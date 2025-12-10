@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -57,6 +58,11 @@ type AgentMailUpdateMsg struct {
 	Connected bool
 	Locks     int
 	LockInfo  []AgentMailLockInfo
+}
+
+// CassSelectMsg is sent when a CASS search result is selected
+type CassSelectMsg struct {
+	Hit cass.SearchHit
 }
 
 // Model is the session dashboard model
@@ -117,6 +123,10 @@ type Model struct {
 
 	// Markdown renderer
 	renderer *glamour.TermRenderer
+
+	// CASS Search
+	showCassSearch bool
+	cassSearch     components.CassSearchModel
 }
 
 // PaneStatus tracks the status of a pane including compaction state
@@ -153,6 +163,7 @@ type KeyMap struct {
 	Quit           key.Binding
 	ContextRefresh key.Binding // 'c' to refresh context data
 	MailRefresh    key.Binding // 'm' to refresh Agent Mail data
+	CassSearch     key.Binding // 'ctrl+s' to open CASS search
 	Num1           key.Binding
 	Num2           key.Binding
 	Num3           key.Binding
@@ -187,6 +198,7 @@ var dashKeys = KeyMap{
 	Quit:           key.NewBinding(key.WithKeys("q", "esc"), key.WithHelp("q/esc", "quit")),
 	ContextRefresh: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "refresh context")),
 	MailRefresh:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "refresh mail")),
+	CassSearch:     key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "cass search")),
 	Num1:           key.NewBinding(key.WithKeys("1")),
 	Num2:           key.NewBinding(key.WithKeys("2")),
 	Num3:           key.NewBinding(key.WithKeys("3")),
@@ -217,6 +229,11 @@ func New(session string) Model {
 		refreshInterval: DefaultRefreshInterval,
 		healthStatus:    "unknown",
 		healthMessage:   "",
+		cassSearch: components.NewCassSearch(func(hit cass.SearchHit) tea.Cmd {
+			return func() tea.Msg {
+				return CassSelectMsg{Hit: hit}
+			}
+		}),
 	}
 	
 	m.initRenderer(40)
@@ -443,20 +460,45 @@ func (m Model) fetchStatuses() tea.Cmd {
 
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	// Handle CASS search updates
+	passToSearch := true
+	if _, ok := msg.(tea.KeyMsg); ok && !m.showCassSearch {
+		passToSearch = false
+	}
+
+	if passToSearch {
+		var cmd tea.Cmd
+		m.cassSearch, cmd = m.cassSearch.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
 	switch msg := msg.(type) {
+	case CassSelectMsg:
+		m.showCassSearch = false
+		m.healthMessage = fmt.Sprintf("Selected: %s", msg.Hit.Title)
+		return m, tea.Batch(cmds...)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.tier = layout.TierForWidth(msg.Width)
-		
+
 		_, detailWidth := layout.SplitProportions(msg.Width)
 		contentWidth := detailWidth - 4
 		if contentWidth < 20 {
 			contentWidth = 20
 		}
 		m.initRenderer(contentWidth)
-		
-		return m, nil
+
+		searchW := int(float64(msg.Width) * 0.6)
+		searchH := int(float64(msg.Height) * 0.6)
+		m.cassSearch.SetSize(searchW, searchH)
+
+		return m, tea.Batch(cmds...)
 
 	case DashboardTickMsg:
 		m.animTick++
@@ -570,7 +612,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.showCassSearch {
+			if msg.String() == "esc" {
+				m.showCassSearch = false
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		switch {
+		case key.Matches(msg, dashKeys.CassSearch):
+			m.showCassSearch = true
+			searchW := int(float64(m.width) * 0.6)
+			searchH := int(float64(m.height) * 0.6)
+			m.cassSearch.SetSize(searchW, searchH)
+			cmds = append(cmds, m.cassSearch.Init())
+			return m, tea.Batch(cmds...)
+
 		case key.Matches(msg, dashKeys.Quit):
 			m.quitting = true
 			return m, tea.Quit
@@ -731,7 +788,20 @@ func (m Model) View() string {
 		string(t.Surface2), string(t.Surface1)) + "\n")
 	b.WriteString("  " + m.renderHelpBar() + "\n")
 
-	return b.String()
+	content := b.String()
+
+	if m.showCassSearch {
+		searchView := m.cassSearch.View()
+		modalStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(t.Primary).
+			Background(t.Base).
+			Padding(1, 2)
+		modal := modalStyle.Render(searchView)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	return content
 }
 
 func (m Model) renderStatsBar() string {
