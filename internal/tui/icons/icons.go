@@ -351,13 +351,12 @@ func Detect() IconSet {
 		}
 	}
 
-	// Check for Nerd Fonts via specific env var
-	if HasNerdFonts() {
+	// Legacy: NTM_USE_ICONS or NERD_FONTS env vars (explicit opt-in)
+	if os.Getenv("NTM_USE_ICONS") == "1" || os.Getenv("NERD_FONTS") == "1" {
 		return NerdFonts
 	}
 
-	// Default to ASCII to avoid width drift issues on some terminals.
-	// Users can opt-in to Unicode/Nerd Fonts via NTM_ICONS=auto|unicode|nerd
+	// Default to ASCII to avoid width drift issues.
 	return ASCII
 }
 
