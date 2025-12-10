@@ -18,6 +18,22 @@ const (
 	UltraWideViewThreshold = 240
 )
 
+// Surface guidance (rationale, not enforced):
+//   - Palette: split list/preview at TierSplit; promote richer preview/badges at TierWide+.
+//   - Dashboard/status: switch to split list/detail at TierSplit; add secondary metadata bars at
+//     TierWide; show tertiary items (locks, model/variant) TierUltra.
+//   - Tutorial/markdown views: re-render markdown per resize; use TierWide to loosen padding and
+//     show side metadata when present.
+// Keeping this guidance close to the thresholds helps avoid divergence across surfaces.
+//
+// Reference matrix (behavior by tier):
+//   TierNarrow (<120): stacked layouts; minimal badges; truncate secondary columns.
+//   TierSplit  (120-199): split list/detail; primary metadata only; conservative padding.
+//   TierWide   (200-239): enable secondary metadata columns (age/comments/locks/model); richer
+//                        preview styling and wider gutters.
+//   TierUltra  (>=240):   tertiary metadata (labels/variants), widest gutters, extra padding for
+//                        markdown/detail panes to avoid wrap when showing side info.
+
 // Tier describes the current width bucket.
 type Tier int
 

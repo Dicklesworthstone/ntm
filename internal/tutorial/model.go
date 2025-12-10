@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
+	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -70,6 +71,7 @@ type Model struct {
 	theme  theme.Theme
 	styles theme.Styles
 	icons  icons.IconSet
+	tier   layout.Tier
 
 	// Options
 	skipAnimations bool
@@ -109,6 +111,7 @@ func New(opts ...Option) Model {
 	m := Model{
 		width:        80,
 		height:       24,
+		tier:         layout.TierForWidth(80),
 		currentSlide: SlideWelcome,
 		slideStates:  make(map[SlideID]*SlideState),
 		theme:        t,
@@ -167,6 +170,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.tier = layout.TierForWidth(msg.Width)
 		return m, nil
 
 	case TickMsg:

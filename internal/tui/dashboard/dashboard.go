@@ -879,13 +879,13 @@ func (m Model) renderPaneList(width int) string {
 		Width(width)
 
 	// Column headers vary by tier
-	var header string
-	if m.tier >= layout.TierWide {
-		header = "  #  T  S  TITLE                    CTX     MODEL"
+	if m.tier >= layout.TierUltra {
+		lines = append(lines, headerStyle.Render("  #  T  S  TITLE                    CTX   MODEL      CMD"))
+	} else if m.tier >= layout.TierWide {
+		lines = append(lines, headerStyle.Render("  #  T  S  TITLE                    CTX   MODEL"))
 	} else {
-		header = "  #  T  S  TITLE"
+		lines = append(lines, headerStyle.Render("  #  T  S  TITLE"))
 	}
-	lines = append(lines, headerStyle.Render(header))
 
 	// Pane rows
 	for i, p := range m.panes {
@@ -898,7 +898,7 @@ func (m Model) renderPaneList(width int) string {
 }
 
 // renderPaneRow renders a single pane as a table row
-func (m Model) renderPaneRow(p tmux.Pane, _ int, selected bool, _ int) string {
+func (m Model) renderPaneRow(p tmux.Pane, _ int, selected bool, width int) string {
 	t := m.theme
 	ic := m.icons
 	var parts []string
@@ -956,13 +956,25 @@ func (m Model) renderPaneRow(p tmux.Pane, _ int, selected bool, _ int) string {
 	}
 	parts = append(parts, statusStyle.Render(statusIcon))
 
-	// Title (flexible width)
-	titleWidth := 20
+	// Title (flexible width based on available columns)
+	baseSpaces := 6 // approx separators + selection/index/icon/status
+	fixedAfterTitle := 0
 	if m.tier >= layout.TierWide {
-		titleWidth = 24
+		fixedAfterTitle += 6 /*ctx*/ + 1
+		fixedAfterTitle += 8 /*model*/ + 1
+	}
+	if m.tier >= layout.TierUltra {
+		fixedAfterTitle += 12 /*cmd*/ + 1
+	}
+	titleWidth := width - baseSpaces - fixedAfterTitle
+	if titleWidth < 12 {
+		titleWidth = 12
+	}
+	if titleWidth > 40 {
+		titleWidth = 40
 	}
 	title := layout.TruncateRunes(p.Title, titleWidth, "…")
-	titleStyle := lipgloss.NewStyle().Foreground(t.Text).Width(titleWidth)
+	titleStyle := lipgloss.NewStyle().Foreground(t.Text)
 	if selected {
 		titleStyle = titleStyle.Bold(true)
 	}
@@ -988,8 +1000,22 @@ func (m Model) renderPaneRow(p tmux.Pane, _ int, selected bool, _ int) string {
 		parts = append(parts, "        ") // placeholder
 	}
 
-	// Highlight selected row
+	// Command snippet (TierUltra)
+	if m.tier >= layout.TierUltra {
+		cmd := layout.TruncateRunes(strings.TrimSpace(p.Command), 12, "…")
+		cmdStyle := lipgloss.NewStyle().Foreground(t.Overlay).Width(12)
+		parts = append(parts, cmdStyle.Render(cmd))
+	}
+
+	// Join and pad to requested width to avoid wrap jitter
 	rowContent := strings.Join(parts, " ")
+	if width > 0 {
+		padding := width - lipgloss.Width(rowContent)
+		if padding > 0 {
+			rowContent += strings.Repeat(" ", padding)
+		}
+	}
+
 	if selected {
 		return lipgloss.NewStyle().Background(t.Surface0).Render(rowContent)
 	}
