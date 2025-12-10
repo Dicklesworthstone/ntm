@@ -439,6 +439,110 @@ func TestPrint(t *testing.T) {
 	}
 }
 
+func TestCASSDefaults(t *testing.T) {
+	cfg := Default()
+
+	if !cfg.CASS.Enabled {
+		t.Error("CASS should be enabled by default")
+	}
+	if !cfg.CASS.ShowInstallHints {
+		t.Error("CASS ShowInstallHints should be true by default")
+	}
+	if cfg.CASS.Timeout != 30 {
+		t.Errorf("Expected CASS timeout 30, got %d", cfg.CASS.Timeout)
+	}
+
+	// Context defaults
+	if !cfg.CASS.Context.Enabled {
+		t.Error("CASS Context should be enabled by default")
+	}
+	if cfg.CASS.Context.MaxSessions != 3 {
+		t.Errorf("Expected MaxSessions 3, got %d", cfg.CASS.Context.MaxSessions)
+	}
+	if cfg.CASS.Context.LookbackDays != 30 {
+		t.Errorf("Expected LookbackDays 30, got %d", cfg.CASS.Context.LookbackDays)
+	}
+
+	// Duplicates defaults
+	if !cfg.CASS.Duplicates.Enabled {
+		t.Error("CASS Duplicates should be enabled by default")
+	}
+	if cfg.CASS.Duplicates.SimilarityThreshold != 0.7 {
+		t.Errorf("Expected SimilarityThreshold 0.7, got %f", cfg.CASS.Duplicates.SimilarityThreshold)
+	}
+
+	// Search defaults
+	if cfg.CASS.Search.DefaultLimit != 10 {
+		t.Errorf("Expected DefaultLimit 10, got %d", cfg.CASS.Search.DefaultLimit)
+	}
+	if cfg.CASS.Search.DefaultFields != "summary" {
+		t.Errorf("Expected DefaultFields 'summary', got %s", cfg.CASS.Search.DefaultFields)
+	}
+
+	// TUI defaults
+	if !cfg.CASS.TUI.ShowActivitySparkline {
+		t.Error("CASS TUI ShowActivitySparkline should be true by default")
+	}
+	if !cfg.CASS.TUI.ShowStatusIndicator {
+		t.Error("CASS TUI ShowStatusIndicator should be true by default")
+	}
+}
+
+func TestCASSEnvOverrides(t *testing.T) {
+	// Save original values
+	origEnabled := os.Getenv("NTM_CASS_ENABLED")
+	origTimeout := os.Getenv("NTM_CASS_TIMEOUT")
+	origBinary := os.Getenv("NTM_CASS_BINARY")
+
+	// Create a minimal config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[cass]
+enabled = true
+timeout = 30
+`), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	// Test NTM_CASS_ENABLED=false
+	os.Setenv("NTM_CASS_ENABLED", "false")
+	defer os.Setenv("NTM_CASS_ENABLED", origEnabled)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Enabled {
+		t.Error("CASS should be disabled via NTM_CASS_ENABLED=false")
+	}
+
+	// Test NTM_CASS_TIMEOUT
+	os.Setenv("NTM_CASS_ENABLED", "true")
+	os.Setenv("NTM_CASS_TIMEOUT", "60")
+	defer os.Setenv("NTM_CASS_TIMEOUT", origTimeout)
+
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Timeout != 60 {
+		t.Errorf("Expected CASS timeout 60 from env, got %d", cfg.CASS.Timeout)
+	}
+
+	// Test NTM_CASS_BINARY
+	os.Setenv("NTM_CASS_BINARY", "/custom/path/to/cass")
+	defer os.Setenv("NTM_CASS_BINARY", origBinary)
+
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.BinaryPath != "/custom/path/to/cass" {
+		t.Errorf("Expected CASS binary path from env, got %s", cfg.CASS.BinaryPath)
+	}
+}
+
 func TestCreateDefaultAlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
 	origXDG := os.Getenv("XDG_CONFIG_HOME")
