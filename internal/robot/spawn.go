@@ -39,6 +39,7 @@ type SpawnOutput struct {
 type SpawnedAgent struct {
 	Pane      string `json:"pane"`
 	Type      string `json:"type"`
+	Variant   string `json:"variant,omitempty"`
 	Title     string `json:"title"`
 	Ready     bool   `json:"ready"`
 	StartupMs int64  `json:"startup_ms"`

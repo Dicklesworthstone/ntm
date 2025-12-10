@@ -46,6 +46,7 @@ type SessionInfo struct {
 // Agent represents an AI agent in a session
 type Agent struct {
 	Type     string `json:"type"` // claude, codex, gemini
+	Variant  string `json:"variant,omitempty"` // Model alias or persona name
 	Pane     string `json:"pane"`
 	Window   int    `json:"window"`
 	PaneIdx  int    `json:"pane_idx"`
@@ -285,6 +286,7 @@ func PrintStatus() error {
 					Window:   0, // GetPanes doesn't include window index
 					PaneIdx:  pane.Index,
 					IsActive: pane.Active,
+					Variant:  pane.Variant,
 				}
 
 				// Use authoritative type from tmux package if available
@@ -1098,6 +1100,7 @@ type SnapshotSession struct {
 type SnapshotAgent struct {
 	Pane             string  `json:"pane"`
 	Type             string  `json:"type"`
+	Variant          string  `json:"variant,omitempty"` // Model alias or persona name
 	TypeConfidence   float64 `json:"type_confidence"`
 	TypeMethod       string  `json:"type_method"`
 	State            string  `json:"state"`
@@ -1176,6 +1179,7 @@ func PrintSnapshot(cfg *config.Config) error {
 			agent := SnapshotAgent{
 				Pane:             fmt.Sprintf("%d.%d", 0, pane.Index),
 				Type:             detection.Type,
+				Variant:          pane.Variant,
 				TypeConfidence:   detection.Confidence,
 				TypeMethod:       string(detection.Method),
 				State:            "unknown",
