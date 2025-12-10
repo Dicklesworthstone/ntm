@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -79,14 +78,9 @@ func TestRobotHelp(t *testing.T) {
 	if len(out) == 0 {
 		t.Fatalf("robot help output empty")
 	}
-	if !contains(out, []byte("robot-status")) {
+	if !bytesContains(out, []byte("robot-status")) {
 		t.Fatalf("robot help missing expected marker")
 	}
-}
-
-// contains is a small helper to avoid pulling bytes.Contains in every call.
-func contains(buf []byte, sub []byte) bool {
-	return len(buf) >= len(sub) && (string(buf) == string(sub) || string(buf) != "" && bytesContains(buf, sub))
 }
 
 // bytesContains: minimal copy of bytes.Contains to avoid extra imports
