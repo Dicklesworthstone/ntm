@@ -163,6 +163,14 @@ func DefaultAccountsConfig() AccountsConfig {
 	}
 }
 
+// RotationAccount represents a configured account for rotation
+type RotationAccount struct {
+	Provider string `toml:"provider"` // claude, codex, gemini
+	Email    string `toml:"email"`    // Account email
+	Alias    string `toml:"alias"`    // Short name for display (optional)
+	Priority int    `toml:"priority"` // Lower = higher priority (optional, default by order)
+}
+
 // RotationThresholds defines when to trigger account rotation
 type RotationThresholds struct {
 	WarningPercent       int     `toml:"warning_percent"`         // Show warning at this quota %
@@ -184,8 +192,30 @@ type RotationConfig struct {
 	PreferRestart      bool               `toml:"prefer_restart"`      // Prefer restart over switch
 	AutoOpenBrowser    bool               `toml:"auto_open_browser"`   // Auto-open browser for auth
 	ContinuationPrompt string             `toml:"continuation_prompt"` // Prompt template on rotation
+	Accounts           []RotationAccount  `toml:"accounts"`            // Configured accounts per provider
 	Thresholds         RotationThresholds `toml:"thresholds"`
 	Dashboard          RotationDashboard  `toml:"dashboard"`
+}
+
+// GetAccountsForProvider returns all accounts for a given provider in priority order
+func (c *RotationConfig) GetAccountsForProvider(provider string) []RotationAccount {
+	var accounts []RotationAccount
+	for _, acc := range c.Accounts {
+		if acc.Provider == provider {
+			accounts = append(accounts, acc)
+		}
+	}
+	return accounts
+}
+
+// SuggestNextAccount returns the next account to use (first non-current account)
+func (c *RotationConfig) SuggestNextAccount(provider, currentEmail string) *RotationAccount {
+	for i, acc := range c.Accounts {
+		if acc.Provider == provider && acc.Email != currentEmail {
+			return &c.Accounts[i]
+		}
+	}
+	return nil
 }
 
 // DefaultRotationConfig returns the default rotation configuration
