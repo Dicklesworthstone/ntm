@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -50,7 +51,7 @@ Examples:
 				Gemini: gmiFlag,
 			}
 
-			return runCopy(session, lines, filter)
+			return runCopy(cmd.OutOrStdout(), session, lines, filter)
 		},
 	}
 
@@ -91,7 +92,7 @@ func (f AgentFilter) Matches(agentType tmux.AgentType) bool {
 	}
 }
 
-func runCopy(session string, lines int, filter AgentFilter) error {
+func runCopy(w io.Writer, session string, lines int, filter AgentFilter) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -103,6 +104,9 @@ func runCopy(session string, lines int, filter AgentFilter) error {
 		if tmux.InTmux() {
 			session = tmux.GetCurrentSession()
 		} else {
+			if !IsInteractive(w) {
+				return fmt.Errorf("non-interactive environment: session name is required")
+			}
 			sessions, err := tmux.ListSessions()
 			if err != nil {
 				return err

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +57,7 @@ Examples:
 				filter.All = true
 			}
 
-			return runSave(session, outputDir, lines, filter)
+			return runSave(cmd.OutOrStdout(), session, outputDir, lines, filter)
 		},
 	}
 
@@ -70,7 +71,7 @@ Examples:
 	return cmd
 }
 
-func runSave(session, outputDir string, lines int, filter AgentFilter) error {
+func runSave(w io.Writer, session, outputDir string, lines int, filter AgentFilter) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -82,6 +83,9 @@ func runSave(session, outputDir string, lines int, filter AgentFilter) error {
 		if tmux.InTmux() {
 			session = tmux.GetCurrentSession()
 		} else {
+			if !IsInteractive(w) {
+				return fmt.Errorf("non-interactive environment: session name is required")
+			}
 			sessions, err := tmux.ListSessions()
 			if err != nil {
 				return err

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/Dicklesworthstone/ntm/internal/palette"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -33,17 +34,17 @@ Examples:
 			if len(args) > 0 {
 				session = args[0]
 			}
-			return runView(session)
+			return runView(cmd.OutOrStdout(), session)
 		},
 	}
 }
 
-func runView(session string) error {
+func runView(w io.Writer, session string) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
 
-	interactive := isInteractive()
+	interactive := IsInteractive(w)
 	t := theme.Current()
 
 	// Determine target session

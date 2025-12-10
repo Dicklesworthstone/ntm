@@ -342,16 +342,22 @@ func Detect() IconSet {
 		return Unicode
 	case "ascii":
 		return ASCII
+	case "auto":
+		if HasNerdFonts() {
+			return NerdFonts
+		}
+		if HasUnicode() {
+			return Unicode
+		}
 	}
 
+	// Check for Nerd Fonts via specific env var
 	if HasNerdFonts() {
 		return NerdFonts
 	}
 
-	if HasUnicode() {
-		return Unicode
-	}
-
+	// Default to ASCII to avoid width drift issues on some terminals.
+	// Users can opt-in to Unicode/Nerd Fonts via NTM_ICONS=auto|unicode|nerd
 	return ASCII
 }
 

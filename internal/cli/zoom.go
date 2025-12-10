@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/Dicklesworthstone/ntm/internal/palette"
@@ -43,19 +44,19 @@ Examples:
 				paneIdx = idx
 			}
 
-			return runZoom(session, paneIdx)
+			return runZoom(cmd.OutOrStdout(), session, paneIdx)
 		},
 	}
 
 	return cmd
 }
 
-func runZoom(session string, paneIdx int) error {
+func runZoom(w io.Writer, session string, paneIdx int) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
 
-	interactive := isInteractive()
+	interactive := IsInteractive(w)
 	t := theme.Current()
 
 	// Determine target session
