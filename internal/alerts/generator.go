@@ -14,6 +14,35 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+// Pre-compiled regexes for performance
+var (
+	ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`) // Corrected escape sequence for backslash
+
+	errorPatterns = []struct {
+		pattern  *regexp.Regexp
+		severity Severity
+		msg      string
+	}{
+		{regexp.MustCompile(`(?i)error:`), SeverityError, "Error detected in agent output"},
+		{regexp.MustCompile(`(?i)fatal:`), SeverityCritical, "Fatal error in agent"},
+		{regexp.MustCompile(`(?i)panic:`), SeverityCritical, "Panic in agent"},
+		{regexp.MustCompile(`(?i)failed:`), SeverityWarning, "Operation failed in agent"},
+		{regexp.MustCompile(`(?i)exception`), SeverityError, "Exception in agent"},
+		{regexp.MustCompile(`(?i)traceback`), SeverityError, "Exception traceback detected"},
+		{regexp.MustCompile(`(?i)permission denied`), SeverityError, "Permission denied error"},
+		{regexp.MustCompile(`(?i)connection refused`), SeverityWarning, "Connection refused"},
+		{regexp.MustCompile(`(?i)timeout`), SeverityWarning, "Timeout detected"},
+	}
+
+	rateLimitPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)rate.?limit`),
+		regexp.MustCompile(`(?i)too many requests`),
+		regexp.MustCompile(`(?i)429`),
+		regexp.MustCompile(`(?i)quota exceeded`),
+		regexp.MustCompile(`(?i)throttl`),
+	}
+)
+
 // Generator creates alerts from system state analysis
 type Generator struct {
 	config Config
@@ -101,22 +130,6 @@ func (g *Generator) checkAgentStates() []Alert {
 
 // detectErrorState checks pane output for error patterns
 func (g *Generator) detectErrorState(session string, pane tmux.Pane, lines []string) *Alert {
-	errorPatterns := []struct {
-		pattern  string
-		severity Severity
-		msg      string
-	}{
-		{`(?i)error:`, SeverityError, "Error detected in agent output"},
-		{`(?i)fatal:`, SeverityCritical, "Fatal error in agent"},
-		{`(?i)panic:`, SeverityCritical, "Panic in agent"},
-		{`(?i)failed:`, SeverityWarning, "Operation failed in agent"},
-		{`(?i)exception`, SeverityError, "Exception in agent"},
-		{`(?i)traceback`, SeverityError, "Exception traceback detected"},
-		{`(?i)permission denied`, SeverityError, "Permission denied error"},
-		{`(?i)connection refused`, SeverityWarning, "Connection refused"},
-		{`(?i)timeout`, SeverityWarning, "Timeout detected"},
-	}
-
 	// Check last N lines for patterns
 	checkLines := lines
 	if len(checkLines) > 20 {
@@ -125,8 +138,7 @@ func (g *Generator) detectErrorState(session string, pane tmux.Pane, lines []str
 
 	for _, line := range checkLines {
 		for _, ep := range errorPatterns {
-			matched, _ := regexp.MatchString(ep.pattern, line)
-			if matched {
+			if ep.pattern.MatchString(line) {
 				return &Alert{
 					ID:        generateAlertID(AlertAgentError, session, pane.ID),
 					Type:      AlertAgentError,
@@ -148,14 +160,6 @@ func (g *Generator) detectErrorState(session string, pane tmux.Pane, lines []str
 
 // detectRateLimit checks for rate limiting patterns
 func (g *Generator) detectRateLimit(session string, pane tmux.Pane, lines []string) *Alert {
-	rateLimitPatterns := []string{
-		`(?i)rate.?limit`,
-		`(?i)too many requests`,
-		`(?i)429`,
-		`(?i)quota exceeded`,
-		`(?i)throttl`,
-	}
-
 	checkLines := lines
 	if len(checkLines) > 20 {
 		checkLines = checkLines[len(checkLines)-20:]
@@ -163,8 +167,7 @@ func (g *Generator) detectRateLimit(session string, pane tmux.Pane, lines []stri
 
 	for _, line := range checkLines {
 		for _, pattern := range rateLimitPatterns {
-			matched, _ := regexp.MatchString(pattern, line)
-			if matched {
+			if pattern.MatchString(line) {
 				return &Alert{
 					ID:        generateAlertID(AlertRateLimit, session, pane.ID),
 					Type:      AlertRateLimit,
@@ -187,9 +190,22 @@ func (g *Generator) detectRateLimit(session string, pane tmux.Pane, lines []stri
 // checkDiskSpace verifies available disk space
 func (g *Generator) checkDiskSpace() *Alert {
 	var stat syscall.Statfs_t
-	err := syscall.Statfs("/", &stat)
+
+	// Check space on project directory if configured, otherwise root
+	checkPath := "/"
+	if g.config.ProjectsDir != "" {
+		checkPath = g.config.ProjectsDir
+	}
+
+	err := syscall.Statfs(checkPath, &stat)
 	if err != nil {
-		return nil
+		// If project dir check fails (e.g. doesn't exist), fallback to root
+		if checkPath != "/" {
+			err = syscall.Statfs("/", &stat)
+		}
+		if err != nil {
+			return nil
+		}
 	}
 
 	// Calculate free space in GB
@@ -205,10 +221,11 @@ func (g *Generator) checkDiskSpace() *Alert {
 			ID:       generateAlertID(AlertDiskLow, "", ""),
 			Type:     AlertDiskLow,
 			Severity: severity,
-			Message:  fmt.Sprintf("Low disk space: %.1f GB remaining", freeGB),
+			Message:  fmt.Sprintf("Low disk space: %.1f GB remaining on %s", freeGB, checkPath),
 			Context: map[string]interface{}{
 				"free_gb":      freeGB,
 				"threshold_gb": g.config.DiskLowThresholdGB,
+				"path":         checkPath,
 			},
 			CreatedAt:  time.Now(),
 			LastSeenAt: time.Now(),
@@ -333,7 +350,6 @@ func generateAlertID(alertType AlertType, session, pane string) string {
 
 // stripANSI removes ANSI escape sequences from text
 func stripANSI(s string) string {
-	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 	return ansiRegex.ReplaceAllString(s, "")
 }
 

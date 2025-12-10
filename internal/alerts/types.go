@@ -99,6 +99,8 @@ type Config struct {
 	ResolvedPruneMinutes int `toml:"resolved_prune_minutes" json:"resolved_prune_minutes"`
 	// Enabled controls whether alert generation is active
 	Enabled bool `toml:"enabled" json:"enabled"`
+	// ProjectsDir is the base directory for projects (used for disk space check)
+	ProjectsDir string `json:"projects_dir,omitempty"`
 }
 
 // DefaultConfig returns sensible default alert thresholds
