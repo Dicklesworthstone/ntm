@@ -29,7 +29,6 @@ var promptPatterns = []PromptPattern{
 
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},
-	{AgentType: "cod", Regex: regexp.MustCompile(`\$\s*$`), Description: "Shell prompt after codex"},
 
 	// Gemini CLI patterns
 	{AgentType: "gmi", Regex: regexp.MustCompile(`(?i)gemini>?\s*$`), Description: "Gemini prompt"},
@@ -85,13 +84,6 @@ func IsPromptLine(line string, agentType string) bool {
 		}
 	}
 
-	// Fallback: for user/unknown agent types, treat any line containing a '$' as a prompt.
-	if agentType == "" || agentType == "user" {
-		if strings.Contains(line, "$") {
-			return true
-		}
-	}
-
 	return false
 }
 
@@ -106,22 +98,20 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		return false
 	}
 
-	// Check last few non-empty lines (sometimes prompts span multiple lines)
-	checkLines := 3
-	checked := 0
-
-	for i := len(lines) - 1; i >= 0 && checked < checkLines; i-- {
+	// Only consider the last non-empty line to avoid stale prompts earlier in history.
+	foundLine := false
+	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
 		}
-
-		if IsPromptLine(line, agentType) {
-			return true
-		}
-		checked++
+		foundLine = true
+		return IsPromptLine(line, agentType)
 	}
-
+	// If there was no output at all, treat user panes as idle (empty buffer, likely waiting at prompt)
+	if !foundLine && (agentType == "" || agentType == "user") {
+		return true
+	}
 	return false
 }
 
