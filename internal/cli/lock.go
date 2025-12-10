@@ -74,7 +74,7 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session)
+	sessionAgent, err := agentmail.LoadSessionAgent(session, wd)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
 	}

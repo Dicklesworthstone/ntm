@@ -336,46 +336,6 @@ func (m *Model) updateStats() {
 	}
 }
 
-// checkCompaction polls pane output and checks for compaction events
-func (m *Model) checkCompaction() {
-	for _, pane := range m.panes {
-		// Skip user panes
-		if pane.Type == tmux.AgentUser {
-			continue
-		}
-
-		// Capture recent output from the pane
-		output, err := tmux.CapturePaneOutput(pane.ID, 50)
-		if err != nil {
-			continue
-		}
-
-		// Determine agent type string for detection
-		agentType := "unknown"
-		switch pane.Type {
-		case tmux.AgentClaude:
-			agentType = "claude"
-		case tmux.AgentCodex:
-			agentType = "codex"
-		case tmux.AgentGemini:
-			agentType = "gemini"
-		}
-
-		// Check for compaction and send recovery if detected
-		event, recoverySent, _ := m.compaction.CheckAndRecover(output, agentType, m.session, pane.Index)
-
-		// Update pane status
-		ps := m.paneStatus[pane.Index]
-		if event != nil {
-			now := time.Now()
-			ps.LastCompaction = &now
-			ps.RecoverySent = recoverySent
-			ps.State = "compacted"
-		}
-		m.paneStatus[pane.Index] = ps
-	}
-}
-
 // View implements tea.Model
 func (m Model) View() string {
 	t := m.theme

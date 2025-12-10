@@ -58,7 +58,7 @@ func runUnlock(session string, patterns []string, all bool) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session)
+	sessionAgent, err := agentmail.LoadSessionAgent(session, wd)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
 	}

@@ -29,23 +29,46 @@ func sanitizeSessionName(name string) string {
 }
 
 // sessionAgentPath returns the path to the session's agent.json file.
-func sessionAgentPath(sessionName string) string {
+// The path is namespaced by project slug to avoid collisions when
+// the same tmux session name is reused across different projects.
+// If projectKey is empty, we fall back to the legacy path (no slug)
+// for backward compatibility.
+func sessionAgentPath(sessionName, projectKey string) string {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		configDir = filepath.Join(os.Getenv("HOME"), ".config")
 	}
-	return filepath.Join(configDir, "ntm", "sessions", sessionName, "agent.json")
+	base := filepath.Join(configDir, "ntm", "sessions", sessionName)
+	if projectKey != "" {
+		slug := ProjectSlugFromPath(projectKey)
+		if slug == "" {
+			slug = sanitizeSessionName(projectKey)
+		}
+		base = filepath.Join(base, slug)
+	}
+	return filepath.Join(base, "agent.json")
 }
 
 // LoadSessionAgent loads the agent info for a session, if it exists.
-func LoadSessionAgent(sessionName string) (*SessionAgentInfo, error) {
-	path := sessionAgentPath(sessionName)
+func LoadSessionAgent(sessionName, projectKey string) (*SessionAgentInfo, error) {
+	// Prefer project-scoped path to avoid cross-project collisions.
+	path := sessionAgentPath(sessionName, projectKey)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil // No agent registered yet
+			// Legacy fallback (pre-namespacing)
+			legacyPath := sessionAgentPath(sessionName, "")
+			data, err = os.ReadFile(legacyPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil, nil // No agent registered yet
+				}
+				return nil, fmt.Errorf("reading session agent: %w", err)
+			}
+			path = legacyPath
+		} else {
+			return nil, fmt.Errorf("reading session agent: %w", err)
 		}
-		return nil, fmt.Errorf("reading session agent: %w", err)
 	}
 
 	var info SessionAgentInfo
@@ -57,8 +80,8 @@ func LoadSessionAgent(sessionName string) (*SessionAgentInfo, error) {
 }
 
 // SaveSessionAgent saves the agent info for a session.
-func SaveSessionAgent(sessionName string, info *SessionAgentInfo) error {
-	path := sessionAgentPath(sessionName)
+func SaveSessionAgent(sessionName, projectKey string, info *SessionAgentInfo) error {
+	path := sessionAgentPath(sessionName, projectKey)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -78,8 +101,8 @@ func SaveSessionAgent(sessionName string, info *SessionAgentInfo) error {
 }
 
 // DeleteSessionAgent removes the agent info file for a session.
-func DeleteSessionAgent(sessionName string) error {
-	path := sessionAgentPath(sessionName)
+func DeleteSessionAgent(sessionName, projectKey string) error {
+	path := sessionAgentPath(sessionName, projectKey)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("deleting session agent: %w", err)
 	}
@@ -96,7 +119,7 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 	}
 
 	// Check if already registered
-	existing, err := LoadSessionAgent(sessionName)
+	existing, err := LoadSessionAgent(sessionName, workingDir)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +127,7 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 	// If already registered with same project, just update activity
 	if existing != nil && existing.ProjectKey == workingDir {
 		existing.LastActiveAt = time.Now()
-		if err := SaveSessionAgent(sessionName, existing); err != nil {
+		if err := SaveSessionAgent(sessionName, workingDir, existing); err != nil {
 			return nil, err
 		}
 		// Update activity on server (re-register updates last_active_ts)
@@ -162,7 +185,7 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 		RegisteredAt: time.Now(),
 		LastActiveAt: time.Now(),
 	}
-	if err := SaveSessionAgent(sessionName, info); err != nil {
+	if err := SaveSessionAgent(sessionName, workingDir, info); err != nil {
 		return nil, err
 	}
 
@@ -173,7 +196,7 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 // If Agent Mail is unavailable, update silently fails without blocking.
 func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName string) error {
 	// Load existing agent info
-	info, err := LoadSessionAgent(sessionName)
+	info, err := LoadSessionAgent(sessionName, "")
 	if err != nil {
 		return err
 	}
@@ -183,7 +206,7 @@ func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName string) 
 
 	// Update local timestamp
 	info.LastActiveAt = time.Now()
-	if err := SaveSessionAgent(sessionName, info); err != nil {
+	if err := SaveSessionAgent(sessionName, info.ProjectKey, info); err != nil {
 		return err
 	}
 
