@@ -753,6 +753,54 @@ func (m Model) renderHealthBadge() string {
 		Render(fmt.Sprintf("%s %s", icon, label))
 }
 
+// renderScanBadge renders the UBS scan status badge
+func (m Model) renderScanBadge() string {
+	t := m.theme
+
+	if m.scanStatus == "" || m.scanStatus == "unavailable" {
+		return ""
+	}
+
+	var bgColor, fgColor lipgloss.Color
+	var icon, label string
+
+	switch m.scanStatus {
+	case "clean":
+		bgColor = t.Green
+		fgColor = t.Base
+		icon = "✓"
+		label = "scan clean"
+	case "warning":
+		bgColor = t.Yellow
+		fgColor = t.Base
+		icon = "⚠"
+		label = fmt.Sprintf("scan %d warn", m.scanTotals.Warning)
+	case "critical":
+		bgColor = t.Red
+		fgColor = t.Base
+		icon = "✗"
+		label = fmt.Sprintf("scan %d crit", m.scanTotals.Critical)
+	case "error":
+		bgColor = t.Surface1
+		fgColor = t.Overlay
+		icon = "?"
+		label = "scan error"
+	default:
+		return ""
+	}
+
+	if m.scanStatus == "clean" && (m.scanTotals.Critical+m.scanTotals.Warning+m.scanTotals.Info) > 0 {
+		label = fmt.Sprintf("scan %d/%d/%d", m.scanTotals.Critical, m.scanTotals.Warning, m.scanTotals.Info)
+	}
+
+	return lipgloss.NewStyle().
+		Background(bgColor).
+		Foreground(fgColor).
+		Bold(true).
+		Padding(0, 1).
+		Render(fmt.Sprintf("%s %s", icon, label))
+}
+
 // renderAgentMailBadge renders the Agent Mail status badge
 func (m Model) renderAgentMailBadge() string {
 	t := m.theme

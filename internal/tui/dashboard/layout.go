@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // Layout mode thresholds - defines breakpoints for responsive layouts
@@ -227,17 +228,17 @@ func RenderContextMiniBar(percent float64, width int, t theme.Theme) string {
 
 // PaneTableRow represents a single row in the pane table
 type PaneTableRow struct {
-	Index        int
-	Type         string
-	Variant      string
-	Title        string
-	Status       string
-	ContextPct   float64
-	Model        string
-	Command      string
-	IsSelected   bool
-	IsCompacted  bool
-	BorderColor  lipgloss.Color
+	Index       int
+	Type        string
+	Variant     string
+	Title       string
+	Status      string
+	ContextPct  float64
+	Model       string
+	Command     string
+	IsSelected  bool
+	IsCompacted bool
+	BorderColor lipgloss.Color
 }
 
 // RenderPaneRow renders a single pane as a table row with progressive columns
@@ -354,6 +355,10 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 // RenderPaneDetail renders the detail panel for a selected pane
 func RenderPaneDetail(pane tmux.Pane, ps PaneStatus, dims LayoutDimensions, t theme.Theme) string {
 	var lines []string
+	innerWidth := dims.DetailWidth
+	if innerWidth < 12 {
+		innerWidth = 12
+	}
 
 	// Header with pane title
 	headerStyle := lipgloss.NewStyle().
@@ -362,9 +367,9 @@ func RenderPaneDetail(pane tmux.Pane, ps PaneStatus, dims LayoutDimensions, t th
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
 		BorderForeground(t.Surface1).
-		Width(dims.DetailWidth - 4).
+		Width(innerWidth-4).
 		Padding(0, 1)
-	lines = append(lines, headerStyle.Render(pane.Title))
+	lines = append(lines, headerStyle.Render(truncate(pane.Title, innerWidth-6)))
 	lines = append(lines, "")
 
 	// Info grid
@@ -415,9 +420,12 @@ func RenderPaneDetail(pane tmux.Pane, ps PaneStatus, dims LayoutDimensions, t th
 		lines = append(lines, "")
 
 		// Large context bar
-		barWidth := dims.DetailWidth - 20
+		barWidth := innerWidth - 20
 		if barWidth > 60 {
 			barWidth = 60
+		}
+		if barWidth < 10 {
+			barWidth = 10
 		}
 		contextBar := renderDetailContextBar(ps.ContextPercent, barWidth, t)
 		lines = append(lines, contextBar)
@@ -455,11 +463,17 @@ func RenderPaneDetail(pane tmux.Pane, ps PaneStatus, dims LayoutDimensions, t th
 		lines = append(lines, "")
 		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Lavender).Render("Command"))
 		lines = append(lines, "")
+		cmdWidth := innerWidth - 6
+		if cmdWidth < 10 {
+			cmdWidth = innerWidth
+		}
+		wrappedCmd := wordwrap.String(strings.TrimSpace(pane.Command), cmdWidth)
 		cmdStyle := lipgloss.NewStyle().
 			Foreground(t.Overlay).
 			Italic(true).
-			Width(dims.DetailWidth - 6)
-		lines = append(lines, "  "+cmdStyle.Render(pane.Command))
+			Width(cmdWidth).
+			MaxWidth(cmdWidth)
+		lines = append(lines, "  "+cmdStyle.Render(wrappedCmd))
 	}
 
 	return strings.Join(lines, "\n")
