@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -31,6 +33,7 @@ type SpawnOptions struct {
 	AutoRestart bool
 	RecipeName  string
 	PersonaMap  map[string]*persona.Persona
+	PluginMap   map[string]plugins.AgentPlugin
 
 	// CASS Context
 	CassContextQuery string
@@ -105,8 +108,23 @@ Examples:
 				cfg.CASS.Context.LookbackDays = contextDays
 			}
 
-			// Handle personas first (they contribute to agentSpecs)
-			// personaMap maps variant name to Persona for system prompt injection
+			// Load plugins (late loading to ensure config is ready if needed)
+			// But flags were registered below?
+			// Wait, if flags are registered below, RunE logic needs plugin map to resolve.
+			// Re-load plugins here?
+			configDir := filepath.Dir(config.DefaultPath())
+			pluginsDir := filepath.Join(configDir, "agents")
+			loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+			pluginMap := make(map[string]plugins.AgentPlugin)
+			for _, p := range loadedPlugins {
+				pluginMap[p.Name] = p
+				// Note: Alias mapping should match what was used for registration
+				// Since we passed p.Name as AgentType for both name and alias flags,
+				// the specs will have Type=p.Name.
+				// So we key by p.Name.
+			}
+
+			// Handle personas first
 			personaMap := make(map[string]*persona.Persona)
 			if len(personaSpecs) > 0 {
 				resolved, err := ResolvePersonas(personaSpecs, dir)
@@ -114,43 +132,33 @@ Examples:
 					return err
 				}
 				personaAgents := FlattenPersonas(resolved)
-
-				// Add persona agents to agentSpecs with persona name as model variant
 				for _, pa := range personaAgents {
 					agentSpecs = append(agentSpecs, AgentSpec{
 						Type:  pa.AgentType,
-						Count: 1,              // Each persona agent is added individually
-						Model: pa.PersonaName, // Use persona name as variant for pane naming
+						Count: 1,
+						Model: pa.PersonaName,
 					})
 				}
-
-				// Build persona map for system prompt lookup
 				for _, r := range resolved {
 					personaMap[r.Persona.Name] = r.Persona
 				}
-
 				if !IsJSONOutput() {
 					fmt.Printf("Resolved %d persona agent(s)\n", len(personaAgents))
 				}
 			}
 
-			// If a recipe is specified, load it and use its agent counts
+			// Handle recipe
 			if recipeName != "" {
 				loader := recipe.NewLoader()
 				r, err := loader.Get(recipeName)
 				if err != nil {
-					// List available recipes to help the user
 					available := recipe.BuiltinNames()
 					return fmt.Errorf("%w\n\nAvailable built-in recipes: %s",
 						err, strings.Join(available, ", "))
 				}
-
-				// Validate the recipe
 				if err := r.Validate(); err != nil {
 					return fmt.Errorf("invalid recipe %q: %w", recipeName, err)
 				}
-
-				// Get counts from recipe (add to specs if no specs of that type)
 				counts := r.AgentCounts()
 				if agentSpecs.ByType(AgentTypeClaude).TotalCount() == 0 && counts["cc"] > 0 {
 					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeClaude, Count: counts["cc"]})
@@ -161,16 +169,15 @@ Examples:
 				if agentSpecs.ByType(AgentTypeGemini).TotalCount() == 0 && counts["gmi"] > 0 {
 					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeGemini, Count: counts["gmi"]})
 				}
-
 				fmt.Printf("Using recipe '%s': %s\n", r.Name, r.Description)
 			}
 
-			// Extract simple counts for backwards compatible runSpawn
+			// Extract simple counts
 			ccCount := agentSpecs.ByType(AgentTypeClaude).TotalCount()
 			codCount := agentSpecs.ByType(AgentTypeCodex).TotalCount()
 			gmiCount := agentSpecs.ByType(AgentTypeGemini).TotalCount()
 
-			// Apply defaults from config if no agents specified
+			// Apply defaults
 			if ccCount+codCount+gmiCount == 0 && len(cfg.ProjectDefaults) > 0 {
 				if v, ok := cfg.ProjectDefaults["cc"]; ok && v > 0 {
 					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeClaude, Count: v})
@@ -181,12 +188,9 @@ Examples:
 				if v, ok := cfg.ProjectDefaults["gmi"]; ok && v > 0 {
 					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeGemini, Count: v})
 				}
-
-				// Re-calculate counts
 				ccCount = agentSpecs.ByType(AgentTypeClaude).TotalCount()
 				codCount = agentSpecs.ByType(AgentTypeCodex).TotalCount()
-			gmiCount = agentSpecs.ByType(AgentTypeGemini).TotalCount()
-
+				gmiCount = agentSpecs.ByType(AgentTypeGemini).TotalCount()
 				if !IsJSONOutput() && (ccCount+codCount+gmiCount > 0) {
 					fmt.Printf("Using default configuration: %d cc, %d cod, %d gmi\n", ccCount, codCount, gmiCount)
 				}
@@ -202,6 +206,7 @@ Examples:
 				AutoRestart:      autoRestart,
 				RecipeName:       recipeName,
 				PersonaMap:       personaMap,
+				PluginMap:        pluginMap,
 				CassContextQuery: contextQuery,
 				NoCassContext:    noCassContext,
 				Prompt:           prompt,
@@ -226,6 +231,20 @@ Examples:
 	cmd.Flags().IntVar(&contextLimit, "cass-context-limit", 0, "Max past sessions to include")
 	cmd.Flags().IntVar(&contextDays, "cass-context-days", 0, "Look back N days")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt to initialize agents with")
+
+	// Register plugin flags dynamically
+	// Note: We scan for plugins here to register flags.
+	configDir := filepath.Dir(config.DefaultPath())
+	pluginsDir := filepath.Join(configDir, "agents")
+	loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+	for _, p := range loadedPlugins {
+		// Use p.Name as the AgentType so we can identify it later
+		agentType := AgentType(p.Name)
+		cmd.Flags().Var(NewAgentSpecsValue(agentType, &agentSpecs), p.Name, p.Description)
+		if p.Alias != "" {
+			cmd.Flags().Var(NewAgentSpecsValue(agentType, &agentSpecs), p.Alias, p.Description+" (alias)")
+		}
+	}
 
 	return cmd
 }
@@ -262,9 +281,19 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		return outputError(err)
 	}
 
-	totalAgents := opts.CCCount + opts.CodCount + opts.GmiCount
-	if totalAgents == 0 {
-		return outputError(fmt.Errorf("no agents specified (use --cc, --cod, or --gmi)"))
+	totalAgents := 0
+	for _, _ = range opts.Agents {
+		// Count plugin agents too
+		totalAgents++
+	}
+	// Or use explicit counts if populated manually (legacy path)
+	if len(opts.Agents) == 0 {
+		totalAgents = opts.CCCount + opts.CodCount + opts.GmiCount
+		if totalAgents == 0 {
+			return outputError(fmt.Errorf("no agents specified (use --cc, --cod, --gmi, or plugin flags)"))
+		}
+	} else {
+		totalAgents = len(opts.Agents)
 	}
 
 	dir := cfg.GetProjectDir(opts.Session)
@@ -381,7 +410,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 	agentNum := startIdx
 	if !IsJSONOutput() {
-		fmt.Printf("Launching agents: %dx cc, %dx cod, %dx gmi...\n", opts.CCCount, opts.CodCount, opts.GmiCount)
+		fmt.Printf("Launching agents...\n")
 	}
 
 	// Track launched agents for resilience monitor
@@ -430,6 +459,8 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 		// Get agent command template based on type
 		var agentCmdTemplate string
+		var envVars map[string]string
+		
 		switch agent.Type {
 		case AgentTypeClaude:
 			agentCmdTemplate = cfg.Agents.Claude
@@ -438,7 +469,15 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		case AgentTypeGemini:
 			agentCmdTemplate = cfg.Agents.Gemini
 		default:
-			continue
+			// Check plugins
+			if p, ok := opts.PluginMap[string(agent.Type)]; ok {
+				agentCmdTemplate = p.Command
+				envVars = p.Env
+			} else {
+				// Unknown type, skip
+				fmt.Printf("⚠ Warning: unknown agent type %s\n", agent.Type)
+				continue
+			}
 		}
 
 		// Resolve model alias to full model name
@@ -477,6 +516,15 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
+		}
+		
+		// Apply plugin env vars if any
+		if len(envVars) > 0 {
+			var envPrefix string
+			for k, v := range envVars {
+				envPrefix += fmt.Sprintf("%s=%q ", k, v)
+			}
+			agentCmd = envPrefix + agentCmd
 		}
 
 		safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
@@ -552,7 +600,8 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			case tmux.AgentGemini:
 				agentCounts.Gemini++
 			default:
-				agentCounts.User++
+				// Other/plugin agents
+				agentCounts.User++ // Maybe separate category?
 			}
 		}
 		agentCounts.Total = agentCounts.Claude + agentCounts.Codex + agentCounts.Gemini

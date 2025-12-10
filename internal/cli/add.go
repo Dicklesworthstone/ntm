@@ -2,12 +2,14 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -21,22 +23,35 @@ func newAddCmd() *cobra.Command {
 		Short: "Add more agents to an existing session",
 		Long: `Add additional AI agents to an existing tmux session.
 
-You can specify agent counts and optional model variants:
-  ntm add myproject --cc=2           # Add 2 Claude agents (default model)
-  ntm add myproject --cc=1:opus      # Add 1 Claude Opus agent
-  ntm add myproject --cod=1 --gmi=1  # Add 1 Codex, 1 Gemini
+		You can specify agent counts and optional model variants:
+	  ntm add myproject --cc=2           # Add 2 Claude agents (default model)
+	  ntm add myproject --cc=1:opus      # Add 1 Claude Opus agent
+	  ntm add myproject --cod=1 --gmi=1  # Add 1 Codex, 1 Gemini
 
-Persona mode:
-  Use --persona to add agents with predefined roles and system prompts.
-  Built-in personas: architect, implementer, reviewer, tester, documenter
-  ntm add myproject --persona=reviewer  # Add 1 reviewer agent
+		Persona mode:
+	  Use --persona to add agents with predefined roles and system prompts.
+	  Built-in personas: architect, implementer, reviewer, tester, documenter
+	  ntm add myproject --persona=reviewer  # Add 1 reviewer agent
 
-Agent count syntax: N or N:model where N is count and model is optional.
-Multiple flags of the same type accumulate.`,
+		Agent count syntax: N or N:model where N is count and model is optional.
+		Multiple flags of the same type accumulate.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionName := args[0]
 			dir := cfg.GetProjectDir(sessionName)
+
+			// Load plugins (re-load here to ensure latest state and to pass map)
+			// Ideally we should share this logic or load once.
+			configDir := filepath.Dir(config.DefaultPath())
+			pluginsDir := filepath.Join(configDir, "agents")
+			loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+			pluginMap := make(map[string]plugins.AgentPlugin)
+			for _, p := range loadedPlugins {
+				pluginMap[p.Name] = p
+				if p.Alias != "" {
+					pluginMap[p.Alias] = p
+				}
+			}
 
 			// Handle personas (they contribute to agentSpecs)
 			if len(personaSpecs) > 0 {
@@ -60,7 +75,7 @@ Multiple flags of the same type accumulate.`,
 				}
 			}
 
-			return runAdd(sessionName, agentSpecs)
+			return runAdd(sessionName, agentSpecs, pluginMap)
 		},
 	}
 
@@ -69,15 +84,22 @@ Multiple flags of the same type accumulate.`,
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model)")
 	cmd.Flags().Var(&personaSpecs, "persona", "Persona-defined agents (name or name:count)")
 
+	// Register plugin flags
+	configDir := filepath.Dir(config.DefaultPath())
+	pluginsDir := filepath.Join(configDir, "agents")
+	loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)
+	for _, p := range loadedPlugins {
+		agentType := AgentType(p.Name)
+		cmd.Flags().Var(NewAgentSpecsValue(agentType, &agentSpecs), p.Name, p.Description)
+		if p.Alias != "" {
+			cmd.Flags().Var(NewAgentSpecsValue(agentType, &agentSpecs), p.Alias, p.Description+" (alias)")
+		}
+	}
+
 	return cmd
 }
 
-func runAdd(session string, specs AgentSpecs) error {
-	// Aggregate counts per type and keep per-agent model info
-	ccSpecs := specs.ByType(AgentTypeClaude)
-	codSpecs := specs.ByType(AgentTypeCodex)
-	gmiSpecs := specs.ByType(AgentTypeGemini)
-	ccCount, codCount, gmiCount := ccSpecs.TotalCount(), codSpecs.TotalCount(), gmiSpecs.TotalCount()
+func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.AgentPlugin) error {
 	totalAgents := specs.TotalCount()
 	// Helper for JSON error output
 	outputError := func(err error) error {
@@ -96,7 +118,7 @@ func runAdd(session string, specs AgentSpecs) error {
 	}
 
 	if totalAgents == 0 {
-		return outputError(fmt.Errorf("no agents specified (use --cc, --cod, or --gmi)"))
+		return outputError(fmt.Errorf("no agents specified"))
 	}
 
 	dir := cfg.GetProjectDir(session)
@@ -137,69 +159,122 @@ func runAdd(session string, specs AgentSpecs) error {
 		return outputError(err)
 	}
 
-	maxCC, maxCod, maxGmi := 0, 0, 0
+	maxIndices := make(map[string]int)
 
-	// Helper to parse index from title (e.g., "myproject__cc_2" -> 2)
-	parseIndex := func(title, suffix string) int {
-		if idx := strings.LastIndex(title, suffix); idx != -1 {
-			numPart := title[idx+len(suffix):]
-			// Handle variants (e.g., "2_opus")
-			if split := strings.SplitN(numPart, "_", 2); len(split) > 0 {
-				if val, err := strconv.Atoi(split[0]); err == nil {
-					return val
+	// Helper to parse index from title
+	parseIndex := func(title string) {
+		parts := strings.Split(title, "__")
+		if len(parts) >= 2 {
+			// part[1] is like "cc_2" or "cc_2_opus"
+			// Split by first underscore to get type
+			// But type can contain underscore? No, usually short.
+			// Format is {type}_{index} or {type}_{index}_{variant}
+			// But type itself might be "claude_code"?
+			// Standard types are "cc", "cod", "gmi".
+			// Plugin types are user defined.
+			// Let's iterate types we know? No, dynamic.
+			// We scan for last "_" before digits?
+			// Example: "cursor_1" -> type "cursor", index 1.
+			// "local_llm_2" -> type "local_llm", index 2?
+			// Tmux format: FormatPaneName uses `{type}_{index}` prefix.
+			// So `cc_1`. `cursor_1`.
+			// We can try to split by `_` and find where the number is.
+			sub := parts[1]
+			subParts := strings.Split(sub, "_")
+			// Iterate to find the index part
+			for i, p := range subParts {
+				if num, err := strconv.Atoi(p); err == nil && num > 0 {
+					// Found the index. Everything before is type.
+					// Everything after is variant.
+					typeStr := strings.Join(subParts[:i], "_")
+					if num > maxIndices[typeStr] {
+						maxIndices[typeStr] = num
+					}
+					break
 				}
 			}
 		}
-		return 0
 	}
 
 	for _, p := range panes {
-		if idx := parseIndex(p.Title, fmt.Sprintf("__%s_", tmux.AgentClaude)); idx > maxCC {
-			maxCC = idx
-		}
-		if idx := parseIndex(p.Title, fmt.Sprintf("__%s_", tmux.AgentCodex)); idx > maxCod {
-			maxCod = idx
-		}
-		if idx := parseIndex(p.Title, fmt.Sprintf("__%s_", tmux.AgentGemini)); idx > maxGmi {
-			maxGmi = idx
-		}
+		parseIndex(p.Title)
 	}
 
-	// Add Claude agents
-	ccFlat := ccSpecs.Flatten()
-	for _, agent := range ccFlat {
+	// Add agents
+	flatAgents := specs.Flatten()
+	ccCount, codCount, gmiCount := 0, 0, 0
+
+	for _, agent := range flatAgents {
+		agentTypeStr := string(agent.Type)
+		
 		paneID, err := tmux.SplitWindow(session, dir)
 		if err != nil {
 			return outputError(fmt.Errorf("creating pane: %w", err))
 		}
 
-		num := maxCC + agent.Index
-		title := FormatPaneName(session, AgentTypeClaude, num, agent.Model)
+		// Increment index for this type
+		maxIndices[agentTypeStr]++
+		num := maxIndices[agentTypeStr]
+		
+		title := tmux.FormatPaneName(session, agentTypeStr, num, agent.Model)
 		if err := tmux.SetPaneTitle(paneID, title); err != nil {
 			return outputError(fmt.Errorf("setting pane title: %w", err))
 		}
 
-		// Generate command using template (respect model if provided)
-		model := ResolveModel(AgentTypeClaude, agent.Model)
-		agentCmd, err := config.GenerateAgentCommand(cfg.Agents.Claude, config.AgentTemplateVars{
+		// Generate command
+		var agentCmd string
+		var envVars map[string]string
+		
+		switch agent.Type {
+		case AgentTypeClaude:
+			agentCmd = cfg.Agents.Claude
+			ccCount++
+		case AgentTypeCodex:
+			agentCmd = cfg.Agents.Codex
+			codCount++
+		case AgentTypeGemini:
+			agentCmd = cfg.Agents.Gemini
+			gmiCount++
+		default:
+			if p, ok := pluginMap[agentTypeStr]; ok {
+				agentCmd = p.Command
+				envVars = p.Env
+			} else {
+				return outputError(fmt.Errorf("unknown agent type: %s", agent.Type))
+			}
+		}
+
+		// Resolve model alias to full model name
+		model := ResolveModel(agent.Type, agent.Model)
+		
+		finalCmd, err := config.GenerateAgentCommand(agentCmd, config.AgentTemplateVars{
 			Model:       model,
 			SessionName: session,
 			PaneIndex:   num,
-			AgentType:   "cc",
+			AgentType:   agentTypeStr,
 			ProjectDir:  dir,
 		})
 		if err != nil {
-			return outputError(fmt.Errorf("generating command for Claude agent: %w", err))
+			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
+		}
+		
+		// Apply plugin env vars
+		if len(envVars) > 0 {
+			var envPrefix string
+			for k, v := range envVars {
+				envPrefix += fmt.Sprintf("%s=%q ", k, v)
+			}
+			finalCmd = envPrefix + finalCmd
 		}
 
-		safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
+		safeCmd, err := tmux.SanitizePaneCommand(finalCmd)
 		if err != nil {
-			return outputError(fmt.Errorf("invalid Claude agent command: %w", err))
+			return outputError(fmt.Errorf("invalid agent command: %w", err))
 		}
 
-		cmd, err := tmux.BuildPaneCommand(dir, safeAgentCmd)
+		cmd, err := tmux.BuildPaneCommand(dir, safeCmd)
 		if err != nil {
-			return outputError(fmt.Errorf("building Claude agent command: %w", err))
+			return outputError(fmt.Errorf("building agent command: %w", err))
 		}
 
 		if err := tmux.SendKeys(paneID, cmd, true); err != nil {
@@ -209,107 +284,8 @@ func runAdd(session string, specs AgentSpecs) error {
 		// Track for JSON output
 		newPanes = append(newPanes, output.PaneResponse{
 			Title:   title,
-			Type:    "claude",
+			Type:    agentTypeStr,
 			Variant: agent.Model,
-			Command: cmd,
-		})
-	}
-
-	// Add Codex agents
-	codFlat := codSpecs.Flatten()
-	for _, agent := range codFlat {
-		paneID, err := tmux.SplitWindow(session, dir)
-		if err != nil {
-			return outputError(fmt.Errorf("creating pane: %w", err))
-		}
-
-		num := maxCod + agent.Index
-		title := FormatPaneName(session, AgentTypeCodex, num, agent.Model)
-		if err := tmux.SetPaneTitle(paneID, title); err != nil {
-			return outputError(fmt.Errorf("setting pane title: %w", err))
-		}
-
-		// Generate command using template (respect model if provided)
-		model := ResolveModel(AgentTypeCodex, agent.Model)
-		codexCmd, err := config.GenerateAgentCommand(cfg.Agents.Codex, config.AgentTemplateVars{
-			Model:       model,
-			SessionName: session,
-			PaneIndex:   num,
-			AgentType:   "cod",
-			ProjectDir:  dir,
-		})
-		if err != nil {
-			return outputError(fmt.Errorf("generating command for Codex agent: %w", err))
-		}
-
-		safeCodexCmd, err := tmux.SanitizePaneCommand(codexCmd)
-		if err != nil {
-			return outputError(fmt.Errorf("invalid Codex agent command: %w", err))
-		}
-
-		cmd, err := tmux.BuildPaneCommand(dir, safeCodexCmd)
-		if err != nil {
-			return outputError(fmt.Errorf("building Codex agent command: %w", err))
-		}
-
-		if err := tmux.SendKeys(paneID, cmd, true); err != nil {
-			return outputError(fmt.Errorf("launching agent: %w", err))
-		}
-
-		// Track for JSON output
-		newPanes = append(newPanes, output.PaneResponse{
-			Title:   title,
-			Type:    "codex",
-			Variant: agent.Model,
-			Command: cmd,
-		})
-	}
-
-	// Add Gemini agents
-	gmiFlat := gmiSpecs.Flatten()
-	for _, agent := range gmiFlat {
-		paneID, err := tmux.SplitWindow(session, dir)
-		if err != nil {
-			return outputError(fmt.Errorf("creating pane: %w", err))
-		}
-
-		num := maxGmi + agent.Index
-		title := fmt.Sprintf("%s__gmi_%d", session, num)
-		if err := tmux.SetPaneTitle(paneID, title); err != nil {
-			return outputError(fmt.Errorf("setting pane title: %w", err))
-		}
-
-		// Generate command using template (respect model if provided)
-		model := ResolveModel(AgentTypeGemini, agent.Model)
-		geminiCmd, err := config.GenerateAgentCommand(cfg.Agents.Gemini, config.AgentTemplateVars{
-			Model:       model,
-			SessionName: session,
-			PaneIndex:   num,
-			AgentType:   "gmi",
-			ProjectDir:  dir,
-		})
-		if err != nil {
-			return outputError(fmt.Errorf("generating command for Gemini agent: %w", err))
-		}
-
-		safeGeminiCmd, err := tmux.SanitizePaneCommand(geminiCmd)
-		if err != nil {
-			return outputError(fmt.Errorf("invalid Gemini agent command: %w", err))
-		}
-
-		cmd, err := tmux.BuildPaneCommand(dir, safeGeminiCmd)
-		if err != nil {
-			return outputError(fmt.Errorf("building Gemini agent command: %w", err))
-		}
-
-		if err := tmux.SendKeys(paneID, cmd, true); err != nil {
-			return outputError(fmt.Errorf("launching agent: %w", err))
-		}
-
-		// Track for JSON output
-		newPanes = append(newPanes, output.PaneResponse{
-			Title:   title,
-			Type:    "gemini",
 			Command: cmd,
 		})
 	}
@@ -327,6 +303,6 @@ func runAdd(session string, specs AgentSpecs) error {
 		})
 	}
 
-	fmt.Printf("✓ Added %dx cc, %dx cod, %dx gmi\n", ccCount, codCount, gmiCount)
+	fmt.Printf("✓ Added %d agent(s) (total %d panes now)\n", totalAgents, len(panes)+totalAgents)
 	return nil
 }
