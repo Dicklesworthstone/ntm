@@ -163,6 +163,14 @@ func runSpawnAgents(session string, agents []FlatAgent, ccCount, codCount, gmiCo
 
 // runSpawnAgentsWithRestart launches agents with model-specific pane naming and optional auto-restart
 func runSpawnAgentsWithRestart(session string, agents []FlatAgent, ccCount, codCount, gmiCount int, userPane, autoRestart bool, recipeName string, personaMap map[string]*persona.Persona) error {
+	if err := spawnSessionLogic(session, agents, ccCount, codCount, gmiCount, userPane, autoRestart, recipeName, personaMap); err != nil {
+		return err
+	}
+	return tmux.AttachOrSwitch(session)
+}
+
+// spawnSessionLogic handles the creation of the session and spawning of agents
+func spawnSessionLogic(session string, agents []FlatAgent, ccCount, codCount, gmiCount int, userPane, autoRestart bool, recipeName string, personaMap map[string]*persona.Persona) error {
 	// Helper for JSON error output
 	outputError := func(err error) error {
 		if IsJSONOutput() {
@@ -508,7 +516,7 @@ func runSpawnAgentsWithRestart(session string, agents []FlatAgent, ccCount, codC
 	// Register session as Agent Mail agent (non-blocking)
 	registerSessionAgent(session, dir)
 
-	return tmux.AttachOrSwitch(session)
+	return nil
 }
 
 // registerSessionAgent registers the session with Agent Mail.

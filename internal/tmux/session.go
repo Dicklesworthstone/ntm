@@ -14,7 +14,7 @@ import (
 
 // paneNameRegex matches the NTM pane naming convention:
 // session__type_index or session__type_index_variant
-var paneNameRegex = regexp.MustCompile(`^.+__(\w+)_\d+(?:_(\w+))?$`)
+var paneNameRegex = regexp.MustCompile(`^.+__(\w+)_\d+(?:_([A-Za-z0-9._/@:+-]+))?$`)
 
 // AgentType represents the type of AI agent
 type AgentType string
