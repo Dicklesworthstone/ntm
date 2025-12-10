@@ -513,6 +513,7 @@ func init() {
 		newInterruptCmd(),
 		newRotateCmd(),
 		newQuotaCmd(),
+		newPipelineCmd(),
 		newMailCmd(),
 
 		// Session navigation
