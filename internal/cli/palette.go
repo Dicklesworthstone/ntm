@@ -56,8 +56,8 @@ func runPalette(session string) error {
 			if len(sessions) == 1 {
 				session = sessions[0].Name
 			} else {
-				// Use enhanced session selector
-				selected, err := palette.RunEnhancedSessionSelector(sessions)
+				// Use session selector
+				selected, err := palette.RunSessionSelector(sessions)
 				if err != nil {
 					return err
 				}
@@ -78,8 +78,8 @@ func runPalette(session string) error {
 		return fmt.Errorf("no palette commands configured - run 'ntm config init' first")
 	}
 
-	// Create and run the enhanced TUI palette
-	model := palette.NewEnhanced(session, cfg.Palette)
+	// Create and run the TUI palette
+	model := palette.New(session, cfg.Palette)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	finalModel, err := p.Run()
@@ -88,7 +88,7 @@ func runPalette(session string) error {
 	}
 
 	// Check result
-	m := finalModel.(palette.EnhancedModel)
+	m := finalModel.(palette.Model)
 	sent, err := m.Result()
 	if err != nil {
 		return err

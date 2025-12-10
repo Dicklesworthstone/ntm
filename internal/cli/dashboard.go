@@ -58,7 +58,7 @@ func runDashboard(session string) error {
 				return fmt.Errorf("no tmux sessions found. Create one with: ntm spawn <name>")
 			}
 
-			selected, err := palette.RunEnhancedSessionSelector(sessions)
+			selected, err := palette.RunSessionSelector(sessions)
 			if err != nil {
 				return err
 			}

@@ -3,9 +3,11 @@ package palette
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
+	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +22,7 @@ type SessionSelector struct {
 	quitting bool
 	width    int
 	height   int
+	animTick int
 
 	// Theme
 	theme theme.Theme
@@ -84,7 +87,13 @@ func NewSessionSelector(sessions []tmux.Session) SessionSelector {
 
 // Init implements tea.Model
 func (s SessionSelector) Init() tea.Cmd {
-	return nil
+	return s.tick()
+}
+
+func (s SessionSelector) tick() tea.Cmd {
+	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+		return AnimationTickMsg(t)
+	})
 }
 
 // Update implements tea.Model
@@ -94,6 +103,10 @@ func (s SessionSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.width = msg.Width
 		s.height = msg.Height
 		return s, nil
+
+	case AnimationTickMsg:
+		s.animTick++
+		return s, s.tick()
 
 	case tea.KeyMsg:
 		switch {
@@ -178,69 +191,78 @@ func (s SessionSelector) View() string {
 	var b strings.Builder
 
 	// Box width
-	boxWidth := 50
-	if s.width > 60 {
-		boxWidth = 55
+	boxWidth := 55
+	if s.width > 70 {
+		boxWidth = 60
 	}
 
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(t.Primary)
-
 	b.WriteString("\n")
-	b.WriteString(headerStyle.Render("  "+ic.Session+" Select Session") + "\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(t.Surface2).Render("  "+strings.Repeat("─", boxWidth)) + "\n\n")
+
+	// Header with animated gradient
+	titleText := ic.Session + "  Select Session"
+	animatedTitle := styles.Shimmer(titleText, s.animTick, string(t.Blue), string(t.Lavender), string(t.Mauve))
+	b.WriteString("  " + animatedTitle + "\n")
+	b.WriteString("  " + styles.GradientDivider(boxWidth, string(t.Blue), string(t.Mauve)) + "\n\n")
 
 	if len(s.sessions) == 0 {
-		emptyStyle := lipgloss.NewStyle().
-			Foreground(t.Overlay).
-			Italic(true)
-		b.WriteString(emptyStyle.Render("  No tmux sessions found") + "\n")
-		b.WriteString(emptyStyle.Render("  Create one with: ntm spawn <name>") + "\n\n")
+		// Empty state with styled message
+		emptyIcon := lipgloss.NewStyle().Foreground(t.Warning).Render(ic.Warning)
+		emptyText := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true).Render("No tmux sessions found")
+		b.WriteString("  " + emptyIcon + " " + emptyText + "\n\n")
+
+		hintStyle := lipgloss.NewStyle().Foreground(t.Subtext)
+		cmdStyle := lipgloss.NewStyle().Foreground(t.Blue).Bold(true)
+		b.WriteString("  " + hintStyle.Render("Create one with: ") + cmdStyle.Render("ntm spawn <name>") + "\n\n")
 	} else {
+		// Session list
 		for i, session := range s.sessions {
 			isSelected := i == s.cursor
 
 			var line strings.Builder
 
-			// Cursor
+			// Selection indicator
 			if isSelected {
-				cursorStyle := lipgloss.NewStyle().Foreground(t.Pink).Bold(true)
-				line.WriteString(cursorStyle.Render(ic.Pointer + " "))
+				pointer := styles.Shimmer(ic.Pointer, s.animTick, string(t.Pink), string(t.Mauve))
+				line.WriteString(pointer + " ")
 			} else {
 				line.WriteString("  ")
 			}
 
-			// Number (1-9)
+			// Number badge (1-9)
 			if i < 9 {
-				numStyle := lipgloss.NewStyle().Foreground(t.Overlay)
-				line.WriteString(numStyle.Render(fmt.Sprintf("%d ", i+1)))
+				numStyle := lipgloss.NewStyle().
+					Foreground(t.Overlay).
+					Background(t.Surface0).
+					Padding(0, 0)
+				line.WriteString(numStyle.Render(fmt.Sprintf("%d", i+1)) + " ")
 			} else {
 				line.WriteString("  ")
 			}
 
-			// Session name
-			var nameStyle lipgloss.Style
+			// Session name with selection styling
+			name := session.Name
 			if isSelected {
-				nameStyle = lipgloss.NewStyle().
-					Bold(true).
-					Foreground(t.Pink)
+				line.WriteString(styles.GradientText(name, string(t.Pink), string(t.Rosewater)))
 			} else {
-				nameStyle = lipgloss.NewStyle().
-					Foreground(t.Text)
+				nameStyle := lipgloss.NewStyle().Foreground(t.Text)
+				line.WriteString(nameStyle.Render(name))
 			}
-			line.WriteString(nameStyle.Render(session.Name))
 
-			// Pane count and status
-			infoStyle := lipgloss.NewStyle().Foreground(t.Subtext)
-			info := fmt.Sprintf(" (%d windows)", session.Windows)
-			line.WriteString(infoStyle.Render(info))
+			// Window count badge
+			windowBadge := lipgloss.NewStyle().
+				Foreground(t.Subtext).
+				Render(fmt.Sprintf(" %d win", session.Windows))
+			line.WriteString(windowBadge)
 
-			// Attached indicator
+			// Attached indicator with pulsing dot
 			if session.Attached {
-				attachedStyle := lipgloss.NewStyle().Foreground(t.Green)
-				line.WriteString(attachedStyle.Render(" " + ic.Dot))
+				dotColor := string(t.Green)
+				if s.animTick%20 < 10 {
+					dotColor = string(t.Teal)
+				}
+				dot := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render(" " + ic.Dot)
+				attachedLabel := lipgloss.NewStyle().Foreground(t.Green).Render(" attached")
+				line.WriteString(dot + attachedLabel)
 			}
 
 			b.WriteString(line.String() + "\n")
@@ -248,22 +270,43 @@ func (s SessionSelector) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(lipgloss.NewStyle().Foreground(t.Surface2).Render("  "+strings.Repeat("─", boxWidth)) + "\n\n")
+	// Divider
+	b.WriteString("  " + styles.GradientDivider(boxWidth, string(t.Surface2), string(t.Surface1)) + "\n\n")
 
-	// Help
-	helpStyle := lipgloss.NewStyle().Foreground(t.Overlay)
-	keyStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
-
-	helpItems := []string{
-		keyStyle.Render("↑/↓") + " navigate",
-		keyStyle.Render("1-9") + " quick select",
-		keyStyle.Render("enter") + " select",
-		keyStyle.Render("esc") + " quit",
-	}
-
-	b.WriteString("  " + helpStyle.Render(strings.Join(helpItems, " • ")))
+	// Help bar
+	b.WriteString("  " + s.renderHelpBar() + "\n")
 
 	return b.String()
+}
+
+func (s SessionSelector) renderHelpBar() string {
+	t := s.theme
+
+	keyStyle := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Bold(true).
+		Padding(0, 1)
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(t.Overlay)
+
+	items := []struct {
+		key  string
+		desc string
+	}{
+		{"↑/↓", "navigate"},
+		{"1-9", "quick select"},
+		{"Enter", "select"},
+		{"Esc", "quit"},
+	}
+
+	var parts []string
+	for _, item := range items {
+		parts = append(parts, keyStyle.Render(item.key)+" "+descStyle.Render(item.desc))
+	}
+
+	return strings.Join(parts, "  ")
 }
 
 // Selected returns the selected session name (empty if cancelled)

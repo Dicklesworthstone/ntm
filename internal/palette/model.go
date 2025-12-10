@@ -3,10 +3,13 @@ package palette
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
+	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -14,6 +17,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 )
+
+// AnimationTickMsg is used to trigger animation updates
+type AnimationTickMsg time.Time
 
 // Phase represents the current UI phase
 type Phase int
@@ -51,6 +57,10 @@ type Model struct {
 	quitting  bool
 	err       error
 
+	// Animation state
+	animTick    int
+	showPreview bool
+
 	// visualOrder maps visual display position (0-indexed) to index in filtered slice.
 	// This is needed because items are grouped by category, so visual order differs from slice order.
 	visualOrder []int
@@ -59,6 +69,10 @@ type Model struct {
 	theme  theme.Theme
 	styles theme.Styles
 	icons  icons.IconSet
+
+	// Computed gradient colors
+	headerGradient []string
+	listGradient   []string
 }
 
 // KeyMap defines the keybindings
@@ -68,7 +82,6 @@ type KeyMap struct {
 	Select  key.Binding
 	Back    key.Binding
 	Quit    key.Binding
-	Filter  key.Binding
 	Target1 key.Binding
 	Target2 key.Binding
 	Target3 key.Binding
@@ -123,30 +136,43 @@ var keys = KeyMap{
 // New creates a new palette model
 func New(session string, commands []config.PaletteCmd) Model {
 	ti := textinput.New()
-	ti.Placeholder = "Type to filter commands..."
+	ti.Placeholder = "Search commands..."
 	ti.Focus()
 	ti.CharLimit = 50
 	ti.Width = 40
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#cba6f7"))
-	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#cdd6f4"))
-	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))
-	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#f5c2e7"))
 
 	t := theme.Current()
+
+	// Style the input with theme colors
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(t.Mauve)
+	ti.TextStyle = lipgloss.NewStyle().Foreground(t.Text)
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(t.Overlay)
+	ti.Cursor.Style = lipgloss.NewStyle().Foreground(t.Pink)
+
 	s := theme.NewStyles(t)
 	ic := icons.Current()
 
 	m := Model{
-		session:  session,
-		commands: commands,
-		filtered: commands,
-		filter:   ti,
-		phase:    PhaseCommand,
-		width:    80,
-		height:   24,
-		theme:    t,
-		styles:   s,
-		icons:    ic,
+		session:     session,
+		commands:    commands,
+		filtered:    commands,
+		filter:      ti,
+		phase:       PhaseCommand,
+		width:       80,
+		height:      24,
+		showPreview: true,
+		theme:       t,
+		styles:      s,
+		icons:       ic,
+		headerGradient: []string{
+			string(t.Blue),
+			string(t.Lavender),
+			string(t.Mauve),
+		},
+		listGradient: []string{
+			string(t.Mauve),
+			string(t.Pink),
+		},
 	}
 
 	// Build initial visual order mapping
@@ -157,7 +183,16 @@ func New(session string, commands []config.PaletteCmd) Model {
 
 // Init implements tea.Model
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(
+		textinput.Blink,
+		m.tick(),
+	)
+}
+
+func (m Model) tick() tea.Cmd {
+	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+		return AnimationTickMsg(t)
+	})
 }
 
 // Update implements tea.Model
@@ -168,6 +203,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.filter.Width = m.width/2 - 10
 		return m, nil
+
+	case AnimationTickMsg:
+		m.animTick++
+		return m, m.tick()
 
 	case tea.KeyMsg:
 		switch m.phase {
@@ -429,30 +468,41 @@ func (m Model) viewQuitting() string {
 
 	if m.err != nil {
 		errorStyle := lipgloss.NewStyle().Foreground(t.Error)
-		return errorStyle.Render(fmt.Sprintf("%s Error: %v\n", ic.Cross, m.err))
+		return errorStyle.Render(fmt.Sprintf("\n  %s Error: %v\n\n", ic.Cross, m.err))
 	}
 
 	if m.sent {
-		successStyle := lipgloss.NewStyle().Foreground(t.Success)
-		labelStyle := lipgloss.NewStyle().Bold(true).Foreground(t.Text)
-
+		// Beautiful success message with gradient
 		targetName := "all agents"
+		targetColor := string(t.Green)
 		targetIcon := ic.All
+
 		switch m.target {
 		case TargetClaude:
-			targetName = "Claude agents"
+			targetName = "Claude"
+			targetColor = string(t.Claude)
 			targetIcon = ic.Claude
 		case TargetCodex:
-			targetName = "Codex agents"
+			targetName = "Codex"
+			targetColor = string(t.Codex)
 			targetIcon = ic.Codex
 		case TargetGemini:
-			targetName = "Gemini agents"
+			targetName = "Gemini"
+			targetColor = string(t.Gemini)
 			targetIcon = ic.Gemini
 		}
 
-		return successStyle.Render(ic.Check) + " " +
-			labelStyle.Render(fmt.Sprintf("Sent \"%s\" to %s %s (%d panes)\n",
-				m.selected.Label, targetIcon, targetName, m.sentCount))
+		checkStyle := lipgloss.NewStyle().Foreground(t.Success).Bold(true)
+		labelStyle := lipgloss.NewStyle().Foreground(t.Text)
+		highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(targetColor)).Bold(true)
+		countStyle := lipgloss.NewStyle().Foreground(t.Subtext)
+
+		return fmt.Sprintf("\n  %s %s %s %s\n\n",
+			checkStyle.Render(ic.Check),
+			labelStyle.Render("Sent to"),
+			highlightStyle.Render(targetIcon+" "+targetName),
+			countStyle.Render(fmt.Sprintf("(%d panes)", m.sentCount)),
+		)
 	}
 
 	return ""
@@ -467,62 +517,69 @@ func (m Model) viewCommandPhase() string {
 	// Calculate layout dimensions
 	listWidth := m.width/2 - 2
 	previewWidth := m.width/2 - 2
-	if listWidth < 30 {
-		listWidth = 30
+	if listWidth < 35 {
+		listWidth = 35
 	}
-	if previewWidth < 30 {
-		previewWidth = 30
+	if previewWidth < 35 {
+		previewWidth = 35
 	}
 
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(t.Primary).
-		Padding(0, 1)
+	// ═══════════════════════════════════════════════════════════════
+	// HEADER with animated gradient
+	// ═══════════════════════════════════════════════════════════════
+	b.WriteString("\n")
 
-	sessionStyle := lipgloss.NewStyle().
-		Foreground(t.Subtext)
+	// Animated title with shimmer effect
+	titleText := ic.Palette + "  NTM Command Palette"
+	animatedTitle := styles.Shimmer(titleText, m.animTick, m.headerGradient...)
 
-	sepStyle := lipgloss.NewStyle().
-		Foreground(t.Surface2)
+	sessionBadge := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Padding(0, 1).
+		Render(ic.Session + " " + m.session)
 
-	header := headerStyle.Render(ic.Palette+" Command Palette") +
-		sepStyle.Render(" │ ") +
-		sessionStyle.Render(m.session)
+	headerLine := "  " + animatedTitle + "  " + sessionBadge
+	b.WriteString(headerLine + "\n")
 
-	b.WriteString(header + "\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(t.Surface2).Render(strings.Repeat("─", m.width-4)) + "\n\n")
+	// Gradient divider
+	b.WriteString("  " + styles.GradientDivider(m.width-4, m.headerGradient...) + "\n\n")
 
-	// Filter input
-	filterStyle := lipgloss.NewStyle().
+	// ═══════════════════════════════════════════════════════════════
+	// FILTER INPUT with glow effect
+	// ═══════════════════════════════════════════════════════════════
+	filterBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Surface1).
+		BorderForeground(t.Mauve).
 		Padding(0, 1).
 		Width(listWidth - 4)
 
-	b.WriteString("  " + filterStyle.Render(m.filter.View()) + "\n\n")
+	searchIcon := lipgloss.NewStyle().Foreground(t.Mauve).Render(ic.Search + " ")
+	b.WriteString("  " + filterBox.Render(searchIcon+m.filter.View()) + "\n\n")
 
-	// Build the two-column layout
+	// ═══════════════════════════════════════════════════════════════
+	// TWO-COLUMN LAYOUT: Commands | Preview
+	// ═══════════════════════════════════════════════════════════════
 	listContent := m.renderCommandList(listWidth - 4)
 	previewContent := m.renderPreview(previewWidth - 4)
 
-	// Create list box
+	// List box with subtle glow
 	listBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Surface2).
 		Width(listWidth - 2).
-		Height(m.height - 12).
+		Height(m.height - 14).
 		Padding(1, 1)
 
-	// Create preview box
+	// Preview box with accent border
 	previewBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Blue).
 		Width(previewWidth - 2).
-		Height(m.height - 12).
+		Height(m.height - 14).
 		Padding(1, 1)
 
-	// Join horizontally
+	// Join columns horizontally
 	columns := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		listBox.Render(listContent),
@@ -532,18 +589,10 @@ func (m Model) viewCommandPhase() string {
 
 	b.WriteString(columns + "\n\n")
 
-	// Help bar
-	helpStyle := lipgloss.NewStyle().Foreground(t.Overlay)
-	keyStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
-
-	helpItems := []string{
-		keyStyle.Render("↑/↓") + " navigate",
-		keyStyle.Render("1-9") + " quick select",
-		keyStyle.Render("enter") + " select",
-		keyStyle.Render("esc") + " quit",
-	}
-
-	b.WriteString("  " + helpStyle.Render(strings.Join(helpItems, " • ")))
+	// ═══════════════════════════════════════════════════════════════
+	// HELP BAR with styled keys
+	// ═══════════════════════════════════════════════════════════════
+	b.WriteString("  " + m.renderHelpBar() + "\n")
 
 	return b.String()
 }
@@ -580,12 +629,11 @@ func (m Model) renderCommandList(width int) string {
 	for _, cat := range categoryOrder {
 		indices := categories[cat]
 
-		// Category header
+		// Category header with icon and gradient
 		catIcon := ic.CategoryIcon(cat)
-		catStyle := lipgloss.NewStyle().
-			Bold(true).
-			Foreground(t.Lavender)
-		lines = append(lines, catStyle.Render(catIcon+" "+cat))
+		catText := catIcon + " " + cat
+		catStyled := styles.GradientText(catText, string(t.Lavender), string(t.Mauve))
+		lines = append(lines, catStyled)
 
 		for _, idx := range indices {
 			cmd := m.filtered[idx]
@@ -594,33 +642,39 @@ func (m Model) renderCommandList(width int) string {
 
 			var line strings.Builder
 
-			// Cursor
+			// Selection indicator with animation
 			if isSelected {
-				cursorStyle := lipgloss.NewStyle().Foreground(t.Pink).Bold(true)
-				line.WriteString(cursorStyle.Render(ic.Pointer + " "))
+				// Animated pointer
+				pointer := styles.Shimmer(ic.Pointer, m.animTick, string(t.Pink), string(t.Mauve))
+				line.WriteString(pointer + " ")
 			} else {
 				line.WriteString("  ")
 			}
 
-			// Number (1-9)
+			// Number (1-9) with subtle styling
 			if itemNum <= 9 {
-				numStyle := lipgloss.NewStyle().Foreground(t.Overlay)
-				line.WriteString(numStyle.Render(fmt.Sprintf("%d ", itemNum)))
+				numStyle := lipgloss.NewStyle().
+					Foreground(t.Surface2).
+					Background(t.Surface0).
+					Padding(0, 0)
+				line.WriteString(numStyle.Render(fmt.Sprintf("%d", itemNum)) + " ")
 			} else {
 				line.WriteString("  ")
 			}
 
-			// Item
-			var itemStyle lipgloss.Style
-			if isSelected {
-				itemStyle = lipgloss.NewStyle().
-					Bold(true).
-					Foreground(t.Pink)
-			} else {
-				itemStyle = lipgloss.NewStyle().
-					Foreground(t.Text)
+			// Item label with selection highlight
+			label := cmd.Label
+			if len(label) > width-8 {
+				label = label[:width-11] + "..."
 			}
-			line.WriteString(itemStyle.Render(cmd.Label))
+
+			if isSelected {
+				// Gradient highlight for selected item
+				line.WriteString(styles.GradientText(label, string(t.Pink), string(t.Rosewater)))
+			} else {
+				labelStyle := lipgloss.NewStyle().Foreground(t.Text)
+				line.WriteString(labelStyle.Render(label))
+			}
 
 			lines = append(lines, line.String())
 		}
@@ -635,40 +689,83 @@ func (m Model) renderPreview(width int) string {
 	t := m.theme
 	ic := m.icons
 
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(t.Primary)
-
 	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
 		emptyStyle := lipgloss.NewStyle().
 			Foreground(t.Overlay).
 			Italic(true)
-		return emptyStyle.Render("Select a command to preview")
+		return styles.CenterText(emptyStyle.Render("Select a command to preview"), width)
 	}
 
 	cmd := m.filtered[m.cursor]
 
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render(ic.Send+" "+cmd.Label) + "\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(t.Surface2).Render(strings.Repeat("─", width)) + "\n\n")
+	// Title with gradient
+	titleText := ic.Send + " " + cmd.Label
+	b.WriteString(styles.GradientText(titleText, string(t.Blue), string(t.Sapphire)) + "\n")
+	b.WriteString(styles.GradientDivider(width, string(t.Surface2), string(t.Surface1)) + "\n\n")
 
 	// Category badge
 	if cmd.Category != "" {
-		badgeStyle := lipgloss.NewStyle().
-			Foreground(t.Base).
-			Background(t.Mauve).
-			Padding(0, 1)
-		b.WriteString(badgeStyle.Render(cmd.Category) + "\n\n")
+		// Only use agent badge for known agent types, otherwise create a generic category badge
+		catLower := strings.ToLower(cmd.Category)
+		var badge string
+		if catLower == "claude" || catLower == "cc" || catLower == "codex" || catLower == "cod" || catLower == "gemini" || catLower == "gmi" {
+			badge = components.RenderAgentBadge(catLower)
+		} else {
+			badge = lipgloss.NewStyle().
+				Background(t.Mauve).
+				Foreground(t.Base).
+				Bold(true).
+				Padding(0, 1).
+				Render(cmd.Category)
+		}
+		b.WriteString(badge + "\n\n")
 	}
 
-	// Prompt content
+	// Prompt content with wrapping
 	promptStyle := lipgloss.NewStyle().Foreground(t.Text)
 	wrapped := wordwrap.String(cmd.Prompt, width)
-	b.WriteString(promptStyle.Render(wrapped))
+
+	// Add subtle line highlighting on the left
+	lines := strings.Split(wrapped, "\n")
+	for i, line := range lines {
+		if i < len(lines)-1 || line != "" {
+			b.WriteString(promptStyle.Render(line) + "\n")
+		}
+	}
 
 	return b.String()
+}
+
+func (m Model) renderHelpBar() string {
+	t := m.theme
+
+	keyStyle := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Bold(true).
+		Padding(0, 1)
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(t.Overlay)
+
+	items := []struct {
+		key  string
+		desc string
+	}{
+		{"↑/↓", "navigate"},
+		{"1-9", "quick select"},
+		{"Enter", "select"},
+		{"Esc", "quit"},
+	}
+
+	var parts []string
+	for _, item := range items {
+		parts = append(parts, keyStyle.Render(item.key)+" "+descStyle.Render(item.desc))
+	}
+
+	return strings.Join(parts, "  ")
 }
 
 func (m Model) viewTargetPhase() string {
@@ -683,77 +780,114 @@ func (m Model) viewTargetPhase() string {
 		boxWidth = m.width - 10
 	}
 
-	// Header
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(t.Primary)
-
 	b.WriteString("\n")
-	b.WriteString(headerStyle.Render("  "+ic.Target+" Select Target") + "\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(t.Surface2).Render("  "+strings.Repeat("─", boxWidth)) + "\n\n")
 
-	// Selected command
+	// ═══════════════════════════════════════════════════════════════
+	// HEADER with animated gradient
+	// ═══════════════════════════════════════════════════════════════
+	titleText := ic.Target + "  Select Target"
+	animatedTitle := styles.Shimmer(titleText, m.animTick, string(t.Blue), string(t.Mauve), string(t.Pink))
+	b.WriteString("  " + animatedTitle + "\n")
+	b.WriteString("  " + styles.GradientDivider(boxWidth, string(t.Blue), string(t.Mauve)) + "\n\n")
+
+	// Selected command info
 	dimStyle := lipgloss.NewStyle().Foreground(t.Subtext)
-	labelStyle := lipgloss.NewStyle().Foreground(t.Text)
-	b.WriteString(dimStyle.Render("  Sending: ") + labelStyle.Render(m.selected.Label) + "\n\n")
+	cmdBadge := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Padding(0, 1).
+		Render(m.selected.Label)
 
-	// Target options
+	b.WriteString("  " + dimStyle.Render("Sending:") + " " + cmdBadge + "\n\n")
+
+	// ═══════════════════════════════════════════════════════════════
+	// TARGET OPTIONS with visual styling
+	// ═══════════════════════════════════════════════════════════════
 	targets := []struct {
-		key   string
-		icon  string
-		label string
-		desc  string
-		color lipgloss.Color
+		key     string
+		icon    string
+		label   string
+		desc    string
+		color   lipgloss.Color
+		bgColor lipgloss.Color
 	}{
-		{"1", ic.All, "All Agents", "broadcast to all agent panes", t.Green},
-		{"2", ic.Claude, "Claude (cc)", "Anthropic agents only", t.Claude},
-		{"3", ic.Codex, "Codex (cod)", "OpenAI agents only", t.Codex},
-		{"4", ic.Gemini, "Gemini (gmi)", "Google agents only", t.Gemini},
+		{"1", ic.All, "All Agents", "broadcast to all", t.Green, t.Surface0},
+		{"2", ic.Claude, "Claude (cc)", "Anthropic agents", t.Claude, t.Surface0},
+		{"3", ic.Codex, "Codex (cod)", "OpenAI agents", t.Codex, t.Surface0},
+		{"4", ic.Gemini, "Gemini (gmi)", "Google agents", t.Gemini, t.Surface0},
 	}
 
 	for _, target := range targets {
-		keyStyle := lipgloss.NewStyle().
+		// Key badge
+		keyBadge := lipgloss.NewStyle().
+			Background(target.color).
+			Foreground(t.Base).
 			Bold(true).
-			Foreground(t.Primary).
-			Width(3)
+			Padding(0, 1).
+			Render(target.key)
 
-		iconStyle := lipgloss.NewStyle().
+		// Icon with color
+		iconStyled := lipgloss.NewStyle().
 			Foreground(target.color).
-			Width(3)
-
-		labelStyle := lipgloss.NewStyle().
 			Bold(true).
+			Render(target.icon)
+
+		// Label
+		labelStyle := lipgloss.NewStyle().
 			Foreground(t.Text).
-			Width(16)
+			Bold(true).
+			Width(15)
 
+		// Description
 		descStyle := lipgloss.NewStyle().
-			Foreground(t.Overlay)
+			Foreground(t.Overlay).
+			Italic(true)
 
-		line := fmt.Sprintf("  %s %s %s %s\n",
-			keyStyle.Render(target.key),
-			iconStyle.Render(target.icon),
+		line := fmt.Sprintf("  %s  %s  %s %s",
+			keyBadge,
+			iconStyled,
 			labelStyle.Render(target.label),
 			descStyle.Render(target.desc))
 
-		b.WriteString(line)
+		b.WriteString(line + "\n\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(t.Surface2).Render("  "+strings.Repeat("─", boxWidth)) + "\n\n")
+	// Divider
+	b.WriteString("  " + styles.GradientDivider(boxWidth, string(t.Surface2), string(t.Surface1)) + "\n\n")
 
-	// Help
-	helpStyle := lipgloss.NewStyle().Foreground(t.Overlay)
-	keyStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
-
-	helpItems := []string{
-		keyStyle.Render("1-4") + " select target",
-		keyStyle.Render("esc") + " back",
-		keyStyle.Render("q") + " quit",
-	}
-
-	b.WriteString("  " + helpStyle.Render(strings.Join(helpItems, " • ")))
+	// Help bar
+	b.WriteString("  " + m.renderTargetHelpBar() + "\n")
 
 	return b.String()
+}
+
+func (m Model) renderTargetHelpBar() string {
+	t := m.theme
+
+	keyStyle := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Bold(true).
+		Padding(0, 1)
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(t.Overlay)
+
+	items := []struct {
+		key  string
+		desc string
+	}{
+		{"1-4", "select target"},
+		{"Esc", "back"},
+		{"q", "quit"},
+	}
+
+	var parts []string
+	for _, item := range items {
+		parts = append(parts, keyStyle.Render(item.key)+" "+descStyle.Render(item.desc))
+	}
+
+	return strings.Join(parts, "  ")
 }
 
 // Result returns the send result after the program exits
