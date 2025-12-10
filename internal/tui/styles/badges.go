@@ -66,7 +66,7 @@ func AgentBadge(agentType string, opts ...BadgeOptions) string {
 		icon = ic.Gemini
 		label = "gemini"
 	case "user":
-		bgColor = t.Green
+		bgColor = t.User
 		icon = ic.User
 		label = "user"
 	default:
@@ -83,7 +83,7 @@ func AgentBadge(agentType string, opts ...BadgeOptions) string {
 	return renderBadge(text, bgColor, t.Base, opt)
 }
 
-// AgentBadgeWithCount renders an agent badge with a count (e.g., "󰗣 claude 3")
+// AgentBadgeWithCount renders an agent badge with a count (e.g., "󰗣 3")
 func AgentBadgeWithCount(agentType string, count int, opts ...BadgeOptions) string {
 	t := theme.Current()
 	ic := icons.Current()
@@ -106,7 +106,7 @@ func AgentBadgeWithCount(agentType string, count int, opts ...BadgeOptions) stri
 		bgColor = t.Gemini
 		icon = ic.Gemini
 	case "user":
-		bgColor = t.Green
+		bgColor = t.User
 		icon = ic.User
 	default:
 		bgColor = t.Overlay
@@ -223,9 +223,11 @@ func StatusBadgeIcon(status string) string {
 func PriorityBadge(priority int, opts ...BadgeOptions) string {
 	t := theme.Current()
 	opt := DefaultBadgeOptions()
-	opt.ShowIcon = false // Priority badges typically don't have icons
 	if len(opts) > 0 {
 		opt = opts[0]
+	} else {
+		// Priority badges don't show icons by default (just "P0", "P1", etc.)
+		opt.ShowIcon = false
 	}
 
 	var bgColor lipgloss.Color
@@ -338,7 +340,7 @@ func IssueTypeBadge(issueType string, opts ...BadgeOptions) string {
 		icon = "●"
 	case "bug":
 		bgColor = t.Red
-		icon = "●"
+		icon = "◉"
 	case "chore":
 		bgColor = t.Overlay
 		icon = "○"

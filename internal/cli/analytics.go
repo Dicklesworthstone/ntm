@@ -380,6 +380,7 @@ func outputStatsCSV(stats AnalyticsStats) error {
 		{"total_agents", fmt.Sprintf("%d", stats.TotalAgents)},
 		{"total_prompts", fmt.Sprintf("%d", stats.TotalPrompts)},
 		{"total_chars_sent", fmt.Sprintf("%d", stats.TotalCharsSent)},
+		{"total_tokens_estimated", fmt.Sprintf("%d", stats.TotalTokensEst)},
 		{"error_count", fmt.Sprintf("%d", stats.ErrorCount)},
 	}
 
@@ -407,10 +408,11 @@ func outputStatsText(stats AnalyticsStats, showSessions bool) error {
 	fmt.Println(strings.Repeat("=", 40))
 
 	fmt.Printf("\nSummary:\n")
-	fmt.Printf("  Sessions:    %d\n", stats.TotalSessions)
-	fmt.Printf("  Agents:      %d\n", stats.TotalAgents)
-	fmt.Printf("  Prompts:     %d\n", stats.TotalPrompts)
-	fmt.Printf("  Characters:  %d\n", stats.TotalCharsSent)
+	fmt.Printf("  Sessions:     %d\n", stats.TotalSessions)
+	fmt.Printf("  Agents:       %d\n", stats.TotalAgents)
+	fmt.Printf("  Prompts:      %d\n", stats.TotalPrompts)
+	fmt.Printf("  Characters:   %d\n", stats.TotalCharsSent)
+	fmt.Printf("  Tokens (est): %s\n", formatTokenCount(stats.TotalTokensEst))
 
 	if len(stats.AgentBreakdown) > 0 {
 		fmt.Printf("\nAgent Breakdown:\n")
@@ -421,8 +423,9 @@ func outputStatsText(stats AnalyticsStats, showSessions bool) error {
 				displayName = strings.ToUpper(agentType[:1]) + agentType[1:]
 			}
 			fmt.Printf("  %s:\n", displayName)
-			fmt.Printf("    Spawned:  %d\n", agentStats.Count)
-			fmt.Printf("    Prompts:  %d\n", agentStats.Prompts)
+			fmt.Printf("    Spawned:      %d\n", agentStats.Count)
+			fmt.Printf("    Prompts:      %d\n", agentStats.Prompts)
+			fmt.Printf("    Tokens (est): %s\n", formatTokenCount(agentStats.TokensEst))
 		}
 	}
 
@@ -456,4 +459,15 @@ func getEventsLogPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "ntm", "analytics", "events.jsonl")
+}
+
+// formatTokenCount formats a token count with K/M suffixes for readability.
+func formatTokenCount(tokens int) string {
+	if tokens >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+	}
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
 }

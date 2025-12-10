@@ -45,14 +45,14 @@ type Project struct {
 
 // FileReservation represents a file path reservation (advisory lock).
 type FileReservation struct {
-	ID          int       `json:"id"`
-	PathPattern string    `json:"path_pattern"` // Path or glob pattern
-	AgentName   string    `json:"agent_name"`
-	ProjectID   int       `json:"project_id"`
-	Exclusive   bool      `json:"exclusive"` // Exclusive or shared
-	Reason      string    `json:"reason"`
-	ExpiresTS   time.Time `json:"expires_ts"`
-	CreatedTS   time.Time `json:"created_ts"`
+	ID          int        `json:"id"`
+	PathPattern string     `json:"path_pattern"` // Path or glob pattern
+	AgentName   string     `json:"agent_name"`
+	ProjectID   int        `json:"project_id"`
+	Exclusive   bool       `json:"exclusive"` // Exclusive or shared
+	Reason      string     `json:"reason"`
+	ExpiresTS   time.Time  `json:"expires_ts"`
+	CreatedTS   time.Time  `json:"created_ts"`
 	ReleasedTS  *time.Time `json:"released_ts,omitempty"`
 }
 
@@ -112,7 +112,7 @@ type SessionStartResult struct {
 
 // ReservationResult contains the result of file path reservations.
 type ReservationResult struct {
-	Granted   []FileReservation    `json:"granted"`
+	Granted   []FileReservation     `json:"granted"`
 	Conflicts []ReservationConflict `json:"conflicts"`
 }
 
