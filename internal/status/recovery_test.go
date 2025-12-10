@@ -237,3 +237,111 @@ func TestMakePaneID(t *testing.T) {
 		t.Errorf("makePaneID = %q, want %q", id, expected)
 	}
 }
+
+func TestRecoveryManager_GetRecoveryEvents(t *testing.T) {
+	rm := NewRecoveryManagerDefault()
+
+	// Initially should be empty
+	events := rm.GetRecoveryEvents()
+	if len(events) != 0 {
+		t.Errorf("initial events should be empty, got %d", len(events))
+	}
+
+	// Add some events
+	rm.mu.Lock()
+	rm.recoveryEvents = []RecoveryEvent{
+		{PaneID: "test:0", SentAt: time.Now()},
+		{PaneID: "test:1", SentAt: time.Now()},
+	}
+	rm.mu.Unlock()
+
+	events = rm.GetRecoveryEvents()
+	if len(events) != 2 {
+		t.Errorf("should have 2 events, got %d", len(events))
+	}
+}
+
+func TestRecoveryManager_ResetAll(t *testing.T) {
+	rm := NewRecoveryManagerDefault()
+
+	// Set some state
+	rm.mu.Lock()
+	rm.lastRecovery["test:0"] = time.Now()
+	rm.lastRecovery["test:1"] = time.Now()
+	rm.recoveryCount["test:0"] = 5
+	rm.recoveryCount["test:1"] = 3
+	rm.recoveryEvents = []RecoveryEvent{
+		{PaneID: "test:0", SentAt: time.Now()},
+	}
+	rm.mu.Unlock()
+
+	// Reset all
+	rm.ResetAll()
+
+	// Verify all cleared
+	rm.mu.RLock()
+	if len(rm.lastRecovery) != 0 {
+		t.Errorf("lastRecovery should be empty, got %d entries", len(rm.lastRecovery))
+	}
+	if len(rm.recoveryCount) != 0 {
+		t.Errorf("recoveryCount should be empty, got %d entries", len(rm.recoveryCount))
+	}
+	if len(rm.recoveryEvents) != 0 {
+		t.Errorf("recoveryEvents should be empty, got %d entries", len(rm.recoveryEvents))
+	}
+	rm.mu.RUnlock()
+
+	// Recovery should be allowed for all panes now
+	can, _ := rm.CanSendRecovery("test:0")
+	if !can {
+		t.Error("recovery should be allowed after ResetAll")
+	}
+}
+
+func TestRecoveryManager_pruneEvents(t *testing.T) {
+	config := RecoveryConfig{
+		Cooldown:      30 * time.Second,
+		MaxRecoveries: 10,
+		MaxEventAge:   1 * time.Minute,
+	}
+	rm := NewRecoveryManager(config)
+
+	// Add old and new events
+	oldTime := time.Now().Add(-2 * time.Minute) // Older than maxEventAge
+	newTime := time.Now()
+
+	rm.mu.Lock()
+	rm.recoveryEvents = []RecoveryEvent{
+		{PaneID: "test:0", SentAt: oldTime}, // Should be pruned
+		{PaneID: "test:1", SentAt: newTime}, // Should be kept
+	}
+	rm.mu.Unlock()
+
+	// GetRecoveryEvents calls pruneEvents internally
+	events := rm.GetRecoveryEvents()
+
+	// Only the new event should remain
+	if len(events) != 1 {
+		t.Errorf("should have 1 event after pruning, got %d", len(events))
+	}
+	if len(events) > 0 && events[0].PaneID != "test:1" {
+		t.Errorf("remaining event should be test:1, got %s", events[0].PaneID)
+	}
+}
+
+func TestRecoveryManager_SendRecoveryPrompt_NoTmux(t *testing.T) {
+	rm := NewRecoveryManagerDefault()
+
+	// This will fail since we're not in a real tmux session
+	// but we're testing the code path
+	sent, err := rm.SendRecoveryPrompt("fake_session", 999)
+
+	// Should fail - either tmux not available or session doesn't exist
+	if err == nil && sent {
+		t.Log("SendRecoveryPrompt succeeded (tmux available)")
+	} else if err != nil {
+		t.Logf("SendRecoveryPrompt failed as expected: %v", err)
+	} else {
+		t.Log("SendRecoveryPrompt returned false (skipped)")
+	}
+}
