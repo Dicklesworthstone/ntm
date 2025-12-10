@@ -102,21 +102,24 @@ func runAdd(session string, ccCount, codCount, gmiCount int) error {
 	parseIndex := func(title, suffix string) int {
 		if idx := strings.LastIndex(title, suffix); idx != -1 {
 			numPart := title[idx+len(suffix):]
-			if val, err := strconv.Atoi(numPart); err == nil {
-				return val
+			// Handle variants (e.g., "2_opus")
+			if split := strings.SplitN(numPart, "_", 2); len(split) > 0 {
+				if val, err := strconv.Atoi(split[0]); err == nil {
+					return val
+				}
 			}
 		}
 		return 0
 	}
 
 	for _, p := range panes {
-		if idx := parseIndex(p.Title, "__cc_"); idx > maxCC {
+		if idx := parseIndex(p.Title, fmt.Sprintf("__%s_", tmux.AgentClaude)); idx > maxCC {
 			maxCC = idx
 		}
-		if idx := parseIndex(p.Title, "__cod_"); idx > maxCod {
+		if idx := parseIndex(p.Title, fmt.Sprintf("__%s_", tmux.AgentCodex)); idx > maxCod {
 			maxCod = idx
 		}
-		if idx := parseIndex(p.Title, "__gmi_"); idx > maxGmi {
+		if idx := parseIndex(p.Title, fmt.Sprintf("__%s_", tmux.AgentGemini)); idx > maxGmi {
 			maxGmi = idx
 		}
 	}
@@ -172,7 +175,19 @@ func runAdd(session string, ccCount, codCount, gmiCount int) error {
 			return outputError(fmt.Errorf("setting pane title: %w", err))
 		}
 
-		cmd := fmt.Sprintf("cd %q && %s", dir, cfg.Agents.Codex)
+		// Generate command using template (default model)
+		codexCmd, err := config.GenerateAgentCommand(cfg.Agents.Codex, config.AgentTemplateVars{
+			Model:       cfg.Models.DefaultCodex,
+			SessionName: session,
+			PaneIndex:   num,
+			AgentType:   "cod",
+			ProjectDir:  dir,
+		})
+		if err != nil {
+			return outputError(fmt.Errorf("generating command for Codex agent: %w", err))
+		}
+
+		cmd := fmt.Sprintf("cd %q && %s", dir, codexCmd)
 		if err := tmux.SendKeys(paneID, cmd, true); err != nil {
 			return outputError(fmt.Errorf("launching agent: %w", err))
 		}
@@ -198,7 +213,19 @@ func runAdd(session string, ccCount, codCount, gmiCount int) error {
 			return outputError(fmt.Errorf("setting pane title: %w", err))
 		}
 
-		cmd := fmt.Sprintf("cd %q && %s", dir, cfg.Agents.Gemini)
+		// Generate command using template (default model)
+		geminiCmd, err := config.GenerateAgentCommand(cfg.Agents.Gemini, config.AgentTemplateVars{
+			Model:       cfg.Models.DefaultGemini,
+			SessionName: session,
+			PaneIndex:   num,
+			AgentType:   "gmi",
+			ProjectDir:  dir,
+		})
+		if err != nil {
+			return outputError(fmt.Errorf("generating command for Gemini agent: %w", err))
+		}
+
+		cmd := fmt.Sprintf("cd %q && %s", dir, geminiCmd)
 		if err := tmux.SendKeys(paneID, cmd, true); err != nil {
 			return outputError(fmt.Errorf("launching agent: %w", err))
 		}
