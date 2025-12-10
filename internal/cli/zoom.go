@@ -2,13 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 
 	"github.com/Dicklesworthstone/ntm/internal/palette"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -179,11 +177,4 @@ func runPaneSelector(session string, panes []tmux.Pane) (int, error) {
 	}
 
 	return panes[idx-1].Index, nil
-}
-
-// isInteractive returns true when both stdin and stdout are TTYs. The pane/session
-// selectors rely on user input; in tests or piped execution they should not run.
-func isInteractive() bool {
-	return (isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())) &&
-		(isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()))
 }

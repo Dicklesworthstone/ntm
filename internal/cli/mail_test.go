@@ -244,7 +244,7 @@ func TestMailMarkReportsErrorsInJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected command to finish with JSON summary, got error: %v", err)
 	}
-	if !strings.Contains(out, `"errors":1`) {
+	if !strings.Contains(out, `"errors": 1`) {
 		t.Fatalf("expected JSON summary to report errors, got: %s", out)
 	}
 }
