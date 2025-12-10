@@ -2,8 +2,15 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+)
+
+var (
+	// modelPattern restricts model/alias values to a safe charset to prevent shell injection.
+	// Allows common tokens: letters, numbers, dot, dash, underscore, slash, colon, plus, at.
+	modelPattern = regexp.MustCompile(`^[A-Za-z0-9._/@:+-]+$`)
 )
 
 // AgentType represents the type of AI agent
@@ -80,6 +87,9 @@ func ParseAgentSpec(value string) (AgentSpec, error) {
 		model := strings.TrimSpace(parts[1])
 		if model == "" {
 			return spec, fmt.Errorf("empty model in agent spec: %q", value)
+		}
+		if !modelPattern.MatchString(model) {
+			return spec, fmt.Errorf("invalid characters in model %q; allowed: letters, numbers, . _ / @ : + -", model)
 		}
 		spec.Model = model
 	}
