@@ -488,11 +488,48 @@ func TestCASSDefaults(t *testing.T) {
 	}
 }
 
+func TestCASSEnabledFalseRespected(t *testing.T) {
+	// This tests that when a user sets enabled = false but nothing else,
+	// we don't override their enabled = false with the default true.
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[cass]
+enabled = false
+`), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// User's enabled = false should be respected
+	if cfg.CASS.Enabled {
+		t.Error("User's enabled = false was overwritten with default true")
+	}
+
+	// But other defaults should still be applied
+	if cfg.CASS.Timeout != 30 {
+		t.Errorf("Expected default timeout 30, got %d", cfg.CASS.Timeout)
+	}
+	if cfg.CASS.Context.MaxSessions != 3 {
+		t.Errorf("Expected default MaxSessions 3, got %d", cfg.CASS.Context.MaxSessions)
+	}
+}
+
 func TestCASSEnvOverrides(t *testing.T) {
 	// Save original values
 	origEnabled := os.Getenv("NTM_CASS_ENABLED")
 	origTimeout := os.Getenv("NTM_CASS_TIMEOUT")
 	origBinary := os.Getenv("NTM_CASS_BINARY")
+
+	// Clear env vars before test
+	os.Unsetenv("NTM_CASS_ENABLED")
+	os.Unsetenv("NTM_CASS_TIMEOUT")
+	os.Unsetenv("NTM_CASS_BINARY")
 
 	// Create a minimal config file
 	tmpDir := t.TempDir()
@@ -540,6 +577,16 @@ timeout = 30
 	}
 	if cfg.CASS.BinaryPath != "/custom/path/to/cass" {
 		t.Errorf("Expected CASS binary path from env, got %s", cfg.CASS.BinaryPath)
+	}
+
+	// Test that negative timeout values are rejected
+	os.Setenv("NTM_CASS_TIMEOUT", "-5")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Timeout != 30 {
+		t.Errorf("Negative timeout should be rejected; expected 30 (from config), got %d", cfg.CASS.Timeout)
 	}
 }
 
@@ -653,5 +700,179 @@ prompt = "TOML prompt"
 	}
 	if len(cfg.Palette) != 1 || cfg.Palette[0].Key != "toml_cmd" {
 		t.Errorf("Expected palette from TOML, got %d commands", len(cfg.Palette))
+	}
+}
+
+func TestAccountsDefaults(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Accounts.StateFile == "" {
+		t.Error("Accounts.StateFile should have a default")
+	}
+	if cfg.Accounts.ResetBufferMinutes == 0 {
+		t.Error("Accounts.ResetBufferMinutes should have a default")
+	}
+	if !cfg.Accounts.AutoRotate {
+		t.Error("Accounts.AutoRotate should default to true")
+	}
+}
+
+func TestRotationDefaults(t *testing.T) {
+	cfg := Default()
+
+	// Rotation should be disabled by default (opt-in)
+	if cfg.Rotation.Enabled {
+		t.Error("Rotation.Enabled should default to false")
+	}
+	if !cfg.Rotation.PreferRestart {
+		t.Error("Rotation.PreferRestart should default to true")
+	}
+	if cfg.Rotation.ContinuationPrompt == "" {
+		t.Error("Rotation.ContinuationPrompt should have a default")
+	}
+	if cfg.Rotation.Thresholds.WarningPercent == 0 {
+		t.Error("Rotation.Thresholds.WarningPercent should have a default")
+	}
+	if cfg.Rotation.Thresholds.CriticalPercent == 0 {
+		t.Error("Rotation.Thresholds.CriticalPercent should have a default")
+	}
+	if !cfg.Rotation.Dashboard.ShowQuotaBars {
+		t.Error("Rotation.Dashboard.ShowQuotaBars should default to true")
+	}
+}
+
+func TestAccountsFromTOML(t *testing.T) {
+	configContent := `
+[accounts]
+state_file = "/custom/state.json"
+auto_rotate = false
+reset_buffer_minutes = 30
+
+[[accounts.claude]]
+email = "test@example.com"
+alias = "main"
+priority = 1
+
+[[accounts.claude]]
+email = "backup@example.com"
+alias = "backup"
+priority = 2
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Accounts.StateFile != "/custom/state.json" {
+		t.Errorf("Expected custom state file, got %s", cfg.Accounts.StateFile)
+	}
+	if cfg.Accounts.AutoRotate {
+		t.Error("Expected auto_rotate = false")
+	}
+	if cfg.Accounts.ResetBufferMinutes != 30 {
+		t.Errorf("Expected reset_buffer_minutes = 30, got %d", cfg.Accounts.ResetBufferMinutes)
+	}
+	if len(cfg.Accounts.Claude) != 2 {
+		t.Fatalf("Expected 2 Claude accounts, got %d", len(cfg.Accounts.Claude))
+	}
+	if cfg.Accounts.Claude[0].Email != "test@example.com" {
+		t.Errorf("Expected first account email test@example.com, got %s", cfg.Accounts.Claude[0].Email)
+	}
+	if cfg.Accounts.Claude[1].Alias != "backup" {
+		t.Errorf("Expected second account alias backup, got %s", cfg.Accounts.Claude[1].Alias)
+	}
+}
+
+func TestRotationFromTOML(t *testing.T) {
+	configContent := `
+[rotation]
+enabled = true
+prefer_restart = false
+auto_open_browser = true
+continuation_prompt = "Custom prompt: {{.Context}}"
+
+[rotation.thresholds]
+warning_percent = 70
+critical_percent = 90
+restart_if_tokens_above = 50000
+restart_if_session_hours = 4
+
+[rotation.dashboard]
+show_quota_bars = false
+show_account_status = true
+show_reset_timers = false
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if !cfg.Rotation.Enabled {
+		t.Error("Expected rotation.enabled = true")
+	}
+	if cfg.Rotation.PreferRestart {
+		t.Error("Expected rotation.prefer_restart = false")
+	}
+	if !cfg.Rotation.AutoOpenBrowser {
+		t.Error("Expected rotation.auto_open_browser = true")
+	}
+	if cfg.Rotation.ContinuationPrompt != "Custom prompt: {{.Context}}" {
+		t.Errorf("Wrong continuation_prompt: %s", cfg.Rotation.ContinuationPrompt)
+	}
+	if cfg.Rotation.Thresholds.WarningPercent != 70 {
+		t.Errorf("Expected warning_percent = 70, got %d", cfg.Rotation.Thresholds.WarningPercent)
+	}
+	if cfg.Rotation.Thresholds.CriticalPercent != 90 {
+		t.Errorf("Expected critical_percent = 90, got %d", cfg.Rotation.Thresholds.CriticalPercent)
+	}
+	if cfg.Rotation.Dashboard.ShowQuotaBars {
+		t.Error("Expected show_quota_bars = false")
+	}
+	if !cfg.Rotation.Dashboard.ShowAccountStatus {
+		t.Error("Expected show_account_status = true")
+	}
+}
+
+func TestAccountsEnvOverrides(t *testing.T) {
+	configContent := `
+[accounts]
+auto_rotate = true
+`
+	configPath := createTempConfig(t, configContent)
+
+	// Set env override to disable auto_rotate
+	os.Setenv("NTM_ACCOUNTS_AUTO_ROTATE", "false")
+	defer os.Unsetenv("NTM_ACCOUNTS_AUTO_ROTATE")
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Accounts.AutoRotate {
+		t.Error("Expected auto_rotate to be overridden to false by env var")
+	}
+}
+
+func TestRotationEnvOverrides(t *testing.T) {
+	configContent := `
+[rotation]
+enabled = false
+`
+	configPath := createTempConfig(t, configContent)
+
+	// Set env override to enable rotation
+	os.Setenv("NTM_ROTATION_ENABLED", "true")
+	defer os.Unsetenv("NTM_ROTATION_ENABLED")
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if !cfg.Rotation.Enabled {
+		t.Error("Expected rotation.enabled to be overridden to true by env var")
 	}
 }

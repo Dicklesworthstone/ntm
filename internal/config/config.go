@@ -47,8 +47,10 @@ type Config struct {
 	Checkpoints   CheckpointsConfig `toml:"checkpoints"`
 	Notifications notify.Config     `toml:"notifications"`
 	Resilience    ResilienceConfig  `toml:"resilience"`
-	Scanner       ScannerConfig     `toml:"scanner"` // UBS scanner configuration
-	CASS          CASSConfig        `toml:"cass"`    // CASS integration configuration
+	Scanner       ScannerConfig     `toml:"scanner"`  // UBS scanner configuration
+	CASS          CASSConfig        `toml:"cass"`     // CASS integration configuration
+	Accounts      AccountsConfig    `toml:"accounts"` // Multi-account management
+	Rotation      RotationConfig    `toml:"rotation"` // Account rotation configuration
 }
 
 // CheckpointsConfig holds configuration for automatic checkpoints
@@ -128,6 +130,81 @@ func DefaultResilienceConfig() ResilienceConfig {
 			Detect:   true, // Detect rate limits by default
 			Notify:   true, // Notify on rate limit by default
 			Patterns: nil,  // Use default patterns (rate limit, 429, too many requests, quota exceeded)
+		},
+	}
+}
+
+// AccountEntry represents a single account for a provider
+type AccountEntry struct {
+	Email    string `toml:"email"`
+	Alias    string `toml:"alias"`
+	Priority int    `toml:"priority"`
+}
+
+// AccountsConfig holds multi-account management configuration
+type AccountsConfig struct {
+	StateFile          string         `toml:"state_file"`           // Path to account state JSON
+	AutoRotate         bool           `toml:"auto_rotate"`          // Auto-rotate on limit detection
+	ResetBufferMinutes int            `toml:"reset_buffer_minutes"` // Minutes before reset to consider available
+	Claude             []AccountEntry `toml:"claude"`               // Claude accounts
+	Codex              []AccountEntry `toml:"codex"`                // Codex accounts
+	Gemini             []AccountEntry `toml:"gemini"`               // Gemini accounts
+}
+
+// DefaultAccountsConfig returns the default accounts configuration
+func DefaultAccountsConfig() AccountsConfig {
+	return AccountsConfig{
+		StateFile:          "~/.config/ntm/account_state.json",
+		AutoRotate:         true,
+		ResetBufferMinutes: 15,
+		Claude:             nil,
+		Codex:              nil,
+		Gemini:             nil,
+	}
+}
+
+// RotationThresholds defines when to trigger account rotation
+type RotationThresholds struct {
+	WarningPercent       int     `toml:"warning_percent"`         // Show warning at this quota %
+	CriticalPercent      int     `toml:"critical_percent"`        // Consider limited at this %
+	RestartIfTokensAbove float64 `toml:"restart_if_tokens_above"` // Restart if tokens exceed this
+	RestartIfSessionHours int    `toml:"restart_if_session_hours"` // Restart after N hours
+}
+
+// RotationDashboard defines dashboard display settings for rotation
+type RotationDashboard struct {
+	ShowQuotaBars     bool `toml:"show_quota_bars"`     // Show quota bars in dashboard
+	ShowAccountStatus bool `toml:"show_account_status"` // Show account status
+	ShowResetTimers   bool `toml:"show_reset_timers"`   // Show reset countdown
+}
+
+// RotationConfig holds account rotation configuration
+type RotationConfig struct {
+	Enabled            bool               `toml:"enabled"`             // Master toggle
+	PreferRestart      bool               `toml:"prefer_restart"`      // Prefer restart over switch
+	AutoOpenBrowser    bool               `toml:"auto_open_browser"`   // Auto-open browser for auth
+	ContinuationPrompt string             `toml:"continuation_prompt"` // Prompt template on rotation
+	Thresholds         RotationThresholds `toml:"thresholds"`
+	Dashboard          RotationDashboard  `toml:"dashboard"`
+}
+
+// DefaultRotationConfig returns the default rotation configuration
+func DefaultRotationConfig() RotationConfig {
+	return RotationConfig{
+		Enabled:            false, // Opt-in by default
+		PreferRestart:      true,  // Restart is cleaner than switch
+		AutoOpenBrowser:    false, // Don't auto-open browser
+		ContinuationPrompt: "Continue where you left off. Previous context: {{.Context}}",
+		Thresholds: RotationThresholds{
+			WarningPercent:        80,
+			CriticalPercent:       95,
+			RestartIfTokensAbove:  100000,
+			RestartIfSessionHours: 8,
+		},
+		Dashboard: RotationDashboard{
+			ShowQuotaBars:     true,
+			ShowAccountStatus: true,
+			ShowResetTimers:   true,
 		},
 	}
 }
@@ -500,6 +577,8 @@ func Default() *Config {
 		Resilience:    DefaultResilienceConfig(),
 		Scanner:       DefaultScannerConfig(),
 		CASS:          DefaultCASSConfig(),
+		Accounts:      DefaultAccountsConfig(),
+		Rotation:      DefaultRotationConfig(),
 	}
 
 	// Try to load palette from markdown file
@@ -748,22 +827,85 @@ func Load(path string) (*Config, error) {
 	// Apply environment variable overrides for scanner
 	applyEnvOverrides(&cfg.Scanner)
 
-	// Apply CASS defaults
-	// If Timeout is 0, apply all defaults (section likely missing)
+	// Apply CASS defaults for individual fields
+	// We check each field separately to avoid overwriting user-specified values
+	cassDefaults := DefaultCASSConfig()
 	if cfg.CASS.Timeout == 0 {
-		cfg.CASS = DefaultCASSConfig()
+		cfg.CASS.Timeout = cassDefaults.Timeout
 	}
+	// For nested configs, check if they appear unset (all zero values)
+	if cfg.CASS.Context.MaxSessions == 0 && cfg.CASS.Context.LookbackDays == 0 {
+		cfg.CASS.Context = cassDefaults.Context
+	}
+	if cfg.CASS.Duplicates.LookbackDays == 0 && cfg.CASS.Duplicates.SimilarityThreshold == 0 {
+		cfg.CASS.Duplicates = cassDefaults.Duplicates
+	}
+	if cfg.CASS.Search.DefaultLimit == 0 {
+		cfg.CASS.Search = cassDefaults.Search
+	}
+	// TUI booleans default to false in Go, but we want true by default.
+	// If both are false (Go zero value), apply TUI defaults.
+	// Users who explicitly want both disabled is an edge case we accept.
+	if !cfg.CASS.TUI.ShowActivitySparkline && !cfg.CASS.TUI.ShowStatusIndicator {
+		cfg.CASS.TUI = cassDefaults.TUI
+	}
+
 	// Apply environment variable overrides for CASS
 	if enabled := os.Getenv("NTM_CASS_ENABLED"); enabled != "" {
 		cfg.CASS.Enabled = enabled == "1" || enabled == "true"
 	}
 	if timeout := os.Getenv("NTM_CASS_TIMEOUT"); timeout != "" {
-		if t, err := fmt.Sscanf(timeout, "%d", &cfg.CASS.Timeout); err == nil && t == 1 {
-			// Timeout parsed successfully
+		var t int
+		if _, err := fmt.Sscanf(timeout, "%d", &t); err == nil && t > 0 {
+			cfg.CASS.Timeout = t
 		}
 	}
 	if binary := os.Getenv("NTM_CASS_BINARY"); binary != "" {
 		cfg.CASS.BinaryPath = binary
+	}
+
+	// Apply Accounts defaults
+	accountsDefaults := DefaultAccountsConfig()
+	if cfg.Accounts.StateFile == "" {
+		cfg.Accounts.StateFile = accountsDefaults.StateFile
+	}
+	if cfg.Accounts.ResetBufferMinutes == 0 {
+		cfg.Accounts.ResetBufferMinutes = accountsDefaults.ResetBufferMinutes
+	}
+	// AutoRotate defaults to true, so only set if entire section appears missing
+	// We detect this by checking if StateFile was empty (now set to default)
+	if cfg.Accounts.StateFile == accountsDefaults.StateFile && !cfg.Accounts.AutoRotate && len(cfg.Accounts.Claude) == 0 {
+		cfg.Accounts.AutoRotate = accountsDefaults.AutoRotate
+	}
+
+	// Apply Rotation defaults
+	rotationDefaults := DefaultRotationConfig()
+	if cfg.Rotation.ContinuationPrompt == "" {
+		cfg.Rotation.ContinuationPrompt = rotationDefaults.ContinuationPrompt
+	}
+	if cfg.Rotation.Thresholds.WarningPercent == 0 {
+		cfg.Rotation.Thresholds.WarningPercent = rotationDefaults.Thresholds.WarningPercent
+	}
+	if cfg.Rotation.Thresholds.CriticalPercent == 0 {
+		cfg.Rotation.Thresholds.CriticalPercent = rotationDefaults.Thresholds.CriticalPercent
+	}
+	if cfg.Rotation.Thresholds.RestartIfTokensAbove == 0 {
+		cfg.Rotation.Thresholds.RestartIfTokensAbove = rotationDefaults.Thresholds.RestartIfTokensAbove
+	}
+	if cfg.Rotation.Thresholds.RestartIfSessionHours == 0 {
+		cfg.Rotation.Thresholds.RestartIfSessionHours = rotationDefaults.Thresholds.RestartIfSessionHours
+	}
+	// Dashboard bools default to false; if all are false, apply defaults
+	if !cfg.Rotation.Dashboard.ShowQuotaBars && !cfg.Rotation.Dashboard.ShowAccountStatus && !cfg.Rotation.Dashboard.ShowResetTimers {
+		cfg.Rotation.Dashboard = rotationDefaults.Dashboard
+	}
+
+	// Environment variable overrides for accounts/rotation
+	if autoRotate := os.Getenv("NTM_ACCOUNTS_AUTO_ROTATE"); autoRotate != "" {
+		cfg.Accounts.AutoRotate = autoRotate == "1" || autoRotate == "true"
+	}
+	if rotationEnabled := os.Getenv("NTM_ROTATION_ENABLED"); rotationEnabled != "" {
+		cfg.Rotation.Enabled = rotationEnabled == "1" || rotationEnabled == "true"
 	}
 
 	// Try to load palette from markdown file
@@ -999,6 +1141,53 @@ func Print(cfg *Config, w io.Writer) error {
 	} else {
 		fmt.Fprintln(w, "# patterns = [\"custom pattern\"]  # Custom patterns (in addition to defaults)")
 	}
+	fmt.Fprintln(w)
+
+	// Write accounts configuration
+	fmt.Fprintln(w, "[accounts]")
+	fmt.Fprintln(w, "# Multi-account management for quota rotation")
+	fmt.Fprintf(w, "state_file = %q            # Path to account state JSON\n", cfg.Accounts.StateFile)
+	fmt.Fprintf(w, "auto_rotate = %t            # Auto-rotate when limit detected\n", cfg.Accounts.AutoRotate)
+	fmt.Fprintf(w, "reset_buffer_minutes = %d   # Minutes before reset to consider available\n", cfg.Accounts.ResetBufferMinutes)
+	fmt.Fprintln(w)
+
+	// Write Claude accounts if any
+	if len(cfg.Accounts.Claude) > 0 {
+		for _, acct := range cfg.Accounts.Claude {
+			fmt.Fprintln(w, "[[accounts.claude]]")
+			fmt.Fprintf(w, "email = %q\n", acct.Email)
+			fmt.Fprintf(w, "alias = %q\n", acct.Alias)
+			fmt.Fprintf(w, "priority = %d\n", acct.Priority)
+			fmt.Fprintln(w)
+		}
+	} else {
+		fmt.Fprintln(w, "# [[accounts.claude]]")
+		fmt.Fprintln(w, "# email = \"primary@gmail.com\"")
+		fmt.Fprintln(w, "# alias = \"main\"")
+		fmt.Fprintln(w, "# priority = 1")
+		fmt.Fprintln(w)
+	}
+
+	// Write rotation configuration
+	fmt.Fprintln(w, "[rotation]")
+	fmt.Fprintln(w, "# Account rotation and restart configuration")
+	fmt.Fprintf(w, "enabled = %t               # Master toggle\n", cfg.Rotation.Enabled)
+	fmt.Fprintf(w, "prefer_restart = %t        # Prefer restart over account switch\n", cfg.Rotation.PreferRestart)
+	fmt.Fprintf(w, "auto_open_browser = %t     # Auto-open browser for auth\n", cfg.Rotation.AutoOpenBrowser)
+	fmt.Fprintf(w, "continuation_prompt = %q\n", cfg.Rotation.ContinuationPrompt)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[rotation.thresholds]")
+	fmt.Fprintf(w, "warning_percent = %d        # Show warning at this quota %%\n", cfg.Rotation.Thresholds.WarningPercent)
+	fmt.Fprintf(w, "critical_percent = %d       # Consider limited at this %%\n", cfg.Rotation.Thresholds.CriticalPercent)
+	fmt.Fprintf(w, "restart_if_tokens_above = %.0f  # Restart if tokens exceed this\n", cfg.Rotation.Thresholds.RestartIfTokensAbove)
+	fmt.Fprintf(w, "restart_if_session_hours = %d   # Restart after N hours\n", cfg.Rotation.Thresholds.RestartIfSessionHours)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[rotation.dashboard]")
+	fmt.Fprintf(w, "show_quota_bars = %t       # Show quota bars in dashboard\n", cfg.Rotation.Dashboard.ShowQuotaBars)
+	fmt.Fprintf(w, "show_account_status = %t   # Show account status\n", cfg.Rotation.Dashboard.ShowAccountStatus)
+	fmt.Fprintf(w, "show_reset_timers = %t     # Show reset countdown\n", cfg.Rotation.Dashboard.ShowResetTimers)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "# Command Palette entries")
