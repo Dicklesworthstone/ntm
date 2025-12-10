@@ -81,6 +81,13 @@ type Model struct {
 
 	// Layout tier (narrow/split/wide/ultra)
 	tier layout.Tier
+
+	// Agent Mail integration
+	agentMailAvailable bool
+	agentMailConnected bool
+	agentMailLocks     int                 // Active file reservations
+	agentMailUnread    int                 // Unread message count (requires agent context)
+	agentMailLockInfo  []AgentMailLockInfo // Lock details for display
 }
 
 // PaneStatus tracks the status of a pane including compaction state
@@ -96,6 +103,14 @@ type PaneStatus struct {
 	ContextModel   string  // Model name for context limit lookup
 }
 
+// AgentMailLockInfo represents a file lock for dashboard display
+type AgentMailLockInfo struct {
+	PathPattern string
+	AgentName   string
+	Exclusive   bool
+	ExpiresIn   string
+}
+
 // KeyMap defines dashboard keybindings
 type KeyMap struct {
 	Up             key.Binding
@@ -108,6 +123,7 @@ type KeyMap struct {
 	Pause          key.Binding
 	Quit           key.Binding
 	ContextRefresh key.Binding // 'c' to refresh context data
+	MailRefresh    key.Binding // 'm' to refresh Agent Mail data
 	Num1           key.Binding
 	Num2           key.Binding
 	Num3           key.Binding
