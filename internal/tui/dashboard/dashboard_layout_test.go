@@ -118,10 +118,10 @@ func TestSplitProportionsAcrossThresholds(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		total           int
-		expectSplit     bool
-		expectNonZero   bool
-		name            string
+		total         int
+		expectSplit   bool
+		expectNonZero bool
+		name          string
 	}{
 		{total: 80, expectSplit: false, expectNonZero: false, name: "narrow"},
 		{total: 120, expectSplit: true, expectNonZero: true, name: "split-threshold"},
