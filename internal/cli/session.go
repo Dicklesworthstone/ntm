@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -68,14 +69,69 @@ func newListCmd() *cobra.Command {
 
 func runList() error {
 	if err := tmux.EnsureInstalled(); err != nil {
+		if IsJSONOutput() {
+			return output.PrintJSON(output.NewError(err.Error()))
+		}
 		return err
 	}
 
 	sessions, err := tmux.ListSessions()
 	if err != nil {
+		if IsJSONOutput() {
+			return output.PrintJSON(output.NewError(err.Error()))
+		}
 		return err
 	}
 
+	// Build response for JSON output
+	if IsJSONOutput() {
+		items := make([]output.SessionListItem, len(sessions))
+		for i, s := range sessions {
+			item := output.SessionListItem{
+				Name:             s.Name,
+				Windows:          s.Windows,
+				Attached:         s.Attached,
+				WorkingDirectory: s.Directory,
+			}
+
+			// Get panes to count agents
+			panes, err := tmux.GetPanes(s.Name)
+			if err == nil {
+				item.PaneCount = len(panes)
+
+				// Count agent types
+				var claudeCount, codexCount, geminiCount, userCount int
+				for _, p := range panes {
+					switch p.Type {
+					case tmux.AgentClaude:
+						claudeCount++
+					case tmux.AgentCodex:
+						codexCount++
+					case tmux.AgentGemini:
+						geminiCount++
+					default:
+						userCount++
+					}
+				}
+				item.AgentCounts = &output.AgentCountsResponse{
+					Claude: claudeCount,
+					Codex:  codexCount,
+					Gemini: geminiCount,
+					User:   userCount,
+					Total:  len(panes),
+				}
+			}
+			items[i] = item
+		}
+		resp := output.ListResponse{
+			TimestampedResponse: output.NewTimestamped(),
+			Sessions:            items,
+			Count:               len(sessions),
+		}
+		return output.PrintJSON(resp)
+	}
+
+	// Text output
 	if len(sessions) == 0 {
 		fmt.Println("No tmux sessions running")
 		return nil

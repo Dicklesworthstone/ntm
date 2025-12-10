@@ -22,16 +22,19 @@ type ErrorPattern struct {
 var errorPatterns = []ErrorPattern{
 	// Rate limiting (highest priority - transient errors)
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)rate[\s._-]?limit`), Description: "Rate limit message"},
-	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`\b429\b`), Description: "HTTP 429 status"},
+	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)(http|status|error|code).{0,10}\b429\b`), Description: "HTTP 429 status"},
+	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)\b429\b.{0,10}(too many|rate|limit)`), Description: "429 with message"},
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)too many requests`), Description: "Too many requests"},
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)quota exceeded`), Description: "Quota exceeded"},
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)try again (later|in)`), Description: "Retry message"},
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)requests per (minute|second|hour)`), Description: "Rate description"},
 	{Type: ErrorRateLimit, Regex: regexp.MustCompile(`(?i)throttl(ed|ing)`), Description: "Throttling"},
 
-	// Authentication errors
-	{Type: ErrorAuth, Regex: regexp.MustCompile(`\b401\b`), Description: "HTTP 401 Unauthorized"},
-	{Type: ErrorAuth, Regex: regexp.MustCompile(`\b403\b`), Description: "HTTP 403 Forbidden"},
+	// Authentication errors (require context to avoid false positives)
+	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)(http|status|error|code).{0,10}\b401\b`), Description: "HTTP 401 Unauthorized"},
+	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)\b401\b.{0,10}(unauthorized|error|denied)`), Description: "401 with message"},
+	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)(http|status|error|code).{0,10}\b403\b`), Description: "HTTP 403 Forbidden"},
+	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)\b403\b.{0,10}(forbidden|error|denied)`), Description: "403 with message"},
 	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)\bunauthorized\b`), Description: "Unauthorized"},
 	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)\bforbidden\b`), Description: "Forbidden"},
 	{Type: ErrorAuth, Regex: regexp.MustCompile(`(?i)(invalid|expired|missing)[\s._-]?(api[\s._-]?)?(key|token|credential)`), Description: "Invalid credentials"},

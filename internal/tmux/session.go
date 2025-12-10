@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // AgentType represents the type of AI agent
@@ -377,4 +378,99 @@ func ValidateSessionName(name string) error {
 		return errors.New("session name cannot contain ':' or '.'")
 	}
 	return nil
+}
+
+// GetPaneActivity returns the last activity time for a pane
+func GetPaneActivity(paneID string) (time.Time, error) {
+	output, err := run("display-message", "-p", "-t", paneID, "#{pane_last_activity}")
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	timestamp, err := strconv.ParseInt(output, 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse pane activity timestamp: %w", err)
+	}
+
+	return time.Unix(timestamp, 0), nil
+}
+
+// PaneActivity contains pane info with activity timestamp
+type PaneActivity struct {
+	Pane         Pane
+	LastActivity time.Time
+}
+
+// GetPanesWithActivity returns all panes in a session with their activity times
+func GetPanesWithActivity(session string) ([]PaneActivity, error) {
+	output, err := run("list-panes", "-s", "-t", session, "-F",
+		"#{pane_id}:#{pane_index}:#{pane_title}:#{pane_current_command}:#{pane_width}:#{pane_height}:#{pane_active}:#{pane_last_activity}")
+	if err != nil {
+		return nil, err
+	}
+
+	var panes []PaneActivity
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, ":", 8)
+		if len(parts) < 8 {
+			continue
+		}
+
+		index, _ := strconv.Atoi(parts[1])
+		width, _ := strconv.Atoi(parts[4])
+		height, _ := strconv.Atoi(parts[5])
+		active := parts[6] == "1"
+		timestamp, _ := strconv.ParseInt(parts[7], 10, 64)
+
+		pane := Pane{
+			ID:      parts[0],
+			Index:   index,
+			Title:   parts[2],
+			Command: parts[3],
+			Width:   width,
+			Height:  height,
+			Active:  active,
+		}
+
+		// Determine agent type from title
+		pane.Type = AgentUser
+		if strings.Contains(pane.Title, "__cc") {
+			pane.Type = AgentClaude
+		} else if strings.Contains(pane.Title, "__cod") {
+			pane.Type = AgentCodex
+		} else if strings.Contains(pane.Title, "__gmi") {
+			pane.Type = AgentGemini
+		}
+
+		panes = append(panes, PaneActivity{
+			Pane:         pane,
+			LastActivity: time.Unix(timestamp, 0),
+		})
+	}
+
+	return panes, nil
+}
+
+// IsRecentlyActive checks if a pane has had activity within the threshold
+func IsRecentlyActive(paneID string, threshold time.Duration) (bool, error) {
+	lastActivity, err := GetPaneActivity(paneID)
+	if err != nil {
+		return false, err
+	}
+
+	return time.Since(lastActivity) <= threshold, nil
+}
+
+// GetPaneLastActivityAge returns how long ago the pane was last active
+func GetPaneLastActivityAge(paneID string) (time.Duration, error) {
+	lastActivity, err := GetPaneActivity(paneID)
+	if err != nil {
+		return 0, err
+	}
+
+	return time.Since(lastActivity), nil
 }

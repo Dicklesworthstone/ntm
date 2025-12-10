@@ -155,9 +155,10 @@ var (
 	robotVersion  bool
 	robotPlan     bool
 	robotSnapshot bool   // unified state query
+	robotSince    string // ISO8601 timestamp for delta snapshot
 	robotTail     string // session name for tail
-	robotLines   int    // number of lines to capture
-	robotPanes   string // comma-separated pane filter
+	robotLines    int    // number of lines to capture
+	robotPanes    string // comma-separated pane filter
 
 	// Robot-send flags
 	robotSend        string // session name for send

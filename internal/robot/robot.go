@@ -593,13 +593,15 @@ type SnapshotSession struct {
 
 // SnapshotAgent represents an agent in the snapshot
 type SnapshotAgent struct {
-	Pane             string  `json:"pane"`
-	Type             string  `json:"type"`
-	State            string  `json:"state"`
-	LastOutputAgeSec int     `json:"last_output_age_sec"`
-	OutputTailLines  int     `json:"output_tail_lines"`
-	CurrentBead      *string `json:"current_bead"`
-	PendingMail      int     `json:"pending_mail"`
+	Pane               string  `json:"pane"`
+	Type               string  `json:"type"`
+	TypeConfidence     float64 `json:"type_confidence"`
+	TypeMethod         string  `json:"type_method"`
+	State              string  `json:"state"`
+	LastOutputAgeSec   int     `json:"last_output_age_sec"`
+	OutputTailLines    int     `json:"output_tail_lines"`
+	CurrentBead        *string `json:"current_bead"`
+	PendingMail        int     `json:"pending_mail"`
 }
 
 // BeadsSummary provides issue tracking stats
@@ -713,12 +715,12 @@ func getBeadsSummary() *BeadsSummary {
 		return nil
 	}
 
-	// Parse the JSON output
+	// Parse the JSON output - bd returns fields with "_issues" suffix
 	var stats struct {
-		Open       int `json:"open"`
-		InProgress int `json:"in_progress"`
-		Blocked    int `json:"blocked"`
-		Ready      int `json:"ready"`
+		Open       int `json:"open_issues"`
+		InProgress int `json:"in_progress_issues"`
+		Blocked    int `json:"blocked_issues"`
+		Ready      int `json:"ready_issues"`
 	}
 	if err := json.Unmarshal(output, &stats); err != nil {
 		return nil

@@ -102,9 +102,12 @@ type ListResponse struct {
 
 // SessionListItem is a single session in list output
 type SessionListItem struct {
-	Name     string `json:"name"`
-	Windows  int    `json:"windows"`
-	Attached bool   `json:"attached"`
+	Name             string              `json:"name"`
+	Windows          int                 `json:"windows"`
+	PaneCount        int                 `json:"pane_count"`
+	Attached         bool                `json:"attached"`
+	WorkingDirectory string              `json:"working_directory,omitempty"`
+	AgentCounts      *AgentCountsResponse `json:"agents,omitempty"`
 }
 
 // StatusResponse is the output format for status command
