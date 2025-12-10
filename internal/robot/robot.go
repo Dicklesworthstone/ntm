@@ -60,10 +60,27 @@ type SystemInfo struct {
 
 // StatusOutput is the structured output for robot-status
 type StatusOutput struct {
-	GeneratedAt time.Time     `json:"generated_at"`
-	System      SystemInfo    `json:"system"`
-	Sessions    []SessionInfo `json:"sessions"`
-	Summary     StatusSummary `json:"summary"`
+	GeneratedAt   time.Time       `json:"generated_at"`
+	System        SystemInfo      `json:"system"`
+	Sessions      []SessionInfo   `json:"sessions"`
+	Summary       StatusSummary   `json:"summary"`
+	Beads         *BeadsSummary   `json:"beads,omitempty"`
+	GraphMetrics  *GraphMetrics   `json:"graph_metrics,omitempty"`
+}
+
+// GraphMetrics provides bv graph analysis metrics for status output
+type GraphMetrics struct {
+	TopBottlenecks []BottleneckInfo `json:"top_bottlenecks,omitempty"`
+	Keystones      int              `json:"keystones_count"`
+	HealthStatus   string           `json:"health_status"`  // "ok", "warning", "critical"
+	DriftMessage   string           `json:"drift_message,omitempty"`
+}
+
+// BottleneckInfo represents a bottleneck issue with its score
+type BottleneckInfo struct {
+	ID    string  `json:"id"`
+	Title string  `json:"title,omitempty"`
+	Score float64 `json:"score"`
 }
 
 // StatusSummary provides aggregate stats
@@ -268,7 +285,55 @@ func PrintStatus() error {
 		}
 	}
 
+	// Add beads summary if bv is available
+	if bv.IsInstalled() {
+		output.Beads = getBeadsSummary()
+		output.GraphMetrics = getGraphMetrics()
+	}
+
 	return encodeJSON(output)
+}
+
+// getGraphMetrics returns bv graph analysis metrics
+func getGraphMetrics() *GraphMetrics {
+	metrics := &GraphMetrics{
+		HealthStatus: "unknown",
+	}
+
+	// Get health summary (drift + bottleneck count)
+	health, err := bv.GetHealthSummary()
+	if err == nil && health != nil {
+		switch health.DriftStatus {
+		case bv.DriftOK:
+			metrics.HealthStatus = "ok"
+		case bv.DriftWarning:
+			metrics.HealthStatus = "warning"
+		case bv.DriftCritical:
+			metrics.HealthStatus = "critical"
+		default:
+			metrics.HealthStatus = "unknown"
+		}
+		metrics.DriftMessage = health.DriftMessage
+	}
+
+	// Get top bottlenecks
+	bottlenecks, err := bv.GetTopBottlenecks(3)
+	if err == nil {
+		for _, b := range bottlenecks {
+			metrics.TopBottlenecks = append(metrics.TopBottlenecks, BottleneckInfo{
+				ID:    b.ID,
+				Score: b.Value,
+			})
+		}
+	}
+
+	// Get keystone count
+	insights, err := bv.GetInsights()
+	if err == nil && insights != nil {
+		metrics.Keystones = len(insights.Keystones)
+	}
+
+	return metrics
 }
 
 // PrintVersion outputs version as JSON
@@ -783,13 +848,37 @@ type SnapshotAgent struct {
 	PendingMail        int     `json:"pending_mail"`
 }
 
-// BeadsSummary provides issue tracking stats
+// BeadsSummary provides issue tracking stats for snapshot
 type BeadsSummary struct {
-	Open       int `json:"open"`
-	InProgress int `json:"in_progress"`
-	Blocked    int `json:"blocked"`
-	Ready      int `json:"ready"`
+	Available      bool             `json:"available"`
+	Reason         string           `json:"reason,omitempty"` // Reason if not available
+	Project        string           `json:"project,omitempty"`
+	Total          int              `json:"total,omitempty"`
+	Open           int              `json:"open,omitempty"`
+	InProgress     int              `json:"in_progress,omitempty"`
+	Blocked        int              `json:"blocked,omitempty"`
+	Ready          int              `json:"ready,omitempty"`
+	Closed         int              `json:"closed,omitempty"`
+	ReadyPreview   []BeadPreview    `json:"ready_preview,omitempty"`
+	InProgressList []BeadInProgress `json:"in_progress_list,omitempty"`
 }
+
+// BeadPreview is a minimal bead representation for ready items
+type BeadPreview struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Priority string `json:"priority"` // e.g., "P0", "P1"
+}
+
+// BeadInProgress represents an in-progress bead with assignee
+type BeadInProgress struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Assignee string `json:"assignee,omitempty"`
+}
+
+// BeadLimit controls how many ready/in-progress beads to include in snapshot
+var BeadLimit = 5
 
 // PrintSnapshot outputs complete system state for AI orchestration
 func PrintSnapshot() error {

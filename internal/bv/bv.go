@@ -465,3 +465,116 @@ func GetHealthSummary() (*HealthSummary, error) {
 
 	return summary, nil
 }
+
+// BlockerInfo represents an issue that is blocked and what blocks it
+type BlockerInfo struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	BlockedBy   []string `json:"blocked_by"`
+	IsInProgress bool    `json:"is_in_progress"`
+}
+
+// InProgressInfo represents an in-progress issue with its dependencies
+type InProgressInfo struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	DependencyCount  int      `json:"dependency_count"`
+	OpenDependencies []string `json:"open_dependencies,omitempty"`
+}
+
+// DependencyContext contains dependency information for recovery prompts
+type DependencyContext struct {
+	InProgressTasks  []InProgressInfo `json:"in_progress_tasks"`
+	BlockedCount     int              `json:"blocked_count"`
+	ReadyCount       int              `json:"ready_count"`
+	TopBlockers      []BlockerInfo    `json:"top_blockers,omitempty"`
+}
+
+// GetDependencyContext returns dependency/blocker context from bd
+func GetDependencyContext(n int) (*DependencyContext, error) {
+	ctx := &DependencyContext{}
+
+	// Get stats
+	statsOutput, err := runBd("stats", "--json")
+	if err == nil {
+		var stats struct {
+			BlockedIssues int `json:"blocked_issues"`
+			ReadyIssues   int `json:"ready_issues"`
+		}
+		if json.Unmarshal([]byte(statsOutput), &stats) == nil {
+			ctx.BlockedCount = stats.BlockedIssues
+			ctx.ReadyCount = stats.ReadyIssues
+		}
+	}
+
+	// Get in-progress tasks
+	inProgressOutput, err := runBd("list", "--status=in_progress", "--json")
+	if err == nil {
+		var inProgress []struct {
+			ID              string `json:"id"`
+			Title           string `json:"title"`
+			DependencyCount int    `json:"dependency_count"`
+		}
+		if json.Unmarshal([]byte(inProgressOutput), &inProgress) == nil {
+			for _, task := range inProgress {
+				if len(ctx.InProgressTasks) >= n {
+					break
+				}
+				ctx.InProgressTasks = append(ctx.InProgressTasks, InProgressInfo{
+					ID:              task.ID,
+					Title:           task.Title,
+					DependencyCount: task.DependencyCount,
+				})
+			}
+		}
+	}
+
+	// Get blocked tasks (what is blocking progress)
+	blockedOutput, err := runBd("blocked", "--json")
+	if err == nil {
+		var blocked []struct {
+			ID             string   `json:"id"`
+			Title          string   `json:"title"`
+			BlockedByCount int      `json:"blocked_by_count"`
+			BlockedBy      []string `json:"blocked_by"`
+		}
+		if json.Unmarshal([]byte(blockedOutput), &blocked) == nil {
+			for _, task := range blocked {
+				if len(ctx.TopBlockers) >= n {
+					break
+				}
+				ctx.TopBlockers = append(ctx.TopBlockers, BlockerInfo{
+					ID:        task.ID,
+					Title:     task.Title,
+					BlockedBy: task.BlockedBy,
+				})
+			}
+		}
+	}
+
+	return ctx, nil
+}
+
+// runBd executes bd with given args and returns stdout
+func runBd(args ...string) (string, error) {
+	cmd := exec.Command("bd", args...)
+	if WorkDir != "" {
+		cmd.Dir = WorkDir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+	}
+
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// IsBdInstalled checks if bd is available in PATH
+func IsBdInstalled() bool {
+	_, err := exec.LookPath("bd")
+	return err == nil
+}

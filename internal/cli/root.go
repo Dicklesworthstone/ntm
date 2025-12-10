@@ -252,6 +252,7 @@ func init() {
 		newDepsCmd(),
 		newKillCmd(),
 		newScanCmd(),
+		newHooksCmd(),
 
 		// Shell integration
 		newInitCmd(),

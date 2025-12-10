@@ -265,6 +265,11 @@ type BeadContext struct {
 	NextActions       []string // Recommended next actions
 	HealthStatus      string   // Project health summary
 	HasDrift          bool     // Whether drift was detected
+	// Dependency context
+	InProgressTasks   []string // Currently in-progress tasks
+	BlockedCount      int      // Number of blocked issues
+	ReadyCount        int      // Number of ready issues
+	TopBlockers       []string // Top issues blocking progress
 }
 
 // BuildContextAwarePrompt creates a recovery prompt that includes bead context
@@ -306,6 +311,29 @@ func BuildContextAwarePrompt(basePrompt string, includeBeadContext bool) string 
 		sb.WriteString("\n**Warning**: Project has drifted from baseline. Consider running `bv` to review.\n")
 	}
 
+	// Add dependency/blocker context
+	if len(ctx.InProgressTasks) > 0 || ctx.BlockedCount > 0 || len(ctx.TopBlockers) > 0 {
+		sb.WriteString("\n## Dependency Summary\n")
+
+		if len(ctx.InProgressTasks) > 0 {
+			sb.WriteString("\n### Tasks In Progress:\n")
+			for _, task := range ctx.InProgressTasks {
+				sb.WriteString(fmt.Sprintf("- %s\n", task))
+			}
+		}
+
+		if ctx.BlockedCount > 0 || ctx.ReadyCount > 0 {
+			sb.WriteString(fmt.Sprintf("\n**Status**: %d blocked, %d ready to work on\n", ctx.BlockedCount, ctx.ReadyCount))
+		}
+
+		if len(ctx.TopBlockers) > 0 {
+			sb.WriteString("\n### Top Blockers (completing these unblocks many tasks):\n")
+			for _, blocker := range ctx.TopBlockers {
+				sb.WriteString(fmt.Sprintf("- %s\n", blocker))
+			}
+		}
+	}
+
 	return sb.String()
 }
 
@@ -338,6 +366,31 @@ func GetBeadContext() *BeadContext {
 	if err == nil && health != nil {
 		ctx.HealthStatus = health.DriftStatus.String()
 		ctx.HasDrift = health.DriftStatus == bv.DriftCritical || health.DriftStatus == bv.DriftWarning
+	}
+
+	// Get dependency context (from bd, not bv)
+	if bv.IsBdInstalled() {
+		depCtx, err := bv.GetDependencyContext(5)
+		if err == nil && depCtx != nil {
+			ctx.BlockedCount = depCtx.BlockedCount
+			ctx.ReadyCount = depCtx.ReadyCount
+
+			// Format in-progress tasks
+			for _, task := range depCtx.InProgressTasks {
+				ctx.InProgressTasks = append(ctx.InProgressTasks,
+					fmt.Sprintf("[%s] %s", task.ID, task.Title))
+			}
+
+			// Format top blockers
+			for _, blocker := range depCtx.TopBlockers {
+				blockedByStr := ""
+				if len(blocker.BlockedBy) > 0 {
+					blockedByStr = fmt.Sprintf(" (blocked by: %s)", strings.Join(blocker.BlockedBy, ", "))
+				}
+				ctx.TopBlockers = append(ctx.TopBlockers,
+					fmt.Sprintf("[%s] %s%s", blocker.ID, blocker.Title, blockedByStr))
+			}
+		}
 	}
 
 	return ctx

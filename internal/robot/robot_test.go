@@ -1381,3 +1381,93 @@ func TestPlanOutputWithBeadActions(t *testing.T) {
 		t.Errorf("BeadActions[0].BeadID = %s, want ntm-123", result.BeadActions[0].BeadID)
 	}
 }
+
+func TestGraphMetricsMarshal(t *testing.T) {
+	metrics := GraphMetrics{
+		TopBottlenecks: []BottleneckInfo{
+			{ID: "ntm-123", Title: "Test bead", Score: 25.5},
+			{ID: "ntm-456", Score: 18.0},
+		},
+		Keystones:    50,
+		HealthStatus: "warning",
+		DriftMessage: "Drift detected: 5 new issues",
+	}
+
+	data, err := json.Marshal(metrics)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var result GraphMetrics
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if result.Keystones != 50 {
+		t.Errorf("Keystones = %d, want 50", result.Keystones)
+	}
+	if result.HealthStatus != "warning" {
+		t.Errorf("HealthStatus = %s, want warning", result.HealthStatus)
+	}
+	if len(result.TopBottlenecks) != 2 {
+		t.Errorf("TopBottlenecks count = %d, want 2", len(result.TopBottlenecks))
+	}
+	if result.TopBottlenecks[0].Score != 25.5 {
+		t.Errorf("TopBottlenecks[0].Score = %f, want 25.5", result.TopBottlenecks[0].Score)
+	}
+}
+
+func TestStatusOutputWithGraphMetrics(t *testing.T) {
+	output := StatusOutput{
+		GeneratedAt: time.Now().UTC(),
+		System: SystemInfo{
+			Version: "1.0.0",
+			TmuxOK:  true,
+		},
+		Sessions: []SessionInfo{},
+		Summary: StatusSummary{
+			TotalSessions: 1,
+			TotalAgents:   3,
+		},
+		Beads: &BeadsSummary{
+			Open:       10,
+			InProgress: 2,
+			Blocked:    5,
+			Ready:      3,
+		},
+		GraphMetrics: &GraphMetrics{
+			TopBottlenecks: []BottleneckInfo{
+				{ID: "test-1", Score: 20.0},
+			},
+			Keystones:    25,
+			HealthStatus: "ok",
+		},
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var result StatusOutput
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if result.Beads == nil {
+		t.Error("Beads should not be nil")
+	} else if result.Beads.Open != 10 {
+		t.Errorf("Beads.Open = %d, want 10", result.Beads.Open)
+	}
+
+	if result.GraphMetrics == nil {
+		t.Error("GraphMetrics should not be nil")
+	} else {
+		if result.GraphMetrics.Keystones != 25 {
+			t.Errorf("GraphMetrics.Keystones = %d, want 25", result.GraphMetrics.Keystones)
+		}
+		if len(result.GraphMetrics.TopBottlenecks) != 1 {
+			t.Errorf("TopBottlenecks count = %d, want 1", len(result.GraphMetrics.TopBottlenecks))
+		}
+	}
+}
