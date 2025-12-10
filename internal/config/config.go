@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -13,6 +14,7 @@ import (
 // Config represents the main configuration
 type Config struct {
 	ProjectsBase string       `toml:"projects_base"`
+	PaletteFile  string       `toml:"palette_file"` // Path to command_palette.md (optional)
 	Agents       AgentConfig  `toml:"agents"`
 	Palette      []PaletteCmd `toml:"palette"`
 	Tmux         TmuxConfig   `toml:"tmux"`
@@ -58,9 +60,120 @@ func DefaultProjectsBase() string {
 	return "/data/projects"
 }
 
-// Default returns the default configuration
+// findPaletteMarkdown searches for a command_palette.md file in standard locations
+// Search order: ~/.config/ntm/command_palette.md, then ./command_palette.md
+func findPaletteMarkdown() string {
+	// Check ~/.config/ntm/command_palette.md (user customization)
+	configDir := filepath.Dir(DefaultPath())
+	mdPath := filepath.Join(configDir, "command_palette.md")
+	if _, err := os.Stat(mdPath); err == nil {
+		return mdPath
+	}
+
+	// Check current working directory (project-specific)
+	if cwd, err := os.Getwd(); err == nil {
+		cwdPath := filepath.Join(cwd, "command_palette.md")
+		if _, err := os.Stat(cwdPath); err == nil {
+			return cwdPath
+		}
+	}
+
+	return ""
+}
+
+// LoadPaletteFromMarkdown parses a command palette from markdown format.
+// Format:
+//
+//	## Category Name
+//	### command_key | Display Label
+//	The prompt text (can be multiple lines)
+//
+// Lines starting with # (but not ## or ###) are treated as comments.
+func LoadPaletteFromMarkdown(path string) ([]PaletteCmd, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var commands []PaletteCmd
+	var currentCategory string
+	var currentCmd *PaletteCmd
+	var promptLines []string
+
+	// Normalize line endings
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+
+	for _, line := range lines {
+		// Check for category header: ## Category Name
+		if strings.HasPrefix(line, "## ") {
+			// Save previous command if exists
+			if currentCmd != nil {
+				currentCmd.Prompt = strings.TrimSpace(strings.Join(promptLines, "\n"))
+				if currentCmd.Prompt != "" {
+					commands = append(commands, *currentCmd)
+				}
+				currentCmd = nil
+				promptLines = nil
+			}
+			currentCategory = strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			continue
+		}
+
+		// Check for command header: ### key | Label
+		if strings.HasPrefix(line, "### ") {
+			// Save previous command if exists
+			if currentCmd != nil {
+				currentCmd.Prompt = strings.TrimSpace(strings.Join(promptLines, "\n"))
+				if currentCmd.Prompt != "" {
+					commands = append(commands, *currentCmd)
+				}
+				promptLines = nil
+			}
+
+			// Parse key | label
+			header := strings.TrimSpace(strings.TrimPrefix(line, "### "))
+			parts := strings.SplitN(header, "|", 2)
+			if len(parts) != 2 {
+				// Invalid format, skip this command
+				currentCmd = nil
+				continue
+			}
+
+			currentCmd = &PaletteCmd{
+				Key:      strings.TrimSpace(parts[0]),
+				Label:    strings.TrimSpace(parts[1]),
+				Category: currentCategory,
+			}
+			continue
+		}
+
+		// Comment: starts with # but not ## or ###
+		if strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "##") {
+			continue
+		}
+
+		// Otherwise, it's prompt content
+		if currentCmd != nil {
+			promptLines = append(promptLines, line)
+		}
+	}
+
+	// Don't forget the last command
+	if currentCmd != nil {
+		currentCmd.Prompt = strings.TrimSpace(strings.Join(promptLines, "\n"))
+		if currentCmd.Prompt != "" {
+			commands = append(commands, *currentCmd)
+		}
+	}
+
+	return commands, nil
+}
+
+// Default returns the default configuration.
+// It tries to load the palette from a markdown file first, falling back to hardcoded defaults.
 func Default() *Config {
-	return &Config{
+	cfg := &Config{
 		ProjectsBase: DefaultProjectsBase(),
 		Agents: AgentConfig{
 			Claude: `NODE_OPTIONS="--max-old-space-size=32768" ENABLE_BACKGROUND_TASKS=1 claude --dangerously-skip-permissions`,
@@ -71,8 +184,19 @@ func Default() *Config {
 			DefaultPanes: 10,
 			PaletteKey:   "F6",
 		},
-		Palette: defaultPaletteCommands(),
 	}
+
+	// Try to load palette from markdown file
+	if mdPath := findPaletteMarkdown(); mdPath != "" {
+		if mdCmds, err := LoadPaletteFromMarkdown(mdPath); err == nil && len(mdCmds) > 0 {
+			cfg.Palette = mdCmds
+			return cfg
+		}
+	}
+
+	// Fall back to hardcoded defaults
+	cfg.Palette = defaultPaletteCommands()
+	return cfg
 }
 
 func defaultPaletteCommands() []PaletteCmd {
@@ -189,7 +313,12 @@ Report findings with specific file locations and line numbers.`,
 	}
 }
 
-// Load loads configuration from a file
+// Load loads configuration from a file.
+// Palette loading precedence:
+//  1. Explicit palette_file from TOML config
+//  2. Auto-discovered command_palette.md (~/.config/ntm/ or ./command_palette.md)
+//  3. [[palette]] entries from TOML config
+//  4. Hardcoded defaults
 func Load(path string) (*Config, error) {
 	if path == "" {
 		path = DefaultPath()
@@ -225,7 +354,28 @@ func Load(path string) (*Config, error) {
 		cfg.Tmux.PaletteKey = "F6"
 	}
 
-	// If no palette commands, use defaults
+	// Try to load palette from markdown file
+	// This takes precedence over TOML [[palette]] entries
+	mdPath := cfg.PaletteFile
+	if mdPath == "" {
+		mdPath = findPaletteMarkdown()
+	} else {
+		// Expand ~/ in explicit path (e.g., ~/foo -> /home/user/foo)
+		if strings.HasPrefix(mdPath, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				mdPath = filepath.Join(home, mdPath[2:])
+			}
+		}
+	}
+
+	if mdPath != "" {
+		if mdCmds, err := LoadPaletteFromMarkdown(mdPath); err == nil && len(mdCmds) > 0 {
+			cfg.Palette = mdCmds
+			return &cfg, nil
+		}
+	}
+
+	// If no palette commands from TOML, use defaults
 	if len(cfg.Palette) == 0 {
 		cfg.Palette = defaultPaletteCommands()
 	}
@@ -273,6 +423,16 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "projects_base = %q\n", cfg.ProjectsBase)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "# Path to command palette markdown file (optional)")
+	fmt.Fprintln(w, "# If set, loads palette commands from this file instead of [[palette]] entries below")
+	fmt.Fprintln(w, "# Searched automatically: ~/.config/ntm/command_palette.md, ./command_palette.md")
+	if cfg.PaletteFile != "" {
+		fmt.Fprintf(w, "palette_file = %q\n", cfg.PaletteFile)
+	} else {
+		fmt.Fprintln(w, "# palette_file = \"~/.config/ntm/command_palette.md\"")
+	}
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "[agents]")
 	fmt.Fprintln(w, "# Commands used to launch each agent type")
 	fmt.Fprintf(w, "claude = %q\n", cfg.Agents.Claude)
@@ -290,24 +450,26 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "# Add your own prompts here")
 	fmt.Fprintln(w)
 
-	// Group by category
+	// Group by category, preserving order of first occurrence
 	categories := make(map[string][]PaletteCmd)
+	var categoryOrder []string
+	seenCategories := make(map[string]bool)
+
 	for _, cmd := range cfg.Palette {
 		cat := cmd.Category
 		if cat == "" {
 			cat = "General"
 		}
 		categories[cat] = append(categories[cat], cmd)
+		if !seenCategories[cat] {
+			seenCategories[cat] = true
+			categoryOrder = append(categoryOrder, cat)
+		}
 	}
 
-	// Write in order
-	order := []string{"Quick Actions", "Code Quality", "Coordination", "Investigation", "General"}
-	for _, cat := range order {
-		cmds, ok := categories[cat]
-		if !ok {
-			continue
-		}
-
+	// Write categories in order of first occurrence
+	for _, cat := range categoryOrder {
+		cmds := categories[cat]
 		fmt.Fprintf(w, "# %s\n", cat)
 		for _, cmd := range cmds {
 			fmt.Fprintln(w, "[[palette]]")
@@ -327,11 +489,11 @@ func Print(cfg *Config, w io.Writer) error {
 
 // GetProjectDir returns the project directory for a session
 func (c *Config) GetProjectDir(session string) string {
-	// Expand ~ in path
+	// Expand ~/ in path (e.g., ~/Developer -> /home/user/Developer)
 	base := c.ProjectsBase
-	if len(base) > 0 && base[0] == '~' {
+	if strings.HasPrefix(base, "~/") {
 		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, base[1:])
+		base = filepath.Join(home, base[2:])
 	}
 	return filepath.Join(base, session)
 }

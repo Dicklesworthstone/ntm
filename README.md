@@ -7,7 +7,7 @@
 
 **A powerful tmux session management tool for orchestrating multiple AI coding agents in parallel.**
 
-Spawn, manage, and coordinate Claude Code, OpenAI Codex, and Google Gemini CLI agents across tiled tmux panes with simple commands and a beautiful TUI.
+Spawn, manage, and coordinate Claude Code, OpenAI Codex, and Google Gemini CLI agents across tiled tmux panes with simple commands and a stunning TUI featuring animated gradients, visual dashboards, and a beautiful command palette.
 
 <div align="center">
 
@@ -32,6 +32,7 @@ Modern AI-assisted development often involves running multiple coding agents sim
 - **Session fragility**: Disconnecting from SSH loses all your agent sessions
 - **Setup friction**: Starting a new project means manually creating directories, initializing git, and spawning agents one by one
 - **Visual noise**: Plain terminal output with no visual hierarchy or status indication
+- **No visibility**: Hard to see agent status at a glance across many panes
 
 ### The Solution
 
@@ -42,7 +43,7 @@ NTM transforms tmux into a **multi-agent command center**:
 3. **Broadcast prompts**: Send the same task to all agents of a specific type with one command
 4. **Persistent sessions**: Detach and reattach without losing any agent state
 5. **Quick project setup**: Create directory, initialize git, and spawn agents in a single command
-6. **Beautiful TUI**: Catppuccin-themed command palette with fuzzy search, Nerd Font icons, and live preview
+6. **Stunning TUI**: Animated gradients, visual dashboards, shimmering effects, and a beautiful command palette with Catppuccin themes
 
 ### Who Benefits
 
@@ -106,6 +107,7 @@ ntm status myproject          # Show detailed status with agent counts
 ntm attach myproject          # Reattach to session
 ntm view myproject            # View all panes in tiled layout
 ntm zoom myproject 2          # Zoom to specific pane
+ntm dashboard myproject       # Open interactive visual dashboard
 ntm kill -f myproject         # Kill session (force, no confirmation)
 ```
 
@@ -123,17 +125,48 @@ Invoke a stunning fuzzy-searchable palette of pre-configured prompts with a sing
 
 ```bash
 ntm palette myproject         # Open palette for session
-# Or press F6 in tmux (after shell integration)
+# Or press F6 in tmux (after running ntm bind)
 ```
 
 The palette features:
-- **Catppuccin color theme** with elegant gradients
+- **Animated gradient banner** with shimmering title effects
+- **Catppuccin color theme** with elegant gradients throughout
 - **Fuzzy search** through all commands with live filtering
-- **Preview pane** showing full prompt text with word wrapping
+- **Live preview pane** showing full prompt text with syntax highlighting
 - **Nerd Font icons** (with Unicode/ASCII fallbacks for basic terminals)
-- **Visual target selector** with color-coded agent types
+- **Visual target selector** with animated color-coded agent badges
 - **Quick select**: Numbers 1-9 for instant command selection
-- **Keyboard-driven**: Full keyboard navigation
+- **Smooth animations**: Pulsing indicators, gradient transitions
+- **Keyboard-driven**: Full keyboard navigation with vim-style keys
+
+### Interactive Dashboard
+
+Open a stunning visual dashboard for any session:
+
+```bash
+ntm dashboard myproject       # Or use alias: ntm dash myproject
+```
+
+The dashboard provides:
+- **Visual pane grid** with color-coded agent cards
+- **Live agent counts** showing Claude, Codex, Gemini, and user panes
+- **Animated status indicators** with pulsing selection highlights
+- **Quick navigation**: Use 1-9 to select panes, z/Enter to zoom
+- **Real-time refresh**: Press r to update pane status
+- **Responsive layout**: Adapts to terminal size automatically
+
+### Tmux Keybinding Setup
+
+Set up a convenient F6 hotkey to open the palette in a tmux popup:
+
+```bash
+ntm bind                      # Bind F6 (default)
+ntm bind --key=F5             # Use different key
+ntm bind --show               # Show current binding
+ntm bind --unbind             # Remove the binding
+```
+
+After binding, press F6 inside any tmux session to open the palette in a floating popup.
 
 ### Dependency Check
 
@@ -200,12 +233,13 @@ Shell integration adds:
 | **Session Creation** | `cnt`, `sat`, `qps` | create, spawn, quick |
 | **Agent Mgmt** | `ant`, `bp`, `int` | add, send, interrupt |
 | **Navigation** | `rnt`, `lnt`, `snt`, `vnt`, `znt` | attach, list, status, view, zoom |
+| **Dashboard** | `dash`, `d` | Interactive visual dashboard |
 | **Output** | `cpnt`, `svnt` | copy, save |
-| **Utilities** | `ncp`, `knt`, `dnt` | palette, kill, deps |
+| **Utilities** | `ncp`, `knt`, `cad` | palette, kill, deps |
 
 Plus:
 - Tab completions for all commands
-- F6 keybinding for palette (in tmux popup)
+- F6 keybinding support (run `ntm bind` to configure)
 
 ---
 
@@ -264,6 +298,7 @@ int myproject                                  # Stop all agents
 | `ntm status` | `snt` | `<session>` | Show pane details and agent counts |
 | `ntm view` | `vnt` | `<session>` | Unzoom, tile layout, and attach |
 | `ntm zoom` | `znt` | `<session> [pane-index]` | Zoom to specific pane |
+| `ntm dashboard` | `d`, `dash` | `[session]` | Interactive visual dashboard |
 
 **Examples:**
 
@@ -273,6 +308,7 @@ lnt                # Show all sessions
 snt myproject      # Detailed status with icons
 vnt myproject      # View all panes tiled
 znt myproject 3    # Zoom to pane 3
+ntm dash myproject # Open interactive dashboard
 ```
 
 ### Output Management
@@ -291,17 +327,21 @@ svnt myproject -o ~/logs   # Save all outputs to ~/logs
 svnt myproject --cod       # Save only Codex pane outputs
 ```
 
-### Command Palette
+### Command Palette & Dashboard
 
 | Command | Alias | Arguments | Description |
 |---------|-------|-----------|-------------|
 | `ntm palette` | `ncp` | `[session]` | Open interactive command palette |
+| `ntm dashboard` | `d`, `dash` | `[session]` | Open visual session dashboard |
+| `ntm bind` | | `[--key=F6] [--unbind] [--show]` | Configure tmux popup keybinding |
 
 **Examples:**
 
 ```bash
 ncp myproject              # Open palette for session
 ncp                        # Select session first, then palette
+ntm dash myproject         # Open dashboard for session
+ntm bind                   # Set up F6 keybinding for palette popup
 ```
 
 **Palette Navigation:**
@@ -314,21 +354,33 @@ ncp                        # Select session first, then palette
 | `Esc` | Back / Quit |
 | Type | Filter commands |
 
+**Dashboard Navigation:**
+
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `j/k` | Navigate panes |
+| `1-9` | Quick select pane |
+| `z` or `Enter` | Zoom to pane |
+| `r` | Refresh pane data |
+| `q` or `Esc` | Quit dashboard |
+
 ### Utilities
 
 | Command | Alias | Arguments | Description |
 |---------|-------|-----------|-------------|
-| `ntm deps` | `dnt` | `[-v]` | Check installed dependencies |
+| `ntm deps` | `cad` | `[-v]` | Check installed dependencies |
 | `ntm kill` | `knt` | `<session> [-f]` | Kill session (with confirmation) |
+| `ntm bind` | | `[--key=F6] [--unbind] [--show]` | Configure tmux F6 keybinding |
 | `ntm config init` | | | Create default config file |
 | `ntm config show` | | | Display current configuration |
 
 **Examples:**
 
 ```bash
-dnt -v              # Verbose dependency check
+ntm deps            # Check all dependencies
 knt myproject       # Prompts for confirmation
 knt -f myproject    # Force kill, no prompt
+ntm bind            # Set up F6 popup keybinding
 ntm config init     # Create ~/.config/ntm/config.toml
 ```
 
@@ -1114,15 +1166,18 @@ go test ./...
 
 ```
 ntm/
-├── cmd/ntm/          # Main entry point
+├── cmd/ntm/              # Main entry point
 ├── internal/
-│   ├── cli/          # Cobra commands
-│   ├── config/       # TOML configuration
-│   ├── palette/      # Bubble Tea TUI
-│   ├── tmux/         # Tmux operations
+│   ├── cli/              # Cobra commands and help rendering
+│   ├── config/           # TOML configuration
+│   ├── palette/          # Command palette TUI (enhanced with animations)
+│   ├── tmux/             # Tmux operations
 │   └── tui/
-│       ├── theme/    # Catppuccin themes
-│       └── icons/    # Nerd Font icons
+│       ├── components/   # Reusable TUI components (spinners, progress, banner)
+│       ├── dashboard/    # Interactive session dashboard
+│       ├── icons/        # Nerd Font / Unicode / ASCII icon sets
+│       ├── styles/       # Gradient text, shimmer, glow effects
+│       └── theme/        # Catppuccin themes (Mocha, Macchiato, Nord)
 └── README.md
 ```
 

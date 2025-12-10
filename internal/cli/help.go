@@ -72,7 +72,7 @@ func PrintStunningHelp() {
 			color: t.Mauve,
 			commands: []commandHelp{
 				{"add", "ant", "<session> --cc=N --cod=N", "Add agents to existing session"},
-				{"send", "bp", "<session> <prompt> [--cc|--cod|--gmi]", "Send prompt to agents"},
+				{"send", "bp", "<session> <prompt> [--agents]", "Send prompt to agents"},
 				{"interrupt", "int", "<session>", "Send Ctrl+C to all agents"},
 			},
 		},
