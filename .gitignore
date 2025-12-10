@@ -20,3 +20,6 @@ Thumbs.db
 
 # Go
 vendor/
+
+# Test binaries
+*.test
