@@ -985,30 +985,127 @@ func agentTypeString(t tmux.AgentType) string {
 
 // getBeadsSummary attempts to get bead statistics from bd command
 func getBeadsSummary() *BeadsSummary {
+	result := &BeadsSummary{}
+
+	// Check if .beads directory exists
+	if _, err := os.Stat(".beads"); os.IsNotExist(err) {
+		result.Available = false
+		result.Reason = "no .beads/ directory"
+		return result
+	}
+
+	// Get current working directory for project path
+	if cwd, err := os.Getwd(); err == nil {
+		result.Project = cwd
+	}
+
 	// Try to run bd stats --json to get summary
 	cmd := exec.Command("bd", "stats", "--json")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil
+		result.Available = false
+		result.Reason = fmt.Sprintf("bd stats failed: %v", err)
+		return result
 	}
 
-	// Parse the JSON output - bd returns fields with "_issues" suffix
+	// Parse the JSON output
 	var stats struct {
-		Open       int `json:"open_issues"`
-		InProgress int `json:"in_progress_issues"`
-		Blocked    int `json:"blocked_issues"`
-		Ready      int `json:"ready_issues"`
+		TotalIssues      int `json:"total_issues"`
+		OpenIssues       int `json:"open_issues"`
+		InProgressIssues int `json:"in_progress_issues"`
+		BlockedIssues    int `json:"blocked_issues"`
+		ReadyIssues      int `json:"ready_issues"`
+		ClosedIssues     int `json:"closed_issues"`
 	}
 	if err := json.Unmarshal(output, &stats); err != nil {
-		return nil
+		result.Available = false
+		result.Reason = fmt.Sprintf("parse stats failed: %v", err)
+		return result
 	}
 
-	return &BeadsSummary{
-		Open:       stats.Open,
-		InProgress: stats.InProgress,
-		Blocked:    stats.Blocked,
-		Ready:      stats.Ready,
+	result.Available = true
+	result.Total = stats.TotalIssues
+	result.Open = stats.OpenIssues
+	result.InProgress = stats.InProgressIssues
+	result.Blocked = stats.BlockedIssues
+	result.Ready = stats.ReadyIssues
+	result.Closed = stats.ClosedIssues
+
+	// Get ready preview (top N ready issues sorted by priority)
+	result.ReadyPreview = getReadyPreview(BeadLimit)
+
+	// Get in-progress list
+	result.InProgressList = getInProgressList(BeadLimit)
+
+	return result
+}
+
+// getReadyPreview returns top N ready beads sorted by priority
+func getReadyPreview(limit int) []BeadPreview {
+	var previews []BeadPreview
+
+	cmd := exec.Command("bd", "ready", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return previews
 	}
+
+	var issues []struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Priority int    `json:"priority"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return previews
+	}
+
+	// Take up to limit items
+	for i, issue := range issues {
+		if i >= limit {
+			break
+		}
+		previews = append(previews, BeadPreview{
+			ID:       issue.ID,
+			Title:    issue.Title,
+			Priority: fmt.Sprintf("P%d", issue.Priority),
+		})
+	}
+
+	return previews
+}
+
+// getInProgressList returns in-progress beads with assignees
+func getInProgressList(limit int) []BeadInProgress {
+	var items []BeadInProgress
+
+	cmd := exec.Command("bd", "list", "--status=in_progress", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return items
+	}
+
+	var issues []struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Assignee string `json:"assignee"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return items
+	}
+
+	// Take up to limit items
+	for i, issue := range issues {
+		if i >= limit {
+			break
+		}
+		items = append(items, BeadInProgress{
+			ID:       issue.ID,
+			Title:    issue.Title,
+			Assignee: issue.Assignee,
+		})
+	}
+
+	return items
 }
 
 // SendOutput is the structured output for --robot-send
