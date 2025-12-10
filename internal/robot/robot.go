@@ -61,19 +61,19 @@ type SystemInfo struct {
 
 // StatusOutput is the structured output for robot-status
 type StatusOutput struct {
-	GeneratedAt   time.Time       `json:"generated_at"`
-	System        SystemInfo      `json:"system"`
-	Sessions      []SessionInfo   `json:"sessions"`
-	Summary       StatusSummary   `json:"summary"`
-	Beads         *BeadsSummary   `json:"beads,omitempty"`
-	GraphMetrics  *GraphMetrics   `json:"graph_metrics,omitempty"`
+	GeneratedAt  time.Time     `json:"generated_at"`
+	System       SystemInfo    `json:"system"`
+	Sessions     []SessionInfo `json:"sessions"`
+	Summary      StatusSummary `json:"summary"`
+	Beads        *BeadsSummary `json:"beads,omitempty"`
+	GraphMetrics *GraphMetrics `json:"graph_metrics,omitempty"`
 }
 
 // GraphMetrics provides bv graph analysis metrics for status output
 type GraphMetrics struct {
 	TopBottlenecks []BottleneckInfo `json:"top_bottlenecks,omitempty"`
 	Keystones      int              `json:"keystones_count"`
-	HealthStatus   string           `json:"health_status"`  // "ok", "warning", "critical"
+	HealthStatus   string           `json:"health_status"` // "ok", "warning", "critical"
 	DriftMessage   string           `json:"drift_message,omitempty"`
 }
 
@@ -86,24 +86,24 @@ type BottleneckInfo struct {
 
 // StatusSummary provides aggregate stats
 type StatusSummary struct {
-	TotalSessions   int `json:"total_sessions"`
-	TotalAgents     int `json:"total_agents"`
-	AttachedCount   int `json:"attached_count"`
-	ClaudeCount     int `json:"claude_count"`
-	CodexCount      int `json:"codex_count"`
-	GeminiCount     int `json:"gemini_count"`
-	CursorCount     int `json:"cursor_count"`
-	WindsurfCount   int `json:"windsurf_count"`
-	AiderCount      int `json:"aider_count"`
+	TotalSessions int `json:"total_sessions"`
+	TotalAgents   int `json:"total_agents"`
+	AttachedCount int `json:"attached_count"`
+	ClaudeCount   int `json:"claude_count"`
+	CodexCount    int `json:"codex_count"`
+	GeminiCount   int `json:"gemini_count"`
+	CursorCount   int `json:"cursor_count"`
+	WindsurfCount int `json:"windsurf_count"`
+	AiderCount    int `json:"aider_count"`
 }
 
 // PlanOutput provides an execution plan for what can be done
 type PlanOutput struct {
-	GeneratedAt    time.Time          `json:"generated_at"`
-	Recommendation string             `json:"recommendation"`
-	Actions        []PlanAction       `json:"actions"`
-	BeadActions    []BeadAction       `json:"bead_actions,omitempty"`
-	Warnings       []string           `json:"warnings,omitempty"`
+	GeneratedAt    time.Time    `json:"generated_at"`
+	Recommendation string       `json:"recommendation"`
+	Actions        []PlanAction `json:"actions"`
+	BeadActions    []BeadAction `json:"bead_actions,omitempty"`
+	Warnings       []string     `json:"warnings,omitempty"`
 }
 
 // BeadAction represents a recommended action based on bead priority analysis
@@ -256,8 +256,14 @@ func PrintStatus() error {
 					IsActive: pane.Active,
 				}
 
-				// Try to detect agent type from pane title or content
-				agent.Type = detectAgentType(pane.Title)
+				// Use authoritative type from tmux package if available
+				ntmType := agentTypeString(pane.Type)
+				if ntmType != "user" && ntmType != "unknown" {
+					agent.Type = ntmType
+				} else {
+					// Fallback to loose detection for other agents (cursor, windsurf, etc.)
+					agent.Type = detectAgentType(pane.Title)
+				}
 				info.Agents = append(info.Agents, agent)
 
 				// Update summary counts
@@ -649,8 +655,8 @@ func encodeJSON(v interface{}) error {
 
 // TailOutput is the structured output for --robot-tail
 type TailOutput struct {
-	Session    string               `json:"session"`
-	CapturedAt time.Time            `json:"captured_at"`
+	Session    string                `json:"session"`
+	CapturedAt time.Time             `json:"captured_at"`
 	Panes      map[string]PaneOutput `json:"panes"`
 }
 
@@ -848,9 +854,9 @@ type AlertInfo struct {
 
 // AlertSummaryInfo provides aggregate alert statistics
 type AlertSummaryInfo struct {
-	TotalActive   int            `json:"total_active"`
-	BySeverity    map[string]int `json:"by_severity"`
-	ByType        map[string]int `json:"by_type"`
+	TotalActive int            `json:"total_active"`
+	BySeverity  map[string]int `json:"by_severity"`
+	ByType      map[string]int `json:"by_type"`
 }
 
 // SnapshotSession represents a session in the snapshot
@@ -862,15 +868,15 @@ type SnapshotSession struct {
 
 // SnapshotAgent represents an agent in the snapshot
 type SnapshotAgent struct {
-	Pane               string  `json:"pane"`
-	Type               string  `json:"type"`
-	TypeConfidence     float64 `json:"type_confidence"`
-	TypeMethod         string  `json:"type_method"`
-	State              string  `json:"state"`
-	LastOutputAgeSec   int     `json:"last_output_age_sec"`
-	OutputTailLines    int     `json:"output_tail_lines"`
-	CurrentBead        *string `json:"current_bead"`
-	PendingMail        int     `json:"pending_mail"`
+	Pane             string  `json:"pane"`
+	Type             string  `json:"type"`
+	TypeConfidence   float64 `json:"type_confidence"`
+	TypeMethod       string  `json:"type_method"`
+	State            string  `json:"state"`
+	LastOutputAgeSec int     `json:"last_output_age_sec"`
+	OutputTailLines  int     `json:"output_tail_lines"`
+	CurrentBead      *string `json:"current_bead"`
+	PendingMail      int     `json:"pending_mail"`
 }
 
 // BeadsSummary provides issue tracking stats for snapshot
@@ -1203,6 +1209,17 @@ type SendOptions struct {
 
 // PrintSend sends a message to multiple panes atomically and returns structured results
 func PrintSend(opts SendOptions) error {
+	if strings.TrimSpace(opts.Session) == "" {
+		return encodeJSON(SendOutput{
+			Session:        opts.Session,
+			SentAt:         time.Now().UTC(),
+			Targets:        []string{},
+			Successful:     []string{},
+			Failed:         []SendError{{Pane: "session", Error: "session name is required"}},
+			MessagePreview: truncateMessage(opts.Message),
+		})
+	}
+
 	if !tmux.SessionExists(opts.Session) {
 		return encodeJSON(SendOutput{
 			Session:        opts.Session,
@@ -1272,7 +1289,12 @@ func PrintSend(opts SendOptions) error {
 
 		// Check agent type filter
 		if hasTypeFilter {
-			agentType := detectAgentType(pane.Title)
+			// Use authoritative type if available, otherwise fallback to loose detection
+			agentType := agentTypeString(pane.Type)
+			if agentType == "user" || agentType == "unknown" {
+				agentType = detectAgentType(pane.Title)
+			}
+			
 			if !typeFilterMap[agentType] {
 				continue
 			}
@@ -1385,12 +1407,12 @@ func GetStateTracker() *tracker.StateTracker {
 
 // GraphOutput provides project graph analysis from bv
 type GraphOutput struct {
-	GeneratedAt time.Time                  `json:"generated_at"`
-	Available   bool                       `json:"available"`
-	Error       string                     `json:"error,omitempty"`
-	Insights    *bv.InsightsResponse       `json:"insights,omitempty"`
-	Priority    *bv.PriorityResponse       `json:"priority,omitempty"`
-	Health      *bv.HealthSummary          `json:"health,omitempty"`
+	GeneratedAt time.Time            `json:"generated_at"`
+	Available   bool                 `json:"available"`
+	Error       string               `json:"error,omitempty"`
+	Insights    *bv.InsightsResponse `json:"insights,omitempty"`
+	Priority    *bv.PriorityResponse `json:"priority,omitempty"`
+	Health      *bv.HealthSummary    `json:"health,omitempty"`
 }
 
 // PrintGraph outputs bv graph insights for AI consumption
@@ -1501,4 +1523,3 @@ func PrintAlertsDetailed(includeResolved bool) error {
 
 	return encodeJSON(output)
 }
-
