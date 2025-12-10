@@ -180,5 +180,6 @@ type AnalyticsResponse struct {
 	TotalAgents    int    `json:"total_agents"`
 	TotalPrompts   int    `json:"total_prompts"`
 	TotalCharsSent int    `json:"total_chars_sent"`
+	TotalTokensEst int    `json:"total_tokens_estimated"`
 	ErrorCount     int    `json:"error_count"`
 }

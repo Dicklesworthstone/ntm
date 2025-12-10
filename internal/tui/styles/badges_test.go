@@ -1,6 +1,7 @@
 package styles
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -95,15 +96,17 @@ func TestStatusBadgeIcon(t *testing.T) {
 
 func TestPriorityBadge(t *testing.T) {
 	for priority := 0; priority <= 5; priority++ {
-		t.Run("priority", func(t *testing.T) {
-			result := PriorityBadge(priority)
+		name := fmt.Sprintf("P%d", priority)
+		p := priority // capture for closure
+		t.Run(name, func(t *testing.T) {
+			result := PriorityBadge(p)
 			if result == "" {
-				t.Errorf("PriorityBadge(%d) returned empty string", priority)
+				t.Errorf("PriorityBadge(%d) returned empty string", p)
 			}
 			// Should contain P followed by number
-			expected := "P"
+			expected := fmt.Sprintf("P%d", p)
 			if !strings.Contains(result, expected) {
-				t.Errorf("PriorityBadge(%d) should contain %q", priority, expected)
+				t.Errorf("PriorityBadge(%d) should contain %q", p, expected)
 			}
 		})
 	}
