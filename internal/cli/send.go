@@ -1103,7 +1103,11 @@ func warnConflictsLater(session, workDir string) {
 		if prefix != "" && strings.HasPrefix(path, prefix) {
 			path = strings.TrimPrefix(path, prefix)
 		}
-		fmt.Printf("  %s — agents: %s\n", path, strings.Join(c.Agents, ", "))
+		marker := "[warn]"
+		if c.Severity == "critical" {
+			marker = "[CRIT]"
+		}
+		fmt.Printf("  %s %s — agents: %s\n", marker, path, strings.Join(c.Agents, ", "))
 	}
 }
 

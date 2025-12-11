@@ -282,14 +282,15 @@ type SystemInfo struct {
 
 // StatusOutput is the structured output for robot-status
 type StatusOutput struct {
-	GeneratedAt  time.Time         `json:"generated_at"`
-	System       SystemInfo        `json:"system"`
-	Sessions     []SessionInfo     `json:"sessions"`
-	Summary      StatusSummary     `json:"summary"`
-	Beads        *bv.BeadsSummary  `json:"beads,omitempty"`
-	GraphMetrics *GraphMetrics     `json:"graph_metrics,omitempty"`
-	AgentMail    *AgentMailSummary `json:"agent_mail,omitempty"`
-	FileChanges  []FileChangeInfo  `json:"file_changes,omitempty"`
+	GeneratedAt  time.Time          `json:"generated_at"`
+	System       SystemInfo         `json:"system"`
+	Sessions     []SessionInfo      `json:"sessions"`
+	Summary      StatusSummary      `json:"summary"`
+	Beads        *bv.BeadsSummary   `json:"beads,omitempty"`
+	GraphMetrics *GraphMetrics      `json:"graph_metrics,omitempty"`
+	AgentMail    *AgentMailSummary  `json:"agent_mail,omitempty"`
+	FileChanges  []FileChangeInfo   `json:"file_changes,omitempty"`
+	Conflicts    []tracker.Conflict `json:"conflicts,omitempty"`
 }
 
 // AgentMailSummary provides a lightweight Agent Mail state for --robot-status.
@@ -330,6 +331,7 @@ type FileChangeInfo struct {
 const (
 	fileChangeLookback = 30 * time.Minute
 	fileChangeLimit    = 50
+	conflictLimit      = 20
 )
 
 // StatusSummary provides aggregate stats
@@ -554,6 +556,7 @@ func PrintStatus() error {
 
 	// Include recent file changes (best-effort, bounded).
 	appendFileChanges(&output)
+	appendConflicts(&output)
 
 	return encodeJSON(output)
 }
@@ -589,6 +592,17 @@ func appendFileChanges(output *StatusOutput) {
 			At:      change.Timestamp,
 		})
 	}
+}
+
+func appendConflicts(output *StatusOutput) {
+	conflicts := tracker.ConflictsSince(time.Now().Add(-fileChangeLookback), "")
+	if len(conflicts) == 0 {
+		return
+	}
+	if len(conflicts) > conflictLimit {
+		conflicts = conflicts[:conflictLimit]
+	}
+	output.Conflicts = conflicts
 }
 
 // PrintMail outputs detailed Agent Mail state for AI orchestrators.

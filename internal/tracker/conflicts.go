@@ -45,15 +45,22 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 			// But usually conflict implies >= 2 actors.
 			if len(allAgents) > 1 {
 				agentList := make([]string, 0, len(allAgents))
+				var last time.Time
 				for agent := range allAgents {
 					agentList = append(agentList, agent)
 				}
-				
+				sev := conflictSeverity(pathChanges, len(allAgents))
+				for _, pc := range pathChanges {
+					if pc.Timestamp.After(last) {
+						last = pc.Timestamp
+					}
+				}
 				conflicts = append(conflicts, Conflict{
 					Path:     path,
 					Changes:  pathChanges,
-					Severity: "warning", // Default to warning for same-file
+					Severity: sev,
 					Agents:   agentList,
+					LastAt:   last,
 				})
 			}
 		}
@@ -70,11 +77,7 @@ func DetectConflictsRecent(window time.Duration) []Conflict {
 // ConflictsSince returns files changed by more than one agent since the timestamp.
 func ConflictsSince(ts time.Time, session string) []Conflict {
 	changes := GlobalFileChanges.Since(ts)
-	if len(changes) == 0 {
-		return nil
-	}
-
-	byPath := make(map[string]map[string]time.Time)
+	filtered := make([]RecordedFileChange, 0, len(changes))
 	for _, c := range changes {
 		if session != "" && c.Session != session {
 			continue
@@ -82,30 +85,29 @@ func ConflictsSince(ts time.Time, session string) []Conflict {
 		if len(c.Agents) == 0 {
 			continue
 		}
-		if _, ok := byPath[c.Change.Path]; !ok {
-			byPath[c.Change.Path] = make(map[string]time.Time)
-		}
-		for _, agent := range c.Agents {
-			byPath[c.Change.Path][agent] = c.Timestamp
-		}
+		filtered = append(filtered, c)
 	}
+	return DetectConflicts(filtered)
+}
 
-	out := make([]Conflict, 0)
-	for path, agentsMap := range byPath {
-		if len(agentsMap) < 2 {
-			continue
-		}
-		conflict := Conflict{Path: path}
-		var last time.Time
-		for agent, ts := range agentsMap {
-			conflict.Agents = append(conflict.Agents, agent)
-			if ts.After(last) {
-				last = ts
-			}
-		}
-		conflict.LastAt = last
-		conflict.Severity = "warning"
-		out = append(out, conflict)
+// conflictSeverity is a lightweight heuristic:
+// - critical if >=3 distinct agents, or first/last change within 2 minutes
+// - otherwise warning.
+func conflictSeverity(pathChanges []RecordedFileChange, agentCount int) string {
+	if agentCount >= 3 {
+		return "critical"
 	}
-	return out
+	var minT, maxT time.Time
+	for i, c := range pathChanges {
+		if i == 0 || c.Timestamp.Before(minT) {
+			minT = c.Timestamp
+		}
+		if c.Timestamp.After(maxT) {
+			maxT = c.Timestamp
+		}
+	}
+	if maxT.Sub(minT) <= 10*time.Minute {
+		return "critical"
+	}
+	return "warning"
 }
