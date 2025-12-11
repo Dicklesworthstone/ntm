@@ -13,7 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
-	conf "github.com/Dicklesworthstone/ntm/internal/config"
+	config "github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -47,7 +47,7 @@ type StatusUpdateMsg struct {
 
 // ConfigReloadMsg is sent when configuration changes
 type ConfigReloadMsg struct {
-	Config *conf.Config
+	Config *config.Config
 }
 
 // HealthCheckMsg is sent when health check (bv drift) completes
@@ -148,6 +148,12 @@ type Model struct {
 	refreshPaused bool
 	refreshCount  int
 
+	// Subsystem refresh timers
+	lastPaneFetch    time.Time
+	lastContextFetch time.Time
+	lastAlertsFetch  time.Time
+	lastBeadsFetch   time.Time
+
 	// Auto-refresh configuration
 	refreshInterval time.Duration
 
@@ -171,7 +177,7 @@ type Model struct {
 	agentMailLockInfo  []AgentMailLockInfo // Lock details for display
 
 	// Config watcher
-	configSub    chan *conf.Config
+	configSub    chan *config.Config
 	configCloser func()
 
 	// Markdown renderer
@@ -245,6 +251,14 @@ type KeyMap struct {
 // DefaultRefreshInterval is the default auto-refresh interval
 const DefaultRefreshInterval = 2 * time.Second
 
+// Per-subsystem refresh cadence (driven by DashboardTickMsg)
+const (
+	PaneRefreshInterval    = 1 * time.Second
+	ContextRefreshInterval = 2 * time.Second
+	AlertsRefreshInterval  = 3 * time.Second
+	BeadsRefreshInterval   = 5 * time.Second
+)
+
 func (m *Model) initRenderer(width int) {
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
@@ -305,12 +319,19 @@ func New(session string) Model {
 		alertsPanel: panels.NewAlertsPanel(),
 	}
 
+	// Initialize last-fetch timestamps to start cadence after the initial fetches from Init.
+	now := time.Now()
+	m.lastPaneFetch = now
+	m.lastContextFetch = now
+	m.lastAlertsFetch = now
+	m.lastBeadsFetch = now
+
 	// Setup config watcher
-	m.configSub = make(chan *conf.Config, 1)
+	m.configSub = make(chan *config.Config, 1)
 	// We capture the channel in the closure. Since Model is copied, we must ensure
 	// we use the channel we just created, which is what m.configSub holds.
 	sub := m.configSub
-	closer, err := conf.Watch(func(cfg *conf.Config) {
+	closer, err := config.Watch(func(cfg *config.Config) {
 		select {
 		case sub <- cfg:
 		default:
@@ -651,7 +672,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DashboardTickMsg:
 		m.animTick++
-		return m, m.tick()
+
+		// Drive staggered refreshes on the animation ticker to avoid a single heavy burst.
+		now := time.Now()
+		if !m.refreshPaused {
+			if now.Sub(m.lastPaneFetch) >= PaneRefreshInterval {
+				cmds = append(cmds, m.fetchSessionDataWithOutputs(), m.fetchScanStatus())
+				m.lastPaneFetch = now
+			}
+			if now.Sub(m.lastContextFetch) >= ContextRefreshInterval {
+				cmds = append(cmds,
+					m.fetchStatuses(),
+					m.fetchMetricsCmd(),
+					m.fetchHistoryCmd(),
+					m.fetchFileChangesCmd(),
+				)
+				m.lastContextFetch = now
+			}
+			if now.Sub(m.lastAlertsFetch) >= AlertsRefreshInterval {
+				cmds = append(cmds, m.fetchAlertsCmd())
+				m.lastAlertsFetch = now
+			}
+			if now.Sub(m.lastBeadsFetch) >= BeadsRefreshInterval {
+				cmds = append(cmds, m.fetchBeadsCmd())
+				m.lastBeadsFetch = now
+			}
+		}
+
+		cmds = append(cmds, m.tick())
+		return m, tea.Batch(cmds...)
 
 	case RefreshMsg:
 		// Trigger async fetch for pane data and status detection
@@ -714,8 +763,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.paneStatus[data.PaneIndex] = ps
 			}
 		}
-		// Schedule next refresh
-		return m, m.refresh()
+		return m, nil
 
 	case StatusUpdateMsg:
 		// Build index lookup for current panes
@@ -1225,8 +1273,10 @@ func (m Model) renderContextBar(percent float64, width int) string {
 	// Determine warning icon and gradient stops
 	var warningIcon string
 	switch {
+	case percent >= 95:
+		warningIcon = " !!!"
 	case percent >= 90:
-		warningIcon = " ⚠"
+		warningIcon = " !!"
 	case percent >= 80:
 		warningIcon = " !"
 	default:
@@ -1251,7 +1301,7 @@ func (m Model) renderContextBar(percent float64, width int) string {
 	// Gradient-filled portion
 	var filledStr string
 	if filled > 0 {
-		grad := []string{string(t.Green), string(t.Blue), string(t.Yellow), string(t.Red)}
+		grad := []string{string(t.Green), string(t.Yellow), string(t.Red)}
 		filledStr = styles.GradientText(strings.Repeat("█", filled), grad...)
 	}
 

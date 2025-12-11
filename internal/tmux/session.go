@@ -14,9 +14,10 @@ import (
 // paneNameRegex matches the NTM pane naming convention:
 // session__type_index or session__type_index_variant, optionally with tags [tag1,tag2]
 // Examples:
-//   session__cc_1
-//   session__cc_1[frontend]
-//   session__cc_1_opus[backend,api]
+//
+//	session__cc_1
+//	session__cc_1[frontend]
+//	session__cc_1_opus[backend,api]
 var paneNameRegex = regexp.MustCompile(`^.+__(\w+)_\d+(?:_([A-Za-z0-9._/@:+-]+))?(?:[^\]]*)?$`)
 
 // AgentType represents the type of AI agent
@@ -65,10 +66,13 @@ func parseAgentFromTitle(title string) (AgentType, string, []string) {
 
 	// matches[1] = type (cc, cod, gmi)
 	// matches[2] = variant (may be empty)
-	// matches[3] = tags string (may be empty)
+	// matches[3] = tags string (may be empty, may be absent if regex didn't capture)
 	agentType := AgentType(matches[1])
 	variant := matches[2]
-	tags := parseTags(matches[3])
+	var tags []string
+	if len(matches) >= 4 {
+		tags = parseTags(matches[3])
+	}
 
 	// Validate agent type
 	switch agentType {
@@ -122,8 +126,6 @@ func EnsureInstalled() error {
 func InTmux() bool {
 	return os.Getenv("TMUX") != ""
 }
-
-
 
 // SessionExists checks if a session exists
 func (c *Client) SessionExists(name string) bool {
@@ -716,7 +718,7 @@ func (c *Client) GetCurrentSession() string {
 	} else {
 		// Remote check logic might differ or be unsupported
 		// For now, assume unsupported or return empty
-		return "" 
+		return ""
 	}
 	output, err := c.Run("display-message", "-p", "#{session_name}")
 	if err != nil {
