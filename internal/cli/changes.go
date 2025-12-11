@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
@@ -130,36 +131,51 @@ func runChanges(sessionFilter string) error {
 }
 
 func runConflicts(sessionFilter string) error {
-	changes := tracker.RecordedChanges()
+	// Detect conflicts in last 24h
+	conflicts := tracker.DetectConflictsRecent(24 * time.Hour)
 
-	var conflicts []tracker.RecordedFileChange
-	for _, c := range changes {
-		if sessionFilter != "" && c.Session != sessionFilter {
-			continue
+	// Filter by session if needed
+	var filtered []tracker.Conflict
+	for _, c := range conflicts {
+		// A conflict might span sessions, but if any change matches filter, include it
+		include := false
+		if sessionFilter == "" {
+			include = true
+		} else {
+			for _, ch := range c.Changes {
+				if ch.Session == sessionFilter {
+					include = true
+					break
+				}
+			}
 		}
-		if len(c.Agents) > 1 {
-			conflicts = append(conflicts, c)
+		if include {
+			filtered = append(filtered, c)
 		}
 	}
 
 	if IsJSONOutput() {
-		return output.PrintJSON(conflicts)
+		return output.PrintJSON(filtered)
 	}
 
-	if len(conflicts) == 0 {
+	if len(filtered) == 0 {
 		fmt.Println("No conflicts detected.")
 		return nil
 	}
 
 	t := theme.Current()
-	fmt.Printf("%sPotential Conflicts%s\n", "\033[1m", "\033[0m")
-	fmt.Println("The following files were modified during multi-agent broadcasts:")
+	fmt.Printf("%sConflicts Detected%s\n", "\033[1m", "\033[0m")
+	fmt.Println("The following files were modified by different agent sets:")
 	fmt.Println()
 
-	for _, c := range conflicts {
-		fmt.Printf("  %s%s%s\n", colorize(t.Error), c.Change.Path, "\033[0m")
-		fmt.Printf("    Agents: %s\n", strings.Join(c.Agents, ", "))
-		fmt.Printf("    Time:   %s\n", formatAge(c.Timestamp))
+	for _, c := range filtered {
+		fmt.Printf("  %s%s%s\n", colorize(t.Error), c.Path, "\033[0m")
+		
+		for _, change := range c.Changes {
+			age := formatAge(change.Timestamp)
+			agents := strings.Join(change.Agents, ", ")
+			fmt.Printf("    %-20s %s (%s)\n", agents, change.Session, age)
+		}
 		fmt.Println()
 	}
 

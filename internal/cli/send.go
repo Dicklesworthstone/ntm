@@ -35,17 +35,20 @@ type SendResult struct {
 }
 
 const fileChangeScanDelay = 5 * time.Second
+const conflictWarningDelay = fileChangeScanDelay + 1500*time.Millisecond
+const conflictLookback = 15 * time.Minute
+const conflictWarnMax = 5
 
 // SendOptions configures the send operation
 type SendOptions struct {
-	Session        string
-	Prompt         string
-	Targets        SendTargets
-	TargetAll      bool
-	SkipFirst      bool
-	PaneIndex      int
-	TemplateName   string
-	Tags           []string
+	Session      string
+	Prompt       string
+	Targets      SendTargets
+	TargetAll    bool
+	SkipFirst    bool
+	PaneIndex    int
+	TemplateName string
+	Tags         []string
 
 	// CASS check options
 	CassCheck      bool
@@ -476,7 +479,7 @@ func runSendInternal(opts SendOptions) error {
 		histErr     error
 		histSuccess bool
 	)
-	
+
 	// Start time tracking for history
 	start := time.Now()
 
@@ -663,19 +666,19 @@ func runSendInternal(opts SendOptions) error {
 				delivered++
 				histSuccess = true
 
-					if jsonOutput {
-						result := SendResult{
-							Success:       true,
-							Session:       session,
-							PromptPreview: truncatePrompt(prompt, 50),
-							Targets:       targetPanes,
-							Delivered:     delivered,
-							Failed:        failed,
-						}
-						return json.NewEncoder(os.Stdout).Encode(result)
+				if jsonOutput {
+					result := SendResult{
+						Success:       true,
+						Session:       session,
+						PromptPreview: truncatePrompt(prompt, 50),
+						Targets:       targetPanes,
+						Delivered:     delivered,
+						Failed:        failed,
 					}
-					fmt.Printf("Sent to pane %d\n", paneIndex)
-					return nil
+					return json.NewEncoder(os.Stdout).Encode(result)
+				}
+				fmt.Printf("Sent to pane %d\n", paneIndex)
+				return nil
 
 			}
 		}
@@ -757,6 +760,9 @@ func runSendInternal(opts SendOptions) error {
 
 	if len(targetPanes) > 0 && len(fileBaseline) > 0 && workDir != "" {
 		tracker.RecordFileChanges(session, workDir, trackAgents, fileBaseline, fileChangeScanDelay)
+		if !jsonOutput {
+			go warnConflictsLater(session, workDir)
+		}
 	}
 
 	// Run post-send hooks
@@ -1011,7 +1017,7 @@ func runKill(session string, force bool, tags []string, noHooks bool) error {
 	}
 
 	fmt.Printf("Killed session '%s'\n", session)
-	
+
 	// Post-kill hooks?
 	// The session is gone, but we can still run hooks in context of what was killed.
 	if hookExec != nil && hookExec.HasHooksForEvent(hooks.EventPostKill) {
@@ -1041,6 +1047,64 @@ func truncatePrompt(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// warnConflictsLater prints a best-effort conflict warning after file-change scans complete.
+func warnConflictsLater(session, workDir string) {
+	time.Sleep(conflictWarningDelay)
+
+	rawConflicts := tracker.DetectConflictsRecent(conflictLookback)
+	var conflicts []struct {
+		Path   string
+		Agents []string
+	}
+
+	for _, rc := range rawConflicts {
+		// Filter for session and collect agents
+		relevant := false
+		agentSet := make(map[string]bool)
+		for _, ch := range rc.Changes {
+			if ch.Session == session {
+				relevant = true
+			}
+			for _, a := range ch.Agents {
+				agentSet[a] = true
+			}
+		}
+
+		if relevant {
+			var agents []string
+			for a := range agentSet {
+				agents = append(agents, a)
+			}
+			conflicts = append(conflicts, struct {
+				Path   string
+				Agents []string
+			}{rc.Path, agents})
+		}
+	}
+
+	if len(conflicts) == 0 {
+		return
+	}
+
+	prefix := workDir
+	if prefix != "" && !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+		prefix += string(os.PathSeparator)
+	}
+
+	fmt.Println("⚠ Potential file conflicts detected:")
+	for i, c := range conflicts {
+		if i >= conflictWarnMax {
+			fmt.Printf("  ...%d more\n", len(conflicts)-i)
+			break
+		}
+		path := c.Path
+		if prefix != "" && strings.HasPrefix(path, prefix) {
+			path = strings.TrimPrefix(path, prefix)
+		}
+		fmt.Printf("  %s — agents: %s\n", path, strings.Join(c.Agents, ", "))
+	}
 }
 
 // buildTargetDescription creates a human-readable description of send targets
