@@ -5,6 +5,7 @@ package dashboard
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	status "github.com/Dicklesworthstone/ntm/internal/status"
@@ -209,8 +210,8 @@ func RenderMiniBar(value float64, width int, t theme.Theme) string {
 }
 
 // RenderContextMiniBar renders context usage with warning indicator
-func RenderContextMiniBar(percent float64, width int, t theme.Theme) string {
-	bar := RenderMiniBar(percent/100, width-4, t)
+func RenderContextMiniBar(percent float64, width int, tick int, t theme.Theme) string {
+	bar := styles.ShimmerProgressBar(percent/100, width-4, "█", "░", tick, string(t.Green), string(t.Yellow), string(t.Red))
 
 	// Add warning icon for high usage
 	var suffix string
@@ -227,22 +228,23 @@ func RenderContextMiniBar(percent float64, width int, t theme.Theme) string {
 
 // PaneTableRow represents a single row in the pane table
 type PaneTableRow struct {
-	Index         int
-	Type          string
-	Variant       string
-	ModelVariant  string
-	Title         string
-	Status        string
-	ContextPct    float64
-	Model         string
-	Command       string
-	CurrentBead   string
+	Index            int
+	Type             string
+	Variant          string
+	ModelVariant     string
+	Title            string
+	Status           string
+	ContextPct       float64
+	Model            string
+	Command          string
+	CurrentBead      string
 	CurrentBeadTitle string
-	FileChanges   int
-	TokenVelocity float64
-	IsSelected    bool
-	IsCompacted   bool
-	BorderColor   lipgloss.Color
+	FileChanges      int
+	TokenVelocity    float64
+	Tick             int
+	IsSelected       bool
+	IsCompacted      bool
+	BorderColor      lipgloss.Color
 }
 
 // BuildPaneTableRows hydrates pane table rows using live status, bead progress,
@@ -267,15 +269,15 @@ func BuildPaneTableRows(
 			ModelVariant:  pane.Variant,
 			Title:         pane.Title,
 			Status:        "unknown",
-			            Command:       pane.Command,
-			            FileChanges:   changeCounts[pane.Title],
-			            TokenVelocity: 0,
-			            ContextPct:    ps.ContextPercent,
-			            Model:         ps.ContextModel,
-			            IsCompacted:   ps.LastCompaction != nil,
-			        }
-			
-			        row.CurrentBead, row.CurrentBeadTitle = currentBeadForPane(pane, beads)
+			Command:       pane.Command,
+			FileChanges:   changeCounts[pane.Title],
+			TokenVelocity: 0,
+			ContextPct:    ps.ContextPercent,
+			Model:         ps.ContextModel,
+			IsCompacted:   ps.LastCompaction != nil,
+		}
+
+		row.CurrentBead = currentBeadForPane(pane, beads)
 		if hasStatus {
 			row.Status = st.State.String()
 			row.TokenVelocity = tokenVelocityFromStatus(st)
@@ -315,9 +317,9 @@ func fileChangesByPane(panes []tmux.Pane, changes []tracker.RecordedFileChange) 
 	return counts
 }
 
-func currentBeadForPane(pane tmux.Pane, beads *bv.BeadsSummary) (string, string) {
+func currentBeadForPane(pane tmux.Pane, beads *bv.BeadsSummary) string {
 	if beads == nil || !beads.Available {
-		return "", ""
+		return ""
 	}
 
 	for _, item := range beads.InProgressList {
@@ -325,10 +327,10 @@ func currentBeadForPane(pane tmux.Pane, beads *bv.BeadsSummary) (string, string)
 			continue
 		}
 		if strings.EqualFold(item.Assignee, pane.Title) || strings.EqualFold(item.Assignee, pane.ID) {
-			return item.ID, item.Title
+			return fmt.Sprintf("%s: %s", item.ID, item.Title)
 		}
 	}
-	return "", ""
+	return ""
 }
 
 func tokenVelocityFromStatus(st status.AgentStatus) float64 {
@@ -481,7 +483,7 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 
 	// Context bar (tablet and up)
 	if dims.ShowContextCol {
-		contextBar := RenderContextMiniBar(row.ContextPct, 10, t)
+		contextBar := RenderContextMiniBar(row.ContextPct, 10, row.Tick, t)
 		parts = append(parts, contextBar)
 	}
 

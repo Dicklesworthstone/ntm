@@ -181,7 +181,7 @@ type Model struct {
 	scanDuration time.Duration      // How long the scan took
 
 	// Layout tier (narrow/split/wide/ultra)
-	tier layout.Tier
+	tier baselayout.Tier
 
 	// Agent Mail integration
 	agentMailAvailable bool
@@ -676,9 +676,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-			m.tier = layout.TierForWidth(msg.Width)
+		m.tier = layout.TierForWidth(msg.Width)
 
-			_, detailWidth := layout.SplitProportions(msg.Width)
+		_, detailWidth := layout.SplitProportions(msg.Width)
 		contentWidth := detailWidth - 4
 		if contentWidth < 20 {
 			contentWidth = 20
@@ -1780,43 +1780,15 @@ func (m Model) renderPaneList(width int) string {
 
 	// Calculate layout dimensions
 	dims := CalculateLayout(width, 1)
-	changeCounts := fileChangesByPane(m.panes, m.fileChanges)
 
 	// Header row
 	lines = append(lines, RenderTableHeader(dims, t))
 
-	// Pane rows
-	for i, p := range m.panes {
-		ps := m.paneStatus[p.Index]
-		isSelected := i == m.cursor
-		st, hasStatus := m.agentStatuses[p.ID]
-
-		row := PaneTableRow{
-			Index:         p.Index,
-			Type:          string(p.Type),
-			Variant:       p.Variant,
-			ModelVariant:  p.Variant,
-			Title:         p.Title,
-			Status:        ps.State,
-			ContextPct:    ps.ContextPercent,
-			Model:         ps.ContextModel,
-			Command:       p.Command,
-			IsSelected:    isSelected,
-			IsCompacted:   ps.LastCompaction != nil,
-			FileChanges:   changeCounts[p.Title],
-			CurrentBead:   currentBeadForPane(p, &m.beadsSummary),
-			TokenVelocity: 0,
-		}
-
-		if hasStatus {
-			row.Status = st.State.String()
-			row.TokenVelocity = tokenVelocityFromStatus(st)
-			if row.ModelVariant == "" {
-				row.ModelVariant = st.AgentType
-			}
-		}
-
-		lines = append(lines, RenderPaneRow(row, dims, t))
+	// Pane rows (hydrated with status, beads, file changes)
+	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges)
+	for i := range rows {
+		rows[i].IsSelected = i == m.cursor
+		lines = append(lines, RenderPaneRow(rows[i], dims, t))
 	}
 
 	return strings.Join(lines, "\n")
