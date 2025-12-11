@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -38,7 +40,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newMailSendCmd())
-	cmd.AddCommand(newMailInboxCmd())
+	cmd.AddCommand(newMailInboxCmdReal())
 	cmd.AddCommand(newMailReadCmd())
 	cmd.AddCommand(newMailAckCmd())
 
@@ -127,7 +129,7 @@ type mailInboxClient interface {
 }
 
 // newMailInboxCmd shows aggregate inbox for project agents.
-func newMailInboxCmd() *cobra.Command {
+func newMailInboxCmdReal() *cobra.Command {
 	var (
 		agent         string
 		urgent        bool
@@ -841,4 +843,209 @@ func openEditorForMessage(existingSubject string) (body string, subject string, 
 
 	body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
 	return body, subject, nil
+}
+func newMailInboxCmd() *cobra.Command {
+	var (
+		agent         string
+		urgent        bool
+		sessionAgents bool
+		jsonFormat    bool
+		limit         int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "inbox [session]",
+		Short: "Show aggregate project inbox",
+		Long: `Display an aggregate inbox view showing messages across ALL agents in the project.
+
+		This gives visibility into all agent-to-agent communication.
+
+		Examples:
+		  ntm mail inbox myproject
+		  ntm mail inbox myproject --urgent
+		  ntm mail inbox myproject --agent cc_1`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var session string
+			if len(args) > 0 {
+				session = args[0]
+			}
+			return runMailInbox(cmd, session, sessionAgents, agent, urgent, limit, jsonFormat)
+		},
+	}
+
+	cmd.Flags().StringVar(&agent, "agent", "", "Filter by specific agent name")
+	cmd.Flags().BoolVar(&urgent, "urgent", false, "Show only urgent messages")
+	cmd.Flags().BoolVar(&sessionAgents, "session-agents", false, "Filter to agents currently in session")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Max messages to show")
+	cmd.Flags().BoolVar(&jsonFormat, "json", false, "Output in JSON format")
+
+	return cmd
+}
+
+type aggregatedMessage struct {
+	ID          int       `json:"id"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
+	CreatedTS   time.Time `json:"created_ts"`
+	Importance  string    `json:"importance"`
+	AckRequired bool      `json:"ack_required"`
+	Kind        string    `json:"kind"`
+	BodyMD      string    `json:"body_md,omitempty"` // truncated for display
+	Recipients  []string  `json:"recipients"`
+}
+
+func runMailInbox(cmd *cobra.Command, session string, sessionAgents bool, agentFilter string, urgent bool, limit int, jsonFmt bool) error {
+	projectKey, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if !client.IsAvailable() {
+		return fmt.Errorf("agent mail server not available")
+	}
+
+	// List all agents in project
+	agents, err := client.ListProjectAgents(ctx, projectKey)
+	if err != nil {
+		return fmt.Errorf("listing agents: %w", err)
+	}
+
+	var targetAgents []string
+	if agentFilter != "" {
+		targetAgents = []string{agentFilter}
+	} else {
+		for _, a := range agents {
+			if a.Name != "HumanOverseer" {
+				targetAgents = append(targetAgents, a.Name)
+			}
+		}
+	}
+
+	// Filter by session agents if requested
+	if sessionAgents {
+		if session == "" {
+			if tmux.InTmux() {
+				session = tmux.GetCurrentSession()
+			} else {
+				return fmt.Errorf("session name required for --session-agents")
+			}
+		}
+		panes, err := tmux.GetPanes(session)
+		if err != nil {
+			return fmt.Errorf("getting session panes: %w", err)
+		}
+
+		sessionAgentSet := make(map[string]bool)
+		for _, p := range panes {
+			name := resolveAgentName(p)
+			if name != "" {
+				sessionAgentSet[name] = true
+			}
+		}
+
+		var filteredAgents []string
+		for _, name := range targetAgents {
+			if sessionAgentSet[name] {
+				filteredAgents = append(filteredAgents, name)
+			}
+		}
+		targetAgents = filteredAgents
+
+		if len(targetAgents) == 0 {
+			return fmt.Errorf("no agents found in session '%s'", session)
+		}
+	}
+
+	// Collect messages
+	var allMessages []*aggregatedMessage
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	messageMap := make(map[int]*aggregatedMessage)
+
+	for _, agentName := range targetAgents {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			msgs, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+				ProjectKey: projectKey,
+				AgentName:  name,
+				UrgentOnly: urgent,
+				Limit:      limit,
+			})
+			if err == nil {
+				mu.Lock()
+				for _, msg := range msgs {
+					agg, exists := messageMap[msg.ID]
+					if !exists {
+						agg = &aggregatedMessage{
+							ID:          msg.ID,
+							Subject:     msg.Subject,
+							From:        msg.From,
+							CreatedTS:   msg.CreatedTS,
+							Importance:  msg.Importance,
+							AckRequired: msg.AckRequired,
+							Kind:        msg.Kind,
+							BodyMD:      msg.BodyMD,
+							Recipients:  []string{},
+						}
+						messageMap[msg.ID] = agg
+						allMessages = append(allMessages, agg)
+					}
+					// Add recipient if not present
+					hasRecipient := false
+					for _, r := range agg.Recipients {
+						if r == name {
+							hasRecipient = true
+							break
+						}
+					}
+					if !hasRecipient {
+						agg.Recipients = append(agg.Recipients, name)
+					}
+				}
+				mu.Unlock()
+			}
+		}(agentName)
+	}
+	wg.Wait()
+
+	// Sort by time descending
+	sort.Slice(allMessages, func(i, j int) bool {
+		return allMessages[i].CreatedTS.After(allMessages[j].CreatedTS)
+	})
+
+	if IsJSONOutput() || jsonFmt {
+		return encodeJSONResult(mailJSONWriter(cmd), allMessages)
+	}
+
+	if len(allMessages) == 0 {
+		fmt.Println("No messages found.")
+		return nil
+	}
+
+	fmt.Printf("Inbox for project %s (%d messages)\n", filepath.Base(projectKey), len(allMessages))
+	for _, m := range allMessages {
+		prefix := " "
+		if m.Importance == "high" || m.Importance == "urgent" {
+			prefix = "!"
+		}
+		recipients := strings.Join(m.Recipients, ", ")
+		if len(recipients) > 30 {
+			recipients = recipients[:27] + "..."
+		}
+
+		fmt.Printf("%s [%s] #%d %s -> %s: %s\n",
+			prefix,
+			m.CreatedTS.Format("15:04"),
+			m.ID,
+			m.From,
+			recipients,
+			m.Subject)
+	}
+
+	return nil
 }
