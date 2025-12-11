@@ -56,16 +56,20 @@ func (m *BeadsPanel) View() string {
 		return ""
 	}
 
-	headerStyle := lipgloss.NewStyle().
+	borderColor := t.Surface1
+	if m.focused {
+		borderColor = t.Pink
+	}
+
+	header := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(t.Text).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
-		BorderForeground(t.Surface1).
+		BorderForeground(borderColor).
 		Width(m.width).
-		Padding(0, 1)
-
-	header := headerStyle.Render("Beads Pipeline")
+		Padding(0, 1).
+		Render("Beads Pipeline")
 
 	var content strings.Builder
 	content.WriteString(header + "\n")

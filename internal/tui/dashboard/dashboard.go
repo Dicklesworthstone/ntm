@@ -868,6 +868,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch {
+		case key.Matches(msg, dashKeys.NextPanel):
+			m.cycleFocus(1)
+			return m, nil
+
+		case key.Matches(msg, dashKeys.PrevPanel):
+			m.cycleFocus(-1)
+			return m, nil
 		case key.Matches(msg, dashKeys.CassSearch):
 			m.showCassSearch = true
 			searchW := int(float64(m.width) * 0.6)
@@ -961,11 +968,11 @@ func (m *Model) selectByNumber(n int) {
 func (m *Model) cycleFocus(dir int) {
 	var visiblePanes []PanelID
 	switch {
-	case m.tier >= baselayout.TierMega:
+	case m.tier >= layout.TierMega:
 		visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelAlerts, PanelSidebar}
-	case m.tier >= baselayout.TierUltra:
+	case m.tier >= layout.TierUltra:
 		visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelSidebar}
-	case m.tier >= baselayout.TierSplit:
+	case m.tier >= layout.TierSplit:
 		visiblePanes = []PanelID{PanelPaneList, PanelDetail}
 	default:
 		visiblePanes = []PanelID{PanelPaneList}
@@ -1058,11 +1065,11 @@ func (m Model) View() string {
 	} else {
 		// Responsive layout selection
 		switch {
-		case m.tier >= baselayout.TierMega:
+		case m.tier >= layout.TierMega:
 			b.WriteString(m.renderMegaLayout() + "\n")
-		case m.tier >= baselayout.TierUltra:
+		case m.tier >= layout.TierUltra:
 			b.WriteString(m.renderUltraLayout() + "\n")
-		case m.tier >= baselayout.TierSplit:
+		case m.tier >= layout.TierSplit:
 			b.WriteString(m.renderSplitView() + "\n")
 		default:
 			b.WriteString(m.renderPaneGrid() + "\n")
@@ -1389,7 +1396,7 @@ func (m Model) renderPaneGrid() string {
 	cardWidth, cardsPerRow := styles.AdaptiveCardDimensions(availableWidth, minCardWidth, maxCardWidth, cardGap)
 
 	// On wide/ultra displays, show more detail per card
-	showExtendedInfo := m.tier >= baselayout.TierWide
+	showExtendedInfo := m.tier >= layout.TierWide
 
 	var cards []string
 
@@ -1429,7 +1436,7 @@ func (m Model) renderPaneGrid() string {
 
 		// Header line with icon and title
 		iconStyled := lipgloss.NewStyle().Foreground(iconColor).Bold(true).Render(agentIcon)
-		title := baselayout.TruncateRunes(p.Title, maxInt(cardWidth-6, 10), "…")
+		title := layout.TruncateRunes(p.Title, maxInt(cardWidth-6, 10), "…")
 
 		titleStyled := lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(title)
 		cardContent.WriteString(iconStyled + " " + titleStyled + "\n")
@@ -1454,14 +1461,14 @@ func (m Model) renderPaneGrid() string {
 		}
 
 		// Command running (if any) - only when there is room
-		if p.Command != "" && m.tier >= baselayout.TierSplit {
+		if p.Command != "" && m.tier >= layout.TierSplit {
 			cmdStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
-			cmd := baselayout.TruncateRunes(p.Command, maxInt(cardWidth-4, 8), "…")
+			cmd := layout.TruncateRunes(p.Command, maxInt(cardWidth-4, 8), "…")
 			cardContent.WriteString(cmdStyle.Render(cmd))
 		}
 
 		// Context usage bar
-		if ps, ok := m.paneStatus[p.Index]; ok && ps.ContextLimit > 0 && m.tier >= baselayout.TierWide {
+		if ps, ok := m.paneStatus[p.Index]; ok && ps.ContextLimit > 0 && m.tier >= layout.TierWide {
 			cardContent.WriteString("\n")
 			contextBar := m.renderContextBar(ps.ContextPercent, cardWidth-4)
 			cardContent.WriteString(contextBar)
@@ -1555,7 +1562,7 @@ func maxInt(a, b int) int {
 // renderSplitView renders a two-panel layout: pane list (left) + detail (right)
 func (m Model) renderSplitView() string {
 	t := m.theme
-	leftWidth, rightWidth := baselayout.SplitProportions(m.width)
+	leftWidth, rightWidth := layout.SplitProportions(m.width)
 
 	// Calculate content height (leave room for header/footer)
 	contentHeight := m.height - 14
@@ -2033,31 +2040,6 @@ func (m Model) renderPaneDetail(width int) string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-func (m *Model) cycleFocus(next bool) {
-	if next {
-		m.focusedPanel++
-		if m.focusedPanel >= numPanes {
-			m.focusedPanel = 0
-		}
-	} else {
-		m.focusedPanel--
-		if m.focusedPanel < 0 {
-			m.focusedPanel = numPanes - 1
-		}
-	}
-
-	// Update panel focus state
-	m.beadsPanel.Blur()
-	m.alertsPanel.Blur()
-
-	switch m.focusedPanel {
-	case PanelBeads:
-		m.beadsPanel.Focus()
-	case PanelAlerts:
-		m.alertsPanel.Focus()
-	}
 }
 
 // Run starts the dashboard

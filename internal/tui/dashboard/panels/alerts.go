@@ -49,9 +49,14 @@ func (m *AlertsPanel) Blur() {
 
 func (m *AlertsPanel) View() string {
 	t := theme.Current()
-	
+
 	if m.width <= 0 {
 		return ""
+	}
+
+	borderColor := t.Surface1
+	if m.focused {
+		borderColor = t.Pink
 	}
 
 	header := lipgloss.NewStyle().
@@ -59,11 +64,10 @@ func (m *AlertsPanel) View() string {
 		Foreground(t.Text).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
-		BorderForeground(t.Surface1).
+		BorderForeground(borderColor).
 		Width(m.width).
 		Padding(0, 1).
 		Render("Active Alerts")
-
 	var content strings.Builder
 	content.WriteString(header + "\n")
 
