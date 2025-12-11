@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/clipboard"
 	"github.com/Dicklesworthstone/ntm/internal/codeblock"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -249,9 +250,15 @@ func handleExtractCopy(blocks []codeblock.CodeBlock) error {
 	}
 	combined := strings.Join(parts, "\n\n")
 
-	// Use the shared clipboard function
-	if err := copyToClipboard(combined); err != nil {
-		return fmt.Errorf("failed to copy to clipboard: %w", err)
+	clip, err := clipboard.New()
+	if err != nil {
+		return fmt.Errorf("failed to init clipboard: %w", err)
+	}
+	if !clip.Available() {
+		return fmt.Errorf("clipboard backend unavailable")
+	}
+	if err := clip.Copy(combined); err != nil {
+		return fmt.Errorf("failed to copy to clipboard via %s: %w", clip.Backend(), err)
 	}
 
 	lineCount := strings.Count(combined, "\n") + 1
