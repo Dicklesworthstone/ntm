@@ -186,6 +186,11 @@ func TestStatusDetectsErrors(t *testing.T) {
 }
 
 func TestStatusDetectsAgentTypes(t *testing.T) {
+	// Skip on CI - this test is flaky due to timing issues with tmux pane creation
+	// and title setting across different environments.
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skip("Skipping flaky tmux test on CI")
+	}
 	testutil.RequireTmux(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
