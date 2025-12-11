@@ -10,6 +10,9 @@ coverage.html
 # IDE
 .idea/
 .vscode/
+vscode/node_modules/
+vscode/out/
+vscode/package-lock.json
 *.swp
 *.swo
 *~

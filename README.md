@@ -142,8 +142,12 @@ ntm kill -f myproject         # Kill session (force, no confirmation)
 ### Output Capture
 
 ```bash
+ntm copy myproject:1          # Copy from specific pane
 ntm copy myproject --all      # Copy all pane outputs to clipboard
 ntm copy myproject --cc       # Copy Claude panes only
+ntm copy myproject --pattern 'ERROR'  # Filter lines by regex
+ntm copy myproject --code             # Extract only markdown code blocks
+ntm copy myproject --output out.txt   # Save output to file instead of clipboard
 ntm save myproject -o ~/logs  # Save all pane outputs to timestamped files
 ```
 
@@ -390,14 +394,16 @@ ntm dash myproject # Open interactive dashboard
 
 | Command | Alias | Arguments | Description |
 |---------|-------|-----------|-------------|
-| `ntm copy` | `cpnt` | `<session> [--all\|--cc\|--cod\|--gmi] [-l lines]` | Copy pane output to clipboard |
+| `ntm copy` | `cpnt` | `<session[:pane]> [--all\|--cc\|--cod\|--gmi] [-l lines] [--pattern REGEX] [--code] [--output FILE] [--quiet]` | Copy pane output to clipboard or file with filters |
 | `ntm save` | `svnt` | `<session> [-o dir] [-l lines] [--all\|--cc\|--cod\|--gmi]` | Save outputs to files |
 
 **Examples:**
 
 ```bash
+cpnt myproject:1           # Copy specific pane
 cpnt myproject --all       # Copy all panes to clipboard
 cpnt myproject --cc -l 500 # Copy last 500 lines from Claude panes
+cpnt myproject --pattern 'ERROR' --output /tmp/errors.txt # Filter + save to file
 svnt myproject -o ~/logs   # Save all outputs to ~/logs
 svnt myproject --cod       # Save only Codex pane outputs
 ```
