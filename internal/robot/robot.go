@@ -2157,28 +2157,53 @@ func PrintRecipes() error {
 }
 
 // TerseState represents the ultra-compact state for token-constrained scenarios.
-// Format: S:session|A:active/total|R:ready|B:blocked|I:in_progress|M:mail|!:alerts
+// Format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:Nc,Nw
 type TerseState struct {
-	Session      string `json:"session"`
-	ActiveAgents int    `json:"active_agents"`
-	TotalAgents  int    `json:"total_agents"`
-	ReadyBeads   int    `json:"ready_beads"`
-	BlockedBeads int    `json:"blocked_beads"`
-	InProgress   int    `json:"in_progress_beads"`
-	UnreadMail   int    `json:"unread_mail"`
-	AlertCount   int    `json:"alert_count"`
+	Session        string `json:"session"`
+	ActiveAgents   int    `json:"active_agents"`
+	TotalAgents    int    `json:"total_agents"`
+	WorkingAgents  int    `json:"working_agents"`  // Agents actively processing
+	IdleAgents     int    `json:"idle_agents"`     // Agents waiting at prompt
+	ErrorAgents    int    `json:"error_agents"`    // Agents in error state
+	ContextPct     int    `json:"context_pct"`     // Average context usage %
+	ReadyBeads     int    `json:"ready_beads"`     // Beads ready to work on
+	BlockedBeads   int    `json:"blocked_beads"`   // Blocked beads
+	InProgressBead int    `json:"in_progress_beads"`
+	UnreadMail     int    `json:"unread_mail"`
+	CriticalAlerts int    `json:"critical_alerts"`
+	WarningAlerts  int    `json:"warning_alerts"`
 }
 
 // String returns the ultra-compact string representation.
+// Format: S:session|A:5/8|W:3|I:2|E:0|C:78%|B:R3/I2/B1|M:4|!:1c,2w
 func (t TerseState) String() string {
-	return fmt.Sprintf("S:%s|A:%d/%d|R:%d|B:%d|I:%d|M:%d|!:%d",
-		t.Session, t.ActiveAgents, t.TotalAgents,
-		t.ReadyBeads, t.BlockedBeads, t.InProgress,
-		t.UnreadMail, t.AlertCount)
+	// Build alerts string (only include if non-zero)
+	alertStr := ""
+	if t.CriticalAlerts > 0 || t.WarningAlerts > 0 {
+		var parts []string
+		if t.CriticalAlerts > 0 {
+			parts = append(parts, fmt.Sprintf("%dc", t.CriticalAlerts))
+		}
+		if t.WarningAlerts > 0 {
+			parts = append(parts, fmt.Sprintf("%dw", t.WarningAlerts))
+		}
+		alertStr = strings.Join(parts, ",")
+	} else {
+		alertStr = "0"
+	}
+
+	return fmt.Sprintf("S:%s|A:%d/%d|W:%d|I:%d|E:%d|C:%d%%|B:R%d/I%d/B%d|M:%d|!:%s",
+		t.Session,
+		t.ActiveAgents, t.TotalAgents,
+		t.WorkingAgents, t.IdleAgents, t.ErrorAgents,
+		t.ContextPct,
+		t.ReadyBeads, t.InProgressBead, t.BlockedBeads,
+		t.UnreadMail,
+		alertStr)
 }
 
 // ParseTerse parses the ultra-compact terse string into a TerseState.
-// Format: S:session|A:active/total|R:ready|B:blocked|I:in_progress|M:mail|!:alerts
+// Format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:Nc,Nw
 func ParseTerse(s string) (*TerseState, error) {
 	state := &TerseState{}
 
@@ -2201,16 +2226,51 @@ func ParseTerse(s string) (*TerseState, error) {
 				fmt.Sscanf(agentParts[0], "%d", &state.ActiveAgents)
 				fmt.Sscanf(agentParts[1], "%d", &state.TotalAgents)
 			}
-		case "R":
-			fmt.Sscanf(val, "%d", &state.ReadyBeads)
-		case "B":
-			fmt.Sscanf(val, "%d", &state.BlockedBeads)
+		case "W":
+			fmt.Sscanf(val, "%d", &state.WorkingAgents)
 		case "I":
-			fmt.Sscanf(val, "%d", &state.InProgress)
+			fmt.Sscanf(val, "%d", &state.IdleAgents)
+		case "E":
+			fmt.Sscanf(val, "%d", &state.ErrorAgents)
+		case "C":
+			// Parse "78%" format
+			fmt.Sscanf(strings.TrimSuffix(val, "%"), "%d", &state.ContextPct)
+		case "B":
+			// Parse "R3/I2/B1" format
+			beadParts := strings.Split(val, "/")
+			for _, bp := range beadParts {
+				if len(bp) < 2 {
+					continue
+				}
+				prefix := bp[0]
+				var count int
+				fmt.Sscanf(bp[1:], "%d", &count)
+				switch prefix {
+				case 'R':
+					state.ReadyBeads = count
+				case 'I':
+					state.InProgressBead = count
+				case 'B':
+					state.BlockedBeads = count
+				}
+			}
 		case "M":
 			fmt.Sscanf(val, "%d", &state.UnreadMail)
 		case "!":
-			fmt.Sscanf(val, "%d", &state.AlertCount)
+			// Parse "1c,2w" or "0" format
+			if val == "0" {
+				state.CriticalAlerts = 0
+				state.WarningAlerts = 0
+			} else {
+				alertParts := strings.Split(val, ",")
+				for _, ap := range alertParts {
+					if strings.HasSuffix(ap, "c") {
+						fmt.Sscanf(strings.TrimSuffix(ap, "c"), "%d", &state.CriticalAlerts)
+					} else if strings.HasSuffix(ap, "w") {
+						fmt.Sscanf(strings.TrimSuffix(ap, "w"), "%d", &state.WarningAlerts)
+					}
+				}
+			}
 		}
 	}
 
@@ -2218,49 +2278,13 @@ func ParseTerse(s string) (*TerseState, error) {
 }
 
 // PrintTerse outputs ultra-compact single-line state for token-constrained scenarios.
-// Output format: S:session|A:active/total|R:ready|B:blocked|I:in_progress|M:mail|!:alerts
+// Output format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:Nc,Nw
 // Multiple sessions are separated by semicolons.
 func PrintTerse(cfg *config.Config) error {
 	var results []string
 
-	// Get all sessions
-	sessions, err := tmux.ListSessions()
-	if err != nil {
-		// No sessions - output minimal state with just beads info
-		state := TerseState{Session: "-"}
-		if beads := bv.GetBeadsSummary(0); beads != nil {
-			state.ReadyBeads = beads.Ready
-			state.BlockedBeads = beads.Blocked
-			state.InProgress = beads.InProgress
-		}
-
-		// Get alert count
-		if cfg != nil {
-			alertCfg := alerts.ToConfigAlerts(
-				cfg.Alerts.Enabled,
-				cfg.Alerts.AgentStuckMinutes,
-				cfg.Alerts.DiskLowThresholdGB,
-				cfg.Alerts.MailBacklogThreshold,
-				cfg.Alerts.BeadStaleHours,
-				cfg.Alerts.ResolvedPruneMinutes,
-				cfg.ProjectsBase,
-			)
-			activeAlerts := alerts.GetActiveAlerts(alertCfg)
-			state.AlertCount = len(activeAlerts)
-		}
-
-		fmt.Println(state.String())
-		return nil
-	}
-
-	// Get beads summary (shared across sessions)
-	var beadsSummary *bv.BeadsSummary
-	if bv.IsInstalled() {
-		beadsSummary = bv.GetBeadsSummary(0)
-	}
-
-	// Get alert count
-	var alertCount int
+	// Get alert breakdown (critical vs warning)
+	var criticalAlerts, warningAlerts int
 	if cfg != nil {
 		alertCfg := alerts.ToConfigAlerts(
 			cfg.Alerts.Enabled,
@@ -2272,33 +2296,83 @@ func PrintTerse(cfg *config.Config) error {
 			cfg.ProjectsBase,
 		)
 		activeAlerts := alerts.GetActiveAlerts(alertCfg)
-		alertCount = len(activeAlerts)
+		for _, a := range activeAlerts {
+			switch a.Severity {
+			case alerts.SeverityCritical:
+				criticalAlerts++
+			case alerts.SeverityWarning:
+				warningAlerts++
+			}
+		}
+	}
+
+	// Get beads summary (shared across sessions)
+	var beadsSummary *bv.BeadsSummary
+	if bv.IsInstalled() {
+		beadsSummary = bv.GetBeadsSummary(0)
+	}
+
+	// Get mail count (best-effort)
+	mailCount := getTerseMailCount()
+
+	// Get all sessions
+	sessions, err := tmux.ListSessions()
+	if err != nil {
+		// No sessions - output minimal state with just beads info
+		state := TerseState{
+			Session:        "-",
+			CriticalAlerts: criticalAlerts,
+			WarningAlerts:  warningAlerts,
+			UnreadMail:     mailCount,
+		}
+		if beadsSummary != nil {
+			state.ReadyBeads = beadsSummary.Ready
+			state.BlockedBeads = beadsSummary.Blocked
+			state.InProgressBead = beadsSummary.InProgress
+		}
+
+		fmt.Println(state.String())
+		return nil
 	}
 
 	for _, sess := range sessions {
 		state := TerseState{
-			Session:    sess.Name,
-			AlertCount: alertCount, // Alerts are global, not per-session
+			Session:        sess.Name,
+			CriticalAlerts: criticalAlerts,
+			WarningAlerts:  warningAlerts,
+			UnreadMail:     mailCount,
 		}
 
 		// Get panes for this session
 		panes, err := tmux.GetPanes(sess.Name)
 		if err == nil {
 			state.TotalAgents = len(panes)
-			// Count active agents (non-user panes that are in active state)
+			// Count agents by state: working (active), idle, error
 			for _, pane := range panes {
 				agentType := agentTypeString(pane.Type)
 				if agentType != "user" && agentType != "unknown" {
 					// Capture output to detect state
-					captured, err := tmux.CapturePaneOutput(pane.ID, 20)
-					if err == nil {
+					captured, captureErr := tmux.CapturePaneOutput(pane.ID, 20)
+					if captureErr == nil {
 						lines := splitLines(stripANSI(captured))
 						paneState := detectState(lines, pane.Title)
-						if paneState == "active" || paneState == "idle" {
+						switch paneState {
+						case "active":
+							state.WorkingAgents++
+							state.ActiveAgents++
+						case "idle":
+							state.IdleAgents++
+							state.ActiveAgents++
+						case "error":
+							state.ErrorAgents++
+							state.ActiveAgents++
+						default:
+							// Unknown state counts as active
 							state.ActiveAgents++
 						}
 					} else {
-						// Assume active if we can't capture
+						// Assume active/working if we can't capture
+						state.WorkingAgents++
 						state.ActiveAgents++
 					}
 				}
@@ -2309,11 +2383,12 @@ func PrintTerse(cfg *config.Config) error {
 		if beadsSummary != nil {
 			state.ReadyBeads = beadsSummary.Ready
 			state.BlockedBeads = beadsSummary.Blocked
-			state.InProgress = beadsSummary.InProgress
+			state.InProgressBead = beadsSummary.InProgress
 		}
 
-		// TODO: Add mail count when agent-mail integration is available
-		// For now, mail count remains 0
+		// Context percentage is not available at session level yet
+		// Would require aggregating from individual agent outputs
+		state.ContextPct = 0
 
 		results = append(results, state.String())
 	}
@@ -2321,6 +2396,40 @@ func PrintTerse(cfg *config.Config) error {
 	// Output all sessions separated by semicolons
 	fmt.Println(strings.Join(results, ";"))
 	return nil
+}
+
+// getTerseMailCount returns unread mail count for terse output (best-effort).
+func getTerseMailCount() int {
+	projectKey, err := os.Getwd()
+	if err != nil {
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	if !client.IsAvailable() {
+		return 0
+	}
+
+	// Ensure project exists
+	if _, err := client.EnsureProject(ctx, projectKey); err != nil {
+		return 0
+	}
+
+	agents, err := client.ListProjectAgents(ctx, projectKey)
+	if err != nil {
+		return 0
+	}
+
+	// Sum unread across all agents
+	total := 0
+	for _, a := range agents {
+		total += countInbox(ctx, client, projectKey, a.Name, false)
+	}
+
+	return total
 }
 
 // getAgentMailSummary returns a best-effort Agent Mail summary for --robot-status.

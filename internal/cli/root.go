@@ -549,7 +549,7 @@ func init() {
 	rootCmd.Flags().IntVar(&robotInterruptTimeout, "interrupt-timeout", 10000, "Timeout in ms for ready state (used with --robot-interrupt)")
 
 	// Robot-terse flag for ultra-compact output
-	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Output ultra-compact single-line state (e.g., S:proj|A:2/3|R:10|B:5|I:2|M:3|!:1)")
+	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Output ultra-compact single-line state (e.g., S:proj|A:2/3|W:2|I:1|E:0|C:0%|B:R10/I5/B2|M:3|!:1c,2w)")
 
 	// Robot-save flags for session state persistence
 	rootCmd.Flags().StringVar(&robotSave, "robot-save", "", "Save session state as JSON for AI agents")

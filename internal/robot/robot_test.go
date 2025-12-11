@@ -1480,17 +1480,22 @@ func TestStatusOutputWithGraphMetrics(t *testing.T) {
 
 func TestTerseStateString(t *testing.T) {
 	state := TerseState{
-		Session:      "myproject",
-		ActiveAgents: 2,
-		TotalAgents:  3,
-		ReadyBeads:   10,
-		BlockedBeads: 5,
-		InProgress:   2,
-		UnreadMail:   3,
-		AlertCount:   1,
+		Session:        "myproject",
+		ActiveAgents:   2,
+		TotalAgents:    3,
+		WorkingAgents:  1,
+		IdleAgents:     1,
+		ErrorAgents:    0,
+		ContextPct:     45,
+		ReadyBeads:     10,
+		BlockedBeads:   5,
+		InProgressBead: 2,
+		UnreadMail:     3,
+		CriticalAlerts: 1,
+		WarningAlerts:  2,
 	}
 
-	expected := "S:myproject|A:2/3|R:10|B:5|I:2|M:3|!:1"
+	expected := "S:myproject|A:2/3|W:1|I:1|E:0|C:45%|B:R10/I2/B5|M:3|!:1c,2w"
 	got := state.String()
 	if got != expected {
 		t.Errorf("TerseState.String() = %q, want %q", got, expected)
@@ -1499,17 +1504,22 @@ func TestTerseStateString(t *testing.T) {
 
 func TestTerseStateStringNoSession(t *testing.T) {
 	state := TerseState{
-		Session:      "-",
-		ActiveAgents: 0,
-		TotalAgents:  0,
-		ReadyBeads:   15,
-		BlockedBeads: 8,
-		InProgress:   3,
-		UnreadMail:   0,
-		AlertCount:   0,
+		Session:        "-",
+		ActiveAgents:   0,
+		TotalAgents:    0,
+		WorkingAgents:  0,
+		IdleAgents:     0,
+		ErrorAgents:    0,
+		ContextPct:     0,
+		ReadyBeads:     15,
+		BlockedBeads:   8,
+		InProgressBead: 3,
+		UnreadMail:     0,
+		CriticalAlerts: 0,
+		WarningAlerts:  0,
 	}
 
-	expected := "S:-|A:0/0|R:15|B:8|I:3|M:0|!:0"
+	expected := "S:-|A:0/0|W:0|I:0|E:0|C:0%|B:R15/I3/B8|M:0|!:0"
 	got := state.String()
 	if got != expected {
 		t.Errorf("TerseState.String() = %q, want %q", got, expected)
@@ -1523,45 +1533,60 @@ func TestParseTerse(t *testing.T) {
 		expected TerseState
 	}{
 		{
-			name:  "full state",
-			input: "S:myproject|A:2/3|R:10|B:5|I:2|M:3|!:1",
+			name:  "full state with alerts",
+			input: "S:myproject|A:2/3|W:1|I:1|E:0|C:45%|B:R10/I2/B5|M:3|!:1c,2w",
 			expected: TerseState{
-				Session:      "myproject",
-				ActiveAgents: 2,
-				TotalAgents:  3,
-				ReadyBeads:   10,
-				BlockedBeads: 5,
-				InProgress:   2,
-				UnreadMail:   3,
-				AlertCount:   1,
+				Session:        "myproject",
+				ActiveAgents:   2,
+				TotalAgents:    3,
+				WorkingAgents:  1,
+				IdleAgents:     1,
+				ErrorAgents:    0,
+				ContextPct:     45,
+				ReadyBeads:     10,
+				BlockedBeads:   5,
+				InProgressBead: 2,
+				UnreadMail:     3,
+				CriticalAlerts: 1,
+				WarningAlerts:  2,
 			},
 		},
 		{
-			name:  "no session",
-			input: "S:-|A:0/0|R:15|B:8|I:3|M:0|!:0",
+			name:  "no session zero alerts",
+			input: "S:-|A:0/0|W:0|I:0|E:0|C:0%|B:R15/I3/B8|M:0|!:0",
 			expected: TerseState{
-				Session:      "-",
-				ActiveAgents: 0,
-				TotalAgents:  0,
-				ReadyBeads:   15,
-				BlockedBeads: 8,
-				InProgress:   3,
-				UnreadMail:   0,
-				AlertCount:   0,
+				Session:        "-",
+				ActiveAgents:   0,
+				TotalAgents:    0,
+				WorkingAgents:  0,
+				IdleAgents:     0,
+				ErrorAgents:    0,
+				ContextPct:     0,
+				ReadyBeads:     15,
+				BlockedBeads:   8,
+				InProgressBead: 3,
+				UnreadMail:     0,
+				CriticalAlerts: 0,
+				WarningAlerts:  0,
 			},
 		},
 		{
-			name:  "large numbers",
-			input: "S:bigproject|A:50/100|R:1000|B:500|I:200|M:50|!:10",
+			name:  "only critical alerts",
+			input: "S:proj|A:5/8|W:3|I:2|E:0|C:78%|B:R100/I50/B20|M:10|!:5c",
 			expected: TerseState{
-				Session:      "bigproject",
-				ActiveAgents: 50,
-				TotalAgents:  100,
-				ReadyBeads:   1000,
-				BlockedBeads: 500,
-				InProgress:   200,
-				UnreadMail:   50,
-				AlertCount:   10,
+				Session:        "proj",
+				ActiveAgents:   5,
+				TotalAgents:    8,
+				WorkingAgents:  3,
+				IdleAgents:     2,
+				ErrorAgents:    0,
+				ContextPct:     78,
+				ReadyBeads:     100,
+				BlockedBeads:   20,
+				InProgressBead: 50,
+				UnreadMail:     10,
+				CriticalAlerts: 5,
+				WarningAlerts:  0,
 			},
 		},
 	}
