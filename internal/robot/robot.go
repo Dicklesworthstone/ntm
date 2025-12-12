@@ -1225,7 +1225,7 @@ func buildSnapshotAgentMail() *SnapshotAgentMail {
 	if !client.IsAvailable() {
 		return &SnapshotAgentMail{
 			Available: false,
-			Reason:    fmt.Sprintf("agent mail server not available at %s", agentmail.DefaultBaseURL),
+			Reason:    fmt.Sprintf("agent mail server not available at %s", client.BaseURL()),
 			Project:   cwd,
 		}
 	}
@@ -1257,8 +1257,39 @@ func buildSnapshotAgentMail() *SnapshotAgentMail {
 		Agents:    make(map[string]SnapshotAgentMailStats),
 	}
 
+	// Best-effort: map Agent Mail identities to tmux panes by exact title match.
+	agentNames := make(map[string]struct{}, len(agents))
+	for _, a := range agents {
+		if a.Name == "HumanOverseer" {
+			continue
+		}
+		agentNames[a.Name] = struct{}{}
+	}
+	paneByAgent := make(map[string]string)
+	if tmux.IsInstalled() && len(agentNames) > 0 {
+		if sessions, err := tmux.ListSessions(); err == nil {
+			for _, sess := range sessions {
+				panes, err := tmux.GetPanes(sess.Name)
+				if err != nil {
+					continue
+				}
+				for _, pane := range panes {
+					if _, ok := agentNames[pane.Title]; ok {
+						// Mirror the snapshot pane format: windowIndex.paneIndex
+						paneByAgent[pane.Title] = fmt.Sprintf("%d.%d", 0, pane.Index)
+					}
+				}
+			}
+		}
+	}
+
 	// Fetch limited inbox slices to keep the call lightweight.
+	threadSet := make(map[string]struct{})
 	for _, agent := range agents {
+		if agent.Name == "HumanOverseer" {
+			continue
+		}
+
 		inbox, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
 			ProjectKey:    cwd,
 			AgentName:     agent.Name,
@@ -1274,12 +1305,28 @@ func buildSnapshotAgentMail() *SnapshotAgentMail {
 			if msg.AckRequired {
 				pendingAck++
 			}
+			threadKey := ""
+			if msg.ThreadID != nil && *msg.ThreadID != "" {
+				threadKey = *msg.ThreadID
+			} else {
+				// Messages without an explicit thread_id can be treated as their own thread.
+				threadKey = fmt.Sprintf("%d", msg.ID)
+			}
+			threadSet[threadKey] = struct{}{}
 		}
 		summary.TotalUnread += unread
-		summary.Agents[agent.Name] = SnapshotAgentMailStats{
+		stats := SnapshotAgentMailStats{
 			Unread:     unread,
 			PendingAck: pendingAck,
 		}
+		if paneRef, ok := paneByAgent[agent.Name]; ok {
+			stats.Pane = paneRef
+		}
+		summary.Agents[agent.Name] = stats
+	}
+
+	if len(threadSet) > 0 {
+		summary.ThreadsKnown = len(threadSet)
 	}
 
 	return summary
@@ -1352,8 +1399,9 @@ type SnapshotAgentMail struct {
 
 // SnapshotAgentMailStats holds per-agent inbox counts.
 type SnapshotAgentMailStats struct {
-	Unread     int `json:"unread"`
-	PendingAck int `json:"pending_ack"`
+	Pane       string `json:"pane,omitempty"`
+	Unread     int    `json:"unread"`
+	PendingAck int    `json:"pending_ack"`
 }
 
 // BeadLimit controls how many ready/in-progress beads to include in snapshot
@@ -1374,6 +1422,13 @@ func PrintSnapshot(cfg *config.Config) error {
 	if !tmux.IsInstalled() {
 		output.Alerts = append(output.Alerts, "tmux is not installed")
 		return encodeJSON(output)
+	}
+
+	// Agent Mail summary (best-effort, graceful degradation). Populate early so we can attach
+	// per-pane PendingMail hints during snapshot construction.
+	output.AgentMail = buildSnapshotAgentMail()
+	if output.AgentMail != nil && output.AgentMail.Available {
+		output.MailUnread = output.AgentMail.TotalUnread
 	}
 
 	// Get all sessions
@@ -1419,6 +1474,14 @@ func PrintSnapshot(cfg *config.Config) error {
 				PendingMail:      0,
 			}
 
+			// Best-effort mapping: if the pane title matches an Agent Mail identity, attach its
+			// unread count as a PendingMail hint.
+			if output.AgentMail != nil && output.AgentMail.Agents != nil {
+				if stats, ok := output.AgentMail.Agents[pane.Title]; ok {
+					agent.PendingMail = stats.Unread
+				}
+			}
+
 			// Process captured output for state
 			if capturedErr == nil {
 				lines := splitLines(stripANSI(captured))
@@ -1437,9 +1500,6 @@ func PrintSnapshot(cfg *config.Config) error {
 	if beads != nil {
 		output.BeadsSummary = beads
 	}
-
-	// Agent Mail summary (best-effort, graceful degradation)
-	output.AgentMail = buildSnapshotAgentMail()
 
 	// Add alerts for detected issues (legacy string format)
 	for _, sess := range output.Sessions {
@@ -2162,12 +2222,12 @@ type TerseState struct {
 	Session        string `json:"session"`
 	ActiveAgents   int    `json:"active_agents"`
 	TotalAgents    int    `json:"total_agents"`
-	WorkingAgents  int    `json:"working_agents"`  // Agents actively processing
-	IdleAgents     int    `json:"idle_agents"`     // Agents waiting at prompt
-	ErrorAgents    int    `json:"error_agents"`    // Agents in error state
-	ContextPct     int    `json:"context_pct"`     // Average context usage %
-	ReadyBeads     int    `json:"ready_beads"`     // Beads ready to work on
-	BlockedBeads   int    `json:"blocked_beads"`   // Blocked beads
+	WorkingAgents  int    `json:"working_agents"` // Agents actively processing
+	IdleAgents     int    `json:"idle_agents"`    // Agents waiting at prompt
+	ErrorAgents    int    `json:"error_agents"`   // Agents in error state
+	ContextPct     int    `json:"context_pct"`    // Average context usage %
+	ReadyBeads     int    `json:"ready_beads"`    // Beads ready to work on
+	BlockedBeads   int    `json:"blocked_beads"`  // Blocked beads
 	InProgressBead int    `json:"in_progress_beads"`
 	UnreadMail     int    `json:"unread_mail"`
 	CriticalAlerts int    `json:"critical_alerts"`

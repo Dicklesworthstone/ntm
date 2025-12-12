@@ -62,6 +62,7 @@ type InboxMessage struct {
 	Subject     string    `json:"subject"`
 	From        string    `json:"from"`
 	CreatedTS   time.Time `json:"created_ts"`
+	ThreadID    *string   `json:"thread_id,omitempty"`
 	Importance  string    `json:"importance"`
 	AckRequired bool      `json:"ack_required"`
 	Kind        string    `json:"kind"`

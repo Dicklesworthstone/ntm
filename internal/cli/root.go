@@ -349,6 +349,25 @@ Shell Integration:
 			opts := robot.DefaultMarkdownOptions()
 			opts.Compact = robotMarkdownCompact
 			opts.Session = robotMarkdownSession
+			if robotMarkdownSections != "" {
+				parts := strings.Split(robotMarkdownSections, ",")
+				var sections []string
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						sections = append(sections, p)
+					}
+				}
+				if len(sections) > 0 {
+					opts.IncludeSections = sections
+				}
+			}
+			if robotMarkdownMaxBeads > 0 {
+				opts.MaxBeads = robotMarkdownMaxBeads
+			}
+			if robotMarkdownMaxAlerts > 0 {
+				opts.MaxAlerts = robotMarkdownMaxAlerts
+			}
 			if err := robot.PrintMarkdown(cfg, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -470,9 +489,12 @@ var (
 	robotTerse bool // single-line encoded state
 
 	// Robot-markdown flags for token-efficient markdown output
-	robotMarkdown        bool   // markdown output mode
-	robotMarkdownCompact bool   // ultra-compact markdown
-	robotMarkdownSession string // filter to specific session
+	robotMarkdown          bool   // markdown output mode
+	robotMarkdownCompact   bool   // ultra-compact markdown
+	robotMarkdownSession   string // filter to specific session
+	robotMarkdownSections  string // comma-separated sections to include
+	robotMarkdownMaxBeads  int    // max beads per category
+	robotMarkdownMaxAlerts int    // max alerts to show
 
 	// Robot-save flags for session state persistence
 	robotSave       string // session name to save
@@ -570,6 +592,9 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "Output system state as token-efficient markdown for LLM consumption")
 	rootCmd.Flags().BoolVar(&robotMarkdownCompact, "md-compact", false, "Use ultra-compact markdown format (used with --robot-markdown)")
 	rootCmd.Flags().StringVar(&robotMarkdownSession, "md-session", "", "Filter markdown output to specific session (used with --robot-markdown)")
+	rootCmd.Flags().StringVar(&robotMarkdownSections, "md-sections", "", "Comma-separated sections to include: sessions, beads, alerts, mail (used with --robot-markdown)")
+	rootCmd.Flags().IntVar(&robotMarkdownMaxBeads, "md-max-beads", 0, "Override max beads shown per category (used with --robot-markdown)")
+	rootCmd.Flags().IntVar(&robotMarkdownMaxAlerts, "md-max-alerts", 0, "Override max alerts shown (used with --robot-markdown)")
 
 	// Robot-save flags for session state persistence
 	rootCmd.Flags().StringVar(&robotSave, "robot-save", "", "Save session state as JSON for AI agents")
@@ -773,13 +798,62 @@ func newConfigCmd() *cobra.Command {
 		Use:   "show",
 		Short: "Show current configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load("")
-			if err != nil {
-				cfg = config.Default()
-				fmt.Println("# Using default configuration (no config file found)")
-				fmt.Println()
+			effectiveCfg := cfg
+			if effectiveCfg == nil {
+				loaded, err := config.Load(cfgFile)
+				if err != nil {
+					loaded = config.Default()
+				}
+				effectiveCfg = loaded
 			}
-			return config.Print(cfg, os.Stdout)
+
+			if IsJSONOutput() {
+				palette := make([]map[string]interface{}, 0, len(effectiveCfg.Palette))
+				for _, pal := range effectiveCfg.Palette {
+					palette = append(palette, map[string]interface{}{
+						"key":      pal.Key,
+						"label":    pal.Label,
+						"prompt":   pal.Prompt,
+						"category": pal.Category,
+						"tags":     pal.Tags,
+					})
+				}
+
+				return output.PrintJSON(map[string]interface{}{
+					"projects_base": effectiveCfg.ProjectsBase,
+					"theme":         effectiveCfg.Theme,
+					"palette_file":  effectiveCfg.PaletteFile,
+					"agents": map[string]string{
+						"claude": effectiveCfg.Agents.Claude,
+						"codex":  effectiveCfg.Agents.Codex,
+						"gemini": effectiveCfg.Agents.Gemini,
+					},
+					"tmux": map[string]interface{}{
+						"default_panes": effectiveCfg.Tmux.DefaultPanes,
+						"palette_key":   effectiveCfg.Tmux.PaletteKey,
+					},
+					"checkpoints": map[string]interface{}{
+						"enabled":                  effectiveCfg.Checkpoints.Enabled,
+						"before_broadcast":         effectiveCfg.Checkpoints.BeforeBroadcast,
+						"before_add_agents":        effectiveCfg.Checkpoints.BeforeAddAgents,
+						"max_auto_checkpoints":     effectiveCfg.Checkpoints.MaxAutoCheckpoints,
+						"scrollback_lines":         effectiveCfg.Checkpoints.ScrollbackLines,
+						"include_git":              effectiveCfg.Checkpoints.IncludeGit,
+						"auto_checkpoint_on_spawn": effectiveCfg.Checkpoints.AutoCheckpointOnSpawn,
+					},
+					"alerts": map[string]interface{}{
+						"enabled":                effectiveCfg.Alerts.Enabled,
+						"agent_stuck_minutes":    effectiveCfg.Alerts.AgentStuckMinutes,
+						"disk_low_threshold_gb":  effectiveCfg.Alerts.DiskLowThresholdGB,
+						"mail_backlog_threshold": effectiveCfg.Alerts.MailBacklogThreshold,
+						"bead_stale_hours":       effectiveCfg.Alerts.BeadStaleHours,
+						"resolved_prune_minutes": effectiveCfg.Alerts.ResolvedPruneMinutes,
+					},
+					"palette": palette,
+				})
+			}
+
+			return config.Print(effectiveCfg, os.Stdout)
 		},
 	})
 
