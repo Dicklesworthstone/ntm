@@ -185,7 +185,7 @@ func ListSessions() ([]Session, error) {
 
 // GetSession returns detailed info about a session
 func (c *Client) GetSession(name string) (*Session, error) {
-	if !SessionExists(name) {
+	if !c.SessionExists(name) {
 		return nil, fmt.Errorf("session '%s' not found", name)
 	}
 
@@ -613,7 +613,9 @@ func (c *Client) AttachOrSwitch(session string) error {
 
 	// Remote attach
 	// ssh -t user@host tmux attach -t session
-	sshArgs := []string{"-t", c.Remote, "tmux", "attach", "-t", session}
+	remoteCmd := buildRemoteShellCommand("tmux", "attach", "-t", session)
+	// Use "--" to prevent Remote from being parsed as an ssh option.
+	sshArgs := []string{"-t", "--", c.Remote, remoteCmd}
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

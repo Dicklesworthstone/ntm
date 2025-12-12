@@ -27,11 +27,31 @@ func (c *Client) Run(args ...string) (string, error) {
 	}
 
 	// Remote execution via ssh
-	// We need to handle escaping if args contain spaces?
-	// ssh passes args concatenated.
-	// For simple tmux commands it's usually fine.
-	sshArgs := append([]string{c.Remote, "tmux"}, args...)
-	return runSSH(sshArgs...)
+	remoteCmd := buildRemoteShellCommand("tmux", args...)
+	// Use "--" to prevent Remote from being parsed as an ssh option.
+	return runSSH("--", c.Remote, remoteCmd)
+}
+
+// shellQuote returns a POSIX-shell-safe single-quoted string.
+//
+// This is required for ssh remote commands because OpenSSH transmits a single
+// command string to the remote shell (not an argv vector).
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+
+	// Close-quote, escape single quote, reopen: ' -> '\''.
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func buildRemoteShellCommand(command string, args ...string) string {
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, command)
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 // runLocal executes a tmux command locally

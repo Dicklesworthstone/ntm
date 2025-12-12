@@ -1,8 +1,47 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestShellQuote(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: "''"},
+		{name: "simple", in: "foo", want: "'foo'"},
+		{name: "space", in: "foo bar", want: "'foo bar'"},
+		{name: "single quote", in: "weird'quote", want: `'weird'\''quote'`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellQuote(tt.in)
+			if got != tt.want {
+				t.Fatalf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildRemoteShellCommand(t *testing.T) {
+	t.Parallel()
+
+	got := buildRemoteShellCommand("tmux", "display-message", "-t", "sess", "hello world")
+	want := `tmux 'display-message' '-t' 'sess' 'hello world'`
+	if got != want {
+		t.Fatalf("buildRemoteShellCommand() = %q, want %q", got, want)
+	}
+
+	got = buildRemoteShellCommand("tmux", "new-session", "-s", "x; rm -rf /")
+	if !strings.Contains(got, `'x; rm -rf /'`) {
+		t.Fatalf("buildRemoteShellCommand() did not quote dangerous arg: %q", got)
+	}
+}
 
 func TestBuildPaneCommand(t *testing.T) {
 	t.Parallel()
