@@ -208,6 +208,7 @@ type Model struct {
 	alertsPanel  *panels.AlertsPanel
 	metricsPanel *panels.MetricsPanel
 	historyPanel *panels.HistoryPanel
+	cassPanel    *panels.CASSPanel
 	tickerPanel  *panels.TickerPanel
 
 	// Data for new panels
@@ -356,6 +357,7 @@ func New(session string) Model {
 		alertsPanel:  panels.NewAlertsPanel(),
 		metricsPanel: panels.NewMetricsPanel(),
 		historyPanel: panels.NewHistoryPanel(),
+		cassPanel:    panels.NewCASSPanel(),
 		tickerPanel:  panels.NewTickerPanel(),
 	}
 
@@ -698,8 +700,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CASSContextMsg:
 		m.cassError = msg.Err
-		if msg.Err == nil {
-			m.cassContext = msg.Hits
+		m.cassContext = msg.Hits
+		if m.cassPanel != nil {
+			m.cassPanel.SetData(m.cassContext, m.cassError)
 		}
 		return m, nil
 
@@ -1735,7 +1738,7 @@ func (m Model) renderUltraLayout() string {
 		Padding(0, 1).
 		Render(detailContent)
 
-	sidebarContent := m.renderSidebar(rightWidth - 4)
+	sidebarContent := m.renderSidebar(rightWidth-4, contentHeight-2)
 	sidebarPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(sidebarBorder).
@@ -1748,9 +1751,13 @@ func (m Model) renderUltraLayout() string {
 	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel, sidebarPanel)
 }
 
-func (m Model) renderSidebar(width int) string {
+func (m Model) renderSidebar(width, height int) string {
 	t := m.theme
 	var lines []string
+
+	if width <= 0 {
+		return ""
+	}
 
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -1780,6 +1787,25 @@ func (m Model) renderSidebar(width int) string {
 	if m.scanStatus != "" && m.scanStatus != "unavailable" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Render("Scan Status"))
 		lines = append(lines, m.renderScanBadge())
+	}
+
+	// CASS context (best-effort, height-gated)
+	if m.cassPanel != nil && height > 0 {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		remaining := height - used
+		if remaining >= m.cassPanel.Config().MinHeight {
+			if remaining > 14 {
+				remaining = 14
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.cassPanel.Focus()
+			} else {
+				m.cassPanel.Blur()
+			}
+			m.cassPanel.SetSize(width, remaining)
+			lines = append(lines, "", m.cassPanel.View())
+		}
 	}
 
 	return strings.Join(lines, "\n")
@@ -1853,7 +1879,7 @@ func (m Model) renderMegaLayout() string {
 		BorderForeground(sidebarBorder).
 		Width(p5).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
-		Render(m.renderSidebar(p5 - 2))
+		Render(m.renderSidebar(p5-2, contentHeight-2))
 
 	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5)
 }
@@ -1899,8 +1925,8 @@ func (m Model) renderPaneList(width int) string {
 	// Header row
 	lines = append(lines, RenderTableHeader(dims, t))
 
-	// Pane rows (hydrated with status, beads, file changes)
-	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.animTick)
+	// Pane rows (hydrated with status, beads, file changes, with per-agent border colors)
+	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.animTick, t)
 	for i := range rows {
 		rows[i].IsSelected = i == m.cursor
 		lines = append(lines, RenderPaneRow(rows[i], dims, t))

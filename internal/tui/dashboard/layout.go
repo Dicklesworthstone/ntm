@@ -253,6 +253,7 @@ type PaneTableRow struct {
 
 // BuildPaneTableRows hydrates pane table rows using live status, bead progress,
 // file change activity, and lightweight token velocity estimates.
+// The theme is used to assign per-agent border colors.
 func BuildPaneTableRows(
 	panes []tmux.Pane,
 	statuses map[string]status.AgentStatus,
@@ -260,6 +261,7 @@ func BuildPaneTableRows(
 	beads *bv.BeadsSummary,
 	fileChanges []tracker.RecordedFileChange,
 	tick int,
+	t theme.Theme,
 ) []PaneTableRow {
 	changeCounts := fileChangesByPane(panes, fileChanges)
 
@@ -281,6 +283,7 @@ func BuildPaneTableRows(
 			ContextPct:    ps.ContextPercent,
 			Model:         ps.ContextModel,
 			IsCompacted:   ps.LastCompaction != nil,
+			BorderColor:   AgentBorderColor(string(pane.Type), t),
 		}
 
 		row.CurrentBead = currentBeadForPane(pane, beads)
@@ -406,6 +409,17 @@ func BuildPaneTableRow(pane tmux.Pane, ps PaneStatus, beads []bv.BeadPreview, fi
 func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) string {
 	var parts []string
 
+	// Per-agent colored border indicator (pulses when working)
+	borderColor := row.BorderColor
+	if borderColor == "" {
+		borderColor = AgentBorderColor(row.Type, t)
+	}
+	if row.Status == "working" && row.Tick > 0 {
+		borderColor = styles.Pulse(string(borderColor), row.Tick)
+	}
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor).Bold(true)
+	parts = append(parts, borderStyle.Render("▌"))
+
 	// Selection indicator
 	selectStyle := lipgloss.NewStyle().Foreground(t.Pink).Bold(true)
 	if row.IsSelected {
@@ -418,7 +432,7 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 	idxStyle := lipgloss.NewStyle().Foreground(t.Overlay)
 	parts = append(parts, idxStyle.Render(fmt.Sprintf("%2d", row.Index)))
 
-	// Type icon with color
+	// Type icon with per-agent color (pulses when working)
 	var typeColor lipgloss.Color
 	var typeIcon string
 	switch row.Type {
@@ -435,6 +449,12 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		typeColor = t.Green
 		typeIcon = "󰄛"
 	}
+
+	// Apply pulse animation when agent is actively working
+	if row.Status == "working" && row.Tick > 0 {
+		typeColor = styles.Pulse(string(typeColor), row.Tick)
+	}
+
 	typeStyle := lipgloss.NewStyle().Foreground(typeColor).Bold(true)
 	parts = append(parts, typeStyle.Render(typeIcon))
 
@@ -919,4 +939,66 @@ var workingSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
 // The spinner animates through circular segments to indicate active processing.
 func WorkingSpinnerFrame(tick int) string {
 	return workingSpinnerFrames[tick%len(workingSpinnerFrames)]
+}
+
+// AgentBorderColor returns the theme color for a given agent type.
+// Each agent type has a unique color: Claude=purple/Mauve, Codex=blue, Gemini=yellow, User=green.
+func AgentBorderColor(agentType string, t theme.Theme) lipgloss.Color {
+	switch agentType {
+	case "cc", "claude":
+		return t.Claude // Mauve/purple
+	case "cod", "codex":
+		return t.Codex // Blue
+	case "gmi", "gemini":
+		return t.Gemini // Yellow
+	case "user":
+		return t.User // Green
+	default:
+		return t.Surface2 // Default neutral color
+	}
+}
+
+// AgentBorderStyle returns a lipgloss border style for an agent.
+// When isActive is true and tick > 0, the border pulses to indicate active processing.
+func AgentBorderStyle(agentType string, isActive bool, tick int, t theme.Theme) lipgloss.Style {
+	baseColor := AgentBorderColor(agentType, t)
+
+	var borderColor lipgloss.Color
+	if isActive && tick > 0 {
+		// Apply pulse animation for active agents
+		borderColor = styles.Pulse(string(baseColor), tick)
+	} else {
+		borderColor = baseColor
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1)
+}
+
+// AgentPanelStyles returns list and detail panel styles with agent-specific border colors.
+// The selected/focused panel uses the agent's color; unfocused uses a neutral color.
+func AgentPanelStyles(agentType string, focused FocusedPanel, isActive bool, tick int, t theme.Theme) (listStyle, detailStyle lipgloss.Style) {
+	agentColor := AgentBorderColor(agentType, t)
+	unfocusedBorder := t.Surface1
+
+	// Apply pulse effect if agent is active
+	if isActive && tick > 0 {
+		agentColor = styles.Pulse(string(agentColor), tick)
+	}
+
+	baseStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1)
+
+	if focused == FocusList {
+		listStyle = baseStyle.BorderForeground(agentColor)
+		detailStyle = baseStyle.BorderForeground(unfocusedBorder)
+	} else {
+		listStyle = baseStyle.BorderForeground(unfocusedBorder)
+		detailStyle = baseStyle.BorderForeground(agentColor)
+	}
+
+	return listStyle, detailStyle
 }
