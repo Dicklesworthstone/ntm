@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
+	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -27,21 +28,52 @@ func alertsConfig() PanelConfig {
 	}
 }
 
+const newAlertPulseDuration = 3 * time.Second
+
 type AlertsPanel struct {
 	PanelBase
 	alerts []alerts.Alert
 	err    error
+
+	firstSeen map[string]time.Time
+	now       func() time.Time
 }
 
 func NewAlertsPanel() *AlertsPanel {
 	return &AlertsPanel{
 		PanelBase: NewPanelBase(alertsConfig()),
+		firstSeen: make(map[string]time.Time),
+		now:       time.Now,
 	}
 }
 
 func (m *AlertsPanel) SetData(alertList []alerts.Alert, err error) {
 	m.alerts = alertList
 	m.err = err
+
+	nowFn := m.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
+
+	if m.firstSeen == nil {
+		m.firstSeen = make(map[string]time.Time, len(alertList))
+	}
+
+	keep := make(map[string]struct{}, len(alertList))
+	for _, a := range alertList {
+		key := m.alertKey(a)
+		keep[key] = struct{}{}
+		if _, ok := m.firstSeen[key]; !ok {
+			m.firstSeen[key] = now
+		}
+	}
+	for key := range m.firstSeen {
+		if _, ok := keep[key]; !ok {
+			delete(m.firstSeen, key)
+		}
+	}
 }
 
 // HasError returns true if there's an active error
@@ -73,6 +105,26 @@ func (m *AlertsPanel) Keybindings() []Keybinding {
 	}
 }
 
+func (m *AlertsPanel) alertKey(a alerts.Alert) string {
+	if a.ID != "" {
+		return a.ID
+	}
+	// Fallback for older/edge alert sources that don't set ID.
+	return fmt.Sprintf("%s|%s|%s|%s|%s", a.Type, a.Severity, a.Session, a.Pane, a.Message)
+}
+
+func (m *AlertsPanel) shouldPulse(key string, now time.Time) bool {
+	if m.firstSeen == nil {
+		return false
+	}
+	seenAt, ok := m.firstSeen[key]
+	if !ok {
+		return false
+	}
+	age := now.Sub(seenAt)
+	return age >= 0 && age < newAlertPulseDuration
+}
+
 func (m *AlertsPanel) View() string {
 	t := theme.Current()
 	w, h := m.Width(), m.Height()
@@ -80,6 +132,14 @@ func (m *AlertsPanel) View() string {
 	if w <= 0 {
 		return ""
 	}
+
+	nowFn := m.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
+	// Keep tick bounded to avoid int overflow on 32-bit platforms.
+	tick := int((now.UnixMilli() / 100) % 10_000)
 
 	borderColor := t.Surface1
 	if m.IsFocused() {
@@ -164,7 +224,11 @@ func (m *AlertsPanel) View() string {
 			}
 			msg := layout.TruncateRunes(a.Message, w-6, "…")
 			line := fmt.Sprintf("  %s %s", icon, msg)
-			content.WriteString(lipgloss.NewStyle().Foreground(color).Render(line) + "\n")
+			style := lipgloss.NewStyle().Foreground(color)
+			if m.shouldPulse(m.alertKey(a), now) {
+				style = style.Foreground(styles.Pulse(string(color), tick)).Bold(true)
+			}
+			content.WriteString(style.Render(line) + "\n")
 			count++
 		}
 	}

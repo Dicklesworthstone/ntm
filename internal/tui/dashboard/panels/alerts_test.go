@@ -194,3 +194,82 @@ func TestAlertsPanelUpdate(t *testing.T) {
 		t.Error("expected Update to return nil cmd")
 	}
 }
+
+func TestAlertsPanelTracksFirstSeenByID(t *testing.T) {
+	panel := NewAlertsPanel()
+
+	t0 := time.Date(2025, 12, 12, 12, 0, 0, 0, time.UTC)
+	panel.now = func() time.Time { return t0 }
+
+	a := alerts.Alert{ID: "a1", Severity: alerts.SeverityWarning, Message: "Warning message"}
+	panel.SetData([]alerts.Alert{a}, nil)
+
+	first, ok := panel.firstSeen["a1"]
+	if !ok {
+		t.Fatal("expected firstSeen to contain a1")
+	}
+	if !first.Equal(t0) {
+		t.Fatalf("expected firstSeen[a1]=%s, got %s", t0, first)
+	}
+
+	// Refresh the same alert later; firstSeen should remain stable.
+	panel.now = func() time.Time { return t0.Add(10 * time.Second) }
+	panel.SetData([]alerts.Alert{a}, nil)
+
+	first2, ok := panel.firstSeen["a1"]
+	if !ok {
+		t.Fatal("expected firstSeen to still contain a1")
+	}
+	if !first2.Equal(first) {
+		t.Fatalf("expected firstSeen[a1] to remain %s, got %s", first, first2)
+	}
+}
+
+func TestAlertsPanelPrunesFirstSeenWhenAlertsRemoved(t *testing.T) {
+	panel := NewAlertsPanel()
+
+	t0 := time.Date(2025, 12, 12, 12, 0, 0, 0, time.UTC)
+	panel.now = func() time.Time { return t0 }
+
+	a1 := alerts.Alert{ID: "a1", Severity: alerts.SeverityCritical, Message: "Critical"}
+	a2 := alerts.Alert{ID: "a2", Severity: alerts.SeverityInfo, Message: "Info"}
+	panel.SetData([]alerts.Alert{a1, a2}, nil)
+
+	if len(panel.firstSeen) != 2 {
+		t.Fatalf("expected firstSeen to have 2 entries, got %d", len(panel.firstSeen))
+	}
+
+	panel.now = func() time.Time { return t0.Add(1 * time.Second) }
+	panel.SetData([]alerts.Alert{a2}, nil)
+
+	if _, ok := panel.firstSeen["a1"]; ok {
+		t.Fatal("expected firstSeen to prune removed alert a1")
+	}
+	if _, ok := panel.firstSeen["a2"]; !ok {
+		t.Fatal("expected firstSeen to retain existing alert a2")
+	}
+}
+
+func TestAlertsPanelAlertKeyFallbackWhenIDMissing(t *testing.T) {
+	panel := NewAlertsPanel()
+
+	t0 := time.Date(2025, 12, 12, 12, 0, 0, 0, time.UTC)
+	panel.now = func() time.Time { return t0 }
+
+	a := alerts.Alert{
+		Type:     alerts.AlertDiskLow,
+		Severity: alerts.SeverityWarning,
+		Message:  "Disk is low",
+		Session:  "sess",
+		Pane:     "%1",
+	}
+	key := panel.alertKey(a)
+	if key == "" {
+		t.Fatal("expected non-empty fallback key")
+	}
+
+	panel.SetData([]alerts.Alert{a}, nil)
+	if _, ok := panel.firstSeen[key]; !ok {
+		t.Fatalf("expected firstSeen to contain fallback key %q", key)
+	}
+}

@@ -258,8 +258,25 @@ func TestBeadsPanelViewUnavailable(t *testing.T) {
 
 	view := panel.View()
 
-	if !strings.Contains(view, "Pipeline unavailable") {
-		t.Error("expected view to contain 'Pipeline unavailable'")
+	if !strings.Contains(view, "Fetching beads pipeline") {
+		t.Error("expected view to contain loading state message")
+	}
+}
+
+func TestBeadsPanelViewUnavailableWithReason(t *testing.T) {
+	panel := NewBeadsPanel()
+	panel.SetSize(80, 20)
+
+	summary := bv.BeadsSummary{Available: false, Reason: "bv not installed"}
+	panel.SetData(summary, nil, nil)
+
+	view := panel.View()
+
+	if !strings.Contains(view, "bv not installed") {
+		t.Error("expected view to contain unavailability reason")
+	}
+	if !strings.Contains(view, "Press r") {
+		t.Error("expected view to include refresh hint")
 	}
 }
 

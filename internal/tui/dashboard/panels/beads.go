@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -128,12 +129,18 @@ func (m *BeadsPanel) View() string {
 
 	// Show error message if present
 	if m.err != nil {
-		errorStyle := lipgloss.NewStyle().
-			Foreground(t.Red).
-			Italic(true).
-			Padding(0, 1)
 		errMsg := layout.TruncateRunes(m.err.Error(), w-6, "…")
-		content.WriteString(errorStyle.Render("⚠ "+errMsg) + "\n\n")
+		content.WriteString(components.ErrorState(errMsg, "Press r to refresh", w) + "\n\n")
+	}
+
+	if !m.summary.Available && m.err == nil {
+		if strings.TrimSpace(m.summary.Reason) == "" {
+			content.WriteString(components.LoadingState("Fetching beads pipeline…", w) + "\n")
+		} else {
+			reason := layout.TruncateRunes(m.summary.Reason, w-6, "…")
+			content.WriteString(components.ErrorState(reason, "Press r to refresh", w) + "\n")
+		}
+		return content.String()
 	}
 
 	// Stats row

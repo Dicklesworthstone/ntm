@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/cass"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -167,16 +168,12 @@ func (m *CASSPanel) View() string {
 	content.WriteString(headerStyle.Render(title) + "\n")
 
 	if m.err != nil {
-		errorStyle := lipgloss.NewStyle().
-			Foreground(t.Red).
-			Italic(true).
-			Padding(0, 1)
 		errMsg := layout.TruncateRunes(m.err.Error(), w-6, "…")
-		content.WriteString(errorStyle.Render("⚠ "+errMsg) + "\n")
+		content.WriteString(components.ErrorState(errMsg, "Press r to refresh", w-4) + "\n")
 	}
 
 	if len(m.hits) == 0 {
-		content.WriteString("\n" + lipgloss.NewStyle().Foreground(t.Overlay).Italic(true).Render("No matches"))
+		content.WriteString("\n" + components.EmptyState("No matches", w-4))
 		return boxStyle.Render(content.String())
 	}
 
