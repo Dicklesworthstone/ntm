@@ -148,32 +148,63 @@ func (n *Notifier) Notify(event Event) error {
 		event.Timestamp = time.Now().UTC()
 	}
 
-	var errs []error
+	var (
+		wg    sync.WaitGroup
+		errs  []error
+		errMu sync.Mutex
+	)
 
-	// Send through each enabled channel
-	if n.config.Desktop.Enabled {
-		if err := n.sendDesktop(event); err != nil {
-			errs = append(errs, fmt.Errorf("desktop: %w", err))
+	// Helper to collect errors safely
+	addErr := func(err error) {
+		if err != nil {
+			errMu.Lock()
+			errs = append(errs, err)
+			errMu.Unlock()
 		}
+	}
+
+	// Send through each enabled channel in parallel
+	if n.config.Desktop.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := n.sendDesktop(event); err != nil {
+				addErr(fmt.Errorf("desktop: %w", err))
+			}
+		}()
 	}
 
 	if n.config.Webhook.Enabled && n.config.Webhook.URL != "" {
-		if err := n.sendWebhook(event); err != nil {
-			errs = append(errs, fmt.Errorf("webhook: %w", err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := n.sendWebhook(event); err != nil {
+				addErr(fmt.Errorf("webhook: %w", err))
+			}
+		}()
 	}
 
 	if n.config.Shell.Enabled && n.config.Shell.Command != "" {
-		if err := n.sendShell(event); err != nil {
-			errs = append(errs, fmt.Errorf("shell: %w", err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := n.sendShell(event); err != nil {
+				addErr(fmt.Errorf("shell: %w", err))
+			}
+		}()
 	}
 
 	if n.config.Log.Enabled && n.config.Log.Path != "" {
-		if err := n.sendLog(event); err != nil {
-			errs = append(errs, fmt.Errorf("log: %w", err))
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := n.sendLog(event); err != nil {
+				addErr(fmt.Errorf("log: %w", err))
+			}
+		}()
 	}
+
+	wg.Wait()
 
 	if len(errs) > 0 {
 		return fmt.Errorf("notification errors: %v", errs)

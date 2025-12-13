@@ -215,44 +215,55 @@ func (m *Monitor) handleRateLimit(agent *AgentState, waitSeconds int) {
 	log.Printf("[resilience] Agent %s (pane %d, type %s) hit rate limit (wait %ds)",
 		agent.PaneID, agent.PaneIndex, agent.AgentType, waitSeconds)
 
-	// Send rate limit notification if enabled
-	if m.cfg.Resilience.RateLimit.Notify && m.notifier != nil {
-		event := notify.NewRateLimitEvent(m.session, agent.PaneID, agent.AgentType, waitSeconds)
-		if err := m.notifier.Notify(event); err != nil {
-			log.Printf("[resilience] notification error: %v", err)
-		}
-	}
+	// Snapshot values for async operations
+	session := m.session
+	paneID := agent.PaneID
+	paneIndex := agent.PaneIndex
+	agentType := agent.AgentType
+	notifyEnabled := m.cfg.Resilience.RateLimit.Notify
+	rotateConfig := m.cfg.Rotation
 
-	// Trigger rotation assistance if enabled
-	if m.cfg.Rotation.Enabled && m.cfg.Rotation.AutoTrigger {
-		m.triggerRotationAssistance(agent)
-	}
+	// Run notifications and rotation triggers asynchronously
+	go func() {
+		// Send rate limit notification if enabled
+		if notifyEnabled && m.notifier != nil {
+			event := notify.NewRateLimitEvent(session, paneID, agentType, waitSeconds)
+			if err := m.notifier.Notify(event); err != nil {
+				log.Printf("[resilience] notification error: %v", err)
+			}
+		}
+
+		// Trigger rotation assistance if enabled
+		if rotateConfig.Enabled && rotateConfig.AutoTrigger {
+			m.triggerRotationAssistance(session, paneIndex, agentType, rotateConfig)
+		}
+	}()
 }
 
 // triggerRotationAssistance sends a notification with rotation command or auto-initiates rotation
-func (m *Monitor) triggerRotationAssistance(agent *AgentState) {
-	rotateCmd := fmt.Sprintf("ntm rotate %s --pane=%d", m.session, agent.PaneIndex)
+func (m *Monitor) triggerRotationAssistance(session string, paneIndex int, agentType string, rotateConfig config.RotationConfig) {
+	rotateCmd := fmt.Sprintf("ntm rotate %s --pane=%d", session, paneIndex)
 
 	log.Printf("[resilience] Suggesting rotation: %s", rotateCmd)
 
 	// Send rotation notification with command
 	if m.notifier != nil {
-		event := notify.NewRotationNeededEvent(m.session, agent.PaneIndex, agent.AgentType, rotateCmd)
+		event := notify.NewRotationNeededEvent(session, paneIndex, agentType, rotateCmd)
 		if err := m.notifier.Notify(event); err != nil {
 			log.Printf("[resilience] notification error: %v", err)
 		}
 	}
 
 	// Also display tmux message if in a tmux session
-	if m.session != "" {
+	if session != "" {
 		msg := fmt.Sprintf("⚠️ Rate limit! Run: %s", rotateCmd)
-		displayTmuxMessage(m.session, msg)
+		displayTmuxMessage(session, msg)
 	}
 
 	// Auto-initiate rotation if configured (aggressive mode)
-	if m.cfg.Rotation.AutoInitiate {
+	if rotateConfig.AutoInitiate {
 		log.Printf("[resilience] Auto-initiating rotation for agent %s (pane %d)",
-			agent.AgentType, agent.PaneIndex)
+			agentType, paneIndex)
 		// Note: Auto-initiate is disabled in this implementation because
 		// rotation requires user interaction (browser account switch).
 		// Instead, we just provide the notification with command.
@@ -275,34 +286,46 @@ func (m *Monitor) handleCrash(agent *AgentState, reason string) {
 	log.Printf("[resilience] Agent %s (pane %d, type %s) crashed: %s",
 		agent.PaneID, agent.PaneIndex, agent.AgentType, reason)
 
-	// Send crash notification if enabled
-	if m.cfg.Resilience.NotifyOnCrash && m.notifier != nil {
-		event := notify.NewAgentCrashedEvent(m.session, agent.PaneID, agent.AgentType)
-		event.Message = fmt.Sprintf("Agent %s crashed: %s", agent.AgentType, reason)
-		if err := m.notifier.Notify(event); err != nil {
-			log.Printf("[resilience] notification error: %v", err)
+	// Snapshot values for async operations
+	session := m.session
+	paneID := agent.PaneID
+	agentType := agent.AgentType
+	notifyCrash := m.cfg.Resilience.NotifyOnCrash
+	notifyMax := m.cfg.Resilience.NotifyOnMaxRestarts
+	maxRestarts := m.cfg.Resilience.MaxRestarts
+	currentRestarts := agent.RestartCount
+
+	// Run notifications asynchronously
+	go func() {
+		// Send crash notification if enabled
+		if notifyCrash && m.notifier != nil {
+			event := notify.NewAgentCrashedEvent(session, paneID, agentType)
+			event.Message = fmt.Sprintf("Agent %s crashed: %s", agentType, reason)
+			if err := m.notifier.Notify(event); err != nil {
+				log.Printf("[resilience] notification error: %v", err)
+			}
 		}
-	}
 
-	// Attempt restart if under the limit
-	if agent.RestartCount >= m.cfg.Resilience.MaxRestarts {
-		log.Printf("[resilience] Agent %s exceeded max restarts (%d), not restarting",
-			agent.PaneID, m.cfg.Resilience.MaxRestarts)
-
-		// Send max restarts notification
-		if m.cfg.Resilience.NotifyOnMaxRestarts && m.notifier != nil {
+		// Send max restarts notification if limit reached
+		if currentRestarts >= maxRestarts && notifyMax && m.notifier != nil {
 			event := notify.Event{
 				Type:    notify.EventAgentError,
-				Session: m.session,
-				Pane:    agent.PaneID,
-				Agent:   agent.AgentType,
+				Session: session,
+				Pane:    paneID,
+				Agent:   agentType,
 				Message: fmt.Sprintf("Agent %s exceeded max restart attempts (%d)",
-					agent.AgentType, m.cfg.Resilience.MaxRestarts),
+					agentType, maxRestarts),
 			}
 			if err := m.notifier.Notify(event); err != nil {
 				log.Printf("[resilience] notification error: %v", err)
 			}
 		}
+	}()
+
+	// Attempt restart if under the limit
+	if agent.RestartCount >= m.cfg.Resilience.MaxRestarts {
+		log.Printf("[resilience] Agent %s exceeded max restarts (%d), not restarting",
+			agent.PaneID, m.cfg.Resilience.MaxRestarts)
 		return
 	}
 
