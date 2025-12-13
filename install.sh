@@ -198,8 +198,9 @@ find_download_url() {
     local binary_pattern="${BIN_NAME}_${platform}"
 
     # Extract browser_download_url for matching asset
+    # Use || true to prevent grep from causing script exit when no match found
     echo "$release_json" | grep -o '"browser_download_url":[[:space:]]*"[^"]*'"${binary_pattern}"'"' | \
-        sed -E 's/.*"browser_download_url":[[:space:]]*"([^"]+)".*/\1/' | head -1
+        sed -E 's/.*"browser_download_url":[[:space:]]*"([^"]+)".*/\1/' | head -1 || true
 }
 
 # Ensure install directory exists
@@ -273,6 +274,15 @@ install_ntm() {
         # Some releases use dashes instead of underscores
         local alt_platform="${platform//_/-}"
         download_url=$(find_download_url "$alt_platform" "$release_json")
+    fi
+
+    if [ -z "$download_url" ]; then
+        # macOS uses universal binary (darwin_all) instead of arch-specific
+        case "$platform" in
+            darwin_amd64|darwin_arm64)
+                download_url=$(find_download_url "darwin_all" "$release_json")
+                ;;
+        esac
     fi
 
     if [ -z "$download_url" ]; then
