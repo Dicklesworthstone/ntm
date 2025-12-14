@@ -83,8 +83,8 @@ func (m Model) fetchMetricsCmd() tea.Cmd {
 				modelName = p.Variant
 			}
 
-			tokensCount := tokens.EstimateTokens(out)
 			usage := tokens.GetUsageInfo(out, modelName)
+			tokensCount := usage.EstimatedTokens
 
 			totalTokens += tokensCount
 

@@ -196,7 +196,7 @@ type UsageInfo struct {
 
 // GetUsageInfo returns comprehensive usage information for given text and model.
 func GetUsageInfo(text, model string) *UsageInfo {
-	tokens := EstimateTokens(text)
+	tokens := SmartEstimate(text)
 	limit := GetContextLimit(model)
 	return &UsageInfo{
 		EstimatedTokens: tokens,

@@ -105,8 +105,8 @@ func TestDetectContentType(t *testing.T) {
 
 func TestGetUsageInfo(t *testing.T) {
 	info := GetUsageInfo("hello world", "gpt-4")
-	if info.EstimatedTokens != 3 {
-		t.Errorf("EstimatedTokens = %d, want 3", info.EstimatedTokens)
+	if info.EstimatedTokens != 2 {
+		t.Errorf("EstimatedTokens = %d, want 2", info.EstimatedTokens)
 	}
 	if info.ContextLimit != 128000 {
 		t.Errorf("ContextLimit = %d, want 128000", info.ContextLimit)
