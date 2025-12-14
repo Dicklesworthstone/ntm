@@ -187,6 +187,46 @@ func TestPrune(t *testing.T) {
 	}
 }
 
+func TestPruneByTime(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	Clear()
+
+	// Add entries with different timestamps
+	now := time.Now()
+	entry1 := NewEntry("session", nil, "old", SourceCLI)
+	entry1.Timestamp = now.Add(-2 * time.Hour)
+	Append(entry1)
+
+	entry2 := NewEntry("session", nil, "recent", SourceCLI)
+	entry2.Timestamp = now.Add(-30 * time.Minute)
+	Append(entry2)
+
+	// Prune older than 1 hour
+	cutoff := now.Add(-1 * time.Hour)
+	removed, err := PruneByTime(cutoff)
+	if err != nil {
+		t.Fatalf("failed to prune by time: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 removed, got %d", removed)
+	}
+
+	// Verify remaining
+	entries, err := ReadAll()
+	if err != nil {
+		t.Fatalf("failed to read all: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry left, got %d", len(entries))
+	}
+	if entries[0].Prompt != "recent" {
+		t.Errorf("expected 'recent' entry, got %q", entries[0].Prompt)
+	}
+}
+
 func TestSearch(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.Setenv("XDG_DATA_HOME", tmpDir)

@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -73,6 +75,48 @@ func Append(entry *HistoryEntry) error {
 	return err
 }
 
+// BatchAppend adds multiple entries to the history file atomically.
+func BatchAppend(entries []*HistoryEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	unlock, err := acquireLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	path := StoragePath()
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	writer := bufio.NewWriter(f)
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if _, err := writer.Write(data); err != nil {
+			return err
+		}
+		if err := writer.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+
+	return writer.Flush()
+}
+
 // ReadAll reads all history entries from the file.
 // Returns empty slice if file doesn't exist.
 func ReadAll() ([]HistoryEntry, error) {
@@ -100,8 +144,8 @@ func readAllLocked() ([]HistoryEntry, error) {
 
 	var entries []HistoryEntry
 	scanner := bufio.NewScanner(f)
-	// Set max line size for large prompts
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	// Set max line size for large prompts (5MB)
+	scanner.Buffer(make([]byte, 5*1024*1024), 5*1024*1024)
 
 	for scanner.Scan() {
 		var entry HistoryEntry
@@ -199,7 +243,7 @@ ReadEntries:
 
 	var entries []HistoryEntry
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 5*1024*1024), 5*1024*1024)
 
 	for scanner.Scan() {
 		var entry HistoryEntry
@@ -347,6 +391,73 @@ func Prune(keep int) (int, error) {
 	return removed, nil
 }
 
+// PruneByTime removes entries older than the cutoff time.
+func PruneByTime(cutoff time.Time) (int, error) {
+	unlock, err := acquireLock()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+
+	entries, err := readAllLocked()
+	if err != nil {
+		return 0, err
+	}
+
+	var toKeep []HistoryEntry
+	for _, e := range entries {
+		if e.Timestamp.After(cutoff) {
+			toKeep = append(toKeep, e)
+		}
+	}
+
+	removed := len(entries) - len(toKeep)
+	if removed == 0 {
+		return 0, nil
+	}
+
+	// Rewrite file atomically
+	path := StoragePath()
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, "history-*.tmp")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmpFile.Name()) // clean up on error
+
+	writer := bufio.NewWriter(tmpFile)
+	for _, entry := range toKeep {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		if _, err := writer.Write(data); err != nil {
+			return 0, err
+		}
+		if err := writer.WriteByte('\n'); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return 0, err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return 0, err
+	}
+
+	if err := os.Chmod(tmpFile.Name(), 0644); err != nil {
+		return 0, err
+	}
+
+	// Atomic rename
+	if err := os.Rename(tmpFile.Name(), path); err != nil {
+		return 0, err
+	}
+
+	return removed, nil
+}
+
 // Search finds entries matching a query string in the prompt.
 func Search(query string) ([]HistoryEntry, error) {
 	entries, err := ReadAll()
@@ -355,39 +466,13 @@ func Search(query string) ([]HistoryEntry, error) {
 	}
 
 	var result []HistoryEntry
+	queryLower := strings.ToLower(query)
 	for _, e := range entries {
-		if containsIgnoreCase(e.Prompt, query) {
+		if strings.Contains(strings.ToLower(e.Prompt), queryLower) {
 			result = append(result, e)
 		}
 	}
 	return result, nil
-}
-
-// containsIgnoreCase checks if s contains substr (case-insensitive)
-func containsIgnoreCase(s, substr string) bool {
-	// Simple implementation - could be optimized
-	sLower := toLower(s)
-	substrLower := toLower(substr)
-
-	for i := 0; i <= len(sLower)-len(substrLower); i++ {
-		if sLower[i:i+len(substrLower)] == substrLower {
-			return true
-		}
-	}
-	return false
-}
-
-// toLower converts ASCII letters to lowercase
-func toLower(s string) string {
-	b := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		b[i] = c
-	}
-	return string(b)
 }
 
 // Exists checks if history file exists and has content.
@@ -444,22 +529,27 @@ func ImportFrom(path string) (int, error) {
 	}
 	defer f.Close()
 
-	imported := 0
+	var entries []*HistoryEntry
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 5*1024*1024), 5*1024*1024)
 
 	for scanner.Scan() {
 		var entry HistoryEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}
-		if err := Append(&entry); err != nil {
-			return imported, err
-		}
-		imported++
+		entries = append(entries, &entry)
 	}
 
-	return imported, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return len(entries), err
+	}
+
+	if err := BatchAppend(entries); err != nil {
+		return 0, err
+	}
+
+	return len(entries), nil
 }
 
 // Stats returns summary statistics about history.

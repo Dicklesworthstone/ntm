@@ -397,14 +397,9 @@ func runHistoryClear(force bool, before string) error {
 			}
 		}
 
-		// Rewrite history with only recent entries
-		if err := history.Clear(); err != nil {
+		// Rewrite history efficiently
+		if _, err := history.PruneByTime(cutoff); err != nil {
 			return err
-		}
-		for i := range toKeep {
-			if err := history.Append(&toKeep[i]); err != nil {
-				return err
-			}
 		}
 
 		fmt.Printf("%s✓%s Removed %d entries\n", colorize(t.Success), colorize(t.Text), removed)
