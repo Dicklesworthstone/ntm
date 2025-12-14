@@ -1490,3 +1490,90 @@ func (c *Config) GetProjectDir(session string) string {
 	base := ExpandHome(c.ProjectsBase)
 	return filepath.Join(base, session)
 }
+
+// SetProjectsBase sets the projects_base in the config file.
+// If the config file doesn't exist, it creates one with defaults.
+// The path can use ~ for home directory (which will be preserved in config).
+func SetProjectsBase(path string) error {
+	// Expand ~ in path for validation
+	expandedPath := ExpandHome(path)
+
+	// Validate path - must be absolute after expansion
+	if !filepath.IsAbs(expandedPath) {
+		return fmt.Errorf("path must be absolute: %s", path)
+	}
+
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(expandedPath, 0755); err != nil {
+		return fmt.Errorf("cannot create directory %s: %w", expandedPath, err)
+	}
+
+	configPath := DefaultPath()
+
+	// Ensure config directory exists
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	// Read existing config or use defaults
+	var fileContents string
+	if data, err := os.ReadFile(configPath); err == nil {
+		fileContents = string(data)
+	}
+
+	// Store the original path (preserves ~ if used)
+	fileContents = upsertTOMLKey(fileContents, "projects_base", path)
+
+	// Write back
+	if err := os.WriteFile(configPath, []byte(fileContents), 0644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+
+	return nil
+}
+
+// upsertTOMLKey updates or inserts a top-level TOML key.
+func upsertTOMLKey(contents, key, value string) string {
+	lines := strings.Split(contents, "\n")
+	keyPrefix := key + " "
+	keyEquals := key + "="
+	found := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, keyPrefix) || strings.HasPrefix(trimmed, keyEquals) {
+			// Replace existing line
+			lines[i] = fmt.Sprintf("%s = %q", key, value)
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Add at the beginning (after any comments at the top)
+		insertIdx := 0
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+				insertIdx = i
+				break
+			}
+			insertIdx = i + 1
+		}
+
+		newLine := fmt.Sprintf("%s = %q", key, value)
+		if insertIdx >= len(lines) {
+			lines = append(lines, newLine)
+		} else {
+			// Insert at position
+			lines = append(lines[:insertIdx], append([]string{newLine}, lines[insertIdx:]...)...)
+		}
+	}
+
+	result := strings.Join(lines, "\n")
+	if !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+	return result
+}

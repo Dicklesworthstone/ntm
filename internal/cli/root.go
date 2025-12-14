@@ -809,6 +809,36 @@ func newConfigCmd() *cobra.Command {
 		},
 	})
 
+	// Add 'set' subcommand for easy configuration
+	setCmd := &cobra.Command{
+		Use:   "set",
+		Short: "Set configuration values",
+	}
+
+	setCmd.AddCommand(&cobra.Command{
+		Use:   "projects-base <path>",
+		Short: "Set the base directory for projects",
+		Long: `Set the base directory where ntm creates project folders.
+
+Examples:
+  ntm config set projects-base ~/projects
+  ntm config set projects-base /data/projects
+  ntm config set projects-base ~/Developer`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := args[0]
+			if err := config.SetProjectsBase(path); err != nil {
+				return err
+			}
+			expanded := config.ExpandHome(path)
+			fmt.Printf("Projects base set to: %s\n", expanded)
+			fmt.Printf("Config saved to: %s\n", config.DefaultPath())
+			return nil
+		},
+	})
+
+	cmd.AddCommand(setCmd)
+
 	cmd.AddCommand(&cobra.Command{
 		Use:   "show",
 		Short: "Show current configuration",
