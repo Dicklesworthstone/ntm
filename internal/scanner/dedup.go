@@ -2,11 +2,11 @@
 package scanner
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
 // DedupIndex maintains an index of existing findings for deduplication.
@@ -36,16 +36,13 @@ func NewDedupIndex() (*DedupIndex, error) {
 // Refresh reloads the index from the beads database.
 func (idx *DedupIndex) Refresh() error {
 	// Query all open UBS beads
-	cmd := exec.Command("bd", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
+	output, err := bv.RunBd("", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
+	if err != nil {
 		// bd might not be installed or no beads exist
 		return nil
 	}
 
-	if stdout.Len() == 0 {
+	if output == "" {
 		return nil
 	}
 
@@ -54,7 +51,7 @@ func (idx *DedupIndex) Refresh() error {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &beads); err != nil {
+	if err := json.Unmarshal([]byte(output), &beads); err != nil {
 		return fmt.Errorf("parsing beads: %w", err)
 	}
 

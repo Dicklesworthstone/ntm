@@ -67,7 +67,7 @@ func AnalyzeImpact(result *ScanResult, existingBeadIDs map[string]string) (*Anal
 	ar.GraphAvailable = true
 
 	// Get bv insights for graph analysis
-	insights, err := bv.GetInsights("")
+	insights, err := bv.GetInsights(result.Project)
 	if err != nil {
 		// Fall back to basic analysis
 		ar.GraphAvailable = false
@@ -107,7 +107,7 @@ func AnalyzeImpact(result *ScanResult, existingBeadIDs map[string]string) (*Anal
 			analysis.BeadID = beadID
 
 			// Get graph position for this bead
-			pos, err := bv.GetGraphPosition("", beadID)
+			pos, err := bv.GetGraphPosition(result.Project, beadID)
 			if err == nil {
 				analysis.GraphPosition = pos
 

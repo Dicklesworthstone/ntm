@@ -3,14 +3,14 @@
 package scanner
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
 // BeadPriority represents the priority level for beads issues.
@@ -224,20 +224,16 @@ func createBead(spec BeadSpec) (string, error) {
 		args = append(args, "--labels", strings.Join(spec.Labels, ","))
 	}
 
-	cmd := exec.Command("bd", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("bd create failed: %w (stderr: %s)", err, stderr.String())
+	output, err := bv.RunBd("", args...)
+	if err != nil {
+		return "", fmt.Errorf("bd create failed: %w", err)
 	}
 
 	// Parse JSON output to get the bead ID
 	var result []struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		return "", fmt.Errorf("parsing bd output: %w", err)
 	}
 
@@ -251,22 +247,19 @@ func createBead(spec BeadSpec) (string, error) {
 // loadExistingSignatures loads signatures of existing UBS-created beads.
 func loadExistingSignatures() (map[string]bool, error) {
 	// Query beads with ubs-scan label that are open
-	cmd := exec.Command("bd", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
+	output, err := bv.RunBd("", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
+	if err != nil {
 		return nil, fmt.Errorf("listing beads: %w", err)
 	}
 
 	var beads []struct {
 		Description string `json:"description"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &beads); err != nil {
+	if output == "" {
+		return make(map[string]bool), nil
+	}
+	if err := json.Unmarshal([]byte(output), &beads); err != nil {
 		// Empty list is fine
-		if stdout.Len() == 0 {
-			return make(map[string]bool), nil
-		}
 		return nil, fmt.Errorf("parsing beads: %w", err)
 	}
 
@@ -343,11 +336,8 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 	}
 
 	// Get existing UBS beads
-	cmd := exec.Command("bd", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
+	output, err := bv.RunBd("", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
+	if err != nil {
 		return nil, fmt.Errorf("listing beads: %w", err)
 	}
 
@@ -355,10 +345,10 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 		ID          string `json:"id"`
 		Description string `json:"description"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &beads); err != nil {
-		if stdout.Len() == 0 {
-			return br, nil // No beads to update
-		}
+	if output == "" {
+		return br, nil // No beads to update
+	}
+	if err := json.Unmarshal([]byte(output), &beads); err != nil {
 		return nil, fmt.Errorf("parsing beads: %w", err)
 	}
 
@@ -395,12 +385,9 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 
 // closeBead closes a bead by ID.
 func closeBead(id string) error {
-	cmd := exec.Command("bd", "close", id)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("bd close failed: %w (stderr: %s)", err, stderr.String())
+	_, err := bv.RunBd("", "close", id)
+	if err != nil {
+		return fmt.Errorf("bd close failed: %w", err)
 	}
 	return nil
 }
