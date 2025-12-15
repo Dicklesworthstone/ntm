@@ -42,6 +42,7 @@ func TestDetectAgentType(t *testing.T) {
 		title    string
 		expected string
 	}{
+		// Canonical forms
 		{"claude lowercase", "claude code", "claude"},
 		{"claude uppercase", "CLAUDE", "claude"},
 		{"claude mixed", "Claude-Code", "claude"},
@@ -52,6 +53,22 @@ func TestDetectAgentType(t *testing.T) {
 		{"cursor", "cursor ide", "cursor"},
 		{"windsurf", "windsurf editor", "windsurf"},
 		{"aider", "aider assistant", "aider"},
+
+		// Short forms in pane titles (e.g., "session__cc_1")
+		{"cc short form", "myproject__cc_1", "claude"},
+		{"cc short form double underscore", "test__cc__2", "claude"},
+		{"cc short uppercase", "SESSION__CC_3", "claude"},
+		{"cod short form", "myproject__cod_1", "codex"},
+		{"cod short form double underscore", "test__cod__2", "codex"},
+		{"gmi short form", "myproject__gmi_1", "gemini"},
+		{"gmi short form double underscore", "test__gmi__2", "gemini"},
+
+		// Should NOT match short forms inside words
+		{"success not cc", "success_test", "unknown"},
+		{"accord not cc", "accord_pane", "unknown"},
+		{"decode not cod", "decode_pane", "unknown"},
+
+		// Edge cases
 		{"unknown", "bash", "unknown"},
 		{"empty", "", "unknown"},
 		{"partial match", "claud", "unknown"},
@@ -918,6 +935,60 @@ func TestAgentTypeString(t *testing.T) {
 			got := agentTypeString(tc.input)
 			if got != tc.expected {
 				t.Errorf("agentTypeString(%v) = %s, want %s", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestResolveAgentType(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// Claude aliases
+		{"claude", "claude"},
+		{"cc", "claude"},
+		{"claude_code", "claude"},
+		{"claude-code", "claude"},
+		{"CLAUDE", "claude"},
+		{"CC", "claude"},
+
+		// Codex aliases
+		{"codex", "codex"},
+		{"cod", "codex"},
+		{"codex_cli", "codex"},
+		{"codex-cli", "codex"},
+		{"CODEX", "codex"},
+		{"COD", "codex"},
+
+		// Gemini aliases
+		{"gemini", "gemini"},
+		{"gmi", "gemini"},
+		{"gemini_cli", "gemini"},
+		{"gemini-cli", "gemini"},
+		{"GEMINI", "gemini"},
+		{"GMI", "gemini"},
+
+		// Other known types
+		{"cursor", "cursor"},
+		{"windsurf", "windsurf"},
+		{"aider", "aider"},
+		{"user", "user"},
+
+		// Unknown types pass through
+		{"unknown_agent", "unknown_agent"},
+		{"custom", "custom"},
+
+		// Edge cases
+		{"  claude  ", "claude"}, // Trimming whitespace
+		{"", ""},                 // Empty string
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := ResolveAgentType(tc.input)
+			if got != tc.expected {
+				t.Errorf("ResolveAgentType(%q) = %q, want %q", tc.input, got, tc.expected)
 			}
 		})
 	}

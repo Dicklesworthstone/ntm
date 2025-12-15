@@ -588,7 +588,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSend, "robot-send", "", "Send prompt to panes atomically (JSON output)")
 	rootCmd.Flags().StringVar(&robotSendMsg, "msg", "", "Message to send (used with --robot-send)")
 	rootCmd.Flags().BoolVar(&robotSendAll, "all", false, "Send to all panes including user (used with --robot-send)")
-	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude, codex, gemini (used with --robot-send)")
+	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type (aliases: cc/claude, cod/codex, gmi/gemini) (used with --robot-send)")
 	rootCmd.Flags().StringVar(&robotSendExclude, "exclude", "", "Comma-separated pane indices to exclude (used with --robot-send)")
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends in milliseconds (used with --robot-send)")
 

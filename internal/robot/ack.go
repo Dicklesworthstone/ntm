@@ -451,10 +451,10 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 	}
 	hasPaneFilter := len(paneFilterMap) > 0
 
-	// Build agent type filter map
+	// Build agent type filter map (resolves aliases to canonical form)
 	typeFilterMap := make(map[string]bool)
 	for _, t := range opts.AgentTypes {
-		typeFilterMap[strings.ToLower(t)] = true
+		typeFilterMap[ResolveAgentType(t)] = true
 	}
 	hasTypeFilter := len(typeFilterMap) > 0
 

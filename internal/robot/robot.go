@@ -1309,13 +1309,20 @@ func getBlockersForIssue(issueID string) []string {
 }
 
 func detectAgentType(title string) string {
-	// Try to detect from pane title
+	// Try to detect from pane title (supports both canonical and short forms)
+	// Note: Order matters - check short forms after canonical to avoid false positives
 	switch {
 	case contains(title, "claude"):
 		return "claude"
+	case containsShortForm(title, "cc"):
+		return "claude"
 	case contains(title, "codex"):
 		return "codex"
+	case containsShortForm(title, "cod"):
+		return "codex"
 	case contains(title, "gemini"):
+		return "gemini"
+	case containsShortForm(title, "gmi"):
 		return "gemini"
 	case contains(title, "cursor"):
 		return "cursor"
@@ -1326,6 +1333,30 @@ func detectAgentType(title string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// containsShortForm checks if title contains the short form as a word boundary
+// e.g., "session__cc_1" contains "cc" as a word, but "success" does not
+func containsShortForm(title, short string) bool {
+	lower := toLower(title)
+	short = toLower(short)
+
+	// Find all occurrences and check for word boundaries
+	for i := 0; i <= len(lower)-len(short); i++ {
+		if lower[i:i+len(short)] == short {
+			// Check if it's at a word boundary (preceded/followed by non-alpha)
+			beforeOK := i == 0 || !isAlpha(lower[i-1])
+			afterOK := i+len(short) == len(lower) || !isAlpha(lower[i+len(short)])
+			if beforeOK && afterOK {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isAlpha(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 func contains(s, substr string) bool {
@@ -1959,6 +1990,39 @@ func agentTypeString(t tmux.AgentType) string {
 	}
 }
 
+// ResolveAgentType normalizes any agent type string to its canonical form.
+// Accepts various aliases and returns the standardized name.
+//
+// Canonical forms: claude, codex, gemini, cursor, windsurf, aider, user, unknown
+//
+// Examples:
+//   - "cc", "claude", "claude_code", "claude-code" -> "claude"
+//   - "cod", "codex", "codex_cli", "codex-cli"    -> "codex"
+//   - "gmi", "gemini", "gemini_cli", "gemini-cli" -> "gemini"
+func ResolveAgentType(input string) string {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+
+	switch normalized {
+	case "cc", "claude", "claude_code":
+		return "claude"
+	case "cod", "codex", "codex_cli":
+		return "codex"
+	case "gmi", "gemini", "gemini_cli":
+		return "gemini"
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "aider":
+		return "aider"
+	case "user":
+		return "user"
+	default:
+		return normalized // Unknown types passed through
+	}
+}
+
 // SendOutput is the structured output for --robot-send
 type SendOutput struct {
 	RobotResponse                   // Embed standard response fields (success, timestamp, error)
@@ -2056,10 +2120,10 @@ func PrintSend(opts SendOptions) error {
 	}
 	hasPaneFilter := len(paneFilterMap) > 0
 
-	// Build agent type filter map
+	// Build agent type filter map (resolves aliases to canonical form)
 	typeFilterMap := make(map[string]bool)
 	for _, t := range opts.AgentTypes {
-		typeFilterMap[strings.ToLower(t)] = true
+		typeFilterMap[ResolveAgentType(t)] = true
 	}
 	hasTypeFilter := len(typeFilterMap) > 0
 
