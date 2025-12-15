@@ -35,10 +35,17 @@ func run(dir string, args ...string) (string, error) {
 		return "", ErrNotInstalled
 	}
 
-	cmd := exec.Command("bv", args...)
-	if dir != "" {
-		cmd.Dir = dir
+	// Resolve empty dir to current working directory
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("failed to get working directory: %w", err)
+		}
 	}
+
+	cmd := exec.Command("bv", args...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -126,10 +133,37 @@ func CheckDrift(dir string) DriftResult {
 		}
 	}
 
-	cmd := exec.Command("bv", "-check-drift")
-	if dir != "" {
-		cmd.Dir = dir
+	// Resolve empty dir to current working directory
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return DriftResult{
+				Status:  DriftNoBaseline,
+				Message: fmt.Sprintf("failed to get working directory: %v", err),
+			}
+		}
 	}
+
+	// Validate directory exists
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return DriftResult{
+			Status:  DriftNoBaseline,
+			Message: fmt.Sprintf("project directory does not exist: %s", dir),
+		}
+	}
+
+	// Check if .beads directory exists
+	beadsDir := filepath.Join(dir, ".beads")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		return DriftResult{
+			Status:  DriftNoBaseline,
+			Message: fmt.Sprintf("no .beads directory in %s", dir),
+		}
+	}
+
+	cmd := exec.Command("bv", "-check-drift")
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -565,10 +599,17 @@ func RunBd(dir string, args ...string) (string, error) {
 		args = append([]string{"--no-db"}, args...)
 	}
 
-	cmd := exec.Command("bd", args...)
-	if dir != "" {
-		cmd.Dir = dir
+	// Resolve empty dir to current working directory
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("failed to get working directory: %w", err)
+		}
 	}
+
+	cmd := exec.Command("bd", args...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -610,23 +651,33 @@ func IsBdInstalled() bool {
 func GetBeadsSummary(dir string, limit int) *BeadsSummary {
 	result := &BeadsSummary{}
 
-	// Check if .beads directory exists relative to dir
-	beadsDir := ".beads"
-	if dir != "" {
-		beadsDir = filepath.Join(dir, ".beads")
+	// Resolve empty dir to current working directory
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			result.Available = false
+			result.Reason = fmt.Sprintf("failed to get working directory: %v", err)
+			return result
+		}
 	}
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+
+	// Validate directory exists
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		result.Available = false
-		result.Reason = "no .beads/ directory"
+		result.Reason = fmt.Sprintf("project directory does not exist: %s", dir)
 		return result
 	}
 
-	// Get project path (dir or CWD)
-	if dir != "" {
-		result.Project = dir
-	} else if cwd, err := os.Getwd(); err == nil {
-		result.Project = cwd
+	// Check if .beads directory exists
+	beadsDir := filepath.Join(dir, ".beads")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		result.Available = false
+		result.Reason = fmt.Sprintf("no .beads/ directory in %s", dir)
+		return result
 	}
+
+	result.Project = dir
 
 	// Try to run bd stats --json to get summary
 	statsOutput, err := RunBd(dir, "stats", "--json")
