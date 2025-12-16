@@ -843,6 +843,7 @@ func init() {
 		newRecipesCmd(),
 		newPersonasCmd(),
 		newTemplateCmd(),
+		newMonitorCmd(),
 	)
 
 	// Load command plugins

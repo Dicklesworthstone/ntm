@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -576,7 +578,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		if cassContext != "" {
 			// Wait a bit for agent to start
 			time.Sleep(500 * time.Millisecond)
-			if err := tmux.PasteKeys(pane.ID, cassContext, true); err != nil {
+			if err := tmux.SendKeys(pane.ID, cassContext, true); err != nil {
 				if !IsJSONOutput() {
 					fmt.Printf("⚠ Warning: failed to inject context: %v\n", err)
 				}
@@ -586,7 +588,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		// Inject user prompt if provided
 		if opts.Prompt != "" {
 			time.Sleep(200 * time.Millisecond)
-			if err := tmux.PasteKeys(pane.ID, opts.Prompt, true); err != nil {
+			if err := tmux.SendKeys(pane.ID, opts.Prompt, true); err != nil {
 				if !IsJSONOutput() {
 					fmt.Printf("⚠ Warning: failed to send prompt: %v\n", err)
 				}
@@ -711,39 +713,40 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 	// Start resilience monitor if auto-restart is enabled
 	if opts.AutoRestart || cfg.Resilience.AutoRestart {
-		// Launch background monitor process
-		// We use os.Executable() to find the ntm binary
-		exe, err := os.Executable()
-		if err != nil {
+		// Save manifest for the monitor process
+		manifest := &resilience.SpawnManifest{
+			Session:    opts.Session,
+			ProjectDir: dir,
+		}
+		for _, agent := range launchedAgents {
+			manifest.Agents = append(manifest.Agents, resilience.AgentConfig{
+				PaneID:    agent.paneID,
+				PaneIndex: agent.paneIndex,
+				Type:      agent.agentType,
+				Model:     agent.model,
+				Command:   agent.command,
+			})
+		}
+		if err := resilience.SaveManifest(manifest); err != nil {
 			if !IsJSONOutput() {
-				output.PrintWarningf("Failed to determine executable path for auto-restart: %v", err)
+				output.PrintWarningf("Failed to save resilience manifest: %v", err)
 			}
 		} else {
-			// Ensure log directory exists
-			logDir := filepath.Join(dir, ".ntm", "logs")
-			_ = os.MkdirAll(logDir, 0755)
-			logFile, err := os.OpenFile(filepath.Join(logDir, fmt.Sprintf("monitor-%s.log", opts.Session)), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			
-			cmd := exec.Command(exe, "_monitor", opts.Session)
-			// Detach from current process group to survive exit
-			// Note: SysProcAttr is OS-specific, but minimal setsid is widely supported on unix
-			// We can just rely on not waiting for it.
-			
+			// Launch monitor in background
+			exe, err := os.Executable()
 			if err == nil {
-				cmd.Stdout = logFile
-				cmd.Stderr = logFile
-			}
-
-			if err := cmd.Start(); err != nil {
-				if !IsJSONOutput() {
-					output.PrintWarningf("Failed to start resilience monitor: %v", err)
+				cmd := exec.Command(exe, "internal-monitor", opts.Session)
+				// Detach from terminal so it survives when ntm spawn exits
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				if err := cmd.Start(); err != nil {
+					if !IsJSONOutput() {
+						output.PrintWarningf("Failed to start resilience monitor: %v", err)
+					}
+				} else {
+					if !IsJSONOutput() {
+						output.PrintInfof("Auto-restart enabled (monitor pid: %d)", cmd.Process.Pid)
+					}
 				}
-			} else {
-				if !IsJSONOutput() {
-					output.PrintInfof("Auto-restart enabled (monitor PID: %d, logs: .ntm/logs/)", cmd.Process.Pid)
-				}
-				// Release resources, let it run
-				_ = cmd.Process.Release()
 			}
 		}
 	}

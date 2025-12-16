@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -14,47 +15,68 @@ import (
 )
 
 func newMonitorCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "_monitor <session>",
-		Short:  "Internal command to run resilience monitor (hidden)",
+	return &cobra.Command{
+		Use:    "internal-monitor <session>",
+		Short:  "Run the resilience monitor for a session (internal use)",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			session := args[0]
-			return runMonitor(session)
+			return runMonitor(args[0])
 		},
 	}
-	return cmd
 }
 
 func runMonitor(session string) error {
-	// 1. Validate session
+	// Load manifest
+	manifest, err := resilience.LoadManifest(session)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+
+	// Ensure session exists
 	if !tmux.SessionExists(session) {
-		return fmt.Errorf("session %q not found", session)
+		// If session is gone, clean up and exit
+		_ = resilience.DeleteManifest(session)
+		return nil
 	}
 
-	dir := cfg.GetProjectDir(session)
+	// Initialize monitor
+	monitor := resilience.NewMonitor(session, manifest.ProjectDir, cfg)
 
-	// 2. Start monitor
-	monitor := resilience.NewMonitor(session, dir, cfg)
-
-	// 3. Scan for existing agents
-	if err := monitor.ScanAndRegisterAgents(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to scan agents: %v\n", err)
+	// Register agents
+	for _, agent := range manifest.Agents {
+		monitor.RegisterAgent(agent.PaneID, agent.PaneIndex, agent.Type, agent.Model, agent.Command)
 	}
 
-	// 4. Start monitoring
+	// Start monitoring
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	monitor.Start(ctx)
-	fmt.Printf("Monitoring session %s... (PID: %d)\n", session, os.Getpid())
 
-	// 5. Wait for signal
+	// Wait for termination signal or session end
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	monitor.Stop()
-	return nil
+	// Poll for session existence periodically to exit if session is killed
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	fmt.Printf("Monitoring session '%s' for resilience...\n", session)
+
+	for {
+		select {
+		case <-sigChan:
+			fmt.Println("Monitor stopping...")
+			monitor.Stop()
+			return nil
+		case <-ticker.C:
+			if !tmux.SessionExists(session) {
+				fmt.Println("Session ended, stopping monitor...")
+				monitor.Stop()
+				_ = resilience.DeleteManifest(session)
+				return nil
+			}
+		}
+	}
 }
