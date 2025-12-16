@@ -509,7 +509,7 @@ func (w *Watcher) pollOnce() {
 	// Scan the filesystem (slow operation, done without lock)
 	currentSnapshot := make(map[string]fileMeta)
 	for _, root := range roots {
-		entries, err := snapshotEntries(root, w.recursive)
+		entries, err := snapshotEntries(root, w.recursive, w.isIgnored)
 		if err != nil {
 			if w.errorHandler != nil {
 				w.errorHandler(err)
@@ -640,7 +640,7 @@ func isPathUnderRoots(path string, roots []string) bool {
 
 // snapshotPath seeds the snapshot map for a newly added path in polling mode.
 func (w *Watcher) snapshotPath(path string, info os.FileInfo) error {
-	entries, err := entriesForPath(path, info, w.recursive)
+	entries, err := entriesForPath(path, info, w.recursive, w.isIgnored)
 	if err != nil {
 		return err
 	}
@@ -651,15 +651,15 @@ func (w *Watcher) snapshotPath(path string, info os.FileInfo) error {
 }
 
 // snapshotEntries returns the current metadata for the watched root (and children if recursive).
-func snapshotEntries(root string, recursive bool) (map[string]fileMeta, error) {
+func snapshotEntries(root string, recursive bool, isIgnored func(string) bool) (map[string]fileMeta, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, err
 	}
-	return entriesForPath(root, info, recursive)
+	return entriesForPath(root, info, recursive, isIgnored)
 }
 
-func entriesForPath(root string, info os.FileInfo, recursive bool) (map[string]fileMeta, error) {
+func entriesForPath(root string, info os.FileInfo, recursive bool, isIgnored func(string) bool) (map[string]fileMeta, error) {
 	entries := make(map[string]fileMeta)
 
 	add := func(path string, fi os.FileInfo) {
@@ -669,6 +669,11 @@ func entriesForPath(root string, info os.FileInfo, recursive bool) (map[string]f
 			Mode:    fi.Mode(),
 			IsDir:   fi.IsDir(),
 		}
+	}
+
+	// Don't add if root itself is ignored (though unlikely if called explicitly)
+	if isIgnored != nil && isIgnored(root) {
+		return entries, nil
 	}
 
 	add(root, info)
@@ -683,6 +688,12 @@ func entriesForPath(root string, info os.FileInfo, recursive bool) (map[string]f
 				return err
 			}
 			if path == root {
+				return nil
+			}
+			if isIgnored != nil && isIgnored(path) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			fi, statErr := d.Info()
@@ -704,11 +715,15 @@ func entriesForPath(root string, info os.FileInfo, recursive bool) (map[string]f
 		return nil, err
 	}
 	for _, d := range dirEntries {
+		path := filepath.Join(root, d.Name())
+		if isIgnored != nil && isIgnored(path) {
+			continue
+		}
 		fi, statErr := d.Info()
 		if statErr != nil {
 			return nil, statErr
 		}
-		add(filepath.Join(root, d.Name()), fi)
+		add(path, fi)
 	}
 	return entries, nil
 }

@@ -473,6 +473,16 @@ func runScanWatch(path string, opts scanner.ScanOptions, createBeads, updateBead
 		watcher.WithDebouncer(watcher.NewDebouncer(500*time.Millisecond)),
 		watcher.WithRecursive(true),
 		watcher.WithEventFilter(watcher.Write|watcher.Create|watcher.Remove|watcher.Rename),
+		watcher.WithIgnorePaths([]string{
+			"node_modules",
+			".git",
+			"__pycache__",
+			".venv",
+			"target",
+			"dist",
+			"build",
+			"vendor",
+		}),
 	)
 
 	if err != nil {
