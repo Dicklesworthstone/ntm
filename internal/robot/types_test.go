@@ -521,3 +521,193 @@ func TestTailAgentHints(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Required Field Tests - Verify critical fields are always present
+// =============================================================================
+// These tests ensure that critical arrays are never absent from JSON output,
+// allowing safe iteration without null checks.
+
+func TestCriticalFieldsAlwaysPresent(t *testing.T) {
+	t.Run("InterruptOutput has required arrays", func(t *testing.T) {
+		output := InterruptOutput{
+			Session:        "test",
+			Interrupted:    []string{},
+			PreviousStates: map[string]PaneState{},
+			ReadyForInput:  []string{},
+			Failed:         []InterruptError{},
+		}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		// These fields must always be present (not omitted even when empty)
+		requiredArrays := []string{"interrupted", "previous_states", "ready_for_input", "failed"}
+		for _, field := range requiredArrays {
+			if _, ok := parsed[field]; !ok {
+				t.Errorf("required field %q is missing from JSON output", field)
+			}
+		}
+	})
+
+	t.Run("SendOutput has required arrays", func(t *testing.T) {
+		output := SendOutput{
+			RobotResponse:  NewRobotResponse(true),
+			Session:        "test",
+			Targets:        []string{},
+			Successful:     []string{},
+			Failed:         []SendError{},
+			MessagePreview: "",
+		}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		requiredArrays := []string{"targets", "successful", "failed"}
+		for _, field := range requiredArrays {
+			if _, ok := parsed[field]; !ok {
+				t.Errorf("required field %q is missing from JSON output", field)
+			}
+		}
+	})
+
+	t.Run("SpawnOutput has required arrays", func(t *testing.T) {
+		output := SpawnOutput{
+			Session:   "test",
+			CreatedAt: FormatTimestamp(time.Now()),
+			Agents:    []SpawnedAgent{},
+		}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if _, ok := parsed["agents"]; !ok {
+			t.Error("required field 'agents' is missing from JSON output")
+		}
+	})
+
+	t.Run("TailOutput has required fields", func(t *testing.T) {
+		output := TailOutput{
+			RobotResponse: NewRobotResponse(true),
+			Session:       "test",
+			Panes:         map[string]PaneOutput{},
+		}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if _, ok := parsed["panes"]; !ok {
+			t.Error("required field 'panes' is missing from JSON output")
+		}
+	})
+}
+
+func TestOptionalFieldsOmitted(t *testing.T) {
+	t.Run("error fields absent on success", func(t *testing.T) {
+		resp := NewRobotResponse(true)
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		optionalFields := []string{"error", "error_code", "hint"}
+		for _, field := range optionalFields {
+			if _, ok := parsed[field]; ok {
+				t.Errorf("optional field %q should be absent on success", field)
+			}
+		}
+	})
+
+	t.Run("dry_run absent when not in dry-run mode", func(t *testing.T) {
+		output := SendOutput{
+			RobotResponse:  NewRobotResponse(true),
+			Session:        "test",
+			Targets:        []string{"1"},
+			Successful:     []string{"1"},
+			Failed:         []SendError{},
+			MessagePreview: "test",
+			DryRun:         false, // Not dry-run
+		}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if _, ok := parsed["dry_run"]; ok {
+			t.Error("dry_run should be absent when false")
+		}
+		if _, ok := parsed["would_send_to"]; ok {
+			t.Error("would_send_to should be absent in normal mode")
+		}
+	})
+
+	t.Run("dry_run present when true", func(t *testing.T) {
+		output := SendOutput{
+			RobotResponse:  NewRobotResponse(true),
+			Session:        "test",
+			Targets:        []string{"1"},
+			Successful:     []string{},
+			Failed:         []SendError{},
+			MessagePreview: "test",
+			DryRun:         true,
+			WouldSendTo:    []string{"1"},
+		}
+
+		data, err := json.Marshal(output)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if _, ok := parsed["dry_run"]; !ok {
+			t.Error("dry_run should be present when true")
+		}
+		if _, ok := parsed["would_send_to"]; !ok {
+			t.Error("would_send_to should be present in dry-run mode")
+		}
+	})
+}

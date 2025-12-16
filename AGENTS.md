@@ -250,6 +250,78 @@ Common error codes: `SESSION_NOT_FOUND`, `PANE_NOT_FOUND`, `INVALID_FLAG`, `TIME
 
 ---
 
+### JSON Field Semantics
+
+Robot command outputs follow consistent semantics for absent, null, and empty fields:
+
+**Always Present (Required Fields)**
+
+These fields are ALWAYS present in successful responses:
+- `success`: boolean - Whether the operation succeeded
+- `timestamp`: RFC3339 string - When the response was generated
+- Critical arrays like `sessions`, `panes`, `targets`, `agents` - Always present, empty array `[]` if none found
+
+**Absent Fields**
+
+Fields may be absent from JSON when:
+- The field doesn't apply to this response type
+- Example: `_agent_hints` absent when no hints are relevant
+- Example: `dry_run` absent when not in preview mode
+
+```json
+// Normal response - no dry_run field
+{"success": true, "targets": ["1", "2"]}
+
+// Dry-run response - dry_run field present
+{"success": true, "dry_run": true, "would_send_to": ["1", "2"]}
+```
+
+**Empty Arrays vs Absent**
+
+Empty arrays indicate "checked, found nothing" - distinct from "didn't check":
+
+```json
+// Checked, found no agents
+{"agents": []}
+
+// Checked, found no errors
+{"failed": []}
+```
+
+Critical arrays are never absent - they're always present even if empty. This allows safe iteration without null checks.
+
+**Optional Fields (omitempty)**
+
+These fields are only present when they have meaningful values:
+- `error`, `error_code`, `hint` - Only on error responses
+- `variant` - Only if agent has a model variant
+- `preset_used` - Only if a preset was used
+- `_agent_hints` - Only when hints are available
+- `warnings`, `notes` - Only when there are warnings/notes
+
+**Null Fields**
+
+Go doesn't typically emit `null` for missing values. Fields are either present with a value or absent entirely. The only exception is pointer types where the underlying value couldn't be determined.
+
+**Parsing Guidance**
+
+```python
+# Safe array iteration (always present)
+for agent in data.get("agents", []):
+    process(agent)
+
+# Check optional fields
+if "_agent_hints" in data:
+    hints = data["_agent_hints"]
+
+# Check error state
+if not data["success"]:
+    code = data.get("error_code", "UNKNOWN")
+    msg = data.get("error", "No error message")
+```
+
+---
+
 ### Robot Flag Quick Reference
 
 **State Inspection Commands:**
