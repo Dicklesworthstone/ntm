@@ -100,6 +100,7 @@ type LayoutDimensions struct {
 	ShowModelCol   bool
 	ShowAgeCol     bool
 	ShowCmdCol     bool
+	HiddenColCount int // Number of columns hidden due to narrow width
 }
 
 // CalculateLayout returns dimensions for the given width and height
@@ -118,6 +119,19 @@ func CalculateLayout(width, height int) LayoutDimensions {
 	dims.ShowModelCol = width >= DesktopThreshold
 	dims.ShowAgeCol = width >= DesktopThreshold
 	dims.ShowCmdCol = width >= UltraWideThreshold
+
+	// Calculate hidden column count for header indicator
+	// Only count columns that are rendered in the header: Context, Model, Cmd
+	dims.HiddenColCount = 0
+	if !dims.ShowContextCol {
+		dims.HiddenColCount++
+	}
+	if !dims.ShowModelCol {
+		dims.HiddenColCount++
+	}
+	if !dims.ShowCmdCol {
+		dims.HiddenColCount++
+	}
 
 	switch mode {
 	case LayoutMobile:
@@ -820,6 +834,15 @@ func RenderTableHeader(dims LayoutDimensions, t theme.Theme) string {
 
 	if dims.ShowCmdCol {
 		parts = append(parts, headerStyle.Width(20).Render("COMMAND"))
+	}
+
+	// Add hidden column indicator when columns are hidden due to narrow width
+	if dims.HiddenColCount > 0 {
+		hiddenIndicator := lipgloss.NewStyle().
+			Foreground(t.Overlay).
+			Italic(true).
+			Render(fmt.Sprintf("+%d hidden", dims.HiddenColCount))
+		parts = append(parts, hiddenIndicator)
 	}
 
 	return strings.Join(parts, " ")

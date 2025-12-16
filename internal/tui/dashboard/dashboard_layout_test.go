@@ -1128,3 +1128,139 @@ func TestTruncateRunes(t *testing.T) {
 		})
 	}
 }
+
+// TestHiddenColCountCalculation verifies that HiddenColCount is calculated correctly
+// based on terminal width and column visibility thresholds.
+func TestHiddenColCountCalculation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		width          int
+		wantHiddenCols int
+		wantContext    bool
+		wantModel      bool
+		wantCmd        bool
+	}{
+		{
+			name:           "narrow_hides_all",
+			width:          80, // Below TabletThreshold (100)
+			wantHiddenCols: 3,  // Context, Model, Cmd all hidden
+			wantContext:    false,
+			wantModel:      false,
+			wantCmd:        false,
+		},
+		{
+			name:           "tablet_shows_context",
+			width:          TabletThreshold, // 100
+			wantHiddenCols: 2,               // Model and Cmd hidden
+			wantContext:    true,
+			wantModel:      false,
+			wantCmd:        false,
+		},
+		{
+			name:           "desktop_shows_model",
+			width:          DesktopThreshold, // 140
+			wantHiddenCols: 1,                // Only Cmd hidden
+			wantContext:    true,
+			wantModel:      true,
+			wantCmd:        false,
+		},
+		{
+			name:           "ultrawide_shows_all",
+			width:          UltraWideThreshold, // 180
+			wantHiddenCols: 0,                  // Nothing hidden
+			wantContext:    true,
+			wantModel:      true,
+			wantCmd:        true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dims := CalculateLayout(tc.width, 30)
+
+			if dims.HiddenColCount != tc.wantHiddenCols {
+				t.Errorf("width %d: HiddenColCount = %d, want %d",
+					tc.width, dims.HiddenColCount, tc.wantHiddenCols)
+			}
+			if dims.ShowContextCol != tc.wantContext {
+				t.Errorf("width %d: ShowContextCol = %v, want %v",
+					tc.width, dims.ShowContextCol, tc.wantContext)
+			}
+			if dims.ShowModelCol != tc.wantModel {
+				t.Errorf("width %d: ShowModelCol = %v, want %v",
+					tc.width, dims.ShowModelCol, tc.wantModel)
+			}
+			if dims.ShowCmdCol != tc.wantCmd {
+				t.Errorf("width %d: ShowCmdCol = %v, want %v",
+					tc.width, dims.ShowCmdCol, tc.wantCmd)
+			}
+		})
+	}
+}
+
+// TestRenderTableHeaderHiddenIndicator verifies that the header shows "+N hidden"
+// when columns are hidden due to narrow width.
+func TestRenderTableHeaderHiddenIndicator(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		width         int
+		expectHidden  bool
+		expectedCount int
+	}{
+		{
+			name:          "narrow_shows_hidden_indicator",
+			width:         80,
+			expectHidden:  true,
+			expectedCount: 3,
+		},
+		{
+			name:          "tablet_shows_hidden_indicator",
+			width:         TabletThreshold,
+			expectHidden:  true,
+			expectedCount: 2,
+		},
+		{
+			name:          "desktop_shows_hidden_indicator",
+			width:         DesktopThreshold,
+			expectHidden:  true,
+			expectedCount: 1,
+		},
+		{
+			name:          "ultrawide_no_hidden_indicator",
+			width:         UltraWideThreshold,
+			expectHidden:  false,
+			expectedCount: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := newTestModel(tc.width)
+			dims := CalculateLayout(tc.width, 30)
+			header := RenderTableHeader(dims, m.theme)
+			plain := status.StripANSI(header)
+
+			expectedIndicator := fmt.Sprintf("+%d hidden", tc.expectedCount)
+			hasIndicator := strings.Contains(plain, expectedIndicator)
+
+			if tc.expectHidden && !hasIndicator {
+				t.Errorf("width %d: expected header to contain %q, got %q",
+					tc.width, expectedIndicator, plain)
+			}
+			if !tc.expectHidden && strings.Contains(plain, "hidden") {
+				t.Errorf("width %d: expected no hidden indicator, but found one in %q",
+					tc.width, plain)
+			}
+		})
+	}
+}
