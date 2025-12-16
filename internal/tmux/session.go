@@ -573,8 +573,10 @@ func (c *Client) SendKeys(target, keys string, enter bool) error {
 				// or just check the rune starting at 'end'.
 				// If keys[end] is a continuation byte (top two bits are 10xxxxxx), back up.
 				// UTF-8 continuation bytes are 0x80-0xBF (10000000-10111111).
-				for end > start && (keys[end]&0xC0 == 0x80) {
-					end--
+				if end < len(keys) {
+					for end > start && (keys[end]&0xC0 == 0x80) {
+						end--
+					}
 				}
 			}
 
