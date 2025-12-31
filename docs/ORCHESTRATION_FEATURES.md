@@ -4,6 +4,49 @@
 > NTM's next-generation orchestration capabilities. It serves as the authoritative
 > reference for the feature set and should be updated as implementation proceeds.
 
+**Document Version**: 2.0 (2025-12-30)
+
+## Revision History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 2.0 | 2025-12-30 | Major revision: Added state transition hysteresis, enhanced wait command with error handling, Agent Mail integration for alerts, configurable scoring weights, sticky routing, parallel step execution, conditional logic, loop constructs, output parsing, pipeline notifications |
+| 1.0 | 2025-12-30 | Initial design document |
+
+---
+
+## Key Improvements in v2.0
+
+### Activity Detection
+- **State Transition Hysteresis**: Prevents rapid state flapping by requiring 2s stability before transition (except ERROR which transitions immediately)
+- **Unicode & ANSI Handling**: Proper character counting with escape sequence stripping
+- **Enhanced Wait Command**: Error handling with `--exit-on-error`, composed conditions, partial wait support
+
+### Health & Resilience
+- **Soft vs Hard Restart**: Tries soft restart (Ctrl+C) before hard restart (kill + relaunch)
+- **Agent Mail Integration**: Health alerts sent via Agent Mail for multi-agent awareness
+- **Context Loss Notification**: Notifies when hard restart causes context loss
+
+### Smart Routing
+- **Configurable Scoring Weights**: Users can tune the 40%/40%/20% balance via config
+- **Sticky Routing Strategy**: Prefers same agent for related tasks (context affinity)
+- **Agent Mail Reservation Integration**: File reservations boost agent scores
+
+### Output Synthesis
+- **Structured Extraction**: Parse code blocks, JSON, file paths from agent output
+- **Activity Summary Generation**: Per-agent reports of what was accomplished
+
+### CASS Injection
+- **Topic Filtering**: Exclude irrelevant historical context by category
+- **Smart Placement**: Context injection format varies by agent type
+
+### Workflow Pipelines (Major Enhancements)
+- **Parallel Step Execution**: Run multiple steps concurrently on different agents
+- **Conditional Logic**: `when:` clauses with full expression evaluation
+- **Loop Constructs**: for-each, while, and times loops with break/continue
+- **Output Parsing**: Extract JSON fields, regex captures from step outputs
+- **Pipeline Notifications**: Desktop, webhook, and Agent Mail on completion/failure
+
 ## Executive Summary
 
 NTM currently excels at **infrastructure** (spawning agents, sending prompts, capturing output)
@@ -691,9 +734,10 @@ Complex tasks require multiple steps, different agents, waiting for completion, 
 
 Define workflows in YAML/TOML and execute them automatically.
 
-### Workflow Schema
+### Workflow Schema (v2.0)
 
 ```yaml
+schema_version: "2.0"
 name: feature-implementation
 description: Design → Implement → Test → Review
 version: "1.0"
@@ -702,6 +746,15 @@ vars:
   feature_name:
     description: "Name of the feature to implement"
     required: true
+    type: string
+  run_tests:
+    default: true
+    type: boolean
+
+settings:
+  timeout: 30m
+  notify_on_complete: true
+  notify_on_error: true
 
 steps:
   - id: design
@@ -710,52 +763,129 @@ steps:
     route: least-loaded
     prompt: |
       Design the architecture for: ${vars.feature_name}
-
-      Consider:
-      - Data models
-      - API endpoints
-      - Error handling
     wait: completion
     timeout: 5m
+    output_var: design_doc      # Store output in variable
+    output_parse: none          # or json, yaml, lines
 
-  - id: implement
-    name: "Implementation"
-    agent: codex
-    depends_on: [design]
-    prompt: |
-      Implement this design:
+  # PARALLEL STEPS - run concurrently
+  - id: parallel_impl
+    parallel:
+      - id: backend
+        agent: codex
+        prompt: Implement backend for: ${vars.design_doc}
+      - id: frontend
+        agent: claude
+        prompt: Implement frontend for: ${vars.design_doc}
 
-      ${steps.design.output}
-
-      Write clean, tested code.
-    wait: completion
-    timeout: 10m
-
+  # CONDITIONAL STEP - skip if condition false
   - id: test
     name: "Testing"
+    when: ${vars.run_tests}    # Only run if run_tests is true
     agent: gemini
-    depends_on: [implement]
+    depends_on: [parallel_impl]
     prompt: |
-      Write comprehensive tests for:
-
-      ${steps.implement.output}
-    wait: completion
-    timeout: 5m
+      Test these implementations:
+      Backend: ${steps.backend.output}
+      Frontend: ${steps.frontend.output}
     on_error: retry
     retry_count: 2
 
   - id: review
-    name: "Code Review"
-    agent: claude
-    depends_on: [implement, test]
-    prompt: |
-      Review this implementation:
+    depends_on: [parallel_impl, test]
+    prompt: Review all changes
+```
 
-      Code: ${steps.implement.output}
-      Tests: ${steps.test.output}
+### Parallel Steps
 
-      Identify issues and suggest improvements.
-    wait: completion
+Run multiple steps concurrently on different agents:
+
+```yaml
+- id: research_phase
+  parallel:
+    - id: market_research
+      agent: claude
+      prompt: Research market trends
+    - id: tech_research
+      agent: codex
+      prompt: Research technical options
+    - id: competitor_analysis
+      agent: gemini
+      prompt: Analyze competitors
+  # All three run simultaneously, next step waits for all
+
+- id: synthesis
+  depends_on: [research_phase]
+  prompt: |
+    Synthesize findings:
+    ${steps.market_research.output}
+    ${steps.tech_research.output}
+    ${steps.competitor_analysis.output}
+```
+
+### Conditional Execution
+
+Skip steps based on conditions:
+
+```yaml
+- id: check_env
+  prompt: Return the environment name
+  output_var: env
+  output_parse: first_line
+
+- id: prod_deploy
+  when: ${vars.env} == "production"
+  prompt: Deploy to production with full validation
+
+- id: staging_deploy
+  when: ${vars.env} != "production"
+  prompt: Quick deploy to staging
+```
+
+Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `AND`, `OR`, `NOT`, `contains`
+
+### Loop Constructs
+
+Iterate over collections:
+
+```yaml
+# For-each loop
+- id: process_files
+  loop:
+    items: ${vars.files}
+    as: file
+  steps:
+    - id: process
+      prompt: Process ${loop.file}
+
+# Access loop variables: ${loop.file}, ${loop.index}, ${loop.count}
+
+# While loop
+- id: poll
+  loop:
+    while: ${vars.status} != "ready"
+    max_iterations: 10
+    delay: 30s
+  steps:
+    - id: check
+      prompt: Check status
+      output_var: status
+```
+
+### Output Parsing
+
+Extract structured data from step outputs:
+
+```yaml
+- id: get_config
+  prompt: Return config as JSON
+  output_var: config
+  output_parse: json           # Parse as JSON
+
+- id: use_config
+  prompt: Use port ${vars.config.port}  # Access JSON fields!
+
+# Parsing modes: none, json, yaml, lines, first_line, regex
 ```
 
 ### Execution Model
