@@ -116,24 +116,22 @@ func (g *DependencyGraph) Validate() []DependencyError {
 	return errors
 }
 
-// detectCycles finds all cycles in the dependency graph using Tarjan's algorithm
+// detectCycles finds all cycles in the dependency graph using DFS
 func (g *DependencyGraph) detectCycles() [][]string {
 	var cycles [][]string
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)
 	path := make([]string, 0)
 
-	var dfs func(node string) bool
-	dfs = func(node string) bool {
+	var dfs func(node string)
+	dfs = func(node string) {
 		visited[node] = true
 		recStack[node] = true
 		path = append(path, node)
 
 		for _, dep := range g.edges[node] {
 			if !visited[dep] {
-				if dfs(dep) {
-					return true
-				}
+				dfs(dep)
 			} else if recStack[dep] {
 				// Found cycle - extract it
 				cycleStart := -1
@@ -154,7 +152,6 @@ func (g *DependencyGraph) detectCycles() [][]string {
 
 		path = path[:len(path)-1]
 		recStack[node] = false
-		return false
 	}
 
 	for node := range g.steps {

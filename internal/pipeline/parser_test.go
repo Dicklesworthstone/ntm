@@ -414,6 +414,38 @@ func TestValidate_CircularDependency(t *testing.T) {
 	}
 }
 
+func TestValidate_CycleWithExternalDependency(t *testing.T) {
+	t.Parallel()
+
+	// This tests the bug where a node depending on a cycle member
+	// was incorrectly reported as part of a cycle
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{ID: "a", Prompt: "test", DependsOn: []string{"b"}}, // Part of cycle
+			{ID: "b", Prompt: "test", DependsOn: []string{"a"}}, // Part of cycle
+			{ID: "c", Prompt: "test", DependsOn: []string{"a"}}, // Depends on cycle, but NOT part of cycle
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for circular dependency")
+	}
+
+	// Should have exactly 1 cycle error (a -> b -> a), not 2
+	cycleErrors := 0
+	for _, e := range result.Errors {
+		if e.Field == "depends_on" {
+			cycleErrors++
+		}
+	}
+	if cycleErrors != 1 {
+		t.Errorf("expected exactly 1 cycle error, got %d", cycleErrors)
+	}
+}
+
 func TestValidate_ValidWorkflow(t *testing.T) {
 	t.Parallel()
 
