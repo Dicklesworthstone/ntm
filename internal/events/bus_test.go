@@ -451,3 +451,67 @@ func TestEventBus_ConcurrentSubscribe(t *testing.T) {
 		t.Errorf("expected 50 subscribers, got %d", bus.SubscriberCount("test_event"))
 	}
 }
+
+func TestEventBus_UnsubscribeMultiple(t *testing.T) {
+	t.Parallel()
+
+	bus := NewEventBus(10)
+	var received1, received2, received3 atomic.Int32
+
+	// Subscribe 3 handlers
+	unsub1 := bus.Subscribe("test_event", func(e BusEvent) {
+		received1.Add(1)
+	})
+	unsub2 := bus.Subscribe("test_event", func(e BusEvent) {
+		received2.Add(1)
+	})
+	unsub3 := bus.Subscribe("test_event", func(e BusEvent) {
+		received3.Add(1)
+	})
+
+	// Verify all 3 work
+	event := BaseEvent{Type: "test_event", Timestamp: time.Now()}
+	bus.PublishSync(event)
+
+	if received1.Load() != 1 || received2.Load() != 1 || received3.Load() != 1 {
+		t.Errorf("all handlers should have received, got %d, %d, %d",
+			received1.Load(), received2.Load(), received3.Load())
+	}
+
+	// Unsubscribe #1 (first), then verify #2 and #3 still work correctly
+	unsub1()
+	bus.PublishSync(event)
+
+	if received1.Load() != 1 { // Should NOT have increased
+		t.Errorf("handler 1 should not receive after unsubscribe, got %d", received1.Load())
+	}
+	if received2.Load() != 2 || received3.Load() != 2 {
+		t.Errorf("handlers 2 and 3 should have received, got %d and %d",
+			received2.Load(), received3.Load())
+	}
+
+	// Unsubscribe #3 (last), then verify #2 still works
+	unsub3()
+	bus.PublishSync(event)
+
+	if received3.Load() != 2 { // Should NOT have increased
+		t.Errorf("handler 3 should not receive after unsubscribe, got %d", received3.Load())
+	}
+	if received2.Load() != 3 {
+		t.Errorf("handler 2 should have received, got %d", received2.Load())
+	}
+
+	// Unsubscribe #2 (middle)
+	unsub2()
+	bus.PublishSync(event)
+
+	if received2.Load() != 3 { // Should NOT have increased
+		t.Errorf("handler 2 should not receive after unsubscribe, got %d", received2.Load())
+	}
+
+	// Verify subscriber count is 0
+	if bus.SubscriberCount("test_event") != 0 {
+		t.Errorf("expected 0 subscribers after all unsubscribed, got %d",
+			bus.SubscriberCount("test_event"))
+	}
+}

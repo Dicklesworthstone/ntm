@@ -149,7 +149,7 @@ func Validate(w *Workflow) ValidationResult {
 	// Validate steps
 	stepIDs := make(map[string]bool)
 	for i, step := range w.Steps {
-		validateStep(&step, i, stepIDs, &result)
+		validateStep(&step, fmt.Sprintf("steps[%d]", i), stepIDs, &result)
 	}
 
 	// Check for dependency cycles
@@ -178,8 +178,7 @@ func (r *ValidationResult) addWarning(e ParseError) {
 	r.Warnings = append(r.Warnings, e)
 }
 
-func validateStep(step *Step, index int, stepIDs map[string]bool, result *ValidationResult) {
-	stepField := fmt.Sprintf("steps[%d]", index)
+func validateStep(step *Step, stepField string, stepIDs map[string]bool, result *ValidationResult) {
 
 	// Required: ID
 	if step.ID == "" {
@@ -302,7 +301,7 @@ func validateStep(step *Step, index int, stepIDs map[string]bool, result *Valida
 
 	// Validate parallel sub-steps
 	for j, pStep := range step.Parallel {
-		validateStep(&pStep, j, stepIDs, result)
+		validateStep(&pStep, fmt.Sprintf("%s.parallel[%d]", stepField, j), stepIDs, result)
 	}
 
 	// Validate loop configuration
@@ -321,7 +320,7 @@ func validateStep(step *Step, index int, stepIDs map[string]bool, result *Valida
 			})
 		}
 		for j, lStep := range step.Loop.Steps {
-			validateStep(&lStep, j, stepIDs, result)
+			validateStep(&lStep, fmt.Sprintf("%s.loop.steps[%d]", stepField, j), stepIDs, result)
 		}
 	}
 }
@@ -364,7 +363,10 @@ func detectCycles(steps []Step) [][]string {
 					}
 				}
 				if cycleStart >= 0 {
-					cycle := append(path[cycleStart:], dep)
+					// Create a new slice to avoid corrupting path's backing array
+					cycle := make([]string, len(path)-cycleStart+1)
+					copy(cycle, path[cycleStart:])
+					cycle[len(cycle)-1] = dep
 					cycles = append(cycles, cycle)
 				}
 				return true

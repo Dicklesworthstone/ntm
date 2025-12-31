@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,9 +22,16 @@ type EventHandler func(BusEvent)
 // UnsubscribeFunc is returned from Subscribe and can be called to unsubscribe
 type UnsubscribeFunc func()
 
+// handlerEntry wraps a handler with a unique ID for safe unsubscription
+type handlerEntry struct {
+	id      uint64
+	handler EventHandler
+}
+
 // EventBus provides a centralized pub/sub system for NTM events
 type EventBus struct {
-	subscribers map[string][]EventHandler
+	subscribers map[string][]handlerEntry
+	nextID      atomic.Uint64
 	mu          sync.RWMutex
 	history     *ring.Ring
 	historySize int
@@ -36,7 +44,7 @@ func NewEventBus(historySize int) *EventBus {
 		historySize = 100 // Default history size
 	}
 	return &EventBus{
-		subscribers: make(map[string][]EventHandler),
+		subscribers: make(map[string][]handlerEntry),
 		history:     ring.New(historySize),
 		historySize: historySize,
 	}
@@ -51,18 +59,22 @@ func (b *EventBus) Subscribe(eventType string, handler EventHandler) Unsubscribe
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.subscribers[eventType] = append(b.subscribers[eventType], handler)
-	handlerIdx := len(b.subscribers[eventType]) - 1
+	id := b.nextID.Add(1)
+	entry := handlerEntry{id: id, handler: handler}
+	b.subscribers[eventType] = append(b.subscribers[eventType], entry)
 
-	// Return unsubscribe function
+	// Return unsubscribe function that finds handler by ID
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		handlers := b.subscribers[eventType]
-		if handlerIdx < len(handlers) {
-			// Remove handler by replacing with last and truncating
-			handlers[handlerIdx] = handlers[len(handlers)-1]
-			b.subscribers[eventType] = handlers[:len(handlers)-1]
+		for i, h := range handlers {
+			if h.id == id {
+				// Remove handler by replacing with last and truncating
+				handlers[i] = handlers[len(handlers)-1]
+				b.subscribers[eventType] = handlers[:len(handlers)-1]
+				return
+			}
 		}
 	}
 }
@@ -83,17 +95,17 @@ func (b *EventBus) Publish(event BusEvent) {
 	// Get handlers under read lock
 	b.mu.RLock()
 	eventType := event.EventType()
-	handlers := make([]EventHandler, 0, len(b.subscribers[eventType])+len(b.subscribers["*"]))
-	handlers = append(handlers, b.subscribers[eventType]...)
-	handlers = append(handlers, b.subscribers["*"]...)
+	entries := make([]handlerEntry, 0, len(b.subscribers[eventType])+len(b.subscribers["*"]))
+	entries = append(entries, b.subscribers[eventType]...)
+	entries = append(entries, b.subscribers["*"]...)
 	b.mu.RUnlock()
 
 	// Call handlers outside of lock
-	for _, handler := range handlers {
+	for _, entry := range entries {
 		// Run handler in goroutine for non-blocking publish
 		go func(h EventHandler) {
 			h(event)
-		}(handler)
+		}(entry.handler)
 	}
 }
 
@@ -108,19 +120,19 @@ func (b *EventBus) PublishSync(event BusEvent) {
 	// Get handlers under read lock
 	b.mu.RLock()
 	eventType := event.EventType()
-	handlers := make([]EventHandler, 0, len(b.subscribers[eventType])+len(b.subscribers["*"]))
-	handlers = append(handlers, b.subscribers[eventType]...)
-	handlers = append(handlers, b.subscribers["*"]...)
+	entries := make([]handlerEntry, 0, len(b.subscribers[eventType])+len(b.subscribers["*"]))
+	entries = append(entries, b.subscribers[eventType]...)
+	entries = append(entries, b.subscribers["*"]...)
 	b.mu.RUnlock()
 
 	// Call handlers synchronously
 	var wg sync.WaitGroup
-	for _, handler := range handlers {
+	for _, entry := range entries {
 		wg.Add(1)
 		go func(h EventHandler) {
 			defer wg.Done()
 			h(event)
-		}(handler)
+		}(entry.handler)
 	}
 	wg.Wait()
 }
