@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -269,6 +270,43 @@ Shell Integration:
 				os.Exit(1)
 			}
 			return
+		}
+		if robotWait != "" {
+			// Parse timeout and poll interval
+			timeout, err := time.ParseDuration(robotWaitTimeout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid timeout '%s': %v\n", robotWaitTimeout, err)
+				os.Exit(2)
+			}
+			poll, err := time.ParseDuration(robotWaitPoll)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid poll interval '%s': %v\n", robotWaitPoll, err)
+				os.Exit(2)
+			}
+			// Parse pane filter
+			var paneFilter []int
+			if robotWaitPanes != "" {
+				for _, p := range strings.Split(robotWaitPanes, ",") {
+					idx, err := strconv.Atoi(strings.TrimSpace(p))
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: invalid pane index '%s': %v\n", p, err)
+						os.Exit(2)
+					}
+					paneFilter = append(paneFilter, idx)
+				}
+			}
+			opts := robot.WaitOptions{
+				Session:      robotWait,
+				Condition:    robotWaitUntil,
+				Timeout:      timeout,
+				PollInterval: poll,
+				PaneIndices:  paneFilter,
+				AgentType:    robotWaitType,
+				WaitForAny:   robotWaitAny,
+				ExitOnError:  robotWaitOnError,
+			}
+			exitCode := robot.PrintWait(opts)
+			os.Exit(exitCode)
 		}
 		if robotTail != "" {
 			// Parse pane filter
@@ -662,6 +700,16 @@ var (
 	// Robot-activity flags for agent activity detection
 	robotActivity     string // session name for activity query
 	robotActivityType string // filter by agent type (claude, codex, gemini)
+
+	// Robot-wait flags for waiting on agent states
+	robotWait        string // session name for wait
+	robotWaitUntil   string // wait condition: idle, complete, generating, healthy
+	robotWaitTimeout string // timeout (e.g., "30s", "5m")
+	robotWaitPoll    string // poll interval (e.g., "2s", "500ms")
+	robotWaitPanes   string // comma-separated pane indices
+	robotWaitType    string // filter by agent type
+	robotWaitAny     bool   // wait for ANY agent (vs ALL)
+	robotWaitOnError bool   // exit immediately on error state
 )
 
 func init() {
@@ -789,6 +837,16 @@ func init() {
 	rootCmd.Flags().StringVar(&robotActivity, "robot-activity", "", "Get agent activity state (idle/busy/error). Required: SESSION. Example: ntm --robot-activity=myproject")
 	rootCmd.Flags().StringVar(&robotActivityType, "activity-type", "", "Filter by agent type: claude, codex, gemini. Optional with --robot-activity. Example: --activity-type=claude")
 
+	// Robot-wait flags for waiting on agent states
+	rootCmd.Flags().StringVar(&robotWait, "robot-wait", "", "Wait for agents to reach state. Required: SESSION. Example: ntm --robot-wait=myproject --wait-until=idle")
+	rootCmd.Flags().StringVar(&robotWaitUntil, "wait-until", "idle", "Wait condition: idle, complete, generating, healthy. Optional with --robot-wait. Example: --wait-until=idle")
+	rootCmd.Flags().StringVar(&robotWaitTimeout, "wait-timeout", "5m", "Maximum wait time. Optional with --robot-wait. Example: --wait-timeout=2m")
+	rootCmd.Flags().StringVar(&robotWaitPoll, "wait-poll", "2s", "Polling interval. Optional with --robot-wait. Example: --wait-poll=500ms")
+	rootCmd.Flags().StringVar(&robotWaitPanes, "wait-panes", "", "Comma-separated pane indices. Optional with --robot-wait. Example: --wait-panes=1,2")
+	rootCmd.Flags().StringVar(&robotWaitType, "wait-type", "", "Filter by agent type: claude, codex, gemini. Optional with --robot-wait. Example: --wait-type=claude")
+	rootCmd.Flags().BoolVar(&robotWaitAny, "wait-any", false, "Wait for ANY agent instead of ALL. Optional with --robot-wait")
+	rootCmd.Flags().BoolVar(&robotWaitOnError, "wait-exit-on-error", false, "Exit immediately if ERROR state detected. Optional with --robot-wait")
+
 	// Sync version info with robot package
 	robot.Version = Version
 	robot.Commit = Commit
@@ -810,6 +868,7 @@ func init() {
 		newRotateCmd(),
 		newQuotaCmd(),
 		newPipelineCmd(),
+		newWaitCmd(),
 		newMailCmd(),
 		newPluginsCmd(),
 
