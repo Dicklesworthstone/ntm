@@ -28,6 +28,7 @@ type ExecutorConfig struct {
 	ProgressInterval time.Duration // Interval for progress updates (default: 1s)
 	DryRun           bool          // If true, validate but don't execute
 	Verbose          bool          // Enable verbose logging
+	RunID            string        // Optional: pre-generated run ID (if empty, one is generated)
 }
 
 // DefaultExecutorConfig returns sensible defaults
@@ -88,8 +89,12 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	defer timeoutCancel()
 
 	// Initialize execution state
+	runID := e.config.RunID
+	if runID == "" {
+		runID = generateRunID()
+	}
 	e.state = &ExecutionState{
-		RunID:      generateRunID(),
+		RunID:      runID,
 		WorkflowID: workflow.Name,
 		Status:     StatusRunning,
 		StartedAt:  time.Now(),
@@ -652,141 +657,41 @@ func (e *Executor) resolvePrompt(step *Step) (string, error) {
 	return "", fmt.Errorf("step has no prompt or prompt_file")
 }
 
-// substituteVariables replaces ${var} references with values
+// substituteVariables replaces ${var} references with values.
+// Uses the Substitutor for full variable resolution including:
+// - Nested field access (${vars.data.nested.field})
+// - Default values (${vars.x | "default"})
+// - Escaping (\${literal})
+// - Loop variables (${loop.item}, ${loop.index})
 func (e *Executor) substituteVariables(s string) string {
-	// Pattern: ${vars.name}, ${steps.id.output}, ${env.NAME}, ${session}, etc.
-	varPattern := regexp.MustCompile(`\$\{([^}]+)\}`)
-
-	return varPattern.ReplaceAllStringFunc(s, func(match string) string {
-		// Extract reference (strip ${ and })
-		ref := match[2 : len(match)-1]
-		parts := strings.Split(ref, ".")
-
-		switch parts[0] {
-		case "vars":
-			if len(parts) >= 2 {
-				if val, ok := e.state.Variables[parts[1]]; ok {
-					return fmt.Sprintf("%v", val)
-				}
-			}
-		case "steps":
-			if len(parts) >= 3 {
-				key := strings.Join(parts[:3], ".")
-				if val, ok := e.state.Variables[key]; ok {
-					return fmt.Sprintf("%v", val)
-				}
-			}
-		case "env":
-			if len(parts) >= 2 {
-				return os.Getenv(parts[1])
-			}
-		case "session":
-			return e.config.Session
-		case "run_id":
-			return e.state.RunID
-		case "timestamp":
-			return time.Now().Format(time.RFC3339)
-		case "workflow":
-			return e.state.WorkflowID
-		}
-
-		return match // Return original if not found
-	})
+	sub := NewSubstitutor(e.state, e.config.Session, e.state.WorkflowID)
+	result, _ := sub.Substitute(s)
+	return result
 }
 
-// evaluateCondition evaluates a when condition
-// Returns true if step should be SKIPPED
+// evaluateCondition evaluates a when condition.
+// Returns true if step should be SKIPPED.
+// Uses ConditionEvaluator for comprehensive condition support:
+// - Boolean truthy check
+// - Equality operators (==, !=)
+// - Comparison operators (>, <, >=, <=)
+// - Contains operator (contains)
+// - Logical operators (AND, OR, NOT)
+// - Type coercion for numeric comparisons
 func (e *Executor) evaluateCondition(condition string) (bool, error) {
-	// Substitute variables first
-	evaluated := e.substituteVariables(condition)
-
-	// Simple condition evaluation
-	// Support: "value", "!value", "value == 'x'", "value != 'x'"
-	evaluated = strings.TrimSpace(evaluated)
-
-	// Negation
-	if strings.HasPrefix(evaluated, "!") {
-		inner := strings.TrimPrefix(evaluated, "!")
-		result, err := e.evaluateCondition(inner)
-		return !result, err
-	}
-
-	// Equality checks
-	if strings.Contains(evaluated, "==") {
-		parts := strings.SplitN(evaluated, "==", 2)
-		left := strings.TrimSpace(parts[0])
-		right := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
-		return left != right, nil // Skip if NOT equal
-	}
-	if strings.Contains(evaluated, "!=") {
-		parts := strings.SplitN(evaluated, "!=", 2)
-		left := strings.TrimSpace(parts[0])
-		right := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
-		return left == right, nil // Skip if equal
-	}
-
-	// Truthy check
-	lower := strings.ToLower(evaluated)
-	switch lower {
-	case "", "false", "0", "no", "null", "nil":
-		return true, nil // Skip
-	default:
-		return false, nil // Don't skip (condition is truthy)
-	}
+	sub := NewSubstitutor(e.state, e.config.Session, e.state.WorkflowID)
+	return EvaluateCondition(condition, sub)
 }
 
-// parseOutput parses step output according to the parse configuration
+// parseOutput parses step output according to the parse configuration.
+// Uses the OutputParser for full parsing support including:
+// - JSON parsing with embedded JSON extraction
+// - YAML parsing
+// - Regex with named groups
+// - Line splitting
 func (e *Executor) parseOutput(output string, parse OutputParse) (interface{}, error) {
-	switch parse.Type {
-	case "first_line":
-		lines := strings.Split(output, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				return line, nil
-			}
-		}
-		return "", nil
-
-	case "lines":
-		lines := strings.Split(output, "\n")
-		result := make([]string, 0, len(lines))
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				result = append(result, line)
-			}
-		}
-		return result, nil
-
-	case "json":
-		// Return raw JSON string for now - let consumer parse
-		return output, nil
-
-	case "yaml":
-		// Return raw YAML string for now
-		return output, nil
-
-	case "regex":
-		if parse.Pattern == "" {
-			return nil, fmt.Errorf("regex pattern required")
-		}
-		re, err := regexp.Compile(parse.Pattern)
-		if err != nil {
-			return nil, fmt.Errorf("invalid regex: %w", err)
-		}
-		matches := re.FindStringSubmatch(output)
-		if len(matches) == 0 {
-			return nil, nil
-		}
-		if len(matches) == 1 {
-			return matches[0], nil
-		}
-		return matches[1:], nil // Return captured groups
-
-	default:
-		return output, nil
-	}
+	parser := NewOutputParser()
+	return parser.Parse(output, parse)
 }
 
 // waitForIdle waits for an agent to return to idle state
@@ -991,6 +896,11 @@ func ParseInt(s string, defaultVal int) int {
 
 // generateRunID creates a unique run ID using timestamp and random bytes
 func generateRunID() string {
+	return GenerateRunID()
+}
+
+// GenerateRunID creates a unique run ID using timestamp and random bytes (exported)
+func GenerateRunID() string {
 	timestamp := time.Now().Format("20060102-150405")
 	randBytes := make([]byte, 4)
 	if _, err := rand.Read(randBytes); err != nil {

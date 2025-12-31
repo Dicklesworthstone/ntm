@@ -194,21 +194,38 @@ Examples:
 			ctx := context.Background()
 
 			if background {
-				// Background mode - start and return
+				// Background mode - register pipeline and start execution
+				runID := pipeline.GenerateRunID()
+
+				// Reconfigure executor with the pre-generated RunID
+				execCfg.RunID = runID
+				executor = pipeline.NewExecutor(execCfg)
+
+				// Register pipeline in the registry
+				exec := &pipeline.PipelineExecution{
+					RunID:      runID,
+					WorkflowID: workflow.Name,
+					Session:    session,
+					Status:     "running",
+					StartedAt:  time.Now(),
+					Steps:      make(map[string]pipeline.PipelineStep),
+					Progress: pipeline.PipelineProgress{
+						Total:   len(workflow.Steps),
+						Pending: len(workflow.Steps),
+					},
+				}
+				pipeline.RegisterPipeline(exec)
+
 				go func() {
 					defer close(progress)
-					executor.Run(ctx, workflow, vars, progress)
+					state, _ := executor.Run(ctx, workflow, vars, progress)
+					pipeline.UpdatePipelineFromState(runID, state)
 				}()
 
-				// Wait briefly to get run ID
-				time.Sleep(200 * time.Millisecond)
-				state := executor.GetState()
-				if state != nil {
-					fmt.Printf("✓ Pipeline started in background\n")
-					fmt.Printf("   Run ID: %s\n", state.RunID)
-					fmt.Printf("\n   Check status: ntm pipeline status %s\n", state.RunID)
-					fmt.Printf("   Cancel: ntm pipeline cancel %s\n", state.RunID)
-				}
+				fmt.Printf("✓ Pipeline started in background\n")
+				fmt.Printf("   Run ID: %s\n", runID)
+				fmt.Printf("\n   Check status: ntm pipeline status %s\n", runID)
+				fmt.Printf("   Cancel: ntm pipeline cancel %s\n", runID)
 				return nil
 			}
 
@@ -466,17 +483,86 @@ func printProgressEvent(event pipeline.ProgressEvent) {
 }
 
 func showPipelineStatus(runID string) error {
-	// For now, use JSON output and format it
-	// In a real implementation, we'd have direct access to the registry
-	fmt.Printf("Pipeline: %s\n\n", runID)
-	fmt.Println("(Use --json for detailed status)")
-	pipeline.PrintPipelineStatus(runID)
+	// Get pipeline from registry
+	exec := pipeline.GetPipelineExecution(runID)
+	if exec == nil {
+		return fmt.Errorf("pipeline %q not found (use 'ntm pipeline list' to see available pipelines)", runID)
+	}
+
+	fmt.Printf("Pipeline: %s\n", runID)
+	fmt.Printf("Workflow: %s\n", exec.WorkflowID)
+	fmt.Printf("Session:  %s\n", exec.Session)
+	fmt.Printf("Status:   %s\n", exec.Status)
+	fmt.Printf("Started:  %s\n", exec.StartedAt.Format(time.RFC3339))
+	if exec.FinishedAt != nil {
+		fmt.Printf("Finished: %s\n", exec.FinishedAt.Format(time.RFC3339))
+		fmt.Printf("Duration: %s\n", exec.FinishedAt.Sub(exec.StartedAt))
+	} else {
+		fmt.Printf("Duration: %s (running)\n", time.Since(exec.StartedAt).Round(time.Second))
+	}
+	fmt.Printf("Progress: %d/%d (%.0f%%)\n",
+		exec.Progress.Completed+exec.Progress.Failed+exec.Progress.Skipped,
+		exec.Progress.Total,
+		exec.Progress.Percent)
+
+	if len(exec.Steps) > 0 {
+		fmt.Println("\nSteps:")
+		for id, step := range exec.Steps {
+			status := step.Status
+			switch status {
+			case "completed":
+				status = "✓ completed"
+			case "failed":
+				status = "✗ failed"
+			case "running":
+				status = "▶ running"
+			case "skipped":
+				status = "⊘ skipped"
+			}
+			fmt.Printf("  [%s] %s\n", id, status)
+		}
+	}
+
+	if exec.Error != "" {
+		fmt.Printf("\nError: %s\n", exec.Error)
+	}
+
 	return nil
 }
 
 func showPipelineList() error {
+	pipelines := pipeline.GetAllPipelines()
+
+	if len(pipelines) == 0 {
+		fmt.Println("No pipelines tracked.")
+		fmt.Println("\nStart a pipeline with:")
+		fmt.Println("  ntm pipeline run workflow.yaml --session <session>")
+		return nil
+	}
+
 	fmt.Println("Tracked Pipelines")
 	fmt.Println("=================")
-	pipeline.PrintPipelineList()
+	fmt.Println()
+
+	for _, p := range pipelines {
+		status := p.Status
+		switch status {
+		case "completed":
+			status = "✓ completed"
+		case "failed":
+			status = "✗ failed"
+		case "running":
+			status = "▶ running"
+		case "cancelled":
+			status = "⊘ cancelled"
+		}
+
+		fmt.Printf("%s  [%s]\n", p.RunID, status)
+		fmt.Printf("  Workflow: %s\n", p.WorkflowID)
+		fmt.Printf("  Session:  %s\n", p.Session)
+		fmt.Printf("  Progress: %.0f%%\n", p.Progress.Percent)
+		fmt.Println()
+	}
+
 	return nil
 }

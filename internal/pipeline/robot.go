@@ -233,8 +233,14 @@ func PrintPipelineRun(opts PipelineRunOptions) int {
 	// Start execution
 	if opts.Background {
 		// Background execution - register and return immediately
+		runID := GenerateRunID()
+
+		// Configure executor with the pre-generated RunID
+		execCfg.RunID = runID
+		executor = NewExecutor(execCfg) // Recreate with RunID
+
 		exec := &PipelineExecution{
-			RunID:      generateRunID(),
+			RunID:      runID,
 			WorkflowID: workflow.Name,
 			Session:    opts.Session,
 			Status:     "running",
@@ -255,7 +261,7 @@ func PrintPipelineRun(opts PipelineRunOptions) int {
 			defer close(progress)
 
 			state, _ := executor.Run(ctx, workflow, opts.Variables, progress)
-			updatePipelineFromState(exec.RunID, state)
+			updatePipelineFromState(runID, state)
 		}()
 
 		output.RobotResponse = NewRobotResponse(true)
@@ -589,10 +595,32 @@ func registerPipeline(exec *PipelineExecution) {
 	pipelineMu.Unlock()
 }
 
+// RegisterPipeline registers a pipeline execution (exported for CLI)
+func RegisterPipeline(exec *PipelineExecution) {
+	registerPipeline(exec)
+}
+
 func getPipeline(runID string) *PipelineExecution {
 	pipelineMu.RLock()
 	defer pipelineMu.RUnlock()
 	return pipelineRegistry[runID]
+}
+
+// GetPipelineExecution returns a pipeline by run ID (exported for CLI)
+func GetPipelineExecution(runID string) *PipelineExecution {
+	return getPipeline(runID)
+}
+
+// GetAllPipelines returns all tracked pipelines (exported for CLI)
+func GetAllPipelines() []*PipelineExecution {
+	pipelineMu.RLock()
+	defer pipelineMu.RUnlock()
+
+	result := make([]*PipelineExecution, 0, len(pipelineRegistry))
+	for _, exec := range pipelineRegistry {
+		result = append(result, exec)
+	}
+	return result
 }
 
 func updatePipelineFromState(runID string, state *ExecutionState) {
@@ -610,7 +638,19 @@ func updatePipelineFromState(runID string, state *ExecutionState) {
 
 	exec.Status = string(state.Status)
 	exec.CurrentStep = state.CurrentStep
-	exec.Progress = calculateProgress(state)
+
+	// Calculate progress but preserve original Total if it was set correctly
+	newProgress := calculateProgress(state)
+	if exec.Progress.Total > newProgress.Total {
+		// Keep original total from workflow.Steps, recalculate percent
+		newProgress.Total = exec.Progress.Total
+		if newProgress.Total > 0 {
+			done := newProgress.Completed + newProgress.Failed + newProgress.Skipped
+			newProgress.Percent = float64(done) / float64(newProgress.Total) * 100
+		}
+	}
+	exec.Progress = newProgress
+
 	exec.Steps = convertSteps(state)
 
 	if !state.FinishedAt.IsZero() {
@@ -620,6 +660,11 @@ func updatePipelineFromState(runID string, state *ExecutionState) {
 	if len(state.Errors) > 0 {
 		exec.Error = state.Errors[len(state.Errors)-1].Message
 	}
+}
+
+// UpdatePipelineFromState updates a registered pipeline from execution state (exported for CLI)
+func UpdatePipelineFromState(runID string, state *ExecutionState) {
+	updatePipelineFromState(runID, state)
 }
 
 // ParsePipelineVars parses JSON variable string into map

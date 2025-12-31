@@ -200,9 +200,9 @@ func TestEvaluateCondition(t *testing.T) {
 			wantSkip:  false,
 		},
 		{
-			name:      "empty string - skip",
+			name:      "empty string - no condition means don't skip",
 			condition: "",
-			wantSkip:  true,
+			wantSkip:  false,
 		},
 		{
 			name:      "false string - skip",
@@ -324,10 +324,10 @@ func TestParseOutput(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:   "json passthrough",
+			name:   "json parsing",
 			output: `{"key": "value"}`,
 			parse:  OutputParse{Type: "json"},
-			want:   `{"key": "value"}`,
+			want:   map[string]interface{}{"key": "value"},
 		},
 		{
 			name:   "default passthrough",
@@ -367,6 +367,17 @@ func TestParseOutput(t *testing.T) {
 				for i, w := range want {
 					if gotSlice[i] != w {
 						t.Errorf("parseOutput()[%d] = %q, want %q", i, gotSlice[i], w)
+					}
+				}
+			case map[string]interface{}:
+				gotMap, ok := got.(map[string]interface{})
+				if !ok {
+					t.Errorf("parseOutput() returned %T, want map[string]interface{}", got)
+					return
+				}
+				for k, wantVal := range want {
+					if gotVal, exists := gotMap[k]; !exists || gotVal != wantVal {
+						t.Errorf("parseOutput()[%q] = %v, want %v", k, gotVal, wantVal)
 					}
 				}
 			}
