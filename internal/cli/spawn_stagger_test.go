@@ -175,10 +175,10 @@ func TestStaggerMaxDelayCalculation(t *testing.T) {
 		wantMaxDelay time.Duration
 	}{
 		{1, 0},                     // Single agent: no delay
-		{2, 90 * time.Second},      // 2 agents: max is agent 2 at 90s
-		{3, 180 * time.Second},     // 3 agents: max is agent 3 at 180s
-		{5, 360 * time.Second},     // 5 agents: max is agent 5 at 360s
-		{10, 810 * time.Second},    // 10 agents: max is agent 10 at 810s (13.5m)
+		{2, 90 * time.Second},      // 2 agents: last agent (idx 1) at 90s
+		{3, 180 * time.Second},     // 3 agents: last agent (idx 2) at 180s
+		{5, 360 * time.Second},     // 5 agents: last agent (idx 4) at 360s
+		{10, 810 * time.Second},    // 10 agents: last agent (idx 9) at 810s (13.5m)
 	}
 
 	for _, tt := range tests {
