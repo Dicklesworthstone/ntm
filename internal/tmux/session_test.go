@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // createTestSession creates a unique test session with cleanup
@@ -441,13 +442,23 @@ func TestSendKeys(t *testing.T) {
 		t.Fatalf("CapturePaneOutput failed: %v", err)
 	}
 
-	// Normalize whitespace to handle terminal line wrapping on narrow CI terminals
-	// (e.g., "hello wo\nrld" should still match "hello world")
-	normalizedOutput := strings.Join(strings.Fields(output), " ")
-	if !strings.Contains(normalizedOutput, text) {
+	// Normalize by removing all whitespace to handle terminal line wrapping on
+	// narrow CI terminals (e.g., "hello wor\nld" should still match "hello world")
+	removeAllWhitespace := func(s string) string {
+		var result []rune
+		for _, r := range s {
+			if !unicode.IsSpace(r) {
+				result = append(result, r)
+			}
+		}
+		return string(result)
+	}
+	normalizedOutput := removeAllWhitespace(output)
+	normalizedText := removeAllWhitespace(text)
+	if !strings.Contains(normalizedOutput, normalizedText) {
 		t.Logf("output: %q", output)
 		t.Logf("normalized: %q", normalizedOutput)
-		t.Errorf("output should contain %q", text)
+		t.Errorf("output should contain %q (normalized: %q)", text, normalizedText)
 	}
 }
 
