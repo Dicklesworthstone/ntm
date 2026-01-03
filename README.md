@@ -72,6 +72,10 @@ NTM transforms tmux into a **multi-agent command center**:
 4. **Persistent sessions**: Detach and reattach without losing any agent state
 5. **Quick project setup**: Create directory, initialize git, and spawn agents in a single command
 6. **Stunning TUI**: Animated gradients, visual dashboards, shimmering effects, and a beautiful command palette with Catppuccin themes
+7. **Context monitoring**: Automatic compaction detection and recovery when agents hit context limits
+8. **Multi-channel notifications**: Desktop, webhook, shell, and log notifications for important events
+9. **Conflict tracking**: Detect when multiple agents modify the same files
+10. **Event logging & analytics**: JSONL logging of all session activity for debugging and audit
 
 ### Who Benefits
 
@@ -1155,6 +1159,55 @@ The dashboard displays context usage for each agent pane:
 - **Orange**: 60-80% usage (approaching threshold)
 - **Red**: > 80% usage (warning/needs attention)
 
+### Automatic Compaction Recovery
+
+When an agent's context is compacted (conversation summarized to reduce tokens), NTM can automatically send a recovery prompt to help the agent regain project context. This prevents the disorientation that occurs when an agent loses detailed conversation history.
+
+**How It Works:**
+
+1. **Detection**: NTM monitors agent output for compaction indicators (e.g., "Conversation compacted")
+2. **Recovery Prompt**: A customizable prompt is automatically sent (default: "Reread AGENTS.md so it's still fresh in your mind. Use ultrathink.")
+3. **Bead Context**: If you use Beads for issue tracking, the recovery prompt includes current project state (bottlenecks, next actions, in-progress tasks)
+4. **Cooldown Protection**: A 30-second cooldown prevents prompt spam
+5. **Max Recoveries**: Limits per-pane recoveries (default: 5) to avoid infinite loops
+
+**Configuration:**
+
+```toml
+[context_rotation.recovery]
+enabled = true
+prompt = "Reread AGENTS.md so it's still fresh in your mind. Use ultrathink."
+cooldown_seconds = 30
+max_recoveries_per_pane = 5
+include_bead_context = true   # Include project state from bv
+```
+
+**With Bead Context Enabled:**
+
+The recovery prompt includes live project information:
+
+```
+Reread AGENTS.md so it's still fresh in your mind. Use ultrathink.
+
+# Project Context from Beads
+
+## Current Bottlenecks (resolve these to unblock progress):
+- bd-42
+
+## Recommended Next Actions:
+- [bd-45] Implement user authentication
+- [bd-47] Add unit tests for API
+
+## Project Health: healthy
+
+## Dependency Summary
+
+### Tasks In Progress:
+- [bd-43] Refactor database layer
+
+**Status**: 2 blocked, 5 ready to work on
+```
+
 ---
 
 ## Agent Mail Integration
@@ -1192,6 +1245,129 @@ Install the Agent Mail pre-commit guard to prevent commits that conflict with ot
 ntm hooks guard install
 ntm hooks guard uninstall  # Remove later
 ```
+
+---
+
+## Notifications
+
+NTM includes a comprehensive notification system that alerts you when important events occur in your agent sessions. Notifications can be delivered through multiple channels simultaneously.
+
+### Notification Channels
+
+| Channel | Description | Use Case |
+|---------|-------------|----------|
+| **Desktop** | Native OS notifications (macOS/Linux) | Immediate attention for errors/rate limits |
+| **Webhook** | HTTP POST to any URL with templated payload | Slack, Discord, custom dashboards |
+| **Shell** | Execute arbitrary shell commands | Custom integrations, logging pipelines |
+| **Log File** | Append to a log file | Audit trails, debugging |
+
+### Configuration
+
+Configure notifications in `~/.config/ntm/config.toml`:
+
+```toml
+[notifications]
+enabled = true
+# Which events trigger notifications
+events = ["agent.error", "agent.crashed", "agent.rate_limit", "rotation.needed"]
+
+[notifications.desktop]
+enabled = true
+title = "NTM"   # Title prefix for desktop notifications
+
+[notifications.webhook]
+enabled = false
+url = "https://hooks.slack.com/services/..."
+method = "POST"
+template = '{"text": "NTM: {{.Type}} - {{jsonEscape .Message}}"}'
+
+[notifications.webhook.headers]
+Authorization = "Bearer your-token"
+
+[notifications.shell]
+enabled = false
+command = "/path/to/your-handler.sh"
+pass_json = true   # Pass event as JSON via stdin
+
+[notifications.log]
+enabled = true
+path = "~/.config/ntm/notifications.log"
+```
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `agent.error` | Agent hit an error state |
+| `agent.crashed` | Agent process exited unexpectedly |
+| `agent.restarted` | Agent was auto-restarted |
+| `agent.idle` | Agent waiting for input |
+| `agent.rate_limit` | Agent hit rate limit |
+| `rotation.needed` | Account rotation recommended |
+| `session.created` | New session spawned |
+| `session.killed` | Session terminated |
+| `health.degraded` | Overall session health dropped |
+
+### Webhook Templates
+
+Webhook payloads use Go templates with access to event data:
+
+```toml
+# Slack-compatible template
+template = '''
+{
+  "text": "NTM Alert: {{.Type}}",
+  "attachments": [{
+    "color": "{{if eq .Type "agent.error"}}danger{{else}}warning{{end}}",
+    "fields": [
+      {"title": "Session", "value": "{{jsonEscape .Session}}", "short": true},
+      {"title": "Agent", "value": "{{jsonEscape .Agent}}", "short": true},
+      {"title": "Message", "value": "{{jsonEscape .Message}}"}
+    ]
+  }]
+}
+'''
+```
+
+Available template fields:
+- `{{.Type}}` - Event type (e.g., "agent.error")
+- `{{.Timestamp}}` - ISO 8601 timestamp
+- `{{.Session}}` - Session name
+- `{{.Pane}}` - Pane identifier
+- `{{.Agent}}` - Agent type (claude, codex, gemini)
+- `{{.Message}}` - Human-readable message
+- `{{.Details}}` - Map of additional details (varies by event)
+- `{{jsonEscape .Field}}` - Escape strings for safe JSON embedding
+
+### Shell Handler
+
+When `pass_json = true`, your script receives the full event as JSON via stdin:
+
+```bash
+#!/bin/bash
+# /path/to/your-handler.sh
+
+# Read JSON from stdin
+EVENT=$(cat)
+
+# Parse with jq
+TYPE=$(echo "$EVENT" | jq -r '.type')
+MESSAGE=$(echo "$EVENT" | jq -r '.message')
+SESSION=$(echo "$EVENT" | jq -r '.session')
+
+# Custom handling
+if [[ "$TYPE" == "agent.crashed" ]]; then
+    # Send to PagerDuty, restart agent, etc.
+    curl -X POST "https://your-alert-system/..."
+fi
+```
+
+Environment variables are also set for simpler scripts:
+- `NTM_EVENT_TYPE` - Event type
+- `NTM_EVENT_MESSAGE` - Message
+- `NTM_EVENT_SESSION` - Session name
+- `NTM_EVENT_PANE` - Pane ID
+- `NTM_EVENT_AGENT` - Agent type
 
 ---
 
@@ -1678,6 +1854,282 @@ If you're new to tmux, here are the key bindings (default prefix is `Ctrl+B`):
 
 ---
 
+## Auto-Scanner (UBS Integration)
+
+NTM integrates with [UBS (Ultimate Bug Scanner)](https://github.com/...) to automatically scan your project for bugs when files change. This provides continuous code quality monitoring without manual intervention.
+
+### How It Works
+
+1. **File Watching**: NTM monitors your project directory for file changes
+2. **Debouncing**: Multiple rapid changes are batched (default: 1 second delay)
+3. **Automatic Scan**: UBS is triggered on relevant file changes
+4. **Exclusions**: Common directories (`.git`, `node_modules`, `vendor`) are ignored
+
+### Configuration
+
+Configure auto-scanning in `~/.config/ntm/config.toml` or `.ntm/config.toml`:
+
+```toml
+[scanner]
+enabled = true
+ubs_path = ""              # Path to ubs binary (auto-detect if empty)
+debounce_ms = 1000         # Wait time before scanning after changes
+timeout_seconds = 60       # Max time for a scan to complete
+
+[scanner.defaults]
+timeout = "60s"
+exclude = [".git", "node_modules", "vendor", ".beads", "*.min.js", "*.min.css"]
+
+# Dashboard integration
+[scanner.dashboard]
+show_findings = true       # Display findings in dashboard
+max_display = 10           # Max findings to show
+```
+
+### Dashboard Integration
+
+When auto-scanning is enabled, the NTM dashboard displays:
+- Scan status (running, complete, error)
+- Latest scan results with severity breakdown
+- Quick access to finding details
+
+### Manual Scanning
+
+You can also trigger scans manually:
+
+```bash
+# Scan specific files
+ubs internal/cli/send.go
+
+# Scan staged files before commit
+ubs $(git diff --name-only --cached)
+
+# Language-filtered scan
+ubs --only=go internal/
+```
+
+---
+
+## Conflict Tracking
+
+NTM tracks file modifications across all agents to detect potential conflicts when multiple agents edit the same files.
+
+### How It Works
+
+1. **Change Recording**: All file modifications by agents are logged with timestamps
+2. **Conflict Detection**: When multiple agents modify the same file, a conflict is flagged
+3. **Severity Classification**:
+   - **Warning**: Two agents edited the same file
+   - **Critical**: Three or more agents, or edits within 10 minutes of each other
+
+### Viewing Conflicts
+
+```bash
+# Check for conflicts in robot mode
+ntm --robot-snapshot --since=1h | jq '.conflicts'
+```
+
+### Dashboard Integration
+
+The dashboard shows conflict indicators on affected panes, with visual severity coding (yellow for warnings, red for critical).
+
+### Prevention
+
+Use Agent Mail file reservations to prevent conflicts:
+
+```bash
+# Reserve files before editing
+ntm mail reserve myproject --agent BlueLake --paths "internal/api/*.go"
+```
+
+---
+
+## Event Logging & Analytics
+
+NTM logs all session activity to JSONL files for analytics, debugging, and audit trails.
+
+### Event Types
+
+| Category | Events |
+|----------|--------|
+| **Session** | `session_create`, `session_kill`, `session_attach` |
+| **Agent** | `agent_spawn`, `agent_add`, `agent_crash`, `agent_restart` |
+| **Communication** | `prompt_send`, `prompt_broadcast`, `interrupt` |
+| **State** | `checkpoint_create`, `checkpoint_restore`, `session_save`, `session_restore` |
+| **Templates** | `template_use` |
+| **Errors** | `error` |
+
+### Log Location
+
+Events are logged to `~/.config/ntm/events.jsonl` with automatic rotation.
+
+### Log Format
+
+```json
+{
+  "timestamp": "2025-01-02T15:04:05Z",
+  "type": "prompt_send",
+  "session": "myproject",
+  "data": {
+    "target_count": 3,
+    "prompt_length": 256,
+    "template": "code_review",
+    "estimated_tokens": 85
+  }
+}
+```
+
+### Querying Events
+
+```bash
+# View recent events
+tail -100 ~/.config/ntm/events.jsonl | jq 'select(.type == "prompt_send")'
+
+# Count events by type
+cat ~/.config/ntm/events.jsonl | jq -s 'group_by(.type) | map({type: .[0].type, count: length})'
+
+# Get session history
+cat ~/.config/ntm/events.jsonl | jq 'select(.session == "myproject")'
+```
+
+### Configuration
+
+```toml
+[events]
+enabled = true
+path = "~/.config/ntm/events.jsonl"
+max_file_size_mb = 50      # Rotate when file exceeds this size
+retention_days = 30        # Delete logs older than this
+```
+
+---
+
+## Performance Profiler
+
+NTM includes a built-in profiler for measuring startup performance and command execution times. This helps identify bottlenecks and optimize your workflow.
+
+### Enabling Profiling
+
+```bash
+# Enable for a single command
+NTM_PROFILE=1 ntm spawn myproject --cc=2
+
+# Enable globally
+export NTM_PROFILE=1
+```
+
+### Profile Output
+
+When profiling is enabled, NTM outputs timing information:
+
+```
+=== NTM Performance Profile ===
+Total Duration: 245.32ms
+Span Count: 12
+
+By Phase:
+  startup:        42.15ms (17.2%) [4 spans]
+  config:         18.50ms ( 7.5%) [2 spans]
+  command:       184.67ms (75.3%) [6 spans]
+
+Top Spans by Duration:
+  145.20ms  tmux_spawn [command]
+   38.50ms  config_load [startup]
+   25.30ms  palette_load [config]
+   18.20ms  theme_detect [startup]
+
+Recommendations:
+  ℹ [startup] Consider lazy loading palette commands
+```
+
+### JSON Output
+
+```bash
+NTM_PROFILE=1 ntm --robot-status --json 2>&1 | jq '.profile'
+```
+
+### Profile Categories
+
+- **startup**: Initial loading (config, themes, icons)
+- **config**: Configuration parsing and validation
+- **command**: Actual command execution
+- **deferred**: Lazy-loaded components
+- **shutdown**: Cleanup operations
+
+### Recommendations
+
+The profiler automatically generates recommendations based on performance data:
+- Slow startup components that could be lazy-loaded
+- Commands that exceed expected duration
+- Resource-intensive operations
+
+---
+
+## Prompt History
+
+NTM maintains a history of all prompts sent to agents, enabling replay, analysis, and debugging.
+
+### How It Works
+
+Every prompt sent via `ntm send` or the command palette is recorded with:
+- Timestamp and unique ID
+- Session and target panes
+- Full prompt text
+- Source (CLI, palette, replay)
+- Template used (if any)
+- Success/error status
+- Execution duration
+
+### Viewing History
+
+```bash
+# Get session history via robot mode
+ntm --robot-history=myproject --history-stats
+
+# Filter by time range
+ntm --robot-history=myproject --since=1h
+
+# JSON output for processing
+ntm --robot-history=myproject --json
+```
+
+### History Storage
+
+History is stored in `~/.config/ntm/history.jsonl`:
+
+```json
+{
+  "id": "1735830245123-a1b2c3d4",
+  "ts": "2025-01-02T15:04:05Z",
+  "session": "myproject",
+  "targets": ["0", "1", "2"],
+  "prompt": "Review the authentication implementation",
+  "source": "palette",
+  "template": "code_review",
+  "success": true,
+  "duration_ms": 125
+}
+```
+
+### Configuration
+
+```toml
+[history]
+enabled = true
+path = "~/.config/ntm/history.jsonl"
+max_entries = 10000        # Max entries to keep
+retention_days = 90        # Delete entries older than this
+```
+
+### Use Cases
+
+- **Debugging**: See exactly what was sent when an agent misbehaves
+- **Replay**: Re-send successful prompts to new sessions
+- **Analytics**: Track prompt patterns and agent usage
+- **Audit**: Review all instructions given to agents
+
+---
+
 ## Troubleshooting
 
 ### "tmux not found"
@@ -1986,14 +2438,33 @@ NTM uses GitHub Actions for continuous integration:
 ntm/
 ├── cmd/ntm/              # Main entry point
 ├── internal/
+│   ├── agentmail/        # Agent Mail client for multi-agent coordination
+│   ├── auth/             # Authentication and account rotation
+│   ├── bv/               # Beads/bv integration for issue tracking
+│   ├── cass/             # CASS (Cross-Agent Search System) client
+│   ├── checkpoint/       # Session checkpoint types
 │   ├── cli/              # Cobra commands and help rendering
 │   ├── config/           # TOML configuration and palette loading
+│   ├── context/          # Context window monitoring and estimation
+│   ├── events/           # Event logging framework (JSONL)
+│   ├── history/          # Prompt history tracking
+│   ├── hooks/            # Pre/post command hooks
+│   ├── notify/           # Multi-channel notifications (desktop, webhook, shell, log)
+│   ├── output/           # Formatting utilities (diff, JSON, progress)
 │   ├── palette/          # Command palette TUI with animations
+│   ├── profiler/         # Performance profiling with recommendations
+│   ├── quota/            # Rate limit and quota tracking
 │   ├── robot/            # Machine-readable JSON output for AI agents
+│   ├── rotation/         # Account rotation providers
+│   ├── scanner/          # UBS auto-scanner integration
+│   ├── startup/          # Lazy initialization framework
+│   ├── status/           # Agent status detection, compaction recovery
+│   ├── templates/        # Built-in prompt templates
 │   ├── tmux/             # Tmux session/pane/window operations
+│   ├── tracker/          # File conflict tracking across agents
 │   ├── tutorial/         # Interactive tutorial with animated slides
 │   ├── updater/          # Self-update from GitHub releases
-│   ├── watcher/          # File watching utilities
+│   ├── watcher/          # File watching with debouncing
 │   └── tui/
 │       ├── components/   # Reusable components (spinners, progress, banner)
 │       ├── dashboard/    # Interactive session dashboard
