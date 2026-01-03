@@ -1,1242 +1,1215 @@
 # NTM Improvement Plan
 
-This document outlines strategic improvements to elevate NTM from a capable power-user tool to a compelling, accessible platform for AI-assisted development.
+This document outlines strategic improvements to elevate NTM from a capable power-user tool to the definitive command center for AI-assisted development. NTM is the **cockpit** of the Agentic Coding Flywheel—the orchestration layer that coordinates all other tools in the Dicklesworthstone Stack.
 
 ---
 
 ## Table of Contents
 
 1. [Executive Summary](#executive-summary)
-2. [Integration with Existing Projects](#integration-with-existing-projects)
-3. [Web Dashboard](#web-dashboard)
-4. [Zero-Config Quick Start](#zero-config-quick-start)
-5. [Notifications System](#notifications-system)
-6. [Session Templates](#session-templates)
-7. [Intelligent Error Recovery](#intelligent-error-recovery)
-8. [IDE Integration](#ide-integration)
-9. [Agent Orchestration Patterns](#agent-orchestration-patterns)
-10. [Interactive Tutorial & Onboarding](#interactive-tutorial--onboarding)
-11. [Shareable Sessions](#shareable-sessions)
-12. [UX Polish](#ux-polish)
-13. [Implementation Roadmap](#implementation-roadmap)
+2. [The Flywheel Vision](#the-flywheel-vision)
+3. [Integration: CAAM (Coding Agent Account Manager)](#integration-caam-coding-agent-account-manager)
+4. [Integration: CASS Memory System](#integration-cass-memory-system)
+5. [Integration: SLB (Safety Guardrails)](#integration-slb-safety-guardrails)
+6. [Integration: MCP Agent Mail](#integration-mcp-agent-mail)
+7. [Unified Architecture](#unified-architecture)
+8. [Web Dashboard](#web-dashboard)
+9. [Zero-Config Quick Start](#zero-config-quick-start)
+10. [Notifications System](#notifications-system)
+11. [Session Templates](#session-templates)
+12. [Intelligent Error Recovery](#intelligent-error-recovery)
+13. [IDE Integration](#ide-integration)
+14. [Agent Orchestration Patterns](#agent-orchestration-patterns)
+15. [Interactive Tutorial & Onboarding](#interactive-tutorial--onboarding)
+16. [Shareable Sessions](#shareable-sessions)
+17. [UX Polish](#ux-polish)
+18. [Implementation Roadmap](#implementation-roadmap)
 
 ---
 
 ## Executive Summary
 
-NTM has solid foundations for multi-agent tmux session management, but several gaps limit broader adoption:
+NTM is positioned as the **central orchestration layer** in a complete AI development ecosystem. The Agentic Coding Flywheel Setup (ACFS) demonstrates this vision: NTM is one of eight coordinated tools that together transform raw compute into a productive multi-agent development environment.
 
-| Gap | Impact | Current State |
-|-----|--------|---------------|
-| No web interface | Users must watch terminal | TUI dashboard only |
-| Complex setup | High barrier to entry | Config files required |
-| Silent operation | Users miss important events | No notifications |
-| No templates | Repetitive configuration | Manual setup each time |
-| Cryptic errors | Frustration, support burden | Technical error messages |
+### The Dicklesworthstone Stack
 
-This plan addresses each gap with concrete implementation strategies.
+| Tool | Command | Purpose | NTM Role |
+|------|---------|---------|----------|
+| **NTM** | `ntm` | Agent cockpit - spawn, orchestrate, monitor | **Central hub** |
+| **MCP Agent Mail** | `am` | Inter-agent messaging & file reservations | Message routing |
+| **UBS** | `ubs` | Bug scanning with quality guardrails | Pre-commit checks |
+| **Beads Viewer** | `bv` | Task management with graph analysis | Work assignment |
+| **CASS** | `cass` | Session search across all agents | Historical context |
+| **CASS Memory** | `cm` | Procedural memory for agents | Rule injection |
+| **CAAM** | `caam` | Account switching & rate limit failover | Auth orchestration |
+| **SLB** | `slb` | Two-person rule for dangerous commands | Safety layer |
+
+### Current Gaps & Improvements
+
+| Gap | Impact | Solution |
+|-----|--------|----------|
+| No account orchestration | Agents hit rate limits, manual switching | CAAM integration |
+| No persistent memory | Agents re-learn same lessons | CM integration |
+| No safety gates | Dangerous commands execute unchecked | SLB integration |
+| No web interface | Terminal-only monitoring | Web dashboard |
+| Complex setup | High barrier to entry | Zero-config mode |
+| Silent operation | Users miss important events | Notification system |
+| No templates | Repetitive configuration | Template system |
 
 ---
 
-## Integration with Existing Projects
+## The Flywheel Vision
 
-Three existing projects should be integrated to provide critical functionality without reinventing the wheel:
+The Agentic Coding Flywheel is a closed-loop learning system where each cycle compounds:
 
-### 1. coding_agent_account_manager
-**Repository:** https://github.com/Dicklesworthstone/coding_agent_account_manager
+```
+                    ┌────────────────────────────────────────┐
+                    │                                        │
+    ┌───────────────▼───────────────┐                        │
+    │        PLAN (Beads/bv)        │                        │
+    │   - Ready work queue          │                        │
+    │   - Dependency graph          │                        │
+    │   - Priority scoring          │                        │
+    └───────────────┬───────────────┘                        │
+                    │                                        │
+    ┌───────────────▼───────────────┐                        │
+    │    COORDINATE (Agent Mail)    │                        │
+    │   - File reservations         │                        │
+    │   - Message routing           │                        │
+    │   - Thread tracking           │                        │
+    └───────────────┬───────────────┘                        │
+                    │                                        │
+    ┌───────────────▼───────────────┐                        │
+    │      EXECUTE (NTM + Agents)   │ ◄── SAFETY (SLB)       │
+    │   - Multi-agent sessions      │     Two-person rule    │
+    │   - Account rotation (CAAM)   │     for dangerous ops  │
+    │   - Parallel task dispatch    │                        │
+    └───────────────┬───────────────┘                        │
+                    │                                        │
+    ┌───────────────▼───────────────┐                        │
+    │         SCAN (UBS)            │                        │
+    │   - Static analysis           │                        │
+    │   - Bug detection             │                        │
+    │   - Pre-commit checks         │                        │
+    └───────────────┬───────────────┘                        │
+                    │                                        │
+    ┌───────────────▼───────────────┐                        │
+    │    REMEMBER (CASS + CM)       │                        │
+    │   - Session indexing          │                        │
+    │   - Rule extraction           │                        │
+    │   - Confidence scoring        │                        │
+    └───────────────┴────────────────────────────────────────┘
+```
 
-**Purpose:** Account management for AI coding agents
+NTM sits at the center of EXECUTE—the active work phase where agents create value. But NTM should also orchestrate the entire loop, pulling context from PLAN, coordinating via Agent Mail, gating through SLB, triggering SCAN, and feeding REMEMBER.
 
-**Integration Points:**
-- Session authentication and authorization
-- Multi-user support for team environments
-- API key management and rotation
-- Usage analytics and reporting
+---
 
-**Investigation Required:**
-- [ ] Analyze API surface and integration patterns
-- [ ] Determine authentication flow for NTM sessions
-- [ ] Identify shared data models
-- [ ] Plan migration path for existing users
+## Integration: CAAM (Coding Agent Account Manager)
 
-### 2. cass_memory_system
-**Repository:** https://github.com/Dicklesworthstone/cass_memory_system
+### What CAAM Does
 
-**Purpose:** Persistent memory system for AI agents
+CAAM enables **sub-100ms account switching** for AI coding CLIs (Claude, Codex, Gemini) by managing OAuth token files directly. Key capabilities:
 
-**Integration Points:**
-- Agent memory persistence across sessions
-- Project-specific context retention
-- User preference learning
-- Cross-session knowledge sharing between agents
+- **Vault-based profiles**: Backup/restore auth files without browser OAuth
+- **Smart rotation**: Multi-factor scoring (health, recency, cooldown) for profile selection
+- **Rate limit failover**: `caam run` automatically switches accounts on rate limit
+- **Health scoring**: Token validity tracking with expiry warnings
+- **Project associations**: Directory-specific account bindings
 
-**Investigation Required:**
-- [ ] Map CASS memory concepts to NTM agent lifecycle
-- [ ] Design memory injection points in agent prompts
-- [ ] Plan memory synchronization strategy
-- [ ] Determine storage and privacy implications
+### Integration Architecture
 
-### 3. slb (Smart Load Balancer)
-**Repository:** https://github.com/Dicklesworthstone/slb
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           NTM Spawn                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ntm spawn myproject --cc=3 --cod=2                                 │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐              │
+│  │ Agent 1     │    │ Agent 2     │    │ Agent 3     │              │
+│  │ (claude)    │    │ (claude)    │    │ (claude)    │              │
+│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘              │
+│         │                  │                  │                     │
+│         ▼                  ▼                  ▼                     │
+│  ┌──────────────────────────────────────────────────┐               │
+│  │               CAAM Account Layer                  │               │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐          │               │
+│  │  │ Profile A│ │ Profile B│ │ Profile C│          │               │
+│  │  │ alice@   │ │ bob@     │ │ work@    │          │               │
+│  │  │ Health:🟢│ │ Health:🟢│ │ Cooldown │          │               │
+│  │  └──────────┘ └──────────┘ └──────────┘          │               │
+│  └──────────────────────────────────────────────────┘               │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-**Purpose:** Automated approval system with agents
+### Concrete Integration Points
 
-**Integration Points:**
-- Automated review and approval of agent actions
-- Risk assessment for file modifications
-- Configurable approval policies
-- Audit trail for compliance
+#### 1. Spawn with Account Assignment
 
-**Investigation Required:**
-- [ ] Analyze SLB approval workflow API
-- [ ] Design integration with NTM's pipeline system
-- [ ] Plan approval UI in both TUI and web dashboard
-- [ ] Determine policy configuration format
+```bash
+# New flag: --account-strategy
+ntm spawn myproject --cc=3 --account-strategy=round-robin
+
+# Explicit account assignment
+ntm spawn myproject --cc=alice@gmail.com,bob@gmail.com,work@company.com
+
+# Project-based (uses caam project associations)
+ntm spawn myproject --cc=3 --accounts=project
+```
+
+**Implementation** (`internal/cli/spawn.go`):
+```go
+func assignAccounts(agentType string, count int, strategy string) ([]string, error) {
+    switch strategy {
+    case "round-robin":
+        // Query caam for available profiles
+        profiles, err := caamListProfiles(agentType)
+        if err != nil {
+            return nil, err
+        }
+        // Distribute agents across profiles
+        assignments := make([]string, count)
+        for i := 0; i < count; i++ {
+            assignments[i] = profiles[i%len(profiles)].AccountLabel
+        }
+        return assignments, nil
+
+    case "smart":
+        // Use caam's smart selection for each agent
+        assignments := make([]string, count)
+        for i := 0; i < count; i++ {
+            // Each call rotates to next-best profile
+            profile, err := caamNextProfile(agentType)
+            if err != nil {
+                return nil, err
+            }
+            assignments[i] = profile.AccountLabel
+        }
+        return assignments, nil
+
+    case "project":
+        // Use caam project get for current directory
+        profile, err := caamProjectGet(agentType)
+        if err != nil {
+            return nil, err
+        }
+        // All agents use same project-associated account
+        assignments := make([]string, count)
+        for i := 0; i < count; i++ {
+            assignments[i] = profile.AccountLabel
+        }
+        return assignments, nil
+    }
+    return nil, fmt.Errorf("unknown strategy: %s", strategy)
+}
+```
+
+#### 2. Automatic Rate Limit Failover
+
+When an agent hits a rate limit, NTM should automatically:
+1. Detect the rate limit (via output parsing or exit code)
+2. Mark the current profile in cooldown (`caam cooldown set`)
+3. Switch to next available profile (`caam activate --auto`)
+4. Retry the operation
+
+```go
+// internal/monitor/ratelimit.go
+type RateLimitHandler struct {
+    session string
+    paneID  string
+}
+
+func (h *RateLimitHandler) OnRateLimit(agentType, currentProfile string) error {
+    // 1. Mark cooldown
+    if err := exec.Command("caam", "cooldown", "set",
+        fmt.Sprintf("%s/%s", agentType, currentProfile)).Run(); err != nil {
+        log.Printf("Failed to set cooldown: %v", err)
+    }
+
+    // 2. Get next profile
+    out, err := exec.Command("caam", "next", agentType, "--json").Output()
+    if err != nil {
+        return fmt.Errorf("no available profiles: %w", err)
+    }
+    var next struct { Profile string `json:"profile"` }
+    json.Unmarshal(out, &next)
+
+    // 3. Activate new profile
+    if err := exec.Command("caam", "activate", agentType, next.Profile).Run(); err != nil {
+        return fmt.Errorf("failed to activate %s: %w", next.Profile, err)
+    }
+
+    // 4. Notify via Agent Mail
+    sendAgentMail(h.session, "rate-limit-failover", fmt.Sprintf(
+        "Agent switched from %s to %s due to rate limit", currentProfile, next.Profile))
+
+    return nil
+}
+```
+
+#### 3. Health Dashboard Integration
+
+Query CAAM's SQLite database for real-time health metrics:
+
+```go
+// internal/dashboard/caam.go
+type ProfileHealth struct {
+    Provider     string    `json:"provider"`
+    AccountLabel string    `json:"account_label"`
+    HealthStatus string    `json:"health_status"` // healthy, warning, critical
+    TokenExpiry  time.Time `json:"token_expiry"`
+    InCooldown   bool      `json:"in_cooldown"`
+    CooldownEnds time.Time `json:"cooldown_ends,omitempty"`
+}
+
+func GetAccountHealth() ([]ProfileHealth, error) {
+    // Query ~/.caam/data/caam.db directly
+    db, err := sql.Open("sqlite3", filepath.Join(os.Getenv("HOME"), ".caam/data/caam.db"))
+    if err != nil {
+        return nil, err
+    }
+    defer db.Close()
+
+    rows, err := db.Query(`
+        SELECT p.provider, p.account_label, p.health_status,
+               p.token_expiry, c.ends_at IS NOT NULL as in_cooldown, c.ends_at
+        FROM profiles p
+        LEFT JOIN cooldowns c ON p.id = c.profile_id AND c.ends_at > datetime('now')
+        ORDER BY p.provider, p.account_label
+    `)
+    // ... parse and return
+}
+```
+
+#### 4. Robot Mode Output
+
+Add CAAM status to `--robot-status`:
+
+```json
+{
+  "success": true,
+  "sessions": [...],
+  "account_health": {
+    "claude": [
+      {"account": "alice@gmail.com", "status": "healthy", "cooldown": false},
+      {"account": "bob@gmail.com", "status": "warning", "cooldown": true, "cooldown_ends": "2025-01-03T16:30:00Z"}
+    ],
+    "codex": [
+      {"account": "work@company.com", "status": "healthy", "cooldown": false}
+    ]
+  }
+}
+```
+
+### New NTM Commands
+
+```bash
+# Account management
+ntm accounts status                    # Show all account health
+ntm accounts rotate <session>          # Force rotation for session's agents
+ntm accounts cooldown list             # Show active cooldowns
+ntm accounts set <pane> <account>      # Assign specific account to pane
+
+# In robot mode
+ntm --robot-accounts                   # JSON account health output
+```
+
+---
+
+## Integration: CASS Memory System
+
+### What CASS Memory Does
+
+CASS Memory (`cm`) is a **three-layer cognitive memory system** that gives agents persistent learning:
+
+1. **Episodic Memory** (CASS): Raw session logs from all agents
+2. **Working Memory** (Diary): Structured session summaries
+3. **Procedural Memory** (Playbook): Distilled rules with confidence scoring
+
+Key capabilities:
+- **Cross-agent learning**: Rules from Claude benefit Codex and vice versa
+- **Confidence decay**: 90-day half-life prevents stale rules
+- **Anti-pattern conversion**: Bad rules automatically become warnings
+- **Evidence-based validation**: Rules require historical support before acceptance
+
+### The ACE Pipeline
+
+```
+GENERATOR (cm context)    →    REFLECTOR (cm reflect)
+Get relevant rules             Extract new rules from sessions
+before task                    after task completion
+       │                              │
+       │                              ▼
+       │                       VALIDATOR
+       │                       Search evidence in CASS
+       │                       Accept/reject based on proof
+       │                              │
+       ▼                              ▼
+   AGENT WORK              CURATOR (deterministic)
+   Apply rules             Update playbook with new rules
+   Record feedback         Handle conflicts, duplicates
+```
+
+### Integration Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         NTM Session Lifecycle                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  PRE-TASK                                                           │
+│  ┌────────────────────────────────────────────────────────────┐     │
+│  │ cm context "implement JWT authentication" --json            │     │
+│  │                                                             │     │
+│  │ Returns:                                                    │     │
+│  │ - relevantBullets: rules that apply to this task           │     │
+│  │ - antiPatterns: pitfalls to avoid                          │     │
+│  │ - historySnippets: past sessions solving similar problems  │     │
+│  │ - suggestedCassQueries: deeper searches if needed          │     │
+│  └───────────────────────────────┬────────────────────────────┘     │
+│                                  │                                  │
+│                                  ▼                                  │
+│  INJECT INTO AGENT CONTEXT                                          │
+│  ┌────────────────────────────────────────────────────────────┐     │
+│  │ Agent system prompt includes:                               │     │
+│  │                                                             │     │
+│  │ ## CASS Memory Context                                      │     │
+│  │ The following rules have been learned from past sessions:   │     │
+│  │                                                             │     │
+│  │ ### Rules (apply these)                                     │     │
+│  │ - [b-8f3a2c] Always validate JWT expiry before debugging   │     │
+│  │ - [b-2d4e6f] Use httptest for auth endpoint testing        │     │
+│  │                                                             │     │
+│  │ ### Anti-patterns (avoid these)                             │     │
+│  │ - [b-9a1b3c] Don't cache tokens without expiry validation  │     │
+│  │                                                             │     │
+│  │ When a rule helps, note: [cass: helpful b-xyz]             │     │
+│  │ When a rule harms, note: [cass: harmful b-xyz]             │     │
+│  └────────────────────────────────────────────────────────────┘     │
+│                                                                     │
+│  DURING WORK                                                        │
+│  Agent references rules, leaves inline feedback                     │
+│  // [cass: helpful b-8f3a2c] - caught the token expiry issue        │
+│                                                                     │
+│  POST-TASK                                                          │
+│  ┌────────────────────────────────────────────────────────────┐     │
+│  │ cm reflect --days 1 --json                                  │     │
+│  │                                                             │     │
+│  │ Extracts patterns from new session, proposes rules          │     │
+│  │ Validator checks evidence, curator updates playbook         │     │
+│  └────────────────────────────────────────────────────────────┘     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Concrete Integration Points
+
+#### 1. Pre-Task Context Injection
+
+When spawning agents or sending prompts, inject relevant memory:
+
+```go
+// internal/memory/context.go
+type MemoryContext struct {
+    Rules        []Rule       `json:"relevantBullets"`
+    AntiPatterns []Rule       `json:"antiPatterns"`
+    History      []Snippet    `json:"historySnippets"`
+    Queries      []string     `json:"suggestedCassQueries"`
+}
+
+func GetMemoryContext(taskDescription string) (*MemoryContext, error) {
+    out, err := exec.Command("cm", "context", taskDescription, "--json").Output()
+    if err != nil {
+        // Graceful degradation: continue without memory
+        log.Printf("cm context failed (continuing without memory): %v", err)
+        return &MemoryContext{}, nil
+    }
+
+    var ctx MemoryContext
+    if err := json.Unmarshal(out, &ctx); err != nil {
+        return nil, err
+    }
+    return &ctx, nil
+}
+
+func FormatMemoryPrompt(ctx *MemoryContext) string {
+    var sb strings.Builder
+    sb.WriteString("## CASS Memory Context\n\n")
+
+    if len(ctx.Rules) > 0 {
+        sb.WriteString("### Rules (apply these)\n")
+        for _, r := range ctx.Rules {
+            sb.WriteString(fmt.Sprintf("- [%s] %s (confidence: %.2f)\n",
+                r.ID, r.Content, r.EffectiveScore))
+        }
+        sb.WriteString("\n")
+    }
+
+    if len(ctx.AntiPatterns) > 0 {
+        sb.WriteString("### Anti-patterns (avoid these)\n")
+        for _, r := range ctx.AntiPatterns {
+            sb.WriteString(fmt.Sprintf("- [%s] PITFALL: %s\n", r.ID, r.Content))
+        }
+        sb.WriteString("\n")
+    }
+
+    sb.WriteString("When a rule helps: `// [cass: helpful <id>]`\n")
+    sb.WriteString("When a rule harms: `// [cass: harmful <id>]`\n")
+
+    return sb.String()
+}
+```
+
+#### 2. Automatic Post-Session Reflection
+
+When a session ends or is compacted, trigger reflection:
+
+```go
+// internal/session/lifecycle.go
+func (m *Manager) OnSessionEnd(session string) {
+    // 1. Wait for session logs to be indexed by CASS
+    time.Sleep(5 * time.Second)
+
+    // 2. Trigger reflection on recent sessions
+    go func() {
+        cmd := exec.Command("cm", "reflect", "--days", "1", "--json")
+        out, err := cmd.Output()
+        if err != nil {
+            log.Printf("Reflection failed: %v", err)
+            return
+        }
+
+        var result struct {
+            NewRules []struct {
+                Content  string `json:"content"`
+                Category string `json:"category"`
+            } `json:"proposedRules"`
+        }
+        json.Unmarshal(out, &result)
+
+        // 3. Notify via Agent Mail if new rules were learned
+        if len(result.NewRules) > 0 {
+            notifyNewRules(session, result.NewRules)
+        }
+    }()
+}
+```
+
+#### 3. Memory-Aware Task Assignment
+
+Use memory to inform agent selection:
+
+```go
+// internal/robot/assign.go - enhance existing logic
+func generateAssignments(agents []agentInfo, beads []bv.BeadPreview, ...) []AssignRecommend {
+    for _, bead := range beads {
+        // Get memory context for this task
+        memCtx, _ := GetMemoryContext(bead.Title)
+
+        // Check if any rules suggest specific agent types
+        for _, rule := range memCtx.Rules {
+            if strings.Contains(rule.Content, "claude excels at") {
+                // Boost claude agent preference
+            }
+            if strings.Contains(rule.Content, "codex faster for") {
+                // Boost codex agent preference
+            }
+        }
+    }
+}
+```
+
+#### 4. Robot Mode Output
+
+Add memory status to `--robot-snapshot`:
+
+```json
+{
+  "success": true,
+  "sessions": [...],
+  "memory": {
+    "playbook_size": 247,
+    "proven_rules": 45,
+    "established_rules": 89,
+    "candidate_rules": 113,
+    "anti_patterns": 23,
+    "last_reflection": "2025-01-03T14:30:00Z",
+    "top_categories": ["debugging", "testing", "git"]
+  }
+}
+```
+
+### New NTM Commands
+
+```bash
+# Memory integration
+ntm memory status                      # Show playbook health
+ntm memory context "task description"  # Get relevant rules
+ntm memory reflect                     # Trigger post-session reflection
+ntm memory inject <session> <task>     # Inject rules into running session
+
+# In robot mode
+ntm --robot-memory                     # JSON memory status
+```
+
+---
+
+## Integration: SLB (Safety Guardrails)
+
+### What SLB Does
+
+SLB implements a **two-person rule** for potentially destructive commands. Before dangerous operations execute, a second agent (or human) must explicitly approve. Key capabilities:
+
+- **Risk tier classification**: CRITICAL (2+ approvals), DANGEROUS (1 approval), CAUTION (auto-approve delay), SAFE (immediate)
+- **HMAC-signed reviews**: Cryptographic proof of who approved what
+- **Client-side execution**: Commands run in caller's environment (inherits credentials)
+- **Audit trail**: Complete history in SQLite and Agent Mail
+
+### Risk Tier Examples
+
+| Tier | Pattern Examples | Approvals | Auto-approve |
+|------|------------------|-----------|--------------|
+| CRITICAL | `rm -rf /`, `DROP DATABASE`, `terraform destroy`, `git push --force main` | 2+ | Never |
+| DANGEROUS | `rm -rf ./build`, `git reset --hard`, `kubectl delete deployment` | 1 | Never |
+| CAUTION | `rm file.txt`, `npm uninstall`, `git branch -d` | 0 | After 30s |
+| SAFE | `rm *.log`, `git stash`, `kubectl delete pod` | 0 | Immediate |
+
+### Integration Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    NTM + SLB Safety Layer                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Agent wants to run: rm -rf ./node_modules                          │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                   SLB Pattern Engine                         │    │
+│  │   Classifies: DANGEROUS (rm -rf with recursive flag)        │    │
+│  │   Requires: 1 approval                                       │    │
+│  └───────────────────────────┬─────────────────────────────────┘    │
+│                              │                                      │
+│       ┌──────────────────────┴────────────────────┐                 │
+│       │                                           │                 │
+│       ▼                                           ▼                 │
+│  ┌────────────┐                           ┌────────────────────┐    │
+│  │ Request    │   Agent Mail Notification │ Reviewer Agent     │    │
+│  │ Created    │ ─────────────────────────▶│ (or Human via TUI) │    │
+│  │            │                           │                    │    │
+│  │ Blocked... │ ◀─────────────────────────│ APPROVED (signed)  │    │
+│  └────────────┘                           └────────────────────┘    │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                   Command Executes                           │    │
+│  │   - In agent's shell environment                            │    │
+│  │   - Audit logged to .slb/state.db                           │    │
+│  │   - Notification sent to Agent Mail                         │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Concrete Integration Points
+
+#### 1. SLB-Wrapped Command Execution
+
+For agents, wrap dangerous commands through SLB:
+
+```go
+// internal/agents/execute.go
+type CommandExecutor struct {
+    slbEnabled bool
+    sessionID  string
+    sessionKey string
+}
+
+func (e *CommandExecutor) Execute(cmd string, justification string) error {
+    // Check if SLB is enabled and command is risky
+    if e.slbEnabled && isRisky(cmd) {
+        return e.executeWithSLB(cmd, justification)
+    }
+    return e.executeDirect(cmd)
+}
+
+func (e *CommandExecutor) executeWithSLB(cmd, justification string) error {
+    // Use slb run for atomic request+wait+execute
+    args := []string{
+        "run", cmd,
+        "--reason", justification,
+        "--session-id", e.sessionID,
+    }
+
+    slbCmd := exec.Command("slb", args...)
+    slbCmd.Stdout = os.Stdout
+    slbCmd.Stderr = os.Stderr
+
+    // This blocks until approved, rejected, or timeout
+    if err := slbCmd.Run(); err != nil {
+        if exitErr, ok := err.(*exec.ExitError); ok {
+            if exitErr.ExitCode() == 2 {
+                return fmt.Errorf("request rejected by reviewer")
+            }
+            if exitErr.ExitCode() == 3 {
+                return fmt.Errorf("request timed out waiting for approval")
+            }
+        }
+        return err
+    }
+    return nil
+}
+```
+
+#### 2. NTM as SLB Reviewer Dispatcher
+
+NTM can route SLB approval requests to appropriate reviewers:
+
+```go
+// internal/slb/dispatcher.go
+func WatchSLBRequests(session string) {
+    // Watch for pending SLB requests
+    cmd := exec.Command("slb", "watch", "--json")
+    stdout, _ := cmd.StdoutPipe()
+    cmd.Start()
+
+    scanner := bufio.NewScanner(stdout)
+    for scanner.Scan() {
+        var event struct {
+            Type      string `json:"type"`
+            RequestID string `json:"request_id"`
+            Tier      string `json:"tier"`
+            Command   string `json:"command"`
+            Requestor string `json:"requestor"`
+        }
+        json.Unmarshal(scanner.Bytes(), &event)
+
+        if event.Type == "request_pending" {
+            // Find appropriate reviewer (different agent than requestor)
+            reviewer := findReviewer(session, event.Requestor, event.Tier)
+
+            // Notify via Agent Mail
+            sendReviewRequest(reviewer, event)
+        }
+    }
+}
+
+func findReviewer(session, requestor, tier string) string {
+    panes, _ := tmux.GetPanes(session)
+
+    // For CRITICAL: prefer different model
+    // For DANGEROUS: prefer different agent
+    for _, pane := range panes {
+        if pane.AgentName != requestor {
+            if tier == "critical" && pane.Model != getAgentModel(requestor) {
+                return pane.AgentName
+            }
+            return pane.AgentName
+        }
+    }
+
+    // Fallback: notify human via desktop notification
+    return "HUMAN"
+}
+```
+
+#### 3. SLB Status in Dashboard
+
+Show pending approvals in NTM dashboard:
+
+```go
+// internal/dashboard/slb.go
+type SLBStatus struct {
+    PendingRequests []struct {
+        ID        string    `json:"id"`
+        Command   string    `json:"command"`
+        Tier      string    `json:"tier"`
+        Requestor string    `json:"requestor"`
+        CreatedAt time.Time `json:"created_at"`
+        ExpiresAt time.Time `json:"expires_at"`
+    } `json:"pending"`
+    RecentApprovals int `json:"recent_approvals_24h"`
+    RecentRejections int `json:"recent_rejections_24h"`
+}
+
+func GetSLBStatus() (*SLBStatus, error) {
+    out, err := exec.Command("slb", "pending", "--json").Output()
+    if err != nil {
+        return nil, err
+    }
+    var status SLBStatus
+    json.Unmarshal(out, &status)
+    return &status, nil
+}
+```
+
+#### 4. Emergency Override Integration
+
+For human operators, NTM can facilitate emergency overrides:
+
+```bash
+# In NTM TUI: Ctrl+E opens emergency override prompt
+# Logs to SLB with audit trail
+ntm emergency "rm -rf /stuck/process/files" --reason "Process hung, manual intervention required"
+```
+
+### New NTM Commands
+
+```bash
+# SLB integration
+ntm safety status                      # Show pending requests
+ntm safety approve <request-id>        # Approve as current user
+ntm safety reject <request-id>         # Reject with reason
+ntm safety history                     # Show recent approvals/rejections
+ntm safety patterns test "cmd"         # Test what tier a command would be
+
+# In robot mode
+ntm --robot-safety                     # JSON safety status
+```
+
+---
+
+## Integration: MCP Agent Mail
+
+### Current State
+
+MCP Agent Mail is already integrated with NTM at a basic level. This section describes deeper integration.
+
+### Enhanced Integration Points
+
+#### 1. Automatic Session Threads
+
+When NTM spawns a session, automatically create an Agent Mail thread:
+
+```go
+// internal/session/mail.go
+func CreateSessionThread(session string, agents []AgentInfo) error {
+    // Create thread for session coordination
+    threadID := fmt.Sprintf("NTM-%s", session)
+
+    // Register all agents
+    for _, agent := range agents {
+        _, err := agentmail.RegisterAgent(session, agent.Type, agent.Model, agent.Name)
+        if err != nil {
+            return err
+        }
+    }
+
+    // Send initial coordination message
+    return agentmail.SendMessage(agentmail.Message{
+        ProjectKey: getCurrentProjectPath(),
+        SenderName: "NTM-Orchestrator",
+        To:         getAgentNames(agents),
+        Subject:    fmt.Sprintf("Session %s started", session),
+        BodyMD:     formatSessionInfo(session, agents),
+        ThreadID:   threadID,
+        Importance: "normal",
+    })
+}
+```
+
+#### 2. File Reservation for Parallel Agents
+
+Before agents work on files, reserve them to prevent conflicts:
+
+```go
+// internal/agents/files.go
+func ReserveFilesForTask(session, agentName string, files []string) error {
+    return agentmail.FileReservationPaths(agentmail.Reservation{
+        ProjectKey: getCurrentProjectPath(),
+        AgentName:  agentName,
+        Paths:      files,
+        TTLSeconds: 3600,
+        Exclusive:  true,
+        Reason:     fmt.Sprintf("Working on task in session %s", session),
+    })
+}
+
+func ReleaseFilesAfterTask(session, agentName string) error {
+    return agentmail.ReleaseFileReservations(getCurrentProjectPath(), agentName)
+}
+```
+
+#### 3. Cross-Agent Communication via NTM
+
+```bash
+# Send message to specific agent in session
+ntm mail send myproject/agent-1 "Please review the auth module changes"
+
+# Broadcast to all agents
+ntm mail broadcast myproject "Switching to phase 2"
+
+# Check inbox for agent
+ntm mail inbox myproject/agent-1
+```
+
+---
+
+## Unified Architecture
+
+### The NTM Daemon
+
+To coordinate all integrations, NTM should run a lightweight daemon that:
+
+1. **Monitors account health** (CAAM polling)
+2. **Watches for SLB requests** (approval dispatch)
+3. **Triggers memory reflection** (post-session)
+4. **Routes Agent Mail** (session threads)
+5. **Serves web dashboard** (HTTP/WebSocket)
+
+```go
+// internal/daemon/daemon.go
+type Daemon struct {
+    accountWatcher  *caam.HealthWatcher
+    slbDispatcher   *slb.RequestDispatcher
+    memoryReflector *cm.Reflector
+    mailRouter      *agentmail.Router
+    webServer       *dashboard.Server
+}
+
+func (d *Daemon) Start() error {
+    // Start all subsystems
+    go d.accountWatcher.Watch()
+    go d.slbDispatcher.Watch()
+    go d.memoryReflector.Watch()
+    go d.mailRouter.Watch()
+    return d.webServer.ListenAndServe()
+}
+```
+
+### Configuration
+
+Unified configuration for all integrations:
+
+```toml
+# ~/.config/ntm/config.toml
+
+[integrations]
+# Account management
+caam_enabled = true
+caam_auto_failover = true
+caam_health_poll_interval = "30s"
+
+# Safety layer
+slb_enabled = true
+slb_auto_dispatch_reviews = true
+slb_default_timeout = "30m"
+
+# Memory system
+cm_enabled = true
+cm_auto_inject = true
+cm_reflect_on_session_end = true
+
+# Agent mail
+agent_mail_enabled = true
+agent_mail_auto_threads = true
+agent_mail_file_reservations = true
+
+[daemon]
+enabled = true
+web_port = 8080
+```
 
 ---
 
 ## Web Dashboard
 
-### Why It Matters
-
-The web dashboard is the single highest-impact improvement. It transforms NTM from a power-user CLI tool into an accessible platform.
-
-**Benefits:**
-- Works on any device without terminal expertise
-- Enables remote monitoring (coffee shop, meetings, commute)
-- Shareable with teammates for collaboration
-- Rich visualizations impossible in terminal (charts, syntax-highlighted diffs)
-- Foundation for all other UX improvements
-
-### Proposed Architecture
+### Enhanced Architecture with Integrations
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Web Dashboard                           │
-├─────────────────────────────────────────────────────────────────┤
-│  Frontend (React/Svelte)                                        │
-│  ├── Real-time agent output streaming (WebSocket)               │
-│  ├── Session management UI                                      │
-│  ├── File diff viewer with syntax highlighting                  │
-│  ├── Agent configuration panels                                 │
-│  └── Notification center                                        │
-├─────────────────────────────────────────────────────────────────┤
-│  Backend API (Go, part of ntm binary)                           │
-│  ├── REST API for CRUD operations                               │
-│  ├── WebSocket server for real-time updates                     │
-│  ├── Authentication via coding_agent_account_manager            │
-│  └── Session state synchronization                              │
-├─────────────────────────────────────────────────────────────────┤
-│  Existing NTM Core                                              │
-│  ├── tmux session management                                    │
-│  ├── Agent lifecycle                                            │
-│  └── Robot mode (JSON API already exists)                       │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         NTM Web Dashboard                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                    Session Overview                          │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐            │   │
+│  │  │ Agent 1 │ │ Agent 2 │ │ Agent 3 │ │ Agent 4 │            │   │
+│  │  │ claude  │ │ claude  │ │ codex   │ │ gemini  │            │   │
+│  │  │ 🟢 alice│ │ 🟡 bob  │ │ 🟢 work │ │ 🟢 main │ ← Accounts  │   │
+│  │  │ Working │ │ Idle    │ │ Working │ │ Waiting │ ← Status   │   │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘            │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌────────────────────────┐  ┌────────────────────────────────┐    │
+│  │   SLB Pending (2)      │  │   Memory Context               │    │
+│  │   ┌──────────────────┐ │  │   247 rules in playbook        │    │
+│  │   │ DANGEROUS        │ │  │   45 proven, 89 established    │    │
+│  │   │ rm -rf ./build   │ │  │                                │    │
+│  │   │ [Approve][Reject]│ │  │   Active rules (this session): │    │
+│  │   └──────────────────┘ │  │   - JWT validation first       │    │
+│  │   ┌──────────────────┐ │  │   - Use httptest for auth      │    │
+│  │   │ CRITICAL         │ │  │                                │    │
+│  │   │ DROP TABLE users │ │  │   [View Playbook]              │    │
+│  │   │ Needs 2 approvals│ │  │                                │    │
+│  │   └──────────────────┘ │  └────────────────────────────────┘    │
+│  └────────────────────────┘                                        │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                    Agent Output Stream                        │   │
+│  │  [Agent 1] Analyzing auth module structure...                │   │
+│  │  [Agent 1] Found 3 files to modify                           │   │
+│  │  [Agent 1] // [cass: helpful b-8f3a2c] - JWT check helped    │   │
+│  │  [Agent 3] Tests passing: 47/50                              │   │
+│  │  [SLB] Approval request created for: rm -rf ./old_tests      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Features
+### WebSocket Events
 
-#### 1. Real-time Agent Output Streaming
+```typescript
+// Dashboard receives these events
+interface NTMEvent {
+  type: 'agent_output' | 'slb_request' | 'memory_rule' | 'account_health' | 'agent_status';
+  timestamp: string;
+  payload: any;
+}
+
+// Example events
+{ type: 'slb_request', payload: { id: 'abc', tier: 'dangerous', command: 'rm -rf ./build' }}
+{ type: 'account_health', payload: { provider: 'claude', account: 'bob@', status: 'cooldown' }}
+{ type: 'memory_rule', payload: { id: 'b-xyz', applied: true, helpful: true }}
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Agent: claude-planner                              [Interrupt] │
-├─────────────────────────────────────────────────────────────────┤
-│  > Analyzing codebase structure...                              │
-│  > Found 47 Go files in internal/                               │
-│  > Identifying authentication-related code...                   │
-│  >                                                              │
-│  > I've identified the following files that handle auth:        │
-│  > - internal/auth/jwt.go (JWT token generation)                │
-│  > - internal/auth/session.go (session management)              │
-│  > - internal/middleware/auth.go (HTTP middleware)              │
-│  >                                                              │
-│  > Shall I proceed with the refactoring plan?                   │
-│  ▌                                                              │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 2. Multi-Agent Overview
-```
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│ claude-planner  │  │ claude-coder    │  │ codex-tester    │
-│ ████████░░ 80%  │  │ ██████████ Done │  │ ████░░░░░░ 40%  │
-│ Planning auth   │  │ Waiting for     │  │ Writing tests   │
-│ refactor...     │  │ approval        │  │ for jwt.go      │
-│                 │  │                 │  │                 │
-│ [View] [Stop]   │  │ [View] [Resume] │  │ [View] [Stop]   │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
-```
-
-#### 3. File Change Viewer
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Pending Changes (3 files)                         [Approve All]│
-├─────────────────────────────────────────────────────────────────┤
-│  📄 internal/auth/jwt.go                          +45 -12       │
-│  ├── Line 23: Added token refresh logic                         │
-│  └── Line 67: Updated expiration handling                       │
-│                                                                 │
-│  📄 internal/auth/session.go                      +8 -3         │
-│  └── Line 12: Import new jwt package                            │
-│                                                                 │
-│  📄 internal/middleware/auth.go                   +22 -5        │
-│  └── Line 45: Added refresh token endpoint                      │
-├─────────────────────────────────────────────────────────────────┤
-│  [View Diff] [Approve] [Reject] [Request Changes]               │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Implementation Strategy
-
-**Phase 1: Embedded Server**
-- Add HTTP/WebSocket server to ntm binary
-- Serve static files for frontend
-- Expose robot-mode API via REST
-- `ntm dashboard --web` starts on localhost:8080
-
-**Phase 2: Frontend Development**
-- Choose framework (recommend Svelte for bundle size)
-- Implement core views: sessions, agents, output
-- Add WebSocket integration for real-time updates
-
-**Phase 3: Polish & Features**
-- Syntax highlighting for code output
-- Diff viewer for file changes
-- Session recording and playback
-- Dark/light theme support
 
 ---
 
 ## Zero-Config Quick Start
 
-### Why It Matters
-
-Current NTM requires understanding of:
-- tmux concepts (sessions, panes, windows)
-- Configuration file syntax (TOML)
-- Agent CLI installations and configurations
-- Various flags and options
-
-This creates a significant barrier for new users.
-
-### Proposed Solution
-
-#### 1. Intelligent Defaults
-
-Auto-detect everything possible:
-
-```go
-// Pseudo-code for smart defaults
-func detectEnvironment() Config {
-    config := Config{}
-
-    // Detect installed AI CLIs
-    if commandExists("claude") {
-        config.Agents = append(config.Agents, AgentConfig{
-            Type: "claude",
-            Name: "claude-1",
-        })
-    }
-    if commandExists("codex") {
-        config.Agents = append(config.Agents, AgentConfig{
-            Type: "codex",
-            Name: "codex-1",
-        })
-    }
-
-    // Detect project type
-    if fileExists("go.mod") {
-        config.ProjectType = "go"
-    } else if fileExists("package.json") {
-        config.ProjectType = "node"
-    } else if fileExists("requirements.txt") {
-        config.ProjectType = "python"
-    }
-
-    // Use sensible resource defaults based on available memory
-    config.MaxAgents = min(runtime.NumCPU(), 4)
-
-    return config
-}
-```
-
-#### 2. One-Liner Commands
+### One-Liner with Auto-Detection
 
 ```bash
 # Current (complex)
 ntm spawn --session=myproject --agents=claude:2,codex:1 \
     --workdir=/path/to/project --config=~/.config/ntm/config.toml
 
-# Proposed (simple)
+# New (simple)
 ntm go "refactor the auth module to use JWT"
 
-# Or even simpler - just start working
-ntm
-# Auto-detects project, spawns appropriate agents, opens dashboard
+# What happens:
+# 1. Detect project type (Go, Node, Python, etc.)
+# 2. Detect available agents (claude, codex, gemini)
+# 3. Query CAAM for available accounts
+# 4. Get memory context from cm
+# 5. Spawn appropriate agents
+# 6. Inject memory rules
+# 7. Start web dashboard
+# 8. Begin work
 ```
 
-#### 3. Interactive Prompts When Needed
+### Implementation
 
+```go
+// internal/cli/go.go
+func runGoCommand(task string) error {
+    // 1. Detect environment
+    env := detectEnvironment()
+
+    // 2. Get accounts
+    accounts, err := getAvailableAccounts()
+    if err != nil {
+        log.Printf("CAAM not available, using defaults")
+    }
+
+    // 3. Get memory context
+    memCtx, err := cm.GetContext(task)
+    if err != nil {
+        log.Printf("Memory not available, continuing without")
+    }
+
+    // 4. Configure agents
+    agentCount := min(len(accounts.Claude), 2)
+    config := SessionConfig{
+        Name:     generateSessionName(task),
+        Agents:   generateAgentConfig(env, accounts, agentCount),
+        Memory:   memCtx,
+        Task:     task,
+    }
+
+    // 5. Spawn session
+    session, err := spawnSession(config)
+    if err != nil {
+        return err
+    }
+
+    // 6. Start dashboard
+    fmt.Printf("Dashboard: http://localhost:8080\n")
+    fmt.Printf("Session: %s\n", session.Name)
+
+    return nil
+}
 ```
-$ ntm go "implement user authentication"
-
-Detected: Go project (go.mod found)
-Available agents: Claude, Codex
-
-? How many agents should work on this? (1-4) [2]
-? Enable auto-restart if agents crash? [Y/n]
-
-Starting session "auth-impl-2024-01-03"...
-├── Agent 1 (claude-opus): Planning...
-└── Agent 2 (claude-sonnet): Ready
-
-Dashboard: http://localhost:8080
-Press Ctrl+C to stop, or use `ntm attach` from another terminal.
-```
-
-### Implementation Strategy
-
-1. **Create `ntm go` command** - single entry point for quick tasks
-2. **Build environment detection** - project type, available agents
-3. **Add interactive prompts** - only ask what can't be auto-detected
-4. **Store learned preferences** - remember choices for next time
 
 ---
 
 ## Notifications System
 
-### Why It Matters
-
-Users shouldn't need to watch the terminal constantly. They should be able to work on other things and be notified when:
-- An agent needs input or approval
-- A task completes successfully
-- An error occurs that needs attention
-- Rate limiting or other issues arise
-
-### Proposed Implementation
-
-#### 1. Desktop Notifications
-
-Using native OS notification APIs:
-
-```go
-// internal/notify/desktop.go
-func SendDesktopNotification(title, body string, urgency Urgency) error {
-    switch runtime.GOOS {
-    case "darwin":
-        return sendMacOSNotification(title, body, urgency)
-    case "linux":
-        return sendLinuxNotification(title, body, urgency)
-    case "windows":
-        return sendWindowsNotification(title, body, urgency)
-    }
-    return nil
-}
-```
-
-**Notification Types:**
-| Event | Title | Body | Urgency |
-|-------|-------|------|---------|
-| Agent needs input | "Agent waiting" | "claude-1 is waiting for your response" | High |
-| Task complete | "Task complete" | "Auth refactoring finished successfully" | Normal |
-| Error occurred | "Agent error" | "claude-2 crashed: context overflow" | Critical |
-| Approval needed | "Approval required" | "3 file changes pending review" | High |
-
-#### 2. Slack/Discord Webhooks
+### Multi-Channel Notifications
 
 ```toml
-# ~/.config/ntm/config.toml
-[notifications.slack]
-enabled = true
-webhook_url = "https://hooks.slack.com/services/..."
-events = ["error", "complete", "approval_needed"]
+[notifications]
+# Desktop notifications (native OS)
+desktop_enabled = true
+desktop_events = ["slb_approval_needed", "agent_error", "task_complete"]
 
-[notifications.discord]
-enabled = true
-webhook_url = "https://discord.com/api/webhooks/..."
-events = ["error", "complete"]
+# Slack webhook
+slack_enabled = true
+slack_webhook = "https://hooks.slack.com/..."
+slack_events = ["slb_approval_needed", "session_complete"]
+
+# Discord webhook
+discord_enabled = true
+discord_webhook = "https://discord.com/api/webhooks/..."
+discord_events = ["agent_error"]
+
+# Sound cues
+sound_enabled = true
+sound_slb_approval = "alert"
+sound_task_complete = "chime"
 ```
 
-**Slack Message Format:**
-```json
-{
-  "blocks": [
-    {
-      "type": "header",
-      "text": {"type": "plain_text", "text": "🤖 NTM: Task Complete"}
-    },
-    {
-      "type": "section",
-      "fields": [
-        {"type": "mrkdwn", "text": "*Session:*\nauth-refactor"},
-        {"type": "mrkdwn", "text": "*Duration:*\n45m 23s"},
-        {"type": "mrkdwn", "text": "*Files Changed:*\n12"},
-        {"type": "mrkdwn", "text": "*Status:*\n✅ Success"}
-      ]
-    }
-  ]
-}
-```
+### Event Types
 
-#### 3. Sound Cues
-
-Optional audio feedback for accessibility and awareness:
-
-```toml
-[notifications.sound]
-enabled = true
-on_complete = "chime"      # Built-in sound
-on_error = "alert"         # Built-in sound
-on_approval = "~/sounds/approval.wav"  # Custom sound
-volume = 0.7
-```
-
-### Implementation Strategy
-
-1. **Create notification abstraction** - `internal/notify/notify.go`
-2. **Implement desktop notifications** - platform-specific backends
-3. **Add webhook support** - Slack, Discord, generic HTTP
-4. **Add sound support** - cross-platform audio playback
-5. **Configuration system** - per-event notification routing
+| Event | Urgency | Channels |
+|-------|---------|----------|
+| `slb_approval_needed` | High | Desktop, Slack, Discord |
+| `agent_error` | High | Desktop, Discord |
+| `rate_limit_hit` | Normal | Desktop |
+| `account_switched` | Low | Dashboard only |
+| `task_complete` | Normal | Desktop, Slack |
+| `memory_rule_learned` | Low | Dashboard only |
 
 ---
 
 ## Session Templates
 
-### Why It Matters
-
-Users frequently need similar session configurations:
-- Code review: 2 reviewers + 1 summarizer
-- Feature development: planner + coder + tester
-- Bug investigation: 1 agent with verbose logging
-- Pair programming: 2 collaborating agents
-
-Currently, each session requires manual configuration.
-
-### Proposed Implementation
-
-#### Built-in Templates
+### Built-in Templates with Integration Awareness
 
 ```yaml
-# internal/templates/code-review.yaml
+# templates/code-review.yaml
 name: code-review
-description: "Two reviewers analyze code, one summarizes findings"
+description: "Two reviewers + summarizer with memory context"
+
+settings:
+  slb_enabled: true           # Require approval for file deletions
+  memory_injection: true      # Inject relevant rules
+  account_strategy: smart     # Use CAAM smart selection
+
 agents:
   - name: reviewer-1
     type: claude
     model: opus
+    account: auto             # CAAM selects
     system_prompt: |
-      You are a senior code reviewer. Focus on:
-      - Logic errors and edge cases
-      - Security vulnerabilities
-      - Performance issues
+      You are a senior code reviewer.
+      {{ .memory_context }}   # Injected from cm
 
   - name: reviewer-2
     type: claude
     model: opus
+    account: auto
     system_prompt: |
-      You are a senior code reviewer. Focus on:
-      - Code style and readability
-      - Best practices adherence
-      - Documentation quality
+      You are a senior code reviewer focusing on security.
+      {{ .memory_context }}
 
   - name: summarizer
     type: claude
     model: sonnet
     depends_on: [reviewer-1, reviewer-2]
     system_prompt: |
-      Summarize the findings from the two reviewers.
-      Prioritize issues by severity.
-      Suggest a review order for addressing issues.
+      Summarize findings from reviewers.
 ```
-
-#### User Commands
-
-```bash
-# List available templates
-$ ntm template list
-Built-in templates:
-  code-review     Two reviewers + summarizer
-  feature-dev     Planner + coder + tester
-  debug           Single agent with verbose logging
-  pair            Two collaborating agents
-
-Custom templates:
-  my-workflow     Your saved workflow (created 2024-01-01)
-
-# Use a template
-$ ntm template use code-review
-Starting session from template "code-review"...
-├── reviewer-1 (claude-opus): Ready
-├── reviewer-2 (claude-opus): Ready
-└── summarizer (claude-sonnet): Waiting for reviewers
-
-# Save current session as template
-$ ntm template save my-refactor-workflow
-Template saved: my-refactor-workflow
-
-# Edit a template
-$ ntm template edit my-refactor-workflow
-# Opens in $EDITOR
-
-# Share a template
-$ ntm template export my-workflow > my-workflow.yaml
-$ ntm template import colleague-workflow.yaml
-```
-
-### Implementation Strategy
-
-1. **Define template schema** - YAML format with validation
-2. **Bundle built-in templates** - embed in binary
-3. **User template storage** - `~/.config/ntm/templates/`
-4. **Template commands** - list, use, save, edit, export, import
-5. **Template variables** - `{{ .ProjectName }}`, `{{ .GitBranch }}`
-
----
-
-## Intelligent Error Recovery
-
-### Why It Matters
-
-Current errors are technical and unhelpful:
-```
-Error: agent crashed: exit status 1
-```
-
-Users need:
-- Clear explanation of what went wrong
-- Actionable suggestions to fix it
-- One-command recovery options
-
-### Proposed Implementation
-
-#### Error Categories and Suggestions
-
-```go
-// internal/errors/recovery.go
-type RecoverableError struct {
-    Code        ErrorCode
-    Message     string
-    Details     string
-    Suggestions []Suggestion
-}
-
-type Suggestion struct {
-    Description string
-    Command     string
-    Risk        Risk // low, medium, high
-}
-
-var errorSuggestions = map[ErrorCode][]Suggestion{
-    ErrContextOverflow: {
-        {
-            Description: "Save current state before recovery",
-            Command:     "ntm checkpoint save",
-            Risk:        RiskLow,
-        },
-        {
-            Description: "Compact context to reduce size",
-            Command:     "ntm context compact --aggressive",
-            Risk:        RiskMedium,
-        },
-        {
-            Description: "Restart agent with fresh context",
-            Command:     "ntm restart %s --fresh",
-            Risk:        RiskMedium,
-        },
-    },
-    ErrRateLimit: {
-        {
-            Description: "Wait and retry automatically",
-            Command:     "ntm retry --backoff=exponential",
-            Risk:        RiskLow,
-        },
-        {
-            Description: "Switch to a different agent/model",
-            Command:     "ntm switch %s --model=sonnet",
-            Risk:        RiskLow,
-        },
-    },
-    // ... more error types
-}
-```
-
-#### User-Facing Output
-
-```
-❌ Agent "planner" crashed: context window exceeded
-
-   The agent's context grew to 210,000 tokens, exceeding the
-   200,000 token limit for Claude Opus.
-
-   Suggested fixes:
-   ┌────────────────────────────────────────────────────────┐
-   │ 1. Save checkpoint (recommended)                       │
-   │    $ ntm checkpoint save                               │
-   │    Risk: Low - Preserves current state                 │
-   │                                                        │
-   │ 2. Compact context                                     │
-   │    $ ntm context compact --aggressive                  │
-   │    Risk: Medium - May lose some conversation history   │
-   │                                                        │
-   │ 3. Restart with fresh context                          │
-   │    $ ntm restart planner --fresh                       │
-   │    Risk: Medium - Loses current agent state            │
-   └────────────────────────────────────────────────────────┘
-
-   Quick fix: Press [1], [2], or [3] to run a suggestion
-
-   Run `ntm doctor` for full system diagnostics.
-```
-
-#### Auto-Recovery Options
-
-```toml
-[recovery]
-# Automatically attempt recovery for certain errors
-auto_recover = true
-
-# What to do on context overflow
-context_overflow = "compact"  # compact | checkpoint_and_restart | ask
-
-# What to do on rate limit
-rate_limit = "backoff"  # backoff | switch_model | ask
-
-# What to do on crash
-crash = "restart"  # restart | checkpoint | ask
-
-# Maximum auto-recovery attempts
-max_retries = 3
-```
-
-### Implementation Strategy
-
-1. **Categorize all errors** - map exit codes and messages to categories
-2. **Build suggestion database** - context-aware recovery suggestions
-3. **Implement interactive recovery** - press key to run suggestion
-4. **Add auto-recovery** - configurable automatic fixes
-5. **Create `ntm doctor`** - comprehensive diagnostics command
-
----
-
-## IDE Integration
-
-### Why It Matters
-
-Developers spend most of their time in IDEs. Forcing them to switch to a terminal for NTM reduces adoption and workflow efficiency.
-
-### VSCode Extension
-
-#### Features
-
-1. **Sidebar Panel**
-   - View active sessions and agents
-   - One-click to view agent output
-   - Status indicators (working, idle, error)
-
-2. **Command Palette Integration**
-   - `NTM: Start Session` - launch from VSCode
-   - `NTM: Send to Agent` - send selected code to agent
-   - `NTM: Ask Agent` - ask question about current file
-   - `NTM: Approve Changes` - review and approve pending changes
-
-3. **Inline Features**
-   - CodeLens showing "Ask NTM about this function"
-   - Hover information from agent analysis
-   - Inline diff preview for pending changes
-
-4. **Output Panel**
-   - Dedicated NTM output channel
-   - Syntax-highlighted agent responses
-   - Clickable file references
-
-#### Implementation
-
-```typescript
-// extension.ts
-import * as vscode from 'vscode';
-import { NtmClient } from './ntm-client';
-
-export function activate(context: vscode.ExtensionContext) {
-    const ntm = new NtmClient();
-
-    // Register sidebar view
-    const sessionProvider = new SessionTreeProvider(ntm);
-    vscode.window.registerTreeDataProvider('ntm-sessions', sessionProvider);
-
-    // Register commands
-    context.subscriptions.push(
-        vscode.commands.registerCommand('ntm.startSession', () => {
-            ntm.startSession(vscode.workspace.rootPath);
-        }),
-        vscode.commands.registerCommand('ntm.sendToAgent', () => {
-            const editor = vscode.window.activeTextEditor;
-            const selection = editor?.document.getText(editor.selection);
-            ntm.sendToAgent(selection);
-        }),
-        vscode.commands.registerCommand('ntm.approveChanges', () => {
-            ntm.showPendingChanges();
-        })
-    );
-
-    // Register CodeLens provider
-    context.subscriptions.push(
-        vscode.languages.registerCodeLensProvider('*', new NtmCodeLensProvider(ntm))
-    );
-}
-```
-
-### Neovim/Vim Plugin
-
-#### Features
-
-```vim
-" Commands
-:NTMStatus          " Show session status in floating window
-:NTMSend            " Send visual selection to agent
-:NTMAsk <question>  " Ask agent about current file
-:NTMApprove         " Show and approve pending changes
-:NTMOutput          " Open agent output in split
-
-" Keybindings (suggested)
-nnoremap <leader>ns :NTMStatus<CR>
-vnoremap <leader>na :NTMSend<CR>
-nnoremap <leader>nq :NTMAsk
-nnoremap <leader>no :NTMOutput<CR>
-```
-
-#### Implementation
-
-```lua
--- lua/ntm/init.lua
-local M = {}
-
-function M.setup(opts)
-    opts = opts or {}
-
-    -- Create commands
-    vim.api.nvim_create_user_command('NTMStatus', function()
-        M.show_status()
-    end, {})
-
-    vim.api.nvim_create_user_command('NTMSend', function(args)
-        local lines = vim.api.nvim_buf_get_lines(0, args.line1-1, args.line2, false)
-        M.send_to_agent(table.concat(lines, '\n'))
-    end, { range = true })
-
-    vim.api.nvim_create_user_command('NTMAsk', function(args)
-        M.ask_agent(args.args)
-    end, { nargs = '+' })
-end
-
-function M.show_status()
-    local status = vim.fn.system('ntm status --robot')
-    local parsed = vim.fn.json_decode(status)
-    -- Display in floating window
-    M.show_float(M.format_status(parsed))
-end
-
-return M
-```
-
-### Implementation Strategy
-
-1. **Define NTM API for IDEs** - stable JSON protocol over stdio/socket
-2. **Build VSCode extension first** - largest user base
-3. **Create Neovim plugin** - second largest among target audience
-4. **Document API** - enable community plugins (JetBrains, Emacs, etc.)
-
----
-
-## Agent Orchestration Patterns
-
-### Why It Matters
-
-Current NTM treats agents as independent workers. Real-world tasks often need:
-- Sequential dependencies (plan before implement)
-- Parallel execution (multiple files simultaneously)
-- Approval gates (review before commit)
-- Conditional branching (test results affect next steps)
-
-### Proposed Implementation
-
-#### Pipeline Definition
-
-```yaml
-# pipelines/feature-implementation.yaml
-name: feature-implementation
-description: "Complete feature implementation with planning, coding, review, and testing"
-
-variables:
-  feature_description: ""  # Set at runtime
-
-stages:
-  - id: plan
-    name: "Plan Implementation"
-    agent: claude-opus
-    prompt: |
-      Create a detailed implementation plan for:
-      {{ .feature_description }}
-
-      Break it down into specific tasks with file changes.
-    outputs:
-      - tasks: "$.tasks[]"
-    approval: required
-
-  - id: implement
-    name: "Implement Tasks"
-    agent: claude-sonnet
-    parallel: true
-    for_each: "{{ .plan.tasks }}"
-    prompt: |
-      Implement this task:
-      {{ .item.description }}
-
-      Files to modify: {{ .item.files }}
-    depends_on: [plan]
-
-  - id: review
-    name: "Code Review"
-    agent: claude-opus
-    prompt: |
-      Review all the changes made in the implement stage.
-      Check for:
-      - Correctness
-      - Security issues
-      - Performance problems
-      - Code style
-    depends_on: [implement]
-    approval: required
-
-  - id: test
-    name: "Write and Run Tests"
-    agent: codex
-    prompt: |
-      Write tests for the new functionality.
-      Run them and report results.
-    depends_on: [review]
-    on_failure:
-      goto: implement
-      max_retries: 2
-
-  - id: complete
-    name: "Completion Summary"
-    agent: claude-sonnet
-    prompt: |
-      Summarize what was accomplished.
-      List all files changed.
-      Provide any follow-up recommendations.
-    depends_on: [test]
-```
-
-#### Pipeline Commands
-
-```bash
-# Run a pipeline
-$ ntm pipeline run feature-implementation \
-    --var feature_description="Add user authentication with JWT"
-
-# View pipeline status
-$ ntm pipeline status
-Pipeline: feature-implementation (running)
-┌─────────┬────────────────────┬──────────┬──────────┐
-│ Stage   │ Name               │ Status   │ Duration │
-├─────────┼────────────────────┼──────────┼──────────┤
-│ plan    │ Plan Implementation│ ✅ Done  │ 2m 34s   │
-│ impl    │ Implement Tasks    │ 🔄 3/5   │ 8m 12s   │
-│ review  │ Code Review        │ ⏳ Waiting│ -        │
-│ test    │ Write and Run Tests│ ⏳ Waiting│ -        │
-│ complete│ Completion Summary │ ⏳ Waiting│ -        │
-└─────────┴────────────────────┴──────────┴──────────┘
-
-# Cancel a pipeline
-$ ntm pipeline cancel
-
-# View pipeline history
-$ ntm pipeline history
-```
-
-### Implementation Strategy
-
-1. **Extend existing pipeline system** - NTM already has basic pipelines
-2. **Add parallel execution** - fan-out/fan-in patterns
-3. **Implement approval gates** - integrate with slb
-4. **Add conditional logic** - on_failure, when clauses
-5. **Create pipeline UI** - visual pipeline editor in web dashboard
-
----
-
-## Interactive Tutorial & Onboarding
-
-### Why It Matters
-
-New users need guidance. A well-designed tutorial can:
-- Reduce time to first success from hours to minutes
-- Prevent common mistakes
-- Build confidence
-- Reduce support burden
-
-### Proposed Implementation
-
-#### First-Run Experience
-
-```
-$ ntm
-
-╔══════════════════════════════════════════════════════════════════╗
-║                                                                  ║
-║   ███╗   ██╗████████╗███╗   ███╗                                 ║
-║   ████╗  ██║╚══██╔══╝████╗ ████║                                 ║
-║   ██╔██╗ ██║   ██║   ██╔████╔██║                                 ║
-║   ██║╚██╗██║   ██║   ██║╚██╔╝██║                                 ║
-║   ██║ ╚████║   ██║   ██║ ╚═╝ ██║                                 ║
-║   ╚═╝  ╚═══╝   ╚═╝   ╚═╝     ╚═╝                                 ║
-║                                                                  ║
-║   Named Tmux Manager - AI Agent Orchestration                    ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
-
-👋 Welcome! Looks like this is your first time using NTM.
-
-? Would you like to run the interactive tutorial? (recommended for new users)
-  ❯ Yes, show me around (5 minutes)
-    No, I know what I'm doing
-    Just show me the quick start
-```
-
-#### Tutorial Sections
-
-```
-Tutorial Progress: [████░░░░░░] 40%
-
-Section 3 of 5: Creating Your First Session
-
-NTM manages "sessions" - workspaces where AI agents collaborate.
-Let's create one now.
-
-┌────────────────────────────────────────────────────────────────┐
-│  Try this command:                                             │
-│                                                                │
-│  $ ntm spawn --agents=1                                        │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-
-Type the command above, or press [Enter] to run it automatically.
-Press [S] to skip this section, [Q] to quit tutorial.
-```
-
-#### Contextual Help
-
-```bash
-# Help with examples
-$ ntm spawn --help
-
-ntm spawn - Create a new NTM session with AI agents
-
-USAGE:
-    ntm spawn [OPTIONS]
-
-OPTIONS:
-    --session, -s    Session name (default: auto-generated)
-    --agents, -a     Number or specification of agents (default: 1)
-    --workdir, -w    Working directory (default: current)
-    --template, -t   Use a session template
-
-EXAMPLES:
-    # Simple: one agent in current directory
-    ntm spawn
-
-    # Multiple agents
-    ntm spawn --agents=3
-
-    # Named session with specific agents
-    ntm spawn --session=my-project --agents=claude:2,codex:1
-
-    # Using a template
-    ntm spawn --template=code-review
-
-TIPS:
-    💡 Use `ntm template list` to see available templates
-    💡 Use `ntm go "task"` for quick one-off tasks
-```
-
-### Implementation Strategy
-
-1. **Create tutorial framework** - step-by-step progression
-2. **Write tutorial content** - clear, concise, tested
-3. **Add progress persistence** - resume where you left off
-4. **Implement contextual help** - examples in all --help output
-5. **Add `ntm docs`** - searchable documentation browser
-
----
-
-## Shareable Sessions
-
-### Why It Matters
-
-Development is collaborative. Users need to:
-- Show progress to teammates
-- Get help from experts
-- Document what happened
-- Review async (not everyone online at same time)
-
-### Proposed Implementation
-
-#### Read-Only Sharing
-
-```bash
-# Generate shareable link (read-only, expires in 24h)
-$ ntm share
-Session shared! View at:
-https://ntm.sh/s/abc123xyz
-
-Link expires in 24 hours. Anyone with the link can:
-- View real-time agent output
-- See file changes
-- NOT send commands or make changes
-
-To stop sharing: ntm share --stop
-```
-
-#### Team Collaboration
-
-```bash
-# Invite teammate with write access
-$ ntm invite teammate@company.com --role=collaborator
-Invitation sent! They can join with:
-  ntm join abc123xyz
-
-# Or generate a join code
-$ ntm invite --code
-Join code: BLUE-FISH-GAMMA
-Expires in 1 hour. Share this code with your teammate.
-They can join with: ntm join BLUE-FISH-GAMMA
-```
-
-#### Session Export
-
-```bash
-# Export session as HTML report
-$ ntm export --format=html > session-report.html
-
-# Export as markdown (for GitHub issues, docs)
-$ ntm export --format=markdown > session-report.md
-
-# Export raw JSON (for tooling)
-$ ntm export --format=json > session-data.json
-```
-
-### Implementation Strategy
-
-1. **Build sharing infrastructure** - temporary URLs, access control
-2. **Create read-only view** - web-based session viewer
-3. **Add collaboration** - invite system, join codes
-4. **Implement export** - HTML, Markdown, JSON formats
-5. **Security review** - ensure proper access control
-
----
-
-## UX Polish
-
-### Small Improvements, Big Impact
-
-#### 1. Progress & Feedback
-
-Every operation should feel responsive:
-
-```
-$ ntm spawn --agents=3
-Creating session "dev-session"...
-├── Initializing tmux session... ✓
-├── Starting agent 1/3 (claude-opus)... ✓
-├── Starting agent 2/3 (claude-sonnet)... ✓
-├── Starting agent 3/3 (codex)... ✓
-├── Verifying agent health... ✓
-└── Session ready in 2.3s
-
-┌─────────────────────────────────────────────────────┐
-│  Session "dev-session" is running                   │
-│                                                     │
-│  Attach:     ntm attach                             │
-│  Dashboard:  ntm dashboard (or http://localhost:8080)│
-│  Status:     ntm status                             │
-│  Stop:       ntm stop                               │
-└─────────────────────────────────────────────────────┘
-```
-
-#### 2. Fuzzy Matching & Typo Tolerance
-
-```
-$ ntm spwan
-Unknown command: spwan
-
-Did you mean?
-  ntm spawn  - Create a new session with AI agents
-
-Run `ntm help` for all commands.
-```
-
-```
-$ ntm checkpoint lst
-Unknown subcommand: lst
-
-Did you mean?
-  ntm checkpoint list  - List all checkpoints
-
-Run `ntm checkpoint --help` for all subcommands.
-```
-
-#### 3. Contextual Hints
-
-```
-$ ntm status
-Session: auth-refactor (running 45m)
-
-Agents:
-  claude-1: idle (last activity 12m ago)
-  claude-2: working on src/auth/jwt.go (active)
-  codex-1:  idle (last activity 3m ago)
-
-Checkpoints: 2 saved
-
-💡 Hints:
-   - claude-1 has been idle for a while
-     Send a task: ntm send claude-1 "review the jwt implementation"
-
-   - Consider saving a checkpoint
-     Run: ntm checkpoint save "before-testing"
-```
-
-#### 4. Confirmation for Destructive Actions
-
-```
-$ ntm stop --force
-⚠️  Warning: This will immediately terminate all agents.
-   Unsaved work may be lost.
-
-   Session: auth-refactor
-   Agents: 3 (2 active, 1 idle)
-   Running time: 1h 23m
-   Last checkpoint: 45m ago
-
-? Are you sure you want to stop this session? (y/N)
-
-💡 Tip: Save a checkpoint first with `ntm checkpoint save`
-```
-
-#### 5. Command Suggestions
-
-```
-$ ntm
-No command specified. What would you like to do?
-
-  ntm spawn         Create a new session with AI agents
-  ntm go <task>     Quick one-off task
-  ntm status        Show current session status
-  ntm dashboard     Open the web dashboard
-  ntm template list Show available session templates
-
-Run `ntm help` for all commands.
-```
-
-### Implementation Strategy
-
-1. **Audit all commands** - ensure consistent progress feedback
-2. **Implement fuzzy matching** - Levenshtein distance for suggestions
-3. **Add hint system** - context-aware suggestions
-4. **Review destructive operations** - add confirmation prompts
-5. **Create empty-command handler** - helpful guidance when no args
 
 ---
 
 ## Implementation Roadmap
 
-### Phase 1: Foundation (Weeks 1-4)
-**Goal:** Core infrastructure for future features
+### Phase 1: Core Integrations (High Priority)
 
-- [ ] HTTP/WebSocket server in ntm binary
-- [ ] Define IDE/external tool API
-- [ ] Notification system framework
-- [ ] Error recovery framework
-- [ ] Template system
+**CAAM Integration**
+- [ ] Account assignment on spawn
+- [ ] Rate limit detection and failover
+- [ ] Health status in robot mode
+- [ ] Account status in dashboard
 
-### Phase 2: Web Dashboard MVP (Weeks 5-8)
-**Goal:** Basic but functional web interface
+**CM Integration**
+- [ ] Pre-task context injection
+- [ ] Post-session reflection trigger
+- [ ] Memory status in robot mode
+- [ ] Rule tracking in dashboard
 
-- [ ] Frontend framework setup (Svelte)
-- [ ] Session list and management
+**SLB Integration**
+- [ ] SLB-wrapped command execution
+- [ ] Approval dispatch to reviewers
+- [ ] Pending requests in dashboard
+- [ ] Emergency override via NTM
+
+### Phase 2: Unified Experience
+
+- [ ] NTM daemon for background coordination
+- [ ] Unified configuration system
+- [ ] `ntm go` zero-config command
+- [ ] Multi-channel notifications
+
+### Phase 3: Web Dashboard
+
 - [ ] Real-time agent output streaming
-- [ ] Basic file change viewer
-- [ ] Desktop notifications
+- [ ] Account health visualization
+- [ ] SLB approval UI
+- [ ] Memory context display
 
-### Phase 3: UX Polish (Weeks 9-10)
-**Goal:** Smooth, intuitive experience
+### Phase 4: IDE Integration
 
-- [ ] Zero-config quick start (`ntm go`)
-- [ ] Interactive tutorial
-- [ ] Improved error messages
-- [ ] Fuzzy matching and hints
-- [ ] Progress feedback for all commands
-
-### Phase 4: IDE Integration (Weeks 11-14)
-**Goal:** Meet developers where they work
-
-- [ ] VSCode extension
+- [ ] VSCode extension with integration awareness
 - [ ] Neovim plugin
-- [ ] API documentation for community plugins
+- [ ] API documentation
 
-### Phase 5: Advanced Features (Weeks 15-20)
-**Goal:** Power user capabilities
+### Phase 5: Polish & Advanced Features
 
+- [ ] Session templates with integration settings
+- [ ] Interactive tutorial
+- [ ] Session sharing
 - [ ] Advanced pipeline orchestration
-- [ ] Session sharing and collaboration
-- [ ] Export functionality
-- [ ] Integration with external projects (account manager, memory, slb)
-
-### Phase 6: Integration & Polish (Weeks 21-24)
-**Goal:** Production-ready
-
-- [ ] coding_agent_account_manager integration
-- [ ] cass_memory_system integration
-- [ ] slb approval system integration
-- [ ] Security audit
-- [ ] Performance optimization
-- [ ] Documentation overhaul
 
 ---
 
 ## Success Metrics
 
-### Adoption Metrics
-- Time to first successful session < 5 minutes
-- Tutorial completion rate > 70%
-- Weekly active users growth
+### Integration Health
+- CAAM failover success rate > 95%
+- Memory rule hit rate > 60%
+- SLB approval latency < 2 minutes (for agents)
+- Zero unreviewed CRITICAL commands
 
-### Engagement Metrics
-- Average session length
-- Commands per session
-- Web dashboard vs CLI usage ratio
+### User Experience
+- Time to first working session < 3 minutes
+- Zero-config success rate > 80%
+- Dashboard adoption > 50% of users
 
-### Quality Metrics
-- Error recovery success rate > 80%
-- User-reported issues decrease
-- Support ticket volume
-
-### Satisfaction Metrics
-- NPS score
-- GitHub stars growth rate
-- Community contributions
+### Ecosystem Adoption
+- ACFS installation success rate > 90%
+- All 8 stack tools working together
+- Cross-agent learning measurable (rules from Claude used by Codex)
 
 ---
 
 ## Conclusion
 
-This plan transforms NTM from a capable power-user tool into an accessible, compelling platform for AI-assisted development. The key insight is that **accessibility drives adoption**, and adoption drives community, which drives further development.
+NTM's position as the **cockpit** of the Agentic Coding Flywheel means it must integrate deeply with all stack tools. This plan provides concrete integration patterns for:
 
-The highest-impact improvements are:
-1. **Web Dashboard** - opens NTM to non-terminal users
-2. **Zero-Config Quick Start** - reduces barrier to entry
-3. **Notifications** - frees users from terminal watching
-4. **IDE Integration** - meets developers where they work
+1. **CAAM**: Seamless account management with automatic failover
+2. **CM**: Persistent memory that compounds across sessions
+3. **SLB**: Safety gates that prevent disasters
+4. **Agent Mail**: Coordination backbone for multi-agent workflows
 
-With the integration of the three related projects (account manager, memory system, approval system), NTM becomes a comprehensive platform for managing AI-assisted development workflows.
+The result is a closed-loop system where:
+- Agents learn from every session (CM)
+- Rate limits are handled transparently (CAAM)
+- Dangerous operations require review (SLB)
+- All coordination is auditable (Agent Mail)
+
+NTM becomes not just a session manager, but the **intelligent orchestrator** that makes the entire flywheel spin.
