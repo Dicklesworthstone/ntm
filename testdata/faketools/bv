@@ -1,0 +1,60 @@
+#!/bin/bash
+# Fake bv tool for testing
+# Supports MODE environment variable: normal (default), timeout, error, schema_drift
+
+MODE="${FAKE_TOOL_MODE:-normal}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FIXTURES_DIR="$SCRIPT_DIR/../fixtures"
+
+case "$MODE" in
+    timeout)
+        sleep 3600
+        ;;
+    error)
+        echo "bv: simulated error" >&2
+        exit 1
+        ;;
+    schema_drift)
+        # Return JSON with unexpected schema
+        echo '{"unexpected_field": true, "version": "0.31.0-drift"}'
+        exit 0
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$1" in
+    --version)
+        echo "bv 0.31.0 (fake)"
+        exit 0
+        ;;
+    --robot-triage)
+        cat "$FIXTURES_DIR/bv_triage.json" 2>/dev/null || echo '{"generated_at": "2026-01-01T00:00:00Z", "data_hash": "test", "triage": {"meta": {"version": "1.0.0"}, "quick_ref": {"open_count": 10, "actionable_count": 5}}}'
+        exit 0
+        ;;
+    --robot-plan)
+        cat "$FIXTURES_DIR/bv_plan.json" 2>/dev/null || echo '{"generated_at": "2026-01-01T00:00:00Z", "plan": {"tracks": []}}'
+        exit 0
+        ;;
+    --robot-insights)
+        cat "$FIXTURES_DIR/bv_insights.json" 2>/dev/null || echo '{"generated_at": "2026-01-01T00:00:00Z", "insights": {}}'
+        exit 0
+        ;;
+    --robot-next)
+        cat "$FIXTURES_DIR/bv_next.json" 2>/dev/null || echo '{"id": "test-1", "title": "Test issue", "command": "bd update test-1 --status in_progress"}'
+        exit 0
+        ;;
+    --help|-h)
+        echo "bv - Beads Viewer (fake for testing)"
+        echo "Usage: bv [options]"
+        echo "  --version          Show version"
+        echo "  --robot-triage     Get triage recommendations"
+        echo "  --robot-plan       Get execution plan"
+        echo "  --robot-insights   Get graph insights"
+        echo "  --robot-next       Get next work item"
+        exit 0
+        ;;
+    *)
+        echo "bv: unknown command: $1" >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,49 @@
+#!/bin/bash
+# Fake am tool for testing (Agent Mail launcher)
+# Note: Agent Mail is typically accessed via MCP, not CLI
+# This fake simulates the launcher script
+
+MODE="${FAKE_TOOL_MODE:-normal}"
+
+case "$MODE" in
+    timeout)
+        sleep 3600
+        ;;
+    error)
+        echo "am: simulated error" >&2
+        exit 1
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$1" in
+    --version)
+        echo "am 1.0.0 (fake)"
+        exit 0
+        ;;
+    status)
+        echo '{"running": true, "port": 8765, "projects": 1}'
+        exit 0
+        ;;
+    start)
+        echo "Agent Mail server starting on port 8765..."
+        exit 0
+        ;;
+    stop)
+        echo "Agent Mail server stopped"
+        exit 0
+        ;;
+    --help|-h)
+        echo "am - Agent Mail launcher (fake for testing)"
+        echo "Usage: am [command] [options]"
+        echo "Commands:"
+        echo "  status    Check server status"
+        echo "  start     Start the server"
+        echo "  stop      Stop the server"
+        exit 0
+        ;;
+    *)
+        echo "am: unknown command: $1" >&2
+        exit 1
+        ;;
+esac

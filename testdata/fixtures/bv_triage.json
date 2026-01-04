@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-01-04T00:00:00Z",
+  "data_hash": "abc123test",
+  "triage": {
+    "meta": {
+      "version": "1.0.0",
+      "generated_at": "2026-01-04T00:00:00Z",
+      "phase2_ready": true,
+      "issue_count": 50,
+      "compute_time_ms": 100
+    },
+    "quick_ref": {
+      "open_count": 30,
+      "actionable_count": 15,
+      "blocked_count": 10,
+      "in_progress_count": 5,
+      "top_picks": [
+        {
+          "id": "test-1",
+          "title": "High priority test issue",
+          "score": 0.95,
+          "reasons": ["High impact", "No blockers"],
+          "unblocks": 3
+        }
+      ]
+    },
+    "recommendations": [
+      {
+        "id": "test-1",
+        "title": "High priority test issue",
+        "type": "feature",
+        "status": "open",
+        "priority": 0,
+        "score": 0.95,
+        "action": "Start work on this issue",
+        "reasons": ["High impact", "No blockers"],
+        "unblocks_ids": ["test-2", "test-3", "test-4"]
+      }
+    ],
+    "quick_wins": [
+      {
+        "id": "test-5",
+        "title": "Quick win issue",
+        "score": 0.8,
+        "reason": "Low effort, high impact",
+        "unblocks_ids": ["test-6"]
+      }
+    ]
+  }
+}

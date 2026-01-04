@@ -1,0 +1,67 @@
+#!/bin/bash
+# Fake cass tool for testing
+# Supports MODE environment variable: normal (default), timeout, error
+
+MODE="${FAKE_TOOL_MODE:-normal}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FIXTURES_DIR="$SCRIPT_DIR/../fixtures"
+
+case "$MODE" in
+    timeout)
+        sleep 3600
+        ;;
+    error)
+        echo "cass: simulated error" >&2
+        exit 1
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$1" in
+    --version)
+        echo "cass 0.5.0 (fake)"
+        exit 0
+        ;;
+    health)
+        echo '{"status": "healthy", "indexed_sessions": 100, "last_indexed": "2026-01-01T00:00:00Z"}'
+        exit 0
+        ;;
+    search)
+        shift
+        if [[ "$*" == *"--robot"* ]] || [[ "$*" == *"--json"* ]]; then
+            cat "$FIXTURES_DIR/cass_search.json" 2>/dev/null || echo '{"results": [{"path": "/path/to/session.jsonl", "score": 0.95, "snippet": "Test result"}]}'
+        else
+            echo "1. /path/to/session.jsonl (0.95)"
+            echo "   Test result"
+        fi
+        exit 0
+        ;;
+    view)
+        if [[ "$*" == *"--json"* ]]; then
+            echo '{"turn": 1, "role": "user", "content": "Test message"}'
+        else
+            echo "[1] user: Test message"
+        fi
+        exit 0
+        ;;
+    capabilities)
+        if [[ "$*" == *"--json"* ]]; then
+            echo '{"search": true, "view": true, "expand": true}'
+        fi
+        exit 0
+        ;;
+    --help|-h)
+        echo "cass - Cross-Agent Semantic Search (fake for testing)"
+        echo "Usage: cass [command] [options]"
+        echo "Commands:"
+        echo "  health       Check service health"
+        echo "  search       Search sessions"
+        echo "  view         View session"
+        echo "  capabilities List capabilities"
+        exit 0
+        ;;
+    *)
+        echo "cass: unknown command: $1" >&2
+        exit 1
+        ;;
+esac

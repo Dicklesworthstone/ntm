@@ -1,0 +1,78 @@
+#!/bin/bash
+# Fake cm tool for testing
+# Supports MODE environment variable: normal (default), timeout, error
+
+MODE="${FAKE_TOOL_MODE:-normal}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FIXTURES_DIR="$SCRIPT_DIR/../fixtures"
+
+case "$MODE" in
+    timeout)
+        sleep 3600
+        ;;
+    error)
+        echo "cm: simulated error" >&2
+        exit 1
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$1" in
+    --version)
+        echo "cm 0.3.0 (fake)"
+        exit 0
+        ;;
+    onboard)
+        case "$2" in
+            status)
+                echo '{"status": "ready", "sessions_analyzed": 50, "rules_extracted": 25}'
+                exit 0
+                ;;
+            sample)
+                echo '["/path/to/session1.jsonl", "/path/to/session2.jsonl"]'
+                exit 0
+                ;;
+            *)
+                echo "cm onboard: unknown subcommand: $2" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    context)
+        if [[ "$*" == *"--json"* ]]; then
+            cat "$FIXTURES_DIR/cm_context.json" 2>/dev/null || echo '{"relevantBullets": ["Rule 1", "Rule 2"], "antiPatterns": [], "historySnippets": []}'
+        else
+            echo "Relevant: Rule 1, Rule 2"
+        fi
+        exit 0
+        ;;
+    playbook)
+        case "$2" in
+            list)
+                echo '[{"id": "b-123", "content": "Test rule", "category": "general"}]'
+                exit 0
+                ;;
+            add)
+                echo "Added rule: fake-rule"
+                exit 0
+                ;;
+            *)
+                echo "cm playbook: unknown subcommand: $2" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    --help|-h)
+        echo "cm - Cass Memory system (fake for testing)"
+        echo "Usage: cm [command] [options]"
+        echo "Commands:"
+        echo "  onboard    Onboarding workflow"
+        echo "  context    Get context for task"
+        echo "  playbook   Manage playbook rules"
+        exit 0
+        ;;
+    *)
+        echo "cm: unknown command: $1" >&2
+        exit 1
+        ;;
+esac

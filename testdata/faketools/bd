@@ -1,0 +1,96 @@
+#!/bin/bash
+# Fake bd tool for testing
+# Supports MODE environment variable: normal (default), timeout, error, schema_drift
+
+MODE="${FAKE_TOOL_MODE:-normal}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FIXTURES_DIR="$SCRIPT_DIR/../fixtures"
+
+case "$MODE" in
+    timeout)
+        sleep 3600
+        ;;
+    error)
+        echo "bd: simulated error" >&2
+        exit 1
+        ;;
+    schema_drift)
+        echo '{"unexpected_field": true}'
+        exit 0
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$1" in
+    --version)
+        echo "bd 1.0.0 (fake)"
+        exit 0
+        ;;
+    list)
+        if [[ "$*" == *"--json"* ]]; then
+            cat "$FIXTURES_DIR/bd_list.json" 2>/dev/null || echo '[{"id": "test-1", "title": "Test issue", "status": "open"}]'
+        else
+            echo "test-1  Test issue  open"
+        fi
+        exit 0
+        ;;
+    ready)
+        if [[ "$*" == *"--json"* ]]; then
+            cat "$FIXTURES_DIR/bd_ready.json" 2>/dev/null || echo '[{"id": "test-1", "title": "Test issue", "priority": 1}]'
+        else
+            echo "test-1  Test issue  P1"
+        fi
+        exit 0
+        ;;
+    show)
+        if [[ "$*" == *"--json"* ]]; then
+            cat "$FIXTURES_DIR/bd_show.json" 2>/dev/null || echo '{"id": "test-1", "title": "Test issue", "description": "Test description"}'
+        else
+            echo "ID: test-1"
+            echo "Title: Test issue"
+        fi
+        exit 0
+        ;;
+    update)
+        echo "Updated issue: $2"
+        exit 0
+        ;;
+    create)
+        echo "Created issue: fake-new"
+        exit 0
+        ;;
+    close)
+        echo "Closed issue: $2"
+        exit 0
+        ;;
+    sync)
+        echo "Sync complete"
+        exit 0
+        ;;
+    stats)
+        if [[ "$*" == *"--json"* ]]; then
+            echo '{"open": 10, "closed": 5, "in_progress": 2}'
+        else
+            echo "Open: 10, Closed: 5, In Progress: 2"
+        fi
+        exit 0
+        ;;
+    --help|-h)
+        echo "bd - Beads issue tracker (fake for testing)"
+        echo "Usage: bd [command] [options]"
+        echo "Commands:"
+        echo "  list      List issues"
+        echo "  ready     Show ready issues"
+        echo "  show      Show issue details"
+        echo "  update    Update issue"
+        echo "  create    Create issue"
+        echo "  close     Close issue"
+        echo "  sync      Sync with git"
+        echo "  stats     Show statistics"
+        exit 0
+        ;;
+    *)
+        echo "bd: unknown command: $1" >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,43 @@
+#!/bin/bash
+# Fake s2p tool for testing
+# Supports MODE environment variable: normal (default), timeout, error
+
+MODE="${FAKE_TOOL_MODE:-normal}"
+
+case "$MODE" in
+    timeout)
+        sleep 3600
+        ;;
+    error)
+        echo "s2p: simulated error" >&2
+        exit 1
+        ;;
+esac
+
+# Normal mode - check arguments
+case "$1" in
+    --version)
+        echo "s2p 0.2.0 (fake)"
+        exit 0
+        ;;
+    pack)
+        echo "Packed context: 1500 tokens"
+        exit 0
+        ;;
+    analyze)
+        echo '{"files": 10, "tokens": 15000, "languages": ["go", "markdown"]}'
+        exit 0
+        ;;
+    --help|-h)
+        echo "s2p - Source to Prompt (fake for testing)"
+        echo "Usage: s2p [command] [options]"
+        echo "Commands:"
+        echo "  pack      Pack source into prompt"
+        echo "  analyze   Analyze source structure"
+        exit 0
+        ;;
+    *)
+        echo "s2p: unknown command: $1" >&2
+        exit 1
+        ;;
+esac
