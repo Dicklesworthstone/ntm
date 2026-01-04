@@ -264,38 +264,42 @@ func runSafetyCheck(command string) error {
 			resp.Pattern = match.Pattern
 			resp.Reason = match.Reason
 		}
-		return output.PrintJSON(resp)
-	}
-
-	// TUI output
-	okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-	fmt.Println()
-	fmt.Printf("  Command: %s\n", command)
-	fmt.Println()
-
-	if match == nil {
-		fmt.Printf("  %s Allowed (no policy match)\n", okStyle.Render("✓"))
+		if err := output.PrintJSON(resp); err != nil {
+			return err
+		}
 	} else {
-		switch match.Action {
-		case policy.ActionAllow:
-			fmt.Printf("  %s Explicitly allowed\n", okStyle.Render("✓"))
-		case policy.ActionBlock:
-			fmt.Printf("  %s BLOCKED\n", errorStyle.Render("✗"))
-		case policy.ActionApprove:
-			fmt.Printf("  %s Requires approval\n", warnStyle.Render("⚠"))
+		// TUI output
+		okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+		mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+		fmt.Println()
+		fmt.Printf("  Command: %s\n", command)
+		fmt.Println()
+
+		if match == nil {
+			fmt.Printf("  %s Allowed (no policy match)\n", okStyle.Render("✓"))
+		} else {
+			switch match.Action {
+			case policy.ActionAllow:
+				fmt.Printf("  %s Explicitly allowed\n", okStyle.Render("✓"))
+			case policy.ActionBlock:
+				fmt.Printf("  %s BLOCKED\n", errorStyle.Render("✗"))
+			case policy.ActionApprove:
+				fmt.Printf("  %s Requires approval\n", warnStyle.Render("⚠"))
+			}
+			if match.Reason != "" {
+				fmt.Printf("    %s\n", mutedStyle.Render(match.Reason))
+			}
+			fmt.Printf("    %s\n", mutedStyle.Render("Pattern: "+match.Pattern))
 		}
-		if match.Reason != "" {
-			fmt.Printf("    %s\n", mutedStyle.Render(match.Reason))
-		}
-		fmt.Printf("    %s\n", mutedStyle.Render("Pattern: "+match.Pattern))
+
+		fmt.Println()
 	}
 
-	fmt.Println()
-
+	// Exit with code 1 for blocked commands (both JSON and TUI modes)
+	// This is critical for wrapper scripts that rely on exit code
 	if match != nil && match.Action == policy.ActionBlock {
 		os.Exit(1)
 	}

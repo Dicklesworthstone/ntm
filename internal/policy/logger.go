@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// DefaultBlockedLogPath is the default location for blocked command logs.
-const DefaultBlockedLogPath = ".ntm/logs/blocked.jsonl"
+// DefaultBlockedLogSubPath is the default subdirectory for blocked command logs.
+// This is relative to the user's home directory.
+const DefaultBlockedLogSubPath = ".ntm/logs/blocked.jsonl"
 
 // BlockedEntry represents a single blocked command log entry.
 type BlockedEntry struct {
@@ -30,10 +31,20 @@ type BlockedLogger struct {
 	file *os.File
 }
 
+// defaultBlockedLogPath returns the default blocked log path in the user's home directory.
+func defaultBlockedLogPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback to current directory if home is unavailable
+		return DefaultBlockedLogSubPath
+	}
+	return filepath.Join(home, DefaultBlockedLogSubPath)
+}
+
 // NewBlockedLogger creates a new blocked command logger.
 func NewBlockedLogger(path string) (*BlockedLogger, error) {
 	if path == "" {
-		path = DefaultBlockedLogPath
+		path = defaultBlockedLogPath()
 	}
 
 	// Ensure directory exists
@@ -108,7 +119,7 @@ func (l *BlockedLogger) Close() error {
 // ReadBlockedLog reads all entries from a blocked log file.
 func ReadBlockedLog(path string) ([]BlockedEntry, error) {
 	if path == "" {
-		path = DefaultBlockedLogPath
+		path = defaultBlockedLogPath()
 	}
 
 	data, err := os.ReadFile(path)
