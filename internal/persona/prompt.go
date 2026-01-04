@@ -266,22 +266,6 @@ func loadCustomVars(projectDir string, ctx *TemplateContext) {
 	}
 }
 
-// expandPromptVars replaces template variables in the prompt content.
-// Supported variables:
-//   - {{.Name}} - persona name
-//   - {{.Description}} - persona description
-//   - {{.AgentType}} - agent type (claude, codex, gemini)
-//   - {{.Model}} - model name
-//
-// Legacy support (no dot prefix):
-//   - {{project_name}} - project name
-//   - {{language}} - primary language
-//   - {{codebase_summary}} - project description
-//   - {{custom_var}} - any custom variable
-func expandPromptVars(content string, p *Persona) string {
-	return ExpandPromptVarsWithContext(content, p, nil)
-}
-
 // ExpandPromptVarsWithContext replaces template variables with context support.
 func ExpandPromptVarsWithContext(content string, p *Persona, ctx *TemplateContext) string {
 	if p == nil && ctx == nil {
