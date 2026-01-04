@@ -8,13 +8,13 @@ import (
 
 // Lazy provides thread-safe lazy initialization for any type T
 type Lazy[T any] struct {
-	mu       sync.RWMutex
-	value    T
-	init     func() (T, error)
-	initOnce sync.Once
-	initErr  error
-	name     string
-	phase    string
+	mu      sync.RWMutex
+	value   T
+	init    func() (T, error)
+	done    bool
+	initErr error
+	name    string
+	phase   string
 }
 
 // NewLazy creates a lazy initializer with the given initialization function
@@ -37,16 +37,34 @@ func NewLazyWithPhase[T any](name, phase string, init func() (T, error)) *Lazy[T
 
 // Get returns the lazily initialized value, initializing it if necessary
 func (l *Lazy[T]) Get() (T, error) {
-	l.initOnce.Do(func() {
-		span := profiler.StartWithPhase("lazy_init_"+l.name, l.phase)
-		defer span.End()
+	// Fast path: already initialized
+	l.mu.RLock()
+	if l.done {
+		val, err := l.value, l.initErr
+		l.mu.RUnlock()
+		return val, err
+	}
+	l.mu.RUnlock()
 
-		l.value, l.initErr = l.init()
-		if l.initErr != nil {
-			span.Tag("error", l.initErr.Error())
-		}
-		markInitialized(l.name)
-	})
+	// Slow path: acquire write lock and initialize
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if l.done {
+		return l.value, l.initErr
+	}
+
+	span := profiler.StartWithPhase("lazy_init_"+l.name, l.phase)
+	defer span.End()
+
+	l.value, l.initErr = l.init()
+	if l.initErr != nil {
+		span.Tag("error", l.initErr.Error())
+	}
+	l.done = true
+	markInitialized(l.name)
+
 	return l.value, l.initErr
 }
 
@@ -70,7 +88,7 @@ func (l *Lazy[T]) IsInitialized() bool {
 func (l *Lazy[T]) Reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.initOnce = sync.Once{}
+	l.done = false
 	l.initErr = nil
 	var zero T
 	l.value = zero
@@ -78,11 +96,11 @@ func (l *Lazy[T]) Reset() {
 
 // LazyValue is a simplified lazy initializer that doesn't return errors
 type LazyValue[T any] struct {
-	mu       sync.RWMutex
-	value    T
-	init     func() T
-	initOnce sync.Once
-	name     string
+	mu    sync.RWMutex
+	value T
+	init  func() T
+	done  bool
+	name  string
 }
 
 // NewLazyValue creates a lazy initializer that doesn't fail
@@ -95,12 +113,30 @@ func NewLazyValue[T any](name string, init func() T) *LazyValue[T] {
 
 // Get returns the lazily initialized value
 func (l *LazyValue[T]) Get() T {
-	l.initOnce.Do(func() {
-		span := profiler.StartWithPhase("lazy_value_"+l.name, "deferred")
-		defer span.End()
-		l.value = l.init()
-		markInitialized(l.name)
-	})
+	// Fast path: already initialized
+	l.mu.RLock()
+	if l.done {
+		val := l.value
+		l.mu.RUnlock()
+		return val
+	}
+	l.mu.RUnlock()
+
+	// Slow path: acquire write lock and initialize
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if l.done {
+		return l.value
+	}
+
+	span := profiler.StartWithPhase("lazy_value_"+l.name, "deferred")
+	defer span.End()
+	l.value = l.init()
+	l.done = true
+	markInitialized(l.name)
+
 	return l.value
 }
 
@@ -108,7 +144,7 @@ func (l *LazyValue[T]) Get() T {
 func (l *LazyValue[T]) Reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.initOnce = sync.Once{}
+	l.done = false
 	var zero T
 	l.value = zero
 }
