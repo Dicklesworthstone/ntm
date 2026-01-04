@@ -127,5 +127,8 @@ func runUnlock(session string, patterns []string, all bool) error {
 		return nil
 	}
 
-	return fmt.Errorf("%s", result.Error)
+	if result.Error != "" {
+		return fmt.Errorf("%s", result.Error)
+	}
+	return fmt.Errorf("unlock failed")
 }

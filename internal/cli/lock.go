@@ -177,5 +177,8 @@ func printLockResult(result LockResult, shared bool) error {
 		return fmt.Errorf("reservation conflicts detected")
 	}
 
-	return fmt.Errorf("%s", result.Error)
+	if result.Error != "" {
+		return fmt.Errorf("%s", result.Error)
+	}
+	return fmt.Errorf("lock failed")
 }
