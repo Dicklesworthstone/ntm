@@ -424,26 +424,25 @@ type ModelsConfig struct {
 // DefaultModels returns the default model configuration with sensible aliases
 func DefaultModels() ModelsConfig {
 	return ModelsConfig{
-		DefaultClaude: "claude-sonnet-4-20250514",
-		DefaultCodex:  "gpt-4",
-		DefaultGemini: "gemini-2.0-flash",
+		DefaultClaude: "claude-opus-4-5",
+		DefaultCodex:  "gpt-5.2-codex-medium",
+		DefaultGemini: "gemini-3-pro-preview",
 		Claude: map[string]string{
-			"opus":      "claude-opus-4-20250514",
-			"sonnet":    "claude-sonnet-4-20250514",
-			"haiku":     "claude-haiku-3-20240307",
-			"architect": "claude-opus-4-20250514",
-			"fast":      "claude-sonnet-4-20250514",
+			"opus":      "claude-opus-4-5",
+			"sonnet":    "claude-sonnet-4-5",
+			"haiku":     "claude-haiku-4-5",
+			"architect": "claude-opus-4-5",
+			"fast":      "claude-sonnet-4-5",
 		},
 		Codex: map[string]string{
-			"gpt4":  "gpt-4",
-			"o1":    "o1",
-			"turbo": "gpt-4-turbo",
-			"max":   "gpt-5.1-codex-max",
+			"o1":        "o1",
+			"medium":    "gpt-5.2-codex-medium",
+			"high":      "gpt-5.2-codex-high",
+			"xhigh":     "gpt-5.2-codex-xhigh",
 		},
 		Gemini: map[string]string{
-			"pro":   "gemini-pro",
-			"flash": "gemini-2.0-flash",
-			"ultra": "gemini-ultra",
+			"pro":   "gemini-3-pro-preview",
+			"flash": "gemini-3-flash-preview"
 		},
 	}
 }
