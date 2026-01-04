@@ -151,10 +151,14 @@ func (rm *RecoveryManager) SendRecoveryPromptByID(session string, paneIndex int,
 	// Build target for tmux (session:pane_index)
 	target := fmt.Sprintf("%s:%d", session, paneIndex)
 
+	// Capture values while holding lock to avoid data race with SetPrompt()
+	prompt := rm.prompt
+	includeBeadContext := rm.includeBeadContext
+
 	// Execute recovery asynchronously
 	go func() {
 		// Build prompt with optional bead context (potentially slow)
-		promptToSend := BuildContextAwarePrompt(rm.prompt, rm.includeBeadContext)
+		promptToSend := BuildContextAwarePrompt(prompt, includeBeadContext)
 
 		// Send the recovery prompt
 		if err := tmux.SendKeys(target, promptToSend, true); err != nil {
