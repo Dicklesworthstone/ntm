@@ -7,16 +7,16 @@ import (
 
 func TestRotateCmdValidation(t *testing.T) {
 	tests := []struct {
-		name                   string
-		args                   []string
-		flags                  map[string]string
-		wantError              string
+		name                     string
+		args                     []string
+		flags                    map[string]string
+		wantError                string
 		skipIfAutoSelectPossible bool // Skip if exactly one session is running (auto-select applies)
 	}{
 		{
-			name:                   "missing session and not in tmux",
-			args:                   []string{},
-			wantError:              "session",
+			name:                     "missing session and not in tmux",
+			args:                     []string{},
+			wantError:                "session",
 			skipIfAutoSelectPossible: true, // Session auto-selected when only one exists
 		},
 		{

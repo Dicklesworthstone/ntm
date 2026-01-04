@@ -50,13 +50,13 @@ This is the recommended first step for using NTM with a new project.`,
 // SetupResponse is the JSON output for setup command.
 type SetupResponse struct {
 	output.TimestampedResponse
-	Success        bool     `json:"success"`
-	ProjectPath    string   `json:"project_path"`
-	NTMDir         string   `json:"ntm_dir"`
-	CreatedDirs    []string `json:"created_dirs"`
-	CreatedFiles   []string `json:"created_files"`
-	WrappersInstalled bool   `json:"wrappers_installed,omitempty"`
-	HooksInstalled    bool   `json:"hooks_installed,omitempty"`
+	Success           bool     `json:"success"`
+	ProjectPath       string   `json:"project_path"`
+	NTMDir            string   `json:"ntm_dir"`
+	CreatedDirs       []string `json:"created_dirs"`
+	CreatedFiles      []string `json:"created_files"`
+	WrappersInstalled bool     `json:"wrappers_installed,omitempty"`
+	HooksInstalled    bool     `json:"hooks_installed,omitempty"`
 }
 
 func runSetup(installWrappers, installHooks, force bool) error {

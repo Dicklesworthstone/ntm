@@ -184,10 +184,10 @@ func TestSplitLines(t *testing.T) {
 
 func TestSetupResponse(t *testing.T) {
 	resp := SetupResponse{
-		Success:     true,
-		ProjectPath: "/test/project",
-		NTMDir:      "/test/project/.ntm",
-		CreatedDirs: []string{".ntm", ".ntm/logs"},
+		Success:      true,
+		ProjectPath:  "/test/project",
+		NTMDir:       "/test/project/.ntm",
+		CreatedDirs:  []string{".ntm", ".ntm/logs"},
 		CreatedFiles: []string{".ntm/config.yaml"},
 	}
 

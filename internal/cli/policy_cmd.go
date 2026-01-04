@@ -64,20 +64,20 @@ func newPolicyShowCmd() *cobra.Command {
 // PolicyShowResponse is the JSON output for policy show.
 type PolicyShowResponse struct {
 	output.TimestampedResponse
-	Version    int                      `json:"version"`
-	PolicyPath string                   `json:"policy_path,omitempty"`
-	IsDefault  bool                     `json:"is_default"`
-	Stats      PolicyStats              `json:"stats"`
-	Automation policy.AutomationConfig  `json:"automation"`
-	Rules      *PolicyRulesDetail       `json:"rules,omitempty"`
+	Version    int                     `json:"version"`
+	PolicyPath string                  `json:"policy_path,omitempty"`
+	IsDefault  bool                    `json:"is_default"`
+	Stats      PolicyStats             `json:"stats"`
+	Automation policy.AutomationConfig `json:"automation"`
+	Rules      *PolicyRulesDetail      `json:"rules,omitempty"`
 }
 
 // PolicyStats contains rule counts.
 type PolicyStats struct {
-	Blocked   int `json:"blocked"`
-	Approval  int `json:"approval"`
-	Allowed   int `json:"allowed"`
-	SLBRules  int `json:"slb_rules"`
+	Blocked  int `json:"blocked"`
+	Approval int `json:"approval"`
+	Allowed  int `json:"allowed"`
+	SLBRules int `json:"slb_rules"`
 }
 
 // PolicyRulesDetail contains detailed rule information.

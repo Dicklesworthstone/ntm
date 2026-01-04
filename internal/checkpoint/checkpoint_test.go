@@ -382,13 +382,13 @@ func TestCountLines(t *testing.T) {
 		want  int
 	}{
 		{"", 0},
-		{"\n", 0},                 // Just a newline = 0 lines
+		{"\n", 0}, // Just a newline = 0 lines
 		{"one", 1},
-		{"one\n", 1},              // Trailing newline doesn't add a line
+		{"one\n", 1}, // Trailing newline doesn't add a line
 		{"one\ntwo", 2},
-		{"one\ntwo\n", 2},         // Trailing newline doesn't add a line
+		{"one\ntwo\n", 2}, // Trailing newline doesn't add a line
 		{"one\ntwo\nthree", 3},
-		{"one\ntwo\nthree\n", 3},  // Trailing newline doesn't add a line
+		{"one\ntwo\nthree\n", 3}, // Trailing newline doesn't add a line
 	}
 
 	for _, tt := range tests {

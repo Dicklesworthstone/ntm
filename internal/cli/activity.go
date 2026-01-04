@@ -337,11 +337,11 @@ func outputActivityJSON(result *activityResult) error {
 	}
 
 	type jsonOutput struct {
-		Success    bool                 `json:"success"`
-		Session    string               `json:"session"`
-		CapturedAt string               `json:"captured_at"`
-		Agents     []jsonAgent          `json:"agents"`
-		Summary    map[string]int       `json:"summary"`
+		Success    bool           `json:"success"`
+		Session    string         `json:"session"`
+		CapturedAt string         `json:"captured_at"`
+		Agents     []jsonAgent    `json:"agents"`
+		Summary    map[string]int `json:"summary"`
 	}
 
 	agents := make([]jsonAgent, len(result.Agents))
