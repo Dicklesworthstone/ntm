@@ -217,7 +217,14 @@ func truncate(s string, n int) string {
 		return s
 	}
 	if n <= 3 {
-		return s[:n]
+		return "..."[:n]
 	}
-	return s[:n-3] + "..."
+	// Find first rune boundary at or after n-3 bytes
+	targetLen := n - 3
+	for i := range s {
+		if i >= targetLen {
+			return s[:i] + "..."
+		}
+	}
+	return s
 }

@@ -105,15 +105,38 @@ func (t *Table) Render() {
 	}
 }
 
-// Truncate truncates a string to max length, adding "..." if needed
+// Truncate truncates a string to max length, adding "..." if needed, respecting UTF-8 boundaries.
 func Truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
+	// When maxLen too small for content + ellipsis, just return first maxLen chars
 	if maxLen <= 3 {
-		return s[:maxLen]
+		// Find last rune boundary at or before maxLen bytes
+		lastValid := 0
+		for i := range s {
+			if i > maxLen {
+				break
+			}
+			lastValid = i
+		}
+		if lastValid == 0 && len(s) > 0 {
+			// First rune is larger than maxLen, return empty
+			return ""
+		}
+		return s[:lastValid]
 	}
-	return s[:maxLen-3] + "..."
+	// Find first rune boundary at or after maxLen-3 bytes
+	targetLen := maxLen - 3
+	for i := range s {
+		if i >= targetLen {
+			return s[:i] + "..."
+		}
+	}
+	return s
 }
 
 // Pluralize returns singular or plural form based on count

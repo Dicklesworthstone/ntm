@@ -500,15 +500,25 @@ func writeMailSection(sb *strings.Builder, opts MarkdownOptions) {
 	sb.WriteString("\n")
 }
 
-// truncateStr truncates a string to maxLen with ellipsis.
+// truncateStr truncates a string to maxLen with ellipsis, respecting UTF-8 boundaries.
 func truncateStr(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return "..."[:maxLen]
 	}
-	return s[:maxLen-3] + "..."
+	// Find first rune boundary at or after maxLen-3 bytes
+	targetLen := maxLen - 3
+	for i := range s {
+		if i >= targetLen {
+			return s[:i] + "..."
+		}
+	}
+	return s
 }
 
 // AgentTable renders a markdown table summarizing agents per session.

@@ -1155,16 +1155,29 @@ func (e *Executor) emitProgress(eventType, stepID, message string, progress floa
 	}
 }
 
-// truncatePrompt truncates a prompt for display
+// truncatePrompt truncates a prompt for display, respecting UTF-8 boundaries.
 func truncatePrompt(s string, n int) string {
 	// Replace newlines with spaces for single-line display
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
 
+	if n <= 0 {
+		return ""
+	}
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-3] + "..."
+	if n <= 3 {
+		return "..."[:n]
+	}
+	// Find first rune boundary at or after n-3 bytes
+	targetLen := n - 3
+	for i := range s {
+		if i >= targetLen {
+			return s[:i] + "..."
+		}
+	}
+	return s
 }
 
 // GetState returns the current execution state (for monitoring)

@@ -432,10 +432,23 @@ func formatAge(t time.Time) string {
 	}
 }
 
-// truncateStr shortens a string to max length.
+// truncateStr shortens a string to max length, respecting UTF-8 boundaries.
 func truncateStr(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	if maxLen <= 3 {
+		return "..."[:maxLen]
+	}
+	// Find first rune boundary at or after maxLen-3 bytes
+	targetLen := maxLen - 3
+	for i := range s {
+		if i >= targetLen {
+			return s[:i] + "..."
+		}
+	}
+	return s
 }
