@@ -1809,20 +1809,45 @@ func (rm *RestartManager) tryHardRestart(ctx context.Context, paneID, agentType 
 	// Send Ctrl+C multiple times with delay
 	target := fmt.Sprintf("%s:%s", rm.session, paneID)
 	for i := 0; i < 3; i++ {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			result.Reason = "context cancelled during hard restart"
+			return result
+		default:
+		}
+
 		if err := tmux.SendKeys(target, "C-c", false); err != nil {
 			continue
 		}
-		time.Sleep(time.Second)
+
+		// Sleep with context awareness
+		select {
+		case <-ctx.Done():
+			result.Reason = "context cancelled during hard restart"
+			return result
+		case <-time.After(time.Second):
+		}
 	}
 
-	// Check if we got a shell prompt
-	time.Sleep(500 * time.Millisecond)
+	// Check if we got a shell prompt (with context check)
+	select {
+	case <-ctx.Done():
+		result.Reason = "context cancelled during hard restart"
+		return result
+	case <-time.After(500 * time.Millisecond):
+	}
 	output, _ := tmux.CapturePaneOutput(target, 5)
 
 	// If still not at prompt, try Ctrl+D
 	if !isShellPrompt(output) {
 		tmux.SendKeys(target, "C-d", false)
-		time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+			result.Reason = "context cancelled during hard restart"
+			return result
+		case <-time.After(time.Second):
+		}
 	}
 
 	// Re-launch the agent
@@ -1838,8 +1863,13 @@ func (rm *RestartManager) tryHardRestart(ctx context.Context, paneID, agentType 
 		return result
 	}
 
-	// Wait for agent to start
-	time.Sleep(2 * time.Second)
+	// Wait for agent to start (with context check)
+	select {
+	case <-ctx.Done():
+		result.Reason = "context cancelled during hard restart"
+		return result
+	case <-time.After(2 * time.Second):
+	}
 
 	// Verify agent started
 	output, captureErr := tmux.CapturePaneOutput(target, 10)
@@ -1901,22 +1931,38 @@ func isShellPrompt(output string) bool {
 
 // isAgentRunning checks if the agent appears to be running
 func isAgentRunning(output, agentType string) bool {
-	outputLower := strings.ToLower(output)
+	output = strings.TrimSpace(output)
+	if len(output) == 0 {
+		return false
+	}
 
-	// Check for startup indicators
+	outputLower := strings.ToLower(output)
+	lines := splitLines(output)
+	lastLine := ""
+	if len(lines) > 0 {
+		lastLine = strings.TrimSpace(lines[len(lines)-1])
+	}
+
+	// Check for startup indicators - be more specific than just ">"
 	switch agentType {
 	case "claude", "cc":
+		// Claude shows "claude" in startup or idle prompt ending with ">"
 		return strings.Contains(outputLower, "claude") ||
-			strings.Contains(output, ">") ||
-			strings.Contains(outputLower, "what would you like")
+			strings.Contains(outputLower, "what would you like") ||
+			(len(lastLine) < 50 && strings.HasSuffix(lastLine, ">"))
 	case "codex", "cod":
+		// Codex shows "codex" in startup or prompt
 		return strings.Contains(outputLower, "codex") ||
-			strings.Contains(output, ">")
+			(len(lastLine) < 50 && strings.HasSuffix(lastLine, ">"))
 	case "gemini", "gmi":
+		// Gemini shows "gemini" in startup or prompt
 		return strings.Contains(outputLower, "gemini") ||
-			strings.Contains(output, ">")
+			(len(lastLine) < 50 && strings.HasSuffix(lastLine, ">"))
 	default:
-		return strings.Contains(output, ">")
+		// For unknown types, require a short prompt-like line
+		return len(lastLine) < 50 && (strings.HasSuffix(lastLine, ">") ||
+			strings.HasSuffix(lastLine, "$") ||
+			strings.HasSuffix(lastLine, "%"))
 	}
 }
 
@@ -1944,13 +1990,20 @@ var (
 	restartManagerRegistryMu sync.RWMutex
 )
 
-// GetRestartManager returns the restart manager for a session
+// GetRestartManager returns the restart manager for a session.
+// If a manager already exists and alerter is non-nil, the alerter is updated.
 func GetRestartManager(session string, alerter AlerterInterface) *RestartManager {
 	restartManagerRegistryMu.RLock()
 	manager, ok := restartManagerRegistry[session]
 	restartManagerRegistryMu.RUnlock()
 
 	if ok {
+		// Update alerter if provided (allows late binding)
+		if alerter != nil {
+			manager.mu.Lock()
+			manager.alerter = alerter
+			manager.mu.Unlock()
+		}
 		return manager
 	}
 
@@ -1959,6 +2012,12 @@ func GetRestartManager(session string, alerter AlerterInterface) *RestartManager
 
 	// Double-check
 	if manager, ok = restartManagerRegistry[session]; ok {
+		// Update alerter if provided
+		if alerter != nil {
+			manager.mu.Lock()
+			manager.alerter = alerter
+			manager.mu.Unlock()
+		}
 		return manager
 	}
 
