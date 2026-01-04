@@ -94,11 +94,7 @@ func ConfirmWriter(w io.Writer, r io.Reader, prompt string, opts ConfirmOptions)
 			hintStyle.Render(hint),
 		)
 	} else {
-		if icon != "" {
-			fmt.Fprintf(w, "%s %s %s ", icon, prompt, hint)
-		} else {
-			fmt.Fprintf(w, "%s %s ", prompt, hint)
-		}
+		fmt.Fprintf(w, "%s %s %s ", icon, prompt, hint)
 	}
 
 	// Read answer

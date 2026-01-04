@@ -908,8 +908,10 @@ func runSendInternal(opts SendOptions) error {
 		if failed > 0 && histErr == nil {
 			histErr = fmt.Errorf("%d pane(s) failed", failed)
 		}
-		// Show "What's next?" suggestions
-		output.SuccessFooter(output.SendSuggestions(session)...)
+		// Show "What's next?" suggestions only on complete success
+		if failed == 0 {
+			output.SuccessFooter(output.SendSuggestions(session)...)
+		}
 	}
 
 	return nil
