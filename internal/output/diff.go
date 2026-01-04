@@ -42,9 +42,23 @@ func ComputeDiff(pane1, content1, pane2, content2 string) *DiffResult {
 	return &DiffResult{
 		Pane1:       pane1,
 		Pane2:       pane2,
-		LineCount1:  len(strings.Split(content1, "\n")),
-		LineCount2:  len(strings.Split(content2, "\n")),
+		LineCount1:  countLines(content1),
+		LineCount2:  countLines(content2),
 		Similarity:  similarity,
 		UnifiedDiff: unified,
 	}
+}
+
+// countLines counts the number of lines in a string.
+// Empty strings return 0, trailing newlines don't count as extra lines.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	// Remove trailing newline to avoid counting an empty final line
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
+		return 0 // String was just a newline
+	}
+	return len(strings.Split(s, "\n"))
 }
