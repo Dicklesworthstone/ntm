@@ -1497,10 +1497,10 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		return nil, fmt.Errorf("config is nil")
 	}
 
-	parts := strings.Split(path, ".")
-	if len(parts) == 0 {
+	if path == "" {
 		return nil, fmt.Errorf("empty path")
 	}
+	parts := strings.Split(path, ".")
 
 	switch parts[0] {
 	case "projects_base":
@@ -1637,10 +1637,11 @@ func Diff(cfg *Config) []ConfigDiff {
 	var diffs []ConfigDiff
 
 	// Helper to add diff if values differ
-	addDiff := func(key, path string, def, cur interface{}) {
+	// Key is set to path for uniqueness in JSON output
+	addDiff := func(path string, def, cur interface{}) {
 		if fmt.Sprintf("%v", def) != fmt.Sprintf("%v", cur) {
 			diffs = append(diffs, ConfigDiff{
-				Key:     key,
+				Key:     path, // Use path as key for uniqueness
 				Path:    path,
 				Default: def,
 				Current: cur,
@@ -1650,45 +1651,45 @@ func Diff(cfg *Config) []ConfigDiff {
 	}
 
 	// Top-level settings
-	addDiff("projects_base", "projects_base", defaults.ProjectsBase, cfg.ProjectsBase)
-	addDiff("theme", "theme", defaults.Theme, cfg.Theme)
+	addDiff("projects_base", defaults.ProjectsBase, cfg.ProjectsBase)
+	addDiff("theme", defaults.Theme, cfg.Theme)
 
 	// Agents
-	addDiff("claude", "agents.claude", defaults.Agents.Claude, cfg.Agents.Claude)
-	addDiff("codex", "agents.codex", defaults.Agents.Codex, cfg.Agents.Codex)
-	addDiff("gemini", "agents.gemini", defaults.Agents.Gemini, cfg.Agents.Gemini)
+	addDiff("agents.claude", defaults.Agents.Claude, cfg.Agents.Claude)
+	addDiff("agents.codex", defaults.Agents.Codex, cfg.Agents.Codex)
+	addDiff("agents.gemini", defaults.Agents.Gemini, cfg.Agents.Gemini)
 
 	// Tmux
-	addDiff("default_panes", "tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)
-	addDiff("palette_key", "tmux.palette_key", defaults.Tmux.PaletteKey, cfg.Tmux.PaletteKey)
+	addDiff("tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)
+	addDiff("tmux.palette_key", defaults.Tmux.PaletteKey, cfg.Tmux.PaletteKey)
 
 	// Agent Mail
-	addDiff("enabled", "agent_mail.enabled", defaults.AgentMail.Enabled, cfg.AgentMail.Enabled)
-	addDiff("url", "agent_mail.url", defaults.AgentMail.URL, cfg.AgentMail.URL)
-	addDiff("auto_register", "agent_mail.auto_register", defaults.AgentMail.AutoRegister, cfg.AgentMail.AutoRegister)
+	addDiff("agent_mail.enabled", defaults.AgentMail.Enabled, cfg.AgentMail.Enabled)
+	addDiff("agent_mail.url", defaults.AgentMail.URL, cfg.AgentMail.URL)
+	addDiff("agent_mail.auto_register", defaults.AgentMail.AutoRegister, cfg.AgentMail.AutoRegister)
 
 	// Alerts
-	addDiff("enabled", "alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
-	addDiff("agent_stuck_minutes", "alerts.agent_stuck_minutes", defaults.Alerts.AgentStuckMinutes, cfg.Alerts.AgentStuckMinutes)
-	addDiff("disk_low_threshold_gb", "alerts.disk_low_threshold_gb", defaults.Alerts.DiskLowThresholdGB, cfg.Alerts.DiskLowThresholdGB)
+	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
+	addDiff("alerts.agent_stuck_minutes", defaults.Alerts.AgentStuckMinutes, cfg.Alerts.AgentStuckMinutes)
+	addDiff("alerts.disk_low_threshold_gb", defaults.Alerts.DiskLowThresholdGB, cfg.Alerts.DiskLowThresholdGB)
 
 	// Checkpoints
-	addDiff("enabled", "checkpoints.enabled", defaults.Checkpoints.Enabled, cfg.Checkpoints.Enabled)
-	addDiff("before_broadcast", "checkpoints.before_broadcast", defaults.Checkpoints.BeforeBroadcast, cfg.Checkpoints.BeforeBroadcast)
-	addDiff("max_auto_checkpoints", "checkpoints.max_auto_checkpoints", defaults.Checkpoints.MaxAutoCheckpoints, cfg.Checkpoints.MaxAutoCheckpoints)
+	addDiff("checkpoints.enabled", defaults.Checkpoints.Enabled, cfg.Checkpoints.Enabled)
+	addDiff("checkpoints.before_broadcast", defaults.Checkpoints.BeforeBroadcast, cfg.Checkpoints.BeforeBroadcast)
+	addDiff("checkpoints.max_auto_checkpoints", defaults.Checkpoints.MaxAutoCheckpoints, cfg.Checkpoints.MaxAutoCheckpoints)
 
 	// Resilience
-	addDiff("auto_restart", "resilience.auto_restart", defaults.Resilience.AutoRestart, cfg.Resilience.AutoRestart)
-	addDiff("max_restarts", "resilience.max_restarts", defaults.Resilience.MaxRestarts, cfg.Resilience.MaxRestarts)
+	addDiff("resilience.auto_restart", defaults.Resilience.AutoRestart, cfg.Resilience.AutoRestart)
+	addDiff("resilience.max_restarts", defaults.Resilience.MaxRestarts, cfg.Resilience.MaxRestarts)
 
 	// Context Rotation
-	addDiff("enabled", "context_rotation.enabled", defaults.ContextRotation.Enabled, cfg.ContextRotation.Enabled)
-	addDiff("warning_threshold", "context_rotation.warning_threshold", defaults.ContextRotation.WarningThreshold, cfg.ContextRotation.WarningThreshold)
-	addDiff("rotate_threshold", "context_rotation.rotate_threshold", defaults.ContextRotation.RotateThreshold, cfg.ContextRotation.RotateThreshold)
+	addDiff("context_rotation.enabled", defaults.ContextRotation.Enabled, cfg.ContextRotation.Enabled)
+	addDiff("context_rotation.warning_threshold", defaults.ContextRotation.WarningThreshold, cfg.ContextRotation.WarningThreshold)
+	addDiff("context_rotation.rotate_threshold", defaults.ContextRotation.RotateThreshold, cfg.ContextRotation.RotateThreshold)
 
 	// CASS
-	addDiff("enabled", "cass.enabled", defaults.CASS.Enabled, cfg.CASS.Enabled)
-	addDiff("timeout", "cass.timeout", defaults.CASS.Timeout, cfg.CASS.Timeout)
+	addDiff("cass.enabled", defaults.CASS.Enabled, cfg.CASS.Enabled)
+	addDiff("cass.timeout", defaults.CASS.Timeout, cfg.CASS.Timeout)
 
 	return diffs
 }

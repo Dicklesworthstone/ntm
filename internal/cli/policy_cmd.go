@@ -95,7 +95,10 @@ type RuleSummary struct {
 }
 
 func runPolicyShow(showAll bool) error {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("getting home directory: %w", err)
+	}
 	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
 
 	p, err := policy.LoadOrDefault()
@@ -261,7 +264,10 @@ type PolicyValidateResponse struct {
 func runPolicyValidate(policyFile string) error {
 	// Determine policy file path
 	if policyFile == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("getting home directory: %w", err)
+		}
 		policyFile = filepath.Join(home, ".ntm", "policy.yaml")
 	}
 
@@ -288,15 +294,15 @@ func runPolicyValidate(policyFile string) error {
 		return outputValidationResult(policyFile, false, errors, warnings)
 	}
 
+	// Check for warnings before Validate() mutates the policy
+	if p.Version == 0 {
+		warnings = append(warnings, "No version specified, defaulting to 1")
+	}
+
 	// Validate the policy
 	if err := p.Validate(); err != nil {
 		errors = append(errors, err.Error())
 		return outputValidationResult(policyFile, false, errors, warnings)
-	}
-
-	// Check for warnings
-	if p.Version == 0 {
-		warnings = append(warnings, "No version specified, defaulting to 1")
 	}
 
 	blocked, approval, allowed := p.Stats()
@@ -583,7 +589,10 @@ type AutomationResponse struct {
 }
 
 func runPolicyAutomation(cmd *cobra.Command, args []string) error {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("getting home directory: %w", err)
+	}
 	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
 
 	// Check if any flags were set

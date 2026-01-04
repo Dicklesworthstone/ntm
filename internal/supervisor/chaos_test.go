@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -62,8 +61,9 @@ func TestDaemonRestartOnCrash(t *testing.T) {
 	}
 
 	// After max restarts, should be in failed state
-	if state != StateFailed && restarts >= int(s.maxRestarts) {
-		t.Logf("State: %v, Restarts: %d (max: %d)", state, restarts, s.maxRestarts)
+	if restarts >= int(s.maxRestarts) && state != StateFailed {
+		t.Errorf("daemon should be in StateFailed after %d restarts (max: %d), but state = %v",
+			restarts, s.maxRestarts, state)
 	}
 }
 
@@ -162,9 +162,10 @@ func TestMaxRestartBackoff(t *testing.T) {
 	d.mu.RUnlock()
 
 	// With max 2 restarts and exponential backoff (1s, 2s), we expect
-	// at least 3 seconds to pass before giving up
-	if elapsed < 3*time.Second {
-		t.Logf("Restarts: %d, Elapsed: %v", restarts, elapsed)
+	// at least 2 seconds to pass before giving up (initial + first backoff)
+	// Note: Using 2s as minimum since timing can vary
+	if elapsed < 2*time.Second && restarts > 0 {
+		t.Errorf("backoff too fast: elapsed %v with %d restarts (expected >= 2s)", elapsed, restarts)
 	}
 }
 
@@ -411,12 +412,12 @@ func TestHealthCheckFlapping(t *testing.T) {
 	t.Logf("Daemon state after 2s without health endpoint: %v", state)
 }
 
-// TestContextCancellation tests that operations respect context cancellation
-func TestContextCancellation(t *testing.T) {
+// TestShutdownIsTimely tests that Shutdown() completes in a reasonable time
+func TestShutdownIsTimely(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	s, err := New(Config{
-		SessionID:      "ctx-test",
+		SessionID:      "shutdown-timing-test",
 		ProjectDir:     tmpDir,
 		HealthInterval: 100 * time.Millisecond,
 	})
@@ -426,7 +427,7 @@ func TestContextCancellation(t *testing.T) {
 
 	// Start a daemon
 	spec := DaemonSpec{
-		Name:    "ctx-daemon",
+		Name:    "timing-daemon",
 		Command: "sleep",
 		Args:    []string{"60"},
 	}
@@ -439,22 +440,28 @@ func TestContextCancellation(t *testing.T) {
 	// Wait for daemon to start
 	time.Sleep(200 * time.Millisecond)
 
-	// Create a child context and cancel it
-	ctx, cancel := context.WithCancel(context.Background())
-	_ = ctx
+	// Verify daemon is running
+	d, exists := s.GetDaemon("timing-daemon")
+	if !exists {
+		t.Fatal("daemon not found")
+	}
+	d.mu.RLock()
+	state := d.State
+	d.mu.RUnlock()
+	if state != StateRunning && state != StateStarting {
+		t.Fatalf("daemon not running, state = %v", state)
+	}
 
-	// Cancel supervisor context
-	cancel()
-
-	// Give shutdown time to propagate
-	time.Sleep(200 * time.Millisecond)
-
-	// Now call shutdown which should be fast since context is already cancelled
+	// Shutdown should complete quickly (within 5 seconds)
 	start := time.Now()
-	s.Shutdown()
+	err = s.Shutdown()
 	elapsed := time.Since(start)
 
+	if err != nil {
+		t.Errorf("Shutdown() error = %v", err)
+	}
+
 	if elapsed > 5*time.Second {
-		t.Errorf("Shutdown took too long after context cancellation: %v", elapsed)
+		t.Errorf("Shutdown took too long: %v (expected < 5s)", elapsed)
 	}
 }

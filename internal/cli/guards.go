@@ -191,6 +191,10 @@ func installFallbackGuard(hookPath, projectKey, repoPath string) error {
 		return fmt.Errorf("creating hooks directory: %w", err)
 	}
 
+	// Sanitize paths for shell comments (replace newlines and special chars)
+	safeProjectKey := sanitizeForShellComment(projectKey)
+	safeRepoPath := sanitizeForShellComment(repoPath)
+
 	script := fmt.Sprintf(`#!/bin/bash
 # ntm-precommit-guard
 # Installed by: ntm guards install
@@ -210,7 +214,7 @@ fi
 # For now, just log and pass (full implementation via Agent Mail)
 echo "[ntm-guard] Pre-commit check passed"
 exit 0
-`, projectKey, repoPath)
+`, safeProjectKey, safeRepoPath)
 
 	return os.WriteFile(hookPath, []byte(script), 0755)
 }
@@ -368,9 +372,9 @@ func runGuardsStatus(cmd *cobra.Command, args []string) error {
 
 	hookPath := filepath.Join(repoPath, ".git", "hooks", "pre-commit")
 
-	// Check MCP availability (NewClient always succeeds, check if it works)
-	mcpAvailable := true
-	_ = agentmail.NewClient() // Client created successfully
+	// Check MCP availability using the IsAvailable() method
+	client := agentmail.NewClient()
+	mcpAvailable := client.IsAvailable()
 
 	// Check hook status
 	installed := fileExists(hookPath)
@@ -467,4 +471,18 @@ func findGitRoot(startPath string) (string, error) {
 		return "", fmt.Errorf("finding git root: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// sanitizeForShellComment sanitizes a string for safe inclusion in a shell comment.
+// Replaces newlines with spaces and removes control characters that could break script structure.
+func sanitizeForShellComment(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
+// fileExists returns true if the file at path exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
