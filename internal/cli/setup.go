@@ -342,19 +342,12 @@ func ensureGitignoreEntry(gitignorePath, entry string) error {
 	return nil
 }
 
+// splitLines splits a string into lines, handling both Unix (\n) and Windows (\r\n) line endings.
 func splitLines(s string) []string {
 	var lines []string
-	var line string
-	for _, c := range s {
-		if c == '\n' {
-			lines = append(lines, line)
-			line = ""
-		} else {
-			line += string(c)
-		}
-	}
-	if line != "" {
-		lines = append(lines, line)
+	for _, line := range strings.Split(s, "\n") {
+		// Handle Windows line endings by trimming trailing \r
+		lines = append(lines, strings.TrimSuffix(line, "\r"))
 	}
 	return lines
 }
