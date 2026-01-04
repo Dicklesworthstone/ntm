@@ -783,9 +783,9 @@ func generatePolicyYAML(p *policy.Policy) string {
 	if len(p.Allowed) > 0 {
 		sb.WriteString("allowed:\n")
 		for _, r := range p.Allowed {
-			sb.WriteString(fmt.Sprintf("  - pattern: '%s'\n", r.Pattern))
+			sb.WriteString(fmt.Sprintf("  - pattern: '%s'\n", escapeYAMLSingleQuote(r.Pattern)))
 			if r.Reason != "" {
-				sb.WriteString(fmt.Sprintf("    reason: \"%s\"\n", r.Reason))
+				sb.WriteString(fmt.Sprintf("    reason: \"%s\"\n", escapeYAMLDoubleQuote(r.Reason)))
 			}
 		}
 		sb.WriteString("\n")
@@ -794,9 +794,9 @@ func generatePolicyYAML(p *policy.Policy) string {
 	if len(p.Blocked) > 0 {
 		sb.WriteString("blocked:\n")
 		for _, r := range p.Blocked {
-			sb.WriteString(fmt.Sprintf("  - pattern: '%s'\n", r.Pattern))
+			sb.WriteString(fmt.Sprintf("  - pattern: '%s'\n", escapeYAMLSingleQuote(r.Pattern)))
 			if r.Reason != "" {
-				sb.WriteString(fmt.Sprintf("    reason: \"%s\"\n", r.Reason))
+				sb.WriteString(fmt.Sprintf("    reason: \"%s\"\n", escapeYAMLDoubleQuote(r.Reason)))
 			}
 		}
 		sb.WriteString("\n")
@@ -805,9 +805,9 @@ func generatePolicyYAML(p *policy.Policy) string {
 	if len(p.ApprovalRequired) > 0 {
 		sb.WriteString("approval_required:\n")
 		for _, r := range p.ApprovalRequired {
-			sb.WriteString(fmt.Sprintf("  - pattern: '%s'\n", r.Pattern))
+			sb.WriteString(fmt.Sprintf("  - pattern: '%s'\n", escapeYAMLSingleQuote(r.Pattern)))
 			if r.Reason != "" {
-				sb.WriteString(fmt.Sprintf("    reason: \"%s\"\n", r.Reason))
+				sb.WriteString(fmt.Sprintf("    reason: \"%s\"\n", escapeYAMLDoubleQuote(r.Reason)))
 			}
 			if r.SLB {
 				sb.WriteString("    slb: true\n")
@@ -816,4 +816,18 @@ func generatePolicyYAML(p *policy.Policy) string {
 	}
 
 	return sb.String()
+}
+
+// escapeYAMLSingleQuote escapes single quotes for YAML single-quoted strings.
+// In YAML single-quoted strings, single quotes are escaped by doubling them.
+func escapeYAMLSingleQuote(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// escapeYAMLDoubleQuote escapes characters for YAML double-quoted strings.
+// Backslashes and double quotes need to be escaped.
+func escapeYAMLDoubleQuote(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return s
 }

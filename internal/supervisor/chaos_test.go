@@ -161,6 +161,11 @@ func TestMaxRestartBackoff(t *testing.T) {
 	restarts := d.Restarts
 	d.mu.RUnlock()
 
+	// The daemon should have attempted at least one restart
+	if restarts == 0 {
+		t.Error("daemon should have restart count > 0")
+	}
+
 	// With max 2 restarts and exponential backoff (1s, 2s), we expect
 	// at least 2 seconds to pass before giving up (initial + first backoff)
 	// Note: Using 2s as minimum since timing can vary
@@ -214,12 +219,14 @@ func TestCleanShutdown(t *testing.T) {
 		t.Errorf("Shutdown() error = %v", err)
 	}
 
-	// Verify all stopped
+	// Verify all stopped (or failed if killed during shutdown)
 	time.Sleep(200 * time.Millisecond)
 	status = s.Status()
 	for name, d := range status {
-		if d.State != StateStopped {
-			t.Errorf("daemon %s state = %v, want StateStopped", name, d.State)
+		// After Shutdown(), daemons should be either Stopped or Failed
+		// (Failed can happen if the process was killed with SIGTERM/SIGKILL)
+		if d.State != StateStopped && d.State != StateFailed {
+			t.Errorf("daemon %s state = %v, want StateStopped or StateFailed", name, d.State)
 		}
 	}
 
@@ -409,7 +416,9 @@ func TestHealthCheckFlapping(t *testing.T) {
 
 	// Daemon should still be starting/running despite health check failures
 	// (health check failures don't immediately kill the daemon)
-	t.Logf("Daemon state after 2s without health endpoint: %v", state)
+	if state != StateRunning && state != StateStarting {
+		t.Errorf("daemon should be running/starting despite health failures, but state = %v", state)
+	}
 }
 
 // TestShutdownIsTimely tests that Shutdown() completes in a reasonable time

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -148,7 +149,7 @@ func TestCheckNoSilentDataLoss_WithPolicyFile(t *testing.T) {
 
 	found := false
 	for _, detail := range result.Details {
-		if contains(detail, "policy.yaml exists") {
+		if strings.Contains(detail, "policy.yaml exists") {
 			found = true
 			break
 		}
@@ -178,7 +179,7 @@ func TestCheckAuditableActions_WithLogsDir(t *testing.T) {
 
 	found := false
 	for _, detail := range result.Details {
-		if contains(detail, "logs directory exists") {
+		if strings.Contains(detail, "logs directory exists") {
 			found = true
 			break
 		}
@@ -213,7 +214,7 @@ func TestCheckRecoverableState_WithStateDB(t *testing.T) {
 
 	found := false
 	for _, detail := range result.Details {
-		if contains(detail, "state.db exists") {
+		if strings.Contains(detail, "state.db exists") {
 			found = true
 			break
 		}
@@ -252,34 +253,13 @@ echo "checking..."
 
 	found := false
 	for _, detail := range result.Details {
-		if contains(detail, "pre-commit guard installed") {
+		if strings.Contains(detail, "pre-commit guard installed") {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Errorf("expected detail about pre-commit guard, got: %v", result.Details)
-	}
-}
-
-func TestContains(t *testing.T) {
-	tests := []struct {
-		s, substr string
-		want      bool
-	}{
-		{"hello world", "world", true},
-		{"hello world", "foo", false},
-		{"", "", true},
-		{"hello", "", true},
-		{"", "hello", false},
-		{"abc", "abc", true},
-	}
-
-	for _, tt := range tests {
-		got := contains(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("contains(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
 	}
 }
 
@@ -300,7 +280,7 @@ func TestInvariantViolationDetection(t *testing.T) {
 
 		foundWillCreate := false
 		for _, detail := range result.Details {
-			if contains(detail, "will be created") {
+			if strings.Contains(detail, "will be created") {
 				foundWillCreate = true
 				break
 			}

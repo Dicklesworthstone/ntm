@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -301,15 +302,21 @@ approval_required:
 }
 
 func ensureGitignoreEntry(gitignorePath, entry string) error {
+	if entry == "" {
+		return nil // Nothing to add
+	}
+
 	content, err := os.ReadFile(gitignorePath)
 	if err != nil {
 		return err
 	}
 
-	// Check if entry already exists
+	// Check if entry already exists (with or without trailing slash)
 	lines := splitLines(string(content))
+	entryWithoutSlash := strings.TrimSuffix(entry, "/")
 	for _, line := range lines {
-		if line == entry || line == entry[:len(entry)-1] { // with or without trailing slash
+		lineWithoutSlash := strings.TrimSuffix(line, "/")
+		if lineWithoutSlash == entryWithoutSlash {
 			return nil // Already present
 		}
 	}

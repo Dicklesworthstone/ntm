@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -279,8 +280,12 @@ func (c *Checker) checkNoSilentDataLoss(ctx context.Context) CheckResult {
 	gitHooksDir := filepath.Join(c.projectDir, ".git", "hooks")
 	preCommit := filepath.Join(gitHooksDir, "pre-commit")
 	if _, err := os.Stat(preCommit); err == nil {
-		content, _ := os.ReadFile(preCommit)
-		if contains(string(content), "ntm-precommit-guard") || contains(string(content), "ntm") {
+		content, readErr := os.ReadFile(preCommit)
+		if readErr != nil {
+			details = append(details, "pre-commit hook exists but unreadable")
+		} else if strings.Contains(string(content), "ntm-precommit-guard") ||
+			strings.Contains(string(content), "ntm guard") ||
+			strings.Contains(string(content), "ntm safety") {
 			details = append(details, "pre-commit guard installed")
 		} else {
 			details = append(details, "pre-commit hook exists but no ntm guard")
@@ -457,17 +462,3 @@ func (c *Checker) checkSafeByDefault(ctx context.Context) CheckResult {
 	return result
 }
 
-// contains is a simple string containment check.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
