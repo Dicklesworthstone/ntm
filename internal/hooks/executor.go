@@ -202,18 +202,20 @@ func buildEnvironment(hook *CommandHook, execCtx ExecutionContext) []string {
 	if execCtx.Message != "" {
 		msg := execCtx.Message
 		if len(msg) > 1000 {
-			// Find a valid UTF-8 rune boundary before truncating
-			// to avoid splitting multi-byte characters
-			targetLen := 1000 - 3 // Reserve space for "..."
+			// Find the last rune boundary that allows for "..." suffix within 1000 bytes.
+			targetLen := 1000 - 3
+			prevI := 0
 			for i := range msg {
-				if i >= targetLen {
-					msg = msg[:i] + "..."
+				if i > targetLen {
+					msg = msg[:prevI] + "..."
 					break
 				}
+				prevI = i
 			}
-			// If we didn't break (string is all very long runes), truncate at 1000
+			// If loop completed without breaking, all rune starts were <= targetLen
+			// but the string may still exceed 1000 bytes due to multi-byte char at end.
 			if len(msg) > 1000 {
-				msg = msg[:1000]
+				msg = msg[:prevI] + "..."
 			}
 		}
 		ntmEnv["NTM_MESSAGE"] = msg
