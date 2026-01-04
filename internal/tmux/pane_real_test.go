@@ -48,7 +48,7 @@ func TestRealPaneSplitHorizontal(t *testing.T) {
 	initialCount := len(panes)
 
 	// Split window (creates new pane)
-	paneID, err := SplitWindow(session, os.TempDir())
+	paneID, err := SplitWindow(session, t.TempDir())
 	if err != nil {
 		t.Fatalf("SplitWindow failed: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRealPaneSplitMultiple(t *testing.T) {
 	// Create 4 additional panes (5 total)
 	paneIDs := make([]string, 0, 4)
 	for i := 0; i < 4; i++ {
-		paneID, err := SplitWindow(session, os.TempDir())
+		paneID, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -115,7 +115,7 @@ func TestRealPaneIDAssignment(t *testing.T) {
 	initialPaneID := panes[0].ID
 
 	// Split to create new pane
-	newPaneID, err := SplitWindow(session, os.TempDir())
+	newPaneID, err := SplitWindow(session, t.TempDir())
 	if err != nil {
 		t.Fatalf("SplitWindow failed: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestRealPaneCountViaTmux(t *testing.T) {
 	// Create specific number of panes
 	targetCount := 4
 	for i := 0; i < targetCount-1; i++ {
-		_, err := SplitWindow(session, os.TempDir())
+		_, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -242,7 +242,7 @@ func TestRealPaneZoom(t *testing.T) {
 	session := createTestSessionForPanes(t)
 
 	// Create second pane (need at least 2 for zoom)
-	_, err := SplitWindow(session, os.TempDir())
+	_, err := SplitWindow(session, t.TempDir())
 	if err != nil {
 		t.Fatalf("SplitWindow failed: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestRealPaneLayout2Panes(t *testing.T) {
 	session := createTestSessionForPanes(t)
 
 	// Create 1 additional pane (2 total)
-	_, err := SplitWindow(session, os.TempDir())
+	_, err := SplitWindow(session, t.TempDir())
 	if err != nil {
 		t.Fatalf("SplitWindow failed: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestRealPaneLayout4Panes(t *testing.T) {
 
 	// Create 3 additional panes (4 total)
 	for i := 0; i < 3; i++ {
-		_, err := SplitWindow(session, os.TempDir())
+		_, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -356,7 +356,7 @@ func TestRealPaneLayout8Panes(t *testing.T) {
 
 	// Create 7 additional panes (8 total)
 	for i := 0; i < 7; i++ {
-		_, err := SplitWindow(session, os.TempDir())
+		_, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -389,7 +389,7 @@ func TestRealPaneKillIndividual(t *testing.T) {
 	// Create 2 additional panes (3 total)
 	var paneIDs []string
 	for i := 0; i < 2; i++ {
-		paneID, err := SplitWindow(session, os.TempDir())
+		paneID, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -431,7 +431,7 @@ func TestRealPaneReflowAfterKill(t *testing.T) {
 
 	// Create 3 additional panes (4 total)
 	for i := 0; i < 3; i++ {
-		_, err := SplitWindow(session, os.TempDir())
+		_, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -483,7 +483,7 @@ func TestRealPaneIndices(t *testing.T) {
 
 	// Create 3 additional panes
 	for i := 0; i < 3; i++ {
-		_, err := SplitWindow(session, os.TempDir())
+		_, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
@@ -582,7 +582,7 @@ func TestRealPanesWithActivityMultiple(t *testing.T) {
 
 	// Create additional panes
 	for i := 0; i < 2; i++ {
-		_, err := SplitWindow(session, os.TempDir())
+		_, err := SplitWindow(session, t.TempDir())
 		if err != nil {
 			t.Fatalf("SplitWindow %d failed: %v", i, err)
 		}
