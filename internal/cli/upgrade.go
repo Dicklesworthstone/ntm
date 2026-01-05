@@ -85,9 +85,13 @@ func (e *upgradeError) Error() string {
 	headerContent := fmt.Sprintf("%s\n\n", errorStyle.Render("Upgrade Asset Lookup Failed"))
 	headerContent += fmt.Sprintf("  Platform:      %s\n", e.Platform)
 	headerContent += fmt.Sprintf("  Convention:    %s\n", e.Convention)
-	headerContent += fmt.Sprintf("  Tried:         %s", e.TriedNames[0])
-	for _, name := range e.TriedNames[1:] {
-		headerContent += fmt.Sprintf("\n                 %s", name)
+	if len(e.TriedNames) > 0 {
+		headerContent += fmt.Sprintf("  Tried:         %s", e.TriedNames[0])
+		for _, name := range e.TriedNames[1:] {
+			headerContent += fmt.Sprintf("\n                 %s", name)
+		}
+	} else {
+		headerContent += "  Tried:         [none]"
 	}
 	headerContent += fmt.Sprintf("\n  Found:         %s", errorStyle.Render("[none matching]"))
 

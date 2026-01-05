@@ -64,13 +64,15 @@ ntm_{os}_{arch}
 
 **Platform Examples**:
 
-| Platform | Archive Name | Binary Name |
-|----------|-------------|-------------|
+| Platform | Archive Name | Binary Pattern |
+|----------|-------------|----------------|
 | macOS ARM | `ntm_1.4.1_darwin_all.tar.gz` | `ntm_darwin_all` |
 | macOS Intel | `ntm_1.4.1_darwin_all.tar.gz` | `ntm_darwin_all` |
 | Linux x64 | `ntm_1.4.1_linux_amd64.tar.gz` | `ntm_linux_amd64` |
 | Linux ARM64 | `ntm_1.4.1_linux_arm64.tar.gz` | `ntm_linux_arm64` |
-| Windows | `ntm_1.4.1_windows_amd64.zip` | `ntm_windows_amd64.exe` |
+| Windows | `ntm_1.4.1_windows_amd64.zip` | `ntm_windows_amd64` |
+
+**Note**: The "Binary Pattern" column shows the asset name prefix used by `upgrade.go` to find assets. The actual binary inside archives is always named `ntm` (or `ntm.exe` on Windows).
 
 ### Making Changes Safely
 
