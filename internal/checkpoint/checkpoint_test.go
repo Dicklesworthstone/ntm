@@ -481,7 +481,7 @@ func TestStorage_ListAll_NoDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAll() should not error for nonexistent dir: %v", err)
 	}
-	if all != nil && len(all) != 0 {
+	if len(all) != 0 {
 		t.Errorf("ListAll() should return nil/empty for nonexistent dir")
 	}
 }
@@ -793,7 +793,7 @@ func TestStorage_List_NonexistentSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() should not error for non-existent session: %v", err)
 	}
-	if list != nil && len(list) != 0 {
+	if len(list) != 0 {
 		t.Error("List() should return nil/empty for non-existent session")
 	}
 }

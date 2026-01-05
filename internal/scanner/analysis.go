@@ -236,16 +236,16 @@ func estimateFileCentrality(file string, keystoneMap map[string]float64) float64
 func FormatImpactReport(ar *AnalysisResult) string {
 	var s string
 
-	s += fmt.Sprintf("Scan Impact Analysis\n")
-	s += fmt.Sprintf("════════════════════════════════════════════════════\n\n")
+	s += "Scan Impact Analysis\n"
+	s += "════════════════════════════════════════════════════\n\n"
 
 	if !ar.GraphAvailable {
-		s += fmt.Sprintf("Note: bv not available, showing severity-based analysis only\n\n")
+		s += "Note: bv not available, showing severity-based analysis only\n\n"
 	}
 
 	// High-impact findings
 	if len(ar.RecommendedOrder) > 0 {
-		s += fmt.Sprintf("High-Impact Findings (by downstream blockers):\n")
+		s += "High-Impact Findings (by downstream blockers):\n"
 		for i, a := range ar.RecommendedOrder {
 			if i >= 10 {
 				s += fmt.Sprintf("  ... and %d more\n", len(ar.RecommendedOrder)-10)
@@ -268,7 +268,7 @@ func FormatImpactReport(ar *AnalysisResult) string {
 
 	// Hotspots
 	if len(ar.Hotspots) > 0 {
-		s += fmt.Sprintf("Quality Hotspots:\n")
+		s += "Quality Hotspots:\n"
 		for i, h := range ar.Hotspots {
 			if i >= 5 {
 				break
@@ -288,7 +288,7 @@ func FormatImpactReport(ar *AnalysisResult) string {
 
 	// Recommended fix order
 	if len(ar.RecommendedOrder) > 0 {
-		s += fmt.Sprintf("Recommended Fix Order:\n")
+		s += "Recommended Fix Order:\n"
 		for i, a := range ar.RecommendedOrder {
 			if i >= 5 {
 				break

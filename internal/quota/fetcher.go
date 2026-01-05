@@ -82,7 +82,7 @@ func (f *PTYFetcher) FetchQuota(ctx context.Context, paneID string, provider Pro
 	for {
 		select {
 		case <-ctx.Done():
-			info.Error = fmt.Sprintf("context cancelled")
+			info.Error = "context cancelled"
 			return info, nil
 		case <-ticker.C:
 			if time.Now().After(deadline) {

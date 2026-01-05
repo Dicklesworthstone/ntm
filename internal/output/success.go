@@ -156,10 +156,7 @@ func NewSuccessWithSuggestions(msg string, suggestions []Suggestion) SuccessFoot
 		Message: msg,
 	}
 	for _, s := range suggestions {
-		resp.Suggestions = append(resp.Suggestions, SuggJSON{
-			Command:     s.Command,
-			Description: s.Description,
-		})
+		resp.Suggestions = append(resp.Suggestions, SuggJSON(s))
 	}
 	return resp
 }

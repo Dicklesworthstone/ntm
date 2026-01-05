@@ -398,8 +398,7 @@ func detectCycles(steps []Step) [][]string {
 func validateVariableRefs(w *Workflow, result *ValidationResult) {
 	varRefPattern := regexp.MustCompile(`\$\{([^}]+)\}`)
 
-	var checkString func(s string, field string)
-	checkString = func(s string, field string) {
+	checkString := func(s, field string) {
 		matches := varRefPattern.FindAllStringSubmatch(s, -1)
 		for _, match := range matches {
 			ref := match[1]

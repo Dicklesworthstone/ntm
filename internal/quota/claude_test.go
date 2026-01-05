@@ -187,8 +187,6 @@ Account: api-user@service.com`,
 }
 
 func TestParseResetTime(t *testing.T) {
-	now := time.Now().UTC()
-
 	tests := []struct {
 		name      string
 		input     string
@@ -234,10 +232,8 @@ func TestParseResetTime(t *testing.T) {
 				if result.IsZero() {
 					t.Errorf("Expected valid time for input %q, got zero time", tt.input)
 				}
-				if result.Before(now) {
-					// Reset times should generally be in the future
-					// (except for edge cases we don't test here)
-				}
+				// Note: Reset times are generally in the future,
+				// but we don't assert on that for edge cases
 			} else {
 				if !result.IsZero() {
 					t.Errorf("Expected zero time for input %q, got %v", tt.input, result)

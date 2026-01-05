@@ -175,7 +175,7 @@ func FormatPriorityReport(report *PriorityReport) string {
 	var s string
 
 	s += "Priority Report\n"
-	s += fmt.Sprintf("════════════════════════════════════════════════════\n\n")
+	s += "════════════════════════════════════════════════════\n\n"
 
 	if !report.GraphAvailable {
 		s += "Note: bv not available, priorities based on severity only\n\n"

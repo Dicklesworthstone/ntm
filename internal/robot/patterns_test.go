@@ -340,7 +340,7 @@ func TestPatternLibrary_GetPatterns(t *testing.T) {
 
 	// Modifying the copy shouldn't affect original
 	originalCount := lib.PatternCount()
-	patterns = patterns[:1]
+	_ = patterns[:1] // Truncating the copy; verify it doesn't affect original
 	if lib.PatternCount() != originalCount {
 		t.Error("GetPatterns should return a copy")
 	}

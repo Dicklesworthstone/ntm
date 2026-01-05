@@ -919,8 +919,7 @@ func TestTogglePinAndFavoritePersistsPaletteState(t *testing.T) {
 	})
 
 	// Pin the first command ("fix")
-	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
-	m = newModel.(Model)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
 	if cmd == nil {
 		t.Fatalf("Expected save cmd for Ctrl+P when PaletteStatePath is set")
 	}

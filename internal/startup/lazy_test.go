@@ -171,7 +171,7 @@ func TestLazyValue(t *testing.T) {
 	}
 
 	// Second call should not re-initialize
-	val = lazy.Get()
+	_ = lazy.Get()
 	if initCalled != 1 {
 		t.Errorf("Init should still be 1, got %d", initCalled)
 	}

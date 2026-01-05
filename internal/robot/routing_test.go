@@ -978,13 +978,8 @@ func TestRouterRoute(t *testing.T) {
 	})
 
 	t.Run("uses fallback when primary fails", func(t *testing.T) {
+		// Create a scenario where first-available fails (all busy)
 		agents := []ScoredAgent{
-			{PaneID: "cc_1", Score: 50, State: StateWaiting, Excluded: false},
-		}
-
-		// FirstAvailable should work, then we can test fallback
-		// Actually let's create a scenario where first-available fails
-		agents = []ScoredAgent{
 			{PaneID: "cc_1", Score: 50, State: StateGenerating, Excluded: false},
 			{PaneID: "cc_2", Score: 80, State: StateThinking, Excluded: false},
 		}
