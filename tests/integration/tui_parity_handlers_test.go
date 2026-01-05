@@ -351,20 +351,31 @@ func TestRobotHealthFlagParsing(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	logger.Log("Output: %s", string(out))
 
-	// With nonexistent session, should return JSON error
-	if err == nil {
-		// Command succeeded - check output
-		var payload struct {
-			Success bool `json:"success"`
-		}
-		if json.Unmarshal(out, &payload) == nil {
-			if payload.Success {
-				t.Logf("health check succeeded (session may exist)")
-			}
-		}
-	} else {
-		// Command failed - that's expected for nonexistent session
-		t.Logf("health check failed as expected for nonexistent session")
+	// Command should succeed (exit 0) but return success=false for nonexistent session
+	if err != nil {
+		t.Fatalf("expected command to exit 0, got error: %v", err)
+	}
+
+	var payload struct {
+		Success   bool   `json:"success"`
+		Session   string `json:"session"`
+		CheckedAt string `json:"checked_at"`
+		Error     string `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// For nonexistent session, success should be false
+	if payload.Success {
+		t.Errorf("expected success=false for nonexistent session")
+	}
+	if payload.Session != "nonexistent-session" {
+		t.Errorf("expected session='nonexistent-session', got %q", payload.Session)
+	}
+	if payload.CheckedAt == "" {
+		t.Errorf("expected checked_at field")
 	}
 }
 
