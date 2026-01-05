@@ -104,6 +104,10 @@ func (e *upgradeError) Error() string {
 	for _, asset := range e.AvailableAssets {
 		var marker, suffix string
 		switch asset.Match {
+		case "exact":
+			// Semantic exact match (OS+Arch) but name didn't match - unusual, check version/naming
+			marker = warnStyle.Render("?")
+			suffix = warnStyle.Render(" ← platform match, name mismatch (check version?)")
 		case "close":
 			marker = warnStyle.Render("≈")
 			suffix = warnStyle.Render(" ← closest match")

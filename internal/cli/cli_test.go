@@ -906,6 +906,18 @@ func TestParseAssetInfo(t *testing.T) {
 			wantVersion:   "1.4.1",
 			wantMatch:     "exact",
 		},
+		// Version mismatch: OS+Arch match but version differs (still "exact" for diagnostic purposes)
+		{
+			name:          "exact_match_version_differs",
+			assetName:     "ntm_1.4.2_linux_amd64.tar.gz",
+			targetOS:      "linux",
+			targetArch:    "amd64",
+			targetVersion: "1.4.1",
+			wantOS:        "linux",
+			wantArch:      "amd64",
+			wantVersion:   "1.4.2",
+			wantMatch:     "exact",
+		},
 	}
 
 	for _, tt := range tests {
@@ -979,6 +991,43 @@ func TestUpgradeErrorFormat(t *testing.T) {
 	}
 	if !strings.Contains(jsonStr, `"closest_match"`) {
 		t.Error("JSON output missing closest_match field")
+	}
+
+	// Log for debugging
+	t.Logf("Error output:\n%s", errStr)
+}
+
+// TestUpgradeErrorExactMatch tests the "exact" match marker for version mismatch scenarios
+func TestUpgradeErrorExactMatch(t *testing.T) {
+	// Scenario: User on linux/amd64, but release has wrong version in asset name
+	assets := []GitHubAsset{
+		{Name: "ntm_1.4.2_linux_amd64.tar.gz"}, // version 1.4.2, not 1.4.1
+		{Name: "ntm_1.4.2_darwin_all.tar.gz"},
+		{Name: "checksums.txt"},
+	}
+
+	triedNames := []string{
+		"ntm_1.4.1_linux_amd64.tar.gz", // looking for 1.4.1
+		"ntm_linux_amd64",
+	}
+
+	err := newUpgradeError(
+		"linux",
+		"amd64",
+		"1.4.1",
+		triedNames,
+		assets,
+		"https://github.com/Dicklesworthstone/ntm/releases/tag/v1.4.1",
+	)
+
+	errStr := err.Error()
+
+	// Verify exact match annotation is present
+	if !strings.Contains(errStr, "platform match") {
+		t.Error("Error output missing 'platform match' annotation for exact semantic match")
+	}
+	if !strings.Contains(errStr, "check version") {
+		t.Error("Error output missing 'check version' hint for version mismatch")
 	}
 
 	// Log for debugging

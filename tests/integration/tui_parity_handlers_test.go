@@ -141,13 +141,22 @@ func TestRobotSnapshotFlagParsing(t *testing.T) {
 	var payload struct {
 		TS       string `json:"ts"`
 		Sessions []struct {
-			Name string `json:"name"`
+			Name     string `json:"name"`
+			Attached bool   `json:"attached"`
+			Agents   []struct {
+				Pane  string `json:"pane"`
+				Type  string `json:"type"`
+				State string `json:"state"`
+			} `json:"agents"`
 		} `json:"sessions"`
-		Beads struct {
-			Ready      []interface{} `json:"ready"`
-			InProgress []interface{} `json:"in_progress"`
-		} `json:"beads"`
-		Alerts []interface{} `json:"alerts"`
+		BeadsSummary struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason,omitempty"`
+		} `json:"beads_summary"`
+		AgentMail struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason,omitempty"`
+		} `json:"agent_mail"`
 	}
 
 	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
@@ -156,6 +165,10 @@ func TestRobotSnapshotFlagParsing(t *testing.T) {
 
 	if payload.TS == "" {
 		t.Errorf("expected ts field")
+	}
+	// Sessions array should always be present (even if empty)
+	if payload.Sessions == nil {
+		t.Errorf("sessions should be an array, not nil")
 	}
 }
 
@@ -297,16 +310,26 @@ func TestRobotGraphFlagParsing(t *testing.T) {
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-graph")
 
 	var payload struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error,omitempty"`
+		GeneratedAt string `json:"generated_at"`
+		Available   bool   `json:"available"`
+		Insights    struct {
+			Bottlenecks []struct {
+				ID    string  `json:"ID"`
+				Value float64 `json:"Value"`
+			} `json:"Bottlenecks"`
+		} `json:"insights,omitempty"`
+		Error string `json:"error,omitempty"`
 	}
 
 	if err := json.Unmarshal(out, &payload); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
+	if payload.GeneratedAt == "" {
+		t.Errorf("expected generated_at field")
+	}
 	// May return error if bv not available - that's okay
-	if !payload.Success && payload.Error != "" {
+	if !payload.Available && payload.Error != "" {
 		t.Logf("robot-graph returned error (expected if bv not available): %s", payload.Error)
 	}
 }
@@ -652,18 +675,18 @@ func TestRobotSnapshotWithBeadLimit(t *testing.T) {
 	jsonBytes := out[jsonStart:]
 
 	var payload struct {
-		TS    string `json:"ts"`
-		Beads struct {
-			Ready      []interface{} `json:"ready"`
-			InProgress []interface{} `json:"in_progress"`
-		} `json:"beads"`
+		TS           string `json:"ts"`
+		BeadsSummary struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason,omitempty"`
+		} `json:"beads_summary"`
 	}
 
 	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	// Bead lists should be limited (can't verify exact count without data)
+	// Bead limit flag affects output when beads are available
 	if payload.TS == "" {
 		t.Errorf("expected ts field")
 	}
@@ -713,18 +736,23 @@ func TestRobotPlanHandlerDispatch(t *testing.T) {
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-plan")
 
 	var payload struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error,omitempty"`
+		GeneratedAt    string `json:"generated_at"`
+		Recommendation string `json:"recommendation"`
+		Actions        []struct {
+			Priority int    `json:"priority"`
+			Command  string `json:"command"`
+		} `json:"actions"`
+		Warnings []string `json:"warnings"`
 	}
 
 	if err := json.Unmarshal(out, &payload); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	// May return error if bv not available - that's okay
-	if !payload.Success && payload.Error != "" {
-		t.Logf("robot-plan returned error (expected if bv not available): %s", payload.Error)
+	if payload.GeneratedAt == "" {
+		t.Errorf("expected generated_at field")
 	}
+	// Actions and Recommendation are optional - may be empty if no sessions exist
 }
 
 func TestRobotTokensHandlerDispatch(t *testing.T) {
