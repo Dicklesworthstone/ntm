@@ -416,7 +416,7 @@ func runUpgrade(checkOnly, force, yes bool) error {
 	defer os.RemoveAll(tempDir)
 
 	downloadPath := filepath.Join(tempDir, asset.Name)
-	if err := downloadFile(downloadPath, asset.BrowserDownloadURL); err != nil {
+	if err := downloadFile(downloadPath, asset.BrowserDownloadURL, asset.Size); err != nil {
 		fmt.Println(errorStyle.Render("✗"))
 		return fmt.Errorf("failed to download: %w", err)
 	}
@@ -626,8 +626,80 @@ func getArchiveAssetName(version string) string {
 	return fmt.Sprintf("ntm_%s_%s_%s.%s", version, runtime.GOOS, arch, ext)
 }
 
+// progressWriter wraps an io.Writer and reports download progress
+type progressWriter struct {
+	writer     io.Writer
+	total      int64
+	downloaded int64
+	startTime  time.Time
+	lastUpdate time.Time
+	isTTY      bool
+}
+
+// Write implements io.Writer and updates progress
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+
+	pw.downloaded += int64(n)
+
+	// Update progress display at most every 100ms to avoid flickering
+	if time.Since(pw.lastUpdate) > 100*time.Millisecond {
+		pw.displayProgress()
+		pw.lastUpdate = time.Now()
+	}
+
+	return n, nil
+}
+
+// displayProgress shows the current download progress
+func (pw *progressWriter) displayProgress() {
+	if pw.total <= 0 {
+		// Unknown total size - just show downloaded bytes
+		if pw.isTTY {
+			fmt.Printf("\r  Downloading... %s", formatSize(pw.downloaded))
+		}
+		return
+	}
+
+	percentage := float64(pw.downloaded) / float64(pw.total) * 100
+	elapsed := time.Since(pw.startTime).Seconds()
+	var speed float64
+	if elapsed > 0 {
+		speed = float64(pw.downloaded) / elapsed
+	}
+
+	if pw.isTTY {
+		// In-place update for TTY
+		fmt.Printf("\r  Downloading... %.0f%% %s/%s (%s/s)    ",
+			percentage,
+			formatSize(pw.downloaded),
+			formatSize(pw.total),
+			formatSize(int64(speed)))
+	}
+}
+
+// finish clears the progress line and prepares for the checkmark
+func (pw *progressWriter) finish() {
+	if pw.isTTY && pw.total > 0 {
+		// Clear the progress line and reset cursor
+		fmt.Printf("\r  Downloading... ")
+	}
+}
+
+// isTerminal checks if stdout is a TTY
+func isTerminal() bool {
+	fileInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
+}
+
 // downloadFile downloads a file with progress indication
-func downloadFile(destPath string, url string) error {
+func downloadFile(destPath string, url string, expectedSize int64) error {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -639,13 +711,29 @@ func downloadFile(destPath string, url string) error {
 		return fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
 
+	// Use Content-Length if available, otherwise fall back to expectedSize
+	totalSize := resp.ContentLength
+	if totalSize <= 0 {
+		totalSize = expectedSize
+	}
+
 	out, err := os.Create(destPath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
+	// Wrap the file writer with progress tracking
+	pw := &progressWriter{
+		writer:     out,
+		total:      totalSize,
+		startTime:  time.Now(),
+		lastUpdate: time.Now(),
+		isTTY:      isTerminal(),
+	}
+
+	_, err = io.Copy(pw, resp.Body)
+	pw.finish()
 	return err
 }
 

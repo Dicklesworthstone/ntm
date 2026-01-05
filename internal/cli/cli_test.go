@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1514,5 +1515,55 @@ func TestFetchChecksumsParser(t *testing.T) {
 		
 		// The parser should handle both formats
 		t.Log("fetchChecksums parses GoReleaser checksums.txt format")
+	})
+}
+
+// TestProgressWriter tests the download progress writer
+func TestProgressWriter(t *testing.T) {
+	t.Run("write updates downloaded count", func(t *testing.T) {
+		var buf bytes.Buffer
+		pw := &progressWriter{
+			writer:     &buf,
+			total:      100,
+			startTime:  time.Now(),
+			lastUpdate: time.Now().Add(-time.Second), // Force immediate update
+			isTTY:      false, // Disable TTY output for test
+		}
+
+		data := []byte("hello")
+		n, err := pw.Write(data)
+		if err != nil {
+			t.Fatalf("Write failed: %v", err)
+		}
+		if n != len(data) {
+			t.Errorf("Write returned %d, want %d", n, len(data))
+		}
+		if pw.downloaded != int64(len(data)) {
+			t.Errorf("downloaded = %d, want %d", pw.downloaded, len(data))
+		}
+		if buf.String() != "hello" {
+			t.Errorf("buffer content = %q, want %q", buf.String(), "hello")
+		}
+	})
+
+	t.Run("formatSize handles various sizes", func(t *testing.T) {
+		tests := []struct {
+			bytes int64
+			want  string
+		}{
+			{0, "0 B"},
+			{512, "512 B"},
+			{1024, "1.0 KB"},
+			{1536, "1.5 KB"},
+			{1048576, "1.0 MB"},
+			{10485760, "10.0 MB"},
+		}
+
+		for _, tc := range tests {
+			got := formatSize(tc.bytes)
+			if got != tc.want {
+				t.Errorf("formatSize(%d) = %q, want %q", tc.bytes, got, tc.want)
+			}
+		}
 	})
 }
