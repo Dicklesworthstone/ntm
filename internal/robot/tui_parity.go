@@ -1202,8 +1202,8 @@ func PrintBeadsList(opts BeadsListOptions) error {
 		)
 	}
 
-	// First, compute summary from ALL beads (before applying limit)
-	// This gives accurate counts for the full dataset
+	// Compute summary from the full result set (before applying limit)
+	// This gives accurate counts - limit only affects returned items, not summary
 	// Note: bd status "blocked" means unmet dependencies, "open" means ready to work
 	for _, rb := range rawBeads {
 		switch rb.Status {
