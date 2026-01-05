@@ -162,8 +162,8 @@ func TestCalculateBackoffDuration(t *testing.T) {
 		{1, 60 * time.Second},
 		{2, 120 * time.Second},
 		{3, 240 * time.Second},
-		{4, 300 * time.Second}, // capped
-		{5, 300 * time.Second}, // still capped
+		{4, 300 * time.Second},  // capped
+		{5, 300 * time.Second},  // still capped
 		{10, 300 * time.Second}, // still capped
 	}
 

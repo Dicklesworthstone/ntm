@@ -80,7 +80,7 @@ func (r *Registry) Names() []ToolName {
 func (r *Registry) GetAllInfo(ctx context.Context) []*ToolInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	infos := make([]*ToolInfo, 0, len(r.adapters))
 	for _, a := range r.adapters {
 		info, _ := a.Info(ctx)
@@ -104,20 +104,20 @@ type HealthReport struct {
 func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	report := &HealthReport{
 		Tools: make(map[ToolName]bool),
 	}
-	
+
 	for name, a := range r.adapters {
 		report.Total++
-		
+
 		if _, installed := a.Detect(); !installed {
 			report.Missing++
 			report.Tools[name] = false
 			continue
 		}
-		
+
 		health, err := a.Health(ctx)
 		if err != nil || health == nil || !health.Healthy {
 			report.Unhealthy++
@@ -127,7 +127,7 @@ func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
 			report.Tools[name] = true
 		}
 	}
-	
+
 	return report
 }
 
@@ -165,7 +165,7 @@ func GetDetected() []Adapter {
 func GetInfo(ctx context.Context, name ToolName) (*ToolInfo, error) {
 	globalMu.RLock()
 	defer globalMu.RUnlock()
-	
+
 	adapter, ok := globalRegistry.Get(name)
 	if !ok {
 		return nil, ErrToolNotInstalled

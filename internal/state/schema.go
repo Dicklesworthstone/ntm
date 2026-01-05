@@ -224,7 +224,7 @@ func ApplyMigrations(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("query applied migrations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	applied := make(map[int]bool)
 	for rows.Next() {
@@ -263,7 +263,7 @@ func ApplyMigrations(db *sql.DB) error {
 		}
 
 		if _, err := tx.Exec(content); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback() // best-effort rollback; we're returning the exec error
 			return fmt.Errorf("execute migration %s: %w", filename, err)
 		}
 
@@ -272,7 +272,7 @@ func ApplyMigrations(db *sql.DB) error {
 			"INSERT INTO _migrations (version, name) VALUES (?, ?)",
 			version, filename,
 		); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback() // best-effort rollback; we're returning the insert error
 			return fmt.Errorf("record migration %s: %w", filename, err)
 		}
 

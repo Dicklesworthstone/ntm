@@ -124,8 +124,8 @@ func Definitions() map[InvariantID]Invariant {
 			},
 		},
 		InvariantAuditableActions: {
-			ID:   InvariantAuditableActions,
-			Name: "Auditable Actions",
+			ID:          InvariantAuditableActions,
+			Name:        "Auditable Actions",
 			Description: "Critical actions are logged with correlation IDs.",
 			Enforcement: "Reservations, releases, force-releases logged. " +
 				"Blocked commands logged. Approvals and denials logged. " +
@@ -137,8 +137,8 @@ func Definitions() map[InvariantID]Invariant {
 			},
 		},
 		InvariantSafeByDefault: {
-			ID:   InvariantSafeByDefault,
-			Name: "Safe-by-Default",
+			ID:          InvariantSafeByDefault,
+			Name:        "Safe-by-Default",
 			Description: "Risky automation is opt-in and policy-gated.",
 			Enforcement: "auto_push: disabled by default, requires policy + approval. " +
 				"force_release: requires approval by default. " +
@@ -164,11 +164,11 @@ type CheckResult struct {
 
 // Report contains results for all invariant checks.
 type Report struct {
-	Timestamp time.Time               `json:"timestamp"`
+	Timestamp time.Time                   `json:"timestamp"`
 	Results   map[InvariantID]CheckResult `json:"results"`
-	AllPassed bool                    `json:"all_passed"`
-	Errors    int                     `json:"errors"`
-	Warnings  int                     `json:"warnings"`
+	AllPassed bool                        `json:"all_passed"`
+	Errors    int                         `json:"errors"`
+	Warnings  int                         `json:"warnings"`
 }
 
 // Checker provides methods to verify invariant enforcement.
@@ -461,4 +461,3 @@ func (c *Checker) checkSafeByDefault(ctx context.Context) CheckResult {
 
 	return result
 }
-

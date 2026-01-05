@@ -99,12 +99,12 @@ func TestRestartManager_CalculateBackoff(t *testing.T) {
 		restartCount int
 		expected     time.Duration
 	}{
-		{0, 0},              // No restarts, no backoff
-		{1, 30 * time.Second}, // First restart: base
-		{2, 60 * time.Second}, // Second: base * 2
-		{3, 120 * time.Second}, // Third: base * 4
-		{4, 240 * time.Second}, // Fourth: base * 8
-		{5, 300 * time.Second}, // Fifth: capped at max (5m)
+		{0, 0},                  // No restarts, no backoff
+		{1, 30 * time.Second},   // First restart: base
+		{2, 60 * time.Second},   // Second: base * 2
+		{3, 120 * time.Second},  // Third: base * 4
+		{4, 240 * time.Second},  // Fourth: base * 8
+		{5, 300 * time.Second},  // Fifth: capped at max (5m)
 		{10, 300 * time.Second}, // Many: still capped
 	}
 

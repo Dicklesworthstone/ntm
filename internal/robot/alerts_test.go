@@ -437,8 +437,8 @@ type mockAlertChannel struct {
 	sendFunc  func(ctx context.Context, alert *Alert) error
 }
 
-func (m *mockAlertChannel) Name() string      { return m.name }
-func (m *mockAlertChannel) Available() bool   { return m.available }
+func (m *mockAlertChannel) Name() string    { return m.name }
+func (m *mockAlertChannel) Available() bool { return m.available }
 func (m *mockAlertChannel) Send(ctx context.Context, alert *Alert) error {
 	if m.sendFunc != nil {
 		return m.sendFunc(ctx, alert)

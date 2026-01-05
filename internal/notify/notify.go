@@ -54,11 +54,11 @@ type Config struct {
 	Fallback string              `toml:"fallback"` // Fallback channel if primary fails
 	Routing  map[string][]string `toml:"routing"`  // Event type -> ordered channel list
 
-	Desktop  DesktopConfig  `toml:"desktop"`
-	Webhook  WebhookConfig  `toml:"webhook"`
-	Shell    ShellConfig    `toml:"shell"`
-	Log      LogConfig      `toml:"log"`
-	FileBox  FileBoxConfig  `toml:"filebox"` // File inbox for offline review
+	Desktop DesktopConfig `toml:"desktop"`
+	Webhook WebhookConfig `toml:"webhook"`
+	Shell   ShellConfig   `toml:"shell"`
+	Log     LogConfig     `toml:"log"`
+	FileBox FileBoxConfig `toml:"filebox"` // File inbox for offline review
 }
 
 // DesktopConfig configures desktop notifications

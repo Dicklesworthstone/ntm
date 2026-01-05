@@ -340,15 +340,15 @@ func calculateOutputRate(lastActivitySec int) string {
 
 // HealthCheck contains the result of a comprehensive health check
 type HealthCheck struct {
-	PaneID       string      `json:"pane_id"`
-	AgentType    string      `json:"agent_type"`
-	HealthState  HealthState `json:"health_state"`
+	PaneID       string              `json:"pane_id"`
+	AgentType    string              `json:"agent_type"`
+	HealthState  HealthState         `json:"health_state"`
 	ProcessCheck *ProcessCheckResult `json:"process_check"`
 	StallCheck   *StallCheckResult   `json:"stall_check"`
 	ErrorCheck   *ErrorCheckResult   `json:"error_check"`
-	Confidence   float64     `json:"confidence"`
-	Reason       string      `json:"reason"`
-	CheckedAt    time.Time   `json:"checked_at"`
+	Confidence   float64             `json:"confidence"`
+	Reason       string              `json:"reason"`
+	CheckedAt    time.Time           `json:"checked_at"`
 }
 
 // ProcessCheckResult contains the result of process-level health check
@@ -361,12 +361,12 @@ type ProcessCheckResult struct {
 
 // StallCheckResult contains the result of stall detection using activity detection
 type StallCheckResult struct {
-	Stalled        bool          `json:"stalled"`
-	ActivityState  string        `json:"activity_state"` // from StateClassifier
-	Velocity       float64       `json:"velocity"`       // chars/sec
-	IdleSeconds    int           `json:"idle_seconds"`
-	Confidence     float64       `json:"confidence"`
-	Reason         string        `json:"reason,omitempty"`
+	Stalled       bool    `json:"stalled"`
+	ActivityState string  `json:"activity_state"` // from StateClassifier
+	Velocity      float64 `json:"velocity"`       // chars/sec
+	IdleSeconds   int     `json:"idle_seconds"`
+	Confidence    float64 `json:"confidence"`
+	Reason        string  `json:"reason,omitempty"`
 }
 
 // ErrorCheckResult contains the result of error pattern detection
@@ -707,19 +707,19 @@ func calculateHealthConfidence(check *HealthCheck) float64 {
 
 // SessionHealthOutput is the response format for --robot-health=SESSION
 type SessionHealthOutput struct {
-	Success   bool                       `json:"success"`
-	Session   string                     `json:"session"`
-	CheckedAt time.Time                  `json:"checked_at"`
-	Agents    []SessionAgentHealth       `json:"agents"`
-	Summary   SessionHealthSummary       `json:"summary"`
-	Error     string                     `json:"error,omitempty"`
+	Success   bool                 `json:"success"`
+	Session   string               `json:"session"`
+	CheckedAt time.Time            `json:"checked_at"`
+	Agents    []SessionAgentHealth `json:"agents"`
+	Summary   SessionHealthSummary `json:"summary"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // SessionAgentHealth contains health metrics for a single agent pane
 type SessionAgentHealth struct {
 	Pane             int     `json:"pane"`
 	AgentType        string  `json:"agent_type"`
-	Health           string  `json:"health"` // healthy, degraded, unhealthy, rate_limited
+	Health           string  `json:"health"`             // healthy, degraded, unhealthy, rate_limited
 	IdleSinceSeconds int     `json:"idle_since_seconds"` // seconds since last pane activity
 	Restarts         int     `json:"restarts"`
 	LastError        string  `json:"last_error,omitempty"`
@@ -862,16 +862,16 @@ type HealthStateTransition struct {
 
 // AgentErrorInfo captures details about an error
 type AgentErrorInfo struct {
-	Type      string    `json:"type"`    // e.g., "rate_limit", "crash", "auth_error"
+	Type      string    `json:"type"` // e.g., "rate_limit", "crash", "auth_error"
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
 // AgentHealthMetrics holds all tracked metrics for a single agent
 type AgentHealthMetrics struct {
-	PaneID    string      `json:"pane_id"`
-	AgentType string      `json:"agent_type"`
-	SessionID string      `json:"session_id"`
+	PaneID    string `json:"pane_id"`
+	AgentType string `json:"agent_type"`
+	SessionID string `json:"session_id"`
 
 	// Current state
 	CurrentState HealthState `json:"current_state"`
@@ -889,8 +889,8 @@ type AgentHealthMetrics struct {
 	RestartTimestamps []time.Time `json:"-"` // Internal: for counting restarts in windows
 
 	// Error tracking
-	LastError       *AgentErrorInfo `json:"last_error,omitempty"`
-	TotalErrors     int             `json:"total_errors"`
+	LastError   *AgentErrorInfo `json:"last_error,omitempty"`
+	TotalErrors int             `json:"total_errors"`
 
 	// Rate limit tracking
 	RateLimitCount      int       `json:"rate_limit_count"`       // Total rate limits hit
@@ -911,8 +911,8 @@ type HealthTracker struct {
 	session string
 
 	// Configuration
-	maxTransitions int           // Max state transitions to keep in history
-	restartWindow  time.Duration // Window for counting restarts (e.g., 1 hour)
+	maxTransitions  int           // Max state transitions to keep in history
+	restartWindow   time.Duration // Window for counting restarts (e.g., 1 hour)
 	rateLimitWindow time.Duration // Window for counting rate limits
 }
 
@@ -1228,11 +1228,11 @@ const (
 
 // RateLimitBackoff tracks backoff state for a single agent
 type RateLimitBackoff struct {
-	PaneID           string    `json:"pane_id"`
-	BackoffCount     int       `json:"backoff_count"`      // n in 30s * 2^n
-	BackoffEndsAt    time.Time `json:"backoff_ends_at"`
-	LastRateLimitAt  time.Time `json:"last_rate_limit_at"`
-	TotalRateLimits  int       `json:"total_rate_limits"`  // lifetime count
+	PaneID          string    `json:"pane_id"`
+	BackoffCount    int       `json:"backoff_count"` // n in 30s * 2^n
+	BackoffEndsAt   time.Time `json:"backoff_ends_at"`
+	LastRateLimitAt time.Time `json:"last_rate_limit_at"`
+	TotalRateLimits int       `json:"total_rate_limits"` // lifetime count
 }
 
 // BackoffManager manages rate limit backoffs for all agents in a session
@@ -1521,9 +1521,9 @@ func ClearHealthTracker(session string) {
 // RestartConfig configures the restart behavior
 type RestartConfig struct {
 	Enabled            bool          `toml:"enabled"`
-	MaxRestartsPerHour int           `toml:"max_restarts"`        // Max restarts per hour (default: 3)
-	BackoffBase        time.Duration `toml:"backoff_base"`        // Base backoff (default: 30s)
-	BackoffMax         time.Duration `toml:"backoff_max"`         // Max backoff (default: 5m)
+	MaxRestartsPerHour int           `toml:"max_restarts"`         // Max restarts per hour (default: 3)
+	BackoffBase        time.Duration `toml:"backoff_base"`         // Base backoff (default: 30s)
+	BackoffMax         time.Duration `toml:"backoff_max"`          // Max backoff (default: 5m)
 	SoftRestartTimeout time.Duration `toml:"soft_restart_timeout"` // Timeout for soft restart (default: 10s)
 	NotifyContextLoss  bool          `toml:"notify_on_context_loss"`
 }
@@ -1551,14 +1551,14 @@ const (
 
 // RestartResult contains the result of a restart attempt
 type RestartResult struct {
-	Success      bool        `json:"success"`
-	Type         RestartType `json:"type"`
-	PaneID       string      `json:"pane_id"`
-	AgentType    string      `json:"agent_type"`
+	Success        bool          `json:"success"`
+	Type           RestartType   `json:"type"`
+	PaneID         string        `json:"pane_id"`
+	AgentType      string        `json:"agent_type"`
 	BackoffApplied time.Duration `json:"backoff_applied"`
-	ContextLost  bool        `json:"context_lost"`
-	Reason       string      `json:"reason"`
-	AttemptedAt  time.Time   `json:"attempted_at"`
+	ContextLost    bool          `json:"context_lost"`
+	Reason         string        `json:"reason"`
+	AttemptedAt    time.Time     `json:"attempted_at"`
 }
 
 // RestartManager manages automatic restarts for agents
@@ -1979,7 +1979,6 @@ func getAgentCommand(agentType string) string {
 		return ""
 	}
 }
-
 
 // =============================================================================
 // Global Restart Manager Registry

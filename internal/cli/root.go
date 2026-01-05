@@ -964,26 +964,26 @@ var (
 	robotAlertsSession  string // filter by session
 
 	// Robot-beads-list flags for bead listing
-	robotBeadsList       bool   // list beads
-	robotBeadsStatus     string // filter by status: open, in_progress, closed, blocked
-	robotBeadsPriority   string // filter by priority: 0-4 or P0-P4
-	robotBeadsAssignee   string // filter by assignee
-	robotBeadsType       string // filter by type: task, bug, feature, epic, chore
-	robotBeadsLimit      int    // max beads to return
+	robotBeadsList     bool   // list beads
+	robotBeadsStatus   string // filter by status: open, in_progress, closed, blocked
+	robotBeadsPriority string // filter by priority: 0-4 or P0-P4
+	robotBeadsAssignee string // filter by assignee
+	robotBeadsType     string // filter by type: task, bug, feature, epic, chore
+	robotBeadsLimit    int    // max beads to return
 
 	// Robot-bead flags for bead management
-	robotBeadClaim    string   // bead ID to claim
-	robotBeadCreate   bool     // create a new bead
-	robotBeadShow     string   // bead ID to show details
-	robotBeadClose    string   // bead ID to close
-	beadTitle         string   // title for new bead
-	beadType          string   // type: task, bug, feature, epic, chore
-	beadPriority      int      // priority: 0-4
-	beadDescription   string   // description for new bead
-	beadLabels        string   // comma-separated labels
-	beadDependsOn     string   // comma-separated dependency IDs
-	beadAssignee      string   // assignee for claim
-	beadCloseReason   string   // reason for closing
+	robotBeadClaim  string // bead ID to claim
+	robotBeadCreate bool   // create a new bead
+	robotBeadShow   string // bead ID to show details
+	robotBeadClose  string // bead ID to close
+	beadTitle       string // title for new bead
+	beadType        string // type: task, bug, feature, epic, chore
+	beadPriority    int    // priority: 0-4
+	beadDescription string // description for new bead
+	beadLabels      string // comma-separated labels
+	beadDependsOn   string // comma-separated dependency IDs
+	beadAssignee    string // assignee for claim
+	beadCloseReason string // reason for closing
 )
 
 func init() {

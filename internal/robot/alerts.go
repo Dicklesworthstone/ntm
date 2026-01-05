@@ -20,13 +20,13 @@ import (
 type AlertType string
 
 const (
-	AlertUnhealthy      AlertType = "unhealthy"
-	AlertDegraded       AlertType = "degraded"
-	AlertRateLimited    AlertType = "rate_limited"
-	AlertRestart        AlertType = "restart"
-	AlertRestartFailed  AlertType = "restart_failed"
-	AlertMaxRestarts    AlertType = "max_restarts"
-	AlertRecovered      AlertType = "recovered"
+	AlertUnhealthy     AlertType = "unhealthy"
+	AlertDegraded      AlertType = "degraded"
+	AlertRateLimited   AlertType = "rate_limited"
+	AlertRestart       AlertType = "restart"
+	AlertRestartFailed AlertType = "restart_failed"
+	AlertMaxRestarts   AlertType = "max_restarts"
+	AlertRecovered     AlertType = "recovered"
 )
 
 // Alert represents a single alert event
@@ -222,14 +222,14 @@ func (a *Alerter) SendStateChange(ctx context.Context, session, paneID, agentTyp
 	}
 
 	alert := &Alert{
-		Timestamp: time.Now().UTC(),
-		Type:      alertType,
-		Session:   session,
-		PaneID:    paneID,
-		AgentType: agentType,
-		PrevState: prevState,
-		NewState:  newState,
-		Message:   fmt.Sprintf("Agent %s in %s: %s -> %s", agentType, session, prevState, newState),
+		Timestamp:  time.Now().UTC(),
+		Type:       alertType,
+		Session:    session,
+		PaneID:     paneID,
+		AgentType:  agentType,
+		PrevState:  prevState,
+		NewState:   newState,
+		Message:    fmt.Sprintf("Agent %s in %s: %s -> %s", agentType, session, prevState, newState),
 		Suggestion: getSuggestion(alertType),
 	}
 
@@ -269,12 +269,12 @@ func (a *Alerter) SendRestart(ctx context.Context, session, paneID, agentType st
 // SendMaxRestarts sends an alert when restart limit is reached
 func (a *Alerter) SendMaxRestarts(ctx context.Context, session, paneID, agentType string, restartCount int) error {
 	alert := &Alert{
-		Timestamp: time.Now().UTC(),
-		Type:      AlertMaxRestarts,
-		Session:   session,
-		PaneID:    paneID,
-		AgentType: agentType,
-		Message:   fmt.Sprintf("Agent %s in %s exceeded max restarts (%d)", agentType, session, restartCount),
+		Timestamp:  time.Now().UTC(),
+		Type:       AlertMaxRestarts,
+		Session:    session,
+		PaneID:     paneID,
+		AgentType:  agentType,
+		Message:    fmt.Sprintf("Agent %s in %s exceeded max restarts (%d)", agentType, session, restartCount),
 		Suggestion: "Agent is unstable. Consider killing and respawning, or investigating the underlying issue.",
 		Metadata:   map[string]interface{}{"restart_count": restartCount},
 	}
@@ -493,8 +493,8 @@ func (w *WebhookChannel) Send(ctx context.Context, alert *Alert) error {
 // LogChannel logs alerts to stderr as JSON
 type LogChannel struct{}
 
-func (l *LogChannel) Name() string      { return "log" }
-func (l *LogChannel) Available() bool   { return true }
+func (l *LogChannel) Name() string    { return "log" }
+func (l *LogChannel) Available() bool { return true }
 
 func (l *LogChannel) Send(ctx context.Context, alert *Alert) error {
 	payload, err := json.Marshal(alert)

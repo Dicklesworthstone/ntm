@@ -12,10 +12,10 @@ import (
 
 // Common errors returned by tool adapters
 var (
-	ErrToolNotInstalled = errors.New("tool not installed")
-	ErrToolNotHealthy   = errors.New("tool not healthy")
-	ErrTimeout          = errors.New("operation timed out")
-	ErrSchemaValidation = errors.New("schema validation failed")
+	ErrToolNotInstalled  = errors.New("tool not installed")
+	ErrToolNotHealthy    = errors.New("tool not healthy")
+	ErrTimeout           = errors.New("operation timed out")
+	ErrSchemaValidation  = errors.New("schema validation failed")
 	ErrCapabilityMissing = errors.New("capability not available")
 )
 
@@ -50,11 +50,11 @@ type Capability string
 
 // Common capabilities across tools
 const (
-	CapRobotMode    Capability = "robot_mode"    // JSON output for automation
-	CapDaemonMode   Capability = "daemon_mode"   // Can run as daemon
-	CapMacros       Capability = "macros"        // Supports macro commands
-	CapSearch       Capability = "search"        // Can search content
-	CapContextPack  Capability = "context_pack"  // Context preparation
+	CapRobotMode   Capability = "robot_mode"   // JSON output for automation
+	CapDaemonMode  Capability = "daemon_mode"  // Can run as daemon
+	CapMacros      Capability = "macros"       // Supports macro commands
+	CapSearch      Capability = "search"       // Can search content
+	CapContextPack Capability = "context_pack" // Context preparation
 )
 
 // Version represents a parsed semantic version

@@ -90,14 +90,14 @@ func TestTruncateOutput(t *testing.T) {
 		},
 		{
 			name:     "unicode at exact boundary",
-			input:    "世界",   // 6 bytes: 世(3) + 界(3)
+			input:    "世界", // 6 bytes: 世(3) + 界(3)
 			maxLen:   3,
 			expected: "界", // Returns last 3-byte character
 		},
 		{
 			name:     "unicode all cut",
 			input:    "世界",
-			maxLen:   1, // Can't fit any character
+			maxLen:   1,  // Can't fit any character
 			expected: "", // All characters are 3 bytes, none fits
 		},
 	}

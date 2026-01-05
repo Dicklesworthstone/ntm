@@ -783,8 +783,8 @@ func TestInspectPaneOutputStructure(t *testing.T) {
 			CodeBlocks: []CodeBlockInfo{},
 		},
 		Context: InspectPaneContext{
-			PendingMail:  0,
-			RecentFiles:  []string{},
+			PendingMail: 0,
+			RecentFiles: []string{},
 		},
 	}
 
@@ -1130,7 +1130,7 @@ func TestDetectErrorsEdgeCases(t *testing.T) {
 		},
 		{
 			name:      "error in middle of word should not match",
-			lines:    []string{"terror is not an error"},
+			lines:     []string{"terror is not an error"},
 			wantCount: 0,
 		},
 		{

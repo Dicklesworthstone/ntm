@@ -26,32 +26,32 @@ import (
 // FilesOutput represents the output for --robot-files
 type FilesOutput struct {
 	RobotResponse
-	Session    string              `json:"session,omitempty"`
-	TimeWindow string              `json:"time_window"` // "5m", "15m", "1h", "all"
-	Count      int                 `json:"count"`
-	Changes    []FileChangeRecord  `json:"changes"`
-	Summary    FileChangesSummary  `json:"summary"`
-	AgentHints *AgentHints         `json:"_agent_hints,omitempty"`
+	Session    string             `json:"session,omitempty"`
+	TimeWindow string             `json:"time_window"` // "5m", "15m", "1h", "all"
+	Count      int                `json:"count"`
+	Changes    []FileChangeRecord `json:"changes"`
+	Summary    FileChangesSummary `json:"summary"`
+	AgentHints *AgentHints        `json:"_agent_hints,omitempty"`
 }
 
 // FileChangeRecord represents a single file change with agent attribution
 type FileChangeRecord struct {
-	Timestamp   string   `json:"timestamp"`    // RFC3339
-	Path        string   `json:"path"`         // Relative file path
-	Operation   string   `json:"operation"`    // "create", "modify", "delete", "rename"
-	Agents      []string `json:"agents"`       // Agents that touched this file
-	Session     string   `json:"session"`      // Session where change was detected
-	SizeBytes   int64    `json:"size_bytes,omitempty"`
-	LinesAdded  int      `json:"lines_added,omitempty"`
-	LinesRemoved int     `json:"lines_removed,omitempty"`
+	Timestamp    string   `json:"timestamp"` // RFC3339
+	Path         string   `json:"path"`      // Relative file path
+	Operation    string   `json:"operation"` // "create", "modify", "delete", "rename"
+	Agents       []string `json:"agents"`    // Agents that touched this file
+	Session      string   `json:"session"`   // Session where change was detected
+	SizeBytes    int64    `json:"size_bytes,omitempty"`
+	LinesAdded   int      `json:"lines_added,omitempty"`
+	LinesRemoved int      `json:"lines_removed,omitempty"`
 }
 
 // FileChangesSummary provides aggregate statistics
 type FileChangesSummary struct {
 	TotalChanges    int            `json:"total_changes"`
 	UniqueFiles     int            `json:"unique_files"`
-	ByAgent         map[string]int `json:"by_agent"`         // Agent -> change count
-	ByOperation     map[string]int `json:"by_operation"`     // Operation -> count
+	ByAgent         map[string]int `json:"by_agent"`     // Agent -> change count
+	ByOperation     map[string]int `json:"by_operation"` // Operation -> count
 	MostActiveAgent string         `json:"most_active_agent,omitempty"`
 	Conflicts       []FileConflict `json:"conflicts,omitempty"` // Files touched by multiple agents
 }
@@ -60,7 +60,7 @@ type FileChangesSummary struct {
 type FileConflict struct {
 	Path      string   `json:"path"`
 	Agents    []string `json:"agents"`
-	Severity  string   `json:"severity"` // "warning", "critical"
+	Severity  string   `json:"severity"`   // "warning", "critical"
 	FirstEdit string   `json:"first_edit"` // RFC3339
 	LastEdit  string   `json:"last_edit"`  // RFC3339
 }
@@ -257,33 +257,33 @@ func PrintFiles(opts FilesOptions) error {
 // InspectPaneOutput represents detailed pane inspection
 type InspectPaneOutput struct {
 	RobotResponse
-	Session    string              `json:"session"`
-	PaneIndex  int                 `json:"pane_index"`
-	PaneID     string              `json:"pane_id"`
-	Agent      InspectPaneAgent    `json:"agent"`
-	Output     InspectPaneOutput_  `json:"output"`
-	Context    InspectPaneContext  `json:"context"`
-	AgentHints *AgentHints         `json:"_agent_hints,omitempty"`
+	Session    string             `json:"session"`
+	PaneIndex  int                `json:"pane_index"`
+	PaneID     string             `json:"pane_id"`
+	Agent      InspectPaneAgent   `json:"agent"`
+	Output     InspectPaneOutput_ `json:"output"`
+	Context    InspectPaneContext `json:"context"`
+	AgentHints *AgentHints        `json:"_agent_hints,omitempty"`
 }
 
 // InspectPaneAgent contains agent-specific information
 type InspectPaneAgent struct {
-	Type           string  `json:"type"`             // claude, codex, gemini, user
-	Variant        string  `json:"variant,omitempty"`
-	Title          string  `json:"title"`
-	State          string  `json:"state"`            // generating, waiting, thinking, error
+	Type            string  `json:"type"` // claude, codex, gemini, user
+	Variant         string  `json:"variant,omitempty"`
+	Title           string  `json:"title"`
+	State           string  `json:"state"` // generating, waiting, thinking, error
 	StateConfidence float64 `json:"state_confidence"`
-	Command        string  `json:"command,omitempty"`
-	ProcessRunning bool    `json:"process_running"`
+	Command         string  `json:"command,omitempty"`
+	ProcessRunning  bool    `json:"process_running"`
 }
 
 // InspectPaneOutput_ contains the pane output analysis
 type InspectPaneOutput_ struct {
-	Lines       int      `json:"lines"`              // Total lines captured
-	Characters  int      `json:"characters"`         // Total characters
-	LastLines   []string `json:"last_lines"`         // Last N lines (configurable)
-	CodeBlocks  []CodeBlockInfo `json:"code_blocks,omitempty"` // Detected code blocks
-	ErrorsFound []string `json:"errors_found,omitempty"` // Detected error messages
+	Lines       int             `json:"lines"`                  // Total lines captured
+	Characters  int             `json:"characters"`             // Total characters
+	LastLines   []string        `json:"last_lines"`             // Last N lines (configurable)
+	CodeBlocks  []CodeBlockInfo `json:"code_blocks,omitempty"`  // Detected code blocks
+	ErrorsFound []string        `json:"errors_found,omitempty"` // Detected error messages
 }
 
 // CodeBlockInfo represents a detected code block in output
@@ -297,7 +297,7 @@ type CodeBlockInfo struct {
 // InspectPaneContext contains context information
 type InspectPaneContext struct {
 	WorkingDir     string   `json:"working_dir,omitempty"`
-	RecentFiles    []string `json:"recent_files,omitempty"`    // Files mentioned in output
+	RecentFiles    []string `json:"recent_files,omitempty"` // Files mentioned in output
 	PendingMail    int      `json:"pending_mail"`
 	CurrentBead    string   `json:"current_bead,omitempty"`
 	ContextPercent float64  `json:"context_percent,omitempty"` // Estimated context usage
@@ -454,12 +454,12 @@ func PrintInspectPane(opts InspectPaneOptions) error {
 // MetricsOutput represents comprehensive session metrics
 type MetricsOutput struct {
 	RobotResponse
-	Session       string                   `json:"session,omitempty"`
-	Period        string                   `json:"period"` // e.g., "last_24h", "all_time"
-	TokenUsage    MetricsTokenUsage        `json:"token_usage"`
-	AgentStats    map[string]AgentMetrics  `json:"agent_stats"`
-	SessionStats  MetricsSessionStats      `json:"session_stats"`
-	AgentHints    *AgentHints              `json:"_agent_hints,omitempty"`
+	Session      string                  `json:"session,omitempty"`
+	Period       string                  `json:"period"` // e.g., "last_24h", "all_time"
+	TokenUsage   MetricsTokenUsage       `json:"token_usage"`
+	AgentStats   map[string]AgentMetrics `json:"agent_stats"`
+	SessionStats MetricsSessionStats     `json:"session_stats"`
+	AgentHints   *AgentHints             `json:"_agent_hints,omitempty"`
 }
 
 // MetricsTokenUsage contains token consumption data
@@ -473,23 +473,23 @@ type MetricsTokenUsage struct {
 
 // AgentMetrics contains per-agent statistics
 type AgentMetrics struct {
-	Type          string  `json:"type"`
-	PromptsReceived int   `json:"prompts_received"`
-	TokensUsed    int64   `json:"tokens_used"`
+	Type            string  `json:"type"`
+	PromptsReceived int     `json:"prompts_received"`
+	TokensUsed      int64   `json:"tokens_used"`
 	AvgResponseTime float64 `json:"avg_response_time_sec"`
-	ErrorCount    int     `json:"error_count"`
-	RestartCount  int     `json:"restart_count"`
-	Uptime        string  `json:"uptime"`
+	ErrorCount      int     `json:"error_count"`
+	RestartCount    int     `json:"restart_count"`
+	Uptime          string  `json:"uptime"`
 }
 
 // MetricsSessionStats contains session-level statistics
 type MetricsSessionStats struct {
-	TotalPrompts    int     `json:"total_prompts"`
-	TotalAgents     int     `json:"total_agents"`
-	ActiveAgents    int     `json:"active_agents"`
-	SessionDuration string  `json:"session_duration"`
-	FilesChanged    int     `json:"files_changed"`
-	Commits         int     `json:"commits,omitempty"`
+	TotalPrompts    int    `json:"total_prompts"`
+	TotalAgents     int    `json:"total_agents"`
+	ActiveAgents    int    `json:"active_agents"`
+	SessionDuration string `json:"session_duration"`
+	FilesChanged    int    `json:"files_changed"`
+	Commits         int    `json:"commits,omitempty"`
 }
 
 // MetricsOptions configures the metrics export
@@ -580,12 +580,12 @@ func PrintMetrics(opts MetricsOptions) error {
 // ReplayOutput represents the result of a replay operation
 type ReplayOutput struct {
 	RobotResponse
-	HistoryID    string   `json:"history_id"`
-	OriginalCmd  string   `json:"original_command"`
-	Session      string   `json:"session"`
-	TargetPanes  []int    `json:"target_panes"`
-	Replayed     bool     `json:"replayed"`
-	AgentHints   *AgentHints `json:"_agent_hints,omitempty"`
+	HistoryID   string      `json:"history_id"`
+	OriginalCmd string      `json:"original_command"`
+	Session     string      `json:"session"`
+	TargetPanes []int       `json:"target_panes"`
+	Replayed    bool        `json:"replayed"`
+	AgentHints  *AgentHints `json:"_agent_hints,omitempty"`
 }
 
 // ReplayOptions configures the replay operation
@@ -677,34 +677,34 @@ func PrintReplay(opts ReplayOptions) error {
 // PaletteOutput represents palette state and available commands
 type PaletteOutput struct {
 	RobotResponse
-	Session      string          `json:"session,omitempty"`
-	Commands     []PaletteCmd    `json:"commands"`
-	Favorites    []string        `json:"favorites"`
-	Pinned       []string        `json:"pinned"`
-	Recent       []PaletteRecent `json:"recent"`
-	Categories   []string        `json:"categories"`
-	AgentHints   *AgentHints     `json:"_agent_hints,omitempty"`
+	Session    string          `json:"session,omitempty"`
+	Commands   []PaletteCmd    `json:"commands"`
+	Favorites  []string        `json:"favorites"`
+	Pinned     []string        `json:"pinned"`
+	Recent     []PaletteRecent `json:"recent"`
+	Categories []string        `json:"categories"`
+	AgentHints *AgentHints     `json:"_agent_hints,omitempty"`
 }
 
 // PaletteCmd represents a single palette command
 type PaletteCmd struct {
-	Key         string   `json:"key"`
-	Label       string   `json:"label"`
-	Category    string   `json:"category"`
-	Prompt      string   `json:"prompt"`
-	Targets     string   `json:"targets,omitempty"` // "all", "claude", etc.
-	IsFavorite  bool     `json:"is_favorite"`
-	IsPinned    bool     `json:"is_pinned"`
-	UseCount    int      `json:"use_count"`
-	Tags        []string `json:"tags,omitempty"`
+	Key        string   `json:"key"`
+	Label      string   `json:"label"`
+	Category   string   `json:"category"`
+	Prompt     string   `json:"prompt"`
+	Targets    string   `json:"targets,omitempty"` // "all", "claude", etc.
+	IsFavorite bool     `json:"is_favorite"`
+	IsPinned   bool     `json:"is_pinned"`
+	UseCount   int      `json:"use_count"`
+	Tags       []string `json:"tags,omitempty"`
 }
 
 // PaletteRecent represents a recently used command
 type PaletteRecent struct {
-	Key      string `json:"key"`
-	UsedAt   string `json:"used_at"` // RFC3339
-	Session  string `json:"session"`
-	Success  bool   `json:"success"`
+	Key     string `json:"key"`
+	UsedAt  string `json:"used_at"` // RFC3339
+	Session string `json:"session"`
+	Success bool   `json:"success"`
 }
 
 // PaletteOptions configures the palette query
@@ -740,7 +740,7 @@ func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
 		if opts.SearchQuery != "" {
 			query := strings.ToLower(opts.SearchQuery)
 			if !strings.Contains(strings.ToLower(cmd.Label), query) &&
-			   !strings.Contains(strings.ToLower(cmd.Key), query) {
+				!strings.Contains(strings.ToLower(cmd.Key), query) {
 				continue
 			}
 		}
@@ -776,18 +776,18 @@ func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
 // TUIAlertsOutput represents active alerts with TUI-parity fields
 type TUIAlertsOutput struct {
 	RobotResponse
-	Session    string          `json:"session,omitempty"`
-	Count      int             `json:"count"`
-	Alerts     []TUIAlertInfo  `json:"alerts"`
-	Dismissed  []string        `json:"dismissed,omitempty"` // IDs of dismissed alerts
-	AgentHints *AgentHints     `json:"_agent_hints,omitempty"`
+	Session    string         `json:"session,omitempty"`
+	Count      int            `json:"count"`
+	Alerts     []TUIAlertInfo `json:"alerts"`
+	Dismissed  []string       `json:"dismissed,omitempty"` // IDs of dismissed alerts
+	AgentHints *AgentHints    `json:"_agent_hints,omitempty"`
 }
 
 // TUIAlertInfo represents a single alert with TUI-parity fields
 type TUIAlertInfo struct {
 	ID          string `json:"id"`
-	Type        string `json:"type"`      // "agent_stuck", "disk_low", "mail_backlog", etc.
-	Severity    string `json:"severity"`  // "info", "warning", "error", "critical"
+	Type        string `json:"type"`     // "agent_stuck", "disk_low", "mail_backlog", etc.
+	Severity    string `json:"severity"` // "info", "warning", "error", "critical"
 	Session     string `json:"session,omitempty"`
 	Pane        string `json:"pane,omitempty"`
 	Message     string `json:"message"`
@@ -889,9 +889,9 @@ type DismissAlertOutput struct {
 
 // DismissAlertOptions configures alert dismissal
 type DismissAlertOptions struct {
-	AlertID   string
-	Session   string // Scope to session
-	DismissAll bool  // Dismiss all alerts matching criteria
+	AlertID    string
+	Session    string // Scope to session
+	DismissAll bool   // Dismiss all alerts matching criteria
 }
 
 // PrintDismissAlert dismisses an alert and outputs the result
@@ -1096,11 +1096,11 @@ type BeadListItem struct {
 // BeadsListOutput represents the result of listing beads
 type BeadsListOutput struct {
 	RobotResponse
-	Beads      []BeadListItem    `json:"beads"`
-	Total      int               `json:"total"`
-	Filtered   int               `json:"filtered"`
-	Summary    BeadsListSummary  `json:"summary"`
-	AgentHints *AgentHints       `json:"_agent_hints,omitempty"`
+	Beads      []BeadListItem   `json:"beads"`
+	Total      int              `json:"total"`
+	Filtered   int              `json:"filtered"`
+	Summary    BeadsListSummary `json:"summary"`
+	AgentHints *AgentHints      `json:"_agent_hints,omitempty"`
 }
 
 // BeadsListSummary provides counts by status for bead listing
@@ -1515,20 +1515,20 @@ func PrintBeadCreate(opts BeadCreateOptions) error {
 // BeadShowOutput represents detailed bead information
 type BeadShowOutput struct {
 	RobotResponse
-	BeadID      string       `json:"bead_id"`
-	Title       string       `json:"title"`
-	Status      string       `json:"status"`
-	Type        string       `json:"type"`
-	Priority    string       `json:"priority"`
-	Assignee    string       `json:"assignee,omitempty"`
-	Description string       `json:"description,omitempty"`
-	Labels      []string     `json:"labels,omitempty"`
-	CreatedAt   string       `json:"created_at,omitempty"`
-	UpdatedAt   string       `json:"updated_at,omitempty"`
-	DependsOn   []string     `json:"depends_on,omitempty"`
-	Blocks      []string     `json:"blocks,omitempty"`
+	BeadID      string        `json:"bead_id"`
+	Title       string        `json:"title"`
+	Status      string        `json:"status"`
+	Type        string        `json:"type"`
+	Priority    string        `json:"priority"`
+	Assignee    string        `json:"assignee,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Labels      []string      `json:"labels,omitempty"`
+	CreatedAt   string        `json:"created_at,omitempty"`
+	UpdatedAt   string        `json:"updated_at,omitempty"`
+	DependsOn   []string      `json:"depends_on,omitempty"`
+	Blocks      []string      `json:"blocks,omitempty"`
 	Comments    []BeadComment `json:"comments,omitempty"`
-	AgentHints  *AgentHints  `json:"_agent_hints,omitempty"`
+	AgentHints  *AgentHints   `json:"_agent_hints,omitempty"`
 }
 
 // BeadComment represents a comment on a bead
@@ -1750,4 +1750,3 @@ func PrintBeadClose(opts BeadCloseOptions) error {
 
 	return encodeJSON(output)
 }
-

@@ -585,9 +585,9 @@ type ImpactResult struct {
 
 // ImpactResponse contains bv impact analysis
 type ImpactResponse struct {
-	Files      []ImpactResult `json:"files"`
-	TotalBeads int            `json:"total_beads"`
-	UniqueBeads int           `json:"unique_beads"`
+	Files       []ImpactResult `json:"files"`
+	TotalBeads  int            `json:"total_beads"`
+	UniqueBeads int            `json:"unique_beads"`
 }
 
 // runWorkImpact executes the impact command
