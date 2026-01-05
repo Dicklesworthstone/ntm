@@ -682,6 +682,62 @@ Shell Integration:
 			return
 		}
 
+		// Robot-bead handlers for bead management
+		if robotBeadClaim != "" {
+			opts := robot.BeadClaimOptions{
+				BeadID:   robotBeadClaim,
+				Assignee: beadAssignee,
+			}
+			if err := robot.PrintBeadClaim(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotBeadCreate {
+			var labels, dependsOn []string
+			if beadLabels != "" {
+				labels = strings.Split(beadLabels, ",")
+			}
+			if beadDependsOn != "" {
+				dependsOn = strings.Split(beadDependsOn, ",")
+			}
+			opts := robot.BeadCreateOptions{
+				Title:       beadTitle,
+				Type:        beadType,
+				Priority:    beadPriority,
+				Description: beadDescription,
+				Labels:      labels,
+				DependsOn:   dependsOn,
+			}
+			if err := robot.PrintBeadCreate(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotBeadShow != "" {
+			opts := robot.BeadShowOptions{
+				BeadID: robotBeadShow,
+			}
+			if err := robot.PrintBeadShow(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotBeadClose != "" {
+			opts := robot.BeadCloseOptions{
+				BeadID: robotBeadClose,
+				Reason: beadCloseReason,
+			}
+			if err := robot.PrintBeadClose(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		// Show stunning help with gradients when run without subcommand
 		PrintStunningHelp(cmd.OutOrStdout())
 	},
@@ -870,6 +926,20 @@ var (
 	robotDismissAlert    string // alert ID to dismiss
 	robotDismissSession  string // session scope for alert dismissal
 	robotDismissAll      bool   // dismiss all matching alerts
+
+	// Robot-bead flags for bead management
+	robotBeadClaim    string   // bead ID to claim
+	robotBeadCreate   bool     // create a new bead
+	robotBeadShow     string   // bead ID to show details
+	robotBeadClose    string   // bead ID to close
+	beadTitle         string   // title for new bead
+	beadType          string   // type: task, bug, feature, epic, chore
+	beadPriority      int      // priority: 0-4
+	beadDescription   string   // description for new bead
+	beadLabels        string   // comma-separated labels
+	beadDependsOn     string   // comma-separated dependency IDs
+	beadAssignee      string   // assignee for claim
+	beadCloseReason   string   // reason for closing
 )
 
 func init() {
@@ -1049,6 +1119,20 @@ func init() {
 	rootCmd.Flags().StringVar(&robotDismissAlert, "robot-dismiss-alert", "", "Dismiss an alert by ID. Example: ntm --robot-dismiss-alert=alert-abc123")
 	rootCmd.Flags().StringVar(&robotDismissSession, "dismiss-session", "", "Scope dismissal to session. Optional with --robot-dismiss-alert")
 	rootCmd.Flags().BoolVar(&robotDismissAll, "dismiss-all", false, "Dismiss all matching alerts. Optional with --robot-dismiss-alert")
+
+	// Robot-bead flags for programmatic bead management
+	rootCmd.Flags().StringVar(&robotBeadClaim, "robot-bead-claim", "", "Claim a bead by ID. Example: ntm --robot-bead-claim=ntm-abc123")
+	rootCmd.Flags().BoolVar(&robotBeadCreate, "robot-bead-create", false, "Create a new bead. Requires --bead-title. Example: ntm --robot-bead-create --bead-title='Fix bug'")
+	rootCmd.Flags().StringVar(&robotBeadShow, "robot-bead-show", "", "Show bead details. Example: ntm --robot-bead-show=ntm-abc123")
+	rootCmd.Flags().StringVar(&robotBeadClose, "robot-bead-close", "", "Close a bead by ID. Example: ntm --robot-bead-close=ntm-abc123")
+	rootCmd.Flags().StringVar(&beadTitle, "bead-title", "", "Title for new bead. Required with --robot-bead-create")
+	rootCmd.Flags().StringVar(&beadType, "bead-type", "task", "Type: task, bug, feature, epic, chore. Optional with --robot-bead-create")
+	rootCmd.Flags().IntVar(&beadPriority, "bead-priority", 2, "Priority 0-4 (0=critical, 4=backlog). Optional with --robot-bead-create")
+	rootCmd.Flags().StringVar(&beadDescription, "bead-description", "", "Description for new bead. Optional with --robot-bead-create")
+	rootCmd.Flags().StringVar(&beadLabels, "bead-labels", "", "Comma-separated labels. Optional with --robot-bead-create. Example: --bead-labels=backend,api")
+	rootCmd.Flags().StringVar(&beadDependsOn, "bead-depends-on", "", "Comma-separated dependency bead IDs. Optional with --robot-bead-create")
+	rootCmd.Flags().StringVar(&beadAssignee, "bead-assignee", "", "Assignee for claim. Optional with --robot-bead-claim")
+	rootCmd.Flags().StringVar(&beadCloseReason, "bead-close-reason", "", "Reason for closing. Optional with --robot-bead-close")
 
 	// Sync version info with robot package
 	robot.Version = Version

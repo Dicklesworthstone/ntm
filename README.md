@@ -605,6 +605,15 @@ ntm --robot-replay=SESSION --replay-id=ID                # Replay command from h
 ntm --robot-dismiss-alert=ALERT_ID                       # Dismiss an alert
 ```
 
+**Bead Management:**
+
+```bash
+ntm --robot-bead-claim=BEAD_ID --bead-assignee=agent     # Claim a bead for work
+ntm --robot-bead-create --bead-title="Fix auth bug" --bead-type=bug --bead-priority=1
+ntm --robot-bead-show=BEAD_ID                            # Show bead details
+ntm --robot-bead-close=BEAD_ID --bead-close-reason="Fixed"  # Close a bead
+```
+
 **CASS Integration (Cross-Agent Search):**
 
 ```bash
@@ -644,6 +653,14 @@ ntm --robot-tokens --tokens-group-by=model               # Token usage analytics
 | `--replay-id=ID` | replay | History entry ID to replay |
 | `--replay-dry-run` | replay | Preview without executing |
 | `--dismiss-all` | dismiss-alert | Dismiss all matching alerts |
+| `--bead-title=TEXT` | bead-create | Title for new bead (required) |
+| `--bead-type=TYPE` | bead-create | Type: task, bug, feature, epic, chore |
+| `--bead-priority=N` | bead-create | Priority 0-4 (0=critical, 4=backlog) |
+| `--bead-description=TEXT` | bead-create | Description for new bead |
+| `--bead-labels=a,b` | bead-create | Comma-separated labels |
+| `--bead-depends-on=id1,id2` | bead-create | Comma-separated dependency IDs |
+| `--bead-assignee=NAME` | bead-claim | Assignee name for claim |
+| `--bead-close-reason=TEXT` | bead-close | Reason for closing |
 
 This enables AI agents to:
 - Discover existing sessions and their agent configurations
@@ -657,6 +674,7 @@ This enables AI agents to:
 - Manage alerts programmatically
 - Search past agent conversations via CASS
 - Assign beads/tasks to specific agents
+- Manage beads programmatically (claim, create, show, close)
 - Save and restore session state
 - Track token usage and history
 

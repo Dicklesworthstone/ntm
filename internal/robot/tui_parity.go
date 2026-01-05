@@ -4,11 +4,13 @@
 package robot
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1061,5 +1063,448 @@ func truncateString(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// =============================================================================
+// Bead Management (--robot-bead-claim, --robot-bead-create, --robot-bead-show)
+// =============================================================================
+// Provides programmatic bead operations for AI agents, mirroring TUI beads panel actions.
+
+// BeadClaimOutput represents the result of claiming a bead
+type BeadClaimOutput struct {
+	RobotResponse
+	BeadID     string      `json:"bead_id"`
+	Title      string      `json:"title"`
+	PrevStatus string      `json:"prev_status,omitempty"`
+	NewStatus  string      `json:"new_status"`
+	Claimed    bool        `json:"claimed"`
+	AgentHints *AgentHints `json:"_agent_hints,omitempty"`
+}
+
+// BeadClaimOptions configures the claim operation
+type BeadClaimOptions struct {
+	BeadID   string // Bead ID to claim (e.g., "ntm-abc123")
+	Assignee string // Optional assignee name
+}
+
+// PrintBeadClaim claims a bead by setting its status to in_progress
+func PrintBeadClaim(opts BeadClaimOptions) error {
+	if opts.BeadID == "" {
+		return RobotError(
+			fmt.Errorf("bead ID required"),
+			ErrCodeInvalidFlag,
+			"Specify --robot-bead-claim=BEAD_ID",
+		)
+	}
+
+	output := BeadClaimOutput{
+		RobotResponse: NewRobotResponse(true),
+		BeadID:        opts.BeadID,
+	}
+
+	// Get current bead info first
+	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
+	if err != nil {
+		return RobotError(
+			fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+			ErrCodeInvalidFlag,
+			"Use 'bd list --status=open' to see available beads",
+		)
+	}
+
+	// Parse bead info - bd show returns an array
+	var beadInfo []struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(showOutput), &beadInfo); err != nil || len(beadInfo) == 0 {
+		return RobotError(
+			fmt.Errorf("failed to parse bead info"),
+			ErrCodeInternalError,
+			"Bead data may be corrupted",
+		)
+	}
+
+	output.Title = beadInfo[0].Title
+	output.PrevStatus = beadInfo[0].Status
+
+	// Check if already in_progress
+	if beadInfo[0].Status == "in_progress" {
+		output.NewStatus = "in_progress"
+		output.Claimed = false
+		output.AgentHints = &AgentHints{
+			Summary:  fmt.Sprintf("Bead %s is already in progress", opts.BeadID),
+			Warnings: []string{"Bead was already claimed"},
+		}
+		return encodeJSON(output)
+	}
+
+	// Claim the bead
+	args := []string{"update", opts.BeadID, "--status=in_progress", "--json"}
+	if opts.Assignee != "" {
+		args = append(args, "--assignee="+opts.Assignee)
+	}
+
+	_, err = bv.RunBd("", args...)
+	if err != nil {
+		return RobotError(
+			fmt.Errorf("failed to claim bead: %w", err),
+			ErrCodeInternalError,
+			"Check if bead is blocked by dependencies",
+		)
+	}
+
+	output.NewStatus = "in_progress"
+	output.Claimed = true
+	output.AgentHints = &AgentHints{
+		Summary: fmt.Sprintf("Claimed bead %s: %s", opts.BeadID, truncateString(output.Title, 50)),
+		Notes:   []string{"Use 'bd close " + opts.BeadID + "' when complete"},
+	}
+
+	return encodeJSON(output)
+}
+
+// BeadCreateOutput represents the result of creating a bead
+type BeadCreateOutput struct {
+	RobotResponse
+	BeadID      string      `json:"bead_id"`
+	Title       string      `json:"title"`
+	Type        string      `json:"type"`
+	Priority    string      `json:"priority"`
+	Description string      `json:"description,omitempty"`
+	Labels      []string    `json:"labels,omitempty"`
+	Created     bool        `json:"created"`
+	AgentHints  *AgentHints `json:"_agent_hints,omitempty"`
+}
+
+// BeadCreateOptions configures bead creation
+type BeadCreateOptions struct {
+	Title       string   // Required: bead title
+	Type        string   // task, bug, feature, epic, chore (default: task)
+	Priority    int      // 0-4 (default: 2)
+	Description string   // Optional description
+	Labels      []string // Optional labels
+	DependsOn   []string // Optional dependency IDs
+}
+
+// PrintBeadCreate creates a new bead
+func PrintBeadCreate(opts BeadCreateOptions) error {
+	if opts.Title == "" {
+		return RobotError(
+			fmt.Errorf("title required"),
+			ErrCodeInvalidFlag,
+			"Specify --bead-title='Your title'",
+		)
+	}
+
+	// Set defaults
+	if opts.Type == "" {
+		opts.Type = "task"
+	}
+	if opts.Priority < 0 || opts.Priority > 4 {
+		opts.Priority = 2
+	}
+
+	output := BeadCreateOutput{
+		RobotResponse: NewRobotResponse(true),
+		Title:         opts.Title,
+		Type:          opts.Type,
+		Priority:      fmt.Sprintf("P%d", opts.Priority),
+		Description:   opts.Description,
+		Labels:        opts.Labels,
+	}
+
+	// Build bd create command
+	args := []string{
+		"create",
+		"--json",
+		"--type", opts.Type,
+		"--priority", fmt.Sprintf("%d", opts.Priority),
+		"--title", opts.Title,
+	}
+
+	if opts.Description != "" {
+		args = append(args, "--description", opts.Description)
+	}
+
+	if len(opts.Labels) > 0 {
+		args = append(args, "--labels", strings.Join(opts.Labels, ","))
+	}
+
+	// Execute creation
+	createOutput, err := bv.RunBd("", args...)
+	if err != nil {
+		return RobotError(
+			fmt.Errorf("failed to create bead: %w", err),
+			ErrCodeInternalError,
+			"Check bd is installed and .beads/ directory exists",
+		)
+	}
+
+	// Parse the result to get the bead ID
+	var result []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(createOutput), &result); err != nil || len(result) == 0 {
+		return RobotError(
+			fmt.Errorf("failed to parse created bead ID"),
+			ErrCodeInternalError,
+			"Bead may have been created but ID not returned",
+		)
+	}
+
+	output.BeadID = result[0].ID
+	output.Created = true
+
+	// Add dependencies if specified
+	var depWarnings []string
+	for _, dep := range opts.DependsOn {
+		_, depErr := bv.RunBd("", "dep", "add", output.BeadID, dep)
+		if depErr != nil {
+			// Non-fatal, just note it
+			depWarnings = append(depWarnings,
+				fmt.Sprintf("Failed to add dependency %s: %v", dep, depErr))
+		}
+	}
+
+	output.AgentHints = &AgentHints{
+		Summary: fmt.Sprintf("Created %s: %s", output.BeadID, truncateString(output.Title, 40)),
+		Notes: []string{
+			fmt.Sprintf("Claim with: bd update %s --status=in_progress", output.BeadID),
+			fmt.Sprintf("View with: bd show %s", output.BeadID),
+		},
+		Warnings: depWarnings, // Preserve any dependency warnings
+	}
+
+	return encodeJSON(output)
+}
+
+// BeadShowOutput represents detailed bead information
+type BeadShowOutput struct {
+	RobotResponse
+	BeadID      string       `json:"bead_id"`
+	Title       string       `json:"title"`
+	Status      string       `json:"status"`
+	Type        string       `json:"type"`
+	Priority    string       `json:"priority"`
+	Assignee    string       `json:"assignee,omitempty"`
+	Description string       `json:"description,omitempty"`
+	Labels      []string     `json:"labels,omitempty"`
+	CreatedAt   string       `json:"created_at,omitempty"`
+	UpdatedAt   string       `json:"updated_at,omitempty"`
+	DependsOn   []string     `json:"depends_on,omitempty"`
+	Blocks      []string     `json:"blocks,omitempty"`
+	Comments    []BeadComment `json:"comments,omitempty"`
+	AgentHints  *AgentHints  `json:"_agent_hints,omitempty"`
+}
+
+// BeadComment represents a comment on a bead
+type BeadComment struct {
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Body      string `json:"body"`
+}
+
+// BeadShowOptions configures the show operation
+type BeadShowOptions struct {
+	BeadID          string // Bead ID to show
+	IncludeComments bool   // Include comments in output
+}
+
+// PrintBeadShow outputs detailed bead information
+func PrintBeadShow(opts BeadShowOptions) error {
+	if opts.BeadID == "" {
+		return RobotError(
+			fmt.Errorf("bead ID required"),
+			ErrCodeInvalidFlag,
+			"Specify --robot-bead-show=BEAD_ID",
+		)
+	}
+
+	output := BeadShowOutput{
+		RobotResponse: NewRobotResponse(true),
+		BeadID:        opts.BeadID,
+	}
+
+	// Get bead details
+	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
+	if err != nil {
+		return RobotError(
+			fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+			ErrCodeInvalidFlag,
+			"Use 'bd list' to see available beads",
+		)
+	}
+
+	// Parse bead info - bd show returns an array with detailed info
+	var beadInfo []struct {
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Status      string   `json:"status"`
+		IssueType   string   `json:"issue_type"`
+		Priority    int      `json:"priority"`
+		Assignee    string   `json:"assignee"`
+		Description string   `json:"description"`
+		Labels      []string `json:"labels"`
+		CreatedAt   string   `json:"created_at"`
+		UpdatedAt   string   `json:"updated_at"`
+		DependsOn   []string `json:"depends_on"`
+		Blocks      []string `json:"blocks"`
+	}
+
+	if err := json.Unmarshal([]byte(showOutput), &beadInfo); err != nil || len(beadInfo) == 0 {
+		return RobotError(
+			fmt.Errorf("failed to parse bead info"),
+			ErrCodeInternalError,
+			"Bead data may be corrupted",
+		)
+	}
+
+	info := beadInfo[0]
+	output.Title = info.Title
+	output.Status = info.Status
+	output.Type = info.IssueType
+	output.Priority = fmt.Sprintf("P%d", info.Priority)
+	output.Assignee = info.Assignee
+	output.Description = info.Description
+	output.Labels = info.Labels
+	output.CreatedAt = info.CreatedAt
+	output.UpdatedAt = info.UpdatedAt
+	output.DependsOn = info.DependsOn
+	output.Blocks = info.Blocks
+
+	// Generate hints based on status
+	var suggestions []RobotAction
+	var notes []string
+
+	switch output.Status {
+	case "open":
+		suggestions = append(suggestions, RobotAction{
+			Action:   "claim",
+			Target:   opts.BeadID,
+			Reason:   "Bead is available to work on",
+			Priority: 1,
+		})
+		notes = append(notes, fmt.Sprintf("Claim with: ntm --robot-bead-claim=%s", opts.BeadID))
+	case "in_progress":
+		notes = append(notes, fmt.Sprintf("Close when done: bd close %s", opts.BeadID))
+		if output.Assignee != "" {
+			notes = append(notes, fmt.Sprintf("Currently assigned to: %s", output.Assignee))
+		}
+	case "blocked":
+		if len(output.DependsOn) > 0 {
+			notes = append(notes, fmt.Sprintf("Blocked by: %s", strings.Join(output.DependsOn, ", ")))
+		}
+	}
+
+	if len(output.Blocks) > 0 {
+		notes = append(notes, fmt.Sprintf("Completing this unblocks: %s", strings.Join(output.Blocks, ", ")))
+	}
+
+	output.AgentHints = &AgentHints{
+		Summary:          fmt.Sprintf("%s [%s] %s: %s", output.Priority, output.Status, output.Type, truncateString(output.Title, 40)),
+		Notes:            notes,
+		SuggestedActions: suggestions,
+	}
+
+	return encodeJSON(output)
+}
+
+// BeadCloseOutput represents the result of closing a bead
+type BeadCloseOutput struct {
+	RobotResponse
+	BeadID     string      `json:"bead_id"`
+	Title      string      `json:"title"`
+	PrevStatus string      `json:"prev_status,omitempty"`
+	NewStatus  string      `json:"new_status"`
+	Closed     bool        `json:"closed"`
+	Reason     string      `json:"reason,omitempty"`
+	AgentHints *AgentHints `json:"_agent_hints,omitempty"`
+}
+
+// BeadCloseOptions configures the close operation
+type BeadCloseOptions struct {
+	BeadID string // Bead ID to close
+	Reason string // Optional closure reason
+}
+
+// PrintBeadClose closes a bead
+func PrintBeadClose(opts BeadCloseOptions) error {
+	if opts.BeadID == "" {
+		return RobotError(
+			fmt.Errorf("bead ID required"),
+			ErrCodeInvalidFlag,
+			"Specify --robot-bead-close=BEAD_ID",
+		)
+	}
+
+	output := BeadCloseOutput{
+		RobotResponse: NewRobotResponse(true),
+		BeadID:        opts.BeadID,
+		Reason:        opts.Reason,
+	}
+
+	// Get current bead info first
+	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
+	if err != nil {
+		return RobotError(
+			fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+			ErrCodeInvalidFlag,
+			"Use 'bd list' to see available beads",
+		)
+	}
+
+	// Parse bead info
+	var beadInfo []struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(showOutput), &beadInfo); err != nil || len(beadInfo) == 0 {
+		return RobotError(
+			fmt.Errorf("failed to parse bead info"),
+			ErrCodeInternalError,
+			"Bead data may be corrupted",
+		)
+	}
+
+	output.Title = beadInfo[0].Title
+	output.PrevStatus = beadInfo[0].Status
+
+	// Check if already closed
+	if beadInfo[0].Status == "closed" {
+		output.NewStatus = "closed"
+		output.Closed = false
+		output.AgentHints = &AgentHints{
+			Summary:  fmt.Sprintf("Bead %s is already closed", opts.BeadID),
+			Warnings: []string{"Bead was already closed"},
+		}
+		return encodeJSON(output)
+	}
+
+	// Close the bead
+	args := []string{"close", opts.BeadID, "--json"}
+	if opts.Reason != "" {
+		args = append(args, "--reason", opts.Reason)
+	}
+
+	_, err = bv.RunBd("", args...)
+	if err != nil {
+		return RobotError(
+			fmt.Errorf("failed to close bead: %w", err),
+			ErrCodeInternalError,
+			"Check bead status and dependencies",
+		)
+	}
+
+	output.NewStatus = "closed"
+	output.Closed = true
+	output.AgentHints = &AgentHints{
+		Summary: fmt.Sprintf("Closed bead %s: %s", opts.BeadID, truncateString(output.Title, 40)),
+		Notes:   []string{"Remember to run 'bd sync' to push changes"},
+	}
+
+	return encodeJSON(output)
 }
 
