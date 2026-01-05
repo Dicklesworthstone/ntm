@@ -136,11 +136,11 @@ func TestRobotInspectPaneWithSyntheticSession(t *testing.T) {
 
 	var payload struct {
 		Timestamp string `json:"timestamp"`
-		Success     bool   `json:"success"`
-		Session     string `json:"session"`
-		PaneIndex   int    `json:"pane_index"`
-		PaneID      string `json:"pane_id"`
-		Agent       struct {
+		Success   bool   `json:"success"`
+		Session   string `json:"session"`
+		PaneIndex int    `json:"pane_index"`
+		PaneID    string `json:"pane_id"`
+		Agent     struct {
 			Type  string `json:"type"`
 			State string `json:"state"`
 			Title string `json:"title"`
@@ -192,11 +192,11 @@ func TestRobotMetricsWithSyntheticSession(t *testing.T) {
 
 	var payload struct {
 		Timestamp string `json:"timestamp"`
-		Success     bool   `json:"success"`
-		Session     string `json:"session"`
-		Period      string `json:"period"`
-		TokenUsage  struct {
-			TotalTokens int64 `json:"total_tokens"`
+		Success   bool   `json:"success"`
+		Session   string `json:"session"`
+		Period    string `json:"period"`
+		TokenUsage struct {
+			TotalTokens int64   `json:"total_tokens"`
 			TotalCost   float64 `json:"total_cost_usd"`
 		} `json:"token_usage"`
 		SessionStats struct {
@@ -265,9 +265,9 @@ func TestRobotPalette(t *testing.T) {
 	logger.Log("FULL JSON OUTPUT:\n%s", string(out))
 
 	var payload struct {
-		Timestamp string `json:"timestamp"`
-		Success     bool   `json:"success"`
-		Commands    []struct {
+		Timestamp  string `json:"timestamp"`
+		Success    bool   `json:"success"`
+		Commands   []struct {
 			Key      string `json:"key"`
 			Label    string `json:"label"`
 			Category string `json:"category"`
@@ -498,13 +498,19 @@ func TestRobotReplayWithInvalidSession(t *testing.T) {
 	out, _ := cmd.CombinedOutput()
 	logger.Log("Output: %s", string(out))
 
-	// Find JSON in output (may have warnings before)
+	// Find JSON in output (may have warnings before and text errors after)
 	jsonStart := strings.Index(string(out), "{")
 	if jsonStart == -1 {
 		t.Logf("no JSON in output, command likely failed with text error")
 		return
 	}
-	jsonBytes := out[jsonStart:]
+	// Find the closing brace for top-level JSON object
+	jsonEnd := strings.LastIndex(string(out), "}")
+	if jsonEnd == -1 || jsonEnd < jsonStart {
+		t.Logf("malformed JSON in output")
+		return
+	}
+	jsonBytes := out[jsonStart : jsonEnd+1]
 
 	var payload struct {
 		Success bool   `json:"success"`
@@ -535,8 +541,8 @@ func TestRobotBeadsList(t *testing.T) {
 
 	var payload struct {
 		Timestamp string `json:"timestamp"`
-		Success     bool   `json:"success"`
-		Beads       []struct {
+		Success   bool   `json:"success"`
+		Beads     []struct {
 			ID        string   `json:"id"`
 			Title     string   `json:"title"`
 			Status    string   `json:"status"`
@@ -587,20 +593,17 @@ func TestRobotBeadsListWithFilters(t *testing.T) {
 
 	logger := testutil.NewTestLoggerStdout(t)
 
-	// Test status filter
-	filters := []struct {
-		flag   string
-		expect string
-	}{
-		{"--beads-status=open", "open"},
-		{"--beads-status=in_progress", "in_progress"},
-		{"--beads-priority=P2", "P2"},
-		{"--beads-type=task", "task"},
+	// Test various filter flags
+	filterFlags := []string{
+		"--beads-status=open",
+		"--beads-status=in_progress",
+		"--beads-priority=P2",
+		"--beads-type=task",
 	}
 
-	for _, f := range filters {
-		t.Run(f.flag, func(t *testing.T) {
-			out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-beads-list", f.flag)
+	for _, flag := range filterFlags {
+		t.Run(flag, func(t *testing.T) {
+			out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-beads-list", flag)
 
 			var payload struct {
 				Success bool   `json:"success"`
@@ -741,13 +744,19 @@ func TestRobotBeadCreateMissingTitle(t *testing.T) {
 	out, _ := cmd.CombinedOutput()
 	logger.Log("Output: %s", string(out))
 
-	// Find JSON in output (may have warnings before)
+	// Find JSON in output (may have warnings before and text errors after)
 	jsonStart := strings.Index(string(out), "{")
 	if jsonStart == -1 {
 		t.Logf("no JSON in output, command likely failed with text error")
 		return
 	}
-	jsonBytes := out[jsonStart:]
+	// Find the closing brace for top-level JSON object
+	jsonEnd := strings.LastIndex(string(out), "}")
+	if jsonEnd == -1 || jsonEnd < jsonStart {
+		t.Logf("malformed JSON in output")
+		return
+	}
+	jsonBytes := out[jsonStart : jsonEnd+1]
 
 	var payload struct {
 		Success bool   `json:"success"`
