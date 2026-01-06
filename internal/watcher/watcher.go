@@ -222,20 +222,9 @@ func WithPolling(force bool) Option {
 // Add adds a path to the watcher.
 // If the path is a directory and recursive is enabled, all subdirectories are also watched.
 func (w *Watcher) Add(path string) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.closed {
-		return ErrClosed
-	}
-
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return err
-	}
-
-	if w.watchedPaths[absPath] {
-		return nil // Already watching
 	}
 
 	info, err := os.Stat(absPath)
@@ -243,22 +232,49 @@ func (w *Watcher) Add(path string) error {
 		return err
 	}
 
+	// For poll mode, generate the snapshot before acquiring the lock
+	// to minimize lock contention time.
+	var pollSnapshot map[string]fileMeta
 	if w.pollMode {
-		if err := w.snapshotPath(absPath, info); err != nil {
+		pollSnapshot, err = entriesForPath(absPath, info, w.recursive, w.isIgnored)
+		if err != nil {
 			return err
 		}
+	}
+
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return ErrClosed
+	}
+
+	if w.watchedPaths[absPath] {
+		w.mu.Unlock()
+		return nil // Already watching
+	}
+
+	if w.pollMode {
+		// Merge snapshot
+		for p, meta := range pollSnapshot {
+			w.snapshots[p] = meta
+		}
 		w.watchedPaths[absPath] = true
+		w.mu.Unlock()
 		return nil
 	}
 
 	if info.IsDir() && w.recursive {
+		w.mu.Unlock() // Release lock for recursive add
 		return w.addRecursive(absPath)
 	}
 
+	// Non-recursive or file
 	if err := w.fsWatcher.Add(absPath); err != nil {
+		w.mu.Unlock()
 		return err
 	}
 	w.watchedPaths[absPath] = true
+	w.mu.Unlock()
 
 	return nil
 }
@@ -275,7 +291,7 @@ func (w *Watcher) isIgnored(path string) bool {
 }
 
 // addRecursive adds a directory and all its subdirectories to the watcher.
-// Must be called with w.mu held.
+// Handles locking internally per directory to allow event interleaving.
 func (w *Watcher) addRecursive(root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -286,39 +302,32 @@ func (w *Watcher) addRecursive(root string) error {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			// Check ignores
+			// Check ignores (safe without lock as ignorePaths is immutable)
 			if w.isIgnored(path) {
 				return filepath.SkipDir
 			}
 
+			w.mu.Lock()
+			if w.closed {
+				w.mu.Unlock()
+				return filepath.SkipDir // Stop walking
+			}
+
 			if w.watchedPaths[path] {
+				w.mu.Unlock()
 				return nil
 			}
-			if w.pollMode {
-				info, statErr := os.Stat(path)
-				if statErr != nil {
-					if w.errorHandler != nil {
-						w.errorHandler(fmt.Errorf("stat %s: %w", path, statErr))
-					}
-					return nil
+
+			if err := w.fsWatcher.Add(path); err != nil {
+				// Report error but continue
+				if w.errorHandler != nil {
+					w.errorHandler(fmt.Errorf("watching %s: %w", path, err))
 				}
-				if snapErr := w.snapshotPath(path, info); snapErr != nil && w.errorHandler != nil {
-					w.errorHandler(snapErr)
-				}
-				w.watchedPaths[path] = true
-			} else {
-				if err := w.fsWatcher.Add(path); err != nil {
-					// Report error but continue
-					if w.errorHandler != nil {
-						w.errorHandler(fmt.Errorf("watching %s: %w", path, err))
-					}
-					// If we can't watch this directory, we probably can't watch its children?
-					// fsnotify might fail for other reasons (limit reached).
-					// We'll try to continue.
-					return nil
-				}
-				w.watchedPaths[path] = true
+				w.mu.Unlock()
+				return nil
 			}
+			w.watchedPaths[path] = true
+			w.mu.Unlock()
 		}
 		return nil
 	})
@@ -638,17 +647,6 @@ func isPathUnderRoots(path string, roots []string) bool {
 	return false
 }
 
-// snapshotPath seeds the snapshot map for a newly added path in polling mode.
-func (w *Watcher) snapshotPath(path string, info os.FileInfo) error {
-	entries, err := entriesForPath(path, info, w.recursive, w.isIgnored)
-	if err != nil {
-		return err
-	}
-	for p, meta := range entries {
-		w.snapshots[p] = meta
-	}
-	return nil
-}
 
 // snapshotEntries returns the current metadata for the watched root (and children if recursive).
 func snapshotEntries(root string, recursive bool, isIgnored func(string) bool) (map[string]fileMeta, error) {
