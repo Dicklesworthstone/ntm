@@ -1190,3 +1190,503 @@ func NewOutputCaptureResponse(stats OutputCaptureStats) *OutputCaptureResponse {
 		Stats:         &stats,
 	}
 }
+
+// ============================================================================
+// Activity Summary Generation
+// ============================================================================
+
+// SessionSummary provides an overview of agent activity in a session.
+type SessionSummary struct {
+	Session     string              `json:"session"`
+	TimeRange   SummaryTimeRange    `json:"time_range"`
+	Agents      []AgentOutputSummary `json:"agents"`
+	TotalFiles  int                 `json:"total_files"`
+	TotalOutput int                 `json:"total_output_lines"`
+	Conflicts   []FileConflict      `json:"conflicts,omitempty"`
+	Timestamp   string              `json:"timestamp"`
+}
+
+// SummaryTimeRange represents a time period for the summary.
+type SummaryTimeRange struct {
+	Start    time.Time     `json:"start"`
+	End      time.Time     `json:"end"`
+	Duration time.Duration `json:"duration"`
+}
+
+// AgentOutputSummary provides metrics and highlights for a single agent.
+type AgentOutputSummary struct {
+	PaneID    string `json:"pane_id"`
+	PaneTitle string `json:"pane_title,omitempty"`
+	AgentType string `json:"agent_type"`
+
+	// Activity metrics
+	ActiveTime  time.Duration `json:"active_time"`   // Time in generating state
+	IdleTime    time.Duration `json:"idle_time"`     // Time in waiting state
+	OutputLines int           `json:"output_lines"`
+	OutputChars int           `json:"output_chars"`
+
+	// Content summary
+	FilesModified []string `json:"files_modified,omitempty"`
+	CodeBlocks    int      `json:"code_blocks"`
+	Commands      int      `json:"commands_run"`
+
+	// Health
+	Errors   int `json:"errors"`
+	Restarts int `json:"restarts"`
+
+	// Highlights
+	KeyActions []string `json:"key_actions,omitempty"`
+	State      string   `json:"state"` // Current state: generating, idle, error
+}
+
+// SessionSummaryGenerator generates session summaries.
+type SessionSummaryGenerator struct {
+	conflictDetector *ConflictDetector
+	outputCapture    *OutputCapture
+}
+
+// NewSessionSummaryGenerator creates a new session summary generator.
+func NewSessionSummaryGenerator(cd *ConflictDetector, oc *OutputCapture) *SessionSummaryGenerator {
+	return &SessionSummaryGenerator{
+		conflictDetector: cd,
+		outputCapture:    oc,
+	}
+}
+
+// GenerateSummary creates a session summary from collected data.
+func (g *SessionSummaryGenerator) GenerateSummary(session string, since time.Duration, agentData []AgentActivityData) *SessionSummary {
+	now := time.Now()
+	sinceTime := now.Add(-since)
+
+	summary := &SessionSummary{
+		Session: session,
+		TimeRange: SummaryTimeRange{
+			Start:    sinceTime,
+			End:      now,
+			Duration: since,
+		},
+		Agents:    make([]AgentOutputSummary, 0, len(agentData)),
+		Timestamp: FormatTimestamp(now),
+	}
+
+	fileSet := make(map[string]bool)
+
+	for _, data := range agentData {
+		agentSummary := g.summarizeAgent(data, sinceTime)
+		summary.Agents = append(summary.Agents, agentSummary)
+		summary.TotalOutput += agentSummary.OutputLines
+
+		for _, f := range agentSummary.FilesModified {
+			fileSet[f] = true
+		}
+	}
+
+	summary.TotalFiles = len(fileSet)
+
+	// Add detected conflicts if conflict detector is available
+	if g.conflictDetector != nil {
+		conflicts, _ := g.conflictDetector.DetectConflicts(context.Background())
+		for _, c := range conflicts {
+			summary.Conflicts = append(summary.Conflicts, FileConflict{
+				Path:   c.Path,
+				Agents: c.LikelyModifiers,
+			})
+		}
+	}
+
+	return summary
+}
+
+// AgentActivityData holds raw data for summarizing an agent.
+type AgentActivityData struct {
+	PaneID      string
+	PaneTitle   string
+	AgentType   string
+	Output      string
+	State       string
+	ActiveStart *time.Time
+	ActiveEnd   *time.Time
+}
+
+// summarizeAgent creates an agent summary from activity data.
+func (g *SessionSummaryGenerator) summarizeAgent(data AgentActivityData, since time.Time) AgentOutputSummary {
+	summary := AgentOutputSummary{
+		PaneID:    data.PaneID,
+		PaneTitle: data.PaneTitle,
+		AgentType: data.AgentType,
+		State:     data.State,
+	}
+
+	// Calculate activity times
+	if data.ActiveStart != nil && data.ActiveEnd != nil {
+		summary.ActiveTime = data.ActiveEnd.Sub(*data.ActiveStart)
+	}
+
+	// Count output
+	if data.Output != "" {
+		lines := strings.Split(data.Output, "\n")
+		summary.OutputLines = len(lines)
+		summary.OutputChars = len(data.Output)
+
+		// Extract structures from output
+		codeBlocks := ExtractCodeBlocks(data.Output)
+		summary.CodeBlocks = len(codeBlocks)
+
+		commands := ExtractCommands(data.Output)
+		summary.Commands = len(commands)
+
+		fileMentions := ExtractFileMentions(data.Output)
+		for _, fm := range fileMentions {
+			if fm.Action == FileActionCreated || fm.Action == FileActionModified {
+				summary.FilesModified = append(summary.FilesModified, fm.Path)
+			}
+		}
+
+		// Count errors
+		summary.Errors = countErrors(lines)
+
+		// Extract key actions
+		summary.KeyActions = extractKeyActions(lines, 5)
+	}
+
+	return summary
+}
+
+// countErrors counts error indicators in output lines.
+func countErrors(lines []string) int {
+	count := 0
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "error:") ||
+			strings.Contains(lower, "error!") ||
+			strings.Contains(lower, "failed:") ||
+			strings.Contains(lower, "fatal:") ||
+			strings.Contains(lower, "panic:") {
+			count++
+		}
+	}
+	return count
+}
+
+// extractKeyActions extracts key action highlights from output lines.
+// Looks for action verbs and summaries, limited to maxActions.
+func extractKeyActions(lines []string, maxActions int) []string {
+	var actions []string
+	seen := make(map[string]bool)
+
+	// Patterns indicating key actions (prioritized)
+	actionPatterns := []struct {
+		keywords []string
+		priority int
+	}{
+		{[]string{"created ", "creating "}, 1},
+		{[]string{"modified ", "modifying ", "updated ", "updating "}, 2},
+		{[]string{"fixed ", "fixing "}, 1},
+		{[]string{"added ", "adding "}, 2},
+		{[]string{"removed ", "removing ", "deleted ", "deleting "}, 2},
+		{[]string{"implemented ", "implementing "}, 1},
+		{[]string{"refactored ", "refactoring "}, 2},
+		{[]string{"tested ", "testing "}, 3},
+	}
+
+	// Also look for summary sections
+	summaryPrefixes := []string{
+		"summary:",
+		"changes made:",
+		"completed:",
+		"done:",
+		"result:",
+	}
+
+	type actionCandidate struct {
+		text     string
+		priority int
+	}
+	var candidates []actionCandidate
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 10 || len(trimmed) > 200 {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+
+		// Check for summary sections
+		for _, prefix := range summaryPrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				content := strings.TrimSpace(trimmed[len(prefix):])
+				if content != "" && !seen[content] {
+					seen[content] = true
+					candidates = append(candidates, actionCandidate{content, 0})
+				}
+			}
+		}
+
+		// Check for action patterns
+		for _, pattern := range actionPatterns {
+			for _, keyword := range pattern.keywords {
+				if strings.Contains(lower, keyword) {
+					action := cleanActionLine(trimmed)
+					if action != "" && !seen[action] {
+						seen[action] = true
+						candidates = append(candidates, actionCandidate{action, pattern.priority})
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// Sort by priority and take top maxActions
+	// Lower priority number = more important
+	for p := 0; p <= 3; p++ {
+		for _, c := range candidates {
+			if c.priority == p {
+				actions = append(actions, c.text)
+				if len(actions) >= maxActions {
+					return actions
+				}
+			}
+		}
+	}
+
+	return actions
+}
+
+// cleanActionLine cleans up an action line for display.
+func cleanActionLine(line string) string {
+	// Remove common prefixes like bullet points, numbers, timestamps
+	line = strings.TrimSpace(line)
+
+	// Remove leading bullets/dashes/numbers
+	prefixPatterns := []string{
+		"- ", "* ", "• ", "◦ ",
+		"1. ", "2. ", "3. ", "4. ", "5. ",
+		"[x] ", "[ ] ",
+	}
+	for _, prefix := range prefixPatterns {
+		if strings.HasPrefix(line, prefix) {
+			line = strings.TrimPrefix(line, prefix)
+			break
+		}
+	}
+
+	// Truncate if too long
+	if len(line) > 80 {
+		// Find a good break point
+		if idx := strings.LastIndex(line[:80], " "); idx > 40 {
+			line = line[:idx] + "..."
+		} else {
+			line = line[:77] + "..."
+		}
+	}
+
+	return strings.TrimSpace(line)
+}
+
+// SessionSummaryResponse is the robot command response for session summary.
+type SessionSummaryResponse struct {
+	RobotResponse
+	Summary *SessionSummary `json:"summary,omitempty"`
+}
+
+// NewSessionSummaryResponse creates a new session summary response.
+func NewSessionSummaryResponse(summary *SessionSummary) *SessionSummaryResponse {
+	return &SessionSummaryResponse{
+		RobotResponse: NewRobotResponse(true),
+		Summary:       summary,
+	}
+}
+
+// FormatSessionSummaryText formats the summary as human-readable text.
+func FormatSessionSummaryText(summary *SessionSummary) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Session: %s (last %s)\n\n", summary.Session, formatDuration(summary.TimeRange.Duration)))
+
+	for _, agent := range summary.Agents {
+		// Agent header
+		sb.WriteString(fmt.Sprintf("Agent %s (%s):\n", agent.PaneTitle, agent.AgentType))
+
+		// Metrics line
+		sb.WriteString(fmt.Sprintf("  Active: %s | Output: %d lines\n",
+			formatDuration(agent.ActiveTime), agent.OutputLines))
+
+		// Files
+		if len(agent.FilesModified) > 0 {
+			sb.WriteString(fmt.Sprintf("  Files: %s\n", strings.Join(agent.FilesModified, ", ")))
+		}
+
+		// Key actions
+		if len(agent.KeyActions) > 0 {
+			sb.WriteString("  Key actions:\n")
+			for _, action := range agent.KeyActions {
+				sb.WriteString(fmt.Sprintf("    - %s\n", action))
+			}
+		}
+
+		// Errors
+		if agent.Errors > 0 {
+			sb.WriteString(fmt.Sprintf("  Errors: %d\n", agent.Errors))
+		}
+
+		sb.WriteString("\n")
+	}
+
+	// Summary totals
+	if summary.TotalFiles > 0 {
+		sb.WriteString(fmt.Sprintf("Total: %d files modified, %d output lines\n",
+			summary.TotalFiles, summary.TotalOutput))
+	}
+
+	// Conflicts
+	if len(summary.Conflicts) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚠ %d potential conflicts:\n", len(summary.Conflicts)))
+		for _, c := range summary.Conflicts {
+			sb.WriteString(fmt.Sprintf("  - %s (agents: %s)\n", c.Path, strings.Join(c.Agents, ", ")))
+		}
+	}
+
+	return sb.String()
+}
+
+// formatDuration formats a duration in a human-friendly way.
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		if s > 0 {
+			return fmt.Sprintf("%dm %ds", m, s)
+		}
+		return fmt.Sprintf("%dm", m)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	return fmt.Sprintf("%dh", h)
+}
+
+// SummaryOptions holds options for the --robot-summary flag.
+type SummaryOptions struct {
+	Session string
+	Since   time.Duration
+}
+
+// PrintSummary generates and prints an activity summary for a session.
+func PrintSummary(opts SummaryOptions) error {
+	session := opts.Session
+	since := opts.Since
+	if since == 0 {
+		since = 30 * time.Minute
+	}
+
+	// Get panes from tmux
+	panes, err := getPanesForSession(session)
+	if err != nil {
+		return RobotError(err, ErrCodeInternalError, "Failed to get panes")
+	}
+
+	// Build agent activity data from panes
+	var agentData []AgentActivityData
+	for _, pane := range panes {
+		// Skip user panes
+		if pane.AgentType == "" || pane.AgentType == "unknown" {
+			continue
+		}
+
+		// Capture pane output
+		output, _ := capturePaneOutput(pane.ID, 500)
+
+		data := AgentActivityData{
+			PaneID:    pane.ID,
+			PaneTitle: pane.Title,
+			AgentType: pane.AgentType,
+			Output:    output,
+			State:     pane.State,
+		}
+
+		agentData = append(agentData, data)
+	}
+
+	// Create generator and generate summary
+	wd, _ := os.Getwd()
+	detector := NewConflictDetector(&ConflictDetectorConfig{
+		RepoPath: wd,
+	})
+	generator := NewSessionSummaryGenerator(detector, nil)
+	summary := generator.GenerateSummary(session, since, agentData)
+
+	// Output as JSON
+	resp := NewSessionSummaryResponse(summary)
+	return outputJSON(resp)
+}
+
+// paneInfo represents minimal pane data needed for summary.
+type paneInfo struct {
+	ID        string
+	Title     string
+	AgentType string
+	State     string
+}
+
+// getPanesForSession gets pane info for a session (stub - uses tmux package).
+func getPanesForSession(session string) ([]paneInfo, error) {
+	// Import tmux package and get panes
+	// This is a simplified version - the actual implementation will use tmux.GetPanes
+	cmd := exec.Command("tmux", "list-panes", "-t", session, "-F", "#{pane_id}|#{pane_title}|#{pane_current_command}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get panes: %w", err)
+	}
+
+	var panes []paneInfo
+	for _, line := range strings.Split(string(output), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		pane := paneInfo{
+			ID:    parts[0],
+			Title: parts[1],
+			State: "idle",
+		}
+		// Infer agent type from title
+		title := strings.ToLower(pane.Title)
+		switch {
+		case strings.Contains(title, "claude") || strings.Contains(title, "cc_"):
+			pane.AgentType = "claude"
+		case strings.Contains(title, "codex") || strings.Contains(title, "cod_"):
+			pane.AgentType = "codex"
+		case strings.Contains(title, "gemini") || strings.Contains(title, "gmi_"):
+			pane.AgentType = "gemini"
+		case strings.Contains(title, "cursor"):
+			pane.AgentType = "cursor"
+		case strings.Contains(title, "aider"):
+			pane.AgentType = "aider"
+		default:
+			// Skip non-agent panes
+			continue
+		}
+		panes = append(panes, pane)
+	}
+
+	return panes, nil
+}
+
+// capturePaneOutput captures output from a tmux pane.
+func capturePaneOutput(paneID string, lines int) (string, error) {
+	cmd := exec.Command("tmux", "capture-pane", "-t", paneID, "-p", "-S", fmt.Sprintf("-%d", lines))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
+}
