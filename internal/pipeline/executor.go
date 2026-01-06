@@ -224,6 +224,13 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 				return fmt.Errorf("failed to mark step %s as executed: %w", stepID, err)
 			}
 
+			// Mark skipped steps as failed ONLY if skipped due to failed dependencies.
+			// This ensures transitive dependents are also skipped (A fails -> B skipped -> C skipped).
+			// Steps skipped due to `when` conditions should NOT mark downstream as failed.
+			if result.Status == StatusSkipped && e.graph.HasFailedDependency(stepID) {
+				_ = e.graph.MarkFailed(stepID)
+			}
+
 			// Handle failure based on error action
 			if result.Status == StatusFailed {
 				// Mark step as failed in dependency graph

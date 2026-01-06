@@ -576,3 +576,54 @@ func TestDependencyGraph_GetFailedDependencies(t *testing.T) {
 		t.Errorf("expected 2 failed deps, got %d", len(failed))
 	}
 }
+
+func TestDependencyGraph_TransitiveFailure(t *testing.T) {
+	t.Parallel()
+
+	// Test transitive failure propagation: A -> B -> C
+	// When A fails and B is marked as failed (skipped due to A), C should also detect failed dependency
+	w := &Workflow{
+		Steps: []Step{
+			{ID: "a", Prompt: "step a"},
+			{ID: "b", Prompt: "step b", DependsOn: []string{"a"}},
+			{ID: "c", Prompt: "step c", DependsOn: []string{"b"}},
+		},
+	}
+
+	g := NewDependencyGraph(w)
+
+	// Initially no failed deps
+	if g.HasFailedDependency("b") {
+		t.Error("b should not have failed dependency initially")
+	}
+	if g.HasFailedDependency("c") {
+		t.Error("c should not have failed dependency initially")
+	}
+
+	// Mark a as failed
+	g.MarkFailed("a")
+
+	// b now has failed dependency
+	if !g.HasFailedDependency("b") {
+		t.Error("b should have failed dependency after a fails")
+	}
+
+	// c still doesn't have failed dependency (only b is in its deps, and b isn't failed yet)
+	if g.HasFailedDependency("c") {
+		t.Error("c should not have failed dependency (b hasn't been marked failed)")
+	}
+
+	// Now mark b as failed (simulating what executor does when skipping b due to a's failure)
+	g.MarkFailed("b")
+
+	// Now c should have failed dependency
+	if !g.HasFailedDependency("c") {
+		t.Error("c should have failed dependency after b is marked failed")
+	}
+
+	// Verify the transitive chain
+	failedDeps := g.GetFailedDependencies("c")
+	if len(failedDeps) != 1 || failedDeps[0] != "b" {
+		t.Errorf("expected c's failed deps to be [b], got %v", failedDeps)
+	}
+}
