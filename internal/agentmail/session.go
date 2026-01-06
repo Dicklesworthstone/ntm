@@ -167,8 +167,8 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 			TaskDescription: fmt.Sprintf("NTM session coordinator for %s", sessionName),
 		})
 		if serverErr != nil {
-			// Log but don't fail - local state is already updated
-			return existing, nil
+			// Return local state but pass error up so caller can warn
+			return existing, fmt.Errorf("updating server activity: %w", serverErr)
 		}
 		return existing, nil
 	}
@@ -233,14 +233,16 @@ func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName, project
 	}
 
 	// Re-register to update last_active_ts on server
-	_, _ = c.RegisterAgent(ctx, RegisterAgentOptions{
+	_, err = c.RegisterAgent(ctx, RegisterAgentOptions{
 		ProjectKey:      info.ProjectKey,
 		Program:         "ntm",
 		Model:           "coordinator",
 		Name:            info.AgentName,
 		TaskDescription: fmt.Sprintf("NTM session coordinator for %s", sessionName),
 	})
-	// Ignore server errors - local state is already updated
+	if err != nil {
+		return fmt.Errorf("updating server activity: %w", err)
+	}
 	return nil
 }
 

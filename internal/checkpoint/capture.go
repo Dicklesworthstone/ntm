@@ -2,7 +2,9 @@ package checkpoint
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,19 +230,52 @@ func isGitRepo(dir string) bool {
 	return cmd.Run() == nil || fileExists(gitDir)
 }
 
-// gitCommand runs a git command in the specified directory.
+// MaxGitOutputBytes limits the size of git command output to prevent OOM.
+// 10MB is sufficient for most status/diff operations while preventing abuse.
+const MaxGitOutputBytes = 10 * 1024 * 1024
+
+// gitCommand runs a git command in the specified directory with output size limit.
 func gitCommand(dir string, args ...string) (string, error) {
 	allArgs := append([]string{"-C", dir}, args...)
-	cmd := exec.Command("git", allArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", allArgs...)
+	
+	// Capture stderr separately for error reporting
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("starting git %s: %w", strings.Join(args, " "), err)
+	}
+
+	// Read up to limit + 1 byte to detect truncation
+	data, err := io.ReadAll(io.LimitReader(stdoutPipe, MaxGitOutputBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading git output: %w", err)
+	}
+
+	// Check for truncation
+	if len(data) > MaxGitOutputBytes {
+		_ = cmd.Process.Kill() // Kill process if it's spewing too much data
+		return "", fmt.Errorf("git output exceeded limit of %d bytes", MaxGitOutputBytes)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		// Verify context error first
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git command timed out")
+		}
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 
-	return stdout.String(), nil
+	return string(data), nil
 }
 
 // parseGitStatus parses git status --porcelain output.
