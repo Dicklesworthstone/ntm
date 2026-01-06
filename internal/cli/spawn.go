@@ -597,6 +597,9 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	// Track agent index for stagger calculation (0-based, regardless of user pane)
 	staggerAgentIdx := 0
 
+	// Create spawn context for agent coordination (environment vars and prompt annotation)
+	spawnCtx := NewSpawnContext(len(opts.Agents))
+
 	// WaitGroup for staggered prompt delivery - ensures all prompts are sent before returning
 	var staggerWg sync.WaitGroup
 	var setupWg sync.WaitGroup
@@ -735,6 +738,19 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			agentCmd = envPrefix + agentCmd
 		}
 
+		// Calculate stagger delay for this agent (used for spawn context)
+		var promptDelay time.Duration
+		if opts.StaggerEnabled && opts.Stagger > 0 {
+			promptDelay = time.Duration(staggerAgentIdx) * opts.Stagger
+		}
+
+		// Create agent-specific spawn context with order (1-based) and stagger delay
+		agentSpawnCtx := spawnCtx.ForAgent(staggerAgentIdx+1, promptDelay)
+
+		// Apply spawn context environment variables
+		// These allow agents to programmatically access their spawn position
+		agentCmd = agentSpawnCtx.EnvVarPrefix() + agentCmd
+
 		safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
 		if err != nil {
 			return outputError(fmt.Errorf("invalid %s agent command: %w", agent.Type, err))
@@ -802,33 +818,29 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			}
 		}(pane.ID, agent.Index, agent.Type, agent)
 
-		// Calculate stagger delay for this agent (used for tracking/JSON output)
-		var promptDelay time.Duration
-		if opts.StaggerEnabled && opts.Stagger > 0 {
-			promptDelay = time.Duration(staggerAgentIdx) * opts.Stagger
-			
-			// Schedule staggered prompt
-			if opts.Prompt != "" {
-				pID := pane.ID
-				prompt := opts.Prompt
-				delay := promptDelay
-				staggerWg.Add(1)
-				go func() {
-					defer staggerWg.Done()
-					time.Sleep(delay)
-					if err := tmux.SendKeys(pID, prompt, true); err != nil {
-						if !IsJSONOutput() {
-							fmt.Printf("⚠ Warning: staggered prompt delivery failed for pane %s: %v\n", pID, err)
-						}
+		// Schedule staggered prompt delivery with spawn context annotation
+		if opts.StaggerEnabled && opts.Stagger > 0 && opts.Prompt != "" {
+			pID := pane.ID
+			// Annotate prompt with spawn context when stagger is enabled
+			// This helps agents understand their position in the spawn order
+			annotatedPrompt := agentSpawnCtx.AnnotatePrompt(opts.Prompt, true)
+			delay := promptDelay
+			staggerWg.Add(1)
+			go func() {
+				defer staggerWg.Done()
+				time.Sleep(delay)
+				if err := tmux.SendKeys(pID, annotatedPrompt, true); err != nil {
+					if !IsJSONOutput() {
+						fmt.Printf("⚠ Warning: staggered prompt delivery failed for pane %s: %v\n", pID, err)
 					}
-				}()
-				// Track max delay
-				if delay > maxStaggerDelay {
-					maxStaggerDelay = delay
 				}
-				if !IsJSONOutput() {
-					fmt.Printf("  → Agent %d prompt scheduled in %v\n", staggerAgentIdx+1, delay)
-				}
+			}()
+			// Track max delay
+			if delay > maxStaggerDelay {
+				maxStaggerDelay = delay
+			}
+			if !IsJSONOutput() {
+				fmt.Printf("  → Agent %d prompt scheduled in %v\n", staggerAgentIdx+1, delay)
 			}
 		}
 
