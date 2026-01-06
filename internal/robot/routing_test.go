@@ -3,6 +3,8 @@ package robot
 import (
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 )
 
 func TestDefaultRoutingConfig(t *testing.T) {
@@ -1386,5 +1388,417 @@ func TestEmptyAgentsListAllStrategies(t *testing.T) {
 				t.Errorf("Strategy %s should return nil for empty list", strat)
 			}
 		})
+	}
+}
+
+// =============================================================================
+// Agent Mail Integration Tests
+// =============================================================================
+
+func TestDefaultAgentMailConfig(t *testing.T) {
+	cfg := DefaultAgentMailConfig()
+
+	if cfg.Enabled {
+		t.Error("Enabled should be false by default")
+	}
+	if cfg.ReservationBonus != 30.0 {
+		t.Errorf("ReservationBonus = %f, want 30.0", cfg.ReservationBonus)
+	}
+	if cfg.RespectReservations {
+		t.Error("RespectReservations should be false by default")
+	}
+	if cfg.CacheTTL != 30*time.Second {
+		t.Errorf("CacheTTL = %v, want 30s", cfg.CacheTTL)
+	}
+}
+
+func TestRoutingConfigIncludesAgentMail(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+
+	// Verify AgentMail config is included
+	if cfg.AgentMail.ReservationBonus != 30.0 {
+		t.Errorf("AgentMail.ReservationBonus = %f, want 30.0", cfg.AgentMail.ReservationBonus)
+	}
+}
+
+func TestExtractFilePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		want   []string
+	}{
+		{
+			name:   "simple file path",
+			prompt: "Please fix internal/robot/routing.go",
+			want:   []string{"internal/robot/routing.go"},
+		},
+		{
+			name:   "multiple paths",
+			prompt: "Update src/main.go and src/util.go",
+			want:   []string{"src/main.go", "src/util.go"},
+		},
+		{
+			name:   "path in quotes",
+			prompt: `Fix the bug in "internal/config.yaml"`,
+			want:   []string{"internal/config.yaml"},
+		},
+		{
+			name:   "tsx file",
+			prompt: "Modify the component in src/Button.tsx",
+			want:   []string{"src/Button.tsx"},
+		},
+		{
+			name:   "standalone filename",
+			prompt: "Update config.go",
+			want:   []string{"config.go"},
+		},
+		{
+			name:   "no file paths",
+			prompt: "Please help me understand the code",
+			want:   nil,
+		},
+		{
+			name:   "relative path",
+			prompt: "Check ./config.yaml",
+			want:   []string{"./config.yaml"},
+		},
+		{
+			name:   "filters out version numbers",
+			prompt: "Upgrade to version 1.2.3",
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractFilePaths(tt.prompt)
+			if len(got) != len(tt.want) {
+				t.Errorf("ExtractFilePaths() = %v, want %v", got, tt.want)
+				return
+			}
+			for i, path := range got {
+				if path != tt.want[i] {
+					t.Errorf("ExtractFilePaths()[%d] = %q, want %q", i, path, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestIsLikelyCodePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"go file with path", "internal/robot/routing.go", true},
+		{"standalone go file", "main.go", true},
+		{"ts file", "src/app.ts", true},
+		{"tsx file", "src/Button.tsx", true},
+		{"yaml file", "config.yaml", true},
+		{"json file", "package.json", true},
+		{"no extension", "Makefile", false},
+		{"directory", "src/", false},
+		{"version number", "1.2.3", false},
+		{"http url", "http://example.com/file.txt", false},
+		{"https url", "https://example.com/file.txt", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isLikelyCodePath(tt.path)
+			if got != tt.want {
+				t.Errorf("isLikelyCodePath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewReservationCache(t *testing.T) {
+	t.Run("default TTL", func(t *testing.T) {
+		cache := NewReservationCache(nil, "/test/project", 0)
+		if cache.ttl != 30*time.Second {
+			t.Errorf("Default TTL = %v, want 30s", cache.ttl)
+		}
+	})
+
+	t.Run("custom TTL", func(t *testing.T) {
+		cache := NewReservationCache(nil, "/test/project", 60*time.Second)
+		if cache.ttl != 60*time.Second {
+			t.Errorf("TTL = %v, want 60s", cache.ttl)
+		}
+	})
+
+	t.Run("initializes pathToAgents map", func(t *testing.T) {
+		cache := NewReservationCache(nil, "/test/project", 0)
+		if cache.pathToAgents == nil {
+			t.Error("pathToAgents should be initialized")
+		}
+	})
+}
+
+func TestReservationCacheNeedsRefresh(t *testing.T) {
+	t.Run("needs refresh when never fetched", func(t *testing.T) {
+		cache := NewReservationCache(nil, "/test", 30*time.Second)
+		if !cache.NeedsRefresh() {
+			t.Error("Should need refresh when never fetched")
+		}
+	})
+
+	t.Run("does not need refresh when recently fetched", func(t *testing.T) {
+		cache := NewReservationCache(nil, "/test", 30*time.Second)
+		cache.lastFetch = time.Now()
+		if cache.NeedsRefresh() {
+			t.Error("Should not need refresh when recently fetched")
+		}
+	})
+
+	t.Run("needs refresh after TTL", func(t *testing.T) {
+		cache := NewReservationCache(nil, "/test", 1*time.Millisecond)
+		cache.lastFetch = time.Now().Add(-10 * time.Millisecond)
+		if !cache.NeedsRefresh() {
+			t.Error("Should need refresh after TTL")
+		}
+	})
+}
+
+func TestReservationCacheRefreshWithNilClient(t *testing.T) {
+	cache := NewReservationCache(nil, "/test", 30*time.Second)
+	err := cache.Refresh(nil)
+	if err != nil {
+		t.Errorf("Refresh with nil client should not error, got: %v", err)
+	}
+}
+
+func TestReservationCacheGetReservedPathsForAgent(t *testing.T) {
+	cache := NewReservationCache(nil, "/test", 30*time.Second)
+
+	// Add some test reservations
+	now := time.Now()
+	cache.reservations = []agentmail.FileReservation{
+		{AgentName: "GreenCastle", PathPattern: "internal/*.go", ExpiresTS: now.Add(1 * time.Hour)},
+		{AgentName: "GreenCastle", PathPattern: "cmd/main.go", ExpiresTS: now.Add(1 * time.Hour)},
+		{AgentName: "BlueLake", PathPattern: "pkg/*.go", ExpiresTS: now.Add(1 * time.Hour)},
+		{AgentName: "GreenCastle", PathPattern: "expired.go", ExpiresTS: now.Add(-1 * time.Hour)}, // expired
+	}
+
+	paths := cache.GetReservedPathsForAgent("GreenCastle")
+	if len(paths) != 2 {
+		t.Errorf("GetReservedPathsForAgent() = %v, want 2 paths", paths)
+	}
+}
+
+func TestAgentScorerMapping(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	scorer := NewAgentScorer(cfg)
+
+	t.Run("MapPaneToAgent", func(t *testing.T) {
+		scorer.MapPaneToAgent("%1", "GreenCastle")
+		scorer.MapPaneToAgent("%2", "BlueLake")
+
+		name, ok := scorer.GetAgentNameForPane("%1")
+		if !ok || name != "GreenCastle" {
+			t.Errorf("GetAgentNameForPane(%%1) = %q, %v, want GreenCastle, true", name, ok)
+		}
+	})
+
+	t.Run("GetAgentNameForPane returns false for unknown", func(t *testing.T) {
+		name, ok := scorer.GetAgentNameForPane("%99")
+		if ok || name != "" {
+			t.Errorf("GetAgentNameForPane(%%99) = %q, %v, want '', false", name, ok)
+		}
+	})
+
+	t.Run("SetAgentMapping", func(t *testing.T) {
+		mapping := map[string]string{
+			"%10": "RedStone",
+			"%11": "PurpleBear",
+		}
+		scorer.SetAgentMapping(mapping)
+
+		name, ok := scorer.GetAgentNameForPane("%10")
+		if !ok || name != "RedStone" {
+			t.Errorf("After SetAgentMapping: GetAgentNameForPane(%%10) = %q, %v", name, ok)
+		}
+	})
+}
+
+func TestCheckReservationWarning_Disabled(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = false
+	scorer := NewAgentScorer(cfg)
+
+	warning := scorer.CheckReservationWarning("Fix internal/robot/routing.go", "%1")
+	if warning != nil {
+		t.Error("Should return nil when Agent Mail is disabled")
+	}
+}
+
+func TestCheckReservationWarning_NoCache(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	scorer := NewAgentScorer(cfg)
+	// No reservation cache set
+
+	warning := scorer.CheckReservationWarning("Fix internal/robot/routing.go", "%1")
+	if warning != nil {
+		t.Error("Should return nil when no reservation cache")
+	}
+}
+
+func TestCheckReservationWarning_NoFilePaths(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	scorer := NewAgentScorer(cfg)
+	scorer.SetReservationCache(NewReservationCache(nil, "/test", 30*time.Second))
+
+	warning := scorer.CheckReservationWarning("Please help me understand the code", "%1")
+	if warning != nil {
+		t.Error("Should return nil when no file paths in prompt")
+	}
+}
+
+func TestCheckReservationWarning_WithReservations(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	scorer := NewAgentScorer(cfg)
+
+	cache := NewReservationCache(nil, "/test", 30*time.Second)
+	// Manually set pathToAgents for testing
+	cache.pathToAgents = map[string][]string{
+		"internal/robot/*.go": {"GreenCastle"},
+	}
+	scorer.SetReservationCache(cache)
+	scorer.MapPaneToAgent("%1", "BlueLake") // Different from reservation holder
+
+	warning := scorer.CheckReservationWarning("Fix internal/robot/routing.go", "%1")
+	if warning == nil {
+		t.Fatal("Should return warning when files are reserved")
+	}
+	if warning.SelectedHas {
+		t.Error("SelectedHas should be false for BlueLake")
+	}
+	if len(warning.Holders) != 1 || warning.Holders[0] != "GreenCastle" {
+		t.Errorf("Holders = %v, want [GreenCastle]", warning.Holders)
+	}
+}
+
+func TestCheckReservationWarning_SelectedHoldsReservation(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	scorer := NewAgentScorer(cfg)
+
+	cache := NewReservationCache(nil, "/test", 30*time.Second)
+	cache.pathToAgents = map[string][]string{
+		"internal/robot/*.go": {"GreenCastle"},
+	}
+	scorer.SetReservationCache(cache)
+	scorer.MapPaneToAgent("%1", "GreenCastle") // Same as reservation holder
+
+	warning := scorer.CheckReservationWarning("Fix internal/robot/routing.go", "%1")
+	if warning == nil {
+		t.Fatal("Should return warning")
+	}
+	if !warning.SelectedHas {
+		t.Error("SelectedHas should be true for GreenCastle")
+	}
+}
+
+func TestCalculateAffinity_WithReservations(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	cfg.AgentMail.ReservationBonus = 30.0
+	scorer := NewAgentScorer(cfg)
+
+	// Set up cache with reservations
+	cache := NewReservationCache(nil, "/test", 30*time.Second)
+	now := time.Now()
+	cache.reservations = []agentmail.FileReservation{
+		{AgentName: "GreenCastle", PathPattern: "internal/robot/*.go", ExpiresTS: now.Add(1 * time.Hour)},
+	}
+	scorer.SetReservationCache(cache)
+	scorer.MapPaneToAgent("%1", "GreenCastle")
+
+	agent := &ScoredAgent{PaneID: "%1"}
+
+	// Test with matching file path
+	affinity := scorer.calculateAffinity(agent, "Fix internal/robot/routing.go")
+	if affinity <= 0 {
+		t.Errorf("Affinity should be > 0 when agent holds matching reservation, got %f", affinity)
+	}
+	if affinity > 30.0 {
+		t.Errorf("Affinity should not exceed ReservationBonus (30), got %f", affinity)
+	}
+}
+
+func TestCalculateAffinity_NoMapping(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+	scorer := NewAgentScorer(cfg)
+	scorer.SetReservationCache(NewReservationCache(nil, "/test", 30*time.Second))
+
+	// No mapping for pane
+	agent := &ScoredAgent{PaneID: "%1"}
+	affinity := scorer.calculateAffinity(agent, "Fix internal/robot/routing.go")
+	if affinity != 0 {
+		t.Errorf("Affinity should be 0 when no pane mapping, got %f", affinity)
+	}
+}
+
+func TestNewAgentScorerWithReservations(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.AgentMail.Enabled = true
+
+	// Without client/project key, cache should not be created
+	scorer := NewAgentScorerWithReservations(cfg, nil, "")
+	if scorer.reservationCache != nil {
+		t.Error("Should not create cache without client and project key")
+	}
+
+	// With disabled, cache should not be created
+	cfg.AgentMail.Enabled = false
+	scorer = NewAgentScorerWithReservations(cfg, nil, "/test")
+	if scorer.reservationCache != nil {
+		t.Error("Should not create cache when disabled")
+	}
+}
+
+func TestReservationWarningStruct(t *testing.T) {
+	warning := ReservationWarning{
+		Message:     "Test warning",
+		Paths:       []string{"file1.go", "file2.go"},
+		Holders:     []string{"Agent1", "Agent2"},
+		SelectedHas: true,
+	}
+
+	if warning.Message != "Test warning" {
+		t.Errorf("Message = %q", warning.Message)
+	}
+	if len(warning.Paths) != 2 {
+		t.Errorf("Paths = %v", warning.Paths)
+	}
+	if len(warning.Holders) != 2 {
+		t.Errorf("Holders = %v", warning.Holders)
+	}
+	if !warning.SelectedHas {
+		t.Error("SelectedHas should be true")
+	}
+}
+
+func TestRoutingResultWithReservationWarning(t *testing.T) {
+	result := RoutingResult{
+		Strategy: StrategyLeastLoaded,
+		ReservationWarning: &ReservationWarning{
+			Message: "Files reserved by other agents",
+			Paths:   []string{"config.go"},
+			Holders: []string{"GreenCastle"},
+		},
+	}
+
+	if result.ReservationWarning == nil {
+		t.Fatal("ReservationWarning should not be nil")
+	}
+	if result.ReservationWarning.Message == "" {
+		t.Error("Warning message should not be empty")
 	}
 }

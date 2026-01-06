@@ -3,13 +3,37 @@
 package robot
 
 import (
+	"context"
 	"math"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// AgentMailConfig holds configuration for Agent Mail integration in routing.
+type AgentMailConfig struct {
+	Enabled             bool          `toml:"enabled"`              // Enable reservation-aware routing
+	ReservationBonus    float64       `toml:"reservation_bonus"`    // Affinity bonus for reservation holders (default: 30)
+	RespectReservations bool          `toml:"respect_reservations"` // If true, exclude non-holders; if false, just warn
+	CacheTTL            time.Duration `toml:"cache_ttl"`            // Cache TTL for reservation queries (default: 30s)
+	ProjectKey          string        `toml:"project_key"`          // Project key for Agent Mail queries
+}
+
+// DefaultAgentMailConfig returns sensible defaults for Agent Mail integration.
+func DefaultAgentMailConfig() AgentMailConfig {
+	return AgentMailConfig{
+		Enabled:             false,
+		ReservationBonus:    30.0,
+		RespectReservations: false,
+		CacheTTL:            30 * time.Second,
+	}
+}
 
 // RoutingConfig holds configuration for agent routing and scoring.
 type RoutingConfig struct {
@@ -27,6 +51,9 @@ type RoutingConfig struct {
 	ExcludeIfGenerating  bool    `toml:"exclude_if_generating"`   // Default: true
 	ExcludeIfRateLimited bool    `toml:"exclude_if_rate_limited"` // Default: true
 	ExcludeIfErrorState  bool    `toml:"exclude_if_error"`        // Default: true
+
+	// Agent Mail integration
+	AgentMail AgentMailConfig `toml:"agent_mail"`
 }
 
 // DefaultRoutingConfig returns sensible default configuration.
@@ -41,6 +68,7 @@ func DefaultRoutingConfig() RoutingConfig {
 		ExcludeIfGenerating:  true,
 		ExcludeIfRateLimited: true,
 		ExcludeIfErrorState:  true,
+		AgentMail:            DefaultAgentMailConfig(),
 	}
 }
 
@@ -96,18 +124,226 @@ const (
 	HealthRateLimited HealthState = "rate_limited"
 )
 
+// =============================================================================
+// Reservation Cache
+// =============================================================================
+
+// ReservationCache caches file reservations from Agent Mail with TTL.
+type ReservationCache struct {
+	mu          sync.RWMutex
+	reservations []agentmail.FileReservation // All active reservations
+	pathToAgents map[string][]string          // path_pattern -> agent names
+	lastFetch   time.Time
+	ttl         time.Duration
+	client      *agentmail.Client
+	projectKey  string
+}
+
+// NewReservationCache creates a new reservation cache.
+func NewReservationCache(client *agentmail.Client, projectKey string, ttl time.Duration) *ReservationCache {
+	if ttl == 0 {
+		ttl = 30 * time.Second
+	}
+	return &ReservationCache{
+		pathToAgents: make(map[string][]string),
+		ttl:          ttl,
+		client:       client,
+		projectKey:   projectKey,
+	}
+}
+
+// NeedsRefresh returns true if the cache has expired.
+func (rc *ReservationCache) NeedsRefresh() bool {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	return time.Since(rc.lastFetch) > rc.ttl
+}
+
+// Refresh fetches fresh reservations from Agent Mail.
+func (rc *ReservationCache) Refresh(ctx context.Context) error {
+	if rc.client == nil {
+		return nil
+	}
+
+	// Fetch all reservations for the project
+	reservations, err := rc.client.ListReservations(ctx, rc.projectKey, "", true)
+	if err != nil {
+		return err
+	}
+
+	// Build index
+	pathToAgents := make(map[string][]string)
+	for _, r := range reservations {
+		// Skip expired reservations (server should filter, but double-check)
+		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS) {
+			continue
+		}
+		pathToAgents[r.PathPattern] = append(pathToAgents[r.PathPattern], r.AgentName)
+	}
+
+	rc.mu.Lock()
+	rc.reservations = reservations
+	rc.pathToAgents = pathToAgents
+	rc.lastFetch = time.Now()
+	rc.mu.Unlock()
+
+	return nil
+}
+
+// EnsureFresh refreshes the cache if needed.
+func (rc *ReservationCache) EnsureFresh(ctx context.Context) error {
+	if !rc.NeedsRefresh() {
+		return nil
+	}
+	return rc.Refresh(ctx)
+}
+
+// GetHoldersForPath returns agent names that have reservations matching the given path.
+func (rc *ReservationCache) GetHoldersForPath(path string) []string {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	var holders []string
+	seen := make(map[string]bool)
+
+	for pattern, agents := range rc.pathToAgents {
+		if matchesPattern(path, pattern) { // matchesPattern takes (filePath, pattern)
+			for _, agent := range agents {
+				if !seen[agent] {
+					seen[agent] = true
+					holders = append(holders, agent)
+				}
+			}
+		}
+	}
+
+	return holders
+}
+
+// GetAllReservations returns all cached reservations.
+func (rc *ReservationCache) GetAllReservations() []agentmail.FileReservation {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	result := make([]agentmail.FileReservation, len(rc.reservations))
+	copy(result, rc.reservations)
+	return result
+}
+
+// GetReservedPathsForAgent returns all paths reserved by a specific agent.
+func (rc *ReservationCache) GetReservedPathsForAgent(agentName string) []string {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	var paths []string
+	for _, r := range rc.reservations {
+		if r.AgentName == agentName && r.ReleasedTS == nil && time.Now().Before(r.ExpiresTS) {
+			paths = append(paths, r.PathPattern)
+		}
+	}
+	return paths
+}
+
+// =============================================================================
+// File Path Extraction
+// =============================================================================
+
+// filePathRegex matches common file path patterns in prompts.
+var filePathRegex = regexp.MustCompile(`(?:^|[\s"'(])([a-zA-Z0-9_./\-]+\.[a-zA-Z0-9]+)(?:[\s"'),:]|$)`)
+
+// ExtractFilePaths extracts potential file paths from a prompt.
+// It looks for patterns like:
+// - internal/robot/routing.go
+// - src/components/Button.tsx
+// - ./config.yaml
+func ExtractFilePaths(prompt string) []string {
+	matches := filePathRegex.FindAllStringSubmatch(prompt, -1)
+
+	pathSet := make(map[string]bool)
+	var paths []string
+
+	for _, match := range matches {
+		if len(match) > 1 {
+			path := match[1]
+			// Filter out common non-file patterns
+			if isLikelyCodePath(path) && !pathSet[path] {
+				pathSet[path] = true
+				paths = append(paths, path)
+			}
+		}
+	}
+
+	return paths
+}
+
+// isLikelyCodePath returns true if the string looks like a code file path.
+func isLikelyCodePath(s string) bool {
+	// Must contain at least one slash or start with ./
+	if !strings.Contains(s, "/") && !strings.HasPrefix(s, "./") {
+		// Could be just a filename like "config.go"
+		ext := filepath.Ext(s)
+		if ext == "" {
+			return false
+		}
+		// Common code file extensions
+		validExts := map[string]bool{
+			".go": true, ".py": true, ".js": true, ".ts": true, ".tsx": true,
+			".jsx": true, ".rs": true, ".java": true, ".c": true, ".h": true,
+			".cpp": true, ".hpp": true, ".yaml": true, ".yml": true, ".json": true,
+			".toml": true, ".md": true, ".txt": true, ".sh": true, ".bash": true,
+		}
+		return validExts[ext]
+	}
+
+	// Must have a file extension (not a directory)
+	ext := filepath.Ext(s)
+	if ext == "" {
+		return false
+	}
+
+	// Filter out URLs
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return false
+	}
+
+	// Filter out version numbers like 1.0.0
+	if matched, _ := regexp.MatchString(`^\d+\.\d+`, s); matched {
+		return false
+	}
+
+	return true
+}
+
+// =============================================================================
+// Agent Scorer
+// =============================================================================
+
 // AgentScorer scores agents for routing decisions.
 type AgentScorer struct {
-	config  RoutingConfig
-	monitor *ActivityMonitor
+	config           RoutingConfig
+	monitor          *ActivityMonitor
+	reservationCache *ReservationCache
+	agentMapping     map[string]string // pane_id -> agent_mail_name (optional)
 }
 
 // NewAgentScorer creates a new agent scorer with the given configuration.
 func NewAgentScorer(cfg RoutingConfig) *AgentScorer {
 	return &AgentScorer{
-		config:  cfg,
-		monitor: NewActivityMonitor(nil),
+		config:       cfg,
+		monitor:      NewActivityMonitor(nil),
+		agentMapping: make(map[string]string),
 	}
+}
+
+// NewAgentScorerWithReservations creates a scorer with Agent Mail reservation support.
+func NewAgentScorerWithReservations(cfg RoutingConfig, client *agentmail.Client, projectKey string) *AgentScorer {
+	scorer := NewAgentScorer(cfg)
+
+	if cfg.AgentMail.Enabled && client != nil && projectKey != "" {
+		scorer.reservationCache = NewReservationCache(client, projectKey, cfg.AgentMail.CacheTTL)
+	}
+
+	return scorer
 }
 
 // NewAgentScorerFromConfig creates a scorer using config file settings.
@@ -118,6 +354,108 @@ func NewAgentScorerFromConfig(cfg *config.Config) *AgentScorer {
 	// For now, use defaults
 
 	return NewAgentScorer(routingCfg)
+}
+
+// SetReservationCache sets the reservation cache for Agent Mail integration.
+func (s *AgentScorer) SetReservationCache(cache *ReservationCache) {
+	s.reservationCache = cache
+}
+
+// SetAgentMapping sets the mapping from pane IDs to Agent Mail agent names.
+func (s *AgentScorer) SetAgentMapping(mapping map[string]string) {
+	s.agentMapping = mapping
+}
+
+// MapPaneToAgent adds a mapping from pane ID to Agent Mail agent name.
+func (s *AgentScorer) MapPaneToAgent(paneID, agentName string) {
+	if s.agentMapping == nil {
+		s.agentMapping = make(map[string]string)
+	}
+	s.agentMapping[paneID] = agentName
+}
+
+// GetAgentNameForPane returns the Agent Mail agent name for a pane, if mapped.
+func (s *AgentScorer) GetAgentNameForPane(paneID string) (string, bool) {
+	if s.agentMapping == nil {
+		return "", false
+	}
+	name, ok := s.agentMapping[paneID]
+	return name, ok
+}
+
+// CheckReservationWarning checks if any files in the prompt have reservations
+// and returns a warning if the selected agent doesn't hold them.
+func (s *AgentScorer) CheckReservationWarning(prompt string, selectedPaneID string) *ReservationWarning {
+	if !s.config.AgentMail.Enabled || s.reservationCache == nil {
+		return nil
+	}
+
+	// Extract file paths from prompt
+	filePaths := ExtractFilePaths(prompt)
+	if len(filePaths) == 0 {
+		return nil
+	}
+
+	// Check which paths have reservations
+	var reservedPaths []string
+	holdersSet := make(map[string]bool)
+
+	for _, path := range filePaths {
+		holders := s.reservationCache.GetHoldersForPath(path)
+		if len(holders) > 0 {
+			reservedPaths = append(reservedPaths, path)
+			for _, h := range holders {
+				holdersSet[h] = true
+			}
+		}
+	}
+
+	if len(reservedPaths) == 0 {
+		return nil
+	}
+
+	// Get all holder names
+	var holders []string
+	for h := range holdersSet {
+		holders = append(holders, h)
+	}
+
+	// Check if selected agent holds any reservations
+	selectedAgentName, hasMapping := s.GetAgentNameForPane(selectedPaneID)
+	selectedHas := false
+	if hasMapping {
+		selectedHas = holdersSet[selectedAgentName]
+	}
+
+	// Build warning message
+	var msg string
+	if selectedHas {
+		msg = "Selected agent holds reservations for some mentioned files"
+	} else if hasMapping {
+		msg = "Files mentioned in prompt are reserved by other agents"
+	} else {
+		msg = "Files mentioned in prompt have active reservations"
+	}
+
+	return &ReservationWarning{
+		Message:     msg,
+		Paths:       reservedPaths,
+		Holders:     holders,
+		SelectedHas: selectedHas,
+	}
+}
+
+// ScoreAgentsWithContext calculates scores and refreshes reservation cache if needed.
+func (s *AgentScorer) ScoreAgentsWithContext(ctx context.Context, session string, prompt string) ([]ScoredAgent, error) {
+	// Refresh reservation cache if needed
+	if s.reservationCache != nil {
+		if err := s.reservationCache.EnsureFresh(ctx); err != nil {
+			// Log error but continue - reservations are advisory
+			// TODO: Add proper logging
+		}
+	}
+
+	return s.ScoreAgents(session, prompt)
 }
 
 // ScoreAgents calculates scores for all agents in a session.
@@ -260,10 +598,49 @@ func (s *AgentScorer) recencyToScore(lastActivity time.Time) float64 {
 
 // calculateAffinity calculates affinity bonus based on prompt matching.
 func (s *AgentScorer) calculateAffinity(agent *ScoredAgent, prompt string) float64 {
-	// TODO: Implement affinity matching
-	// This would look at the agent's recent work and compare to the prompt
-	// For now, return 0
-	return 0
+	// If Agent Mail integration is not enabled or no cache, return 0
+	if !s.config.AgentMail.Enabled || s.reservationCache == nil {
+		return 0
+	}
+
+	// Get the Agent Mail name for this pane
+	agentName, ok := s.GetAgentNameForPane(agent.PaneID)
+	if !ok {
+		return 0
+	}
+
+	// Extract file paths from the prompt
+	filePaths := ExtractFilePaths(prompt)
+	if len(filePaths) == 0 {
+		return 0
+	}
+
+	// Check if this agent has reservations for any of the extracted paths
+	reservedPaths := s.reservationCache.GetReservedPathsForAgent(agentName)
+	if len(reservedPaths) == 0 {
+		return 0
+	}
+
+	// Count matches
+	matches := 0
+	for _, filePath := range filePaths {
+		for _, reserved := range reservedPaths {
+			if matchesPattern(filePath, reserved) { // matchesPattern takes (filePath, pattern)
+				matches++
+				break // Count each file path only once
+			}
+		}
+	}
+
+	if matches == 0 {
+		return 0
+	}
+
+	// Scale bonus based on match ratio (more matches = higher bonus, capped at config max)
+	matchRatio := float64(matches) / float64(len(filePaths))
+	bonus := s.config.AgentMail.ReservationBonus * matchRatio
+
+	return bonus
 }
 
 // checkExclusion checks if an agent should be excluded from routing.
@@ -473,13 +850,23 @@ type RoutingStrategy interface {
 }
 
 // RoutingResult represents the outcome of a routing decision.
+// ReservationWarning contains information about file reservation conflicts.
+type ReservationWarning struct {
+	Message     string   `json:"message"`               // Human-readable warning message
+	Paths       []string `json:"paths"`                 // File paths that are reserved
+	Holders     []string `json:"holders"`               // Agent names that hold reservations
+	SelectedHas bool     `json:"selected_has_reserved"` // True if selected agent holds reservations
+}
+
+// RoutingResult represents the outcome of a routing decision.
 type RoutingResult struct {
-	Selected     *ScoredAgent  `json:"selected,omitempty"`
-	Strategy     StrategyName  `json:"strategy"`
-	Candidates   []ScoredAgent `json:"candidates"`
-	Excluded     []ScoredAgent `json:"excluded,omitempty"`
-	FallbackUsed bool          `json:"fallback_used"`
-	Reason       string        `json:"reason,omitempty"`
+	Selected           *ScoredAgent        `json:"selected,omitempty"`
+	Strategy           StrategyName        `json:"strategy"`
+	Candidates         []ScoredAgent       `json:"candidates"`
+	Excluded           []ScoredAgent       `json:"excluded,omitempty"`
+	FallbackUsed       bool                `json:"fallback_used"`
+	Reason             string              `json:"reason,omitempty"`
+	ReservationWarning *ReservationWarning `json:"reservation_warning,omitempty"` // Warning if files are reserved by other agents
 }
 
 // =============================================================================
