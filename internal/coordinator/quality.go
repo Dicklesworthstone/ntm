@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -47,20 +48,21 @@ type ScanMetrics struct {
 
 // AgentQualityMetrics tracks quality metrics specific to an agent.
 type AgentQualityMetrics struct {
-	PaneID          string    `json:"pane_id"`
-	AgentType       string    `json:"agent_type"`
-	TestsPassed     int       `json:"tests_passed"`
-	TestsFailed     int       `json:"tests_failed"`
-	TestsTotal      int       `json:"tests_total"`
-	ErrorCount      int       `json:"error_count"`
-	RecoveryCount   int       `json:"recovery_count"`
-	BugsIntroduced  int       `json:"bugs_introduced"`
-	BugsFixed       int       `json:"bugs_fixed"`
-	AvgContextUsage float64   `json:"avg_context_usage"`
-	PeakContext     float64   `json:"peak_context_usage"`
-	ContextSamples  int       `json:"context_samples"`
-	LastActivity    time.Time `json:"last_activity"`
-	LastError       time.Time `json:"last_error,omitempty"`
+	PaneID          string      `json:"pane_id"`
+	AgentType       string      `json:"agent_type"`
+	TestsPassed     int         `json:"tests_passed"`
+	TestsFailed     int         `json:"tests_failed"`
+	TestsTotal      int         `json:"tests_total"`
+	ErrorCount      int         `json:"error_count"`
+	RecoveryCount   int         `json:"recovery_count"`
+	BugsIntroduced  int         `json:"bugs_introduced"`
+	BugsFixed       int         `json:"bugs_fixed"`
+	AvgContextUsage float64     `json:"avg_context_usage"`
+	PeakContext     float64     `json:"peak_context_usage"`
+	ContextSamples  int         `json:"context_samples"`
+	LastActivity    time.Time   `json:"last_activity"`
+	LastError       time.Time   `json:"last_error,omitempty"`
+	ErrorHistory    []time.Time `json:"error_history,omitempty"` // Timestamps of errors for trend analysis
 }
 
 // TestRunMetrics captures results from a test execution.
@@ -256,7 +258,14 @@ func (qm *QualityMonitor) RecordAgentError(paneID, agentType string) {
 	agent := qm.getOrCreateAgentMetrics(paneID)
 	agent.AgentType = agentType
 	agent.ErrorCount++
-	agent.LastError = time.Now()
+	now := time.Now()
+	agent.LastError = now
+
+	// Track error history for trend analysis (keep last 100 errors per agent)
+	agent.ErrorHistory = append(agent.ErrorHistory, now)
+	if len(agent.ErrorHistory) > 100 {
+		agent.ErrorHistory = agent.ErrorHistory[len(agent.ErrorHistory)-100:]
+	}
 
 	qm.updateErrorTrend()
 }
@@ -473,9 +482,10 @@ func (qm *QualityMonitor) GetAgentQualityScore(paneID string) float64 {
 
 	score := 100.0
 
-	// Test pass rate factor
-	if agent.TestsTotal > 0 {
-		passRate := float64(agent.TestsPassed) / float64(agent.TestsTotal)
+	// Test pass rate factor (exclude skipped tests from denominator)
+	testsRun := agent.TestsPassed + agent.TestsFailed
+	if testsRun > 0 {
+		passRate := float64(agent.TestsPassed) / float64(testsRun)
 		score = score * (0.5 + 0.5*passRate) // Scale by pass rate (50-100%)
 	}
 
@@ -582,17 +592,17 @@ func (qm *QualityMonitor) updateTestTrend() {
 
 // updateErrorTrend analyzes error history to determine error trend (must hold write lock).
 func (qm *QualityMonitor) updateErrorTrend() {
-	// Simple heuristic: compare recent hour vs previous hour
+	// Compare error count in recent hour vs previous hour across all agents
 	now := time.Now()
 	recentCutoff := now.Add(-1 * time.Hour)
 	olderCutoff := now.Add(-2 * time.Hour)
 
 	var recentErrors, olderErrors int
 	for _, agent := range qm.agentMetrics {
-		if !agent.LastError.IsZero() {
-			if agent.LastError.After(recentCutoff) {
+		for _, errTime := range agent.ErrorHistory {
+			if errTime.After(recentCutoff) {
 				recentErrors++
-			} else if agent.LastError.After(olderCutoff) {
+			} else if errTime.After(olderCutoff) {
 				olderErrors++
 			}
 		}
@@ -620,6 +630,11 @@ func (qm *QualityMonitor) updateContextTrend() {
 		qm.qualityTrend.ContextTrend = TrendUnknown
 		return
 	}
+
+	// Sort samples by timestamp to ensure correct time-based analysis
+	sort.Slice(allSamples, func(i, j int) bool {
+		return allSamples[i].Timestamp.Before(allSamples[j].Timestamp)
+	})
 
 	// Compare recent average vs older average
 	n := min(100, len(allSamples))
