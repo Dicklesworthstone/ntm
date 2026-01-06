@@ -286,22 +286,69 @@ func sanitizeForID(s string) string {
 }
 
 // matchesPattern checks if a path matches a glob pattern.
-// Simple implementation - can be extended for full glob support.
+// Supports:
+// - Exact match: "src/main.go"
+// - Prefix match: "src/" matches "src/main.go"
+// - Single * wildcard: "src/*.go" matches "src/main.go"
+// - Double ** wildcard: "src/**" matches any path under src/
+// - Combined: "src/**/test.go" matches "src/foo/bar/test.go"
 func matchesPattern(path, pattern string) bool {
-	// Handle ** patterns
-	if strings.Contains(pattern, "**") {
-		prefix := strings.Split(pattern, "**")[0]
-		return strings.HasPrefix(path, prefix)
+	// Exact match
+	if path == pattern {
+		return true
 	}
 
-	// Handle * patterns
+	// Handle ** patterns (match any number of path segments)
+	if strings.Contains(pattern, "**") {
+		parts := strings.SplitN(pattern, "**", 2)
+		prefix := parts[0]
+		suffix := ""
+		if len(parts) > 1 {
+			suffix = strings.TrimPrefix(parts[1], "/")
+		}
+
+		// Path must start with prefix
+		if !strings.HasPrefix(path, prefix) {
+			return false
+		}
+
+		// If no suffix, just prefix match is enough
+		if suffix == "" {
+			return true
+		}
+
+		// Path must end with suffix (after stripping prefix)
+		remaining := strings.TrimPrefix(path, prefix)
+		return strings.HasSuffix(remaining, suffix)
+	}
+
+	// Handle single * patterns (match single path segment)
 	if strings.Contains(pattern, "*") {
 		parts := strings.Split(pattern, "*")
-		if len(parts) == 2 {
-			return strings.HasPrefix(path, parts[0]) && strings.HasSuffix(path, parts[1])
+
+		// Must start with first part and end with last part
+		if !strings.HasPrefix(path, parts[0]) {
+			return false
 		}
+		if !strings.HasSuffix(path, parts[len(parts)-1]) {
+			return false
+		}
+
+		// For multiple wildcards, check that all parts appear in order
+		remaining := path
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			idx := strings.Index(remaining, part)
+			if idx == -1 {
+				return false
+			}
+			remaining = remaining[idx+len(part):]
+		}
+		return true
 	}
 
-	// Exact match or prefix match
-	return path == pattern || strings.HasPrefix(path, pattern+"/")
+	// Prefix match (pattern is a directory)
+	return strings.HasPrefix(path, pattern+"/")
 }

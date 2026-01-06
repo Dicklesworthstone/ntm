@@ -19,24 +19,43 @@ func TestMatchesPattern(t *testing.T) {
 		// Single * patterns
 		{"internal/cli/coordinator.go", "internal/cli/*.go", true},
 		{"internal/cli/coordinator.go", "internal/cli/*.ts", false},
-		{"internal/cli/coordinator.go", "*.go", true}, // Simple * matcher uses prefix/suffix
+		{"internal/cli/coordinator.go", "*.go", true},
+
+		// Multiple * patterns (was broken before fix)
+		{"src/app/test/main.go", "src/*/test/*.go", true},
+		{"src/foo/bar/test.go", "src/*/test.go", true},
+		{"src/app/other/main.go", "src/*/test/*.go", false},
 
 		// Double ** patterns
 		{"internal/cli/coordinator.go", "internal/**", true},
 		{"internal/cli/subdir/file.go", "internal/**", true},
 		{"external/cli/file.go", "internal/**", false},
 
+		// Double ** patterns with suffix (was broken before fix)
+		{"src/foo/bar/test.go", "src/**/test.go", true},
+		{"src/test.go", "src/**/test.go", true},
+		{"src/deep/nested/path/test.go", "src/**/test.go", true},
+		{"src/foo/bar/main.go", "src/**/test.go", false},
+		{"other/test.go", "src/**/test.go", false},
+
 		// Prefix patterns (directory matching)
 		{"internal/cli/coordinator.go", "internal/cli", true},
 		{"internal/cli/subdir/file.go", "internal/cli", true},
 		{"internal/cli_other/file.go", "internal/cli", false},
+
+		// Edge cases
+		{"file.go", "file.go", true},
+		{"a/b/c.go", "a/b/*.go", true},
+		{"a/b/c.ts", "a/b/*.go", false},
 	}
 
 	for _, tt := range tests {
-		result := matchesPattern(tt.path, tt.pattern)
-		if result != tt.matches {
-			t.Errorf("matchesPattern(%q, %q) = %v, expected %v", tt.path, tt.pattern, result, tt.matches)
-		}
+		t.Run(tt.pattern+"_"+tt.path, func(t *testing.T) {
+			result := matchesPattern(tt.path, tt.pattern)
+			if result != tt.matches {
+				t.Errorf("matchesPattern(%q, %q) = %v, expected %v", tt.path, tt.pattern, result, tt.matches)
+			}
+		})
 	}
 }
 
