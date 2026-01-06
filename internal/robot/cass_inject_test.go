@@ -1781,7 +1781,7 @@ func TestFilterResults_TopicFiltering_Disabled(t *testing.T) {
 	}
 }
 
-func TestFilterResults_TopicFiltering_GeneralTopicNopenalty(t *testing.T) {
+func TestFilterResults_TopicFiltering_GeneralTopicNoPenalty(t *testing.T) {
 	now := time.Now()
 	hits := []CASSHit{
 		{
