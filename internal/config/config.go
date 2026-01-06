@@ -293,10 +293,13 @@ type CASSConfig struct {
 
 // CASSContextConfig holds settings for automatic context injection
 type CASSContextConfig struct {
-	Enabled      bool `toml:"enabled"`       // Auto-inject context when spawning
-	MaxSessions  int  `toml:"max_sessions"`  // Max past sessions to include
-	LookbackDays int  `toml:"lookback_days"` // How far back to search
-	MaxTokens    int  `toml:"max_tokens"`    // Token budget for context
+	Enabled            bool    `toml:"enabled"`              // Auto-inject context when spawning
+	MaxSessions        int     `toml:"max_sessions"`         // Max past sessions to include (inject_limit)
+	LookbackDays       int     `toml:"lookback_days"`        // How far back to search (max_age_days)
+	MaxTokens          int     `toml:"max_tokens"`           // Token budget for context (max_inject_tokens)
+	MinRelevance       float64 `toml:"min_relevance"`        // Minimum relevance score to include (0.0-1.0)
+	SkipIfContextAbove float64 `toml:"skip_if_context_above"` // Skip injection if context usage exceeds this % (0-100)
+	PreferSameProject  bool    `toml:"prefer_same_project"`  // Prefer results from same project
 }
 
 // CASSDuplicateConfig holds settings for duplicate detection
@@ -329,10 +332,13 @@ func DefaultCASSConfig() CASSConfig {
 		Timeout:          30,
 
 		Context: CASSContextConfig{
-			Enabled:      true,
-			MaxSessions:  3,
-			LookbackDays: 30,
-			MaxTokens:    2000,
+			Enabled:            true,
+			MaxSessions:        3,
+			LookbackDays:       30,
+			MaxTokens:          2000,
+			MinRelevance:       0.5, // Only include results with >= 50% relevance
+			SkipIfContextAbove: 80,  // Skip injection if context usage > 80%
+			PreferSameProject:  true,
 		},
 		Duplicates: CASSDuplicateConfig{
 			Enabled:             true,
@@ -928,6 +934,23 @@ func Load(path string) (*Config, error) {
 	if binary := os.Getenv("NTM_CASS_BINARY"); binary != "" {
 		cfg.CASS.BinaryPath = binary
 	}
+	// CASS Context Env Overrides
+	if contextEnabled := os.Getenv("NTM_CASS_CONTEXT_ENABLED"); contextEnabled != "" {
+		cfg.CASS.Context.Enabled = contextEnabled == "1" || contextEnabled == "true"
+	}
+	if minRel := os.Getenv("NTM_CASS_MIN_RELEVANCE"); minRel != "" {
+		if v, err := strconv.ParseFloat(minRel, 64); err == nil && v >= 0 && v <= 1 {
+			cfg.CASS.Context.MinRelevance = v
+		}
+	}
+	if skipAbove := os.Getenv("NTM_CASS_SKIP_IF_CONTEXT_ABOVE"); skipAbove != "" {
+		if v, err := strconv.ParseFloat(skipAbove, 64); err == nil && v >= 0 && v <= 100 {
+			cfg.CASS.Context.SkipIfContextAbove = v
+		}
+	}
+	if preferSame := os.Getenv("NTM_CASS_PREFER_SAME_PROJECT"); preferSame != "" {
+		cfg.CASS.Context.PreferSameProject = preferSame == "1" || preferSame == "true"
+	}
 
 	// Accounts/Rotation Env Overrides
 	if autoRotate := os.Getenv("NTM_ACCOUNTS_AUTO_ROTATE"); autoRotate != "" {
@@ -1376,6 +1399,19 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[cass.context]")
+	fmt.Fprintln(w, "# Automatic CASS context injection settings")
+	fmt.Fprintln(w, "# Environment variables: NTM_CASS_CONTEXT_ENABLED, NTM_CASS_MIN_RELEVANCE,")
+	fmt.Fprintln(w, "#   NTM_CASS_SKIP_IF_CONTEXT_ABOVE, NTM_CASS_PREFER_SAME_PROJECT")
+	fmt.Fprintf(w, "enabled = %t                # Auto-inject context when spawning (--with-cass/--no-cass)\n", cfg.CASS.Context.Enabled)
+	fmt.Fprintf(w, "max_sessions = %d            # Max past sessions to include\n", cfg.CASS.Context.MaxSessions)
+	fmt.Fprintf(w, "lookback_days = %d          # How far back to search\n", cfg.CASS.Context.LookbackDays)
+	fmt.Fprintf(w, "max_tokens = %d            # Token budget for context\n", cfg.CASS.Context.MaxTokens)
+	fmt.Fprintf(w, "min_relevance = %.2f        # Minimum relevance score (0.0-1.0)\n", cfg.CASS.Context.MinRelevance)
+	fmt.Fprintf(w, "skip_if_context_above = %.0f  # Skip if context usage > this %% (0-100)\n", cfg.CASS.Context.SkipIfContextAbove)
+	fmt.Fprintf(w, "prefer_same_project = %t   # Prefer results from same project\n", cfg.CASS.Context.PreferSameProject)
+	fmt.Fprintln(w)
+
 	// Write Gemini setup configuration
 	fmt.Fprintln(w, "[gemini_setup]")
 	fmt.Fprintln(w, "# Gemini CLI post-spawn setup configuration")
@@ -1661,6 +1697,26 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.CASS.Enabled, nil
 		case "timeout":
 			return cfg.CASS.Timeout, nil
+		case "context":
+			if len(parts) < 3 {
+				return cfg.CASS.Context, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.CASS.Context.Enabled, nil
+			case "max_sessions":
+				return cfg.CASS.Context.MaxSessions, nil
+			case "lookback_days":
+				return cfg.CASS.Context.LookbackDays, nil
+			case "max_tokens":
+				return cfg.CASS.Context.MaxTokens, nil
+			case "min_relevance":
+				return cfg.CASS.Context.MinRelevance, nil
+			case "skip_if_context_above":
+				return cfg.CASS.Context.SkipIfContextAbove, nil
+			case "prefer_same_project":
+				return cfg.CASS.Context.PreferSameProject, nil
+			}
 		}
 	case "health":
 		if len(parts) < 2 {
@@ -1774,6 +1830,15 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("cass.enabled", defaults.CASS.Enabled, cfg.CASS.Enabled)
 	addDiff("cass.timeout", defaults.CASS.Timeout, cfg.CASS.Timeout)
 
+	// CASS Context
+	addDiff("cass.context.enabled", defaults.CASS.Context.Enabled, cfg.CASS.Context.Enabled)
+	addDiff("cass.context.max_sessions", defaults.CASS.Context.MaxSessions, cfg.CASS.Context.MaxSessions)
+	addDiff("cass.context.lookback_days", defaults.CASS.Context.LookbackDays, cfg.CASS.Context.LookbackDays)
+	addDiff("cass.context.max_tokens", defaults.CASS.Context.MaxTokens, cfg.CASS.Context.MaxTokens)
+	addDiff("cass.context.min_relevance", defaults.CASS.Context.MinRelevance, cfg.CASS.Context.MinRelevance)
+	addDiff("cass.context.skip_if_context_above", defaults.CASS.Context.SkipIfContextAbove, cfg.CASS.Context.SkipIfContextAbove)
+	addDiff("cass.context.prefer_same_project", defaults.CASS.Context.PreferSameProject, cfg.CASS.Context.PreferSameProject)
+
 	// Health monitoring
 	addDiff("health.enabled", defaults.Health.Enabled, cfg.Health.Enabled)
 	addDiff("health.check_interval", defaults.Health.CheckInterval, cfg.Health.CheckInterval)
@@ -1839,6 +1904,23 @@ func Validate(cfg *Config) []error {
 	// Validate CASS timeout
 	if cfg.CASS.Timeout < 0 {
 		errs = append(errs, fmt.Errorf("cass.timeout: must be non-negative, got %d", cfg.CASS.Timeout))
+	}
+
+	// Validate CASS context settings
+	if cfg.CASS.Context.MinRelevance < 0 || cfg.CASS.Context.MinRelevance > 1 {
+		errs = append(errs, fmt.Errorf("cass.context.min_relevance: must be between 0.0 and 1.0, got %.2f", cfg.CASS.Context.MinRelevance))
+	}
+	if cfg.CASS.Context.SkipIfContextAbove < 0 || cfg.CASS.Context.SkipIfContextAbove > 100 {
+		errs = append(errs, fmt.Errorf("cass.context.skip_if_context_above: must be between 0 and 100, got %.0f", cfg.CASS.Context.SkipIfContextAbove))
+	}
+	if cfg.CASS.Context.MaxSessions < 0 {
+		errs = append(errs, fmt.Errorf("cass.context.max_sessions: must be non-negative, got %d", cfg.CASS.Context.MaxSessions))
+	}
+	if cfg.CASS.Context.MaxTokens < 0 {
+		errs = append(errs, fmt.Errorf("cass.context.max_tokens: must be non-negative, got %d", cfg.CASS.Context.MaxTokens))
+	}
+	if cfg.CASS.Context.LookbackDays < 0 {
+		errs = append(errs, fmt.Errorf("cass.context.lookback_days: must be non-negative, got %d", cfg.CASS.Context.LookbackDays))
 	}
 
 	// Validate tmux settings

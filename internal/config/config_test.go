@@ -1390,3 +1390,449 @@ func TestHealthConfigGetValue(t *testing.T) {
 		})
 	}
 }
+
+func TestCASSContextDefaults(t *testing.T) {
+	cfg := Default()
+
+	// New fields should have defaults
+	if cfg.CASS.Context.MinRelevance != 0.5 {
+		t.Errorf("Expected MinRelevance 0.5, got %f", cfg.CASS.Context.MinRelevance)
+	}
+	if cfg.CASS.Context.SkipIfContextAbove != 80 {
+		t.Errorf("Expected SkipIfContextAbove 80, got %f", cfg.CASS.Context.SkipIfContextAbove)
+	}
+	if !cfg.CASS.Context.PreferSameProject {
+		t.Error("PreferSameProject should be true by default")
+	}
+	if cfg.CASS.Context.MaxTokens != 2000 {
+		t.Errorf("Expected MaxTokens 2000, got %d", cfg.CASS.Context.MaxTokens)
+	}
+}
+
+func TestCASSContextFromTOML(t *testing.T) {
+	configContent := `
+[cass]
+enabled = true
+
+[cass.context]
+enabled = false
+max_sessions = 5
+lookback_days = 14
+max_tokens = 1000
+min_relevance = 0.7
+skip_if_context_above = 60
+prefer_same_project = false
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.CASS.Context.Enabled {
+		t.Error("Expected context.enabled = false")
+	}
+	if cfg.CASS.Context.MaxSessions != 5 {
+		t.Errorf("Expected MaxSessions 5, got %d", cfg.CASS.Context.MaxSessions)
+	}
+	if cfg.CASS.Context.LookbackDays != 14 {
+		t.Errorf("Expected LookbackDays 14, got %d", cfg.CASS.Context.LookbackDays)
+	}
+	if cfg.CASS.Context.MaxTokens != 1000 {
+		t.Errorf("Expected MaxTokens 1000, got %d", cfg.CASS.Context.MaxTokens)
+	}
+	if cfg.CASS.Context.MinRelevance != 0.7 {
+		t.Errorf("Expected MinRelevance 0.7, got %f", cfg.CASS.Context.MinRelevance)
+	}
+	if cfg.CASS.Context.SkipIfContextAbove != 60 {
+		t.Errorf("Expected SkipIfContextAbove 60, got %f", cfg.CASS.Context.SkipIfContextAbove)
+	}
+	if cfg.CASS.Context.PreferSameProject {
+		t.Error("Expected PreferSameProject = false")
+	}
+}
+
+func TestCASSContextEnvOverrides(t *testing.T) {
+	// Save original values
+	origContextEnabled := os.Getenv("NTM_CASS_CONTEXT_ENABLED")
+	origMinRel := os.Getenv("NTM_CASS_MIN_RELEVANCE")
+	origSkipAbove := os.Getenv("NTM_CASS_SKIP_IF_CONTEXT_ABOVE")
+	origPreferSame := os.Getenv("NTM_CASS_PREFER_SAME_PROJECT")
+	defer func() {
+		os.Setenv("NTM_CASS_CONTEXT_ENABLED", origContextEnabled)
+		os.Setenv("NTM_CASS_MIN_RELEVANCE", origMinRel)
+		os.Setenv("NTM_CASS_SKIP_IF_CONTEXT_ABOVE", origSkipAbove)
+		os.Setenv("NTM_CASS_PREFER_SAME_PROJECT", origPreferSame)
+	}()
+
+	// Clear env vars
+	os.Unsetenv("NTM_CASS_CONTEXT_ENABLED")
+	os.Unsetenv("NTM_CASS_MIN_RELEVANCE")
+	os.Unsetenv("NTM_CASS_SKIP_IF_CONTEXT_ABOVE")
+	os.Unsetenv("NTM_CASS_PREFER_SAME_PROJECT")
+
+	// Create config with defaults
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[cass.context]
+enabled = true
+min_relevance = 0.5
+skip_if_context_above = 80
+prefer_same_project = true
+`), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	// Test NTM_CASS_CONTEXT_ENABLED=false
+	os.Setenv("NTM_CASS_CONTEXT_ENABLED", "false")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Context.Enabled {
+		t.Error("Context should be disabled via NTM_CASS_CONTEXT_ENABLED=false")
+	}
+
+	// Test NTM_CASS_MIN_RELEVANCE
+	os.Setenv("NTM_CASS_CONTEXT_ENABLED", "true")
+	os.Setenv("NTM_CASS_MIN_RELEVANCE", "0.8")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Context.MinRelevance != 0.8 {
+		t.Errorf("Expected MinRelevance 0.8 from env, got %f", cfg.CASS.Context.MinRelevance)
+	}
+
+	// Test NTM_CASS_SKIP_IF_CONTEXT_ABOVE
+	os.Setenv("NTM_CASS_SKIP_IF_CONTEXT_ABOVE", "50")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Context.SkipIfContextAbove != 50 {
+		t.Errorf("Expected SkipIfContextAbove 50 from env, got %f", cfg.CASS.Context.SkipIfContextAbove)
+	}
+
+	// Test NTM_CASS_PREFER_SAME_PROJECT
+	os.Setenv("NTM_CASS_PREFER_SAME_PROJECT", "false")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Context.PreferSameProject {
+		t.Error("Expected PreferSameProject false from env")
+	}
+
+	// Test invalid MinRelevance values are rejected (outside 0-1)
+	os.Setenv("NTM_CASS_MIN_RELEVANCE", "1.5")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Context.MinRelevance != 0.5 { // Should keep config value, not env
+		t.Errorf("Invalid MinRelevance should be rejected, got %f", cfg.CASS.Context.MinRelevance)
+	}
+
+	// Test invalid SkipIfContextAbove values are rejected (outside 0-100)
+	os.Setenv("NTM_CASS_MIN_RELEVANCE", "0.5") // Reset to valid
+	os.Setenv("NTM_CASS_SKIP_IF_CONTEXT_ABOVE", "150")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CASS.Context.SkipIfContextAbove != 80 { // Should keep config value, not env
+		t.Errorf("Invalid SkipIfContextAbove should be rejected, got %f", cfg.CASS.Context.SkipIfContextAbove)
+	}
+}
+
+func TestCASSContextValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+		errPath string
+	}{
+		{
+			name: "valid context config",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MaxSessions:        3,
+						LookbackDays:       30,
+						MaxTokens:          2000,
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: false,
+		},
+		{
+			name: "min_relevance too low",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       -0.1,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.min_relevance",
+		},
+		{
+			name: "min_relevance too high",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       1.5,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.min_relevance",
+		},
+		{
+			name: "skip_if_context_above too low",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       0.5,
+						SkipIfContextAbove: -10,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.skip_if_context_above",
+		},
+		{
+			name: "skip_if_context_above too high",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 150,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.skip_if_context_above",
+		},
+		{
+			name: "max_sessions negative",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MaxSessions:        -1,
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.max_sessions",
+		},
+		{
+			name: "max_tokens negative",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MaxTokens:          -100,
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.max_tokens",
+		},
+		{
+			name: "lookback_days negative",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						LookbackDays:       -7,
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: true,
+			errPath: "cass.context.lookback_days",
+		},
+		{
+			name: "boundary values valid - min_relevance 0",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       0,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: false,
+		},
+		{
+			name: "boundary values valid - min_relevance 1",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       1,
+						SkipIfContextAbove: 80,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: false,
+		},
+		{
+			name: "boundary values valid - skip_if_context_above 0",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 0,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: false,
+		},
+		{
+			name: "boundary values valid - skip_if_context_above 100",
+			cfg: Config{
+				CASS: CASSConfig{
+					Timeout: 30,
+					Context: CASSContextConfig{
+						MinRelevance:       0.5,
+						SkipIfContextAbove: 100,
+					},
+				},
+				Tmux:            TmuxConfig{DefaultPanes: 1},
+				ContextRotation: DefaultContextRotationConfig(),
+				Health:          DefaultHealthConfig(),
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := Validate(&tt.cfg)
+			hasErr := len(errs) > 0
+			if hasErr != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", errs, tt.wantErr)
+			}
+			if tt.wantErr && tt.errPath != "" {
+				found := false
+				for _, err := range errs {
+					if strings.Contains(err.Error(), tt.errPath) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected error containing %q, got %v", tt.errPath, errs)
+				}
+			}
+		})
+	}
+}
+
+func TestCASSContextGetValue(t *testing.T) {
+	cfg := Default()
+
+	tests := []struct {
+		path string
+		want interface{}
+	}{
+		{"cass.context.enabled", true},
+		{"cass.context.max_sessions", 3},
+		{"cass.context.lookback_days", 30},
+		{"cass.context.max_tokens", 2000},
+		{"cass.context.min_relevance", 0.5},
+		{"cass.context.skip_if_context_above", float64(80)},
+		{"cass.context.prefer_same_project", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got, err := GetValue(cfg, tt.path)
+			if err != nil {
+				t.Fatalf("GetValue(%q) error = %v", tt.path, err)
+			}
+			if got != tt.want {
+				t.Errorf("GetValue(%q) = %v (%T), want %v (%T)", tt.path, got, got, tt.want, tt.want)
+			}
+		})
+	}
+}
+
+func TestCASSContextPrintOutput(t *testing.T) {
+	cfg := Default()
+	var buf bytes.Buffer
+	err := Print(cfg, &buf)
+	if err != nil {
+		t.Fatalf("Print failed: %v", err)
+	}
+	output := buf.String()
+
+	// Check for cass.context section
+	if !strings.Contains(output, "[cass.context]") {
+		t.Error("Expected output to contain [cass.context]")
+	}
+	if !strings.Contains(output, "min_relevance") {
+		t.Error("Expected output to contain min_relevance")
+	}
+	if !strings.Contains(output, "skip_if_context_above") {
+		t.Error("Expected output to contain skip_if_context_above")
+	}
+	if !strings.Contains(output, "prefer_same_project") {
+		t.Error("Expected output to contain prefer_same_project")
+	}
+}
