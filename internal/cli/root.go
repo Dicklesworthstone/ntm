@@ -1269,6 +1269,9 @@ func init() {
 		// Memory integration
 		newMemoryCmd(),
 
+		// Beads daemon management
+		newBeadsCmd(),
+
 		// Shell integration
 		newInitCmd(),
 		newCompletionCmd(),

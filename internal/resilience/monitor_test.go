@@ -74,7 +74,7 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 	cfg.Resilience.AutoRestart = true
 	cfg.Resilience.RestartDelaySeconds = 0
 
-	m := NewMonitor("sess", "/tmp/project with space", cfg)
+	m := NewMonitor("sess", "/tmp/project with space", cfg, true)
 	m.agents["pane-1"] = &AgentState{
 		PaneID:    "pane-1",
 		PaneIndex: 1,
@@ -97,7 +97,7 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 
 func TestRegisterAgent(t *testing.T) {
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude --model opus")
 	m.RegisterAgent("pane-2", 2, "gmi", "pro", "gemini --model pro")
@@ -135,7 +135,7 @@ func TestRegisterAgent(t *testing.T) {
 
 func TestGetRestartCount(t *testing.T) {
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	// Non-existent agent should return 0
 	if count := m.GetRestartCount("nonexistent"); count != 0 {
@@ -161,7 +161,7 @@ func TestGetRestartCount(t *testing.T) {
 
 func TestGetAgentStatesReturnsCopy(t *testing.T) {
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
@@ -193,7 +193,7 @@ func TestStartAndStop(t *testing.T) {
 		}
 	})
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	ctx := context.Background()
 	m.Start(ctx)
@@ -218,7 +218,7 @@ func TestStartAndStop(t *testing.T) {
 
 func TestStopWithoutStart(t *testing.T) {
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	// Should not panic or hang
 	done := make(chan struct{})
@@ -255,7 +255,7 @@ func TestCheckHealthWithHealthyAgent(t *testing.T) {
 	})
 
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Mark as unhealthy first
@@ -307,7 +307,7 @@ func TestCheckHealthDetectsCrash(t *testing.T) {
 	cfg.Resilience.MaxRestarts = 3
 	cfg.Resilience.RestartDelaySeconds = 0
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	m.checkHealth()
@@ -348,7 +348,7 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Resilience.MaxRestarts = 3
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	m.checkHealth()
@@ -393,7 +393,7 @@ func TestCheckHealthDetectsRateLimit(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Resilience.RateLimit.Detect = true
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	m.checkHealth()
@@ -435,7 +435,7 @@ func TestCheckHealthRateLimitCleared(t *testing.T) {
 	})
 
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Pre-set as rate limited
@@ -470,7 +470,7 @@ func TestCheckHealthError(t *testing.T) {
 	})
 
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Should not panic
@@ -504,7 +504,7 @@ func TestHandleCrashMaxRestartsExceeded(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Resilience.MaxRestarts = 3
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Set restart count at max
@@ -536,7 +536,7 @@ func TestRestartAgentIncreasesCount(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Resilience.RestartDelaySeconds = 0
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	m.mu.Lock()
@@ -576,7 +576,7 @@ func TestRestartAgentSkipsIfHealthy(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Resilience.RestartDelaySeconds = 0
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Agent is healthy by default
@@ -604,7 +604,7 @@ func TestRestartAgentHandlesBuildError(t *testing.T) {
 	})
 
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	m.mu.Lock()
@@ -633,7 +633,7 @@ func TestRestartAgentHandlesSendKeysError(t *testing.T) {
 	})
 
 	cfg := config.Default()
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	m.mu.Lock()
@@ -671,7 +671,7 @@ func TestMonitorLoopRespectsMinCheckInterval(t *testing.T) {
 	cfg := config.Default()
 	cfg.Resilience.HealthCheckSeconds = 0 // Should become 10 seconds minimum
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -696,7 +696,7 @@ func TestNewMonitorWithNotifications(t *testing.T) {
 	cfg := config.Default()
 	cfg.Notifications.Enabled = true
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	if m.notifier == nil {
 		t.Error("notifier should be created when notifications enabled")
@@ -707,7 +707,7 @@ func TestNewMonitorWithoutNotifications(t *testing.T) {
 	cfg := config.Default()
 	cfg.Notifications.Enabled = false
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	if m.notifier != nil {
 		t.Error("notifier should be nil when notifications disabled")
@@ -777,7 +777,7 @@ func TestHandleRateLimitTriggersRotationAssistance(t *testing.T) {
 	cfg.Rotation.Enabled = true
 	cfg.Rotation.AutoTrigger = true
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	agent := m.agents["pane-1"]
@@ -810,7 +810,7 @@ func TestTriggerRotationAssistanceWithNotifier(t *testing.T) {
 	cfg.Notifications.Enabled = true
 	cfg.Rotation.AutoInitiate = true // Test this branch even though it's a no-op
 
-	m := NewMonitor("test-session", "/tmp/project", cfg)
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 
 	m.triggerRotationAssistance("test-session", 1, "cc", cfg.Rotation)
 
@@ -832,7 +832,7 @@ func TestTriggerRotationAssistanceEmptySession(t *testing.T) {
 	})
 
 	cfg := config.Default()
-	m := NewMonitor("", "/tmp/project", cfg)
+	m := NewMonitor("", "/tmp/project", cfg, true)
 
 	// With empty session, should not call displayTmuxMessage
 	m.triggerRotationAssistance("", 1, "cc", cfg.Rotation)

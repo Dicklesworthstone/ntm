@@ -61,7 +61,7 @@ func runMonitor(session string) error {
 	}
 
 	// Initialize resilience monitor
-	monitor := resilience.NewMonitor(session, manifest.ProjectDir, cfg)
+	monitor := resilience.NewMonitor(session, manifest.ProjectDir, cfg, manifest.AutoRestart)
 
 	// Register agents
 	for _, agent := range manifest.Agents {

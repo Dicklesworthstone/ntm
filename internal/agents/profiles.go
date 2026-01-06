@@ -305,7 +305,7 @@ func taskMatchesSpecialization(task TaskInfo, spec Specialization) bool {
 			strings.Contains(titleLower, "spike") || strings.Contains(titleLower, "explore")
 	case SpecDocs:
 		return strings.Contains(titleLower, "doc") || strings.Contains(titleLower, "readme") ||
-			typeLower == "docs" || typeLower == "chore"
+			typeLower == "docs"
 	case SpecAnalysis:
 		return strings.Contains(titleLower, "analy") || strings.Contains(titleLower, "review") ||
 			strings.Contains(titleLower, "audit")

@@ -144,6 +144,17 @@ func TestScoreAssignment_Specialization(t *testing.T) {
 	if !claudeEpicResult.SpecializationHit {
 		t.Error("Claude should hit specialization for epic task")
 	}
+
+	// Chore task should NOT hit Gemini's docs specialization
+	// (chores are general maintenance, not documentation)
+	choreTask := TaskInfo{
+		Title: "Update dependencies",
+		Type:  "chore",
+	}
+	geminiChoreResult := pm.ScoreAssignment(AgentTypeGemini, choreTask)
+	if geminiChoreResult.SpecializationHit {
+		t.Error("Gemini should NOT hit specialization for chore task (chores are not docs)")
+	}
 }
 
 func TestScoreAssignment_FileMatching(t *testing.T) {

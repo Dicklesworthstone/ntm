@@ -48,6 +48,8 @@ type Monitor struct {
 	cfg        *config.Config
 	notifier   *notify.Notifier
 
+	autoRestart bool // Whether to automatically restart crashed agents
+
 	mu     sync.RWMutex
 	agents map[string]*AgentState // keyed by pane ID
 	cancel context.CancelFunc
@@ -55,19 +57,20 @@ type Monitor struct {
 }
 
 // NewMonitor creates a new resilience monitor for a session
-func NewMonitor(session, projectDir string, cfg *config.Config) *Monitor {
+func NewMonitor(session, projectDir string, cfg *config.Config, autoRestart bool) *Monitor {
 	var notifier *notify.Notifier
 	if cfg.Notifications.Enabled {
 		notifier = notify.New(cfg.Notifications)
 	}
 
 	return &Monitor{
-		session:    session,
-		projectDir: projectDir,
-		cfg:        cfg,
-		notifier:   notifier,
-		agents:     make(map[string]*AgentState),
-		done:       make(chan struct{}),
+		session:     session,
+		projectDir:  projectDir,
+		cfg:         cfg,
+		notifier:    notifier,
+		autoRestart: autoRestart,
+		agents:      make(map[string]*AgentState),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -403,15 +406,18 @@ func (m *Monitor) handleCrash(agent *AgentState, reason string) {
 		}
 	}()
 
-	// Attempt restart if under the limit
-	if agent.RestartCount >= m.cfg.Resilience.MaxRestarts {
-		log.Printf("[resilience] Agent %s exceeded max restarts (%d), not restarting",
-			agent.PaneID, m.cfg.Resilience.MaxRestarts)
-		return
+	// Attempt restart if enabled and under the limit
+	if m.autoRestart && agent.RestartCount < m.cfg.Resilience.MaxRestarts {
+		// Schedule restart
+		go m.restartAgent(agent)
+	} else {
+		if !m.autoRestart {
+			log.Printf("[resilience] Auto-restart disabled. Agent %s stopped.", agent.PaneID)
+		} else {
+			log.Printf("[resilience] Agent %s exceeded max restarts (%d), not restarting",
+				agent.PaneID, m.cfg.Resilience.MaxRestarts)
+		}
 	}
-
-	// Schedule restart
-	go m.restartAgent(agent)
 }
 
 // restartAgent restarts a crashed agent after the configured delay
