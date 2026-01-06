@@ -3819,6 +3819,7 @@ type DiffOptions struct {
 // DiffOutput is the structured output for --robot-diff.
 type DiffOutput struct {
 	RobotResponse
+	Session       string          `json:"session"`
 	Timeframe     DiffTimeframe   `json:"timeframe"`
 	Files         DiffFiles       `json:"files"`
 	AgentActivity []DiffAgentInfo `json:"agent_activity"`
@@ -3884,6 +3885,7 @@ func PrintDiff(opts DiffOptions) error {
 
 	output := DiffOutput{
 		RobotResponse: NewRobotResponse(true),
+		Session:       opts.Session,
 		Timeframe: DiffTimeframe{
 			Since:      opts.Since.String(),
 			SinceTS:    sinceTime.Format(time.RFC3339),
@@ -3908,7 +3910,11 @@ func PrintDiff(opts DiffOptions) error {
 	}
 
 	// Create conflict detector for file analysis
-	wd, _ := os.Getwd()
+	wd, err := os.Getwd()
+	if err != nil {
+		// Fall back to empty path - conflict detection will be limited
+		wd = ""
+	}
 	detector := NewConflictDetector(&ConflictDetectorConfig{
 		RepoPath: wd,
 	})
@@ -3923,15 +3929,11 @@ func PrintDiff(opts DiffOptions) error {
 		// Capture pane output for state detection
 		captured, _ := tmux.CapturePaneOutput(pane.ID, 100)
 		lines := strings.Split(captured, "\n")
-		state := "idle"
-		if len(lines) > 0 {
-			// Simple state detection from output
-			lastLine := strings.ToLower(lines[len(lines)-1])
-			if strings.Contains(lastLine, "thinking") || strings.Contains(lastLine, "generating") {
-				state = "generating"
-			} else if strings.Contains(lastLine, "error") || strings.Contains(lastLine, "failed") {
-				state = "error"
-			}
+
+		// Use the proper detectState function for accurate state detection
+		state := detectState(lines, pane.Title)
+		if state == "" {
+			state = "idle"
 		}
 
 		info := DiffAgentInfo{
@@ -3946,17 +3948,26 @@ func PrintDiff(opts DiffOptions) error {
 		detector.RecordActivity(pane.ID, agentType, sinceTime, now, len(lines) > 0)
 	}
 
+	// Track issues for hints
+	var analysisIssues []string
+
 	// Get modified files from git
-	gitStatus, err := detector.GetGitStatus()
-	if err == nil {
+	gitStatus, gitErr := detector.GetGitStatus()
+	if gitErr == nil {
 		for _, fs := range gitStatus {
 			output.Files.Modified = append(output.Files.Modified, fs.Path)
 		}
+	} else if wd != "" {
+		// Only note git issues if we had a valid working directory
+		analysisIssues = append(analysisIssues, "Could not get git status")
 	}
 
 	// Detect potential conflicts
 	ctx := context.Background()
-	conflicts, _ := detector.DetectConflicts(ctx)
+	conflicts, conflictErr := detector.DetectConflicts(ctx)
+	if conflictErr != nil && wd != "" {
+		analysisIssues = append(analysisIssues, "Conflict detection incomplete")
+	}
 	for _, c := range conflicts {
 		output.Files.PotentialConflicts = append(output.Files.PotentialConflicts, DiffConflict{
 			File:            c.Path,
@@ -3970,6 +3981,11 @@ func PrintDiff(opts DiffOptions) error {
 	hints := &DiffAgentHints{
 		Summary: fmt.Sprintf("%s activity: %d files modified, %d agents",
 			opts.Session, len(output.Files.Modified), len(panes)),
+	}
+
+	// Add analysis issues as warnings
+	if len(analysisIssues) > 0 {
+		hints.ConflictWarnings = append(hints.ConflictWarnings, analysisIssues...)
 	}
 
 	if len(output.Files.PotentialConflicts) > 0 {
