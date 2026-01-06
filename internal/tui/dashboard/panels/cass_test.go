@@ -123,6 +123,23 @@ func TestCASSPanelViewNoHits(t *testing.T) {
 	}
 }
 
+func TestCASSPanelViewShowsErrorState(t *testing.T) {
+	panel := NewCASSPanel()
+	panel.SetSize(80, 15)
+	panel.SetData(nil, errors.New("cass not installed"))
+
+	view := panel.View()
+	if !strings.Contains(view, "Error") {
+		t.Error("expected view to include error badge")
+	}
+	if !strings.Contains(view, "cass not installed") {
+		t.Error("expected view to include error message")
+	}
+	if !strings.Contains(view, "Press r") {
+		t.Error("expected view to include refresh hint")
+	}
+}
+
 func TestCASSPanelViewWithHits(t *testing.T) {
 	panel := NewCASSPanel()
 	panel.SetSize(80, 15)

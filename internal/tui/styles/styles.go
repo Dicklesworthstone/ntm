@@ -289,6 +289,9 @@ func clamp(v int) int {
 
 // ProgressBar creates a beautiful gradient progress bar
 func ProgressBar(percent float64, width int, filled, empty string, colors ...string) string {
+	if width <= 0 {
+		return ""
+	}
 	if percent < 0 {
 		percent = 0
 	}
@@ -312,6 +315,9 @@ func ProgressBar(percent float64, width int, filled, empty string, colors ...str
 
 // ShimmerProgressBar creates a progress bar with animated shimmer effect on the filled portion
 func ShimmerProgressBar(percent float64, width int, filled, empty string, tick int, colors ...string) string {
+	if width <= 0 {
+		return ""
+	}
 	if percent < 0 {
 		percent = 0
 	}

@@ -1,6 +1,7 @@
 package panels
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +258,24 @@ func TestHistoryPanelViewNoHistory(t *testing.T) {
 
 	if !strings.Contains(view, "No command history") {
 		t.Error("expected view to contain 'No command history' when empty")
+	}
+}
+
+func TestHistoryPanelViewShowsErrorState(t *testing.T) {
+	panel := NewHistoryPanel()
+	panel.SetSize(80, 20)
+	panel.SetEntries(nil, errors.New("history fetch failed"))
+
+	view := panel.View()
+
+	if !strings.Contains(view, "Error") {
+		t.Error("expected view to include error badge")
+	}
+	if !strings.Contains(view, "history fetch failed") {
+		t.Error("expected view to include error message")
+	}
+	if !strings.Contains(view, "Press r") {
+		t.Error("expected view to include retry hint")
 	}
 }
 
