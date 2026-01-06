@@ -41,6 +41,8 @@ Examples:
 	cmd.AddCommand(newCheckpointShowCmd())
 	cmd.AddCommand(newCheckpointDeleteCmd())
 	cmd.AddCommand(newCheckpointVerifyCmd())
+	cmd.AddCommand(newCheckpointExportCmd())
+	cmd.AddCommand(newCheckpointImportCmd())
 	// TODO: newCheckpointRestoreCmd() not yet implemented
 
 	return cmd
@@ -581,6 +583,180 @@ func verifyAllCheckpoints(storage *checkpoint.Storage, session string) error {
 	}
 
 	return nil
+}
+
+func newCheckpointExportCmd() *cobra.Command {
+	var (
+		output        string
+		format        string
+		redactSecrets bool
+		noScrollback  bool
+		noGitPatch    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "export <session> <id>",
+		Short: "Export a checkpoint to a shareable archive",
+		Long: `Export a checkpoint to a tar.gz or zip archive for sharing.
+
+The exported archive contains all checkpoint data:
+- Metadata (session name, git state, pane configuration)
+- Scrollback buffers
+- Git patches (uncommitted changes)
+- MANIFEST.json with SHA256 checksums
+
+Use --redact-secrets to remove sensitive data (API keys, tokens) from
+scrollback files before sharing.
+
+Examples:
+  ntm checkpoint export myproject 20251210-143052
+  ntm checkpoint export myproject 20251210-143052 --output=backup.tar.gz
+  ntm checkpoint export myproject 20251210-143052 --format=zip
+  ntm checkpoint export myproject 20251210-143052 --redact-secrets`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session, id := args[0], args[1]
+
+			storage := checkpoint.NewStorage()
+
+			// Verify checkpoint exists
+			if _, err := storage.Load(session, id); err != nil {
+				return fmt.Errorf("checkpoint not found: %w", err)
+			}
+
+			// Determine output path
+			outputPath := output
+			if outputPath == "" {
+				ext := ".tar.gz"
+				if format == "zip" {
+					ext = ".zip"
+				}
+				outputPath = fmt.Sprintf("%s_%s%s", session, id, ext)
+			}
+
+			// Build options
+			opts := checkpoint.DefaultExportOptions()
+			if format == "zip" {
+				opts.Format = checkpoint.FormatZip
+			}
+			opts.RedactSecrets = redactSecrets
+			opts.IncludeScrollback = !noScrollback
+			opts.IncludeGitPatch = !noGitPatch
+
+			manifest, err := storage.Export(session, id, outputPath, opts)
+			if err != nil {
+				return fmt.Errorf("exporting checkpoint: %w", err)
+			}
+
+			if jsonOutput {
+				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"output_path":     outputPath,
+					"session":         manifest.SessionName,
+					"checkpoint_id":   manifest.CheckpointID,
+					"checkpoint_name": manifest.CheckpointName,
+					"file_count":      len(manifest.Files),
+					"exported_at":     manifest.ExportedAt,
+				})
+			}
+
+			t := theme.Current()
+			fmt.Printf("%s✓%s Exported checkpoint: %s\n", colorize(t.Success), "\033[0m", outputPath)
+			fmt.Printf("  Session: %s\n", manifest.SessionName)
+			fmt.Printf("  Checkpoint: %s\n", manifest.CheckpointID)
+			fmt.Printf("  Files: %d\n", len(manifest.Files))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: <session>_<id>.tar.gz)")
+	cmd.Flags().StringVar(&format, "format", "tar.gz", "archive format: tar.gz or zip")
+	cmd.Flags().BoolVar(&redactSecrets, "redact-secrets", false, "remove sensitive data before export")
+	cmd.Flags().BoolVar(&noScrollback, "no-scrollback", false, "exclude scrollback buffers")
+	cmd.Flags().BoolVar(&noGitPatch, "no-git-patch", false, "exclude git patch file")
+
+	return cmd
+}
+
+func newCheckpointImportCmd() *cobra.Command {
+	var (
+		targetSession   string
+		targetDir       string
+		skipVerify      bool
+		allowOverwrite  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "import <archive>",
+		Short: "Import a checkpoint from an archive",
+		Long: `Import a checkpoint from a tar.gz or zip archive.
+
+The archive must contain a valid NTM checkpoint structure with
+metadata.json and session data.
+
+Use --session to import into a different session name.
+Use --target-dir to override the working directory path.
+
+Examples:
+  ntm checkpoint import backup.tar.gz
+  ntm checkpoint import backup.zip --session=restored-session
+  ntm checkpoint import backup.tar.gz --target-dir=/new/path/to/project
+  ntm checkpoint import backup.tar.gz --skip-verify`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			archivePath := args[0]
+
+			// Verify archive exists
+			if _, err := os.Stat(archivePath); err != nil {
+				return fmt.Errorf("archive not found: %w", err)
+			}
+
+			storage := checkpoint.NewStorage()
+
+			opts := checkpoint.ImportOptions{
+				TargetSession:   targetSession,
+				TargetDir:       targetDir,
+				VerifyChecksums: !skipVerify,
+				AllowOverwrite:  allowOverwrite,
+			}
+
+			cp, err := storage.Import(archivePath, opts)
+			if err != nil {
+				return fmt.Errorf("importing checkpoint: %w", err)
+			}
+
+			if jsonOutput {
+				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"session":       cp.SessionName,
+					"checkpoint_id": cp.ID,
+					"name":          cp.Name,
+					"working_dir":   cp.WorkingDir,
+					"pane_count":    cp.PaneCount,
+				})
+			}
+
+			t := theme.Current()
+			fmt.Printf("%s✓%s Imported checkpoint\n", colorize(t.Success), "\033[0m")
+			fmt.Printf("  Session: %s\n", cp.SessionName)
+			fmt.Printf("  ID: %s\n", cp.ID)
+			if cp.Name != "" {
+				fmt.Printf("  Name: %s\n", cp.Name)
+			}
+			fmt.Printf("  Panes: %d\n", cp.PaneCount)
+			if cp.WorkingDir != "" && cp.WorkingDir != "${WORKING_DIR}" {
+				fmt.Printf("  Working Dir: %s\n", cp.WorkingDir)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&targetSession, "session", "", "override session name")
+	cmd.Flags().StringVar(&targetDir, "target-dir", "", "override working directory path")
+	cmd.Flags().BoolVar(&skipVerify, "skip-verify", false, "skip checksum verification")
+	cmd.Flags().BoolVar(&allowOverwrite, "overwrite", false, "overwrite existing checkpoint")
+
+	return cmd
 }
 
 // formatAge returns a human-readable age string.
