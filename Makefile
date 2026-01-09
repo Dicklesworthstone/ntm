@@ -12,7 +12,7 @@ GOFLAGS := -trimpath
 # Output directory
 DIST := dist
 
-.PHONY: all build clean install test lint fmt help
+.PHONY: all build clean install test lint fmt help pre-commit upgrade-contract
 
 all: build
 
@@ -54,6 +54,21 @@ uninstall:
 ## Run tests
 test:
 	$(GO) test -v ./...
+
+## Validate upgrade asset naming contract
+upgrade-contract:
+	@echo "Running upgrade contract tests..."
+	$(GO) test -v -run TestUpgradeAsset ./internal/cli/
+
+## Pre-commit checks (run upgrade contract tests when relevant files are staged)
+pre-commit:
+	@changed=$$(git diff --cached --name-only); \
+	if echo "$$changed" | grep -Eq '(^|/)(\.goreleaser\.yaml|internal/cli/upgrade.go|internal/cli/cli_test.go)$$'; then \
+		echo "Detected upgrade-related staged changes; running upgrade contract tests..."; \
+		$(GO) test -v -run TestUpgradeAsset ./internal/cli/; \
+	else \
+		echo "No upgrade-related staged changes detected; skipping upgrade contract tests."; \
+	fi
 
 ## Run tests with coverage
 test-coverage:

@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -652,6 +655,158 @@ func TestFormatSize(t *testing.T) {
 	}
 }
 
+type goreleaserConfig struct {
+	ProjectName       string                      `yaml:"project_name"`
+	Builds            []goreleaserBuild           `yaml:"builds"`
+	UniversalBinaries []goreleaserUniversalBinary `yaml:"universal_binaries"`
+	Archives          []goreleaserArchive         `yaml:"archives"`
+}
+
+type goreleaserBuild struct {
+	Goarm []string `yaml:"goarm"`
+}
+
+type goreleaserUniversalBinary struct {
+	Replace bool `yaml:"replace"`
+}
+
+type goreleaserArchive struct {
+	ID              string                     `yaml:"id"`
+	Formats         []string                   `yaml:"formats"`
+	NameTemplate    string                     `yaml:"name_template"`
+	FormatOverrides []goreleaserFormatOverride `yaml:"format_overrides"`
+}
+
+type goreleaserFormatOverride struct {
+	Goos    string   `yaml:"goos"`
+	Formats []string `yaml:"formats"`
+}
+
+type archiveTemplateContext struct {
+	ProjectName string
+	Version     string
+	Os          string
+	Arch        string
+	Arm         string
+}
+
+func loadGoReleaserConfig(t *testing.T) goreleaserConfig {
+	t.Helper()
+
+	path := findGoReleaserConfigPath(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var cfg goreleaserConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	if cfg.ProjectName == "" {
+		t.Fatalf("project_name missing in %s", path)
+	}
+	return cfg
+}
+
+func findGoReleaserConfigPath(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	for {
+		path := filepath.Join(dir, ".goreleaser.yaml")
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not find .goreleaser.yaml from %s", dir)
+		}
+		dir = parent
+	}
+}
+
+func findArchive(cfg goreleaserConfig, wantBinary bool) *goreleaserArchive {
+	for i := range cfg.Archives {
+		isBinary := containsStringValue(cfg.Archives[i].Formats, "binary")
+		if isBinary == wantBinary {
+			return &cfg.Archives[i]
+		}
+	}
+	return nil
+}
+
+func containsStringValue(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUniversalBinary(cfg goreleaserConfig) bool {
+	for _, ub := range cfg.UniversalBinaries {
+		if ub.Replace {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultGoarm(cfg goreleaserConfig) string {
+	for _, b := range cfg.Builds {
+		if len(b.Goarm) > 0 {
+			return b.Goarm[0]
+		}
+	}
+	return ""
+}
+
+func normalizedTemplateArch(cfg goreleaserConfig, goos, goarch string) (string, string) {
+	if goos == "darwin" && hasUniversalBinary(cfg) {
+		return "all", ""
+	}
+	if goarch == "arm" {
+		return "arm", defaultGoarm(cfg)
+	}
+	return goarch, ""
+}
+
+func renderNameTemplate(t *testing.T, tmpl string, ctx archiveTemplateContext) string {
+	t.Helper()
+
+	tpl, err := template.New("name").Option("missingkey=error").Parse(tmpl)
+	if err != nil {
+		t.Fatalf("parse name_template: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, ctx); err != nil {
+		t.Fatalf("render name_template: %v", err)
+	}
+	return strings.TrimSpace(buf.String())
+}
+
+func archiveFormatForOS(archive *goreleaserArchive, goos string) string {
+	if archive == nil {
+		return ""
+	}
+	for _, override := range archive.FormatOverrides {
+		if override.Goos == goos && len(override.Formats) > 0 {
+			return override.Formats[0]
+		}
+	}
+	if len(archive.Formats) > 0 {
+		return archive.Formats[0]
+	}
+	return ""
+}
+
 // TestUpgradeAssetNamingContract validates that upgrade.go asset naming
 // matches the GoReleaser naming convention. This is a CONTRACT TEST that
 // catches drift between .goreleaser.yaml and upgrade.go before users hit it.
@@ -665,96 +820,101 @@ func TestFormatSize(t *testing.T) {
 // See CONTRIBUTING.md "Release Infrastructure" section for full documentation
 // on the upgrade naming contract and how to safely make changes.
 func TestUpgradeAssetNamingContract(t *testing.T) {
-	// These test cases represent the expected GoReleaser output based on
-	// .goreleaser.yaml configuration. If these tests fail, either:
-	// 1. GoReleaser config changed and upgrade.go needs updating, or
-	// 2. upgrade.go changed and broke compatibility with GoReleaser output
+	cfg := loadGoReleaserConfig(t)
+	archive := findArchive(cfg, false)
+	if archive == nil {
+		t.Fatalf("no non-binary archive found in .goreleaser.yaml")
+	}
+	binaryArchive := findArchive(cfg, true)
+	if binaryArchive == nil {
+		t.Fatalf("no binary archive found in .goreleaser.yaml")
+	}
+
+	// These test cases represent platform combinations we must support.
+	// Expected names are derived from .goreleaser.yaml at test time.
 	tests := []struct {
-		name           string
-		goos           string
-		goarch         string
-		version        string
-		wantArchive    string
-		wantBinaryName string
+		name    string
+		goos    string
+		goarch  string
+		version string
 	}{
-		// macOS uses universal binary "all" instead of specific arch
 		{
-			name:           "darwin_arm64",
-			goos:           "darwin",
-			goarch:         "arm64",
-			version:        "1.4.1",
-			wantArchive:    "ntm_1.4.1_darwin_all.tar.gz",
-			wantBinaryName: "ntm_darwin_all",
+			name:    "darwin_arm64",
+			goos:    "darwin",
+			goarch:  "arm64",
+			version: "1.4.1",
 		},
 		{
-			name:           "darwin_amd64",
-			goos:           "darwin",
-			goarch:         "amd64",
-			version:        "1.4.1",
-			wantArchive:    "ntm_1.4.1_darwin_all.tar.gz",
-			wantBinaryName: "ntm_darwin_all",
-		},
-		// Linux uses actual architecture
-		{
-			name:           "linux_amd64",
-			goos:           "linux",
-			goarch:         "amd64",
-			version:        "2.0.0",
-			wantArchive:    "ntm_2.0.0_linux_amd64.tar.gz",
-			wantBinaryName: "ntm_linux_amd64",
+			name:    "darwin_amd64",
+			goos:    "darwin",
+			goarch:  "amd64",
+			version: "1.4.1",
 		},
 		{
-			name:           "linux_arm64",
-			goos:           "linux",
-			goarch:         "arm64",
-			version:        "1.5.0",
-			wantArchive:    "ntm_1.5.0_linux_arm64.tar.gz",
-			wantBinaryName: "ntm_linux_arm64",
+			name:    "linux_amd64",
+			goos:    "linux",
+			goarch:  "amd64",
+			version: "2.0.0",
 		},
-		// 32-bit ARM uses armv7 suffix (goarm=7)
 		{
-			name:           "linux_arm",
-			goos:           "linux",
-			goarch:         "arm",
-			version:        "1.5.0",
-			wantArchive:    "ntm_1.5.0_linux_armv7.tar.gz",
-			wantBinaryName: "ntm_linux_armv7",
+			name:    "linux_arm64",
+			goos:    "linux",
+			goarch:  "arm64",
+			version: "1.5.0",
 		},
-		// Windows uses .zip extension
 		{
-			name:           "windows_amd64",
-			goos:           "windows",
-			goarch:         "amd64",
-			version:        "1.4.1",
-			wantArchive:    "ntm_1.4.1_windows_amd64.zip",
-			wantBinaryName: "ntm_windows_amd64",
+			name:    "linux_arm",
+			goos:    "linux",
+			goarch:  "arm",
+			version: "1.5.0",
 		},
-		// FreeBSD
 		{
-			name:           "freebsd_amd64",
-			goos:           "freebsd",
-			goarch:         "amd64",
-			version:        "1.4.1",
-			wantArchive:    "ntm_1.4.1_freebsd_amd64.tar.gz",
-			wantBinaryName: "ntm_freebsd_amd64",
+			name:    "windows_amd64",
+			goos:    "windows",
+			goarch:  "amd64",
+			version: "1.4.1",
+		},
+		{
+			name:    "freebsd_amd64",
+			goos:    "freebsd",
+			goarch:  "amd64",
+			version: "1.4.1",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			arch, arm := normalizedTemplateArch(cfg, tt.goos, tt.goarch)
+			ctx := archiveTemplateContext{
+				ProjectName: cfg.ProjectName,
+				Version:     tt.version,
+				Os:          tt.goos,
+				Arch:        arch,
+				Arm:         arm,
+			}
+
+			archiveBase := renderNameTemplate(t, archive.NameTemplate, ctx)
+			archiveExt := archiveFormatForOS(archive, tt.goos)
+			wantArchive := archiveBase
+			if archiveExt != "" {
+				wantArchive = archiveBase + "." + archiveExt
+			}
+
+			wantBinaryName := renderNameTemplate(t, binaryArchive.NameTemplate, ctx)
+
 			// Simulate the asset name generation for this platform
 			gotArchive := simulateGetArchiveAssetName(tt.version, tt.goos, tt.goarch)
 			gotBinary := simulateGetAssetName(tt.goos, tt.goarch)
 
-			if gotArchive != tt.wantArchive {
+			if gotArchive != wantArchive {
 				t.Errorf("Archive name mismatch for %s/%s:\n  got:  %q\n  want: %q\n"+
 					"  This likely means upgrade.go is out of sync with .goreleaser.yaml",
-					tt.goos, tt.goarch, gotArchive, tt.wantArchive)
+					tt.goos, tt.goarch, gotArchive, wantArchive)
 			}
-			if gotBinary != tt.wantBinaryName {
+			if gotBinary != wantBinaryName {
 				t.Errorf("Binary name mismatch for %s/%s:\n  got:  %q\n  want: %q\n"+
 					"  This likely means upgrade.go is out of sync with .goreleaser.yaml",
-					tt.goos, tt.goarch, gotBinary, tt.wantBinaryName)
+					tt.goos, tt.goarch, gotBinary, wantBinaryName)
 			}
 		})
 	}

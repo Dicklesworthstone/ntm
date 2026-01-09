@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,7 +17,11 @@ var (
 	ErrNotInstalled = errors.New("ubs is not installed")
 	ErrTimeout      = errors.New("scan timed out")
 	ErrScanFailed   = errors.New("scan failed")
+	ErrOutputTooLarge = errors.New("scan output exceeded limit")
 )
+
+// MaxScanOutputBytes limits the size of scan output to prevent OOM.
+const MaxScanOutputBytes = 10 * 1024 * 1024
 
 // Scanner wraps the UBS command-line tool.
 type Scanner struct {
@@ -61,12 +66,34 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 	}
 
 	cmd := exec.CommandContext(ctx, s.binaryPath, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	
+	// Capture stderr separately
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
 	startTime := time.Now()
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting ubs: %w", err)
+	}
+
+	// Read output with limit
+	output, err := io.ReadAll(io.LimitReader(stdoutPipe, MaxScanOutputBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading output: %w", err)
+	}
+
+	// Check if output exceeded limit
+	if len(output) > MaxScanOutputBytes {
+		_ = cmd.Process.Kill()
+		return nil, ErrOutputTooLarge
+	}
+
+	waitErr := cmd.Wait()
 	duration := time.Since(startTime)
 
 	// Check for timeout
@@ -75,10 +102,10 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 	}
 
 	// Parse the JSON output
-	result, parseErr := s.parseOutput(stdout.Bytes())
+	result, parseErr := s.parseOutput(output)
 	if parseErr != nil {
 		// If we can't parse output but command succeeded, return basic result
-		if err == nil {
+		if waitErr == nil {
 			return &ScanResult{
 				Project:  path,
 				Duration: duration,
@@ -91,11 +118,11 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 	result.Duration = duration
 
 	// Get exit code
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			return nil, fmt.Errorf("running ubs: %w", err)
+			return nil, fmt.Errorf("running ubs: %w", waitErr)
 		}
 	}
 

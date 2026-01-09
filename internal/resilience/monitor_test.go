@@ -83,7 +83,7 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 		Healthy:   false,
 	}
 
-	m.restartAgent(m.agents["pane-1"])
+	m.restartAgent(context.Background(), m.agents["pane-1"])
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -263,7 +263,7 @@ func TestCheckHealthWithHealthyAgent(t *testing.T) {
 	m.agents["pane-1"].Healthy = false
 	m.mu.Unlock()
 
-	m.checkHealth()
+	m.checkHealth(context.Background())
 
 	// Should be marked healthy again
 	m.mu.RLock()
@@ -310,7 +310,7 @@ func TestCheckHealthDetectsCrash(t *testing.T) {
 	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
-	m.checkHealth()
+	m.checkHealth(context.Background())
 
 	// Give async restart goroutine time to run
 	time.Sleep(50 * time.Millisecond)
@@ -351,7 +351,7 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
-	m.checkHealth()
+	m.checkHealth(context.Background())
 
 	// Give async restart goroutine time to run
 	time.Sleep(50 * time.Millisecond)
@@ -396,7 +396,7 @@ func TestCheckHealthDetectsRateLimit(t *testing.T) {
 	m := NewMonitor("test-session", "/tmp/project", cfg, true)
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
-	m.checkHealth()
+	m.checkHealth(context.Background())
 
 	// Give async goroutine time to run
 	time.Sleep(50 * time.Millisecond)
@@ -444,7 +444,7 @@ func TestCheckHealthRateLimitCleared(t *testing.T) {
 	m.agents["pane-1"].WaitSeconds = 60
 	m.mu.Unlock()
 
-	m.checkHealth()
+	m.checkHealth(context.Background())
 
 	m.mu.RLock()
 	rateLimited := m.agents["pane-1"].RateLimited
@@ -474,7 +474,7 @@ func TestCheckHealthError(t *testing.T) {
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Should not panic
-	m.checkHealth()
+	m.checkHealth(context.Background())
 
 	// Agent should remain unchanged
 	m.mu.RLock()
@@ -512,7 +512,7 @@ func TestHandleCrashMaxRestartsExceeded(t *testing.T) {
 	m.agents["pane-1"].RestartCount = 3
 	m.mu.Unlock()
 
-	m.handleCrash(m.agents["pane-1"], "test crash")
+	m.handleCrash(context.Background(), m.agents["pane-1"], "test crash")
 
 	// Give time for any goroutine
 	time.Sleep(50 * time.Millisecond)
@@ -543,7 +543,7 @@ func TestRestartAgentIncreasesCount(t *testing.T) {
 	m.agents["pane-1"].Healthy = false
 	m.mu.Unlock()
 
-	m.restartAgent(m.agents["pane-1"])
+	m.restartAgent(context.Background(), m.agents["pane-1"])
 
 	m.mu.RLock()
 	count := m.agents["pane-1"].RestartCount
@@ -580,7 +580,7 @@ func TestRestartAgentSkipsIfHealthy(t *testing.T) {
 	m.RegisterAgent("pane-1", 1, "cc", "opus", "claude")
 
 	// Agent is healthy by default
-	m.restartAgent(m.agents["pane-1"])
+	m.restartAgent(context.Background(), m.agents["pane-1"])
 
 	if sendKeysCalled {
 		t.Error("should not restart healthy agent")
@@ -611,7 +611,7 @@ func TestRestartAgentHandlesBuildError(t *testing.T) {
 	m.agents["pane-1"].Healthy = false
 	m.mu.Unlock()
 
-	m.restartAgent(m.agents["pane-1"])
+	m.restartAgent(context.Background(), m.agents["pane-1"])
 
 	if sendKeysCalled {
 		t.Error("should not send keys when build fails")
@@ -641,7 +641,7 @@ func TestRestartAgentHandlesSendKeysError(t *testing.T) {
 	m.mu.Unlock()
 
 	// Should not panic
-	m.restartAgent(m.agents["pane-1"])
+	m.restartAgent(context.Background(), m.agents["pane-1"])
 
 	// Restart count should still be incremented
 	m.mu.RLock()

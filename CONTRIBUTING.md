@@ -93,6 +93,13 @@ Before making **ANY** changes to asset naming:
    go test -v -run TestUpgradeAsset ./internal/cli/
    ```
 
+   Optional helpers:
+   ```bash
+   make upgrade-contract
+   make pre-commit
+   ```
+   `make pre-commit` only runs the contract tests when relevant files are staged.
+
 4. **CI will validate**:
    - `upgrade-check` job tests against latest release
    - If naming changed, expect CI to fail until new release with new naming

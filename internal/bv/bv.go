@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -25,7 +26,25 @@ var ErrNoBaseline = errors.New("no baseline found")
 // DefaultTimeout is the default timeout for external command execution
 const DefaultTimeout = 30 * time.Second
 
-var bdForceNoDB atomic.Bool
+// noDBCache tracks which directories require --no-db flag.
+// Key: directory path, Value: bool (true if --no-db is needed)
+// We use a sync.Map for thread-safe concurrent access across sessions.
+var noDBCache atomic.Value // Stores *sync.Map
+
+func init() {
+	noDBCache.Store(&sync.Map{})
+}
+
+func getNoDBState(dir string) bool {
+	m := noDBCache.Load().(*sync.Map)
+	v, ok := m.Load(dir)
+	return ok && v.(bool)
+}
+
+func setNoDBState(dir string, val bool) {
+	m := noDBCache.Load().(*sync.Map)
+	m.Store(dir, val)
+}
 
 // IsInstalled checks if bv is available in PATH
 func IsInstalled() bool {
@@ -615,17 +634,18 @@ func GetDependencyContext(dir string, n int) (*DependencyContext, error) {
 // If bd reports a missing database and suggests `--no-db`, it retries once with `--no-db`
 // and caches that preference for the remainder of the process.
 func RunBd(dir string, args ...string) (string, error) {
-	if bdForceNoDB.Load() && !containsString(args, "--no-db") {
-		args = append([]string{"--no-db"}, args...)
-	}
-
-	// Resolve empty dir to current working directory
+	// Resolve empty dir to current working directory first to ensure consistent cache keys
 	if dir == "" {
 		var err error
 		dir, err = os.Getwd()
 		if err != nil {
 			return "", fmt.Errorf("failed to get working directory: %w", err)
 		}
+	}
+
+	// Check cache for this specific directory
+	if getNoDBState(dir) && !containsString(args, "--no-db") {
+		args = append([]string{"--no-db"}, args...)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
@@ -644,8 +664,9 @@ func RunBd(dir string, args ...string) (string, error) {
 		}
 
 		stderrStr := stderr.String()
-		if !bdForceNoDB.Load() && !containsString(args, "--no-db") && isNoBeadsDBError(stderrStr) {
-			bdForceNoDB.Store(true)
+		// If we haven't already forced no-db, check if we should
+		if !getNoDBState(dir) && !containsString(args, "--no-db") && isNoBeadsDBError(stderrStr) {
+			setNoDBState(dir, true)
 			return RunBd(dir, append([]string{"--no-db"}, args...)...)
 		}
 		return "", fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, stderrStr)

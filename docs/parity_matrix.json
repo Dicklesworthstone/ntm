@@ -1,0 +1,2908 @@
+{
+  "generated_at": "2026-01-07T22:39:29.586Z",
+  "count": 223,
+  "endpoints": [
+    {
+      "id": "core.health",
+      "method": "get",
+      "path": "/health",
+      "tags": [
+        "core"
+      ],
+      "summary": "Health check",
+      "description": "Returns server health status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "HealthResponse"
+    },
+    {
+      "id": "core.version",
+      "method": "get",
+      "path": "/version",
+      "tags": [
+        "core"
+      ],
+      "summary": "Version info",
+      "description": "Returns NTM version and build info.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "VersionResponse"
+    },
+    {
+      "id": "core.deps",
+      "method": "get",
+      "path": "/deps",
+      "tags": [
+        "core"
+      ],
+      "summary": "Dependencies",
+      "description": "Returns dependency check results (tmux, go, etc.).",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "core.doctor",
+      "method": "get",
+      "path": "/doctor",
+      "tags": [
+        "core",
+        "tools"
+      ],
+      "summary": "Doctor report",
+      "description": "Validates ecosystem tool health and configuration.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "DoctorResponse"
+    },
+    {
+      "id": "core.upgrade",
+      "method": "post",
+      "path": "/upgrade",
+      "tags": [
+        "core"
+      ],
+      "summary": "Upgrade",
+      "description": "Runs the NTM upgrade flow.",
+      "source": null,
+      "requestSchema": "UpgradeRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "core.setup",
+      "method": "post",
+      "path": "/setup",
+      "tags": [
+        "core"
+      ],
+      "summary": "Setup",
+      "description": "Runs NTM setup.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "core.validate",
+      "method": "post",
+      "path": "/validate",
+      "tags": [
+        "core"
+      ],
+      "summary": "Validate",
+      "description": "Runs validation checks.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "core.serve",
+      "method": "post",
+      "path": "/server/serve",
+      "tags": [
+        "core"
+      ],
+      "summary": "Start server",
+      "description": "Starts the NTM HTTP server (no-op if already running).",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.show",
+      "method": "get",
+      "path": "/config",
+      "tags": [
+        "core"
+      ],
+      "summary": "Show config",
+      "description": "Returns effective config.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.init",
+      "method": "post",
+      "path": "/config/init",
+      "tags": [
+        "core"
+      ],
+      "summary": "Init config",
+      "description": "Creates default config file.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.path",
+      "method": "get",
+      "path": "/config/path",
+      "tags": [
+        "core"
+      ],
+      "summary": "Config path",
+      "description": "Returns config path.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.setProjectsBase",
+      "method": "put",
+      "path": "/config/projects-base",
+      "tags": [
+        "core"
+      ],
+      "summary": "Set projects base",
+      "description": "Sets projects base directory.",
+      "source": null,
+      "requestSchema": "ProjectsBaseRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.diff",
+      "method": "get",
+      "path": "/config/diff",
+      "tags": [
+        "core"
+      ],
+      "summary": "Config diff",
+      "description": "Shows config differences from defaults.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.validate",
+      "method": "post",
+      "path": "/config/validate",
+      "tags": [
+        "core"
+      ],
+      "summary": "Validate config",
+      "description": "Validates config file.",
+      "source": null,
+      "requestSchema": "ConfigValidateRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.get",
+      "method": "get",
+      "path": "/config/{key}",
+      "tags": [
+        "core"
+      ],
+      "summary": "Get config value",
+      "description": "Get config by key.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.edit",
+      "method": "post",
+      "path": "/config/edit",
+      "tags": [
+        "core"
+      ],
+      "summary": "Edit config",
+      "description": "Opens config in editor (server-side).",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.reset",
+      "method": "post",
+      "path": "/config/reset",
+      "tags": [
+        "core"
+      ],
+      "summary": "Reset config",
+      "description": "Resets config to defaults.",
+      "source": null,
+      "requestSchema": "ConfigResetRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "config.projectInit",
+      "method": "post",
+      "path": "/config/project/init",
+      "tags": [
+        "core"
+      ],
+      "summary": "Init project config",
+      "description": "Initializes .ntm config in project.",
+      "source": null,
+      "requestSchema": "ProjectInitRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "shell.init",
+      "method": "post",
+      "path": "/shell/init",
+      "tags": [
+        "core"
+      ],
+      "summary": "Shell init",
+      "description": "Returns shell init snippet.",
+      "source": null,
+      "requestSchema": "ShellInitRequest",
+      "responseSchema": "ShellInitResponse"
+    },
+    {
+      "id": "shell.completion",
+      "method": "get",
+      "path": "/shell/completion",
+      "tags": [
+        "core"
+      ],
+      "summary": "Shell completion",
+      "description": "Returns completion script.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "tmux.bind",
+      "method": "post",
+      "path": "/tmux/bind",
+      "tags": [
+        "core"
+      ],
+      "summary": "Bind palette key",
+      "description": "Sets tmux keybinding for palette.",
+      "source": null,
+      "requestSchema": "BindRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.list",
+      "method": "get",
+      "path": "/sessions",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "List sessions",
+      "description": "Lists sessions from state store.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "SessionListResponse"
+    },
+    {
+      "id": "sessions.create",
+      "method": "post",
+      "path": "/sessions",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Create session",
+      "description": "Creates a tmux session.",
+      "source": null,
+      "requestSchema": "CreateSessionRequest",
+      "responseSchema": "CreateSessionResponse"
+    },
+    {
+      "id": "sessions.get",
+      "method": "get",
+      "path": "/sessions/{sessionId}",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Get session",
+      "description": "Returns session details.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "SessionResponse"
+    },
+    {
+      "id": "sessions.delete",
+      "method": "delete",
+      "path": "/sessions/{sessionId}",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Kill session",
+      "description": "Kills session and updates state.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "SuccessResponse"
+    },
+    {
+      "id": "sessions.status",
+      "method": "get",
+      "path": "/sessions/{sessionId}/status",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Session status",
+      "description": "Detailed status for session.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.attach",
+      "method": "post",
+      "path": "/sessions/{sessionId}/attach",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Attach session",
+      "description": "Attach/switch to a session.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.view",
+      "method": "post",
+      "path": "/sessions/{sessionId}/view",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "View session",
+      "description": "Tile panes for session.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.zoom",
+      "method": "post",
+      "path": "/sessions/{sessionId}/zoom",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Zoom pane",
+      "description": "Zoom to a pane.",
+      "source": null,
+      "requestSchema": "ZoomRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.spawn",
+      "method": "post",
+      "path": "/sessions/{sessionId}/spawn",
+      "tags": [
+        "sessions",
+        "agents"
+      ],
+      "summary": "Spawn agents",
+      "description": "Creates session and spawns agents.",
+      "source": null,
+      "requestSchema": "SpawnRequest",
+      "responseSchema": "SpawnResponse"
+    },
+    {
+      "id": "sessions.add",
+      "method": "post",
+      "path": "/sessions/{sessionId}/add",
+      "tags": [
+        "sessions",
+        "agents"
+      ],
+      "summary": "Add agents",
+      "description": "Adds agents to session.",
+      "source": null,
+      "requestSchema": "AddAgentsRequest",
+      "responseSchema": "AddAgentsResponse"
+    },
+    {
+      "id": "sessions.quick",
+      "method": "post",
+      "path": "/projects/quick",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Quick project",
+      "description": "Creates project scaffold and spawns agents.",
+      "source": null,
+      "requestSchema": "QuickProjectRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.dashboard",
+      "method": "get",
+      "path": "/dashboard/{sessionId}",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Dashboard data",
+      "description": "Returns dashboard panel data.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "sessions.watch",
+      "method": "get",
+      "path": "/sessions/{sessionId}/watch",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Watch session",
+      "description": "Long-poll watch (WS preferred).",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.send",
+      "method": "post",
+      "path": "/sessions/{sessionId}/send",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Send prompt",
+      "description": "Sends prompt to agents/panes.",
+      "source": null,
+      "requestSchema": "SendRequest",
+      "responseSchema": "SendResponse"
+    },
+    {
+      "id": "agents.interrupt",
+      "method": "post",
+      "path": "/sessions/{sessionId}/interrupt",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Interrupt",
+      "description": "Sends Ctrl+C to agents.",
+      "source": null,
+      "requestSchema": "InterruptRequest",
+      "responseSchema": "InterruptResponse"
+    },
+    {
+      "id": "agents.wait",
+      "method": "post",
+      "path": "/sessions/{sessionId}/wait",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Wait state",
+      "description": "Waits for agent state.",
+      "source": null,
+      "requestSchema": "WaitRequest",
+      "responseSchema": "WaitResponse"
+    },
+    {
+      "id": "agents.replay",
+      "method": "post",
+      "path": "/sessions/{sessionId}/replay",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Replay",
+      "description": "Replays a prompt from history.",
+      "source": null,
+      "requestSchema": "ReplayRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.activity",
+      "method": "get",
+      "path": "/sessions/{sessionId}/activity",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Activity",
+      "description": "Agent activity state.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.summary",
+      "method": "get",
+      "path": "/sessions/{sessionId}/summary",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Summary",
+      "description": "Session activity summary.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.health",
+      "method": "get",
+      "path": "/sessions/{sessionId}/health",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Health",
+      "description": "Health status for session.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.quota",
+      "method": "get",
+      "path": "/sessions/{sessionId}/quota",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Quota",
+      "description": "Quota usage for session.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.rotate",
+      "method": "post",
+      "path": "/sessions/{sessionId}/rotate",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Rotate",
+      "description": "Rotate agents/accounts.",
+      "source": null,
+      "requestSchema": "RotateRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "rotate.context.history",
+      "method": "get",
+      "path": "/rotate/context/history",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Rotation history",
+      "description": "Context rotation history.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "rotate.context.stats",
+      "method": "get",
+      "path": "/rotate/context/stats",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Rotation stats",
+      "description": "Context rotation statistics.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "rotate.context.clear",
+      "method": "delete",
+      "path": "/rotate/context/history",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Clear rotation history",
+      "description": "Clears rotation history.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "output.copy",
+      "method": "get",
+      "path": "/sessions/{sessionId}/copy",
+      "tags": [
+        "output"
+      ],
+      "summary": "Copy output",
+      "description": "Returns recent output.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "CopyResponse"
+    },
+    {
+      "id": "output.save",
+      "method": "get",
+      "path": "/sessions/{sessionId}/save",
+      "tags": [
+        "output"
+      ],
+      "summary": "Save output",
+      "description": "Saves output to files.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "output.grep",
+      "method": "post",
+      "path": "/sessions/{sessionId}/grep",
+      "tags": [
+        "output"
+      ],
+      "summary": "Grep output",
+      "description": "Filter output by regex.",
+      "source": null,
+      "requestSchema": "GrepRequest",
+      "responseSchema": "GrepResponse"
+    },
+    {
+      "id": "output.extract",
+      "method": "post",
+      "path": "/sessions/{sessionId}/extract",
+      "tags": [
+        "output"
+      ],
+      "summary": "Extract code blocks",
+      "description": "Extract code blocks.",
+      "source": null,
+      "requestSchema": "ExtractRequest",
+      "responseSchema": "ExtractResponse"
+    },
+    {
+      "id": "output.diff",
+      "method": "get",
+      "path": "/sessions/{sessionId}/diff",
+      "tags": [
+        "output"
+      ],
+      "summary": "Diff panes",
+      "description": "Diff outputs between panes.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "output.changes",
+      "method": "get",
+      "path": "/sessions/{sessionId}/changes",
+      "tags": [
+        "output"
+      ],
+      "summary": "File changes",
+      "description": "Recent changes with attribution.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "output.conflicts",
+      "method": "get",
+      "path": "/sessions/{sessionId}/conflicts",
+      "tags": [
+        "output"
+      ],
+      "summary": "Conflicts",
+      "description": "Conflict detection.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "history.show",
+      "method": "get",
+      "path": "/history/{id}",
+      "tags": [
+        "output"
+      ],
+      "summary": "History entry",
+      "description": "Get history entry.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "history.clear",
+      "method": "post",
+      "path": "/history/clear",
+      "tags": [
+        "output"
+      ],
+      "summary": "Clear history",
+      "description": "Clears history.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "history.stats",
+      "method": "get",
+      "path": "/history/stats",
+      "tags": [
+        "output"
+      ],
+      "summary": "History stats",
+      "description": "History stats.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "history.export",
+      "method": "post",
+      "path": "/history/export",
+      "tags": [
+        "output"
+      ],
+      "summary": "History export",
+      "description": "Exports history.",
+      "source": null,
+      "requestSchema": "ExportRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "history.prune",
+      "method": "post",
+      "path": "/history/prune",
+      "tags": [
+        "output"
+      ],
+      "summary": "Prune history",
+      "description": "Prunes history.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "analytics",
+      "method": "get",
+      "path": "/analytics",
+      "tags": [
+        "output"
+      ],
+      "summary": "Analytics",
+      "description": "Analytics summary.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "metrics.show",
+      "method": "get",
+      "path": "/metrics",
+      "tags": [
+        "output"
+      ],
+      "summary": "Metrics",
+      "description": "Metrics summary.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "metrics.compare",
+      "method": "get",
+      "path": "/metrics/compare",
+      "tags": [
+        "output"
+      ],
+      "summary": "Metrics compare",
+      "description": "Compare metrics snapshots.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "metrics.export",
+      "method": "get",
+      "path": "/metrics/export",
+      "tags": [
+        "output"
+      ],
+      "summary": "Metrics export",
+      "description": "Export metrics.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "metrics.snapshot",
+      "method": "post",
+      "path": "/metrics/snapshot",
+      "tags": [
+        "output"
+      ],
+      "summary": "Metrics snapshot",
+      "description": "Create metrics snapshot.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "metrics.save",
+      "method": "post",
+      "path": "/metrics/save",
+      "tags": [
+        "output"
+      ],
+      "summary": "Metrics save",
+      "description": "Save metrics snapshot.",
+      "source": null,
+      "requestSchema": "NameRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "metrics.list",
+      "method": "get",
+      "path": "/metrics/list",
+      "tags": [
+        "output"
+      ],
+      "summary": "Metrics list",
+      "description": "List metrics snapshots.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.create",
+      "method": "post",
+      "path": "/checkpoints",
+      "tags": [
+        "output"
+      ],
+      "summary": "Create checkpoint",
+      "description": "Create checkpoint.",
+      "source": null,
+      "requestSchema": "CheckpointCreateRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.list",
+      "method": "get",
+      "path": "/checkpoints",
+      "tags": [
+        "output"
+      ],
+      "summary": "List checkpoints",
+      "description": "List checkpoints.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.get",
+      "method": "get",
+      "path": "/checkpoints/{id}",
+      "tags": [
+        "output"
+      ],
+      "summary": "Get checkpoint",
+      "description": "Get checkpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.delete",
+      "method": "delete",
+      "path": "/checkpoints/{id}",
+      "tags": [
+        "output"
+      ],
+      "summary": "Delete checkpoint",
+      "description": "Delete checkpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.verify",
+      "method": "post",
+      "path": "/checkpoints/{id}/verify",
+      "tags": [
+        "output"
+      ],
+      "summary": "Verify checkpoint",
+      "description": "Verify checkpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.export",
+      "method": "post",
+      "path": "/checkpoints/{id}/export",
+      "tags": [
+        "output"
+      ],
+      "summary": "Export checkpoint",
+      "description": "Export checkpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "checkpoints.import",
+      "method": "post",
+      "path": "/checkpoints/import",
+      "tags": [
+        "output"
+      ],
+      "summary": "Import checkpoint",
+      "description": "Import checkpoint.",
+      "source": null,
+      "requestSchema": "ImportRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "rollback",
+      "method": "post",
+      "path": "/sessions/{sessionId}/rollback",
+      "tags": [
+        "output"
+      ],
+      "summary": "Rollback",
+      "description": "Rollback session.",
+      "source": null,
+      "requestSchema": "RollbackRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "saved.create",
+      "method": "post",
+      "path": "/sessions/saved",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Save session state",
+      "description": "Save session state.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "saved.list",
+      "method": "get",
+      "path": "/sessions/saved",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "List saved",
+      "description": "List saved session states.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "saved.get",
+      "method": "get",
+      "path": "/sessions/saved/{name}",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Get saved",
+      "description": "Get saved state.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "saved.delete",
+      "method": "delete",
+      "path": "/sessions/saved/{name}",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Delete saved",
+      "description": "Delete saved state.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "saved.restore",
+      "method": "post",
+      "path": "/sessions/saved/{name}/restore",
+      "tags": [
+        "sessions"
+      ],
+      "summary": "Restore saved",
+      "description": "Restore saved session.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "tools.list",
+      "method": "get",
+      "path": "/tools",
+      "tags": [
+        "tools"
+      ],
+      "summary": "Tools",
+      "description": "List tool health.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "ToolsResponse"
+    },
+    {
+      "id": "tools.get",
+      "method": "get",
+      "path": "/tools/{tool}",
+      "tags": [
+        "tools"
+      ],
+      "summary": "Tool details",
+      "description": "Tool health details.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "work.triage",
+      "method": "get",
+      "path": "/work/triage",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Triage",
+      "description": "BV triage.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "work.alerts",
+      "method": "get",
+      "path": "/work/alerts",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Work alerts",
+      "description": "Work alerts.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "work.search",
+      "method": "get",
+      "path": "/work/search",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Work search",
+      "description": "Search work items.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "work.impact",
+      "method": "post",
+      "path": "/work/impact",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Impact analysis",
+      "description": "Impact analysis.",
+      "source": null,
+      "requestSchema": "ImpactRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "work.next",
+      "method": "get",
+      "path": "/work/next",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Next work",
+      "description": "Next recommended work.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "beads.daemon.start",
+      "method": "post",
+      "path": "/beads/daemon/start",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Start beads daemon",
+      "description": "Start BD daemon.",
+      "source": null,
+      "requestSchema": "BeadsDaemonRequest",
+      "responseSchema": "BeadsDaemonControlResponse"
+    },
+    {
+      "id": "beads.daemon.stop",
+      "method": "post",
+      "path": "/beads/daemon/stop",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Stop beads daemon",
+      "description": "Stop BD daemon.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "BeadsDaemonControlResponse"
+    },
+    {
+      "id": "beads.daemon.status",
+      "method": "get",
+      "path": "/beads/daemon/status",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Beads status",
+      "description": "BD daemon status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "DaemonStatusResponse"
+    },
+    {
+      "id": "beads.daemon.health",
+      "method": "get",
+      "path": "/beads/daemon/health",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Beads health",
+      "description": "BD daemon health.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "BeadsDaemonHealthResponse"
+    },
+    {
+      "id": "beads.daemon.metrics",
+      "method": "get",
+      "path": "/beads/daemon/metrics",
+      "tags": [
+        "beads"
+      ],
+      "summary": "Beads metrics",
+      "description": "BD daemon metrics.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "BeadsDaemonMetricsResponse"
+    },
+    {
+      "id": "cass.status",
+      "method": "get",
+      "path": "/cass/status",
+      "tags": [
+        "cass"
+      ],
+      "summary": "CASS status",
+      "description": "CASS health.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "CassStatusResponse"
+    },
+    {
+      "id": "cass.search",
+      "method": "get",
+      "path": "/cass/search",
+      "tags": [
+        "cass"
+      ],
+      "summary": "CASS search",
+      "description": "Semantic search.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "CassSearchResponse"
+    },
+    {
+      "id": "cass.insights",
+      "method": "get",
+      "path": "/cass/insights",
+      "tags": [
+        "cass"
+      ],
+      "summary": "CASS insights",
+      "description": "CASS insights.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "CassInsightsResponse"
+    },
+    {
+      "id": "cass.timeline",
+      "method": "get",
+      "path": "/cass/timeline",
+      "tags": [
+        "cass"
+      ],
+      "summary": "CASS timeline",
+      "description": "CASS timeline.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "CassTimelineResponse"
+    },
+    {
+      "id": "cass.preview",
+      "method": "post",
+      "path": "/cass/preview",
+      "tags": [
+        "cass"
+      ],
+      "summary": "CASS preview",
+      "description": "Preview prompt context.",
+      "source": null,
+      "requestSchema": "CassPreviewRequest",
+      "responseSchema": "CassPreviewResponse"
+    },
+    {
+      "id": "context.build",
+      "method": "post",
+      "path": "/context/build",
+      "tags": [
+        "context"
+      ],
+      "summary": "Build context",
+      "description": "Build context pack.",
+      "source": null,
+      "requestSchema": "ContextBuildRequest",
+      "responseSchema": "ContextBuildResponse"
+    },
+    {
+      "id": "context.show",
+      "method": "get",
+      "path": "/context/{id}",
+      "tags": [
+        "context"
+      ],
+      "summary": "Show context pack",
+      "description": "Get context pack.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "context.stats",
+      "method": "get",
+      "path": "/context/stats",
+      "tags": [
+        "context"
+      ],
+      "summary": "Context stats",
+      "description": "Context stats.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "context.clear",
+      "method": "delete",
+      "path": "/context/cache",
+      "tags": [
+        "context"
+      ],
+      "summary": "Clear context cache",
+      "description": "Clear context cache.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "memory.daemon.start",
+      "method": "post",
+      "path": "/memory/daemon/start",
+      "tags": [
+        "context"
+      ],
+      "summary": "Start CM daemon",
+      "description": "Starts CM server.",
+      "source": null,
+      "requestSchema": "DaemonStartRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "memory.context",
+      "method": "post",
+      "path": "/memory/context",
+      "tags": [
+        "context"
+      ],
+      "summary": "Get memory context",
+      "description": "CM context for task.",
+      "source": null,
+      "requestSchema": "MemoryContextRequest",
+      "responseSchema": "MemoryContextResponse"
+    },
+    {
+      "id": "memory.outcome",
+      "method": "post",
+      "path": "/memory/outcome",
+      "tags": [
+        "context"
+      ],
+      "summary": "Record outcome",
+      "description": "Record CM outcome.",
+      "source": null,
+      "requestSchema": "MemoryOutcomeRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "memory.privacy",
+      "method": "post",
+      "path": "/memory/privacy",
+      "tags": [
+        "context"
+      ],
+      "summary": "Memory privacy",
+      "description": "Update privacy settings.",
+      "source": null,
+      "requestSchema": "MemoryPrivacyRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "memory.privacy.status",
+      "method": "get",
+      "path": "/memory/privacy",
+      "tags": [
+        "context"
+      ],
+      "summary": "Memory privacy status",
+      "description": "Get privacy status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "scan.run",
+      "method": "post",
+      "path": "/scan",
+      "tags": [
+        "scanner"
+      ],
+      "summary": "Run scan",
+      "description": "Run UBS scan.",
+      "source": null,
+      "requestSchema": "ScanRequest",
+      "responseSchema": "ScanResponse"
+    },
+    {
+      "id": "scan.bridge",
+      "method": "post",
+      "path": "/scan/bridge",
+      "tags": [
+        "scanner"
+      ],
+      "summary": "Scan bridge",
+      "description": "Create beads from findings.",
+      "source": null,
+      "requestSchema": "ScanBridgeRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "scan.watch",
+      "method": "post",
+      "path": "/scan/watch",
+      "tags": [
+        "scanner"
+      ],
+      "summary": "Scan watch",
+      "description": "Watch mode scan.",
+      "source": null,
+      "requestSchema": "ScanRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "bugs.list",
+      "method": "get",
+      "path": "/bugs",
+      "tags": [
+        "scanner"
+      ],
+      "summary": "Bugs list",
+      "description": "List bugs.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "bugs.notify",
+      "method": "post",
+      "path": "/bugs/notify",
+      "tags": [
+        "scanner"
+      ],
+      "summary": "Bugs notify",
+      "description": "Notify agents about findings.",
+      "source": null,
+      "requestSchema": "BugsNotifyRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "bugs.summary",
+      "method": "get",
+      "path": "/bugs/summary",
+      "tags": [
+        "scanner"
+      ],
+      "summary": "Bugs summary",
+      "description": "Summary report.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "mail.send",
+      "method": "post",
+      "path": "/mail/send",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Mail send",
+      "description": "Send mail to agents.",
+      "source": null,
+      "requestSchema": "MailSendRequest",
+      "responseSchema": "MailSendResponse"
+    },
+    {
+      "id": "mail.inbox",
+      "method": "get",
+      "path": "/mail/inbox",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Mail inbox",
+      "description": "Inbox.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "MailInboxResponse"
+    },
+    {
+      "id": "message.inbox",
+      "method": "get",
+      "path": "/message/inbox",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Message inbox",
+      "description": "Message inbox.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "InboxResponse"
+    },
+    {
+      "id": "message.send",
+      "method": "post",
+      "path": "/message/send",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Message send",
+      "description": "Send message.",
+      "source": null,
+      "requestSchema": "MessageSendRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "message.read",
+      "method": "get",
+      "path": "/message/{id}",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Message read",
+      "description": "Read message.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "message.ack",
+      "method": "post",
+      "path": "/message/{id}/ack",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Message ack",
+      "description": "Ack message.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "locks.create",
+      "method": "post",
+      "path": "/locks",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Create lock",
+      "description": "Create file reservation.",
+      "source": null,
+      "requestSchema": "LockRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "locks.release",
+      "method": "post",
+      "path": "/locks/release",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Release locks",
+      "description": "Release reservations.",
+      "source": null,
+      "requestSchema": "LockReleaseRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "locks.list",
+      "method": "get",
+      "path": "/locks",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "List locks",
+      "description": "List reservations.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "locks.forceRelease",
+      "method": "post",
+      "path": "/locks/{id}/force-release",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Force release",
+      "description": "Force release reservation (may require SLB).",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "locks.renew",
+      "method": "post",
+      "path": "/locks/renew",
+      "tags": [
+        "agentmail"
+      ],
+      "summary": "Renew locks",
+      "description": "Renew reservations.",
+      "source": null,
+      "requestSchema": "LockRenewRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "approvals.list",
+      "method": "get",
+      "path": "/approvals",
+      "tags": [
+        "approvals"
+      ],
+      "summary": "Approvals",
+      "description": "List approvals.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "ApprovalListResponse"
+    },
+    {
+      "id": "approvals.show",
+      "method": "get",
+      "path": "/approvals/{id}",
+      "tags": [
+        "approvals"
+      ],
+      "summary": "Approval show",
+      "description": "Approval details.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "approvals.deny",
+      "method": "post",
+      "path": "/approvals/{id}/deny",
+      "tags": [
+        "approvals"
+      ],
+      "summary": "Deny approval",
+      "description": "Deny approval.",
+      "source": null,
+      "requestSchema": "ApprovalDecisionRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "approvals.history",
+      "method": "get",
+      "path": "/approvals/history",
+      "tags": [
+        "approvals"
+      ],
+      "summary": "Approval history",
+      "description": "Approval history.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "personas.list",
+      "method": "get",
+      "path": "/personas",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Personas",
+      "description": "List personas.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "personas.show",
+      "method": "get",
+      "path": "/personas/{name}",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Persona details",
+      "description": "Show persona.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "profiles.list",
+      "method": "get",
+      "path": "/profiles",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Profiles",
+      "description": "List profiles.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "profiles.show",
+      "method": "get",
+      "path": "/profiles/{name}",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Profile details",
+      "description": "Show profile.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "profiles.switch",
+      "method": "post",
+      "path": "/profiles/switch",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Switch profile",
+      "description": "Switch agent profile.",
+      "source": null,
+      "requestSchema": "ProfileSwitchRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "recipes.list",
+      "method": "get",
+      "path": "/recipes",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Recipes",
+      "description": "List recipes.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "recipes.show",
+      "method": "get",
+      "path": "/recipes/{name}",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Recipe details",
+      "description": "Show recipe.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "templates.list",
+      "method": "get",
+      "path": "/templates",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Templates",
+      "description": "List templates.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "templates.show",
+      "method": "get",
+      "path": "/templates/{name}",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Template details",
+      "description": "Show template.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "plugins.list",
+      "method": "get",
+      "path": "/plugins",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Plugins",
+      "description": "List plugins.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "agents.list",
+      "method": "get",
+      "path": "/agents",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Agents list",
+      "description": "List agent types.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "AgentsListResponse"
+    },
+    {
+      "id": "agents.show",
+      "method": "get",
+      "path": "/agents/{agentType}",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Agent info",
+      "description": "Show agent type.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "AgentDetailResponse"
+    },
+    {
+      "id": "agents.stats",
+      "method": "get",
+      "path": "/agents/stats",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Agent stats",
+      "description": "Agent stats.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "AgentStatsResponse"
+    },
+    {
+      "id": "agents.recommend",
+      "method": "get",
+      "path": "/agents/recommend",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Recommend agents",
+      "description": "Recommend agent mix.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "AgentRecommendResponse"
+    },
+    {
+      "id": "palette.list",
+      "method": "get",
+      "path": "/palette",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Palette",
+      "description": "List palette commands.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "palette.run",
+      "method": "post",
+      "path": "/palette/run",
+      "tags": [
+        "agents"
+      ],
+      "summary": "Palette run",
+      "description": "Run palette command.",
+      "source": null,
+      "requestSchema": "PaletteRunRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "git.sync",
+      "method": "post",
+      "path": "/git/sync",
+      "tags": [
+        "core"
+      ],
+      "summary": "Git sync",
+      "description": "Git sync.",
+      "source": null,
+      "requestSchema": "GitSyncRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "git.status",
+      "method": "get",
+      "path": "/git/status",
+      "tags": [
+        "core"
+      ],
+      "summary": "Git status",
+      "description": "Git status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "safety.status",
+      "method": "get",
+      "path": "/safety/status",
+      "tags": [
+        "core"
+      ],
+      "summary": "Safety status",
+      "description": "Safety status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "safety.blocked",
+      "method": "get",
+      "path": "/safety/blocked",
+      "tags": [
+        "core"
+      ],
+      "summary": "Safety blocked",
+      "description": "Blocked commands.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "safety.check",
+      "method": "post",
+      "path": "/safety/check",
+      "tags": [
+        "core"
+      ],
+      "summary": "Safety check",
+      "description": "Check command against policy.",
+      "source": null,
+      "requestSchema": "SafetyCheckRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "safety.install",
+      "method": "post",
+      "path": "/safety/install",
+      "tags": [
+        "core"
+      ],
+      "summary": "Safety install",
+      "description": "Install safety hooks.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "safety.uninstall",
+      "method": "post",
+      "path": "/safety/uninstall",
+      "tags": [
+        "core"
+      ],
+      "summary": "Safety uninstall",
+      "description": "Uninstall safety hooks.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "policy.show",
+      "method": "get",
+      "path": "/policy",
+      "tags": [
+        "core"
+      ],
+      "summary": "Policy",
+      "description": "Show policy.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "policy.validate",
+      "method": "post",
+      "path": "/policy/validate",
+      "tags": [
+        "core"
+      ],
+      "summary": "Policy validate",
+      "description": "Validate policy.",
+      "source": null,
+      "requestSchema": "PolicyValidateRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "policy.reset",
+      "method": "post",
+      "path": "/policy/reset",
+      "tags": [
+        "core"
+      ],
+      "summary": "Policy reset",
+      "description": "Reset policy.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "policy.edit",
+      "method": "post",
+      "path": "/policy/edit",
+      "tags": [
+        "core"
+      ],
+      "summary": "Policy edit",
+      "description": "Edit policy.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "policy.automation",
+      "method": "post",
+      "path": "/policy/automation",
+      "tags": [
+        "core"
+      ],
+      "summary": "Policy automation",
+      "description": "Update automation config.",
+      "source": null,
+      "requestSchema": "PolicyAutomationRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "hooks.install",
+      "method": "post",
+      "path": "/hooks/install",
+      "tags": [
+        "core"
+      ],
+      "summary": "Hooks install",
+      "description": "Install hooks.",
+      "source": null,
+      "requestSchema": "HookRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "hooks.uninstall",
+      "method": "post",
+      "path": "/hooks/uninstall",
+      "tags": [
+        "core"
+      ],
+      "summary": "Hooks uninstall",
+      "description": "Uninstall hooks.",
+      "source": null,
+      "requestSchema": "HookRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "hooks.status",
+      "method": "get",
+      "path": "/hooks/status",
+      "tags": [
+        "core"
+      ],
+      "summary": "Hooks status",
+      "description": "Hooks status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "hooks.run",
+      "method": "post",
+      "path": "/hooks/run",
+      "tags": [
+        "core"
+      ],
+      "summary": "Hooks run",
+      "description": "Run hooks.",
+      "source": null,
+      "requestSchema": "HookRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "hooks.guard.install",
+      "method": "post",
+      "path": "/hooks/guard/install",
+      "tags": [
+        "core"
+      ],
+      "summary": "Hook guard install",
+      "description": "Install guard hook.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "hooks.guard.uninstall",
+      "method": "post",
+      "path": "/hooks/guard/uninstall",
+      "tags": [
+        "core"
+      ],
+      "summary": "Hook guard uninstall",
+      "description": "Uninstall guard hook.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "guards.install",
+      "method": "post",
+      "path": "/guards/install",
+      "tags": [
+        "core"
+      ],
+      "summary": "Guards install",
+      "description": "Install guards.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "guards.uninstall",
+      "method": "post",
+      "path": "/guards/uninstall",
+      "tags": [
+        "core"
+      ],
+      "summary": "Guards uninstall",
+      "description": "Uninstall guards.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "guards.status",
+      "method": "get",
+      "path": "/guards/status",
+      "tags": [
+        "core"
+      ],
+      "summary": "Guards status",
+      "description": "Guards status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "pipelines.run",
+      "method": "post",
+      "path": "/pipelines/run",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Run pipeline",
+      "description": "Run workflow.",
+      "source": null,
+      "requestSchema": "PipelineRunRequest",
+      "responseSchema": "PipelineRunResponse"
+    },
+    {
+      "id": "pipelines.status",
+      "method": "get",
+      "path": "/pipelines/{id}",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Pipeline status",
+      "description": "Get pipeline status.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "PipelineStatusResponse"
+    },
+    {
+      "id": "pipelines.list",
+      "method": "get",
+      "path": "/pipelines",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Pipeline list",
+      "description": "List pipelines.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "PipelineListResponse"
+    },
+    {
+      "id": "pipelines.cancel",
+      "method": "post",
+      "path": "/pipelines/{id}/cancel",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Pipeline cancel",
+      "description": "Cancel pipeline.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "PipelineCancelResponse"
+    },
+    {
+      "id": "pipelines.resume",
+      "method": "post",
+      "path": "/pipelines/{id}/resume",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Pipeline resume",
+      "description": "Resume pipeline.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "pipelines.cleanup",
+      "method": "post",
+      "path": "/pipelines/cleanup",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Pipeline cleanup",
+      "description": "Cleanup pipelines.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "pipelines.exec",
+      "method": "post",
+      "path": "/pipelines/exec",
+      "tags": [
+        "pipelines"
+      ],
+      "summary": "Pipeline exec",
+      "description": "Execute pipeline in session.",
+      "source": null,
+      "requestSchema": "PipelineExecRequest",
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "tutorial",
+      "method": "get",
+      "path": "/tutorial",
+      "tags": [
+        "core"
+      ],
+      "summary": "Tutorial",
+      "description": "Tutorial metadata.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "GenericResponse"
+    },
+    {
+      "id": "robot.help",
+      "method": "get",
+      "path": "/robot/help",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot help",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.status",
+      "method": "get",
+      "path": "/robot/status",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot status",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.version",
+      "method": "get",
+      "path": "/robot/version",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot version",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.plan",
+      "method": "get",
+      "path": "/robot/plan",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot plan",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.snapshot",
+      "method": "get",
+      "path": "/robot/snapshot",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot snapshot",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.graph",
+      "method": "get",
+      "path": "/robot/graph",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot graph",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.dashboard",
+      "method": "get",
+      "path": "/robot/dashboard",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot dashboard",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.context",
+      "method": "get",
+      "path": "/robot/context",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot context",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.terse",
+      "method": "get",
+      "path": "/robot/terse",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot terse",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.markdown",
+      "method": "get",
+      "path": "/robot/markdown",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot markdown",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.tail",
+      "method": "get",
+      "path": "/robot/tail",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot tail",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.send",
+      "method": "post",
+      "path": "/robot/send",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot send",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.ack",
+      "method": "post",
+      "path": "/robot/ack",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot ack",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.sendAck",
+      "method": "post",
+      "path": "/robot/send-and-ack",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot send+ack",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.spawn",
+      "method": "post",
+      "path": "/robot/spawn",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot spawn",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.interrupt",
+      "method": "post",
+      "path": "/robot/interrupt",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot interrupt",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.save",
+      "method": "post",
+      "path": "/robot/save",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot save",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.restore",
+      "method": "post",
+      "path": "/robot/restore",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot restore",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.wait",
+      "method": "post",
+      "path": "/robot/wait",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot wait",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.route",
+      "method": "get",
+      "path": "/robot/route",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot route",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.health",
+      "method": "get",
+      "path": "/robot/health",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot health",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.activity",
+      "method": "get",
+      "path": "/robot/activity",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot activity",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.history",
+      "method": "get",
+      "path": "/robot/history",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot history",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.summary",
+      "method": "get",
+      "path": "/robot/summary",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot summary",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.diff",
+      "method": "get",
+      "path": "/robot/diff",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot diff",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.recipes",
+      "method": "get",
+      "path": "/robot/recipes",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot recipes",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.schema",
+      "method": "get",
+      "path": "/robot/schema/{type}",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot schema",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.cass.status",
+      "method": "get",
+      "path": "/robot/cass/status",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot CASS status",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.cass.search",
+      "method": "get",
+      "path": "/robot/cass/search",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot CASS search",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.cass.insights",
+      "method": "get",
+      "path": "/robot/cass/insights",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot CASS insights",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.cass.context",
+      "method": "get",
+      "path": "/robot/cass/context",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot CASS context",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.tokens",
+      "method": "get",
+      "path": "/robot/tokens",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot tokens",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.assign",
+      "method": "get",
+      "path": "/robot/assign",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot assign",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.pipeline.run",
+      "method": "post",
+      "path": "/robot/pipeline/run",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot pipeline run",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.pipeline.status",
+      "method": "get",
+      "path": "/robot/pipeline/{id}",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot pipeline status",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.pipeline.list",
+      "method": "get",
+      "path": "/robot/pipeline",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot pipeline list",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.pipeline.cancel",
+      "method": "post",
+      "path": "/robot/pipeline/{id}/cancel",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot pipeline cancel",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.files",
+      "method": "get",
+      "path": "/robot/files",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot files",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.inspect",
+      "method": "get",
+      "path": "/robot/inspect-pane",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot inspect pane",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.metrics",
+      "method": "get",
+      "path": "/robot/metrics",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot metrics",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.replay",
+      "method": "post",
+      "path": "/robot/replay",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot replay",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.palette",
+      "method": "get",
+      "path": "/robot/palette",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot palette",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.alerts",
+      "method": "get",
+      "path": "/robot/alerts",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot alerts",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.alerts.dismiss",
+      "method": "post",
+      "path": "/robot/alerts/dismiss",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot dismiss alert",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.beads.list",
+      "method": "get",
+      "path": "/robot/beads",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot beads list",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.beads.show",
+      "method": "get",
+      "path": "/robot/beads/{id}",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot bead show",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.beads.claim",
+      "method": "post",
+      "path": "/robot/beads/{id}/claim",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot bead claim",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.beads.close",
+      "method": "post",
+      "path": "/robot/beads/{id}/close",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot bead close",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": "RobotRequest",
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "robot.mail",
+      "method": "get",
+      "path": "/robot/mail",
+      "tags": [
+        "robot"
+      ],
+      "summary": "Robot mail",
+      "description": "Robot parity endpoint.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "RobotResponse"
+    },
+    {
+      "id": "auth.login",
+      "method": "post",
+      "path": "/auth/login",
+      "tags": [
+        "auth"
+      ],
+      "summary": "Login",
+      "description": "Exchange credentials for access and refresh tokens.",
+      "source": null,
+      "requestSchema": "AuthLoginRequest",
+      "responseSchema": "AuthLoginResponse"
+    },
+    {
+      "id": "auth.refresh",
+      "method": "post",
+      "path": "/auth/refresh",
+      "tags": [
+        "auth"
+      ],
+      "summary": "Refresh access token",
+      "description": "Issue a new access token using a refresh token.",
+      "source": null,
+      "requestSchema": "AuthRefreshRequest",
+      "responseSchema": "AuthRefreshResponse"
+    },
+    {
+      "id": "auth.logout",
+      "method": "post",
+      "path": "/auth/logout",
+      "tags": [
+        "auth"
+      ],
+      "summary": "Logout",
+      "description": "Invalidate the current refresh token.",
+      "source": null,
+      "requestSchema": "AuthLogoutRequest",
+      "responseSchema": "SuccessResponse"
+    },
+    {
+      "id": "auth.whoami",
+      "method": "get",
+      "path": "/auth/whoami",
+      "tags": [
+        "auth"
+      ],
+      "summary": "Current user",
+      "description": "Return the authenticated user and org context.",
+      "source": null,
+      "requestSchema": null,
+      "responseSchema": "AuthWhoamiResponse"
+    }
+  ]
+}

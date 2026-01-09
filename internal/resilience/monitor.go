@@ -208,13 +208,13 @@ func (m *Monitor) monitorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.checkHealth()
+			m.checkHealth(ctx)
 		}
 	}
 }
 
 // checkHealth performs a health check on all monitored agents
-func (m *Monitor) checkHealth() {
+func (m *Monitor) checkHealth(ctx context.Context) {
 	// Snapshot hook under lock for thread-safe access
 	hooksMu.RLock()
 	checkFn := checkSessionFn
@@ -244,7 +244,7 @@ func (m *Monitor) checkHealth() {
 		// If pane doesn't exist anymore, agent crashed hard
 		if !exists {
 			if agentState.Healthy {
-				m.handleCrash(agentState, "Pane no longer exists")
+				m.handleCrash(ctx, agentState, "Pane no longer exists")
 			}
 			continue
 		}
@@ -276,7 +276,7 @@ func (m *Monitor) checkHealth() {
 				if len(agentHealth.Issues) > 0 {
 					reason = agentHealth.Issues[0].Message
 				}
-				m.handleCrash(agentState, reason)
+				m.handleCrash(ctx, agentState, reason)
 			}
 		} else {
 			// Agent is healthy again
@@ -362,7 +362,7 @@ func displayTmuxMessage(session, msg string) {
 }
 
 // handleCrash processes a detected agent crash
-func (m *Monitor) handleCrash(agent *AgentState, reason string) {
+func (m *Monitor) handleCrash(ctx context.Context, agent *AgentState, reason string) {
 	agent.Healthy = false
 	agent.LastCrash = time.Now()
 
@@ -408,7 +408,7 @@ func (m *Monitor) handleCrash(agent *AgentState, reason string) {
 	// Attempt restart if enabled and under the limit
 	if m.autoRestart && agent.RestartCount < m.cfg.Resilience.MaxRestarts {
 		// Schedule restart
-		go m.restartAgent(agent)
+		go m.restartAgent(ctx, agent)
 	} else {
 		if !m.autoRestart {
 			log.Printf("[resilience] Auto-restart disabled. Agent %s stopped.", agent.PaneID)
@@ -420,18 +420,24 @@ func (m *Monitor) handleCrash(agent *AgentState, reason string) {
 }
 
 // restartAgent restarts a crashed agent after the configured delay
-func (m *Monitor) restartAgent(agent *AgentState) {
+func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	delay := time.Duration(m.cfg.Resilience.RestartDelaySeconds) * time.Second
 	log.Printf("[resilience] Restarting agent %s in %v...", agent.PaneID, delay)
 
 	// Snapshot hooks under lock for thread-safe access from spawned goroutines
 	hooksMu.RLock()
-	sleepFunc := sleepFn
+	// sleepFunc is no longer used directly, we use time.After/ctx.Done
 	buildFunc := buildPaneCmdFn
 	sendFunc := sendKeysFn
 	hooksMu.RUnlock()
 
-	sleepFunc(delay)
+	select {
+	case <-time.After(delay):
+		// Continue
+	case <-ctx.Done():
+		log.Printf("[resilience] Restart cancelled for agent %s", agent.PaneID)
+		return
+	}
 
 	m.mu.Lock()
 	// Check if still in crashed state (could have been stopped)

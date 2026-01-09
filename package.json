@@ -1,0 +1,8 @@
+{
+  "name": "ntm",
+  "private": true,
+  "scripts": {
+    "gen:openapi": "bun scripts/gen_openapi.ts",
+    "lint:openapi": "go run github.com/getkin/kin-openapi/cmd/validate@latest docs/openapi.json"
+  }
+}

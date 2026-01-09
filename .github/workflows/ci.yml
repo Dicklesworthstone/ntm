@@ -49,6 +49,19 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "latest"
+
+      - name: OpenAPI drift check
+        run: |
+          bun run gen:openapi
+          git diff --exit-code docs/openapi.json docs/parity_matrix.json
+
+      - name: Validate OpenAPI
+        run: bun run lint:openapi
+
   # ============================================================================
   # TEST - Unit tests with coverage on multiple platforms
   # ============================================================================
