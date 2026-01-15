@@ -320,13 +320,18 @@ func waitForAgentsReady(output *SpawnOutput, timeout time.Duration) {
 			}
 
 			// Build tmux target from session and pane reference
-			// The Pane field is in "window.index" format (e.g., "0.1")
-			// We need a fully qualified target: "session:window.index"
+			// The Pane field is in "window.index" format (e.g., "0.2")
+			// For tmux capture, use "session.pane_index" format
 			paneRef := output.Agents[i].Pane
-			target := output.Session + ":" + paneRef
+			// Extract pane index from "window.index" format
+			paneIndex := paneRef
+			if idx := strings.LastIndex(paneRef, "."); idx >= 0 {
+				paneIndex = paneRef[idx+1:]
+			}
+			target := output.Session + "." + paneIndex
 
-			// Capture pane output
-			captured, err := tmux.CapturePaneOutput(target, 10)
+			// Capture pane output (50 lines to catch Claude's TUI)
+			captured, err := tmux.CapturePaneOutput(target, 50)
 			if err != nil {
 				allReady = false
 				continue
@@ -350,24 +355,40 @@ func waitForAgentsReady(output *SpawnOutput, timeout time.Duration) {
 
 // isAgentReady checks if agent output indicates ready state.
 func isAgentReady(output, agentType string) bool {
-	output = strings.ToLower(output)
+	lower := strings.ToLower(output)
 
-	// Common ready indicators
-	readyPatterns := []string{
+	// Common ready indicators (case-insensitive)
+	lowerPatterns := []string{
 		"claude>",
 		"claude >",
 		"codex>",
 		"gemini>",
 		">>>", // Python REPL
-		"$ ",  // Shell prompt
-		"% ",  // Zsh prompt
-		"❯",   // Modern prompts
 		"waiting for input",
 		"ready",
 		"how can i help",
+		// Claude Code TUI indicators
+		"claude code v",      // Version banner
+		"welcome back",       // Greeting
+		"bypass permissions", // Status line
+		"try \"",             // Example prompt
 	}
 
-	for _, pattern := range readyPatterns {
+	for _, pattern := range lowerPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+
+	// Case-sensitive patterns (Unicode symbols)
+	exactPatterns := []string{
+		"$ ", // Shell prompt
+		"% ", // Zsh prompt
+		"❯",  // Modern prompts (U+276F)
+		">",  // Simple prompt
+	}
+
+	for _, pattern := range exactPatterns {
 		if strings.Contains(output, pattern) {
 			return true
 		}
@@ -391,6 +412,7 @@ func agentTypeShort(agentType string) string {
 }
 
 // getAgentCommands returns the commands to launch each agent type.
+// Templates are rendered with empty vars (optional fields only).
 func getAgentCommands(cfg *config.Config) map[string]string {
 	defaults := map[string]string{
 		"claude": "claude",
@@ -406,6 +428,15 @@ func getAgentCommands(cfg *config.Config) map[string]string {
 	}
 	if cfg != nil && cfg.Agents.Gemini != "" {
 		defaults["gemini"] = cfg.Agents.Gemini
+	}
+
+	// Render templates with empty vars (all template fields are optional)
+	vars := config.AgentTemplateVars{}
+	for agentType, cmdTemplate := range defaults {
+		if rendered, err := config.GenerateAgentCommand(cmdTemplate, vars); err == nil {
+			defaults[agentType] = rendered
+		}
+		// On error, keep original command (non-template or invalid template)
 	}
 
 	return defaults

@@ -81,6 +81,11 @@ func defaultPatterns() []Pattern {
 		{Name: "claude_prompt", RegexStr: `(?i)claude\s*>?\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Claude prompt"},
 		{Name: "claude_code_prompt", RegexStr: `(?i)claude\s+code\s*>?\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code prompt"},
 		{Name: "claude_arrow_prompt", RegexStr: `╰─>\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 99, Description: "Claude arrow prompt"},
+		// Claude Code TUI indicators (welcome screen and status line)
+		{Name: "claude_code_version", RegexStr: `(?i)claude\s+code\s+v[\d.]+`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code version banner"},
+		{Name: "claude_welcome", RegexStr: `(?i)welcome\s+back`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code welcome message"},
+		{Name: "claude_bypass_status", RegexStr: `bypass\s+permissions\s+on`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code bypass status"},
+		{Name: "claude_try_prompt", RegexStr: `❯\s*Try\s+"`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code try prompt"},
 
 		// Codex patterns
 		{Name: "codex_prompt", RegexStr: `(?i)codex\s*>?\s*$`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Codex prompt"},

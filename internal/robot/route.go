@@ -137,14 +137,14 @@ func PrintRoute(opts RouteOptions) int {
 
 	for _, pane := range panes {
 		// Skip user pane
-		agentType := detectAgentTypeFromTitle(pane.Title)
-		if agentType == "" {
+		// Use detectAgentType which maps short forms (cc->claude, cod->codex, gmi->gemini)
+		agentType := detectAgentType(pane.Title)
+		if agentType == "" || agentType == "unknown" {
 			continue
 		}
 
 		// Filter by agent type if specified
-		// Normalize both sides: agentType from title is "cc/cod/gmi", user input could be "claude/codex/gemini"
-		if opts.AgentType != "" && !strings.EqualFold(normalizeAgentType(agentType), normalizeAgentType(opts.AgentType)) {
+		if opts.AgentType != "" && !strings.EqualFold(agentType, normalizeAgentType(opts.AgentType)) {
 			continue
 		}
 
@@ -346,14 +346,14 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 
 	for _, pane := range panes {
 		// Skip user pane
-		agentType := detectAgentTypeFromTitle(pane.Title)
-		if agentType == "" {
+		// Use detectAgentType which maps short forms (cc->claude, cod->codex, gmi->gemini)
+		agentType := detectAgentType(pane.Title)
+		if agentType == "" || agentType == "unknown" {
 			continue
 		}
 
 		// Filter by agent type if specified
-		// Normalize both sides: agentType from title is "cc/cod/gmi", user input could be "claude/codex/gemini"
-		if opts.AgentType != "" && !strings.EqualFold(normalizeAgentType(agentType), normalizeAgentType(opts.AgentType)) {
+		if opts.AgentType != "" && !strings.EqualFold(agentType, normalizeAgentType(opts.AgentType)) {
 			continue
 		}
 

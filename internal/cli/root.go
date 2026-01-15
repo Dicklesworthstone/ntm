@@ -298,14 +298,15 @@ Shell Integration:
 				}
 			}
 			opts := robot.WaitOptions{
-				Session:      robotWait,
-				Condition:    robotWaitUntil,
-				Timeout:      timeout,
-				PollInterval: poll,
-				PaneIndices:  paneFilter,
-				AgentType:    robotWaitType,
-				WaitForAny:   robotWaitAny,
-				ExitOnError:  robotWaitOnError,
+				Session:           robotWait,
+				Condition:         robotWaitUntil,
+				Timeout:           timeout,
+				PollInterval:      poll,
+				PaneIndices:       paneFilter,
+				AgentType:         robotWaitType,
+				WaitForAny:        robotWaitAny,
+				ExitOnError:       robotWaitOnError,
+				RequireTransition: robotWaitTransition,
 			}
 			exitCode := robot.PrintWait(opts)
 			os.Exit(exitCode)
@@ -510,6 +511,7 @@ Shell Integration:
 				GmiCount:     robotSpawnGmi,
 				Preset:       robotSpawnPreset,
 				NoUserPane:   robotSpawnNoUser,
+				WorkingDir:   robotSpawnDir,
 				WaitReady:    robotSpawnWait,
 				ReadyTimeout: int(spawnTimeout.Seconds()),
 				DryRun:       robotRestoreDry,
@@ -889,6 +891,7 @@ var (
 	robotSpawnWait    bool   // wait for agents to be ready
 	robotSpawnTimeout string // timeout for ready detection (e.g., "30s", "1m")
 	robotSpawnSafety  bool   // fail if session already exists
+	robotSpawnDir     string // working directory override
 
 	// Robot-interrupt flags for priority course correction
 	robotInterrupt        string // session name for interrupt
@@ -948,14 +951,15 @@ var (
 	robotActivityType string // filter by agent type (claude, codex, gemini)
 
 	// Robot-wait flags for waiting on agent states
-	robotWait        string // session name for wait
-	robotWaitUntil   string // wait condition: idle, complete, generating, healthy
-	robotWaitTimeout string // timeout (e.g., "30s", "5m")
-	robotWaitPoll    string // poll interval (e.g., "2s", "500ms")
-	robotWaitPanes   string // comma-separated pane indices
-	robotWaitType    string // filter by agent type
-	robotWaitAny     bool   // wait for ANY agent (vs ALL)
-	robotWaitOnError bool   // exit immediately on error state
+	robotWait           string // session name for wait
+	robotWaitUntil      string // wait condition: idle, complete, generating, healthy
+	robotWaitTimeout    string // timeout (e.g., "30s", "5m")
+	robotWaitPoll       string // poll interval (e.g., "2s", "500ms")
+	robotWaitPanes      string // comma-separated pane indices
+	robotWaitType       string // filter by agent type
+	robotWaitAny        bool   // wait for ANY agent (vs ALL)
+	robotWaitOnError    bool   // exit immediately on error state
+	robotWaitTransition bool   // require state transition before returning
 
 	// Robot-route flags for routing recommendations
 	robotRoute         string // session name for route
@@ -1096,7 +1100,9 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")
 	rootCmd.Flags().BoolVar(&robotSpawnWait, "spawn-wait", false, "Wait for agents to show ready state before returning. Recommended for automation")
 	rootCmd.Flags().StringVar(&robotSpawnTimeout, "spawn-timeout", "30s", "Max wait for agent ready state (e.g., 30s, 1m). Use with --spawn-wait")
+	rootCmd.Flags().StringVar(&robotSpawnTimeout, "ready-timeout", "30s", "Alias for --spawn-timeout. Max wait for agent ready state. Use with --spawn-wait")
 	rootCmd.Flags().BoolVar(&robotSpawnSafety, "spawn-safety", false, "Fail if session already exists. Prevents accidental reuse of existing sessions")
+	rootCmd.Flags().StringVar(&robotSpawnDir, "spawn-dir", "", "Working directory for spawned session. Use with --robot-spawn. Example: --spawn-dir=/path/to/project")
 
 	// Robot-interrupt flags for priority course correction
 	rootCmd.Flags().StringVar(&robotInterrupt, "robot-interrupt", "", "Send Ctrl+C to stop agents, optionally send new task. Required: SESSION. Example: ntm --robot-interrupt=proj --interrupt-msg='Stop and fix bug'")
@@ -1160,12 +1166,16 @@ func init() {
 	// Robot-wait flags for waiting on agent states
 	rootCmd.Flags().StringVar(&robotWait, "robot-wait", "", "Wait for agents to reach state. Required: SESSION. Example: ntm --robot-wait=myproject --wait-until=idle")
 	rootCmd.Flags().StringVar(&robotWaitUntil, "wait-until", "idle", "Wait condition: idle, complete, generating, healthy. Optional with --robot-wait. Example: --wait-until=idle")
+	rootCmd.Flags().StringVar(&robotWaitUntil, "condition", "idle", "Alias for --wait-until. Wait condition: idle, complete, generating, healthy")
 	rootCmd.Flags().StringVar(&robotWaitTimeout, "wait-timeout", "5m", "Maximum wait time. Optional with --robot-wait. Example: --wait-timeout=2m")
 	rootCmd.Flags().StringVar(&robotWaitPoll, "wait-poll", "2s", "Polling interval. Optional with --robot-wait. Example: --wait-poll=500ms")
 	rootCmd.Flags().StringVar(&robotWaitPanes, "wait-panes", "", "Comma-separated pane indices. Optional with --robot-wait. Example: --wait-panes=1,2")
 	rootCmd.Flags().StringVar(&robotWaitType, "wait-type", "", "Filter by agent type: claude, codex, gemini. Optional with --robot-wait. Example: --wait-type=claude")
 	rootCmd.Flags().BoolVar(&robotWaitAny, "wait-any", false, "Wait for ANY agent instead of ALL. Optional with --robot-wait")
 	rootCmd.Flags().BoolVar(&robotWaitOnError, "wait-exit-on-error", false, "Exit immediately if ERROR state detected. Optional with --robot-wait")
+	rootCmd.Flags().BoolVar(&robotWaitOnError, "exit-on-error", false, "Alias for --wait-exit-on-error. Exit immediately if ERROR state detected")
+	rootCmd.Flags().BoolVar(&robotWaitTransition, "wait-transition", false, "Require state transition: agents must leave then return to target state. Use after sending prompts to wait for complete processing cycle. Optional with --robot-wait")
+	rootCmd.Flags().BoolVar(&robotWaitTransition, "transition", false, "Alias for --wait-transition")
 
 	// Robot-route flags for routing recommendations
 	rootCmd.Flags().StringVar(&robotRoute, "robot-route", "", "Get routing recommendation. Required: SESSION. Example: ntm --robot-route=myproject --route-strategy=least-loaded")
@@ -1344,7 +1354,7 @@ func init() {
 		newLockCmd(),
 		newUnlockCmd(),
 		newLocksCmd(),
-		newMessageCmd(),    // Unified messaging
+		newMessageCmd(),     // Unified messaging
 		newCoordinatorCmd(), // Multi-agent coordination
 
 		// Git coordination
@@ -1641,12 +1651,10 @@ Examples:
 				}
 			}
 
-			editor := os.Getenv("EDITOR")
-			if editor == "" {
-				editor = "vi"
+			editorCmd, err := buildEditorCommand(path)
+			if err != nil {
+				return err
 			}
-
-			editorCmd := exec.Command(editor, path)
 			editorCmd.Stdin = os.Stdin
 			editorCmd.Stdout = os.Stdout
 			editorCmd.Stderr = os.Stderr
@@ -1695,6 +1703,35 @@ Examples:
 	cmd.AddCommand(projectCmd)
 
 	return cmd
+}
+
+func buildEditorCommand(path string) (*exec.Cmd, error) {
+	editor := strings.TrimSpace(os.Getenv("EDITOR"))
+	if editor == "" {
+		editor = "vi"
+	}
+
+	parts := strings.Fields(editor)
+	if len(parts) == 0 || !editorTokensSafe(parts) {
+		parts = []string{"vi"}
+	}
+
+	cmdPath, err := exec.LookPath(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("editor not found: %w", err)
+	}
+
+	args := append(parts[1:], path)
+	return exec.Command(cmdPath, args...), nil
+}
+
+func editorTokensSafe(tokens []string) bool {
+	for _, token := range tokens {
+		if strings.ContainsAny(token, ";&|<>`$\n\r") {
+			return false
+		}
+	}
+	return true
 }
 
 // IsJSONOutput returns true if JSON output is enabled

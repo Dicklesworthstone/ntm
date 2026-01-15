@@ -12,15 +12,16 @@ import (
 
 // WaitOptions configures the robot wait operation.
 type WaitOptions struct {
-	Session      string
-	Condition    string // idle, complete, generating, healthy
-	Timeout      time.Duration
-	PollInterval time.Duration
-	PaneIndices  []int  // Empty = all panes
-	AgentType    string // Empty = all types
-	WaitForAny   bool   // If true, wait for ANY; otherwise wait for ALL
-	ExitOnError  bool   // If true, exit immediately on ERROR state
-	CountN       int    // With WaitForAny, wait for at least N agents (default 1)
+	Session           string
+	Condition         string // idle, complete, generating, healthy
+	Timeout           time.Duration
+	PollInterval      time.Duration
+	PaneIndices       []int  // Empty = all panes
+	AgentType         string // Empty = all types
+	WaitForAny        bool   // If true, wait for ANY; otherwise wait for ALL
+	ExitOnError       bool   // If true, exit immediately on ERROR state
+	CountN            int    // With WaitForAny, wait for at least N agents (default 1)
+	RequireTransition bool   // If true, agents must leave and return to target state
 }
 
 // WaitResponse is the JSON output for --robot-wait.
@@ -97,6 +98,15 @@ func PrintWait(opts WaitOptions) int {
 	// Create activity monitor
 	monitor := NewActivityMonitor(nil)
 
+	// Parse conditions once for transition tracking
+	conditions := strings.Split(opts.Condition, ",")
+
+	// Track state transitions when RequireTransition is enabled
+	// Key: paneID, Value: true if agent was in target state at start AND has since left it
+	sawTransition := make(map[string]bool)
+	initiallyInTarget := make(map[string]bool)
+	firstPoll := true
+
 	for {
 		// Check timeout
 		if time.Now().After(deadline) {
@@ -160,7 +170,8 @@ func PrintWait(opts WaitOptions) int {
 		for _, pane := range filteredPanes {
 			classifier := monitor.GetOrCreate(pane.ID)
 			// Set agent type if we can detect it from pane name
-			if at := detectAgentTypeFromTitle(pane.Title); at != "" {
+			// Use detectAgentType which maps short forms (cc->claude, cod->codex, gmi->gemini)
+			if at := detectAgentType(pane.Title); at != "" && at != "unknown" {
 				classifier.SetAgentType(at)
 			}
 			activity, err := classifier.Classify()
@@ -169,6 +180,21 @@ func PrintWait(opts WaitOptions) int {
 				continue
 			}
 			activities = append(activities, activity)
+		}
+
+		// Track state transitions for RequireTransition mode
+		if opts.RequireTransition {
+			for _, a := range activities {
+				inTarget := meetsAllWaitConditions(a, conditions)
+				if firstPoll {
+					// Record initial state
+					initiallyInTarget[a.PaneID] = inTarget
+				} else if initiallyInTarget[a.PaneID] && !inTarget {
+					// Agent was in target state initially and has now left it
+					sawTransition[a.PaneID] = true
+				}
+			}
+			firstPoll = false
 		}
 
 		// Check for error state (if --exit-on-error)
@@ -198,7 +224,7 @@ func PrintWait(opts WaitOptions) int {
 		}
 
 		// Check if condition is met
-		met, matching, pending := checkWaitConditionMet(activities, opts)
+		met, matching, pending := checkWaitConditionMetWithTransition(activities, opts, conditions, initiallyInTarget, sawTransition)
 		if met {
 			elapsed := time.Since(startTime)
 			resp := WaitResponse{
@@ -247,9 +273,10 @@ func filterWaitPanes(panes []tmux.Pane, opts WaitOptions) []tmux.Pane {
 	}
 
 	for _, pane := range panes {
-		// Skip user pane (typically has no agent type indicator)
-		agentType := detectAgentTypeFromTitle(pane.Title)
-		if agentType == "" && pane.Index == 0 {
+		// Skip panes without a recognized agent type (user pane, unknown)
+		// Use detectAgentType which maps short forms (cc->claude, cod->codex, gmi->gemini)
+		agentType := detectAgentType(pane.Title)
+		if agentType == "" || agentType == "unknown" {
 			continue
 		}
 
@@ -323,6 +350,66 @@ func checkWaitConditionMet(activities []*AgentActivity, opts WaitOptions) (bool,
 	}
 
 	// Default: ALL agents must match (no pending)
+	return len(pendingAgents) == 0 && len(matchingAgents) > 0, matchingAgents, pendingAgents
+}
+
+// checkWaitConditionMetWithTransition is like checkWaitConditionMet but handles
+// RequireTransition mode. When RequireTransition is true, agents that were in
+// the target state initially must leave and return to that state before being
+// considered as matching.
+func checkWaitConditionMetWithTransition(
+	activities []*AgentActivity,
+	opts WaitOptions,
+	conditions []string,
+	initiallyInTarget map[string]bool,
+	sawTransition map[string]bool,
+) (bool, []WaitAgentInfo, []string) {
+	if len(activities) == 0 {
+		return false, nil, nil
+	}
+
+	var matchingAgents []WaitAgentInfo
+	var pendingAgents []string
+
+	now := time.Now()
+
+	for _, activity := range activities {
+		meetsCondition := meetsAllWaitConditions(activity, conditions)
+
+		// For RequireTransition mode, check if agent needs to have transitioned
+		if opts.RequireTransition && initiallyInTarget[activity.PaneID] {
+			// Agent was in target state at start - only count as matching if it
+			// has since left the target state and come back
+			if !sawTransition[activity.PaneID] {
+				// Agent hasn't left target state yet - still pending
+				pendingAgents = append(pendingAgents, activity.PaneID)
+				continue
+			}
+			// Agent has transitioned - now check if it's back in target state
+			if !meetsCondition {
+				pendingAgents = append(pendingAgents, activity.PaneID)
+				continue
+			}
+		} else if !meetsCondition {
+			// Normal case or agent wasn't initially in target state
+			pendingAgents = append(pendingAgents, activity.PaneID)
+			continue
+		}
+
+		// Agent meets condition (and transition requirement if applicable)
+		matchingAgents = append(matchingAgents, WaitAgentInfo{
+			Pane:      activity.PaneID,
+			State:     string(activity.State),
+			MetAt:     FormatTimestamp(now),
+			AgentType: activity.AgentType,
+		})
+	}
+
+	// Determine if condition is met based on --any vs ALL
+	if opts.WaitForAny {
+		return len(matchingAgents) >= opts.CountN, matchingAgents, pendingAgents
+	}
+
 	return len(pendingAgents) == 0 && len(matchingAgents) > 0, matchingAgents, pendingAgents
 }
 
