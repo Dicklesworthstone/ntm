@@ -294,9 +294,10 @@ func TestTrackerPollingControl(t *testing.T) {
 		returnVal: &QuotaInfo{SessionUsage: 50},
 	}
 
+	// Use MinPollInterval to ensure polling is fast enough for the test
 	tracker := NewTracker(
 		WithFetcher(mockFetcher),
-		WithPollInterval(20*time.Millisecond),
+		WithPollInterval(MinPollInterval),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -304,8 +305,8 @@ func TestTrackerPollingControl(t *testing.T) {
 
 	tracker.StartPolling(ctx, "pane1", ProviderClaude)
 
-	// Wait for a few poll cycles
-	time.Sleep(70 * time.Millisecond)
+	// Wait for a few poll cycles (3x the poll interval)
+	time.Sleep(3 * MinPollInterval)
 
 	// Should have been called multiple times
 	if mockFetcher.CallCount() < 2 {
@@ -316,7 +317,7 @@ func TestTrackerPollingControl(t *testing.T) {
 	tracker.StopPolling("pane1")
 
 	callsBefore := mockFetcher.CallCount()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(2 * MinPollInterval)
 	callsAfter := mockFetcher.CallCount()
 
 	if callsAfter != callsBefore {
@@ -329,21 +330,23 @@ func TestTrackerStopAllPolling(t *testing.T) {
 		returnVal: &QuotaInfo{SessionUsage: 50},
 	}
 
+	// Use MinPollInterval to ensure polling is fast enough for the test
 	tracker := NewTracker(
 		WithFetcher(mockFetcher),
-		WithPollInterval(20*time.Millisecond),
+		WithPollInterval(MinPollInterval),
 	)
 
 	ctx := context.Background()
 	tracker.StartPolling(ctx, "pane1", ProviderClaude)
 	tracker.StartPolling(ctx, "pane2", ProviderClaude)
 
-	time.Sleep(30 * time.Millisecond)
+	// Wait for polling to establish
+	time.Sleep(MinPollInterval / 2)
 
 	tracker.StopAllPolling()
 
 	callsBefore := mockFetcher.CallCount()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(2 * MinPollInterval)
 	callsAfter := mockFetcher.CallCount()
 
 	if callsAfter != callsBefore {

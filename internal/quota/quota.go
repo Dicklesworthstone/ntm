@@ -106,10 +106,17 @@ func WithCacheTTL(ttl time.Duration) TrackerOption {
 	}
 }
 
+// MinPollInterval is the minimum allowed poll interval to prevent ticker panics.
+// time.NewTicker requires a positive duration.
+const MinPollInterval = 100 * time.Millisecond
+
 // WithPollInterval sets the polling interval
 func WithPollInterval(interval time.Duration) TrackerOption {
 	return func(t *Tracker) {
-		t.pollInterval = interval
+		if interval >= MinPollInterval {
+			t.pollInterval = interval
+		}
+		// If interval is too small, keep the default (2 minutes)
 	}
 }
 

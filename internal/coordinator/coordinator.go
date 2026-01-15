@@ -78,6 +78,13 @@ type CoordinatorConfig struct {
 	HumanAgent  string `toml:"human_agent"`  // Agent name to send digests to (default: "Human")
 }
 
+// MinPollInterval is the minimum allowed poll interval to prevent ticker panics.
+// time.NewTicker requires a positive duration.
+const MinPollInterval = 100 * time.Millisecond
+
+// MinDigestInterval is the minimum allowed digest interval.
+const MinDigestInterval = 10 * time.Second
+
 // DefaultCoordinatorConfig returns sensible defaults.
 func DefaultCoordinatorConfig() CoordinatorConfig {
 	return CoordinatorConfig{
@@ -140,6 +147,15 @@ func (c *SessionCoordinator) WithConfig(cfg CoordinatorConfig) *SessionCoordinat
 
 // Start begins coordinator operations.
 func (c *SessionCoordinator) Start(ctx context.Context) error {
+	// Validate and fix interval configuration to prevent ticker panics.
+	// time.NewTicker requires a positive duration.
+	if c.config.PollInterval < MinPollInterval {
+		c.config.PollInterval = DefaultCoordinatorConfig().PollInterval
+	}
+	if c.config.DigestInterval < MinDigestInterval {
+		c.config.DigestInterval = DefaultCoordinatorConfig().DigestInterval
+	}
+
 	// Create derived context
 	c.ctx, c.cancel = context.WithCancel(ctx)
 

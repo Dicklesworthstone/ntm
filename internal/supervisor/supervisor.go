@@ -104,8 +104,12 @@ func New(cfg Config) (*Supervisor, error) {
 
 	ntmDir := filepath.Join(cfg.ProjectDir, ".ntm")
 
-	// Set defaults
-	if cfg.HealthInterval == 0 {
+	// MinHealthInterval is the minimum allowed health check interval to prevent ticker panics.
+	// time.NewTicker requires a positive duration.
+	const MinHealthInterval = 100 * time.Millisecond
+
+	// Set defaults and validate intervals to prevent ticker panics
+	if cfg.HealthInterval < MinHealthInterval {
 		cfg.HealthInterval = 5 * time.Second
 	}
 	if cfg.MaxRestarts == 0 {

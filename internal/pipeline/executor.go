@@ -34,6 +34,10 @@ type ExecutorConfig struct {
 	RunID            string        // Optional: pre-generated run ID (if empty, one is generated)
 }
 
+// MinProgressInterval is the minimum allowed progress interval to prevent ticker panics.
+// time.NewTicker requires a positive duration.
+const MinProgressInterval = 100 * time.Millisecond
+
 // DefaultExecutorConfig returns sensible defaults
 func DefaultExecutorConfig(session string) ExecutorConfig {
 	return ExecutorConfig{
@@ -66,6 +70,12 @@ type Executor struct {
 
 // NewExecutor creates a new workflow executor
 func NewExecutor(config ExecutorConfig) *Executor {
+	// Validate ProgressInterval to prevent ticker panics.
+	// time.NewTicker requires a positive duration.
+	if config.ProgressInterval < MinProgressInterval {
+		config.ProgressInterval = DefaultExecutorConfig("").ProgressInterval
+	}
+
 	e := &Executor{
 		config:   config,
 		detector: status.NewDetector(),
