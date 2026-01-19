@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -75,30 +76,11 @@ type AssignAgentHints struct {
 	Warnings          []string `json:"warnings,omitempty"`
 }
 
-// AgentStrength defines task type affinities for different agent types
-var AgentStrength = map[string]map[string]float64{
-	"claude": {
-		"analysis":      0.9, // Code analysis, architecture decisions
-		"refactor":      0.9, // Large refactoring tasks
-		"documentation": 0.8,
-		"testing":       0.7,
-		"feature":       0.8,
-		"bug":           0.7,
-		"task":          0.7,
-	},
-	"codex": {
-		"feature":  0.9, // Quick feature implementations
-		"bug":      0.8, // Bug fixes
-		"testing":  0.7,
-		"task":     0.8,
-		"refactor": 0.6,
-	},
-	"gemini": {
-		"feature":       0.8,
-		"documentation": 0.9, // Documentation tasks
-		"analysis":      0.8,
-		"task":          0.7,
-	},
+// AgentStrength returns the task type affinity score for an agent/task combination.
+// This delegates to the assign package's capability matrix which supports
+// configuration overrides and learned score adjustments.
+func AgentStrength(agentType, taskType string) float64 {
+	return assign.GetAgentScoreByString(agentType, taskType)
 }
 
 // PrintAssign outputs work assignment recommendations as JSON
@@ -288,23 +270,17 @@ func generateAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, strat
 
 // calculateConfidence determines assignment confidence based on agent-task match
 func calculateConfidence(agentType string, bead bv.BeadPreview, strategy string) float64 {
-	baseConfidence := 0.7 // Default confidence
-
 	// Extract task type from bead title/priority
 	taskType := inferTaskType(bead)
 
-	// Check if agent has strength for this task type
-	if strengths, ok := AgentStrength[agentType]; ok {
-		if strength, ok := strengths[taskType]; ok {
-			baseConfidence = strength
-		}
-	}
+	// Get capability score from the assign package
+	baseConfidence := AgentStrength(agentType, taskType)
 
 	// Adjust based on strategy
 	switch strategy {
 	case "quality":
 		// Quality strategy favors better agent-task matches
-		// Already using AgentStrength, so this is good
+		// Using capability matrix scores
 	case "speed":
 		// Speed strategy slightly favors any available agent
 		baseConfidence = (baseConfidence + 0.9) / 2
@@ -368,10 +344,9 @@ func generateReasoning(agentType string, bead bv.BeadPreview, strategy string) s
 	var reasons []string
 
 	// Add task-agent match reasoning
-	if strengths, ok := AgentStrength[agentType]; ok {
-		if strength, ok := strengths[taskType]; ok && strength >= 0.8 {
-			reasons = append(reasons, fmt.Sprintf("%s excels at %s tasks", agentType, taskType))
-		}
+	strength := AgentStrength(agentType, taskType)
+	if strength >= 0.8 {
+		reasons = append(reasons, fmt.Sprintf("%s excels at %s tasks", agentType, taskType))
 	}
 
 	// Add priority reasoning
