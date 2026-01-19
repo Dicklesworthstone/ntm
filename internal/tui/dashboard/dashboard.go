@@ -31,6 +31,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
+	"github.com/Dicklesworthstone/ntm/internal/watcher"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
@@ -165,6 +166,11 @@ type CheckpointUpdateMsg struct {
 type CheckpointCreatedMsg struct {
 	Checkpoint *checkpoint.Checkpoint
 	Err        error
+}
+
+// FileConflictMsg is sent when a file reservation conflict is detected
+type FileConflictMsg struct {
+	Conflict watcher.FileConflict
 }
 
 // RoutingScore holds routing info for a single agent
@@ -353,8 +359,9 @@ type Model struct {
 	historyPanel *panels.HistoryPanel
 	cassPanel    *panels.CASSPanel
 	filesPanel   *panels.FilesPanel
-	tickerPanel  *panels.TickerPanel
-	spawnPanel   *panels.SpawnPanel
+	tickerPanel     *panels.TickerPanel
+	spawnPanel      *panels.SpawnPanel
+	conflictsPanel  *panels.ConflictsPanel
 
 	// Data for new panels
 	beadsSummary  bv.BeadsSummary
@@ -412,6 +419,10 @@ type PaneStatus struct {
 	HealthIssues  []string // List of issue messages (rate limit, crash, etc.)
 	RestartCount  int      // Number of restarts in last hour
 	UptimeSeconds int      // Seconds since agent started (negative = uptime from tracker)
+
+	// Rotation tracking
+	IsRotating bool       // True when agent rotation is in progress
+	RotatedAt  *time.Time // When agent was last rotated (nil if never)
 }
 
 // AgentMailLockInfo represents a file lock for dashboard display
@@ -555,8 +566,9 @@ func New(session, projectDir string) Model {
 		historyPanel: panels.NewHistoryPanel(),
 		cassPanel:    panels.NewCASSPanel(),
 		filesPanel:   panels.NewFilesPanel(),
-		tickerPanel:  panels.NewTickerPanel(),
-		spawnPanel:   panels.NewSpawnPanel(),
+		tickerPanel:     panels.NewTickerPanel(),
+		spawnPanel:      panels.NewSpawnPanel(),
+		conflictsPanel:  panels.NewConflictsPanel(),
 
 		// Init() kicks off these fetches immediately; mark as fetching so the tick loop
 		// doesn't pile on duplicates if the first round is still in flight.
@@ -1447,6 +1459,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.markUpdated(refreshAlerts, time.Now())
 		}
 		m.alertsPanel.SetData(m.activeAlerts, m.alertsError)
+		return m, nil
+
+	case FileConflictMsg:
+		// Add the conflict to the conflicts panel
+		m.conflictsPanel.AddConflict(msg.Conflict)
+		return m, nil
+
+	case panels.ConflictActionResultMsg:
+		// Handle conflict action result
+		if msg.Err != nil {
+			// Log error but don't block
+			log.Printf("[Dashboard] Conflict action error: %v", msg.Err)
+		}
+		// Remove the conflict from the panel if action was successful or dismissed
+		if msg.Err == nil {
+			m.conflictsPanel.RemoveConflict(msg.Conflict.Path, msg.Conflict.RequestorAgent)
+		}
 		return m, nil
 
 	case SpawnUpdateMsg:
@@ -2696,6 +2725,31 @@ func (m Model) renderContextBar(percent float64, width int) string {
 	return bar
 }
 
+// formatTokenDisplay formats token counts for display (e.g., "142.5K / 200K")
+func formatTokenDisplay(used, limit int) string {
+	formatTokens := func(n int) string {
+		if n >= 1000000 {
+			return fmt.Sprintf("%.1fM", float64(n)/1000000)
+		}
+		if n >= 1000 {
+			return fmt.Sprintf("%.1fK", float64(n)/1000)
+		}
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%s / %s", formatTokens(used), formatTokens(limit))
+}
+
+// formatDuration formats a duration for display (e.g., "2m", "45s")
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
 func (m Model) renderPaneGrid() string {
 	t := m.theme
 	ic := m.icons
@@ -2914,8 +2968,30 @@ func (m Model) renderPaneGrid() string {
 		// Context usage bar (best-effort; show in grid when available)
 		if ps, ok := m.paneStatus[p.Index]; ok && ps.ContextLimit > 0 {
 			cardContent.WriteString("\n")
+			// Show token counts in extended view (e.g., "142.5K / 200K")
+			if showExtendedInfo && ps.ContextTokens > 0 {
+				tokenInfo := formatTokenDisplay(ps.ContextTokens, ps.ContextLimit)
+				tokenStyle := lipgloss.NewStyle().Foreground(t.Subtext)
+				cardContent.WriteString(tokenStyle.Render(tokenInfo) + "\n")
+			}
 			contextBar := m.renderContextBar(ps.ContextPercent, cardWidth-4)
 			cardContent.WriteString(contextBar)
+		}
+
+		// Rotation in-progress indicator
+		if ps, ok := m.paneStatus[p.Index]; ok && ps.IsRotating {
+			cardContent.WriteString("\n")
+			rotateIcon := styles.Shimmer("🔄", m.animTick, string(t.Blue), string(t.Sapphire), string(t.Blue))
+			rotateStyle := lipgloss.NewStyle().Foreground(t.Blue).Bold(true)
+			cardContent.WriteString(rotateIcon + rotateStyle.Render(" Rotating..."))
+		} else if ps, ok := m.paneStatus[p.Index]; ok && ps.RotatedAt != nil {
+			// Show "rotated Xm ago" indicator for recently rotated agents
+			elapsed := time.Since(*ps.RotatedAt)
+			if elapsed < 5*time.Minute {
+				cardContent.WriteString("\n")
+				rotatedStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
+				cardContent.WriteString(rotatedStyle.Render(fmt.Sprintf("↻ rotated %s ago", formatDuration(elapsed))))
+			}
 		}
 
 		// Compaction indicator
