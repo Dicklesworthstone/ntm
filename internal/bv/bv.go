@@ -835,6 +835,69 @@ func GetInProgressList(dir string, limit int) []BeadInProgress {
 	return items
 }
 
+// GetRecentlyCompletedList returns recently completed beads.
+// These are beads with status=done, ordered by completion time descending.
+func GetRecentlyCompletedList(dir string, limit int) []BeadPreview {
+	var items []BeadPreview
+
+	output, err := RunBd(dir, "list", "--status=done", "--json")
+	if err != nil {
+		return items
+	}
+
+	var issues []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(output), &issues); err != nil {
+		return items
+	}
+
+	// Take up to limit items
+	for i, issue := range issues {
+		if i >= limit {
+			break
+		}
+		items = append(items, BeadPreview{
+			ID:    issue.ID,
+			Title: issue.Title,
+		})
+	}
+
+	return items
+}
+
+// GetBlockedList returns blocked beads (beads that are blocked by dependencies).
+func GetBlockedList(dir string, limit int) []BeadPreview {
+	var items []BeadPreview
+
+	output, err := RunBd(dir, "blocked", "--json")
+	if err != nil {
+		return items
+	}
+
+	var issues []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(output), &issues); err != nil {
+		return items
+	}
+
+	// Take up to limit items
+	for i, issue := range issues {
+		if i >= limit {
+			break
+		}
+		items = append(items, BeadPreview{
+			ID:    issue.ID,
+			Title: issue.Title,
+		})
+	}
+
+	return items
+}
+
 // RunRaw executes bv with given args and returns the raw output.
 // This is useful for commands where the caller wants to parse or display
 // the output directly rather than using typed wrappers.

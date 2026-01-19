@@ -941,3 +941,411 @@ func TestScoreAssignmentWithNilProfile(t *testing.T) {
 		t.Errorf("expected zero FocusPatternBonus with nil profile, got %f", result.ScoreBreakdown.FocusPatternBonus)
 	}
 }
+
+// Tests for AssignTasks function with strategies
+
+func TestAssignTasksBasic(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+		{PaneID: "%2", AgentType: "cod", ContextUsage: 50, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Epic task", Type: "epic", Status: "open", Priority: 2, Score: 0.8},
+		{ID: "ntm-002", Title: "Quick fix", Type: "chore", Status: "open", Priority: 2, Score: 0.6},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategyBalanced, nil)
+
+	if len(assignments) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(assignments))
+	}
+
+	// Verify each agent got exactly one task
+	agentTasks := make(map[string]string)
+	for _, a := range assignments {
+		if existing, ok := agentTasks[a.Agent.PaneID]; ok {
+			t.Errorf("agent %s assigned twice: %s and %s", a.Agent.PaneID, existing, a.Bead.ID)
+		}
+		agentTasks[a.Agent.PaneID] = a.Bead.ID
+	}
+
+	// Verify assignments have reasoning
+	for _, a := range assignments {
+		if a.Reason == "" {
+			t.Errorf("assignment for %s missing reason", a.Bead.ID)
+		}
+		if a.Confidence <= 0 || a.Confidence > 1 {
+			t.Errorf("assignment confidence %f out of range [0,1]", a.Confidence)
+		}
+	}
+}
+
+func TestAssignTasksMoreBeadsThanAgents(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.8},
+		{ID: "ntm-002", Title: "Task 2", Type: "task", Status: "open", Score: 0.6},
+		{ID: "ntm-003", Title: "Task 3", Type: "task", Status: "open", Score: 0.4},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategyBalanced, nil)
+
+	// Should only get 1 assignment (limited by agents)
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment (limited by agents), got %d", len(assignments))
+	}
+}
+
+func TestAssignTasksMoreAgentsThanBeads(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+		{PaneID: "%2", AgentType: "cod", ContextUsage: 40, Status: robot.StateWaiting},
+		{PaneID: "%3", AgentType: "gmi", ContextUsage: 20, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.8},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategyBalanced, nil)
+
+	// Should only get 1 assignment (limited by beads)
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment (limited by beads), got %d", len(assignments))
+	}
+}
+
+func TestAssignTasksFiltersUnavailableAgents(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+		{PaneID: "%2", AgentType: "cc", ContextUsage: 95, Status: robot.StateWaiting},    // High context
+		{PaneID: "%3", AgentType: "cc", ContextUsage: 30, Status: robot.StateGenerating}, // Not idle
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Task 1", Type: "task", Status: "open", Score: 0.8},
+		{ID: "ntm-002", Title: "Task 2", Type: "task", Status: "open", Score: 0.6},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategySpeed, nil)
+
+	// Should only assign to agent %1 (others unavailable)
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment (only 1 available agent), got %d", len(assignments))
+	}
+
+	if assignments[0].Agent.PaneID != "%1" {
+		t.Errorf("expected agent %%1, got %s", assignments[0].Agent.PaneID)
+	}
+}
+
+func TestAssignTasksSkipsBlockedBeads(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+		{PaneID: "%2", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Blocked", Type: "task", Status: "blocked", Score: 0.9},
+		{ID: "ntm-002", Title: "Open", Type: "task", Status: "open", Score: 0.8},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategySpeed, nil)
+
+	// Should only assign the open bead
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment (blocked bead skipped), got %d", len(assignments))
+	}
+
+	if assignments[0].Bead.ID != "ntm-002" {
+		t.Errorf("expected bead ntm-002, got %s", assignments[0].Bead.ID)
+	}
+}
+
+func TestAssignTasksEmpty(t *testing.T) {
+	// Empty agents
+	result := AssignTasks([]*bv.TriageRecommendation{{ID: "1"}}, nil, StrategyBalanced, nil)
+	if result != nil {
+		t.Error("expected nil for empty agents")
+	}
+
+	// Empty beads
+	result = AssignTasks(nil, []*AgentState{{PaneID: "%1", Status: robot.StateWaiting}}, StrategyBalanced, nil)
+	if result != nil {
+		t.Error("expected nil for empty beads")
+	}
+}
+
+func TestStrategySpeed(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+		{PaneID: "%2", AgentType: "cod", ContextUsage: 30, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Task 1", Type: "epic", Status: "open", Score: 0.5},
+		{ID: "ntm-002", Title: "Task 2", Type: "chore", Status: "open", Score: 0.8},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategySpeed, nil)
+
+	// Speed strategy should assign quickly, not necessarily optimally
+	if len(assignments) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(assignments))
+	}
+
+	// Verify reasons mention speed
+	for _, a := range assignments {
+		if !strings.Contains(a.Reason, "fastest") {
+			t.Logf("Speed strategy reason: %s", a.Reason)
+		}
+	}
+}
+
+func TestStrategyQuality(t *testing.T) {
+	// Create agents with profiles
+	testerProfile := &persona.Persona{Tags: []string{"testing"}}
+
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting, Profile: testerProfile},
+		{PaneID: "%2", AgentType: "cod", ContextUsage: 30, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Add unit tests", Type: "task", Status: "open", Score: 0.5},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategyQuality, nil)
+
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(assignments))
+	}
+
+	// Quality strategy should pick the best-matching agent (agent 1 has testing profile)
+	if assignments[0].Agent.PaneID != "%1" {
+		t.Errorf("expected agent %%1 (with testing profile) for test task, got %s", assignments[0].Agent.PaneID)
+	}
+}
+
+func TestStrategyDependency(t *testing.T) {
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+	}
+
+	beads := []*bv.TriageRecommendation{
+		{ID: "ntm-001", Title: "Low impact", Type: "task", Status: "open", Score: 0.9, UnblocksIDs: nil},
+		{ID: "ntm-002", Title: "High impact", Type: "task", Status: "open", Score: 0.5, UnblocksIDs: []string{"a", "b", "c"}},
+	}
+
+	assignments := AssignTasks(beads, agents, StrategyDependency, nil)
+
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(assignments))
+	}
+
+	// Dependency strategy should prioritize the blocker even though it has lower base score
+	if assignments[0].Bead.ID != "ntm-002" {
+		t.Errorf("expected bead ntm-002 (blocker), got %s", assignments[0].Bead.ID)
+	}
+
+	// Reason should mention unblocking
+	if !strings.Contains(assignments[0].Reason, "unblocks") {
+		t.Errorf("expected reason to mention unblocking, got: %s", assignments[0].Reason)
+	}
+}
+
+func TestParseStrategy(t *testing.T) {
+	tests := []struct {
+		input string
+		want  AssignmentStrategy
+	}{
+		{"balanced", StrategyBalanced},
+		{"BALANCED", StrategyBalanced},
+		{"speed", StrategySpeed},
+		{"fast", StrategySpeed},
+		{"quality", StrategyQuality},
+		{"best", StrategyQuality},
+		{"dependency", StrategyDependency},
+		{"deps", StrategyDependency},
+		{"blockers", StrategyDependency},
+		{"unknown", StrategyBalanced}, // Default
+		{"", StrategyBalanced},        // Default
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := ParseStrategy(tt.input)
+			if got != tt.want {
+				t.Errorf("ParseStrategy(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildStrategyConfig(t *testing.T) {
+	t.Run("speed disables expensive features", func(t *testing.T) {
+		config := buildStrategyConfig(StrategySpeed)
+		if config.UseAgentProfiles {
+			t.Error("speed strategy should disable UseAgentProfiles")
+		}
+		if config.PenalizeFileOverlap {
+			t.Error("speed strategy should disable PenalizeFileOverlap")
+		}
+		if config.PreferCriticalPath {
+			t.Error("speed strategy should disable PreferCriticalPath")
+		}
+	})
+
+	t.Run("quality maximizes matching", func(t *testing.T) {
+		config := buildStrategyConfig(StrategyQuality)
+		if !config.UseAgentProfiles {
+			t.Error("quality strategy should enable UseAgentProfiles")
+		}
+		if config.ProfileTagBoostWeight < 0.2 {
+			t.Errorf("quality strategy should boost ProfileTagBoostWeight, got %f", config.ProfileTagBoostWeight)
+		}
+	})
+
+	t.Run("dependency weights critical path", func(t *testing.T) {
+		config := buildStrategyConfig(StrategyDependency)
+		if !config.PreferCriticalPath {
+			t.Error("dependency strategy should enable PreferCriticalPath")
+		}
+	})
+}
+
+func TestIsAgentAvailable(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent *AgentState
+		want  bool
+	}{
+		{
+			name:  "idle with low context",
+			agent: &AgentState{Status: robot.StateWaiting, ContextUsage: 50},
+			want:  true,
+		},
+		{
+			name:  "idle at context threshold",
+			agent: &AgentState{Status: robot.StateWaiting, ContextUsage: 90},
+			want:  true,
+		},
+		{
+			name:  "idle over context threshold",
+			agent: &AgentState{Status: robot.StateWaiting, ContextUsage: 95},
+			want:  false,
+		},
+		{
+			name:  "generating",
+			agent: &AgentState{Status: robot.StateGenerating, ContextUsage: 30},
+			want:  false,
+		},
+		{
+			name:  "error state",
+			agent: &AgentState{Status: robot.StateError, ContextUsage: 30},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAgentAvailable(tt.agent)
+			if got != tt.want {
+				t.Errorf("isAgentAvailable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComputeConfidence(t *testing.T) {
+	tests := []struct {
+		name    string
+		pair    scoredPair
+		wantMin float64
+		wantMax float64
+	}{
+		{
+			name: "high score high confidence",
+			pair: scoredPair{
+				score:     1.5,
+				breakdown: AssignmentScoreBreakdown{AgentTypeBonus: 0.1, ProfileTagBonus: 0.1},
+			},
+			wantMin: 0.8,
+			wantMax: 0.95,
+		},
+		{
+			name: "low score low confidence",
+			pair: scoredPair{
+				score:     0.2,
+				breakdown: AssignmentScoreBreakdown{},
+			},
+			wantMin: 0.1,
+			wantMax: 0.3,
+		},
+		{
+			name: "penalties reduce confidence",
+			pair: scoredPair{
+				score:     1.0,
+				breakdown: AssignmentScoreBreakdown{ContextPenalty: 0.1, FileOverlapPenalty: 0.1},
+			},
+			wantMin: 0.3,
+			wantMax: 0.6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			confidence := computeConfidence(tt.pair)
+			if confidence < tt.wantMin || confidence > tt.wantMax {
+				t.Errorf("computeConfidence() = %f, want in [%f, %f]", confidence, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestBuildAssignmentReason(t *testing.T) {
+	tests := []struct {
+		name     string
+		pair     scoredPair
+		strategy AssignmentStrategy
+		contains string
+	}{
+		{
+			name:     "dependency with blockers",
+			pair:     scoredPair{bead: &bv.TriageRecommendation{UnblocksIDs: []string{"a", "b"}}},
+			strategy: StrategyDependency,
+			contains: "unblocks 2 tasks",
+		},
+		{
+			name:     "quality strategy",
+			pair:     scoredPair{bead: &bv.TriageRecommendation{}},
+			strategy: StrategyQuality,
+			contains: "best capability match",
+		},
+		{
+			name:     "agent type bonus",
+			pair:     scoredPair{bead: &bv.TriageRecommendation{}, breakdown: AssignmentScoreBreakdown{AgentTypeBonus: 0.15}},
+			strategy: StrategyBalanced,
+			contains: "agent type bonus",
+		},
+		{
+			name:     "profile tags",
+			pair:     scoredPair{bead: &bv.TriageRecommendation{}, breakdown: AssignmentScoreBreakdown{ProfileTagBonus: 0.1}},
+			strategy: StrategyBalanced,
+			contains: "matching profile tags",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := buildAssignmentReason(tt.pair, tt.strategy)
+			if !strings.Contains(reason, tt.contains) {
+				t.Errorf("reason %q should contain %q", reason, tt.contains)
+			}
+		})
+	}
+}

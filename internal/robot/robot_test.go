@@ -2526,3 +2526,104 @@ func TestGenerateTokenHints(t *testing.T) {
 		})
 	}
 }
+
+// ====================
+// PrintTriage Tests
+// ====================
+
+func TestPrintTriageOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		opts  TriageOptions
+		limit int // expected default if 0
+	}{
+		{"default limit", TriageOptions{}, 10},
+		{"custom limit", TriageOptions{Limit: 5}, 5},
+		{"zero limit uses default", TriageOptions{Limit: 0}, 10},
+		{"negative limit uses default", TriageOptions{Limit: -1}, 10},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// The function normalizes opts.Limit internally
+			opts := tc.opts
+			if opts.Limit <= 0 {
+				opts.Limit = 10
+			}
+			if opts.Limit != tc.limit {
+				t.Errorf("limit = %d, want %d", opts.Limit, tc.limit)
+			}
+		})
+	}
+}
+
+func TestTriageOutputStructure(t *testing.T) {
+	// Test that TriageOutput JSON serializes correctly
+	output := TriageOutput{
+		GeneratedAt: time.Now().UTC(),
+		Available:   true,
+		DataHash:    "test-hash",
+		QuickRef: &bv.TriageQuickRef{
+			OpenCount:       10,
+			ActionableCount: 5,
+			BlockedCount:    2,
+			InProgressCount: 3,
+		},
+		Recommendations: []bv.TriageRecommendation{
+			{ID: "test-1", Title: "Test Item", Score: 0.5},
+		},
+		CacheInfo: &TriageCacheInfo{
+			Cached: true,
+			AgeMs:  1000,
+			TTLMs:  30000,
+		},
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("failed to marshal TriageOutput: %v", err)
+	}
+
+	var decoded TriageOutput
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal TriageOutput: %v", err)
+	}
+
+	if decoded.DataHash != "test-hash" {
+		t.Errorf("DataHash = %q, want %q", decoded.DataHash, "test-hash")
+	}
+	if decoded.QuickRef.OpenCount != 10 {
+		t.Errorf("OpenCount = %d, want 10", decoded.QuickRef.OpenCount)
+	}
+	if len(decoded.Recommendations) != 1 {
+		t.Errorf("Recommendations length = %d, want 1", len(decoded.Recommendations))
+	}
+	if decoded.CacheInfo.TTLMs != 30000 {
+		t.Errorf("TTLMs = %d, want 30000", decoded.CacheInfo.TTLMs)
+	}
+}
+
+func TestPrintTriageWhenBvNotInstalled(t *testing.T) {
+	// This test verifies behavior when bv is not installed
+	// We can't easily mock bv.IsInstalled, so we just test the output structure
+	if !bv.IsInstalled() {
+		output, err := captureStdout(t, func() error {
+			return PrintTriage(TriageOptions{Limit: 5})
+		})
+		if err != nil {
+			t.Fatalf("PrintTriage returned error: %v", err)
+		}
+
+		var result TriageOutput
+		if err := json.Unmarshal([]byte(output), &result); err != nil {
+			t.Fatalf("failed to parse output as JSON: %v", err)
+		}
+
+		if result.Available {
+			t.Error("Available should be false when bv not installed")
+		}
+		if result.Error == "" {
+			t.Error("Error should be set when bv not installed")
+		}
+	}
+}

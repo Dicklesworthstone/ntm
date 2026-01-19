@@ -83,6 +83,110 @@ func AgentStrength(agentType, taskType string) float64 {
 	return assign.GetAgentScoreByString(agentType, taskType)
 }
 
+// DistributeRecommendation is a simplified recommendation for distribute mode
+type DistributeRecommendation struct {
+	BeadID    string `json:"bead_id"`
+	Title     string `json:"title"`
+	PaneIndex int    `json:"pane_index"`
+	AgentType string `json:"agent_type"`
+	Reason    string `json:"reason"`
+}
+
+// GetAssignRecommendations returns assignment recommendations for the distribute mode.
+// This is a simplified version of PrintAssign that returns data instead of printing JSON.
+func GetAssignRecommendations(opts AssignOptions) ([]DistributeRecommendation, error) {
+	if opts.Session == "" {
+		return nil, fmt.Errorf("session name is required")
+	}
+
+	if !tmux.SessionExists(opts.Session) {
+		return nil, fmt.Errorf("session '%s' not found", opts.Session)
+	}
+
+	// Normalize strategy
+	strategy := strings.ToLower(opts.Strategy)
+	if strategy == "" {
+		strategy = "balanced"
+	}
+
+	// Get agents from tmux panes
+	panes, err := tmux.GetPanes(opts.Session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get panes: %w", err)
+	}
+
+	// Build agent info
+	var agents []assignAgentInfo
+	var idleAgentPanes []string
+
+	for _, pane := range panes {
+		agentType := detectAgentType(pane.Title)
+		if agentType == "user" || agentType == "unknown" {
+			continue
+		}
+
+		// Capture state
+		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		state := determineState(scrollback, agentType)
+
+		agents = append(agents, assignAgentInfo{
+			paneIdx:   pane.Index,
+			agentType: agentType,
+			model:     detectModel(agentType, pane.Title),
+			state:     state,
+		})
+		if state == "idle" {
+			idleAgentPanes = append(idleAgentPanes, fmt.Sprintf("%d", pane.Index))
+		}
+	}
+
+	if len(idleAgentPanes) == 0 {
+		return nil, nil // No idle agents
+	}
+
+	// Get beads from bv
+	wd, _ := os.Getwd()
+	readyBeads := bv.GetReadyPreview(wd, 50)
+
+	if len(readyBeads) == 0 {
+		return nil, nil // No ready work
+	}
+
+	// Filter to specific beads if requested
+	if len(opts.Beads) > 0 {
+		beadSet := make(map[string]bool)
+		for _, b := range opts.Beads {
+			beadSet[b] = true
+		}
+		var filtered []bv.BeadPreview
+		for _, b := range readyBeads {
+			if beadSet[b.ID] {
+				filtered = append(filtered, b)
+			}
+		}
+		readyBeads = filtered
+	}
+
+	// Generate recommendations
+	recs := generateAssignments(agents, readyBeads, strategy, idleAgentPanes)
+
+	// Convert to DistributeRecommendation format
+	var result []DistributeRecommendation
+	for _, rec := range recs {
+		paneIdx := 0
+		fmt.Sscanf(rec.Agent, "%d", &paneIdx)
+		result = append(result, DistributeRecommendation{
+			BeadID:    rec.AssignBead,
+			Title:     rec.BeadTitle,
+			PaneIndex: paneIdx,
+			AgentType: rec.AgentType,
+			Reason:    rec.Reasoning,
+		})
+	}
+
+	return result, nil
+}
+
 // PrintAssign outputs work assignment recommendations as JSON
 func PrintAssign(opts AssignOptions) error {
 	if opts.Session == "" {

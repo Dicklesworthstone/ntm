@@ -3970,3 +3970,95 @@ func PrintDiff(opts DiffOptions) error {
 
 	return encodeJSON(output)
 }
+
+// TriageOptions configures the triage output
+type TriageOptions struct {
+	Limit int // Max recommendations per category (default 10)
+}
+
+// TriageOutput is the robot-triage JSON output structure
+type TriageOutput struct {
+	GeneratedAt     time.Time                   `json:"generated_at"`
+	Available       bool                        `json:"available"`
+	DataHash        string                      `json:"data_hash,omitempty"`
+	Error           string                      `json:"error,omitempty"`
+	QuickRef        *bv.TriageQuickRef          `json:"quick_ref,omitempty"`
+	Recommendations []bv.TriageRecommendation   `json:"recommendations,omitempty"`
+	QuickWins       []bv.TriageRecommendation   `json:"quick_wins,omitempty"`
+	BlockersToClear []bv.TriageRecommendation   `json:"blockers_to_clear,omitempty"`
+	ProjectHealth   *bv.ProjectHealth           `json:"project_health,omitempty"`
+	Commands        map[string]string           `json:"commands,omitempty"`
+	CacheInfo       *TriageCacheInfo            `json:"cache_info,omitempty"`
+}
+
+// TriageCacheInfo provides cache metadata
+type TriageCacheInfo struct {
+	Cached   bool   `json:"cached"`
+	AgeMs    int64  `json:"age_ms,omitempty"`
+	TTLMs    int64  `json:"ttl_ms"`
+}
+
+// PrintTriage outputs bv triage analysis for AI consumption
+func PrintTriage(opts TriageOptions) error {
+	if opts.Limit <= 0 {
+		opts.Limit = 10
+	}
+
+	output := TriageOutput{
+		GeneratedAt: time.Now().UTC(),
+		Available:   bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		return encodeJSON(output)
+	}
+
+	wd := mustGetwd()
+
+	// Get triage data (uses internal cache)
+	triage, err := bv.GetTriage(wd)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get triage: %v", err)
+		return encodeJSON(output)
+	}
+
+	if triage == nil {
+		output.Error = "no triage data returned"
+		return encodeJSON(output)
+	}
+
+	// Copy data with limits applied
+	output.DataHash = triage.DataHash
+	output.QuickRef = &triage.Triage.QuickRef
+	output.ProjectHealth = triage.Triage.ProjectHealth
+	output.Commands = triage.Triage.Commands
+
+	// Apply limits to recommendations
+	if len(triage.Triage.Recommendations) > opts.Limit {
+		output.Recommendations = triage.Triage.Recommendations[:opts.Limit]
+	} else {
+		output.Recommendations = triage.Triage.Recommendations
+	}
+
+	if len(triage.Triage.QuickWins) > opts.Limit {
+		output.QuickWins = triage.Triage.QuickWins[:opts.Limit]
+	} else {
+		output.QuickWins = triage.Triage.QuickWins
+	}
+
+	if len(triage.Triage.BlockersToClear) > opts.Limit {
+		output.BlockersToClear = triage.Triage.BlockersToClear[:opts.Limit]
+	} else {
+		output.BlockersToClear = triage.Triage.BlockersToClear
+	}
+
+	// Add cache info
+	output.CacheInfo = &TriageCacheInfo{
+		Cached: bv.IsCacheValid(),
+		AgeMs:  bv.GetCacheAge().Milliseconds(),
+		TTLMs:  bv.TriageCacheTTL.Milliseconds(),
+	}
+
+	return encodeJSON(output)
+}
