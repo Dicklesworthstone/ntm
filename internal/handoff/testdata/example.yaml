@@ -1,0 +1,98 @@
+# Example handoff file demonstrating the canonical YAML format.
+# This format is designed to be compact (~400 tokens vs ~2000 for markdown).
+
+version: "1.0"
+session: feature-auth-refactor
+date: "2025-01-15"
+created_at: 2025-01-15T10:30:00Z
+updated_at: 2025-01-15T14:45:00Z
+
+# Status tracking
+status: partial
+outcome: PARTIAL_PLUS
+
+# Core fields (REQUIRED for status line integration)
+goal: "Implement OAuth2 authentication flow with JWT tokens"
+now: "Add refresh token rotation and session management"
+test: "go test ./internal/auth/... -v"
+
+# Work completed this session
+done_this_session:
+  - task: "Created JWT token generation and validation"
+    files:
+      - internal/auth/jwt.go
+      - internal/auth/jwt_test.go
+  - task: "Added OAuth2 provider configuration"
+    files:
+      - internal/auth/oauth2.go
+      - config/auth.yaml
+
+# Blockers preventing progress
+blockers:
+  - "Need API keys for Google OAuth2 - waiting on infra team"
+  - "Rate limiting middleware not yet available"
+
+# Questions for next session or human
+questions:
+  - "Should we support both access and refresh tokens in the same endpoint?"
+  - "What should the token expiry be for refresh tokens?"
+
+# Key decisions made during this session
+decisions:
+  token_storage: "Use Redis for token blacklist instead of database"
+  session_strategy: "Sliding window sessions with 15 minute inactivity timeout"
+  jwt_algorithm: "RS256 for asymmetric signing"
+
+# Important discoveries during implementation
+findings:
+  oauth2_library: "golang.org/x/oauth2 handles most edge cases well"
+  jwt_performance: "Token validation takes ~50μs, acceptable for middleware"
+
+# What worked well
+worked:
+  - "Using table-driven tests for JWT validation edge cases"
+  - "Separating token generation from validation logic"
+
+# What failed or didn't work
+failed:
+  - "Initial attempt to use symmetric HMAC - moved to RSA for key rotation"
+  - "Caching tokens in memory - too much memory pressure under load"
+
+# Recommended next steps in priority order
+next:
+  - "Implement refresh token rotation with grace period"
+  - "Add session revocation endpoint"
+  - "Set up Redis connection pooling"
+  - "Write integration tests for full OAuth2 flow"
+
+# File change tracking
+files:
+  created:
+    - internal/auth/jwt.go
+    - internal/auth/jwt_test.go
+    - internal/auth/oauth2.go
+    - internal/auth/oauth2_test.go
+  modified:
+    - config/auth.yaml
+    - internal/server/middleware.go
+  deleted:
+    - internal/auth/legacy_session.go
+
+# Integration with other NTM tools
+active_beads:
+  - bd-auth-01
+  - bd-auth-02
+agent_mail_threads:
+  - TKT-auth-discussion
+cm_memories:
+  - auth-pattern-discovery
+
+# Agent info for multi-agent coordination
+agent_id: BronzeCrane
+agent_type: cc
+pane_id: "ntm:auth-work:0"
+
+# Token context at handoff time
+tokens_used: 145000
+tokens_max: 200000
+tokens_pct: 72.5
