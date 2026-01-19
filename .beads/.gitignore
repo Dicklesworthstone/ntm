@@ -42,3 +42,9 @@ sync_base.jsonl
 # contributors to accidentally commit upstream issue databases.
 # The JSONL files (issues.jsonl, interactions.jsonl) and config files
 # are tracked by git by default since no pattern above ignores them.
+
+# Local history backups
+.br_history/
+
+# bv (beads viewer) lock file
+.bv.lock
