@@ -20,6 +20,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -3340,11 +3341,24 @@ func countInbox(ctx context.Context, client *agentmail.Client, projectKey, agent
 // ContextOutput is the structured output for --robot-context
 type ContextOutput struct {
 	RobotResponse
-	Session    string             `json:"session"`
-	CapturedAt time.Time          `json:"captured_at"`
-	Agents     []AgentContextInfo `json:"agents"`
-	Summary    ContextSummary     `json:"summary"`
-	AgentHints *ContextAgentHints `json:"_agent_hints,omitempty"`
+	Session          string                       `json:"session"`
+	CapturedAt       time.Time                    `json:"captured_at"`
+	Agents           []AgentContextInfo           `json:"agents"`
+	Summary          ContextSummary               `json:"summary"`
+	PendingRotations []ContextPendingRotationInfo `json:"pending_rotations,omitempty"`
+	AgentHints       *ContextAgentHints           `json:"_agent_hints,omitempty"`
+}
+
+// ContextPendingRotationInfo contains information about a pending rotation confirmation
+type ContextPendingRotationInfo struct {
+	AgentID        string  `json:"agent_id"`
+	SessionName    string  `json:"session_name"`
+	PaneID         string  `json:"pane_id"`
+	ContextPercent float64 `json:"context_percent"`
+	CreatedAt      string  `json:"created_at"`
+	TimeoutAt      string  `json:"timeout_at"`
+	DefaultAction  string  `json:"default_action"`
+	WorkDir        string  `json:"work_dir,omitempty"`
 }
 
 // AgentContextInfo contains context window information for a single agent pane
@@ -3526,6 +3540,21 @@ func PrintContext(session string, lines int) error {
 	output.Summary.HighUsageCount = len(highUsage)
 	if len(output.Agents) > 0 {
 		output.Summary.AvgUsage = totalUsage / float64(len(output.Agents))
+	}
+
+	// Add pending rotations for this session
+	pendingRotations, _ := ntmctx.GetPendingRotationsForSession(session)
+	for _, p := range pendingRotations {
+		output.PendingRotations = append(output.PendingRotations, ContextPendingRotationInfo{
+			AgentID:        p.AgentID,
+			SessionName:    p.SessionName,
+			PaneID:         p.PaneID,
+			ContextPercent: p.ContextPercent,
+			CreatedAt:      p.CreatedAt.Format(time.RFC3339),
+			TimeoutAt:      p.TimeoutAt.Format(time.RFC3339),
+			DefaultAction:  string(p.DefaultAction),
+			WorkDir:        p.WorkDir,
+		})
 	}
 
 	output.AgentHints = generateContextHints(lowUsage, highUsage, len(highUsage), len(output.Agents))
