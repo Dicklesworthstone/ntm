@@ -35,6 +35,7 @@ var (
 	assignQuiet          bool
 	assignTimeout        time.Duration
 	assignDryRun         bool // Alias for no --auto
+	assignReserveFiles   bool // Enable Agent Mail file reservations
 )
 
 // assignAgentInfo holds information about an agent pane for assignment matching
@@ -103,6 +104,7 @@ Examples:
 	cmd.Flags().BoolVarP(&assignQuiet, "quiet", "q", false, "Suppress non-essential output")
 	cmd.Flags().DurationVar(&assignTimeout, "timeout", 30*time.Second, "Timeout for external calls (bv, br, Agent Mail)")
 	cmd.Flags().BoolVar(&assignDryRun, "dry-run", false, "Preview mode (alias for no --auto)")
+	cmd.Flags().BoolVar(&assignReserveFiles, "reserve-files", true, "Reserve file paths via Agent Mail before assignment")
 
 	return cmd
 }
@@ -162,6 +164,7 @@ func runAssign(cmd *cobra.Command, args []string) error {
 		Verbose:         assignVerbose,
 		Quiet:           assignQuiet,
 		Timeout:         assignTimeout,
+		ReserveFiles:    assignReserveFiles,
 	}
 
 	// For JSON output, use enhanced JSON output
@@ -240,6 +243,7 @@ type AssignCommandOptions struct {
 	Verbose         bool
 	Quiet           bool
 	Timeout         time.Duration
+	ReserveFiles    bool // Reserve file paths via Agent Mail before assignment
 }
 
 // AssignOutputEnhanced is the enhanced output structure matching the spec
@@ -861,20 +865,48 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		blockedBeads = filteredBlocked
 	}
 
+	// Filter out beads in dependency cycles (with warning)
+	var cycleWarnings int
+	var cyclicBeads []SkippedItem
+	cycles, _ := CheckCycles(false)
+	if len(cycles) > 0 {
+		var nonCyclic []bv.BeadPreview
+		for _, bead := range readyBeads {
+			if IsBeadInCycle(bead.ID, cycles) {
+				cyclicBeads = append(cyclicBeads, SkippedItem{
+					BeadID:    bead.ID,
+					BeadTitle: bead.Title,
+					Reason:    "in_dependency_cycle",
+				})
+				cycleWarnings++
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[DEP] Excluding %s from assignment (in dependency cycle)\n", bead.ID)
+				}
+			} else {
+				nonCyclic = append(nonCyclic, bead)
+			}
+		}
+		readyBeads = nonCyclic
+	}
+
 	// Limit ready beads to 50
 	if len(readyBeads) > 50 {
 		readyBeads = readyBeads[:50]
 	}
 
+	// Combine all skipped beads
+	allSkipped := append(blockedBeads, cyclicBeads...)
+
 	result := &AssignOutputEnhanced{
 		Strategy: opts.Strategy,
 		Assigned: make([]AssignedItem, 0),
-		Skipped:  blockedBeads, // Start with blocked beads
+		Skipped:  allSkipped, // Blocked + cyclic beads
 		Summary: AssignSummaryEnhanced{
-			TotalBeads:   len(readyBeads) + len(blockedBeads),
-			ActionableC:  len(readyBeads),
-			BlockedCount: len(blockedBeads),
-			IdleAgents:   len(idleAgents),
+			TotalBeads:    len(readyBeads) + len(blockedBeads) + cycleWarnings,
+			ActionableC:   len(readyBeads),
+			BlockedCount:  len(blockedBeads),
+			IdleAgents:    len(idleAgents),
+			CycleWarnings: cycleWarnings,
 		},
 	}
 
@@ -924,19 +956,33 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 	switch strings.ToLower(opts.Strategy) {
 	case "round-robin":
 		// Deterministic round-robin: bead[i] -> agent[i % N]
+		// Score is always 1.0 (all assignments equally valid in round-robin)
+		// Distribution: beads evenly spread, first agents get +1 if uneven
+		if opts.Verbose && len(agents) > 0 {
+			// Log distribution plan
+			base := len(beads) / len(agents)
+			extra := len(beads) % len(agents)
+			fmt.Fprintf(os.Stderr, "Round-robin distribution plan: %d beads across %d agents\n", len(beads), len(agents))
+			for i, a := range agents {
+				count := base
+				if i < extra {
+					count++
+				}
+				fmt.Fprintf(os.Stderr, "  Agent %d (%s): %d beads\n", a.pane.Index, a.agentType, count)
+			}
+		}
 		for i, bead := range beads {
 			if len(agents) == 0 {
 				break
 			}
 			agent := agents[i%len(agents)]
-			score := calculateMatchConfidence(agent.agentType, bead, "round-robin")
 			assignments = append(assignments, AssignedItem{
 				BeadID:    bead.ID,
 				BeadTitle: bead.Title,
 				Pane:      agent.pane.Index,
 				AgentType: agent.agentType,
-				Score:     score,
-				Reasoning: buildReasoning(agent.agentType, bead, "round-robin"),
+				Score:     1.0, // Round-robin: all assignments equally valid
+				Reasoning: fmt.Sprintf("round-robin slot %d → agent %d", i+1, i%len(agents)),
 			})
 		}
 
