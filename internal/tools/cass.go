@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -149,4 +150,49 @@ func (a *CASSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	}
 
 	return output, nil
+}
+
+// enhanceQueryForContext enhances a query with context-specific terms
+func (a *CASSAdapter) enhanceQueryForContext(query string) string {
+	// Simple implementation - just return the original query
+	// TODO: Add context-specific enhancement logic
+	return query
+}
+
+// filterAndRankForContext post-processes search results for better context relevance
+func (a *CASSAdapter) filterAndRankForContext(rawResults json.RawMessage, limit int) (json.RawMessage, error) {
+	// Simple implementation - just return the raw results
+	// TODO: Add filtering and ranking logic
+	return rawResults, nil
+}
+
+// extractKeyConcepts extracts key concepts from a query for broader matching
+func (a *CASSAdapter) extractKeyConcepts(query string) []string {
+	// Simple implementation - split on spaces and return non-empty words
+	words := strings.Fields(query)
+	var concepts []string
+	for _, word := range words {
+		if len(word) > 2 { // Only include words longer than 2 characters
+			concepts = append(concepts, word)
+		}
+	}
+	return concepts
+}
+
+// buildRelatedSessionQuery constructs a query for finding related sessions
+func (a *CASSAdapter) buildRelatedSessionQuery(concepts []string, sessionId string) string {
+	// Simple implementation - join concepts with OR
+	if len(concepts) == 0 {
+		return ""
+	}
+	return strings.Join(concepts, " OR ")
+}
+
+// buildPatternQuery constructs a query for finding historical patterns
+func (a *CASSAdapter) buildPatternQuery(concepts []string) string {
+	// Simple implementation - join concepts with AND for pattern matching
+	if len(concepts) == 0 {
+		return ""
+	}
+	return strings.Join(concepts, " AND ")
 }

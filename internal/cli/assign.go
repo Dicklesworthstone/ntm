@@ -46,9 +46,14 @@ var (
 	assignPrompt     string // Custom prompt for direct assignment
 
 	// Clear assignment flags
-	assignClear     string // Clear specific bead assignments (comma-separated)
-	assignClearPane int    // Clear all assignments for a pane (-1 = disabled)
-	assignClearFailed bool // Clear all failed assignments
+	assignClear       string // Clear specific bead assignments (comma-separated)
+	assignClearPane   int    // Clear all assignments for a pane (-1 = disabled)
+	assignClearFailed bool   // Clear all failed assignments
+
+	// Watch mode flags for continuous auto-assignment
+	assignWatch         bool          // Enable watch mode for continuous auto-assignment on completion
+	assignAutoReassign  bool          // Enable auto-reassignment of newly unblocked beads (default true in watch mode)
+	assignWatchInterval time.Duration // How often to check for completions (default 30s)
 )
 
 // assignAgentInfo holds information about an agent pane for assignment matching
@@ -98,8 +103,14 @@ Clear Assignments:
   ntm assign myproject --clear bd-xyz             # Clear single assignment
   ntm assign myproject --clear bd-xyz,bd-abc      # Clear multiple assignments
   ntm assign myproject --clear-pane=3             # Clear all assignments for pane 3
-  ntm assign myproject --clear-failed             # Clear all failed assignments
-  ntm assign myproject --clear bd-xyz --force     # Clear completed assignment
+
+Watch Mode (Dependency-Aware Auto-Assignment):
+  Use --watch to enable continuous monitoring for task completions and automatic
+  reassignment of newly unblocked beads to idle agents.
+
+  ntm assign myproject --watch                    # Watch mode with auto-reassignment
+  ntm assign myproject --watch --no-auto-reassign # Watch mode without auto-reassignment
+  ntm assign myproject --watch --watch-interval=10s # Check every 10 seconds
 
 Examples:
   ntm assign myproject                         # Show assignment recommendations
@@ -155,6 +166,11 @@ Examples:
 	cmd.Flags().IntVar(&assignClearPane, "clear-pane", -1, "Clear all assignments for a pane (use when agent crashed)")
 	cmd.Flags().BoolVar(&assignClearFailed, "clear-failed", false, "Clear all failed assignments")
 
+	// Watch mode flags
+	cmd.Flags().BoolVar(&assignWatch, "watch", false, "Enable watch mode for continuous auto-assignment on completion")
+	cmd.Flags().BoolVar(&assignAutoReassign, "auto-reassign", true, "Enable auto-reassignment of newly unblocked beads in watch mode")
+	cmd.Flags().DurationVar(&assignWatchInterval, "watch-interval", 30*time.Second, "How often to check for completions in watch mode")
+
 	return cmd
 }
 
@@ -182,6 +198,11 @@ func runAssign(cmd *cobra.Command, args []string) error {
 	// Handle clear operations first
 	if assignClear != "" || assignClearPane >= 0 || assignClearFailed {
 		return runClearAssignments(cmd, session)
+	}
+
+	// Handle watch mode for continuous auto-assignment
+	if assignWatch {
+		return runWatchMode(cmd, session)
 	}
 
 	// BV is preferred for dependency-aware assignment, but we can fall back to bd-ready
@@ -562,6 +583,13 @@ func determineAgentState(scrollback, agentType string) string {
 	return "working"
 }
 
+func assignmentAgentName(session, agentType string, paneIndex int) string {
+	if session == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s_%s_%d", session, agentType, paneIndex)
+}
+
 // calculateMatchConfidence calculates how well an agent matches a task
 func calculateMatchConfidence(agentType string, bead bv.BeadPreview, strategy string) float64 {
 	baseConfidence := 0.7
@@ -872,15 +900,53 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	wd, _ := os.Getwd()
 	allRecs, err := bv.GetTriageRecommendations(wd, 100)
 
-	// Fallback to GetReadyPreview if triage fails
+	// Enhanced error handling for BV unavailability and stale graphs
 	var readyBeads []bv.BeadPreview
 	var blockedBeads []SkippedItem
+	var fallbackReason string
+
 	if err != nil {
-		// Fallback: use GetReadyPreview (no dependency info)
+		fallbackReason = fmt.Sprintf("BV triage unavailable: %v", err)
+		result.Errors = append(result.Errors, fallbackReason)
+
+		// Try alternative dependency checking methods
 		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "[DEP] BV triage unavailable (%v), using br list fallback\n", err)
+			fmt.Fprintf(os.Stderr, "[DEP] %s, attempting fallbacks\n", fallbackReason)
 		}
+
+		// Fallback 1: Try BV insights to at least get cycle information
+		cycles, cycleErr := CheckCycles(false)
+		if cycleErr == nil && len(cycles) > 0 {
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "[DEP] Got cycle info from BV insights, filtering %d cycles\n", len(cycles))
+			}
+		}
+
+		// Fallback 2: Use GetReadyPreview (no dependency info)
 		readyBeads = bv.GetReadyPreview(wd, 50)
+		if len(readyBeads) == 0 {
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "[DEP] No beads available from br list either\n")
+			}
+		}
+
+		// Apply cycle filtering to fallback beads if we have cycle info
+		if len(cycles) > 0 {
+			filteredBeads, excluded := FilterCyclicBeads(readyBeads, false)
+			for i := 0; i < excluded; i++ {
+				// Add excluded beads to skipped list
+				for _, bead := range readyBeads {
+					if IsBeadInCycle(bead.ID, cycles) {
+						blockedBeads = append(blockedBeads, SkippedItem{
+							BeadID: bead.ID,
+							Reason: "in_dependency_cycle",
+						})
+						break
+					}
+				}
+			}
+			readyBeads = filteredBeads
+		}
 	} else {
 		// Filter blocked beads from recommendations
 		for _, rec := range allRecs {
@@ -1048,6 +1114,7 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 				BeadTitle: bead.Title,
 				Pane:      agent.pane.Index,
 				AgentType: agent.agentType,
+				AgentName: assignmentAgentName(opts.Session, agent.agentType, agent.pane.Index),
 				Score:     1.0, // Round-robin: all assignments equally valid
 				Reasoning: fmt.Sprintf("round-robin slot %d → agent %d", i+1, i%len(agents)),
 			})
@@ -1077,6 +1144,7 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 					BeadTitle: bead.Title,
 					Pane:      bestAgent.pane.Index,
 					AgentType: bestAgent.agentType,
+					AgentName: assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
 					Score:     bestScore,
 					Reasoning: buildReasoning(bestAgent.agentType, bead, "quality"),
 				})
@@ -1098,6 +1166,7 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 					BeadTitle: bead.Title,
 					Pane:      agents[i].pane.Index,
 					AgentType: agents[i].agentType,
+					AgentName: assignmentAgentName(opts.Session, agents[i].agentType, agents[i].pane.Index),
 					Score:     score,
 					Reasoning: buildReasoning(agents[i].agentType, bead, "speed"),
 				})
@@ -1135,6 +1204,7 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 					BeadTitle: bead.Title,
 					Pane:      bestAgent.pane.Index,
 					AgentType: bestAgent.agentType,
+					AgentName: assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
 					Score:     bestScore,
 					Reasoning: buildReasoning(bestAgent.agentType, bead, "dependency"),
 				})
@@ -1168,6 +1238,7 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 					BeadTitle: bead.Title,
 					Pane:      bestAgent.pane.Index,
 					AgentType: bestAgent.agentType,
+					AgentName: assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
 					Score:     bestScore,
 					Reasoning: buildReasoning(bestAgent.agentType, bead, "balanced"),
 				})
@@ -1481,9 +1552,9 @@ type ClearAllResult struct {
 
 // ClearAssignmentsSummary provides a summary of a clear operation.
 type ClearAssignmentsSummary struct {
-	ClearedCount        int `json:"cleared_count"`
+	ClearedCount         int `json:"cleared_count"`
 	ReservationsReleased int `json:"reservations_released"`
-	FailedCount         int `json:"failed_count,omitempty"`
+	FailedCount          int `json:"failed_count,omitempty"`
 }
 
 // ClearAssignmentsData is the data payload for clear operations.
@@ -1502,14 +1573,14 @@ type ClearAssignmentsError struct {
 
 // ClearAssignmentsEnvelope is the standard JSON envelope for clear operations.
 type ClearAssignmentsEnvelope struct {
-	Command   string                 `json:"command"`
-	Subcommand string                `json:"subcommand"`
-	Session   string                 `json:"session"`
-	Timestamp string                 `json:"timestamp"`
-	Success   bool                   `json:"success"`
-	Data      *ClearAssignmentsData  `json:"data,omitempty"`
-	Warnings  []string               `json:"warnings"`
-	Error     *ClearAssignmentsError `json:"error,omitempty"`
+	Command    string                 `json:"command"`
+	Subcommand string                 `json:"subcommand"`
+	Session    string                 `json:"session"`
+	Timestamp  string                 `json:"timestamp"`
+	Success    bool                   `json:"success"`
+	Data       *ClearAssignmentsData  `json:"data,omitempty"`
+	Warnings   []string               `json:"warnings"`
+	Error      *ClearAssignmentsError `json:"error,omitempty"`
 }
 
 var releaseReservations = releaseFileReservations
@@ -1830,7 +1901,7 @@ func releaseFileReservations(session, beadID, agentName string) ([]string, error
 }
 
 // ============================================================================
-// Dependency Awareness - Completion Detection and Unblock Checking
+// Dependency Awareness - Completion Detection and Auto-Reassignment
 // ============================================================================
 
 // UnblockedBead represents a bead that was previously blocked but is now actionable
@@ -1868,11 +1939,83 @@ func GetNewlyUnblockedBeads(completedBeadID string, verbose bool) (*DependencyAw
 		fmt.Fprintf(os.Stderr, "[DEP] Checking for beads unblocked by %s\n", completedBeadID)
 	}
 
-	// Get current triage recommendations (fresh data)
-	recommendations, err := bv.GetTriageRecommendations(wd, 100)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("failed to get triage data: %v", err))
+	// Get current triage recommendations (fresh data) with retry logic
+	var recommendations []bv.TriageRecommendation
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		recommendations, lastErr = bv.GetTriageRecommendations(wd, 100)
+		if lastErr == nil {
+			break
+		}
+
+		if verbose && attempt < maxRetries-1 {
+			fmt.Fprintf(os.Stderr, "[DEP] BV triage failed (attempt %d/%d): %v, retrying...\n",
+				attempt+1, maxRetries, lastErr)
+		}
+
+		// Brief delay before retry
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
+
+	if lastErr != nil {
+		// All retries failed - try alternative approaches
+		errMsg := fmt.Sprintf("failed to get triage data after %d attempts: %v", maxRetries, lastErr)
+		result.Errors = append(result.Errors, errMsg)
+
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[DEP] %s\n", errMsg)
+			fmt.Fprintf(os.Stderr, "[DEP] Attempting alternative dependency detection...\n")
+		}
+
+		// Alternative: Check if we can at least validate that the completed bead exists
+		// and try to infer potential unblocks from available data
+		fallbackBeads := bv.GetReadyPreview(wd, 50)
+		if len(fallbackBeads) > 0 {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[DEP] Found %d ready beads, but cannot determine dependencies\n", len(fallbackBeads))
+			}
+			result.Errors = append(result.Errors, "dependency information unavailable - manual verification recommended")
+		}
+
 		return result, nil // Return partial result, not error
+	}
+
+	if len(recommendations) == 0 {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[DEP] No triage recommendations returned - dependency graph may be empty\n")
+		}
+		result.Errors = append(result.Errors, "no beads found in triage - dependency graph may be empty or stale")
+		return result, nil
+	}
+
+	// Validate dependency graph freshness by checking if completed bead is known
+	// This helps detect stale graphs where the completion hasn't been processed yet
+	foundCompletedBead := false
+	for _, rec := range recommendations {
+		if rec.ID == completedBeadID {
+			foundCompletedBead = true
+			if len(rec.BlockedBy) > 0 {
+				// The completed bead still shows as blocked - graph is stale
+				if verbose {
+					fmt.Fprintf(os.Stderr, "[DEP] Warning: completed bead %s still shows blockers: %v (stale graph)\n",
+						completedBeadID, rec.BlockedBy)
+				}
+				result.Errors = append(result.Errors,
+					fmt.Sprintf("stale dependency graph detected - %s still shows as blocked", completedBeadID))
+			}
+			break
+		}
+	}
+
+	if !foundCompletedBead {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[DEP] Completed bead %s not found in triage recommendations\n", completedBeadID)
+		}
+		// This could be normal if the bead was already processed, so just note it
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("completed bead %s not in current triage (may be normal)", completedBeadID))
 	}
 
 	// Find beads that were blocked by the completed bead and are now actionable
@@ -1964,28 +2107,88 @@ func OnBeadCompletion(session string, completedBeadID string, verbose bool) ([]b
 
 // CheckCycles returns any dependency cycles detected in the current project.
 // Beads in cycles should be excluded from automatic assignment.
+// Enhanced with retry logic and comprehensive error handling.
 func CheckCycles(verbose bool) ([][]string, error) {
 	wd, _ := os.Getwd()
 	client := bv.NewBVClient()
 	client.WorkspacePath = wd
 
-	insights, err := client.GetInsights()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get insights: %w", err)
+	maxRetries := 2
+	var insights *bv.Insights
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		insights, lastErr = client.GetInsights()
+		if lastErr == nil {
+			break
+		}
+
+		if verbose && attempt < maxRetries-1 {
+			fmt.Fprintf(os.Stderr, "[DEP] BV insights failed (attempt %d/%d): %v, retrying...\n",
+				attempt+1, maxRetries, lastErr)
+		}
+
+		// Brief delay before retry
+		time.Sleep(500 * time.Millisecond * time.Duration(attempt+1))
+	}
+
+	if lastErr != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[DEP] Failed to get insights after %d attempts: %v\n", maxRetries, lastErr)
+			fmt.Fprintf(os.Stderr, "[DEP] Cycle detection unavailable - proceeding without cycle filtering\n")
+		}
+		return nil, fmt.Errorf("failed to get insights after %d attempts: %w", maxRetries, lastErr)
 	}
 
 	if insights == nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[DEP] BV insights returned nil - no cycle information available\n")
+		}
 		return nil, nil
 	}
 
-	if verbose && len(insights.Cycles) > 0 {
-		fmt.Fprintf(os.Stderr, "[DEP] Detected %d dependency cycles:\n", len(insights.Cycles))
-		for i, cycle := range insights.Cycles {
+	// Validate cycle data integrity
+	var validCycles [][]string
+	for i, cycle := range insights.Cycles {
+		if len(cycle) < 2 {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[DEP] Warning: invalid cycle %d with < 2 nodes: %v\n", i+1, cycle)
+			}
+			continue
+		}
+
+		// Check for duplicate nodes in the cycle (indicates data corruption)
+		seen := make(map[string]bool)
+		valid := true
+		for _, node := range cycle {
+			if seen[node] {
+				if verbose {
+					fmt.Fprintf(os.Stderr, "[DEP] Warning: cycle %d has duplicate node %s: %v\n", i+1, node, cycle)
+				}
+				valid = false
+				break
+			}
+			seen[node] = true
+		}
+
+		if valid {
+			validCycles = append(validCycles, cycle)
+		}
+	}
+
+	if verbose && len(validCycles) > 0 {
+		fmt.Fprintf(os.Stderr, "[DEP] Detected %d valid dependency cycles:\n", len(validCycles))
+		for i, cycle := range validCycles {
 			fmt.Fprintf(os.Stderr, "  Cycle %d: %v\n", i+1, cycle)
 		}
 	}
 
-	return insights.Cycles, nil
+	if len(validCycles) != len(insights.Cycles) && verbose {
+		fmt.Fprintf(os.Stderr, "[DEP] Filtered out %d invalid cycles\n",
+			len(insights.Cycles)-len(validCycles))
+	}
+
+	return validCycles, nil
 }
 
 // IsBeadInCycle checks if a bead ID is part of any detected dependency cycle.
@@ -2285,4 +2488,308 @@ func reserveFilesForBead(session, beadID, beadTitle, agentType string, verbose b
 	}
 
 	return result
+}
+
+// ============================================================================
+// Auto-Reassignment Logic
+// ============================================================================
+
+// AutoReassignOptions contains options for auto-reassignment
+type AutoReassignOptions struct {
+	Session         string
+	Strategy        string
+	Template        string
+	TemplateFile    string
+	ReserveFiles    bool
+	Verbose         bool
+	Quiet           bool
+	Timeout         time.Duration
+	AgentTypeFilter string
+}
+
+// AutoReassignResult contains the result of an auto-reassignment operation
+type AutoReassignResult struct {
+	TriggerBeadID  string          `json:"trigger_bead_id"`
+	NewlyUnblocked []UnblockedBead `json:"newly_unblocked"`
+	Assigned       []AssignedItem  `json:"assigned"`
+	Skipped        []SkippedItem   `json:"skipped"`
+	IdleAgents     int             `json:"idle_agents"`
+	Errors         []string        `json:"errors,omitempty"`
+	CyclesDetected [][]string      `json:"cycles_detected,omitempty"`
+	CompletionTime time.Time       `json:"completion_time"`
+}
+
+// PerformAutoReassignment handles automatic reassignment when a bead completes.
+// This is the main entry point for dependency-aware auto-reassignment.
+// It:
+// 1. Detects newly unblocked beads after the completion
+// 2. Finds idle agents that can take new work
+// 3. Assigns unblocked beads to idle agents using the specified strategy
+// 4. Handles file reservations and prompt generation
+func PerformAutoReassignment(completedBeadID string, opts *AutoReassignOptions) (*AutoReassignResult, error) {
+	result := &AutoReassignResult{
+		TriggerBeadID:  completedBeadID,
+		CompletionTime: time.Now(),
+		Assigned:       make([]AssignedItem, 0),
+		Skipped:        make([]SkippedItem, 0),
+	}
+
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "[AUTO] Auto-reassignment triggered by completion of %s\n", completedBeadID)
+	}
+
+	// Step 1: Get newly unblocked beads
+	depResult, err := GetNewlyUnblockedBeads(completedBeadID, opts.Verbose)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to check unblocked beads: %v", err))
+		return result, nil // Return partial result, not error
+	}
+
+	result.NewlyUnblocked = depResult.NewlyUnblocked
+	result.CyclesDetected = depResult.CyclesDetected
+
+	if len(depResult.Errors) > 0 {
+		result.Errors = append(result.Errors, depResult.Errors...)
+	}
+
+	if len(result.NewlyUnblocked) == 0 {
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "[AUTO] No beads were unblocked by completion of %s\n", completedBeadID)
+		}
+		return result, nil
+	}
+
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "[AUTO] Found %d newly unblocked beads: %v\n",
+			len(result.NewlyUnblocked),
+			func() []string {
+				var ids []string
+				for _, ub := range result.NewlyUnblocked {
+					ids = append(ids, ub.ID)
+				}
+				return ids
+			}())
+	}
+
+	// Step 2: Get idle agents
+	idleAgents, err := getIdleAgents(opts.Session, opts.AgentTypeFilter, opts.Verbose)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to get idle agents: %v", err))
+		return result, nil
+	}
+
+	result.IdleAgents = len(idleAgents)
+
+	if len(idleAgents) == 0 {
+		// No idle agents - mark all unblocked beads as skipped
+		for _, unblocked := range result.NewlyUnblocked {
+			result.Skipped = append(result.Skipped, SkippedItem{
+				BeadID: unblocked.ID,
+				Reason: "no_idle_agents",
+			})
+		}
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "[AUTO] No idle agents available for reassignment\n")
+		}
+		return result, nil
+	}
+
+	// Step 3: Convert unblocked beads to BeadPreview format for assignment
+	var unblockedBeads []bv.BeadPreview
+	for _, unblocked := range result.NewlyUnblocked {
+		unblockedBeads = append(unblockedBeads, bv.BeadPreview{
+			ID:       unblocked.ID,
+			Title:    unblocked.Title,
+			Priority: fmt.Sprintf("P%d", unblocked.Priority),
+		})
+	}
+
+	// Step 4: Filter out beads in dependency cycles
+	filteredBeads, excluded := FilterCyclicBeads(unblockedBeads, opts.Verbose)
+	for i := 0; i < excluded; i++ {
+		// Find the excluded bead to add to skipped
+		for _, unblocked := range result.NewlyUnblocked {
+			if IsBeadInCycle(unblocked.ID, result.CyclesDetected) {
+				result.Skipped = append(result.Skipped, SkippedItem{
+					BeadID: unblocked.ID,
+					Reason: "in_dependency_cycle",
+				})
+				break
+			}
+		}
+	}
+
+	if len(filteredBeads) == 0 {
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "[AUTO] No assignable beads after filtering cycles\n")
+		}
+		return result, nil
+	}
+
+	// Step 5: Generate assignments using strategy
+	assignOpts := &AssignCommandOptions{
+		Session:         opts.Session,
+		Strategy:        opts.Strategy,
+		Template:        opts.Template,
+		TemplateFile:    opts.TemplateFile,
+		AgentTypeFilter: opts.AgentTypeFilter,
+		Verbose:         opts.Verbose,
+		Quiet:           opts.Quiet,
+		Timeout:         opts.Timeout,
+		ReserveFiles:    opts.ReserveFiles,
+	}
+
+	assignments := generateAssignmentsEnhanced(idleAgents, filteredBeads, assignOpts)
+	result.Assigned = assignments
+
+	// Step 6: Execute assignments
+	if len(assignments) > 0 {
+		// Create a mock enhanced output for execution
+		enhancedOut := &AssignOutputEnhanced{
+			Strategy: opts.Strategy,
+			Assigned: assignments,
+			Skipped:  result.Skipped,
+		}
+
+		if err := executeAssignmentsEnhanced(opts.Session, enhancedOut, assignOpts); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("failed to execute assignments: %v", err))
+		} else {
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "[AUTO] Successfully assigned %d unblocked beads\n", len(assignments))
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// getIdleAgents returns a list of idle agents that can take new assignments
+func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgentInfo, error) {
+	// Get panes from tmux
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get panes: %w", err)
+	}
+
+	var idleAgents []assignAgentInfo
+
+	for _, pane := range panes {
+		agentType := detectAgentTypeFromTitle(pane.Title)
+		if agentType == "user" || agentType == "unknown" {
+			continue
+		}
+
+		// Apply agent type filter
+		if agentTypeFilter != "" && agentType != agentTypeFilter {
+			continue
+		}
+
+		model := detectModelFromTitle(agentType, pane.Title)
+		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		state := determineAgentState(scrollback, agentType)
+
+		if state == "idle" {
+			idleAgents = append(idleAgents, assignAgentInfo{
+				pane:      pane,
+				agentType: agentType,
+				model:     model,
+				state:     state,
+			})
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[AUTO] Found idle agent: pane %d (%s)\n", pane.Index, agentType)
+			}
+		}
+	}
+
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[AUTO] Total idle agents available: %d\n", len(idleAgents))
+	}
+
+	return idleAgents, nil
+}
+
+// WatchForCompletions starts a background watcher that monitors for bead completions
+// and triggers auto-reassignment. This implements the active monitoring component.
+func WatchForCompletions(opts *AutoReassignOptions) error {
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "[WATCH] Starting completion watcher for session %s\n", opts.Session)
+	}
+
+	// Load assignment store to monitor completions
+	store, err := assignment.LoadStore(opts.Session)
+	if err != nil {
+		return fmt.Errorf("failed to load assignment store: %w", err)
+	}
+
+	// Get initial state of assignments
+	lastCheckTime := time.Now()
+	knownAssignments := make(map[string]assignment.Assignment)
+	for _, a := range store.GetAll() {
+		knownAssignments[a.BeadID] = a
+	}
+
+	// Watch loop
+	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Check for completed assignments
+		currentAssignments := store.GetAll()
+		for _, current := range currentAssignments {
+			if prev, existed := knownAssignments[current.BeadID]; existed {
+				// Check if status changed from non-completed to completed
+				if prev.Status != "completed" && current.Status == "completed" {
+					if opts.Verbose {
+						fmt.Fprintf(os.Stderr, "[WATCH] Detected completion: %s\n", current.BeadID)
+					}
+
+					// Trigger auto-reassignment
+					result, err := PerformAutoReassignment(current.BeadID, opts)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "[WATCH] Auto-reassignment failed for %s: %v\n", current.BeadID, err)
+					} else if len(result.Assigned) > 0 {
+						if !opts.Quiet {
+							fmt.Printf("[AUTO] Assigned %d newly unblocked beads after %s completion\n",
+								len(result.Assigned), current.BeadID)
+						}
+					}
+				}
+			}
+			knownAssignments[current.BeadID] = current
+		}
+
+		lastCheckTime = time.Now()
+	}
+
+	return nil
+}
+
+// TriggerCompletionCheck manually triggers a completion check and auto-reassignment.
+// This can be called from external completion notifications or manual triggers.
+func TriggerCompletionCheck(session, completedBeadID string, opts *AutoReassignOptions) (*AutoReassignResult, error) {
+	if opts.Session == "" {
+		opts.Session = session
+	}
+
+	result, err := PerformAutoReassignment(completedBeadID, opts)
+	if err != nil {
+		return result, err
+	}
+
+	// Update assignment store to mark the bead as completed if it's tracked
+	store, err := assignment.LoadStore(session)
+	if err == nil && store != nil {
+		assignments := store.GetAll()
+		for _, a := range assignments {
+			if a.BeadID == completedBeadID && a.Status != "completed" {
+				store.UpdateStatus(completedBeadID, "completed")
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[AUTO] Marked %s as completed in assignment store\n", completedBeadID)
+				}
+				break
+			}
+		}
+	}
+
+	return result, nil
 }

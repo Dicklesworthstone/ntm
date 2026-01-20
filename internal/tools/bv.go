@@ -145,6 +145,51 @@ func (a *BVAdapter) GetNext(ctx context.Context, dir string) (json.RawMessage, e
 	return a.runRobotCommand(ctx, dir, "--robot-next")
 }
 
+// Analysis mode methods for advanced BV analysis
+func (a *BVAdapter) GetForecast(ctx context.Context, dir string, target string) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-forecast", target)
+}
+
+func (a *BVAdapter) GetSuggestions(ctx context.Context, dir string) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-suggest")
+}
+
+func (a *BVAdapter) GetImpact(ctx context.Context, dir string, filePath string) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-impact", filePath)
+}
+
+func (a *BVAdapter) GetSearch(ctx context.Context, dir string, query string) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-search", query)
+}
+
+// Label mode methods for label-based analysis
+func (a *BVAdapter) GetLabelAttention(ctx context.Context, dir string, limit int) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-label-attention", fmt.Sprintf("--attention-limit=%d", limit))
+}
+
+func (a *BVAdapter) GetLabelFlow(ctx context.Context, dir string) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-label-flow")
+}
+
+func (a *BVAdapter) GetLabelHealth(ctx context.Context, dir string) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-label-health")
+}
+
+// File mode methods for file-based analysis
+func (a *BVAdapter) GetFileBeads(ctx context.Context, dir string, filePath string, limit int) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-file-beads", filePath, fmt.Sprintf("--file-beads-limit=%d", limit))
+}
+
+func (a *BVAdapter) GetFileHotspots(ctx context.Context, dir string, limit int) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-file-hotspots", fmt.Sprintf("--hotspots-limit=%d", limit))
+}
+
+func (a *BVAdapter) GetFileRelations(ctx context.Context, dir string, filePath string, limit int, threshold float64) (json.RawMessage, error) {
+	return a.runRobotCommand(ctx, dir, "--robot-file-relations", filePath,
+		fmt.Sprintf("--relations-limit=%d", limit),
+		fmt.Sprintf("--relations-threshold=%.2f", threshold))
+}
+
 // runRobotCommand executes a bv robot command and returns raw JSON
 func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())

@@ -68,6 +68,7 @@ type Pane struct {
 	Width   int
 	Height  int
 	Active  bool
+	PID     int // Shell PID
 }
 
 // Session represents a tmux session
@@ -272,7 +273,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
 		return nil, err
@@ -285,7 +286,7 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 7 {
+		if len(parts) < 8 {
 			continue
 		}
 
@@ -293,6 +294,7 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 		width, _ := strconv.Atoi(parts[4])
 		height, _ := strconv.Atoi(parts[5])
 		active := parts[6] == "1"
+		pid, _ := strconv.Atoi(parts[7])
 
 		pane := Pane{
 			ID:      parts[0],
@@ -302,6 +304,7 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 			Width:   width,
 			Height:  height,
 			Active:  active,
+			PID:     pid,
 		}
 
 		// Parse pane title using regex to extract type, variant, and tags
@@ -915,7 +918,7 @@ type PaneActivity struct {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_last_activity}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_last_activity}%[1]s#{pane_pid}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
 		return nil, err
@@ -928,7 +931,7 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 8 {
+		if len(parts) < 9 {
 			continue
 		}
 
@@ -937,6 +940,7 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		height, _ := strconv.Atoi(parts[5])
 		active := parts[6] == "1"
 		timestamp, _ := strconv.ParseInt(parts[7], 10, 64)
+		pid, _ := strconv.Atoi(parts[8])
 
 		pane := Pane{
 			ID:      parts[0],
@@ -946,6 +950,7 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			Width:   width,
 			Height:  height,
 			Active:  active,
+			PID:     pid,
 		}
 
 		// Parse pane title using regex to extract type, variant, and tags

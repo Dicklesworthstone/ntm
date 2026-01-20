@@ -249,3 +249,128 @@ type GraphMetrics struct {
 	MaxDepth   int     `json:"max_depth"`
 	CycleCount int     `json:"cycle_count"`
 }
+
+// ForecastResponse contains ETA predictions
+type ForecastResponse struct {
+	Forecasts []ForecastItem `json:"forecasts"`
+}
+
+// ForecastItem represents a forecast for a single issue
+type ForecastItem struct {
+	ID              string    `json:"id"`
+	Title           string    `json:"title"`
+	EstimatedETA    time.Time `json:"estimated_eta"`
+	ConfidenceLevel float64   `json:"confidence_level"`
+	DependencyCount int       `json:"dependency_count"`
+	CriticalPath    bool      `json:"critical_path"`
+	BlockingFactors []string  `json:"blocking_factors,omitempty"`
+}
+
+// SuggestionsResponse contains hygiene suggestions
+type SuggestionsResponse struct {
+	Suggestions []Suggestion `json:"suggestions"`
+}
+
+// Suggestion represents a hygiene suggestion
+type Suggestion struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description"`
+	Items       []string `json:"items"`
+}
+
+// ImpactResponse contains impact analysis
+type ImpactResponse struct {
+	ImpactScore float64  `json:"impact_score"`
+	Affected    []string `json:"affected_beads"`
+}
+
+// SearchResponse contains semantic search results
+type SearchResponse struct {
+	Results []SearchResult `json:"results"`
+}
+
+// SearchResult represents a single search result
+type SearchResult struct {
+	ID    string  `json:"id"`
+	Title string  `json:"title"`
+	Score float64 `json:"score"`
+}
+
+// LabelAttentionResponse contains attention-ranked labels
+type LabelAttentionResponse struct {
+	Labels []LabelAttention `json:"labels"`
+}
+
+// LabelAttention represents a label with attention score
+type LabelAttention struct {
+	Name  string  `json:"name"`
+	Score float64 `json:"score"`
+}
+
+// LabelHealthResponse contains health metrics per label
+type LabelHealthResponse struct {
+	Results LabelHealthResults `json:"results"`
+}
+
+// LabelHealthResults contains the actual health data
+type LabelHealthResults struct {
+	Labels []LabelHealth `json:"labels"`
+}
+
+// LabelHealth contains health metrics for a single label
+type LabelHealth struct {
+	Label         string  `json:"label"`
+	HealthLevel   string  `json:"health_level"` // healthy, warning, critical
+	VelocityScore float64 `json:"velocity_score"`
+	Staleness     float64 `json:"staleness"`
+	BlockedCount  int     `json:"blocked_count"`
+}
+
+// LabelFlowResponse contains cross-label dependency analysis
+type LabelFlowResponse struct {
+	FlowMatrix       map[string]map[string]int `json:"flow_matrix"`
+	Dependencies     []LabelDependency         `json:"dependencies"`
+	BottleneckLabels []string                  `json:"bottleneck_labels"`
+}
+
+// LabelDependency represents a dependency between labels
+type LabelDependency struct {
+	From   string  `json:"from"`
+	To     string  `json:"to"`
+	Count  int     `json:"count"`
+	Weight float64 `json:"weight"`
+}
+
+// FileBeadsResponse contains file-to-bead mapping
+type FileBeadsResponse struct {
+	Files []FileBeads `json:"files"`
+}
+
+// FileBeads represents beads associated with a file
+type FileBeads struct {
+	Path  string   `json:"path"`
+	Beads []string `json:"beads"`
+}
+
+// FileHotspotsResponse contains file hotspot analysis
+type FileHotspotsResponse struct {
+	Hotspots []FileHotspot `json:"hotspots"`
+}
+
+// FileHotspot represents a frequently changed file
+type FileHotspot struct {
+	Path  string `json:"path"`
+	Score int    `json:"score"`
+}
+
+// FileRelationsResponse contains file relation analysis
+type FileRelationsResponse struct {
+	Relations []FileRelation `json:"relations"`
+}
+
+// FileRelation represents a relationship between files
+type FileRelation struct {
+	Source string  `json:"source"`
+	Target string  `json:"target"`
+	Weight float64 `json:"weight"`
+}

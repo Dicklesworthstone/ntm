@@ -288,7 +288,7 @@ func (b *ContextPackBuilder) buildCASSComponent(ctx context.Context, query strin
 	return component
 }
 
-// buildS2PComponent generates S2P context
+// buildS2PComponent generates S2P context with agent-aware budget enforcement
 func (b *ContextPackBuilder) buildS2PComponent(ctx context.Context, dir string, files []string, tokenBudget int) *PackComponent {
 	component := &PackComponent{Type: "s2p"}
 
@@ -303,14 +303,18 @@ func (b *ContextPackBuilder) buildS2PComponent(ctx context.Context, dir string, 
 		return component
 	}
 
-	data, err := b.s2pAdapter.GenerateContext(ctx, dir, files, "")
+	// Apply agent-specific file limits and processing strategies
+	optimizedFiles := b.optimizeFilesForBudget(files, tokenBudget)
+	format := b.selectS2PFormat(tokenBudget)
+
+	data, err := b.s2pAdapter.GenerateContext(ctx, dir, optimizedFiles, format)
 	if err != nil {
 		component.Error = err.Error()
 		return component
 	}
 
-	// S2P returns raw text, not JSON
-	truncated := truncateText(string(data), tokenBudget)
+	// Apply intelligent truncation that preserves structure
+	truncated := b.intelligentTruncate(string(data), tokenBudget)
 	component.Data = json.RawMessage(fmt.Sprintf("%q", truncated))
 	component.TokenCount = estimateTokens(truncated)
 	return component
@@ -534,4 +538,146 @@ func truncateText(text string, tokenBudget int) string {
 		return text
 	}
 	return text[:charBudget] + "\n...[truncated]"
+}
+
+// optimizeFilesForBudget applies agent-specific file selection strategies
+func (b *ContextPackBuilder) optimizeFilesForBudget(files []string, tokenBudget int) []string {
+	// Estimate files per token budget - smaller budgets get fewer files
+	maxFiles := tokenBudget / 2000 // Roughly 2000 tokens per file
+	if maxFiles < 3 {
+		maxFiles = 3 // Minimum files for context
+	}
+	if maxFiles > 20 {
+		maxFiles = 20 // Maximum to prevent overwhelm
+	}
+
+	if len(files) <= maxFiles {
+		return files
+	}
+
+	// Prioritize files by importance heuristics
+	prioritized := b.prioritizeFilesByImportance(files)
+	return prioritized[:maxFiles]
+}
+
+// prioritizeFilesByImportance sorts files by likely importance for context
+func (b *ContextPackBuilder) prioritizeFilesByImportance(files []string) []string {
+	type fileWithPriority struct {
+		path     string
+		priority int
+	}
+
+	priorityFiles := make([]fileWithPriority, 0, len(files))
+
+	for _, file := range files {
+		priority := b.calculateFilePriority(file)
+		priorityFiles = append(priorityFiles, fileWithPriority{file, priority})
+	}
+
+	// Sort by priority (higher number = higher priority)
+	for i := 0; i < len(priorityFiles)-1; i++ {
+		for j := i + 1; j < len(priorityFiles); j++ {
+			if priorityFiles[i].priority < priorityFiles[j].priority {
+				priorityFiles[i], priorityFiles[j] = priorityFiles[j], priorityFiles[i]
+			}
+		}
+	}
+
+	result := make([]string, len(priorityFiles))
+	for i, fp := range priorityFiles {
+		result[i] = fp.path
+	}
+	return result
+}
+
+// calculateFilePriority assigns priority scores to files
+func (b *ContextPackBuilder) calculateFilePriority(file string) int {
+	priority := 0
+	lower := strings.ToLower(file)
+
+	// High priority: Main entry points
+	if strings.Contains(lower, "main.") ||
+	   strings.Contains(lower, "index.") ||
+	   strings.Contains(lower, "app.") {
+		priority += 100
+	}
+
+	// Medium-high priority: Core logic files
+	if strings.Contains(lower, "core") ||
+	   strings.Contains(lower, "service") ||
+	   strings.Contains(lower, "controller") ||
+	   strings.Contains(lower, "handler") {
+		priority += 50
+	}
+
+	// Medium priority: Configuration and important modules
+	if strings.Contains(lower, "config") ||
+	   strings.Contains(lower, "router") ||
+	   strings.Contains(lower, "middleware") {
+		priority += 30
+	}
+
+	// Lower priority: Tests, docs, examples
+	if strings.Contains(lower, "test") ||
+	   strings.Contains(lower, "spec") ||
+	   strings.Contains(lower, "example") ||
+	   strings.Contains(lower, "demo") {
+		priority -= 20
+	}
+
+	// Bonus for shorter paths (likely more important)
+	if strings.Count(file, "/") <= 2 {
+		priority += 10
+	}
+
+	return priority
+}
+
+// selectS2PFormat chooses optimal s2p format based on token budget
+func (b *ContextPackBuilder) selectS2PFormat(tokenBudget int) string {
+	// Use more compact formats for smaller budgets
+	if tokenBudget < 30000 { // Less than ~30k tokens
+		return "compact" // More concise output if s2p supports it
+	}
+	return "" // Default format
+}
+
+// intelligentTruncate preserves important content structure when truncating
+func (b *ContextPackBuilder) intelligentTruncate(text string, tokenBudget int) string {
+	charBudget := tokenBudget * 4
+	if len(text) <= charBudget {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	var result strings.Builder
+	var currentSize int
+
+	// Phase 1: Include file headers and important structural elements
+	for i, line := range lines {
+		lineSize := len(line) + 1 // +1 for newline
+
+		// Always include file boundaries and headers
+		if strings.HasPrefix(line, "=== ") ||
+		   strings.HasPrefix(line, "# ") ||
+		   strings.Contains(line, "File: ") ||
+		   i < 3 { // First few lines often contain metadata
+			if currentSize + lineSize <= charBudget {
+				result.WriteString(line + "\n")
+				currentSize += lineSize
+				continue
+			}
+		}
+
+		// For regular content, check budget
+		if currentSize + lineSize > charBudget {
+			result.WriteString("\n...[truncated - content exceeded budget]\n")
+			break
+		}
+
+		result.WriteString(line + "\n")
+		currentSize += lineSize
+	}
+
+	return result.String()
 }

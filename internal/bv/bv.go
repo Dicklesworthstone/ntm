@@ -904,3 +904,158 @@ func GetBlockedList(dir string, limit int) []BeadPreview {
 func RunRaw(dir string, args ...string) (string, error) {
 	return run(dir, args...)
 }
+
+// GetForecast returns forecast analysis
+func GetForecast(dir, target string) (*ForecastResponse, error) {
+	args := []string{"-robot-forecast"}
+	if target != "" {
+		args = append(args, target)
+	} else {
+		args = append(args, "all")
+	}
+	output, err := run(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	var resp ForecastResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing forecast: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetSuggestions returns hygiene suggestions
+func GetSuggestions(dir string) (*SuggestionsResponse, error) {
+	output, err := run(dir, "-robot-suggest")
+	if err != nil {
+		return nil, err
+	}
+	var resp SuggestionsResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing suggestions: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetImpact returns impact analysis for a file
+func GetImpact(dir, filePath string) (*ImpactResponse, error) {
+	output, err := run(dir, "-robot-impact", filePath)
+	if err != nil {
+		return nil, err
+	}
+	var resp ImpactResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing impact: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetSearch performs semantic search
+func GetSearch(dir, query string) (*SearchResponse, error) {
+	output, err := run(dir, "-robot-search", query)
+	if err != nil {
+		return nil, err
+	}
+	var resp SearchResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing search: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetLabelAttention returns label attention ranking
+func GetLabelAttention(dir string, limit int) (*LabelAttentionResponse, error) {
+	args := []string{"-robot-label-attention"}
+	if limit > 0 {
+		args = append(args, fmt.Sprintf("--attention-limit=%d", limit))
+	}
+	output, err := run(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	var resp LabelAttentionResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing label attention: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetLabelFlow returns cross-label dependency flow
+func GetLabelFlow(dir string) (*LabelFlowResponse, error) {
+	output, err := run(dir, "-robot-label-flow")
+	if err != nil {
+		return nil, err
+	}
+	var resp LabelFlowResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing label flow: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetLabelHealth returns per-label health metrics
+func GetLabelHealth(dir string) (*LabelHealthResponse, error) {
+	output, err := run(dir, "-robot-label-health")
+	if err != nil {
+		return nil, err
+	}
+	var resp LabelHealthResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing label health: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetFileBeads returns file-to-bead mapping
+func GetFileBeads(dir, filePath string, limit int) (*FileBeadsResponse, error) {
+	args := []string{"-robot-file-beads", filePath}
+	if limit > 0 {
+		args = append(args, fmt.Sprintf("--limit=%d", limit))
+	}
+	output, err := run(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	var resp FileBeadsResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing file beads: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetFileHotspots returns frequently changed files
+func GetFileHotspots(dir string, limit int) (*FileHotspotsResponse, error) {
+	args := []string{"-robot-file-hotspots"}
+	if limit > 0 {
+		args = append(args, fmt.Sprintf("--limit=%d", limit))
+	}
+	output, err := run(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	var resp FileHotspotsResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing file hotspots: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetFileRelations returns file co-change relationships
+func GetFileRelations(dir, filePath string, limit int, threshold float64) (*FileRelationsResponse, error) {
+	args := []string{"-robot-file-relations", filePath}
+	if limit > 0 {
+		args = append(args, fmt.Sprintf("--limit=%d", limit))
+	}
+	if threshold > 0 {
+		args = append(args, fmt.Sprintf("--threshold=%f", threshold))
+	}
+	output, err := run(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	var resp FileRelationsResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing file relations: %w", err)
+	}
+	return &resp, nil
+}

@@ -159,6 +159,91 @@ Shell Integration:
 			}
 			return
 		}
+		if robotForecast != "" {
+			if err := robot.PrintForecast(robotForecast); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotSuggest {
+			if err := robot.PrintSuggest(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotImpact != "" {
+			if err := robot.PrintImpact(robotImpact); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotSearch != "" {
+			if err := robot.PrintSearch(robotSearch); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotLabelAttention {
+			opts := robot.LabelAttentionOptions{
+				Limit: robotAttentionLimit,
+			}
+			if err := robot.PrintLabelAttention(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotLabelFlow {
+			if err := robot.PrintLabelFlow(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotLabelHealth {
+			if err := robot.PrintLabelHealth(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotFileBeads != "" {
+			opts := robot.FileBeadsOptions{
+				FilePath: robotFileBeads,
+				Limit:    robotFileBeadsLimit,
+			}
+			if err := robot.PrintFileBeads(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotFileHotspots {
+			opts := robot.FileHotspotsOptions{
+				Limit: robotHotspotsLimit,
+			}
+			if err := robot.PrintFileHotspots(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotFileRelations != "" {
+			opts := robot.FileRelationsOptions{
+				FilePath:  robotFileRelations,
+				Limit:     robotRelationsLimit,
+				Threshold: robotRelationsThreshold,
+			}
+			if err := robot.PrintFileRelations(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotDashboard {
 			if err := robot.PrintDashboard(jsonOutput); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1050,6 +1135,27 @@ var (
 	robotTriage      bool // bv triage output
 	robotTriageLimit int  // max recommendations to return
 
+	// BV Analysis robot flags for advanced analysis modes
+	robotForecast string // bv forecast analysis target (all or specific ID)
+	robotSuggest  bool   // bv hygiene suggestions
+	robotImpact   string // file impact analysis target
+	robotSearch   string // semantic vector search query
+
+	// BV Label robot flags for label-based analysis
+	robotLabelAttention bool // attention-ranked labels by impact and urgency
+	robotLabelFlow      bool // cross-label dependency flow matrix
+	robotLabelHealth    bool // per-label health analysis
+	robotAttentionLimit int  // max attention items to return
+
+	// BV File robot flags for file-based analysis
+	robotFileBeads         string  // beads that touched a file path
+	robotFileHotspots      bool    // files touched by most beads
+	robotFileRelations     string  // files that co-change with given file
+	robotFileBeadsLimit    int     // max beads to return per file
+	robotHotspotsLimit     int     // max hotspots to return
+	robotRelationsLimit    int     // max related files to return
+	robotRelationsThreshold float64 // correlation threshold (0.0-1.0)
+
 	// Help verbosity flags
 	helpMinimal bool // show minimal help with essential commands only
 	helpFull    bool // show full help (default behavior)
@@ -1081,6 +1187,27 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotDashboard, "robot-dashboard", false, "Get dashboard summary as markdown (or JSON with --json). Token-efficient overview")
 	rootCmd.Flags().StringVar(&robotContext, "robot-context", "", "Get context window usage for all agents in a session. Required: SESSION. Example: ntm --robot-context=myproject")
 	rootCmd.Flags().IntVar(&robotBeadLimit, "bead-limit", 5, "Max beads per category in snapshot. Optional with --robot-snapshot, --robot-status. Example: --bead-limit=10")
+
+	// BV Analysis robot flags for advanced analysis modes
+	rootCmd.Flags().StringVar(&robotForecast, "robot-forecast", "", "Get ETA predictions. Use 'all' or specific ID. Example: ntm --robot-forecast=br-123")
+	rootCmd.Flags().BoolVar(&robotSuggest, "robot-suggest", false, "Get hygiene suggestions: duplicates, missing deps, label suggestions (JSON)")
+	rootCmd.Flags().StringVar(&robotImpact, "robot-impact", "", "Get file impact analysis. Required: FILE_PATH. Example: ntm --robot-impact=src/main.go")
+	rootCmd.Flags().StringVar(&robotSearch, "robot-search", "", "Semantic vector search. Required: QUERY. Example: ntm --robot-search='authentication bug'")
+
+	// BV Label robot flags for label-based analysis
+	rootCmd.Flags().BoolVar(&robotLabelAttention, "robot-label-attention", false, "Get attention-ranked labels by impact and urgency (JSON)")
+	rootCmd.Flags().IntVar(&robotAttentionLimit, "attention-limit", 10, "Max attention items to return. Optional with --robot-label-attention")
+	rootCmd.Flags().BoolVar(&robotLabelFlow, "robot-label-flow", false, "Get cross-label dependency flow matrix and bottleneck analysis (JSON)")
+	rootCmd.Flags().BoolVar(&robotLabelHealth, "robot-label-health", false, "Get per-label health analysis: velocity, staleness, blocked count (JSON)")
+
+	// BV File robot flags for file-based analysis
+	rootCmd.Flags().StringVar(&robotFileBeads, "robot-file-beads", "", "Get beads that touched a file path. Required: FILE_PATH. Example: ntm --robot-file-beads=src/main.go")
+	rootCmd.Flags().IntVar(&robotFileBeadsLimit, "file-beads-limit", 20, "Max beads to return per file. Optional with --robot-file-beads")
+	rootCmd.Flags().BoolVar(&robotFileHotspots, "robot-file-hotspots", false, "Get files touched by most beads (quality hotspots) (JSON)")
+	rootCmd.Flags().IntVar(&robotHotspotsLimit, "hotspots-limit", 10, "Max hotspots to return. Optional with --robot-file-hotspots")
+	rootCmd.Flags().StringVar(&robotFileRelations, "robot-file-relations", "", "Get files that co-change with given file. Required: FILE_PATH. Example: ntm --robot-file-relations=src/api.go")
+	rootCmd.Flags().IntVar(&robotRelationsLimit, "relations-limit", 10, "Max related files to return. Optional with --robot-file-relations")
+	rootCmd.Flags().Float64Var(&robotRelationsThreshold, "relations-threshold", 0.5, "Correlation threshold (0.0-1.0). Optional with --robot-file-relations")
 
 	// Robot-send flags for batch messaging
 	rootCmd.Flags().StringVar(&robotSend, "robot-send", "", "Send message to panes atomically. Required: SESSION, --msg. Example: ntm --robot-send=proj --msg='Fix auth'")
@@ -1387,6 +1514,7 @@ func init() {
 
 		// Git coordination
 		newGitCmd(),
+		newWorktreesCmd(),
 
 		// Configuration management
 		newRecipesCmd(),

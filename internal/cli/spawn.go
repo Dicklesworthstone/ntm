@@ -18,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/gemini"
+	"github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -27,6 +28,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
+	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
 
 // optionalDurationValue implements pflag.Value for a duration flag with optional value.
@@ -137,6 +139,9 @@ type SpawnOptions struct {
 	AssignStrategy     string        // Assignment strategy: balanced, speed, quality, dependency, round-robin
 	AssignLimit        int           // Maximum assignments (0 = unlimited)
 	AssignReadyTimeout time.Duration // Timeout waiting for agents to become ready
+
+	// Git worktree isolation configuration
+	UseWorktrees bool // Enable git worktree isolation for agents
 }
 
 // RecoveryContext holds all the information needed to help an agent recover
@@ -252,6 +257,9 @@ func newSpawnCmd() *cobra.Command {
 	var assignLimit int
 	var assignReadyTimeout time.Duration
 
+	// Git worktree isolation flag
+	var useWorktrees bool
+
 	// Pre-load plugins to avoid double loading in RunE
 	// TODO: This runs eagerly during init() which slows down startup for all commands.
 	// Fixing this requires refactoring how dynamic flags are registered.
@@ -322,6 +330,16 @@ Stagger mode (--stagger-mode):
 
   Legacy --stagger flag still works for duration-based staggering.
   Smart mode automatically backs off on rate limits and speeds up on success.
+
+Worktree isolation (--worktrees):
+  Creates separate Git worktrees for each agent, allowing safe parallel work.
+  Each agent gets its own branch (ntm/<session>/<agent>) and working directory.
+  Reduces conflicts and isolates destructive operations to individual worktrees.
+
+  Examples:
+    ntm spawn myproject --cc=3 --worktrees
+    ntm worktrees list                    # View created worktrees
+    ntm worktrees merge claude_1          # Merge agent's work back to main
 
 Examples:
   ntm spawn myproject --cc=2 --cod=2           # 2 Claude, 2 Codex + user pane
@@ -537,6 +555,7 @@ Examples:
 				AssignStrategy:     assignStrategy,
 				AssignLimit:        assignLimit,
 				AssignReadyTimeout: assignReadyTimeout,
+				UseWorktrees:       useWorktrees,
 			}
 
 			return spawnSessionLogic(opts)
@@ -577,6 +596,9 @@ Examples:
 	cmd.Flags().StringVar(&assignStrategy, "strategy", "balanced", "Assignment strategy: balanced, speed, quality, dependency, round-robin")
 	cmd.Flags().IntVar(&assignLimit, "limit", 0, "Maximum beads to assign (0 = unlimited)")
 	cmd.Flags().DurationVar(&assignReadyTimeout, "ready-timeout", 60*time.Second, "Timeout waiting for agents to become ready")
+
+	// Git worktree isolation flag
+	cmd.Flags().BoolVar(&useWorktrees, "worktrees", false, "Enable git worktree isolation for agents (each agent gets isolated working directory)")
 
 	// Profile flags for mapping personas to agents
 	cmd.Flags().StringVar(&profilesFlag, "profiles", "", "Comma-separated list of profile/persona names to map to agents in order")
@@ -728,6 +750,30 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		}
 	}
 
+	// Create worktrees if enabled
+	var worktreeManager *worktrees.WorktreeManager
+	if opts.UseWorktrees {
+		worktreeManager = worktrees.NewManager(dir, opts.Session)
+		if !IsJSONOutput() {
+			steps.Start("Creating Git worktrees for agent isolation")
+		}
+
+		// Create worktree for each agent
+		for _, agent := range opts.Agents {
+			agentName := fmt.Sprintf("%s_%d", strings.ToLower(string(agent.Type)), agent.Index)
+			if _, err := worktreeManager.CreateForAgent(agentName); err != nil {
+				if !IsJSONOutput() {
+					steps.Fail()
+				}
+				return outputError(fmt.Errorf("failed to create worktree for agent %s: %w", agentName, err))
+			}
+		}
+
+		if !IsJSONOutput() {
+			steps.Done()
+		}
+	}
+
 	// Get current pane count
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
@@ -857,6 +903,50 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			if !IsJSONOutput() && recoveryPrompt != "" {
 				fmt.Println("✓ Recovery context prepared for session")
 			}
+		}
+	}
+
+	// Git worktree isolation setup
+	var worktreeManager *git.WorktreeManager
+	agentWorktrees := make(map[string]string) // agentKey -> worktree path
+	if opts.UseWorktrees {
+		if !IsJSONOutput() {
+			steps.Start("Setting up git worktree isolation")
+		}
+
+		wm, err := git.NewWorktreeManager(dir)
+		if err != nil {
+			if !IsJSONOutput() {
+				steps.Fail()
+			}
+			return outputError(fmt.Errorf("failed to initialize worktree manager: %w", err))
+		}
+		worktreeManager = wm
+
+		// Pre-provision worktrees for all agents
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		for _, agent := range opts.Agents {
+			agentKey := fmt.Sprintf("%s_%d", string(agent.Type), agent.Index)
+			sessionID := opts.Session
+
+			worktree, err := worktreeManager.ProvisionWorktree(ctx, agentKey, sessionID)
+			if err != nil {
+				if !IsJSONOutput() {
+					steps.Fail()
+				}
+				return outputError(fmt.Errorf("failed to provision worktree for %s: %w", agentKey, err))
+			}
+
+			agentWorktrees[agentKey] = worktree.Path
+			if !IsJSONOutput() {
+				fmt.Printf("  ✓ Worktree for %s: %s\n", agentKey, worktree.Path)
+			}
+		}
+
+		if !IsJSONOutput() {
+			steps.Success()
 		}
 	}
 
@@ -991,7 +1081,16 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			return outputError(fmt.Errorf("invalid %s agent command: %w", agent.Type, err))
 		}
 
-		cmd, err := tmux.BuildPaneCommand(dir, safeAgentCmd)
+		// Use worktree directory if worktree isolation is enabled
+		workingDir := dir
+		if opts.UseWorktrees && worktreeManager != nil {
+			agentName := fmt.Sprintf("%s_%d", strings.ToLower(string(agent.Type)), agent.Index)
+			if wtInfo, err := worktreeManager.GetWorktreeForAgent(agentName); err == nil && wtInfo.Created && wtInfo.Error == "" {
+				workingDir = wtInfo.Path
+			}
+		}
+
+		cmd, err := tmux.BuildPaneCommand(workingDir, safeAgentCmd)
 		if err != nil {
 			return outputError(fmt.Errorf("building %s agent command: %w", agent.Type, err))
 		}

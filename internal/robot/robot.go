@@ -24,16 +24,15 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 )
-
-// ... existing code ...
 
 // CASSStatusOutput represents the output for --robot-cass-status
 type CASSStatusOutput struct {
 	CASSAvailable bool           `json:"cass_available"`
 	Healthy       bool           `json:"healthy"`
-	Index         CASSIndexStats `json:"index"`
+		Index         CASSIndexStats `json:"index"`
 }
 
 // CASSIndexStats holds index statistics
@@ -272,6 +271,18 @@ type Agent struct {
 	Window   int    `json:"window"`
 	PaneIdx  int    `json:"pane_idx"`
 	IsActive bool   `json:"is_active"`
+
+	// Status enrichment fields
+	PID                  int       `json:"pid,omitempty"`                     // Shell PID
+	ChildPID             int       `json:"child_pid,omitempty"`               // Agent process PID
+	LastOutputTS         time.Time `json:"last_output_ts,omitempty"`          // Last output timestamp
+	SecondsSinceOutput   int       `json:"seconds_since_output,omitempty"`    // Time since last output
+	RateLimitDetected    bool      `json:"rate_limit_detected,omitempty"`     // Rate limit pattern matched
+	RateLimitMatch       string    `json:"rate_limit_match,omitempty"`        // The specific pattern matched
+	ProcessState         string    `json:"process_state,omitempty"`           // R, S, D, Z, T
+	ProcessStateName     string    `json:"process_state_name,omitempty"`      // running, sleeping, etc.
+	MemoryMB             int       `json:"memory_mb,omitempty"`               // Resident memory in MB
+	OutputLinesSinceLast int       `json:"output_lines_since_last,omitempty"` // Lines since last check
 }
 
 // SystemInfo contains system and runtime information
@@ -510,6 +521,7 @@ func PrintStatus() error {
 					PaneIdx:  pane.Index,
 					IsActive: pane.Active,
 					Variant:  pane.Variant,
+					PID:      pane.PID,
 				}
 
 				// Use authoritative type from tmux package if available
@@ -520,6 +532,10 @@ func PrintStatus() error {
 					// Fallback to loose detection for other agents (cursor, windsurf, etc.)
 					agent.Type = detectAgentType(pane.Title)
 				}
+
+				// Enrich status with process/output info
+				enrichAgentStatus(&agent, sess.Name)
+
 				info.Agents = append(info.Agents, agent)
 
 				// Update summary counts
@@ -675,6 +691,9 @@ func PrintMail(sessionName, projectKey string) error {
 
 	// Gather per-agent mail counts (best-effort).
 	for _, a := range agents {
+		if a.Name == "HumanOverseer" {
+			continue
+		}
 		agentByName[a.Name] = a
 		tally := getInboxTally(ctx, client, projectKey, a.Name, 50)
 		inboxByName[a.Name] = tally
@@ -715,6 +734,9 @@ func PrintMail(sessionName, projectKey string) error {
 	// If no panes were added (no session context), fall back to listing agents as-is.
 	if len(output.Agents) == 0 {
 		for _, a := range agents {
+			if a.Name == "HumanOverseer" {
+				continue
+			}
 			tally := inboxByName[a.Name]
 			output.Agents = append(output.Agents, AgentMailAgent{
 				AgentName:    a.Name,
@@ -728,6 +750,9 @@ func PrintMail(sessionName, projectKey string) error {
 	} else {
 		// Include any registered agents that we couldn't map to panes.
 		for _, a := range agents {
+			if a.Name == "HumanOverseer" {
+				continue
+			}
 			if a.Program == "ntm" || assigned[a.Name] {
 				continue
 			}
@@ -804,11 +829,11 @@ func getInboxTally(ctx context.Context, client *agentmail.Client, projectKey, ag
 	}
 
 	tally := inboxTally{Total: len(msgs)}
-	for _, m := range msgs {
-		if strings.EqualFold(m.Importance, "urgent") {
+	for _, msg := range msgs {
+		if strings.EqualFold(msg.Importance, "urgent") {
 			tally.Urgent++
 		}
-		if m.AckRequired {
+		if msg.AckRequired {
 			tally.PendingAck++
 		}
 	}
@@ -1823,7 +1848,7 @@ type SnapshotSession struct {
 // SnapshotAgent represents an agent in the snapshot
 type SnapshotAgent struct {
 	Pane             string  `json:"pane"`
-	Type             string  `json:"type"`
+	Type             string  `json:"type"`              // claude, codex, gemini
 	Variant          string  `json:"variant,omitempty"` // Model alias or persona name
 	TypeConfidence   float64 `json:"type_confidence"`
 	TypeMethod       string  `json:"type_method"`
@@ -1841,7 +1866,7 @@ type SnapshotAgentMail struct {
 	Project      string                            `json:"project,omitempty"`
 	TotalUnread  int                               `json:"total_unread,omitempty"`
 	Agents       map[string]SnapshotAgentMailStats `json:"agents,omitempty"`
-	ThreadsKnown int                               `json:"threads_active,omitempty"`
+	ThreadsKnown int                               `json:"threads_known,omitempty"`
 }
 
 // SnapshotAgentMailStats holds per-agent inbox counts.
@@ -2559,6 +2584,9 @@ func buildCorrelationGraph() *GraphCorrelation {
 
 	assignmentByAgent := make(map[string]*GraphAgentAssignment)
 	for _, a := range agents {
+		if a.Name == "HumanOverseer" {
+			continue
+		}
 		assignmentByAgent[a.Name] = &GraphAgentAssignment{
 			Agent:       a.Name,
 			AgentName:   a.Name,
@@ -2618,7 +2646,11 @@ func buildCorrelationGraph() *GraphCorrelation {
 	if len(agents) > 0 && agentMailClient.IsAvailable() {
 		const inboxLimit = 50
 		for _, a := range agents {
-			msgs, err := agentMailClient.FetchInbox(ctx, agentmail.FetchInboxOptions{
+			if a.Name == "HumanOverseer" {
+				continue
+			}
+
+			inbox, err := agentMailClient.FetchInbox(ctx, agentmail.FetchInboxOptions{
 				ProjectKey:    wd,
 				AgentName:     a.Name,
 				Limit:         inboxLimit,
@@ -2628,7 +2660,7 @@ func buildCorrelationGraph() *GraphCorrelation {
 				corr.Errors = append(corr.Errors, fmt.Sprintf("agent mail fetch_inbox %s: %v", a.Name, err))
 				continue
 			}
-			for _, msg := range msgs {
+			for _, msg := range inbox {
 				if msg.ThreadID == nil || strings.TrimSpace(*msg.ThreadID) == "" {
 					continue
 				}
@@ -3015,7 +3047,7 @@ type TerseState struct {
 }
 
 // String returns the ultra-compact string representation.
-// Format: S:session|A:5/8|W:3|I:2|E:0|C:78%|B:R3/I2/B1|M:4|!:1c,2w
+// Format: S:session|A:5/8|W:3|I:2|E:0|C:78%|B:R3/I2/B1|M:4|!:
 func (t TerseState) String() string {
 	// Build alerts string (only include if non-zero)
 	alertStr := ""
@@ -3043,7 +3075,7 @@ func (t TerseState) String() string {
 }
 
 // ParseTerse parses the ultra-compact terse string into a TerseState.
-// Format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:Nc,Nw
+// Format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:
 func ParseTerse(s string) (*TerseState, error) {
 	state := &TerseState{}
 
@@ -3118,7 +3150,7 @@ func ParseTerse(s string) (*TerseState, error) {
 }
 
 // PrintTerse outputs ultra-compact single-line state for token-constrained scenarios.
-// Output format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:Nc,Nw
+// Output format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:
 // Multiple sessions are separated by semicolons.
 func PrintTerse(cfg *config.Config) error {
 	var results []string
@@ -3146,7 +3178,7 @@ func PrintTerse(cfg *config.Config) error {
 		}
 	}
 
-	// Get beads summary (shared across sessions)
+	// Get beads summary (same for all sessions in same project)
 	var beadsSummary *bv.BeadsSummary
 	if bv.IsInstalled() {
 		beadsSummary = bv.GetBeadsSummary("", 0)
@@ -4060,6 +4092,8 @@ func PrintTriage(opts TriageOptions) error {
 	// Copy data with limits applied
 	output.DataHash = triage.DataHash
 	output.QuickRef = &triage.Triage.QuickRef
+	output.QuickWins = triage.Triage.QuickWins
+	output.BlockersToClear = triage.Triage.BlockersToClear
 	output.ProjectHealth = triage.Triage.ProjectHealth
 	output.Commands = triage.Triage.Commands
 
@@ -4070,23 +4104,378 @@ func PrintTriage(opts TriageOptions) error {
 		output.Recommendations = triage.Triage.Recommendations
 	}
 
-	if len(triage.Triage.QuickWins) > opts.Limit {
-		output.QuickWins = triage.Triage.QuickWins[:opts.Limit]
-	} else {
-		output.QuickWins = triage.Triage.QuickWins
-	}
-
-	if len(triage.Triage.BlockersToClear) > opts.Limit {
-		output.BlockersToClear = triage.Triage.BlockersToClear[:opts.Limit]
-	} else {
-		output.BlockersToClear = triage.Triage.BlockersToClear
-	}
-
 	// Add cache info
 	output.CacheInfo = &TriageCacheInfo{
 		Cached: bv.IsCacheValid(),
 		AgeMs:  bv.GetCacheAge().Milliseconds(),
 		TTLMs:  bv.TriageCacheTTL.Milliseconds(),
+	}
+
+	return encodeJSON(output)
+}
+// Additional BV robot modes for comprehensive analysis
+
+// LabelAttentionOptions configures label attention analysis
+type LabelAttentionOptions struct {
+	Limit int
+}
+
+// FileBeadsOptions configures file-to-beads analysis
+type FileBeadsOptions struct {
+	FilePath string
+	Limit    int
+}
+
+// FileHotspotsOptions configures file hotspots analysis
+type FileHotspotsOptions struct {
+	Limit int
+}
+
+// FileRelationsOptions configures file relations analysis
+type FileRelationsOptions struct {
+	FilePath  string
+	Limit     int
+	Threshold float64
+}
+
+// PrintForecast outputs BV forecast analysis for ETA predictions
+/*
+func PrintForecast(target string) error {
+	output := struct {
+		RobotResponse
+		Target    string                 `json:"target"`
+		Available bool                   `json:"available"`
+		Forecast  *bv.ForecastResponse   `json:"forecast,omitempty"`
+		Error     string                 `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Target:        target,
+		Available:     bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	forecast, err := adapter.GetForecast(context.Background(), wd, target)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get forecast: %v", err)
+		output.Success = false
+	} else {
+		output.Forecast = forecast
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintSuggest outputs BV hygiene suggestions for code quality improvements
+func PrintSuggest() error {
+	output := struct {
+		RobotResponse
+		Available   bool            `json:"available"`
+		Suggestions json.RawMessage `json:"suggestions,omitempty"`
+		Error       string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Available:     bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	suggestions, err := adapter.GetSuggestions(context.Background(), wd)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get suggestions: %v", err)
+		output.Success = false
+	} else {
+		output.Suggestions = suggestions
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintImpact outputs BV impact analysis for file changes
+func PrintImpact(filePath string) error {
+	output := struct {
+		RobotResponse
+		FilePath  string          `json:"file_path"`
+		Available bool            `json:"available"`
+		Impact    json.RawMessage `json:"impact,omitempty"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		FilePath:      filePath,
+		Available:     bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	impact, err := adapter.GetImpact(context.Background(), wd, filePath)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get impact analysis: %v", err)
+		output.Success = false
+	} else {
+		output.Impact = impact
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintSearch outputs BV semantic vector search results
+func PrintSearch(query string) error {
+	output := struct {
+		RobotResponse
+		Query     string          `json:"query"`
+		Available bool            `json:"available"`
+		Results   json.RawMessage `json:"results,omitempty"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Query:         query,
+		Available:     bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	results, err := adapter.GetSearch(context.Background(), wd, query)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to perform search: %v", err)
+		output.Success = false
+	} else {
+		output.Results = results
+	}
+
+	return encodeJSON(output)
+}
+*/
+
+// PrintLabelAttention outputs BV label attention ranking
+/*
+func PrintLabelAttention(opts LabelAttentionOptions) error {
+	output := struct {
+		RobotResponse
+		Available bool            `json:"available"`
+		Labels    json.RawMessage `json:"labels,omitempty"`
+		Limit     int             `json:"limit"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Available:     bv.IsInstalled(),
+		Limit:         opts.Limit,
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	labels, err := adapter.GetLabelAttention(context.Background(), wd, opts.Limit)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get label attention: %v", err)
+		output.Success = false
+	} else {
+		output.Labels = labels
+	}
+
+	return encodeJSON(output)
+}
+*/
+
+// PrintLabelFlow outputs BV cross-label dependency flow analysis
+/*
+func PrintLabelFlow() error {
+	output := struct {
+		RobotResponse
+		Available bool            `json:"available"`
+		Flow      json.RawMessage `json:"flow,omitempty"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Available:     bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	flow, err := adapter.GetLabelFlow(context.Background(), wd)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get label flow: %v", err)
+		output.Success = false
+	} else {
+		output.Flow = flow
+	}
+
+	return encodeJSON(output)
+}
+*/
+
+// PrintLabelHealth outputs BV per-label health analysis
+/*
+func PrintLabelHealth() error {
+	output := struct {
+		RobotResponse
+		Available bool            `json:"available"`
+		Health    json.RawMessage `json:"health,omitempty"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Available:     bv.IsInstalled(),
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	health, err := adapter.GetLabelHealth(context.Background(), wd)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get label health: %v", err)
+		output.Success = false
+	} else {
+		output.Health = health
+	}
+
+	return encodeJSON(output)
+}
+*/
+
+// PrintFileBeads outputs BV file-to-beads mapping
+/*
+func PrintFileBeads(opts FileBeadsOptions) error {
+	output := struct {
+		RobotResponse
+		FilePath  string          `json:"file_path"`
+		Available bool            `json:"available"`
+		Beads     json.RawMessage `json:"beads,omitempty"`
+		Limit     int             `json:"limit"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		FilePath:      opts.FilePath,
+		Available:     bv.IsInstalled(),
+		Limit:         opts.Limit,
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	beads, err := adapter.GetFileBeads(context.Background(), wd, opts.FilePath, opts.Limit)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get file beads: %v", err)
+		output.Success = false
+	} else {
+		output.Beads = beads
+	}
+
+	return encodeJSON(output)
+}
+*/
+
+// PrintFileHotspots outputs BV file quality hotspots
+/*
+func PrintFileHotspots(opts FileHotspotsOptions) error {
+	output := struct {
+		RobotResponse
+		Available bool            `json:"available"`
+		Hotspots  json.RawMessage `json:"hotspots,omitempty"`
+		Limit     int             `json:"limit"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		Available:     bv.IsInstalled(),
+		Limit:         opts.Limit,
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	hotspots, err := adapter.GetFileHotspots(context.Background(), wd, opts.Limit)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get file hotspots: %v", err)
+		output.Success = false
+	} else {
+		output.Hotspots = hotspots
+	}
+
+	return encodeJSON(output)
+}
+*/
+
+// PrintFileRelations outputs BV file co-change relations
+/*
+func PrintFileRelations(opts FileRelationsOptions) error {
+	output := struct {
+		RobotResponse
+		FilePath  string          `json:"file_path"`
+		Available bool            `json:"available"`
+		Relations json.RawMessage `json:"relations,omitempty"`
+		Limit     int             `json:"limit"`
+		Threshold float64         `json:"threshold"`
+		Error     string          `json:"error,omitempty"`
+	}{
+		RobotResponse: NewRobotResponse(true),
+		FilePath:      opts.FilePath,
+		Available:     bv.IsInstalled(),
+		Limit:         opts.Limit,
+		Threshold:     opts.Threshold,
+	}
+
+	if !bv.IsInstalled() {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return encodeJSON(output)
+	}
+
+	adapter := tools.NewBVAdapter()
+	wd := mustGetwd()
+	relations, err := adapter.GetFileRelations(context.Background(), wd, opts.FilePath, opts.Limit, opts.Threshold)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get file relations: %v", err)
+		output.Success = false
+	} else {
+		output.Relations = relations
 	}
 
 	return encodeJSON(output)
