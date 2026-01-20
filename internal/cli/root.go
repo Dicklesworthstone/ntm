@@ -497,6 +497,26 @@ Shell Integration:
 			}
 			return
 		}
+		if robotDiagnose != "" {
+			if robotDiagnoseBrief {
+				if err := robot.PrintDiagnoseBrief(robotDiagnose); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			} else {
+				opts := robot.DiagnoseOptions{
+					Session: robotDiagnose,
+					Pane:    robotDiagnosePane,
+					Fix:     robotDiagnoseFix,
+					Brief:   robotDiagnoseBrief,
+				}
+				if err := robot.PrintDiagnose(opts); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			return
+		}
 		if robotRecipes {
 			if err := robot.PrintRecipes(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -601,6 +621,25 @@ Shell Integration:
 				DryRun:    robotRestoreDry,
 			}
 			if err := robot.PrintInterrupt(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotRestartPane != "" {
+			// Parse pane filter (reuse --panes flag)
+			var paneFilter []string
+			if robotPanes != "" {
+				paneFilter = strings.Split(robotPanes, ",")
+			}
+			opts := robot.RestartPaneOptions{
+				Session: robotRestartPane,
+				Panes:   paneFilter,
+				Type:    robotSendType,
+				All:     robotSendAll,
+				DryRun:  robotRestoreDry,
+			}
+			if err := robot.PrintRestartPane(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -926,6 +965,12 @@ var (
 	// Robot-health flag
 	robotHealth string // session health or project health (empty = project)
 
+	// Robot-diagnose flags
+	robotDiagnose      string // session name for comprehensive diagnosis
+	robotDiagnoseFix   bool   // attempt auto-fix
+	robotDiagnoseBrief bool   // minimal output mode
+	robotDiagnosePane  int    // specific pane to diagnose (-1 = all)
+
 	// Robot-recipes flag
 	robotRecipes bool // list available recipes as JSON
 
@@ -995,8 +1040,8 @@ var (
 	robotTokensDays    int    // number of days to analyze
 	robotTokensSince   string // ISO8601 timestamp to analyze since
 	robotTokensGroupBy string // grouping: agent, model, day, week, month
-	robotTokensSession string // filter to specific session
-	robotTokensAgent   string // filter to specific agent type
+	robotTokensSession string // filter to session
+	robotTokensAgent   string // filter to agent type
 
 	// Robot-history flags for command history tracking
 	robotHistory      string // session name for history query
@@ -1037,7 +1082,7 @@ var (
 	robotPipelineDryRun  bool   // validate without executing
 	robotPipelineBG      bool   // run in background
 
-	// TUI Parity robot flags - expose TUI functionality to AI agents
+	// TUI Parity robot flags - expose TUI dashboard functionality to AI agents
 	robotFiles           string // session name for file changes query
 	robotFilesWindow     string // time window: 5m, 15m, 1h, all (default: 15m)
 	robotFilesLimit      int    // max changes to return
@@ -1076,7 +1121,7 @@ var (
 	robotBeadsType     string // filter by type: task, bug, feature, epic, chore
 	robotBeadsLimit    int    // max beads to return
 
-	// Robot-bead flags for bead management
+	// Robot-bead flags for programmatic bead management
 	robotBeadClaim  string // bead ID to claim
 	robotBeadCreate bool   // create a new bead
 	robotBeadShow   string // bead ID to show details
@@ -1118,6 +1163,9 @@ var (
 	robotHotspotsLimit     int     // max hotspots to return
 	robotRelationsLimit    int     // max related files to return
 	robotRelationsThreshold float64 // correlation threshold (0.0-1.0)
+
+	// Robot-restart-pane flag
+	robotRestartPane string // session name for pane restart
 
 	// Help verbosity flags
 	helpMinimal bool // show minimal help with essential commands only
@@ -1188,6 +1236,12 @@ func init() {
 	// Robot-health flag for session/project health summary
 	rootCmd.Flags().StringVar(&robotHealth, "robot-health", "", "Get session or project health (JSON). SESSION for per-agent health, empty for project health. Example: ntm --robot-health=myproject")
 
+	// Robot-diagnose flags for comprehensive health diagnosis
+	rootCmd.Flags().StringVar(&robotDiagnose, "robot-diagnose", "", "Comprehensive health check with fix recommendations. Required: SESSION. Example: ntm --robot-diagnose=myproject")
+	rootCmd.Flags().BoolVar(&robotDiagnoseFix, "diagnose-fix", false, "Attempt auto-fix for fixable issues. Use with --robot-diagnose. Example: --robot-diagnose=proj --diagnose-fix")
+	rootCmd.Flags().BoolVar(&robotDiagnoseBrief, "diagnose-brief", false, "Minimal output (summary only). Use with --robot-diagnose")
+	rootCmd.Flags().IntVar(&robotDiagnosePane, "diagnose-pane", -1, "Diagnose specific pane only. Use with --robot-diagnose. Example: --diagnose-pane=2")
+
 	// Robot-recipes flag for recipe listing
 	rootCmd.Flags().BoolVar(&robotRecipes, "robot-recipes", false, "List available spawn recipes/presets (JSON). Use with --robot-spawn --spawn-preset")
 
@@ -1223,6 +1277,8 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotInterruptForce, "interrupt-force", false, "Send Ctrl+C even if agent shows idle/ready. Use for stuck agents")
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "interrupt-no-wait", false, "Return immediately after Ctrl+C without waiting for ready state")
 	rootCmd.Flags().StringVar(&robotInterruptTimeout, "interrupt-timeout", "10s", "Max wait for ready state after interrupt (e.g., 10s, 5000ms). Ignored with --interrupt-no-wait")
+
+	// Robot-restart-pane flag
 
 	// Robot-terse flag for ultra-compact output
 	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Single-line state: S:session|A:ready/total|W:working|I:idle|B:beads|M:mail|!:alerts. Minimal tokens")
@@ -1338,8 +1394,8 @@ func init() {
 	// Robot-alerts flags for alert listing (TUI parity)
 	rootCmd.Flags().BoolVar(&robotAlerts, "robot-alerts", false, "List active alerts with filtering. TUI parity for Alerts panel. Example: ntm --robot-alerts --alerts-severity=critical")
 	rootCmd.Flags().StringVar(&robotAlertsSeverity, "alerts-severity", "", "Filter by severity: info, warning, error, critical. Optional with --robot-alerts")
-	rootCmd.Flags().StringVar(&robotAlertsType, "alerts-type", "", "Filter by type: agent_stuck, agent_crashed, rate_limit, disk_low, etc. Optional with --robot-alerts")
-	rootCmd.Flags().StringVar(&robotAlertsSession, "alerts-session", "", "Filter to specific session. Optional with --robot-alerts")
+	rootCmd.Flags().StringVar(&robotAlertsType, "alerts-type", "", "Filter by alert type. Optional with --robot-alerts")
+	rootCmd.Flags().StringVar(&robotAlertsSession, "alerts-session", "", "Filter by session. Optional with --robot-alerts")
 
 	// Robot-beads-list flags for bead listing (TUI parity)
 	rootCmd.Flags().BoolVar(&robotBeadsList, "robot-beads-list", false, "List beads with filtering. TUI parity for Beads panel. Example: ntm --robot-beads-list --beads-status=open")
@@ -1928,8 +1984,8 @@ func needsConfigLoading(cmdName string) bool {
 		// Most other robot flags need full config
 		if robotStatus || robotPlan || robotSnapshot || robotTail != "" ||
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
-			robotInterrupt != "" || robotGraph || robotMail || robotHealth != "" ||
-			robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
+			robotInterrupt != "" || robotRestartPane != "" || robotGraph || robotMail || robotHealth != "" ||
+			robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotAlerts {
 			return true
 		}

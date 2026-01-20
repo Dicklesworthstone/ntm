@@ -173,6 +173,71 @@ type RobotAction struct {
 	Priority int `json:"priority,omitempty"`
 }
 
+// TerseKeyMap defines the short-key mapping for --robot-verbosity=terse JSON/TOON output.
+// This is NOT used by --robot-terse (single-line encoded state).
+//
+// Mapping rules:
+// - Only keys listed here are shortened.
+// - Values must be unique to keep the mapping reversible.
+// - Keep the mapping stable; add new keys only when needed by terse profile outputs.
+//
+// Agents can reverse the mapping using TerseKeyReverseMap().
+var TerseKeyMap = map[string]string{
+	// Envelope fields
+	"success":    "ok",
+	"timestamp":  "ts",
+	"error":      "err",
+	"error_code": "ec",
+	"hint":       "h",
+
+	// Optional agent guidance (only if included by profile)
+	"_agent_hints": "ah",
+
+	// Critical top-level arrays (always present per envelope spec)
+	"sessions": "s",
+	"panes":    "p",
+	"targets":  "t",
+	"agents":   "a",
+
+	// Common top-level collections
+	"alerts":   "al",
+	"beads":    "b",
+	"messages": "m",
+
+	// Common meta fields
+	"count":        "n",
+	"generated_at": "ga",
+	"summary":      "sum",
+}
+
+// TerseKeyFor returns the short key for a long field name.
+// If no mapping exists, ok is false and key is empty.
+func TerseKeyFor(field string) (key string, ok bool) {
+	key, ok = TerseKeyMap[field]
+	return key, ok
+}
+
+// TerseKeyReverseMap returns the reverse mapping for short keys.
+// It panics if the mapping is not reversible (duplicate short keys).
+func TerseKeyReverseMap() map[string]string {
+	reverse := make(map[string]string, len(TerseKeyMap))
+	for longKey, shortKey := range TerseKeyMap {
+		if existing, ok := reverse[shortKey]; ok {
+			panic(fmt.Sprintf("terse key map collision: %q and %q both map to %q", existing, longKey, shortKey))
+		}
+		reverse[shortKey] = longKey
+	}
+	return reverse
+}
+
+// ExpandTerseKey converts a short key back to its long form.
+// If the short key is unknown, ok is false and long is empty.
+func ExpandTerseKey(short string) (long string, ok bool) {
+	reverse := TerseKeyReverseMap()
+	long, ok = reverse[short]
+	return long, ok
+}
+
 // NewRobotResponse creates a new RobotResponse with current timestamp.
 func NewRobotResponse(success bool) RobotResponse {
 	return RobotResponse{

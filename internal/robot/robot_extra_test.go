@@ -63,6 +63,34 @@ func TestPrintTerseNoTmux(t *testing.T) {
 	}
 }
 
+func TestTerseKeyMapUnique(t *testing.T) {
+	seen := make(map[string]string, len(TerseKeyMap))
+	for longKey, shortKey := range TerseKeyMap {
+		if shortKey == "" {
+			t.Fatalf("short key is empty for %q", longKey)
+		}
+		if existing, ok := seen[shortKey]; ok {
+			t.Fatalf("short key %q collision: %q and %q", shortKey, existing, longKey)
+		}
+		seen[shortKey] = longKey
+	}
+}
+
+func TestTerseKeyMapRoundTrip(t *testing.T) {
+	reverse := TerseKeyReverseMap()
+	for longKey, shortKey := range TerseKeyMap {
+		if got, ok := TerseKeyFor(longKey); !ok || got != shortKey {
+			t.Fatalf("TerseKeyFor(%q) = %q, ok=%v; want %q", longKey, got, ok, shortKey)
+		}
+		if got, ok := reverse[shortKey]; !ok || got != longKey {
+			t.Fatalf("reverse[%q] = %q, ok=%v; want %q", shortKey, got, ok, longKey)
+		}
+		if got, ok := ExpandTerseKey(shortKey); !ok || got != longKey {
+			t.Fatalf("ExpandTerseKey(%q) = %q, ok=%v; want %q", shortKey, got, ok, longKey)
+		}
+	}
+}
+
 func parseTerseOutput(output string) []string {
 	// Strip newline
 	output = stripNewline(output)

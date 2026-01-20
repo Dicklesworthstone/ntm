@@ -30,11 +30,13 @@ const (
 	ToolCASS ToolName = "cass" // Cross-Agent Semantic Search
 	ToolS2P  ToolName = "s2p"  // Source to Prompt
 	ToolJFP  ToolName = "jfp"  // JeffreysPrompts CLI - prompt library
+	ToolDCG  ToolName = "dcg"  // Destructive Command Guard - blocks dangerous commands
+	ToolSLB  ToolName = "slb"  // Simultaneous Launch Button - two-person authorization
 )
 
 // AllTools returns a list of all supported tools
 func AllTools() []ToolName {
-	return []ToolName{ToolBV, ToolBD, ToolAM, ToolCM, ToolCASS, ToolS2P, ToolJFP}
+	return []ToolName{ToolBV, ToolBD, ToolAM, ToolCM, ToolCASS, ToolS2P, ToolJFP, ToolDCG, ToolSLB}
 }
 
 // HealthStatus represents the health state of a tool

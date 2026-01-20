@@ -101,50 +101,62 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 
 	for _, p := range panes {
 		// Only monitor agent panes (not user or unknown)
-		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini {
-			// Skip if already registered
-			if _, exists := m.agents[p.ID]; exists {
-				continue
+		if p.Type == tmux.AgentUser {
+			continue
+		}
+
+		// Skip if already registered
+		if _, exists := m.agents[p.ID]; exists {
+			continue
+		}
+
+		// Determine command template
+		var agentCmdTemplate string
+		switch p.Type {
+		case tmux.AgentClaude:
+			agentCmdTemplate = m.cfg.Agents.Claude
+		case tmux.AgentCodex:
+			agentCmdTemplate = m.cfg.Agents.Codex
+		case tmux.AgentGemini:
+			agentCmdTemplate = m.cfg.Agents.Gemini
+		default:
+			// Check plugins
+			if cmd, ok := m.cfg.Agents.Plugins[string(p.Type)]; ok {
+				agentCmdTemplate = cmd
 			}
+		}
 
-			// Reconstruct command template
-			var agentCmdTemplate string
-			switch p.Type {
-			case tmux.AgentClaude:
-				agentCmdTemplate = m.cfg.Agents.Claude
-			case tmux.AgentCodex:
-				agentCmdTemplate = m.cfg.Agents.Codex
-			case tmux.AgentGemini:
-				agentCmdTemplate = m.cfg.Agents.Gemini
-			}
+		if agentCmdTemplate == "" {
+			log.Printf("[resilience] Warning: no command template found for agent type %s (pane %s)", p.Type, p.ID)
+			continue
+		}
 
-			// Resolve model
-			modelName := m.cfg.Models.GetModelName(string(p.Type), p.Variant)
+		// Resolve model
+		modelName := m.cfg.Models.GetModelName(string(p.Type), p.Variant)
 
-			// Generate command
-			cmd, err := config.GenerateAgentCommand(agentCmdTemplate, config.AgentTemplateVars{
-				Model:       modelName,
-				ModelAlias:  p.Variant,
-				SessionName: m.session,
-				PaneIndex:   p.Index,
-				AgentType:   string(p.Type),
-				ProjectDir:  m.projectDir,
-				// Note: SystemPromptFile is lost in reconstruction
-			})
+		// Generate command
+		cmd, err := config.GenerateAgentCommand(agentCmdTemplate, config.AgentTemplateVars{
+			Model:       modelName,
+			ModelAlias:  p.Variant,
+			SessionName: m.session,
+			PaneIndex:   p.Index,
+			AgentType:   string(p.Type),
+			ProjectDir:  m.projectDir,
+			// Note: SystemPromptFile is lost in reconstruction
+		})
 
-			if err != nil {
-				log.Printf("[resilience] Failed to reconstruct command for %s: %v", p.ID, err)
-				continue
-			}
+		if err != nil {
+			log.Printf("[resilience] Failed to reconstruct command for %s: %v", p.ID, err)
+			continue
+		}
 
-			m.agents[p.ID] = &AgentState{
-				PaneID:    p.ID,
-				PaneIndex: p.Index,
-				AgentType: string(p.Type),
-				Model:     p.Variant,
-				Command:   cmd,
-				Healthy:   true,
-			}
+		m.agents[p.ID] = &AgentState{
+			PaneID:    p.ID,
+			PaneIndex: p.Index,
+			AgentType: string(p.Type),
+			Model:     p.Variant,
+			Command:   cmd,
+			Healthy:   true,
 		}
 	}
 	return nil

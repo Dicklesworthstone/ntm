@@ -929,7 +929,7 @@ func displayAssignOutput(output *robot.AssignOutput) {
 	fmt.Printf("Strategy: %s\n", output.Strategy)
 	fmt.Printf("Agents: %d total, %d idle, %d working\n",
 		output.Summary.TotalAgents,
-		output.Summary.IdleAgentCount,
+		output.Summary.IdleAgents,
 		output.Summary.WorkingAgents)
 	fmt.Printf("Beads: %d ready\n", output.Summary.ReadyBeads)
 
@@ -1274,7 +1274,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 			TotalBeadCount:        len(readyBeads) + len(blockedBeads) + cycleWarnings,
 			ActionableCount:   len(readyBeads),
 			BlockedCount:      len(blockedBeads),
-			IdleAgentCount:        len(idleAgents),
+			IdleAgents:        len(idleAgents),
 			CycleWarningCount: cycleWarnings,
 		},
 		Errors: triageErrors, // Add any triage errors collected before result was initialized
@@ -1542,7 +1542,7 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 	// Summary
 	fmt.Println()
 	fmt.Printf("Strategy: %s\n", out.Strategy)
-	fmt.Printf("Idle Agents: %d | Actionable Beads: %d", out.Summary.IdleAgentCount, out.Summary.ActionableCount)
+	fmt.Printf("Idle Agents: %d | Actionable Beads: %d", out.Summary.IdleAgents, out.Summary.ActionableCount)
 	if out.Summary.BlockedCount > 0 {
 		fmt.Printf(" | Blocked: %d", out.Summary.BlockedCount)
 	}
@@ -1569,7 +1569,7 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 	} else {
 		fmt.Println()
 		fmt.Println(subtitleStyle.Render("No assignments to recommend."))
-		if out.Summary.IdleAgentCount == 0 {
+		if out.Summary.IdleAgents == 0 {
 			fmt.Println(subtitleStyle.Render("  Reason: No idle agents available"))
 		} else if out.Summary.TotalBeadCount == 0 {
 			fmt.Println(subtitleStyle.Render("  Reason: No ready beads to assign"))
@@ -3590,7 +3590,7 @@ func PerformAutoReassignment(completedBeadID string, opts *AutoReassignOptions) 
 		return result, nil
 	}
 
-	result.IdleAgentCount = len(idleAgents)
+	result.IdleAgents = len(idleAgents)
 
 	if len(idleAgents) == 0 {
 		// No idle agents - mark all unblocked beads as skipped

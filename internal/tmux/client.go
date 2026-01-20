@@ -123,3 +123,29 @@ func (c *Client) IsInstalled() bool {
 	err := c.RunSilent("-V")
 	return err == nil
 }
+
+// RespawnPane respawns a pane, optionally killing the current process (-k)
+func (c *Client) RespawnPane(target string, kill bool) error {
+	return c.RespawnPaneContext(context.Background(), target, kill)
+}
+
+// RespawnPaneContext respawns a pane with cancellation support
+func (c *Client) RespawnPaneContext(ctx context.Context, target string, kill bool) error {
+	args := []string{"respawn-pane", "-t", target}
+	if kill {
+		args = append(args, "-k")
+	}
+	return c.RunSilentContext(ctx, args...)
+}
+
+// RespawnPane respawns a pane, optionally killing the current process (-k) (default client)
+func RespawnPane(target string, kill bool) error {
+	return DefaultClient.RespawnPane(target, kill)
+}
+
+// RespawnPaneContext respawns a pane with cancellation support (default client)
+func RespawnPaneContext(ctx context.Context, target string, kill bool) error {
+	return DefaultClient.RespawnPaneContext(ctx, target, kill)
+}
+
+// ApplyTiledLayout applies tiled layout to all windows

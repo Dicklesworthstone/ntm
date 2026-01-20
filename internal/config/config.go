@@ -369,10 +369,11 @@ func DefaultCASSConfig() CASSConfig {
 
 // AgentConfig defines the commands for each agent type
 type AgentConfig struct {
-	Claude       string `toml:"claude"`
-	Codex        string `toml:"codex"`
-	Gemini       string `toml:"gemini"`
-	DefaultCount int    `toml:"default_count"`
+	Claude       string            `toml:"claude"`
+	Codex        string            `toml:"codex"`
+	Gemini       string            `toml:"gemini"`
+	Plugins      map[string]string `toml:"plugins"` // Custom agent commands keyed by type
+	DefaultCount int               `toml:"default_count"`
 }
 
 // ContextRotationConfig holds configuration for automatic context window rotation
@@ -1948,6 +1949,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("agents.claude", defaults.Agents.Claude, cfg.Agents.Claude)
 	addDiff("agents.codex", defaults.Agents.Codex, cfg.Agents.Codex)
 	addDiff("agents.gemini", defaults.Agents.Gemini, cfg.Agents.Gemini)
+	addDiff("agents.plugins", defaults.Agents.Plugins, cfg.Agents.Plugins)
 
 	// Tmux
 	addDiff("tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)

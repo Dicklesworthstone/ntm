@@ -838,7 +838,6 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	spawnCtx := NewSpawnContext(len(opts.Agents))
 
 	// WaitGroup for staggered prompt delivery - ensures all prompts are sent before returning
-	var staggerWg sync.WaitGroup
 	var setupWg sync.WaitGroup
 	var maxStaggerDelay time.Duration
 
@@ -1061,10 +1060,16 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			return outputError(fmt.Errorf("launching %s agent: %w", agent.Type, err))
 		}
 
-		// Parallelize post-launch setup (Gemini setup, CASS context, immediate prompts)
-		// This prevents sequential blocking which can make spawn very slow
+		// Parallelize post-launch setup and prompt delivery
+		// This prevents sequential blocking and ensures correct ordering (Context -> Prompt)
 		setupWg.Add(1)
-		go func(paneID string, idx int, agentType AgentType, agent FlatAgent) {
+		
+		// Capture vars for closure
+		pID := pane.ID
+		pTitle := title
+		idx := agent.Index
+
+		go func(paneID, paneTitle string, idx int, agentType AgentType, agent FlatAgent) {
 			defer setupWg.Done()
 
 			// Gemini post-spawn setup: auto-select Pro model
@@ -1091,8 +1096,13 @@ func spawnSessionLogic(opts SpawnOptions) error {
 				}
 			}
 
+			// Determine if we have a user prompt to send
+			hasPrompt := opts.Prompt != ""
+
 			// Inject CASS context if available
-			if cassContext != "" {
+			// Only send separately if we DON'T have a prompt to combine it with
+			cassSent := false
+			if cassContext != "" && !hasPrompt {
 				// Wait a bit for agent to start (simple heuristic)
 				time.Sleep(500 * time.Millisecond)
 				if err := tmux.SendKeys(paneID, cassContext, true); err != nil {
@@ -1100,6 +1110,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 						fmt.Printf("⚠ Warning: failed to inject context for agent %d: %v\n", idx, err)
 					}
 				}
+				cassSent = true
 			}
 
 			// Inject recovery prompt if available (smart session recovery)
@@ -1107,7 +1118,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			if rc != nil {
 				recoveryPrompt := FormatRecoveryPrompt(rc, agentType)
 				if recoveryPrompt != "" {
-					// Small delay to let agent initialize
+					// Small delay to let agent initialize or after CASS
 					time.Sleep(300 * time.Millisecond)
 					if err := tmux.SendKeys(paneID, recoveryPrompt, true); err != nil {
 						if !IsJSONOutput() {
@@ -1117,16 +1128,29 @@ func spawnSessionLogic(opts SpawnOptions) error {
 				}
 			}
 
-
-			// Inject user prompt if provided (Immediate delivery only)
-			// Staggered delivery is handled by the main thread's staggerWg logic
-			if opts.Prompt != "" && !isStaggered {
-				time.Sleep(200 * time.Millisecond)
-
-				// Combine CASS context with user prompt
+			// Send user prompt (Staggered or Immediate)
+			if hasPrompt {
+				// Combine CASS context with user prompt if not sent yet
 				finalPrompt := opts.Prompt
-				if cassContext != "" {
+				if cassContext != "" && !cassSent {
 					finalPrompt = cassContext + "\n\n" + opts.Prompt
+				}
+
+				// Apply annotation if staggered
+				if isStaggered {
+					finalPrompt = agentSpawnCtx.AnnotatePrompt(finalPrompt, true)
+				}
+
+				// Determine delay
+				if isStaggered {
+					// For staggered delivery, we sleep the calculated delay.
+					// Since this goroutine runs in parallel with others starting at T=0,
+					// sleeping 'promptDelay' achieves the correct absolute timing (approx).
+					// Importantly, this ensures we never send BEFORE the context/recovery steps above.
+					time.Sleep(promptDelay)
+				} else {
+					// Immediate delivery: small delay to ensure shell is ready
+					time.Sleep(200 * time.Millisecond)
 				}
 
 				if err := tmux.SendKeys(paneID, finalPrompt, true); err != nil {
@@ -1134,52 +1158,32 @@ func spawnSessionLogic(opts SpawnOptions) error {
 						fmt.Printf("⚠ Warning: failed to send prompt to agent %d: %v\n", idx, err)
 					}
 				}
-			}
-		}(pane.ID, agent.Index, agent.Type, agent)
 
-		// Schedule staggered prompt delivery with spawn context annotation
-		if isStaggered && opts.Prompt != "" {
-			pID := pane.ID
-			pTitle := title
-			// Combine CASS context with user prompt for staggered delivery
-			finalPromptForStagger := opts.Prompt
-			if cassContext != "" {
-				finalPromptForStagger = cassContext + "\n\n" + opts.Prompt
+				// Update spawn state (only for staggered mode where we track progress)
+				if isStaggered && spawnState != nil {
+					spawnState.MarkSent(paneID)
+					if err := spawnState.Save(dir); err != nil && !IsJSONOutput() {
+						fmt.Printf("⚠ Warning: failed to update spawn state: %v\n", err)
+					}
+				}
 			}
-			// Annotate prompt with spawn context when stagger is enabled
-			// This helps agents understand their position in the spawn order
-			annotatedPrompt := agentSpawnCtx.AnnotatePrompt(finalPromptForStagger, true)
-			delay := promptDelay
-			scheduledAt := time.Now().Add(delay)
+		}(pID, pTitle, idx, agent.Type, agent)
+
+		// Schedule staggered prompt delivery in spawn state (Main Thread)
+		if isStaggered && opts.Prompt != "" {
+			scheduledAt := time.Now().Add(promptDelay)
 
 			// Add to spawn state for dashboard display
 			if spawnState != nil {
 				spawnState.AddPrompt(pTitle, pID, staggerAgentIdx+1, scheduledAt)
 			}
 
-			staggerWg.Add(1)
-			go func() {
-				defer staggerWg.Done()
-				time.Sleep(delay)
-				if err := tmux.SendKeys(pID, annotatedPrompt, true); err != nil {
-					if !IsJSONOutput() {
-						fmt.Printf("⚠ Warning: staggered prompt delivery failed for pane %s: %v\n", pID, err)
-					}
-				}
-				// Mark as sent in state
-				if spawnState != nil {
-					spawnState.MarkSent(pID)
-					if err := spawnState.Save(dir); err != nil && !IsJSONOutput() {
-						fmt.Printf("⚠ Warning: failed to update spawn state: %v\n", err)
-					}
-				}
-			}()
-			// Track max delay
-			if delay > maxStaggerDelay {
-				maxStaggerDelay = delay
+			// Track max delay for the final wait message
+			if promptDelay > maxStaggerDelay {
+				maxStaggerDelay = promptDelay
 			}
 			if !IsJSONOutput() {
-				fmt.Printf("  → Agent %d prompt scheduled in %v\n", staggerAgentIdx+1, delay)
+				fmt.Printf("  → Agent %d prompt scheduled in %v\n", staggerAgentIdx+1, promptDelay)
 			}
 		}
 
@@ -1212,15 +1216,17 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		}
 	}
 
-	// Wait for parallel setup tasks to complete
-	setupWg.Wait()
-
-	// Wait for staggered prompt delivery to complete
+	// Wait for staggered prompt delivery to complete (if any)
 	if maxStaggerDelay > 0 {
 		if !IsJSONOutput() {
 			fmt.Printf("⏳ Waiting for staggered prompts (max %v)...\n", maxStaggerDelay)
 		}
-		staggerWg.Wait()
+	}
+
+	// Wait for parallel setup tasks (and staggered prompts) to complete
+	setupWg.Wait()
+
+	if maxStaggerDelay > 0 {
 		if !IsJSONOutput() {
 			fmt.Println("✓ All staggered prompts delivered")
 		}
@@ -1533,7 +1539,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			output.PrintWarningf("Assignment failed: %v", err)
 		} else {
 			steps.Done()
-			output.PrintInfof("Assigned %d tasks (strategy: %s)", len(assignResult.Assigned), assignResult.Strategy)
+			output.PrintInfof("Assigned %d tasks (strategy: %s)", len(assignResult.Assignments), assignResult.Strategy)
 		}
 	}
 

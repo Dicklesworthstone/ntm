@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/supervisor"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -58,6 +61,18 @@ func runMonitor(session string) error {
 			}
 		}
 		defer sup.Shutdown()
+	}
+
+	// Load plugins to populate config
+	configDir := filepath.Dir(config.DefaultPath())
+	pluginsDir := filepath.Join(configDir, "agents")
+	if loadedPlugins, err := plugins.LoadAgentPlugins(pluginsDir); err == nil {
+		if cfg.Agents.Plugins == nil {
+			cfg.Agents.Plugins = make(map[string]string)
+		}
+		for _, p := range loadedPlugins {
+			cfg.Agents.Plugins[p.Name] = p.Command
+		}
 	}
 
 	// Initialize resilience monitor

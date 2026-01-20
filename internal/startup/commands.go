@@ -93,6 +93,7 @@ var RobotFlagClassification = map[string]CommandRequirement{
 	"robot-ack":       RequireFullStartup,
 	"robot-spawn":     RequireFullStartup,
 	"robot-interrupt": RequireFullStartup,
+	"robot-restart-pane": RequireFullStartup,
 	"robot-graph":     RequireFullStartup,
 	"robot-mail":      RequireFullStartup,
 	"robot-health":    RequireFullStartup,

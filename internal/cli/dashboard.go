@@ -2,23 +2,30 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 func newDashboardCmd() *cobra.Command {
-	return &cobra.Command{
+	var noTUI bool
+	var jsonOutput bool
+	var debug bool
+
+	cmd := &cobra.Command{
 		Use:     "dashboard [session-name]",
 		Aliases: []string{"dash", "d"},
 		Short:   "Open interactive session dashboard",
@@ -33,21 +40,63 @@ If no session is specified:
 - Inside tmux: uses the current session
 - Outside tmux: shows a session selector
 
+Flags:
+  --no-tui    Plain text output (no interactive UI)
+  --json      JSON output (implies --no-tui)
+  --debug     Enable debug mode with state inspection
+
+Environment:
+  CI=1              Auto-selects plain mode
+  TERM=dumb         Auto-selects plain mode
+  NO_COLOR=1        Disables colors in plain mode
+  NTM_TUI_DEBUG=1   Enables debug mode
+
 Examples:
   ntm dashboard myproject
-  ntm dash                  # Auto-detect session`,
+  ntm dash                  # Auto-detect session
+  ntm dashboard --no-tui    # Plain text output for scripting
+  ntm dashboard --json      # JSON output for automation
+  CI=1 ntm dashboard        # Auto-detects plain mode in CI`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var session string
 			if len(args) > 0 {
 				session = args[0]
 			}
-			return runDashboard(cmd.OutOrStdout(), cmd.ErrOrStderr(), session)
+
+			// JSON implies no-tui
+			if jsonOutput {
+				noTUI = true
+			}
+
+			// Auto-detect non-interactive environments
+			if !noTUI && shouldUsePlainMode() {
+				noTUI = true
+			}
+
+			// Enable debug mode via environment variable
+			if !debug && isTUIDebugEnabled() {
+				debug = true
+			}
+
+			if jsonOutput {
+				return runDashboardJSON(cmd.OutOrStdout(), cmd.ErrOrStderr(), session)
+			}
+			if noTUI {
+				return runDashboardPlain(cmd.OutOrStdout(), cmd.ErrOrStderr(), session)
+			}
+			return runDashboard(cmd.OutOrStdout(), cmd.ErrOrStderr(), session, debug)
 		},
 	}
+
+	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "Plain text output (no interactive UI)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "JSON output (implies --no-tui)")
+	cmd.Flags().BoolVar(&debug, "debug", false, "Enable debug mode with state inspection")
+
+	return cmd
 }
 
-func runDashboard(w io.Writer, errW io.Writer, session string) error {
+func runDashboard(w io.Writer, errW io.Writer, session string, debug bool) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}

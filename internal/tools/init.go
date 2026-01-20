@@ -22,4 +22,10 @@ func init() {
 
 	// Register JFP adapter (JeffreysPrompts CLI - prompt library)
 	Register(NewJFPAdapter())
+
+	// Register DCG adapter (Destructive Command Guard - blocks dangerous commands)
+	Register(NewDCGAdapter())
+
+	// Register SLB adapter (Simultaneous Launch Button - two-person authorization)
+	Register(NewSLBAdapter())
 }

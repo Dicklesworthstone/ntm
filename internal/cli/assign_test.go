@@ -32,7 +32,7 @@ func TestDependencyFilteringInAssignment(t *testing.T) {
 // TestAssignSummaryBlockedCount tests that the summary correctly tracks blocked count
 func TestAssignSummaryBlockedCount(t *testing.T) {
 	summary := AssignSummaryEnhanced{
-		TotalBeads:      10,
+		TotalBeadCount:  10,
 		ActionableCount: 7,
 		BlockedCount:    3,
 		AssignedCount:   5,
@@ -40,8 +40,8 @@ func TestAssignSummaryBlockedCount(t *testing.T) {
 		IdleAgents:      2,
 	}
 
-	if summary.TotalBeads != 10 {
-		t.Errorf("Expected TotalBeads=10, got %d", summary.TotalBeads)
+	if summary.TotalBeadCount != 10 {
+		t.Errorf("Expected TotalBeadCount=10, got %d", summary.TotalBeadCount)
 	}
 	if summary.ActionableCount != 7 {
 		t.Errorf("Expected ActionableCount=7, got %d", summary.ActionableCount)
@@ -153,7 +153,7 @@ func TestAssignOutputEnhancedStructure(t *testing.T) {
 			},
 		},
 		Summary: AssignSummaryEnhanced{
-			TotalBeads:      2,
+			TotalBeadCount:  2,
 			ActionableCount: 1,
 			BlockedCount:    1,
 			AssignedCount:   1,
