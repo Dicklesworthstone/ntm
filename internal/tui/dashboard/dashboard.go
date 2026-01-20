@@ -2242,6 +2242,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.markUpdated(refreshAgentMail, time.Now())
 		return m, nil
 
+	case AgentMailInboxSummaryMsg:
+		if !m.acceptUpdate(refreshAgentMailInbox, msg.Gen) {
+			return m, nil
+		}
+		m.fetchingMailInbox = false
+		m.lastMailInboxFetch = time.Now()
+
+		if msg.Err == nil {
+			m.agentMailInbox = msg.Inboxes
+			m.agentMailAgents = msg.AgentMap
+			// Calculate totals from summary
+			unread := 0
+			urgent := 0
+			for _, msgs := range msg.Inboxes {
+				unread += len(msgs)
+				for _, mm := range msgs {
+					if strings.EqualFold(mm.Importance, "urgent") {
+						urgent++
+					}
+				}
+			}
+			m.agentMailUnread = unread
+			m.agentMailUrgent = urgent
+			m.markUpdated(refreshAgentMailInbox, time.Now())
+		}
+		return m, nil
+
+	case AgentMailInboxDetailMsg:
+		if !m.acceptUpdate(refreshAgentMailInbox, msg.Gen) {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.agentMailInboxErrors[msg.PaneID] = msg.Err
+		} else {
+			delete(m.agentMailInboxErrors, msg.PaneID)
+			m.agentMailInbox[msg.PaneID] = msg.Messages
+		}
+		return m, nil
+
 	case CheckpointUpdateMsg:
 		if !m.acceptUpdate(refreshCheckpoint, msg.Gen) {
 			return m, nil
