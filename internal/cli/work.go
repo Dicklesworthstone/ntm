@@ -39,6 +39,12 @@ Examples:
 	cmd.AddCommand(newWorkSearchCmd())
 	cmd.AddCommand(newWorkImpactCmd())
 	cmd.AddCommand(newWorkNextCmd())
+	cmd.AddCommand(newWorkHistoryCmd())
+	cmd.AddCommand(newWorkForecastCmd())
+	cmd.AddCommand(newWorkGraphCmd())
+	cmd.AddCommand(newWorkLabelHealthCmd())
+	cmd.AddCommand(newWorkLabelFlowCmd())
+	cmd.AddCommand(newWorkBurndownCmd())
 
 	return cmd
 }
@@ -740,6 +746,687 @@ func runWorkNext() error {
 		mutedStyle.Render("Claim:"), rec.ID)
 
 	fmt.Println()
+	return nil
+}
+
+// newWorkHistoryCmd creates the history command
+func newWorkHistoryCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "history",
+		Short: "Show bead-to-commit correlations and milestones",
+		Long: `Display history analysis showing how beads correlate with commits.
+
+Shows bead events, commit milestones, and provides insights into development patterns.
+
+Examples:
+  ntm work history               # Full history analysis
+  ntm work history --json       # Output as JSON`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorkHistory()
+		},
+	}
+
+	return cmd
+}
+
+// newWorkForecastCmd creates the forecast command
+func newWorkForecastCmd() *cobra.Command {
+	var issueID string
+
+	cmd := &cobra.Command{
+		Use:   "forecast [issue-id]",
+		Short: "ETA predictions with dependency-aware scheduling",
+		Long: `Predict completion times for issues using dependency analysis.
+
+Uses graph analysis to provide realistic estimates considering dependencies.
+
+Examples:
+  ntm work forecast                # Forecast all open issues
+  ntm work forecast ntm-123        # Forecast specific issue
+  ntm work forecast --json         # Output as JSON`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				issueID = args[0]
+			}
+			return runWorkForecast(issueID)
+		},
+	}
+
+	return cmd
+}
+
+// newWorkGraphCmd creates the graph command
+func newWorkGraphCmd() *cobra.Command {
+	var graphFormat string
+
+	cmd := &cobra.Command{
+		Use:   "graph",
+		Short: "Export dependency graph visualization",
+		Long: `Export the dependency graph in various formats.
+
+Supports JSON, DOT (Graphviz), and Mermaid formats for visualization.
+
+Examples:
+  ntm work graph                           # JSON format
+  ntm work graph --format=dot             # DOT format for Graphviz
+  ntm work graph --format=mermaid         # Mermaid format
+  ntm work graph --json                   # Alias for JSON format`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorkGraph(graphFormat)
+		},
+	}
+
+	cmd.Flags().StringVar(&graphFormat, "format", "json", "Graph format: json, dot, or mermaid")
+
+	return cmd
+}
+
+// newWorkLabelHealthCmd creates the label-health command
+func newWorkLabelHealthCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "label-health",
+		Short: "Health metrics per label",
+		Long: `Show health metrics for each label including velocity, staleness, and blocked count.
+
+Helps identify which areas of the project need attention.
+
+Examples:
+  ntm work label-health           # All label health metrics
+  ntm work label-health --json    # Output as JSON`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorkLabelHealth()
+		},
+	}
+
+	return cmd
+}
+
+// newWorkLabelFlowCmd creates the label-flow command
+func newWorkLabelFlowCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "label-flow",
+		Short: "Cross-label dependency flows and bottlenecks",
+		Long: `Analyze dependencies between labels to identify bottlenecks.
+
+Shows which labels depend on others and where work gets blocked.
+
+Examples:
+  ntm work label-flow             # Flow analysis between labels
+  ntm work label-flow --json      # Output as JSON`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorkLabelFlow()
+		},
+	}
+
+	return cmd
+}
+
+// newWorkBurndownCmd creates the burndown command
+func newWorkBurndownCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "burndown <sprint>",
+		Short: "Sprint burndown with scope changes and at-risk items",
+		Long: `Generate burndown charts and analysis for sprints.
+
+Shows progress, scope changes, and identifies at-risk items.
+
+Examples:
+  ntm work burndown sprint-1      # Burndown for sprint-1
+  ntm work burndown current       # Current sprint burndown
+  ntm work burndown sprint-2 --json  # Output as JSON`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorkBurndown(args[0])
+		},
+	}
+
+	return cmd
+}
+
+// Response types for the new commands
+
+// HistoryResponse contains bead-to-commit correlation data
+type HistoryResponse struct {
+	Stats        HistoryStats             `json:"stats"`
+	Histories    []BeadHistory           `json:"histories"`
+	CommitIndex  map[string]CommitInfo    `json:"commit_index"`
+}
+
+// HistoryStats contains overall history statistics
+type HistoryStats struct {
+	TotalBeads    int `json:"total_beads"`
+	TotalCommits  int `json:"total_commits"`
+	CorrelatedCount int `json:"correlated_count"`
+}
+
+// BeadHistory contains history for a single bead
+type BeadHistory struct {
+	ID        string         `json:"id"`
+	Title     string         `json:"title"`
+	Events    []BeadEvent    `json:"events"`
+	Commits   []string       `json:"commits"`
+	Milestones []string      `json:"milestones"`
+}
+
+// BeadEvent represents a bead state change
+type BeadEvent struct {
+	Timestamp time.Time `json:"timestamp"`
+	Event     string    `json:"event"`
+	Status    string    `json:"status,omitempty"`
+}
+
+// CommitInfo contains commit details
+type CommitInfo struct {
+	Hash      string    `json:"hash"`
+	Timestamp time.Time `json:"timestamp"`
+	Message   string    `json:"message"`
+	Beads     []string  `json:"beads,omitempty"`
+}
+
+// ForecastResponse contains ETA predictions
+type ForecastResponse struct {
+	Forecasts []ForecastItem `json:"forecasts"`
+}
+
+// ForecastItem represents a forecast for a single issue
+type ForecastItem struct {
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	EstimatedETA     time.Time `json:"estimated_eta"`
+	ConfidenceLevel  float64   `json:"confidence_level"`
+	DependencyCount  int       `json:"dependency_count"`
+	CriticalPath     bool      `json:"critical_path"`
+	BlockingFactors  []string  `json:"blocking_factors,omitempty"`
+}
+
+// GraphResponse contains dependency graph data
+type GraphResponse struct {
+	Format string      `json:"format"`
+	Data   interface{} `json:"data"`
+}
+
+// LabelHealthResponse contains health metrics per label
+type LabelHealthResponse struct {
+	Results LabelHealthResults `json:"results"`
+}
+
+// LabelHealthResults contains the actual health data
+type LabelHealthResults struct {
+	Labels []LabelHealth `json:"labels"`
+}
+
+// LabelHealth contains health metrics for a single label
+type LabelHealth struct {
+	Label         string  `json:"label"`
+	HealthLevel   string  `json:"health_level"` // healthy, warning, critical
+	VelocityScore float64 `json:"velocity_score"`
+	Staleness     float64 `json:"staleness"`
+	BlockedCount  int     `json:"blocked_count"`
+}
+
+// LabelFlowResponse contains cross-label dependency analysis
+type LabelFlowResponse struct {
+	FlowMatrix       map[string]map[string]int `json:"flow_matrix"`
+	Dependencies     []LabelDependency         `json:"dependencies"`
+	BottleneckLabels []string                  `json:"bottleneck_labels"`
+}
+
+// LabelDependency represents a dependency between labels
+type LabelDependency struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Count  int    `json:"count"`
+	Weight float64 `json:"weight"`
+}
+
+// BurndownResponse contains sprint burndown data
+type BurndownResponse struct {
+	Sprint      string          `json:"sprint"`
+	Progress    BurndownProgress `json:"progress"`
+	ScopeChanges []ScopeChange   `json:"scope_changes,omitempty"`
+	AtRisk      []AtRiskItem    `json:"at_risk,omitempty"`
+}
+
+// BurndownProgress contains progress metrics
+type BurndownProgress struct {
+	TotalPoints     int     `json:"total_points"`
+	CompletedPoints int     `json:"completed_points"`
+	PercentComplete float64 `json:"percent_complete"`
+	DaysRemaining   int     `json:"days_remaining"`
+}
+
+// ScopeChange represents a change in sprint scope
+type ScopeChange struct {
+	Timestamp time.Time `json:"timestamp"`
+	Action    string    `json:"action"` // added, removed, modified
+	IssueID   string    `json:"issue_id"`
+	Points    int       `json:"points"`
+}
+
+// AtRiskItem represents an at-risk sprint item
+type AtRiskItem struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Risk     string   `json:"risk"` // behind_schedule, blocked, scope_creep
+	Reasons  []string `json:"reasons"`
+}
+
+// Implementation functions for the new commands
+
+// runWorkHistory executes the history command
+func runWorkHistory() error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	args := []string{"-robot-history"}
+
+	output, err := bv.RunRaw(dir, args...)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		fmt.Println(output)
+		return nil
+	}
+
+	// Parse and render
+	var resp HistoryResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		// If parsing fails, just print raw output
+		fmt.Println(output)
+		return nil
+	}
+
+	return renderHistory(resp)
+}
+
+// renderHistory renders history data in a human-friendly format
+func renderHistory(resp HistoryResponse) error {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	fmt.Println()
+	fmt.Println(titleStyle.Render("Bead History & Correlation"))
+	fmt.Println()
+
+	// Stats
+	stats := resp.Stats
+	fmt.Printf("  Total Beads: %d  Commits: %d  Correlated: %d\n\n",
+		stats.TotalBeads, stats.TotalCommits, stats.CorrelatedCount)
+
+	// Recent bead histories (limit to first 10)
+	histories := resp.Histories
+	if len(histories) > 10 {
+		histories = histories[:10]
+	}
+
+	for _, bead := range histories {
+		fmt.Printf("  %s %s\n", idStyle.Render(bead.ID), bead.Title)
+
+		if len(bead.Events) > 0 {
+			fmt.Printf("    %s %d events, %d commits\n",
+				mutedStyle.Render("Events:"), len(bead.Events), len(bead.Commits))
+		}
+
+		if len(bead.Milestones) > 0 {
+			fmt.Printf("    %s %s\n",
+				mutedStyle.Render("Milestones:"), strings.Join(bead.Milestones, ", "))
+		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// runWorkForecast executes the forecast command
+func runWorkForecast(issueID string) error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	var args []string
+	if issueID != "" {
+		args = []string{"-robot-forecast", issueID}
+	} else {
+		args = []string{"-robot-forecast", "all"}
+	}
+
+	output, err := bv.RunRaw(dir, args...)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		fmt.Println(output)
+		return nil
+	}
+
+	// Parse and render
+	var resp ForecastResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		// If parsing fails, just print raw output
+		fmt.Println(output)
+		return nil
+	}
+
+	return renderForecast(resp)
+}
+
+// renderForecast renders forecast data
+func renderForecast(resp ForecastResponse) error {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	dateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	riskStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	fmt.Println()
+	fmt.Println(titleStyle.Render("Issue Forecasts"))
+	fmt.Println()
+
+	if len(resp.Forecasts) == 0 {
+		fmt.Println("No forecasts available")
+		return nil
+	}
+
+	for i, forecast := range resp.Forecasts {
+		if i >= 10 { // Limit display
+			break
+		}
+
+		fmt.Printf("  %s %s\n", idStyle.Render(forecast.ID), forecast.Title)
+
+		eta := forecast.EstimatedETA.Format("2006-01-02")
+		confidence := fmt.Sprintf("%.0f%%", forecast.ConfidenceLevel*100)
+		fmt.Printf("    %s %s %s %s\n",
+			mutedStyle.Render("ETA:"), dateStyle.Render(eta),
+			mutedStyle.Render("Confidence:"), confidence)
+
+		if forecast.CriticalPath {
+			fmt.Printf("    %s Critical path item\n", riskStyle.Render("⚠"))
+		}
+
+		if len(forecast.BlockingFactors) > 0 {
+			fmt.Printf("    %s %s\n",
+				mutedStyle.Render("Blocking:"), strings.Join(forecast.BlockingFactors, ", "))
+		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// runWorkGraph executes the graph command
+func runWorkGraph(format string) error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	args := []string{"-robot-graph"}
+	if format != "" && format != "json" {
+		args = append(args, "-graph-format", format)
+	}
+
+	output, err := bv.RunRaw(dir, args...)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput || format == "json" {
+		fmt.Println(output)
+		return nil
+	}
+
+	// For non-JSON formats like DOT or Mermaid, just print directly
+	fmt.Println(output)
+	return nil
+}
+
+// runWorkLabelHealth executes the label-health command
+func runWorkLabelHealth() error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	args := []string{"-robot-label-health"}
+
+	output, err := bv.RunRaw(dir, args...)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		fmt.Println(output)
+		return nil
+	}
+
+	// Parse and render
+	var resp LabelHealthResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		// If parsing fails, just print raw output
+		fmt.Println(output)
+		return nil
+	}
+
+	return renderLabelHealth(resp)
+}
+
+// renderLabelHealth renders label health data
+func renderLabelHealth(resp LabelHealthResponse) error {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	healthyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	criticalStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	fmt.Println()
+	fmt.Println(titleStyle.Render("Label Health"))
+	fmt.Println()
+
+	labels := resp.Results.Labels
+	if len(labels) == 0 {
+		fmt.Println("No label health data available")
+		return nil
+	}
+
+	// Sort by health level (critical first)
+	sort.Slice(labels, func(i, j int) bool {
+		order := map[string]int{"critical": 0, "warning": 1, "healthy": 2}
+		return order[labels[i].HealthLevel] < order[labels[j].HealthLevel]
+	})
+
+	for _, label := range labels {
+		var healthStyle lipgloss.Style
+		var icon string
+
+		switch label.HealthLevel {
+		case "critical":
+			healthStyle = criticalStyle
+			icon = "✗"
+		case "warning":
+			healthStyle = warningStyle
+			icon = "⚠"
+		default:
+			healthStyle = healthyStyle
+			icon = "✓"
+		}
+
+		fmt.Printf("  %s %s %s\n",
+			icon, label.Label, healthStyle.Render(label.HealthLevel))
+
+		fmt.Printf("    %s %.2f  %s %.2f  %s %d\n",
+			mutedStyle.Render("Velocity:"), label.VelocityScore,
+			mutedStyle.Render("Staleness:"), label.Staleness,
+			mutedStyle.Render("Blocked:"), label.BlockedCount)
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// runWorkLabelFlow executes the label-flow command
+func runWorkLabelFlow() error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	args := []string{"-robot-label-flow"}
+
+	output, err := bv.RunRaw(dir, args...)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		fmt.Println(output)
+		return nil
+	}
+
+	// Parse and render
+	var resp LabelFlowResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		// If parsing fails, just print raw output
+		fmt.Println(output)
+		return nil
+	}
+
+	return renderLabelFlow(resp)
+}
+
+// renderLabelFlow renders label flow data
+func renderLabelFlow(resp LabelFlowResponse) error {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	bottleneckStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	fmt.Println()
+	fmt.Println(titleStyle.Render("Label Flow Analysis"))
+	fmt.Println()
+
+	// Show bottleneck labels first
+	if len(resp.BottleneckLabels) > 0 {
+		fmt.Printf("  %s\n", bottleneckStyle.Render("Bottleneck Labels:"))
+		for _, label := range resp.BottleneckLabels {
+			fmt.Printf("    ⚠ %s\n", label)
+		}
+		fmt.Println()
+	}
+
+	// Show top dependencies
+	fmt.Printf("  %s\n", mutedStyle.Render("Top Dependencies:"))
+
+	// Sort dependencies by count (descending)
+	deps := resp.Dependencies
+	sort.Slice(deps, func(i, j int) bool {
+		return deps[i].Count > deps[j].Count
+	})
+
+	count := 0
+	for _, dep := range deps {
+		if count >= 10 { // Limit display
+			break
+		}
+		fmt.Printf("    %s → %s %s\n",
+			labelStyle.Render(dep.From),
+			labelStyle.Render(dep.To),
+			mutedStyle.Render(fmt.Sprintf("(%d)", dep.Count)))
+		count++
+	}
+
+	return nil
+}
+
+// runWorkBurndown executes the burndown command
+func runWorkBurndown(sprint string) error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	args := []string{"-robot-burndown", sprint}
+
+	output, err := bv.RunRaw(dir, args...)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		fmt.Println(output)
+		return nil
+	}
+
+	// Parse and render
+	var resp BurndownResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		// If parsing fails, just print raw output
+		fmt.Println(output)
+		return nil
+	}
+
+	return renderBurndown(resp)
+}
+
+// renderBurndown renders burndown data
+func renderBurndown(resp BurndownResponse) error {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	progressStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	riskStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	fmt.Println()
+	fmt.Printf("%s %s\n", titleStyle.Render("Sprint Burndown:"), resp.Sprint)
+	fmt.Println()
+
+	// Progress
+	progress := resp.Progress
+	fmt.Printf("  %s %d/%d points %s\n",
+		mutedStyle.Render("Progress:"),
+		progress.CompletedPoints,
+		progress.TotalPoints,
+		progressStyle.Render(fmt.Sprintf("(%.0f%%)", progress.PercentComplete)))
+
+	fmt.Printf("  %s %d days\n\n",
+		mutedStyle.Render("Remaining:"), progress.DaysRemaining)
+
+	// At-risk items
+	if len(resp.AtRisk) > 0 {
+		fmt.Printf("  %s\n", riskStyle.Render("At Risk:"))
+		for _, item := range resp.AtRisk {
+			fmt.Printf("    ⚠ %s - %s\n", item.ID, item.Title)
+			if len(item.Reasons) > 0 {
+				fmt.Printf("      %s %s\n",
+					mutedStyle.Render("Reason:"), strings.Join(item.Reasons, ", "))
+			}
+		}
+		fmt.Println()
+	}
+
+	// Scope changes (show recent ones)
+	if len(resp.ScopeChanges) > 0 {
+		fmt.Printf("  %s\n", mutedStyle.Render("Recent Scope Changes:"))
+		count := 0
+		for _, change := range resp.ScopeChanges {
+			if count >= 5 { // Limit display
+				break
+			}
+			fmt.Printf("    %s %s %s (%d pts)\n",
+				change.Timestamp.Format("01/02"),
+				change.Action,
+				change.IssueID,
+				change.Points)
+			count++
+		}
+	}
+
 	return nil
 }
 
