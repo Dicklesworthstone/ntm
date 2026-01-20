@@ -300,7 +300,9 @@ func getAgentHealth(session string, pane tmux.Pane) AgentHealthInfo {
 	health.OutputRate = calculateOutputRate(health.LastActivitySec)
 
 	// Capture recent output to detect error states
-	captured, err := tmux.CapturePaneOutput(pane.ID, 20)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	captured, err := tmux.CapturePaneOutputContext(ctx, pane.ID, 20)
+	cancel()
 	if err == nil {
 		// Get agent type from pane info
 		agentType := agentTypeString(pane.Type)
@@ -449,7 +451,9 @@ func checkProcess(paneID string) *ProcessCheckResult {
 	}
 
 	// Capture pane output to check for exit indicators
-	output, err := tmux.CapturePaneOutput(paneID, 30)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	output, err := tmux.CapturePaneOutputContext(ctx, paneID, 30)
+	cancel()
 	if err != nil {
 		result.Reason = "failed to capture pane output"
 		return result
@@ -570,7 +574,9 @@ func checkErrors(paneID string) *ErrorCheckResult {
 	}
 
 	// Capture pane output
-	output, err := tmux.CapturePaneOutput(paneID, 50)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	output, err := tmux.CapturePaneOutputContext(ctx, paneID, 50)
+	cancel()
 	if err != nil {
 		result.Reason = "failed to capture pane output"
 		return result
@@ -1787,7 +1793,7 @@ func (rm *RestartManager) trySoftRestart(ctx context.Context, paneID, agentType 
 			return result
 		case <-ticker.C:
 			// Check if agent is now idle
-			output, err := tmux.CapturePaneOutput(target, 5)
+			output, err := tmux.CapturePaneOutputContext(timeoutCtx, target, 5)
 			if err != nil {
 				continue
 			}
@@ -1842,7 +1848,7 @@ func (rm *RestartManager) tryHardRestart(ctx context.Context, paneID, agentType 
 		return result
 	case <-time.After(500 * time.Millisecond):
 	}
-	output, _ := tmux.CapturePaneOutput(target, 5)
+	output, _ := tmux.CapturePaneOutputContext(ctx, target, 5)
 
 	// If still not at prompt, try Ctrl+D
 	if !isShellPrompt(output) {
@@ -1877,7 +1883,7 @@ func (rm *RestartManager) tryHardRestart(ctx context.Context, paneID, agentType 
 	}
 
 	// Verify agent started
-	output, captureErr := tmux.CapturePaneOutput(target, 10)
+	output, captureErr := tmux.CapturePaneOutputContext(ctx, target, 10)
 	if captureErr != nil {
 		result.Reason = fmt.Sprintf("failed to capture output: %v", captureErr)
 		return result

@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -137,7 +138,9 @@ func PrintAck(opts AckOptions) error {
 	initialStates := make(map[string]string)
 	for _, pane := range targetPanes {
 		paneKey := fmt.Sprintf("%d", pane.Index)
-		captured, err := tmux.CapturePaneOutput(pane.ID, 20)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		captured, err := tmux.CapturePaneOutputContext(ctx, pane.ID, 20)
+		cancel()
 		if err == nil {
 			initialStates[paneKey] = status.StripANSI(captured)
 		}
@@ -170,7 +173,9 @@ func PrintAck(opts AckOptions) error {
 			}
 
 			// Capture current output
-			captured, err := tmux.CapturePaneOutput(targetPane.ID, 20)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			captured, err := tmux.CapturePaneOutputContext(ctx, targetPane.ID, 20)
+			cancel()
 			if err != nil {
 				stillPending = append(stillPending, paneKey)
 				continue
@@ -474,7 +479,9 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 		targetKeys = append(targetKeys, paneKey)
 
 		// Capture initial state before sending
-		captured, err := tmux.CapturePaneOutput(pane.ID, 20)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		captured, err := tmux.CapturePaneOutputContext(ctx, pane.ID, 20)
+		cancel()
 		if err == nil {
 			initialStates[paneKey] = status.StripANSI(captured)
 		}
@@ -550,7 +557,9 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 				continue
 			}
 
-			captured, err := tmux.CapturePaneOutput(targetPane.ID, 20)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			captured, err := tmux.CapturePaneOutputContext(ctx, targetPane.ID, 20)
+			cancel()
 			if err != nil {
 				stillPending = append(stillPending, paneKey)
 				continue

@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"context"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -67,7 +68,9 @@ func (vt *VelocityTracker) Update() (*VelocitySample, error) {
 // updateLocked performs the update with the lock already held.
 func (vt *VelocityTracker) updateLocked() (*VelocitySample, error) {
 	// Capture current pane output
-	output, err := tmux.CaptureForStatusDetection(vt.PaneID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := tmux.CaptureForStatusDetectionContext(ctx, vt.PaneID)
 	if err != nil {
 		return nil, err
 	}

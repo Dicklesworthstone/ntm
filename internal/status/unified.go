@@ -193,14 +193,18 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 	status.LastActive = lastActivity
 
 	// Capture recent output for analysis
-	output, err := tmux.CapturePaneOutput(paneID, d.config.ScanLines)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := tmux.CapturePaneOutputContext(ctx, paneID, d.config.ScanLines)
 	if err != nil {
 		return status, err
 	}
 	if strings.TrimSpace(output) == "" {
 		// Give tmux a brief moment to flush output, then retry once
 		time.Sleep(100 * time.Millisecond)
-		if retry, err := tmux.CapturePaneOutput(paneID, d.config.ScanLines); err == nil {
+		ctxRetry, cancelRetry := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelRetry()
+		if retry, err := tmux.CapturePaneOutputContext(ctxRetry, paneID, d.config.ScanLines); err == nil {
 			output = retry
 		}
 	}

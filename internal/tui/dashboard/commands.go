@@ -82,7 +82,9 @@ func (m *Model) fetchMetricsCmd() tea.Cmd {
 			}
 
 			// Capture more context for better estimate
-			out, err := tmux.CapturePaneOutput(p.ID, 2000)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			out, err := tmux.CapturePaneOutputContext(ctx, p.ID, 2000)
+			cancel()
 			if err != nil {
 				continue
 			}
