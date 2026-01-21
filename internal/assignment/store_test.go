@@ -28,8 +28,7 @@ func TestNewStore(t *testing.T) {
 func TestAssign(t *testing.T) {
 	// Use temp directory
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 
@@ -63,8 +62,7 @@ func TestAssign(t *testing.T) {
 
 func TestGet(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
@@ -87,8 +85,7 @@ func TestGet(t *testing.T) {
 
 func TestList(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
@@ -103,8 +100,7 @@ func TestList(t *testing.T) {
 
 func TestListByPane(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
@@ -124,8 +120,7 @@ func TestListByPane(t *testing.T) {
 
 func TestListByStatus(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
@@ -147,8 +142,7 @@ func TestListByStatus(t *testing.T) {
 
 func TestListActive(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
@@ -168,8 +162,7 @@ func TestListActive(t *testing.T) {
 
 func TestStateTransitions(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	tests := []struct {
 		name  string
@@ -200,8 +193,7 @@ func TestStateTransitions(t *testing.T) {
 
 func TestUpdateStatus(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
@@ -237,8 +229,7 @@ func TestUpdateStatus(t *testing.T) {
 
 func TestInvalidTransition(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
@@ -261,8 +252,7 @@ func TestInvalidTransition(t *testing.T) {
 
 func TestMarkFailed(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
@@ -286,8 +276,7 @@ func TestMarkFailed(t *testing.T) {
 
 func TestReassign(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "Agent1", "Do the thing")
@@ -319,8 +308,7 @@ func TestReassign(t *testing.T) {
 
 func TestRemove(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
@@ -335,8 +323,7 @@ func TestRemove(t *testing.T) {
 
 func TestClear(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
@@ -351,8 +338,7 @@ func TestClear(t *testing.T) {
 
 func TestStats(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-1", "Bead 1", 1, "claude", "", "")
@@ -385,8 +371,7 @@ func TestStats(t *testing.T) {
 
 func TestPersistenceSaveLoad(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	// Create and save
 	store1 := NewStore("persist-test")
@@ -416,11 +401,12 @@ func TestPersistenceSaveLoad(t *testing.T) {
 
 func TestPersistenceBackupRecovery(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	// Create valid backup file
-	dir := filepath.Join(tmpDir, "ntm", "assignments")
+	// assignments are now in ~/.ntm/sessions/<session>/assignments.json
+	// So we need to create <tmpDir>/.ntm/sessions/backup-test/assignments.json.bak
+	dir := filepath.Join(tmpDir, ".ntm", "sessions", "backup-test")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
@@ -442,13 +428,14 @@ func TestPersistenceBackupRecovery(t *testing.T) {
 	}
 
 	data, _ := json.MarshalIndent(backupStore, "", "  ")
-	bakPath := filepath.Join(dir, "backup-test.json.bak")
+	// Name is assignments.json (assignmentsDirName + fileExtension)
+	bakPath := filepath.Join(dir, "assignments.json.bak")
 	if err := os.WriteFile(bakPath, data, 0644); err != nil {
 		t.Fatalf("failed to write backup: %v", err)
 	}
 
 	// Write corrupted main file
-	mainPath := filepath.Join(dir, "backup-test.json")
+	mainPath := filepath.Join(dir, "assignments.json")
 	if err := os.WriteFile(mainPath, []byte("invalid json"), 0644); err != nil {
 		t.Fatalf("failed to write corrupted file: %v", err)
 	}
@@ -470,8 +457,7 @@ func TestPersistenceBackupRecovery(t *testing.T) {
 
 func TestPersistenceMissingDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	// Don't create directory - Load should handle it gracefully
 	store, err := LoadStore("missing-dir-test")
@@ -491,7 +477,7 @@ func TestPersistenceMissingDirectory(t *testing.T) {
 	}
 
 	// Verify directory was created
-	dir := filepath.Join(tmpDir, "ntm", "assignments")
+	dir := filepath.Join(tmpDir, ".ntm", "sessions", "missing-dir-test")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Error("expected directory to be created")
 	}
@@ -499,8 +485,7 @@ func TestPersistenceMissingDirectory(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("concurrent-test")
 
@@ -544,8 +529,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 func TestNonExistentAssignment(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	defer os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("HOME", tmpDir)
 
 	store := NewStore("test-session")
 
@@ -563,20 +547,13 @@ func TestNonExistentAssignment(t *testing.T) {
 }
 
 func TestStorageDir(t *testing.T) {
-	// Test with XDG_DATA_HOME set
+	// Test with HOME set
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	
 	dir := StorageDir()
-	expected := filepath.Join(tmpDir, "ntm", "assignments")
-	if dir != expected {
-		t.Errorf("expected %s, got %s", expected, dir)
-	}
-	os.Unsetenv("XDG_DATA_HOME")
-
-	// Test without XDG_DATA_HOME (uses home directory)
-	home, _ := os.UserHomeDir()
-	dir = StorageDir()
-	expected = filepath.Join(home, ".local", "share", "ntm", "assignments")
+	// New behavior: ~/.ntm/sessions
+	expected := filepath.Join(tmpDir, ".ntm", "sessions")
 	if dir != expected {
 		t.Errorf("expected %s, got %s", expected, dir)
 	}
