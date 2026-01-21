@@ -21,25 +21,25 @@ import (
 
 // TmuxEnvInfo contains tmux environment detection results
 type TmuxEnvInfo struct {
-	BinaryPath          string `json:"binary_path"`           // Full path to tmux binary
-	Version             string `json:"version"`               // tmux version string
-	ShellAliasDetected  bool   `json:"shell_alias_detected"`  // True if shell has tmux alias/function
-	RecommendedPath     string `json:"recommended_path"`      // Always /usr/bin/tmux
-	Warning             string `json:"warning,omitempty"`     // Warning message if alias detected
-	OhMyZshTmuxPlugin   bool   `json:"oh_my_zsh_tmux_plugin"` // oh-my-zsh tmux plugin detected
-	TmuxinatorDetected  bool   `json:"tmuxinator_detected"`   // tmuxinator detected
-	TmuxResurrect       bool   `json:"tmux_resurrect"`        // tmux-resurrect detected
+	BinaryPath         string `json:"binary_path"`           // Full path to tmux binary
+	Version            string `json:"version"`               // tmux version string
+	ShellAliasDetected bool   `json:"shell_alias_detected"`  // True if shell has tmux alias/function
+	RecommendedPath    string `json:"recommended_path"`      // Always /usr/bin/tmux
+	Warning            string `json:"warning,omitempty"`     // Warning message if alias detected
+	OhMyZshTmuxPlugin  bool   `json:"oh_my_zsh_tmux_plugin"` // oh-my-zsh tmux plugin detected
+	TmuxinatorDetected bool   `json:"tmuxinator_detected"`   // tmuxinator detected
+	TmuxResurrect      bool   `json:"tmux_resurrect"`        // tmux-resurrect detected
 }
 
 // EnvOutput is the response for --robot-env
 type EnvOutput struct {
 	RobotResponse
-	Session          string                 `json:"session,omitempty"`
-	Tmux             TmuxEnvInfo            `json:"tmux"`
-	SessionStructure *SessionStructureInfo  `json:"session_structure,omitempty"`
-	Shell            *ShellEnvInfo          `json:"shell,omitempty"`
-	Timing           *TimingInfo            `json:"timing,omitempty"`
-	Targeting        *TargetingInfo         `json:"targeting,omitempty"`
+	Session          string                `json:"session,omitempty"`
+	Tmux             TmuxEnvInfo           `json:"tmux"`
+	SessionStructure *SessionStructureInfo `json:"session_structure,omitempty"`
+	Shell            *ShellEnvInfo         `json:"shell,omitempty"`
+	Timing           *TimingInfo           `json:"timing,omitempty"`
+	Targeting        *TargetingInfo        `json:"targeting,omitempty"`
 }
 
 // SessionStructureInfo describes session window/pane structure
@@ -53,16 +53,17 @@ type SessionStructureInfo struct {
 
 // ShellEnvInfo describes shell environment
 type ShellEnvInfo struct {
-	Type              string `json:"type"`                 // bash, zsh, fish, etc.
-	TmuxPluginDetected bool   `json:"tmux_plugin_detected"` // May cause issues
-	OhMyZshDetected   bool   `json:"oh_my_zsh_detected"`   // oh-my-zsh installed
+	Type               string `json:"type"`                  // bash, zsh, fish, etc.
+	TmuxPluginDetected bool   `json:"tmux_plugin_detected"`  // May cause issues
+	OhMyZshDetected    bool   `json:"oh_my_zsh_detected"`    // oh-my-zsh installed
+	ConfigPath         string `json:"config_path,omitempty"` // Where to look for aliases (~/.zshrc, ~/.bashrc)
 }
 
 // TimingInfo contains recommended timing constants
 type TimingInfo struct {
-	CtrlCGapMs        int `json:"ctrl_c_gap_ms"`         // Recommended gap between Ctrl-Cs
-	PostExitWaitMs    int `json:"post_exit_wait_ms"`     // Wait after exit before launching
-	CCInitWaitMs      int `json:"cc_init_wait_ms"`       // Wait for cc to initialize
+	CtrlCGapMs          int `json:"ctrl_c_gap_ms"`          // Recommended gap between Ctrl-Cs
+	PostExitWaitMs      int `json:"post_exit_wait_ms"`      // Wait after exit before launching
+	CCInitWaitMs        int `json:"cc_init_wait_ms"`        // Wait for cc to initialize
 	PromptSubmitDelayMs int `json:"prompt_submit_delay_ms"` // Delay before submitting prompts
 }
 
@@ -238,10 +239,10 @@ func PrintEnv(session string) error {
 
 	// Add timing constants (recommended defaults)
 	output.Timing = &TimingInfo{
-		CtrlCGapMs:          100,   // 0.1s gap between Ctrl-Cs
-		PostExitWaitMs:      3000,  // 3s wait after exit
-		CCInitWaitMs:        6000,  // 6s for cc to initialize
-		PromptSubmitDelayMs: 1000,  // 1s before submitting prompts
+		CtrlCGapMs:          100,  // 0.1s gap between Ctrl-Cs
+		PostExitWaitMs:      3000, // 3s wait after exit
+		CCInitWaitMs:        6000, // 6s for cc to initialize
+		PromptSubmitDelayMs: 1000, // 1s before submitting prompts
 	}
 
 	// If session specified, add session-specific info
@@ -307,13 +308,33 @@ func detectShellEnv() *ShellEnvInfo {
 		return nil
 	}
 
+	shellType := filepath.Base(shell)
 	info := &ShellEnvInfo{
-		Type: filepath.Base(shell),
+		Type: shellType,
 	}
 
 	home := os.Getenv("HOME")
 	if home != "" {
 		info.OhMyZshDetected = dirExists(filepath.Join(home, ".oh-my-zsh"))
+
+		// Set config path based on shell type
+		switch shellType {
+		case "zsh":
+			info.ConfigPath = filepath.Join(home, ".zshrc")
+		case "bash":
+			// Prefer .bashrc, fall back to .bash_profile
+			bashrc := filepath.Join(home, ".bashrc")
+			if fileExists(bashrc) {
+				info.ConfigPath = bashrc
+			} else {
+				info.ConfigPath = filepath.Join(home, ".bash_profile")
+			}
+		case "fish":
+			info.ConfigPath = filepath.Join(home, ".config", "fish", "config.fish")
+		default:
+			// For unknown shells, try common rc pattern
+			info.ConfigPath = filepath.Join(home, "."+shellType+"rc")
+		}
 	}
 
 	info.TmuxPluginDetected = detectTmuxAlias() || detectOhMyZshTmuxPlugin()
