@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
+	"github.com/Dicklesworthstone/ntm/internal/cli/suggestions"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -987,6 +988,41 @@ func runStatus(w io.Writer, session string, opts statusOptions) error {
 	fmt.Fprintf(w, "    %sntm zoom %s <n>%s             %s# Zoom pane n%s\n",
 		subtext, session, reset, overlay, reset)
 	fmt.Fprintln(w)
+
+	// Contextual suggestion
+	hasBeads := false
+	if assignmentStore != nil && len(assignmentStore.ListActive()) > 0 {
+		hasBeads = true
+	}
+
+	busyAgents := 0
+	idleAgents := 0
+	for _, p := range panes {
+		if p.Type == tmux.AgentUser {
+			continue
+		}
+		st, _ := detector.Detect(p.ID)
+		if st.State == status.StateWorking {
+			busyAgents++
+		} else if st.State == status.StateIdle {
+			idleAgents++
+		}
+	}
+
+	sugState := suggestions.State{
+		SessionCount:   1, // At least this one exists
+		CurrentSession: session,
+		BusyAgents:     busyAgents,
+		IdleAgents:     idleAgents,
+		HasBeads:       hasBeads,
+	}
+
+	if suggestion := suggestions.SuggestNextCommand(sugState); suggestion != nil {
+		output.SuccessFooter(output.Suggestion{
+			Command:     suggestion.Command,
+			Description: suggestion.Description,
+		})
+	}
 
 	return nil
 }
