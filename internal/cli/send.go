@@ -30,8 +30,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/templates"
-	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -908,7 +908,7 @@ func runSendInternal(opts SendOptions) error {
 	// If specific pane requested
 	if paneIndex >= 0 {
 		p := selectedPanes[0]
-		if err := tmux.PasteKeys(p.ID, prompt, true); err != nil {
+		if err := sendPromptToPane(p, prompt); err != nil {
 			failed++
 			histErr = err
 			if jsonOutput {
@@ -952,7 +952,7 @@ func runSendInternal(opts SendOptions) error {
 	}
 
 	for _, p := range selectedPanes {
-		if err := tmux.PasteKeys(p.ID, prompt, true); err != nil {
+		if err := sendPromptToPane(p, prompt); err != nil {
 			failed++
 			histErr = err
 			if !jsonOutput {
@@ -1443,6 +1443,30 @@ func looksLikeShellCommand(line string) bool {
 	return false
 }
 
+const (
+	agentPromptFirstEnterDelay  = 1 * time.Second
+	agentPromptSecondEnterDelay = 500 * time.Millisecond
+)
+
+func sendPromptToPane(p tmux.Pane, prompt string) error {
+	if p.Type == tmux.AgentUser {
+		return tmux.PasteKeys(p.ID, prompt, true)
+	}
+	return sendPromptWithDoubleEnter(p.ID, prompt)
+}
+
+func sendPromptWithDoubleEnter(paneID, prompt string) error {
+	if err := tmux.PasteKeys(paneID, prompt, false); err != nil {
+		return err
+	}
+	time.Sleep(agentPromptFirstEnterDelay)
+	if err := tmux.SendKeys(paneID, "", true); err != nil {
+		return err
+	}
+	time.Sleep(agentPromptSecondEnterDelay)
+	return tmux.SendKeys(paneID, "", true)
+}
+
 func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.BlockedCommand) {
 	config := dcg.DefaultAuditLoggerConfig()
 	if cfg != nil && cfg.Integrations.DCG.AuditLog != "" {
@@ -1637,7 +1661,7 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool) er
 
 		// Send to the specific pane
 		paneID := fmt.Sprintf("%s:%d", session, rec.PaneIndex)
-		if err := tmux.SendKeys(paneID, taskPrompt, true); err != nil {
+		if err := sendPromptWithDoubleEnter(paneID, taskPrompt); err != nil {
 			if !jsonOutput {
 				fmt.Printf("  ✗ Failed to send to pane %d: %v\n", rec.PaneIndex, err)
 			}
@@ -1967,7 +1991,7 @@ func runSendBatch(opts SendOptions) error {
 		var sendErr error
 		for _, paneIdx := range targetPanes {
 			paneID := fmt.Sprintf("%s:%d", opts.Session, paneIdx)
-			if err := tmux.PasteKeys(paneID, promptText, true); err != nil {
+			if err := sendPromptWithDoubleEnter(paneID, promptText); err != nil {
 				paneFailed++
 				sendErr = err
 			} else {

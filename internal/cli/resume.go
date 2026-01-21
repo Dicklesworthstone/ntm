@@ -17,12 +17,12 @@ import (
 
 // ResumeResult is the JSON output for the resume command.
 type ResumeResult struct {
-	Success   bool                   `json:"success"`
-	Action    string                 `json:"action"` // display, spawn, inject
-	Handoff   *ResumeHandoffInfo     `json:"handoff,omitempty"`
-	SpawnInfo *ResumeSpawnInfo       `json:"spawn_info,omitempty"`
-	InjectInfo *ResumeInjectInfo     `json:"inject_info,omitempty"`
-	Error     string                 `json:"error,omitempty"`
+	Success    bool               `json:"success"`
+	Action     string             `json:"action"` // display, spawn, inject
+	Handoff    *ResumeHandoffInfo `json:"handoff,omitempty"`
+	SpawnInfo  *ResumeSpawnInfo   `json:"spawn_info,omitempty"`
+	InjectInfo *ResumeInjectInfo  `json:"inject_info,omitempty"`
+	Error      string             `json:"error,omitempty"`
 }
 
 // ResumeHandoffInfo contains handoff details for JSON output.
@@ -42,16 +42,16 @@ type ResumeHandoffInfo struct {
 
 // ResumeSpawnInfo contains spawn operation details.
 type ResumeSpawnInfo struct {
-	Session    string   `json:"session"`
-	PaneCount  int      `json:"pane_count"`
-	PaneIDs    []string `json:"pane_ids,omitempty"`
+	Session   string   `json:"session"`
+	PaneCount int      `json:"pane_count"`
+	PaneIDs   []string `json:"pane_ids,omitempty"`
 }
 
 // ResumeInjectInfo contains inject operation details.
 type ResumeInjectInfo struct {
-	Session    string `json:"session"`
-	PanesSent  int    `json:"panes_sent"`
-	PanesFailed int   `json:"panes_failed"`
+	Session     string `json:"session"`
+	PanesSent   int    `json:"panes_sent"`
+	PanesFailed int    `json:"panes_failed"`
 }
 
 func newResumeCmd() *cobra.Command {
@@ -364,7 +364,7 @@ func spawnWithHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff
 	for _, pane := range panes {
 		if pane.Type != tmux.AgentUser {
 			// Send context to agent panes
-			if err := tmux.SendKeys(pane.ID, contextText, true); err != nil {
+			if err := sendPromptWithDoubleEnter(pane.ID, contextText); err != nil {
 				slog.Warn("failed to send context to pane", "pane", pane.ID, "error", err)
 			} else {
 				sentCount++
@@ -430,7 +430,7 @@ func injectHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff,
 		if pane.Type == tmux.AgentUser {
 			continue // Skip user pane
 		}
-		if err := tmux.SendKeys(pane.ID, contextText, true); err != nil {
+		if err := sendPromptWithDoubleEnter(pane.ID, contextText); err != nil {
 			slog.Warn("failed to send to pane",
 				"pane_id", pane.ID,
 				"error", err,

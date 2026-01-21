@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
@@ -334,6 +335,33 @@ func runAdd(opts AddOptions) error {
 			}
 		}
 
+		// Configure DCG hooks for Claude agents when DCG integration is enabled
+		if agent.Type == AgentTypeClaude && cfg.Integrations.DCG.Enabled {
+			if dcg.ShouldConfigureHooks(cfg.Integrations.DCG.Enabled, cfg.Integrations.DCG.BinaryPath) {
+				dcgOpts := dcg.DCGHookOptions{
+					BinaryPath:      cfg.Integrations.DCG.BinaryPath,
+					AuditLog:        cfg.Integrations.DCG.AuditLog,
+					Timeout:         5000, // 5 second timeout for hook
+					CustomBlocklist: cfg.Integrations.DCG.CustomBlocklist,
+					CustomWhitelist: cfg.Integrations.DCG.CustomWhitelist,
+				}
+				dcgEnvVars, err := dcg.HookEnvVars(dcgOpts)
+				if err == nil {
+					if envVars == nil {
+						envVars = make(map[string]string)
+					}
+					for k, v := range dcgEnvVars {
+						envVars[k] = v
+					}
+					if !IsJSONOutput() {
+						output.PrintInfof("DCG hooks configured for agent %d", num)
+					}
+				} else if !IsJSONOutput() {
+					output.PrintWarningf("Failed to configure DCG hooks for agent %d: %v", num, err)
+				}
+			}
+		}
+
 		// Resolve model alias to full model name
 		resolvedModel := ResolveModel(agent.Type, agent.Model)
 
@@ -375,7 +403,7 @@ func runAdd(opts AddOptions) error {
 		if len(envVars) > 0 {
 			var envPrefix string
 			for k, v := range envVars {
-				envPrefix += fmt.Sprintf("%s=%q ", k, v)
+				envPrefix += fmt.Sprintf("%s=%s ", k, tmux.ShellQuote(v))
 			}
 			finalCmd = envPrefix + finalCmd
 		}
@@ -425,7 +453,7 @@ func runAdd(opts AddOptions) error {
 		if cassContext != "" {
 			// Wait a bit for agent to start
 			time.Sleep(500 * time.Millisecond)
-			if err := tmux.PasteKeys(paneID, cassContext, true); err != nil {
+			if err := sendPromptWithDoubleEnter(paneID, cassContext); err != nil {
 				if !IsJSONOutput() {
 					fmt.Printf("⚠ Warning: failed to inject context: %v\n", err)
 				}
@@ -435,7 +463,7 @@ func runAdd(opts AddOptions) error {
 		// Inject user prompt if provided
 		if opts.Prompt != "" {
 			time.Sleep(200 * time.Millisecond)
-			if err := tmux.PasteKeys(paneID, opts.Prompt, true); err != nil {
+			if err := sendPromptWithDoubleEnter(paneID, opts.Prompt); err != nil {
 				if !IsJSONOutput() {
 					fmt.Printf("⚠ Warning: failed to send prompt: %v\n", err)
 				}

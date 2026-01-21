@@ -143,7 +143,7 @@ func runProfileSwitch(agentID, newProfileName, sessionName, customPrompt string,
 
 	// Send transition prompt to agent
 	if transitionText != "" && !noPrompt {
-		if err := tmux.SendKeys(targetPane.ID, transitionText, true); err != nil {
+		if err := sendPromptWithDoubleEnter(targetPane.ID, transitionText); err != nil {
 			return outputProfileSwitchError(agentID, targetPane.ID, newProfileName, fmt.Errorf("sending transition prompt: %w", err))
 		}
 	}

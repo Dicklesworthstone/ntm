@@ -1045,7 +1045,7 @@ func executeAssignments(session string, recommendations []robot.AssignRecommend)
 
 		// Send to the pane
 		paneID := fmt.Sprintf("%s:%s", session, rec.Agent)
-		if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 			fmt.Printf("  Failed to assign to pane %s: %v\n", rec.Agent, err)
 			continue
 		}
@@ -1760,7 +1760,7 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 
 		// Send to the pane
 		paneID := fmt.Sprintf("%s:%d", session, item.Pane)
-		if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 			if !opts.Quiet {
 				fmt.Printf("  ✗ Failed to assign %s to pane %d: %v\n", item.BeadID, item.Pane, err)
 			}
@@ -2197,7 +2197,7 @@ func runRetryAssignments(cmd *cobra.Command, session string) error {
 		// Send prompt to pane
 		paneID := fmt.Sprintf("%s:%d", session, targetPane.Index)
 		promptSent := true
-		if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 			promptSent = false
 			warnings = append(warnings, fmt.Sprintf("failed to send prompt to pane %d for %s: %v",
 				targetPane.Index, failed.BeadID, err))
@@ -2770,7 +2770,7 @@ func runReassignment(cmd *cobra.Command, session string) error {
 	// Send prompt to new agent
 	paneID := fmt.Sprintf("%s:%d", session, targetPane.Index)
 	promptSent := true
-	if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+	if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 		promptSent = false
 		warnings = append(warnings, fmt.Sprintf("failed to send prompt: %v", err))
 	}
@@ -3455,7 +3455,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 
 	// Execute the assignment
 	paneID := fmt.Sprintf("%s:%d", opts.Session, opts.Pane)
-	if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+	if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 		assignItem.PromptSent = false
 		errMsg := fmt.Sprintf("failed to send prompt: %v", err)
 

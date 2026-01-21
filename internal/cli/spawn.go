@@ -18,10 +18,10 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
-	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
@@ -209,33 +209,33 @@ type RecoveryError struct {
 
 // RecoveryCheckpoint represents checkpoint info for recovery.
 type RecoveryCheckpoint struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
-	PaneCount   int       `json:"pane_count"`
-	HasGitPatch bool      `json:"has_git_patch"`
+	ID          string                     `json:"id"`
+	Name        string                     `json:"name"`
+	Description string                     `json:"description"`
+	CreatedAt   time.Time                  `json:"created_at"`
+	PaneCount   int                        `json:"pane_count"`
+	HasGitPatch bool                       `json:"has_git_patch"`
 	Assignments *RecoveryAssignmentSummary `json:"assignments_summary,omitempty"`
 	BVSummary   *RecoveryBVSummary         `json:"bv_summary,omitempty"`
 }
 
 // RecoveryAssignmentSummary captures assignment status counts from a checkpoint.
 type RecoveryAssignmentSummary struct {
-	Total       int `json:"total"`
-	Assigned    int `json:"assigned,omitempty"`
-	Working     int `json:"working,omitempty"`
-	Completed   int `json:"completed,omitempty"`
-	Failed      int `json:"failed,omitempty"`
-	Reassigned  int `json:"reassigned,omitempty"`
+	Total      int `json:"total"`
+	Assigned   int `json:"assigned,omitempty"`
+	Working    int `json:"working,omitempty"`
+	Completed  int `json:"completed,omitempty"`
+	Failed     int `json:"failed,omitempty"`
+	Reassigned int `json:"reassigned,omitempty"`
 }
 
 // RecoveryBVSummary captures BV snapshot counts from a checkpoint.
 type RecoveryBVSummary struct {
-	OpenCount       int      `json:"open_count"`
-	ActionableCount int      `json:"actionable_count"`
-	BlockedCount    int      `json:"blocked_count"`
-	InProgressCount int      `json:"in_progress_count"`
-	TopPicks        []string `json:"top_picks,omitempty"`
+	OpenCount       int       `json:"open_count"`
+	ActionableCount int       `json:"actionable_count"`
+	BlockedCount    int       `json:"blocked_count"`
+	InProgressCount int       `json:"in_progress_count"`
+	TopPicks        []string  `json:"top_picks,omitempty"`
 	CapturedAt      time.Time `json:"captured_at"`
 }
 
@@ -1171,7 +1171,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			if cassContext != "" && !hasPrompt {
 				// Wait a bit for agent to start (simple heuristic)
 				time.Sleep(500 * time.Millisecond)
-				if err := tmux.SendKeys(paneID, cassContext, true); err != nil {
+				if err := sendPromptWithDoubleEnter(paneID, cassContext); err != nil {
 					if !IsJSONOutput() {
 						fmt.Printf("⚠ Warning: failed to inject context for agent %d: %v\n", idx, err)
 					}
@@ -1186,7 +1186,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 				if recoveryPrompt != "" {
 					// Small delay to let agent initialize or after CASS
 					time.Sleep(300 * time.Millisecond)
-					if err := tmux.SendKeys(paneID, recoveryPrompt, true); err != nil {
+					if err := sendPromptWithDoubleEnter(paneID, recoveryPrompt); err != nil {
 						if !IsJSONOutput() {
 							fmt.Printf("⚠ Warning: failed to inject recovery context for agent %d: %v\n", idx, err)
 						}
@@ -1219,7 +1219,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 					time.Sleep(200 * time.Millisecond)
 				}
 
-				if err := tmux.SendKeys(paneID, finalPrompt, true); err != nil {
+				if err := sendPromptWithDoubleEnter(paneID, finalPrompt); err != nil {
 					if !IsJSONOutput() {
 						fmt.Printf("⚠ Warning: failed to send prompt to agent %d: %v\n", idx, err)
 					}
@@ -2607,7 +2607,7 @@ func sendInitPromptToReadyAgents(session, prompt string) (int, error) {
 			continue
 		}
 
-		if err := tmux.SendKeys(pane.ID, prompt, true); err != nil {
+		if err := sendPromptWithDoubleEnter(pane.ID, prompt); err != nil {
 			errs = append(errs, fmt.Sprintf("pane %d: %v", pane.Index, err))
 			continue
 		}

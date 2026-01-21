@@ -162,7 +162,7 @@ Examples:
 			// Send to all targets
 			var targetNames []string
 			for _, p := range targets {
-				if err := tmux.PasteKeys(p.ID, prompt, true); err != nil {
+				if err := sendPromptToPane(p, prompt); err != nil {
 					return fmt.Errorf("sending to pane %d: %w", p.Index, err)
 				}
 				targetNames = append(targetNames, fmt.Sprintf("%d", p.Index))

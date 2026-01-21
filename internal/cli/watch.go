@@ -434,7 +434,7 @@ func runFileWatch(ctx context.Context, session string, opts watchOptions, t them
 
 			fmt.Printf("Triggering command on %d pane(s)...\n", len(targets))
 			for _, p := range targets {
-				if err := tmux.PasteKeys(p.ID, opts.watchCommand, true); err != nil {
+				if err := sendPromptToPane(p, opts.watchCommand); err != nil {
 					fmt.Printf("Failed to send to pane %s: %v\n", p.ID, err)
 				}
 			}
