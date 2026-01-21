@@ -18,20 +18,16 @@ const (
 )
 
 // StorageDir returns the path to the session storage directory.
-// Uses XDG_DATA_HOME if set, otherwise ~/.local/share/ntm/sessions/
+// Uses ~/.ntm/sessions by default.
 // Falls back to temp directory if home directory is unavailable.
 func StorageDir() string {
-	dataDir := os.Getenv("XDG_DATA_HOME")
-	if dataDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			// Fallback to temp directory to ensure an absolute path
-			// (relative paths would fragment sessions across working directories)
-			return filepath.Join(os.TempDir(), "ntm", sessionDirName)
-		}
-		dataDir = filepath.Join(home, ".local", "share")
+	ntmDir, err := NTMDir()
+	if err != nil || ntmDir == "" {
+		// Fallback to temp directory to ensure an absolute path
+		// (relative paths would fragment sessions across working directories)
+		return filepath.Join(os.TempDir(), "ntm", sessionDirName)
 	}
-	return filepath.Join(dataDir, "ntm", sessionDirName)
+	return filepath.Join(ntmDir, sessionDirName)
 }
 
 // Save writes a session state to disk.

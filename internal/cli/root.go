@@ -493,6 +493,26 @@ Shell Integration:
 			}
 			return
 		}
+		if robotAgentHealth != "" {
+			// Parse pane filter
+			panes, err := robot.ParsePanesArg(robotPanes)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid --panes: %v\n", err)
+				os.Exit(3)
+			}
+			opts := robot.AgentHealthOptions{
+				Session:       robotAgentHealth,
+				Panes:         panes,
+				LinesCaptured: robotLines,
+				IncludeCaut:   !robotAgentHealthNoCaut,
+				Verbose:       robotAgentHealthVerbose,
+			}
+			if err := robot.PrintAgentHealth(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotSend != "" {
 			// Validate message is provided
 			if robotSendMsg == "" {
@@ -1253,6 +1273,11 @@ var (
 	robotIsWorking        string // session name to check
 	robotIsWorkingVerbose bool   // include raw sample output
 
+	// Robot-agent-health flags for comprehensive health check (bd-2pwzf)
+	robotAgentHealth        string // session name to check
+	robotAgentHealthNoCaut  bool   // skip caut provider query
+	robotAgentHealthVerbose bool   // include raw sample output
+
 	// Help verbosity flags
 	helpMinimal bool // show minimal help with essential commands only
 	helpFull    bool // show full help (default behavior)
@@ -1281,6 +1306,9 @@ func init() {
 	rootCmd.Flags().StringVar(&robotPanes, "panes", "", "Filter to specific pane indices. Optional with --robot-tail, --robot-send, --robot-ack, --robot-interrupt, --robot-is-working. Example: --panes=1,2")
 	rootCmd.Flags().StringVar(&robotIsWorking, "robot-is-working", "", "Check if agents are working. Returns work state with recommendations. Required: SESSION. Example: ntm --robot-is-working=myproject --panes=2,3")
 	rootCmd.Flags().BoolVar(&robotIsWorkingVerbose, "is-working-verbose", false, "Include raw sample output in --robot-is-working response. Example: --is-working-verbose")
+	rootCmd.Flags().StringVar(&robotAgentHealth, "robot-agent-health", "", "Comprehensive agent health check combining local state and provider usage. Required: SESSION. Example: ntm --robot-agent-health=myproject --panes=2,3")
+	rootCmd.Flags().BoolVar(&robotAgentHealthNoCaut, "no-caut", false, "Skip caut provider query for faster local-only health check. Optional with --robot-agent-health")
+	rootCmd.Flags().BoolVar(&robotAgentHealthVerbose, "agent-health-verbose", false, "Include raw sample output in --robot-agent-health response. Example: --agent-health-verbose")
 	rootCmd.Flags().BoolVar(&robotGraph, "robot-graph", false, "Get bv dependency graph insights: PageRank, critical path, cycles (JSON)")
 	rootCmd.Flags().BoolVar(&robotTriage, "robot-triage", false, "Get bv triage analysis with recommendations, quick wins, blockers (JSON). Example: ntm --robot-triage --triage-limit=20")
 	rootCmd.Flags().IntVar(&robotTriageLimit, "triage-limit", 10, "Max recommendations per category. Optional with --robot-triage. Example: --triage-limit=20")
@@ -2142,7 +2170,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
 			robotInterrupt != "" || robotRestartPane != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
-			robotContext != "" || robotAlerts || robotIsWorking != "" {
+			robotContext != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" {
 			return true
 		}
 	}

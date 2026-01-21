@@ -96,12 +96,16 @@ func TestStorageDir_XDGDataHome(t *testing.T) {
 	original := os.Getenv("XDG_DATA_HOME")
 	defer os.Setenv("XDG_DATA_HOME", original)
 
-	// Set XDG_DATA_HOME
+	// Set XDG_DATA_HOME and HOME (StorageDir should ignore XDG_DATA_HOME now)
 	tmpDir := t.TempDir()
+	homeDir := t.TempDir()
 	os.Setenv("XDG_DATA_HOME", tmpDir)
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	os.Setenv("HOME", homeDir)
 
 	got := StorageDir()
-	want := filepath.Join(tmpDir, "ntm", "sessions")
+	want := filepath.Join(homeDir, ".ntm", "sessions")
 
 	if got != want {
 		t.Errorf("StorageDir() = %q, want %q", got, want)
@@ -118,15 +122,15 @@ func TestStorageDir_Default(t *testing.T) {
 	// Clear XDG_DATA_HOME
 	os.Setenv("XDG_DATA_HOME", "")
 
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	homeDir := t.TempDir()
+	os.Setenv("HOME", homeDir)
+
 	got := StorageDir()
 
 	// Should be under home directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot get home directory")
-	}
-
-	expected := filepath.Join(home, ".local", "share", "ntm", "sessions")
+	expected := filepath.Join(homeDir, ".ntm", "sessions")
 	if got != expected {
 		t.Errorf("StorageDir() = %q, want %q", got, expected)
 	}
@@ -138,16 +142,19 @@ func TestStorageDir_Default(t *testing.T) {
 func setupTestStorage(t *testing.T) (string, func()) {
 	t.Helper()
 
-	// Save original XDG_DATA_HOME
-	original := os.Getenv("XDG_DATA_HOME")
+	// Save original env vars
+	originalXDG := os.Getenv("XDG_DATA_HOME")
+	originalHome := os.Getenv("HOME")
 
-	// Create temp directory and set it as XDG_DATA_HOME
+	// Create temp directory and set it as HOME (StorageDir now uses ~/.ntm)
 	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
 	os.Setenv("XDG_DATA_HOME", tmpDir)
 
 	// Return cleanup function
 	cleanup := func() {
-		os.Setenv("XDG_DATA_HOME", original)
+		os.Setenv("XDG_DATA_HOME", originalXDG)
+		os.Setenv("HOME", originalHome)
 	}
 
 	return tmpDir, cleanup
