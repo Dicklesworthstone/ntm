@@ -58,14 +58,16 @@ type SendRoutingResult struct {
 
 // SendOptions configures the send operation
 type SendOptions struct {
-	Session      string
-	Prompt       string
-	Targets      SendTargets
-	TargetAll    bool
-	SkipFirst    bool
-	PaneIndex    int
-	TemplateName string
-	Tags         []string
+	Session        string
+	Prompt         string
+	Targets        SendTargets
+	TargetAll      bool
+	SkipFirst      bool
+	PaneIndex      int
+	Panes          []int // Specific pane indices to target
+	PanesSpecified bool  // True if --panes was explicitly set
+	TemplateName   string
+	Tags           []string
 
 	// Smart routing options
 	SmartRoute    bool   // Use smart routing to select best agent
