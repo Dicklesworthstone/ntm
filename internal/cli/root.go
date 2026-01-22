@@ -329,6 +329,70 @@ Shell Integration:
 			}
 			return
 		}
+		// JFP (JeffreysPrompts) robot handlers
+		if robotJFPStatus {
+			if err := robot.PrintJFPStatus(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPList {
+			if err := robot.PrintJFPList(jfpCategory, jfpTag); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPSearch != "" {
+			if err := robot.PrintJFPSearch(robotJFPSearch); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPShow != "" {
+			if err := robot.PrintJFPShow(robotJFPShow); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPSuggest != "" {
+			if err := robot.PrintJFPSuggest(robotJFPSuggest); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPInstalled {
+			if err := robot.PrintJFPInstalled(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPCategories {
+			if err := robot.PrintJFPCategories(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPTags {
+			if err := robot.PrintJFPTags(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotJFPBundles {
+			if err := robot.PrintJFPBundles(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotTokens {
 			opts := robot.TokensOptions{
 				Days:      robotTokensDays,
@@ -1275,6 +1339,19 @@ var (
 	cassSince         string // filter by time
 	cassLimit         int    // max results
 
+	// Robot-jfp flags for JeffreysPrompts integration
+	robotJFPStatus     bool   // JFP health check
+	robotJFPList       bool   // list all prompts
+	robotJFPSearch     string // search query
+	robotJFPShow       string // prompt ID to show
+	robotJFPSuggest    string // task for suggestions
+	robotJFPInstalled  bool   // list installed skills
+	robotJFPCategories bool   // list categories
+	robotJFPTags       bool   // list tags
+	robotJFPBundles    bool   // list bundles
+	jfpCategory        string // filter by category
+	jfpTag             string // filter by tag
+
 	// Robot-tokens flags for token usage analysis
 	robotTokens        bool   // token usage output
 	robotTokensDays    int    // number of days to analyze
@@ -1625,6 +1702,21 @@ func init() {
 	rootCmd.Flags().StringVar(&cassSince, "cass-since", "", "Filter CASS by recency: 1d, 7d, 30d, etc. Example: --cass-since=7d")
 	rootCmd.Flags().IntVar(&cassLimit, "cass-limit", 10, "Max CASS results to return. Example: --cass-limit=20")
 
+	// Robot-jfp flags for JeffreysPrompts (jfp) integration
+	rootCmd.Flags().BoolVar(&robotJFPStatus, "robot-jfp-status", false, "Get JFP health: installation status, registry connectivity (JSON)")
+	rootCmd.Flags().BoolVar(&robotJFPList, "robot-jfp-list", false, "List all prompts from JeffreysPrompts registry (JSON)")
+	rootCmd.Flags().StringVar(&robotJFPSearch, "robot-jfp-search", "", "Search prompts. Required: QUERY. Example: ntm --robot-jfp-search='debugging'")
+	rootCmd.Flags().StringVar(&robotJFPShow, "robot-jfp-show", "", "Show prompt details. Required: ID. Example: ntm --robot-jfp-show='prompt-123'")
+	rootCmd.Flags().StringVar(&robotJFPSuggest, "robot-jfp-suggest", "", "Get prompt suggestions for a task. Required: TASK. Example: ntm --robot-jfp-suggest='build a REST API'")
+	rootCmd.Flags().BoolVar(&robotJFPInstalled, "robot-jfp-installed", false, "List installed Claude Code skills (JSON)")
+	rootCmd.Flags().BoolVar(&robotJFPCategories, "robot-jfp-categories", false, "List all prompt categories with counts (JSON)")
+	rootCmd.Flags().BoolVar(&robotJFPTags, "robot-jfp-tags", false, "List all prompt tags with counts (JSON)")
+	rootCmd.Flags().BoolVar(&robotJFPBundles, "robot-jfp-bundles", false, "List all prompt bundles (JSON)")
+
+	// JFP filters - work with --robot-jfp-list
+	rootCmd.Flags().StringVar(&jfpCategory, "jfp-category", "", "Filter JFP list by category. Example: --jfp-category=coding")
+	rootCmd.Flags().StringVar(&jfpTag, "jfp-tag", "", "Filter JFP list by tag. Example: --jfp-tag=debugging")
+
 	// Robot-tokens flags for token usage analysis
 	rootCmd.Flags().BoolVar(&robotTokens, "robot-tokens", false, "Get token usage statistics (JSON). Group by agent, model, or time period")
 	rootCmd.Flags().IntVar(&robotTokensDays, "tokens-days", 30, "Days to analyze. Optional with --robot-tokens. Example: --tokens-days=7")
@@ -1771,6 +1863,7 @@ func init() {
 		newCreateCmd(),
 		newSpawnCmd(),
 		newQuickCmd(),
+		newAdoptCmd(),
 
 		// Agent management
 		newAddCmd(),

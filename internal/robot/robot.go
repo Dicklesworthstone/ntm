@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/git"
@@ -235,6 +236,523 @@ func PrintCASSContext(query string) error {
 
 	if len(suggestions) > 0 {
 		output.SuggestedContext = fmt.Sprintf("Consider reviewing: %s", strings.Join(suggestions, ", "))
+	}
+
+	return encodeJSON(output)
+}
+
+// ===========================================================================
+// JFP (JeffreysPrompts) Robot Wrappers
+// ===========================================================================
+
+// JFPStatusOutput represents the output for --robot-jfp-status
+type JFPStatusOutput struct {
+	Success      bool        `json:"success"`
+	Timestamp    string      `json:"timestamp"`
+	JFPAvailable bool        `json:"jfp_available"`
+	Healthy      bool        `json:"healthy"`
+	Version      string      `json:"version,omitempty"`
+	Error        string      `json:"error,omitempty"`
+	ErrorCode    string      `json:"error_code,omitempty"`
+	Hint         string      `json:"hint,omitempty"`
+	Data         interface{} `json:"data,omitempty"`
+}
+
+// JFPListOutput represents the output for --robot-jfp-list
+type JFPListOutput struct {
+	Success   bool            `json:"success"`
+	Timestamp string          `json:"timestamp"`
+	Count     int             `json:"count"`
+	Prompts   json.RawMessage `json:"prompts"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	Hint      string          `json:"hint,omitempty"`
+}
+
+// JFPSearchOutput represents the output for --robot-jfp-search
+type JFPSearchOutput struct {
+	Success   bool            `json:"success"`
+	Timestamp string          `json:"timestamp"`
+	Query     string          `json:"query"`
+	Count     int             `json:"count"`
+	Results   json.RawMessage `json:"results"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	Hint      string          `json:"hint,omitempty"`
+}
+
+// JFPShowOutput represents the output for --robot-jfp-show
+type JFPShowOutput struct {
+	Success   bool            `json:"success"`
+	Timestamp string          `json:"timestamp"`
+	ID        string          `json:"id"`
+	Prompt    json.RawMessage `json:"prompt,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	Hint      string          `json:"hint,omitempty"`
+}
+
+// JFPSuggestOutput represents the output for --robot-jfp-suggest
+type JFPSuggestOutput struct {
+	Success     bool            `json:"success"`
+	Timestamp   string          `json:"timestamp"`
+	Task        string          `json:"task"`
+	Suggestions json.RawMessage `json:"suggestions"`
+	Error       string          `json:"error,omitempty"`
+	ErrorCode   string          `json:"error_code,omitempty"`
+	Hint        string          `json:"hint,omitempty"`
+}
+
+// JFPInstalledOutput represents the output for --robot-jfp-installed
+type JFPInstalledOutput struct {
+	Success   bool            `json:"success"`
+	Timestamp string          `json:"timestamp"`
+	Count     int             `json:"count"`
+	Skills    json.RawMessage `json:"skills"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	Hint      string          `json:"hint,omitempty"`
+}
+
+// JFPCategoriesOutput represents the output for --robot-jfp-categories
+type JFPCategoriesOutput struct {
+	Success    bool            `json:"success"`
+	Timestamp  string          `json:"timestamp"`
+	Count      int             `json:"count"`
+	Categories json.RawMessage `json:"categories"`
+	Error      string          `json:"error,omitempty"`
+	ErrorCode  string          `json:"error_code,omitempty"`
+	Hint       string          `json:"hint,omitempty"`
+}
+
+// JFPTagsOutput represents the output for --robot-jfp-tags
+type JFPTagsOutput struct {
+	Success   bool            `json:"success"`
+	Timestamp string          `json:"timestamp"`
+	Count     int             `json:"count"`
+	Tags      json.RawMessage `json:"tags"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	Hint      string          `json:"hint,omitempty"`
+}
+
+// JFPBundlesOutput represents the output for --robot-jfp-bundles
+type JFPBundlesOutput struct {
+	Success   bool            `json:"success"`
+	Timestamp string          `json:"timestamp"`
+	Count     int             `json:"count"`
+	Bundles   json.RawMessage `json:"bundles"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	Hint      string          `json:"hint,omitempty"`
+}
+
+// PrintJFPStatus outputs JFP health and status as JSON
+func PrintJFPStatus() error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPStatusOutput{
+		Success:      true,
+		Timestamp:    now,
+		JFPAvailable: false,
+		Healthy:      false,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	output.JFPAvailable = installed
+
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	// Check health
+	ctx := context.Background()
+	health, err := adapter.Health(ctx)
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "HEALTH_CHECK_FAILED"
+		output.Error = err.Error()
+		output.Hint = "Run 'jfp doctor' to diagnose issues"
+		return encodeJSON(output)
+	}
+
+	output.Healthy = health.Healthy
+
+	// Get version
+	version, err := adapter.Version(ctx)
+	if err == nil {
+		output.Version = version.Raw
+	}
+
+	// Get registry status
+	statusData, err := adapter.Status(ctx)
+	if err == nil && len(statusData) > 0 {
+		output.Data = json.RawMessage(statusData)
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintJFPList outputs all prompts as JSON
+func PrintJFPList(category, tag string) error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPListOutput{
+		Success:   true,
+		Timestamp: now,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	var data json.RawMessage
+	var err error
+
+	if category != "" {
+		data, err = adapter.ListByCategory(ctx, category)
+	} else if tag != "" {
+		data, err = adapter.ListByTag(ctx, tag)
+	} else {
+		data, err = adapter.List(ctx)
+	}
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "LIST_FAILED"
+		output.Error = err.Error()
+		output.Hint = "Check 'jfp status' for registry connectivity"
+		return encodeJSON(output)
+	}
+
+	output.Prompts = data
+
+	// Try to count items
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintJFPSearch outputs search results as JSON
+func PrintJFPSearch(query string) error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPSearchOutput{
+		Success:   true,
+		Timestamp: now,
+		Query:     query,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	if query == "" {
+		output.Success = false
+		output.ErrorCode = "INVALID_FLAG"
+		output.Error = "query is required"
+		output.Hint = "Provide a search query, e.g., --robot-jfp-search='debugging'"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Search(ctx, query)
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "SEARCH_FAILED"
+		output.Error = err.Error()
+		output.Hint = "Try a different search query"
+		return encodeJSON(output)
+	}
+
+	output.Results = data
+
+	// Try to count results
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintJFPShow outputs a specific prompt by ID as JSON
+func PrintJFPShow(id string) error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPShowOutput{
+		Success:   true,
+		Timestamp: now,
+		ID:        id,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	if id == "" {
+		output.Success = false
+		output.ErrorCode = "INVALID_FLAG"
+		output.Error = "prompt ID is required"
+		output.Hint = "Provide a prompt ID, e.g., --robot-jfp-show=my-prompt-id"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Show(ctx, id)
+
+	if err != nil {
+		output.Success = false
+		if strings.Contains(err.Error(), "not found") {
+			output.ErrorCode = "NOT_FOUND"
+		} else {
+			output.ErrorCode = "SHOW_FAILED"
+		}
+		output.Error = err.Error()
+		output.Hint = "Use --robot-jfp-search to find available prompts"
+		return encodeJSON(output)
+	}
+
+	output.Prompt = data
+	return encodeJSON(output)
+}
+
+// PrintJFPSuggest outputs prompt suggestions for a task as JSON
+func PrintJFPSuggest(task string) error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPSuggestOutput{
+		Success:   true,
+		Timestamp: now,
+		Task:      task,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	if task == "" {
+		output.Success = false
+		output.ErrorCode = "INVALID_FLAG"
+		output.Error = "task description is required"
+		output.Hint = "Provide a task description, e.g., --robot-jfp-suggest='build a REST API'"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Suggest(ctx, task)
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "SUGGEST_FAILED"
+		output.Error = err.Error()
+		output.Hint = "Try a different task description"
+		return encodeJSON(output)
+	}
+
+	output.Suggestions = data
+	return encodeJSON(output)
+}
+
+// PrintJFPInstalled outputs installed Claude Code skills as JSON
+func PrintJFPInstalled() error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPInstalledOutput{
+		Success:   true,
+		Timestamp: now,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Installed(ctx)
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "INSTALLED_FAILED"
+		output.Error = err.Error()
+		output.Hint = "Check if Claude Code skills directory exists"
+		return encodeJSON(output)
+	}
+
+	output.Skills = data
+
+	// Try to count items
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintJFPCategories outputs all categories with counts as JSON
+func PrintJFPCategories() error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPCategoriesOutput{
+		Success:   true,
+		Timestamp: now,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Categories(ctx)
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "CATEGORIES_FAILED"
+		output.Error = err.Error()
+		return encodeJSON(output)
+	}
+
+	output.Categories = data
+
+	// Try to count items
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintJFPTags outputs all tags with counts as JSON
+func PrintJFPTags() error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPTagsOutput{
+		Success:   true,
+		Timestamp: now,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Tags(ctx)
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "TAGS_FAILED"
+		output.Error = err.Error()
+		return encodeJSON(output)
+	}
+
+	output.Tags = data
+
+	// Try to count items
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
+	}
+
+	return encodeJSON(output)
+}
+
+// PrintJFPBundles outputs all bundles as JSON
+func PrintJFPBundles() error {
+	adapter := tools.NewJFPAdapter()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	output := JFPBundlesOutput{
+		Success:   true,
+		Timestamp: now,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.Success = false
+		output.ErrorCode = "DEPENDENCY_MISSING"
+		output.Error = "jfp not installed"
+		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
+		return encodeJSON(output)
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Bundles(ctx)
+
+	if err != nil {
+		output.Success = false
+		output.ErrorCode = "BUNDLES_FAILED"
+		output.Error = err.Error()
+		return encodeJSON(output)
+	}
+
+	output.Bundles = data
+
+	// Try to count items
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
 	}
 
 	return encodeJSON(output)
