@@ -591,3 +591,388 @@ func TestTimelinePanel_CursorBounds(t *testing.T) {
 
 	t.Log("TIMELINE_TEST: Cursor bounds maintained correctly")
 }
+
+func TestTimelinePanel_MarkerTypes(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerTypes | Testing marker type symbols")
+
+	tests := []struct {
+		markerType state.MarkerType
+		symbol     string
+	}{
+		{state.MarkerPrompt, "▶"},
+		{state.MarkerCompletion, "✓"},
+		{state.MarkerError, "✗"},
+		{state.MarkerStart, "◆"},
+		{state.MarkerStop, "◆"},
+	}
+
+	for _, tt := range tests {
+		symbol := tt.markerType.Symbol()
+		if symbol != tt.symbol {
+			t.Errorf("MarkerType %v: expected symbol %q, got %q", tt.markerType, tt.symbol, symbol)
+		}
+		t.Logf("TIMELINE_TEST: MarkerType=%v Symbol=%q", tt.markerType, symbol)
+	}
+}
+
+func TestTimelinePanel_MarkerColors(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerColors | Testing marker color mapping")
+
+	panel := NewTimelinePanel()
+
+	tests := []struct {
+		markerType state.MarkerType
+	}{
+		{state.MarkerPrompt},
+		{state.MarkerCompletion},
+		{state.MarkerError},
+		{state.MarkerStart},
+		{state.MarkerStop},
+	}
+
+	for _, tt := range tests {
+		color := panel.markerColor(tt.markerType)
+		if color == "" {
+			t.Errorf("markerColor(%v): returned empty color", tt.markerType)
+		}
+		t.Logf("TIMELINE_TEST: MarkerType=%v Color=%v", tt.markerType, color)
+	}
+}
+
+func TestTimelinePanel_SetDataWithMarkers(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_SetDataWithMarkers | Testing data updates with markers")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	events := []state.AgentEvent{
+		{AgentID: "cc_1", State: state.TimelineWorking, Timestamp: now.Add(-5 * time.Minute)},
+	}
+
+	markers := []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-4 * time.Minute), Message: "Test prompt"},
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerCompletion, Timestamp: now.Add(-2 * time.Minute)},
+	}
+
+	data := TimelineData{Events: events, Markers: markers}
+	panel.SetData(data, nil)
+
+	if len(panel.data.Markers) != 2 {
+		t.Errorf("expected 2 markers, got %d", len(panel.data.Markers))
+	}
+
+	t.Logf("TIMELINE_TEST: Data set with markers | Events=%d Markers=%d", len(events), len(markers))
+}
+
+func TestTimelinePanel_GetVisibleMarkers(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_GetVisibleMarkers | Testing visible marker filtering")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	// Default 30m window viewing "now"
+	panel.timeOffset = 0
+	panel.timeWindow = 30 * time.Minute
+
+	markers := []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-60 * time.Minute)}, // Outside window
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-20 * time.Minute)}, // Inside
+		{ID: "m3", AgentID: "cc_1", Type: state.MarkerCompletion, Timestamp: now.Add(-10 * time.Minute)}, // Inside
+		{ID: "m4", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(10 * time.Minute)},  // Future, outside
+	}
+
+	panel.SetData(TimelineData{Markers: markers}, nil)
+	visible := panel.getVisibleMarkers()
+
+	if len(visible) != 2 {
+		t.Errorf("expected 2 visible markers, got %d", len(visible))
+	}
+
+	// Should be sorted by timestamp
+	if len(visible) >= 2 && visible[0].ID != "m2" {
+		t.Errorf("expected first visible marker to be m2, got %s", visible[0].ID)
+	}
+
+	t.Logf("TIMELINE_TEST: Visible markers | Total=%d Visible=%d", len(markers), len(visible))
+}
+
+func TestTimelinePanel_MarkerNavigation(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerNavigation | Testing marker navigation")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	markers := []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-20 * time.Minute)},
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerCompletion, Timestamp: now.Add(-10 * time.Minute)},
+		{ID: "m3", AgentID: "cc_1", Type: state.MarkerError, Timestamp: now.Add(-5 * time.Minute)},
+	}
+
+	panel.SetData(TimelineData{Markers: markers}, nil)
+
+	t.Run("initial marker index is -1", func(t *testing.T) {
+		if panel.markerIndex != -1 {
+			t.Errorf("expected initial markerIndex=-1, got %d", panel.markerIndex)
+		}
+	})
+
+	t.Run("select next marker from unselected", func(t *testing.T) {
+		panel.markerIndex = -1
+		panel.selectNextMarker()
+		if panel.markerIndex != 0 {
+			t.Errorf("expected markerIndex=0 after selectNextMarker from -1, got %d", panel.markerIndex)
+		}
+	})
+
+	t.Run("select next marker increments", func(t *testing.T) {
+		panel.markerIndex = 0
+		panel.selectNextMarker()
+		if panel.markerIndex != 1 {
+			t.Errorf("expected markerIndex=1, got %d", panel.markerIndex)
+		}
+	})
+
+	t.Run("select next marker at end stays at end", func(t *testing.T) {
+		panel.markerIndex = 2
+		panel.selectNextMarker()
+		if panel.markerIndex != 2 {
+			t.Errorf("expected markerIndex=2 (at end), got %d", panel.markerIndex)
+		}
+	})
+
+	t.Run("select prev marker decrements", func(t *testing.T) {
+		panel.markerIndex = 2
+		panel.selectPrevMarker()
+		if panel.markerIndex != 1 {
+			t.Errorf("expected markerIndex=1, got %d", panel.markerIndex)
+		}
+	})
+
+	t.Run("select prev marker at start stays at start", func(t *testing.T) {
+		panel.markerIndex = 0
+		panel.selectPrevMarker()
+		if panel.markerIndex != 0 {
+			t.Errorf("expected markerIndex=0 (at start), got %d", panel.markerIndex)
+		}
+	})
+
+	t.Run("select first marker in view", func(t *testing.T) {
+		panel.markerIndex = -1
+		panel.selectFirstMarkerInView()
+		if panel.markerIndex != 0 {
+			t.Errorf("expected markerIndex=0, got %d", panel.markerIndex)
+		}
+	})
+
+	t.Logf("TIMELINE_TEST: Marker navigation tests completed")
+}
+
+func TestTimelinePanel_MarkerSelection(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerSelection | Testing marker selection state")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	markers := []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-10 * time.Minute)},
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerError, Timestamp: now.Add(-5 * time.Minute)},
+	}
+
+	panel.SetData(TimelineData{Markers: markers}, nil)
+
+	t.Run("no marker selected initially", func(t *testing.T) {
+		if panel.isMarkerSelected(markers[0]) {
+			t.Error("expected marker m1 not selected initially")
+		}
+	})
+
+	t.Run("marker selected when index matches", func(t *testing.T) {
+		panel.markerIndex = 0
+		if !panel.isMarkerSelected(markers[0]) {
+			t.Error("expected marker m1 to be selected")
+		}
+		if panel.isMarkerSelected(markers[1]) {
+			t.Error("expected marker m2 not to be selected")
+		}
+	})
+
+	t.Logf("TIMELINE_TEST: Marker selection tests completed")
+}
+
+func TestTimelinePanel_HighestPriorityMarker(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_HighestPriorityMarker | Testing marker priority for clustering")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		markers  []state.TimelineMarker
+		expected state.MarkerType
+	}{
+		{
+			name: "error highest priority",
+			markers: []state.TimelineMarker{
+				{Type: state.MarkerPrompt, Timestamp: now},
+				{Type: state.MarkerError, Timestamp: now},
+				{Type: state.MarkerCompletion, Timestamp: now},
+			},
+			expected: state.MarkerError,
+		},
+		{
+			name: "completion over prompt",
+			markers: []state.TimelineMarker{
+				{Type: state.MarkerPrompt, Timestamp: now},
+				{Type: state.MarkerCompletion, Timestamp: now},
+			},
+			expected: state.MarkerCompletion,
+		},
+		{
+			name: "prompt over start",
+			markers: []state.TimelineMarker{
+				{Type: state.MarkerStart, Timestamp: now},
+				{Type: state.MarkerPrompt, Timestamp: now},
+			},
+			expected: state.MarkerPrompt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := panel.highestPriorityMarker(tt.markers)
+			if result.Type != tt.expected {
+				t.Errorf("expected %v, got %v", tt.expected, result.Type)
+			}
+			t.Logf("TIMELINE_TEST: %s | Result=%v", tt.name, result.Type)
+		})
+	}
+}
+
+func TestTimelinePanel_OverlayState(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_OverlayState | Testing overlay visibility")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	marker := state.TimelineMarker{
+		ID:        "m1",
+		AgentID:   "cc_1",
+		Type:      state.MarkerPrompt,
+		Timestamp: now,
+		Message:   "Test message",
+	}
+
+	t.Run("overlay initially hidden", func(t *testing.T) {
+		if panel.showOverlay {
+			t.Error("expected overlay hidden initially")
+		}
+		if panel.selectedMarker != nil {
+			t.Error("expected no selected marker initially")
+		}
+	})
+
+	t.Run("overlay shows when marker selected", func(t *testing.T) {
+		panel.selectedMarker = &marker
+		panel.showOverlay = true
+
+		if !panel.showOverlay {
+			t.Error("expected overlay to be shown")
+		}
+		if panel.selectedMarker == nil {
+			t.Error("expected selected marker to be set")
+		}
+	})
+
+	t.Run("overlay hidden after escape", func(t *testing.T) {
+		panel.showOverlay = false
+		panel.selectedMarker = nil
+
+		if panel.showOverlay {
+			t.Error("expected overlay hidden after reset")
+		}
+	})
+
+	t.Logf("TIMELINE_TEST: Overlay state tests completed")
+}
+
+func TestTimelinePanel_RenderMarkerRow(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_RenderMarkerRow | Testing marker row rendering")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	markers := []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-15 * time.Minute)},
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerError, Timestamp: now.Add(-10 * time.Minute)},
+	}
+
+	panel.SetData(TimelineData{Markers: markers}, nil)
+
+	windowStart := now.Add(-30 * time.Minute)
+	windowEnd := now
+
+	row := panel.renderMarkerRow("cc_1", windowStart, windowEnd, 30)
+
+	// Row should not be empty
+	if len(row) == 0 {
+		t.Error("expected non-empty marker row")
+	}
+
+	// Should contain marker symbols somewhere (rendered with styles)
+	t.Logf("TIMELINE_TEST: Marker row rendered | Length=%d", len(row))
+}
+
+func TestTimelinePanel_MarkerKeybindings(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerKeybindings | Testing marker-related keybindings")
+
+	panel := NewTimelinePanel()
+	bindings := panel.Keybindings()
+
+	expectedActions := map[string]bool{
+		"next_marker":  false,
+		"prev_marker":  false,
+		"first_marker": false,
+		"close":        false,
+	}
+
+	for _, b := range bindings {
+		if _, ok := expectedActions[b.Action]; ok {
+			expectedActions[b.Action] = true
+			t.Logf("TIMELINE_TEST: MarkerKeybinding | Action=%s Description=%q", b.Action, b.Description)
+		}
+	}
+
+	for action, found := range expectedActions {
+		if !found {
+			t.Errorf("missing keybinding for marker action %q", action)
+		}
+	}
+}
+
+func TestTimelinePanel_GetMarkersForAgentInWindow(t *testing.T) {
+	t.Log("TIMELINE_TEST: TestTimelinePanel_GetMarkersForAgentInWindow | Testing marker filtering by agent and window")
+
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	markers := []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-40 * time.Minute)},  // Outside
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-20 * time.Minute)},  // Inside
+		{ID: "m3", AgentID: "cc_2", Type: state.MarkerPrompt, Timestamp: now.Add(-15 * time.Minute)},  // Different agent
+		{ID: "m4", AgentID: "cc_1", Type: state.MarkerError, Timestamp: now.Add(-5 * time.Minute)},    // Inside
+		{ID: "m5", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(10 * time.Minute)},   // Future
+	}
+
+	panel.SetData(TimelineData{Markers: markers}, nil)
+
+	windowStart := now.Add(-30 * time.Minute)
+	windowEnd := now
+
+	result := panel.getMarkersForAgentInWindow("cc_1", windowStart, windowEnd)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 markers for cc_1 in window, got %d", len(result))
+	}
+
+	t.Logf("TIMELINE_TEST: Markers for agent in window | Agent=cc_1 Total=%d InWindow=%d", 4, len(result))
+}

@@ -737,3 +737,358 @@ func BenchmarkGetEvents(b *testing.B) {
 		_ = tracker.GetEvents(time.Time{})
 	}
 }
+
+// ============================================================================
+// Marker Tests - Event markers for discrete timeline events
+// ============================================================================
+
+func TestMarkerTypeSymbol(t *testing.T) {
+	tests := []struct {
+		markerType MarkerType
+		expected   string
+	}{
+		{MarkerPrompt, "▶"},
+		{MarkerCompletion, "✓"},
+		{MarkerError, "✗"},
+		{MarkerStart, "◆"},
+		{MarkerStop, "◆"},
+		{MarkerType("unknown"), "•"},
+	}
+
+	for _, tc := range tests {
+		result := tc.markerType.Symbol()
+		if result != tc.expected {
+			t.Errorf("MarkerType(%s).Symbol() = %s, expected %s", tc.markerType, result, tc.expected)
+		}
+	}
+}
+
+func TestMarkerTypeString(t *testing.T) {
+	tests := []struct {
+		markerType MarkerType
+		expected   string
+	}{
+		{MarkerPrompt, "prompt"},
+		{MarkerCompletion, "completion"},
+		{MarkerError, "error"},
+		{MarkerStart, "start"},
+		{MarkerStop, "stop"},
+	}
+
+	for _, tc := range tests {
+		result := tc.markerType.String()
+		if result != tc.expected {
+			t.Errorf("MarkerType(%s).String() = %s, expected %s", tc.markerType, result, tc.expected)
+		}
+	}
+}
+
+func TestAddMarker(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	t.Run("basic marker", func(t *testing.T) {
+		marker := tracker.AddMarker(TimelineMarker{
+			AgentID:   "cc_1",
+			SessionID: "test-session",
+			Type:      MarkerPrompt,
+			Message:   "Test prompt message",
+		})
+
+		if marker.ID == "" {
+			t.Error("expected marker to have an ID assigned")
+		}
+		if marker.Timestamp.IsZero() {
+			t.Error("expected marker to have timestamp set")
+		}
+		if marker.AgentID != "cc_1" {
+			t.Errorf("expected AgentID=cc_1, got %s", marker.AgentID)
+		}
+		if marker.Type != MarkerPrompt {
+			t.Errorf("expected Type=prompt, got %s", marker.Type)
+		}
+	})
+
+	t.Run("preserves custom ID", func(t *testing.T) {
+		marker := tracker.AddMarker(TimelineMarker{
+			ID:        "custom-id",
+			AgentID:   "cc_1",
+			Type:      MarkerCompletion,
+		})
+
+		if marker.ID != "custom-id" {
+			t.Errorf("expected ID=custom-id, got %s", marker.ID)
+		}
+	})
+
+	t.Run("with details", func(t *testing.T) {
+		marker := tracker.AddMarker(TimelineMarker{
+			AgentID: "cc_1",
+			Type:    MarkerError,
+			Message: "Error occurred",
+			Details: map[string]string{"code": "500", "reason": "timeout"},
+		})
+
+		if marker.Details["code"] != "500" {
+			t.Errorf("expected details[code]=500, got %s", marker.Details["code"])
+		}
+		if marker.Details["reason"] != "timeout" {
+			t.Errorf("expected details[reason]=timeout, got %s", marker.Details["reason"])
+		}
+	})
+}
+
+func TestGetMarkers(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	now := time.Now()
+
+	// Add markers at different times
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt, Timestamp: now.Add(-20 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerCompletion, Timestamp: now.Add(-10 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt, Timestamp: now.Add(-5 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_2", Type: MarkerStart, Timestamp: now.Add(-2 * time.Minute)})
+
+	t.Run("all markers", func(t *testing.T) {
+		markers := tracker.GetMarkers(time.Time{}, time.Time{})
+		if len(markers) != 4 {
+			t.Errorf("expected 4 markers, got %d", len(markers))
+		}
+	})
+
+	t.Run("markers since timestamp", func(t *testing.T) {
+		markers := tracker.GetMarkers(now.Add(-10*time.Minute), time.Time{})
+		if len(markers) != 3 {
+			t.Errorf("expected 3 markers since -10m, got %d", len(markers))
+		}
+	})
+
+	t.Run("markers in time range", func(t *testing.T) {
+		markers := tracker.GetMarkers(now.Add(-15*time.Minute), now.Add(-5*time.Minute))
+		if len(markers) != 2 {
+			t.Errorf("expected 2 markers in range, got %d", len(markers))
+		}
+	})
+}
+
+func TestGetMarkersForAgent(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	now := time.Now()
+
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt, Timestamp: now.Add(-10 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_2", Type: MarkerPrompt, Timestamp: now.Add(-8 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerCompletion, Timestamp: now.Add(-5 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerError, Timestamp: now.Add(-2 * time.Minute)})
+
+	markers := tracker.GetMarkersForAgent("cc_1", time.Time{}, time.Time{})
+	if len(markers) != 3 {
+		t.Errorf("expected 3 markers for cc_1, got %d", len(markers))
+	}
+
+	markers = tracker.GetMarkersForAgent("cc_2", time.Time{}, time.Time{})
+	if len(markers) != 1 {
+		t.Errorf("expected 1 marker for cc_2, got %d", len(markers))
+	}
+
+	markers = tracker.GetMarkersForAgent("nonexistent", time.Time{}, time.Time{})
+	if len(markers) != 0 {
+		t.Errorf("expected 0 markers for nonexistent agent, got %d", len(markers))
+	}
+}
+
+func TestGetMarkersForSession(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	now := time.Now()
+
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", SessionID: "session-1", Type: MarkerPrompt, Timestamp: now.Add(-10 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_2", SessionID: "session-1", Type: MarkerPrompt, Timestamp: now.Add(-8 * time.Minute)})
+	tracker.AddMarker(TimelineMarker{AgentID: "cod_1", SessionID: "session-2", Type: MarkerStart, Timestamp: now.Add(-5 * time.Minute)})
+
+	markers := tracker.GetMarkersForSession("session-1", time.Time{}, time.Time{})
+	if len(markers) != 2 {
+		t.Errorf("expected 2 markers for session-1, got %d", len(markers))
+	}
+
+	markers = tracker.GetMarkersForSession("session-2", time.Time{}, time.Time{})
+	if len(markers) != 1 {
+		t.Errorf("expected 1 marker for session-2, got %d", len(markers))
+	}
+}
+
+func TestOnMarkerAdd(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	var callbackMarkers []TimelineMarker
+	var mu sync.Mutex
+
+	tracker.OnMarkerAdd(func(marker TimelineMarker) {
+		mu.Lock()
+		callbackMarkers = append(callbackMarkers, marker)
+		mu.Unlock()
+	})
+
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerCompletion})
+
+	mu.Lock()
+	count := len(callbackMarkers)
+	mu.Unlock()
+
+	if count != 2 {
+		t.Errorf("expected 2 callback invocations, got %d", count)
+	}
+}
+
+func TestPruneMarkers(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{
+		RetentionDuration: 100 * time.Millisecond,
+		PruneInterval:     0,
+	})
+	defer tracker.Stop()
+
+	// Add an old marker
+	oldTime := time.Now().Add(-200 * time.Millisecond)
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt, Timestamp: oldTime})
+
+	// Add a recent marker
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerCompletion})
+
+	pruned := tracker.PruneMarkers()
+	if pruned != 1 {
+		t.Errorf("expected 1 marker pruned, got %d", pruned)
+	}
+
+	markers := tracker.GetMarkers(time.Time{}, time.Time{})
+	if len(markers) != 1 {
+		t.Errorf("expected 1 marker remaining, got %d", len(markers))
+	}
+	if markers[0].Type != MarkerCompletion {
+		t.Errorf("expected remaining marker type=completion, got %s", markers[0].Type)
+	}
+}
+
+func TestClearMarkers(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt})
+	tracker.AddMarker(TimelineMarker{AgentID: "cc_2", Type: MarkerStart})
+
+	tracker.ClearMarkers()
+
+	markers := tracker.GetMarkers(time.Time{}, time.Time{})
+	if len(markers) != 0 {
+		t.Errorf("expected 0 markers after clear, got %d", len(markers))
+	}
+}
+
+func TestMarkerConcurrentAccess(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	var wg sync.WaitGroup
+	const goroutines = 10
+	const markersPerGoroutine = 50
+
+	// Concurrent writes
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			agentID := "cc_" + string(rune('0'+id))
+			for j := 0; j < markersPerGoroutine; j++ {
+				tracker.AddMarker(TimelineMarker{
+					AgentID:   agentID,
+					SessionID: "test",
+					Type:      MarkerType([]string{"prompt", "completion"}[j%2]),
+				})
+			}
+		}(i)
+	}
+
+	// Concurrent reads while writing
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < markersPerGoroutine; j++ {
+				_ = tracker.GetMarkers(time.Time{}, time.Time{})
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	markers := tracker.GetMarkers(time.Time{}, time.Time{})
+	expectedMarkers := goroutines * markersPerGoroutine
+	if len(markers) != expectedMarkers {
+		t.Errorf("expected %d markers, got %d", expectedMarkers, len(markers))
+	}
+}
+
+func TestMarkerIDSequence(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	m1 := tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerPrompt})
+	m2 := tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerCompletion})
+	m3 := tracker.AddMarker(TimelineMarker{AgentID: "cc_1", Type: MarkerError})
+
+	// IDs should be unique
+	ids := map[string]bool{m1.ID: true, m2.ID: true, m3.ID: true}
+	if len(ids) != 3 {
+		t.Errorf("expected 3 unique marker IDs, got %d", len(ids))
+	}
+
+	// IDs should follow sequence pattern (m1, m2, m3, ...)
+	if m1.ID != "m1" {
+		t.Errorf("expected first marker ID=m1, got %s", m1.ID)
+	}
+	if m2.ID != "m2" {
+		t.Errorf("expected second marker ID=m2, got %s", m2.ID)
+	}
+	if m3.ID != "m3" {
+		t.Errorf("expected third marker ID=m3, got %s", m3.ID)
+	}
+}
+
+func BenchmarkAddMarker(b *testing.B) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	marker := TimelineMarker{
+		AgentID:   "cc_1",
+		SessionID: "bench-session",
+		Type:      MarkerPrompt,
+		Message:   "benchmark prompt",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tracker.AddMarker(marker)
+	}
+}
+
+func BenchmarkGetMarkers(b *testing.B) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	// Pre-populate with markers
+	for i := 0; i < 1000; i++ {
+		tracker.AddMarker(TimelineMarker{
+			AgentID: "cc_1",
+			Type:    MarkerType([]string{"prompt", "completion"}[i%2]),
+		})
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tracker.GetMarkers(time.Time{}, time.Time{})
+	}
+}
