@@ -1,11 +1,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -188,79 +187,21 @@ func runSwarm(opts swarmOptions) error {
 	return nil
 }
 
-// discoverProjects finds projects with bead counts
+// discoverProjects finds projects with bead counts using BeadScanner
 func discoverProjects(scanDir string, explicitProjects []string) ([]swarm.ProjectBeadCount, error) {
-	var projects []swarm.ProjectBeadCount
+	var opts []swarm.BeadScannerOption
 
 	if len(explicitProjects) > 0 {
-		// Use explicit project list
-		for _, p := range explicitProjects {
-			path := p
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(scanDir, p)
-			}
-			beadCount := countProjectBeads(path)
-			projects = append(projects, swarm.ProjectBeadCountFromPath(path, beadCount))
-		}
-		return projects, nil
+		opts = append(opts, swarm.WithExplicitProjects(explicitProjects))
 	}
 
-	// Scan directory for projects
-	entries, err := os.ReadDir(scanDir)
+	scanner := swarm.NewBeadScanner(scanDir, opts...)
+	result, err := scanner.Scan(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("failed to read scan directory: %w", err)
+		return nil, fmt.Errorf("scan projects: %w", err)
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		// Skip hidden directories
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
-		projectPath := filepath.Join(scanDir, entry.Name())
-
-		// Check if it looks like a project (has .git or .beads)
-		if !isProject(projectPath) {
-			continue
-		}
-
-		beadCount := countProjectBeads(projectPath)
-		projects = append(projects, swarm.ProjectBeadCountFromPath(projectPath, beadCount))
-	}
-
-	return projects, nil
-}
-
-// isProject checks if a directory looks like a project
-func isProject(path string) bool {
-	// Check for .git directory
-	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
-		return true
-	}
-	// Check for .beads directory
-	if _, err := os.Stat(filepath.Join(path, ".beads")); err == nil {
-		return true
-	}
-	return false
-}
-
-// countProjectBeads counts open beads in a project
-// This is a placeholder - real implementation would use br CLI or library
-func countProjectBeads(projectPath string) int {
-	// Try to read from .beads/issues.jsonl
-	issuesPath := filepath.Join(projectPath, ".beads", "issues.jsonl")
-	if _, err := os.Stat(issuesPath); err != nil {
-		return 0 // No beads
-	}
-
-	// For now, return a placeholder
-	// Real implementation would parse JSONL and count open issues
-	// TODO: Implement actual bead counting via br library
-	return 100 // Placeholder for testing
+	return result.Projects, nil
 }
 
 func buildSwarmPlanOutput(plan *swarm.SwarmPlan, dryRun bool) SwarmPlanOutput {
