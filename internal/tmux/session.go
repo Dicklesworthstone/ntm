@@ -150,6 +150,45 @@ func FormatTags(tags []string) string {
 	return "[" + strings.Join(tags, ",") + "]"
 }
 
+// detectAgentFromCommand attempts to identify the agent type from the process command.
+// This is a fallback when the pane title doesn't match the NTM format (e.g., when
+// shell prompts or tmux hooks change the title dynamically).
+func detectAgentFromCommand(command string) AgentType {
+	cmd := strings.ToLower(command)
+
+	// Claude Code variants
+	if strings.Contains(cmd, "claude") {
+		return AgentClaude
+	}
+
+	// Codex CLI
+	if cmd == "codex" || strings.HasPrefix(cmd, "codex ") || strings.Contains(cmd, "/codex") {
+		return AgentCodex
+	}
+
+	// Gemini CLI
+	if cmd == "gemini" || strings.HasPrefix(cmd, "gemini ") || strings.Contains(cmd, "/gemini") {
+		return AgentGemini
+	}
+
+	// Cursor
+	if strings.Contains(cmd, "cursor") {
+		return AgentCursor
+	}
+
+	// Windsurf
+	if strings.Contains(cmd, "windsurf") {
+		return AgentWindsurf
+	}
+
+	// Aider
+	if cmd == "aider" || strings.HasPrefix(cmd, "aider ") || strings.Contains(cmd, "/aider") {
+		return AgentAider
+	}
+
+	return AgentUser
+}
+
 // IsInstalled checks if tmux is available
 func IsInstalled() bool {
 	return DefaultClient.IsInstalled()
@@ -324,6 +363,14 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 		// Parse pane title using regex to extract type, index, variant, and tags
 		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
 		pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
+
+		// Fallback: if title didn't match NTM format, try detecting from process command
+		// This handles cases where shell prompts or tmux hooks change the pane title
+		if pane.Type == AgentUser && pane.Command != "" {
+			if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
+				pane.Type = detected
+			}
+		}
 
 		panes = append(panes, pane)
 	}
