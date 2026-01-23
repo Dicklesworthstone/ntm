@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -170,20 +171,36 @@ func TestSynthesisStrategy_IsValid(t *testing.T) {
 }
 
 func TestEnsemblePreset_Validate(t *testing.T) {
-	catalog := []ReasoningMode{
-		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
-		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test"},
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Tier: TierCore},
+		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Tier: TierCore, Code: "C1"},
+		{ID: "game-theory", Name: "Game Theory", Category: CategoryStrategic, ShortDesc: "Test", Tier: TierAdvanced, Code: "H1"},
+	}
+	catalog, err := NewModeCatalog(modes, "1.0")
+	if err != nil {
+		t.Fatalf("failed to create catalog: %v", err)
 	}
 
 	validPreset := EnsemblePreset{
-		Name:              "test-preset",
-		Description:       "A test preset",
-		Modes:             []string{"deductive", "bayesian"},
-		SynthesisStrategy: StrategyConsensus,
+		Name:        "test-preset",
+		Description: "A test preset",
+		Modes:       []ModeRef{ModeRefFromID("deductive"), ModeRefFromID("bayesian")},
+		Synthesis:   SynthesisConfig{Strategy: StrategyConsensus},
 	}
 
 	if err := validPreset.Validate(catalog); err != nil {
 		t.Errorf("valid preset should pass validation: %v", err)
+	}
+
+	// Test preset with code reference
+	codePreset := EnsemblePreset{
+		Name:        "code-preset",
+		Description: "Uses code ref",
+		Modes:       []ModeRef{ModeRefFromID("deductive"), ModeRefFromCode("C1")},
+		Synthesis:   SynthesisConfig{Strategy: StrategyDebate},
+	}
+	if err := codePreset.Validate(catalog); err != nil {
+		t.Errorf("preset with code ref should pass validation: %v", err)
 	}
 
 	// Test missing name
@@ -202,16 +219,34 @@ func TestEnsemblePreset_Validate(t *testing.T) {
 
 	// Test invalid strategy
 	invalidStrategy := validPreset
-	invalidStrategy.SynthesisStrategy = "invalid"
+	invalidStrategy.Synthesis = SynthesisConfig{Strategy: "invalid"}
 	if err := invalidStrategy.Validate(catalog); err == nil {
 		t.Error("preset with invalid strategy should fail validation")
 	}
 
 	// Test missing mode
 	missingMode := validPreset
-	missingMode.Modes = []string{"deductive", "nonexistent"}
+	missingMode.Modes = []ModeRef{ModeRefFromID("deductive"), ModeRefFromID("nonexistent")}
 	if err := missingMode.Validate(catalog); err == nil {
 		t.Error("preset referencing nonexistent mode should fail validation")
+	}
+
+	// Test advanced mode blocked by default
+	advancedPreset := EnsemblePreset{
+		Name:        "advanced-blocked",
+		Description: "Should fail",
+		Modes:       []ModeRef{ModeRefFromID("game-theory")},
+	}
+	if err := advancedPreset.Validate(catalog); err == nil {
+		t.Error("preset with advanced mode and AllowAdvanced=false should fail")
+	}
+
+	// Test advanced mode allowed with flag
+	advancedAllowed := advancedPreset
+	advancedAllowed.Name = "advanced-allowed"
+	advancedAllowed.AllowAdvanced = true
+	if err := advancedAllowed.Validate(catalog); err != nil {
+		t.Errorf("preset with AllowAdvanced=true should pass: %v", err)
 	}
 }
 
@@ -1025,5 +1060,537 @@ func TestModeCatalog_ListDefault(t *testing.T) {
 		if m.Tier != TierCore {
 			t.Errorf("ListDefault() returned mode with tier %q, want %q", m.Tier, TierCore)
 		}
+	}
+}
+
+// =============================================================================
+// ModeRef Tests
+// =============================================================================
+
+func TestModeRef_Resolve_ByID(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	ref := ModeRefFromID("deductive")
+	id, err := ref.Resolve(catalog)
+	if err != nil {
+		t.Fatalf("Resolve by ID failed: %v", err)
+	}
+	if id != "deductive" {
+		t.Errorf("Resolve() = %q, want %q", id, "deductive")
+	}
+}
+
+func TestModeRef_Resolve_ByCode(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	ref := ModeRefFromCode("C1")
+	id, err := ref.Resolve(catalog)
+	if err != nil {
+		t.Fatalf("Resolve by code failed: %v", err)
+	}
+	if id != "bayesian" {
+		t.Errorf("Resolve() = %q, want %q", id, "bayesian")
+	}
+}
+
+func TestModeRef_Resolve_BothSet(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	ref := ModeRef{ID: "deductive", Code: "A1"}
+	_, err := ref.Resolve(catalog)
+	if err == nil {
+		t.Error("Resolve with both ID and Code set should fail")
+	}
+}
+
+func TestModeRef_Resolve_NeitherSet(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	ref := ModeRef{}
+	_, err := ref.Resolve(catalog)
+	if err == nil {
+		t.Error("Resolve with neither ID nor Code should fail")
+	}
+}
+
+func TestModeRef_Resolve_NotFound(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	// Unknown ID
+	ref := ModeRefFromID("nonexistent")
+	_, err := ref.Resolve(catalog)
+	if err == nil {
+		t.Error("Resolve with unknown ID should fail")
+	}
+
+	// Unknown code
+	ref = ModeRefFromCode("Z9")
+	_, err = ref.Resolve(catalog)
+	if err == nil {
+		t.Error("Resolve with unknown code should fail")
+	}
+}
+
+func TestModeRef_String(t *testing.T) {
+	if got := ModeRefFromID("deductive").String(); got != "deductive" {
+		t.Errorf("ModeRefFromID.String() = %q, want %q", got, "deductive")
+	}
+	if got := ModeRefFromCode("A1").String(); got != "code:A1" {
+		t.Errorf("ModeRefFromCode.String() = %q, want %q", got, "code:A1")
+	}
+}
+
+func TestResolveModeRefs(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
+		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	// Mix of ID and code refs
+	refs := []ModeRef{
+		ModeRefFromID("deductive"),
+		ModeRefFromCode("C1"),
+	}
+	ids, err := ResolveModeRefs(refs, catalog)
+	if err != nil {
+		t.Fatalf("ResolveModeRefs failed: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d ids, want 2", len(ids))
+	}
+	if ids[0] != "deductive" || ids[1] != "bayesian" {
+		t.Errorf("got %v, want [deductive bayesian]", ids)
+	}
+}
+
+func TestResolveModeRefs_Duplicate(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	refs := []ModeRef{
+		ModeRefFromID("deductive"),
+		ModeRefFromCode("A1"), // resolves to same ID
+	}
+	_, err := ResolveModeRefs(refs, catalog)
+	if err == nil {
+		t.Error("ResolveModeRefs with duplicates should fail")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error should mention duplicate, got: %v", err)
+	}
+}
+
+func TestResolveModeRefs_Empty(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	ids, err := ResolveModeRefs(nil, catalog)
+	if err != nil {
+		t.Fatalf("ResolveModeRefs(nil) should not error: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("ResolveModeRefs(nil) = %v, want empty", ids)
+	}
+}
+
+// =============================================================================
+// CacheConfig Tests
+// =============================================================================
+
+func TestDefaultCacheConfig(t *testing.T) {
+	cfg := DefaultCacheConfig()
+	if !cfg.Enabled {
+		t.Error("default cache should be enabled")
+	}
+	if cfg.TTL <= 0 {
+		t.Error("TTL should be positive")
+	}
+	if cfg.MaxEntries <= 0 {
+		t.Error("MaxEntries should be positive")
+	}
+	if !cfg.ShareAcrossModes {
+		t.Error("ShareAcrossModes should be true by default")
+	}
+}
+
+func TestCacheConfig_ZeroValue(t *testing.T) {
+	var cfg CacheConfig
+	if cfg.Enabled {
+		t.Error("zero-value cache should not be enabled")
+	}
+	if cfg.TTL != 0 {
+		t.Errorf("zero-value TTL = %v, want 0", cfg.TTL)
+	}
+	if cfg.MaxEntries != 0 {
+		t.Errorf("zero-value MaxEntries = %d, want 0", cfg.MaxEntries)
+	}
+}
+
+// =============================================================================
+// AgentDistribution Tests
+// =============================================================================
+
+func TestDefaultAgentDistribution(t *testing.T) {
+	dist := DefaultAgentDistribution()
+	if dist.Strategy != "one-per-agent" {
+		t.Errorf("default Strategy = %q, want %q", dist.Strategy, "one-per-agent")
+	}
+	if dist.MaxAgents != 0 {
+		t.Errorf("default MaxAgents = %d, want 0", dist.MaxAgents)
+	}
+	if dist.PreferredAgentType != "" {
+		t.Errorf("default PreferredAgentType = %q, want empty", dist.PreferredAgentType)
+	}
+}
+
+func TestAgentDistribution_ZeroValue(t *testing.T) {
+	var dist AgentDistribution
+	if dist.Strategy != "" {
+		t.Errorf("zero-value Strategy = %q, want empty", dist.Strategy)
+	}
+}
+
+// =============================================================================
+// EnsemblePreset Serialization Tests
+// =============================================================================
+
+func TestEnsemblePreset_JSONRoundTrip(t *testing.T) {
+	preset := EnsemblePreset{
+		Name:          "test-preset",
+		DisplayName:   "Test Preset",
+		Description:   "A test preset for roundtrip",
+		Modes:         []ModeRef{ModeRefFromID("deductive"), ModeRefFromCode("C1")},
+		Synthesis:     DefaultSynthesisConfig(),
+		Budget:        DefaultBudgetConfig(),
+		Cache:         DefaultCacheConfig(),
+		AllowAdvanced: true,
+		AgentDistribution: &AgentDistribution{
+			Strategy:           "round-robin",
+			MaxAgents:          4,
+			PreferredAgentType: "cc",
+		},
+		Tags: []string{"test", "roundtrip"},
+	}
+
+	data, err := json.Marshal(preset)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded EnsemblePreset
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if decoded.Name != preset.Name {
+		t.Errorf("Name = %q, want %q", decoded.Name, preset.Name)
+	}
+	if decoded.DisplayName != preset.DisplayName {
+		t.Errorf("DisplayName = %q, want %q", decoded.DisplayName, preset.DisplayName)
+	}
+	if len(decoded.Modes) != 2 {
+		t.Fatalf("Modes count = %d, want 2", len(decoded.Modes))
+	}
+	if decoded.Modes[0].ID != "deductive" {
+		t.Errorf("Modes[0].ID = %q, want %q", decoded.Modes[0].ID, "deductive")
+	}
+	if decoded.Modes[1].Code != "C1" {
+		t.Errorf("Modes[1].Code = %q, want %q", decoded.Modes[1].Code, "C1")
+	}
+	if !decoded.AllowAdvanced {
+		t.Error("AllowAdvanced should be true")
+	}
+	if decoded.AgentDistribution == nil {
+		t.Fatal("AgentDistribution should not be nil")
+	}
+	if decoded.AgentDistribution.Strategy != "round-robin" {
+		t.Errorf("AgentDistribution.Strategy = %q, want %q", decoded.AgentDistribution.Strategy, "round-robin")
+	}
+	if decoded.Cache.TTL != preset.Cache.TTL {
+		t.Errorf("Cache.TTL = %v, want %v", decoded.Cache.TTL, preset.Cache.TTL)
+	}
+}
+
+func TestEnsemblePreset_ZeroValues(t *testing.T) {
+	// Zero-value preset should serialize cleanly
+	var preset EnsemblePreset
+	data, err := json.Marshal(preset)
+	if err != nil {
+		t.Fatalf("Marshal zero preset failed: %v", err)
+	}
+
+	var decoded EnsemblePreset
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal zero preset failed: %v", err)
+	}
+
+	if decoded.Name != "" {
+		t.Errorf("zero Name = %q, want empty", decoded.Name)
+	}
+	if decoded.AllowAdvanced {
+		t.Error("zero AllowAdvanced should be false")
+	}
+	if decoded.AgentDistribution != nil {
+		t.Error("zero AgentDistribution should be nil")
+	}
+	if len(decoded.Tags) != 0 {
+		t.Errorf("zero Tags = %v, want nil", decoded.Tags)
+	}
+}
+
+func TestEnsemblePreset_ResolveIDs(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1"},
+		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1"},
+	}
+	catalog, _ := NewModeCatalog(modes, "1.0")
+
+	preset := EnsemblePreset{
+		Name:  "test",
+		Modes: []ModeRef{ModeRefFromCode("A1"), ModeRefFromID("bayesian")},
+	}
+
+	ids, err := preset.ResolveIDs(catalog)
+	if err != nil {
+		t.Fatalf("ResolveIDs failed: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d ids, want 2", len(ids))
+	}
+	if ids[0] != "deductive" {
+		t.Errorf("ids[0] = %q, want %q", ids[0], "deductive")
+	}
+	if ids[1] != "bayesian" {
+		t.Errorf("ids[1] = %q, want %q", ids[1], "bayesian")
+	}
+}
+
+func TestModeRef_JSONRoundTrip(t *testing.T) {
+	refs := []ModeRef{
+		ModeRefFromID("deductive"),
+		ModeRefFromCode("C1"),
+		{}, // empty
+	}
+
+	data, err := json.Marshal(refs)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded []ModeRef
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if len(decoded) != 3 {
+		t.Fatalf("decoded count = %d, want 3", len(decoded))
+	}
+	if decoded[0].ID != "deductive" {
+		t.Errorf("decoded[0].ID = %q, want %q", decoded[0].ID, "deductive")
+	}
+	if decoded[1].Code != "C1" {
+		t.Errorf("decoded[1].Code = %q, want %q", decoded[1].Code, "C1")
+	}
+	if decoded[2].ID != "" || decoded[2].Code != "" {
+		t.Errorf("decoded[2] should be empty, got %+v", decoded[2])
+	}
+}
+
+func TestCacheConfig_JSONRoundTrip(t *testing.T) {
+	cfg := DefaultCacheConfig()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded CacheConfig
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if decoded.Enabled != cfg.Enabled {
+		t.Errorf("Enabled = %v, want %v", decoded.Enabled, cfg.Enabled)
+	}
+	if decoded.TTL != cfg.TTL {
+		t.Errorf("TTL = %v, want %v", decoded.TTL, cfg.TTL)
+	}
+	if decoded.MaxEntries != cfg.MaxEntries {
+		t.Errorf("MaxEntries = %d, want %d", decoded.MaxEntries, cfg.MaxEntries)
+	}
+	if decoded.ShareAcrossModes != cfg.ShareAcrossModes {
+		t.Errorf("ShareAcrossModes = %v, want %v", decoded.ShareAcrossModes, cfg.ShareAcrossModes)
+	}
+}
+
+// =============================================================================
+// DefaultCatalog / EmbeddedModes Tests
+// =============================================================================
+
+func TestDefaultCatalog_Creates(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog() error: %v", err)
+	}
+	if catalog == nil {
+		t.Fatal("DefaultCatalog() returned nil")
+	}
+	if catalog.Version() != CatalogVersion {
+		t.Errorf("catalog.Version() = %q, want %q", catalog.Version(), CatalogVersion)
+	}
+}
+
+func TestDefaultCatalog_Has80Modes(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog() error: %v", err)
+	}
+	if catalog.Count() != 80 {
+		t.Errorf("DefaultCatalog has %d modes, want 80", catalog.Count())
+	}
+}
+
+func TestDefaultCatalog_CoreTierCount(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog() error: %v", err)
+	}
+	core := catalog.ListByTier(TierCore)
+	if len(core) != 28 {
+		t.Errorf("DefaultCatalog core tier has %d modes, want 28", len(core))
+	}
+}
+
+func TestDefaultCatalog_AdvancedTierCount(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog() error: %v", err)
+	}
+	advanced := catalog.ListByTier(TierAdvanced)
+	if len(advanced) != 52 {
+		t.Errorf("DefaultCatalog advanced tier has %d modes, want 52", len(advanced))
+	}
+}
+
+func TestDefaultCatalog_AllModesValidate(t *testing.T) {
+	for i, m := range EmbeddedModes {
+		if err := m.Validate(); err != nil {
+			t.Errorf("EmbeddedModes[%d] (%q) validation failed: %v", i, m.ID, err)
+		}
+	}
+}
+
+func TestDefaultCatalog_UniqueIDs(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, m := range EmbeddedModes {
+		if seen[m.ID] {
+			t.Errorf("duplicate mode ID: %q", m.ID)
+		}
+		seen[m.ID] = true
+	}
+}
+
+func TestDefaultCatalog_UniqueCodes(t *testing.T) {
+	seen := make(map[string]string) // code -> ID
+	for _, m := range EmbeddedModes {
+		if m.Code == "" {
+			t.Errorf("mode %q has empty code", m.ID)
+			continue
+		}
+		if prevID, exists := seen[m.Code]; exists {
+			t.Errorf("duplicate code %q: used by both %q and %q", m.Code, prevID, m.ID)
+		}
+		seen[m.Code] = m.ID
+	}
+}
+
+func TestDefaultCatalog_CategoryLetterConsistency(t *testing.T) {
+	for _, m := range EmbeddedModes {
+		if m.Code == "" {
+			continue
+		}
+		// Extract the letter from the code
+		codeLetter := string(m.Code[0])
+		expectedLetter := m.Category.CategoryLetter()
+		if codeLetter != expectedLetter {
+			t.Errorf("mode %q: code %q starts with %q but category %q maps to letter %q",
+				m.ID, m.Code, codeLetter, m.Category, expectedLetter)
+		}
+	}
+}
+
+func TestDefaultCatalog_AllCategoriesPresent(t *testing.T) {
+	categories := make(map[ModeCategory]int)
+	for _, m := range EmbeddedModes {
+		categories[m.Category]++
+	}
+
+	expected := []ModeCategory{
+		CategoryFormal, CategoryAmpliative, CategoryUncertainty,
+		CategoryVagueness, CategoryChange, CategoryCausal,
+		CategoryPractical, CategoryStrategic, CategoryDialectical,
+		CategoryModal, CategoryDomain, CategoryMeta,
+	}
+	for _, cat := range expected {
+		if categories[cat] == 0 {
+			t.Errorf("category %q has no modes in the catalog", cat)
+		}
+	}
+}
+
+func TestDefaultCatalog_GetByCodeMatchesID(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog() error: %v", err)
+	}
+	for _, m := range EmbeddedModes {
+		if m.Code == "" {
+			continue
+		}
+		found := catalog.GetModeByCode(m.Code)
+		if found == nil {
+			t.Errorf("GetModeByCode(%q) returned nil for mode %q", m.Code, m.ID)
+			continue
+		}
+		if found.ID != m.ID {
+			t.Errorf("GetModeByCode(%q).ID = %q, want %q", m.Code, found.ID, m.ID)
+		}
+	}
+}
+
+func TestDefaultCatalog_ListDefaultIsCore(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("DefaultCatalog() error: %v", err)
+	}
+	defaults := catalog.ListDefault()
+	for _, m := range defaults {
+		if m.Tier != TierCore {
+			t.Errorf("ListDefault() includes mode %q with tier %q, want %q", m.ID, m.Tier, TierCore)
+		}
+	}
+	// ListDefault should match ListByTier(TierCore)
+	core := catalog.ListByTier(TierCore)
+	if len(defaults) != len(core) {
+		t.Errorf("ListDefault() count = %d, ListByTier(core) count = %d, want equal", len(defaults), len(core))
 	}
 }

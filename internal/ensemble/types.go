@@ -394,52 +394,191 @@ func (s SynthesisStrategy) IsValid() bool {
 	}
 }
 
+// ModeRef references a reasoning mode by ID or taxonomy code.
+// It canonicalizes to a mode ID at load time for consistent internal usage.
+type ModeRef struct {
+	// ID is the mode identifier (e.g., "deductive"). Mutually exclusive with Code.
+	ID string `json:"id,omitempty" toml:"id,omitempty" yaml:"id,omitempty"`
+
+	// Code is the taxonomy code (e.g., "A1"). Mutually exclusive with ID.
+	Code string `json:"code,omitempty" toml:"code,omitempty" yaml:"code,omitempty"`
+}
+
+// Resolve canonicalizes a ModeRef to a mode ID using the catalog.
+// Returns the resolved mode ID or an error if the reference is invalid.
+func (r ModeRef) Resolve(catalog *ModeCatalog) (string, error) {
+	if r.ID != "" && r.Code != "" {
+		return "", fmt.Errorf("mode ref must specify id or code, not both (id=%q, code=%q)", r.ID, r.Code)
+	}
+	if r.ID == "" && r.Code == "" {
+		return "", errors.New("mode ref must specify either id or code")
+	}
+	if r.ID != "" {
+		if catalog.GetMode(r.ID) == nil {
+			return "", fmt.Errorf("mode id %q not found in catalog", r.ID)
+		}
+		return r.ID, nil
+	}
+	// Resolve by code
+	mode := catalog.GetModeByCode(r.Code)
+	if mode == nil {
+		return "", fmt.Errorf("mode code %q not found in catalog", r.Code)
+	}
+	return mode.ID, nil
+}
+
+// String returns a human-readable representation.
+func (r ModeRef) String() string {
+	if r.ID != "" {
+		return r.ID
+	}
+	return "code:" + r.Code
+}
+
+// ModeRefFromID creates a ModeRef from a mode ID.
+func ModeRefFromID(id string) ModeRef {
+	return ModeRef{ID: id}
+}
+
+// ModeRefFromCode creates a ModeRef from a taxonomy code.
+func ModeRefFromCode(code string) ModeRef {
+	return ModeRef{Code: code}
+}
+
+// ResolveModeRefs resolves a slice of ModeRefs to mode IDs.
+// Returns an error if any ref is invalid or resolves to a duplicate.
+func ResolveModeRefs(refs []ModeRef, catalog *ModeCatalog) ([]string, error) {
+	seen := make(map[string]bool, len(refs))
+	result := make([]string, 0, len(refs))
+	for i, ref := range refs {
+		id, err := ref.Resolve(catalog)
+		if err != nil {
+			return nil, fmt.Errorf("modes[%d]: %w", i, err)
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("modes[%d]: duplicate mode %q", i, id)
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// CacheConfig defines context pack cache control for ensemble execution.
+type CacheConfig struct {
+	// Enabled controls whether context pack caching is active.
+	Enabled bool `json:"enabled" toml:"enabled" yaml:"enabled"`
+
+	// TTL is how long cached context packs remain valid.
+	TTL time.Duration `json:"ttl,omitempty" toml:"ttl,omitempty" yaml:"ttl,omitempty"`
+
+	// MaxEntries is the maximum number of cached context packs.
+	MaxEntries int `json:"max_entries,omitempty" toml:"max_entries,omitempty" yaml:"max_entries,omitempty"`
+
+	// ShareAcrossModes controls whether modes in the same ensemble share cache.
+	ShareAcrossModes bool `json:"share_across_modes,omitempty" toml:"share_across_modes,omitempty" yaml:"share_across_modes,omitempty"`
+}
+
+// DefaultCacheConfig returns sensible default cache settings.
+func DefaultCacheConfig() CacheConfig {
+	return CacheConfig{
+		Enabled:          true,
+		TTL:              15 * time.Minute,
+		MaxEntries:       32,
+		ShareAcrossModes: true,
+	}
+}
+
+// AgentDistribution configures how modes are distributed across agents.
+type AgentDistribution struct {
+	// Strategy controls how modes map to agents ("one-per-agent", "round-robin", "packed").
+	Strategy string `json:"strategy" toml:"strategy" yaml:"strategy"`
+
+	// MaxAgents limits the number of agents spawned (0 = one per mode).
+	MaxAgents int `json:"max_agents,omitempty" toml:"max_agents,omitempty" yaml:"max_agents,omitempty"`
+
+	// PreferredAgentType is the default agent type for modes (cc, cod, gmi).
+	PreferredAgentType string `json:"preferred_agent_type,omitempty" toml:"preferred_agent_type,omitempty" yaml:"preferred_agent_type,omitempty"`
+}
+
+// DefaultAgentDistribution returns the default agent distribution (one mode per agent).
+func DefaultAgentDistribution() AgentDistribution {
+	return AgentDistribution{
+		Strategy: "one-per-agent",
+	}
+}
+
 // EnsemblePreset is a pre-configured mode combination.
 // Presets make it easy to quickly start an ensemble with a curated
 // set of modes for common use cases.
 type EnsemblePreset struct {
 	// Name is the unique identifier for this preset.
-	Name string `json:"name" toml:"name"`
+	Name string `json:"name" toml:"name" yaml:"name"`
+
+	// DisplayName is the human-facing name (e.g., "Architecture Review").
+	DisplayName string `json:"display_name,omitempty" toml:"display_name,omitempty" yaml:"display_name,omitempty"`
 
 	// Description explains what this preset is for.
-	Description string `json:"description" toml:"description"`
+	Description string `json:"description" toml:"description" yaml:"description"`
 
-	// Modes lists the mode IDs to use in this preset.
-	Modes []string `json:"modes" toml:"modes"`
+	// Modes lists mode references (by id or code) for this preset.
+	Modes []ModeRef `json:"modes" toml:"modes" yaml:"modes"`
 
-	// SynthesisStrategy is how outputs should be combined.
-	SynthesisStrategy SynthesisStrategy `json:"synthesis_strategy" toml:"synthesis_strategy"`
+	// Synthesis configures how outputs are combined. Reuses SynthesisConfig.
+	Synthesis SynthesisConfig `json:"synthesis,omitempty" toml:"synthesis,omitempty" yaml:"synthesis,omitempty"`
+
+	// Budget defines resource limits. Reuses BudgetConfig.
+	Budget BudgetConfig `json:"budget,omitempty" toml:"budget,omitempty" yaml:"budget,omitempty"`
+
+	// Cache configures context pack caching.
+	Cache CacheConfig `json:"cache,omitempty" toml:"cache,omitempty" yaml:"cache,omitempty"`
+
+	// AllowAdvanced enables advanced-tier modes (default: only core modes).
+	AllowAdvanced bool `json:"allow_advanced,omitempty" toml:"allow_advanced,omitempty" yaml:"allow_advanced,omitempty"`
+
+	// AgentDistribution configures how modes are distributed across agents.
+	AgentDistribution *AgentDistribution `json:"agent_distribution,omitempty" toml:"agent_distribution,omitempty" yaml:"agent_distribution,omitempty"`
 
 	// Tags are optional categories for organization.
-	Tags []string `json:"tags,omitempty" toml:"tags"`
+	Tags []string `json:"tags,omitempty" toml:"tags,omitempty" yaml:"tags,omitempty"`
 }
 
-// Validate checks that the preset is valid and all mode IDs exist in the catalog.
-func (p *EnsemblePreset) Validate(catalog []ReasoningMode) error {
+// Validate checks that the preset is valid and all mode refs resolve against the catalog.
+func (p *EnsemblePreset) Validate(catalog *ModeCatalog) error {
 	if p.Name == "" {
 		return errors.New("preset name is required")
 	}
 	if len(p.Modes) == 0 {
 		return errors.New("preset must have at least one mode")
 	}
-	if !p.SynthesisStrategy.IsValid() {
-		return fmt.Errorf("invalid synthesis strategy %q", p.SynthesisStrategy)
+
+	// Resolve all mode refs
+	resolved, err := ResolveModeRefs(p.Modes, catalog)
+	if err != nil {
+		return fmt.Errorf("preset %q: %w", p.Name, err)
 	}
 
-	// Build mode lookup
-	modeIDs := make(map[string]bool)
-	for _, m := range catalog {
-		modeIDs[m.ID] = true
-	}
-
-	// Check all preset modes exist
-	for _, modeID := range p.Modes {
-		if !modeIDs[modeID] {
-			return fmt.Errorf("mode %q not found in catalog", modeID)
+	// Check tier restrictions
+	if !p.AllowAdvanced {
+		for _, modeID := range resolved {
+			mode := catalog.GetMode(modeID)
+			if mode != nil && mode.Tier == TierAdvanced {
+				return fmt.Errorf("preset %q: mode %q is advanced tier but AllowAdvanced is false", p.Name, modeID)
+			}
 		}
 	}
 
+	// Validate synthesis config if strategy is set
+	if p.Synthesis.Strategy != "" && !p.Synthesis.Strategy.IsValid() {
+		return fmt.Errorf("preset %q: invalid synthesis strategy %q", p.Name, p.Synthesis.Strategy)
+	}
+
 	return nil
+}
+
+// ResolveIDs resolves all ModeRefs to mode IDs using the catalog.
+func (p *EnsemblePreset) ResolveIDs(catalog *ModeCatalog) ([]string, error) {
+	return ResolveModeRefs(p.Modes, catalog)
 }
 
 // modeIDRegex validates mode IDs (lowercase alphanumeric with hyphens).
@@ -487,7 +626,7 @@ func ValidateModeCode(code string, category ModeCategory) error {
 
 // ValidatePreset checks if a preset is valid and all its modes exist.
 // This is an alias for EnsemblePreset.Validate for convenience.
-func ValidatePreset(preset EnsemblePreset, catalog []ReasoningMode) error {
+func ValidatePreset(preset EnsemblePreset, catalog *ModeCatalog) error {
 	return preset.Validate(catalog)
 }
 
@@ -667,19 +806,19 @@ func (c Confidence) String() string {
 // Finding represents a specific discovery or insight from reasoning.
 type Finding struct {
 	// Finding is the description of what was discovered.
-	Finding string `json:"finding"`
+	Finding string `json:"finding" yaml:"finding"`
 
 	// Impact is the significance level of this finding.
-	Impact ImpactLevel `json:"impact"`
+	Impact ImpactLevel `json:"impact" yaml:"impact"`
 
 	// Confidence is how certain the mode is about this finding (0.0-1.0).
-	Confidence Confidence `json:"confidence"`
+	Confidence Confidence `json:"confidence" yaml:"confidence"`
 
 	// EvidencePointer is a reference to supporting evidence (e.g., "file.go:42").
-	EvidencePointer string `json:"evidence_pointer,omitempty"`
+	EvidencePointer string `json:"evidence_pointer,omitempty" yaml:"evidence_pointer,omitempty"`
 
 	// Reasoning explains how this finding was reached.
-	Reasoning string `json:"reasoning,omitempty"`
+	Reasoning string `json:"reasoning,omitempty" yaml:"reasoning,omitempty"`
 }
 
 // Validate checks that the finding is properly formed.
@@ -699,19 +838,19 @@ func (f *Finding) Validate() error {
 // Risk represents a potential problem or threat identified by reasoning.
 type Risk struct {
 	// Risk is the description of the potential problem.
-	Risk string `json:"risk"`
+	Risk string `json:"risk" yaml:"risk"`
 
 	// Impact is the severity if this risk materializes.
-	Impact ImpactLevel `json:"impact"`
+	Impact ImpactLevel `json:"impact" yaml:"impact"`
 
 	// Likelihood is the probability this risk will occur (0.0-1.0).
-	Likelihood Confidence `json:"likelihood"`
+	Likelihood Confidence `json:"likelihood" yaml:"likelihood"`
 
 	// Mitigation describes how to address this risk.
-	Mitigation string `json:"mitigation,omitempty"`
+	Mitigation string `json:"mitigation,omitempty" yaml:"mitigation,omitempty"`
 
 	// AffectedAreas lists components or areas impacted by this risk.
-	AffectedAreas []string `json:"affected_areas,omitempty"`
+	AffectedAreas []string `json:"affected_areas,omitempty" yaml:"affected_areas,omitempty"`
 }
 
 // Validate checks that the risk is properly formed.
@@ -731,19 +870,19 @@ func (r *Risk) Validate() error {
 // Recommendation represents a suggested action from reasoning.
 type Recommendation struct {
 	// Recommendation is the suggested action.
-	Recommendation string `json:"recommendation"`
+	Recommendation string `json:"recommendation" yaml:"recommendation"`
 
 	// Priority indicates how urgent this recommendation is.
-	Priority ImpactLevel `json:"priority"`
+	Priority ImpactLevel `json:"priority" yaml:"priority"`
 
 	// Rationale explains why this is recommended.
-	Rationale string `json:"rationale,omitempty"`
+	Rationale string `json:"rationale,omitempty" yaml:"rationale,omitempty"`
 
 	// Effort is an estimate of implementation complexity (low/medium/high).
-	Effort string `json:"effort,omitempty"`
+	Effort string `json:"effort,omitempty" yaml:"effort,omitempty"`
 
 	// RelatedFindings lists finding indices that support this recommendation.
-	RelatedFindings []int `json:"related_findings,omitempty"`
+	RelatedFindings []int `json:"related_findings,omitempty" yaml:"related_findings,omitempty"`
 }
 
 // Validate checks that the recommendation is properly formed.
@@ -760,16 +899,16 @@ func (r *Recommendation) Validate() error {
 // Question represents an unresolved question for the user.
 type Question struct {
 	// Question is the query for the user.
-	Question string `json:"question"`
+	Question string `json:"question" yaml:"question"`
 
 	// Context explains why this question matters.
-	Context string `json:"context,omitempty"`
+	Context string `json:"context,omitempty" yaml:"context,omitempty"`
 
 	// Blocking indicates if this question blocks further analysis.
-	Blocking bool `json:"blocking,omitempty"`
+	Blocking bool `json:"blocking,omitempty" yaml:"blocking,omitempty"`
 
 	// SuggestedAnswers provides possible responses if applicable.
-	SuggestedAnswers []string `json:"suggested_answers,omitempty"`
+	SuggestedAnswers []string `json:"suggested_answers,omitempty" yaml:"suggested_answers,omitempty"`
 }
 
 // Validate checks that the question is properly formed.
@@ -783,16 +922,16 @@ func (q *Question) Validate() error {
 // FailureModeWarning represents a potential failure mode to watch for.
 type FailureModeWarning struct {
 	// Mode is the failure mode identifier.
-	Mode string `json:"mode"`
+	Mode string `json:"mode" yaml:"mode"`
 
 	// Description explains what this failure mode entails.
-	Description string `json:"description"`
+	Description string `json:"description" yaml:"description"`
 
 	// Indicators are signs that this failure mode may be occurring.
-	Indicators []string `json:"indicators,omitempty"`
+	Indicators []string `json:"indicators,omitempty" yaml:"indicators,omitempty"`
 
 	// Prevention describes how to avoid this failure mode.
-	Prevention string `json:"prevention,omitempty"`
+	Prevention string `json:"prevention,omitempty" yaml:"prevention,omitempty"`
 }
 
 // Validate checks that the failure mode warning is properly formed.
@@ -811,34 +950,34 @@ func (f *FailureModeWarning) Validate() error {
 // consistent synthesis and comparison across different reasoning approaches.
 type ModeOutput struct {
 	// ModeID identifies which reasoning mode produced this output.
-	ModeID string `json:"mode_id"`
+	ModeID string `json:"mode_id" yaml:"mode_id"`
 
 	// Thesis is the main conclusion or argument from this mode.
-	Thesis string `json:"thesis"`
+	Thesis string `json:"thesis" yaml:"thesis"`
 
 	// TopFindings are the key discoveries ranked by importance.
-	TopFindings []Finding `json:"top_findings"`
+	TopFindings []Finding `json:"top_findings" yaml:"top_findings"`
 
 	// Risks are potential problems or threats identified.
-	Risks []Risk `json:"risks,omitempty"`
+	Risks []Risk `json:"risks,omitempty" yaml:"risks,omitempty"`
 
 	// Recommendations are suggested actions.
-	Recommendations []Recommendation `json:"recommendations,omitempty"`
+	Recommendations []Recommendation `json:"recommendations,omitempty" yaml:"recommendations,omitempty"`
 
 	// QuestionsForUser are unresolved queries needing user input.
-	QuestionsForUser []Question `json:"questions_for_user,omitempty"`
+	QuestionsForUser []Question `json:"questions_for_user,omitempty" yaml:"questions_for_user,omitempty"`
 
 	// FailureModesToWatch are warnings about reasoning pitfalls.
-	FailureModesToWatch []FailureModeWarning `json:"failure_modes_to_watch,omitempty"`
+	FailureModesToWatch []FailureModeWarning `json:"failure_modes_to_watch,omitempty" yaml:"failure_modes_to_watch,omitempty"`
 
 	// Confidence is the overall confidence in this analysis (0.0-1.0).
-	Confidence Confidence `json:"confidence"`
+	Confidence Confidence `json:"confidence" yaml:"confidence"`
 
 	// RawOutput is the original unstructured output from the agent.
-	RawOutput string `json:"raw_output,omitempty"`
+	RawOutput string `json:"raw_output,omitempty" yaml:"raw_output,omitempty"`
 
 	// GeneratedAt is when this output was produced.
-	GeneratedAt time.Time `json:"generated_at"`
+	GeneratedAt time.Time `json:"generated_at" yaml:"generated_at"`
 }
 
 // Validate checks that the mode output is properly formed.
@@ -901,19 +1040,19 @@ func (m *ModeOutput) Validate() error {
 // BudgetConfig defines resource limits for ensemble execution.
 type BudgetConfig struct {
 	// MaxTokensPerMode is the token limit for each mode's response.
-	MaxTokensPerMode int `json:"max_tokens_per_mode,omitempty" toml:"max_tokens_per_mode"`
+	MaxTokensPerMode int `json:"max_tokens_per_mode,omitempty" toml:"max_tokens_per_mode" yaml:"max_tokens_per_mode,omitempty"`
 
 	// MaxTotalTokens is the total token budget across all modes.
-	MaxTotalTokens int `json:"max_total_tokens,omitempty" toml:"max_total_tokens"`
+	MaxTotalTokens int `json:"max_total_tokens,omitempty" toml:"max_total_tokens" yaml:"max_total_tokens,omitempty"`
 
 	// TimeoutPerMode is the max duration for each mode to complete.
-	TimeoutPerMode time.Duration `json:"timeout_per_mode,omitempty" toml:"timeout_per_mode"`
+	TimeoutPerMode time.Duration `json:"timeout_per_mode,omitempty" toml:"timeout_per_mode" yaml:"timeout_per_mode,omitempty"`
 
 	// TotalTimeout is the max duration for the entire ensemble.
-	TotalTimeout time.Duration `json:"total_timeout,omitempty" toml:"total_timeout"`
+	TotalTimeout time.Duration `json:"total_timeout,omitempty" toml:"total_timeout" yaml:"total_timeout,omitempty"`
 
 	// MaxRetries is how many times to retry failed modes.
-	MaxRetries int `json:"max_retries,omitempty" toml:"max_retries"`
+	MaxRetries int `json:"max_retries,omitempty" toml:"max_retries" yaml:"max_retries,omitempty"`
 }
 
 // DefaultBudgetConfig returns sensible default budget limits.
@@ -930,19 +1069,19 @@ func DefaultBudgetConfig() BudgetConfig {
 // SynthesisConfig defines how ensemble outputs are combined.
 type SynthesisConfig struct {
 	// Strategy is the synthesis approach to use.
-	Strategy SynthesisStrategy `json:"strategy" toml:"strategy"`
+	Strategy SynthesisStrategy `json:"strategy" toml:"strategy" yaml:"strategy"`
 
 	// MinConfidence is the minimum confidence threshold for inclusion.
-	MinConfidence Confidence `json:"min_confidence,omitempty" toml:"min_confidence"`
+	MinConfidence Confidence `json:"min_confidence,omitempty" toml:"min_confidence" yaml:"min_confidence,omitempty"`
 
 	// MaxFindings limits how many findings to include in synthesis.
-	MaxFindings int `json:"max_findings,omitempty" toml:"max_findings"`
+	MaxFindings int `json:"max_findings,omitempty" toml:"max_findings" yaml:"max_findings,omitempty"`
 
 	// IncludeRawOutputs includes original mode outputs in synthesis.
-	IncludeRawOutputs bool `json:"include_raw_outputs,omitempty" toml:"include_raw_outputs"`
+	IncludeRawOutputs bool `json:"include_raw_outputs,omitempty" toml:"include_raw_outputs" yaml:"include_raw_outputs,omitempty"`
 
 	// ConflictResolution specifies how to handle disagreements.
-	ConflictResolution string `json:"conflict_resolution,omitempty" toml:"conflict_resolution"`
+	ConflictResolution string `json:"conflict_resolution,omitempty" toml:"conflict_resolution" yaml:"conflict_resolution,omitempty"`
 }
 
 // DefaultSynthesisConfig returns sensible default synthesis settings.
@@ -961,31 +1100,40 @@ func DefaultSynthesisConfig() SynthesisConfig {
 // not individual modes. Modes are internal implementation details.
 type Ensemble struct {
 	// Name is the unique identifier (e.g., "project-diagnosis").
-	Name string `json:"name" toml:"name"`
+	Name string `json:"name" toml:"name" yaml:"name"`
 
 	// DisplayName is the user-facing name (e.g., "Project Diagnosis").
-	DisplayName string `json:"display_name" toml:"display_name"`
+	DisplayName string `json:"display_name" toml:"display_name" yaml:"display_name"`
 
 	// Description explains what this ensemble is for.
-	Description string `json:"description" toml:"description"`
+	Description string `json:"description" toml:"description" yaml:"description"`
 
 	// ModeIDs lists the reasoning modes in this ensemble.
-	ModeIDs []string `json:"mode_ids" toml:"mode_ids"`
+	ModeIDs []string `json:"mode_ids" toml:"mode_ids" yaml:"mode_ids"`
 
 	// Synthesis configures how outputs are combined.
-	Synthesis SynthesisConfig `json:"synthesis" toml:"synthesis"`
+	Synthesis SynthesisConfig `json:"synthesis" toml:"synthesis" yaml:"synthesis"`
 
 	// Budget defines resource limits.
-	Budget BudgetConfig `json:"budget" toml:"budget"`
+	Budget BudgetConfig `json:"budget" toml:"budget" yaml:"budget"`
+
+	// Cache configures context pack caching.
+	Cache CacheConfig `json:"cache,omitempty" toml:"cache" yaml:"cache,omitempty"`
+
+	// AllowAdvanced enables advanced-tier modes.
+	AllowAdvanced bool `json:"allow_advanced,omitempty" toml:"allow_advanced" yaml:"allow_advanced,omitempty"`
+
+	// AgentDistribution configures how modes are distributed across agents.
+	AgentDistribution *AgentDistribution `json:"agent_distribution,omitempty" toml:"agent_distribution" yaml:"agent_distribution,omitempty"`
 
 	// Tags enable filtering and discovery.
-	Tags []string `json:"tags,omitempty" toml:"tags"`
+	Tags []string `json:"tags,omitempty" toml:"tags" yaml:"tags,omitempty"`
 
 	// Icon is a single emoji or glyph for UI display.
-	Icon string `json:"icon,omitempty" toml:"icon"`
+	Icon string `json:"icon,omitempty" toml:"icon" yaml:"icon,omitempty"`
 
 	// Source indicates where this ensemble was loaded from.
-	Source string `json:"source,omitempty" toml:"-"`
+	Source string `json:"source,omitempty" toml:"-" yaml:"source,omitempty"`
 }
 
 // Validate checks that the ensemble is valid and all mode IDs exist in the catalog.
