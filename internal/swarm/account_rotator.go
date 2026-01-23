@@ -457,6 +457,9 @@ func (r *AccountRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error
 	// Update per-pane state
 	r.mu.Lock()
 	record.SessionPane = event.SessionPane
+	if state.CurrentAccount == "" && record.FromAccount != "" {
+		state.CurrentAccount = record.FromAccount
+	}
 	if state.CurrentAccount != "" {
 		state.PreviousAccounts = append(state.PreviousAccounts, state.CurrentAccount)
 	}

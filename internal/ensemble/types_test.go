@@ -851,16 +851,16 @@ func TestValidateModeCode(t *testing.T) {
 		{"L10", CategoryMeta, false},
 		{"C99", CategoryUncertainty, false},
 		// Invalid format
-		{"", CategoryFormal, true},           // empty
-		{"a1", CategoryFormal, true},         // lowercase letter
-		{"M1", CategoryFormal, true},         // letter out of range
-		{"A", CategoryFormal, true},          // no number
-		{"AB1", CategoryFormal, true},        // two letters
-		{"1A", CategoryFormal, true},         // starts with digit
+		{"", CategoryFormal, true},    // empty
+		{"a1", CategoryFormal, true},  // lowercase letter
+		{"M1", CategoryFormal, true},  // letter out of range
+		{"A", CategoryFormal, true},   // no number
+		{"AB1", CategoryFormal, true}, // two letters
+		{"1A", CategoryFormal, true},  // starts with digit
 		// Category mismatch
-		{"B1", CategoryFormal, true},         // B != A (Formal)
-		{"A1", CategoryAmpliative, true},     // A != B (Ampliative)
-		{"K5", CategoryMeta, true},           // K != L (Meta)
+		{"B1", CategoryFormal, true},     // B != A (Formal)
+		{"A1", CategoryAmpliative, true}, // A != B (Ampliative)
+		{"K5", CategoryMeta, true},       // K != L (Meta)
 	}
 
 	for _, tt := range tests {
@@ -1027,4 +1027,3 @@ func TestModeCatalog_ListDefault(t *testing.T) {
 		}
 	}
 }
-

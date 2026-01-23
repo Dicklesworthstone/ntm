@@ -612,6 +612,7 @@ func TestSearcher_StreamSearch(t *testing.T) {
 	// Test: Stream with cancellation
 	t.Run("StreamWithCancellation", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		results, err := searcher.StreamSearch(ctx, Query{})
 		if err != nil {
 			t.Fatalf("StreamSearch failed: %v", err)

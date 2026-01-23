@@ -602,13 +602,13 @@ func TestPatternCoverage(t *testing.T) {
 	// Note: stacktrace pattern requires leading whitespace, but isErrorLine trims input
 	// so we can't test stacktrace pattern directly in this coverage test
 	testCases := map[string]string{
-		"traceback":     "Traceback (most recent call last):",
-		"exception":     "TypeError: cannot convert",
-		"panic":         "panic: runtime error",
-		"fatal":         "fatal error: all goroutines asleep",
-		"error":         "error: compilation failed",
-		"failed":        "build failed: syntax error",
-		"exit":          "exit status 1",
+		"traceback": "Traceback (most recent call last):",
+		"exception": "TypeError: cannot convert",
+		"panic":     "panic: runtime error",
+		"fatal":     "fatal error: all goroutines asleep",
+		"error":     "error: compilation failed",
+		"failed":    "build failed: syntax error",
+		"exit":      "exit status 1",
 		// stacktrace pattern not testable because isErrorLine trims whitespace
 		"rate_limit":    "rate limit exceeded",
 		"context_limit": "context window exceeded",

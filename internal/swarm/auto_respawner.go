@@ -24,6 +24,10 @@ type AccountRotatorI interface {
 
 	// CurrentAccount returns the current account for the agent type.
 	CurrentAccount(agentType string) string
+
+	// OnLimitHit handles a limit detection event and performs rotation with cooldown.
+	// Returns a rotation record or an error if rotation was skipped or failed.
+	OnLimitHit(event LimitHitEvent) (*RotationRecord, error)
 }
 
 // ProjectPathLookup is a callback to resolve project path from session:pane.
@@ -298,7 +302,7 @@ func (r *AutoRespawner) processLimitEvents() {
 			}
 
 			// Attempt respawn
-			result := r.Respawn(event.SessionPane, event.AgentType)
+			result := r.Respawn(event)
 			if result.Success {
 				r.recordRetryAttempt(event.SessionPane)
 			}
@@ -341,8 +345,10 @@ func (r *AutoRespawner) recordRetryAttempt(sessionPane string) {
 	state.Count++
 }
 
-// Respawn performs the full respawn sequence for an agent.
-func (r *AutoRespawner) Respawn(sessionPane, agentType string) *RespawnResult {
+// Respawn performs the full respawn sequence for an agent after a limit hit.
+func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
+	sessionPane := event.SessionPane
+	agentType := event.AgentType
 	start := time.Now()
 	result := &RespawnResult{
 		SessionPane: sessionPane,
@@ -371,23 +377,29 @@ func (r *AutoRespawner) Respawn(sessionPane, agentType string) *RespawnResult {
 
 	// Step 2: (Optional) Rotate account
 	if r.Config.AutoRotateAccounts && r.AccountRotator != nil {
-		previousAccount := r.AccountRotator.CurrentAccount(agentType)
-		newAccount, err := r.AccountRotator.RotateAccount(agentType)
+		hit := LimitHitEvent{
+			SessionPane: sessionPane,
+			AgentType:   agentType,
+			Pattern:     event.Pattern,
+			DetectedAt:  event.DetectedAt,
+			Project:     r.projectForPane(sessionPane),
+		}
+		record, err := r.AccountRotator.OnLimitHit(hit)
 		if err != nil {
 			r.logger().Warn("[AutoRespawner] account_rotation_failed",
 				"session_pane", sessionPane,
 				"agent_type", agentType,
 				"error", err)
 			// Continue without rotation - not fatal
-		} else {
+		} else if record != nil {
 			result.AccountRotated = true
-			result.PreviousAccount = previousAccount
-			result.NewAccount = newAccount
+			result.PreviousAccount = record.FromAccount
+			result.NewAccount = record.ToAccount
 
 			r.logger().Info("[AutoRespawner] account_rotated",
 				"session_pane", sessionPane,
-				"old", previousAccount,
-				"new", newAccount)
+				"old", record.FromAccount,
+				"new", record.ToAccount)
 		}
 	}
 
@@ -726,6 +738,14 @@ func (r *AutoRespawner) clearPane(sessionPane string) error {
 
 	time.Sleep(r.Config.ClearPaneDelay)
 	return nil
+}
+
+// projectForPane returns the project path for a pane, if available.
+func (r *AutoRespawner) projectForPane(sessionPane string) string {
+	if r.ProjectPathLookup == nil {
+		return ""
+	}
+	return r.ProjectPathLookup(sessionPane)
 }
 
 // cdToProject changes to the project directory if a path is available.

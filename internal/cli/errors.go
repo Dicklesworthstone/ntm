@@ -18,15 +18,15 @@ import (
 
 // ErrorEntry represents a single error detected in pane output
 type ErrorEntry struct {
-	Timestamp   time.Time `json:"timestamp"`
-	Session     string    `json:"session"`
-	Pane        string    `json:"pane"`
-	PaneIndex   int       `json:"pane_index"`
-	Line        int       `json:"line"`
-	Content     string    `json:"content"`
-	MatchType   string    `json:"match_type"`
-	Context     []string  `json:"context,omitempty"`
-	AgentType   string    `json:"agent_type,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Session   string    `json:"session"`
+	Pane      string    `json:"pane"`
+	PaneIndex int       `json:"pane_index"`
+	Line      int       `json:"line"`
+	Content   string    `json:"content"`
+	MatchType string    `json:"match_type"`
+	Context   []string  `json:"context,omitempty"`
+	AgentType string    `json:"agent_type,omitempty"`
 }
 
 // ErrorsResult contains all errors found in a session
@@ -165,12 +165,12 @@ func isErrorLine(line string) (bool, string) {
 
 // ErrorsOptions contains options for the errors operation
 type ErrorsOptions struct {
-	Since       time.Duration
-	Panes       []int
+	Since        time.Duration
+	Panes        []int
 	ContextLines int
-	MaxLines    int
-	Follow      bool
-	Filter      AgentFilter
+	MaxLines     int
+	Follow       bool
+	Filter       AgentFilter
 }
 
 func newErrorsCmd() *cobra.Command {

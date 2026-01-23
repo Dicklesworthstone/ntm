@@ -378,7 +378,7 @@ func parseModeCode(code string) (ModeCategory, int, bool) {
 	}
 
 	letter := unicode.ToUpper(rune(code[0]))
-	category, ok := codeCategory(letter)
+	category, ok := CategoryFromLetter(string(letter))
 	if !ok {
 		return "", 0, false
 	}
@@ -388,37 +388,6 @@ func parseModeCode(code string) (ModeCategory, int, bool) {
 		return "", 0, false
 	}
 	return category, index, true
-}
-
-func codeCategory(letter rune) (ModeCategory, bool) {
-	switch letter {
-	case 'A':
-		return CategoryFormal, true
-	case 'B':
-		return CategoryAmpliative, true
-	case 'C':
-		return CategoryUncertainty, true
-	case 'D':
-		return CategoryVagueness, true
-	case 'E':
-		return CategoryChange, true
-	case 'F':
-		return CategoryCausal, true
-	case 'G':
-		return CategoryPractical, true
-	case 'H':
-		return CategoryStrategic, true
-	case 'I':
-		return CategoryDialectical, true
-	case 'J':
-		return CategoryModal, true
-	case 'K':
-		return CategoryDomain, true
-	case 'L':
-		return CategoryMeta, true
-	default:
-		return "", false
-	}
 }
 
 func normalizeModeKeys(modes []string) ([]string, error) {

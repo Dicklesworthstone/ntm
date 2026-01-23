@@ -323,9 +323,7 @@ func TestAccountRotatorImplementsInterface(t *testing.T) {
 	// Verify AccountRotator implements the AccountRotator interface used by AutoRespawner
 	rotator := NewAccountRotator()
 
-	// These methods must exist for the interface
-	var _ = rotator.RotateAccount
-	var _ = rotator.CurrentAccount
+	var _ AccountRotatorI = rotator
 }
 
 func TestCaamStatusStruct(t *testing.T) {

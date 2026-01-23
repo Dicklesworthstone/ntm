@@ -116,6 +116,32 @@ func (m *mockAccountRotator) CurrentAccount(agentType string) string {
 	return acc
 }
 
+func (m *mockAccountRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rotateCalls = append(m.rotateCalls, event.AgentType)
+	if m.rotateErr != nil {
+		return nil, m.rotateErr
+	}
+	prev := m.currentAccount[event.AgentType]
+	if prev == "" {
+		prev = "account_1"
+	}
+	next := m.nextAccount[event.AgentType]
+	if next == "" {
+		next = "account_2"
+	}
+	m.currentAccount[event.AgentType] = next
+	return &RotationRecord{
+		Provider:    normalizeProvider(event.AgentType),
+		FromAccount: prev,
+		ToAccount:   next,
+		RotatedAt:   time.Now(),
+		SessionPane: event.SessionPane,
+		TriggeredBy: "limit_hit",
+	}, nil
+}
+
 // mockTmuxClient implements a minimal mock for tmux.Client operations.
 type mockTmuxClient struct {
 	mu            sync.Mutex
@@ -777,7 +803,7 @@ func TestGetMarchingOrdersAgentSpecific(t *testing.T) {
 		{"claude-code", "Claude prompt", "config/cc"},
 		{"cod", "Codex prompt", "config/cod"},
 		{"codex", "Codex prompt", "config/cod"},
-		{"gmi", "Default prompt", "config/default"},  // Not in config, fallback to default
+		{"gmi", "Default prompt", "config/default"},     // Not in config, fallback to default
 		{"unknown", "Default prompt", "config/default"}, // Not in config, fallback to default
 	}
 

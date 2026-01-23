@@ -37,24 +37,24 @@ func DefaultErrorsOptions() ErrorsOptions {
 
 // ErrorEntry represents a single error detected in pane output.
 type ErrorEntry struct {
-	Timestamp   time.Time `json:"timestamp"`
-	PaneID      string    `json:"pane_id"`
-	PaneName    string    `json:"pane_name"`
-	PaneIndex   int       `json:"pane_index"`
-	AgentType   string    `json:"agent_type"`
-	LineNumber  int       `json:"line_number"`
-	Content     string    `json:"content"`
-	MatchType   string    `json:"match_type"`
-	Context     []string  `json:"context,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
+	PaneID     string    `json:"pane_id"`
+	PaneName   string    `json:"pane_name"`
+	PaneIndex  int       `json:"pane_index"`
+	AgentType  string    `json:"agent_type"`
+	LineNumber int       `json:"line_number"`
+	Content    string    `json:"content"`
+	MatchType  string    `json:"match_type"`
+	Context    []string  `json:"context,omitempty"`
 }
 
 // ErrorsSummary provides aggregate statistics.
 type ErrorsSummary struct {
-	TotalErrors    int            `json:"total_errors"`
-	TotalLines     int            `json:"total_lines_searched"`
-	PanesSearched  int            `json:"panes_searched"`
-	ByType         map[string]int `json:"by_type"`
-	ByAgent        map[string]int `json:"by_agent"`
+	TotalErrors   int            `json:"total_errors"`
+	TotalLines    int            `json:"total_lines_searched"`
+	PanesSearched int            `json:"panes_searched"`
+	ByType        map[string]int `json:"by_type"`
+	ByAgent       map[string]int `json:"by_agent"`
 }
 
 // ErrorsOutput is the response for --robot-errors.

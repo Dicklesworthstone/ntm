@@ -11,18 +11,18 @@ import (
 // MockTmuxClient is a mock implementation for testing AgentLauncher.
 // It records all operations for verification without executing real tmux commands.
 type MockTmuxClient struct {
-	t *testing.T
+	t  *testing.T
 	mu sync.Mutex
 
 	// Recorded operations
-	SendKeysCalls    []SendKeysCall
-	GetPanesCalls    []string // session names
-	CaptureSequence  []string // sequence of captured pane outputs for WaitForReady tests
+	SendKeysCalls   []SendKeysCall
+	GetPanesCalls   []string // session names
+	CaptureSequence []string // sequence of captured pane outputs for WaitForReady tests
 
 	// Return values
-	Panes    []tmux.Pane
-	PaneErr  error
-	SendErr  error
+	Panes   []tmux.Pane
+	PaneErr error
+	SendErr error
 
 	// State tracking
 	captureIndex int

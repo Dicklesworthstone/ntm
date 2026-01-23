@@ -441,7 +441,7 @@ func TestE2E_FullRespawnCycleSimulation(t *testing.T) {
 
 	// Verify all steps completed
 	checks := map[string]bool{
-		"AGENT_V2_RUNNING":        strings.Contains(paneContent, "AGENT_V2_RUNNING"),
+		"AGENT_V2_RUNNING":         strings.Contains(paneContent, "AGENT_V2_RUNNING"),
 		"MARCHING_ORDERS_INJECTED": strings.Contains(paneContent, "MARCHING_ORDERS_INJECTED"),
 		"/tmp":                     strings.Contains(paneContent, "/tmp"),
 	}
@@ -676,12 +676,12 @@ func getProcessCmdline(pid string) string {
 
 // AutoRespawnerTestResult represents parsed output from respawn operations.
 type AutoRespawnerTestResult struct {
-	Success         bool   `json:"success"`
-	SessionPane     string `json:"session_pane"`
-	AgentType       string `json:"agent_type"`
-	AccountRotated  bool   `json:"account_rotated"`
-	Duration        string `json:"duration"`
-	Error           string `json:"error,omitempty"`
+	Success        bool   `json:"success"`
+	SessionPane    string `json:"session_pane"`
+	AgentType      string `json:"agent_type"`
+	AccountRotated bool   `json:"account_rotated"`
+	Duration       string `json:"duration"`
+	Error          string `json:"error,omitempty"`
 }
 
 // parseRespawnResult parses JSON respawn result output.
