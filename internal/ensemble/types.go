@@ -212,6 +212,10 @@ type ReasoningMode struct {
 	// PreambleKey is the key to lookup the preamble template for this mode.
 	// The preamble is injected into the agent prompt to set its reasoning approach.
 	PreambleKey string `json:"preamble_key" toml:"preamble_key"`
+
+	// Source indicates where this mode was loaded from (embedded, user, project).
+	// Set at load time, not persisted in TOML.
+	Source string `json:"source,omitempty" toml:"-"`
 }
 
 // Validate checks that the mode has all required fields and valid values.
@@ -366,17 +370,37 @@ type EnsembleSession struct {
 type SynthesisStrategy string
 
 const (
+	// StrategyManual performs mechanical merge only; no synthesizer agent.
+	StrategyManual SynthesisStrategy = "manual"
+	// StrategyAdversarial uses adversarial challenge/defense synthesis.
+	StrategyAdversarial SynthesisStrategy = "adversarial"
 	// StrategyConsensus combines outputs by finding agreement points.
 	StrategyConsensus SynthesisStrategy = "consensus"
-	// StrategyDebate synthesizes through dialectical comparison.
-	StrategyDebate SynthesisStrategy = "debate"
-	// StrategyWeighted uses quality-weighted combination.
-	StrategyWeighted SynthesisStrategy = "weighted"
-	// StrategySequential chains outputs in order.
-	StrategySequential SynthesisStrategy = "sequential"
-	// StrategyBestOf selects the highest-quality single response.
-	StrategyBestOf SynthesisStrategy = "best-of"
+	// StrategyCreative synthesizes through creative recombination.
+	StrategyCreative SynthesisStrategy = "creative"
+	// StrategyAnalytical uses systematic analytical decomposition.
+	StrategyAnalytical SynthesisStrategy = "analytical"
+	// StrategyDeliberative uses structured deliberation to weigh tradeoffs.
+	StrategyDeliberative SynthesisStrategy = "deliberative"
+	// StrategyPrioritized ranks and selects outputs by priority/quality.
+	StrategyPrioritized SynthesisStrategy = "prioritized"
+	// StrategyDialectical synthesizes through agent-led thesis/antithesis debate.
+	StrategyDialectical SynthesisStrategy = "dialectical"
+	// StrategyMetaReasoning uses a meta-cognitive synthesizer agent.
+	StrategyMetaReasoning SynthesisStrategy = "meta-reasoning"
+	// StrategyVoting uses structured score/vote aggregation.
+	StrategyVoting SynthesisStrategy = "voting"
+	// StrategyArgumentation builds support/attack graph from outputs.
+	StrategyArgumentation SynthesisStrategy = "argumentation-graph"
 )
+
+// allStrategies is the canonical ordered list of valid strategies.
+var allStrategies = []SynthesisStrategy{
+	StrategyManual, StrategyAdversarial, StrategyConsensus,
+	StrategyCreative, StrategyAnalytical, StrategyDeliberative,
+	StrategyPrioritized, StrategyDialectical, StrategyMetaReasoning,
+	StrategyVoting, StrategyArgumentation,
+}
 
 // String returns the strategy as a string.
 func (s SynthesisStrategy) String() string {
@@ -385,13 +409,12 @@ func (s SynthesisStrategy) String() string {
 
 // IsValid returns true if this is a known synthesis strategy.
 func (s SynthesisStrategy) IsValid() bool {
-	switch s {
-	case StrategyConsensus, StrategyDebate, StrategyWeighted,
-		StrategySequential, StrategyBestOf:
-		return true
-	default:
-		return false
+	for _, valid := range allStrategies {
+		if s == valid {
+			return true
+		}
 	}
+	return false
 }
 
 // ModeRef references a reasoning mode by ID or taxonomy code.
