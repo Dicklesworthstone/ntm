@@ -154,13 +154,23 @@ func TestSynthesisStrategy_IsValid(t *testing.T) {
 		strategy SynthesisStrategy
 		valid    bool
 	}{
+		{StrategyManual, true},
+		{StrategyAdversarial, true},
 		{StrategyConsensus, true},
-		{StrategyDebate, true},
-		{StrategyWeighted, true},
-		{StrategySequential, true},
-		{StrategyBestOf, true},
+		{StrategyCreative, true},
+		{StrategyAnalytical, true},
+		{StrategyDeliberative, true},
+		{StrategyPrioritized, true},
+		{StrategyDialectical, true},
+		{StrategyMetaReasoning, true},
+		{StrategyVoting, true},
+		{StrategyArgumentation, true},
 		{SynthesisStrategy("invalid"), false},
 		{SynthesisStrategy(""), false},
+		{SynthesisStrategy("debate"), false},
+		{SynthesisStrategy("weighted"), false},
+		{SynthesisStrategy("sequential"), false},
+		{SynthesisStrategy("best-of"), false},
 	}
 
 	for _, tt := range tests {
@@ -197,7 +207,7 @@ func TestEnsemblePreset_Validate(t *testing.T) {
 		Name:        "code-preset",
 		Description: "Uses code ref",
 		Modes:       []ModeRef{ModeRefFromID("deductive"), ModeRefFromCode("C1")},
-		Synthesis:   SynthesisConfig{Strategy: StrategyDebate},
+		Synthesis:   SynthesisConfig{Strategy: StrategyDialectical},
 	}
 	if err := codePreset.Validate(catalog); err != nil {
 		t.Errorf("preset with code ref should pass validation: %v", err)
