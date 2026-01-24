@@ -1133,7 +1133,7 @@ func (s *Store) GetBeadHistoryStats(sessionID string) (*BeadHistoryStats, error)
 		stats.ByStatus[status] = count
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate status counts: %w", err)
+		return nil, fmt.Errorf("iterate status rows: %w", err)
 	}
 
 	// Count by agent
@@ -1154,7 +1154,7 @@ func (s *Store) GetBeadHistoryStats(sessionID string) (*BeadHistoryStats, error)
 		}
 	}
 	if err := rows2.Err(); err != nil {
-		return nil, fmt.Errorf("iterate agent counts: %w", err)
+		return nil, fmt.Errorf("iterate agent rows: %w", err)
 	}
 
 	// Count failure reasons
@@ -1172,6 +1172,9 @@ func (s *Store) GetBeadHistoryStats(sessionID string) (*BeadHistoryStats, error)
 			return nil, fmt.Errorf("scan reason count: %w", err)
 		}
 		stats.FailureReasons[reason] = count
+	}
+	if err := rows3.Err(); err != nil {
+		return nil, fmt.Errorf("iterate reason rows: %w", err)
 	}
 
 	return stats, nil
