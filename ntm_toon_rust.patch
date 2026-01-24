@@ -1,0 +1,1094 @@
+From 1e9596052425c400ee09d33952b0bf65f6659c68 Mon Sep 17 00:00:00 2001
+From: Dicklesworthstone <jeff141421@gmail.com>
+Date: Sat, 24 Jan 2026 02:34:15 -0500
+Subject: [PATCH] ntm: use toon_rust (tru) for TOON output
+
+---
+ internal/robot/env.go                    |  52 ++--
+ internal/robot/renderer.go               |   8 +-
+ internal/robot/renderer_test.go          | 114 +++-----
+ internal/robot/toon.go                   | 133 ++++++++--
+ internal/robot/toon_test.go              | 320 +++--------------------
+ internal/robot/toon_test_helpers_test.go | 104 ++++++++
+ 6 files changed, 328 insertions(+), 403 deletions(-)
+ create mode 100644 internal/robot/toon_test_helpers_test.go
+
+diff --git a/internal/robot/env.go b/internal/robot/env.go
+index b605a0f..981a130 100644
+--- a/internal/robot/env.go
++++ b/internal/robot/env.go
+@@ -3,12 +3,14 @@
+ package robot
+ 
+ import (
++	"context"
+ 	"fmt"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+ 	"regexp"
+ 	"strings"
++	"time"
+ )
+ 
+ // =============================================================================
+@@ -132,7 +134,10 @@ func findTmuxBinaryPath() string {
+ 
+ // getTmuxVersion returns the tmux version string
+ func getTmuxVersion(binaryPath string) string {
+-	out, err := exec.Command(binaryPath, "-V").Output()
++	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
++	defer cancel()
++
++	out, err := exec.CommandContext(ctx, binaryPath, "-V").Output()
+ 	if err != nil {
+ 		return ""
+ 	}
+@@ -147,26 +152,43 @@ func detectTmuxAlias() bool {
+ 		return false
+ 	}
+ 
+-	// Use type command to check for alias/function
+-	var cmd *exec.Cmd
+-	if strings.Contains(shell, "zsh") {
+-		cmd = exec.Command("zsh", "-i", "-c", "type tmux 2>/dev/null")
+-	} else if strings.Contains(shell, "bash") {
+-		cmd = exec.Command("bash", "-i", "-c", "type tmux 2>/dev/null")
+-	} else {
++	home := os.Getenv("HOME")
++	if home == "" {
+ 		return false
+ 	}
+ 
+-	out, err := cmd.Output()
+-	if err != nil {
++	// Avoid invoking an interactive shell here; user shell init files can hang.
++	// Instead, do a best-effort scan of common RC files for an alias/function.
++	var rcFiles []string
++	switch {
++	case strings.Contains(shell, "zsh"):
++		rcFiles = []string{
++			filepath.Join(home, ".zshrc"),
++			filepath.Join(home, ".zshrc.local"),
++		}
++	case strings.Contains(shell, "bash"):
++		rcFiles = []string{
++			filepath.Join(home, ".bashrc"),
++			filepath.Join(home, ".bash_profile"),
++		}
++	default:
+ 		return false
+ 	}
+ 
+-	output := strings.ToLower(string(out))
+-	// If "type tmux" shows function or alias, it's wrapped
+-	return strings.Contains(output, "function") ||
+-		strings.Contains(output, "alias") ||
+-		strings.Contains(output, "shell function")
++	aliasRe := regexp.MustCompile(`(?m)^\s*alias\s+tmux=`)
++	funcRe := regexp.MustCompile(`(?m)^\s*(?:function\s+)?tmux\s*\(\)\s*\{`)
++
++	for _, rc := range rcFiles {
++		content, err := os.ReadFile(rc)
++		if err != nil {
++			continue
++		}
++		if aliasRe.Match(content) || funcRe.Match(content) {
++			return true
++		}
++	}
++
++	return false
+ }
+ 
+ // detectOhMyZshTmuxPlugin checks for oh-my-zsh tmux plugin
+diff --git a/internal/robot/renderer.go b/internal/robot/renderer.go
+index d39f242..2d719f3 100644
+--- a/internal/robot/renderer.go
++++ b/internal/robot/renderer.go
+@@ -150,12 +150,8 @@ func (r *JSONRenderer) Format() RobotFormat {
+ // TOON (Token-Oriented Object Notation) uses tab-separated values with schema
+ // headers, providing significant token savings over JSON for AI model consumption.
+ //
+-// Supported shapes:
+-//   - Uniform arrays of objects (tabular format)
+-//   - Primitive values (strings, numbers, booleans, null)
+-//   - Simple objects with scalar fields
+-//
+-// Unsupported shapes return an error; use FormatAuto to fall back to JSON.
++// Encoding is performed by toon_rust's `tru` binary via toonEncode to ensure a
++// single canonical implementation across languages/tools.
+ type TOONRenderer struct {
+ 	// Delimiter is the field separator. Default: "\t" (tab).
+ 	Delimiter string
+diff --git a/internal/robot/renderer_test.go b/internal/robot/renderer_test.go
+index 5e952f4..09f6798 100644
+--- a/internal/robot/renderer_test.go
++++ b/internal/robot/renderer_test.go
+@@ -237,15 +237,13 @@ func TestTOONRendererRenderSimpleObject(t *testing.T) {
+ 	r := NewTOONRenderer()
+ 	payload := map[string]string{"key": "value"}
+ 
++	requireToonBinary(t)
+ 	output, err := r.Render(payload)
+ 	if err != nil {
+ 		t.Fatalf("TOON Render() error: %v", err)
+ 	}
+ 
+-	// Output should contain the key-value pair
+-	if !strings.Contains(output, "key:") || !strings.Contains(output, "value") {
+-		t.Errorf("TOON output missing expected content: %q", output)
+-	}
++	assertToonDecodesToPayload(t, output, payload)
+ }
+ 
+ func TestTOONRendererRenderArray(t *testing.T) {
+@@ -256,41 +254,32 @@ func TestTOONRendererRenderArray(t *testing.T) {
+ 			{"id": 1, "name": "Alice"},
+ 			{"id": 2, "name": "Bob"},
+ 		}
++		requireToonBinary(t)
+ 		output, err := r.Render(payload)
+ 		if err != nil {
+ 			t.Fatalf("TOON Render() error: %v", err)
+ 		}
+-		// Should have tabular header with field names
+-		if !strings.Contains(output, "[2]{") {
+-			t.Errorf("TOON output missing array header: %q", output)
+-		}
+-		// Should contain field names (alphabetically sorted)
+-		if !strings.Contains(output, "id") || !strings.Contains(output, "name") {
+-			t.Errorf("TOON output missing field names: %q", output)
+-		}
++		assertToonDecodesToPayload(t, output, payload)
+ 	})
+ 
+ 	t.Run("primitive array", func(t *testing.T) {
+ 		payload := []int{1, 2, 3}
++		requireToonBinary(t)
+ 		output, err := r.Render(payload)
+ 		if err != nil {
+ 			t.Fatalf("TOON Render() error: %v", err)
+ 		}
+-		// Should have inline format
+-		if !strings.Contains(output, "[3]:") {
+-			t.Errorf("TOON output missing array inline format: %q", output)
+-		}
++		assertToonDecodesToPayload(t, output, payload)
+ 	})
+ 
+ 	t.Run("empty array", func(t *testing.T) {
+ 		payload := []string{}
++		requireToonBinary(t)
+ 		output, err := r.Render(payload)
+ 		if err != nil {
+ 			t.Fatalf("TOON Render() error: %v", err)
+ 		}
+-		if strings.TrimSpace(output) != "[]" {
+-			t.Errorf("TOON empty array output = %q, want %q", output, "[]")
+-		}
++		assertToonDecodesToPayload(t, output, payload)
+ 	})
+ }
+ 
+@@ -298,33 +287,31 @@ func TestTOONRendererRenderPrimitives(t *testing.T) {
+ 	r := NewTOONRenderer()
+ 
+ 	tests := []struct {
+-		name     string
+-		payload  interface{}
+-		expected string
++		name    string
++		payload interface{}
+ 	}{
+-		{"nil", nil, "null\n"},
+-		{"true", true, "true\n"},
+-		{"false", false, "false\n"},
+-		{"int", 42, "42\n"},
+-		{"float", 3.14, "3.14\n"},
+-		{"string identifier", "hello", "hello\n"},
+-		{"string with spaces", "hello world", "\"hello world\"\n"},
++		{"nil", nil},
++		{"true", true},
++		{"false", false},
++		{"int", 42},
++		{"float", 3.14},
++		{"string identifier", "hello"},
++		{"string with spaces", "hello world"},
+ 	}
+ 
+ 	for _, tc := range tests {
+ 		t.Run(tc.name, func(t *testing.T) {
++			requireToonBinary(t)
+ 			output, err := r.Render(tc.payload)
+ 			if err != nil {
+ 				t.Fatalf("TOON Render() error: %v", err)
+ 			}
+-			if output != tc.expected {
+-				t.Errorf("TOON Render(%v) = %q, want %q", tc.payload, output, tc.expected)
+-			}
++			assertToonDecodesToPayload(t, output, tc.payload)
+ 		})
+ 	}
+ }
+ 
+-func TestTOONRendererDeterministicOrder(t *testing.T) {
++func TestTOONRendererRoundTripMap(t *testing.T) {
+ 	r := NewTOONRenderer()
+ 	payload := map[string]int{
+ 		"zebra":  1,
+@@ -332,23 +319,12 @@ func TestTOONRendererDeterministicOrder(t *testing.T) {
+ 		"banana": 3,
+ 	}
+ 
+-	// Render multiple times to verify deterministic output
+-	output1, _ := r.Render(payload)
+-	output2, _ := r.Render(payload)
+-	output3, _ := r.Render(payload)
+-
+-	if output1 != output2 || output2 != output3 {
+-		t.Errorf("TOON output not deterministic:\n%s\nvs\n%s", output1, output2)
+-	}
+-
+-	// Fields should be alphabetically sorted
+-	appleIdx := strings.Index(output1, "apple")
+-	bananaIdx := strings.Index(output1, "banana")
+-	zebraIdx := strings.Index(output1, "zebra")
+-
+-	if appleIdx > bananaIdx || bananaIdx > zebraIdx {
+-		t.Errorf("TOON fields not alphabetically sorted: %s", output1)
++	requireToonBinary(t)
++	output, err := r.Render(payload)
++	if err != nil {
++		t.Fatalf("TOON Render() error: %v", err)
+ 	}
++	assertToonDecodesToPayload(t, output, payload)
+ }
+ 
+ func TestTOONRendererContentType(t *testing.T) {
+@@ -394,14 +370,12 @@ func TestRender(t *testing.T) {
+ 	})
+ 
+ 	t.Run("FormatTOON renders successfully", func(t *testing.T) {
++		requireToonBinary(t)
+ 		output, err := Render(payload, FormatTOON)
+ 		if err != nil {
+ 			t.Fatalf("Render() with TOON error: %v", err)
+ 		}
+-		// TOON output should contain the message field
+-		if !strings.Contains(output, "message") || !strings.Contains(output, "hello") {
+-			t.Errorf("TOON output missing expected content: %q", output)
+-		}
++		assertToonDecodesToPayload(t, output, payload)
+ 	})
+ 
+ 	t.Run("FormatAuto defaults to JSON", func(t *testing.T) {
+@@ -498,6 +472,7 @@ func TestOutputTo(t *testing.T) {
+ 	})
+ 
+ 	t.Run("TOON writes to buffer", func(t *testing.T) {
++		requireToonBinary(t)
+ 		var buf bytes.Buffer
+ 		err := OutputTo(&buf, payload, FormatTOON)
+ 		if err != nil {
+@@ -507,9 +482,7 @@ func TestOutputTo(t *testing.T) {
+ 		if output == "" {
+ 			t.Error("expected non-empty output")
+ 		}
+-		if !strings.Contains(output, "count") {
+-			t.Errorf("TOON output missing expected content: %q", output)
+-		}
++		assertToonDecodesToPayload(t, output, payload)
+ 	})
+ }
+ 
+@@ -548,6 +521,7 @@ func TestRenderWithMeta(t *testing.T) {
+ 	})
+ 
+ 	t.Run("TOON format", func(t *testing.T) {
++		requireToonBinary(t)
+ 		result, err := RenderWithMeta(payload, FormatTOON)
+ 		if err != nil {
+ 			t.Fatalf("RenderWithMeta() with TOON error: %v", err)
+@@ -561,9 +535,7 @@ func TestRenderWithMeta(t *testing.T) {
+ 		if result.Format != FormatTOON {
+ 			t.Errorf("Format = %q, want %q", result.Format, FormatTOON)
+ 		}
+-		if !strings.Contains(result.Output, "data") {
+-			t.Errorf("TOON output missing expected content: %q", result.Output)
+-		}
++		assertToonDecodesToPayload(t, result.Output, payload)
+ 	})
+ }
+ 
+@@ -688,6 +660,7 @@ func TestOutputFormatAffectsEncodeJSON(t *testing.T) {
+ 
+ 	// Test with TOON format
+ 	OutputFormat = FormatTOON
++	requireToonBinary(t)
+ 	toonOutput, err := Render(payload, OutputFormat)
+ 	if err != nil {
+ 		t.Fatalf("Render with FormatTOON error: %v", err)
+@@ -698,10 +671,7 @@ func TestOutputFormatAffectsEncodeJSON(t *testing.T) {
+ 		t.Error("TOON output should differ from JSON output")
+ 	}
+ 
+-	// TOON output should contain key-value format
+-	if !strings.Contains(toonOutput, "key") || !strings.Contains(toonOutput, "value") {
+-		t.Errorf("TOON output missing expected content: %q", toonOutput)
+-	}
++	assertToonDecodesToPayload(t, toonOutput, payload)
+ }
+ 
+ // =============================================================================
+@@ -729,15 +699,12 @@ func TestRenderSnapshotsJSONAndTOON(t *testing.T) {
+ 	})
+ 
+ 	t.Run("toon array snapshot", func(t *testing.T) {
++		requireToonBinary(t)
+ 		output, err := Render(items, FormatTOON)
+ 		if err != nil {
+ 			t.Fatalf("Render(TOON) error: %v", err)
+ 		}
+-
+-		expected := "[2]{id,name}:\n 1\talpha\n 2\tbeta\n"
+-		if output != expected {
+-			t.Errorf("TOON snapshot mismatch:\n--- got ---\n%s--- want ---\n%s", output, expected)
+-		}
++		assertToonDecodesToPayload(t, output, items)
+ 	})
+ 
+ 	t.Run("robot response snapshot", func(t *testing.T) {
+@@ -756,15 +723,12 @@ func TestRenderSnapshotsJSONAndTOON(t *testing.T) {
+ 			t.Errorf("RobotResponse JSON snapshot mismatch:\n--- got ---\n%s--- want ---\n%s", jsonOutput, expectedJSON)
+ 		}
+ 
++		requireToonBinary(t)
+ 		toonOutput, err := Render(payload, FormatTOON)
+ 		if err != nil {
+ 			t.Fatalf("Render(TOON) error: %v", err)
+ 		}
+-
+-		expectedTOON := "error: \"\"\nerror_code: \"\"\nhint: \"\"\nstructured_error: null\nsuccess: true\ntimestamp: \"2026-01-01T00:00:00Z\"\n"
+-		if toonOutput != expectedTOON {
+-			t.Errorf("RobotResponse TOON snapshot mismatch:\n--- got ---\n%s--- want ---\n%s", toonOutput, expectedTOON)
+-		}
++		assertToonDecodesToPayload(t, toonOutput, payload)
+ 	})
+ }
+ 
+@@ -795,7 +759,7 @@ func TestRenderTOONUnsupportedTypeReturnsError(t *testing.T) {
+ 	if err == nil {
+ 		t.Fatal("expected error for unsupported TOON payload, got nil")
+ 	}
+-	if !strings.Contains(err.Error(), "unsupported") {
+-		t.Fatalf("expected unsupported error, got: %v", err)
++	if !strings.Contains(err.Error(), "json marshal") && !strings.Contains(err.Error(), "json encode") && !strings.Contains(err.Error(), "unsupported") {
++		t.Fatalf("expected json marshal/encode/unsupported error, got: %v", err)
+ 	}
+ }
+diff --git a/internal/robot/toon.go b/internal/robot/toon.go
+index 3ab8dbc..95ad48e 100644
+--- a/internal/robot/toon.go
++++ b/internal/robot/toon.go
+@@ -1,5 +1,6 @@
+ // Package robot provides machine-readable output for AI agents.
+-// toon.go implements the TOON (Token-Oriented Object Notation) encoder.
++// toon.go implements TOON (Token-Oriented Object Notation) encoding by
++// delegating to the toon_rust encoder binary (`tru`).
+ //
+ // TOON is a token-efficient serialization format designed for LLM consumption.
+ // This implementation supports:
+@@ -17,51 +18,127 @@ import (
+ 	"bytes"
+ 	"encoding/json"
+ 	"fmt"
++	"os"
++	"os/exec"
+ 	"reflect"
+ 	"sort"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ )
+ 
+ // toonEncode encodes a payload as TOON format.
+ // Returns an error for unsupported payload shapes.
+ func toonEncode(payload any, delimiter string) (string, error) {
+-	if payload == nil {
+-		return "null\n", nil
++	jsonBytes, err := json.Marshal(payload)
++	if err != nil {
++		return "", fmt.Errorf("json marshal: %w", err)
+ 	}
+ 
+-	v := reflect.ValueOf(payload)
++	trPath, err := toonBinaryPath()
++	if err != nil {
++		return "", err
++	}
+ 
+-	// Dereference pointers
+-	for v.Kind() == reflect.Ptr {
+-		if v.IsNil() {
+-			return "null\n", nil
++	args := []string{}
++	if delimArg := toonDelimiterArg(delimiter); delimArg != "" {
++		args = append(args, "--delimiter", delimArg)
++	}
++
++	cmd := exec.Command(trPath, args...)
++	cmd.Stdin = bytes.NewReader(jsonBytes)
++
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
++	if err := cmd.Run(); err != nil {
++		errMsg := strings.TrimSpace(stderr.String())
++		if errMsg == "" {
++			errMsg = err.Error()
+ 		}
+-		v = v.Elem()
++		return "", fmt.Errorf("toon_rust encode failed: %s", errMsg)
+ 	}
+ 
+-	enc := &toonEncoder{delimiter: delimiter}
++	return stdout.String(), nil
++}
+ 
+-	switch v.Kind() {
+-	case reflect.Slice, reflect.Array:
+-		return enc.renderArray(v)
+-	case reflect.Map, reflect.Struct:
+-		return enc.renderObject(v, 0)
+-	case reflect.String:
+-		return enc.encodeString(v.String()) + "\n", nil
+-	case reflect.Bool:
+-		if v.Bool() {
+-			return "true\n", nil
++var (
++	toonBinaryOnce       sync.Once
++	toonBinaryPathCached string
++	toonBinaryErr        error
++)
++
++func toonBinaryPath() (string, error) {
++	if envPath, err := toonBinaryFromEnv(); err != nil {
++		return "", err
++	} else if envPath != "" {
++		return envPath, nil
++	}
++
++	toonBinaryOnce.Do(func() {
++		for _, candidate := range []string{"tru"} {
++			path, err := exec.LookPath(candidate)
++			if err != nil {
++				continue
++			}
++			if !isToonRustBinary(path) {
++				continue
++			}
++			toonBinaryPathCached = path
++			return
+ 		}
+-		return "false\n", nil
+-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+-		return strconv.FormatInt(v.Int(), 10) + "\n", nil
+-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+-		return strconv.FormatUint(v.Uint(), 10) + "\n", nil
+-	case reflect.Float32, reflect.Float64:
+-		return enc.formatFloat(v.Float()) + "\n", nil
++
++		toonBinaryErr = fmt.Errorf(
++			"toon_rust encoder not found in PATH; install tru or set TOON_TRU_BIN to the toon_rust binary path",
++		)
++	})
++
++	if toonBinaryErr != nil {
++		return "", toonBinaryErr
++	}
++	return toonBinaryPathCached, nil
++}
++
++func toonBinaryFromEnv() (string, error) {
++	for _, env := range []string{"TOON_TRU_BIN"} {
++		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
++			if !isToonRustBinary(val) {
++				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru)", env, val)
++			}
++			return val, nil
++		}
++	}
++	return "", nil
++}
++
++func isToonRustBinary(path string) bool {
++	// Distinguish toon_rust from:
++	// - system `tr` (coreutils)
++	// - the Node.js `toon` CLI (toon-format), which is not allowed here
++	helpOut, _ := exec.Command(path, "--help").CombinedOutput()
++	helpLower := strings.ToLower(string(helpOut))
++	if strings.Contains(helpLower, "reference implementation in rust") {
++		return true
++	}
++
++	verOut, _ := exec.Command(path, "--version").CombinedOutput()
++	verLower := strings.ToLower(strings.TrimSpace(string(verOut)))
++	return strings.HasPrefix(verLower, "tru ") || strings.HasPrefix(verLower, "toon_rust ")
++}
++
++func toonDelimiterArg(delimiter string) string {
++	switch delimiter {
++	case "", ",":
++		return ","
++	case "\t":
++		return "tab"
++	case "|":
++		return "|"
++	case "tab", "comma", "pipe":
++		return delimiter
+ 	default:
+-		return "", fmt.Errorf("TOON: unsupported type %s", v.Kind())
++		return strings.TrimSpace(delimiter)
+ 	}
+ }
+ 
+diff --git a/internal/robot/toon_test.go b/internal/robot/toon_test.go
+index ee5a10d..5097f54 100644
+--- a/internal/robot/toon_test.go
++++ b/internal/robot/toon_test.go
+@@ -1,7 +1,6 @@
+ package robot
+ 
+ import (
+-	"strings"
+ 	"testing"
+ 	"time"
+ )
+@@ -12,105 +11,42 @@ import (
+ 
+ func TestToonEncode_Primitives(t *testing.T) {
+ 	tests := []struct {
+-		name     string
+-		input    interface{}
+-		expected string
++		name  string
++		input interface{}
+ 	}{
+-		{"nil", nil, "null\n"},
+-		{"bool true", true, "true\n"},
+-		{"bool false", false, "false\n"},
+-		{"int", 42, "42\n"},
+-		{"negative int", -123, "-123\n"},
+-		{"uint", uint(100), "100\n"},
+-		{"float", 3.14159, "3.14159\n"},
+-		{"float no trailing zeros", 1.5, "1.5\n"},
+-		{"float whole number", 2.0, "2\n"},
+-		{"string simple", "hello", "hello\n"},
+-		{"string with spaces", "hello world", "\"hello world\"\n"},
+-		{"string with special chars", "hello\nworld", "\"hello\\nworld\"\n"},
+-		{"string empty", "", "\"\"\n"},
++		{"nil", nil},
++		{"bool true", true},
++		{"bool false", false},
++		{"int", 42},
++		{"negative int", -123},
++		{"uint", uint(100)},
++		{"float", 3.14159},
++		{"float no trailing zeros", 1.5},
++		{"float whole number", 2.0},
++		{"string simple", "hello"},
++		{"string with spaces", "hello world"},
++		{"string with special chars", "hello\nworld"},
++		{"string empty", ""},
+ 	}
+ 
+ 	for _, tc := range tests {
+ 		t.Run(tc.name, func(t *testing.T) {
+-			output, err := toonEncode(tc.input, "\t")
+-			if err != nil {
+-				t.Fatalf("toonEncode() error: %v", err)
+-			}
+-			if output != tc.expected {
+-				t.Errorf("toonEncode(%v) = %q, want %q", tc.input, output, tc.expected)
+-			}
+-		})
+-	}
+-}
+-
+-func TestToonEncode_StringQuoting(t *testing.T) {
+-	tests := []struct {
+-		name     string
+-		input    string
+-		expected string
+-	}{
+-		{"identifier", "hello_world", "hello_world"},
+-		{"with digit", "test123", "test123"},
+-		{"starts with underscore", "_private", "_private"},
+-		{"needs quote - space", "hello world", "\"hello world\""},
+-		{"needs quote - starts with digit", "123abc", "\"123abc\""},
+-		{"needs quote - hyphen", "hello-world", "\"hello-world\""},
+-		{"needs quote - dot", "hello.world", "\"hello.world\""},
+-		{"keyword true", "true", "\"true\""},
+-		{"keyword false", "false", "\"false\""},
+-		{"keyword null", "null", "\"null\""},
+-		{"escape backslash", "a\\b", "\"a\\\\b\""},
+-		{"escape quote", "a\"b", "\"a\\\"b\""},
+-		{"escape newline", "a\nb", "\"a\\nb\""},
+-		{"escape tab", "a\tb", "\"a\\tb\""},
+-		{"escape carriage return", "a\rb", "\"a\\rb\""},
+-	}
+-
+-	enc := &toonEncoder{delimiter: "\t"}
+-	for _, tc := range tests {
+-		t.Run(tc.name, func(t *testing.T) {
+-			output := enc.encodeString(tc.input)
+-			if output != tc.expected {
+-				t.Errorf("encodeString(%q) = %q, want %q", tc.input, output, tc.expected)
+-			}
++			assertToonRoundTrip(t, tc.input)
+ 		})
+ 	}
+ }
+ 
+ func TestToonEncode_SimpleArrays(t *testing.T) {
+ 	t.Run("empty slice", func(t *testing.T) {
+-		output, err := toonEncode([]int{}, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if strings.TrimSpace(output) != "[]" {
+-			t.Errorf("output = %q, want %q", output, "[]")
+-		}
++		assertToonRoundTrip(t, []int{})
+ 	})
+ 
+ 	t.Run("int slice", func(t *testing.T) {
+-		output, err := toonEncode([]int{1, 2, 3}, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		// Should be inline format: [3]:1	2	3
+-		if !strings.HasPrefix(output, "[3]:") {
+-			t.Errorf("output should start with [3]:, got %q", output)
+-		}
+-		if !strings.Contains(output, "1") || !strings.Contains(output, "3") {
+-			t.Errorf("output missing values: %q", output)
+-		}
++		assertToonRoundTrip(t, []int{1, 2, 3})
+ 	})
+ 
+ 	t.Run("string slice", func(t *testing.T) {
+-		output, err := toonEncode([]string{"a", "b", "c"}, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if !strings.HasPrefix(output, "[3]:") {
+-			t.Errorf("output should start with [3]:, got %q", output)
+-		}
++		assertToonRoundTrip(t, []string{"a", "b", "c"})
+ 	})
+ }
+ 
+@@ -120,26 +56,7 @@ func TestToonEncode_TabularArrays(t *testing.T) {
+ 			{"id": 1, "name": "Alice"},
+ 			{"id": 2, "name": "Bob"},
+ 		}
+-		output, err := toonEncode(input, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-
+-		// Should have header with count and fields
+-		if !strings.HasPrefix(output, "[2]{") {
+-			t.Errorf("output should start with [2]{, got %q", output)
+-		}
+-
+-		// Fields should be alphabetically sorted (id before name)
+-		if !strings.Contains(output, "id,name") {
+-			t.Errorf("fields should be sorted as id,name, got %q", output)
+-		}
+-
+-		// Should have 2 data rows (plus header)
+-		lines := strings.Split(strings.TrimSpace(output), "\n")
+-		if len(lines) != 3 {
+-			t.Errorf("expected 3 lines (header + 2 rows), got %d", len(lines))
+-		}
++		assertToonRoundTrip(t, input)
+ 	})
+ 
+ 	t.Run("uniform structs", func(t *testing.T) {
+@@ -151,31 +68,14 @@ func TestToonEncode_TabularArrays(t *testing.T) {
+ 			{ID: 1, Name: "Alice"},
+ 			{ID: 2, Name: "Bob"},
+ 		}
+-		output, err := toonEncode(input, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-
+-		if !strings.HasPrefix(output, "[2]{") {
+-			t.Errorf("output should start with [2]{, got %q", output)
+-		}
++		assertToonRoundTrip(t, input)
+ 	})
+ }
+ 
+ func TestToonEncode_Objects(t *testing.T) {
+ 	t.Run("simple map", func(t *testing.T) {
+ 		input := map[string]int{"count": 42, "value": 100}
+-		output, err := toonEncode(input, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-
+-		if !strings.Contains(output, "count: 42") {
+-			t.Errorf("output should contain 'count: 42', got %q", output)
+-		}
+-		if !strings.Contains(output, "value: 100") {
+-			t.Errorf("output should contain 'value: 100', got %q", output)
+-		}
++		assertToonRoundTrip(t, input)
+ 	})
+ 
+ 	t.Run("simple struct", func(t *testing.T) {
+@@ -185,158 +85,47 @@ func TestToonEncode_Objects(t *testing.T) {
+ 			Enabled bool   `json:"enabled"`
+ 		}
+ 		input := Config{Port: 8080, Host: "localhost", Enabled: true}
+-		output, err := toonEncode(input, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-
+-		if !strings.Contains(output, "port: 8080") {
+-			t.Errorf("output should contain 'port: 8080', got %q", output)
+-		}
+-		if !strings.Contains(output, "host: localhost") {
+-			t.Errorf("output should contain 'host: localhost', got %q", output)
+-		}
+-		if !strings.Contains(output, "enabled: true") {
+-			t.Errorf("output should contain 'enabled: true', got %q", output)
+-		}
++		assertToonRoundTrip(t, input)
+ 	})
+ 
+ 	t.Run("empty map", func(t *testing.T) {
+ 		input := map[string]int{}
+-		output, err := toonEncode(input, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if strings.TrimSpace(output) != "{}" {
+-			t.Errorf("output = %q, want %q", output, "{}")
+-		}
++		assertToonRoundTrip(t, input)
+ 	})
+ }
+ 
+-func TestToonEncode_DeterministicOrdering(t *testing.T) {
+-	input := map[string]int{
+-		"zebra":  1,
+-		"apple":  2,
+-		"mango":  3,
+-		"banana": 4,
+-		"cherry": 5,
+-	}
+-
+-	// Encode multiple times
+-	outputs := make([]string, 10)
+-	for i := 0; i < 10; i++ {
+-		output, err := toonEncode(input, "\t")
+-		if err != nil {
+-			t.Fatalf("error on iteration %d: %v", i, err)
+-		}
+-		outputs[i] = output
+-	}
+-
+-	// All outputs should be identical
+-	for i := 1; i < 10; i++ {
+-		if outputs[i] != outputs[0] {
+-			t.Errorf("non-deterministic output on iteration %d:\n%s\nvs\n%s", i, outputs[0], outputs[i])
+-		}
+-	}
+-
+-	// Verify alphabetical ordering
+-	lines := strings.Split(outputs[0], "\n")
+-	var prevField string
+-	for _, line := range lines {
+-		if strings.Contains(line, ":") {
+-			parts := strings.SplitN(line, ":", 2)
+-			field := strings.TrimSpace(parts[0])
+-			if prevField != "" && field < prevField {
+-				t.Errorf("fields not sorted: %q comes after %q", field, prevField)
+-			}
+-			prevField = field
+-		}
+-	}
+-}
+-
+-func TestToonEncode_TabSafetyFallback(t *testing.T) {
+-	// When values contain tabs, should fall back to comma delimiter
++func TestToonEncode_TabSafetyRoundTrip(t *testing.T) {
+ 	input := []map[string]string{
+ 		{"name": "Alice", "desc": "has\ttab"},
+ 		{"name": "Bob", "desc": "normal"},
+ 	}
+-
+-	output, err := toonEncode(input, "\t")
+-	if err != nil {
+-		t.Fatalf("error: %v", err)
+-	}
+-
+-	// Data rows should use comma, not tab
+-	lines := strings.Split(strings.TrimSpace(output), "\n")
+-	if len(lines) < 2 {
+-		t.Fatalf("expected at least 2 lines, got %d", len(lines))
+-	}
+-
+-	// First data row should contain comma separator
+-	dataRow := lines[1]
+-	if strings.Count(dataRow, ",") < 1 {
+-		t.Errorf("expected comma-separated values due to tab in data, got %q", dataRow)
+-	}
++	assertToonRoundTrip(t, input)
+ }
+ 
+-func TestToonEncode_NestedFallbackToJSON(t *testing.T) {
+-	// Nested complex types in tabular rows should fall back to JSON inline
++func TestToonEncode_NestedRoundTrip(t *testing.T) {
+ 	input := []map[string]interface{}{
+ 		{"id": 1, "tags": []string{"a", "b"}},
+ 		{"id": 2, "tags": []string{"c"}},
+ 	}
+-
+-	output, err := toonEncode(input, "\t")
+-	if err != nil {
+-		t.Fatalf("error: %v", err)
+-	}
+-
+-	// Should contain quoted JSON for the tags field
+-	if !strings.Contains(output, `["a","b"]`) && !strings.Contains(output, `"[\"a\",\"b\"]"`) {
+-		t.Logf("output: %s", output)
+-		// The nested array should be encoded somehow
+-	}
++	assertToonRoundTrip(t, input)
+ }
+ 
+ func TestToonEncode_PointerHandling(t *testing.T) {
+ 	t.Run("nil pointer", func(t *testing.T) {
+ 		var ptr *int
+-		output, err := toonEncode(ptr, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if output != "null\n" {
+-			t.Errorf("output = %q, want %q", output, "null\n")
+-		}
++		assertToonRoundTrip(t, ptr)
+ 	})
+ 
+ 	t.Run("non-nil pointer", func(t *testing.T) {
+ 		val := 42
+ 		ptr := &val
+-		output, err := toonEncode(ptr, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if output != "42\n" {
+-			t.Errorf("output = %q, want %q", output, "42\n")
+-		}
++		assertToonRoundTrip(t, ptr)
+ 	})
+ }
+ 
+ func TestToonEncode_TimeHandling(t *testing.T) {
+-	// time.Time should be encoded as a struct (with its fields)
+-	// This is primarily to ensure it doesn't panic
+ 	input := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+-
+-	output, err := toonEncode(input, "\t")
+-	if err != nil {
+-		t.Fatalf("error: %v", err)
+-	}
+-
+-	// Should produce some output without error
+-	if output == "" {
+-		t.Error("expected non-empty output for time.Time")
+-	}
++	assertToonRoundTrip(t, input)
+ }
+ 
+ func TestToonEncode_JSONTagHandling(t *testing.T) {
+@@ -349,51 +138,24 @@ func TestToonEncode_JSONTagHandling(t *testing.T) {
+ 	}
+ 
+ 	input := Item{ID: 1, Name: "test", internal: "secret", Ignored: "skip", OmitZero: 0}
+-	output, err := toonEncode(input, "\t")
+-	if err != nil {
+-		t.Fatalf("error: %v", err)
+-	}
+-
+-	// Should contain id and name
+-	if !strings.Contains(output, "id:") || !strings.Contains(output, "name:") {
+-		t.Errorf("output should contain id and name: %q", output)
+-	}
+-
+-	// Should not contain internal or Ignored
+-	if strings.Contains(output, "internal") {
+-		t.Errorf("output should not contain unexported field: %q", output)
+-	}
+-	if strings.Contains(output, "Ignored") {
+-		t.Errorf("output should not contain ignored field: %q", output)
+-	}
+-
+-	// Should contain omit_zero (the json tag name, not the field name)
+-	if !strings.Contains(output, "omit_zero") {
+-		t.Errorf("output should use json tag name omit_zero: %q", output)
+-	}
++	assertToonRoundTrip(t, input)
+ }
+ 
+ func TestToonEncode_RobotPayloads(t *testing.T) {
+-	// Test with actual robot types to ensure compatibility
+ 	t.Run("RobotResponse", func(t *testing.T) {
+ 		resp := NewRobotResponse(true)
+-		output, err := toonEncode(resp, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if !strings.Contains(output, "success: true") {
+-			t.Errorf("output should contain 'success: true': %q", output)
+-		}
++		assertToonRoundTrip(t, resp)
+ 	})
+ 
+ 	t.Run("ErrorResponse", func(t *testing.T) {
+ 		resp := NewErrorResponse(nil, ErrCodeInternalError, "test hint")
+-		output, err := toonEncode(resp, "\t")
+-		if err != nil {
+-			t.Fatalf("error: %v", err)
+-		}
+-		if !strings.Contains(output, "success: false") {
+-			t.Errorf("output should contain 'success: false': %q", output)
+-		}
++		assertToonRoundTrip(t, resp)
+ 	})
+ }
++
++func TestToonEncode_JSONMarshalError(t *testing.T) {
++	ch := make(chan int)
++	if _, err := toonEncode(ch, "\t"); err == nil {
++		t.Fatal("expected json marshal error, got nil")
++	}
++}
+diff --git a/internal/robot/toon_test_helpers_test.go b/internal/robot/toon_test_helpers_test.go
+new file mode 100644
+index 0000000..f8aa3db
+--- /dev/null
++++ b/internal/robot/toon_test_helpers_test.go
+@@ -0,0 +1,104 @@
++package robot
++
++import (
++	"bytes"
++	"encoding/json"
++	"os"
++	"os/exec"
++	"reflect"
++	"strings"
++	"testing"
++)
++
++func requireToonBinary(t *testing.T) string {
++	t.Helper()
++
++	path, err := toonBinaryPath()
++	if err != nil {
++		if strings.TrimSpace(os.Getenv("TOON_TRU_BIN")) != "" {
++			t.Fatalf("TOON_TRU_BIN env set but invalid: %v", err)
++		}
++		t.Skipf("toon_rust tru not available: %v", err)
++	}
++
++	return path
++}
++
++func normalizeJSONPayload(t *testing.T, payload any) any {
++	t.Helper()
++
++	data, err := json.Marshal(payload)
++	if err != nil {
++		t.Fatalf("json marshal: %v", err)
++	}
++
++	var out any
++	if err := json.Unmarshal(data, &out); err != nil {
++		t.Fatalf("json unmarshal: %v", err)
++	}
++
++	return out
++}
++
++func decodeToJSON(t *testing.T, toon string) []byte {
++	t.Helper()
++
++	path := requireToonBinary(t)
++	cmd := exec.Command(path, "-d")
++	cmd.Stdin = strings.NewReader(toon)
++
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
++	if err := cmd.Run(); err != nil {
++		errMsg := strings.TrimSpace(stderr.String())
++		if errMsg == "" {
++			errMsg = err.Error()
++		}
++		t.Fatalf("toon_rust decode failed: %s", errMsg)
++	}
++
++	return stdout.Bytes()
++}
++
++func decodeToValue(t *testing.T, toon string) any {
++	t.Helper()
++
++	data := decodeToJSON(t, toon)
++	var out any
++	if err := json.Unmarshal(data, &out); err != nil {
++		t.Fatalf("decoded JSON unmarshal: %v", err)
++	}
++
++	return out
++}
++
++func assertToonRoundTrip(t *testing.T, payload any) {
++	t.Helper()
++
++	requireToonBinary(t)
++	output, err := toonEncode(payload, "\t")
++	if err != nil {
++		t.Fatalf("toonEncode: %v", err)
++	}
++
++	got := decodeToValue(t, output)
++	want := normalizeJSONPayload(t, payload)
++	if !reflect.DeepEqual(got, want) {
++		t.Errorf("TOON round-trip mismatch: got %#v want %#v", got, want)
++	}
++}
++
++func assertToonDecodesToPayload(t *testing.T, toon string, payload any) {
++	t.Helper()
++
++	got := decodeToValue(t, toon)
++	want := normalizeJSONPayload(t, payload)
++	if !reflect.DeepEqual(got, want) {
++		t.Errorf("TOON decode mismatch: got %#v want %#v", got, want)
++	}
++}
+-- 
+2.51.0

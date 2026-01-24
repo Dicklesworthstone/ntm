@@ -1,6 +1,6 @@
 // Package robot provides machine-readable output for AI agents.
 // toon.go implements TOON (Token-Oriented Object Notation) encoding by
-// delegating to the toon_rust encoder binary (`toon-tr` preferred; `tr` also supported).
+// delegating to the toon_rust encoder binary (`tru`).
 //
 // TOON is a token-efficient serialization format designed for LLM consumption.
 // This implementation supports:
@@ -35,7 +35,7 @@ func toonEncode(payload any, delimiter string) (string, error) {
 		return "", fmt.Errorf("json marshal: %w", err)
 	}
 
-	trPath, err := toonBinaryPath()
+	truPath, err := toonBinaryPath()
 	if err != nil {
 		return "", err
 	}
@@ -45,7 +45,7 @@ func toonEncode(payload any, delimiter string) (string, error) {
 		args = append(args, "--delimiter", delimArg)
 	}
 
-	cmd := exec.Command(trPath, args...)
+	cmd := exec.Command(truPath, args...)
 	cmd.Stdin = bytes.NewReader(jsonBytes)
 
 	var stdout, stderr bytes.Buffer
@@ -77,7 +77,7 @@ func toonBinaryPath() (string, error) {
 	}
 
 	toonBinaryOnce.Do(func() {
-		for _, candidate := range []string{"toon-tr", "tr"} {
+		for _, candidate := range []string{"tru"} {
 			path, err := exec.LookPath(candidate)
 			if err != nil {
 				continue
@@ -90,7 +90,7 @@ func toonBinaryPath() (string, error) {
 		}
 
 		toonBinaryErr = fmt.Errorf(
-			"toon_rust encoder not found in PATH; install toon-tr or set TOON_TR_PATH/TOON_TR_BIN to the toon_rust binary path",
+			"toon_rust encoder not found in PATH; install tru or set TOON_TRU_BIN to the toon_rust binary path",
 		)
 	})
 
@@ -101,10 +101,10 @@ func toonBinaryPath() (string, error) {
 }
 
 func toonBinaryFromEnv() (string, error) {
-	for _, env := range []string{"TOON_TR_BIN", "TOON_RUST_BIN", "TOON_TR_PATH", "TOON_TR"} {
+	for _, env := range []string{"TOON_TRU_BIN"} {
 		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
 			if !isToonRustBinary(val) {
-				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected toon-tr/tr)", env, val)
+				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru)", env, val)
 			}
 			return val, nil
 		}
@@ -115,7 +115,7 @@ func toonBinaryFromEnv() (string, error) {
 func isToonRustBinary(path string) bool {
 	// Distinguish toon_rust from:
 	// - system `tr` (coreutils)
-	// - the Node.js `toon` CLI (toon-format)
+	// - the Node.js `toon` CLI (toon-format), which is not allowed here
 	helpOut, _ := exec.Command(path, "--help").CombinedOutput()
 	helpLower := strings.ToLower(string(helpOut))
 	if strings.Contains(helpLower, "reference implementation in rust") {
@@ -124,7 +124,7 @@ func isToonRustBinary(path string) bool {
 
 	verOut, _ := exec.Command(path, "--version").CombinedOutput()
 	verLower := strings.ToLower(strings.TrimSpace(string(verOut)))
-	return strings.HasPrefix(verLower, "tr ")
+	return strings.HasPrefix(verLower, "tru ") || strings.HasPrefix(verLower, "toon_rust ")
 }
 
 func toonDelimiterArg(delimiter string) string {
