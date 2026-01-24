@@ -18,7 +18,7 @@ import (
 
 func TestE2EAgentMailReservationFlow(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 	requireBr(t)
 	client := requireAgentMail(t)
@@ -74,7 +74,7 @@ func TestE2EAgentMailReservationFlow(t *testing.T) {
 
 func TestE2EAgentMailReservationConflict(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 	requireBr(t)
 	client := requireAgentMail(t)

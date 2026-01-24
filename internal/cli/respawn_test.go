@@ -9,6 +9,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestNormalizeAgentType(t *testing.T) {
@@ -43,9 +44,7 @@ func TestNormalizeAgentType(t *testing.T) {
 }
 
 func TestRespawnRequiresSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Test respawning a non-existent session should fail
 	err := runRespawn("nonexistent-session-12345", true, "", "", false, false)
@@ -55,9 +54,7 @@ func TestRespawnRequiresSession(t *testing.T) {
 }
 
 func TestRespawnDryRun(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Setup temp dir
 	tmpDir, err := os.MkdirTemp("", "ntm-test-respawn")
@@ -119,9 +116,7 @@ func TestRespawnDryRun(t *testing.T) {
 }
 
 func TestRespawnWithPaneFilter(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Setup temp dir
 	tmpDir, err := os.MkdirTemp("", "ntm-test-respawn-filter")

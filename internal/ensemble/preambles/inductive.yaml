@@ -1,0 +1,25 @@
+id: inductive
+code: B1
+name: Inductive Generalization
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Inductive Generalization (B1)
+  **Category**: Ampliative
+
+  ### Approach
+  Infer general patterns from observations. Not truth-preserving; new data can overturn conclusions.
+
+  ### What You Produce
+  General rules; trends; predictors
+
+  ### Best Applied To
+  - Learning from experience
+  - Pattern discovery
+  - Forming priors
+
+  ### Watch Out For (Failure Modes)
+  - Overgeneralizing from small or biased samples
+
+  ### What Makes This Mode Unique
+  Goes beyond premises to form general rules; the basis of empirical learning

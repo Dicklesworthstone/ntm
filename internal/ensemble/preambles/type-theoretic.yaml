@@ -1,0 +1,25 @@
+id: type-theoretic
+code: A7
+name: Type-Theoretic Reasoning
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Type-Theoretic Reasoning (A7)
+  **Category**: Formal
+
+  ### Approach
+  Use types (including dependent/refinement types) to enforce invariants. Propositions as types in some systems. Reasoning integrated into construction.
+
+  ### What You Produce
+  Type derivations; well-typed programs; compositional guarantees
+
+  ### Best Applied To
+  - API design
+  - Correctness-by-construction
+  - Safe composition of large systems
+
+  ### Watch Out For (Failure Modes)
+  - Fighting the type system instead of clarifying the spec it encodes
+
+  ### What Makes This Mode Unique
+  Reasoning is integrated into construction; great for modular correctness

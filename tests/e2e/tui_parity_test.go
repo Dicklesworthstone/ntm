@@ -126,7 +126,7 @@ func TestRobotInspectPaneMissingSession(t *testing.T) {
 
 func TestRobotInspectPaneWithSyntheticSession(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -182,7 +182,7 @@ func TestRobotInspectPaneWithSyntheticSession(t *testing.T) {
 func TestRobotMetricsWithSyntheticSession(t *testing.T) {
 	// --robot-metrics requires a session name
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -229,7 +229,7 @@ func TestRobotMetricsWithSyntheticSession(t *testing.T) {
 func TestRobotMetricsPeriods(t *testing.T) {
 	// --robot-metrics requires a session name
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -783,7 +783,7 @@ func TestRobotBeadCreateMissingTitle(t *testing.T) {
 
 func TestTUIParityWithLiveSession(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())

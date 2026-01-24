@@ -21,7 +21,7 @@ import (
 // name mappings are persisted for session recovery.
 func TestE2EAgentMailAutoRegistration(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 	client := requireAgentMail(t)
 
@@ -137,7 +137,7 @@ func TestE2EAgentMailAutoRegistration(t *testing.T) {
 // can be loaded after session restart for routing recovery.
 func TestE2EAgentMailRegistryRecovery(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 	_ = requireAgentMail(t)
 

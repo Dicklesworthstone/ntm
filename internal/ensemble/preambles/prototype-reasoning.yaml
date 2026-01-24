@@ -1,0 +1,26 @@
+id: prototype-reasoning
+code: D4
+name: Prototype Reasoning
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Prototype Reasoning (D4)
+  **Category**: Vagueness
+
+  ### Approach
+  Categorize by similarity to prototypes or exemplars rather than strict necessary-and-sufficient definitions. Graded category judgments.
+
+  ### What You Produce
+  Graded category judgments; typicality effects
+
+  ### Best Applied To
+  - UX taxonomies
+  - Product categorization
+  - Human-facing labeling
+
+  ### Watch Out For (Failure Modes)
+  - Hidden bias in prototypes
+  - Category drift over time
+
+  ### What Makes This Mode Unique
+  Natural for human categories; complements fuzzy/rough with similarity geometry

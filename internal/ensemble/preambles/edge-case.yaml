@@ -1,0 +1,25 @@
+id: edge-case
+code: A8
+name: Edge Case Reasoning
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Edge Case Reasoning (A8)
+  **Category**: Formal
+
+  ### Approach
+  Propose an abstraction, check it, and if a counterexample appears refine the abstraction and repeat. A loop blending deduction + model checking + refinement.
+
+  ### What You Produce
+  Either a proof of property or a concrete counterexample; refined models
+
+  ### Best Applied To
+  - Verification
+  - Security properties
+  - Systems where full modeling is too expensive
+
+  ### Watch Out For (Failure Modes)
+  - Endless refinement loops if the abstraction boundary is poorly chosen
+
+  ### What Makes This Mode Unique
+  Iterative loop that scales verification through progressive refinement

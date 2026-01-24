@@ -10,15 +10,14 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // TestAgentLifecycleSpawnWorkKill tests the complete agent lifecycle:
 // spawn -> send work -> verify output -> kill -> verify cleanup
 // This is the comprehensive integration test for bead ntm-j8eo.
 func TestAgentLifecycleSpawnWorkKill(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Setup temp dir for projects
 	tmpDir, err := os.MkdirTemp("", "ntm-lifecycle-test")
@@ -185,9 +184,7 @@ func TestAgentLifecycleSpawnWorkKill(t *testing.T) {
 
 // TestAgentLifecycleMultipleAgents tests spawning multiple agent types
 func TestAgentLifecycleMultipleAgents(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	tmpDir, err := os.MkdirTemp("", "ntm-lifecycle-multi")
 	if err != nil {
@@ -317,9 +314,7 @@ func TestAgentLifecycleMultipleAgents(t *testing.T) {
 
 // TestAgentLifecycleRapidSpawnKill tests rapid spawn/kill cycles for stability
 func TestAgentLifecycleRapidSpawnKill(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	tmpDir, err := os.MkdirTemp("", "ntm-lifecycle-rapid")
 	if err != nil {
@@ -382,9 +377,7 @@ func TestAgentLifecycleRapidSpawnKill(t *testing.T) {
 
 // TestAgentLifecycleSendBeforeSpawn verifies error handling for send without spawn
 func TestAgentLifecycleSendBeforeSpawn(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	nonexistentSession := fmt.Sprintf("ntm-nonexistent-%d", time.Now().UnixNano())
 
@@ -401,9 +394,7 @@ func TestAgentLifecycleSendBeforeSpawn(t *testing.T) {
 
 // TestAgentLifecycleKillIdempotent verifies that killing an already-killed session is handled
 func TestAgentLifecycleKillIdempotent(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	tmpDir, err := os.MkdirTemp("", "ntm-lifecycle-idempotent")
 	if err != nil {

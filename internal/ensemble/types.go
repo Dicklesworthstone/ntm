@@ -564,6 +564,10 @@ type EnsemblePreset struct {
 
 	// Tags are optional categories for organization.
 	Tags []string `json:"tags,omitempty" toml:"tags,omitempty" yaml:"tags,omitempty"`
+
+	// Source indicates where this preset was loaded from (embedded, user, project).
+	// Set at load time, not persisted in TOML.
+	Source string `json:"source,omitempty" toml:"-" yaml:"source,omitempty"`
 }
 
 // Validate checks that the preset is valid and all mode refs resolve against the catalog.
@@ -787,9 +791,11 @@ func (c *ModeCatalog) ListDefault() []ReasoningMode {
 type ImpactLevel string
 
 const (
-	// ImpactHigh indicates a critical finding requiring immediate attention.
+	// ImpactCritical indicates a showstopper finding requiring immediate attention.
+	ImpactCritical ImpactLevel = "critical"
+	// ImpactHigh indicates a significant finding requiring prompt attention.
 	ImpactHigh ImpactLevel = "high"
-	// ImpactMedium indicates a significant finding worth addressing.
+	// ImpactMedium indicates a notable finding worth addressing.
 	ImpactMedium ImpactLevel = "medium"
 	// ImpactLow indicates a minor finding for consideration.
 	ImpactLow ImpactLevel = "low"
@@ -803,11 +809,45 @@ func (i ImpactLevel) String() string {
 // IsValid returns true if this is a known impact level.
 func (i ImpactLevel) IsValid() bool {
 	switch i {
-	case ImpactHigh, ImpactMedium, ImpactLow:
+	case ImpactCritical, ImpactHigh, ImpactMedium, ImpactLow:
 		return true
 	default:
 		return false
 	}
+}
+
+// ParseConfidenceString converts a string confidence value to a float.
+// Accepts floats ("0.8"), percentages ("80%"), or qualitative levels ("high", "medium", "low").
+// Qualitative mappings: high=0.8, medium=0.5, low=0.2.
+func ParseConfidenceString(s string) (Confidence, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+
+	// Handle qualitative levels
+	switch s {
+	case "high":
+		return 0.8, nil
+	case "medium", "med":
+		return 0.5, nil
+	case "low":
+		return 0.2, nil
+	}
+
+	// Handle percentage format (e.g., "80%")
+	if strings.HasSuffix(s, "%") {
+		s = strings.TrimSuffix(s, "%")
+		var pct float64
+		if _, err := fmt.Sscanf(s, "%f", &pct); err != nil {
+			return 0, fmt.Errorf("invalid confidence percentage: %q", s)
+		}
+		return Confidence(pct / 100), nil
+	}
+
+	// Handle float format
+	var f float64
+	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+		return 0, fmt.Errorf("invalid confidence value: %q", s)
+	}
+	return Confidence(f), nil
 }
 
 // Confidence represents a confidence score between 0.0 and 1.0.

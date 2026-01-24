@@ -13,6 +13,8 @@ import (
 // TestToonVsJSONTokenEfficiency evaluates TOON vs JSON token counts on representative payloads.
 // This test documents the findings for bead bd-rmnfk.
 func TestToonVsJSONTokenEfficiency(t *testing.T) {
+	requireToonBinary(t)
+
 	payloads := []struct {
 		name    string
 		payload any
@@ -258,6 +260,8 @@ func createSampleAgentInfoArray() []map[string]any {
 
 // TestToonOutputFormats shows what TOON output looks like for different payloads.
 func TestToonOutputFormats(t *testing.T) {
+	requireToonBinary(t)
+
 	payloads := []struct {
 		name    string
 		payload any

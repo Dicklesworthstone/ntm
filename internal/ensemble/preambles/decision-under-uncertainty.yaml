@@ -1,0 +1,26 @@
+id: decision-under-uncertainty
+code: G2
+name: Decision Under Uncertainty
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Decision Under Uncertainty (G2)
+  **Category**: Practical
+
+  ### Approach
+  Combine beliefs with preferences or utilities to choose actions. Option rankings and explicit tradeoffs via expected utility.
+
+  ### What You Produce
+  Option rankings; policies; explicit tradeoffs
+
+  ### Best Applied To
+  - Portfolio choices
+  - Risk decisions
+  - Prioritization
+  - Pricing
+
+  ### Watch Out For (Failure Modes)
+  - Utility mismatch (optimizing what you do not truly value)
+
+  ### What Makes This Mode Unique
+  Adds values and consequences to belief updates; decision vs belief

@@ -16,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // resetFlags resets global flags to default values between tests
@@ -171,9 +172,7 @@ func TestDepsCmdExecutes(t *testing.T) {
 
 // TestListCmdExecutes tests list command executes
 func TestListCmdExecutes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"list"})
@@ -186,9 +185,7 @@ func TestListCmdExecutes(t *testing.T) {
 
 // TestListCmdJSONExecutes tests list command with JSON output executes
 func TestListCmdJSONExecutes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"list", "--json"})
@@ -201,9 +198,7 @@ func TestListCmdJSONExecutes(t *testing.T) {
 
 // TestSpawnValidation tests spawn command argument validation
 func TestSpawnValidation(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Initialize config for spawn command
 	cfg = config.Default()
@@ -328,9 +323,7 @@ func TestRobotHelpExecutes(t *testing.T) {
 
 // TestRobotStatusExecutes tests the robot-status flag executes
 func TestRobotStatusExecutes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--robot-status"})
@@ -343,9 +336,7 @@ func TestRobotStatusExecutes(t *testing.T) {
 
 // TestRobotSnapshotExecutes tests the robot-snapshot flag executes
 func TestRobotSnapshotExecutes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--robot-snapshot"})
@@ -358,9 +349,7 @@ func TestRobotSnapshotExecutes(t *testing.T) {
 
 // TestRobotPlanExecutes tests the robot-plan flag executes
 func TestRobotPlanExecutes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--robot-plan"})
@@ -373,9 +362,7 @@ func TestRobotPlanExecutes(t *testing.T) {
 
 // TestAttachCmdNoArgs tests attach command without arguments
 func TestAttachCmdNoArgs(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Initialize config
 	cfg = config.Default()
@@ -497,9 +484,7 @@ func TestKillCmdRequiresSession(t *testing.T) {
 
 // TestViewCmdRequiresSession tests view command requires session name
 func TestViewCmdRequiresSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Isolate environment
 	tmpDir := t.TempDir()
@@ -1413,9 +1398,7 @@ func TestBindCmdHelp(t *testing.T) {
 
 // TestCommandAliases tests command aliases work
 func TestCommandAliases(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	aliases := []struct {
 		alias   string
@@ -1500,9 +1483,7 @@ func TestConfigInitCreatesFile(t *testing.T) {
 
 // TestStatusCmdNonExistentSession tests status with non-existent session
 func TestStatusCmdNonExistentSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	cfg = config.Default()
 	resetFlags()
@@ -1568,9 +1549,7 @@ func TestLoadRobotSendMessageEmptyFile(t *testing.T) {
 
 // TestRobotSnapshotWithSince tests robot-snapshot with --since flag
 func TestRobotSnapshotWithSince(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--robot-snapshot", "--since", "2025-01-01T00:00:00Z"})
@@ -1593,9 +1572,7 @@ func TestRobotSnapshotInvalidSince(t *testing.T) {
 
 // TestRobotTailExecutes tests robot-tail flag executes
 func TestRobotTailExecutes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--robot-tail", "nonexistent_session_xyz"})
@@ -1606,9 +1583,7 @@ func TestRobotTailExecutes(t *testing.T) {
 
 // TestRobotTailWithLines tests robot-tail with --lines flag
 func TestRobotTailWithLines(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--robot-tail", "nonexistent", "--lines", "50"})
@@ -1652,9 +1627,7 @@ func TestRobotDiffFlagParsing(t *testing.T) {
 
 // TestGlobalJSONFlag tests the global --json flag works
 func TestGlobalJSONFlag(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	resetFlags()
 	rootCmd.SetArgs([]string{"--json", "list"})

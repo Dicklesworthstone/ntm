@@ -1,0 +1,26 @@
+id: option-generation
+code: B5
+name: Option Generation
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Option Generation (B5)
+  **Category**: Ampliative
+
+  ### Approach
+  From observations, propose hypotheses that would best explain them. Introduces hidden mechanisms and causes. Not guaranteed but creative.
+
+  ### What You Produce
+  Candidate explanations/models; best current story; generated options
+
+  ### Best Applied To
+  - Hypothesis generation
+  - Incident triage
+  - Diagnosis
+  - Discovery
+
+  ### Watch Out For (Failure Modes)
+  - Story bias (choosing most appealing explanation, not most supported)
+
+  ### What Makes This Mode Unique
+  Introduces hidden mechanisms/causes; creative generation of possibilities

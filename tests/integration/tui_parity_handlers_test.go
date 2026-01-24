@@ -89,7 +89,7 @@ func TestRobotVersionFlagParsing(t *testing.T) {
 
 func TestRobotStatusFlagParsing(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-status")
@@ -129,7 +129,7 @@ func TestRobotStatusFlagParsing(t *testing.T) {
 
 func TestRobotSnapshotFlagParsing(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-snapshot")
@@ -177,7 +177,7 @@ func TestRobotSnapshotFlagParsing(t *testing.T) {
 
 func TestRobotSnapshotWithSinceFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-snapshot", "--since=2025-01-01T00:00:00Z")
@@ -250,7 +250,7 @@ func TestRobotTailMissingSession(t *testing.T) {
 
 func TestRobotTailWithNonexistentSession(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 
@@ -485,7 +485,7 @@ func TestRobotSchemaInvalidType(t *testing.T) {
 
 func TestRobotTerseFlagParsing(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-terse")
@@ -509,7 +509,7 @@ func TestRobotTerseFlagParsing(t *testing.T) {
 
 func TestRobotMarkdownFlagParsing(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-markdown")
@@ -528,7 +528,7 @@ func TestRobotMarkdownFlagParsing(t *testing.T) {
 
 func TestRobotMarkdownWithSectionsFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-markdown", "--md-sections=sessions,beads")
@@ -545,7 +545,7 @@ func TestRobotMarkdownWithSectionsFlag(t *testing.T) {
 
 func TestRobotDashboardFlagParsing(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-dashboard")
@@ -559,7 +559,7 @@ func TestRobotDashboardFlagParsing(t *testing.T) {
 
 func TestRobotDashboardWithJSONFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-dashboard", "--json")
@@ -679,7 +679,7 @@ func TestRobotErrorOutputToStderr(t *testing.T) {
 
 func TestRobotSnapshotWithBeadLimit(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-snapshot", "--bead-limit=10")
@@ -711,7 +711,7 @@ func TestRobotSnapshotWithBeadLimit(t *testing.T) {
 
 func TestRobotMarkdownCompactFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-markdown", "--compact")
@@ -1037,7 +1037,7 @@ func TestRobotFilesAgentHints(t *testing.T) {
 
 func TestRobotInspectPaneNonExistentSession(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	// Non-existent session should return error JSON with exit code 1
@@ -1081,7 +1081,7 @@ func TestRobotInspectPaneNonExistentSession(t *testing.T) {
 
 func TestRobotInspectPanePaneNotFound(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	// First we need a real session to test PANE_NOT_FOUND
 	// Create a temporary session for this test
@@ -1131,7 +1131,7 @@ func TestRobotInspectPanePaneNotFound(t *testing.T) {
 
 func TestRobotInspectPaneSuccessStructure(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	// Create a test session with a single pane
 	sessionName := fmt.Sprintf("ntm-test-inspect-%d", time.Now().UnixNano())
@@ -1196,7 +1196,7 @@ func TestRobotInspectPaneSuccessStructure(t *testing.T) {
 
 func TestRobotInspectPaneInspectLinesFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-inspect-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1231,7 +1231,7 @@ func TestRobotInspectPaneInspectLinesFlag(t *testing.T) {
 
 func TestRobotInspectPaneInspectCodeFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-inspect-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1270,7 +1270,7 @@ func TestRobotInspectPaneInspectCodeFlag(t *testing.T) {
 
 func TestRobotInspectPaneAgentHints(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-inspect-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1315,7 +1315,7 @@ func TestRobotInspectPaneAgentHints(t *testing.T) {
 
 func TestRobotMetricsWithValidSession(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	// Create a test session
 	sessionName := fmt.Sprintf("ntm-test-metrics-%d", time.Now().UnixNano())
@@ -1363,7 +1363,7 @@ func TestRobotMetricsWithValidSession(t *testing.T) {
 
 func TestRobotMetricsPeriodFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-metrics-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1411,7 +1411,7 @@ func TestRobotMetricsPeriodFlag(t *testing.T) {
 
 func TestRobotMetricsNonExistentSession(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	// Non-existent session should return error
 	cmd := exec.Command("ntm", "--robot-metrics=nonexistent-session-xyz")
@@ -1448,7 +1448,7 @@ func TestRobotMetricsNonExistentSession(t *testing.T) {
 
 func TestRobotMetricsAgentHints(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-metrics-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1486,7 +1486,7 @@ func TestRobotMetricsAgentHints(t *testing.T) {
 
 func TestRobotReplayMissingHistoryID(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-replay-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1545,7 +1545,7 @@ func TestRobotReplayMissingHistoryID(t *testing.T) {
 
 func TestRobotReplayNonExistentHistoryID(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-replay-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1590,7 +1590,7 @@ func TestRobotReplayNonExistentHistoryID(t *testing.T) {
 
 func TestRobotReplayDryRunFlag(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-replay-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)
@@ -1767,7 +1767,7 @@ func TestRobotPaletteSearchFilter(t *testing.T) {
 
 func TestRobotPaletteSessionFilter(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := fmt.Sprintf("ntm-test-palette-%d", time.Now().UnixNano())
 	createCmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", sessionName)

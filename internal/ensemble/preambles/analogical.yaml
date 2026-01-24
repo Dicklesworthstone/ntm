@@ -1,0 +1,26 @@
+id: analogical
+code: B6
+name: Analogical Transfer
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Analogical Transfer (B6)
+  **Category**: Ampliative
+
+  ### Approach
+  Transfer relational structure from a known domain or case to a new one, often deeper than surface similarity.
+
+  ### What You Produce
+  Candidate inferences; adapted solutions; conceptual models/metaphors
+
+  ### Best Applied To
+  - Innovation
+  - Design
+  - Teaching
+  - Cross-domain problem solving
+
+  ### Watch Out For (Failure Modes)
+  - False analogies (shared surface traits, different causal structure)
+
+  ### What Makes This Mode Unique
+  Particular-to-particular transfer; seeds abduction with structural parallels

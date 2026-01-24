@@ -1,0 +1,25 @@
+id: root-cause
+code: F5
+name: Root Cause Analysis
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Root Cause Analysis (F5)
+  **Category**: Causal
+
+  ### Approach
+  Infer hidden faults or causes from symptoms using a fault or causal model plus uncertainty handling. Ranked causes and next-best tests.
+
+  ### What You Produce
+  Ranked causes; next-best tests; triage plans
+
+  ### Best Applied To
+  - Incident response
+  - Troubleshooting
+  - Quality triage
+
+  ### Watch Out For (Failure Modes)
+  - Premature closure (locking onto one cause too early)
+
+  ### What Makes This Mode Unique
+  Abduction plus Bayesian updates constrained by explicit fault models

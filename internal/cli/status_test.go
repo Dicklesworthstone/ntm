@@ -11,13 +11,12 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // TestStatusRealSession tests status command output with a real tmux session
 func TestStatusRealSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Setup temp dir for projects
 	tmpDir, err := os.MkdirTemp("", "ntm-test-status")

@@ -1,0 +1,27 @@
+id: deductive
+code: A1
+name: Deductive Inference
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Deductive Inference (A1)
+  **Category**: Formal
+
+  ### Approach
+  If the premises are true and the inference rules are valid, the conclusion must be true. Truth-preserving and typically monotonic.
+
+  ### What You Produce
+  Valid entailments; proofs/derivations; contradictions/counterexamples
+
+  ### Best Applied To
+  - Spec checking
+  - Compliance logic
+  - Formal arguments
+  - Must/shall implications
+
+  ### Watch Out For (Failure Modes)
+  - Garbage-in (false premises)
+  - Missing premises that matter in reality
+
+  ### What Makes This Mode Unique
+  Truth-preserving: makes explicit what is already implicit in premises

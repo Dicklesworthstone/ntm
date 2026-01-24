@@ -627,3 +627,167 @@ func TestValidationError_Error(t *testing.T) {
 		}
 	})
 }
+
+func TestParseConfidenceString(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    Confidence
+		wantErr bool
+	}{
+		// Qualitative levels
+		{"high", 0.8, false},
+		{"HIGH", 0.8, false},
+		{"High", 0.8, false},
+		{"medium", 0.5, false},
+		{"med", 0.5, false},
+		{"low", 0.2, false},
+
+		// Float values
+		{"0.9", 0.9, false},
+		{"0.5", 0.5, false},
+		{"1.0", 1.0, false},
+		{"0", 0, false},
+
+		// Percentage values
+		{"80%", 0.8, false},
+		{"50%", 0.5, false},
+		{"100%", 1.0, false},
+
+		// Invalid values
+		{"invalid", 0, true},
+		{"abc%", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseConfidenceString(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseConfidenceString(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestImpactLevel_Critical(t *testing.T) {
+	if !ImpactCritical.IsValid() {
+		t.Error("ImpactCritical should be valid")
+	}
+	if ImpactCritical.String() != "critical" {
+		t.Errorf("ImpactCritical.String() = %q, want %q", ImpactCritical.String(), "critical")
+	}
+
+	// Test that validation accepts critical level in findings
+	v := NewSchemaValidator()
+	findings := []Finding{
+		{Finding: "Critical issue", Impact: ImpactCritical, Confidence: 0.95},
+	}
+	errs := v.ValidateFindings(findings)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors for critical impact: %v", errs)
+	}
+}
+
+func TestSchemaValidator_Normalize(t *testing.T) {
+	v := NewSchemaValidator()
+
+	t.Run("injects missing mode_id", func(t *testing.T) {
+		output := &ModeOutput{
+			Thesis: "Test thesis",
+			TopFindings: []Finding{
+				{Finding: "Test", Impact: ImpactHigh, Confidence: 0.8},
+			},
+			Confidence: 0.8,
+		}
+		errs := v.Normalize(output, "injected-mode")
+		if len(errs) > 0 {
+			t.Errorf("unexpected errors: %v", errs)
+		}
+		if output.ModeID != "injected-mode" {
+			t.Errorf("ModeID = %q, want %q", output.ModeID, "injected-mode")
+		}
+	})
+
+	t.Run("does not overwrite existing mode_id", func(t *testing.T) {
+		output := &ModeOutput{
+			ModeID: "existing-mode",
+			Thesis: "Test thesis",
+			TopFindings: []Finding{
+				{Finding: "Test", Impact: ImpactHigh, Confidence: 0.8},
+			},
+			Confidence: 0.8,
+		}
+		v.Normalize(output, "different-mode")
+		if output.ModeID != "existing-mode" {
+			t.Errorf("ModeID = %q, want %q", output.ModeID, "existing-mode")
+		}
+	})
+
+	t.Run("normalizes impact levels case-insensitively", func(t *testing.T) {
+		output := &ModeOutput{
+			ModeID: "test",
+			Thesis: "Test thesis",
+			TopFindings: []Finding{
+				{Finding: "Test", Impact: "HIGH", Confidence: 0.8},
+				{Finding: "Test2", Impact: "Medium", Confidence: 0.5},
+			},
+			Risks: []Risk{
+				{Risk: "Risk", Impact: "LOW", Likelihood: 0.3},
+			},
+			Recommendations: []Recommendation{
+				{Recommendation: "Do this", Priority: "CRITICAL"},
+			},
+			Confidence: 0.8,
+		}
+		errs := v.Normalize(output, "")
+		if len(errs) > 0 {
+			t.Errorf("unexpected errors: %v", errs)
+		}
+		if output.TopFindings[0].Impact != ImpactHigh {
+			t.Errorf("Finding impact = %q, want %q", output.TopFindings[0].Impact, ImpactHigh)
+		}
+		if output.TopFindings[1].Impact != ImpactMedium {
+			t.Errorf("Finding impact = %q, want %q", output.TopFindings[1].Impact, ImpactMedium)
+		}
+		if output.Risks[0].Impact != ImpactLow {
+			t.Errorf("Risk impact = %q, want %q", output.Risks[0].Impact, ImpactLow)
+		}
+		if output.Recommendations[0].Priority != ImpactCritical {
+			t.Errorf("Recommendation priority = %q, want %q", output.Recommendations[0].Priority, ImpactCritical)
+		}
+	})
+}
+
+func TestSchemaValidator_ParseNormalizeAndValidate(t *testing.T) {
+	v := NewSchemaValidator()
+
+	t.Run("injects mode_id and validates", func(t *testing.T) {
+		yaml := `
+thesis: The conclusion follows from the premises
+top_findings:
+  - finding: Premise 1 is true
+    impact: high
+    confidence: 0.95
+confidence: 0.9
+`
+		output, errs, err := v.ParseNormalizeAndValidate(yaml, "injected-mode")
+		if err != nil {
+			t.Fatalf("ParseNormalizeAndValidate error: %v", err)
+		}
+		if len(errs) > 0 {
+			t.Errorf("unexpected validation errors: %v", errs)
+		}
+		if output.ModeID != "injected-mode" {
+			t.Errorf("ModeID = %q, want %q", output.ModeID, "injected-mode")
+		}
+	})
+}

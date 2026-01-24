@@ -1,0 +1,27 @@
+id: prioritization
+code: G3
+name: Prioritization
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Prioritization (G3)
+  **Category**: Practical
+
+  ### Approach
+  Decide with multiple objectives (cost, speed, safety, equity) using weights, outranking, or Pareto frontiers. Makes tradeoffs explicit.
+
+  ### What You Produce
+  Tradeoff surfaces; Pareto-efficient sets; transparent scoring models
+
+  ### Best Applied To
+  - Strategy
+  - Procurement
+  - Roadmap planning
+  - Governance
+
+  ### Watch Out For (Failure Modes)
+  - Arbitrary weights hiding politics
+  - False precision
+
+  ### What Makes This Mode Unique
+  Makes tradeoffs explicit instead of collapsing into one objective

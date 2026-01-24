@@ -132,7 +132,7 @@ func TestRobotPlan(t *testing.T) {
 // TestRobotStatusWithLiveSession ensures a real session appears in robot-status.
 func TestRobotStatusWithLiveSession(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -220,7 +220,7 @@ func TestRobotHelp(t *testing.T) {
 // creating a tmux session with synthetic pane titles.
 func TestRobotStatusWithSyntheticAgents(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -339,7 +339,7 @@ func TestRobotStatusIncludesSystemFields(t *testing.T) {
 
 func TestRobotStatusHandlesLongSessionNames(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -384,7 +384,7 @@ func TestRobotStatusHandlesLongSessionNames(t *testing.T) {
 // TestRobotSpawn tests the --robot-spawn flag for creating sessions.
 func TestRobotSpawn(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -456,7 +456,7 @@ codex = "bash"
 // TestRobotSendAndTail tests --robot-send and --robot-tail together.
 func TestRobotSendAndTail(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -564,7 +564,7 @@ claude = "bash"
 // TestRobotInterrupt tests the --robot-interrupt flag.
 func TestRobotInterrupt(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -666,7 +666,7 @@ func createSyntheticAgentSessionWithName(t *testing.T, logger *testutil.TestLogg
 // for all possible agent states: idle, working, error, unknown.
 func TestRobotStatusAllAgentStates(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -871,7 +871,7 @@ gemini = "bash"
 // TestRobotStatusVerboseMode tests that verbose mode includes additional fields
 func TestRobotStatusVerboseMode(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -994,7 +994,7 @@ func TestRobotStatusFieldStability(t *testing.T) {
 // TestRobotSendTargetFiltering tests comprehensive target filtering for robot-send.
 func TestRobotSendTargetFiltering(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -1132,7 +1132,7 @@ claude = "bash"
 // TestRobotSendExcludeFiltering tests exclude filtering capabilities.
 func TestRobotSendExcludeFiltering(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -1204,7 +1204,7 @@ claude = "bash"
 // TestRobotSendDryRun tests dry-run functionality.
 func TestRobotSendDryRun(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -1349,7 +1349,7 @@ func TestRobotSendErrorHandling(t *testing.T) {
 // TestRobotSendFieldStability validates JSON schema stability for robot-send.
 func TestRobotSendFieldStability(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -1437,7 +1437,7 @@ claude = "bash"
 // TestRobotSendTrackingCapabilities tests the tracking functionality for robot-send.
 func TestRobotSendTrackingCapabilities(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -1610,7 +1610,7 @@ claude = "bash"
 // TestRobotSendAdvancedFiltering tests complex filtering scenarios and edge cases.
 func TestRobotSendAdvancedFiltering(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -1778,7 +1778,7 @@ claude = "bash"
 // TestRobotRestartPane tests the --robot-restart-pane flag.
 func TestRobotRestartPane(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())

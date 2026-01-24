@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // Helper to capture stdout
@@ -505,9 +506,7 @@ func TestPrintSessions(t *testing.T) {
 // ====================
 
 func TestPrintStatusWithSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Create a test session
 	sessionName := "ntm_test_status_" + time.Now().Format("150405")
@@ -552,9 +551,7 @@ func TestPrintStatusWithSession(t *testing.T) {
 }
 
 func TestPrintTailNonexistentSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	err := PrintTail("nonexistent_session_12345", 20, nil)
 	if err == nil {
@@ -566,9 +563,7 @@ func TestPrintTailNonexistentSession(t *testing.T) {
 }
 
 func TestPrintSendNonexistentSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	output, err := captureStdout(t, func() error {
 		return PrintSend(SendOptions{
@@ -596,9 +591,7 @@ func TestPrintSendNonexistentSession(t *testing.T) {
 }
 
 func TestPrintSendWithSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Create a test session
 	sessionName := "ntm_test_send_" + time.Now().Format("150405")
@@ -640,9 +633,7 @@ func TestPrintSendWithSession(t *testing.T) {
 // ====================
 
 func TestSendOptionsExclude(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "ntm_test_exclude_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -683,9 +674,7 @@ func TestSendOptionsExclude(t *testing.T) {
 }
 
 func TestSendOptionsPaneFilter(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "ntm_test_panefilter_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -730,9 +719,7 @@ func TestSendOptionsPaneFilter(t *testing.T) {
 // ====================
 
 func TestPrintTailWithSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "ntm_test_tail_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -774,9 +761,7 @@ func TestPrintTailWithSession(t *testing.T) {
 }
 
 func TestPrintTailWithPaneFilter(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "ntm_test_tail_filter_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -844,9 +829,7 @@ func TestPrintSnapshot(t *testing.T) {
 }
 
 func TestPrintSnapshotWithSession(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "ntm_test_snapshot_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -1088,9 +1071,7 @@ func TestSnapshotOutputStructure(t *testing.T) {
 // ====================
 
 func TestSendOptionsDelay(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "ntm_test_delay_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {

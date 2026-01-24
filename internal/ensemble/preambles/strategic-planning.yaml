@@ -1,0 +1,25 @@
+id: strategic-planning
+code: G4
+name: Strategic Planning
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Strategic Planning (G4)
+  **Category**: Practical
+
+  ### Approach
+  Compute action sequences or policies achieving goals under constraints and dynamics. Outputs procedures, not propositions.
+
+  ### What You Produce
+  Plans; policies; contingencies; playbooks
+
+  ### Best Applied To
+  - Operations
+  - Project plans
+  - Incident response
+
+  ### Watch Out For (Failure Modes)
+  - Plans that ignore uncertainty and execution reality
+
+  ### What Makes This Mode Unique
+  Outputs a procedure, not a proposition; connects beliefs to action

@@ -1,0 +1,25 @@
+id: dependency-mapping
+code: F2
+name: Dependency Mapping
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Dependency Mapping (F2)
+  **Category**: Causal
+
+  ### Approach
+  Infer causal graph structure from data plus assumptions (and ideally interventions). Learn the dependency structure of a system.
+
+  ### What You Produce
+  Candidate causal graphs; equivalence classes; hypotheses for experimentation
+
+  ### Best Applied To
+  - Early-stage domains with unclear mechanisms
+  - Prioritizing experiments
+  - System dependencies
+
+  ### Watch Out For (Failure Modes)
+  - Overtrusting discovery outputs without validating assumptions
+
+  ### What Makes This Mode Unique
+  Causal inference assumes structure; discovery or mapping tries to learn it

@@ -1,0 +1,25 @@
+id: meta-cognitive
+code: L1
+name: Meta-cognitive Monitoring
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Meta-cognitive Monitoring (L1)
+  **Category**: Meta
+
+  ### Approach
+  Decide how to reason: which mode to use, effort allocation, what uncertainties matter, when to stop. Second-order reasoning about inference.
+
+  ### What You Produce
+  Deliberation policies; checklists; stopping rules
+
+  ### Best Applied To
+  - High-stakes decisions
+  - Avoiding over-analysis
+  - Building reliable processes
+
+  ### Watch Out For (Failure Modes)
+  - Meta-infinite regress (thinking about thinking forever)
+
+  ### What Makes This Mode Unique
+  Second-order: the object is your inference process and resource allocation

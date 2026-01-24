@@ -19,7 +19,7 @@ import (
 // state store verification, event emission, and crash recovery.
 func TestFullSessionLifecycle(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())

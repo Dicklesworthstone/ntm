@@ -22,7 +22,7 @@ import (
 // BD-1ed7: E2E Tests: Full session recovery workflow
 func TestFullSessionRecovery(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -171,7 +171,7 @@ max_recovery_tokens = 2000
 // It verifies that remaining panes are still restored and errors are reported.
 func TestPartialRecovery(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
 	logger.Log("[E2E-RECOVERY] Starting partial recovery test")

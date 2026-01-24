@@ -6,12 +6,11 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestPrintSpawn(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Use mock options that don't actually spawn heavy processes if possible,
 	// but PrintSpawn calls logic that calls tmux.
@@ -262,9 +261,7 @@ func TestSpawnOptions_DryRunMode(t *testing.T) {
 
 // TestSpawnOptions_NoAgentsSpecified validates error when no agents specified
 func TestSpawnOptions_NoAgentsSpecified(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 	// Note: Cannot use t.Parallel() because captureStdout modifies global os.Stdout
 
 	opts := SpawnOptions{
@@ -297,9 +294,7 @@ func TestSpawnOptions_NoAgentsSpecified(t *testing.T) {
 
 // TestSpawnOptions_SafetyMode validates safety mode blocks existing sessions
 func TestSpawnOptions_SafetyMode(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "test_safety_mode_spawn"
 
@@ -339,9 +334,7 @@ func TestSpawnOptions_SafetyMode(t *testing.T) {
 
 // TestSpawnOptions_MultipleAgentTypes validates spawning multiple agent types
 func TestSpawnOptions_MultipleAgentTypes(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	sessionName := "test_multi_agent_spawn"
 	defer tmux.KillSession(sessionName)

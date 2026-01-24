@@ -19,7 +19,7 @@ import (
 // ntm-0nsv: Test managing multiple concurrent sessions
 func TestMultiSessionManagement(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -224,7 +224,7 @@ scrollback = 500
 // TestConcurrentSessionOperations tests performing operations across multiple sessions concurrently.
 func TestConcurrentSessionOperations(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -443,7 +443,7 @@ scrollback = 500
 // TestSessionNamespaceIsolation verifies that sessions with similar names don't interfere.
 func TestSessionNamespaceIsolation(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -586,7 +586,7 @@ scrollback = 500
 // TestRapidSessionCreationDestruction tests rapid creation and destruction of sessions.
 func TestRapidSessionCreationDestruction(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())

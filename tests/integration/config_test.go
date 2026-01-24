@@ -15,7 +15,7 @@ import (
 
 // TestConfigCustomProjectsBase verifies that projects_base setting affects ntm quick
 func TestConfigCustomProjectsBase(t *testing.T) {
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	binary := testutil.BuildLocalNTM(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
@@ -71,7 +71,7 @@ func TestConfigCustomProjectsBase(t *testing.T) {
 
 // TestConfigCustomAgentCommands verifies custom agent commands are used
 func TestConfigCustomAgentCommands(t *testing.T) {
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	binary := testutil.BuildLocalNTM(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 

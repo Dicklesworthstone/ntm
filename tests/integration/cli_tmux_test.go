@@ -20,7 +20,7 @@ import (
 // - status reports the expected pane count.
 func TestCLISpawnSendAndStatus(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
@@ -101,7 +101,7 @@ gemini = "/bin/true"
 // TestCLIAddCommand verifies that ntm add correctly adds new panes to an existing session.
 func TestCLIAddCommand(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
@@ -165,7 +165,7 @@ gemini = "/bin/true"
 // TestCLIKillCommand verifies that ntm kill correctly destroys a session.
 func TestCLIKillCommand(t *testing.T) {
 	testutil.RequireNTMBinary(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
 

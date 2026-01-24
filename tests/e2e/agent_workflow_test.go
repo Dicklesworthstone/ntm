@@ -18,7 +18,7 @@ import (
 // Uses simple shell commands as agent substitutes to avoid requiring real Claude/Codex binaries.
 func TestFullAgentWorkflow(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -193,7 +193,7 @@ scrollback = 500
 // TestAgentWorkflowSendAll tests the --all flag for broadcasting to all panes.
 func TestAgentWorkflowSendAll(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -290,7 +290,7 @@ func TestSpawnAssignE2E(t *testing.T) {
 // TestAgentWorkflowKillForce tests force-killing a session.
 func TestAgentWorkflowKillForce(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -368,7 +368,7 @@ func TestAgentWorkflowStatusNonexistent(t *testing.T) {
 func TestAgentWorkflowWithVariants(t *testing.T) {
 	t.Skip("Variants test skipped - requires full agent environment")
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())

@@ -1,0 +1,25 @@
+id: ambiguity-detection
+code: D2
+name: Ambiguity Detection
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Ambiguity Detection (D2)
+  **Category**: Vagueness
+
+  ### Approach
+  More than two truth values; explicitly represent unknown or undefined. Inferences track indeterminacy rather than forcing a binary choice.
+
+  ### What You Produce
+  Inferences tracking indeterminacy; identified ambiguities; clarification needs
+
+  ### Best Applied To
+  - Databases with nulls
+  - Partial specs
+  - Missingness-aware reasoning
+
+  ### Watch Out For (Failure Modes)
+  - Conflating unknown with false
+
+  ### What Makes This Mode Unique
+  Targets incompleteness and ambiguity; surfaces what is truly unknown

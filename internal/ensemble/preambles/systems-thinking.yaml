@@ -1,0 +1,26 @@
+id: systems-thinking
+code: F7
+name: Systems Thinking
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Systems Thinking (F7)
+  **Category**: Causal
+
+  ### Approach
+  Reason about interacting components over time: reinforcing or balancing loops, delays, unintended consequences. Explicitly multi-level and dynamic.
+
+  ### What You Produce
+  Causal loop diagrams; leverage points; dynamic hypotheses
+
+  ### Best Applied To
+  - Org design
+  - Markets
+  - Reliability engineering
+  - Platform ecosystems
+
+  ### Watch Out For (Failure Modes)
+  - Vague loop stories without measurable hypotheses
+
+  ### What Makes This Mode Unique
+  Explicitly multi-level and dynamic; local linear reasoning often fails

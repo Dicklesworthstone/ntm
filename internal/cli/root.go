@@ -2294,6 +2294,7 @@ func init() {
 		newCleanupCmd(),
 		newSafetyCmd(),
 		newPolicyCmd(),
+		newKernelCmd(),
 		newGuardsCmd(),
 		newApproveCmd(),
 		newServeCmd(),
@@ -2303,6 +2304,7 @@ func init() {
 		newAnalyticsCmd(),
 		newMetricsCmd(),
 		newWorkCmd(),
+		newEnsembleCmd(),
 
 		// Internal commands
 		newMonitorCmd(),

@@ -1,0 +1,25 @@
+id: conceptual-blending
+code: B8
+name: Conceptual Blending
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Conceptual Blending (B8)
+  **Category**: Ampliative
+
+  ### Approach
+  Use explanations of why solutions work to generalize reusable rules and plans. Generalizes like induction but guided by deductive explanation.
+
+  ### What You Produce
+  Generalized strategies with explanatory justification; novel concept combinations
+
+  ### Best Applied To
+  - Turning expert solutions into SOPs
+  - Reducing overfitting to anecdotes
+  - Creative synthesis
+
+  ### Watch Out For (Failure Modes)
+  - Explanations that are internally elegant but empirically wrong
+
+  ### What Makes This Mode Unique
+  Induction guided and validated by deductive explanation; creativity through combination

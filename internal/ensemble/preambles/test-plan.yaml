@@ -1,0 +1,25 @@
+id: test-plan
+code: K2
+name: Test Plan Mode
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Test Plan Mode (K2)
+  **Category**: Domain
+
+  ### Approach
+  Choose interventions, measurements, and sampling to identify effects (randomization, controls, blocking, instrumentation). Reasoning about how to learn reliably.
+
+  ### What You Produce
+  Experiment plans; power analyses; measurement strategies
+
+  ### Best Applied To
+  - A/B testing
+  - Causal learning
+  - Evaluation of interventions
+
+  ### Watch Out For (Failure Modes)
+  - Measuring proxies that do not capture the real outcome (Goodhart risk)
+
+  ### What Makes This Mode Unique
+  Reasoning about how to learn reliably, not just how to analyze after the fact

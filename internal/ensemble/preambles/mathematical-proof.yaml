@@ -1,0 +1,26 @@
+id: mathematical-proof
+code: A2
+name: Mathematical Proof
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Mathematical Proof (A2)
+  **Category**: Formal
+
+  ### Approach
+  Deduction where the proof object matters - what counts as a proof, how it is constructed. Emphasizes derivability and proof structure.
+
+  ### What You Produce
+  Formal proofs (sometimes machine-checkable); proof transformations
+
+  ### Best Applied To
+  - Formal methods
+  - Theorem proving
+  - Certified reasoning pipelines
+
+  ### Watch Out For (Failure Modes)
+  - Proving the wrong theorem (spec mismatch)
+  - Proving something irrelevant to outcomes
+
+  ### What Makes This Mode Unique
+  More structured than everyday deduction; emphasizes derivability and proof structure

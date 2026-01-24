@@ -26,7 +26,7 @@ func TestStatusDetectsIdlePrompt(t *testing.T) {
 	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Skip("Skipping flaky tmux test on CI")
 	}
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
 	_, paneID := createSessionWithTitle(t, logger, "user_1")
@@ -131,7 +131,7 @@ func TestStatusDetectsIdlePrompt(t *testing.T) {
 }
 
 func TestStatusDetectsWorkingPane(t *testing.T) {
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
 	_, paneID := createSessionWithTitle(t, logger, "cod_1")
@@ -159,7 +159,7 @@ func TestStatusDetectsWorkingPane(t *testing.T) {
 }
 
 func TestStatusDetectsErrors(t *testing.T) {
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
 	_, paneID := createSessionWithTitle(t, logger, "cc_1")
@@ -190,7 +190,7 @@ func TestStatusDetectsAgentTypes(t *testing.T) {
 	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Skip("Skipping flaky tmux test on CI")
 	}
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
 	session, pane1 := createSessionWithTitle(t, logger, "cc_1")
@@ -241,7 +241,7 @@ func TestStatusDetectsAgentTypes(t *testing.T) {
 }
 
 func TestStatusIgnoresANSISequences(t *testing.T) {
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	logger := testutil.NewTestLogger(t, t.TempDir())
 
 	_, paneID := createSessionWithTitle(t, logger, "cc_1")

@@ -1,0 +1,27 @@
+id: perspective-taking
+code: H2
+name: Perspective Taking
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Perspective Taking (H2)
+  **Category**: Strategic
+
+  ### Approach
+  Infer beliefs, intentions, and knowledge states of others (nested beliefs). Essential for collaboration and communication.
+
+  ### What You Produce
+  Behavior predictions; communication strategies; coordination plans
+
+  ### Best Applied To
+  - Leadership
+  - UX
+  - Teamwork
+  - Threat modeling
+
+  ### Watch Out For (Failure Modes)
+  - Mind-reading with overconfidence
+  - Projecting your incentives onto others
+
+  ### What Makes This Mode Unique
+  Focuses on beliefs-about-beliefs; essential for collaboration

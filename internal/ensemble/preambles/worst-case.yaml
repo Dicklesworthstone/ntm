@@ -1,0 +1,26 @@
+id: worst-case
+code: G6
+name: Worst-Case Analysis
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Worst-Case Analysis (G6)
+  **Category**: Practical
+
+  ### Approach
+  Choose actions that perform acceptably under worst plausible conditions or adversaries. Conservative policies and guarantees.
+
+  ### What You Produce
+  Conservative policies; guarantees; buffer sizing; safety margins
+
+  ### Best Applied To
+  - Safety-critical systems
+  - Security
+  - Compliance
+  - Tail-risk control
+
+  ### Watch Out For (Failure Modes)
+  - Overconservatism (leaving too much value on the table)
+
+  ### What Makes This Mode Unique
+  Expected-value optimizes averages; robust optimizes guarantees

@@ -1,0 +1,58 @@
+name: hypersync
+description: HyperSync (leader-authoritative workspace replication fabric) spec refinement
+
+documents:
+  readme: README.md
+  spec: PROPOSED_HYPERSYNC_SPEC__CODEX.md
+  implementation: PROPOSED_HYPERSYNC_SPEC__OPUS.md
+
+oracle:
+  model: "5.2 Pro"
+  thinking_time: extended
+
+rounds:
+  output_dir: .apr/rounds/hypersync
+  # The bundle is large (NTM README + two specs). Include OPUS less often to avoid ChatGPT size limits.
+  impl_every_n: 8
+
+template: |
+  Read the attached `README.md` first (Oracle includes it below as "File: README.md").
+
+  Then read the attached `PROPOSED_HYPERSYNC_SPEC__CODEX.md` (the HyperSync spec under review).
+
+  NOW: Carefully review this HyperSync specification and propose your best
+  revisions to make it:
+  - more correct (filesystems/locking semantics, deterministic replay, failure modes)
+  - more robust (partitions, crashes, replays, idempotency, recovery)
+  - more implementable/testable (clear message types, invariants, test plan)
+  - more performant on modern hardware (NVMe, 64 cores, fast networks)
+
+  Hard constraints:
+  - Single leader (main machine). Workers are subordinate. No additional servers.
+  - Preserve "single shared workspace" semantics (not separate git worktrees).
+  - If leader unreachable: workers must become read-only (no merge-later divergence).
+  - Avoid "old tech" as the core solution (no NFS/rsync as the core replication mechanism).
+  - NTM repo stays pure Go; HyperSync daemon can be separate (Rust preferred).
+
+  Use "alien artifact" standards: be explicit about assumptions and guarantees.
+  Use "extreme optimization" discipline: propose profiling/microbench plans for hotspots.
+
+  Output format:
+  - First: a ranked list of issues you found (severity + confidence).
+  - Then: git-diff style patches against the spec text.
+
+template_with_impl: |
+  Read the attached `README.md` first (NTM context and constraints).
+
+  Then read the attached `PROPOSED_HYPERSYNC_SPEC__OPUS.md` (reference spec / alternate ideas).
+
+  Then read the attached `PROPOSED_HYPERSYNC_SPEC__CODEX.md` (the HyperSync spec under review).
+
+  NOW: Review the HyperSync spec below and:
+  - Identify the best ideas from the reference spec not yet present here
+  - Identify any flaws/regressions
+  - Propose concrete patches to improve the spec
+
+  Output format:
+  - First: ranked issues (severity + confidence).
+  - Then: git-diff style patches against the spec text.

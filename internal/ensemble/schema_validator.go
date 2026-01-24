@@ -205,6 +205,60 @@ func (v *SchemaValidator) ParseAndValidate(raw string) (*ModeOutput, []Validatio
 	return output, errs, nil
 }
 
+// Normalize applies normalization to a ModeOutput, injecting defaults and
+// converting flexible input formats to canonical values.
+// Returns a slice of ValidationErrors for values that couldn't be normalized.
+//
+// Normalization includes:
+// - Injecting mode_id if missing (from modeID parameter)
+// - Normalizing confidence/likelihood strings ("high"/"medium"/"low") to floats
+// - Normalizing impact levels (case-insensitive)
+func (v *SchemaValidator) Normalize(output *ModeOutput, modeID string) []ValidationError {
+	var errs []ValidationError
+
+	// Inject mode_id if missing
+	if output.ModeID == "" && modeID != "" {
+		output.ModeID = modeID
+	}
+
+	// Normalize impact levels (case-insensitive)
+	for i := range output.TopFindings {
+		normalized := ImpactLevel(strings.ToLower(string(output.TopFindings[i].Impact)))
+		if normalized.IsValid() {
+			output.TopFindings[i].Impact = normalized
+		}
+	}
+
+	for i := range output.Risks {
+		normalized := ImpactLevel(strings.ToLower(string(output.Risks[i].Impact)))
+		if normalized.IsValid() {
+			output.Risks[i].Impact = normalized
+		}
+	}
+
+	for i := range output.Recommendations {
+		normalized := ImpactLevel(strings.ToLower(string(output.Recommendations[i].Priority)))
+		if normalized.IsValid() {
+			output.Recommendations[i].Priority = normalized
+		}
+	}
+
+	return errs
+}
+
+// ParseNormalizeAndValidate combines parsing, normalization, and validation.
+// This is the recommended entry point for processing mode output.
+func (v *SchemaValidator) ParseNormalizeAndValidate(raw string, modeID string) (*ModeOutput, []ValidationError, error) {
+	output, err := v.ParseYAML(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Normalize first (e.g., inject mode_id), then validate
+	normErrs := v.Normalize(output, modeID)
+	valErrs := v.Validate(output)
+	return output, append(normErrs, valErrs...), nil
+}
+
 // validateRisk validates a single risk entry.
 func (v *SchemaValidator) validateRisk(index int, r *Risk) []ValidationError {
 	var errs []ValidationError

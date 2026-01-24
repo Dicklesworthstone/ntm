@@ -214,9 +214,13 @@ func TestGetSchemaContract(t *testing.T) {
 		"confidence:",
 		"top_findings:",
 		"risks:",
+		"affected_areas:",
 		"recommendations:",
+		"related_findings:",
 		"questions_for_user:",
+		"suggested_answers:",
 		"failure_modes_to_watch:",
+		"indicators:",
 		"SCHEMA VERSION",
 		SchemaVersion,
 	}
@@ -224,6 +228,64 @@ func TestGetSchemaContract(t *testing.T) {
 	for _, r := range required {
 		if !strings.Contains(schema, r) {
 			t.Errorf("GetSchemaContract() missing: %q", r)
+		}
+	}
+}
+
+func TestPreambleEngine_Render_AllModes(t *testing.T) {
+	engine := NewPreambleEngine()
+
+	for _, mode := range EmbeddedModes {
+		mode := mode
+		data := &PreambleData{
+			Problem:  "Test problem",
+			TokenCap: 2000,
+			Mode:     &mode,
+		}
+
+		result, err := engine.Render(data)
+		if err != nil {
+			t.Errorf("Render() failed for mode %s (%s, %s): %v", mode.ID, mode.Code, mode.Tier, err)
+			continue
+		}
+
+		if !strings.Contains(result, mode.Name) {
+			t.Errorf("Render() missing mode name for %s (%s)", mode.ID, mode.Code)
+		}
+	}
+}
+
+func TestPreambleEngine_Render_FallbackIncludesMetadata(t *testing.T) {
+	engine := NewPreambleEngine()
+
+	var mode *ReasoningMode
+	for i := range EmbeddedModes {
+		if EmbeddedModes[i].ID == "statistical" {
+			mode = &EmbeddedModes[i]
+			break
+		}
+	}
+	if mode == nil {
+		t.Fatal("statistical mode not found in EmbeddedModes")
+	}
+
+	section := engine.renderModeSection(mode)
+
+	checks := []string{
+		mode.Name,
+		mode.Code,
+		mode.Category.String(),
+		"Inference about populations from samples",
+		"Effect estimates",
+		"A/B tests",
+		"P-value worship",
+		"long-run procedure properties",
+		"advanced-tier mode",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(section, check) {
+			t.Errorf("fallback section missing %q", check)
 		}
 	}
 }

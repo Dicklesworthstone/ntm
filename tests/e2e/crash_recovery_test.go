@@ -18,7 +18,7 @@ import (
 // BD-ntm-wel1: Test agent recovery after crash/disconnect
 func TestCrashDetection(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -158,7 +158,7 @@ scrollback = 500
 // TestHealthCheckCycle tests the health check cycle including stall detection.
 func TestHealthCheckCycle(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -265,7 +265,7 @@ scrollback = 500
 // TestRateLimitDetection tests detection of rate-limited agents.
 func TestRateLimitDetection(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -377,7 +377,7 @@ scrollback = 500
 // TestRestartPaneCommand tests the --robot-restart-pane command.
 func TestRestartPaneCommand(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())
@@ -512,7 +512,7 @@ scrollback = 500
 // TestDiagnoseWithFix tests the diagnose --fix auto-recovery functionality.
 func TestDiagnoseWithFix(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLogger(t, t.TempDir())

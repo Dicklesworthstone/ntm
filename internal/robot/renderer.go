@@ -150,7 +150,7 @@ func (r *JSONRenderer) Format() RobotFormat {
 // TOON (Token-Oriented Object Notation) uses tab-separated values with schema
 // headers, providing significant token savings over JSON for AI model consumption.
 //
-// Encoding is performed by toon_rust's `tr` binary via toonEncode to ensure a
+// Encoding is performed by toon_rust's `tru` binary via toonEncode to ensure a
 // single canonical implementation across languages/tools.
 type TOONRenderer struct {
 	// Delimiter is the field separator. Default: "\t" (tab).

@@ -891,7 +891,7 @@ func TestEstimationMethods(t *testing.T) {
 // TestContextIntegrationWithTmuxSession tests context monitoring with a real tmux session.
 func TestContextIntegrationWithTmuxSession(t *testing.T) {
 	testutil.RequireE2E(t)
-	testutil.RequireTmux(t)
+	testutil.RequireTmuxThrottled(t)
 	testutil.RequireNTMBinary(t)
 
 	logger := testutil.NewTestLoggerStdout(t)

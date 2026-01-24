@@ -1,0 +1,26 @@
+id: failure-mode
+code: F4
+name: Failure Mode Analysis
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Failure Mode Analysis (F4)
+  **Category**: Causal
+
+  ### Approach
+  Explain and predict by identifying parts and interactions. Gives actionable intervention points and generalizes when mechanisms hold.
+
+  ### What You Produce
+  Mechanistic explanations; levers; failure modes; intervention points
+
+  ### Best Applied To
+  - Engineering
+  - Debugging
+  - Safety analysis
+  - Reliability
+
+  ### Watch Out For (Failure Modes)
+  - Just-so mechanisms that sound plausible but are not validated
+
+  ### What Makes This Mode Unique
+  Stronger than correlation: gives actionable intervention points

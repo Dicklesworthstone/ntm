@@ -1,0 +1,26 @@
+id: engineering-design
+code: K3
+name: Engineering Design Reasoning
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Engineering Design Reasoning (K3)
+  **Category**: Domain
+
+  ### Approach
+  Iterate from requirements to architectures to prototypes with tradeoffs, constraints, and failure analyses. Multi-objective and constraint-laden.
+
+  ### What You Produce
+  Designs; specs; tradeoff justifications; test plans
+
+  ### Best Applied To
+  - Product development
+  - Reliability
+  - Architecture decisions
+
+  ### Watch Out For (Failure Modes)
+  - Premature optimization or over-engineering
+  - Ignoring maintainability
+
+  ### What Makes This Mode Unique
+  Inherently multi-objective and constraint-laden; relies on simulation and safety margins

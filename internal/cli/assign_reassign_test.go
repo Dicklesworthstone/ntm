@@ -11,6 +11,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 type assignGlobalsSnapshot struct {
@@ -118,9 +119,7 @@ func agentTypeLabel(pane tmux.Pane) string {
 }
 
 func TestRunReassignment_ToPane_Success(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	snapshot := captureAssignGlobals()
 	defer snapshot.restore()
@@ -202,9 +201,7 @@ func TestRunReassignment_ToPane_Success(t *testing.T) {
 }
 
 func TestRunReassignment_AlreadyAssigned(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	snapshot := captureAssignGlobals()
 	defer snapshot.restore()
@@ -254,9 +251,7 @@ func TestRunReassignment_AlreadyAssigned(t *testing.T) {
 }
 
 func TestRunReassignment_NoIdleAgentForType(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	snapshot := captureAssignGlobals()
 	defer snapshot.restore()
@@ -305,9 +300,7 @@ func TestRunReassignment_NoIdleAgentForType(t *testing.T) {
 }
 
 func TestRunReassignment_TargetBusyWithoutForce(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	snapshot := captureAssignGlobals()
 	defer snapshot.restore()
@@ -361,9 +354,7 @@ func TestRunReassignment_TargetBusyWithoutForce(t *testing.T) {
 }
 
 func TestRunReassignment_NotAssigned(t *testing.T) {
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	snapshot := captureAssignGlobals()
 	defer snapshot.restore()

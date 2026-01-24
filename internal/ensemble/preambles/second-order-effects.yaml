@@ -1,0 +1,27 @@
+id: second-order-effects
+code: F6
+name: Second-Order Effects
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Second-Order Effects (F6)
+  **Category**: Causal
+
+  ### Approach
+  Run an internal model (mental or computational) to predict consequences under scenarios. What-if analysis and sensitivity.
+
+  ### What You Produce
+  Scenario traces; sensitivity analyses; what-if results
+
+  ### Best Applied To
+  - Complex systems
+  - Policy design
+  - Engineering dynamics
+  - Capacity planning
+
+  ### Watch Out For (Failure Modes)
+  - Simulation overconfidence
+  - Unvalidated models
+
+  ### What Makes This Mode Unique
+  Generative prediction from a specified model; not proof-like

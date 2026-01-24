@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tokenpkg "github.com/Dicklesworthstone/ntm/internal/tokens"
 )
 
 func TestModeCategory_IsValid(t *testing.T) {
@@ -31,6 +33,33 @@ func TestModeCategory_IsValid(t *testing.T) {
 	for _, tt := range tests {
 		if got := tt.cat.IsValid(); got != tt.valid {
 			t.Errorf("ModeCategory(%q).IsValid() = %v, want %v", tt.cat, got, tt.valid)
+		}
+	}
+}
+
+func TestModeCategory_String(t *testing.T) {
+	tests := []struct {
+		cat  ModeCategory
+		want string
+	}{
+		{CategoryFormal, "Formal"},
+		{CategoryAmpliative, "Ampliative"},
+		{CategoryUncertainty, "Uncertainty"},
+		{CategoryVagueness, "Vagueness"},
+		{CategoryChange, "Change"},
+		{CategoryCausal, "Causal"},
+		{CategoryPractical, "Practical"},
+		{CategoryStrategic, "Strategic"},
+		{CategoryDialectical, "Dialectical"},
+		{CategoryModal, "Modal"},
+		{CategoryDomain, "Domain"},
+		{CategoryMeta, "Meta"},
+		{ModeCategory("custom"), "custom"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.cat.String(); got != tt.want {
+			t.Errorf("ModeCategory(%q).String() = %q, want %q", tt.cat, got, tt.want)
 		}
 	}
 }
@@ -722,6 +751,61 @@ func TestDefaultBudgetConfig(t *testing.T) {
 	}
 	if cfg.TotalTimeout <= 0 {
 		t.Error("TotalTimeout should be positive")
+	}
+}
+
+func TestEstimateModeOutputTokens_UsesRawOutput(t *testing.T) {
+	output := ModeOutput{
+		ModeID:      "test-mode",
+		Thesis:      "short thesis",
+		TopFindings: []Finding{{Finding: "finding", Impact: ImpactLow, Confidence: 0.5}},
+		Confidence:  0.5,
+		RawOutput:   "raw output goes here",
+	}
+
+	got := EstimateModeOutputTokens(&output)
+	want := tokenpkg.EstimateTokensWithLanguageHint(output.RawOutput, tokenpkg.ContentMarkdown)
+	if got != want {
+		t.Errorf("EstimateModeOutputTokens() = %d, want %d", got, want)
+	}
+}
+
+func TestEstimateModeOutputTokens_Fallback(t *testing.T) {
+	output := ModeOutput{
+		ModeID:      "test-mode",
+		Thesis:      "short thesis",
+		TopFindings: []Finding{{Finding: "finding", Impact: ImpactLow, Confidence: 0.5}},
+		Confidence:  0.5,
+	}
+
+	got := EstimateModeOutputTokens(&output)
+	if got <= 0 {
+		t.Errorf("EstimateModeOutputTokens() = %d, want > 0", got)
+	}
+}
+
+func TestEstimateModeOutputsTokens_Sums(t *testing.T) {
+	outputs := []ModeOutput{
+		{
+			ModeID:      "mode-a",
+			Thesis:      "a",
+			TopFindings: []Finding{{Finding: "a", Impact: ImpactLow, Confidence: 0.5}},
+			Confidence:  0.5,
+			RawOutput:   "alpha output",
+		},
+		{
+			ModeID:      "mode-b",
+			Thesis:      "b",
+			TopFindings: []Finding{{Finding: "b", Impact: ImpactLow, Confidence: 0.5}},
+			Confidence:  0.5,
+			RawOutput:   "beta output",
+		},
+	}
+
+	got := EstimateModeOutputsTokens(outputs)
+	want := EstimateModeOutputTokens(&outputs[0]) + EstimateModeOutputTokens(&outputs[1])
+	if got != want {
+		t.Errorf("EstimateModeOutputsTokens() = %d, want %d", got, want)
 	}
 }
 

@@ -11,13 +11,11 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestSpawnSessionLogic(t *testing.T) {
-	// Skip if tmux is not installed (Epic says "Tests requiring tmux must be skipped in CI without tmux")
-	if !tmux.IsInstalled() {
-		t.Skip("tmux not installed")
-	}
+	testutil.RequireTmuxThrottled(t)
 
 	// Setup temp dir for projects
 	tmpDir, err := os.MkdirTemp("", "ntm-test-projects")

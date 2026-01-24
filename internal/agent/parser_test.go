@@ -247,7 +247,13 @@ Processing request...`
 
 func TestParser_Parse_WorkingWithLowContext(t *testing.T) {
 	p := NewParser()
+	// Realistic Codex output when actively working with low context.
+	// The "? for shortcuts" status line is pushed up by several lines of output,
+	// so it should NOT be in the last 5 lines that we check for idle detection.
 	output := `5% context left · ? for shortcuts
+This is some explanation from the agent...
+And more explanation...
+I'll write some code now.
 Writing to file.go...
 ` + "```go" + `
 func example() {}
@@ -624,9 +630,11 @@ func TestParser_FileData_Gemini_YOLO(t *testing.T) {
 	if state.Type != AgentTypeGemini {
 		t.Errorf("Type = %v, want %v", state.Type, AgentTypeGemini)
 	}
-	// YOLO mode with running commands should be detected as working
-	if !state.IsWorking {
-		t.Error("Expected IsWorking=true for YOLO mode with active commands")
+	// Test data shows deployment is complete and agent is at gemini> prompt.
+	// The agent WAS working but is now idle, waiting for next command.
+	// YOLO mode only affects auto-approval behavior, not working/idle detection.
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for completed deployment at gemini> prompt")
 	}
 }
 

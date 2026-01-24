@@ -1,0 +1,26 @@
+id: formal-verification
+code: A3
+name: Formal Verification
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Formal Verification (A3)
+  **Category**: Formal
+
+  ### Approach
+  A proof of existence must provide a construction or witness. Proofs correspond to algorithms (proofs as programs). Stronger link between proved and computable.
+
+  ### What You Produce
+  Proofs that correspond to algorithms; verified implementations
+
+  ### Best Applied To
+  - Verified software
+  - Protocol verification
+  - Constructive math
+  - Show me the witness
+
+  ### Watch Out For (Failure Modes)
+  - Over-constraining when classical reasoning is acceptable and simpler
+
+  ### What Makes This Mode Unique
+  Ensures proofs are constructive and correspond to executable programs

@@ -1,0 +1,26 @@
+id: resource-allocation
+code: G5
+name: Resource Allocation
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Resource Allocation (G5)
+  **Category**: Practical
+
+  ### Approach
+  Choose the best solution relative to an objective subject to constraints. Not just feasible but optimal or near-optimal.
+
+  ### What You Produce
+  Optimal or near-optimal decisions; tradeoff curves; shadow prices
+
+  ### Best Applied To
+  - Resource allocation
+  - Routing
+  - Scheduling
+  - Design tradeoffs
+
+  ### Watch Out For (Failure Modes)
+  - Optimizing the wrong objective or ignoring unmodeled constraints
+
+  ### What Makes This Mode Unique
+  Constraint satisfaction asks any feasible; optimization asks best feasible

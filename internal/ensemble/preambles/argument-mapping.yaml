@@ -1,0 +1,26 @@
+id: argument-mapping
+code: E6
+name: Argument Mapping
+tier: core
+preamble: |
+  ## YOUR REASONING MODE
+  **Mode**: Argument Mapping (E6)
+  **Category**: Change
+
+  ### Approach
+  Build arguments and counterarguments; compute which claims stand given attack/defense relations. Evaluate competing reasons.
+
+  ### What You Produce
+  Accepted or warranted claims; rationale maps; argument structures
+
+  ### Best Applied To
+  - Governance
+  - Policy disputes
+  - Legal-style reasoning
+  - Stakeholder conflicts
+
+  ### Watch Out For (Failure Modes)
+  - Mistaking won the debate for is true (argument strength vs reality)
+
+  ### What Makes This Mode Unique
+  Not just derive consequences but evaluate competing reasons systematically
