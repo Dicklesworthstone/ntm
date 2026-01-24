@@ -283,32 +283,25 @@ func (p *EnsemblePanel) renderAssignmentLine(a ensemble.ModeAssignment, width in
 
 	statusIcon := assignmentStatusIcon(a.Status)
 	pane := shortenPaneName(a.PaneName)
-	modeIcon := "•"
+	modeBadge := strings.ToUpper(a.ModeID)
 	modeName := a.ModeID
-	modeCode := strings.ToUpper(a.ModeID)
 	tierBadge := ""
 
 	if mode != nil {
-		if mode.Icon != "" {
-			modeIcon = mode.Icon
-		}
 		if mode.Name != "" {
 			modeName = mode.Name
 		}
-		if mode.Code != "" {
-			modeCode = mode.Code
-		}
+		modeBadge = ensemble.ModeBadge(*mode)
 		tierBadge = renderTierBadge(mode.Tier, t)
 	}
 
 	progress := renderProgressBar(assignmentProgress(a.Status), maxInt(6, minInt(16, width/6)))
 	statusText := string(a.Status)
 
-	line := fmt.Sprintf("%s %-6s %s %-4s %-18s %s %s %s",
+	line := fmt.Sprintf("%s %-6s %-8s %-18s %s %s %s",
 		statusIcon,
 		pane,
-		modeIcon,
-		modeCode,
+		modeBadge,
 		modeName,
 		tierBadge,
 		progress,

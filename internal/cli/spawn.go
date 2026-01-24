@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -120,6 +121,19 @@ func resolveStaggerInterval(mode string, opts SpawnOptions, tracker *ratelimit.R
 		}
 	}
 	return interval
+}
+
+func shouldStartInternalMonitor() bool {
+	// When spawnSessionLogic is invoked from package tests, os.Executable() points at a
+	// `*.test` binary. Spawning "internal-monitor" via that binary re-runs the entire
+	// test suite recursively (detached), which can quickly fork-bomb the machine.
+	if flag.Lookup("test.v") != nil {
+		return false
+	}
+	if os.Getenv("NTM_DISABLE_INTERNAL_MONITOR") != "" {
+		return false
+	}
+	return true
 }
 
 // SpawnOptions configures session creation and agent spawning
@@ -1306,7 +1320,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	// Always started regardless of auto-restart config
 	// Note: Started BEFORE waiting for staggered prompts so that resilience is active
 	// even if the user interrupts the wait.
-	{
+	if shouldStartInternalMonitor() {
 		// Save manifest for the monitor process
 		manifest := &resilience.SpawnManifest{
 			Session:     opts.Session,
