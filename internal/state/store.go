@@ -1118,55 +1118,55 @@ func (s *Store) GetBeadHistoryStats(sessionID string) (*BeadHistoryStats, error)
 	}
 
 	// Count by status
+	// #nosec G202 -- sessionFilter is internally generated, not user input
 	rows, err := s.db.Query(`SELECT to_status, COUNT(*) FROM bead_history WHERE `+sessionFilter+` GROUP BY to_status`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("count by status: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var status string
 		var count int
 		if err := rows.Scan(&status, &count); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("scan status count: %w", err)
 		}
 		stats.ByStatus[status] = count
 	}
-	rows.Close()
 
 	// Count by agent
-	rows, err = s.db.Query(`SELECT COALESCE(agent_name, agent_type), COUNT(*) FROM bead_history WHERE `+sessionFilter+` GROUP BY COALESCE(agent_name, agent_type)`, args...)
+	// #nosec G202 -- sessionFilter is internally generated, not user input
+	rows2, err := s.db.Query(`SELECT COALESCE(agent_name, agent_type), COUNT(*) FROM bead_history WHERE `+sessionFilter+` GROUP BY COALESCE(agent_name, agent_type)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("count by agent: %w", err)
 	}
-	for rows.Next() {
+	defer rows2.Close()
+	for rows2.Next() {
 		var agent string
 		var count int
-		if err := rows.Scan(&agent, &count); err != nil {
-			rows.Close()
+		if err := rows2.Scan(&agent, &count); err != nil {
 			return nil, fmt.Errorf("scan agent count: %w", err)
 		}
 		if agent != "" {
 			stats.ByAgent[agent] = count
 		}
 	}
-	rows.Close()
 
 	// Count failure reasons
 	failedArgs := append(args[:0:0], args...) // Copy args to avoid modifying original
-	rows, err = s.db.Query(`SELECT reason, COUNT(*) FROM bead_history WHERE `+sessionFilter+` AND to_status = 'failed' AND reason != '' GROUP BY reason`, failedArgs...)
+	// #nosec G202 -- sessionFilter is internally generated, not user input
+	rows3, err := s.db.Query(`SELECT reason, COUNT(*) FROM bead_history WHERE `+sessionFilter+` AND to_status = 'failed' AND reason != '' GROUP BY reason`, failedArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("count failure reasons: %w", err)
 	}
-	for rows.Next() {
+	defer rows3.Close()
+	for rows3.Next() {
 		var reason string
 		var count int
-		if err := rows.Scan(&reason, &count); err != nil {
-			rows.Close()
+		if err := rows3.Scan(&reason, &count); err != nil {
 			return nil, fmt.Errorf("scan reason count: %w", err)
 		}
 		stats.FailureReasons[reason] = count
 	}
-	rows.Close()
 
 	return stats, nil
 }

@@ -589,7 +589,7 @@ func parseHexColor(hex string) color.RGBA {
 	}
 
 	var r, g, b uint8
-	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	_, _ = fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
 	return color.RGBA{r, g, b, 255}
 }
 

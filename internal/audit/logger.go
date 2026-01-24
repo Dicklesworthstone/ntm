@@ -188,8 +188,8 @@ func (al *AuditLogger) startFlushTimer() {
 		al.mutex.Lock()
 		defer al.mutex.Unlock()
 		if !al.closed {
-			al.flushUnlocked()
-			al.startFlushTimer() // Restart timer
+			_ = al.flushUnlocked() // Ignore error in background flush
+			al.startFlushTimer()   // Restart timer
 		}
 	})
 }
@@ -210,12 +210,6 @@ func (al *AuditLogger) Log(entry AuditEntry) error {
 	al.sequenceNum++
 	entry.SequenceNum = al.sequenceNum
 
-	// Calculate checksum
-	entryData, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("failed to marshal audit entry: %w", err)
-	}
-
 	// Calculate hash without the checksum field
 	entryForHash := entry
 	entryForHash.Checksum = ""
@@ -228,7 +222,7 @@ func (al *AuditLogger) Log(entry AuditEntry) error {
 	entry.Checksum = hex.EncodeToString(hash[:])
 
 	// Re-marshal with checksum
-	entryData, err = json.Marshal(entry)
+	entryData, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("failed to marshal final audit entry: %w", err)
 	}

@@ -547,7 +547,7 @@ func TestSummaryStatsByAgent(t *testing.T) {
 }
 
 func TestSummaryStatsEmpty(t *testing.T) {
-	var assignments []*assignment.Assignment
+	assignments := []*assignment.Assignment{} // Use empty slice instead of nil
 
 	// Empty assignments should result in zero counts
 	statusCounts := make(map[assignment.AssignmentStatus]int)
@@ -585,7 +585,7 @@ func TestCompletionRateCalculation(t *testing.T) {
 }
 
 func TestCompletionRateZeroDivision(t *testing.T) {
-	var assignments []*assignment.Assignment
+	assignments := []*assignment.Assignment{} // Use empty slice instead of nil
 
 	total := len(assignments)
 

@@ -158,7 +158,7 @@ func (m *WorktreeManager) RemoveWorktree(agentName string) error {
 		// If removal failed, try to prune and remove manually
 		cmd = exec.Command("git", "worktree", "prune")
 		cmd.Dir = m.projectPath
-		cmd.Run() // Ignore errors for prune
+		_ = cmd.Run() // Ignore errors for prune
 
 		// Try to remove directory manually
 		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
@@ -169,7 +169,7 @@ func (m *WorktreeManager) RemoveWorktree(agentName string) error {
 	// Delete the branch
 	cmd = exec.Command("git", "branch", "-D", branchName)
 	cmd.Dir = m.projectPath
-	cmd.Run() // Ignore errors as branch might not exist
+	_ = cmd.Run() // Ignore errors as branch might not exist
 
 	return nil
 }
@@ -191,7 +191,7 @@ func (m *WorktreeManager) Cleanup() error {
 	// Remove the worktrees directory if empty
 	worktreesDir := filepath.Join(m.projectPath, ".ntm", "worktrees")
 	if entries, err := os.ReadDir(worktreesDir); err == nil && len(entries) == 0 {
-		os.Remove(worktreesDir)
+		_ = os.Remove(worktreesDir) // Ignore error for optional cleanup
 	}
 
 	if len(errors) > 0 {

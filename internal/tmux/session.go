@@ -124,6 +124,13 @@ func parseAgentFromTitle(title string) (AgentType, int, string, []string) {
 	return AgentUser, 0, "", nil
 }
 
+// tagsFromTitle extracts only tags from a pane title.
+// This is a convenience wrapper around parseAgentFromTitle.
+func tagsFromTitle(title string) []string {
+	_, _, _, tags := parseAgentFromTitle(title)
+	return tags
+}
+
 // parseTags parses a comma-separated tag string into a slice.
 // Returns nil for empty input.
 func parseTags(tagStr string) []string {
@@ -496,8 +503,7 @@ func (c *Client) GetPaneTags(paneID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, _, _, tags := parseAgentFromTitle(title)
-	return tags, nil
+	return tagsFromTitle(title), nil
 }
 
 // GetPaneTags returns the tags for a pane (default client)

@@ -554,6 +554,7 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 	}
 
 	seq.AgentLaunched = true
+	_ = attemptedActions // Used for error reporting in failure paths
 	return seq, nil
 }
 
