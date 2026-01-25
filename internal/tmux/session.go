@@ -999,10 +999,11 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		active := parts[6] == "1"
 		rawTimestamp := strings.TrimSpace(parts[7])
 		pid, _ := strconv.Atoi(parts[8])
-		lastActivity, err := parsePaneActivityTimestamp(rawTimestamp, time.Now())
+		now := time.Now()
+		lastActivity, err := parsePaneActivityTimestamp(rawTimestamp, now)
 		if err != nil {
 			// Unparseable timestamps should not produce huge idle durations.
-			lastActivity = time.Time{}
+			lastActivity = now
 		}
 
 		pane := Pane{
