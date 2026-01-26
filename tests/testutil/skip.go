@@ -7,9 +7,48 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/shirou/gopsutil/v4/cpu"
 )
+
+// CPUOverloadThreshold is the percentage above which a core is considered overloaded.
+const CPUOverloadThreshold = 95.0
+
+// SkipIfCPUOverloaded checks if all CPU cores are at 95%+ utilization and skips
+// the test if so. This prevents flaky timing-based benchmark tests when the
+// system is under extreme load.
+//
+// Use this at the start of any test that asserts on wall-clock time.
+func SkipIfCPUOverloaded(t *testing.T) {
+	t.Helper()
+
+	// Sample CPU usage over 200ms per-core
+	perCPU, err := cpu.Percent(200*time.Millisecond, true)
+	if err != nil {
+		// If we can't measure CPU, proceed with the test
+		t.Logf("Warning: could not measure CPU load: %v", err)
+		return
+	}
+
+	if len(perCPU) == 0 {
+		return
+	}
+
+	// Check if ALL cores are at 95%+
+	overloadedCores := 0
+	for _, usage := range perCPU {
+		if usage >= CPUOverloadThreshold {
+			overloadedCores++
+		}
+	}
+
+	if overloadedCores == len(perCPU) {
+		t.Skipf("Skipping benchmark: system under extreme CPU load (all %d cores at %.0f%%+ utilization)",
+			len(perCPU), CPUOverloadThreshold)
+	}
+}
 
 // RequireTmux skips the test if tmux is not installed.
 func RequireTmux(t *testing.T) {
