@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -267,5 +268,179 @@ func TestErrorHelpers(t *testing.T) {
 		if result != tt.expect {
 			t.Errorf("for %v, expected %v, got %v", tt.err, tt.expect, result)
 		}
+	}
+}
+
+func TestExtractMCPContent(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       json.RawMessage
+		wantErr     bool
+		errContains string
+		validate    func(t *testing.T, result json.RawMessage)
+	}{
+		{
+			name:  "raw result (no envelope) - backward compatibility",
+			input: json.RawMessage(`{"id": 1, "name": "TestAgent"}`),
+			validate: func(t *testing.T, result json.RawMessage) {
+				var data struct {
+					ID   int    `json:"id"`
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(result, &data); err != nil {
+					t.Fatalf("failed to unmarshal: %v", err)
+				}
+				if data.ID != 1 || data.Name != "TestAgent" {
+					t.Errorf("unexpected data: %+v", data)
+				}
+			},
+		},
+		{
+			name: "MCP envelope with structuredContent (preferred)",
+			input: json.RawMessage(`{
+				"content": [{"type": "text", "text": "{\"id\":99,\"name\":\"Ignored\"}"}],
+				"structuredContent": {"id": 115, "name": "BrownOtter"},
+				"isError": false
+			}`),
+			validate: func(t *testing.T, result json.RawMessage) {
+				var data struct {
+					ID   int    `json:"id"`
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(result, &data); err != nil {
+					t.Fatalf("failed to unmarshal: %v", err)
+				}
+				if data.ID != 115 || data.Name != "BrownOtter" {
+					t.Errorf("expected {115, BrownOtter}, got %+v", data)
+				}
+			},
+		},
+		{
+			name: "MCP envelope with content text (fallback)",
+			input: json.RawMessage(`{
+				"content": [{"type": "text", "text": "{\"id\":42,\"name\":\"GreenLake\"}"}],
+				"isError": false
+			}`),
+			validate: func(t *testing.T, result json.RawMessage) {
+				var data struct {
+					ID   int    `json:"id"`
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(result, &data); err != nil {
+					t.Fatalf("failed to unmarshal: %v", err)
+				}
+				if data.ID != 42 || data.Name != "GreenLake" {
+					t.Errorf("expected {42, GreenLake}, got %+v", data)
+				}
+			},
+		},
+		{
+			name: "MCP envelope with isError=true and message",
+			input: json.RawMessage(`{
+				"content": [{"type": "text", "text": "Agent name already in use"}],
+				"isError": true
+			}`),
+			wantErr:     true,
+			errContains: "Agent name already in use",
+		},
+		{
+			name: "MCP envelope with isError=true no message",
+			input: json.RawMessage(`{
+				"content": [],
+				"isError": true
+			}`),
+			wantErr:     true,
+			errContains: "tool returned error",
+		},
+		{
+			name:  "empty result",
+			input: json.RawMessage(``),
+			validate: func(t *testing.T, result json.RawMessage) {
+				if len(result) != 0 {
+					t.Errorf("expected empty result, got %s", string(result))
+				}
+			},
+		},
+		{
+			name:  "null result",
+			input: json.RawMessage(`null`),
+			validate: func(t *testing.T, result json.RawMessage) {
+				// null is valid JSON, should pass through
+				if string(result) != "null" {
+					t.Errorf("expected null, got %s", string(result))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := extractMCPContent(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+
+func TestCallToolWithMCPEnvelope(t *testing.T) {
+	// Mock server that returns MCP envelope format
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      1,
+			// MCP envelope with structuredContent
+			Result: json.RawMessage(`{
+				"content": [{"type": "text", "text": "{\"id\":115,\"name\":\"BrownOtter\"}"}],
+				"structuredContent": {"id": 115, "name": "BrownOtter", "program": "ntm", "model": "coordinator"},
+				"isError": false
+			}`),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	result, err := c.callTool(context.Background(), "register_agent", map[string]interface{}{
+		"project_key": "/test/project",
+		"program":     "ntm",
+		"model":       "coordinator",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify we got the extracted structuredContent, not the envelope
+	var agent struct {
+		ID      int    `json:"id"`
+		Name    string `json:"name"`
+		Program string `json:"program"`
+		Model   string `json:"model"`
+	}
+	if err := json.Unmarshal(result, &agent); err != nil {
+		t.Fatalf("failed to unmarshal agent: %v", err)
+	}
+	if agent.ID != 115 {
+		t.Errorf("expected ID 115, got %d", agent.ID)
+	}
+	if agent.Name != "BrownOtter" {
+		t.Errorf("expected name BrownOtter, got %s", agent.Name)
+	}
+	if agent.Program != "ntm" {
+		t.Errorf("expected program ntm, got %s", agent.Program)
 	}
 }

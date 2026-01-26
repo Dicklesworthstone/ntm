@@ -249,6 +249,64 @@ type JSONRPCResponse struct {
 	Error   *JSONRPCError   `json:"error,omitempty"`
 }
 
+// MCPToolResult represents the MCP tools/call result envelope.
+// MCP wraps tool outputs in this structure rather than returning raw data.
+type MCPToolResult struct {
+	// Content is an array of content blocks (text, image, etc.)
+	Content []MCPContentBlock `json:"content,omitempty"`
+	// StructuredContent contains the parsed tool output (preferred)
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	// IsError indicates if the tool returned an error
+	IsError bool `json:"isError,omitempty"`
+}
+
+// MCPContentBlock represents a single content block in an MCP response.
+type MCPContentBlock struct {
+	Type string `json:"type"` // "text", "image", etc.
+	Text string `json:"text,omitempty"`
+}
+
+// extractMCPContent extracts the actual tool output from an MCP envelope.
+// It prefers structuredContent (already parsed), falls back to content[0].text
+// (JSON string), and finally returns the raw result if not an MCP envelope.
+func extractMCPContent(result json.RawMessage) (json.RawMessage, error) {
+	if len(result) == 0 {
+		return result, nil
+	}
+
+	// Try to parse as MCP envelope
+	var envelope MCPToolResult
+	if err := json.Unmarshal(result, &envelope); err != nil {
+		// Not an MCP envelope, return raw result (backward compatibility)
+		return result, nil
+	}
+
+	// Check for tool-level error
+	if envelope.IsError {
+		// Extract error message from content if available
+		if len(envelope.Content) > 0 && envelope.Content[0].Text != "" {
+			return nil, fmt.Errorf("tool error: %s", envelope.Content[0].Text)
+		}
+		return nil, fmt.Errorf("tool returned error")
+	}
+
+	// Prefer structuredContent (already parsed JSON)
+	if len(envelope.StructuredContent) > 0 {
+		return envelope.StructuredContent, nil
+	}
+
+	// Fall back to content[0].text (JSON string that needs no re-parsing)
+	if len(envelope.Content) > 0 && envelope.Content[0].Type == "text" && envelope.Content[0].Text != "" {
+		// The text field contains JSON, return it as RawMessage
+		return json.RawMessage(envelope.Content[0].Text), nil
+	}
+
+	// No structured content and no text content - might not be an MCP envelope
+	// Check if it looks like raw tool output (has expected fields)
+	// Return raw result for backward compatibility
+	return result, nil
+}
+
 // ToolCallParams represents the params for a tools/call request.
 type ToolCallParams struct {
 	Name      string                 `json:"name"`
@@ -318,7 +376,13 @@ func (c *Client) callTool(ctx context.Context, toolName string, args map[string]
 		return nil, NewAPIError(toolName, 0, mapJSONRPCError(rpcResp.Error))
 	}
 
-	return rpcResp.Result, nil
+	// Extract actual content from MCP envelope
+	content, err := extractMCPContent(rpcResp.Result)
+	if err != nil {
+		return nil, NewAPIError(toolName, 0, err)
+	}
+
+	return content, nil
 }
 
 // callToolWithTimeout calls a tool with a specific timeout.
