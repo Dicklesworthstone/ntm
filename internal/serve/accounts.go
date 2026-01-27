@@ -359,6 +359,18 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 	}
 	accountState.mu.Unlock()
 
+	// Publish WebSocket event for rotation
+	if s.wsHub != nil {
+		s.wsHub.Publish("accounts:"+req.Provider, "account.rotated", map[string]interface{}{
+			"provider":         req.Provider,
+			"previous_account": output.Switch.PreviousAccount,
+			"new_account":      output.Switch.NewAccount,
+			"success":          output.Switch.Success,
+			"reason":           req.Reason,
+			"automatic":        false,
+		})
+	}
+
 	if !output.Success {
 		statusCode := http.StatusInternalServerError
 		if output.ErrorCode == robot.ErrCodeDependencyMissing {
@@ -463,6 +475,18 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 		accountState.history = accountState.history[len(accountState.history)-1000:]
 	}
 	accountState.mu.Unlock()
+
+	// Publish WebSocket event for rotation
+	if s.wsHub != nil {
+		s.wsHub.Publish("accounts:"+provider, "account.rotated", map[string]interface{}{
+			"provider":         provider,
+			"previous_account": output.Switch.PreviousAccount,
+			"new_account":      output.Switch.NewAccount,
+			"success":          output.Switch.Success,
+			"reason":           req.Reason,
+			"automatic":        false,
+		})
+	}
 
 	if !output.Success {
 		statusCode := http.StatusInternalServerError

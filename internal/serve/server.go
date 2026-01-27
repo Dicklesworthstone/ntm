@@ -794,7 +794,13 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(s.RequirePermission(PermReadSessions)).Get("/{paneIdx}/output", s.handlePaneOutputV1)
 			r.With(s.RequirePermission(PermReadSessions)).Get("/{paneIdx}/title", s.handleGetPaneTitleV1)
 			r.With(s.RequirePermission(PermWriteSessions)).Patch("/{paneIdx}/title", s.handleSetPaneTitleV1)
+			// Streaming endpoints
+			r.With(s.RequirePermission(PermWriteSessions)).Post("/{paneIdx}/stream", s.handleStartPaneStreamV1)
+			r.With(s.RequirePermission(PermWriteSessions)).Delete("/{paneIdx}/stream", s.handleStopPaneStreamV1)
 		})
+
+		// Streaming stats endpoint
+		r.With(s.RequirePermission(PermReadHealth)).Get("/streaming/stats", s.handleStreamingStatsV1)
 
 		// Agents API - manage AI agents within sessions
 		r.Route("/sessions/{sessionId}/agents", func(r chi.Router) {
@@ -830,6 +836,12 @@ func (s *Server) buildRouter() chi.Router {
 
 		// Scanner and Bug Reporting API
 		s.registerScannerRoutes(r)
+
+		// CASS and Memory API
+		s.registerCASSRoutes(r)
+
+		// Checkpoint and Rollback API
+		s.registerCheckpointRoutes(r)
 
 		// Metrics API - performance and analytics data
 		r.Route("/metrics", func(r chi.Router) {
@@ -889,6 +901,9 @@ func (s *Server) buildRouter() chi.Router {
 		// Safety, Policy, and Approvals API
 		s.registerSafetyRoutes(r)
 
+		// Accounts API - CAAM account management
+		s.registerAccountsRoutes(r)
+
 		// WebSocket endpoint (requires read permission)
 		r.With(s.RequirePermission(PermReadWebSocket)).Get("/ws", s.handleWebSocket)
 
@@ -912,6 +927,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start WebSocket hub
 	go s.wsHub.Run()
 	defer s.wsHub.Stop()
+
+	// Cleanup pane streaming on shutdown
+	defer s.streamManager.StopAll()
 
 	// Subscribe to events for SSE and WebSocket broadcasting
 	if s.eventBus != nil {
@@ -2795,6 +2813,78 @@ func (s *Server) handleSetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 		"pane":  paneTarget,
 		"title": req.Title,
 	}, reqID)
+}
+
+// =============================================================================
+// Streaming API Handlers
+// =============================================================================
+
+// handleStartPaneStreamV1 handles POST /api/v1/sessions/{sessionId}/panes/{paneIdx}/stream.
+func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+	paneIdxStr := chi.URLParam(r, "paneIdx")
+
+	if sessionID == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+		return
+	}
+
+	paneIdx := 0
+	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+		return
+	}
+
+	// Target format for streaming is "session:pane_idx" which matches WebSocket topic "panes:session:idx"
+	target := fmt.Sprintf("%s:%d", sessionID, paneIdx)
+
+	if err := s.streamManager.StartStream(target); err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+
+	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+		"target":  target,
+		"topic":   target, // WebSocket topic to subscribe to
+		"message": "streaming started",
+	}, reqID)
+}
+
+// handleStopPaneStreamV1 handles DELETE /api/v1/sessions/{sessionId}/panes/{paneIdx}/stream.
+func (s *Server) handleStopPaneStreamV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+	paneIdxStr := chi.URLParam(r, "paneIdx")
+
+	if sessionID == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+		return
+	}
+
+	paneIdx := 0
+	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+		return
+	}
+
+	target := fmt.Sprintf("%s:%d", sessionID, paneIdx)
+	s.streamManager.StopStream(target)
+
+	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+		"target":  target,
+		"message": "streaming stopped",
+	}, reqID)
+}
+
+// handleStreamingStatsV1 handles GET /api/v1/streaming/stats.
+func (s *Server) handleStreamingStatsV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+
+	stats := s.streamManager.Stats()
+	stats["active_targets"] = s.streamManager.ListActive()
+
+	writeSuccessResponse(w, http.StatusOK, stats, reqID)
 }
 
 // =============================================================================
