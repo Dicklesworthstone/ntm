@@ -3510,10 +3510,11 @@ type Change struct {
 	Data    map[string]interface{} `json:"data,omitempty"`
 }
 
-// PrintSnapshotDelta outputs changes since the given timestamp.
+// GetSnapshotDelta retrieves state changes since the given timestamp.
 // Uses the internal state tracker ring buffer to return delta changes.
-func PrintSnapshotDelta(since time.Time) error {
-	output := SnapshotDeltaOutput{
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
+	output := &SnapshotDeltaOutput{
 		RobotResponse: NewRobotResponse(true),
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		Since:         since.Format(time.RFC3339),
@@ -3534,6 +3535,15 @@ func PrintSnapshotDelta(since time.Time) error {
 		output.Changes = append(output.Changes, change)
 	}
 
+	return output, nil
+}
+
+// PrintSnapshotDelta outputs changes since the given timestamp.
+func PrintSnapshotDelta(since time.Time) error {
+	output, err := GetSnapshotDelta(since)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -5292,13 +5302,13 @@ type TriageCacheInfo struct {
 	TTLMs  int64 `json:"ttl_ms"`
 }
 
-// PrintTriage outputs bv triage analysis for AI consumption
-func PrintTriage(opts TriageOptions) error {
+// GetTriage returns bv triage analysis data.
+func GetTriage(opts TriageOptions) (*TriageOutput, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 10
 	}
 
-	output := TriageOutput{
+	output := &TriageOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Available:     bv.IsInstalled(),
@@ -5311,7 +5321,7 @@ func PrintTriage(opts TriageOptions) error {
 			ErrCodeDependencyMissing,
 			"Install bv to enable triage",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5325,7 +5335,7 @@ func PrintTriage(opts TriageOptions) error {
 			ErrCodeInternalError,
 			"Check bv triage cache and repository state",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	if triage == nil {
@@ -5335,7 +5345,7 @@ func PrintTriage(opts TriageOptions) error {
 			ErrCodeInternalError,
 			"Rebuild bv cache or retry triage",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Copy data with limits applied
@@ -5360,6 +5370,15 @@ func PrintTriage(opts TriageOptions) error {
 		TTLMs:  bv.TriageCacheTTL.Milliseconds(),
 	}
 
+	return output, nil
+}
+
+// PrintTriage outputs bv triage analysis for AI consumption
+func PrintTriage(opts TriageOptions) error {
+	output, err := GetTriage(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -5388,15 +5407,18 @@ type FileRelationsOptions struct {
 	Threshold float64
 }
 
-// PrintForecast outputs BV forecast analysis for ETA predictions
-func PrintForecast(target string) error {
-	output := struct {
-		RobotResponse
-		Target    string               `json:"target"`
-		Available bool                 `json:"available"`
-		Forecast  *bv.ForecastResponse `json:"forecast,omitempty"`
-		Error     string               `json:"error,omitempty"`
-	}{
+// ForecastOutput is the JSON output for --robot-forecast
+type ForecastOutput struct {
+	RobotResponse
+	Target    string               `json:"target"`
+	Available bool                 `json:"available"`
+	Forecast  *bv.ForecastResponse `json:"forecast,omitempty"`
+	Error     string               `json:"error,omitempty"`
+}
+
+// GetForecast returns BV forecast analysis data.
+func GetForecast(target string) (*ForecastOutput, error) {
+	output := &ForecastOutput{
 		RobotResponse: NewRobotResponse(true),
 		Target:        target,
 		Available:     bv.IsInstalled(),
@@ -5405,7 +5427,7 @@ func PrintForecast(target string) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5413,22 +5435,34 @@ func PrintForecast(target string) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get forecast: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Forecast = forecast
 
+	return output, nil
+}
+
+// PrintForecast outputs BV forecast analysis for ETA predictions
+func PrintForecast(target string) error {
+	output, err := GetForecast(target)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintSuggest outputs BV hygiene suggestions for code quality improvements
-func PrintSuggest() error {
-	output := struct {
-		RobotResponse
-		Available   bool                    `json:"available"`
-		Suggestions *bv.SuggestionsResponse `json:"suggestions,omitempty"`
-		Error       string                  `json:"error,omitempty"`
-	}{
+// SuggestOutput is the JSON output for --robot-suggest
+type SuggestOutput struct {
+	RobotResponse
+	Available   bool                    `json:"available"`
+	Suggestions *bv.SuggestionsResponse `json:"suggestions,omitempty"`
+	Error       string                  `json:"error,omitempty"`
+}
+
+// GetSuggest returns BV hygiene suggestions data.
+func GetSuggest() (*SuggestOutput, error) {
+	output := &SuggestOutput{
 		RobotResponse: NewRobotResponse(true),
 		Available:     bv.IsInstalled(),
 	}
@@ -5436,7 +5470,7 @@ func PrintSuggest() error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5444,23 +5478,35 @@ func PrintSuggest() error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get suggestions: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Suggestions = suggestions
 
+	return output, nil
+}
+
+// PrintSuggest outputs BV hygiene suggestions for code quality improvements
+func PrintSuggest() error {
+	output, err := GetSuggest()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintImpact outputs BV impact analysis for file changes
-func PrintImpact(filePath string) error {
-	output := struct {
-		RobotResponse
-		FilePath  string             `json:"file_path"`
-		Available bool               `json:"available"`
-		Impact    *bv.ImpactResponse `json:"impact,omitempty"`
-		Error     string             `json:"error,omitempty"`
-	}{
+// ImpactOutput is the JSON output for --robot-impact
+type ImpactOutput struct {
+	RobotResponse
+	FilePath  string             `json:"file_path"`
+	Available bool               `json:"available"`
+	Impact    *bv.ImpactResponse `json:"impact,omitempty"`
+	Error     string             `json:"error,omitempty"`
+}
+
+// GetImpact returns BV impact analysis data.
+func GetImpact(filePath string) (*ImpactOutput, error) {
+	output := &ImpactOutput{
 		RobotResponse: NewRobotResponse(true),
 		FilePath:      filePath,
 		Available:     bv.IsInstalled(),
@@ -5469,7 +5515,7 @@ func PrintImpact(filePath string) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5477,23 +5523,35 @@ func PrintImpact(filePath string) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get impact analysis: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Impact = impact
 
+	return output, nil
+}
+
+// PrintImpact outputs BV impact analysis for file changes
+func PrintImpact(filePath string) error {
+	output, err := GetImpact(filePath)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintSearch outputs BV semantic vector search results
-func PrintSearch(query string) error {
-	output := struct {
-		RobotResponse
-		Query     string             `json:"query"`
-		Available bool               `json:"available"`
-		Results   *bv.SearchResponse `json:"results,omitempty"`
-		Error     string             `json:"error,omitempty"`
-	}{
+// SearchOutput is the JSON output for --robot-search
+type SearchOutput struct {
+	RobotResponse
+	Query     string             `json:"query"`
+	Available bool               `json:"available"`
+	Results   *bv.SearchResponse `json:"results,omitempty"`
+	Error     string             `json:"error,omitempty"`
+}
+
+// GetSearch returns BV semantic vector search results.
+func GetSearch(query string) (*SearchOutput, error) {
+	output := &SearchOutput{
 		RobotResponse: NewRobotResponse(true),
 		Query:         query,
 		Available:     bv.IsInstalled(),
@@ -5502,7 +5560,7 @@ func PrintSearch(query string) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5510,23 +5568,35 @@ func PrintSearch(query string) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to perform search: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Results = results
 
+	return output, nil
+}
+
+// PrintSearch outputs BV semantic vector search results
+func PrintSearch(query string) error {
+	output, err := GetSearch(query)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintLabelAttention outputs BV label attention ranking
-func PrintLabelAttention(opts LabelAttentionOptions) error {
-	output := struct {
-		RobotResponse
-		Available bool                       `json:"available"`
-		Labels    *bv.LabelAttentionResponse `json:"labels,omitempty"`
-		Limit     int                        `json:"limit"`
-		Error     string                     `json:"error,omitempty"`
-	}{
+// LabelAttentionOutput is the JSON output for --robot-label-attention
+type LabelAttentionOutput struct {
+	RobotResponse
+	Available bool                       `json:"available"`
+	Labels    *bv.LabelAttentionResponse `json:"labels,omitempty"`
+	Limit     int                        `json:"limit"`
+	Error     string                     `json:"error,omitempty"`
+}
+
+// GetLabelAttention returns BV label attention ranking data.
+func GetLabelAttention(opts LabelAttentionOptions) (*LabelAttentionOutput, error) {
+	output := &LabelAttentionOutput{
 		RobotResponse: NewRobotResponse(true),
 		Available:     bv.IsInstalled(),
 		Limit:         opts.Limit,
@@ -5535,7 +5605,7 @@ func PrintLabelAttention(opts LabelAttentionOptions) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5543,22 +5613,34 @@ func PrintLabelAttention(opts LabelAttentionOptions) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get label attention: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Labels = labels
 
+	return output, nil
+}
+
+// PrintLabelAttention outputs BV label attention ranking
+func PrintLabelAttention(opts LabelAttentionOptions) error {
+	output, err := GetLabelAttention(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintLabelFlow outputs BV cross-label dependency flow analysis
-func PrintLabelFlow() error {
-	output := struct {
-		RobotResponse
-		Available bool                  `json:"available"`
-		Flow      *bv.LabelFlowResponse `json:"flow,omitempty"`
-		Error     string                `json:"error,omitempty"`
-	}{
+// LabelFlowOutput is the JSON output for --robot-label-flow
+type LabelFlowOutput struct {
+	RobotResponse
+	Available bool                  `json:"available"`
+	Flow      *bv.LabelFlowResponse `json:"flow,omitempty"`
+	Error     string                `json:"error,omitempty"`
+}
+
+// GetLabelFlow returns BV cross-label dependency flow data.
+func GetLabelFlow() (*LabelFlowOutput, error) {
+	output := &LabelFlowOutput{
 		RobotResponse: NewRobotResponse(true),
 		Available:     bv.IsInstalled(),
 	}
@@ -5566,7 +5648,7 @@ func PrintLabelFlow() error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5574,22 +5656,34 @@ func PrintLabelFlow() error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get label flow: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Flow = flow
 
+	return output, nil
+}
+
+// PrintLabelFlow outputs BV cross-label dependency flow analysis
+func PrintLabelFlow() error {
+	output, err := GetLabelFlow()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintLabelHealth outputs BV per-label health analysis
-func PrintLabelHealth() error {
-	output := struct {
-		RobotResponse
-		Available bool                    `json:"available"`
-		Health    *bv.LabelHealthResponse `json:"health,omitempty"`
-		Error     string                  `json:"error,omitempty"`
-	}{
+// LabelHealthOutput is the JSON output for --robot-label-health
+type LabelHealthOutput struct {
+	RobotResponse
+	Available bool                    `json:"available"`
+	Health    *bv.LabelHealthResponse `json:"health,omitempty"`
+	Error     string                  `json:"error,omitempty"`
+}
+
+// GetLabelHealth returns BV per-label health data.
+func GetLabelHealth() (*LabelHealthOutput, error) {
+	output := &LabelHealthOutput{
 		RobotResponse: NewRobotResponse(true),
 		Available:     bv.IsInstalled(),
 	}
@@ -5597,7 +5691,7 @@ func PrintLabelHealth() error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5605,24 +5699,36 @@ func PrintLabelHealth() error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get label health: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Health = health
 
+	return output, nil
+}
+
+// PrintLabelHealth outputs BV per-label health analysis
+func PrintLabelHealth() error {
+	output, err := GetLabelHealth()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintFileBeads outputs BV file-to-beads mapping
-func PrintFileBeads(opts FileBeadsOptions) error {
-	output := struct {
-		RobotResponse
-		FilePath  string                `json:"file_path"`
-		Available bool                  `json:"available"`
-		Beads     *bv.FileBeadsResponse `json:"beads,omitempty"`
-		Limit     int                   `json:"limit"`
-		Error     string                `json:"error,omitempty"`
-	}{
+// FileBeadsOutput is the JSON output for --robot-file-beads
+type FileBeadsOutput struct {
+	RobotResponse
+	FilePath  string                `json:"file_path"`
+	Available bool                  `json:"available"`
+	Beads     *bv.FileBeadsResponse `json:"beads,omitempty"`
+	Limit     int                   `json:"limit"`
+	Error     string                `json:"error,omitempty"`
+}
+
+// GetFileBeads returns BV file-to-beads mapping data.
+func GetFileBeads(opts FileBeadsOptions) (*FileBeadsOutput, error) {
+	output := &FileBeadsOutput{
 		RobotResponse: NewRobotResponse(true),
 		FilePath:      opts.FilePath,
 		Available:     bv.IsInstalled(),
@@ -5632,7 +5738,7 @@ func PrintFileBeads(opts FileBeadsOptions) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5640,23 +5746,35 @@ func PrintFileBeads(opts FileBeadsOptions) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get file beads: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Beads = beads
 
+	return output, nil
+}
+
+// PrintFileBeads outputs BV file-to-beads mapping
+func PrintFileBeads(opts FileBeadsOptions) error {
+	output, err := GetFileBeads(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintFileHotspots outputs BV file quality hotspots
-func PrintFileHotspots(opts FileHotspotsOptions) error {
-	output := struct {
-		RobotResponse
-		Available bool                     `json:"available"`
-		Hotspots  *bv.FileHotspotsResponse `json:"hotspots,omitempty"`
-		Limit     int                      `json:"limit"`
-		Error     string                   `json:"error,omitempty"`
-	}{
+// FileHotspotsOutput is the JSON output for --robot-file-hotspots
+type FileHotspotsOutput struct {
+	RobotResponse
+	Available bool                     `json:"available"`
+	Hotspots  *bv.FileHotspotsResponse `json:"hotspots,omitempty"`
+	Limit     int                      `json:"limit"`
+	Error     string                   `json:"error,omitempty"`
+}
+
+// GetFileHotspots returns BV file quality hotspots data.
+func GetFileHotspots(opts FileHotspotsOptions) (*FileHotspotsOutput, error) {
+	output := &FileHotspotsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Available:     bv.IsInstalled(),
 		Limit:         opts.Limit,
@@ -5665,7 +5783,7 @@ func PrintFileHotspots(opts FileHotspotsOptions) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5673,25 +5791,37 @@ func PrintFileHotspots(opts FileHotspotsOptions) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get file hotspots: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Hotspots = hotspots
 
+	return output, nil
+}
+
+// PrintFileHotspots outputs BV file quality hotspots
+func PrintFileHotspots(opts FileHotspotsOptions) error {
+	output, err := GetFileHotspots(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintFileRelations outputs BV file co-change relations
-func PrintFileRelations(opts FileRelationsOptions) error {
-	output := struct {
-		RobotResponse
-		FilePath  string                    `json:"file_path"`
-		Available bool                      `json:"available"`
-		Relations *bv.FileRelationsResponse `json:"relations,omitempty"`
-		Limit     int                       `json:"limit"`
-		Threshold float64                   `json:"threshold"`
-		Error     string                    `json:"error,omitempty"`
-	}{
+// FileRelationsOutput is the JSON output for --robot-file-relations
+type FileRelationsOutput struct {
+	RobotResponse
+	FilePath  string                    `json:"file_path"`
+	Available bool                      `json:"available"`
+	Relations *bv.FileRelationsResponse `json:"relations,omitempty"`
+	Limit     int                       `json:"limit"`
+	Threshold float64                   `json:"threshold"`
+	Error     string                    `json:"error,omitempty"`
+}
+
+// GetFileRelations returns BV file co-change relations data.
+func GetFileRelations(opts FileRelationsOptions) (*FileRelationsOutput, error) {
+	output := &FileRelationsOutput{
 		RobotResponse: NewRobotResponse(true),
 		FilePath:      opts.FilePath,
 		Available:     bv.IsInstalled(),
@@ -5702,7 +5832,7 @@ func PrintFileRelations(opts FileRelationsOptions) error {
 	if !bv.IsInstalled() {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5710,10 +5840,19 @@ func PrintFileRelations(opts FileRelationsOptions) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get file relations: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	output.Relations = relations
 
+	return output, nil
+}
+
+// PrintFileRelations outputs BV file co-change relations
+func PrintFileRelations(opts FileRelationsOptions) error {
+	output, err := GetFileRelations(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
