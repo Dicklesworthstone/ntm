@@ -598,3 +598,194 @@ func TestOutputFormat_Constants(t *testing.T) {
 		t.Errorf("FormatYAML = %q, want yaml", FormatYAML)
 	}
 }
+
+func TestFormatResult_ContributionsSection(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	f := NewSynthesisFormatter(FormatMarkdown)
+	f.IncludeContributions = true
+
+	result := &SynthesisResult{
+		Summary:     "Test summary",
+		Confidence:  0.8,
+		GeneratedAt: time.Now(),
+		Contributions: &ContributionReport{
+			GeneratedAt:     time.Now(),
+			TotalFindings:   10,
+			DedupedFindings: 7,
+			OverlapRate:     0.3,
+			DiversityScore:  0.65,
+			Scores: []ContributionScore{
+				{
+					ModeID:               "mode-a",
+					ModeName:             "Deductive Logic",
+					FindingsCount:        4,
+					OriginalFindings:     5,
+					UniqueInsights:       2,
+					CitationCount:        3,
+					RisksCount:           1,
+					RecommendationsCount: 1,
+					Score:                55.0,
+					Rank:                 1,
+					HighlightFindings:    []string{"Key insight from deductive analysis"},
+				},
+				{
+					ModeID:               "mode-b",
+					ModeName:             "Bayesian Reasoning",
+					FindingsCount:        3,
+					OriginalFindings:     5,
+					UniqueInsights:       1,
+					CitationCount:        2,
+					RisksCount:           0,
+					RecommendationsCount: 0,
+					Score:                35.0,
+					Rank:                 2,
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	err := f.FormatResult(&buf, result, nil)
+	if err != nil {
+		t.Fatalf("FormatResult error: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("TEST: %s - output:\n%s", t.Name(), output)
+
+	// Check contributions section header
+	if !strings.Contains(output, "## Mode Contributions") {
+		t.Error("Missing Mode Contributions section")
+	}
+
+	// Check summary stats
+	if !strings.Contains(output, "Total findings: 10 (deduped: 7)") {
+		t.Error("Missing total/deduped findings summary")
+	}
+	if !strings.Contains(output, "Overlap: 30%") {
+		t.Error("Missing overlap rate")
+	}
+	if !strings.Contains(output, "Diversity: 0.65") {
+		t.Error("Missing diversity score")
+	}
+
+	// Check table headers
+	if !strings.Contains(output, "| Rank | Mode | Score |") {
+		t.Error("Missing contribution table header")
+	}
+
+	// Check mode data in table
+	if !strings.Contains(output, "Deductive Logic") {
+		t.Error("Missing Deductive Logic mode name")
+	}
+	if !strings.Contains(output, "Bayesian Reasoning") {
+		t.Error("Missing Bayesian Reasoning mode name")
+	}
+	if !strings.Contains(output, "#1") {
+		t.Error("Missing rank #1")
+	}
+	if !strings.Contains(output, "#2") {
+		t.Error("Missing rank #2")
+	}
+
+	t.Logf("TEST: %s - assertion: contributions section rendered correctly", t.Name())
+}
+
+func TestFormatResult_ContributionsSection_Verbose(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	f := NewSynthesisFormatter(FormatMarkdown)
+	f.IncludeContributions = true
+	f.Verbose = true
+
+	result := &SynthesisResult{
+		Summary:     "Test summary",
+		Confidence:  0.8,
+		GeneratedAt: time.Now(),
+		Contributions: &ContributionReport{
+			GeneratedAt:     time.Now(),
+			TotalFindings:   5,
+			DedupedFindings: 4,
+			Scores: []ContributionScore{
+				{
+					ModeID:            "mode-a",
+					ModeName:          "Test Mode",
+					FindingsCount:     3,
+					OriginalFindings:  3,
+					UniqueInsights:    1,
+					Score:             60.0,
+					Rank:              1,
+					HighlightFindings: []string{"Important unique finding"},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	err := f.FormatResult(&buf, result, nil)
+	if err != nil {
+		t.Fatalf("FormatResult error: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("TEST: %s - output:\n%s", t.Name(), output)
+
+	// Verbose mode should show highlights
+	if !strings.Contains(output, "Test Mode highlights") {
+		t.Error("Verbose mode should show highlights header")
+	}
+	if !strings.Contains(output, "Important unique finding") {
+		t.Error("Verbose mode should show highlight findings")
+	}
+
+	t.Logf("TEST: %s - assertion: verbose mode shows highlights", t.Name())
+}
+
+func TestFormatResult_ContributionsSection_JSON(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	f := NewSynthesisFormatter(FormatJSON)
+
+	result := &SynthesisResult{
+		Summary:     "Test summary",
+		Confidence:  0.8,
+		GeneratedAt: time.Now(),
+		Contributions: &ContributionReport{
+			GeneratedAt:     time.Now(),
+			TotalFindings:   5,
+			DedupedFindings: 4,
+			Scores: []ContributionScore{
+				{
+					ModeID:           "mode-a",
+					FindingsCount:    3,
+					OriginalFindings: 3,
+					Score:            60.0,
+					Rank:             1,
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	err := f.FormatResult(&buf, result, nil)
+	if err != nil {
+		t.Fatalf("FormatResult error: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("TEST: %s - output:\n%s", t.Name(), output)
+
+	// JSON output should include contributions
+	if !strings.Contains(output, "\"contributions\"") {
+		t.Error("JSON output should include contributions field")
+	}
+	if !strings.Contains(output, "\"total_findings\": 5") {
+		t.Error("JSON output should include total_findings")
+	}
+	if !strings.Contains(output, "\"scores\"") {
+		t.Error("JSON output should include scores array")
+	}
+
+	t.Logf("TEST: %s - assertion: JSON includes contributions", t.Name())
+}

@@ -21,11 +21,12 @@ const (
 
 // SynthesisFormatter formats synthesis results for output.
 type SynthesisFormatter struct {
-	Format             OutputFormat
-	IncludeRaw         bool
-	IncludeAudit       bool
-	IncludeExplanation bool
-	Verbose            bool
+	Format              OutputFormat
+	IncludeRaw          bool
+	IncludeAudit        bool
+	IncludeExplanation  bool
+	IncludeContributions bool
+	Verbose             bool
 }
 
 // NewSynthesisFormatter creates a formatter with the given format.
@@ -256,6 +257,57 @@ func (f *SynthesisFormatter) formatMarkdown(w io.Writer, result *SynthesisResult
 					b.WriteString(fmt.Sprintf("  - %s: %s (strength: %.2f)\n", p.ModeID, truncate(p.Position, 50), p.Strength))
 				}
 				b.WriteString("\n")
+			}
+		}
+	}
+
+	// Mode Contributions
+	if f.IncludeContributions && result.Contributions != nil && len(result.Contributions.Scores) > 0 {
+		b.WriteString("## Mode Contributions\n\n")
+
+		b.WriteString(fmt.Sprintf("*Total findings: %d (deduped: %d), Overlap: %.0f%%, Diversity: %.2f*\n\n",
+			result.Contributions.TotalFindings,
+			result.Contributions.DedupedFindings,
+			result.Contributions.OverlapRate*100,
+			result.Contributions.DiversityScore,
+		))
+
+		b.WriteString("| Rank | Mode | Score | Findings | Unique | Citations | Risks | Recs |\n")
+		b.WriteString("|------|------|-------|----------|--------|-----------|-------|------|\n")
+
+		for _, score := range result.Contributions.Scores {
+			name := score.ModeName
+			if name == "" {
+				name = score.ModeID
+			}
+			b.WriteString(fmt.Sprintf("| #%d | %s | %.1f | %d/%d | %d | %d | %d | %d |\n",
+				score.Rank,
+				truncate(name, 20),
+				score.Score,
+				score.FindingsCount,
+				score.OriginalFindings,
+				score.UniqueInsights,
+				score.CitationCount,
+				score.RisksCount,
+				score.RecommendationsCount,
+			))
+		}
+		b.WriteString("\n")
+
+		// Show highlights for top contributors
+		if f.Verbose {
+			for _, score := range result.Contributions.Scores {
+				if len(score.HighlightFindings) > 0 {
+					name := score.ModeName
+					if name == "" {
+						name = score.ModeID
+					}
+					b.WriteString(fmt.Sprintf("**%s highlights:**\n", name))
+					for _, h := range score.HighlightFindings {
+						b.WriteString(fmt.Sprintf("- %s\n", h))
+					}
+					b.WriteString("\n")
+				}
 			}
 		}
 	}

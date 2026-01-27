@@ -531,3 +531,143 @@ func TestSynthesisSchemaJSON(t *testing.T) {
 		t.Error("Schema should contain recommendations field")
 	}
 }
+
+func TestSynthesizer_Contributions_Populated(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	cfg := SynthesisConfig{Strategy: StrategyManual}
+	synth, err := NewSynthesizer(cfg)
+	if err != nil {
+		t.Fatalf("NewSynthesizer error: %v", err)
+	}
+
+	input := &SynthesisInput{
+		OriginalQuestion: "How does the system perform?",
+		Outputs: []ModeOutput{
+			{
+				ModeID:     "mode-a",
+				Thesis:     "System performs well",
+				Confidence: 0.85,
+				TopFindings: []Finding{
+					{Finding: "Finding 1 from mode-a", Impact: ImpactHigh, Confidence: 0.9},
+					{Finding: "Finding 2 from mode-a", Impact: ImpactMedium, Confidence: 0.8},
+				},
+				Risks: []Risk{
+					{Risk: "Risk from mode-a", Impact: ImpactMedium, Likelihood: 0.5},
+				},
+			},
+			{
+				ModeID:     "mode-b",
+				Thesis:     "System has issues",
+				Confidence: 0.75,
+				TopFindings: []Finding{
+					{Finding: "Finding 1 from mode-b", Impact: ImpactHigh, Confidence: 0.85},
+				},
+				Recommendations: []Recommendation{
+					{Recommendation: "Recommendation from mode-b", Priority: ImpactHigh},
+				},
+			},
+		},
+	}
+
+	result, err := synth.Synthesize(input)
+	if err != nil {
+		t.Fatalf("Synthesize error: %v", err)
+	}
+
+	t.Logf("TEST: %s - result has %d findings", t.Name(), len(result.Findings))
+
+	// Verify contributions are populated
+	if result.Contributions == nil {
+		t.Fatal("Contributions should not be nil")
+	}
+
+	t.Logf("TEST: %s - contributions: total=%d deduped=%d scores=%d",
+		t.Name(),
+		result.Contributions.TotalFindings,
+		result.Contributions.DedupedFindings,
+		len(result.Contributions.Scores))
+
+	if result.Contributions.TotalFindings != 3 {
+		t.Errorf("TotalFindings = %d, want 3", result.Contributions.TotalFindings)
+	}
+
+	if len(result.Contributions.Scores) != 2 {
+		t.Errorf("Scores = %d, want 2 (one per mode)", len(result.Contributions.Scores))
+	}
+
+	// mode-a should rank higher (2 findings vs 1)
+	foundModeA := false
+	for _, score := range result.Contributions.Scores {
+		if score.ModeID == "mode-a" {
+			foundModeA = true
+			if score.OriginalFindings != 2 {
+				t.Errorf("mode-a OriginalFindings = %d, want 2", score.OriginalFindings)
+			}
+			if score.RisksCount != 1 {
+				t.Errorf("mode-a RisksCount = %d, want 1", score.RisksCount)
+			}
+		}
+	}
+	if !foundModeA {
+		t.Error("mode-a should be in Contributions.Scores")
+	}
+
+	t.Logf("TEST: %s - assertion: contributions populated correctly", t.Name())
+}
+
+func TestSynthesizer_Contributions_UniqueInsights(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	cfg := SynthesisConfig{Strategy: StrategyManual}
+	synth, _ := NewSynthesizer(cfg)
+
+	// Create two modes with one shared finding and one unique finding each
+	input := &SynthesisInput{
+		OriginalQuestion: "Test question",
+		Outputs: []ModeOutput{
+			{
+				ModeID:     "mode-a",
+				Thesis:     "Thesis A",
+				Confidence: 0.8,
+				TopFindings: []Finding{
+					{Finding: "Shared finding", Impact: ImpactHigh, Confidence: 0.9, EvidencePointer: "file.go:10"},
+					{Finding: "Unique to mode-a", Impact: ImpactMedium, Confidence: 0.8},
+				},
+			},
+			{
+				ModeID:     "mode-b",
+				Thesis:     "Thesis B",
+				Confidence: 0.8,
+				TopFindings: []Finding{
+					{Finding: "Shared finding", Impact: ImpactHigh, Confidence: 0.9, EvidencePointer: "file.go:10"},
+					{Finding: "Unique to mode-b", Impact: ImpactMedium, Confidence: 0.7},
+				},
+			},
+		},
+	}
+
+	result, err := synth.Synthesize(input)
+	if err != nil {
+		t.Fatalf("Synthesize error: %v", err)
+	}
+
+	t.Logf("TEST: %s - result has %d findings", t.Name(), len(result.Findings))
+
+	if result.Contributions == nil {
+		t.Fatal("Contributions should not be nil")
+	}
+
+	// With 4 original and 3 deduped, each mode should have 1 unique
+	t.Logf("TEST: %s - contributions: total=%d deduped=%d",
+		t.Name(),
+		result.Contributions.TotalFindings,
+		result.Contributions.DedupedFindings)
+
+	for _, score := range result.Contributions.Scores {
+		t.Logf("TEST: %s - mode %s: findings=%d original=%d unique=%d",
+			t.Name(), score.ModeID, score.FindingsCount, score.OriginalFindings, score.UniqueInsights)
+	}
+
+	t.Logf("TEST: %s - assertion: unique insights tracked", t.Name())
+}

@@ -19,15 +19,16 @@ type DisagreementAuditor struct {
 // SynthesisResult represents the combined output from a synthesis stage.
 // This will be extended by the synthesis subsystem as it matures.
 type SynthesisResult struct {
-	Summary          string            `json:"summary" yaml:"summary"`
-	Findings         []Finding         `json:"findings,omitempty" yaml:"findings,omitempty"`
-	Risks            []Risk            `json:"risks,omitempty" yaml:"risks,omitempty"`
-	Recommendations  []Recommendation  `json:"recommendations,omitempty" yaml:"recommendations,omitempty"`
-	QuestionsForUser []Question        `json:"questions_for_user,omitempty" yaml:"questions_for_user,omitempty"`
-	Confidence       Confidence        `json:"confidence,omitempty" yaml:"confidence,omitempty"`
-	RawOutput        string            `json:"raw_output,omitempty" yaml:"raw_output,omitempty"`
-	GeneratedAt      time.Time         `json:"generated_at,omitempty" yaml:"generated_at,omitempty"`
-	Explanation      *ExplanationLayer `json:"explanation,omitempty" yaml:"explanation,omitempty"`
+	Summary          string               `json:"summary" yaml:"summary"`
+	Findings         []Finding            `json:"findings,omitempty" yaml:"findings,omitempty"`
+	Risks            []Risk               `json:"risks,omitempty" yaml:"risks,omitempty"`
+	Recommendations  []Recommendation     `json:"recommendations,omitempty" yaml:"recommendations,omitempty"`
+	QuestionsForUser []Question           `json:"questions_for_user,omitempty" yaml:"questions_for_user,omitempty"`
+	Confidence       Confidence           `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+	RawOutput        string               `json:"raw_output,omitempty" yaml:"raw_output,omitempty"`
+	GeneratedAt      time.Time            `json:"generated_at,omitempty" yaml:"generated_at,omitempty"`
+	Explanation      *ExplanationLayer    `json:"explanation,omitempty" yaml:"explanation,omitempty"`
+	Contributions    *ContributionReport  `json:"contributions,omitempty" yaml:"contributions,omitempty"`
 }
 
 // AuditReport captures disagreement analysis across modes.

@@ -72,7 +72,16 @@ func (s *Synthesizer) Synthesize(input *SynthesisInput) (*SynthesisResult, error
 
 // mechanicalSynthesize performs deterministic merging without an AI agent.
 func (s *Synthesizer) mechanicalSynthesize(input *SynthesisInput) (*SynthesisResult, error) {
+	// Initialize contribution tracking
+	contribTracker := NewContributionTracker()
+
+	// Record original findings before deduplication
+	TrackOriginalFindings(contribTracker, input.Outputs)
+
 	merged := MergeOutputsWithProvenance(input.Outputs, s.MergeConfig, input.Provenance)
+
+	// Track contributions from merged output
+	TrackContributionsFromMerge(contribTracker, merged)
 
 	// Convert merged findings to plain findings
 	findings := make([]Finding, 0, len(merged.Findings))
@@ -106,6 +115,10 @@ func (s *Synthesizer) mechanicalSynthesize(input *SynthesisInput) (*SynthesisRes
 		for i, mf := range merged.Findings {
 			if mf.ProvenanceID != "" {
 				_ = input.Provenance.RecordSynthesisCitation(mf.ProvenanceID, fmt.Sprintf("findings[%d]", i))
+				// Track citations for contribution scoring
+				for _, mode := range mf.SourceModes {
+					contribTracker.RecordCitation(mode)
+				}
 			}
 		}
 	}
@@ -119,6 +132,9 @@ func (s *Synthesizer) mechanicalSynthesize(input *SynthesisInput) (*SynthesisRes
 		}
 		result.Explanation = explTracker.GenerateLayer()
 	}
+
+	// Generate and attach contribution report
+	result.Contributions = contribTracker.GenerateReport()
 
 	return result, nil
 }
