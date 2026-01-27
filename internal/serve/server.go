@@ -553,11 +553,15 @@ func (c *WSClient) Topics() []string {
 }
 
 // WebSocket upgrader configuration.
+// Note: CheckOrigin always returns true here because origin validation
+// is performed in handleWebSocket using Server.checkWSOrigin() which has
+// access to the configured allowed origins. This is necessary because
+// CORS middleware does NOT apply to WebSocket upgrade requests.
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Origin checking is handled by CORS middleware
+		// Origin validation is performed in handleWebSocket
 		return true
 	},
 }
@@ -2115,8 +2119,42 @@ func (s *Server) Router() chi.Router {
 // WebSocket Handler
 // ============================================================================
 
+// checkWSOrigin validates the Origin header for WebSocket connections.
+// In local auth mode, it allows any origin. Otherwise, it validates against
+// the configured allowed origins to prevent WebSocket CSRF attacks.
+func (s *Server) checkWSOrigin(r *http.Request) bool {
+	// In local mode, accept any origin for development convenience
+	if s.auth.Mode == AuthModeLocal || s.auth.Mode == "" {
+		return true
+	}
+
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No origin header - allow for non-browser clients
+		return true
+	}
+
+	// Check against configured allowed origins
+	for _, allowed := range s.corsAllowedOrigins {
+		if strings.HasPrefix(origin, allowed) {
+			return true
+		}
+	}
+
+	log.Printf("ws: rejected origin %q (allowed: %v)", origin, s.corsAllowedOrigins)
+	return false
+}
+
 // handleWebSocket handles WebSocket connections at /api/v1/ws.
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Validate origin to prevent WebSocket CSRF attacks
+	// Note: CORS middleware does NOT apply to WebSocket upgrades
+	if !s.checkWSOrigin(r) {
+		reqID := requestIDFromContext(r.Context())
+		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden, "origin not allowed", nil, reqID)
+		return
+	}
+
 	// Upgrade HTTP connection to WebSocket
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
