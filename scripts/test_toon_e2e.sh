@@ -14,9 +14,9 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 
-record_pass() { ((TESTS_PASSED++)); log_pass "$1"; }
-record_fail() { ((TESTS_FAILED++)); log_fail "$1"; }
-record_skip() { ((TESTS_SKIPPED++)); log_skip "$1"; }
+record_pass() { ((TESTS_PASSED++)) || true; log_pass "$1"; }
+record_fail() { ((TESTS_FAILED++)) || true; log_fail "$1"; }
+record_skip() { ((TESTS_SKIPPED++)) || true; log_skip "$1"; }
 
 log "=========================================="
 log "NTM (NAMED TMUX MANAGER) TOON E2E TEST"
@@ -46,8 +46,9 @@ log ""
 # Phase 2: Format Flag Tests
 log "--- Phase 2: Format Flag Tests ---"
 
-log_info "Test 2.1: ntm --robot-health --robot-format=json"
-if json_output=$(ntm --robot-health --robot-format=json 2>/dev/null); then
+# Use --robot-capabilities which doesn't require a session
+log_info "Test 2.1: ntm --robot-capabilities --robot-format=json"
+if json_output=$(ntm --robot-capabilities --robot-format=json 2>/dev/null); then
     if echo "$json_output" | jq . >/dev/null 2>&1; then
         record_pass "--robot-format=json produces valid JSON"
         json_bytes=$(echo -n "$json_output" | wc -c)
@@ -56,11 +57,11 @@ if json_output=$(ntm --robot-health --robot-format=json 2>/dev/null); then
         record_fail "--robot-format=json invalid"
     fi
 else
-    record_skip "ntm --robot-health error"
+    record_skip "ntm --robot-capabilities error"
 fi
 
-log_info "Test 2.2: ntm --robot-health --robot-format=toon"
-if toon_output=$(ntm --robot-health --robot-format=toon 2>/dev/null); then
+log_info "Test 2.2: ntm --robot-capabilities --robot-format=toon"
+if toon_output=$(ntm --robot-capabilities --robot-format=toon 2>/dev/null); then
     if [[ -n "$toon_output" && "${toon_output:0:1}" != "{" && "${toon_output:0:1}" != "[" ]]; then
         record_pass "--robot-format=toon produces TOON"
         toon_bytes=$(echo -n "$toon_output" | wc -c)
@@ -74,7 +75,7 @@ if toon_output=$(ntm --robot-health --robot-format=toon 2>/dev/null); then
         fi
     fi
 else
-    record_skip "ntm --robot-health --robot-format=toon error"
+    record_skip "ntm --robot-capabilities --robot-format=toon error"
 fi
 log ""
 
@@ -110,7 +111,7 @@ log "--- Phase 4: Environment Variables ---"
 unset NTM_OUTPUT_FORMAT NTM_ROBOT_FORMAT TOON_DEFAULT_FORMAT
 
 export NTM_OUTPUT_FORMAT=toon
-if env_out=$(ntm --robot-health 2>/dev/null); then
+if env_out=$(ntm --robot-status 2>/dev/null); then
     if [[ -n "$env_out" ]]; then
         record_pass "NTM_OUTPUT_FORMAT=toon accepted"
     else
@@ -122,7 +123,7 @@ fi
 unset NTM_OUTPUT_FORMAT
 
 export NTM_ROBOT_FORMAT=toon
-if env_out=$(ntm --robot-health 2>/dev/null); then
+if env_out=$(ntm --robot-status 2>/dev/null); then
     if [[ -n "$env_out" ]]; then
         record_pass "NTM_ROBOT_FORMAT=toon accepted"
     else
@@ -134,7 +135,7 @@ fi
 unset NTM_ROBOT_FORMAT
 
 export TOON_DEFAULT_FORMAT=toon
-if env_out=$(ntm --robot-health 2>/dev/null); then
+if env_out=$(ntm --robot-status 2>/dev/null); then
     if [[ -n "$env_out" ]]; then
         record_pass "TOON_DEFAULT_FORMAT=toon accepted"
     else
@@ -145,7 +146,7 @@ else
 fi
 
 # Test CLI override
-if override=$(ntm --robot-health --robot-format=json 2>/dev/null) && echo "$override" | jq . >/dev/null 2>&1; then
+if override=$(ntm --robot-status --robot-format=json 2>/dev/null) && echo "$override" | jq . >/dev/null 2>&1; then
     record_pass "CLI --robot-format=json overrides env"
 else
     record_skip "CLI override test"
@@ -175,9 +176,12 @@ log ""
 # Phase 6: Multiple Robot Commands
 log "--- Phase 6: Multiple Robot Commands ---"
 
+# Robot commands that don't require a session
 ROBOT_CMDS=(
-    "--robot-health"
     "--robot-capabilities"
+    "--robot-status"
+    "--robot-triage"
+    "--robot-version"
 )
 
 for cmd in "${ROBOT_CMDS[@]}"; do
