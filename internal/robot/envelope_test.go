@@ -193,6 +193,7 @@ func TestOutputTypesEmbedRobotResponse(t *testing.T) {
 		{"ReplayOutput", reflect.TypeOf(ReplayOutput{})},
 		{"RestartPaneOutput", reflect.TypeOf(RestartPaneOutput{})},
 		{"RouteOutput", reflect.TypeOf(RouteOutput{})},
+		{"RUSyncOutput", reflect.TypeOf(RUSyncOutput{})},
 		{"SchemaOutput", reflect.TypeOf(SchemaOutput{})},
 		{"SendAndAckOutput", reflect.TypeOf(SendAndAckOutput{})},
 		{"SendOutput", reflect.TypeOf(SendOutput{})},

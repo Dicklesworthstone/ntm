@@ -385,6 +385,16 @@ Shell Integration:
 			}
 			return
 		}
+		if robotRUSync {
+			opts := robot.RUSyncOptions{
+				DryRun: robotDryRun,
+			}
+			if err := robot.PrintRUSync(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotMail {
 			projectKey := GetProjectRoot()
 			sessionName := ""
@@ -1979,6 +1989,9 @@ var (
 	// Robot-dcg-status flag for DCG status
 	robotDCGStatus bool // --robot-dcg-status flag
 
+	// Robot-ru-sync flag for RU
+	robotRUSync bool // --robot-ru-sync flag
+
 	// Robot-quota-status and robot-quota-check flags for caut
 	robotQuotaStatus        bool   // --robot-quota-status flag
 	robotQuotaCheck         bool   // --robot-quota-check flag
@@ -2378,6 +2391,9 @@ func init() {
 
 	// Robot-dcg-status flag for DCG
 	rootCmd.Flags().BoolVar(&robotDCGStatus, "robot-dcg-status", false, "Show DCG status and configuration. JSON output. Example: ntm --robot-dcg-status")
+
+	// Robot-ru-sync flag for RU
+	rootCmd.Flags().BoolVar(&robotRUSync, "robot-ru-sync", false, "Run ru sync with JSON output. Optional with --dry-run. Example: ntm --robot-ru-sync")
 
 	// Robot-quota-status and robot-quota-check flags for caut
 	rootCmd.Flags().BoolVar(&robotQuotaStatus, "robot-quota-status", false, "Show caut quota status for all providers. JSON output. Example: ntm --robot-quota-status")
@@ -2782,6 +2798,7 @@ func init() {
 
 		// Git coordination
 		newGitCmd(),
+		newRepoCmd(),
 		newWorktreesCmd(),
 
 		// Configuration management

@@ -812,6 +812,19 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples:    []string{"ntm --robot-tools"},
 		},
 		{
+			Name:        "ru-sync",
+			Flag:        "--robot-ru-sync",
+			Category:    "utility",
+			Description: "Run ru sync and return JSON summary.",
+			Parameters: []RobotParameter{
+				{Name: "dry-run", Flag: "--dry-run", Type: "bool", Required: false, Description: "Preview without executing"},
+			},
+			Examples: []string{
+				"ntm --robot-ru-sync",
+				"ntm --robot-ru-sync --dry-run",
+			},
+		},
+		{
 			Name:        "rano-stats",
 			Flag:        "--robot-rano-stats",
 			Category:    "utility",
