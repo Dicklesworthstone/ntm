@@ -131,7 +131,12 @@ Shell Integration:
 			return
 		}
 		if robotStatus {
-			if err := robot.PrintStatus(); err != nil {
+			pagination, err := resolveRobotPagination(cmd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(2)
+			}
+			if err := robot.PrintStatusWithOptions(pagination); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -170,7 +175,11 @@ Shell Integration:
 			if robotBeadLimit > 0 {
 				robot.BeadLimit = robotBeadLimit
 			}
-			var err error
+			pagination, err := resolveRobotPagination(cmd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(2)
+			}
 			if robotSince != "" {
 				// Parse the since timestamp
 				sinceTime, parseErr := time.Parse(time.RFC3339, robotSince)
@@ -180,7 +189,7 @@ Shell Integration:
 				}
 				err = robot.PrintSnapshotDelta(sinceTime)
 			} else {
-				err = robot.PrintSnapshot(cfg)
+				err = robot.PrintSnapshotWithOptions(cfg, pagination)
 			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -481,6 +490,11 @@ Shell Integration:
 			return
 		}
 		if robotHistory != "" {
+			pagination, err := resolveRobotPagination(cmd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(2)
+			}
 			opts := robot.HistoryOptions{
 				Session:   robotHistory,
 				Pane:      robotHistoryPane,
@@ -488,6 +502,8 @@ Shell Integration:
 				Last:      robotHistoryLast,
 				Since:     robotHistorySince,
 				Stats:     robotHistoryStats,
+				Limit:     pagination.Limit,
+				Offset:    pagination.Offset,
 			}
 			if err := robot.PrintHistory(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1401,10 +1417,10 @@ Shell Integration:
 				IncludeBodies: mailIncludeBodies,
 				UrgentOnly:    mailUrgentOnly,
 				Verbose:       mailVerbose,
-				Limit:         cassLimit,   // Use global --limit
-				Offset:        mailOffset,  // Pagination offset
-				Since:         cassSince,   // Use global --since (if set via --cass-since)
-				Until:         mailUntil,   // Date filter
+				Limit:         cassLimit,  // Use global --limit
+				Offset:        mailOffset, // Pagination offset
+				Since:         cassSince,  // Use global --since (if set via --cass-since)
+				Until:         mailUntil,  // Date filter
 			}
 			if err := robot.PrintMailCheck(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1433,6 +1449,26 @@ func Execute() error {
 		return err
 	}
 	return nil
+}
+
+func resolveRobotPagination(cmd *cobra.Command) (robot.PaginationOptions, error) {
+	opts := robot.PaginationOptions{}
+
+	if cmd.Flags().Changed("robot-limit") {
+		opts.Limit = robotLimit
+	} else if cmd.Flags().Changed("limit") {
+		opts.Limit = cassLimit
+	}
+
+	if cmd.Flags().Changed("robot-offset") || cmd.Flags().Changed("offset") {
+		opts.Offset = robotOffset
+	}
+
+	if opts.Limit < 0 || opts.Offset < 0 {
+		return opts, fmt.Errorf("pagination values must be >= 0")
+	}
+
+	return opts, nil
 }
 
 // goVersion returns the current Go runtime version.
@@ -1493,6 +1529,8 @@ var (
 	robotPanes                 string // comma-separated pane filter
 	robotGraph                 bool   // bv insights passthrough
 	robotBeadLimit             int    // limit for ready/in-progress beads in snapshot
+	robotLimit                 int    // pagination limit for robot list outputs
+	robotOffset                int    // pagination offset for robot list outputs
 	robotDashboard             bool   // dashboard summary output
 	robotContext               string // session name for context usage
 	robotEnsemble              string // session name for ensemble state
@@ -1826,16 +1864,16 @@ var (
 	robotQuotaCheckProvider string // --provider filter for quota-check
 
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
-	robotMailCheck        bool   // --robot-mail-check flag
-	mailProject           string // --project for mail check (required)
-	mailAgent             string // --agent filter for specific agent inbox
-	mailThread            string // --thread filter for specific thread
-	mailStatus            string // --status filter: read, unread, all
-	mailIncludeBodies     bool   // --include-bodies flag
-	mailUrgentOnly        bool   // --urgent-only flag
-	mailVerbose           bool   // --verbose flag for extra details
-	mailOffset            int    // --mail-offset for pagination
-	mailUntil             string // --mail-until date filter (YYYY-MM-DD)
+	robotMailCheck    bool   // --robot-mail-check flag
+	mailProject       string // --project for mail check (required)
+	mailAgent         string // --agent filter for specific agent inbox
+	mailThread        string // --thread filter for specific thread
+	mailStatus        string // --status filter: read, unread, all
+	mailIncludeBodies bool   // --include-bodies flag
+	mailUrgentOnly    bool   // --urgent-only flag
+	mailVerbose       bool   // --verbose flag for extra details
+	mailOffset        int    // --mail-offset for pagination
+	mailUntil         string // --mail-until date filter (YYYY-MM-DD)
 )
 
 func init() {
@@ -1907,6 +1945,8 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotEnsembleStopForce, "stop-force", false, "Force kill without graceful shutdown. Optional with --robot-ensemble-stop")
 	rootCmd.Flags().BoolVar(&robotEnsembleStopNoCollect, "stop-no-collect", false, "Skip partial output collection. Optional with --robot-ensemble-stop")
 	rootCmd.Flags().IntVar(&robotBeadLimit, "bead-limit", 5, "Max beads per category in snapshot. Optional with --robot-snapshot, --robot-status. Example: --bead-limit=10")
+	rootCmd.Flags().IntVar(&robotLimit, "robot-limit", 0, "Max items to return for robot list outputs (status, snapshot, history). Example: --robot-limit=10")
+	rootCmd.Flags().IntVar(&robotOffset, "robot-offset", 0, "Pagination offset for robot list outputs (status, snapshot, history). Example: --robot-offset=20")
 	rootCmd.Flags().StringVar(&robotVerbosity, "robot-verbosity", "", "Robot verbosity profile for JSON/TOON: terse, default, or debug. Env: NTM_ROBOT_VERBOSITY")
 
 	// BV Analysis robot flags for advanced analysis modes
@@ -2229,6 +2269,7 @@ func init() {
 	// defined above and bound to primary use cases. Those flags serve double-duty.
 	// See docs/robot-api-design.md for design principles.
 	rootCmd.Flags().IntVar(&cassLimit, "limit", 10, "Max results to return (default varies by command)")
+	rootCmd.Flags().IntVar(&robotOffset, "offset", 0, "Pagination offset (default 0)")
 	// Note: --since already defined at line 1631 for robotSince (used by --robot-snapshot)
 	rootCmd.Flags().StringVar(&cassAgent, "agent", "", "Filter by agent type: claude, codex, gemini, cursor, etc.")
 	rootCmd.Flags().StringVar(&cassWorkspace, "workspace", "", "Filter by workspace/project path")

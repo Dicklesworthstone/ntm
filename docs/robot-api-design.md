@@ -102,6 +102,8 @@ These flags are shared across many commands and MUST NOT be tool-prefixed:
 | `--dry-run` | Preview without executing | send, spawn, restart |
 | `--output=PATH` | Output file path | save, monitor |
 
+Note: `--robot-limit` and `--robot-offset` are accepted as explicit aliases for robot list outputs (status, snapshot, history). Unprefixed flags remain canonical.
+
 **Example (Correct):**
 ```bash
 ntm --robot-cass-search --query="auth" --limit=20 --since=7d
@@ -250,6 +252,9 @@ Commands that return lists MUST support pagination:
 - `count` - Number of items in current response
 - `has_more` - Boolean indicating more results available
 - `_agent_hints.next_offset` - Next offset value for convenience
+
+**Status/Snapshot/History Note:** These commands expose pagination under a `pagination` object:
+`{limit, offset, count, total, has_more, next_cursor}`.
 
 ---
 

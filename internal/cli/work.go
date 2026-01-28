@@ -263,25 +263,22 @@ func resolveTriageFormat(format string) string {
 
 // runGroupedTriage runs bv with grouped output
 func runGroupedTriage(dir string, byLabel, byTrack bool) error {
-	var args []string
-	if byLabel {
-		args = append(args, "-robot-triage-by-label")
-	} else if byTrack {
-		args = append(args, "-robot-triage-by-track")
-	}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetGroupedTriage(context.Background(), dir, tools.BVGroupedTriageOptions{
+		ByLabel: byLabel,
+		ByTrack: byTrack,
+	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// For non-JSON, just print the structured output
-	fmt.Println(output)
+	fmt.Println(string(output))
 	return nil
 }
 
@@ -1016,23 +1013,22 @@ func runWorkHistory() error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-history"}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetHistory(context.Background(), dir)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp HistoryResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -1343,23 +1339,22 @@ func runWorkBurndown(sprint string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-burndown", sprint}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetBurndown(context.Background(), dir, sprint)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp BurndownResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
