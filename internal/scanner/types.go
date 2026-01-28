@@ -51,6 +51,7 @@ type ScanResult struct {
 	Scanners  []ScannerResult `json:"scanners"`
 	Totals    ScanTotals      `json:"totals"`
 	Findings  []Finding       `json:"findings,omitempty"`
+	Warnings  []string        `json:"warnings,omitempty"`
 	Duration  time.Duration   `json:"duration,omitempty"`
 	ExitCode  int             `json:"exit_code"`
 }

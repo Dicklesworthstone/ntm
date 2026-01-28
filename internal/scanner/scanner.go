@@ -18,6 +18,7 @@ var (
 	ErrTimeout        = errors.New("scan timed out")
 	ErrScanFailed     = errors.New("scan failed")
 	ErrOutputTooLarge = errors.New("scan output exceeded limit")
+	ErrOutputNotJSON  = errors.New("scan output missing JSON")
 )
 
 // MaxScanOutputBytes limits the size of scan output to prevent OOM.
@@ -113,11 +114,19 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 		return nil, ErrTimeout
 	}
 
-	// Parse the JSON output
-	result, parseErr := s.parseOutput(output)
+	// Parse the JSON output (capture warnings even if output is mixed)
+	result, warnings, parseErr := s.parseOutput(output)
 	if parseErr != nil {
 		// If we can't parse output but command succeeded, return basic result
 		if waitErr == nil {
+			if len(warnings) > 0 {
+				return &ScanResult{
+					Project:  path,
+					Duration: duration,
+					ExitCode: 0,
+					Warnings: warnings,
+				}, nil
+			}
 			return &ScanResult{
 				Project:  path,
 				Duration: duration,
@@ -125,6 +134,10 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 			}, nil
 		}
 		return nil, fmt.Errorf("parsing output: %w (stderr: %s)", parseErr, stderr.String())
+	}
+
+	if len(warnings) > 0 {
+		result.Warnings = append(result.Warnings, warnings...)
 	}
 
 	result.Duration = duration
@@ -196,17 +209,64 @@ func (s *Scanner) buildArgs(path string, opts ScanOptions) []string {
 }
 
 // parseOutput parses UBS JSON output into a ScanResult.
-func (s *Scanner) parseOutput(data []byte) (*ScanResult, error) {
+func (s *Scanner) parseOutput(data []byte) (*ScanResult, []string, error) {
 	if len(data) == 0 {
-		return &ScanResult{}, nil
+		return &ScanResult{}, nil, nil
 	}
 
 	var result ScanResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("unmarshaling result: %w", err)
+	if err := json.Unmarshal(data, &result); err == nil {
+		return &result, nil, nil
+	} else {
+		jsonBlob, warnings := splitJSONAndWarnings(data)
+		if len(jsonBlob) > 0 {
+			if err := json.Unmarshal(jsonBlob, &result); err == nil {
+				return &result, warnings, nil
+			}
+		}
+		if len(warnings) > 0 {
+			return nil, warnings, ErrOutputNotJSON
+		}
+		return nil, nil, fmt.Errorf("unmarshaling result: %w", err)
+	}
+}
+
+func splitJSONAndWarnings(data []byte) ([]byte, []string) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, nil
 	}
 
-	return &result, nil
+	start := bytes.IndexByte(trimmed, '{')
+	end := bytes.LastIndexByte(trimmed, '}')
+	if start == -1 || end == -1 || end < start {
+		return nil, extractWarningLines(trimmed)
+	}
+
+	jsonBlob := bytes.TrimSpace(trimmed[start : end+1])
+	prefix := strings.TrimSpace(string(trimmed[:start]))
+	suffix := strings.TrimSpace(string(trimmed[end+1:]))
+
+	warnings := make([]string, 0, 4)
+	warnings = append(warnings, extractWarningLines([]byte(prefix))...)
+	warnings = append(warnings, extractWarningLines([]byte(suffix))...)
+	return jsonBlob, warnings
+}
+
+func extractWarningLines(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	warnings := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		warnings = append(warnings, line)
+	}
+	return warnings
 }
 
 // QuickScan is a convenience function that creates a scanner and runs a scan.

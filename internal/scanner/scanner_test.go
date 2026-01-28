@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -248,5 +249,47 @@ func TestBuildArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseOutput_WithWarningsPrefix(t *testing.T) {
+	scanner := &Scanner{binaryPath: "ubs"}
+	jsonPayload := `{"project":"test","timestamp":"2026-01-01T00:00:00Z","scanners":[],"totals":{"critical":0,"warning":0,"info":0,"files":0},"findings":[],"exit_code":0}`
+	output := []byte("ℹ Created filtered scan workspace at /tmp\n" + jsonPayload + "\n")
+
+	result, warnings, err := scanner.parseOutput(output)
+	if err != nil {
+		t.Fatalf("parseOutput error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if result.Project != "test" {
+		t.Fatalf("expected project=test, got %q", result.Project)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	if warnings[0] != "ℹ Created filtered scan workspace at /tmp" {
+		t.Fatalf("unexpected warning: %q", warnings[0])
+	}
+}
+
+func TestParseOutput_WarningsOnly(t *testing.T) {
+	scanner := &Scanner{binaryPath: "ubs"}
+	output := []byte("✓ No changed files to scan.\n")
+
+	result, warnings, err := scanner.parseOutput(output)
+	if err == nil || !errors.Is(err, ErrOutputNotJSON) {
+		t.Fatalf("expected ErrOutputNotJSON, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result when no JSON, got %+v", result)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	if warnings[0] != "✓ No changed files to scan." {
+		t.Fatalf("unexpected warning: %q", warnings[0])
 	}
 }
