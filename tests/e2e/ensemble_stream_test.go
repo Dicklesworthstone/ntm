@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,12 +27,12 @@ func TestEnsembleSynthesizeStreamJSONL(t *testing.T) {
 	testutil.E2ETestPrecheck(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	streamHome(t)
 
 	workDir := t.TempDir()
 	session, paneID := createEnsembleStreamSession(t, logger, "stream")
 	writeModeOutputToPane(t, paneID)
+	assertPaneContains(t, paneID, "```yaml")
 
 	state := buildEnsembleSessionState(session, paneID)
 	if err := ensemble.SaveSession(session, state); err != nil {
@@ -56,12 +57,12 @@ func TestEnsembleSynthesizeStreamResumeJSONL(t *testing.T) {
 	testutil.E2ETestPrecheck(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	streamHome(t)
 
 	workDir := t.TempDir()
 	session, paneID := createEnsembleStreamSession(t, logger, "resume")
 	writeModeOutputToPane(t, paneID)
+	assertPaneContains(t, paneID, "```yaml")
 
 	state := buildEnsembleSessionState(session, paneID)
 	if err := ensemble.SaveSession(session, state); err != nil {
@@ -94,12 +95,12 @@ func TestEnsembleSynthesizeStreamWritesCheckpoint(t *testing.T) {
 	testutil.E2ETestPrecheck(t)
 
 	logger := testutil.NewTestLoggerStdout(t)
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	streamHome(t)
 
 	workDir := t.TempDir()
 	session, paneID := createEnsembleStreamSession(t, logger, "checkpoint")
 	writeModeOutputToPane(t, paneID)
+	assertPaneContains(t, paneID, "```yaml")
 
 	state := buildEnsembleSessionState(session, paneID)
 	if err := ensemble.SaveSession(session, state); err != nil {
@@ -123,6 +124,24 @@ func TestEnsembleSynthesizeStreamWritesCheckpoint(t *testing.T) {
 	if checkpoint.LastIndex == 0 {
 		t.Fatalf("expected LastIndex to be set")
 	}
+}
+
+var (
+	streamHomeOnce sync.Once
+	streamHomeDir  string
+)
+
+func streamHome(t *testing.T) {
+	t.Helper()
+
+	streamHomeOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ntm-e2e-home-")
+		if err != nil {
+			t.Fatalf("create temp home: %v", err)
+		}
+		streamHomeDir = dir
+	})
+	t.Setenv("HOME", streamHomeDir)
 }
 
 func createEnsembleStreamSession(t *testing.T, logger *testutil.TestLogger, label string) (string, string) {
@@ -177,19 +196,42 @@ func writeModeOutputToPane(t *testing.T, paneID string) {
 		`  - question: "Which service is highest priority?"`,
 		"```",
 	}
-	command := buildPrintfCommand(lines)
-	if err := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneID, command, "Enter").Run(); err != nil {
-		t.Fatalf("send pane output: %v", err)
+
+	if err := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneID, "cat <<'EOF'", "Enter").Run(); err != nil {
+		t.Fatalf("send here-doc start: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	for _, line := range lines {
+		if err := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneID, line, "Enter").Run(); err != nil {
+			t.Fatalf("send line: %v", err)
+		}
+	}
+	if err := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneID, "EOF", "Enter").Run(); err != nil {
+		t.Fatalf("send here-doc end: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
 }
 
-func buildPrintfCommand(lines []string) string {
-	quoted := make([]string, 0, len(lines))
-	for _, line := range lines {
-		quoted = append(quoted, fmt.Sprintf("%q", line))
+func assertPaneContains(t *testing.T, paneID, needle string) {
+	t.Helper()
+
+	output, err := capturePaneOutput(paneID, 200)
+	if err != nil {
+		t.Fatalf("capture pane: %v", err)
 	}
-	return fmt.Sprintf("printf '%%s\\n' %s", strings.Join(quoted, " "))
+	if !strings.Contains(output, needle) {
+		t.Fatalf("pane output missing %q\noutput:\n%s", needle, output)
+	}
+}
+
+func capturePaneOutput(paneID string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 50
+	}
+	out, err := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", paneID, "-p", "-S", fmt.Sprintf("-%d", lines)).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func buildEnsembleSessionState(session, paneID string) *ensemble.EnsembleSession {
