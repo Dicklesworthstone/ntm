@@ -77,6 +77,13 @@ done
 mkdir -p "$LOG_DIR"
 export E2E_LOG_DIR="$LOG_DIR"
 
+# Test-only spawn pacing to avoid resource spikes under parallel runs.
+if [[ "${PARALLEL_JOBS}" -gt 1 ]]; then
+    export NTM_TEST_MODE="${NTM_TEST_MODE:-1}"
+    export NTM_TEST_SPAWN_PANE_DELAY_MS="${NTM_TEST_SPAWN_PANE_DELAY_MS:-150}"
+    export NTM_TEST_SPAWN_AGENT_DELAY_MS="${NTM_TEST_SPAWN_AGENT_DELAY_MS:-120}"
+fi
+
 # Find test scripts (outputs one per line for mapfile)
 find_tests() {
     for f in "${SCRIPT_DIR}"/test-*.sh; do

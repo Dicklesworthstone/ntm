@@ -32,7 +32,8 @@ setup_env() {
 cat <<EOF >"$STUB_BIN"
 #!/usr/bin/env bash
 echo "Error: rate limit exceeded. Retry-After: 10"
-sleep 5
+# Keep process alive so the monitor has time to observe output.
+sleep 30
 EOF
     chmod +x "$STUB_BIN"
 
@@ -74,10 +75,18 @@ main() {
 
     local rate_limits="${PROJECTS_DIR}/${session}/.ntm/rate_limits.json"
     log_info "${E2E_TAG} bead=${BEAD_ID} session=${session} step=await_tracker path=${rate_limits}"
-    if wait_for 12 "rate limit tracker file" test -f "$rate_limits"; then
+    if wait_for 20 "rate limit tracker file" test -f "$rate_limits"; then
         log_assert_eq "yes" "yes" "rate_limits.json created"
     else
         log_assert_eq "no" "yes" "rate_limits.json created"
+        return 1
+    fi
+
+    log_info "${E2E_TAG} bead=${BEAD_ID} session=${session} step=await_rate_limit_record"
+    if wait_for 20 "rate limit event recorded" grep -Eq '"total_rate_limits": [1-9]' "$rate_limits"; then
+        log_assert_eq "yes" "yes" "rate limit event recorded"
+    else
+        log_assert_eq "no" "yes" "rate limit event recorded"
         return 1
     fi
 
