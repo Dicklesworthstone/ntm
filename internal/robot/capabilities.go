@@ -35,6 +35,7 @@ type RobotParameter struct {
 // categoryOrder defines the canonical order for categories
 var categoryOrder = []string{
 	"state",
+	"ensemble",
 	"control",
 	"spawn",
 	"beads",
@@ -112,12 +113,56 @@ func buildCommandRegistry() []RobotCommandInfo {
 		{
 			Name:        "ensemble",
 			Flag:        "--robot-ensemble",
-			Category:    "state",
+			Category:    "ensemble",
 			Description: "Get ensemble state for a session including modes, status, and synthesis readiness.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-ensemble", Type: "string", Required: true, Description: "Session name to inspect"},
 			},
 			Examples: []string{"ntm --robot-ensemble=myproject"},
+		},
+		{
+			Name:        "ensemble-modes",
+			Flag:        "--robot-ensemble-modes",
+			Category:    "ensemble",
+			Description: "List available reasoning modes with filtering by category and tier.",
+			Parameters: []RobotParameter{
+				{Name: "category", Flag: "--category", Type: "string", Required: false, Description: "Filter by category code (A-L) or name (Formal, Heuristic, etc.)"},
+				{Name: "tier", Flag: "--tier", Type: "string", Required: false, Default: "core", Description: "Filter by tier: core, advanced, experimental, all"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "50", Description: "Max modes to return"},
+				{Name: "offset", Flag: "--offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset"},
+			},
+			Examples: []string{
+				"ntm --robot-ensemble-modes",
+				"ntm --robot-ensemble-modes --tier=all",
+				"ntm --robot-ensemble-modes --category=Formal --tier=all",
+				"ntm --robot-ensemble-modes --limit=10 --offset=20",
+			},
+		},
+		{
+			Name:        "ensemble-presets",
+			Flag:        "--robot-ensemble-presets",
+			Category:    "ensemble",
+			Description: "List available ensemble presets with their mode configurations and budgets.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-ensemble-presets"},
+		},
+		{
+			Name:        "ensemble-synthesize",
+			Flag:        "--robot-ensemble-synthesize",
+			Category:    "ensemble",
+			Description: "Trigger synthesis for an ensemble session, combining mode outputs into a unified report.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-ensemble-synthesize", Type: "string", Required: true, Description: "Session name with ensemble to synthesize"},
+				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "manual", Description: "Synthesis strategy: manual, adversarial, consensus, creative, analytical, deliberative, prioritized, dialectical, meta-reasoning, voting, argumentation-graph"},
+				{Name: "format", Flag: "--format", Type: "string", Required: false, Default: "markdown", Description: "Output format: markdown, json, yaml"},
+				{Name: "output", Flag: "--output", Type: "string", Required: false, Description: "Path to write the synthesis report"},
+				{Name: "force", Flag: "--force", Type: "bool", Required: false, Description: "Synthesize even if some outputs are incomplete"},
+			},
+			Examples: []string{
+				"ntm --robot-ensemble-synthesize=myproject",
+				"ntm --robot-ensemble-synthesize=myproject --strategy=adversarial --format=json",
+				"ntm --robot-ensemble-synthesize=myproject --output=/tmp/report.md --force",
+			},
 		},
 		{
 			Name:        "snapshot",
@@ -409,8 +454,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 		{
 			Name:        "ensemble_spawn",
 			Flag:        "--robot-ensemble-spawn",
-			Category:    "spawn",
-			Description: "Spawn a reasoning ensemble session (experimental build tag required).",
+			Category:    "ensemble",
+			Description: "Spawn a reasoning ensemble session with mode assignments.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-ensemble-spawn", Type: "string", Required: true, Description: "Session name to create"},
 				{Name: "preset", Flag: "--preset", Type: "string", Required: false, Description: "Ensemble preset name (required unless --modes is set)"},
