@@ -713,8 +713,21 @@ func (c *Client) ListProjectAgents(ctx context.Context, projectKey string) ([]Ag
 		return []Agent{}, nil
 	}
 
+	// The server may return either:
+	// 1. A wrapped response: {"project": {...}, "agents": [...]}
+	// 2. A raw array: [...]
+	// Try wrapped format first, fall back to raw array.
+	var wrappedResp struct {
+		Agents []Agent `json:"agents"`
+	}
+	text := resourceResp.Contents[0].Text
+	if err := json.Unmarshal([]byte(text), &wrappedResp); err == nil && wrappedResp.Agents != nil {
+		return wrappedResp.Agents, nil
+	}
+
+	// Fall back to raw array format
 	var agents []Agent
-	if err := json.Unmarshal([]byte(resourceResp.Contents[0].Text), &agents); err != nil {
+	if err := json.Unmarshal([]byte(text), &agents); err != nil {
 		return nil, NewAPIError("list_agents", 0, err)
 	}
 

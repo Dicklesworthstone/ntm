@@ -3,7 +3,62 @@
 // file reservations, and project management.
 package agentmail
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// FlexTime is a time.Time that can unmarshal from both RFC3339 (with timezone)
+// and ISO8601 timestamps without timezone suffix (assumes UTC).
+type FlexTime struct {
+	time.Time
+}
+
+// UnmarshalJSON implements json.Unmarshaler for FlexTime.
+func (ft *FlexTime) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		ft.Time = time.Time{}
+		return nil
+	}
+
+	// Try RFC3339 first (has timezone)
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		ft.Time = t
+		return nil
+	}
+
+	// Try RFC3339Nano (has timezone with nanoseconds)
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		ft.Time = t
+		return nil
+	}
+
+	// Fall back to ISO8601 without timezone (assume UTC)
+	// Format: "2006-01-02T15:04:05" or "2006-01-02T15:04:05.999999"
+	layouts := []string{
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05.999",
+		"2006-01-02T15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			ft.Time = t.UTC()
+			return nil
+		}
+	}
+
+	return &time.ParseError{Layout: time.RFC3339, Value: s, LayoutElem: "", ValueElem: "", Message: ""}
+}
+
+// MarshalJSON implements json.Marshaler for FlexTime.
+func (ft FlexTime) MarshalJSON() ([]byte, error) {
+	return json.Marshal(ft.Time.Format(time.RFC3339Nano))
+}
 
 // Agent represents an AI coding agent registered with Agent Mail.
 type Agent struct {
@@ -214,10 +269,10 @@ type OverseerMessageOptions struct {
 
 // OverseerSendResult contains the result of sending a Human Overseer message.
 type OverseerSendResult struct {
-	Success    bool      `json:"success"`
-	MessageID  int       `json:"message_id"`
-	Recipients []string  `json:"recipients"`
-	SentAt     time.Time `json:"sent_at"`
+	Success    bool     `json:"success"`
+	MessageID  int      `json:"message_id"`
+	Recipients []string `json:"recipients"`
+	SentAt     FlexTime `json:"sent_at"`
 }
 
 // PrepareThreadOptions contains options for the macro_prepare_thread call.
