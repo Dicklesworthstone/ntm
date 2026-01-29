@@ -160,6 +160,7 @@ gemini = "custom-gemini-cmd"
 [tmux]
 default_panes = 5
 palette_key = "F5"
+pane_init_delay_ms = 1500
 
 [agent_mail]
 enabled = true
@@ -191,6 +192,9 @@ program_name = "test-ntm"
 	}
 	if cfg.Tmux.PaletteKey != "F5" {
 		t.Errorf("Expected palette_key F5, got %s", cfg.Tmux.PaletteKey)
+	}
+	if cfg.Tmux.PaneInitDelayMs != 1500 {
+		t.Errorf("Expected pane_init_delay_ms 1500, got %d", cfg.Tmux.PaneInitDelayMs)
 	}
 	if cfg.AgentMail.URL != "http://localhost:9999/mcp/" {
 		t.Errorf("Expected URL http://localhost:9999/mcp/, got %s", cfg.AgentMail.URL)
@@ -264,6 +268,9 @@ func TestDefaultTmuxSettings(t *testing.T) {
 	if cfg.Tmux.PaletteKey != "F6" {
 		t.Errorf("Expected palette_key F6, got %s", cfg.Tmux.PaletteKey)
 	}
+	if cfg.Tmux.PaneInitDelayMs != 1000 {
+		t.Errorf("Expected pane_init_delay_ms 1000, got %d", cfg.Tmux.PaneInitDelayMs)
+	}
 }
 
 func TestCustomTmuxSettings(t *testing.T) {
@@ -271,6 +278,7 @@ func TestCustomTmuxSettings(t *testing.T) {
 [tmux]
 default_panes = 20
 palette_key = "F12"
+pane_init_delay_ms = 2500
 `
 	path := createTempConfig(t, content)
 	cfg, err := Load(path)
@@ -282,6 +290,9 @@ palette_key = "F12"
 	}
 	if cfg.Tmux.PaletteKey != "F12" {
 		t.Errorf("Expected palette_key F12, got %s", cfg.Tmux.PaletteKey)
+	}
+	if cfg.Tmux.PaneInitDelayMs != 2500 {
+		t.Errorf("Expected pane_init_delay_ms 2500, got %d", cfg.Tmux.PaneInitDelayMs)
 	}
 }
 
@@ -303,6 +314,9 @@ func TestLoadDefaultsForMissingFields(t *testing.T) {
 	}
 	if cfg.Tmux.PaletteKey != "F6" {
 		t.Errorf("Missing palette_key should be F6, got %s", cfg.Tmux.PaletteKey)
+	}
+	if cfg.Tmux.PaneInitDelayMs != 1000 {
+		t.Errorf("Missing pane_init_delay_ms should be 1000, got %d", cfg.Tmux.PaneInitDelayMs)
 	}
 }
 

@@ -992,10 +992,16 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		return outputError(err)
 	}
 	existingPanes := len(panes)
+	paneInitDelay := time.Duration(cfg.Tmux.PaneInitDelayMs) * time.Millisecond
+	if flag.Lookup("test.v") != nil {
+		paneInitDelay = 0
+	}
+	panesAdded := 0
 
 	// Add more panes if needed
 	if existingPanes < totalPanes {
 		toAdd := totalPanes - existingPanes
+		panesAdded = toAdd
 		if !IsJSONOutput() {
 			steps.Start(fmt.Sprintf("Creating %d pane(s)", toAdd))
 		}
@@ -1014,6 +1020,15 @@ func spawnSessionLogic(opts SpawnOptions) error {
 					opts.Session, i+1, time.Now().UnixMilli())
 			}
 		}
+		if !IsJSONOutput() {
+			steps.Done()
+		}
+	}
+	if panesAdded > 0 && paneInitDelay > 0 {
+		if !IsJSONOutput() {
+			steps.Start("Waiting for panes to initialize")
+		}
+		time.Sleep(paneInitDelay)
 		if !IsJSONOutput() {
 			steps.Done()
 		}

@@ -807,8 +807,9 @@ type PaletteState struct {
 
 // TmuxConfig holds tmux-specific settings
 type TmuxConfig struct {
-	DefaultPanes int    `toml:"default_panes"`
-	PaletteKey   string `toml:"palette_key"`
+	DefaultPanes    int    `toml:"default_panes"`
+	PaletteKey      string `toml:"palette_key"`
+	PaneInitDelayMs int    `toml:"pane_init_delay_ms"` // Delay before sending keys to new panes
 	// ActivityIndicators control pane border activity coloring.
 	ActivityIndicators ActivityIndicatorConfig `toml:"activity_indicators"`
 }
@@ -1457,6 +1458,7 @@ func Default() *Config {
 		Tmux: TmuxConfig{
 			DefaultPanes:       10,
 			PaletteKey:         "F6",
+			PaneInitDelayMs:    1000,
 			ActivityIndicators: DefaultActivityIndicatorConfig(),
 		},
 		Robot: DefaultRobotConfig(),
@@ -1948,6 +1950,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "# Tmux-specific settings")
 	fmt.Fprintf(w, "default_panes = %d\n", cfg.Tmux.DefaultPanes)
 	fmt.Fprintf(w, "palette_key = %q\n", cfg.Tmux.PaletteKey)
+	fmt.Fprintf(w, "pane_init_delay_ms = %d  # Delay before send-keys to new panes\n", cfg.Tmux.PaneInitDelayMs)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[robot]")
@@ -2530,6 +2533,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Tmux.DefaultPanes, nil
 		case "palette_key":
 			return cfg.Tmux.PaletteKey, nil
+		case "pane_init_delay_ms":
+			return cfg.Tmux.PaneInitDelayMs, nil
 		}
 	case "agent_mail":
 		if len(parts) < 2 {
@@ -2807,6 +2812,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	// Tmux
 	addDiff("tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)
 	addDiff("tmux.palette_key", defaults.Tmux.PaletteKey, cfg.Tmux.PaletteKey)
+	addDiff("tmux.pane_init_delay_ms", defaults.Tmux.PaneInitDelayMs, cfg.Tmux.PaneInitDelayMs)
 
 	// Agent Mail
 	addDiff("agent_mail.enabled", defaults.AgentMail.Enabled, cfg.AgentMail.Enabled)
@@ -2989,6 +2995,9 @@ func Validate(cfg *Config) []error {
 	// Validate tmux settings
 	if cfg.Tmux.DefaultPanes < 1 {
 		errs = append(errs, fmt.Errorf("tmux.default_panes: must be at least 1, got %d", cfg.Tmux.DefaultPanes))
+	}
+	if cfg.Tmux.PaneInitDelayMs < 0 {
+		errs = append(errs, fmt.Errorf("tmux.pane_init_delay_ms: must be non-negative, got %d", cfg.Tmux.PaneInitDelayMs))
 	}
 
 	return errs

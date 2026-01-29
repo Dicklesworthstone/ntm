@@ -3067,8 +3067,9 @@ Examples:
 						"gemini": effectiveCfg.Agents.Gemini,
 					},
 					"tmux": map[string]interface{}{
-						"default_panes": effectiveCfg.Tmux.DefaultPanes,
-						"palette_key":   effectiveCfg.Tmux.PaletteKey,
+						"default_panes":      effectiveCfg.Tmux.DefaultPanes,
+						"palette_key":        effectiveCfg.Tmux.PaletteKey,
+						"pane_init_delay_ms": effectiveCfg.Tmux.PaneInitDelayMs,
 					},
 					"checkpoints": map[string]interface{}{
 						"enabled":                  effectiveCfg.Checkpoints.Enabled,
