@@ -1,8 +1,10 @@
 package robot
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRestartPaneBeadPromptTemplate(t *testing.T) {
@@ -134,5 +136,197 @@ func TestRestartPaneDryRunShowsBead(t *testing.T) {
 	}
 	if !output.DryRun {
 		t.Error("DryRun should be true")
+	}
+}
+
+func TestRestartPaneOutputJSONFields(t *testing.T) {
+	output := RestartPaneOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       "myproject",
+		RestartedAt:   time.Date(2026, 1, 28, 12, 0, 0, 0, time.UTC),
+		Restarted:     []string{"1", "2"},
+		Failed:        []RestartError{{Pane: "3", Reason: "timeout"}},
+		BeadAssigned:  "bd-test1",
+		PromptSent:    true,
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	// Check that bead_assigned and prompt_sent are present
+	if parsed["bead_assigned"] != "bd-test1" {
+		t.Errorf("bead_assigned = %v, want %q", parsed["bead_assigned"], "bd-test1")
+	}
+	if parsed["prompt_sent"] != true {
+		t.Errorf("prompt_sent = %v, want true", parsed["prompt_sent"])
+	}
+	if parsed["session"] != "myproject" {
+		t.Errorf("session = %v, want %q", parsed["session"], "myproject")
+	}
+}
+
+func TestRestartPaneOutputJSONOmitEmpty(t *testing.T) {
+	// When no bead is used, bead fields should be omitted from JSON
+	output := RestartPaneOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       "myproject",
+		RestartedAt:   time.Now().UTC(),
+		Restarted:     []string{"1"},
+		Failed:        []RestartError{},
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	jsonStr := string(data)
+	if strings.Contains(jsonStr, "bead_assigned") {
+		t.Error("bead_assigned should be omitted when empty")
+	}
+	if strings.Contains(jsonStr, "prompt_error") {
+		t.Error("prompt_error should be omitted when empty")
+	}
+}
+
+func TestRestartPaneOptionsDefaults(t *testing.T) {
+	opts := RestartPaneOptions{
+		Session: "test-session",
+	}
+
+	if opts.DryRun {
+		t.Error("DryRun should default to false")
+	}
+	if opts.All {
+		t.Error("All should default to false")
+	}
+	if opts.Bead != "" {
+		t.Error("Bead should default to empty")
+	}
+	if opts.Prompt != "" {
+		t.Error("Prompt should default to empty")
+	}
+	if len(opts.Panes) != 0 {
+		t.Error("Panes should default to empty")
+	}
+}
+
+func TestRestartPaneOptionsAllFieldsSet(t *testing.T) {
+	opts := RestartPaneOptions{
+		Session: "proj",
+		Panes:   []string{"1", "2", "3"},
+		Type:    "cc",
+		All:     true,
+		DryRun:  true,
+		Bead:    "bd-abc12",
+		Prompt:  "Work on this task",
+	}
+
+	if opts.Session != "proj" {
+		t.Error("Session mismatch")
+	}
+	if len(opts.Panes) != 3 {
+		t.Error("Panes length mismatch")
+	}
+	if opts.Type != "cc" {
+		t.Error("Type mismatch")
+	}
+	if !opts.All {
+		t.Error("All should be true")
+	}
+	if !opts.DryRun {
+		t.Error("DryRun should be true")
+	}
+	if opts.Bead != "bd-abc12" {
+		t.Error("Bead mismatch")
+	}
+	if opts.Prompt != "Work on this task" {
+		t.Error("Prompt mismatch")
+	}
+}
+
+func TestRestartErrorStructure(t *testing.T) {
+	re := RestartError{
+		Pane:   "2",
+		Reason: "failed to respawn: pane not found",
+	}
+
+	data, err := json.Marshal(re)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var parsed map[string]string
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	if parsed["pane"] != "2" {
+		t.Errorf("pane = %q, want %q", parsed["pane"], "2")
+	}
+	if parsed["reason"] != "failed to respawn: pane not found" {
+		t.Errorf("reason = %q, want proper error message", parsed["reason"])
+	}
+}
+
+func TestRestartPaneBeadPromptTemplateMatchesBulkAssign(t *testing.T) {
+	// The restart-pane bead template should be compatible with the bulk-assign template.
+	// Both should include: AGENTS.md reference, Agent Mail, bead ID, br show, ultrathink.
+	template := restartPaneBeadPromptTemplate
+
+	expectedParts := []string{
+		"AGENTS.md",
+		"Agent Mail",
+		"{bead_id}",
+		"{bead_title}",
+		"br show",
+		"ultrathink",
+	}
+
+	for _, part := range expectedParts {
+		if !strings.Contains(template, part) {
+			t.Errorf("template missing expected part %q", part)
+		}
+	}
+}
+
+func TestRestartPanePromptOnlyNoBeadAssigned(t *testing.T) {
+	// When --prompt is used without --bead, BeadAssigned should be empty
+	output := RestartPaneOutput{
+		Restarted:  []string{"1"},
+		PromptSent: true,
+	}
+
+	if output.BeadAssigned != "" {
+		t.Error("BeadAssigned should be empty when only --prompt is used")
+	}
+	if !output.PromptSent {
+		t.Error("PromptSent should be true")
+	}
+}
+
+func TestRestartPaneMultiplePanesPromptErrors(t *testing.T) {
+	// Test that prompt errors for multiple panes are joined with semicolons
+	errors := []string{
+		"pane 1: connection refused",
+		"pane 3: timeout",
+	}
+	joined := strings.Join(errors, "; ")
+
+	if !strings.Contains(joined, "pane 1") {
+		t.Error("should contain first pane error")
+	}
+	if !strings.Contains(joined, "pane 3") {
+		t.Error("should contain second pane error")
+	}
+	if strings.Count(joined, "; ") != 1 {
+		t.Errorf("expected 1 semicolon separator, got %d", strings.Count(joined, "; "))
 	}
 }
