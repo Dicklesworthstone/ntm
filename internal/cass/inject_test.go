@@ -1,6 +1,7 @@
 package cass
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -277,6 +278,187 @@ func TestTruncateToTokensCass(t *testing.T) {
 			t.Errorf("zero max tokens should truncate: got %q", got)
 		}
 	})
+}
+
+func TestExtractSessionName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		path  string
+		want  string
+	}{
+		{"simple path", "sessions/my-session.jsonl", "my-session"},
+		{"nested path", "/data/2026/01/29/my-project.jsonl", "my-project"},
+		{"json extension", "path/to/data.json", "data"},
+		{"no extension", "path/to/session", "session"},
+		{"empty path", "", ""},
+		{"long name truncated", "sessions/" + strings.Repeat("a", 50) + ".jsonl", strings.Repeat("a", 37) + "..."},
+		{"trailing slash", "sessions/", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := ExtractSessionName(tc.path)
+			if got != tc.want {
+				t.Errorf("ExtractSessionName(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractCodeSnippets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"with code block", "text\n```go\nfmt.Println(\"hello\")\n```\nmore text"},
+		{"no code block short", "just plain text"},
+		{"no code block long", strings.Repeat("a ", 200)},
+		{"empty string", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractCodeSnippets(tc.input)
+			if tc.input != "" && got == "" {
+				t.Errorf("extractCodeSnippets(%q) returned empty", tc.input)
+			}
+		})
+	}
+
+	t.Run("extracts code from fenced block", func(t *testing.T) {
+		t.Parallel()
+		input := "Here is code:\n```go\nfmt.Println(\"hello\")\n```\nEnd."
+		got := extractCodeSnippets(input)
+		if !strings.Contains(got, "fmt.Println") {
+			t.Errorf("expected code snippet, got %q", got)
+		}
+	})
+
+	t.Run("truncates long content without code blocks", func(t *testing.T) {
+		t.Parallel()
+		input := strings.Repeat("word ", 100)
+		got := extractCodeSnippets(input)
+		if len(got) > 210 {
+			t.Errorf("should truncate long content: len=%d", len(got))
+		}
+	})
+}
+
+func TestSortScoredHits(t *testing.T) {
+	t.Parallel()
+
+	hits := []ScoredHit{
+		{ComputedScore: 0.3},
+		{ComputedScore: 0.9},
+		{ComputedScore: 0.5},
+		{ComputedScore: 0.7},
+	}
+
+	sortScoredHits(hits)
+
+	if !sort.SliceIsSorted(hits, func(i, j int) bool {
+		return hits[i].ComputedScore > hits[j].ComputedScore
+	}) {
+		t.Errorf("sortScoredHits did not sort descending: scores = %v",
+			[]float64{hits[0].ComputedScore, hits[1].ComputedScore, hits[2].ComputedScore, hits[3].ComputedScore})
+	}
+}
+
+func TestFormatMarkdown(t *testing.T) {
+	t.Parallel()
+
+	hits := []ScoredHit{
+		{
+			CASSHit:       CASSHit{SourcePath: "sessions/2026/01/15/my-session.jsonl", Content: "Some context here"},
+			ComputedScore: 0.85,
+		},
+	}
+
+	got := formatMarkdown(hits)
+
+	if !strings.Contains(got, "## Relevant Context") {
+		t.Error("formatMarkdown should contain header")
+	}
+	if !strings.Contains(got, "### Session:") {
+		t.Error("formatMarkdown should contain session header")
+	}
+	if !strings.Contains(got, "85% match") {
+		t.Error("formatMarkdown should contain relevance percentage")
+	}
+	if !strings.Contains(got, "Some context here") {
+		t.Error("formatMarkdown should contain hit content")
+	}
+}
+
+func TestFormatMinimal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with content", func(t *testing.T) {
+		t.Parallel()
+		hits := []ScoredHit{
+			{CASSHit: CASSHit{Content: "func hello() {}"}},
+			{CASSHit: CASSHit{Content: "func world() {}"}},
+		}
+		got := formatMinimal(hits)
+		if !strings.Contains(got, "// Related context:") {
+			t.Error("should start with comment header")
+		}
+		if !strings.Contains(got, "// ---") {
+			t.Error("should contain separator between items")
+		}
+	})
+
+	t.Run("empty content", func(t *testing.T) {
+		t.Parallel()
+		hits := []ScoredHit{
+			{CASSHit: CASSHit{Content: ""}},
+		}
+		got := formatMinimal(hits)
+		if !strings.Contains(got, "// Related context:") {
+			t.Error("should contain header even with empty content")
+		}
+	})
+}
+
+func TestFormatStructured(t *testing.T) {
+	t.Parallel()
+
+	hits := []ScoredHit{
+		{
+			CASSHit:       CASSHit{SourcePath: "sessions/proj.jsonl", Content: "func main() {}"},
+			ComputedScore: 0.72,
+		},
+	}
+
+	got := formatStructured(hits)
+
+	if !strings.Contains(got, "RELEVANT CONTEXT") {
+		t.Error("should contain header")
+	}
+	if !strings.Contains(got, "1. Session:") {
+		t.Error("should contain numbered item")
+	}
+	if !strings.Contains(got, "72%") {
+		t.Error("should contain relevance percentage")
+	}
+}
+
+func TestFilterResults_EmptyHits(t *testing.T) {
+	t.Parallel()
+
+	result := FilterResults(nil, FilterConfig{MaxItems: 10})
+	if result.OriginalCount != 0 {
+		t.Errorf("OriginalCount = %d, want 0", result.OriginalCount)
+	}
+	if len(result.Hits) != 0 {
+		t.Errorf("Hits should be empty, got %d", len(result.Hits))
+	}
 }
 
 func TestCountInjectedItems(t *testing.T) {
