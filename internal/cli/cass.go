@@ -43,18 +43,29 @@ func newSearchCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
-		Short: "Search archived agent output",
-		Args:  cobra.ExactArgs(1),
+		Short: "Search archived agent output via CASS",
+		Long: `Search past agent sessions indexed by CASS (Coding Agent Session Search).
+
+Queries archived agent output across all sessions, with optional filtering
+by session name, agent type, and time range.
+
+This is a convenience wrapper around 'ntm cass search' with defaults
+tuned for quick lookups.`,
+		Example: `  ntm search 'rate limiting middleware'
+  ntm search 'authentication' --session=myproject
+  ntm search 'database migration' --agent=claude_code --since=7d
+  ntm search 'error handling' --limit=5 --json`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCassSearch(args[0], agent, session, since, limit, offset)
 		},
 	}
 
-	cmd.Flags().StringVar(&session, "session", "", "Filter by session/project")
-	cmd.Flags().StringVar(&agent, "agent", "", "Filter by agent type")
-	cmd.Flags().StringVar(&since, "since", "", "Filter by time (e.g. 7d)")
-	cmd.Flags().IntVar(&limit, "limit", 20, "Max results")
-	cmd.Flags().IntVar(&offset, "offset", 0, "Result offset")
+	cmd.Flags().StringVarP(&session, "session", "s", "", "Filter by session/project workspace")
+	cmd.Flags().StringVarP(&agent, "agent", "a", "", "Filter by agent type (e.g. claude_code)")
+	cmd.Flags().StringVar(&since, "since", "", "Filter by time (e.g. 1h, 7d, 30d)")
+	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Max results to return")
+	cmd.Flags().IntVar(&offset, "offset", 0, "Result offset for pagination")
 
 	return cmd
 }

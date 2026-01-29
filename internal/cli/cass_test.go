@@ -223,3 +223,189 @@ func TestCassPreviewCmdAddedToParent(t *testing.T) {
 		t.Error("preview subcommand not found in cass command")
 	}
 }
+
+func TestNewSearchCmd(t *testing.T) {
+	cmd := newSearchCmd()
+
+	if cmd.Use != "search <query>" {
+		t.Errorf("Use = %q; want %q", cmd.Use, "search <query>")
+	}
+	if cmd.Short == "" {
+		t.Error("Short description is empty")
+	}
+	if cmd.Long == "" {
+		t.Error("Long description is empty")
+	}
+	if cmd.Example == "" {
+		t.Error("Example is empty")
+	}
+}
+
+func TestSearchCmdFlags(t *testing.T) {
+	cmd := newSearchCmd()
+
+	flags := []struct {
+		name      string
+		shorthand string
+	}{
+		{"session", "s"},
+		{"agent", "a"},
+		{"since", ""},
+		{"limit", "n"},
+		{"offset", ""},
+	}
+
+	for _, f := range flags {
+		flag := cmd.Flags().Lookup(f.name)
+		if flag == nil {
+			t.Errorf("Flag %q not found", f.name)
+			continue
+		}
+		if f.shorthand != "" && flag.Shorthand != f.shorthand {
+			t.Errorf("Flag %q shorthand = %q; want %q", f.name, flag.Shorthand, f.shorthand)
+		}
+	}
+}
+
+func TestSearchCmdDefaults(t *testing.T) {
+	cmd := newSearchCmd()
+
+	limit, err := cmd.Flags().GetInt("limit")
+	if err != nil {
+		t.Fatalf("GetInt(limit) error: %v", err)
+	}
+	if limit != 20 {
+		t.Errorf("limit default = %d; want 20", limit)
+	}
+
+	offset, err := cmd.Flags().GetInt("offset")
+	if err != nil {
+		t.Fatalf("GetInt(offset) error: %v", err)
+	}
+	if offset != 0 {
+		t.Errorf("offset default = %d; want 0", offset)
+	}
+
+	session, err := cmd.Flags().GetString("session")
+	if err != nil {
+		t.Fatalf("GetString(session) error: %v", err)
+	}
+	if session != "" {
+		t.Errorf("session default = %q; want empty", session)
+	}
+
+	agent, err := cmd.Flags().GetString("agent")
+	if err != nil {
+		t.Fatalf("GetString(agent) error: %v", err)
+	}
+	if agent != "" {
+		t.Errorf("agent default = %q; want empty", agent)
+	}
+
+	since, err := cmd.Flags().GetString("since")
+	if err != nil {
+		t.Fatalf("GetString(since) error: %v", err)
+	}
+	if since != "" {
+		t.Errorf("since default = %q; want empty", since)
+	}
+}
+
+func TestSearchCmdRequiresExactlyOneArg(t *testing.T) {
+	cmd := newSearchCmd()
+
+	// No args should fail
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error with no args, got nil")
+	}
+
+	// Two args should fail
+	cmd = newSearchCmd()
+	cmd.SetArgs([]string{"arg1", "arg2"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error with two args, got nil")
+	}
+}
+
+func TestCassSubcommands(t *testing.T) {
+	cmd := newCassCmd()
+	expected := map[string]bool{
+		"status":   false,
+		"search":   false,
+		"insights": false,
+		"timeline": false,
+		"preview":  false,
+	}
+
+	for _, sub := range cmd.Commands() {
+		if _, ok := expected[sub.Name()]; ok {
+			expected[sub.Name()] = true
+		}
+	}
+
+	for name, found := range expected {
+		if !found {
+			t.Errorf("subcommand %q not found in cass command", name)
+		}
+	}
+}
+
+func TestCassSearchCmdFlags(t *testing.T) {
+	cmd := newCassSearchCmd()
+
+	flags := []string{"agent", "workspace", "since", "limit", "offset"}
+	for _, f := range flags {
+		if cmd.Flags().Lookup(f) == nil {
+			t.Errorf("Flag %q not found on cass search command", f)
+		}
+	}
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	if limit != 10 {
+		t.Errorf("cass search limit default = %d; want 10", limit)
+	}
+}
+
+func TestSearchVsCassSearchDifferences(t *testing.T) {
+	searchCmd := newSearchCmd()
+	cassSearchCmd := newCassSearchCmd()
+
+	// Top-level search uses "session" flag, cass search uses "workspace"
+	if searchCmd.Flags().Lookup("session") == nil {
+		t.Error("top-level search should have --session flag")
+	}
+	if cassSearchCmd.Flags().Lookup("workspace") == nil {
+		t.Error("cass search should have --workspace flag")
+	}
+
+	// Top-level search has higher default limit (20 vs 10)
+	searchLimit, _ := searchCmd.Flags().GetInt("limit")
+	cassLimit, _ := cassSearchCmd.Flags().GetInt("limit")
+	if searchLimit <= cassLimit {
+		t.Errorf("top-level search limit (%d) should be > cass search limit (%d)", searchLimit, cassLimit)
+	}
+
+	// Top-level search has shorthand flags
+	if searchCmd.Flags().ShorthandLookup("s") == nil {
+		t.Error("top-level search should have -s shorthand for --session")
+	}
+	if searchCmd.Flags().ShorthandLookup("a") == nil {
+		t.Error("top-level search should have -a shorthand for --agent")
+	}
+	if searchCmd.Flags().ShorthandLookup("n") == nil {
+		t.Error("top-level search should have -n shorthand for --limit")
+	}
+}
+
+func TestNewCassClient(t *testing.T) {
+	// Ensure newCassClient doesn't panic even without config
+	oldCfg := cfg
+	cfg = nil
+	defer func() { cfg = oldCfg }()
+
+	client := newCassClient()
+	if client == nil {
+		t.Error("newCassClient() returned nil with nil config")
+	}
+}

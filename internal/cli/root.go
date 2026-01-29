@@ -1454,6 +1454,10 @@ Shell Integration:
 		if robotSwitchAccount != "" {
 			opts := robot.ParseSwitchAccountArg(robotSwitchAccount)
 			opts.Pane = robotSwitchAccountPane
+			if opts.Pane == "" && robotHistoryPane != "" {
+				// switch-account-pane is deprecated in favor of --pane
+				opts.Pane = robotHistoryPane
+			}
 			if err := robot.PrintSwitchAccount(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -2471,7 +2475,7 @@ func init() {
 
 	// --pane and --last, --stats for history
 	// Note: --type already defined at line 1689 for robotSendType (used by --robot-send)
-	rootCmd.Flags().StringVar(&robotHistoryPane, "pane", "", "Filter by pane ID")
+	rootCmd.Flags().StringVar(&robotHistoryPane, "pane", "", "Filter by pane ID. Optional with --robot-history and --robot-switch-account")
 	rootCmd.Flags().IntVar(&robotHistoryLast, "last", 0, "Show last N entries")
 	rootCmd.Flags().BoolVar(&robotHistoryStats, "stats", false, "Show statistics instead of entries")
 
@@ -2742,6 +2746,7 @@ func init() {
 		newCopyCmd(),
 		newSaveCmd(),
 		newGrepCmd(),
+		newSearchCmd(),
 		newErrorsCmd(),
 		newExtractCmd(),
 		newDiffCmd(),
