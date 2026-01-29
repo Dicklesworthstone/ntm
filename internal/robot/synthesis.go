@@ -388,6 +388,9 @@ func matchesPattern(filePath, pattern string) bool {
 	}
 
 	// Prefix match (pattern is a directory)
+	if strings.HasSuffix(pattern, "/") {
+		return strings.HasPrefix(filePath, pattern)
+	}
 	return strings.HasPrefix(filePath, pattern+"/")
 }
 

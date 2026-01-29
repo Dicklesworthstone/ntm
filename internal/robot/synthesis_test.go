@@ -284,6 +284,9 @@ func TestMatchesPattern(t *testing.T) {
 		{"dir/file.go", "dir", true},
 		{"dir/sub/file.go", "dir", true},
 		{"other/file.go", "dir", false},
+		{"dir/file.go", "dir/", true},
+		{"dir/sub/file.go", "dir/", true},
+		{"other/file.go", "dir/", false},
 
 		// Glob patterns
 		{"file.go", "*.go", true},
