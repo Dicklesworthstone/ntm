@@ -14,6 +14,90 @@ func stripANSI(s string) string {
 	return re.ReplaceAllString(s, "")
 }
 
+func TestClamp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{"zero", 0, 0},
+		{"mid range", 128, 128},
+		{"max", 255, 255},
+		{"above max", 256, 255},
+		{"well above max", 1000, 255},
+		{"negative", -1, 0},
+		{"very negative", -100, 0},
+		{"one", 1, 1},
+		{"254", 254, 254},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := clamp(tc.input)
+			if got != tc.want {
+				t.Errorf("clamp(%d) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAbs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{"zero", 0, 0},
+		{"positive", 42, 42},
+		{"negative", -42, 42},
+		{"one", 1, 1},
+		{"negative one", -1, 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := abs(tc.input)
+			if got != tc.want {
+				t.Errorf("abs(%d) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVisibleLength(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"empty string", "", 0},
+		{"plain ASCII", "hello", 5},
+		{"with ANSI color", "\x1b[31mred\x1b[0m", 3},
+		{"nested ANSI", "\x1b[1m\x1b[32mbold green\x1b[0m\x1b[0m", 10},
+		{"no ANSI", "plain text", 10},
+		{"only ANSI", "\x1b[31m\x1b[0m", 0},
+		{"mixed", "before\x1b[31mred\x1b[0mafter", 14},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := visibleLength(tc.input)
+			if got != tc.want {
+				t.Errorf("visibleLength(%q) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewTutorialModel(t *testing.T) {
 	m := New()
 

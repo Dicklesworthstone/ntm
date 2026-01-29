@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -457,4 +458,69 @@ func TestTracker_RecordSessionEnd(t *testing.T) {
 	if len(results) != 2 {
 		t.Errorf("RecordSessionEnd() recorded %d scores, want 2", len(results))
 	}
+}
+
+func TestSqrt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		input     float64
+		expected  float64
+		tolerance float64
+	}{
+		{"zero", 0, 0, 0.001},
+		{"negative", -4, 0, 0.001},
+		{"one", 1, 1, 0.0001},
+		{"four", 4, 2, 0.0001},
+		{"nine", 9, 3, 0.0001},
+		{"two", 2, math.Sqrt(2), 0.0001},
+		{"large", 10000, 100, 0.0001},
+		{"small fraction", 0.25, 0.5, 0.0001},
+		{"pi", math.Pi, math.Sqrt(math.Pi), 0.0001},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sqrt(tc.input)
+			if diff := got - tc.expected; diff < -tc.tolerance || diff > tc.tolerance {
+				t.Errorf("sqrt(%v) = %v, want %v (diff=%v)", tc.input, got, tc.expected, diff)
+			}
+		})
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty string", ""},
+		{"no tilde", "/usr/local/bin"},
+		{"relative path", "relative/path"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := expandPath(tc.input)
+			if got != tc.input {
+				t.Errorf("expandPath(%q) = %q, want %q", tc.input, got, tc.input)
+			}
+		})
+	}
+
+	// Tilde expansion should produce a different path
+	t.Run("tilde expansion", func(t *testing.T) {
+		got := expandPath("~/foo")
+		if got == "~/foo" {
+			t.Error("expandPath(\"~/foo\") should expand tilde")
+		}
+		if !filepath.IsAbs(got) {
+			t.Errorf("expandPath(\"~/foo\") = %q, expected absolute path", got)
+		}
+	})
 }

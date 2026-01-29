@@ -1419,3 +1419,151 @@ done:
 
 	hub.unregister <- globalClient
 }
+
+func TestMatchTopic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		topic   string
+		want    bool
+	}{
+		{"wildcard matches anything", "*", "sessions:foo", true},
+		{"wildcard matches empty-like", "*", "x", true},
+		{"exact match", "global", "global", true},
+		{"exact mismatch", "global", "sessions:foo", false},
+		{"prefix wildcard match", "sessions:*", "sessions:my-session", true},
+		{"prefix wildcard mismatch", "sessions:*", "panes:foo", false},
+		{"prefix wildcard exact prefix", "panes:*", "panes:test:0", true},
+		{"empty pattern no match", "", "global", false},
+		{"empty topic no match", "global", "", false},
+		{"both empty", "", "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchTopic(tc.pattern, tc.topic)
+			if got != tc.want {
+				t.Errorf("matchTopic(%q, %q) = %v, want %v", tc.pattern, tc.topic, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeRequestID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"alphanumeric", "abc123", "abc123"},
+		{"with dashes", "req-123-abc", "req-123-abc"},
+		{"with underscores", "req_123_abc", "req_123_abc"},
+		{"with dots", "req.123.abc", "req.123.abc"},
+		{"with colons", "req:123", "req:123"},
+		{"with slashes", "req/path", "req/path"},
+		{"strips special chars", "req<script>alert", "reqscriptalert"},
+		{"strips spaces", "req 123", "req123"},
+		{"truncates long input", strings.Repeat("a", 100), strings.Repeat("a", 64)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeRequestID(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeRequestID(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"empty", "", true},
+		{"localhost", "localhost", true},
+		{"LOCALHOST", "LOCALHOST", true},
+		{"127.0.0.1", "127.0.0.1", true},
+		{"::1", "::1", true},
+		{"bracketed ::1", "[::1]", true},
+		{"external IP", "192.168.1.1", false},
+		{"domain", "example.com", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isLoopbackHost(tc.host)
+			if got != tc.want {
+				t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOriginAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		origin    string
+		allowlist []string
+		want      bool
+	}{
+		{"empty origin always allowed", "", []string{"example.com"}, true},
+		{"empty allowlist rejects", "http://evil.com", []string{}, false},
+		{"wildcard allows all", "http://evil.com", []string{"*"}, true},
+		{"hostname match", "http://example.com", []string{"example.com"}, true},
+		{"hostname mismatch", "http://evil.com", []string{"example.com"}, false},
+		{"full URL match", "http://localhost:3000", []string{"http://localhost:3000"}, true},
+		{"port mismatch in full URL", "http://localhost:3001", []string{"http://localhost:3000"}, false},
+		{"host:port match", "http://localhost:8080", []string{"localhost:8080"}, true},
+		{"case insensitive", "http://Example.Com", []string{"example.com"}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := originAllowed(tc.origin, tc.allowlist)
+			if got != tc.want {
+				t.Errorf("originAllowed(%q, %v) = %v, want %v", tc.origin, tc.allowlist, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatAge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"seconds", 30 * time.Second, "just now"},
+		{"minutes", 5 * time.Minute, "5m ago"},
+		{"hours", 3 * time.Hour, "3h ago"},
+		{"days", 48 * time.Hour, "2d ago"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatAge(tc.d)
+			if got != tc.want {
+				t.Errorf("formatAge(%v) = %q, want %q", tc.d, got, tc.want)
+			}
+		})
+	}
+}

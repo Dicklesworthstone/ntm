@@ -105,3 +105,54 @@ func TestChooseBackendNoTools(t *testing.T) {
 		t.Fatalf("expected error when no clipboard tools found")
 	}
 }
+
+func TestIsWSL(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		version string
+		want    bool
+	}{
+		{"WSL_DISTRO_NAME set", map[string]string{"WSL_DISTRO_NAME": "Ubuntu"}, "", true},
+		{"WSL_INTEROP set", map[string]string{"WSL_INTEROP": "/run/wsl"}, "", true},
+		{"microsoft in /proc/version", nil, "Linux 5.15.0-microsoft-standard-WSL2", true},
+		{"Microsoft uppercase", nil, "Linux MICROSOFT something", true},
+		{"not WSL", nil, "Linux 6.1.0-generic", false},
+		{"no env no version", nil, "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			det := newStubDetector("linux", tc.env, nil, tc.version)
+			got := isWSL(det)
+			if got != tc.want {
+				t.Errorf("isWSL() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsWayland(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"XDG_SESSION_TYPE=wayland", map[string]string{"XDG_SESSION_TYPE": "wayland"}, true},
+		{"XDG_SESSION_TYPE=Wayland", map[string]string{"XDG_SESSION_TYPE": "Wayland"}, true},
+		{"XDG_SESSION_TYPE=x11", map[string]string{"XDG_SESSION_TYPE": "x11"}, false},
+		{"WAYLAND_DISPLAY set", map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
+		{"no wayland env", map[string]string{"DISPLAY": ":0"}, false},
+		{"empty env", nil, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			det := newStubDetector("linux", tc.env, nil, "")
+			got := isWayland(det)
+			if got != tc.want {
+				t.Errorf("isWayland() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
