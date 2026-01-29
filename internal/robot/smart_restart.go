@@ -416,7 +416,19 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 
 		// Step 3: Verify shell prompt
 		attemptedActions = append(attemptedActions, "verify-shell-prompt")
-		target := fmt.Sprintf("%s:1.%d", session, pane)
+		target, targetErr := tmux.FormatPaneTarget(session, pane)
+		if targetErr != nil {
+			structErr := newRestartError(
+				ErrCodeInternalError,
+				"Failed to get window index: "+targetErr.Error(),
+				"post_exit",
+				pane,
+				agentType,
+				attemptedActions,
+				"",
+			).WithRecoveryHint("Check tmux session state")
+			return seq, structErr
+		}
 		output, err := tmux.CapturePaneOutput(target, 10)
 		if err != nil {
 			if opts.HardKill {
@@ -483,7 +495,19 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 		time.Sleep(1 * time.Second)
 
 		// Verify shell prompt after hard kill
-		target := fmt.Sprintf("%s:1.%d", session, pane)
+		target, targetErr := tmux.FormatPaneTarget(session, pane)
+		if targetErr != nil {
+			structErr := newRestartError(
+				ErrCodeInternalError,
+				"Failed to get window index: "+targetErr.Error(),
+				"post_hard_kill",
+				pane,
+				agentType,
+				attemptedActions,
+				"",
+			).WithRecoveryHint("Check tmux session state")
+			return seq, structErr
+		}
 		output, err := tmux.CapturePaneOutput(target, 10)
 		if err != nil {
 			structErr := newRestartError(
@@ -564,7 +588,13 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 // verifyRestart checks the post-restart state of a pane.
 func verifyRestart(session string, pane int, opts SmartRestartOptions) *PostStateInfo {
 	// Capture current state
-	target := fmt.Sprintf("%s:1.%d", session, pane)
+	target, err := tmux.FormatPaneTarget(session, pane)
+	if err != nil {
+		return &PostStateInfo{
+			AgentRunning: false,
+			Confidence:   0.0,
+		}
+	}
 	content, err := tmux.CapturePaneOutput(target, 50)
 	if err != nil {
 		return &PostStateInfo{

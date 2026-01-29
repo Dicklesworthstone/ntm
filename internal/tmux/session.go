@@ -791,6 +791,29 @@ func FormatPaneName(session string, agentType string, index int, variant string)
 	return base
 }
 
+// FormatPaneTarget builds a tmux pane target string (session:window.pane) using
+// the actual first window index of the session. This avoids hardcoding window 1
+// which fails when sessions use window 0.
+func (c *Client) FormatPaneTarget(session string, paneIndex int) (string, error) {
+	firstWin, err := c.GetFirstWindow(session)
+	if err != nil {
+		return "", fmt.Errorf("get first window for %s: %w", session, err)
+	}
+	return fmt.Sprintf("%s:%d.%d", session, firstWin, paneIndex), nil
+}
+
+// FormatPaneTarget builds a tmux pane target string (default client)
+func FormatPaneTarget(session string, paneIndex int) (string, error) {
+	return DefaultClient.FormatPaneTarget(session, paneIndex)
+}
+
+// FormatPaneTargetWithWindow builds a tmux pane target string with an explicit
+// window index. Use this when you already know the window index to avoid an
+// extra tmux call.
+func FormatPaneTargetWithWindow(session string, windowIndex, paneIndex int) string {
+	return fmt.Sprintf("%s:%d.%d", session, windowIndex, paneIndex)
+}
+
 // SendKeys sends keys to a pane (default client)
 func SendKeys(target, keys string, enter bool) error {
 	return DefaultClient.SendKeys(target, keys, enter)

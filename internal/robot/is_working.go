@@ -221,7 +221,18 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 		}
 
 		// Capture pane output
-		target := fmt.Sprintf("%s:1.%d", opts.Session, paneIdx)
+		target, err := tmux.FormatPaneTarget(opts.Session, paneIdx)
+		if err != nil {
+			output.Panes[paneKey] = PaneWorkStatus{
+				AgentType:            string(agent.AgentTypeUnknown),
+				Recommendation:       string(agent.RecommendErrorState),
+				RecommendationReason: fmt.Sprintf("Failed to get window index: %v", err),
+				Confidence:           0.0,
+				Indicators:           WorkIndicators{Work: []string{}, Limit: []string{}},
+			}
+			output.Summary.ErrorCount++
+			continue
+		}
 		content, err := tmux.CapturePaneOutput(target, opts.LinesCaptured)
 		if err != nil {
 			output.Panes[paneKey] = PaneWorkStatus{

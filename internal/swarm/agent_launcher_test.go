@@ -67,6 +67,19 @@ func (m *MockTmuxClient) GetPanes(session string) ([]tmux.Pane, error) {
 	return m.Panes, m.PaneErr
 }
 
+// GetFirstWindow returns 1 as the default mock window index
+func (m *MockTmuxClient) GetFirstWindow(session string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.t != nil {
+		m.t.Logf("[TEST] MockTmuxClient.GetFirstWindow: session=%s", session)
+	}
+
+	// Return 1 as the default window index for backward compatibility with tests
+	return 1, nil
+}
+
 // CapturePaneOutput returns the next item from CaptureSequence
 func (m *MockTmuxClient) CapturePaneOutput(target string, lines int) (string, error) {
 	m.mu.Lock()
@@ -126,22 +139,26 @@ func TestNewAgentLauncher(t *testing.T) {
 }
 
 func TestFormatPaneTarget(t *testing.T) {
+	// Test the pure formatting helper (FormatPaneTargetWithWindow) since formatPaneTarget
+	// now queries tmux for the actual window index and may fail without a live session.
 	tests := []struct {
 		session  string
+		window   int
 		pane     int
 		expected string
 	}{
-		{"myproject", 1, "myproject:1.1"},
-		{"cc_agents_1", 5, "cc_agents_1:1.5"},
-		{"test-session", 10, "test-session:1.10"},
+		{"myproject", 1, 1, "myproject:1.1"},
+		{"cc_agents_1", 1, 5, "cc_agents_1:1.5"},
+		{"test-session", 1, 10, "test-session:1.10"},
+		{"myproject", 0, 1, "myproject:0.1"}, // Window 0 case
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.expected, func(t *testing.T) {
-			result := formatPaneTarget(tt.session, tt.pane)
+			result := tmux.FormatPaneTargetWithWindow(tt.session, tt.window, tt.pane)
 			if result != tt.expected {
-				t.Errorf("formatPaneTarget(%q, %d) = %q, want %q",
-					tt.session, tt.pane, result, tt.expected)
+				t.Errorf("FormatPaneTargetWithWindow(%q, %d, %d) = %q, want %q",
+					tt.session, tt.window, tt.pane, result, tt.expected)
 			}
 		})
 	}

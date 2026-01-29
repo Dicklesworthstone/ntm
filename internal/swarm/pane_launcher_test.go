@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestNewPaneLauncher(t *testing.T) {
@@ -160,20 +162,24 @@ func TestBatchLaunchResult(t *testing.T) {
 func TestGetPaneTarget(t *testing.T) {
 	tests := []struct {
 		session  string
+		window   int
 		pane     int
 		expected string
 	}{
-		{"test", 1, "test:1.1"},
-		{"my-session", 5, "my-session:1.5"},
-		{"cc_agents_1", 10, "cc_agents_1:1.10"},
+		{"test", 1, 1, "test:1.1"},
+		{"my-session", 1, 5, "my-session:1.5"},
+		{"cc_agents_1", 1, 10, "cc_agents_1:1.10"},
+		{"test", 0, 1, "test:0.1"}, // Window 0 case
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.expected, func(t *testing.T) {
-			result := GetPaneTarget(tt.session, tt.pane)
+			// Test the pure formatting helper since GetPaneTarget now queries tmux
+			// for the actual window index and may fail without a live session.
+			result := tmux.FormatPaneTargetWithWindow(tt.session, tt.window, tt.pane)
 			if result != tt.expected {
-				t.Errorf("GetPaneTarget(%q, %d) = %q, want %q",
-					tt.session, tt.pane, result, tt.expected)
+				t.Errorf("FormatPaneTargetWithWindow(%q, %d, %d) = %q, want %q",
+					tt.session, tt.window, tt.pane, result, tt.expected)
 			}
 		})
 	}

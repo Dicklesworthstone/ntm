@@ -123,7 +123,14 @@ func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
 
 	for _, sess := range plan.Sessions {
 		for _, pane := range sess.Panes {
-			target := formatPaneTarget(sess.Name, pane.Index)
+			target, err := formatPaneTarget(sess.Name, pane.Index)
+			if err != nil {
+				d.logger().Warn("[LimitDetector] Failed to format pane target",
+					"session", sess.Name,
+					"pane_index", pane.Index,
+					"error", err)
+				continue
+			}
 			if err := d.StartPane(d.ctx, target, pane.AgentType); err != nil {
 				d.logger().Warn("[LimitDetector] Failed to start pane monitoring",
 					"session_pane", target,

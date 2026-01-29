@@ -190,7 +190,10 @@ func (a *Archiver) archiveNewContent(ctx context.Context) error {
 
 // capturePane captures new content from a single pane.
 func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
-	target := fmt.Sprintf("%s:1.%d", a.sessionName, pane.Index)
+	target, err := tmux.FormatPaneTarget(a.sessionName, pane.Index)
+	if err != nil {
+		return fmt.Errorf("format pane target: %w", err)
+	}
 
 	// Capture content
 	content, err := tmux.DefaultClient.CapturePaneOutputContext(ctx, target, a.linesPerCapture)

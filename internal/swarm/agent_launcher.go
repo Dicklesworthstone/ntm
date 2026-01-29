@@ -52,6 +52,7 @@ type AgentLauncher struct {
 type agentLauncherTmux interface {
 	SendKeys(target, keys string, enter bool) error
 	GetPanes(session string) ([]tmux.Pane, error)
+	GetFirstWindow(session string) (int, error)
 }
 
 // NewAgentLauncher creates a new AgentLauncher with default settings.
@@ -101,16 +102,31 @@ func (l *AgentLauncher) logger() *slog.Logger {
 }
 
 // formatPaneTarget formats a target string for tmux send-keys.
-// Uses the format "session:window.pane" where window is typically 1.
-func formatPaneTarget(session string, pane int) string {
-	return fmt.Sprintf("%s:1.%d", session, pane)
+// Uses the format "session:window.pane" with the actual window index from tmux.
+// Uses the default tmux client - prefer formatPaneTargetWithClient when a custom
+// client is available.
+func formatPaneTarget(session string, pane int) (string, error) {
+	return tmux.FormatPaneTarget(session, pane)
+}
+
+// formatPaneTargetWithClient formats a target string using the provided client's
+// GetFirstWindow method to get the actual window index.
+func formatPaneTargetWithClient(client agentLauncherTmux, session string, pane int) (string, error) {
+	firstWin, err := client.GetFirstWindow(session)
+	if err != nil {
+		return "", fmt.Errorf("get first window for %s: %w", session, err)
+	}
+	return tmux.FormatPaneTargetWithWindow(session, firstWin, pane), nil
 }
 
 // LaunchAgent starts an agent in a specific pane.
 // session is the tmux session name, pane is the 1-based pane index,
 // and agentType is the agent command (cc, cod, or gmi).
 func (l *AgentLauncher) LaunchAgent(session string, pane int, agentType string) error {
-	target := formatPaneTarget(session, pane)
+	target, err := formatPaneTargetWithClient(l.tmuxClient(), session, pane)
+	if err != nil {
+		return fmt.Errorf("format pane target: %w", err)
+	}
 
 	l.logger().Debug("launching agent",
 		"session", session,
@@ -216,7 +232,19 @@ func (l *AgentLauncher) LaunchSwarm(plan *SwarmPlan) (*AgentLauncherResult, erro
 				time.Sleep(l.LaunchDelay)
 			}
 
-			target := formatPaneTarget(sessionSpec.Name, paneSpec.Index)
+			target, err := formatPaneTargetWithClient(l.tmuxClient(), sessionSpec.Name, paneSpec.Index)
+			if err != nil {
+				launchResult := LaunchResult{
+					SessionPane: fmt.Sprintf("%s:?.%d", sessionSpec.Name, paneSpec.Index),
+					AgentType:   paneSpec.AgentType,
+					Success:     false,
+					Error:       fmt.Sprintf("format pane target: %v", err),
+				}
+				result.LaunchResults = append(result.LaunchResults, launchResult)
+				result.TotalFailed++
+				result.Errors = append(result.Errors, err)
+				continue
+			}
 			launchResult := LaunchResult{
 				SessionPane: target,
 				AgentType:   paneSpec.AgentType,
@@ -481,15 +509,17 @@ func (b *LaunchCommandBuilder) BuildSwarmCommands(plan *SwarmPlan) []LaunchComma
 
 // LaunchAgentWithCommand launches an agent using a pre-built LaunchCommand.
 func (l *AgentLauncher) LaunchAgentWithCommand(session string, pane int, cmd LaunchCommand) error {
-	target := formatPaneTarget(session, pane)
+	client := l.tmuxClient()
+	target, err := formatPaneTargetWithClient(client, session, pane)
+	if err != nil {
+		return fmt.Errorf("format pane target: %w", err)
+	}
 
 	l.logger().Debug("launching agent with command",
 		"session", session,
 		"pane", pane,
 		"target", target,
 		"command", cmd.ToShellCommand())
-
-	client := l.tmuxClient()
 
 	// Send the shell command
 	shellCmd := cmd.ToShellCommand()

@@ -607,7 +607,15 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 	}
 
 	// Build target string for tmux commands
-	target := fmt.Sprintf("%s:1.%d", opts.Session, opts.Pane)
+	target, err := tmux.FormatPaneTarget(opts.Session, opts.Pane)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get window index: %w", err),
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
+		return output, nil
+	}
 	timeout := time.Duration(opts.Flags.TimeoutMs) * time.Millisecond
 
 	// Execute probe based on method

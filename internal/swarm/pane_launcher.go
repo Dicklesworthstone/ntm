@@ -141,7 +141,13 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 	}
 
 	// Format pane target (session:window.pane)
-	paneTarget := formatPaneTarget(sessionName, paneSpec.Index)
+	paneTarget, err := pl.tmuxClient().FormatPaneTarget(sessionName, paneSpec.Index)
+	if err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("format pane target: %v", err)
+		result.Duration = time.Since(start)
+		return result, fmt.Errorf("format pane target: %w", err)
+	}
 	result.PaneTarget = paneTarget
 
 	pl.logger().Info("[PaneLauncher] launch_start",
@@ -370,8 +376,8 @@ func (pl *PaneLauncher) LaunchSwarm(ctx context.Context, plan *SwarmPlan, stagge
 }
 
 // GetPaneTarget formats the tmux target string for a pane.
-// Uses the format "session:window.pane" where window is typically 1.
-func GetPaneTarget(sessionName string, paneIndex int) string {
+// Uses the format "session:window.pane" with the actual window index from tmux.
+func GetPaneTarget(sessionName string, paneIndex int) (string, error) {
 	return formatPaneTarget(sessionName, paneIndex)
 }
 
