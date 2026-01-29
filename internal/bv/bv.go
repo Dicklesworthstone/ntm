@@ -36,13 +36,23 @@ func init() {
 }
 
 func getNoDBState(dir string) bool {
-	m := noDBCache.Load().(*sync.Map)
+	m, ok := noDBCache.Load().(*sync.Map)
+	if !ok || m == nil {
+		return false
+	}
 	v, ok := m.Load(dir)
-	return ok && v.(bool)
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
 }
 
 func setNoDBState(dir string, val bool) {
-	m := noDBCache.Load().(*sync.Map)
+	m, ok := noDBCache.Load().(*sync.Map)
+	if !ok || m == nil {
+		return
+	}
 	m.Store(dir, val)
 }
 

@@ -79,6 +79,9 @@ func TestTriageCache(t *testing.T) {
 	if !IsCacheValid() {
 		t.Error("Cache should be valid after GetTriage")
 	}
+	if triageCacheDir != projectRoot {
+		t.Errorf("Cache directory mismatch: got %q want %q", triageCacheDir, projectRoot)
+	}
 
 	// Second call should return cached result
 	triage2, err := GetTriage(projectRoot)

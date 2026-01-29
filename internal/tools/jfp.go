@@ -238,10 +238,12 @@ func (a *JFPAdapter) runCommand(ctx context.Context, args ...string) (json.RawMe
 	output, err := io.ReadAll(io.LimitReader(stdoutPipe, maxOutput+1))
 	if err != nil {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("failed to read jfp output: %w", err)
 	}
 	if len(output) > maxOutput {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("jfp output exceeded limit of %d bytes", maxOutput)
 	}
 

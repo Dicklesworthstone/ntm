@@ -335,10 +335,12 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 	output, err := io.ReadAll(io.LimitReader(stdoutPipe, maxOutput+1))
 	if err != nil {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("failed to read bv output: %w", err)
 	}
 	if len(output) > maxOutput {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("bv output exceeded limit of %d bytes", maxOutput)
 	}
 

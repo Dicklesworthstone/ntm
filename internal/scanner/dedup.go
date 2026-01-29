@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
 // DedupIndex maintains an index of existing findings for deduplication.
+// All methods are safe for concurrent use.
 type DedupIndex struct {
+	mu sync.RWMutex
 	// BySignature maps finding signatures to bead IDs
 	BySignature map[string]string
 	// ByFile maps file paths to finding signatures in that file
@@ -35,7 +38,7 @@ func NewDedupIndex() (*DedupIndex, error) {
 
 // Refresh reloads the index from the beads database.
 func (idx *DedupIndex) Refresh() error {
-	// Query all open UBS beads
+	// Query all open UBS beads (done outside lock to avoid holding lock during I/O)
 	output, err := bv.RunBd("", "list", "--json", "--labels=ubs-scan", "--status=open,in_progress")
 	if err != nil {
 		// bd might not be installed or no beads exist
@@ -55,10 +58,10 @@ func (idx *DedupIndex) Refresh() error {
 		return fmt.Errorf("parsing beads: %w", err)
 	}
 
-	// Clear existing index
-	idx.BySignature = make(map[string]string)
-	idx.ByFile = make(map[string][]string)
-	idx.Total = 0
+	// Build new index data before acquiring lock
+	newBySignature := make(map[string]string)
+	newByFile := make(map[string][]string)
+	newTotal := 0
 
 	for _, b := range beads {
 		sig, file := parseBeadForDedup(b.Title, b.Description)
@@ -66,12 +69,19 @@ func (idx *DedupIndex) Refresh() error {
 			continue
 		}
 
-		idx.BySignature[sig] = b.ID
+		newBySignature[sig] = b.ID
 		if file != "" {
-			idx.ByFile[file] = append(idx.ByFile[file], sig)
+			newByFile[file] = append(newByFile[file], sig)
 		}
-		idx.Total++
+		newTotal++
 	}
+
+	// Atomically swap the index
+	idx.mu.Lock()
+	idx.BySignature = newBySignature
+	idx.ByFile = newByFile
+	idx.Total = newTotal
+	idx.mu.Unlock()
 
 	return nil
 }
@@ -79,28 +89,37 @@ func (idx *DedupIndex) Refresh() error {
 // Exists returns true if a finding already exists as a bead.
 func (idx *DedupIndex) Exists(f Finding) bool {
 	sig := FindingSignature(f)
+	idx.mu.RLock()
 	_, exists := idx.BySignature[sig]
+	idx.mu.RUnlock()
 	return exists
 }
 
 // GetBeadID returns the bead ID for a finding if it exists.
 func (idx *DedupIndex) GetBeadID(f Finding) (string, bool) {
 	sig := FindingSignature(f)
+	idx.mu.RLock()
 	id, exists := idx.BySignature[sig]
+	idx.mu.RUnlock()
 	return id, exists
 }
 
 // Add registers a new finding in the index (after creating a bead).
 func (idx *DedupIndex) Add(f Finding, beadID string) {
 	sig := FindingSignature(f)
+	idx.mu.Lock()
 	idx.BySignature[sig] = beadID
 	idx.ByFile[f.File] = append(idx.ByFile[f.File], sig)
 	idx.Total++
+	idx.mu.Unlock()
 }
 
 // FindingsForFile returns signatures of all indexed findings in a file.
 func (idx *DedupIndex) FindingsForFile(file string) []string {
-	return idx.ByFile[file]
+	idx.mu.RLock()
+	sigs := idx.ByFile[file]
+	idx.mu.RUnlock()
+	return sigs
 }
 
 // parseBeadForDedup extracts signature and file from bead title/description.
@@ -155,10 +174,13 @@ type DedupStats struct {
 
 // Stats returns statistics about the current index.
 func (idx *DedupIndex) Stats() DedupStats {
-	return DedupStats{
+	idx.mu.RLock()
+	stats := DedupStats{
 		TotalBeads:  idx.Total,
 		UniqueFiles: len(idx.ByFile),
 	}
+	idx.mu.RUnlock()
+	return stats
 }
 
 // FindDuplicatesInFindings identifies findings that already have beads.
@@ -168,9 +190,13 @@ type DuplicateInfo struct {
 }
 
 // CheckFindings returns which findings are duplicates of existing beads.
+// Holds the lock for the entire operation for consistency and efficiency.
 func (idx *DedupIndex) CheckFindings(findings []Finding) (new []Finding, duplicates []DuplicateInfo) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
 	for _, f := range findings {
-		if id, exists := idx.GetBeadID(f); exists {
+		sig := FindingSignature(f)
+		if id, exists := idx.BySignature[sig]; exists {
 			duplicates = append(duplicates, DuplicateInfo{
 				Finding: f,
 				BeadID:  id,

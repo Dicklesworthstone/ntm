@@ -9,8 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // =============================================================================
@@ -300,37 +303,92 @@ func PrintEnv(session string) error {
 
 // detectSessionStructure detects session window/pane structure
 func detectSessionStructure(session string) (*SessionStructureInfo, error) {
-	// Get pane count using tmux
-	out, err := exec.Command("/usr/bin/tmux", "list-panes", "-t", session, "-F", "#{pane_index}").Output()
+	tmuxPath := tmux.BinaryPath()
+
+	// Determine primary window (prefer window 1 if present)
+	windowOut, err := exec.Command(tmuxPath, "list-windows", "-t", session, "-F", "#{window_index}").Output()
+	if err != nil {
+		return nil, err
+	}
+	windowLines := strings.Split(strings.TrimSpace(string(windowOut)), "\n")
+	if len(windowLines) == 0 || (len(windowLines) == 1 && strings.TrimSpace(windowLines[0]) == "") {
+		return nil, fmt.Errorf("no windows found")
+	}
+	windowIDs := make([]int, 0, len(windowLines))
+	for _, line := range windowLines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil {
+			continue
+		}
+		windowIDs = append(windowIDs, idx)
+	}
+	if len(windowIDs) == 0 {
+		return nil, fmt.Errorf("no windows found")
+	}
+	primaryWindow := (&SessionStructure{WindowIDs: windowIDs}).findPrimaryWindow()
+
+	target := fmt.Sprintf("%s:%d", session, primaryWindow)
+
+	// Get pane indices from primary window
+	out, err := exec.Command(tmuxPath, "list-panes", "-t", target, "-F", "#{pane_index}").Output()
 	if err != nil {
 		return nil, err
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
+	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
 		return nil, fmt.Errorf("no panes found")
 	}
 
 	// Parse pane indices
-	minPane := 0
-	maxPane := 0
-	for i, line := range lines {
-		var idx int
-		fmt.Sscanf(line, "%d", &idx)
-		if i == 0 || idx < minPane {
+	minPane := -1
+	maxPane := -1
+	paneIndices := make([]int, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		idx, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+		paneIndices = append(paneIndices, idx)
+		if minPane == -1 || idx < minPane {
 			minPane = idx
 		}
 		if idx > maxPane {
 			maxPane = idx
 		}
 	}
+	if len(paneIndices) == 0 || minPane == -1 {
+		return nil, fmt.Errorf("no panes found")
+	}
+
+	controlPane := minPane
+	totalAgentPanes := 0
+	for _, idx := range paneIndices {
+		if idx != controlPane {
+			totalAgentPanes++
+		}
+	}
+
+	agentPaneStart := 0
+	agentPaneEnd := 0
+	if totalAgentPanes > 0 {
+		agentPaneStart = controlPane + 1
+		agentPaneEnd = maxPane
+	}
 
 	return &SessionStructureInfo{
-		WindowIndex:     1, // NTM typically uses window 1
-		ControlPane:     1, // Pane 1 is control shell
-		AgentPaneStart:  2, // Agents start at pane 2
-		AgentPaneEnd:    maxPane,
-		TotalAgentPanes: len(lines) - 1, // Subtract control pane
+		WindowIndex:     primaryWindow,
+		ControlPane:     controlPane,
+		AgentPaneStart:  agentPaneStart,
+		AgentPaneEnd:    agentPaneEnd,
+		TotalAgentPanes: totalAgentPanes,
 	}, nil
 }
 

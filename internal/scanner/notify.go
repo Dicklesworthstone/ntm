@@ -120,7 +120,7 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 
 			if len(broadcastTo) > 0 {
 				summaryMsg := buildSummaryMessage(result)
-				client.SendMessage(ctx, agentmail.SendMessageOptions{
+				_, err := client.SendMessage(ctx, agentmail.SendMessageOptions{
 					ProjectKey: projectKey,
 					SenderName: "ntm_scanner",
 					To:         broadcastTo,
@@ -128,6 +128,9 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 					BodyMD:     summaryMsg,
 					Importance: "normal",
 				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to send scan summary: %v\n", err)
+				}
 			}
 		}
 	}

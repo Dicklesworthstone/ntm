@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // SessionStructure contains comprehensive session layout information.
@@ -66,8 +68,9 @@ func DetectSessionStructure(session string) (*SessionStructure, error) {
 
 // detectWindows queries tmux for window information.
 func (s *SessionStructure) detectWindows(session string) error {
+	tmuxPath := tmux.BinaryPath()
 	// Get window list: index and name
-	out, err := exec.Command("/usr/bin/tmux", "list-windows", "-t", session,
+	out, err := exec.Command(tmuxPath, "list-windows", "-t", session,
 		"-F", "#{window_index}|#{window_name}").Output()
 	if err != nil {
 		return fmt.Errorf("list-windows failed: %w", err)
@@ -129,9 +132,10 @@ func (s *SessionStructure) findPrimaryWindow() int {
 // detectPanes queries tmux for pane information in the primary window.
 func (s *SessionStructure) detectPanes(session string) error {
 	target := fmt.Sprintf("%s:%d", session, s.WindowIndex)
+	tmuxPath := tmux.BinaryPath()
 
 	// Get pane list: index and pid
-	out, err := exec.Command("/usr/bin/tmux", "list-panes", "-t", target,
+	out, err := exec.Command(tmuxPath, "list-panes", "-t", target,
 		"-F", "#{pane_index}|#{pane_pid}|#{pane_current_command}").Output()
 	if err != nil {
 		return fmt.Errorf("list-panes failed: %w", err)
@@ -170,30 +174,18 @@ func (s *SessionStructure) detectPanes(session string) error {
 	}
 
 	// NTM convention:
-	// - Pane 1 = control shell (where spawn command was run)
-	// - Panes 2+ = agent panes
-	s.ControlPane = 1 // NTM always uses pane 1 as control
-
-	// If pane 1 doesn't exist, warn but continue
-	controlExists := false
-	for _, idx := range s.PaneIndices {
-		if idx == 1 {
-			controlExists = true
-			break
-		}
+	// - Control pane is the first pane (respects pane-base-index)
+	// - Agent panes are subsequent panes
+	if minIdx >= 0 {
+		s.ControlPane = minIdx
 	}
-
-	if !controlExists && len(s.PaneIndices) > 0 {
-		s.ControlPane = s.PaneIndices[0]
-		s.Warnings = append(s.Warnings, "pane 1 not found; using first pane as control")
+	if s.ControlPane != 1 && len(s.PaneIndices) > 0 {
+		s.Warnings = append(s.Warnings, fmt.Sprintf("pane 1 not found; using pane %d as control", s.ControlPane))
 	}
 
 	// Agent panes are all panes except control
 	if len(s.PaneIndices) > 1 {
 		s.AgentPaneStart = s.ControlPane + 1
-		if s.AgentPaneStart < 2 {
-			s.AgentPaneStart = 2
-		}
 		s.AgentPaneEnd = maxIdx
 		s.TotalAgentPanes = s.countAgentPanes()
 	} else {
@@ -222,7 +214,8 @@ func (s *SessionStructure) countAgentPanes() int {
 
 // detectLayout gets the tmux layout string.
 func (s *SessionStructure) detectLayout(target string) {
-	out, err := exec.Command("/usr/bin/tmux", "display-message", "-t", target,
+	tmuxPath := tmux.BinaryPath()
+	out, err := exec.Command(tmuxPath, "display-message", "-t", target,
 		"-p", "#{window_layout}").Output()
 	if err == nil {
 		s.Layout = strings.TrimSpace(string(out))
