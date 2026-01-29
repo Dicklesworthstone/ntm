@@ -2655,3 +2655,159 @@ func TestValidateRejectsInvalidRobotOutputFormat(t *testing.T) {
 		t.Error("Expected Validate to return error for invalid robot.output.format")
 	}
 }
+
+func TestUpsertTOMLTable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("insert new table", func(t *testing.T) {
+		t.Parallel()
+		contents := "key = \"value\"\n"
+		got := upsertTOMLTable(contents, "new_section", "[new_section]\nfoo = \"bar\"\n")
+		if !strings.Contains(got, "[new_section]") {
+			t.Error("expected [new_section] in output")
+		}
+		if !strings.Contains(got, "foo = \"bar\"") {
+			t.Error("expected foo = bar in output")
+		}
+		if !strings.Contains(got, "key = \"value\"") {
+			t.Error("existing content should be preserved")
+		}
+	})
+
+	t.Run("replace existing table", func(t *testing.T) {
+		t.Parallel()
+		contents := "[existing]\nold = \"data\"\n\n[other]\nkeep = \"this\"\n"
+		got := upsertTOMLTable(contents, "existing", "[existing]\nnew = \"data\"\n")
+		if strings.Contains(got, "old = \"data\"") {
+			t.Error("old table content should be removed")
+		}
+		if !strings.Contains(got, "new = \"data\"") {
+			t.Error("new table content should be present")
+		}
+		if !strings.Contains(got, "[other]") {
+			t.Error("[other] table should be preserved")
+		}
+	})
+
+	t.Run("empty contents", func(t *testing.T) {
+		t.Parallel()
+		got := upsertTOMLTable("", "section", "[section]\nval = 1\n")
+		if !strings.Contains(got, "[section]") {
+			t.Error("expected [section] in output")
+		}
+	})
+
+	t.Run("ensures trailing newline", func(t *testing.T) {
+		t.Parallel()
+		got := upsertTOMLTable("", "s", "[s]\nk = 1")
+		if !strings.HasSuffix(got, "\n") {
+			t.Error("output should end with newline")
+		}
+	})
+}
+
+func TestUpsertTOMLKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("update existing key", func(t *testing.T) {
+		t.Parallel()
+		contents := "name = \"old\"\nother = \"keep\"\n"
+		got := upsertTOMLKey(contents, "name", "new")
+		if !strings.Contains(got, `name = "new"`) {
+			t.Errorf("expected updated key, got %q", got)
+		}
+		if !strings.Contains(got, `other = "keep"`) {
+			t.Error("other keys should be preserved")
+		}
+	})
+
+	t.Run("insert new key", func(t *testing.T) {
+		t.Parallel()
+		contents := "existing = \"value\"\n"
+		got := upsertTOMLKey(contents, "newkey", "newval")
+		if !strings.Contains(got, `newkey = "newval"`) {
+			t.Errorf("expected new key, got %q", got)
+		}
+		if !strings.Contains(got, `existing = "value"`) {
+			t.Error("existing content should be preserved")
+		}
+	})
+
+	t.Run("insert after comments", func(t *testing.T) {
+		t.Parallel()
+		contents := "# comment\n# another\nexisting = \"val\"\n"
+		got := upsertTOMLKey(contents, "newkey", "newval")
+		if !strings.Contains(got, `newkey = "newval"`) {
+			t.Errorf("expected new key, got %q", got)
+		}
+	})
+
+	t.Run("ensures trailing newline", func(t *testing.T) {
+		t.Parallel()
+		got := upsertTOMLKey("k = \"v\"", "k", "v2")
+		if !strings.HasSuffix(got, "\n") {
+			t.Error("output should end with newline")
+		}
+	})
+}
+
+func TestRenderTOMLStringArray(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{"empty", nil, "[]"},
+		{"single", []string{"a"}, `[ "a" ]`},
+		{"multiple", []string{"a", "b", "c"}, `[ "a", "b", "c" ]`},
+		{"deduplicates", []string{"a", "b", "a"}, `[ "a", "b" ]`},
+		{"trims whitespace", []string{" a ", " b "}, `[ "a", "b" ]`},
+		{"filters empty", []string{"a", "", "b"}, `[ "a", "b" ]`},
+		{"all empty", []string{"", " "}, "[]"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := renderTOMLStringArray(tc.values)
+			if got != tc.want {
+				t.Errorf("renderTOMLStringArray(%v) = %q, want %q", tc.values, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderPaletteStateTOML(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty state", func(t *testing.T) {
+		t.Parallel()
+		got := renderPaletteStateTOML(PaletteState{})
+		if !strings.Contains(got, "[palette_state]") {
+			t.Error("expected [palette_state] header")
+		}
+		if !strings.Contains(got, "pinned = []") {
+			t.Error("expected empty pinned array")
+		}
+		if !strings.Contains(got, "favorites = []") {
+			t.Error("expected empty favorites array")
+		}
+	})
+
+	t.Run("with values", func(t *testing.T) {
+		t.Parallel()
+		state := PaletteState{
+			Pinned:    []string{"cmd1", "cmd2"},
+			Favorites: []string{"fav1"},
+		}
+		got := renderPaletteStateTOML(state)
+		if !strings.Contains(got, `"cmd1"`) {
+			t.Error("expected cmd1 in output")
+		}
+		if !strings.Contains(got, `"fav1"`) {
+			t.Error("expected fav1 in output")
+		}
+	})
+}
