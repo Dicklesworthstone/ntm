@@ -952,7 +952,7 @@ func GetImpact(dir, filePath string) (*ImpactResponse, error) {
 
 // GetSearch performs semantic search
 func GetSearch(dir, query string) (*SearchResponse, error) {
-	output, err := run(dir, "-robot-search", query)
+	output, err := run(dir, "-robot-search", "-search", query)
 	if err != nil {
 		return nil, err
 	}
@@ -967,7 +967,7 @@ func GetSearch(dir, query string) (*SearchResponse, error) {
 func GetLabelAttention(dir string, limit int) (*LabelAttentionResponse, error) {
 	args := []string{"-robot-label-attention"}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--attention-limit=%d", limit))
+		args = append(args, fmt.Sprintf("-attention-limit=%d", limit))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
@@ -1010,7 +1010,7 @@ func GetLabelHealth(dir string) (*LabelHealthResponse, error) {
 func GetFileBeads(dir, filePath string, limit int) (*FileBeadsResponse, error) {
 	args := []string{"-robot-file-beads", filePath}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", limit))
+		args = append(args, fmt.Sprintf("-file-beads-limit=%d", limit))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
@@ -1027,7 +1027,7 @@ func GetFileBeads(dir, filePath string, limit int) (*FileBeadsResponse, error) {
 func GetFileHotspots(dir string, limit int) (*FileHotspotsResponse, error) {
 	args := []string{"-robot-file-hotspots"}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", limit))
+		args = append(args, fmt.Sprintf("-hotspots-limit=%d", limit))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
@@ -1044,10 +1044,10 @@ func GetFileHotspots(dir string, limit int) (*FileHotspotsResponse, error) {
 func GetFileRelations(dir, filePath string, limit int, threshold float64) (*FileRelationsResponse, error) {
 	args := []string{"-robot-file-relations", filePath}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", limit))
+		args = append(args, fmt.Sprintf("-relations-limit=%d", limit))
 	}
 	if threshold > 0 {
-		args = append(args, fmt.Sprintf("--threshold=%f", threshold))
+		args = append(args, fmt.Sprintf("-relations-threshold=%f", threshold))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
