@@ -206,6 +206,17 @@ func TestSessionStructure_classifyLayout(t *testing.T) {
 			expectWarning: false,
 		},
 		{
+			name: "base-index-0 NTM layout",
+			structure: SessionStructure{
+				WindowIndex:    1,
+				ControlPane:    0,
+				TotalPanes:     3,
+				AgentPaneStart: 1,
+			},
+			expectNTM:     true,
+			expectWarning: false,
+		},
+		{
 			name: "non-standard window index",
 			structure: SessionStructure{
 				WindowIndex:    0,

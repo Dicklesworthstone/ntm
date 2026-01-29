@@ -76,10 +76,11 @@ func (s *SessionStructure) detectWindows(session string) error {
 		return fmt.Errorf("list-windows failed: %w", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
 		return fmt.Errorf("no windows found")
 	}
+	lines := strings.Split(trimmed, "\n")
 
 	s.WindowCount = len(lines)
 	s.WindowIDs = make([]int, 0, len(lines))
@@ -141,12 +142,12 @@ func (s *SessionStructure) detectPanes(session string) error {
 		return fmt.Errorf("list-panes failed: %w", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
 		return fmt.Errorf("no panes found in window %d", s.WindowIndex)
 	}
+	lines := strings.Split(trimmed, "\n")
 
-	s.TotalPanes = len(lines)
 	s.PaneIndices = make([]int, 0, len(lines))
 
 	minIdx := -1
@@ -173,21 +174,40 @@ func (s *SessionStructure) detectPanes(session string) error {
 		}
 	}
 
+	if len(s.PaneIndices) == 0 || minIdx == -1 {
+		return fmt.Errorf("no panes found in window %d", s.WindowIndex)
+	}
+
+	s.TotalPanes = len(s.PaneIndices)
+
 	// NTM convention:
 	// - Control pane is the first pane (respects pane-base-index)
 	// - Agent panes are subsequent panes
-	if minIdx >= 0 {
-		s.ControlPane = minIdx
-	}
+	s.ControlPane = minIdx
 	if s.ControlPane != 1 && len(s.PaneIndices) > 0 {
 		s.Warnings = append(s.Warnings, fmt.Sprintf("pane 1 not found; using pane %d as control", s.ControlPane))
 	}
 
 	// Agent panes are all panes except control
 	if len(s.PaneIndices) > 1 {
-		s.AgentPaneStart = s.ControlPane + 1
-		s.AgentPaneEnd = maxIdx
-		s.TotalAgentPanes = s.countAgentPanes()
+		minAgent := -1
+		maxAgent := -1
+		for _, idx := range s.PaneIndices {
+			if idx == s.ControlPane {
+				continue
+			}
+			if minAgent == -1 || idx < minAgent {
+				minAgent = idx
+			}
+			if idx > maxAgent {
+				maxAgent = idx
+			}
+		}
+		if minAgent != -1 {
+			s.AgentPaneStart = minAgent
+			s.AgentPaneEnd = maxAgent
+			s.TotalAgentPanes = s.countAgentPanes()
+		}
 	} else {
 		// Only control pane exists
 		s.AgentPaneStart = 0
@@ -226,14 +246,13 @@ func (s *SessionStructure) detectLayout(target string) {
 func (s *SessionStructure) classifyLayout() {
 	// NTM standard layout:
 	// - Window index 1
-	// - Pane 1 = control shell
-	// - Panes 2+ = agents
+	// - Control pane is first pane (respects pane-base-index)
+	// - Subsequent panes are agents
 	// - Total panes >= 2
 
 	isNTM := s.WindowIndex == 1 &&
-		s.ControlPane == 1 &&
 		s.TotalPanes >= 2 &&
-		s.AgentPaneStart == 2
+		s.AgentPaneStart == s.ControlPane+1
 
 	s.IsNTMLayout = isNTM
 

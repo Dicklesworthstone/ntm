@@ -278,10 +278,27 @@ func GetEnv(session string) (*EnvOutput, error) {
 			output.SessionStructure = structure
 		}
 
+		windowIndex := 1
+		controlPane := 1
+		agentPane := 2
+		if structure != nil {
+			if structure.WindowIndex > 0 {
+				windowIndex = structure.WindowIndex
+			}
+			if structure.ControlPane >= 0 {
+				controlPane = structure.ControlPane
+			}
+			if structure.AgentPaneStart > 0 {
+				agentPane = structure.AgentPaneStart
+			} else {
+				agentPane = controlPane
+			}
+		}
+
 		output.Targeting = &TargetingInfo{
 			PaneFormat:         "session:window.pane",
-			ExampleAgentPane:   fmt.Sprintf("%s:1.2", session),
-			ExampleControlPane: fmt.Sprintf("%s:1.1", session),
+			ExampleAgentPane:   fmt.Sprintf("%s:%d.%d", session, windowIndex, agentPane),
+			ExampleControlPane: fmt.Sprintf("%s:%d.%d", session, windowIndex, controlPane),
 		}
 	}
 
@@ -370,17 +387,25 @@ func detectSessionStructure(session string) (*SessionStructureInfo, error) {
 
 	controlPane := minPane
 	totalAgentPanes := 0
+	minAgent := -1
+	maxAgent := -1
 	for _, idx := range paneIndices {
 		if idx != controlPane {
 			totalAgentPanes++
+			if minAgent == -1 || idx < minAgent {
+				minAgent = idx
+			}
+			if idx > maxAgent {
+				maxAgent = idx
+			}
 		}
 	}
 
 	agentPaneStart := 0
 	agentPaneEnd := 0
 	if totalAgentPanes > 0 {
-		agentPaneStart = controlPane + 1
-		agentPaneEnd = maxPane
+		agentPaneStart = minAgent
+		agentPaneEnd = maxAgent
 	}
 
 	return &SessionStructureInfo{

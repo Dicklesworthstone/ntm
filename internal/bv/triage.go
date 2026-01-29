@@ -5,6 +5,7 @@ package bv
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 )
@@ -23,6 +24,14 @@ var (
 // GetTriage returns the complete triage analysis from bv -robot-triage.
 // Results are cached for TriageCacheTTL (default 30 seconds).
 func GetTriage(dir string) (*TriageResponse, error) {
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("getting working directory: %w", err)
+		}
+		dir = cwd
+	}
+
 	triageCacheMu.Lock()
 	defer triageCacheMu.Unlock()
 
@@ -51,6 +60,14 @@ func GetTriage(dir string) (*TriageResponse, error) {
 
 // GetTriageNoCache returns fresh triage data, bypassing the cache
 func GetTriageNoCache(dir string) (*TriageResponse, error) {
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("getting working directory: %w", err)
+		}
+		dir = cwd
+	}
+
 	output, err := run(dir, "-robot-triage")
 	if err != nil {
 		return nil, err
