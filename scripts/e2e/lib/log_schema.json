@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "description": "Shared JSONL schema for shell and Go E2E test logs.",
+  "fields": {
+    "schema_version": "integer schema version for each log entry",
+    "timestamp": "RFC3339 UTC timestamp",
+    "elapsed_ms": "milliseconds since test start",
+    "level": "event type: test_start|info|warn|error|debug|section|exec_start|exec_end|assert|skip|test_end",
+    "test": "test name or scenario",
+    "message": "optional human-readable message",
+    "section": "optional section label",
+    "command": "optional command string",
+    "exit_code": "optional command exit code",
+    "duration_ms": "optional command duration in ms",
+    "output": "optional command output (truncated)",
+    "result": "optional result: pass|fail|skip",
+    "type": "optional assertion type",
+    "description": "optional assertion description",
+    "expected": "optional expected value",
+    "actual": "optional actual value",
+    "needle": "optional substring used in assertion",
+    "reason": "optional skip reason",
+    "total": "optional total count",
+    "passed": "optional passed count",
+    "failed": "optional failed count",
+    "skipped": "optional skipped count"
+  }
+}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 )
 
 func TestGenerateOpenAPISpec(t *testing.T) {
@@ -122,6 +124,7 @@ func TestBuildDescription(t *testing.T) {
 		description string
 		safetyLevel string
 		idempotent  bool
+		emits       []string
 		wantParts   []string
 	}{
 		{
@@ -141,12 +144,127 @@ func TestBuildDescription(t *testing.T) {
 			idempotent:  true,
 			wantParts:   []string{"Test command", "Idempotent:", "safe to retry"},
 		},
+		{
+			name:        "with-events",
+			description: "Test command",
+			emits:       []string{"agent.started", "agent.stopped"},
+			wantParts:   []string{"Test command", "Emits Events:", "agent.started", "agent.stopped"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Import the kernel package for Command type
-			// For this test, we just verify the helper functions work
+			cmd := kernel.Command{
+				Name:        "test.command",
+				Description: tt.description,
+				SafetyLevel: kernel.SafetyLevel(tt.safetyLevel),
+				Idempotent:  tt.idempotent,
+				EmitsEvents: tt.emits,
+			}
+			desc := buildDescription(cmd)
+			for _, part := range tt.wantParts {
+				if !strings.Contains(desc, part) {
+					t.Errorf("description missing %q in %q", part, desc)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildResponseSchema(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   kernel.Command
+		expectRef string
+	}{
+		{
+			name: "default-success",
+			command: kernel.Command{
+				Name: "robot.status",
+			},
+			expectRef: "#/components/schemas/SuccessResponse",
+		},
+		{
+			name: "output-ref-with-name",
+			command: kernel.Command{
+				Name:   "robot.status",
+				Output: &kernel.SchemaRef{Name: "RobotStatus", Ref: "#/schemas/RobotStatus"},
+			},
+			expectRef: "#/components/schemas/RobotStatus",
+		},
+		{
+			name: "output-ref-without-name",
+			command: kernel.Command{
+				Name:   "robot.status",
+				Output: &kernel.SchemaRef{Ref: "#/schemas/RobotStatus"},
+			},
+			expectRef: "#/components/schemas/robot_status_Response",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := buildResponseSchema(tt.command)
+			if schema == nil {
+				t.Fatalf("expected schema, got nil")
+			}
+			if schema.Ref != tt.expectRef {
+				t.Errorf("schema.Ref = %q, want %q", schema.Ref, tt.expectRef)
+			}
+		})
+	}
+}
+
+func TestBuildInputSchema(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   kernel.Command
+		expectRef string
+		wantType  string
+	}{
+		{
+			name: "default-object",
+			command: kernel.Command{
+				Name: "robot.status",
+			},
+			wantType: "object",
+		},
+		{
+			name: "input-ref-with-name",
+			command: kernel.Command{
+				Name:  "robot.status",
+				Input: &kernel.SchemaRef{Name: "RobotStatusRequest", Ref: "#/schemas/RobotStatusRequest"},
+			},
+			expectRef: "#/components/schemas/RobotStatusRequest",
+		},
+		{
+			name: "input-ref-without-name",
+			command: kernel.Command{
+				Name:  "robot.status",
+				Input: &kernel.SchemaRef{Ref: "#/schemas/RobotStatusRequest"},
+			},
+			expectRef: "#/components/schemas/robot_status_Request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := buildInputSchema(tt.command)
+			if schema == nil {
+				t.Fatalf("expected schema, got nil")
+			}
+			if tt.expectRef != "" {
+				if schema.Ref != tt.expectRef {
+					t.Errorf("schema.Ref = %q, want %q", schema.Ref, tt.expectRef)
+				}
+				return
+			}
+			if schema.Type != tt.wantType {
+				t.Errorf("schema.Type = %q, want %q", schema.Type, tt.wantType)
+			}
+			if schema.AdditionalProperties != true {
+				t.Errorf("schema.AdditionalProperties = %v, want true", schema.AdditionalProperties)
+			}
 		})
 	}
 }

@@ -168,3 +168,37 @@ func TestPadRightWithDoubleWidth(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// stripANSI
+// =============================================================================
+
+func TestStripANSI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no ANSI", "hello world", "hello world"},
+		{"simple color", "\033[31mred\033[0m", "red"},
+		{"bold", "\033[1mbold\033[0m", "bold"},
+		{"multiple codes", "\033[31m\033[1mbold red\033[0m", "bold red"},
+		{"empty string", "", ""},
+		{"only ANSI", "\033[31m\033[0m", ""},
+		{"256 color", "\033[38;5;196mcolor\033[0m", "color"},
+		{"truecolor", "\033[38;2;255;0;0mred\033[0m", "red"},
+		{"mixed content", "before\033[31mred\033[0mafter", "beforeredafter"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripANSI(tc.input)
+			if got != tc.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

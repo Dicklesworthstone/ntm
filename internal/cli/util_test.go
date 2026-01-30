@@ -274,3 +274,193 @@ func TestUniqueStrings_SortOrder(t *testing.T) {
 		t.Errorf("uniqueStrings output not sorted: %v", got)
 	}
 }
+
+// =============================================================================
+// parseEditorCommand
+// =============================================================================
+
+func TestParseEditorCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		editor   string
+		wantCmd  string
+		wantArgs []string
+	}{
+		{"simple editor", "vim", "vim", nil},
+		{"editor with args", "code --wait", "code", []string{"--wait"}},
+		{"editor with multiple args", "emacs -nw --no-init", "emacs", []string{"-nw", "--no-init"}},
+		{"empty string", "", "", nil},
+		{"whitespace only", "   ", "", nil},
+		{"extra spaces", "  vim  --clean  ", "vim", []string{"--clean"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cmd, args := parseEditorCommand(tc.editor)
+			if cmd != tc.wantCmd {
+				t.Errorf("parseEditorCommand(%q) cmd = %q, want %q", tc.editor, cmd, tc.wantCmd)
+			}
+			if len(args) != len(tc.wantArgs) {
+				t.Fatalf("parseEditorCommand(%q) args len = %d, want %d", tc.editor, len(args), len(tc.wantArgs))
+			}
+			for i, a := range args {
+				if a != tc.wantArgs[i] {
+					t.Errorf("parseEditorCommand(%q) args[%d] = %q, want %q", tc.editor, i, a, tc.wantArgs[i])
+				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// HasAnyTag
+// =============================================================================
+
+func TestHasAnyTag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		paneTags   []string
+		filterTags []string
+		want       bool
+	}{
+		{"exact match", []string{"auth", "api"}, []string{"auth"}, true},
+		{"case insensitive", []string{"Auth", "API"}, []string{"auth"}, true},
+		{"no match", []string{"auth", "api"}, []string{"db"}, false},
+		{"empty pane tags", []string{}, []string{"auth"}, false},
+		{"empty filter tags", []string{"auth"}, []string{}, false},
+		{"both empty", []string{}, []string{}, false},
+		{"nil pane tags", nil, []string{"auth"}, false},
+		{"nil filter tags", []string{"auth"}, nil, false},
+		{"multiple matches", []string{"auth", "api", "db"}, []string{"db", "auth"}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := HasAnyTag(tc.paneTags, tc.filterTags)
+			if got != tc.want {
+				t.Errorf("HasAnyTag(%v, %v) = %v, want %v", tc.paneTags, tc.filterTags, got, tc.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// SanitizeFilename
+// =============================================================================
+
+func TestSanitizeFilename(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple", "hello", "hello"},
+		{"spaces to underscores", "hello world", "hello_world"},
+		{"slashes to underscores", "path/to/file", "path_to_file"},
+		{"special chars", "file:name?test", "file_name_test"},
+		{"leading underscores trimmed", "_leading", "leading"},
+		{"trailing underscores trimmed", "trailing_", "trailing"},
+		{"pipes replaced", "a|b", "a_b"},
+		{"stars replaced", "a*b", "a_b"},
+		{"quotes replaced", `a"b`, "a_b"},
+		{"angle brackets", "a<b>c", "a_b_c"},
+		{"backslash", `a\b`, "a_b"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := SanitizeFilename(tc.input)
+			if got != tc.want {
+				t.Errorf("SanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeFilename_LongName(t *testing.T) {
+	t.Parallel()
+
+	// Name longer than 50 chars should be truncated
+	long := strings.Repeat("a", 100)
+	got := SanitizeFilename(long)
+	if len(got) > 50 {
+		t.Errorf("SanitizeFilename truncated length = %d, want <= 50", len(got))
+	}
+}
+
+// =============================================================================
+// sessionNames
+// =============================================================================
+
+func TestSessionNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		sessions []tmux.Session
+		want     []string
+	}{
+		{"empty", nil, []string{}},
+		{"single", []tmux.Session{{Name: "alpha"}}, []string{"alpha"}},
+		{"sorted output", []tmux.Session{{Name: "beta"}, {Name: "alpha"}}, []string{"alpha", "beta"}},
+		{"skips empty names", []tmux.Session{{Name: "alpha"}, {Name: ""}, {Name: "beta"}}, []string{"alpha", "beta"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sessionNames(tc.sessions)
+			if len(got) != len(tc.want) {
+				t.Fatalf("sessionNames() len = %d, want %d", len(got), len(tc.want))
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("sessionNames()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// orderSessionsForSelection
+// =============================================================================
+
+func TestOrderSessionsForSelection(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{
+		{Name: "beta", Attached: false},
+		{Name: "alpha", Attached: true},
+		{Name: "gamma", Attached: false},
+	}
+
+	ordered := orderSessionsForSelection(sessions)
+
+	// Attached sessions should come first
+	if !ordered[0].Attached {
+		t.Errorf("expected attached session first, got %q (attached=%v)", ordered[0].Name, ordered[0].Attached)
+	}
+	if ordered[0].Name != "alpha" {
+		t.Errorf("expected 'alpha' first (attached), got %q", ordered[0].Name)
+	}
+
+	// Non-attached should be sorted alphabetically
+	if ordered[1].Name != "beta" || ordered[2].Name != "gamma" {
+		t.Errorf("expected non-attached sorted: beta, gamma; got %q, %q", ordered[1].Name, ordered[2].Name)
+	}
+
+	// Original slice should not be mutated
+	if sessions[0].Name != "beta" {
+		t.Errorf("original slice was mutated: sessions[0].Name = %q, want 'beta'", sessions[0].Name)
+	}
+}

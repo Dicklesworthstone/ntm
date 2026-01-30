@@ -113,6 +113,67 @@ func TestValidateConfigPublicBaseURL(t *testing.T) {
 	}
 }
 
+func TestParseAuthMode(t *testing.T) {
+	tests := []struct {
+		raw     string
+		expect  AuthMode
+		wantErr bool
+	}{
+		{"", AuthModeLocal, false},
+		{"local", AuthModeLocal, false},
+		{"LOCAL", AuthModeLocal, false},
+		{"api_key", AuthModeAPIKey, false},
+		{"oidc", AuthModeOIDC, false},
+		{"mtls", AuthModeMTLS, false},
+		{"invalid", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			mode, err := ParseAuthMode(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q", tt.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tt.raw, err)
+			}
+			if mode != tt.expect {
+				t.Fatalf("ParseAuthMode(%q) = %q, want %q", tt.raw, mode, tt.expect)
+			}
+		})
+	}
+}
+
+func TestDefaultLocalOrigins(t *testing.T) {
+	origins := defaultLocalOrigins()
+	if len(origins) == 0 {
+		t.Fatal("expected defaultLocalOrigins to return entries")
+	}
+	want := []string{
+		"http://localhost",
+		"http://127.0.0.1",
+		"http://[::1]",
+		"https://localhost",
+		"https://127.0.0.1",
+		"https://[::1]",
+	}
+	for _, expected := range want {
+		found := false
+		for _, origin := range origins {
+			if origin == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing default origin %q", expected)
+		}
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
@@ -1664,9 +1725,9 @@ func TestExtractBearerToken(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		auth  string
-		want  string
+		name string
+		auth string
+		want string
 	}{
 		{"valid bearer", "Bearer my-token-123", "my-token-123"},
 		{"bearer lowercase", "bearer my-token", "my-token"},
