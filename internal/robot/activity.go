@@ -509,14 +509,9 @@ func (sc *StateClassifier) Classify() (*AgentActivity, error) {
 // classifyState determines state based on velocity and patterns.
 // Returns state, confidence, and trigger description.
 func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatch) (AgentState, float64, string) {
-	// Error patterns take priority
-	for _, m := range matches {
-		if m.Category == CategoryError {
-			return StateError, 0.95, "error_pattern:" + m.Pattern
-		}
-	}
-
-	// Check for idle prompt with low velocity
+	// Check for idle prompt FIRST - if agent is at a prompt and ready for input,
+	// it's in WAITING state regardless of any older error messages in the output.
+	// This prevents false ERROR detection when historical errors are still visible.
 	hasIdlePrompt := false
 	for _, m := range matches {
 		if m.Category == CategoryIdle {
@@ -527,6 +522,14 @@ func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatc
 
 	if hasIdlePrompt && velocity < VelocityIdleThreshold {
 		return StateWaiting, 0.90, "idle_prompt"
+	}
+
+	// Only check error patterns when NOT at an idle prompt.
+	// Error patterns in historical output shouldn't override a ready state.
+	for _, m := range matches {
+		if m.Category == CategoryError {
+			return StateError, 0.95, "error_pattern:" + m.Pattern
+		}
 	}
 
 	// Check for thinking indicator

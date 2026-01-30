@@ -1340,6 +1340,27 @@ func TestClassifyState_ErrorTakesPriority(t *testing.T) {
 	}
 }
 
+func TestClassifyState_IdleTakesPriorityOverHistoricalErrors(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test", nil)
+
+	// Simulate Codex agent showing idle prompt but with "failed" in historical output.
+	// This is the false positive bug: agent is ready for input but shows ERROR
+	// because older error patterns are still visible in captured output.
+	matches := []PatternMatch{
+		{Pattern: "codex_context_left", Category: CategoryIdle}, // Agent is at prompt
+		{Pattern: "failed_text", Category: CategoryError},       // Historical error message
+	}
+
+	// Low velocity indicates agent is idle/waiting
+	state, _, trigger := sc.classifyState(0.5, matches)
+
+	if state != StateWaiting {
+		t.Errorf("expected WAITING state when idle prompt present with low velocity, got %s (trigger: %s)", state, trigger)
+	}
+}
+
 func TestApplyHysteresis_SameStateResetsPending(t *testing.T) {
 	t.Parallel()
 
