@@ -353,8 +353,10 @@ func (w *FileReservationWatcher) OnFileEdit(ctx context.Context, sessionName str
 							if r.PathPattern == conflict.Path {
 								for _, holder := range conflict.Holders {
 									if r.AgentName == holder {
-										fc.ReservedSince = &r.CreatedTS
-										fc.ExpiresAt = &r.ExpiresTS
+										reservedSince := r.CreatedTS.Time
+										fc.ReservedSince = &reservedSince
+										expiresAt := r.ExpiresTS.Time
+										fc.ExpiresAt = &expiresAt
 										fc.HolderReservationIDs = append(fc.HolderReservationIDs, r.ID)
 									}
 								}

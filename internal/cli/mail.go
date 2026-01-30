@@ -268,7 +268,7 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 					ID:          msg.ID,
 					Subject:     msg.Subject,
 					From:        msg.From,
-					CreatedTS:   msg.CreatedTS,
+					CreatedTS:   msg.CreatedTS.Time,
 					Importance:  msg.Importance,
 					AckRequired: msg.AckRequired,
 					Kind:        msg.Kind,

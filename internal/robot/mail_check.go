@@ -231,7 +231,7 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 		if msg.ReadAt == nil {
 			unreadCount++
 			if oldestUnread == nil || msg.CreatedTS.Before(*oldestUnread) {
-				t := msg.CreatedTS
+				t := msg.CreatedTS.Time
 				oldestUnread = &t
 			}
 		}

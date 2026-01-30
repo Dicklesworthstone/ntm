@@ -873,7 +873,7 @@ func buildReservationTransfer(opts GenerateHandoffOptions, projectKey string, re
 			PathPattern: r.PathPattern,
 			Exclusive:   r.Exclusive,
 			Reason:      r.Reason,
-			ExpiresAt:   r.ExpiresTS,
+			ExpiresAt:   r.ExpiresTS.Time,
 		})
 	}
 	return transfer

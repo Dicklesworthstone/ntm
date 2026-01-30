@@ -16,12 +16,12 @@ func TestAssignAgentsToPanes_VariantPriority(t *testing.T) {
 	agentA := agentmail.Agent{
 		Name:        "AgentA",
 		Model:       "pro",
-		InceptionTS: now.Add(-2 * time.Hour),
+		InceptionTS: agentmail.FlexTime{Time: now.Add(-2 * time.Hour)},
 	}
 	agentB := agentmail.Agent{
 		Name:        "AgentB",
 		Model:       "sonnet",
-		InceptionTS: now.Add(-1 * time.Hour),
+		InceptionTS: agentmail.FlexTime{Time: now.Add(-1 * time.Hour)},
 	}
 	agents := []agentmail.Agent{agentA, agentB}
 

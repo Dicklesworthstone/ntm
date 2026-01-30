@@ -116,8 +116,8 @@ func TestUnifiedMessengerInbox_MergesAndSorts(t *testing.T) {
 	am := &fakeAMClient{
 		available: true,
 		inboxResponses: [][]InboxMessage{{
-			{ID: 1, From: "alice", Subject: "AM-1", BodyMD: "hello", CreatedTS: now.Add(-2 * time.Minute)},
-			{ID: 2, From: "bob", Subject: "AM-2", BodyMD: "world", CreatedTS: now.Add(-4 * time.Minute)},
+			{ID: 1, From: "alice", Subject: "AM-1", BodyMD: "hello", CreatedTS: FlexTime{now.Add(-2 * time.Minute)}},
+			{ID: 2, From: "bob", Subject: "AM-2", BodyMD: "world", CreatedTS: FlexTime{now.Add(-4 * time.Minute)}},
 		}},
 	}
 	bdClient := &fakeBDClient{
@@ -191,7 +191,7 @@ func TestUnifiedMessengerRead_AgentMailMarksRead(t *testing.T) {
 	am := &fakeAMClient{
 		available: true,
 		inboxResponses: [][]InboxMessage{{
-			{ID: 42, From: "alice", Subject: "hello", BodyMD: "body", CreatedTS: now},
+			{ID: 42, From: "alice", Subject: "hello", BodyMD: "body", CreatedTS: FlexTime{now}},
 		}},
 	}
 
@@ -218,8 +218,8 @@ func TestUnifiedMessengerRead_AgentMailFetchesDeeperHistory(t *testing.T) {
 	am := &fakeAMClient{
 		available: true,
 		inboxResponses: [][]InboxMessage{
-			{{ID: 1, From: "skip", Subject: "skip", BodyMD: "skip", CreatedTS: now}},
-			{{ID: 99, From: "found", Subject: "ok", BodyMD: "ok", CreatedTS: now}},
+			{{ID: 1, From: "skip", Subject: "skip", BodyMD: "skip", CreatedTS: FlexTime{now}}},
+			{{ID: 99, From: "found", Subject: "ok", BodyMD: "ok", CreatedTS: FlexTime{now}}},
 		},
 	}
 

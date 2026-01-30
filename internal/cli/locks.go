@@ -175,7 +175,7 @@ func printLocksResult(result LocksResult, allAgents bool) error {
 			lockType = "Shared"
 		}
 
-		remaining := time.Until(r.ExpiresTS)
+		remaining := time.Until(r.ExpiresTS.Time)
 		expiresStr := formatLockDuration(remaining)
 
 		fmt.Printf("[#%d] %s\n", r.ID, r.PathPattern)
@@ -348,7 +348,10 @@ func runForceRelease(session string, reservationID int, note string, notify, ski
 		result.Success = releaseResult.Success
 		result.PreviousHolder = releaseResult.PreviousHolder
 		result.PathPattern = releaseResult.PathPattern
-		result.ReleasedAt = releaseResult.ReleasedAt
+		if releaseResult.ReleasedAt != nil {
+			t := releaseResult.ReleasedAt.Time
+			result.ReleasedAt = &t
+		}
 		result.Notified = releaseResult.Notified
 		// Server may return success=false if reservation is not stale enough
 		if !releaseResult.Success {

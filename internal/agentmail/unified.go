@@ -79,7 +79,7 @@ func (m *UnifiedMessenger) Inbox(ctx context.Context) ([]UnifiedMessage, error) 
 					From:      msg.From,
 					Subject:   msg.Subject,
 					Body:      msg.BodyMD,
-					Timestamp: msg.CreatedTS,
+					Timestamp: msg.CreatedTS.Time,
 				})
 			}
 		}
@@ -197,7 +197,7 @@ func (m *UnifiedMessenger) Read(ctx context.Context, id string) (*UnifiedMessage
 					From:      found.From,
 					Subject:   found.Subject,
 					Body:      found.BodyMD,
-					Timestamp: found.CreatedTS,
+					Timestamp: found.CreatedTS.Time,
 				}, nil
 			}
 			return nil, fmt.Errorf("message not found: %s", id)

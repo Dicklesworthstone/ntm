@@ -1112,7 +1112,7 @@ func (m *Model) fetchAgentMailStatus() tea.Cmd {
 			for _, r := range reservations {
 				expiresIn := ""
 				if !r.ExpiresTS.IsZero() {
-					remaining := time.Until(r.ExpiresTS)
+					remaining := time.Until(r.ExpiresTS.Time)
 					if remaining > 0 {
 						if remaining < time.Minute {
 							expiresIn = fmt.Sprintf("%ds", int(remaining.Seconds()))

@@ -130,7 +130,8 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 		result.Success = true
 		result.Granted = reservation.Granted
 		if len(reservation.Granted) > 0 {
-			result.ExpiresAt = &reservation.Granted[0].ExpiresTS
+			t := reservation.Granted[0].ExpiresTS.Time
+			result.ExpiresAt = &t
 		}
 	}
 

@@ -1537,7 +1537,7 @@ func fetchAgentMailStatus(projectKey string) *output.AgentMailStatus {
 		for _, r := range reservations {
 			expiresIn := ""
 			if !r.ExpiresTS.IsZero() {
-				remaining := time.Until(r.ExpiresTS)
+				remaining := time.Until(r.ExpiresTS.Time)
 				if remaining > 0 {
 					expiresIn = formatDuration(remaining)
 				} else {

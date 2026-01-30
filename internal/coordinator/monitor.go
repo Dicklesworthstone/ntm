@@ -145,7 +145,7 @@ func (m *AgentMonitor) GetReservationsForAgent(ctx context.Context, agentMailNam
 
 	var patterns []string
 	for _, r := range reservations {
-		if r.ReleasedTS == nil && time.Now().Before(r.ExpiresTS) {
+		if r.ReleasedTS == nil && time.Now().Before(r.ExpiresTS.Time) {
 			patterns = append(patterns, r.PathPattern)
 		}
 	}

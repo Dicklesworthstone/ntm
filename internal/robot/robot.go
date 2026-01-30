@@ -1846,7 +1846,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 						entry.Model = a.Model
 						entry.UnreadCount = tally.Total
 						entry.UrgentCount = tally.Urgent
-						entry.LastActiveTs = a.LastActiveTS
+						entry.LastActiveTs = a.LastActiveTS.Time
 					}
 					output.Agents = append(output.Agents, entry)
 				}
@@ -1867,7 +1867,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 				Model:        a.Model,
 				UnreadCount:  tally.Total,
 				UrgentCount:  tally.Urgent,
-				LastActiveTs: a.LastActiveTS,
+				LastActiveTs: a.LastActiveTS.Time,
 			})
 		}
 	} else {
@@ -1886,7 +1886,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 				Model:        a.Model,
 				UnreadCount:  tally.Total,
 				UrgentCount:  tally.Urgent,
-				LastActiveTs: a.LastActiveTS,
+				LastActiveTs: a.LastActiveTS.Time,
 			})
 		}
 	}
@@ -2036,7 +2036,7 @@ func groupAgentsByType(agents []agentmail.Agent) map[string][]agentmail.Agent {
 	}
 
 	for typ := range out {
-		sort.SliceStable(out[typ], func(i, j int) bool { return out[typ][i].InceptionTS.Before(out[typ][j].InceptionTS) })
+		sort.SliceStable(out[typ], func(i, j int) bool { return out[typ][i].InceptionTS.Before(out[typ][j].InceptionTS.Time) })
 	}
 	return out
 }
@@ -4074,7 +4074,7 @@ func buildCorrelationGraph() *GraphCorrelation {
 					thread.Subject = msg.Subject
 				}
 				if msg.CreatedTS.After(thread.LastActivity) {
-					thread.LastActivity = msg.CreatedTS
+					thread.LastActivity = msg.CreatedTS.Time
 				}
 				thread.Unread++
 				corr.MailSummary[tid] = thread

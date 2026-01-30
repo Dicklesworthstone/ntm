@@ -459,27 +459,28 @@ func TestConflictDetector_FindReservationHolders(t *testing.T) {
 	cd := NewConflictDetector(nil)
 	now := time.Now()
 
+	ftNow := agentmail.FlexTime{Time: now}
 	reservations := []agentmail.FileReservation{
 		{
 			PathPattern: "internal/**",
 			AgentName:   "AgentA",
-			ExpiresTS:   now.Add(1 * time.Hour),
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(1 * time.Hour)},
 		},
 		{
 			PathPattern: "*.go",
 			AgentName:   "AgentB",
-			ExpiresTS:   now.Add(1 * time.Hour),
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(1 * time.Hour)},
 		},
 		{
 			PathPattern: "cmd/**",
 			AgentName:   "AgentC",
-			ExpiresTS:   now.Add(-1 * time.Hour), // expired
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(-1 * time.Hour)}, // expired
 		},
 		{
 			PathPattern: "docs/**",
 			AgentName:   "AgentD",
-			ExpiresTS:   now.Add(1 * time.Hour),
-			ReleasedTS:  &now, // released
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(1 * time.Hour)},
+			ReleasedTS:  &ftNow, // released
 		},
 	}
 

@@ -1576,10 +1576,10 @@ func TestReservationCacheGetReservedPathsForAgent(t *testing.T) {
 	// Add some test reservations
 	now := time.Now()
 	cache.reservations = []agentmail.FileReservation{
-		{AgentName: "GreenCastle", PathPattern: "internal/*.go", ExpiresTS: now.Add(1 * time.Hour)},
-		{AgentName: "GreenCastle", PathPattern: "cmd/main.go", ExpiresTS: now.Add(1 * time.Hour)},
-		{AgentName: "BlueLake", PathPattern: "pkg/*.go", ExpiresTS: now.Add(1 * time.Hour)},
-		{AgentName: "GreenCastle", PathPattern: "expired.go", ExpiresTS: now.Add(-1 * time.Hour)}, // expired
+		{AgentName: "GreenCastle", PathPattern: "internal/*.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(1 * time.Hour)}},
+		{AgentName: "GreenCastle", PathPattern: "cmd/main.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(1 * time.Hour)}},
+		{AgentName: "BlueLake", PathPattern: "pkg/*.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(1 * time.Hour)}},
+		{AgentName: "GreenCastle", PathPattern: "expired.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(-1 * time.Hour)}}, // expired
 	}
 
 	paths := cache.GetReservedPathsForAgent("GreenCastle")
@@ -1714,7 +1714,7 @@ func TestCalculateAffinity_WithReservations(t *testing.T) {
 	cache := NewReservationCache(nil, "/test", 30*time.Second)
 	now := time.Now()
 	cache.reservations = []agentmail.FileReservation{
-		{AgentName: "GreenCastle", PathPattern: "internal/robot/*.go", ExpiresTS: now.Add(1 * time.Hour)},
+		{AgentName: "GreenCastle", PathPattern: "internal/robot/*.go", ExpiresTS: agentmail.FlexTime{Time: now.Add(1 * time.Hour)}},
 	}
 	scorer.SetReservationCache(cache)
 	scorer.MapPaneToAgent("%1", "GreenCastle")

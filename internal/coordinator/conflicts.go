@@ -61,14 +61,14 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context) ([]Conflict, err
 	// Group by pattern to detect overlaps
 	patternHolders := make(map[string][]Holder)
 	for _, r := range reservations {
-		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS) {
+		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS.Time) {
 			continue // Skip released/expired
 		}
 
 		holder := Holder{
 			AgentName:  r.AgentName,
-			ReservedAt: r.CreatedTS,
-			ExpiresAt:  r.ExpiresTS,
+			ReservedAt: r.CreatedTS.Time,
+			ExpiresAt:  r.ExpiresTS.Time,
 			Reason:     r.Reason,
 		}
 		patternHolders[r.PathPattern] = append(patternHolders[r.PathPattern], holder)
@@ -105,7 +105,7 @@ func (d *ConflictDetector) CheckPathConflict(ctx context.Context, path, excludeA
 
 	var holders []Holder
 	for _, r := range reservations {
-		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS) {
+		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS.Time) {
 			continue
 		}
 		if r.AgentName == excludeAgent {
@@ -114,8 +114,8 @@ func (d *ConflictDetector) CheckPathConflict(ctx context.Context, path, excludeA
 		if matchesPattern(path, r.PathPattern) {
 			holders = append(holders, Holder{
 				AgentName:  r.AgentName,
-				ReservedAt: r.CreatedTS,
-				ExpiresAt:  r.ExpiresTS,
+				ReservedAt: r.CreatedTS.Time,
+				ExpiresAt:  r.ExpiresTS.Time,
 				Reason:     r.Reason,
 			})
 		}

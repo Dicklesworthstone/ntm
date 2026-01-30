@@ -2304,7 +2304,7 @@ func loadRecoveryMessages(ctx context.Context, sessionName, workingDir string) (
 			Subject:    m.Subject,
 			Body:       m.BodyMD,
 			Importance: m.Importance,
-			CreatedAt:  m.CreatedTS,
+			CreatedAt:  m.CreatedTS.Time,
 		})
 	}
 

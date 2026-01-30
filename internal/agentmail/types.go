@@ -67,8 +67,8 @@ type Agent struct {
 	Program         string    `json:"program"`          // e.g., "claude-code"
 	Model           string    `json:"model"`            // e.g., "opus-4.5"
 	TaskDescription string    `json:"task_description"` // Current task description
-	InceptionTS     time.Time `json:"inception_ts"`     // When agent was first registered
-	LastActiveTS    time.Time `json:"last_active_ts"`   // Last activity timestamp
+	InceptionTS     FlexTime `json:"inception_ts"`     // When agent was first registered
+	LastActiveTS    FlexTime `json:"last_active_ts"`   // Last activity timestamp
 	ProjectID       int       `json:"project_id"`       // Associated project ID
 }
 
@@ -86,8 +86,8 @@ type Message struct {
 	BCC         []string  `json:"bcc,omitempty"`
 	Importance  string    `json:"importance"`   // normal, high, urgent
 	AckRequired bool      `json:"ack_required"` // Whether recipient must acknowledge
-	CreatedTS   time.Time `json:"created_ts"`
-	Kind        string    `json:"kind,omitempty"` // to, cc, bcc
+	CreatedTS   FlexTime `json:"created_ts"`
+	Kind        string   `json:"kind,omitempty"` // to, cc, bcc
 }
 
 // Project represents an Agent Mail project.
@@ -95,7 +95,7 @@ type Project struct {
 	ID        int       `json:"id"`
 	Slug      string    `json:"slug"`
 	HumanKey  string    `json:"human_key"` // Absolute path to project
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt FlexTime `json:"created_at"`
 }
 
 // FileReservation represents a file path reservation (advisory lock).
@@ -106,9 +106,9 @@ type FileReservation struct {
 	ProjectID   int        `json:"project_id"`
 	Exclusive   bool       `json:"exclusive"` // Exclusive or shared
 	Reason      string     `json:"reason"`
-	ExpiresTS   time.Time  `json:"expires_ts"`
-	CreatedTS   time.Time  `json:"created_ts"`
-	ReleasedTS  *time.Time `json:"released_ts,omitempty"`
+	ExpiresTS   FlexTime  `json:"expires_ts"`
+	CreatedTS   FlexTime  `json:"created_ts"`
+	ReleasedTS  *FlexTime `json:"released_ts,omitempty"`
 }
 
 // InboxMessage represents a message in an agent's inbox.
@@ -116,13 +116,13 @@ type InboxMessage struct {
 	ID          int        `json:"id"`
 	Subject     string     `json:"subject"`
 	From        string     `json:"from"`
-	CreatedTS   time.Time  `json:"created_ts"`
-	ThreadID    *string    `json:"thread_id,omitempty"`
-	Importance  string     `json:"importance"`
-	AckRequired bool       `json:"ack_required"`
-	Kind        string     `json:"kind"`
-	BodyMD      string     `json:"body_md,omitempty"` // Only if include_bodies=true
-	ReadAt      *time.Time `json:"read_at,omitempty"`
+	CreatedTS   FlexTime  `json:"created_ts"`
+	ThreadID    *string   `json:"thread_id,omitempty"`
+	Importance  string    `json:"importance"`
+	AckRequired bool      `json:"ack_required"`
+	Kind        string    `json:"kind"`
+	BodyMD      string    `json:"body_md,omitempty"` // Only if include_bodies=true
+	ReadAt      *FlexTime `json:"read_at,omitempty"`
 }
 
 // ContactLink represents a contact relationship between agents.
@@ -133,8 +133,8 @@ type ContactLink struct {
 	Status    string     `json:"status,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 	Approved  bool       `json:"approved,omitempty"`
-	UpdatedTS *time.Time `json:"updated_ts,omitempty"`
-	ExpiresTS *time.Time `json:"expires_ts,omitempty"`
+	UpdatedTS *FlexTime `json:"updated_ts,omitempty"`
+	ExpiresTS *FlexTime `json:"expires_ts,omitempty"`
 }
 
 // ThreadSummary contains summary information for a message thread.
@@ -248,13 +248,13 @@ type SearchOptions struct {
 
 // SearchResult represents a message search result.
 type SearchResult struct {
-	ID          int       `json:"id"`
-	Subject     string    `json:"subject"`
-	Importance  string    `json:"importance"`
-	AckRequired bool      `json:"ack_required"`
-	CreatedTS   time.Time `json:"created_ts"`
-	ThreadID    *string   `json:"thread_id"`
-	From        string    `json:"from"`
+	ID          int      `json:"id"`
+	Subject     string   `json:"subject"`
+	Importance  string   `json:"importance"`
+	AckRequired bool     `json:"ack_required"`
+	CreatedTS   FlexTime `json:"created_ts"`
+	ThreadID    *string  `json:"thread_id"`
+	From        string   `json:"from"`
 }
 
 // OverseerMessageOptions contains options for sending a Human Overseer message.
@@ -379,8 +379,8 @@ type RenewReservationsResult struct {
 type RenewedReservation struct {
 	ID           int       `json:"id"`
 	PathPattern  string    `json:"path_pattern"`
-	OldExpiresTS time.Time `json:"old_expires_ts"`
-	NewExpiresTS time.Time `json:"new_expires_ts"`
+	OldExpiresTS FlexTime `json:"old_expires_ts"`
+	NewExpiresTS FlexTime `json:"new_expires_ts"`
 }
 
 // ForceReleaseOptions contains options for forcibly releasing a stale reservation.
@@ -395,7 +395,7 @@ type ForceReleaseOptions struct {
 // ForceReleaseResult contains the result of a force-release operation.
 type ForceReleaseResult struct {
 	Success        bool       `json:"success"`
-	ReleasedAt     *time.Time `json:"released_at,omitempty"`
+	ReleasedAt     *FlexTime `json:"released_at,omitempty"`
 	PreviousHolder string     `json:"previous_holder,omitempty"`
 	PathPattern    string     `json:"path_pattern,omitempty"`
 	Notified       bool       `json:"notified,omitempty"`

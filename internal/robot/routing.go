@@ -203,7 +203,7 @@ func (rc *ReservationCache) Refresh(ctx context.Context) error {
 	pathToAgents := make(map[string][]string)
 	for _, r := range reservations {
 		// Skip expired reservations (server should filter, but double-check)
-		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS) {
+		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS.Time) {
 			continue
 		}
 		pathToAgents[r.PathPattern] = append(pathToAgents[r.PathPattern], r.AgentName)
@@ -265,7 +265,7 @@ func (rc *ReservationCache) GetReservedPathsForAgent(agentName string) []string 
 
 	var paths []string
 	for _, r := range rc.reservations {
-		if r.AgentName == agentName && r.ReleasedTS == nil && time.Now().Before(r.ExpiresTS) {
+		if r.AgentName == agentName && r.ReleasedTS == nil && time.Now().Before(r.ExpiresTS.Time) {
 			paths = append(paths, r.PathPattern)
 		}
 	}
