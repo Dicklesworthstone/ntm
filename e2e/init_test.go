@@ -7,11 +7,13 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // InitResult mirrors the CLI JSON output structure for init command
@@ -33,12 +35,43 @@ type InitResult struct {
 	NoHooks          bool     `json:"no_hooks"`
 }
 
+type initStepEvent struct {
+	Number      int    `json:"number"`
+	Total       int    `json:"total"`
+	Description string `json:"description"`
+	AtMs        int64  `json:"at_ms"`
+}
+
+type initTestReport struct {
+	Timestamp    string          `json:"timestamp"`
+	TestName     string          `json:"test_name"`
+	Scenario     string          `json:"scenario"`
+	Passed       bool            `json:"passed"`
+	DurationMs   int64           `json:"duration_ms"`
+	LogPath      string          `json:"log_path"`
+	ReportPath   string          `json:"report_path"`
+	ArtifactsDir string          `json:"artifacts_dir,omitempty"`
+	TempDir      string          `json:"temp_dir,omitempty"`
+	LastCommand  []string        `json:"last_command,omitempty"`
+	LastOutput   string          `json:"last_output,omitempty"`
+	Steps        []initStepEvent `json:"steps,omitempty"`
+}
+
 // InitTestSuite manages E2E tests for the init command
 type InitTestSuite struct {
-	t       *testing.T
-	logger  *TestLogger
-	tempDir string
-	cleanup []func()
+	t           *testing.T
+	logger      *TestLogger
+	tempDir     string
+	cleanup     []func()
+	cleanedUp   bool
+	scenario    string
+	startTime   time.Time
+	stepTotal   int
+	stepCurrent int
+	steps       []initStepEvent
+
+	lastCommand []string
+	lastOutput  []byte
 }
 
 // NewInitTestSuite creates a new init test suite
@@ -46,11 +79,37 @@ func NewInitTestSuite(t *testing.T, scenario string) *InitTestSuite {
 	logger := NewTestLogger(t, scenario)
 
 	s := &InitTestSuite{
-		t:      t,
-		logger: logger,
+		t:         t,
+		logger:    logger,
+		scenario:  scenario,
+		startTime: time.Now(),
 	}
 
+	t.Cleanup(s.Cleanup)
+
 	return s
+}
+
+func (s *InitTestSuite) SetSteps(total int) {
+	s.stepTotal = total
+	s.stepCurrent = 0
+	s.steps = nil
+}
+
+func (s *InitTestSuite) Step(description string) {
+	s.stepCurrent++
+	total := s.stepTotal
+	if total <= 0 {
+		total = 1
+	}
+	elapsedMs := time.Since(s.startTime).Milliseconds()
+	s.steps = append(s.steps, initStepEvent{
+		Number:      s.stepCurrent,
+		Total:       total,
+		Description: description,
+		AtMs:        elapsedMs,
+	})
+	s.logger.Log("[E2E] Step %d/%d: %s", s.stepCurrent, total, description)
 }
 
 // Setup creates a temporary directory for testing
@@ -63,6 +122,7 @@ func (s *InitTestSuite) Setup() error {
 		return err
 	}
 	s.tempDir = tempDir
+	s.logger.Log("[E2E] Creating directory: %s", tempDir)
 
 	s.cleanup = append(s.cleanup, func() {
 		os.RemoveAll(tempDir)
@@ -78,6 +138,7 @@ func (s *InitTestSuite) SetupWithGit() error {
 	}
 
 	// Initialize git repo
+	s.logger.Log("[E2E] Step 1/3: Initialize git repo")
 	cmd := exec.Command("git", "init")
 	cmd.Dir = s.tempDir
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -86,6 +147,7 @@ func (s *InitTestSuite) SetupWithGit() error {
 	}
 
 	// Configure git user
+	s.logger.Log("[E2E] Step 2/3: Configure git user")
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
 	cmd.Dir = s.tempDir
 	cmd.Run()
@@ -94,15 +156,57 @@ func (s *InitTestSuite) SetupWithGit() error {
 	cmd.Dir = s.tempDir
 	cmd.Run()
 
+	s.logger.Log("[E2E] Step 3/3: Git repo ready")
 	s.logger.Log("[E2E-INIT] Created git repo at %s", s.tempDir)
 	return nil
 }
 
 // Cleanup runs all cleanup functions
 func (s *InitTestSuite) Cleanup() {
+	if s.cleanedUp {
+		return
+	}
+	s.cleanedUp = true
+
+	start := s.startTime
+	if start.IsZero() {
+		start = time.Now()
+	}
+	duration := time.Since(start)
+	passed := !s.t.Failed()
+
+	logPath := ""
+	if s.logger != nil {
+		logPath = s.logger.LogPath()
+	}
+
+	reportBase := strings.TrimSuffix(logPath, ".log")
+	if reportBase == "" {
+		reportBase = filepath.Join(os.TempDir(), fmt.Sprintf("ntm-init-%s-%d", s.scenario, time.Now().Unix()))
+	}
+	reportPath := reportBase + ".report.json"
+	artifactsDir := reportBase + ".artifacts"
+
+	if !passed {
+		s.logger.Log("[E2E] FAIL: %s - see %s", s.t.Name(), logPath)
+		if err := s.saveArtifacts(artifactsDir); err != nil {
+			s.logger.Log("[E2E-INIT] Failed to save artifacts: %v", err)
+		}
+	} else {
+		s.logger.Log("[E2E] PASS: %s in %s", s.t.Name(), duration.Round(time.Millisecond))
+	}
+
+	if err := s.writeReport(reportPath, artifactsDir, passed, duration, logPath); err != nil {
+		s.logger.Log("[E2E-INIT] Failed to write report: %v", err)
+	}
+
 	s.logger.Log("[E2E-INIT] Running cleanup")
 	for i := len(s.cleanup) - 1; i >= 0; i-- {
 		s.cleanup[i]()
+	}
+
+	if s.logger != nil {
+		s.logger.Close()
 	}
 }
 
@@ -114,12 +218,14 @@ func (s *InitTestSuite) TempDir() string {
 // RunInit executes ntm init and returns the raw output
 func (s *InitTestSuite) RunInit(args ...string) ([]byte, error) {
 	allArgs := append([]string{"init"}, args...)
+	s.lastCommand = append([]string{"ntm"}, allArgs...)
 	cmd := exec.Command("ntm", allArgs...)
 	cmd.Dir = s.tempDir
 
 	s.logger.Log("[E2E-INIT] Running: ntm %v", allArgs)
 
 	output, err := cmd.CombinedOutput()
+	s.lastOutput = output
 	s.logger.Log("[E2E-INIT] Output: %s", string(output))
 	if err != nil {
 		s.logger.Log("[E2E-INIT] Exit error: %v", err)
@@ -149,6 +255,119 @@ func (s *InitTestSuite) RunInitJSON(args ...string) (*InitResult, error) {
 	return &result, nil
 }
 
+type configValidateReport struct {
+	Valid bool `json:"valid"`
+}
+
+func (s *InitTestSuite) RunConfigValidateJSON() (*configValidateReport, error) {
+	cmd := exec.Command("ntm", "config", "validate", "--json")
+	cmd.Dir = s.tempDir
+	s.logger.Log("[E2E-INIT] Running: ntm config validate --json")
+	out, err := cmd.CombinedOutput()
+	s.logger.Log("[E2E-INIT] Output: %s", string(out))
+	if err != nil {
+		return nil, fmt.Errorf("config validate failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	var report configValidateReport
+	if err := json.Unmarshal(out, &report); err != nil {
+		return nil, fmt.Errorf("parse config validate output: %w", err)
+	}
+	return &report, nil
+}
+
+func (s *InitTestSuite) saveArtifacts(dir string) error {
+	if s.tempDir == "" {
+		return nil
+	}
+
+	ntmDir := filepath.Join(s.tempDir, ".ntm")
+	if _, err := os.Stat(ntmDir); err != nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	dst := filepath.Join(dir, ".ntm")
+	if err := copyDir(ntmDir, dst); err != nil {
+		return err
+	}
+	s.logger.Log("[E2E-INIT] Saved .ntm artifacts to %s", dst)
+	return nil
+}
+
+func (s *InitTestSuite) writeReport(reportPath, artifactsDir string, passed bool, duration time.Duration, logPath string) error {
+	var lastOutput string
+	if len(s.lastOutput) > 0 {
+		// Keep reports reasonably sized.
+		const max = 20000
+		if len(s.lastOutput) > max {
+			lastOutput = string(s.lastOutput[:max]) + "...(truncated)"
+		} else {
+			lastOutput = string(s.lastOutput)
+		}
+	}
+
+	rep := initTestReport{
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+		TestName:     s.t.Name(),
+		Scenario:     s.scenario,
+		Passed:       passed,
+		DurationMs:   duration.Milliseconds(),
+		LogPath:      logPath,
+		ReportPath:   reportPath,
+		ArtifactsDir: "",
+		TempDir:      s.tempDir,
+		LastCommand:  s.lastCommand,
+		LastOutput:   lastOutput,
+		Steps:        s.steps,
+	}
+	if !passed {
+		rep.ArtifactsDir = artifactsDir
+	}
+
+	data, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(reportPath, data, 0644); err != nil {
+		return err
+	}
+	s.logger.Log("[E2E-INIT] Wrote report: %s", reportPath)
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+			continue
+		}
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dstPath, data, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // TestInitBasicRun tests that init command creates .ntm directory
 func TestInitBasicRun(t *testing.T) {
 	SkipIfShort(t)
@@ -173,6 +392,58 @@ func TestInitBasicRun(t *testing.T) {
 	}
 
 	suite.logger.Log("[E2E-INIT] Basic run test passed - .ntm directory exists at %s", ntmDir)
+}
+
+// TestInitScenarioFreshProjectDetailedLogging validates fresh init + directory structure + config validation,
+// using the bead-required step logging format.
+func TestInitScenarioFreshProjectDetailedLogging(t *testing.T) {
+	SkipIfShort(t)
+	SkipIfNoNTM(t)
+
+	suite := NewInitTestSuite(t, "init-scenario-fresh-detailed")
+	defer suite.Cleanup()
+
+	suite.SetSteps(4)
+	suite.Step("Create temp directory")
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-INIT] Setup failed: %v", err)
+	}
+
+	suite.Step("Run ntm init (fresh project)")
+	result, err := suite.RunInitJSON("--no-hooks")
+	if err != nil {
+		t.Fatalf("[E2E-INIT] Init command failed: %v", err)
+	}
+	if !result.Success {
+		suite.logger.Log("[E2E] FAIL: %s - expected success=true, got false", t.Name())
+		t.Fatal("[E2E-INIT] Expected success=true in result")
+	}
+
+	suite.Step("Verify .ntm directory structure and key files")
+	paths := []string{
+		filepath.Join(suite.TempDir(), ".ntm"),
+		filepath.Join(suite.TempDir(), ".ntm", "templates"),
+		filepath.Join(suite.TempDir(), ".ntm", "pipelines"),
+		filepath.Join(suite.TempDir(), ".ntm", "config.toml"),
+		filepath.Join(suite.TempDir(), ".ntm", "palette.md"),
+		filepath.Join(suite.TempDir(), ".ntm", "personas.toml"),
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			suite.logger.Log("[E2E] FAIL: %s - expected %s to exist, got err=%v", t.Name(), p, err)
+			t.Fatalf("[E2E-INIT] Expected path to exist: %s", p)
+		}
+	}
+
+	suite.Step("Validate configs with ntm config validate --json")
+	report, err := suite.RunConfigValidateJSON()
+	if err != nil {
+		t.Fatalf("[E2E-INIT] Config validate failed: %v", err)
+	}
+	if !report.Valid {
+		suite.logger.Log("[E2E] FAIL: %s - expected valid=true, got false", t.Name())
+		t.Fatal("[E2E-INIT] Expected config validate valid=true")
+	}
 }
 
 // TestInitJSONOutput tests that --json flag produces valid JSON
@@ -300,7 +571,15 @@ func TestInitForceFlag(t *testing.T) {
 		t.Fatalf("[E2E-INIT] First init failed: %v", err)
 	}
 
+	configPath := filepath.Join(suite.TempDir(), ".ntm", "config.toml")
+	suite.logger.Log("[E2E] Step 1/4: Modify existing config before --force")
+	if err := os.WriteFile(configPath, []byte("# SENTINEL: should be removed by --force\n"), 0644); err != nil {
+		t.Fatalf("[E2E-INIT] Failed to modify config.toml: %v", err)
+	}
+	suite.logger.Log("[E2E] Writing config: %s (%d bytes)", configPath, len("# SENTINEL: should be removed by --force\n"))
+
 	// Second init with --force should succeed
+	suite.logger.Log("[E2E] Step 2/4: Re-run init with --force")
 	result, err := suite.RunInitJSON("--force", "--no-hooks")
 	if err != nil {
 		t.Fatalf("[E2E-INIT] Init with --force failed: %v", err)
@@ -314,7 +593,177 @@ func TestInitForceFlag(t *testing.T) {
 		t.Error("[E2E-INIT] Expected force=true in result")
 	}
 
+	suite.logger.Log("[E2E] Step 3/4: Verify sentinel removed (clean state restored)")
+	updated, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("[E2E-INIT] Failed to read config.toml: %v", err)
+	}
+	if strings.Contains(string(updated), "SENTINEL") {
+		suite.logger.Log("[E2E] FAIL: %s - expected sentinel removed, got still present", t.Name())
+		t.Fatal("[E2E-INIT] Expected config.toml to be overwritten by --force")
+	}
+
+	suite.logger.Log("[E2E] Step 4/4: Done")
 	suite.logger.Log("[E2E-INIT] Force flag test passed")
+}
+
+// TestInitScenarioPartialStructure verifies init fills missing pieces when `.ntm/` exists but is incomplete.
+func TestInitScenarioPartialStructure(t *testing.T) {
+	SkipIfShort(t)
+	SkipIfNoNTM(t)
+
+	suite := NewInitTestSuite(t, "init-scenario-partial-structure")
+	defer suite.Cleanup()
+
+	suite.SetSteps(5)
+	suite.Step("Create temp directory")
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-INIT] Setup failed: %v", err)
+	}
+
+	suite.Step("Create partial .ntm directory with sentinel palette.md")
+	ntmDir := filepath.Join(suite.TempDir(), ".ntm")
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		t.Fatalf("[E2E-INIT] Failed to create partial .ntm dir: %v", err)
+	}
+	suite.logger.Log("[E2E] Creating directory: %s", ntmDir)
+
+	palettePath := filepath.Join(ntmDir, "palette.md")
+	paletteSentinel := []byte("# KEEP ME\n\necho ok\n")
+	if err := os.WriteFile(palettePath, paletteSentinel, 0644); err != nil {
+		t.Fatalf("[E2E-INIT] Failed to write palette.md: %v", err)
+	}
+	suite.logger.Log("[E2E] Writing config: %s (%d bytes)", palettePath, len(paletteSentinel))
+
+	// Ensure config.toml is missing but templates/ exists.
+	templatesDir := filepath.Join(ntmDir, "templates")
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		t.Fatalf("[E2E-INIT] Failed to create templates dir: %v", err)
+	}
+	suite.logger.Log("[E2E] Creating directory: %s", templatesDir)
+
+	suite.Step("Run ntm init to fill missing pieces")
+	result, err := suite.RunInitJSON("--no-hooks")
+	if err != nil {
+		t.Fatalf("[E2E-INIT] Init command failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("[E2E-INIT] Expected success=true in result")
+	}
+
+	suite.Step("Verify missing config.toml/pipelines/personas.toml created")
+	expected := []string{
+		filepath.Join(ntmDir, "config.toml"),
+		filepath.Join(ntmDir, "pipelines"),
+		filepath.Join(ntmDir, "personas.toml"),
+	}
+	for _, p := range expected {
+		if _, err := os.Stat(p); err != nil {
+			suite.logger.Log("[E2E] FAIL: %s - expected %s to exist, got err=%v", t.Name(), p, err)
+			t.Fatalf("[E2E-INIT] Expected path to exist: %s", p)
+		}
+	}
+
+	suite.Step("Verify existing palette.md preserved")
+	got, err := os.ReadFile(palettePath)
+	if err != nil {
+		t.Fatalf("[E2E-INIT] Failed to read palette.md: %v", err)
+	}
+	if string(got) != string(paletteSentinel) {
+		suite.logger.Log("[E2E] FAIL: %s - expected palette preserved, got different content", t.Name())
+		t.Fatal("[E2E-INIT] Expected existing palette.md content to be preserved")
+	}
+}
+
+// TestInitScenarioFlywheelToolIntegration verifies basic integration checks for Agent Mail + CM + bv.
+func TestInitScenarioFlywheelToolIntegration(t *testing.T) {
+	SkipIfShort(t)
+	SkipIfNoNTM(t)
+
+	// These are external tools; skip if not available.
+	if _, err := exec.LookPath("cm"); err != nil {
+		t.Skip("cm binary not found in PATH")
+	}
+	if _, err := exec.LookPath("br"); err != nil {
+		t.Skip("br binary not found in PATH")
+	}
+	if _, err := exec.LookPath("bv"); err != nil {
+		t.Skip("bv binary not found in PATH")
+	}
+
+	suite := NewInitTestSuite(t, "init-scenario-flywheel-integration")
+	defer suite.Cleanup()
+
+	suite.SetSteps(6)
+	suite.Step("Create temp directory")
+	if err := suite.Setup(); err != nil {
+		t.Fatalf("[E2E-INIT] Setup failed: %v", err)
+	}
+
+	suite.Step("Run ntm init (records Agent Mail registration outcome)")
+	result, err := suite.RunInitJSON("--no-hooks")
+	if err != nil {
+		t.Fatalf("[E2E-INIT] Init command failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("[E2E-INIT] Expected success=true in result")
+	}
+	if !result.AgentMail && result.AgentMailWarning == "" {
+		suite.logger.Log("[E2E] FAIL: %s - expected agent_mail_warning when agent_mail=false", t.Name())
+		t.Fatal("[E2E-INIT] Expected agent_mail_warning when agent_mail=false")
+	}
+	if result.AgentMail {
+		suite.logger.Log("[E2E-INIT] Agent Mail registered successfully")
+	} else {
+		suite.logger.Log("[E2E-INIT] Agent Mail warning: %s", result.AgentMailWarning)
+	}
+
+	suite.Step("Verify CM can initialize repo scaffolding (isolated HOME)")
+	cmCmd := exec.Command("cm", "init", "--repo", "--no-interactive", "--json")
+	cmCmd.Dir = suite.TempDir()
+	cmCmd.Env = append(os.Environ(), "HOME="+suite.TempDir())
+	cmOut, cmErr := cmCmd.CombinedOutput()
+	suite.logger.Log("[E2E-INIT] cm output: %s", string(cmOut))
+	if cmErr != nil {
+		t.Fatalf("[E2E-INIT] cm init failed: %v", cmErr)
+	}
+
+	suite.Step("Initialize beads workspace via br")
+	brCmd := exec.Command("br", "init", "--json")
+	brCmd.Dir = suite.TempDir()
+	brOut, brErr := brCmd.CombinedOutput()
+	suite.logger.Log("[E2E-INIT] br output: %s", string(brOut))
+	if brErr != nil {
+		t.Fatalf("[E2E-INIT] br init failed: %v", brErr)
+	}
+
+	suite.Step("Export beads JSONL via br sync --flush-only")
+	syncCmd := exec.Command("br", "sync", "--flush-only")
+	syncCmd.Dir = suite.TempDir()
+	syncOut, syncErr := syncCmd.CombinedOutput()
+	suite.logger.Log("[E2E-INIT] br sync output: %s", string(syncOut))
+	if syncErr != nil {
+		t.Fatalf("[E2E-INIT] br sync failed: %v", syncErr)
+	}
+
+	suite.Step("Verify bv can read the project via --robot-triage")
+	bvCmd := exec.Command("bv", "--robot-triage")
+	bvCmd.Dir = suite.TempDir()
+	bvOut, bvErr := bvCmd.CombinedOutput()
+	suite.logger.Log("[E2E-INIT] bv output: %s", string(bvOut))
+	if bvErr != nil {
+		t.Fatalf("[E2E-INIT] bv triage failed: %v", bvErr)
+	}
+	var bvPayload map[string]interface{}
+	if err := json.Unmarshal(bvOut, &bvPayload); err != nil {
+		t.Fatalf("[E2E-INIT] bv output was not valid JSON: %v", err)
+	}
+	if _, ok := bvPayload["triage"]; !ok {
+		suite.logger.Log("[E2E] FAIL: %s - expected bv payload to contain triage key", t.Name())
+		t.Fatal("[E2E-INIT] Expected bv output to include triage")
+	}
+
+	suite.Step("Done")
 }
 
 // TestInitWithGitHooks tests that git hooks are installed in git repo
