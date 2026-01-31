@@ -498,7 +498,11 @@ func TestGetSuggestion(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(string(tt.alertType), func(t *testing.T) {
+		name := string(tt.alertType)
+		if name == "" {
+			name = "empty_alert_type"
+		}
+		t.Run(name, func(t *testing.T) {
 			got := getSuggestion(tt.alertType)
 			if tt.wantNonEmpty && got == "" {
 				t.Errorf("getSuggestion(%q) returned empty string, expected non-empty", tt.alertType)

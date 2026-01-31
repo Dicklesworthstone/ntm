@@ -641,7 +641,11 @@ func TestGetWarningMessage(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(string(tt.level), func(t *testing.T) {
+		name := string(tt.level)
+		if name == "" {
+			name = "empty_level"
+		}
+		t.Run(name, func(t *testing.T) {
 			got := getWarningMessage(tt.level, tt.threshold)
 			if got != tt.want {
 				t.Errorf("getWarningMessage(%q, %.0f) = %q, want %q", tt.level, tt.threshold, got, tt.want)
