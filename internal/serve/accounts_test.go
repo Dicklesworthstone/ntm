@@ -3,10 +3,16 @@ package serve
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -289,4 +295,235 @@ func TestAccountsRBACPermissions(t *testing.T) {
 	// This test would require mocking the auth middleware to test different roles
 	// For now, just verify the routes are registered with permission middleware
 	t.Log("RBAC permissions are enforced via RequirePermission middleware in route registration")
+}
+
+func TestRotateAccount_DependencyMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	tools.NewCAAMAdapter().InvalidateCache()
+
+	s := &Server{
+		auth: AuthConfig{Mode: AuthModeLocal},
+	}
+	s.wsHub = NewWSHub()
+
+	r := chi.NewRouter()
+	r.Use(s.requestIDMiddlewareFunc)
+	r.Use(s.rbacMiddleware)
+	r.Route("/api/v1", func(r chi.Router) {
+		s.registerAccountsRoutes(r)
+	})
+
+	body := []byte(`{"provider":"claude"}`)
+	req := httptest.NewRequest("POST", "/api/v1/accounts/rotate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+		Hint      string `json:"hint"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Success {
+		t.Fatalf("expected success=false")
+	}
+	if resp.ErrorCode != robot.ErrCodeDependencyMissing {
+		t.Fatalf("expected error_code=%s, got %q", robot.ErrCodeDependencyMissing, resp.ErrorCode)
+	}
+	if resp.Hint == "" {
+		t.Fatalf("expected non-empty hint")
+	}
+}
+
+func TestRotateProviderAccount_FakeCAAM_UpdatesActiveAndPublishesEvent(t *testing.T) {
+	dir := t.TempDir()
+
+	stateFile := filepath.Join(dir, "state_claude")
+	if err := os.WriteFile(stateFile, []byte("claude-a"), 0o644); err != nil {
+		t.Fatalf("failed to write state file: %v", err)
+	}
+
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+
+STATE_FILE=%q
+
+if [ "${1:-}" = "--version" ]; then
+  echo "caam 1.0.0"
+  exit 0
+fi
+
+if [ "${1:-}" = "list" ] && [ "${2:-}" = "--json" ]; then
+  active="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "$active" = "claude-b" ]; then
+    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":true}]'
+  else
+    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":true},{"id":"claude-b","provider":"claude","email":"b@example.com","active":false}]'
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = "creds" ] && [ "${3:-}" = "--json" ]; then
+  provider="${2:-}"
+  active="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "$provider" = "claude" ]; then
+    echo "{\"provider\":\"claude\",\"account_id\":\"$active\",\"env_var_name\":\"ANTHROPIC_API_KEY\",\"rate_limited\":false}"
+    exit 0
+  fi
+fi
+
+if [ "${1:-}" = "switch" ]; then
+  if [ "${3:-}" = "--next" ] && [ "${4:-}" = "--json" ]; then
+    provider="${2:-}"
+    if [ "$provider" != "claude" ]; then
+      echo "{\"success\":false,\"provider\":\"$provider\",\"error\":\"unknown provider\"}" >&2
+      exit 1
+    fi
+
+    prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
+    if [ "$prev" = "claude-b" ]; then
+      next="claude-a"
+    else
+      next="claude-b"
+    fi
+
+    echo "$next" > "$STATE_FILE"
+    echo "{\"success\":true,\"provider\":\"claude\",\"previous_account\":\"$prev\",\"new_account\":\"$next\",\"accounts_remaining\":1}"
+    exit 0
+  fi
+
+  # Switch to a specific account ID.
+  acct="${2:-}"
+  echo "$acct" > "$STATE_FILE"
+  exit 0
+fi
+
+echo "unknown command" >&2
+exit 2
+`, stateFile)
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write fake caam: %v", err)
+	}
+
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	tools.NewCAAMAdapter().InvalidateCache()
+
+	hub := NewWSHub()
+	go hub.Run()
+	defer hub.Stop()
+	time.Sleep(10 * time.Millisecond)
+
+	client := &WSClient{
+		id:     "accounts-watcher",
+		hub:    hub,
+		send:   make(chan []byte, 10),
+		topics: make(map[string]struct{}),
+	}
+	client.Subscribe([]string{"accounts:*"})
+	hub.register <- client
+	time.Sleep(20 * time.Millisecond)
+
+	s := &Server{
+		auth:  AuthConfig{Mode: AuthModeLocal},
+		wsHub: hub,
+	}
+
+	r := chi.NewRouter()
+	r.Use(s.requestIDMiddlewareFunc)
+	r.Use(s.rbacMiddleware)
+	r.Route("/api/v1", func(r chi.Router) {
+		s.registerAccountsRoutes(r)
+	})
+
+	getActive := func(t *testing.T) string {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/v1/accounts/active", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Success bool `json:"success"`
+			Active  map[string]struct {
+				ID string `json:"id"`
+			} `json:"active"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode active response: %v", err)
+		}
+		if !resp.Success {
+			t.Fatalf("expected success=true")
+		}
+		if resp.Active["claude"].ID == "" {
+			t.Fatalf("expected active claude account to be present")
+		}
+		return resp.Active["claude"].ID
+	}
+
+	if got := getActive(t); got != "claude-a" {
+		t.Fatalf("expected initial active=claude-a, got %q", got)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/accounts/claude/rotate", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var rotateResp struct {
+		Success bool `json:"success"`
+		Switch  struct {
+			Success         bool   `json:"success"`
+			Provider        string `json:"provider"`
+			PreviousAccount string `json:"previous_account"`
+			NewAccount      string `json:"new_account"`
+		} `json:"switch"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&rotateResp); err != nil {
+		t.Fatalf("failed to decode rotate response: %v", err)
+	}
+	if !rotateResp.Success || !rotateResp.Switch.Success {
+		t.Fatalf("expected rotate success=true, got %+v", rotateResp)
+	}
+	if rotateResp.Switch.Provider != "claude" {
+		t.Fatalf("expected provider=claude, got %q", rotateResp.Switch.Provider)
+	}
+	if rotateResp.Switch.PreviousAccount != "claude-a" || rotateResp.Switch.NewAccount != "claude-b" {
+		t.Fatalf("unexpected switch result: %+v", rotateResp.Switch)
+	}
+
+	select {
+	case msg := <-client.send:
+		var ev struct {
+			Topic     string                 `json:"topic"`
+			EventType string                 `json:"event_type"`
+			Data      map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msg, &ev); err != nil {
+			t.Fatalf("failed to decode WS event: %v", err)
+		}
+		if ev.Topic != "accounts:claude" {
+			t.Fatalf("expected topic=accounts:claude, got %q", ev.Topic)
+		}
+		if ev.EventType != "account.rotated" {
+			t.Fatalf("expected event_type=account.rotated, got %q", ev.EventType)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("timed out waiting for websocket event")
+	}
+
+	if got := getActive(t); got != "claude-b" {
+		t.Fatalf("expected post-rotate active=claude-b, got %q", got)
+	}
 }
