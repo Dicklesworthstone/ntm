@@ -844,3 +844,230 @@ func TestArchiver_CloseIdempotent(t *testing.T) {
 		t.Errorf("Third Close() error: %v", err)
 	}
 }
+
+// =============================================================================
+// Additional Pure Function Tests for Coverage Improvement
+// =============================================================================
+
+func TestMin(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		a, b, want int
+	}{
+		{1, 2, 1},
+		{2, 1, 1},
+		{0, 0, 0},
+		{-1, 1, -1},
+		{100, 50, 50},
+		{-100, -50, -100},
+	}
+
+	for _, tc := range tests {
+		got := min(tc.a, tc.b)
+		if got != tc.want {
+			t.Errorf("min(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestFindOverlap_EdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		prev []string
+		curr []string
+		want int
+	}{
+		{
+			name: "empty prev",
+			prev: []string{},
+			curr: []string{"a", "b"},
+			want: 0,
+		},
+		{
+			name: "empty curr",
+			prev: []string{"a", "b"},
+			curr: []string{},
+			want: 0,
+		},
+		{
+			name: "no overlap at all",
+			prev: []string{"x", "y", "z"},
+			curr: []string{"a", "b", "c"},
+			want: 0,
+		},
+		{
+			name: "last line of prev in middle of curr",
+			prev: []string{"a", "b", "c"},
+			curr: []string{"x", "c", "d"},
+			want: 2,
+		},
+		{
+			name: "single line prev matches first of curr",
+			prev: []string{"x"},
+			curr: []string{"x", "y", "z"},
+			want: 1,
+		},
+		{
+			name: "complete match",
+			prev: []string{"a", "b"},
+			curr: []string{"a", "b"},
+			want: 2,
+		},
+		{
+			name: "suffix of prev at start of curr",
+			prev: []string{"1", "2", "3", "4", "5"},
+			curr: []string{"4", "5", "6", "7"},
+			want: 2,
+		},
+		{
+			name: "longer than maxCheck lines",
+			prev: make([]string, 100), // 100 lines
+			curr: make([]string, 10),
+			want: 0, // No overlap since slices are empty strings
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findOverlap(tc.prev, tc.curr)
+			if got != tc.want {
+				t.Errorf("findOverlap() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSplitLines_EdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  int // Number of lines expected
+	}{
+		{"empty", "", 0},
+		{"single line no newline", "hello", 1},
+		{"single line with newline", "hello\n", 1},
+		{"two lines", "a\nb", 2},
+		{"empty lines", "\n\n\n", 3},
+		{"mixed empty", "a\n\nb", 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitLines(tc.input)
+			if len(got) != tc.want {
+				t.Errorf("splitLines(%q) = %d lines, want %d", tc.input, len(got), tc.want)
+			}
+		})
+	}
+}
+
+func TestFlush_NilFile(t *testing.T) {
+	a := &Archiver{
+		file: nil, // No file set
+	}
+
+	// flush with nil file should not panic and return nil
+	err := a.flush()
+	if err != nil {
+		t.Errorf("flush() with nil file should return nil, got %v", err)
+	}
+}
+
+func TestStats_WithPaneStates(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	a, err := NewArchiver(ArchiverOptions{
+		SessionName: "stats-panes-test",
+		OutputDir:   tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("NewArchiver() error: %v", err)
+	}
+	defer a.Close()
+
+	// Manually add pane states
+	a.mu.Lock()
+	a.paneStates[2] = &PaneState{TotalLines: 100}
+	a.paneStates[3] = &PaneState{TotalLines: 200}
+	a.paneStates[4] = &PaneState{TotalLines: 50}
+	a.mu.Unlock()
+
+	stats := a.Stats()
+
+	if stats.PanesTracked != 3 {
+		t.Errorf("PanesTracked = %d, want 3", stats.PanesTracked)
+	}
+	if stats.TotalLines != 350 {
+		t.Errorf("TotalLines = %d, want 350", stats.TotalLines)
+	}
+}
+
+func TestStartsWithLines_EdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		lines  []string
+		prefix []string
+		want   bool
+	}{
+		{
+			name:   "empty prefix",
+			lines:  []string{"a", "b"},
+			prefix: []string{},
+			want:   true,
+		},
+		{
+			name:   "empty lines",
+			lines:  []string{},
+			prefix: []string{"a"},
+			want:   false,
+		},
+		{
+			name:   "both empty",
+			lines:  []string{},
+			prefix: []string{},
+			want:   true,
+		},
+		{
+			name:   "single element match",
+			lines:  []string{"x"},
+			prefix: []string{"x"},
+			want:   true,
+		},
+		{
+			name:   "single element no match",
+			lines:  []string{"x"},
+			prefix: []string{"y"},
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := startsWithLines(tc.lines, tc.prefix)
+			if got != tc.want {
+				t.Errorf("startsWithLines() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandPath_NoHome(t *testing.T) {
+	// Test with path that doesn't start with ~
+	result := expandPath("/absolute/path")
+	if result != "/absolute/path" {
+		t.Errorf("expandPath(/absolute/path) = %q, want /absolute/path", result)
+	}
+
+	result = expandPath("relative/path")
+	if result != "relative/path" {
+		t.Errorf("expandPath(relative/path) = %q, want relative/path", result)
+	}
+
+	result = expandPath("")
+	if result != "" {
+		t.Errorf("expandPath('') = %q, want ''", result)
+	}
+}
