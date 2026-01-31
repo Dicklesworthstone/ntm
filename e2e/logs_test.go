@@ -430,6 +430,7 @@ func TestRobotLogsFlag(t *testing.T) {
 func TestRobotLogsLimitFlag(t *testing.T) {
 	suite := NewLogsTestSuite(t, "robot-logs-limit")
 	defer suite.Teardown()
+	suite.requireLogsCommand()
 
 	suite.logger.Log("Testing --robot-logs with --logs-limit")
 
@@ -447,6 +448,7 @@ func TestRobotLogsLimitFlag(t *testing.T) {
 func TestRobotLogsPanesFlag(t *testing.T) {
 	suite := NewLogsTestSuite(t, "robot-logs-panes")
 	defer suite.Teardown()
+	suite.requireLogsCommand()
 
 	suite.logger.Log("Testing --robot-logs with --logs-panes")
 
@@ -467,6 +469,7 @@ func TestHistoryListEmpty(t *testing.T) {
 		t.Fatalf("Setup failed: %v", err)
 	}
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history list with no entries")
 
@@ -488,6 +491,7 @@ func TestHistoryListEmpty(t *testing.T) {
 func TestHistoryLimitFlag(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-limit-flag")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history --limit flag")
 
@@ -505,6 +509,7 @@ func TestHistoryLimitFlag(t *testing.T) {
 func TestHistorySessionFilter(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-session-filter")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history --session flag")
 
@@ -522,6 +527,7 @@ func TestHistorySessionFilter(t *testing.T) {
 func TestHistorySinceFilter(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-since-filter")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history --since flag")
 
@@ -539,6 +545,7 @@ func TestHistorySinceFilter(t *testing.T) {
 func TestHistorySearchFilter(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-search-filter")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history --search flag")
 
@@ -556,6 +563,7 @@ func TestHistorySearchFilter(t *testing.T) {
 func TestHistorySourceFilter(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-source-filter")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history --source flag")
 
@@ -573,6 +581,7 @@ func TestHistorySourceFilter(t *testing.T) {
 func TestHistoryStats(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-stats")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history stats subcommand")
 
@@ -596,6 +605,7 @@ func TestHistoryStats(t *testing.T) {
 func TestHistoryClear(t *testing.T) {
 	suite := NewLogsTestSuite(t, "history-clear")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history clear subcommand exists")
 
@@ -617,6 +627,7 @@ func TestHistoryExport(t *testing.T) {
 		t.Fatalf("Setup failed: %v", err)
 	}
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing history export subcommand")
 
@@ -635,6 +646,7 @@ func TestHistoryExport(t *testing.T) {
 func TestRobotHistoryFlag(t *testing.T) {
 	suite := NewLogsTestSuite(t, "robot-history-flag")
 	defer suite.Teardown()
+	suite.requireHistoryCommand()
 
 	suite.logger.Log("Testing --robot-history flag")
 
