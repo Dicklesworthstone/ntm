@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
 func newSafetyCmd() *cobra.Command {
@@ -248,27 +250,33 @@ type CheckResponse struct {
 	Action  string `json:"action"` // allow, block, approve
 	Pattern string `json:"pattern,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+
+	Policy *CheckPolicyVerdict `json:"policy,omitempty"`
+	DCG    *CheckDCGVerdict    `json:"dcg,omitempty"`
+}
+
+type CheckPolicyVerdict struct {
+	Action  string `json:"action"` // allow, block, approve
+	Pattern string `json:"pattern,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	SLB     bool   `json:"slb,omitempty"` // Requires SLB two-person approval
+}
+
+type CheckDCGVerdict struct {
+	Available bool   `json:"available"`
+	Checked   bool   `json:"checked"`
+	Blocked   bool   `json:"blocked"`
+	Reason    string `json:"reason,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func runSafetyCheck(command string) error {
-	p, err := policy.LoadOrDefault()
+	resp, exitCode, err := evaluateSafetyCheck(command)
 	if err != nil {
-		return fmt.Errorf("loading policy: %w", err)
+		return err
 	}
 
-	match := p.Check(command)
-
 	if IsJSONOutput() {
-		resp := CheckResponse{
-			TimestampedResponse: output.NewTimestamped(),
-			Command:             command,
-			Action:              "allow",
-		}
-		if match != nil {
-			resp.Action = string(match.Action)
-			resp.Pattern = match.Pattern
-			resp.Reason = match.Reason
-		}
 		if err := output.PrintJSON(resp); err != nil {
 			return err
 		}
@@ -283,33 +291,116 @@ func runSafetyCheck(command string) error {
 		fmt.Printf("  Command: %s\n", command)
 		fmt.Println()
 
-		if match == nil {
+		if resp.Policy == nil {
 			fmt.Printf("  %s Allowed (no policy match)\n", okStyle.Render("✓"))
 		} else {
-			switch match.Action {
-			case policy.ActionAllow:
+			switch resp.Action {
+			case string(policy.ActionAllow):
 				fmt.Printf("  %s Explicitly allowed\n", okStyle.Render("✓"))
-			case policy.ActionBlock:
+			case string(policy.ActionBlock):
 				fmt.Printf("  %s BLOCKED\n", errorStyle.Render("✗"))
-			case policy.ActionApprove:
+			case string(policy.ActionApprove):
 				fmt.Printf("  %s Requires approval\n", warnStyle.Render("⚠"))
 			}
-			if match.Reason != "" {
-				fmt.Printf("    %s\n", mutedStyle.Render(match.Reason))
+			if resp.Reason != "" {
+				fmt.Printf("    %s\n", mutedStyle.Render(resp.Reason))
 			}
-			fmt.Printf("    %s\n", mutedStyle.Render("Pattern: "+match.Pattern))
+			if resp.Pattern != "" {
+				fmt.Printf("    %s\n", mutedStyle.Render("Pattern: "+resp.Pattern))
+			}
+			if resp.DCG != nil && resp.DCG.Checked {
+				if resp.DCG.Blocked {
+					fmt.Printf("    %s\n", mutedStyle.Render("DCG: BLOCKED"))
+				} else {
+					fmt.Printf("    %s\n", mutedStyle.Render("DCG: allowed"))
+				}
+				if resp.DCG.Reason != "" {
+					fmt.Printf("    %s\n", mutedStyle.Render("DCG reason: "+resp.DCG.Reason))
+				}
+				if resp.DCG.Error != "" {
+					fmt.Printf("    %s\n", mutedStyle.Render("DCG error: "+resp.DCG.Error))
+				}
+			}
+			if resp.Policy != nil && resp.Pattern == "dcg" {
+				fmt.Printf("    %s\n", mutedStyle.Render("Policy: "+resp.Policy.Action+" (pattern: "+resp.Policy.Pattern+")"))
+			}
 		}
 
 		fmt.Println()
 	}
 
-	// Exit with code 1 for blocked commands (both JSON and TUI modes)
-	// This is critical for wrapper scripts that rely on exit code
-	if match != nil && match.Action == policy.ActionBlock {
+	// Exit with code 1 for blocked commands (both JSON and TUI modes).
+	// This is critical for wrapper scripts that rely on exit code.
+	if exitCode == 1 {
 		os.Exit(1)
 	}
 
 	return nil
+}
+
+func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
+	p, err := policy.LoadOrDefault()
+	if err != nil {
+		return CheckResponse{}, 0, fmt.Errorf("loading policy: %w", err)
+	}
+
+	match := p.Check(command)
+
+	resp := CheckResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Command:             command,
+		Action:              string(policy.ActionAllow),
+	}
+	if match != nil {
+		resp.Action = string(match.Action)
+		resp.Pattern = match.Pattern
+		resp.Reason = match.Reason
+		resp.Policy = &CheckPolicyVerdict{
+			Action:  string(match.Action),
+			Pattern: match.Pattern,
+			Reason:  match.Reason,
+			SLB:     match.SLB,
+		}
+	}
+
+	// If policy marks the command as dangerous, consult DCG when available.
+	if match != nil && match.Action != policy.ActionAllow {
+		dcg := &CheckDCGVerdict{}
+		adapter := tools.NewDCGAdapter()
+		if _, installed := adapter.Detect(); installed {
+			dcg.Available = true
+			dcg.Checked = true
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			blocked, err := adapter.CheckCommand(ctx, command)
+			if err != nil {
+				dcg.Error = err.Error()
+			} else if blocked != nil {
+				dcg.Blocked = true
+				dcg.Reason = blocked.Reason
+
+				// If DCG blocks, enforce that decision even if policy only required approval.
+				if match.Action != policy.ActionBlock {
+					resp.Action = string(policy.ActionBlock)
+					resp.Pattern = "dcg"
+					if dcg.Reason != "" {
+						resp.Reason = dcg.Reason
+					} else {
+						resp.Reason = "blocked by dcg"
+					}
+				}
+			}
+		}
+		resp.DCG = dcg
+	}
+
+	exitCode := 0
+	if resp.Action == string(policy.ActionBlock) {
+		exitCode = 1
+	}
+	return resp, exitCode, nil
 }
 
 func newSafetyInstallCmd() *cobra.Command {

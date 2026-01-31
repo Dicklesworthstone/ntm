@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
 // agentToProvider maps agent type aliases to caam provider names.
@@ -23,10 +26,13 @@ var agentToProvider = map[string]string{
 
 // AccountInfo describes a caam account.
 type AccountInfo struct {
-	Provider    string    `json:"provider"`
-	AccountName string    `json:"account_name"`
-	IsActive    bool      `json:"is_active"`
-	LastUsed    time.Time `json:"last_used,omitempty"`
+	Provider      string    `json:"provider"`
+	AccountName   string    `json:"account_name"`
+	Email         string    `json:"email,omitempty"`
+	IsActive      bool      `json:"is_active"`
+	RateLimited   bool      `json:"rate_limited,omitempty"`
+	CooldownUntil time.Time `json:"cooldown_until,omitempty"`
+	LastUsed      time.Time `json:"last_used,omitempty"`
 }
 
 // RotationRecord tracks an account rotation.
@@ -192,30 +198,44 @@ func (r *AccountRotator) GetCurrentAccount(agentType string) (*AccountInfo, erro
 	ctx, cancel := context.WithTimeout(context.Background(), r.CommandTimeout)
 	defer cancel()
 
-	output, err := r.runCaamCommand(ctx, "status", "--provider", provider, "--json")
+	stdout, stderr, err := r.runCaamCommand(ctx, "list", "--json")
 	if err != nil {
 		r.logger().Error("[AccountRotator] get_current_failed",
 			"provider", provider,
-			"error", err)
-		return nil, fmt.Errorf("caam status failed: %w", err)
+			"error", err,
+			"stderr", stderr,
+		)
+		return nil, fmt.Errorf("caam list failed: %w", err)
 	}
 
-	var status caamStatus
-	if err := json.Unmarshal([]byte(output), &status); err != nil {
-		return nil, fmt.Errorf("parse caam status: %w", err)
+	accounts, err := parseCAAMAccounts(stdout)
+	if err != nil {
+		return nil, fmt.Errorf("parse caam list: %w", err)
 	}
 
-	info := &AccountInfo{
-		Provider:    status.Provider,
-		AccountName: status.ActiveAccount,
-		IsActive:    true,
+	for _, acc := range accounts {
+		if acc.Provider != provider || !acc.Active {
+			continue
+		}
+
+		info := &AccountInfo{
+			Provider:      provider,
+			AccountName:   acc.ID,
+			Email:         acc.Email,
+			IsActive:      true,
+			RateLimited:   acc.RateLimited,
+			CooldownUntil: acc.CooldownUntil,
+		}
+
+		r.logger().Info("[AccountRotator] get_current",
+			"provider", provider,
+			"account", info.AccountName,
+		)
+
+		return info, nil
 	}
 
-	r.logger().Info("[AccountRotator] get_current",
-		"provider", provider,
-		"account", status.ActiveAccount)
-
-	return info, nil
+	return nil, fmt.Errorf("no active account found for provider %q", provider)
 }
 
 // ListAccounts returns all accounts for a provider/agent type.
@@ -229,26 +249,35 @@ func (r *AccountRotator) ListAccounts(agentType string) ([]AccountInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.CommandTimeout)
 	defer cancel()
 
-	output, err := r.runCaamCommand(ctx, "list", "--provider", provider, "--json")
+	stdout, stderr, err := r.runCaamCommand(ctx, "list", "--json")
 	if err != nil {
 		r.logger().Error("[AccountRotator] list_accounts_failed",
 			"provider", provider,
-			"error", err)
+			"error", err,
+			"stderr", stderr,
+		)
 		return nil, fmt.Errorf("caam list failed: %w", err)
 	}
 
-	var accounts []caamAccount
-	if err := json.Unmarshal([]byte(output), &accounts); err != nil {
+	accounts, err := parseCAAMAccounts(stdout)
+	if err != nil {
 		return nil, fmt.Errorf("parse caam list: %w", err)
 	}
 
-	result := make([]AccountInfo, len(accounts))
-	for i, acc := range accounts {
-		result[i] = AccountInfo{
-			Provider:    provider,
-			AccountName: acc.Name,
-			IsActive:    acc.Active,
+	result := make([]AccountInfo, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.Provider != provider {
+			continue
 		}
+
+		result = append(result, AccountInfo{
+			Provider:      provider,
+			AccountName:   acc.ID,
+			Email:         acc.Email,
+			IsActive:      acc.Active,
+			RateLimited:   acc.RateLimited,
+			CooldownUntil: acc.CooldownUntil,
+		})
 	}
 
 	r.logger().Info("[AccountRotator] list_accounts",
@@ -256,6 +285,46 @@ func (r *AccountRotator) ListAccounts(agentType string) ([]AccountInfo, error) {
 		"count", len(result))
 
 	return result, nil
+}
+
+// ListAvailableAccounts returns non-rate-limited accounts for a provider/agent type.
+func (r *AccountRotator) ListAvailableAccounts(agentType string) ([]AccountInfo, error) {
+	accounts, err := r.ListAccounts(agentType)
+	if err != nil {
+		return nil, err
+	}
+
+	available := make([]AccountInfo, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.RateLimited {
+			continue
+		}
+		available = append(available, acc)
+	}
+	return available, nil
+}
+
+func parseCAAMAccounts(output string) ([]tools.CAAMAccount, error) {
+	data := []byte(output)
+	if len(data) == 0 {
+		return []tools.CAAMAccount{}, nil
+	}
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("invalid JSON")
+	}
+
+	var accounts []tools.CAAMAccount
+	if err := json.Unmarshal(data, &accounts); err == nil {
+		return accounts, nil
+	}
+
+	var wrapper struct {
+		Accounts []tools.CAAMAccount `json:"accounts"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+	return wrapper.Accounts, nil
 }
 
 // SwitchAccount switches to the next available account.
@@ -267,42 +336,56 @@ func (r *AccountRotator) SwitchAccount(agentType string) (*RotationRecord, error
 
 	provider := normalizeProvider(agentType)
 
-	// Get current account before switch
-	currentInfo, err := r.GetCurrentAccount(agentType)
-	fromAccount := ""
-	if err == nil && currentInfo != nil {
-		fromAccount = currentInfo.AccountName
-	}
-
 	r.logger().Info("[AccountRotator] switch_start",
-		"provider", provider,
-		"from", fromAccount)
+		"provider", provider)
 
 	ctx, cancel := context.WithTimeout(context.Background(), r.CommandTimeout)
 	defer cancel()
 
 	start := time.Now()
-	_, err = r.runCaamCommand(ctx, "switch", "--provider", provider, "--next")
-	if err != nil {
-		r.logger().Error("[AccountRotator] switch_failed",
-			"provider", provider,
-			"error", err)
-		return nil, fmt.Errorf("caam switch failed: %w", err)
+	stdout, stderr, runErr := r.runCaamCommand(ctx, "switch", provider, "--next", "--json")
+
+	payload := stdout
+	if payload == "" {
+		payload = stderr
 	}
 
-	// Get new account after switch
-	newInfo, err := r.GetCurrentAccount(agentType)
-	toAccount := ""
-	if err == nil && newInfo != nil {
-		toAccount = newInfo.AccountName
+	var result tools.SwitchResult
+	if payload != "" && json.Valid([]byte(payload)) {
+		if err := json.Unmarshal([]byte(payload), &result); err != nil {
+			r.logger().Error("[AccountRotator] switch_parse_failed",
+				"provider", provider,
+				"error", err,
+				"output", payload,
+			)
+			return nil, fmt.Errorf("parse caam switch output: %w", err)
+		}
+	}
+
+	if runErr != nil {
+		r.logger().Error("[AccountRotator] switch_failed",
+			"provider", provider,
+			"error", runErr,
+			"stderr", stderr,
+			"stdout", stdout,
+		)
+		return nil, fmt.Errorf("caam switch failed: %w", runErr)
+	}
+
+	if !result.Success && result.Error != "" {
+		r.logger().Error("[AccountRotator] switch_failed",
+			"provider", provider,
+			"error", result.Error,
+		)
+		return nil, fmt.Errorf("caam switch failed: %s", result.Error)
 	}
 
 	duration := time.Since(start)
 
 	record := &RotationRecord{
 		Provider:    provider,
-		FromAccount: fromAccount,
-		ToAccount:   toAccount,
+		FromAccount: result.PreviousAccount,
+		ToAccount:   result.NewAccount,
 		RotatedAt:   time.Now(),
 		TriggeredBy: "limit_hit",
 	}
@@ -313,9 +396,11 @@ func (r *AccountRotator) SwitchAccount(agentType string) (*RotationRecord, error
 
 	r.logger().Info("[AccountRotator] switch_complete",
 		"provider", provider,
-		"from", fromAccount,
-		"to", toAccount,
-		"duration", duration)
+		"from", record.FromAccount,
+		"to", record.ToAccount,
+		"duration", duration,
+		"accounts_remaining", result.AccountsRemaining,
+	)
 
 	return record, nil
 }
@@ -344,12 +429,14 @@ func (r *AccountRotator) SwitchToAccount(agentType, accountName string) (*Rotati
 	defer cancel()
 
 	start := time.Now()
-	_, err = r.runCaamCommand(ctx, "switch", "--provider", provider, "--account", accountName)
+	_, stderr, err := r.runCaamCommand(ctx, "switch", accountName)
 	if err != nil {
 		r.logger().Error("[AccountRotator] switch_to_failed",
 			"provider", provider,
 			"account", accountName,
-			"error", err)
+			"error", err,
+			"stderr", stderr,
+		)
 		return nil, fmt.Errorf("caam switch failed: %w", err)
 	}
 
@@ -507,16 +594,23 @@ func (r *AccountRotator) getOrCreateState(sessionPane string) *RotationState {
 }
 
 // runCaamCommand executes a caam command and returns its output.
-func (r *AccountRotator) runCaamCommand(ctx context.Context, args ...string) (string, error) {
+func (r *AccountRotator) runCaamCommand(ctx context.Context, args ...string) (stdoutStr string, stderrStr string, err error) {
 	cmd := exec.CommandContext(ctx, r.caamPath, args...)
-	output, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("caam %v: exit %d: %s", args, exitErr.ExitCode(), string(exitErr.Stderr))
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return stdout.String(), stderr.String(), fmt.Errorf("caam %v: timeout", args)
 		}
-		return "", fmt.Errorf("caam %v: %w", args, err)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return stdout.String(), stderr.String(), fmt.Errorf("caam %v: exit %d: %s", args, exitErr.ExitCode(), stderr.String())
+		}
+		return stdout.String(), stderr.String(), fmt.Errorf("caam %v: %w", args, err)
 	}
-	return string(output), nil
+	return stdout.String(), stderr.String(), nil
 }
 
 // RotateAccount implements the AccountRotator interface used by AutoRespawner.

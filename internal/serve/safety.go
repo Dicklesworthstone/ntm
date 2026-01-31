@@ -1113,6 +1113,11 @@ func (s *Server) handleApprovalApproveV1(w http.ResponseWriter, r *http.Request)
 	approvalsLock.Unlock()
 
 	log.Printf("Approval %s approved by %s", id, approver)
+	s.publishApprovalEvent("approval.resolved", map[string]interface{}{
+		"approval_id": id,
+		"decision":    "approved",
+		"approved_by": approver,
+	})
 
 	resp := ApprovalDecisionResponse{
 		ID:       id,
@@ -1169,6 +1174,11 @@ func (s *Server) handleApprovalDenyV1(w http.ResponseWriter, r *http.Request) {
 	approvalsLock.Unlock()
 
 	log.Printf("Approval %s denied by %s", id, denier)
+	s.publishApprovalEvent("approval.resolved", map[string]interface{}{
+		"approval_id": id,
+		"decision":    "denied",
+		"approved_by": denier,
+	})
 
 	resp := ApprovalDecisionResponse{
 		ID:       id,
@@ -1254,6 +1264,17 @@ func (s *Server) handleApprovalRequestV1(w http.ResponseWriter, r *http.Request)
 	approvalsLock.Unlock()
 
 	log.Printf("Approval request %s created by %s for action '%s'", id, requestor, req.Action)
+	s.publishApprovalEvent("approval.requested", map[string]interface{}{
+		"approval_id":  id,
+		"action":       approval.Action,
+		"resource":     approval.Resource,
+		"requestor":    approval.Requestor,
+		"reason":       approval.Reason,
+		"slb_required": approval.SLBRequired,
+		"status":       approval.Status,
+		"expires_at":   approval.ExpiresAt.Format(time.RFC3339Nano),
+		"requested_at": approval.CreatedAt.Format(time.RFC3339Nano),
+	})
 
 	resp := ApprovalRequestResponse{
 		ID:          id,
@@ -1270,6 +1291,13 @@ func (s *Server) handleApprovalRequestV1(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeSuccessResponse(w, http.StatusOK, data, reqID)
+}
+
+func (s *Server) publishApprovalEvent(eventType string, payload map[string]interface{}) {
+	if s.wsHub == nil {
+		return
+	}
+	s.wsHub.Publish("approvals:*", eventType, payload)
 }
 
 // Helper functions

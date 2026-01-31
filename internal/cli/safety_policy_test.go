@@ -74,3 +74,75 @@ approval_required:
 		})
 	}
 }
+
+func TestEvaluateSafetyCheck_DCGMissing_DoesNotBlockApprovalRequired(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+
+	resp, exitCode, err := evaluateSafetyCheck("git commit --amend")
+	if err != nil {
+		t.Fatalf("evaluateSafetyCheck returned error: %v", err)
+	}
+
+	if exitCode != 0 {
+		t.Fatalf("expected exitCode=0, got %d", exitCode)
+	}
+
+	if resp.Action != string(policy.ActionApprove) {
+		t.Fatalf("expected action=%s, got %q", policy.ActionApprove, resp.Action)
+	}
+
+	if resp.DCG == nil {
+		t.Fatalf("expected dcg verdict to be present for dangerous commands")
+	}
+	if resp.DCG.Available {
+		t.Fatalf("expected dcg.available=false when dcg missing")
+	}
+}
+
+func TestEvaluateSafetyCheck_DCGBlocks_PromotesApprovalToBlock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	dcgPath := filepath.Join(dir, "dcg")
+	script := `#!/bin/sh
+if [ "$1" = "check" ]; then
+  # dcg check --json <command>
+  cmd="$3"
+  echo "{\"command\":\"$cmd\",\"reason\":\"blocked by fake dcg\"}"
+  exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(dcgPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write fake dcg: %v", err)
+	}
+
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	resp, exitCode, err := evaluateSafetyCheck("git commit --amend")
+	if err != nil {
+		t.Fatalf("evaluateSafetyCheck returned error: %v", err)
+	}
+
+	if exitCode != 1 {
+		t.Fatalf("expected exitCode=1, got %d", exitCode)
+	}
+
+	if resp.Action != string(policy.ActionBlock) {
+		t.Fatalf("expected action=%s, got %q", policy.ActionBlock, resp.Action)
+	}
+	if resp.Pattern != "dcg" {
+		t.Fatalf("expected pattern=dcg, got %q", resp.Pattern)
+	}
+	if resp.Reason != "blocked by fake dcg" {
+		t.Fatalf("expected reason from dcg, got %q", resp.Reason)
+	}
+
+	if resp.Policy == nil || resp.Policy.Action != string(policy.ActionApprove) {
+		t.Fatalf("expected policy verdict to reflect approval_required; got %+v", resp.Policy)
+	}
+	if resp.DCG == nil || !resp.DCG.Available || !resp.DCG.Checked || !resp.DCG.Blocked {
+		t.Fatalf("expected dcg verdict populated and blocked=true; got %+v", resp.DCG)
+	}
+}

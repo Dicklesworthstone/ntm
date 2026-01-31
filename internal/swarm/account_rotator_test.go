@@ -1,9 +1,65 @@
 package swarm
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+func writeFakeCAAM(t *testing.T, dir, stateFile string) string {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("fake caam helper uses /bin/sh")
+	}
+
+	path := filepath.Join(dir, "caam")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+
+STATE_FILE=%q
+
+if [ "${1:-}" = "list" ] && [ "${2:-}" = "--json" ]; then
+  active="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "$active" = "claude-b" ]; then
+    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":false,"rate_limited":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":true,"rate_limited":true}]'
+  else
+    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":true,"rate_limited":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":false,"rate_limited":true}]'
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = "switch" ] && [ "${2:-}" = "claude" ] && [ "${3:-}" = "--next" ] && [ "${4:-}" = "--json" ]; then
+  prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "$prev" = "claude-b" ]; then
+    next="claude-a"
+  else
+    next="claude-b"
+  fi
+  echo "$next" > "$STATE_FILE"
+  echo "{\"success\":true,\"provider\":\"claude\",\"previous_account\":\"$prev\",\"new_account\":\"$next\",\"accounts_remaining\":1}"
+  exit 0
+fi
+
+if [ "${1:-}" = "switch" ]; then
+  acct="${2:-}"
+  echo "$acct" > "$STATE_FILE"
+  exit 0
+fi
+
+echo "unexpected args" >&2
+exit 2
+`, stateFile)
+
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake caam: %v", err)
+	}
+
+	return path
+}
 
 func TestNewAccountRotator(t *testing.T) {
 	rotator := NewAccountRotator()
@@ -618,6 +674,64 @@ func TestAccountRotatorCooldownDurationRespected(t *testing.T) {
 	}
 	if contains(err.Error(), "cooldown active") {
 		t.Error("cooldown should have expired")
+	}
+}
+
+func TestAccountRotatorSwitchAccount_UsesJSONSwitchResult(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "state")
+	if err := os.WriteFile(stateFile, []byte("claude-a"), 0o644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	caamPath := writeFakeCAAM(t, dir, stateFile)
+	rotator := NewAccountRotator().WithCaamPath(caamPath)
+
+	record, err := rotator.SwitchAccount("cc")
+	if err != nil {
+		t.Fatalf("SwitchAccount error: %v", err)
+	}
+	if record.Provider != "claude" {
+		t.Fatalf("Provider = %q, want claude", record.Provider)
+	}
+	if record.FromAccount != "claude-a" {
+		t.Fatalf("FromAccount = %q, want claude-a", record.FromAccount)
+	}
+	if record.ToAccount != "claude-b" {
+		t.Fatalf("ToAccount = %q, want claude-b", record.ToAccount)
+	}
+
+	info, err := rotator.GetCurrentAccount("cc")
+	if err != nil {
+		t.Fatalf("GetCurrentAccount error: %v", err)
+	}
+	if info == nil || info.AccountName != "claude-b" {
+		t.Fatalf("active account = %v, want claude-b", info)
+	}
+}
+
+func TestAccountRotatorListAvailableAccounts_FiltersRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "state")
+	if err := os.WriteFile(stateFile, []byte("claude-a"), 0o644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	caamPath := writeFakeCAAM(t, dir, stateFile)
+	rotator := NewAccountRotator().WithCaamPath(caamPath)
+
+	available, err := rotator.ListAvailableAccounts("cc")
+	if err != nil {
+		t.Fatalf("ListAvailableAccounts error: %v", err)
+	}
+	if len(available) != 1 {
+		t.Fatalf("available len = %d, want 1", len(available))
+	}
+	if available[0].AccountName != "claude-a" {
+		t.Fatalf("available[0].AccountName = %q, want claude-a", available[0].AccountName)
+	}
+	if available[0].RateLimited {
+		t.Fatalf("available[0].RateLimited = true, want false")
 	}
 }
 
