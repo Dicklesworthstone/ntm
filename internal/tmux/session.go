@@ -541,8 +541,21 @@ func SplitWindow(session string, directory string) (string, error) {
 // SetPaneTitle sets the title of a pane and disables title changes by programs
 // to prevent shells/processes from overwriting NTM's pane naming convention.
 func (c *Client) SetPaneTitle(paneID, title string) error {
-	if err := c.RunSilent("select-pane", "-t", paneID, "-T", title); err != nil {
-		return err
+	selectErr := c.RunSilent("select-pane", "-t", paneID, "-T", title)
+	if selectErr != nil && strings.Contains(selectErr.Error(), "can't find pane") {
+		// On busy tmux servers, newly-created panes can transiently fail to resolve by ID.
+		// Retry briefly to reduce flakiness (especially under `go test`).
+		const attempts = 5
+		for i := 0; i < attempts && selectErr != nil; i++ {
+			time.Sleep(50 * time.Millisecond)
+			selectErr = c.RunSilent("select-pane", "-t", paneID, "-T", title)
+			if selectErr != nil && !strings.Contains(selectErr.Error(), "can't find pane") {
+				break
+			}
+		}
+	}
+	if selectErr != nil {
+		return selectErr
 	}
 	// Disable allow-set-title to prevent programs (shells, node, etc.) from
 	// overwriting the pane title via terminal escape sequences (OSC 0/2).
