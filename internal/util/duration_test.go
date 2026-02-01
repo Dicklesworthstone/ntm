@@ -2,6 +2,7 @@ package util
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -60,10 +61,6 @@ func TestParseDuration(t *testing.T) {
 }
 
 func TestParseDurationWithDefault(t *testing.T) {
-	// Capture stderr for deprecation warning tests
-	originalStderr := os.Stderr
-	defer func() { os.Stderr = originalStderr }()
-
 	tests := []struct {
 		name        string
 		input       string
@@ -116,11 +113,15 @@ func TestParseDurationWithDefault(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Capture stderr
+			// Capture slog output for deprecation warning tests
 			r, w, _ := os.Pipe()
-			os.Stderr = w
+			oldLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 			got, err := ParseDurationWithDefault(tc.input, tc.defaultUnit, tc.flagName)
+
+			// Restore logger before reading pipe
+			slog.SetDefault(oldLogger)
 
 			// Close write end and read output
 			w.Close()
