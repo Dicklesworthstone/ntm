@@ -46,6 +46,17 @@ Examples:
 }
 
 func runPalette(w io.Writer, errW io.Writer, session string) error {
+	// When --json is passed, output palette data as JSON instead of launching the TUI
+	if jsonOutput {
+		var sess string
+		if session != "" {
+			sess = session
+		}
+		return robot.PrintPalette(cfg, robot.PaletteOptions{
+			Session: sess,
+		})
+	}
+
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
