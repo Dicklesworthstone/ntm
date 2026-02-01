@@ -272,8 +272,8 @@ func TestSwarmPaneTargetFromPlanIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("swarmPaneTargetFromPlanIndex returned error: %v", err)
 	}
-	if target != "test:0.1" {
-		t.Fatalf("target = %q, want %q", target, "test:0.1")
+	if target != "test:0.0" {
+		t.Fatalf("target = %q, want %q", target, "test:0.0")
 	}
 
 	targeting = swarmSessionTargeting{WindowIndex: 1, BasePaneIndex: 1}
@@ -281,8 +281,8 @@ func TestSwarmPaneTargetFromPlanIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("swarmPaneTargetFromPlanIndex returned error: %v", err)
 	}
-	if target != "test:1.2" {
-		t.Fatalf("target = %q, want %q", target, "test:1.2")
+	if target != "test:1.1" {
+		t.Fatalf("target = %q, want %q", target, "test:1.1")
 	}
 
 	_, err = swarmPaneTargetFromPlanIndex("test", targeting, -1)
