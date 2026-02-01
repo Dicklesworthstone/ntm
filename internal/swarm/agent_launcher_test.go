@@ -1,7 +1,9 @@
 package swarm
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +146,148 @@ func TestFormatPaneTarget(t *testing.T) {
 					tt.session, tt.pane, result, tt.expected)
 			}
 		})
+	}
+}
+
+type fakeTmuxRunner struct {
+	windowsOutput string
+	panesOutput   map[string]string
+	errByCommand  map[string]error
+}
+
+func (f *fakeTmuxRunner) RunContext(ctx context.Context, args ...string) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if len(args) == 0 {
+		return "", errors.New("no tmux args")
+	}
+
+	cmd := args[0]
+	if err := f.errByCommand[cmd]; err != nil {
+		return "", err
+	}
+
+	switch cmd {
+	case "list-windows":
+		return f.windowsOutput, nil
+	case "list-panes":
+		target, ok := findTmuxFlagValue(args, "-t")
+		if !ok {
+			return "", errors.New("missing -t")
+		}
+		if f.panesOutput == nil {
+			return "", errors.New("no panes output configured")
+		}
+		out, ok := f.panesOutput[target]
+		if !ok {
+			return "", fmt.Errorf("no panes output configured for target %q", target)
+		}
+		return out, nil
+	default:
+		return "", fmt.Errorf("unexpected tmux command %q", cmd)
+	}
+}
+
+func findTmuxFlagValue(args []string, flag string) (string, bool) {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
+func TestResolveSwarmSessionTargeting_BaseIndexZero(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeTmuxRunner{
+		windowsOutput: "0\n",
+		panesOutput: map[string]string{
+			"test:0": "0\n1\n2\n",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	targeting, err := resolveSwarmSessionTargeting(context.Background(), runner, "test")
+	if err != nil {
+		t.Fatalf("resolveSwarmSessionTargeting returned error: %v", err)
+	}
+	if targeting.WindowIndex != 0 {
+		t.Fatalf("WindowIndex = %d, want %d", targeting.WindowIndex, 0)
+	}
+	if targeting.BasePaneIndex != 0 {
+		t.Fatalf("BasePaneIndex = %d, want %d", targeting.BasePaneIndex, 0)
+	}
+}
+
+func TestResolveSwarmSessionTargeting_PrefersWindowOne(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeTmuxRunner{
+		windowsOutput: "0\n1\n2\n",
+		panesOutput: map[string]string{
+			"test:1": "0\n1\n",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	targeting, err := resolveSwarmSessionTargeting(context.Background(), runner, "test")
+	if err != nil {
+		t.Fatalf("resolveSwarmSessionTargeting returned error: %v", err)
+	}
+	if targeting.WindowIndex != 1 {
+		t.Fatalf("WindowIndex = %d, want %d", targeting.WindowIndex, 1)
+	}
+}
+
+func TestResolveSwarmSessionTargeting_BaseIndexOne(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeTmuxRunner{
+		windowsOutput: "2\n1\n", // unsorted; resolver should pick min
+		panesOutput: map[string]string{
+			"test:1": "3\n1\n2\n", // unsorted; resolver should pick min
+		},
+		errByCommand: map[string]error{},
+	}
+
+	targeting, err := resolveSwarmSessionTargeting(context.Background(), runner, "test")
+	if err != nil {
+		t.Fatalf("resolveSwarmSessionTargeting returned error: %v", err)
+	}
+	if targeting.WindowIndex != 1 {
+		t.Fatalf("WindowIndex = %d, want %d", targeting.WindowIndex, 1)
+	}
+	if targeting.BasePaneIndex != 1 {
+		t.Fatalf("BasePaneIndex = %d, want %d", targeting.BasePaneIndex, 1)
+	}
+}
+
+func TestSwarmPaneTargetFromPlanIndex(t *testing.T) {
+	t.Parallel()
+
+	targeting := swarmSessionTargeting{WindowIndex: 0, BasePaneIndex: 0}
+	target, err := swarmPaneTargetFromPlanIndex("test", targeting, 1)
+	if err != nil {
+		t.Fatalf("swarmPaneTargetFromPlanIndex returned error: %v", err)
+	}
+	if target != "test:0.1" {
+		t.Fatalf("target = %q, want %q", target, "test:0.1")
+	}
+
+	targeting = swarmSessionTargeting{WindowIndex: 1, BasePaneIndex: 1}
+	target, err = swarmPaneTargetFromPlanIndex("test", targeting, 1)
+	if err != nil {
+		t.Fatalf("swarmPaneTargetFromPlanIndex returned error: %v", err)
+	}
+	if target != "test:1.2" {
+		t.Fatalf("target = %q, want %q", target, "test:1.2")
+	}
+
+	_, err = swarmPaneTargetFromPlanIndex("test", targeting, -1)
+	if err == nil {
+		t.Fatalf("expected error for negative plan pane index")
 	}
 }
 

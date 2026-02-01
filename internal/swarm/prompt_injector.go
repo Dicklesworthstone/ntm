@@ -377,16 +377,47 @@ func (p *PromptInjector) InjectSwarm(plan *SwarmPlan, prompt string) (*BatchInje
 // InjectSwarmWithContext sends marching orders to all panes in a SwarmPlan with context support.
 // Each pane receives the same prompt. The operation can be cancelled via context.
 func (p *PromptInjector) InjectSwarmWithContext(ctx context.Context, plan *SwarmPlan, prompt string) (*BatchInjectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if plan == nil {
 		return nil, fmt.Errorf("plan cannot be nil")
 	}
 
 	// Build targets from plan
+	client := p.tmuxClient()
+	targetingCache := make(map[string]swarmSessionTargeting, len(plan.Sessions))
 	var targets []InjectionTarget
 	for _, sessionSpec := range plan.Sessions {
+		targeting, targetingOK := targetingCache[sessionSpec.Name]
+		if !targetingOK && ctx.Err() == nil {
+			resolved, err := resolveSwarmSessionTargeting(ctx, client, sessionSpec.Name)
+			if err != nil {
+				p.logger().Warn("[PromptInjector] session_targeting_resolve_failed",
+					"session", sessionSpec.Name,
+					"error", err)
+			} else {
+				targeting = resolved
+				targetingCache[sessionSpec.Name] = resolved
+				targetingOK = true
+			}
+		}
+
 		for _, paneSpec := range sessionSpec.Panes {
+			sessionPane := formatPaneTarget(sessionSpec.Name, paneSpec.Index)
+			if targetingOK {
+				if resolved, err := swarmPaneTargetFromPlanIndex(sessionSpec.Name, targeting, paneSpec.Index); err == nil {
+					sessionPane = resolved
+				} else {
+					p.logger().Warn("[PromptInjector] pane_target_resolve_failed",
+						"session", sessionSpec.Name,
+						"pane_index", paneSpec.Index,
+						"error", err)
+				}
+			}
+
 			target := InjectionTarget{
-				SessionPane: formatPaneTarget(sessionSpec.Name, paneSpec.Index),
+				SessionPane: sessionPane,
 				AgentType:   paneSpec.AgentType,
 			}
 			targets = append(targets, target)

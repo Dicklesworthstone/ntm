@@ -1,8 +1,12 @@
 package swarm
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -104,6 +108,132 @@ func (l *AgentLauncher) logger() *slog.Logger {
 // Uses the format "session:window.pane" where window is typically 1.
 func formatPaneTarget(session string, pane int) string {
 	return fmt.Sprintf("%s:1.%d", session, pane)
+}
+
+type tmuxContextRunner interface {
+	RunContext(ctx context.Context, args ...string) (string, error)
+}
+
+type swarmSessionTargeting struct {
+	WindowIndex   int
+	BasePaneIndex int
+}
+
+func resolveSwarmSessionTargeting(ctx context.Context, runner tmuxContextRunner, session string) (swarmSessionTargeting, error) {
+	if runner == nil {
+		return swarmSessionTargeting{}, errors.New("tmux runner is nil")
+	}
+	if session == "" {
+		return swarmSessionTargeting{}, errors.New("session name required")
+	}
+
+	windowsOut, err := runner.RunContext(ctx, "list-windows", "-t", session, "-F", "#{window_index}")
+	if err != nil {
+		return swarmSessionTargeting{}, fmt.Errorf("list-windows: %w", err)
+	}
+	windowIndex, err := parsePrimaryWindowIndex(windowsOut)
+	if err != nil {
+		return swarmSessionTargeting{}, fmt.Errorf("parse window index: %w", err)
+	}
+
+	panesOut, err := runner.RunContext(ctx, "list-panes", "-t", fmt.Sprintf("%s:%d", session, windowIndex), "-F", "#{pane_index}")
+	if err != nil {
+		return swarmSessionTargeting{}, fmt.Errorf("list-panes: %w", err)
+	}
+	basePaneIndex, err := parseMinIntOutput(panesOut)
+	if err != nil {
+		return swarmSessionTargeting{}, fmt.Errorf("parse base pane index: %w", err)
+	}
+
+	return swarmSessionTargeting{WindowIndex: windowIndex, BasePaneIndex: basePaneIndex}, nil
+}
+
+func parsePrimaryWindowIndex(output string) (int, error) {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return 0, errors.New("no values returned")
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	minVal := 0
+	found := false
+	hasWindowOne := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		val, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+		if val == 1 {
+			hasWindowOne = true
+		}
+		if !found || val < minVal {
+			minVal = val
+			found = true
+		}
+	}
+
+	if !found {
+		return 0, errors.New("no valid integers returned")
+	}
+	if hasWindowOne {
+		return 1, nil
+	}
+	return minVal, nil
+}
+
+func parseMinIntOutput(output string) (int, error) {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return 0, errors.New("no values returned")
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	minVal := 0
+	found := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		val, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+		if !found || val < minVal {
+			minVal = val
+			found = true
+		}
+	}
+
+	if !found {
+		return 0, errors.New("no valid integers returned")
+	}
+	return minVal, nil
+}
+
+func formatPaneTargetWithWindow(session string, windowIndex int, paneIndex int) string {
+	return fmt.Sprintf("%s:%d.%d", session, windowIndex, paneIndex)
+}
+
+func swarmTmuxPaneIndex(basePaneIndex, planPaneIndex int) (int, error) {
+	if planPaneIndex < 0 {
+		return 0, fmt.Errorf("plan pane index must be >= 0, got %d", planPaneIndex)
+	}
+	return basePaneIndex + planPaneIndex, nil
+}
+
+func swarmPaneTargetFromPlanIndex(session string, targeting swarmSessionTargeting, planPaneIndex int) (string, error) {
+	tmuxPaneIndex, err := swarmTmuxPaneIndex(targeting.BasePaneIndex, planPaneIndex)
+	if err != nil {
+		return "", err
+	}
+	return formatPaneTargetWithWindow(session, targeting.WindowIndex, tmuxPaneIndex), nil
 }
 
 // LaunchAgent starts an agent in a specific pane.

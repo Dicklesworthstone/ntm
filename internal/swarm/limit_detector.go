@@ -109,6 +109,9 @@ func (d *LimitDetector) Events() <-chan LimitEvent {
 
 // Start begins monitoring all panes in the swarm.
 func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if plan == nil {
 		return nil
 	}
@@ -121,9 +124,42 @@ func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
 		"sessions", len(plan.Sessions),
 		"check_interval", d.CheckInterval)
 
+	var runner tmuxContextRunner = tmux.DefaultClient
+	if d.TmuxClient != nil {
+		if typed, ok := d.TmuxClient.(tmuxContextRunner); ok {
+			runner = typed
+		}
+	}
+
+	targetingCache := make(map[string]swarmSessionTargeting, len(plan.Sessions))
+
 	for _, sess := range plan.Sessions {
+		targeting, targetingOK := targetingCache[sess.Name]
+		if !targetingOK && d.ctx.Err() == nil {
+			resolved, err := resolveSwarmSessionTargeting(d.ctx, runner, sess.Name)
+			if err != nil {
+				d.logger().Warn("[LimitDetector] session_targeting_resolve_failed",
+					"session", sess.Name,
+					"error", err)
+			} else {
+				targeting = resolved
+				targetingCache[sess.Name] = resolved
+				targetingOK = true
+			}
+		}
+
 		for _, pane := range sess.Panes {
 			target := formatPaneTarget(sess.Name, pane.Index)
+			if targetingOK {
+				if resolved, err := swarmPaneTargetFromPlanIndex(sess.Name, targeting, pane.Index); err == nil {
+					target = resolved
+				} else {
+					d.logger().Warn("[LimitDetector] pane_target_resolve_failed",
+						"session", sess.Name,
+						"pane_index", pane.Index,
+						"error", err)
+				}
+			}
 			if err := d.StartPane(d.ctx, target, pane.AgentType); err != nil {
 				d.logger().Warn("[LimitDetector] Failed to start pane monitoring",
 					"session_pane", target,

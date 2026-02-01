@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
@@ -36,6 +37,9 @@ type PaneLauncher struct {
 
 	// RateLimitTracker enables adaptive throttling for Codex.
 	RateLimitTracker *ratelimit.RateLimitTracker
+
+	targetingMu    sync.Mutex
+	targetingCache map[string]swarmSessionTargeting
 }
 
 // NewPaneLauncher creates a new PaneLauncher with default settings.
@@ -47,6 +51,7 @@ func NewPaneLauncher() *PaneLauncher {
 		ValidatePaths:    true,
 		Logger:           slog.Default(),
 		RateLimitTracker: nil,
+		targetingCache:   make(map[string]swarmSessionTargeting),
 	}
 }
 
@@ -59,6 +64,7 @@ func NewPaneLauncherWithClient(client *tmux.Client) *PaneLauncher {
 		ValidatePaths:    true,
 		Logger:           slog.Default(),
 		RateLimitTracker: nil,
+		targetingCache:   make(map[string]swarmSessionTargeting),
 	}
 }
 
@@ -116,6 +122,38 @@ func (pl *PaneLauncher) logger() *slog.Logger {
 	return slog.Default()
 }
 
+func (pl *PaneLauncher) resolveSessionTargeting(ctx context.Context, sessionName string) (swarmSessionTargeting, bool) {
+	if sessionName == "" {
+		return swarmSessionTargeting{}, false
+	}
+
+	pl.targetingMu.Lock()
+	if pl.targetingCache != nil {
+		if cached, ok := pl.targetingCache[sessionName]; ok {
+			pl.targetingMu.Unlock()
+			return cached, true
+		}
+	}
+	pl.targetingMu.Unlock()
+
+	targeting, err := resolveSwarmSessionTargeting(ctx, pl.tmuxClient(), sessionName)
+	if err != nil {
+		pl.logger().Warn("[PaneLauncher] session_targeting_resolve_failed",
+			"session", sessionName,
+			"error", err)
+		return swarmSessionTargeting{}, false
+	}
+
+	pl.targetingMu.Lock()
+	if pl.targetingCache == nil {
+		pl.targetingCache = make(map[string]swarmSessionTargeting)
+	}
+	pl.targetingCache[sessionName] = targeting
+	pl.targetingMu.Unlock()
+
+	return targeting, true
+}
+
 // PaneLaunchResult represents the result of launching an agent in a pane.
 type PaneLaunchResult struct {
 	SessionName string        `json:"session_name"`
@@ -132,6 +170,10 @@ type PaneLaunchResult struct {
 // LaunchAgentInPane sets up and launches an agent in a specific pane.
 // It changes to the project directory before launching the agent.
 func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName string, paneSpec PaneSpec) (*PaneLaunchResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	start := time.Now()
 	result := &PaneLaunchResult{
 		SessionName: sessionName,
@@ -140,16 +182,9 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		Project:     paneSpec.Project,
 	}
 
-	// Format pane target (session:window.pane)
+	// Default target format (fallback if session targeting can't be resolved)
 	paneTarget := formatPaneTarget(sessionName, paneSpec.Index)
 	result.PaneTarget = paneTarget
-
-	pl.logger().Info("[PaneLauncher] launch_start",
-		"session", sessionName,
-		"pane_index", paneSpec.Index,
-		"pane_target", paneTarget,
-		"project", paneSpec.Project,
-		"agent_type", paneSpec.AgentType)
 
 	// Check for context cancellation
 	select {
@@ -175,6 +210,25 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 	}
 
 	client := pl.tmuxClient()
+
+	if targeting, ok := pl.resolveSessionTargeting(ctx, sessionName); ok {
+		if resolved, err := swarmPaneTargetFromPlanIndex(sessionName, targeting, paneSpec.Index); err == nil {
+			paneTarget = resolved
+			result.PaneTarget = resolved
+		} else {
+			pl.logger().Warn("[PaneLauncher] pane_target_resolve_failed",
+				"session", sessionName,
+				"pane_index", paneSpec.Index,
+				"error", err)
+		}
+	}
+
+	pl.logger().Info("[PaneLauncher] launch_start",
+		"session", sessionName,
+		"pane_index", paneSpec.Index,
+		"pane_target", paneTarget,
+		"project", paneSpec.Project,
+		"agent_type", paneSpec.AgentType)
 
 	// Step 1: Change to project directory (if specified)
 	if paneSpec.Project != "" {
