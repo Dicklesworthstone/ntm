@@ -22,8 +22,10 @@ func newHistoryCmd() *cobra.Command {
 		limit   int
 		session string
 		since   string
+		until   string
 		search  string
 		source  string
+		regex   bool
 	)
 
 	cmd := &cobra.Command{
@@ -44,17 +46,21 @@ Examples:
   ntm history export history.jsonl     # Export to file`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHistoryList(limit, session, since, search, source)
+			return runHistoryList(limit, session, since, until, search, source, regex)
 		},
 	}
 
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Number of entries to show")
 	cmd.Flags().StringVarP(&session, "session", "s", "", "Filter by session name")
-	cmd.Flags().StringVar(&since, "since", "", "Time filter (e.g., 1h, 1d, 1w)")
+	cmd.Flags().StringVar(&since, "since", "", "Start time filter (duration like 1h/1d or RFC3339 timestamp)")
+	cmd.Flags().StringVar(&until, "until", "", "End time filter (duration like 1h/1d or RFC3339 timestamp)")
 	cmd.Flags().StringVar(&search, "search", "", "Search prompt text")
+	cmd.Flags().BoolVar(&regex, "regex", false, "Treat --search as a regular expression")
 	cmd.Flags().StringVar(&source, "source", "", "Filter by source (cli, palette, replay)")
 
 	// Subcommands
+	cmd.AddCommand(newHistorySearchCmd())
+	cmd.AddCommand(newHistoryReplayCmd())
 	cmd.AddCommand(newHistoryShowCmd())
 	cmd.AddCommand(newHistoryClearCmd())
 	cmd.AddCommand(newHistoryStatsCmd())
@@ -185,7 +191,7 @@ type HistoryListEntry struct {
 	DurationMs int       `json:"duration_ms,omitempty"`
 }
 
-func runHistoryList(limit int, session, since, search, source string) error {
+func runHistoryList(limit int, session, since, until, search, source string, searchRegex bool) error {
 	if limit <= 0 {
 		return fmt.Errorf("--limit must be greater than 0")
 	}
@@ -197,8 +203,12 @@ func runHistoryList(limit int, session, since, search, source string) error {
 	if session != "" {
 		entries, err = history.ReadForSession(session)
 	} else if search != "" {
-		entries, err = history.Search(search)
-	} else if since == "" && source == "" {
+		if searchRegex {
+			entries, err = history.SearchRegex(search)
+		} else {
+			entries, err = history.Search(search)
+		}
+	} else if since == "" && until == "" && source == "" {
 		entries, err = history.ReadRecent(limit)
 	} else {
 		entries, err = history.ReadAll()
@@ -207,18 +217,29 @@ func runHistoryList(limit int, session, since, search, source string) error {
 		return err
 	}
 
-	// Apply time filter
-	if since != "" {
-		duration, parseErr := util.ParseDuration(since)
+	// Apply time filters
+	if since != "" || until != "" {
+		sinceTime, parseErr := parseHistoryTimeFilter(since)
 		if parseErr != nil {
 			return fmt.Errorf("invalid --since value: %w", parseErr)
 		}
-		cutoff := time.Now().Add(-duration)
+		untilTime, parseErr := parseHistoryTimeFilter(until)
+		if parseErr != nil {
+			return fmt.Errorf("invalid --until value: %w", parseErr)
+		}
+		if !sinceTime.IsZero() && !untilTime.IsZero() && untilTime.Before(sinceTime) {
+			return fmt.Errorf("--until must be >= --since")
+		}
+
 		var filtered []history.HistoryEntry
 		for _, e := range entries {
-			if e.Timestamp.After(cutoff) {
-				filtered = append(filtered, e)
+			if !sinceTime.IsZero() && e.Timestamp.Before(sinceTime) {
+				continue
 			}
+			if !untilTime.IsZero() && e.Timestamp.After(untilTime) {
+				continue
+			}
+			filtered = append(filtered, e)
 		}
 		entries = filtered
 	}
@@ -251,6 +272,59 @@ func runHistoryList(limit int, session, since, search, source string) error {
 
 	formatter := output.New(output.WithJSON(jsonOutput))
 	return formatter.Output(result)
+}
+
+func parseHistoryTimeFilter(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+
+	// Prefer duration for backwards compatibility.
+	if d, err := util.ParseDuration(value); err == nil {
+		return time.Now().Add(-d), nil
+	}
+
+	// RFC3339 timestamp (UTC recommended).
+	ts, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return ts, nil
+}
+
+func newHistorySearchCmd() *cobra.Command {
+	var (
+		limit   int
+		session string
+		since   string
+		until   string
+		source  string
+		regex   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "search <query>",
+		Short: "Search prompt history",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runHistoryList(limit, session, since, until, args[0], source, regex)
+		},
+	}
+
+	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Number of entries to show")
+	cmd.Flags().StringVarP(&session, "session", "s", "", "Filter by session name")
+	cmd.Flags().StringVar(&since, "since", "", "Start time filter (duration like 1h/1d or RFC3339 timestamp)")
+	cmd.Flags().StringVar(&until, "until", "", "End time filter (duration like 1h/1d or RFC3339 timestamp)")
+	cmd.Flags().BoolVar(&regex, "regex", false, "Treat <query> as a regular expression")
+	cmd.Flags().StringVar(&source, "source", "", "Filter by source (cli, palette, replay)")
+
+	return cmd
+}
+
+func newHistoryReplayCmd() *cobra.Command {
+	// Use the same flags and behavior as `ntm replay`, but nested under `ntm history`.
+	return newReplayCmd()
 }
 
 func newHistoryShowCmd() *cobra.Command {
@@ -547,5 +621,3 @@ func truncateHistoryStr(s string, maxLen int) string {
 
 	return util.Truncate(s, maxLen)
 }
-
-

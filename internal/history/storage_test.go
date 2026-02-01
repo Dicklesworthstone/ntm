@@ -258,6 +258,32 @@ func TestSearch(t *testing.T) {
 	}
 }
 
+func TestSearchRegex(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	Clear()
+
+	// Add entries with different prompts
+	Append(NewEntry("session", nil, "implement authentication flow", SourceCLI))
+	Append(NewEntry("session", nil, "run tests", SourceCLI))
+	Append(NewEntry("session", nil, "fix authentication bug", SourceCLI))
+
+	results, err := SearchRegex(`auth.*(flow|bug)`)
+	if err != nil {
+		t.Fatalf("failed to regex search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	// Invalid regex should error
+	if _, err := SearchRegex(`(`); err == nil {
+		t.Fatalf("expected error for invalid regex")
+	}
+}
+
 func TestClear(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.Setenv("XDG_DATA_HOME", tmpDir)

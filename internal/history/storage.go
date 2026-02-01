@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -427,6 +428,28 @@ func Search(query string) ([]HistoryEntry, error) {
 	queryLower := strings.ToLower(query)
 	for _, e := range entries {
 		if strings.Contains(strings.ToLower(e.Prompt), queryLower) {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
+// SearchRegex finds entries where the prompt matches the provided regex pattern.
+// Pattern uses Go's regexp syntax. Use inline flags like (?i) for case-insensitive matches.
+func SearchRegex(pattern string) ([]HistoryEntry, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []HistoryEntry
+	for _, e := range entries {
+		if re.MatchString(e.Prompt) {
 			result = append(result, e)
 		}
 	}
