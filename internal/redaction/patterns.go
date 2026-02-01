@@ -5,22 +5,22 @@ import (
 	"sync"
 )
 
-// patternDef defines a pattern with its category and priority
+// patternDef defines a pattern with its category and priority.
 type patternDef struct {
 	category Category
 	pattern  string
 	priority int // higher = more specific, takes precedence
 }
 
-// pattern represents a compiled detection pattern
+// pattern represents a compiled detection pattern.
 type pattern struct {
 	category Category
 	regex    *regexp.Regexp
 	priority int // higher priority patterns take precedence
 }
 
-// defaultPatterns contains all built-in detection patterns
-// Higher priority patterns are checked first and take precedence
+// defaultPatterns contains all built-in detection patterns.
+// Higher priority patterns are checked first and take precedence.
 var defaultPatterns = []patternDef{
 	// Provider-specific API keys (high priority)
 	{CategoryOpenAIKey, `sk-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}`, 100},
@@ -52,26 +52,26 @@ var defaultPatterns = []patternDef{
 	{CategoryGenericSecret, `(?i)(secret|private[_]?key|token)\s*[=:]\s*["']?[a-zA-Z0-9/+=_-]{16,}["']?`, 30},
 }
 
-// compiledPatterns holds the compiled regex patterns
+// compiledPatterns holds the compiled regex patterns.
 var compiledPatterns []pattern
 
-// compileOnce ensures patterns are compiled exactly once
+// compileOnce ensures patterns are compiled exactly once.
 var compileOnce sync.Once
 
-// ResetPatterns resets compiled patterns (for testing only)
+// ResetPatterns resets compiled patterns (for testing only).
 func ResetPatterns() {
 	compileOnce = sync.Once{}
 	compiledPatterns = nil
 }
 
-// compilePatterns compiles all default patterns
+// compilePatterns compiles all default patterns.
 func compilePatterns() {
 	compileOnce.Do(func() {
 		compiledPatterns = make([]pattern, 0, len(defaultPatterns))
 		for _, def := range defaultPatterns {
 			re, err := regexp.Compile(def.pattern)
 			if err != nil {
-				// Pattern compilation errors should be caught during development
+				// Pattern compilation errors should be caught during development.
 				continue
 			}
 			compiledPatterns = append(compiledPatterns, pattern{
@@ -80,13 +80,13 @@ func compilePatterns() {
 				priority: def.priority,
 			})
 		}
-		// Sort by priority (descending) for deterministic matching
+		// Sort by priority (descending) for deterministic matching.
 		sortPatternsByPriority(compiledPatterns)
 	})
 }
 
-// sortPatternsByPriority sorts patterns by priority descending
-// Uses insertion sort since the list is small
+// sortPatternsByPriority sorts patterns by priority descending.
+// Uses insertion sort since the list is small.
 func sortPatternsByPriority(patterns []pattern) {
 	for i := 1; i < len(patterns); i++ {
 		j := i
@@ -97,13 +97,13 @@ func sortPatternsByPriority(patterns []pattern) {
 	}
 }
 
-// getPatterns returns the compiled patterns, initializing if needed
+// getPatterns returns the compiled patterns, initializing if needed.
 func getPatterns() []pattern {
 	compilePatterns()
 	return compiledPatterns
 }
 
-// compileAllowlist compiles allowlist patterns
+// compileAllowlist compiles allowlist patterns.
 func compileAllowlist(allowlist []string) []*regexp.Regexp {
 	if len(allowlist) == 0 {
 		return nil
@@ -119,7 +119,7 @@ func compileAllowlist(allowlist []string) []*regexp.Regexp {
 	return compiled
 }
 
-// isAllowlisted checks if a match should be ignored
+// isAllowlisted checks if a match should be ignored.
 func isAllowlisted(match string, allowlist []*regexp.Regexp) bool {
 	for _, re := range allowlist {
 		if re.MatchString(match) {
@@ -129,7 +129,7 @@ func isAllowlisted(match string, allowlist []*regexp.Regexp) bool {
 	return false
 }
 
-// isCategoryDisabled checks if a category is in the disabled list
+// isCategoryDisabled checks if a category is in the disabled list.
 func isCategoryDisabled(cat Category, disabled []Category) bool {
 	for _, d := range disabled {
 		if d == cat {
@@ -138,3 +138,4 @@ func isCategoryDisabled(cat Category, disabled []Category) bool {
 	}
 	return false
 }
+

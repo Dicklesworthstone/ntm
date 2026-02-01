@@ -46,8 +46,8 @@ Notes:
 #### OpenAI
 ```
 Pattern: sk-[a-zA-Z0-9]{48}                     # legacy (shipped in checkpoint export)
-         sk-[a-zA-Z0-9]{20,}T3BlbkFJ[a-zA-Z0-9]{20,}
-         sk-proj-[a-zA-Z0-9_-]{80,}
+         sk-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}
+         sk-proj-[a-zA-Z0-9_-]{40,}
 Category: OPENAI_KEY
 Examples:
   - sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -57,7 +57,7 @@ Examples:
 
 #### Anthropic
 ```
-Pattern: sk-ant-[a-zA-Z0-9_-]{95,}              # must match legacy {95} pattern
+Pattern: sk-ant-[a-zA-Z0-9_-]{40,}              # covers legacy {95} pattern
 Category: ANTHROPIC_KEY
 Examples:
   - sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -73,8 +73,8 @@ Examples:
 
 #### GitHub
 ```
-Pattern: gh[pousr]_[a-zA-Z0-9]{36,}
-         github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}
+Pattern: gh[pousr]_[a-zA-Z0-9]{30,}
+         github_pat_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{40,}
 Category: GITHUB_TOKEN
 Examples:
   - ghp_abc123...
@@ -86,6 +86,7 @@ Examples:
 #### AWS Access Keys
 ```
 Pattern: AKIA[0-9A-Z]{16}
+         ASIA[0-9A-Z]{16}
 Category: AWS_ACCESS_KEY
 Examples:
   - AKIAIOSFODNN7EXAMPLE
@@ -115,7 +116,7 @@ Category: GCP_SERVICE_KEY
 
 #### JWT (JSON Web Tokens)
 ```
-Pattern: eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*
+Pattern: eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]+
 Category: JWT
 Examples:
   - eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
@@ -123,8 +124,7 @@ Examples:
 
 #### OAuth Bearer Tokens
 ```
-Pattern: (?i)(bearer|token|authorization)\s*[=:]\s*["']?[a-zA-Z0-9._-]{20,}["']?
-         (?i)Authorization:\s*Bearer\s+[a-zA-Z0-9._-]{20,}
+Pattern: (?i)bearer\s+[a-zA-Z0-9._-]{20,}
 Category: BEARER_TOKEN
 ```
 
@@ -172,7 +172,7 @@ Category: SSH_PRIVATE_KEY
 
 #### Connection Strings
 ```
-Pattern: (?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@
+Pattern: (?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@[^\s]+
 Category: DATABASE_URL
 Examples:
   - postgres://user:password@localhost/db
@@ -422,7 +422,7 @@ should be fast on large inputs (target: scan 1MB in <100ms on a typical dev mach
 Patterns should be compiled once at startup and reused:
 ```go
 var compiledPatterns = map[string]*regexp.Regexp{
-    "OPENAI_KEY": regexp.MustCompile(`sk-[a-zA-Z0-9]{20,}T3BlbkFJ[a-zA-Z0-9]{20,}|sk-proj-[a-zA-Z0-9_-]{80,}`),
+    "OPENAI_KEY": regexp.MustCompile(`sk-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}|sk-proj-[a-zA-Z0-9_-]{40,}|sk-[a-zA-Z0-9]{48}`),
     // ...
 }
 ```

@@ -21,6 +21,13 @@ func testOpenAIKey() string {
 	return "sk-abc123defghijklmnop" + "T3Blbk" + "FJ" + "xyz789abcdefghijklmnop"
 }
 
+// testOpenAILegacyKey constructs a fake legacy OpenAI API key for testing.
+// Split into parts to avoid triggering secret scanners.
+func testOpenAILegacyKey() string {
+	// Format: sk-{48 chars}
+	return "sk-" + "abc123defghijklmnop" + "qrstuvwxyz0123456789" + "ABCDE12345"
+}
+
 // TestFixtures holds the test fixture data structure
 type TestFixtures struct {
 	Version        string `json:"version"`
@@ -54,6 +61,7 @@ func loadFixtures(t *testing.T) *TestFixtures {
 	// Replace placeholder with actual test key to avoid GitHub secret scanning
 	// The placeholder is used in the JSON file to avoid triggering push protection
 	dataStr := strings.ReplaceAll(string(data), "<<OPENAI_TEST_KEY>>", testOpenAIKey())
+	dataStr = strings.ReplaceAll(dataStr, "<<OPENAI_LEGACY_KEY>>", testOpenAILegacyKey())
 
 	var fixtures TestFixtures
 	if err := json.Unmarshal([]byte(dataStr), &fixtures); err != nil {

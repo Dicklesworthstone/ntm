@@ -6,7 +6,8 @@
       "description": "OpenAI API keys",
       "patterns": [
         "sk-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}",
-        "sk-proj-[a-zA-Z0-9_-]{40,}"
+        "sk-proj-[a-zA-Z0-9_-]{40,}",
+        "sk-[a-zA-Z0-9]{48}"
       ]
     },
     "ANTHROPIC_KEY": {
@@ -69,6 +70,11 @@
       "input": "<<OPENAI_TEST_KEY>>",
       "expected_category": "OPENAI_KEY",
       "description": "Standard OpenAI API key"
+    },
+    {
+      "input": "<<OPENAI_LEGACY_KEY>>",
+      "expected_category": "OPENAI_KEY",
+      "description": "Legacy OpenAI API key (sk-*)"
     },
     {
       "input": "sk-proj-ABC123_def456-ghi789_jkl012_mno345pqr678stu901vwx234yz567abc890def123ghi456jkl789mno012",
