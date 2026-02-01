@@ -3,7 +3,7 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"os"
+	"log/slog"
 	"path"
 	"path/filepath"
 	"sort"
@@ -23,7 +23,7 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 
 	// Ensure scanner identity is registered
 	if err := ensureScannerRegistered(ctx, client, projectKey); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to register scanner agent: %v\n", err)
+		slog.Warn("failed to register scanner agent", "error", err)
 		// Continue anyway, maybe it exists?
 	}
 
@@ -31,7 +31,7 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 	reservations, err := client.ListReservations(ctx, projectKey, "", true)
 	if err != nil {
 		// Log error but continue with summary
-		fmt.Fprintf(os.Stderr, "Warning: failed to fetch reservations: %v\n", err)
+		slog.Warn("failed to fetch reservations", "error", err)
 	}
 
 	// Group findings by file
@@ -46,7 +46,7 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 
 	assignmentMatches, assignmentErr := collectAssignmentMatches(projectKey, result.Findings)
 	if assignmentErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to load assignment store: %v\n", assignmentErr)
+		slog.Warn("failed to load assignment store", "error", assignmentErr)
 	}
 
 	for agentName, items := range assignmentMatches {
@@ -129,7 +129,7 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 					Importance: "normal",
 				})
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to send scan summary: %v\n", err)
+					slog.Warn("failed to send scan summary", "error", err)
 				}
 			}
 		}
