@@ -863,7 +863,8 @@ func (c *Client) SendBuffer(target, content string, enter bool) error {
 // SendBufferWithDelay sends content using the buffer mechanism with a configurable Enter delay.
 func (c *Client) SendBufferWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
 	// Use a unique buffer name to avoid conflicts with concurrent operations
-	bufferName := "ntm-paste"
+	// Include timestamp to prevent race conditions when multiple agents send simultaneously
+	bufferName := fmt.Sprintf("ntm-%d", time.Now().UnixNano())
 
 	// Load content into a tmux buffer
 	// We use 'load-buffer' with stdin to handle arbitrary content including special characters
