@@ -11,13 +11,108 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+var (
+	e2eNTMBinOnce sync.Once
+	e2eNTMBinPath string
+	e2eNTMBinErr  error
+)
+
+func TestMain(m *testing.M) {
+	bin, err := ensureE2ENTMBin()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "E2E: failed to resolve/build ntm: %v\n", err)
+		os.Exit(1)
+	}
+
+	dir := filepath.Dir(bin)
+	pathKey := "PATH"
+	oldPath := os.Getenv(pathKey)
+	newPath := dir + string(os.PathListSeparator) + oldPath
+	if err := os.Setenv(pathKey, newPath); err != nil {
+		fmt.Fprintf(os.Stderr, "E2E: failed to update PATH: %v\n", err)
+		os.Exit(1)
+	}
+
+	os.Exit(m.Run())
+}
+
+func ensureE2ENTMBin() (string, error) {
+	e2eNTMBinOnce.Do(func() {
+		// If explicitly provided, prefer it (useful for debugging).
+		if override := os.Getenv("E2E_NTM_BIN"); override != "" {
+			path := override
+			if !strings.ContainsRune(path, filepath.Separator) {
+				resolved, err := exec.LookPath(path)
+				if err != nil {
+					e2eNTMBinErr = fmt.Errorf("E2E_NTM_BIN=%q not found on PATH: %w", override, err)
+					return
+				}
+				path = resolved
+			}
+			e2eNTMBinPath = path
+			return
+		}
+
+		wd, err := os.Getwd()
+		if err != nil {
+			e2eNTMBinErr = fmt.Errorf("getwd: %w", err)
+			return
+		}
+		repoRoot, err := findRepoRoot(wd)
+		if err != nil {
+			e2eNTMBinErr = err
+			return
+		}
+
+		outDir, err := os.MkdirTemp("", "ntm-e2e-bin-*")
+		if err != nil {
+			e2eNTMBinErr = fmt.Errorf("mkdtemp: %w", err)
+			return
+		}
+
+		binName := "ntm"
+		if runtime.GOOS == "windows" {
+			binName += ".exe"
+		}
+		outPath := filepath.Join(outDir, binName)
+
+		cmd := exec.Command("go", "build", "-o", outPath, "./cmd/ntm")
+		cmd.Dir = repoRoot
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			e2eNTMBinErr = fmt.Errorf("go build ./cmd/ntm: %w output=%s", err, string(out))
+			return
+		}
+		e2eNTMBinPath = outPath
+	})
+
+	return e2eNTMBinPath, e2eNTMBinErr
+}
+
+func findRepoRoot(startDir string) (string, error) {
+	dir := startDir
+	for i := 0; i < 12; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("could not find repo root with go.mod from %q", startDir)
+}
 
 // TestLogger provides structured logging for E2E tests with persistent log files.
 type TestLogger struct {
@@ -127,8 +222,10 @@ func (s *TestSuite) Setup() error {
 	}
 
 	// Check if ntm is available
-	if _, err := exec.LookPath("ntm"); err != nil {
+	if ntmPath, err := exec.LookPath("ntm"); err != nil {
 		return fmt.Errorf("ntm not found: %w", err)
+	} else {
+		s.logger.Log("[E2E-SETUP] Using ntm binary: %s", ntmPath)
 	}
 
 	// Create tmux session with specified dimensions

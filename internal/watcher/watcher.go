@@ -353,22 +353,48 @@ func (w *Watcher) Remove(path string) error {
 		return err
 	}
 
-	if !w.watchedPaths[absPath] {
+	// Determine which watched paths are covered by this remove request.
+	// In recursive mode, we may have individually-watched subdirectories too.
+	sep := string(os.PathSeparator)
+	var toRemove []string
+	if w.recursive {
+		for watched := range w.watchedPaths {
+			if watched == absPath || strings.HasPrefix(watched, absPath+sep) {
+				toRemove = append(toRemove, watched)
+			}
+		}
+	} else {
+		if w.watchedPaths[absPath] {
+			toRemove = []string{absPath}
+		}
+	}
+
+	if len(toRemove) == 0 {
 		return nil // Not watching
 	}
 
 	if w.pollMode {
-		delete(w.watchedPaths, absPath)
-		delete(w.snapshots, absPath)
+		for _, watched := range toRemove {
+			delete(w.watchedPaths, watched)
+		}
+		// Clean up snapshots for the root and anything beneath it.
+		for snapPath := range w.snapshots {
+			if snapPath == absPath || strings.HasPrefix(snapPath, absPath+sep) {
+				delete(w.snapshots, snapPath)
+			}
+		}
 		return nil
 	}
 
-	if err := w.fsWatcher.Remove(absPath); err != nil {
-		return err
+	var firstErr error
+	for _, watched := range toRemove {
+		if err := w.fsWatcher.Remove(watched); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(w.watchedPaths, watched)
 	}
-	delete(w.watchedPaths, absPath)
 
-	return nil
+	return firstErr
 }
 
 // Close stops the watcher and releases resources.

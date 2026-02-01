@@ -3,6 +3,7 @@ package watcher
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +124,68 @@ func TestWatcherRecursive(t *testing.T) {
 	paths := w.WatchedPaths()
 	if len(paths) != 2 {
 		t.Errorf("WatchedPaths() = %v, want 2 paths (root + subdir)", paths)
+	}
+}
+
+func TestWatcherRecursiveRemove(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "subdir")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	nestedFile := filepath.Join(subDir, "file.txt")
+	if err := os.WriteFile(nestedFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{
+			name: "fsnotify-or-fallback",
+			opts: []Option{WithRecursive(true)},
+		},
+		{
+			name: "polling-forced",
+			opts: []Option{WithRecursive(true), WithPolling(true)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := New(func(events []Event) {}, tt.opts...)
+			if err != nil {
+				t.Fatalf("New() failed: %v", err)
+			}
+			defer w.Close()
+
+			if err := w.Add(tmpDir); err != nil {
+				t.Fatalf("Add() failed: %v", err)
+			}
+
+			paths := w.WatchedPaths()
+			if len(paths) != 2 {
+				t.Fatalf("WatchedPaths() = %v, want 2 paths (root + subdir)", paths)
+			}
+
+			if err := w.Remove(tmpDir); err != nil {
+				t.Fatalf("Remove() failed: %v", err)
+			}
+
+			paths = w.WatchedPaths()
+			if len(paths) != 0 {
+				t.Fatalf("WatchedPaths() after remove = %v, want 0 paths", paths)
+			}
+
+			if w.pollMode {
+				for p := range w.snapshots {
+					if strings.HasPrefix(p, tmpDir+string(os.PathSeparator)) || p == tmpDir {
+						t.Fatalf("expected poll snapshot cleanup, found %q", p)
+					}
+				}
+			}
+		})
 	}
 }
 
