@@ -77,37 +77,37 @@
       "description": "Legacy OpenAI API key (sk-*)"
     },
     {
-      "input": "sk-proj-ABC123_def456-ghi789_jkl012_mno345pqr678stu901vwx234yz567abc890def123ghi456jkl789mno012",
+      "input": "<<OPENAI_PROJ_KEY>>",
       "expected_category": "OPENAI_KEY",
       "description": "OpenAI project API key"
     },
     {
-      "input": "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "input": "<<ANTHROPIC_KEY>>",
       "expected_category": "ANTHROPIC_KEY",
       "description": "Anthropic API key"
     },
     {
-      "input": "ghp_1234567890abcdefghijklmnopqrstuvwxyz12",
+      "input": "<<GITHUB_TOKEN>>",
       "expected_category": "GITHUB_TOKEN",
       "description": "GitHub personal access token"
     },
     {
-      "input": "github_pat_11ABCDEFG0123456789AB_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "input": "<<GITHUB_FINE_PAT>>",
       "expected_category": "GITHUB_TOKEN",
       "description": "GitHub fine-grained PAT"
     },
     {
-      "input": "AKIAIOSFODNN7EXAMPLE",
+      "input": "<<AWS_ACCESS_KEY>>",
       "expected_category": "AWS_ACCESS_KEY",
       "description": "AWS access key ID"
     },
     {
-      "input": "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "input": "AWS_SECRET_ACCESS_KEY=<<AWS_SECRET_KEY>>",
       "expected_category": "AWS_SECRET_KEY",
       "description": "AWS secret access key"
     },
     {
-      "input": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+      "input": "<<JWT>>",
       "expected_category": "JWT",
       "description": "Standard JWT token"
     },
@@ -117,17 +117,17 @@
       "description": "Authorization header bearer token"
     },
     {
-      "input": "AIzaSyD-abc123_XYZ456_789-defGHI012jklMNO",
+      "input": "<<GOOGLE_API_KEY>>",
       "expected_category": "GOOGLE_API_KEY",
       "description": "Google API key"
     },
     {
-      "input": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----",
+      "input": "<<RSA_PRIVATE_KEY>>",
       "expected_category": "PRIVATE_KEY",
       "description": "RSA private key block"
     },
     {
-      "input": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC...\n-----END OPENSSH PRIVATE KEY-----",
+      "input": "<<OPENSSH_PRIVATE_KEY>>",
       "expected_category": "PRIVATE_KEY",
       "description": "OpenSSH private key block"
     },
@@ -162,17 +162,17 @@
       "description": "Generic secret assignment"
     },
     {
-      "input": "ASIAIOSFODNN7EXAMPLE",
+      "input": "<<AWS_STS_ACCESS_KEY>>",
       "expected_category": "AWS_ACCESS_KEY",
       "description": "AWS STS access key ID"
     },
     {
-      "input": "secret_access_key = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"",
+      "input": "secret_access_key = \"<<AWS_SECRET_KEY>>\"",
       "expected_category": "AWS_SECRET_KEY",
       "description": "AWS secret access key explicit field"
     },
     {
-      "input": "secret_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'",
+      "input": "secret_key: '<<AWS_SECRET_KEY>>'",
       "expected_category": "AWS_SECRET_KEY",
       "description": "AWS secret key generic name"
     },
@@ -212,12 +212,12 @@
       "description": "Generic private_key assignment"
     },
     {
-      "input": "gho_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKL",
+      "input": "<<GITHUB_OAUTH_TOKEN>>",
       "expected_category": "GITHUB_TOKEN",
       "description": "GitHub OAuth token"
     },
     {
-      "input": "ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghij",
+      "input": "<<GITHUB_APP_TOKEN>>",
       "expected_category": "GITHUB_TOKEN",
       "description": "GitHub app installation token"
     },
@@ -227,7 +227,7 @@
       "description": "MySQL connection string"
     },
     {
-      "input": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC...\n-----END PRIVATE KEY-----",
+      "input": "<<GENERIC_PRIVATE_KEY>>",
       "expected_category": "PRIVATE_KEY",
       "description": "Generic private key block"
     }
@@ -298,7 +298,7 @@
       "description": "Key in shell export"
     },
     {
-      "input": "OPENAI_KEY=<<OPENAI_TEST_KEY>> ANTHROPIC_KEY=sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "input": "OPENAI_KEY=<<OPENAI_TEST_KEY>> ANTHROPIC_KEY=<<ANTHROPIC_KEY>>",
       "expected_categories": ["OPENAI_KEY", "ANTHROPIC_KEY"],
       "description": "Multiple keys on one line"
     },
@@ -326,7 +326,7 @@
       "description": "Hash is 8 hex chars"
     },
     {
-      "input": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+      "input": "<<JWT>>",
       "category": "JWT",
       "redacted_format": "[REDACTED:JWT:????????]",
       "description": "JWT redaction"

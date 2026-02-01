@@ -106,4 +106,3 @@ type ConfigError struct {
 func (e *ConfigError) Error() string {
 	return "redaction config error: " + e.Field + ": " + e.Message
 }
-

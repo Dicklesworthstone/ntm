@@ -138,4 +138,3 @@ func isCategoryDisabled(cat Category, disabled []Category) bool {
 	}
 	return false
 }
-

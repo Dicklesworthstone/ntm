@@ -152,6 +152,10 @@ type AutoRespawner struct {
 
 	// forceKillFn overrides forceKill behavior in tests (optional).
 	forceKillFn func(sessionPane string) error
+
+	// CommandBuilder generates launch commands (optional).
+	// If provided, it is used to resolve the full command string for agents.
+	CommandBuilder *LaunchCommandBuilder
 }
 
 type autoRespawnerTmux interface {
@@ -205,6 +209,12 @@ func (r *AutoRespawner) WithTmuxClient(client autoRespawnerTmux) *AutoRespawner 
 	return r
 }
 
+// WithCommandBuilder sets the command builder.
+func (r *AutoRespawner) WithCommandBuilder(builder *LaunchCommandBuilder) *AutoRespawner {
+	r.CommandBuilder = builder
+	return r
+}
+
 // WithProjectPathLookup sets the project path lookup callback.
 func (r *AutoRespawner) WithProjectPathLookup(lookup ProjectPathLookup) *AutoRespawner {
 	r.ProjectPathLookup = lookup
@@ -252,13 +262,30 @@ func (r *AutoRespawner) Events() <-chan RespawnEvent {
 }
 
 // Start begins listening for limit events and auto-respawning agents.
-func (r *AutoRespawner) Start(ctx context.Context) error {
+func (r *AutoRespawner) Start(ctx context.Context) (err error) {
 	if r.LimitDetector == nil {
 		return fmt.Errorf("LimitDetector is required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Create a child context for the lifetime of the respawner.
+	// If Start returns an error after creating the context, ensure we cancel it
+	// to avoid leaking goroutines/resources.
+	childCtx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 
 	r.mu.Lock()
-	r.ctx, r.cancel = context.WithCancel(ctx)
+	if r.cancel != nil {
+		r.mu.Unlock()
+		return fmt.Errorf("AutoRespawner already started")
+	}
+	r.ctx, r.cancel = childCtx, cancel
 	r.mu.Unlock()
 
 	r.logger().Info("[AutoRespawner] starting",
@@ -798,8 +825,22 @@ func (r *AutoRespawner) spawnAgent(sessionPane, agentType string) error {
 
 	client := r.tmuxClient()
 
-	// Get the agent command
-	cmd := r.getAgentCommand(agentType)
+	// Determine the command to run
+	var cmd string
+	if r.CommandBuilder != nil {
+		// Use builder to construct full command (respects config/env)
+		// We reconstruct a partial PaneSpec since we don't have the full original spec
+		project := r.projectForPane(sessionPane)
+		spec := PaneSpec{
+			AgentType: agentType,
+			Project:   project,
+		}
+		launchCmd := r.CommandBuilder.BuildLaunchCommand(spec, project)
+		cmd = launchCmd.ToShellCommand()
+	} else {
+		// Fallback to simple alias lookup
+		cmd = r.getAgentCommand(agentType)
+	}
 
 	if err := client.SendKeys(sessionPane, cmd, true); err != nil {
 		return fmt.Errorf("send agent command: %w", err)

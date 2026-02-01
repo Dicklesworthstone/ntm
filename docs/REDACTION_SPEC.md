@@ -4,6 +4,8 @@
 
 This document defines the canonical set of detection categories, patterns, and redaction strategies for NTM's secrets/PII protection engine.
 
+**Implementation:** `internal/redaction` (canonical). `internal/safety/redaction` is a compatibility wrapper.
+
 ## Design Goals
 
 1. **Minimal false positives** - Patterns should be precise enough to avoid flagging legitimate content
@@ -50,9 +52,9 @@ Pattern: sk-[a-zA-Z0-9]{48}                     # legacy (shipped in checkpoint 
          sk-proj-[a-zA-Z0-9_-]{40,}
 Category: OPENAI_KEY
 Examples:
-  - sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  - sk-12345678901234567890T3BlbkFJ12345678901234567890
-  - sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - <<OPENAI_LEGACY_KEY>>
+  - <<OPENAI_TEST_KEY>>
+  - <<OPENAI_PROJ_KEY>>
 ```
 
 #### Anthropic
@@ -60,7 +62,7 @@ Examples:
 Pattern: sk-ant-[a-zA-Z0-9_-]{40,}              # covers legacy {95} pattern
 Category: ANTHROPIC_KEY
 Examples:
-  - sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - <<ANTHROPIC_KEY>>
 ```
 
 #### Google/Gemini
@@ -68,7 +70,7 @@ Examples:
 Pattern: AIza[a-zA-Z0-9_-]{35}
 Category: GOOGLE_API_KEY
 Examples:
-  - AIzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - <<GOOGLE_API_KEY>>
 ```
 
 #### GitHub
@@ -77,8 +79,8 @@ Pattern: gh[pousr]_[a-zA-Z0-9]{30,}
          github_pat_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{40,}
 Category: GITHUB_TOKEN
 Examples:
-  - ghp_abc123...
-  - github_pat_ABC123...
+  - <<GITHUB_TOKEN>>
+  - <<GITHUB_FINE_PAT>>
 ```
 
 ### 2. Cloud Provider Credentials
@@ -89,7 +91,7 @@ Pattern: AKIA[0-9A-Z]{16}
          ASIA[0-9A-Z]{16}
 Category: AWS_ACCESS_KEY
 Examples:
-  - AKIAIOSFODNN7EXAMPLE
+  - <<AWS_ACCESS_KEY>>
 ```
 
 #### AWS Secret Keys (heuristic)
@@ -97,7 +99,7 @@ Examples:
 Pattern: (?i)(aws_secret|secret_access_key|secret_key)\s*[=:]\s*["']?[a-zA-Z0-9/+=]{40}["']?
 Category: AWS_SECRET_KEY
 Examples:
-  - aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  - aws_secret_access_key = "<<AWS_SECRET_KEY>>"
 ```
 
 #### Azure
@@ -119,7 +121,7 @@ Category: GCP_SERVICE_KEY
 Pattern: eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]+
 Category: JWT
 Examples:
-  - eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
+  - <<JWT>>
 ```
 
 #### OAuth Bearer Tokens
@@ -164,7 +166,7 @@ Category: PRIVATE_KEY
 
 #### SSH Private Keys
 ```
-Pattern: -----BEGIN OPENSSH PRIVATE KEY-----
+Pattern: -----BEGIN\\s+OPENSSH\\s+PRIVATE\\s+KEY-----
 Category: SSH_PRIVATE_KEY
 ```
 
@@ -302,36 +304,39 @@ NTM_REDACTION_ALLOWLIST="sk-test-.*,EXAMPLE.*" ntm send ...
 
 ## Test Fixtures
 
+Some fixtures use placeholders to avoid committing secret-looking strings
+(provider keys, cloud creds, and private keys). Unit tests expand these placeholders into synthetic values.
+See `internal/safety/redaction/redaction_test.go` for the exact expansion logic.
 ### True Positives (should detect)
 
 ```
 # NOTE: These are synthetic fixtures, not real credentials.
 
 # Category: OPENAI_KEY
-sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-sk-12345678901234567890T3BlbkFJ12345678901234567890
-sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-OPENAI_API_KEY=sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+<<OPENAI_LEGACY_KEY>>
+<<OPENAI_TEST_KEY>>
+<<OPENAI_PROJ_KEY>>
+OPENAI_API_KEY=<<OPENAI_LEGACY_KEY>>
 
 # Category: ANTHROPIC_KEY
-sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+<<ANTHROPIC_KEY>>
 
 # Category: GOOGLE_API_KEY
-AIzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+<<GOOGLE_API_KEY>>
 
 # Category: GITHUB_TOKEN
-ghp_abcdefghijklmnopqrstuvwxyz0123456789
-github_pat_11ABCDEFG0123456789ABC_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVW
+<<GITHUB_TOKEN>>
+<<GITHUB_FINE_PAT>>
 
 # Category: AWS_ACCESS_KEY
-AKIAIOSFODNN7EXAMPLE
+<<AWS_ACCESS_KEY>>
 
 # Category: AWS_SECRET_KEY
-aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+aws_secret_access_key="<<AWS_SECRET_KEY>>"
 aws_access="aaaaaaaaaaaaaaaaaaaa/+/=AAAAAAAAAAAAAAAAAAAA"
 
 # Category: JWT
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+<<JWT>>
 
 # Category: BEARER_TOKEN
 Authorization: Bearer abcdefghijklmnopqrstuvwxyzABCDE
@@ -342,9 +347,7 @@ postgres://myuser:mypassword@localhost:5432/mydb
 mongodb://admin:secretPassword123@mongo.example.com:27017/production
 
 # Category: PRIVATE_KEY
------BEGIN RSA PRIVATE KEY-----
-MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGyLXJ8B+l0DGKx7mN0wbP6zXuF9S4xGz
------END RSA PRIVATE KEY-----
+<<RSA_PRIVATE_KEY>>
 
 # Category: PASSWORD
 password=SuperSecretP@ssw0rd!
@@ -352,7 +355,7 @@ DATABASE_PASSWORD="hunter2"
 
 # Category: GENERIC_API_KEY
 MY_API_KEY=abcdef123456789abcdef
-stripe_api_key="sk_live_abcdefghijklmnop"
+stripe_api_key="<<STRIPE_LIVE_KEY>>"
 ```
 
 ### True Negatives (should NOT detect)
@@ -387,24 +390,22 @@ The pattern sk-* is for OpenAI
 
 ```
 # Multiline private key (should detect full block)
------BEGIN RSA PRIVATE KEY-----
-MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGyLXJ8B+l0DGKx7mN0wbP6zXuF9S4xGz
------END RSA PRIVATE KEY-----
+<<RSA_PRIVATE_KEY>>
 
 # Key in JSON (should detect)
-{"api_key":"sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+{"api_key":"<<OPENAI_LEGACY_KEY>>"}
 
 # Key in environment export (should detect)
-export OPENAI_API_KEY=sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export OPENAI_API_KEY=<<OPENAI_LEGACY_KEY>>
 
 # Multiple keys in one line (should detect all)
-OPENAI_KEY=sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ANTHROPIC_KEY=sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+OPENAI_KEY=<<OPENAI_LEGACY_KEY>> ANTHROPIC_KEY=<<ANTHROPIC_KEY>>
 
 # Key with surrounding whitespace (should detect)
-   sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+   <<OPENAI_LEGACY_KEY>>
 
 # Key in code-like text (should detect)
-export API_KEY=sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export API_KEY=<<OPENAI_LEGACY_KEY>>
 ```
 
 ---

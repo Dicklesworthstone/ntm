@@ -244,4 +244,3 @@ func AddLineInfo(input string, findings []Finding) {
 		findings[i].Column = pos - lineStarts[line] + 1
 	}
 }
-
