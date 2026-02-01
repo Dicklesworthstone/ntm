@@ -3413,9 +3413,10 @@ func applyRedactionFlagOverrides(cfg *config.Config) {
 		}
 	}
 
-	// --allow-secret forces mode to "off" (bypasses block mode)
-	if allowSecret {
-		cfg.Redaction.Mode = "off"
+	// --allow-secret downgrades "block" to "warn" (still detects, but doesn't fail)
+	// This allows the operation to proceed while still logging any findings
+	if allowSecret && cfg.Redaction.Mode == "block" {
+		cfg.Redaction.Mode = "warn"
 	}
 }
 
