@@ -247,9 +247,10 @@ func (p *PromptInjector) InjectPromptWithResult(sessionPane, agentType, prompt s
 func (p *PromptInjector) sendToPane(sessionPane, agentType, prompt string) error {
 	client := p.tmuxClient()
 
-	// Use PasteKeys for reliable multi-line prompt delivery
+	// Use agent-aware send method for reliable multi-line prompt delivery
+	// For Gemini, this uses buffer-based paste to avoid newline interpretation issues
 	// Send without Enter first
-	if err := client.PasteKeys(sessionPane, prompt, false); err != nil {
+	if err := client.SendKeysForAgent(sessionPane, prompt, false, tmux.AgentType(agentType)); err != nil {
 		return fmt.Errorf("send prompt text: %w", err)
 	}
 

@@ -1,10 +1,10 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"os"
 	"os/exec"
 	"regexp"
@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // paneNameRegex matches the NTM pane naming convention:
@@ -841,6 +843,139 @@ func PasteKeys(target, content string, enter bool) error {
 // PasteKeysWithDelay pastes content to a pane with a configurable delay (default client)
 func PasteKeysWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
 	return DefaultClient.PasteKeysWithDelay(target, content, enter, enterDelay)
+}
+
+// SendBuffer sends content to a pane using tmux's load-buffer + paste-buffer mechanism.
+// This is the correct way to send multi-line content to agents like Gemini that interpret
+// newlines in send-keys as actual Enter key presses (causing "quote mode" or similar issues).
+//
+// Unlike SendKeys which uses send-keys -l (literal mode), this method:
+// 1. Loads the content into a tmux buffer
+// 2. Pastes the buffer into the target pane
+// 3. Optionally sends Enter after the paste
+//
+// This preserves newlines as data rather than as key presses, which is essential for
+// multi-line prompts in Gemini's TUI.
+func (c *Client) SendBuffer(target, content string, enter bool) error {
+	return c.SendBufferWithDelay(target, content, enter, DefaultEnterDelay)
+}
+
+// SendBufferWithDelay sends content using the buffer mechanism with a configurable Enter delay.
+func (c *Client) SendBufferWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
+	// Use a unique buffer name to avoid conflicts with concurrent operations
+	bufferName := "ntm-paste"
+
+	// Load content into a tmux buffer
+	// We use 'load-buffer' with stdin to handle arbitrary content including special characters
+	if c.Remote == "" {
+		// Local: use load-buffer with a pipe
+		if err := c.loadBufferLocal(bufferName, content); err != nil {
+			return fmt.Errorf("load buffer: %w", err)
+		}
+	} else {
+		// Remote: need to escape content for ssh
+		if err := c.loadBufferRemote(bufferName, content); err != nil {
+			return fmt.Errorf("load buffer (remote): %w", err)
+		}
+	}
+
+	// Paste the buffer into the target pane
+	// -p = paste from buffer, -d = delete buffer after pasting, -b = buffer name
+	if err := c.RunSilent("paste-buffer", "-p", "-d", "-b", bufferName, "-t", target); err != nil {
+		// Clean up buffer on error
+		_ = c.RunSilent("delete-buffer", "-b", bufferName)
+		return fmt.Errorf("paste buffer: %w", err)
+	}
+
+	if enter {
+		time.Sleep(enterDelay)
+		return c.RunSilent("send-keys", "-t", target, "Enter")
+	}
+	return nil
+}
+
+// loadBufferLocal loads content into a tmux buffer using stdin (for local operations).
+func (c *Client) loadBufferLocal(bufferName, content string) error {
+	binary := BinaryPath()
+	cmd := exec.Command(binary, "load-buffer", "-b", bufferName, "-")
+	cmd.Stdin = strings.NewReader(content)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s load-buffer: %w: %s", binary, err, stderr.String())
+	}
+	return nil
+}
+
+// loadBufferRemote loads content into a tmux buffer for remote operations.
+func (c *Client) loadBufferRemote(bufferName, content string) error {
+	// For remote, we need to pipe the content through ssh
+	// Use printf with escaped content to avoid shell interpretation issues
+	quotedContent := ShellQuote(content)
+	remoteCmd := fmt.Sprintf("printf %%s %s | tmux load-buffer -b %s -", quotedContent, ShellQuote(bufferName))
+	sshArgs := []string{"--", c.Remote, "/bin/sh", "-c", ShellQuote(remoteCmd)}
+
+	cmd := exec.Command("ssh", sshArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh load-buffer: %w: %s", err, stderr.String())
+	}
+	return nil
+}
+
+// SendBuffer sends content using the buffer mechanism (default client)
+func SendBuffer(target, content string, enter bool) error {
+	return DefaultClient.SendBuffer(target, content, enter)
+}
+
+// SendBufferWithDelay sends content using the buffer mechanism with delay (default client)
+func SendBufferWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
+	return DefaultClient.SendBufferWithDelay(target, content, enter, enterDelay)
+}
+
+// SendKeysForAgent sends keys to a pane using the appropriate method for the agent type.
+// For Gemini agents with multi-line content, it uses the buffer mechanism to avoid
+// newlines being interpreted as Enter key presses.
+// For other agents, it uses the standard send-keys method.
+func (c *Client) SendKeysForAgent(target, keys string, enter bool, agentType AgentType) error {
+	return c.SendKeysForAgentWithDelay(target, keys, enter, DefaultEnterDelay, agentType)
+}
+
+// SendKeysForAgentWithDelay sends keys using the appropriate method with a configurable delay.
+func (c *Client) SendKeysForAgentWithDelay(target, keys string, enter bool, enterDelay time.Duration, agentType AgentType) error {
+	// Use buffer mechanism for Gemini when content contains newlines
+	// Gemini's TUI interprets newlines in send-keys as actual Enter presses,
+	// causing it to enter "quote mode" or submit prompts prematurely
+	if needsBufferSend(agentType, keys) {
+		return c.SendBufferWithDelay(target, keys, enter, enterDelay)
+	}
+	return c.SendKeysWithDelay(target, keys, enter, enterDelay)
+}
+
+// needsBufferSend returns true if the content should be sent via buffer mechanism
+// rather than send-keys, based on agent type and content.
+func needsBufferSend(agentType AgentType, content string) bool {
+	// Only Gemini currently needs buffer-based sending for multi-line content
+	switch agentType {
+	case AgentGemini:
+		// Use buffer if content contains newlines
+		return strings.Contains(content, "\n")
+	default:
+		return false
+	}
+}
+
+// SendKeysForAgent sends keys using the appropriate method for the agent type (default client)
+func SendKeysForAgent(target, keys string, enter bool, agentType AgentType) error {
+	return DefaultClient.SendKeysForAgent(target, keys, enter, agentType)
+}
+
+// SendKeysForAgentWithDelay sends keys using the appropriate method with delay (default client)
+func SendKeysForAgentWithDelay(target, keys string, enter bool, enterDelay time.Duration, agentType AgentType) error {
+	return DefaultClient.SendKeysForAgentWithDelay(target, keys, enter, enterDelay, agentType)
 }
 
 // SendInterrupt sends Ctrl+C to a pane

@@ -2005,7 +2005,7 @@ func sendPromptToPane(session string, p tmux.Pane, prompt string) error {
 		}
 		return nil
 	}
-	if err := sendPromptWithDoubleEnter(p.ID, prompt); err != nil {
+	if err := sendPromptWithDoubleEnterForAgent(p.ID, prompt, p.Type); err != nil {
 		return err
 	}
 	addTimelinePromptMarker(session, p, prompt)
@@ -2013,7 +2013,14 @@ func sendPromptToPane(session string, p tmux.Pane, prompt string) error {
 }
 
 func sendPromptWithDoubleEnter(paneID, prompt string) error {
-	if err := tmux.PasteKeys(paneID, prompt, false); err != nil {
+	// Default to AgentUnknown for backward compatibility
+	return sendPromptWithDoubleEnterForAgent(paneID, prompt, tmux.AgentUnknown)
+}
+
+func sendPromptWithDoubleEnterForAgent(paneID, prompt string, agentType tmux.AgentType) error {
+	// Use agent-aware send method which handles Gemini's multi-line quirks
+	// by using buffer-based paste instead of send-keys when content has newlines
+	if err := tmux.SendKeysForAgent(paneID, prompt, false, agentType); err != nil {
 		return err
 	}
 	time.Sleep(agentPromptFirstEnterDelay)

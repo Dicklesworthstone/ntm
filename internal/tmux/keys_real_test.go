@@ -525,3 +525,129 @@ func TestRealKeysEscapeSequences(t *testing.T) {
 		t.Errorf("escape sequence test should complete")
 	}
 }
+
+// =============================================================================
+// Buffer-Based Paste Tests (for Gemini multi-line fix)
+// =============================================================================
+
+func TestRealSendBufferSimpleText(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSessionForKeys(t)
+
+	panes, _ := GetPanes(session)
+	paneID := panes[0].ID
+
+	// Use cat to capture input, testing buffer-based paste
+	SendKeys(paneID, "cat << 'EOF'", true)
+	time.Sleep(200 * time.Millisecond)
+
+	// Send simple text using buffer method
+	text := "hello from buffer"
+	if err := SendBuffer(paneID, text, true); err != nil {
+		t.Fatalf("SendBuffer failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// End heredoc
+	SendKeys(paneID, "EOF", true)
+	time.Sleep(300 * time.Millisecond)
+
+	output, _ := CapturePaneOutput(paneID, 20)
+	if !strings.Contains(output, "hello from buffer") {
+		t.Logf("output: %q", output)
+		t.Errorf("expected buffer-pasted text to appear in output")
+	}
+}
+
+func TestRealSendBufferMultilineText(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSessionForKeys(t)
+
+	panes, _ := GetPanes(session)
+	paneID := panes[0].ID
+
+	// Use cat to capture multiline input
+	SendKeys(paneID, "cat << 'ENDTEST'", true)
+	time.Sleep(200 * time.Millisecond)
+
+	// Send multiline text using buffer method (this is the key fix for Gemini)
+	// With SendKeys, each \n would be interpreted as Enter
+	// With SendBuffer, the entire text is pasted as data
+	multilineText := "line one\nline two\nline three"
+	if err := SendBuffer(paneID, multilineText, true); err != nil {
+		t.Fatalf("SendBuffer multiline failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// End heredoc
+	SendKeys(paneID, "ENDTEST", true)
+	time.Sleep(400 * time.Millisecond)
+
+	output, _ := CapturePaneOutput(paneID, 30)
+	// Verify all lines appear in output
+	for _, line := range []string{"line one", "line two", "line three"} {
+		if !strings.Contains(output, line) {
+			t.Logf("output: %q", output)
+			t.Errorf("expected output to contain %q", line)
+		}
+	}
+}
+
+func TestRealSendKeysForAgentGemini(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSessionForKeys(t)
+
+	panes, _ := GetPanes(session)
+	paneID := panes[0].ID
+
+	// Use cat to capture input
+	SendKeys(paneID, "cat << 'GEMINITEST'", true)
+	time.Sleep(200 * time.Millisecond)
+
+	// Test SendKeysForAgent with Gemini type and multiline content
+	// This should use buffer-based paste internally
+	multilinePrompt := "First line of prompt\nSecond line of prompt\nThird line"
+	if err := SendKeysForAgent(paneID, multilinePrompt, true, AgentGemini); err != nil {
+		t.Fatalf("SendKeysForAgent for Gemini failed: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// End heredoc
+	SendKeys(paneID, "GEMINITEST", true)
+	time.Sleep(400 * time.Millisecond)
+
+	output, _ := CapturePaneOutput(paneID, 30)
+	// All lines should appear as data, not as separate commands
+	for _, expected := range []string{"First line", "Second line", "Third line"} {
+		if !strings.Contains(output, expected) {
+			t.Logf("output: %q", output)
+			t.Errorf("expected Gemini multiline content to contain %q", expected)
+		}
+	}
+}
+
+func TestRealSendKeysForAgentClaude(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSessionForKeys(t)
+
+	panes, _ := GetPanes(session)
+	paneID := panes[0].ID
+
+	// For Claude, SendKeysForAgent should use regular send-keys (not buffer)
+	// Test that simple text still works
+	marker := fmt.Sprintf("CLAUDE_TEST_%d", time.Now().UnixNano())
+	if err := SendKeysForAgent(paneID, fmt.Sprintf("echo %s", marker), true, AgentClaude); err != nil {
+		t.Fatalf("SendKeysForAgent for Claude failed: %v", err)
+	}
+	time.Sleep(400 * time.Millisecond)
+
+	output, _ := CapturePaneOutput(paneID, 20)
+	if !strings.Contains(output, marker) {
+		t.Logf("output: %q", output)
+		t.Errorf("expected Claude send to work normally")
+	}
+}

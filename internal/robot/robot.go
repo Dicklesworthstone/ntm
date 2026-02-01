@@ -3871,7 +3871,9 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			enterDelay = tmux.ShellEnterDelay
 		}
 
-		err := tmux.SendKeysWithDelay(pane.ID, messageToSend, sendEnter, enterDelay)
+		// Use agent-aware send method which handles Gemini's multi-line quirks
+		// by using buffer-based paste instead of send-keys when content has newlines
+		err := tmux.SendKeysForAgentWithDelay(pane.ID, messageToSend, sendEnter, enterDelay, pane.Type)
 		if err != nil {
 			output.Failed = append(output.Failed, SendError{
 				Pane:  paneKey,
