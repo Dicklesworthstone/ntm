@@ -38,6 +38,18 @@ func TestMatchesPattern(t *testing.T) {
 		{"src/foo/bar/main.go", "src/**/test.go", false},
 		{"other/test.go", "src/**/test.go", false},
 
+		// Double ** patterns with wildcard suffix (was broken before fix)
+		{"src/foo/bar/test.go", "src/**/*.go", true},
+		{"src/main.go", "src/**/*.go", true},
+		{"src/foo/bar/test.ts", "src/**/*.go", false},
+		{"other/main.go", "src/**/*.go", false},
+		{"foo/bar/main.go", "**/*.go", true},
+		{"main.go", "**/*.go", true},
+
+		// Multi-segment suffix patterns after **
+		{"src/a/b/foo/main.go", "src/**/foo/*.go", true},
+		{"src/a/b/bar/main.go", "src/**/foo/*.go", false},
+
 		// Prefix patterns (directory matching)
 		{"internal/cli/coordinator.go", "internal/cli", true},
 		{"internal/cli/subdir/file.go", "internal/cli", true},
