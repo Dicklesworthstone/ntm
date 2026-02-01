@@ -4,6 +4,7 @@ package assignment
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -138,7 +139,7 @@ func (s *AssignmentStore) Load() error {
 				return nil
 			}
 			// Log recovery from backup
-			fmt.Fprintf(os.Stderr, "[ASSIGN] Recovered from backup: %s\n", bakPath)
+			slog.Warn("recovered assignment store from backup", "path", bakPath)
 		} else {
 			return &PersistenceError{Operation: "load", Path: s.path, Cause: err}
 		}
@@ -151,14 +152,14 @@ func (s *AssignmentStore) Load() error {
 		data, bakErr := os.ReadFile(bakPath)
 		if bakErr != nil {
 			// Start fresh
-			fmt.Fprintf(os.Stderr, "[ASSIGN] Corrupted state, starting fresh: %v\n", err)
+			slog.Warn("assignment store corrupted, starting fresh", "error", err)
 			return nil
 		}
 		if err := json.Unmarshal(data, &loaded); err != nil {
-			fmt.Fprintf(os.Stderr, "[ASSIGN] Corrupted state and backup, starting fresh: %v\n", err)
+			slog.Warn("assignment store and backup corrupted, starting fresh", "error", err)
 			return nil
 		}
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Corrupted state, recovered from backup\n")
+		slog.Warn("assignment store corrupted, recovered from backup")
 	}
 
 	s.SessionName = loaded.SessionName
@@ -238,7 +239,7 @@ func (s *AssignmentStore) Assign(beadID, beadTitle string, pane int, agentType, 
 	// Persist immediately
 	if err := s.saveLocked(); err != nil {
 		// Log but don't fail - keep in-memory state
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Failed to persist: %v\n", err)
+		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
 	return assignment, nil
@@ -374,7 +375,7 @@ func (s *AssignmentStore) UpdateStatus(beadID string, newStatus AssignmentStatus
 
 	// Persist
 	if err := s.saveLocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Failed to persist: %v\n", err)
+		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
 	return nil
@@ -414,7 +415,7 @@ func (s *AssignmentStore) MarkFailed(beadID, reason string) error {
 	assignment.FailReason = reason
 
 	if err := s.saveLocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Failed to persist: %v\n", err)
+		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
 	return nil
@@ -457,7 +458,7 @@ func (s *AssignmentStore) Reassign(beadID string, newPane int, newAgentType, new
 	s.Assignments[beadID] = newAssignment
 
 	if err := s.saveLocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Failed to persist: %v\n", err)
+		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
 	return newAssignment, nil
@@ -471,7 +472,7 @@ func (s *AssignmentStore) Remove(beadID string) {
 	delete(s.Assignments, beadID)
 
 	if err := s.saveLocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Failed to persist: %v\n", err)
+		slog.Warn("failed to persist assignment store", "error", err)
 	}
 }
 
@@ -483,7 +484,7 @@ func (s *AssignmentStore) Clear() {
 	s.Assignments = make(map[string]*Assignment)
 
 	if err := s.saveLocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "[ASSIGN] Failed to persist: %v\n", err)
+		slog.Warn("failed to persist assignment store", "error", err)
 	}
 }
 
