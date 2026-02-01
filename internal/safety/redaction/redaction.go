@@ -113,26 +113,48 @@ func deduplicateMatches(matches []match) []match {
 		return matches
 	}
 
-	// Sort by start position, then by priority (descending)
+	// Sort by priority (descending) so higher priority matches get first pick
 	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].start != matches[j].start {
-			return matches[i].start < matches[j].start
+		if matches[i].priority != matches[j].priority {
+			return matches[i].priority > matches[j].priority
 		}
-		return matches[i].priority > matches[j].priority
+		return matches[i].start < matches[j].start
 	})
 
-	// Remove overlaps
+	// Track which byte positions are covered by kept matches
+	maxEnd := 0
+	for _, m := range matches {
+		if m.end > maxEnd {
+			maxEnd = m.end
+		}
+	}
+
+	covered := make([]bool, maxEnd+1)
 	var result []match
-	lastEnd := -1
 
 	for _, m := range matches {
-		// Skip if this match starts before the end of the last kept match
-		if m.start < lastEnd {
-			continue
+		// Check if any part of this match overlaps with already-covered bytes
+		overlaps := false
+		for i := m.start; i < m.end; i++ {
+			if covered[i] {
+				overlaps = true
+				break
+			}
 		}
-		result = append(result, m)
-		lastEnd = m.end
+
+		if !overlaps {
+			result = append(result, m)
+			// Mark this range as covered
+			for i := m.start; i < m.end; i++ {
+				covered[i] = true
+			}
+		}
 	}
+
+	// Sort result by start position for consistent output order
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].start < result[j].start
+	})
 
 	return result
 }
