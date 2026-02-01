@@ -3,7 +3,7 @@ package util
 
 import (
 	"fmt"
-	"os"
+	"log/slog"
 	"strconv"
 	"time"
 )
@@ -75,8 +75,8 @@ func ParseDurationWithDefault(s string, defaultUnit time.Duration, flagName stri
 
 	// Emit deprecation warning
 	unitName := suggestUnit(defaultUnit)
-	fmt.Fprintf(os.Stderr, "Warning: bare number '%s' for --%s is deprecated. Use explicit units: --%s=%d%s\n",
-		s, flagName, flagName, n, unitName)
+	slog.Warn("bare number duration is deprecated",
+		"value", s, "flag", flagName, "suggested", fmt.Sprintf("--%s=%d%s", flagName, n, unitName))
 
 	return time.Duration(n) * defaultUnit, nil
 }
