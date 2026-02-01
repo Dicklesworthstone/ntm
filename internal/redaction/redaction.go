@@ -88,11 +88,6 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category) []match
 		for _, loc := range locs {
 			matchStr := input[loc[0]:loc[1]]
 
-			// Skip if allowlisted.
-			if isAllowlisted(matchStr, allowlist) {
-				continue
-			}
-
 			allMatches = append(allMatches, match{
 				category: p.category,
 				match:    matchStr,
@@ -104,7 +99,23 @@ func scan(input string, allowlist []*regexp.Regexp, disabled []Category) []match
 	}
 
 	// Remove overlapping matches, keeping higher priority ones.
-	return deduplicateMatches(allMatches)
+	// This must happen BEFORE allowlist checking so that higher-priority
+	// matches can be allowlisted even when lower-priority patterns match
+	// different substrings of the same region.
+	deduplicated := deduplicateMatches(allMatches)
+
+	// Filter out allowlisted matches.
+	if len(allowlist) > 0 {
+		var filtered []match
+		for _, m := range deduplicated {
+			if !isAllowlisted(m.match, allowlist) {
+				filtered = append(filtered, m)
+			}
+		}
+		return filtered
+	}
+
+	return deduplicated
 }
 
 // deduplicateMatches removes overlapping matches, preferring higher priority.
