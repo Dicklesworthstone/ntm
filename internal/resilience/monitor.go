@@ -183,19 +183,35 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 
 // Start begins monitoring agent health in the background
 func (m *Monitor) Start(ctx context.Context) {
-	ctx, m.cancel = context.WithCancel(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	go m.monitorLoop(ctx)
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.mu.Unlock()
+		return
+	}
+
+	childCtx, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
+	m.mu.Unlock()
+
+	go m.monitorLoop(childCtx)
 }
 
 // Stop stops the monitor gracefully.
 // Safe to call even if Start() was never called.
 func (m *Monitor) Stop() {
-	if m.cancel == nil {
-		// Start() was never called, nothing to stop
+	m.mu.Lock()
+	cancel := m.cancel
+	m.mu.Unlock()
+
+	if cancel == nil {
 		return
 	}
-	m.cancel()
+
+	cancel()
 	<-m.done
 	m.wg.Wait()
 }

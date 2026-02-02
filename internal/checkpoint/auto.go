@@ -243,11 +243,19 @@ func (w *BackgroundWorker) Start(ctx context.Context) {
 		return
 	}
 
-	ctx, w.cancel = context.WithCancel(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	w.wg.Add(1)
 	w.mu.Lock()
+	if w.cancel != nil {
+		w.mu.Unlock()
+		return
+	}
+
+	ctx, w.cancel = context.WithCancel(ctx)
 	w.started = true
+	w.wg.Add(1)
 	w.mu.Unlock()
 	go w.run(ctx)
 
@@ -259,12 +267,20 @@ func (w *BackgroundWorker) Start(ctx context.Context) {
 func (w *BackgroundWorker) Stop() {
 	w.mu.Lock()
 	wasStarted := w.started
-	if w.cancel != nil {
-		w.cancel()
-	}
+	cancel := w.cancel
 	w.mu.Unlock()
 
+	if cancel != nil {
+		cancel()
+	}
+
 	w.wg.Wait()
+
+	w.mu.Lock()
+	w.cancel = nil
+	w.started = false
+	w.mu.Unlock()
+
 	if wasStarted {
 		log.Printf("Stopped auto-checkpoint worker for session %s", w.sessionName)
 	}

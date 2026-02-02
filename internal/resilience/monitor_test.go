@@ -960,3 +960,28 @@ func TestTriggerRotationAssistanceEmptySession(t *testing.T) {
 		t.Error("should not display tmux message for empty session")
 	}
 }
+
+func TestMonitorStart_NilContextAndDoubleStartAreSafe(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = false
+
+	m := NewMonitor("test-session", t.TempDir(), cfg, false)
+
+	// Should not panic on nil context.
+	m.Start(nil)
+
+	// Calling Start twice should be a no-op (monitor is single-use due to done channel).
+	m.Start(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		m.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() hung after Start(nil) + Start()")
+	}
+}

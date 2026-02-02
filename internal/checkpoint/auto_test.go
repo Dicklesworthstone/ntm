@@ -122,6 +122,36 @@ func TestBackgroundWorker_StartStop(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorkerStart_NilContextAndDoubleStartAreSafe(t *testing.T) {
+	config := AutoCheckpointConfig{
+		Enabled:         true,
+		IntervalMinutes: 0,
+		OnRotation:      true,
+		OnError:         true,
+	}
+
+	worker := NewBackgroundWorker("test-session", config)
+
+	// Should not panic.
+	worker.Start(nil)
+	worker.Start(context.Background()) // idempotent
+
+	done := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() blocked for too long after Start(nil) + Start()")
+	}
+
+	// Stop should be safe to call again.
+	worker.Stop()
+}
+
 func TestBackgroundWorker_EventChannel(t *testing.T) {
 	config := AutoCheckpointConfig{
 		Enabled:    true,
