@@ -2,9 +2,11 @@ package coordinator
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -210,6 +212,68 @@ func TestEventsChannel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("timeout waiting for event")
 	}
+}
+
+func TestEmitEvent_PublishesToEventsBus(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	var (
+		mu         sync.Mutex
+		eventsSeen []events.BusEvent
+	)
+	unsub := events.Subscribe("agent.idle", func(e events.BusEvent) {
+		mu.Lock()
+		eventsSeen = append(eventsSeen, e)
+		mu.Unlock()
+	})
+	defer unsub()
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 2,
+		AgentType: "cc",
+		Status:    robot.StateWaiting,
+	}
+	c.emitEvent(agent, robot.StateGenerating)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(eventsSeen)
+		var last events.BusEvent
+		if n > 0 {
+			last = eventsSeen[n-1]
+		}
+		mu.Unlock()
+
+		if last != nil {
+			if last.EventType() != "agent.idle" {
+				t.Fatalf("EventType=%q, want %q", last.EventType(), "agent.idle")
+			}
+			if last.EventSession() != "test-session" {
+				t.Fatalf("EventSession=%q, want %q", last.EventSession(), "test-session")
+			}
+
+			typed, ok := last.(busCoordinatorEvent)
+			if !ok {
+				t.Fatalf("event type=%T, want %T", last, busCoordinatorEvent{})
+			}
+			if typed.AgentID != "%0" {
+				t.Fatalf("AgentID=%q, want %q", typed.AgentID, "%0")
+			}
+			if typed.PrevType != string(robot.StateGenerating) {
+				t.Fatalf("PrevType=%q, want %q", typed.PrevType, string(robot.StateGenerating))
+			}
+			if typed.NewType != string(robot.StateWaiting) {
+				t.Fatalf("NewType=%q, want %q", typed.NewType, string(robot.StateWaiting))
+			}
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("timeout waiting for agent.idle bus event")
 }
 
 func TestStartStop(t *testing.T) {

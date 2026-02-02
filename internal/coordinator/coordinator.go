@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -129,6 +130,14 @@ type CoordinatorEvent struct {
 	Timestamp time.Time            `json:"timestamp"`
 	AgentID   string               `json:"agent_id,omitempty"`
 	Details   map[string]any       `json:"details,omitempty"`
+}
+
+type busCoordinatorEvent struct {
+	events.BaseEvent
+	AgentID  string         `json:"agent_id,omitempty"`
+	Details  map[string]any `json:"details,omitempty"`
+	PrevType string         `json:"prev_status,omitempty"`
+	NewType  string         `json:"new_status,omitempty"`
 }
 
 // New creates a new SessionCoordinator.
@@ -345,23 +354,34 @@ func (c *SessionCoordinator) updateAgentStates() {
 func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.AgentState) {
 	var eventType CoordinatorEventType
 
+	var busType string
 	switch {
 	case agent.Status == robot.StateWaiting && prevStatus != robot.StateWaiting:
 		eventType = EventAgentIdle
+		busType = "agent.idle"
 	case agent.Status == robot.StateGenerating || agent.Status == robot.StateThinking:
 		eventType = EventAgentBusy
+		busType = "agent.busy"
 	case agent.Status == robot.StateError:
 		eventType = EventAgentError
+		busType = "agent.error"
 	case prevStatus == robot.StateError && agent.Status != robot.StateError:
 		eventType = EventAgentRecovered
+		busType = "agent.recovered"
 	default:
 		return // No event for this transition
+	}
+
+	now := time.Now().UTC()
+	details := map[string]any{
+		"agent_type": agent.AgentType,
+		"pane_index": agent.PaneIndex,
 	}
 
 	select {
 	case c.events <- CoordinatorEvent{
 		Type:      eventType,
-		Timestamp: time.Now(),
+		Timestamp: now,
 		AgentID:   agent.PaneID,
 		Details: map[string]any{
 			"agent_type":  agent.AgentType,
@@ -373,6 +393,18 @@ func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.Agent
 	default:
 		// Channel full, drop event
 	}
+
+	events.Publish(busCoordinatorEvent{
+		BaseEvent: events.BaseEvent{
+			Type:      busType,
+			Timestamp: now,
+			Session:   c.session,
+		},
+		AgentID:  agent.PaneID,
+		Details:  details,
+		PrevType: string(prevStatus),
+		NewType:  string(agent.Status),
+	})
 }
 
 // digestLoop periodically sends digest summaries.
