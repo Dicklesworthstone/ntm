@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -15,6 +18,39 @@ const (
 	promptsDirName  = "prompts"
 	promptExtension = ".json"
 )
+
+var (
+	// redactionConfig holds the global redaction config for session prompt persistence.
+	// If nil, redaction is disabled.
+	redactionConfig *redaction.Config
+	redactionMu     sync.RWMutex
+)
+
+// SetRedactionConfig sets the global redaction config for session prompt persistence.
+// Pass nil to disable redaction.
+func SetRedactionConfig(cfg *redaction.Config) {
+	redactionMu.Lock()
+	defer redactionMu.Unlock()
+	if cfg != nil {
+		// Make a copy to avoid external mutation
+		c := *cfg
+		redactionConfig = &c
+	} else {
+		redactionConfig = nil
+	}
+}
+
+// GetRedactionConfig returns the current redaction config (or nil if disabled).
+func GetRedactionConfig() *redaction.Config {
+	redactionMu.RLock()
+	defer redactionMu.RUnlock()
+	if redactionConfig == nil {
+		return nil
+	}
+	// Return a copy
+	c := *redactionConfig
+	return &c
+}
 
 // PromptEntry represents a saved prompt that was sent to agents.
 type PromptEntry struct {
@@ -64,6 +100,15 @@ func promptsFilePath(sessionName string) (string, error) {
 func SavePrompt(entry PromptEntry) error {
 	if entry.Session == "" {
 		return fmt.Errorf("session name is required")
+	}
+
+	// Check privacy mode before persisting.
+	if err := privacy.GetDefaultManager().CanPersist(entry.Session, privacy.OpPromptHistory); err != nil {
+		// Silently skip persistence in privacy mode (don't propagate error)
+		if privacy.IsPrivacyError(err) {
+			return nil
+		}
+		return err
 	}
 
 	// Generate ID if not set
@@ -124,12 +169,27 @@ func LoadPromptHistory(sessionName string) (*PromptHistory, error) {
 
 // savePromptHistory writes the prompt history to disk.
 func savePromptHistory(history *PromptHistory) error {
+	if history == nil {
+		return fmt.Errorf("prompt history is required")
+	}
+	// Check privacy mode before persisting.
+	if history.Session != "" {
+		if err := privacy.GetDefaultManager().CanPersist(history.Session, privacy.OpPromptHistory); err != nil {
+			if privacy.IsPrivacyError(err) {
+				return nil
+			}
+			return err
+		}
+	}
+
 	path, err := promptsFilePath(history.Session)
 	if err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(history, "", "  ")
+	historyToWrite := redactPromptHistoryForPersistence(history)
+
+	data, err := json.MarshalIndent(historyToWrite, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to serialize prompt history: %w", err)
 	}
@@ -139,6 +199,32 @@ func savePromptHistory(history *PromptHistory) error {
 	}
 
 	return nil
+}
+
+func redactPromptHistoryForPersistence(history *PromptHistory) *PromptHistory {
+	redactionMu.RLock()
+	cfg := redactionConfig
+	redactionMu.RUnlock()
+
+	if cfg == nil || cfg.Mode == redaction.ModeOff {
+		return history
+	}
+
+	// For persistence, treat warn and block as "redact" so secrets are not written to disk.
+	cfgCopy := *cfg
+	if cfgCopy.Mode == redaction.ModeWarn || cfgCopy.Mode == redaction.ModeBlock {
+		cfgCopy.Mode = redaction.ModeRedact
+	}
+
+	redacted := *history
+	redacted.Prompts = make([]PromptEntry, 0, len(history.Prompts))
+	for _, entry := range history.Prompts {
+		redactedEntry := entry
+		result := redaction.ScanAndRedact(redactedEntry.Content, cfgCopy)
+		redactedEntry.Content = result.Output
+		redacted.Prompts = append(redacted.Prompts, redactedEntry)
+	}
+	return &redacted
 }
 
 // GetLatestPrompts returns the N most recent prompts for a session.

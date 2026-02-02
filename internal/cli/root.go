@@ -21,7 +21,9 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -118,9 +120,12 @@ Shell Integration:
 			// Ensure persisted prompt history + event logs never store raw secrets/PII when redaction is enabled.
 			// (bd-3sl0s)
 			if cfg != nil {
+				privacy.SetDefaultManager(privacy.New(cfg.Privacy))
+
 				redactCfg := cfg.Redaction.ToRedactionLibConfig()
 				history.SetRedactionConfig(&redactCfg)
 				events.SetRedactionConfig(&redactCfg)
+				session.SetRedactionConfig(&redactCfg)
 			}
 
 			// Run automatic temp file cleanup if enabled

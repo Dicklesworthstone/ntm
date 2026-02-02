@@ -5,6 +5,7 @@ package privacy
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
@@ -184,21 +185,28 @@ func IsPrivacyError(err error) bool {
 
 // Global default manager instance (initialized lazily).
 var (
-	defaultManager     *Manager
-	defaultManagerOnce sync.Once
+	defaultManager atomic.Pointer[Manager]
 )
 
 // GetDefaultManager returns the global default privacy manager.
 func GetDefaultManager() *Manager {
-	defaultManagerOnce.Do(func() {
-		cfg := config.Default()
-		defaultManager = New(cfg.Privacy)
-	})
-	return defaultManager
+	if m := defaultManager.Load(); m != nil {
+		return m
+	}
+
+	cfg := config.Default()
+	m := New(cfg.Privacy)
+	if defaultManager.CompareAndSwap(nil, m) {
+		return m
+	}
+	return defaultManager.Load()
 }
 
 // SetDefaultManager sets the global default privacy manager.
 // This should only be called during initialization.
 func SetDefaultManager(m *Manager) {
-	defaultManager = m
+	if m == nil {
+		return
+	}
+	defaultManager.Store(m)
 }

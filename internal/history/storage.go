@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -51,6 +52,19 @@ func StoragePath() string {
 // Thread-safe and process-safe.
 // If redaction is configured via SetRedactionConfig, prompts are redacted before storage.
 func Append(entry *HistoryEntry) error {
+	if entry == nil {
+		return nil
+	}
+	if entry.Session != "" {
+		if err := privacy.GetDefaultManager().CanPersist(entry.Session, privacy.OpPromptHistory); err != nil {
+			// Silently skip persistence in privacy mode (don't propagate error)
+			if privacy.IsPrivacyError(err) {
+				return nil
+			}
+			return err
+		}
+	}
+
 	unlock, err := acquireLock()
 	if err != nil {
 		return err
@@ -90,6 +104,26 @@ func BatchAppend(entries []*HistoryEntry) error {
 		return nil
 	}
 
+	// Apply privacy gating before taking any locks or touching the filesystem.
+	toWrite := make([]*HistoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if entry.Session != "" {
+			if err := privacy.GetDefaultManager().CanPersist(entry.Session, privacy.OpPromptHistory); err != nil {
+				if privacy.IsPrivacyError(err) {
+					continue
+				}
+				return err
+			}
+		}
+		toWrite = append(toWrite, entry)
+	}
+	if len(toWrite) == 0 {
+		return nil
+	}
+
 	unlock, err := acquireLock()
 	if err != nil {
 		return err
@@ -110,7 +144,7 @@ func BatchAppend(entries []*HistoryEntry) error {
 	defer f.Close()
 
 	writer := bufio.NewWriter(f)
-	for _, entry := range entries {
+	for _, entry := range toWrite {
 		// Apply redaction if configured
 		entryToWrite := RedactEntry(entry)
 
