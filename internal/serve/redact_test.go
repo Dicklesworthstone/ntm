@@ -398,6 +398,9 @@ func TestIsJSONContent(t *testing.T) {
 	}{
 		{"application/json", true},
 		{"application/json; charset=utf-8", true},
+		{"Application/JSON", true},                // case-insensitive per RFC 2616
+		{"APPLICATION/JSON", true},                // case-insensitive per RFC 2616
+		{"Application/Json; charset=utf-8", true}, // case-insensitive per RFC 2616
 		{"text/plain", false},
 		{"text/html", false},
 		{"application/xml", false},
