@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 )
 
 const (
@@ -117,6 +119,13 @@ func (l *Logger) Log(event *Event) error {
 
 // LogEvent is a convenience method to create and log an event in one call.
 func (l *Logger) LogEvent(eventType EventType, session string, data interface{}) error {
+	// Check privacy mode before logging
+	if session != "" {
+		if err := privacy.GetDefaultManager().CanPersist(session, privacy.OpEventLog); err != nil {
+			// Silently skip logging in privacy mode (don't propagate error)
+			return nil
+		}
+	}
 	event := NewEvent(eventType, session, ToMap(data))
 	return l.Log(event)
 }
