@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
@@ -45,7 +46,7 @@ type LoggerOptions struct {
 // DefaultOptions returns the default logger options.
 func DefaultOptions() LoggerOptions {
 	return LoggerOptions{
-		Path:          expandPath(DefaultLogPath),
+		Path:          util.ExpandPath(DefaultLogPath),
 		RetentionDays: DefaultRetentionDays,
 		Enabled:       true,
 	}
@@ -54,7 +55,7 @@ func DefaultOptions() LoggerOptions {
 // NewLogger creates a new event logger.
 func NewLogger(opts LoggerOptions) (*Logger, error) {
 	if opts.Path == "" {
-		opts.Path = expandPath(DefaultLogPath)
+		opts.Path = util.ExpandPath(DefaultLogPath)
 	}
 	if opts.RetentionDays == 0 {
 		opts.RetentionDays = DefaultRetentionDays
@@ -260,17 +261,6 @@ func (l *Logger) rotateOldEntries() error {
 	l.file = f
 
 	return nil
-}
-
-// expandPath expands ~ in a path to the home directory.
-func expandPath(path string) string {
-	if len(path) > 0 && path[0] == '~' {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[1:])
-		}
-	}
-	return path
 }
 
 // Global logger instance

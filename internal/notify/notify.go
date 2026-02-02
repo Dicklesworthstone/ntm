@@ -478,14 +478,7 @@ func (n *Notifier) sendWebhook(event Event) error {
 // sendShell executes a shell command notification
 func (n *Notifier) sendShell(event Event) error {
 	cmdStr := n.config.Shell.Command
-
-	// Expand ~ in path
-	if strings.HasPrefix(cmdStr, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			cmdStr = filepath.Join(home, cmdStr[1:])
-		}
-	}
+	cmdStr = util.ExpandPath(cmdStr)
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 
@@ -516,13 +509,7 @@ func (n *Notifier) sendLog(event Event) error {
 	defer n.mu.Unlock()
 
 	path := n.config.Log.Path
-	// Expand ~ in path
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			path = filepath.Join(home, path[1:])
-		}
-	}
+	path = util.ExpandPath(path)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -567,14 +554,7 @@ func (n *Notifier) sendFileBox(event Event) error {
 	if path == "" {
 		path = ".ntm/human_inbox"
 	}
-
-	// Expand ~ in path
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			path = filepath.Join(home, path[1:])
-		}
-	}
+	path = util.ExpandPath(path)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(path, 0755); err != nil {

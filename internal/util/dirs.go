@@ -17,6 +17,32 @@ func NTMDir() (string, error) {
 	return filepath.Join(home, ".ntm"), nil
 }
 
+// ExpandPath expands a leading "~/" (or "~\\") to the current user's home directory.
+//
+// It intentionally does not expand "~user/..." (which is shell-specific).
+func ExpandPath(path string) string {
+	if path == "" {
+		return path
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	if strings.HasPrefix(path, "~\\") {
+		return filepath.Join(home, path[2:])
+	}
+
+	return path
+}
+
 // EnsureDir ensures that a directory exists, creating it if necessary.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)

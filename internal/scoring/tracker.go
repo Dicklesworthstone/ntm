@@ -11,6 +11,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
@@ -151,7 +153,7 @@ type TrackerOptions struct {
 // DefaultTrackerOptions returns default options.
 func DefaultTrackerOptions() TrackerOptions {
 	return TrackerOptions{
-		Path:          expandPath(DefaultScorePath),
+		Path:          util.ExpandPath(DefaultScorePath),
 		RetentionDays: DefaultRetentionDays,
 		Enabled:       true,
 	}
@@ -160,7 +162,7 @@ func DefaultTrackerOptions() TrackerOptions {
 // NewTracker creates a new score tracker.
 func NewTracker(opts TrackerOptions) (*Tracker, error) {
 	if opts.Path == "" {
-		opts.Path = expandPath(DefaultScorePath)
+		opts.Path = util.ExpandPath(DefaultScorePath)
 	}
 	if opts.RetentionDays == 0 {
 		opts.RetentionDays = DefaultRetentionDays
@@ -518,17 +520,6 @@ func DefaultTracker() *Tracker {
 		}
 	})
 	return globalTracker
-}
-
-// expandPath expands ~ in a path to the home directory.
-func expandPath(path string) string {
-	if len(path) > 0 && path[0] == '~' {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[1:])
-		}
-	}
-	return path
 }
 
 // sqrt computes square root using Newton's method (avoiding math import).

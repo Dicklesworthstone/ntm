@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
@@ -78,7 +79,7 @@ type ArchiverOptions struct {
 func DefaultArchiverOptions(sessionName string) ArchiverOptions {
 	return ArchiverOptions{
 		SessionName:     sessionName,
-		OutputDir:       expandPath(DefaultOutputDir),
+		OutputDir:       util.ExpandPath(DefaultOutputDir),
 		Interval:        DefaultInterval,
 		LinesPerCapture: DefaultLinesPerCapture,
 	}
@@ -90,7 +91,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		return nil, fmt.Errorf("session name required")
 	}
 	if opts.OutputDir == "" {
-		opts.OutputDir = expandPath(DefaultOutputDir)
+		opts.OutputDir = util.ExpandPath(DefaultOutputDir)
 	}
 	if opts.Interval == 0 {
 		opts.Interval = DefaultInterval
@@ -106,9 +107,9 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 
 	// Create archive file (one per session, append mode)
 	filename := fmt.Sprintf("%s_%s.jsonl", opts.SessionName, time.Now().Format("2006-01-02"))
-	filepath := filepath.Join(opts.OutputDir, filename)
+	filePath := filepath.Join(opts.OutputDir, filename)
 
-	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive file: %w", err)
 	}
@@ -325,17 +326,6 @@ type ArchiverStats struct {
 }
 
 // Helper functions
-
-// expandPath expands ~ to home directory.
-func expandPath(path string) string {
-	if len(path) > 0 && path[0] == '~' {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[1:])
-		}
-	}
-	return path
-}
 
 // simpleHash computes a simple hash of a string for change detection.
 func simpleHash(s string) uint64 {
