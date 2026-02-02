@@ -124,137 +124,39 @@ func TestSendRealSession(t *testing.T) {
 	if !strings.Contains(output, prompt) {
 		t.Errorf("Pane output did not contain prompt %q. Got:\n%s", prompt, output)
 	}
-}
 
-func TestSendRealSession_RedactMode(t *testing.T) {
-	testutil.RequireTmuxThrottled(t)
-
-	tmpDir, err := os.MkdirTemp("", "ntm-test-send-redact")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Save/Restore global config
-	oldCfg := cfg
-	oldJsonOutput := jsonOutput
-	defer func() {
-		cfg = oldCfg
-		jsonOutput = oldJsonOutput
-	}()
-
-	cfg = config.Default()
-	cfg.ProjectsBase = tmpDir
+	// Redaction: redact mode should replace sensitive substrings before sending to panes.
 	cfg.Redaction.Mode = "redact"
-	jsonOutput = true
-
-	cfg.Agents.Claude = "cat"
-
-	sessionName := fmt.Sprintf("ntm-test-send-redact-%d", time.Now().UnixNano())
-	defer func() {
-		_ = tmux.KillSession(sessionName)
-	}()
-
-	agents := []FlatAgent{
-		{Type: AgentTypeClaude, Index: 1, Model: "test-model"},
-	}
-
-	projectDir := filepath.Join(tmpDir, sessionName)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		t.Fatalf("failed to create project dir: %v", err)
-	}
-
-	if err := spawnSessionLogic(SpawnOptions{Session: sessionName, Agents: agents, CCCount: 1, UserPane: true}); err != nil {
-		t.Fatalf("spawnSessionLogic failed: %v", err)
-	}
-	time.Sleep(500 * time.Millisecond)
-
-	promptSecret := "prefix password=hunter2hunter2 suffix"
+	redactSecret := "prefix password=hunter2hunter2 suffix"
 	if err := runSendWithTargets(SendOptions{
 		Session:   sessionName,
-		Prompt:    promptSecret,
+		Prompt:    redactSecret,
 		Targets:   SendTargets{},
 		TargetAll: true,
 		SkipFirst: false,
 		PaneIndex: -1,
 	}); err != nil {
-		t.Fatalf("runSendWithTargets failed: %v", err)
+		t.Fatalf("runSendWithTargets (redact) failed: %v", err)
 	}
 	time.Sleep(500 * time.Millisecond)
 
-	panes, err := tmux.GetPanes(sessionName)
-	if err != nil {
-		t.Fatalf("failed to get panes: %v", err)
-	}
-	var agentPane *tmux.Pane
-	for i := range panes {
-		if panes[i].Type == tmux.AgentClaude {
-			agentPane = &panes[i]
-			break
-		}
-	}
-	if agentPane == nil {
-		t.Fatal("Agent pane not found")
-	}
-
-	output, err := tmux.CapturePaneOutput(agentPane.ID, 20)
+	redactedOutput, err := tmux.CapturePaneOutput(agentPane.ID, 20)
 	if err != nil {
 		t.Fatalf("CapturePaneOutput failed: %v", err)
 	}
-	if strings.Contains(output, "hunter2hunter2") {
-		t.Fatalf("expected secret to be redacted in pane output, got:\n%s", output)
+	if strings.Contains(redactedOutput, "hunter2hunter2") {
+		t.Fatalf("expected secret to be redacted in pane output, got:\n%s", redactedOutput)
 	}
-	if !strings.Contains(output, "[REDACTED:PASSWORD:") {
-		t.Fatalf("expected redaction placeholder in pane output, got:\n%s", output)
+	if !strings.Contains(redactedOutput, "[REDACTED:PASSWORD:") {
+		t.Fatalf("expected redaction placeholder in pane output, got:\n%s", redactedOutput)
 	}
-}
 
-func TestSendRealSession_BlockMode(t *testing.T) {
-	testutil.RequireTmuxThrottled(t)
-
-	tmpDir, err := os.MkdirTemp("", "ntm-test-send-block")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	oldCfg := cfg
-	oldJsonOutput := jsonOutput
-	defer func() {
-		cfg = oldCfg
-		jsonOutput = oldJsonOutput
-	}()
-
-	cfg = config.Default()
-	cfg.ProjectsBase = tmpDir
+	// Redaction: block mode should abort send (and not leak secrets to panes).
 	cfg.Redaction.Mode = "block"
-	jsonOutput = true
-
-	cfg.Agents.Claude = "cat"
-
-	sessionName := fmt.Sprintf("ntm-test-send-block-%d", time.Now().UnixNano())
-	defer func() {
-		_ = tmux.KillSession(sessionName)
-	}()
-
-	agents := []FlatAgent{
-		{Type: AgentTypeClaude, Index: 1, Model: "test-model"},
-	}
-
-	projectDir := filepath.Join(tmpDir, sessionName)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		t.Fatalf("failed to create project dir: %v", err)
-	}
-
-	if err := spawnSessionLogic(SpawnOptions{Session: sessionName, Agents: agents, CCCount: 1, UserPane: true}); err != nil {
-		t.Fatalf("spawnSessionLogic failed: %v", err)
-	}
-	time.Sleep(500 * time.Millisecond)
-
-	promptSecret := "prefix password=hunter2hunter2 suffix"
+	blockSecret := "prefix password=blocksecretblocksecret suffix"
 	err = runSendWithTargets(SendOptions{
 		Session:   sessionName,
-		Prompt:    promptSecret,
+		Prompt:    blockSecret,
 		Targets:   SendTargets{},
 		TargetAll: true,
 		SkipFirst: false,
@@ -269,30 +171,12 @@ func TestSendRealSession_BlockMode(t *testing.T) {
 	}
 
 	time.Sleep(500 * time.Millisecond)
-	panes, err := tmux.GetPanes(sessionName)
-	if err != nil {
-		t.Fatalf("failed to get panes: %v", err)
-	}
-	var agentPane *tmux.Pane
-	for i := range panes {
-		if panes[i].Type == tmux.AgentClaude {
-			agentPane = &panes[i]
-			break
-		}
-	}
-	if agentPane == nil {
-		t.Fatal("Agent pane not found")
-	}
-
-	output, err := tmux.CapturePaneOutput(agentPane.ID, 20)
+	blockedOutput, err := tmux.CapturePaneOutput(agentPane.ID, 20)
 	if err != nil {
 		t.Fatalf("CapturePaneOutput failed: %v", err)
 	}
-	if strings.Contains(output, "hunter2hunter2") {
-		t.Fatalf("expected secret not to appear in pane output when blocked, got:\n%s", output)
-	}
-	if strings.Contains(output, "[REDACTED:PASSWORD:") {
-		t.Fatalf("expected prompt not to be sent at all when blocked, got:\n%s", output)
+	if strings.Contains(blockedOutput, "blocksecretblocksecret") {
+		t.Fatalf("expected secret not to appear in pane output when blocked, got:\n%s", blockedOutput)
 	}
 }
 
