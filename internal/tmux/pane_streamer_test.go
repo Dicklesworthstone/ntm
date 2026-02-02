@@ -276,6 +276,17 @@ func TestPaneStreamer_NextSeq(t *testing.T) {
 	}
 }
 
+func TestPipePaneCatCommand_QuotesPath(t *testing.T) {
+	fifoPath := "/tmp/ntm_pane_streams/pane_session;rm -rf /_123.fifo"
+
+	got := pipePaneCatCommand(fifoPath)
+	want := "cat >> " + ShellQuote(fifoPath)
+
+	if got != want {
+		t.Fatalf("pipePaneCatCommand(%q) = %q, want %q", fifoPath, got, want)
+	}
+}
+
 func TestNewPaneStreamer_DefaultsApplied(t *testing.T) {
 	callback := func(event StreamEvent) {}
 

@@ -67,8 +67,8 @@ type PaneStreamer struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	fifoPath   string
-	seq        int64
+	fifoPath    string
+	seq         int64
 	useFallback atomic.Bool
 
 	mu       sync.Mutex
@@ -168,6 +168,11 @@ func (ps *PaneStreamer) nextSeq() int64 {
 	return atomic.AddInt64(&ps.seq, 1)
 }
 
+func pipePaneCatCommand(fifoPath string) string {
+	// pipe-pane runs the command via a shell, so the FIFO path must be quoted.
+	return fmt.Sprintf("cat >> %s", ShellQuote(fifoPath))
+}
+
 // startPipePaneStreaming sets up pipe-pane streaming via a FIFO.
 func (ps *PaneStreamer) startPipePaneStreaming() error {
 	// Create unique FIFO path
@@ -182,7 +187,7 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 
 	// Start the pipe-pane command
 	// Note: pipe-pane runs the command in a shell, output goes to the command's stdin
-	catCmd := fmt.Sprintf("cat >> %s", ps.fifoPath)
+	catCmd := pipePaneCatCommand(ps.fifoPath)
 	if err := ps.client.RunSilent("pipe-pane", "-t", ps.target, catCmd); err != nil {
 		os.Remove(ps.fifoPath)
 		return fmt.Errorf("pipe-pane: %w", err)
@@ -425,10 +430,10 @@ func (sm *StreamManager) Stats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"active_streams":   active,
-		"pipe_pane_count":  pipePaneCount,
-		"fallback_count":   fallbackCount,
-		"fifo_dir":         sm.config.FIFODir,
+		"active_streams":    active,
+		"pipe_pane_count":   pipePaneCount,
+		"fallback_count":    fallbackCount,
+		"fifo_dir":          sm.config.FIFODir,
 		"flush_interval_ms": sm.config.FlushInterval.Milliseconds(),
 	}
 }
