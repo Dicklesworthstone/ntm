@@ -41,8 +41,9 @@ func TestSendRealSession(t *testing.T) {
 
 	// Use a simple echo command that persists for a bit so we can capture it
 	// We use 'read' to keep the pane open/active if needed, or just sleep
-	cfg.Agents.Claude = "cat" // Simple cat will echo whatever we send to stdin/tty?
-	// Actually, SendKeys sends keystrokes. "cat" will print them back. Perfect.
+	// Use /bin/cat explicitly to avoid shell aliases (e.g., cat -> bat) which
+	// have different input/output behavior and can cause test flakiness.
+	cfg.Agents.Claude = "/bin/cat"
 
 	sessionName := fmt.Sprintf("ntm-test-send-%d", time.Now().UnixNano())
 	defer func() {
@@ -73,8 +74,11 @@ func TestSendRealSession(t *testing.T) {
 		t.Fatalf("spawnSessionLogic failed: %v", err)
 	}
 
-	// Wait for session to settle
-	time.Sleep(500 * time.Millisecond)
+	// Wait for session to settle - needs enough time for:
+	// 1. Shell to initialize (load zshrc, etc.)
+	// 2. The cd && cat command to be processed
+	// 3. cat to be ready to receive input
+	time.Sleep(1500 * time.Millisecond)
 
 	// Send a prompt
 	prompt := "Hello NTM Test"
