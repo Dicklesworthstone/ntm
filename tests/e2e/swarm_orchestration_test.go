@@ -444,3 +444,88 @@ func TestE2ESwarmOrchestration_ConfigOptions(t *testing.T) {
 		}
 	})
 }
+
+// TestE2ESwarmOrchestration_ProjectDiscovery verifies scan-dir discovery excludes
+// projects without beads while including valid beads projects.
+func TestE2ESwarmOrchestration_ProjectDiscovery(t *testing.T) {
+	testutil.RequireE2E(t)
+	testutil.RequireNTMBinary(t)
+
+	setupSwarmTestEnv(t)
+
+	tmpDir := t.TempDir()
+	validProject := filepath.Join(tmpDir, "project-with-beads")
+	noBeadsProject := filepath.Join(tmpDir, "project-without-beads")
+
+	if err := os.MkdirAll(filepath.Join(validProject, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	if err := os.MkdirAll(noBeadsProject, 0755); err != nil {
+		t.Fatalf("mkdir no-beads dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(validProject, ".beads", "issues.jsonl"), []byte{}, 0644); err != nil {
+		t.Fatalf("write issues.jsonl: %v", err)
+	}
+
+	resp := runSwarmPlan(t, tmpDir, "--scan-dir="+tmpDir)
+
+	if len(resp.Allocations) != 1 {
+		t.Fatalf("expected 1 allocation, got %d", len(resp.Allocations))
+	}
+	if !strings.Contains(resp.Allocations[0].Path, validProject) {
+		t.Fatalf("expected allocation for %s, got %s", validProject, resp.Allocations[0].Path)
+	}
+	for _, alloc := range resp.Allocations {
+		if strings.Contains(alloc.Path, noBeadsProject) {
+			t.Fatalf("unexpected allocation for no-beads project: %s", alloc.Path)
+		}
+	}
+}
+
+// TestE2ESwarmOrchestration_SessionNaming verifies session names follow
+// the expected cc/cod/gmi naming convention in plan output.
+func TestE2ESwarmOrchestration_SessionNaming(t *testing.T) {
+	testutil.RequireE2E(t)
+	testutil.RequireNTMBinary(t)
+
+	setupSwarmTestEnv(t)
+
+	tmpDir := t.TempDir()
+	project := filepath.Join(tmpDir, "naming-test")
+	beadsDir := filepath.Join(project, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", beadsDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte{}, 0644); err != nil {
+		t.Fatalf("write issues.jsonl: %v", err)
+	}
+
+	resp := runSwarmPlan(t, tmpDir, "--scan-dir="+tmpDir, "--sessions-per-type=1")
+	if len(resp.Sessions) == 0 {
+		t.Fatalf("expected sessions in plan output")
+	}
+
+	wantPrefixes := map[string]string{
+		"cc":  "cc_agents_",
+		"cod": "cod_agents_",
+		"gmi": "gmi_agents_",
+	}
+
+	seen := make(map[string]bool)
+	for _, sess := range resp.Sessions {
+		prefix, ok := wantPrefixes[sess.AgentType]
+		if !ok {
+			t.Fatalf("unexpected agent type: %s", sess.AgentType)
+		}
+		if !strings.HasPrefix(sess.Name, prefix) {
+			t.Fatalf("expected session %s to start with %s", sess.Name, prefix)
+		}
+		seen[sess.AgentType] = true
+	}
+
+	for agentType := range wantPrefixes {
+		if !seen[agentType] {
+			t.Fatalf("missing session for agent type %s", agentType)
+		}
+	}
+}

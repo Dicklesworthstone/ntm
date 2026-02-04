@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 func TestExport_TarGz(t *testing.T) {
@@ -394,30 +396,47 @@ func TestExportImport_RoundTrip(t *testing.T) {
 }
 
 func TestRedactSecrets(t *testing.T) {
+	SetRedactionConfig(&redaction.Config{
+		Mode:      redaction.ModeWarn,
+		Allowlist: []string{`token=NO_REDACT_SECRET_[0-9]+`},
+	})
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
 	tests := []struct {
 		name       string
 		input      string
 		shouldFind bool // whether we expect to find the original string after redaction
+		category   string
 	}{
 		{
 			name:       "aws key",
 			input:      "AKIAIOSFODNN7EXAMPLE",
 			shouldFind: false,
+			category:   "AWS_ACCESS_KEY",
 		},
 		{
 			name:       "api key pattern",
 			input:      "api_key: myverysecretkeyvalue12345678",
 			shouldFind: false,
+			category:   "GENERIC_API_KEY",
 		},
 		{
 			name:       "bearer token",
-			input:      "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+			input:      "Authorization: Bearer tok_abcdefghijklmnopqrstuvwxyz12345",
 			shouldFind: false,
+			category:   "BEARER_TOKEN",
 		},
 		{
 			name:       "no secrets",
 			input:      "Hello, this is normal text without any secrets",
 			shouldFind: true,
+			category:   "",
+		},
+		{
+			name:       "allowlist bypass",
+			input:      "token=NO_REDACT_SECRET_1234567890",
+			shouldFind: true,
+			category:   "",
 		},
 	}
 
@@ -427,6 +446,9 @@ func TestRedactSecrets(t *testing.T) {
 			found := strings.Contains(string(result), tt.input)
 			if found != tt.shouldFind {
 				t.Errorf("redactSecrets() found original = %v, want %v; result = %q", found, tt.shouldFind, result)
+			}
+			if tt.category != "" && !strings.Contains(string(result), "[REDACTED:"+tt.category+":") {
+				t.Errorf("redactSecrets() missing category placeholder %s; result = %q", tt.category, result)
 			}
 		})
 	}

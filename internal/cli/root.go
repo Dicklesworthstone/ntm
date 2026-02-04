@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/history"
@@ -126,6 +127,7 @@ Shell Integration:
 				history.SetRedactionConfig(&redactCfg)
 				events.SetRedactionConfig(&redactCfg)
 				session.SetRedactionConfig(&redactCfg)
+				checkpoint.SetRedactionConfig(&redactCfg)
 			}
 
 			// Run automatic temp file cleanup if enabled

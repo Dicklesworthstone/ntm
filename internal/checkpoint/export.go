@@ -11,9 +11,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 // ExportFormat specifies the archive format for export.
@@ -88,18 +90,33 @@ func DefaultImportOptions() ImportOptions {
 	}
 }
 
-// Secret patterns to redact from scrollback.
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(api[_-]?key|apikey)\s*[:=]\s*['"]?[\w-]{20,}['"]?`),
-	regexp.MustCompile(`(?i)(secret|password|passwd|pwd)\s*[:=]\s*['"]?[^\s'"]{8,}['"]?`),
-	regexp.MustCompile(`(?i)(token|bearer)\s*[:=]\s*['"]?[\w-]{20,}['"]?`),
-	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+[\w-]+`),
-	regexp.MustCompile(`(?i)(aws_secret|aws_access)\s*[:=]\s*['"]?[\w/+=]{20,}['"]?`),
-	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`),
-	regexp.MustCompile(`sk-[a-zA-Z0-9]{48}`),
-	regexp.MustCompile(`sk-ant-[a-zA-Z0-9-]{95}`),
-	regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
-	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----`),
+var (
+	redactionConfig *redaction.Config
+	redactionMu     sync.RWMutex
+)
+
+// SetRedactionConfig sets the global redaction config for checkpoint export redaction.
+// Pass nil to use the default redaction config.
+func SetRedactionConfig(cfg *redaction.Config) {
+	redactionMu.Lock()
+	defer redactionMu.Unlock()
+	if cfg != nil {
+		c := *cfg
+		redactionConfig = &c
+	} else {
+		redactionConfig = nil
+	}
+}
+
+// GetRedactionConfig returns the current redaction config (or nil if unset).
+func GetRedactionConfig() *redaction.Config {
+	redactionMu.RLock()
+	defer redactionMu.RUnlock()
+	if redactionConfig == nil {
+		return nil
+	}
+	c := *redactionConfig
+	return &c
 }
 
 // Export creates a portable archive of a checkpoint.
@@ -629,11 +646,21 @@ func sha256sum(data []byte) string {
 }
 
 func redactSecrets(data []byte) []byte {
-	result := string(data)
-	for _, pattern := range secretPatterns {
-		result = pattern.ReplaceAllString(result, "[REDACTED]")
+	redactionMu.RLock()
+	cfg := redactionConfig
+	redactionMu.RUnlock()
+
+	var effective redaction.Config
+	if cfg == nil {
+		effective = redaction.DefaultConfig()
+	} else {
+		effective = *cfg
 	}
-	return []byte(result)
+	// Export redaction is explicitly requested by flag; always redact.
+	effective.Mode = redaction.ModeRedact
+
+	result := redaction.ScanAndRedact(string(data), effective)
+	return []byte(result.Output)
 }
 
 func rewriteCheckpointPaths(cp *Checkpoint) *Checkpoint {
