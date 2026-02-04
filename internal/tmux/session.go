@@ -1156,9 +1156,11 @@ func ZoomPane(session string, paneIndex int) error {
 	return DefaultClient.ZoomPane(session, paneIndex)
 }
 
-// CapturePaneOutput captures the output of a pane
+// CapturePaneOutput captures the output of a pane with a default timeout to avoid hangs.
 func (c *Client) CapturePaneOutput(target string, lines int) (string, error) {
-	return c.CapturePaneOutputContext(context.Background(), target, lines)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCommandTimeout)
+	defer cancel()
+	return c.CapturePaneOutputContext(ctx, target, lines)
 }
 
 // CapturePaneOutputContext captures the output of a pane with cancellation support.
