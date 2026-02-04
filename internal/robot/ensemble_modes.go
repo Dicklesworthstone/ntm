@@ -265,12 +265,9 @@ func buildModesHints(output *EnsembleModesOutput) *AgentHints {
 		return nil
 	}
 
-	hints := &AgentHints{
-		Summary: "",
-	}
+	hints := &AgentHints{}
 
 	// Provide summary
-	hints.Summary = ""
 	if len(output.Modes) > 0 {
 		hints.Summary = "Use modes in ensembles via: ntm ensemble <preset> <question>"
 	}
@@ -285,7 +282,15 @@ func buildModesHints(output *EnsembleModesOutput) *AgentHints {
 		})
 	}
 
-	if hints.Summary == "" && len(hints.SuggestedActions) == 0 {
+	if output.Pagination != nil {
+		if next, pages := paginationHintOffsets(output.Pagination); next != nil {
+			hints.NextOffset = next
+			hints.PagesRemaining = pages
+		}
+	}
+
+	if hints.Summary == "" && len(hints.SuggestedActions) == 0 &&
+		hints.NextOffset == nil && len(hints.Warnings) == 0 && len(hints.Notes) == 0 {
 		return nil
 	}
 	return hints

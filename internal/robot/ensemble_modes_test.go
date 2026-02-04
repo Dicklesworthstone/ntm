@@ -135,6 +135,21 @@ func TestGetEnsembleModes_Pagination(t *testing.T) {
 		}
 	}
 
+	if page1.Pagination != nil {
+		expectedNext, expectedPages := paginationHintOffsets(page1.Pagination)
+		if page1.AgentHints == nil {
+			t.Fatal("expected agent hints when pagination is active")
+		}
+		if page1.AgentHints.NextOffset == nil || expectedNext == nil ||
+			*page1.AgentHints.NextOffset != *expectedNext {
+			t.Fatalf("expected next_offset=%v, got %v", expectedNext, page1.AgentHints.NextOffset)
+		}
+		if page1.AgentHints.PagesRemaining == nil || expectedPages == nil ||
+			*page1.AgentHints.PagesRemaining != *expectedPages {
+			t.Fatalf("expected pages_remaining=%v, got %v", expectedPages, page1.AgentHints.PagesRemaining)
+		}
+	}
+
 	// Pages should have different modes
 	if len(page1.Modes) > 0 && len(page2.Modes) > 0 {
 		if page1.Modes[0].ID == page2.Modes[0].ID {
@@ -145,6 +160,31 @@ func TestGetEnsembleModes_Pagination(t *testing.T) {
 	t.Logf("TEST: TestGetEnsembleModes_Pagination - page1: %d, page2: %d",
 		len(page1.Modes), len(page2.Modes))
 	t.Log("TEST: TestGetEnsembleModes_Pagination - assertion: pagination works")
+}
+
+func TestBuildModesHints_PaginationOnly(t *testing.T) {
+	t.Log("TEST: TestBuildModesHints_PaginationOnly - starting")
+
+	output := &EnsembleModesOutput{
+		Pagination: &PaginationInfo{
+			Limit:  5,
+			Offset: 10,
+			Count:  5,
+			Total:  25,
+		},
+	}
+
+	hints := buildModesHints(output)
+	if hints == nil {
+		t.Fatal("expected hints when pagination is present")
+	}
+	if hints.NextOffset == nil || *hints.NextOffset != 15 {
+		t.Fatalf("expected next_offset=15, got %v", hints.NextOffset)
+	}
+	if hints.PagesRemaining == nil || *hints.PagesRemaining != 2 {
+		t.Fatalf("expected pages_remaining=2, got %v", hints.PagesRemaining)
+	}
+	t.Log("TEST: TestBuildModesHints_PaginationOnly - assertion: pagination hints set")
 }
 
 func TestGetEnsembleModes_Categories(t *testing.T) {
