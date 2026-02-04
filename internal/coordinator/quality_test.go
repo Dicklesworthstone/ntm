@@ -3,6 +3,8 @@ package coordinator
 import (
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/scanner"
 )
 
 func TestNewQualityMonitor(t *testing.T) {
@@ -555,5 +557,163 @@ func TestHistoryLimits(t *testing.T) {
 
 	if len(qm.contextHistory["%1"]) > 1000 {
 		t.Errorf("context history should be capped at 1000, got %d", len(qm.contextHistory["%1"]))
+	}
+}
+
+// =============================================================================
+// IsUBSAvailable / GetLastScanResult tests
+// =============================================================================
+
+func TestIsUBSAvailable(t *testing.T) {
+	t.Parallel()
+
+	qm := &QualityMonitor{}
+	if qm.IsUBSAvailable() {
+		t.Error("expected false when scanner is nil")
+	}
+
+	// Cannot easily set a real scanner in unit tests (requires UBS binary),
+	// but we verify the nil-check path works.
+}
+
+func TestGetLastScanResult_Nil(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+	result := qm.GetLastScanResult()
+	if result != nil {
+		t.Errorf("expected nil when no scan has been run, got %v", result)
+	}
+}
+
+func TestGetLastScanResult_WithResult(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+
+	// Directly set the lastScanResult (bypassing RunScan which needs UBS)
+	expected := &scanner.ScanResult{
+		Project: "test-project",
+		Totals: scanner.ScanTotals{
+			Critical: 2,
+			Warning:  5,
+			Info:     10,
+			Files:    20,
+		},
+		ExitCode: 0,
+	}
+	qm.mu.Lock()
+	qm.lastScanResult = expected
+	qm.mu.Unlock()
+
+	result := qm.GetLastScanResult()
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Project != "test-project" {
+		t.Errorf("expected project 'test-project', got %q", result.Project)
+	}
+	if result.Totals.Critical != 2 {
+		t.Errorf("expected 2 critical, got %d", result.Totals.Critical)
+	}
+	if result.Totals.Warning != 5 {
+		t.Errorf("expected 5 warnings, got %d", result.Totals.Warning)
+	}
+}
+
+func TestGetAgentMetrics_Nil(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+	m := qm.GetAgentMetrics("%nonexistent")
+	if m != nil {
+		t.Errorf("expected nil for unknown agent, got %v", m)
+	}
+}
+
+func TestErrorHistoryLimit(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+
+	// Record more than 100 errors to test history cap
+	for i := 0; i < 110; i++ {
+		qm.RecordAgentError("%1", "cc")
+	}
+
+	agent := qm.GetAgentMetrics("%1")
+	if len(agent.ErrorHistory) > 100 {
+		t.Errorf("error history should be capped at 100, got %d", len(agent.ErrorHistory))
+	}
+}
+
+func TestUpdateErrorTrend_Stable(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+
+	now := time.Now()
+	// Same errors in both hours -> stable
+	qm.agentMetrics["a1"] = &AgentQualityMetrics{
+		ErrorHistory: []time.Time{
+			now.Add(-30 * time.Minute),  // recent hour: 1
+			now.Add(-90 * time.Minute),  // older hour: 1
+		},
+	}
+
+	qm.updateErrorTrend()
+	if qm.qualityTrend.ErrorTrend != TrendStable {
+		t.Errorf("expected TrendStable, got %s", qm.qualityTrend.ErrorTrend)
+	}
+}
+
+func TestUpdateContextTrend_InsufficientData(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+
+	// Only 5 samples - not enough (needs 20)
+	for i := 0; i < 5; i++ {
+		qm.RecordContextUsage("%1", "cc", 50.0)
+	}
+
+	// Force re-evaluation
+	qm.mu.Lock()
+	qm.updateContextTrend()
+	qm.mu.Unlock()
+
+	if qm.qualityTrend.ContextTrend != TrendUnknown {
+		t.Errorf("expected TrendUnknown with <20 samples, got %s", qm.qualityTrend.ContextTrend)
+	}
+}
+
+func TestUpdateContextTrend_Declining(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+
+	// Record context samples showing increase (declining = usage going up)
+	for i := 0; i < 30; i++ {
+		usage := 30.0 + float64(i)*2 // Increasing from 30 to 88
+		qm.RecordContextUsage("%1", "cc", usage)
+	}
+
+	if qm.qualityTrend.ContextTrend != TrendDeclining {
+		t.Errorf("expected TrendDeclining (context usage increasing), got %s", qm.qualityTrend.ContextTrend)
+	}
+}
+
+func TestUpdateContextTrend_Stable(t *testing.T) {
+	t.Parallel()
+
+	qm := NewQualityMonitor("/tmp/test")
+
+	// Record stable context samples
+	for i := 0; i < 30; i++ {
+		qm.RecordContextUsage("%1", "cc", 50.0)
+	}
+
+	if qm.qualityTrend.ContextTrend != TrendStable {
+		t.Errorf("expected TrendStable, got %s", qm.qualityTrend.ContextTrend)
 	}
 }

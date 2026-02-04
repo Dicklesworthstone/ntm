@@ -120,6 +120,159 @@ func TestNewConflictDetector(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// formatNegotiationRequest / formatConflictNotification tests
+// =============================================================================
+
+func TestFormatNegotiationRequest(t *testing.T) {
+	t.Parallel()
+
+	c := New("test-session", "/tmp/test", nil, "CoordAgent")
+
+	now := time.Now()
+	conflict := &Conflict{
+		ID:      "conflict-42",
+		Pattern: "internal/cli/*.go",
+	}
+	target := &Holder{
+		AgentName:  "BlueFox",
+		ReservedAt: now.Add(-10 * time.Minute),
+		ExpiresAt:  now.Add(50 * time.Minute),
+		Reason:     "refactoring CLI",
+	}
+
+	body := c.formatNegotiationRequest(conflict, "RedBear", target)
+
+	// Verify key sections (note: target.AgentName is not in the body,
+	// since the message is addressed *to* the target holder)
+	checks := []string{
+		"# File Reservation Conflict",
+		"internal/cli/*.go",
+		"RedBear",
+		"refactoring CLI",
+		"## Request",
+		"### Your Reservation",
+		"## Options",
+		"Release",
+		"Keep",
+		"Coordinate",
+		"acknowledge",
+	}
+	for _, want := range checks {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q", want)
+		}
+	}
+}
+
+func TestFormatNegotiationRequest_NoReason(t *testing.T) {
+	t.Parallel()
+
+	c := New("test-session", "/tmp/test", nil, "CoordAgent")
+
+	now := time.Now()
+	conflict := &Conflict{Pattern: "src/**/*.go"}
+	target := &Holder{
+		AgentName:  "GreenCastle",
+		ReservedAt: now,
+		ExpiresAt:  now.Add(time.Hour),
+		Reason:     "", // No reason
+	}
+
+	body := c.formatNegotiationRequest(conflict, "Requester", target)
+
+	// Should NOT contain "Reason:" line when reason is empty
+	if strings.Contains(body, "**Reason:**") {
+		t.Error("expected no Reason line when holder reason is empty")
+	}
+}
+
+func TestFormatConflictNotification(t *testing.T) {
+	t.Parallel()
+
+	c := New("test-session", "/tmp/test", nil, "CoordAgent")
+
+	now := time.Now()
+	conflict := &Conflict{
+		ID:      "conflict-99",
+		Pattern: "internal/config/*.go",
+		Holders: []Holder{
+			{
+				AgentName:  "Agent1",
+				ReservedAt: now.Add(-5 * time.Minute),
+				ExpiresAt:  now.Add(55 * time.Minute),
+				Reason:     "config refactor",
+			},
+			{
+				AgentName:  "Agent2",
+				ReservedAt: now.Add(-2 * time.Minute),
+				ExpiresAt:  now.Add(58 * time.Minute),
+				Reason:     "",
+			},
+		},
+	}
+
+	body := c.formatConflictNotification(conflict)
+
+	checks := []string{
+		"# Reservation Conflict Detected",
+		"internal/config/*.go",
+		"## Current Holders",
+		"Agent1",
+		"Agent2",
+		"config refactor",
+		"## Recommendation",
+		"releases their reservation",
+		"different parts of the file",
+		"Wait for one agent",
+	}
+	for _, want := range checks {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q", want)
+		}
+	}
+
+	// Agent2 has no reason, should not have a reason line for it
+	// Count "Reason:" occurrences - should be 1 (Agent1 only)
+	if strings.Count(body, "Reason:") != 1 {
+		t.Errorf("expected exactly 1 Reason line, got %d", strings.Count(body, "Reason:"))
+	}
+}
+
+func TestFormatConflictNotification_EmptyHolders(t *testing.T) {
+	t.Parallel()
+
+	c := New("test-session", "/tmp/test", nil, "CoordAgent")
+
+	conflict := &Conflict{
+		Pattern: "empty/*.go",
+		Holders: []Holder{},
+	}
+
+	body := c.formatConflictNotification(conflict)
+
+	// Should still produce valid markdown
+	if !strings.Contains(body, "# Reservation Conflict Detected") {
+		t.Error("expected markdown header even with no holders")
+	}
+	if !strings.Contains(body, "## Recommendation") {
+		t.Error("expected recommendation section even with no holders")
+	}
+}
+
+// =============================================================================
+// matchesSuffixPattern edge case
+// =============================================================================
+
+func TestMatchesSuffixPattern_TooFewSegments(t *testing.T) {
+	t.Parallel()
+
+	// path has fewer segments than suffix pattern requires
+	if matchesSuffixPattern("main.go", "foo/bar/*.go") {
+		t.Error("expected false when path has fewer segments than suffix pattern")
+	}
+}
+
 func TestConflictStruct(t *testing.T) {
 	now := time.Now()
 	conflict := Conflict{

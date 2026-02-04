@@ -2,12 +2,14 @@ package coordinator
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 func TestNewSessionCoordinator(t *testing.T) {
@@ -354,5 +356,141 @@ func TestFormatDuration(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("formatDuration(%v) = %q, expected %q", tt.d, result, tt.expected)
 		}
+	}
+}
+
+// =============================================================================
+// mapStatusToRobotState tests
+// =============================================================================
+
+func TestMapStatusToRobotState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input status.AgentState
+		want  robot.AgentState
+	}{
+		{"idle maps to waiting", status.StateIdle, robot.StateWaiting},
+		{"working maps to generating", status.StateWorking, robot.StateGenerating},
+		{"error maps to error", status.StateError, robot.StateError},
+		{"unknown maps to unknown", status.StateUnknown, robot.StateUnknown},
+		{"arbitrary string maps to unknown", status.AgentState("something_else"), robot.StateUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mapStatusToRobotState(tt.input)
+			if got != tt.want {
+				t.Errorf("mapStatusToRobotState(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// formatDigestMarkdown tests
+// =============================================================================
+
+func TestFormatDigestMarkdown(t *testing.T) {
+	t.Parallel()
+
+	c := New("my-session", "/tmp/test", nil, "OrangeFox")
+
+	now := time.Now()
+	digest := DigestSummary{
+		Session:     "my-session",
+		GeneratedAt: now,
+		AgentCount:  3,
+		ActiveCount: 2,
+		IdleCount:   1,
+		ErrorCount:  0,
+		AgentStatuses: []AgentDigestStatus{
+			{PaneIndex: 0, AgentType: "cc", Status: "generating", ContextUsage: 45.0},
+			{PaneIndex: 1, AgentType: "cod", Status: "waiting", ContextUsage: 30.0, IdleFor: "5m"},
+			{PaneIndex: 2, AgentType: "gmi", Status: "generating", ContextUsage: 60.0},
+		},
+	}
+
+	body := c.formatDigestMarkdown(digest)
+
+	checks := []string{
+		"# Session Digest: my-session",
+		"**Total Agents:** 3",
+		"**Active:** 2",
+		"**Idle:** 1",
+		"## Agent Status",
+		"| Pane | Type | Status | Context | Idle For |",
+		"OrangeFox",
+		"cc",
+		"cod",
+		"gmi",
+		"5m",
+	}
+	for _, want := range checks {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q", want)
+		}
+	}
+
+	// No errors, so should NOT contain the error emoji line
+	if strings.Contains(body, "⚠️") {
+		t.Error("expected no error warning emoji when ErrorCount is 0")
+	}
+}
+
+func TestFormatDigestMarkdown_WithErrors(t *testing.T) {
+	t.Parallel()
+
+	c := New("err-session", "/tmp/test", nil, "CoordBot")
+
+	digest := DigestSummary{
+		Session:     "err-session",
+		GeneratedAt: time.Now(),
+		AgentCount:  2,
+		ActiveCount: 0,
+		IdleCount:   1,
+		ErrorCount:  1,
+		AgentStatuses: []AgentDigestStatus{
+			{PaneIndex: 0, AgentType: "cc", Status: "error", ContextUsage: 90.0},
+		},
+		Alerts: []string{"Agent 0 (cc) in error state", "Agent 0 (cc) context at 90%"},
+	}
+
+	body := c.formatDigestMarkdown(digest)
+
+	// Verify error count appears with warning
+	if !strings.Contains(body, "**Errors:** 1 ⚠️") {
+		t.Error("expected error count with warning emoji")
+	}
+
+	// Verify alerts section present
+	if !strings.Contains(body, "## Alerts") {
+		t.Error("expected Alerts section")
+	}
+	if !strings.Contains(body, "Agent 0 (cc) in error state") {
+		t.Error("expected error alert text")
+	}
+}
+
+func TestFormatDigestMarkdown_IdleForDash(t *testing.T) {
+	t.Parallel()
+
+	c := New("test-session", "/tmp/test", nil, "Bot")
+
+	digest := DigestSummary{
+		Session:     "test-session",
+		GeneratedAt: time.Now(),
+		AgentStatuses: []AgentDigestStatus{
+			{PaneIndex: 0, AgentType: "cc", Status: "generating", ContextUsage: 50.0, IdleFor: ""},
+		},
+	}
+
+	body := c.formatDigestMarkdown(digest)
+
+	// Empty IdleFor should render as "-"
+	if !strings.Contains(body, "| - |") {
+		t.Error("expected '-' for empty IdleFor in table")
 	}
 }
