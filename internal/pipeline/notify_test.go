@@ -411,6 +411,21 @@ func TestTruncateMessage(t *testing.T) {
 	}
 }
 
+func TestTruncateMessage_ForLoopCompletion(t *testing.T) {
+	t.Parallel()
+
+	// Test case where the for loop completes without returning early (line 371)
+	// This happens when all rune boundaries fit within targetLen
+	// String "abc🌍" is 7 bytes (a=1, b=1, c=1, emoji=4)
+	// With n=6, targetLen=3, all rune boundaries (0,1,2,3) are <= 3
+	s := "abc🌍"
+	got := truncateMessage(s, 6)
+	want := "abc..."
+	if got != want {
+		t.Errorf("truncateMessage(%q, 6) = %q, want %q", s, got, want)
+	}
+}
+
 func TestBuildPayloadFromState(t *testing.T) {
 	now := time.Now()
 	state := &ExecutionState{
@@ -671,6 +686,29 @@ func TestBuildPayloadFromState_NoStartedTime(t *testing.T) {
 	payload := BuildPayloadFromState(state, workflow, NotifyStarted)
 	if payload.Duration != 0 {
 		t.Errorf("Duration = %v, want 0 for no started time", payload.Duration)
+	}
+}
+
+func TestBuildPayloadFromState_OngoingExecution(t *testing.T) {
+	t.Parallel()
+
+	// Test case where StartedAt is set but FinishedAt is zero (ongoing execution)
+	state := &ExecutionState{
+		RunID:     "run-ongoing",
+		Status:    StatusRunning,
+		StartedAt: time.Now().Add(-30 * time.Second),
+		// FinishedAt is zero
+		Steps: map[string]StepResult{},
+	}
+	workflow := &Workflow{
+		Name:  "wf",
+		Steps: []Step{{ID: "s1"}},
+	}
+
+	payload := BuildPayloadFromState(state, workflow, NotifyStarted)
+	// Duration should be approximately 30 seconds (time.Since(StartedAt))
+	if payload.Duration < 25*time.Second || payload.Duration > 35*time.Second {
+		t.Errorf("Duration = %v, expected ~30s for ongoing execution", payload.Duration)
 	}
 }
 

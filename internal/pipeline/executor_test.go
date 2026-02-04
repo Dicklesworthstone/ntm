@@ -2860,6 +2860,20 @@ func TestTruncatePrompt_Various(t *testing.T) {
 	}
 }
 
+func TestTruncatePrompt_ForLoopCompletion(t *testing.T) {
+	t.Parallel()
+
+	// Test case where the for loop completes without returning early (line 1490)
+	// String "abc🌍" is 7 bytes, with rune boundaries at 0, 1, 2, 3
+	// With n=6, targetLen=3, all rune boundaries fit within targetLen
+	s := "abc🌍"
+	got := truncatePrompt(s, 6)
+	want := "abc..."
+	if got != want {
+		t.Errorf("truncatePrompt(%q, 6) = %q, want %q", s, got, want)
+	}
+}
+
 // --- EvaluateString tests ---
 
 func TestVariableContext_EvaluateString_UnknownVar(t *testing.T) {

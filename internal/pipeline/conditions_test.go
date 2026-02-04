@@ -929,10 +929,11 @@ func TestConditionEvaluator_NOTError(t *testing.T) {
 	sub := NewSubstitutor(state, "test-session", "test-workflow")
 	evaluator := NewConditionEvaluator(sub)
 
-	// Inner has invalid namespace -> error during NOT evaluation
-	_, err := evaluator.Evaluate("NOT ${badns.var}")
+	// Inner has invalid numeric comparison -> error during NOT evaluation
+	// This tests the error path at line 123-125 in evaluateExpr
+	_, err := evaluator.Evaluate("NOT abc > notanumber")
 	if err == nil {
-		t.Error("expected error for invalid inner expression of NOT")
+		t.Error("expected error for invalid inner expression of NOT (numeric error)")
 	}
 }
 
@@ -946,9 +947,45 @@ func TestConditionEvaluator_ExclamationError(t *testing.T) {
 	sub := NewSubstitutor(state, "test-session", "test-workflow")
 	evaluator := NewConditionEvaluator(sub)
 
-	// Inner has invalid namespace -> error during ! evaluation
-	_, err := evaluator.Evaluate("!${badns.var}")
+	// Inner has invalid numeric comparison -> error during ! evaluation
+	// This tests the error path at line 133-135 in evaluateExpr
+	_, err := evaluator.Evaluate("!abc > notanumber")
 	if err == nil {
-		t.Error("expected error for invalid inner expression of !")
+		t.Error("expected error for invalid inner expression of ! (numeric error)")
+	}
+}
+
+func TestConditionEvaluator_ORLeftEvalError(t *testing.T) {
+	t.Parallel()
+
+	state := &ExecutionState{
+		Variables: map[string]interface{}{},
+	}
+
+	sub := NewSubstitutor(state, "test-session", "test-workflow")
+	evaluator := NewConditionEvaluator(sub)
+
+	// Left side of OR has invalid numeric comparison -> error during recursive evaluation
+	// "abc" > 1 fails numeric parsing, this error bubbles up through OR
+	_, err := evaluator.Evaluate("abc > notanumber OR true")
+	if err == nil {
+		t.Error("expected error for invalid left side of OR (numeric comparison error)")
+	}
+}
+
+func TestConditionEvaluator_ANDLeftEvalError(t *testing.T) {
+	t.Parallel()
+
+	state := &ExecutionState{
+		Variables: map[string]interface{}{},
+	}
+
+	sub := NewSubstitutor(state, "test-session", "test-workflow")
+	evaluator := NewConditionEvaluator(sub)
+
+	// Left side of AND has invalid numeric comparison -> error during recursive evaluation
+	_, err := evaluator.Evaluate("abc > notanumber AND true")
+	if err == nil {
+		t.Error("expected error for invalid left side of AND (numeric comparison error)")
 	}
 }

@@ -690,6 +690,75 @@ func TestValidate_VariableReferencesInLoopSubsteps(t *testing.T) {
 	}
 }
 
+func TestValidate_VariableReferencesInWhenCondition(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Prompt: "test",
+				When:   "${unknown.ref} == true",
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should produce warning for unknown reference type in when condition
+	if len(result.Warnings) == 0 {
+		t.Error("expected warning for unknown variable reference in when condition")
+	}
+
+	// Check that the field path includes .when
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w.Field, ".when") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning field to contain '.when'")
+	}
+}
+
+func TestValidate_VariableReferencesInParallelSubsteps(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID: "par_step",
+				Parallel: []Step{
+					{ID: "inner", Prompt: "Process ${unknown.ref}"},
+				},
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should produce warning for unknown reference type in parallel sub-step
+	if len(result.Warnings) == 0 {
+		t.Error("expected warning for unknown variable reference in parallel sub-step")
+	}
+
+	// Check that the field path includes .parallel
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w.Field, ".parallel") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning field to contain '.parallel'")
+	}
+}
+
 func TestLoadAndValidate(t *testing.T) {
 	t.Parallel()
 
@@ -1313,5 +1382,58 @@ func TestValidate_UnknownReferenceType(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected warning about unknown reference type, got %v", result.Warnings)
+	}
+}
+
+func TestValidate_StepWithEmptyID(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{ID: "", Prompt: "test prompt"}, // Empty ID should fail
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for empty step id")
+	}
+
+	found := false
+	for _, err := range result.Errors {
+		if strings.Contains(err.Message, "step id is required") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error about empty step id, got %v", result.Errors)
+	}
+}
+
+func TestValidate_StepWithInvalidPromptFile(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{ID: "s1", PromptFile: "invalid\x00path"}, // Invalid path with null byte
+		},
+	}
+
+	result := Validate(w)
+	// This should produce a warning about invalid path
+	found := false
+	for _, warn := range result.Warnings {
+		if strings.Contains(warn.Message, "may be invalid") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about invalid prompt_file path, got %v", result.Warnings)
 	}
 }
