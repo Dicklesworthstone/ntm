@@ -466,3 +466,63 @@ func TestConditionEvaluator_WithStepOutputs(t *testing.T) {
 		}
 	}
 }
+
+func TestFindLogicalOpFlexible(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		expr  string
+		op    string
+		wantN int // -1 for not found
+	}{
+		{"AND with spaces", "a AND b", "AND", 1},
+		{"OR with spaces", "x OR y", "OR", 1},
+		{"AND at end", "x AND", "AND", 1},
+		{"OR at end", "y OR", "OR", 1},
+		{"AND in parens", "(a AND b) OR c", "AND", -1}, // inside parens, outer scan
+		{"not found", "abc def", "AND", -1},
+		{"no spaces", "aANDb", "AND", -1}, // no spaces around
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := findLogicalOpFlexible(tt.expr, tt.op)
+			if tt.wantN < 0 && got >= 0 {
+				t.Errorf("findLogicalOpFlexible(%q, %q) = %d, want not found", tt.expr, tt.op, got)
+			} else if tt.wantN >= 0 && got < 0 {
+				t.Errorf("findLogicalOpFlexible(%q, %q) = %d, want found", tt.expr, tt.op, got)
+			}
+		})
+	}
+}
+
+func TestFindLogicalOp_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		op   string
+		want int
+	}{
+		{"in double quoted string", `"hello AND world" == x`, " AND ", -1},
+		{"in single quoted string", `'hello OR world' != x`, " OR ", -1},
+		{"escaped quote in string", `"say \"hi AND bye\"" AND x`, " AND ", 20},
+		{"nested parens", "((a)) AND b", " AND ", 5},
+		{"complex nesting", "(a OR (b AND c)) AND d", " AND ", 16},
+		{"at end no trailing space", "x AND", " AND", 1},
+		{"operator at start", " AND x", " AND ", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := findLogicalOp(tt.expr, tt.op)
+			if got != tt.want {
+				t.Errorf("findLogicalOp(%q, %q) = %d, want %d", tt.expr, tt.op, got, tt.want)
+			}
+		})
+	}
+}

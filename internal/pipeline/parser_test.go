@@ -898,3 +898,79 @@ func TestIsValidPath(t *testing.T) {
 		})
 	}
 }
+
+func TestIsValidRoute(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		route RoutingStrategy
+		want  bool
+	}{
+		{RouteLeastLoaded, true},
+		{RouteFirstAvailable, true},
+		{RouteRoundRobin, true},
+		{RoutingStrategy("unknown"), false},
+		{RoutingStrategy(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.route), func(t *testing.T) {
+			t.Parallel()
+			got := isValidRoute(tt.route)
+			if got != tt.want {
+				t.Errorf("isValidRoute(%q) = %v, want %v", tt.route, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidErrorAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		action ErrorAction
+		want   bool
+	}{
+		{ErrorActionFail, true},
+		{ErrorActionContinue, true},
+		{ErrorActionRetry, true},
+		{ErrorAction("unknown"), false},
+		{ErrorAction(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.action), func(t *testing.T) {
+			t.Parallel()
+			got := isValidErrorAction(tt.action)
+			if got != tt.want {
+				t.Errorf("isValidErrorAction(%q) = %v, want %v", tt.action, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidWaitCondition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		cond WaitCondition
+		want bool
+	}{
+		{WaitCompletion, true},
+		{WaitIdle, true},
+		{WaitTime, true},
+		{WaitNone, true},
+		{WaitCondition("unknown"), false},
+		{WaitCondition(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.cond), func(t *testing.T) {
+			t.Parallel()
+			got := isValidWaitCondition(tt.cond)
+			if got != tt.want {
+				t.Errorf("isValidWaitCondition(%q) = %v, want %v", tt.cond, got, tt.want)
+			}
+		})
+	}
+}
