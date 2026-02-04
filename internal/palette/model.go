@@ -540,59 +540,82 @@ func (m *Model) updateCommandPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keys.PageUp):
-		m.listViewport.ViewUp()
-		// Move cursor to top of visible area
+		// Move cursor up by approximately one page worth of items
 		if len(m.visualOrder) > 0 {
-			visibleTop := m.listViewport.YOffset
-			if visibleTop < len(m.visualOrder) {
-				m.cursor = m.visualOrder[visibleTop]
+			pos := m.cursorVisualPos()
+			// Estimate items per page (viewport height minus some header overhead)
+			itemsPerPage := m.listViewport.Height - 4
+			if itemsPerPage < 3 {
+				itemsPerPage = 3
 			}
+			newPos := pos - itemsPerPage
+			if newPos < 0 {
+				newPos = 0
+			}
+			m.cursor = m.visualOrder[newPos]
+			m.ensureCursorVisible()
 		}
 
 	case key.Matches(msg, keys.PageDown):
-		m.listViewport.ViewDown()
-		// Move cursor to bottom of visible area
+		// Move cursor down by approximately one page worth of items
 		if len(m.visualOrder) > 0 {
-			visibleBottom := m.listViewport.YOffset + m.listViewport.Height - 1
-			if visibleBottom >= len(m.visualOrder) {
-				visibleBottom = len(m.visualOrder) - 1
+			pos := m.cursorVisualPos()
+			itemsPerPage := m.listViewport.Height - 4
+			if itemsPerPage < 3 {
+				itemsPerPage = 3
 			}
-			if visibleBottom >= 0 {
-				m.cursor = m.visualOrder[visibleBottom]
+			newPos := pos + itemsPerPage
+			if newPos >= len(m.visualOrder) {
+				newPos = len(m.visualOrder) - 1
 			}
+			m.cursor = m.visualOrder[newPos]
+			m.ensureCursorVisible()
 		}
 
 	case key.Matches(msg, keys.HalfPageUp):
-		m.listViewport.HalfViewUp()
+		// Move cursor up by half a page worth of items
 		if len(m.visualOrder) > 0 {
-			visibleTop := m.listViewport.YOffset
-			if visibleTop < len(m.visualOrder) {
-				m.cursor = m.visualOrder[visibleTop]
+			pos := m.cursorVisualPos()
+			itemsPerHalfPage := (m.listViewport.Height - 4) / 2
+			if itemsPerHalfPage < 2 {
+				itemsPerHalfPage = 2
 			}
+			newPos := pos - itemsPerHalfPage
+			if newPos < 0 {
+				newPos = 0
+			}
+			m.cursor = m.visualOrder[newPos]
+			m.ensureCursorVisible()
 		}
 
 	case key.Matches(msg, keys.HalfPageDown):
-		m.listViewport.HalfViewDown()
+		// Move cursor down by half a page worth of items
 		if len(m.visualOrder) > 0 {
-			visibleBottom := m.listViewport.YOffset + m.listViewport.Height - 1
-			if visibleBottom >= len(m.visualOrder) {
-				visibleBottom = len(m.visualOrder) - 1
+			pos := m.cursorVisualPos()
+			itemsPerHalfPage := (m.listViewport.Height - 4) / 2
+			if itemsPerHalfPage < 2 {
+				itemsPerHalfPage = 2
 			}
-			if visibleBottom >= 0 {
-				m.cursor = m.visualOrder[visibleBottom]
+			newPos := pos + itemsPerHalfPage
+			if newPos >= len(m.visualOrder) {
+				newPos = len(m.visualOrder) - 1
 			}
+			m.cursor = m.visualOrder[newPos]
+			m.ensureCursorVisible()
 		}
 
 	case key.Matches(msg, keys.Home):
-		m.listViewport.GotoTop()
+		// Jump to first item
 		if len(m.visualOrder) > 0 {
 			m.cursor = m.visualOrder[0]
+			m.listViewport.GotoTop()
 		}
 
 	case key.Matches(msg, keys.End):
-		m.listViewport.GotoBottom()
+		// Jump to last item
 		if len(m.visualOrder) > 0 {
 			m.cursor = m.visualOrder[len(m.visualOrder)-1]
+			m.listViewport.GotoBottom()
 		}
 
 	case key.Matches(msg, keys.TogglePin):
@@ -772,12 +795,83 @@ func (m Model) cursorVisualPos() int {
 	return 0
 }
 
+// visualPosToLineNum converts a visual position (index in visualOrder) to an
+// approximate line number in the rendered list, accounting for section headers
+// and blank lines between sections.
+func (m *Model) visualPosToLineNum(pos int) int {
+	if pos < 0 || len(m.visualOrder) == 0 {
+		return 0
+	}
+	if pos >= len(m.visualOrder) {
+		pos = len(m.visualOrder) - 1
+	}
+
+	// Count how many items are in pinned and recents sections
+	pinnedCount := 0
+	recentsCount := 0
+
+	idxByKey := make(map[string]int, len(m.filtered))
+	for i, cmd := range m.filtered {
+		if cmd.Key != "" {
+			idxByKey[cmd.Key] = i
+		}
+	}
+
+	used := make(map[int]bool)
+	for _, k := range m.paletteState.Pinned {
+		if idx, ok := idxByKey[k]; ok && !used[idx] {
+			used[idx] = true
+			pinnedCount++
+		}
+	}
+	for _, k := range m.recents {
+		if idx, ok := idxByKey[k]; ok && !used[idx] {
+			used[idx] = true
+			recentsCount++
+		}
+	}
+
+	// Calculate which section the position falls into and the line offset
+	lineNum := 0
+	itemsBeforePos := 0
+
+	// Pinned section: header + items + blank
+	if pinnedCount > 0 {
+		lineNum++ // header
+		if pos < pinnedCount {
+			return lineNum + pos
+		}
+		lineNum += pinnedCount + 1 // items + blank
+		itemsBeforePos = pinnedCount
+	}
+
+	// Recents section: header + items + blank
+	if recentsCount > 0 {
+		lineNum++ // header
+		if pos < itemsBeforePos+recentsCount {
+			return lineNum + (pos - itemsBeforePos)
+		}
+		lineNum += recentsCount + 1 // items + blank
+		itemsBeforePos += recentsCount
+	}
+
+	// Category sections: each has header + items + blank
+	// Estimate categories from remaining items
+	remainingItems := len(m.visualOrder) - itemsBeforePos
+	if remainingItems > 0 && pos >= itemsBeforePos {
+		posInCategories := pos - itemsBeforePos
+		// Estimate ~4 items per category on average, with 2 extra lines per category
+		estimatedCategories := (posInCategories / 4) + 1
+		lineNum += posInCategories + (estimatedCategories * 2)
+	}
+
+	return lineNum
+}
+
 // ensureCursorVisible scrolls the viewport if necessary to keep the cursor visible.
 func (m *Model) ensureCursorVisible() {
 	pos := m.cursorVisualPos()
-	// Each item takes approximately 1 line in the list
-	// Account for category headers by estimating 1.2 lines per item on average
-	linePos := pos
+	linePos := m.visualPosToLineNum(pos)
 
 	// If cursor is above the visible area, scroll up
 	if linePos < m.listViewport.YOffset {
@@ -788,7 +882,11 @@ func (m *Model) ensureCursorVisible() {
 	// Leave a small margin at the bottom
 	visibleBottom := m.listViewport.YOffset + m.listViewport.Height - 2
 	if linePos > visibleBottom {
-		m.listViewport.SetYOffset(linePos - m.listViewport.Height + 3)
+		newOffset := linePos - m.listViewport.Height + 3
+		if newOffset < 0 {
+			newOffset = 0
+		}
+		m.listViewport.SetYOffset(newOffset)
 	}
 }
 
