@@ -589,6 +589,304 @@ func TestSqrt(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// bd-1u5g: Additional coverage tests
+// =============================================================================
+
+func TestDefaultTrackerOptions(t *testing.T) {
+	t.Parallel()
+
+	opts := DefaultTrackerOptions()
+
+	if opts.RetentionDays != DefaultRetentionDays {
+		t.Errorf("RetentionDays = %d, want %d", opts.RetentionDays, DefaultRetentionDays)
+	}
+	if !opts.Enabled {
+		t.Error("Enabled should be true by default")
+	}
+	if opts.Path == "" {
+		t.Error("Path should not be empty")
+	}
+	t.Logf("SCORE_TEST: DefaultTrackerOptions | Path=%s | Retention=%d | Enabled=%v",
+		opts.Path, opts.RetentionDays, opts.Enabled)
+}
+
+func TestTracker_Prune(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 1})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Write an old score directly
+	now := time.Now().UTC()
+	old := Score{
+		Timestamp: now.AddDate(0, 0, -5),
+		AgentType: "claude",
+		Metrics:   ScoreMetrics{Overall: 0.5},
+	}
+	recent := Score{
+		Timestamp: now.Add(-1 * time.Hour),
+		AgentType: "codex",
+		Metrics:   ScoreMetrics{Overall: 0.9},
+	}
+	for _, s := range []*Score{&old, &recent} {
+		if err := tracker.Record(s); err != nil {
+			t.Fatalf("Record() error: %v", err)
+		}
+	}
+
+	// Public Prune should remove the old one
+	if err := tracker.Prune(); err != nil {
+		t.Fatalf("Prune() error: %v", err)
+	}
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 score after Prune(), got %d", len(results))
+	}
+	if results[0].AgentType != "codex" {
+		t.Errorf("expected codex score to survive, got %s", results[0].AgentType)
+	}
+	t.Logf("SCORE_TEST: Prune | kept=%d | removed=1", len(results))
+}
+
+func TestTracker_PruneMalformedLines(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	// Write a mix of valid and malformed lines
+	content := `{"timestamp":"2020-01-01T00:00:00Z","agent_type":"old","metrics":{"overall":0.5}}
+not-valid-json
+{"timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","agent_type":"recent","metrics":{"overall":0.9}}
+`
+	if err := os.WriteFile(scorePath, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 1})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Prune should keep malformed lines and recent scores, remove old
+	if err := tracker.Prune(); err != nil {
+		t.Fatalf("Prune() error: %v", err)
+	}
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() error: %v", err)
+	}
+	// The recent score should survive; old one pruned; malformed skipped by query
+	if len(results) != 1 {
+		t.Errorf("expected 1 queryable score after pruning malformed file, got %d", len(results))
+	}
+}
+
+func TestTracker_RecordAutoFields(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Record with zero timestamp and zero Overall
+	score := Score{
+		AgentType: "claude",
+		Metrics: ScoreMetrics{
+			Completion: 0.8,
+			Quality:    0.7,
+			Efficiency: 0.6,
+		},
+	}
+	if err := tracker.Record(&score); err != nil {
+		t.Fatalf("Record() error: %v", err)
+	}
+
+	// Timestamp should be auto-set
+	if score.Timestamp.IsZero() {
+		t.Error("Record() should auto-set timestamp")
+	}
+
+	// Overall should be auto-computed
+	if score.Metrics.Overall == 0 {
+		t.Error("Record() should auto-compute Overall when zero")
+	}
+
+	t.Logf("SCORE_TEST: RecordAutoFields | Timestamp=%v | Overall=%.3f",
+		score.Timestamp, score.Metrics.Overall)
+}
+
+func TestTracker_RollingAverageDefaultWindow(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		s := Score{
+			Timestamp: now.Add(-time.Duration(i) * time.Hour),
+			AgentType: "claude",
+			Metrics:   ScoreMetrics{Overall: 0.75},
+		}
+		tracker.Record(&s)
+	}
+
+	// Pass windowDays=0 to trigger default
+	avg, err := tracker.RollingAverage(Query{AgentType: "claude"}, 0)
+	if err != nil {
+		t.Fatalf("RollingAverage() error: %v", err)
+	}
+	if avg != 0.75 {
+		t.Errorf("RollingAverage(window=0) = %v, want 0.75", avg)
+	}
+}
+
+func TestTracker_RollingAverageEmpty(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	avg, err := tracker.RollingAverage(Query{AgentType: "nonexistent"}, 7)
+	if err != nil {
+		t.Fatalf("RollingAverage() error: %v", err)
+	}
+	if avg != 0 {
+		t.Errorf("RollingAverage(empty) = %v, want 0", avg)
+	}
+}
+
+func TestTracker_QueryScoresFileNotFound(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "nonexistent.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() should not error for missing file: %v", err)
+	}
+	if results != nil {
+		t.Errorf("QueryScores() should return nil for missing file, got %d scores", len(results))
+	}
+}
+
+func TestTracker_PruneNoFile(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "nonexistent.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 30})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+
+	// Should not error when file doesn't exist
+	if err := tracker.Prune(); err != nil {
+		t.Errorf("Prune() should not error for missing file: %v", err)
+	}
+}
+
+func TestTracker_PruneDisabled(t *testing.T) {
+	t.Parallel()
+
+	tracker, err := NewTracker(TrackerOptions{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+
+	if err := tracker.Prune(); err != nil {
+		t.Errorf("Prune() with disabled tracker should not error: %v", err)
+	}
+}
+
+func TestLoadWeightsConfig_Errors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("file not found", func(t *testing.T) {
+		t.Parallel()
+		_, err := LoadWeightsConfig("/nonexistent/path.json")
+		if err == nil {
+			t.Error("expected error for missing config file")
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		t.Parallel()
+		tmpPath := filepath.Join(t.TempDir(), "bad.json")
+		os.WriteFile(tmpPath, []byte("{invalid"), 0644)
+		_, err := LoadWeightsConfig(tmpPath)
+		if err == nil {
+			t.Error("expected error for invalid JSON config")
+		}
+	})
+}
+
+func TestTracker_ExportNoScores(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+	exportPath := filepath.Join(tmpDir, "export.json")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	if err := tracker.Export(exportPath, time.Time{}); err != nil {
+		t.Fatalf("Export() error: %v", err)
+	}
+
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("reading export: %v", err)
+	}
+	// Empty export should still be valid JSON
+	if string(data) != "null" && string(data) != "[]" {
+		t.Logf("empty export content: %s", string(data))
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	t.Parallel()
 
