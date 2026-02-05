@@ -130,6 +130,18 @@ main() {
     require_tmux
     require_jq
 
+    if [[ -z "${NTM_BIN:-}" ]]; then
+        NTM_BIN="/tmp/ntm-master-bin-${TEST_PREFIX}"
+        log_section "Build"
+        log_info "Building ntm binary: ${NTM_BIN}"
+        if ! log_exec go build -o "$NTM_BIN" ./cmd/ntm; then
+            log_error "Failed to build ntm binary; aborting test run"
+            log_summary
+            return 1
+        fi
+    fi
+    export PATH="$(dirname "$NTM_BIN"):$PATH"
+
     PROJECTS_BASE=$(mktemp -d -t ntm-master-e2e-XXXX)
     export NTM_PROJECTS_BASE="$PROJECTS_BASE"
 
@@ -188,6 +200,9 @@ main() {
     status="pass"
     if require_br; then
         if pushd "$PROJECT_DIR" >/dev/null; then
+            if ! log_exec br init --json; then
+                status="fail"
+            fi
             if log_exec br create "E2E master integration task" -t task -p 2 --json; then
                 if ! log_exec ntm assign "$SESSION_NAME" --auto --limit 1 --strategy round-robin --json; then
                     status="fail"

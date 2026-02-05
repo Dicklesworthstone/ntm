@@ -209,18 +209,18 @@ func (ei *EffectivenessIntegrator) GetMode() AssignmentMode {
 
 // EffectivenessRanking provides a ranked list of agents for a task type.
 type EffectivenessRanking struct {
-	TaskType string                        `json:"task_type"`
-	Rankings []AgentEffectivenessRank      `json:"rankings"`
-	Mode     AssignmentMode                `json:"mode"`
-	HasData  bool                          `json:"has_data"`
+	TaskType string                   `json:"task_type"`
+	Rankings []AgentEffectivenessRank `json:"rankings"`
+	Mode     AssignmentMode           `json:"mode"`
+	HasData  bool                     `json:"has_data"`
 }
 
 // AgentEffectivenessRank represents one agent's ranking for a task.
 type AgentEffectivenessRank struct {
 	AgentType   string  `json:"agent_type"`
-	Score       float64 `json:"score"`       // Combined score (base + effectiveness)
-	BaseScore   float64 `json:"base_score"`  // Static capability score
-	EffScore    float64 `json:"eff_score"`   // Effectiveness adjustment
+	Score       float64 `json:"score"`      // Combined score (base + effectiveness)
+	BaseScore   float64 `json:"base_score"` // Static capability score
+	EffScore    float64 `json:"eff_score"`  // Effectiveness adjustment
 	SampleCount int     `json:"sample_count"`
 	Confidence  float64 `json:"confidence"`
 	Rank        int     `json:"rank"`
