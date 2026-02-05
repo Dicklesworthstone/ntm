@@ -1232,3 +1232,113 @@ func BenchmarkExtractFileChanges(b *testing.B) {
 		_ = extractFileChanges(lines)
 	}
 }
+
+// =============================================================================
+// RenderSummary tests
+// =============================================================================
+
+func TestRenderSummary_Nil(t *testing.T) {
+	t.Parallel()
+	if got := RenderSummary(nil, FormatBrief); got != "" {
+		t.Errorf("RenderSummary(nil) = %q, want empty", got)
+	}
+}
+
+func TestRenderSummary_Brief(t *testing.T) {
+	t.Parallel()
+	summary := &SessionSummary{
+		Session:         "test-session",
+		Format:          FormatBrief,
+		Accomplishments: []string{"Implemented auth flow"},
+		Pending:         []string{"Add tests"},
+	}
+
+	got := RenderSummary(summary, FormatBrief)
+	if got == "" {
+		t.Fatal("expected non-empty brief summary")
+	}
+	if !strings.Contains(got, "Implemented auth flow") {
+		t.Error("expected summary to contain accomplishment")
+	}
+}
+
+func TestRenderSummary_Detailed(t *testing.T) {
+	t.Parallel()
+	summary := &SessionSummary{
+		Session:         "detail-session",
+		Format:          FormatDetailed,
+		Accomplishments: []string{"Built API endpoint"},
+		Changes:         []string{"Modified api/routes.go"},
+		Files: []FileChange{
+			{Path: "api/routes.go", Action: "modified"},
+		},
+		Errors: []string{"Test timeout on CI"},
+	}
+
+	got := RenderSummary(summary, FormatDetailed)
+	if got == "" {
+		t.Fatal("expected non-empty detailed summary")
+	}
+	if !strings.Contains(got, "Built API endpoint") {
+		t.Error("expected summary to contain accomplishment")
+	}
+}
+
+func TestRenderSummary_Handoff(t *testing.T) {
+	t.Parallel()
+	summary := &SessionSummary{
+		Session:         "handoff-session",
+		Accomplishments: []string{"Refactored module"},
+		Pending:         []string{"Review PR"},
+		Files: []FileChange{
+			{Path: "internal/module.go", Action: "modified"},
+			{Path: "internal/module_test.go", Action: "created"},
+		},
+	}
+
+	got := RenderSummary(summary, FormatHandoff)
+	if got == "" {
+		t.Fatal("expected non-empty handoff summary")
+	}
+}
+
+func TestRenderSummary_DefaultFormat(t *testing.T) {
+	t.Parallel()
+	summary := &SessionSummary{
+		Session: "default-session",
+		Format:  FormatBrief,
+		Text:    "Pre-rendered summary text",
+	}
+
+	// Empty format string → falls through to summary.Format
+	got := RenderSummary(summary, "")
+	if got == "" {
+		t.Fatal("expected non-empty summary with empty format")
+	}
+}
+
+func TestRenderSummary_UnknownFormat_FallbackToText(t *testing.T) {
+	t.Parallel()
+	summary := &SessionSummary{
+		Session: "fallback-session",
+		Text:    "Existing text content",
+	}
+
+	got := RenderSummary(summary, "unknown")
+	if got != "Existing text content" {
+		t.Errorf("expected fallback to Text field, got %q", got)
+	}
+}
+
+func TestRenderSummary_UnknownFormat_NoText(t *testing.T) {
+	t.Parallel()
+	summary := &SessionSummary{
+		Session:         "no-text-session",
+		Accomplishments: []string{"Did things"},
+	}
+
+	got := RenderSummary(summary, "unknown")
+	if got == "" {
+		t.Error("expected brief fallback when Text is empty")
+	}
+}

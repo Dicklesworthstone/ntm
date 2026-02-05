@@ -565,3 +565,123 @@ func TestValidateCommandFunction(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Global wrapper function tests (defaultRegistry)
+// =============================================================================
+
+func TestRegister_Global(t *testing.T) {
+	// Not parallel: modifies package-level defaultRegistry
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	cmd := testCommand("global-test-cmd")
+	if err := Register(cmd); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	got, ok := Get("global-test-cmd")
+	if !ok {
+		t.Fatal("expected to find registered command")
+	}
+	if got.Name != "global-test-cmd" {
+		t.Errorf("Name = %q, want global-test-cmd", got.Name)
+	}
+}
+
+func TestMustRegister_Global(t *testing.T) {
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	cmd := testCommand("must-register-cmd")
+	// Should not panic
+	MustRegister(cmd)
+
+	_, ok := Get("must-register-cmd")
+	if !ok {
+		t.Error("expected to find must-registered command")
+	}
+}
+
+func TestMustRegister_PanicsOnDuplicate(t *testing.T) {
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	cmd := testCommand("dup-cmd")
+	MustRegister(cmd)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic on duplicate MustRegister")
+		}
+	}()
+	MustRegister(cmd) // Should panic
+}
+
+func TestList_Global(t *testing.T) {
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	Register(testCommand("cmd-a"))
+	Register(testCommand("cmd-b"))
+
+	cmds := List()
+	if len(cmds) != 2 {
+		t.Errorf("List() returned %d commands, want 2", len(cmds))
+	}
+}
+
+func TestRegisterHandler_Global(t *testing.T) {
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	Register(testCommand("handler-cmd"))
+	if err := RegisterHandler("handler-cmd", func(ctx context.Context, input any) (any, error) {
+		return "result", nil
+	}); err != nil {
+		t.Fatalf("RegisterHandler: %v", err)
+	}
+
+	result, err := Run(context.Background(), "handler-cmd", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result != "result" {
+		t.Errorf("Run result = %v, want 'result'", result)
+	}
+}
+
+func TestMustRegisterHandler_Global(t *testing.T) {
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	Register(testCommand("must-handler"))
+	MustRegisterHandler("must-handler", func(ctx context.Context, input any) (any, error) {
+		return "ok", nil
+	})
+
+	result, err := Run(context.Background(), "must-handler", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("result = %v, want 'ok'", result)
+	}
+}
+
+func TestRun_NotFound(t *testing.T) {
+	origRegistry := defaultRegistry
+	defaultRegistry = NewRegistry()
+	t.Cleanup(func() { defaultRegistry = origRegistry })
+
+	_, err := Run(context.Background(), "nonexistent", nil)
+	if err == nil {
+		t.Error("expected error for non-existent command")
+	}
+}
