@@ -1,7 +1,10 @@
 package robot
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseExcludePanes(t *testing.T) {
@@ -271,5 +274,81 @@ func TestRouteStrategyNames(t *testing.T) {
 		if !expected[name] {
 			t.Errorf("Unexpected strategy name: %s", name)
 		}
+	}
+}
+
+func TestGetRoute_MissingSession(t *testing.T) {
+	out, code := GetRoute(RouteOptions{Strategy: StrategyLeastLoaded})
+	if code == 0 {
+		t.Fatal("expected non-zero exit code for missing session")
+	}
+	if out.Success {
+		t.Error("expected Success=false for missing session")
+	}
+	if out.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("ErrorCode = %q, want %q", out.ErrorCode, ErrCodeInvalidFlag)
+	}
+	if !strings.Contains(out.Error, "session name") {
+		t.Errorf("Error = %q", out.Error)
+	}
+}
+
+func TestGetRoute_InvalidStrategy(t *testing.T) {
+	out, code := GetRoute(RouteOptions{
+		Session:  "fake-session",
+		Strategy: StrategyName("bogus"),
+	})
+	if code == 0 {
+		t.Fatal("expected non-zero exit code for invalid strategy")
+	}
+	if out.Success {
+		t.Error("expected Success=false for invalid strategy")
+	}
+	if out.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("ErrorCode = %q, want %q", out.ErrorCode, ErrCodeInvalidFlag)
+	}
+	if !strings.Contains(out.Error, "invalid strategy") {
+		t.Errorf("Error = %q", out.Error)
+	}
+}
+
+func TestGetRoute_SessionNotFound(t *testing.T) {
+	session := fmt.Sprintf("ntm-missing-%d", time.Now().UnixNano())
+	out, code := GetRoute(RouteOptions{
+		Session:  session,
+		Strategy: StrategyLeastLoaded,
+	})
+	if code == 0 {
+		t.Fatal("expected non-zero exit code for missing session")
+	}
+	if out.Success {
+		t.Error("expected Success=false for missing session")
+	}
+	if out.ErrorCode != ErrCodeSessionNotFound {
+		t.Errorf("ErrorCode = %q, want %q", out.ErrorCode, ErrCodeSessionNotFound)
+	}
+	if !strings.Contains(out.Error, session) {
+		t.Errorf("Error should mention session name, got %q", out.Error)
+	}
+}
+
+func TestGetRouteRecommendation_Errors(t *testing.T) {
+	if _, err := GetRouteRecommendation(RouteOptions{}); err == nil {
+		t.Fatal("expected error for missing session")
+	}
+
+	if _, err := GetRouteRecommendation(RouteOptions{
+		Session:  "fake-session",
+		Strategy: StrategyName("bogus"),
+	}); err == nil {
+		t.Fatal("expected error for invalid strategy")
+	}
+
+	session := fmt.Sprintf("ntm-missing-%d", time.Now().UnixNano())
+	if _, err := GetRouteRecommendation(RouteOptions{
+		Session:  session,
+		Strategy: StrategyLeastLoaded,
+	}); err == nil {
+		t.Fatal("expected error for missing session")
 	}
 }

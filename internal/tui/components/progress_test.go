@@ -209,3 +209,44 @@ func TestTrueColorFallback(t *testing.T) {
 		t.Errorf("found %d RGB escape sequences, expected <=2 for solid color fallback", rgbEscapeCount)
 	}
 }
+
+func TestProgressBarInitAndUpdate(t *testing.T) {
+	bar := NewProgressBar(10)
+	bar.Animated = true
+	if cmd := bar.Init(); cmd == nil {
+		t.Fatal("expected Init to return a command when animated")
+	}
+
+	initialTick := bar.AnimationTick
+	updated, cmd := bar.Update(ProgressTickMsg{})
+	if updated.AnimationTick <= initialTick {
+		t.Fatalf("expected AnimationTick to increase, got %d", updated.AnimationTick)
+	}
+	if cmd == nil {
+		t.Fatal("expected Update to return a command on tick")
+	}
+}
+
+func TestProgressBarInitNoAnimation(t *testing.T) {
+	bar := NewProgressBar(10)
+	bar.Animated = false
+	if cmd := bar.Init(); cmd != nil {
+		t.Fatal("expected Init to return nil when not animated")
+	}
+}
+
+func TestIndeterminateBarInitAndUpdate(t *testing.T) {
+	bar := NewIndeterminateBar(10)
+	if cmd := bar.Init(); cmd == nil {
+		t.Fatal("expected Init to return a command")
+	}
+
+	initial := bar.Tick
+	updated, cmd := bar.Update(ProgressTickMsg{})
+	if updated.Tick <= initial {
+		t.Fatalf("expected Tick to increase, got %d", updated.Tick)
+	}
+	if cmd == nil {
+		t.Fatal("expected Update to return a command on tick")
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 func TestIsStale(t *testing.T) {
@@ -108,4 +110,69 @@ func TestRenderStaleBadge(t *testing.T) {
 			t.Errorf("expected STALE badge, got %q", got)
 		}
 	})
+}
+
+func TestRenderFreshnessFooter(t *testing.T) {
+	opts := FreshnessOptions{
+		LastUpdate:      time.Now().Add(-5 * time.Second),
+		RefreshInterval: 10 * time.Second,
+		Width:           40,
+	}
+	indicator := RenderFreshnessIndicator(opts)
+	if indicator == "" {
+		t.Fatal("expected non-empty indicator")
+	}
+
+	out := RenderFreshnessFooter(opts)
+	if out == "" {
+		t.Fatal("expected non-empty footer")
+	}
+
+	indicatorPlain := status.StripANSI(indicator)
+	footerPlain := status.StripANSI(out)
+
+	if !strings.Contains(footerPlain, indicatorPlain) {
+		t.Fatalf("expected footer to include indicator text, got %q", footerPlain)
+	}
+	if strings.HasPrefix(footerPlain, indicatorPlain) {
+		t.Fatalf("expected footer to be right-aligned with padding, got %q", footerPlain)
+	}
+}
+
+func TestRenderFreshnessFooterNarrow(t *testing.T) {
+	opts := FreshnessOptions{
+		LastUpdate:      time.Now().Add(-5 * time.Second),
+		RefreshInterval: 10 * time.Second,
+		Width:           10,
+	}
+	indicator := RenderFreshnessIndicator(opts)
+	out := RenderFreshnessFooter(opts)
+
+	indicatorPlain := status.StripANSI(indicator)
+	footerPlain := status.StripANSI(out)
+	if footerPlain != indicatorPlain {
+		t.Fatalf("expected narrow footer to equal indicator, got %q", footerPlain)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{name: "now", d: 500 * time.Millisecond, want: "now"},
+		{name: "seconds", d: 5 * time.Second, want: "5s"},
+		{name: "minutes", d: 2 * time.Minute, want: "2m"},
+		{name: "hours", d: 3 * time.Hour, want: "3h"},
+		{name: "days", d: 48 * time.Hour, want: "2d"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatDuration(tt.d); got != tt.want {
+				t.Fatalf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
 }

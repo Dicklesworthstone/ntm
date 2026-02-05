@@ -1158,6 +1158,61 @@ func TestDefaultHints(t *testing.T) {
 	})
 }
 
+func TestDashboardHelpOptionsFrom(t *testing.T) {
+	t.Run("minimal", func(t *testing.T) {
+		opts := DashboardHelpOptionsFrom(" minimal ", false)
+		if opts.Verbosity != DashboardHelpVerbosityMinimal {
+			t.Fatalf("expected minimal verbosity, got %v", opts.Verbosity)
+		}
+		if opts.Debug {
+			t.Fatal("expected debug false")
+		}
+	})
+
+	t.Run("full default", func(t *testing.T) {
+		opts := DashboardHelpOptionsFrom("full", false)
+		if opts.Verbosity != DashboardHelpVerbosityFull {
+			t.Fatalf("expected full verbosity, got %v", opts.Verbosity)
+		}
+	})
+
+	t.Run("debug forces full", func(t *testing.T) {
+		opts := DashboardHelpOptionsFrom("minimal", true)
+		if opts.Verbosity != DashboardHelpVerbosityFull {
+			t.Fatalf("expected full verbosity when debug, got %v", opts.Verbosity)
+		}
+		if !opts.Debug {
+			t.Fatal("expected debug true")
+		}
+	})
+}
+
+func TestCommonHintSets(t *testing.T) {
+	nav := CommonNavigationHints()
+	if len(nav) < 2 {
+		t.Fatalf("expected navigation hints, got %d", len(nav))
+	}
+	if nav[0].Desc != "navigate" {
+		t.Fatalf("expected navigate description, got %q", nav[0].Desc)
+	}
+
+	selectHints := CommonSelectionHints()
+	if len(selectHints) < 2 {
+		t.Fatalf("expected selection hints, got %d", len(selectHints))
+	}
+	if selectHints[0].Desc != "select" {
+		t.Fatalf("expected select description, got %q", selectHints[0].Desc)
+	}
+
+	quitHints := CommonQuitHints()
+	if len(quitHints) < 2 {
+		t.Fatalf("expected quit hints, got %d", len(quitHints))
+	}
+	if quitHints[0].Desc != "back" {
+		t.Fatalf("expected back description, got %q", quitHints[0].Desc)
+	}
+}
+
 func TestDashboardHelpVerbosityMapping(t *testing.T) {
 	t.Parallel()
 

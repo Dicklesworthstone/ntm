@@ -104,6 +104,35 @@ func TestCassSearchClearsOnEmptyQuery(t *testing.T) {
 	}
 }
 
+func TestCassSearchInitReturnsCmd(t *testing.T) {
+	model := NewCassSearch(nil)
+	if cmd := model.Init(); cmd == nil {
+		t.Fatal("expected Init to return a command")
+	}
+}
+
+func TestSearchItemFields(t *testing.T) {
+	item := searchItem{hit: cass.SearchHit{
+		Title:      "Hit title",
+		Agent:      "cod",
+		SourcePath: "path/to/session",
+	}}
+
+	if item.Title() != "Hit title" {
+		t.Fatalf("expected Title to be %q, got %q", "Hit title", item.Title())
+	}
+	if item.FilterValue() != "Hit title" {
+		t.Fatalf("expected FilterValue to be %q, got %q", "Hit title", item.FilterValue())
+	}
+	desc := item.Description()
+	if !strings.Contains(desc, "cod") || !strings.Contains(desc, "path/to/session") {
+		t.Fatalf("unexpected Description output: %q", desc)
+	}
+	if !strings.Contains(desc, "•") {
+		t.Fatalf("expected Description to include separator, got %q", desc)
+	}
+}
+
 type listItemStub struct{}
 
 func (listItemStub) Title() string       { return "stub" }
