@@ -1,6 +1,9 @@
 package ensemble
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestGenerateFindingID_Deterministic(t *testing.T) {
 	first := GenerateFindingID("mode-a", "Same finding")
@@ -303,6 +306,458 @@ func assertEqualProvenance(t *testing.T, desc string, got, want any) {
 func containsStage(steps []ProvenanceStep, stage string) bool {
 	for _, step := range steps {
 		if step.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProvenanceTracker_RecordFilter(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+
+	id := tracker.RecordDiscovery("m1", Finding{Finding: "filterable", Impact: ImpactLow, Confidence: 0.3})
+
+	if err := tracker.RecordFilter(id, "low confidence"); err != nil {
+		t.Fatalf("RecordFilter: %v", err)
+	}
+
+	chain, ok := tracker.GetChain(id)
+	if !ok {
+		t.Fatal("chain not found after filter")
+	}
+	if !containsStage(chain.Steps, "filter") {
+		t.Error("expected filter stage in steps")
+	}
+
+	// Filter on nonexistent should error
+	if err := tracker.RecordFilter("nonexistent", "reason"); err == nil {
+		t.Error("expected error for nonexistent finding")
+	}
+}
+
+func TestProvenanceTracker_RecordMerge_Error(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+
+	// Merge with nonexistent primary
+	err := tracker.RecordMerge("nonexistent", []string{"also-nonexistent"}, 0.9)
+	if err == nil {
+		t.Error("expected error for nonexistent primary")
+	}
+}
+
+func TestProvenanceTracker_RecordTextChange(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+
+	id := tracker.RecordDiscovery("m1", Finding{Finding: "original text", Impact: ImpactMedium, Confidence: 0.8})
+
+	if err := tracker.RecordTextChange(id, "updated text", "normalize"); err != nil {
+		t.Fatalf("RecordTextChange: %v", err)
+	}
+
+	chain, _ := tracker.GetChain(id)
+	if chain.CurrentText != "updated text" {
+		t.Errorf("CurrentText = %q, want %q", chain.CurrentText, "updated text")
+	}
+	if !containsStage(chain.Steps, "transform") {
+		t.Error("expected transform stage in steps")
+	}
+
+	// TextChange on nonexistent should error
+	if err := tracker.RecordTextChange("nonexistent", "text", "reason"); err == nil {
+		t.Error("expected error for nonexistent finding")
+	}
+}
+
+func TestProvenanceTracker_RecordSynthesisCitation_Error(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+
+	if err := tracker.RecordSynthesisCitation("nonexistent", "loc"); err == nil {
+		t.Error("expected error for nonexistent finding")
+	}
+}
+
+func TestProvenanceTracker_ListChains(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1", "m2"})
+
+	// Empty tracker
+	chains := tracker.ListChains()
+	if len(chains) != 0 {
+		t.Errorf("empty tracker: ListChains() = %d, want 0", len(chains))
+	}
+
+	// Add findings
+	tracker.RecordDiscovery("m1", Finding{Finding: "finding A", Impact: ImpactHigh, Confidence: 0.9})
+	tracker.RecordDiscovery("m2", Finding{Finding: "finding B", Impact: ImpactMedium, Confidence: 0.7})
+
+	chains = tracker.ListChains()
+	if len(chains) != 2 {
+		t.Errorf("ListChains() = %d, want 2", len(chains))
+	}
+
+	// Verify sorted by creation time (both created nearly simultaneously, but order should be stable)
+	if chains[0].CreatedAt.After(chains[1].CreatedAt) {
+		t.Error("ListChains should be sorted by CreatedAt")
+	}
+}
+
+func TestProvenanceTracker_ListActiveChains(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1", "m2"})
+
+	id1 := tracker.RecordDiscovery("m1", Finding{Finding: "active finding", Impact: ImpactHigh, Confidence: 0.9})
+	id2 := tracker.RecordDiscovery("m2", Finding{Finding: "merged finding", Impact: ImpactMedium, Confidence: 0.7})
+
+	// Merge id2 into id1
+	_ = tracker.RecordMerge(id1, []string{id2}, 0.85)
+
+	active := tracker.ListActiveChains()
+	if len(active) != 1 {
+		t.Fatalf("ListActiveChains() = %d, want 1", len(active))
+	}
+	if active[0].FindingID != id1 {
+		t.Errorf("active chain ID = %q, want %q", active[0].FindingID, id1)
+	}
+}
+
+func TestProvenanceTracker_FindByText(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+
+	tracker.RecordDiscovery("m1", Finding{Finding: "SQL injection vulnerability in login form", Impact: ImpactHigh, Confidence: 0.9})
+	tracker.RecordDiscovery("m1", Finding{Finding: "XSS vulnerability in search page", Impact: ImpactMedium, Confidence: 0.8})
+	tracker.RecordDiscovery("m1", Finding{Finding: "Missing CSRF token", Impact: ImpactLow, Confidence: 0.6})
+
+	// Search for "vulnerability"
+	matches := tracker.FindByText("vulnerability")
+	if len(matches) != 2 {
+		t.Errorf("FindByText(vulnerability) = %d matches, want 2", len(matches))
+	}
+
+	// Search for "CSRF"
+	matches = tracker.FindByText("csrf") // case-insensitive via normalizeText
+	if len(matches) != 1 {
+		t.Errorf("FindByText(csrf) = %d matches, want 1", len(matches))
+	}
+
+	// Search for something nonexistent
+	matches = tracker.FindByText("buffer overflow")
+	if len(matches) != 0 {
+		t.Errorf("FindByText(buffer overflow) = %d matches, want 0", len(matches))
+	}
+}
+
+func TestFormatProvenance_Nil(t *testing.T) {
+	t.Parallel()
+	result := FormatProvenance(nil)
+	if result != "No provenance found" {
+		t.Errorf("FormatProvenance(nil) = %q", result)
+	}
+}
+
+func TestFormatProvenance_ActiveChain(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+	id := tracker.RecordDiscovery("m1", Finding{Finding: "test finding", Impact: ImpactHigh, Confidence: 0.9})
+	chain, _ := tracker.GetChain(id)
+
+	result := FormatProvenance(chain)
+
+	// Verify key sections are present
+	checks := []string{
+		"Finding:",
+		"Source:",
+		"Impact:",
+		"Status: Active",
+		"Timeline:",
+		"discovery",
+	}
+	for _, check := range checks {
+		found := false
+		for i := 0; i <= len(result)-len(check); i++ {
+			if result[i:i+len(check)] == check {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("FormatProvenance missing %q", check)
+		}
+	}
+}
+
+func TestFormatProvenance_MergedChain(t *testing.T) {
+	t.Parallel()
+	chain := &ProvenanceChain{
+		FindingID:    "abc123",
+		SourceMode:   "m1",
+		ContextHash:  "ctx123",
+		OriginalText: "original",
+		CurrentText:  "original",
+		Impact:       ImpactHigh,
+		Confidence:   0.9,
+		MergedInto:   "def456",
+		Steps:        []ProvenanceStep{{Stage: "dedupe", Action: "absorbed", Timestamp: testTimeProvenance()}},
+	}
+
+	result := FormatProvenance(chain)
+	if !strContains(result, "Merged into def456") {
+		t.Error("expected merged status in output")
+	}
+}
+
+func TestFormatProvenance_WithMergedFrom(t *testing.T) {
+	t.Parallel()
+	chain := &ProvenanceChain{
+		FindingID:    "abc123",
+		SourceMode:   "m1",
+		ContextHash:  "ctx123",
+		OriginalText: "original",
+		CurrentText:  "original",
+		Impact:       ImpactHigh,
+		Confidence:   0.9,
+		MergedFrom:   []string{"id1", "id2"},
+		Steps:        []ProvenanceStep{{Stage: "dedupe", Action: "merged", Timestamp: testTimeProvenance()}},
+	}
+
+	result := FormatProvenance(chain)
+	if !strContains(result, "merged 2 findings") {
+		t.Error("expected merged-from count in output")
+	}
+}
+
+func TestFormatProvenance_WithCitations(t *testing.T) {
+	t.Parallel()
+	chain := &ProvenanceChain{
+		FindingID:          "abc123",
+		SourceMode:         "m1",
+		ContextHash:        "ctx123",
+		OriginalText:       "original",
+		CurrentText:        "updated",
+		Impact:             ImpactMedium,
+		Confidence:         0.8,
+		SynthesisCitations: []string{"synthesis:summary", "synthesis:findings"},
+		Steps:              []ProvenanceStep{{Stage: "discovery", Action: "discovered", Timestamp: testTimeProvenance()}},
+	}
+
+	result := FormatProvenance(chain)
+	if !strContains(result, "Synthesis Citations") {
+		t.Error("expected citations section")
+	}
+	if !strContains(result, "synthesis:summary") {
+		t.Error("expected citation entry")
+	}
+	// When CurrentText != OriginalText, should show both
+	if !strContains(result, "Current:") {
+		t.Error("expected Current text when different from Original")
+	}
+}
+
+func TestProvenanceIndex_Full(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewProvenanceTracker("q", []string{"m1", "m2"})
+	id1 := tracker.RecordDiscovery("m1", Finding{Finding: "finding A", Impact: ImpactHigh, Confidence: 0.9})
+	id2 := tracker.RecordDiscovery("m2", Finding{Finding: "finding B", Impact: ImpactMedium, Confidence: 0.8})
+
+	idx := NewProvenanceIndex()
+	idx.Index(tracker)
+
+	// Lookup
+	chain, ok := idx.Lookup(id1)
+	if !ok {
+		t.Fatalf("Lookup(%s) not found", id1)
+	}
+	if chain.SourceMode != "m1" {
+		t.Errorf("Lookup source mode = %q, want m1", chain.SourceMode)
+	}
+
+	// Lookup nonexistent
+	_, ok = idx.Lookup("nonexistent")
+	if ok {
+		t.Error("Lookup should return false for nonexistent")
+	}
+
+	// ByMode
+	m1Chains := idx.ByMode("m1")
+	if len(m1Chains) != 1 {
+		t.Errorf("ByMode(m1) = %d chains, want 1", len(m1Chains))
+	}
+
+	m2Chains := idx.ByMode("m2")
+	if len(m2Chains) != 1 {
+		t.Errorf("ByMode(m2) = %d chains, want 1", len(m2Chains))
+	}
+
+	// ByMode nonexistent
+	empty := idx.ByMode("nonexistent")
+	if len(empty) != 0 {
+		t.Errorf("ByMode(nonexistent) = %d, want 0", len(empty))
+	}
+
+	// ByContext
+	ctxChains := idx.ByContext(tracker.ContextHash())
+	if len(ctxChains) != 2 {
+		t.Errorf("ByContext() = %d chains, want 2", len(ctxChains))
+	}
+
+	_ = id2 // used above in RecordDiscovery
+}
+
+func TestGenerateReport_Nil(t *testing.T) {
+	t.Parallel()
+	report := GenerateReport(nil)
+	if report != nil {
+		t.Error("GenerateReport(nil) should return nil")
+	}
+}
+
+func TestGenerateReport_Populated(t *testing.T) {
+	t.Parallel()
+	tracker := NewProvenanceTracker("q", []string{"m1", "m2"})
+
+	id1 := tracker.RecordDiscovery("m1", Finding{Finding: "primary finding", Impact: ImpactHigh, Confidence: 0.9})
+	id2 := tracker.RecordDiscovery("m2", Finding{Finding: "secondary finding", Impact: ImpactMedium, Confidence: 0.8})
+	_ = tracker.RecordMerge(id1, []string{id2}, 0.85)
+
+	report := GenerateReport(tracker)
+	if report == nil {
+		t.Fatal("expected non-nil report")
+	}
+	if report.ContextHash != tracker.ContextHash() {
+		t.Errorf("ContextHash = %q, want %q", report.ContextHash, tracker.ContextHash())
+	}
+	if report.Stats.TotalFindings != 2 {
+		t.Errorf("Stats.TotalFindings = %d, want 2", report.Stats.TotalFindings)
+	}
+	if len(report.ActiveChains) != 1 {
+		t.Errorf("ActiveChains = %d, want 1", len(report.ActiveChains))
+	}
+	if len(report.MergeGraph) != 1 {
+		t.Errorf("MergeGraph = %d entries, want 1", len(report.MergeGraph))
+	}
+	if report.GeneratedAt.IsZero() {
+		t.Error("GeneratedAt should not be zero")
+	}
+}
+
+func TestProvenanceChain_Validate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		chain   ProvenanceChain
+		wantErr bool
+	}{
+		{
+			"valid",
+			ProvenanceChain{
+				FindingID:    "f1",
+				SourceMode:   "m1",
+				OriginalText: "text",
+				Steps:        []ProvenanceStep{{Stage: "discovery", Action: "found"}},
+			},
+			false,
+		},
+		{
+			"missing finding_id",
+			ProvenanceChain{SourceMode: "m1", OriginalText: "text", Steps: []ProvenanceStep{{Stage: "s"}}},
+			true,
+		},
+		{
+			"missing source_mode",
+			ProvenanceChain{FindingID: "f1", OriginalText: "text", Steps: []ProvenanceStep{{Stage: "s"}}},
+			true,
+		},
+		{
+			"missing original_text",
+			ProvenanceChain{FindingID: "f1", SourceMode: "m1", Steps: []ProvenanceStep{{Stage: "s"}}},
+			true,
+		},
+		{
+			"missing steps",
+			ProvenanceChain{FindingID: "f1", SourceMode: "m1", OriginalText: "text"},
+			true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.chain.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestTruncateText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		text   string
+		maxLen int
+		want   string
+	}{
+		{"short text", "hello", 10, "hello"},
+		{"exact length", "hello", 5, "hello"},
+		{"truncated", "hello world", 8, "hello..."},
+		{"very short max", "hello world", 4, "h..."},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateText(tc.text, tc.maxLen)
+			if got != tc.want {
+				t.Errorf("truncateText(%q, %d) = %q, want %q", tc.text, tc.maxLen, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProvenanceChain_AddStep(t *testing.T) {
+	t.Parallel()
+	chain := &ProvenanceChain{FindingID: "f1"}
+
+	chain.AddStep("discovery", "found", "details", "related-1", "related-2")
+
+	if len(chain.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(chain.Steps))
+	}
+	step := chain.Steps[0]
+	if step.Stage != "discovery" {
+		t.Errorf("Stage = %q", step.Stage)
+	}
+	if step.Action != "found" {
+		t.Errorf("Action = %q", step.Action)
+	}
+	if step.Details != "details" {
+		t.Errorf("Details = %q", step.Details)
+	}
+	if len(step.RelatedIDs) != 2 {
+		t.Errorf("RelatedIDs = %d, want 2", len(step.RelatedIDs))
+	}
+	if chain.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt should be set")
+	}
+}
+
+// testTimeProvenance returns a fixed time for deterministic test output.
+func testTimeProvenance() time.Time {
+	return time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+}
+
+// strContains is a simple string containment check for tests.
+func strContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
 			return true
 		}
 	}
