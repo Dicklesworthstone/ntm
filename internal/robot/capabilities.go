@@ -893,6 +893,37 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples:    []string{"ntm --robot-jfp-bundles"},
 		},
 		{
+			Name:        "jfp-install",
+			Flag:        "--robot-jfp-install",
+			Category:    "utility",
+			Description: "Install JFP prompt(s) by ID.",
+			Parameters: []RobotParameter{
+				{Name: "ids", Flag: "--robot-jfp-install", Type: "string", Required: true, Description: "Prompt ID(s), comma-separated"},
+				{Name: "project", Flag: "--project", Type: "string", Required: false, Description: "Project directory override (alias: --jfp-project)"},
+				{Name: "jfp-project", Flag: "--jfp-project", Type: "string", Required: false, Description: "Optional project directory for installs"},
+			},
+			Examples: []string{"ntm --robot-jfp-install=prompt-123", "ntm --robot-jfp-install=prompt-1,prompt-2 --jfp-project=/path/to/project"},
+		},
+		{
+			Name:        "jfp-export",
+			Flag:        "--robot-jfp-export",
+			Category:    "utility",
+			Description: "Export JFP prompt(s) by ID.",
+			Parameters: []RobotParameter{
+				{Name: "ids", Flag: "--robot-jfp-export", Type: "string", Required: true, Description: "Prompt ID(s), comma-separated"},
+				{Name: "format", Flag: "--jfp-format", Type: "string", Required: false, Description: "Export format (skill or md)"},
+			},
+			Examples: []string{"ntm --robot-jfp-export=prompt-123", "ntm --robot-jfp-export=prompt-123 --jfp-format=md"},
+		},
+		{
+			Name:        "jfp-update",
+			Flag:        "--robot-jfp-update",
+			Category:    "utility",
+			Description: "Update JFP registry cache.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-update"},
+		},
+		{
 			Name:        "ms-search",
 			Flag:        "--robot-ms-search",
 			Category:    "utility",

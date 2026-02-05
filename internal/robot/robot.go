@@ -458,6 +458,28 @@ type JFPBundlesOutput struct {
 	Bundles json.RawMessage `json:"bundles"`
 }
 
+// JFPInstallOutput represents the output for --robot-jfp-install
+type JFPInstallOutput struct {
+	RobotResponse
+	IDs     []string        `json:"ids"`
+	Project string          `json:"project,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+}
+
+// JFPExportOutput represents the output for --robot-jfp-export
+type JFPExportOutput struct {
+	RobotResponse
+	IDs    []string        `json:"ids"`
+	Format string          `json:"format,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+// JFPUpdateOutput represents the output for --robot-jfp-update
+type JFPUpdateOutput struct {
+	RobotResponse
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
 // GetJFPStatus returns JFP health and status.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetJFPStatus() (*JFPStatusOutput, error) {
@@ -983,6 +1005,188 @@ func PrintJFPBundles() error {
 	return encodeJSON(output)
 }
 
+func parseJFPIDs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', ' ', '\n', '\t':
+			return true
+		default:
+			return false
+		}
+	})
+	ids := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		ids = append(ids, part)
+	}
+	return ids
+}
+
+// GetJFPInstall installs one or more prompts by ID.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPInstall(rawIDs, project string) (*JFPInstallOutput, error) {
+	adapter := tools.NewJFPAdapter()
+	ids := parseJFPIDs(rawIDs)
+
+	output := &JFPInstallOutput{
+		RobotResponse: NewRobotResponse(true),
+		IDs:           ids,
+		Project:       project,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
+	}
+
+	if len(ids) == 0 {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("prompt ID is required"),
+			ErrCodeInvalidFlag,
+			"Provide prompt IDs, e.g., --robot-jfp-install=prompt-123",
+		)
+		return output, nil
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Install(ctx, ids, project)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"INSTALL_FAILED",
+			"Check prompt IDs and try again",
+		)
+		return output, nil
+	}
+
+	output.Result = data
+	return output, nil
+}
+
+// PrintJFPInstall outputs install results as JSON.
+// This is a thin wrapper around GetJFPInstall() for CLI output.
+func PrintJFPInstall(rawIDs, project string) error {
+	output, err := GetJFPInstall(rawIDs, project)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// GetJFPExport exports one or more prompts by ID.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPExport(rawIDs, format string) (*JFPExportOutput, error) {
+	adapter := tools.NewJFPAdapter()
+	ids := parseJFPIDs(rawIDs)
+
+	output := &JFPExportOutput{
+		RobotResponse: NewRobotResponse(true),
+		IDs:           ids,
+		Format:        format,
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
+	}
+
+	if len(ids) == 0 {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("prompt ID is required"),
+			ErrCodeInvalidFlag,
+			"Provide prompt IDs, e.g., --robot-jfp-export=prompt-123",
+		)
+		return output, nil
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Export(ctx, ids, format)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"EXPORT_FAILED",
+			"Check prompt IDs and format, then retry",
+		)
+		return output, nil
+	}
+
+	output.Result = data
+	return output, nil
+}
+
+// PrintJFPExport outputs export results as JSON.
+// This is a thin wrapper around GetJFPExport() for CLI output.
+func PrintJFPExport(rawIDs, format string) error {
+	output, err := GetJFPExport(rawIDs, format)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// GetJFPUpdate refreshes the local prompt registry/cache.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPUpdate() (*JFPUpdateOutput, error) {
+	adapter := tools.NewJFPAdapter()
+
+	output := &JFPUpdateOutput{
+		RobotResponse: NewRobotResponse(true),
+	}
+
+	// Check if jfp is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Update(ctx)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"UPDATE_FAILED",
+			"Run 'jfp update' to refresh the registry",
+		)
+		return output, nil
+	}
+
+	output.Result = data
+	return output, nil
+}
+
+// PrintJFPUpdate outputs update results as JSON.
+// This is a thin wrapper around GetJFPUpdate() for CLI output.
+func PrintJFPUpdate() error {
+	output, err := GetJFPUpdate()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
 // ===========================================================================
 // MS (Meta Skill) Robot Wrappers
 // ===========================================================================
@@ -1440,6 +1644,9 @@ Tool Bridges:
 --robot-cass-search=QUERY    Search past conversations (--limit=20, --since=7d)
 --robot-giil-fetch=URL       Download image from share URL via giil
 --robot-jfp-search=QUERY     Search prompts library
+--robot-jfp-install=ID       Install prompt(s) (--jfp-project=PATH)
+--robot-jfp-export=ID        Export prompt(s) (--jfp-format=skill|md)
+--robot-jfp-update           Update JFP registry cache
 --robot-ms-search=QUERY      Search Meta Skill catalog
 --robot-ms-show=ID           Show Meta Skill details
 --robot-slb-pending          List pending SLB approval requests
