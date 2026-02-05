@@ -1,6 +1,9 @@
 package tools
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseStandardVersion(t *testing.T) {
 	t.Parallel()
@@ -147,4 +150,70 @@ func TestNewLimitedBuffer(t *testing.T) {
 			t.Errorf("buffer content = %q, want %q", buf.String(), "hello world")
 		}
 	})
+}
+
+func TestParseVersionHelpers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parseVersion delegates to standard parser", func(t *testing.T) {
+		t.Parallel()
+		v, err := parseVersion("tool v2.4.6")
+		if err != nil {
+			t.Fatalf("parseVersion error: %v", err)
+		}
+		if v.Major != 2 || v.Minor != 4 || v.Patch != 6 {
+			t.Errorf("parseVersion = %d.%d.%d, want 2.4.6", v.Major, v.Minor, v.Patch)
+		}
+	})
+
+	t.Run("parseACFSVersion delegates to standard parser", func(t *testing.T) {
+		t.Parallel()
+		v, err := parseACFSVersion("1.0.3")
+		if err != nil {
+			t.Fatalf("parseACFSVersion error: %v", err)
+		}
+		if v.Major != 1 || v.Minor != 0 || v.Patch != 3 {
+			t.Errorf("parseACFSVersion = %d.%d.%d, want 1.0.3", v.Major, v.Minor, v.Patch)
+		}
+	})
+}
+
+func TestVersionCompareAndAtLeast(t *testing.T) {
+	t.Parallel()
+
+	v1 := Version{Major: 1, Minor: 2, Patch: 3}
+	v2 := Version{Major: 1, Minor: 2, Patch: 4}
+	v3 := Version{Major: 2, Minor: 0, Patch: 0}
+
+	if v1.Compare(v1) != 0 {
+		t.Errorf("v1.Compare(v1) = %d, want 0", v1.Compare(v1))
+	}
+	if v1.Compare(v2) >= 0 {
+		t.Errorf("v1.Compare(v2) = %d, want < 0", v1.Compare(v2))
+	}
+	if v3.Compare(v2) <= 0 {
+		t.Errorf("v3.Compare(v2) = %d, want > 0", v3.Compare(v2))
+	}
+
+	if !v2.AtLeast(v1) {
+		t.Error("v2.AtLeast(v1) should be true")
+	}
+	if v1.AtLeast(v3) {
+		t.Error("v1.AtLeast(v3) should be false")
+	}
+}
+
+func TestBaseAdapterBasics(t *testing.T) {
+	t.Parallel()
+
+	adapter := NewBaseAdapter(ToolBV, "bv")
+	if adapter.Name() != ToolBV {
+		t.Errorf("Name() = %q, want %q", adapter.Name(), ToolBV)
+	}
+	if adapter.BinaryName() != "bv" {
+		t.Errorf("BinaryName() = %q, want %q", adapter.BinaryName(), "bv")
+	}
+	if adapter.Timeout() != 30*time.Second {
+		t.Errorf("Timeout() = %v, want %v", adapter.Timeout(), 30*time.Second)
+	}
 }

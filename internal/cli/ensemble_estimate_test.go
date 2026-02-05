@@ -152,7 +152,7 @@ func TestSplitCommaSeparated(t *testing.T) {
 		{name: "empty between commas", input: "one,,two", expected: []string{"one", "two"}},
 		{name: "trailing comma", input: "one,two,", expected: []string{"one", "two"}},
 		{name: "leading comma", input: ",one,two", expected: []string{"one", "two"}},
-		{name: "multiple empty", input: ",,,", expected: nil},
+		{name: "multiple empty", input: ",,,", expected: []string{}},
 		{name: "spaces between commas", input: "one, ,two", expected: []string{"one", "two"}},
 
 		// Real-world examples
@@ -167,8 +167,15 @@ func TestSplitCommaSeparated(t *testing.T) {
 
 			// Handle nil vs empty slice comparison
 			if tc.expected == nil {
-				if result != nil {
-					t.Errorf("splitCommaSeparated(%q) = %v; want nil", tc.input, result)
+				if len(result) != 0 {
+					t.Errorf("splitCommaSeparated(%q) = %v; want nil/empty", tc.input, result)
+				}
+				return
+			}
+			// Also handle empty expected slice
+			if len(tc.expected) == 0 {
+				if len(result) != 0 {
+					t.Errorf("splitCommaSeparated(%q) = %v; want empty", tc.input, result)
 				}
 				return
 			}

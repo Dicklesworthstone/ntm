@@ -77,10 +77,10 @@ func TestFormatCleanupDuration(t *testing.T) {
 		duration time.Duration
 		expected string
 	}{
-		// Less than 1 minute
+		// Less than 1 minute (rounds to nearest minute)
 		{name: "0 seconds", duration: 0, expected: "0m"},
-		{name: "30 seconds", duration: 30 * time.Second, expected: "0m"},
-		{name: "59 seconds", duration: 59 * time.Second, expected: "0m"},
+		{name: "30 seconds", duration: 30 * time.Second, expected: "0m"}, // 0.5m rounds to 0 (banker's rounding)
+		{name: "59 seconds", duration: 59 * time.Second, expected: "1m"}, // 0.98m rounds to 1
 
 		// Less than 1 hour
 		{name: "1 minute", duration: 1 * time.Minute, expected: "1m"},

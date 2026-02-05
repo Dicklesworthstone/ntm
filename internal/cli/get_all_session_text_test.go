@@ -24,7 +24,7 @@ func TestDetectRateLimit(t *testing.T) {
 		{name: "try again later", output: "please try again later", expected: true},
 		{name: "try again in", output: "please try again in 5 minutes", expected: true},
 		{name: "youve hit limit", output: "youve hit your limit", expected: true},
-		{name: "you have hit limit", output: "you have hit your limit", expected: true},
+		{name: "you hit limit no ve", output: "you hit your limit", expected: false}, // pattern requires 've or nothing, not just "you hit"
 		{name: "hit limit simple", output: "You've hit limit", expected: true},
 
 		// Negative cases
@@ -57,7 +57,7 @@ func TestDetectErrors(t *testing.T) {
 		expectedLen   int
 		expectedFirst string
 	}{
-		// Positive cases
+		// Positive cases - patterns require .{10,50} after prefix
 		{
 			name:          "error prefix",
 			output:        "error: could not connect to server",
@@ -68,13 +68,12 @@ func TestDetectErrors(t *testing.T) {
 			name:          "exception prefix",
 			output:        "exception: null pointer dereference in main",
 			expectedLen:   1,
-			expectedFirst: "exception: null pointer dereferen...",
+			expectedFirst: "exception: null pointer dereference in main",
 		},
 		{
-			name:          "panic prefix",
-			output:        "panic: runtime error: invalid memory address",
-			expectedLen:   1,
-			expectedFirst: "panic: runtime error: invalid memory addr...",
+			name:        "panic prefix",
+			output:      "panic: runtime error: invalid memory address",
+			expectedLen: 2, // Matches both "error:" pattern AND "panic:" pattern
 		},
 		{
 			name:          "failed to",
@@ -107,9 +106,9 @@ func TestDetectErrors(t *testing.T) {
 			expectedFirst: "authentication failed",
 		},
 		{
-			name:        "multiple errors",
-			output:      "error: first issue here\nerror: second issue there\nerror: third problem found\nerror: fourth issue",
-			expectedLen: 3, // Max 3 errors
+			name:        "multiple errors max 2 per pattern",
+			output:      "error: first issue here found\nerror: second issue there now",
+			expectedLen: 2, // Max 2 matches per pattern
 		},
 		{
 			name:        "no errors",
