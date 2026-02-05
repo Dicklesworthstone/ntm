@@ -1561,7 +1561,12 @@ Shell Integration:
 		}
 		// Robot-dcg-check / robot-guard handler for DCG command preflight
 		if robotDCGCheck {
-			if err := robot.PrintDCGCheck(robotDCGCmd); err != nil {
+			opts := robot.DCGCheckOptions{
+				Command: robotDCGCmd,
+				Context: robotDCGContext,
+				CWD:     robotDCGCwd,
+			}
+			if err := robot.PrintDCGCheckWithOptions(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -2178,9 +2183,11 @@ var (
 	robotEnv string // --robot-env flag (session name or "global")
 
 	// Robot-dcg-status flag for DCG status
-	robotDCGStatus bool   // --robot-dcg-status flag
-	robotDCGCheck  bool   // --robot-dcg-check / --robot-guard flag
-	robotDCGCmd    string // --command / --cmd flag (required with --robot-dcg-check / --robot-guard)
+	robotDCGStatus  bool   // --robot-dcg-status flag
+	robotDCGCheck   bool   // --robot-dcg-check / --robot-guard flag
+	robotDCGCmd     string // --command / --cmd flag (required with --robot-dcg-check / --robot-guard)
+	robotDCGContext string // --context flag (intent/context for the command)
+	robotDCGCwd     string // --cwd flag (working directory context)
 
 	// Robot-slb flags for SLB approvals
 	robotSLBPending bool   // --robot-slb-pending flag
@@ -2616,6 +2623,8 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotDCGCheck, "robot-guard", false, "DEPRECATED: use --robot-dcg-check")
 	rootCmd.Flags().StringVar(&robotDCGCmd, "command", "", "Command to preflight with --robot-dcg-check / --robot-guard (no execution). Example: --command='rm -rf /tmp'")
 	rootCmd.Flags().StringVar(&robotDCGCmd, "cmd", "", "DEPRECATED: use --command")
+	rootCmd.Flags().StringVar(&robotDCGContext, "context", "", "Context/intent for the command (helps DCG make better decisions). Example: --context='Cleaning build artifacts'")
+	rootCmd.Flags().StringVar(&robotDCGCwd, "cwd", "", "Working directory context (defaults to current directory). Example: --cwd=/tmp/scratch")
 
 	// Robot-slb flags for SLB approvals
 	rootCmd.Flags().BoolVar(&robotSLBPending, "robot-slb-pending", false, "List pending SLB approval requests. JSON output. Example: ntm --robot-slb-pending")

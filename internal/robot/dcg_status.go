@@ -122,19 +122,49 @@ func PrintDCGStatus() error {
 // DCGCheckOutput represents the response from --robot-dcg-check / --robot-guard.
 type DCGCheckOutput struct {
 	RobotResponse
-	Command    string `json:"command"`
-	Allowed    bool   `json:"allowed"`
-	Reason     string `json:"reason,omitempty"`
-	DCGVersion string `json:"dcg_version,omitempty"`
-	BinaryPath string `json:"binary_path,omitempty"`
+	Command     string          `json:"command"`
+	Context     string          `json:"context,omitempty"`
+	CWD         string          `json:"cwd,omitempty"`
+	Allowed     bool            `json:"allowed"`
+	Severity    string          `json:"severity,omitempty"`
+	Rationale   string          `json:"rationale,omitempty"`
+	Suggestion  string          `json:"suggestion,omitempty"`
+	RuleMatched string          `json:"rule_matched,omitempty"`
+	DCGVersion  string          `json:"dcg_version,omitempty"`
+	BinaryPath  string          `json:"binary_path,omitempty"`
+	AgentHints  *DCGAgentHints  `json:"_agent_hints,omitempty"`
+
+	// Deprecated: use Rationale instead (kept for backwards compatibility)
+	Reason string `json:"reason,omitempty"`
+}
+
+// DCGAgentHints contains hints for AI agents processing blocked commands.
+type DCGAgentHints struct {
+	SaferAlternative     string `json:"safer_alternative,omitempty"`
+	RequiresConfirmation bool   `json:"requires_confirmation,omitempty"`
+}
+
+// DCGCheckOptions contains options for the DCG check operation.
+type DCGCheckOptions struct {
+	Command string // Required: command to check
+	Context string // Optional: intent/context for the command
+	CWD     string // Optional: working directory context
+	Verbose bool   // Optional: include detailed analysis
 }
 
 // GetDCGCheck preflights an arbitrary shell command via DCG (no execution).
+// Deprecated: use GetDCGCheckWithOptions for full functionality.
 func GetDCGCheck(command string) (*DCGCheckOutput, error) {
+	return GetDCGCheckWithOptions(DCGCheckOptions{Command: command})
+}
+
+// GetDCGCheckWithOptions preflights an arbitrary shell command via DCG (no execution).
+// It accepts extended options for context, working directory, and verbose mode.
+func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
 	meta, finish := StartResponseMeta("robot-dcg-check")
 	defer finish()
 
-	command = strings.TrimSpace(command)
+	command := strings.TrimSpace(opts.Command)
 	if command == "" {
 		output := &DCGCheckOutput{
 			RobotResponse: NewErrorResponse(
@@ -143,10 +173,19 @@ func GetDCGCheck(command string) (*DCGCheckOutput, error) {
 				"Provide a command to check: ntm --robot-dcg-check --command='rm -rf /tmp'",
 			),
 			Command: command,
+			Context: opts.Context,
 			Allowed: false,
 		}
 		output.RobotResponse.Meta = meta.WithExitCode(1)
 		return output, nil
+	}
+
+	// Determine working directory
+	cwd := opts.CWD
+	if cwd == "" {
+		if wd, err := os.Getwd(); err == nil {
+			cwd = wd
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -158,6 +197,8 @@ func GetDCGCheck(command string) (*DCGCheckOutput, error) {
 		output := &DCGCheckOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to check DCG availability"),
 			Command:       command,
+			Context:       opts.Context,
+			CWD:           cwd,
 			Allowed:       false,
 		}
 		output.RobotResponse.Meta = meta.WithExitCode(1)
@@ -174,6 +215,8 @@ func GetDCGCheck(command string) (*DCGCheckOutput, error) {
 		output := &DCGCheckOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeDependencyMissing, hint),
 			Command:       command,
+			Context:       opts.Context,
+			CWD:           cwd,
 			Allowed:       false,
 			BinaryPath:    "",
 		}
@@ -190,6 +233,8 @@ func GetDCGCheck(command string) (*DCGCheckOutput, error) {
 	output := &DCGCheckOutput{
 		RobotResponse: NewRobotResponseWithMeta(true, meta.WithExitCode(0)),
 		Command:       command,
+		Context:       opts.Context,
+		CWD:           cwd,
 		Allowed:       false,
 		BinaryPath:    availability.Path,
 	}
@@ -197,7 +242,8 @@ func GetDCGCheck(command string) (*DCGCheckOutput, error) {
 		output.DCGVersion = availability.Version.String()
 	}
 
-	blocked, err := adapter.CheckCommand(ctx, command)
+	// Use extended check if context or cwd is provided
+	checkResult, err := adapter.CheckCommandExtended(ctx, command, opts.Context, cwd)
 	if err != nil {
 		errCode := ErrCodeInternalError
 		hint := "Check dcg installation and try again"
@@ -210,20 +256,40 @@ func GetDCGCheck(command string) (*DCGCheckOutput, error) {
 		return output, nil
 	}
 
-	if blocked != nil {
+	if checkResult != nil && checkResult.Blocked {
 		output.Allowed = false
-		output.Reason = blocked.Reason
+		output.Rationale = checkResult.Reason
+		output.Reason = checkResult.Reason // Backwards compatibility
+		output.Severity = checkResult.Severity
+		output.RuleMatched = checkResult.RuleMatched
+		output.Suggestion = checkResult.Suggestion
+
+		// Add agent hints if available
+		if checkResult.SaferAlternative != "" || checkResult.Severity == "critical" || checkResult.Severity == "high" {
+			output.AgentHints = &DCGAgentHints{
+				SaferAlternative:     checkResult.SaferAlternative,
+				RequiresConfirmation: checkResult.Severity == "critical" || checkResult.Severity == "high",
+			}
+		}
 		return output, nil
 	}
 
 	output.Allowed = true
-	output.Reason = "allowed"
+	output.Severity = "safe"
+	output.Reason = "allowed" // Backwards compatibility
+	output.Rationale = "Command passed DCG checks"
 	return output, nil
 }
 
 // PrintDCGCheck handles the --robot-dcg-check / --robot-guard command.
+// Deprecated: use PrintDCGCheckWithOptions for full functionality.
 func PrintDCGCheck(command string) error {
-	output, err := GetDCGCheck(command)
+	return PrintDCGCheckWithOptions(DCGCheckOptions{Command: command})
+}
+
+// PrintDCGCheckWithOptions handles the --robot-dcg-check command with extended options.
+func PrintDCGCheckWithOptions(opts DCGCheckOptions) error {
+	output, err := GetDCGCheckWithOptions(opts)
 	if err != nil {
 		return err
 	}
