@@ -13,6 +13,85 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
+// =============================================================================
+// DefaultImportOptions (bd-9czd7)
+// =============================================================================
+
+func TestDefaultImportOptions(t *testing.T) {
+	t.Parallel()
+	opts := DefaultImportOptions()
+	if !opts.VerifyChecksums {
+		t.Error("VerifyChecksums should default to true")
+	}
+	if opts.AllowOverwrite {
+		t.Error("AllowOverwrite should default to false")
+	}
+	if opts.TargetSession != "" {
+		t.Errorf("TargetSession should be empty, got %q", opts.TargetSession)
+	}
+	if opts.TargetDir != "" {
+		t.Errorf("TargetDir should be empty, got %q", opts.TargetDir)
+	}
+}
+
+// =============================================================================
+// GetRedactionConfig / SetRedactionConfig round-trip (bd-9czd7)
+// =============================================================================
+
+func TestGetRedactionConfig_Default(t *testing.T) {
+	// Save and restore global state
+	SetRedactionConfig(nil)
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
+	cfg := GetRedactionConfig()
+	if cfg != nil {
+		t.Error("GetRedactionConfig should return nil when not set")
+	}
+}
+
+func TestGetRedactionConfig_SetAndGet(t *testing.T) {
+	SetRedactionConfig(nil)
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
+	original := &redaction.Config{
+		Mode: redaction.ModeRedact,
+	}
+	SetRedactionConfig(original)
+
+	got := GetRedactionConfig()
+	if got == nil {
+		t.Fatal("GetRedactionConfig returned nil after Set")
+	}
+	if got.Mode != redaction.ModeRedact {
+		t.Errorf("Mode = %v, want ModeRedact", got.Mode)
+	}
+
+	// Verify it returns a copy, not the same pointer
+	got.Mode = redaction.ModeWarn
+	got2 := GetRedactionConfig()
+	if got2.Mode != redaction.ModeRedact {
+		t.Error("GetRedactionConfig should return a copy, not shared state")
+	}
+}
+
+// =============================================================================
+// Storage.GitPatchPath (bd-9czd7)
+// =============================================================================
+
+func TestGitPatchPath(t *testing.T) {
+	t.Parallel()
+	storage := NewStorageWithDir("/base/dir")
+	got := storage.GitPatchPath("my-session", "chk-123")
+	want := filepath.Join("/base/dir", "my-session", "chk-123", GitPatchFile)
+	if got != want {
+		t.Errorf("GitPatchPath = %q, want %q", got, want)
+	}
+}
+
+// =============================================================================
+// Existing tests below
+// =============================================================================
+
 func TestExport_TarGz(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "ntm-export-test")
 	if err != nil {
