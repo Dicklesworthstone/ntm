@@ -25,6 +25,7 @@ type DashboardOutput struct {
 	System       SystemInfo         `json:"system"`
 	Summary      StatusSummary      `json:"summary"`
 	Beads        *bv.BeadsSummary   `json:"beads,omitempty"`
+	Progress     *ProgressSummary   `json:"progress,omitempty"`
 	Alerts       []AlertInfo        `json:"alerts,omitempty"`
 	AlertSummary *AlertSummaryInfo  `json:"alert_summary,omitempty"`
 	Conflicts    []tracker.Conflict `json:"conflicts,omitempty"`
@@ -111,6 +112,7 @@ func GetDashboard() (*DashboardOutput, error) {
 	// Beads summary (best-effort)
 	if bv.IsInstalled() {
 		output.Beads = bv.GetBeadsSummary(wd, BeadLimit)
+		output.Progress = ComputeProgress(output.Beads)
 	}
 
 	// Alerts (best-effort)

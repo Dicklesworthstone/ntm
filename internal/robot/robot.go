@@ -1562,6 +1562,7 @@ type StatusOutput struct {
 	AgentHints     *AgentHints            `json:"_agent_hints,omitempty"`
 	Summary        StatusSummary          `json:"summary"`
 	Beads          *bv.BeadsSummary       `json:"beads,omitempty"`
+	Progress       *ProgressSummary       `json:"progress,omitempty"`
 	GraphMetrics   *GraphMetrics          `json:"graph_metrics,omitempty"`
 	AgentMail      *AgentMailSummary      `json:"agent_mail,omitempty"`
 	Handoff        *HandoffSummary        `json:"handoff,omitempty"`
@@ -1701,6 +1702,33 @@ type StatusSummary struct {
 	CursorCount   int `json:"cursor_count"`
 	WindsurfCount int `json:"windsurf_count"`
 	AiderCount    int `json:"aider_count"`
+}
+
+// ProgressSummary provides bead completion metrics for status and dashboard (bd-1qct).
+type ProgressSummary struct {
+	Assigned        int     `json:"assigned"`         // Beads currently in progress
+	Completed       int     `json:"completed"`        // Beads closed
+	Remaining       int     `json:"remaining"`        // Open + in-progress (not yet closed)
+	Total           int     `json:"total"`            // All beads
+	CompletionRatio float64 `json:"completion_ratio"` // Closed / Total (0.0 to 1.0)
+}
+
+// ComputeProgress derives a ProgressSummary from BeadsSummary counts.
+func ComputeProgress(beads *bv.BeadsSummary) *ProgressSummary {
+	if beads == nil || !beads.Available || beads.Total == 0 {
+		return nil
+	}
+	remaining := beads.Open + beads.InProgress
+	ratio := float64(beads.Closed) / float64(beads.Total)
+	// Round to 4 decimal places for cleaner JSON
+	ratio = float64(int(ratio*10000+0.5)) / 10000
+	return &ProgressSummary{
+		Assigned:        beads.InProgress,
+		Completed:       beads.Closed,
+		Remaining:       remaining,
+		Total:           beads.Total,
+		CompletionRatio: ratio,
+	}
 }
 
 // PlanOutput provides an execution plan for what can be done
@@ -1988,6 +2016,7 @@ func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 	// Add beads summary if bv is available
 	if bv.IsInstalled() {
 		output.Beads = bv.GetBeadsSummary(wd, BeadLimit)
+		output.Progress = ComputeProgress(output.Beads)
 		output.GraphMetrics = getGraphMetrics()
 	}
 
