@@ -441,10 +441,20 @@ func formatAge(path string) string {
 	if date.IsZero() {
 		return ""
 	}
-	days := int(time.Since(date).Hours() / 24)
-	if days == 0 {
+
+	// Compare by calendar day in UTC (CASS paths encode YYYY/MM/DD without timezone).
+	// Using UTC avoids off-by-one issues when the local timezone is behind/ahead of UTC.
+	now := time.Now().UTC()
+	ny, nm, nd := now.Date()
+	dy, dm, dd := date.Date()
+	nowDay := time.Date(ny, nm, nd, 0, 0, 0, 0, time.UTC)
+	dateDay := time.Date(dy, dm, dd, 0, 0, 0, 0, time.UTC)
+
+	days := int(nowDay.Sub(dateDay).Hours() / 24)
+	if days <= 0 {
 		return "today"
-	} else if days == 1 {
+	}
+	if days == 1 {
 		return "yesterday"
 	}
 	return fmt.Sprintf("%d days ago", days)

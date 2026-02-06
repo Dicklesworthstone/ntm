@@ -413,7 +413,7 @@ func TestCountInjectedItems_Structured(t *testing.T) {
 func TestFormatAge(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	today := now
 	yesterday := now.AddDate(0, 0, -1)
 	threeDaysAgo := now.AddDate(0, 0, -3)

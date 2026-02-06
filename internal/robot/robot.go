@@ -528,9 +528,14 @@ func buildSetupToolStatus(spec setupToolSpec) SetupToolStatus {
 	status.Path = path
 
 	if len(spec.VersionArgs) > 0 {
-		cmd := exec.Command(spec.Command, spec.VersionArgs...)
+		// Some CLIs can hang or take a long time when invoked for version detection.
+		// Keep this check best-effort and bounded so robot mode and tests never stall.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, spec.Command, spec.VersionArgs...)
 		out, err := cmd.CombinedOutput()
-		if err == nil {
+		if err == nil && ctx.Err() == nil {
 			status.Version = strings.TrimSpace(string(out))
 		}
 	}

@@ -176,7 +176,7 @@ func runSupportBundle(ctx context.Context, opts supportBundleOptions) error {
 	return nil
 }
 
-func createSupportBundle(ctx context.Context, outputPath string, opts supportBundleOptions) (*BundleResult, error) {
+func createSupportBundle(ctx context.Context, outputPath string, opts supportBundleOptions) (result *BundleResult, retErr error) {
 	// Create output directory if needed
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -188,10 +188,24 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	if err != nil {
 		return nil, fmt.Errorf("create zip file: %w", err)
 	}
-	defer zipFile.Close()
+	defer func() {
+		if zipFile == nil {
+			return
+		}
+		if err := zipFile.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close zip file: %w", err)
+		}
+	}()
 
 	zipWriter := zip.NewWriter(zipFile)
-	defer zipWriter.Close()
+	defer func() {
+		if zipWriter == nil {
+			return
+		}
+		if err := zipWriter.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close zip: %w", err)
+		}
+	}()
 
 	manifest := &BundleManifest{
 		Version:       "1.0.0",
@@ -283,6 +297,13 @@ func createSupportBundle(ctx context.Context, outputPath string, opts supportBun
 	if err := zipWriter.Close(); err != nil {
 		return nil, fmt.Errorf("close zip: %w", err)
 	}
+	zipWriter = nil
+
+	// Close file before stat so any buffered writes are fully persisted.
+	if err := zipFile.Close(); err != nil {
+		return nil, fmt.Errorf("close zip file: %w", err)
+	}
+	zipFile = nil
 
 	// Get final file size
 	info, err := os.Stat(outputPath)
@@ -379,7 +400,13 @@ func collectBundleEvents(sinceStr string, redactCfg *redaction.Config) ([]byte, 
 		}
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		// Best-effort close: event logs are read-only here, but we still check the error
+		// so scanners don't treat it as an accidentally-ignored Close() result.
+		if err := file.Close(); err != nil {
+			// Intentionally ignored.
+		}
+	}()
 
 	var buf strings.Builder
 	scanner := bufio.NewScanner(file)
@@ -421,7 +448,7 @@ type bundleSessionFile struct {
 	data []byte
 }
 
-func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOptions, redactor *redaction.Redactor) ([]bundleSessionFile, error) {
+func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOptions, redactCfg *redaction.Config) ([]bundleSessionFile, error) {
 	var files []bundleSessionFile
 
 	client := tmux.DefaultClient
@@ -430,7 +457,7 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 	}
 
 	// List sessions
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.ListSessions()
 	if err != nil {
 		return files, err
 	}
@@ -446,10 +473,10 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 
 		// Create session snapshot
 		snapshot := map[string]interface{}{
-			"name":       sess.Name,
-			"created":    sess.Created,
-			"attached":   sess.Attached,
-			"dimensions": fmt.Sprintf("%dx%d", sess.Width, sess.Height),
+			"name":     sess.Name,
+			"created":  sess.Created,
+			"attached": sess.Attached,
+			"windows":  sess.Windows,
 		}
 
 		snapshotData, _ := json.MarshalIndent(snapshot, "", "  ")
@@ -470,7 +497,7 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 		}
 
 		// Capture pane output
-		panes, err := client.ListPanes(ctx, sess.Name)
+		panes, err := client.GetPanesContext(ctx, sess.Name)
 		if err != nil {
 			continue
 		}
@@ -483,14 +510,14 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 
 			// Capture output
 			target := fmt.Sprintf("%s:%d", sess.Name, pane.Index)
-			output, err := client.CapturePaneOutput(target, opts.Lines)
+			output, err := client.CapturePaneOutputContext(ctx, target, opts.Lines)
 			if err != nil {
 				continue
 			}
 
 			// Apply redaction
-			if redactor != nil {
-				output = redactor.Redact(output)
+			if redactCfg != nil {
+				output, _ = redaction.Redact(output, *redactCfg)
 			}
 
 			files = append(files, bundleSessionFile{
@@ -534,20 +561,14 @@ func bundleSHA256(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-func buildBundleRedactor(cfg *config.Config) *redaction.Redactor {
-	if cfg == nil || cfg.Redaction.Mode == "off" {
+func buildBundleRedactionConfig(cfg *config.Config) *redaction.Config {
+	if cfg == nil || strings.TrimSpace(cfg.Redaction.Mode) == "" || cfg.Redaction.Mode == "off" {
 		return nil
 	}
 
-	redactCfg := redaction.Config{
-		Mode:      cfg.Redaction.Mode,
-		Allowlist: cfg.Redaction.Allowlist,
-	}
-
-	r, err := redaction.NewRedactor(redactCfg)
-	if err != nil {
+	libCfg := cfg.Redaction.ToRedactionLibConfig()
+	if err := libCfg.Validate(); err != nil {
 		return nil
 	}
-
-	return r
+	return &libCfg
 }

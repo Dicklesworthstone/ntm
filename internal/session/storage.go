@@ -267,7 +267,9 @@ func List() ([]SavedSession, error) {
 		}
 
 		sessions = append(sessions, SavedSession{
-			Name:      state.Name,
+			// List/save/show/delete address saved sessions by the on-disk entry name (filename),
+			// not by the original tmux session name captured in the state.
+			Name:      name,
 			SavedAt:   state.SavedAt,
 			WorkDir:   state.WorkDir,
 			Agents:    state.Agents.Total(),
