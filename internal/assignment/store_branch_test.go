@@ -74,6 +74,32 @@ func TestGetAll_Empty(t *testing.T) {
 	}
 }
 
+// TestIsValidTransition_UnknownSource tests the !ok branch (invalid source status).
+func TestIsValidTransition_UnknownSource(t *testing.T) {
+	t.Parallel()
+
+	got := isValidTransition(AssignmentStatus("nonexistent"), StatusWorking)
+	if got {
+		t.Error("isValidTransition with unknown source should return false")
+	}
+}
+
+// TestIsValidTransition_TerminalStates tests that terminal states have no valid transitions.
+func TestIsValidTransition_TerminalStates(t *testing.T) {
+	t.Parallel()
+
+	terminals := []AssignmentStatus{StatusCompleted, StatusReassigned}
+	targets := []AssignmentStatus{StatusAssigned, StatusWorking, StatusCompleted, StatusFailed, StatusReassigned}
+
+	for _, from := range terminals {
+		for _, to := range targets {
+			if isValidTransition(from, to) {
+				t.Errorf("isValidTransition(%s, %s) = true, want false (terminal state)", from, to)
+			}
+		}
+	}
+}
+
 func TestStorageDir_Fallback(t *testing.T) {
 	// StorageDir has a fallback to TempDir when NTMDir fails.
 	// When HOME is set, it should return a sessions path under ~/.ntm/sessions

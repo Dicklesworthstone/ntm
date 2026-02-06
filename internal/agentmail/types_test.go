@@ -386,3 +386,31 @@ func TestReservationConflictUnmarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+// TestReservationConflictUnmarshalJSON_DirectInvalid calls UnmarshalJSON directly
+// with invalid JSON bytes to exercise the inner json.Unmarshal error path (line 196-198).
+// Going through json.Unmarshal fails at the outer decoder before calling the method.
+func TestReservationConflictUnmarshalJSON_DirectInvalid(t *testing.T) {
+	t.Parallel()
+
+	var rc ReservationConflict
+	err := rc.UnmarshalJSON([]byte("not valid json"))
+	if err == nil {
+		t.Error("expected error for invalid JSON bytes passed directly to UnmarshalJSON")
+	}
+}
+
+// TestFlexTimeUnmarshalJSON_BareFormatParsedAsUTC verifies bare ISO8601
+// timestamps (without timezone) are parsed as UTC.
+func TestFlexTimeUnmarshalJSON_BareFormatParsedAsUTC(t *testing.T) {
+	t.Parallel()
+
+	var ft FlexTime
+	err := ft.UnmarshalJSON([]byte(`"2026-03-15T14:30:00"`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ft.Time.Year() != 2026 || ft.Time.Month() != 3 || ft.Time.Day() != 15 {
+		t.Errorf("parsed date = %v, want 2026-03-15", ft.Time)
+	}
+}
