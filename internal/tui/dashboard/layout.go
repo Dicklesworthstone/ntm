@@ -19,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Layout mode thresholds - defines breakpoints for responsive layouts
@@ -270,6 +271,8 @@ type PaneTableRow struct {
 	CurrentBeadTitle string
 	FileChanges      int
 	TokenVelocity    float64
+	LocalTokensPS    float64
+	LocalMemoryBytes int64
 	Tick             int
 	IsSelected       bool
 	IsCompacted      bool
@@ -307,6 +310,7 @@ func BuildPaneTableRows(
 			Command:       pane.Command,
 			FileChanges:   changeCounts[pane.Title],
 			TokenVelocity: 0,
+			LocalTokensPS: 0,
 			ContextPct:    ps.ContextPercent,
 			Model:         ps.ContextModel,
 			IsCompacted:   ps.LastCompaction != nil,
@@ -328,6 +332,8 @@ func BuildPaneTableRows(
 		if hasStatus {
 			row.Status = st.State.String()
 			row.TokenVelocity = ps.TokenVelocity
+			row.LocalTokensPS = ps.LocalTokensPerSecond
+			row.LocalMemoryBytes = ps.LocalMemoryBytes
 			if row.ModelVariant == "" {
 				row.ModelVariant = st.AgentType
 			}
@@ -660,7 +666,7 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 
 	// Render second line for rich content (Wide+)
 	// Show bead info, file changes, etc.
-	if dims.Mode >= LayoutWide && (row.CurrentBead != "" || row.FileChanges > 0 || row.TokenVelocity > 0) {
+	if dims.Mode >= LayoutWide && (row.CurrentBead != "" || row.FileChanges > 0 || row.TokenVelocity > 0 || row.LocalTokensPS > 0 || row.LocalMemoryBytes > 0) {
 		var subParts []string
 
 		// Indent to align with title (approx 8 chars: sel(1)+space+idx(2)+icon(1)+status(1)+spaces)
@@ -683,6 +689,22 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 
 		if row.TokenVelocity > 0 {
 			subParts = append(subParts, styles.TokenVelocityBadge(row.TokenVelocity, styles.BadgeOptions{
+				Style:    styles.BadgeStyleCompact,
+				Bold:     false,
+				ShowIcon: true,
+			}))
+		}
+
+		if row.LocalTokensPS > 0 {
+			subParts = append(subParts, styles.TokensPerSecondBadge(row.LocalTokensPS, styles.BadgeOptions{
+				Style:    styles.BadgeStyleCompact,
+				Bold:     false,
+				ShowIcon: true,
+			}))
+		}
+
+		if row.LocalMemoryBytes > 0 {
+			subParts = append(subParts, styles.MemoryUsageBadge(row.LocalMemoryBytes, styles.BadgeOptions{
 				Style:    styles.BadgeStyleCompact,
 				Bold:     false,
 				ShowIcon: true,
@@ -791,6 +813,29 @@ func RenderPaneDetail(pane tmux.Pane, ps PaneStatus, dims LayoutDimensions, t th
 	}
 
 	lines = append(lines, "")
+
+	// Local performance section (Ollama)
+	if string(pane.Type) == "ollama" {
+		if ps.LocalTokensPerSecond > 0 || ps.LocalTotalTokens > 0 || ps.LocalLastLatency > 0 || ps.LocalMemoryBytes > 0 {
+			lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Lavender).Render("Local Performance"))
+			lines = append(lines, "")
+
+			if ps.LocalTokensPerSecond > 0 {
+				lines = append(lines, fmt.Sprintf("  %.1f tok/s", ps.LocalTokensPerSecond))
+			}
+			if ps.LocalTotalTokens > 0 {
+				lines = append(lines, fmt.Sprintf("  %d tokens (session)", ps.LocalTotalTokens))
+			}
+			if ps.LocalMemoryBytes > 0 {
+				lines = append(lines, fmt.Sprintf("  %s VRAM", util.FormatBytes(ps.LocalMemoryBytes)))
+			}
+			if ps.LocalLastLatency > 0 {
+				lines = append(lines, fmt.Sprintf("  first-token: %s (avg %s)", ps.LocalLastLatency.Round(10*time.Millisecond), ps.LocalAvgLatency.Round(10*time.Millisecond)))
+			}
+
+			lines = append(lines, "")
+		}
+	}
 
 	// Status section
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Lavender).Render("Status"))

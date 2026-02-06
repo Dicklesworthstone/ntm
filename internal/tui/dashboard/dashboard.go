@@ -421,6 +421,14 @@ type Model struct {
 	paneOutputLastCaptured  map[string]time.Time
 	renderedOutputCache     map[string]string // Cache for expensive markdown rendering
 
+	// Local agent performance (best-effort; derived from output deltas + prompt history)
+	localPerfByPaneID map[string]*localPerfTracker // keyed by pane ID
+
+	// Ollama /api/ps cache (best-effort)
+	ollamaModelMemory map[string]int64 // model name -> bytes
+	lastOllamaPSFetch time.Time
+	ollamaPSError     error
+
 	// Health badge (bv drift status)
 	healthStatus  string // "ok", "warning", "critical", "no_baseline", "unavailable"
 	healthMessage string
@@ -592,6 +600,13 @@ type PaneStatus struct {
 	MailUrgent int
 
 	TokenVelocity float64 // Estimated tokens/sec
+
+	// Local agent performance (Ollama) - best-effort estimates.
+	LocalTokensPerSecond float64
+	LocalTotalTokens     int
+	LocalLastLatency     time.Duration // First-token latency for the most recent prompt (if observed)
+	LocalAvgLatency      time.Duration // Moving average of observed first-token latencies
+	LocalMemoryBytes     int64         // VRAM/CPU bytes (from Ollama /api/ps), 0 if unknown
 
 	// Health tracking
 	HealthStatus  string   // "ok", "warning", "error", "unknown"
@@ -2606,6 +2621,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					modelName = currentPane.Variant
 				}
 
+				// Compute delta once (used for cost + local perf).
+				delta := ""
+				deltaTokens := 0
+				if data.PaneID != "" && data.Output != "" {
+					delta = tailDelta(prevOutput, data.Output)
+					if delta != "" {
+						deltaTokens = cost.EstimateTokens(delta)
+					}
+				}
+
 				// Record estimated output delta tokens for cost tracking BEFORE updating caches.
 				if data.PaneID != "" && data.Output != "" {
 					m.recordCostOutputDelta(data.PaneID, modelName, prevOutput, data.Output)
@@ -2621,6 +2646,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Get or create pane status
 				ps := m.paneStatus[data.PaneIndex]
+
+				// Local agent performance (Ollama): best-effort token rate + latency tracking.
+				// This is based on output deltas and prompt history timestamps, not on Ollama's
+				// API token counters, because local panes are typically launched via `ollama run`.
+				if isLocalAgentType(statusAgentType) && data.PaneID != "" {
+					tr := m.ensureLocalPerfTracker(data.PaneID)
+					if tr != nil && deltaTokens > 0 && !data.LastActivity.IsZero() {
+						tr.addOutputDelta(data.LastActivity, deltaTokens)
+					}
+					if tr != nil {
+						tps, total, lastLat, avgLat := tr.snapshot()
+						ps.LocalTokensPerSecond = tps
+						ps.LocalTotalTokens = total
+						ps.LocalLastLatency = lastLat
+						ps.LocalAvgLatency = avgLat
+					}
+
+					// Refresh /api/ps memory occasionally and map by model name (pane variant).
+					if found && currentPane.Variant != "" {
+						m.refreshOllamaPSIfNeeded(time.Now())
+						if m.ollamaModelMemory != nil {
+							if mem, ok := m.ollamaModelMemory[currentPane.Variant]; ok {
+								ps.LocalMemoryBytes = mem
+							}
+						}
+					}
+				}
 
 				// Update LIVE STATUS using local analysis (avoid waiting for slow full fetch)
 				st := m.detector.Analyze(data.PaneID, currentPane.Title, statusAgentType, data.Output, data.LastActivity)
@@ -2686,6 +2738,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			paneByID[p.ID] = p
 		}
 
+		// Best-effort refresh of Ollama /api/ps, only if we have any local panes.
+		hasOllama := false
+		for _, p := range m.panes {
+			if string(p.Type) == "ollama" {
+				hasOllama = true
+				break
+			}
+		}
+		if hasOllama {
+			m.refreshOllamaPSIfNeeded(msg.Time)
+		}
+
 		timelineUpdated := false
 		for _, st := range msg.Statuses {
 			idx, ok := paneIndexByID[st.PaneID]
@@ -2707,6 +2771,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Pre-calculate token velocity
 			ps.TokenVelocity = tokenVelocityFromStatus(st)
+
+			// Local perf snapshot + memory enrichment (Ollama panes only).
+			if pane, ok := paneByID[st.PaneID]; ok && string(pane.Type) == "ollama" {
+				if tr := m.ensureLocalPerfTracker(st.PaneID); tr != nil {
+					tps, total, lastLat, avgLat := tr.snapshot()
+					ps.LocalTokensPerSecond = tps
+					ps.LocalTotalTokens = total
+					ps.LocalLastLatency = lastLat
+					ps.LocalAvgLatency = avgLat
+				}
+				if hasOllama && m.ollamaModelMemory != nil && pane.Variant != "" {
+					if mem, ok := m.ollamaModelMemory[pane.Variant]; ok {
+						ps.LocalMemoryBytes = mem
+					}
+				}
+			}
+
 			m.paneStatus[idx] = ps
 			m.agentStatuses[st.PaneID] = st
 			if m.recordTimelineStatus(paneByID[st.PaneID], st) {
@@ -5058,6 +5139,11 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 						continue
 					}
 					m.costInputTokens[p.ID] += promptTokens
+					if string(p.Type) == "ollama" {
+						if tr := m.ensureLocalPerfTracker(p.ID); tr != nil {
+							tr.addPrompt(entry.Timestamp)
+						}
+					}
 				}
 				continue
 			}
@@ -5071,6 +5157,11 @@ func (m *Model) updateCostFromPrompts(now time.Time) {
 				continue
 			}
 			m.costInputTokens[pane.ID] += promptTokens
+			if string(pane.Type) == "ollama" {
+				if tr := m.ensureLocalPerfTracker(pane.ID); tr != nil {
+					tr.addPrompt(entry.Timestamp)
+				}
+			}
 		}
 
 		if entry.Timestamp.After(maxTs) {

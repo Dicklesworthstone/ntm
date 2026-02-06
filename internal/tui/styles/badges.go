@@ -3,12 +3,14 @@ package styles
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // BadgeStyle defines the visual style of a badge
@@ -555,6 +557,70 @@ func TokenVelocityBadge(tokensPerMinute float64, opts ...BadgeOptions) string {
 	label := fmt.Sprintf("%.0f tpm", value)
 	if opt.ShowIcon {
 		label = "⚡ " + label
+	}
+
+	return renderBadge(label, bgColor, t.Base, opt)
+}
+
+// TokensPerSecondBadge renders a badge for an instantaneous token rate estimate.
+// Example output: "⚡ 42.1 tok/s"
+func TokensPerSecondBadge(tokensPerSecond float64, opts ...BadgeOptions) string {
+	t := theme.Current()
+	opt := DefaultBadgeOptions()
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	value := tokensPerSecond
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		value = 0
+	}
+
+	var bgColor lipgloss.Color
+	switch {
+	case value >= 80:
+		bgColor = t.Red
+	case value >= 40:
+		bgColor = t.Yellow
+	default:
+		bgColor = t.Green
+	}
+
+	label := fmt.Sprintf("%.1f tok/s", value)
+	if opt.ShowIcon {
+		label = "⚡ " + label
+	}
+
+	return renderBadge(label, bgColor, t.Base, opt)
+}
+
+// MemoryUsageBadge renders a badge for memory usage (VRAM/CPU).
+// Example output: "🧠 12.0 GB"
+func MemoryUsageBadge(bytes int64, opts ...BadgeOptions) string {
+	t := theme.Current()
+	opt := DefaultBadgeOptions()
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	value := bytes
+	if value < 0 {
+		value = 0
+	}
+
+	var bgColor lipgloss.Color
+	switch {
+	case value >= 16*1024*1024*1024:
+		bgColor = t.Red
+	case value >= 8*1024*1024*1024:
+		bgColor = t.Yellow
+	default:
+		bgColor = t.Green
+	}
+
+	label := util.FormatBytes(value)
+	if opt.ShowIcon {
+		label = "🧠 " + label
 	}
 
 	return renderBadge(label, bgColor, t.Base, opt)
