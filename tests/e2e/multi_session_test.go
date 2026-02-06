@@ -671,3 +671,172 @@ scrollback = 500
 
 	logger.Log("[RAPID] PASS: Completed %d/%d rapid cycles", successfulCycles, cycles)
 }
+
+// TestCrossSessionRobotSendAck validates robot-mode prompt delivery and acknowledgment
+// across multiple concurrent sessions.
+// ntm-lmto: Test cross-session agent communication
+func TestCrossSessionRobotSendAck(t *testing.T) {
+	testutil.RequireE2E(t)
+	testutil.RequireTmuxThrottled(t)
+	testutil.RequireNTMBinary(t)
+
+	logger := testutil.NewTestLogger(t, t.TempDir())
+	logger.Log("[LMTO] Starting cross-session robot send+ack test")
+
+	projectsBase := t.TempDir()
+	stateDir := t.TempDir()
+	stateDBPath := filepath.Join(stateDir, "lmto_state.db")
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.toml")
+	configContent := fmt.Sprintf(`
+projects_base = %q
+state_path = %q
+
+[agents]
+claude = "bash"
+codex = "bash"
+gemini = "bash"
+
+[tmux]
+scrollback = 500
+`, projectsBase, stateDBPath)
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("[LMTO] Failed to write test config: %v", err)
+	}
+
+	sessionA := fmt.Sprintf("e2e_lmto_a_%d", time.Now().UnixNano())
+	sessionB := fmt.Sprintf("e2e_lmto_b_%d", time.Now().UnixNano())
+	sessions := []string{sessionA, sessionB}
+
+	for _, sess := range sessions {
+		projectDir := filepath.Join(projectsBase, sess)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("[LMTO] Failed to create project dir for %s: %v", sess, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		logger.Log("[LMTO] Teardown: Killing test sessions")
+		for _, sess := range sessions {
+			_ = exec.Command(tmux.BinaryPath(), "kill-session", "-t", sess).Run()
+		}
+	})
+
+	logger.LogSection("Step 1: Spawn two sessions")
+	for _, sess := range sessions {
+		_, err := logger.Exec("ntm", "--config", configPath, "spawn", sess, "--cc=1", "--safety")
+		if err != nil {
+			t.Fatalf("[LMTO] Spawn failed for %s: %v", sess, err)
+		}
+		testutil.AssertSessionExists(t, logger, sess)
+	}
+
+	// Let agents initialize so --robot-ack has something to observe.
+	time.Sleep(1500 * time.Millisecond)
+
+	logger.LogSection("Step 2: robot-send --track to each session")
+	markerA := fmt.Sprintf("LMTO_MARKER_A_%d", time.Now().UnixNano())
+	markerB := fmt.Sprintf("LMTO_MARKER_B_%d", time.Now().UnixNano())
+
+	type sendAndAck struct {
+		Success bool `json:"success"`
+		Send    struct {
+			Success    bool     `json:"success"`
+			Session    string   `json:"session"`
+			Targets    []string `json:"targets"`
+			Successful []string `json:"successful"`
+			Failed     []struct {
+				Pane  string `json:"pane"`
+				Error string `json:"error"`
+			} `json:"failed"`
+		} `json:"send"`
+		Ack struct {
+			Success       bool   `json:"success"`
+			Session       string `json:"session"`
+			Confirmations []struct {
+				Pane string `json:"pane"`
+			} `json:"confirmations"`
+			Pending []string `json:"pending"`
+			Failed  []struct {
+				Pane   string `json:"pane"`
+				Reason string `json:"reason"`
+			} `json:"failed"`
+		} `json:"ack"`
+		Error string `json:"error,omitempty"`
+	}
+
+	runTrackedSend := func(t *testing.T, sess, marker string) {
+		t.Helper()
+
+		out := testutil.AssertCommandSuccess(
+			t,
+			logger,
+			"ntm",
+			"--config", configPath,
+			"--robot-send="+sess,
+			"--msg", fmt.Sprintf("echo %s", marker),
+			"--type=claude",
+			"--track",
+		)
+		testutil.AssertJSONOutput(t, logger, out)
+
+		var res sendAndAck
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("[LMTO] parse send+ack json: %v\n%s", err, string(out))
+		}
+		if !res.Success || !res.Send.Success || !res.Ack.Success {
+			t.Fatalf("[LMTO] send+ack failed: success=%v send.success=%v ack.success=%v error=%q send.failed=%v ack.failed=%v",
+				res.Success, res.Send.Success, res.Ack.Success, res.Error, res.Send.Failed, res.Ack.Failed)
+		}
+		if res.Send.Session != sess || res.Ack.Session != sess {
+			t.Fatalf("[LMTO] session mismatch: send.session=%q ack.session=%q want %q", res.Send.Session, res.Ack.Session, sess)
+		}
+		if len(res.Send.Successful) == 0 {
+			t.Fatalf("[LMTO] expected at least one successful target for %s; targets=%v failed=%v", sess, res.Send.Targets, res.Send.Failed)
+		}
+		if len(res.Ack.Confirmations) == 0 {
+			t.Fatalf("[LMTO] expected at least one ack confirmation for %s; pending=%v failed=%v", sess, res.Ack.Pending, res.Ack.Failed)
+		}
+	}
+
+	runTrackedSend(t, sessionA, markerA)
+	runTrackedSend(t, sessionB, markerB)
+
+	logger.LogSection("Step 3: Verify markers landed in the correct sessions only")
+	assertMarkerIsolation := func(t *testing.T, sessWant, marker string, sessNot string) {
+		t.Helper()
+
+		paneCountWant, _ := testutil.GetSessionPaneCount(sessWant)
+		foundInWant := false
+		for p := 0; p < paneCountWant; p++ {
+			content, err := testutil.CapturePane(sessWant, p)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(content, marker) {
+				foundInWant = true
+				break
+			}
+		}
+		if !foundInWant {
+			t.Fatalf("[LMTO] expected marker %q in session %q output", marker, sessWant)
+		}
+
+		paneCountNot, _ := testutil.GetSessionPaneCount(sessNot)
+		for p := 0; p < paneCountNot; p++ {
+			content, err := testutil.CapturePane(sessNot, p)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(content, marker) {
+				t.Fatalf("[LMTO] marker %q leaked into wrong session %q", marker, sessNot)
+			}
+		}
+	}
+
+	assertMarkerIsolation(t, sessionA, markerA, sessionB)
+	assertMarkerIsolation(t, sessionB, markerB, sessionA)
+
+	logger.Log("[LMTO] PASS: Cross-session robot send+ack verified")
+}
