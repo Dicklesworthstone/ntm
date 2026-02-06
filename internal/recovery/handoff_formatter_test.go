@@ -308,7 +308,7 @@ func TestGetInjectionForType(t *testing.T) {
 		Now:  "Continue with next",
 		Next: []string{"Step 1", "Step 2"},
 	}
-	memories := []string{"Memory 1", "Memory 2"}
+	memories := []string{"Memory 1", "Memory 2", "Memory 3", "Memory 4"}
 
 	tests := []struct {
 		name         string
@@ -343,6 +343,15 @@ func TestGetInjectionForType(t *testing.T) {
 				"Now:",
 			},
 			wantMinimal: true,
+		},
+		{
+			name:        "unknown session type gets full context",
+			sessionType: SessionType(99),
+			wantContains: []string{
+				"## Previous Session Context",
+				"**Your immediate task:**",
+			},
+			wantMinimal: false,
 		},
 	}
 

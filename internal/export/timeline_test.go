@@ -460,6 +460,7 @@ func TestGetStateColor(t *testing.T) {
 		{state.TimelineWaiting, theme.WaitingColor},
 		{state.TimelineError, theme.ErrorColor},
 		{state.TimelineStopped, theme.StoppedColor},
+		{state.TimelineState("unknown-state"), theme.IdleColor}, // default branch
 	}
 
 	for _, tt := range tests {
@@ -469,6 +470,31 @@ func TestGetStateColor(t *testing.T) {
 
 			if result != tt.expected {
 				t.Errorf("getStateColor(%s) = %s, want %s", tt.state, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetAgentColor returns correct colors for agent types
+func TestGetAgentColor(t *testing.T) {
+	theme := DefaultTheme()
+	exporter := NewTimelineExporter(ExportOptions{Theme: theme})
+
+	tests := []struct {
+		agentID  string
+		expected string
+	}{
+		{"cc_1", theme.ClaudeColor},
+		{"cod_1", theme.CodexColor},
+		{"gmi_1", theme.GeminiColor},
+		{"other_1", theme.TextColor}, // default branch
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agentID, func(t *testing.T) {
+			result := exporter.getAgentColor(tt.agentID)
+			if result != tt.expected {
+				t.Errorf("getAgentColor(%s) = %s, want %s", tt.agentID, result, tt.expected)
 			}
 		})
 	}
