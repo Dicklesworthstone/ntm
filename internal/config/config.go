@@ -865,6 +865,7 @@ type IntegrationsConfig struct {
 	Caut          CautConfig          `toml:"caut"`           // caut (Cloud API Usage Tracker) integration
 	ProcessTriage ProcessTriageConfig `toml:"process_triage"` // pt (process_triage) Bayesian health classification
 	Rano          RanoConfig          `toml:"rano"`           // rano network observer for per-agent API tracking
+	XF            XFConfig            `toml:"xf"`             // xf (X/Twitter archive search) integration
 }
 
 // DCGConfig holds configuration for the DCG (destructive_commit_guard) integration.
@@ -1000,6 +1001,7 @@ func DefaultIntegrationsConfig() IntegrationsConfig {
 		Caut:          DefaultCautConfig(),
 		ProcessTriage: DefaultProcessTriageConfig(),
 		Rano:          DefaultRanoConfig(),
+		XF:            DefaultXFConfig(),
 	}
 }
 
@@ -1205,6 +1207,61 @@ func ValidateRanoConfig(cfg *RanoConfig) error {
 		return fmt.Errorf("history_days must be non-negative, got %d", cfg.HistoryDays)
 	}
 
+	return nil
+}
+
+// XFConfig holds configuration for xf (X/Twitter archive search) integration.
+// xf enables querying local X/Twitter archives from NTM via robot/tool bridges.
+type XFConfig struct {
+	Enabled     bool   `toml:"enabled"`      // Enable xf integration
+	BinPath     string `toml:"bin_path"`     // Path to xf binary (or command name in PATH)
+	ArchivePath string `toml:"archive_path"` // Path to xf archive directory (supports ~ expansion)
+	DefaultMode string `toml:"default_mode"` // keyword|semantic|hybrid
+}
+
+// DefaultXFConfig returns sensible defaults for xf integration.
+func DefaultXFConfig() XFConfig {
+	return XFConfig{
+		Enabled:     true,
+		BinPath:     "xf",
+		ArchivePath: "~/.xf/archive",
+		DefaultMode: "hybrid",
+	}
+}
+
+// ValidateXFConfig validates the xf configuration.
+func ValidateXFConfig(cfg *XFConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	// Skip validation for unconfigured/zero-valued configs (use defaults).
+	if !cfg.Enabled && cfg.BinPath == "" && cfg.ArchivePath == "" && cfg.DefaultMode == "" {
+		return nil
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+
+	if strings.TrimSpace(cfg.BinPath) == "" {
+		return fmt.Errorf("bin_path: must be non-empty when enabled")
+	}
+	if strings.TrimSpace(cfg.ArchivePath) == "" {
+		return fmt.Errorf("archive_path: must be non-empty when enabled")
+	}
+
+	if cfg.DefaultMode != "" {
+		mode := strings.ToLower(strings.TrimSpace(cfg.DefaultMode))
+		switch mode {
+		case "keyword", "semantic", "hybrid":
+			// ok
+		default:
+			return fmt.Errorf("default_mode: must be keyword, semantic, or hybrid, got %q", cfg.DefaultMode)
+		}
+	}
+
+	// Ensure ~ is expandable (and avoid storing unexpanded "~" surprises downstream).
+	_ = ExpandHome(cfg.ArchivePath)
 	return nil
 }
 
@@ -2301,6 +2358,26 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "allow_override = %t\n", cfg.Integrations.DCG.AllowOverride)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[integrations.xf]")
+	fmt.Fprintln(w, "# X/Twitter archive search (xf) settings")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.XF.Enabled)
+	if cfg.Integrations.XF.BinPath != "" {
+		fmt.Fprintf(w, "bin_path = %q\n", cfg.Integrations.XF.BinPath)
+	} else {
+		fmt.Fprintln(w, "# bin_path = \"xf\"  # Auto-detect from PATH")
+	}
+	if cfg.Integrations.XF.ArchivePath != "" {
+		fmt.Fprintf(w, "archive_path = %q\n", cfg.Integrations.XF.ArchivePath)
+	} else {
+		fmt.Fprintln(w, "# archive_path = \"~/.xf/archive\"")
+	}
+	if cfg.Integrations.XF.DefaultMode != "" {
+		fmt.Fprintf(w, "default_mode = %q\n", cfg.Integrations.XF.DefaultMode)
+	} else {
+		fmt.Fprintln(w, "# default_mode = \"hybrid\"  # keyword|semantic|hybrid")
+	}
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "[safety]")
 	fmt.Fprintln(w, "# Safety profile presets that set defaults for multiple knobs")
 	fmt.Fprintln(w, "# profile = \"standard\"  # standard|safe|paranoid")
@@ -3253,6 +3330,11 @@ func Validate(cfg *Config) []error {
 	// Validate ProcessTriage integration config
 	if err := ValidateProcessTriageConfig(&cfg.Integrations.ProcessTriage); err != nil {
 		errs = append(errs, fmt.Errorf("integrations.process_triage: %w", err))
+	}
+
+	// Validate xf integration config
+	if err := ValidateXFConfig(&cfg.Integrations.XF); err != nil {
+		errs = append(errs, fmt.Errorf("integrations.xf: %w", err))
 	}
 
 	// Validate safety profile and preflight configuration

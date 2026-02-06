@@ -2247,6 +2247,20 @@ func TestDefaultIntegrationsConfig(t *testing.T) {
 	if !cfg.CAAM.AutoRotate {
 		t.Error("Expected CAAM AutoRotate to be enabled by default")
 	}
+
+	// Verify XF config defaults are present
+	if !cfg.XF.Enabled {
+		t.Error("Expected XF integration to be enabled by default")
+	}
+	if cfg.XF.BinPath != "xf" {
+		t.Errorf("Expected XF bin_path 'xf', got %q", cfg.XF.BinPath)
+	}
+	if cfg.XF.ArchivePath != "~/.xf/archive" {
+		t.Errorf("Expected XF archive_path '~/.xf/archive', got %q", cfg.XF.ArchivePath)
+	}
+	if cfg.XF.DefaultMode != "hybrid" {
+		t.Errorf("Expected XF default_mode 'hybrid', got %q", cfg.XF.DefaultMode)
+	}
 }
 
 func TestIntegrationsConfigInFullConfig(t *testing.T) {
@@ -2263,8 +2277,8 @@ func TestIntegrationsConfigInFullConfig(t *testing.T) {
 
 func TestCAAMConfigFromTOML(t *testing.T) {
 	configContent := `
-[integrations.caam]
-enabled = false
+	[integrations.caam]
+	enabled = false
 binary_path = "/usr/local/bin/caam"
 auto_rotate = false
 providers = ["claude"]
@@ -2297,6 +2311,34 @@ alert_threshold = 90
 	}
 }
 
+func TestXFConfigFromTOML(t *testing.T) {
+	configContent := `
+	[integrations.xf]
+	enabled = false
+	bin_path = "/usr/local/bin/xf"
+	archive_path = "~/.xf/custom-archive"
+	default_mode = "semantic"
+	`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Integrations.XF.Enabled {
+		t.Error("Expected XF to be disabled")
+	}
+	if cfg.Integrations.XF.BinPath != "/usr/local/bin/xf" {
+		t.Errorf("Expected bin_path '/usr/local/bin/xf', got %q", cfg.Integrations.XF.BinPath)
+	}
+	if cfg.Integrations.XF.ArchivePath != "~/.xf/custom-archive" {
+		t.Errorf("Expected archive_path '~/.xf/custom-archive', got %q", cfg.Integrations.XF.ArchivePath)
+	}
+	if cfg.Integrations.XF.DefaultMode != "semantic" {
+		t.Errorf("Expected default_mode 'semantic', got %q", cfg.Integrations.XF.DefaultMode)
+	}
+}
+
 func TestDefaultProcessTriageConfig(t *testing.T) {
 	cfg := DefaultProcessTriageConfig()
 
@@ -2320,6 +2362,79 @@ func TestDefaultProcessTriageConfig(t *testing.T) {
 	}
 	if !cfg.UseRanoData {
 		t.Error("Expected UseRanoData to be enabled by default")
+	}
+}
+
+func TestValidateXFConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     XFConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid default config",
+			cfg:     DefaultXFConfig(),
+			wantErr: false,
+		},
+		{
+			name: "disabled skips validation",
+			cfg: XFConfig{
+				Enabled: false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing bin_path",
+			cfg: XFConfig{
+				Enabled:     true,
+				BinPath:     "",
+				ArchivePath: "~/.xf/archive",
+				DefaultMode: "hybrid",
+			},
+			wantErr: true,
+			errMsg:  "bin_path",
+		},
+		{
+			name: "missing archive_path",
+			cfg: XFConfig{
+				Enabled:     true,
+				BinPath:     "xf",
+				ArchivePath: "",
+				DefaultMode: "hybrid",
+			},
+			wantErr: true,
+			errMsg:  "archive_path",
+		},
+		{
+			name: "invalid default_mode",
+			cfg: XFConfig{
+				Enabled:     true,
+				BinPath:     "xf",
+				ArchivePath: "~/.xf/archive",
+				DefaultMode: "wat",
+			},
+			wantErr: true,
+			errMsg:  "default_mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateXFConfig(&tt.cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Fatalf("expected error containing %q, got %v", tt.errMsg, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil error, got %v", err)
+			}
+		})
 	}
 }
 
