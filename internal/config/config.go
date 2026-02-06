@@ -1331,7 +1331,7 @@ type ModelsConfig struct {
 func DefaultModels() ModelsConfig {
 	return ModelsConfig{
 		DefaultClaude: "claude-opus-4-5-20251101",
-		DefaultCodex:  "gpt-5.2-codex",
+		DefaultCodex:  "gpt-5.3-codex",
 		DefaultGemini: "gemini-3-pro-preview",
 		Claude: map[string]string{
 			"opus":      "claude-opus-4-5-20251101",
@@ -1342,11 +1342,11 @@ func DefaultModels() ModelsConfig {
 		},
 		Codex: map[string]string{
 			"gpt4":  "gpt-4",
-			"gpt5":  "gpt-5.2-codex",
+			"gpt5":  "gpt-5.3-codex",
 			"o1":    "o1",
 			"o3":    "o3",
 			"turbo": "gpt-4-turbo",
-			"codex": "gpt-5.2-codex",
+			"codex": "gpt-5.3-codex",
 		},
 		Gemini: map[string]string{
 			"pro":    "gemini-3-pro-preview",
