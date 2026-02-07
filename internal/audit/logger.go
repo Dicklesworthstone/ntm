@@ -275,7 +275,7 @@ func NewAuditLogger(config *LoggerConfig) (*AuditLogger, error) {
 	filepath := filepath.Join(auditDir, filename)
 
 	// Open file in append mode with exclusive locking intent
-	file, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audit log file: %w", err)
 	}

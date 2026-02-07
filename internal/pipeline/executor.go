@@ -735,8 +735,8 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 				}
 				e.stateMu.Lock()
 				e.state.Steps[ps.ID] = results[idx]
-				e.stateMu.Unlock()
 				e.state.UpdatedAt = time.Now()
+				e.stateMu.Unlock()
 				e.persistState()
 				mu.Unlock()
 				return
@@ -752,8 +752,8 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 			results[idx] = pResult
 			e.stateMu.Lock()
 			e.state.Steps[ps.ID] = pResult
-			e.stateMu.Unlock()
 			e.state.UpdatedAt = time.Now()
+			e.stateMu.Unlock()
 			e.persistState()
 
 			// Handle fail_fast: cancel remaining steps on first error
