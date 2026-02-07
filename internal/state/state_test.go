@@ -1451,3 +1451,18 @@ func TestGetBeadHistoryStats(t *testing.T) {
 		t.Errorf("FailureReasons[timeout] = %d, want 1", stats.FailureReasons["timeout"])
 	}
 }
+
+func TestStoreDB(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+
+	db := store.DB()
+	if db == nil {
+		t.Fatal("DB() returned nil")
+	}
+
+	// Verify it's a working connection
+	if err := db.Ping(); err != nil {
+		t.Fatalf("DB().Ping(): %v", err)
+	}
+}

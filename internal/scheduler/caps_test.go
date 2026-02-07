@@ -446,3 +446,34 @@ func TestAgentCaps_ForceRampUp(t *testing.T) {
 		t.Errorf("expected cap 5 after force ramp-up, got %d", cap)
 	}
 }
+
+func TestAgentCaps_GlobalCapExceeded_ViaAcquire(t *testing.T) {
+	t.Parallel()
+
+	cfg := AgentCapsConfig{
+		Default:   AgentCapConfig{MaxConcurrent: 5},
+		GlobalMax: 1,
+	}
+	caps := NewAgentCaps(cfg)
+
+	// Acquire 1 slot of "other" type — fills the global cap
+	if !caps.TryAcquire("other") {
+		t.Fatal("expected TryAcquire to succeed")
+	}
+
+	// Now Acquire("cc") should fail:
+	// - TryAcquire fast path fails (global full)
+	// - Double-check: per-agent has room (0 < 5) but globalCapExceeded() returns true
+	// - Falls through to select on wait channel
+	// - Cancelled context returns immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := caps.Acquire(ctx, "cc")
+	if err == nil {
+		t.Error("expected error from Acquire with cancelled context")
+	}
+	if err != context.Canceled {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}

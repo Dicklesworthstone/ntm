@@ -295,3 +295,16 @@ func TestRegistryAliasesAreConsistent(t *testing.T) {
 		}
 	}
 }
+
+func TestGetMasterCommands(t *testing.T) {
+	t.Parallel()
+	cmds := GetMasterCommands()
+	if len(cmds) == 0 {
+		t.Fatal("GetMasterCommands returned empty list")
+	}
+	// Master commands should be a superset of all tiers
+	apprenticeCmds := GetByTier(TierApprentice)
+	if len(cmds) < len(apprenticeCmds) {
+		t.Errorf("master commands (%d) should include all apprentice commands (%d)", len(cmds), len(apprenticeCmds))
+	}
+}
