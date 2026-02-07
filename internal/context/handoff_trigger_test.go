@@ -32,6 +32,33 @@ func TestNewHandoffTrigger(t *testing.T) {
 	}
 }
 
+func TestNewHandoffTrigger_ZeroConfig(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	predictor := NewContextPredictor(DefaultPredictorConfig())
+
+	// Zero-value config: all defaults should be filled in
+	trigger := NewHandoffTrigger(HandoffTriggerConfig{}, monitor, predictor)
+
+	if trigger == nil {
+		t.Fatal("NewHandoffTrigger() returned nil")
+	}
+
+	if trigger.config.PollInterval != 30*time.Second {
+		t.Errorf("PollInterval = %v, want 30s", trigger.config.PollInterval)
+	}
+	if trigger.config.WarnThreshold != 70.0 {
+		t.Errorf("WarnThreshold = %f, want 70.0", trigger.config.WarnThreshold)
+	}
+	if trigger.config.TriggerThreshold != 75.0 {
+		t.Errorf("TriggerThreshold = %f, want 75.0", trigger.config.TriggerThreshold)
+	}
+	if trigger.config.Cooldown != 5*time.Minute {
+		t.Errorf("Cooldown = %v, want 5m", trigger.config.Cooldown)
+	}
+}
+
 func TestHandoffTrigger_SetCallbacks(t *testing.T) {
 	t.Parallel()
 
@@ -307,6 +334,75 @@ func TestRegisterAgentWithTranscript(t *testing.T) {
 	}
 	if state.TranscriptPath != "/path/to/transcript.jsonl" {
 		t.Errorf("TranscriptPath = %s, want /path/to/transcript.jsonl", state.TranscriptPath)
+	}
+}
+
+func TestShouldTriggerHandoff_WithPredictor_ExhaustionSoon(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+
+	// Set usage to ~50% (below thresholds, so trigger should come from velocity)
+	state := monitor.GetState("agent-1")
+	state.cumulativeInputTokens = 50000
+	state.cumulativeOutputTokens = 50000
+
+	// Create predictor with samples showing high velocity
+	cfg := DefaultPredictorConfig()
+	cfg.MinSamples = 3
+	cfg.Window = 10 * time.Minute
+	predictor := NewContextPredictor(cfg)
+
+	// Add samples: rapidly growing token usage (simulate high velocity)
+	now := time.Now()
+	predictor.AddSampleAt(150000, now.Add(-2*time.Minute))
+	predictor.AddSampleAt(170000, now.Add(-1*time.Minute))
+	predictor.AddSampleAt(190000, now)
+
+	rec := monitor.ShouldTriggerHandoff("agent-1", predictor)
+
+	// The predictor shows 20k tokens/min, context limit ~200k, ~190k used → ~0.5 min to exhaustion
+	// This should trigger handoff
+	if !rec.ShouldTrigger {
+		t.Errorf("ShouldTrigger should be true with high velocity; usage=%.1f%% velocity=%.0f", rec.UsagePercent, rec.TokenVelocity)
+	}
+	if rec.TokenVelocity <= 0 {
+		t.Errorf("TokenVelocity should be positive, got %.0f", rec.TokenVelocity)
+	}
+}
+
+func TestShouldTriggerHandoff_WithPredictor_NoExhaustion(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+
+	// Set usage to ~30%
+	state := monitor.GetState("agent-1")
+	state.cumulativeInputTokens = 30000
+	state.cumulativeOutputTokens = 30000
+
+	// Create predictor with low velocity
+	cfg := DefaultPredictorConfig()
+	cfg.MinSamples = 3
+	cfg.Window = 10 * time.Minute
+	predictor := NewContextPredictor(cfg)
+
+	// Slow growth: 1k tokens/min
+	now := time.Now()
+	predictor.AddSampleAt(58000, now.Add(-2*time.Minute))
+	predictor.AddSampleAt(59000, now.Add(-1*time.Minute))
+	predictor.AddSampleAt(60000, now)
+
+	rec := monitor.ShouldTriggerHandoff("agent-1", predictor)
+
+	// 1k/min velocity, 140k remaining → 140 min → no trigger
+	if rec.ShouldTrigger {
+		t.Errorf("ShouldTrigger should be false with low velocity; usage=%.1f%% velocity=%.0f", rec.UsagePercent, rec.TokenVelocity)
+	}
+	if rec.ShouldWarn {
+		t.Errorf("ShouldWarn should be false below warning threshold; usage=%.1f%%", rec.UsagePercent)
 	}
 }
 

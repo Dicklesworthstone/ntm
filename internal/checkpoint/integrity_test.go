@@ -356,6 +356,156 @@ func TestCheckpoint_GenerateManifest(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_GenerateManifest_WithScrollbackAndPatch(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ntm-manifest-full-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "test-session"
+	checkpointID := "20251210-143052-manifest-full"
+
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: SessionState{
+			Panes: []PaneState{
+				{ID: "%0", Index: 0, ScrollbackFile: "panes/pane__0.txt"},
+				{ID: "%1", Index: 1, ScrollbackFile: "panes/pane__1.txt"},
+			},
+		},
+		Git: GitState{
+			PatchFile: "changes.patch",
+		},
+		PaneCount: 2,
+	}
+
+	// Save the checkpoint
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("Failed to save checkpoint: %v", err)
+	}
+
+	dir := storage.CheckpointDir(sessionName, checkpointID)
+
+	// Create scrollback files
+	panesDir := filepath.Join(dir, "panes")
+	if err := os.MkdirAll(panesDir, 0755); err != nil {
+		t.Fatalf("Failed to create panes dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "panes/pane__0.txt"), []byte("scrollback 0"), 0644); err != nil {
+		t.Fatalf("Failed to write scrollback 0: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "panes/pane__1.txt"), []byte("scrollback 1"), 0644); err != nil {
+		t.Fatalf("Failed to write scrollback 1: %v", err)
+	}
+
+	// Create git patch file
+	if err := os.WriteFile(filepath.Join(dir, "changes.patch"), []byte("diff --git a/foo"), 0644); err != nil {
+		t.Fatalf("Failed to write patch: %v", err)
+	}
+
+	manifest, err := cp.GenerateManifest(storage)
+	if err != nil {
+		t.Fatalf("GenerateManifest failed: %v", err)
+	}
+
+	// Should have metadata.json, session.json, 2 scrollback files, 1 patch
+	if len(manifest.Files) < 5 {
+		t.Errorf("Expected at least 5 files in manifest, got %d: %v", len(manifest.Files), manifest.Files)
+	}
+
+	if _, ok := manifest.Files["panes/pane__0.txt"]; !ok {
+		t.Error("Missing panes/pane__0.txt in manifest")
+	}
+	if _, ok := manifest.Files["panes/pane__1.txt"]; !ok {
+		t.Error("Missing panes/pane__1.txt in manifest")
+	}
+	if _, ok := manifest.Files["changes.patch"]; !ok {
+		t.Error("Missing changes.patch in manifest")
+	}
+}
+
+func TestCheckpoint_GenerateManifest_NoPanes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ntm-manifest-nopanes-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "test-session"
+	checkpointID := "20251210-143052-manifest-nopanes"
+
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session:     SessionState{Panes: []PaneState{}},
+	}
+
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("Failed to save checkpoint: %v", err)
+	}
+
+	manifest, err := cp.GenerateManifest(storage)
+	if err != nil {
+		t.Fatalf("GenerateManifest failed: %v", err)
+	}
+
+	// Should only have metadata and session files
+	if len(manifest.Files) > 2 {
+		t.Errorf("Expected at most 2 files in manifest for no panes, got %d", len(manifest.Files))
+	}
+}
+
+func TestCheckpoint_GenerateManifest_EmptyScrollbackFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ntm-manifest-empty-scroll")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "test-session"
+	checkpointID := "20251210-143052-manifest-empty"
+
+	// Pane with empty ScrollbackFile string - should be skipped
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: SessionState{
+			Panes: []PaneState{
+				{ID: "%0", Index: 0, ScrollbackFile: ""}, // empty
+			},
+		},
+		PaneCount: 1,
+	}
+
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("Failed to save checkpoint: %v", err)
+	}
+
+	manifest, err := cp.GenerateManifest(storage)
+	if err != nil {
+		t.Fatalf("GenerateManifest failed: %v", err)
+	}
+
+	// Should only have metadata and session
+	if len(manifest.Files) > 2 {
+		t.Errorf("Expected at most 2 files for empty scrollback, got %d", len(manifest.Files))
+	}
+}
+
 func TestCheckpoint_VerifyManifest(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "ntm-verify-manifest-test")
 	if err != nil {

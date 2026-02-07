@@ -790,6 +790,199 @@ func TestDebouncingBehavior(t *testing.T) {
 }
 
 // TestMultipleAgentTracking tests concurrent tracking of multiple agents.
+func TestNewContextMonitor_ZeroThresholds(t *testing.T) {
+	t.Parallel()
+
+	// Zero-value config should get defaults filled in
+	monitor := NewContextMonitor(MonitorConfig{})
+
+	// Register an agent and check thresholds are applied
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+
+	// Set usage to ~72% (above default 70% warning, below 75% rotate)
+	state := monitor.GetState("agent-1")
+	state.cumulativeInputTokens = 103000
+	state.cumulativeOutputTokens = 103000
+
+	rec := monitor.ShouldTriggerHandoff("agent-1", nil)
+
+	// Should warn at default 70% but not trigger at default 75%
+	if !rec.ShouldWarn {
+		t.Errorf("ShouldWarn should be true at ~72%% with default thresholds (actual: %.1f%%)", rec.UsagePercent)
+	}
+	if rec.ShouldTrigger {
+		t.Error("ShouldTrigger should be false below default 75% threshold")
+	}
+}
+
+func TestNewContextMonitor_NegativeTokensPerMessage(t *testing.T) {
+	t.Parallel()
+
+	// Negative TokensPerMessage should get default
+	monitor := NewContextMonitor(MonitorConfig{
+		WarningThreshold: 70.0,
+		RotateThreshold:  75.0,
+		TokensPerMessage: -1,
+	})
+
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+	for i := 0; i < 10; i++ {
+		monitor.RecordMessage("agent-1", 500, 500)
+	}
+
+	estimate := monitor.GetEstimate("agent-1")
+	if estimate == nil {
+		t.Fatal("GetEstimate returned nil")
+	}
+	// Should still produce a valid estimate (default 1500 tokens/msg)
+	if estimate.TokensUsed == 0 {
+		t.Error("TokensUsed should be non-zero")
+	}
+}
+
+func TestRegisterAgent_UpdateExisting(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+
+	// Register initially
+	state1 := monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+	state1.MessageCount = 42 // Set some state
+
+	// Re-register with different pane/model (update path)
+	state2 := monitor.RegisterAgent("agent-1", "pane-2", "gpt-4")
+
+	if state2.PaneID != "pane-2" {
+		t.Errorf("PaneID = %s, want pane-2", state2.PaneID)
+	}
+	if state2.Model != "gpt-4" {
+		t.Errorf("Model = %s, want gpt-4", state2.Model)
+	}
+	// MessageCount should be preserved (same state object)
+	if state2.MessageCount != 42 {
+		t.Errorf("MessageCount = %d, want 42 (should be preserved on update)", state2.MessageCount)
+	}
+	// Should still be only 1 agent
+	if monitor.Count() != 1 {
+		t.Errorf("Count() = %d, want 1", monitor.Count())
+	}
+}
+
+func TestRegisterAgentWithTranscript_UpdateExisting(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+
+	// Register initially
+	state1 := monitor.RegisterAgentWithTranscript(
+		"agent-1", "pane-1", "claude-opus-4",
+		"cc", "session-1", "/path/one.jsonl",
+	)
+	state1.MessageCount = 10
+
+	// Re-register with updated fields
+	state2 := monitor.RegisterAgentWithTranscript(
+		"agent-1", "pane-2", "gpt-4",
+		"cod", "session-2", "/path/two.jsonl",
+	)
+
+	if state2.PaneID != "pane-2" {
+		t.Errorf("PaneID = %s, want pane-2", state2.PaneID)
+	}
+	if state2.Model != "gpt-4" {
+		t.Errorf("Model = %s, want gpt-4", state2.Model)
+	}
+	if state2.AgentType != "cod" {
+		t.Errorf("AgentType = %s, want cod", state2.AgentType)
+	}
+	if state2.SessionName != "session-2" {
+		t.Errorf("SessionName = %s, want session-2", state2.SessionName)
+	}
+	if state2.TranscriptPath != "/path/two.jsonl" {
+		t.Errorf("TranscriptPath = %s, want /path/two.jsonl", state2.TranscriptPath)
+	}
+	// MessageCount preserved
+	if state2.MessageCount != 10 {
+		t.Errorf("MessageCount = %d, want 10", state2.MessageCount)
+	}
+}
+
+func TestGetEstimateLocked_StaleEstimate(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+
+	// Inject a robot mode estimate with a recent timestamp
+	robotOutput := `{"context_used": 50000, "context_limit": 200000}`
+	monitor.UpdateFromRobotMode("agent-1", robotOutput)
+
+	// Should use robot mode estimate (recent)
+	estimate := monitor.GetEstimate("agent-1")
+	if estimate == nil {
+		t.Fatal("GetEstimate returned nil")
+	}
+	if estimate.Method != MethodRobotMode {
+		t.Errorf("Method = %s, want %s (fresh robot mode)", estimate.Method, MethodRobotMode)
+	}
+
+	// Now make the robot mode estimate stale by backdating it
+	state := monitor.GetState("agent-1")
+	state.Estimate.UpdatedAt = time.Now().Add(-1 * time.Minute) // > 30s ago
+
+	// Record some messages so cumulative estimator has data
+	for i := 0; i < 5; i++ {
+		monitor.RecordMessage("agent-1", 1000, 1000)
+	}
+
+	// Should now fall through to cumulative token estimator
+	estimate2 := monitor.GetEstimate("agent-1")
+	if estimate2 == nil {
+		t.Fatal("GetEstimate returned nil after stale robot mode")
+	}
+	if estimate2.Method != MethodCumulativeTokens {
+		t.Errorf("Method = %s, want %s (stale robot mode should fall through)", estimate2.Method, MethodCumulativeTokens)
+	}
+}
+
+func TestShouldTriggerHandoff_NormalRange(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+
+	// Set low usage (~21%)
+	state := monitor.GetState("agent-1")
+	state.cumulativeInputTokens = 30000
+	state.cumulativeOutputTokens = 30000
+
+	rec := monitor.ShouldTriggerHandoff("agent-1", nil)
+
+	if rec.ShouldTrigger {
+		t.Error("ShouldTrigger should be false for low usage")
+	}
+	if rec.ShouldWarn {
+		t.Error("ShouldWarn should be false for low usage")
+	}
+	// Reason should indicate normal range
+	if rec.Reason == "" {
+		t.Error("Reason should not be empty")
+	}
+}
+
+func TestRecordMessage_UnknownAgent(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+
+	// Should not panic for unknown agent
+	monitor.RecordMessage("nonexistent", 1000, 2000)
+
+	if monitor.Count() != 0 {
+		t.Errorf("Count() = %d, want 0 (unknown agent should not be created)", monitor.Count())
+	}
+}
+
 func TestMultipleAgentTracking(t *testing.T) {
 	t.Parallel()
 
