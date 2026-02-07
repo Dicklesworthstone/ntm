@@ -120,21 +120,23 @@ func newMetricsExportCmd() *cobra.Command {
 		Long: `Export metrics data in various formats for analysis.
 
 Formats:
-  json  Full metrics report as JSON (default)
-  csv   Latency data as CSV
+  json        Full metrics report as JSON (default)
+  csv         Latency data as CSV
+  prometheus  Prometheus exposition format
 
 Examples:
-  ntm metrics export                        # JSON to stdout
-  ntm metrics export --format csv           # CSV to stdout
-  ntm metrics export -o metrics.json        # JSON to file
-  ntm metrics export --format csv -o data.csv`,
+  ntm metrics export                             # JSON to stdout
+  ntm metrics export --format csv                # CSV to stdout
+  ntm metrics export --format prometheus         # Prometheus to stdout
+  ntm metrics export -o metrics.json             # JSON to file
+  ntm metrics export --format prometheus -o m.prom`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMetricsExport(sessionID, format, outputFile)
 		},
 	}
 
 	cmd.Flags().StringVar(&sessionID, "session", "", "filter to specific session")
-	cmd.Flags().StringVarP(&format, "format", "f", "json", "output format: json, csv")
+	cmd.Flags().StringVarP(&format, "format", "f", "json", "output format: json, csv, prometheus")
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file (default: stdout)")
 
 	return cmd
@@ -345,6 +347,9 @@ func runMetricsExport(sessionID, format, outputFile string) error {
 	switch format {
 	case "csv":
 		return exportCSV(out, report)
+	case "prometheus", "prom":
+		_, err = fmt.Fprint(out, report.ExportPrometheus())
+		return err
 	case "json":
 		fallthrough
 	default:

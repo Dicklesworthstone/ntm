@@ -68,16 +68,18 @@ Time Filtering:
   --since DATE  Show events since DATE (YYYY-MM-DD format)
 
 Output Formats:
-  --format text  Human-readable output (default)
-  --format json  JSON output
-  --format csv   CSV output
+  --format text        Human-readable output (default)
+  --format json        JSON output
+  --format csv         CSV output
+  --format prometheus  Prometheus exposition format
 
 Examples:
-  ntm analytics                      # Last 30 days summary
-  ntm analytics --days 7             # Last 7 days
-  ntm analytics --since 2025-01-01   # Since specific date
-  ntm analytics --format json        # JSON output
-  ntm analytics --sessions           # Include per-session details`,
+  ntm analytics                           # Last 30 days summary
+  ntm analytics --days 7                  # Last 7 days
+  ntm analytics --since 2025-01-01        # Since specific date
+  ntm analytics --format json             # JSON output
+  ntm analytics --format prometheus       # Prometheus output
+  ntm analytics --sessions               # Include per-session details`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAnalytics(days, since, format, showSessions)
 		},
@@ -85,7 +87,7 @@ Examples:
 
 	cmd.Flags().IntVar(&days, "days", 30, "show last N days of analytics")
 	cmd.Flags().StringVar(&since, "since", "", "show analytics since date (YYYY-MM-DD)")
-	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, csv")
+	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, csv, prometheus")
 	cmd.Flags().BoolVar(&showSessions, "sessions", false, "include per-session breakdown")
 
 	return cmd
@@ -339,6 +341,8 @@ func outputStats(stats AnalyticsStats, format string, showSessions bool) error {
 		return outputStatsJSON(stats)
 	case "csv":
 		return outputStatsCSV(stats)
+	case "prometheus", "prom":
+		return outputStatsPrometheus(stats)
 	default:
 		return outputStatsText(stats, showSessions)
 	}
@@ -398,6 +402,72 @@ func outputStatsCSV(stats AnalyticsStats) error {
 		if err := w.Write([]string{agentType + "_prompts", fmt.Sprintf("%d", agentStats.Prompts)}); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func outputStatsPrometheus(stats AnalyticsStats) error {
+	fmt.Println("# HELP ntm_sessions_total Total sessions in the analytics period.")
+	fmt.Println("# TYPE ntm_sessions_total gauge")
+	fmt.Printf("ntm_sessions_total{period=%q} %d\n", stats.Period, stats.TotalSessions)
+	fmt.Println()
+
+	fmt.Println("# HELP ntm_agents_total Total agents spawned in the analytics period.")
+	fmt.Println("# TYPE ntm_agents_total gauge")
+	fmt.Printf("ntm_agents_total{period=%q} %d\n", stats.Period, stats.TotalAgents)
+	fmt.Println()
+
+	fmt.Println("# HELP ntm_prompts_total Total prompts sent in the analytics period.")
+	fmt.Println("# TYPE ntm_prompts_total gauge")
+	fmt.Printf("ntm_prompts_total{period=%q} %d\n", stats.Period, stats.TotalPrompts)
+	fmt.Println()
+
+	fmt.Println("# HELP ntm_chars_sent_total Total characters sent in the analytics period.")
+	fmt.Println("# TYPE ntm_chars_sent_total gauge")
+	fmt.Printf("ntm_chars_sent_total{period=%q} %d\n", stats.Period, stats.TotalCharsSent)
+	fmt.Println()
+
+	fmt.Println("# HELP ntm_tokens_estimated_total Estimated total tokens in the analytics period.")
+	fmt.Println("# TYPE ntm_tokens_estimated_total gauge")
+	fmt.Printf("ntm_tokens_estimated_total{period=%q} %d\n", stats.Period, stats.TotalTokensEst)
+	fmt.Println()
+
+	fmt.Println("# HELP ntm_errors_total Total errors in the analytics period.")
+	fmt.Println("# TYPE ntm_errors_total gauge")
+	fmt.Printf("ntm_errors_total{period=%q} %d\n", stats.Period, stats.ErrorCount)
+	fmt.Println()
+
+	if len(stats.AgentBreakdown) > 0 {
+		fmt.Println("# HELP ntm_agent_spawns Agent spawn count by type.")
+		fmt.Println("# TYPE ntm_agent_spawns gauge")
+		for agentType, as := range stats.AgentBreakdown {
+			fmt.Printf("ntm_agent_spawns{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.Count)
+		}
+		fmt.Println()
+
+		fmt.Println("# HELP ntm_agent_prompts Prompts sent by agent type.")
+		fmt.Println("# TYPE ntm_agent_prompts gauge")
+		for agentType, as := range stats.AgentBreakdown {
+			fmt.Printf("ntm_agent_prompts{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.Prompts)
+		}
+		fmt.Println()
+
+		fmt.Println("# HELP ntm_agent_tokens_estimated Estimated tokens by agent type.")
+		fmt.Println("# TYPE ntm_agent_tokens_estimated gauge")
+		for agentType, as := range stats.AgentBreakdown {
+			fmt.Printf("ntm_agent_tokens_estimated{period=%q,agent_type=%q} %d\n", stats.Period, agentType, as.TokensEst)
+		}
+		fmt.Println()
+	}
+
+	if len(stats.ErrorTypes) > 0 {
+		fmt.Println("# HELP ntm_errors_by_type Error count by type.")
+		fmt.Println("# TYPE ntm_errors_by_type gauge")
+		for errType, count := range stats.ErrorTypes {
+			fmt.Printf("ntm_errors_by_type{period=%q,error_type=%q} %d\n", stats.Period, errType, count)
+		}
+		fmt.Println()
 	}
 
 	return nil
