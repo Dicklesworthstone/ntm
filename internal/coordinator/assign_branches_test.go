@@ -253,7 +253,7 @@ func TestApplyStrategySelection_Speed(t *testing.T) {
 		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.9},
 		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.5},
 	}
-	result := applyStrategySelection(pairs, 2, 2, StrategySpeed)
+	result := applyStrategySelection(pairs, StrategySpeed, 2, 2)
 	if len(result) != 2 {
 		t.Errorf("expected 2 selections, got %d", len(result))
 	}
@@ -265,7 +265,7 @@ func TestApplyStrategySelection_Balanced(t *testing.T) {
 		{agent: &AgentState{PaneID: "%0", Status: robot.StateWaiting, Assignments: 0}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.8},
 		{agent: &AgentState{PaneID: "%1", Status: robot.StateGenerating, Assignments: 2}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.9},
 	}
-	result := applyStrategySelection(pairs, 2, 2, StrategyBalanced)
+	result := applyStrategySelection(pairs, StrategyBalanced, 2, 2)
 	if len(result) != 2 {
 		t.Errorf("expected 2 selections, got %d", len(result))
 	}
@@ -277,7 +277,7 @@ func TestApplyStrategySelection_Quality(t *testing.T) {
 		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
 		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.9},
 	}
-	result := applyStrategySelection(pairs, 2, 1, StrategyQuality)
+	result := applyStrategySelection(pairs, StrategyQuality, 2, 1)
 	if len(result) != 1 {
 		t.Errorf("expected 1 selection (best agent for b1), got %d", len(result))
 	}
