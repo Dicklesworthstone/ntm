@@ -2480,3 +2480,213 @@ func TestRequestIDFromContext(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// checkWSOrigin tests
+// =============================================================================
+
+func TestCheckWSOrigin_LocalMode(t *testing.T) {
+	t.Parallel()
+	srv := &Server{auth: AuthConfig{Mode: AuthModeLocal}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	if !srv.checkWSOrigin(req) {
+		t.Error("local mode should accept any origin")
+	}
+}
+
+func TestCheckWSOrigin_EmptyMode(t *testing.T) {
+	t.Parallel()
+	srv := &Server{auth: AuthConfig{Mode: ""}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	if !srv.checkWSOrigin(req) {
+		t.Error("empty auth mode should accept any origin")
+	}
+}
+
+func TestCheckWSOrigin_NoOriginHeader(t *testing.T) {
+	t.Parallel()
+	srv := &Server{
+		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
+		corsAllowedOrigins: []string{"https://example.com"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// No Origin header
+	if !srv.checkWSOrigin(req) {
+		t.Error("no origin header should be accepted for non-browser clients")
+	}
+}
+
+func TestCheckWSOrigin_AllowedOrigin(t *testing.T) {
+	t.Parallel()
+	srv := &Server{
+		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
+		corsAllowedOrigins: []string{"https://example.com", "https://app.example.com:8080"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://example.com")
+	if !srv.checkWSOrigin(req) {
+		t.Error("allowed origin should be accepted")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.Header.Set("Origin", "https://app.example.com:8080")
+	if !srv.checkWSOrigin(req2) {
+		t.Error("allowed origin with port should be accepted")
+	}
+}
+
+func TestCheckWSOrigin_RejectedOrigin(t *testing.T) {
+	t.Parallel()
+	srv := &Server{
+		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
+		corsAllowedOrigins: []string{"https://example.com"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	if srv.checkWSOrigin(req) {
+		t.Error("rejected origin should return false")
+	}
+}
+
+func TestCheckWSOrigin_MalformedOrigin(t *testing.T) {
+	t.Parallel()
+	srv := &Server{
+		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
+		corsAllowedOrigins: []string{"https://example.com"},
+	}
+
+	// Missing scheme
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "//example.com")
+	if srv.checkWSOrigin(req) {
+		t.Error("origin with missing scheme should be rejected")
+	}
+}
+
+func TestCheckWSOrigin_MalformedAllowedOrigin(t *testing.T) {
+	t.Parallel()
+	srv := &Server{
+		auth:               AuthConfig{Mode: AuthModeAPIKey, APIKey: "key"},
+		corsAllowedOrigins: []string{"not-a-url", "https://good.com"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://good.com")
+	if !srv.checkWSOrigin(req) {
+		t.Error("should skip malformed allowed origins and still match valid ones")
+	}
+}
+
+// =============================================================================
+// extractAuthClaims tests
+// =============================================================================
+
+func TestExtractAuthClaims_NoClaims(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	claims := extractAuthClaims(req)
+	if len(claims) != 0 {
+		t.Errorf("expected empty claims, got %v", claims)
+	}
+}
+
+func TestExtractAuthClaims_WithClaims(t *testing.T) {
+	t.Parallel()
+	authData := map[string]interface{}{
+		"sub":   "user-123",
+		"email": "user@example.com",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), authContextKey, authData)
+	req = req.WithContext(ctx)
+
+	claims := extractAuthClaims(req)
+	if claims["sub"] != "user-123" {
+		t.Errorf("expected sub=user-123, got %v", claims["sub"])
+	}
+	if claims["email"] != "user@example.com" {
+		t.Errorf("expected email, got %v", claims["email"])
+	}
+}
+
+func TestExtractAuthClaims_WrongType(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), authContextKey, "not-a-map")
+	req = req.WithContext(ctx)
+
+	claims := extractAuthClaims(req)
+	if len(claims) != 0 {
+		t.Errorf("expected empty claims for wrong type, got %v", claims)
+	}
+}
+
+// =============================================================================
+// ValidateConfig additional branch tests
+// =============================================================================
+
+func TestValidateConfig_APIKeyNoKey(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Auth: AuthConfig{Mode: AuthModeAPIKey}, // No APIKey
+	}
+	err := ValidateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "requires --api-key") {
+		t.Errorf("expected api-key error, got %v", err)
+	}
+}
+
+func TestValidateConfig_OIDCMissingIssuer(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Host: "0.0.0.0",
+		Auth: AuthConfig{
+			Mode: AuthModeOIDC,
+			OIDC: OIDCConfig{JWKSURL: "https://example.com/.well-known/jwks.json"},
+		},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "requires --oidc-issuer") {
+		t.Errorf("expected oidc-issuer error, got %v", err)
+	}
+}
+
+func TestValidateConfig_OIDCMissingJWKS(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Host: "0.0.0.0",
+		Auth: AuthConfig{
+			Mode: AuthModeOIDC,
+			OIDC: OIDCConfig{Issuer: "https://example.com"},
+		},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "requires --oidc-jwks-url") {
+		t.Errorf("expected oidc-jwks error, got %v", err)
+	}
+}
+
+func TestValidateConfig_MTLSMissing(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Host: "0.0.0.0",
+		Auth: AuthConfig{Mode: AuthModeMTLS},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "requires --mtls") {
+		t.Errorf("expected mtls error, got %v", err)
+	}
+}
+
+func TestValidateConfig_InvalidAuthMode(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Auth: AuthConfig{Mode: "bogus_mode"},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Error("expected error for invalid auth mode")
+	}
+}
