@@ -68,3 +68,52 @@ func GetChildPID(parentPID int) int {
 
 	return 0
 }
+
+// IsChildAlive is an alias for HasChildAlive for backward compatibility.
+var IsChildAlive = HasChildAlive
+
+// processStateNames maps single-character /proc state codes to human names.
+var processStateNames = map[string]string{
+	"R": "running",
+	"S": "sleeping",
+	"D": "disk sleep",
+	"Z": "zombie",
+	"T": "stopped",
+	"t": "tracing stop",
+	"X": "dead",
+	"x": "dead",
+	"K": "wakekill",
+	"W": "waking",
+	"P": "parked",
+	"I": "idle",
+}
+
+// GetProcessState reads the process state from /proc/<pid>/status.
+// Returns the single-character state code (R, S, D, Z, T, etc.),
+// a human-readable name, and any error.
+func GetProcessState(pid int) (string, string, error) {
+	if pid <= 0 {
+		return "", "", fmt.Errorf("invalid pid: %d", pid)
+	}
+
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return "", "", fmt.Errorf("read /proc/%d/status: %w", pid, err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "State:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				state := fields[1]
+				name := processStateNames[state]
+				if name == "" {
+					name = "unknown"
+				}
+				return state, name, nil
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("no State line in /proc/%d/status", pid)
+}

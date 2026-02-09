@@ -383,12 +383,12 @@ func TestGetChildPID_NoChildren(t *testing.T) {
 	pid := os.Getpid()
 	t.Logf("INPUT: pid=%d (current process, likely no children)", pid)
 
-	childPID, err := process.GetChildPID(pid)
+	childPID := process.GetChildPID(pid)
 
-	t.Logf("OUTPUT: childPID=%d err=%v", childPID, err)
+	t.Logf("OUTPUT: childPID=%d", childPID)
 
-	// Should error or return 0 for process without children
-	if err == nil && childPID != 0 {
+	// Should return 0 for process without children
+	if childPID != 0 {
 		t.Logf("Note: Current process unexpectedly has child PID %d", childPID)
 	}
 }
@@ -401,12 +401,12 @@ func TestGetChildPID_NonExistentProcess(t *testing.T) {
 	pid := 999999999
 	t.Logf("INPUT: pid=%d (non-existent)", pid)
 
-	childPID, err := process.GetChildPID(pid)
+	childPID := process.GetChildPID(pid)
 
-	t.Logf("OUTPUT: childPID=%d err=%v", childPID, err)
+	t.Logf("OUTPUT: childPID=%d", childPID)
 
-	if err == nil && childPID != 0 {
-		t.Errorf("process.GetChildPID(non-existent) expected error or 0, got childPID=%d", childPID)
+	if childPID != 0 {
+		t.Errorf("process.GetChildPID(non-existent) expected 0, got childPID=%d", childPID)
 	}
 }
 

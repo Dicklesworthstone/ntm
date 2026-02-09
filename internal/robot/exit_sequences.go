@@ -160,8 +160,8 @@ func hardKillAgent(session string, pane int, seq *RestartSequence) (*HardKillRes
 	result.ShellPID = shellPID
 
 	// Step 2: Get child PID via pgrep
-	childPID, err := process.GetChildPID(shellPID)
-	if err != nil {
+	childPID := process.GetChildPID(shellPID)
+	if childPID <= 0 {
 		// No child process might mean agent already exited
 		result.KillMethod = "no_child_process"
 		result.Success = true

@@ -469,7 +469,7 @@ func checkProcess(paneID string, shellPID int) *ProcessCheckResult {
 
 	// PID-based liveness check (authoritative, avoids false positives)
 	if shellPID > 0 {
-		if process.IsChildAlive(shellPID) {
+		if process.HasChildAlive(shellPID) {
 			return result // Running=true, agent is alive per PID check
 		}
 		// PID says dead — mark as crashed but continue to text patterns

@@ -84,6 +84,7 @@ type AgentHealth struct {
 	RateLimited   bool          `json:"rate_limited"`   // True if agent hit rate limit
 	WaitSeconds   int           `json:"wait_seconds"`   // Suggested wait time (if rate limited)
 	Progress      *Progress     `json:"progress"`       // Detected work progress
+	ShellPID      int           `json:"shell_pid"`      // Shell PID from tmux pane
 }
 
 // SessionHealth contains health information for an entire session

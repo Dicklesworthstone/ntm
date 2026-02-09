@@ -43,8 +43,8 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string) {
 
 	// 2. Get Child PID (delegated to shared process package)
 
-	childPID, err := process.GetChildPID(agent.PID)
-	if err == nil {
+	childPID := process.GetChildPID(agent.PID)
+	if childPID > 0 {
 		agent.ChildPID = childPID
 	}
 
