@@ -11864,5 +11864,299 @@ func TestWriteApprovalRequired_FullResponse(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Batch 32 — Pipeline GET/Cancel/Resume, discoverPipelineTemplates, Safety Install
+// =============================================================================
+
+// TestHandleGetPipeline_FoundWithFinishedAt exercises the success path
+// with FinishedAt and Error fields populated (lines 258-276 of pipelines.go).
+func TestHandleGetPipeline_FoundWithFinishedAt(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	now := time.Now()
+	finished := now.Add(5 * time.Second)
+	runID := fmt.Sprintf("get-test-%d", now.UnixNano())
+	exec := &pipeline.PipelineExecution{
+		RunID:       runID,
+		WorkflowID:  "wf-1",
+		Session:     "sess-1",
+		Status:      "failed",
+		StartedAt:   now,
+		FinishedAt:  &finished,
+		CurrentStep: "step-2",
+		Error:       "step-2 timed out",
+		Progress:    pipeline.PipelineProgress{Total: 3, Completed: 1, Failed: 1},
+	}
+	pipeline.RegisterPipeline(exec)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", runID)
+	req := httptest.NewRequest("GET", "/api/v1/pipelines/"+runID, nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleGetPipeline(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["finished_at"] == nil || resp["finished_at"] == "" {
+		t.Error("expected finished_at in response")
+	}
+	if resp["duration_ms"] == nil {
+		t.Error("expected duration_ms in response")
+	}
+	if resp["error"] != "step-2 timed out" {
+		t.Errorf("error = %v, want 'step-2 timed out'", resp["error"])
+	}
+}
+
+// TestHandleGetPipeline_NotFoundBranch exercises the 404 path in handleGetPipeline
+// (line 252-256 of pipelines.go).
+func TestHandleGetPipeline_NotFoundBranch(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "nonexistent-run")
+	req := httptest.NewRequest("GET", "/api/v1/pipelines/nonexistent-run", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleGetPipeline(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleCancelPipeline_CompletedConflict exercises the conflict path
+// in handleCancelPipeline (lines 300-306 of pipelines.go) — can't cancel completed.
+func TestHandleCancelPipeline_CompletedConflict(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	now := time.Now()
+	runID := fmt.Sprintf("cancel-conflict-%d", now.UnixNano())
+	exec := &pipeline.PipelineExecution{
+		RunID:      runID,
+		WorkflowID: "wf-1",
+		Session:    "sess-1",
+		Status:     "completed",
+		StartedAt:  now,
+	}
+	pipeline.RegisterPipeline(exec)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", runID)
+	req := httptest.NewRequest("DELETE", "/api/v1/pipelines/"+runID, nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleCancelPipeline(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleCancelPipeline_RunningSuccess exercises the success path
+// in handleCancelPipeline (lines 308-315 of pipelines.go) — cancel a running pipeline.
+func TestHandleCancelPipeline_RunningSuccess(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	now := time.Now()
+	runID := fmt.Sprintf("cancel-ok-%d", now.UnixNano())
+	exec := &pipeline.PipelineExecution{
+		RunID:      runID,
+		WorkflowID: "wf-1",
+		Session:    "sess-1",
+		Status:     "running",
+		StartedAt:  now,
+	}
+	pipeline.RegisterPipeline(exec)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", runID)
+	req := httptest.NewRequest("DELETE", "/api/v1/pipelines/"+runID, nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleCancelPipeline(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["status"] != "cancelled" {
+		t.Errorf("status = %v, want cancelled", resp["status"])
+	}
+}
+
+// TestHandleResumePipeline_NoState exercises the 404 path when
+// pipeline state file doesn't exist (lines 339-345 of pipelines.go).
+func TestHandleResumePipeline_NoState(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "nonexistent-resume")
+	body := bytes.NewBufferString(`{"session":"test"}`)
+	req := httptest.NewRequest("POST", "/api/v1/pipelines/nonexistent-resume/resume", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleResumePipeline(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDiscoverPipelineTemplates exercises the template discovery function
+// with actual YAML/TOML files present (lines 920-933 of pipelines.go).
+func TestDiscoverPipelineTemplates(t *testing.T) {
+	// Create a temp dir with workflow files
+	tmpDir := t.TempDir()
+
+	// Create .ntm/workflows subdirectory
+	wfDir := filepath.Join(tmpDir, ".ntm", "workflows")
+	os.MkdirAll(wfDir, 0755)
+	os.WriteFile(filepath.Join(wfDir, "deploy.yaml"), []byte("name: deploy"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "build.yml"), []byte("name: build"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "config.toml"), []byte("[config]"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "readme.md"), []byte("# ignore"), 0644) // should be skipped
+
+	// Create a subdirectory to verify IsDir skip
+	os.MkdirAll(filepath.Join(wfDir, "subdir"), 0755)
+
+	// Change to tmpDir so that .ntm/workflows is found
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	templates := discoverPipelineTemplates()
+
+	// Should find 3 templates (yaml, yml, toml) but not .md or dirs
+	foundNames := map[string]bool{}
+	for _, tpl := range templates {
+		foundNames[tpl.Name] = true
+	}
+	for _, name := range []string{"deploy", "build", "config"} {
+		if !foundNames[name] {
+			t.Errorf("expected template %q, not found in %v", name, templates)
+		}
+	}
+}
+
+// TestHandleSafetyInstallV1_FullFlow exercises handleSafetyInstallV1 end-to-end
+// with a fake HOME directory (lines 244-329 of safety.go).
+func TestHandleSafetyInstallV1_FullFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	s, _ := setupTestServer(t)
+
+	body := bytes.NewBufferString(`{"force":true}`)
+	req := httptest.NewRequest("POST", "/api/v1/safety/install", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyInstallV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify files were created
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	// Check git wrapper exists
+	gitWrapper := filepath.Join(tmpDir, ".ntm", "bin", "git")
+	if _, err := os.Stat(gitWrapper); err != nil {
+		t.Errorf("git wrapper not created: %v", err)
+	}
+
+	// Check rm wrapper exists
+	rmWrapper := filepath.Join(tmpDir, ".ntm", "bin", "rm")
+	if _, err := os.Stat(rmWrapper); err != nil {
+		t.Errorf("rm wrapper not created: %v", err)
+	}
+
+	// Check hook exists
+	hookPath := filepath.Join(tmpDir, ".claude", "hooks", "PreToolUse", "ntm-safety.sh")
+	if _, err := os.Stat(hookPath); err != nil {
+		t.Errorf("hook not created: %v", err)
+	}
+}
+
+// TestHandleSafetyInstallV1_ExistingWrapperConflict exercises the conflict path
+// when wrappers already exist and force=false (lines 278-280 of safety.go).
+func TestHandleSafetyInstallV1_ExistingWrapperConflict(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Pre-create git wrapper
+	binDir := filepath.Join(tmpDir, ".ntm", "bin")
+	os.MkdirAll(binDir, 0755)
+	os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\n"), 0755)
+
+	s, _ := setupTestServer(t)
+
+	body := bytes.NewBufferString(`{"force":false}`)
+	req := httptest.NewRequest("POST", "/api/v1/safety/install", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyInstallV1(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleExecPipeline_EmptySession exercises the missing session path
+// in handleExecPipeline (lines 197-200 of pipelines.go).
+func TestHandleExecPipeline_EmptySession(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	body := bytes.NewBufferString(`{"workflow":{"name":"test","steps":[]},"session":""}`)
+	req := httptest.NewRequest("POST", "/api/v1/pipelines/exec", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleExecPipeline(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleExecPipeline_InvalidBody exercises the invalid body path
+// in handleExecPipeline (lines 192-195 of pipelines.go).
+func TestHandleExecPipeline_InvalidBody(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/api/v1/pipelines/exec", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleExecPipeline(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // Ensure kernel import is used
 var _ = kernel.Run
