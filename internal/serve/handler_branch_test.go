@@ -8563,5 +8563,361 @@ func TestPublishApprovalEvent_NilHub(t *testing.T) {
 }
 
 
+// =============================================================================
+// BATCH 22 — OIDC validation branches, deeper approval, CASS with real tools
+// =============================================================================
+
+// --- validateOIDCToken: incomplete config ---
+
+func TestValidateOIDCToken_IncompleteConfig(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	// Empty OIDC config → "oidc config incomplete"
+	s.auth = AuthConfig{Mode: AuthModeOIDC}
+
+	err := s.validateOIDCToken(context.Background(), "any-token")
+	if err == nil || !strings.Contains(err.Error(), "oidc config incomplete") {
+		t.Fatalf("expected oidc config incomplete error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: unsupported algorithm ---
+
+func TestValidateOIDCToken_UnsupportedAlg(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: "https://example.com/.well-known/jwks.json",
+			Issuer:  "https://example.com",
+		},
+	}
+
+	// Build JWT with HS256 algorithm
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","kid":"key1"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://example.com","sub":"user"}`))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	err := s.validateOIDCToken(context.Background(), token)
+	if err == nil || !strings.Contains(err.Error(), "unsupported jwt alg") {
+		t.Fatalf("expected unsupported jwt alg error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: invalid issuer ---
+
+func TestValidateOIDCToken_InvalidIssuer(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: "https://example.com/.well-known/jwks.json",
+			Issuer:  "https://correct-issuer.com",
+		},
+	}
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://wrong-issuer.com","sub":"user"}`))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	err := s.validateOIDCToken(context.Background(), token)
+	if err == nil || !strings.Contains(err.Error(), "invalid issuer") {
+		t.Fatalf("expected invalid issuer error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: invalid audience ---
+
+func TestValidateOIDCToken_InvalidAudience(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL:  "https://example.com/.well-known/jwks.json",
+			Issuer:   "https://example.com",
+			Audience: "my-app",
+		},
+	}
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://example.com","aud":"wrong-app"}`))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	err := s.validateOIDCToken(context.Background(), token)
+	if err == nil || !strings.Contains(err.Error(), "invalid audience") {
+		t.Fatalf("expected invalid audience error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: expired token ---
+
+func TestValidateOIDCToken_ExpiredToken(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: "https://example.com/.well-known/jwks.json",
+			Issuer:  "https://example.com",
+		},
+	}
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
+	// exp set to year 2000
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://example.com","exp":946684800}`))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	err := s.validateOIDCToken(context.Background(), token)
+	if err == nil || !strings.Contains(err.Error(), "token expired") {
+		t.Fatalf("expected token expired error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: not yet valid (nbf in future) ---
+
+func TestValidateOIDCToken_NotYetValid(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: "https://example.com/.well-known/jwks.json",
+			Issuer:  "https://example.com",
+		},
+	}
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
+	// nbf set to year 2099
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://example.com","nbf":4102444800}`))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	err := s.validateOIDCToken(context.Background(), token)
+	if err == nil || !strings.Contains(err.Error(), "token not yet valid") {
+		t.Fatalf("expected token not yet valid error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: valid claims but JWKS fetch fails ---
+
+func TestValidateOIDCToken_JWKSFetchError(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: "https://127.0.0.1:1/nonexistent-jwks",
+			Issuer:  "https://example.com",
+		},
+	}
+	s.jwksCache = newJWKSCache(0) // default TTL
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+		`{"iss":"https://example.com","exp":%d}`, time.Now().Add(time.Hour).Unix())))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := s.validateOIDCToken(ctx, token)
+	// Should fail on JWKS fetch
+	if err == nil {
+		t.Fatal("expected JWKS fetch error")
+	}
+}
+
+// --- validateOIDCToken: valid claims + JWKS served but wrong kid ---
+
+func TestValidateOIDCToken_JWKSKidNotFound(t *testing.T) {
+	t.Parallel()
+
+	// Generate RSA key
+	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+
+	// Serve JWKS with kid="correct-kid"
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"keys": []map[string]interface{}{
+				{
+					"kty": "RSA",
+					"kid": "correct-kid",
+					"n":   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes()),
+				},
+			},
+		})
+	}))
+	defer jwksServer.Close()
+
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: jwksServer.URL,
+			Issuer:  "https://example.com",
+		},
+	}
+	s.jwksCache = newJWKSCache(time.Minute)
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"wrong-kid"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+		`{"iss":"https://example.com","exp":%d}`, time.Now().Add(time.Hour).Unix())))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+	token := header + "." + payload + "." + sig
+
+	err := s.validateOIDCToken(context.Background(), token)
+	if err == nil || !strings.Contains(err.Error(), "kid not found") {
+		t.Fatalf("expected kid not found error, got: %v", err)
+	}
+}
+
+// --- newJWKSCache with zero TTL (uses default) ---
+
+func TestNewJWKSCache_DefaultTTL(t *testing.T) {
+	t.Parallel()
+	cache := newJWKSCache(0)
+	if cache == nil {
+		t.Fatal("expected non-nil cache")
+	}
+	if cache.ttl != defaultJWKSCacheTTL {
+		t.Errorf("ttl = %v, want default %v", cache.ttl, defaultJWKSCacheTTL)
+	}
+}
+
+// --- newJWKSCache with custom TTL ---
+
+func TestNewJWKSCache_CustomTTL(t *testing.T) {
+	t.Parallel()
+	cache := newJWKSCache(5 * time.Minute)
+	if cache.ttl != 5*time.Minute {
+		t.Errorf("ttl = %v, want 5m", cache.ttl)
+	}
+}
+
+// --- handleCASSCapabilities with real cass ---
+
+func TestHandleCASSCapabilities_WithRealCass(t *testing.T) {
+	t.Parallel()
+	client := cass.NewClient()
+	if !client.IsInstalled() {
+		t.Skip("cass not installed")
+	}
+	s, _ := setupTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/memory/cass/capabilities", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleCASSCapabilities(rec, req)
+
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatal("cass is installed but got 503")
+	}
+	// Should be 200 (capabilities) or 500 (cass error)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 200 or 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleCASSInsights with real cass ---
+
+func TestHandleCASSInsights_WithRealCass(t *testing.T) {
+	t.Parallel()
+	client := cass.NewClient()
+	if !client.IsInstalled() {
+		t.Skip("cass not installed")
+	}
+	s, _ := setupTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/memory/cass/insights", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleCASSInsights(rec, req)
+
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatal("cass is installed but got 503")
+	}
+}
+
+// --- handleCASSTimeline with real cass ---
+
+func TestHandleCASSTimeline_WithRealCass(t *testing.T) {
+	t.Parallel()
+	client := cass.NewClient()
+	if !client.IsInstalled() {
+		t.Skip("cass not installed")
+	}
+	s, _ := setupTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/memory/cass/timeline?limit=5", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleCASSTimeline(rec, req)
+
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatal("cass is installed but got 503")
+	}
+}
+
+// --- handleMemoryRules with real cm ---
+
+func TestHandleMemoryRules_WithRealCM(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("cm"); err != nil {
+		t.Skip("cm not installed")
+	}
+	s, _ := setupTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/memory/rules", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleMemoryRules(rec, req)
+
+	// Should exercise CLI client path (may succeed or error on daemon)
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatal("cm is installed but got 503")
+	}
+}
+
+// --- Approval approve with expired approval ---
+
+func TestApprovalApproveV1_Expired(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	// Directly insert an expired approval into the map
+	approvalsLock.Lock()
+	approvalIDSeq++
+	id := fmt.Sprintf("apr-%d", approvalIDSeq)
+	approvals[id] = &Approval{
+		ID:        id,
+		Action:    "test-action",
+		Status:    "pending",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour), // expired 1 hour ago
+	}
+	approvalsLock.Unlock()
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", id)
+	req := httptest.NewRequest("POST", "/api/v1/safety/approvals/"+id+"/approve", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleApprovalApproveV1(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for expired approval, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // Ensure kernel import is used
 var _ = kernel.Run
