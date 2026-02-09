@@ -3105,3 +3105,393 @@ func TestHandleDeleteCheckpoint_Branch_NotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// =============================================================================
+// BATCH 7: ws_events cleanup, matchTopic, memory outcome, MemoryStore, publish
+// =============================================================================
+
+// --- WSEventStore cleanup (16.7% → higher) ---
+
+func TestWSEventStore_CleanupRemovesOldEvents(t *testing.T) {
+	t.Parallel()
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := WSEventStoreConfig{
+		BufferSize:       100,
+		RetentionSeconds: 1, // 1 second retention
+		CleanupInterval:  time.Hour,
+	}
+	store := NewWSEventStore(db, cfg)
+	defer store.Stop()
+
+	// Insert events directly with old timestamps (2 hours ago) using Go time format
+	oldTime := time.Now().Add(-2 * time.Hour)
+	for i := 0; i < 5; i++ {
+		db.Exec("INSERT INTO ws_events (topic, event_type, data, created_at) VALUES (?, ?, ?, ?)",
+			"test", "ev", `{"i":0}`, oldTime)
+	}
+
+	// Verify events exist
+	var before int
+	db.QueryRow("SELECT COUNT(*) FROM ws_events").Scan(&before)
+	if before != 5 {
+		t.Fatalf("expected 5 events before cleanup, got %d", before)
+	}
+
+	// Run cleanup directly
+	if err := store.cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	// Verify events were removed from DB
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM ws_events").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected 0 events after cleanup, got %d", count)
+	}
+}
+
+func TestWSEventStore_CleanupNilDB(t *testing.T) {
+	t.Parallel()
+	store := &WSEventStore{db: nil}
+	if err := store.cleanup(); err != nil {
+		t.Errorf("cleanup with nil db should return nil, got %v", err)
+	}
+}
+
+func TestWSEventStore_CleanupDroppedEvents(t *testing.T) {
+	t.Parallel()
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := WSEventStoreConfig{
+		BufferSize:       100,
+		RetentionSeconds: 3600,
+		CleanupInterval:  time.Hour,
+	}
+	store := NewWSEventStore(db, cfg)
+	defer store.Stop()
+
+	// Insert dropped event records and backdate them using Go time format
+	store.RecordDropped("client-1", "test", "slow", 1, 5)
+	oldTime := time.Now().Add(-48 * time.Hour)
+	_, _ = db.Exec("UPDATE ws_dropped_events SET created_at = ?", oldTime)
+
+	// Run cleanup — should remove dropped events older than 24h
+	if err := store.cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM ws_dropped_events").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected 0 dropped events after cleanup, got %d", count)
+	}
+}
+
+func TestWSEventStore_RecordDroppedNilDB(t *testing.T) {
+	t.Parallel()
+	store := &WSEventStore{db: nil}
+	if err := store.RecordDropped("c1", "t", "r", 1, 5); err != nil {
+		t.Errorf("RecordDropped with nil db should return nil, got %v", err)
+	}
+}
+
+func TestWSEventStore_GetDroppedStatsNilDB(t *testing.T) {
+	t.Parallel()
+	store := &WSEventStore{db: nil}
+	stats, err := store.GetDroppedStats("c1", time.Now())
+	if err != nil {
+		t.Errorf("GetDroppedStats nil db: %v", err)
+	}
+	if stats != nil {
+		t.Errorf("expected nil stats from nil db, got %v", stats)
+	}
+}
+
+func TestWSEventStore_CurrentSeqBranch(t *testing.T) {
+	t.Parallel()
+	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 10, CleanupInterval: time.Hour})
+	defer store.Stop()
+
+	if seq := store.CurrentSeq(); seq != 0 {
+		t.Errorf("initial seq = %d, want 0", seq)
+	}
+	store.Store("test", "ev", map[string]interface{}{})
+	if seq := store.CurrentSeq(); seq != 1 {
+		t.Errorf("after store seq = %d, want 1", seq)
+	}
+}
+
+func TestWSEventStore_GetSinceDBFallback_CursorTooOld(t *testing.T) {
+	t.Parallel()
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := WSEventStoreConfig{
+		BufferSize:       5, // tiny buffer
+		RetentionSeconds: 3600,
+		CleanupInterval:  time.Hour,
+	}
+	store := NewWSEventStore(db, cfg)
+	defer store.Stop()
+
+	// Store enough events to overflow ring buffer (all with topic "test")
+	for i := 0; i < 20; i++ {
+		store.Store("test", "ev", map[string]interface{}{"i": i})
+	}
+
+	// Delete old events from DB so minSeq jumps up
+	db.Exec("DELETE FROM ws_events WHERE seq <= 15")
+
+	// Ask for events since seq 1 with a non-matching topic.
+	// Buffer can't satisfy (cursor too old), falls back to DB.
+	// DB returns events 16-20 (seq > 1) but topic filter removes them all.
+	// len(events)==0, since=1, minSeq=16, since < minSeq-1 → reset!
+	events, needsReset, err := store.GetSince(1, "nonexistent:*", 100)
+	if err != nil {
+		t.Fatalf("GetSince: %v", err)
+	}
+	if !needsReset {
+		t.Errorf("expected reset signal, got %d events", len(events))
+	}
+}
+
+func TestWSEventStore_GetSinceDBWithTopicFilter(t *testing.T) {
+	t.Parallel()
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	cfg := WSEventStoreConfig{
+		BufferSize:       3, // tiny buffer forces DB fallback
+		RetentionSeconds: 3600,
+		CleanupInterval:  time.Hour,
+	}
+	store := NewWSEventStore(db, cfg)
+	defer store.Stop()
+
+	// Store events with different topics
+	store.Store("panes:proj:0", "pane.output", map[string]interface{}{})
+	store.Store("panes:proj:1", "pane.output", map[string]interface{}{})
+	store.Store("sessions:proj", "session.started", map[string]interface{}{})
+	store.Store("panes:proj:2", "pane.output", map[string]interface{}{})
+	store.Store("global", "system.event", map[string]interface{}{})
+
+	// Buffer only has last 3, so seq=0 forces DB fallback
+	events, _, err := store.GetSince(0, "panes:*", 100)
+	if err != nil {
+		t.Fatalf("GetSince: %v", err)
+	}
+	if len(events) != 3 {
+		t.Errorf("expected 3 pane events, got %d", len(events))
+	}
+}
+
+func TestWSEventStore_GetSinceDefaultLimit(t *testing.T) {
+	t.Parallel()
+	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 100, CleanupInterval: time.Hour})
+	defer store.Stop()
+
+	for i := 0; i < 5; i++ {
+		store.Store("test", "ev", map[string]interface{}{"i": i})
+	}
+
+	// limit=0 should default to 1000 (not return 0 events)
+	events, _, err := store.GetSince(0, "", 0)
+	if err != nil {
+		t.Fatalf("GetSince: %v", err)
+	}
+	if len(events) != 5 {
+		t.Errorf("expected 5 events with default limit, got %d", len(events))
+	}
+}
+
+// --- matchTopic direct tests ---
+
+func TestMatchTopic_Wildcard(t *testing.T) {
+	t.Parallel()
+	if !matchTopic("*", "anything") {
+		t.Error("* should match anything")
+	}
+}
+
+func TestMatchTopic_PrefixWildcard(t *testing.T) {
+	t.Parallel()
+	if !matchTopic("sessions:*", "sessions:proj1") {
+		t.Error("sessions:* should match sessions:proj1")
+	}
+	if matchTopic("sessions:*", "panes:proj1") {
+		t.Error("sessions:* should not match panes:proj1")
+	}
+}
+
+func TestMatchTopic_ExactMatch(t *testing.T) {
+	t.Parallel()
+	if !matchTopic("global", "global") {
+		t.Error("exact match should work")
+	}
+	if matchTopic("global", "other") {
+		t.Error("non-match should return false")
+	}
+}
+
+// --- handleMemoryOutcome — daemon not running (deeper branch) ---
+
+func TestHandleMemoryOutcome_DaemonNotRunning(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	srv := New(Config{})
+	srv.projectDir = tmpDir
+
+	rec := httptest.NewRecorder()
+	body := `{"status":"success","rule_ids":["r1"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/memory/outcome", strings.NewReader(body))
+	srv.handleMemoryOutcome(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- NewMemoryStore / MemoryStore methods ---
+
+func TestNewMemoryStoreBranch(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	info := store.GetDaemonInfo()
+	if info.State != DaemonStateStopped {
+		t.Errorf("state = %v, want stopped", info.State)
+	}
+}
+
+func TestMemoryStore_SetGetDaemonInfo(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryStore()
+	now := time.Now()
+	store.SetDaemonInfo(&MemoryDaemonInfo{
+		State:     DaemonStateRunning,
+		PID:       12345,
+		Port:      8200,
+		SessionID: "test-session",
+		StartedAt: &now,
+	})
+	info := store.GetDaemonInfo()
+	if info.State != DaemonStateRunning {
+		t.Errorf("state = %v, want running", info.State)
+	}
+	if info.PID != 12345 {
+		t.Errorf("pid = %d, want 12345", info.PID)
+	}
+}
+
+// --- DefaultWSEventStoreConfig ---
+
+func TestDefaultWSEventStoreConfigBranch(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultWSEventStoreConfig()
+	if cfg.BufferSize != 10000 {
+		t.Errorf("BufferSize = %d, want 10000", cfg.BufferSize)
+	}
+	if cfg.RetentionSeconds != 3600 {
+		t.Errorf("RetentionSeconds = %d, want 3600", cfg.RetentionSeconds)
+	}
+	if cfg.CleanupInterval != 5*time.Minute {
+		t.Errorf("CleanupInterval = %v, want 5m", cfg.CleanupInterval)
+	}
+}
+
+// --- publishMemoryEvent / publishMailEvent / publishReservationEvent nil hub ---
+
+func TestPublishMemoryEvent_NilHub(t *testing.T) {
+	t.Parallel()
+	srv := &Server{} // no wsHub
+	// Should not panic
+	srv.publishMemoryEvent("test.event", map[string]interface{}{"key": "val"})
+}
+
+func TestPublishMailEvent_NilHubBranch(t *testing.T) {
+	t.Parallel()
+	srv := &Server{} // no wsHub
+	srv.publishMailEvent("agent1", "mail.sent", map[string]interface{}{"key": "val"})
+}
+
+func TestPublishReservationEvent_NilHubBranch(t *testing.T) {
+	t.Parallel()
+	srv := &Server{} // no wsHub
+	srv.publishReservationEvent("agent1", "reservation.granted", map[string]interface{}{})
+}
+
+func TestPublishMailEvent_EmptyAgentName(t *testing.T) {
+	t.Parallel()
+	srv := &Server{} // no wsHub
+	srv.publishMailEvent("", "mail.sent", map[string]interface{}{"key": "val"})
+}
+
+func TestPublishReservationEvent_EmptyAgentName(t *testing.T) {
+	t.Parallel()
+	srv := &Server{} // no wsHub
+	srv.publishReservationEvent("", "reservation.granted", map[string]interface{}{})
+}
+
+// --- checkMemoryDaemon with invalid PID file JSON ---
+
+func TestCheckMemoryDaemon_InvalidPIDJSON(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
+	if err := os.MkdirAll(pidsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write invalid JSON PID file
+	os.WriteFile(filepath.Join(pidsDir, "cm-badsession.pid"), []byte("{bad json"), 0o644)
+
+	srv := New(Config{})
+	srv.projectDir = tmpDir
+	info := srv.checkMemoryDaemon()
+	if info.State != DaemonStateStopped {
+		t.Errorf("state = %v, want stopped (invalid JSON should be skipped)", info.State)
+	}
+}
+
+func TestCheckMemoryDaemon_NonCMPidFile(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
+	if err := os.MkdirAll(pidsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write a non-cm PID file — should be ignored
+	os.WriteFile(filepath.Join(pidsDir, "other-daemon.pid"), []byte(`{"pid":1}`), 0o644)
+
+	srv := New(Config{})
+	srv.projectDir = tmpDir
+	info := srv.checkMemoryDaemon()
+	if info.State != DaemonStateStopped {
+		t.Errorf("state = %v, want stopped (non-cm PID files ignored)", info.State)
+	}
+}
+
+// --- WSEventStore Stop idempotency ---
+
+func TestWSEventStore_StopMemoryOnly(t *testing.T) {
+	t.Parallel()
+	store := NewWSEventStore(nil, WSEventStoreConfig{BufferSize: 10, CleanupInterval: time.Hour})
+	// Stop should not panic even without cleanup ticker
+	store.Stop()
+}
+
+// --- NewWSEventStore config defaults ---
+
+func TestNewWSEventStore_ZeroConfig(t *testing.T) {
+	t.Parallel()
+	store := NewWSEventStore(nil, WSEventStoreConfig{})
+	defer store.Stop()
+
+	// Should apply defaults
+	if store.bufferSize != 10000 {
+		t.Errorf("bufferSize = %d, want 10000", store.bufferSize)
+	}
+	if store.retentionSecs != 3600 {
+		t.Errorf("retentionSecs = %d, want 3600", store.retentionSecs)
+	}
+}
