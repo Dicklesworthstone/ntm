@@ -93,7 +93,7 @@ func (s SessionSelector) Init() tea.Cmd {
 }
 
 func (s SessionSelector) tick() tea.Cmd {
-	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+	return tea.Tick(time.Millisecond*250, func(t time.Time) tea.Msg {
 		return AnimationTickMsg(t)
 	})
 }

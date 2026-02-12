@@ -223,8 +223,8 @@ func Shimmer(text string, tick int, colors ...string) string {
 	var result strings.Builder
 	segments := len(parsedColors) - 1
 
-	// Offset based on tick for animation
-	offset := float64(tick%100) / 100.0
+	// Offset based on tick for animation (~10s full cycle at 4 FPS)
+	offset := float64(tick%40) / 40.0
 
 	for i, r := range runes {
 		pos := (float64(i)/float64(n) + offset)

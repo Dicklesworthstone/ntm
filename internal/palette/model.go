@@ -327,9 +327,9 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) tick() tea.Cmd {
-	// Use 100ms tick interval to reduce flickering on some terminals.
-	// The shimmer animation is still smooth at this rate.
-	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+	// Use 250ms tick interval to minimize flicker on terminals that
+	// struggle with rapid ANSI color escape re-rendering.
+	return tea.Tick(time.Millisecond*250, func(t time.Time) tea.Msg {
 		return AnimationTickMsg(t)
 	})
 }
