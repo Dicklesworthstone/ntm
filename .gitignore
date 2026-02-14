@@ -70,3 +70,9 @@ e2e/*.lock
 
 # Go test coverage profiles
 *.cover
+
+# E2E test log files
+scripts/test-label-e2e-*.log
+
+# Agent coordination config
+.agent-mail.yaml
