@@ -417,7 +417,7 @@ func TestGetModelName(t *testing.T) {
 		{"cc", "", models.DefaultClaude},
 		{"codex", "", models.DefaultCodex},
 		{"gemini", "", models.DefaultGemini},
-		{"claude", "opus", "claude-opus-4-5-20251101"},
+		{"claude", "opus", "claude-opus-4-6-20260116"},
 		{"codex", "gpt4", "gpt-4"},
 		{"gemini", "flash", "gemini-3-flash"},
 		{"claude", "custom-model", "custom-model"},

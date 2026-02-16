@@ -1346,14 +1346,14 @@ type ModelsConfig struct {
 // DefaultModels returns the default model configuration with sensible aliases
 func DefaultModels() ModelsConfig {
 	return ModelsConfig{
-		DefaultClaude: "claude-opus-4-5-20251101",
+		DefaultClaude: "claude-opus-4-6-20260116",
 		DefaultCodex:  "gpt-5.3-codex",
 		DefaultGemini: "gemini-3-pro-preview",
 		Claude: map[string]string{
-			"opus":      "claude-opus-4-5-20251101",
+			"opus":      "claude-opus-4-6-20260116",
 			"sonnet":    "claude-sonnet-4-20250514",
 			"haiku":     "claude-haiku-3-20240307",
-			"architect": "claude-opus-4-5-20251101",
+			"architect": "claude-opus-4-6-20260116",
 			"fast":      "claude-sonnet-4-20250514",
 		},
 		Codex: map[string]string{
