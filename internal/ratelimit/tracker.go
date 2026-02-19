@@ -137,6 +137,12 @@ func (t *RateLimitTracker) RecordRateLimitWithCooldown(provider, action string, 
     now := time.Now()
     state := t.recordRateLimitLocked(provider, action, now)
 
+    // Cap waitSeconds to prevent absurdly long cooldowns from misparse
+    // (e.g., ParseWaitSeconds extracting a Unix timestamp from output).
+    const maxCooldownSeconds = 600 // 10 minutes
+    if waitSeconds > maxCooldownSeconds {
+        waitSeconds = maxCooldownSeconds
+    }
     cooldown := time.Duration(waitSeconds) * time.Second
     if waitSeconds <= 0 {
         cooldown = state.CurrentDelay
