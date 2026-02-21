@@ -37,7 +37,8 @@ func toonEncode(payload any, delimiter string) (string, error) {
 
 	truPath, err := toonBinaryPath()
 	if err != nil {
-		return "", err
+		// Fallback to pure Go implementation if rust binary is missing
+		return toonEncodePureGo(payload, delimiter)
 	}
 
 	args := []string{"--encode"}
@@ -61,6 +62,36 @@ func toonEncode(payload any, delimiter string) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+// toonEncodePureGo encodes a payload as TOON using the pure Go implementation.
+func toonEncodePureGo(payload any, delimiter string) (string, error) {
+	enc := &toonEncoder{delimiter: toonDelimiterArg(delimiter)}
+	v := reflect.ValueOf(payload)
+
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return "null\n", nil
+		}
+		v = v.Elem()
+	}
+
+	if !v.IsValid() {
+		return "null\n", nil
+	}
+
+	switch v.Kind() {
+	case reflect.Slice, reflect.Array:
+		return enc.renderArray(v)
+	case reflect.Map, reflect.Struct:
+		return enc.renderObject(v, 0)
+	default:
+		encoded, err := enc.encodeValue(v)
+		if err != nil {
+			return "", err
+		}
+		return encoded + "\n", nil
+	}
 }
 
 var (

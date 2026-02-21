@@ -3699,6 +3699,9 @@ Examples:
 						"claude": effectiveCfg.Agents.Claude,
 						"codex":  effectiveCfg.Agents.Codex,
 						"gemini": effectiveCfg.Agents.Gemini,
+						"cursor": effectiveCfg.Agents.Cursor,
+						"windsurf": effectiveCfg.Agents.Windsurf,
+						"aider": effectiveCfg.Agents.Aider,
 					},
 					"tmux": map[string]interface{}{
 						"default_panes":      effectiveCfg.Tmux.DefaultPanes,
@@ -3713,6 +3716,9 @@ Examples:
 						"scrollback_lines":         effectiveCfg.Checkpoints.ScrollbackLines,
 						"include_git":              effectiveCfg.Checkpoints.IncludeGit,
 						"auto_checkpoint_on_spawn": effectiveCfg.Checkpoints.AutoCheckpointOnSpawn,
+						"interval_minutes":         effectiveCfg.Checkpoints.IntervalMinutes,
+						"on_rotation":              effectiveCfg.Checkpoints.OnRotation,
+						"on_error":                 effectiveCfg.Checkpoints.OnError,
 					},
 					"alerts": map[string]interface{}{
 						"enabled":                effectiveCfg.Alerts.Enabled,
@@ -3734,9 +3740,65 @@ Examples:
 						"privacy": map[string]interface{}{
 							"enabled": effectiveCfg.Privacy.Enabled,
 						},
+					},
+					"integrations": map[string]interface{}{
 						"dcg": map[string]interface{}{
+							"enabled":        effectiveCfg.Integrations.DCG.Enabled,
+							"binary_path":    effectiveCfg.Integrations.DCG.BinaryPath,
 							"allow_override": effectiveCfg.Integrations.DCG.AllowOverride,
 						},
+						"caam": map[string]interface{}{
+							"enabled":     effectiveCfg.Integrations.CAAM.Enabled,
+							"auto_rotate": effectiveCfg.Integrations.CAAM.AutoRotate,
+						},
+						"rch": map[string]interface{}{
+							"enabled":        effectiveCfg.Integrations.RCH.Enabled,
+							"fallback_local": effectiveCfg.Integrations.RCH.FallbackLocal,
+						},
+						"caut": map[string]interface{}{
+							"enabled": effectiveCfg.Integrations.Caut.Enabled,
+						},
+						"process_triage": map[string]interface{}{
+							"enabled": effectiveCfg.Integrations.ProcessTriage.Enabled,
+						},
+						"rano": map[string]interface{}{
+							"enabled": effectiveCfg.Integrations.Rano.Enabled,
+						},
+						"proxy": map[string]interface{}{
+							"enabled": effectiveCfg.Integrations.Proxy.Enabled,
+						},
+						"xf": map[string]interface{}{
+							"enabled": effectiveCfg.Integrations.XF.Enabled,
+						},
+					},
+					"health": map[string]interface{}{
+						"enabled":        effectiveCfg.Health.Enabled,
+						"check_interval": effectiveCfg.Health.CheckInterval,
+						"auto_restart":   effectiveCfg.Health.AutoRestart,
+					},
+					"scanner": map[string]interface{}{
+						"ubs_path": effectiveCfg.Scanner.UBSPath,
+					},
+					"cass": map[string]interface{}{
+						"enabled": effectiveCfg.CASS.Enabled,
+						"timeout": effectiveCfg.CASS.Timeout,
+					},
+					"gemini_setup": map[string]interface{}{
+						"auto_select_pro_model": effectiveCfg.GeminiSetup.AutoSelectProModel,
+					},
+					"context_rotation": map[string]interface{}{
+						"enabled":           effectiveCfg.ContextRotation.Enabled,
+						"warning_threshold": effectiveCfg.ContextRotation.WarningThreshold,
+						"rotate_threshold":  effectiveCfg.ContextRotation.RotateThreshold,
+					},
+					"agent_mail": map[string]interface{}{
+						"enabled":       effectiveCfg.AgentMail.Enabled,
+						"url":           effectiveCfg.AgentMail.URL,
+						"auto_register": effectiveCfg.AgentMail.AutoRegister,
+					},
+					"ensemble": map[string]interface{}{
+						"default_ensemble": effectiveCfg.Ensemble.DefaultEnsemble,
+						"agent_mix":        effectiveCfg.Ensemble.AgentMix,
 					},
 					"palette": palette,
 				})

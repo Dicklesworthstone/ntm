@@ -17,20 +17,30 @@ func newDiffCmd() *cobra.Command {
 	var codeOnly bool
 
 	cmd := &cobra.Command{
-		Use:   "diff <session> <pane1> <pane2>",
+		Use:   "diff [session] <pane1> <pane2>",
 		Short: "Compare output from two agent panes",
 		Long: `Compare outputs from different agents to see differences in approach.
 
 You can specify panes by Index (e.g. 1) or Title (e.g. cc_1).
+If session is omitted, it will be inferred from the current tmux session or project directory.
 
 Examples:
   ntm diff myproject cc_1 cod_1
-  ntm diff myproject 1 2
-  ntm diff myproject 1 2 --unified
-  ntm diff myproject 1 2 --code-only`,
-		Args: cobra.ExactArgs(3),
+  ntm diff 1 2
+  ntm diff 1 2 --unified
+  ntm diff 1 2 --code-only`,
+		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDiff(args[0], args[1], args[2], unified, sideBySide, codeOnly)
+			var session, pane1, pane2 string
+			if len(args) == 3 {
+				session = args[0]
+				pane1 = args[1]
+				pane2 = args[2]
+			} else {
+				pane1 = args[0]
+				pane2 = args[1]
+			}
+			return runDiff(session, pane1, pane2, unified, sideBySide, codeOnly)
 		},
 	}
 
@@ -46,13 +56,18 @@ func runDiff(session, pane1ID, pane2ID string, unified, sideBySide, codeOnly boo
 		return err
 	}
 
-	if !IsJSONOutput() {
-		res, err := ResolveSession(session, nil)
-		if err != nil {
-			return err
-		}
-		session = res.Session
+	opts := SessionResolveOptions{}
+	if IsJSONOutput() {
+		opts.TreatAsJSON = true
 	}
+	res, err := ResolveSessionWithOptions(session, nil, opts)
+	if err != nil {
+		return err
+	}
+	if res.Session == "" {
+		return fmt.Errorf("session is required")
+	}
+	session = res.Session
 
 	// Resolve panes
 	p1, err := resolvePane(session, pane1ID)

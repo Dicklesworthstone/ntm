@@ -2834,6 +2834,27 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "prefer_same_project = %t   # Prefer results from same project\n", cfg.CASS.Context.PreferSameProject)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[cass.duplicates]")
+	fmt.Fprintln(w, "# Duplicate detection settings")
+	fmt.Fprintf(w, "enabled = %t                # Check for duplicates before sending\n", cfg.CASS.Duplicates.Enabled)
+	fmt.Fprintf(w, "similarity_threshold = %.2f # 0-1, higher = stricter matching\n", cfg.CASS.Duplicates.SimilarityThreshold)
+	fmt.Fprintf(w, "lookback_days = %d          # How far back to check\n", cfg.CASS.Duplicates.LookbackDays)
+	fmt.Fprintf(w, "prompt_on_match = %t        # Ask user before proceeding\n", cfg.CASS.Duplicates.PromptOnMatch)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[cass.search]")
+	fmt.Fprintln(w, "# Search defaults")
+	fmt.Fprintf(w, "default_limit = %d\n", cfg.CASS.Search.DefaultLimit)
+	fmt.Fprintf(w, "default_fields = %q\n", cfg.CASS.Search.DefaultFields)
+	fmt.Fprintf(w, "include_meta = %t\n", cfg.CASS.Search.IncludeMeta)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[cass.tui]")
+	fmt.Fprintln(w, "# TUI settings")
+	fmt.Fprintf(w, "show_activity_sparkline = %t\n", cfg.CASS.TUI.ShowActivitySparkline)
+	fmt.Fprintf(w, "show_status_indicator = %t\n", cfg.CASS.TUI.ShowStatusIndicator)
+	fmt.Fprintln(w)
+
 	// Write Gemini setup configuration
 	fmt.Fprintln(w, "[gemini_setup]")
 	fmt.Fprintln(w, "# Gemini CLI post-spawn setup configuration")

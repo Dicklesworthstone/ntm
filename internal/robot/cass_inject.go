@@ -33,6 +33,9 @@ type CASSConfig struct {
 	// AgentFilter limits results to specific agent types (e.g., "claude", "codex").
 	// Empty means all agents.
 	AgentFilter []string `json:"agent_filter,omitempty"`
+
+	// BinaryPath is the path to the cass binary.
+	BinaryPath string `json:"binary_path,omitempty"`
 }
 
 // DefaultCASSConfig returns sensible defaults for CASS queries.
@@ -44,6 +47,7 @@ func DefaultCASSConfig() CASSConfig {
 		MinRelevance:      0.0,
 		PreferSameProject: true,
 		AgentFilter:       nil,
+		BinaryPath:        "",
 	}
 }
 
@@ -132,7 +136,12 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 	result.Query = query
 
 	// Check if CASS is available
-	if !isCASSAvailable() {
+	binPath := config.BinaryPath
+	if binPath == "" {
+		binPath = "cass"
+	}
+
+	if !isCASSAvailable(binPath) {
 		result.Error = "cass command not found"
 		return result
 	}
@@ -156,7 +165,7 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 	}
 
 	// Execute CASS search
-	cmd := exec.Command("cass", args...)
+	cmd := exec.Command(binPath, args...)
 	output, err := cmd.Output()
 	result.QueryTime = time.Since(start)
 
@@ -313,8 +322,8 @@ func isStopWord(word string) bool {
 }
 
 // isCASSAvailable checks if the cass command is available.
-func isCASSAvailable() bool {
-	_, err := exec.LookPath("cass")
+func isCASSAvailable(binPath string) bool {
+	_, err := exec.LookPath(binPath)
 	return err == nil
 }
 

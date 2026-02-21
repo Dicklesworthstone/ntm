@@ -21,97 +21,108 @@ type CASSConfig struct {
 	MaxAgeDays        int      `json:"max_age_days"`
 	MinRelevance      float64  `json:"min_relevance"`
 	PreferSameProject bool     `json:"prefer_same_project"`
-	AgentFilter       []string `json:"agent_filter,omitempty"`
-}
-
-// DefaultCASSConfig returns sensible defaults for CASS queries.
-func DefaultCASSConfig() CASSConfig {
-	return CASSConfig{
-		Enabled:           true,
-		MaxResults:        5,
-		MaxAgeDays:        30,
-		MinRelevance:      0.0,
-		PreferSameProject: true,
-		AgentFilter:       nil,
+		// AgentFilter limits results to specific agent types (e.g., "claude", "codex").
+		// Empty means all agents.
+		AgentFilter []string `json:"agent_filter,omitempty"`
+	
+		// BinaryPath is the path to the cass binary.
+		BinaryPath string `json:"binary_path,omitempty"`
 	}
-}
-
-// CASSHit represents a single search result from CASS.
-type CASSHit struct {
-	SourcePath string  `json:"source_path"`
-	LineNumber int     `json:"line_number"`
-	Agent      string  `json:"agent"`
-	Content    string  `json:"content,omitempty"`
-	Score      float64 `json:"score,omitempty"`
-}
-
-// CASSQueryResult holds the results of a CASS query.
-type CASSQueryResult struct {
-	Success      bool          `json:"success"`
-	Query        string        `json:"query"`
-	Hits         []CASSHit     `json:"hits"`
-	TotalMatches int           `json:"total_matches"`
-	QueryTime    time.Duration `json:"query_time_ms"`
-	Error        string        `json:"error,omitempty"`
-	Keywords     []string      `json:"keywords,omitempty"`
-}
-
-// cassSearchResponse matches the JSON structure returned by `cass search --json`.
-type cassSearchResponse struct {
-	Query        string `json:"query"`
-	TotalMatches int    `json:"total_matches"`
-	Hits         []struct {
+	
+	// DefaultCASSConfig returns sensible defaults for CASS queries.
+	func DefaultCASSConfig() CASSConfig {
+		return CASSConfig{
+			Enabled:           true,
+			MaxResults:        5,
+			MaxAgeDays:        30,
+			MinRelevance:      0.0,
+			PreferSameProject: true,
+			AgentFilter:       nil,
+			BinaryPath:        "",
+		}
+	}
+	
+	// CASSHit represents a single search result from CASS.
+	type CASSHit struct {
 		SourcePath string  `json:"source_path"`
 		LineNumber int     `json:"line_number"`
 		Agent      string  `json:"agent"`
 		Content    string  `json:"content,omitempty"`
 		Score      float64 `json:"score,omitempty"`
-	} `json:"hits"`
-}
-
-// QueryCASS queries CASS for relevant historical context based on the prompt.
-func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
-	start := time.Now()
-	result := CASSQueryResult{
-		Success: false,
-		Query:   "",
-		Hits:    []CASSHit{},
 	}
-
-	if !config.Enabled {
-		result.Success = true
-		return result
+	
+	// CASSQueryResult holds the results of a CASS query.
+	type CASSQueryResult struct {
+		Success      bool          `json:"success"`
+		Query        string        `json:"query"`
+		Hits         []CASSHit     `json:"hits"`
+		TotalMatches int           `json:"total_matches"`
+		QueryTime    time.Duration `json:"query_time_ms"`
+		Error        string        `json:"error,omitempty"`
+		Keywords     []string      `json:"keywords,omitempty"`
 	}
-
-	keywords := ExtractKeywords(prompt)
-	result.Keywords = keywords
-
-	if len(keywords) == 0 {
-		result.Success = true
-		result.Error = "no keywords extracted from prompt"
-		return result
+	
+	// cassSearchResponse matches the JSON structure returned by `cass search --json`.
+	type cassSearchResponse struct {
+		Query        string `json:"query"`
+		TotalMatches int    `json:"total_matches"`
+		Hits         []struct {
+			SourcePath string  `json:"source_path"`
+			LineNumber int     `json:"line_number"`
+			Agent      string  `json:"agent"`
+			Content    string  `json:"content,omitempty"`
+			Score      float64 `json:"score,omitempty"`
+		} `json:"hits"`
 	}
-
-	query := strings.Join(keywords, " ")
-	result.Query = query
-
-	if !isCASSAvailable() {
-		result.Error = "cass command not found"
-		return result
-	}
-
-	args := []string{"search", query, "--json"}
-	if config.MaxResults > 0 {
-		args = append(args, "--limit", strconv.Itoa(config.MaxResults))
-	}
-	if config.MaxAgeDays > 0 {
-		args = append(args, "--days", strconv.Itoa(config.MaxAgeDays))
-	}
-	for _, agent := range config.AgentFilter {
-		args = append(args, "--agent", agent)
-	}
-
-	cmd := exec.Command("cass", args...)
+	
+	// QueryCASS queries CASS for relevant historical context based on the prompt.
+	func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
+		start := time.Now()
+		result := CASSQueryResult{
+			Success: false,
+			Query:   "",
+			Hits:    []CASSHit{},
+		}
+	
+		if !config.Enabled {
+			result.Success = true
+			return result
+		}
+	
+		keywords := ExtractKeywords(prompt)
+		result.Keywords = keywords
+	
+		if len(keywords) == 0 {
+			result.Success = true
+			result.Error = "no keywords extracted from prompt"
+			return result
+		}
+	
+		query := strings.Join(keywords, " ")
+		result.Query = query
+	
+		binPath := config.BinaryPath
+		if binPath == "" {
+			binPath = "cass"
+		}
+	
+		if !isCASSAvailable(binPath) {
+			result.Error = "cass command not found"
+			return result
+		}
+	
+		args := []string{"search", query, "--json"}
+		if config.MaxResults > 0 {
+			args = append(args, "--limit", strconv.Itoa(config.MaxResults))
+		}
+		if config.MaxAgeDays > 0 {
+			args = append(args, "--days", strconv.Itoa(config.MaxAgeDays))
+		}
+		for _, agent := range config.AgentFilter {
+			args = append(args, "--agent", agent)
+		}
+	
+		cmd := exec.Command(binPath, args...)
 	output, err := cmd.Output()
 	result.QueryTime = time.Since(start)
 
@@ -234,8 +245,8 @@ func isStopWord(word string) bool {
 	return stopWords[word]
 }
 
-func isCASSAvailable() bool {
-	_, err := exec.LookPath("cass")
+func isCASSAvailable(binPath string) bool {
+	_, err := exec.LookPath(binPath)
 	return err == nil
 }
 

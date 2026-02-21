@@ -362,6 +362,10 @@ func runCassPreview(prompt string, maxResults, maxAgeDays int, format string, ma
 		MaxAgeDays:        maxAgeDays,
 		PreferSameProject: true,
 	}
+	
+	if cfg != nil {
+		queryConfig.BinaryPath = cfg.CASS.BinaryPath
+	}
 
 	filterConfig := robot.DefaultFilterConfig()
 	filterConfig.MaxItems = maxResults
