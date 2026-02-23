@@ -1439,16 +1439,16 @@ func DefaultPath() string {
 
 // DefaultProjectsBase returns the default projects directory
 func DefaultProjectsBase() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// Fallback to /tmp only when home directory is truly unavailable (e.g., containers)
+		return filepath.Join(os.TempDir(), "ntm_Dev")
+	}
 	if runtime.GOOS == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			// Fallback to /tmp when home directory is unavailable
-			return filepath.Join(os.TempDir(), "Developer")
-		}
 		return filepath.Join(home, "Developer")
 	}
-	// Linux/other: use /tmp to avoid polluting project directories
-	return os.TempDir()
+	// Linux/other: use ~/ntm_Dev instead of /tmp to avoid data loss on reboot
+	return filepath.Join(home, "ntm_Dev")
 }
 
 // findPaletteMarkdown searches for a command_palette.md file in standard locations
