@@ -65,6 +65,11 @@ var (
 		regexp.MustCompile(`Human:\s*$`), // Conversation mode prompt
 		regexp.MustCompile(`waiting for input`),
 		regexp.MustCompile(`\?\s*$`), // Question prompt
+		// Claude Code TUI patterns (welcome screen and status bar)
+		regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), // Version banner
+		regexp.MustCompile(`(?i)bypass\s+permissions\s+on`), // Status bar
+		regexp.MustCompile(`(?i)welcome\s+back`),            // Welcome message
+		regexp.MustCompile(`╰─>\s*$`),                       // Arrow prompt
 	}
 
 	// ccErrorPatterns indicates an error condition.

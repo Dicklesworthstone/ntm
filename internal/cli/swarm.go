@@ -15,6 +15,8 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -32,6 +34,8 @@ func newSwarmCmd() *cobra.Command {
 		autoRotate      bool
 		initialPrompt   string
 		promptFile      string
+		waitReady       bool
+		readyTimeout    int
 	)
 
 	cmd := &cobra.Command{
@@ -63,6 +67,8 @@ Examples:
 				AutoRotate:      autoRotate,
 				InitialPrompt:   initialPrompt,
 				PromptFile:      promptFile,
+				WaitReady:       waitReady,
+				ReadyTimeout:    readyTimeout,
 			})
 		},
 	}
@@ -91,6 +97,8 @@ Examples:
 	cmd.Flags().StringVar(&outputPath, "output", "", "Write swarm plan to JSON file (optional)")
 	cmd.Flags().StringVar(&initialPrompt, "prompt", "", "Initial prompt to inject into all agents after launch")
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "File containing initial prompt (mutually exclusive with --prompt)")
+	cmd.Flags().BoolVar(&waitReady, "wait-ready", false, "Wait for all agents to reach idle/ready state before returning")
+	cmd.Flags().IntVar(&readyTimeout, "ready-timeout", 30, "Timeout in seconds for --wait-ready (default: 30)")
 	cmd.PersistentFlags().BoolVar(&autoRotate, "auto-rotate-accounts", defaultAutoRotate, "Automatically rotate accounts on usage limit hit (requires caam)")
 
 	// Add subcommands
@@ -113,6 +121,8 @@ type swarmOptions struct {
 	AutoRotate      bool
 	InitialPrompt   string
 	PromptFile      string
+	WaitReady       bool
+	ReadyTimeout    int
 }
 
 // SwarmPlanOutput is the JSON output format for swarm plan
@@ -312,6 +322,23 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		output.PrintSuccessf("Injected initial prompt: %d succeeded, %d failed", execResult.Injection.Successful, execResult.Injection.Failed)
 		if execResult.Injection.Failed > 0 {
 			output.PrintWarningf("%d panes failed prompt injection (see logs)", execResult.Injection.Failed)
+		}
+	}
+
+	// Phase 4 (optional): Wait for agents to reach idle/ready state.
+	// This gates external callers (e.g., --robot-send) from sending prompts
+	// before agents have fully initialized their TUIs.
+	if opts.WaitReady && execResult.Sessions != nil {
+		timeout := time.Duration(opts.ReadyTimeout) * time.Second
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		output.PrintInfof("Waiting for agents to reach ready state (timeout: %s)...", timeout)
+		ready, total := waitForSwarmAgentsReady(ctx, plan, tmuxClient, timeout, logger)
+		if ready == total {
+			output.PrintSuccessf("All %d agents are ready", total)
+		} else {
+			output.PrintWarningf("%d/%d agents reached ready state (timeout reached)", ready, total)
 		}
 	}
 
@@ -775,4 +802,90 @@ func globToRegex(glob string) string {
 		}
 	}
 	return result
+}
+
+// swarmAgentTypeToLong maps short swarm agent types to the long form used
+// by the robot pattern library.
+var swarmAgentTypeToLong = map[string]string{
+	"cc":  "claude",
+	"cod": "codex",
+	"gmi": "gemini",
+}
+
+// waitForSwarmAgentsReady polls all agent panes in the swarm plan until they
+// show idle/ready state or the timeout expires.  Returns (readyCount, totalCount).
+// This implements the readiness gate for --wait-ready (issue #61).
+func waitForSwarmAgentsReady(ctx context.Context, plan *swarm.SwarmPlan, client *tmux.Client, timeout time.Duration, logger *slog.Logger) (int, int) {
+	deadline := time.Now().Add(timeout)
+	pollInterval := 500 * time.Millisecond
+
+	// Collect all pane targets: "session:0.index"
+	type paneInfo struct {
+		target        string
+		shortType     string // "cc", "cod", "gmi" (for status package)
+		longType      string // "claude", "codex", "gemini" (for robot patterns)
+		ready         bool
+	}
+	var panes []paneInfo
+	for _, sess := range plan.Sessions {
+		longType := swarmAgentTypeToLong[sess.AgentType]
+		if longType == "" {
+			longType = sess.AgentType
+		}
+		for _, ps := range sess.Panes {
+			target := fmt.Sprintf("%s:0.%d", sess.Name, ps.Index)
+			panes = append(panes, paneInfo{
+				target:    target,
+				shortType: sess.AgentType,
+				longType:  longType,
+			})
+		}
+	}
+
+	if len(panes) == 0 {
+		return 0, 0
+	}
+
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			break
+		}
+
+		allReady := true
+		for i := range panes {
+			if panes[i].ready {
+				continue
+			}
+
+			captured, err := client.CapturePaneOutput(panes[i].target, 50)
+			if err != nil {
+				allReady = false
+				continue
+			}
+
+			// Check idle using both the status package (short types) and
+			// robot pattern library (long types) for comprehensive detection.
+			if status.DetectIdleFromOutput(captured, panes[i].shortType) ||
+				robot.HasIdlePattern(captured, panes[i].longType) {
+				panes[i].ready = true
+				logger.Debug("agent ready", "pane", panes[i].target, "type", panes[i].shortType)
+			} else {
+				allReady = false
+			}
+		}
+
+		if allReady {
+			return len(panes), len(panes)
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	readyCount := 0
+	for _, p := range panes {
+		if p.ready {
+			readyCount++
+		}
+	}
+	return readyCount, len(panes)
 }

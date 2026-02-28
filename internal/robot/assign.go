@@ -125,8 +125,9 @@ func GetAssignRecommendations(opts AssignOptions) ([]DistributeRecommendation, e
 			continue
 		}
 
-		// Capture state
-		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		// Capture state — use 20 lines to reliably detect Claude Code
+		// welcome screens and status bars (matches LinesStatusDetection).
+		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 20)
 		state := determineState(scrollback, agentType)
 
 		agents = append(agents, assignAgentInfo{
@@ -257,8 +258,9 @@ func GetAssign(opts AssignOptions) (*AssignOutput, error) {
 
 		model := detectModel(agentType, pane.Title)
 
-		// Capture state (simplified - just check last few lines)
-		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		// Capture state — use 20 lines to reliably detect Claude Code
+		// welcome screens and status bars (matches LinesStatusDetection).
+		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 20)
 		state := determineState(scrollback, agentType)
 
 		agents = append(agents, assignAgentInfo{

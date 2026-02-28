@@ -3241,6 +3241,12 @@ func determineState(output, agentType string) string {
 	if status.DetectIdleFromOutput(output, shortType) {
 		return "idle"
 	}
+	// Also check the robot pattern library which has richer agent-specific
+	// idle patterns (Claude Code version banner, bypass status, welcome
+	// message, arrow prompt) that the status package doesn't cover.
+	if HasIdlePattern(output, agentType) {
+		return "idle"
+	}
 	// If output is empty and it's a user pane, treat as idle (prompt)
 	if strings.TrimSpace(output) == "" && (agentType == "" || agentType == "user") {
 		return "idle"
