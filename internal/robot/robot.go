@@ -3268,8 +3268,10 @@ func detectState(lines []string, title string) string {
 	// Reconstruct the output from lines
 	output := strings.Join(lines, "\n")
 	agentType := detectAgentType(title)
-	// Translate to short form for status package patterns
-	agentType = translateAgentTypeForStatus(agentType)
+	// Pass the long-form agent type (e.g. "claude") directly to determineState.
+	// determineState handles its own translation to short form ("cc") for the
+	// status package, and uses the long form for HasIdlePattern which matches
+	// against defaultPatterns that use Agent: "claude" (long form).
 	return determineState(output, agentType)
 }
 
