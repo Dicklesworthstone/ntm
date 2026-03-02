@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,7 +34,7 @@ type Phase int
 const (
 	PhaseCommand Phase = iota
 	PhaseTarget
-	PhaseConfirm
+	PhaseEdit    // edit prompt text before sending
 	PhaseXFSearch
 	PhaseXFResults
 )
@@ -117,6 +118,10 @@ type Model struct {
 	// This is needed because items are grouped by category, so visual order differs from slice order.
 	visualOrder []int
 
+	// Edit phase state
+	editInput textarea.Model
+	editDraft string // non-empty when user has modified the prompt
+
 	// XF search state
 	xfQuery     textinput.Model
 	xfResults   []tools.XFSearchResult
@@ -161,6 +166,8 @@ type KeyMap struct {
 	Target2        key.Binding
 	Target3        key.Binding
 	Target4        key.Binding
+	Edit           key.Binding
+	ConfirmEdit    key.Binding
 	Num1           key.Binding
 	Num2           key.Binding
 	Num3           key.Binding
@@ -237,7 +244,15 @@ var keys = KeyMap{
 	Target2: key.NewBinding(key.WithKeys("2")),
 	Target3: key.NewBinding(key.WithKeys("3")),
 	Target4: key.NewBinding(key.WithKeys("4")),
-	Num1:    key.NewBinding(key.WithKeys("1")),
+	Edit: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "edit prompt"),
+	),
+	ConfirmEdit: key.NewBinding(
+		key.WithKeys("ctrl+s"),
+		key.WithHelp("ctrl+s", "save & continue"),
+	),
+	Num1: key.NewBinding(key.WithKeys("1")),
 	Num2:    key.NewBinding(key.WithKeys("2")),
 	Num3:    key.NewBinding(key.WithKeys("3")),
 	Num4:    key.NewBinding(key.WithKeys("4")),
@@ -454,6 +469,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.listViewport.Width = m.width - 8
 		m.listViewport.Height = listBoxHeight - 2 // Must match View() calculation
+		// Resize textarea if currently in edit phase
+		if m.phase == PhaseEdit {
+			editWidth := msg.Width - 8
+			if editWidth < 30 {
+				editWidth = 30
+			}
+			m.editInput.SetWidth(editWidth)
+		}
 		return m, nil
 
 	case AnimationTickMsg:
@@ -531,6 +554,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCommandPhase(msg)
 		case PhaseTarget:
 			return m.updateTargetPhase(msg)
+		case PhaseEdit:
+			return m.updateEditPhase(msg)
 		case PhaseXFSearch:
 			return m.updateXFSearchPhase(msg)
 		case PhaseXFResults:
@@ -543,6 +568,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(msg)
 		m.updateFiltered()
+		return m, cmd
+	}
+
+	// Update edit textarea (handles cursor blink and other non-key messages)
+	if m.phase == PhaseEdit {
+		var cmd tea.Cmd
+		m.editInput, cmd = m.editInput.Update(msg)
 		return m, cmd
 	}
 
@@ -776,6 +808,10 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return *m, tea.Quit
 
+	case key.Matches(msg, keys.Edit):
+		cmd := m.enterEditPhase()
+		return *m, cmd
+
 	case key.Matches(msg, keys.Target1):
 		m.target = TargetAll
 		return m.send()
@@ -794,6 +830,77 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return *m, nil
+}
+
+// enterEditPhase opens the prompt editor, pre-populating with any existing draft.
+func (m *Model) enterEditPhase() tea.Cmd {
+	prompt := m.selected.Prompt
+	if m.editDraft != "" {
+		prompt = m.editDraft
+	}
+
+	ta := textarea.New()
+	ta.SetValue(prompt)
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0
+
+	editWidth := m.width - 8
+	if editWidth < 30 {
+		editWidth = 30
+	}
+	ta.SetWidth(editWidth)
+
+	// Height: fit prompt lines, capped at available vertical space.
+	lines := strings.Count(prompt, "\n") + 3
+	maxHeight := m.height - 14
+	if maxHeight < 4 {
+		maxHeight = 4
+	}
+	if lines > maxHeight {
+		lines = maxHeight
+	}
+	if lines < 4 {
+		lines = 4
+	}
+	ta.SetHeight(lines)
+
+	// Theme the textarea to match the palette
+	t := m.theme
+	ta.FocusedStyle.Base = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(t.Blue)
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(t.Text)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(t.Overlay)
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(t.Surface0)
+	ta.Cursor.Style = lipgloss.NewStyle().Foreground(t.Pink)
+
+	m.editInput = ta
+	m.phase = PhaseEdit
+	return m.editInput.Focus()
+}
+
+// updateEditPhase handles key events in the prompt-edit phase.
+func (m *Model) updateEditPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.ConfirmEdit):
+		// Save the draft and return to target selection.
+		m.editDraft = m.editInput.Value()
+		m.phase = PhaseTarget
+		return *m, nil
+
+	case key.Matches(msg, keys.Back):
+		// Discard unsaved changes and return to target selection.
+		m.phase = PhaseTarget
+		return *m, nil
+
+	case key.Matches(msg, keys.Quit):
+		m.quitting = true
+		return *m, tea.Quit
+	}
+
+	var cmd tea.Cmd
+	m.editInput, cmd = m.editInput.Update(msg)
+	return *m, cmd
 }
 
 func (m *Model) updateFiltered() {
@@ -1010,6 +1117,9 @@ func (m *Model) send() (tea.Model, tea.Cmd) {
 	}
 
 	prompt := m.selected.Prompt
+	if m.editDraft != "" {
+		prompt = m.editDraft
+	}
 	count := 0
 	var targetPanes []int
 
@@ -1049,7 +1159,11 @@ func (m *Model) send() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) recordHistory(targetPanes []int, start time.Time, err error) {
-	entry := history.NewEntry(m.session, intsToStrings(targetPanes), m.selected.Prompt, history.SourcePalette)
+	sentPrompt := m.selected.Prompt
+	if m.editDraft != "" {
+		sentPrompt = m.editDraft
+	}
+	entry := history.NewEntry(m.session, intsToStrings(targetPanes), sentPrompt, history.SourcePalette)
 	entry.Template = m.selected.Key
 	entry.DurationMs = int(time.Since(start) / time.Millisecond)
 	if err == nil {
@@ -1147,6 +1261,8 @@ func (m Model) View() string {
 		return m.viewCommandPhase()
 	case PhaseTarget:
 		return m.viewTargetPhase()
+	case PhaseEdit:
+		return m.viewEditPhase()
 	case PhaseXFSearch:
 		return m.viewXFSearchPhase()
 	case PhaseXFResults:
@@ -1866,7 +1982,16 @@ func (m Model) viewTargetPhase() string {
 		Padding(0, 1).
 		Render(m.selected.Label)
 
-	b.WriteString("  " + dimStyle.Render("Sending:") + " " + cmdBadge + "\n\n")
+	sendingLabel := "Sending:"
+	if m.editDraft != "" {
+		editedBadge := lipgloss.NewStyle().
+			Foreground(t.Yellow).
+			Italic(true).
+			Render("(edited)")
+		b.WriteString("  " + dimStyle.Render(sendingLabel) + " " + cmdBadge + " " + editedBadge + "\n\n")
+	} else {
+		b.WriteString("  " + dimStyle.Render(sendingLabel) + " " + cmdBadge + "\n\n")
+	}
 
 	// ═══════════════════════════════════════════════════════════════
 	// TARGET OPTIONS with visual styling
@@ -1998,9 +2123,74 @@ func (m Model) renderTargetHelpBar() string {
 		desc string
 	}{
 		{"1-4", "select target"},
+		{"e", "edit prompt"},
 		{"?", "help"},
 		{"Esc", "back"},
 		{"q", "quit"},
+	}
+
+	var parts []string
+	for _, item := range items {
+		parts = append(parts, keyStyle.Render(item.key)+" "+descStyle.Render(item.desc))
+	}
+
+	return strings.Join(parts, "  ")
+}
+
+// viewEditPhase renders the prompt-editing screen.
+func (m Model) viewEditPhase() string {
+	t := m.theme
+	ic := m.icons
+
+	var b strings.Builder
+
+	boxWidth := m.width - 6
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+
+	b.WriteString("\n")
+
+	titleText := ic.Save + "  Edit Prompt"
+	animatedTitle := styles.Shimmer(titleText, m.animTick, string(t.Yellow), string(t.Peach), string(t.Maroon))
+	b.WriteString("  " + animatedTitle + "\n")
+	b.WriteString("  " + styles.GradientDivider(boxWidth, string(t.Yellow), string(t.Peach)) + "\n\n")
+
+	dimStyle := lipgloss.NewStyle().Foreground(t.Subtext)
+	cmdBadge := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Padding(0, 1).
+		Render(m.selected.Label)
+	b.WriteString("  " + dimStyle.Render("Editing:") + " " + cmdBadge + "\n\n")
+
+	b.WriteString("  " + m.editInput.View() + "\n\n")
+
+	b.WriteString("  " + styles.GradientDivider(boxWidth, string(t.Surface2), string(t.Surface1)) + "\n\n")
+	b.WriteString("  " + m.renderEditHelpBar() + "\n")
+
+	return b.String()
+}
+
+func (m Model) renderEditHelpBar() string {
+	t := m.theme
+
+	keyStyle := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Text).
+		Bold(true).
+		Padding(0, 1)
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(t.Overlay)
+
+	items := []struct {
+		key  string
+		desc string
+	}{
+		{"ctrl+s", "save & pick target"},
+		{"Esc", "cancel"},
+		{"ctrl+c", "quit"},
 	}
 
 	var parts []string
