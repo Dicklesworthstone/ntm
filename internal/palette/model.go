@@ -475,6 +475,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.recents = msg.keys
 			m.buildVisualOrder()
+			m.listViewport.GotoTop()
 		}
 		return m, nil
 
@@ -907,14 +908,27 @@ func (m *Model) visualPosToLineNum(pos int) int {
 		itemsBeforePos += recentsCount
 	}
 
-	// Category sections: each has header + items + blank
-	// Estimate categories from remaining items
-	remainingItems := len(m.visualOrder) - itemsBeforePos
-	if remainingItems > 0 && pos >= itemsBeforePos {
-		posInCategories := pos - itemsBeforePos
-		// Estimate ~4 items per category on average, with 2 extra lines per category
-		estimatedCategories := (posInCategories / 4) + 1
-		lineNum += posInCategories + (estimatedCategories * 2)
+	// Category sections: 1 header + N items (1 line each) + 1 blank per category.
+	// Iterate through visualOrder to get the exact line number — same structure
+	// as renderCommandList, so this matches the actual rendered output exactly.
+	prevCat := ""
+	for i := itemsBeforePos; i < len(m.visualOrder); i++ {
+		idx := m.visualOrder[i]
+		cat := m.filtered[idx].Category
+		if cat == "" {
+			cat = "General"
+		}
+		if cat != prevCat {
+			if prevCat != "" {
+				lineNum++ // blank separator after previous category
+			}
+			lineNum++ // header for this category
+			prevCat = cat
+		}
+		if i == pos {
+			return lineNum
+		}
+		lineNum++ // count past this item
 	}
 
 	return lineNum
@@ -925,20 +939,22 @@ func (m *Model) ensureCursorVisible() {
 	pos := m.cursorVisualPos()
 	linePos := m.visualPosToLineNum(pos)
 
-	// If cursor is above the visible area, scroll up
+	// If cursor is above the visible area, scroll up.
+	// Direct YOffset assignment bypasses SetYOffset()'s clamping to maxYOffset()
+	// (which returns 0 in Update() because SetContent() is only called in View()).
 	if linePos < m.listViewport.YOffset {
-		m.listViewport.SetYOffset(linePos)
+		m.listViewport.YOffset = linePos
 	}
 
-	// If cursor is below the visible area, scroll down
-	// Leave a small margin at the bottom
+	// If cursor is below the visible area, scroll down.
+	// Leave a small margin at the bottom.
 	visibleBottom := m.listViewport.YOffset + m.listViewport.Height - 2
 	if linePos > visibleBottom {
 		newOffset := linePos - m.listViewport.Height + 3
 		if newOffset < 0 {
 			newOffset = 0
 		}
-		m.listViewport.SetYOffset(newOffset)
+		m.listViewport.YOffset = newOffset
 	}
 }
 
