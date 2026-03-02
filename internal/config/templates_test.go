@@ -282,6 +282,8 @@ func TestDefaultAgentTemplates_ShellQuoting(t *testing.T) {
 
 	templates := DefaultAgentTemplates()
 
+	// check verifies that a template correctly shell-quotes both the model and
+	// the system prompt file (for agents that support the system-prompt-file flag).
 	check := func(name, tmpl string) {
 		cmd, err := GenerateAgentCommand(tmpl, vars)
 		if err != nil {
@@ -302,9 +304,27 @@ func TestDefaultAgentTemplates_ShellQuoting(t *testing.T) {
 		}
 	}
 
+	// checkModelOnly verifies shell-quoting of the model only — for agents where
+	// system-prompt-file injection is not supported via CLI flags (e.g. Gemini,
+	// which removed --system-instruction-file in v0.31.0).
+	checkModelOnly := func(name, tmpl string) {
+		cmd, err := GenerateAgentCommand(tmpl, vars)
+		if err != nil {
+			t.Fatalf("%s template: %v", name, err)
+		}
+		quotedModel := ShellQuote(vars.Model)
+		if !strings.Contains(cmd, quotedModel) {
+			t.Fatalf("%s template should contain quoted model %q, got: %s", name, quotedModel, cmd)
+		}
+		if strings.Contains(cmd, vars.Model) && !strings.Contains(cmd, quotedModel) {
+			t.Fatalf("%s template appears to include unquoted model: %s", name, cmd)
+		}
+	}
+
 	check("claude", templates.Claude)
 	check("codex", templates.Codex)
-	check("gemini", templates.Gemini)
+	// Gemini dropped --system-instruction-file in v0.31.0; only model quoting applies.
+	checkModelOnly("gemini", templates.Gemini)
 }
 
 // TestShellQuote_Branches tests both branches of ShellQuote.
