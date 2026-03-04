@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"time"
 )
 
@@ -185,6 +186,14 @@ func (p *parserImpl) extractMetrics(output string, state *AgentState) {
 
 // detectStateFlags sets qualitative state flags based on output patterns.
 func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
+	// Empty output with known agent type = idle (freshly restarted, waiting for input).
+	// This handles the auto-restart case: agent exits, tmux respawns the process,
+	// the pane buffer is empty because the new process hasn't printed anything yet.
+	if strings.TrimSpace(output) == "" && state.Type != AgentTypeUnknown {
+		state.IsIdle = true
+		return
+	}
+
 	// Rate limit detection (highest priority - agent is blocked)
 	state.IsRateLimited = p.detectRateLimit(output, state.Type)
 	if state.IsRateLimited {

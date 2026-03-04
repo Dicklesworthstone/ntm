@@ -285,6 +285,51 @@ Previous task completed.
 	}
 }
 
+// TestParser_Parse_EmptyOutput_WithHint verifies that an empty buffer with a
+// known agent type hint is treated as idle (freshly restarted agent).
+func TestParser_Parse_EmptyOutput_WithHint(t *testing.T) {
+	p := NewParser()
+
+	tests := []struct {
+		name   string
+		output string
+		hint   AgentType
+	}{
+		{"empty_claude", "", AgentTypeClaudeCode},
+		{"whitespace_claude", "   \n  \t  ", AgentTypeClaudeCode},
+		{"empty_codex", "", AgentTypeCodex},
+		{"empty_gemini", "", AgentTypeGemini},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, err := p.ParseWithHint(tt.output, tt.hint)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if !state.IsIdle {
+				t.Errorf("Expected IsIdle=true for empty output with known agent type %v", tt.hint)
+			}
+			if state.IsWorking {
+				t.Error("Expected IsWorking=false for empty output")
+			}
+		})
+	}
+}
+
+// TestParser_Parse_EmptyOutput_NoHint verifies that empty output WITHOUT a hint
+// does NOT get marked idle (we don't know what agent it is).
+func TestParser_Parse_EmptyOutput_NoHint(t *testing.T) {
+	p := NewParser()
+	state, err := p.ParseWithHint("", AgentTypeUnknown)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if state.IsIdle {
+		t.Error("Expected IsIdle=false for empty output with unknown agent type")
+	}
+}
+
 func TestParser_Parse_Codex_ContextExtraction(t *testing.T) {
 	p := NewParser()
 	output := `Processing your request...

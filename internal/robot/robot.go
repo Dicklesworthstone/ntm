@@ -3256,8 +3256,10 @@ func determineState(output, agentType string) string {
 	if HasIdlePattern(output, agentType) {
 		return "idle"
 	}
-	// If output is empty and it's a user pane, treat as idle (prompt)
-	if strings.TrimSpace(output) == "" && (agentType == "" || agentType == "user") {
+	// If output is empty, treat as idle. For user panes this means an empty
+	// prompt. For agent panes this means a freshly restarted process (e.g.,
+	// auto-restart after exit) that hasn't printed anything yet.
+	if strings.TrimSpace(output) == "" {
 		return "idle"
 	}
 	// Otherwise assume active/working

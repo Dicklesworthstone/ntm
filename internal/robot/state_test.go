@@ -165,8 +165,8 @@ func TestDetermineState(t *testing.T) {
 			name:          "edge_empty_output_non_user",
 			output:        "",
 			agentType:     "claude",
-			expectedState: "active",
-			description:   "Empty output for non-user agent should default to active state",
+			expectedState: "idle",
+			description:   "Empty output for non-user agent means freshly restarted, treat as idle",
 		},
 		{
 			name:          "edge_ansi_codes",
