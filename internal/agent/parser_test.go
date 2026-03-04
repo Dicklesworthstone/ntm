@@ -233,6 +233,58 @@ Human: `
 	}
 }
 
+// TestParser_Parse_Claude_SpinnerOverridesBypass verifies that an active
+// spinner line correctly reports WORKING even when the "bypass permissions on"
+// status bar is present at the bottom of the pane.
+// This is the core regression test for https://github.com/Dicklesworthstone/ntm/issues/79
+func TestParser_Parse_Claude_SpinnerOverridesBypass(t *testing.T) {
+	p := NewParser()
+	// Simulates real Claude Code TUI output: spinner above, status bar below
+	output := `Claude Opus 4.5 ready
+Some previous output here...
+
+✢ Bunning… (3m 42s · thinking)
+
+❯
+
+  /c/WORK/atlas-kb (main)
+  bypass permissions on (shift+tab to toggle)`
+
+	state, err := p.ParseWithHint(output, AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true when spinner is visible")
+	}
+	if state.IsIdle {
+		t.Error("Expected IsIdle=false when spinner is visible — spinner overrides bypass status bar")
+	}
+}
+
+// TestParser_Parse_Claude_TrulyIdle verifies that an agent without a spinner
+// is correctly detected as idle (no false working from stale scrollback).
+func TestParser_Parse_Claude_TrulyIdle(t *testing.T) {
+	p := NewParser()
+	// No spinner, just the prompt
+	output := `Claude Opus 4.5 ready
+Previous task completed.
+
+❯
+
+  /c/WORK/atlas-kb (main)`
+
+	state, err := p.ParseWithHint(output, AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if state.IsWorking {
+		t.Error("Expected IsWorking=false when no spinner and no working patterns")
+	}
+}
+
 func TestParser_Parse_Codex_ContextExtraction(t *testing.T) {
 	p := NewParser()
 	output := `Processing your request...

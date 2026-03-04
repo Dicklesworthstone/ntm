@@ -57,17 +57,48 @@ var (
 		"uploading",   // Upload operation
 	}
 
+	// ccSpinnerPattern detects Claude Code's TUI spinner/progress indicator.
+	// Claude Code shows a spinner line while generating or running tools:
+	//   "✢ Bunning… (3m 42s · thinking)"
+	//   "· Scurrying… (2m 0s · thought for 5s)"
+	//   "✻ Baked for 5m 24s"
+	//   "● Bash(cd /tmp && ls)"
+	// The spinner uses randomized verbs (Bunning, Scurrying, Zesting, etc.)
+	// followed by Unicode ellipsis "…" and timing info in parens.
+	// The past-tense form ("Baked for") indicates the turn just completed
+	// but the agent may still be processing (not yet idle).
+	ccSpinnerPattern = regexp.MustCompile(
+		`(?i)` +
+			`(?:` +
+			`\S+…\s+\(` + // "Bunning… (" — active spinner with timing
+			`|` +
+			`· thinking` + // "· thinking" — explicit thinking indicator
+			`|` +
+			`· thought for` + // "· thought for 5s" — just finished thinking
+			`|` +
+			`\S+ for \d+[ms]\b` + // "Baked for 5m" — past-tense completion indicator
+			`|` +
+			`Running…` + // Tool execution in progress
+			`|` +
+			`· timeout` + // Tool with timeout indicator
+			`)`,
+	)
+
 	// ccIdlePatterns indicates the agent is waiting for user input.
 	// When these match at the end of output, it's safe to restart or send new work.
+	//
+	// NOTE: "bypass permissions on" was removed — it's a permanent status bar
+	// indicator from --dangerously-skip-permissions that is always visible
+	// regardless of whether the agent is working or idle. Matching it caused
+	// all agents to appear idle even while actively generating.
 	ccIdlePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`>\s*$`),      // Prompt waiting for input
 		regexp.MustCompile(`(?m)^>\s*`),  // Prompt start (handles user typing)
 		regexp.MustCompile(`Human:\s*$`), // Conversation mode prompt
 		regexp.MustCompile(`waiting for input`),
 		regexp.MustCompile(`\?\s*$`), // Question prompt
-		// Claude Code TUI patterns (welcome screen and status bar)
+		// Claude Code TUI patterns (welcome screen)
 		regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), // Version banner
-		regexp.MustCompile(`(?i)bypass\s+permissions\s+on`), // Status bar
 		regexp.MustCompile(`(?i)welcome\s+back`),            // Welcome message
 		regexp.MustCompile(`╰─>\s*$`),                       // Arrow prompt
 	}

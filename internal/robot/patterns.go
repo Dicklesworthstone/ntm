@@ -84,7 +84,9 @@ func defaultPatterns() []Pattern {
 		// Claude Code TUI indicators (welcome screen and status line)
 		{Name: "claude_code_version", RegexStr: `(?i)claude\s+code\s+v[\d.]+`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code version banner"},
 		{Name: "claude_welcome", RegexStr: `(?i)welcome\s+back`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code welcome message"},
-		{Name: "claude_bypass_status", RegexStr: `(?i)bypass\s+permissions\s+on`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code bypass status"},
+		// NOTE: "bypass permissions on" was removed — it's a permanent status bar from
+		// --dangerously-skip-permissions that is always visible, not a state indicator.
+		// See https://github.com/Dicklesworthstone/ntm/issues/79
 		{Name: "claude_try_prompt", RegexStr: `❯\s*Try\s+"`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code try prompt"},
 
 		// Codex patterns
@@ -139,6 +141,11 @@ func defaultPatterns() []Pattern {
 		// Spinners (braille pattern characters)
 		{Name: "braille_spinner", RegexStr: `[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]`, Agent: "*", State: StateThinking, Category: CategoryThinking, Priority: 80, Description: "Braille spinner"},
 		{Name: "dots_spinner", RegexStr: `\.{3,}$`, Agent: "*", State: StateThinking, Category: CategoryThinking, Priority: 70, Description: "Dots spinner"},
+
+		// Claude Code TUI spinner (randomized verbs like "Bunning…", "Scurrying…", "Zesting…")
+		// Format: [symbol] Word… (time · thinking/thought) — highest priority thinking indicator
+		{Name: "claude_spinner", RegexStr: `\S+…\s+\(\d+`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code TUI spinner"},
+		{Name: "claude_spinner_past", RegexStr: `\S+ for \d+[ms]\b`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 108, Description: "Claude Code past-tense spinner"},
 
 		// Text indicators
 		{Name: "thinking_text", RegexStr: `(?i)thinking\.{0,3}$`, Agent: "*", State: StateThinking, Category: CategoryThinking, Priority: 85, Description: "Thinking text"},

@@ -3238,12 +3238,21 @@ func determineState(output, agentType string) string {
 	if status.DetectErrorInOutput(output) != status.ErrorNone {
 		return "error"
 	}
+
+	// Check for thinking/spinner indicators BEFORE idle detection.
+	// Claude Code's TUI spinner (e.g., "Bunning… (3m · thinking)") is the
+	// most reliable indicator of active work. The "bypass permissions on"
+	// status bar is always visible and would otherwise cause false idle.
+	if HasThinkingPattern(output, agentType) {
+		return "active"
+	}
+
 	if status.DetectIdleFromOutput(output, shortType) {
 		return "idle"
 	}
 	// Also check the robot pattern library which has richer agent-specific
-	// idle patterns (Claude Code version banner, bypass status, welcome
-	// message, arrow prompt) that the status package doesn't cover.
+	// idle patterns (Claude Code version banner, welcome message, arrow
+	// prompt) that the status package doesn't cover.
 	if HasIdlePattern(output, agentType) {
 		return "idle"
 	}

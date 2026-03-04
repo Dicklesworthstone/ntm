@@ -35,9 +35,9 @@ var promptPatterns = []PromptPattern{
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)^claude\s*$`), Description: "Claude name only"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`^\s*\d+\s*>\s*$`), Description: "Claude numbered prompt"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`^[│┃|]\s*>\s*$`), Description: "Claude prompt with border"},
-	// Claude Code TUI patterns (welcome screen and status bar)
+	// Claude Code TUI patterns (welcome screen)
+	// NOTE: "bypass permissions on" removed — permanent status bar, not state indicator (issue #79)
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), Description: "Claude Code version banner"},
-	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)bypass\s+permissions\s+on`), Description: "Claude Code bypass status"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)welcome\s+back`), Description: "Claude Code welcome message"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`╰─>\s*$`), Description: "Claude Code arrow prompt"},
 

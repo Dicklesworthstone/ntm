@@ -613,6 +613,54 @@ func TestShellModePattern(t *testing.T) {
 	}
 }
 
+func TestCCSpinnerPattern(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		// Active spinner (present continuous + ellipsis + timing)
+		{"active spinner Bunning", "✢ Bunning… (3m 42s · thinking)", true},
+		{"active spinner Scurrying", "· Scurrying… (2m 0s · thought for 5s)", true},
+		{"active spinner Zesting", "✶ Zesting… (1m 42s · thought for 1s)", true},
+		{"active spinner short", "Churning… (5s · thinking)", true},
+
+		// Running indicator
+		{"tool running", "Running… (1m 9s · timeout 5m)", true},
+
+		// Past tense completion
+		{"past tense Baked", "✻ Baked for 5m 24s", true},
+		{"past tense Churned", "✻ Churned for 3m 42s", true},
+
+		// Thinking indicators
+		{"thinking bare", "· thinking", true},
+		{"thought for", "· thought for 20s", true},
+
+		// Should NOT match
+		{"plain text", "Everything is working fine", false},
+		{"bypass status", "bypass permissions on", false},
+		{"prompt only", ">", false},
+		{"code output", "func main() {}", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ccSpinnerPattern.MatchString(tt.text); got != tt.want {
+				t.Errorf("ccSpinnerPattern.MatchString(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCCIdlePatterns_BypassRemoved(t *testing.T) {
+	// Verify "bypass permissions on" no longer matches idle patterns.
+	// This was a permanent status bar indicator that caused false idle detection.
+	text := "bypass permissions on (shift+tab to toggle)"
+	if matchAnyRegex(text, ccIdlePatterns) {
+		t.Error("ccIdlePatterns should NOT match 'bypass permissions on' — it is a permanent status bar, not a state indicator")
+	}
+}
+
 // Test that all regex patterns compile correctly
 func TestAllPatternsCompile(t *testing.T) {
 	// If we got here, all patterns compiled (they're package-level vars)
@@ -631,6 +679,7 @@ func TestAllPatternsCompile(t *testing.T) {
 		windsurfHeaderPattern,
 		aiderHeaderPattern,
 		ansiPattern,
+		ccSpinnerPattern,
 	}
 
 	for i, p := range patterns {
