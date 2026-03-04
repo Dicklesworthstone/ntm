@@ -1198,6 +1198,11 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, at)
 
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "[IDLE-CHECK] pane=%d type=%q state=%q scrollback_len=%d scrollback_trimmed=%q\n",
+				pane.Index, at, state, len(scrollback), strings.TrimSpace(scrollback))
+		}
+
 		if state == "idle" {
 			idleAgents = append(idleAgents, assignAgentInfo{
 				pane:      pane,

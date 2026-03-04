@@ -207,41 +207,45 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 
 	// Spinner detection (Claude Code specific)
 	// Claude Code's TUI shows a spinner line while generating or running tools.
-	// This is the most reliable indicator of active work — it's only visible
-	// during generation and disappears when the agent returns to the prompt.
-	// Check this BEFORE idle/working to handle the status bar issue:
-	// the "bypass permissions on" status bar is always visible and would
-	// otherwise cause false idle detection.
-	hasSpinner := false
+	// IMPORTANT: The ❯ prompt is ALWAYS visible in Claude Code's TUI (it's part
+	// of the chrome/layout), so we can't use idle prompt alone to determine state.
+	// We split spinner detection into active vs past-tense:
+	// - Active spinner ("Bunning… (3m 42s · thinking)") = definitely working
+	// - Past-tense spinner ("Baked for 5m") = turn completed, stays in scrollback
+	hasActiveSpinner := false
+	hasPastSpinner := false
 	if state.Type == AgentTypeClaudeCode {
 		recentForSpinner := getLastNLines(output, 15)
-		hasSpinner = ccSpinnerPattern.MatchString(recentForSpinner)
+		hasActiveSpinner = ccActiveSpinnerPattern.MatchString(recentForSpinner)
+		if !hasActiveSpinner {
+			hasPastSpinner = ccPastSpinnerPattern.MatchString(recentForSpinner)
+		}
 	}
 
 	// Idle detection
-	// We check this BEFORE trusting IsWorking, because IsWorking patterns
-	// (like "testing", "running") might still be present in the scrollback
-	// even after the agent has finished and printed a prompt.
 	state.IsIdle = p.detectIdle(output, state.Type)
 
 	// Working detection
-	// We always run this to collect indicators for debugging/confidence
 	rawIsWorking := p.detectWorking(output, state.Type)
 	if rawIsWorking {
 		state.WorkIndicators = p.collectWorkIndicators(output, state.Type)
 	}
 
-	// Spinner overrides idle: if the Claude Code spinner is visible,
-	// the agent is definitely generating, regardless of what else appears
-	// in the last few lines (e.g., the permanent "bypass permissions" bar).
-	if hasSpinner {
+	// Conflict resolution for spinner + idle:
+	// - Active spinner (any) → WORKING (overrides idle prompt, which is always visible in TUI)
+	// - Past-tense spinner + idle prompt → IDLE (turn completed, prompt is meaningful)
+	// - Past-tense spinner, no idle prompt → WORKING (still transitioning)
+	// - No spinner + idle prompt → IDLE (standard case)
+	if hasActiveSpinner {
 		state.IsWorking = true
 		state.IsIdle = false
 	} else if state.IsIdle {
-		// Conflict resolution: Prompt beats substring heuristics
-		// If we see a definitive prompt at the end (IsIdle), we are not working,
-		// regardless of what keywords appear in the scrollback.
+		// Idle prompt with no active spinner = idle.
+		// Past-tense spinner in scrollback doesn't matter — the prompt appeared after.
 		state.IsWorking = false
+	} else if hasPastSpinner {
+		// Past-tense spinner visible but no idle prompt yet — still transitioning
+		state.IsWorking = true
 	} else {
 		state.IsWorking = rawIsWorking
 	}
@@ -312,8 +316,14 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 // detectIdle checks if the agent is waiting for user input.
 // This examines the last few lines for prompt patterns.
 func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
-	// Check last lines for prompt indicators
-	lastLines := getLastNLines(output, 5)
+	// Check last lines for prompt indicators.
+	// Claude Code's TUI has a status bar (project path, bypass status, context %)
+	// that can be 5-8 lines below the actual prompt. Use a larger window for CC.
+	lineCount := 5
+	if agentType == AgentTypeClaudeCode {
+		lineCount = 12
+	}
+	lastLines := getLastNLines(output, lineCount)
 
 	switch agentType {
 	case AgentTypeClaudeCode:

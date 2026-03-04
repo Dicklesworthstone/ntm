@@ -285,6 +285,34 @@ Previous task completed.
 	}
 }
 
+// TestParser_Parse_Claude_PastSpinnerIdle verifies that a past-tense spinner
+// ("Churned for 4m 26s") combined with the ❯ idle prompt = IDLE.
+// The past-tense spinner stays in scrollback after the turn completes.
+func TestParser_Parse_Claude_PastSpinnerIdle(t *testing.T) {
+	p := NewParser()
+	output := `Claude Opus 4.5 ready
+Previous task completed.
+
+✻ Churned for 4m 26s
+
+❯
+
+  /c/WORK/atlas-kb (main)
+  bypass permissions on (shift+tab to toggle)`
+
+	state, err := p.ParseWithHint(output, AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if state.IsWorking {
+		t.Error("Expected IsWorking=false — past-tense spinner + idle prompt means turn completed")
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true — past-tense spinner + idle prompt means agent is idle")
+	}
+}
+
 // TestParser_Parse_EmptyOutput_WithHint verifies that an empty buffer with a
 // known agent type hint is treated as idle (freshly restarted agent).
 func TestParser_Parse_EmptyOutput_WithHint(t *testing.T) {

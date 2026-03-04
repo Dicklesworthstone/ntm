@@ -81,6 +81,7 @@ func defaultPatterns() []Pattern {
 		{Name: "claude_prompt", RegexStr: `(?i)claude\s*>?\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Claude prompt"},
 		{Name: "claude_code_prompt", RegexStr: `(?i)claude\s+code\s*>?\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code prompt"},
 		{Name: "claude_arrow_prompt", RegexStr: `╰─>\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 99, Description: "Claude arrow prompt"},
+		{Name: "claude_unicode_prompt", RegexStr: `(?m)❯[\s\x{00a0}]*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 98, Description: "Claude unicode heavy angle prompt"},
 		// Claude Code TUI indicators (welcome screen and status line)
 		{Name: "claude_code_version", RegexStr: `(?i)claude\s+code\s+v[\d.]+`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code version banner"},
 		{Name: "claude_welcome", RegexStr: `(?i)welcome\s+back`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code welcome message"},

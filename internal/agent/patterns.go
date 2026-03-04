@@ -57,16 +57,42 @@ var (
 		"uploading",   // Upload operation
 	}
 
-	// ccSpinnerPattern detects Claude Code's TUI spinner/progress indicator.
-	// Claude Code shows a spinner line while generating or running tools:
+	// ccActiveSpinnerPattern detects Claude Code's TUI spinner during ACTIVE generation.
+	// These patterns are only visible while the agent is actively working:
 	//   "✢ Bunning… (3m 42s · thinking)"
 	//   "· Scurrying… (2m 0s · thought for 5s)"
-	//   "✻ Baked for 5m 24s"
 	//   "● Bash(cd /tmp && ls)"
-	// The spinner uses randomized verbs (Bunning, Scurrying, Zesting, etc.)
-	// followed by Unicode ellipsis "…" and timing info in parens.
-	// The past-tense form ("Baked for") indicates the turn just completed
-	// but the agent may still be processing (not yet idle).
+	//   "Running…"
+	// The ❯ prompt is always visible in Claude Code's TUI (it's part of the chrome),
+	// so active spinner MUST override the idle prompt detection.
+	ccActiveSpinnerPattern = regexp.MustCompile(
+		`(?i)` +
+			`(?:` +
+			`\S+…\s+\(` + // "Bunning… (" — active spinner with timing
+			`|` +
+			`· thinking` + // "· thinking" — explicit thinking indicator
+			`|` +
+			`· thought for` + // "· thought for 5s" — just finished thinking
+			`|` +
+			`Running…` + // Tool execution in progress
+			`|` +
+			`· timeout` + // Tool with timeout indicator
+			`)`,
+	)
+
+	// ccPastSpinnerPattern detects the past-tense completion indicator.
+	// This stays in scrollback AFTER the turn completes:
+	//   "✻ Baked for 5m 24s"
+	//   "✻ Churned for 4m 26s"
+	// When this appears WITH an idle prompt below it, the agent is IDLE
+	// (the turn finished and the prompt appeared). Without an idle prompt,
+	// it may still be transitioning.
+	ccPastSpinnerPattern = regexp.MustCompile(
+		`(?i)\S+ for \d+[ms]\b`,
+	)
+
+	// ccSpinnerPattern matches ANY spinner (active or past-tense).
+	// Used where the distinction doesn't matter.
 	ccSpinnerPattern = regexp.MustCompile(
 		`(?i)` +
 			`(?:` +
@@ -101,6 +127,7 @@ var (
 		regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), // Version banner
 		regexp.MustCompile(`(?i)welcome\s+back`),            // Welcome message
 		regexp.MustCompile(`╰─>\s*$`),                       // Arrow prompt
+		regexp.MustCompile(`(?m)❯[\s\x{00a0}]*$`),            // Unicode heavy right-pointing angle prompt (multiline, NBSP-aware)
 	}
 
 	// ccErrorPatterns indicates an error condition.

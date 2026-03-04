@@ -40,6 +40,7 @@ var promptPatterns = []PromptPattern{
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), Description: "Claude Code version banner"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)welcome\s+back`), Description: "Claude Code welcome message"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`╰─>\s*$`), Description: "Claude Code arrow prompt"},
+	{AgentType: "cc", Regex: regexp.MustCompile(`(?m)❯[\s\x{00a0}]*$`), Description: "Claude Code unicode prompt"},
 
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},
