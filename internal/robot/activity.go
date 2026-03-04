@@ -618,6 +618,14 @@ func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatc
 		return StateWaiting, 0.60, "idle_no_output"
 	}
 
+	// Empty pane with known agent type = waiting (freshly restarted).
+	// When auto-restart spawns a new process, the buffer is empty and
+	// velocity is 0 with no prior captures. Treat this as idle/waiting
+	// so ntm assign --watch can immediately send the next bead.
+	if velocity == 0 && len(matches) == 0 && sc.agentType != "" {
+		return StateWaiting, 0.65, "empty_known_agent"
+	}
+
 	// Default to unknown
 	return StateUnknown, 0.50, "insufficient_signals"
 }
