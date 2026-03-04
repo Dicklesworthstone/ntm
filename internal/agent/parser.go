@@ -285,8 +285,14 @@ func (p *parserImpl) detectWorking(output string, agentType AgentType) bool {
 // detectIdle checks if the agent is waiting for user input.
 // This examines the last few lines for prompt patterns.
 func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
-	// Check last lines for prompt indicators
-	lastLines := getLastNLines(output, 5)
+	// Check last lines for prompt indicators.
+	// Claude Code's TUI has a status bar (project path, bypass status, context %)
+	// that can be 5-8 lines below the prompt. Use a larger window for CC.
+	lineCount := 5
+	if agentType == AgentTypeClaudeCode {
+		lineCount = 12
+	}
+	lastLines := getLastNLines(output, lineCount)
 
 	switch agentType {
 	case AgentTypeClaudeCode:

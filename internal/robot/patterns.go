@@ -87,7 +87,7 @@ func defaultPatterns() []Pattern {
 		{Name: "claude_code_version", RegexStr: `(?i)claude\s+code\s+v[\d.]+`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code version banner"},
 		{Name: "claude_welcome", RegexStr: `(?i)welcome\s+back`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code welcome message"},
 		{Name: "claude_try_prompt", RegexStr: `❯\s*Try\s+"`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code try prompt"},
-		{Name: "claude_unicode_prompt", RegexStr: `❯\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code unicode angle prompt"},
+		{Name: "claude_unicode_prompt", RegexStr: `(?m)❯[\s\x{00a0}]*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code unicode angle prompt (multiline, NBSP-aware)"},
 
 		// Claude Code spinner detection (active work indicators)
 		{Name: "claude_spinner_timing", RegexStr: `\S+…\s+\(`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code timing spinner (e.g. Bunning… (3s))"},

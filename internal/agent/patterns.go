@@ -71,7 +71,7 @@ var (
 		regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), // Version banner
 		regexp.MustCompile(`(?i)welcome\s+back`),           // Welcome message
 		regexp.MustCompile(`╰─>\s*$`),                      // Arrow prompt
-		regexp.MustCompile(`❯\s*$`),                        // Unicode heavy right-pointing angle prompt
+		regexp.MustCompile(`(?m)❯[\s\x{00a0}]*$`),            // Unicode heavy right-pointing angle prompt (multiline, NBSP-aware)
 	}
 
 	// ccSpinnerActivePatterns detect Claude Code's randomized spinner verbs
