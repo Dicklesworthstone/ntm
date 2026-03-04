@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"time"
 )
 
@@ -289,7 +290,18 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 
 	switch agentType {
 	case AgentTypeClaudeCode:
-		return matchAnyRegex(lastLines, ccIdlePatterns)
+		// Handle empty output with known agent type as idle
+		if strings.TrimSpace(lastLines) == "" {
+			return true
+		}
+		idleMatch := matchAnyRegex(lastLines, ccIdlePatterns)
+		// Active spinner overrides idle: if we see a spinner pattern in the
+		// last few lines, the agent is working even if an idle pattern also matches
+		// (e.g. from the permanent status bar or a stale prompt above the spinner).
+		if idleMatch && matchAnyRegex(lastLines, ccSpinnerActivePatterns) {
+			return false
+		}
+		return idleMatch
 	case AgentTypeCodex:
 		return matchAnyRegex(lastLines, codIdlePatterns)
 	case AgentTypeGemini:

@@ -59,17 +59,35 @@ var (
 
 	// ccIdlePatterns indicates the agent is waiting for user input.
 	// When these match at the end of output, it's safe to restart or send new work.
+	// NOTE: "bypass permissions on" was removed — it matches the permanent status bar,
+	// causing agents to always appear idle even while actively working.
 	ccIdlePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`>\s*$`),      // Prompt waiting for input
 		regexp.MustCompile(`(?m)^>\s*`),  // Prompt start (handles user typing)
 		regexp.MustCompile(`Human:\s*$`), // Conversation mode prompt
 		regexp.MustCompile(`waiting for input`),
 		regexp.MustCompile(`\?\s*$`), // Question prompt
-		// Claude Code TUI patterns (welcome screen and status bar)
+		// Claude Code TUI patterns (welcome screen)
 		regexp.MustCompile(`(?i)claude\s+code\s+v[\d.]+`), // Version banner
-		regexp.MustCompile(`(?i)bypass\s+permissions\s+on`), // Status bar
-		regexp.MustCompile(`(?i)welcome\s+back`),            // Welcome message
-		regexp.MustCompile(`╰─>\s*$`),                       // Arrow prompt
+		regexp.MustCompile(`(?i)welcome\s+back`),           // Welcome message
+		regexp.MustCompile(`╰─>\s*$`),                      // Arrow prompt
+		regexp.MustCompile(`❯\s*$`),                        // Unicode heavy right-pointing angle prompt
+	}
+
+	// ccSpinnerActivePatterns detect Claude Code's randomized spinner verbs
+	// (e.g. "Bunning… (3s)", "Scurrying… (12s)", "Running…", "· thinking", "· thought for 5s").
+	// When these match, the agent is actively working — NOT idle.
+	ccSpinnerActivePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\S+…\s+\(`),          // Timing spinners: "Bunning… (3s)"
+		regexp.MustCompile(`·\s*thinking`),        // Extended thinking indicator
+		regexp.MustCompile(`·\s*thought\s+for`),   // Past thinking indicator (still active context)
+		regexp.MustCompile(`Running…`),            // Explicit running spinner
+	}
+
+	// ccSpinnerPastPatterns detect completed spinner lines that indicate recent work.
+	// These appear after a spinner finishes: "Scurried for 12s"
+	ccSpinnerPastPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\S+\s+for\s+\d+[ms]\b`), // Completed spinner: "Bunned for 3s"
 	}
 
 	// ccErrorPatterns indicates an error condition.

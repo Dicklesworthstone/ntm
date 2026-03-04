@@ -81,11 +81,20 @@ func defaultPatterns() []Pattern {
 		{Name: "claude_prompt", RegexStr: `(?i)claude\s*>?\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Claude prompt"},
 		{Name: "claude_code_prompt", RegexStr: `(?i)claude\s+code\s*>?\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code prompt"},
 		{Name: "claude_arrow_prompt", RegexStr: `╰─>\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 99, Description: "Claude arrow prompt"},
-		// Claude Code TUI indicators (welcome screen and status line)
+		// Claude Code TUI indicators (welcome screen)
+		// NOTE: "bypass permissions on" was removed — it matches the permanent status bar,
+		// causing agents to always appear idle even while actively working.
 		{Name: "claude_code_version", RegexStr: `(?i)claude\s+code\s+v[\d.]+`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code version banner"},
 		{Name: "claude_welcome", RegexStr: `(?i)welcome\s+back`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code welcome message"},
-		{Name: "claude_bypass_status", RegexStr: `(?i)bypass\s+permissions\s+on`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code bypass status"},
 		{Name: "claude_try_prompt", RegexStr: `❯\s*Try\s+"`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code try prompt"},
+		{Name: "claude_unicode_prompt", RegexStr: `❯\s*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code unicode angle prompt"},
+
+		// Claude Code spinner detection (active work indicators)
+		{Name: "claude_spinner_timing", RegexStr: `\S+…\s+\(`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code timing spinner (e.g. Bunning… (3s))"},
+		{Name: "claude_spinner_thinking", RegexStr: `·\s*thinking`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code thinking indicator"},
+		{Name: "claude_spinner_thought", RegexStr: `·\s*thought\s+for`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code thought duration"},
+		{Name: "claude_spinner_running", RegexStr: `Running…`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code running spinner"},
+		{Name: "claude_spinner_past", RegexStr: `\S+\s+for\s+\d+[ms]\b`, Agent: "claude", State: StateGenerating, Category: CategoryCompletion, Priority: 95, Description: "Claude Code completed spinner (e.g. Bunned for 3s)"},
 
 		// Codex patterns
 		{Name: "codex_prompt", RegexStr: `(?i)codex\s*>?\s*$`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Codex prompt"},
