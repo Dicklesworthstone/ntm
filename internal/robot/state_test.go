@@ -259,12 +259,14 @@ func TestDetermineStateIdleConditions(t *testing.T) {
 		{"   ", "", true},            // Whitespace only in user/generic pane
 		{"\n\n", "user", true},       // Newlines only in user pane
 
-		// Claude Code TUI patterns (version banner, status bar, welcome)
-		{"Claude Code v1.0.31\nbypass permissions on\n", "claude", true},          // Welcome screen
-		{"Claude Code v2.0.0\n", "claude", true},                                 // Version banner alone
-		{"bypass permissions on\n", "claude", true},                               // Status bar alone
-		{"welcome back\n", "claude", true},                                        // Welcome message
-		{"some output\nClaude Code v1.0.31\nbypass permissions on\n", "claude", true}, // Mixed with scrollback
+		// Claude Code TUI patterns (version banner, welcome)
+		// NOTE: "bypass permissions on" is no longer an idle indicator — it's the
+		// permanent status bar that stays visible during active work.
+		{"Claude Code v1.0.31\nwelcome back\n", "claude", true},              // Welcome screen
+		{"Claude Code v2.0.0\n", "claude", true},                             // Version banner alone
+		{"welcome back\n", "claude", true},                                    // Welcome message
+		{"some output\nClaude Code v1.0.31\nwelcome back\n", "claude", true}, // Mixed with scrollback
+		{"❯ \n", "claude", true},                                              // Unicode prompt
 
 		// Should NOT be idle (active instead)
 		{"$ ls\nfile1.txt\nfile2.txt", "", false}, // Command with output
