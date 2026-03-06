@@ -1021,9 +1021,7 @@ func TestBDAdapterWithFakeTools(t *testing.T) {
 	if err := os.Symlink(filepath.Join(fakePath, "bd"), filepath.Join(tempPath, "br")); err != nil {
 		t.Fatalf("symlink fake br: %v", err)
 	}
-	oldPath := os.Getenv("PATH")
-	os.Setenv("PATH", tempPath+":"+oldPath)
-	defer os.Setenv("PATH", oldPath)
+	t.Setenv("PATH", tempPath+":"+os.Getenv("PATH"))
 
 	adapter := NewBDAdapter()
 	ctx := context.Background()
@@ -1057,8 +1055,6 @@ func TestBDAdapterWithFakeTools(t *testing.T) {
 }
 
 func TestBDAdapterPrefersBrWhenAvailable(t *testing.T) {
-	t.Parallel()
-
 	tmpDir := t.TempDir()
 	brPath := filepath.Join(tmpDir, "br")
 	script := "#!/bin/sh\necho 'br 9.9.9'\n"
@@ -1066,9 +1062,7 @@ func TestBDAdapterPrefersBrWhenAvailable(t *testing.T) {
 		t.Fatalf("write fake br: %v", err)
 	}
 
-	oldPath := os.Getenv("PATH")
-	os.Setenv("PATH", tmpDir+":"+oldPath)
-	defer os.Setenv("PATH", oldPath)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 
 	adapter := NewBDAdapter()
 
@@ -1078,6 +1072,50 @@ func TestBDAdapterPrefersBrWhenAvailable(t *testing.T) {
 	}
 	if !strings.HasSuffix(path, string(filepath.Separator)+"br") && filepath.Base(path) != "br" {
 		t.Fatalf("Detect() should prefer br, got %q", path)
+	}
+}
+
+func TestBDAdapterFallsBackToBdWhenBrVersionFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	brPath := filepath.Join(tmpDir, "br")
+	brScript := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'broken br' >&2\n  exit 1\nfi\necho '{\"from\":\"br\"}'\n"
+	if err := os.WriteFile(brPath, []byte(brScript), 0o755); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+
+	bdPath := filepath.Join(tmpDir, "bd")
+	bdScript := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'bd 1.2.3'\n  exit 0\nfi\necho '{\"from\":\"bd\"}'\n"
+	if err := os.WriteFile(bdPath, []byte(bdScript), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	adapter := NewBDAdapter()
+	ctx := context.Background()
+
+	path, installed := adapter.Detect()
+	if !installed {
+		t.Fatal("Detect() should find a working beads binary")
+	}
+	if filepath.Base(path) != "bd" {
+		t.Fatalf("Detect() should fall back to bd, got %q", path)
+	}
+
+	version, err := adapter.Version(ctx)
+	if err != nil {
+		t.Fatalf("Version() error: %v", err)
+	}
+	if version.Major != 1 || version.Minor != 2 || version.Patch != 3 {
+		t.Fatalf("Version() = %+v, want 1.2.3", version)
+	}
+
+	output, err := adapter.GetStats(ctx, "")
+	if err != nil {
+		t.Fatalf("GetStats() error: %v", err)
+	}
+	if string(output) != "{\"from\":\"bd\"}\n" {
+		t.Fatalf("GetStats() should use bd fallback, got %q", string(output))
 	}
 }
 

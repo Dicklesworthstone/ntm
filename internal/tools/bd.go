@@ -22,30 +22,85 @@ func NewBDAdapter() *BDAdapter {
 	}
 }
 
-func (a *BDAdapter) resolveBinary() string {
+func (a *BDAdapter) binaryCandidates() []string {
+	seen := make(map[string]struct{}, 2)
+	candidates := make([]string, 0, 2)
+
 	for _, candidate := range []string{"br", a.BinaryName()} {
 		if candidate == "" {
 			continue
 		}
 		if path, err := exec.LookPath(candidate); err == nil {
-			return path
+			if _, exists := seen[path]; exists {
+				continue
+			}
+			seen[path] = struct{}{}
+			candidates = append(candidates, path)
 		}
 	}
-	return a.BinaryName()
+	return candidates
+}
+
+func (a *BDAdapter) versionFromBinary(ctx context.Context, binary string) (Version, error) {
+	cmd := exec.CommandContext(ctx, binary, "--version")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return Version{}, fmt.Errorf("failed to get beads_rust version from %s: %w", binary, err)
+	}
+
+	return ParseStandardVersion(stdout.String())
+}
+
+func (a *BDAdapter) workingBinary(ctx context.Context, candidates []string) (string, Version, error) {
+	if len(candidates) == 0 {
+		return "", Version{}, ErrToolNotInstalled
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		version, err := a.versionFromBinary(ctx, candidate)
+		if err == nil {
+			return candidate, version, nil
+		}
+		lastErr = err
+	}
+
+	return candidates[0], Version{}, lastErr
+}
+
+func (a *BDAdapter) resolveBinary() string {
+	candidates := a.binaryCandidates()
+	if len(candidates) == 0 {
+		return a.BinaryName()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), a.Timeout())
+	defer cancel()
+
+	if path, _, err := a.workingBinary(ctx, candidates); err == nil {
+		return path
+	}
+
+	return candidates[0]
 }
 
 // Detect checks if bd is installed
 func (a *BDAdapter) Detect() (string, bool) {
-	for _, candidate := range []string{"br", a.BinaryName()} {
-		if candidate == "" {
-			continue
-		}
-		path, err := exec.LookPath(candidate)
-		if err == nil {
-			return path, true
-		}
+	candidates := a.binaryCandidates()
+	if len(candidates) == 0 {
+		return "", false
 	}
-	return "", false
+
+	ctx, cancel := context.WithTimeout(context.Background(), a.Timeout())
+	defer cancel()
+
+	if path, _, err := a.workingBinary(ctx, candidates); err == nil {
+		return path, true
+	}
+
+	return candidates[0], true
 }
 
 // Version returns the installed bd version
@@ -53,15 +108,14 @@ func (a *BDAdapter) Version(ctx context.Context) (Version, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.resolveBinary(), "--version")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
+	path, version, err := a.workingBinary(ctx, a.binaryCandidates())
+	if err != nil {
+		if path == "" {
+			return Version{}, fmt.Errorf("failed to get beads_rust version: %w", err)
+		}
 		return Version{}, fmt.Errorf("failed to get beads_rust version: %w", err)
 	}
-
-	return ParseStandardVersion(stdout.String())
+	return version, nil
 }
 
 // Capabilities returns the list of bd capabilities
@@ -171,7 +225,12 @@ func (a *BDAdapter) runCommand(ctx context.Context, dir string, args ...string) 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.resolveBinary(), args...)
+	binary, _, err := a.workingBinary(ctx, a.binaryCandidates())
+	if err != nil {
+		return nil, fmt.Errorf("failed to find usable beads_rust binary: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, binary, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
