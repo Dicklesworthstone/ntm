@@ -982,8 +982,8 @@ func SendBufferWithDelay(target, content string, enter bool, enterDelay time.Dur
 }
 
 // SendKeysForAgent sends keys to a pane using the appropriate method for the agent type.
-// For Gemini agents with multi-line content, it uses the buffer mechanism to avoid
-// newlines being interpreted as Enter key presses.
+// For Gemini and Claude Code agents with multi-line content, it uses the buffer mechanism
+// to avoid newlines being interpreted as Enter key presses.
 // For other agents, it uses the standard send-keys method.
 func (c *Client) SendKeysForAgent(target, keys string, enter bool, agentType AgentType) error {
 	return c.SendKeysForAgentWithDelay(target, keys, enter, DefaultEnterDelay, agentType)
@@ -991,9 +991,9 @@ func (c *Client) SendKeysForAgent(target, keys string, enter bool, agentType Age
 
 // SendKeysForAgentWithDelay sends keys using the appropriate method with a configurable delay.
 func (c *Client) SendKeysForAgentWithDelay(target, keys string, enter bool, enterDelay time.Duration, agentType AgentType) error {
-	// Use buffer mechanism for Gemini when content contains newlines
-	// Gemini's TUI interprets newlines in send-keys as actual Enter presses,
-	// causing it to enter "quote mode" or submit prompts prematurely
+	// Use buffer mechanism for Gemini and Claude Code when content contains newlines
+	// Their TUIs interpret newlines in send-keys as actual Enter presses,
+	// causing them to enter "quote mode" or submit prompts prematurely
 	if needsBufferSend(agentType, keys) {
 		return c.SendBufferWithDelay(target, keys, enter, enterDelay)
 	}

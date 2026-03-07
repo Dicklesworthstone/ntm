@@ -1408,7 +1408,7 @@ func TestNeedsBufferSend(t *testing.T) {
 			content:   "",
 			want:      false,
 		},
-		// Claude cases - never uses buffer
+		// Claude cases - uses buffer for multi-line content
 		{
 			name:      "claude single line",
 			agentType: AgentClaude,
