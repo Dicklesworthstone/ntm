@@ -367,11 +367,11 @@ type SpawnOptions struct {
 	ProfileList []*persona.Persona
 
 	// CASS Context
-	CassContextQuery      string
-	NoCassContext         bool
+	CassContextQuery string
+	NoCassContext    bool
 
 	// Recovery suppression (independent of CASS)
-	NoRecovery bool
+	NoRecovery            bool
 	Prompt                string
 	InitPrompt            string
 	LocalModel            string
@@ -925,7 +925,7 @@ Examples:
 				PluginMap:             pluginMap,
 				CassContextQuery:      contextQuery,
 				NoCassContext:         noCassContext,
-				NoRecovery:           noRecovery,
+				NoRecovery:            noRecovery,
 				Prompt:                prompt,
 				InitPrompt:            initPrompt,
 				LocalModel:            localModel,
@@ -1573,6 +1573,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 
 		// Resolve model alias to full model name
 		resolvedModel := ResolveModel(agent.Type, agent.Model)
+		modelRequested := strings.TrimSpace(agent.Model) != ""
 		if agent.Type == AgentTypeOllama && resolvedModel == "" {
 			resolvedModel = strings.TrimSpace(opts.LocalModel)
 			if resolvedModel == "" {
@@ -1586,6 +1587,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		if opts.PersonaMap != nil {
 			if p, ok := opts.PersonaMap[agent.Model]; ok {
 				personaName = p.Name
+				modelRequested = strings.TrimSpace(p.Model) != ""
 				// Prepare system prompt file
 				promptFile, err := persona.PrepareSystemPrompt(p, dir)
 				if err != nil {
@@ -1605,6 +1607,10 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		if len(opts.ProfileList) > profileIdx {
 			profile := opts.ProfileList[profileIdx]
 			personaName = profile.Name
+			if strings.TrimSpace(profile.Model) != "" {
+				modelRequested = true
+				resolvedModel = ResolveModel(agent.Type, profile.Model)
+			}
 			// Prepare system prompt file for the profile
 			promptFile, err := persona.PrepareSystemPrompt(profile, dir)
 			if err != nil {
@@ -1633,6 +1639,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		agentCmd, err := config.GenerateAgentCommand(agentCmdTemplate, config.AgentTemplateVars{
 			Model:            resolvedModel,
 			ModelAlias:       agent.Model,
+			ModelRequested:   modelRequested,
 			SessionName:      opts.Session,
 			PaneIndex:        agent.Index,
 			AgentType:        string(agent.Type),

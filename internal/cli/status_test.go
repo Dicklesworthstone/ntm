@@ -38,7 +38,7 @@ func TestStatusRealSession(t *testing.T) {
 	jsonOutput = false // Test text output
 
 	// Use simple command
-	cfg.Agents.Claude = "cat" // Runs until killed or input closed
+	cfg.Agents.Claude = testAgentCatCommandTemplate // Runs until killed or input closed
 
 	sessionName := fmt.Sprintf("ntm-test-status-%d", time.Now().UnixNano())
 	defer func() {

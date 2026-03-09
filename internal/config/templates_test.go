@@ -52,12 +52,12 @@ func TestGenerateAgentCommand_LegacyModeModelOverrideGuard(t *testing.T) {
 		{
 			name:     "plain command with model override",
 			template: "claude --dangerously-skip-permissions",
-			vars:     AgentTemplateVars{Model: "opus"},
+			vars:     AgentTemplateVars{Model: "opus", ModelRequested: true},
 		},
 		{
 			name:     "codex command with model override",
 			template: "codex -m gpt-4",
-			vars:     AgentTemplateVars{Model: "gpt-4"},
+			vars:     AgentTemplateVars{Model: "gpt-4", ModelRequested: true},
 		},
 	}
 
@@ -74,6 +74,32 @@ func TestGenerateAgentCommand_LegacyModeModelOverrideGuard(t *testing.T) {
 				t.Errorf("error should mention the model %q, got: %v", tt.vars.Model, err)
 			}
 		})
+	}
+}
+
+func TestGenerateAgentCommand_TemplateModelOverrideGuard(t *testing.T) {
+	_, err := GenerateAgentCommand(`agent --session {{.SessionName}}`, AgentTemplateVars{
+		Model:          "claude-opus-4",
+		ModelRequested: true,
+		SessionName:    "demo",
+	})
+	if err == nil {
+		t.Fatal("expected error for template that ignores requested model, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not reference .Model or .ModelAlias") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGenerateAgentCommand_DefaultModelDoesNotTriggerLegacyGuard(t *testing.T) {
+	got, err := GenerateAgentCommand("claude --dangerously-skip-permissions", AgentTemplateVars{
+		Model: "claude-opus-4-6",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "claude --dangerously-skip-permissions" {
+		t.Fatalf("got %q, want legacy command unchanged", got)
 	}
 }
 

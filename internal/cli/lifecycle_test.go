@@ -39,9 +39,9 @@ func TestAgentLifecycleSpawnWorkKill(t *testing.T) {
 	jsonOutput = true
 
 	// Use 'cat' as agent command - it echoes input back to stdout
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
-	cfg.Agents.Gemini = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-lifecycle-%d", time.Now().UnixNano())
 
@@ -203,9 +203,9 @@ func TestAgentLifecycleMultipleAgents(t *testing.T) {
 	cfg.ProjectsBase = tmpDir
 	jsonOutput = true
 
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
-	cfg.Agents.Gemini = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-lifecycle-multi-%d", time.Now().UnixNano())
 	defer func() {
@@ -332,7 +332,7 @@ func TestAgentLifecycleRapidSpawnKill(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	jsonOutput = true
-	cfg.Agents.Claude = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
 
 	const iterations = 3
 	for i := 0; i < iterations; i++ {
@@ -412,7 +412,7 @@ func TestAgentLifecycleKillIdempotent(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	jsonOutput = true
-	cfg.Agents.Claude = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-idempotent-%d", time.Now().UnixNano())
 	projectDir := filepath.Join(tmpDir, sessionName)

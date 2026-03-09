@@ -16,6 +16,7 @@ import (
 type AgentTemplateVars struct {
 	Model            string // Resolved full model name (e.g., "claude-opus-4-20250514")
 	ModelAlias       string // Original alias as specified (e.g., "opus")
+	ModelRequested   bool   // True when the user explicitly requested a non-default model
 	SessionName      string // NTM session name
 	PaneIndex        int    // Pane number (1-based)
 	AgentType        string // Agent type: "cc", "cod", "gmi"
@@ -164,22 +165,37 @@ var templateFuncs = template.FuncMap{
 	"memLimitPrefix": memLimitPrefix,
 }
 
+func templateReferencesModel(tmpl string) bool {
+	return strings.Contains(tmpl, ".Model") || strings.Contains(tmpl, ".ModelAlias")
+}
+
 // GenerateAgentCommand renders an agent command template with the given variables.
-// If the template contains no {{}} syntax, it's returned as-is (legacy mode).
+// Legacy commands without template syntax are returned as-is unless they would
+// silently drop an explicitly requested model selection.
 // Returns an error if template parsing or execution fails.
 func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
+	if vars.ModelRequested && !templateReferencesModel(tmpl) {
+		requestedModel := vars.Model
+		if requestedModel == "" {
+			requestedModel = vars.ModelAlias
+		}
+		if requestedModel == "" {
+			requestedModel = "<requested>"
+		}
+		if !strings.Contains(tmpl, "{{") {
+			return "", fmt.Errorf(
+				"model override %q was specified but agent command has no template syntax (no {{.Model}} or {{.ModelAlias}} placeholder); "+
+					"the model would be silently ignored. Convert the command to template format or remove the model override. "+
+					"Command: %s", requestedModel, tmpl)
+		}
+		return "", fmt.Errorf(
+			"model override %q was specified but agent command template does not reference .Model or .ModelAlias; "+
+				"the model would be silently ignored. Update the template or remove the model override. "+
+				"Command: %s", requestedModel, tmpl)
+	}
+
 	// Fast path: if no template syntax, return as-is (legacy mode)
 	if !strings.Contains(tmpl, "{{") {
-		// Guard: if a model override was explicitly requested but the command
-		// has no template syntax, the model would be silently dropped.
-		// Fail fast with an actionable error so the user knows to upgrade
-		// their agent command to template format.
-		if vars.Model != "" {
-			return "", fmt.Errorf(
-				"model override %q was specified but agent command has no template syntax (no {{.Model}} placeholder); "+
-					"the model would be silently ignored. Convert the command to template format or remove the model override. "+
-					"Command: %s", vars.Model, tmpl)
-		}
 		return tmpl, nil
 	}
 

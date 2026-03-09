@@ -484,6 +484,7 @@ func runAdd(opts AddOptions) error {
 
 		// Resolve model alias to full model name
 		resolvedModel := ResolveModel(agent.Type, agent.Model)
+		modelRequested := strings.TrimSpace(agent.Model) != ""
 
 		// Check if this is a persona agent and prepare system prompt
 		var systemPromptFile string
@@ -491,6 +492,7 @@ func runAdd(opts AddOptions) error {
 		if opts.PersonaMap != nil {
 			if p, ok := opts.PersonaMap[agent.Model]; ok {
 				personaName = p.Name
+				modelRequested = strings.TrimSpace(p.Model) != ""
 				// Prepare system prompt file
 				promptFile, err := persona.PrepareSystemPrompt(p, dir)
 				if err != nil {
@@ -508,6 +510,7 @@ func runAdd(opts AddOptions) error {
 		finalCmd, err := config.GenerateAgentCommand(agentCmd, config.AgentTemplateVars{
 			Model:            resolvedModel,
 			ModelAlias:       agent.Model,
+			ModelRequested:   modelRequested,
 			SessionName:      session,
 			PaneIndex:        num,
 			AgentType:        agentTypeStr,

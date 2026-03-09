@@ -34,9 +34,9 @@ func TestSessionTemplateSpawn_Builtin(t *testing.T) {
 	cfg.AgentMail.Enabled = false
 	jsonOutput = true
 
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
-	cfg.Agents.Gemini = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	t.Logf("[E2E-TEMPLATE] Loading builtin template: code-review")
 	loader := templates.NewSessionTemplateLoader()
@@ -147,9 +147,9 @@ func TestSessionTemplateSpawn_CustomUserTemplate(t *testing.T) {
 	cfg.AgentMail.Enabled = false
 	jsonOutput = true
 
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
-	cfg.Agents.Gemini = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Gemini = testAgentCatCommandTemplate
 
 	userTemplateDir := filepath.Join(tmpDir, "ntm", "templates")
 	if err := os.MkdirAll(userTemplateDir, 0755); err != nil {

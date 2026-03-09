@@ -41,7 +41,7 @@ func TestSendRealSession(t *testing.T) {
 
 	// Use /bin/cat explicitly to avoid shell aliases (e.g., cat -> bat) which
 	// have different input/output behavior and can cause test flakiness.
-	cfg.Agents.Claude = "/bin/cat"
+	cfg.Agents.Claude = testAgentBinCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-test-send-%d", time.Now().UnixNano())
 	defer func() {
@@ -745,7 +745,7 @@ func TestSendDryRunDoesNotSendToPane(t *testing.T) {
 	jsonOutput = true // avoid polluting test logs
 
 	// Use a simple echoing agent so we can detect sends
-	cfg.Agents.Claude = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-test-send-dry-run-%d", time.Now().UnixNano())
 	defer func() {
@@ -835,7 +835,7 @@ func TestSendSmartRouteIsDisabledWhenPanesSpecified(t *testing.T) {
 	cfg.ProjectsBase = tmpDir
 	cfg.Checkpoints.Enabled = false
 	jsonOutput = true // avoid polluting test logs
-	cfg.Agents.Claude = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
 
 	sessionName := fmt.Sprintf("ntm-test-send-smart-route-panes-%d", time.Now().UnixNano())
 	defer func() {

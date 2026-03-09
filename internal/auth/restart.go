@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -170,12 +171,13 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 
 	// Generate command
 	agentCmd, err := config.GenerateAgentCommand(agentCmdTemplate, config.AgentTemplateVars{
-		Model:       resolvedModel,
-		ModelAlias:  ctx.ModelAlias,
-		SessionName: ctx.SessionName,
-		PaneIndex:   ctx.PaneIndex,
-		AgentType:   agentType,
-		ProjectDir:  ctx.ProjectDir,
+		Model:          resolvedModel,
+		ModelAlias:     ctx.ModelAlias,
+		ModelRequested: strings.TrimSpace(ctx.ModelAlias) != "",
+		SessionName:    ctx.SessionName,
+		PaneIndex:      ctx.PaneIndex,
+		AgentType:      agentType,
+		ProjectDir:     ctx.ProjectDir,
 	})
 	if err != nil {
 		return fmt.Errorf("generating command: %w", err)

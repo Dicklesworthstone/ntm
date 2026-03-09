@@ -155,9 +155,9 @@ func TestRunReassignment_ToPane_Success(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
-	cfg.Agents.Gemini = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
+	cfg.Agents.Gemini = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -237,8 +237,8 @@ func TestRunReassignment_AlreadyAssigned(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, _ := setupReassignSession(t, tmpDir)
@@ -287,8 +287,8 @@ func TestRunReassignment_NoIdleAgentForType(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, _ := setupReassignSession(t, tmpDir)
@@ -336,8 +336,8 @@ func TestRunReassignment_TargetBusyWithoutForce(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -390,8 +390,8 @@ func TestRunReassignment_NotAssigned(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, _, codexPane := setupReassignSession(t, tmpDir)
@@ -431,8 +431,8 @@ func TestRunReassignment_ToPaneNotFound(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, _ := setupReassignSession(t, tmpDir)
@@ -486,8 +486,8 @@ func TestRunReassignment_CompletedBead(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -552,8 +552,8 @@ func TestRunReassignment_FailedBead(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)
@@ -628,8 +628,8 @@ func TestRunReassignment_FileReservationsGracefulDegradation(t *testing.T) {
 	cfg = config.Default()
 	cfg.ProjectsBase = tmpDir
 	cfg.AgentMail.Enabled = false // Agent Mail disabled
-	cfg.Agents.Claude = "cat"
-	cfg.Agents.Codex = "cat"
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+	cfg.Agents.Codex = testAgentCatCommandTemplate
 	jsonOutput = true
 
 	sessionName, claudePane, codexPane := setupReassignSession(t, tmpDir)

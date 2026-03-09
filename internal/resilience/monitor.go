@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,21 +32,21 @@ var (
 
 // AgentState tracks the state of an individual agent for restart purposes
 type AgentState struct {
-	PaneID            string
-	PaneIndex         int
-	ShellPID          int    // Shell PID from tmux #{pane_pid} — used for PID-based liveness checks
-	AgentType         string // cc, cod, gmi
-	Model             string // Model variant (opus, sonnet, etc.)
-	Command           string // Original launch command
-	RestartCount      int
-	LastCrash         time.Time
-	LastRestart       time.Time // When agent was last restarted
+	PaneID              string
+	PaneIndex           int
+	ShellPID            int    // Shell PID from tmux #{pane_pid} — used for PID-based liveness checks
+	AgentType           string // cc, cod, gmi
+	Model               string // Model variant (opus, sonnet, etc.)
+	Command             string // Original launch command
+	RestartCount        int
+	LastCrash           time.Time
+	LastRestart         time.Time // When agent was last restarted
 	Healthy             bool
-	ConsecutiveFailures int    // Consecutive health check failures (for text-based debounce)
-	LastFailureReason   string // Most recent failure reason (for logging)
-	RateLimited         bool   // Currently rate limited
-	LastRateLimitTime time.Time // When rate limit was last detected
-	WaitSeconds       int       // Suggested wait time from rate limit message
+	ConsecutiveFailures int       // Consecutive health check failures (for text-based debounce)
+	LastFailureReason   string    // Most recent failure reason (for logging)
+	RateLimited         bool      // Currently rate limited
+	LastRateLimitTime   time.Time // When rate limit was last detected
+	WaitSeconds         int       // Suggested wait time from rate limit message
 }
 
 // Monitor watches agent health and handles auto-restart
@@ -171,12 +172,13 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 		}
 
 		cmd, err := config.GenerateAgentCommand(agentCmdTemplate, config.AgentTemplateVars{
-			Model:       modelName,
-			ModelAlias:  p.Variant,
-			SessionName: m.session,
-			PaneIndex:   paneIdx,
-			AgentType:   string(p.Type),
-			ProjectDir:  m.projectDir,
+			Model:          modelName,
+			ModelAlias:     p.Variant,
+			ModelRequested: strings.TrimSpace(p.Variant) != "",
+			SessionName:    m.session,
+			PaneIndex:      paneIdx,
+			AgentType:      string(p.Type),
+			ProjectDir:     m.projectDir,
 			// Note: SystemPromptFile is lost in reconstruction
 		})
 
