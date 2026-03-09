@@ -150,7 +150,13 @@ func TestGlow(t *testing.T) {
 }
 
 func TestShimmer(t *testing.T) {
+	t.Setenv("NTM_ANIMATIONS", "1")
 	t.Setenv("NTM_REDUCE_MOTION", "0")
+	t.Setenv("TMUX", "")
+	t.Setenv("STY", "")
+	t.Setenv("CI", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("COLORTERM", "truecolor")
 
 	t.Run("with colors", func(t *testing.T) {
 		result := Shimmer("hello", 0, "#ff0000", "#00ff00", "#0000ff")
@@ -192,6 +198,7 @@ func TestShimmer(t *testing.T) {
 	})
 
 	t.Run("reduced motion produces stable output", func(t *testing.T) {
+		t.Setenv("NTM_ANIMATIONS", "")
 		t.Setenv("NTM_REDUCE_MOTION", "1")
 
 		r1 := Shimmer("hello", 0, "#ff0000", "#0000ff")
@@ -210,7 +217,13 @@ func TestRainbow(t *testing.T) {
 }
 
 func TestPulse(t *testing.T) {
+	t.Setenv("NTM_ANIMATIONS", "1")
 	t.Setenv("NTM_REDUCE_MOTION", "0")
+	t.Setenv("TMUX", "")
+	t.Setenv("STY", "")
+	t.Setenv("CI", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("COLORTERM", "truecolor")
 
 	c := Pulse("#ff0000", 0)
 	if c == "" {
@@ -226,6 +239,7 @@ func TestPulse(t *testing.T) {
 	}
 
 	t.Run("reduced motion disables pulsing", func(t *testing.T) {
+		t.Setenv("NTM_ANIMATIONS", "")
 		t.Setenv("NTM_REDUCE_MOTION", "1")
 
 		want := lipgloss.Color("#ff0000")
@@ -235,6 +249,40 @@ func TestPulse(t *testing.T) {
 			t.Errorf("expected Pulse to return base color under reduced motion, got %q and %q", c1, c2)
 		}
 	})
+}
+
+func TestAnimationsEnabledAutoDisablesInTmux(t *testing.T) {
+	t.Setenv("NTM_ANIMATIONS", "")
+	t.Setenv("NTM_REDUCE_MOTION", "")
+	t.Setenv("TMUX", "/tmp/tmux-123/default,1,0")
+	t.Setenv("STY", "")
+	t.Setenv("CI", "")
+	t.Setenv("TERM", "tmux-256color")
+	t.Setenv("COLORTERM", "truecolor")
+
+	if AnimationsEnabled() {
+		t.Fatal("expected animations to auto-disable inside tmux")
+	}
+	if !ReducedMotionEnabled() {
+		t.Fatal("expected reduced motion to auto-enable inside tmux")
+	}
+}
+
+func TestAnimationsEnabledExplicitOverride(t *testing.T) {
+	t.Setenv("NTM_ANIMATIONS", "1")
+	t.Setenv("NTM_REDUCE_MOTION", "")
+	t.Setenv("TMUX", "/tmp/tmux-123/default,1,0")
+	t.Setenv("STY", "")
+	t.Setenv("CI", "")
+	t.Setenv("TERM", "tmux-256color")
+	t.Setenv("COLORTERM", "truecolor")
+
+	if !AnimationsEnabled() {
+		t.Fatal("expected NTM_ANIMATIONS=1 to force-enable animations")
+	}
+	if ReducedMotionEnabled() {
+		t.Fatal("expected reduced motion to stay disabled when animations are forced on")
+	}
 }
 
 func TestClamp(t *testing.T) {

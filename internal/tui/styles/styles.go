@@ -10,15 +10,64 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/truncate"
 
+	"github.com/Dicklesworthstone/ntm/internal/tui/terminal"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
-func reducedMotionEnabled() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("NTM_REDUCE_MOTION")))
-	if v == "" || v == "0" || v == "false" || v == "no" || v == "off" {
+func envBool(name string) (bool, bool) {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	if v == "" {
+		return false, false
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// AnimationsEnabled reports whether motion-heavy TUI effects should run.
+//
+// We bias toward stability in multiplexers and limited terminals because repeated
+// full-frame ANSI repaints are the main source of visible flashing/tearing.
+func AnimationsEnabled() bool {
+	if enabled, ok := envBool("NTM_ANIMATIONS"); ok {
+		return enabled
+	}
+	if reduced, ok := envBool("NTM_REDUCE_MOTION"); ok && reduced {
 		return false
 	}
-	return true
+	if noColor, ok := envBool("NTM_NO_COLOR"); ok && noColor {
+		return false
+	}
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("CI")) != "" {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("TMUX")) != "" || strings.TrimSpace(os.Getenv("STY")) != "" {
+		return false
+	}
+
+	term := strings.TrimSpace(strings.ToLower(os.Getenv("TERM")))
+	if term == "" || term == "dumb" {
+		return false
+	}
+
+	return terminal.SupportsTrueColor()
+}
+
+// ReducedMotionEnabled reports whether TUI motion should be suppressed.
+func ReducedMotionEnabled() bool {
+	return !AnimationsEnabled()
+}
+
+func reducedMotionEnabled() bool {
+	return ReducedMotionEnabled()
 }
 
 func defaultGradient() []string {
