@@ -247,6 +247,20 @@ func TestStorage_SaveScrollback(t *testing.T) {
 	}
 }
 
+func TestStorage_LoadRejectsInvalidIdentifiers(t *testing.T) {
+	storage := NewStorageWithDir(t.TempDir())
+
+	if _, err := storage.Load("../escape", "valid-id"); err == nil {
+		t.Fatal("expected invalid session name error")
+	}
+	if _, err := storage.Load("valid_session", "../escape"); err == nil {
+		t.Fatal("expected invalid checkpoint ID error")
+	}
+	if _, err := storage.Load("valid_session", "."); err == nil {
+		t.Fatal("expected dot checkpoint ID to be rejected")
+	}
+}
+
 func TestStorage_GetLatest(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {

@@ -203,7 +203,7 @@ func TestListCheckpointSessions(t *testing.T) {
 	storage := checkpoint.NewStorageWithDir(tmpDir)
 
 	// Empty directory should return nil
-	sessions, err := listCheckpointSessionsWithDir(tmpDir)
+	sessions, err := listCheckpointSessions(storage)
 	if err != nil {
 		t.Fatalf("listCheckpointSessions error: %v", err)
 	}
@@ -217,15 +217,13 @@ func TestListCheckpointSessions(t *testing.T) {
 		t.Fatalf("failed to create session dir: %v", err)
 	}
 
-	sessions, err = listCheckpointSessionsWithDir(tmpDir)
+	sessions, err = listCheckpointSessions(storage)
 	if err != nil {
 		t.Fatalf("listCheckpointSessions error: %v", err)
 	}
 	if len(sessions) != 1 || sessions[0] != "test-session" {
 		t.Errorf("expected [test-session], got %v", sessions)
 	}
-
-	_ = storage // silence unused
 }
 
 // listCheckpointSessionsWithDir is a helper for testing that accepts a custom directory.

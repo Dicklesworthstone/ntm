@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -27,6 +29,8 @@ const (
 	// PanesDir is the subdirectory for pane scrollback captures
 	PanesDir = "panes"
 )
+
+var checkpointIDRegex = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Storage manages checkpoint storage on disk.
 type Storage struct {
@@ -56,7 +60,75 @@ func NewStorageWithDir(dir string) *Storage {
 
 // CheckpointDir returns the directory path for a specific checkpoint.
 func (s *Storage) CheckpointDir(sessionName, checkpointID string) string {
-	return filepath.Join(s.BaseDir, sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return filepath.Join(s.BaseDir, safePathFallbackComponent(sessionName), safePathFallbackComponent(checkpointID))
+	}
+	return dir
+}
+
+func (s *Storage) safeSessionDir(sessionName string) (string, error) {
+	if err := tmux.ValidateSessionName(sessionName); err != nil {
+		return "", fmt.Errorf("invalid session name: %w", err)
+	}
+	return filepath.Join(s.BaseDir, sessionName), nil
+}
+
+func validateCheckpointID(checkpointID string) error {
+	if checkpointID == "" {
+		return fmt.Errorf("checkpoint ID cannot be empty")
+	}
+	if strings.HasPrefix(checkpointID, ".") {
+		return fmt.Errorf("invalid checkpoint ID: %q", checkpointID)
+	}
+	if strings.Contains(checkpointID, "..") || strings.ContainsAny(checkpointID, `/\`) {
+		return fmt.Errorf("invalid checkpoint ID: %q", checkpointID)
+	}
+	if !checkpointIDRegex.MatchString(checkpointID) {
+		return fmt.Errorf("invalid checkpoint ID: %q", checkpointID)
+	}
+	return nil
+}
+
+func safePathFallbackComponent(value string) string {
+	safe := strings.Trim(sanitizeName(value), ".")
+	if safe == "" {
+		return "invalid"
+	}
+	return safe
+}
+
+func (s *Storage) safeCheckpointDir(sessionName, checkpointID string) (string, error) {
+	sessionDir, err := s.safeSessionDir(sessionName)
+	if err != nil {
+		return "", err
+	}
+	if err := validateCheckpointID(checkpointID); err != nil {
+		return "", err
+	}
+	return filepath.Join(sessionDir, checkpointID), nil
+}
+
+func resolveCheckpointRelativePath(baseDir, relPath string) (string, error) {
+	if strings.TrimSpace(relPath) == "" {
+		return "", fmt.Errorf("relative path cannot be empty")
+	}
+
+	cleaned := filepath.Clean(relPath)
+	if cleaned == "." {
+		return "", fmt.Errorf("invalid relative path: %q", relPath)
+	}
+
+	fullPath := filepath.Join(baseDir, cleaned)
+	relToBase, err := filepath.Rel(baseDir, fullPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid relative path %q: %w", relPath, err)
+	}
+	if relToBase == ".." || strings.HasPrefix(relToBase, ".."+string(filepath.Separator)) || filepath.IsAbs(relToBase) {
+		return "", fmt.Errorf("path escapes checkpoint directory: %s", relPath)
+	}
+
+	return fullPath, nil
 }
 
 // GitPatchPath returns the file path for the git patch.
@@ -125,7 +197,10 @@ func sanitizeName(name string) string {
 
 // Save writes a checkpoint to disk.
 func (s *Storage) Save(cp *Checkpoint) error {
-	dir := s.CheckpointDir(cp.SessionName, cp.ID)
+	dir, err := s.safeCheckpointDir(cp.SessionName, cp.ID)
+	if err != nil {
+		return err
+	}
 
 	// Create checkpoint directory
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -155,7 +230,10 @@ func (s *Storage) Save(cp *Checkpoint) error {
 
 // Load reads a checkpoint from disk.
 func (s *Storage) Load(sessionName, checkpointID string) (*Checkpoint, error) {
-	dir := s.CheckpointDir(sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return nil, err
+	}
 	metaPath := filepath.Join(dir, MetadataFile)
 
 	data, err := os.ReadFile(metaPath)
@@ -173,7 +251,10 @@ func (s *Storage) Load(sessionName, checkpointID string) (*Checkpoint, error) {
 
 // List returns all checkpoints for a session, sorted by creation time (newest first).
 func (s *Storage) List(sessionName string) ([]*Checkpoint, error) {
-	sessionDir := filepath.Join(s.BaseDir, sessionName)
+	sessionDir, err := s.safeSessionDir(sessionName)
+	if err != nil {
+		return nil, err
+	}
 
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
@@ -237,7 +318,10 @@ func (s *Storage) ListAll() ([]*Checkpoint, error) {
 
 // Delete removes a checkpoint from disk.
 func (s *Storage) Delete(sessionName, checkpointID string) error {
-	dir := s.CheckpointDir(sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return err
+	}
 	return os.RemoveAll(dir)
 }
 
@@ -289,14 +373,20 @@ func (s *Storage) SaveGitPatch(sessionName, checkpointID, patch string) error {
 	if patch == "" {
 		return nil
 	}
-	dir := s.CheckpointDir(sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(dir, GitPatchFile)
 	return util.AtomicWriteFile(path, []byte(patch), 0600)
 }
 
 // LoadGitPatch reads the git diff patch from the checkpoint.
 func (s *Storage) LoadGitPatch(sessionName, checkpointID string) (string, error) {
-	dir := s.CheckpointDir(sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return "", err
+	}
 	path := filepath.Join(dir, GitPatchFile)
 
 	data, err := os.ReadFile(path)
@@ -312,7 +402,10 @@ func (s *Storage) LoadGitPatch(sessionName, checkpointID string) (string, error)
 
 // SaveGitStatus writes the git status output to the checkpoint.
 func (s *Storage) SaveGitStatus(sessionName, checkpointID, status string) error {
-	dir := s.CheckpointDir(sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(dir, GitStatusFile)
 	return util.AtomicWriteFile(path, []byte(status), 0600)
 }
@@ -329,7 +422,10 @@ func writeJSON(path string, data interface{}) error {
 
 // Exists returns true if a checkpoint exists.
 func (s *Storage) Exists(sessionName, checkpointID string) bool {
-	dir := s.CheckpointDir(sessionName, checkpointID)
+	dir, err := s.safeCheckpointDir(sessionName, checkpointID)
+	if err != nil {
+		return false
+	}
 	info, err := os.Stat(dir)
 	return err == nil && info.IsDir()
 }

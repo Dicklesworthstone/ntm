@@ -138,7 +138,12 @@ func (c *Checkpoint) checkFiles(storage *Storage, dir string, result *IntegrityR
 	missingScrollback := 0
 	for _, pane := range c.Session.Panes {
 		if pane.ScrollbackFile != "" {
-			scrollPath := filepath.Join(dir, pane.ScrollbackFile)
+			scrollPath, err := resolveCheckpointRelativePath(dir, pane.ScrollbackFile)
+			if err != nil {
+				missingScrollback++
+				result.Errors = append(result.Errors, fmt.Sprintf("invalid scrollback file for pane %s: %v", pane.ID, err))
+				continue
+			}
 			if !fileExists(scrollPath) {
 				missingScrollback++
 				result.Errors = append(result.Errors, fmt.Sprintf("missing scrollback file for pane %s: %s", pane.ID, pane.ScrollbackFile))
@@ -152,7 +157,14 @@ func (c *Checkpoint) checkFiles(storage *Storage, dir string, result *IntegrityR
 
 	// Check git patch if referenced
 	if c.Git.PatchFile != "" {
-		patchPath := filepath.Join(dir, c.Git.PatchFile)
+		patchPath, err := resolveCheckpointRelativePath(dir, c.Git.PatchFile)
+		if err != nil {
+			result.FilesPresent = false
+			result.Errors = append(result.Errors, fmt.Sprintf("invalid git patch file: %v", err))
+			result.Details["panes_dir"] = filepath.Join(dir, PanesDir)
+			result.Details["files_checked"] = fmt.Sprintf("%d", 2+len(c.Session.Panes))
+			return
+		}
 		if !fileExists(patchPath) {
 			result.FilesPresent = false
 			result.Errors = append(result.Errors, fmt.Sprintf("missing git patch file: %s", c.Git.PatchFile))
@@ -220,7 +232,10 @@ func (c *Checkpoint) GenerateManifest(storage *Storage) (*FileManifest, error) {
 	// Hash scrollback files
 	for _, pane := range c.Session.Panes {
 		if pane.ScrollbackFile != "" {
-			path := filepath.Join(dir, pane.ScrollbackFile)
+			path, err := resolveCheckpointRelativePath(dir, pane.ScrollbackFile)
+			if err != nil {
+				return nil, fmt.Errorf("invalid scrollback path %s: %w", pane.ScrollbackFile, err)
+			}
 			if hash, err := hashFile(path); err == nil {
 				manifest.Files[pane.ScrollbackFile] = hash
 			} else if !os.IsNotExist(err) {
@@ -231,7 +246,10 @@ func (c *Checkpoint) GenerateManifest(storage *Storage) (*FileManifest, error) {
 
 	// Hash git patch if exists
 	if c.Git.PatchFile != "" {
-		path := filepath.Join(dir, c.Git.PatchFile)
+		path, err := resolveCheckpointRelativePath(dir, c.Git.PatchFile)
+		if err != nil {
+			return nil, fmt.Errorf("invalid git patch path %s: %w", c.Git.PatchFile, err)
+		}
 		if hash, err := hashFile(path); err == nil {
 			manifest.Files[c.Git.PatchFile] = hash
 		} else if !os.IsNotExist(err) {

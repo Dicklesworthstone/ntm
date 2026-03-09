@@ -226,7 +226,10 @@ func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []st
 			continue
 		}
 
-		srcPath := filepath.Join(cpDir, file)
+		srcPath, err := resolveCheckpointRelativePath(cpDir, file)
+		if err != nil {
+			return fmt.Errorf("invalid checkpoint file path %s: %w", file, err)
+		}
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
 			continue
@@ -296,7 +299,10 @@ func (s *Storage) exportZip(destPath, cpDir string, cp *Checkpoint, files []stri
 			continue
 		}
 
-		srcPath := filepath.Join(cpDir, file)
+		srcPath, err := resolveCheckpointRelativePath(cpDir, file)
+		if err != nil {
+			return fmt.Errorf("invalid checkpoint file path %s: %w", file, err)
+		}
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
 			continue

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -236,10 +236,7 @@ Examples:
 
 // listCheckpointSessions lists all session names that have checkpoints.
 func listCheckpointSessions(storage *checkpoint.Storage) ([]string, error) {
-	home, _ := os.UserHomeDir()
-	baseDir := filepath.Join(home, ".local/share/ntm/checkpoints")
-
-	entries, err := os.ReadDir(baseDir)
+	entries, err := os.ReadDir(storage.BaseDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -253,6 +250,7 @@ func listCheckpointSessions(storage *checkpoint.Storage) ([]string, error) {
 			sessions = append(sessions, entry.Name())
 		}
 	}
+	sort.Strings(sessions)
 	return sessions, nil
 }
 

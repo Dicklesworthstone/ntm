@@ -315,6 +315,34 @@ func TestTruncateToLines(t *testing.T) {
 	}
 }
 
+func TestValidateCheckpoint_RejectsScrollbackTraversal(t *testing.T) {
+	storage := NewStorageWithDir(t.TempDir())
+	r := NewRestorerWithStorage(storage)
+
+	cp := &Checkpoint{
+		ID:          "test-checkpoint",
+		SessionName: "test-session",
+		WorkingDir:  t.TempDir(),
+		Session: SessionState{
+			Panes: []PaneState{
+				{
+					Index:          0,
+					ID:             "%0",
+					ScrollbackFile: "../../etc/passwd",
+				},
+			},
+		},
+	}
+
+	issues := r.ValidateCheckpoint(cp, RestoreOptions{InjectContext: true})
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d: %v", len(issues), issues)
+	}
+	if !containsSubstr(issues[0], "invalid scrollback path") {
+		t.Fatalf("expected invalid scrollback path issue, got %v", issues)
+	}
+}
+
 func TestSplitLines(t *testing.T) {
 	tests := []struct {
 		input string

@@ -469,10 +469,13 @@ func (r *Restorer) ValidateCheckpoint(cp *Checkpoint, opts RestoreOptions) []str
 	if opts.InjectContext {
 		for _, pane := range cp.Session.Panes {
 			if pane.ScrollbackFile != "" {
-				scrollbackPath := filepath.Join(
-					r.storage.CheckpointDir(cp.SessionName, cp.ID),
-					pane.ScrollbackFile,
-				)
+				baseDir := r.storage.CheckpointDir(cp.SessionName, cp.ID)
+				scrollbackPath, err := resolveCheckpointRelativePath(baseDir, pane.ScrollbackFile)
+				if err != nil {
+					issues = append(issues,
+						fmt.Sprintf("invalid scrollback path for pane %s: %v", pane.ID, err))
+					continue
+				}
 				if _, err := os.Stat(scrollbackPath); os.IsNotExist(err) {
 					issues = append(issues,
 						fmt.Sprintf("scrollback file missing for pane %s", pane.ID))
