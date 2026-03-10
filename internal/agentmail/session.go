@@ -419,8 +419,21 @@ func (r *SessionAgentRegistry) AddAgent(paneTitle, paneID, agentName string) {
 	if r.PaneIDMap == nil {
 		r.PaneIDMap = make(map[string]string)
 	}
-	r.Agents[paneTitle] = agentName
+
+	if paneTitle != "" {
+		for existingTitle, existingAgent := range r.Agents {
+			if existingAgent == agentName && existingTitle != paneTitle {
+				delete(r.Agents, existingTitle)
+			}
+		}
+		r.Agents[paneTitle] = agentName
+	}
 	if paneID != "" {
+		for existingPaneID, existingAgent := range r.PaneIDMap {
+			if existingAgent == agentName && existingPaneID != paneID {
+				delete(r.PaneIDMap, existingPaneID)
+			}
+		}
 		r.PaneIDMap[paneID] = agentName
 	}
 }

@@ -2106,19 +2106,29 @@ func AutoRestartUnhealthyAgent(ctx context.Context, session, paneID, agentType s
 		}
 	}
 
-	// Only restart if unhealthy
-	if check.HealthState != HealthUnhealthy && check.HealthState != HealthRateLimited {
+	if restart, reason := shouldAutoRestartHealthState(check.HealthState); !restart {
 		return &RestartResult{
 			PaneID:    paneID,
 			AgentType: agentType,
 			Type:      RestartNone,
-			Reason:    fmt.Sprintf("agent is %s, no restart needed", check.HealthState),
+			Reason:    reason,
 		}
 	}
 
 	// Get restart manager and attempt restart
 	manager := GetRestartManager(session, alerter)
 	return manager.TryRestart(ctx, paneID, agentType, check.HealthState)
+}
+
+func shouldAutoRestartHealthState(state HealthState) (bool, string) {
+	switch state {
+	case HealthUnhealthy:
+		return true, ""
+	case HealthRateLimited:
+		return false, "agent is rate_limited, waiting for cooldown"
+	default:
+		return false, fmt.Sprintf("agent is %s, no restart needed", state)
+	}
 }
 
 // =============================================================================

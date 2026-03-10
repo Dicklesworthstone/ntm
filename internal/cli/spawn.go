@@ -2553,6 +2553,7 @@ func registerSpawnedAgents(workingDir, sessionName string, agents []spawnedAgent
 				legacyPath := legacyIdentityFilePath(workingDir, agent.paneID)
 				_ = os.WriteFile(legacyPath, []byte(existingName+"\n"), 0o600)
 			}
+			registry.AddAgent(agent.paneTitle, agent.paneID, existingName)
 			continue
 		}
 

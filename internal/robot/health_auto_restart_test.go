@@ -444,6 +444,55 @@ func TestAutoRestartStuckOutput_JSONFields(t *testing.T) {
 	}
 }
 
+func TestShouldAutoRestartHealthState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		state       HealthState
+		wantRestart bool
+		wantReason  string
+	}{
+		{
+			name:        "unhealthy restarts",
+			state:       HealthUnhealthy,
+			wantRestart: true,
+		},
+		{
+			name:        "rate limited waits",
+			state:       HealthRateLimited,
+			wantRestart: false,
+			wantReason:  "agent is rate_limited, waiting for cooldown",
+		},
+		{
+			name:        "healthy does not restart",
+			state:       HealthHealthy,
+			wantRestart: false,
+			wantReason:  "agent is healthy, no restart needed",
+		},
+		{
+			name:        "degraded does not restart",
+			state:       HealthDegraded,
+			wantRestart: false,
+			wantReason:  "agent is degraded, no restart needed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotRestart, gotReason := shouldAutoRestartHealthState(tt.state)
+			if gotRestart != tt.wantRestart {
+				t.Fatalf("shouldAutoRestartHealthState(%q) restart = %v, want %v", tt.state, gotRestart, tt.wantRestart)
+			}
+			if gotReason != tt.wantReason {
+				t.Fatalf("shouldAutoRestartHealthState(%q) reason = %q, want %q", tt.state, gotReason, tt.wantReason)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================

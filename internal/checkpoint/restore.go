@@ -293,7 +293,7 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) error {
 		targetPane := panes[i]
 
 		// Load scrollback content
-		content, err := r.storage.LoadScrollback(cp.SessionName, cp.ID, paneState.ID)
+		content, err := r.loadPaneScrollback(cp.SessionName, cp.ID, paneState.ID)
 		if err != nil {
 			lastErr = err
 			continue
@@ -306,12 +306,16 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) error {
 
 		// Send as context message
 		contextMsg := formatContextInjection(content, cp.CreatedAt)
-		if err := tmux.SendKeys(targetPane.ID, contextMsg, true); err != nil {
+		if err := tmux.SendBuffer(targetPane.ID, contextMsg, true); err != nil {
 			lastErr = err
 		}
 	}
 
 	return lastErr
+}
+
+func (r *Restorer) loadPaneScrollback(sessionName, checkpointID, paneID string) (string, error) {
+	return r.storage.LoadCompressedScrollback(sessionName, checkpointID, paneID)
 }
 
 // checkGitState compares current git state with checkpoint and returns a warning if different.

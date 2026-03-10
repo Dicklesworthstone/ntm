@@ -237,6 +237,32 @@ func TestSessionAgentRegistry_AddAgentWithNilMaps(t *testing.T) {
 	}
 }
 
+func TestSessionAgentRegistry_AddAgent_RefreshesMappingsForSameAgent(t *testing.T) {
+	registry := NewSessionAgentRegistry("test-session", "/test/project")
+
+	registry.AddAgent("old_title", "%1", "GreenCastle")
+	registry.AddAgent("new_title", "%9", "GreenCastle")
+
+	if _, ok := registry.GetAgentByTitle("old_title"); ok {
+		t.Fatal("expected old title mapping to be removed")
+	}
+	if _, ok := registry.GetAgentByID("%1"); ok {
+		t.Fatal("expected old pane ID mapping to be removed")
+	}
+
+	name, ok := registry.GetAgentByTitle("new_title")
+	if !ok || name != "GreenCastle" {
+		t.Fatalf("expected new title mapping to GreenCastle, got %q, %v", name, ok)
+	}
+	name, ok = registry.GetAgentByID("%9")
+	if !ok || name != "GreenCastle" {
+		t.Fatalf("expected new pane ID mapping to GreenCastle, got %q, %v", name, ok)
+	}
+	if registry.Count() != 1 {
+		t.Fatalf("expected count 1 after remap, got %d", registry.Count())
+	}
+}
+
 func TestSessionAgentRegistry_GetAgentByTitle(t *testing.T) {
 	registry := NewSessionAgentRegistry("test-session", "/test/project")
 	registry.AddAgent("test__cc_1", "%1", "GreenCastle")

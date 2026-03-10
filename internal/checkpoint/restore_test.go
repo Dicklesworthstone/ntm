@@ -292,6 +292,40 @@ func TestRestorer_ValidateCheckpoint_MissingScrollback(t *testing.T) {
 	}
 }
 
+func TestRestorer_loadPaneScrollback_Compressed(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ntm-restore-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewStorageWithDir(tmpDir)
+	r := NewRestorerWithStorage(storage)
+
+	const (
+		sessionName  = "test-session"
+		checkpointID = "test-checkpoint"
+		paneID       = "%0"
+		content      = "compressed scrollback\nline 2\n"
+	)
+
+	compressed, err := gzipCompress([]byte(content))
+	if err != nil {
+		t.Fatalf("gzipCompress failed: %v", err)
+	}
+	if _, err := storage.SaveCompressedScrollback(sessionName, checkpointID, paneID, compressed); err != nil {
+		t.Fatalf("SaveCompressedScrollback failed: %v", err)
+	}
+
+	got, err := r.loadPaneScrollback(sessionName, checkpointID, paneID)
+	if err != nil {
+		t.Fatalf("loadPaneScrollback failed: %v", err)
+	}
+	if got != content {
+		t.Fatalf("loadPaneScrollback = %q, want %q", got, content)
+	}
+}
+
 func TestTruncateToLines(t *testing.T) {
 	tests := []struct {
 		content  string
