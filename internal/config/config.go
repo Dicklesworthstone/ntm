@@ -1439,8 +1439,13 @@ func DefaultPath() string {
 	return filepath.Join(home, ".config", "ntm", "config.toml")
 }
 
-// DefaultProjectsBase returns the default projects directory
+// DefaultProjectsBase returns the default projects directory.
+// Honors NTM_PROJECTS_BASE env var when set, allowing provisioning tools
+// (e.g. ACFS) to override the compiled default without touching config.toml.
 func DefaultProjectsBase() string {
+	if envBase := os.Getenv("NTM_PROJECTS_BASE"); envBase != "" {
+		return envBase
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		// Fallback to /tmp only when home directory is truly unavailable (e.g., containers)
