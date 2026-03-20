@@ -3288,6 +3288,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, dashKeys.Quit):
 			m.quitting = true
+			// In popup mode, ensure no post-quit action (clean close).
+			if m.popupMode {
+				m.postQuitAction = nil
+			}
 			return m, tea.Quit
 
 		case key.Matches(msg, dashKeys.Up):
@@ -3822,6 +3826,17 @@ func (m Model) renderStatsBar() string {
 		Padding(0, 1).
 		Render(helpLabel)
 	parts = append(parts, helpBadge)
+
+	// Overlay mode badge
+	if m.popupMode {
+		overlayBadge := lipgloss.NewStyle().
+			Background(t.Teal).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render("◉ overlay")
+		parts = append(parts, overlayBadge)
+	}
 
 	// Health badge (bv drift status)
 	healthBadge := m.renderHealthBadge()
