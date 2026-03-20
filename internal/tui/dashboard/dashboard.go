@@ -636,6 +636,7 @@ type PaneStatus struct {
 	LocalLastLatency     time.Duration // First-token latency for the most recent prompt (if observed)
 	LocalAvgLatency      time.Duration // Moving average of observed first-token latencies
 	LocalMemoryBytes     int64         // VRAM/CPU bytes (from Ollama /api/ps), 0 if unknown
+	LocalTPSHistory      []float64     // Recent TPS samples for sparkline rendering
 
 	// Health tracking
 	HealthStatus  string   // "ok", "warning", "error", "unknown"
@@ -2816,6 +2817,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						ps.LocalTotalTokens = total
 						ps.LocalLastLatency = lastLat
 						ps.LocalAvgLatency = avgLat
+						ps.LocalTPSHistory = tr.TPSHistory
 					}
 
 					// Refresh /api/ps memory occasionally and map by model name (pane variant).
@@ -2935,6 +2937,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ps.LocalTotalTokens = total
 					ps.LocalLastLatency = lastLat
 					ps.LocalAvgLatency = avgLat
+					ps.LocalTPSHistory = tr.TPSHistory
 				}
 				if hasOllama && m.ollamaModelMemory != nil && pane.Variant != "" {
 					if mem, ok := m.ollamaModelMemory[pane.Variant]; ok {

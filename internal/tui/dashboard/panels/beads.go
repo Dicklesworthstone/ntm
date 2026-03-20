@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -30,14 +31,18 @@ func beadsConfig() PanelConfig {
 
 type BeadsPanel struct {
 	PanelBase
-	summary bv.BeadsSummary
-	ready   []bv.BeadPreview
-	err     error
+	summary  bv.BeadsSummary
+	ready    []bv.BeadPreview
+	err      error
+	viewport viewport.Model
+	vpReady  bool
 }
 
 func NewBeadsPanel() *BeadsPanel {
+	vp := viewport.New(30, 10)
 	return &BeadsPanel{
 		PanelBase: NewPanelBase(beadsConfig()),
+		viewport:  vp,
 	}
 }
 
@@ -65,6 +70,11 @@ func (m *BeadsPanel) Init() tea.Cmd {
 }
 
 func (m *BeadsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.IsFocused() {
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -175,27 +185,14 @@ func (m *BeadsPanel) View() string {
 	statsStyled := lipgloss.NewStyle().Foreground(t.Subtext).Padding(0, 1).Render(stats)
 	content.WriteString(statsStyled + "\n\n")
 
-	// Calculate remaining height
-	usedHeight := lipgloss.Height(header) + lipgloss.Height(statsStyled) + 2 // +2 for newlines
-	remainingHeight := h - usedHeight
-	if remainingHeight < 0 {
-		remainingHeight = 0
-	}
-
-	// Split remaining height between In Progress and Ready
-	halfHeight := remainingHeight / 2
-	if halfHeight < 3 {
-		halfHeight = 3 // Minimum
-	}
+	// Build scrollable body content (render ALL items, let viewport handle scrolling)
+	var body strings.Builder
 
 	// In Progress Section
 	if len(m.summary.InProgressList) > 0 {
-		content.WriteString(lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Padding(0, 1).Render("In Progress") + "\n")
+		body.WriteString(lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Padding(0, 1).Render("In Progress") + "\n")
 
-		for i, b := range m.summary.InProgressList {
-			if i >= halfHeight-1 {
-				break
-			}
+		for _, b := range m.summary.InProgressList {
 			assignee := ""
 			if b.Assignee != "" {
 				assignee = fmt.Sprintf(" (@%s)", b.Assignee)
@@ -208,20 +205,16 @@ func (m *BeadsPanel) View() string {
 
 			title := layout.TruncateWidthDefault(b.Title, titleWidth)
 			line := fmt.Sprintf("  %s %s%s", b.ID, title, assignee)
-			content.WriteString(lipgloss.NewStyle().Foreground(t.Text).Render(line) + "\n")
+			body.WriteString(lipgloss.NewStyle().Foreground(t.Text).Render(line) + "\n")
 		}
-		content.WriteString("\n")
+		body.WriteString("\n")
 	}
 
 	// Ready Section
 	if len(m.ready) > 0 {
-		content.WriteString(lipgloss.NewStyle().Foreground(t.Green).Bold(true).Padding(0, 1).Render("Ready / Backlog") + "\n")
+		body.WriteString(lipgloss.NewStyle().Foreground(t.Green).Bold(true).Padding(0, 1).Render("Ready / Backlog") + "\n")
 
-		for i, b := range m.ready {
-			if i >= halfHeight-1 {
-				break
-			}
-
+		for _, b := range m.ready {
 			prio := b.Priority
 			prioStyle := lipgloss.NewStyle().Foreground(t.Overlay)
 			switch prio {
@@ -238,12 +231,32 @@ func (m *BeadsPanel) View() string {
 
 			title := layout.TruncateWidthDefault(b.Title, titleWidth)
 			line := fmt.Sprintf("  %s %s %s", prioStyle.Render(fmt.Sprintf("% -3s", prio)), b.ID, title)
-			content.WriteString(lipgloss.NewStyle().Foreground(t.Text).Render(line) + "\n")
+			body.WriteString(lipgloss.NewStyle().Foreground(t.Text).Render(line) + "\n")
 		}
 	} else if m.summary.Available {
-		content.WriteString("  No ready items\n")
+		body.WriteString("  No ready items\n")
 	} else {
-		content.WriteString(lipgloss.NewStyle().Foreground(t.Overlay).Italic(true).Padding(0, 1).Render("  (Pipeline unavailable)") + "\n")
+		body.WriteString(lipgloss.NewStyle().Foreground(t.Overlay).Italic(true).Padding(0, 1).Render("  (Pipeline unavailable)") + "\n")
+	}
+
+	// Update viewport dimensions and content
+	usedHeight := lipgloss.Height(header) + lipgloss.Height(statsStyled) + 3 // +3 for newlines + scroll indicator
+	vpHeight := h - usedHeight
+	if vpHeight < 3 {
+		vpHeight = 3
+	}
+	m.viewport.Width = w
+	m.viewport.Height = vpHeight
+	m.viewport.SetContent(body.String())
+
+	content.WriteString(m.viewport.View())
+
+	// Show scroll indicator if content overflows
+	totalLines := lipgloss.Height(body.String())
+	if totalLines > vpHeight {
+		scrollPct := int(m.viewport.ScrollPercent() * 100)
+		scrollHint := lipgloss.NewStyle().Foreground(t.Overlay).Render(fmt.Sprintf(" ↕ %d%%", scrollPct))
+		content.WriteString("\n" + scrollHint)
 	}
 
 	// Ensure stable height to prevent layout jitter

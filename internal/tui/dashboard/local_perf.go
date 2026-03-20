@@ -34,6 +34,10 @@ type localPerfTracker struct {
 	lastTPS     float64
 	lastLatency time.Duration
 	avgLatency  time.Duration
+
+	// TPSHistory stores recent tokens-per-second samples for sparkline rendering.
+	// Updated on each addOutputDelta call. Capped at 30 entries.
+	TPSHistory []float64
 }
 
 func newLocalPerfTracker(window time.Duration) *localPerfTracker {
@@ -59,6 +63,12 @@ func (t *localPerfTracker) addOutputDelta(at time.Time, deltaTokens int) {
 	t.total += deltaTokens
 	t.prune(at)
 	t.lastTPS = t.tokensPerSecond(at)
+
+	// Record TPS sample for sparkline display (capped at 30 entries)
+	t.TPSHistory = append(t.TPSHistory, t.lastTPS)
+	if len(t.TPSHistory) > 30 {
+		t.TPSHistory = t.TPSHistory[len(t.TPSHistory)-30:]
+	}
 
 	// First-token latency: when we see the first output delta after a prompt timestamp.
 	if len(t.pendingPromptTimes) > 0 {

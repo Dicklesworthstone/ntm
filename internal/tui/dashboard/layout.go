@@ -16,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -832,6 +833,17 @@ func RenderPaneDetail(pane tmux.Pane, ps PaneStatus, dims LayoutDimensions, t th
 
 			if ps.LocalTokensPerSecond > 0 {
 				lines = append(lines, fmt.Sprintf("  %.1f tok/s", ps.LocalTokensPerSecond))
+				// Show sparkline if TPS history is available
+				if len(ps.LocalTPSHistory) > 2 {
+					sparkWidth := innerWidth - 20
+					if sparkWidth > 24 {
+						sparkWidth = 24
+					}
+					if sparkWidth >= 4 {
+						spark := components.SparklineWithLabel("  tps", ps.LocalTPSHistory, sparkWidth, fmt.Sprintf("%.0f", ps.LocalTokensPerSecond))
+						lines = append(lines, spark)
+					}
+				}
 			}
 			if ps.LocalTotalTokens > 0 {
 				lines = append(lines, fmt.Sprintf("  %d tokens (session)", ps.LocalTotalTokens))

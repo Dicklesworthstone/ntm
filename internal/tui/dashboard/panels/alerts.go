@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -33,16 +34,19 @@ const newAlertPulseDuration = 3 * time.Second
 
 type AlertsPanel struct {
 	PanelBase
-	alerts []alerts.Alert
-	err    error
+	alerts   []alerts.Alert
+	err      error
+	viewport viewport.Model
 
 	firstSeen map[string]time.Time
 	now       func() time.Time
 }
 
 func NewAlertsPanel() *AlertsPanel {
+	vp := viewport.New(25, 6)
 	return &AlertsPanel{
 		PanelBase: NewPanelBase(alertsConfig()),
+		viewport:  vp,
 		firstSeen: make(map[string]time.Time),
 		now:       time.Now,
 	}
@@ -87,6 +91,11 @@ func (m *AlertsPanel) Init() tea.Cmd {
 }
 
 func (m *AlertsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.IsFocused() {
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -222,30 +231,18 @@ func (m *AlertsPanel) View() string {
 	statsStyled := lipgloss.NewStyle().Foreground(t.Subtext).Padding(0, 1).Render(stats)
 	content.WriteString(statsStyled + "\n\n")
 
-	// Calculate display limit based on height
-	// Header + Stats + 2 newlines = ~4 lines
-	// Each item = 1 line
-	availableLines := h - 4
-	if availableLines < 0 {
-		availableLines = 0
-	}
-
-	// Render alerts (Critical > Warning > Info)
-	count := 0
+	// Render ALL alerts into viewport body (let viewport handle scrolling)
+	var body strings.Builder
 
 	renderList := func(list []alerts.Alert, color lipgloss.Color, icon string) {
 		for _, a := range list {
-			if count >= availableLines {
-				return
-			}
 			msg := layout.TruncateWidthDefault(a.Message, w-6)
 			line := fmt.Sprintf("  %s %s", icon, msg)
 			style := lipgloss.NewStyle().Foreground(color)
 			if m.shouldPulse(m.alertKey(a), now) {
 				style = style.Foreground(styles.Pulse(string(color), tick)).Bold(true)
 			}
-			content.WriteString(style.Render(line) + "\n")
-			count++
+			body.WriteString(style.Render(line) + "\n")
 		}
 	}
 
@@ -257,6 +254,25 @@ func (m *AlertsPanel) View() string {
 	}
 	if len(info) > 0 {
 		renderList(info, t.Blue, "ℹ")
+	}
+
+	// Update viewport dimensions and content
+	vpHeight := h - 5 // header + stats + newlines + scroll indicator
+	if vpHeight < 3 {
+		vpHeight = 3
+	}
+	m.viewport.Width = w
+	m.viewport.Height = vpHeight
+	m.viewport.SetContent(body.String())
+
+	content.WriteString(m.viewport.View())
+
+	// Show scroll indicator if content overflows
+	totalLines := lipgloss.Height(body.String())
+	if totalLines > vpHeight {
+		scrollPct := int(m.viewport.ScrollPercent() * 100)
+		scrollHint := lipgloss.NewStyle().Foreground(t.Overlay).Render(fmt.Sprintf(" ↕ %d%%", scrollPct))
+		content.WriteString("\n" + scrollHint)
 	}
 
 	// Ensure stable height to prevent layout jitter
