@@ -1460,3 +1460,446 @@ func BenchmarkBuildAttentionDigest_Burst(b *testing.B) {
 		_ = BuildAttentionDigest(events, 0, 4001, opts)
 	}
 }
+
+// =============================================================================
+// EventsOptions / filterEventsForRobot Tests (br-kpvhy)
+// =============================================================================
+
+func TestFilterEventsForRobot_NoFilters(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Session: "proj", Category: EventCategoryPane, Actionability: ActionabilityInteresting, Severity: SeverityInfo},
+		{Cursor: 2, Session: "other", Category: EventCategoryAlert, Actionability: ActionabilityActionRequired, Severity: SeverityWarning},
+	}
+
+	opts := EventsOptions{} // No filters
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 events with no filters, got %d", len(result))
+	}
+}
+
+func TestFilterEventsForRobot_SessionFilter(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Session: "proj", Category: EventCategoryPane},
+		{Cursor: 2, Session: "other", Category: EventCategoryAlert},
+		{Cursor: 3, Session: "proj", Category: EventCategorySystem},
+	}
+
+	opts := EventsOptions{Session: "proj"}
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 events for session 'proj', got %d", len(result))
+	}
+	for _, ev := range result {
+		if ev.Session != "proj" {
+			t.Errorf("expected session 'proj', got %q", ev.Session)
+		}
+	}
+}
+
+func TestFilterEventsForRobot_CategoryFilter(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Session: "proj", Category: EventCategoryPane},
+		{Cursor: 2, Session: "proj", Category: EventCategoryAlert},
+		{Cursor: 3, Session: "proj", Category: EventCategorySystem},
+		{Cursor: 4, Session: "proj", Category: EventCategoryPane},
+	}
+
+	opts := EventsOptions{CategoryFilter: []string{string(EventCategoryPane)}}
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 pane events, got %d", len(result))
+	}
+	for _, ev := range result {
+		if ev.Category != EventCategoryPane {
+			t.Errorf("expected category 'pane', got %q", ev.Category)
+		}
+	}
+}
+
+func TestFilterEventsForRobot_ActionabilityFilter(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Actionability: ActionabilityActionRequired},
+		{Cursor: 2, Actionability: ActionabilityInteresting},
+		{Cursor: 3, Actionability: ActionabilityBackground},
+		{Cursor: 4, Actionability: ActionabilityActionRequired},
+	}
+
+	opts := EventsOptions{ActionabilityFilter: []string{string(ActionabilityActionRequired)}}
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 action_required events, got %d", len(result))
+	}
+	for _, ev := range result {
+		if ev.Actionability != ActionabilityActionRequired {
+			t.Errorf("expected actionability 'action_required', got %q", ev.Actionability)
+		}
+	}
+}
+
+func TestFilterEventsForRobot_SeverityFilter(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Severity: SeverityInfo},
+		{Cursor: 2, Severity: SeverityWarning},
+		{Cursor: 3, Severity: SeverityError},
+		{Cursor: 4, Severity: SeverityWarning},
+	}
+
+	opts := EventsOptions{SeverityFilter: []string{string(SeverityWarning), string(SeverityError)}}
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 3 {
+		t.Errorf("expected 3 warning/error events, got %d", len(result))
+	}
+}
+
+func TestFilterEventsForRobot_CombinedFilters(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Session: "proj", Category: EventCategoryPane, Actionability: ActionabilityActionRequired},
+		{Cursor: 2, Session: "proj", Category: EventCategoryAlert, Actionability: ActionabilityActionRequired},
+		{Cursor: 3, Session: "other", Category: EventCategoryPane, Actionability: ActionabilityActionRequired},
+		{Cursor: 4, Session: "proj", Category: EventCategoryPane, Actionability: ActionabilityInteresting},
+	}
+
+	opts := EventsOptions{
+		Session:             "proj",
+		CategoryFilter:      []string{string(EventCategoryPane)},
+		ActionabilityFilter: []string{string(ActionabilityActionRequired)},
+	}
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 event matching all filters, got %d", len(result))
+	}
+	if len(result) > 0 {
+		if result[0].Cursor != 1 {
+			t.Errorf("expected cursor 1, got %d", result[0].Cursor)
+		}
+	}
+}
+
+func TestFilterEventsForRobot_MultipleCategoryValues(t *testing.T) {
+	events := []AttentionEvent{
+		{Cursor: 1, Category: EventCategoryPane},
+		{Cursor: 2, Category: EventCategoryAlert},
+		{Cursor: 3, Category: EventCategorySystem},
+	}
+
+	opts := EventsOptions{CategoryFilter: []string{string(EventCategoryPane), string(EventCategoryAlert)}}
+	result := filterEventsForRobot(events, opts)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 events (pane or alert), got %d", len(result))
+	}
+}
+
+func TestToStringSetForEvents_Empty(t *testing.T) {
+	result := toStringSetForEvents(nil)
+	if result != nil {
+		t.Errorf("expected nil for empty input, got %v", result)
+	}
+
+	result = toStringSetForEvents([]string{})
+	if result != nil {
+		t.Errorf("expected nil for empty slice, got %v", result)
+	}
+}
+
+func TestToStringSetForEvents_Values(t *testing.T) {
+	input := []string{"a", "b", "c"}
+	result := toStringSetForEvents(input)
+
+	if len(result) != 3 {
+		t.Errorf("expected 3 items, got %d", len(result))
+	}
+	for _, v := range input {
+		if !result[v] {
+			t.Errorf("expected %q in set", v)
+		}
+	}
+}
+
+func TestEventsOptions_Fields(t *testing.T) {
+	// Verify the EventsOptions struct has expected fields
+	opts := EventsOptions{
+		SinceCursor:         100,
+		Limit:               50,
+		Session:             "test",
+		CategoryFilter:      []string{"pane"},
+		ActionabilityFilter: []string{"action_required"},
+		SeverityFilter:      []string{"warning"},
+	}
+
+	if opts.SinceCursor != 100 {
+		t.Errorf("expected SinceCursor 100, got %d", opts.SinceCursor)
+	}
+	if opts.Limit != 50 {
+		t.Errorf("expected Limit 50, got %d", opts.Limit)
+	}
+	if opts.Session != "test" {
+		t.Errorf("expected Session 'test', got %q", opts.Session)
+	}
+}
+
+// =============================================================================
+// DigestOptions / DigestResponse Tests (br-6tzh9)
+// =============================================================================
+
+func TestDigestOptions_Fields(t *testing.T) {
+	t.Parallel()
+
+	opts := DigestOptions{
+		SinceCursor:         100,
+		Session:             "test",
+		ActionRequiredLimit: 5,
+		InterestingLimit:    4,
+		BackgroundLimit:     3,
+		IncludeTrace:        true,
+	}
+
+	if opts.SinceCursor != 100 {
+		t.Errorf("expected SinceCursor 100, got %d", opts.SinceCursor)
+	}
+	if opts.Session != "test" {
+		t.Errorf("expected Session 'test', got %q", opts.Session)
+	}
+	if opts.ActionRequiredLimit != 5 {
+		t.Errorf("expected ActionRequiredLimit 5, got %d", opts.ActionRequiredLimit)
+	}
+	if opts.InterestingLimit != 4 {
+		t.Errorf("expected InterestingLimit 4, got %d", opts.InterestingLimit)
+	}
+	if opts.BackgroundLimit != 3 {
+		t.Errorf("expected BackgroundLimit 3, got %d", opts.BackgroundLimit)
+	}
+	if !opts.IncludeTrace {
+		t.Error("expected IncludeTrace to be true")
+	}
+}
+
+func TestDigestResponse_EmptyFeed(t *testing.T) {
+	t.Parallel()
+
+	feed := newTestAttentionFeed(t)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(nil)
+
+	opts := DigestOptions{
+		SinceCursor: 0,
+	}
+
+	// Build digest directly using feed.Digest
+	digestOpts := AttentionDigestOptions{
+		ActionRequiredLimit: 5,
+		InterestingLimit:    4,
+		BackgroundLimit:     3,
+	}
+	digest, err := feed.Digest(opts.SinceCursor, digestOpts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if digest.EventCount != 0 {
+		t.Errorf("expected 0 events in empty feed, got %d", digest.EventCount)
+	}
+	if digest.CursorStart != 0 {
+		t.Errorf("expected CursorStart 0, got %d", digest.CursorStart)
+	}
+	if digest.CursorEnd != 0 {
+		t.Errorf("expected CursorEnd 0, got %d", digest.CursorEnd)
+	}
+	if len(digest.Buckets.ActionRequired) != 0 {
+		t.Errorf("expected 0 action_required items, got %d", len(digest.Buckets.ActionRequired))
+	}
+	if len(digest.Buckets.Interesting) != 0 {
+		t.Errorf("expected 0 interesting items, got %d", len(digest.Buckets.Interesting))
+	}
+}
+
+func TestDigestResponse_WithEvents(t *testing.T) {
+	t.Parallel()
+
+	feed := newTestAttentionFeed(t)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(nil)
+
+	// Add some events
+	now := time.Now()
+	events := []AttentionEvent{
+		{
+			Ts:            now.Add(-3 * time.Minute).Format(time.RFC3339),
+			Session:       "proj",
+			Category:      EventCategoryPane,
+			Type:          EventTypePaneOutput,
+			Actionability: ActionabilityBackground,
+			Severity:      SeverityInfo,
+			Summary:       "Background output",
+		},
+		{
+			Ts:            now.Add(-2 * time.Minute).Format(time.RFC3339),
+			Session:       "proj",
+			Pane:          1,
+			Category:      EventCategoryAgent,
+			Type:          EventTypeAgentError,
+			Actionability: ActionabilityActionRequired,
+			Severity:      SeverityError,
+			Summary:       "Agent error detected",
+		},
+		{
+			Ts:            now.Add(-1 * time.Minute).Format(time.RFC3339),
+			Session:       "proj",
+			Pane:          2,
+			Category:      EventCategoryAgent,
+			Type:          EventTypeAgentStateChange,
+			Actionability: ActionabilityInteresting,
+			Severity:      SeverityWarning,
+			Summary:       "Agent waiting for prompt",
+		},
+	}
+	for _, ev := range events {
+		feed.Append(ev)
+	}
+
+	// Build digest
+	digestOpts := AttentionDigestOptions{
+		ActionRequiredLimit: 5,
+		InterestingLimit:    4,
+		BackgroundLimit:     3,
+	}
+	digest, err := feed.Digest(0, digestOpts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if digest.EventCount != 3 {
+		t.Errorf("expected 3 events, got %d", digest.EventCount)
+	}
+	if digest.CursorStart < 1 {
+		t.Errorf("expected CursorStart >= 1, got %d", digest.CursorStart)
+	}
+	if digest.CursorEnd < digest.CursorStart {
+		t.Errorf("expected CursorEnd >= CursorStart, got start=%d end=%d",
+			digest.CursorStart, digest.CursorEnd)
+	}
+
+	// Verify buckets contain expected items
+	if len(digest.Buckets.ActionRequired) == 0 {
+		t.Error("expected at least one action_required item")
+	}
+	if len(digest.Buckets.Interesting) == 0 {
+		t.Error("expected at least one interesting item")
+	}
+}
+
+func TestDigestResponse_CursorChaining(t *testing.T) {
+	t.Parallel()
+
+	feed := newTestAttentionFeed(t)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(nil)
+
+	now := time.Now()
+
+	// First batch
+	feed.Append(AttentionEvent{
+		Ts:            now.Add(-10 * time.Minute).Format(time.RFC3339),
+		Session:       "proj",
+		Category:      EventCategoryPane,
+		Type:          EventTypePaneOutput,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "First batch event",
+	})
+
+	digestOpts := AttentionDigestOptions{
+		ActionRequiredLimit: 5,
+		InterestingLimit:    4,
+		BackgroundLimit:     3,
+	}
+
+	// First digest
+	digest1, err := feed.Digest(0, digestOpts)
+	if err != nil {
+		t.Fatalf("first digest error: %v", err)
+	}
+	if digest1.EventCount != 1 {
+		t.Errorf("expected 1 event in first digest, got %d", digest1.EventCount)
+	}
+
+	// Add second batch after first digest
+	feed.Append(AttentionEvent{
+		Ts:            now.Add(-5 * time.Minute).Format(time.RFC3339),
+		Session:       "proj",
+		Category:      EventCategoryAgent,
+		Type:          EventTypeAgentStateChange,
+		Actionability: ActionabilityInteresting,
+		Severity:      SeverityInfo,
+		Summary:       "Second batch event",
+	})
+
+	// Second digest from cursor_end of first
+	digest2, err := feed.Digest(digest1.CursorEnd, digestOpts)
+	if err != nil {
+		t.Fatalf("second digest error: %v", err)
+	}
+
+	// Second digest should only have the new event
+	if digest2.EventCount != 1 {
+		t.Errorf("expected 1 event in second digest (cursor chaining), got %d", digest2.EventCount)
+	}
+	if digest2.CursorStart <= digest1.CursorEnd {
+		t.Logf("cursor chaining: first.CursorEnd=%d second.CursorStart=%d",
+			digest1.CursorEnd, digest2.CursorStart)
+	}
+}
+
+func TestDigestResponse_SessionFilter(t *testing.T) {
+	t.Parallel()
+
+	feed := newTestAttentionFeed(t)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(nil)
+
+	now := time.Now()
+
+	// Add events from different sessions
+	feed.Append(AttentionEvent{
+		Ts:            now.Add(-2 * time.Minute).Format(time.RFC3339),
+		Session:       "proj-a",
+		Category:      EventCategoryPane,
+		Type:          EventTypePaneOutput,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "Event from proj-a",
+	})
+	feed.Append(AttentionEvent{
+		Ts:            now.Add(-1 * time.Minute).Format(time.RFC3339),
+		Session:       "proj-b",
+		Category:      EventCategoryPane,
+		Type:          EventTypePaneOutput,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "Event from proj-b",
+	})
+
+	// Digest with session filter
+	digestOpts := AttentionDigestOptions{
+		Session:             "proj-a",
+		ActionRequiredLimit: 5,
+		InterestingLimit:    4,
+		BackgroundLimit:     3,
+	}
+	digest, err := feed.Digest(0, digestOpts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should only include events from proj-a
+	if digest.EventCount != 1 {
+		t.Errorf("expected 1 event for proj-a, got %d", digest.EventCount)
+	}
+}

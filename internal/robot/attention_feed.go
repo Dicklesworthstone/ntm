@@ -2483,4 +2483,4 @@ func minInt(a, b int) int {
 	return b
 }
 
-// NOTE: --robot-events command implementation lives in events.go (br-kpvhy).
+// NOTE: buildSnapshotAttentionSummary lives in robot.go (br-slg9g).

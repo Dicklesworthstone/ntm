@@ -1,0 +1,521 @@
+package robot
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+)
+
+// =============================================================================
+// --robot-events Command Implementation (br-kpvhy)
+// =============================================================================
+
+// EventsOptions configures the --robot-events command.
+type EventsOptions struct {
+	// SinceCursor is the cursor to replay from. 0 = from beginning.
+	SinceCursor int64
+
+	// Limit is the maximum number of events to return.
+	Limit int
+
+	// Session filters events to a specific session.
+	Session string
+
+	// CategoryFilter restricts to specific event categories.
+	CategoryFilter []string
+
+	// ActionabilityFilter restricts to specific actionability levels.
+	ActionabilityFilter []string
+
+	// SeverityFilter restricts to specific severity levels.
+	SeverityFilter []string
+}
+
+// EventsOutput is the JSON response for --robot-events.
+type EventsOutput struct {
+	RobotResponse
+
+	// Events is the list of events matching the query.
+	Events []AttentionEvent `json:"events"`
+
+	// NextCursor is the cursor to use for the next request.
+	// Use this as --since-cursor for the next call to continue from here.
+	NextCursor int64 `json:"next_cursor"`
+
+	// HasMore indicates if more events exist beyond limit.
+	HasMore bool `json:"has_more"`
+
+	// ReplayWindow describes the available cursor range.
+	ReplayWindow *SnapshotReplayWindowInfo `json:"replay_window,omitempty"`
+}
+
+// PrintEvents outputs attention events since a cursor with optional filtering.
+// This is the raw replay/feed surface for robot clients.
+func PrintEvents(opts EventsOptions) error {
+	feed := GetAttentionFeed()
+	if feed == nil {
+		return outputJSON(EventsOutput{
+			RobotResponse: NewErrorResponse(
+				errors.New("attention feed not initialized"),
+				"FEED_UNAVAILABLE",
+				"The attention feed service is not running",
+			),
+			Events: []AttentionEvent{},
+		})
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	// Replay events from the feed
+	events, newestCursor, err := feed.Replay(opts.SinceCursor, limit+1)
+	if err != nil {
+		var cursorErr *CursorExpiredError
+		if errors.As(err, &cursorErr) {
+			details := cursorErr.ToDetails()
+			return outputJSON(EventsOutput{
+				RobotResponse: NewErrorResponse(
+					cursorErr,
+					ErrCodeCursorExpired,
+					details.ResyncCommand,
+				),
+				Events: []AttentionEvent{},
+				ReplayWindow: &SnapshotReplayWindowInfo{
+					Supported:       true,
+					OldestCursor:    details.EarliestCursor,
+					RetentionPeriod: details.RetentionPeriod,
+					ResyncCommand:   details.ResyncCommand,
+				},
+			})
+		}
+		return outputJSON(EventsOutput{
+			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, ""),
+			Events:        []AttentionEvent{},
+		})
+	}
+
+	// Apply filters
+	filtered := filterEventsForRobot(events, opts)
+
+	// Determine if there are more events
+	hasMore := len(filtered) > limit
+	if hasMore {
+		filtered = filtered[:limit]
+	}
+
+	// Compute next cursor
+	nextCursor := int64(0)
+	if len(filtered) > 0 {
+		nextCursor = filtered[len(filtered)-1].Cursor
+	} else if newestCursor > 0 {
+		nextCursor = newestCursor
+	}
+
+	// Build replay window info
+	stats := feed.Stats()
+	replayWindow := &SnapshotReplayWindowInfo{
+		Supported:       true,
+		OldestCursor:    stats.OldestCursor,
+		LatestCursor:    stats.NewestCursor,
+		RetentionPeriod: stats.RetentionPeriod.String(),
+		ResyncCommand:   "ntm --robot-snapshot",
+	}
+
+	return outputJSON(EventsOutput{
+		RobotResponse: RobotResponse{
+			Success:      true,
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			Version:      AttentionContractVersion,
+			OutputFormat: "json",
+		},
+		Events:       filtered,
+		NextCursor:   nextCursor,
+		HasMore:      hasMore,
+		ReplayWindow: replayWindow,
+	})
+}
+
+// filterEventsForRobot applies category, actionability, severity, and session filters.
+func filterEventsForRobot(events []AttentionEvent, opts EventsOptions) []AttentionEvent {
+	if len(opts.CategoryFilter) == 0 && len(opts.ActionabilityFilter) == 0 &&
+		len(opts.SeverityFilter) == 0 && opts.Session == "" {
+		return events
+	}
+
+	categorySet := toStringSetForEvents(opts.CategoryFilter)
+	actionabilitySet := toStringSetForEvents(opts.ActionabilityFilter)
+	severitySet := toStringSetForEvents(opts.SeverityFilter)
+
+	filtered := make([]AttentionEvent, 0, len(events))
+	for _, event := range events {
+		if len(categorySet) > 0 && !categorySet[string(event.Category)] {
+			continue
+		}
+		if len(actionabilitySet) > 0 && !actionabilitySet[string(event.Actionability)] {
+			continue
+		}
+		if len(severitySet) > 0 && !severitySet[string(event.Severity)] {
+			continue
+		}
+		if opts.Session != "" && event.Session != opts.Session {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered
+}
+
+// toStringSetForEvents converts a slice of strings to a set (map[string]bool).
+func toStringSetForEvents(strs []string) map[string]bool {
+	if len(strs) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(strs))
+	for _, s := range strs {
+		set[s] = true
+	}
+	return set
+}
+
+// =============================================================================
+// --robot-overlay (br-a6cmp)
+// =============================================================================
+
+var overlayExecCommand = exec.Command
+
+// OverlayOptions configures the --robot-overlay command.
+type OverlayOptions struct {
+	Session string
+	Cursor  int64
+	NoWait  bool
+}
+
+// OverlayOutput reports the result of a --robot-overlay request.
+type OverlayOutput struct {
+	RobotResponse
+	Session   string `json:"session"`
+	Cursor    int64  `json:"cursor,omitempty"`
+	NoWait    bool   `json:"no_wait"`
+	Launched  bool   `json:"launched"`
+	Dismissed bool   `json:"dismissed"`
+	PID       int    `json:"pid,omitempty"`
+}
+
+func overlayPopupInnerCommand(ntmBin, session string, attentionCursor int64) string {
+	parts := []string{
+		"NTM_POPUP=1",
+		tmux.ShellQuote(ntmBin),
+		"dashboard",
+		"--popup",
+	}
+	if attentionCursor > 0 {
+		parts = append(parts, "--attention-cursor", strconv.FormatInt(attentionCursor, 10))
+	}
+	parts = append(parts, tmux.ShellQuote(session))
+	return strings.Join(parts, " ")
+}
+
+func overlayPopupArgs(ntmBin, session string, attentionCursor int64) []string {
+	return []string{
+		"display-popup",
+		"-E",
+		"-w", "95%",
+		"-h", "95%",
+		overlayPopupInnerCommand(ntmBin, session, attentionCursor),
+	}
+}
+
+func newOverlayErrorOutput(opts OverlayOptions, err error, code, hint string) OverlayOutput {
+	return OverlayOutput{
+		RobotResponse: NewErrorResponse(err, code, hint),
+		Session:       strings.TrimSpace(opts.Session),
+		Cursor:        opts.Cursor,
+		NoWait:        opts.NoWait,
+	}
+}
+
+// PrintOverlay launches the dashboard overlay and returns JSON status.
+func PrintOverlay(opts OverlayOptions) error {
+	session := strings.TrimSpace(opts.Session)
+	if session == "" {
+		return outputJSON(newOverlayErrorOutput(
+			opts,
+			fmt.Errorf("session is required"),
+			ErrCodeInvalidFlag,
+			"Pass --robot-overlay=<session>",
+		))
+	}
+	if opts.Cursor < 0 {
+		return outputJSON(newOverlayErrorOutput(
+			opts,
+			fmt.Errorf("overlay cursor must be >= 0"),
+			ErrCodeInvalidFlag,
+			"Use --overlay-cursor with a non-negative event cursor",
+		))
+	}
+	if !tmux.IsInstalled() {
+		return outputJSON(newOverlayErrorOutput(
+			opts,
+			fmt.Errorf("tmux not installed"),
+			ErrCodeDependencyMissing,
+			"Install tmux to use overlay popups",
+		))
+	}
+	if !tmux.InTmux() {
+		return outputJSON(newOverlayErrorOutput(
+			opts,
+			fmt.Errorf("overlay requires an attached tmux client"),
+			ErrCodeInternalError,
+			"Run --robot-overlay from inside tmux so tmux can draw the popup",
+		))
+	}
+	if !tmux.SessionExists(session) {
+		return outputJSON(newOverlayErrorOutput(
+			OverlayOptions{Session: session, Cursor: opts.Cursor, NoWait: opts.NoWait},
+			fmt.Errorf("session %q not found", session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		))
+	}
+
+	ntmBin, err := os.Executable()
+	if err != nil || strings.TrimSpace(ntmBin) == "" {
+		ntmBin = "ntm"
+	}
+
+	cmd := overlayExecCommand(tmux.BinaryPath(), overlayPopupArgs(ntmBin, session, opts.Cursor)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	output := OverlayOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       session,
+		Cursor:        opts.Cursor,
+		NoWait:        opts.NoWait,
+	}
+
+	if opts.NoWait {
+		if err := cmd.Start(); err != nil {
+			return outputJSON(newOverlayErrorOutput(
+				OverlayOptions{Session: session, Cursor: opts.Cursor, NoWait: opts.NoWait},
+				err,
+				ErrCodeInternalError,
+				"Check that tmux popup support is available in this client",
+			))
+		}
+		output.Launched = true
+		if cmd.Process != nil {
+			output.PID = cmd.Process.Pid
+			_ = cmd.Process.Release()
+		}
+		return outputJSON(output)
+	}
+
+	if err := cmd.Run(); err != nil {
+		return outputJSON(newOverlayErrorOutput(
+			OverlayOptions{Session: session, Cursor: opts.Cursor, NoWait: opts.NoWait},
+			err,
+			ErrCodeInternalError,
+			"Check that tmux popup support is available in this client",
+		))
+	}
+
+	output.Launched = true
+	output.Dismissed = true
+	return outputJSON(output)
+}
+
+// =============================================================================
+// --robot-digest Command Implementation (br-6tzh9)
+// =============================================================================
+
+// DigestOptions configures the --robot-digest command.
+type DigestOptions struct {
+	// SinceCursor is the cursor to digest from. 0 = from beginning.
+	SinceCursor int64
+
+	// Session filters events to a specific session.
+	Session string
+
+	// ActionRequiredLimit is the max action_required items to surface.
+	ActionRequiredLimit int
+
+	// InterestingLimit is the max interesting items to surface.
+	InterestingLimit int
+
+	// BackgroundLimit is the max background items to surface.
+	BackgroundLimit int
+
+	// IncludeTrace enables detailed decision tracing for debugging.
+	IncludeTrace bool
+}
+
+// DigestResponse is the JSON response for --robot-digest.
+// It wraps AttentionDigest with robot envelope and replay window metadata.
+type DigestResponse struct {
+	RobotResponse
+
+	// CursorStart is the earliest cursor in this digest window.
+	CursorStart int64 `json:"cursor_start"`
+
+	// CursorEnd is the latest cursor included in this digest.
+	// Use this as --since-cursor for the next call.
+	CursorEnd int64 `json:"cursor_end"`
+
+	// PeriodStart is the RFC3339 timestamp of the earliest event.
+	PeriodStart string `json:"period_start,omitempty"`
+
+	// PeriodEnd is the RFC3339 timestamp of the latest event.
+	PeriodEnd string `json:"period_end,omitempty"`
+
+	// EventCount is the total raw events that were processed.
+	EventCount int `json:"event_count"`
+
+	// ByCategory breaks down event counts by category.
+	ByCategory map[EventCategory]int `json:"by_category"`
+
+	// ByActionability breaks down event counts by actionability level.
+	ByActionability map[Actionability]int `json:"by_actionability"`
+
+	// Buckets contains the surfaced digest items by urgency.
+	Buckets AttentionDigestBuckets `json:"buckets"`
+
+	// Suppressed summarizes how much feed noise was filtered out.
+	Suppressed AttentionDigestSuppression `json:"suppressed"`
+
+	// Summary is a human-readable summary of the digest.
+	Summary string `json:"summary"`
+
+	// Trace contains detailed decision logs when IncludeTrace is enabled.
+	Trace []AttentionDigestDecision `json:"trace,omitempty"`
+
+	// ReplayWindow describes the available cursor range for follow-up commands.
+	ReplayWindow *SnapshotReplayWindowInfo `json:"replay_window,omitempty"`
+}
+
+// PrintDigest outputs a token-efficient digest of what changed since a cursor.
+// This is the default delta surface for operators that don't need raw event replay.
+func PrintDigest(opts DigestOptions) error {
+	feed := GetAttentionFeed()
+	if feed == nil {
+		return outputJSON(DigestResponse{
+			RobotResponse: NewErrorResponse(
+				errors.New("attention feed not initialized"),
+				"FEED_UNAVAILABLE",
+				"The attention feed service is not running",
+			),
+			ByCategory:      map[EventCategory]int{},
+			ByActionability: map[Actionability]int{},
+			Buckets: AttentionDigestBuckets{
+				ActionRequired: []AttentionDigestItem{},
+				Interesting:    []AttentionDigestItem{},
+				Background:     []AttentionDigestItem{},
+			},
+			Suppressed: AttentionDigestSuppression{ByReason: map[string]int{}},
+		})
+	}
+
+	// Build digest options from CLI options
+	digestOpts := AttentionDigestOptions{
+		Session:             opts.Session,
+		ActionRequiredLimit: opts.ActionRequiredLimit,
+		InterestingLimit:    opts.InterestingLimit,
+		BackgroundLimit:     opts.BackgroundLimit,
+		IncludeTrace:        opts.IncludeTrace,
+	}
+
+	// Apply defaults if not specified
+	if digestOpts.ActionRequiredLimit <= 0 {
+		digestOpts.ActionRequiredLimit = 5
+	}
+	if digestOpts.InterestingLimit <= 0 {
+		digestOpts.InterestingLimit = 4
+	}
+	if digestOpts.BackgroundLimit <= 0 {
+		digestOpts.BackgroundLimit = 3
+	}
+
+	// Build the digest
+	digest, err := feed.Digest(opts.SinceCursor, digestOpts)
+	if err != nil {
+		var cursorErr *CursorExpiredError
+		if errors.As(err, &cursorErr) {
+			details := cursorErr.ToDetails()
+			return outputJSON(DigestResponse{
+				RobotResponse: NewErrorResponse(
+					cursorErr,
+					ErrCodeCursorExpired,
+					details.ResyncCommand,
+				),
+				ByCategory:      map[EventCategory]int{},
+				ByActionability: map[Actionability]int{},
+				Buckets: AttentionDigestBuckets{
+					ActionRequired: []AttentionDigestItem{},
+					Interesting:    []AttentionDigestItem{},
+					Background:     []AttentionDigestItem{},
+				},
+				Suppressed: AttentionDigestSuppression{ByReason: map[string]int{}},
+				ReplayWindow: &SnapshotReplayWindowInfo{
+					Supported:       true,
+					OldestCursor:    details.EarliestCursor,
+					RetentionPeriod: details.RetentionPeriod,
+					ResyncCommand:   details.ResyncCommand,
+				},
+			})
+		}
+		return outputJSON(DigestResponse{
+			RobotResponse:   NewErrorResponse(err, ErrCodeInternalError, ""),
+			ByCategory:      map[EventCategory]int{},
+			ByActionability: map[Actionability]int{},
+			Buckets: AttentionDigestBuckets{
+				ActionRequired: []AttentionDigestItem{},
+				Interesting:    []AttentionDigestItem{},
+				Background:     []AttentionDigestItem{},
+			},
+			Suppressed: AttentionDigestSuppression{ByReason: map[string]int{}},
+		})
+	}
+
+	// Build replay window info
+	stats := feed.Stats()
+	replayWindow := &SnapshotReplayWindowInfo{
+		Supported:       true,
+		OldestCursor:    stats.OldestCursor,
+		LatestCursor:    stats.NewestCursor,
+		RetentionPeriod: stats.RetentionPeriod.String(),
+		ResyncCommand:   "ntm --robot-snapshot",
+	}
+
+	return outputJSON(DigestResponse{
+		RobotResponse: RobotResponse{
+			Success:      true,
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			Version:      AttentionContractVersion,
+			OutputFormat: "json",
+		},
+		CursorStart:     digest.CursorStart,
+		CursorEnd:       digest.CursorEnd,
+		PeriodStart:     digest.PeriodStart,
+		PeriodEnd:       digest.PeriodEnd,
+		EventCount:      digest.EventCount,
+		ByCategory:      digest.ByCategory,
+		ByActionability: digest.ByActionability,
+		Buckets:         digest.Buckets,
+		Suppressed:      digest.Suppressed,
+		Summary:         digest.Summary,
+		Trace:           digest.Trace,
+		ReplayWindow:    replayWindow,
+	})
+}

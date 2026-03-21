@@ -265,6 +265,24 @@ Shell Integration:
 			}
 			return
 		}
+		if robotEvents {
+			opts := robot.EventsOptions{
+				SinceCursor: robotEventsSinceCursor,
+				Limit:       robotEventsLimit,
+				Session:     robotEventsSession,
+			}
+			if robotEventsCategory != "" {
+				opts.CategoryFilter = []string{robotEventsCategory}
+			}
+			if robotEventsActionability != "" {
+				opts.ActionabilityFilter = []string{robotEventsActionability}
+			}
+			if err := robot.PrintEvents(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotGraph {
 			if err := robot.PrintGraph(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2118,6 +2136,12 @@ var (
 	robotPlan                  bool
 	robotSnapshot              bool   // unified state query
 	robotSince                 string // ISO8601 timestamp for delta snapshot
+	robotEvents              bool   // raw replay/feed surface
+	robotEventsSinceCursor   int64  // cursor for --robot-events
+	robotEventsLimit         int    // max events for --robot-events
+	robotEventsCategory      string // category filter for --robot-events
+	robotEventsSession       string // session filter for --robot-events
+	robotEventsActionability string // actionability filter for --robot-events
 	robotTail                  string // session name for tail
 	robotWatchBead             string // session name for bead mention watch
 	robotWatchBeadID           string // bead ID for watch command
@@ -2592,6 +2616,12 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotPlan, "robot-plan", false, "Get bv execution plan with parallelizable tracks (JSON). Example: ntm --robot-plan")
 	rootCmd.Flags().BoolVar(&robotSnapshot, "robot-snapshot", false, "Unified state: sessions + beads + alerts + mail. Use --since for delta. Example: ntm --robot-snapshot")
 	rootCmd.Flags().StringVar(&robotSince, "since", "", "RFC3339 timestamp for delta snapshot. Optional with --robot-snapshot. Example: --since=2025-12-15T10:00:00Z")
+	rootCmd.Flags().BoolVar(&robotEvents, "robot-events", false, "Stream attention events since cursor. Use for raw replay/feed. Example: ntm --robot-events --since-cursor=42 --limit=50")
+	rootCmd.Flags().Int64Var(&robotEventsSinceCursor, "since-cursor", 0, "Cursor position to replay from. Optional with --robot-events. Example: --since-cursor=42")
+	rootCmd.Flags().IntVar(&robotEventsLimit, "events-limit", 100, "Max events to return. Optional with --robot-events. Example: --events-limit=50")
+	rootCmd.Flags().StringVar(&robotEventsCategory, "events-category", "", "Filter by event category. Optional with --robot-events. Example: --events-category=agent")
+	rootCmd.Flags().StringVar(&robotEventsSession, "events-session", "", "Filter by session name. Optional with --robot-events. Example: --events-session=myproject")
+	rootCmd.Flags().StringVar(&robotEventsActionability, "events-actionability", "", "Filter by actionability level. Optional with --robot-events. Values: action_required, interesting, background")
 	rootCmd.Flags().StringVar(&robotTail, "robot-tail", "", "Capture recent pane output. Required: SESSION. Example: ntm --robot-tail=myproject --lines=50")
 	rootCmd.Flags().StringVar(&robotWatchBead, "robot-watch-bead", "", "Capture bead mentions across panes plus current bead status (JSON snapshot). Required: SESSION")
 	rootCmd.Flags().StringVar(&robotWatchBeadID, "bead", "", "Bead ID for --robot-watch-bead. Example: --bead=bd-abc123")
