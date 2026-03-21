@@ -36,6 +36,7 @@ type RobotParameter struct {
 // categoryOrder defines the canonical order for categories
 var categoryOrder = []string{
 	"state",
+	"attention",
 	"ensemble",
 	"control",
 	"spawn",
@@ -366,6 +367,54 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "summary-since", Flag: "--summary-since", Type: "string", Required: false, Default: "30m", Description: "Duration to look back"},
 			},
 			Examples: []string{"ntm --robot-summary=myproject --summary-since=1h"},
+		},
+
+		// === ATTENTION FEED (Operator Loop) ===
+		{
+			Name:        "events",
+			Flag:        "--robot-events",
+			Category:    "attention",
+			Description: "Raw event replay from the attention feed. Returns events since the specified cursor with pagination support. Use this for full event history or debugging; prefer --robot-digest or --robot-attention for operator loops.",
+			Parameters: []RobotParameter{
+				{Name: "since-cursor", Flag: "--since-cursor", Type: "int", Required: false, Default: "0", Description: "Replay events after this cursor (0 = all)"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "100", Description: "Max events to return"},
+				{Name: "profile", Flag: "--profile", Type: "string", Required: false, Default: "operator", Description: "Attention profile: operator, debug, minimal, alerts"},
+			},
+			Examples: []string{
+				"ntm --robot-events",
+				"ntm --robot-events --since-cursor=42 --limit=50",
+				"ntm --robot-events --profile=debug",
+			},
+		},
+		{
+			Name:        "digest",
+			Flag:        "--robot-digest",
+			Category:    "attention",
+			Description: "Aggregated summary of recent attention events. Returns counts, top items, and category breakdown without waiting. Use for quick status checks; prefer --robot-attention for blocking operator loops.",
+			Parameters: []RobotParameter{
+				{Name: "profile", Flag: "--profile", Type: "string", Required: false, Default: "operator", Description: "Attention profile: operator, debug, minimal, alerts"},
+			},
+			Examples: []string{
+				"ntm --robot-digest",
+				"ntm --robot-digest --profile=minimal",
+			},
+		},
+		{
+			Name:        "attention",
+			Flag:        "--robot-attention",
+			Category:    "attention",
+			Description: "The canonical tending primitive: wait until attention is needed, then return a digest with wake reason and next cursor. This is the one obvious way to implement an operator loop. Combines wait + digest semantics with cursor handoff for mechanical replay.",
+			Parameters: []RobotParameter{
+				{Name: "since-cursor", Flag: "--since-cursor", Type: "int", Required: false, Default: "0", Description: "Wait for events after this cursor"},
+				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "5m", Description: "Maximum wait time before returning"},
+				{Name: "profile", Flag: "--profile", Type: "string", Required: false, Default: "operator", Description: "Attention profile: operator, debug, minimal, alerts"},
+				{Name: "condition", Flag: "--condition", Type: "string", Required: false, Description: "Additional wait conditions (comma-separated): action_required, mail_pending, context_hot, etc."},
+			},
+			Examples: []string{
+				"ntm --robot-attention",
+				"ntm --robot-attention --since-cursor=42 --timeout=2m",
+				"ntm --robot-attention --profile=debug --condition=action_required",
+			},
 		},
 
 		// === AGENT CONTROL ===
