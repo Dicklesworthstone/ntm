@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -482,7 +483,8 @@ type Model struct {
 	ensembleModes     synthtui.ModeVisualization
 
 	// Help overlay
-	showHelp bool
+	showHelp  bool
+	helpModel help.Model // bubbles/help for rendering keybindings
 
 	// Help verbosity (minimal/full), sourced from config (help_verbosity)
 	helpVerbosity string
@@ -697,6 +699,38 @@ type KeyMap struct {
 	Num9           key.Binding
 }
 
+// ShortHelp returns the short help bindings for the footer bar.
+// Implements help.KeyMap interface.
+func (k KeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Help, k.Quit, k.Tab, k.Zoom, k.Refresh}
+}
+
+// FullHelp returns the full help bindings for the help overlay.
+// Implements help.KeyMap interface.
+func (k KeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.Left, k.Right, k.Zoom},    // Navigation
+		{k.Tab, k.ShiftTab, k.NextPanel, k.Send},   // Panels & Actions
+		{k.Refresh, k.ContextRefresh, k.MailRefresh, k.CassSearch}, // Data
+		{k.Help, k.Quit, k.Pause, k.Diagnostics},   // Control
+	}
+}
+
+// Compile-time check that KeyMap implements help.KeyMap
+var _ help.KeyMap = KeyMap{}
+
+// newHelpModel creates a styled help.Model using the current theme.
+func newHelpModel(t theme.Theme) help.Model {
+	h := help.New()
+	h.Styles.ShortKey = lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	h.Styles.ShortDesc = lipgloss.NewStyle().Foreground(t.Subtext)
+	h.Styles.ShortSeparator = lipgloss.NewStyle().Foreground(t.Overlay)
+	h.Styles.FullKey = lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	h.Styles.FullDesc = lipgloss.NewStyle().Foreground(t.Subtext)
+	h.Styles.FullSeparator = lipgloss.NewStyle().Foreground(t.Overlay)
+	return h
+}
+
 // DefaultRefreshInterval is the default auto-refresh interval
 const DefaultRefreshInterval = 2 * time.Second
 
@@ -808,6 +842,7 @@ func New(session, projectDir string) Model {
 		agentMailInboxErrors:       make(map[string]error),
 		agentMailAgents:            make(map[string]string),
 		helpVerbosity:              "full",
+		helpModel:                  newHelpModel(t),
 		cassSearch: components.NewCassSearch(func(hit cass.SearchHit) tea.Cmd {
 			return func() tea.Msg {
 				return CassSelectMsg{Hit: hit}
@@ -1000,6 +1035,8 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 	if prevWidth != m.width {
 		m.renderedOutputCache = make(map[string]string)
+		// Update help model width for responsive rendering
+		m.helpModel.Width = width - 4
 	}
 
 	searchW := int(float64(width) * 0.6)
@@ -1074,6 +1111,12 @@ func (m Model) getTickInterval() time.Duration {
 	idleTick := m.idleTick
 	if idleTick == 0 {
 		idleTick = 500 * time.Millisecond
+	}
+
+	// Use fast tick during toast animations for smooth spring physics
+	if m.toasts != nil && m.toasts.IsAnimating() {
+		// ~60 FPS for smooth spring animation
+		return 16 * time.Millisecond
 	}
 
 	switch m.activityState {
@@ -3260,6 +3303,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.checkpointCount++
 			m.checkpointStatus = "recent"
 			m.checkpointError = nil
+		}
+		return m, nil
+
+	case tea.MouseMsg:
+		// Track activity for adaptive tick rate
+		m.lastActivity = time.Now()
+		m.activityState = StateActive
+
+		// Log mouse events in debug mode
+		if os.Getenv("NTM_DEBUG") == "1" {
+			log.Printf("mouse: button=%d x=%d y=%d action=%v", msg.Button, msg.X, msg.Y, msg.Action)
+		}
+
+		// Handle mouse wheel for scrolling pane selection
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			if m.cursor < len(m.panes)-1 {
+				m.cursor++
+			}
+			return m, nil
+		case tea.MouseButtonLeft:
+			if msg.Action == tea.MouseActionPress {
+				// Click to dismiss toasts
+				if m.toasts != nil && m.toasts.Count() > 0 {
+					// Toast area is typically at top-right; simple heuristic
+					if msg.X > m.width-40 && msg.Y < 5 {
+						m.toasts = components.NewToastManager()
+						return m, nil
+					}
+				}
+				// Click on pane list to select (left side of dashboard)
+				if msg.X < m.width/4 && msg.Y > 3 {
+					// Map Y position to pane index (rough heuristic)
+					paneIndex := (msg.Y - 4) / 2
+					if paneIndex >= 0 && paneIndex < len(m.panes) {
+						m.cursor = paneIndex
+						return m, nil
+					}
+				}
+			}
 		}
 		return m, nil
 
@@ -7001,11 +7089,24 @@ func RunPopup(session, projectDir string) (*PostQuitAction, error) {
 	return RunWithOptions(session, projectDir, true)
 }
 
+// mouseEnabled returns true if NTM_MOUSE is not explicitly disabled.
+// Mouse support is enabled by default; set NTM_MOUSE=0 to disable.
+func mouseEnabled() bool {
+	if v, ok := os.LookupEnv("NTM_MOUSE"); ok && (v == "0" || v == "false") {
+		return false
+	}
+	return true
+}
+
 // RunWithOptions starts the dashboard with configurable options.
 func RunWithOptions(session, projectDir string, popupMode bool) (*PostQuitAction, error) {
 	model := New(session, projectDir)
 	model.popupMode = popupMode
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	if mouseEnabled() {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	p := tea.NewProgram(model, opts...)
 	finalModel, err := p.Run()
 	if err != nil {
 		return nil, err
