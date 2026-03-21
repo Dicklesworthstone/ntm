@@ -115,6 +115,16 @@ func popupEnvEnabled() bool {
 	return value != "" && value != "0"
 }
 
+func isSessionMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "can't find session") ||
+		strings.Contains(msg, "session not found") ||
+		strings.Contains(msg, "has-session")
+}
+
 func startDashboardReservationWatcher(session, projectDir string) func() {
 	if cfg == nil || !cfg.FileReservation.Enabled || !cfg.AgentMail.Enabled {
 		return nil
@@ -349,10 +359,6 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 	res.ExplainIfInferred(errW)
 	session = res.Session
 
-	if !tmux.SessionExists(session) {
-		return fmt.Errorf("session '%s' not found", session)
-	}
-
 	// Auto-popup: if we're inside tmux AND inside the same session we're
 	// monitoring, launch as an overlay popup instead of consuming a pane.
 	// Skip if already in popup mode (--popup flag or NTM_POPUP env) to
@@ -362,6 +368,18 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 		if currentSession == session {
 			return launchOverlayPopup(session, "", attentionCursor)
 		}
+	}
+
+	prefetchCtx, cancelPrefetch := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	initialPanes, err := tmux.GetPanesWithActivityContext(prefetchCtx, session)
+	cancelPrefetch()
+	if err != nil {
+		if isSessionMissingError(err) {
+			return fmt.Errorf("session '%s' not found", session)
+		}
+		// Fall back to the original lazy dashboard fetch path for transient tmux
+		// errors or slow prefetches so startup optimization never changes results.
+		initialPanes = nil
 	}
 
 	projectDir := ""
@@ -386,6 +404,7 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 	action, err := dashboard.RunWithOptions(session, projectDir, dashboard.RunOptions{
 		PopupMode:       popup,
 		AttentionCursor: attentionCursor,
+		InitialPanes:    initialPanes,
 	})
 	if err != nil {
 		return err

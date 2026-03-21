@@ -2023,10 +2023,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd := m.startConfigWatcher(); cmd != nil {
 				warmupCmds = append(warmupCmds, cmd)
 			}
-			if m.mouseWarmupPending {
-				m.mouseWarmupPending = false
-				warmupCmds = append(warmupCmds, tea.EnableMouseCellMotion)
-			}
 			return m, tea.Batch(warmupCmds...)
 		}
 
@@ -2042,6 +2038,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.startupWarmupDone = true
 
+		if cmd := m.startRendererInit(); cmd != nil {
+			warmupCmds = append(warmupCmds, cmd)
+		}
+		if cmd := m.startConfigWatcher(); cmd != nil {
+			warmupCmds = append(warmupCmds, cmd)
+		}
 		if cmd := m.requestStatusesFetch(); cmd != nil {
 			warmupCmds = append(warmupCmds, cmd)
 		}
@@ -2891,6 +2893,26 @@ func (m *Model) updateStats() {
 			m.userCount++
 		}
 	}
+}
+
+func (m *Model) seedInitialPanes(panesWithActivity []tmux.PaneActivity) {
+	if len(panesWithActivity) == 0 {
+		return
+	}
+
+	seeded := make([]tmux.Pane, 0, len(panesWithActivity))
+	for _, pane := range panesWithActivity {
+		seeded = append(seeded, pane.Pane)
+	}
+	sort.Slice(seeded, func(i, j int) bool {
+		return seeded[i].Index < seeded[j].Index
+	})
+
+	m.panes = seeded
+	m.initialPaneSnapshotDone = true
+	m.updateStats()
+	_ = m.rebuildPaneList()
+	m.lastRefresh = time.Now()
 }
 
 // updateTickerData updates the ticker panel with current dashboard data

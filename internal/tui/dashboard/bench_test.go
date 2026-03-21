@@ -173,6 +173,17 @@ func BenchmarkDashboardUpdate(b *testing.B) {
 	}
 }
 
+func BenchmarkDashboardNew(b *testing.B) {
+	configureDashboardPerfEnv(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m := New("bench", "")
+		m.cleanup()
+	}
+}
+
 // TestViewRenderTime verifies View() stays under 16ms for 60fps.
 func TestViewRenderTime(t *testing.T) {
 	if testing.Short() {

@@ -6,6 +6,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // Run starts the dashboard.
@@ -32,11 +34,15 @@ func mouseEnabled() bool {
 type RunOptions struct {
 	PopupMode       bool
 	AttentionCursor int64
+	InitialPanes    []tmux.PaneActivity
 }
 
 // RunWithOptions starts the dashboard with configurable options.
 func RunWithOptions(session, projectDir string, opts RunOptions) (*PostQuitAction, error) {
 	model := New(session, projectDir)
+	if len(opts.InitialPanes) > 0 {
+		model.seedInitialPanes(opts.InitialPanes)
+	}
 	if opts.AttentionCursor > 0 {
 		model.requestAttentionCursor(opts.AttentionCursor)
 	}

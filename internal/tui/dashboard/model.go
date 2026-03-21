@@ -181,7 +181,6 @@ type Model struct {
 	spawnActive         bool // Whether a spawn is currently active (for adaptive polling)
 	fetchingPTHealth    bool // Whether we're currently fetching process_triage health states
 	startupWarmupDone   bool // Ensures post-startup background warmup only runs once
-	mouseWarmupPending  bool // Enable mouse support after the first painted frame
 
 	// Coalescing/cancellation for user-triggered refreshes
 	sessionFetchPending bool
