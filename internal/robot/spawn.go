@@ -544,7 +544,8 @@ func waitForAgentsReady(output *SpawnOutput, timeout time.Duration) {
 }
 
 // isAgentReady checks if agent output indicates ready state.
-func isAgentReady(output, agentType string) bool {
+// Note: agentType is accepted for future type-specific detection but currently unused.
+func isAgentReady(output, _ string) bool {
 	lower := strings.ToLower(output)
 
 	// Common ready indicators (case-insensitive)
