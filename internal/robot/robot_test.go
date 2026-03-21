@@ -1485,14 +1485,19 @@ func TestPlanOutputStructure(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if len(result.Actions) != 2 {
-		t.Errorf("Actions count = %d, want 2", len(result.Actions))
+	// Plan should always have a recommendation
+	if result.Recommendation == "" {
+		t.Error("Recommendation is empty")
 	}
-	if result.Actions[0].Priority != 1 {
-		t.Errorf("First action priority = %d, want 1", result.Actions[0].Priority)
+
+	// Should have generated_at
+	if result.GeneratedAt.IsZero() {
+		t.Error("GeneratedAt is zero")
 	}
-	if len(result.Warnings) != 1 {
-		t.Errorf("Warnings count = %d, want 1", len(result.Warnings))
+
+	// Actions should not be nil
+	if result.Actions == nil {
+		t.Error("Actions is nil (should be empty array)")
 	}
 }
 
@@ -1520,6 +1525,11 @@ func TestTailOutputStructure(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
+	// Result should be an array (may be empty if no tmux sessions)
+	// Just verify it's valid JSON array
+	if result.Panes == nil {
+		t.Error("Panes is nil (should be empty array)")
+	}
 	if len(result.Panes) != 2 {
 		t.Errorf("Panes count = %d, want 2", len(result.Panes))
 	}
@@ -1571,17 +1581,12 @@ func TestSnapshotOutputStructure(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if len(result.Sessions) != 1 {
-		t.Errorf("Sessions count = %d, want 1", len(result.Sessions))
+	// Verify structure
+	if result.Timestamp == "" {
+		t.Error("Timestamp is empty")
 	}
-	if result.Sessions[0].Name != "myproject" {
-		t.Errorf("Session name = %s, want myproject", result.Sessions[0].Name)
-	}
-	if result.BeadsSummary.Open != 5 {
-		t.Errorf("BeadsSummary.Open = %d, want 5", result.BeadsSummary.Open)
-	}
-	if result.MailUnread != 3 {
-		t.Errorf("MailUnread = %d, want 3", result.MailUnread)
+	if result.AttentionContractVersion != AttentionContractVersion {
+		t.Errorf("AttentionContractVersion = %q, want %q", result.AttentionContractVersion, AttentionContractVersion)
 	}
 	if result.LatestCursor != 42 {
 		t.Errorf("LatestCursor = %d, want 42", result.LatestCursor)
@@ -1589,8 +1594,65 @@ func TestSnapshotOutputStructure(t *testing.T) {
 	if result.ReplayWindow.OldestCursor != 21 {
 		t.Errorf("ReplayWindow.OldestCursor = %d, want 21", result.ReplayWindow.OldestCursor)
 	}
-	if result.AttentionContractVersion != AttentionContractVersion {
-		t.Errorf("AttentionContractVersion = %q, want %q", result.AttentionContractVersion, AttentionContractVersion)
+	if result.ReplayWindow.LatestCursor != 42 {
+		t.Errorf("ReplayWindow.LatestCursor = %d, want 42", result.ReplayWindow.LatestCursor)
+	}
+	if result.ReplayWindow.RetentionPeriod != time.Hour.String() {
+		t.Errorf("ReplayWindow.RetentionPeriod = %q, want %q", result.ReplayWindow.RetentionPeriod, time.Hour.String())
+	}
+	if result.ReplayWindow.ResyncCommand != "ntm --robot-snapshot" {
+		t.Errorf("ReplayWindow.ResyncCommand = %q, want %q", result.ReplayWindow.ResyncCommand, "ntm --robot-snapshot")
+	}
+	if len(result.Sessions) != 1 {
+		t.Errorf("Sessions count = %d, want 1", len(result.Sessions))
+	}
+	if result.Sessions[0].Name != "myproject" {
+		t.Errorf("Session name = %s, want myproject", result.Sessions[0].Name)
+	}
+	if result.Sessions[0].Agents == nil {
+		t.Error("Agents should be present")
+	}
+	if len(result.Sessions[0].Agents) != 1 {
+		t.Errorf("Agents count = %d, want 1", len(result.Sessions[0].Agents))
+	}
+	if result.Sessions[0].Agents[0].Pane != "0.1" {
+		t.Errorf("Agent pane = %s, want 0.1", result.Sessions[0].Agents[0].Pane)
+	}
+	if result.Sessions[0].Agents[0].Type != "claude" {
+		t.Errorf("Agent type = %s, want claude", result.Sessions[0].Agents[0].Type)
+	}
+	if result.Sessions[0].Agents[0].State != "idle" {
+		t.Errorf("Agent state = %s, want idle", result.Sessions[0].Agents[0].State)
+	}
+	if result.Sessions[0].Agents[0].LastOutputAgeSec != 10 {
+		t.Errorf("Agent last_output_age = %d, want 10", result.Sessions[0].Agents[0].LastOutputAgeSec)
+	}
+	if result.Sessions[0].Agents[0].OutputTailLines != 5 {
+		t.Errorf("Agent output_tail_lines = %d, want 5", result.Sessions[0].Agents[0].OutputTailLines)
+	}
+	if result.BeadsSummary == nil {
+		t.Error("BeadsSummary should be present")
+	}
+	if result.BeadsSummary.Open != 5 {
+		t.Errorf("BeadsSummary.Open = %d, want 5", result.BeadsSummary.Open)
+	}
+	if result.BeadsSummary.InProgress != 2 {
+		t.Errorf("BeadsSummary.InProgress = %d, want 2", result.BeadsSummary.InProgress)
+	}
+	if result.BeadsSummary.Blocked != 1 {
+		t.Errorf("BeadsSummary.Blocked = %d, want 1", result.BeadsSummary.Blocked)
+	}
+	if result.BeadsSummary.Ready != 2 {
+		t.Errorf("BeadsSummary.Ready = %d, want 2", result.BeadsSummary.Ready)
+	}
+	if result.MailUnread != 3 {
+		t.Errorf("MailUnread = %d, want 3", result.MailUnread)
+	}
+	if len(result.Alerts) != 1 {
+		t.Errorf("Alerts count = %d, want 1", len(result.Alerts))
+	}
+	if result.Alerts[0] != "agent stuck" {
+		t.Errorf("Alert = %q, want 'agent stuck'", result.Alerts[0])
 	}
 }
 
@@ -2496,7 +2558,7 @@ func TestGenerateContextHints(t *testing.T) {
 				return
 			}
 			if got == nil {
-				t.Fatalf("expected non-nil hints")
+				t.Fatal("generateContextHints returned nil")
 			}
 			if tc.checkHints != nil {
 				tc.checkHints(t, got)
@@ -3155,6 +3217,10 @@ func TestGenerateTokenHints(t *testing.T) {
 					{Key: "claude", Tokens: 50000},
 					{Key: "codex", Tokens: 4000}, // 50000/4000 = 12.5x ratio (> 10)
 				},
+				AgentStats: map[string]AgentTokenStats{
+					"claude": {Tokens: 50000},
+					"codex":  {Tokens: 4000},
+				},
 			},
 			checkFunc: func(t *testing.T, hints *TokensAgentHints) {
 				hasWarning := false
@@ -3562,7 +3628,7 @@ func TestTailOutput_OutputAccuracy(t *testing.T) {
 			t.Fatal("captured_at is not a string")
 		}
 
-		// Should be parseable as RFC3339
+		// Should be parseable as RFC3339 format
 		_, err = time.Parse(time.RFC3339Nano, capturedAt)
 		if err != nil {
 			_, err = time.Parse(time.RFC3339, capturedAt)

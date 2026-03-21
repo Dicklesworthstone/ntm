@@ -52,10 +52,10 @@ func TestValidKeyRegex(t *testing.T) {
 // TestOverlayBindingCommandGeneration tests the generation of overlay binding commands.
 func TestOverlayBindingCommandGeneration(t *testing.T) {
 	testCases := []struct {
-		key              string
-		wantContains     []string
-		wantNotContains  []string
-		desc             string
+		key             string
+		wantContains    []string
+		wantNotContains []string
+		desc            string
 	}{
 		{
 			key: "F12",
@@ -70,7 +70,7 @@ func TestOverlayBindingCommandGeneration(t *testing.T) {
 				"#{session_name}",
 			},
 			wantNotContains: []string{
-				"palette",  // overlay is dashboard, not palette
+				"palette", // overlay is dashboard, not palette
 			},
 			desc: "F12 overlay binding",
 		},
@@ -172,12 +172,12 @@ func TestOverlayBindingArgs(t *testing.T) {
 // TestSetupOverlayBindingWithWriter tests the overlay binding setup function.
 func TestSetupOverlayBindingWithWriter(t *testing.T) {
 	testCases := []struct {
-		name           string
-		key            string
-		existingConf   string
-		wantInConf     []string
-		wantNotInConf  []string
-		wantInOutput   []string
+		name          string
+		key           string
+		existingConf  string
+		wantInConf    []string
+		wantNotInConf []string
+		wantInOutput  []string
 	}{
 		{
 			name:         "new_binding_empty_conf",
@@ -491,10 +491,10 @@ func TestMaybeFprintf(t *testing.T) {
 // TestBindingLineWithVariousFormats tests isBindingLine with edge cases.
 func TestBindingLineWithVariousFormats(t *testing.T) {
 	testCases := []struct {
-		line     string
-		key      string
+		line      string
+		key       string
 		wantMatch bool
-		desc     string
+		desc      string
 	}{
 		// Standard formats
 		{`bind-key -n F12 display-popup`, "F12", true, "bind-key standard"},

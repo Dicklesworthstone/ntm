@@ -63,12 +63,6 @@ func TestPostQuitActionStructure(t *testing.T) {
 	if action.AttachSession != "myproject" {
 		t.Errorf("AttachSession = %q, want myproject", action.AttachSession)
 	}
-
-	// Test nil action (popup mode clean close)
-	var nilAction *PostQuitAction
-	if nilAction != nil {
-		t.Error("nil PostQuitAction should be nil")
-	}
 }
 
 // TestPostQuitActionComparison tests how PostQuitAction is used for popup vs normal mode.

@@ -2233,10 +2233,10 @@ var (
 	robotEnsembleStopNoCollect bool   // skip partial output collection
 
 	// Robot-overlay flags for agent-initiated human handoff (br-a6cmp)
-	robotOverlay               bool   // open overlay for human handoff
-	robotOverlaySession        string // session for overlay
-	robotOverlayCursor         int64  // attention cursor for pre-focus
-	robotOverlayNoWait         bool   // return immediately without blocking
+	robotOverlay        bool   // open overlay for human handoff
+	robotOverlaySession string // session for overlay
+	robotOverlayCursor  int64  // attention cursor for pre-focus
+	robotOverlayNoWait  bool   // return immediately without blocking
 
 	// Robot-send flags
 	robotSend        string // session name for send
