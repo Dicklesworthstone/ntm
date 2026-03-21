@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 )
 
 type tokenEvent struct {
@@ -38,13 +39,18 @@ type localPerfTracker struct {
 	// TPSHistory stores recent tokens-per-second samples for sparkline rendering.
 	// Updated on each addOutputDelta call. Capped at 30 entries.
 	TPSHistory []float64
+
+	springs *components.SpringManager
 }
 
 func newLocalPerfTracker(window time.Duration) *localPerfTracker {
 	if window <= 0 {
 		window = 10 * time.Second
 	}
-	return &localPerfTracker{window: window}
+	return &localPerfTracker{
+		window:  window,
+		springs: components.NewSpringManager(),
+	}
 }
 
 func (t *localPerfTracker) addPrompt(ts time.Time) {
@@ -69,6 +75,7 @@ func (t *localPerfTracker) addOutputDelta(at time.Time, deltaTokens int) {
 	if len(t.TPSHistory) > 30 {
 		t.TPSHistory = t.TPSHistory[len(t.TPSHistory)-30:]
 	}
+	t.syncAnimatedTPSHistory()
 
 	// First-token latency: when we see the first output delta after a prompt timestamp.
 	if len(t.pendingPromptTimes) > 0 {
@@ -132,7 +139,64 @@ func (t *localPerfTracker) tokensPerSecond(at time.Time) float64 {
 }
 
 func (t *localPerfTracker) snapshot() (tps float64, total int, lastLatency time.Duration, avgLatency time.Duration) {
-	return t.lastTPS, t.total, t.lastLatency, t.avgLatency
+	return t.animatedLastTPS(), t.total, t.lastLatency, t.avgLatency
+}
+
+func (t *localPerfTracker) syncAnimatedTPSHistory() {
+	if t == nil || t.springs == nil {
+		return
+	}
+
+	for i, value := range t.TPSHistory {
+		key := fmt.Sprintf("tps:%d", i)
+		if !t.springs.Has(key) {
+			t.springs.SetImmediate(key, value)
+			continue
+		}
+		t.springs.SetWithParams(key, value, 8.0, 0.5)
+	}
+}
+
+func (t *localPerfTracker) tick() {
+	if t == nil || t.springs == nil {
+		return
+	}
+	t.springs.Tick()
+}
+
+func (t *localPerfTracker) isAnimating() bool {
+	return t != nil && t.springs != nil && t.springs.IsAnimating()
+}
+
+func (t *localPerfTracker) animatedTPSHistory() []float64 {
+	if t == nil || len(t.TPSHistory) == 0 {
+		return nil
+	}
+	if t.springs == nil {
+		return append([]float64(nil), t.TPSHistory...)
+	}
+
+	history := make([]float64, len(t.TPSHistory))
+	for i, value := range t.TPSHistory {
+		key := fmt.Sprintf("tps:%d", i)
+		if t.springs.Has(key) {
+			history[i] = t.springs.Get(key)
+			continue
+		}
+		history[i] = value
+	}
+	return history
+}
+
+func (t *localPerfTracker) animatedLastTPS() float64 {
+	if t == nil || len(t.TPSHistory) == 0 || t.springs == nil {
+		return t.lastTPS
+	}
+	key := fmt.Sprintf("tps:%d", len(t.TPSHistory)-1)
+	if t.springs.Has(key) {
+		return t.springs.Get(key)
+	}
+	return t.lastTPS
 }
 
 func (m *Model) ensureLocalPerfTracker(paneID string) *localPerfTracker {
@@ -148,6 +212,26 @@ func (m *Model) ensureLocalPerfTracker(paneID string) *localPerfTracker {
 		m.localPerfByPaneID[paneID] = tr
 	}
 	return tr
+}
+
+func (m *Model) tickLocalPerfAnimations() {
+	if m == nil {
+		return
+	}
+	for _, tracker := range m.localPerfByPaneID {
+		if tracker != nil {
+			tracker.tick()
+		}
+	}
+}
+
+func (m Model) localPerfAnimating() bool {
+	for _, tracker := range m.localPerfByPaneID {
+		if tracker != nil && tracker.isAnimating() {
+			return true
+		}
+	}
+	return false
 }
 
 type ollamaPSResponse struct {

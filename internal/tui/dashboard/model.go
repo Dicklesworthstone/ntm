@@ -272,6 +272,9 @@ type Model struct {
 	// Toast notifications (ephemeral bottom-right overlays)
 	toasts *components.ToastManager
 
+	// Shared dashboard animation state for focus and other spring-driven UI.
+	dashboardSprings *components.SpringManager
+
 	// Panels
 	beadsPanel           *panels.BeadsPanel
 	alertsPanel          *panels.AlertsPanel
@@ -527,6 +530,7 @@ func New(session, projectDir string) Model {
 		}),
 		ensembleModes:        synthtui.NewModeVisualization(),
 		toasts:               components.NewToastManager(),
+		dashboardSprings:     components.NewSpringManager(),
 		beadsPanel:           panels.NewBeadsPanel(),
 		alertsPanel:          panels.NewAlertsPanel(),
 		attentionPanel:       panels.NewAttentionPanel(),
@@ -605,6 +609,7 @@ func New(session, projectDir string) Model {
 
 	applyDashboardEnvOverrides(&m)
 	m.syncFocusRing()
+	m.syncFocusAnimations()
 
 	// Set up conflict action handler for the conflicts panel
 	m.conflictsPanel.SetActionHandler(m.handleConflictAction)
