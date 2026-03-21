@@ -125,7 +125,14 @@ type TestLogger struct {
 
 // NewTestLogger creates a new test logger with a dedicated log file.
 func NewTestLogger(t *testing.T, scenario string) *TestLogger {
+	return newTestLoggerWithDir(t, scenario, "")
+}
+
+func newTestLoggerWithDir(t *testing.T, scenario string, logDir string) *TestLogger {
 	logDir := os.Getenv("E2E_LOG_DIR")
+	if logDir == "" {
+		logDir = logDir
+	}
 	if logDir == "" {
 		logDir = "/tmp/ntm-e2e-logs"
 	}
@@ -192,6 +199,7 @@ func (l *TestLogger) LogPath() string {
 type TestSuite struct {
 	t       *testing.T
 	logger  *TestLogger
+	harness *ScenarioHarness
 	session string
 	panes   map[int]string // pane index -> agent type
 	cleanup []func()
@@ -199,16 +207,27 @@ type TestSuite struct {
 
 // NewTestSuite creates a new test suite for the given scenario.
 func NewTestSuite(t *testing.T, scenario string) *TestSuite {
-	logger := NewTestLogger(t, scenario)
+	harness, err := NewScenarioHarness(t, HarnessOptions{
+		Scenario:     scenario,
+		SessionPrefix: "e2e",
+		Retain:       RetainOnFailure,
+	})
+	if err != nil {
+		t.Fatalf("[E2E-SETUP] Failed to create scenario harness: %v", err)
+	}
+
+	logger := newTestLoggerWithDir(t, scenario, harness.Dir(ArtifactLogs))
 
 	s := &TestSuite{
 		t:       t,
 		logger:  logger,
-		session: fmt.Sprintf("e2e_%s_%d", scenario, time.Now().Unix()),
+		harness: harness,
+		session: harness.SessionName(),
 		panes:   make(map[int]string),
 	}
 
 	s.logger.Log("[E2E-SUITE] Creating test session: %s", s.session)
+	s.logger.Log("[E2E-SUITE] Artifact root: %s", harness.Root())
 	return s
 }
 
@@ -228,17 +247,12 @@ func (s *TestSuite) Setup() error {
 		s.logger.Log("[E2E-SETUP] Using ntm binary: %s", ntmPath)
 	}
 
-	// Create tmux session with specified dimensions
-	cmd := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", s.session, "-x", "200", "-y", "50")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("create session: %w, output: %s", err, string(output))
+	if err := s.harness.SetupTmuxSession(TmuxSessionOptions{
+		Width:  200,
+		Height: 50,
+	}); err != nil {
+		return err
 	}
-
-	s.cleanup = append(s.cleanup, func() {
-		s.logger.Log("[E2E-CLEANUP] Killing session %s", s.session)
-		exec.Command(tmux.BinaryPath(), "kill-session", "-t", s.session).Run()
-	})
 
 	s.logger.Log("[E2E-SETUP] Session created successfully")
 	return nil
@@ -544,6 +558,9 @@ func (s *TestSuite) Teardown() {
 		s.cleanup[i]()
 	}
 
+	if s.harness != nil {
+		s.harness.Close()
+	}
 	s.logger.Close()
 }
 
