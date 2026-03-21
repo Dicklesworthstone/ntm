@@ -2,6 +2,8 @@ module github.com/Dicklesworthstone/ntm
 
 go 1.25
 
+replace github.com/charmbracelet/bubbletea => ./third_party/bubbletea
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/bubbles v1.0.0

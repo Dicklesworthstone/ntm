@@ -72,7 +72,9 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	if contentWidth < 20 {
 		contentWidth = 20
 	}
-	m.initRenderer(contentWidth)
+	if m.renderer != nil {
+		m.initRenderer(contentWidth)
+	}
 
 	if prevWidth != m.width {
 		m.renderedOutputCache = make(map[string]string)
@@ -886,6 +888,8 @@ type SessionDataWithOutputMsg struct {
 	Outputs           []PaneOutputData
 	Duration          time.Duration
 	NextCaptureCursor int
+	MetadataOnly      bool
+	FocusedOnly       bool
 	Err               error
 	Gen               uint64
 }
@@ -1103,6 +1107,17 @@ func (m *Model) fetchSessionDataWithOutputsCtx(ctx context.Context) tea.Cmd {
 	budget := m.paneOutputCaptureBudget
 	startCursor := m.paneOutputCaptureCursor
 	lastCaptured := copyTimeMap(m.paneOutputLastCaptured)
+	metadataOnly := !m.initialPaneSnapshotDone
+	focusedOnly := m.initialPaneSnapshotDone && !m.initialFocusedPaneHydrationDone
+	if metadataOnly {
+		// The first visible frame only needs pane metadata. Defer capture-pane work
+		// until immediately after first paint to minimize startup latency.
+		budget = 0
+	} else if focusedOnly {
+		// Hydrate only the selected pane before kicking off broader warmup so the
+		// first meaningful detail view is not competing with background probes.
+		budget = 1
+	}
 
 	selectedPaneID := ""
 	if m.cursor >= 0 && m.cursor < len(m.panes) {
@@ -1179,6 +1194,8 @@ func (m *Model) fetchSessionDataWithOutputsCtx(ctx context.Context) tea.Cmd {
 			Outputs:           outputs,
 			Duration:          time.Since(start),
 			NextCaptureCursor: plan.NextCursor,
+			MetadataOnly:      metadataOnly,
+			FocusedOnly:       focusedOnly,
 			Gen:               gen,
 		}
 	}
@@ -1993,7 +2010,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateCostFromPrompts(now)
 			m.refreshCostPanel(now)
 		}
-		return m, followUp
+
+		warmupCmds := []tea.Cmd{followUp}
+		if msg.MetadataOnly {
+			m.initialPaneSnapshotDone = true
+			if cmd := m.requestSessionFetch(false); cmd != nil {
+				warmupCmds = append(warmupCmds, cmd)
+			}
+			if cmd := m.startRendererInit(); cmd != nil {
+				warmupCmds = append(warmupCmds, cmd)
+			}
+			if cmd := m.startConfigWatcher(); cmd != nil {
+				warmupCmds = append(warmupCmds, cmd)
+			}
+			if m.mouseWarmupPending {
+				m.mouseWarmupPending = false
+				warmupCmds = append(warmupCmds, tea.EnableMouseCellMotion)
+			}
+			return m, tea.Batch(warmupCmds...)
+		}
+
+		if msg.FocusedOnly {
+			m.initialFocusedPaneHydrationDone = true
+			if cmd := m.requestSessionFetch(false); cmd != nil {
+				warmupCmds = append(warmupCmds, cmd)
+			}
+		}
+
+		if m.startupWarmupDone {
+			return m, tea.Batch(warmupCmds...)
+		}
+		m.startupWarmupDone = true
+
+		if cmd := m.requestStatusesFetch(); cmd != nil {
+			warmupCmds = append(warmupCmds, cmd)
+		}
+		warmupCmds = append(warmupCmds, m.fetchTimelineCmd())
+		if m.healthStatus == "unknown" && m.healthMessage == "" {
+			warmupCmds = append(warmupCmds, m.fetchHealthStatus())
+		}
+		warmupCmds = append(warmupCmds, m.fetchAgentMailStatus())
+		if !m.fetchingMailInbox {
+			m.fetchingMailInbox = true
+			m.lastMailInboxFetch = time.Now()
+			warmupCmds = append(warmupCmds, m.fetchAgentMailInboxes())
+		}
+		if !m.fetchingPTHealth {
+			m.fetchingPTHealth = true
+			warmupCmds = append(warmupCmds, m.fetchPTHealthStatesCmd())
+		}
+		if !m.fetchingPendingRot {
+			m.fetchingPendingRot = true
+			m.lastPendingFetch = time.Now()
+			warmupCmds = append(warmupCmds, m.fetchPendingRotations())
+		}
+		if !m.fetchingCheckpoint {
+			m.fetchingCheckpoint = true
+			m.lastCheckpointFetch = time.Now()
+			warmupCmds = append(warmupCmds, m.fetchCheckpointStatus())
+		}
+		if !m.fetchingHandoff {
+			m.fetchingHandoff = true
+			m.lastHandoffFetch = time.Now()
+			warmupCmds = append(warmupCmds, m.fetchHandoffCmd())
+		}
+		if !m.fetchingSpawn && m.spawnPanel != nil {
+			m.fetchingSpawn = true
+			m.lastSpawnFetch = time.Now()
+			warmupCmds = append(warmupCmds, m.fetchSpawnStateCmd())
+		}
+
+		return m, tea.Batch(warmupCmds...)
 
 	case StatusUpdateMsg:
 		if !m.acceptUpdate(refreshStatus, msg.Gen) {
@@ -2139,6 +2226,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleFocus(0)
 		}
 		return m, m.subscribeToConfig()
+
+	case ConfigWatcherReadyMsg:
+		if msg.Err == nil && msg.Closer != nil && m.configCloser == nil {
+			m.configCloser = msg.Closer
+			return m, m.subscribeToConfig()
+		}
+		return m, nil
+
+	case RendererReadyMsg:
+		if msg.Renderer != nil {
+			m.renderer = msg.Renderer
+			m.renderedOutputCache = make(map[string]string)
+		}
+		return m, nil
 
 	case HealthCheckMsg:
 		m.healthStatus = msg.Status
@@ -3978,12 +4079,14 @@ func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
 
 	paneDue := refreshDue(m.lastPaneFetch, m.paneRefreshInterval)
 	contextDue := refreshDue(m.lastContextFetch, m.contextRefreshInterval)
-	coreDue := paneDue || contextDue
 
-	if coreDue {
+	if paneDue {
 		if cmd := m.requestSessionFetch(false); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	}
+
+	if contextDue {
 		if cmd := m.requestStatusesFetch(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}

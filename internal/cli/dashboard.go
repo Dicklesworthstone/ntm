@@ -115,6 +115,80 @@ func popupEnvEnabled() bool {
 	return value != "" && value != "0"
 }
 
+func startDashboardReservationWatcher(session, projectDir string) func() {
+	if cfg == nil || !cfg.FileReservation.Enabled || !cfg.AgentMail.Enabled {
+		return nil
+	}
+
+	amOpts := []agentmail.Option{
+		agentmail.WithBaseURL(cfg.AgentMail.URL),
+		agentmail.WithProjectKey(projectDir),
+	}
+	if cfg.AgentMail.Token != "" {
+		amOpts = append(amOpts, agentmail.WithToken(cfg.AgentMail.Token))
+	}
+	amClient := agentmail.NewClient(amOpts...)
+
+	watcherCtx, cancelWatcher := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		healthCtx, cancelHealth := context.WithTimeout(watcherCtx, 2*time.Second)
+		_, err := amClient.HealthCheck(healthCtx)
+		cancelHealth()
+		if err != nil || watcherCtx.Err() != nil {
+			return
+		}
+
+		cfgValues := watcher.FileReservationConfigValues{
+			Enabled:               cfg.FileReservation.Enabled,
+			AutoReserve:           cfg.FileReservation.AutoReserve,
+			AutoReleaseIdleMin:    cfg.FileReservation.AutoReleaseIdleMin,
+			NotifyOnConflict:      cfg.FileReservation.NotifyOnConflict,
+			ExtendOnActivity:      cfg.FileReservation.ExtendOnActivity,
+			DefaultTTLMin:         cfg.FileReservation.DefaultTTLMin,
+			PollIntervalSec:       cfg.FileReservation.PollIntervalSec,
+			CaptureLinesForDetect: cfg.FileReservation.CaptureLinesForDetect,
+			Debug:                 cfg.FileReservation.Debug,
+		}
+
+		conflictCallback := func(conflict watcher.FileConflict) {
+			if cfg.FileReservation.Debug {
+				log.Printf("[FileReservation] Conflict: %s requested by %s, held by %v",
+					conflict.Path, conflict.RequestorAgent, conflict.Holders)
+			}
+			// TODO: Integrate with dashboard notification system
+		}
+
+		reservationWatcher := watcher.NewFileReservationWatcherFromConfig(
+			cfgValues,
+			amClient,
+			projectDir,
+			session, // Use session name as agent name
+			conflictCallback,
+		)
+		if reservationWatcher == nil {
+			return
+		}
+
+		reservationWatcher.Start(watcherCtx)
+		defer reservationWatcher.Stop()
+
+		if cfg.FileReservation.Debug {
+			log.Printf("[FileReservation] Watcher started for session %s", session)
+		}
+
+		<-watcherCtx.Done()
+	}()
+
+	return func() {
+		cancelWatcher()
+		<-done
+	}
+}
+
 // runDashboardJSON outputs dashboard data in JSON format
 func runDashboardJSON(w io.Writer, errW io.Writer, session string) error {
 	if err := tmux.EnsureInstalled(); err != nil {
@@ -305,61 +379,8 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 		fmt.Fprintf(errW, "Check your projects_base setting in config: ntm config show\n\n")
 	}
 
-	// Start FileReservationWatcher if enabled and Agent Mail is available
-	var reservationWatcher *watcher.FileReservationWatcher
-	if cfg != nil && cfg.FileReservation.Enabled && cfg.AgentMail.Enabled {
-		// Create Agent Mail client with config options
-		amOpts := []agentmail.Option{
-			agentmail.WithBaseURL(cfg.AgentMail.URL),
-			agentmail.WithProjectKey(projectDir),
-		}
-		if cfg.AgentMail.Token != "" {
-			amOpts = append(amOpts, agentmail.WithToken(cfg.AgentMail.Token))
-		}
-		amClient := agentmail.NewClient(amOpts...)
-
-		// Check if Agent Mail is reachable
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if _, err := amClient.HealthCheck(ctx); err == nil {
-			// Convert config to watcher config values
-			cfgValues := watcher.FileReservationConfigValues{
-				Enabled:               cfg.FileReservation.Enabled,
-				AutoReserve:           cfg.FileReservation.AutoReserve,
-				AutoReleaseIdleMin:    cfg.FileReservation.AutoReleaseIdleMin,
-				NotifyOnConflict:      cfg.FileReservation.NotifyOnConflict,
-				ExtendOnActivity:      cfg.FileReservation.ExtendOnActivity,
-				DefaultTTLMin:         cfg.FileReservation.DefaultTTLMin,
-				PollIntervalSec:       cfg.FileReservation.PollIntervalSec,
-				CaptureLinesForDetect: cfg.FileReservation.CaptureLinesForDetect,
-				Debug:                 cfg.FileReservation.Debug,
-			}
-
-			// Create conflict callback for notifications
-			conflictCallback := func(conflict watcher.FileConflict) {
-				if cfg.FileReservation.Debug {
-					log.Printf("[FileReservation] Conflict: %s requested by %s, held by %v",
-						conflict.Path, conflict.RequestorAgent, conflict.Holders)
-				}
-				// TODO: Integrate with dashboard notification system
-			}
-
-			reservationWatcher = watcher.NewFileReservationWatcherFromConfig(
-				cfgValues,
-				amClient,
-				projectDir,
-				session, // Use session name as agent name
-				conflictCallback,
-			)
-
-			if reservationWatcher != nil {
-				reservationWatcher.Start(context.Background())
-				defer reservationWatcher.Stop()
-				if cfg.FileReservation.Debug {
-					log.Printf("[FileReservation] Watcher started for session %s", session)
-				}
-			}
-		}
-		cancel()
+	if stopWatcher := startDashboardReservationWatcher(session, projectDir); stopWatcher != nil {
+		defer stopWatcher()
 	}
 
 	action, err := dashboard.RunWithOptions(session, projectDir, dashboard.RunOptions{

@@ -592,6 +592,9 @@ func Divider(width int, style string, color lipgloss.Color) string {
 
 // GradientDivider creates a gradient divider
 func GradientDivider(width int, colors ...string) string {
+	if width <= 0 {
+		return ""
+	}
 	if len(colors) < 2 {
 		colors = []string{"#89b4fa", "#cba6f7"}
 	}

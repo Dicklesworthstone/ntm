@@ -382,7 +382,7 @@ func TestAutoThemeFallsBackToDarkOnPanic(t *testing.T) {
 }
 
 func TestDetectDarkBackgroundSkipsOSCOverSSH(t *testing.T) {
-	// Test that SSH sessions skip OSC queries and default to dark theme
+	// Test that SSH sessions default to dark without any terminal probing.
 	t.Run("SSH_CONNECTION triggers dark default", func(t *testing.T) {
 		t.Setenv("SSH_CONNECTION", "192.168.1.1 12345 192.168.1.2 22")
 		t.Setenv("SSH_TTY", "")
@@ -403,6 +403,40 @@ func TestDetectDarkBackgroundSkipsOSCOverSSH(t *testing.T) {
 
 		if !detectDarkBackground() {
 			t.Error("detectDarkBackground should return true (dark) when SSH_TTY is set")
+		}
+	})
+}
+
+func TestDetectDarkBackgroundRespectsExplicitOverrides(t *testing.T) {
+	t.Run("explicit dark override wins", func(t *testing.T) {
+		t.Setenv("NTM_BACKGROUND", "dark")
+		t.Setenv("COLORFGBG", "15;7")
+		if !detectDarkBackground() {
+			t.Fatal("expected explicit dark override to win")
+		}
+	})
+
+	t.Run("explicit light override wins", func(t *testing.T) {
+		t.Setenv("NTM_BACKGROUND", "light")
+		t.Setenv("COLORFGBG", "15;0")
+		if detectDarkBackground() {
+			t.Fatal("expected explicit light override to win")
+		}
+	})
+}
+
+func TestDetectDarkBackgroundUsesColorFGBG(t *testing.T) {
+	t.Run("dark background code is detected", func(t *testing.T) {
+		t.Setenv("COLORFGBG", "15;0")
+		if !detectDarkBackground() {
+			t.Fatal("expected COLORFGBG dark background to be detected")
+		}
+	})
+
+	t.Run("light background code is detected", func(t *testing.T) {
+		t.Setenv("COLORFGBG", "0;15")
+		if detectDarkBackground() {
+			t.Fatal("expected COLORFGBG light background to be detected")
 		}
 	})
 }
