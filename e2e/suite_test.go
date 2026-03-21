@@ -129,19 +129,19 @@ func NewTestLogger(t *testing.T, scenario string) *TestLogger {
 }
 
 func newTestLoggerWithDir(t *testing.T, scenario string, logDir string) *TestLogger {
-	logDir := os.Getenv("E2E_LOG_DIR")
-	if logDir == "" {
-		logDir = logDir
+	resolvedLogDir := strings.TrimSpace(os.Getenv("E2E_LOG_DIR"))
+	if resolvedLogDir == "" {
+		resolvedLogDir = logDir
 	}
-	if logDir == "" {
-		logDir = "/tmp/ntm-e2e-logs"
+	if resolvedLogDir == "" {
+		resolvedLogDir = "/tmp/ntm-e2e-logs"
 	}
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(resolvedLogDir, 0755); err != nil {
 		t.Fatalf("[E2E-SETUP] Failed to create log directory: %v", err)
 	}
 
 	timestamp := time.Now().Format("20060102-150405")
-	logPath := filepath.Join(logDir, fmt.Sprintf("%s-%s.log", scenario, timestamp))
+	logPath := filepath.Join(resolvedLogDir, fmt.Sprintf("%s-%s.log", scenario, timestamp))
 
 	f, err := os.Create(logPath)
 	if err != nil {
@@ -208,9 +208,9 @@ type TestSuite struct {
 // NewTestSuite creates a new test suite for the given scenario.
 func NewTestSuite(t *testing.T, scenario string) *TestSuite {
 	harness, err := NewScenarioHarness(t, HarnessOptions{
-		Scenario:     scenario,
+		Scenario:      scenario,
 		SessionPrefix: "e2e",
-		Retain:       RetainOnFailure,
+		Retain:        RetainOnFailure,
 	})
 	if err != nil {
 		t.Fatalf("[E2E-SETUP] Failed to create scenario harness: %v", err)
