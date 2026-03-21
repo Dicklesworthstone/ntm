@@ -2128,31 +2128,28 @@ func (s *Server) handleVersionV1(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCapabilitiesV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	// Detect installed tools
-	tools := []string{}
-	toolChecks := map[string]string{
-		"br":   "beads_rust issue tracker",
-		"bv":   "beads viewer",
-		"cass": "code analysis/search",
-		"cm":   "cass memory",
-	}
-	for tool := range toolChecks {
-		// Simple existence check - in production, use the tools registry
-		tools = append(tools, tool)
+	// Phase 5 validation requires the REST capabilities surface to match the
+	// canonical robot-mode contract rather than exposing a divergent ad hoc
+	// server feature blob.
+	caps, err := robot.GetCapabilities()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to collect capabilities", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
 	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"auth_modes":    []string{string(AuthModeLocal), string(AuthModeAPIKey), string(AuthModeOIDC), string(AuthModeMTLS)},
-		"current_auth":  string(s.auth.Mode),
-		"stream_topics": []string{"events", "ws"},
-		"tools":         tools,
-		"features": map[string]bool{
-			"idempotency_keys": true,
-			"jobs_api":         true,
-			"sse_events":       true,
-			"websocket":        false, // Not yet implemented
-		},
-	}, reqID)
+	data, err := toJSONMap(caps)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode capabilities", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleDepsV1 handles GET /api/v1/deps.

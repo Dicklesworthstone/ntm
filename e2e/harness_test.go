@@ -380,6 +380,28 @@ func TestScenarioHarnessOperatorLoopTranscriptArtifacts(t *testing.T) {
 					},
 				})
 				return result, nil
+			case command == "--robot-capabilities":
+				result.Stdout = mustJSON(map[string]any{
+					"success": true,
+					"attention": map[string]any{
+						"contract_version": "1.0.0",
+						"default_profile":  "operator",
+						"features": map[string]any{
+							"cursor_replay": map[string]any{
+								"status": "available",
+								"note":   "Replay uses monotonic cursors with explicit resync instructions on expiration.",
+							},
+							"operator_boundary": map[string]any{
+								"status": "available",
+								"note":   "Attention feed remains a sensing/actuation surface only; it does not assign work, infer intent, or replace beads, bv, or Agent Mail.",
+							},
+						},
+					},
+				})
+				return result, nil
+			case command == "--robot-help":
+				result.Stdout = []byte("Attention Feed (Operator Loop):\n  --robot-attention      Wait-then-digest (the one obvious tending command)\nIf cursor expires: re-run --robot-snapshot to resync.\nTips for AI Agents:\n- Attention feed is a sensing/actuation surface, not a planner: it does not assign beads, infer intent, or replace beads, bv, or Agent Mail.\n")
+				return result, nil
 			case command == "--robot-events --since-cursor=1 --limit=20":
 				result.ExitCode = 1
 				result.Stdout = mustJSON(map[string]any{
@@ -616,6 +638,58 @@ func TestScenarioHarnessOperatorLoopTranscriptArtifacts(t *testing.T) {
 		t.Fatalf("resync latest_cursor = %d, want 44", got)
 	}
 
+	capabilities, err := h.RunCommand(CommandSpec{
+		Name: "robot-capabilities",
+		Path: "/usr/bin/ntm",
+		Args: []string{"--robot-capabilities"},
+	})
+	if err != nil {
+		t.Fatalf("capabilities command failed: %v", err)
+	}
+	if _, err := h.WriteRenderedSummary("capabilities-surface.json", capabilities.Stdout); err != nil {
+		t.Fatalf("WriteRenderedSummary capabilities failed: %v", err)
+	}
+	capsPayload := decodeJSON(capabilities)
+	attentionCaps := capsPayload["attention"].(map[string]any)
+	features := attentionCaps["features"].(map[string]any)
+	if _, ok := features["operator_boundary"]; !ok {
+		t.Fatalf("capabilities surface missing operator_boundary feature: %+v", attentionCaps)
+	}
+	if err := h.RecordStep("capabilities_surface", map[string]any{
+		"default_profile": attentionCaps["default_profile"],
+		"features":        []string{"cursor_replay", "operator_boundary"},
+	}); err != nil {
+		t.Fatalf("RecordStep capabilities_surface failed: %v", err)
+	}
+
+	helpOut, err := h.RunCommand(CommandSpec{
+		Name: "robot-help",
+		Path: "/usr/bin/ntm",
+		Args: []string{"--robot-help"},
+	})
+	if err != nil {
+		t.Fatalf("help command failed: %v", err)
+	}
+	if _, err := h.WriteRenderedSummary("robot-help.txt", helpOut.Stdout); err != nil {
+		t.Fatalf("WriteRenderedSummary robot-help failed: %v", err)
+	}
+	helpText := string(helpOut.Stdout)
+	for _, want := range []string{
+		"Wait-then-digest (the one obvious tending command)",
+		"re-run --robot-snapshot to resync",
+		"sensing/actuation surface, not a planner",
+	} {
+		if !strings.Contains(helpText, want) {
+			t.Fatalf("help output missing %q: %s", want, helpText)
+		}
+	}
+	if err := h.RecordStep("help_surface", map[string]any{
+		"guardrail": "not a planner",
+		"resync":    true,
+	}); err != nil {
+		t.Fatalf("RecordStep help_surface failed: %v", err)
+	}
+
 	h.Close()
 
 	timelineBytes, err := os.ReadFile(filepath.Join(h.Root(), "timeline.jsonl"))
@@ -623,7 +697,7 @@ func TestScenarioHarnessOperatorLoopTranscriptArtifacts(t *testing.T) {
 		t.Fatalf("read timeline: %v", err)
 	}
 	timeline := string(timelineBytes)
-	for _, want := range []string{"bootstrap_snapshot", "raw_replay", "profile_compare", "cursor_resync_required"} {
+	for _, want := range []string{"bootstrap_snapshot", "raw_replay", "profile_compare", "cursor_resync_required", "capabilities_surface", "help_surface"} {
 		if !strings.Contains(timeline, want) {
 			t.Fatalf("timeline missing %q entry: %s", want, timeline)
 		}
@@ -665,5 +739,35 @@ func TestScenarioHarnessOperatorLoopTranscriptArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(string(busyDashboardBytes), "| Action Required | 1 |") {
 		t.Fatalf("busy dashboard artifact missing attention summary: %s", string(busyDashboardBytes))
+	}
+
+	helpFiles, err := filepath.Glob(filepath.Join(h.Dir(ArtifactSummaries), "*-robot-help.txt"))
+	if err != nil {
+		t.Fatalf("glob help artifacts: %v", err)
+	}
+	if len(helpFiles) != 1 {
+		t.Fatalf("expected one robot-help artifact, got %d", len(helpFiles))
+	}
+	helpBytes, err := os.ReadFile(helpFiles[0])
+	if err != nil {
+		t.Fatalf("read help artifact: %v", err)
+	}
+	if !strings.Contains(string(helpBytes), "not a planner") {
+		t.Fatalf("help artifact missing operator boundary guardrail: %s", string(helpBytes))
+	}
+
+	capsFiles, err := filepath.Glob(filepath.Join(h.Dir(ArtifactSummaries), "*-capabilities-surface.json"))
+	if err != nil {
+		t.Fatalf("glob capabilities artifacts: %v", err)
+	}
+	if len(capsFiles) != 1 {
+		t.Fatalf("expected one capabilities artifact, got %d", len(capsFiles))
+	}
+	capsBytes, err := os.ReadFile(capsFiles[0])
+	if err != nil {
+		t.Fatalf("read capabilities artifact: %v", err)
+	}
+	if !strings.Contains(string(capsBytes), "\"operator_boundary\"") {
+		t.Fatalf("capabilities artifact missing operator boundary feature: %s", string(capsBytes))
 	}
 }

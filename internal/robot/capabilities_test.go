@@ -150,6 +150,40 @@ func TestBuildCommandRegistryParameterFields(t *testing.T) {
 	}
 }
 
+func TestBuildCommandRegistry_IncludesAttentionContractCommands(t *testing.T) {
+	t.Parallel()
+
+	commands := buildCommandRegistry()
+	byFlag := make(map[string]RobotCommandInfo, len(commands))
+	for _, cmd := range commands {
+		byFlag[cmd.Flag] = cmd
+	}
+
+	expectedCategories := map[string]string{
+		"--robot-snapshot":  "state",
+		"--robot-events":    "attention",
+		"--robot-digest":    "attention",
+		"--robot-wait":      "control",
+		"--robot-attention": "attention",
+	}
+
+	for _, want := range AttentionCommands {
+		cmd, ok := byFlag[want.Name]
+		if !ok {
+			t.Fatalf("attention contract command %q missing from command registry", want.Name)
+		}
+		if got, ok := expectedCategories[want.Name]; ok && cmd.Category != got {
+			t.Fatalf("command %q category = %q, want %q", want.Name, cmd.Category, got)
+		}
+		if strings.TrimSpace(cmd.Description) == "" {
+			t.Fatalf("command %q should have a registry description", want.Name)
+		}
+		if len(cmd.Examples) == 0 {
+			t.Fatalf("command %q should include at least one example", want.Name)
+		}
+	}
+}
+
 // =============================================================================
 // GetCapabilities tests
 // =============================================================================
@@ -266,6 +300,63 @@ func TestDefaultAttentionCapabilities_ProfilesDiscoverable(t *testing.T) {
 		if !seen[required] {
 			t.Fatalf("expected %q profile in capabilities output, got %+v", required, caps.Profiles)
 		}
+	}
+}
+
+func TestDefaultAttentionCapabilities_OperatorBoundaryGuardrail(t *testing.T) {
+	t.Parallel()
+
+	caps := DefaultAttentionCapabilities()
+	if caps == nil {
+		t.Fatal("DefaultAttentionCapabilities() returned nil")
+	}
+	feature, ok := caps.Features["operator_boundary"]
+	if !ok {
+		t.Fatal("expected operator_boundary feature entry")
+	}
+	if feature.Status != CapabilityAvailable {
+		t.Fatalf("operator_boundary status = %q, want %q", feature.Status, CapabilityAvailable)
+	}
+	for _, want := range []string{
+		"sensing/actuation surface",
+		"does not assign work",
+		"Agent Mail",
+	} {
+		if !strings.Contains(feature.Note, want) {
+			t.Fatalf("operator_boundary note %q missing %q", feature.Note, want)
+		}
+	}
+}
+
+func TestDefaultAttentionCapabilities_GuardrailsIncluded(t *testing.T) {
+	t.Parallel()
+
+	caps := DefaultAttentionCapabilities()
+	if caps == nil {
+		t.Fatal("DefaultAttentionCapabilities() returned nil")
+	}
+	if len(caps.Guardrails) == 0 {
+		t.Fatal("expected Guardrails to be non-empty")
+	}
+
+	required := map[string]string{
+		"nervous_system_not_planner":           "must not invent plans",
+		"one_obvious_tending_loop":             "--robot-attention",
+		"cursor_resync_is_explicit":            "--robot-snapshot",
+		"unsupported_conditions_stay_explicit": "bead_orphaned",
+	}
+	for _, guardrail := range caps.Guardrails {
+		wantSnippet, ok := required[guardrail.Name]
+		if !ok {
+			continue
+		}
+		if !strings.Contains(guardrail.Rule, wantSnippet) {
+			t.Fatalf("guardrail %q rule = %q, want snippet %q", guardrail.Name, guardrail.Rule, wantSnippet)
+		}
+		delete(required, guardrail.Name)
+	}
+	for name := range required {
+		t.Fatalf("missing guardrail %q", name)
 	}
 }
 
@@ -422,6 +513,21 @@ func TestDefaultAttentionCapabilities_UnsupportedConditionsIncluded(t *testing.T
 	}
 	if !found {
 		t.Errorf("expected %q in UnsupportedConditions", AttentionSignalBeadOrphaned)
+	}
+}
+
+func TestGetCapabilities_IncludesAttentionGuardrails(t *testing.T) {
+	t.Parallel()
+
+	output, err := GetCapabilities()
+	if err != nil {
+		t.Fatalf("GetCapabilities() error: %v", err)
+	}
+	if output.Attention == nil {
+		t.Fatal("expected attention capabilities")
+	}
+	if len(output.Attention.Guardrails) == 0 {
+		t.Fatal("expected attention guardrails in capabilities output")
 	}
 }
 

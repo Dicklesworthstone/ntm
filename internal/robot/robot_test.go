@@ -506,12 +506,78 @@ func TestPrintHelp(t *testing.T) {
 		"replay_window",
 		"--robot-version",
 		"Common Workflows",
+		"Rollout Guardrails",
+		"not a planner",
 		"Tips for AI Agents",
 	}
 
 	for _, section := range expectedSections {
 		if !strings.Contains(output, section) {
 			t.Errorf("Help output missing section: %s", section)
+		}
+	}
+}
+
+func TestPrintHelpOperatorLoopGuardrails(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp failed: %v", err)
+	}
+
+	for _, want := range []string{
+		"Wait-then-digest (the one obvious tending command)",
+		"If cursor expires: re-run --robot-snapshot to resync.",
+		"sensing/actuation surface, not a planner",
+		"does not assign beads, infer intent, or replace beads, bv, or Agent Mail",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestPrintHelp_AttentionLoopMatchesCapabilities(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp capture failed: %v", err)
+	}
+
+	if !strings.Contains(output, "Attention Feed (Operator Loop)") {
+		t.Fatalf("help output missing operator loop section:\n%s", output)
+	}
+	if !strings.Contains(output, "--robot-snapshot") {
+		t.Fatalf("help output missing snapshot bootstrap command:\n%s", output)
+	}
+	if !strings.Contains(output, "If cursor expires: re-run --robot-snapshot to resync.") {
+		t.Fatalf("help output missing resync guidance:\n%s", output)
+	}
+
+	for _, cmd := range AttentionCommands {
+		if !strings.Contains(output, cmd.Name) {
+			t.Errorf("help output missing attention command %q", cmd.Name)
+		}
+	}
+
+	caps := DefaultAttentionCapabilities()
+	if caps == nil {
+		t.Fatal("DefaultAttentionCapabilities() returned nil")
+	}
+
+	for _, profile := range caps.Profiles {
+		if !strings.Contains(output, profile.Name) {
+			t.Errorf("help output missing discoverable profile %q", profile.Name)
+		}
+	}
+
+	for _, unsupported := range caps.UnsupportedConditions {
+		if !strings.Contains(output, unsupported.Name) {
+			t.Errorf("help output missing unsupported condition %q", unsupported.Name)
 		}
 	}
 }

@@ -337,6 +337,8 @@ func TestParityVersionOutput(t *testing.T) {
 // =============================================================================
 
 func TestParityCapabilitiesOutput(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
 	robotOutput, err := robot.GetCapabilities()
 	if err != nil {
 		t.Fatalf("robot.GetCapabilities failed: %v", err)
@@ -349,18 +351,39 @@ func TestParityCapabilitiesOutput(t *testing.T) {
 
 	robotNorm := normalizeForParity(t, robotJSON)
 
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "test-123"))
+	rec := httptest.NewRecorder()
+	srv.handleCapabilitiesV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("REST capabilities returned %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	restNorm := normalizeForParity(t, rec.Body.Bytes())
+	if !compareNormalized(t, "capabilities", robotNorm, restNorm) {
+		t.Fatal("capabilities parity mismatch")
+	}
+
 	if robotNorm["success"] != true {
 		t.Error("capabilities output should have success=true")
 	}
-
-	// Should have commands listed (the actual field name per CapabilitiesOutput struct)
 	if _, ok := robotNorm["commands"]; !ok {
 		t.Error("capabilities output missing 'commands' field")
 	}
-
-	// Should have categories listed
 	if _, ok := robotNorm["categories"]; !ok {
 		t.Error("capabilities output missing 'categories' field")
+	}
+	attention, ok := robotNorm["attention"].(map[string]any)
+	if !ok {
+		t.Fatal("capabilities output missing 'attention' object")
+	}
+	features, ok := attention["features"].(map[string]any)
+	if !ok {
+		t.Fatal("capabilities output missing attention.features")
+	}
+	if _, ok := features["operator_boundary"]; !ok {
+		t.Fatal("capabilities output missing attention.features.operator_boundary")
 	}
 
 	t.Logf("Capabilities output validated: %d fields", len(robotNorm))

@@ -869,6 +869,10 @@ type AttentionCapabilities struct {
 	// and rejected with rationale. This allows operators and future contributors
 	// to understand what was decided and what would need to change.
 	UnsupportedConditions []UnsupportedCondition `json:"unsupported_conditions,omitempty"`
+
+	// Guardrails records the intended operator-loop boundary so future changes
+	// do not quietly turn ntm into a planner or hidden coordinator.
+	Guardrails []OperatorLoopGuardrail `json:"guardrails,omitempty"`
 }
 
 // CapabilityFeature describes a single feature's status.
@@ -884,6 +888,14 @@ type DegradedFeature struct {
 	Reason  string           `json:"reason"`
 	Impact  string           `json:"impact"`
 	Hint    string           `json:"hint,omitempty"`
+}
+
+// OperatorLoopGuardrail captures a non-negotiable product boundary for the
+// attention feed and tending loop surfaces.
+type OperatorLoopGuardrail struct {
+	Name      string `json:"name"`
+	Rule      string `json:"rule"`
+	Rationale string `json:"rationale,omitempty"`
 }
 
 const (
@@ -983,6 +995,10 @@ func DefaultAttentionCapabilities() *AttentionCapabilities {
 				Status: CapabilityAvailable,
 				Note:   "Named attention profiles resolve first, then explicit filters narrow or override the effective filter set.",
 			},
+			"operator_boundary": {
+				Status: CapabilityAvailable,
+				Note:   "Attention feed remains a sensing/actuation surface only; it does not assign work, infer intent, or replace beads, bv, or Agent Mail.",
+			},
 		},
 		SignalAvailability: map[string]CapabilityFeature{
 			AttentionSignalBeadOrphaned: {
@@ -991,6 +1007,28 @@ func DefaultAttentionCapabilities() *AttentionCapabilities {
 			},
 		},
 		UnsupportedConditions: UnsupportedConditions(),
+		Guardrails: []OperatorLoopGuardrail{
+			{
+				Name:      "nervous_system_not_planner",
+				Rule:      "ntm emits observable state and executes commands, but it must not invent plans, hidden task graphs, or coordinator conclusions.",
+				Rationale: "The operator agent remains the decision-maker; ntm should sense and act, not pretend to think on the operator's behalf.",
+			},
+			{
+				Name:      "one_obvious_tending_loop",
+				Rule:      "Prefer --robot-attention for the steady-state operator loop; use --robot-events for replay/debug and --robot-digest for non-blocking summaries.",
+				Rationale: "This keeps tending simpler than repeated snapshot polling and prevents multiple competing loop patterns.",
+			},
+			{
+				Name:      "cursor_resync_is_explicit",
+				Rule:      "When replay is stale or CURSOR_EXPIRED occurs, resync with --robot-snapshot instead of guessing missed history.",
+				Rationale: "Cursor expiry is a retention boundary with explicit recovery semantics, not a reason to fabricate state.",
+			},
+			{
+				Name:      "unsupported_conditions_stay_explicit",
+				Rule:      "Unsupported conditions such as bead_orphaned must stay explicit in help and capabilities until ntm can prove them from observable state.",
+				Rationale: "Honest unsupported markers prevent false positives and coordinator-style overreach.",
+			},
+		},
 	}
 }
 

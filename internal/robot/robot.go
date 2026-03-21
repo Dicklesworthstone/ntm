@@ -1903,6 +1903,12 @@ Profiles (--profile=NAME):
   minimal     Only critical items requiring immediate action.
   alerts      Only synthesized alert events.
 
+Rollout Guardrails:
+- ntm is the nervous system, not a planner: it emits observable state and executes commands, but does not invent tasks or hidden coordinator state.
+- Prefer --robot-attention for the steady-state loop; use --robot-events for replay/debug and --robot-digest for non-blocking summaries.
+- On CURSOR_EXPIRED or stale replay, re-run --robot-snapshot to resync instead of guessing missed history.
+- Unsupported conditions stay explicit until ntm can prove them from observable state; do not treat bead_orphaned as implemented.
+
 Unsupported Conditions:
   bead_orphaned   Not supported — ntm cannot prove abandonment from observable state.
                   Use --robot-capabilities for full rationale.
@@ -1923,6 +1929,7 @@ Tips for AI Agents:
 - Snapshot returns latest_cursor plus replay_window metadata for mechanical resync.
 - Prefer --robot-capabilities for schema discovery over parsing help text.
 - Profiles reduce filter boilerplate: --profile=operator is the default.
+- Attention feed is a sensing/actuation surface, not a planner: it does not assign beads, infer intent, or replace beads, bv, or Agent Mail.
 
 For complete API documentation: docs/robot-api-design.md
 For machine-readable schema:    ntm --robot-capabilities

@@ -286,6 +286,10 @@ func (r *AutoRespawner) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("AutoRespawner already started")
 	}
 	r.ctx, r.cancel = childCtx, cancel
+	// Recreate event channel if it was closed by Stop()
+	if r.eventChan == nil {
+		r.eventChan = make(chan RespawnEvent, 100)
+	}
 	r.mu.Unlock()
 
 	r.logger().Info("[AutoRespawner] starting",
