@@ -278,6 +278,7 @@ func (ps *PaneStreamer) runFIFOReader() {
 	errCh := make(chan error, 1)
 
 	go func() {
+		defer func() { _ = recover() }()
 		reader := bufio.NewReader(fifo)
 		for {
 			line, err := reader.ReadString('\n')

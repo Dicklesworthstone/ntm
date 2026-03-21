@@ -255,6 +255,11 @@ Examples:
 			// Foreground mode - show progress
 			done := make(chan *pipeline.ExecutionState)
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						close(done)
+					}
+				}()
 				defer close(progress)
 				state, _ := executor.Run(ctx, workflow, vars, progress)
 				done <- state
@@ -265,17 +270,23 @@ Examples:
 				select {
 				case event, ok := <-progress:
 					if !ok {
+						progress = nil
 						continue
 					}
 					printProgressEvent(event)
 				case state := <-done:
 					// Drain remaining events
-					for event := range progress {
-						printProgressEvent(event)
+					if progress != nil {
+						for event := range progress {
+							printProgressEvent(event)
+						}
 					}
 
 					fmt.Println()
-					if state.Status == pipeline.StatusCompleted {
+					if state == nil {
+						fmt.Fprintf(os.Stderr, "❌ Pipeline crashed unexpectedly\n")
+						os.Exit(1)
+					} else if state.Status == pipeline.StatusCompleted {
 						output.SuccessCheck("Pipeline completed successfully!")
 					} else {
 						fmt.Fprintf(os.Stderr, "❌ Pipeline %s\n", state.Status)
@@ -554,6 +565,11 @@ Examples:
 			done := make(chan *pipeline.ExecutionState)
 
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						close(done)
+					}
+				}()
 				defer close(progress)
 				state, _ := executor.Resume(ctx, workflow, state, progress)
 				done <- state
@@ -563,16 +579,22 @@ Examples:
 				select {
 				case event, ok := <-progress:
 					if !ok {
+						progress = nil
 						continue
 					}
 					printProgressEvent(event)
 				case finalState := <-done:
-					for event := range progress {
-						printProgressEvent(event)
+					if progress != nil {
+						for event := range progress {
+							printProgressEvent(event)
+						}
 					}
 
 					fmt.Println()
-					if finalState.Status == pipeline.StatusCompleted {
+					if finalState == nil {
+						fmt.Fprintf(os.Stderr, "❌ Pipeline crashed unexpectedly\n")
+						os.Exit(1)
+					} else if finalState.Status == pipeline.StatusCompleted {
 						output.SuccessCheck("Pipeline completed successfully!")
 					} else {
 						fmt.Fprintf(os.Stderr, "❌ Pipeline %s\n", finalState.Status)
