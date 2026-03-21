@@ -324,6 +324,246 @@ func TestWaitOptionsDefaults(t *testing.T) {
 	}
 }
 
+func TestSplitWaitConditions(t *testing.T) {
+	paneConditions, attentionConditions := splitWaitConditions([]string{
+		" idle ",
+		"action_required",
+		" pane_changed ",
+		"healthy",
+	})
+
+	if len(paneConditions) != 2 || paneConditions[0] != "idle" || paneConditions[1] != "healthy" {
+		t.Fatalf("paneConditions = %#v, want [idle healthy]", paneConditions)
+	}
+	if len(attentionConditions) != 2 || attentionConditions[0] != "action_required" || attentionConditions[1] != "pane_changed" {
+		t.Fatalf("attentionConditions = %#v, want [action_required pane_changed]", attentionConditions)
+	}
+}
+
+func TestAttentionEventMatchesWaitCondition(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		event      AttentionEvent
+		want      bool
+	}{
+		{
+			name:      "attention requires interesting or higher",
+			condition: WaitConditionAttention,
+			event: AttentionEvent{
+				Actionability: ActionabilityInteresting,
+			},
+			want: true,
+		},
+		{
+			name:      "background does not satisfy attention",
+			condition: WaitConditionAttention,
+			event: AttentionEvent{
+				Actionability: ActionabilityBackground,
+			},
+			want: false,
+		},
+		{
+			name:      "context hot uses derived signal",
+			condition: WaitConditionContextHot,
+			event: AttentionEvent{
+				Type:    EventTypeAlertWarning,
+				Source:  "event_bus.context",
+				Summary: "context usage 95%",
+				Details: map[string]any{"usage_percent": 95.0},
+			},
+			want: true,
+		},
+		{
+			name:      "session changed uses lifecycle event",
+			condition: WaitConditionSessionChanged,
+			event: AttentionEvent{
+				Type: EventTypeSessionCreated,
+			},
+			want: true,
+		},
+		{
+			name:      "pane changed uses lifecycle event",
+			condition: WaitConditionPaneChanged,
+			event: AttentionEvent{
+				Type: EventTypePaneResized,
+			},
+			want: true,
+		},
+		{
+			name:      "reservation conflict uses conflict classifier",
+			condition: WaitConditionReservationConflict,
+			event: AttentionEvent{
+				Type:   EventTypeFileConflict,
+				Source: "watcher.file_reservation",
+				Details: map[string]any{
+					"path":           "internal/robot/wait.go",
+					"holders":        []string{"BlueLake"},
+					"requestor_agent": "QuietSeal",
+				},
+			},
+			want: true,
+		},
+		{
+			name:      "file conflict uses conflict classifier",
+			condition: WaitConditionFileConflict,
+			event: AttentionEvent{
+				Type:   EventTypeFileConflict,
+				Source: "tracker.conflicts",
+				Details: map[string]any{
+					"path":   "internal/robot/wait.go",
+					"agents": []string{"BlueLake", "QuietSeal"},
+				},
+			},
+			want: true,
+		},
+		{
+			name:      "mail pending uses mail received events",
+			condition: WaitConditionMailPending,
+			event: AttentionEvent{
+				Category: EventCategoryMail,
+				Type:     EventTypeMailReceived,
+			},
+			want: true,
+		},
+		{
+			name:      "mail ack required uses ack events",
+			condition: WaitConditionMailAckRequired,
+			event: AttentionEvent{
+				Category: EventCategoryMail,
+				Type:     EventTypeMailAckRequired,
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := attentionEventMatchesWaitCondition(tt.condition, tt.event)
+			if got != tt.want {
+				t.Fatalf("attentionEventMatchesWaitCondition(%q, %#v) = %v, want %v", tt.condition, tt.event, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckAttentionConditions_AllConditionsRequired(t *testing.T) {
+	oldFeed := PeekAttentionFeed()
+	feed := newWaitTestFeed(time.Hour)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	mailEvent := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryMail,
+		Type:          EventTypeMailReceived,
+		Actionability: ActionabilityInteresting,
+		Severity:      SeverityInfo,
+		Summary:       "new mail",
+	})
+	actionRequiredEvent := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "operator action required",
+	})
+
+	result := checkAttentionConditions([]string{WaitConditionMailPending, WaitConditionActionRequired}, 0, "proj")
+	if result == nil || !result.Met {
+		t.Fatalf("expected attention conditions to be met, got %#v", result)
+	}
+	if result.Condition != WaitConditionActionRequired {
+		t.Fatalf("Condition = %q, want %q", result.Condition, WaitConditionActionRequired)
+	}
+	if result.TriggerEvent == nil || result.TriggerEvent.Cursor != actionRequiredEvent.Cursor {
+		t.Fatalf("TriggerEvent cursor = %#v, want %d", result.TriggerEvent, actionRequiredEvent.Cursor)
+	}
+	if result.ObservedCursor != actionRequiredEvent.Cursor {
+		t.Fatalf("ObservedCursor = %d, want %d", result.ObservedCursor, actionRequiredEvent.Cursor)
+	}
+	if result.NextCursor != actionRequiredEvent.Cursor {
+		t.Fatalf("NextCursor = %d, want %d", result.NextCursor, actionRequiredEvent.Cursor)
+	}
+	if result.OldestCursor != mailEvent.Cursor {
+		t.Fatalf("OldestCursor = %d, want %d", result.OldestCursor, mailEvent.Cursor)
+	}
+	matchedConditions, ok := result.Details["matched_conditions"].([]string)
+	if !ok {
+		t.Fatalf("matched_conditions type = %T, want []string", result.Details["matched_conditions"])
+	}
+	if len(matchedConditions) != 2 || matchedConditions[0] != WaitConditionMailPending || matchedConditions[1] != WaitConditionActionRequired {
+		t.Fatalf("matched_conditions = %#v", matchedConditions)
+	}
+	matchCounts, ok := result.Details["match_count_by_condition"].(map[string]int)
+	if !ok {
+		t.Fatalf("match_count_by_condition type = %T, want map[string]int", result.Details["match_count_by_condition"])
+	}
+	if matchCounts[WaitConditionMailPending] != 1 || matchCounts[WaitConditionActionRequired] != 1 {
+		t.Fatalf("match_count_by_condition = %#v", matchCounts)
+	}
+
+	notMet := checkAttentionConditions([]string{WaitConditionMailPending, WaitConditionActionRequired}, 0, "other")
+	if notMet == nil {
+		t.Fatal("expected a non-nil result for unmet conditions")
+	}
+	if notMet.Met {
+		t.Fatalf("expected session-filtered conditions not to match, got %#v", notMet)
+	}
+	if notMet.NextCursor != actionRequiredEvent.Cursor {
+		t.Fatalf("NextCursor = %d, want %d", notMet.NextCursor, actionRequiredEvent.Cursor)
+	}
+}
+
+func TestCheckAttentionConditions_CursorExpired(t *testing.T) {
+	oldFeed := PeekAttentionFeed()
+	feed := newWaitTestFeed(time.Nanosecond)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	first := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryMail,
+		Type:          EventTypeMailReceived,
+		Actionability: ActionabilityInteresting,
+		Severity:      SeverityInfo,
+		Summary:       "old mail",
+	})
+	second := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "new attention",
+	})
+
+	time.Sleep(2 * time.Millisecond)
+
+	result := checkAttentionConditions([]string{WaitConditionAttention}, first.Cursor, "proj")
+	if result == nil || result.CursorExpired == nil {
+		t.Fatalf("expected cursor expiration, got %#v", result)
+	}
+	if result.Met {
+		t.Fatalf("expected expired cursor result not to be met, got %#v", result)
+	}
+	if result.OldestCursor != second.Cursor {
+		t.Fatalf("OldestCursor = %d, want %d", result.OldestCursor, second.Cursor)
+	}
+	if result.NextCursor != second.Cursor {
+		t.Fatalf("NextCursor = %d, want %d", result.NextCursor, second.Cursor)
+	}
+}
+
+func newWaitTestFeed(retention time.Duration) *AttentionFeed {
+	return NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       64,
+		RetentionPeriod:   retention,
+		HeartbeatInterval: 0,
+	})
+}
+
 // =============================================================================
 // filterWaitPanes Tests
 // =============================================================================

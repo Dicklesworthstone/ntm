@@ -143,9 +143,11 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 		}, 2
 	}
 
-	// Parse conditions once so composite waits can mix standard and attention-based checks.
+	// Parse conditions once and split pane-vs-attention semantics. Mixed waits
+	// are ANDed across both surfaces.
 	conditions := strings.Split(opts.Condition, ",")
-	hasAttention := hasAttentionBasedConditions(conditions)
+	paneConditions, attentionConditions := splitWaitConditions(conditions)
+	hasAttention := len(attentionConditions) > 0
 
 	// Set default count for --any mode
 	if opts.WaitForAny && opts.CountN <= 0 {
@@ -164,18 +166,14 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	sawTransition := make(map[string]bool)
 	initiallyInTarget := make(map[string]bool)
 	firstPoll := true
+	var lastPending []string
+	var lastAttentionResult *AttentionConditionResult
 
 	for {
 		// Check timeout
 		if time.Now().After(deadline) {
 			elapsed := time.Since(startTime)
-			// Collect pending agents
-			panes, _ := tmux.GetPanes(opts.Session)
-			var pending []string
-			for _, pane := range filterWaitPanes(panes, opts) {
-				pending = append(pending, pane.ID)
-			}
-			return &WaitResponse{
+			resp := &WaitResponse{
 				RobotResponse: NewErrorResponse(
 					fmt.Errorf("timeout after %v", opts.Timeout),
 					ErrCodeTimeout,
@@ -184,122 +182,131 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 				Session:       opts.Session,
 				Condition:     opts.Condition,
 				WaitedSeconds: elapsed.Seconds(),
-				AgentsPending: pending,
-			}, 1
+				AgentsPending: append([]string(nil), lastPending...),
+			}
+			if hasAttention {
+				if lastAttentionResult == nil {
+					lastAttentionResult = newAttentionConditionResult("", opts.SinceCursor, opts.SinceCursor, 0)
+				}
+				resp.CursorInfo = buildWaitCursorInfo(lastAttentionResult)
+			}
+			return resp, 1
 		}
 
-		// Get all panes
-		panes, err := tmux.GetPanes(opts.Session)
-		if err != nil {
-			return &WaitResponse{
-				RobotResponse: NewErrorResponse(
-					fmt.Errorf("failed to list panes: %w", err),
-					ErrCodeInternalError,
-					"",
-				),
-				Session:   opts.Session,
-				Condition: opts.Condition,
-			}, 2
-		}
-
-		// Filter panes based on options
-		filteredPanes := filterWaitPanes(panes, opts)
-
-		if len(filteredPanes) == 0 {
-			return &WaitResponse{
-				RobotResponse: NewErrorResponse(
-					fmt.Errorf("no panes match the filter criteria"),
-					ErrCodePaneNotFound,
-					"Check --wait-panes and --wait-type filters",
-				),
-				Session:   opts.Session,
-				Condition: opts.Condition,
-			}, 2
-		}
-
-		// Update activity state for each pane
 		var activities []*AgentActivity
-		for _, pane := range filteredPanes {
-			classifier := monitor.GetOrCreate(pane.ID)
-			// Set agent type if we can detect it from pane name
-			// Use detectAgentType which maps short forms (cc->claude, cod->codex, gmi->gemini)
-			if at := detectAgentType(pane.Title); at != "" && at != "unknown" {
-				classifier.SetAgentType(at)
-			}
-			activity, err := classifier.Classify()
+		needPaneState := len(paneConditions) > 0 || opts.ExitOnError || opts.RequireTransition
+		if needPaneState {
+			panes, err := tmux.GetPanes(opts.Session)
 			if err != nil {
-				// Pane may have disappeared, continue
-				continue
-			}
-			activities = append(activities, activity)
-		}
-
-		// Track state transitions for RequireTransition mode
-		if opts.RequireTransition {
-			for _, a := range activities {
-				inTarget := meetsAllWaitConditions(a, conditions)
-				if firstPoll {
-					// Record initial state
-					initiallyInTarget[a.PaneID] = inTarget
-				} else if initiallyInTarget[a.PaneID] && !inTarget {
-					// Agent was in target state initially and has now left it
-					sawTransition[a.PaneID] = true
-				}
-			}
-			firstPoll = false
-		}
-
-		// Check for error state (if --exit-on-error)
-		if opts.ExitOnError {
-			for _, a := range activities {
-				if a.State == StateError {
-					elapsed := time.Since(startTime)
-					return &WaitResponse{
-						RobotResponse: NewErrorResponse(
-							fmt.Errorf("agent error detected in pane '%s'", a.PaneID),
-							"AGENT_ERROR",
-							"Check agent output with --robot-tail",
-						),
-						Session:       opts.Session,
-						Condition:     opts.Condition,
-						WaitedSeconds: elapsed.Seconds(),
-						Agents: []WaitAgentInfo{{
-							Pane:      a.PaneID,
-							State:     string(a.State),
-							AgentType: a.AgentType,
-						}},
-					}, 3
-				}
-			}
-		}
-
-		// Check attention-based conditions first (if any)
-		if hasAttention {
-			attResult := checkAttentionConditions(conditions, opts.SinceCursor, opts.Session)
-			if attResult != nil && attResult.Met {
-				elapsed := time.Since(startTime)
 				return &WaitResponse{
-					RobotResponse: NewRobotResponse(true),
-					Session:       opts.Session,
-					Condition:     opts.Condition,
-					WaitedSeconds: elapsed.Seconds(),
-					WakePayload: &WaitWakePayload{
-						MatchedCondition: attResult.Condition,
-						TriggerEvent:     attResult.TriggerEvent,
-						TriggerCount:     attResult.TriggerCount,
-						Details:          attResult.Details,
-					},
-					CursorInfo: &WaitCursorInfo{
-						ObservedCursor: attResult.ObservedCursor,
-						NextCursor:     attResult.NextCursor,
-					},
-				}, 0
+					RobotResponse: NewErrorResponse(
+						fmt.Errorf("failed to list panes: %w", err),
+						ErrCodeInternalError,
+						"",
+					),
+					Session:   opts.Session,
+					Condition: opts.Condition,
+				}, 2
+			}
+
+			filteredPanes := filterWaitPanes(panes, opts)
+			if len(filteredPanes) == 0 {
+				return &WaitResponse{
+					RobotResponse: NewErrorResponse(
+						fmt.Errorf("no panes match the filter criteria"),
+						ErrCodePaneNotFound,
+						"Check --wait-panes and --wait-type filters",
+					),
+					Session:   opts.Session,
+					Condition: opts.Condition,
+				}, 2
+			}
+
+			for _, pane := range filteredPanes {
+				classifier := monitor.GetOrCreate(pane.ID)
+				// Use detectAgentType which maps short forms (cc->claude, cod->codex, gmi->gemini)
+				if at := detectAgentType(pane.Title); at != "" && at != "unknown" {
+					classifier.SetAgentType(at)
+				}
+				activity, err := classifier.Classify()
+				if err != nil {
+					// Pane may have disappeared, continue.
+					continue
+				}
+				activities = append(activities, activity)
+			}
+
+			if opts.RequireTransition && len(paneConditions) > 0 {
+				for _, a := range activities {
+					inTarget := meetsAllWaitConditions(a, paneConditions)
+					if firstPoll {
+						initiallyInTarget[a.PaneID] = inTarget
+					} else if initiallyInTarget[a.PaneID] && !inTarget {
+						sawTransition[a.PaneID] = true
+					}
+				}
+			}
+
+			if opts.ExitOnError {
+				for _, a := range activities {
+					if a.State == StateError {
+						elapsed := time.Since(startTime)
+						return &WaitResponse{
+							RobotResponse: NewErrorResponse(
+								fmt.Errorf("agent error detected in pane '%s'", a.PaneID),
+								"AGENT_ERROR",
+								"Check agent output with --robot-tail",
+							),
+							Session:       opts.Session,
+							Condition:     opts.Condition,
+							WaitedSeconds: elapsed.Seconds(),
+							Agents: []WaitAgentInfo{{
+								Pane:      a.PaneID,
+								State:     string(a.State),
+								AgentType: a.AgentType,
+							}},
+						}, 3
+					}
+				}
 			}
 		}
+		firstPoll = false
 
-		// Check pane-based conditions
-		met, matching, pending := checkWaitConditionMetWithTransition(activities, opts, conditions, initiallyInTarget, sawTransition)
-		if met {
+		paneMet := len(paneConditions) == 0
+		var matching []WaitAgentInfo
+		if len(paneConditions) > 0 {
+			var met bool
+			met, matching, lastPending = checkWaitConditionMetWithTransition(activities, opts, paneConditions, initiallyInTarget, sawTransition)
+			paneMet = met
+		} else {
+			lastPending = nil
+		}
+
+		attentionMet := !hasAttention
+		if hasAttention {
+			lastAttentionResult = checkAttentionConditions(attentionConditions, opts.SinceCursor, opts.Session)
+			if lastAttentionResult != nil && lastAttentionResult.CursorExpired != nil {
+				cursorErr := lastAttentionResult.CursorExpired
+				details := cursorErr.ToDetails()
+				return &WaitResponse{
+					RobotResponse: NewErrorResponse(
+						cursorErr,
+						ErrCodeCursorExpired,
+						details.ResyncCommand,
+					),
+					Session:   opts.Session,
+					Condition: opts.Condition,
+					CursorInfo: &WaitCursorInfo{
+						ObservedCursor: opts.SinceCursor,
+						NextCursor:     details.EarliestCursor,
+						OldestCursor:   details.EarliestCursor,
+					},
+				}, 2
+			}
+			attentionMet = lastAttentionResult != nil && lastAttentionResult.Met
+		}
+
+		if attentionMet && paneMet {
 			elapsed := time.Since(startTime)
 			return &WaitResponse{
 				RobotResponse: NewRobotResponse(true),
@@ -307,11 +314,10 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 				Condition:     opts.Condition,
 				WaitedSeconds: elapsed.Seconds(),
 				Agents:        matching,
+				WakePayload:   buildWaitWakePayload(lastAttentionResult),
+				CursorInfo:    buildWaitCursorInfo(lastAttentionResult),
 			}, 0
 		}
-
-		// Store pending for potential timeout response
-		_ = pending
 
 		// Sleep and poll again
 		time.Sleep(opts.PollInterval)
@@ -393,6 +399,23 @@ func hasAttentionBasedConditions(conditions []string) bool {
 		}
 	}
 	return false
+}
+
+func splitWaitConditions(conditions []string) ([]string, []string) {
+	paneConditions := make([]string, 0, len(conditions))
+	attentionConditions := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		trimmed := strings.TrimSpace(condition)
+		if trimmed == "" {
+			continue
+		}
+		if isAttentionBasedCondition(trimmed) {
+			attentionConditions = append(attentionConditions, trimmed)
+			continue
+		}
+		paneConditions = append(paneConditions, trimmed)
+	}
+	return paneConditions, attentionConditions
 }
 
 // filterWaitPanes filters panes based on wait options.
@@ -593,20 +616,47 @@ type AttentionConditionResult struct {
 	Details        map[string]any
 	ObservedCursor int64
 	NextCursor     int64
+	OldestCursor   int64
+	CursorExpired  *CursorExpiredError
 }
 
-// checkAttentionConditions checks if any attention-based conditions are met.
-// Returns the first matching condition result, or nil if none match.
+type singleAttentionConditionMatch struct {
+	Condition    string
+	TriggerEvent *AttentionEvent
+	TriggerCount int
+}
+
+func newAttentionConditionResult(condition string, observedCursor, nextCursor, oldestCursor int64) *AttentionConditionResult {
+	return &AttentionConditionResult{
+		Condition:      condition,
+		ObservedCursor: observedCursor,
+		NextCursor:     nextCursor,
+		OldestCursor:   oldestCursor,
+		Details:        make(map[string]any),
+	}
+}
+
+// checkAttentionConditions checks if all requested attention-based conditions
+// are met. Multiple attention conditions are ANDed together.
 func checkAttentionConditions(conditions []string, sinceCursor int64, session string) *AttentionConditionResult {
 	feed := GetAttentionFeed()
 	if feed == nil {
 		return nil
 	}
 
-	// Replay events since the cursor
-	events, _, err := feed.Replay(sinceCursor, 1000)
+	stats := feed.Stats()
+	result := newAttentionConditionResult("", sinceCursor, stats.NewestCursor, stats.OldestCursor)
+
+	// Replay events since the cursor.
+	events, newestCursor, err := feed.Replay(sinceCursor, 1000)
+	result.NextCursor = newestCursor
 	if err != nil {
-		return nil
+		if cursorErr, ok := err.(*CursorExpiredError); ok {
+			result.CursorExpired = cursorErr
+			result.OldestCursor = cursorErr.EarliestCursor
+			result.NextCursor = cursorErr.EarliestCursor
+		}
+		return result
 	}
 
 	// Filter by session if specified
@@ -620,147 +670,129 @@ func checkAttentionConditions(conditions []string, sinceCursor int64, session st
 		events = filtered
 	}
 
+	result.Details["scanned_event_count"] = len(events)
+	if session != "" {
+		result.Details["session"] = session
+	}
+
+	matchedConditions := make([]string, 0, len(conditions))
+	matchCounts := make(map[string]int, len(conditions))
+	var decisiveMatch *singleAttentionConditionMatch
+
 	for _, cond := range conditions {
 		c := strings.TrimSpace(cond)
 		if !isAttentionBasedCondition(c) {
 			continue
 		}
 
-		result := checkSingleAttentionCondition(c, events, sinceCursor)
-		if result != nil && result.Met {
+		match := checkSingleAttentionCondition(c, events)
+		if match == nil {
 			return result
+		}
+
+		matchedConditions = append(matchedConditions, c)
+		matchCounts[c] = match.TriggerCount
+		if decisiveMatch == nil || (match.TriggerEvent != nil && decisiveMatch.TriggerEvent != nil &&
+			match.TriggerEvent.Cursor > decisiveMatch.TriggerEvent.Cursor) {
+			decisiveMatch = match
 		}
 	}
 
-	return nil
+	if decisiveMatch == nil {
+		return result
+	}
+
+	result.Met = true
+	result.Condition = decisiveMatch.Condition
+	result.TriggerEvent = decisiveMatch.TriggerEvent
+	result.TriggerCount = decisiveMatch.TriggerCount
+	result.ObservedCursor = decisiveMatch.TriggerEvent.Cursor
+	result.Details["matched_conditions"] = matchedConditions
+	result.Details["match_count_by_condition"] = matchCounts
+	return result
 }
 
 // checkSingleAttentionCondition checks a single attention-based condition.
-func checkSingleAttentionCondition(condition string, events []AttentionEvent, sinceCursor int64) *AttentionConditionResult {
-	result := &AttentionConditionResult{
-		Condition:      condition,
-		ObservedCursor: sinceCursor,
-		Details:        make(map[string]any),
+func checkSingleAttentionCondition(condition string, events []AttentionEvent) *singleAttentionConditionMatch {
+	count := 0
+	var firstMatch *AttentionEvent
+
+	for i := range events {
+		if !attentionEventMatchesWaitCondition(condition, events[i]) {
+			continue
+		}
+		count++
+		if firstMatch == nil {
+			matched := cloneAttentionEvent(events[i])
+			firstMatch = &matched
+		}
 	}
 
+	if firstMatch == nil {
+		return nil
+	}
+
+	return &singleAttentionConditionMatch{
+		Condition:    condition,
+		TriggerEvent: firstMatch,
+		TriggerCount: count,
+	}
+}
+
+func attentionEventMatchesWaitCondition(condition string, event AttentionEvent) bool {
 	switch condition {
 	case WaitConditionAttention:
-		// Any attention event (action_required or interesting, not just background)
-		for _, ev := range events {
-			if ev.Actionability == ActionabilityActionRequired || ev.Actionability == ActionabilityInteresting {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = 1
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
-
+		return attentionActionabilityRank(event.Actionability) >= attentionActionabilityRank(ActionabilityInteresting)
 	case WaitConditionActionRequired:
-		// Events with action_required actionability
-		for _, ev := range events {
-			if ev.Actionability == ActionabilityActionRequired {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = countByActionability(events, ActionabilityActionRequired)
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
-
+		return event.Actionability == ActionabilityActionRequired
 	case WaitConditionMailPending:
-		// Mail-related events (received/unread)
-		for _, ev := range events {
-			if ev.Category == EventCategoryMail && ev.Type == EventTypeMailReceived {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = countByType(events, EventTypeMailReceived)
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
-
+		return event.Category == EventCategoryMail && event.Type == EventTypeMailReceived
 	case WaitConditionMailAckRequired:
-		// Mail events requiring acknowledgment
-		for _, ev := range events {
-			if ev.Category == EventCategoryMail && ev.Type == EventTypeMailAckRequired {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = countByType(events, EventTypeMailAckRequired)
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
-
+		return event.Category == EventCategoryMail && event.Type == EventTypeMailAckRequired
 	case WaitConditionContextHot:
-		// Context hot events (agent context is filling up)
-		// This is indicated by the "signal" detail field
-		for _, ev := range events {
-			if ev.Details != nil {
-				if signal, ok := ev.Details["signal"]; ok && signal == "context_hot" {
-					result.Met = true
-					result.TriggerEvent = &ev
-					result.TriggerCount = 1
-					result.NextCursor = ev.Cursor
-					return result
-				}
-			}
-		}
-
+		return attentionEventSignal(event) == attentionSignalContextHot
 	case WaitConditionReservationConflict:
-		// Reservation conflicts are file conflicts with conflict_kind=reservation
-		for _, ev := range events {
-			if ev.Type == EventTypeFileConflict {
-				if ev.Details != nil {
-					if kind, ok := ev.Details["conflict_kind"]; ok && kind == "reservation" {
-						result.Met = true
-						result.TriggerEvent = &ev
-						result.TriggerCount = 1
-						result.NextCursor = ev.Cursor
-						return result
-					}
-				}
-			}
-		}
-
+		return attentionEventSignal(event) == attentionSignalReservationConflict || isReservationConflictAttentionEvent(event)
 	case WaitConditionFileConflict:
-		// File conflict events
-		for _, ev := range events {
-			if ev.Type == EventTypeFileConflict {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = countByType(events, EventTypeFileConflict)
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
-
+		return attentionEventSignal(event) == attentionSignalFileConflict || isFileConflictAttentionEvent(event)
 	case WaitConditionSessionChanged:
-		// Session structure change events
-		for _, ev := range events {
-			if ev.Category == EventCategorySession {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = countByCategory(events, EventCategorySession)
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
-
+		return attentionEventSignal(event) == attentionSignalSessionChanged
 	case WaitConditionPaneChanged:
-		// Pane change events
-		for _, ev := range events {
-			if ev.Category == EventCategoryPane {
-				result.Met = true
-				result.TriggerEvent = &ev
-				result.TriggerCount = countByCategory(events, EventCategoryPane)
-				result.NextCursor = ev.Cursor
-				return result
-			}
-		}
+		return attentionEventSignal(event) == attentionSignalPaneChanged
+	default:
+		return false
 	}
+}
 
-	return result
+func attentionEventSignal(event AttentionEvent) string {
+	if signal := attentionStringDetail(event.Details, "signal"); signal != "" {
+		return signal
+	}
+	signal, _, _ := deriveAttentionSignal(event)
+	return signal
+}
+
+func buildWaitWakePayload(result *AttentionConditionResult) *WaitWakePayload {
+	if result == nil || !result.Met {
+		return nil
+	}
+	return &WaitWakePayload{
+		MatchedCondition: result.Condition,
+		TriggerEvent:     result.TriggerEvent,
+		TriggerCount:     result.TriggerCount,
+		Details:          result.Details,
+	}
+}
+
+func buildWaitCursorInfo(result *AttentionConditionResult) *WaitCursorInfo {
+	if result == nil {
+		return nil
+	}
+	return &WaitCursorInfo{
+		ObservedCursor: result.ObservedCursor,
+		NextCursor:     result.NextCursor,
+		OldestCursor:   result.OldestCursor,
+	}
 }
 
 // countByActionability counts events with a specific actionability level.
