@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 )
 
 func TestSpringManagerSetAndGet(t *testing.T) {
@@ -136,5 +137,54 @@ func BenchmarkSpringManagerTick20(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sm.Tick()
+	}
+}
+
+// BenchmarkSpringManagerTick50 benchmarks Tick() with 50 active springs.
+// Target: < 1μs per tick for smooth 60fps animation.
+func BenchmarkSpringManagerTick50(b *testing.B) {
+	sm := NewSpringManager()
+	for i := 0; i < 50; i++ {
+		sm.Set(fmt.Sprintf("s%d", i), float64(i)*10)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sm.Tick()
+	}
+}
+
+// BenchmarkSpringManagerTick100 benchmarks Tick() at higher load.
+func BenchmarkSpringManagerTick100(b *testing.B) {
+	sm := NewSpringManager()
+	for i := 0; i < 100; i++ {
+		sm.Set(fmt.Sprintf("s%d", i), float64(i)*10)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sm.Tick()
+	}
+}
+
+// TestSpringTickPerformance verifies Tick() performance target.
+func TestSpringTickPerformance(t *testing.T) {
+	sm := NewSpringManager()
+	for i := 0; i < 50; i++ {
+		sm.Set(fmt.Sprintf("s%d", i), float64(i)*10)
+	}
+
+	const iterations = 10000
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		sm.Tick()
+	}
+	elapsed := time.Since(start)
+	avgNs := float64(elapsed.Nanoseconds()) / float64(iterations)
+
+	t.Logf("average Tick() time with 50 springs: %.0fns (target <1000ns)", avgNs)
+
+	if avgNs > 1000.0 {
+		t.Errorf("Tick() too slow: %.0fns (target <1000ns = 1μs)", avgNs)
 	}
 }
