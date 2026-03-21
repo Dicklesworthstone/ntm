@@ -84,11 +84,14 @@ func NewEventWithCorrelation(eventType EventType, session, agentName, correlatio
 
 // SessionCreateData contains data for session_create events.
 type SessionCreateData struct {
-	ClaudeCount int    `json:"claude_count,omitempty"`
-	CodexCount  int    `json:"codex_count,omitempty"`
-	GeminiCount int    `json:"gemini_count,omitempty"`
-	WorkDir     string `json:"work_dir,omitempty"`
-	Recipe      string `json:"recipe,omitempty"`
+	ClaudeCount   int    `json:"claude_count,omitempty"`
+	CodexCount    int    `json:"codex_count,omitempty"`
+	GeminiCount   int    `json:"gemini_count,omitempty"`
+	CursorCount   int    `json:"cursor_count,omitempty"`
+	WindsurfCount int    `json:"windsurf_count,omitempty"`
+	AiderCount    int    `json:"aider_count,omitempty"`
+	WorkDir       string `json:"work_dir,omitempty"`
+	Recipe        string `json:"recipe,omitempty"`
 }
 
 // AgentSpawnData contains data for agent_spawn events.
@@ -128,11 +131,14 @@ func ToMap(v interface{}) map[string]interface{} {
 	switch d := v.(type) {
 	case SessionCreateData:
 		return map[string]interface{}{
-			"claude_count": d.ClaudeCount,
-			"codex_count":  d.CodexCount,
-			"gemini_count": d.GeminiCount,
-			"work_dir":     d.WorkDir,
-			"recipe":       d.Recipe,
+			"claude_count":   d.ClaudeCount,
+			"codex_count":    d.CodexCount,
+			"gemini_count":   d.GeminiCount,
+			"cursor_count":   d.CursorCount,
+			"windsurf_count": d.WindsurfCount,
+			"aider_count":    d.AiderCount,
+			"work_dir":       d.WorkDir,
+			"recipe":         d.Recipe,
 		}
 	case AgentSpawnData:
 		return map[string]interface{}{

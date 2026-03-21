@@ -314,17 +314,13 @@ func TestToMap(t *testing.T) {
 	data := SessionCreateData{
 		ClaudeCount: 2,
 		CodexCount:  1,
+		CursorCount: 1,
 		WorkDir:     "/path",
 	}
 
 	m := ToMap(data)
-
-	if m["claude_count"] != 2 {
-		t.Errorf("claude_count = %v, want 2", m["claude_count"])
-	}
-
-	if m["codex_count"] != 1 {
-		t.Errorf("codex_count = %v, want 1", m["codex_count"])
+	if m["claude_count"] != 2 || m["codex_count"] != 1 || m["cursor_count"] != 1 || m["work_dir"] != "/path" {
+		t.Errorf("ToMap(SessionCreateData) produced unexpected map: %v", m)
 	}
 }
 
@@ -334,26 +330,20 @@ func TestToMap_AllTypes(t *testing.T) {
 	t.Run("SessionCreateData", func(t *testing.T) {
 		t.Parallel()
 		m := ToMap(SessionCreateData{
-			ClaudeCount: 3,
-			CodexCount:  2,
-			GeminiCount: 1,
-			WorkDir:     "/work",
-			Recipe:      "code-review",
+			ClaudeCount:   3,
+			CodexCount:    2,
+			GeminiCount:   1,
+			CursorCount:   1,
+			WindsurfCount: 1,
+			AiderCount:    1,
+			WorkDir:       "/work",
+			Recipe:        "code-review",
 		})
-		if m == nil {
-			t.Fatal("ToMap returned nil")
+		if m["claude_count"] != 3 || m["codex_count"] != 2 || m["gemini_count"] != 1 || m["cursor_count"] != 1 || m["windsurf_count"] != 1 || m["aider_count"] != 1 {
+			t.Errorf("unexpected counts: %v", m)
 		}
-		if m["claude_count"] != 3 {
-			t.Errorf("claude_count = %v, want 3", m["claude_count"])
-		}
-		if m["gemini_count"] != 1 {
-			t.Errorf("gemini_count = %v, want 1", m["gemini_count"])
-		}
-		if m["work_dir"] != "/work" {
-			t.Errorf("work_dir = %v, want /work", m["work_dir"])
-		}
-		if m["recipe"] != "code-review" {
-			t.Errorf("recipe = %v, want code-review", m["recipe"])
+		if m["work_dir"] != "/work" || m["recipe"] != "code-review" {
+			t.Errorf("unexpected context: %v", m)
 		}
 	})
 

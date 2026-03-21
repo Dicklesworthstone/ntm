@@ -67,6 +67,9 @@ func TestRobotStatusEmptySessions(t *testing.T) {
 			ClaudeCount   int `json:"claude_count"`
 			CodexCount    int `json:"codex_count"`
 			GeminiCount   int `json:"gemini_count"`
+			CursorCount   int `json:"cursor_count"`
+			WindsurfCount int `json:"windsurf_count"`
+			AiderCount    int `json:"aider_count"`
 		} `json:"summary"`
 	}
 
@@ -244,6 +247,9 @@ func TestRobotStatusWithSyntheticAgents(t *testing.T) {
 			ClaudeCount int `json:"claude_count"`
 			CodexCount  int `json:"codex_count"`
 			GeminiCount int `json:"gemini_count"`
+			CursorCount int `json:"cursor_count"`
+			WindsurfCount int `json:"windsurf_count"`
+			AiderCount int `json:"aider_count"`
 		} `json:"summary"`
 	}
 
@@ -356,6 +362,13 @@ func TestRobotStatusHandlesLongSessionNames(t *testing.T) {
 		} `json:"sessions"`
 		Summary struct {
 			TotalSessions int `json:"total_sessions"`
+			TotalAgents   int `json:"total_agents"`
+			ClaudeCount   int `json:"claude_count"`
+			CodexCount    int `json:"codex_count"`
+			GeminiCount   int `json:"gemini_count"`
+			CursorCount   int `json:"cursor_count"`
+			WindsurfCount int `json:"windsurf_count"`
+			AiderCount    int `json:"aider_count"`
 		} `json:"summary"`
 	}
 
@@ -403,7 +416,6 @@ projects_base = %q
 
 [agents]
 claude = "bash"
-codex = "bash"
 `, projectsBase)
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("failed to write test config: %v", err)
@@ -740,6 +752,9 @@ gemini = "bash"
 			ClaudeCount   int `json:"claude_count"`
 			CodexCount    int `json:"codex_count"`
 			GeminiCount   int `json:"gemini_count"`
+			CursorCount   int `json:"cursor_count"`
+			WindsurfCount int `json:"windsurf_count"`
+			AiderCount    int `json:"aider_count"`
 		} `json:"summary"`
 	}
 
@@ -1935,11 +1950,11 @@ func TestRobotEnsembleSuggest(t *testing.T) {
 			}
 
 			if len(payload.Suggestions) == 0 {
-				t.Errorf("expected at least one suggestion")
+				t.Errorf("expected suggestions in JSON output")
 			}
 
 			if payload.AgentHints == nil {
-				t.Errorf("expected _agent_hints to be present")
+				t.Errorf("expected agent hints to be present")
 			} else {
 				if payload.AgentHints.Summary == "" {
 					t.Errorf("expected agent hints summary to be non-empty")
@@ -1962,7 +1977,7 @@ func TestEnsembleSuggestIDOnly(t *testing.T) {
 	logger := testutil.NewTestLoggerStdout(t)
 
 	out := testutil.AssertCommandSuccess(t, logger,
-		"ntm", "--robot-ensemble-suggest=What security issues exist?", "--suggest-id-only")
+		"ntm", "--robot-ensemble-suggest=What security vulnerabilities exist?", "--suggest-id-only")
 	logger.Log("ID-ONLY OUTPUT:\n%s", string(out))
 
 	var payload struct {
@@ -1999,14 +2014,14 @@ func TestEnsembleSuggestCLI(t *testing.T) {
 	t.Run("table_output", func(t *testing.T) {
 		logger.LogSection("Testing table output")
 		out := testutil.AssertCommandSuccess(t, logger,
-			"ntm", "ensemble", "suggest", "What security vulnerabilities exist?")
+			"ntm", "ensemble", "suggest", "What bugs exist?")
 		logger.Log("TABLE OUTPUT:\n%s", string(out))
 
 		if !strings.Contains(string(out), "Recommended:") {
 			t.Errorf("expected 'Recommended:' in table output")
 		}
-		if !strings.Contains(string(out), "Safety") || !strings.Contains(string(out), "Risk") {
-			t.Errorf("expected 'Safety / Risk' preset in output")
+		if !strings.Contains(string(out), "Bug") || !strings.Contains(string(out), "Hunt") {
+			t.Errorf("expected 'Bug / Hunt' preset in output")
 		}
 		if !strings.Contains(string(out), "Spawn command:") {
 			t.Errorf("expected 'Spawn command:' in output")
@@ -2016,7 +2031,7 @@ func TestEnsembleSuggestCLI(t *testing.T) {
 	t.Run("json_output", func(t *testing.T) {
 		logger.LogSection("Testing JSON output")
 		out := testutil.AssertCommandSuccess(t, logger,
-			"ntm", "ensemble", "suggest", "What bugs exist?", "--json")
+			"ntm", "ensemble", "suggest", "What features should we add?", "--json")
 		logger.Log("JSON OUTPUT:\n%s", string(out))
 
 		var payload struct {

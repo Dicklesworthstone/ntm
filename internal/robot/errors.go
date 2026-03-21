@@ -138,6 +138,12 @@ func agentTypeFromPaneType(t tmux.AgentType) string {
 		return "codex"
 	case tmux.AgentGemini:
 		return "gemini"
+	case tmux.AgentCursor:
+		return "cursor"
+	case tmux.AgentWindsurf:
+		return "windsurf"
+	case tmux.AgentAider:
+		return "aider"
 	case tmux.AgentUser:
 		return "user"
 	default:

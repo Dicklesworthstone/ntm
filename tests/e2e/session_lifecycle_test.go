@@ -354,7 +354,7 @@ func TestEventLogging(t *testing.T) {
 		correlationID string
 		data          string
 	}{
-		{"session_create", "corr-1", `{"claude_count": 2}`},
+		{"session_create", "corr-1", `{"claude_count": 2, "cursor_count": 0}`},
 		{"agent_spawn", "corr-2", `{"agent_type": "cc", "model": "opus"}`},
 		{"agent_spawn", "corr-3", `{"agent_type": "cc", "model": "sonnet"}`},
 		{"prompt_send", "corr-4", `{"target_count": 2}`},

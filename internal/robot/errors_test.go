@@ -330,12 +330,13 @@ func TestAgentTypeFromPaneType(t *testing.T) {
 		{tmux.AgentClaude, "claude"},
 		{tmux.AgentCodex, "codex"},
 		{tmux.AgentGemini, "gemini"},
+		{tmux.AgentCursor, "cursor"},
+		{tmux.AgentWindsurf, "windsurf"},
+		{tmux.AgentAider, "aider"},
 		{tmux.AgentUser, "user"},
 		{tmux.AgentUnknown, "unknown"},
 		// Types not in the switch should return "unknown"
-		{tmux.AgentCursor, "unknown"},
-		{tmux.AgentWindsurf, "unknown"},
-		{tmux.AgentAider, "unknown"},
+		{tmux.AgentType("unknown_type"), "unknown"},
 	}
 
 	for _, tc := range tests {

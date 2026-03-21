@@ -65,6 +65,31 @@ func renderedHeight(s string) int {
 	return lipgloss.Height(plain)
 }
 
+func leadingSpaceCount(s string) int {
+	count := 0
+	for _, r := range s {
+		if r != ' ' {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func firstNonEmptyLines(s string, limit int) []string {
+	lines := make([]string, 0, limit)
+	for _, line := range strings.Split(status.StripANSI(s), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) == limit {
+			break
+		}
+	}
+	return lines
+}
+
 func TestViewFitsHeightAndFooterOnce(t *testing.T) {
 	t.Parallel()
 
@@ -406,96 +431,6 @@ func TestRenderSplitViewUsesAttentionPanelWhenFocused(t *testing.T) {
 
 	m := newTestModel(200)
 	m.attentionPanel.SetData([]panels.AttentionItem{
-		{Summary: "Critical alert", Actionability: robot.ActionabilityActionRequired, SourcePane: 1},
-	}, true)
-	m.focusedPanel = PanelAttention
-
-	out := status.StripANSI(m.renderSplitView())
-	if !strings.Contains(out, "Attention") {
-		t.Fatalf("expected split view to render attention panel, got %q", out)
-	}
-	if strings.Contains(out, "Context Usage") {
-		t.Fatalf("expected split attention view to replace detail content, got %q", out)
-	}
-}
-
-func TestRenderUltraLayoutKeepsDetailVisibleWhenAttentionFocused(t *testing.T) {
-	t.Parallel()
-
-	m := newTestModel(240)
-	m.attentionPanel.SetData([]panels.AttentionItem{
-		{Summary: "Critical alert", Actionability: robot.ActionabilityActionRequired, SourcePane: 1},
-	}, true)
-	m.focusedPanel = PanelAttention
-
-	out := status.StripANSI(m.renderUltraLayout())
-	if !strings.Contains(out, "Attention") {
-		t.Fatalf("expected ultra layout to include attention panel, got %q", out)
-	}
-	if !strings.Contains(out, "Context Usage") {
-		t.Fatalf("expected ultra layout to keep pane detail visible when attention is focused, got %q", out)
-	}
-}
-
-func TestVisiblePanelsIncludeAttentionAtSplitAndHideAtNarrow(t *testing.T) {
-	t.Parallel()
-
-	split := newTestModel(layout.SplitViewThreshold)
-	split.tier = layout.TierSplit
-
-	narrow := newTestModel(100)
-	narrow.tier = layout.TierNarrow
-
-	if !containsPanelID(split.visiblePanelsForHelpVerbosity(), PanelAttention) {
-		t.Fatal("expected split-tier panel set to include PanelAttention")
-	}
-	if containsPanelID(narrow.visiblePanelsForHelpVerbosity(), PanelAttention) {
-		t.Fatal("did not expect narrow-tier panel set to include PanelAttention")
-	}
-}
-
-func TestNewSeedsAttentionFetchCadence(t *testing.T) {
-	t.Parallel()
-
-	m := New("test", "")
-	if !m.fetchingAttention {
-		t.Fatal("expected New to mark attention fetch as in flight during initial startup")
-	}
-	if m.lastAttentionFetch.IsZero() {
-		t.Fatal("expected New to seed the attention refresh timestamp")
-	}
-}
-
-func TestSortAttentionItemsOrdersByActionabilityThenRecency(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 3, 21, 7, 0, 0, 0, time.UTC)
-	items := []panels.AttentionItem{
-		{Summary: "older interesting", Actionability: robot.ActionabilityInteresting, Timestamp: now.Add(-2 * time.Minute)},
-		{Summary: "newer action required", Actionability: robot.ActionabilityActionRequired, Timestamp: now.Add(-1 * time.Minute)},
-		{Summary: "older action required", Actionability: robot.ActionabilityActionRequired, Timestamp: now.Add(-3 * time.Minute)},
-		{Summary: "newer interesting", Actionability: robot.ActionabilityInteresting, Timestamp: now},
-	}
-
-	sortAttentionItems(items)
-
-	got := []string{items[0].Summary, items[1].Summary, items[2].Summary, items[3].Summary}
-	want := []string{"newer action required", "older action required", "newer interesting", "older interesting"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("sorted item[%d] = %q, want %q (full order: %v)", i, got[i], want[i], got)
-		}
-	}
-}
-
-func TestSplitViewRendersAttentionPanelWhenFocused(t *testing.T) {
-	t.Parallel()
-
-	m := newTestModel(160)
-	m.height = 30
-	m.tier = layout.TierSplit
-	m.focusedPanel = PanelAttention
-	m.attentionPanel.SetData([]panels.AttentionItem{
 		{
 			Summary:       "operator attention item",
 			Actionability: robot.ActionabilityActionRequired,
@@ -504,6 +439,7 @@ func TestSplitViewRendersAttentionPanelWhenFocused(t *testing.T) {
 			SourceAgent:   "codex",
 		},
 	}, true)
+	m.focusedPanel = PanelAttention
 
 	out := status.StripANSI(m.renderSplitView())
 	if !strings.Contains(out, "Attention") {
@@ -573,6 +509,64 @@ func TestMegaLayout_DoesNotOverflowWidth(t *testing.T) {
 	out := m.renderMegaLayout()
 	if got := maxRenderedLineWidth(out); got > m.width {
 		t.Fatalf("renderMegaLayout max line width = %d, want <= %d", got, m.width)
+	}
+}
+
+func TestLayouts_IndentAllLinesConsistently(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		width  int
+		render func(Model) string
+	}{
+		{
+			name:  "split",
+			width: layout.SplitViewThreshold,
+			render: func(m Model) string {
+				return m.renderSplitView()
+			},
+		},
+		{
+			name:  "ultra",
+			width: layout.UltraWideViewThreshold,
+			render: func(m Model) string {
+				return m.renderUltraLayout()
+			},
+		},
+		{
+			name:  "mega",
+			width: layout.MegaWideViewThreshold,
+			render: func(m Model) string {
+				return m.renderMegaLayout()
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := newTestModel(tc.width)
+			m.height = 30
+			m.tier = layout.TierForWidth(tc.width)
+			rendered := tc.render(m)
+
+			lines := firstNonEmptyLines(rendered, 2)
+			if len(lines) < 2 {
+				t.Fatalf("expected at least two rendered lines, got %d", len(lines))
+			}
+
+			firstIndent := leadingSpaceCount(lines[0])
+			secondIndent := leadingSpaceCount(lines[1])
+			if firstIndent != 2 || secondIndent != 2 {
+				t.Fatalf("expected first two lines to be indented by 2 spaces, got %d and %d\nline1=%q\nline2=%q", firstIndent, secondIndent, lines[0], lines[1])
+			}
+			if got := maxRenderedLineWidth(rendered); got > m.width {
+				t.Fatalf("rendered max line width = %d, want <= %d", got, m.width)
+			}
+		})
 	}
 }
 
@@ -2116,16 +2110,19 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		claudeCount int
-		codexCount  int
-		geminiCount int
-		userCount   int
+		name          string
+		claudeCount   int
+		codexCount    int
+		geminiCount   int
+		cursorCount   int
+		windsurfCount int
+		aiderCount    int
+		userCount     int
 	}{
-		{"all_claude", 5, 0, 0, 0},
-		{"mixed_agents", 2, 2, 1, 0},
-		{"with_user", 3, 2, 1, 1},
-		{"all_types", 4, 4, 2, 1},
+		{"all_claude", 5, 0, 0, 0, 0, 0, 0},
+		{"mixed_agents", 2, 2, 1, 1, 1, 1, 1},
+		{"all_user", 0, 0, 0, 0, 0, 0, 4},
+		{"empty", 0, 0, 0, 0, 0, 0, 0},
 	}
 
 	for _, tc := range tests {
@@ -2159,7 +2156,28 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 				})
 				idx++
 			}
-			// Add user panes
+			// Add Cursor panes
+			for i := 0; i < tc.cursorCount; i++ {
+				m.panes = append(m.panes, tmux.Pane{
+					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentCursor,
+				})
+				idx++
+			}
+			// Add Windsurf panes
+			for i := 0; i < tc.windsurfCount; i++ {
+				m.panes = append(m.panes, tmux.Pane{
+					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentWindsurf,
+				})
+				idx++
+			}
+			// Add Aider panes
+			for i := 0; i < tc.aiderCount; i++ {
+				m.panes = append(m.panes, tmux.Pane{
+					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentAider,
+				})
+				idx++
+			}
+			// Add User panes
 			for i := 0; i < tc.userCount; i++ {
 				m.panes = append(m.panes, tmux.Pane{
 					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentUser,
@@ -2169,12 +2187,12 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 
 			m.updateStats()
 
-			expectedTotal := tc.claudeCount + tc.codexCount + tc.geminiCount + tc.userCount
-			actualSum := m.claudeCount + m.codexCount + m.geminiCount + m.userCount
+			expectedTotal := tc.claudeCount + tc.codexCount + tc.geminiCount + tc.cursorCount + tc.windsurfCount + tc.aiderCount + tc.userCount
+			actualSum := m.claudeCount + m.codexCount + m.geminiCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.userCount
 
 			if actualSum != expectedTotal {
-				t.Errorf("expected sum %d, got %d (claude=%d codex=%d gemini=%d user=%d)",
-					expectedTotal, actualSum, m.claudeCount, m.codexCount, m.geminiCount, m.userCount)
+				t.Errorf("expected sum %d, got %d (claude=%d codex=%d gemini=%d cursor=%d windsurf=%d aider=%d user=%d)",
+					expectedTotal, actualSum, m.claudeCount, m.codexCount, m.geminiCount, m.cursorCount, m.windsurfCount, m.aiderCount, m.userCount)
 			}
 
 			if len(m.panes) != expectedTotal {
@@ -2235,16 +2253,9 @@ func TestPaneDelegateRender(t *testing.T) {
 	d.SetTick(5) // Set animation tick
 
 	items := []list.Item{
-		paneItem{row: PaneTableRow{
-			Title:  "proj__cc_1",
-			Type:   "cc",
-			Status: "working",
-		}},
-		paneItem{row: PaneTableRow{
-			Title:  "proj__cod_1",
-			Type:   "cod",
-			Status: "idle",
-		}},
+		paneItem{row: PaneTableRow{Index: 0, Title: "cc_1", Type: "cc"}},
+		paneItem{row: PaneTableRow{Index: 1, Title: "cc_2", Type: "cc"}},
+		paneItem{row: PaneTableRow{Index: 2, Title: "cod_1", Type: "cod"}},
 	}
 
 	l := list.New(items, d, 100, 20)

@@ -204,6 +204,18 @@ func aggregateStats(eventList []events.Event, days int, since string, cutoff tim
 				stats.TotalAgents += int(gmi)
 				updateAgentStats(stats.AgentBreakdown, "gemini", int(gmi), 0, 0)
 			}
+			if cursor, ok := event.Data["cursor_count"].(float64); ok {
+				stats.TotalAgents += int(cursor)
+				updateAgentStats(stats.AgentBreakdown, "cursor", int(cursor), 0, 0)
+			}
+			if windsurf, ok := event.Data["windsurf_count"].(float64); ok {
+				stats.TotalAgents += int(windsurf)
+				updateAgentStats(stats.AgentBreakdown, "windsurf", int(windsurf), 0, 0)
+			}
+			if aider, ok := event.Data["aider_count"].(float64); ok {
+				stats.TotalAgents += int(aider)
+				updateAgentStats(stats.AgentBreakdown, "aider", int(aider), 0, 0)
+			}
 
 		case events.EventAgentSpawn:
 			if agentType, ok := event.Data["agent_type"].(string); ok {
@@ -316,6 +328,15 @@ func buildSessionDetails(eventList []events.Event) []SessionSummary {
 			}
 			if gmi, ok := event.Data["gemini_count"].(float64); ok {
 				summary.AgentCount += int(gmi)
+			}
+			if cursor, ok := event.Data["cursor_count"].(float64); ok {
+				summary.AgentCount += int(cursor)
+			}
+			if windsurf, ok := event.Data["windsurf_count"].(float64); ok {
+				summary.AgentCount += int(windsurf)
+			}
+			if aider, ok := event.Data["aider_count"].(float64); ok {
+				summary.AgentCount += int(aider)
 			}
 		case events.EventPromptSend:
 			summary.PromptCount++

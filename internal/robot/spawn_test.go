@@ -86,6 +86,9 @@ func TestAgentTypeShort(t *testing.T) {
 		{tmux.AgentClaude, "cc"},
 		{tmux.AgentCodex, "cod"},
 		{tmux.AgentGemini, "gmi"},
+		{tmux.AgentCursor, "cursor"},
+		{tmux.AgentWindsurf, "windsurf"},
+		{tmux.AgentAider, "aider"},
 		{tmux.AgentUser, "user"},
 	}
 

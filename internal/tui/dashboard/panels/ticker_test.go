@@ -158,13 +158,16 @@ func TestTickerPanelBuildFleetSegment(t *testing.T) {
 		{
 			name: "with all agent types",
 			data: TickerData{
-				TotalAgents:  6,
-				ActiveAgents: 4,
-				ClaudeCount:  2,
-				CodexCount:   2,
-				GeminiCount:  2,
+				TotalAgents:   9,
+				ActiveAgents:  7,
+				ClaudeCount:   2,
+				CodexCount:    2,
+				GeminiCount:   2,
+				CursorCount:   1,
+				WindsurfCount: 1,
+				AiderCount:    1,
 			},
-			contains: []string{"Fleet", "4 active / 6 total", "C:2", "X:2", "G:2"},
+			contains: []string{"Fleet", "7 active / 9 total", "C:2", "X:2", "G:2", "Cur:1", "W:1", "A:1"},
 		},
 		{
 			name: "with only Claude",

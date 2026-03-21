@@ -169,7 +169,7 @@ func resolveSpawnAssignAgentType(agent string, ccOnly, codOnly, gmiOnly bool) st
 func parseLocalFallbackProvider(raw string) (AgentType, error) {
 	provider := strings.ToLower(strings.TrimSpace(raw))
 	if provider == "" {
-		provider = "cod"
+		return AgentTypeCodex, nil
 	}
 	switch provider {
 	case "cc", "claude", "claude-code":
@@ -405,6 +405,9 @@ type SpawnOptions struct {
 	AssignQuiet        bool          // Suppress non-essential assignment output
 	AssignTimeout      time.Duration // Timeout for external calls during assignment (bv, br, Agent Mail)
 	AssignAgentType    string        // Filter assignment to specific agent type (claude, codex, gemini)
+	AssignCCOnly       bool          // Only assign to Claude agents (alias for --assign-agent=claude)
+	AssignCodOnly      bool          // Only assign to Codex agents (alias for --assign-agent=codex)
+	AssignGmiOnly      bool          // Only assign to Gemini agents (alias for --assign-agent=gemini)
 
 	// Git worktree isolation configuration
 	UseWorktrees bool // Enable git worktree isolation for agents
@@ -2054,7 +2057,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 	}
 
 	// Emit analytics events (JSONL) for session creation and agent spawns.
-	events.EmitSessionCreate(opts.Session, opts.CCCount, opts.CodCount, opts.GmiCount, dir, opts.RecipeName)
+	events.EmitSessionCreate(opts.Session, opts.CCCount, opts.CodCount, opts.GmiCount, opts.CursorCount, opts.WindsurfCount, opts.AiderCount, dir, opts.RecipeName)
 	for _, agent := range launchedAgents {
 		events.Emit(events.EventAgentSpawn, opts.Session, events.AgentSpawnData{
 			AgentType: agent.agentType,
@@ -2093,12 +2096,18 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 				agentCounts.Codex++
 			case tmux.AgentGemini:
 				agentCounts.Gemini++
+			case tmux.AgentCursor:
+				agentCounts.Cursor++
+			case tmux.AgentWindsurf:
+				agentCounts.Windsurf++
+			case tmux.AgentAider:
+				agentCounts.Aider++
 			default:
 				// Other/plugin agents
 				agentCounts.User++ // Maybe separate category?
 			}
 		}
-		agentCounts.Total = agentCounts.Claude + agentCounts.Codex + agentCounts.Gemini
+		agentCounts.Total = agentCounts.Claude + agentCounts.Codex + agentCounts.Gemini + agentCounts.Cursor + agentCounts.Windsurf + agentCounts.Aider + agentCounts.User
 
 		// Build stagger config if enabled
 		var staggerCfg *output.StaggerConfig
@@ -2248,8 +2257,21 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		}
 	}
 
-	// Register session as Agent Mail agent (non-blocking)
-	registerSessionAgent(opts.Session, dir)
+	// Register spawned agents with Agent Mail (non-JSON mode)
+	if len(launchedAgents) > 0 {
+		spawnedAgents := make([]spawnedAgentInfo, len(launchedAgents))
+		for i, agent := range launchedAgents {
+			spawnedAgents[i] = spawnedAgentInfo{
+				paneIndex:     agent.paneIndex,
+				paneID:        agent.paneID,
+				paneTitle:     agent.paneTitle,
+				agentType:     agent.agentType,
+				model:         agent.model,
+				resolvedModel: agent.resolvedModel,
+			}
+		}
+		_ = registerSpawnedAgents(dir, opts.Session, spawnedAgents) // Ignore result in non-JSON mode
+	}
 
 	// Start timeline tracking and persistence for this session
 	if err := state.StartSessionTimeline(opts.Session); err != nil {

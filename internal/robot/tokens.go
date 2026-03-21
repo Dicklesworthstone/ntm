@@ -282,6 +282,15 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 			if gmi, ok := event.Data["gemini_count"].(float64); ok && gmi > 0 {
 				agentSpawns["gemini"] += int(gmi)
 			}
+			if cursor, ok := event.Data["cursor_count"].(float64); ok && cursor > 0 {
+				agentSpawns["cursor"] += int(cursor)
+			}
+			if windsurf, ok := event.Data["windsurf_count"].(float64); ok && windsurf > 0 {
+				agentSpawns["windsurf"] += int(windsurf)
+			}
+			if aider, ok := event.Data["aider_count"].(float64); ok && aider > 0 {
+				agentSpawns["aider"] += int(aider)
+			}
 
 		case events.EventAgentSpawn:
 			// Track model info

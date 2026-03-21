@@ -4024,12 +4024,15 @@ func (m *Model) updateTickerData() {
 
 	// Build ticker data from dashboard state
 	data := panels.TickerData{
-		TotalAgents:  len(m.panes),
-		ActiveAgents: activeAgents,
-		ClaudeCount:  m.claudeCount,
-		CodexCount:   m.codexCount,
-		GeminiCount:  m.geminiCount,
-		UserCount:    m.userCount,
+		TotalAgents:      len(m.panes),
+		ActiveAgents:     activeAgents,
+		ClaudeCount:      m.claudeCount,
+		CodexCount:       m.codexCount,
+		GeminiCount:      m.geminiCount,
+		CursorCount:      m.cursorCount,
+		WindsurfCount:    m.windsurfCount,
+		AiderCount:       m.aiderCount,
+		UserCount:        m.userCount,
 		CriticalAlerts:   critAlerts,
 		WarningAlerts:    warnAlerts,
 		InfoAlerts:       infoAlerts,
@@ -4434,6 +4437,39 @@ func (m Model) renderStatsBar() string {
 			Padding(0, 1).
 			Render(fmt.Sprintf("%s %d", ic.Gemini, m.geminiCount))
 		parts = append(parts, geminiBadge)
+	}
+
+	// Cursor count
+	if m.cursorCount > 0 {
+		cursorBadge := lipgloss.NewStyle().
+			Background(t.Success).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("%s %d", ic.Robot, m.cursorCount))
+		parts = append(parts, cursorBadge)
+	}
+
+	// Windsurf count
+	if m.windsurfCount > 0 {
+		windsurfBadge := lipgloss.NewStyle().
+			Background(t.Success).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("%s %d", ic.Robot, m.windsurfCount))
+		parts = append(parts, windsurfBadge)
+	}
+
+	// Aider count
+	if m.aiderCount > 0 {
+		aiderBadge := lipgloss.NewStyle().
+			Background(t.Success).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("%s %d", ic.Robot, m.aiderCount))
+		parts = append(parts, aiderBadge)
 	}
 
 	// User count
@@ -6551,6 +6587,9 @@ func rchStatusActive(status *tools.RCHStatus) bool {
 func (m Model) renderSplitView() string {
 	t := m.theme
 	leftWidth, rightWidth := layout.SplitProportions(m.width)
+	// The dashboard UI uses a left margin; trim the rightmost panel so the total
+	// rendered width stays within the terminal width at exact thresholds.
+	rightWidth = maxInt(rightWidth-2, 0)
 
 	// Calculate content height (leave room for header/footer)
 	contentHeight := contentHeightFor(m.height)
@@ -6590,7 +6629,7 @@ func (m Model) renderSplitView() string {
 		Render(rightContent)
 
 	// Join panels horizontally
-	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel)
+	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel))
 }
 
 // renderUltraLayout renders a three-panel layout: Agents | Detail | Sidebar
@@ -6650,7 +6689,7 @@ func (m Model) renderUltraLayout() string {
 		Padding(0, 1).
 		Render(sidebarContent)
 
-	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel, sidebarPanel)
+	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel, sidebarPanel))
 }
 
 func (m Model) renderSidebar(width, height int) string {
@@ -6995,7 +7034,14 @@ func (m Model) renderMegaLayout() string {
 		Padding(0, 1).
 		Render(m.renderSidebar(p6Inner, contentHeight-2))
 
-	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5, panel6)
+	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5, panel6))
+}
+
+func indentDashboardLayout(content string) string {
+	if content == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().PaddingLeft(2).Render(content)
 }
 
 func (m Model) renderBeadsPanel(width, height int) string {
