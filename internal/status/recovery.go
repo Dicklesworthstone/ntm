@@ -149,7 +149,7 @@ func (rm *RecoveryManager) SendRecoveryPromptByID(session string, paneIndex int,
 	rm.recoveryCount[paneID]++
 
 	// Build target for tmux (session:pane_index)
-	target := fmt.Sprintf("%s:%d", session, paneIndex)
+	target := fmt.Sprintf("%s:.%d", session, paneIndex)
 
 	// Capture values while holding lock to avoid data race with SetPrompt()
 	prompt := rm.prompt
@@ -163,7 +163,11 @@ func (rm *RecoveryManager) SendRecoveryPromptByID(session string, paneIndex int,
 		// Send the recovery prompt
 		if err := tmux.SendKeys(target, promptToSend, true); err != nil {
 			// Log error if possible, or just fail silently
-			// Since we can't return the error, we rely on the next check to retry (after cooldown)
+			// Revert the state update so it can retry without losing a count
+			rm.mu.Lock()
+			defer rm.mu.Unlock()
+			rm.recoveryCount[paneID]--
+			rm.lastRecovery[paneID] = time.Time{}
 			return
 		}
 
@@ -267,7 +271,7 @@ func (rm *RecoveryManager) pruneEvents() {
 
 // makePaneID creates a consistent pane ID.
 func makePaneID(session string, paneIndex int) string {
-	return fmt.Sprintf("%s:%d", session, paneIndex)
+	return fmt.Sprintf("%s:.%d", session, paneIndex)
 }
 
 // BeadContext contains bead-related context for recovery prompts

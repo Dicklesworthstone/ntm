@@ -149,7 +149,7 @@ func runExtract(sessionName, paneIndex, language string, lastPane bool, lines in
 
 		// Add source pane info
 		for i := range blocks {
-			blocks[i].SourcePane = fmt.Sprintf("%s:%d", sessionName, pane.Index)
+			blocks[i].SourcePane = fmt.Sprintf("%s:.%d", sessionName, pane.Index)
 		}
 
 		allBlocks = append(allBlocks, blocks...)

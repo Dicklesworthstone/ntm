@@ -245,7 +245,7 @@ func paneIdentityKey(pane tmux.Pane, session string) string {
 	if pane.Title != "" {
 		return pane.Title
 	}
-	return fmt.Sprintf("%s:%d", session, pane.Index)
+	return pane.ID
 }
 
 func aggregateRanoStats(

@@ -357,7 +357,7 @@ func minInt(a, b int) int {
 
 func sendReviewPrompts(session string, suggestions []ReviewSuggestion) (sent, skipped int) {
 	for _, s := range suggestions {
-		target := fmt.Sprintf("%s:%d", session, s.Pane)
+		target := fmt.Sprintf("%s:.%d", session, s.Pane)
 		slog.Info("[E2E-REVIEWQ] send",
 			"session", session,
 			"agent", s.Agent,

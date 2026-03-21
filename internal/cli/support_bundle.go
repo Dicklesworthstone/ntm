@@ -509,7 +509,7 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 			}
 
 			// Capture output
-			target := fmt.Sprintf("%s:%d", sess.Name, pane.Index)
+			target := pane.ID
 			output, err := client.CapturePaneOutputContext(ctx, target, opts.Lines)
 			if err != nil {
 				continue

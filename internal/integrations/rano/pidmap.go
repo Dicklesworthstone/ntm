@@ -34,7 +34,7 @@ func (p PaneIdentity) String() string {
 	if p.PaneTitle != "" {
 		return p.PaneTitle
 	}
-	return fmt.Sprintf("%s:%d", p.Session, p.PaneIndex)
+	return fmt.Sprintf("%s:.%d", p.Session, p.PaneIndex)
 }
 
 // PIDMap maintains bidirectional mappings between PIDs and pane identities.

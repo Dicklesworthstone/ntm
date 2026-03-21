@@ -296,7 +296,7 @@ To include private content, use: ntm --robot-support-bundle=%s --allow-persist
 
 	// Capture scrollback for each pane
 	for _, pane := range panes {
-		target := fmt.Sprintf("%s:%d", session, pane.Index)
+		target := pane.ID
 		content, err := tmux.CapturePaneOutput(target, lines)
 		if err != nil {
 			// Record error and continue

@@ -375,7 +375,7 @@ func executeDiagnoseFix(diag DiagnoseOutput, opts DiagnoseOptions) error {
 		switch rec.Action {
 		case "restart":
 			// Attempt to restart the pane
-			target := fmt.Sprintf("%s:%d", opts.Session, rec.Pane)
+			target := fmt.Sprintf("%s:.%d", opts.Session, rec.Pane)
 			err := tmux.RespawnPane(target, true)
 			if err != nil {
 				attempt.Success = false
@@ -389,7 +389,7 @@ func executeDiagnoseFix(diag DiagnoseOutput, opts DiagnoseOptions) error {
 
 		case "interrupt":
 			// Send Ctrl+C to interrupt
-			paneID := fmt.Sprintf("%s:%d", opts.Session, rec.Pane)
+			paneID := fmt.Sprintf("%s:.%d", opts.Session, rec.Pane)
 			err := tmux.SendKeys(paneID, "C-c", false)
 			if err != nil {
 				attempt.Success = false

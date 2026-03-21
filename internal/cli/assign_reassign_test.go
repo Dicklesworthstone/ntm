@@ -343,7 +343,7 @@ func TestRunReassignment_TargetBusyWithoutForce(t *testing.T) {
 	}
 
 	// Make the target pane appear busy.
-	targetPaneID := fmt.Sprintf("%s:%d", sessionName, codexPane.Index)
+	targetPaneID := codexPane.ID
 	_ = tmux.SendKeys(targetPaneID, "busy", true)
 	time.Sleep(200 * time.Millisecond)
 

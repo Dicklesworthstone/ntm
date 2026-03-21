@@ -600,7 +600,7 @@ func applyBulkAssignPlan(opts BulkAssignOptions, deps BulkAssignDependencies, ou
 					return
 				}
 
-				paneID := fmt.Sprintf("%s:%d", output.Session, a.Pane)
+				paneID := fmt.Sprintf("%s:.%d", output.Session, a.Pane)
 				if err := deps.SendKeys(paneID, prompt, true); err != nil {
 					a.Status = "failed"
 					a.Error = err.Error()
@@ -634,7 +634,7 @@ func applyBulkAssignPlan(opts BulkAssignOptions, deps BulkAssignDependencies, ou
 				assignment.Status = "planned"
 				assignment.PromptSent = false
 			} else {
-				paneID := fmt.Sprintf("%s:%d", output.Session, assignment.Pane)
+				paneID := fmt.Sprintf("%s:.%d", output.Session, assignment.Pane)
 				if err := deps.SendKeys(paneID, prompt, true); err != nil {
 					assignment.Status = "failed"
 					assignment.Error = err.Error()

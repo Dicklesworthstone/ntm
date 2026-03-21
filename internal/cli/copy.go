@@ -254,7 +254,7 @@ func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) 
 		} else {
 			outputs = append(outputs, output)
 		}
-		paneLabels = append(paneLabels, fmt.Sprintf("%s:%d", session, p.Index))
+		paneLabels = append(paneLabels, fmt.Sprintf("%s:.%d", session, p.Index))
 	}
 
 	if len(outputs) == 0 {

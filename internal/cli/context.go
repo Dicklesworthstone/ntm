@@ -450,7 +450,7 @@ Use --files to override the file list.`,
 			if !dryRun {
 				// Send content to target panes
 				for _, p := range targetPanes {
-					target := fmt.Sprintf("%s:%d", session, p.Index)
+					target := p.ID
 					if err := tmux.SendKeys(target, content, true); err != nil {
 						slog.Warn("failed to send context to pane",
 							"session", session,

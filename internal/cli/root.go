@@ -1665,7 +1665,7 @@ Shell Integration:
 				}
 				if !robotContextInjectDry {
 					for _, p := range targets {
-						target := fmt.Sprintf("%s:%d", session, p.Index)
+						target := p.ID
 						if sErr := tmux.SendKeys(target, content, true); sErr != nil {
 							continue
 						}
