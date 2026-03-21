@@ -3,6 +3,10 @@ package dashboard
 import (
 	"log"
 	"os"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 )
 
 // FocusTarget describes a focusable dashboard panel.
@@ -200,6 +204,7 @@ func (m *Model) rebuildFocusRing(logChanges bool) {
 	current := m.focusRing.Current()
 	if current.ID == "" {
 		m.focusedPanel = PanelPaneList
+		m.syncFocusAnimations()
 		return
 	}
 
@@ -210,6 +215,7 @@ func (m *Model) rebuildFocusRing(logChanges bool) {
 		}
 	}
 	m.focusedPanel = current.Panel
+	m.syncFocusAnimations()
 }
 
 func (m *Model) setFocusedPanel(panel PanelID) bool {
@@ -226,7 +232,77 @@ func (m *Model) setFocusedPanel(panel PanelID) bool {
 	if previous != panel {
 		logFocusf("focus: %s -> %s", panelIDString(previous), targetID)
 	}
+	m.syncFocusAnimations()
 	return true
+}
+
+func (m *Model) syncFocusAnimations() {
+	if m == nil || m.dashboardSprings == nil {
+		return
+	}
+
+	for _, panel := range []PanelID{
+		PanelPaneList,
+		PanelDetail,
+		PanelBeads,
+		PanelAlerts,
+		PanelAttention,
+		PanelConflicts,
+		PanelMetrics,
+		PanelHistory,
+		PanelSidebar,
+	} {
+		id := panelIDString(panel)
+		if id == "" {
+			continue
+		}
+
+		target := 0.0
+		if m.focusedPanel == panel {
+			target = 1.0
+		}
+
+		key := "focus:" + id
+		if !m.dashboardSprings.Has(key) {
+			m.dashboardSprings.SetImmediate(key, target)
+			continue
+		}
+		m.dashboardSprings.SetWithParams(key, target, 10.0, 0.7)
+	}
+}
+
+func (m Model) focusIntensity(panel PanelID) float64 {
+	if m.dashboardSprings == nil {
+		return 0
+	}
+	id := panelIDString(panel)
+	if id == "" {
+		return 0
+	}
+	value := m.dashboardSprings.Get("focus:" + id)
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
+func (m Model) focusBorderColor(base lipgloss.Color, panels ...PanelID) lipgloss.Color {
+	intensity := 0.0
+	for _, panel := range panels {
+		if current := m.focusIntensity(panel); current > intensity {
+			intensity = current
+		}
+	}
+	if intensity <= 0 {
+		return base
+	}
+
+	from := styles.ParseHex(string(base))
+	to := styles.ParseHex(string(m.theme.Primary))
+	return styles.Lerp(from, to, intensity).ToLipgloss()
 }
 
 func countVisibleTargets(targets []FocusTarget) int {

@@ -152,8 +152,10 @@ func (m Model) getTickInterval() time.Duration {
 		idleTick = 500 * time.Millisecond
 	}
 
-	// Use fast tick during toast animations for smooth spring physics
-	if m.toasts != nil && m.toasts.IsAnimating() {
+	// Use fast tick during spring-driven animations for smooth motion.
+	if (m.toasts != nil && m.toasts.IsAnimating()) ||
+		(m.dashboardSprings != nil && m.dashboardSprings.IsAnimating()) ||
+		m.localPerfAnimating() {
 		// ~60 FPS for smooth spring animation
 		return 16 * time.Millisecond
 	}
@@ -1686,6 +1688,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.animTick++
 		}
 
+		if m.dashboardSprings != nil {
+			m.dashboardSprings.Tick()
+		}
+		m.tickLocalPerfAnimations()
+
 		// Check for idle state transition (fixes #32 - reduce tick rate when idle)
 		now := time.Now()
 		idleTimeout := m.idleTimeout
@@ -1923,7 +1930,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						ps.LocalTotalTokens = total
 						ps.LocalLastLatency = lastLat
 						ps.LocalAvgLatency = avgLat
-						ps.LocalTPSHistory = tr.TPSHistory
+						ps.LocalTPSHistory = tr.animatedTPSHistory()
 					}
 
 					// Refresh /api/ps memory occasionally and map by model name (pane variant).
@@ -2043,7 +2050,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ps.LocalTotalTokens = total
 					ps.LocalLastLatency = lastLat
 					ps.LocalAvgLatency = avgLat
-					ps.LocalTPSHistory = tr.TPSHistory
+					ps.LocalTPSHistory = tr.animatedTPSHistory()
 				}
 				if hasOllama && m.ollamaModelMemory != nil && pane.Variant != "" {
 					if mem, ok := m.ollamaModelMemory[pane.Variant]; ok {
@@ -2403,11 +2410,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.MouseButtonLeft:
 			if msg.Action == tea.MouseActionPress {
-				// Click to dismiss toasts
+				// Click to dismiss toasts (individual toast hit-testing)
 				if m.toasts != nil && m.toasts.Count() > 0 {
-					// Toast area is typically at top-right; simple heuristic
-					if msg.X > m.width-40 && msg.Y < 5 {
-						m.toasts = components.NewToastManager()
+					// Toast area is positioned at top-right
+					toastWidth := m.width / 3
+					if toastWidth > 60 {
+						toastWidth = 60
+					}
+					toastStackHeight := m.toasts.ToastStackHeight()
+					// Check if click is within toast area bounds
+					if msg.X > m.width-toastWidth-5 && msg.Y < toastStackHeight+1 {
+						// Find which toast was clicked based on Y position
+						toastID := m.toasts.ToastAtPosition(msg.Y)
+						if toastID != "" {
+							m.toasts.Dismiss(toastID)
+						} else {
+							// Click in toast area but not on a specific toast - dismiss all
+							m.toasts.DismissAll()
+						}
 						return m, nil
 					}
 				}
@@ -2705,6 +2725,7 @@ func (m *Model) cycleFocus(dir int) {
 	}
 
 	m.focusedPanel = current.Panel
+	m.syncFocusAnimations()
 	if previous != m.focusedPanel {
 		logFocusf("focus: %s -> %s", panelIDString(previous), current.ID)
 	}
@@ -4067,15 +4088,8 @@ func (m Model) renderSplitView() string {
 	// Calculate content height (leave room for header/footer)
 	contentHeight := contentHeightFor(m.height)
 
-	listBorder := t.Surface1
-	if m.focusedPanel == PanelPaneList {
-		listBorder = t.Primary
-	}
-
-	detailBorder := t.Pink
-	if m.focusedPanel == PanelDetail || m.focusedPanel == PanelAttention {
-		detailBorder = t.Primary
-	}
+	listBorder := m.focusBorderColor(t.Surface1, PanelPaneList)
+	detailBorder := m.focusBorderColor(t.Pink, PanelDetail, PanelAttention)
 
 	// Build left panel (pane list)
 	listContent := m.renderPaneList(leftWidth - 4) // -4 for borders/padding
@@ -4115,20 +4129,9 @@ func (m Model) renderUltraLayout() string {
 
 	contentHeight := contentHeightFor(m.height)
 
-	listBorder := t.Surface1
-	if m.focusedPanel == PanelPaneList {
-		listBorder = t.Primary
-	}
-
-	detailBorder := t.Pink
-	if m.focusedPanel == PanelDetail {
-		detailBorder = t.Primary
-	}
-
-	sidebarBorder := t.Lavender
-	if m.focusedPanel == PanelSidebar || m.focusedPanel == PanelAttention {
-		sidebarBorder = t.Primary
-	}
+	listBorder := m.focusBorderColor(t.Surface1, PanelPaneList)
+	detailBorder := m.focusBorderColor(t.Pink, PanelDetail)
+	sidebarBorder := m.focusBorderColor(t.Lavender, PanelSidebar, PanelAttention)
 
 	listContent := m.renderPaneList(leftWidth - 4)
 	listPanel := lipgloss.NewStyle().
@@ -4416,40 +4419,13 @@ func (m Model) renderMegaLayout() string {
 
 	contentHeight := contentHeightFor(m.height)
 
-	listBorder := t.Surface1
-	if m.focusedPanel == PanelPaneList {
-		listBorder = t.Primary
-	}
-
-	detailBorder := t.Pink
-	if m.focusedPanel == PanelDetail {
-		detailBorder = t.Primary
-	}
-
-	beadsBorder := t.Green
-	if m.focusedPanel == PanelBeads {
-		beadsBorder = t.Primary
-	}
-
-	alertsBorder := t.Red
-	if m.focusedPanel == PanelAlerts || m.focusedPanel == PanelConflicts {
-		alertsBorder = t.Primary
-	}
-
-	conflictsBorder := t.Red
-	if m.focusedPanel == PanelConflicts {
-		conflictsBorder = t.Primary
-	}
-
-	attentionBorder := t.Yellow
-	if m.focusedPanel == PanelAttention {
-		attentionBorder = t.Primary
-	}
-
-	sidebarBorder := t.Lavender
-	if m.focusedPanel == PanelSidebar {
-		sidebarBorder = t.Primary
-	}
+	listBorder := m.focusBorderColor(t.Surface1, PanelPaneList)
+	detailBorder := m.focusBorderColor(t.Pink, PanelDetail)
+	beadsBorder := m.focusBorderColor(t.Green, PanelBeads)
+	alertsBorder := m.focusBorderColor(t.Red, PanelAlerts, PanelConflicts)
+	conflictsBorder := m.focusBorderColor(t.Red, PanelConflicts)
+	attentionBorder := m.focusBorderColor(t.Yellow, PanelAttention)
+	sidebarBorder := m.focusBorderColor(t.Lavender, PanelSidebar)
 
 	panel1 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
