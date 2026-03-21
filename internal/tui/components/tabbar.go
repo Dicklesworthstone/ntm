@@ -28,6 +28,7 @@ type TabBarOptions struct {
 	Width      int    // Total available width
 	Focused    bool   // Whether the tab bar area has focus
 	ShowBadges bool   // Whether to show notification badges
+	Tick       int    // [tui-upgrade: bd-28vsw] Animation tick for shimmer effects
 }
 
 // RenderTabBar renders a horizontal tab bar with active tab highlighting.
@@ -170,12 +171,18 @@ func RenderTabBar(opts TabBarOptions) string {
 		}
 
 		// Tab underline segment
+		// [tui-upgrade: bd-28vsw] Use shimmer for active tab underline
 		seg := strings.Repeat(underChar, meta.width)
 		if meta.isActive {
 			if truecolor {
-				// Gradient: Blue → Lavender → Mauve
-				seg = styles.GradientText(seg,
-					string(t.Blue), string(t.Lavender), string(t.Mauve))
+				// Gradient with shimmer sweep: Blue → Lavender → Mauve
+				if opts.Tick > 0 && !styles.ReducedMotionEnabled() {
+					seg = styles.Shimmer(seg, opts.Tick,
+						string(t.Blue), string(t.Lavender), string(t.Mauve))
+				} else {
+					seg = styles.GradientText(seg,
+						string(t.Blue), string(t.Lavender), string(t.Mauve))
+				}
 			} else {
 				// Fallback: solid Blue
 				seg = lipgloss.NewStyle().Foreground(t.Blue).Render(seg)

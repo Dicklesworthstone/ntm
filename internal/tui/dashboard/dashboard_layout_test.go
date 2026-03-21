@@ -916,6 +916,31 @@ func TestToastControls(t *testing.T) {
 			t.Fatal("expected toast history overlay to stay closed when beads panel owns 'n'")
 		}
 	})
+
+	t.Run("mouse_click_dismisses_toast_at_rendered_position", func(t *testing.T) {
+		t.Parallel()
+
+		m := newTestModel(120)
+		m.toasts.Push(components.Toast{ID: "toast-hit", Message: "click me", Duration: 10 * time.Second})
+
+		headerHeight := lipgloss.Height(m.renderHeaderSection())
+		footerHeight := lipgloss.Height(m.renderFooterSection())
+		toastMetrics := m.toastRenderMetrics(headerHeight, footerHeight)
+		toastTop := headerHeight + m.contentHeightBudget(headerHeight, footerHeight, toastMetrics.height)
+
+		updated, _ := m.Update(tea.MouseMsg{
+			Button: tea.MouseButtonLeft,
+			Action: tea.MouseActionPress,
+			X:      toastMetrics.left + 1,
+			Y:      toastTop,
+		})
+		m = updated.(Model)
+
+		history := m.toasts.RecentHistory(1)
+		if len(history) != 1 || history[0].ID != "toast-hit" {
+			t.Fatalf("expected clicked toast dismissed, got %+v", history)
+		}
+	})
 }
 
 func TestDashboardSpawnWizardOpensOverlay(t *testing.T) {
@@ -1252,6 +1277,8 @@ func TestFocusedPanelHandlesOwnHeight(t *testing.T) {
 	m.beadsPanel = panels.NewBeadsPanel()
 	m.alertsPanel = panels.NewAlertsPanel()
 	m.attentionPanel = panels.NewAttentionPanel()
+	m.metricsPanel = panels.NewMetricsPanel()
+	m.historyPanel = panels.NewHistoryPanel()
 
 	tests := []struct {
 		name  string
@@ -1262,6 +1289,8 @@ func TestFocusedPanelHandlesOwnHeight(t *testing.T) {
 		{name: "beads", panel: PanelBeads, want: true},
 		{name: "alerts", panel: PanelAlerts, want: true},
 		{name: "attention", panel: PanelAttention, want: true},
+		{name: "metrics", panel: PanelMetrics, want: true},
+		{name: "history", panel: PanelHistory, want: true},
 	}
 
 	for _, tt := range tests {
@@ -1275,6 +1304,19 @@ func TestFocusedPanelHandlesOwnHeight(t *testing.T) {
 				t.Fatalf("focusedPanelHandlesOwnHeight() = %v, want %v for panel %v", got, tt.want, tt.panel)
 			}
 		})
+	}
+}
+
+func TestDashboardViewWithToastsStaysWithinViewportHeight(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(120)
+	m.height = 30
+	m.toasts.Push(components.Toast{ID: "toast-1", Message: "one", Duration: 10 * time.Second})
+	m.toasts.Push(components.Toast{ID: "toast-2", Message: "two", Duration: 10 * time.Second})
+
+	if got := renderedHeight(m.View()); got > m.height {
+		t.Fatalf("rendered dashboard height = %d, want <= %d", got, m.height)
 	}
 }
 
@@ -1909,8 +1951,8 @@ func TestPanelStyles(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(120)
-	// Test with FocusList
-	listStyle, detailStyle := PanelStyles(FocusList, m.theme)
+	// Test with FocusList (tick=0 for static, tick=5 for animation)
+	listStyle, detailStyle := PanelStyles(FocusList, 0, m.theme)
 
 	// Both should be valid styles (not zero values)
 	testText := "test"
@@ -1922,7 +1964,7 @@ func TestPanelStyles(t *testing.T) {
 	}
 
 	// Test with FocusDetail
-	listStyle2, detailStyle2 := PanelStyles(FocusDetail, m.theme)
+	listStyle2, detailStyle2 := PanelStyles(FocusDetail, 5, m.theme)
 	if listStyle2.Render(testText) == "" {
 		t.Error("list panel style (detail focus) should render")
 	}

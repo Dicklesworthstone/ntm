@@ -64,6 +64,8 @@ type AuditStore struct {
 	jsonlFile   *os.File
 	retention   time.Duration
 	stopCleanup chan struct{}
+	stopOnce    sync.Once
+	cleanupWG   sync.WaitGroup
 }
 
 // AuditStoreConfig configures the audit store.
@@ -151,8 +153,11 @@ func NewAuditStore(cfg AuditStoreConfig) (*AuditStore, error) {
 		store.jsonlFile = f
 	}
 
-	// Start retention cleanup goroutine
-	go store.cleanupLoop(cfg.CleanupInterval)
+	// Start retention cleanup goroutine only when there is a DB backend to prune.
+	if store.db != nil {
+		store.cleanupWG.Add(1)
+		go store.cleanupLoop(cfg.CleanupInterval)
+	}
 
 	return store, nil
 }
@@ -352,6 +357,7 @@ type AuditFilter struct {
 
 // cleanupLoop periodically removes old audit records.
 func (s *AuditStore) cleanupLoop(interval time.Duration) {
+	defer s.cleanupWG.Done()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -386,7 +392,10 @@ func (s *AuditStore) cleanup() {
 
 // Close closes the audit store and releases resources.
 func (s *AuditStore) Close() error {
-	close(s.stopCleanup)
+	s.stopOnce.Do(func() {
+		close(s.stopCleanup)
+	})
+	s.cleanupWG.Wait()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -396,11 +405,13 @@ func (s *AuditStore) Close() error {
 		if err := s.jsonlFile.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		s.jsonlFile = nil
 	}
 	if s.db != nil {
 		if err := s.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		s.db = nil
 	}
 
 	if len(errs) > 0 {

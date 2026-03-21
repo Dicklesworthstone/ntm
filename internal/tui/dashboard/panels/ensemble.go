@@ -374,26 +374,46 @@ func assignmentStatusIcon(status ensemble.AssignmentStatus) string {
 	}
 }
 
+// renderTierBadge renders a tier badge with optional pulse animation.
+// [tui-upgrade: bd-28vsw] Added time-based pulse for tier badge color transitions.
 func renderTierBadge(tier ensemble.ModeTier, t theme.Theme) string {
 	if tier == "" {
 		return ""
 	}
+
+	// Time-based tick for subtle color pulse (bounds to prevent overflow)
+	tick := int((time.Now().UnixMilli() / 100) % 10_000)
+
 	opts := styles.BadgeOptions{
 		Style:      styles.BadgeStyleCompact,
 		Bold:       true,
 		ShowIcon:   false,
 		FixedWidth: 4,
 	}
+
+	// Get base color for tier
+	var baseColor lipgloss.Color
+	var text string
 	switch tier {
 	case ensemble.TierCore:
-		return styles.TextBadge("CORE", t.Green, t.Base, opts)
+		baseColor = t.Green
+		text = "CORE"
 	case ensemble.TierAdvanced:
-		return styles.TextBadge("ADV", t.Yellow, t.Base, opts)
+		baseColor = t.Yellow
+		text = "ADV"
 	case ensemble.TierExperimental:
-		return styles.TextBadge("EXP", t.Red, t.Base, opts)
+		baseColor = t.Red
+		text = "EXP"
 	default:
 		return styles.TextBadge(strings.ToUpper(tier.String()), t.Surface1, t.Text, opts)
 	}
+
+	// Apply subtle pulse to tier badge color if animations enabled
+	if !styles.ReducedMotionEnabled() {
+		baseColor = styles.Pulse(string(baseColor), tick)
+	}
+
+	return styles.TextBadge(text, baseColor, t.Base, opts)
 }
 
 func renderProgressBar(percent float64, width int) string {

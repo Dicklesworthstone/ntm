@@ -613,6 +613,44 @@ func GradientDivider(width int, colors ...string) string {
 	return GradientText(strings.Repeat("─", width), colors...)
 }
 
+// AnimatedGradientDivider creates a gradient divider with animated shimmer effect.
+// [tui-upgrade: bd-28vsw] The shimmer sweeps across the divider based on tick.
+func AnimatedGradientDivider(width, tick int, colors ...string) string {
+	if width <= 0 {
+		return ""
+	}
+	if len(colors) < 2 {
+		colors = []string{"#89b4fa", "#cba6f7"}
+	}
+	if ReducedMotionEnabled() {
+		return GradientDivider(width, colors...)
+	}
+	return Shimmer(strings.Repeat("─", width), tick, colors...)
+}
+
+// AnimatedBorderColor returns a color that cycles between two colors for shimmer border effects.
+// [tui-upgrade: bd-28vsw] Use with BorderForeground() for animated panel borders.
+func AnimatedBorderColor(tick int, baseColor, accentColor string) lipgloss.Color {
+	if ReducedMotionEnabled() {
+		return lipgloss.Color(baseColor)
+	}
+	// Cycle every 20 ticks (2 seconds at 100ms tick rate)
+	phase := (tick / 10) % 2
+	if phase == 0 {
+		return lipgloss.Color(baseColor)
+	}
+	// Blend between colors based on tick position within phase
+	t := float64(tick%10) / 10.0
+	base := ParseHex(baseColor)
+	accent := ParseHex(accentColor)
+	blended := Color{
+		R: int(float64(base.R)*(1-t) + float64(accent.R)*t),
+		G: int(float64(base.G)*(1-t) + float64(accent.G)*t),
+		B: int(float64(base.B)*(1-t) + float64(accent.B)*t),
+	}
+	return blended.ToLipgloss()
+}
+
 // Badge creates a styled badge/tag
 func Badge(text string, bg, fg lipgloss.Color) string {
 	return lipgloss.NewStyle().

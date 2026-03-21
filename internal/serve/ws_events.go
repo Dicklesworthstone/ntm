@@ -24,6 +24,8 @@ type WSEventStore struct {
 	seqMu         sync.Mutex
 	cleanupTicker *time.Ticker
 	done          chan struct{}
+	stopOnce      sync.Once
+	cleanupWG     sync.WaitGroup
 }
 
 // WSStoredEvent is an event stored in the ring buffer and database.
@@ -103,6 +105,7 @@ func NewWSEventStore(db *sql.DB, cfg WSEventStoreConfig) *WSEventStore {
 	// Start cleanup goroutine if we have a database
 	if db != nil {
 		store.cleanupTicker = time.NewTicker(cfg.CleanupInterval)
+		store.cleanupWG.Add(1)
 		go store.cleanupLoop()
 	}
 
@@ -111,14 +114,18 @@ func NewWSEventStore(db *sql.DB, cfg WSEventStoreConfig) *WSEventStore {
 
 // Stop stops the event store's background goroutines.
 func (s *WSEventStore) Stop() {
-	close(s.done)
-	if s.cleanupTicker != nil {
-		s.cleanupTicker.Stop()
-	}
+	s.stopOnce.Do(func() {
+		close(s.done)
+		if s.cleanupTicker != nil {
+			s.cleanupTicker.Stop()
+		}
+	})
+	s.cleanupWG.Wait()
 }
 
 // cleanupLoop periodically removes old events from the database.
 func (s *WSEventStore) cleanupLoop() {
+	defer s.cleanupWG.Done()
 	for {
 		select {
 		case <-s.done:

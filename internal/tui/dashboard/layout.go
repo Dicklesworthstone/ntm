@@ -1091,13 +1091,15 @@ const (
 	FocusDetail
 )
 
-// PanelStyles returns styles for panels based on focus state
-func PanelStyles(focused FocusedPanel, t theme.Theme) (listStyle, detailStyle lipgloss.Style) {
+// PanelStyles returns styles for panels based on focus state.
+// [tui-upgrade: bd-28vsw] Added tick parameter for shimmer border animation.
+func PanelStyles(focused FocusedPanel, tick int, t theme.Theme) (listStyle, detailStyle lipgloss.Style) {
 	baseStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1)
 
-	focusedBorder := t.Pink
+	// [tui-upgrade: bd-28vsw] Shimmer effect on focused border
+	focusedBorder := styles.AnimatedBorderColor(tick, string(t.Pink), string(t.Mauve))
 	unfocusedBorder := t.Surface1
 
 	if focused == FocusList {

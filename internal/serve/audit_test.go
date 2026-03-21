@@ -761,6 +761,26 @@ func TestAuditStore_Close_DBOnly(t *testing.T) {
 	}
 }
 
+func TestAuditStore_Close_Idempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("first Close error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("second Close error: %v", err)
+	}
+}
+
 func TestAuditContextFromRequest_NilContext(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 

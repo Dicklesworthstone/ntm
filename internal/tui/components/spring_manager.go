@@ -185,3 +185,63 @@ func isSpringSettled(spring *AnimatedFloat) bool {
 	}
 	return math.Abs(spring.Target-spring.Value) <= deadZone && math.Abs(spring.Velocity) <= springSettledEpsilon
 }
+
+// SetDimension animates a 2D dimension (width, height) using two coordinated springs.
+// [tui-upgrade: bd-3xm0o] - Panel dimension animation for focus transitions
+func (sm *SpringManager) SetDimension(id string, width, height int) {
+	sm.Set(id+":w", float64(width))
+	sm.Set(id+":h", float64(height))
+}
+
+// SetDimensionImmediate sets a 2D dimension without animation.
+func (sm *SpringManager) SetDimensionImmediate(id string, width, height int) {
+	sm.SetImmediate(id+":w", float64(width))
+	sm.SetImmediate(id+":h", float64(height))
+}
+
+// GetDimension returns the current animated width and height.
+// [tui-upgrade: bd-3xm0o]
+func (sm *SpringManager) GetDimension(id string) (width, height int) {
+	if sm == nil || id == "" {
+		return 0, 0
+	}
+	w := sm.Get(id + ":w")
+	h := sm.Get(id + ":h")
+	return int(math.Round(w)), int(math.Round(h))
+}
+
+// GetSmoothed returns the current value with optional smoothing applied.
+// For values that jump around, this can provide visual stability.
+// [tui-upgrade: bd-3xm0o]
+func (sm *SpringManager) GetSmoothed(id string, smoothingFactor float64) float64 {
+	if sm == nil || id == "" {
+		return 0
+	}
+	value := sm.Get(id)
+	if smoothingFactor <= 0 || smoothingFactor >= 1 {
+		return value
+	}
+	// Exponential smoothing: smooth = smooth * factor + value * (1 - factor)
+	// The spring already provides smoothing, so this just returns the current value
+	// with an optional bias toward the target for more responsive feel.
+	if spring, ok := sm.springs[id]; ok && spring != nil {
+		// Blend current value toward target based on smoothing factor
+		return value*(1-smoothingFactor) + spring.Target*smoothingFactor
+	}
+	return value
+}
+
+// SetScrollOffset animates a scroll position with easing.
+// [tui-upgrade: bd-3xm0o] - Scroll easing for viewport panels
+func (sm *SpringManager) SetScrollOffset(id string, offset int) {
+	// Use softer spring parameters for scroll easing
+	sm.SetWithParams(id+":scroll", float64(offset), 8.0, 0.5)
+}
+
+// GetScrollOffset returns the current animated scroll position.
+func (sm *SpringManager) GetScrollOffset(id string) int {
+	if sm == nil || id == "" {
+		return 0
+	}
+	return int(math.Round(sm.Get(id + ":scroll")))
+}

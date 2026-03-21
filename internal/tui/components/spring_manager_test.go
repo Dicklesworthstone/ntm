@@ -188,3 +188,112 @@ func TestSpringTickPerformance(t *testing.T) {
 		t.Errorf("Tick() too slow: %.0fns (target <1000ns = 1μs)", avgNs)
 	}
 }
+
+// TestSpringManagerDimension tests the SetDimension/GetDimension methods.
+// [tui-upgrade: bd-3xm0o]
+func TestSpringManagerDimension(t *testing.T) {
+	enableAnimationsForTest(t)
+
+	sm := NewSpringManager()
+
+	// Test immediate dimension setting
+	sm.SetDimensionImmediate("panel1", 100, 50)
+	w, h := sm.GetDimension("panel1")
+	if w != 100 || h != 50 {
+		t.Errorf("immediate dimension = (%d, %d), want (100, 50)", w, h)
+	}
+
+	// Test animated dimension
+	sm.SetDimension("panel2", 200, 100)
+	w, h = sm.GetDimension("panel2")
+	if w != 0 || h != 0 {
+		t.Errorf("initial animated dimension = (%d, %d), want (0, 0)", w, h)
+	}
+
+	// Tick until settled
+	for i := 0; i < 200; i++ {
+		sm.Tick()
+	}
+	w, h = sm.GetDimension("panel2")
+	if math.Abs(float64(w)-200) > 1 || math.Abs(float64(h)-100) > 1 {
+		t.Errorf("settled dimension = (%d, %d), want near (200, 100)", w, h)
+	}
+}
+
+// TestSpringManagerScrollOffset tests scroll easing.
+// [tui-upgrade: bd-3xm0o]
+func TestSpringManagerScrollOffset(t *testing.T) {
+	enableAnimationsForTest(t)
+
+	sm := NewSpringManager()
+
+	// Set scroll target
+	sm.SetScrollOffset("viewport1", 100)
+	if sm.GetScrollOffset("viewport1") != 0 {
+		t.Errorf("initial scroll = %d, want 0", sm.GetScrollOffset("viewport1"))
+	}
+
+	// Tick until mostly settled
+	for i := 0; i < 200; i++ {
+		sm.Tick()
+	}
+	offset := sm.GetScrollOffset("viewport1")
+	if math.Abs(float64(offset)-100) > 2 {
+		t.Errorf("settled scroll = %d, want near 100", offset)
+	}
+}
+
+// TestSpringManagerGetSmoothed tests the GetSmoothed method.
+// [tui-upgrade: bd-3xm0o]
+func TestSpringManagerGetSmoothed(t *testing.T) {
+	enableAnimationsForTest(t)
+
+	sm := NewSpringManager()
+	sm.SetImmediate("test", 50.0)
+	sm.Set("test", 100.0) // Target 100, current is still 50
+
+	// With smoothing factor 0, should return current value
+	val := sm.GetSmoothed("test", 0)
+	if val != 50.0 {
+		t.Errorf("GetSmoothed(0) = %f, want 50.0", val)
+	}
+
+	// With smoothing factor 1, should return target
+	val = sm.GetSmoothed("test", 1)
+	if val != 50.0 { // Still returns value because factor >= 1 returns value
+		t.Errorf("GetSmoothed(1) = %f, want 50.0 (clamped)", val)
+	}
+
+	// With smoothing factor 0.5, should blend
+	val = sm.GetSmoothed("test", 0.5)
+	// Expected: 50 * 0.5 + 100 * 0.5 = 75
+	if math.Abs(val-75.0) > 0.1 {
+		t.Errorf("GetSmoothed(0.5) = %f, want 75.0", val)
+	}
+}
+
+// TestSpringManagerNilSafety tests nil-safe behavior for new methods.
+// [tui-upgrade: bd-3xm0o]
+func TestSpringManagerNilSafety(t *testing.T) {
+	var sm *SpringManager
+
+	// These should not panic
+	sm.SetDimension("test", 100, 50)
+	sm.SetDimensionImmediate("test", 100, 50)
+	sm.SetScrollOffset("test", 100)
+
+	w, h := sm.GetDimension("test")
+	if w != 0 || h != 0 {
+		t.Errorf("nil GetDimension = (%d, %d), want (0, 0)", w, h)
+	}
+
+	offset := sm.GetScrollOffset("test")
+	if offset != 0 {
+		t.Errorf("nil GetScrollOffset = %d, want 0", offset)
+	}
+
+	val := sm.GetSmoothed("test", 0.5)
+	if val != 0 {
+		t.Errorf("nil GetSmoothed = %f, want 0", val)
+	}
+}

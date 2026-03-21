@@ -300,6 +300,53 @@ func TestTransactionRollback(t *testing.T) {
 	}
 }
 
+func TestTransactionRollbackOnPanic(t *testing.T) {
+	store := testStore(t)
+
+	sess := &Session{
+		ID:          "tx-panic-1",
+		Name:        "panic-session",
+		ProjectPath: "/test/panic",
+		CreatedAt:   time.Now(),
+		Status:      SessionActive,
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Transaction should re-panic")
+		}
+
+		got, err := store.GetSession(sess.ID)
+		if err != nil {
+			t.Fatalf("GetSession error after panic: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("session should not exist after panic rollback")
+		}
+
+		if err := store.CreateSession(&Session{
+			ID:          "tx-after-panic",
+			Name:        "after-panic",
+			ProjectPath: "/test/after-panic",
+			CreatedAt:   time.Now(),
+			Status:      SessionActive,
+		}); err != nil {
+			t.Fatalf("store should remain usable after panic rollback: %v", err)
+		}
+	}()
+
+	_ = store.Transaction(func(tx *Tx) error {
+		if _, err := tx.tx.Exec(`
+			INSERT INTO sessions (id, name, project_path, created_at, status)
+			VALUES (?, ?, ?, ?, ?)`,
+			sess.ID, sess.Name, sess.ProjectPath, sess.CreatedAt, sess.Status,
+		); err != nil {
+			return err
+		}
+		panic("boom")
+	})
+}
+
 // ======================
 // Session Operations Tests
 // ======================

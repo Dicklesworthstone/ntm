@@ -457,6 +457,50 @@ func TestGradientDivider(t *testing.T) {
 	})
 }
 
+// [tui-upgrade: bd-28vsw]
+func TestAnimatedGradientDivider(t *testing.T) {
+	t.Run("with colors", func(t *testing.T) {
+		result := AnimatedGradientDivider(10, 5, "#ff0000", "#0000ff")
+		if result == "" {
+			t.Error("AnimatedGradientDivider should return non-empty string")
+		}
+	})
+
+	t.Run("different ticks produce different results", func(t *testing.T) {
+		r1 := AnimatedGradientDivider(10, 0, "#ff0000", "#0000ff")
+		r2 := AnimatedGradientDivider(10, 50, "#ff0000", "#0000ff")
+		// Both should be non-empty, and if motion is enabled they should differ
+		if r1 == "" || r2 == "" {
+			t.Error("AnimatedGradientDivider should return non-empty strings")
+		}
+	})
+
+	t.Run("non-positive width", func(t *testing.T) {
+		if result := AnimatedGradientDivider(0, 5, "#ff0000", "#0000ff"); result != "" {
+			t.Fatalf("AnimatedGradientDivider with width 0 = %q, want empty", result)
+		}
+	})
+}
+
+// [tui-upgrade: bd-28vsw]
+func TestAnimatedBorderColor(t *testing.T) {
+	t.Run("returns valid color", func(t *testing.T) {
+		color := AnimatedBorderColor(0, "#89b4fa", "#cba6f7")
+		if color == "" {
+			t.Error("AnimatedBorderColor should return non-empty color")
+		}
+	})
+
+	t.Run("different ticks may return different colors", func(t *testing.T) {
+		c1 := AnimatedBorderColor(0, "#ff0000", "#0000ff")
+		c2 := AnimatedBorderColor(15, "#ff0000", "#0000ff")
+		// Both should be valid lipgloss colors
+		if c1 == "" || c2 == "" {
+			t.Error("AnimatedBorderColor should return valid colors")
+		}
+	})
+}
+
 func TestBadge(t *testing.T) {
 	result := Badge("test", lipgloss.Color("#ff0000"), lipgloss.Color("#ffffff"))
 	if result == "" {

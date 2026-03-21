@@ -605,3 +605,12 @@ func TestWSEventStore_ConcurrentPublish(t *testing.T) {
 
 	t.Logf("WS_STREAMING_TEST: concurrent publish verified, %d events with unique seqs", len(events))
 }
+
+func TestWSEventStore_Stop_Idempotent(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+
+	store.Stop()
+	store.Stop()
+}

@@ -113,13 +113,13 @@ func (m Model) View() string {
 
 	header := m.renderHeaderSection()
 	footer := m.renderFooterSection()
+	headerHeight := lipgloss.Height(header)
+	footerHeight := lipgloss.Height(footer)
+	toastMetrics := m.toastRenderMetrics(headerHeight, footerHeight)
 	content := m.renderMainContentSection()
 
 	if m.height > 0 {
-		available := m.height - lipgloss.Height(header) - lipgloss.Height(footer)
-		if available < 1 {
-			available = 1
-		}
+		available := m.contentHeightBudget(headerHeight, footerHeight, toastMetrics.height)
 		if !m.focusedPanelHandlesOwnHeight() {
 			// Truncate content to fit within available height.
 			// lipgloss Height/MaxHeight don't truncate - they're CSS-like properties.
@@ -133,21 +133,53 @@ func (m Model) View() string {
 	// We avoid pixel-level overlay (placeOverlay) because ANSI escape sequences
 	// in lipgloss-rendered text make rune-based splicing corrupt the output.
 	toastSection := ""
-	if m.toasts != nil && m.toasts.Count() > 0 {
-		toastStr := m.toasts.RenderToasts(m.width / 3)
-		if toastStr != "" {
-			toastWidth := lipgloss.Width(toastStr)
-			rightPad := m.width - toastWidth - 2
-			if rightPad < 0 {
-				rightPad = 0
-			}
-			toastSection = lipgloss.NewStyle().
-				PaddingLeft(rightPad).
-				Render(toastStr) + "\n"
-		}
+	if toastMetrics.section != "" {
+		toastSection = toastMetrics.section + "\n"
 	}
 
 	return header + content + toastSection + footer
+}
+
+type toastRenderMetrics struct {
+	section string
+	left    int
+	width   int
+	height  int
+}
+
+func (m Model) contentHeightBudget(headerHeight, footerHeight, toastHeight int) int {
+	available := m.height - headerHeight - footerHeight - toastHeight
+	if available < 1 {
+		available = 1
+	}
+	return available
+}
+
+func (m Model) toastRenderMetrics(headerHeight, footerHeight int) toastRenderMetrics {
+	if m.toasts == nil || m.toasts.Count() == 0 || m.width <= 0 {
+		return toastRenderMetrics{}
+	}
+
+	toastStr := m.toasts.RenderToasts(m.width / 3)
+	if toastStr == "" {
+		return toastRenderMetrics{}
+	}
+
+	height := lipgloss.Height(toastStr)
+	width := lipgloss.Width(toastStr)
+	left := m.width - width - 2
+	if left < 0 {
+		left = 0
+	}
+
+	return toastRenderMetrics{
+		section: lipgloss.NewStyle().
+			PaddingLeft(left).
+			Render(toastStr),
+		left:   left,
+		width:  width,
+		height: height,
+	}
 }
 
 func (m Model) renderHeaderSection() string {
@@ -215,7 +247,8 @@ func (m Model) renderHeaderSection() string {
 	if contextWarnLine != "" {
 		b.WriteString(pad + contextWarnLine + "\n")
 	}
-	b.WriteString(styles.GradientDivider(m.width,
+	// [tui-upgrade: bd-28vsw] Animated header divider
+	b.WriteString(styles.AnimatedGradientDivider(m.width, m.animTick,
 		string(t.Blue), string(t.Mauve)) + "\n\n")
 
 	// ═══════════════════════════════════════════════════════════════
@@ -334,12 +367,14 @@ func (m Model) renderPanelTabBar(width int) string {
 
 	activeID := panelIDString(m.focusedPanel)
 
+	// [tui-upgrade: bd-28vsw] Pass tick for shimmer animation
 	return components.RenderTabBar(components.TabBarOptions{
 		Tabs:       tabs,
 		ActiveID:   activeID,
 		Width:      width,
 		Focused:    true,
 		ShowBadges: true,
+		Tick:       m.animTick,
 	})
 }
 

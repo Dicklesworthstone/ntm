@@ -99,7 +99,7 @@ func (sw *SpawnWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return sw, func() tea.Msg {
 				return SpawnWizardDoneMsg{Cancelled: true}
 			}
-		case "backspace", "ctrl+h":
+		case "shift+tab":
 			// Go back one step
 			if sw.step > SpawnStepMethod {
 				sw.step--
@@ -234,7 +234,7 @@ func (sw *SpawnWizard) View() string {
 	content.WriteString("\n")
 	hintStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
 	if sw.step > SpawnStepMethod {
-		content.WriteString(hintStyle.Render("Backspace: previous step • Esc: cancel"))
+		content.WriteString(hintStyle.Render("Shift+Tab: previous step • Esc: cancel"))
 	} else {
 		content.WriteString(hintStyle.Render("Esc: cancel"))
 	}
@@ -260,7 +260,7 @@ func (sw *SpawnWizard) Keybindings() []Keybinding {
 			Action:      "select",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("backspace"), key.WithHelp("backspace", "back")),
+			Key:         key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back")),
 			Description: "Go to previous step",
 			Action:      "back",
 		},

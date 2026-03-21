@@ -2653,16 +2653,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Action == tea.MouseActionPress {
 				// Click to dismiss toasts (individual toast hit-testing)
 				if m.toasts != nil && m.toasts.Count() > 0 {
-					// Toast area is positioned at top-right
-					toastWidth := m.width / 3
-					if toastWidth > 60 {
-						toastWidth = 60
-					}
-					toastStackHeight := m.toasts.ToastStackHeight()
-					// Check if click is within toast area bounds
-					if msg.X > m.width-toastWidth-5 && msg.Y < toastStackHeight+1 {
-						// Find which toast was clicked based on Y position
-						toastID := m.toasts.ToastAtPosition(msg.Y)
+					headerHeight := lipgloss.Height(m.renderHeaderSection())
+					footerHeight := lipgloss.Height(m.renderFooterSection())
+					toastMetrics := m.toastRenderMetrics(headerHeight, footerHeight)
+					contentHeight := m.contentHeightBudget(headerHeight, footerHeight, toastMetrics.height)
+					toastTop := headerHeight + contentHeight
+					toastBottom := toastTop + toastMetrics.height
+
+					if toastMetrics.width > 0 &&
+						msg.X >= toastMetrics.left &&
+						msg.X < toastMetrics.left+toastMetrics.width &&
+						msg.Y >= toastTop &&
+						msg.Y < toastBottom {
+						// Find which toast was clicked based on Y position within the rendered stack.
+						toastID := m.toasts.ToastAtPosition(msg.Y - toastTop)
 						if toastID != "" {
 							m.toasts.Dismiss(toastID)
 						} else {
@@ -3634,6 +3638,10 @@ func (m Model) focusedPanelHandlesOwnHeight() bool {
 		return m.alertsPanel != nil && m.alertsPanel.HandlesOwnHeight()
 	case PanelAttention:
 		return m.attentionPanel != nil && m.attentionPanel.HandlesOwnHeight()
+	case PanelMetrics:
+		return m.metricsPanel != nil && m.metricsPanel.HandlesOwnHeight()
+	case PanelHistory:
+		return m.historyPanel != nil && m.historyPanel.HandlesOwnHeight()
 	default:
 		return false
 	}
