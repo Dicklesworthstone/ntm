@@ -24,6 +24,7 @@ func newDashboardCmd() *cobra.Command {
 	var jsonOutput bool
 	var debug bool
 	var popup bool
+	var attentionCursor int64
 
 	cmd := &cobra.Command{
 		Use:     "dashboard [session-name]",
@@ -85,7 +86,7 @@ Examples:
 			if noTUI {
 				return runDashboardPlain(cmd.OutOrStdout(), cmd.ErrOrStderr(), session)
 			}
-			return runDashboard(cmd.OutOrStdout(), cmd.ErrOrStderr(), session, debug, popup)
+			return runDashboard(cmd.OutOrStdout(), cmd.ErrOrStderr(), session, debug, popup, attentionCursor)
 		},
 	}
 
@@ -93,6 +94,7 @@ Examples:
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "JSON output (implies --no-tui)")
 	cmd.Flags().BoolVar(&debug, "debug", false, "Enable debug mode with state inspection")
 	cmd.Flags().BoolVar(&popup, "popup", false, "Run in popup/overlay mode (Esc closes, zoom focuses pane)")
+	cmd.Flags().Int64Var(&attentionCursor, "attention-cursor", 0, "Pre-focus the attention panel on this event cursor")
 	cmd.ValidArgsFunction = completeSessionArgs
 
 	return cmd
@@ -106,6 +108,11 @@ func shouldUsePlainMode() bool {
 // isTUIDebugEnabled checks if TUI debug mode is enabled
 func isTUIDebugEnabled() bool {
 	return os.Getenv("NTM_TUI_DEBUG") == "1"
+}
+
+func popupEnvEnabled() bool {
+	value := strings.TrimSpace(os.Getenv("NTM_POPUP"))
+	return value != "" && value != "0"
 }
 
 // runDashboardJSON outputs dashboard data in JSON format
@@ -248,7 +255,7 @@ func runDashboardPlain(w io.Writer, errW io.Writer, session string) error {
 	return nil
 }
 
-func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup bool) error {
+func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup bool, attentionCursor int64) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -276,10 +283,10 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 	// monitoring, launch as an overlay popup instead of consuming a pane.
 	// Skip if already in popup mode (--popup flag or NTM_POPUP env) to
 	// prevent nested popups.
-	if !popup && os.Getenv("NTM_POPUP") != "1" && tmux.InTmux() {
+	if !popup && !popupEnvEnabled() && tmux.InTmux() {
 		currentSession := tmux.GetCurrentSession()
 		if currentSession == session {
-			return launchOverlayPopup(session, "")
+			return launchOverlayPopup(session, "", attentionCursor)
 		}
 	}
 
@@ -355,19 +362,12 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 		cancel()
 	}
 
-	var action *dashboard.PostQuitAction
-	if popup {
-		a, e := dashboard.RunPopup(session, projectDir)
-		if e != nil {
-			return e
-		}
-		action = a
-	} else {
-		a, e := dashboard.Run(session, projectDir)
-		if e != nil {
-			return e
-		}
-		action = a
+	action, err := dashboard.RunWithOptions(session, projectDir, dashboard.RunOptions{
+		PopupMode:       popup,
+		AttentionCursor: attentionCursor,
+	})
+	if err != nil {
+		return err
 	}
 	if action != nil && action.AttachSession != "" {
 		return tmux.AttachOrSwitch(action.AttachSession)

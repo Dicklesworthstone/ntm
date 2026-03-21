@@ -13,6 +13,7 @@ import (
 
 func newOverlayCmd() *cobra.Command {
 	var overlayKey string
+	var attentionCursor int64
 
 	cmd := &cobra.Command{
 		Use:   "overlay [session-name]",
@@ -58,18 +59,19 @@ Examples:
 				return fmt.Errorf("session '%s' not found", session)
 			}
 
-			return launchOverlayPopup(session, overlayKey)
+			return launchOverlayPopup(session, overlayKey, attentionCursor)
 		},
 	}
 
 	cmd.Flags().StringVar(&overlayKey, "bind-key", "", "Also set up this key as a toggle (e.g., F12)")
+	cmd.Flags().Int64Var(&attentionCursor, "attention-cursor", 0, "Pre-focus the overlay attention panel on this event cursor")
 	cmd.ValidArgsFunction = completeSessionArgs
 
 	return cmd
 }
 
 // launchOverlayPopup opens the NTM dashboard inside a tmux display-popup.
-func launchOverlayPopup(session, bindKey string) error {
+func launchOverlayPopup(session, bindKey string, attentionCursor int64) error {
 	t := theme.Current()
 
 	// Auto-setup: if the overlay key isn't bound yet, set it up on first use.
@@ -92,7 +94,7 @@ func launchOverlayPopup(session, bindKey string) error {
 	if err != nil {
 		ntmBin = "ntm"
 	}
-	innerCmd := fmt.Sprintf("NTM_POPUP=1 '%s' dashboard --popup '%s'", ntmBin, session)
+	innerCmd := overlayPopupInnerCommand(ntmBin, session, attentionCursor)
 
 	// Launch the popup — this blocks until the popup is dismissed
 	tmuxArgs := []string{
@@ -108,4 +110,12 @@ func launchOverlayPopup(session, bindKey string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func overlayPopupInnerCommand(ntmBin, session string, attentionCursor int64) string {
+	innerCmd := fmt.Sprintf("NTM_POPUP=1 '%s' dashboard --popup", ntmBin)
+	if attentionCursor > 0 {
+		innerCmd += fmt.Sprintf(" --attention-cursor %d", attentionCursor)
+	}
+	return innerCmd + fmt.Sprintf(" '%s'", session)
 }

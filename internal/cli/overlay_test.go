@@ -76,6 +76,33 @@ func TestIsBindingLine(t *testing.T) {
 	}
 }
 
+func TestPopupEnvEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     bool
+	}{
+		{name: "unset", envValue: "", want: false},
+		{name: "one", envValue: "1", want: true},
+		{name: "zero", envValue: "0", want: false},
+		{name: "true", envValue: "true", want: true},
+		{name: "whitespace trimmed", envValue: "  yes  ", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envValue == "" {
+				os.Unsetenv("NTM_POPUP")
+			} else {
+				t.Setenv("NTM_POPUP", tt.envValue)
+			}
+			if got := popupEnvEnabled(); got != tt.want {
+				t.Fatalf("popupEnvEnabled() = %v, want %v for NTM_POPUP=%q", got, tt.want, tt.envValue)
+			}
+		})
+	}
+}
+
 func TestIsOverlayKeyBound(t *testing.T) {
 	// Create temporary tmux.conf files
 	tests := []struct {
@@ -314,6 +341,14 @@ func TestOverlayTmuxArgs(t *testing.T) {
 	// innerCmd should be args[6]
 	if tmuxArgs[6] != innerCmd {
 		t.Errorf("tmuxArgs[6] = %q, want %q", tmuxArgs[6], innerCmd)
+	}
+}
+
+func TestOverlayPopupInnerCommandIncludesAttentionCursor(t *testing.T) {
+	got := overlayPopupInnerCommand("/usr/local/bin/ntm", "myproject", 42135)
+	want := "NTM_POPUP=1 '/usr/local/bin/ntm' dashboard --popup --attention-cursor 42135 'myproject'"
+	if got != want {
+		t.Fatalf("overlayPopupInnerCommand() = %q, want %q", got, want)
 	}
 }
 
