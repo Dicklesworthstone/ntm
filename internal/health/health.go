@@ -107,12 +107,11 @@ type HealthSummary struct {
 
 // CheckSession performs health checks on all agents in a session
 func CheckSession(ctx context.Context, session string) (*SessionHealth, error) {
-	if !tmux.SessionExists(session) {
-		return nil, &SessionNotFoundError{Session: session}
-	}
-
 	panesWithActivity, err := tmux.GetPanesWithActivityContext(ctx, session)
 	if err != nil {
+		if isSessionMissing(err) {
+			return nil, &SessionNotFoundError{Session: session}
+		}
 		return nil, err
 	}
 
@@ -175,6 +174,18 @@ func CheckSession(ctx context.Context, session string) (*SessionHealth, error) {
 	}
 
 	return health, nil
+}
+
+func isSessionMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "can't find session") ||
+		strings.Contains(msg, "no server running") ||
+		strings.Contains(msg, "no sessions") ||
+		strings.Contains(msg, "error connecting to")
 }
 
 // checkAgent performs health checks on a single agent pane

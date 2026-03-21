@@ -30,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -93,6 +94,7 @@ Shell Integration:
 		if noColor {
 			os.Setenv("NTM_NO_COLOR", "1")
 		}
+		theme.ApplyLipGlossDefaults(theme.Current())
 
 		// Phase 1: Critical startup (always runs, minimal overhead)
 		startup.BeginPhase1()
@@ -123,6 +125,11 @@ Shell Integration:
 				// Use defaults if config loading fails
 				cfg = config.Default()
 			}
+			activeTheme := theme.Current()
+			if strings.TrimSpace(os.Getenv("NTM_THEME")) == "" && cfg != nil {
+				activeTheme = theme.FromName(cfg.Theme)
+			}
+			theme.ApplyLipGlossDefaults(activeTheme)
 
 			// Apply redaction flag overrides
 			applyRedactionFlagOverrides(cfg)

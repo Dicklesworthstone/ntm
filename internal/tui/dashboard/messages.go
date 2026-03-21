@@ -5,6 +5,8 @@ package dashboard
 import (
 	"time"
 
+	"github.com/charmbracelet/glamour"
+
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -52,6 +54,17 @@ type StatusUpdateMsg struct {
 // ConfigReloadMsg is sent when configuration changes.
 type ConfigReloadMsg struct {
 	Config *config.Config
+}
+
+// ConfigWatcherReadyMsg reports the outcome of starting the config watcher.
+type ConfigWatcherReadyMsg struct {
+	Closer func()
+	Err    error
+}
+
+// RendererReadyMsg reports that the deferred markdown renderer is available.
+type RendererReadyMsg struct {
+	Renderer *glamour.TermRenderer
 }
 
 // HealthCheckMsg is sent when health check (bv drift) completes.

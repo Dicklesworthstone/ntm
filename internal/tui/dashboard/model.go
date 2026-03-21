@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	glamourstyles "github.com/charmbracelet/glamour/styles"
+	"github.com/muesli/termenv"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
@@ -178,6 +180,8 @@ type Model struct {
 	fetchingSpawn       bool
 	spawnActive         bool // Whether a spawn is currently active (for adaptive polling)
 	fetchingPTHealth    bool // Whether we're currently fetching process_triage health states
+	startupWarmupDone   bool // Ensures post-startup background warmup only runs once
+	mouseWarmupPending  bool // Enable mouse support after the first painted frame
 
 	// Coalescing/cancellation for user-triggered refreshes
 	sessionFetchPending bool
@@ -202,12 +206,14 @@ type Model struct {
 	spawnRefreshInterval       time.Duration // How often to poll spawn state (faster when active)
 
 	// Pane output capture budgeting/caching
-	paneOutputLines         int
-	paneOutputCaptureBudget int
-	paneOutputCaptureCursor int
-	paneOutputCache         map[string]string
-	paneOutputLastCaptured  map[string]time.Time
-	renderedOutputCache     map[string]string // Cache for expensive markdown rendering
+	paneOutputLines                 int
+	paneOutputCaptureBudget         int
+	paneOutputCaptureCursor         int
+	initialPaneSnapshotDone         bool
+	initialFocusedPaneHydrationDone bool
+	paneOutputCache                 map[string]string
+	paneOutputLastCaptured          map[string]time.Time
+	renderedOutputCache             map[string]string // Cache for expensive markdown rendering
 
 	// Local agent performance (best-effort; derived from output deltas + prompt history)
 	localPerfByPaneID map[string]*localPerfTracker // keyed by pane ID
@@ -466,16 +472,30 @@ const (
 )
 
 func (m *Model) initRenderer(width int) {
+	m.renderer = newMarkdownRenderer(m.theme, width)
+}
+
+func newMarkdownRenderer(t theme.Theme, width int) *glamour.TermRenderer {
+	styleName := glamourstyles.DarkStyle
+	switch {
+	case theme.IsPlain(t):
+		styleName = glamourstyles.NoTTYStyle
+	case !theme.IsDark(t):
+		styleName = glamourstyles.LightStyle
+	}
+
 	r, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithColorProfile(termenv.EnvColorProfile()),
+		glamour.WithStandardStyle(styleName),
 		glamour.WithWordWrap(width),
 	)
-	m.renderer = r
+	return r
 }
 
 // New creates a new dashboard model.
 func New(session, projectDir string) Model {
 	t := theme.Current()
+	theme.ApplyLipGlossDefaults(t)
 	ic := icons.Current()
 
 	m := Model{
@@ -547,24 +567,9 @@ func New(session, projectDir string) Model {
 		conflictsPanel:       panels.NewConflictsPanel(),
 		rotationConfirmPanel: panels.NewRotationConfirmPanel(),
 
-		// Init() kicks off these fetches immediately; mark as fetching so the tick loop
-		// doesn't pile on duplicates if the first round is still in flight.
-		fetchingSession:     true,
-		fetchingContext:     true,
-		fetchingAlerts:      true,
-		fetchingAttention:   true,
-		fetchingBeads:       true,
-		fetchingCassContext: true,
-		fetchingMetrics:     true,
-		fetchingRouting:     true,
-		fetchingHistory:     true,
-		fetchingFileChanges: true,
-		fetchingCheckpoint:  true,
-		fetchingHandoff:     true,
-		fetchingMailInbox:   true,
-		fetchingRanoNetwork: true,
-		fetchingRCH:         true,
-		fetchingDCG:         true,
+		// Init() only kicks off the critical first-paint session fetch. Everything
+		// else warms in after the UI is already visible.
+		fetchingSession: true,
 	}
 
 	m.paneDelegate = newPaneDelegate(t, CalculateLayout(40, 1))
@@ -614,32 +619,54 @@ func New(session, projectDir string) Model {
 	// Set up conflict action handler for the conflicts panel
 	m.conflictsPanel.SetActionHandler(m.handleConflictAction)
 
-	// Setup config watcher
+	// Set up the reload channel immediately, but start the file watcher only
+	// after startup warmup so fsnotify/path setup never blocks first paint.
 	m.configSub = make(chan *config.Config, 1)
-	// We capture the channel in the closure. Since Model is copied, we must ensure
-	// we use the channel we just created, which is what m.configSub holds.
+
+	return m
+}
+
+func (m Model) startConfigWatcher() tea.Cmd {
+	if m.configSub == nil || m.configCloser != nil {
+		return nil
+	}
+
 	sub := m.configSub
-	closer, err := config.Watch(func(cfg *config.Config) {
-		select {
-		case sub <- cfg:
-		default:
-			// If channel full, drop oldest
-			select {
-			case <-sub:
-			default:
-			}
+	return func() tea.Msg {
+		closer, err := config.Watch(func(cfg *config.Config) {
 			select {
 			case sub <- cfg:
 			default:
+				// If channel full, drop oldest
+				select {
+				case <-sub:
+				default:
+				}
+				select {
+				case sub <- cfg:
+				default:
+				}
 			}
-		}
-	})
-	if err == nil {
-		m.configCloser = closer
+		})
+		return ConfigWatcherReadyMsg{Closer: closer, Err: err}
+	}
+}
+
+func (m Model) startRendererInit() tea.Cmd {
+	if m.renderer != nil {
+		return nil
 	}
 
-	m.initRenderer(40)
-	return m
+	_, detailWidth := layout.SplitProportions(m.width)
+	contentWidth := detailWidth - 4
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	t := m.theme
+
+	return func() tea.Msg {
+		return RendererReadyMsg{Renderer: newMarkdownRenderer(t, contentWidth)}
+	}
 }
 
 // cleanup releases resources held by the dashboard model.
@@ -740,28 +767,6 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.tick(),
 		m.fetchSessionDataWithOutputs(),
-		m.fetchTimelineCmd(),
-		m.fetchHealthStatus(),
-		m.fetchStatuses(),
-		m.fetchHealthCmd(),
-		m.fetchAgentMailStatus(),
-		m.fetchAgentMailInboxes(),
-		m.fetchBeadsCmd(),
-		m.fetchAlertsCmd(),
-		m.fetchAttentionCmd(),
-		m.fetchMetricsCmd(),
-		m.fetchRoutingCmd(),
-		m.fetchHistoryCmd(),
-		m.fetchFileChangesCmd(),
-		m.fetchCASSContextCmd(),
-		m.fetchCheckpointStatus(),
-		m.fetchHandoffCmd(),
-		m.fetchRanoNetworkStats(),
-		m.fetchRCHStatus(),
-		m.fetchDCGStatus(),
-		m.fetchPendingRotations(),
-		m.fetchPTHealthStatesCmd(),
-		m.subscribeToConfig(),
 	)
 }
 

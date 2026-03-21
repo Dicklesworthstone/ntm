@@ -2,6 +2,7 @@ package theme
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -324,23 +325,88 @@ func Current() Theme {
 	return FromName(os.Getenv("NTM_THEME"))
 }
 
+// IsPlain reports whether the theme is the plain/no-color theme.
+func IsPlain(t Theme) bool {
+	return t == Plain
+}
+
+// IsDark reports whether the theme should be treated as dark for adaptive styling.
+func IsDark(t Theme) bool {
+	if IsPlain(t) {
+		return true
+	}
+	return t.Base != CatppuccinLatte.Base
+}
+
+// ApplyLipGlossDefaults pins global Lip Gloss renderer settings without
+// performing any terminal round-trips. This prevents adaptive Bubbles/Lip Gloss
+// components from triggering their own background probes later.
+func ApplyLipGlossDefaults(t Theme) {
+	lipgloss.SetHasDarkBackground(IsDark(t))
+	lipgloss.SetColorProfile(termenv.EnvColorProfile())
+}
+
+func explicitDarkBackground() (bool, bool) {
+	for _, key := range []string{"NTM_BACKGROUND", "NTM_BG", "TERMINAL_BACKGROUND"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+		case "dark":
+			return true, true
+		case "light":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func colorFGBGDarkBackground(value string) (bool, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false, false
+	}
+
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ';' || r == ':'
+	})
+	if len(parts) == 0 {
+		return false, false
+	}
+
+	bg, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return false, false
+	}
+
+	switch {
+	case bg < 0:
+		return false, false
+	case bg <= 6 || bg == 8:
+		return true, true
+	default:
+		return false, true
+	}
+}
+
 // detectDarkBackground inspects the terminal to determine if a dark background is in use.
 // It is defined as a variable for testability.
 //
-// Note: Over SSH connections, we skip OSC queries to avoid a race condition where the
-// terminal's response arrives after a TUI program has taken over stdin, causing escape
-// sequences to appear as literal text in input fields. Instead, we default to dark theme.
+// This must never perform terminal I/O. Startup needs a deterministic answer in a few
+// microseconds, not a multi-second OSC round-trip that blocks first paint.
 var detectDarkBackground = func() bool {
-	// Skip OSC queries over SSH - responses may arrive late due to network latency,
-	// causing escape sequences to leak into TUI text input components.
-	// This is a known issue with terminals that respond to OSC 10/11 queries
-	// (Kitty, iTerm2, most modern terminals).
-	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
-		return true // Default to dark theme over SSH
+	if dark, ok := explicitDarkBackground(); ok {
+		return dark
 	}
 
-	output := termenv.NewOutput(os.Stdout)
-	return output.HasDarkBackground()
+	// Skip terminal probing over SSH. Dark is the safest default and matches prior behavior.
+	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
+		return true
+	}
+
+	if dark, ok := colorFGBGDarkBackground(os.Getenv("COLORFGBG")); ok {
+		return dark
+	}
+
+	// Default to dark to keep the dashboard deterministic and avoid blocking startup.
+	return true
 }
 
 var (
