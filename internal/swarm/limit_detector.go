@@ -123,6 +123,10 @@ func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
 		return fmt.Errorf("LimitDetector already started; call Stop() first")
 	}
 	d.ctx, d.cancel = context.WithCancel(ctx)
+	// Recreate event channel if it was closed by Stop()
+	if d.eventChan == nil {
+		d.eventChan = make(chan LimitEvent, 100)
+	}
 	d.mu.Unlock()
 
 	d.logger().Info("[LimitDetector] Starting swarm monitoring",
@@ -235,6 +239,12 @@ func (d *LimitDetector) Stop() {
 			"session_pane", sessionPane)
 	}
 	d.monitoredPanes = make(map[string]context.CancelFunc)
+
+	// Close the event channel to unblock readers
+	if d.eventChan != nil {
+		close(d.eventChan)
+		d.eventChan = nil
+	}
 }
 
 // CheckPane captures pane output and checks for limit patterns (synchronous).

@@ -173,22 +173,28 @@ func (ei *EffectivenessIntegrator) GetEffectivenessScore(agentType, taskType str
 // GetEffectivenessBonus calculates an assignment bonus based on effectiveness.
 // Returns a bonus value and explanation.
 func (ei *EffectivenessIntegrator) GetEffectivenessBonus(agentType, taskType string) (float64, string) {
-	if !ei.config.Enabled {
+	ei.mu.RLock()
+	enabled := ei.config.Enabled
+	weight := ei.config.EffectivenessWeight()
+	mode := ei.config.Mode
+	ei.mu.RUnlock()
+
+	if !enabled {
 		return 0, "effectiveness scoring disabled"
 	}
 
 	eff, err := ei.GetEffectivenessScore(agentType, taskType)
-	if err != nil || !eff.HasData {
+	if err != nil || eff == nil || !eff.HasData {
 		return 0, "insufficient historical data"
 	}
 
 	// Calculate bonus relative to baseline (0.5)
 	// Score > 0.5 = positive bonus, Score < 0.5 = negative bonus
 	baseline := 0.5
-	bonus := (eff.Score - baseline) * ei.config.EffectivenessWeight()
+	bonus := (eff.Score - baseline) * weight
 
 	reason := fmt.Sprintf("effectiveness %.2f (%d samples, %.0f%% confidence, mode=%s)",
-		eff.Score, eff.SampleCount, eff.Confidence*100, ei.config.Mode)
+		eff.Score, eff.SampleCount, eff.Confidence*100, mode)
 
 	return bonus, reason
 }
