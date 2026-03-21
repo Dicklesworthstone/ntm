@@ -23,15 +23,16 @@ import (
 
 // WebUITestSuite manages Web UI E2E tests with browser automation.
 type WebUITestSuite struct {
-	t           *testing.T
-	logger      *TestLogger
-	ctx         context.Context
-	cancel      context.CancelFunc
-	allocCtx    context.Context
-	allocCancel context.CancelFunc
-	baseURL     string
-	apiURL      string
-	screenshots []string
+	t             *testing.T
+	logger        *TestLogger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	browserCancel context.CancelFunc
+	allocCtx      context.Context
+	allocCancel   context.CancelFunc
+	baseURL       string
+	apiURL        string
+	screenshots   []string
 }
 
 // NewWebUITestSuite creates a new Web UI test suite.
@@ -96,14 +97,15 @@ func (s *WebUITestSuite) Setup() error {
 	)
 
 	s.allocCtx, s.allocCancel = chromedp.NewExecAllocator(context.Background(), opts...)
-	s.ctx, s.cancel = chromedp.NewContext(s.allocCtx,
+	browserCtx, browserCancel := chromedp.NewContext(s.allocCtx,
 		chromedp.WithLogf(func(format string, args ...interface{}) {
 			s.logger.Log("[E2E-BROWSER] "+format, args...)
 		}),
 	)
+	s.browserCancel = browserCancel
 
 	// Set timeout for all browser operations
-	s.ctx, s.cancel = context.WithTimeout(s.ctx, 2*time.Minute)
+	s.ctx, s.cancel = context.WithTimeout(browserCtx, 2*time.Minute)
 
 	s.logger.Log("[E2E-WEBUI-SETUP] Browser context initialized (headless=%v)", headless)
 	return nil
@@ -115,6 +117,9 @@ func (s *WebUITestSuite) Teardown() {
 
 	if s.cancel != nil {
 		s.cancel()
+	}
+	if s.browserCancel != nil {
+		s.browserCancel()
 	}
 	if s.allocCancel != nil {
 		s.allocCancel()

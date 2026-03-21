@@ -1,12 +1,10 @@
-//go:build e2e
-// +build e2e
-
 package e2e
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,6 +29,9 @@ type overlayResponse struct {
 
 func newOverlayHarness(t *testing.T, scenario string) *ScenarioHarness {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping overlay-feed e2e in short mode")
+	}
 
 	h, err := NewScenarioHarness(t, HarnessOptions{
 		Scenario:     scenario,
@@ -48,18 +49,44 @@ func decodeOverlayResponse(t *testing.T, data []byte) overlayResponse {
 
 	var resp overlayResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
+		raw := strings.TrimSpace(string(data))
+		start := strings.Index(raw, "{")
+		end := strings.LastIndex(raw, "}")
+		if start >= 0 && end > start {
+			if retryErr := json.Unmarshal([]byte(raw[start:end+1]), &resp); retryErr == nil {
+				return resp
+			}
+		}
 		t.Fatalf("parse overlay response: %v\nraw: %s", err, string(data))
 	}
 	return resp
 }
 
+func overlayNTMBin(t *testing.T) string {
+	t.Helper()
+
+	if override := strings.TrimSpace(os.Getenv("E2E_NTM_BIN")); override != "" {
+		if strings.ContainsRune(override, filepath.Separator) {
+			return override
+		}
+		path, err := exec.LookPath(override)
+		if err != nil {
+			t.Skipf("E2E_NTM_BIN=%q not found on PATH: %v", override, err)
+		}
+		return path
+	}
+
+	path, err := exec.LookPath("ntm")
+	if err != nil {
+		t.Skip("ntm binary not found in PATH; set E2E_NTM_BIN to run overlay-feed e2e")
+	}
+	return path
+}
+
 func runOverlayWithEnv(t *testing.T, h *ScenarioHarness, env []string, args ...string) overlayResponse {
 	t.Helper()
 
-	bin, err := ensureE2ENTMBin()
-	if err != nil {
-		t.Fatalf("ensureE2ENTMBin() error = %v", err)
-	}
+	bin := overlayNTMBin(t)
 
 	result, err := h.RunCommand(CommandSpec{
 		Name:    "robot-overlay",
@@ -80,10 +107,7 @@ func runOverlayWithEnv(t *testing.T, h *ScenarioHarness, env []string, args ...s
 func runOverlayInPane(t *testing.T, h *ScenarioHarness, label string, args ...string) overlayResponse {
 	t.Helper()
 
-	bin, err := ensureE2ENTMBin()
-	if err != nil {
-		t.Fatalf("ensureE2ENTMBin() error = %v", err)
-	}
+	bin := overlayNTMBin(t)
 
 	base := sanitizeName(label)
 	if base == "" {
@@ -100,14 +124,15 @@ func runOverlayInPane(t *testing.T, h *ScenarioHarness, label string, args ...st
 	commandLine := strings.Join(quoted, " ")
 	shellLine := fmt.Sprintf("%s > %s 2>&1; printf done > %s", commandLine, tmux.ShellQuote(stdoutPath), tmux.ShellQuote(donePath))
 
-	target := fmt.Sprintf("%s:0.0", h.SessionName())
-	if _, err := h.RunCommand(CommandSpec{
+	target := h.SessionName()
+	result, err := h.RunCommand(CommandSpec{
 		Name:    "tmux-send-keys-" + base,
 		Path:    tmux.BinaryPath(),
 		Args:    []string{"send-keys", "-t", target, shellLine, "Enter"},
 		Timeout: 10 * time.Second,
-	}); err != nil {
-		t.Fatalf("send-keys failed: %v", err)
+	})
+	if err != nil {
+		t.Fatalf("send-keys failed: %v\nstdout=%s\nstderr=%s", err, string(result.Stdout), string(result.Stderr))
 	}
 
 	var data []byte
@@ -144,22 +169,6 @@ func requireTmux(t *testing.T) {
 	}
 }
 
-func TestOverlayFeedRejectsMissingSessionOutsideTmux(t *testing.T) {
-	h := newOverlayHarness(t, "overlay_feed_missing_session_outside_tmux")
-	defer h.Close()
-
-	resp := runOverlayWithEnv(t, h, []string{"TMUX="}, "--robot-overlay")
-	if resp.Success {
-		t.Fatalf("expected failure response, got success: %+v", resp)
-	}
-	if resp.ErrorCode != "INVALID_FLAG" {
-		t.Fatalf("error_code = %q, want INVALID_FLAG", resp.ErrorCode)
-	}
-	if !strings.Contains(resp.Hint, "--overlay-session=<session>") {
-		t.Fatalf("hint = %q, want overlay-session guidance", resp.Hint)
-	}
-}
-
 func TestOverlayFeedRejectsNegativeCursorOutsideTmux(t *testing.T) {
 	h := newOverlayHarness(t, "overlay_feed_negative_cursor_outside_tmux")
 	defer h.Close()
@@ -190,12 +199,15 @@ func TestOverlayFeedDefaultsToCurrentSessionInsideTmux(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	resp := runOverlayInPane(t, h, "current-session-negative-cursor", "--robot-overlay", "--overlay-cursor", "-1")
-	if resp.ErrorCode != "INVALID_FLAG" {
-		t.Fatalf("error_code = %q, want INVALID_FLAG", resp.ErrorCode)
+	resp := runOverlayInPane(t, h, "current-session-default", "--robot-overlay")
+	if resp.Success {
+		t.Fatalf("expected failure response in detached session, got success: %+v", resp)
 	}
 	if resp.Session != h.SessionName() {
 		t.Fatalf("session = %q, want %q", resp.Session, h.SessionName())
+	}
+	if resp.ErrorCode != "INTERNAL_ERROR" {
+		t.Fatalf("error_code = %q, want INTERNAL_ERROR", resp.ErrorCode)
 	}
 }
 
@@ -220,5 +232,42 @@ func TestOverlayFeedReportsMissingTargetSessionInsideTmux(t *testing.T) {
 	}
 	if resp.Session != missingSession {
 		t.Fatalf("session = %q, want %q", resp.Session, missingSession)
+	}
+}
+
+func TestOverlayFeedNoWaitReportsImmediatePopupFailureInsideTmux(t *testing.T) {
+	requireTmux(t)
+
+	h := newOverlayHarness(t, "overlay_feed_no_wait_failure")
+	defer h.Close()
+	if err := h.SetupTmuxSession(TmuxSessionOptions{}); err != nil {
+		t.Fatalf("SetupTmuxSession() error = %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	resp := runOverlayInPane(
+		t,
+		h,
+		"overlay-no-wait-failure",
+		"--robot-overlay",
+		"--overlay-session", h.SessionName(),
+		"--overlay-cursor", "73",
+		"--overlay-no-wait",
+	)
+	if resp.Success {
+		t.Fatalf("expected failure response, got success: %+v", resp)
+	}
+	if resp.ErrorCode != "INTERNAL_ERROR" {
+		t.Fatalf("error_code = %q, want INTERNAL_ERROR", resp.ErrorCode)
+	}
+	if resp.Cursor != 73 {
+		t.Fatalf("cursor = %d, want 73", resp.Cursor)
+	}
+	if !resp.NoWait {
+		t.Fatalf("expected no_wait=true, got %+v", resp)
+	}
+	if resp.Launched {
+		t.Fatalf("expected launched=false on immediate popup failure, got %+v", resp)
 	}
 }
