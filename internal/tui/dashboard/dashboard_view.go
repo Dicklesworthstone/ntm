@@ -61,29 +61,32 @@ func (m Model) View() string {
 
 		// Wrap in styled box using Catppuccin theme.
 		helpOverlay := m.renderHelpOverlayBox("Dashboard Shortcuts", fullContent, 60)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, helpOverlay)
+		backdrop := m.renderHeaderSection() + m.renderMainContentSection() + m.renderFooterSection()
+		return renderModalOverlay(backdrop, helpOverlay, m.width, m.height, m.theme)
 	}
 
 	if m.showCassSearch {
 		searchView := m.cassSearch.View()
 		modalStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.DoubleBorder()).
 			BorderForeground(m.theme.Primary).
 			Background(m.theme.Base).
 			Padding(1, 2)
 		modal := modalStyle.Render(searchView)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+		backdrop := m.renderHeaderSection() + m.renderMainContentSection() + m.renderFooterSection()
+		return renderModalOverlay(backdrop, modal, m.width, m.height, m.theme)
 	}
 
 	if m.showEnsembleModes {
 		modesView := m.ensembleModes.View()
 		modalStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.DoubleBorder()).
 			BorderForeground(m.theme.Primary).
 			Background(m.theme.Base).
 			Padding(1, 2)
 		modal := modalStyle.Render(modesView)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+		backdrop := m.renderHeaderSection() + m.renderMainContentSection() + m.renderFooterSection()
+		return renderModalOverlay(backdrop, modal, m.width, m.height, m.theme)
 	}
 
 	header := m.renderHeaderSection()
@@ -336,6 +339,21 @@ func (m Model) renderFooterSection() string {
 	if quickActions := m.renderQuickActions(); quickActions != "" {
 		b.WriteString("  " + quickActions + "\n")
 	}
+
+	// ═══════════════════════════════════════════════════════════════
+	// STATUS BAR (session info, focused panel, layout tier)
+	// ═══════════════════════════════════════════════════════════════
+	b.WriteString(components.RenderStatusBar(components.StatusBarOptions{
+		Width:        m.width,
+		Session:      m.session,
+		ClaudeCount:  m.claudeCount,
+		CodexCount:   m.codexCount,
+		GeminiCount:  m.geminiCount,
+		UserCount:    m.userCount,
+		FocusedPanel: panelIDString(m.focusedPanel),
+		LayoutTier:   tierLabel(m.tier),
+		Paused:       m.refreshPaused,
+	}) + "\n")
 
 	// ═══════════════════════════════════════════════════════════════
 	// HELP BAR
@@ -972,7 +990,7 @@ func (m Model) renderHelpOverlayBox(title, content string, maxWidth int) string 
 		Foreground(t.Primary).
 		Padding(0, 1)
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.DoubleBorder()).
 		BorderForeground(t.Primary).
 		Background(t.Base).
 		Padding(1, 2).

@@ -378,7 +378,7 @@ func escapeAppleScript(s string) string {
 	var sb strings.Builder
 	// Pre-allocate slightly more than the string length to avoid reallocations
 	sb.Grow(len(s) + 16)
-	
+
 	for _, c := range s {
 		switch c {
 		case '\\':

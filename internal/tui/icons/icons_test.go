@@ -149,7 +149,11 @@ func TestAgentIcon(t *testing.T) {
 		{"user", "Terminal"},
 		{"unknown", "Robot"},
 		{"", "Robot"},
-		{"cursor", "Robot"},
+		{"cursor", "Cursor"},
+		{"windsurf", "Windsurf"},
+		{"ws", "Windsurf"},
+		{"aider", "Aider"},
+		{"ollama", "Ollama"},
 	}
 
 	icons := ASCII

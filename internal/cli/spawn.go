@@ -359,7 +359,7 @@ type SpawnOptions struct {
 	CursorCount   int
 	WindsurfCount int
 	AiderCount    int
-	OllamaCount    int
+	OllamaCount   int
 	UserPane      bool
 	AutoRestart   bool
 	RecipeName    string
@@ -595,6 +595,9 @@ func newSpawnCmd() *cobra.Command {
 	// Goal label for multi-session support (bd-1933u)
 	var label string
 
+	// Interactive wizard flag
+	var interactive bool
+
 	// Pre-load plugins to avoid double loading in RunE
 	// TODO: This runs eagerly during init() which slows down startup for all commands.
 	// Fixing this requires refactoring how dynamic flags are registered.
@@ -727,6 +730,33 @@ Examples:
 			}
 
 			dir := cfg.GetProjectDir(sessionName)
+
+			// Interactive wizard: triggered by --interactive flag or when no agents specified and TTY available
+			if interactive && len(agentSpecs) == 0 && recipeName == "" && templateName == "" && len(personaSpecs) == 0 {
+				wizResult, err := runSpawnWizard(sessionName)
+				if err != nil {
+					return err
+				}
+				if !wizResult.Confirmed {
+					return fmt.Errorf("spawn cancelled")
+				}
+				if wizResult.CCCount > 0 {
+					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeClaude, Count: wizResult.CCCount})
+				}
+				if wizResult.CodCount > 0 {
+					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeCodex, Count: wizResult.CodCount})
+				}
+				if wizResult.GmiCount > 0 {
+					agentSpecs = append(agentSpecs, AgentSpec{Type: AgentTypeGemini, Count: wizResult.GmiCount})
+				}
+				if wizResult.Recipe != "" {
+					recipeName = wizResult.Recipe
+				}
+				if wizResult.Template != "" {
+					templateName = wizResult.Template
+				}
+				autoRestart = wizResult.AutoRestart
+			}
 
 			// Update CASS config from flags
 			if contextLimit > 0 {
@@ -1043,6 +1073,9 @@ Examples:
 	// Profile flags for mapping personas to agents
 	cmd.Flags().StringVar(&profilesFlag, "profiles", "", "Comma-separated list of profile/persona names to map to agents in order")
 	cmd.Flags().StringVar(&profileSetFlag, "profile-set", "", "Predefined profile set name (e.g., backend-team, review-team)")
+
+	// Interactive wizard flag
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Launch interactive wizard for agent configuration")
 
 	// Session profile flag (bd-29kr): load saved spawn config
 	cmd.Flags().StringVar(&sessionProfileName, "profile", "", "Load a saved session profile (see: ntm profile save)")

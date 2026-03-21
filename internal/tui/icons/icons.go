@@ -48,17 +48,17 @@ type IconSet struct {
 	View   string
 
 	// Branding
-	Palette string
-	Robot   string
-	Claude  string
-	Codex   string
-	Gemini  string
-	Cursor  string
+	Palette  string
+	Robot    string
+	Claude   string
+	Codex    string
+	Gemini   string
+	Cursor   string
 	Windsurf string
-	Aider   string
-	Ollama  string
-	All     string
-	User    string
+	Aider    string
+	Ollama   string
+	All      string
+	User     string
 
 	// Categories
 	Quick         string
@@ -120,17 +120,17 @@ var NerdFonts = IconSet{
 	View:   "󰈈",
 
 	// Branding
-	Palette: "",
-	Robot:   "󰚩",
-	Claude:  "󰗣", // Alpha C circle - Anthropic-ish
-	Codex:   "",  // Hubot - OpenAI-ish
-	Gemini:  "󰊤", // Google icon
-	Cursor:  "󰢹",
+	Palette:  "",
+	Robot:    "󰚩",
+	Claude:   "󰗣", // Alpha C circle - Anthropic-ish
+	Codex:    "",  // Hubot - OpenAI-ish
+	Gemini:   "󰊤", // Google icon
+	Cursor:   "󰢹",
 	Windsurf: "󰖟",
-	Aider:   "󰚩",
-	Ollama:  "󰚩",
-	All:     "󰕟", // Broadcast
-	User:    "",  // User icon
+	Aider:    "󰚩",
+	Ollama:   "󰚩",
+	All:      "󰕟", // Broadcast
+	User:     "",  // User icon
 
 	// Categories
 	Quick:         "⚡",
@@ -192,17 +192,17 @@ var Unicode = IconSet{
 	View:   "◉",
 
 	// Branding
-	Palette: "◆",
-	Robot:   "⚙",
-	Claude:  "C",
-	Codex:   "O",
-	Gemini:  "G",
-	Cursor:  "c",
+	Palette:  "◆",
+	Robot:    "⚙",
+	Claude:   "C",
+	Codex:    "O",
+	Gemini:   "G",
+	Cursor:   "c",
 	Windsurf: "W",
-	Aider:   "A",
-	Ollama:  "L",
-	All:     "*",
-	User:    "U",
+	Aider:    "A",
+	Ollama:   "L",
+	All:      "*",
+	User:     "U",
 
 	// Categories
 	Quick:         "⚡",
@@ -264,17 +264,17 @@ var ASCII = IconSet{
 	View:   "[V]",
 
 	// Branding
-	Palette: "[P]",
-	Robot:   "[R]",
-	Claude:  "C",
-	Codex:   "O",
-	Gemini:  "G",
-	Cursor:  "c",
+	Palette:  "[P]",
+	Robot:    "[R]",
+	Claude:   "C",
+	Codex:    "O",
+	Gemini:   "G",
+	Cursor:   "c",
 	Windsurf: "W",
-	Aider:   "A",
-	Ollama:  "L",
-	All:     "*",
-	User:    "U",
+	Aider:    "A",
+	Ollama:   "L",
+	All:      "*",
+	User:     "U",
 
 	// Categories
 	Quick:         "!",

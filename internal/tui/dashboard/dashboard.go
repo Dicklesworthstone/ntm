@@ -4113,9 +4113,9 @@ func rchStatusActive(status *tools.RCHStatus) bool {
 func (m Model) renderSplitView() string {
 	t := m.theme
 	leftWidth, rightWidth := layout.SplitProportions(m.width)
-	// The dashboard UI uses a left margin; trim the rightmost panel so the total
-	// rendered width stays within the terminal width at exact thresholds.
-	rightWidth = maxInt(rightWidth-2, 0)
+	// The dashboard UI uses a left margin (2) plus inter-panel gap (1);
+	// trim the rightmost panel so the total rendered width stays within the terminal.
+	rightWidth = maxInt(rightWidth-3, 0)
 
 	// Calculate content height (leave room for header/footer)
 	contentHeight := contentHeightFor(m.height)
@@ -4147,17 +4147,18 @@ func (m Model) renderSplitView() string {
 		Padding(0, 1).
 		Render(rightContent)
 
-	// Join panels horizontally
-	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel))
+	// Join panels horizontally with gap
+	gap := panelGap(contentHeight)
+	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, listPanel, gap, detailPanel))
 }
 
 // renderUltraLayout renders a three-panel layout: Agents | Detail | Sidebar
 func (m Model) renderUltraLayout() string {
 	t := m.theme
 	leftWidth, centerWidth, rightWidth := layout.UltraProportions(m.width)
-	// The dashboard UI uses a left margin; trim the rightmost panel so the total
-	// rendered width stays within the terminal width at exact thresholds.
-	rightWidth = maxInt(rightWidth-2, 0)
+	// The dashboard UI uses a left margin (2) plus inter-panel gaps (2×1=2);
+	// trim the rightmost panel so the total rendered width stays within the terminal.
+	rightWidth = maxInt(rightWidth-4, 0)
 
 	contentHeight := contentHeightFor(m.height)
 
@@ -4197,7 +4198,8 @@ func (m Model) renderUltraLayout() string {
 		Padding(0, 1).
 		Render(sidebarContent)
 
-	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel, sidebarPanel))
+	gap := panelGap(contentHeight)
+	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, listPanel, gap, detailPanel, gap, sidebarPanel))
 }
 
 func (m Model) renderSidebar(width, height int) string {
@@ -4439,9 +4441,9 @@ func (m Model) renderSidebar(width, height int) string {
 func (m Model) renderMegaLayout() string {
 	t := m.theme
 	p1, p2, p3, p4, p5, p6 := layout.MegaProportions6(m.width)
-	// The dashboard UI uses a left margin; trim the rightmost panel so the total
-	// rendered width stays within the terminal width at exact thresholds.
-	p6 = maxInt(p6-2, 0)
+	// The dashboard UI uses a left margin (2) plus inter-panel gaps (5×1=5);
+	// trim the rightmost panel so the total rendered width stays within the terminal.
+	p6 = maxInt(p6-7, 0)
 	p1Inner := maxInt(p1-4, 0)
 	p2Inner := maxInt(p2-4, 0)
 	p3Inner := maxInt(p3-4, 0)
@@ -4515,7 +4517,20 @@ func (m Model) renderMegaLayout() string {
 		Padding(0, 1).
 		Render(m.renderSidebar(p6Inner, contentHeight-2))
 
-	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5, panel6))
+	gap := panelGap(contentHeight)
+	return indentDashboardLayout(lipgloss.JoinHorizontal(lipgloss.Top, panel1, gap, panel2, gap, panel3, gap, panel4, gap, panel5, gap, panel6))
+}
+
+// panelGap returns a single-character-wide vertical spacer between dashboard panels.
+func panelGap(height int) string {
+	if height <= 0 {
+		return " "
+	}
+	lines := make([]string, height+2) // +2 for border top/bottom
+	for i := range lines {
+		lines[i] = " "
+	}
+	return strings.Join(lines, "\n")
 }
 
 func indentDashboardLayout(content string) string {

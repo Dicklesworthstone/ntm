@@ -202,7 +202,7 @@ func (b *EventBus) History(limit int) []BusEvent {
 // Encode errors are silently ignored (best-effort delivery to closed writers).
 func (b *EventBus) EnableRobotMode(w io.Writer) UnsubscribeFunc {
 	enc := json.NewEncoder(w)
-	
+
 	// Use a buffered channel to decouple encoding from the bus publish loop
 	// and prevent blocking the publisher if the writer stalls.
 	ch := make(chan BusEvent, 1000)

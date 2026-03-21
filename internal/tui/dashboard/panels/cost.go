@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -54,9 +55,11 @@ type CostPanelData struct {
 
 type CostPanel struct {
 	PanelBase
-	data  CostPanelData
-	theme theme.Theme
-	err   error
+	data      CostPanelData
+	theme     theme.Theme
+	err       error
+	table     table.Model
+	tableInit bool
 }
 
 func costConfig() PanelConfig {
@@ -194,79 +197,18 @@ func (c *CostPanel) View() string {
 		tableWidth = 0
 	}
 
-	// Decide how many columns can fit.
-	showTokens := tableWidth >= 44
-	showOut := tableWidth >= 36
-
-	// Column widths (right-aligned for numbers).
-	inW := 7  // "45.2K"
-	outW := 7 // "23.1K"
-	costW := 8
-	trendW := 1
-	sep := 1
-
-	colsFixed := costW + trendW + sep + sep
-	if showTokens {
-		colsFixed += inW + sep
-	}
-	if showOut {
-		colsFixed += outW + sep
-	}
-
-	nameW := tableWidth - colsFixed
-	if nameW < 8 {
-		nameW = 8
-	}
-
-	headerParts := []string{lipgloss.NewStyle().Foreground(t.Subtext).Render(padRight("Agent", nameW))}
-	if showTokens {
-		headerParts = append(headerParts, lipgloss.NewStyle().Foreground(t.Subtext).Render(padLeft("In", inW)))
-	}
-	if showOut {
-		headerParts = append(headerParts, lipgloss.NewStyle().Foreground(t.Subtext).Render(padLeft("Out", outW)))
-	}
-	headerParts = append(headerParts, lipgloss.NewStyle().Foreground(t.Subtext).Render(padLeft("Cost", costW)))
-	headerParts = append(headerParts, lipgloss.NewStyle().Foreground(t.Subtext).Render(padLeft("", trendW)))
-	content.WriteString(strings.Join(headerParts, strings.Repeat(" ", sep)) + "\n")
-
 	// Height budget: header + totals + footer; keep the table compact.
 	availRows := h - 7
 	if availRows < 1 {
 		availRows = 1
 	}
 
-	for i, row := range c.data.Agents {
-		if i >= availRows {
-			remaining := len(c.data.Agents) - availRows
-			if remaining > 0 {
-				content.WriteString(lipgloss.NewStyle().Foreground(t.Overlay).Render(fmt.Sprintf("+%d more", remaining)) + "\n")
-			}
-			break
-		}
+	// Build table columns and rows using bubbles/table
+	c.initCostTable(tableWidth, availRows)
+	content.WriteString(c.table.View() + "\n")
 
-		name := layout.TruncatePaneTitle(row.PaneTitle, nameW)
-		name = padRight(name, nameW)
-
-		parts := []string{lipgloss.NewStyle().Foreground(t.Text).Render(name)}
-		if showTokens {
-			parts = append(parts, lipgloss.NewStyle().Foreground(t.Overlay).Render(padLeft(formatTokenShort(row.InputTokens), inW)))
-		}
-		if showOut {
-			parts = append(parts, lipgloss.NewStyle().Foreground(t.Overlay).Render(padLeft(formatTokenShort(row.OutputTokens), outW)))
-		}
-
-		parts = append(parts, lipgloss.NewStyle().Foreground(t.Text).Render(padLeft(cost.FormatCost(row.CostUSD), costW)))
-
-		trendColor := t.Subtext
-		switch row.Trend {
-		case CostTrendUp:
-			trendColor = t.Green
-		case CostTrendDown:
-			trendColor = t.Red
-		}
-		parts = append(parts, lipgloss.NewStyle().Foreground(trendColor).Render(padLeft(row.Trend.Arrow(), trendW)))
-
-		content.WriteString(strings.Join(parts, strings.Repeat(" ", sep)) + "\n")
+	if overflow := len(c.data.Agents) - availRows; overflow > 0 {
+		content.WriteString(lipgloss.NewStyle().Foreground(t.Overlay).Render(fmt.Sprintf("+%d more", overflow)) + "\n")
 	}
 
 	content.WriteString("\n")
@@ -307,6 +249,119 @@ func (c *CostPanel) View() string {
 	}
 
 	return boxStyle.Render(FitToHeight(content.String(), h-4))
+}
+
+// initCostTable initializes or reconfigures the bubbles/table for cost data.
+func (c *CostPanel) initCostTable(tableWidth, maxRows int) {
+	t := c.theme
+
+	cols := c.costTableColumns(tableWidth)
+	rows := c.costTableRows(cols, maxRows)
+
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(t.Surface1).
+		BorderBottom(true).
+		Bold(true).
+		Foreground(t.Lavender)
+	s.Selected = s.Selected.
+		Foreground(t.Text).
+		Background(t.Surface0).
+		Bold(false)
+	s.Cell = s.Cell.
+		Foreground(t.Subtext)
+
+	tableHeight := len(rows)
+	if tableHeight < 1 {
+		tableHeight = 1
+	}
+	if tableHeight > maxRows {
+		tableHeight = maxRows
+	}
+
+	c.table = table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithFocused(false),
+		table.WithWidth(max(10, tableWidth)),
+		table.WithHeight(tableHeight),
+		table.WithStyles(s),
+	)
+	c.tableInit = true
+}
+
+// costTableColumns returns adaptive table columns based on available width.
+func (c *CostPanel) costTableColumns(tableWidth int) []table.Column {
+	showTokens := tableWidth >= 44
+	showOut := tableWidth >= 36
+
+	inW := 7
+	outW := 7
+	costW := 8
+	trendW := 2
+
+	fixedW := costW + trendW
+	if showTokens {
+		fixedW += inW
+	}
+	if showOut {
+		fixedW += outW
+	}
+	nameW := tableWidth - fixedW
+	if nameW < 8 {
+		nameW = 8
+	}
+
+	var cols []table.Column
+	cols = append(cols, table.Column{Title: "Agent", Width: nameW})
+	if showTokens {
+		cols = append(cols, table.Column{Title: "In", Width: inW})
+	}
+	if showOut {
+		cols = append(cols, table.Column{Title: "Out", Width: outW})
+	}
+	cols = append(cols, table.Column{Title: "Cost", Width: costW})
+	cols = append(cols, table.Column{Title: "", Width: trendW})
+	return cols
+}
+
+// costTableRows builds table rows from the current data.
+func (c *CostPanel) costTableRows(cols []table.Column, maxRows int) []table.Row {
+	showTokens := len(cols) >= 4 // Agent + In + ... (4+ columns means In is present)
+	showOut := len(cols) >= 4    // Check by column title presence instead
+	for _, col := range cols {
+		if col.Title == "In" {
+			showTokens = true
+		}
+		if col.Title == "Out" {
+			showOut = true
+		}
+	}
+
+	nameW := 8
+	if len(cols) > 0 {
+		nameW = cols[0].Width
+	}
+
+	var rows []table.Row
+	for i, agent := range c.data.Agents {
+		if i >= maxRows {
+			break
+		}
+		name := layout.TruncatePaneTitle(agent.PaneTitle, nameW)
+		row := []string{name}
+		if showTokens {
+			row = append(row, formatTokenShort(agent.InputTokens))
+		}
+		if showOut {
+			row = append(row, formatTokenShort(agent.OutputTokens))
+		}
+		row = append(row, cost.FormatCost(agent.CostUSD))
+		row = append(row, agent.Trend.Arrow())
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func formatTokenShort(tokens int) string {
