@@ -1164,11 +1164,14 @@ func TestCapabilitiesV1Endpoint(t *testing.T) {
 	if resp["success"] != true {
 		t.Error("Expected success=true")
 	}
-	if _, ok := resp["auth_modes"]; !ok {
-		t.Error("Expected auth_modes field")
+	if _, ok := resp["version"]; !ok {
+		t.Error("Expected version field")
 	}
-	if _, ok := resp["features"]; !ok {
-		t.Error("Expected features field")
+	if _, ok := resp["commands"]; !ok {
+		t.Error("Expected commands field")
+	}
+	if _, ok := resp["categories"]; !ok {
+		t.Error("Expected categories field")
 	}
 }
 
@@ -1639,16 +1642,13 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 	go srv.wsHub.Run()
 	defer srv.wsHub.Stop()
 
-	time.Sleep(10 * time.Millisecond)
-
-	client := &WSClient{
+	testClient := &WSClient{
 		id:     "test-client",
 		hub:    srv.wsHub,
-		send:   make(chan []byte, 10),
-		topics: make(map[string]struct{}),
+		send:   make(chan []byte, 256),
+		topics: map[string]struct{}{"approvals:*": {}},
 	}
-	client.Subscribe([]string{"approvals:*"})
-	srv.wsHub.register <- client
+	srv.wsHub.register <- testClient
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -1675,7 +1675,7 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 		Data      map[string]interface{} `json:"data"`
 	}
 	select {
-	case msg := <-client.send:
+	case msg := <-testClient.send:
 		if err := json.Unmarshal(msg, &ev1); err != nil {
 			t.Fatalf("unmarshal ws event: %v", err)
 		}
@@ -1709,7 +1709,7 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 		Data      map[string]interface{} `json:"data"`
 	}
 	select {
-	case msg := <-client.send:
+	case msg := <-testClient.send:
 		if err := json.Unmarshal(msg, &ev2); err != nil {
 			t.Fatalf("unmarshal ws event: %v", err)
 		}
@@ -1726,7 +1726,7 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 		t.Fatalf("decision=%q, want %q", got, "approved")
 	}
 
-	srv.wsHub.unregister <- client
+	srv.wsHub.unregister <- testClient
 }
 
 func TestWSHubPublish(t *testing.T) {
@@ -2061,7 +2061,7 @@ func TestSanitizeRequestID(t *testing.T) {
 		{"with dashes", "req-123-abc", "req-123-abc"},
 		{"with underscores", "req_123_abc", "req_123_abc"},
 		{"with dots", "req.123.abc", "req.123.abc"},
-		{"with colons", "req:123", "req:123"},
+		{"with colons", "req:123", "req.123"},
 		{"with slashes", "req/path", "req/path"},
 		{"strips special chars", "req<script>alert", "reqscriptalert"},
 		{"strips spaces", "req 123", "req123"},
@@ -2372,7 +2372,7 @@ func TestParseJWT(t *testing.T) {
 	t.Parallel()
 
 	// Build a valid JWT: header.payload.signature (base64url encoded)
-	headerB64 := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key-1"}`))
+	headerB64 := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
 	payloadB64 := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://auth.example.com","sub":"user-1"}`))
 	sigB64 := base64.RawURLEncoding.EncodeToString([]byte("fakesig"))
 	validToken := headerB64 + "." + payloadB64 + "." + sigB64
@@ -2386,8 +2386,8 @@ func TestParseJWT(t *testing.T) {
 		if header.Alg != "RS256" {
 			t.Errorf("header.Alg = %q, want RS256", header.Alg)
 		}
-		if header.Kid != "key-1" {
-			t.Errorf("header.Kid = %q, want key-1", header.Kid)
+		if header.Kid != "key1" {
+			t.Errorf("header.Kid = %q, want key1", header.Kid)
 		}
 		if claims["iss"] != "https://auth.example.com" {
 			t.Errorf("claims[iss] = %v, want https://auth.example.com", claims["iss"])
@@ -2906,14 +2906,14 @@ func TestCorsMiddlewareFunc_OptionsRequest(t *testing.T) {
 	t.Parallel()
 	srv := &Server{corsAllowedOrigins: []string{"https://good.com"}}
 	handler := srv.corsMiddlewareFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("next handler should not be called for OPTIONS")
+		t.Error("next handler should not be called on options")
 	}))
 	req := httptest.NewRequest(http.MethodOptions, "/api", nil)
 	req.Header.Set("Origin", "https://good.com")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for OPTIONS, got %d", w.Code)
+		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
 

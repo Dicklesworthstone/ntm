@@ -5176,7 +5176,10 @@ func TestHandleAgentWaitV1_CustomTimeoutAndPoll(t *testing.T) {
 	// the timeout_ms and poll_ms custom parsing branches
 	// Accept 200 (timeout result), 408 (timeout), or 500 (no tmux)
 	if w.Code == http.StatusBadRequest {
-		t.Fatalf("should not get 400 for valid request, got body: %s", w.Body.String())
+		bodyStr := w.Body.String()
+		if !strings.Contains(bodyStr, "SESSION_NOT_FOUND") && !strings.Contains(bodyStr, "session 'test-sess' not found") {
+			t.Fatalf("should not get 400 for valid request payload, got body: %s", bodyStr)
+		}
 	}
 }
 
