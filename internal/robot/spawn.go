@@ -3,6 +3,7 @@ package robot
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,16 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// Pre-compiled prompt patterns for isAgentReady (anchored to end of lines or output).
+var promptPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?m)^\$\s*$`), // Empty Shell prompt
+	regexp.MustCompile(`(?m)^%\s*$`),  // Empty Zsh prompt
+	regexp.MustCompile(`❯\s*$`),       // Modern prompts (U+276F)
+	regexp.MustCompile(`›\s*$`),       // Codex prompt (U+203A)
+	regexp.MustCompile(`>\s*$`),       // Simple prompt at end of output
+	regexp.MustCompile(`(?m)^>\s*$`),  // Simple prompt on its own line
+}
 
 // SpawnOptions configures the robot-spawn operation.
 type SpawnOptions struct {
@@ -561,17 +572,8 @@ func isAgentReady(output, agentType string) bool {
 		}
 	}
 
-	// Case-sensitive patterns (Unicode symbols)
-	exactPatterns := []string{
-		"$ ", // Shell prompt
-		"% ", // Zsh prompt
-		"❯",  // Modern prompts (U+276F)
-		"›",  // Codex prompt (U+203A)
-		">",  // Simple prompt
-	}
-
-	for _, pattern := range exactPatterns {
-		if strings.Contains(output, pattern) {
+	for _, p := range promptPatterns {
+		if p.MatchString(output) {
 			return true
 		}
 	}

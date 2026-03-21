@@ -65,6 +65,87 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 	}
 }
 
+// fetchAttentionCmd reads attention events from the feed.
+func (m *Model) fetchAttentionCmd() tea.Cmd {
+	gen := m.nextGen(refreshAttention)
+	return func() tea.Msg {
+		feed := robot.GetAttentionFeed()
+		if feed == nil {
+			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
+		}
+
+		// Replay recent events (up to 20 items)
+		events, _, err := feed.Replay(0, 20)
+		if err != nil {
+			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
+		}
+
+		// Filter to action_required and interesting only, convert to AttentionItems
+		items := make([]panels.AttentionItem, 0, len(events))
+		for _, ev := range events {
+			if ev.Actionability != robot.ActionabilityActionRequired &&
+				ev.Actionability != robot.ActionabilityInteresting {
+				continue
+			}
+
+			ts, _ := time.Parse(time.RFC3339, ev.Ts)
+			item := panels.AttentionItem{
+				Summary:       ev.Summary,
+				Actionability: ev.Actionability,
+				Timestamp:     ts,
+				SourcePane:    ev.Pane,
+				Cursor:        ev.Cursor,
+			}
+			// Extract agent type from details if available
+			if ev.Details != nil {
+				if agent, ok := ev.Details["agent_type"].(string); ok {
+					item.SourceAgent = agent
+				}
+			}
+			items = append(items, item)
+		}
+
+		// Sort by actionability (action_required first) then by recency (newest first)
+		sortAttentionItems(items)
+
+		return AttentionUpdateMsg{Items: items, FeedAvailable: true, Gen: gen}
+	}
+}
+
+// sortAttentionItems sorts items by actionability desc, then timestamp desc.
+func sortAttentionItems(items []panels.AttentionItem) {
+	// Simple bubble sort for small N (typically <20 items)
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if shouldSwapAttentionItems(items[i], items[j]) {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+}
+
+func shouldSwapAttentionItems(a, b panels.AttentionItem) bool {
+	// action_required > interesting > background
+	aRank := actionabilityRank(a.Actionability)
+	bRank := actionabilityRank(b.Actionability)
+	if aRank != bRank {
+		return aRank < bRank // Higher rank should come first
+	}
+	// Same actionability: newer first
+	return a.Timestamp.Before(b.Timestamp)
+}
+
+func actionabilityRank(a robot.Actionability) int {
+	switch a {
+	case robot.ActionabilityActionRequired:
+		return 3
+	case robot.ActionabilityInteresting:
+		return 2
+	default:
+		return 1
+	}
+}
+
 // fetchMetricsCmd refreshes observability metrics.
 func (m *Model) fetchMetricsCmd() tea.Cmd {
 	gen := m.nextGen(refreshMetrics)

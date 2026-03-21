@@ -69,13 +69,24 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 		}, 2
 	}
 
-	// Validate condition
+	// Validate condition — check for unsupported conditions with specific guidance
 	if !isValidWaitCondition(opts.Condition) {
+		hint := "Valid conditions: idle, complete, generating, healthy"
+		errMsg := fmt.Sprintf("invalid condition '%s'", opts.Condition)
+
+		// Provide specific guidance for known unsupported conditions
+		if isUnsupportedWaitCondition(opts.Condition) {
+			hint = fmt.Sprintf("Condition '%s' is deliberately unsupported. "+
+				"Use --robot-capabilities to see rationale. "+
+				"Available conditions: idle, complete, generating, healthy", opts.Condition)
+			errMsg = fmt.Sprintf("unsupported condition '%s'", opts.Condition)
+		}
+
 		return &WaitResponse{
 			RobotResponse: NewErrorResponse(
-				fmt.Errorf("invalid condition '%s'", opts.Condition),
+				fmt.Errorf("%s", errMsg),
 				ErrCodeInvalidFlag,
-				"Valid conditions: idle, complete, generating, healthy",
+				hint,
 			),
 			Session:   opts.Session,
 			Condition: opts.Condition,
@@ -238,6 +249,23 @@ func PrintWait(opts WaitOptions) int {
 	resp, exitCode := GetWait(opts)
 	outputJSON(resp)
 	return exitCode
+}
+
+// isUnsupportedWaitCondition checks if the condition is a known unsupported
+// condition that was deliberately considered and rejected. This provides
+// better error messages than a generic "invalid condition" for conditions
+// that operators might reasonably try.
+func isUnsupportedWaitCondition(condition string) bool {
+	parts := strings.Split(condition, ",")
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		for _, uc := range UnsupportedConditions() {
+			if p == uc.Name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isValidWaitCondition checks if the condition string is valid.

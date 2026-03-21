@@ -635,6 +635,11 @@ type AttentionCapabilities struct {
 
 	// Degraded lists features that are in degraded state with reasons.
 	Degraded []DegradedFeature `json:"degraded,omitempty"`
+
+	// UnsupportedConditions lists conditions that were deliberately considered
+	// and rejected with rationale. This allows operators and future contributors
+	// to understand what was decided and what would need to change.
+	UnsupportedConditions []UnsupportedCondition `json:"unsupported_conditions,omitempty"`
 }
 
 // CapabilityFeature describes a single feature's status.
@@ -656,8 +661,81 @@ const (
 	// AttentionSignalBeadOrphaned identifies the proposed signal for work that
 	// appears abandoned. It remains unsupported until ntm can prove the state
 	// from observable evidence instead of heuristic guesswork.
+	//
+	// Feasibility analysis (br-3qs46, 2026-03-21):
+	//
+	// Observable state available to ntm:
+	//   - Bead status (open, in_progress, closed) via br/bv integration
+	//   - Agent identity and pane liveness (alive, stalled, dead)
+	//   - Agent Mail message history and reservations
+	//
+	// Why this is NOT enough to prove orphaned:
+	//   1. An in-progress bead with a dead agent pane does NOT mean the work is
+	//      orphaned — the agent may have been intentionally killed, may be
+	//      respawning, or may have finished but not closed the bead yet.
+	//   2. An in-progress bead with a stalled agent does NOT mean the work is
+	//      abandoned — the agent may be compacting, waiting for rch compilation,
+	//      doing deep research, or simply thinking on a hard problem.
+	//   3. Heuristic time-based detection (e.g., "no progress for 30 minutes")
+	//      conflates legitimate long-running work with abandonment and would
+	//      produce false positives on complex tasks.
+	//   4. ntm has no way to distinguish "agent chose to stop working on this
+	//      bead" from "agent crashed mid-work" — both look like silence.
+	//
+	// The honest conclusion: bead_orphaned requires coordination-level knowledge
+	// that only the operator agent or the working agent can provide. ntm should
+	// surface the raw observables (agent state, bead status, time since last
+	// activity) and let the operator draw conclusions.
+	//
+	// To revisit: if Agent Mail gains "bead handoff" or "explicit abandon"
+	// messages, ntm could detect orphaned work from that evidence. Until then,
+	// emitting bead_orphaned would be inventing conclusions from insufficient data.
 	AttentionSignalBeadOrphaned = "bead_orphaned"
 )
+
+// UnsupportedCondition describes a condition that was considered but is not
+// implemented, with rationale for why and what would need to change.
+type UnsupportedCondition struct {
+	// Name is the condition identifier (e.g., "bead_orphaned").
+	Name string `json:"name"`
+
+	// Status is always CapabilityUnavailable for this type.
+	Status CapabilityStatus `json:"status"`
+
+	// Reason explains why this condition is not supported.
+	Reason string `json:"reason"`
+
+	// ObservablesAvailable lists what ntm CAN see that relates to this condition.
+	ObservablesAvailable []string `json:"observables_available"`
+
+	// WhatWouldChange describes what needs to happen for this to become supported.
+	WhatWouldChange string `json:"what_would_change"`
+}
+
+// UnsupportedConditions returns conditions that were considered but are not
+// implemented. This is exposed in capabilities and help output so operators
+// and future contributors know what was decided and why.
+func UnsupportedConditions() []UnsupportedCondition {
+	return []UnsupportedCondition{
+		{
+			Name:   AttentionSignalBeadOrphaned,
+			Status: CapabilityUnavailable,
+			Reason: "ntm cannot prove work is orphaned from observable state alone. " +
+				"Agent silence may indicate compaction, deep thinking, rch compilation, " +
+				"or intentional pause — not abandonment. Emitting this signal would " +
+				"produce false positives that erode operator trust.",
+			ObservablesAvailable: []string{
+				"bead status (open/in_progress/closed) via br/bv",
+				"agent pane liveness (alive/stalled/dead)",
+				"time since last pane output",
+				"Agent Mail message history",
+			},
+			WhatWouldChange: "Agent Mail gains explicit 'bead abandon' or 'bead handoff' " +
+				"messages, giving ntm positive evidence of intent rather than inferring " +
+				"abandonment from silence.",
+		},
+	}
+}
 
 // DefaultAttentionCapabilities returns the current machine-readable attention
 // contract status. This is intentionally conservative: when ntm cannot defend a
@@ -677,6 +755,7 @@ func DefaultAttentionCapabilities() *AttentionCapabilities {
 				Note:   "Unsupported: ntm cannot yet prove orphaned work from observable beads, bv, and agent state without inventing coordination conclusions.",
 			},
 		},
+		UnsupportedConditions: UnsupportedConditions(),
 	}
 }
 

@@ -162,6 +162,13 @@ type AlertsUpdateMsg struct {
 	Gen    uint64
 }
 
+// AttentionUpdateMsg is sent when attention items are refreshed
+type AttentionUpdateMsg struct {
+	Items         []panels.AttentionItem
+	FeedAvailable bool
+	Gen           uint64
+}
+
 // SpawnUpdateMsg is sent when spawn state is updated
 type SpawnUpdateMsg struct {
 	Data panels.SpawnData
@@ -306,6 +313,7 @@ const (
 	PanelDetail
 	PanelBeads
 	PanelAlerts
+	PanelAttention // Attention feed panel
 	PanelConflicts // File reservation conflicts panel
 	PanelMetrics
 	PanelHistory
@@ -320,6 +328,7 @@ const (
 	refreshStatus
 	refreshBeads
 	refreshAlerts
+	refreshAttention
 	refreshMetrics
 	refreshHistory
 	refreshFiles
@@ -427,6 +436,7 @@ type Model struct {
 	paneRefreshInterval        time.Duration
 	contextRefreshInterval     time.Duration
 	alertsRefreshInterval      time.Duration
+	attentionRefreshInterval   time.Duration
 	beadsRefreshInterval       time.Duration
 	cassContextRefreshInterval time.Duration
 	scanRefreshInterval        time.Duration
@@ -507,6 +517,7 @@ type Model struct {
 	// Panels
 	beadsPanel           *panels.BeadsPanel
 	alertsPanel          *panels.AlertsPanel
+	attentionPanel       *panels.AttentionPanel
 	costPanel            *panels.CostPanel
 	ranoNetworkPanel     *panels.RanoNetworkPanel
 	rchPanel             *panels.RCHPanel
@@ -521,9 +532,13 @@ type Model struct {
 	rotationConfirmPanel *panels.RotationConfirmPanel
 
 	// Data for new panels
-	beadsSummary  bv.BeadsSummary
-	beadsReady    []bv.BeadPreview
-	activeAlerts  []alerts.Alert
+	beadsSummary     bv.BeadsSummary
+	beadsReady       []bv.BeadPreview
+	activeAlerts     []alerts.Alert
+	attentionItems   []panels.AttentionItem
+	attentionFeedOK  bool // Whether the attention feed is available
+	lastAttentionFetch time.Time
+	fetchingAttention  bool
 	costData      panels.CostPanelData
 	costError     error
 	metricsData   panels.MetricsData // Cached full metrics data for panel
@@ -727,6 +742,25 @@ func (m *Model) handlePaneZoom(pane tmux.Pane) tea.Cmd {
 	return tea.Quit
 }
 
+// handleAttentionZoom zooms to the pane that generated the attention event.
+// If the pane no longer exists, displays a health message instead of zooming.
+func (m *Model) handleAttentionZoom(paneIndex int) tea.Cmd {
+	pane, ok := m.paneByIndex(paneIndex)
+	if !ok {
+		m.healthMessage = "Source pane no longer available"
+		if m.toasts != nil {
+			m.toasts.Push(components.Toast{
+				ID:      fmt.Sprintf("attention-missing-pane-%d", paneIndex),
+				Message: "Source pane no longer available",
+				Level:   components.ToastWarning,
+			})
+		}
+		return nil
+	}
+	m.setPaneListSelectionByPaneID(pane.ID)
+	return m.handlePaneZoom(pane)
+}
+
 // PaneStatus tracks the status of a pane including compaction state
 type PaneStatus struct {
 	LastCompaction *time.Time // When compaction was last detected
@@ -852,6 +886,7 @@ const (
 	PaneRefreshInterval        = 1 * time.Second
 	ContextRefreshInterval     = 10 * time.Second
 	AlertsRefreshInterval      = 3 * time.Second
+	AttentionRefreshInterval   = 5 * time.Second // Same cadence as alerts
 	BeadsRefreshInterval       = 5 * time.Second
 	CassContextRefreshInterval = 15 * time.Minute
 	ScanRefreshInterval        = 1 * time.Minute
@@ -933,6 +968,7 @@ func New(session, projectDir string) Model {
 		paneRefreshInterval:        PaneRefreshInterval,
 		contextRefreshInterval:     ContextRefreshInterval,
 		alertsRefreshInterval:      AlertsRefreshInterval,
+		attentionRefreshInterval:   AttentionRefreshInterval,
 		beadsRefreshInterval:       BeadsRefreshInterval,
 		cassContextRefreshInterval: CassContextRefreshInterval,
 		scanRefreshInterval:        ScanRefreshInterval,
@@ -965,6 +1001,7 @@ func New(session, projectDir string) Model {
 		toasts:               components.NewToastManager(),
 		beadsPanel:           panels.NewBeadsPanel(),
 		alertsPanel:          panels.NewAlertsPanel(),
+		attentionPanel:       panels.NewAttentionPanel(),
 		costPanel:            panels.NewCostPanel(),
 		ranoNetworkPanel:     panels.NewRanoNetworkPanel(),
 		rchPanel:             panels.NewRCHPanel(),
@@ -1167,6 +1204,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchAgentMailInboxes(),
 		m.fetchBeadsCmd(),
 		m.fetchAlertsCmd(),
+		m.fetchAttentionCmd(),
 		m.fetchMetricsCmd(),
 		m.fetchRoutingCmd(),
 		m.fetchHistoryCmd(),
@@ -2194,6 +2232,11 @@ func (m *Model) fullRefresh(cancelInFlight bool) []tea.Cmd {
 		m.lastAlertsFetch = now
 		cmds = append(cmds, m.fetchAlertsCmd())
 	}
+	if !m.fetchingAttention {
+		m.fetchingAttention = true
+		m.lastAttentionFetch = now
+		cmds = append(cmds, m.fetchAttentionCmd())
+	}
 	if !m.fetchingMetrics {
 		m.fetchingMetrics = true
 		cmds = append(cmds, m.fetchMetricsCmd())
@@ -2662,6 +2705,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.alertsPanel.SetData(m.activeAlerts, m.alertsError)
+		return m, nil
+
+	case AttentionUpdateMsg:
+		if !m.acceptUpdate(refreshAttention, msg.Gen) {
+			return m, nil
+		}
+		m.fetchingAttention = false
+		m.attentionItems = msg.Items
+		m.attentionFeedOK = msg.FeedAvailable
+		m.markUpdated(refreshAttention, time.Now())
+		m.attentionPanel.SetData(m.attentionItems, m.attentionFeedOK)
 		return m, nil
 
 	case FileConflictMsg:
@@ -3665,6 +3719,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if (m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail) && len(m.panes) > 0 && m.cursor < len(m.panes) {
 				return m, m.handlePaneZoom(m.panes[m.cursor])
 			}
+			// Zoom-to-source for attention panel items
+			if m.focusedPanel == PanelAttention && m.attentionPanel != nil {
+				if item := m.attentionPanel.SelectedItem(); item != nil {
+					return m, m.handleAttentionZoom(item.SourcePane)
+				}
+			}
 			return m, nil
 
 		// Number quick-select
@@ -3752,6 +3812,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.alertsPanel != nil {
 				var cmd tea.Cmd
 				_, cmd = m.alertsPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		case PanelAttention:
+			if m.attentionPanel != nil {
+				var cmd tea.Cmd
+				_, cmd = m.attentionPanel.Update(keyMsg)
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -4141,6 +4209,10 @@ func (m Model) renderPanelTabBar(width int) string {
 		case PanelAlerts:
 			badge = len(m.activeAlerts)
 			hasErr = m.alertsPanel.HasError()
+		case PanelAttention:
+			if m.attentionPanel != nil {
+				badge = m.attentionPanel.ActionRequiredCount()
+			}
 		case PanelBeads:
 			badge = m.beadsSummary.InProgress
 			hasErr = m.beadsPanel.HasError()
@@ -4864,6 +4936,10 @@ func (m Model) getFocusedPanelHints() []components.KeyHint {
 		if m.alertsPanel != nil {
 			keybindings = m.alertsPanel.Keybindings()
 		}
+	case PanelAttention:
+		if m.attentionPanel != nil {
+			keybindings = m.attentionPanel.Keybindings()
+		}
 	case PanelMetrics:
 		if m.metricsPanel != nil {
 			keybindings = m.metricsPanel.Keybindings()
@@ -5575,14 +5651,19 @@ func (m *Model) visiblePanelsForHelpVerbosity() []PanelID {
 	switch {
 	case m.tier >= layout.TierMega:
 		// Use PanelConflicts instead of PanelAlerts when conflicts are present.
+		// Include PanelAttention between alerts and sidebar.
 		if m.conflictsPanel.HasConflicts() {
-			return []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelConflicts, PanelSidebar}
+			return []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelConflicts, PanelAttention, PanelSidebar}
 		}
-		return []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelAlerts, PanelSidebar}
+		return []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelAlerts, PanelAttention, PanelSidebar}
 	case m.tier >= layout.TierUltra:
-		return []PanelID{PanelPaneList, PanelDetail, PanelSidebar}
+		// Include PanelAttention at TierUltra and above.
+		return []PanelID{PanelPaneList, PanelDetail, PanelAttention, PanelSidebar}
+	case m.tier >= layout.TierWide:
+		// Show attention panel at TierWide (visible between split and ultra).
+		return []PanelID{PanelPaneList, PanelDetail, PanelAttention}
 	case m.tier >= layout.TierSplit:
-		return []PanelID{PanelPaneList, PanelDetail}
+		return []PanelID{PanelPaneList, PanelDetail, PanelAttention}
 	default:
 		return []PanelID{PanelPaneList}
 	}
@@ -6203,6 +6284,12 @@ func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
 		cmds = append(cmds, m.fetchAlertsCmd())
 	}
 
+	if refreshDue(m.lastAttentionFetch, m.attentionRefreshInterval) && !m.fetchingAttention {
+		m.fetchingAttention = true
+		m.lastAttentionFetch = now
+		cmds = append(cmds, m.fetchAttentionCmd())
+	}
+
 	if refreshDue(m.lastBeadsFetch, m.beadsRefreshInterval) && !m.fetchingBeads {
 		m.fetchingBeads = true
 		m.lastBeadsFetch = now
@@ -6291,7 +6378,7 @@ func (m Model) renderSplitView() string {
 	}
 
 	detailBorder := t.Pink
-	if m.focusedPanel == PanelDetail {
+	if m.focusedPanel == PanelDetail || m.focusedPanel == PanelAttention {
 		detailBorder = t.Primary
 	}
 
@@ -6306,9 +6393,9 @@ func (m Model) renderSplitView() string {
 		Padding(0, 1).
 		Render(listContent)
 
-	// Build right panel (tab bar + detail view)
+	// Build right panel (tab bar + focused content)
 	tabBar := m.renderPanelTabBar(rightWidth - 4)
-	detailContent := m.renderPaneDetail(rightWidth - 4)
+	detailContent := m.renderSplitPrimaryPanel(rightWidth-4, contentHeight-2)
 	rightContent := tabBar + "\n" + detailContent
 	detailPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -6339,7 +6426,7 @@ func (m Model) renderUltraLayout() string {
 	}
 
 	detailBorder := t.Pink
-	if m.focusedPanel == PanelDetail {
+	if m.focusedPanel == PanelDetail || m.focusedPanel == PanelAttention {
 		detailBorder = t.Primary
 	}
 
@@ -6359,7 +6446,7 @@ func (m Model) renderUltraLayout() string {
 		Render(listContent)
 
 	tabBar := m.renderPanelTabBar(centerWidth - 4)
-	detailContent := m.renderPaneDetail(centerWidth - 4)
+	detailContent := m.renderSplitPrimaryPanel(centerWidth-4, contentHeight-2)
 	centerContent := tabBar + "\n" + detailContent
 	detailPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -6628,7 +6715,7 @@ func (m Model) renderMegaLayout() string {
 	}
 
 	alertsBorder := t.Red
-	if m.focusedPanel == PanelAlerts {
+	if m.focusedPanel == PanelAlerts || m.focusedPanel == PanelAttention || m.focusedPanel == PanelConflicts {
 		alertsBorder = t.Primary
 	}
 
@@ -6664,16 +6751,23 @@ func (m Model) renderMegaLayout() string {
 		Padding(0, 1).
 		Render(m.renderBeadsPanel(p3Inner, contentHeight-2))
 
-	// Show conflicts panel instead of alerts when there are active conflicts
 	var panel4 string
-	if m.conflictsPanel.HasConflicts() {
+	switch {
+	case m.focusedPanel == PanelAttention:
+		panel4 = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(alertsBorder).
+			Width(p4).Height(contentHeight).MaxHeight(contentHeight).
+			Padding(0, 1).
+			Render(m.renderAttentionPanel(p4Inner, contentHeight-2))
+	case m.conflictsPanel.HasConflicts():
 		panel4 = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(conflictsBorder).
 			Width(p4).Height(contentHeight).MaxHeight(contentHeight).
 			Padding(0, 1).
 			Render(m.renderConflictsPanel(p4Inner, contentHeight-2))
-	} else {
+	default:
 		panel4 = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(alertsBorder).
@@ -6705,6 +6799,23 @@ func (m Model) renderAlertsPanel(width, height int) string {
 		m.alertsPanel.Blur()
 	}
 	return m.alertsPanel.View()
+}
+
+func (m Model) renderAttentionPanel(width, height int) string {
+	m.attentionPanel.SetSize(width, height)
+	if m.focusedPanel == PanelAttention {
+		m.attentionPanel.Focus()
+	} else {
+		m.attentionPanel.Blur()
+	}
+	return m.attentionPanel.View()
+}
+
+func (m Model) renderSplitPrimaryPanel(width, height int) string {
+	if m.focusedPanel == PanelAttention && m.attentionPanel != nil {
+		return m.renderAttentionPanel(width, height)
+	}
+	return m.renderPaneDetail(width)
 }
 
 func (m Model) renderConflictsPanel(width, height int) string {

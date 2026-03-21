@@ -154,6 +154,8 @@ func panelIDString(id PanelID) string {
 		return "beads"
 	case PanelAlerts:
 		return "alerts"
+	case PanelAttention:
+		return "attention"
 	case PanelConflicts:
 		return "conflicts"
 	case PanelMetrics:
