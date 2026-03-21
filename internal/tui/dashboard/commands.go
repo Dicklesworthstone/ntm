@@ -88,7 +88,10 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 				continue
 			}
 
-			ts, _ := time.Parse(time.RFC3339, ev.Ts)
+			ts, err := time.Parse(time.RFC3339Nano, ev.Ts)
+			if err != nil {
+				ts, _ = time.Parse(time.RFC3339, ev.Ts)
+			}
 			item := panels.AttentionItem{
 				Summary:       ev.Summary,
 				Actionability: ev.Actionability,

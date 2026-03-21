@@ -19,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/history"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
@@ -183,6 +184,64 @@ func TestFetchCASSContextCmd_NoCass(t *testing.T) {
 	// If CASS is not installed, we expect an error
 	// If CASS is installed, we may get hits or empty hits
 	_ = cassMsg
+}
+
+func TestFetchAttentionCmdParsesRFC3339NanoAndSorts(t *testing.T) {
+	t.Parallel()
+
+	oldFeed := robot.GetAttentionFeed()
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       16,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	feed.Append(robot.AttentionEvent{
+		Ts:            "2026-03-21T07:00:00.123456Z",
+		Summary:       "interesting but older",
+		Actionability: robot.ActionabilityInteresting,
+		Pane:          3,
+		Details:       map[string]any{"agent_type": "codex"},
+	})
+	feed.Append(robot.AttentionEvent{
+		Ts:            "2026-03-21T07:01:00.654321Z",
+		Summary:       "action required newer",
+		Actionability: robot.ActionabilityActionRequired,
+		Pane:          1,
+		Details:       map[string]any{"agent_type": "claude"},
+	})
+	feed.Append(robot.AttentionEvent{
+		Ts:            "2026-03-21T07:02:00Z",
+		Summary:       "background noise",
+		Actionability: robot.ActionabilityBackground,
+		Pane:          9,
+	})
+	robot.SetAttentionFeed(feed)
+
+	m := newTestModel(120)
+	msg := m.fetchAttentionCmd()()
+	update, ok := msg.(AttentionUpdateMsg)
+	if !ok {
+		t.Fatalf("expected AttentionUpdateMsg, got %T", msg)
+	}
+	if !update.FeedAvailable {
+		t.Fatal("expected attention feed to be available")
+	}
+	if len(update.Items) != 2 {
+		t.Fatalf("expected 2 actionable items, got %d", len(update.Items))
+	}
+	if update.Items[0].Summary != "action required newer" {
+		t.Fatalf("first item = %q, want action-required item first", update.Items[0].Summary)
+	}
+	if update.Items[0].Timestamp.IsZero() || update.Items[1].Timestamp.IsZero() {
+		t.Fatal("expected timestamps to parse successfully")
+	}
+	if update.Items[0].SourceAgent != "claude" || update.Items[1].SourceAgent != "codex" {
+		t.Fatalf("unexpected source agents: %+v", update.Items)
+	}
 }
 
 func TestHandleConflictAction_ForceRegistersDashboardAgent(t *testing.T) {

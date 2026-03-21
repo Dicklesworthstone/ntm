@@ -532,20 +532,20 @@ type Model struct {
 	rotationConfirmPanel *panels.RotationConfirmPanel
 
 	// Data for new panels
-	beadsSummary     bv.BeadsSummary
-	beadsReady       []bv.BeadPreview
-	activeAlerts     []alerts.Alert
-	attentionItems   []panels.AttentionItem
-	attentionFeedOK  bool // Whether the attention feed is available
+	beadsSummary       bv.BeadsSummary
+	beadsReady         []bv.BeadPreview
+	activeAlerts       []alerts.Alert
+	attentionItems     []panels.AttentionItem
+	attentionFeedOK    bool // Whether the attention feed is available
 	lastAttentionFetch time.Time
 	fetchingAttention  bool
-	costData      panels.CostPanelData
-	costError     error
-	metricsData   panels.MetricsData // Cached full metrics data for panel
-	cmdHistory    []history.HistoryEntry
-	fileChanges   []tracker.RecordedFileChange
-	cassContext   []cass.SearchHit
-	routingScores map[string]RoutingScore // keyed by pane ID
+	costData           panels.CostPanelData
+	costError          error
+	metricsData        panels.MetricsData // Cached full metrics data for panel
+	cmdHistory         []history.HistoryEntry
+	fileChanges        []tracker.RecordedFileChange
+	cassContext        []cass.SearchHit
+	routingScores      map[string]RoutingScore // keyed by pane ID
 
 	// Cost tracking (estimated; derived from prompt history + pane output deltas)
 	costInputTokens         map[string]int     // paneID -> estimated input tokens
@@ -6431,7 +6431,7 @@ func (m Model) renderUltraLayout() string {
 	}
 
 	sidebarBorder := t.Lavender
-	if m.focusedPanel == PanelSidebar {
+	if m.focusedPanel == PanelSidebar || m.focusedPanel == PanelAttention {
 		sidebarBorder = t.Primary
 	}
 
@@ -6476,6 +6476,17 @@ func (m Model) renderSidebar(width, height int) string {
 
 	if width <= 0 {
 		return ""
+	}
+
+	if m.attentionPanel != nil && height >= m.attentionPanel.Config().MinHeight {
+		panelHeight := maxInt(m.attentionPanel.Config().MinHeight, height/3)
+		if panelHeight > 12 {
+			panelHeight = 12
+		}
+		if panelHeight > height {
+			panelHeight = height
+		}
+		lines = append(lines, m.renderAttentionPanel(width, panelHeight), "")
 	}
 
 	headerStyle := lipgloss.NewStyle().
@@ -6725,7 +6736,7 @@ func (m Model) renderMegaLayout() string {
 	}
 
 	sidebarBorder := t.Lavender
-	if m.focusedPanel == PanelSidebar {
+	if m.focusedPanel == PanelSidebar || m.focusedPanel == PanelAttention {
 		sidebarBorder = t.Primary
 	}
 
