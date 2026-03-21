@@ -4880,6 +4880,87 @@ func (s *Server) WSHub() *WSHub {
 // Attention Feed Handlers
 // =============================================================================
 
+type attentionStreamFeed interface {
+	Stats() robot.JournalStats
+	Replay(sinceCursor int64, limit int) ([]robot.AttentionEvent, int64, error)
+	Subscribe(robot.AttentionHandler) func()
+}
+
+type preparedAttentionStream struct {
+	stats          robot.JournalStats
+	replayBoundary int64
+	replayEvents   []robot.AttentionEvent
+	eventCh        chan robot.AttentionEvent
+	unsubscribe    func()
+}
+
+func prepareAttentionStream(feed attentionStreamFeed, sinceCursor int64, bufferSize int) (*preparedAttentionStream, error) {
+	if feed == nil {
+		return nil, errors.New("attention feed unavailable")
+	}
+	if bufferSize <= 0 {
+		bufferSize = 100
+	}
+
+	eventCh := make(chan robot.AttentionEvent, bufferSize)
+	unsubscribe := feed.Subscribe(func(event robot.AttentionEvent) {
+		select {
+		case eventCh <- event:
+		default:
+			// Buffer full, drop event.
+		}
+	})
+
+	stats := feed.Stats()
+	if expired, earliest := attentionCursorExpired(sinceCursor, stats); expired {
+		unsubscribe()
+		return nil, &robot.CursorExpiredError{
+			RequestedCursor: sinceCursor,
+			EarliestCursor:  earliest,
+			RetentionPeriod: stats.RetentionPeriod,
+		}
+	}
+
+	prepared := &preparedAttentionStream{
+		stats:          stats,
+		replayBoundary: stats.NewestCursor,
+		replayEvents:   []robot.AttentionEvent{},
+		eventCh:        eventCh,
+		unsubscribe:    unsubscribe,
+	}
+	if sinceCursor < 0 {
+		return prepared, nil
+	}
+
+	replayLimit := stats.Count
+	if replayLimit <= 0 {
+		replayLimit = 1
+	}
+	events, _, err := feed.Replay(sinceCursor, replayLimit)
+	if err != nil {
+		unsubscribe()
+		return nil, err
+	}
+
+	prepared.replayEvents = filterAttentionReplayBoundary(events, prepared.replayBoundary)
+	return prepared, nil
+}
+
+func filterAttentionReplayBoundary(events []robot.AttentionEvent, maxCursor int64) []robot.AttentionEvent {
+	if len(events) == 0 || maxCursor <= 0 {
+		return []robot.AttentionEvent{}
+	}
+
+	filtered := make([]robot.AttentionEvent, 0, len(events))
+	for _, event := range events {
+		if event.Cursor > maxCursor {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered
+}
+
 // handleAttentionStreamV1 handles SSE streaming at /api/v1/attention/stream.
 // Query params:
 //   - since_cursor: replay from this cursor (0 = start from beginning, -1 = from now)
@@ -4913,6 +4994,42 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		heartbeatInterval = time.Duration(parsed) * time.Second
 	}
 
+	feed := robot.GetAttentionFeed()
+	prepared, err := prepareAttentionStream(feed, sinceCursor, 100)
+	if err != nil {
+		var cursorErr *robot.CursorExpiredError
+		if !errors.As(err, &cursorErr) {
+			writeError(w, http.StatusInternalServerError, "attention stream setup failed: "+err.Error())
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "streaming not supported")
+			return
+		}
+
+		cursorExpiredEvent := map[string]interface{}{
+			"error_code":    robot.ErrCodeCursorExpired,
+			"message":       "cursor has expired, resync required",
+			"oldest_cursor": cursorErr.EarliestCursor,
+			"newest_cursor": feed.Stats().NewestCursor,
+			"resync_hint":   "fetch --robot-snapshot then resume from newest_cursor",
+		}
+		data, _ := json.Marshal(cursorExpiredEvent)
+		if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", data); err != nil {
+			return
+		}
+		flusher.Flush()
+		return
+	}
+	defer prepared.unsubscribe()
+
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -4925,35 +5042,13 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	feed := robot.GetAttentionFeed()
-	stats := feed.Stats()
-	earliestCursor := attentionReplayEarliestCursor(stats)
-
-	// Check for cursor expiration using the same boundary as the underlying journal.
-	if expired, earliest := attentionCursorExpired(sinceCursor, stats); expired {
-		// Cursor has expired - send error event and close
-		cursorExpiredEvent := map[string]interface{}{
-			"error_code":    robot.ErrCodeCursorExpired,
-			"message":       "cursor has expired, resync required",
-			"oldest_cursor": earliest,
-			"newest_cursor": stats.NewestCursor,
-			"resync_hint":   "fetch --robot-snapshot then resume from newest_cursor",
-		}
-		data, _ := json.Marshal(cursorExpiredEvent)
-		if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", data); err != nil {
-			return
-		}
-		flusher.Flush()
-		return
-	}
-
 	// Send connection event
 	connEvent := map[string]interface{}{
 		"status":        "connected",
 		"time":          time.Now().UTC().Format(time.RFC3339),
 		"since_cursor":  sinceCursor,
-		"oldest_cursor": earliestCursor,
-		"newest_cursor": stats.NewestCursor,
+		"oldest_cursor": attentionReplayEarliestCursor(prepared.stats),
+		"newest_cursor": prepared.stats.NewestCursor,
 	}
 	connData, _ := json.Marshal(connEvent)
 	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connData); err != nil {
@@ -4962,41 +5057,20 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 	flusher.Flush()
 
 	// Replay events from cursor if requested
-	replayCursor := sinceCursor
-	if sinceCursor == -1 {
-		// Start from now - no replay
-		replayCursor = stats.NewestCursor
-	} else if sinceCursor >= 0 {
-		// Replay all events since cursor
-		events, newest, err := feed.Replay(sinceCursor, stats.Count)
-		if err == nil {
-			for _, event := range events {
-				if !matchesAttentionFilters(event, categoryFilter, sessionFilter, actionabilityFilter) {
-					continue
-				}
-				data, err := json.Marshal(event)
-				if err != nil {
-					continue
-				}
-				if _, err := fmt.Fprintf(w, "event: attention\ndata: %s\n\n", data); err != nil {
-					return
-				}
-			}
-			flusher.Flush()
-			replayCursor = newest
+	replayCursor := prepared.replayBoundary
+	for _, event := range prepared.replayEvents {
+		if !matchesAttentionFilters(event, categoryFilter, sessionFilter, actionabilityFilter) {
+			continue
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "event: attention\ndata: %s\n\n", data); err != nil {
+			return
 		}
 	}
-
-	// Subscribe for new events
-	eventCh := make(chan robot.AttentionEvent, 100)
-	unsubscribe := feed.Subscribe(func(event robot.AttentionEvent) {
-		select {
-		case eventCh <- event:
-		default:
-			// Buffer full, drop event
-		}
-	})
-	defer unsubscribe()
+	flusher.Flush()
 
 	// Set up heartbeat ticker
 	var heartbeatTicker *time.Ticker
@@ -5013,7 +5087,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		select {
 		case <-ctx.Done():
 			return
-		case event := <-eventCh:
+		case event := <-prepared.eventCh:
 			if event.Cursor <= replayCursor {
 				// Already sent during replay
 				continue

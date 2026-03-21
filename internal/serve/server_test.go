@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -3358,5 +3359,115 @@ func TestLoggingMiddleware_WithoutRequestID(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if !called {
 		t.Error("next handler should be called")
+	}
+}
+
+type fakeAttentionStreamFeed struct {
+	stats        robot.JournalStats
+	replayEvents []robot.AttentionEvent
+	replayNewest int64
+	replayErr    error
+	onReplay     func()
+	subscriber   robot.AttentionHandler
+}
+
+func (f *fakeAttentionStreamFeed) Stats() robot.JournalStats {
+	return f.stats
+}
+
+func (f *fakeAttentionStreamFeed) Replay(_ int64, _ int) ([]robot.AttentionEvent, int64, error) {
+	if f.onReplay != nil {
+		f.onReplay()
+	}
+	events := append([]robot.AttentionEvent(nil), f.replayEvents...)
+	return events, f.replayNewest, f.replayErr
+}
+
+func (f *fakeAttentionStreamFeed) Subscribe(handler robot.AttentionHandler) func() {
+	f.subscriber = handler
+	return func() {
+		f.subscriber = nil
+	}
+}
+
+func (f *fakeAttentionStreamFeed) emit(event robot.AttentionEvent) {
+	if f.subscriber != nil {
+		f.subscriber(event)
+	}
+}
+
+func TestPrepareAttentionStream_ReplayBoundaryPreservesLiveEvents(t *testing.T) {
+	t.Parallel()
+
+	liveEvent := robot.AttentionEvent{Cursor: 2, Summary: "live"}
+	feed := &fakeAttentionStreamFeed{
+		stats: robot.JournalStats{
+			Count:           1,
+			OldestCursor:    1,
+			NewestCursor:    1,
+			RetentionPeriod: time.Hour,
+		},
+		replayEvents: []robot.AttentionEvent{
+			{Cursor: 1, Summary: "baseline"},
+			liveEvent,
+		},
+		replayNewest: 2,
+	}
+	feed.onReplay = func() {
+		feed.emit(liveEvent)
+	}
+
+	prepared, err := prepareAttentionStream(feed, 0, 4)
+	if err != nil {
+		t.Fatalf("prepareAttentionStream() error = %v", err)
+	}
+	defer prepared.unsubscribe()
+
+	if prepared.replayBoundary != 1 {
+		t.Fatalf("replayBoundary = %d, want 1", prepared.replayBoundary)
+	}
+	if len(prepared.replayEvents) != 1 || prepared.replayEvents[0].Cursor != 1 {
+		t.Fatalf("replayEvents = %+v, want only cursor 1", prepared.replayEvents)
+	}
+
+	select {
+	case got := <-prepared.eventCh:
+		if got.Cursor != liveEvent.Cursor {
+			t.Fatalf("live event cursor = %d, want %d", got.Cursor, liveEvent.Cursor)
+		}
+	default:
+		t.Fatal("expected live event queued during replay boundary")
+	}
+}
+
+func TestPrepareAttentionStream_CursorExpired(t *testing.T) {
+	t.Parallel()
+
+	feed := &fakeAttentionStreamFeed{
+		stats: robot.JournalStats{
+			Count:           3,
+			OldestCursor:    10,
+			NewestCursor:    12,
+			RetentionPeriod: time.Hour,
+		},
+	}
+
+	prepared, err := prepareAttentionStream(feed, 5, 4)
+	if err == nil {
+		t.Fatal("expected cursor-expired error")
+	}
+	if prepared != nil {
+		t.Fatalf("prepared stream = %#v, want nil on error", prepared)
+	}
+
+	var cursorErr *robot.CursorExpiredError
+	if !errors.As(err, &cursorErr) {
+		t.Fatalf("error = %T, want *robot.CursorExpiredError", err)
+	}
+	if cursorErr.EarliestCursor != 10 {
+		t.Fatalf("EarliestCursor = %d, want 10", cursorErr.EarliestCursor)
+	}
+	if feed.subscriber != nil {
+		t.Fatal("subscriber should be released after cursor-expired setup failure")
 	}
 }

@@ -310,6 +310,22 @@ Shell Integration:
 			exitCode := robot.PrintAttention(opts)
 			os.Exit(exitCode)
 		}
+		if robotDigest {
+			sinceCursor := robotAttentionSinceCursor
+			if sinceCursor == 0 {
+				sinceCursor = robotEventsSinceCursor
+			}
+			opts := robot.DigestOptions{
+				SinceCursor: sinceCursor,
+				Session:     robotAttentionSession,
+				Profile:     robotProfile,
+			}
+			if err := robot.PrintDigest(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotGraph {
 			if err := robot.PrintGraph(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2177,6 +2193,7 @@ var (
 	robotEventsActionability   string // actionability filter for --robot-events
 	robotProfile               string // filter profile for attention-feed commands (br-91gti)
 	robotAttention             bool   // one obvious tending primitive (br-t540i)
+	robotDigest                bool   // non-blocking digest of attention state (br-rkh17)
 	robotAttentionSinceCursor  int64  // cursor for --robot-attention
 	robotAttentionSession      string // session filter for --robot-attention
 	robotAttentionTimeout      string // timeout for --robot-attention
@@ -2664,6 +2681,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotEventsActionability, "events-actionability", "", "Filter by actionability level. Optional with --robot-events. Values: action_required, interesting, background")
 	rootCmd.Flags().StringVar(&robotProfile, "profile", "", "Attention-feed filter profile. Applies to --robot-events, --robot-attention, --robot-digest, --robot-wait. Values: operator, debug, minimal, alerts")
 	rootCmd.Flags().BoolVar(&robotAttention, "robot-attention", false, "The one obvious tending primitive: wait for attention, then return digest. Example: ntm --robot-attention --since-cursor=42")
+	rootCmd.Flags().BoolVar(&robotDigest, "robot-digest", false, "Non-blocking attention digest. Returns counts and top items without waiting. Example: ntm --robot-digest --profile=minimal")
 	rootCmd.Flags().Int64Var(&robotAttentionSinceCursor, "attention-cursor", 0, "Cursor position to wait/digest from. Optional with --robot-attention. Example: --attention-cursor=42")
 	rootCmd.Flags().StringVar(&robotAttentionSession, "attention-session", "", "Filter to specific session. Optional with --robot-attention. Example: --attention-session=myproject")
 	rootCmd.Flags().StringVar(&robotAttentionTimeout, "attention-timeout", "5m", "Maximum wait time. Optional with --robot-attention. Example: --attention-timeout=10m")
