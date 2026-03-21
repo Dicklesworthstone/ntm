@@ -337,11 +337,12 @@ func (r *AutoRespawner) processLimitEvents() {
 				continue
 			}
 
+			// Record attempt BEFORE respawn to prevent infinite loops on persistent failures.
+			// Even failed attempts count toward the limit.
+			r.recordRetryAttempt(event.SessionPane)
+
 			// Attempt respawn
-			result := r.Respawn(event)
-			if result.Success {
-				r.recordRetryAttempt(event.SessionPane)
-			}
+			_ = r.Respawn(event)
 		}
 	}
 }
@@ -656,18 +657,28 @@ func (r *AutoRespawner) waitForExit(sessionPane string) bool {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	for time.Now().Before(deadline) {
-		<-ticker.C
-
-		// Check if pane is back to shell prompt
+	// Check immediately before waiting on ticker to avoid unnecessary delay
+	checkOnce := func() bool {
 		output := r.capturePaneOutput(sessionPane, 5)
 		if output == "" {
-			continue
+			return false
 		}
-
 		if r.isShellPrompt(output) {
 			r.logger().Info("[AutoRespawner] agent_exited",
 				"session_pane", sessionPane)
+			return true
+		}
+		return false
+	}
+
+	// Immediate check before entering poll loop
+	if checkOnce() {
+		return true
+	}
+
+	for time.Now().Before(deadline) {
+		<-ticker.C
+		if checkOnce() {
 			return true
 		}
 	}

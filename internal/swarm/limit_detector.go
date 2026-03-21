@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -117,6 +118,10 @@ func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
 	}
 
 	d.mu.Lock()
+	if d.cancel != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("LimitDetector already started; call Stop() first")
+	}
 	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.mu.Unlock()
 
