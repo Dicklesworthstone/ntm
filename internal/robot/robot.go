@@ -2999,6 +2999,8 @@ func detectAgentType(title string) string {
 		return "windsurf"
 	case strings.Contains(titleLower, "aider"):
 		return "aider"
+	case strings.Contains(titleLower, "ollama"):
+		return "ollama"
 	}
 
 	// Check short forms in pane titles (e.g., "session__cc_1", "project__cod_2")
@@ -3047,10 +3049,12 @@ func ResolveAgentType(t string) string {
 		return "gemini"
 	case "cursor":
 		return "cursor"
-	case "windsurf":
+	case "windsurf", "ws":
 		return "windsurf"
 	case "aider":
 		return "aider"
+	case "ollama":
+		return "ollama"
 	case "user":
 		return "user"
 	default:

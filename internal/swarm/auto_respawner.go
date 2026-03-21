@@ -879,6 +879,14 @@ func (r *AutoRespawner) getAgentCommand(agentType string) string {
 		return "cod"
 	case "gmi", "gemini":
 		return "gmi"
+	case "cursor":
+		return "cursor"
+	case "windsurf", "ws":
+		return "windsurf"
+	case "aider":
+		return "aider"
+	case "ollama":
+		return "ollama"
 	default:
 		return agentType
 	}
@@ -918,6 +926,14 @@ func (r *AutoRespawner) normalizeAgentType(agentType string) string {
 		return "cod"
 	case "gmi", "gemini":
 		return "gmi"
+	case "cursor":
+		return "cursor"
+	case "windsurf", "ws":
+		return "windsurf"
+	case "aider":
+		return "aider"
+	case "ollama":
+		return "ollama"
 	default:
 		return agentType
 	}
@@ -932,6 +948,14 @@ func agentReadyPatterns(agentType string) []string {
 		return []string{"Codex", "codex>", "?"}
 	case "gmi", "gemini":
 		return []string{"Gemini", ">"}
+	case "cursor":
+		return []string{"Cursor", ">", "$"}
+	case "windsurf", "ws":
+		return []string{"Windsurf", ">", "$"}
+	case "aider":
+		return []string{"Aider", ">"}
+	case "ollama":
+		return []string{"Ollama", ">>>"}
 	default:
 		return []string{">", "$", "%"} // Generic shell/agent prompts
 	}

@@ -624,6 +624,14 @@ func normalizeEnsembleAgentType(value string) string {
 		return "cod"
 	case "gmi", "gemini", "gemini-cli", "gemini_cli":
 		return "gmi"
+	case "cursor":
+		return "cursor"
+	case "windsurf", "ws":
+		return "windsurf"
+	case "aider":
+		return "aider"
+	case "ollama":
+		return "ollama"
 	default:
 		return ""
 	}

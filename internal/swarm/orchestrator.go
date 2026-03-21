@@ -961,8 +961,12 @@ func sendGracefulExit(client *tmux.Client, pane tmux.Pane) error {
 		time.Sleep(50 * time.Millisecond)
 		return client.SendKeys(pane.ID, "\x03", false)
 
+	case "cursor", "windsurf", "aider", "ollama":
+		// Just send Ctrl+C as a best effort graceful exit for these
+		return client.SendKeys(pane.ID, "\x03", false)
+
 	default:
-		// Default: Ctrl+C
+		// Unknown agents: try standard Ctrl+C
 		return client.SendKeys(pane.ID, "\x03", false)
 	}
 }

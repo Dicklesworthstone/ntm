@@ -336,6 +336,14 @@ func (d *LimitDetector) getPatternsForAgent(agentType string) []string {
 		at = agent.AgentTypeCodex
 	case "gmi", "gemini", "google":
 		at = agent.AgentTypeGemini
+	case "cursor":
+		at = agent.AgentTypeCursor
+	case "windsurf", "ws":
+		at = agent.AgentTypeWindsurf
+	case "aider":
+		at = agent.AgentTypeAider
+	case "ollama":
+		at = agent.AgentTypeOllama
 	default:
 		// Return default patterns for unknown agent types
 		return defaultLimitPatterns
