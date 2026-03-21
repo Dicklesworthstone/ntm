@@ -349,7 +349,13 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 	case AgentTypeAider:
 		return matchAny(recentOutput, aiderErrorPatterns)
 	default:
-		return false // Unknown type - don't assume error
+		// Check all patterns for unknown type
+		return matchAny(recentOutput, ccErrorPatterns) ||
+			matchAny(recentOutput, codErrorPatterns) ||
+			matchAny(recentOutput, gmiErrorPatterns) ||
+			matchAny(recentOutput, cursorErrorPatterns) ||
+			matchAny(recentOutput, windsurfErrorPatterns) ||
+			matchAny(recentOutput, aiderErrorPatterns)
 	}
 }
 

@@ -494,10 +494,24 @@ func (r *DedupeResult) Render() string {
 // truncateDedupText limits text length with ellipsis.
 // Named differently to avoid conflict with provenance.go.
 func truncateDedupText(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	if maxLen <= 3 {
+		return "..."[:maxLen]
+	}
+	targetLen := maxLen - 3
+	prevI := 0
+	for i := range s {
+		if i > targetLen {
+			return s[:prevI] + "..."
+		}
+		prevI = i
+	}
+	return s[:prevI] + "..."
 }
 
 // DedupeFindings is a convenience function for deduplicating findings.

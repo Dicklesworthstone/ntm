@@ -766,7 +766,7 @@ func PrintAttention(opts AttentionOptions) int {
 	var wakeReason string
 	var matchedCondition string
 	var triggerEvent *AttentionEvent
-	var finalCursor int64 = opts.SinceCursor
+	var finalCursor = opts.SinceCursor
 
 	// Polling loop for attention conditions
 	for {

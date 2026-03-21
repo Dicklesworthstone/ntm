@@ -176,9 +176,20 @@ func findLogicalOp(expr, op string) int {
 	depth := 0
 	inString := false
 	stringChar := byte(0)
+	escaped := false
 
 	for i := 0; i < len(expr)-len(op)+1; i++ {
 		c := expr[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
 
 		// Handle string literals
 		if !inString && (c == '"' || c == '\'') {
@@ -187,10 +198,6 @@ func findLogicalOp(expr, op string) int {
 			continue
 		}
 		if inString && c == stringChar {
-			// Check for escaped quote
-			if i > 0 && expr[i-1] == '\\' {
-				continue
-			}
 			inString = false
 			continue
 		}
@@ -398,18 +405,20 @@ func ValidateCondition(condition string) []string {
 	// Check for balanced quotes
 	inDouble := false
 	inSingle := false
-	for i, c := range condition {
+	escaped := false
+	for _, c := range condition {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
 		if c == '"' && !inSingle {
-			// Check if escaped
-			if i > 0 && condition[i-1] == '\\' {
-				continue
-			}
 			inDouble = !inDouble
 		}
 		if c == '\'' && !inDouble {
-			if i > 0 && condition[i-1] == '\\' {
-				continue
-			}
 			inSingle = !inSingle
 		}
 	}

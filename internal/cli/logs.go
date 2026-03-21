@@ -317,7 +317,7 @@ func runLogsFollow(opts robot.LogsOptions) error {
 							"line":       line,
 							"timestamp":  entry.Timestamp.Format(time.RFC3339),
 						}
-						json.NewEncoder(os.Stdout).Encode(jsonEntry)
+						_ = json.NewEncoder(os.Stdout).Encode(jsonEntry)
 					} else {
 						// Human-readable output
 						color := th.Text

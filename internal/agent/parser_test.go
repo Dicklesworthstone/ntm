@@ -1002,16 +1002,16 @@ func TestParser_ParseWithHint_Ollama_Idle(t *testing.T) {
 func TestParser_ParseWithHint_Ollama_Error(t *testing.T) {
 	t.Parallel()
 	p := NewParser()
-	// Ollama hits default in detectError which returns false
+	// Ollama hits default in detectError which checks all patterns
 	output := "error: something broke\nfatal crash"
 
 	state, err := p.ParseWithHint(output, AgentTypeOllama)
 	if err != nil {
 		t.Fatalf("ParseWithHint error: %v", err)
 	}
-	// Default detectError returns false for types without explicit case
-	if state.IsInError {
-		t.Error("Expected IsInError=false for Ollama (detectError returns false for default)")
+	// Default detectError checks all patterns, so it should detect the error
+	if !state.IsInError {
+		t.Error("Expected IsInError=true for Ollama (detectError checks all patterns for default)")
 	}
 }
 

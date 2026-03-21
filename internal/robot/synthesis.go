@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +224,15 @@ func parseGitStatusPorcelain(output, repoPath string) ([]GitFileStatus, error) {
 		// Handle renamed files (path contains " -> ")
 		if idx := strings.Index(path, " -> "); idx >= 0 {
 			path = path[idx+4:]
+		}
+
+		// Unquote if necessary (git quotes paths with spaces or special chars)
+		if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
+			// A simple unquote; for full C-style escape sequence unquoting,
+			// strconv.Unquote is usually correct here.
+			if unquoted, err := strconv.Unquote(path); err == nil {
+				path = unquoted
+			}
 		}
 
 		status := GitFileStatus{
@@ -1723,8 +1733,12 @@ func getPanesForSession(session string) ([]paneInfo, error) {
 			pane.AgentType = "gemini"
 		case strings.Contains(title, "cursor"):
 			pane.AgentType = "cursor"
+		case strings.Contains(title, "windsurf") || strings.Contains(title, "ws_"):
+			pane.AgentType = "windsurf"
 		case strings.Contains(title, "aider"):
 			pane.AgentType = "aider"
+		case strings.Contains(title, "ollama"):
+			pane.AgentType = "ollama"
 		default:
 			// Skip non-agent panes
 			continue

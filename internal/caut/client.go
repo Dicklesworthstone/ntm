@@ -21,7 +21,20 @@ type Executor interface {
 	Run(ctx context.Context, args ...string) ([]byte, error)
 }
 
-// DefaultExecutor runs the actual caut binary
+// limitedBuffer prevents unbounded memory growth when capturing output
+type limitedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *limitedBuffer) Write(p []byte) (n int, err error) {
+	if b.Len()+len(p) > b.limit {
+		return 0, fmt.Errorf("output exceeded limit of %d bytes", b.limit)
+	}
+	return b.Buffer.Write(p)
+}
+
+// DefaultExecutor runs the caut binary via os/exec
 type DefaultExecutor struct {
 	BinaryPath string
 }
@@ -29,8 +42,12 @@ type DefaultExecutor struct {
 // Run executes the caut command with the given arguments
 func (e *DefaultExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	
+	// Limit stdout to 10MB to prevent OOM
+	stdout := &limitedBuffer{limit: 10 * 1024 * 1024}
+	var stderr bytes.Buffer
+	
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

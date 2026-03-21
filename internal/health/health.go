@@ -138,8 +138,11 @@ func CheckSession(ctx context.Context, session string) (*SessionHealth, error) {
 			case <-ctx.Done():
 				return
 			}
+			
+			// Ensure token is released even if checkAgent panics
+			defer func() { <-sem }()
+			
 			agentHealth := checkAgent(ctx, pa)
-			<-sem // Release token
 
 			mu.Lock()
 			defer mu.Unlock()

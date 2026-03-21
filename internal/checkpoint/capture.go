@@ -204,7 +204,9 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 	// Save git status text
 	statusText, _ := gitCommand(workingDir, "status")
 	if statusText != "" {
-		c.storage.SaveGitStatus(sessionName, checkpointID, statusText)
+		if err := c.storage.SaveGitStatus(sessionName, checkpointID, statusText); err != nil {
+			slog.Warn("failed to save git status text", "error", err)
+		}
 	}
 
 	// Capture uncommitted changes as patch

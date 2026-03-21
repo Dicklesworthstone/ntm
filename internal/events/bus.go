@@ -185,10 +185,11 @@ func (b *EventBus) History(limit int) []BusEvent {
 	// Walk backward through ring to get newest first
 	r := b.history.Prev()
 	for i := 0; i < limit; i++ {
-		if r.Value != nil {
-			if event, ok := r.Value.(BusEvent); ok {
-				events = append(events, event)
-			}
+		if r.Value == nil {
+			break // Ring is not full yet, no more history
+		}
+		if event, ok := r.Value.(BusEvent); ok {
+			events = append(events, event)
 		}
 		r = r.Prev()
 	}

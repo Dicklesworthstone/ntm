@@ -173,7 +173,10 @@ func runGitPull(workDir string, dryRun bool) *PullResult {
 	if dryRun {
 		// Fetch to see what would be pulled
 		cmd := exec.Command("git", "-C", workDir, "fetch", "--dry-run")
-		cmd.Run()
+		if err := cmd.Run(); err != nil {
+			// A failed fetch in dry-run mode often means no upstream or network error
+			// We can proceed, but the ahead/behind count might be slightly stale
+		}
 
 		// Check how far behind we are
 		cmd = exec.Command("git", "-C", workDir, "rev-list", "--count", "HEAD..@{u}")

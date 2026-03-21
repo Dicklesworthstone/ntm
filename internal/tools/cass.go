@@ -133,7 +133,7 @@ func (a *CASSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	
+
 	// Limit output to 10MB
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer

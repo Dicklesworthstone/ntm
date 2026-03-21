@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -29,20 +28,11 @@ const DefaultTimeout = 30 * time.Second
 // noDBCache tracks which directories require --no-db flag.
 // Key: directory path, Value: bool (true if --no-db is needed)
 // We use a sync.Map for thread-safe concurrent access across sessions.
-var noDBCache atomic.Value    // Stores *sync.Map
-var runBDMutexes atomic.Value // Stores *sync.Map
-
-func init() {
-	noDBCache.Store(&sync.Map{})
-	runBDMutexes.Store(&sync.Map{})
-}
+var noDBCache sync.Map
+var runBDMutexes sync.Map
 
 func getNoDBState(dir string) bool {
-	m, ok := noDBCache.Load().(*sync.Map)
-	if !ok || m == nil {
-		return false
-	}
-	v, ok := m.Load(dir)
+	v, ok := noDBCache.Load(dir)
 	if !ok {
 		return false
 	}
@@ -51,26 +41,17 @@ func getNoDBState(dir string) bool {
 }
 
 func setNoDBState(dir string, val bool) {
-	m, ok := noDBCache.Load().(*sync.Map)
-	if !ok || m == nil {
-		return
-	}
-	m.Store(dir, val)
+	noDBCache.Store(dir, val)
 }
 
 func workspaceBDMutex(dir string) *sync.Mutex {
-	m, ok := runBDMutexes.Load().(*sync.Map)
-	if !ok || m == nil {
-		m = &sync.Map{}
-		runBDMutexes.Store(m)
-	}
-	if existing, ok := m.Load(dir); ok {
+	if existing, ok := runBDMutexes.Load(dir); ok {
 		if mu, ok := existing.(*sync.Mutex); ok {
 			return mu
 		}
 	}
 	mu := &sync.Mutex{}
-	actual, _ := m.LoadOrStore(dir, mu)
+	actual, _ := runBDMutexes.LoadOrStore(dir, mu)
 	if existing, ok := actual.(*sync.Mutex); ok {
 		return existing
 	}

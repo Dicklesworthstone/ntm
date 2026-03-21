@@ -20,7 +20,8 @@ var promptPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?m)^\$\s*$`), // Empty Shell prompt
 	regexp.MustCompile(`(?m)^%\s*$`),  // Empty Zsh prompt
 	regexp.MustCompile(`❯\s*$`),       // Modern prompts (U+276F)
-	regexp.MustCompile(`›\s*$`),       // Codex prompt (U+203A)
+	regexp.MustCompile(`›\s*$`),       // Codex prompt (U+203A) empty
+	regexp.MustCompile(`(?m)^›`),      // Codex prompt with hint text
 	regexp.MustCompile(`>\s*$`),       // Simple prompt at end of output
 	regexp.MustCompile(`(?m)^>\s*$`),  // Simple prompt on its own line
 }
