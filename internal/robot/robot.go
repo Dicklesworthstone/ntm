@@ -3489,42 +3489,8 @@ type SnapshotOutput struct {
 	AttentionSummary         *SnapshotAttentionSummary  `json:"attention_summary,omitempty"`  // Compact feed summary for bootstrap orientation
 }
 
-// SnapshotAttentionSummary provides a compact orientation summary from the
-// attention feed at snapshot time. Helps operators choose the next targeted
-// command without rereading the entire snapshot or waiting for a digest.
-type SnapshotAttentionSummary struct {
-	// TotalEvents is the number of events currently in the journal.
-	TotalEvents int `json:"total_events"`
-
-	// ActionRequiredCount is events needing operator action.
-	ActionRequiredCount int `json:"action_required_count"`
-
-	// InterestingCount is events worth noting but not urgent.
-	InterestingCount int `json:"interesting_count"`
-
-	// TopItems surfaces the most recent action_required events (up to 3)
-	// so operators can immediately see what needs attention.
-	TopItems []SnapshotAttentionItem `json:"top_items,omitempty"`
-
-	// ByCategoryCount groups events by category for orientation.
-	ByCategoryCount map[string]int `json:"by_category,omitempty"`
-
-	// UnsupportedSignals lists signals that were considered but are
-	// deliberately not supported, so operators know what to expect.
-	UnsupportedSignals []string `json:"unsupported_signals,omitempty"`
-
-	// NextSteps are mechanical suggestions for what to do next.
-	NextSteps []NextAction `json:"next_steps,omitempty"`
-}
-
-// SnapshotAttentionItem is a compact representation of a top attention item.
-type SnapshotAttentionItem struct {
-	Cursor        int64  `json:"cursor"`
-	Category      string `json:"category"`
-	Actionability string `json:"actionability"`
-	Severity      string `json:"severity"`
-	Summary       string `json:"summary"`
-}
+// NOTE: SnapshotAttentionSummary and SnapshotAttentionItem types are defined in
+// attention_contract.go (br-slg9g: Attention Feed Phase 2a2)
 
 // SnapshotReplayWindowInfo describes the currently replayable cursor window.
 // This gives operators a mechanical handoff boundary for replay-oriented commands.
@@ -3899,6 +3865,81 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	}
 
 	return output, nil
+}
+
+// buildSnapshotAttentionSummary creates a compact attention orientation from
+// the current feed state. This helps operators choose the next command without
+// reading the full snapshot. Uses the same signal taxonomy as digest/events.
+func buildSnapshotAttentionSummary(feed *AttentionFeed) *SnapshotAttentionSummary {
+	if feed == nil {
+		return nil
+	}
+
+	stats := feed.Stats()
+	if stats.Count == 0 {
+		unsupported := make([]string, 0, len(UnsupportedConditions()))
+		for _, uc := range UnsupportedConditions() {
+			unsupported = append(unsupported, uc.Name)
+		}
+		return &SnapshotAttentionSummary{
+			UnsupportedSignals: unsupported,
+			NextSteps: []NextAction{
+				{Action: "robot-events", Args: "--since=0", Reason: "No events yet — replay will be empty until agents start"},
+			},
+		}
+	}
+
+	// Replay recent events to compute summary (cap at 1000 for performance)
+	events, _, _ := feed.Replay(0, 1000)
+
+	summary := &SnapshotAttentionSummary{
+		TotalEvents:     len(events),
+		ByCategoryCount: make(map[string]int),
+	}
+
+	var topItems []SnapshotAttentionItem
+	for _, ev := range events {
+		cat := string(ev.Category)
+		summary.ByCategoryCount[cat]++
+
+		switch ev.Actionability {
+		case ActionabilityActionRequired:
+			summary.ActionRequiredCount++
+			topItems = append(topItems, SnapshotAttentionItem{
+				Cursor:        ev.Cursor,
+				Category:      cat,
+				Actionability: string(ev.Actionability),
+				Severity:      string(ev.Severity),
+				Summary:       ev.Summary,
+			})
+		case ActionabilityInteresting:
+			summary.InterestingCount++
+		}
+	}
+
+	// Keep only the 3 most recent action_required items
+	if len(topItems) > 3 {
+		topItems = topItems[len(topItems)-3:]
+	}
+	summary.TopItems = topItems
+
+	// Add unsupported signals
+	for _, uc := range UnsupportedConditions() {
+		summary.UnsupportedSignals = append(summary.UnsupportedSignals, uc.Name)
+	}
+
+	// Add mechanical next-step hints based on current state
+	if summary.ActionRequiredCount > 0 {
+		summary.NextSteps = []NextAction{
+			{Action: "robot-events", Args: "--actionability=action_required", Reason: fmt.Sprintf("%d action-required events — review urgently", summary.ActionRequiredCount)},
+		}
+	} else {
+		summary.NextSteps = []NextAction{
+			{Action: "robot-events", Args: fmt.Sprintf("--since=%d", stats.NewestCursor), Reason: "Follow new events from current cursor"},
+		}
+	}
+
+	return summary
 }
 
 func buildSwarmSnapshot(cfg *config.Config, sessions []tmux.Session) *SwarmSnapshot {
