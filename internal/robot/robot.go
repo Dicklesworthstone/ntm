@@ -1792,7 +1792,7 @@ API Design Principles (see docs/robot-api-design.md):
 Core Commands:
 --------------
 --robot-status          Session state, agents, alerts (start here)
---robot-snapshot        Unified state: sessions + beads + alerts + mail
+--robot-snapshot        Unified state: sessions + beads + alerts + mail + cursor handoff
 --robot-capabilities    Machine-discoverable API schema
 --robot-version         Version/build info (JSON)
 
@@ -1879,11 +1879,13 @@ Common Workflows:
 -----------------
 - Single agent: ntm --robot-spawn=proj --spawn-cc=1 --spawn-wait
 - Send+wait:    ntm --robot-send=proj --msg="do X" --track
+- Bootstrap:    ntm --robot-snapshot   # use latest_cursor + replay_window for follow-up
 - Recover:      ntm --robot-snapshot --since=2025-01-01T00:00:00Z
 
 Tips for AI Agents:
 -------------------
 - Start with --robot-status, then narrow with --panes and --lines.
+- Snapshot returns latest_cursor plus replay_window metadata for mechanical resync.
 - Prefer --robot-capabilities for schema discovery over parsing help text.
 
 For complete API documentation: docs/robot-api-design.md
@@ -3466,19 +3468,32 @@ func buildSnapshotAgentMail() *SnapshotAgentMail {
 // SnapshotOutput provides complete system state for AI orchestration
 type SnapshotOutput struct {
 	RobotResponse
-	Timestamp      string             `json:"ts"`
-	SafetyProfile  string             `json:"safety_profile,omitempty"`
-	Sessions       []SnapshotSession  `json:"sessions"`
-	Pagination     *PaginationInfo    `json:"pagination,omitempty"`
-	AgentHints     *AgentHints        `json:"_agent_hints,omitempty"`
-	BeadsSummary   *bv.BeadsSummary   `json:"beads_summary,omitempty"`
-	AgentMail      *SnapshotAgentMail `json:"agent_mail,omitempty"`
-	MailUnread     int                `json:"mail_unread,omitempty"`
-	Tools          []ToolInfoOutput   `json:"tools,omitempty"`           // Flywheel tool inventory and health
-	Swarm          *SwarmSnapshot     `json:"swarm,omitempty"`           // Active swarm orchestration state (optional)
-	Alerts         []string           `json:"alerts"`                    // Legacy: simple string alerts
-	AlertsDetailed []AlertInfo        `json:"alerts_detailed,omitempty"` // Rich alert objects
-	AlertSummary   *AlertSummaryInfo  `json:"alert_summary,omitempty"`
+	Timestamp                string                   `json:"ts"`
+	SafetyProfile            string                   `json:"safety_profile,omitempty"`
+	AttentionContractVersion string                   `json:"attention_contract_version"`
+	LatestCursor             int64                    `json:"latest_cursor"`
+	ReplayWindow             SnapshotReplayWindowInfo `json:"replay_window"`
+	Sessions                 []SnapshotSession        `json:"sessions"`
+	Pagination               *PaginationInfo          `json:"pagination,omitempty"`
+	AgentHints               *AgentHints              `json:"_agent_hints,omitempty"`
+	BeadsSummary             *bv.BeadsSummary         `json:"beads_summary,omitempty"`
+	AgentMail                *SnapshotAgentMail       `json:"agent_mail,omitempty"`
+	MailUnread               int                      `json:"mail_unread,omitempty"`
+	Tools                    []ToolInfoOutput         `json:"tools,omitempty"`           // Flywheel tool inventory and health
+	Swarm                    *SwarmSnapshot           `json:"swarm,omitempty"`           // Active swarm orchestration state (optional)
+	Alerts                   []string                 `json:"alerts"`                    // Legacy: simple string alerts
+	AlertsDetailed           []AlertInfo              `json:"alerts_detailed,omitempty"` // Rich alert objects
+	AlertSummary             *AlertSummaryInfo        `json:"alert_summary,omitempty"`
+}
+
+// SnapshotReplayWindowInfo describes the currently replayable cursor window.
+// This gives operators a mechanical handoff boundary for replay-oriented commands.
+type SnapshotReplayWindowInfo struct {
+	Supported       bool   `json:"supported"`
+	OldestCursor    int64  `json:"oldest_cursor"`
+	LatestCursor    int64  `json:"latest_cursor"`
+	RetentionPeriod string `json:"retention_period,omitempty"`
+	ResyncCommand   string `json:"resync_command,omitempty"`
 }
 
 // AlertInfo provides detailed alert information for robot output
@@ -3601,11 +3616,22 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		cfg = config.Default()
 	}
 	output := &SnapshotOutput{
-		RobotResponse: NewRobotResponse(true),
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
-		SafetyProfile: cfg.Safety.Profile,
-		Sessions:      []SnapshotSession{},
-		Alerts:        []string{},
+		RobotResponse:            NewRobotResponse(true),
+		Timestamp:                time.Now().UTC().Format(time.RFC3339),
+		SafetyProfile:            cfg.Safety.Profile,
+		AttentionContractVersion: AttentionContractVersion,
+		Sessions:                 []SnapshotSession{},
+		Alerts:                   []string{},
+	}
+
+	feedStats := GetAttentionFeed().Stats()
+	output.LatestCursor = feedStats.NewestCursor
+	output.ReplayWindow = SnapshotReplayWindowInfo{
+		Supported:       true,
+		OldestCursor:    feedStats.OldestCursor,
+		LatestCursor:    feedStats.NewestCursor,
+		RetentionPeriod: feedStats.RetentionPeriod.String(),
+		ResyncCommand:   "ntm --robot-snapshot",
 	}
 
 	// Check tmux availability
@@ -4613,13 +4639,16 @@ func PrintSnapshotDelta(since time.Time) error {
 // RecordStateChange records a state change to the global tracker.
 // This should be called by other parts of the application when state changes occur.
 func RecordStateChange(changeType tracker.ChangeType, session, pane string, details map[string]interface{}) {
-	stateTracker.Record(tracker.StateChange{
+	change := tracker.StateChange{
 		Timestamp: time.Now(),
 		Type:      changeType,
 		Session:   session,
 		Pane:      pane,
 		Details:   details,
-	})
+	}
+
+	stateTracker.Record(change)
+	GetAttentionFeed().Append(NewTrackerEvent(change))
 }
 
 // GetStateTracker returns the global state tracker for direct access.

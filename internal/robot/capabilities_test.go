@@ -168,6 +168,19 @@ func TestGetCapabilities(t *testing.T) {
 	if len(output.Categories) != len(categoryOrder) {
 		t.Errorf("Categories length = %d, want %d", len(output.Categories), len(categoryOrder))
 	}
+	if output.Attention == nil {
+		t.Fatal("expected attention capabilities")
+	}
+	if output.Attention.ContractVersion != AttentionContractVersion {
+		t.Errorf("Attention.ContractVersion = %q, want %q", output.Attention.ContractVersion, AttentionContractVersion)
+	}
+	beadOrphaned, ok := output.Attention.SignalAvailability[AttentionSignalBeadOrphaned]
+	if !ok {
+		t.Fatalf("expected %q signal availability entry", AttentionSignalBeadOrphaned)
+	}
+	if beadOrphaned.Status != CapabilityUnavailable {
+		t.Errorf("bead_orphaned status = %q, want %q", beadOrphaned.Status, CapabilityUnavailable)
+	}
 }
 
 func TestGetCapabilitiesSortOrder(t *testing.T) {
@@ -194,6 +207,28 @@ func TestGetCapabilitiesSortOrder(t *testing.T) {
 			t.Errorf("commands not sorted by name within category %q: %q before %q",
 				prev.Category, prev.Name, curr.Name)
 		}
+	}
+}
+
+func TestDefaultAttentionCapabilities_BeadOrphanedUnsupported(t *testing.T) {
+	t.Parallel()
+
+	caps := DefaultAttentionCapabilities()
+	if caps == nil {
+		t.Fatal("DefaultAttentionCapabilities() returned nil")
+	}
+	if caps.ContractVersion != AttentionContractVersion {
+		t.Errorf("ContractVersion = %q, want %q", caps.ContractVersion, AttentionContractVersion)
+	}
+	signal, ok := caps.SignalAvailability[AttentionSignalBeadOrphaned]
+	if !ok {
+		t.Fatalf("expected %q in SignalAvailability", AttentionSignalBeadOrphaned)
+	}
+	if signal.Status != CapabilityUnavailable {
+		t.Errorf("Status = %q, want %q", signal.Status, CapabilityUnavailable)
+	}
+	if signal.Note == "" {
+		t.Error("expected unsupported note for bead_orphaned")
 	}
 }
 

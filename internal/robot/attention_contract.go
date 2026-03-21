@@ -123,13 +123,13 @@ const (
 
 // Agent events
 const (
-	EventTypeAgentStarted    EventType = "agent.started"
-	EventTypeAgentStopped    EventType = "agent.stopped"
+	EventTypeAgentStarted     EventType = "agent.started"
+	EventTypeAgentStopped     EventType = "agent.stopped"
 	EventTypeAgentStateChange EventType = "agent.state_change"
-	EventTypeAgentError      EventType = "agent.error"
-	EventTypeAgentStalled    EventType = "agent.stalled"
-	EventTypeAgentRecovered  EventType = "agent.recovered"
-	EventTypeAgentCompacted  EventType = "agent.compacted"
+	EventTypeAgentError       EventType = "agent.error"
+	EventTypeAgentStalled     EventType = "agent.stalled"
+	EventTypeAgentRecovered   EventType = "agent.recovered"
+	EventTypeAgentCompacted   EventType = "agent.compacted"
 )
 
 // File events
@@ -628,6 +628,11 @@ type AttentionCapabilities struct {
 	// Features reports availability of specific features.
 	Features map[string]CapabilityFeature `json:"features"`
 
+	// SignalAvailability reports signal-specific support or unsupported status.
+	// This is used when ntm can say something precise about a named signal
+	// without pretending the whole feed implementation is complete.
+	SignalAvailability map[string]CapabilityFeature `json:"signal_availability,omitempty"`
+
 	// Degraded lists features that are in degraded state with reasons.
 	Degraded []DegradedFeature `json:"degraded,omitempty"`
 }
@@ -640,11 +645,39 @@ type CapabilityFeature struct {
 
 // DegradedFeature describes a feature operating in degraded mode.
 type DegradedFeature struct {
-	Feature string `json:"feature"`
+	Feature string           `json:"feature"`
 	Status  CapabilityStatus `json:"status"`
-	Reason  string `json:"reason"`
-	Impact  string `json:"impact"`
-	Hint    string `json:"hint,omitempty"`
+	Reason  string           `json:"reason"`
+	Impact  string           `json:"impact"`
+	Hint    string           `json:"hint,omitempty"`
+}
+
+const (
+	// AttentionSignalBeadOrphaned identifies the proposed signal for work that
+	// appears abandoned. It remains unsupported until ntm can prove the state
+	// from observable evidence instead of heuristic guesswork.
+	AttentionSignalBeadOrphaned = "bead_orphaned"
+)
+
+// DefaultAttentionCapabilities returns the current machine-readable attention
+// contract status. This is intentionally conservative: when ntm cannot defend a
+// signal from real observable state, it must say so explicitly.
+func DefaultAttentionCapabilities() *AttentionCapabilities {
+	return &AttentionCapabilities{
+		ContractVersion: AttentionContractVersion,
+		Features: map[string]CapabilityFeature{
+			"cursor_replay": {
+				Status: CapabilityAvailable,
+				Note:   "Replay uses monotonic cursors with explicit resync instructions on expiration.",
+			},
+		},
+		SignalAvailability: map[string]CapabilityFeature{
+			AttentionSignalBeadOrphaned: {
+				Status: CapabilityUnavailable,
+				Note:   "Unsupported: ntm cannot yet prove orphaned work from observable beads, bv, and agent state without inventing coordination conclusions.",
+			},
+		},
+	}
 }
 
 // =============================================================================

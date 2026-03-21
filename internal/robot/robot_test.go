@@ -20,6 +20,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -501,6 +502,8 @@ func TestPrintHelp(t *testing.T) {
 		"--robot-status",
 		"--robot-plan",
 		"--robot-send",
+		"latest_cursor",
+		"replay_window",
 		"--robot-version",
 		"Common Workflows",
 		"Tips for AI Agents",
@@ -989,6 +992,19 @@ func TestPrintTailWithPaneFilter(t *testing.T) {
 // ====================
 
 func TestPrintSnapshot(t *testing.T) {
+	globalFeedOnce.Do(func() {})
+	oldFeed := globalFeed
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       8,
+		RetentionPeriod:   30 * time.Minute,
+		HeartbeatInterval: 0,
+	})
+	SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		SetAttentionFeed(oldFeed)
+	})
+
 	output, err := captureStdout(t, func() error { return PrintSnapshot(config.Default()) })
 	if err != nil {
 		t.Fatalf("PrintSnapshot failed: %v", err)
@@ -1007,6 +1023,32 @@ func TestPrintSnapshot(t *testing.T) {
 	if result.SafetyProfile != config.SafetyProfileStandard {
 		t.Errorf("SafetyProfile = %q, want %q", result.SafetyProfile, config.SafetyProfileStandard)
 	}
+	if result.AttentionContractVersion != AttentionContractVersion {
+		t.Errorf("AttentionContractVersion = %q, want %q", result.AttentionContractVersion, AttentionContractVersion)
+	}
+	if result.LatestCursor != 0 {
+		t.Errorf("LatestCursor = %d, want 0 for empty journal", result.LatestCursor)
+	}
+	if !result.ReplayWindow.Supported {
+		t.Error("ReplayWindow.Supported = false, want true")
+	}
+	if result.ReplayWindow.OldestCursor != 0 {
+		t.Errorf("ReplayWindow.OldestCursor = %d, want 0 for empty journal", result.ReplayWindow.OldestCursor)
+	}
+	if result.ReplayWindow.LatestCursor != 0 {
+		t.Errorf("ReplayWindow.LatestCursor = %d, want 0 for empty journal", result.ReplayWindow.LatestCursor)
+	}
+	if result.ReplayWindow.RetentionPeriod != (30 * time.Minute).String() {
+		t.Errorf("ReplayWindow.RetentionPeriod = %q, want %q", result.ReplayWindow.RetentionPeriod, (30 * time.Minute).String())
+	}
+	if result.ReplayWindow.ResyncCommand != "ntm --robot-snapshot" {
+		t.Errorf("ReplayWindow.ResyncCommand = %q, want %q", result.ReplayWindow.ResyncCommand, "ntm --robot-snapshot")
+	}
+	t.Logf("empty snapshot cursor handoff oldest=%d latest=%d resync=%q",
+		result.ReplayWindow.OldestCursor,
+		result.ReplayWindow.LatestCursor,
+		result.ReplayWindow.ResyncCommand,
+	)
 
 	// Sessions should be an array
 	if result.Sessions == nil {
@@ -1024,8 +1066,110 @@ func TestPrintSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetSnapshotIncludesReplayWindowMetadata(t *testing.T) {
+	globalFeedOnce.Do(func() {})
+	oldFeed := globalFeed
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       2,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		SetAttentionFeed(oldFeed)
+	})
+
+	feed.Append(AttentionEvent{Summary: "first"})
+	feed.Append(AttentionEvent{Summary: "second"})
+	feed.Append(AttentionEvent{Summary: "third"})
+
+	result, err := GetSnapshot(config.Default())
+	if err != nil {
+		t.Fatalf("GetSnapshot failed: %v", err)
+	}
+
+	t.Logf("snapshot cursor handoff oldest=%d latest=%d resync=%q",
+		result.ReplayWindow.OldestCursor,
+		result.ReplayWindow.LatestCursor,
+		result.ReplayWindow.ResyncCommand,
+	)
+
+	if result.AttentionContractVersion != AttentionContractVersion {
+		t.Errorf("AttentionContractVersion = %q, want %q", result.AttentionContractVersion, AttentionContractVersion)
+	}
+	if result.LatestCursor != 3 {
+		t.Errorf("LatestCursor = %d, want 3", result.LatestCursor)
+	}
+	if !result.ReplayWindow.Supported {
+		t.Error("ReplayWindow.Supported = false, want true")
+	}
+	if result.ReplayWindow.OldestCursor != 2 {
+		t.Errorf("ReplayWindow.OldestCursor = %d, want 2", result.ReplayWindow.OldestCursor)
+	}
+	if result.ReplayWindow.LatestCursor != 3 {
+		t.Errorf("ReplayWindow.LatestCursor = %d, want 3", result.ReplayWindow.LatestCursor)
+	}
+	if result.ReplayWindow.RetentionPeriod != time.Hour.String() {
+		t.Errorf("ReplayWindow.RetentionPeriod = %q, want %q", result.ReplayWindow.RetentionPeriod, time.Hour.String())
+	}
+	if result.ReplayWindow.ResyncCommand != "ntm --robot-snapshot" {
+		t.Errorf("ReplayWindow.ResyncCommand = %q, want %q", result.ReplayWindow.ResyncCommand, "ntm --robot-snapshot")
+	}
+}
+
+func TestRecordStateChangePublishesToAttentionFeed(t *testing.T) {
+	globalFeedOnce.Do(func() {})
+	oldFeed := globalFeed
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       8,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		SetAttentionFeed(oldFeed)
+	})
+
+	RecordStateChange(tracker.ChangeAgentState, "myproject", "0.2", map[string]interface{}{
+		"state": "error",
+	})
+
+	events, newest, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay failed: %v", err)
+	}
+	if newest != 1 {
+		t.Errorf("newest cursor = %d, want 1", newest)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if events[0].Type != EventTypeAgentStateChange {
+		t.Errorf("event.Type = %q, want %q", events[0].Type, EventTypeAgentStateChange)
+	}
+	if events[0].Severity != SeverityError {
+		t.Errorf("event.Severity = %q, want %q", events[0].Severity, SeverityError)
+	}
+}
+
 func TestPrintSnapshotIncludesSwarmWhenActive(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
+
+	// Set up attention feed for tests - earlier tests may leave globalFeed nil
+	globalFeedOnce.Do(func() {})
+	oldFeed := globalFeed
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       8,
+		RetentionPeriod:   30 * time.Minute,
+		HeartbeatInterval: 0,
+	})
+	SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		SetAttentionFeed(oldFeed)
+	})
 
 	sessionName := "cc_agents_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -1091,6 +1235,20 @@ func TestPrintSnapshotIncludesSwarmWhenActive(t *testing.T) {
 
 func TestPrintSnapshotWithSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
+
+	// Set up attention feed for tests - earlier tests may leave globalFeed nil
+	globalFeedOnce.Do(func() {})
+	oldFeed := globalFeed
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       8,
+		RetentionPeriod:   30 * time.Minute,
+		HeartbeatInterval: 0,
+	})
+	SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		SetAttentionFeed(oldFeed)
+	})
 
 	sessionName := "ntm_test_snapshot_" + time.Now().Format("150405")
 	if err := tmux.CreateSession(sessionName, ""); err != nil {
@@ -1286,7 +1444,16 @@ func TestTailOutputStructure(t *testing.T) {
 
 func TestSnapshotOutputStructure(t *testing.T) {
 	output := SnapshotOutput{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp:                time.Now().UTC().Format(time.RFC3339),
+		AttentionContractVersion: AttentionContractVersion,
+		LatestCursor:             42,
+		ReplayWindow: SnapshotReplayWindowInfo{
+			Supported:       true,
+			OldestCursor:    21,
+			LatestCursor:    42,
+			RetentionPeriod: time.Hour.String(),
+			ResyncCommand:   "ntm --robot-snapshot",
+		},
 		Sessions: []SnapshotSession{
 			{
 				Name:     "myproject",
@@ -1322,6 +1489,15 @@ func TestSnapshotOutputStructure(t *testing.T) {
 	}
 	if result.MailUnread != 3 {
 		t.Errorf("MailUnread = %d, want 3", result.MailUnread)
+	}
+	if result.LatestCursor != 42 {
+		t.Errorf("LatestCursor = %d, want 42", result.LatestCursor)
+	}
+	if result.ReplayWindow.OldestCursor != 21 {
+		t.Errorf("ReplayWindow.OldestCursor = %d, want 21", result.ReplayWindow.OldestCursor)
+	}
+	if result.AttentionContractVersion != AttentionContractVersion {
+		t.Errorf("AttentionContractVersion = %q, want %q", result.AttentionContractVersion, AttentionContractVersion)
 	}
 }
 

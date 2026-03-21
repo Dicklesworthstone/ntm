@@ -7,9 +7,10 @@ import "sort"
 // CapabilitiesOutput represents the output for --robot-capabilities
 type CapabilitiesOutput struct {
 	RobotResponse
-	Version    string             `json:"version"`
-	Commands   []RobotCommandInfo `json:"commands"`
-	Categories []string           `json:"categories"`
+	Version    string                 `json:"version"`
+	Commands   []RobotCommandInfo     `json:"commands"`
+	Categories []string               `json:"categories"`
+	Attention  *AttentionCapabilities `json:"attention,omitempty"`
 }
 
 // RobotCommandInfo describes a single robot command
@@ -63,6 +64,7 @@ func GetCapabilities() (*CapabilitiesOutput, error) {
 		Version:       Version,
 		Commands:      commands,
 		Categories:    categoryOrder,
+		Attention:     DefaultAttentionCapabilities(),
 	}, nil
 }
 
