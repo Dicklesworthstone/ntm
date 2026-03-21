@@ -225,7 +225,7 @@ func buildControllerResponse(opts ControllerInput) (*ControllerResponse, error) 
 	var agentList []string
 	agentCount := 0
 	for _, p := range panes {
-		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini {
+		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini || p.Type == tmux.AgentCursor || p.Type == tmux.AgentWindsurf || p.Type == tmux.AgentAider {
 			agentCount++
 			agentList = append(agentList, fmt.Sprintf("- Pane %d: %s", p.Index, p.Type))
 		}

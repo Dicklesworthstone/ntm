@@ -204,7 +204,7 @@ func listAgentIDs(session string) []string {
 			continue
 		}
 		switch p.Type {
-		case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini:
+		case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider:
 			ids = append(ids, fmt.Sprintf("%s_%d", p.Type, p.NTMIndex))
 		}
 	}

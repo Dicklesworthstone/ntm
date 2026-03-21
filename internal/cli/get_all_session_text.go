@@ -176,7 +176,16 @@ func getAgentTypeShort(agentType tmux.AgentType) string {
 		return "gmi"
 	case tmux.AgentUser:
 		return "user"
+	case tmux.AgentCursor:
+		return "cursor"
+	case tmux.AgentWindsurf:
+		return "windsurf"
+	case tmux.AgentAider:
+		return "aider"
 	default:
+		if s := string(agentType); s != "" {
+			return s
+		}
 		return "?"
 	}
 }

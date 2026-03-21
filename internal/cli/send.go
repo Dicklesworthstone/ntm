@@ -704,7 +704,7 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all panes (including user pane)")
 	cmd.Flags().BoolVarP(&skipFirst, "skip-first", "s", false, "skip the first (user) pane")
 	cmd.Flags().IntVarP(&paneIndex, "pane", "p", -1, "send to specific pane index")
-	cmd.Flags().StringVar(&panesArg, "panes", "", "send to specific pane indices (comma-separated). Example: --panes=1,2")
+	cmd.Flags().StringVarP(&panesArg, "panes", "", "", "send to specific pane indices (comma-separated). Example: --panes=1,2")
 	cmd.Flags().StringVarP(&promptFile, "file", "f", "", "read prompt from file (also used as {{file}} in templates)")
 	cmd.Flags().StringVar(&prefix, "prefix", "", "text to prepend to file/stdin content")
 	cmd.Flags().StringVar(&suffix, "suffix", "", "text to append to file/stdin content")
@@ -1770,7 +1770,7 @@ func runInterrupt(session string, tags []string) error {
 	count := 0
 	for _, p := range panes {
 		// Only interrupt agent panes
-		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini {
+		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini || p.Type == tmux.AgentCursor || p.Type == tmux.AgentWindsurf || p.Type == tmux.AgentAider {
 			// Check tags
 			if len(tags) > 0 {
 				if !HasAnyTag(p.Tags, tags) {
@@ -1811,7 +1811,7 @@ func buildInterruptResponse(session string, tags []string) (*output.InterruptRes
 
 	for _, p := range panes {
 		// Only interrupt agent panes
-		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini {
+		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini || p.Type == tmux.AgentCursor || p.Type == tmux.AgentWindsurf || p.Type == tmux.AgentAider {
 			// Check tags
 			if len(tags) > 0 {
 				if !HasAnyTag(p.Tags, tags) {
@@ -3477,7 +3477,7 @@ func runSendBatch(opts SendOptions) error {
 
 		// Handle --confirm-each
 		if opts.BatchConfirm && !jsonOutput {
-			fmt.Printf("Prompt %d/%d: %s\n", i+1, total, preview)
+			fmt.Printf("Prompt %d/%d: %s\n", i+2, total, preview)
 			if !confirm("Send this prompt?") {
 				fmt.Println("Skipped.")
 				result.Skipped = true
@@ -3486,7 +3486,7 @@ func runSendBatch(opts SendOptions) error {
 				continue
 			}
 		} else if !jsonOutput {
-			fmt.Printf("Sending prompt %d/%d: %s... ", i+1, total, preview)
+			fmt.Printf("Sending prompt %d/%d: %s... ", i+2, total, preview)
 		}
 
 		// Determine target panes
