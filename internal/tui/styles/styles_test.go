@@ -331,6 +331,26 @@ func TestProgressBar(t *testing.T) {
 			t.Error("ProgressBar with colors should return non-empty string")
 		}
 	})
+
+	t.Run("with default characters", func(t *testing.T) {
+		result := ProgressBar(0.5, 12, "", "")
+		if result == "" {
+			t.Fatal("ProgressBar with default characters should return non-empty string")
+		}
+		if lipgloss.Width(result) != 12 {
+			t.Errorf("width = %d, want 12", lipgloss.Width(result))
+		}
+	})
+
+	t.Run("with single custom color", func(t *testing.T) {
+		result := ProgressBar(0.5, 10, "█", "░", "#ff0000")
+		if result == "" {
+			t.Error("ProgressBar with a single custom color should return non-empty string")
+		}
+		if lipgloss.Width(result) != 10 {
+			t.Errorf("width = %d, want 10", lipgloss.Width(result))
+		}
+	})
 }
 
 func TestGetSpinnerFrame(t *testing.T) {

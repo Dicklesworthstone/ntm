@@ -97,9 +97,10 @@ func (tm *ToastManager) Push(toast Toast) {
 // Tick prunes expired toasts and updates spring animations. Call on each dashboard tick.
 func (tm *ToastManager) Tick() {
 	now := time.Now()
+	reducedMotion := styles.ReducedMotionEnabled()
 
 	// Update spring animations for all toasts
-	if !styles.ReducedMotionEnabled() {
+	if !reducedMotion {
 		for i := range tm.toasts {
 			t := &tm.toasts[i]
 			// Calculate target position: 0 for active, 60 for dismissed (slide out right)
@@ -125,8 +126,13 @@ func (tm *ToastManager) Tick() {
 			t.dismissed = true
 		}
 
-		// Keep toast if: (not dismissed AND not expired) OR (dismissed AND still animating out)
-		if (!t.dismissed && !expired) || (t.dismissed && t.offsetX < 55.0) {
+		// Reduced motion suppresses slide animations, so dismissed toasts should
+		// disappear on the next tick instead of waiting for offsetX to advance.
+		keep := !t.dismissed && !expired
+		if t.dismissed && !reducedMotion && t.offsetX < 55.0 {
+			keep = true
+		}
+		if keep {
 			active = append(active, t)
 		}
 	}

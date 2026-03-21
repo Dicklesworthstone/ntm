@@ -359,9 +359,8 @@ func (m *WebhookManager) sanitizeEvent(event Event) Event {
 	}
 
 	cfg := *m.redactionCfg
-	if cfg.Mode != redaction.ModeOff {
-		cfg.Mode = redaction.ModeRedact
-	}
+	// Force redaction mode since we're past the ModeOff early return
+	cfg.Mode = redaction.ModeRedact
 
 	out := event
 	if out.Message != "" {
@@ -663,7 +662,10 @@ func (m *WebhookManager) send(d *Delivery) (int, error) {
 	defer resp.Body.Close()
 
 	// Read response body (limited to prevent memory issues)
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if readErr != nil {
+		m.log("failed to read response body: %v", readErr)
+	}
 
 	if resp.StatusCode >= 400 {
 		return resp.StatusCode, fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(body))

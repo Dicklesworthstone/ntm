@@ -1,12 +1,18 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
@@ -16,6 +22,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
+	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 func TestFetchBeadsCmd_NoBv(t *testing.T) {
@@ -176,6 +183,85 @@ func TestFetchCASSContextCmd_NoCass(t *testing.T) {
 	// If CASS is not installed, we expect an error
 	// If CASS is installed, we may get hits or empty hits
 	_ = cassMsg
+}
+
+func TestHandleConflictAction_ForceRegistersDashboardAgent(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+
+		params, _ := req["params"].(map[string]any)
+		toolName, _ := params["name"].(string)
+		args, _ := params["arguments"].(map[string]any)
+
+		mu.Lock()
+		calls = append(calls, toolName)
+		mu.Unlock()
+
+		var result any
+		switch toolName {
+		case "register_agent":
+			result = agentmail.Agent{
+				ID:      1,
+				Name:    "sess_dashboard",
+				Program: "ntm-dashboard",
+				Model:   "local",
+			}
+		case "force_release_file_reservation":
+			if args["agent_name"] != "sess_dashboard" {
+				t.Fatalf("force_release agent_name = %#v, want sess_dashboard", args["agent_name"])
+			}
+			result = agentmail.ForceReleaseResult{
+				Success:        true,
+				PreviousHolder: "holder-a",
+				PathPattern:    "internal/robot/attention_feed.go",
+				Notified:       true,
+			}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req["id"],
+			"result":  result,
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	model := &Model{
+		session:    "sess",
+		projectDir: "/tmp/ntm",
+	}
+
+	err := model.handleConflictAction(watcher.FileConflict{
+		Path:                 "internal/robot/attention_feed.go",
+		RequestorAgent:       "worker-a",
+		HolderReservationIDs: []int{42},
+	}, watcher.ConflictActionForce)
+	if err != nil {
+		t.Fatalf("handleConflictAction(force) error: %v", err)
+	}
+
+	mu.Lock()
+	gotCalls := append([]string(nil), calls...)
+	mu.Unlock()
+
+	wantCalls := []string{"register_agent", "force_release_file_reservation"}
+	if !slices.Equal(gotCalls, wantCalls) {
+		t.Fatalf("tool call order = %v, want %v", gotCalls, wantCalls)
+	}
 }
 
 // Test that commands return tea.Cmd (not nil)
