@@ -437,6 +437,16 @@ func (bc *BackoffController) endGlobalBackoff() {
 		return
 	}
 
+	// Check if backoff was extended while we were sleeping
+	if time.Now().Before(bc.globalBackoffUntil) {
+		sleepDuration := time.Until(bc.globalBackoffUntil)
+		go func(resumeAt time.Time) {
+			time.Sleep(sleepDuration)
+			bc.endGlobalBackoff()
+		}(bc.globalBackoffUntil)
+		return
+	}
+
 	totalDuration := time.Since(bc.stats.LastBackoffAt)
 	bc.globalBackoffActive.Store(false)
 

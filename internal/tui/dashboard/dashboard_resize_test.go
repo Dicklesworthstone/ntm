@@ -28,10 +28,11 @@ func TestWindowSizeMsg_UpdatesDimensionsAndPanels(t *testing.T) {
 	contentHeight := contentHeightFor(60)
 	panelHeight := maxInt(contentHeight-2, 0)
 
-	_, _, p3, p4, p5 := layout.MegaProportions(340)
+	_, _, p3, p4, p5, p6 := layout.MegaProportions6(340)
 	p3Inner := maxInt(p3-4, 0)
 	p4Inner := maxInt(p4-4, 0)
 	p5Inner := maxInt(p5-4, 0)
+	p6Inner := maxInt(p6-4, 0)
 
 	if updated.beadsPanel.Width() != p3Inner || updated.beadsPanel.Height() != panelHeight {
 		t.Fatalf("beadsPanel size mismatch: got %dx%d want %dx%d",
@@ -41,25 +42,29 @@ func TestWindowSizeMsg_UpdatesDimensionsAndPanels(t *testing.T) {
 		t.Fatalf("alertsPanel size mismatch: got %dx%d want %dx%d",
 			updated.alertsPanel.Width(), updated.alertsPanel.Height(), p4Inner, panelHeight)
 	}
-	if updated.metricsPanel.Width() != p5Inner || updated.metricsPanel.Height() != panelHeight {
+	if updated.attentionPanel.Width() != p5Inner || updated.attentionPanel.Height() != panelHeight {
+		t.Fatalf("attentionPanel size mismatch: got %dx%d want %dx%d",
+			updated.attentionPanel.Width(), updated.attentionPanel.Height(), p5Inner, panelHeight)
+	}
+	if updated.metricsPanel.Width() != p6Inner || updated.metricsPanel.Height() != panelHeight {
 		t.Fatalf("metricsPanel size mismatch: got %dx%d want %dx%d",
-			updated.metricsPanel.Width(), updated.metricsPanel.Height(), p5Inner, panelHeight)
+			updated.metricsPanel.Width(), updated.metricsPanel.Height(), p6Inner, panelHeight)
 	}
-	if updated.historyPanel.Width() != p5Inner || updated.historyPanel.Height() != panelHeight {
+	if updated.historyPanel.Width() != p6Inner || updated.historyPanel.Height() != panelHeight {
 		t.Fatalf("historyPanel size mismatch: got %dx%d want %dx%d",
-			updated.historyPanel.Width(), updated.historyPanel.Height(), p5Inner, panelHeight)
+			updated.historyPanel.Width(), updated.historyPanel.Height(), p6Inner, panelHeight)
 	}
-	if updated.filesPanel.Width() != p5Inner || updated.filesPanel.Height() != panelHeight {
+	if updated.filesPanel.Width() != p6Inner || updated.filesPanel.Height() != panelHeight {
 		t.Fatalf("filesPanel size mismatch: got %dx%d want %dx%d",
-			updated.filesPanel.Width(), updated.filesPanel.Height(), p5Inner, panelHeight)
+			updated.filesPanel.Width(), updated.filesPanel.Height(), p6Inner, panelHeight)
 	}
-	if updated.cassPanel.Width() != p5Inner || updated.cassPanel.Height() != panelHeight {
+	if updated.cassPanel.Width() != p6Inner || updated.cassPanel.Height() != panelHeight {
 		t.Fatalf("cassPanel size mismatch: got %dx%d want %dx%d",
-			updated.cassPanel.Width(), updated.cassPanel.Height(), p5Inner, panelHeight)
+			updated.cassPanel.Width(), updated.cassPanel.Height(), p6Inner, panelHeight)
 	}
-	if updated.spawnPanel.Width() != p5Inner || updated.spawnPanel.Height() != panelHeight {
+	if updated.spawnPanel.Width() != p6Inner || updated.spawnPanel.Height() != panelHeight {
 		t.Fatalf("spawnPanel size mismatch: got %dx%d want %dx%d",
-			updated.spawnPanel.Width(), updated.spawnPanel.Height(), p5Inner, panelHeight)
+			updated.spawnPanel.Width(), updated.spawnPanel.Height(), p6Inner, panelHeight)
 	}
 
 	if updated.focusedPanel != PanelBeads {

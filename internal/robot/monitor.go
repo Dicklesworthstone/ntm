@@ -165,21 +165,45 @@ func (m *Monitor) getAgentPanes() ([]tmux.Pane, error) {
 		return nil, err
 	}
 
-	// Find minimum pane index to identify control pane
-	minIdx := -1
-	for _, p := range allPanes {
-		if minIdx == -1 || p.Index < minIdx {
-			minIdx = p.Index
-		}
-	}
-
 	var agentPanes []tmux.Pane
+	controlPane, ok := controlPaneIndex(allPanes)
+	if !ok {
+		return agentPanes, nil
+	}
 	for _, p := range allPanes {
-		if p.Index != minIdx { // Skip control pane (first pane)
+		if p.Index != controlPane { // Skip control pane (first pane)
 			agentPanes = append(agentPanes, p)
 		}
 	}
 	return agentPanes, nil
+}
+
+func controlPaneIndex(panes []tmux.Pane) (int, bool) {
+	minIdx := -1
+	for _, p := range panes {
+		if minIdx == -1 || p.Index < minIdx {
+			minIdx = p.Index
+		}
+	}
+	if minIdx == -1 {
+		return 0, false
+	}
+	return minIdx, true
+}
+
+func defaultMonitorPaneIndices(panes []tmux.Pane) []int {
+	controlPane, ok := controlPaneIndex(panes)
+	if !ok {
+		return nil
+	}
+
+	indices := make([]int, 0, len(panes)-1)
+	for _, p := range panes {
+		if p.Index != controlPane {
+			indices = append(indices, p.Index)
+		}
+	}
+	return indices
 }
 
 func (m *Monitor) checkPane(ctx context.Context, pane tmux.Pane) error {
@@ -356,11 +380,7 @@ func PrintMonitor(config MonitorConfig) error {
 			}
 			return encodeJSON(output)
 		}
-		for _, p := range allPanes {
-			if p.Index > 0 {
-				panes = append(panes, p.Index)
-			}
-		}
+		panes = defaultMonitorPaneIndices(allPanes)
 	}
 
 	// Create monitor

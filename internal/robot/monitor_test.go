@@ -4,6 +4,8 @@ package robot
 import (
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // =============================================================================
@@ -435,6 +437,68 @@ func TestDefaultMonitorConfig(t *testing.T) {
 	}
 	if config.LinesCaptured != 100 {
 		t.Errorf("lines captured = %d, want 100", config.LinesCaptured)
+	}
+}
+
+func TestDefaultMonitorPaneIndices(t *testing.T) {
+	tests := []struct {
+		name  string
+		panes []tmux.Pane
+		want  []int
+	}{
+		{
+			name: "base index zero skips control pane",
+			panes: []tmux.Pane{
+				{Index: 0},
+				{Index: 1},
+				{Index: 2},
+			},
+			want: []int{1, 2},
+		},
+		{
+			name: "base index one still skips first pane",
+			panes: []tmux.Pane{
+				{Index: 1},
+				{Index: 2},
+				{Index: 3},
+			},
+			want: []int{2, 3},
+		},
+		{
+			name: "nonstandard minimum index is respected",
+			panes: []tmux.Pane{
+				{Index: 5},
+				{Index: 6},
+				{Index: 7},
+			},
+			want: []int{6, 7},
+		},
+		{
+			name: "single pane session yields no agent panes",
+			panes: []tmux.Pane{
+				{Index: 4},
+			},
+			want: []int{},
+		},
+		{
+			name:  "empty session yields no panes",
+			panes: nil,
+			want:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := defaultMonitorPaneIndices(tt.panes)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len(defaultMonitorPaneIndices(%v)) = %d, want %d", tt.panes, len(got), len(tt.want))
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("defaultMonitorPaneIndices(%v)[%d] = %d, want %d", tt.panes, i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 
