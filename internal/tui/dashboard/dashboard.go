@@ -3645,11 +3645,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseButtonWheelUp:
 			if m.cursor > 0 {
 				m.cursor--
+				m.paneList.Select(m.cursor)
 			}
 			return m, nil
 		case tea.MouseButtonWheelDown:
 			if m.cursor < len(m.panes)-1 {
 				m.cursor++
+				m.paneList.Select(m.cursor)
 			}
 			return m, nil
 		case tea.MouseButtonLeft:
@@ -3669,6 +3671,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if paneIndex >= 0 && paneIndex < len(m.panes) {
 						m.setFocusedPanel(PanelPaneList)
 						m.cursor = paneIndex
+						m.paneList.Select(m.cursor)
 						return m, nil
 					}
 				}
@@ -3757,6 +3760,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail {
 				if m.cursor > 0 {
 					m.cursor--
+					m.paneList.Select(m.cursor)
 				}
 			}
 
@@ -3764,6 +3768,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail {
 				if m.cursor < len(m.panes)-1 {
 					m.cursor++
+					m.paneList.Select(m.cursor)
 				}
 			}
 
@@ -7196,8 +7201,9 @@ func (m Model) renderHistoryPanel(width, height int) string {
 	return m.historyPanel.View()
 }
 
-// renderPaneList renders a compact list of panes with status indicators
-func (m Model) renderPaneList(width int) string {
+// renderPaneList renders a compact list of panes with status indicators.
+// Uses bubbles/list for rendering with fuzzy filtering support.
+func (m *Model) renderPaneList(width int) string {
 	t := m.theme
 	var lines []string
 
@@ -7207,15 +7213,31 @@ func (m Model) renderPaneList(width int) string {
 	// Header row
 	lines = append(lines, RenderTableHeader(dims, t))
 
-	// Pane rows (hydrated with status, beads, file changes, health states, with per-agent border colors)
+	// Activity summary line (computed from items for consistency)
 	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.animTick, t)
 	if summary := activitySummaryLine(rows, t); summary != "" {
 		lines = append(lines, " "+summary)
 	}
-	for i := range rows {
-		rows[i].IsSelected = i == m.cursor
-		lines = append(lines, RenderPaneRow(rows[i], dims, t))
+
+	// Update delegate dimensions and tick for this render
+	m.paneDelegate.SetDims(dims)
+	m.paneDelegate.SetTick(m.animTick)
+	m.paneList.SetDelegate(m.paneDelegate)
+
+	// Set list dimensions to match the rendering context
+	listHeight := len(m.panes)
+	if listHeight < 1 {
+		listHeight = 1
 	}
+	m.paneList.SetSize(width, listHeight)
+
+	// Sync cursor with list selection
+	if m.paneList.Index() != m.cursor && m.cursor < len(m.panes) {
+		m.paneList.Select(m.cursor)
+	}
+
+	// Use bubbles/list View() for the pane rows
+	lines = append(lines, m.paneList.View())
 
 	return strings.Join(lines, "\n")
 }
