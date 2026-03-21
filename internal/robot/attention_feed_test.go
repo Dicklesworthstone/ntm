@@ -1903,3 +1903,155 @@ func TestDigestResponse_SessionFilter(t *testing.T) {
 		t.Errorf("expected 1 event for proj-a, got %d", digest.EventCount)
 	}
 }
+
+// =============================================================================
+// AttentionOptions / AttentionResponse Tests (br-t540i)
+// =============================================================================
+
+func TestAttentionOptions_Fields(t *testing.T) {
+	// Verify AttentionOptions has all expected fields
+	opts := AttentionOptions{
+		SinceCursor:         100,
+		Session:             "test-session",
+		Timeout:             30 * time.Second,
+		PollInterval:        500 * time.Millisecond,
+		Condition:           "action_required",
+		ActionRequiredLimit: 10,
+		InterestingLimit:    5,
+		BackgroundLimit:     2,
+		IncludeTrace:        true,
+	}
+
+	if opts.SinceCursor != 100 {
+		t.Errorf("SinceCursor: expected 100, got %d", opts.SinceCursor)
+	}
+	if opts.Session != "test-session" {
+		t.Errorf("Session: expected test-session, got %s", opts.Session)
+	}
+	if opts.Timeout != 30*time.Second {
+		t.Errorf("Timeout: expected 30s, got %v", opts.Timeout)
+	}
+	if opts.PollInterval != 500*time.Millisecond {
+		t.Errorf("PollInterval: expected 500ms, got %v", opts.PollInterval)
+	}
+	if opts.Condition != "action_required" {
+		t.Errorf("Condition: expected action_required, got %s", opts.Condition)
+	}
+}
+
+func TestAttentionResponse_Fields(t *testing.T) {
+	// Verify AttentionResponse has all expected fields
+	resp := AttentionResponse{
+		RobotResponse: RobotResponse{
+			Success:      true,
+			Timestamp:    "2026-03-21T00:00:00Z",
+			Version:      "1.0.0",
+			OutputFormat: "json",
+		},
+		WakeReason:       "attention",
+		MatchedCondition: "action_required",
+		TriggerEvent: &AttentionEvent{
+			Cursor:        42,
+			Type:          EventTypeMailReceived,
+			Category:      EventCategoryMail,
+			Actionability: ActionabilityActionRequired,
+		},
+		WaitedSeconds: 2.5,
+		Digest: &AttentionDigest{
+			CursorStart: 10,
+			CursorEnd:   42,
+			EventCount:  5,
+		},
+		CursorInfo: AttentionCursorInfo{
+			StartCursor:  10,
+			EndCursor:    42,
+			OldestCursor: 1,
+			NextCommand:  "ntm --robot-attention --since-cursor=42",
+		},
+	}
+
+	if resp.WakeReason != "attention" {
+		t.Errorf("WakeReason: expected attention, got %s", resp.WakeReason)
+	}
+	if resp.MatchedCondition != "action_required" {
+		t.Errorf("MatchedCondition: expected action_required, got %s", resp.MatchedCondition)
+	}
+	if resp.WaitedSeconds != 2.5 {
+		t.Errorf("WaitedSeconds: expected 2.5, got %f", resp.WaitedSeconds)
+	}
+	if resp.CursorInfo.EndCursor != 42 {
+		t.Errorf("CursorInfo.EndCursor: expected 42, got %d", resp.CursorInfo.EndCursor)
+	}
+	if resp.Digest.EventCount != 5 {
+		t.Errorf("Digest.EventCount: expected 5, got %d", resp.Digest.EventCount)
+	}
+}
+
+func TestAttentionCursorInfo_NextCommand(t *testing.T) {
+	// Verify NextCommand format is correct for cursor chaining
+	info := AttentionCursorInfo{
+		StartCursor:  10,
+		EndCursor:    50,
+		OldestCursor: 1,
+		NextCommand:  "ntm --robot-attention --since-cursor=50 --session=proj",
+	}
+
+	if info.NextCommand == "" {
+		t.Error("NextCommand should not be empty")
+	}
+	if info.EndCursor <= info.StartCursor {
+		t.Error("EndCursor should be greater than StartCursor in normal flow")
+	}
+}
+
+func TestAttentionResponse_TimeoutWake(t *testing.T) {
+	// Verify timeout response has correct wake reason
+	resp := AttentionResponse{
+		RobotResponse: RobotResponse{Success: true},
+		WakeReason:    "timeout",
+		WaitedSeconds: 300.0,
+		Digest:        &AttentionDigest{EventCount: 0},
+		CursorInfo: AttentionCursorInfo{
+			StartCursor: 50,
+			EndCursor:   50,
+		},
+	}
+
+	if resp.WakeReason != "timeout" {
+		t.Errorf("WakeReason: expected timeout, got %s", resp.WakeReason)
+	}
+	if resp.MatchedCondition != "" {
+		t.Errorf("MatchedCondition should be empty on timeout, got %s", resp.MatchedCondition)
+	}
+	if resp.TriggerEvent != nil {
+		t.Error("TriggerEvent should be nil on timeout")
+	}
+}
+
+func TestAttentionResponse_CursorExpired(t *testing.T) {
+	// Verify cursor expired response has correct structure
+	resp := AttentionResponse{
+		RobotResponse: NewErrorResponse(
+			&CursorExpiredError{RequestedCursor: 5, EarliestCursor: 100},
+			ErrCodeCursorExpired,
+			"ntm --robot-snapshot",
+		),
+		WakeReason: "cursor_expired",
+		Digest:     &AttentionDigest{},
+		CursorInfo: AttentionCursorInfo{
+			StartCursor:  5,
+			OldestCursor: 100,
+			NextCommand:  "ntm --robot-snapshot",
+		},
+	}
+
+	if resp.WakeReason != "cursor_expired" {
+		t.Errorf("WakeReason: expected cursor_expired, got %s", resp.WakeReason)
+	}
+	if resp.RobotResponse.Success {
+		t.Error("Success should be false on cursor expiry")
+	}
+	if resp.CursorInfo.OldestCursor != 100 {
+		t.Errorf("OldestCursor should be 100, got %d", resp.CursorInfo.OldestCursor)
+	}
+}

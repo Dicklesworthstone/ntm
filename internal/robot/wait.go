@@ -23,6 +23,7 @@ type WaitOptions struct {
 	CountN            int    // With WaitForAny, wait for at least N agents (default 1)
 	RequireTransition bool   // If true, agents must leave and return to target state
 	SinceCursor       int64  // Attention-based conditions only fire for events after this cursor
+	Profile           string // Filter profile for attention-based conditions (operator, debug, minimal, alerts)
 }
 
 // WaitResponse is the JSON output for --robot-wait.

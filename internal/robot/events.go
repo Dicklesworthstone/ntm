@@ -27,6 +27,10 @@ type EventsOptions struct {
 	// Session filters events to a specific session.
 	Session string
 
+	// Profile is the filter preset to use (operator, debug, minimal, alerts).
+	// Explicit filters override profile defaults.
+	Profile string
+
 	// CategoryFilter restricts to specific event categories.
 	CategoryFilter []string
 
@@ -146,19 +150,37 @@ func PrintEvents(opts EventsOptions) error {
 	})
 }
 
-// filterEventsForRobot applies category, actionability, severity, and session filters.
+// filterEventsForRobot applies profile-based and explicit filters.
+// Profile filters use minimum thresholds; explicit filters are exact matches.
 func filterEventsForRobot(events []AttentionEvent, opts EventsOptions) []AttentionEvent {
-	if len(opts.CategoryFilter) == 0 && len(opts.ActionabilityFilter) == 0 &&
-		len(opts.SeverityFilter) == 0 && opts.Session == "" {
+	// Check if any filters are active
+	hasFilters := opts.Profile != "" || opts.Session != "" ||
+		len(opts.CategoryFilter) > 0 || len(opts.ActionabilityFilter) > 0 ||
+		len(opts.SeverityFilter) > 0
+
+	if !hasFilters {
 		return events
 	}
 
+	// Resolve profile filters (only if profile specified)
+	var resolved ResolvedFilters
+	if opts.Profile != "" {
+		resolved = ResolveEffectiveFilters(opts.Profile, ProfileFilters{})
+	}
+
+	// Build filter sets for explicit filters (exact match)
 	categorySet := toStringSetForEvents(opts.CategoryFilter)
 	actionabilitySet := toStringSetForEvents(opts.ActionabilityFilter)
 	severitySet := toStringSetForEvents(opts.SeverityFilter)
 
 	filtered := make([]AttentionEvent, 0, len(events))
 	for _, event := range events {
+		// Apply profile filters (minimum thresholds)
+		if opts.Profile != "" && !resolved.MatchesFilters(&event) {
+			continue
+		}
+
+		// Apply explicit filters (exact match)
 		if len(categorySet) > 0 && !categorySet[string(event.Category)] {
 			continue
 		}
@@ -349,6 +371,10 @@ type DigestOptions struct {
 	// Session filters events to a specific session.
 	Session string
 
+	// Profile is the filter preset to use (operator, debug, minimal, alerts).
+	// Explicit filters override profile defaults.
+	Profile string
+
 	// ActionRequiredLimit is the max action_required items to surface.
 	ActionRequiredLimit int
 
@@ -518,4 +544,263 @@ func PrintDigest(opts DigestOptions) error {
 		Trace:           digest.Trace,
 		ReplayWindow:    replayWindow,
 	})
+}
+
+// =============================================================================
+// --robot-attention Command Implementation (br-t540i)
+// =============================================================================
+
+// AttentionOptions configures the --robot-attention command.
+// This is the one obvious tending primitive: wait for attention, then digest.
+type AttentionOptions struct {
+	// SinceCursor is the cursor to wait/digest from. Required for tending loops.
+	SinceCursor int64
+
+	// Session filters attention to a specific session.
+	Session string
+
+	// Timeout is how long to wait for attention before returning (default: 5m).
+	Timeout time.Duration
+
+	// PollInterval is how often to check for attention (default: 1s).
+	PollInterval time.Duration
+
+	// Condition specifies which attention conditions to wait for.
+	// Default: "attention" (any action_required or interesting event).
+	// Options: attention, action_required, mail_pending, mail_ack_required,
+	//          context_hot, reservation_conflict, file_conflict, session_changed, pane_changed
+	Condition string
+
+	// Profile is the filter preset to use (operator, debug, minimal, alerts).
+	// Explicit filters override profile defaults.
+	Profile string
+
+	// ActionRequiredLimit is the max action_required items in the digest.
+	ActionRequiredLimit int
+
+	// InterestingLimit is the max interesting items in the digest.
+	InterestingLimit int
+
+	// BackgroundLimit is the max background items in the digest.
+	BackgroundLimit int
+
+	// IncludeTrace enables detailed decision tracing for debugging.
+	IncludeTrace bool
+}
+
+// AttentionResponse is the JSON response for --robot-attention.
+// It combines wake information with a digest for the tending loop pattern.
+type AttentionResponse struct {
+	RobotResponse
+
+	// WakeReason describes why attention returned (condition met or timeout).
+	WakeReason string `json:"wake_reason"`
+
+	// MatchedCondition is the specific condition that triggered the wake.
+	// Empty if woke due to timeout.
+	MatchedCondition string `json:"matched_condition,omitempty"`
+
+	// TriggerEvent is the event that caused the wake (if applicable).
+	TriggerEvent *AttentionEvent `json:"trigger_event,omitempty"`
+
+	// WaitedSeconds is how long the command waited before returning.
+	WaitedSeconds float64 `json:"waited_seconds"`
+
+	// Digest contains the token-efficient summary of what changed.
+	Digest *AttentionDigest `json:"digest"`
+
+	// CursorInfo provides cursor handoff for the next tending iteration.
+	CursorInfo AttentionCursorInfo `json:"cursor_info"`
+
+	// ReplayWindow describes the available cursor range for follow-up commands.
+	ReplayWindow *SnapshotReplayWindowInfo `json:"replay_window,omitempty"`
+}
+
+// AttentionCursorInfo provides cursor handoff for tending loops.
+type AttentionCursorInfo struct {
+	// StartCursor is the cursor this attention call started from.
+	StartCursor int64 `json:"start_cursor"`
+
+	// EndCursor is the cursor at the time of wake/timeout.
+	// Use this as --since-cursor for the next --robot-attention call.
+	EndCursor int64 `json:"end_cursor"`
+
+	// OldestCursor is the oldest cursor still available in the feed.
+	OldestCursor int64 `json:"oldest_cursor"`
+
+	// NextCommand is a copy-paste ready command for the next iteration.
+	NextCommand string `json:"next_command"`
+}
+
+// PrintAttention implements the --robot-attention command.
+// This is the one obvious tending primitive: sleep until attention is needed,
+// then wake with a compact digest. Returns exit code 0 on attention, 1 on timeout.
+func PrintAttention(opts AttentionOptions) int {
+	// Apply defaults
+	if opts.Timeout <= 0 {
+		opts.Timeout = 5 * time.Minute
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = 1 * time.Second
+	}
+	if opts.Condition == "" {
+		opts.Condition = WaitConditionAttention
+	}
+	if opts.ActionRequiredLimit <= 0 {
+		opts.ActionRequiredLimit = 5
+	}
+	if opts.InterestingLimit <= 0 {
+		opts.InterestingLimit = 3
+	}
+	if opts.BackgroundLimit <= 0 {
+		opts.BackgroundLimit = 0
+	}
+
+	feed := GetAttentionFeed()
+	if feed == nil {
+		outputJSON(AttentionResponse{
+			RobotResponse: NewErrorResponse(
+				errors.New("attention feed not initialized"),
+				"FEED_UNAVAILABLE",
+				"The attention feed service is not running",
+			),
+			WakeReason: "error",
+			Digest:     &AttentionDigest{},
+			CursorInfo: AttentionCursorInfo{StartCursor: opts.SinceCursor},
+		})
+		return 2
+	}
+
+	startTime := time.Now()
+	deadline := startTime.Add(opts.Timeout)
+
+	var wakeReason string
+	var matchedCondition string
+	var triggerEvent *AttentionEvent
+	var finalCursor int64 = opts.SinceCursor
+
+	// Polling loop for attention conditions
+	for {
+		if time.Now().After(deadline) {
+			wakeReason = "timeout"
+			break
+		}
+
+		// Check for attention events since our cursor
+		result := checkAttentionConditions(
+			[]string{opts.Condition},
+			opts.SinceCursor,
+			opts.Session,
+		)
+
+		if result != nil && result.Met {
+			wakeReason = "attention"
+			matchedCondition = result.Condition
+			if result.TriggerEvent != nil {
+				triggerEvent = result.TriggerEvent
+			}
+			finalCursor = result.NextCursor
+			break
+		}
+
+		time.Sleep(opts.PollInterval)
+	}
+
+	waitedSeconds := time.Since(startTime).Seconds()
+
+	// Build digest from the cursor window
+	digestOpts := AttentionDigestOptions{
+		Session:             opts.Session,
+		ActionRequiredLimit: opts.ActionRequiredLimit,
+		InterestingLimit:    opts.InterestingLimit,
+		BackgroundLimit:     opts.BackgroundLimit,
+		IncludeTrace:        opts.IncludeTrace,
+	}
+
+	digest, err := feed.Digest(opts.SinceCursor, digestOpts)
+	if err != nil {
+		var cursorErr *CursorExpiredError
+		if errors.As(err, &cursorErr) {
+			details := cursorErr.ToDetails()
+			outputJSON(AttentionResponse{
+				RobotResponse: NewErrorResponse(
+					cursorErr,
+					ErrCodeCursorExpired,
+					details.ResyncCommand,
+				),
+				WakeReason: "cursor_expired",
+				Digest:     &AttentionDigest{},
+				CursorInfo: AttentionCursorInfo{
+					StartCursor:  opts.SinceCursor,
+					OldestCursor: details.EarliestCursor,
+					NextCommand:  details.ResyncCommand,
+				},
+			})
+			return 2
+		}
+		outputJSON(AttentionResponse{
+			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, ""),
+			WakeReason:    "error",
+			Digest:        &AttentionDigest{},
+			CursorInfo:    AttentionCursorInfo{StartCursor: opts.SinceCursor},
+		})
+		return 2
+	}
+
+	// Build replay window info
+	stats := feed.Stats()
+	resyncCmd := "ntm --robot-snapshot"
+	if opts.Session != "" {
+		resyncCmd = fmt.Sprintf("ntm --robot-snapshot --session=%s", opts.Session)
+	}
+	replayWindow := &SnapshotReplayWindowInfo{
+		Supported:       true,
+		OldestCursor:    stats.OldestCursor,
+		LatestCursor:    stats.NewestCursor,
+		EventCount:      stats.Count,
+		RetentionPeriod: stats.RetentionPeriod.String(),
+		ResyncCommand:   resyncCmd,
+	}
+
+	// Use digest end cursor if available, otherwise use feed's newest
+	endCursor := digest.CursorEnd
+	if endCursor == 0 && finalCursor > 0 {
+		endCursor = finalCursor
+	}
+	if endCursor == 0 {
+		endCursor = stats.NewestCursor
+	}
+
+	cursorInfo := AttentionCursorInfo{
+		StartCursor:  opts.SinceCursor,
+		EndCursor:    endCursor,
+		OldestCursor: stats.OldestCursor,
+		NextCommand:  fmt.Sprintf("ntm --robot-attention --since-cursor=%d", endCursor),
+	}
+	if opts.Session != "" {
+		cursorInfo.NextCommand += fmt.Sprintf(" --session=%s", opts.Session)
+	}
+
+	exitCode := 0
+	if wakeReason == "timeout" {
+		exitCode = 1
+	}
+
+	outputJSON(AttentionResponse{
+		RobotResponse: RobotResponse{
+			Success:      true,
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			Version:      AttentionContractVersion,
+			OutputFormat: "json",
+		},
+		WakeReason:       wakeReason,
+		MatchedCondition: matchedCondition,
+		TriggerEvent:     triggerEvent,
+		WaitedSeconds:    waitedSeconds,
+		Digest:           digest,
+		CursorInfo:       cursorInfo,
+		ReplayWindow:     replayWindow,
+	})
+
+	return exitCode
 }

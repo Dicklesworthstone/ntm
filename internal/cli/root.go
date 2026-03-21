@@ -270,6 +270,7 @@ Shell Integration:
 				SinceCursor: robotEventsSinceCursor,
 				Limit:       robotEventsLimit,
 				Session:     robotEventsSession,
+				Profile:     robotProfile,
 			}
 			if robotEventsCategory != "" {
 				opts.CategoryFilter = []string{robotEventsCategory}
@@ -282,6 +283,28 @@ Shell Integration:
 				os.Exit(1)
 			}
 			return
+		}
+		if robotAttention {
+			timeout, err := time.ParseDuration(robotAttentionTimeout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid attention timeout '%s': %v\n", robotAttentionTimeout, err)
+				os.Exit(1)
+			}
+			poll, err := time.ParseDuration(robotAttentionPoll)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid attention poll '%s': %v\n", robotAttentionPoll, err)
+				os.Exit(1)
+			}
+			opts := robot.AttentionOptions{
+				SinceCursor:  robotAttentionSinceCursor,
+				Session:      robotAttentionSession,
+				Timeout:      timeout,
+				PollInterval: poll,
+				Condition:    robotAttentionCondition,
+				Profile:      robotProfile,
+			}
+			exitCode := robot.PrintAttention(opts)
+			os.Exit(exitCode)
 		}
 		if robotGraph {
 			if err := robot.PrintGraph(); err != nil {
@@ -2142,6 +2165,13 @@ var (
 	robotEventsCategory      string // category filter for --robot-events
 	robotEventsSession       string // session filter for --robot-events
 	robotEventsActionability string // actionability filter for --robot-events
+	robotProfile               string // filter profile for attention-feed commands (br-91gti)
+	robotAttention             bool   // one obvious tending primitive (br-t540i)
+	robotAttentionSinceCursor  int64  // cursor for --robot-attention
+	robotAttentionSession      string // session filter for --robot-attention
+	robotAttentionTimeout      string // timeout for --robot-attention
+	robotAttentionPoll         string // poll interval for --robot-attention
+	robotAttentionCondition    string // attention condition to wait for
 	robotTail                  string // session name for tail
 	robotWatchBead             string // session name for bead mention watch
 	robotWatchBeadID           string // bead ID for watch command
@@ -2622,6 +2652,13 @@ func init() {
 	rootCmd.Flags().StringVar(&robotEventsCategory, "events-category", "", "Filter by event category. Optional with --robot-events. Example: --events-category=agent")
 	rootCmd.Flags().StringVar(&robotEventsSession, "events-session", "", "Filter by session name. Optional with --robot-events. Example: --events-session=myproject")
 	rootCmd.Flags().StringVar(&robotEventsActionability, "events-actionability", "", "Filter by actionability level. Optional with --robot-events. Values: action_required, interesting, background")
+	rootCmd.Flags().StringVar(&robotProfile, "profile", "", "Attention-feed filter profile. Applies to --robot-events, --robot-attention, --robot-digest, --robot-wait. Values: operator, debug, minimal, alerts")
+	rootCmd.Flags().BoolVar(&robotAttention, "robot-attention", false, "The one obvious tending primitive: wait for attention, then return digest. Example: ntm --robot-attention --since-cursor=42")
+	rootCmd.Flags().Int64Var(&robotAttentionSinceCursor, "attention-cursor", 0, "Cursor position to wait/digest from. Optional with --robot-attention. Example: --attention-cursor=42")
+	rootCmd.Flags().StringVar(&robotAttentionSession, "attention-session", "", "Filter to specific session. Optional with --robot-attention. Example: --attention-session=myproject")
+	rootCmd.Flags().StringVar(&robotAttentionTimeout, "attention-timeout", "5m", "Maximum wait time. Optional with --robot-attention. Example: --attention-timeout=10m")
+	rootCmd.Flags().StringVar(&robotAttentionPoll, "attention-poll", "1s", "Polling interval. Optional with --robot-attention. Example: --attention-poll=500ms")
+	rootCmd.Flags().StringVar(&robotAttentionCondition, "attention-condition", "attention", "Which condition to wait for. Optional with --robot-attention. Values: attention, action_required, mail_pending")
 	rootCmd.Flags().StringVar(&robotTail, "robot-tail", "", "Capture recent pane output. Required: SESSION. Example: ntm --robot-tail=myproject --lines=50")
 	rootCmd.Flags().StringVar(&robotWatchBead, "robot-watch-bead", "", "Capture bead mentions across panes plus current bead status (JSON snapshot). Required: SESSION")
 	rootCmd.Flags().StringVar(&robotWatchBeadID, "bead", "", "Bead ID for --robot-watch-bead. Example: --bead=bd-abc123")
