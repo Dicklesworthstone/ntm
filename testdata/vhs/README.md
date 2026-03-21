@@ -32,6 +32,8 @@ sudo apt install imagemagick
 ./scripts/visual-regression.sh
 ```
 
+The script automatically gives each VHS run its own writable temp directory so Chrome state does not collide with other local browser sessions.
+
 ### Run a specific test:
 ```bash
 ./scripts/visual-regression.sh dashboard-basic

@@ -24,6 +24,7 @@ TESTDATA_DIR="${PROJECT_ROOT}/testdata"
 VHS_DIR="${TESTDATA_DIR}/vhs"
 GOLDEN_DIR="${TESTDATA_DIR}/golden"
 SCREENSHOTS_DIR="${TESTDATA_DIR}/screenshots"
+VHS_TMP_ROOT="${NTM_VHS_TMP_ROOT:-/tmp/ntm-vhs-$$-$(date +%Y%m%d_%H%M%S)}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -56,7 +57,7 @@ if ! command -v vhs &> /dev/null; then
 fi
 
 # Ensure directories exist
-mkdir -p "${GOLDEN_DIR}" "${SCREENSHOTS_DIR}"
+mkdir -p "${GOLDEN_DIR}" "${SCREENSHOTS_DIR}" "${VHS_TMP_ROOT}"
 
 # Clean screenshots directory
 rm -f "${SCREENSHOTS_DIR}"/*.png
@@ -81,11 +82,13 @@ echo ""
 
 for tape in "${TAPES[@]}"; do
     tape_name=$(basename "${tape}" .tape)
+    tape_tmp_dir="${VHS_TMP_ROOT}/${tape_name}"
+    mkdir -p "${tape_tmp_dir}"
     echo -n "  ${tape_name}: "
 
     # Run VHS tape
     cd "${PROJECT_ROOT}"
-    if ! vhs "${tape}" > /dev/null 2>&1; then
+    if ! TMPDIR="${tape_tmp_dir}" vhs "${tape}" > /dev/null 2>&1; then
         echo -e "${RED}FAILED (VHS error)${NC}"
         ((FAILED++))
         continue

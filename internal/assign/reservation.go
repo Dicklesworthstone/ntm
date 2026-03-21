@@ -51,6 +51,9 @@ var (
 	dotfileRegex  = regexp.MustCompile(`(?m)(?:^|\s|[(\["'])(\.[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9]+)*)(?:\s|[)\]"']|$)`)
 	dirPathRegex  = regexp.MustCompile(`(?m)(?:^|\s|[(\["'])([a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)+)(?:\s|[)\]"']|$)`)
 	globRegex     = regexp.MustCompile(`(?m)(?:^|\s|[(\["'])([a-zA-Z0-9_./*-]+\*[a-zA-Z0-9_./*-]*)(?:\s|[)\]"']|$)`)
+	// isValidPath regexes - pre-compiled for performance
+	versionLikeRegex = regexp.MustCompile(`^\d+\.\d+`)
+	validExtRegex    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]{0,9}$`)
 )
 
 // ExtractFilePaths extracts file paths from a bead title and description.
@@ -108,7 +111,7 @@ func isValidPath(path string) bool {
 	}
 
 	// Exclude version-like strings (e.g., 1.2.3)
-	if matched, _ := regexp.MatchString(`^\d+\.\d+`, path); matched {
+	if versionLikeRegex.MatchString(path) {
 		return false
 	}
 
@@ -130,7 +133,7 @@ func isValidPath(path string) bool {
 			// Last part should be a valid extension with at least one letter
 			// This excludes things like "fig.1" while allowing "config.json"
 			ext := parts[len(parts)-1]
-			if matched, _ := regexp.MatchString(`^[a-zA-Z][a-zA-Z0-9]{0,9}$`, ext); matched {
+			if validExtRegex.MatchString(ext) {
 				// First part should have content or be a dotfile
 				if len(parts[0]) > 0 || strings.Contains(path, "/") {
 					return true
