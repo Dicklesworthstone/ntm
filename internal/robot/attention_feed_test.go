@@ -2056,6 +2056,146 @@ func TestAttentionResponse_CursorExpired(t *testing.T) {
 	}
 }
 
+func TestPrintDigest_ProfileFiltersBackgroundNoise(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategorySession,
+		Type:          EventTypeSessionCreated,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "session created",
+	})
+	actionRequired := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "operator action required",
+	})
+
+	output, err := captureStdout(t, func() error {
+		return PrintDigest(DigestOptions{
+			SinceCursor:         0,
+			Session:             "proj",
+			Profile:             "operator",
+			ActionRequiredLimit: 5,
+			InterestingLimit:    4,
+			BackgroundLimit:     3,
+		})
+	})
+	if err != nil {
+		t.Fatalf("PrintDigest returned error: %v", err)
+	}
+
+	var resp DigestResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("failed to decode digest response: %v\noutput=%s", err, output)
+	}
+	if !resp.Success {
+		t.Fatalf("expected successful digest response, got %#v", resp)
+	}
+	if resp.EventCount != 1 {
+		t.Fatalf("EventCount = %d, want 1 after operator profile filtering", resp.EventCount)
+	}
+	if len(resp.Buckets.ActionRequired) != 1 {
+		t.Fatalf("ActionRequired bucket len = %d, want 1", len(resp.Buckets.ActionRequired))
+	}
+	if len(resp.Buckets.Background) != 0 {
+		t.Fatalf("Background bucket len = %d, want 0 after filtering", len(resp.Buckets.Background))
+	}
+	if resp.Buckets.ActionRequired[0].Event.Cursor != actionRequired.Cursor {
+		t.Fatalf("action bucket cursor = %d, want %d", resp.Buckets.ActionRequired[0].Event.Cursor, actionRequired.Cursor)
+	}
+}
+
+func TestPrintAttention_ProfileShapesDigestAndNextCommand(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategorySession,
+		Type:          EventTypeSessionCreated,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "session created",
+	})
+	actionRequired := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "operator action required",
+	})
+
+	output, err := captureStdout(t, func() error {
+		if exitCode := PrintAttention(AttentionOptions{
+			SinceCursor:         0,
+			Session:             "proj",
+			Timeout:             20 * time.Millisecond,
+			PollInterval:        time.Millisecond,
+			Condition:           WaitConditionActionRequired,
+			Profile:             "operator",
+			ActionRequiredLimit: 5,
+			InterestingLimit:    4,
+			BackgroundLimit:     3,
+		}); exitCode != 0 {
+			t.Fatalf("PrintAttention exit code = %d, want 0", exitCode)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintAttention returned error: %v", err)
+	}
+
+	var resp AttentionResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("failed to decode attention response: %v\noutput=%s", err, output)
+	}
+	if !resp.Success {
+		t.Fatalf("expected successful attention response, got %#v", resp)
+	}
+	if resp.WakeReason != "attention" {
+		t.Fatalf("WakeReason = %q, want %q", resp.WakeReason, "attention")
+	}
+	if resp.MatchedCondition != WaitConditionActionRequired {
+		t.Fatalf("MatchedCondition = %q, want %q", resp.MatchedCondition, WaitConditionActionRequired)
+	}
+	if resp.TriggerEvent == nil || resp.TriggerEvent.Cursor != actionRequired.Cursor {
+		t.Fatalf("TriggerEvent = %#v, want cursor %d", resp.TriggerEvent, actionRequired.Cursor)
+	}
+	if resp.Digest == nil {
+		t.Fatal("expected digest payload")
+	}
+	if resp.Digest.EventCount != 1 {
+		t.Fatalf("Digest.EventCount = %d, want 1 after operator profile filtering", resp.Digest.EventCount)
+	}
+	if len(resp.Digest.Buckets.Background) != 0 {
+		t.Fatalf("Digest background bucket len = %d, want 0", len(resp.Digest.Buckets.Background))
+	}
+	if !strings.Contains(resp.CursorInfo.NextCommand, "--since-cursor=") {
+		t.Fatalf("NextCommand = %q, want --since-cursor", resp.CursorInfo.NextCommand)
+	}
+	if !strings.Contains(resp.CursorInfo.NextCommand, "--session=proj") {
+		t.Fatalf("NextCommand = %q, want session handoff", resp.CursorInfo.NextCommand)
+	}
+	if !strings.Contains(resp.CursorInfo.NextCommand, "--profile=operator") {
+		t.Fatalf("NextCommand = %q, want profile handoff", resp.CursorInfo.NextCommand)
+	}
+	if !strings.Contains(resp.CursorInfo.NextCommand, "--attention-condition=action_required") {
+		t.Fatalf("NextCommand = %q, want condition handoff", resp.CursorInfo.NextCommand)
+	}
+}
+
 // =============================================================================
 // Operator Loop Integration Tests (br-9bmtl)
 // =============================================================================

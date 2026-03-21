@@ -344,7 +344,7 @@ func TestAttentionEventMatchesWaitCondition(t *testing.T) {
 	tests := []struct {
 		name      string
 		condition string
-		event      AttentionEvent
+		event     AttentionEvent
 		want      bool
 	}{
 		{
@@ -397,8 +397,8 @@ func TestAttentionEventMatchesWaitCondition(t *testing.T) {
 				Type:   EventTypeFileConflict,
 				Source: "watcher.file_reservation",
 				Details: map[string]any{
-					"path":           "internal/robot/wait.go",
-					"holders":        []string{"BlueLake"},
+					"path":            "internal/robot/wait.go",
+					"holders":         []string{"BlueLake"},
 					"requestor_agent": "QuietSeal",
 				},
 			},
@@ -448,6 +448,8 @@ func TestAttentionEventMatchesWaitCondition(t *testing.T) {
 }
 
 func TestCheckAttentionConditions_AllConditionsRequired(t *testing.T) {
+	// Ensure globalFeedOnce has fired before we override globalFeed
+	_ = GetAttentionFeed()
 	oldFeed := PeekAttentionFeed()
 	feed := newWaitTestFeed(time.Hour)
 	SetAttentionFeed(feed)
@@ -470,7 +472,7 @@ func TestCheckAttentionConditions_AllConditionsRequired(t *testing.T) {
 		Summary:       "operator action required",
 	})
 
-	result := checkAttentionConditions([]string{WaitConditionMailPending, WaitConditionActionRequired}, 0, "proj")
+	result := checkAttentionConditions([]string{WaitConditionMailPending, WaitConditionActionRequired}, 0, "proj", "")
 	if result == nil || !result.Met {
 		t.Fatalf("expected attention conditions to be met, got %#v", result)
 	}
@@ -504,7 +506,7 @@ func TestCheckAttentionConditions_AllConditionsRequired(t *testing.T) {
 		t.Fatalf("match_count_by_condition = %#v", matchCounts)
 	}
 
-	notMet := checkAttentionConditions([]string{WaitConditionMailPending, WaitConditionActionRequired}, 0, "other")
+	notMet := checkAttentionConditions([]string{WaitConditionMailPending, WaitConditionActionRequired}, 0, "other", "")
 	if notMet == nil {
 		t.Fatal("expected a non-nil result for unmet conditions")
 	}
@@ -517,6 +519,8 @@ func TestCheckAttentionConditions_AllConditionsRequired(t *testing.T) {
 }
 
 func TestCheckAttentionConditions_CursorExpired(t *testing.T) {
+	// Ensure globalFeedOnce has fired before we override globalFeed
+	_ = GetAttentionFeed()
 	oldFeed := PeekAttentionFeed()
 	feed := newWaitTestFeed(time.Nanosecond)
 	SetAttentionFeed(feed)
@@ -541,7 +545,7 @@ func TestCheckAttentionConditions_CursorExpired(t *testing.T) {
 
 	time.Sleep(2 * time.Millisecond)
 
-	result := checkAttentionConditions([]string{WaitConditionAttention}, first.Cursor, "proj")
+	result := checkAttentionConditions([]string{WaitConditionAttention}, first.Cursor, "proj", "")
 	if result == nil || result.CursorExpired == nil {
 		t.Fatalf("expected cursor expiration, got %#v", result)
 	}
@@ -553,6 +557,52 @@ func TestCheckAttentionConditions_CursorExpired(t *testing.T) {
 	}
 	if result.NextCursor != second.Cursor {
 		t.Fatalf("NextCursor = %d, want %d", result.NextCursor, second.Cursor)
+	}
+}
+
+func TestCheckAttentionConditions_ProfileFiltersLifecycleNoise(t *testing.T) {
+	// Ensure globalFeedOnce has fired before we override globalFeed
+	_ = GetAttentionFeed()
+	oldFeed := PeekAttentionFeed()
+	feed := newWaitTestFeed(time.Hour)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	lifecycle := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategorySession,
+		Type:          EventTypeSessionCreated,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "session created",
+	})
+
+	operator := checkAttentionConditions([]string{WaitConditionSessionChanged}, 0, "proj", "operator")
+	if operator == nil {
+		t.Fatal("expected operator result")
+	}
+	if operator.Met {
+		t.Fatalf("operator profile should suppress background lifecycle noise, got %#v", operator)
+	}
+	if operator.NextCursor != lifecycle.Cursor {
+		t.Fatalf("NextCursor = %d, want %d", operator.NextCursor, lifecycle.Cursor)
+	}
+	if got := operator.Details["profile"]; got != "operator" {
+		t.Fatalf("profile detail = %#v, want operator", got)
+	}
+	if got := operator.Details["raw_event_count"]; got != 1 {
+		t.Fatalf("raw_event_count = %#v, want 1", got)
+	}
+	if got := operator.Details["scanned_event_count"]; got != 0 {
+		t.Fatalf("scanned_event_count = %#v, want 0 after operator filtering", got)
+	}
+
+	debug := checkAttentionConditions([]string{WaitConditionSessionChanged}, 0, "proj", "debug")
+	if debug == nil || !debug.Met {
+		t.Fatalf("debug profile should retain lifecycle event, got %#v", debug)
+	}
+	if debug.TriggerEvent == nil || debug.TriggerEvent.Cursor != lifecycle.Cursor {
+		t.Fatalf("TriggerEvent = %#v, want cursor %d", debug.TriggerEvent, lifecycle.Cursor)
 	}
 }
 
