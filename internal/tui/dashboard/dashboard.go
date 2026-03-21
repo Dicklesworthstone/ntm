@@ -728,6 +728,7 @@ func (m *Model) exitPopupOverlay() tea.Cmd {
 	m.postQuitAction = nil
 	m.quitting = true
 	m.publishHumanOverlayDismiss(dashboardNow())
+	m.cleanup()
 	return tea.Quit
 }
 
@@ -747,6 +748,7 @@ func (m *Model) handlePaneZoomWithCursor(pane tmux.Pane, cursor int64) tea.Cmd {
 		m.postQuitAction = &PostQuitAction{AttachSession: m.session}
 	}
 	m.quitting = true
+	m.cleanup()
 	return tea.Quit
 }
 
@@ -1157,6 +1159,15 @@ func New(session, projectDir string) Model {
 
 	m.initRenderer(40)
 	return m
+}
+
+// cleanup releases resources held by the dashboard model.
+// Must be called before tea.Quit to prevent goroutine leaks.
+func (m *Model) cleanup() {
+	if m.configCloser != nil {
+		m.configCloser()
+		m.configCloser = nil
+	}
 }
 
 func (m *Model) selectedPaneID() string {
@@ -3754,6 +3765,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.popupMode {
 				m.postQuitAction = nil
 			}
+			m.cleanup()
 			return m, tea.Quit
 
 		case key.Matches(msg, dashKeys.Up):
