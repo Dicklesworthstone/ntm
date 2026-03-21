@@ -3,9 +3,11 @@ package dashboard
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +94,95 @@ func TestFetchAlertsCmd_WithConfig(t *testing.T) {
 	// Should return without panic; Alerts may be nil or empty in test env
 	// Config should influence alert checking, but we just verify completion
 	_ = alertsMsg.Alerts
+}
+
+func TestFetchAttentionCmd_FeedUnavailable(t *testing.T) {
+	lockAttentionFeedForTest(t)
+
+	oldFeed := robot.PeekAttentionFeed()
+	robot.SetAttentionFeed(nil)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	m := newTestModel(200)
+	cmd := m.fetchAttentionCmd()
+	msg := cmd()
+
+	attentionMsg, ok := msg.(AttentionUpdateMsg)
+	if !ok {
+		t.Fatalf("expected AttentionUpdateMsg, got %T", msg)
+	}
+	if attentionMsg.FeedAvailable {
+		t.Fatal("expected feedAvailable=false when no feed is initialized")
+	}
+	if len(attentionMsg.Items) != 0 {
+		t.Fatalf("expected no items when feed is unavailable, got %d", len(attentionMsg.Items))
+	}
+}
+
+func TestFetchAttentionCmd_SortsAndLimitsItems(t *testing.T) {
+	lockAttentionFeedForTest(t)
+
+	oldFeed := robot.PeekAttentionFeed()
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       64,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		feed.Stop()
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	base := time.Date(2026, 3, 21, 12, 0, 0, 123456789, time.UTC)
+	for i := 0; i < 11; i++ {
+		feed.Append(robot.AttentionEvent{
+			Summary:       "interesting-" + strconv.Itoa(i),
+			Ts:            base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano),
+			Actionability: robot.ActionabilityInteresting,
+			Pane:          1,
+		})
+	}
+	feed.Append(robot.AttentionEvent{
+		Summary:       "action-now",
+		Ts:            base.Add(30 * time.Minute).Format(time.RFC3339Nano),
+		Actionability: robot.ActionabilityActionRequired,
+		Pane:          2,
+	})
+
+	m := newTestModel(200)
+	m.panes = []tmux.Pane{
+		{ID: "pane-1", Index: 1, Type: tmux.AgentClaude},
+		{ID: "pane-2", Index: 2, Type: tmux.AgentCodex},
+	}
+
+	cmd := m.fetchAttentionCmd()
+	msg := cmd()
+
+	attentionMsg, ok := msg.(AttentionUpdateMsg)
+	if !ok {
+		t.Fatalf("expected AttentionUpdateMsg, got %T", msg)
+	}
+	if !attentionMsg.FeedAvailable {
+		t.Fatal("expected feedAvailable=true with initialized feed")
+	}
+	if got := len(attentionMsg.Items); got != attentionPanelMaxItems {
+		t.Fatalf("expected %d items after trimming, got %d", attentionPanelMaxItems, got)
+	}
+	if attentionMsg.Items[0].Summary != "action-now" {
+		t.Fatalf("expected action-required item first, got %q", attentionMsg.Items[0].Summary)
+	}
+	if attentionMsg.Items[0].SourceAgent != "Codex" {
+		t.Fatalf("expected pane-derived source agent, got %q", attentionMsg.Items[0].SourceAgent)
+	}
+	if attentionMsg.Items[1].Summary != "interesting-10" {
+		t.Fatalf("expected newest interesting item next, got %q", attentionMsg.Items[1].Summary)
+	}
+	if attentionMsg.Items[len(attentionMsg.Items)-1].Summary != "interesting-2" {
+		t.Fatalf("expected oldest retained interesting item last, got %q", attentionMsg.Items[len(attentionMsg.Items)-1].Summary)
+	}
 }
 
 func TestFetchMetricsCmd_NoPanes(t *testing.T) {
@@ -187,7 +278,7 @@ func TestFetchCASSContextCmd_NoCass(t *testing.T) {
 }
 
 func TestFetchAttentionCmdParsesRFC3339NanoAndSorts(t *testing.T) {
-	t.Parallel()
+	lockAttentionFeedForTest(t)
 
 	oldFeed := robot.GetAttentionFeed()
 	t.Cleanup(func() {
@@ -222,6 +313,10 @@ func TestFetchAttentionCmdParsesRFC3339NanoAndSorts(t *testing.T) {
 	robot.SetAttentionFeed(feed)
 
 	m := newTestModel(120)
+	m.panes = []tmux.Pane{
+		{ID: "pane-1", Index: 1, Type: tmux.AgentClaude},
+		{ID: "pane-3", Index: 3, Type: tmux.AgentCodex},
+	}
 	msg := m.fetchAttentionCmd()()
 	update, ok := msg.(AttentionUpdateMsg)
 	if !ok {
@@ -239,8 +334,141 @@ func TestFetchAttentionCmdParsesRFC3339NanoAndSorts(t *testing.T) {
 	if update.Items[0].Timestamp.IsZero() || update.Items[1].Timestamp.IsZero() {
 		t.Fatal("expected timestamps to parse successfully")
 	}
-	if update.Items[0].SourceAgent != "claude" || update.Items[1].SourceAgent != "codex" {
+	if update.Items[0].SourceAgent != "Claude" || update.Items[1].SourceAgent != "Codex" {
 		t.Fatalf("unexpected source agents: %+v", update.Items)
+	}
+}
+
+func TestFetchAttentionCmdReturnsTopTenNewestActionableItems(t *testing.T) {
+	lockAttentionFeedForTest(t)
+
+	oldFeed := robot.GetAttentionFeed()
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       32,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	for i := 0; i < 12; i++ {
+		feed.Append(robot.AttentionEvent{
+			Ts:            time.Date(2026, 3, 21, 7, i, 0, 0, time.UTC).Format(time.RFC3339Nano),
+			Summary:       fmt.Sprintf("item-%02d", i),
+			Actionability: robot.ActionabilityInteresting,
+			Pane:          i + 1,
+		})
+	}
+	robot.SetAttentionFeed(feed)
+
+	m := newTestModel(120)
+	msg := m.fetchAttentionCmd()()
+	update, ok := msg.(AttentionUpdateMsg)
+	if !ok {
+		t.Fatalf("expected AttentionUpdateMsg, got %T", msg)
+	}
+	if len(update.Items) != attentionPanelMaxItems {
+		t.Fatalf("expected %d attention items, got %d", attentionPanelMaxItems, len(update.Items))
+	}
+	if update.Items[0].Summary != "item-11" {
+		t.Fatalf("first item = %q, want newest actionable item", update.Items[0].Summary)
+	}
+	if update.Items[len(update.Items)-1].Summary != "item-02" {
+		t.Fatalf("last item = %q, want oldest retained actionable item", update.Items[len(update.Items)-1].Summary)
+	}
+}
+
+func TestFetchAttentionCmdRetainsRequestedCursorOutsideTopWindow(t *testing.T) {
+	lockAttentionFeedForTest(t)
+
+	oldFeed := robot.GetAttentionFeed()
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       32,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	var targetCursor int64
+	for i := 0; i < 12; i++ {
+		event := feed.Append(robot.AttentionEvent{
+			Ts:            time.Date(2026, 3, 21, 7, i, 0, 0, time.UTC).Format(time.RFC3339Nano),
+			Summary:       fmt.Sprintf("item-%02d", i),
+			Actionability: robot.ActionabilityInteresting,
+			Pane:          i + 1,
+		})
+		if i == 0 {
+			targetCursor = event.Cursor
+		}
+	}
+	robot.SetAttentionFeed(feed)
+
+	m := newTestModel(120)
+	m.requestedAttentionCursor = targetCursor
+	msg := m.fetchAttentionCmd()()
+	update, ok := msg.(AttentionUpdateMsg)
+	if !ok {
+		t.Fatalf("expected AttentionUpdateMsg, got %T", msg)
+	}
+	if len(update.Items) != attentionPanelMaxItems {
+		t.Fatalf("expected %d attention items, got %d", attentionPanelMaxItems, len(update.Items))
+	}
+	found := false
+	for _, item := range update.Items {
+		if item.Cursor == targetCursor {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected requested cursor %d to be retained in the trimmed attention window", targetCursor)
+	}
+}
+
+func TestFetchAttentionCmdRetainsRequestedCursorOutsideReplayWindow(t *testing.T) {
+	lockAttentionFeedForTest(t)
+
+	oldFeed := robot.GetAttentionFeed()
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       128,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	target := feed.Append(robot.AttentionEvent{
+		Ts:            time.Date(2026, 3, 21, 6, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+		Summary:       "wake-human",
+		Actionability: robot.ActionabilityActionRequired,
+		Pane:          1,
+	})
+	for i := 0; i < attentionPanelReplayHint+5; i++ {
+		feed.Append(robot.AttentionEvent{
+			Ts:            time.Date(2026, 3, 21, 7, i, 0, 0, time.UTC).Format(time.RFC3339Nano),
+			Summary:       fmt.Sprintf("background-%02d", i),
+			Actionability: robot.ActionabilityBackground,
+			Pane:          2,
+		})
+	}
+	robot.SetAttentionFeed(feed)
+
+	m := newTestModel(120)
+	m.requestedAttentionCursor = target.Cursor
+	msg := m.fetchAttentionCmd()()
+	update, ok := msg.(AttentionUpdateMsg)
+	if !ok {
+		t.Fatalf("expected AttentionUpdateMsg, got %T", msg)
+	}
+	if len(update.Items) != 1 {
+		t.Fatalf("expected only the requested actionable item to survive, got %d items", len(update.Items))
+	}
+	if got := update.Items[0].Cursor; got != target.Cursor {
+		t.Fatalf("cursor = %d, want %d", got, target.Cursor)
 	}
 }
 

@@ -487,6 +487,7 @@ type Model struct {
 	lastMailInboxFetch       time.Time
 	mailInboxRefreshInterval time.Duration
 	showInboxDetails         bool
+	seenMailAttentionIDs     map[int]struct{} // Track messages with attention signals emitted
 
 	// Config watcher
 	configSub    chan *config.Config
@@ -532,20 +533,22 @@ type Model struct {
 	rotationConfirmPanel *panels.RotationConfirmPanel
 
 	// Data for new panels
-	beadsSummary       bv.BeadsSummary
-	beadsReady         []bv.BeadPreview
-	activeAlerts       []alerts.Alert
-	attentionItems     []panels.AttentionItem
-	attentionFeedOK    bool // Whether the attention feed is available
-	lastAttentionFetch time.Time
-	fetchingAttention  bool
-	costData           panels.CostPanelData
-	costError          error
-	metricsData        panels.MetricsData // Cached full metrics data for panel
-	cmdHistory         []history.HistoryEntry
-	fileChanges        []tracker.RecordedFileChange
-	cassContext        []cass.SearchHit
-	routingScores      map[string]RoutingScore // keyed by pane ID
+	beadsSummary             bv.BeadsSummary
+	beadsReady               []bv.BeadPreview
+	activeAlerts             []alerts.Alert
+	attentionItems           []panels.AttentionItem
+	attentionFeedOK          bool // Whether the attention feed is available
+	lastAttentionFetch       time.Time
+	fetchingAttention        bool
+	requestedAttentionCursor int64
+	attentionCursorApplied   bool
+	costData                 panels.CostPanelData
+	costError                error
+	metricsData              panels.MetricsData // Cached full metrics data for panel
+	cmdHistory               []history.HistoryEntry
+	fileChanges              []tracker.RecordedFileChange
+	cassContext              []cass.SearchHit
+	routingScores            map[string]RoutingScore // keyed by pane ID
 
 	// Cost tracking (estimated; derived from prompt history + pane output deltas)
 	costInputTokens         map[string]int     // paneID -> estimated input tokens
@@ -725,13 +728,15 @@ func (m *Model) exitPopupOverlay() tea.Cmd {
 	return tea.Quit
 }
 
-func (m *Model) handlePaneZoom(pane tmux.Pane) tea.Cmd {
+func (m *Model) handlePaneZoomWithCursor(pane tmux.Pane, cursor int64) tea.Cmd {
 	if err := dashboardZoomPane(m.session, pane.Index); err != nil {
 		m.healthMessage = fmt.Sprintf("Zoom failed: %v", err)
 		return nil
 	}
+	if cursor <= 0 {
+		cursor = robot.GetAttentionFeed().CurrentCursor()
+	}
 	if m.popupMode {
-		cursor := robot.GetAttentionFeed().CurrentCursor()
 		m.publishHumanZoomEvent(pane, cursor)
 		_ = dashboardDisplayMessage(m.session, overlayZoomHint(cursor), 4000)
 		m.postQuitAction = nil
@@ -742,9 +747,13 @@ func (m *Model) handlePaneZoom(pane tmux.Pane) tea.Cmd {
 	return tea.Quit
 }
 
+func (m *Model) handlePaneZoom(pane tmux.Pane) tea.Cmd {
+	return m.handlePaneZoomWithCursor(pane, 0)
+}
+
 // handleAttentionZoom zooms to the pane that generated the attention event.
 // If the pane no longer exists, displays a health message instead of zooming.
-func (m *Model) handleAttentionZoom(paneIndex int) tea.Cmd {
+func (m *Model) handleAttentionZoom(paneIndex int, cursor int64) tea.Cmd {
 	pane, ok := m.paneByIndex(paneIndex)
 	if !ok {
 		m.healthMessage = "Source pane no longer available"
@@ -758,7 +767,44 @@ func (m *Model) handleAttentionZoom(paneIndex int) tea.Cmd {
 		return nil
 	}
 	m.setPaneListSelectionByPaneID(pane.ID)
-	return m.handlePaneZoom(pane)
+	return m.handlePaneZoomWithCursor(pane, cursor)
+}
+
+func (m *Model) requestAttentionCursor(cursor int64) {
+	if cursor <= 0 {
+		return
+	}
+	m.requestedAttentionCursor = cursor
+	m.attentionCursorApplied = false
+	m.focusRing.prevID = panelIDString(PanelAttention)
+	_ = m.setFocusedPanel(PanelAttention)
+}
+
+func (m *Model) applyRequestedAttentionCursor() {
+	if m.requestedAttentionCursor <= 0 || m.attentionCursorApplied || m.attentionPanel == nil || !m.attentionFeedOK {
+		return
+	}
+
+	_ = m.setFocusedPanel(PanelAttention)
+	if m.attentionPanel.SelectCursor(m.requestedAttentionCursor) {
+		m.attentionCursorApplied = true
+		return
+	}
+	if m.attentionPanel.SelectNearestCursor(m.requestedAttentionCursor) {
+		m.attentionCursorApplied = true
+		m.healthMessage = fmt.Sprintf(
+			"Attention cursor %d no longer available; showing nearest surviving item",
+			m.requestedAttentionCursor,
+		)
+		return
+	}
+	if m.attentionPanel.ItemCount() == 0 {
+		m.attentionCursorApplied = true
+		m.healthMessage = fmt.Sprintf(
+			"Attention cursor %d unavailable; no attention items",
+			m.requestedAttentionCursor,
+		)
+	}
 }
 
 // PaneStatus tracks the status of a pane including compaction state
@@ -990,6 +1036,7 @@ func New(session, projectDir string) Model {
 		agentMailInbox:             make(map[string][]agentmail.InboxMessage),
 		agentMailInboxErrors:       make(map[string]error),
 		agentMailAgents:            make(map[string]string),
+		seenMailAttentionIDs:       make(map[int]struct{}),
 		helpVerbosity:              "full",
 		helpModel:                  newHelpModel(t),
 		cassSearch: components.NewCassSearch(func(hit cass.SearchHit) tea.Cmd {
@@ -1020,6 +1067,7 @@ func New(session, projectDir string) Model {
 		fetchingSession:     true,
 		fetchingContext:     true,
 		fetchingAlerts:      true,
+		fetchingAttention:   true,
 		fetchingBeads:       true,
 		fetchingCassContext: true,
 		fetchingMetrics:     true,
@@ -1050,6 +1098,7 @@ func New(session, projectDir string) Model {
 	m.lastPaneFetch = now
 	m.lastContextFetch = now
 	m.lastAlertsFetch = now
+	m.lastAttentionFetch = now
 	m.lastBeadsFetch = now
 	m.lastCassContextFetch = now
 	m.lastScanFetch = now
@@ -2716,6 +2765,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.attentionFeedOK = msg.FeedAvailable
 		m.markUpdated(refreshAttention, time.Now())
 		m.attentionPanel.SetData(m.attentionItems, m.attentionFeedOK)
+		m.applyRequestedAttentionCursor()
 		return m, nil
 
 	case FileConflictMsg:
@@ -3070,6 +3120,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						modelName = "gemini-2.0-flash"
 					}
+				case string(tmux.AgentCursor):
+					modelName = "cursor"
+				case string(tmux.AgentWindsurf):
+					modelName = "windsurf"
+				case string(tmux.AgentAider):
+					modelName = "aider"
 				}
 
 				// Use variant if available
@@ -3380,12 +3436,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Calculate totals and update per-pane status
 			unread := 0
 			urgent := 0
+			attentionFeed := robot.GetAttentionFeed()
 			for paneID, msgs := range msg.Inboxes {
 				paneUnread := len(msgs)
 				paneUrgent := 0
+				toAgent := msg.AgentMap[paneID]
 				for _, mm := range msgs {
 					if strings.EqualFold(mm.Importance, "urgent") {
 						paneUrgent++
+					}
+					// Emit attention signals for new unread messages
+					if _, seen := m.seenMailAttentionIDs[mm.ID]; !seen {
+						m.seenMailAttentionIDs[mm.ID] = struct{}{}
+						threadID := ""
+						if mm.ThreadID != nil {
+							threadID = *mm.ThreadID
+						}
+						if mm.AckRequired {
+							attentionFeed.PublishMailAckRequired(mm.From, toAgent, mm.Subject, mm.ID, threadID)
+						} else {
+							attentionFeed.PublishMailPending(mm.From, toAgent, mm.Subject, mm.ID, threadID)
+						}
 					}
 				}
 				unread += paneUnread
@@ -3722,7 +3793,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Zoom-to-source for attention panel items
 			if m.focusedPanel == PanelAttention && m.attentionPanel != nil {
 				if item := m.attentionPanel.SelectedItem(); item != nil {
-					return m, m.handleAttentionZoom(item.SourcePane)
+					return m, m.handleAttentionZoom(item.SourcePane, item.Cursor)
 				}
 			}
 			return m, nil
@@ -4278,14 +4349,31 @@ func (m Model) renderStatsBar() string {
 		Render(helpLabel)
 	parts = append(parts, helpBadge)
 
-	// Overlay mode badge
+	// Overlay mode badge — color reflects attention state
 	if m.popupMode {
+		overlayColor := t.Teal // Default calm state
+		overlayIcon := "◉"
+		overlayLabel := "overlay"
+
+		// Reflect attention state in overlay badge color
+		if m.attentionPanel != nil && m.attentionFeedOK {
+			actionCount := m.attentionPanel.ActionRequiredCount()
+			interestingCount := m.attentionPanel.InterestingCount()
+			if actionCount > 0 {
+				overlayColor = t.Red
+				overlayLabel = fmt.Sprintf("overlay ● %d", actionCount)
+			} else if interestingCount > 0 {
+				overlayColor = t.Yellow
+				overlayLabel = fmt.Sprintf("overlay ▲ %d", interestingCount)
+			}
+		}
+
 		overlayBadge := lipgloss.NewStyle().
-			Background(t.Teal).
+			Background(overlayColor).
 			Foreground(t.Base).
 			Bold(true).
 			Padding(0, 1).
-			Render("◉ overlay")
+			Render(fmt.Sprintf("%s %s", overlayIcon, overlayLabel))
 		parts = append(parts, overlayBadge)
 	}
 
@@ -4369,6 +4457,14 @@ func (m Model) renderStatsBar() string {
 	dcgBadge := m.renderDCGBadge()
 	if dcgBadge != "" {
 		parts = append(parts, dcgBadge)
+	}
+
+	// Attention state badge (non-popup mode only — popup mode embeds counts in overlay badge)
+	if !m.popupMode {
+		attentionBadge := m.renderAttentionBadge()
+		if attentionBadge != "" {
+			parts = append(parts, attentionBadge)
+		}
 	}
 
 	return strings.Join(parts, "  ")
@@ -4584,6 +4680,49 @@ func (m Model) renderDCGBadge() string {
 		Bold(true).
 		Padding(0, 1).
 		Render(fmt.Sprintf("%s %s", icon, label))
+}
+
+// renderAttentionBadge renders a compact attention state badge for the stats bar.
+// Shows action_required count in red, interesting count in yellow, or nothing if all clear.
+func (m Model) renderAttentionBadge() string {
+	if m.attentionPanel == nil || !m.attentionFeedOK {
+		return ""
+	}
+
+	actionCount := m.attentionPanel.ActionRequiredCount()
+	interestingCount := m.attentionPanel.InterestingCount()
+
+	if actionCount == 0 && interestingCount == 0 {
+		return "" // All clear, no badge needed
+	}
+
+	t := m.theme
+
+	var parts []string
+
+	// Action required items (red, highest priority)
+	if actionCount > 0 {
+		actionBadge := lipgloss.NewStyle().
+			Background(t.Red).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("● %d", actionCount))
+		parts = append(parts, actionBadge)
+	}
+
+	// Interesting items (yellow)
+	if interestingCount > 0 {
+		interestingBadge := lipgloss.NewStyle().
+			Background(t.Yellow).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("▲ %d", interestingCount))
+		parts = append(parts, interestingBadge)
+	}
+
+	return strings.Join(parts, " ")
 }
 
 // renderRateLimitAlert renders a prominent alert banner if any agent is rate limited
@@ -4904,6 +5043,16 @@ func (m Model) renderHelpBar() string {
 				break
 			}
 			hints = append(hints, hint)
+		}
+	}
+
+	// Add contextual attention hint when items need human attention and we're not already
+	// focused on the attention panel. This helps users discover where to look.
+	if m.focusedPanel != PanelAttention && m.attentionPanel != nil && m.attentionFeedOK {
+		if m.attentionPanel.ActionRequiredCount() > 0 {
+			hints = append(hints, components.KeyHint{Key: "Tab", Desc: "attention!"})
+		} else if m.attentionPanel.InterestingCount() > 0 {
+			hints = append(hints, components.KeyHint{Key: "Tab", Desc: "attention"})
 		}
 	}
 
@@ -5589,6 +5738,13 @@ func maxInt(a, b int) int {
 	return b
 }
 
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func contentHeightFor(total int) int {
 	contentHeight := total - 14
 	if contentHeight < 5 {
@@ -5740,10 +5896,11 @@ func (m *Model) resizePanelsForLayout() {
 
 	switch {
 	case m.tier >= layout.TierMega:
-		_, _, p3, p4, p5 := layout.MegaProportions(m.width)
+		_, _, p3, p4, p5, p6 := layout.MegaProportions6(m.width)
 		p3Inner := maxInt(p3-4, 0)
 		p4Inner := maxInt(p4-4, 0)
 		p5Inner := maxInt(p5-4, 0)
+		p6Inner := maxInt(p6-4, 0)
 
 		if m.beadsPanel != nil {
 			m.beadsPanel.SetSize(p3Inner, panelHeight)
@@ -5751,12 +5908,18 @@ func (m *Model) resizePanelsForLayout() {
 		if m.alertsPanel != nil {
 			m.alertsPanel.SetSize(p4Inner, panelHeight)
 		}
-		m.resizeSidebarPanels(p5Inner, panelHeight)
+		if m.attentionPanel != nil {
+			m.attentionPanel.SetSize(p5Inner, panelHeight)
+		}
+		m.resizeSidebarPanels(p6Inner, panelHeight)
 
 	case m.tier >= layout.TierUltra:
 		_, _, rightWidth := layout.UltraProportions(m.width)
 		rightWidth = maxInt(rightWidth-2, 0)
 		sidebarWidth := maxInt(rightWidth-4, 0)
+		if m.attentionPanel != nil {
+			m.attentionPanel.SetSize(sidebarWidth, minInt(maxInt(panelHeight/3, m.attentionPanel.Config().MinHeight), 10))
+		}
 		m.resizeSidebarPanels(sidebarWidth, panelHeight)
 		if m.beadsPanel != nil {
 			m.beadsPanel.SetSize(0, 0)
@@ -5772,6 +5935,14 @@ func (m *Model) resizePanelsForLayout() {
 		}
 		if m.alertsPanel != nil {
 			m.alertsPanel.SetSize(0, 0)
+		}
+		if m.attentionPanel != nil {
+			if m.tier >= layout.TierSplit {
+				_, rightWidth := layout.SplitProportions(m.width)
+				m.attentionPanel.SetSize(maxInt(rightWidth-4, 0), panelHeight)
+			} else {
+				m.attentionPanel.SetSize(0, 0)
+			}
 		}
 	}
 
@@ -6426,7 +6597,7 @@ func (m Model) renderUltraLayout() string {
 	}
 
 	detailBorder := t.Pink
-	if m.focusedPanel == PanelDetail || m.focusedPanel == PanelAttention {
+	if m.focusedPanel == PanelDetail {
 		detailBorder = t.Primary
 	}
 
@@ -6446,7 +6617,7 @@ func (m Model) renderUltraLayout() string {
 		Render(listContent)
 
 	tabBar := m.renderPanelTabBar(centerWidth - 4)
-	detailContent := m.renderSplitPrimaryPanel(centerWidth-4, contentHeight-2)
+	detailContent := m.renderPaneDetail(centerWidth - 4)
 	centerContent := tabBar + "\n" + detailContent
 	detailPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -6478,10 +6649,20 @@ func (m Model) renderSidebar(width, height int) string {
 		return ""
 	}
 
-	if m.attentionPanel != nil && height >= m.attentionPanel.Config().MinHeight {
-		panelHeight := maxInt(m.attentionPanel.Config().MinHeight, height/3)
-		if panelHeight > 12 {
-			panelHeight = 12
+	// Keep the sidebar compact by only embedding the attention panel when it is
+	// actively relevant. Split/wide layouts render attention in the primary
+	// detail slot when focused; ultra layouts surface it here when focused or
+	// when actionable items exist. Mega has a dedicated attention column.
+	if m.tier < layout.TierMega &&
+		m.attentionPanel != nil &&
+		height >= m.attentionPanel.Config().MinHeight &&
+		(m.focusedPanel == PanelAttention || m.attentionPanel.HasItems()) {
+		panelHeight := m.attentionPanel.Config().MinHeight
+		if m.focusedPanel == PanelAttention || m.attentionPanel.HasItems() {
+			panelHeight = maxInt(panelHeight, height/3)
+			if panelHeight > 10 {
+				panelHeight = 10
+			}
 		}
 		if panelHeight > height {
 			panelHeight = height
@@ -6695,18 +6876,19 @@ func (m Model) renderSidebar(width, height int) string {
 	return panels.FitToHeight(content, height)
 }
 
-// renderMegaLayout renders a five-panel layout: Agents | Detail | Beads | Alerts | Activity
+// renderMegaLayout renders a six-panel layout: Agents | Detail | Beads | Alerts | Attention | Activity
 func (m Model) renderMegaLayout() string {
 	t := m.theme
-	p1, p2, p3, p4, p5 := layout.MegaProportions(m.width)
+	p1, p2, p3, p4, p5, p6 := layout.MegaProportions6(m.width)
 	// The dashboard UI uses a left margin; trim the rightmost panel so the total
 	// rendered width stays within the terminal width at exact thresholds.
-	p5 = maxInt(p5-2, 0)
+	p6 = maxInt(p6-2, 0)
 	p1Inner := maxInt(p1-4, 0)
 	p2Inner := maxInt(p2-4, 0)
 	p3Inner := maxInt(p3-4, 0)
 	p4Inner := maxInt(p4-4, 0)
 	p5Inner := maxInt(p5-4, 0)
+	p6Inner := maxInt(p6-4, 0)
 
 	contentHeight := contentHeightFor(m.height)
 
@@ -6726,7 +6908,7 @@ func (m Model) renderMegaLayout() string {
 	}
 
 	alertsBorder := t.Red
-	if m.focusedPanel == PanelAlerts || m.focusedPanel == PanelAttention || m.focusedPanel == PanelConflicts {
+	if m.focusedPanel == PanelAlerts || m.focusedPanel == PanelConflicts {
 		alertsBorder = t.Primary
 	}
 
@@ -6735,8 +6917,13 @@ func (m Model) renderMegaLayout() string {
 		conflictsBorder = t.Primary
 	}
 
+	attentionBorder := t.Yellow
+	if m.focusedPanel == PanelAttention {
+		attentionBorder = t.Primary
+	}
+
 	sidebarBorder := t.Lavender
-	if m.focusedPanel == PanelSidebar || m.focusedPanel == PanelAttention {
+	if m.focusedPanel == PanelSidebar {
 		sidebarBorder = t.Primary
 	}
 
@@ -6762,23 +6949,16 @@ func (m Model) renderMegaLayout() string {
 		Padding(0, 1).
 		Render(m.renderBeadsPanel(p3Inner, contentHeight-2))
 
+	// Panel 4: Alerts or Conflicts (conflicts take priority when present)
 	var panel4 string
-	switch {
-	case m.focusedPanel == PanelAttention:
-		panel4 = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(alertsBorder).
-			Width(p4).Height(contentHeight).MaxHeight(contentHeight).
-			Padding(0, 1).
-			Render(m.renderAttentionPanel(p4Inner, contentHeight-2))
-	case m.conflictsPanel.HasConflicts():
+	if m.conflictsPanel.HasConflicts() {
 		panel4 = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(conflictsBorder).
 			Width(p4).Height(contentHeight).MaxHeight(contentHeight).
 			Padding(0, 1).
 			Render(m.renderConflictsPanel(p4Inner, contentHeight-2))
-	default:
+	} else {
 		panel4 = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(alertsBorder).
@@ -6787,14 +6967,23 @@ func (m Model) renderMegaLayout() string {
 			Render(m.renderAlertsPanel(p4Inner, contentHeight-2))
 	}
 
+	// Panel 5: Attention feed (always visible in mega layout)
 	panel5 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(sidebarBorder).
+		BorderForeground(attentionBorder).
 		Width(p5).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
-		Render(m.renderSidebar(p5Inner, contentHeight-2))
+		Render(m.renderAttentionPanel(p5Inner, contentHeight-2))
 
-	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5)
+	// Panel 6: Sidebar (activity, locks, metrics, history)
+	panel6 := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(sidebarBorder).
+		Width(p6).Height(contentHeight).MaxHeight(contentHeight).
+		Padding(0, 1).
+		Render(m.renderSidebar(p6Inner, contentHeight-2))
+
+	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5, panel6)
 }
 
 func (m Model) renderBeadsPanel(width, height int) string {
@@ -7371,13 +7560,13 @@ func (m Model) executeReplay(entry history.HistoryEntry) tea.Cmd {
 
 // Run starts the dashboard
 func Run(session, projectDir string) (*PostQuitAction, error) {
-	return RunWithOptions(session, projectDir, false)
+	return RunWithOptions(session, projectDir, RunOptions{})
 }
 
 // RunPopup starts the dashboard in popup/overlay mode.
 // Escape closes the popup; zoom doesn't re-attach.
 func RunPopup(session, projectDir string) (*PostQuitAction, error) {
-	return RunWithOptions(session, projectDir, true)
+	return RunWithOptions(session, projectDir, RunOptions{PopupMode: true})
 }
 
 // mouseEnabled returns true if NTM_MOUSE is not explicitly disabled.
@@ -7390,16 +7579,25 @@ func mouseEnabled() bool {
 }
 
 // RunWithOptions starts the dashboard with configurable options.
-func RunWithOptions(session, projectDir string, popupMode bool) (*PostQuitAction, error) {
+type RunOptions struct {
+	PopupMode       bool
+	AttentionCursor int64
+}
+
+// RunWithOptions starts the dashboard with configurable options.
+func RunWithOptions(session, projectDir string, opts RunOptions) (*PostQuitAction, error) {
 	model := New(session, projectDir)
-	if popupMode {
+	if opts.AttentionCursor > 0 {
+		model.requestAttentionCursor(opts.AttentionCursor)
+	}
+	if opts.PopupMode {
 		model.activatePopupMode(dashboardNow())
 	}
-	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	programOpts := []tea.ProgramOption{tea.WithAltScreen()}
 	if mouseEnabled() {
-		opts = append(opts, tea.WithMouseCellMotion())
+		programOpts = append(programOpts, tea.WithMouseCellMotion())
 	}
-	p := tea.NewProgram(model, opts...)
+	p := tea.NewProgram(model, programOpts...)
 	finalModel, err := p.Run()
 	if err != nil {
 		return nil, err

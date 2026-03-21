@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +21,11 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
+)
+
+const (
+	attentionPanelMaxItems   = 10
+	attentionPanelReplayHint = 64
 )
 
 // fetchBeadsCmd calls bv.GetBeadsSummary
@@ -68,63 +74,138 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 // fetchAttentionCmd reads attention events from the feed.
 func (m *Model) fetchAttentionCmd() tea.Cmd {
 	gen := m.nextGen(refreshAttention)
+	requestedCursor := m.requestedAttentionCursor
+	paneAgents := make(map[int]string, len(m.panes))
+	for _, pane := range m.panes {
+		if name := pane.Type.ProfileName(); name != "" {
+			paneAgents[pane.Index] = name
+			continue
+		}
+		if raw := pane.Type.String(); raw != "" {
+			paneAgents[pane.Index] = raw
+		}
+	}
+
 	return func() tea.Msg {
-		feed := robot.GetAttentionFeed()
+		feed := robot.PeekAttentionFeed()
 		if feed == nil {
 			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
 		}
 
-		// Replay recent events (up to 20 items)
-		events, _, err := feed.Replay(0, 20)
+		replayLimit := attentionPanelReplayHint
+		if statsCount := feed.Stats().Count; statsCount < replayLimit {
+			replayLimit = statsCount
+		}
+		if replayLimit < attentionPanelMaxItems {
+			replayLimit = attentionPanelMaxItems
+		}
+		events, _, err := feed.Replay(0, replayLimit)
 		if err != nil {
 			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
 		}
 
-		// Filter to action_required and interesting only, convert to AttentionItems
-		items := make([]panels.AttentionItem, 0, len(events))
+		items := make([]panels.AttentionItem, 0, len(events)+1)
 		for _, ev := range events {
-			if ev.Actionability != robot.ActionabilityActionRequired &&
-				ev.Actionability != robot.ActionabilityInteresting {
+			if !includeAttentionEvent(ev) {
 				continue
 			}
-
-			ts, err := time.Parse(time.RFC3339Nano, ev.Ts)
-			if err != nil {
-				ts, _ = time.Parse(time.RFC3339, ev.Ts)
-			}
-			item := panels.AttentionItem{
-				Summary:       ev.Summary,
-				Actionability: ev.Actionability,
-				Timestamp:     ts,
-				SourcePane:    ev.Pane,
-				Cursor:        ev.Cursor,
-			}
-			// Extract agent type from details if available
-			if ev.Details != nil {
-				if agent, ok := ev.Details["agent_type"].(string); ok {
-					item.SourceAgent = agent
-				}
-			}
-			items = append(items, item)
+			items = append(items, attentionItemFromEvent(ev, paneAgents))
+		}
+		if requested := requestedAttentionItem(feed, paneAgents, requestedCursor); requested != nil &&
+			!containsAttentionCursor(items, requested.Cursor) {
+			items = append(items, *requested)
 		}
 
 		// Sort by actionability (action_required first) then by recency (newest first)
 		sortAttentionItems(items)
+		items = trimAttentionItems(items, attentionPanelMaxItems, requestedCursor)
 
 		return AttentionUpdateMsg{Items: items, FeedAvailable: true, Gen: gen}
 	}
 }
 
-// sortAttentionItems sorts items by actionability desc, then timestamp desc.
-func sortAttentionItems(items []panels.AttentionItem) {
-	// Simple bubble sort for small N (typically <20 items)
-	for i := 0; i < len(items); i++ {
-		for j := i + 1; j < len(items); j++ {
-			if shouldSwapAttentionItems(items[i], items[j]) {
-				items[i], items[j] = items[j], items[i]
-			}
+func includeAttentionEvent(ev robot.AttentionEvent) bool {
+	return ev.Actionability == robot.ActionabilityActionRequired ||
+		ev.Actionability == robot.ActionabilityInteresting
+}
+
+func attentionItemFromEvent(ev robot.AttentionEvent, paneAgents map[int]string) panels.AttentionItem {
+	item := panels.AttentionItem{
+		Summary:       ev.Summary,
+		Actionability: ev.Actionability,
+		Timestamp:     parseAttentionTimestamp(ev.Ts),
+		SourcePane:    ev.Pane,
+		Cursor:        ev.Cursor,
+	}
+	if agent := paneAgents[ev.Pane]; agent != "" {
+		item.SourceAgent = agent
+	} else if ev.Details != nil {
+		if agent, ok := ev.Details["agent_type"].(string); ok {
+			item.SourceAgent = agent
 		}
 	}
+	return item
+}
+
+func requestedAttentionItem(feed *robot.AttentionFeed, paneAgents map[int]string, requestedCursor int64) *panels.AttentionItem {
+	if requestedCursor <= 0 {
+		return nil
+	}
+	events, _, err := feed.Replay(requestedCursor-1, 1)
+	if err != nil || len(events) == 0 || events[0].Cursor != requestedCursor {
+		return nil
+	}
+	if !includeAttentionEvent(events[0]) {
+		return nil
+	}
+	item := attentionItemFromEvent(events[0], paneAgents)
+	return &item
+}
+
+func containsAttentionCursor(items []panels.AttentionItem, cursor int64) bool {
+	for _, item := range items {
+		if item.Cursor == cursor {
+			return true
+		}
+	}
+	return false
+}
+
+func trimAttentionItems(items []panels.AttentionItem, limit int, requestedCursor int64) []panels.AttentionItem {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+
+	trimmed := append([]panels.AttentionItem(nil), items[:limit]...)
+	if requestedCursor <= 0 {
+		return trimmed
+	}
+
+	for _, item := range trimmed {
+		if item.Cursor == requestedCursor {
+			return trimmed
+		}
+	}
+
+	for _, item := range items[limit:] {
+		if item.Cursor == requestedCursor {
+			if limit == 1 {
+				return []panels.AttentionItem{item}
+			}
+			trimmed = append(trimmed[:limit-1], item)
+			sortAttentionItems(trimmed)
+			return trimmed
+		}
+	}
+
+	return trimmed
+}
+
+// sortAttentionItems sorts items by actionability desc, then timestamp desc.
+func sortAttentionItems(items []panels.AttentionItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return shouldSwapAttentionItems(items[j], items[i])
+	})
 }
 
 func shouldSwapAttentionItems(a, b panels.AttentionItem) bool {
@@ -135,7 +216,10 @@ func shouldSwapAttentionItems(a, b panels.AttentionItem) bool {
 		return aRank < bRank // Higher rank should come first
 	}
 	// Same actionability: newer first
-	return a.Timestamp.Before(b.Timestamp)
+	if !a.Timestamp.Equal(b.Timestamp) {
+		return a.Timestamp.Before(b.Timestamp)
+	}
+	return a.Cursor < b.Cursor
 }
 
 func actionabilityRank(a robot.Actionability) int {
@@ -147,6 +231,19 @@ func actionabilityRank(a robot.Actionability) int {
 	default:
 		return 1
 	}
+}
+
+func parseAttentionTimestamp(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts
+	}
+	return time.Time{}
 }
 
 // fetchMetricsCmd refreshes observability metrics.

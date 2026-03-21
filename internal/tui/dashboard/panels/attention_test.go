@@ -67,12 +67,30 @@ func TestAttentionPanelSelectedItemAndCursorClamp(t *testing.T) {
 	}
 }
 
+func TestAttentionPanelSetDataSortsActionabilityAndRecency(t *testing.T) {
+	panel := NewAttentionPanel()
+	base := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+
+	panel.SetData([]AttentionItem{
+		{Summary: "interesting-old", Actionability: robot.ActionabilityInteresting, Timestamp: base},
+		{Summary: "action-new", Actionability: robot.ActionabilityActionRequired, Timestamp: base.Add(2 * time.Minute)},
+		{Summary: "interesting-new", Actionability: robot.ActionabilityInteresting, Timestamp: base.Add(3 * time.Minute)},
+	}, true)
+
+	if got := panel.items[0].Summary; got != "action-new" {
+		t.Fatalf("expected action_required item first, got %q", got)
+	}
+	if got := panel.items[1].Summary; got != "interesting-new" {
+		t.Fatalf("expected newer interesting item second, got %q", got)
+	}
+}
+
 func TestAttentionPanelNavigationMovesSelection(t *testing.T) {
 	panel := NewAttentionPanel()
 	panel.SetSize(80, 18)
 	panel.SetData([]AttentionItem{
-		{Summary: "first", Actionability: robot.ActionabilityInteresting, Timestamp: time.Now().Add(-2 * time.Minute)},
-		{Summary: "second", Actionability: robot.ActionabilityActionRequired, Timestamp: time.Now()},
+		{Summary: "first", Actionability: robot.ActionabilityInteresting, Timestamp: time.Now()},
+		{Summary: "second", Actionability: robot.ActionabilityInteresting, Timestamp: time.Now().Add(-2 * time.Minute)},
 	}, true)
 	panel.Focus()
 
@@ -100,5 +118,35 @@ func TestAttentionPanelKeybindingsIncludeZoomToSource(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected zoom_to_source keybinding")
+	}
+}
+
+func TestAttentionPanelSelectCursor(t *testing.T) {
+	panel := NewAttentionPanel()
+	panel.SetData([]AttentionItem{
+		{Summary: "older", Cursor: 10, Timestamp: time.Now().Add(-2 * time.Minute)},
+		{Summary: "newer", Cursor: 25, Timestamp: time.Now()},
+	}, true)
+
+	if !panel.SelectCursor(25) {
+		t.Fatal("expected SelectCursor to find cursor 25")
+	}
+	if got := panel.SelectedItem(); got == nil || got.Cursor != 25 {
+		t.Fatalf("selected item = %+v, want cursor 25", got)
+	}
+}
+
+func TestAttentionPanelSelectNearestCursor(t *testing.T) {
+	panel := NewAttentionPanel()
+	panel.SetData([]AttentionItem{
+		{Summary: "older", Cursor: 40, Timestamp: time.Now().Add(-3 * time.Minute)},
+		{Summary: "newer", Cursor: 44, Timestamp: time.Now()},
+	}, true)
+
+	if !panel.SelectNearestCursor(42) {
+		t.Fatal("expected SelectNearestCursor to pick a fallback item")
+	}
+	if got := panel.SelectedItem(); got == nil || got.Cursor != 44 {
+		t.Fatalf("selected item = %+v, want nearest newer cursor 44", got)
 	}
 }

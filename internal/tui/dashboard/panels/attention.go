@@ -2,6 +2,7 @@ package panels
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
+	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -63,11 +65,14 @@ func NewAttentionPanel() *AttentionPanel {
 
 // SetData updates the panel with attention items.
 func (m *AttentionPanel) SetData(items []AttentionItem, feedAvailable bool) {
-	m.items = items
+	m.items = append(m.items[:0], items...)
+	sort.SliceStable(m.items, func(i, j int) bool {
+		return attentionItemLess(m.items[i], m.items[j])
+	})
 	m.feedAvailable = feedAvailable
 	// Clamp cursor to valid range
-	if m.cursor >= len(items) {
-		m.cursor = len(items) - 1
+	if m.cursor >= len(m.items) {
+		m.cursor = len(m.items) - 1
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
@@ -80,6 +85,46 @@ func (m *AttentionPanel) SelectedItem() *AttentionItem {
 		return nil
 	}
 	return &m.items[m.cursor]
+}
+
+// SelectCursor focuses the item with the requested event cursor.
+func (m *AttentionPanel) SelectCursor(cursor int64) bool {
+	if cursor <= 0 {
+		return false
+	}
+	for i := range m.items {
+		if m.items[i].Cursor == cursor {
+			m.cursor = i
+			return true
+		}
+	}
+	return false
+}
+
+// SelectNearestCursor focuses the surviving item closest to the requested cursor.
+func (m *AttentionPanel) SelectNearestCursor(cursor int64) bool {
+	if cursor <= 0 || len(m.items) == 0 {
+		return false
+	}
+
+	bestIdx := -1
+	var bestDelta int64
+	var bestCursor int64
+	for i := range m.items {
+		delta := absInt64(m.items[i].Cursor - cursor)
+		if bestIdx == -1 ||
+			delta < bestDelta ||
+			(delta == bestDelta && m.items[i].Cursor > bestCursor) {
+			bestIdx = i
+			bestDelta = delta
+			bestCursor = m.items[i].Cursor
+		}
+	}
+	if bestIdx < 0 {
+		return false
+	}
+	m.cursor = bestIdx
+	return true
 }
 
 // HasItems returns true if there are attention items.
@@ -197,6 +242,9 @@ func (m *AttentionPanel) View() string {
 
 	// Build header
 	title := m.Config().Title
+	if warning := icons.Current().Warning; warning != "" {
+		title = warning + " " + title
+	}
 	header := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(t.Text).
@@ -287,8 +335,13 @@ func (m *AttentionPanel) renderItem(item AttentionItem, selected bool, width int
 		}
 	}
 
-	// Truncate summary
-	maxSummaryWidth := width - 12 // Account for icon, age, padding
+	// Keep most of the first line available for the summary. Source + age are
+	// rendered on a second line, so the first line only needs room for the
+	// cursor marker, icon, and a single separating space.
+	maxSummaryWidth := width - 4
+	if maxSummaryWidth < 0 {
+		maxSummaryWidth = 0
+	}
 	summary := layout.TruncateWidthDefault(item.Summary, maxSummaryWidth)
 
 	// Build line
@@ -324,6 +377,13 @@ func (m *AttentionPanel) renderItem(item AttentionItem, selected bool, width int
 	return style.Render(line.String())
 }
 
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 // formatRelativeTime formats a duration as a relative time string.
 func formatRelativeTime(d time.Duration) string {
 	if d < 0 {
@@ -350,5 +410,28 @@ func formatRelativeTime(d time.Duration) string {
 			return "1d ago"
 		}
 		return fmt.Sprintf("%dd ago", days)
+	}
+}
+
+func attentionItemLess(a, b AttentionItem) bool {
+	aRank := attentionActionabilityRank(a.Actionability)
+	bRank := attentionActionabilityRank(b.Actionability)
+	if aRank != bRank {
+		return aRank > bRank
+	}
+	if !a.Timestamp.Equal(b.Timestamp) {
+		return a.Timestamp.After(b.Timestamp)
+	}
+	return a.Cursor > b.Cursor
+}
+
+func attentionActionabilityRank(level robot.Actionability) int {
+	switch level {
+	case robot.ActionabilityActionRequired:
+		return 3
+	case robot.ActionabilityInteresting:
+		return 2
+	default:
+		return 1
 	}
 }
