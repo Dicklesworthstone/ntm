@@ -157,15 +157,16 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 		return result
 	}
 
-	// Set up the first pane
+	// Set up the first pane — always track it even if spec.Panes is empty,
+	// since tmux creates it unconditionally with CreateSession.
 	firstPaneID := panes[0].ID
 	if len(spec.Panes) > 0 {
 		title := o.formatPaneTitle(spec.Name, spec.Panes[0])
 		if err := o.setPaneTitleWithRetry(client, firstPaneID, title); err != nil {
 			// Non-fatal, continue
 		}
-		result.PaneIDs = append(result.PaneIDs, firstPaneID)
 	}
+	result.PaneIDs = append(result.PaneIDs, firstPaneID)
 
 	// Create additional panes
 	for i := 1; i < len(spec.Panes); i++ {
@@ -879,8 +880,8 @@ func (o *SwarmOrchestrator) GracefulShutdown(ctx context.Context, sessionNames [
 						"error", err)
 				} else {
 					result.GracefulExits++
+					result.PanesKilled++ // Only count as killed when signal was delivered
 				}
-				result.PanesKilled++
 			}
 		}
 
