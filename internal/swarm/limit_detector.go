@@ -179,6 +179,10 @@ func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
 
 // StartPane begins monitoring a single pane.
 func (d *LimitDetector) StartPane(ctx context.Context, sessionPane string, agentType string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -250,7 +254,12 @@ func (d *LimitDetector) CheckPane(sessionPane string, agentType string) (*LimitE
 
 // monitorPane runs the monitoring loop for a single pane.
 func (d *LimitDetector) monitorPane(ctx context.Context, sessionPane string, agentType string) {
-	ticker := time.NewTicker(d.CheckInterval)
+	interval := d.CheckInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -387,5 +396,5 @@ var defaultLimitPatterns = []string{
 	"too many requests",
 	"please wait",
 	"try again later",
-	"exceeded.*limit",
+	"limit exceeded",
 }

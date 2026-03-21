@@ -700,6 +700,9 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 	if err != nil {
 		return result, err
 	}
+	if sessionsResult == nil {
+		return result, fmt.Errorf("session orchestrator returned nil result")
+	}
 	result.Sessions = sessionsResult
 	result.Errors = append(result.Errors, sessionsResult.Errors...)
 	logger.Info("[SwarmOrchestrator] phase_sessions_complete",
@@ -724,6 +727,9 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 	if err != nil {
 		return result, err
 	}
+	if launchResult == nil {
+		return result, fmt.Errorf("pane launcher returned nil result")
+	}
 	logger.Info("[SwarmOrchestrator] phase_launch_complete",
 		"successful", launchResult.Successful,
 		"failed", launchResult.Failed)
@@ -743,6 +749,9 @@ func (o *SwarmOrchestrator) Execute(ctx context.Context, plan *SwarmPlan, prompt
 		}
 		if err != nil {
 			return result, err
+		}
+		if injectionResult == nil {
+			return result, fmt.Errorf("prompt injector returned nil result")
 		}
 		logger.Info("[SwarmOrchestrator] phase_inject_complete",
 			"successful", injectionResult.Successful,

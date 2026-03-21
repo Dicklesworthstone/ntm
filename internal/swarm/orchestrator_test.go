@@ -373,6 +373,72 @@ func TestSwarmOrchestrator_Execute_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestSwarmOrchestrator_Execute_ErrorsOnNilSessionResult(t *testing.T) {
+	sess := &fakeSessionCreator{result: nil}
+	launcher := &fakePaneLauncher{result: &BatchLaunchResult{}}
+	injector := &fakePromptInjector{result: &BatchInjectionResult{}}
+
+	orch := &SwarmOrchestrator{
+		SessionOrchestrator: sess,
+		PaneLauncher:        launcher,
+		PromptInjector:      injector,
+	}
+
+	_, err := orch.Execute(context.Background(), &SwarmPlan{Sessions: []SessionSpec{}}, "")
+	if err == nil {
+		t.Fatal("expected error for nil session result")
+	}
+	if err.Error() != "session orchestrator returned nil result" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if launcher.called || injector.called {
+		t.Fatal("expected execution to stop before launch and injection phases")
+	}
+}
+
+func TestSwarmOrchestrator_Execute_ErrorsOnNilLaunchResult(t *testing.T) {
+	sess := &fakeSessionCreator{result: &OrchestrationResult{}}
+	launcher := &fakePaneLauncher{result: nil}
+	injector := &fakePromptInjector{result: &BatchInjectionResult{}}
+
+	orch := &SwarmOrchestrator{
+		SessionOrchestrator: sess,
+		PaneLauncher:        launcher,
+		PromptInjector:      injector,
+	}
+
+	_, err := orch.Execute(context.Background(), &SwarmPlan{Sessions: []SessionSpec{}}, "")
+	if err == nil {
+		t.Fatal("expected error for nil launch result")
+	}
+	if err.Error() != "pane launcher returned nil result" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if injector.called {
+		t.Fatal("expected execution to stop before prompt injection")
+	}
+}
+
+func TestSwarmOrchestrator_Execute_ErrorsOnNilInjectionResult(t *testing.T) {
+	sess := &fakeSessionCreator{result: &OrchestrationResult{}}
+	launcher := &fakePaneLauncher{result: &BatchLaunchResult{}}
+	injector := &fakePromptInjector{result: nil}
+
+	orch := &SwarmOrchestrator{
+		SessionOrchestrator: sess,
+		PaneLauncher:        launcher,
+		PromptInjector:      injector,
+	}
+
+	_, err := orch.Execute(context.Background(), &SwarmPlan{Sessions: []SessionSpec{}}, "hello")
+	if err == nil {
+		t.Fatal("expected error for nil injection result")
+	}
+	if err.Error() != "prompt injector returned nil result" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGeometryResult_NonUniform(t *testing.T) {
 	result := GeometryResult{
 		SessionName: "test_session",

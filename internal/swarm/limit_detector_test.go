@@ -131,6 +131,21 @@ func TestLimitDetectorStopPane(t *testing.T) {
 	detector.StopPane("nonexistent:1.1")
 }
 
+func TestLimitDetectorStartPaneNilContext(t *testing.T) {
+	detector := NewLimitDetector()
+
+	if err := detector.StartPane(nil, "test:1.1", "cc"); err != nil {
+		t.Fatalf("StartPane with nil context failed: %v", err)
+	}
+	t.Cleanup(func() {
+		detector.StopPane("test:1.1")
+	})
+
+	if !detector.IsMonitoring("test:1.1") {
+		t.Fatal("expected pane to be monitored after StartPane(nil, ...)")
+	}
+}
+
 func TestLimitEvent(t *testing.T) {
 	event := LimitEvent{
 		SessionPane: "test:1.5",
@@ -283,6 +298,13 @@ func TestCheckOutputPatternsByAgent(t *testing.T) {
 			output:      "Rate limit exceeded by upstream provider.",
 			wantMatch:   true,
 			wantPattern: "rate limit",
+		},
+		{
+			name:        "unknown_agent_limit_exceeded_literal",
+			agentType:   "unknown",
+			output:      "Request failed because limit exceeded for upstream provider.",
+			wantMatch:   true,
+			wantPattern: "limit exceeded",
 		},
 		{
 			name:      "partial_match_no_limit",
@@ -466,6 +488,26 @@ func TestLimitDetectorMonitorPaneEmitsEvent(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for limit event")
 	}
+}
+
+func TestLimitDetectorStartPaneZeroCheckIntervalDoesNotPanic(t *testing.T) {
+	mock := &MockTmuxClient{
+		t:               t,
+		CaptureSequence: []string{"Normal output"},
+	}
+	detector := NewLimitDetector()
+	detector.TmuxClient = mock
+	detector.CheckInterval = 0
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	if err := detector.StartPane(ctx, "test:1.1", "cc"); err != nil {
+		t.Fatalf("StartPane failed: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	detector.StopPane("test:1.1")
 }
 
 func TestDefaultLimitPatterns(t *testing.T) {
