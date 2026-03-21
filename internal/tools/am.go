@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -158,7 +159,8 @@ func (a *AMAdapter) HealthCheck(ctx context.Context) (json.RawMessage, error) {
 	defer resp.Body.Close()
 
 	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
+	// Limit read to 1MB to prevent OOM
+	if _, err := buf.ReadFrom(io.LimitReader(resp.Body, 1024*1024)); err != nil {
 		return nil, err
 	}
 

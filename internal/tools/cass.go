@@ -133,13 +133,19 @@ func (a *CASSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	
+	// Limit output to 10MB
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
+		}
+		if strings.Contains(err.Error(), ErrOutputLimitExceeded.Error()) {
+			return nil, fmt.Errorf("cass output exceeded 10MB limit")
 		}
 		return nil, fmt.Errorf("cass failed: %w: %s", err, stderr.String())
 	}

@@ -55,6 +55,25 @@ var ContextLimits = map[string]int64{
 	"default": 128000,
 }
 
+var (
+	sortedContextKeys []string
+	sortKeysOnce      sync.Once
+)
+
+func getSortedContextKeys() []string {
+	sortKeysOnce.Do(func() {
+		var keys []string
+		for k := range ContextLimits {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return len(keys[i]) > len(keys[j])
+		})
+		sortedContextKeys = keys
+	})
+	return sortedContextKeys
+}
+
 // GetContextLimit returns the context limit for a model.
 // Returns the default limit if the model is not found.
 func GetContextLimit(model string) int64 {
@@ -70,15 +89,7 @@ func GetContextLimit(model string) int64 {
 	}
 
 	// Try prefix matching for families
-	// Sort keys by length descending to ensure we match the longest prefix
-	// (e.g. match "gpt-4-turbo" before "gpt-4")
-	var keys []string
-	for k := range ContextLimits {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return len(keys[i]) > len(keys[j])
-	})
+	keys := getSortedContextKeys()
 
 	modelLower := strings.ToLower(model)
 	for _, key := range keys {

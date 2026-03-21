@@ -723,6 +723,10 @@ func (m *TimelinePanel) renderTimelineBarText(agentID string, start, end time.Ti
 }
 
 func (m *TimelinePanel) renderTimelineBar(agentID string, start, end time.Time, width int) string {
+	if width <= 2 {
+		return ""
+	}
+
 	t := m.theme
 	var bar strings.Builder
 
@@ -743,7 +747,12 @@ func (m *TimelinePanel) renderTimelineBar(agentID string, start, end time.Time, 
 
 	// Calculate time per character
 	duration := end.Sub(start)
-	charDuration := duration / time.Duration(width-2)
+	// Guard against width-2 being 0 or negative (already guarded by early return, but max() adds safety)
+	denom := width - 2
+	if denom < 1 {
+		denom = 1
+	}
+	charDuration := duration / time.Duration(denom)
 
 	// Render each time slot
 	for i := 0; i < width-2; i++ {
@@ -1003,6 +1012,10 @@ func (m *TimelinePanel) markerColor(mt state.MarkerType) lipgloss.Color {
 }
 
 func (m *TimelinePanel) renderMarkerRow(agentID string, windowStart, windowEnd time.Time, width int) string {
+	if width <= 0 {
+		return ""
+	}
+
 	t := m.theme
 	var row strings.Builder
 
