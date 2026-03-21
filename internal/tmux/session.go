@@ -1263,6 +1263,14 @@ func (c *Client) GetCurrentSession() string {
 		return ""
 	}
 	output, err := c.Run("display-message", "-p", "#{session_name}")
+	if err == nil {
+		return output
+	}
+	paneTarget := strings.TrimSpace(os.Getenv("TMUX_PANE"))
+	if paneTarget == "" {
+		return ""
+	}
+	output, err = c.Run("display-message", "-p", "-t", paneTarget, "#{session_name}")
 	if err != nil {
 		return ""
 	}

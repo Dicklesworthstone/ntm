@@ -3,6 +3,7 @@ package robot
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -354,21 +355,21 @@ func PrintOverlay(opts OverlayOptions) error {
 			"Install tmux to use overlay popups",
 		))
 	}
-	if !overlayInTmux() {
-		return outputJSON(newOverlayErrorOutput(
-			opts,
-			fmt.Errorf("overlay requires an attached tmux client"),
-			ErrCodeInternalError,
-			"Run --robot-overlay from inside tmux so tmux can draw the popup",
-		))
-	}
 	session := resolveOverlaySession(opts.Session)
 	if session == "" {
 		return outputJSON(newOverlayErrorOutput(
 			opts,
-			fmt.Errorf("could not determine current tmux session"),
+			fmt.Errorf("session is required"),
+			ErrCodeInvalidFlag,
+			"Pass --overlay-session=<session> or run --robot-overlay inside the target tmux session",
+		))
+	}
+	if !overlayInTmux() {
+		return outputJSON(newOverlayErrorOutput(
+			OverlayOptions{Session: session, Cursor: opts.Cursor, NoWait: opts.NoWait},
+			fmt.Errorf("overlay requires an attached tmux client"),
 			ErrCodeInternalError,
-			"Pass --overlay-session=<session> or run inside the target tmux session",
+			"Run --robot-overlay from inside tmux so tmux can draw the popup",
 		))
 	}
 	if !overlaySessionExists(session) {
@@ -386,9 +387,9 @@ func PrintOverlay(opts OverlayOptions) error {
 	}
 
 	cmd := overlayExecCommand(overlayBinaryPath(), overlayPopupArgs(ntmBin, session, opts.Cursor)...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 
 	output := OverlayOutput{
 		RobotResponse: NewRobotResponse(true),

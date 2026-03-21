@@ -1804,7 +1804,7 @@ Session Operations:
 --robot-tail=SESSION    Capture pane output (--lines=50, --panes=1,2)
 --robot-ensemble=SESSION Ensemble state (modes, status, synthesis readiness)
 --robot-interrupt=SESSION  Ctrl+C to agents (--interrupt-msg="new task")
---robot-overlay         Open dashboard overlay for human handoff (--overlay-session=proj, --overlay-cursor=42)
+--robot-overlay         Open dashboard overlay for human handoff (--overlay-session=proj, --overlay-cursor=42, --overlay-no-wait)
 --robot-is-working=SESSION Check if agents are busy
 --robot-wait=SESSION    Wait for idle state (--timeout=5m, --condition=idle)
                         Conditions: idle, complete, generating, healthy
@@ -1897,6 +1897,7 @@ Attention Feed Commands:
   --robot-events         Raw event replay (--since-cursor=N, --limit=50)
   --robot-digest         Aggregated summary of recent changes
   --robot-attention      Wait-then-digest (the one obvious tending command)
+  --robot-overlay        Human handoff actuator (optionally non-blocking with --overlay-no-wait)
 
 Profiles (--profile=NAME):
   operator    Default. Shows actionable events + important state changes.
@@ -1918,7 +1919,7 @@ Common Workflows:
 -----------------
 - Single agent: ntm --robot-spawn=proj --spawn-cc=1 --spawn-wait
 - Send+wait:    ntm --robot-send=proj --msg="do X" --track
-- Handoff:      ntm --robot-overlay --overlay-session=proj --overlay-cursor=42
+- Handoff:      ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait
 - Bootstrap:    ntm --robot-snapshot   # use latest_cursor + replay_window for follow-up
 - Tending:      ntm --robot-attention --since-cursor=42  # wait-then-digest loop
 - Recover:      ntm --robot-snapshot   # resync after cursor expiration

@@ -735,6 +735,54 @@ func TestDocsContentMentionsAttentionWait(t *testing.T) {
 	}
 }
 
+func TestDocsContentMentionsOverlayHandoff(t *testing.T) {
+	t.Parallel()
+
+	commands := getCommandsContent()
+	if commands == nil {
+		t.Fatal("getCommandsContent() returned nil")
+	}
+
+	foundAgentControl := false
+	for _, section := range commands.Sections {
+		if section.Heading != "Agent Control" {
+			continue
+		}
+		foundAgentControl = true
+		if !strings.Contains(section.Body, "--robot-overlay") {
+			t.Fatalf("Agent Control docs should mention --robot-overlay, got %q", section.Body)
+		}
+	}
+	if !foundAgentControl {
+		t.Fatal("Agent Control section not found")
+	}
+
+	examples := getExamplesContent()
+	if examples == nil {
+		t.Fatal("getExamplesContent() returned nil")
+	}
+
+	found := false
+	for _, example := range examples.Examples {
+		if example.Name != "handoff_to_human" {
+			continue
+		}
+		found = true
+		if !strings.Contains(example.Command, "--robot-overlay") {
+			t.Errorf("handoff_to_human command = %q, want overlay invocation", example.Command)
+		}
+		if !strings.Contains(example.Command, "--overlay-no-wait") {
+			t.Errorf("handoff_to_human command = %q, want explicit no-wait handoff", example.Command)
+		}
+		if !strings.Contains(example.Notes, "operator") {
+			t.Errorf("handoff_to_human notes = %q, want operator guidance", example.Notes)
+		}
+	}
+	if !found {
+		t.Fatal("expected handoff_to_human example")
+	}
+}
+
 // =============================================================================
 // categoryOrder tests
 // =============================================================================

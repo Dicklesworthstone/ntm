@@ -197,6 +197,7 @@ func getCommandsContent() *DocsContent {
 				Body: `--robot-send=SESSION: Send message to panes
 --robot-interrupt=SESSION: Send Ctrl+C to agents
 --robot-wait=SESSION: Wait for pane state or attention-feed condition
+--robot-overlay: Open dashboard overlay for human handoff (--overlay-session optional inside tmux)
 --robot-route=SESSION: Get routing recommendation`,
 			},
 			{
@@ -316,6 +317,12 @@ func getExamplesContent() *DocsContent {
 				Description: "Wait for the next action-required attention signal",
 				Command:     "ntm --robot-wait=proj --wait-until=action_required --wait-timeout=2m",
 				Notes:       "Useful after taking a snapshot when you want the next operator-relevant wakeup",
+			},
+			{
+				Name:        "handoff_to_human",
+				Description: "Open the dashboard overlay as a structured human handoff actuator",
+				Command:     "ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait",
+				Notes:       "Use this when an operator should jump directly to the relevant attention item instead of parsing free-form instructions",
 			},
 			// Recovery
 			{
