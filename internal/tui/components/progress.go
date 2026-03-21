@@ -19,6 +19,8 @@ import (
 // animations less smooth. 150ms is a good balance.
 const progressTickInterval = 150 * time.Millisecond
 
+const progressSpringTickInterval = 16 * time.Millisecond
+
 // ASCII fallback characters for terminals without Unicode block support
 const (
 	FilledASCII = "="
@@ -38,6 +40,7 @@ type ProgressBar struct {
 	EmptyChar      string
 	Animated       bool
 	AnimationTick  int
+	valueSpring    *SpringManager
 }
 
 // ProgressTickMsg is sent for animation updates
@@ -61,12 +64,13 @@ func NewProgressBar(width int) ProgressBar {
 		EmptyChar:     "░",
 		Animated:      styles.AnimationsEnabled() && terminal.SupportsTrueColor(),
 		AnimationTick: 0,
+		valueSpring:   NewSpringManager(),
 	}
 }
 
 // Init initializes the progress bar
 func (p ProgressBar) Init() tea.Cmd {
-	if p.Animated {
+	if p.Animated || (p.valueSpring != nil && p.valueSpring.IsAnimating()) {
 		return p.tick()
 	}
 	return nil
@@ -76,11 +80,19 @@ func (p ProgressBar) Init() tea.Cmd {
 func (p ProgressBar) Update(msg tea.Msg) (ProgressBar, tea.Cmd) {
 	switch msg.(type) {
 	case ProgressTickMsg:
-		if !p.Animated {
+		if p.valueSpring != nil {
+			p.valueSpring.Tick()
+		}
+		if !p.Animated && (p.valueSpring == nil || !p.valueSpring.IsAnimating()) {
 			return p, nil
 		}
-		p.AnimationTick++
-		return p, p.tick()
+		if p.Animated {
+			p.AnimationTick++
+		}
+		if p.Animated || (p.valueSpring != nil && p.valueSpring.IsAnimating()) {
+			return p, p.tick()
+		}
+		return p, nil
 	}
 	return p, nil
 }
@@ -88,6 +100,9 @@ func (p ProgressBar) Update(msg tea.Msg) (ProgressBar, tea.Cmd) {
 // View renders the progress bar
 func (p ProgressBar) View() string {
 	percent := p.Percent
+	if p.valueSpring != nil && p.valueSpring.Has("percent") {
+		percent = p.valueSpring.Get("percent")
+	}
 	if percent < 0 {
 		percent = 0
 	} else if percent > 1 {
@@ -173,16 +188,28 @@ func (p ProgressBar) renderStaticBubblesBar(percent float64, filledChar, emptyCh
 // SetPercent updates the progress percentage
 func (p *ProgressBar) SetPercent(percent float64) {
 	if percent < 0 {
-		p.Percent = 0
+		percent = 0
 	} else if percent > 1 {
-		p.Percent = 1
-	} else {
-		p.Percent = percent
+		percent = 1
 	}
+	p.Percent = percent
+
+	if p.valueSpring == nil {
+		p.valueSpring = NewSpringManager()
+	}
+	if styles.ReducedMotionEnabled() || !p.valueSpring.Has("percent") {
+		p.valueSpring.SetImmediate("percent", percent)
+		return
+	}
+	p.valueSpring.SetWithDeadZone("percent", percent, 5.0, 0.3, 0.02)
 }
 
 func (p ProgressBar) tick() tea.Cmd {
-	return tea.Tick(progressTickInterval, func(t time.Time) tea.Msg {
+	interval := progressTickInterval
+	if p.valueSpring != nil && p.valueSpring.IsAnimating() {
+		interval = progressSpringTickInterval
+	}
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return ProgressTickMsg(t)
 	})
 }

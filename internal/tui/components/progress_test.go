@@ -1,10 +1,12 @@
 package components
 
 import (
+	"math"
 	"os"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
@@ -256,6 +258,53 @@ func TestProgressBarInitAndUpdate(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected Update to return a command on tick")
+	}
+}
+
+func TestProgressBarSpringsPercentTransitions(t *testing.T) {
+	enableAnimationsForTest(t)
+
+	bar := NewProgressBar(10)
+	bar.SetPercent(0.25)
+	if got := bar.valueSpring.Get("percent"); got != 0.25 {
+		t.Fatalf("initial spring value = %f, want 0.25", got)
+	}
+
+	bar.SetPercent(0.75)
+	if got := bar.valueSpring.Get("percent"); got != 0.25 {
+		t.Fatalf("spring should animate from prior value, got %f", got)
+	}
+	if !bar.valueSpring.IsAnimating() {
+		t.Fatal("expected value spring to animate after significant change")
+	}
+
+	for i := 0; i < 240; i++ {
+		var cmd tea.Cmd
+		bar, cmd = bar.Update(ProgressTickMsg{})
+		_ = cmd
+	}
+
+	if diff := math.Abs(bar.valueSpring.Get("percent") - 0.75); diff > 0.05 {
+		t.Fatalf("spring percent diff = %f, want <= 0.05", diff)
+	}
+}
+
+func TestProgressBarPercentReducedMotionSnaps(t *testing.T) {
+	// Clear env vars so NTM_REDUCE_MOTION takes effect
+	t.Setenv("NTM_ANIMATIONS", "")
+	t.Setenv("NTM_REDUCE_MOTION", "1")
+	t.Setenv("CI", "")
+	t.Setenv("TMUX", "")
+
+	bar := NewProgressBar(10)
+	bar.SetPercent(0.25)
+	bar.SetPercent(0.75)
+
+	if got := bar.valueSpring.Get("percent"); got != 0.75 {
+		t.Fatalf("reduced motion spring value = %f, want 0.75", got)
+	}
+	if bar.valueSpring.IsAnimating() {
+		t.Fatal("expected reduced motion to suppress percent spring animation")
 	}
 }
 
