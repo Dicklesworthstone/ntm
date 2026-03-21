@@ -18,14 +18,15 @@ func TestCategoryIndex(t *testing.T) {
 		want int
 	}{
 		{"state", "state", 0},
-		{"ensemble", "ensemble", 1},
-		{"control", "control", 2},
-		{"spawn", "spawn", 3},
-		{"beads", "beads", 4},
-		{"bv", "bv", 5},
-		{"cass", "cass", 6},
-		{"pipeline", "pipeline", 7},
-		{"utility", "utility", 8},
+		{"attention", "attention", 1},
+		{"ensemble", "ensemble", 2},
+		{"control", "control", 3},
+		{"spawn", "spawn", 4},
+		{"beads", "beads", 5},
+		{"bv", "bv", 6},
+		{"cass", "cass", 7},
+		{"pipeline", "pipeline", 8},
+		{"utility", "utility", 9},
 		{"unknown category", "nonexistent", len(categoryOrder)},
 		{"empty string", "", len(categoryOrder)},
 	}
