@@ -95,6 +95,11 @@ type Panel interface {
 	// Keybindings returns panel-specific keyboard shortcuts.
 	// These are active when the panel is focused.
 	Keybindings() []Keybinding
+
+	// HandlesOwnHeight returns true if the panel manages its own height
+	// (e.g., via viewport scrolling) and should not be truncated by the dashboard.
+	// Default is false for backward compatibility.
+	HandlesOwnHeight() bool
 }
 
 // PanelBase provides common functionality for panel implementations.
@@ -142,6 +147,12 @@ func (b *PanelBase) Config() PanelConfig {
 // Override in concrete panels for panel-specific shortcuts.
 func (b *PanelBase) Keybindings() []Keybinding {
 	return nil
+}
+
+// HandlesOwnHeight returns false by default.
+// Override in panels that use viewport scrolling.
+func (b *PanelBase) HandlesOwnHeight() bool {
+	return false
 }
 
 // IsFocused returns whether the panel is focused
