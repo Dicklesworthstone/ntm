@@ -4,7 +4,6 @@ package dashboard
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,7 +16,8 @@ import (
 // paneItem implements list.Item for pane list entries.
 // It wraps the underlying PaneTableRow data for bubbles/list integration.
 type paneItem struct {
-	row PaneTableRow
+	pane tmux.Pane
+	row  PaneTableRow
 }
 
 // Title returns the pane title for list display.
@@ -111,7 +111,7 @@ func toPaneItems(panes []tmux.Pane, statuses map[int]PaneStatus, beads []bv.Bead
 		ps := statuses[pane.Index]
 		row := BuildPaneTableRow(pane, ps, beads, nil)
 		row.BorderColor = AgentBorderColor(string(pane.Type), t)
-		items[i] = paneItem{row: row}
+		items[i] = paneItem{pane: pane, row: row}
 	}
 	return items
 }
@@ -121,8 +121,7 @@ func toPaneItems(panes []tmux.Pane, statuses map[int]PaneStatus, beads []bv.Bead
 func findPaneIndexByID(items []list.Item, paneID string) int {
 	for i, item := range items {
 		if pi, ok := item.(paneItem); ok {
-			// Match by title since PaneTableRow doesn't have explicit ID
-			if strings.Contains(pi.row.Title, paneID) {
+			if pi.pane.ID == paneID {
 				return i
 			}
 		}

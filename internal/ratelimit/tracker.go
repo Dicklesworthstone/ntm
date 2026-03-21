@@ -794,8 +794,9 @@ func (ct *CodexThrottle) RecordSuccess() {
 // Status returns a read-only snapshot of the current throttle state.
 func (ct *CodexThrottle) Status() CodexThrottleStatus {
 	ct.mu.Lock()
-	ct.advanceStateLocked()
 	defer ct.mu.Unlock()
+
+	ct.advanceStateLocked()
 
 	var remaining time.Duration
 	if ct.phase == ThrottlePaused {
