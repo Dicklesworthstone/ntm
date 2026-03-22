@@ -64,6 +64,65 @@ func setupTestServer(t *testing.T) (*Server, *state.Store) {
 	return srv, store
 }
 
+func newMockAgentMailMCPServer(
+	t *testing.T,
+	handlers map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError),
+) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+
+		params, _ := req.Params.(map[string]interface{})
+		toolName, _ := params["name"].(string)
+		args, _ := params["arguments"].(map[string]interface{})
+
+		handler, ok := handlers[toolName]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &agentmail.JSONRPCError{
+					Code:    -32601,
+					Message: "unknown tool: " + toolName,
+				},
+			}); err != nil {
+				t.Fatalf("encode response: %v", err)
+			}
+			return
+		}
+
+		result, rpcErr := handler(args)
+		w.Header().Set("Content-Type", "application/json")
+		if rpcErr != nil {
+			if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error:   rpcErr,
+			}); err != nil {
+				t.Fatalf("encode response: %v", err)
+			}
+			return
+		}
+
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  resultJSON,
+		}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+}
+
 func TestNew(t *testing.T) {
 	srv := New(Config{})
 	if srv == nil {
@@ -124,24 +183,7 @@ func TestValidateConfigPublicBaseURL(t *testing.T) {
 func TestHandleGetMessage_NotImplemented(t *testing.T) {
 	t.Parallel()
 
-	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req agentmail.JSONRPCRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &agentmail.JSONRPCError{
-				Code:    -32601,
-				Message: "unknown tool: get_message",
-			},
-		}); err != nil {
-			t.Fatalf("encode response: %v", err)
-		}
-	}))
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
 	defer mcpServer.Close()
 
 	srv, _ := setupTestServer(t)
@@ -169,6 +211,348 @@ func TestHandleGetMessage_NotImplemented(t *testing.T) {
 	}
 	if !strings.Contains(resp.Hint, "include_bodies") {
 		t.Fatalf("hint = %q, want include_bodies guidance", resp.Hint)
+	}
+}
+
+func TestHandleReplyMessage_MessageNotFound(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"reply_message": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return nil, &agentmail.JSONRPCError{Code: -32000, Message: "Message not found"}
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/42/reply", strings.NewReader(`{"sender_name":"BlueLake","body_md":"reply"}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleReplyMessage(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeMessageNotFound {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeMessageNotFound)
+	}
+}
+
+func TestHandleReservePaths_ConflictReturnsStructured409(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.ReservationResult{
+				Granted: []agentmail.FileReservation{
+					{ID: 7, PathPattern: "internal/serve/*.go", AgentName: "BlueLake", Exclusive: true},
+				},
+				Conflicts: []agentmail.ReservationConflict{
+					{Path: "internal/serve/*.go", Holders: []string{"RedStone"}},
+				},
+			}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(`{"agent_name":"BlueLake","paths":["internal/serve/*.go"],"exclusive":true}`))
+
+	srv.handleReservePaths(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	var resp struct {
+		Success   bool                            `json:"success"`
+		Granted   []agentmail.FileReservation     `json:"granted"`
+		Conflicts []agentmail.ReservationConflict `json:"conflicts"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("expected success=true for structured conflict response")
+	}
+	if len(resp.Granted) != 1 {
+		t.Fatalf("len(granted) = %d, want 1", len(resp.Granted))
+	}
+	if len(resp.Conflicts) != 1 {
+		t.Fatalf("len(conflicts) = %d, want 1", len(resp.Conflicts))
+	}
+}
+
+func TestHandleGetReservation_NotImplemented(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reservations/42", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleGetReservation(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeNotImplemented {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeNotImplemented)
+	}
+}
+
+func TestHandleGetReservation_NotFound(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"list_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return []agentmail.FileReservation{}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reservations/42", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleGetReservation(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeNotFound {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeNotFound)
+	}
+}
+
+func TestHandleRenewReservation_ReturnsRenewedReservations(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"renew_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.RenewReservationsResult{
+				Renewed: 1,
+				Reservations: []agentmail.RenewedReservation{
+					{
+						ID:          42,
+						PathPattern: "internal/serve/*.go",
+					},
+				},
+			}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/42/renew", strings.NewReader(`{"agent_name":"BlueLake","extend_seconds":900}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRenewReservation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Success      bool                           `json:"success"`
+		Renewed      int                            `json:"renewed"`
+		Reservations []agentmail.RenewedReservation `json:"reservations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("expected success=true")
+	}
+	if resp.Renewed != 1 {
+		t.Fatalf("renewed = %d, want 1", resp.Renewed)
+	}
+	if len(resp.Reservations) != 1 {
+		t.Fatalf("len(reservations) = %d, want 1", len(resp.Reservations))
+	}
+	if resp.Reservations[0].PathPattern != "internal/serve/*.go" {
+		t.Fatalf("path_pattern = %q, want %q", resp.Reservations[0].PathPattern, "internal/serve/*.go")
+	}
+}
+
+func TestHandleReleaseReservations_ReturnsReleaseCount(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.ReleaseReservationsResult{Released: 2}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/reservations", strings.NewReader(`{"agent_name":"BlueLake","paths":["a/*","b/*"]}`))
+
+	srv.handleReleaseReservations(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Success  bool `json:"success"`
+		Released int  `json:"released"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("expected success=true")
+	}
+	if resp.Released != 2 {
+		t.Fatalf("released = %d, want 2", resp.Released)
+	}
+}
+
+func TestHandleReleaseReservationByID_NotFoundOnZeroRelease(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.ReleaseReservationsResult{Released: 0}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/42/release?agent_name=BlueLake", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleReleaseReservationByID(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeNotFound {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeNotFound)
+	}
+}
+
+func TestHandleMarkMessageRead_AgentNotFound(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"mark_message_read": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return nil, &agentmail.JSONRPCError{Code: -32000, Message: "Agent not registered in project"}
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mail/messages/42/read?agent_name=BlueLake", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleMarkMessageRead(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeAgentNotFound {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeAgentNotFound)
+	}
+}
+
+func TestHandleSearchMessages_NotImplemented(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/search?q=test", nil)
+
+	srv.handleSearchMessages(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeNotImplemented {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeNotImplemented)
 	}
 }
 

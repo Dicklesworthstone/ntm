@@ -18,12 +18,11 @@ import (
 
 // Mail-specific error codes
 const (
-	ErrCodeMailUnavailable   = "MAIL_UNAVAILABLE"
-	ErrCodeAgentNotFound     = "AGENT_NOT_FOUND"
-	ErrCodeMessageNotFound   = "MESSAGE_NOT_FOUND"
-	ErrCodeThreadNotFound    = "THREAD_NOT_FOUND"
-	ErrCodeReservationFailed = "RESERVATION_FAILED"
-	ErrCodeContactDenied     = "CONTACT_DENIED"
+	ErrCodeMailUnavailable = "MAIL_UNAVAILABLE"
+	ErrCodeAgentNotFound   = "AGENT_NOT_FOUND"
+	ErrCodeMessageNotFound = "MESSAGE_NOT_FOUND"
+	ErrCodeThreadNotFound  = "THREAD_NOT_FOUND"
+	ErrCodeContactDenied   = "CONTACT_DENIED"
 )
 
 // Mail request/response types
@@ -136,6 +135,34 @@ func writeAgentMailHandlerError(
 		writeErrorResponse(w, http.StatusGatewayTimeout, ErrCodeTimeout, err.Error(), nil, reqID)
 	default:
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+	}
+}
+
+func writeAgentMailAgentActionError(w http.ResponseWriter, reqID string, err error, notImplementedMessage string) {
+	writeAgentMailHandlerError(w, reqID, err, ErrCodeAgentNotFound, func(err error) bool {
+		return errors.Is(err, agentmail.ErrAgentNotRegistered) || agentmail.IsNotFound(err)
+	}, notImplementedMessage, "")
+}
+
+func writeAgentMailMessageActionError(w http.ResponseWriter, reqID string, err error, notImplementedMessage string) {
+	switch {
+	case errors.Is(err, agentmail.ErrAgentNotRegistered):
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeAgentNotFound, err.Error(), nil, reqID)
+	default:
+		writeAgentMailHandlerError(w, reqID, err, ErrCodeMessageNotFound, func(err error) bool {
+			return errors.Is(err, agentmail.ErrMessageNotFound) || agentmail.IsNotFound(err)
+		}, notImplementedMessage, "")
+	}
+}
+
+func writeAgentMailReservationError(w http.ResponseWriter, reqID string, err error, notImplementedMessage string) {
+	switch {
+	case errors.Is(err, agentmail.ErrAgentNotRegistered):
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeAgentNotFound, err.Error(), nil, reqID)
+	case agentmail.IsReservationConflict(err):
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict, err.Error(), nil, reqID)
+	default:
+		writeAgentMailHandlerError(w, reqID, err, ErrCodeNotFound, agentmail.IsNotFound, notImplementedMessage, "")
 	}
 }
 
@@ -415,9 +442,7 @@ func (s *Server) handleGetMailAgent(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := client.Whois(ctx, s.projectDir, agentName, true)
 	if err != nil {
-		writeAgentMailHandlerError(w, reqID, err, ErrCodeAgentNotFound, func(err error) bool {
-			return errors.Is(err, agentmail.ErrAgentNotRegistered) || agentmail.IsNotFound(err)
-		}, "agent lookup is not supported by the configured Agent Mail server", "")
+		writeAgentMailAgentActionError(w, reqID, err, "agent lookup is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -633,7 +658,7 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 		CC:         req.CC,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailMessageActionError(w, reqID, err, "message replies are not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -676,7 +701,7 @@ func (s *Server) handleMarkMessageRead(w http.ResponseWriter, r *http.Request) {
 
 	err = client.MarkMessageRead(ctx, s.projectDir, agentName, messageID)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailMessageActionError(w, reqID, err, "marking messages as read is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -725,7 +750,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request) {
 
 	err = client.AcknowledgeMessage(ctx, s.projectDir, agentName, messageID)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailMessageActionError(w, reqID, err, "message acknowledgements are not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -778,7 +803,7 @@ func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
 		Limit:      limit,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailHandlerError(w, reqID, err, "", nil, "message search is not supported by the configured Agent Mail server", "")
 		return
 	}
 
@@ -860,7 +885,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 
 	contacts, err := client.ListContacts(ctx, s.projectDir, agentName)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailAgentActionError(w, reqID, err, "listing contacts is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1006,7 +1031,7 @@ func (s *Server) handleSetContactPolicy(w http.ResponseWriter, r *http.Request) 
 
 	err = client.SetContactPolicy(ctx, s.projectDir, req.AgentName, req.Policy)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailAgentActionError(w, reqID, err, "setting contact policy is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1042,7 +1067,7 @@ func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) 
 	allAgents := agentName == ""
 	reservations, err := client.ListReservations(ctx, s.projectDir, agentName, allAgents)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "listing reservations is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1094,9 +1119,12 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 		Exclusive:  req.Exclusive,
 		Reason:     req.Reason,
 	})
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeReservationFailed, err.Error(), nil, reqID)
+	if err != nil && (!agentmail.IsReservationConflict(err) || result == nil) {
+		writeAgentMailReservationError(w, reqID, err, "creating reservations is not supported by the configured Agent Mail server")
 		return
+	}
+	if result == nil {
+		result = &agentmail.ReservationResult{}
 	}
 
 	if len(result.Granted) > 0 {
@@ -1158,9 +1186,9 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	err = client.ReleaseReservations(ctx, s.projectDir, req.AgentName, req.Paths, req.IDs)
+	releaseResult, err := client.ReleaseReservations(ctx, s.projectDir, req.AgentName, req.Paths, req.IDs)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1171,7 +1199,7 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 	})
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"released": true,
+		"released": releaseResult.Released,
 	}, reqID)
 }
 
@@ -1202,7 +1230,7 @@ func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Reque
 
 	conflicts, err := client.CheckConflicts(ctx, s.projectDir, paths)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "reservation conflict inspection is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1248,7 +1276,7 @@ func (s *Server) handleGetReservation(w http.ResponseWriter, r *http.Request) {
 
 	reservation, err := client.GetReservation(ctx, s.projectDir, reservationID)
 	if err != nil {
-		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "reservation lookup is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1289,9 +1317,13 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	err = client.ReleaseReservations(ctx, s.projectDir, agentName, nil, []int{reservationID})
+	releaseResult, err := client.ReleaseReservations(ctx, s.projectDir, agentName, nil, []int{reservationID})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
+		return
+	}
+	if releaseResult == nil || releaseResult.Released == 0 {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "reservation not found", nil, reqID)
 		return
 	}
 
@@ -1355,7 +1387,7 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 		ReservationIDs: []int{reservationID},
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "renewing reservations is not supported by the configured Agent Mail server")
 		return
 	}
 
@@ -1417,7 +1449,7 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 		NotifyPrevious: req.NotifyPrevious,
 	})
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		writeAgentMailReservationError(w, reqID, err, "force releasing reservations is not supported by the configured Agent Mail server")
 		return
 	}
 

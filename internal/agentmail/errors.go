@@ -124,7 +124,7 @@ func mapJSONRPCError(rpcErr *JSONRPCError) error {
 		return fmt.Errorf("%w: %s", ErrAgentNotRegistered, rpcErr.Message)
 	case strings.Contains(msg, "message not found"):
 		return fmt.Errorf("%w: %s", ErrMessageNotFound, rpcErr.Message)
-	case strings.Contains(msg, "conflict") || strings.Contains(msg, "reservation"):
+	case strings.Contains(msg, "conflict") && strings.Contains(msg, "reservation"):
 		return fmt.Errorf("%w: %s", ErrReservationConflict, rpcErr.Message)
 	case strings.Contains(msg, "not found") && !strings.Contains(msg, "method not found"):
 		return fmt.Errorf("%w: %s", ErrNotFound, rpcErr.Message)

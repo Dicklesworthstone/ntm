@@ -424,7 +424,7 @@ type RenewReservationsOptions struct {
 // RenewReservationsResult contains the result of renewing reservations.
 type RenewReservationsResult struct {
 	Renewed      int                  `json:"renewed"`
-	Reservations []RenewedReservation `json:"reservations"`
+	Reservations []RenewedReservation `json:"file_reservations"`
 }
 
 // RenewedReservation contains info about a renewed reservation.
@@ -433,6 +433,12 @@ type RenewedReservation struct {
 	PathPattern  string   `json:"path_pattern"`
 	OldExpiresTS FlexTime `json:"old_expires_ts"`
 	NewExpiresTS FlexTime `json:"new_expires_ts"`
+}
+
+// ReleaseReservationsResult contains the result of releasing reservations.
+type ReleaseReservationsResult struct {
+	Released   int       `json:"released"`
+	ReleasedAt *FlexTime `json:"released_at,omitempty"`
 }
 
 // ForceReleaseOptions contains options for forcibly releasing a stale reservation.

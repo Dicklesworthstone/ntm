@@ -438,7 +438,7 @@ func (c *Client) ReservePaths(ctx context.Context, opts FileReservationOptions) 
 }
 
 // ReleaseReservations releases file path reservations.
-func (c *Client) ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) error {
+func (c *Client) ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) (*ReleaseReservationsResult, error) {
 	args := map[string]interface{}{
 		"project_key": projectKey,
 		"agent_name":  agentName,
@@ -450,8 +450,17 @@ func (c *Client) ReleaseReservations(ctx context.Context, projectKey, agentName 
 		args["file_reservation_ids"] = ids
 	}
 
-	_, err := c.callTool(ctx, "release_file_reservations", args)
-	return err
+	result, err := c.callTool(ctx, "release_file_reservations", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var releaseResult ReleaseReservationsResult
+	if err := json.Unmarshal(result, &releaseResult); err != nil {
+		return nil, NewAPIError("release_file_reservations", 0, err)
+	}
+
+	return &releaseResult, nil
 }
 
 // RenewReservations extends the TTL of existing reservations using options struct.
@@ -1082,7 +1091,7 @@ func (c *Client) GetReservation(ctx context.Context, projectKey string, reservat
 		}
 	}
 
-	return nil, fmt.Errorf("reservation %d not found", reservationID)
+	return nil, fmt.Errorf("%w: reservation %d not found", ErrNotFound, reservationID)
 }
 
 // RenewReservationsWithOptions is an alias for RenewReservations for backward compatibility.

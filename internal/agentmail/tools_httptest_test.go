@@ -555,9 +555,15 @@ func TestReleaseReservations(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(WithBaseURL(server.URL + "/"))
-	err := c.ReleaseReservations(context.Background(), "/test", "TestAgent", []string{"a/*"}, []int{1, 2})
+	result, err := c.ReleaseReservations(context.Background(), "/test", "TestAgent", []string{"a/*"}, []int{1, 2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Released != 2 {
+		t.Fatalf("released = %d, want 2", result.Released)
 	}
 }
 
@@ -589,6 +595,12 @@ func TestRenewReservations(t *testing.T) {
 	}
 	if result.Renewed != 1 {
 		t.Errorf("renewed = %d, want 1", result.Renewed)
+	}
+	if len(result.Reservations) != 1 {
+		t.Fatalf("len(reservations) = %d, want 1", len(result.Reservations))
+	}
+	if result.Reservations[0].PathPattern != "a/*" {
+		t.Errorf("path_pattern = %q, want %q", result.Reservations[0].PathPattern, "a/*")
 	}
 }
 

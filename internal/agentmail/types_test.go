@@ -190,6 +190,7 @@ func TestMapJSONRPCError(t *testing.T) {
 		{"agent not registered", &JSONRPCError{Code: -32000, Message: "Agent not registered in project"}, false, ErrAgentNotRegistered},
 		{"message not found", &JSONRPCError{Code: -32000, Message: "Message not found"}, false, ErrMessageNotFound},
 		{"reservation conflict", &JSONRPCError{Code: -32000, Message: "Reservation conflict detected"}, false, ErrReservationConflict},
+		{"reservation not found", &JSONRPCError{Code: -32000, Message: "Reservation 42 not found"}, false, ErrNotFound},
 		{"generic not found", &JSONRPCError{Code: -32000, Message: "Thread not found"}, false, ErrNotFound},
 		{"literal method not found", &JSONRPCError{Code: -32601, Message: "Method not found"}, false, ErrNotImplemented},
 		{"invalid request code", &JSONRPCError{Code: -32600, Message: "bad request"}, false, ErrInvalidRequest},
