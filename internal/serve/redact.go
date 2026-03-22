@@ -193,8 +193,11 @@ func (rw *redactingResponseWriter) Flush() {
 // Content-Type comparison is case-insensitive per RFC 2616.
 func isJSONContent(contentType string) bool {
 	ct := strings.ToLower(contentType)
-	return ct == "application/json" ||
-		len(ct) > 16 && ct[:16] == "application/json"
+	if ct == "application/json" {
+		return true
+	}
+	// Match "application/json; charset=utf-8" but not "application/jsonpatch"
+	return len(ct) > 16 && ct[:16] == "application/json" && (ct[16] == ';' || ct[16] == ' ')
 }
 
 // logRedactionSummary logs a redaction summary.

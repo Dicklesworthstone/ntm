@@ -95,15 +95,18 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 		}
 	}
 
-	// Sort panes by WindowIndex, then Index to ensure creation order matches structure
-	sort.Slice(state.Panes, func(i, j int) bool {
-		if state.Panes[i].WindowIndex != state.Panes[j].WindowIndex {
-			return state.Panes[i].WindowIndex < state.Panes[j].WindowIndex
+	// Sort panes by WindowIndex, then Index to ensure creation order matches structure.
+	// Copy to avoid mutating the caller's slice.
+	panes := make([]PaneState, len(state.Panes))
+	copy(panes, state.Panes)
+	sort.Slice(panes, func(i, j int) bool {
+		if panes[i].WindowIndex != panes[j].WindowIndex {
+			return panes[i].WindowIndex < panes[j].WindowIndex
 		}
-		return state.Panes[i].Index < state.Panes[j].Index
+		return panes[i].Index < panes[j].Index
 	})
 
-	if len(state.Panes) == 0 {
+	if len(panes) == 0 {
 		// Create empty session if no panes
 		if err := tmux.CreateSession(name, workDir); err != nil {
 			return fmt.Errorf("creating session: %w", err)
@@ -111,7 +114,7 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 		sessionCreated = true
 	} else {
 		lastWindowIndex := -1
-		for i, p := range state.Panes {
+		for i, p := range panes {
 			if i == 0 {
 				// First pane of first window -> Create Session
 				if err := tmux.CreateSession(name, workDir); err != nil {
@@ -139,18 +142,18 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 	}
 
 	// Get pane list
-	panes, err := tmux.GetPanes(name)
+	tmuxPanes, err := tmux.GetPanes(name)
 	if err != nil {
 		return fmt.Errorf("getting panes: %w", err)
 	}
 
 	// Set pane titles
-	for i, paneState := range state.Panes {
-		if i >= len(panes) {
+	for i, paneState := range panes {
+		if i >= len(tmuxPanes) {
 			break
 		}
 		if paneState.Title != "" {
-			if err := tmux.SetPaneTitle(panes[i].ID, paneState.Title); err != nil {
+			if err := tmux.SetPaneTitle(tmuxPanes[i].ID, paneState.Title); err != nil {
 				// Non-fatal - continue with other panes
 				continue
 			}
