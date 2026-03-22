@@ -169,7 +169,7 @@ Start with --robot-status to understand current state.`,
 				Name:        "check_state",
 				Description: "Get current system state",
 				Command:     "ntm --robot-status",
-				Notes:       "Returns sessions, panes, agents, and alerts",
+				Notes:       "Returns a cheap summary, session headers, and degraded-source indicators",
 			},
 		},
 	}
@@ -182,7 +182,7 @@ func getCommandsContent() *DocsContent {
 		Sections: []DocsSection{
 			{
 				Heading: "State Inspection",
-				Body: `--robot-status: Get tmux sessions, panes, and agent states
+				Body: `--robot-status: Cheap summary surface (session headers, counts, health)
 --robot-snapshot: Unified state query (sessions + beads + alerts + mail)
 --robot-tail=SESSION: Capture recent pane output
 --robot-watch-bead=SESSION: Capture bead mentions + current bead status

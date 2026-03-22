@@ -225,7 +225,7 @@ export default function MailPage() {
       apiFetch<MailInboxResponse>(
         `/api/v1/mail/inbox?agent_name=${encodeURIComponent(
           agentName
-        )}&limit=200`
+        )}&limit=200&include_bodies=true`
       ),
     enabled: agentName.length > 0,
     refetchInterval: 10000,

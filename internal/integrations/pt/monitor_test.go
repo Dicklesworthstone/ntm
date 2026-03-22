@@ -38,10 +38,18 @@ func TestNewHealthMonitor(t *testing.T) {
 func TestHealthMonitorOptions(t *testing.T) {
 	cfg := config.DefaultProcessTriageConfig()
 	alertCh := make(chan Alert, 10)
+	stateChangeCalls := 0
+	alertCalls := 0
 
 	m := NewHealthMonitor(&cfg,
 		WithSession("test-session"),
 		WithAlertChannel(alertCh),
+		WithStateChangeCallback(func(ClassificationStateChange) {
+			stateChangeCalls++
+		}),
+		WithAlertCallback(func(Alert) {
+			alertCalls++
+		}),
 		WithRano(false),
 	)
 
@@ -51,8 +59,17 @@ func TestHealthMonitorOptions(t *testing.T) {
 	if m.alertCh != alertCh {
 		t.Error("expected custom alert channel")
 	}
+	if len(m.stateChangeCallbacks) != 1 {
+		t.Errorf("expected 1 state change callback, got %d", len(m.stateChangeCallbacks))
+	}
+	if len(m.alertCallbacks) != 1 {
+		t.Errorf("expected 1 alert callback, got %d", len(m.alertCallbacks))
+	}
 	if m.useRano {
 		t.Error("expected useRano to be false")
+	}
+	if stateChangeCalls != 0 || alertCalls != 0 {
+		t.Error("callbacks should not fire during monitor construction")
 	}
 }
 
@@ -247,7 +264,7 @@ func TestUpdateState(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.updateState("test__cc_1", 12345, event1)
+	change1 := m.updateState("test__cc_1", 12345, event1)
 	m.mu.Unlock()
 
 	state := m.GetState("test__cc_1")
@@ -269,6 +286,18 @@ func TestUpdateState(t *testing.T) {
 	if len(state.History) != 1 {
 		t.Errorf("expected 1 history entry, got %d", len(state.History))
 	}
+	if change1 == nil {
+		t.Fatal("expected initial classification change")
+	}
+	if !change1.Initial {
+		t.Error("expected initial change to be marked Initial")
+	}
+	if change1.Previous != ClassUnknown {
+		t.Errorf("expected previous classification unknown, got %s", change1.Previous)
+	}
+	if change1.Current != ClassUseful {
+		t.Errorf("expected current classification useful, got %s", change1.Current)
+	}
 
 	// Test updating with same classification (consecutive count increases)
 	event2 := ClassificationEvent{
@@ -279,7 +308,7 @@ func TestUpdateState(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.updateState("test__cc_1", 12345, event2)
+	change2 := m.updateState("test__cc_1", 12345, event2)
 	m.mu.Unlock()
 
 	state = m.GetState("test__cc_1")
@@ -292,6 +321,9 @@ func TestUpdateState(t *testing.T) {
 	if len(state.History) != 2 {
 		t.Errorf("expected 2 history entries, got %d", len(state.History))
 	}
+	if change2 != nil {
+		t.Fatal("expected no classification change when state repeats")
+	}
 
 	// Test updating with different classification (consecutive count resets)
 	event3 := ClassificationEvent{
@@ -302,7 +334,7 @@ func TestUpdateState(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.updateState("test__cc_1", 12345, event3)
+	change3 := m.updateState("test__cc_1", 12345, event3)
 	m.mu.Unlock()
 
 	state = m.GetState("test__cc_1")
@@ -314,6 +346,18 @@ func TestUpdateState(t *testing.T) {
 	}
 	if len(state.History) != 3 {
 		t.Errorf("expected 3 history entries, got %d", len(state.History))
+	}
+	if change3 == nil {
+		t.Fatal("expected classification change when state flips")
+	}
+	if change3.Initial {
+		t.Error("expected non-initial change for later transition")
+	}
+	if change3.Previous != ClassUseful {
+		t.Errorf("expected previous classification useful, got %s", change3.Previous)
+	}
+	if change3.Current != ClassStuck {
+		t.Errorf("expected current classification stuck, got %s", change3.Current)
 	}
 }
 
@@ -333,7 +377,7 @@ func TestUpdateStateHistoryTrimming(t *testing.T) {
 			Reason:         "test",
 		}
 		m.mu.Lock()
-		m.updateState("test__cc_1", 12345, event)
+		_ = m.updateState("test__cc_1", 12345, event)
 		m.mu.Unlock()
 	}
 
@@ -348,7 +392,7 @@ func TestCheckAlertsStuck(t *testing.T) {
 	cfg.StuckThreshold = 1 // 1 second for testing
 	alertCh := make(chan Alert, 10)
 
-	m := NewHealthMonitor(&cfg, WithAlertChannel(alertCh))
+	m := NewHealthMonitor(&cfg, WithSession("test-session"), WithAlertChannel(alertCh))
 
 	// Add a state that's been stuck for longer than threshold
 	stuckSince := time.Now().Add(-5 * time.Second)
@@ -360,8 +404,11 @@ func TestCheckAlertsStuck(t *testing.T) {
 		Since:          stuckSince,
 		LastCheck:      time.Now(),
 	}
-	m.checkAlerts("test__cc_1")
+	alerts := m.checkAlerts("test__cc_1")
 	m.mu.Unlock()
+	for _, alert := range alerts {
+		m.sendAlert(alert)
+	}
 
 	select {
 	case alert := <-alertCh:
@@ -370,6 +417,9 @@ func TestCheckAlertsStuck(t *testing.T) {
 		}
 		if alert.Pane != "test__cc_1" {
 			t.Errorf("expected pane 'test__cc_1', got %q", alert.Pane)
+		}
+		if alert.Session != "test-session" {
+			t.Errorf("expected session 'test-session', got %q", alert.Session)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("expected stuck alert to be sent")
@@ -391,8 +441,11 @@ func TestCheckAlertsZombie(t *testing.T) {
 		Since:          time.Now(),
 		LastCheck:      time.Now(),
 	}
-	m.checkAlerts("test__cc_1")
+	alerts := m.checkAlerts("test__cc_1")
 	m.mu.Unlock()
+	for _, alert := range alerts {
+		m.sendAlert(alert)
+	}
 
 	select {
 	case alert := <-alertCh:
@@ -421,8 +474,11 @@ func TestCheckAlertsIdle(t *testing.T) {
 		Since:          idleSince,
 		LastCheck:      time.Now(),
 	}
-	m.checkAlerts("test__cc_1")
+	alerts := m.checkAlerts("test__cc_1")
 	m.mu.Unlock()
+	for _, alert := range alerts {
+		m.sendAlert(alert)
+	}
 
 	select {
 	case alert := <-alertCh:
@@ -451,8 +507,11 @@ func TestCheckAlertsNoAlertBelowThreshold(t *testing.T) {
 		Since:          time.Now(), // Just started being stuck
 		LastCheck:      time.Now(),
 	}
-	m.checkAlerts("test__cc_1")
+	alerts := m.checkAlerts("test__cc_1")
 	m.mu.Unlock()
+	for _, alert := range alerts {
+		m.sendAlert(alert)
+	}
 
 	select {
 	case <-alertCh:
@@ -468,8 +527,11 @@ func TestCheckAlertsNonexistentPane(t *testing.T) {
 
 	// Should not panic for nonexistent pane
 	m.mu.Lock()
-	m.checkAlerts("nonexistent")
+	alerts := m.checkAlerts("nonexistent")
 	m.mu.Unlock()
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alerts, got %d", len(alerts))
+	}
 }
 
 func TestSendAlertChannelFull(t *testing.T) {
@@ -531,6 +593,97 @@ func TestAlertsChannelAccessor(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("expected to receive alert")
+	}
+}
+
+func TestStateChangeCallbackInvokedForInitialAndTransitionOnly(t *testing.T) {
+	cfg := config.DefaultProcessTriageConfig()
+	var changes []ClassificationStateChange
+	m := NewHealthMonitor(&cfg, WithSession("callback-session"), WithStateChangeCallback(func(change ClassificationStateChange) {
+		changes = append(changes, change)
+	}))
+
+	now := time.Now()
+	events := []ClassificationEvent{
+		{
+			Classification: ClassUseful,
+			Confidence:     0.95,
+			Timestamp:      now,
+			Reason:         "initial",
+		},
+		{
+			Classification: ClassUseful,
+			Confidence:     0.99,
+			Timestamp:      now.Add(time.Second),
+			Reason:         "steady",
+		},
+		{
+			Classification: ClassStuck,
+			Confidence:     0.80,
+			Timestamp:      now.Add(2 * time.Second),
+			Reason:         "regressed",
+		},
+	}
+
+	for _, event := range events {
+		m.mu.Lock()
+		change := m.updateState("test__cc_1", 12345, event)
+		m.mu.Unlock()
+		if change != nil {
+			m.emitStateChange(*change)
+		}
+	}
+
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 emitted state changes, got %d", len(changes))
+	}
+	if !changes[0].Initial {
+		t.Error("expected first callback to be initial")
+	}
+	if changes[0].Session != "callback-session" {
+		t.Errorf("expected callback session 'callback-session', got %q", changes[0].Session)
+	}
+	if changes[0].Previous != ClassUnknown || changes[0].Current != ClassUseful {
+		t.Errorf("unexpected initial transition: %s -> %s", changes[0].Previous, changes[0].Current)
+	}
+	if changes[1].Initial {
+		t.Error("expected second callback to be a real transition")
+	}
+	if changes[1].Previous != ClassUseful || changes[1].Current != ClassStuck {
+		t.Errorf("unexpected transition: %s -> %s", changes[1].Previous, changes[1].Current)
+	}
+}
+
+func TestAlertCallbackInvokedEvenWhenChannelIsFull(t *testing.T) {
+	cfg := config.DefaultProcessTriageConfig()
+	alertCh := make(chan Alert, 1)
+	var seen []Alert
+	m := NewHealthMonitor(&cfg,
+		WithAlertChannel(alertCh),
+		WithAlertCallback(func(alert Alert) {
+			seen = append(seen, alert)
+		}),
+	)
+
+	alertCh <- Alert{Type: AlertIdle, Pane: "filler"}
+	alert := Alert{
+		Session:   "callback-session",
+		Type:      AlertStuck,
+		Pane:      "test__cc_1",
+		PID:       12345,
+		State:     ClassStuck,
+		Duration:  time.Minute,
+		Timestamp: time.Now(),
+		Message:   "test alert",
+	}
+
+	m.sendAlert(alert)
+
+	if len(seen) != 1 {
+		t.Fatalf("expected 1 callback alert, got %d", len(seen))
+	}
+	if seen[0].Type != AlertStuck || seen[0].Pane != "test__cc_1" {
+		t.Fatalf("unexpected callback alert: %#v", seen[0])
 	}
 }
 

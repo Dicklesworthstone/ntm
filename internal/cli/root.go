@@ -2108,6 +2108,7 @@ func initializeRobotPersistence() error {
 		robot.DefaultAttentionFeedConfig(),
 		robot.WithAttentionStore(store),
 	))
+	robot.SetProjectionStore(store)
 	robotStateStore = store
 
 	refreshCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2122,6 +2123,7 @@ func closeRobotPersistence() {
 	}
 	_ = robotStateStore.Close()
 	robotStateStore = nil
+	robot.SetProjectionStore(nil)
 }
 
 func resolveRobotPagination(cmd *cobra.Command) (robot.PaginationOptions, error) {

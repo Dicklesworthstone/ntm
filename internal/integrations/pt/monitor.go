@@ -60,6 +60,7 @@ const (
 
 // Alert represents a health alert for an agent.
 type Alert struct {
+	Session   string         `json:"session,omitempty"`
 	Type      AlertType      `json:"type"`
 	Pane      string         `json:"pane"`
 	PID       int            `json:"pid"`
@@ -68,6 +69,26 @@ type Alert struct {
 	Timestamp time.Time      `json:"timestamp"`
 	Message   string         `json:"message"`
 }
+
+// ClassificationStateChange describes a pane classification transition.
+// It is emitted only for initial observations and real classification changes.
+type ClassificationStateChange struct {
+	Session          string              `json:"session,omitempty"`
+	Pane             string              `json:"pane"`
+	PID              int                 `json:"pid"`
+	Previous         Classification      `json:"previous"`
+	Current          Classification      `json:"current"`
+	Event            ClassificationEvent `json:"event"`
+	Initial          bool                `json:"initial,omitempty"`
+	Since            time.Time           `json:"since"`
+	ConsecutiveCount int                 `json:"consecutive_count"`
+}
+
+// StateChangeCallback receives cycle-safe PT classification transitions.
+type StateChangeCallback func(ClassificationStateChange)
+
+// AlertCallback receives cycle-safe PT alerts when they are emitted.
+type AlertCallback func(Alert)
 
 // HealthMonitor monitors agent health via process_triage.
 type HealthMonitor struct {
@@ -91,6 +112,9 @@ type HealthMonitor struct {
 	idleThreshold  time.Duration
 	stuckThreshold time.Duration
 	maxHistory     int // Maximum history entries to keep per agent
+
+	stateChangeCallbacks []StateChangeCallback
+	alertCallbacks       []AlertCallback
 }
 
 // HealthMonitorOption configures a HealthMonitor.
@@ -107,6 +131,26 @@ func WithSession(session string) HealthMonitorOption {
 func WithAlertChannel(ch chan Alert) HealthMonitorOption {
 	return func(m *HealthMonitor) {
 		m.alertCh = ch
+	}
+}
+
+// WithStateChangeCallback registers a callback for initial classifications and
+// classification transitions. Callbacks run outside the monitor lock.
+func WithStateChangeCallback(cb StateChangeCallback) HealthMonitorOption {
+	return func(m *HealthMonitor) {
+		if cb != nil {
+			m.stateChangeCallbacks = append(m.stateChangeCallbacks, cb)
+		}
+	}
+}
+
+// WithAlertCallback registers a callback for emitted alerts. Callbacks run
+// outside the monitor lock.
+func WithAlertCallback(cb AlertCallback) HealthMonitorOption {
+	return func(m *HealthMonitor) {
+		if cb != nil {
+			m.alertCallbacks = append(m.alertCallbacks, cb)
+		}
 	}
 }
 
@@ -299,11 +343,12 @@ func (m *HealthMonitor) checkAll() {
 	}
 
 	// Process results
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	now := time.Now()
 	seenPanes := make(map[string]bool)
+	var stateChanges []ClassificationStateChange
+	var alerts []Alert
+
+	m.mu.Lock()
 
 	for _, result := range results {
 		pane := pidLabels[result.PID]
@@ -341,8 +386,10 @@ func (m *HealthMonitor) checkAll() {
 			NetworkActive:  networkActive,
 		}
 
-		m.updateState(pane, result.PID, event)
-		m.checkAlerts(pane)
+		if change := m.updateState(pane, result.PID, event); change != nil {
+			stateChanges = append(stateChanges, *change)
+		}
+		alerts = append(alerts, m.checkAlerts(pane)...)
 	}
 
 	// Clean up states for panes that no longer exist
@@ -351,6 +398,15 @@ func (m *HealthMonitor) checkAll() {
 			delete(m.states, pane)
 			monitorLogger.Debug("removed stale pane state", "pane", pane)
 		}
+	}
+
+	m.mu.Unlock()
+
+	for _, change := range stateChanges {
+		m.emitStateChange(change)
+	}
+	for _, alert := range alerts {
+		m.sendAlert(alert)
 	}
 }
 
@@ -370,7 +426,7 @@ func mapPTClassification(ptClass tools.PTClassification) Classification {
 
 // updateState updates the state for a pane with a new classification event.
 // Must be called with m.mu held.
-func (m *HealthMonitor) updateState(pane string, pid int, event ClassificationEvent) {
+func (m *HealthMonitor) updateState(pane string, pid int, event ClassificationEvent) *ClassificationStateChange {
 	state, exists := m.states[pane]
 	if !exists {
 		state = &AgentState{
@@ -384,6 +440,20 @@ func (m *HealthMonitor) updateState(pane string, pid int, event ClassificationEv
 			ConsecutiveCount: 1,
 		}
 		m.states[pane] = state
+
+		// Add to history
+		state.History = append(state.History, event)
+		return &ClassificationStateChange{
+			Session:          m.session,
+			Pane:             pane,
+			PID:              pid,
+			Previous:         ClassUnknown,
+			Current:          event.Classification,
+			Event:            event,
+			Initial:          true,
+			Since:            state.Since,
+			ConsecutiveCount: state.ConsecutiveCount,
+		}
 	} else {
 		state.PID = pid
 		state.LastCheck = event.Timestamp
@@ -393,10 +463,28 @@ func (m *HealthMonitor) updateState(pane string, pid int, event ClassificationEv
 			state.Confidence = event.Confidence // Update confidence
 		} else {
 			// Classification changed
+			previous := state.Classification
 			state.Classification = event.Classification
 			state.Confidence = event.Confidence
 			state.Since = event.Timestamp
 			state.ConsecutiveCount = 1
+
+			// Add to history
+			state.History = append(state.History, event)
+			if len(state.History) > m.maxHistory {
+				state.History = state.History[len(state.History)-m.maxHistory:]
+			}
+
+			return &ClassificationStateChange{
+				Session:          m.session,
+				Pane:             pane,
+				PID:              pid,
+				Previous:         previous,
+				Current:          event.Classification,
+				Event:            event,
+				Since:            state.Since,
+				ConsecutiveCount: state.ConsecutiveCount,
+			}
 		}
 	}
 
@@ -407,22 +495,25 @@ func (m *HealthMonitor) updateState(pane string, pid int, event ClassificationEv
 	if len(state.History) > m.maxHistory {
 		state.History = state.History[len(state.History)-m.maxHistory:]
 	}
+	return nil
 }
 
 // checkAlerts checks if alerts should be triggered for a pane.
 // Must be called with m.mu held.
-func (m *HealthMonitor) checkAlerts(pane string) {
+func (m *HealthMonitor) checkAlerts(pane string) []Alert {
 	state, ok := m.states[pane]
 	if !ok {
-		return
+		return nil
 	}
 
 	duration := time.Since(state.Since)
+	var alerts []Alert
 
 	switch state.Classification {
 	case ClassStuck:
 		if duration >= m.stuckThreshold {
-			m.sendAlert(Alert{
+			alerts = append(alerts, Alert{
+				Session:   m.session,
 				Type:      AlertStuck,
 				Pane:      pane,
 				PID:       state.PID,
@@ -435,7 +526,8 @@ func (m *HealthMonitor) checkAlerts(pane string) {
 
 	case ClassZombie:
 		// Alert immediately for zombies
-		m.sendAlert(Alert{
+		alerts = append(alerts, Alert{
+			Session:   m.session,
 			Type:      AlertZombie,
 			Pane:      pane,
 			PID:       state.PID,
@@ -447,7 +539,8 @@ func (m *HealthMonitor) checkAlerts(pane string) {
 
 	case ClassIdle:
 		if duration >= m.idleThreshold {
-			m.sendAlert(Alert{
+			alerts = append(alerts, Alert{
+				Session:   m.session,
 				Type:      AlertIdle,
 				Pane:      pane,
 				PID:       state.PID,
@@ -458,10 +551,11 @@ func (m *HealthMonitor) checkAlerts(pane string) {
 			})
 		}
 	}
+
+	return alerts
 }
 
-// sendAlert sends an alert on the alert channel.
-// Must be called with m.mu held.
+// sendAlert sends an alert on the alert channel and then notifies callbacks.
 func (m *HealthMonitor) sendAlert(alert Alert) {
 	select {
 	case m.alertCh <- alert:
@@ -476,6 +570,39 @@ func (m *HealthMonitor) sendAlert(alert Alert) {
 			"type", alert.Type,
 			"pane", alert.Pane,
 		)
+	}
+	m.emitAlert(alert)
+}
+
+func (m *HealthMonitor) emitStateChange(change ClassificationStateChange) {
+	for _, cb := range m.stateChangeCallbacks {
+		if cb == nil {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					monitorLogger.Error("state change callback panicked", "panic", r, "pane", change.Pane)
+				}
+			}()
+			cb(change)
+		}()
+	}
+}
+
+func (m *HealthMonitor) emitAlert(alert Alert) {
+	for _, cb := range m.alertCallbacks {
+		if cb == nil {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					monitorLogger.Error("alert callback panicked", "panic", r, "pane", alert.Pane)
+				}
+			}()
+			cb(alert)
+		}()
 	}
 }
 

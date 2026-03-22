@@ -1704,13 +1704,15 @@ func (s *Server) handleRobotStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	// Return basic status - in a full implementation, this would call robot.Status()
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":   true,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"note":      "full robot status requires robot package integration",
-	})
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
 }
 
 // handleRobotHealth handles /api/robot/health.
@@ -2560,9 +2562,15 @@ func (s *Server) handleSessionEventsV1(w http.ResponseWriter, r *http.Request, s
 // handleRobotStatusV1 handles GET /api/v1/robot/status.
 func (s *Server) handleRobotStatusV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"note": "full robot status requires robot package integration",
-	}, reqID)
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
 }
 
 // handleRobotHealthV1 handles GET /api/v1/robot/health.

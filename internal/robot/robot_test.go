@@ -19,6 +19,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -537,7 +539,9 @@ func TestSessionInfoMarshal(t *testing.T) {
 
 func TestStatusOutputMarshal(t *testing.T) {
 	output := StatusOutput{
-		GeneratedAt: time.Now().UTC(),
+		SchemaID:      defaultRobotSchemaID("status"),
+		SchemaVersion: statusSchemaVersion,
+		GeneratedAt:   time.Now().UTC(),
 		System: SystemInfo{
 			Version:   "1.0.0",
 			Commit:    "abc123",
@@ -547,11 +551,14 @@ func TestStatusOutputMarshal(t *testing.T) {
 			Arch:      "arm64",
 			TmuxOK:    true,
 		},
-		Sessions: []SessionInfo{},
+		Sessions: []StatusSessionHeader{},
 		Summary: StatusSummary{
 			TotalSessions: 0,
 			TotalAgents:   0,
+			AgentsByState: map[string]int{},
+			AgentsByType:  map[string]int{},
 		},
+		Sources: &adapters.SourceHealthSection{Sources: map[string]adapters.SourceInfo{}, Degraded: []string{}, AllFresh: true},
 	}
 
 	data, err := json.Marshal(output)
@@ -815,6 +822,12 @@ func TestPrintStatus(t *testing.T) {
 			t.Errorf("SafetyProfile = %q, want one of standard|safe|paranoid", result.SafetyProfile)
 		}
 	}
+	if result.SchemaVersion != statusSchemaVersion {
+		t.Errorf("SchemaVersion = %q, want %q", result.SchemaVersion, statusSchemaVersion)
+	}
+	if result.SchemaID != defaultRobotSchemaID("status") {
+		t.Errorf("SchemaID = %q, want %q", result.SchemaID, defaultRobotSchemaID("status"))
+	}
 
 	// System info should be populated
 	if result.System.GoVersion == "" {
@@ -882,8 +895,8 @@ func TestPrintStatusWithSession(t *testing.T) {
 	for _, sess := range result.Sessions {
 		if sess.Name == sessionName {
 			found = true
-			if !sess.Exists {
-				t.Error("Session should exist")
+			if sess.AgentCount < 0 {
+				t.Error("AgentCount should not be negative")
 			}
 		}
 	}
@@ -2207,15 +2220,19 @@ func TestGraphMetricsMarshal(t *testing.T) {
 
 func TestStatusOutputWithGraphMetrics(t *testing.T) {
 	output := StatusOutput{
-		GeneratedAt: time.Now().UTC(),
+		SchemaID:      defaultRobotSchemaID("status"),
+		SchemaVersion: statusSchemaVersion,
+		GeneratedAt:   time.Now().UTC(),
 		System: SystemInfo{
 			Version: "1.0.0",
 			TmuxOK:  true,
 		},
-		Sessions: []SessionInfo{},
+		Sessions: []StatusSessionHeader{},
 		Summary: StatusSummary{
 			TotalSessions: 1,
 			TotalAgents:   3,
+			AgentsByState: map[string]int{},
+			AgentsByType:  map[string]int{},
 		},
 		Beads: &bv.BeadsSummary{
 			Open:       10,
@@ -2257,6 +2274,145 @@ func TestStatusOutputWithGraphMetrics(t *testing.T) {
 		if len(result.GraphMetrics.TopBottlenecks) != 1 {
 			t.Errorf("TopBottlenecks count = %d, want 1", len(result.GraphMetrics.TopBottlenecks))
 		}
+	}
+}
+
+func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("Migrate store: %v", err)
+	}
+
+	oldStore := currentProjectionStore()
+	SetProjectionStore(store)
+	t.Cleanup(func() {
+		SetProjectionStore(oldStore)
+		_ = store.Close()
+	})
+
+	now := time.Now().UTC()
+	staleAfter := now.Add(time.Hour)
+	if err := store.UpsertRuntimeSession(&state.RuntimeSession{
+		Name:         "alpha",
+		Attached:     true,
+		AgentCount:   2,
+		ActiveAgents: 1,
+		IdleAgents:   1,
+		HealthStatus: state.HealthStatusHealthy,
+		CollectedAt:  now,
+		StaleAfter:   staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeSession: %v", err)
+	}
+	if err := store.UpsertRuntimeAgent(&state.RuntimeAgent{
+		ID:           "alpha:%1",
+		SessionName:  "alpha",
+		Pane:         "%1",
+		AgentType:    "claude",
+		State:        state.AgentStateIdle,
+		HealthStatus: state.HealthStatusHealthy,
+		CollectedAt:  now,
+		StaleAfter:   staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeAgent(alpha:%%1): %v", err)
+	}
+	if err := store.UpsertRuntimeAgent(&state.RuntimeAgent{
+		ID:           "alpha:%2",
+		SessionName:  "alpha",
+		Pane:         "%2",
+		AgentType:    "codex",
+		State:        state.AgentStateBusy,
+		HealthStatus: state.HealthStatusHealthy,
+		CollectedAt:  now,
+		StaleAfter:   staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeAgent(alpha:%%2): %v", err)
+	}
+	if err := store.UpsertRuntimeWork(&state.RuntimeWork{
+		BeadID:         "bd-ready",
+		Title:          "Ready bead",
+		Status:         "open",
+		BlockedByCount: 0,
+		CollectedAt:    now,
+		StaleAfter:     staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeWork ready: %v", err)
+	}
+	if err := store.UpsertRuntimeWork(&state.RuntimeWork{
+		BeadID:      "bd-active",
+		Title:       "Active bead",
+		Status:      "in_progress",
+		CollectedAt: now,
+		StaleAfter:  staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeWork in_progress: %v", err)
+	}
+	if err := store.UpsertRuntimeCoordination(&state.RuntimeCoordination{
+		AgentName:       "BlueLake",
+		SessionName:     "alpha",
+		UnreadCount:     3,
+		PendingAckCount: 1,
+		UrgentCount:     1,
+		CollectedAt:     now,
+		StaleAfter:      staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeCoordination: %v", err)
+	}
+	if err := store.UpsertSourceHealth(&state.SourceHealth{
+		SourceName:    "beads",
+		Available:     true,
+		Healthy:       false,
+		Reason:        "stale cache",
+		LastCheckAt:   now,
+		LastFailureAt: &now,
+	}); err != nil {
+		t.Fatalf("UpsertSourceHealth: %v", err)
+	}
+
+	result, err := GetStatusWithOptions(PaginationOptions{})
+	if err != nil {
+		t.Fatalf("GetStatusWithOptions: %v", err)
+	}
+
+	if result.SchemaVersion != statusSchemaVersion {
+		t.Fatalf("SchemaVersion = %q, want %q", result.SchemaVersion, statusSchemaVersion)
+	}
+	if result.SchemaID != defaultRobotSchemaID("status") {
+		t.Fatalf("SchemaID = %q, want %q", result.SchemaID, defaultRobotSchemaID("status"))
+	}
+	if result.Summary.ReadyWork != 1 {
+		t.Fatalf("Summary.ReadyWork = %d, want 1", result.Summary.ReadyWork)
+	}
+	if result.Summary.InProgress != 1 {
+		t.Fatalf("Summary.InProgress = %d, want 1", result.Summary.InProgress)
+	}
+	if result.Summary.MailUnread != 3 {
+		t.Fatalf("Summary.MailUnread = %d, want 3", result.Summary.MailUnread)
+	}
+	if result.Summary.MailUrgent != 1 {
+		t.Fatalf("Summary.MailUrgent = %d, want 1", result.Summary.MailUrgent)
+	}
+	if result.Summary.AgentsByType["claude"] != 1 || result.Summary.AgentsByType["codex"] != 1 {
+		t.Fatalf("AgentsByType = %+v, want claude=1 codex=1", result.Summary.AgentsByType)
+	}
+	if len(result.Sessions) != 1 || result.Sessions[0].Name != "alpha" {
+		t.Fatalf("Sessions = %+v, want single alpha session", result.Sessions)
+	}
+	if len(result.DegradedSources) != 1 || result.DegradedSources[0] != "beads" {
+		t.Fatalf("DegradedSources = %v, want [beads]", result.DegradedSources)
+	}
+	if result.Sources == nil || !result.Sources.Sources["beads"].Degraded {
+		t.Fatalf("Sources = %+v, want degraded beads source", result.Sources)
+	}
+	if result.OverallStatus != "degraded" {
+		t.Fatalf("OverallStatus = %q, want degraded", result.OverallStatus)
+	}
+	if result.Beads != nil || result.GraphMetrics != nil || result.AgentMail != nil {
+		t.Fatalf("legacy status extras should be empty, got beads=%v graph=%v agent_mail=%v", result.Beads, result.GraphMetrics, result.AgentMail)
 	}
 }
 

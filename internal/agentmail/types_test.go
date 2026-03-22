@@ -191,6 +191,7 @@ func TestMapJSONRPCError(t *testing.T) {
 		{"message not found", &JSONRPCError{Code: -32000, Message: "Message not found"}, false, ErrMessageNotFound},
 		{"reservation conflict", &JSONRPCError{Code: -32000, Message: "Reservation conflict detected"}, false, ErrReservationConflict},
 		{"generic not found", &JSONRPCError{Code: -32000, Message: "Thread not found"}, false, ErrNotFound},
+		{"literal method not found", &JSONRPCError{Code: -32601, Message: "Method not found"}, false, ErrNotImplemented},
 		{"invalid request code", &JSONRPCError{Code: -32600, Message: "bad request"}, false, ErrInvalidRequest},
 		{"method not found code", &JSONRPCError{Code: -32601, Message: "unknown tool: get_message"}, false, ErrNotImplemented},
 		{"invalid params code", &JSONRPCError{Code: -32602, Message: "params"}, false, ErrInvalidRequest},

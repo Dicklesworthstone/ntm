@@ -5,6 +5,7 @@ package robot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -21,7 +23,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/git"
-	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
@@ -1506,6 +1507,30 @@ var OutputFormat RobotFormat = FormatAuto
 // Global state tracker for delta snapshots
 var stateTracker = tracker.New()
 
+var (
+	projectionStoreMu sync.RWMutex
+	projectionStore   *state.Store
+)
+
+const (
+	statusSchemaVersion       = "ntm.robot.status.v2"
+	statusLiveCollectionLimit = 2 * time.Second
+)
+
+// SetProjectionStore configures the shared runtime projection store used by
+// store-backed robot surfaces such as --robot-status.
+func SetProjectionStore(store *state.Store) {
+	projectionStoreMu.Lock()
+	defer projectionStoreMu.Unlock()
+	projectionStore = store
+}
+
+func currentProjectionStore() *state.Store {
+	projectionStoreMu.RLock()
+	defer projectionStoreMu.RUnlock()
+	return projectionStore
+}
+
 // SessionInfo contains machine-readable session information
 type SessionInfo struct {
 	Name        string     `json:"name"`
@@ -1559,22 +1584,43 @@ type SystemInfo struct {
 // StatusOutput is the structured output for robot-status
 type StatusOutput struct {
 	RobotResponse
-	GeneratedAt    time.Time              `json:"generated_at"`
-	SafetyProfile  string                 `json:"safety_profile,omitempty"`
-	System         SystemInfo             `json:"system"`
-	Sessions       []SessionInfo          `json:"sessions"`
-	Pagination     *PaginationInfo        `json:"pagination,omitempty"`
-	AgentHints     *AgentHints            `json:"_agent_hints,omitempty"`
-	Summary        StatusSummary          `json:"summary"`
-	Beads          *bv.BeadsSummary       `json:"beads,omitempty"`
-	Progress       *ProgressSummary       `json:"progress,omitempty"`
-	GraphMetrics   *GraphMetrics          `json:"graph_metrics,omitempty"`
-	AgentMail      *AgentMailSummary      `json:"agent_mail,omitempty"`
-	Handoff        *HandoffSummary        `json:"handoff,omitempty"`
-	Alerts         []StatusAlert          `json:"alerts,omitempty"`
-	FileChanges    []FileChangeInfo       `json:"file_changes,omitempty"`
-	Conflicts      []tracker.Conflict     `json:"conflicts,omitempty"`
-	SchedulerStats *SchedulerStatsSummary `json:"scheduler_stats,omitempty"`
+	SchemaID        string                        `json:"schema_id"`
+	SchemaVersion   string                        `json:"schema_version"`
+	GeneratedAt     time.Time                     `json:"generated_at"`
+	SafetyProfile   string                        `json:"safety_profile,omitempty"`
+	OverallStatus   string                        `json:"overall_status,omitempty"`
+	System          SystemInfo                    `json:"system"`
+	Sessions        []StatusSessionHeader         `json:"sessions"`
+	Pagination      *PaginationInfo               `json:"pagination,omitempty"`
+	AgentHints      *AgentHints                   `json:"_agent_hints,omitempty"`
+	Summary         StatusSummary                 `json:"summary"`
+	AlertCounts     map[string]int                `json:"alert_counts,omitempty"`
+	Sources         *adapters.SourceHealthSection `json:"sources,omitempty"`
+	DegradedSources []string                      `json:"degraded_sources,omitempty"`
+	Beads           *bv.BeadsSummary              `json:"beads,omitempty"`
+	Progress        *ProgressSummary              `json:"progress,omitempty"`
+	GraphMetrics    *GraphMetrics                 `json:"graph_metrics,omitempty"`
+	AgentMail       *AgentMailSummary             `json:"agent_mail,omitempty"`
+	Handoff         *HandoffSummary               `json:"handoff,omitempty"`
+	Alerts          []StatusAlert                 `json:"alerts,omitempty"`
+	FileChanges     []FileChangeInfo              `json:"file_changes,omitempty"`
+	Conflicts       []tracker.Conflict            `json:"conflicts,omitempty"`
+	SchedulerStats  *SchedulerStatsSummary        `json:"scheduler_stats,omitempty"`
+}
+
+// StatusSessionHeader is the compact session representation returned by
+// --robot-status. It intentionally excludes nested agent detail.
+type StatusSessionHeader struct {
+	Name       string              `json:"name"`
+	Attached   bool                `json:"attached,omitempty"`
+	AgentCount int                 `json:"agent_count"`
+	Health     StatusSessionHealth `json:"health"`
+}
+
+// StatusSessionHealth is the cheap health summary for a session header.
+type StatusSessionHealth struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // AgentMailSummary provides a lightweight Agent Mail state for --robot-status.
@@ -1698,15 +1744,24 @@ const (
 
 // StatusSummary provides aggregate stats
 type StatusSummary struct {
-	TotalSessions int `json:"total_sessions"`
-	TotalAgents   int `json:"total_agents"`
-	AttachedCount int `json:"attached_count"`
-	ClaudeCount   int `json:"claude_count"`
-	CodexCount    int `json:"codex_count"`
-	GeminiCount   int `json:"gemini_count"`
-	CursorCount   int `json:"cursor_count"`
-	WindsurfCount int `json:"windsurf_count"`
-	AiderCount    int `json:"aider_count"`
+	TotalSessions int            `json:"total_sessions"`
+	TotalAgents   int            `json:"total_agents"`
+	AttachedCount int            `json:"attached_count"`
+	ClaudeCount   int            `json:"claude_count"`
+	CodexCount    int            `json:"codex_count"`
+	GeminiCount   int            `json:"gemini_count"`
+	CursorCount   int            `json:"cursor_count"`
+	WindsurfCount int            `json:"windsurf_count"`
+	AiderCount    int            `json:"aider_count"`
+	AgentsByState map[string]int `json:"agents_by_state"`
+	AgentsByType  map[string]int `json:"agents_by_type"`
+	ReadyWork     int            `json:"ready_work"`
+	InProgress    int            `json:"in_progress"`
+	HealthScore   float64        `json:"health_score"`
+	HealthStatus  string         `json:"health_status,omitempty"`
+	AlertsActive  int            `json:"alerts_active"`
+	MailUnread    int            `json:"mail_unread"`
+	MailUrgent    int            `json:"mail_urgent"`
 }
 
 // ProgressSummary provides bead completion metrics for status and dashboard (bd-1qct).
@@ -1959,8 +2014,24 @@ func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 		cfg = config.Default()
 	}
 
-	output := &StatusOutput{
+	if store := currentProjectionStore(); store != nil {
+		output, err := buildProjectionBackedStatus(store, cfg, opts)
+		if err == nil {
+			return output, nil
+		}
+	}
+
+	return buildLiveStatus(wd, cfg, opts)
+}
+
+func newStatusOutput(cfg *config.Config) *StatusOutput {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	return &StatusOutput{
 		RobotResponse: NewRobotResponse(true),
+		SchemaID:      defaultRobotSchemaID("status"),
+		SchemaVersion: statusSchemaVersion,
 		GeneratedAt:   time.Now().UTC(),
 		SafetyProfile: cfg.Safety.Profile,
 		System: SystemInfo{
@@ -1972,131 +2043,317 @@ func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 			Arch:      runtime.GOARCH,
 			TmuxOK:    tmux.IsInstalled(),
 		},
-		Sessions:    []SessionInfo{},
-		Summary:     StatusSummary{},
-		Alerts:      []StatusAlert{},
-		FileChanges: []FileChangeInfo{},
-		Conflicts:   []tracker.Conflict{},
+		Sessions:        []StatusSessionHeader{},
+		Summary:         StatusSummary{AgentsByState: map[string]int{}, AgentsByType: map[string]int{}},
+		AlertCounts:     map[string]int{},
+		Sources:         &adapters.SourceHealthSection{Sources: map[string]adapters.SourceInfo{}, Degraded: []string{}, AllFresh: true},
+		DegradedSources: []string{},
+	}
+}
+
+func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts PaginationOptions) (*StatusOutput, error) {
+	output := newStatusOutput(cfg)
+
+	sessions, err := store.GetFreshRuntimeSessions()
+	if err != nil {
+		return nil, fmt.Errorf("status sessions: %w", err)
+	}
+	agentsBySession := make(map[string][]state.RuntimeAgent, len(sessions))
+	for _, sess := range sessions {
+		agents, err := store.GetRuntimeAgentsBySession(sess.Name)
+		if err != nil {
+			return nil, fmt.Errorf("status agents for %s: %w", sess.Name, err)
+		}
+		agentsBySession[sess.Name] = agents
 	}
 
-	// Get all sessions
-	sessions, err := tmux.ListSessions()
+	workRows, err := store.ListFreshRuntimeWork("", 0)
 	if err != nil {
-		// tmux not running is not an error for status
-		return output, nil
+		return nil, fmt.Errorf("status work: %w", err)
+	}
+	coordinationRows, err := store.ListFreshRuntimeCoordination("")
+	if err != nil {
+		return nil, fmt.Errorf("status coordination: %w", err)
+	}
+	healthRows, err := store.GetAllSourceHealth()
+	if err != nil {
+		return nil, fmt.Errorf("status source health: %w", err)
 	}
 
 	for _, sess := range sessions {
-		info := SessionInfo{
-			Name:     sess.Name,
-			Exists:   true,
-			Attached: sess.Attached,
-			Windows:  sess.Windows,
-			Agents:   []Agent{},
+		agents := agentsBySession[sess.Name]
+		agentCount := sess.AgentCount
+		if len(agents) > 0 {
+			agentCount = len(agents)
 		}
+		output.Sessions = append(output.Sessions, StatusSessionHeader{
+			Name:       sess.Name,
+			Attached:   sess.Attached,
+			AgentCount: agentCount,
+			Health: StatusSessionHealth{
+				Status: statusHealthString(sess.HealthStatus),
+				Reason: strings.TrimSpace(sess.HealthReason),
+			},
+		})
 
-		// Try to get agents from panes
-		panes, err := tmux.GetPanes(sess.Name)
-		if err == nil {
-			info.Panes = len(panes)
-			for _, pane := range panes {
-				agent := Agent{
-					Pane:     pane.ID,
-					Window:   0, // GetPanes doesn't include window index
-					PaneIdx:  pane.Index,
-					IsActive: pane.Active,
-					Variant:  pane.Variant,
-					PID:      pane.PID,
-				}
+		output.Summary.TotalSessions++
+		output.Summary.TotalAgents += agentCount
+		if sess.Attached {
+			output.Summary.AttachedCount++
+		}
+		if len(agents) == 0 && agentCount > 0 {
+			output.Summary.AgentsByState["unknown"] += agentCount
+		}
+		for _, agent := range agents {
+			statusAccumulateAgentSummary(&output.Summary, agent.AgentType, string(agent.State))
+		}
+	}
 
-				// Use authoritative type from tmux package if available
-				ntmType := agentTypeString(pane.Type)
-				if ntmType != "user" && ntmType != "unknown" {
-					agent.Type = ntmType
-				} else {
-					// Fallback to loose detection for other agents (cursor, windsurf, etc.)
-					agent.Type = detectAgentType(pane.Title)
-				}
-
-				modelName := modelNameForPane(pane, cfg)
-
-				// Enrich status with process/output info
-				enrichAgentStatus(&agent, sess.Name, modelName)
-
-				if agent.ContextPercent >= 70 {
-					severity := "warning"
-					if agent.ContextPercent >= 85 {
-						severity = "critical"
-					}
-					output.Alerts = append(output.Alerts, StatusAlert{
-						Type:         "context_warning",
-						Session:      sess.Name,
-						Pane:         pane.ID,
-						PaneIdx:      pane.Index,
-						UsagePercent: agent.ContextPercent,
-						ContextModel: agent.ContextModel,
-						Severity:     severity,
-					})
-				}
-
-				info.Agents = append(info.Agents, agent)
-
-				// Update summary counts
-				switch agent.Type {
-				case "claude":
-					output.Summary.ClaudeCount++
-				case "codex":
-					output.Summary.CodexCount++
-				case "gemini":
-					output.Summary.GeminiCount++
-				case "cursor":
-					output.Summary.CursorCount++
-				case "windsurf":
-					output.Summary.WindsurfCount++
-				case "aider":
-					output.Summary.AiderCount++
-				}
-				output.Summary.TotalAgents++
+	for _, item := range workRows {
+		switch item.Status {
+		case "in_progress":
+			output.Summary.InProgress++
+		case "open":
+			if item.BlockedByCount == 0 {
+				output.Summary.ReadyWork++
 			}
 		}
+	}
 
-		output.Sessions = append(output.Sessions, info)
+	for _, item := range coordinationRows {
+		output.Summary.MailUnread += item.UnreadCount
+		output.Summary.MailUrgent += item.UrgentCount
+	}
+
+	output.Sources = statusSourceHealthFromRows(healthRows)
+	if output.Sources != nil {
+		output.DegradedSources = append(output.DegradedSources, output.Sources.Degraded...)
+	}
+
+	statusApplyAlertCounts(output, alerts.GetActiveAlerts(alerts.DefaultConfig()))
+	statusFinalize(output, opts)
+	return output, nil
+}
+
+func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptions) (*StatusOutput, error) {
+	output := newStatusOutput(cfg)
+
+	resolvedProjectDir, err := resolveNormalizedProjectDir(projectDir)
+	if err != nil {
+		return output, nil
+	}
+
+	snapshot, err := collectNormalizedTmuxProjection(resolvedProjectDir, normalizedProjectionStaleAfter)
+	if err != nil {
+		return output, nil
+	}
+
+	for _, sess := range snapshot.Sessions {
+		agentCount := sess.AgentCount
+		if agentCount < 0 {
+			agentCount = 0
+		}
+		output.Sessions = append(output.Sessions, StatusSessionHeader{
+			Name:       sess.Name,
+			Attached:   sess.Attached,
+			AgentCount: agentCount,
+			Health: StatusSessionHealth{
+				Status: statusHealthString(sess.HealthStatus),
+				Reason: strings.TrimSpace(sess.HealthReason),
+			},
+		})
 		output.Summary.TotalSessions++
+		output.Summary.TotalAgents += agentCount
 		if sess.Attached {
 			output.Summary.AttachedCount++
 		}
 	}
 
-	// Add beads summary if bv is available
-	if bv.IsInstalled() {
-		output.Beads = bv.GetBeadsSummary(wd, BeadLimit)
-		output.Progress = ComputeProgress(output.Beads)
-		output.GraphMetrics = getGraphMetrics()
+	for _, agent := range snapshot.Agents {
+		statusAccumulateAgentSummary(&output.Summary, agent.AgentType, string(agent.State))
+		output.Summary.MailUnread += agent.PendingMail
 	}
 
-	// Add latest handoff across sessions (best-effort)
-	if wd != "" {
-		reader := handoff.NewReader(wd)
-		if h, path, err := reader.FindLatestAny(); err == nil && h != nil {
-			output.Handoff = &HandoffSummary{
-				Session:    h.Session,
-				Goal:       h.Goal,
-				Now:        h.Now,
-				Path:       path,
-				Status:     h.Status,
-				AgeSeconds: int64(time.Since(h.CreatedAt).Seconds()),
+	aggregator := adapters.NewSignalAggregator(0)
+	aggregator.RegisterAdapter(adapters.NewWorkCoordinationAdapter(
+		adapters.DefaultWorkCoordinationAdapterConfig(resolvedProjectDir),
+	))
+	collectCtx, cancel := context.WithTimeout(context.Background(), statusLiveCollectionLimit)
+	defer cancel()
+
+	signals, err := aggregator.Collect(collectCtx)
+	if err == nil && signals != nil {
+		if signals.Work != nil {
+			if signals.Work.Summary != nil {
+				output.Summary.ReadyWork = signals.Work.Summary.Ready
+				output.Summary.InProgress = signals.Work.Summary.InProgress
+			} else {
+				output.Summary.ReadyWork = len(signals.Work.Ready)
+				output.Summary.InProgress = len(signals.Work.InProgress)
 			}
 		}
+		if signals.Coordination != nil && signals.Coordination.Mail != nil {
+			output.Summary.MailUnread = signals.Coordination.Mail.TotalUnread
+			output.Summary.MailUrgent = signals.Coordination.Mail.UrgentUnread
+		}
+		if signals.Health != nil {
+			output.Sources = cloneSourceHealthSection(signals.Health)
+			output.DegradedSources = append(output.DegradedSources, signals.Health.Degraded...)
+		}
+		statusApplyAggregatedAlertCounts(output, signals.Alerts)
+	} else if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+		output.DegradedSources = append(output.DegradedSources, "work")
+		output.DegradedSources = append(output.DegradedSources, "coordination")
 	}
 
-	// Enrich with Agent Mail summary (best-effort; degrade gracefully)
-	if summary, _ := getAgentMailSummary(); summary != nil {
-		output.AgentMail = summary
+	if output.Summary.MailUrgent == 0 && output.Summary.MailUnread > 0 {
+		output.Summary.MailUrgent = 0
+	}
+	if len(output.AlertCounts) == 0 {
+		statusApplyAlertCounts(output, alerts.GetActiveAlerts(alerts.DefaultConfig()))
 	}
 
-	// Include recent file changes (best-effort, bounded).
-	appendFileChanges(output)
-	appendConflicts(output)
+	statusFinalize(output, opts)
+	return output, nil
+}
+
+func statusSourceHealthFromRows(rows []state.SourceHealth) *adapters.SourceHealthSection {
+	section := &adapters.SourceHealthSection{
+		Sources:  map[string]adapters.SourceInfo{},
+		Degraded: []string{},
+		AllFresh: true,
+	}
+	for _, row := range rows {
+		status := row.Status(normalizedProjectionStaleAfter)
+		fresh := status == state.SourceStatusFresh
+		info := adapters.SourceInfo{
+			Name:       row.SourceName,
+			Available:  row.Available,
+			Fresh:      fresh,
+			AgeMs:      time.Since(row.LastCheckAt).Milliseconds(),
+			UpdatedAt:  row.LastCheckAt.UTC().Format(time.RFC3339Nano),
+			Degraded:   !fresh,
+			LastError:  strings.TrimSpace(row.LastError),
+			ReasonCode: adapters.ReasonCode(strings.TrimSpace(row.LastErrorCode)),
+		}
+		if !fresh {
+			section.AllFresh = false
+			info.DegradedReason = firstNonEmptyString(strings.TrimSpace(row.Reason), string(status))
+			section.Degraded = append(section.Degraded, row.SourceName)
+			if row.LastFailureAt != nil && !row.LastFailureAt.IsZero() {
+				info.DegradedSince = row.LastFailureAt.UTC().Format(time.RFC3339Nano)
+			}
+		}
+		section.Sources[row.SourceName] = info
+	}
+	if len(rows) == 0 {
+		section.AllFresh = false
+	}
+	return section
+}
+
+func cloneSourceHealthSection(section *adapters.SourceHealthSection) *adapters.SourceHealthSection {
+	if section == nil {
+		return nil
+	}
+	cloned := &adapters.SourceHealthSection{
+		Sources:  make(map[string]adapters.SourceInfo, len(section.Sources)),
+		Degraded: append([]string(nil), section.Degraded...),
+		AllFresh: section.AllFresh,
+	}
+	for key, value := range section.Sources {
+		cloned.Sources[key] = value
+	}
+	return cloned
+}
+
+func statusAccumulateAgentSummary(summary *StatusSummary, agentType, agentState string) {
+	if summary == nil {
+		return
+	}
+	typeKey := strings.TrimSpace(agentType)
+	if typeKey == "" {
+		typeKey = "unknown"
+	}
+	stateKey := strings.TrimSpace(agentState)
+	if stateKey == "" {
+		stateKey = "unknown"
+	}
+	summary.AgentsByType[typeKey]++
+	summary.AgentsByState[stateKey]++
+
+	switch typeKey {
+	case "claude":
+		summary.ClaudeCount++
+	case "codex":
+		summary.CodexCount++
+	case "gemini":
+		summary.GeminiCount++
+	case "cursor":
+		summary.CursorCount++
+	case "windsurf":
+		summary.WindsurfCount++
+	case "aider":
+		summary.AiderCount++
+	}
+}
+
+func statusApplyAlertCounts(output *StatusOutput, active []alerts.Alert) {
+	if output == nil {
+		return
+	}
+	if output.AlertCounts == nil {
+		output.AlertCounts = map[string]int{}
+	}
+	for _, alert := range active {
+		key := strings.TrimSpace(string(alert.Severity))
+		if key == "" {
+			key = "warning"
+		}
+		output.AlertCounts[key]++
+	}
+}
+
+func statusApplyAggregatedAlertCounts(output *StatusOutput, section *adapters.AlertsSection) {
+	if output == nil || section == nil {
+		return
+	}
+	if output.AlertCounts == nil {
+		output.AlertCounts = map[string]int{}
+	}
+	if section.Summary != nil && len(section.Summary.BySeverity) > 0 {
+		for key, value := range section.Summary.BySeverity {
+			output.AlertCounts[key] += value
+		}
+		return
+	}
+	for _, alert := range section.Active {
+		key := strings.TrimSpace(alert.Severity)
+		if key == "" {
+			key = "warning"
+		}
+		output.AlertCounts[key]++
+	}
+}
+
+func statusFinalize(output *StatusOutput, opts PaginationOptions) {
+	if output == nil {
+		return
+	}
+	if output.AlertCounts == nil {
+		output.AlertCounts = map[string]int{}
+	}
+	if output.Summary.AgentsByState == nil {
+		output.Summary.AgentsByState = map[string]int{}
+	}
+	if output.Summary.AgentsByType == nil {
+		output.Summary.AgentsByType = map[string]int{}
+	}
+	output.DegradedSources = uniqueSortedStrings(output.DegradedSources)
+	output.Summary.AlertsActive = statusAlertTotal(output.AlertCounts)
+	output.OverallStatus = statusOverall(output)
+	output.Summary.HealthStatus = output.OverallStatus
+	output.Summary.HealthScore = statusHealthScore(output)
 
 	if paged, page := ApplyPagination(output.Sessions, opts); page != nil {
 		output.Sessions = paged
@@ -2108,8 +2365,75 @@ func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 			}
 		}
 	}
+}
 
-	return output, nil
+func statusHealthString(status state.HealthStatus) string {
+	value := strings.TrimSpace(string(status))
+	if value == "" {
+		return string(state.HealthStatusUnknown)
+	}
+	return value
+}
+
+func statusAlertTotal(counts map[string]int) int {
+	total := 0
+	for _, value := range counts {
+		total += value
+	}
+	return total
+}
+
+func statusOverall(output *StatusOutput) string {
+	if output == nil {
+		return "unknown"
+	}
+	if output.AlertCounts["critical"] > 0 || output.Summary.AgentsByState["error"] > 0 {
+		return "critical"
+	}
+	if len(output.DegradedSources) > 0 || output.AlertCounts["error"] > 0 || output.AlertCounts["warning"] > 0 {
+		return "degraded"
+	}
+	return "healthy"
+}
+
+func statusHealthScore(output *StatusOutput) float64 {
+	score := 1.0
+	if output == nil {
+		return 0
+	}
+	score -= float64(len(output.DegradedSources)) * 0.1
+	score -= float64(output.AlertCounts["warning"]) * 0.05
+	score -= float64(output.AlertCounts["error"]) * 0.1
+	score -= float64(output.AlertCounts["critical"]) * 0.2
+	score -= float64(output.Summary.AgentsByState["error"]) * 0.1
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+	return float64(int(score*100+0.5)) / 100
+}
+
+func uniqueSortedStrings(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // PrintStatus outputs machine-readable status.
