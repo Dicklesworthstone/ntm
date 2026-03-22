@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 )
 
@@ -22,6 +23,7 @@ const (
 	defaultReservationExpiringWithin = time.Hour
 	defaultConflictWindow            = 30 * time.Minute
 	defaultMailBacklogThreshold      = 5
+	defaultSafePreviewLimit          = 120
 )
 
 // WorkSection normalizes beads and bv state into one stable projection shape.
@@ -38,16 +40,17 @@ type WorkSection struct {
 
 // WorkItem is a normalized bead record suitable for robot surfaces.
 type WorkItem struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Priority  int      `json:"priority,omitempty"`
-	Type      string   `json:"type,omitempty"`
-	Labels    []string `json:"labels,omitempty"`
-	Assignee  string   `json:"assignee,omitempty"`
-	BlockedBy []string `json:"blocked_by,omitempty"`
-	Unblocks  int      `json:"unblocks,omitempty"`
-	Score     *float64 `json:"score,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	ID              string              `json:"id"`
+	Title           string              `json:"title"`
+	TitleDisclosure *DisclosureMetadata `json:"title_disclosure,omitempty"`
+	Priority        int                 `json:"priority,omitempty"`
+	Type            string              `json:"type,omitempty"`
+	Labels          []string            `json:"labels,omitempty"`
+	Assignee        string              `json:"assignee,omitempty"`
+	BlockedBy       []string            `json:"blocked_by,omitempty"`
+	Unblocks        int                 `json:"unblocks,omitempty"`
+	Score           *float64            `json:"score,omitempty"`
+	UpdatedAt       string              `json:"updated_at,omitempty"`
 }
 
 // WorkSummary captures aggregate bead state without exposing raw tool output.
@@ -70,12 +73,13 @@ type WorkTriage struct {
 
 // WorkRecommendation is the normalized shape surfaces consume from bv triage.
 type WorkRecommendation struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Priority int      `json:"priority"`
-	Score    float64  `json:"score"`
-	Reasons  []string `json:"reasons,omitempty"`
-	Unblocks int      `json:"unblocks"`
+	ID              string              `json:"id"`
+	Title           string              `json:"title"`
+	TitleDisclosure *DisclosureMetadata `json:"title_disclosure,omitempty"`
+	Priority        int                 `json:"priority"`
+	Score           float64             `json:"score"`
+	Reasons         []string            `json:"reasons,omitempty"`
+	Unblocks        int                 `json:"unblocks"`
 }
 
 // WorkGraph summarizes graph-level dependency health.
@@ -132,15 +136,27 @@ type ReservationsSummary struct {
 
 // HandoffSummary captures the latest handoff context surfaces should understand.
 type HandoffSummary struct {
-	Session          string   `json:"session,omitempty"`
-	Status           string   `json:"status,omitempty"`
-	Goal             string   `json:"goal,omitempty"`
-	Now              string   `json:"now,omitempty"`
-	UpdatedAt        string   `json:"updated_at,omitempty"`
-	ActiveBeads      []string `json:"active_beads,omitempty"`
-	AgentMailThreads []string `json:"agent_mail_threads,omitempty"`
-	Blockers         []string `json:"blockers,omitempty"`
-	Files            []string `json:"files,omitempty"`
+	Session            string               `json:"session,omitempty"`
+	Status             string               `json:"status,omitempty"`
+	Goal               string               `json:"goal,omitempty"`
+	GoalDisclosure     *DisclosureMetadata  `json:"goal_disclosure,omitempty"`
+	Now                string               `json:"now,omitempty"`
+	NowDisclosure      *DisclosureMetadata  `json:"now_disclosure,omitempty"`
+	UpdatedAt          string               `json:"updated_at,omitempty"`
+	ActiveBeads        []string             `json:"active_beads,omitempty"`
+	AgentMailThreads   []string             `json:"agent_mail_threads,omitempty"`
+	Blockers           []string             `json:"blockers,omitempty"`
+	BlockerDisclosures []DisclosureMetadata `json:"blocker_disclosures,omitempty"`
+	Files              []string             `json:"files,omitempty"`
+}
+
+// DisclosureMetadata reports how a free-text field was normalized for safe surfaces.
+// disclosure_state uses the existing repo vocabulary: visible, redacted, preview_only, withheld.
+type DisclosureMetadata struct {
+	DisclosureState string `json:"disclosure_state,omitempty"`
+	Preview         string `json:"preview,omitempty"`
+	RedactionMode   string `json:"redaction_mode,omitempty"`
+	Findings        int    `json:"findings,omitempty"`
 }
 
 // CoordinationProblem captures coordination issues that deserve operator attention.
@@ -608,16 +624,22 @@ func summarizeHandoff(h *handoff.Handoff) *HandoffSummary {
 	files = append(files, h.Files.Modified...)
 	files = append(files, h.Files.Deleted...)
 	sort.Strings(files)
+	goal, goalDisclosure := normalizeFreeText(h.Goal)
+	nowText, nowDisclosure := normalizeFreeText(h.Now)
+	blockers, blockerDisclosures := normalizeFreeTextList(h.Blockers)
 	return &HandoffSummary{
-		Session:          h.Session,
-		Status:           h.Status,
-		Goal:             h.Goal,
-		Now:              h.Now,
-		UpdatedAt:        FormatTimestamp(h.UpdatedAt),
-		ActiveBeads:      append([]string{}, h.ActiveBeads...),
-		AgentMailThreads: append([]string{}, h.AgentMailThreads...),
-		Blockers:         append([]string{}, h.Blockers...),
-		Files:            files,
+		Session:            h.Session,
+		Status:             h.Status,
+		Goal:               goal,
+		GoalDisclosure:     goalDisclosure,
+		Now:                nowText,
+		NowDisclosure:      nowDisclosure,
+		UpdatedAt:          FormatTimestamp(h.UpdatedAt),
+		ActiveBeads:        append([]string{}, h.ActiveBeads...),
+		AgentMailThreads:   append([]string{}, h.AgentMailThreads...),
+		Blockers:           blockers,
+		BlockerDisclosures: blockerDisclosures,
+		Files:              files,
 	}
 }
 
@@ -697,10 +719,12 @@ func collectCoordinationProblems(mail *MailSummary, threads *ThreadsSummary, res
 }
 
 func workItemFromPreview(preview bv.BeadPreview, rec bv.TriageRecommendation) WorkItem {
+	title, disclosure := normalizeFreeText(preview.Title)
 	item := WorkItem{
-		ID:       preview.ID,
-		Title:    preview.Title,
-		Priority: parsePriorityLabel(preview.Priority),
+		ID:              preview.ID,
+		Title:           title,
+		TitleDisclosure: disclosure,
+		Priority:        parsePriorityLabel(preview.Priority),
 	}
 	if rec.ID == "" {
 		return item
@@ -711,7 +735,7 @@ func workItemFromPreview(preview bv.BeadPreview, rec bv.TriageRecommendation) Wo
 	item.Unblocks = len(rec.UnblocksIDs)
 	item.Score = floatPointer(rec.Score)
 	if item.Title == "" {
-		item.Title = rec.Title
+		item.Title, item.TitleDisclosure = normalizeFreeText(rec.Title)
 	}
 	if item.Priority == 0 {
 		item.Priority = rec.Priority
@@ -720,10 +744,12 @@ func workItemFromPreview(preview bv.BeadPreview, rec bv.TriageRecommendation) Wo
 }
 
 func workItemFromInProgress(item bv.BeadInProgress, rec bv.TriageRecommendation) WorkItem {
+	title, disclosure := normalizeFreeText(item.Title)
 	workItem := WorkItem{
-		ID:       item.ID,
-		Title:    item.Title,
-		Assignee: item.Assignee,
+		ID:              item.ID,
+		Title:           title,
+		TitleDisclosure: disclosure,
+		Assignee:        item.Assignee,
 	}
 	if !item.UpdatedAt.IsZero() {
 		workItem.UpdatedAt = FormatTimestamp(item.UpdatedAt)
@@ -736,20 +762,88 @@ func workItemFromInProgress(item bv.BeadInProgress, rec bv.TriageRecommendation)
 	workItem.BlockedBy = append([]string{}, rec.BlockedBy...)
 	workItem.Unblocks = len(rec.UnblocksIDs)
 	workItem.Score = floatPointer(rec.Score)
+	if workItem.Title == "" {
+		workItem.Title, workItem.TitleDisclosure = normalizeFreeText(rec.Title)
+	}
 	if workItem.Priority == 0 {
 		workItem.Priority = rec.Priority
 	}
 	return workItem
 }
 
+func normalizeFreeText(raw string) (string, *DisclosureMetadata) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+
+	cfg := redaction.DefaultConfig()
+	cfg.Mode = redaction.ModeRedact
+	result := redaction.ScanAndRedact(trimmed, cfg)
+
+	preview, truncated := safePreview(result.Output)
+	disclosure := &DisclosureMetadata{
+		DisclosureState: "visible",
+		Preview:         preview,
+		RedactionMode:   string(cfg.Mode),
+	}
+	normalized := strings.TrimSpace(result.Output)
+	if len(result.Findings) > 0 {
+		disclosure.DisclosureState = "redacted"
+		disclosure.Findings = len(result.Findings)
+	} else if truncated {
+		disclosure.DisclosureState = "preview_only"
+		normalized = preview
+	}
+
+	return normalized, disclosure
+}
+
+func normalizeFreeTextList(values []string) ([]string, []DisclosureMetadata) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]string, 0, len(values))
+	disclosures := make([]DisclosureMetadata, 0, len(values))
+	for _, value := range values {
+		safe, disclosure := normalizeFreeText(value)
+		if safe == "" {
+			continue
+		}
+		normalized = append(normalized, safe)
+		if disclosure != nil {
+			disclosures = append(disclosures, *disclosure)
+		}
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, disclosures
+}
+
+func safePreview(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= defaultSafePreviewLimit {
+		return trimmed, false
+	}
+	return string(runes[:defaultSafePreviewLimit-3]) + "...", true
+}
+
 func workRecommendationFromTriage(rec bv.TriageRecommendation) *WorkRecommendation {
+	title, disclosure := normalizeFreeText(rec.Title)
 	return &WorkRecommendation{
-		ID:       rec.ID,
-		Title:    rec.Title,
-		Priority: rec.Priority,
-		Score:    rec.Score,
-		Reasons:  append([]string{}, rec.Reasons...),
-		Unblocks: len(rec.UnblocksIDs),
+		ID:              rec.ID,
+		Title:           title,
+		TitleDisclosure: disclosure,
+		Priority:        rec.Priority,
+		Score:           rec.Score,
+		Reasons:         append([]string{}, rec.Reasons...),
+		Unblocks:        len(rec.UnblocksIDs),
 	}
 }
 

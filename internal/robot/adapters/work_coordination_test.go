@@ -90,6 +90,9 @@ func TestNormalizeWork(t *testing.T) {
 	if len(section.Ready) != 1 || section.Ready[0].Unblocks != 2 {
 		t.Fatalf("unexpected ready items: %+v", section.Ready)
 	}
+	if section.Ready[0].TitleDisclosure == nil || section.Ready[0].TitleDisclosure.DisclosureState != "visible" {
+		t.Fatalf("expected visible title disclosure, got %+v", section.Ready[0].TitleDisclosure)
+	}
 	if len(section.Blocked) != 1 || section.Blocked[0].ID != "bd-9" {
 		t.Fatalf("unexpected blocked items: %+v", section.Blocked)
 	}
@@ -101,6 +104,74 @@ func TestNormalizeWork(t *testing.T) {
 	}
 	if section.Graph == nil || section.Graph.CycleCount != 1 {
 		t.Fatalf("unexpected graph summary: %+v", section.Graph)
+	}
+}
+
+func TestNormalizeWorkRedactsSensitiveTitles(t *testing.T) {
+	t.Parallel()
+
+	secret := "Bearer " + strings.Repeat("token", 10)
+	section := NormalizeWork(WorkInputs{
+		Ready: []bv.BeadPreview{
+			{ID: "bd-secret", Title: "Rotate credential " + secret, Priority: "P1"},
+		},
+	})
+
+	if !section.Available {
+		t.Fatal("expected work section to be available")
+	}
+	if len(section.Ready) != 1 {
+		t.Fatalf("expected 1 ready item, got %d", len(section.Ready))
+	}
+	item := section.Ready[0]
+	if strings.Contains(item.Title, secret) {
+		t.Fatalf("expected title to be redacted, got %q", item.Title)
+	}
+	if !strings.Contains(item.Title, "[REDACTED:") {
+		t.Fatalf("expected redaction placeholder in title, got %q", item.Title)
+	}
+	if item.TitleDisclosure == nil {
+		t.Fatal("expected title disclosure metadata")
+	}
+	if item.TitleDisclosure.DisclosureState != "redacted" {
+		t.Fatalf("disclosure_state = %q, want redacted", item.TitleDisclosure.DisclosureState)
+	}
+	if item.TitleDisclosure.Findings == 0 {
+		t.Fatalf("expected findings count > 0, got %+v", item.TitleDisclosure)
+	}
+	if strings.Contains(item.TitleDisclosure.Preview, secret) {
+		t.Fatalf("expected safe preview to be redacted, got %q", item.TitleDisclosure.Preview)
+	}
+}
+
+func TestNormalizeWorkMarksLongSafeTitlesPreviewOnly(t *testing.T) {
+	t.Parallel()
+
+	longTitle := strings.Repeat("harmless coordination text ", 8)
+	section := NormalizeWork(WorkInputs{
+		Ready: []bv.BeadPreview{
+			{ID: "bd-preview", Title: longTitle, Priority: "P2"},
+		},
+	})
+
+	if len(section.Ready) != 1 {
+		t.Fatalf("expected 1 ready item, got %d", len(section.Ready))
+	}
+	item := section.Ready[0]
+	if item.Title != strings.TrimSpace(longTitle) {
+		t.Fatalf("expected full safe title to remain visible, got %q", item.Title)
+	}
+	if item.TitleDisclosure == nil {
+		t.Fatal("expected title disclosure metadata")
+	}
+	if item.TitleDisclosure.DisclosureState != "preview_only" {
+		t.Fatalf("disclosure_state = %q, want preview_only", item.TitleDisclosure.DisclosureState)
+	}
+	if item.TitleDisclosure.Preview == item.Title {
+		t.Fatalf("expected truncated preview, got %q", item.TitleDisclosure.Preview)
+	}
+	if !strings.HasSuffix(item.TitleDisclosure.Preview, "...") {
+		t.Fatalf("expected ellipsis in preview, got %q", item.TitleDisclosure.Preview)
 	}
 }
 
@@ -221,8 +292,101 @@ func TestNormalizeCoordination(t *testing.T) {
 	if section.Handoff == nil || section.Handoff.Status != "blocked" {
 		t.Fatalf("unexpected handoff summary: %+v", section.Handoff)
 	}
+	if section.Handoff.GoalDisclosure == nil || section.Handoff.GoalDisclosure.DisclosureState != "visible" {
+		t.Fatalf("expected visible goal disclosure, got %+v", section.Handoff.GoalDisclosure)
+	}
+	if section.Handoff.NowDisclosure == nil || section.Handoff.NowDisclosure.DisclosureState != "visible" {
+		t.Fatalf("expected visible now disclosure, got %+v", section.Handoff.NowDisclosure)
+	}
+	if len(section.Handoff.BlockerDisclosures) != len(section.Handoff.Blockers) {
+		t.Fatalf("expected blocker disclosure metadata for each blocker, got %+v", section.Handoff.BlockerDisclosures)
+	}
 	if len(section.Problems) < 4 {
 		t.Fatalf("expected multiple coordination problems, got %+v", section.Problems)
+	}
+}
+
+func TestNormalizeCoordinationRedactsHandoffFreeText(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 22, 4, 0, 0, 0, time.UTC)
+	goalSecret := "Bearer " + strings.Repeat("token", 10)
+	section := NormalizeCoordination(CoordinationInputs{
+		Handoff: (&handoff.Handoff{
+			Session:   "ntm--robot-redesign",
+			Status:    "blocked",
+			Goal:      "Rotate bearer token " + goalSecret,
+			Now:       "Tell ops password=secretpass123 before restart",
+			UpdatedAt: now,
+			Blockers: []string{
+				"Waiting on postgres://user:pass123@localhost:5432/db",
+			},
+		}),
+		Now: now,
+	})
+
+	if section.Handoff == nil {
+		t.Fatal("expected handoff summary")
+	}
+	if strings.Contains(section.Handoff.Goal, goalSecret) {
+		t.Fatalf("expected redacted goal, got %q", section.Handoff.Goal)
+	}
+	if strings.Contains(section.Handoff.Now, "secretpass123") {
+		t.Fatalf("expected redacted now text, got %q", section.Handoff.Now)
+	}
+	if len(section.Handoff.Blockers) != 1 {
+		t.Fatalf("expected 1 blocker, got %+v", section.Handoff.Blockers)
+	}
+	if strings.Contains(section.Handoff.Blockers[0], "pass123") {
+		t.Fatalf("expected redacted blocker, got %q", section.Handoff.Blockers[0])
+	}
+	if section.Handoff.GoalDisclosure == nil || section.Handoff.GoalDisclosure.DisclosureState != "redacted" {
+		t.Fatalf("expected redacted goal disclosure, got %+v", section.Handoff.GoalDisclosure)
+	}
+	if section.Handoff.NowDisclosure == nil || section.Handoff.NowDisclosure.DisclosureState != "redacted" {
+		t.Fatalf("expected redacted now disclosure, got %+v", section.Handoff.NowDisclosure)
+	}
+	if len(section.Handoff.BlockerDisclosures) != 1 || section.Handoff.BlockerDisclosures[0].DisclosureState != "redacted" {
+		t.Fatalf("expected redacted blocker disclosure, got %+v", section.Handoff.BlockerDisclosures)
+	}
+	if strings.Contains(section.Handoff.GoalDisclosure.Preview, goalSecret) {
+		t.Fatalf("expected redacted goal preview, got %q", section.Handoff.GoalDisclosure.Preview)
+	}
+}
+
+func TestNormalizeCoordinationMarksLongSafeHandoffPreviewOnly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 22, 4, 0, 0, 0, time.UTC)
+	longNow := strings.Repeat("normal handoff detail ", 8)
+	section := NormalizeCoordination(CoordinationInputs{
+		Handoff: (&handoff.Handoff{
+			Session:   "ntm--robot-redesign",
+			Status:    "in_progress",
+			Goal:      "complete queue wiring",
+			Now:       longNow,
+			UpdatedAt: now,
+		}),
+		Now: now,
+	})
+
+	if section.Handoff == nil {
+		t.Fatal("expected handoff summary")
+	}
+	if section.Handoff.Now != strings.TrimSpace(longNow) {
+		t.Fatalf("expected full safe handoff text to remain visible, got %q", section.Handoff.Now)
+	}
+	if section.Handoff.NowDisclosure == nil {
+		t.Fatal("expected now disclosure metadata")
+	}
+	if section.Handoff.NowDisclosure.DisclosureState != "preview_only" {
+		t.Fatalf("disclosure_state = %q, want preview_only", section.Handoff.NowDisclosure.DisclosureState)
+	}
+	if section.Handoff.NowDisclosure.Preview == section.Handoff.Now {
+		t.Fatalf("expected truncated preview, got %q", section.Handoff.NowDisclosure.Preview)
+	}
+	if !strings.HasSuffix(section.Handoff.NowDisclosure.Preview, "...") {
+		t.Fatalf("expected ellipsis in preview, got %q", section.Handoff.NowDisclosure.Preview)
 	}
 }
 
