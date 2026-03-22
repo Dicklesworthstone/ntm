@@ -74,12 +74,13 @@ jobs:
           SCOOP_GITHUB_TOKEN: ${{ secrets.SCOOP_GITHUB_TOKEN }}
 
       # ----------------------------------------------------------------
-      # Patch Homebrew cask caveats (workaround for goreleaser #5211)
-      # GoReleaser renders caveats as double-quoted Ruby strings, which
-      # breaks $() subshells. Replace with heredoc syntax (<<~EOS).
+      # Verify Homebrew cask caveats use heredoc syntax.
+      # GoReleaser v2 now natively generates <<~EOS heredocs for caveats
+      # (goreleaser/goreleaser#6460), so no patching is needed.
+      # This step just verifies the generated cask is correct.
       # See: https://github.com/Dicklesworthstone/ntm/issues/91
       # ----------------------------------------------------------------
-      - name: Patch Homebrew cask caveats
+      - name: Verify Homebrew cask caveats
         env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
@@ -88,89 +89,27 @@ jobs:
           CASK="Casks/ntm.rb"
           REPO_URL="https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/Dicklesworthstone/homebrew-tap.git"
 
-          git clone --depth 1 "$REPO_URL" homebrew-tap-patch
-          cd homebrew-tap-patch
+          git clone --depth 1 "$REPO_URL" homebrew-tap-verify
+          cd homebrew-tap-verify
 
           if [ ! -f "$CASK" ]; then
-            echo "::warning::$CASK not found in homebrew-tap — skipping caveats patch"
+            echo "::warning::$CASK not found in homebrew-tap — skipping caveats verification"
             exit 0
           fi
 
-          # Check whether the cask already uses heredoc caveats (idempotent)
+          # Verify caveats use heredoc syntax (not double-quoted strings)
           if grep -q '<<~EOS' "$CASK"; then
-            echo "Cask already uses heredoc caveats — nothing to patch"
-            exit 0
+            echo "Cask caveats use heredoc syntax — OK"
+          else
+            echo "::error::Cask caveats do not use heredoc syntax — GoReleaser may have regressed. See ntm#91."
+            exit 1
           fi
 
-          # Build the replacement caveats block using heredoc syntax.
-          # GoReleaser renders caveats as a double-quoted Ruby string (not do/end),
-          # so we match BOTH forms: 'caveats "..."' and 'caveats do ... end'.
-          python3 - "$CASK" <<'PYEOF'
-          import sys, re
-
-          path = sys.argv[1]
-          text = open(path).read()
-
-          # Form 1: double-quoted string — GoReleaser's default for caveats: | config
-          #   e.g.  caveats "To enable shell integration...\n  eval \"$(ntm init zsh)\"\n"
-          string_pattern = re.compile(
-              r'(?P<indent>[ \t]*)caveats\s+"(?P<body>(?:[^"\\]|\\.)*)"',
-          )
-
-          # Form 2: do/end block (used by some GoReleaser versions or manual edits)
-          #   e.g.  caveats do\n  ...\n  end
-          block_pattern = re.compile(
-              r'(?P<indent>[ \t]*)caveats\s+do\n'
-              r'(?P<body>.*?)\n'
-              r'(?P=indent)end',
-              re.DOTALL,
-          )
-
-          m = string_pattern.search(text) or block_pattern.search(text)
-          if not m:
-              print("::warning::Could not locate caveats block — skipping patch")
-              sys.exit(0)
-
-          indent = m.group("indent")
-          inner = indent + "  "
-
-          replacement = (
-              f'{indent}caveats <<~EOS\n'
-              f'{inner}To complete installation, add the following to your shell config:\n'
-              f'\n'
-              f'{inner}  # For zsh (add to ~/.zshrc):\n'
-              f'{inner}  eval "$(ntm init zsh)"\n'
-              f'\n'
-              f'{inner}  # For bash (add to ~/.bashrc):\n'
-              f'{inner}  eval "$(ntm init bash)"\n'
-              f'\n'
-              f'{inner}Run \'ntm tutorial\' to get started!\n'
-              f'{indent}EOS'
-          )
-
-          patched = text[:m.start()] + replacement + text[m.end():]
-          open(path, "w").write(patched)
-          print("Patched caveats block to use heredoc syntax")
-          PYEOF
-
-          # Verify the patch didn't break Ruby syntax
+          # Verify Ruby syntax if ruby is available
           if command -v ruby >/dev/null 2>&1; then
-            ruby -c "$CASK" || { echo "::error::Ruby syntax check failed after patching"; exit 1; }
+            ruby -c "$CASK" || { echo "::error::Ruby syntax check failed on generated cask"; exit 1; }
+            echo "Ruby syntax check passed"
           fi
-
-          if git diff --quiet "$CASK"; then
-            echo "No changes after patch — cask was already correct"
-            exit 0
-          fi
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$CASK"
-          git commit -m "fix(cask): use heredoc caveats to avoid Ruby \$() breakage
-
-          Automated post-release patch — see Dicklesworthstone/ntm#91"
-          git push
-          echo "Pushed caveats fix to homebrew-tap"
 
       - name: Upload Release Artifacts
         uses: actions/upload-artifact@v4
@@ -321,7 +260,7 @@ jobs:
           - os: macos-latest
             goos: darwin
             goarch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             goos: darwin
             goarch: amd64
           - os: windows-latest

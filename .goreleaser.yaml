@@ -189,10 +189,10 @@ homebrew_casks:
       To complete installation, add the following to your shell config:
 
         # For zsh (add to ~/.zshrc):
-        eval \"\$(ntm init zsh)\"
+        eval "$(ntm init zsh)"
 
         # For bash (add to ~/.bashrc):
-        eval \"\$(ntm init bash)\"
+        eval "$(ntm init bash)"
 
       Run 'ntm tutorial' to get started!
 
