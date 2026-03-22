@@ -136,11 +136,13 @@ jobs:
 
           replacement = (
               f'{indent}caveats <<~EOS\n'
-              f'{inner}To enable shell integration, add to your shell rc file:\n'
+              f'{inner}To complete installation, add the following to your shell config:\n'
               f'\n'
-              f'{inner}  eval "$(ntm init zsh)"   # for zsh\n'
-              f'{inner}  eval "$(ntm init bash)"  # for bash\n'
-              f'{inner}  eval "$(ntm init fish)"  # for fish\n'
+              f'{inner}  # For zsh (add to ~/.zshrc):\n'
+              f'{inner}  eval "$(ntm init zsh)"\n'
+              f'\n'
+              f'{inner}  # For bash (add to ~/.bashrc):\n'
+              f'{inner}  eval "$(ntm init bash)"\n'
               f'\n'
               f'{inner}Run \'ntm tutorial\' to get started!\n'
               f'{indent}EOS'

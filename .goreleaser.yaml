@@ -186,11 +186,13 @@ homebrew_casks:
       zsh: ntm completion zsh
       fish: ntm completion fish
     caveats: |
-      To enable shell integration, add to your shell rc file:
+      To complete installation, add the following to your shell config:
 
-        eval "$(ntm init zsh)"   # for zsh
-        eval "$(ntm init bash)"  # for bash
-        eval "$(ntm init fish)"  # for fish
+        # For zsh (add to ~/.zshrc):
+        eval \"\$(ntm init zsh)\"
+
+        # For bash (add to ~/.bashrc):
+        eval \"\$(ntm init bash)\"
 
       Run 'ntm tutorial' to get started!
 
