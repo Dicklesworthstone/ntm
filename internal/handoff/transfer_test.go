@@ -26,7 +26,7 @@ type fakeTransferClient struct {
 	releaseCalls []releaseCall
 	renewCalls   []renewCall
 	reserveFn    func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
-	releaseFn    func(projectKey, agentName string, paths []string, ids []int) error
+	releaseFn    func(projectKey, agentName string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error)
 	renewFn      func(opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
 }
 
@@ -42,7 +42,7 @@ func (f *fakeTransferClient) ReservePaths(ctx context.Context, opts agentmail.Fi
 	return &agentmail.ReservationResult{Granted: granted}, nil
 }
 
-func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) error {
+func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
 	f.releaseCalls = append(f.releaseCalls, releaseCall{
 		projectKey: projectKey,
 		agentName:  agentName,
@@ -51,7 +51,7 @@ func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey
 	if f.releaseFn != nil {
 		return f.releaseFn(projectKey, agentName, paths, ids)
 	}
-	return nil
+	return &agentmail.ReleaseReservationsResult{Released: len(paths) + len(ids)}, nil
 }
 
 func (f *fakeTransferClient) RenewReservations(ctx context.Context, opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error) {
@@ -171,8 +171,8 @@ func TestTransferReservationsSameAgentRefresh(t *testing.T) {
 
 func TestTransferReservationsReleaseFailure(t *testing.T) {
 	client := &fakeTransferClient{}
-	client.releaseFn = func(projectKey, agentName string, paths []string, ids []int) error {
-		return errors.New("release failed")
+	client.releaseFn = func(projectKey, agentName string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error) {
+		return nil, errors.New("release failed")
 	}
 
 	opts := TransferReservationsOptions{

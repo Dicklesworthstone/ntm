@@ -19,7 +19,7 @@ const (
 // ReservationTransferClient is the subset of Agent Mail client methods needed for transfers.
 type ReservationTransferClient interface {
 	ReservePaths(ctx context.Context, opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
-	ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) error
+	ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) (*agentmail.ReleaseReservationsResult, error)
 	RenewReservations(ctx context.Context, opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
 }
 
@@ -125,7 +125,7 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	}
 
 	// Release old reservations first.
-	if err := client.ReleaseReservations(ctx, opts.ProjectKey, opts.FromAgent, requested, nil); err != nil {
+	if _, err := client.ReleaseReservations(ctx, opts.ProjectKey, opts.FromAgent, requested, nil); err != nil {
 		result.Error = err.Error()
 		logger.Warn("reservation release failed", "error", err)
 		return result, err
@@ -136,7 +136,7 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 	grant, conflicts, err := reserveAll(ctx, client, opts.ProjectKey, opts.ToAgent, ttlSeconds, opts.FromAgent, exclusivePaths, sharedPaths)
 	if agentmail.IsReservationConflict(err) && grace > 0 {
 		// Release any partial grants before retrying to keep atomic semantics.
-		_ = client.ReleaseReservations(ctx, opts.ProjectKey, opts.ToAgent, grant, nil)
+		_, _ = client.ReleaseReservations(ctx, opts.ProjectKey, opts.ToAgent, grant, nil)
 		if waitErr := waitWithContext(ctx, grace); waitErr != nil {
 			result.Error = waitErr.Error()
 			return result, waitErr

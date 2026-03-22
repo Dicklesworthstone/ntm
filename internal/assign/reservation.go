@@ -209,7 +209,8 @@ func (m *FileReservationManager) ReleaseForBead(ctx context.Context, agentName s
 		return nil
 	}
 
-	return m.client.ReleaseReservations(ctx, m.projectKey, agentName, nil, reservationIDs)
+	_, err := m.client.ReleaseReservations(ctx, m.projectKey, agentName, nil, reservationIDs)
+	return err
 }
 
 // ReleaseByPaths releases reservations by path patterns.
@@ -218,7 +219,8 @@ func (m *FileReservationManager) ReleaseByPaths(ctx context.Context, agentName s
 		return nil
 	}
 
-	return m.client.ReleaseReservations(ctx, m.projectKey, agentName, paths, nil)
+	_, err := m.client.ReleaseReservations(ctx, m.projectKey, agentName, paths, nil)
+	return err
 }
 
 // RenewReservations extends the TTL for an agent's reservations.

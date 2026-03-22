@@ -344,12 +344,16 @@ func (w *FileReservationWatcher) releaseIdleReservations(ctx context.Context) {
 		if len(reservation.ReservationID) == 0 {
 			continue
 		}
-		err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, reservation.Files, reservation.ReservationID)
+		releaseResult, err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, reservation.Files, reservation.ReservationID)
 		if err != nil && w.debug {
 			log.Printf("[FileReservationWatcher] Error releasing reservations for pane %s: %v", reservation.PaneID, err)
 		} else if w.debug {
+			releasedCount := len(reservation.ReservationID)
+			if releaseResult != nil && releaseResult.Released > 0 {
+				releasedCount = releaseResult.Released
+			}
 			log.Printf("[FileReservationWatcher] Released %d reservations for idle pane %s",
-				len(reservation.ReservationID), reservation.PaneID)
+				releasedCount, reservation.PaneID)
 		}
 	}
 }
@@ -373,7 +377,7 @@ func (w *FileReservationWatcher) releaseAllReservations() {
 
 	for _, reservation := range reservations {
 		if len(reservation.ReservationID) > 0 {
-			err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, reservation.Files, reservation.ReservationID)
+			_, err := w.client.ReleaseReservations(ctx, w.projectDir, reservation.AgentName, reservation.Files, reservation.ReservationID)
 			if err != nil && w.debug {
 				log.Printf("[FileReservationWatcher] Error releasing reservations for pane %s: %v", reservation.PaneID, err)
 			}
