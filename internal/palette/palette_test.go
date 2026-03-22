@@ -308,17 +308,31 @@ func TestSelectWithEmptyList(t *testing.T) {
 func TestQuitWithQ(t *testing.T) {
 	m := New("test-session", testCommands)
 
+	// When filter is focused (the default), 'q' should type into the filter,
+	// not quit. This prevents the search bar from swallowing queries that
+	// contain 'q'.
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}
-	newModel, cmd := m.Update(msg)
+	newModel, _ := m.Update(msg)
 	m = newModel.(Model)
 
-	if !m.quitting {
-		t.Error("Expected quitting to be true after 'q'")
+	if m.quitting {
+		t.Error("Expected quitting to be false when filter is focused — 'q' should type into filter")
+	}
+	if m.filter.Value() != "q" {
+		t.Errorf("Expected filter value 'q', got %q", m.filter.Value())
 	}
 
-	// Should return quit command
-	if cmd == nil {
-		t.Error("Expected quit command")
+	// Ctrl+C should still quit regardless of filter focus.
+	m2 := New("test-session", testCommands)
+	msg2 := tea.KeyMsg{Type: tea.KeyCtrlC}
+	newModel2, cmd2 := m2.Update(msg2)
+	m2 = newModel2.(Model)
+
+	if !m2.quitting {
+		t.Error("Expected quitting to be true after ctrl+c")
+	}
+	if cmd2 == nil {
+		t.Error("Expected quit command from ctrl+c")
 	}
 }
 

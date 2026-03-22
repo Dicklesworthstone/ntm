@@ -626,6 +626,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateCommandPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When the filter input is focused, printable characters (runes and space)
+	// must go to the text input first. Without this guard, single-char shortcuts
+	// like 'q' (quit) and 'g' (home) swallow keystrokes that belong to the
+	// search query.  Only non-printable keys (ctrl combos, arrows, esc, enter,
+	// function keys, etc.) fall through to the shortcut switch below.
+	if m.filter.Focused() && (msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace) {
+		var cmd tea.Cmd
+		m.filter, cmd = m.filter.Update(msg)
+		m.updateFiltered()
+		return *m, cmd
+	}
+
 	switch {
 	case key.Matches(msg, keys.Quit):
 		m.quitting = true
