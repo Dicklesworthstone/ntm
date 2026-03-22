@@ -470,6 +470,7 @@ func (t *TimelineTracker) backgroundPrune() {
 		select {
 		case <-ticker.C:
 			t.Prune()
+			t.PruneMarkers()
 		case <-t.stopPrune:
 			return
 		}

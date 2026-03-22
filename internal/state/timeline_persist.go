@@ -674,6 +674,12 @@ func (p *TimelinePersister) compressTimeline(sessionID string) error {
 		return err
 	}
 
+	// Sync compressed file to disk before removing source to prevent data loss on crash
+	if err := dst.Sync(); err != nil {
+		os.Remove(dstPath)
+		return err
+	}
+
 	// Remove original after successful compression
 	return os.Remove(srcPath)
 }
@@ -690,16 +696,16 @@ func countUniqueAgents(events []AgentEvent) int {
 var (
 	defaultTimelinePersister     *TimelinePersister
 	defaultTimelinePersisterOnce sync.Once
+	defaultTimelinePersisterErr  error // persists across calls so sync.Once doesn't mask init failures
 )
 
 // GetDefaultTimelinePersister returns the singleton timeline persister.
 func GetDefaultTimelinePersister() (*TimelinePersister, error) {
-	var initErr error
 	defaultTimelinePersisterOnce.Do(func() {
-		defaultTimelinePersister, initErr = NewTimelinePersister(nil)
+		defaultTimelinePersister, defaultTimelinePersisterErr = NewTimelinePersister(nil)
 	})
-	if initErr != nil {
-		return nil, initErr
+	if defaultTimelinePersisterErr != nil {
+		return nil, defaultTimelinePersisterErr
 	}
 	return defaultTimelinePersister, nil
 }

@@ -207,7 +207,9 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "bead.created", bead)
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "bead.created", bead)
+	}
 
 	writeSuccessResponse(w, http.StatusCreated, map[string]interface{}{
 		"bead": bead,
@@ -295,7 +297,9 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "bead.updated", bead)
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "bead.updated", bead)
+	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"bead": bead,
@@ -330,10 +334,12 @@ func (s *Server) handleCloseBead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "bead.closed", map[string]interface{}{
-		"id":   beadID,
-		"bead": bead,
-	})
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "bead.closed", map[string]interface{}{
+			"id":   beadID,
+			"bead": bead,
+		})
+	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"bead":   bead,
@@ -382,7 +388,8 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "bead.claimed", map[string]interface{}{
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "bead.claimed", map[string]interface{}{
 		"id":       beadID,
 		"assignee": req.Assignee,
 		"bead":     bead,
@@ -569,7 +576,8 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "bead.dependency_added", map[string]interface{}{
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "bead.dependency_added", map[string]interface{}{
 		"bead_id":    beadID,
 		"blocked_by": req.BlockedBy,
 	})
@@ -602,7 +610,8 @@ func (s *Server) handleRemoveBeadDep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "bead.dependency_removed", map[string]interface{}{
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "bead.dependency_removed", map[string]interface{}{
 		"bead_id": beadID,
 		"dep_id":  depID,
 	})
@@ -830,7 +839,8 @@ func (s *Server) handleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish WebSocket event
-	s.wsHub.Publish("beads:*", "beads.synced", map[string]interface{}{
+	if s.wsHub != nil {
+		s.wsHub.Publish("beads:*", "beads.synced", map[string]interface{}{
 		"synced": true,
 	})
 
