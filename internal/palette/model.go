@@ -627,7 +627,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.phase != PhaseEdit && key.Matches(msg, keys.Help) {
+		if m.phase != PhaseEdit && m.phase != PhaseXFSearch && key.Matches(msg, keys.Help) {
 			m.showHelp = true
 			return m, nil
 		}
