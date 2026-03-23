@@ -286,7 +286,13 @@ func extractMCPContent(result json.RawMessage) (json.RawMessage, error) {
 	if envelope.IsError {
 		// Extract error message from content if available
 		if len(envelope.Content) > 0 && envelope.Content[0].Text != "" {
-			return nil, fmt.Errorf("tool error: %s", envelope.Content[0].Text)
+			errMsg := envelope.Content[0].Text
+			msgLower := strings.ToLower(errMsg)
+			// Detect transient busy errors so callers can retry
+			if strings.Contains(msgLower, "busy") || strings.Contains(msgLower, "temporarily unavailable") {
+				return nil, fmt.Errorf("%w: %s", ErrTransientBusy, errMsg)
+			}
+			return nil, fmt.Errorf("tool error: %s", errMsg)
 		}
 		return nil, fmt.Errorf("tool returned error")
 	}
