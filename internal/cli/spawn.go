@@ -3,9 +3,9 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -2595,6 +2595,10 @@ func registerSpawnedAgents(workingDir, sessionName string, agents []spawnedAgent
 	}
 	status.ProjectRegistered = true
 
+	// Track agent IDs already claimed by reconciliation to avoid two panes
+	// matching the same server-side agent when multiple busy errors occur.
+	reconciledIDs := make(map[int]bool)
+
 	// Register each agent (reusing existing identities from prior sessions when possible)
 	for _, agent := range agents {
 		// Check if this pane already has an identity from a prior session (#69)
@@ -2640,20 +2644,24 @@ func registerSpawnedAgents(workingDir, sessionName string, agents []spawnedAgent
 			// despite the error. Reconcile by listing agents and checking.
 			if errors.Is(err, agentmail.ErrTransientBusy) {
 				reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				agents, listErr := client.ListAgents(reconcileCtx, workingDir)
+				allAgents, listErr := client.ListAgents(reconcileCtx, workingDir)
 				reconcileCancel()
 				if listErr == nil {
 					// Look for a recently-created agent matching our program/model
+					// that hasn't already been claimed by a prior pane in this loop.
 					var found *agentmail.Agent
-					for i := range agents {
-						if agents[i].Program == program && agents[i].Model == model {
-							if found == nil || agents[i].ID > found.ID {
-								found = &agents[i]
+					for i := range allAgents {
+						if allAgents[i].Program == program && allAgents[i].Model == model {
+							if !reconciledIDs[allAgents[i].ID] {
+								if found == nil || allAgents[i].ID > found.ID {
+									found = &allAgents[i]
+								}
 							}
 						}
 					}
 					if found != nil {
 						// Agent was actually created — treat as success
+						reconciledIDs[found.ID] = true
 						registered = found
 						err = nil
 						if !IsJSONOutput() {
