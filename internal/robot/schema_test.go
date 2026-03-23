@@ -341,12 +341,13 @@ func TestGetSchema_UnknownType(t *testing.T) {
 
 func TestGetSchemaTypes(t *testing.T) {
 	types := getSchemaTypes()
+	registry := GetRobotRegistry()
 
 	if len(types) == 0 {
 		t.Fatal("schema types should not be empty")
 	}
-	if len(types) != len(SchemaCommand) {
-		t.Errorf("got %d types, want %d", len(types), len(SchemaCommand))
+	if len(types) != len(registry.SchemaTypes) {
+		t.Errorf("got %d types, want %d", len(types), len(registry.SchemaTypes))
 	}
 
 	// Verify some expected types
@@ -360,6 +361,40 @@ func TestGetSchemaTypes(t *testing.T) {
 		if !typeSet[exp] {
 			t.Errorf("expected type %q not found in schema types", exp)
 		}
+	}
+}
+
+func TestGetSchema_UsesRegistrySurfaceMetadata(t *testing.T) {
+	output, err := GetSchema("inspect_session")
+	if err != nil {
+		t.Fatalf("GetSchema(inspect_session): %v", err)
+	}
+	if output.Schema == nil {
+		t.Fatal("expected schema for inspect_session")
+	}
+	if !strings.Contains(output.Schema.Title, "Inspect Session") {
+		t.Fatalf("schema title = %q, want title-cased inspect-session humanized title", output.Schema.Title)
+	}
+	if !strings.Contains(output.Schema.Description, "Projection-backed session drill-down") {
+		t.Fatalf("schema description = %q, want registry-backed description", output.Schema.Description)
+	}
+}
+
+func TestHumanizeRobotRegistryName_PreservesCommonInitialisms(t *testing.T) {
+	testCases := map[string]string{
+		"acfs_status": "ACFS Status",
+		"jfp_search":  "JFP Search",
+		"slb_pending": "SLB Pending",
+		"cass_search": "CASS Search",
+		"giil_fetch":  "GIIL Fetch",
+	}
+
+	for name, want := range testCases {
+		t.Run(name, func(t *testing.T) {
+			if got := humanizeRobotRegistryName(name); got != want {
+				t.Fatalf("humanizeRobotRegistryName(%q) = %q, want %q", name, got, want)
+			}
+		})
 	}
 }
 

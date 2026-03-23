@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/summary"
 )
 
@@ -169,6 +170,36 @@ func TestResolveProjectDir_InvalidSession(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid session name") {
 		t.Fatalf("expected invalid session error, got %v", err)
+	}
+}
+
+func TestResolveProjectDir_UsesConfiguredProjectPrefix(t *testing.T) {
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "myproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir ntm dir: %v", err)
+	}
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	oldWd, _ := os.Getwd()
+	wd := t.TempDir()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	got, err := resolveProjectDir("mypro", wd)
+	if err != nil {
+		t.Fatalf("resolveProjectDir() error = %v", err)
+	}
+	if got != projectDir {
+		t.Fatalf("resolveProjectDir() = %q, want %q", got, projectDir)
 	}
 }
 

@@ -349,6 +349,7 @@ func (bs *BeadScanner) countBeads(ctx context.Context, projectPath string) (int,
 
 	// Run br command
 	cmd := exec.CommandContext(ctx, bs.brPath, "list", "--status", "open", "--json")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = projectPath
 
 	// Capture output

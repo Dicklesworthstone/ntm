@@ -44,11 +44,15 @@ type SemanticPalette struct {
 	StatusDisabled lipgloss.Color // Disabled/unavailable
 
 	// Agent identifiers
-	AgentClaude  lipgloss.Color // Claude Code (purple)
-	AgentCodex   lipgloss.Color // OpenAI Codex (blue)
-	AgentGemini  lipgloss.Color // Google Gemini (yellow)
-	AgentUser    lipgloss.Color // User pane (green)
-	AgentUnknown lipgloss.Color // Unknown agent type
+	AgentClaude   lipgloss.Color // Claude Code (purple)
+	AgentCodex    lipgloss.Color // OpenAI Codex (blue)
+	AgentGemini   lipgloss.Color // Google Gemini (yellow)
+	AgentCursor   lipgloss.Color // Cursor (teal)
+	AgentWindsurf lipgloss.Color // Windsurf (flamingo)
+	AgentAider    lipgloss.Color // Aider (peach)
+	AgentOllama   lipgloss.Color // Ollama (green)
+	AgentUser     lipgloss.Color // User pane (green)
+	AgentUnknown  lipgloss.Color // Unknown agent type
 
 	// Accent colors for gradients and highlights
 	Accent1 lipgloss.Color // Primary accent
@@ -111,11 +115,15 @@ func (t Theme) Semantic() SemanticPalette {
 		StatusDisabled: t.Overlay,
 
 		// Agents
-		AgentClaude:  t.Claude,
-		AgentCodex:   t.Codex,
-		AgentGemini:  t.Gemini,
-		AgentUser:    t.User,
-		AgentUnknown: t.Overlay,
+		AgentClaude:   t.Claude,
+		AgentCodex:    t.Codex,
+		AgentGemini:   t.Gemini,
+		AgentCursor:   t.Cursor,
+		AgentWindsurf: t.Windsurf,
+		AgentAider:    t.Aider,
+		AgentOllama:   t.Ollama,
+		AgentUser:     t.User,
+		AgentUnknown:  t.Overlay,
 
 		// Accents
 		Accent1: t.Blue,
@@ -153,6 +161,14 @@ func (p SemanticPalette) AgentColor(agentType string) lipgloss.Color {
 		return p.AgentCodex
 	case "gemini", "gmi":
 		return p.AgentGemini
+	case "cursor":
+		return p.AgentCursor
+	case "windsurf":
+		return p.AgentWindsurf
+	case "aider":
+		return p.AgentAider
+	case "ollama":
+		return p.AgentOllama
 	case "user":
 		return p.AgentUser
 	default:
@@ -216,10 +232,14 @@ type SemanticStyles struct {
 	BadgeInfo    lipgloss.Style
 
 	// Agent badges
-	BadgeClaude lipgloss.Style
-	BadgeCodex  lipgloss.Style
-	BadgeGemini lipgloss.Style
-	BadgeUser   lipgloss.Style
+	BadgeClaude   lipgloss.Style
+	BadgeCodex    lipgloss.Style
+	BadgeGemini   lipgloss.Style
+	BadgeCursor   lipgloss.Style
+	BadgeWindsurf lipgloss.Style
+	BadgeAider    lipgloss.Style
+	BadgeOllama   lipgloss.Style
+	BadgeUser     lipgloss.Style
 
 	// Input elements
 	Input        lipgloss.Style
@@ -322,6 +342,18 @@ func NewSemanticStyles(t Theme) SemanticStyles {
 			Foreground(p.FgInverse),
 		BadgeGemini: baseBadge.
 			Background(p.AgentGemini).
+			Foreground(p.FgInverse),
+		BadgeCursor: baseBadge.
+			Background(p.AgentCursor).
+			Foreground(p.FgInverse),
+		BadgeWindsurf: baseBadge.
+			Background(p.AgentWindsurf).
+			Foreground(p.FgInverse),
+		BadgeAider: baseBadge.
+			Background(p.AgentAider).
+			Foreground(p.FgInverse),
+		BadgeOllama: baseBadge.
+			Background(p.AgentOllama).
 			Foreground(p.FgInverse),
 		BadgeUser: baseBadge.
 			Background(p.AgentUser).

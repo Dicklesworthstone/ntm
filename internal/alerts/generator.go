@@ -179,33 +179,40 @@ func agentAlertSource(session string) string {
 
 // detectErrorState checks pane output for error patterns
 func (g *Generator) detectErrorState(session string, pane tmux.Pane, lines []string) *Alert {
-	// Check last N lines for patterns
+	// Check last N lines for patterns — return the highest-severity match
 	checkLines := lines
 	if len(checkLines) > 20 {
 		checkLines = checkLines[len(checkLines)-20:]
 	}
 
+	var best *Alert
+	bestRank := 0
+
 	for _, line := range checkLines {
 		for _, ep := range errorPatterns {
 			if ep.pattern.MatchString(line) {
-				return &Alert{
-					ID:         generateAlertID(AlertAgentError, session, pane.ID),
-					Type:       AlertAgentError,
-					Severity:   ep.severity,
-					Source:     agentAlertSource(session),
-					Message:    ep.msg,
-					Session:    session,
-					Pane:       pane.ID,
-					Context:    map[string]interface{}{"matched_line": truncateString(line, 200)},
-					CreatedAt:  time.Now(),
-					LastSeenAt: time.Now(),
-					Count:      1,
+				rank := severityRank(ep.severity)
+				if rank > bestRank {
+					bestRank = rank
+					best = &Alert{
+						ID:         generateAlertID(AlertAgentError, session, pane.ID),
+						Type:       AlertAgentError,
+						Severity:   ep.severity,
+						Source:     agentAlertSource(session),
+						Message:    ep.msg,
+						Session:    session,
+						Pane:       pane.ID,
+						Context:    map[string]interface{}{"matched_line": truncateString(line, 200)},
+						CreatedAt:  time.Now(),
+						LastSeenAt: time.Now(),
+						Count:      1,
+					}
 				}
 			}
 		}
 	}
 
-	return nil
+	return best
 }
 
 // detectRateLimit checks for rate limiting patterns

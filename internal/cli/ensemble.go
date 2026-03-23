@@ -2081,6 +2081,7 @@ func parseBrCreateID(outputBytes []byte) (string, error) {
 
 func defaultBrCommand(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "br", args...)
+	cmd.WaitDelay = 2 * time.Second
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}

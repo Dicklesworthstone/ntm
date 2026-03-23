@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -233,6 +234,7 @@ func runCMPrivacyCommand(args ...string) error {
 
 	fullArgs := append([]string{"privacy"}, args...)
 	cmd := exec.CommandContext(context.Background(), "cm", fullArgs...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

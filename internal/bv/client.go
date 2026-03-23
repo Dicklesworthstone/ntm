@@ -124,6 +124,7 @@ func (c *BVClient) IsAvailable() bool {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bv", "--version")
+	cmd.WaitDelay = 2 * time.Second
 	return cmd.Run() == nil
 }
 
@@ -290,6 +291,7 @@ func (c *BVClient) fetchTriage(dir string) (*TriageResponse, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bv", "--robot-triage")
+	cmd.WaitDelay = 2 * time.Second
 	if dir != "" {
 		cmd.Dir = dir
 	}

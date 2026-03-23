@@ -45,6 +45,7 @@ func (a *CAAMAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -68,6 +69,7 @@ func (a *CAAMAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "help")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	_ = cmd.Run() // Ignore error, just check output
@@ -265,6 +267,7 @@ func (a *CAAMAdapter) fetchStatus(ctx context.Context) (*CAAMStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "list", "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -356,6 +359,7 @@ func (a *CAAMAdapter) GetCurrentCredentials(ctx context.Context, provider string
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "creds", provider, "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -429,6 +433,7 @@ func (a *CAAMAdapter) SwitchAccount(ctx context.Context, accountID string) error
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "switch", accountID)
+	cmd.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -460,6 +465,7 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "switch", provider, "--next", "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

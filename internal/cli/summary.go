@@ -266,10 +266,11 @@ func parseSummaryFormat(format string) (summary.SummaryFormat, bool, error) {
 func resolveProjectDir(session, wd string) (string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		if err := tmux.ValidateSessionName(session); err != nil {
-			return "", fmt.Errorf("invalid session name: %w", err)
+		resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+		if err != nil {
+			return "", err
 		}
-		if dir := resolveProjectDirForSession(session, true); dir != "" {
+		if dir := resolveProjectDirForSession(resolved, true); dir != "" {
 			return dir, nil
 		}
 	}

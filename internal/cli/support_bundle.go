@@ -337,6 +337,7 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 	// Get tmux version
 	if tmux.DefaultClient.IsInstalled() {
 		cmd := exec.CommandContext(ctx, tmux.BinaryPath(), "-V")
+		cmd.WaitDelay = 2 * time.Second
 		if out, err := cmd.Output(); err == nil {
 			versions.Tmux = strings.TrimSpace(string(out))
 		}
@@ -347,6 +348,7 @@ func collectBundleVersions(ctx context.Context) (*VersionsInfo, error) {
 	for _, tool := range toolChecks {
 		if path, err := exec.LookPath(tool); err == nil {
 			cmd := exec.CommandContext(ctx, path, "--version")
+			cmd.WaitDelay = 2 * time.Second
 			cmd.Env = append(os.Environ(), "NO_COLOR=1")
 			if out, err := cmd.Output(); err == nil {
 				version := strings.TrimSpace(string(out))

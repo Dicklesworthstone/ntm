@@ -66,6 +66,7 @@ func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, ses
 
 	// Create the worktree with a new branch
 	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branchName, workingDir, currentBranch)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = wm.baseRepo
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w\nOutput: %s", err, string(output))
@@ -92,6 +93,7 @@ func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, ses
 // ListWorktrees returns all worktrees associated with agents
 func (wm *WorktreeManager) ListWorktrees(ctx context.Context) ([]*WorktreeInfo, error) {
 	cmd := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = wm.baseRepo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -109,6 +111,7 @@ func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessio
 
 	// Remove the worktree
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", workingDir)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = wm.baseRepo
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// If worktree doesn't exist, that's OK
@@ -119,6 +122,7 @@ func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessio
 
 	// Remove the branch
 	cmd = exec.CommandContext(ctx, "git", "branch", "-D", branchName)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = wm.baseRepo
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// If branch doesn't exist, that's OK
@@ -161,6 +165,7 @@ func (wm *WorktreeManager) CleanupStaleWorktrees(ctx context.Context, maxAge tim
 func (wm *WorktreeManager) SyncWorktree(ctx context.Context, worktreePath string) error {
 	// Fetch latest changes
 	cmd := exec.CommandContext(ctx, "git", "fetch", "origin")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = worktreePath
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to fetch: %w\nOutput: %s", err, string(output))
@@ -169,6 +174,7 @@ func (wm *WorktreeManager) SyncWorktree(ctx context.Context, worktreePath string
 	// Get the base branch (what this agent branch was created from)
 	// For now, assume 'main' - this could be enhanced to track the actual base
 	cmd = exec.CommandContext(ctx, "git", "merge", "origin/main")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = worktreePath
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to merge base branch: %w\nOutput: %s", err, string(output))

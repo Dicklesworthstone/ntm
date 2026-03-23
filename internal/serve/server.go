@@ -74,6 +74,9 @@ type Server struct {
 
 	// WebSocket hub for real-time subscriptions
 	wsHub *WSHub
+	// wsHubStartOnce ensures the hub loop starts exactly once, even when the
+	// router is used directly in tests without going through Start().
+	wsHubStartOnce sync.Once
 
 	// Pane output streaming
 	streamManager *tmux.StreamManager
@@ -271,6 +274,7 @@ func (s *IdempotencyStore) Get(key string) ([]byte, int, bool) {
 
 // Set stores a response for the idempotency key.
 func (s *IdempotencyStore) Set(key string, response []byte, statusCode int) {
+	s.startCleanup()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries[key] = &idempotencyEntry{
@@ -842,7 +846,6 @@ func New(cfg Config) *Server {
 		jobStore:           NewJobStore(),
 		wsHub:              NewWSHub(),
 	}
-	s.idempotencyStore.startCleanup()
 
 	// Initialize pane output streaming
 	streamCfg := tmux.DefaultPaneStreamerConfig()
@@ -1086,7 +1089,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Start WebSocket hub
-	go s.wsHub.Run()
+	s.ensureWSHubRunning()
 	defer s.wsHub.Stop()
 
 	// Cleanup pane streaming on shutdown
@@ -1160,6 +1163,15 @@ func (s *Server) Start(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (s *Server) ensureWSHubRunning() {
+	if s == nil || s.wsHub == nil {
+		return
+	}
+	s.wsHubStartOnce.Do(func() {
+		go s.wsHub.Run()
+	})
 }
 
 // Port returns the configured port.
@@ -3647,6 +3659,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		topics:     make(map[string]struct{}),
 		authClaims: extractAuthClaims(r),
 	}
+
+	s.ensureWSHubRunning()
 
 	// Register client with hub
 	if !s.wsHub.RegisterClient(client) {

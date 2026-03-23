@@ -63,6 +63,7 @@ func (a *BVAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -315,6 +316,7 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 	if dir != "" {
 		cmd.Dir = dir
 	}

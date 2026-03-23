@@ -389,10 +389,16 @@ Default files (skipped if missing): AGENTS.md, README.md, .claude/project_contex
 Use --files to override the file list.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			session := args[0]
-			if err := tmux.ValidateSessionName(session); err != nil {
-				return fmt.Errorf("invalid session name: %w", err)
+			sessionArg := strings.TrimSpace(args[0])
+			if sessionArg == "" {
+				return fmt.Errorf("session name is required")
 			}
+
+			res, err := ResolveSessionWithOptions(sessionArg, cmd.OutOrStdout(), SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
+			if err != nil {
+				return err
+			}
+			session := res.Session
 
 			// Resolve project directory
 			projectDir := resolveProjectDirForSession(session, true)

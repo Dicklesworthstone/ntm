@@ -67,6 +67,7 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 	}
 
 	cmd := exec.CommandContext(ctx, s.binaryPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 
 	// Capture stderr separately
 	var stderr bytes.Buffer

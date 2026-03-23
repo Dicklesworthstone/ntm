@@ -719,6 +719,7 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 
 	// Run cm serve command
 	cmd := exec.CommandContext(ctx, "cm", "serve", "--port", fmt.Sprintf("%d", port))
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = s.projectDir
 
 	var stderr bytes.Buffer
@@ -1023,6 +1024,7 @@ func (s *Server) handleMemoryPrivacyGet(w http.ResponseWriter, r *http.Request) 
 
 	// Run cm privacy status --json
 	cmd := exec.CommandContext(ctx, "cm", "privacy", "status", "--json")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = s.projectDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1066,8 +1068,10 @@ func (s *Server) handleMemoryPrivacyUpdate(w http.ResponseWriter, r *http.Reques
 		args := []string{"privacy", "enable", "--json"}
 		args = append(args, req.Agents...)
 		cmd = exec.CommandContext(ctx, "cm", args...)
+		cmd.WaitDelay = 2 * time.Second
 	} else {
 		cmd = exec.CommandContext(ctx, "cm", "privacy", "disable", "--json")
+		cmd.WaitDelay = 2 * time.Second
 	}
 
 	cmd.Dir = s.projectDir

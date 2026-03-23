@@ -215,6 +215,7 @@ type ruSyncRun struct {
 
 func runRUSyncCommand(ctx context.Context, path string, args []string) ruSyncRun {
 	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.WaitDelay = 2 * time.Second
 	stdout := tools.NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

@@ -186,6 +186,7 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 	// Create command
 	ctx, cancel := context.WithCancel(s.ctx)
 	cmd := exec.CommandContext(ctx, spec.Command, args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Dir = spec.WorkDir
@@ -555,6 +556,7 @@ func (s *Supervisor) checkHealthCmd(cmdArgs []string) bool {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = s.projectDir // Execute in project dir context
 
 	if err := cmd.Run(); err != nil {

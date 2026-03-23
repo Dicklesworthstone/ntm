@@ -4,6 +4,7 @@ import (
 	"container/ring"
 	"encoding/json"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -125,8 +126,9 @@ func (b *EventBus) Publish(event BusEvent) {
 				<-b.handlerSem
 			}()
 			defer func() {
-				// Recover from panics in event handlers to prevent crashes
-				_ = recover()
+				if r := recover(); r != nil {
+					log.Printf("event bus: handler panic recovered: %v", r)
+				}
 			}()
 			h(event)
 		}(entry.handler)
@@ -163,8 +165,9 @@ func (b *EventBus) PublishSync(event BusEvent) {
 				<-b.handlerSem
 			}()
 			defer func() {
-				// Recover from panics in event handlers to prevent crashes
-				_ = recover()
+				if r := recover(); r != nil {
+					log.Printf("event bus: sync handler panic recovered: %v", r)
+				}
 			}()
 			h(event)
 		}(entry.handler)

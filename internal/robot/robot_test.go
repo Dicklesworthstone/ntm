@@ -767,6 +767,50 @@ func TestPrintHelp_AttentionLoopMatchesCapabilities(t *testing.T) {
 	}
 }
 
+func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp capture failed: %v", err)
+	}
+
+	registry := GetRobotRegistry()
+	for _, name := range []string{"status", "send", "bead-close", "history"} {
+		surface, ok := registry.Surface(name)
+		if !ok {
+			t.Fatalf("missing registry surface %q", name)
+		}
+		if !strings.Contains(output, robotHelpFlagUsage(surface)) {
+			t.Fatalf("help output missing registry usage for %q", name)
+		}
+		wantSummary := firstNonEmptyString(surface.Summary, surface.Description)
+		if !strings.Contains(output, wantSummary) {
+			t.Fatalf("help output missing registry summary for %q: %q", name, wantSummary)
+		}
+	}
+}
+
+func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp capture failed: %v", err)
+	}
+
+	for _, want := range []string{
+		"--question=QUESTION",
+		"--bead-title=BEAD_TITLE",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing required secondary flag hint %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestPrintPlan(t *testing.T) {
 	output, err := captureStdout(t, PrintPlan)
 	if err != nil {

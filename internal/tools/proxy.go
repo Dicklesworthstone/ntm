@@ -40,6 +40,7 @@ func (a *ProxyAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -63,6 +64,7 @@ func (a *ProxyAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "--help")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	_ = cmd.Run() // Best-effort capability probing.
@@ -330,6 +332,7 @@ func proxyCompatible(version Version) bool {
 
 func runProxyStatusCommand(ctx context.Context, binaryPath string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

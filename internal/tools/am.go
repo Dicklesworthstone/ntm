@@ -46,6 +46,7 @@ func (a *AMAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 

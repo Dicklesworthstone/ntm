@@ -541,6 +541,7 @@ func buildSetupToolStatus(spec setupToolSpec) SetupToolStatus {
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, spec.Command, spec.VersionArgs...)
+		cmd.WaitDelay = 2 * time.Second
 		out, err := cmd.CombinedOutput()
 		if err == nil && ctx.Err() == nil {
 			status.Version = strings.TrimSpace(string(out))
@@ -1848,7 +1849,8 @@ type PlanAction struct {
 
 // PrintHelp outputs AI agent help documentation
 func PrintHelp() {
-	help := `ntm (Named Tmux Manager) AI Agent Interface
+	var builder strings.Builder
+	builder.WriteString(`ntm (Named Tmux Manager) AI Agent Interface
 =============================================
 Robot mode provides a JSON API for AI agents to orchestrate coding sessions.
 
@@ -1858,69 +1860,67 @@ API Design Principles (see docs/robot-api-design.md):
 2. Session-scoped: =SESSION syntax (--robot-send=myproj, --robot-tail=myproj)
 3. Modifiers: unprefixed global flags (--limit, --offset, --since, --type)
 4. Output: JSON by default, TOON for token-efficient (--robot-format=toon)
+`)
+	builder.WriteString(renderHelpCommandSection("Core Commands", []string{
+		"status",
+		"snapshot",
+		"capabilities",
+		"version",
+	}))
+	builder.WriteString("\n")
+	builder.WriteString(renderHelpCommandSection("Session Operations", []string{
+		"spawn",
+		"ensemble_spawn",
+		"send",
+		"tail",
+		"ensemble",
+		"interrupt",
+		"overlay",
+		"is-working",
+		"wait",
+	}))
+	builder.WriteString("                        Conditions: idle, complete, generating, healthy\n")
+	builder.WriteString("                        Note: bead_orphaned is deliberately unsupported — see --robot-capabilities\n")
 
-Core Commands:
---------------
---robot-status          Session state, agents, alerts (start here)
---robot-snapshot        Unified state: sessions + beads + alerts + mail + cursor handoff
---robot-capabilities    Machine-discoverable API schema
---robot-version         Version/build info (JSON)
-
-Session Operations:
--------------------
---robot-spawn=SESSION   Create session with --spawn-cc=N, --spawn-cod=N, --spawn-gmi=N, --spawn-label=LABEL
---robot-ensemble-spawn=SESSION  Spawn ensemble with --preset/--modes and --question
---robot-send=SESSION    Send prompts (--msg="text", --panes=1,2, --type=claude)
---robot-tail=SESSION    Capture pane output (--lines=50, --panes=1,2)
---robot-ensemble=SESSION Ensemble state (modes, status, synthesis readiness)
---robot-interrupt=SESSION  Ctrl+C to agents (--interrupt-msg="new task")
---robot-overlay         Open dashboard overlay for human handoff (--overlay-session=proj, --overlay-cursor=42, --overlay-no-wait)
---robot-is-working=SESSION Check if agents are busy
---robot-wait=SESSION    Wait for idle state (--timeout=5m, --condition=idle)
-                        Conditions: idle, complete, generating, healthy
-                        Note: bead_orphaned is deliberately unsupported — see --robot-capabilities
-
+	builder.WriteString(`
 Note: Pane-targeting commands exclude the user pane by default.
 Use --all to include the user pane (index depends on tmux pane-base-index).
-
-Work Distribution:
-------------------
---robot-assign=SESSION  Get assignment recommendations (--strategy=balanced)
---robot-bulk-assign=SESSION  Batch assign beads (--from-bv)
-
-Analysis & Monitoring:
-----------------------
---robot-triage          Prioritized work recommendations
---robot-graph           Dependency graph insights
---robot-context=SESSION Context window usage
---robot-agent-health=SESSION  Comprehensive health check
---robot-diagnose=SESSION Diagnose issues with fix recommendations
-
-Tool Bridges:
--------------
---robot-cass-search=QUERY    Search past conversations (--limit=20, --since=7d)
---robot-acfs-status          Setup status via ACFS (alias: --robot-setup)
---robot-setup                Alias for --robot-acfs-status
---robot-giil-fetch=URL       Download image from share URL via giil
---robot-jfp-search=QUERY     Search prompts library
---robot-jfp-install=ID       Install prompt(s) (--jfp-project=PATH)
---robot-jfp-export=ID        Export prompt(s) (--jfp-format=skill|md)
---robot-jfp-update           Update JFP registry cache
---robot-ms-search=QUERY      Search Meta Skill catalog
---robot-ms-show=ID           Show Meta Skill details
---robot-slb-pending          List pending SLB approval requests
---robot-slb-approve=ID       Approve SLB request by ID
---robot-slb-deny=ID          Deny SLB request by ID (--reason="...")
---robot-tokens               Token usage stats (--days=30, --group-by=agent)
---robot-history=SESSION      Command history (--last=10)
-
-Bead Management:
-----------------
---robot-beads-list      List beads (--status=open, --priority=P0-P1)
---robot-bead-claim=ID   Claim a bead (--bead-assignee=agent-1)
---robot-bead-create     Create bead (--bead-title="Fix bug")
---robot-bead-close=ID   Close bead (--bead-close-reason="done")
-
+`)
+	builder.WriteString(renderHelpCommandSection("Work Distribution", []string{
+		"assign",
+		"beads-list",
+		"bead-claim",
+		"bead-create",
+		"bead-close",
+	}))
+	builder.WriteString("\n")
+	builder.WriteString(renderHelpCommandSection("Analysis & Monitoring", []string{
+		"triage",
+		"plan",
+		"graph",
+		"context",
+		"health",
+		"diagnose",
+	}))
+	builder.WriteString("\n")
+	builder.WriteString(renderHelpCommandSection("Tool Bridges", []string{
+		"cass-search",
+		"acfs-status",
+		"setup-status",
+		"giil-fetch",
+		"jfp-search",
+		"jfp-install",
+		"jfp-export",
+		"jfp-update",
+		"ms-search",
+		"ms-show",
+		"slb-pending",
+		"slb-approve",
+		"slb-deny",
+		"tokens",
+		"history",
+	}))
+	builder.WriteString(`
 Output Formats:
 ---------------
 --robot-format=json     Full JSON (default)
@@ -2007,8 +2007,79 @@ Tips for AI Agents:
 
 For complete API documentation: docs/robot-api-design.md
 For machine-readable schema:    ntm --robot-capabilities
-`
-	fmt.Println(help)
+`)
+	fmt.Println(builder.String())
+}
+
+func renderHelpCommandSection(title string, surfaceNames []string) string {
+	registry := GetRobotRegistry()
+	if registry == nil {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.WriteString(title)
+	builder.WriteString(":\n")
+	builder.WriteString(strings.Repeat("-", len(title)+1))
+	builder.WriteString("\n")
+
+	for _, name := range surfaceNames {
+		surface, ok := registry.Surface(name)
+		if !ok {
+			continue
+		}
+		summary := firstNonEmptyString(surface.Summary, surface.Description) + robotHelpRequiredParameterHints(surface)
+		builder.WriteString(fmt.Sprintf("%-24s %s\n", robotHelpFlagUsage(surface), summary))
+	}
+
+	return builder.String()
+}
+
+func robotHelpFlagUsage(surface RobotSurfaceDescriptor) string {
+	for _, param := range surface.Parameters {
+		if param.Required && param.Flag == surface.Flag {
+			return surface.Flag + "=" + robotHelpPlaceholder(param.Name)
+		}
+	}
+	return surface.Flag
+}
+
+func robotHelpPlaceholder(name string) string {
+	switch normalizeRobotRegistryName(name) {
+	case "session":
+		return "SESSION"
+	case "query":
+		return "QUERY"
+	case "url":
+		return "URL"
+	case "id", "bead-id", "alert-id":
+		return "ID"
+	case "workflow":
+		return "WORKFLOW"
+	default:
+		return strings.ToUpper(strings.ReplaceAll(normalizeRobotRegistryName(name), "-", "_"))
+	}
+}
+
+func robotHelpRequiredParameterHints(surface RobotSurfaceDescriptor) string {
+	hints := make([]string, 0, len(surface.Parameters))
+	for _, param := range surface.Parameters {
+		if !param.Required || param.Flag == surface.Flag {
+			continue
+		}
+		hints = append(hints, robotHelpParameterUsage(param))
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	return " Requires " + strings.Join(hints, ", ") + "."
+}
+
+func robotHelpParameterUsage(param RobotParameter) string {
+	if param.Type == "bool" {
+		return param.Flag
+	}
+	return param.Flag + "=" + robotHelpPlaceholder(param.Name)
 }
 
 // GetStatus collects machine-readable status.

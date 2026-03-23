@@ -32,6 +32,7 @@ type Message struct {
 
 func (c *MessageClient) Send(ctx context.Context, to, body string) error {
 	cmd := exec.CommandContext(ctx, "bd", "message", "send", to, body, "--json")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = c.projectPath
 	return cmd.Run()
 }
@@ -46,6 +47,7 @@ func (c *MessageClient) Inbox(ctx context.Context, unreadOnly, urgentOnly bool) 
 	}
 
 	cmd := exec.CommandContext(ctx, "bd", args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = c.projectPath
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -77,6 +79,7 @@ func (c *MessageClient) Inbox(ctx context.Context, unreadOnly, urgentOnly bool) 
 
 func (c *MessageClient) Read(ctx context.Context, id string) (*Message, error) {
 	cmd := exec.CommandContext(ctx, "bd", "message", "read", id, "--json")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = c.projectPath
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -108,6 +111,7 @@ func (c *MessageClient) Read(ctx context.Context, id string) (*Message, error) {
 
 func (c *MessageClient) Ack(ctx context.Context, id string) error {
 	cmd := exec.CommandContext(ctx, "bd", "message", "ack", id, "--json")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = c.projectPath
 	return cmd.Run()
 }

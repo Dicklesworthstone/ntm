@@ -40,6 +40,7 @@ func (a *RanoAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -63,6 +64,7 @@ func (a *RanoAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "help")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	_ = cmd.Run() // Ignore error, just check output
@@ -282,6 +284,7 @@ func (a *RanoAdapter) checkPermissions(ctx context.Context) bool {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -321,6 +324,7 @@ func (a *RanoAdapter) GetStatus(ctx context.Context) (*RanoStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -373,6 +377,7 @@ func (a *RanoAdapter) GetProcessStatsWithWindow(ctx context.Context, pid int, wi
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -416,6 +421,7 @@ func (a *RanoAdapter) GetAllProcessStatsWithWindow(ctx context.Context, window s
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

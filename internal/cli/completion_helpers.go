@@ -243,6 +243,7 @@ func listBeadIDsFromCommand(args ...string) []string {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "br", args...)
+	cmd.WaitDelay = 2 * time.Second
 	if wd, err := os.Getwd(); err == nil && wd != "" {
 		cmd.Dir = wd
 	}

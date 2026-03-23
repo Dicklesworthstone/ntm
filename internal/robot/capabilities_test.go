@@ -229,6 +229,12 @@ func TestGetCapabilities(t *testing.T) {
 	if len(output.Commands) == 0 {
 		t.Error("expected non-empty Commands")
 	}
+	if len(output.Surfaces) == 0 {
+		t.Fatal("expected registry-backed Surfaces")
+	}
+	if len(output.Surfaces) != len(output.Commands) {
+		t.Fatalf("Surfaces length = %d, want %d", len(output.Surfaces), len(output.Commands))
+	}
 	if len(output.Categories) != len(categoryOrder) {
 		t.Errorf("Categories length = %d, want %d", len(output.Categories), len(categoryOrder))
 	}
@@ -244,6 +250,38 @@ func TestGetCapabilities(t *testing.T) {
 	}
 	if beadOrphaned.Status != CapabilityUnavailable {
 		t.Errorf("bead_orphaned status = %q, want %q", beadOrphaned.Status, CapabilityUnavailable)
+	}
+}
+
+func TestGetCapabilities_RegistryMetadataVisible(t *testing.T) {
+	t.Parallel()
+
+	output, err := GetCapabilities()
+	if err != nil {
+		t.Fatalf("GetCapabilities() error: %v", err)
+	}
+
+	var snapshot *RobotCommandInfo
+	for i := range output.Commands {
+		if output.Commands[i].Name == "snapshot" {
+			snapshot = &output.Commands[i]
+			break
+		}
+	}
+	if snapshot == nil {
+		t.Fatal("expected snapshot command in capabilities output")
+	}
+	if strings.TrimSpace(snapshot.SchemaID) == "" {
+		t.Fatal("expected snapshot schema_id")
+	}
+	if snapshot.SchemaType != "snapshot" {
+		t.Fatalf("snapshot schema_type = %q, want snapshot", snapshot.SchemaType)
+	}
+	if len(snapshot.Sections) == 0 {
+		t.Fatal("expected snapshot sections in capabilities output")
+	}
+	if len(snapshot.Transports) == 0 {
+		t.Fatal("expected snapshot transports in capabilities output")
 	}
 }
 

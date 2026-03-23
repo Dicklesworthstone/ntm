@@ -515,13 +515,16 @@ func (n *Notifier) sendShell(event Event) error {
 		cmd.Stdin = bytes.NewReader(eventJSON)
 	}
 
-	// Set environment variables
+	// Set environment variables (sanitize newlines to prevent shell confusion)
+	sanitize := func(s string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " ")
+	}
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("NTM_EVENT_TYPE=%s", event.Type),
-		fmt.Sprintf("NTM_EVENT_MESSAGE=%s", event.Message),
-		fmt.Sprintf("NTM_EVENT_SESSION=%s", event.Session),
-		fmt.Sprintf("NTM_EVENT_PANE=%s", event.Pane),
-		fmt.Sprintf("NTM_EVENT_AGENT=%s", event.Agent),
+		fmt.Sprintf("NTM_EVENT_TYPE=%s", sanitize(string(event.Type))),
+		fmt.Sprintf("NTM_EVENT_MESSAGE=%s", sanitize(event.Message)),
+		fmt.Sprintf("NTM_EVENT_SESSION=%s", sanitize(event.Session)),
+		fmt.Sprintf("NTM_EVENT_PANE=%s", sanitize(event.Pane)),
+		fmt.Sprintf("NTM_EVENT_AGENT=%s", sanitize(event.Agent)),
 	)
 
 	return cmd.Run()

@@ -40,6 +40,7 @@ func (a *GIILAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -64,6 +65,7 @@ func (a *GIILAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "--help")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	_ = cmd.Run() // Ignore error, just check output
@@ -155,6 +157,7 @@ func (a *GIILAdapter) GetDirectURL(ctx context.Context, shareURL string) (*GIILM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), shareURL, "--print-url", "--json", "--quiet")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -207,6 +210,7 @@ func (a *GIILAdapter) Download(ctx context.Context, shareURL, outputDir string) 
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

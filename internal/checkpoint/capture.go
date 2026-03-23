@@ -271,6 +271,7 @@ func gitCommand(dir string, args ...string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", allArgs...)
+	cmd.WaitDelay = 2 * time.Second
 
 	// Capture stderr separately for error reporting
 	var stderr bytes.Buffer

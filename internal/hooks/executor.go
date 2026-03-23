@@ -137,6 +137,7 @@ func (e *Executor) runSingleHook(ctx context.Context, hook *CommandHook, execCtx
 
 	// Prepare command
 	cmd := exec.CommandContext(hookCtx, "sh", "-c", hook.Command)
+	cmd.WaitDelay = 2 * time.Second
 
 	// Set working directory
 	workDir := hook.ExpandWorkDir(execCtx.SessionName, execCtx.ProjectDir)

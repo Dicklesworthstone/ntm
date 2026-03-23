@@ -147,7 +147,7 @@ func TestLoadWSHub_LargePayloads(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	client.Subscribe([]string{"panes:*"})
-	hub.register <- client
+	requireRegisterWSClient(t, hub, client)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -200,7 +200,7 @@ done:
 		t.Error("No large payload messages received")
 	}
 
-	hub.unregister <- client
+	hub.UnregisterClient(client)
 }
 
 func TestLoadWSHub_ManyTopics(t *testing.T) {
@@ -227,7 +227,7 @@ func TestLoadWSHub_ManyTopics(t *testing.T) {
 		// Each client subscribes to a different pane
 		topic := fmt.Sprintf("panes:proj:%d", i)
 		clients[i].Subscribe([]string{topic})
-		hub.register <- clients[i]
+		requireRegisterWSClient(t, hub, clients[i])
 	}
 
 	time.Sleep(50 * time.Millisecond)
@@ -272,7 +272,7 @@ func TestLoadWSHub_ManyTopics(t *testing.T) {
 
 	// Cleanup
 	for _, client := range clients {
-		hub.unregister <- client
+		hub.UnregisterClient(client)
 	}
 }
 
@@ -298,7 +298,7 @@ func runWSLoadTest(t *testing.T, cfg LoadTestConfig) LoadTestStats {
 			topics: make(map[string]struct{}),
 		}
 		wsClient.Subscribe([]string{"panes:*"})
-		hub.register <- wsClient
+		requireRegisterWSClient(t, hub, wsClient)
 
 		clients[i] = &loadTestClient{
 			id:        i,
@@ -424,7 +424,7 @@ func BenchmarkWSHub_Publish(b *testing.B) {
 		topics: make(map[string]struct{}),
 	}
 	client.Subscribe([]string{"panes:*"})
-	hub.register <- client
+	requireRegisterWSClient(b, hub, client)
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -450,7 +450,7 @@ func BenchmarkWSHub_Publish(b *testing.B) {
 	b.StopTimer()
 
 	close(done)
-	hub.unregister <- client
+	hub.UnregisterClient(client)
 }
 
 func BenchmarkWSHub_BroadcastToMany(b *testing.B) {
@@ -473,7 +473,7 @@ func BenchmarkWSHub_BroadcastToMany(b *testing.B) {
 			topics: make(map[string]struct{}),
 		}
 		clients[i].Subscribe([]string{"panes:*"})
-		hub.register <- clients[i]
+		requireRegisterWSClient(b, hub, clients[i])
 
 		// Drain in background
 		go func(c *WSClient) {
@@ -500,6 +500,6 @@ func BenchmarkWSHub_BroadcastToMany(b *testing.B) {
 
 	close(done)
 	for _, client := range clients {
-		hub.unregister <- client
+		hub.UnregisterClient(client)
 	}
 }

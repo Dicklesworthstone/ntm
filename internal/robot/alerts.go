@@ -358,6 +358,7 @@ func (d *DesktopChannel) Send(ctx context.Context, alert *Alert) error {
 	case "darwin":
 		script := fmt.Sprintf(`display notification "%s" with title "%s"`, escapeAppleScript(body), escapeAppleScript(title))
 		cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+		cmd.WaitDelay = 2 * time.Second
 		return cmd.Run()
 
 	case "linux":
@@ -366,6 +367,7 @@ func (d *DesktopChannel) Send(ctx context.Context, alert *Alert) error {
 			urgencyFlag = "normal"
 		}
 		cmd := exec.CommandContext(ctx, "notify-send", "-u", urgencyFlag, title, body)
+		cmd.WaitDelay = 2 * time.Second
 		return cmd.Run()
 
 	default:

@@ -470,7 +470,34 @@ func humanizeRobotRegistryName(name string) string {
 	if name == "" {
 		return ""
 	}
-	return strings.ToUpper(name[:1]) + name[1:]
+	words := strings.Fields(strings.ToLower(name))
+	initialisms := map[string]string{
+		"acfs": "ACFS",
+		"api":  "API",
+		"bv":   "BV",
+		"cass": "CASS",
+		"giil": "GIIL",
+		"id":   "ID",
+		"jfp":  "JFP",
+		"json": "JSON",
+		"mcp":  "MCP",
+		"sse":  "SSE",
+		"slb":  "SLB",
+		"tmux": "tmux",
+		"tui":  "TUI",
+		"url":  "URL",
+	}
+	for i, word := range words {
+		if word == "" {
+			continue
+		}
+		if initialism, ok := initialisms[word]; ok {
+			words[i] = initialism
+			continue
+		}
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
+	}
+	return strings.Join(words, " ")
 }
 
 func cloneRobotParameters(parameters []RobotParameter) []RobotParameter {
@@ -497,6 +524,23 @@ func cloneTransports(transports []RobotTransportInfo) []RobotTransportInfo {
 	}
 	cloned := make([]RobotTransportInfo, len(transports))
 	copy(cloned, transports)
+	return cloned
+}
+
+func cloneRobotSurfaceDescriptors(surfaces []RobotSurfaceDescriptor) []RobotSurfaceDescriptor {
+	if surfaces == nil {
+		return nil
+	}
+
+	cloned := make([]RobotSurfaceDescriptor, len(surfaces))
+	for i, surface := range surfaces {
+		cloned[i] = surface
+		cloned[i].Sections = cloneStrings(surface.Sections)
+		cloned[i].Parameters = cloneRobotParameters(surface.Parameters)
+		cloned[i].Examples = cloneStrings(surface.Examples)
+		cloned[i].Transports = cloneTransports(surface.Transports)
+	}
+
 	return cloned
 }
 

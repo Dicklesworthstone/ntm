@@ -23,6 +23,7 @@ type DefaultExecutor struct {
 
 func (e *DefaultExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

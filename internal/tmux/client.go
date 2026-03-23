@@ -124,6 +124,7 @@ func runLocalContext(ctx context.Context, args ...string) (string, error) {
 	}
 	binary := BinaryPath()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -159,6 +160,7 @@ func runSSHContext(ctx context.Context, args ...string) (string, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

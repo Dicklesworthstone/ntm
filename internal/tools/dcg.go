@@ -41,6 +41,7 @@ func (a *DCGAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -65,6 +66,7 @@ func (a *DCGAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "help")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	_ = cmd.Run() // Ignore error, just check output
@@ -186,6 +188,7 @@ func (a *DCGAdapter) GetStatus(ctx context.Context) (*DCGStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -353,6 +356,7 @@ func (a *DCGAdapter) CheckCommand(ctx context.Context, command string) (*Blocked
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "check", "--json", commandToCheck)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -408,6 +412,7 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 	args = append(args, commandToCheck)
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

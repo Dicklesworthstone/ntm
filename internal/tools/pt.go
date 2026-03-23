@@ -40,6 +40,7 @@ func (a *PTAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -63,6 +64,7 @@ func (a *PTAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "--help")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	_ = cmd.Run() // Ignore error, just check output
@@ -113,6 +115,7 @@ func (a *PTAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 
 	// Try self-classify as a sanity check (classify our own process)
 	cmd := exec.CommandContext(ctx2, path, "health", "--json")
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -272,6 +275,7 @@ func (a *PTAdapter) ClassifyProcess(ctx context.Context, pid int) (*PTProcessRes
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "classify", "--pid", fmt.Sprintf("%d", pid), "--json")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -309,6 +313,7 @@ func (a *PTAdapter) ClassifyProcesses(ctx context.Context, pids []int) ([]PTProc
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -340,6 +345,7 @@ func (a *PTAdapter) WatchSession(ctx context.Context, sessionName string) ([]PTP
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "watch", "--session", sessionName, "--json", "--once")
+	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout

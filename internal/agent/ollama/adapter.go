@@ -615,7 +615,10 @@ func (a *Adapter) PullModelWithProgress(ctx context.Context, name string, onProg
 		return fmt.Errorf("%w: stream error: %v", ErrPullFailed, err)
 	}
 
-	if lastStatus != "success" && lastStatus != "" {
+	if lastStatus == "" {
+		return fmt.Errorf("%w: no valid response received from server", ErrPullFailed)
+	}
+	if lastStatus != "success" {
 		// Some status messages indicate completion without "success"
 		if !strings.Contains(strings.ToLower(lastStatus), "done") &&
 			!strings.Contains(strings.ToLower(lastStatus), "complete") {

@@ -316,6 +316,7 @@ func checkDependencies(ctx context.Context) []DepCheck {
 		path := tmux.BinaryPath()
 		tmuxCheck.Installed = true
 		cmd := exec.CommandContext(ctx, path, "-V")
+		cmd.WaitDelay = 2 * time.Second
 		if out, err := cmd.Output(); err == nil {
 			tmuxCheck.Version = strings.TrimSpace(string(out))
 		}
@@ -334,6 +335,7 @@ func checkDependencies(ctx context.Context) []DepCheck {
 	if path, err := exec.LookPath("go"); err == nil {
 		goCheck.Installed = true
 		cmd := exec.CommandContext(ctx, path, "version")
+		cmd.WaitDelay = 2 * time.Second
 		if out, err := cmd.Output(); err == nil {
 			parts := strings.Fields(string(out))
 			if len(parts) >= 3 && parts[0] == "go" && parts[1] == "version" {

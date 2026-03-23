@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -305,6 +306,7 @@ func startBDDirect(projectDir string, autoCommit, autoPush bool, interval string
 	}
 
 	cmd := exec.CommandContext(context.Background(), "bd", args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = projectDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -327,6 +329,7 @@ func startBDDirect(projectDir string, autoCommit, autoPush bool, interval string
 func runBDCommand(projectDir string, args ...string) error {
 	fullArgs := append([]string{"daemon"}, args...)
 	cmd := exec.CommandContext(context.Background(), "bd", fullArgs...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = projectDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

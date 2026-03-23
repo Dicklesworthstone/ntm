@@ -467,6 +467,7 @@ func checkDepWithPath(dep depCheck) (status string, version string, path string)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, dep.Command, dep.VersionArgs...)
+		cmd.WaitDelay = 2 * time.Second
 		out, err := cmd.CombinedOutput()
 
 		// Some commands print version info but exit non-zero (or get killed on timeout).

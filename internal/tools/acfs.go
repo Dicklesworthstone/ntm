@@ -37,6 +37,7 @@ func (a *ACFSAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -139,6 +140,7 @@ func (a *ACFSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 
 	// Limit output to 10MB
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)

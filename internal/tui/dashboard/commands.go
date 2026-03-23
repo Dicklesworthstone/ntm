@@ -53,6 +53,7 @@ var dashboardRunAddAgents = func(ctx context.Context, projectDir, session string
 	}
 
 	cmd := exec.CommandContext(ctx, exe, args...)
+	cmd.WaitDelay = 2 * time.Second
 	if strings.TrimSpace(projectDir) != "" {
 		cmd.Dir = projectDir
 	}

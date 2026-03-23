@@ -712,3 +712,62 @@ func TestResolveProjectDirForSession_InvalidSessionReturnsEmpty(t *testing.T) {
 		t.Fatalf("resolveProjectDirForSession invalid = %q, want empty", got)
 	}
 }
+
+func TestNormalizeProjectScopedSessionName_UsesConfiguredProjectPrefix(t *testing.T) {
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+
+	projectsBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectsBase, "myproject"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	got, err := normalizeProjectScopedSessionName("mypro", true)
+	if err != nil {
+		t.Fatalf("normalizeProjectScopedSessionName() error = %v", err)
+	}
+	if got != "myproject" {
+		t.Fatalf("normalizeProjectScopedSessionName() = %q, want %q", got, "myproject")
+	}
+}
+
+func TestNormalizeProjectScopedSessionName_PreservesLabelWithConfiguredProjectPrefix(t *testing.T) {
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+
+	projectsBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectsBase, "myproject"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	got, err := normalizeProjectScopedSessionName("mypro--frontend", true)
+	if err != nil {
+		t.Fatalf("normalizeProjectScopedSessionName() error = %v", err)
+	}
+	if got != "myproject--frontend" {
+		t.Fatalf("normalizeProjectScopedSessionName() = %q, want %q", got, "myproject--frontend")
+	}
+}
+
+func TestNormalizeProjectScopedSessionName_RejectsAmbiguousConfiguredProjectPrefix(t *testing.T) {
+	origCfg := cfg
+	t.Cleanup(func() { cfg = origCfg })
+
+	projectsBase := t.TempDir()
+	for _, name := range []string{"myproject", "myproject2"} {
+		if err := os.MkdirAll(filepath.Join(projectsBase, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	_, err := normalizeProjectScopedSessionName("mypro", true)
+	if err == nil {
+		t.Fatal("expected ambiguous configured project error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous error, got %v", err)
+	}
+}

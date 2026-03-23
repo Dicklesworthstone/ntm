@@ -193,13 +193,17 @@ func (c *Capturer) captureScrollbackEnhanced(cp *Checkpoint, config ScrollbackCo
 
 		capture, err := CaptureScrollback(cp.SessionName, pane.ID, config)
 		if err != nil {
-			// Log error but continue with other panes
+			// Log error but continue with other panes; clear stale references
 			slog.Warn("failed to capture scrollback", "pane", pane.Index, "error", err)
+			pane.ScrollbackFile = ""
+			pane.ScrollbackLines = 0
 			continue
 		}
 
 		if capture.Skipped {
 			slog.Warn("skipped scrollback", "pane", pane.Index, "reason", capture.SkipReason)
+			pane.ScrollbackFile = ""
+			pane.ScrollbackLines = 0
 			continue
 		}
 
@@ -215,6 +219,8 @@ func (c *Capturer) captureScrollbackEnhanced(cp *Checkpoint, config ScrollbackCo
 
 		if saveErr != nil {
 			slog.Warn("failed to save scrollback", "pane", pane.Index, "error", saveErr)
+			pane.ScrollbackFile = ""
+			pane.ScrollbackLines = 0
 			continue
 		}
 

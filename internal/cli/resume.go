@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	sessionpkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -111,11 +113,6 @@ func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, 
 		jsonFormat = true
 	}
 
-	projectDir, err := resolveResumeProjectDir(sessionName)
-	if err != nil {
-		return err
-	}
-
 	slog.Debug("resume command",
 		"session", sessionName,
 		"from", fromPath,
@@ -125,9 +122,10 @@ func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, 
 	)
 
 	// 1. Find handoff
-	reader := handoff.NewReader(projectDir)
 	var h *handoff.Handoff
 	var path string
+	var err error
+	projectDir := ""
 
 	if fromPath != "" {
 		// Resolve relative path
@@ -136,6 +134,7 @@ func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, 
 				return fmt.Errorf("failed to resolve handoff path: %w", err)
 			}
 		}
+		reader := handoff.NewReader("")
 		h, err = reader.Read(fromPath)
 		if err != nil {
 			slog.Error("failed to read handoff file",
@@ -146,6 +145,12 @@ func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, 
 		}
 		path = fromPath
 	} else {
+		allowPrefix := !jsonFormat && !IsJSONOutput()
+		sessionName, projectDir, err = resolveResumeScope(sessionName, allowPrefix)
+		if err != nil {
+			return err
+		}
+		reader := handoff.NewReader(projectDir)
 		if sessionName == "" {
 			// Try to find any handoff
 			h, path, err = reader.FindLatestAny()
@@ -472,23 +477,65 @@ func injectHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff,
 	return nil
 }
 
-func resolveResumeProjectDir(sessionName string) (string, error) {
+func resolveResumeScope(sessionName string, allowPrefix bool) (string, string, error) {
 	sessionName = strings.TrimSpace(sessionName)
 	if sessionName == "" {
 		projectDir := GetProjectRoot()
 		if projectDir == "" {
-			return "", fmt.Errorf("getting project root failed")
+			return "", "", fmt.Errorf("getting project root failed")
 		}
-		return projectDir, nil
+		return "", projectDir, nil
 	}
+
+	resolvedSession, err := normalizeProjectScopedSessionName(sessionName, allowPrefix)
+	if err != nil {
+		return "", "", err
+	}
+
+	projectDir := resolveProjectDirForSession(resolvedSession, true)
+	if projectDir == "" {
+		return "", "", fmt.Errorf("getting project root failed")
+	}
+
+	reader := handoff.NewReader(projectDir)
+	resolvedSession, err = resolveStoredHandoffSessionName(resolvedSession, reader, allowPrefix)
+	if err != nil {
+		return "", "", err
+	}
+	return resolvedSession, projectDir, nil
+}
+
+func resolveStoredHandoffSessionName(sessionName string, reader *handoff.Reader, allowPrefix bool) (string, error) {
 	if err := validateResumeSessionName(sessionName); err != nil {
 		return "", err
 	}
-	projectDir := resolveProjectDirForSession(sessionName, true)
-	if projectDir == "" {
-		return "", fmt.Errorf("getting project root failed")
+	if reader == nil {
+		return sessionName, nil
 	}
-	return projectDir, nil
+
+	sessions, err := reader.ListSessions()
+	if err != nil {
+		return "", fmt.Errorf("list handoff sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		return sessionName, nil
+	}
+
+	candidates := make([]tmux.Session, 0, len(sessions))
+	for _, name := range sessions {
+		candidates = append(candidates, tmux.Session{Name: name})
+	}
+
+	resolved, _, err := resolveExplicitSessionName(sessionName, candidates, allowPrefix)
+	if err == nil {
+		return resolved, nil
+	}
+
+	var resolveErr *sessionpkg.ResolveExplicitSessionNameError
+	if errors.As(err, &resolveErr) && resolveErr.Kind == sessionpkg.ResolveExplicitSessionNameErrorNotFound {
+		return sessionName, nil
+	}
+	return "", err
 }
 
 func validateResumeSessionName(sessionName string) error {

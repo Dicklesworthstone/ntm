@@ -429,7 +429,7 @@ exit 2
 		topics: make(map[string]struct{}),
 	}
 	client.Subscribe([]string{"accounts:*"})
-	hub.register <- client
+	requireRegisterWSClient(t, hub, client)
 	time.Sleep(20 * time.Millisecond)
 
 	s := &Server{

@@ -50,10 +50,14 @@ type Theme struct {
 	Info      lipgloss.Color
 
 	// Agent-specific colors
-	Claude lipgloss.Color
-	Codex  lipgloss.Color
-	Gemini lipgloss.Color
-	User   lipgloss.Color
+	Claude   lipgloss.Color
+	Codex    lipgloss.Color
+	Gemini   lipgloss.Color
+	Cursor   lipgloss.Color
+	Windsurf lipgloss.Color
+	Aider    lipgloss.Color
+	Ollama   lipgloss.Color
+	User     lipgloss.Color
 }
 
 // Catppuccin Mocha - the flagship dark theme
@@ -96,10 +100,14 @@ var CatppuccinMocha = Theme{
 	Info:      lipgloss.Color("#89dceb"), // Sky
 
 	// Agent colors
-	Claude: lipgloss.Color("#cba6f7"), // Mauve (Anthropic purple)
-	Codex:  lipgloss.Color("#89b4fa"), // Blue (OpenAI blue)
-	Gemini: lipgloss.Color("#f9e2af"), // Yellow (Google colors)
-	User:   lipgloss.Color("#a6e3a1"), // Green
+	Claude:   lipgloss.Color("#cba6f7"), // Mauve (Anthropic purple)
+	Codex:    lipgloss.Color("#89b4fa"), // Blue (OpenAI blue)
+	Gemini:   lipgloss.Color("#f9e2af"), // Yellow (Google colors)
+	Cursor:   lipgloss.Color("#94e2d5"), // Teal
+	Windsurf: lipgloss.Color("#f2cdcd"), // Flamingo
+	Aider:    lipgloss.Color("#fab387"), // Peach
+	Ollama:   lipgloss.Color("#a6e3a1"), // Green
+	User:     lipgloss.Color("#a6e3a1"), // Green
 }
 
 // Catppuccin Macchiato - darker variant
@@ -137,10 +145,14 @@ var CatppuccinMacchiato = Theme{
 	Error:     lipgloss.Color("#ed8796"),
 	Info:      lipgloss.Color("#91d7e3"),
 
-	Claude: lipgloss.Color("#c6a0f6"),
-	Codex:  lipgloss.Color("#8aadf4"),
-	Gemini: lipgloss.Color("#eed49f"),
-	User:   lipgloss.Color("#a6da95"),
+	Claude:   lipgloss.Color("#c6a0f6"),
+	Codex:    lipgloss.Color("#8aadf4"),
+	Gemini:   lipgloss.Color("#eed49f"),
+	Cursor:   lipgloss.Color("#8bd5ca"),
+	Windsurf: lipgloss.Color("#f0c6c6"),
+	Aider:    lipgloss.Color("#f5a97f"),
+	Ollama:   lipgloss.Color("#a6da95"),
+	User:     lipgloss.Color("#a6da95"),
 }
 
 // Catppuccin Latte - light theme for light terminals
@@ -178,10 +190,14 @@ var CatppuccinLatte = Theme{
 	Error:     lipgloss.Color("#d20f39"),
 	Info:      lipgloss.Color("#04a5e5"),
 
-	Claude: lipgloss.Color("#8839ef"),
-	Codex:  lipgloss.Color("#1e66f5"),
-	Gemini: lipgloss.Color("#df8e1d"),
-	User:   lipgloss.Color("#40a02b"),
+	Claude:   lipgloss.Color("#8839ef"),
+	Codex:    lipgloss.Color("#1e66f5"),
+	Gemini:   lipgloss.Color("#df8e1d"),
+	Cursor:   lipgloss.Color("#8bd5ca"),
+	Windsurf: lipgloss.Color("#f0c6c6"),
+	Aider:    lipgloss.Color("#f5a97f"),
+	Ollama:   lipgloss.Color("#a6da95"),
+	User:     lipgloss.Color("#40a02b"),
 }
 
 // Plain is a no-color theme that uses empty/default colors.
@@ -225,10 +241,14 @@ var Plain = Theme{
 	Info:      lipgloss.Color(""),
 
 	// Agent colors
-	Claude: lipgloss.Color(""),
-	Codex:  lipgloss.Color(""),
-	Gemini: lipgloss.Color(""),
-	User:   lipgloss.Color(""),
+	Claude:   lipgloss.Color(""),
+	Codex:    lipgloss.Color(""),
+	Gemini:   lipgloss.Color(""),
+	Cursor:   lipgloss.Color(""),
+	Windsurf: lipgloss.Color(""),
+	Aider:    lipgloss.Color(""),
+	Ollama:   lipgloss.Color(""),
+	User:     lipgloss.Color(""),
 }
 
 // Nord - popular arctic theme
@@ -266,10 +286,14 @@ var Nord = Theme{
 	Error:     lipgloss.Color("#bf616a"),
 	Info:      lipgloss.Color("#81a1c1"),
 
-	Claude: lipgloss.Color("#b48ead"),
-	Codex:  lipgloss.Color("#81a1c1"),
-	Gemini: lipgloss.Color("#ebcb8b"),
-	User:   lipgloss.Color("#a3be8c"),
+	Claude:   lipgloss.Color("#b48ead"),
+	Codex:    lipgloss.Color("#81a1c1"),
+	Gemini:   lipgloss.Color("#ebcb8b"),
+	Cursor:   lipgloss.Color("#8fbcbb"),
+	Windsurf: lipgloss.Color("#d8dee9"),
+	Aider:    lipgloss.Color("#d08770"),
+	Ollama:   lipgloss.Color("#a3be8c"),
+	User:     lipgloss.Color("#5e81ac"),
 }
 
 // Default is the currently active theme

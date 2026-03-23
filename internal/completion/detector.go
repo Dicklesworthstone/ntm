@@ -380,6 +380,7 @@ func (d *CompletionDetector) isBrAvailable() bool {
 // checkBeadClosed uses br CLI to check if a bead is closed
 func (d *CompletionDetector) checkBeadClosed(ctx context.Context, beadID string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "br", "show", beadID, "--json")
+	cmd.WaitDelay = 2 * time.Second
 	output, err := cmd.Output()
 	if err != nil {
 		return false, err

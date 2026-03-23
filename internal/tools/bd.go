@@ -43,6 +43,7 @@ func (a *BDAdapter) binaryCandidates() []string {
 
 func (a *BDAdapter) versionFromBinary(ctx context.Context, binary string) (Version, error) {
 	cmd := exec.CommandContext(ctx, binary, "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -231,6 +232,7 @@ func (a *BDAdapter) runCommand(ctx context.Context, dir string, args ...string) 
 	}
 
 	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.WaitDelay = time.Second
 	if dir != "" {
 		cmd.Dir = dir
 	}

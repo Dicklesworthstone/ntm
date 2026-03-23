@@ -84,6 +84,7 @@ type SchemaOutput struct {
 // GetSchema generates JSON Schema for the specified type.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSchema(schemaType string) (*SchemaOutput, error) {
+	registry := GetRobotRegistry()
 	output := &SchemaOutput{
 		RobotResponse: NewRobotResponse(true),
 		SchemaType:    schemaType,
@@ -91,15 +92,20 @@ func GetSchema(schemaType string) (*SchemaOutput, error) {
 
 	if schemaType == "all" {
 		// Generate all schemas
-		schemas := make([]*JSONSchema, 0, len(SchemaCommand))
-		for name, typ := range SchemaCommand {
+		schemaTypes := getSchemaTypes()
+		schemas := make([]*JSONSchema, 0, len(schemaTypes))
+		for _, name := range schemaTypes {
+			typ, ok := registry.SchemaBinding(name)
+			if !ok {
+				continue
+			}
 			schema := generateSchema(typ, name)
 			schemas = append(schemas, schema)
 		}
 		output.Schemas = schemas
 	} else {
 		// Generate single schema
-		typ, ok := SchemaCommand[schemaType]
+		typ, ok := registry.SchemaBinding(schemaType)
 		if !ok {
 			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("unknown schema type: %s", schemaType),
@@ -126,6 +132,9 @@ func PrintSchema(schemaType string) error {
 
 // getSchemaTypes returns available schema type names.
 func getSchemaTypes() []string {
+	if registry := GetRobotRegistry(); registry != nil && len(registry.SchemaTypes) != 0 {
+		return cloneStrings(registry.SchemaTypes)
+	}
 	types := make([]string, 0, len(SchemaCommand))
 	for name := range SchemaCommand {
 		types = append(types, name)
@@ -143,6 +152,13 @@ func generateSchema(v interface{}, name string) *JSONSchema {
 		Definitions: make(map[string]*JSONSchema),
 	}
 
+	if surface, ok := registrySurfaceForSchemaType(GetRobotRegistry(), name); ok {
+		schema.Title = fmt.Sprintf("NTM %s Output", humanizeRobotRegistryName(surface.Name))
+		if strings.TrimSpace(surface.Description) != "" {
+			schema.Description = surface.Description
+		}
+	}
+
 	t := reflect.TypeOf(v)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -153,6 +169,19 @@ func generateSchema(v interface{}, name string) *JSONSchema {
 	schema.Required = required
 
 	return schema
+}
+
+func registrySurfaceForSchemaType(registry *RobotRegistry, schemaType string) (RobotSurfaceDescriptor, bool) {
+	if registry == nil {
+		return RobotSurfaceDescriptor{}, false
+	}
+	normalized := normalizeRobotRegistryName(schemaType)
+	for _, surface := range registry.Surfaces {
+		if surface.SchemaType == schemaType || normalizeRobotRegistryName(surface.Name) == normalized {
+			return surface, true
+		}
+	}
+	return RobotSurfaceDescriptor{}, false
 }
 
 // processStruct extracts schema properties from a struct type.

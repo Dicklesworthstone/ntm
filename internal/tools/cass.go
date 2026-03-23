@@ -37,6 +37,7 @@ func (a *CASSAdapter) Version(ctx context.Context) (Version, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "--version")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -71,6 +72,7 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "health")
+	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -133,6 +135,7 @@ func (a *CASSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	cmd.WaitDelay = time.Second
 
 	// Limit output to 10MB
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)

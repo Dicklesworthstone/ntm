@@ -121,6 +121,22 @@ func AgentBadge(agentType string, opts ...BadgeOptions) string {
 		bgColor = t.Gemini
 		icon = ic.Gemini
 		label = "gemini"
+	case "cursor":
+		bgColor = t.Cursor
+		icon = ic.Cursor
+		label = "cursor"
+	case "windsurf":
+		bgColor = t.Windsurf
+		icon = ic.Windsurf
+		label = "windsurf"
+	case "aider":
+		bgColor = t.Aider
+		icon = ic.Aider
+		label = "aider"
+	case "ollama":
+		bgColor = t.Ollama
+		icon = ic.Ollama
+		label = "ollama"
 	case "user":
 		bgColor = t.User
 		icon = ic.User
@@ -161,6 +177,18 @@ func AgentBadgeWithCount(agentType string, count int, opts ...BadgeOptions) stri
 	case "gemini", "gmi":
 		bgColor = t.Gemini
 		icon = ic.Gemini
+	case "cursor":
+		bgColor = t.Cursor
+		icon = ic.Cursor
+	case "windsurf":
+		bgColor = t.Windsurf
+		icon = ic.Windsurf
+	case "aider":
+		bgColor = t.Aider
+		icon = ic.Aider
+	case "ollama":
+		bgColor = t.Ollama
+		icon = ic.Ollama
 	case "user":
 		bgColor = t.User
 		icon = ic.User

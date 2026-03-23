@@ -625,7 +625,7 @@ func TestWSHubPublish_WithClient(t *testing.T) {
 		send:   make(chan []byte, 16),
 		topics: map[string]struct{}{"*": {}},
 	}
-	hub.register <- client
+	requireRegisterWSClient(t, hub, client)
 	time.Sleep(10 * time.Millisecond)
 
 	hub.Publish("global:events", "test_event", map[string]interface{}{

@@ -42,6 +42,7 @@ type DefaultExecutor struct {
 // Run executes the caut command with the given arguments
 func (e *DefaultExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 
 	// Limit stdout to 10MB to prevent OOM
 	stdout := &limitedBuffer{limit: 10 * 1024 * 1024}

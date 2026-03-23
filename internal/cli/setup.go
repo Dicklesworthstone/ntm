@@ -482,6 +482,7 @@ func initBeadsIfAvailable(projectPath string) (bool, string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "br", "init", "--json")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = projectPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {

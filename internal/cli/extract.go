@@ -311,7 +311,9 @@ blockLoop:
 		fmt.Printf("[%d] %s %s (%s)\n", i+1, action, block.FilePath, langDisplay)
 
 		if isRisky {
-			fmt.Printf("    %s Warning: path escapes current directory\n", "\033[33m⚠\033[0m")
+			fmt.Printf("    %s Blocked: path escapes current directory\n", "\033[31m✗\033[0m")
+			skipped++
+			continue
 		}
 
 		// Check if file exists

@@ -196,6 +196,99 @@ func normalizeExplicitLiveSessionName(session string, allowPrefix bool) (string,
 	return session, nil
 }
 
+// normalizeProjectScopedSessionName normalizes an explicit session name for
+// commands that operate on a project's working directory even when the session
+// itself might be offline.
+func normalizeProjectScopedSessionName(session string, allowPrefix bool) (string, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return "", nil
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return "", fmt.Errorf("invalid session name: %w", err)
+	}
+
+	resolved, err := normalizeExplicitLiveSessionName(session, allowPrefix)
+	if err != nil {
+		var resolveErr *sessionPkg.ResolveExplicitSessionNameError
+		if !errors.As(err, &resolveErr) || resolveErr.Kind != sessionPkg.ResolveExplicitSessionNameErrorAmbiguous {
+			return "", err
+		}
+	} else {
+		session = resolved
+	}
+
+	if !allowPrefix {
+		return session, nil
+	}
+
+	resolvedBase, err := normalizeConfiguredProjectBase(config.SessionBase(session), allowPrefix)
+	if err != nil {
+		return "", fmt.Errorf("session %q is ambiguous: %w", session, err)
+	}
+	if resolvedBase == "" || resolvedBase == config.SessionBase(session) {
+		return session, nil
+	}
+
+	label := config.SessionLabel(session)
+	if label == "" {
+		return resolvedBase, nil
+	}
+	return config.FormatSessionName(resolvedBase, label), nil
+}
+
+func normalizeConfiguredProjectBase(base string, allowPrefix bool) (string, error) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return "", nil
+	}
+
+	activeCfg := cfg
+	if activeCfg == nil {
+		activeCfg = config.Default()
+	}
+	if activeCfg == nil {
+		return base, nil
+	}
+
+	projectsBase := strings.TrimSpace(config.ExpandHome(activeCfg.ProjectsBase))
+	if projectsBase == "" {
+		return base, nil
+	}
+
+	entries, err := os.ReadDir(projectsBase)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return base, nil
+		}
+		return "", err
+	}
+
+	var matches []string
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		name := entry.Name()
+		if name == base {
+			return base, nil
+		}
+		if allowPrefix && strings.HasPrefix(name, base) {
+			matches = append(matches, name)
+		}
+	}
+
+	if !allowPrefix || len(matches) == 0 {
+		return base, nil
+	}
+
+	sort.Strings(matches)
+	if len(matches) > 1 {
+		return "", fmt.Errorf("matches configured project directories: %s", strings.Join(matches, ", "))
+	}
+	return matches[0], nil
+}
+
 func resolveExplicitSessionName(input string, sessions []tmux.Session, allowPrefix bool) (string, string, error) {
 	return sessionPkg.ResolveExplicitSessionName(input, sessions, allowPrefix)
 }

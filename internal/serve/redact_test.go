@@ -824,7 +824,7 @@ func TestIntegration_WSEventRedaction(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	client.Subscribe([]string{"test:*"})
-	hub.register <- client
+	requireRegisterWSClient(t, hub, client)
 
 	// Give hub time to register client
 	time.Sleep(20 * time.Millisecond)
@@ -867,7 +867,7 @@ func TestIntegration_WSEventRedaction(t *testing.T) {
 		t.Error("timeout waiting for WebSocket event")
 	}
 
-	hub.unregister <- client
+	hub.UnregisterClient(client)
 	t.Log("TEST: TestIntegration_WSEventRedaction - PASSED: No secrets leaked via WebSocket")
 }
 

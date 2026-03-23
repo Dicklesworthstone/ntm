@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/gorilla/websocket"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/events"
@@ -62,7 +63,18 @@ func setupTestServer(t *testing.T) (*Server, *state.Store) {
 		StateStore: store,
 	})
 
+	t.Cleanup(func() {
+		srv.Stop()
+	})
+
 	return srv, store
+}
+
+func requireRegisterWSClient(tb testing.TB, hub *WSHub, client *WSClient) {
+	tb.Helper()
+	if ok := hub.RegisterClient(client); !ok {
+		tb.Fatalf("register client %q: hub stopped", client.id)
+	}
 }
 
 func newMockAgentMailMCPServer(
@@ -72,9 +84,24 @@ func newMockAgentMailMCPServer(
 	t.Helper()
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeRPCResponse := func(resp agentmail.JSONRPCResponse) {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Errorf("encode response: %v", err)
+			}
+		}
+
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			writeRPCResponse(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0",
+				Error: &agentmail.JSONRPCError{
+					Code:    -32700,
+					Message: "parse error",
+				},
+			})
+			return
 		}
 
 		params, _ := req.Params.(map[string]interface{})
@@ -83,44 +110,45 @@ func newMockAgentMailMCPServer(
 
 		handler, ok := handlers[toolName]
 		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+			writeRPCResponse(agentmail.JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
 				Error: &agentmail.JSONRPCError{
 					Code:    -32601,
 					Message: "unknown tool: " + toolName,
 				},
-			}); err != nil {
-				t.Fatalf("encode response: %v", err)
-			}
+			})
 			return
 		}
 
 		result, rpcErr := handler(args)
-		w.Header().Set("Content-Type", "application/json")
 		if rpcErr != nil {
-			if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+			writeRPCResponse(agentmail.JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
 				Error:   rpcErr,
-			}); err != nil {
-				t.Fatalf("encode response: %v", err)
-			}
+			})
 			return
 		}
 
 		resultJSON, err := json.Marshal(result)
 		if err != nil {
-			t.Fatalf("marshal result: %v", err)
+			t.Errorf("marshal result: %v", err)
+			writeRPCResponse(agentmail.JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &agentmail.JSONRPCError{
+					Code:    -32603,
+					Message: "internal error",
+				},
+			})
+			return
 		}
-		if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+		writeRPCResponse(agentmail.JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result:  resultJSON,
-		}); err != nil {
-			t.Fatalf("encode response: %v", err)
-		}
+		})
 	}))
 }
 
@@ -1233,7 +1261,7 @@ func TestHandleMarkMessageRead_DoesNotPublishEventWhenReadFalse(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	client.Subscribe([]string{"mail:BlueLake"})
-	hub.register <- client
+	requireRegisterWSClient(t, hub, client)
 	time.Sleep(20 * time.Millisecond)
 
 	rec := httptest.NewRecorder()
@@ -1284,7 +1312,7 @@ func TestHandleAckMessage_DoesNotPublishEventWhenAckFalse(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	client.Subscribe([]string{"mail:BlueLake"})
-	hub.register <- client
+	requireRegisterWSClient(t, hub, client)
 	time.Sleep(20 * time.Millisecond)
 
 	rec := httptest.NewRecorder()
@@ -4283,7 +4311,7 @@ func TestPipelineEventTypeFromProgressType(t *testing.T) {
 
 func TestApprovals_WebSocketEvents(t *testing.T) {
 	srv := New(Config{})
-	go srv.wsHub.Run()
+	srv.ensureWSHubRunning()
 	defer srv.wsHub.Stop()
 
 	testClient := &WSClient{
@@ -4292,7 +4320,7 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 		send:   make(chan []byte, 256),
 		topics: map[string]struct{}{"approvals:*": {}},
 	}
-	srv.wsHub.register <- testClient
+	requireRegisterWSClient(t, srv.wsHub, testClient)
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -4370,7 +4398,34 @@ func TestApprovals_WebSocketEvents(t *testing.T) {
 		t.Fatalf("decision=%q, want %q", got, "approved")
 	}
 
-	srv.wsHub.unregister <- testClient
+	srv.wsHub.UnregisterClient(testClient)
+}
+
+func TestHandleWebSocket_StartsHubWithoutStart(t *testing.T) {
+	t.Parallel()
+
+	srv := New(Config{})
+	defer srv.Stop()
+
+	httpSrv := httptest.NewServer(srv.Router())
+	defer httpSrv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if srv.WSHub().ClientCount() == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected hub client count 1, got %d", srv.WSHub().ClientCount())
 }
 
 func TestWSHubPublish(t *testing.T) {
@@ -4452,7 +4507,7 @@ func TestWSHub_MultiClientFanOut(t *testing.T) {
 		clients[i].Subscribe([]string{"panes:*"})
 
 		// Register with hub
-		hub.register <- clients[i]
+		requireRegisterWSClient(t, hub, clients[i])
 	}
 
 	time.Sleep(20 * time.Millisecond)
@@ -4484,7 +4539,7 @@ func TestWSHub_MultiClientFanOut(t *testing.T) {
 
 	// Cleanup
 	for _, client := range clients {
-		hub.unregister <- client
+		hub.UnregisterClient(client)
 	}
 }
 
@@ -4503,7 +4558,7 @@ func TestWSHub_TopicFiltering(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	paneClient.Subscribe([]string{"panes:*"})
-	hub.register <- paneClient
+	requireRegisterWSClient(t, hub, paneClient)
 
 	sessionClient := &WSClient{
 		id:     "session-watcher",
@@ -4512,7 +4567,7 @@ func TestWSHub_TopicFiltering(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	sessionClient.Subscribe([]string{"sessions:*"})
-	hub.register <- sessionClient
+	requireRegisterWSClient(t, hub, sessionClient)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -4558,8 +4613,8 @@ doneSession:
 	t.Logf("WS_STREAMING_TEST: topic filtering verified, pane_client=%d session_client=%d", paneCount, sessionCount)
 
 	// Cleanup
-	hub.unregister <- paneClient
-	hub.unregister <- sessionClient
+	hub.UnregisterClient(paneClient)
+	hub.UnregisterClient(sessionClient)
 }
 
 func TestWSHub_ClientBufferFull(t *testing.T) {
@@ -4577,7 +4632,7 @@ func TestWSHub_ClientBufferFull(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	slowClient.Subscribe([]string{"panes:*"})
-	hub.register <- slowClient
+	requireRegisterWSClient(t, hub, slowClient)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -4610,7 +4665,7 @@ done:
 
 	t.Logf("WS_STREAMING_TEST: backpressure test - sent 50, received %d (dropped %d)", received, 50-received)
 
-	hub.unregister <- slowClient
+	hub.UnregisterClient(slowClient)
 }
 
 func TestWSHub_GlobalWildcard(t *testing.T) {
@@ -4628,7 +4683,7 @@ func TestWSHub_GlobalWildcard(t *testing.T) {
 		topics: make(map[string]struct{}),
 	}
 	globalClient.Subscribe([]string{"*"})
-	hub.register <- globalClient
+	requireRegisterWSClient(t, hub, globalClient)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -4657,7 +4712,7 @@ done:
 
 	t.Logf("WS_STREAMING_TEST: global wildcard subscription received all %d events", received)
 
-	hub.unregister <- globalClient
+	hub.UnregisterClient(globalClient)
 }
 
 func TestMatchTopic(t *testing.T) {
@@ -4811,7 +4866,6 @@ func TestFormatAge(t *testing.T) {
 func TestAttentionHeartbeatInterval(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
 	tests := []struct {
 		name       string
 		delivered  int
@@ -4857,8 +4911,9 @@ func TestAttentionHeartbeatInterval(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			streamStart := time.Now().Add(-tc.streamBump)
 			got := attentionHeartbeatInterval(
-				now.Add(-tc.streamBump),
+				streamStart,
 				tc.delivered,
 				tc.recovery,
 				attentionHeartbeatSourceSummary{degraded: tc.degraded},

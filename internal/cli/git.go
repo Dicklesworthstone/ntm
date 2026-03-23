@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func newGitCmd() *cobra.Command {
@@ -111,7 +110,7 @@ type PushResult struct {
 }
 
 func runGitSync(session string, pullOnly, pushOnly, force, dryRun bool) error {
-	workDir, err := resolveGitProjectDir(session)
+	session, workDir, err := resolveGitProjectDir(session)
 	if err != nil {
 		return err
 	}
@@ -425,7 +424,7 @@ type AgentMailStatus struct {
 }
 
 func runGitStatus(session string, allAgents bool) error {
-	workDir, err := resolveGitProjectDir(session)
+	session, workDir, err := resolveGitProjectDir(session)
 	if err != nil {
 		return err
 	}
@@ -479,19 +478,17 @@ func runGitStatus(session string, allAgents bool) error {
 	return printGitStatus(result)
 }
 
-func resolveGitProjectDir(session string) (string, error) {
-	session = strings.TrimSpace(session)
-	if session != "" {
-		if err := tmux.ValidateSessionName(session); err != nil {
-			return "", fmt.Errorf("invalid session name: %w", err)
-		}
+func resolveGitProjectDir(session string) (string, string, error) {
+	session, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+	if err != nil {
+		return "", "", err
 	}
 
 	workDir := resolveProjectDirForSession(session, true)
 	if workDir == "" {
-		return "", fmt.Errorf("getting project root failed")
+		return "", "", fmt.Errorf("getting project root failed")
 	}
-	return workDir, nil
+	return session, workDir, nil
 }
 
 func getGitInfo(dir string) (*GitInfo, error) {

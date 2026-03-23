@@ -881,6 +881,7 @@ func (r *AccountRotator) getOrCreateState(sessionPane string) *RotationState {
 // runCaamCommand executes a caam command and returns its output.
 func (r *AccountRotator) runCaamCommand(ctx context.Context, args ...string) (stdoutStr string, stderrStr string, err error) {
 	cmd := exec.CommandContext(ctx, r.caamPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

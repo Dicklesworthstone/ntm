@@ -353,7 +353,7 @@ func TestResolveEnsembleProjectDirForSessionFallsBackToProjectRoot(t *testing.T)
 }
 
 func TestResolveGitProjectDirRejectsInvalidSessionName(t *testing.T) {
-	_, err := resolveGitProjectDir("../escape")
+	_, _, err := resolveGitProjectDir("../escape")
 	if err == nil {
 		t.Fatal("expected invalid session error")
 	}
@@ -450,7 +450,7 @@ func TestResolvePipelineSessionRejectsInvalidSessionName(t *testing.T) {
 	}
 }
 
-func TestResolveResumeProjectDirUsesSessionProjectDir(t *testing.T) {
+func TestResolveResumeScopeUsesSessionProjectDir(t *testing.T) {
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, "mysession")
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
@@ -468,22 +468,49 @@ func TestResolveResumeProjectDirUsesSessionProjectDir(t *testing.T) {
 	}
 	defer os.Chdir(oldWd)
 
-	got, err := resolveResumeProjectDir("mysession")
+	session, got, err := resolveResumeScope("mysession", true)
 	if err != nil {
-		t.Fatalf("resolveResumeProjectDir() error = %v", err)
+		t.Fatalf("resolveResumeScope() error = %v", err)
+	}
+	if session != "mysession" {
+		t.Fatalf("session = %q, want %q", session, "mysession")
 	}
 	if got != projectDir {
 		t.Fatalf("project dir = %q, want %q", got, projectDir)
 	}
 }
 
-func TestResolveResumeProjectDirRejectsInvalidSessionName(t *testing.T) {
-	_, err := resolveResumeProjectDir("../escape")
+func TestResolveResumeScopeRejectsInvalidSessionName(t *testing.T) {
+	_, _, err := resolveResumeScope("../escape", true)
 	if err == nil {
 		t.Fatal("expected invalid session error")
 	}
 	if !strings.Contains(err.Error(), "invalid session name") {
 		t.Fatalf("expected invalid session error, got %v", err)
+	}
+}
+
+func TestResolveResumeScopeResolvesStoredHandoffSessionPrefix(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "mysession")
+	handoffDir := filepath.Join(projectDir, ".ntm", "handoffs", "mysession--frontend")
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatalf("mkdir handoff dir: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	session, gotDir, err := resolveResumeScope("myse--front", true)
+	if err != nil {
+		t.Fatalf("resolveResumeScope() error = %v", err)
+	}
+	if session != "mysession--frontend" {
+		t.Fatalf("session = %q, want %q", session, "mysession--frontend")
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
 	}
 }
 

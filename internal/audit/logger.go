@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -416,8 +417,10 @@ func (al *AuditLogger) startFlushTimer() {
 		al.mutex.Lock()
 		defer al.mutex.Unlock()
 		if !al.closed {
-			_ = al.flushUnlocked() // Ignore error in background flush
-			al.startFlushTimer()   // Restart timer
+			if err := al.flushUnlocked(); err != nil {
+				log.Printf("audit: background flush failed: %v", err)
+			}
+			al.startFlushTimer() // Restart timer
 		}
 	})
 }

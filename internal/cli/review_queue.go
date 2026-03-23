@@ -332,6 +332,7 @@ func getRecentGitCommits(limit int) []gitCommitInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "log", fmt.Sprintf("-%d", limit), "--pretty=format:%H|%s")
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		slog.Debug("review-queue: git log failed", "error", err)

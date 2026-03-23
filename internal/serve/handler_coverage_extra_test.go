@@ -81,6 +81,25 @@ func TestNewIdempotencyStore_DoesNotSpawnCleanupGoroutine(t *testing.T) {
 	}
 }
 
+func TestNewServer_DoesNotSpawnIdempotencyCleanupGoroutine(t *testing.T) {
+	before := runtime.NumGoroutine()
+
+	servers := make([]*Server, 0, 32)
+	for i := 0; i < cap(servers); i++ {
+		servers = append(servers, New(Config{}))
+	}
+	for _, srv := range servers {
+		defer srv.Stop()
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	if after > before+8 {
+		t.Fatalf("New(Config{}) spawned unexpected background goroutines: before=%d after=%d", before, after)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // validate() tests
 // ---------------------------------------------------------------------------

@@ -7,20 +7,26 @@ import "sort"
 // CapabilitiesOutput represents the output for --robot-capabilities
 type CapabilitiesOutput struct {
 	RobotResponse
-	Version    string                 `json:"version"`
-	Commands   []RobotCommandInfo     `json:"commands"`
-	Categories []string               `json:"categories"`
-	Attention  *AttentionCapabilities `json:"attention,omitempty"`
+	Version    string                   `json:"version"`
+	Commands   []RobotCommandInfo       `json:"commands"`
+	Surfaces   []RobotSurfaceDescriptor `json:"surfaces,omitempty"`
+	Categories []string                 `json:"categories"`
+	Attention  *AttentionCapabilities   `json:"attention,omitempty"`
 }
 
 // RobotCommandInfo describes a single robot command
 type RobotCommandInfo struct {
-	Name        string           `json:"name"`
-	Flag        string           `json:"flag"`
-	Category    string           `json:"category"`
-	Description string           `json:"description"`
-	Parameters  []RobotParameter `json:"parameters"`
-	Examples    []string         `json:"examples"`
+	Name        string               `json:"name"`
+	Flag        string               `json:"flag"`
+	Category    string               `json:"category"`
+	Summary     string               `json:"summary,omitempty"`
+	Description string               `json:"description"`
+	SchemaID    string               `json:"schema_id,omitempty"`
+	SchemaType  string               `json:"schema_type,omitempty"`
+	Sections    []string             `json:"sections,omitempty"`
+	Parameters  []RobotParameter     `json:"parameters"`
+	Examples    []string             `json:"examples"`
+	Transports  []RobotTransportInfo `json:"transports,omitempty"`
 }
 
 // RobotParameter describes a command parameter
@@ -50,21 +56,16 @@ var categoryOrder = []string{
 // GetCapabilities collects robot mode capabilities.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetCapabilities() (*CapabilitiesOutput, error) {
-	commands := buildCommandRegistry()
-
-	// Sort commands by category then name for stable output
-	sort.Slice(commands, func(i, j int) bool {
-		if commands[i].Category != commands[j].Category {
-			return categoryIndex(commands[i].Category) < categoryIndex(commands[j].Category)
-		}
-		return commands[i].Name < commands[j].Name
-	})
+	registry := GetRobotRegistry()
+	surfaces := cloneRobotSurfaceDescriptors(registry.Surfaces)
+	commands := buildCapabilitiesCommandCatalog(surfaces)
 
 	return &CapabilitiesOutput{
 		RobotResponse: NewRobotResponse(true),
 		Version:       Version,
 		Commands:      commands,
-		Categories:    categoryOrder,
+		Surfaces:      surfaces,
+		Categories:    cloneStrings(registry.Categories),
 		Attention:     DefaultAttentionCapabilities(),
 	}, nil
 }
@@ -86,6 +87,34 @@ func categoryIndex(cat string) int {
 		}
 	}
 	return len(categoryOrder)
+}
+
+func buildCapabilitiesCommandCatalog(surfaces []RobotSurfaceDescriptor) []RobotCommandInfo {
+	commands := make([]RobotCommandInfo, 0, len(surfaces))
+	for _, surface := range surfaces {
+		commands = append(commands, RobotCommandInfo{
+			Name:        surface.Name,
+			Flag:        surface.Flag,
+			Category:    surface.Category,
+			Summary:     surface.Summary,
+			Description: surface.Description,
+			SchemaID:    surface.SchemaID,
+			SchemaType:  surface.SchemaType,
+			Sections:    cloneStrings(surface.Sections),
+			Parameters:  cloneRobotParameters(surface.Parameters),
+			Examples:    cloneStrings(surface.Examples),
+			Transports:  cloneTransports(surface.Transports),
+		})
+	}
+
+	sort.Slice(commands, func(i, j int) bool {
+		if commands[i].Category != commands[j].Category {
+			return categoryIndex(commands[i].Category) < categoryIndex(commands[j].Category)
+		}
+		return commands[i].Name < commands[j].Name
+	})
+
+	return commands
 }
 
 // buildCommandRegistry returns all robot commands with their metadata
