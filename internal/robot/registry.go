@@ -82,6 +82,12 @@ func (r *RobotRegistry) Surface(name string) (RobotSurfaceDescriptor, bool) {
 		return RobotSurfaceDescriptor{}, false
 	}
 	surface, ok := r.surfaceByName[name]
+	if ok {
+		surface.Sections = cloneStrings(surface.Sections)
+		surface.Parameters = cloneRobotParameters(surface.Parameters)
+		surface.Examples = cloneStrings(surface.Examples)
+		surface.Transports = cloneTransports(surface.Transports)
+	}
 	return surface, ok
 }
 

@@ -4259,7 +4259,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 	var heartbeatTimer *time.Timer
 	var heartbeatCh <-chan time.Time
 	nextHeartbeatInterval := attentionHeartbeatInterval(
-		streamStart,
+		time.Since(streamStart),
 		deliveredSinceHeartbeat,
 		recoveryMode,
 		attentionHeartbeatSourceSummary{},
@@ -4314,7 +4314,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 			if heartbeatTimer != nil {
 				sourceSummary := s.attentionHeartbeatSourceSummary()
 				nextHeartbeatInterval = attentionHeartbeatInterval(
-					streamStart,
+					time.Since(streamStart),
 					deliveredSinceHeartbeat,
 					recoveryMode,
 					sourceSummary,
@@ -4327,7 +4327,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 			currentStats := feed.Stats()
 			sourceSummary := s.attentionHeartbeatSourceSummary()
 			nextHeartbeatInterval = attentionHeartbeatInterval(
-				streamStart,
+				time.Since(streamStart),
 				deliveredSinceHeartbeat,
 				recoveryMode,
 				sourceSummary,
@@ -4376,7 +4376,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 }
 
 func attentionHeartbeatInterval(
-	streamStart time.Time,
+	streamAge time.Duration,
 	deliveredSinceHeartbeat int,
 	recoveryMode bool,
 	sourceSummary attentionHeartbeatSourceSummary,
@@ -4389,7 +4389,7 @@ func attentionHeartbeatInterval(
 	if override {
 		return baseInterval
 	}
-	if recoveryMode && deliveredSinceHeartbeat == 0 && time.Since(streamStart) < attentionHeartbeatIdleInterval {
+	if recoveryMode && deliveredSinceHeartbeat == 0 && streamAge < attentionHeartbeatIdleInterval {
 		return attentionHeartbeatRecoveryInterval
 	}
 	if sourceSummary.degraded > 0 {

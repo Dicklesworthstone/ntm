@@ -193,13 +193,18 @@ func mergeFindings(outputs []ModeOutput, cfg MergeConfig, tracker *ProvenanceTra
 	merged := deduplicateEntries(all, cfg.DeduplicationThreshold,
 		func(e findingEntry) string { return e.finding.Finding },
 		func(a, b findingEntry, similarity float64) findingEntry {
-			// Merge: combine source modes, take higher score
-			combined := append(a.sourceModes, b.sourceModes...)
+			// Merge: combine source modes, take higher score.
+			// Use explicit allocation to avoid slice aliasing from append.
+			combined := make([]string, 0, len(a.sourceModes)+len(b.sourceModes))
+			combined = append(combined, a.sourceModes...)
+			combined = append(combined, b.sourceModes...)
 			score := a.score
 			if b.score > score {
 				score = b.score
 			}
-			combinedIDs := append(a.provenanceIDs, b.provenanceIDs...)
+			combinedIDs := make([]string, 0, len(a.provenanceIDs)+len(b.provenanceIDs))
+			combinedIDs = append(combinedIDs, a.provenanceIDs...)
+			combinedIDs = append(combinedIDs, b.provenanceIDs...)
 			if tracker != nil {
 				primaryID := ""
 				if len(a.provenanceIDs) > 0 {
@@ -284,7 +289,9 @@ func mergeRisks(outputs []ModeOutput, cfg MergeConfig) ([]MergedRisk, int, int) 
 	merged := deduplicateEntries(all, cfg.DeduplicationThreshold,
 		func(e riskEntry) string { return e.risk.Risk },
 		func(a, b riskEntry, _ float64) riskEntry {
-			combined := append(a.sourceModes, b.sourceModes...)
+			combined := make([]string, 0, len(a.sourceModes)+len(b.sourceModes))
+			combined = append(combined, a.sourceModes...)
+			combined = append(combined, b.sourceModes...)
 			score := a.score
 			if b.score > score {
 				score = b.score
@@ -346,7 +353,9 @@ func mergeRecommendations(outputs []ModeOutput, cfg MergeConfig) ([]MergedRecomm
 	merged := deduplicateEntries(all, cfg.DeduplicationThreshold,
 		func(e recEntry) string { return e.rec.Recommendation },
 		func(a, b recEntry, _ float64) recEntry {
-			combined := append(a.sourceModes, b.sourceModes...)
+			combined := make([]string, 0, len(a.sourceModes)+len(b.sourceModes))
+			combined = append(combined, a.sourceModes...)
+			combined = append(combined, b.sourceModes...)
 			score := a.score
 			if b.score > score {
 				score = b.score

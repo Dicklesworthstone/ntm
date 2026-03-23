@@ -171,7 +171,10 @@ func (s *Store) UpdateSession(sess *Session) error {
 		return fmt.Errorf("update session: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("update session rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("session not found: %s", sess.ID)
 	}
@@ -222,7 +225,10 @@ func (s *Store) DeleteSession(id string) error {
 		return fmt.Errorf("delete session: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("session not found: %s", id)
 	}
@@ -303,7 +309,10 @@ func (s *Store) UpdateAgent(agent *Agent) error {
 		return fmt.Errorf("update agent: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("agent not found: %s", agent.ID)
 	}
@@ -408,7 +417,10 @@ func (s *Store) UpdateTask(task *Task) error {
 		return fmt.Errorf("update task: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("task not found: %s", task.ID)
 	}
@@ -509,7 +521,10 @@ func (s *Store) UpdateReservation(res *Reservation) error {
 		return fmt.Errorf("update reservation: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("reservation not found: %d", res.ID)
 	}
@@ -634,7 +649,10 @@ func (s *Store) UpdateApproval(appr *Approval) error {
 		return fmt.Errorf("update approval: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("approval not found: %s", appr.ID)
 	}

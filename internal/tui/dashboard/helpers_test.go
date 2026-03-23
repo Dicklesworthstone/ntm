@@ -88,27 +88,26 @@ func TestCopyTimeMap(t *testing.T) {
 func TestRefreshDue(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
-
 	tests := []struct {
 		name     string
-		last     time.Time
+		last     func(time.Time) time.Time
 		interval time.Duration
 		want     bool
 	}{
-		{"zero interval", now, 0, false},
-		{"negative interval", now, -time.Second, false},
-		{"zero last time", time.Time{}, time.Second, true},
-		{"recent last time", now.Add(-500 * time.Millisecond), time.Second, false},
-		{"old last time", now.Add(-2 * time.Second), time.Second, true},
-		{"exact interval", now.Add(-time.Second), time.Second, true},
+		{"zero interval", func(now time.Time) time.Time { return now }, 0, false},
+		{"negative interval", func(now time.Time) time.Time { return now }, -time.Second, false},
+		{"zero last time", func(time.Time) time.Time { return time.Time{} }, time.Second, true},
+		{"recent last time", func(now time.Time) time.Time { return now.Add(-500 * time.Millisecond) }, time.Second, false},
+		{"old last time", func(now time.Time) time.Time { return now.Add(-2 * time.Second) }, time.Second, true},
+		{"exact interval", func(now time.Time) time.Time { return now.Add(-time.Second) }, time.Second, true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := refreshDue(tc.last, tc.interval)
+			last := tc.last(time.Now())
+			got := refreshDue(last, tc.interval)
 			if got != tc.want {
-				t.Errorf("refreshDue(%v, %v) = %v, want %v", tc.last, tc.interval, got, tc.want)
+				t.Errorf("refreshDue(%v, %v) = %v, want %v", last, tc.interval, got, tc.want)
 			}
 		})
 	}

@@ -192,3 +192,38 @@ func TestGetRobotRegistry_SurfacesSortedByCategoryThenName(t *testing.T) {
 		}
 	}
 }
+
+func TestGetRobotRegistry_SurfaceReturnsDetachedSlices(t *testing.T) {
+	t.Parallel()
+
+	registry := GetRobotRegistry()
+	first, ok := registry.Surface("status")
+	if !ok {
+		t.Fatal("missing surface status")
+	}
+	second, ok := registry.Surface("status")
+	if !ok {
+		t.Fatal("missing surface status on second lookup")
+	}
+
+	if len(first.Parameters) == 0 {
+		t.Fatal("expected status surface parameters")
+	}
+	first.Parameters[0].Name = "mutated"
+	first.Sections[0] = "mutated"
+	first.Examples[0] = "mutated"
+	first.Transports[0].Endpoint = "mutated"
+
+	if second.Parameters[0].Name == "mutated" {
+		t.Fatal("surface parameters alias registry storage")
+	}
+	if second.Sections[0] == "mutated" {
+		t.Fatal("surface sections alias registry storage")
+	}
+	if second.Examples[0] == "mutated" {
+		t.Fatal("surface examples alias registry storage")
+	}
+	if second.Transports[0].Endpoint == "mutated" {
+		t.Fatal("surface transports alias registry storage")
+	}
+}

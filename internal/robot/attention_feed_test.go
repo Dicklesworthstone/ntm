@@ -3060,8 +3060,8 @@ func TestBuildAttentionDigest_SuppressesLifecycleNoiseAndDuplicateAlerts(t *test
 	if alert.SuppressionReason != attentionDigestSuppressionDuplicateAlert {
 		t.Fatalf("duplicate alert reason = %q, want %q", alert.SuppressionReason, attentionDigestSuppressionDuplicateAlert)
 	}
-	if len(digest.Buckets.Interesting) != 1 {
-		t.Fatalf("background bucket len = %d, want 1", len(digest.Buckets.Interesting))
+	if len(digest.Buckets.Background) != 1 {
+		t.Fatalf("background bucket len = %d, want 1", len(digest.Buckets.Background))
 	}
 	if digest.Suppressed.Total != 3 {
 		t.Fatalf("suppressed total = %d, want 3", digest.Suppressed.Total)
@@ -3198,6 +3198,7 @@ func TestBuildAttentionDigest_PrioritizedQueueMergesBuckets(t *testing.T) {
 	opts.ActionRequiredLimit = 15
 	opts.InterestingLimit = 15
 	opts.BackgroundLimit = 15
+	opts.MinSeverity = SeverityDebug
 
 	digest := BuildAttentionDigest([]AttentionEvent{action1, action2, interesting1, interesting2, background1, background2}, 0, 6, opts)
 
@@ -3634,8 +3635,8 @@ func TestFilterEventsForRobot_CategoryFilter(t *testing.T) {
 	opts := EventsOptions{CategoryFilter: []string{string(EventCategoryPane)}}
 	result := filterEventsForRobot(events, opts)
 
-	if len(result) != 2 {
-		t.Errorf("expected 2 pane events, got %d", len(result))
+	if len(result) != 3 {
+		t.Errorf("expected 3 pane events, got %d", len(result))
 	}
 	for _, ev := range result {
 		if ev.Category != EventCategoryPane {
@@ -3685,12 +3686,12 @@ func TestFilterEventsForRobot_SeverityFilter(t *testing.T) {
 	}
 	result := filterEventsForRobot(events, opts)
 
-	if len(result) != 2 {
-		t.Errorf("expected 2 events matching all filters, got %d", len(result))
+	if len(result) != 1 {
+		t.Errorf("expected 1 event matching all filters, got %d", len(result))
 	}
 	if len(result) > 0 {
-		if result[0].Cursor != 2 {
-			t.Errorf("expected cursor 2, got %d", result[0].Cursor)
+		if result[0].Cursor != 4 {
+			t.Errorf("expected cursor 4, got %d", result[0].Cursor)
 		}
 	}
 }
@@ -4120,13 +4121,14 @@ func TestAttentionCursorInfo_NextCommand(t *testing.T) {
 func TestAttentionResponse_TimeoutWake(t *testing.T) {
 	// Verify timeout response has correct wake reason
 	resp := AttentionResponse{
-		RobotResponse: RobotResponse{Success: true},
+		RobotResponse: RobotResponse{Success: false},
 		WakeReason:    "timeout",
 		WaitedSeconds: 300.0,
 		Digest:        &AttentionDigest{EventCount: 0},
 		CursorInfo: AttentionCursorInfo{
-			StartCursor: 50,
-			EndCursor:   50,
+			StartCursor:  50,
+			EndCursor:    50,
+			OldestCursor: 50,
 		},
 	}
 

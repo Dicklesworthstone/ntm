@@ -4411,8 +4411,11 @@ func TestHandleWebSocket_StartsHubWithoutStart(t *testing.T) {
 	defer httpSrv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 		t.Fatalf("dial websocket: %v", err)
 	}
 	defer conn.Close()
@@ -4867,14 +4870,14 @@ func TestAttentionHeartbeatInterval(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		delivered  int
-		recovery   bool
-		degraded   int
-		base       time.Duration
-		override   bool
-		want       time.Duration
-		streamBump time.Duration
+		name      string
+		delivered int
+		recovery  bool
+		degraded  int
+		base      time.Duration
+		override  bool
+		want      time.Duration
+		streamAge time.Duration
 	}{
 		{
 			name:     "override keeps explicit interval",
@@ -4883,11 +4886,11 @@ func TestAttentionHeartbeatInterval(t *testing.T) {
 			want:     12 * time.Second,
 		},
 		{
-			name:       "recovery mode uses fast heartbeat",
-			recovery:   true,
-			base:       attentionHeartbeatIdleInterval,
-			want:       attentionHeartbeatRecoveryInterval,
-			streamBump: 500 * time.Millisecond,
+			name:      "recovery mode uses fast heartbeat",
+			recovery:  true,
+			base:      attentionHeartbeatIdleInterval,
+			want:      attentionHeartbeatRecoveryInterval,
+			streamAge: 500 * time.Millisecond,
 		},
 		{
 			name:     "degraded sources stay chatty",
@@ -4911,9 +4914,8 @@ func TestAttentionHeartbeatInterval(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			streamStart := time.Now().Add(-tc.streamBump)
 			got := attentionHeartbeatInterval(
-				streamStart,
+				tc.streamAge,
 				tc.delivered,
 				tc.recovery,
 				attentionHeartbeatSourceSummary{degraded: tc.degraded},

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	sessionpkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -492,33 +493,64 @@ func resolveResumeScope(sessionName string, allowPrefix bool) (string, string, e
 		return "", "", err
 	}
 
+	if configuredProjectDir, resolvedStoredSession, matched, err := resolveStoredResumeProjectDir(resolvedSession, allowPrefix); err != nil {
+		return "", "", err
+	} else if matched {
+		return resolvedStoredSession, configuredProjectDir, nil
+	}
+
 	projectDir := resolveProjectDirForSession(resolvedSession, true)
 	if projectDir == "" {
 		return "", "", fmt.Errorf("getting project root failed")
 	}
 
 	reader := handoff.NewReader(projectDir)
-	resolvedSession, err = resolveStoredHandoffSessionName(resolvedSession, reader, allowPrefix)
+	resolvedSession, _, err = resolveStoredHandoffSessionName(resolvedSession, reader, allowPrefix)
 	if err != nil {
 		return "", "", err
 	}
 	return resolvedSession, projectDir, nil
 }
 
-func resolveStoredHandoffSessionName(sessionName string, reader *handoff.Reader, allowPrefix bool) (string, error) {
+func resolveStoredResumeProjectDir(sessionName string, allowPrefix bool) (string, string, bool, error) {
+	activeCfg := cfg
+	if activeCfg == nil {
+		activeCfg = config.Default()
+	}
+	if activeCfg == nil {
+		return "", "", false, nil
+	}
+
+	projectDir := strings.TrimSpace(activeCfg.GetProjectDir(sessionName))
+	if projectDir == "" {
+		return "", "", false, nil
+	}
+
+	resolvedSession, matched, err := resolveStoredHandoffSessionName(sessionName, handoff.NewReader(projectDir), allowPrefix)
+	if err != nil {
+		return "", "", false, err
+	}
+	if !matched {
+		return "", "", false, nil
+	}
+
+	return projectDir, resolvedSession, true, nil
+}
+
+func resolveStoredHandoffSessionName(sessionName string, reader *handoff.Reader, allowPrefix bool) (string, bool, error) {
 	if err := validateResumeSessionName(sessionName); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if reader == nil {
-		return sessionName, nil
+		return sessionName, false, nil
 	}
 
 	sessions, err := reader.ListSessions()
 	if err != nil {
-		return "", fmt.Errorf("list handoff sessions: %w", err)
+		return "", false, fmt.Errorf("list handoff sessions: %w", err)
 	}
 	if len(sessions) == 0 {
-		return sessionName, nil
+		return sessionName, false, nil
 	}
 
 	candidates := make([]tmux.Session, 0, len(sessions))
@@ -528,14 +560,14 @@ func resolveStoredHandoffSessionName(sessionName string, reader *handoff.Reader,
 
 	resolved, _, err := resolveExplicitSessionName(sessionName, candidates, allowPrefix)
 	if err == nil {
-		return resolved, nil
+		return resolved, true, nil
 	}
 
 	var resolveErr *sessionpkg.ResolveExplicitSessionNameError
 	if errors.As(err, &resolveErr) && resolveErr.Kind == sessionpkg.ResolveExplicitSessionNameErrorNotFound {
-		return sessionName, nil
+		return sessionName, false, nil
 	}
-	return "", err
+	return "", false, err
 }
 
 func validateResumeSessionName(sessionName string) error {

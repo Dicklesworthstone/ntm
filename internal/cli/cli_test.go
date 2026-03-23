@@ -332,6 +332,12 @@ func TestResolveEnsembleProjectDirForSessionRejectsInvalidSessionName(t *testing
 
 func TestResolveEnsembleProjectDirForSessionFallsBackToProjectRoot(t *testing.T) {
 	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir ntm dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write ntm config: %v", err)
+	}
 	nestedDir := filepath.Join(projectDir, "nested")
 	if err := os.MkdirAll(nestedDir, 0755); err != nil {
 		t.Fatalf("mkdir nested: %v", err)
@@ -501,6 +507,13 @@ func TestResolveResumeScopeResolvesStoredHandoffSessionPrefix(t *testing.T) {
 	oldCfg := cfg
 	cfg = &config.Config{ProjectsBase: projectsBase}
 	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
 
 	session, gotDir, err := resolveResumeScope("myse--front", true)
 	if err != nil {

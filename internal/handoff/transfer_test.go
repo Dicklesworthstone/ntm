@@ -65,7 +65,7 @@ func (f *fakeTransferClient) RenewReservations(ctx context.Context, opts agentma
 	if f.renewFn != nil {
 		return f.renewFn(opts)
 	}
-	return &agentmail.RenewReservationsResult{}, nil
+	return &agentmail.RenewReservationsResult{Renewed: len(opts.Paths)}, nil
 }
 
 func TestTransferReservationsSuccess(t *testing.T) {
