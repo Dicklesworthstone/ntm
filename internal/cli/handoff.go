@@ -16,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func newHandoffCmd() *cobra.Command {
@@ -200,9 +201,9 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 		format = "json" // --json flag overrides default
 	}
 
-	projectDir := resolveHandoffProjectDir(sessionName)
-	if projectDir == "" {
-		return fmt.Errorf("getting project root failed")
+	projectDir, err := resolveHandoffProjectDir(sessionName)
+	if err != nil {
+		return err
 	}
 
 	slog.Debug("handoff create command",
@@ -220,7 +221,6 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 	reader := handoff.NewReader(projectDir)
 	generator := handoff.NewGenerator(projectDir)
 	var h *handoff.Handoff
-	var err error
 
 	if fromFile != "" {
 		// Load from file
@@ -362,9 +362,9 @@ func runHandoffLedger(cmd *cobra.Command, sessionName string, jsonFormat bool) e
 		return err
 	}
 
-	projectDir := resolveHandoffProjectDir(sessionName)
-	if projectDir == "" {
-		return fmt.Errorf("getting project root failed")
+	projectDir, err := resolveHandoffProjectDir(sessionName)
+	if err != nil {
+		return err
 	}
 
 	ledgerPath := filepath.Join(projectDir, ".ntm", "ledgers", fmt.Sprintf("CONTINUITY_%s.md", sessionName))
@@ -561,9 +561,9 @@ func runHandoffList(cmd *cobra.Command, sessionName string, limit int, jsonForma
 		sessionName = normalizedSession
 	}
 
-	projectDir := resolveHandoffProjectDir(sessionName)
-	if projectDir == "" {
-		return fmt.Errorf("getting project root failed")
+	projectDir, err := resolveHandoffProjectDir(sessionName)
+	if err != nil {
+		return err
 	}
 
 	reader := handoff.NewReader(projectDir)
@@ -662,17 +662,16 @@ func runHandoffShow(cmd *cobra.Command, path string, jsonFormat bool) error {
 		jsonFormat = true
 	}
 
-	projectDir := GetProjectRoot()
-	if projectDir == "" {
-		return fmt.Errorf("getting project root failed")
-	}
-
-	reader := handoff.NewReader(projectDir)
-
 	// Handle relative paths
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(projectDir, path)
+		resolvedPath, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("resolve handoff path: %w", err)
+		}
+		path = resolvedPath
 	}
+
+	reader := handoff.NewReader(GetProjectRoot())
 
 	h, err := reader.Read(path)
 	if err != nil {
@@ -832,12 +831,23 @@ func normalizeHandoffSession(sessionName string) (string, error) {
 	return sessionName, nil
 }
 
-func resolveHandoffProjectDir(sessionName string) string {
+func resolveHandoffProjectDir(sessionName string) (string, error) {
 	sessionName = strings.TrimSpace(sessionName)
 	if sessionName == "" || sessionName == "general" {
-		return GetProjectRoot()
+		projectDir := GetProjectRoot()
+		if projectDir == "" {
+			return "", fmt.Errorf("getting project root failed")
+		}
+		return projectDir, nil
 	}
-	return resolveProjectDirForSession(sessionName, true)
+	if err := tmux.ValidateSessionName(sessionName); err != nil {
+		return "", fmt.Errorf("invalid session name: %w", err)
+	}
+	projectDir := resolveProjectDirForSession(sessionName, true)
+	if projectDir == "" {
+		return "", fmt.Errorf("getting project root failed")
+	}
+	return projectDir, nil
 }
 
 func generateDescription(goal string) string {

@@ -1043,6 +1043,58 @@ func TestRunHandoffShowRelativePath(t *testing.T) {
 	}
 }
 
+func TestRunHandoffShowRelativePathFromSubdir(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "nested", "deeper")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+
+	writer := handoff.NewWriter(tmpDir)
+	h := handoff.New("testsession")
+	h.Goal = "Nested relative goal"
+	h.Now = "Nested relative now"
+	h.Status = handoff.StatusComplete
+	path, err := writer.Write(h, "nested-test")
+	if err != nil {
+		t.Fatalf("failed to write handoff: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(subDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	relPath, err := filepath.Rel(subDir, path)
+	if err != nil {
+		t.Fatalf("failed to get relative path: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+
+	err = runHandoffShow(cmd, relPath, false)
+	if err != nil {
+		t.Fatalf("runHandoffShow() with nested relative path error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "Nested relative goal") {
+		t.Fatalf("expected output to contain nested handoff goal, got: %s", buf.String())
+	}
+}
+
+func TestResolveHandoffProjectDirRejectsInvalidSessionName(t *testing.T) {
+	_, err := resolveHandoffProjectDir("../escape")
+	if err == nil {
+		t.Fatal("expected invalid session error")
+	}
+	if !strings.Contains(err.Error(), "invalid session name") {
+		t.Fatalf("expected invalid session error, got %v", err)
+	}
+}
+
 func TestRunHandoffListNoHandoffs(t *testing.T) {
 	// Create temp directory for test
 	tmpDir, err := os.MkdirTemp("", "handoff-test-*")

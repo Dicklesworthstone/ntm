@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,8 +217,34 @@ func TestResolveAssignProjectDirUsesProjectRootFromSubdir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 
-	if got := resolveAssignProjectDir("demo"); got != root {
+	got, err := resolveAssignProjectDir("demo")
+	if err != nil {
+		t.Fatalf("resolveAssignProjectDir() error = %v", err)
+	}
+	if got != root {
 		t.Fatalf("resolveAssignProjectDir() = %q, want %q", got, root)
+	}
+}
+
+func TestResolveAssignProjectDirRejectsInvalidSessionName(t *testing.T) {
+	root, nested := createAssignProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	_, err := resolveAssignProjectDir("../escape")
+	if err == nil {
+		t.Fatal("expected invalid session error")
+	}
+	if got := err.Error(); !strings.Contains(got, "invalid session name") {
+		t.Fatalf("expected invalid session error, got %v", err)
 	}
 }
 

@@ -151,8 +151,24 @@ func TestParseSummaryFormat(t *testing.T) {
 func TestResolveProjectDir_EmptySession(t *testing.T) {
 	t.Parallel()
 	wd := t.TempDir()
-	if got := resolveProjectDir("", wd); got != wd {
+	got, err := resolveProjectDir("", wd)
+	if err != nil {
+		t.Fatalf("resolveProjectDir empty session error: %v", err)
+	}
+	if got != wd {
 		t.Fatalf("resolveProjectDir empty session = %q, want %q", got, wd)
+	}
+}
+
+func TestResolveProjectDir_InvalidSession(t *testing.T) {
+	t.Parallel()
+	wd := t.TempDir()
+	_, err := resolveProjectDir("../escape", wd)
+	if err == nil {
+		t.Fatal("expected invalid session error")
+	}
+	if !strings.Contains(err.Error(), "invalid session name") {
+		t.Fatalf("expected invalid session error, got %v", err)
 	}
 }
 

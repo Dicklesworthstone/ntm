@@ -316,7 +316,7 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 	if boundedness != nil {
 		boundedness.Truncated = hasMore
 	}
-	if reconstruction != nil && hasMore && !containsString(reconstruction.Warnings, "PARTIAL_DATA") {
+	if reconstruction != nil && hasMore && !containsReplayWarning(reconstruction.Warnings, "PARTIAL_DATA") {
 		reconstruction.Warnings = append(reconstruction.Warnings, "PARTIAL_DATA")
 		reconstruction.Partial = true
 		if reconstruction.Confidence == "" || reconstruction.Confidence == ReconstructionConfidenceHigh {
@@ -412,7 +412,7 @@ func maxAttentionEventCursor(events []AttentionEvent) int64 {
 	return cursor
 }
 
-func containsString(items []string, needle string) bool {
+func containsReplayWarning(items []string, needle string) bool {
 	for _, item := range items {
 		if item == needle {
 			return true

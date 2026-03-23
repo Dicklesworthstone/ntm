@@ -95,7 +95,10 @@ func runSummary(args []string, sinceStr, format string, recent, regenerate bool)
 	}
 
 	wd, _ := os.Getwd()
-	projectDir := resolveProjectDir(sessionArg, wd)
+	projectDir, err := resolveProjectDir(sessionArg, wd)
+	if err != nil {
+		return err
+	}
 	summaryFiles, err := listSummaryFiles(projectDir)
 	if err != nil {
 		return err
@@ -148,7 +151,10 @@ func runSummary(args []string, sinceStr, format string, recent, regenerate bool)
 	}
 	res.ExplainIfInferred(os.Stderr)
 	session := res.Session
-	projectDir = resolveProjectDir(session, wd)
+	projectDir, err = resolveProjectDir(session, wd)
+	if err != nil {
+		return err
+	}
 
 	if !tmux.SessionExists(session) {
 		return fmt.Errorf("session '%s' not found", session)
@@ -216,7 +222,10 @@ func runSummaryList(format string) error {
 	}
 
 	wd, _ := os.Getwd()
-	projectDir := resolveProjectDir("", wd)
+	projectDir, err := resolveProjectDir("", wd)
+	if err != nil {
+		return err
+	}
 	files, err := listSummaryFiles(projectDir)
 	if err != nil {
 		return fmt.Errorf("failed to list summaries: %w", err)
@@ -254,14 +263,20 @@ func parseSummaryFormat(format string) (summary.SummaryFormat, bool, error) {
 	}
 }
 
-func resolveProjectDir(session, wd string) string {
-	if dir := resolveProjectDirForSession(session, true); dir != "" {
-		return dir
+func resolveProjectDir(session, wd string) (string, error) {
+	session = strings.TrimSpace(session)
+	if session != "" {
+		if err := tmux.ValidateSessionName(session); err != nil {
+			return "", fmt.Errorf("invalid session name: %w", err)
+		}
+		if dir := resolveProjectDirForSession(session, true); dir != "" {
+			return dir, nil
+		}
 	}
 	if dir := util.ResolveProjectDir(wd); dir != "" {
-		return dir
+		return dir, nil
 	}
-	return wd
+	return wd, nil
 }
 
 func listSummaryFiles(projectDir string) ([]summaryFileInfo, error) {
@@ -416,7 +431,10 @@ func regenerateSummaryFromArchive(sessionArg string, format summary.SummaryForma
 		sessionName = sessionArg
 	}
 	if projectDir == "" {
-		projectDir = resolveProjectDir(sessionName, wd)
+		projectDir, err = resolveProjectDir(sessionName, wd)
+		if err != nil {
+			return err
+		}
 	}
 
 	outputs, err := loadArchiveOutputs(archiveFile)

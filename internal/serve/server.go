@@ -4525,7 +4525,32 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 		}, output.NextCursor))
 		return
 	}
-	writeJSON(w, status, output)
+	payload := map[string]interface{}{
+		"events":        output.Events,
+		"since_cursor":  opts.SinceCursor,
+		"next_cursor":   output.NextCursor,
+		"newest_cursor": output.NextCursor,
+		"oldest_cursor": int64(0),
+		"event_count":   len(output.Events),
+		"truncated":     output.HasMore,
+	}
+	if output.ReplayWindow != nil {
+		payload["newest_cursor"] = output.ReplayWindow.LatestCursor
+		payload["oldest_cursor"] = output.ReplayWindow.OldestCursor
+	}
+	if output.ReplayTarget != nil {
+		payload["replay_target"] = output.ReplayTarget
+	}
+	if output.Reconstruction != nil {
+		payload["reconstruction"] = output.Reconstruction
+	}
+	if output.Boundedness != nil {
+		payload["boundedness"] = output.Boundedness
+	}
+	if output.Incident != nil {
+		payload["incident"] = output.Incident
+	}
+	writeJSON(w, status, payload)
 }
 
 // handleAttentionDigestV1 handles digest at /api/v1/attention/digest.

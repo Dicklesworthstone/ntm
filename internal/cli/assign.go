@@ -231,8 +231,19 @@ Examples:
 	return cmd
 }
 
-func resolveAssignProjectDir(session string) string {
-	return resolveProjectDirForSession(session, true)
+func resolveAssignProjectDir(session string) (string, error) {
+	session = strings.TrimSpace(session)
+	if session != "" {
+		if err := tmux.ValidateSessionName(session); err != nil {
+			return "", fmt.Errorf("invalid session name: %w", err)
+		}
+	}
+
+	projectDir := resolveProjectDirForSession(session, true)
+	if projectDir == "" {
+		return "", fmt.Errorf("getting project root failed")
+	}
+	return projectDir, nil
 }
 
 func runAssign(cmd *cobra.Command, args []string) error {
@@ -258,8 +269,11 @@ func runAssign(cmd *cobra.Command, args []string) error {
 
 	// Enable project webhooks (if configured) so assignment lifecycle events
 	// can fan out while this command runs (including watch mode).
-	projectDir := resolveAssignProjectDir(session)
-	if cfg != nil && projectDir != "" {
+	projectDir, err := resolveAssignProjectDir(session)
+	if err != nil {
+		return err
+	}
+	if cfg != nil {
 		redactCfg := cfg.Redaction.ToRedactionLibConfig()
 		bridge, err := webhook.StartBridgeFromProjectConfig(projectDir, session, events.DefaultBus, &redactCfg)
 		if err != nil {
@@ -1832,10 +1846,10 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 	// Set up file reservation manager if enabled
 	var reservationMgr *assign.FileReservationManager
 	if opts.ReserveFiles {
-		projectDir := resolveAssignProjectDir(session)
-		if projectDir == "" {
+		projectDir, err := resolveAssignProjectDir(session)
+		if err != nil {
 			if !opts.Quiet && opts.Verbose {
-				fmt.Println("  Warning: Could not resolve project directory, skipping file reservations")
+				fmt.Printf("  Warning: Could not resolve project directory, skipping file reservations: %v\n", err)
 			}
 		} else {
 			amClient := newAgentMailClient(projectDir)
@@ -3027,9 +3041,9 @@ func findAssignmentForPane(store *assignment.AssignmentStore, pane int) *assignm
 
 // releaseFileReservationsWithIDs releases file reservations using stored reservation IDs
 func releaseFileReservationsWithIDs(session, beadID, agentName string, reservationIDs []int) ([]string, error) {
-	projectKey := resolveAssignProjectDir(session)
-	if projectKey == "" {
-		return nil, fmt.Errorf("getting project root failed")
+	projectKey, err := resolveAssignProjectDir(session)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create Agent Mail client
@@ -3061,9 +3075,9 @@ func releaseFileReservationsWithIDs(session, beadID, agentName string, reservati
 // releaseFileReservations releases file reservations for a bead via Agent Mail
 // This is used when we don't have reservation IDs stored
 func releaseFileReservations(session, beadID, agentName string) ([]string, error) {
-	projectKey := resolveAssignProjectDir(session)
-	if projectKey == "" {
-		return nil, fmt.Errorf("getting project root failed")
+	projectKey, err := resolveAssignProjectDir(session)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create Agent Mail client
@@ -3711,13 +3725,13 @@ func getBeadTitle(beadID string) string {
 func reserveFilesForBead(session, beadID, beadTitle, agentType string, verbose bool, timeout time.Duration) *assign.FileReservationResult {
 	// Create agent name from session and agent type
 	agentName := fmt.Sprintf("%s_%s", session, agentType)
-	projectKey := resolveAssignProjectDir(session)
-	if projectKey == "" {
+	projectKey, err := resolveAssignProjectDir(session)
+	if err != nil {
 		return &assign.FileReservationResult{
 			BeadID:    beadID,
 			AgentName: agentName,
 			Success:   false,
-			Error:     "getting project root failed",
+			Error:     err.Error(),
 		}
 	}
 
