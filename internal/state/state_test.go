@@ -1513,3 +1513,381 @@ func TestStoreDB(t *testing.T) {
 		t.Fatalf("DB().Ping(): %v", err)
 	}
 }
+
+func TestRunGCPrunesStaleRuntimeData(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+	staleAfter := now.Add(-10 * time.Minute)
+
+	if err := store.UpsertRuntimeSession(&RuntimeSession{
+		Name:        "stale-session",
+		CollectedAt: now.Add(-20 * time.Minute),
+		StaleAfter:  staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeSession(stale): %v", err)
+	}
+	if err := store.UpsertRuntimeAgent(&RuntimeAgent{
+		ID:          "stale-session:%1",
+		SessionName: "stale-session",
+		Pane:        "%1",
+		AgentType:   "claude",
+		State:       AgentStateIdle,
+		CollectedAt: now.Add(-20 * time.Minute),
+		StaleAfter:  staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeAgent(stale): %v", err)
+	}
+	if err := store.UpsertRuntimeWork(&RuntimeWork{
+		BeadID:      "bd-stale",
+		Title:       "stale",
+		Status:      "open",
+		CollectedAt: now.Add(-20 * time.Minute),
+		StaleAfter:  staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeWork(stale): %v", err)
+	}
+	if err := store.UpsertRuntimeCoordination(&RuntimeCoordination{
+		AgentName:   "BlueLake",
+		CollectedAt: now.Add(-20 * time.Minute),
+		StaleAfter:  staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeCoordination(stale): %v", err)
+	}
+	if err := store.UpsertRuntimeHandoff(&RuntimeHandoff{
+		SessionName: "stale-session",
+		CollectedAt: now.Add(-20 * time.Minute),
+		StaleAfter:  staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeHandoff(stale): %v", err)
+	}
+	if err := store.UpsertRuntimeQuota(&RuntimeQuota{
+		Provider:      "anthropic",
+		Account:       "acct-1",
+		UsedPct:       97.0,
+		UsedPctKnown:  true,
+		UsedPctSource: RuntimeQuotaUsedPctSourceProvider,
+		CollectedAt:   now.Add(-20 * time.Minute),
+		StaleAfter:    staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeQuota(stale): %v", err)
+	}
+	if err := store.UpsertSourceHealth(&SourceHealth{
+		SourceName:  "old-source",
+		Available:   true,
+		Healthy:     false,
+		Reason:      "old check",
+		LastCheckAt: now.Add(-25 * time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertSourceHealth(old-source): %v", err)
+	}
+	if err := store.UpsertSourceHealth(&SourceHealth{
+		SourceName:  "fresh-source",
+		Available:   true,
+		Healthy:     true,
+		LastCheckAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertSourceHealth(fresh-source): %v", err)
+	}
+
+	oldResolvedAt := now.Add(-8 * 24 * time.Hour)
+	if err := store.CreateIncident(&Incident{
+		ID:          "inc-resolved-old",
+		Title:       "old resolved incident",
+		Fingerprint: "source.outage:mail",
+		Family:      "source.outage",
+		Category:    "availability",
+		Status:      IncidentStatusResolved,
+		Severity:    SeverityError,
+		AlertCount:  1,
+		StartedAt:   oldResolvedAt.Add(-time.Hour),
+		LastEventAt: oldResolvedAt,
+		ResolvedAt:  &oldResolvedAt,
+		ResolvedBy:  "operator",
+	}); err != nil {
+		t.Fatalf("CreateIncident(old resolved): %v", err)
+	}
+	if err := store.CreateIncident(&Incident{
+		ID:          "inc-open-fresh",
+		Title:       "fresh open incident",
+		Fingerprint: "source.outage:tmux",
+		Family:      "source.outage",
+		Category:    "availability",
+		Status:      IncidentStatusOpen,
+		Severity:    SeverityWarning,
+		AlertCount:  1,
+		StartedAt:   now.Add(-time.Minute),
+		LastEventAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateIncident(fresh open): %v", err)
+	}
+
+	expiredAt := now.Add(-time.Minute)
+	if _, err := store.AppendAttentionEvent(&StoredAttentionEvent{
+		Ts:            now.Add(-2 * time.Minute),
+		Category:      "system",
+		EventType:     "expired",
+		Source:        "test",
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "expired",
+		ExpiresAt:     &expiredAt,
+	}); err != nil {
+		t.Fatalf("AppendAttentionEvent(expired): %v", err)
+	}
+	liveExpiry := now.Add(time.Hour)
+	if _, err := store.AppendAttentionEvent(&StoredAttentionEvent{
+		Ts:            now,
+		Category:      "system",
+		EventType:     "live",
+		Source:        "test",
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "live",
+		ExpiresAt:     &liveExpiry,
+	}); err != nil {
+		t.Fatalf("AppendAttentionEvent(live): %v", err)
+	}
+
+	result, err := store.RunGC(DefaultRuntimeGCConfig())
+	if err != nil {
+		t.Fatalf("RunGC() error: %v", err)
+	}
+	if result.StaleSessions != 1 || result.StaleAgents != 1 || result.StaleWork != 1 || result.StaleCoordination != 1 || result.StaleHandoff != 1 || result.StaleQuota != 1 {
+		t.Fatalf("unexpected stale runtime GC result: %+v", result)
+	}
+	if result.StaleSourceHealth != 1 {
+		t.Fatalf("StaleSourceHealth = %d, want 1", result.StaleSourceHealth)
+	}
+	if result.ExpiredIncidents != 1 {
+		t.Fatalf("ExpiredIncidents = %d, want 1", result.ExpiredIncidents)
+	}
+	if result.ExpiredAttentionEvents != 1 {
+		t.Fatalf("ExpiredAttentionEvents = %d, want 1", result.ExpiredAttentionEvents)
+	}
+
+	sessions, err := store.GetFreshRuntimeSessions()
+	if err != nil {
+		t.Fatalf("GetFreshRuntimeSessions() error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected no fresh runtime sessions after GC, got %+v", sessions)
+	}
+
+	agents, err := store.GetRuntimeAgentsBySession("stale-session")
+	if err != nil {
+		t.Fatalf("GetRuntimeAgentsBySession() error: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("expected stale runtime agents to be pruned, got %+v", agents)
+	}
+
+	quota, err := store.ListFreshRuntimeQuota("")
+	if err != nil {
+		t.Fatalf("ListFreshRuntimeQuota() error: %v", err)
+	}
+	if len(quota) != 0 {
+		t.Fatalf("expected stale runtime quota rows to be pruned, got %+v", quota)
+	}
+
+	oldHealth, err := store.GetSourceHealth("old-source")
+	if err != nil {
+		t.Fatalf("GetSourceHealth(old-source) error: %v", err)
+	}
+	if oldHealth != nil {
+		t.Fatalf("expected old source health to be pruned, got %+v", oldHealth)
+	}
+
+	freshHealth, err := store.GetSourceHealth("fresh-source")
+	if err != nil {
+		t.Fatalf("GetSourceHealth(fresh-source) error: %v", err)
+	}
+	if freshHealth == nil || !freshHealth.Healthy {
+		t.Fatalf("expected fresh source health to remain, got %+v", freshHealth)
+	}
+
+	oldIncident, err := store.GetIncident("inc-resolved-old")
+	if err != nil {
+		t.Fatalf("GetIncident(old resolved) error: %v", err)
+	}
+	if oldIncident != nil {
+		t.Fatalf("expected old resolved incident to be pruned, got %+v", oldIncident)
+	}
+
+	freshIncident, err := store.GetIncident("inc-open-fresh")
+	if err != nil {
+		t.Fatalf("GetIncident(fresh open) error: %v", err)
+	}
+	if freshIncident == nil || freshIncident.Status != IncidentStatusOpen {
+		t.Fatalf("expected fresh open incident to remain, got %+v", freshIncident)
+	}
+
+	events, err := store.GetAttentionEventsSince(0, 10)
+	if err != nil {
+		t.Fatalf("GetAttentionEventsSince() error: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "live" {
+		t.Fatalf("expected only live attention event to remain, got %+v", events)
+	}
+}
+
+func TestCreateOrUpdateIncidentDeduplicatesByFingerprint(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+
+	first, err := store.CreateOrUpdateIncident(&Incident{
+		Title:        "mail outage",
+		Fingerprint:  "source.outage:mail",
+		Family:       "source.outage",
+		Category:     "availability",
+		Status:       IncidentStatusOpen,
+		Severity:     SeverityError,
+		SessionNames: `["ntm--vibe-cockpit"]`,
+		AgentIDs:     `["BlueLake"]`,
+		AlertCount:   1,
+		StartedAt:    now.Add(-2 * time.Minute),
+		LastEventAt:  now.Add(-2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateIncident(first) error: %v", err)
+	}
+
+	second, err := store.CreateOrUpdateIncident(&Incident{
+		Title:        "mail outage recurring",
+		Fingerprint:  "source.outage:mail",
+		Family:       "source.outage",
+		Category:     "availability",
+		Status:       IncidentStatusOpen,
+		Severity:     SeverityCritical,
+		SessionNames: `["ntm--vibe-cockpit"]`,
+		AgentIDs:     `["BlueLake","RedStone"]`,
+		AlertCount:   1,
+		LastEventAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateIncident(second) error: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected deduped incident ID %q, got %q", first.ID, second.ID)
+	}
+	if second.AlertCount != 2 {
+		t.Fatalf("AlertCount = %d, want 2", second.AlertCount)
+	}
+	if second.Severity != SeverityCritical {
+		t.Fatalf("Severity = %s, want %s", second.Severity, SeverityCritical)
+	}
+	if second.Category != "availability" {
+		t.Fatalf("Category = %q, want availability", second.Category)
+	}
+
+	gotByFingerprint, err := store.GetIncidentByFingerprint("source.outage:mail")
+	if err != nil {
+		t.Fatalf("GetIncidentByFingerprint() error: %v", err)
+	}
+	if gotByFingerprint == nil || gotByFingerprint.ID != first.ID {
+		t.Fatalf("GetIncidentByFingerprint() = %+v, want incident %q", gotByFingerprint, first.ID)
+	}
+
+	open, err := store.ListOpenIncidents()
+	if err != nil {
+		t.Fatalf("ListOpenIncidents() error: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open incident, got %d", len(open))
+	}
+	if open[0].Fingerprint != "source.outage:mail" {
+		t.Fatalf("Fingerprint = %q, want source.outage:mail", open[0].Fingerprint)
+	}
+}
+
+func TestCreateOrUpdateIncidentReopensRecentlyResolvedFingerprint(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+
+	created, err := store.CreateOrUpdateIncident(&Incident{
+		Title:       "quota exceeded",
+		Fingerprint: "quota.exceeded:anthropic",
+		Family:      "quota.exceeded",
+		Category:    "quota",
+		Status:      IncidentStatusOpen,
+		Severity:    SeverityError,
+		AlertCount:  1,
+		StartedAt:   now.Add(-10 * time.Minute),
+		LastEventAt: now.Add(-10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateIncident(create) error: %v", err)
+	}
+	if err := store.UpdateIncidentStatus(created.ID, IncidentStatusResolved, "operator", "cleared"); err != nil {
+		t.Fatalf("UpdateIncidentStatus(resolved) error: %v", err)
+	}
+
+	reopened, err := store.CreateOrUpdateIncident(&Incident{
+		Title:       "quota exceeded again",
+		Fingerprint: "quota.exceeded:anthropic",
+		Family:      "quota.exceeded",
+		Category:    "quota",
+		Status:      IncidentStatusOpen,
+		Severity:    SeverityCritical,
+		AlertCount:  1,
+		LastEventAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateIncident(reopen) error: %v", err)
+	}
+	if reopened.ID != created.ID {
+		t.Fatalf("expected reopened incident ID %q, got %q", created.ID, reopened.ID)
+	}
+	if reopened.Status != IncidentStatusOpen {
+		t.Fatalf("Status = %s, want %s", reopened.Status, IncidentStatusOpen)
+	}
+	if reopened.ResolvedAt != nil || reopened.ResolvedBy != "" {
+		t.Fatalf("expected resolved fields to be cleared, got %+v", reopened)
+	}
+	if !strings.Contains(reopened.Notes, "reopened by fingerprint recurrence") {
+		t.Fatalf("expected reopen note in %q", reopened.Notes)
+	}
+}
+
+func TestCreateOrUpdateIncidentCreatesNewRowAfterResolvedWindow(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+
+	created, err := store.CreateOrUpdateIncident(&Incident{
+		Title:       "source outage",
+		Fingerprint: "source.outage:mail",
+		Family:      "source.outage",
+		Category:    "availability",
+		Status:      IncidentStatusOpen,
+		Severity:    SeverityError,
+		AlertCount:  1,
+		StartedAt:   now.Add(-3 * time.Hour),
+		LastEventAt: now.Add(-3 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateIncident(create) error: %v", err)
+	}
+	if err := store.UpdateIncidentStatus(created.ID, IncidentStatusResolved, "operator", "recovered"); err != nil {
+		t.Fatalf("UpdateIncidentStatus(resolved) error: %v", err)
+	}
+	oldResolvedAt := now.Add(-2 * DefaultIncidentReopenWindow)
+	if _, err := store.DB().Exec(`UPDATE incidents SET resolved_at = ?, last_event_at = ? WHERE id = ?`, oldResolvedAt, oldResolvedAt, created.ID); err != nil {
+		t.Fatalf("force old resolved timestamp: %v", err)
+	}
+
+	fresh, err := store.CreateOrUpdateIncident(&Incident{
+		Title:       "source outage again",
+		Fingerprint: "source.outage:mail",
+		Family:      "source.outage",
+		Category:    "availability",
+		Status:      IncidentStatusOpen,
+		Severity:    SeverityCritical,
+		AlertCount:  1,
+		LastEventAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateIncident(new after window) error: %v", err)
+	}
+	if fresh.ID == created.ID {
+		t.Fatalf("expected a new incident after reopen window, got reused ID %q", fresh.ID)
+	}
+}

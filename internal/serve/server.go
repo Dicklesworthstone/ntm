@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -851,6 +852,7 @@ func (s *Server) buildRouter() chi.Router {
 
 	// Base middleware stack
 	r.Use(chimw.RealIP)
+	r.Use(s.maxBytesMiddleware)
 	r.Use(s.requestIDMiddlewareFunc)
 	r.Use(s.recovererMiddleware)
 	r.Use(s.loggingMiddlewareFunc)
@@ -1044,6 +1046,8 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(s.RequirePermission(PermReadEvents)).Get("/events", s.handleAttentionEventsV1)
 			// Digest endpoint for aggregated summary
 			r.With(s.RequirePermission(PermReadEvents)).Get("/digest", s.handleAttentionDigestV1)
+			// Durable operator state mutations for individual attention items
+			r.With(s.RequirePermission(PermWriteSessions)).Post("/items/{cursor}/state", s.handleAttentionItemStateV1)
 		})
 
 		// WebSocket endpoint (requires read permission)
@@ -1190,6 +1194,15 @@ func (s *Server) buildMTLSConfig() (*tls.Config, error) {
 		ClientAuth: tls.RequireAndVerifyClientCert,
 		MinVersion: tls.VersionTLS12,
 	}, nil
+}
+
+// maxBytesMiddleware limits the size of request bodies to prevent DoS via OOM.
+func (s *Server) maxBytesMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Limit to 10MB default
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requestIDMiddleware assigns a request ID and stores it in context and response headers.
@@ -2264,7 +2277,7 @@ func (s *Server) handleDepsV1(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, data, reqID)
 }
 
-// handleKernelCommands handles GET /api/kernel/commands.
+// handleKernelCommands handles GET /api/v1/kernel/commands.
 // Returns the registered kernel command metadata used by the web command palette.
 func (s *Server) handleKernelCommands(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -2901,7 +2914,7 @@ func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 	// Build pane target
 	paneTarget := fmt.Sprintf("%s:%d", sessionID, paneIdx)
 
-	// Send Ctrl+C to interrupt
+	// Send Ctrl+c to interrupt
 	if err := tmux.SendKeys(paneTarget, "C-c", false); err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -2945,6 +2958,11 @@ func (s *Server) handlePaneOutputV1(w http.ResponseWriter, r *http.Request) {
 
 	// Build pane target
 	paneTarget := fmt.Sprintf("%s:%d", sessionID, paneIdx)
+
+	if err := s.streamManager.StartStream(paneTarget); err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
 
 	output, err := tmux.CapturePaneOutputContext(r.Context(), paneTarget, lines)
 	if err != nil {
@@ -3245,11 +3263,14 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := robot.SendOptions{
-		Session:    sessionID,
-		Message:    req.Message,
-		Panes:      req.Panes,
-		AgentTypes: req.AgentTypes,
-		All:        req.All,
+		Session:        sessionID,
+		Message:        req.Message,
+		Panes:          req.Panes,
+		AgentTypes:     req.AgentTypes,
+		All:            req.All,
+		RequestID:      reqID,
+		CorrelationID:  reqID,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	}
 
 	result, err := robot.GetSend(opts)
@@ -3292,11 +3313,14 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 	}
 
 	opts := robot.InterruptOptions{
-		Session: sessionID,
-		Panes:   req.Panes,
-		Message: req.Message,
-		Force:   req.Force,
-		NoWait:  req.NoWait,
+		Session:        sessionID,
+		Panes:          req.Panes,
+		Message:        req.Message,
+		Force:          req.Force,
+		NoWait:         req.NoWait,
+		RequestID:      reqID,
+		CorrelationID:  reqID,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	}
 
 	result, err := robot.GetInterrupt(opts)
@@ -3967,6 +3991,11 @@ type preparedAttentionStream struct {
 	replayEvents   []robot.AttentionEvent
 	eventCh        chan robot.AttentionEvent
 	unsubscribe    func()
+	droppedCount   atomic.Uint64
+}
+
+func (p *preparedAttentionStream) takeDroppedCount() uint64 {
+	return p.droppedCount.Swap(0)
 }
 
 func prepareAttentionStream(feed attentionStreamFeed, sinceCursor int64, bufferSize int) (*preparedAttentionStream, error) {
@@ -3978,11 +4007,14 @@ func prepareAttentionStream(feed attentionStreamFeed, sinceCursor int64, bufferS
 	}
 
 	eventCh := make(chan robot.AttentionEvent, bufferSize)
+	prepared := &preparedAttentionStream{
+		eventCh: eventCh,
+	}
 	unsubscribe := feed.Subscribe(func(event robot.AttentionEvent) {
 		select {
 		case eventCh <- event:
 		default:
-			// Buffer full, drop event.
+			prepared.droppedCount.Add(1)
 		}
 	})
 
@@ -3996,13 +4028,10 @@ func prepareAttentionStream(feed attentionStreamFeed, sinceCursor int64, bufferS
 		}
 	}
 
-	prepared := &preparedAttentionStream{
-		stats:          stats,
-		replayBoundary: stats.NewestCursor,
-		replayEvents:   []robot.AttentionEvent{},
-		eventCh:        eventCh,
-		unsubscribe:    unsubscribe,
-	}
+	prepared.stats = stats
+	prepared.replayBoundary = stats.NewestCursor
+	prepared.replayEvents = []robot.AttentionEvent{}
+	prepared.unsubscribe = unsubscribe
 	if sinceCursor < 0 {
 		return prepared, nil
 	}
@@ -4019,6 +4048,17 @@ func prepareAttentionStream(feed attentionStreamFeed, sinceCursor int64, bufferS
 
 	prepared.replayEvents = filterAttentionReplayBoundary(events, prepared.replayBoundary)
 	return prepared, nil
+}
+
+func attentionCursorExpiredPayload(cursorErr *robot.CursorExpiredError, newestCursor int64) map[string]interface{} {
+	details := cursorErr.ToDetails()
+	return map[string]interface{}{
+		"error_code":     robot.ErrCodeCursorExpired,
+		"message":        "cursor has expired, resync required",
+		"oldest_cursor":  details.EarliestCursor,
+		"newest_cursor":  newestCursor,
+		"resync_command": details.ResyncCommand,
+	}
 }
 
 func filterAttentionReplayBoundary(events []robot.AttentionEvent, maxCursor int64) []robot.AttentionEvent {
@@ -4089,13 +4129,7 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
-		cursorExpiredEvent := map[string]interface{}{
-			"error_code":    robot.ErrCodeCursorExpired,
-			"message":       "cursor has expired, resync required",
-			"oldest_cursor": cursorErr.EarliestCursor,
-			"newest_cursor": feed.Stats().NewestCursor,
-			"resync_hint":   "fetch --robot-snapshot then resume from newest_cursor",
-		}
+		cursorExpiredEvent := attentionCursorExpiredPayload(cursorErr, feed.Stats().NewestCursor)
 		data, _ := json.Marshal(cursorExpiredEvent)
 		if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", data); err != nil {
 			return
@@ -4158,6 +4192,9 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 
 	// Stream events
 	ctx := r.Context()
+	streamStart := time.Now()
+	deliveredSinceHeartbeat := 0
+	filteredSinceHeartbeat := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -4167,7 +4204,12 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 				// Already sent during replay
 				continue
 			}
+			if event.Type == robot.EventType(robot.DefaultTransportLiveness.HeartbeatType) {
+				// SSE uses its own transport heartbeat framing instead of replay/feed events.
+				continue
+			}
 			if !matchesAttentionFilters(event, categoryFilter, sessionFilter, actionabilityFilter) {
+				filteredSinceHeartbeat++
 				continue
 			}
 			data, err := json.Marshal(event)
@@ -4179,20 +4221,29 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 			}
 			flusher.Flush()
 			replayCursor = event.Cursor
+			deliveredSinceHeartbeat++
 		case <-heartbeatCh:
 			currentStats := feed.Stats()
 			heartbeat := map[string]interface{}{
-				"type":          "heartbeat",
-				"time":          time.Now().UTC().Format(time.RFC3339),
-				"oldest_cursor": attentionReplayEarliestCursor(currentStats),
-				"newest_cursor": currentStats.NewestCursor,
-				"event_count":   currentStats.Count,
+				"type":                        "heartbeat",
+				"time":                        time.Now().UTC().Format(time.RFC3339),
+				"oldest_cursor":               attentionReplayEarliestCursor(currentStats),
+				"newest_cursor":               currentStats.NewestCursor,
+				"event_count":                 currentStats.Count,
+				"uptime_ms":                   time.Since(streamStart).Milliseconds(),
+				"next_heartbeat_ms":           heartbeatInterval.Milliseconds(),
+				"events_since_last_heartbeat": deliveredSinceHeartbeat,
+				"filtered_since_last":         filteredSinceHeartbeat,
+				"dropped_since_last":          prepared.takeDroppedCount(),
+				"subscription_active":         true,
 			}
 			data, _ := json.Marshal(heartbeat)
 			if _, err := fmt.Fprintf(w, "event: heartbeat\ndata: %s\n\n", data); err != nil {
 				return
 			}
 			flusher.Flush()
+			deliveredSinceHeartbeat = 0
+			filteredSinceHeartbeat = 0
 		}
 	}
 }
@@ -4237,13 +4288,11 @@ func (s *Server) handleAttentionEventsV1(w http.ResponseWriter, r *http.Request)
 
 	// Check for cursor expiration using the same boundary as the underlying journal.
 	if expired, earliest := attentionCursorExpired(sinceCursor, stats); expired {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error_code":    robot.ErrCodeCursorExpired,
-			"message":       "cursor has expired, resync required",
-			"oldest_cursor": earliest,
-			"newest_cursor": stats.NewestCursor,
-			"resync_hint":   "fetch --robot-snapshot then resume from newest_cursor",
-		})
+		writeJSON(w, http.StatusConflict, attentionCursorExpiredPayload(&robot.CursorExpiredError{
+			RequestedCursor: sinceCursor,
+			EarliestCursor:  earliest,
+			RetentionPeriod: stats.RetentionPeriod,
+		}, stats.NewestCursor))
 		return
 	}
 
@@ -4337,13 +4386,11 @@ func (s *Server) handleAttentionDigestV1(w http.ResponseWriter, r *http.Request)
 
 	// Check for cursor expiration using the same boundary as the underlying journal.
 	if expired, earliest := attentionCursorExpired(sinceCursor, stats); expired {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error_code":    robot.ErrCodeCursorExpired,
-			"message":       "cursor has expired, resync required",
-			"oldest_cursor": earliest,
-			"newest_cursor": stats.NewestCursor,
-			"resync_hint":   "fetch --robot-snapshot then resume from newest_cursor",
-		})
+		writeJSON(w, http.StatusConflict, attentionCursorExpiredPayload(&robot.CursorExpiredError{
+			RequestedCursor: sinceCursor,
+			EarliestCursor:  earliest,
+			RetentionPeriod: stats.RetentionPeriod,
+		}, stats.NewestCursor))
 		return
 	}
 
@@ -4354,6 +4401,409 @@ func (s *Server) handleAttentionDigestV1(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, digest)
+}
+
+type AttentionItemStateRequest struct {
+	Action            string `json:"action"`
+	Reason            string `json:"reason,omitempty"`
+	Until             string `json:"until,omitempty"`
+	OverridePriority  string `json:"override_priority,omitempty"`
+	OverrideExpiresAt string `json:"override_expires_at,omitempty"`
+	ResurfacingPolicy string `json:"resurfacing_policy,omitempty"`
+}
+
+func attentionMaterialDetailsForServe(details map[string]any) map[string]any {
+	if len(details) == 0 {
+		return nil
+	}
+	filtered := make(map[string]any, len(details))
+	for key, value := range details {
+		switch {
+		case strings.HasPrefix(key, "attention_"):
+			continue
+		case strings.HasPrefix(key, "digest_"):
+			continue
+		case key == "resurfaced",
+			key == "resurface_reason",
+			key == "cooldown_window_ms",
+			key == "cooldown_suppressed_count",
+			key == "cooldown_suppressed_since",
+			key == "cooldown_last_suppressed":
+			continue
+		default:
+			filtered[key] = value
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func attentionEventFingerprintForServe(event state.StoredAttentionEvent) string {
+	pane := 0
+	if event.Pane != "" {
+		if parsed, err := strconv.Atoi(event.Pane); err == nil {
+			pane = parsed
+		}
+	}
+	payload := map[string]any{
+		"session":       strings.TrimSpace(event.SessionName),
+		"pane":          pane,
+		"category":      strings.TrimSpace(event.Category),
+		"type":          strings.TrimSpace(event.EventType),
+		"source":        strings.TrimSpace(event.Source),
+		"actionability": strings.TrimSpace(string(event.Actionability)),
+		"severity":      strings.TrimSpace(string(event.Severity)),
+		"reason_code":   strings.TrimSpace(event.ReasonCode),
+		"summary":       strings.TrimSpace(event.Summary),
+	}
+	if event.Details != "" {
+		var details map[string]any
+		if err := json.Unmarshal([]byte(event.Details), &details); err == nil {
+			if filtered := attentionMaterialDetailsForServe(details); len(filtered) > 0 {
+				payload["details"] = filtered
+			}
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("fp-%x", sum[:8])
+}
+
+func (s *Server) attentionStoredEventByCursor(cursor int64) (*state.StoredAttentionEvent, error) {
+	if s.stateStore == nil {
+		return nil, nil
+	}
+	events, err := s.stateStore.GetAttentionEventsSince(cursor-1, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 || events[0].Cursor != cursor {
+		return nil, nil
+	}
+	event := events[0]
+	return &event, nil
+}
+
+func attentionActorFromRequest(r *http.Request) (actorType, actorID, actorOrigin, actorLabel string) {
+	rc := RoleFromContext(r.Context())
+	if rc == nil {
+		return "api", "anonymous", "api", "anonymous"
+	}
+	actorType = "user"
+	actorOrigin = string(rc.Role)
+	actorID = strings.TrimSpace(rc.UserID)
+	if actorID == "" {
+		actorID = actorOrigin
+	}
+	if actorID == "" {
+		actorID = "anonymous"
+	}
+	return actorType, actorID, actorOrigin, actorID
+}
+
+func attentionCanonicalState(itemKey, dedupKey, fingerprint string, prior *state.AttentionItemState) state.AttentionItemState {
+	if prior != nil {
+		next := *prior
+		if itemKey != "" {
+			next.ItemKey = itemKey
+		}
+		if dedupKey != "" {
+			next.DedupKey = dedupKey
+		}
+		if fingerprint != "" {
+			next.Fingerprint = fingerprint
+		}
+		if next.State == "" {
+			next.State = state.AttentionStateNew
+		}
+		if next.ResurfacingPolicy == "" {
+			next.ResurfacingPolicy = "on_change"
+		}
+		return next
+	}
+	return state.AttentionItemState{
+		ItemKey:           itemKey,
+		DedupKey:          dedupKey,
+		State:             state.AttentionStateNew,
+		Fingerprint:       fingerprint,
+		ResurfacingPolicy: "on_change",
+	}
+}
+
+func attentionStateJSON(item state.AttentionItemState) (string, error) {
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func attentionStateLabel(item state.AttentionItemState) string {
+	if strings.TrimSpace(string(item.State)) == "" {
+		return string(state.AttentionStateNew)
+	}
+	return string(item.State)
+}
+
+func applyAttentionItemAction(item *state.AttentionItemState, action string, req AttentionItemStateRequest, actorLabel string, now time.Time) error {
+	if item == nil {
+		return fmt.Errorf("attention item state is nil")
+	}
+
+	action = strings.ToLower(strings.TrimSpace(action))
+	if policy := strings.TrimSpace(req.ResurfacingPolicy); policy != "" {
+		item.ResurfacingPolicy = policy
+	}
+
+	switch action {
+	case "ack", "acknowledge":
+		item.State = state.AttentionStateAcknowledged
+		item.AcknowledgedAt = &now
+		item.AcknowledgedBy = actorLabel
+		item.SnoozedUntil = nil
+		item.DismissedAt = nil
+		item.DismissedBy = ""
+	case "snooze":
+		until := strings.TrimSpace(req.Until)
+		if until == "" {
+			return fmt.Errorf("until is required for snooze")
+		}
+		parsed, err := time.Parse(time.RFC3339, until)
+		if err != nil {
+			return fmt.Errorf("invalid until: %w", err)
+		}
+		parsed = parsed.UTC()
+		if !parsed.After(now) {
+			return fmt.Errorf("until must be in the future")
+		}
+		item.State = state.AttentionStateSnoozed
+		item.SnoozedUntil = &parsed
+		item.DismissedAt = nil
+		item.DismissedBy = ""
+	case "dismiss":
+		item.State = state.AttentionStateDismissed
+		item.DismissedAt = &now
+		item.DismissedBy = actorLabel
+		item.SnoozedUntil = nil
+	case "restore":
+		item.State = state.AttentionStateNew
+		item.AcknowledgedAt = nil
+		item.AcknowledgedBy = ""
+		item.SnoozedUntil = nil
+		item.DismissedAt = nil
+		item.DismissedBy = ""
+	case "pin":
+		item.Pinned = true
+		item.PinnedAt = &now
+		item.PinnedBy = actorLabel
+	case "unpin":
+		item.Pinned = false
+		item.PinnedAt = nil
+		item.PinnedBy = ""
+	case "mute":
+		item.Muted = true
+		item.MutedAt = &now
+		item.MutedBy = actorLabel
+	case "unmute":
+		item.Muted = false
+		item.MutedAt = nil
+		item.MutedBy = ""
+	case "escalate":
+		override := strings.TrimSpace(req.OverridePriority)
+		if override == "" {
+			override = "critical"
+		}
+		item.OverridePriority = override
+		item.OverrideReason = strings.TrimSpace(req.Reason)
+		if expires := strings.TrimSpace(req.OverrideExpiresAt); expires != "" {
+			parsed, err := time.Parse(time.RFC3339, expires)
+			if err != nil {
+				return fmt.Errorf("invalid override_expires_at: %w", err)
+			}
+			parsed = parsed.UTC()
+			item.OverrideExpiresAt = &parsed
+		} else {
+			item.OverrideExpiresAt = nil
+		}
+	default:
+		return fmt.Errorf("unsupported action %q", req.Action)
+	}
+
+	return nil
+}
+
+// handleAttentionItemStateV1 handles POST /api/v1/attention/items/{cursor}/state.
+func (s *Server) handleAttentionItemStateV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore == nil {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeServiceUnavail, "state store not available", nil, reqID)
+		return
+	}
+
+	cursor, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(r, "cursor")), 10, 64)
+	if err != nil || cursor <= 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "valid attention cursor required", nil, reqID)
+		return
+	}
+
+	var req AttentionItemStateRequest
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body: "+err.Error(), nil, reqID)
+		return
+	}
+	if strings.TrimSpace(req.Action) == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "action required", nil, reqID)
+		return
+	}
+
+	storedEvent, err := s.attentionStoredEventByCursor(cursor)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to load attention event: "+err.Error(), nil, reqID)
+		return
+	}
+	if storedEvent == nil {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "attention item not found", nil, reqID)
+		return
+	}
+
+	itemKey, err := s.stateStore.ResolveAttentionItemKey(cursor)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to resolve attention item key: "+err.Error(), nil, reqID)
+		return
+	}
+	if itemKey == "" {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "attention item key not found", nil, reqID)
+		return
+	}
+
+	priorState, err := s.stateStore.GetAttentionItemState(itemKey)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to load attention item state: "+err.Error(), nil, reqID)
+		return
+	}
+
+	actorType, actorID, actorOrigin, actorLabel := attentionActorFromRequest(r)
+	fingerprint := attentionEventFingerprintForServe(*storedEvent)
+	now := time.Now().UTC()
+	nextState := attentionCanonicalState(itemKey, storedEvent.DedupKey, fingerprint, priorState)
+	if err := applyAttentionItemAction(&nextState, req.Action, req, actorLabel, now); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	nextState.Fingerprint = fingerprint
+
+	previous := attentionCanonicalState(itemKey, storedEvent.DedupKey, fingerprint, priorState)
+	previousJSON, err := attentionStateJSON(previous)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize previous state", nil, reqID)
+		return
+	}
+	newJSON, err := attentionStateJSON(nextState)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to serialize new state", nil, reqID)
+		return
+	}
+
+	var (
+		auditEventID    int64
+		auditDecisionID int64
+	)
+
+	err = s.stateStore.Transaction(func(tx *state.Tx) error {
+		if err := tx.UpsertAttentionItemState(&nextState); err != nil {
+			return err
+		}
+
+		evidenceJSON, marshalErr := json.Marshal(map[string]any{
+			"cursor":      cursor,
+			"dedup_key":   storedEvent.DedupKey,
+			"session":     storedEvent.SessionName,
+			"pane":        storedEvent.Pane,
+			"summary":     storedEvent.Summary,
+			"fingerprint": fingerprint,
+		})
+		if marshalErr != nil {
+			return fmt.Errorf("marshal attention evidence: %w", marshalErr)
+		}
+
+		eventID, err := tx.RecordAuditEvent(&state.AuditEvent{
+			Ts:              now,
+			ActorType:       actorType,
+			ActorID:         actorID,
+			ActorOrigin:     actorOrigin,
+			RequestID:       reqID,
+			CorrelationID:   r.Header.Get("Idempotency-Key"),
+			Category:        "attention",
+			EventType:       strings.ToLower(strings.TrimSpace(req.Action)),
+			Severity:        storedEvent.Severity,
+			EntityType:      "attention_item",
+			EntityID:        itemKey,
+			PreviousState:   previousJSON,
+			NewState:        newJSON,
+			ChangeSummary:   fmt.Sprintf("%s attention item %s", strings.ToLower(strings.TrimSpace(req.Action)), itemKey),
+			Reason:          strings.TrimSpace(req.Reason),
+			Evidence:        string(evidenceJSON),
+			DisclosureState: "visible",
+			RetentionClass:  state.RetentionClassStandard,
+		})
+		if err != nil {
+			return err
+		}
+		auditEventID = eventID
+
+		decisionID, err := tx.RecordAuditDecision(&state.AuditDecision{
+			DecisionType: strings.ToLower(strings.TrimSpace(req.Action)),
+			DecisionAt:   now,
+			ActorType:    actorType,
+			ActorID:      actorID,
+			EntityType:   "attention_item",
+			EntityID:     itemKey,
+			Reason:       strings.TrimSpace(req.Reason),
+			ExpiresAt:    nextState.OverrideExpiresAt,
+			AuditEventID: &auditEventID,
+		})
+		if err != nil {
+			return err
+		}
+		auditDecisionID = decisionID
+		return nil
+	})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to apply attention action: "+err.Error(), nil, reqID)
+		return
+	}
+
+	SetAuditResource(r, "attention", itemKey)
+	SetAuditSession(r, storedEvent.SessionName, storedEvent.Pane, "")
+	SetAuditAction(r, AuditActionUpdate)
+	SetAuditDetails(r, fmt.Sprintf("%s attention item %s", strings.ToLower(strings.TrimSpace(req.Action)), itemKey))
+
+	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+		"target": map[string]interface{}{
+			"cursor":    cursor,
+			"item_key":  itemKey,
+			"dedup_key": storedEvent.DedupKey,
+			"session":   storedEvent.SessionName,
+			"pane":      storedEvent.Pane,
+		},
+		"result": map[string]interface{}{
+			"action":          strings.ToLower(strings.TrimSpace(req.Action)),
+			"previous_state":  attentionStateLabel(previous),
+			"new_state":       attentionStateLabel(nextState),
+			"attention_state": nextState,
+		},
+		"audit": map[string]interface{}{
+			"event_id":    auditEventID,
+			"decision_id": auditDecisionID,
+			"actor_type":  actorType,
+			"actor_id":    actorID,
+		},
+	}, reqID)
 }
 
 func attentionReplayEarliestCursor(stats robot.JournalStats) int64 {

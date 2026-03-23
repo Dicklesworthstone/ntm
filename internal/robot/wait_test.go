@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -603,6 +604,44 @@ func TestCheckAttentionConditions_ProfileFiltersLifecycleNoise(t *testing.T) {
 	}
 	if debug.TriggerEvent == nil || debug.TriggerEvent.Cursor != lifecycle.Cursor {
 		t.Fatalf("TriggerEvent = %#v, want cursor %d", debug.TriggerEvent, lifecycle.Cursor)
+	}
+}
+
+func TestCheckAttentionConditions_IgnoresHiddenOperatorState(t *testing.T) {
+	_ = GetAttentionFeed()
+	oldFeed := PeekAttentionFeed()
+	feed := newWaitTestFeed(time.Hour)
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	hidden := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "acknowledged alert",
+		Details: map[string]any{
+			attentionDetailState:        string(state.AttentionStateAcknowledged),
+			attentionDetailHiddenReason: attentionHiddenReasonAcknowledged,
+		},
+	})
+
+	result := checkAttentionConditions([]string{WaitConditionAttention}, 0, "proj", "")
+	if result == nil {
+		t.Fatal("expected attention result")
+	}
+	if result.Met {
+		t.Fatalf("hidden attention item should not wake operator loop, got %#v", result)
+	}
+	if result.NextCursor != hidden.Cursor {
+		t.Fatalf("NextCursor = %d, want %d", result.NextCursor, hidden.Cursor)
+	}
+	if got := result.Details["raw_event_count"]; got != 1 {
+		t.Fatalf("raw_event_count = %#v, want 1", got)
+	}
+	if got := result.Details["scanned_event_count"]; got != 0 {
+		t.Fatalf("scanned_event_count = %#v, want 0 after operator-state filtering", got)
 	}
 }
 

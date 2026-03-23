@@ -692,7 +692,8 @@ func (a *Adapter) classifyError(err error) error {
 
 // parseErrorResponse extracts error information from an HTTP response
 func (a *Adapter) parseErrorResponse(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
+	// Limit read to 1MB to prevent OOM on unexpected large error responses
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	bodyStr := string(body)
 
 	// Try to parse as JSON error

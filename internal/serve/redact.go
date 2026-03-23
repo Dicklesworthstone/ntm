@@ -56,7 +56,9 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 		if r.Body != nil && r.ContentLength > 0 {
 			contentType := r.Header.Get("Content-Type")
 			if isJSONContent(contentType) {
-				body, err := io.ReadAll(r.Body)
+				// Limit request body to 10MB to prevent DoS/OOM
+				limitedBody := io.LimitReader(r.Body, 10<<20)
+				body, err := io.ReadAll(limitedBody)
 				r.Body.Close()
 				if err != nil {
 					writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "failed to read request body", nil, reqID)

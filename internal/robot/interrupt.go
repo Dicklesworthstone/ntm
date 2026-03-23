@@ -55,6 +55,9 @@ type InterruptOptions struct {
 	PollMs          int      // Poll interval (default 300)
 	PreserveContext bool     // Log context before interrupt (for potential resume)
 	DryRun          bool     // Preview mode: show what would happen without executing
+	RequestID       string   // External request identifier for REST parity
+	CorrelationID   string   // Correlation identifier for tracing request/outcome/verification
+	IdempotencyKey  string   // Idempotency key when provided by an upstream caller
 }
 
 // GetInterrupt sends Ctrl+C to panes and optionally a follow-up message, returning the result.
@@ -66,6 +69,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	if opts.PollMs <= 0 {
 		opts.PollMs = 300 // Default 300ms poll interval
 	}
+	trace := normalizeActuationTrace(opts.RequestID, opts.CorrelationID, opts.IdempotencyKey)
 
 	interruptedAt := time.Now().UTC()
 	output := &InterruptOutput{
@@ -98,7 +102,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			"Use --robot-status to list available sessions",
 		)
 		output.CompletedAt = time.Now().UTC()
-		return output, nil
+		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
@@ -113,7 +117,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			"Check tmux session state",
 		)
 		output.CompletedAt = time.Now().UTC()
-		return output, nil
+		return finalizeTerminalInterruptActuation(trace, opts, nil, output), nil
 	}
 
 	// Build pane filter map
@@ -125,6 +129,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 	// Determine which panes to interrupt
 	var targetPanes []tmux.Pane
+	targetKeys := []string{}
 	for _, pane := range panes {
 		paneKey := fmt.Sprintf("%d", pane.Index)
 
@@ -145,11 +150,12 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		}
 
 		targetPanes = append(targetPanes, pane)
+		targetKeys = append(targetKeys, paneKey)
 	}
 
 	if len(targetPanes) == 0 {
 		output.CompletedAt = time.Now().UTC()
-		return output, nil
+		return finalizeTerminalInterruptActuation(trace, opts, targetKeys, output), nil
 	}
 
 	// Capture previous state for each pane before interrupting
@@ -193,6 +199,8 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		return output, nil
 	}
 
+	publishInterruptActuationRequest(trace, opts, targetKeys)
+
 	// Send Ctrl+C to all targets
 	for _, pane := range targetPanes {
 		paneKey := fmt.Sprintf("%d", pane.Index)
@@ -218,6 +226,8 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 	// If we have nothing to wait for, finish early
 	if len(output.Interrupted) == 0 && opts.Message == "" {
+		publishInterruptActuationOutcome(trace, opts, targetKeys, output)
+		publishInterruptActuationVerification(trace, opts, targetKeys, output)
 		output.CompletedAt = time.Now().UTC()
 		return output, nil
 	}
@@ -320,6 +330,8 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		}
 	}
 
+	publishInterruptActuationOutcome(trace, opts, targetKeys, output)
+	publishInterruptActuationVerification(trace, opts, targetKeys, output)
 	output.CompletedAt = time.Now().UTC()
 	return output, nil
 }

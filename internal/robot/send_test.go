@@ -201,6 +201,150 @@ func TestApplySendMessageRedaction_BlockMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeActuationTrace_Defaults(t *testing.T) {
+	trace := normalizeActuationTrace("", "", "")
+	if trace.RequestID == "" {
+		t.Fatal("RequestID should be populated")
+	}
+	if trace.CorrelationID == "" {
+		t.Fatal("CorrelationID should be populated")
+	}
+	if trace.RequestID != trace.CorrelationID {
+		t.Fatalf("expected generated request/correlation IDs to align, got request=%q correlation=%q", trace.RequestID, trace.CorrelationID)
+	}
+}
+
+func TestNormalizeActuationTrace_UsesProvidedRequestID(t *testing.T) {
+	trace := normalizeActuationTrace("req-abc", "", "idem-xyz")
+	if trace.RequestID != "req-abc" {
+		t.Fatalf("RequestID = %q, want req-abc", trace.RequestID)
+	}
+	if trace.CorrelationID != "req-abc" {
+		t.Fatalf("CorrelationID = %q, want req-abc", trace.CorrelationID)
+	}
+	if trace.IdempotencyKey != "idem-xyz" {
+		t.Fatalf("IdempotencyKey = %q, want idem-xyz", trace.IdempotencyKey)
+	}
+}
+
+func TestGetSend_PublishesActuationOutcomeOnSessionNotFound(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	output, err := GetSend(SendOptions{
+		Session:   "missing-session-for-actuation-send",
+		Message:   "hello",
+		RequestID: "req-send-missing",
+	})
+	if err != nil {
+		t.Fatalf("GetSend returned error: %v", err)
+	}
+	if output.ErrorCode != ErrCodeSessionNotFound {
+		t.Fatalf("ErrorCode = %q, want %q", output.ErrorCode, ErrCodeSessionNotFound)
+	}
+
+	events, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 attention event, got %d", len(events))
+	}
+	if events[0].Category != EventCategoryActuation {
+		t.Fatalf("Category = %q, want %q", events[0].Category, EventCategoryActuation)
+	}
+	if events[0].Type != EventTypeActuationOutcome {
+		t.Fatalf("Type = %q, want %q", events[0].Type, EventTypeActuationOutcome)
+	}
+	if events[0].ReasonCode != "actuation_session_not_found" {
+		t.Fatalf("ReasonCode = %q, want actuation_session_not_found", events[0].ReasonCode)
+	}
+	if got := events[0].Details["request_id"]; got != "req-send-missing" {
+		t.Fatalf("request_id = %#v, want req-send-missing", got)
+	}
+}
+
+func TestGetSendAndAck_PublishesActuationOutcomeOnSessionNotFound(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	output, err := GetSendAndAck(SendAndAckOptions{
+		SendOptions: SendOptions{
+			Session:   "missing-session-for-actuation-send-ack",
+			Message:   "hello",
+			RequestID: "req-send-ack-missing",
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetSendAndAck returned error: %v", err)
+	}
+	if output.Send.ErrorCode != ErrCodeSessionNotFound {
+		t.Fatalf("Send.ErrorCode = %q, want %q", output.Send.ErrorCode, ErrCodeSessionNotFound)
+	}
+
+	events, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 attention event, got %d", len(events))
+	}
+	if events[0].Category != EventCategoryActuation {
+		t.Fatalf("Category = %q, want %q", events[0].Category, EventCategoryActuation)
+	}
+	if events[0].Type != EventTypeActuationOutcome {
+		t.Fatalf("Type = %q, want %q", events[0].Type, EventTypeActuationOutcome)
+	}
+	if events[0].ReasonCode != "actuation_session_not_found" {
+		t.Fatalf("ReasonCode = %q, want actuation_session_not_found", events[0].ReasonCode)
+	}
+	if got := events[0].Details["request_id"]; got != "req-send-ack-missing" {
+		t.Fatalf("request_id = %#v, want req-send-ack-missing", got)
+	}
+}
+
+func TestGetInterrupt_PublishesActuationOutcomeOnSessionNotFound(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	defer SetAttentionFeed(oldFeed)
+
+	output, err := GetInterrupt(InterruptOptions{
+		Session:   "missing-session-for-actuation-interrupt",
+		RequestID: "req-interrupt-missing",
+	})
+	if err != nil {
+		t.Fatalf("GetInterrupt returned error: %v", err)
+	}
+	if output.ErrorCode != ErrCodeSessionNotFound {
+		t.Fatalf("ErrorCode = %q, want %q", output.ErrorCode, ErrCodeSessionNotFound)
+	}
+
+	events, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 attention event, got %d", len(events))
+	}
+	if events[0].Category != EventCategoryActuation {
+		t.Fatalf("Category = %q, want %q", events[0].Category, EventCategoryActuation)
+	}
+	if events[0].Type != EventTypeActuationOutcome {
+		t.Fatalf("Type = %q, want %q", events[0].Type, EventTypeActuationOutcome)
+	}
+	if events[0].ReasonCode != "actuation_session_not_found" {
+		t.Fatalf("ReasonCode = %q, want actuation_session_not_found", events[0].ReasonCode)
+	}
+	if got := events[0].Details["request_id"]; got != "req-interrupt-missing" {
+		t.Fatalf("request_id = %#v, want req-interrupt-missing", got)
+	}
+}
+
 // TestSendOptionsTargetFiltering tests target filtering logic
 func TestSendOptionsTargetFiltering(t *testing.T) {
 	tests := []struct {

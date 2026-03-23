@@ -60,6 +60,7 @@ type AccountQuota struct {
 	ID            string     `json:"id"`
 	Provider      string     `json:"provider"`
 	Model         string     `json:"model,omitempty"`
+	UsagePercent  *float64   `json:"usage_percent,omitempty"`
 	TokensUsed    int64      `json:"tokens_used"`
 	TokensLimit   int64      `json:"tokens_limit,omitempty"`
 	RequestsUsed  int        `json:"requests_used"`
@@ -378,6 +379,8 @@ func NormalizeQuota(poller *caut.UsagePoller) *QuotaSection {
 		if status != nil {
 			for _, p := range status.Providers {
 				if p.Name == usage.Provider {
+					quotaUsed := p.QuotaUsed
+					account.UsagePercent = &quotaUsed
 					account.ReasonCode = computeQuotaReasonCode(p.QuotaUsed)
 					account.Status = reasonToStatus(account.ReasonCode)
 					break

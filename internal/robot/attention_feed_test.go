@@ -413,6 +413,75 @@ func TestAttentionFeed_CurrentCursor(t *testing.T) {
 	}
 }
 
+func TestAttentionFeed_HeartbeatLoopSkipsWithoutSubscribers(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       100,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 5 * time.Millisecond,
+	})
+	defer feed.Stop()
+
+	time.Sleep(30 * time.Millisecond)
+
+	if got := feed.CurrentCursor(); got != 0 {
+		t.Fatalf("CurrentCursor() = %d, want 0 with no subscribers", got)
+	}
+
+	events, newest, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("Replay returned %d events, want 0", len(events))
+	}
+	if newest != 0 {
+		t.Fatalf("Replay newest = %d, want 0", newest)
+	}
+}
+
+func TestAttentionFeed_HeartbeatLoopPublishesEphemeralHeartbeats(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       100,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 5 * time.Millisecond,
+	})
+	defer feed.Stop()
+
+	heartbeats := make(chan AttentionEvent, 4)
+	unsub := feed.Subscribe(func(e AttentionEvent) {
+		if e.Type != EventType(DefaultTransportLiveness.HeartbeatType) {
+			return
+		}
+		select {
+		case heartbeats <- e:
+		default:
+		}
+	})
+	defer unsub()
+
+	var heartbeat AttentionEvent
+	select {
+	case heartbeat = <-heartbeats:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for heartbeat")
+	}
+
+	if heartbeat.Cursor <= 0 {
+		t.Fatalf("heartbeat cursor = %d, want positive", heartbeat.Cursor)
+	}
+
+	events, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("Replay returned %d events, want 0 for live-only heartbeats", len(events))
+	}
+	if got := feed.CurrentCursor(); got < heartbeat.Cursor {
+		t.Fatalf("CurrentCursor() = %d, want at least %d", got, heartbeat.Cursor)
+	}
+}
+
 func TestAttentionFeed_ConcurrentAppend(t *testing.T) {
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       10000,
@@ -654,6 +723,107 @@ func TestAttentionFeed_PublishLoggedEvent_Suppressed(t *testing.T) {
 	}
 }
 
+func TestAttentionFeed_PublishActuationOutcome(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+
+	published := feed.PublishActuation(ActuationRecord{
+		Session:        "proj",
+		Action:         "send",
+		Stage:          ActuationStageOutcome,
+		Source:         "robot.send",
+		Method:         "paste_enter",
+		RequestID:      "req-123",
+		CorrelationID:  "corr-123",
+		IdempotencyKey: "idem-123",
+		Targets:        []string{"2"},
+		Successful:     []string{"2"},
+		MessagePreview: "safe preview",
+		Result:         "succeeded",
+		Summary:        "send completed for 1 target(s)",
+		ReasonCode:     "actuation_succeeded",
+		Actionability:  ActionabilityInteresting,
+		Severity:       SeverityInfo,
+	})
+
+	if published.Category != EventCategoryActuation {
+		t.Fatalf("Category = %q, want %q", published.Category, EventCategoryActuation)
+	}
+	if published.Type != EventTypeActuationOutcome {
+		t.Fatalf("Type = %q, want %q", published.Type, EventTypeActuationOutcome)
+	}
+	if published.Pane != 2 {
+		t.Fatalf("Pane = %d, want 2", published.Pane)
+	}
+	if got := published.Details["request_id"]; got != "req-123" {
+		t.Fatalf("request_id = %#v, want req-123", got)
+	}
+	if got := published.Details["correlation_id"]; got != "corr-123" {
+		t.Fatalf("correlation_id = %#v, want corr-123", got)
+	}
+	if got := published.Details["idempotency_key"]; got != "idem-123" {
+		t.Fatalf("idempotency_key = %#v, want idem-123", got)
+	}
+	if got := published.Details["target_ref"]; got != "session:proj:2" {
+		t.Fatalf("target_ref = %#v, want session:proj:2", got)
+	}
+	if got := published.Details["message_preview"]; got != "safe preview" {
+		t.Fatalf("message_preview = %#v, want safe preview", got)
+	}
+
+	replayed, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay error: %v", err)
+	}
+	if len(replayed) != 1 {
+		t.Fatalf("replayed %d actuation events, want 1", len(replayed))
+	}
+	if replayed[0].ReasonCode != "actuation_succeeded" {
+		t.Fatalf("ReasonCode = %q, want actuation_succeeded", replayed[0].ReasonCode)
+	}
+}
+
+func TestAttentionFeed_PublishActuationVerificationTimeout(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+
+	published := feed.PublishActuation(ActuationRecord{
+		Session:       "proj",
+		Action:        "interrupt",
+		Stage:         ActuationStageVerification,
+		Source:        "robot.interrupt",
+		Method:        "ctrl_c",
+		RequestID:     "req-verify",
+		CorrelationID: "corr-verify",
+		Targets:       []string{"1", "3"},
+		Successful:    []string{"1"},
+		Pending:       []string{"3"},
+		Verification:  "timed_out",
+		TimedOut:      true,
+		Summary:       "interrupt verification timed out for 1 target(s)",
+		ReasonCode:    "actuation_verification_timeout",
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+	})
+
+	if published.Type != EventTypeActuationVerified {
+		t.Fatalf("Type = %q, want %q", published.Type, EventTypeActuationVerified)
+	}
+	if published.Actionability != ActionabilityActionRequired {
+		t.Fatalf("Actionability = %q, want %q", published.Actionability, ActionabilityActionRequired)
+	}
+	if published.Severity != SeverityWarning {
+		t.Fatalf("Severity = %q, want %q", published.Severity, SeverityWarning)
+	}
+	if got := published.Details["verification_state"]; got != "timed_out" {
+		t.Fatalf("verification_state = %#v, want timed_out", got)
+	}
+	if got := published.Details["pending_count"]; got != 1 {
+		t.Fatalf("pending_count = %#v, want 1", got)
+	}
+	if got := published.Details["timed_out"]; got != true {
+		t.Fatalf("timed_out = %#v, want true", got)
+	}
+}
+
 func TestAttentionFeed_PublishBusHistoryOrdersOldestFirst(t *testing.T) {
 	feed := newTestAttentionFeed(t)
 	bus := ntmevents.NewEventBus(10)
@@ -859,6 +1029,325 @@ func TestAttentionFeed_StoreSyncCursorOnStartup(t *testing.T) {
 
 	if appended.Cursor <= currentCursor {
 		t.Fatalf("new event cursor %d should be > synced cursor %d", appended.Cursor, currentCursor)
+	}
+}
+
+func TestAttentionFeed_ReplayAnnotatesDurableOperatorState(t *testing.T) {
+	t.Parallel()
+
+	store := newTestAttentionStore(t)
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       100,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	}, WithAttentionStore(store))
+	t.Cleanup(feed.Stop)
+
+	appended := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Pane:          2,
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Source:        "test",
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		ReasonCode:    "alert:quota",
+		Summary:       "quota at 92%",
+		DedupKey:      "alert|proj|quota",
+	})
+
+	itemKey, err := store.ResolveAttentionItemKey(appended.Cursor)
+	if err != nil {
+		t.Fatalf("ResolveAttentionItemKey() error: %v", err)
+	}
+	if itemKey != "dedup:alert|proj|quota" {
+		t.Fatalf("item key = %q, want %q", itemKey, "dedup:alert|proj|quota")
+	}
+
+	acknowledgedAt := time.Now().UTC().Add(-15 * time.Minute).Round(0)
+	snoozedUntil := time.Now().UTC().Add(45 * time.Minute).Round(0)
+	overrideExpiresAt := time.Now().UTC().Add(2 * time.Hour).Round(0)
+	if err := store.UpsertAttentionItemState(&state.AttentionItemState{
+		ItemKey:           itemKey,
+		DedupKey:          appended.DedupKey,
+		State:             state.AttentionStateSnoozed,
+		AcknowledgedAt:    &acknowledgedAt,
+		AcknowledgedBy:    "operator",
+		SnoozedUntil:      &snoozedUntil,
+		Pinned:            true,
+		Muted:             true,
+		OverridePriority:  "urgent",
+		OverrideReason:    "manual-escalation",
+		OverrideExpiresAt: &overrideExpiresAt,
+		ResurfacingPolicy: "manual_review",
+	}); err != nil {
+		t.Fatalf("UpsertAttentionItemState() error: %v", err)
+	}
+
+	replayed, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay() error: %v", err)
+	}
+	if len(replayed) != 1 {
+		t.Fatalf("replayed %d events, want 1", len(replayed))
+	}
+
+	event := replayed[0]
+	if got := attentionStringDetail(event.Details, attentionDetailItemKey); got != itemKey {
+		t.Fatalf("attention_item_key = %q, want %q", got, itemKey)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailState); got != string(state.AttentionStateSnoozed) {
+		t.Fatalf("attention_state = %q, want %q", got, state.AttentionStateSnoozed)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailAcknowledgedAt); got != acknowledgedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("attention_acknowledged_at = %q, want %q", got, acknowledgedAt.Format(time.RFC3339Nano))
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailAcknowledgedBy); got != "operator" {
+		t.Fatalf("attention_acknowledged_by = %q, want operator", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailSnoozedUntil); got != snoozedUntil.Format(time.RFC3339Nano) {
+		t.Fatalf("attention_snoozed_until = %q, want %q", got, snoozedUntil.Format(time.RFC3339Nano))
+	}
+	if got := event.Details[attentionDetailPinned]; got != true {
+		t.Fatalf("attention_pinned = %#v, want true", got)
+	}
+	if got := event.Details[attentionDetailMuted]; got != true {
+		t.Fatalf("attention_muted = %#v, want true", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailOverridePriority); got != "urgent" {
+		t.Fatalf("attention_override_priority = %q, want urgent", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailOverrideReason); got != "manual-escalation" {
+		t.Fatalf("attention_override_reason = %q, want manual-escalation", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailOverrideExpiresAt); got != overrideExpiresAt.Format(time.RFC3339Nano) {
+		t.Fatalf("attention_override_expires_at = %q, want %q", got, overrideExpiresAt.Format(time.RFC3339Nano))
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailResurfacingPolicy); got != "manual_review" {
+		t.Fatalf("attention_resurfacing_policy = %q, want manual_review", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailFingerprint); got == "" {
+		t.Fatal("attention_fingerprint should be populated")
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailExplanationCode); got != attentionExplainPinned {
+		t.Fatalf("attention_explanation_code = %q, want %q", got, attentionExplainPinned)
+	}
+}
+
+func TestAttentionFeed_ReplayResurfacesAcknowledgedItemOnFingerprintChange(t *testing.T) {
+	t.Parallel()
+
+	store := newTestAttentionStore(t)
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       100,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	}, WithAttentionStore(store))
+	t.Cleanup(feed.Stop)
+
+	appended := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Pane:          1,
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Source:        "test",
+		Actionability: ActionabilityInteresting,
+		Severity:      SeverityWarning,
+		ReasonCode:    "alert:quota",
+		Summary:       "quota at 95%",
+		DedupKey:      "alert|proj|quota",
+	})
+
+	itemKey, err := store.ResolveAttentionItemKey(appended.Cursor)
+	if err != nil {
+		t.Fatalf("ResolveAttentionItemKey() error: %v", err)
+	}
+
+	if err := store.UpsertAttentionItemState(&state.AttentionItemState{
+		ItemKey:           itemKey,
+		DedupKey:          appended.DedupKey,
+		State:             state.AttentionStateAcknowledged,
+		Fingerprint:       "fp-old-occurrence",
+		AcknowledgedBy:    "operator",
+		ResurfacingPolicy: "on_change",
+	}); err != nil {
+		t.Fatalf("UpsertAttentionItemState() error: %v", err)
+	}
+
+	replayed, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay() error: %v", err)
+	}
+	if len(replayed) != 1 {
+		t.Fatalf("replayed %d events, want 1", len(replayed))
+	}
+
+	event := replayed[0]
+	if got := attentionStringDetail(event.Details, attentionDetailState); got != string(state.AttentionStateNew) {
+		t.Fatalf("attention_state = %q, want %q", got, state.AttentionStateNew)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailStoredState); got != string(state.AttentionStateAcknowledged) {
+		t.Fatalf("attention_stored_state = %q, want %q", got, state.AttentionStateAcknowledged)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailPreviousState); got != string(state.AttentionStateAcknowledged) {
+		t.Fatalf("attention_previous_state = %q, want %q", got, state.AttentionStateAcknowledged)
+	}
+	if got := event.Details[attentionDetailResurfaced]; got != true {
+		t.Fatalf("resurfaced = %#v, want true", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailResurfaceReason); got != attentionResurfaceReasonFingerprintChange {
+		t.Fatalf("resurface_reason = %q, want %q", got, attentionResurfaceReasonFingerprintChange)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailStoredFingerprint); got != "fp-old-occurrence" {
+		t.Fatalf("attention_stored_fingerprint = %q, want fp-old-occurrence", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailPreviousFingerprint); got != "fp-old-occurrence" {
+		t.Fatalf("attention_previous_fingerprint = %q, want fp-old-occurrence", got)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailExplanationCode); got != attentionExplainResurfaced {
+		t.Fatalf("attention_explanation_code = %q, want %q", got, attentionExplainResurfaced)
+	}
+	if got := attentionStringDetail(event.Details, attentionDetailHiddenReason); got != "" {
+		t.Fatalf("attention_hidden_reason = %q, want empty", got)
+	}
+}
+
+func TestBuildAttentionDigest_RespectsOperatorStateVisibility(t *testing.T) {
+	t.Parallel()
+
+	base := digestTestEvent(1, EventCategoryAlert, EventTypeAlertWarning, ActionabilityInteresting, SeverityWarning, "operator-managed alert")
+
+	acknowledged := annotateAttentionOperatorState(cloneAttentionEvent(base), "dedup:ack", &state.AttentionItemState{
+		ItemKey:     "dedup:ack",
+		State:       state.AttentionStateAcknowledged,
+		Fingerprint: attentionEventFingerprint(base),
+	})
+	acknowledged.Cursor = 1
+
+	muted := cloneAttentionEvent(base)
+	muted.Cursor = 2
+	muted.Summary = "muted alert"
+	muted = annotateAttentionOperatorState(muted, "dedup:muted", &state.AttentionItemState{
+		ItemKey:     "dedup:muted",
+		State:       state.AttentionStateNew,
+		Fingerprint: attentionEventFingerprint(muted),
+		Muted:       true,
+	})
+	muted.Cursor = 2
+
+	pinned := cloneAttentionEvent(base)
+	pinned.Cursor = 3
+	pinned.Severity = SeverityDebug
+	pinned.Actionability = ActionabilityBackground
+	pinned.Summary = "pinned deployment item"
+	pinned = annotateAttentionOperatorState(pinned, "dedup:pinned", &state.AttentionItemState{
+		ItemKey:     "dedup:pinned",
+		State:       state.AttentionStateSnoozed,
+		Fingerprint: attentionEventFingerprint(pinned),
+		Pinned:      true,
+	})
+	pinned.Cursor = 3
+
+	digest := BuildAttentionDigest([]AttentionEvent{acknowledged, muted, pinned}, 0, 3, AttentionDigestOptions{
+		MinSeverity:      SeverityWarning,
+		MinActionability: ActionabilityInteresting,
+	})
+
+	if len(digest.Buckets.ActionRequired) != 0 {
+		t.Fatalf("action_required bucket = %d, want 0", len(digest.Buckets.ActionRequired))
+	}
+	if len(digest.Buckets.Interesting) != 1 {
+		t.Fatalf("interesting bucket = %d, want 1", len(digest.Buckets.Interesting))
+	}
+	if got := digest.Buckets.Interesting[0].Event.Summary; got != "pinned deployment item" {
+		t.Fatalf("surfaced summary = %q, want pinned deployment item", got)
+	}
+	if got := digest.Suppressed.ByReason["attention_state_acknowledged"]; got != 1 {
+		t.Fatalf("suppressed acknowledged = %d, want 1", got)
+	}
+	if got := digest.Suppressed.ByReason["attention_state_muted"]; got != 1 {
+		t.Fatalf("suppressed muted = %d, want 1", got)
+	}
+}
+
+func TestAttentionFeed_AppendDeduplicated_AnnotatesCooldownResurfacing(t *testing.T) {
+	t.Parallel()
+
+	feed := newTestAttentionFeed(t)
+	window := 2 * time.Minute
+	baseTS := time.Date(2026, 3, 22, 4, 0, 0, 0, time.UTC)
+
+	baseEvent := AttentionEvent{
+		Session:       "proj",
+		Pane:          2,
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Source:        "test",
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		ReasonCode:    "alert:quota",
+		Summary:       "quota at 92%",
+		DedupKey:      "alert|proj|quota",
+	}
+
+	first := baseEvent
+	first.Ts = baseTS.Format(time.RFC3339Nano)
+	appended, ok := feed.AppendDeduplicated(first, window)
+	if !ok {
+		t.Fatal("expected first event to publish")
+	}
+	if attentionStringDetail(appended.Details, attentionDetailResurfaceReason) != "" {
+		t.Fatalf("first event should not have resurface reason, got %+v", appended.Details)
+	}
+
+	duplicate1 := baseEvent
+	duplicate1.Ts = baseTS.Add(30 * time.Second).Format(time.RFC3339Nano)
+	if _, ok := feed.AppendDeduplicated(duplicate1, window); ok {
+		t.Fatal("expected duplicate inside cooldown to be suppressed")
+	}
+
+	duplicate2 := baseEvent
+	duplicate2.Ts = baseTS.Add(90 * time.Second).Format(time.RFC3339Nano)
+	if _, ok := feed.AppendDeduplicated(duplicate2, window); ok {
+		t.Fatal("expected second duplicate inside cooldown to be suppressed")
+	}
+
+	resurfaced := baseEvent
+	resurfaced.Ts = baseTS.Add(window + 15*time.Second).Format(time.RFC3339Nano)
+	resurfaced.Summary = "quota at 95%"
+	appended, ok = feed.AppendDeduplicated(resurfaced, window)
+	if !ok {
+		t.Fatal("expected event after cooldown to resurface")
+	}
+
+	if appended.Details[attentionDetailResurfaced] != true {
+		t.Fatalf("resurfaced detail = %#v, want true", appended.Details[attentionDetailResurfaced])
+	}
+	if reason := attentionStringDetail(appended.Details, attentionDetailResurfaceReason); reason != attentionResurfaceReasonCooldownExpired {
+		t.Fatalf("resurface reason = %q, want %q", reason, attentionResurfaceReasonCooldownExpired)
+	}
+	if count := attentionFloatDetail(appended.Details, attentionDetailCooldownSuppressedCount); count != 2 {
+		t.Fatalf("cooldown_suppressed_count = %v, want 2", count)
+	}
+	if windowMS := attentionFloatDetail(appended.Details, attentionDetailCooldownWindowMS); windowMS != float64(window.Milliseconds()) {
+		t.Fatalf("cooldown_window_ms = %v, want %d", windowMS, window.Milliseconds())
+	}
+	if got := attentionStringDetail(appended.Details, attentionDetailCooldownSuppressedSince); got != duplicate1.Ts {
+		t.Fatalf("cooldown_suppressed_since = %q, want %q", got, duplicate1.Ts)
+	}
+	if got := attentionStringDetail(appended.Details, attentionDetailCooldownLastSuppressed); got != duplicate2.Ts {
+		t.Fatalf("cooldown_last_suppressed_at = %q, want %q", got, duplicate2.Ts)
+	}
+
+	events, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 stored events after cooldown resurfacing, got %d", len(events))
+	}
+	if got := attentionStringDetail(events[1].Details, attentionDetailResurfaceReason); got != attentionResurfaceReasonCooldownExpired {
+		t.Fatalf("replayed resurface reason = %q, want %q", got, attentionResurfaceReasonCooldownExpired)
 	}
 }
 
@@ -1194,17 +1683,32 @@ func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 					},
 				},
 			},
+			Handoff: &adapters.HandoffSummary{
+				Session:            "ntm--proj",
+				Status:             "blocked",
+				Goal:               "Ship [REDACTED:generic-secret] safely",
+				GoalDisclosure:     &adapters.DisclosureMetadata{DisclosureState: "redacted", Findings: 1, Preview: "Ship [REDACTED:generic-secret] safely"},
+				Now:                "Need safe preview before merge",
+				NowDisclosure:      &adapters.DisclosureMetadata{DisclosureState: "visible", Preview: "Need safe preview before merge"},
+				UpdatedAt:          firstCollectedAt.Format(time.RFC3339),
+				ActiveBeads:        []string{"bd-3"},
+				AgentMailThreads:   []string{"bd-j9jo3.3.5"},
+				Blockers:           []string{"waiting on [REDACTED:generic-secret] confirmation"},
+				BlockerDisclosures: []adapters.DisclosureMetadata{{DisclosureState: "redacted", Findings: 1, Preview: "waiting on [REDACTED:generic-secret] confirmation"}},
+				Files:              []string{"internal/robot/robot.go"},
+			},
 		},
 		Quota: &adapters.QuotaSection{
 			Accounts: []adapters.AccountQuota{
 				{
-					ID:          "acct-1",
-					Provider:    "anthropic",
-					TokensUsed:  80,
-					TokensLimit: 100,
-					Status:      "warning",
-					ReasonCode:  adapters.ReasonQuotaWarningTokens,
-					IsActive:    true,
+					ID:           "acct-1",
+					Provider:     "anthropic",
+					UsagePercent: func() *float64 { v := 82.5; return &v }(),
+					TokensUsed:   10,
+					TokensLimit:  100,
+					Status:       "warning",
+					ReasonCode:   adapters.ReasonQuotaWarningTokens,
+					IsActive:     true,
 				},
 			},
 		},
@@ -1302,6 +1806,27 @@ func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 	if redCoordination.LastMessageAt == nil || !redCoordination.LastMessageAt.Equal(expectedRedTime) {
 		t.Fatalf("red LastMessageAt = %v, want %v", redCoordination.LastMessageAt, expectedRedTime)
 	}
+	handoffRow, err := store.GetRuntimeHandoff()
+	if err != nil {
+		t.Fatalf("GetRuntimeHandoff(first) error: %v", err)
+	}
+	if handoffRow == nil || handoffRow.SessionName != "ntm--proj" || handoffRow.Status != "blocked" {
+		t.Fatalf("unexpected handoff row: %+v", handoffRow)
+	}
+	var goalDisclosure adapters.DisclosureMetadata
+	if err := json.Unmarshal([]byte(handoffRow.GoalDisclosure), &goalDisclosure); err != nil {
+		t.Fatalf("unmarshal handoff goal disclosure: %v", err)
+	}
+	if goalDisclosure.DisclosureState != "redacted" || goalDisclosure.Findings != 1 {
+		t.Fatalf("handoff goal disclosure = %+v", goalDisclosure)
+	}
+	var blockerDisclosures []adapters.DisclosureMetadata
+	if err := json.Unmarshal([]byte(handoffRow.BlockerDisclosures), &blockerDisclosures); err != nil {
+		t.Fatalf("unmarshal handoff blocker disclosures: %v", err)
+	}
+	if len(blockerDisclosures) != 1 || blockerDisclosures[0].DisclosureState != "redacted" {
+		t.Fatalf("handoff blocker disclosures = %+v", blockerDisclosures)
+	}
 
 	sessionRows, err := store.GetFreshRuntimeSessions()
 	if err != nil {
@@ -1332,6 +1857,9 @@ func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 	}
 	if len(quotaRows) != 1 || quotaRows[0].Provider != "anthropic" {
 		t.Fatalf("unexpected quota rows: %+v", quotaRows)
+	}
+	if quotaRows[0].UsedPct != 82.5 || !quotaRows[0].UsedPctKnown || quotaRows[0].UsedPctSource != state.RuntimeQuotaUsedPctSourceProvider {
+		t.Fatalf("unexpected quota provenance: %+v", quotaRows[0])
 	}
 
 	healthRows, err := store.GetAllSourceHealth()
@@ -1415,6 +1943,13 @@ func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 	}
 	if len(coordinationRows) != 0 {
 		t.Fatalf("expected coordination rows to be removed, got %+v", coordinationRows)
+	}
+	handoffRow, err = store.GetRuntimeHandoff()
+	if err != nil {
+		t.Fatalf("GetRuntimeHandoff(second) error: %v", err)
+	}
+	if handoffRow != nil {
+		t.Fatalf("expected handoff row to be removed, got %+v", handoffRow)
 	}
 
 	sessionRows, err = store.GetFreshRuntimeSessions()
@@ -1628,6 +2163,10 @@ func (s *stubAttentionStore) GetAttentionEventsSince(sinceCursor int64, limit in
 		}
 	}
 	return events, nil
+}
+
+func (s *stubAttentionStore) GetAttentionItemStatesForCursors(cursors []int64) (map[int64]state.AttentionItemState, error) {
+	return map[int64]state.AttentionItemState{}, nil
 }
 
 func (s *stubAttentionStore) GetAttentionReplayWindow() (state.AttentionReplayWindow, error) {
@@ -2115,6 +2654,47 @@ func TestBuildAttentionDigest_SuppressesLifecycleNoiseAndDuplicateAlerts(t *test
 	}
 	if digest.Suppressed.ByReason[attentionDigestSuppressionDuplicateAlert] != 1 {
 		t.Fatalf("duplicate alert suppression count = %d, want 1", digest.Suppressed.ByReason[attentionDigestSuppressionDuplicateAlert])
+	}
+}
+
+func TestBuildAttentionDigest_PrefersRecurringResurfacedItemsWhenBucketLimited(t *testing.T) {
+	recurring := digestTestEvent(1, EventCategoryAlert, EventTypeAlertWarning, ActionabilityInteresting, SeverityInfo, "quota still high")
+	recurring.Details[attentionDetailResurfaced] = true
+	recurring.Details[attentionDetailResurfaceReason] = attentionResurfaceReasonCooldownExpired
+	recurring.Details[attentionDetailCooldownSuppressedCount] = 3
+	recurring.Details[attentionDetailCooldownWindowMS] = (2 * time.Minute).Milliseconds()
+
+	oneOff := digestTestEvent(2, EventCategoryAgent, EventTypeAgentStateChange, ActionabilityInteresting, SeverityInfo, "agent became idle")
+
+	opts := DefaultAttentionDigestOptions()
+	opts.IncludeTrace = true
+	opts.ActionRequiredLimit = 5
+	opts.InterestingLimit = 1
+	opts.BackgroundLimit = 5
+
+	digest := BuildAttentionDigest([]AttentionEvent{recurring, oneOff}, 0, 2, opts)
+	if len(digest.Buckets.Interesting) != 1 {
+		t.Fatalf("interesting bucket len = %d, want 1", len(digest.Buckets.Interesting))
+	}
+	if got := digest.Buckets.Interesting[0].Event.Summary; got != recurring.Summary {
+		t.Fatalf("top interesting summary = %q, want %q", got, recurring.Summary)
+	}
+
+	var resurfacedTrace *AttentionDigestDecision
+	for i := range digest.Trace {
+		if digest.Trace[i].Cursor == recurring.Cursor {
+			resurfacedTrace = &digest.Trace[i]
+			break
+		}
+	}
+	if resurfacedTrace == nil {
+		t.Fatalf("missing trace for recurring event: %+v", digest.Trace)
+	}
+	if resurfacedTrace.Decision != "surfaced" {
+		t.Fatalf("recurring trace decision = %q, want surfaced", resurfacedTrace.Decision)
+	}
+	if resurfacedTrace.Reason != attentionResurfaceReasonCooldownExpired {
+		t.Fatalf("recurring trace reason = %q, want %q", resurfacedTrace.Reason, attentionResurfaceReasonCooldownExpired)
 	}
 }
 

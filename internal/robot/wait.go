@@ -673,6 +673,7 @@ func checkAttentionConditions(conditions []string, sinceCursor int64, session, p
 		events = filtered
 	}
 	events = filterAttentionEventsByProfile(events, profile)
+	events = filterVisibleAttentionEvents(events)
 
 	result.Details["scanned_event_count"] = len(events)
 	if session != "" {

@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -626,9 +627,15 @@ func TestHandleRenewReservation_ReturnsRenewedReservations(t *testing.T) {
 func TestHandleReleaseReservations_ReturnsReleaseCount(t *testing.T) {
 	t.Parallel()
 
+	releasedAt := "2026-03-23T02:03:04Z"
+	releasedTime, err := time.Parse(time.RFC3339, releasedAt)
+	if err != nil {
+		t.Fatalf("parse released_at: %v", err)
+	}
+	releasedFlexTime := agentmail.FlexTime{Time: releasedTime}
 	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
-			return agentmail.ReleaseReservationsResult{Released: 2}, nil
+			return agentmail.ReleaseReservationsResult{Released: 2, ReleasedAt: &releasedFlexTime}, nil
 		},
 	})
 	defer mcpServer.Close()
@@ -647,8 +654,9 @@ func TestHandleReleaseReservations_ReturnsReleaseCount(t *testing.T) {
 	}
 
 	var resp struct {
-		Success  bool `json:"success"`
-		Released int  `json:"released"`
+		Success    bool   `json:"success"`
+		Released   int    `json:"released"`
+		ReleasedAt string `json:"released_at"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -658,6 +666,9 @@ func TestHandleReleaseReservations_ReturnsReleaseCount(t *testing.T) {
 	}
 	if resp.Released != 2 {
 		t.Fatalf("released = %d, want 2", resp.Released)
+	}
+	if resp.ReleasedAt != releasedAt {
+		t.Fatalf("released_at = %q, want %q", resp.ReleasedAt, releasedAt)
 	}
 }
 
@@ -1016,6 +1027,97 @@ func TestHandleThreadSummary_ForwardsExplicitLLMModeFalse(t *testing.T) {
 		t.Fatal("expected llm_mode argument to be forwarded")
 	} else if got != false {
 		t.Fatalf("llm_mode = %#v, want false", got)
+	}
+}
+
+func TestHandleThreadSummary_OmitsIncludeExamplesWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	var receivedArgs map[string]interface{}
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"summarize_thread": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			receivedArgs = args
+			return agentmail.ThreadSummaryResponse{
+				ThreadID: args["thread_id"].(string),
+				Summary: agentmail.ThreadSummary{
+					Participants: []string{"BlueLake"},
+				},
+			}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/threads/TKT-123/summary", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "TKT-123")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleThreadSummary(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, ok := receivedArgs["include_examples"]; ok {
+		t.Fatal("did not expect include_examples argument when query param is omitted")
+	}
+}
+
+func TestHandleThreadSummary_ReturnsExamplesWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"summarize_thread": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.ThreadSummaryResponse{
+				ThreadID: args["thread_id"].(string),
+				Summary: agentmail.ThreadSummary{
+					ThreadID:     args["thread_id"].(string),
+					Participants: []string{"BlueLake"},
+				},
+				Examples: []agentmail.InboxMessage{
+					{ID: 7, Subject: "Example"},
+				},
+			}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/mail/threads/TKT-123/summary?include_examples=true", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "TKT-123")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleThreadSummary(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Success  bool                     `json:"success"`
+		Summary  agentmail.ThreadSummary  `json:"summary"`
+		Examples []agentmail.InboxMessage `json:"examples"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("expected success=true")
+	}
+	if len(resp.Examples) != 1 {
+		t.Fatalf("len(examples) = %d, want 1", len(resp.Examples))
+	}
+	if resp.Examples[0].Subject != "Example" {
+		t.Fatalf("examples[0].subject = %q, want Example", resp.Examples[0].Subject)
 	}
 }
 
@@ -1466,6 +1568,41 @@ func TestHandleForceReleaseReservation_ReturnsMCPResultFields(t *testing.T) {
 	}
 	if resp["released_at"] != releasedAt {
 		t.Fatalf("released_at = %#v, want %s", resp["released_at"], releasedAt)
+	}
+}
+
+func TestHandleRenewReservation_NotFoundOnZeroRenew(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := newMockAgentMailMCPServer(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+		"renew_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return agentmail.RenewReservationsResult{}, nil
+		},
+	})
+	defer mcpServer.Close()
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	srv.mailClient = agentmail.NewClient(agentmail.WithBaseURL(mcpServer.URL + "/"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/42/renew", strings.NewReader(`{"agent_name":"BlueLake","extend_seconds":900}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "42")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRenewReservation(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != ErrCodeNotFound {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeNotFound)
 	}
 }
 
@@ -2134,6 +2271,30 @@ func installServeTestAttentionFeed(t *testing.T) (*robot.AttentionFeed, robot.Jo
 	return feed, stats
 }
 
+func expiredServeTestAttentionCursor(t *testing.T, feed *robot.AttentionFeed) (robot.JournalStats, int64) {
+	t.Helper()
+
+	stats := feed.Stats()
+	for stats.OldestCursor < 3 {
+		feed.Append(robot.AttentionEvent{
+			Session:       "proj",
+			Pane:          2,
+			Category:      robot.EventCategoryAlert,
+			Type:          robot.EventTypeAlertAttentionRequired,
+			Actionability: robot.ActionabilityActionRequired,
+			Severity:      robot.SeverityWarning,
+			Summary:       "operator attention item",
+		})
+		stats = feed.Stats()
+	}
+
+	sinceCursor := stats.OldestCursor - 2
+	if sinceCursor <= 0 {
+		t.Fatalf("expired test cursor = %d, need positive expired cursor", sinceCursor)
+	}
+	return stats, sinceCursor
+}
+
 func TestAttentionEventsAcceptsBoundaryCursor(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	_, stats := installServeTestAttentionFeed(t)
@@ -2259,6 +2420,454 @@ func TestAttentionStreamAcceptsBoundaryCursor(t *testing.T) {
 	}
 	if strings.Contains(body, robot.ErrCodeCursorExpired) {
 		t.Fatalf("stream incorrectly treated boundary cursor as expired: %s", body)
+	}
+}
+
+func TestAttentionStreamSuppressesFeedHeartbeatEvents(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       10,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 5 * time.Millisecond,
+	})
+	oldFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+		feed.Stop()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream", nil).WithContext(ctx)
+	query := req.URL.Query()
+	query.Set("heartbeat", "0")
+	req.URL.RawQuery = query.Encode()
+
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.handleAttentionStreamV1(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("attention stream handler did not exit after cancel")
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: connected") {
+		t.Fatalf("stream body missing connected event: %s", body)
+	}
+	if strings.Contains(body, `"type":"system.heartbeat"`) {
+		t.Fatalf("stream body should not include feed heartbeat as attention event: %s", body)
+	}
+}
+
+func TestAttentionStreamHeartbeatIncludesCounters(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       10,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	oldFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+		feed.Stop()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream", nil).WithContext(ctx)
+	query := req.URL.Query()
+	query.Set("heartbeat", "1")
+	req.URL.RawQuery = query.Encode()
+
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.handleAttentionStreamV1(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(1100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("attention stream handler did not exit after cancel")
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: heartbeat") {
+		t.Fatalf("stream body missing heartbeat event: %s", body)
+	}
+	for _, want := range []string{
+		`"next_heartbeat_ms":1000`,
+		`"events_since_last_heartbeat":0`,
+		`"filtered_since_last":0`,
+		`"dropped_since_last":0`,
+		`"subscription_active":true`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream body missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestAttentionEventsCursorExpiredUsesResyncCommand(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	feed, _ := installServeTestAttentionFeed(t)
+	stats, sinceCursor := expiredServeTestAttentionCursor(t, feed)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/events", nil)
+	query := req.URL.Query()
+	query.Set("since_cursor", strconv.FormatInt(sinceCursor, 10))
+	req.URL.RawQuery = query.Encode()
+
+	rec := httptest.NewRecorder()
+	srv.handleAttentionEventsV1(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp["error_code"]; got != robot.ErrCodeCursorExpired {
+		t.Fatalf("error_code = %v, want %q", got, robot.ErrCodeCursorExpired)
+	}
+	if got := resp["resync_command"]; got != "ntm --robot-snapshot" {
+		t.Fatalf("resync_command = %v, want %q", got, "ntm --robot-snapshot")
+	}
+	if _, ok := resp["resync_hint"]; ok {
+		t.Fatalf("unexpected legacy resync_hint field in response: %#v", resp)
+	}
+	if got := int64(resp["oldest_cursor"].(float64)); got != stats.OldestCursor {
+		t.Fatalf("oldest_cursor = %d, want %d", got, stats.OldestCursor)
+	}
+}
+
+func TestAttentionDigestCursorExpiredUsesResyncCommand(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	feed, _ := installServeTestAttentionFeed(t)
+	stats, sinceCursor := expiredServeTestAttentionCursor(t, feed)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/digest", nil)
+	query := req.URL.Query()
+	query.Set("since_cursor", strconv.FormatInt(sinceCursor, 10))
+	req.URL.RawQuery = query.Encode()
+
+	rec := httptest.NewRecorder()
+	srv.handleAttentionDigestV1(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp["resync_command"]; got != "ntm --robot-snapshot" {
+		t.Fatalf("resync_command = %v, want %q", got, "ntm --robot-snapshot")
+	}
+	if _, ok := resp["resync_hint"]; ok {
+		t.Fatalf("unexpected legacy resync_hint field in response: %#v", resp)
+	}
+	if got := int64(resp["oldest_cursor"].(float64)); got != stats.OldestCursor {
+		t.Fatalf("oldest_cursor = %d, want %d", got, stats.OldestCursor)
+	}
+}
+
+func TestAttentionStreamCursorExpiredUsesResyncCommand(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	feed, _ := installServeTestAttentionFeed(t)
+	_, sinceCursor := expiredServeTestAttentionCursor(t, feed)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/stream", nil)
+	query := req.URL.Query()
+	query.Set("since_cursor", strconv.FormatInt(sinceCursor, 10))
+	req.URL.RawQuery = query.Encode()
+
+	rec := httptest.NewRecorder()
+	srv.handleAttentionStreamV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"error_code":"CURSOR_EXPIRED"`) {
+		t.Fatalf("stream body missing cursor-expired error: %s", body)
+	}
+	if !strings.Contains(body, `"resync_command":"ntm --robot-snapshot"`) {
+		t.Fatalf("stream body missing resync_command: %s", body)
+	}
+	if strings.Contains(body, `"resync_hint"`) {
+		t.Fatalf("stream body still exposes legacy resync_hint: %s", body)
+	}
+}
+
+func appendServeTestAttentionEvent(t *testing.T, store *state.Store, summary string) int64 {
+	t.Helper()
+
+	cursor, err := store.AppendAttentionEvent(&state.StoredAttentionEvent{
+		Ts:            time.Now().UTC(),
+		SessionName:   "proj",
+		Pane:          "2",
+		Category:      "alert",
+		EventType:     "alert_warning",
+		Source:        "serve_test",
+		Actionability: state.ActionabilityActionRequired,
+		Severity:      state.SeverityWarning,
+		ReasonCode:    "test_attention",
+		Summary:       summary,
+		Details:       `{"kind":"serve_test","count":1}`,
+		DedupKey:      "serve-test:" + strings.ReplaceAll(summary, " ", "-"),
+		DedupCount:    1,
+	})
+	if err != nil {
+		t.Fatalf("AppendAttentionEvent() error: %v", err)
+	}
+	return cursor
+}
+
+func newAttentionStateRequest(method string, cursor int64, body string, requestID string, userID string, role Role) *http.Request {
+	req := httptest.NewRequest(method, fmt.Sprintf("/api/v1/attention/items/%d/state", cursor), strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("cursor", strconv.FormatInt(cursor, 10))
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	ctx = context.WithValue(ctx, requestIDKey, requestID)
+	ctx = withRoleContext(ctx, &RoleContext{Role: role, UserID: userID})
+	return req.WithContext(ctx)
+}
+
+func TestAttentionItemStateAcknowledgePersistsAudit(t *testing.T) {
+	srv, store := setupTestServer(t)
+	cursor := appendServeTestAttentionEvent(t, store, "operator attention ack")
+
+	req := newAttentionStateRequest(
+		http.MethodPost,
+		cursor,
+		`{"action":"acknowledge","reason":"handled in operator loop"}`,
+		"req-att-ack",
+		"operator-alice",
+		RoleOperator,
+	)
+	rec := httptest.NewRecorder()
+
+	srv.handleAttentionItemStateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Request string `json:"request_id"`
+		Result  struct {
+			Action         string                   `json:"action"`
+			PreviousState  string                   `json:"previous_state"`
+			NewState       string                   `json:"new_state"`
+			AttentionState state.AttentionItemState `json:"attention_state"`
+		} `json:"result"`
+		Audit struct {
+			EventID    int64  `json:"event_id"`
+			DecisionID int64  `json:"decision_id"`
+			ActorType  string `json:"actor_type"`
+			ActorID    string `json:"actor_id"`
+		} `json:"audit"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if !resp.Success {
+		t.Fatal("expected success=true")
+	}
+	if resp.Result.Action != "acknowledge" {
+		t.Fatalf("action = %q, want acknowledge", resp.Result.Action)
+	}
+	if resp.Result.PreviousState != string(state.AttentionStateNew) {
+		t.Fatalf("previous_state = %q, want %q", resp.Result.PreviousState, state.AttentionStateNew)
+	}
+	if resp.Result.NewState != string(state.AttentionStateAcknowledged) {
+		t.Fatalf("new_state = %q, want %q", resp.Result.NewState, state.AttentionStateAcknowledged)
+	}
+	if resp.Audit.ActorID != "operator-alice" {
+		t.Fatalf("audit.actor_id = %q, want operator-alice", resp.Audit.ActorID)
+	}
+	if resp.Audit.EventID == 0 || resp.Audit.DecisionID == 0 {
+		t.Fatalf("expected non-zero audit ids, got event=%d decision=%d", resp.Audit.EventID, resp.Audit.DecisionID)
+	}
+
+	itemState, err := store.GetAttentionItemStateByCursor(cursor)
+	if err != nil {
+		t.Fatalf("GetAttentionItemStateByCursor() error: %v", err)
+	}
+	if itemState == nil {
+		t.Fatal("expected persisted attention item state")
+	}
+	if itemState.State != state.AttentionStateAcknowledged {
+		t.Fatalf("persisted state = %q, want %q", itemState.State, state.AttentionStateAcknowledged)
+	}
+	if itemState.AcknowledgedBy != "operator-alice" {
+		t.Fatalf("acknowledged_by = %q, want operator-alice", itemState.AcknowledgedBy)
+	}
+	if itemState.Fingerprint == "" {
+		t.Fatal("expected persisted fingerprint to be set")
+	}
+
+	itemKey, err := store.ResolveAttentionItemKey(cursor)
+	if err != nil {
+		t.Fatalf("ResolveAttentionItemKey() error: %v", err)
+	}
+	events, err := store.GetAuditHistory("attention_item", itemKey, 10)
+	if err != nil {
+		t.Fatalf("GetAuditHistory() error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(events))
+	}
+	if events[0].RequestID != "req-att-ack" {
+		t.Fatalf("audit request_id = %q, want req-att-ack", events[0].RequestID)
+	}
+	if events[0].ActorID != "operator-alice" {
+		t.Fatalf("audit actor_id = %q, want operator-alice", events[0].ActorID)
+	}
+
+	decisions, err := store.GetDecisionHistory("attention_item", itemKey, 10)
+	if err != nil {
+		t.Fatalf("GetDecisionHistory() error: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decision history = %d, want 1", len(decisions))
+	}
+	if decisions[0].DecisionType != "acknowledge" {
+		t.Fatalf("decision_type = %q, want acknowledge", decisions[0].DecisionType)
+	}
+}
+
+func TestAttentionItemStateSnoozeRestoreClearsState(t *testing.T) {
+	srv, store := setupTestServer(t)
+	cursor := appendServeTestAttentionEvent(t, store, "operator attention snooze")
+
+	snoozeUntil := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	req := newAttentionStateRequest(
+		http.MethodPost,
+		cursor,
+		fmt.Sprintf(`{"action":"snooze","until":"%s","reason":"later"}`, snoozeUntil),
+		"req-att-snooze",
+		"operator-bob",
+		RoleOperator,
+	)
+	rec := httptest.NewRecorder()
+	srv.handleAttentionItemStateV1(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snooze status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	snoozed, err := store.GetAttentionItemStateByCursor(cursor)
+	if err != nil {
+		t.Fatalf("GetAttentionItemStateByCursor() after snooze error: %v", err)
+	}
+	if snoozed == nil || snoozed.State != state.AttentionStateSnoozed || snoozed.SnoozedUntil == nil {
+		t.Fatalf("expected snoozed state with until, got %#v", snoozed)
+	}
+
+	restoreReq := newAttentionStateRequest(
+		http.MethodPost,
+		cursor,
+		`{"action":"restore","reason":"back in scope"}`,
+		"req-att-restore",
+		"operator-bob",
+		RoleOperator,
+	)
+	restoreRec := httptest.NewRecorder()
+	srv.handleAttentionItemStateV1(restoreRec, restoreReq)
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("restore status = %d, want %d: %s", restoreRec.Code, http.StatusOK, restoreRec.Body.String())
+	}
+
+	restored, err := store.GetAttentionItemStateByCursor(cursor)
+	if err != nil {
+		t.Fatalf("GetAttentionItemStateByCursor() after restore error: %v", err)
+	}
+	if restored == nil {
+		t.Fatal("expected restored state to persist")
+	}
+	if restored.State != state.AttentionStateNew {
+		t.Fatalf("restored state = %q, want %q", restored.State, state.AttentionStateNew)
+	}
+	if restored.SnoozedUntil != nil {
+		t.Fatalf("restore should clear snoozed_until, got %v", restored.SnoozedUntil)
+	}
+	if restored.DismissedAt != nil || restored.DismissedBy != "" {
+		t.Fatalf("restore should clear dismissed fields, got %#v", restored)
+	}
+}
+
+func TestAttentionItemStatePinAndEscalateSetFlags(t *testing.T) {
+	srv, store := setupTestServer(t)
+	cursor := appendServeTestAttentionEvent(t, store, "operator attention priority")
+
+	pinReq := newAttentionStateRequest(
+		http.MethodPost,
+		cursor,
+		`{"action":"pin","reason":"watch closely"}`,
+		"req-att-pin",
+		"operator-carol",
+		RoleOperator,
+	)
+	pinRec := httptest.NewRecorder()
+	srv.handleAttentionItemStateV1(pinRec, pinReq)
+	if pinRec.Code != http.StatusOK {
+		t.Fatalf("pin status = %d, want %d: %s", pinRec.Code, http.StatusOK, pinRec.Body.String())
+	}
+
+	escalateReq := newAttentionStateRequest(
+		http.MethodPost,
+		cursor,
+		`{"action":"escalate","override_priority":"critical","reason":"force visibility"}`,
+		"req-att-escalate",
+		"operator-carol",
+		RoleOperator,
+	)
+	escalateRec := httptest.NewRecorder()
+	srv.handleAttentionItemStateV1(escalateRec, escalateReq)
+	if escalateRec.Code != http.StatusOK {
+		t.Fatalf("escalate status = %d, want %d: %s", escalateRec.Code, http.StatusOK, escalateRec.Body.String())
+	}
+
+	itemState, err := store.GetAttentionItemStateByCursor(cursor)
+	if err != nil {
+		t.Fatalf("GetAttentionItemStateByCursor() error: %v", err)
+	}
+	if itemState == nil {
+		t.Fatal("expected item state to persist")
+	}
+	if !itemState.Pinned {
+		t.Fatal("expected pinned=true after pin action")
+	}
+	if itemState.PinnedBy != "operator-carol" {
+		t.Fatalf("pinned_by = %q, want operator-carol", itemState.PinnedBy)
+	}
+	if itemState.OverridePriority != "critical" {
+		t.Fatalf("override_priority = %q, want critical", itemState.OverridePriority)
+	}
+	if itemState.OverrideReason != "force visibility" {
+		t.Fatalf("override_reason = %q, want force visibility", itemState.OverrideReason)
 	}
 }
 

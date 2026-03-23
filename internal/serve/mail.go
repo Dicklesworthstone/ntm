@@ -996,14 +996,14 @@ func (s *Server) handleThreadSummary(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	includeExamples := false
+	var includeExamples *bool
 	if rawIncludeExamples := r.URL.Query().Get("include_examples"); rawIncludeExamples != "" {
 		parsed, err := strconv.ParseBool(rawIncludeExamples)
 		if err != nil {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "include_examples must be a boolean", nil, reqID)
 			return
 		}
-		includeExamples = parsed
+		includeExamples = &parsed
 	}
 
 	var llmMode *bool
@@ -1016,7 +1016,7 @@ func (s *Server) handleThreadSummary(w http.ResponseWriter, r *http.Request) {
 		llmMode = &parsed
 	}
 
-	summary, err := client.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
+	result, err := client.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
 		ProjectKey:      s.projectDir,
 		ThreadID:        threadID,
 		IncludeExamples: includeExamples,
@@ -1027,9 +1027,18 @@ func (s *Server) handleThreadSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"summary": summary,
-	}, reqID)
+	response := map[string]interface{}{
+		"summary": result.Summary,
+	}
+	if includeExamples != nil && *includeExamples {
+		examples := result.Examples
+		if examples == nil {
+			examples = []agentmail.InboxMessage{}
+		}
+		response["examples"] = examples
+	}
+
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleListContacts handles GET /api/v1/mail/contacts
@@ -1396,16 +1405,31 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
 		return
 	}
+	if releaseResult == nil {
+		releaseResult = &agentmail.ReleaseReservationsResult{}
+	}
 
-	s.publishReservationEvent(req.AgentName, "reservation.released", map[string]interface{}{
-		"agent_name": req.AgentName,
-		"paths":      req.Paths,
-		"ids":        req.IDs,
-	})
+	if releaseResult.Released > 0 {
+		eventPayload := map[string]interface{}{
+			"agent_name": req.AgentName,
+			"paths":      req.Paths,
+			"ids":        req.IDs,
+			"released":   releaseResult.Released,
+		}
+		if releaseResult.ReleasedAt != nil {
+			eventPayload["released_at"] = releaseResult.ReleasedAt
+		}
+		s.publishReservationEvent(req.AgentName, "reservation.released", eventPayload)
+	}
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"released": releaseResult.Released,
-	}, reqID)
+	}
+	if releaseResult.ReleasedAt != nil {
+		response["released_at"] = releaseResult.ReleasedAt
+	}
+
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleReservationConflicts handles GET /api/v1/reservations/conflicts
@@ -1532,15 +1556,24 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	s.publishReservationEvent(agentName, "reservation.released", map[string]interface{}{
+	eventPayload := map[string]interface{}{
 		"agent_name":     agentName,
 		"reservation_id": reservationID,
-	})
+	}
+	if releaseResult.ReleasedAt != nil {
+		eventPayload["released_at"] = releaseResult.ReleasedAt
+	}
+	s.publishReservationEvent(agentName, "reservation.released", eventPayload)
 
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"reservation_id": reservationID,
 		"released":       true,
-	}, reqID)
+	}
+	if releaseResult.ReleasedAt != nil {
+		response["released_at"] = releaseResult.ReleasedAt
+	}
+
+	writeSuccessResponse(w, http.StatusOK, response, reqID)
 }
 
 // handleRenewReservation handles POST /api/v1/reservations/{id}/renew
@@ -1593,6 +1626,13 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 	})
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "renewing reservations is not supported by the configured Agent Mail server")
+		return
+	}
+	if result == nil {
+		result = &agentmail.RenewReservationsResult{}
+	}
+	if result.Renewed == 0 {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, "reservation not found", nil, reqID)
 		return
 	}
 

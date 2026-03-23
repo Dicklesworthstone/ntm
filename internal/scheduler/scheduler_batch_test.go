@@ -17,8 +17,12 @@ func newTestScheduler(t *testing.T) *Scheduler {
 	s := New(cfg)
 	// Set a no-op executor to prevent panics
 	s.SetExecutor(func(ctx context.Context, job *SpawnJob) error {
-		<-ctx.Done()
-		return ctx.Err()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+			return nil
+		}
 	})
 	return s
 }

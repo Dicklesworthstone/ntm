@@ -233,6 +233,8 @@ CREATE TABLE IF NOT EXISTS runtime_quota (
     -- State
     limit_hit INTEGER NOT NULL DEFAULT 0,  -- 0=no, 1=yes
     used_pct REAL NOT NULL DEFAULT 0.0,
+    used_pct_known INTEGER NOT NULL DEFAULT 0, -- 0=unknown, 1=safe to interpret
+    used_pct_source TEXT NOT NULL DEFAULT 'unknown', -- provider|tokens|requests|unknown
     resets_at TIMESTAMP,
 
     -- Active account
@@ -255,6 +257,8 @@ CREATE INDEX IF NOT EXISTS idx_runtime_quota_active ON runtime_quota(is_active);
 ```
 
 **Refresh policy:** Rebuilt from caut on quota event or every 30s.
+
+`used_pct` is only meaningful when `used_pct_known=1`, and it must still be read together with `used_pct_source`. If caut only supplies a provider-level percentage, persist that provenance instead of pretending ntm measured exact token or request saturation.
 
 ---
 
@@ -575,13 +579,23 @@ AND expires_at < datetime('now');
 ### 5.2 Projection Rebuild
 
 ```sql
--- Clear stale projections before rebuild
+-- Clear stale projections only after they have already been unreadable for a grace window
 DELETE FROM runtime_sessions WHERE stale_after < datetime('now', '-5 minutes');
 DELETE FROM runtime_agents WHERE stale_after < datetime('now', '-5 minutes');
 DELETE FROM runtime_work WHERE stale_after < datetime('now', '-5 minutes');
 DELETE FROM runtime_coordination WHERE stale_after < datetime('now', '-5 minutes');
 DELETE FROM runtime_quota WHERE stale_after < datetime('now', '-5 minutes');
+DELETE FROM runtime_handoff WHERE stale_after < datetime('now', '-5 minutes');
+DELETE FROM source_health WHERE last_check_at < datetime('now', '-24 hours');
 ```
+
+### 5.3 Operational Guardrails
+
+- Snapshot tables (`runtime_sessions`, `runtime_agents`, `runtime_work`, `runtime_coordination`, `runtime_handoff`, `runtime_quota`) are read with `stale_after > now` and GC'd only after an additional 5 minute grace window.
+- `source_health` is bounded diagnostic history, not an append-only log. Keep 24 hours and prune anything older.
+- `attention_events` stay append-only on the hot path and prune strictly by `expires_at`; routine readers should use cursor and timestamp indexes rather than full scans.
+- Periodic maintenance should call `RunGC(DefaultRuntimeGCConfig())` about every 5 minutes.
+- Projection refreshes should stay keyed-snapshot based: update current rows, delete rows that disappeared from normalized input, and avoid inventing history-table semantics for routine status polling.
 
 ---
 

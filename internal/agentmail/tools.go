@@ -406,11 +406,13 @@ func (c *Client) SearchMessages(ctx context.Context, opts SearchOptions) ([]Sear
 }
 
 // SummarizeThread summarizes a message thread using options struct.
-func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOptions) (*ThreadSummary, error) {
+func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOptions) (*ThreadSummaryResponse, error) {
 	args := map[string]interface{}{
-		"project_key":      opts.ProjectKey,
-		"thread_id":        opts.ThreadID,
-		"include_examples": opts.IncludeExamples,
+		"project_key": opts.ProjectKey,
+		"thread_id":   opts.ThreadID,
+	}
+	if opts.IncludeExamples != nil {
+		args["include_examples"] = *opts.IncludeExamples
 	}
 	if opts.LLMMode != nil {
 		args["llm_mode"] = *opts.LLMMode
@@ -425,12 +427,17 @@ func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOption
 	}
 
 	var wrapped ThreadSummaryResponse
-	if err := json.Unmarshal(result, &wrapped); err == nil && (wrapped.ThreadID != "" || len(wrapped.Summary.Participants) > 0 || len(wrapped.Summary.KeyPoints) > 0 || len(wrapped.Summary.ActionItems) > 0) {
-		summary := wrapped.Summary
-		if summary.ThreadID == "" {
-			summary.ThreadID = wrapped.ThreadID
+	if err := json.Unmarshal(result, &wrapped); err == nil && (wrapped.ThreadID != "" || len(wrapped.Summary.Participants) > 0 || len(wrapped.Summary.KeyPoints) > 0 || len(wrapped.Summary.ActionItems) > 0 || len(wrapped.Examples) > 0) {
+		if wrapped.ThreadID == "" {
+			wrapped.ThreadID = wrapped.Summary.ThreadID
 		}
-		return &summary, nil
+		if wrapped.ThreadID == "" {
+			wrapped.ThreadID = opts.ThreadID
+		}
+		if wrapped.Summary.ThreadID == "" {
+			wrapped.Summary.ThreadID = wrapped.ThreadID
+		}
+		return &wrapped, nil
 	}
 
 	var summary ThreadSummary
@@ -438,7 +445,14 @@ func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOption
 		return nil, NewAPIError("summarize_thread", 0, err)
 	}
 
-	return &summary, nil
+	if summary.ThreadID == "" {
+		summary.ThreadID = opts.ThreadID
+	}
+
+	return &ThreadSummaryResponse{
+		ThreadID: summary.ThreadID,
+		Summary:  summary,
+	}, nil
 }
 
 // ReservePaths requests file path reservations.

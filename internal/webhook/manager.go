@@ -570,10 +570,12 @@ func (m *WebhookManager) retryProcessor() {
 		}
 
 		// Sleep until next retry or shutdown
+		timer := time.NewTimer(sleepDuration)
 		select {
 		case <-m.ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(sleepDuration):
+		case <-timer.C:
 		}
 	}
 }

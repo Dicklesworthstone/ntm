@@ -9,12 +9,253 @@
 package state
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
+
+const (
+	DefaultRuntimeProjectionGCGrace  = 5 * time.Minute
+	DefaultSourceHealthRetention     = 24 * time.Hour
+	DefaultIncidentReopenWindow      = time.Hour
+	DefaultResolvedIncidentRetention = 7 * 24 * time.Hour
+)
+
+// RuntimeGCConfig defines the bounded cleanup windows for the runtime layer.
+type RuntimeGCConfig struct {
+	ProjectionGracePeriod     time.Duration
+	SourceHealthRetention     time.Duration
+	ResolvedIncidentRetention time.Duration
+}
+
+// RuntimeGCResult captures how many rows a runtime GC pass pruned.
+type RuntimeGCResult struct {
+	StaleSessions          int64 `json:"stale_sessions"`
+	StaleAgents            int64 `json:"stale_agents"`
+	StaleWork              int64 `json:"stale_work"`
+	StaleCoordination      int64 `json:"stale_coordination"`
+	StaleHandoff           int64 `json:"stale_handoff"`
+	StaleQuota             int64 `json:"stale_quota"`
+	StaleSourceHealth      int64 `json:"stale_source_health"`
+	ExpiredIncidents       int64 `json:"expired_incidents"`
+	ExpiredAttentionEvents int64 `json:"expired_attention_events"`
+	ExpiredAuditEvents     int64 `json:"expired_audit_events"`
+	ExpiredAuditDecisions  int64 `json:"expired_audit_decisions"`
+}
+
+// DefaultRuntimeGCConfig returns conservative cleanup windows for routine maintenance.
+func DefaultRuntimeGCConfig() RuntimeGCConfig {
+	return RuntimeGCConfig{
+		ProjectionGracePeriod:     DefaultRuntimeProjectionGCGrace,
+		SourceHealthRetention:     DefaultSourceHealthRetention,
+		ResolvedIncidentRetention: DefaultResolvedIncidentRetention,
+	}
+}
+
+func normalizeRuntimeGCConfig(cfg RuntimeGCConfig) RuntimeGCConfig {
+	if cfg.ProjectionGracePeriod <= 0 {
+		cfg.ProjectionGracePeriod = DefaultRuntimeProjectionGCGrace
+	}
+	if cfg.SourceHealthRetention <= 0 {
+		cfg.SourceHealthRetention = DefaultSourceHealthRetention
+	}
+	if cfg.ResolvedIncidentRetention <= 0 {
+		cfg.ResolvedIncidentRetention = DefaultResolvedIncidentRetention
+	}
+	return cfg
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func rowsAffected(result sql.Result, err error, label string) (int64, error) {
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", label, err)
+	}
+	affected, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return 0, fmt.Errorf("%s rows affected: %w", label, rowsErr)
+	}
+	return affected, nil
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+func execRowsAffected(exec sqlExecer, query, label string, args ...interface{}) (int64, error) {
+	result, err := exec.Exec(query, args...)
+	return rowsAffected(result, err, label)
+}
+
+type incidentScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+type incidentQueryer interface {
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
+const incidentSelectColumns = `
+		id, title, COALESCE(fingerprint, ''), COALESCE(family, ''), COALESCE(category, ''),
+		status, severity, COALESCE(session_names, ''), COALESCE(agent_ids, ''),
+		alert_count, event_count, first_event_cursor, last_event_cursor,
+		started_at, last_event_at, acknowledged_at, COALESCE(acknowledged_by, ''),
+		resolved_at, COALESCE(resolved_by, ''), muted_at, COALESCE(muted_by, ''),
+		COALESCE(muted_reason, ''), COALESCE(root_cause, ''), COALESCE(resolution, ''),
+		COALESCE(notes, '')`
+
+func scanIncident(scanner incidentScanner) (*Incident, error) {
+	incident := &Incident{}
+	err := scanner.Scan(
+		&incident.ID, &incident.Title, &incident.Fingerprint, &incident.Family, &incident.Category,
+		&incident.Status, &incident.Severity, &incident.SessionNames, &incident.AgentIDs,
+		&incident.AlertCount, &incident.EventCount, &incident.FirstEventCursor, &incident.LastEventCursor,
+		&incident.StartedAt, &incident.LastEventAt, &incident.AcknowledgedAt, &incident.AcknowledgedBy,
+		&incident.ResolvedAt, &incident.ResolvedBy, &incident.MutedAt, &incident.MutedBy,
+		&incident.MutedReason, &incident.RootCause, &incident.Resolution, &incident.Notes,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return incident, nil
+}
+
+func generateIncidentID() string {
+	now := time.Now().UTC()
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		return fmt.Sprintf("inc-%s-%d", now.Format("20060102"), now.UnixNano())
+	}
+	return fmt.Sprintf("inc-%s-%x", now.Format("20060102"), suffix)
+}
+
+func incidentOccurrenceDelta(incident *Incident) int {
+	if incident != nil && incident.AlertCount > 0 {
+		return incident.AlertCount
+	}
+	return 1
+}
+
+func normalizeIncidentDraft(incident *Incident, now time.Time) error {
+	if incident == nil {
+		return fmt.Errorf("incident is nil")
+	}
+	if strings.TrimSpace(incident.Fingerprint) == "" {
+		return fmt.Errorf("incident fingerprint is required")
+	}
+	if strings.TrimSpace(incident.ID) == "" {
+		incident.ID = generateIncidentID()
+	}
+	if incident.Status == "" {
+		incident.Status = IncidentStatusOpen
+	}
+	if incident.StartedAt.IsZero() {
+		incident.StartedAt = now
+	}
+	if incident.LastEventAt.IsZero() {
+		incident.LastEventAt = incident.StartedAt
+	}
+	return nil
+}
+
+func updateIncidentOccurrence(exec sqlExecer, incidentID string, incident *Incident, reopened bool, now time.Time, reason string) error {
+	notes := incident.Notes
+	if reopened && strings.TrimSpace(reason) != "" {
+		if notes == "" {
+			notes = reason
+		} else {
+			notes = notes + "\n" + reason
+		}
+	}
+
+	_, err := exec.Exec(`
+		UPDATE incidents SET
+			title = ?,
+			fingerprint = ?,
+			family = ?,
+			category = ?,
+			status = ?,
+			severity = ?,
+			session_names = ?,
+			agent_ids = ?,
+			alert_count = alert_count + ?,
+			first_event_cursor = COALESCE(first_event_cursor, ?),
+			last_event_cursor = CASE
+				WHEN COALESCE(?, -1) > COALESCE(last_event_cursor, -1) THEN ?
+				ELSE last_event_cursor
+			END,
+			last_event_at = ?,
+			acknowledged_at = CASE WHEN ? THEN NULL ELSE acknowledged_at END,
+			acknowledged_by = CASE WHEN ? THEN '' ELSE acknowledged_by END,
+			resolved_at = CASE WHEN ? THEN NULL ELSE resolved_at END,
+			resolved_by = CASE WHEN ? THEN '' ELSE resolved_by END,
+			muted_at = CASE WHEN ? THEN NULL ELSE muted_at END,
+			muted_by = CASE WHEN ? THEN '' ELSE muted_by END,
+			muted_reason = CASE WHEN ? THEN '' ELSE muted_reason END,
+			root_cause = CASE WHEN ? <> '' THEN ? ELSE root_cause END,
+			resolution = CASE WHEN ? THEN '' ELSE resolution END,
+			notes = CASE WHEN ? <> '' THEN ? ELSE notes END
+		WHERE id = ?`,
+		incident.Title, incident.Fingerprint, incident.Family, incident.Category, incident.Status,
+		incident.Severity, incident.SessionNames, incident.AgentIDs, incidentOccurrenceDelta(incident),
+		incident.FirstEventCursor,
+		incident.LastEventCursor, incident.LastEventCursor,
+		incident.LastEventAt,
+		reopened, reopened,
+		reopened, reopened,
+		reopened, reopened, reopened,
+		incident.RootCause, incident.RootCause,
+		reopened,
+		notes, notes,
+		incidentID,
+	)
+	if err != nil {
+		return fmt.Errorf("update incident occurrence: %w", err)
+	}
+	return nil
+}
+
+func queryIncidentByFingerprint(queryer incidentQueryer, fingerprint string) (*Incident, error) {
+	return scanIncident(queryer.QueryRow(`
+		SELECT `+incidentSelectColumns+`
+		FROM incidents
+		WHERE fingerprint = ? AND fingerprint <> ''
+		ORDER BY CASE WHEN status IN ('resolved', 'muted') THEN 1 ELSE 0 END, last_event_at DESC, started_at DESC
+		LIMIT 1`, fingerprint))
+}
+
+func queryOpenIncidentByFingerprint(queryer incidentQueryer, fingerprint string) (*Incident, error) {
+	return scanIncident(queryer.QueryRow(`
+		SELECT `+incidentSelectColumns+`
+		FROM incidents
+		WHERE fingerprint = ? AND fingerprint <> '' AND status NOT IN ('resolved', 'muted')
+		ORDER BY last_event_at DESC, started_at DESC
+		LIMIT 1`, fingerprint))
+}
+
+func queryRecentResolvedIncidentByFingerprint(queryer incidentQueryer, fingerprint string, since time.Time) (*Incident, error) {
+	return scanIncident(queryer.QueryRow(`
+		SELECT `+incidentSelectColumns+`
+		FROM incidents
+		WHERE fingerprint = ?
+			AND fingerprint <> ''
+			AND status IN ('resolved', 'muted')
+			AND datetime(COALESCE(resolved_at, muted_at)) >= datetime(?)
+		ORDER BY datetime(COALESCE(resolved_at, muted_at)) DESC, last_event_at DESC
+		LIMIT 1`, fingerprint, since))
+}
 
 // =============================================================================
 // Runtime Session Operations
@@ -718,6 +959,134 @@ func (tx *Tx) DeleteRuntimeCoordination(agentName string) error {
 }
 
 // =============================================================================
+// Runtime Handoff Operations
+// =============================================================================
+
+// UpsertRuntimeHandoff inserts or updates the latest runtime handoff projection.
+func (s *Store) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		INSERT INTO runtime_handoff (
+			id, session_name, status, goal, goal_disclosure, now_text, now_disclosure,
+			updated_at, active_beads, agent_mail_threads, blockers, blocker_disclosures,
+			files, collected_at, stale_after
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			session_name = excluded.session_name,
+			status = excluded.status,
+			goal = excluded.goal,
+			goal_disclosure = excluded.goal_disclosure,
+			now_text = excluded.now_text,
+			now_disclosure = excluded.now_disclosure,
+			updated_at = excluded.updated_at,
+			active_beads = excluded.active_beads,
+			agent_mail_threads = excluded.agent_mail_threads,
+			blockers = excluded.blockers,
+			blocker_disclosures = excluded.blocker_disclosures,
+			files = excluded.files,
+			collected_at = excluded.collected_at,
+			stale_after = excluded.stale_after`,
+		handoff.SessionName, nullableString(handoff.Status), nullableString(handoff.Goal),
+		nullableString(handoff.GoalDisclosure), nullableString(handoff.NowText),
+		nullableString(handoff.NowDisclosure), handoff.UpdatedAt,
+		nullableString(handoff.ActiveBeads), nullableString(handoff.AgentMailThreads),
+		nullableString(handoff.Blockers), nullableString(handoff.BlockerDisclosures),
+		nullableString(handoff.Files), handoff.CollectedAt, handoff.StaleAfter,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert runtime handoff: %w", err)
+	}
+	return nil
+}
+
+// GetRuntimeHandoff retrieves the latest fresh runtime handoff projection.
+func (s *Store) GetRuntimeHandoff() (*RuntimeHandoff, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	handoff := &RuntimeHandoff{}
+	err := s.db.QueryRow(`
+		SELECT session_name, COALESCE(status, ''), COALESCE(goal, ''), COALESCE(goal_disclosure, ''),
+			COALESCE(now_text, ''), COALESCE(now_disclosure, ''), updated_at,
+			COALESCE(active_beads, ''), COALESCE(agent_mail_threads, ''), COALESCE(blockers, ''),
+			COALESCE(blocker_disclosures, ''), COALESCE(files, ''), collected_at, stale_after
+		FROM runtime_handoff
+		WHERE id = 1 AND stale_after > datetime('now')`,
+	).Scan(
+		&handoff.SessionName, &handoff.Status, &handoff.Goal, &handoff.GoalDisclosure,
+		&handoff.NowText, &handoff.NowDisclosure, &handoff.UpdatedAt,
+		&handoff.ActiveBeads, &handoff.AgentMailThreads, &handoff.Blockers,
+		&handoff.BlockerDisclosures, &handoff.Files, &handoff.CollectedAt, &handoff.StaleAfter,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get runtime handoff: %w", err)
+	}
+	return handoff, nil
+}
+
+// DeleteRuntimeHandoff removes the latest runtime handoff projection.
+func (s *Store) DeleteRuntimeHandoff() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM runtime_handoff WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("delete runtime handoff: %w", err)
+	}
+	return nil
+}
+
+// UpsertRuntimeHandoff inserts or updates the latest runtime handoff projection in an existing transaction.
+func (tx *Tx) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
+	_, err := tx.tx.Exec(`
+		INSERT INTO runtime_handoff (
+			id, session_name, status, goal, goal_disclosure, now_text, now_disclosure,
+			updated_at, active_beads, agent_mail_threads, blockers, blocker_disclosures,
+			files, collected_at, stale_after
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			session_name = excluded.session_name,
+			status = excluded.status,
+			goal = excluded.goal,
+			goal_disclosure = excluded.goal_disclosure,
+			now_text = excluded.now_text,
+			now_disclosure = excluded.now_disclosure,
+			updated_at = excluded.updated_at,
+			active_beads = excluded.active_beads,
+			agent_mail_threads = excluded.agent_mail_threads,
+			blockers = excluded.blockers,
+			blocker_disclosures = excluded.blocker_disclosures,
+			files = excluded.files,
+			collected_at = excluded.collected_at,
+			stale_after = excluded.stale_after`,
+		handoff.SessionName, nullableString(handoff.Status), nullableString(handoff.Goal),
+		nullableString(handoff.GoalDisclosure), nullableString(handoff.NowText),
+		nullableString(handoff.NowDisclosure), handoff.UpdatedAt,
+		nullableString(handoff.ActiveBeads), nullableString(handoff.AgentMailThreads),
+		nullableString(handoff.Blockers), nullableString(handoff.BlockerDisclosures),
+		nullableString(handoff.Files), handoff.CollectedAt, handoff.StaleAfter,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert runtime handoff: %w", err)
+	}
+	return nil
+}
+
+// DeleteRuntimeHandoff removes the latest runtime handoff projection in an existing transaction.
+func (tx *Tx) DeleteRuntimeHandoff() error {
+	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("delete runtime handoff: %w", err)
+	}
+	return nil
+}
+
+// =============================================================================
 // Runtime Quota Operations
 // =============================================================================
 
@@ -728,19 +1097,21 @@ func (s *Store) UpsertRuntimeQuota(quota *RuntimeQuota) error {
 
 	_, err := s.db.Exec(`
 		INSERT INTO runtime_quota (
-			provider, account, limit_hit, used_pct, resets_at, is_active,
+			provider, account, limit_hit, used_pct, used_pct_known, used_pct_source, resets_at, is_active,
 			healthy, health_reason, collected_at, stale_after
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, account) DO UPDATE SET
 			limit_hit = excluded.limit_hit,
 			used_pct = excluded.used_pct,
+			used_pct_known = excluded.used_pct_known,
+			used_pct_source = excluded.used_pct_source,
 			resets_at = excluded.resets_at,
 			is_active = excluded.is_active,
 			healthy = excluded.healthy,
 			health_reason = excluded.health_reason,
 			collected_at = excluded.collected_at,
 			stale_after = excluded.stale_after`,
-		quota.Provider, quota.Account, quota.LimitHit, quota.UsedPct, quota.ResetsAt,
+		quota.Provider, quota.Account, quota.LimitHit, quota.UsedPct, quota.UsedPctKnown, quota.UsedPctSource, quota.ResetsAt,
 		quota.IsActive, quota.Healthy, nullableString(quota.HealthReason),
 		quota.CollectedAt, quota.StaleAfter,
 	)
@@ -756,14 +1127,14 @@ func (s *Store) GetRuntimeQuota(provider, account string) (*RuntimeQuota, error)
 	defer s.mu.RUnlock()
 
 	quota := &RuntimeQuota{}
-	var limitHit, isActive, healthy int
+	var limitHit, usedPctKnown, isActive, healthy int
 	err := s.db.QueryRow(`
-		SELECT provider, account, limit_hit, used_pct, resets_at, is_active,
+		SELECT provider, account, limit_hit, used_pct, used_pct_known, COALESCE(used_pct_source, 'unknown'), resets_at, is_active,
 			healthy, COALESCE(health_reason, ''), collected_at, stale_after
 		FROM runtime_quota
 		WHERE provider = ? AND account = ?`, provider, account,
 	).Scan(
-		&quota.Provider, &quota.Account, &limitHit, &quota.UsedPct, &quota.ResetsAt,
+		&quota.Provider, &quota.Account, &limitHit, &quota.UsedPct, &usedPctKnown, &quota.UsedPctSource, &quota.ResetsAt,
 		&isActive, &healthy, &quota.HealthReason, &quota.CollectedAt, &quota.StaleAfter,
 	)
 	if err == sql.ErrNoRows {
@@ -773,6 +1144,7 @@ func (s *Store) GetRuntimeQuota(provider, account string) (*RuntimeQuota, error)
 		return nil, fmt.Errorf("get runtime quota: %w", err)
 	}
 	quota.LimitHit = limitHit == 1
+	quota.UsedPctKnown = usedPctKnown == 1
 	quota.IsActive = isActive == 1
 	quota.Healthy = healthy == 1
 	return quota, nil
@@ -784,7 +1156,7 @@ func (s *Store) ListFreshRuntimeQuota(provider string) ([]RuntimeQuota, error) {
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT provider, account, limit_hit, used_pct, resets_at, is_active,
+		SELECT provider, account, limit_hit, used_pct, used_pct_known, COALESCE(used_pct_source, 'unknown'), resets_at, is_active,
 			healthy, COALESCE(health_reason, ''), collected_at, stale_after
 		FROM runtime_quota
 		WHERE stale_after > datetime('now')`
@@ -793,7 +1165,7 @@ func (s *Store) ListFreshRuntimeQuota(provider string) ([]RuntimeQuota, error) {
 		query += ` AND provider = ?`
 		args = append(args, provider)
 	}
-	query += ` ORDER BY is_active DESC, used_pct DESC, provider ASC, account ASC`
+	query += ` ORDER BY is_active DESC, limit_hit DESC, used_pct DESC, provider ASC, account ASC`
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -804,14 +1176,15 @@ func (s *Store) ListFreshRuntimeQuota(provider string) ([]RuntimeQuota, error) {
 	var items []RuntimeQuota
 	for rows.Next() {
 		var quota RuntimeQuota
-		var limitHit, isActive, healthy int
+		var limitHit, usedPctKnown, isActive, healthy int
 		if err := rows.Scan(
-			&quota.Provider, &quota.Account, &limitHit, &quota.UsedPct, &quota.ResetsAt,
+			&quota.Provider, &quota.Account, &limitHit, &quota.UsedPct, &usedPctKnown, &quota.UsedPctSource, &quota.ResetsAt,
 			&isActive, &healthy, &quota.HealthReason, &quota.CollectedAt, &quota.StaleAfter,
 		); err != nil {
 			return nil, fmt.Errorf("scan runtime quota: %w", err)
 		}
 		quota.LimitHit = limitHit == 1
+		quota.UsedPctKnown = usedPctKnown == 1
 		quota.IsActive = isActive == 1
 		quota.Healthy = healthy == 1
 		items = append(items, quota)
@@ -835,19 +1208,21 @@ func (s *Store) DeleteRuntimeQuota(provider, account string) error {
 func (tx *Tx) UpsertRuntimeQuota(quota *RuntimeQuota) error {
 	_, err := tx.tx.Exec(`
 		INSERT INTO runtime_quota (
-			provider, account, limit_hit, used_pct, resets_at, is_active,
+			provider, account, limit_hit, used_pct, used_pct_known, used_pct_source, resets_at, is_active,
 			healthy, health_reason, collected_at, stale_after
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, account) DO UPDATE SET
 			limit_hit = excluded.limit_hit,
 			used_pct = excluded.used_pct,
+			used_pct_known = excluded.used_pct_known,
+			used_pct_source = excluded.used_pct_source,
 			resets_at = excluded.resets_at,
 			is_active = excluded.is_active,
 			healthy = excluded.healthy,
 			health_reason = excluded.health_reason,
 			collected_at = excluded.collected_at,
 			stale_after = excluded.stale_after`,
-		quota.Provider, quota.Account, quota.LimitHit, quota.UsedPct, quota.ResetsAt,
+		quota.Provider, quota.Account, quota.LimitHit, quota.UsedPct, quota.UsedPctKnown, quota.UsedPctSource, quota.ResetsAt,
 		quota.IsActive, quota.Healthy, nullableString(quota.HealthReason),
 		quota.CollectedAt, quota.StaleAfter,
 	)
@@ -864,6 +1239,62 @@ func (tx *Tx) DeleteRuntimeQuota(provider, account string) error {
 		return fmt.Errorf("delete runtime quota: %w", err)
 	}
 	return nil
+}
+
+// GCStaleRuntimeData prunes snapshot-style rows after they have remained stale for a grace window.
+func (s *Store) GCStaleRuntimeData(cfg RuntimeGCConfig) (RuntimeGCResult, error) {
+	cfg = normalizeRuntimeGCConfig(cfg)
+	projectionCutoff := time.Now().UTC().Add(-cfg.ProjectionGracePeriod)
+	sourceHealthCutoff := time.Now().UTC().Add(-cfg.SourceHealthRetention)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var result RuntimeGCResult
+	var err error
+	if result.StaleHandoff, err = execRowsAffected(s.db, `DELETE FROM runtime_handoff WHERE stale_after < ?`, "gc stale runtime handoff", projectionCutoff); err != nil {
+		return result, err
+	}
+	if result.StaleCoordination, err = execRowsAffected(s.db, `DELETE FROM runtime_coordination WHERE stale_after < ?`, "gc stale runtime coordination", projectionCutoff); err != nil {
+		return result, err
+	}
+	if result.StaleWork, err = execRowsAffected(s.db, `DELETE FROM runtime_work WHERE stale_after < ?`, "gc stale runtime work", projectionCutoff); err != nil {
+		return result, err
+	}
+	if result.StaleQuota, err = execRowsAffected(s.db, `DELETE FROM runtime_quota WHERE stale_after < ?`, "gc stale runtime quota", projectionCutoff); err != nil {
+		return result, err
+	}
+	if result.StaleAgents, err = execRowsAffected(s.db, `DELETE FROM runtime_agents WHERE stale_after < ?`, "gc stale runtime agents", projectionCutoff); err != nil {
+		return result, err
+	}
+	if result.StaleSessions, err = execRowsAffected(s.db, `DELETE FROM runtime_sessions WHERE stale_after < ?`, "gc stale runtime sessions", projectionCutoff); err != nil {
+		return result, err
+	}
+	if result.StaleSourceHealth, err = execRowsAffected(s.db, `DELETE FROM source_health WHERE last_check_at < ?`, "gc stale source health", sourceHealthCutoff); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// RunGC performs the bounded runtime cleanup pass used by periodic maintenance loops.
+func (s *Store) RunGC(cfg RuntimeGCConfig) (RuntimeGCResult, error) {
+	result, err := s.GCStaleRuntimeData(cfg)
+	if err != nil {
+		return result, err
+	}
+	if result.ExpiredIncidents, err = s.GCResolvedIncidents(cfg.ResolvedIncidentRetention); err != nil {
+		return result, err
+	}
+	if result.ExpiredAttentionEvents, err = s.GCExpiredEvents(); err != nil {
+		return result, err
+	}
+	if result.ExpiredAuditEvents, err = s.GCExpiredAuditEvents(); err != nil {
+		return result, err
+	}
+	if result.ExpiredAuditDecisions, err = s.GCExpiredAuditDecisions(); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // =============================================================================
@@ -1160,6 +1591,315 @@ func (s *Store) GetAttentionEventsSince(sinceCursor int64, limit int) ([]StoredA
 	return events, rows.Err()
 }
 
+func attentionItemKeyForEvent(dedupKey string, cursor int64) string {
+	if key := strings.TrimSpace(dedupKey); key != "" {
+		return "dedup:" + key
+	}
+	return fmt.Sprintf("cursor:%d", cursor)
+}
+
+func nullableTimePtr(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	ts := value.Time.UTC()
+	return &ts
+}
+
+func scanAttentionItemState(scanner interface {
+	Scan(dest ...interface{}) error
+}) (*AttentionItemState, error) {
+	state := &AttentionItemState{}
+	var (
+		acknowledgedAt  sql.NullTime
+		snoozedUntil    sql.NullTime
+		dismissedAt     sql.NullTime
+		pinnedAt        sql.NullTime
+		mutedAt         sql.NullTime
+		overrideExpires sql.NullTime
+		createdAt       sql.NullTime
+		updatedAt       sql.NullTime
+		pinned          int
+		muted           int
+	)
+	err := scanner.Scan(
+		&state.ItemKey,
+		&state.DedupKey,
+		&state.State,
+		&state.Fingerprint,
+		&acknowledgedAt,
+		&state.AcknowledgedBy,
+		&snoozedUntil,
+		&dismissedAt,
+		&state.DismissedBy,
+		&pinned,
+		&pinnedAt,
+		&state.PinnedBy,
+		&muted,
+		&mutedAt,
+		&state.MutedBy,
+		&state.OverridePriority,
+		&state.OverrideReason,
+		&overrideExpires,
+		&state.ResurfacingPolicy,
+		&createdAt,
+		&updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	state.AcknowledgedAt = nullableTimePtr(acknowledgedAt)
+	state.SnoozedUntil = nullableTimePtr(snoozedUntil)
+	state.DismissedAt = nullableTimePtr(dismissedAt)
+	state.Pinned = pinned == 1
+	state.PinnedAt = nullableTimePtr(pinnedAt)
+	state.Muted = muted == 1
+	state.MutedAt = nullableTimePtr(mutedAt)
+	state.OverrideExpiresAt = nullableTimePtr(overrideExpires)
+	if createdAt.Valid {
+		state.CreatedAt = createdAt.Time.UTC()
+	}
+	if updatedAt.Valid {
+		state.UpdatedAt = updatedAt.Time.UTC()
+	}
+	return state, nil
+}
+
+func normalizeAttentionItemStateDraft(item *AttentionItemState, now time.Time) error {
+	if item == nil {
+		return fmt.Errorf("attention item state is nil")
+	}
+	item.ItemKey = strings.TrimSpace(item.ItemKey)
+	item.DedupKey = strings.TrimSpace(item.DedupKey)
+	item.Fingerprint = strings.TrimSpace(item.Fingerprint)
+	if item.ItemKey == "" {
+		return fmt.Errorf("attention item key is required")
+	}
+	if item.State == "" {
+		item.State = AttentionStateNew
+	}
+	if item.ResurfacingPolicy == "" {
+		item.ResurfacingPolicy = "on_change"
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	return nil
+}
+
+func upsertAttentionItemStateExec(exec sqlExecer, item *AttentionItemState, now time.Time) error {
+	if err := normalizeAttentionItemStateDraft(item, now); err != nil {
+		return err
+	}
+
+	_, err := exec.Exec(`
+		INSERT INTO attention_item_states (
+			item_key, dedup_key, state, fingerprint, acknowledged_at, acknowledged_by,
+			snoozed_until, dismissed_at, dismissed_by,
+			pinned, pinned_at, pinned_by,
+			muted, muted_at, muted_by,
+			override_priority, override_reason, override_expires_at,
+			resurfacing_policy, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(item_key) DO UPDATE SET
+			dedup_key = excluded.dedup_key,
+			state = excluded.state,
+			fingerprint = excluded.fingerprint,
+			acknowledged_at = excluded.acknowledged_at,
+			acknowledged_by = excluded.acknowledged_by,
+			snoozed_until = excluded.snoozed_until,
+			dismissed_at = excluded.dismissed_at,
+			dismissed_by = excluded.dismissed_by,
+			pinned = excluded.pinned,
+			pinned_at = excluded.pinned_at,
+			pinned_by = excluded.pinned_by,
+			muted = excluded.muted,
+			muted_at = excluded.muted_at,
+			muted_by = excluded.muted_by,
+			override_priority = excluded.override_priority,
+			override_reason = excluded.override_reason,
+			override_expires_at = excluded.override_expires_at,
+			resurfacing_policy = excluded.resurfacing_policy,
+			updated_at = excluded.updated_at`,
+		item.ItemKey, item.DedupKey, item.State, item.Fingerprint, item.AcknowledgedAt, item.AcknowledgedBy,
+		item.SnoozedUntil, item.DismissedAt, item.DismissedBy,
+		boolToInt(item.Pinned), item.PinnedAt, item.PinnedBy,
+		boolToInt(item.Muted), item.MutedAt, item.MutedBy,
+		item.OverridePriority, item.OverrideReason, item.OverrideExpiresAt,
+		item.ResurfacingPolicy, item.CreatedAt, item.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert attention item state %q: %w", item.ItemKey, err)
+	}
+	return nil
+}
+
+// ResolveAttentionItemKey returns the stable operator-state key for an attention cursor.
+// Recurring items use their durable dedup key; one-off items fall back to a cursor key.
+func (s *Store) ResolveAttentionItemKey(cursor int64) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var dedupKey string
+	err := s.db.QueryRow(`SELECT COALESCE(dedup_key, '') FROM attention_events WHERE cursor = ?`, cursor).Scan(&dedupKey)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve attention item key for cursor %d: %w", cursor, err)
+	}
+	return attentionItemKeyForEvent(dedupKey, cursor), nil
+}
+
+// GetAttentionItemState returns durable operator state for a stable attention item key.
+func (s *Store) GetAttentionItemState(itemKey string) (*AttentionItemState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	itemKey = strings.TrimSpace(itemKey)
+	if itemKey == "" {
+		return nil, nil
+	}
+	state, err := scanAttentionItemState(s.db.QueryRow(`
+		SELECT item_key, COALESCE(dedup_key, ''), state, COALESCE(fingerprint, ''),
+			acknowledged_at, COALESCE(acknowledged_by, ''),
+			snoozed_until, dismissed_at, COALESCE(dismissed_by, ''),
+			pinned, pinned_at, COALESCE(pinned_by, ''),
+			muted, muted_at, COALESCE(muted_by, ''),
+			COALESCE(override_priority, ''), COALESCE(override_reason, ''), override_expires_at,
+			COALESCE(resurfacing_policy, ''), created_at, updated_at
+		FROM attention_item_states
+		WHERE item_key = ?`, itemKey))
+	if err != nil {
+		return nil, fmt.Errorf("get attention item state %q: %w", itemKey, err)
+	}
+	return state, nil
+}
+
+// GetAttentionItemStateByCursor resolves and returns the durable operator state for an attention cursor.
+func (s *Store) GetAttentionItemStateByCursor(cursor int64) (*AttentionItemState, error) {
+	itemKey, err := s.ResolveAttentionItemKey(cursor)
+	if err != nil || itemKey == "" {
+		return nil, err
+	}
+	return s.GetAttentionItemState(itemKey)
+}
+
+// GetAttentionItemStatesForCursors loads durable operator state for a batch of attention cursors.
+func (s *Store) GetAttentionItemStatesForCursors(cursors []int64) (map[int64]AttentionItemState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(cursors) == 0 {
+		return map[int64]AttentionItemState{}, nil
+	}
+
+	placeholders := make([]string, 0, len(cursors))
+	args := make([]any, 0, len(cursors))
+	for _, cursor := range cursors {
+		placeholders = append(placeholders, "?")
+		args = append(args, cursor)
+	}
+
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT e.cursor,
+			s.item_key, COALESCE(s.dedup_key, ''), s.state, COALESCE(s.fingerprint, ''),
+			s.acknowledged_at, COALESCE(s.acknowledged_by, ''),
+			s.snoozed_until, s.dismissed_at, COALESCE(s.dismissed_by, ''),
+			s.pinned, s.pinned_at, COALESCE(s.pinned_by, ''),
+			s.muted, s.muted_at, COALESCE(s.muted_by, ''),
+			COALESCE(s.override_priority, ''), COALESCE(s.override_reason, ''), s.override_expires_at,
+			COALESCE(s.resurfacing_policy, ''), s.created_at, s.updated_at
+		FROM attention_events e
+		JOIN attention_item_states s
+			ON s.item_key = CASE
+				WHEN COALESCE(e.dedup_key, '') <> '' THEN 'dedup:' || e.dedup_key
+				ELSE 'cursor:' || CAST(e.cursor AS TEXT)
+			END
+		WHERE e.cursor IN (%s)`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get attention item states for cursors: %w", err)
+	}
+	defer rows.Close()
+
+	results := make(map[int64]AttentionItemState)
+	for rows.Next() {
+		var cursor int64
+		var (
+			acknowledgedAt  sql.NullTime
+			snoozedUntil    sql.NullTime
+			dismissedAt     sql.NullTime
+			pinnedAt        sql.NullTime
+			mutedAt         sql.NullTime
+			overrideExpires sql.NullTime
+			createdAt       sql.NullTime
+			updatedAt       sql.NullTime
+			pinned          int
+			muted           int
+			state           AttentionItemState
+		)
+		if err := rows.Scan(
+			&cursor,
+			&state.ItemKey,
+			&state.DedupKey,
+			&state.State,
+			&state.Fingerprint,
+			&acknowledgedAt,
+			&state.AcknowledgedBy,
+			&snoozedUntil,
+			&dismissedAt,
+			&state.DismissedBy,
+			&pinned,
+			&pinnedAt,
+			&state.PinnedBy,
+			&muted,
+			&mutedAt,
+			&state.MutedBy,
+			&state.OverridePriority,
+			&state.OverrideReason,
+			&overrideExpires,
+			&state.ResurfacingPolicy,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan attention item state for cursor: %w", err)
+		}
+		state.AcknowledgedAt = nullableTimePtr(acknowledgedAt)
+		state.SnoozedUntil = nullableTimePtr(snoozedUntil)
+		state.DismissedAt = nullableTimePtr(dismissedAt)
+		state.Pinned = pinned == 1
+		state.PinnedAt = nullableTimePtr(pinnedAt)
+		state.Muted = muted == 1
+		state.MutedAt = nullableTimePtr(mutedAt)
+		state.OverrideExpiresAt = nullableTimePtr(overrideExpires)
+		if createdAt.Valid {
+			state.CreatedAt = createdAt.Time.UTC()
+		}
+		if updatedAt.Valid {
+			state.UpdatedAt = updatedAt.Time.UTC()
+		}
+		results[cursor] = state
+	}
+	return results, rows.Err()
+}
+
+// UpsertAttentionItemState creates or updates durable operator state for an attention item.
+func (s *Store) UpsertAttentionItemState(item *AttentionItemState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return upsertAttentionItemStateExec(s.db, item, time.Now().UTC())
+}
+
+// UpsertAttentionItemState creates or updates durable operator state within an existing transaction.
+func (tx *Tx) UpsertAttentionItemState(item *AttentionItemState) error {
+	return upsertAttentionItemStateExec(tx.tx, item, time.Now().UTC())
+}
+
 // GetAttentionReplayWindow returns the currently replayable attention-event range.
 func (s *Store) GetAttentionReplayWindow() (AttentionReplayWindow, error) {
 	s.mu.RLock()
@@ -1225,13 +1965,13 @@ func (s *Store) CreateIncident(incident *Incident) error {
 
 	_, err := s.db.Exec(`
 		INSERT INTO incidents (
-			id, title, status, severity, session_names, agent_ids,
+			id, title, fingerprint, family, category, status, severity, session_names, agent_ids,
 			alert_count, event_count, first_event_cursor, last_event_cursor,
 			started_at, last_event_at, acknowledged_at, acknowledged_by,
 			resolved_at, resolved_by, muted_at, muted_by, muted_reason,
 			root_cause, resolution, notes
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		incident.ID, incident.Title, incident.Status, incident.Severity,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		incident.ID, incident.Title, incident.Fingerprint, incident.Family, incident.Category, incident.Status, incident.Severity,
 		incident.SessionNames, incident.AgentIDs, incident.AlertCount,
 		incident.EventCount, incident.FirstEventCursor, incident.LastEventCursor,
 		incident.StartedAt, incident.LastEventAt, incident.AcknowledgedAt,
@@ -1249,13 +1989,13 @@ func (s *Store) CreateIncident(incident *Incident) error {
 func (tx *Tx) CreateIncident(incident *Incident) error {
 	_, err := tx.tx.Exec(`
 		INSERT INTO incidents (
-			id, title, status, severity, session_names, agent_ids,
+			id, title, fingerprint, family, category, status, severity, session_names, agent_ids,
 			alert_count, event_count, first_event_cursor, last_event_cursor,
 			started_at, last_event_at, acknowledged_at, acknowledged_by,
 			resolved_at, resolved_by, muted_at, muted_by, muted_reason,
 			root_cause, resolution, notes
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		incident.ID, incident.Title, incident.Status, incident.Severity,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		incident.ID, incident.Title, incident.Fingerprint, incident.Family, incident.Category, incident.Status, incident.Severity,
 		incident.SessionNames, incident.AgentIDs, incident.AlertCount,
 		incident.EventCount, incident.FirstEventCursor, incident.LastEventCursor,
 		incident.StartedAt, incident.LastEventAt, incident.AcknowledgedAt,
@@ -1274,31 +2014,23 @@ func (s *Store) GetIncident(id string) (*Incident, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	incident := &Incident{}
-	err := s.db.QueryRow(`
-		SELECT id, title, status, severity, COALESCE(session_names, ''),
-			COALESCE(agent_ids, ''), alert_count, event_count,
-			first_event_cursor, last_event_cursor, started_at, last_event_at,
-			acknowledged_at, COALESCE(acknowledged_by, ''), resolved_at,
-			COALESCE(resolved_by, ''), muted_at, COALESCE(muted_by, ''),
-			COALESCE(muted_reason, ''), COALESCE(root_cause, ''),
-			COALESCE(resolution, ''), COALESCE(notes, '')
-		FROM incidents WHERE id = ?`, id,
-	).Scan(
-		&incident.ID, &incident.Title, &incident.Status, &incident.Severity,
-		&incident.SessionNames, &incident.AgentIDs, &incident.AlertCount,
-		&incident.EventCount, &incident.FirstEventCursor, &incident.LastEventCursor,
-		&incident.StartedAt, &incident.LastEventAt, &incident.AcknowledgedAt,
-		&incident.AcknowledgedBy, &incident.ResolvedAt, &incident.ResolvedBy,
-		&incident.MutedAt, &incident.MutedBy, &incident.MutedReason,
-		&incident.RootCause, &incident.Resolution, &incident.Notes,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	incident, err := scanIncident(s.db.QueryRow(`
+		SELECT `+incidentSelectColumns+`
+		FROM incidents WHERE id = ?`, id))
 	if err != nil {
 		return nil, fmt.Errorf("get incident: %w", err)
+	}
+	return incident, nil
+}
+
+// GetIncidentByFingerprint returns the newest incident for a fingerprint, preferring active ones.
+func (s *Store) GetIncidentByFingerprint(fingerprint string) (*Incident, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	incident, err := queryIncidentByFingerprint(s.db, fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("get incident by fingerprint: %w", err)
 	}
 	return incident, nil
 }
@@ -1309,13 +2041,7 @@ func (s *Store) ListOpenIncidents() ([]Incident, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT id, title, status, severity, COALESCE(session_names, ''),
-			COALESCE(agent_ids, ''), alert_count, event_count,
-			first_event_cursor, last_event_cursor, started_at, last_event_at,
-			acknowledged_at, COALESCE(acknowledged_by, ''), resolved_at,
-			COALESCE(resolved_by, ''), muted_at, COALESCE(muted_by, ''),
-			COALESCE(muted_reason, ''), COALESCE(root_cause, ''),
-			COALESCE(resolution, ''), COALESCE(notes, '')
+		SELECT ` + incidentSelectColumns + `
 		FROM incidents
 		WHERE status NOT IN ('resolved', 'muted')
 		ORDER BY started_at DESC`)
@@ -1326,21 +2052,88 @@ func (s *Store) ListOpenIncidents() ([]Incident, error) {
 
 	var incidents []Incident
 	for rows.Next() {
-		var incident Incident
-		if err := rows.Scan(
-			&incident.ID, &incident.Title, &incident.Status, &incident.Severity,
-			&incident.SessionNames, &incident.AgentIDs, &incident.AlertCount,
-			&incident.EventCount, &incident.FirstEventCursor, &incident.LastEventCursor,
-			&incident.StartedAt, &incident.LastEventAt, &incident.AcknowledgedAt,
-			&incident.AcknowledgedBy, &incident.ResolvedAt, &incident.ResolvedBy,
-			&incident.MutedAt, &incident.MutedBy, &incident.MutedReason,
-			&incident.RootCause, &incident.Resolution, &incident.Notes,
-		); err != nil {
+		incident, err := scanIncident(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan incident: %w", err)
 		}
-		incidents = append(incidents, incident)
+		incidents = append(incidents, *incident)
 	}
 	return incidents, rows.Err()
+}
+
+func (s *Store) getRecentResolvedIncidentByFingerprint(fingerprint string, within time.Duration) (*Incident, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if within <= 0 {
+		within = DefaultIncidentReopenWindow
+	}
+	incident, err := queryRecentResolvedIncidentByFingerprint(s.db, fingerprint, time.Now().UTC().Add(-within))
+	if err != nil {
+		return nil, fmt.Errorf("get recent resolved incident by fingerprint: %w", err)
+	}
+	return incident, nil
+}
+
+// CreateOrUpdateIncident deduplicates durable incidents by stable fingerprint.
+func (s *Store) CreateOrUpdateIncident(incident *Incident) (*Incident, error) {
+	now := time.Now().UTC()
+	draft := *incident
+	if err := normalizeIncidentDraft(&draft, now); err != nil {
+		return nil, err
+	}
+	if draft.AlertCount <= 0 {
+		draft.AlertCount = 1
+	}
+
+	var out *Incident
+	err := s.Transaction(func(tx *Tx) error {
+		existing, err := queryOpenIncidentByFingerprint(tx.tx, draft.Fingerprint)
+		if err != nil {
+			return fmt.Errorf("lookup open incident by fingerprint: %w", err)
+		}
+		if existing != nil {
+			draft.ID = existing.ID
+			draft.Status = existing.Status
+			if draft.Status == "" {
+				draft.Status = IncidentStatusOpen
+			}
+			if err := updateIncidentOccurrence(tx.tx, existing.ID, &draft, false, now, ""); err != nil {
+				return err
+			}
+			out, err = scanIncident(tx.tx.QueryRow(`
+				SELECT `+incidentSelectColumns+`
+				FROM incidents WHERE id = ?`, existing.ID))
+			return err
+		}
+
+		reopenable, err := queryRecentResolvedIncidentByFingerprint(tx.tx, draft.Fingerprint, now.Add(-DefaultIncidentReopenWindow))
+		if err != nil {
+			return fmt.Errorf("lookup reopenable incident by fingerprint: %w", err)
+		}
+		if reopenable != nil {
+			draft.ID = reopenable.ID
+			draft.Status = IncidentStatusOpen
+			reopenReason := fmt.Sprintf("reopened by fingerprint recurrence at %s", now.Format(time.RFC3339))
+			if err := updateIncidentOccurrence(tx.tx, reopenable.ID, &draft, true, now, reopenReason); err != nil {
+				return err
+			}
+			out, err = scanIncident(tx.tx.QueryRow(`
+				SELECT `+incidentSelectColumns+`
+				FROM incidents WHERE id = ?`, reopenable.ID))
+			return err
+		}
+
+		if err := tx.CreateIncident(&draft); err != nil {
+			return err
+		}
+		out = &draft
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create or update incident: %w", err)
+	}
+	return out, nil
 }
 
 // UpdateIncidentStatus updates an incident's status and related fields.
@@ -1371,6 +2164,66 @@ func (s *Store) UpdateIncidentStatus(id string, status IncidentStatus, by string
 	return nil
 }
 
+// ReopenIncident reactivates a resolved or muted incident while preserving history.
+func (s *Store) ReopenIncident(id string, by string, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	result, err := s.db.Exec(`
+		UPDATE incidents SET
+			status = ?,
+			last_event_at = ?,
+			acknowledged_at = NULL,
+			acknowledged_by = '',
+			resolved_at = NULL,
+			resolved_by = '',
+			muted_at = NULL,
+			muted_by = '',
+			muted_reason = '',
+			resolution = '',
+			notes = CASE
+				WHEN ? = '' THEN notes
+				WHEN COALESCE(notes, '') = '' THEN ?
+				ELSE notes || char(10) || ?
+			END
+		WHERE id = ? AND status IN ('resolved', 'muted')`,
+		IncidentStatusOpen, now,
+		reason, reason, reason,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("reopen incident: %w", err)
+	}
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("reopen incident rows affected: %w", rowsErr)
+	}
+	if rows == 0 {
+		return fmt.Errorf("reopen incident: incident %s is not resolved or muted", id)
+	}
+	return nil
+}
+
+// GCResolvedIncidents prunes resolved or muted incidents beyond the bounded retention window.
+func (s *Store) GCResolvedIncidents(retention time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if retention <= 0 {
+		retention = DefaultResolvedIncidentRetention
+	}
+	cutoff := time.Now().UTC().Add(-retention)
+	return execRowsAffected(
+		s.db,
+		`DELETE FROM incidents
+		WHERE status IN ('resolved', 'muted')
+			AND datetime(COALESCE(resolved_at, muted_at)) < datetime(?)`,
+		"gc resolved incidents",
+		cutoff,
+	)
+}
+
 // LinkEventToIncident associates an attention event with an incident.
 func (s *Store) LinkEventToIncident(incidentID string, eventCursor int64) error {
 	s.mu.Lock()
@@ -1388,9 +2241,13 @@ func (s *Store) LinkEventToIncident(incidentID string, eventCursor int64) error 
 	_, err = s.db.Exec(`
 		UPDATE incidents SET
 			event_count = (SELECT COUNT(*) FROM incident_events WHERE incident_id = ?),
-			last_event_cursor = ?,
+			first_event_cursor = COALESCE(first_event_cursor, ?),
+			last_event_cursor = CASE
+				WHEN COALESCE(?, -1) > COALESCE(last_event_cursor, -1) THEN ?
+				ELSE last_event_cursor
+			END,
 			last_event_at = datetime('now')
-		WHERE id = ?`, incidentID, eventCursor, incidentID)
+		WHERE id = ?`, incidentID, eventCursor, eventCursor, eventCursor, incidentID)
 	if err != nil {
 		return fmt.Errorf("update incident counters: %w", err)
 	}
@@ -1409,9 +2266,13 @@ func (tx *Tx) LinkEventToIncident(incidentID string, eventCursor int64) error {
 	_, err = tx.tx.Exec(`
 		UPDATE incidents SET
 			event_count = (SELECT COUNT(*) FROM incident_events WHERE incident_id = ?),
-			last_event_cursor = ?,
+			first_event_cursor = COALESCE(first_event_cursor, ?),
+			last_event_cursor = CASE
+				WHEN COALESCE(?, -1) > COALESCE(last_event_cursor, -1) THEN ?
+				ELSE last_event_cursor
+			END,
 			last_event_at = datetime('now')
-		WHERE id = ?`, incidentID, eventCursor, incidentID)
+		WHERE id = ?`, incidentID, eventCursor, eventCursor, eventCursor, incidentID)
 	if err != nil {
 		return fmt.Errorf("update incident counters: %w", err)
 	}
@@ -1595,6 +2456,33 @@ func upsertAuditActorTx(tx *sql.Tx, event *AuditEvent, now time.Time) error {
 	return nil
 }
 
+func recordAuditEventTx(tx *sql.Tx, event *AuditEvent, now time.Time) (int64, error) {
+	result, err := tx.Exec(`
+		INSERT INTO audit_events (
+			ts, actor_type, actor_id, actor_origin, request_id, correlation_id,
+			category, event_type, severity, entity_type, entity_id,
+			previous_state, new_state, change_summary, reason, evidence,
+			disclosure_state, retention_class, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.Ts, event.ActorType, event.ActorID, event.ActorOrigin,
+		event.RequestID, event.CorrelationID, event.Category, event.EventType,
+		event.Severity, event.EntityType, event.EntityID, event.PreviousState,
+		event.NewState, event.ChangeSummary, event.Reason, event.Evidence,
+		event.DisclosureState, event.RetentionClass, event.ExpiresAt,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("record audit event: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("get audit event id: %w", err)
+	}
+	if err := upsertAuditActorTx(tx, event, now); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // RecordAuditEvent inserts an audit event and returns its ID.
 func (s *Store) RecordAuditEvent(event *AuditEvent) (int64, error) {
 	s.mu.Lock()
@@ -1622,28 +2510,8 @@ func (s *Store) RecordAuditEvent(event *AuditEvent) (int64, error) {
 		}
 	}()
 
-	result, err := tx.Exec(`
-		INSERT INTO audit_events (
-			ts, actor_type, actor_id, actor_origin, request_id, correlation_id,
-			category, event_type, severity, entity_type, entity_id,
-			previous_state, new_state, change_summary, reason, evidence,
-			disclosure_state, retention_class, expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.Ts, event.ActorType, event.ActorID, event.ActorOrigin,
-		event.RequestID, event.CorrelationID, event.Category, event.EventType,
-		event.Severity, event.EntityType, event.EntityID, event.PreviousState,
-		event.NewState, event.ChangeSummary, event.Reason, event.Evidence,
-		event.DisclosureState, event.RetentionClass, event.ExpiresAt,
-	)
+	id, err := recordAuditEventTx(tx, event, now)
 	if err != nil {
-		return 0, fmt.Errorf("record audit event: %w", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get audit event id: %w", err)
-	}
-
-	if err := upsertAuditActorTx(tx, event, now); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1652,6 +2520,21 @@ func (s *Store) RecordAuditEvent(event *AuditEvent) (int64, error) {
 	committed = true
 
 	return id, nil
+}
+
+// RecordAuditEvent inserts an audit event within an existing transaction.
+func (tx *Tx) RecordAuditEvent(event *AuditEvent) (int64, error) {
+	now := time.Now().UTC()
+	if event.Ts.IsZero() {
+		event.Ts = now
+	}
+	if event.RetentionClass == "" {
+		event.RetentionClass = RetentionClassStandard
+	}
+	if event.ExpiresAt == nil {
+		event.ExpiresAt = defaultAuditExpiry(event.RetentionClass, now)
+	}
+	return recordAuditEventTx(tx.tx, event, now)
 }
 
 // UpsertAuditActor records display metadata for a known actor.
@@ -1794,10 +2677,7 @@ func (s *Store) GetAuditHistory(entityType, entityID string, limit int) ([]Audit
 }
 
 // RecordAuditDecision inserts a compact decision-history record.
-func (s *Store) RecordAuditDecision(decision *AuditDecision) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func recordAuditDecisionExec(exec sqlExecer, decision *AuditDecision) (int64, error) {
 	if decision == nil {
 		return 0, fmt.Errorf("record audit decision: nil decision")
 	}
@@ -1805,7 +2685,7 @@ func (s *Store) RecordAuditDecision(decision *AuditDecision) (int64, error) {
 		decision.DecisionAt = time.Now().UTC()
 	}
 
-	result, err := s.db.Exec(`
+	result, err := exec.Exec(`
 		INSERT INTO audit_decision_log (
 			decision_type, decision_at, actor_type, actor_id,
 			entity_type, entity_id, reason, expires_at, audit_event_id
@@ -1821,6 +2701,19 @@ func (s *Store) RecordAuditDecision(decision *AuditDecision) (int64, error) {
 		return 0, fmt.Errorf("get audit decision id: %w", err)
 	}
 	return id, nil
+}
+
+// RecordAuditDecision inserts a compact decision-history record.
+func (s *Store) RecordAuditDecision(decision *AuditDecision) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return recordAuditDecisionExec(s.db, decision)
+}
+
+// RecordAuditDecision inserts a compact decision-history record within an existing transaction.
+func (tx *Tx) RecordAuditDecision(decision *AuditDecision) (int64, error) {
+	return recordAuditDecisionExec(tx.tx, decision)
 }
 
 // GetDecisionHistory returns compact decision history for an entity.

@@ -504,8 +504,10 @@ func TestSearchMessages(t *testing.T) {
 func TestSummarizeThread(t *testing.T) {
 	t.Parallel()
 
+	var receivedArgs map[string]interface{}
 	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
 		"summarize_thread": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			receivedArgs = args
 			return ThreadSummaryResponse{
 				ThreadID: args["thread_id"].(string),
 				Summary: ThreadSummary{
@@ -523,21 +525,29 @@ func TestSummarizeThread(t *testing.T) {
 
 	c := NewClient(WithBaseURL(server.URL + "/"))
 	trueVal := true
-	summary, err := c.SummarizeThread(context.Background(), SummarizeThreadOptions{
+	result, err := c.SummarizeThread(context.Background(), SummarizeThreadOptions{
 		ProjectKey:      "/test",
 		ThreadID:        "TKT-123",
-		IncludeExamples: true,
+		IncludeExamples: &trueVal,
 		LLMMode:         &trueVal,
 		LLMModel:        "opus-4.5",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if summary.ThreadID != "TKT-123" {
-		t.Errorf("thread_id = %q, want TKT-123", summary.ThreadID)
+	if result.ThreadID != "TKT-123" {
+		t.Errorf("thread_id = %q, want TKT-123", result.ThreadID)
 	}
-	if len(summary.Participants) != 2 {
-		t.Errorf("len(participants) = %d, want 2", len(summary.Participants))
+	if len(result.Summary.Participants) != 2 {
+		t.Errorf("len(participants) = %d, want 2", len(result.Summary.Participants))
+	}
+	if len(result.Examples) != 1 {
+		t.Fatalf("len(examples) = %d, want 1", len(result.Examples))
+	}
+	if got, ok := receivedArgs["include_examples"]; !ok {
+		t.Fatal("expected include_examples argument to be forwarded")
+	} else if got != true {
+		t.Fatalf("include_examples = %#v, want true", got)
 	}
 }
 
@@ -563,7 +573,7 @@ func TestSummarizeThread_ForwardsExplicitFalseLLMMode(t *testing.T) {
 	_, err := c.SummarizeThread(context.Background(), SummarizeThreadOptions{
 		ProjectKey:      "/test",
 		ThreadID:        "TKT-456",
-		IncludeExamples: false,
+		IncludeExamples: &falseVal,
 		LLMMode:         &falseVal,
 	})
 	if err != nil {
@@ -573,6 +583,36 @@ func TestSummarizeThread_ForwardsExplicitFalseLLMMode(t *testing.T) {
 		t.Fatal("expected llm_mode argument to be forwarded")
 	} else if got != false {
 		t.Fatalf("llm_mode = %#v, want false", got)
+	}
+}
+
+func TestSummarizeThread_OmitsIncludeExamplesWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	var receivedArgs map[string]interface{}
+	server := httptest.NewServer(mockMCPHandler(t, map[string]func(args map[string]interface{}) (interface{}, *JSONRPCError){
+		"summarize_thread": func(args map[string]interface{}) (interface{}, *JSONRPCError) {
+			receivedArgs = args
+			return ThreadSummaryResponse{
+				ThreadID: args["thread_id"].(string),
+				Summary: ThreadSummary{
+					Participants: []string{"BlueLake"},
+				},
+			}, nil
+		},
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	_, err := c.SummarizeThread(context.Background(), SummarizeThreadOptions{
+		ProjectKey: "/test",
+		ThreadID:   "TKT-789",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := receivedArgs["include_examples"]; ok {
+		t.Fatal("did not expect include_examples argument when unset")
 	}
 }
 

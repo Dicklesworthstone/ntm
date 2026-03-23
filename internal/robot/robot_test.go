@@ -2362,6 +2362,23 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertRuntimeCoordination: %v", err)
 	}
+	if err := store.UpsertRuntimeHandoff(&state.RuntimeHandoff{
+		SessionName:        "alpha",
+		Status:             "blocked",
+		Goal:               "Ship safe preview",
+		GoalDisclosure:     `{"disclosure_state":"visible","preview":"Ship safe preview"}`,
+		NowText:            "Waiting on approval",
+		NowDisclosure:      `{"disclosure_state":"visible","preview":"Waiting on approval"}`,
+		ActiveBeads:        `["bd-active"]`,
+		AgentMailThreads:   `["bd-j9jo3.3.5"]`,
+		Blockers:           `["pending approval"]`,
+		BlockerDisclosures: `[{"disclosure_state":"visible","preview":"pending approval"}]`,
+		Files:              `["internal/robot/robot.go"]`,
+		CollectedAt:        now,
+		StaleAfter:         staleAfter,
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeHandoff: %v", err)
+	}
 	if err := store.UpsertSourceHealth(&state.SourceHealth{
 		SourceName:    "beads",
 		Available:     true,
@@ -2410,6 +2427,15 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 	}
 	if result.OverallStatus != "degraded" {
 		t.Fatalf("OverallStatus = %q, want degraded", result.OverallStatus)
+	}
+	if result.Handoff == nil || result.Handoff.Session != "alpha" || result.Handoff.Status != "blocked" {
+		t.Fatalf("Handoff = %+v, want alpha blocked handoff", result.Handoff)
+	}
+	if result.Handoff.GoalDisclosure == nil || result.Handoff.GoalDisclosure.DisclosureState != "visible" {
+		t.Fatalf("Handoff.GoalDisclosure = %+v", result.Handoff)
+	}
+	if len(result.Handoff.BlockerDisclosures) != 1 || result.Handoff.BlockerDisclosures[0].DisclosureState != "visible" {
+		t.Fatalf("Handoff.BlockerDisclosures = %+v", result.Handoff)
 	}
 	if result.Beads != nil || result.GraphMetrics != nil || result.AgentMail != nil {
 		t.Fatalf("legacy status extras should be empty, got beads=%v graph=%v agent_mail=%v", result.Beads, result.GraphMetrics, result.AgentMail)

@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -26,6 +27,8 @@ type AttentionStore interface {
 	AppendAttentionEvent(event *state.StoredAttentionEvent) (int64, error)
 	// GetAttentionEventsSince returns events with cursor > sinceCursor.
 	GetAttentionEventsSince(sinceCursor int64, limit int) ([]state.StoredAttentionEvent, error)
+	// GetAttentionItemStatesForCursors returns durable operator state keyed by cursor.
+	GetAttentionItemStatesForCursors(cursors []int64) (map[int64]state.AttentionItemState, error)
 	// GetAttentionReplayWindow returns the currently replayable cursor range.
 	GetAttentionReplayWindow() (state.AttentionReplayWindow, error)
 	// GetLatestEventCursor returns the most recent event cursor.
@@ -362,7 +365,7 @@ type AttentionFeed struct {
 	pendingEvents       []AttentionEvent
 	drainingEvents      bool
 	dedupMu             sync.Mutex
-	recentDedup         map[string]time.Time
+	recentDedup         map[string]attentionDedupEntry
 
 	subMu     sync.RWMutex
 	subNextID atomic.Uint64
@@ -370,6 +373,51 @@ type AttentionFeed struct {
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
+}
+
+type attentionDedupEntry struct {
+	surfacedAt       time.Time
+	suppressedCount  int
+	suppressedSince  time.Time
+	lastSuppressedAt time.Time
+}
+
+// ActuationStage identifies where an actuation event sits in the closed loop.
+type ActuationStage string
+
+const (
+	ActuationStageRequest      ActuationStage = "request"
+	ActuationStageOutcome      ActuationStage = "outcome"
+	ActuationStageVerification ActuationStage = "verification"
+)
+
+// ActuationRecord is a high-level description of an operator-triggered action
+// that should be published into the durable attention stream.
+type ActuationRecord struct {
+	Session        string
+	Action         string
+	Stage          ActuationStage
+	Source         string
+	Method         string
+	RequestID      string
+	CorrelationID  string
+	IdempotencyKey string
+	Targets        []string
+	Successful     []string
+	Failed         []map[string]any
+	Confirmations  []map[string]any
+	Pending        []string
+	MessagePreview string
+	Result         string
+	Verification   string
+	ErrorCode      string
+	Error          string
+	Blocked        bool
+	TimedOut       bool
+	ReasonCode     string
+	Summary        string
+	Actionability  Actionability
+	Severity       Severity
 }
 
 // AttentionFeedOption is a functional option for configuring AttentionFeed.
@@ -393,7 +441,7 @@ func NewAttentionFeed(config AttentionFeedConfig, opts ...AttentionFeedOption) *
 		config:      config,
 		cursor:      NewCursorAllocator(),
 		journal:     NewAttentionJournal(config.JournalSize, config.RetentionPeriod),
-		recentDedup: make(map[string]time.Time),
+		recentDedup: make(map[string]attentionDedupEntry),
 		subs:        make(map[uint64]subscription),
 		stopCh:      make(chan struct{}),
 	}
@@ -412,6 +460,15 @@ func NewAttentionFeed(config AttentionFeedConfig, opts ...AttentionFeedOption) *
 	}
 
 	return feed
+}
+
+func (f *AttentionFeed) enqueuePendingEventLocked(event AttentionEvent) bool {
+	f.pendingEvents = append(f.pendingEvents, cloneAttentionEvent(event))
+	if f.drainingEvents {
+		return false
+	}
+	f.drainingEvents = true
+	return true
 }
 
 // Append allocates a cursor, stores the event, and notifies subscribers.
@@ -449,12 +506,29 @@ func (f *AttentionFeed) Append(event AttentionEvent) AttentionEvent {
 
 	// Store in journal (also serves as in-memory cache)
 	f.journal.Append(event)
-	f.pendingEvents = append(f.pendingEvents, cloneAttentionEvent(event))
+	startDrain := f.enqueuePendingEventLocked(event)
+	f.appendMu.Unlock()
 
-	startDrain := !f.drainingEvents
 	if startDrain {
-		f.drainingEvents = true
+		f.drainPendingEvents()
 	}
+
+	return event
+}
+
+// PublishEphemeral allocates a cursor and notifies subscribers without
+// persisting or journaling the event. This is used for live-only control
+// signals such as watch heartbeats that should not appear in replay.
+func (f *AttentionFeed) PublishEphemeral(event AttentionEvent) AttentionEvent {
+	event.NextActions = sanitizeNextActions(event.NextActions)
+
+	if event.Ts == "" {
+		event.Ts = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	f.appendMu.Lock()
+	event.Cursor = f.cursor.Next()
+	startDrain := f.enqueuePendingEventLocked(event)
 	f.appendMu.Unlock()
 
 	if startDrain {
@@ -477,19 +551,317 @@ func (f *AttentionFeed) appendDeduplicated(event AttentionEvent, window time.Dur
 	cutoff := ts.Add(-window)
 
 	f.dedupMu.Lock()
-	for existingKey, seenAt := range f.recentDedup {
-		if seenAt.Before(cutoff) {
+	for existingKey, entry := range f.recentDedup {
+		lastSeen := entry.surfacedAt
+		if entry.lastSuppressedAt.After(lastSeen) {
+			lastSeen = entry.lastSuppressedAt
+		}
+		if lastSeen.Before(cutoff) {
 			delete(f.recentDedup, existingKey)
 		}
 	}
-	if seenAt, ok := f.recentDedup[key]; ok && !seenAt.Before(cutoff) {
+	if entry, ok := f.recentDedup[key]; ok && !entry.surfacedAt.Before(cutoff) {
+		if entry.suppressedCount == 0 {
+			entry.suppressedSince = ts
+		}
+		entry.suppressedCount++
+		entry.lastSuppressedAt = ts
+		f.recentDedup[key] = entry
 		f.dedupMu.Unlock()
 		return AttentionEvent{}, false
 	}
-	f.recentDedup[key] = ts
+	if entry, ok := f.recentDedup[key]; ok && entry.suppressedCount > 0 {
+		event = annotateAttentionDedupResurfacing(event, window, entry)
+	}
+	f.recentDedup[key] = attentionDedupEntry{surfacedAt: ts}
 	f.dedupMu.Unlock()
 
 	return f.Append(event), true
+}
+
+const (
+	attentionDetailItemKey                 = "attention_item_key"
+	attentionDetailState                   = "attention_state"
+	attentionDetailStoredState             = "attention_stored_state"
+	attentionDetailPreviousState           = "attention_previous_state"
+	attentionDetailFingerprint             = "attention_fingerprint"
+	attentionDetailStoredFingerprint       = "attention_stored_fingerprint"
+	attentionDetailPreviousFingerprint     = "attention_previous_fingerprint"
+	attentionDetailAcknowledgedAt          = "attention_acknowledged_at"
+	attentionDetailAcknowledgedBy          = "attention_acknowledged_by"
+	attentionDetailSnoozedUntil            = "attention_snoozed_until"
+	attentionDetailDismissedAt             = "attention_dismissed_at"
+	attentionDetailDismissedBy             = "attention_dismissed_by"
+	attentionDetailPinned                  = "attention_pinned"
+	attentionDetailMuted                   = "attention_muted"
+	attentionDetailOverridePriority        = "attention_override_priority"
+	attentionDetailOverrideReason          = "attention_override_reason"
+	attentionDetailOverrideExpiresAt       = "attention_override_expires_at"
+	attentionDetailResurfacingPolicy       = "attention_resurfacing_policy"
+	attentionDetailHiddenReason            = "attention_hidden_reason"
+	attentionDetailExplanationCode         = "attention_explanation_code"
+	attentionDetailResurfaced              = "resurfaced"
+	attentionDetailResurfaceReason         = "resurface_reason"
+	attentionDetailCooldownWindowMS        = "cooldown_window_ms"
+	attentionDetailCooldownSuppressedCount = "cooldown_suppressed_count"
+	attentionDetailCooldownSuppressedSince = "cooldown_suppressed_since"
+	attentionDetailCooldownLastSuppressed  = "cooldown_last_suppressed_at"
+
+	attentionHiddenReasonAcknowledged = "acknowledged"
+	attentionHiddenReasonSnoozed      = "snoozed"
+	attentionHiddenReasonDismissed    = "dismissed"
+	attentionHiddenReasonMuted        = "muted"
+
+	attentionExplainNew        = "EXPLAIN_ATT_NEW"
+	attentionExplainAck        = "EXPLAIN_ATT_ACK"
+	attentionExplainSnoozed    = "EXPLAIN_ATT_SNOOZED"
+	attentionExplainDismissed  = "EXPLAIN_ATT_DISMISSED"
+	attentionExplainPinned     = "EXPLAIN_ATT_PINNED"
+	attentionExplainMuted      = "EXPLAIN_ATT_MUTED"
+	attentionExplainEscalated  = "EXPLAIN_ATT_ESCALATED"
+	attentionExplainResurfaced = "EXPLAIN_ATT_RESURFACED"
+
+	attentionResurfaceReasonCooldownExpired   = "cooldown_expired"
+	attentionResurfaceReasonFingerprintChange = "fingerprint_changed"
+	attentionResurfaceReasonSnoozeExpired     = "snooze_expired"
+	attentionResurfaceReasonSeverityEscalated = "severity_escalation"
+)
+
+func annotateAttentionDedupResurfacing(event AttentionEvent, window time.Duration, entry attentionDedupEntry) AttentionEvent {
+	if entry.suppressedCount <= 0 {
+		return event
+	}
+	if event.Details == nil {
+		event.Details = map[string]any{}
+	}
+	event.Details[attentionDetailResurfaced] = true
+	event.Details[attentionDetailResurfaceReason] = attentionResurfaceReasonCooldownExpired
+	event.Details[attentionDetailCooldownWindowMS] = window.Milliseconds()
+	event.Details[attentionDetailCooldownSuppressedCount] = entry.suppressedCount
+	if !entry.suppressedSince.IsZero() {
+		event.Details[attentionDetailCooldownSuppressedSince] = entry.suppressedSince.UTC().Format(time.RFC3339Nano)
+	}
+	if !entry.lastSuppressedAt.IsZero() {
+		event.Details[attentionDetailCooldownLastSuppressed] = entry.lastSuppressedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return event
+}
+
+func attentionItemKeyForStoredEvent(event state.StoredAttentionEvent) string {
+	if key := strings.TrimSpace(event.DedupKey); key != "" {
+		return "dedup:" + key
+	}
+	return fmt.Sprintf("cursor:%d", event.Cursor)
+}
+
+func attentionEventFingerprint(event AttentionEvent) string {
+	payload := map[string]any{
+		"session":       strings.TrimSpace(event.Session),
+		"pane":          event.Pane,
+		"category":      string(event.Category),
+		"type":          string(event.Type),
+		"source":        strings.TrimSpace(event.Source),
+		"actionability": string(event.Actionability),
+		"severity":      string(event.Severity),
+		"reason_code":   strings.TrimSpace(event.ReasonCode),
+		"summary":       strings.TrimSpace(event.Summary),
+	}
+	if details := attentionMaterialDetails(event.Details); len(details) > 0 {
+		payload["details"] = details
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("fp-%x", sum[:8])
+}
+
+func attentionMaterialDetails(details map[string]any) map[string]any {
+	cloned := cloneAnyMap(details)
+	if len(cloned) == 0 {
+		return nil
+	}
+	for key := range cloned {
+		switch {
+		case strings.HasPrefix(key, "attention_"):
+			delete(cloned, key)
+		case strings.HasPrefix(key, "digest_"):
+			delete(cloned, key)
+		case key == attentionDetailResurfaced,
+			key == attentionDetailResurfaceReason,
+			key == attentionDetailCooldownWindowMS,
+			key == attentionDetailCooldownSuppressedCount,
+			key == attentionDetailCooldownSuppressedSince,
+			key == attentionDetailCooldownLastSuppressed:
+			delete(cloned, key)
+		}
+	}
+	if len(cloned) == 0 {
+		return nil
+	}
+	return cloned
+}
+
+func attentionPriorityOverrideActive(itemState *state.AttentionItemState, now time.Time) bool {
+	if itemState == nil || strings.TrimSpace(itemState.OverridePriority) == "" {
+		return false
+	}
+	if itemState.OverrideExpiresAt != nil && now.After(itemState.OverrideExpiresAt.UTC()) {
+		return false
+	}
+	return true
+}
+
+func applyAttentionPriorityOverride(event AttentionEvent, override string) AttentionEvent {
+	switch strings.ToLower(strings.TrimSpace(override)) {
+	case "critical":
+		event.Severity = SeverityCritical
+		event.Actionability = ActionabilityActionRequired
+	case "error", "high", "urgent":
+		if attentionSeverityRank(event.Severity) < attentionSeverityRank(SeverityError) {
+			event.Severity = SeverityError
+		}
+		event.Actionability = ActionabilityActionRequired
+	case "warning", "medium", "interesting":
+		if attentionSeverityRank(event.Severity) < attentionSeverityRank(SeverityWarning) {
+			event.Severity = SeverityWarning
+		}
+		if attentionActionabilityRank(event.Actionability) < attentionActionabilityRank(ActionabilityInteresting) {
+			event.Actionability = ActionabilityInteresting
+		}
+	default:
+		if attentionSeverityRank(event.Severity) < attentionSeverityRank(SeverityInfo) {
+			event.Severity = SeverityInfo
+		}
+		if attentionActionabilityRank(event.Actionability) < attentionActionabilityRank(ActionabilityInteresting) {
+			event.Actionability = ActionabilityInteresting
+		}
+	}
+	return event
+}
+
+func annotateAttentionOperatorState(event AttentionEvent, itemKey string, itemState *state.AttentionItemState) AttentionEvent {
+	if event.Details == nil {
+		event.Details = map[string]any{}
+	}
+	event.Details[attentionDetailItemKey] = itemKey
+	if fingerprint := attentionEventFingerprint(event); fingerprint != "" {
+		event.Details[attentionDetailFingerprint] = fingerprint
+	}
+	if itemState == nil {
+		event.Details[attentionDetailState] = state.AttentionStateNew
+		event.Details[attentionDetailExplanationCode] = attentionExplainNew
+		return event
+	}
+
+	now := time.Now().UTC()
+	storedState := strings.TrimSpace(string(itemState.State))
+	if storedState == "" {
+		storedState = string(state.AttentionStateNew)
+	}
+	event.Details[attentionDetailStoredState] = storedState
+	if itemState.Fingerprint != "" {
+		event.Details[attentionDetailStoredFingerprint] = itemState.Fingerprint
+	}
+	if itemState.AcknowledgedAt != nil {
+		event.Details[attentionDetailAcknowledgedAt] = itemState.AcknowledgedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if itemState.AcknowledgedBy != "" {
+		event.Details[attentionDetailAcknowledgedBy] = itemState.AcknowledgedBy
+	}
+	if itemState.SnoozedUntil != nil {
+		event.Details[attentionDetailSnoozedUntil] = itemState.SnoozedUntil.UTC().Format(time.RFC3339Nano)
+	}
+	if itemState.DismissedAt != nil {
+		event.Details[attentionDetailDismissedAt] = itemState.DismissedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if itemState.DismissedBy != "" {
+		event.Details[attentionDetailDismissedBy] = itemState.DismissedBy
+	}
+	if itemState.Pinned {
+		event.Details[attentionDetailPinned] = true
+	}
+	if itemState.Muted {
+		event.Details[attentionDetailMuted] = true
+	}
+	overrideActive := attentionPriorityOverrideActive(itemState, now)
+	if overrideActive {
+		event.Details[attentionDetailOverridePriority] = itemState.OverridePriority
+		event = applyAttentionPriorityOverride(event, itemState.OverridePriority)
+		if event.Details[attentionDetailExplanationCode] == nil {
+			event.Details[attentionDetailExplanationCode] = attentionExplainEscalated
+		}
+	}
+	if itemState.OverrideReason != "" {
+		event.Details[attentionDetailOverrideReason] = itemState.OverrideReason
+	}
+	if itemState.OverrideExpiresAt != nil {
+		event.Details[attentionDetailOverrideExpiresAt] = itemState.OverrideExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	if itemState.ResurfacingPolicy != "" {
+		event.Details[attentionDetailResurfacingPolicy] = itemState.ResurfacingPolicy
+	}
+	if itemState.Pinned && attentionActionabilityRank(event.Actionability) < attentionActionabilityRank(ActionabilityInteresting) {
+		event.Actionability = ActionabilityInteresting
+	}
+
+	effectiveState := storedState
+	fingerprintChanged := itemState.Fingerprint != "" &&
+		attentionStringDetail(event.Details, attentionDetailFingerprint) != "" &&
+		itemState.Fingerprint != attentionStringDetail(event.Details, attentionDetailFingerprint) &&
+		!strings.EqualFold(itemState.ResurfacingPolicy, "never")
+
+	switch {
+	case fingerprintChanged && storedState != string(state.AttentionStateNew):
+		effectiveState = string(state.AttentionStateNew)
+		event.Details[attentionDetailPreviousState] = storedState
+		event.Details[attentionDetailPreviousFingerprint] = itemState.Fingerprint
+		event.Details[attentionDetailResurfaced] = true
+		event.Details[attentionDetailResurfaceReason] = attentionResurfaceReasonFingerprintChange
+		event.Details[attentionDetailExplanationCode] = attentionExplainResurfaced
+	case storedState == string(state.AttentionStateSnoozed) && itemState.SnoozedUntil != nil && !now.Before(itemState.SnoozedUntil.UTC()):
+		effectiveState = string(state.AttentionStateNew)
+		event.Details[attentionDetailPreviousState] = storedState
+		event.Details[attentionDetailResurfaced] = true
+		event.Details[attentionDetailResurfaceReason] = attentionResurfaceReasonSnoozeExpired
+		event.Details[attentionDetailExplanationCode] = attentionExplainResurfaced
+	case storedState == string(state.AttentionStateSnoozed) && event.Severity == SeverityCritical:
+		effectiveState = string(state.AttentionStateNew)
+		event.Details[attentionDetailPreviousState] = storedState
+		event.Details[attentionDetailResurfaced] = true
+		event.Details[attentionDetailResurfaceReason] = attentionResurfaceReasonSeverityEscalated
+		event.Details[attentionDetailExplanationCode] = attentionExplainResurfaced
+	}
+
+	event.Details[attentionDetailState] = effectiveState
+
+	if !itemState.Pinned && !overrideActive {
+		hiddenReason := ""
+		explanationCode := ""
+		switch {
+		case itemState.Muted:
+			hiddenReason = attentionHiddenReasonMuted
+			explanationCode = attentionExplainMuted
+		case effectiveState == string(state.AttentionStateAcknowledged):
+			hiddenReason = attentionHiddenReasonAcknowledged
+			explanationCode = attentionExplainAck
+		case effectiveState == string(state.AttentionStateSnoozed):
+			hiddenReason = attentionHiddenReasonSnoozed
+			explanationCode = attentionExplainSnoozed
+		case effectiveState == string(state.AttentionStateDismissed):
+			hiddenReason = attentionHiddenReasonDismissed
+			explanationCode = attentionExplainDismissed
+		}
+		if hiddenReason != "" {
+			event.Details[attentionDetailHiddenReason] = hiddenReason
+			event.Details[attentionDetailExplanationCode] = explanationCode
+		}
+	} else if itemState.Pinned {
+		event.Details[attentionDetailExplanationCode] = attentionExplainPinned
+	}
+
+	return event
 }
 
 func (f *AttentionFeed) drainPendingEvents() {
@@ -773,11 +1145,13 @@ func matchesAttentionDigestFilters(event AttentionEvent, opts AttentionDigestOpt
 			}
 		}
 	}
-	if attentionSeverityRank(event.Severity) < attentionSeverityRank(opts.MinSeverity) {
-		return false
-	}
-	if attentionActionabilityRank(event.Actionability) < attentionActionabilityRank(opts.MinActionability) {
-		return false
+	if !attentionEventHasVisibilityOverride(event) {
+		if attentionSeverityRank(event.Severity) < attentionSeverityRank(opts.MinSeverity) {
+			return false
+		}
+		if attentionActionabilityRank(event.Actionability) < attentionActionabilityRank(opts.MinActionability) {
+			return false
+		}
 	}
 	return true
 }
@@ -834,8 +1208,14 @@ func surfaceAttentionDigestBucket(candidates []*attentionDigestCandidate, bucket
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := candidates[i].item.Event
 		right := candidates[j].item.Event
+		if attentionBoolDetail(left.Details, attentionDetailPinned) != attentionBoolDetail(right.Details, attentionDetailPinned) {
+			return attentionBoolDetail(left.Details, attentionDetailPinned)
+		}
 		if attentionSeverityRank(left.Severity) != attentionSeverityRank(right.Severity) {
 			return attentionSeverityRank(left.Severity) > attentionSeverityRank(right.Severity)
+		}
+		if attentionDigestRecurrencePriority(left) != attentionDigestRecurrencePriority(right) {
+			return attentionDigestRecurrencePriority(left) > attentionDigestRecurrencePriority(right)
 		}
 		if candidates[i].item.CursorEnd != candidates[j].item.CursorEnd {
 			return candidates[i].item.CursorEnd > candidates[j].item.CursorEnd
@@ -960,6 +1340,9 @@ func attentionDigestDropReason(event AttentionEvent) (string, bool) {
 	case EventTypePaneResized, EventTypeSessionAttached, EventTypeSessionDetached:
 		return attentionDigestSuppressionLifecycleNoise, true
 	default:
+		if hiddenReason := attentionEventHiddenReason(event); hiddenReason != "" {
+			return "attention_state_" + hiddenReason, true
+		}
 		return "", false
 	}
 }
@@ -1036,9 +1419,10 @@ func recordAttentionDigestCandidateTrace(digest *AttentionDigest, opts Attention
 
 	representative := candidate.item.Event
 	representativeCursor := representative.Cursor
+	surfaceReason := attentionDigestSurfaceReason(representative)
 	if len(candidate.members) == 0 {
 		decision := "surfaced"
-		reason := ""
+		reason := surfaceReason
 		if bucketSuppressed {
 			decision = "suppressed"
 			reason = attentionDigestSuppressionBucketLimit
@@ -1057,11 +1441,26 @@ func recordAttentionDigestCandidateTrace(digest *AttentionDigest, opts Attention
 		case member.Cursor == representativeCursor && candidate.item.SuppressedCount > 0:
 			recordAttentionDigestDecision(digest, opts, member, bucket, "coalesced", candidate.item.SuppressionReason, representativeCursor)
 		case member.Cursor == representativeCursor:
-			recordAttentionDigestDecision(digest, opts, member, bucket, "surfaced", "", 0)
+			recordAttentionDigestDecision(digest, opts, member, bucket, "surfaced", surfaceReason, 0)
 		default:
 			recordAttentionDigestDecision(digest, opts, member, bucket, "suppressed", candidate.item.SuppressionReason, representativeCursor)
 		}
 	}
+}
+
+func attentionDigestRecurrencePriority(event AttentionEvent) float64 {
+	score := attentionFloatDetail(event.Details, attentionDetailCooldownSuppressedCount)
+	if score <= 0 {
+		return 0
+	}
+	if attentionDigestSurfaceReason(event) != "" {
+		score += 1
+	}
+	return score
+}
+
+func attentionDigestSurfaceReason(event AttentionEvent) string {
+	return attentionStringDetail(event.Details, attentionDetailResurfaceReason)
 }
 
 func buildAttentionDigestSummary(digest *AttentionDigest) string {
@@ -1494,6 +1893,147 @@ func (f *AttentionFeed) PublishMailAckRequired(from, to, subject string, message
 	return f.Append(annotateAttentionSignal(event))
 }
 
+// PublishActuation appends a first-class actuation event to the durable feed.
+func (f *AttentionFeed) PublishActuation(record ActuationRecord) AttentionEvent {
+	action := strings.TrimSpace(record.Action)
+	if action == "" {
+		action = "actuation"
+	}
+	if record.Source == "" {
+		record.Source = "robot.actuation"
+	}
+	if record.Actionability == "" {
+		record.Actionability = ActionabilityInteresting
+	}
+	if record.Severity == "" {
+		record.Severity = SeverityInfo
+	}
+
+	eventType := EventTypeActuationOutcome
+	switch record.Stage {
+	case ActuationStageRequest:
+		eventType = EventTypeActuationRequested
+	case ActuationStageVerification:
+		eventType = EventTypeActuationVerified
+	}
+
+	targets := append([]string(nil), record.Targets...)
+	targetRef := actuationTargetRef(record.Session, targets)
+	paneRef := actuationPaneRef(targets)
+
+	details := map[string]any{
+		"action":       action,
+		"stage":        string(record.Stage),
+		"target_count": len(targets),
+		"target_ref":   targetRef,
+	}
+	if len(targets) > 0 {
+		details["targets"] = targets
+		details["target_refs"] = actuationTargetRefs(record.Session, targets)
+	}
+	if paneRef != "" {
+		details["pane_ref"] = paneRef
+	}
+	if record.Method != "" {
+		details["method"] = record.Method
+	}
+	if record.RequestID != "" {
+		details["request_id"] = record.RequestID
+	}
+	if record.CorrelationID != "" {
+		details["correlation_id"] = record.CorrelationID
+	}
+	if record.IdempotencyKey != "" {
+		details["idempotency_key"] = record.IdempotencyKey
+	}
+	if record.MessagePreview != "" {
+		details["message_preview"] = record.MessagePreview
+	}
+	if record.Result != "" {
+		details["result"] = record.Result
+	}
+	if record.Verification != "" {
+		details["verification_state"] = record.Verification
+	}
+	if len(record.Successful) > 0 {
+		details["successful"] = append([]string(nil), record.Successful...)
+		details["successful_count"] = len(record.Successful)
+	}
+	if len(record.Failed) > 0 {
+		details["failed"] = cloneAnyMapSlice(record.Failed)
+		details["failed_count"] = len(record.Failed)
+	}
+	if len(record.Confirmations) > 0 {
+		details["confirmations"] = cloneAnyMapSlice(record.Confirmations)
+		details["confirmation_count"] = len(record.Confirmations)
+	}
+	if len(record.Pending) > 0 {
+		details["pending"] = append([]string(nil), record.Pending...)
+		details["pending_count"] = len(record.Pending)
+	}
+	if record.ErrorCode != "" {
+		details["error_code"] = record.ErrorCode
+	}
+	if record.Error != "" {
+		details["error"] = record.Error
+	}
+	if record.Blocked {
+		details["blocked"] = true
+	}
+	if record.TimedOut {
+		details["timed_out"] = true
+	}
+
+	reason := "Inspect the actuation state"
+	switch record.Stage {
+	case ActuationStageOutcome:
+		reason = "Inspect the actuation outcome and resulting agent output"
+	case ActuationStageVerification:
+		reason = "Inspect the verification state before proceeding"
+	}
+
+	summary := strings.TrimSpace(record.Summary)
+	if summary == "" {
+		switch record.Stage {
+		case ActuationStageRequest:
+			summary = fmt.Sprintf("%s requested", action)
+		case ActuationStageVerification:
+			state := robotFirstNonEmpty(record.Verification, "pending")
+			summary = fmt.Sprintf("%s verification %s", action, state)
+		default:
+			state := robotFirstNonEmpty(record.Result, "recorded")
+			summary = fmt.Sprintf("%s outcome %s", action, state)
+		}
+	}
+
+	reasonCode := strings.TrimSpace(record.ReasonCode)
+	if reasonCode == "" {
+		switch record.Stage {
+		case ActuationStageRequest:
+			reasonCode = "actuation_requested"
+		case ActuationStageVerification:
+			reasonCode = "actuation_verification"
+		default:
+			reasonCode = "actuation_outcome"
+		}
+	}
+
+	return f.Append(AttentionEvent{
+		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
+		Session:       record.Session,
+		Pane:          attentionPaneIndex(paneRef),
+		Category:      EventCategoryActuation,
+		Type:          eventType,
+		Source:        record.Source,
+		Actionability: record.Actionability,
+		Severity:      record.Severity,
+		ReasonCode:    reasonCode,
+		Summary:       attentionSummary(record.Session, paneRef, summary),
+		Details:       details,
+		NextActions:   actuationNextActions(record.Session, targets, reason),
+	})
+}
+
 // Subscribe registers a handler to receive events.
 // Returns an unsubscribe function.
 func (f *AttentionFeed) Subscribe(handler AttentionHandler) func() {
@@ -1539,6 +2079,12 @@ func (f *AttentionFeed) notifySubscribers(event AttentionEvent) {
 	}
 }
 
+func (f *AttentionFeed) subscriberCount() int {
+	f.subMu.RLock()
+	defer f.subMu.RUnlock()
+	return len(f.subs)
+}
+
 // heartbeatLoop emits periodic heartbeat events.
 func (f *AttentionFeed) heartbeatLoop() {
 	ticker := time.NewTicker(f.config.HeartbeatInterval)
@@ -1549,7 +2095,10 @@ func (f *AttentionFeed) heartbeatLoop() {
 		case <-f.stopCh:
 			return
 		case t := <-ticker.C:
-			f.Append(AttentionEvent{
+			if f.subscriberCount() == 0 {
+				continue
+			}
+			f.PublishEphemeral(AttentionEvent{
 				Ts:            t.UTC().Format(time.RFC3339Nano),
 				Category:      EventCategorySystem,
 				Type:          EventType(DefaultTransportLiveness.HeartbeatType),
@@ -2719,6 +3268,55 @@ func attentionFloatDetail(details map[string]any, key string) float64 {
 	return 0
 }
 
+func attentionBoolDetail(details map[string]any, key string) bool {
+	if details == nil {
+		return false
+	}
+	value, ok := details[key]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		normalized := strings.TrimSpace(strings.ToLower(v))
+		return normalized == "true" || normalized == "1" || normalized == "yes"
+	case int:
+		return v != 0
+	case int32:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
+func attentionEventHasVisibilityOverride(event AttentionEvent) bool {
+	return attentionBoolDetail(event.Details, attentionDetailPinned) ||
+		attentionStringDetail(event.Details, attentionDetailOverridePriority) != ""
+}
+
+func attentionEventHiddenReason(event AttentionEvent) string {
+	if attentionEventHasVisibilityOverride(event) {
+		return ""
+	}
+	return attentionStringDetail(event.Details, attentionDetailHiddenReason)
+}
+
+func filterVisibleAttentionEvents(events []AttentionEvent) []AttentionEvent {
+	filtered := make([]AttentionEvent, 0, len(events))
+	for _, event := range events {
+		if attentionEventHiddenReason(event) != "" {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered
+}
+
 func attentionContextHotActionability(event AttentionEvent) Actionability {
 	if attentionFloatDetail(event.Details, "usage_percent") >= attentionContextHotActionThreshold {
 		return ActionabilityActionRequired
@@ -2827,6 +3425,63 @@ func attentionStatusNextAction(reason string) NextAction {
 		Args:   "--robot-status",
 		Reason: reason,
 	}
+}
+
+func actuationNextActions(session string, targets []string, reason string) []NextAction {
+	if paneRef := actuationPaneRef(targets); paneRef != "" {
+		return attentionTailOrStatusActions(session, paneRef, reason)
+	}
+	return []NextAction{attentionStatusNextAction(reason)}
+}
+
+func actuationPaneRef(targets []string) string {
+	if len(targets) != 1 {
+		return ""
+	}
+	return strings.TrimSpace(targets[0])
+}
+
+func actuationTargetRef(session string, targets []string) string {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return ""
+	}
+	if paneRef := actuationPaneRef(targets); paneRef != "" {
+		return fmt.Sprintf("session:%s:%s", session, paneRef)
+	}
+	if len(targets) > 0 {
+		return fmt.Sprintf("session:%s:multi", session)
+	}
+	return fmt.Sprintf("session:%s", session)
+}
+
+func actuationTargetRefs(session string, targets []string) []string {
+	if strings.TrimSpace(session) == "" || len(targets) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(targets))
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		refs = append(refs, fmt.Sprintf("session:%s:%s", session, target))
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
+}
+
+func cloneAnyMapSlice(values []map[string]any) []map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		cloned = append(cloned, cloneAnyMap(value))
+	}
+	return cloned
 }
 
 func attentionContextActions(session, reason string) []NextAction {
@@ -2938,9 +3593,28 @@ func (f *AttentionFeed) replayFromStore(sinceCursor int64, limit int) ([]Attenti
 		return nil, 0, fmt.Errorf("replay attention events from store: %w", err)
 	}
 
+	itemStates := map[int64]state.AttentionItemState{}
+	if len(storedEvents) > 0 {
+		cursors := make([]int64, 0, len(storedEvents))
+		for _, stored := range storedEvents {
+			cursors = append(cursors, stored.Cursor)
+		}
+		if loaded, err := f.store.GetAttentionItemStatesForCursors(cursors); err == nil {
+			itemStates = loaded
+		}
+	}
+
 	events := make([]AttentionEvent, 0, len(storedEvents))
 	for _, stored := range storedEvents {
-		events = append(events, attentionEventFromStored(stored))
+		event := attentionEventFromStored(stored)
+		itemKey := attentionItemKeyForStoredEvent(stored)
+		if itemState, ok := itemStates[stored.Cursor]; ok {
+			itemStateCopy := itemState
+			event = annotateAttentionOperatorState(event, itemKey, &itemStateCopy)
+		} else {
+			event = annotateAttentionOperatorState(event, itemKey, nil)
+		}
+		events = append(events, event)
 	}
 
 	if tailStart := f.ephemeralFromCursor.Load(); tailStart > 0 && len(events) < limit {

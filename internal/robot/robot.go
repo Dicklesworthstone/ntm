@@ -18,6 +18,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -1636,12 +1637,20 @@ type AgentMailSummary struct {
 
 // HandoffSummary is the latest handoff across all sessions.
 type HandoffSummary struct {
-	Session    string `json:"session"`
-	Goal       string `json:"goal,omitempty"`
-	Now        string `json:"now,omitempty"`
-	Path       string `json:"path,omitempty"`
-	AgeSeconds int64  `json:"age_seconds,omitempty"`
-	Status     string `json:"status,omitempty"`
+	Session            string                        `json:"session"`
+	Goal               string                        `json:"goal,omitempty"`
+	GoalDisclosure     *adapters.DisclosureMetadata  `json:"goal_disclosure,omitempty"`
+	Now                string                        `json:"now,omitempty"`
+	NowDisclosure      *adapters.DisclosureMetadata  `json:"now_disclosure,omitempty"`
+	Path               string                        `json:"path,omitempty"`
+	AgeSeconds         int64                         `json:"age_seconds,omitempty"`
+	Status             string                        `json:"status,omitempty"`
+	UpdatedAt          string                        `json:"updated_at,omitempty"`
+	ActiveBeads        []string                      `json:"active_beads,omitempty"`
+	AgentMailThreads   []string                      `json:"agent_mail_threads,omitempty"`
+	Blockers           []string                      `json:"blockers,omitempty"`
+	BlockerDisclosures []adapters.DisclosureMetadata `json:"blocker_disclosures,omitempty"`
+	Files              []string                      `json:"files,omitempty"`
 }
 
 // SchedulerStatsSummary provides spawn scheduler statistics for robot-status.
@@ -2075,6 +2084,10 @@ func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts Pa
 	if err != nil {
 		return nil, fmt.Errorf("status coordination: %w", err)
 	}
+	handoffRow, err := store.GetRuntimeHandoff()
+	if err != nil {
+		return nil, fmt.Errorf("status handoff: %w", err)
+	}
 	healthRows, err := store.GetAllSourceHealth()
 	if err != nil {
 		return nil, fmt.Errorf("status source health: %w", err)
@@ -2124,6 +2137,7 @@ func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts Pa
 		output.Summary.MailUnread += item.UnreadCount
 		output.Summary.MailUrgent += item.UrgentCount
 	}
+	output.Handoff = statusHandoffFromRuntime(handoffRow)
 
 	output.Sources = statusSourceHealthFromRows(healthRows)
 	if output.Sources != nil {
@@ -2195,6 +2209,9 @@ func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptio
 		if signals.Coordination != nil && signals.Coordination.Mail != nil {
 			output.Summary.MailUnread = signals.Coordination.Mail.TotalUnread
 			output.Summary.MailUrgent = signals.Coordination.Mail.UrgentUnread
+		}
+		if signals.Coordination != nil && signals.Coordination.Handoff != nil {
+			output.Handoff = statusHandoffFromAdapter(signals.Coordination.Handoff)
 		}
 		if signals.Health != nil {
 			output.Sources = cloneSourceHealthSection(signals.Health)
@@ -4743,22 +4760,461 @@ type SendError struct {
 
 // SendOptions configures the PrintSend operation
 type SendOptions struct {
-	Session    string // Target session name
-	Message    string // Message to send
-	Redaction  redaction.Config
-	All        bool     // Send to all panes (including user)
-	Panes      []string // Specific pane indices (e.g., "0", "1", "2")
-	AgentTypes []string // Filter by agent types (e.g., "claude", "codex")
-	Exclude    []string // Panes to exclude
-	DelayMs    int      // Delay between sends in milliseconds
-	DryRun     bool     // If true, show what would be sent without actually sending
-	Enter      *bool    // If set, override Enter behavior after paste
+	Session        string // Target session name
+	Message        string // Message to send
+	Redaction      redaction.Config
+	All            bool     // Send to all panes (including user)
+	Panes          []string // Specific pane indices (e.g., "0", "1", "2")
+	AgentTypes     []string // Filter by agent types (e.g., "claude", "codex")
+	Exclude        []string // Panes to exclude
+	DelayMs        int      // Delay between sends in milliseconds
+	DryRun         bool     // If true, show what would be sent without actually sending
+	Enter          *bool    // If set, override Enter behavior after paste
+	RequestID      string   // External request identifier for REST parity
+	CorrelationID  string   // Correlation identifier for tracing request/outcome/verification
+	IdempotencyKey string   // Idempotency key when provided by an upstream caller
 
 	// CASS injection options
 	WithCASS     bool          // Enable CASS context injection
 	CASSConfig   *CASSConfig   // CASS query configuration (optional)
 	FilterConfig *FilterConfig // CASS filter configuration (optional)
 	InjectConfig *InjectConfig // CASS injection configuration (optional)
+}
+
+type actuationTrace struct {
+	RequestID      string
+	CorrelationID  string
+	IdempotencyKey string
+}
+
+func normalizeActuationTrace(requestID, correlationID, idempotencyKey string) actuationTrace {
+	requestID = strings.TrimSpace(requestID)
+	correlationID = strings.TrimSpace(correlationID)
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+
+	if correlationID == "" {
+		if requestID != "" {
+			correlationID = requestID
+		} else {
+			correlationID = audit.NewCorrelationID()
+		}
+	}
+	if requestID == "" {
+		requestID = correlationID
+	}
+
+	return actuationTrace{
+		RequestID:      requestID,
+		CorrelationID:  correlationID,
+		IdempotencyKey: idempotencyKey,
+	}
+}
+
+func sendErrorsToDetails(failed []SendError) []map[string]any {
+	if len(failed) == 0 {
+		return nil
+	}
+	details := make([]map[string]any, 0, len(failed))
+	for _, failure := range failed {
+		details = append(details, map[string]any{
+			"pane":  failure.Pane,
+			"error": failure.Error,
+		})
+	}
+	return details
+}
+
+func ackConfirmationsToDetails(confirmations []AckConfirmation) []map[string]any {
+	if len(confirmations) == 0 {
+		return nil
+	}
+	details := make([]map[string]any, 0, len(confirmations))
+	for _, confirmation := range confirmations {
+		details = append(details, map[string]any{
+			"pane":       confirmation.Pane,
+			"ack_type":   confirmation.AckType,
+			"ack_at":     confirmation.AckAt,
+			"latency_ms": confirmation.LatencyMs,
+		})
+	}
+	return details
+}
+
+func interruptErrorsToDetails(failed []InterruptError) []map[string]any {
+	if len(failed) == 0 {
+		return nil
+	}
+	details := make([]map[string]any, 0, len(failed))
+	for _, failure := range failed {
+		details = append(details, map[string]any{
+			"pane":   failure.Pane,
+			"reason": failure.Reason,
+		})
+	}
+	return details
+}
+
+func publishSendActuationRequest(trace actuationTrace, opts SendOptions, targets []string, messagePreview string) {
+	if len(targets) == 0 {
+		return
+	}
+	targetWord := "targets"
+	if len(targets) == 1 {
+		targetWord = "target"
+	}
+	GetAttentionFeed().PublishActuation(ActuationRecord{
+		Session:        opts.Session,
+		Action:         "send",
+		Stage:          ActuationStageRequest,
+		Source:         "robot.send",
+		Method:         "paste_enter",
+		RequestID:      trace.RequestID,
+		CorrelationID:  trace.CorrelationID,
+		IdempotencyKey: trace.IdempotencyKey,
+		Targets:        targets,
+		MessagePreview: messagePreview,
+		Summary:        fmt.Sprintf("send requested for %d %s", len(targets), targetWord),
+		ReasonCode:     "actuation_requested",
+		Actionability:  ActionabilityInteresting,
+		Severity:       SeverityInfo,
+	})
+}
+
+func publishSendActuationOutcome(trace actuationTrace, opts SendOptions, output SendOutput) {
+	result := "failed"
+	summary := "send failed"
+	reasonCode := "actuation_failed"
+	actionability := ActionabilityActionRequired
+	severity := SeverityError
+
+	switch {
+	case output.Blocked:
+		result = "blocked"
+		summary = "send blocked before dispatch"
+		reasonCode = "actuation_blocked"
+	case output.ErrorCode == ErrCodeInvalidFlag:
+		result = "invalid"
+		summary = "send request was invalid"
+		reasonCode = "actuation_invalid_request"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case output.ErrorCode == ErrCodeSessionNotFound:
+		result = "failed"
+		summary = "send failed: session not found"
+		reasonCode = "actuation_session_not_found"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case output.ErrorCode == ErrCodeInternalError && len(output.Targets) == 0:
+		result = "failed"
+		summary = "send failed before dispatch"
+		reasonCode = "actuation_internal_error"
+	case len(output.Targets) == 0:
+		result = "no_targets"
+		summary = "send matched no target panes"
+		reasonCode = "actuation_no_targets"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case len(output.Failed) == 0 && len(output.Successful) > 0:
+		result = "succeeded"
+		summary = fmt.Sprintf("send completed for %d target(s)", len(output.Successful))
+		reasonCode = "actuation_succeeded"
+		actionability = ActionabilityInteresting
+		severity = SeverityInfo
+	case len(output.Successful) > 0:
+		result = "partial"
+		summary = fmt.Sprintf("send partially failed for %d of %d target(s)", len(output.Failed), len(output.Targets))
+		reasonCode = "actuation_partial_failure"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	default:
+		result = "failed"
+		summary = fmt.Sprintf("send failed for %d target(s)", len(output.Targets))
+		reasonCode = "actuation_failed"
+		actionability = ActionabilityActionRequired
+		severity = SeverityError
+	}
+
+	GetAttentionFeed().PublishActuation(ActuationRecord{
+		Session:        opts.Session,
+		Action:         "send",
+		Stage:          ActuationStageOutcome,
+		Source:         "robot.send",
+		Method:         "paste_enter",
+		RequestID:      trace.RequestID,
+		CorrelationID:  trace.CorrelationID,
+		IdempotencyKey: trace.IdempotencyKey,
+		Targets:        output.Targets,
+		Successful:     output.Successful,
+		Failed:         sendErrorsToDetails(output.Failed),
+		MessagePreview: output.MessagePreview,
+		Result:         result,
+		ErrorCode:      output.ErrorCode,
+		Error:          output.Error,
+		Blocked:        output.Blocked,
+		Summary:        summary,
+		ReasonCode:     reasonCode,
+		Actionability:  actionability,
+		Severity:       severity,
+	})
+}
+
+func finalizeTerminalSendActuation(trace actuationTrace, opts SendOptions, output *SendOutput) *SendOutput {
+	if output != nil {
+		publishSendActuationOutcome(trace, opts, *output)
+	}
+	return output
+}
+
+func publishSendActuationVerification(trace actuationTrace, opts SendAndAckOptions, sendOutput SendOutput, ackOutput AckOutput) {
+	if len(sendOutput.Successful) == 0 && len(ackOutput.Confirmations) == 0 && len(ackOutput.Pending) == 0 {
+		return
+	}
+
+	verification := "confirmed"
+	summary := fmt.Sprintf("send verification confirmed for %d target(s)", len(ackOutput.Confirmations))
+	reasonCode := "actuation_verification_confirmed"
+	actionability := ActionabilityInteresting
+	severity := SeverityInfo
+
+	switch {
+	case ackOutput.TimedOut && len(ackOutput.Confirmations) > 0:
+		verification = "partial_timeout"
+		summary = fmt.Sprintf("send verification timed out with %d target(s) still pending", len(ackOutput.Pending))
+		reasonCode = "actuation_verification_partial_timeout"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case ackOutput.TimedOut:
+		verification = "timed_out"
+		summary = fmt.Sprintf("send verification timed out for %d target(s)", len(ackOutput.Pending))
+		reasonCode = "actuation_verification_timeout"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case len(ackOutput.Pending) > 0:
+		verification = "pending"
+		summary = fmt.Sprintf("send verification still pending for %d target(s)", len(ackOutput.Pending))
+		reasonCode = "actuation_verification_pending"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	}
+
+	targets := sendOutput.Successful
+	if len(targets) == 0 {
+		targets = sendOutput.Targets
+	}
+
+	GetAttentionFeed().PublishActuation(ActuationRecord{
+		Session:        opts.Session,
+		Action:         "send",
+		Stage:          ActuationStageVerification,
+		Source:         "robot.send_ack",
+		Method:         "paste_enter",
+		RequestID:      trace.RequestID,
+		CorrelationID:  trace.CorrelationID,
+		IdempotencyKey: trace.IdempotencyKey,
+		Targets:        targets,
+		Confirmations:  ackConfirmationsToDetails(ackOutput.Confirmations),
+		Pending:        ackOutput.Pending,
+		Verification:   verification,
+		ErrorCode:      ackOutput.ErrorCode,
+		Error:          ackOutput.Error,
+		TimedOut:       ackOutput.TimedOut,
+		Summary:        summary,
+		ReasonCode:     reasonCode,
+		Actionability:  actionability,
+		Severity:       severity,
+		MessagePreview: sendOutput.MessagePreview,
+	})
+}
+
+func finalizeTerminalSendAndAckActuation(trace actuationTrace, opts SendAndAckOptions, output *SendAndAckOutput) *SendAndAckOutput {
+	if output != nil {
+		publishSendActuationOutcome(trace, opts.SendOptions, output.Send)
+		publishSendActuationVerification(trace, opts, output.Send, output.Ack)
+	}
+	return output
+}
+
+func publishInterruptActuationRequest(trace actuationTrace, opts InterruptOptions, targets []string) {
+	if len(targets) == 0 {
+		return
+	}
+	targetWord := "targets"
+	if len(targets) == 1 {
+		targetWord = "target"
+	}
+	GetAttentionFeed().PublishActuation(ActuationRecord{
+		Session:        opts.Session,
+		Action:         "interrupt",
+		Stage:          ActuationStageRequest,
+		Source:         "robot.interrupt",
+		Method:         "ctrl_c",
+		RequestID:      trace.RequestID,
+		CorrelationID:  trace.CorrelationID,
+		IdempotencyKey: trace.IdempotencyKey,
+		Targets:        targets,
+		Summary:        fmt.Sprintf("interrupt requested for %d %s", len(targets), targetWord),
+		ReasonCode:     "actuation_requested",
+		Actionability:  ActionabilityInteresting,
+		Severity:       SeverityWarning,
+	})
+}
+
+func publishInterruptActuationOutcome(trace actuationTrace, opts InterruptOptions, targets []string, output *InterruptOutput) {
+	if output == nil {
+		return
+	}
+
+	result := "failed"
+	summary := "interrupt failed"
+	reasonCode := "actuation_failed"
+	actionability := ActionabilityActionRequired
+	severity := SeverityError
+
+	switch {
+	case output.ErrorCode == ErrCodeSessionNotFound:
+		result = "failed"
+		summary = "interrupt failed: session not found"
+		reasonCode = "actuation_session_not_found"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case output.ErrorCode == ErrCodeInternalError && len(targets) == 0:
+		result = "failed"
+		summary = "interrupt failed before dispatch"
+		reasonCode = "actuation_internal_error"
+	case len(targets) == 0:
+		result = "no_targets"
+		summary = "interrupt matched no target panes"
+		reasonCode = "actuation_no_targets"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case len(output.Interrupted) == 0 && len(output.ReadyForInput) > 0 && len(output.Failed) == 0:
+		result = "already_ready"
+		summary = fmt.Sprintf("interrupt skipped because %d target(s) were already ready", len(output.ReadyForInput))
+		reasonCode = "actuation_already_ready"
+		actionability = ActionabilityInteresting
+		severity = SeverityInfo
+	case len(output.Interrupted) > 0 && len(output.Failed) == 0:
+		result = "succeeded"
+		summary = fmt.Sprintf("interrupt sent to %d target(s)", len(output.Interrupted))
+		reasonCode = "actuation_succeeded"
+		actionability = ActionabilityInteresting
+		severity = SeverityWarning
+	case len(output.Interrupted) > 0:
+		result = "partial"
+		summary = fmt.Sprintf("interrupt partially failed for %d of %d target(s)", len(output.Failed), len(targets))
+		reasonCode = "actuation_partial_failure"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	default:
+		result = "failed"
+		summary = fmt.Sprintf("interrupt failed for %d target(s)", len(targets))
+		reasonCode = "actuation_failed"
+		actionability = ActionabilityActionRequired
+		severity = SeverityError
+	}
+
+	GetAttentionFeed().PublishActuation(ActuationRecord{
+		Session:        opts.Session,
+		Action:         "interrupt",
+		Stage:          ActuationStageOutcome,
+		Source:         "robot.interrupt",
+		Method:         "ctrl_c",
+		RequestID:      trace.RequestID,
+		CorrelationID:  trace.CorrelationID,
+		IdempotencyKey: trace.IdempotencyKey,
+		Targets:        targets,
+		Successful:     output.Interrupted,
+		Failed:         interruptErrorsToDetails(output.Failed),
+		Result:         result,
+		ErrorCode:      output.ErrorCode,
+		Error:          output.Error,
+		Summary:        summary,
+		ReasonCode:     reasonCode,
+		Actionability:  actionability,
+		Severity:       severity,
+	})
+}
+
+func finalizeTerminalInterruptActuation(trace actuationTrace, opts InterruptOptions, targets []string, output *InterruptOutput) *InterruptOutput {
+	if output != nil {
+		publishInterruptActuationOutcome(trace, opts, targets, output)
+		publishInterruptActuationVerification(trace, opts, targets, output)
+	}
+	return output
+}
+
+func publishInterruptActuationVerification(trace actuationTrace, opts InterruptOptions, targets []string, output *InterruptOutput) {
+	if output == nil || len(targets) == 0 {
+		return
+	}
+
+	verification := "ready"
+	summary := fmt.Sprintf("interrupt verification confirmed for %d target(s)", len(output.ReadyForInput))
+	reasonCode := "actuation_verification_confirmed"
+	actionability := ActionabilityInteresting
+	severity := SeverityInfo
+
+	switch {
+	case opts.NoWait:
+		verification = "not_requested"
+		summary = "interrupt returned without closed-loop verification"
+		reasonCode = "actuation_verification_skipped"
+		actionability = ActionabilityInteresting
+		severity = SeverityWarning
+	case output.TimedOut && len(output.ReadyForInput) > 0:
+		verification = "partial_timeout"
+		summary = fmt.Sprintf("interrupt verification timed out with %d target(s) still unresolved", len(targets)-len(output.ReadyForInput))
+		reasonCode = "actuation_verification_partial_timeout"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case output.TimedOut:
+		verification = "timed_out"
+		summary = fmt.Sprintf("interrupt verification timed out for %d target(s)", len(targets))
+		reasonCode = "actuation_verification_timeout"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	case len(output.ReadyForInput) < len(targets):
+		verification = "partial"
+		summary = fmt.Sprintf("interrupt verification incomplete for %d of %d target(s)", len(targets)-len(output.ReadyForInput), len(targets))
+		reasonCode = "actuation_verification_partial"
+		actionability = ActionabilityActionRequired
+		severity = SeverityWarning
+	}
+
+	pending := []string{}
+	if len(output.ReadyForInput) < len(targets) {
+		ready := make(map[string]struct{}, len(output.ReadyForInput))
+		for _, pane := range output.ReadyForInput {
+			ready[pane] = struct{}{}
+		}
+		for _, target := range targets {
+			if _, ok := ready[target]; !ok {
+				pending = append(pending, target)
+			}
+		}
+	}
+
+	GetAttentionFeed().PublishActuation(ActuationRecord{
+		Session:        opts.Session,
+		Action:         "interrupt",
+		Stage:          ActuationStageVerification,
+		Source:         "robot.interrupt",
+		Method:         "ctrl_c",
+		RequestID:      trace.RequestID,
+		CorrelationID:  trace.CorrelationID,
+		IdempotencyKey: trace.IdempotencyKey,
+		Targets:        targets,
+		Successful:     output.ReadyForInput,
+		Pending:        pending,
+		Verification:   verification,
+		ErrorCode:      output.ErrorCode,
+		Error:          output.Error,
+		TimedOut:       output.TimedOut,
+		Summary:        summary,
+		ReasonCode:     reasonCode,
+		Actionability:  actionability,
+		Severity:       severity,
+	})
 }
 
 func normalizeSendRedactionConfig(cfg redaction.Config) redaction.Config {
@@ -4871,6 +5327,7 @@ func applySendMessageRedaction(message string, cfg redaction.Config) (messageToS
 // GetSend sends a message to multiple panes atomically and returns structured results.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSend(opts SendOptions) (*SendOutput, error) {
+	trace := normalizeActuationTrace(opts.RequestID, opts.CorrelationID, opts.IdempotencyKey)
 	redactCfg := normalizeSendRedactionConfig(opts.Redaction)
 	_, initialPreview, initialSummary, initialWarnings, initialBlocked := applySendMessageRedaction(opts.Message, redactCfg)
 
@@ -4879,7 +5336,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		if parts := formatRedactionCategoryCounts(initialSummary.Categories); parts != "" {
 			errMsg = fmt.Sprintf("refusing to proceed: potential secrets detected (%s) (redaction mode: block)", parts)
 		}
-		return &SendOutput{
+		return finalizeTerminalSendActuation(trace, opts, &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("%s", errMsg), "SENSITIVE_DATA_BLOCKED", "Re-run with --allow-secret to bypass, or use --redact=warn/--redact=redact"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -4890,11 +5347,11 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			Successful:     []string{},
 			Failed:         []SendError{},
 			MessagePreview: initialPreview,
-		}, nil
+		}), nil
 	}
 
 	if strings.TrimSpace(opts.Session) == "" {
-		return &SendOutput{
+		return finalizeTerminalSendActuation(trace, opts, &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("session name is required"), ErrCodeInvalidFlag, "Provide a session name"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -4905,11 +5362,11 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			Successful:     []string{},
 			Failed:         []SendError{{Pane: "session", Error: "session name is required"}},
 			MessagePreview: initialPreview,
-		}, nil
+		}), nil
 	}
 
 	if !tmux.SessionExists(opts.Session) {
-		return &SendOutput{
+		return finalizeTerminalSendActuation(trace, opts, &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("session '%s' not found", opts.Session), ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -4920,12 +5377,12 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			Successful:     []string{},
 			Failed:         []SendError{{Pane: "session", Error: fmt.Sprintf("session '%s' not found", opts.Session)}},
 			MessagePreview: initialPreview,
-		}, nil
+		}), nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return &SendOutput{
+		return finalizeTerminalSendActuation(trace, opts, &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("failed to get panes: %w", err), ErrCodeInternalError, "Check tmux is running"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -4936,7 +5393,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			Successful:     []string{},
 			Failed:         []SendError{{Pane: "panes", Error: fmt.Sprintf("failed to get panes: %v", err)}},
 			MessagePreview: initialPreview,
-		}, nil
+		}), nil
 	}
 
 	output := SendOutput{
@@ -5090,6 +5547,8 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		return &output, nil
 	}
 
+	publishSendActuationRequest(trace, opts, output.Targets, output.MessagePreview)
+
 	sendEnter := true
 	if opts.Enter != nil {
 		sendEnter = *opts.Enter
@@ -5135,6 +5594,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 
 	// Generate agent hints
 	output.AgentHints = generateSendHints(output)
+	publishSendActuationOutcome(trace, opts, output)
 
 	return &output, nil
 }
@@ -5442,6 +5902,7 @@ func persistNormalizedProjection(store *state.Store, signals *adapters.Aggregate
 
 	workRows := buildRuntimeWorkRows(signals.Work, collectedAt, expiresAt)
 	coordinationRows := buildRuntimeCoordinationRows(signals.Coordination, collectedAt, expiresAt)
+	handoffRow := buildRuntimeHandoffRow(signals.Coordination, collectedAt, expiresAt)
 	quotaRows := buildRuntimeQuotaRows(signals.Quota, collectedAt, expiresAt)
 	healthRows := buildSourceHealthRows(signals.Health, collectedAt)
 	sessionRows := buildRuntimeSessionRows(tmuxSnapshot, collectedAt, expiresAt)
@@ -5561,6 +6022,13 @@ func persistNormalizedProjection(store *state.Store, signals *adapters.Aggregate
 			if err := tx.UpsertSourceHealth(healthRows[key]); err != nil {
 				return err
 			}
+		}
+		if handoffRow == nil {
+			if err := tx.DeleteRuntimeHandoff(); err != nil {
+				return err
+			}
+		} else if err := tx.UpsertRuntimeHandoff(handoffRow); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -5729,6 +6197,35 @@ func buildRuntimeCoordinationRows(section *adapters.CoordinationSection, collect
 	return rows
 }
 
+func buildRuntimeHandoffRow(section *adapters.CoordinationSection, collectedAt, staleAfter time.Time) *state.RuntimeHandoff {
+	if section == nil || section.Handoff == nil {
+		return nil
+	}
+	handoff := section.Handoff
+	if strings.TrimSpace(handoff.Session) == "" &&
+		strings.TrimSpace(handoff.Goal) == "" &&
+		strings.TrimSpace(handoff.Now) == "" &&
+		strings.TrimSpace(handoff.Status) == "" {
+		return nil
+	}
+	return &state.RuntimeHandoff{
+		SessionName:        strings.TrimSpace(handoff.Session),
+		Status:             strings.TrimSpace(handoff.Status),
+		Goal:               strings.TrimSpace(handoff.Goal),
+		GoalDisclosure:     jsonStringOrEmpty(handoff.GoalDisclosure),
+		NowText:            strings.TrimSpace(handoff.Now),
+		NowDisclosure:      jsonStringOrEmpty(handoff.NowDisclosure),
+		UpdatedAt:          parseRobotTimestamp(handoff.UpdatedAt),
+		ActiveBeads:        jsonStringOrEmpty(handoff.ActiveBeads),
+		AgentMailThreads:   jsonStringOrEmpty(handoff.AgentMailThreads),
+		Blockers:           jsonStringOrEmpty(handoff.Blockers),
+		BlockerDisclosures: jsonStringOrEmpty(handoff.BlockerDisclosures),
+		Files:              jsonStringOrEmpty(handoff.Files),
+		CollectedAt:        collectedAt,
+		StaleAfter:         staleAfter,
+	}
+}
+
 func buildRuntimeQuotaRows(section *adapters.QuotaSection, collectedAt, staleAfter time.Time) map[string]*state.RuntimeQuota {
 	rows := make(map[string]*state.RuntimeQuota)
 	if section == nil {
@@ -5742,19 +6239,21 @@ func buildRuntimeQuotaRows(section *adapters.QuotaSection, collectedAt, staleAft
 			continue
 		}
 
-		usedPct := quotaUsedPercent(account)
+		usedPct, usedPctKnown, usedPctSource := quotaUsedPercent(account)
 		healthy := !strings.EqualFold(account.Status, "critical") && !strings.EqualFold(account.Status, "exceeded")
 		row := &state.RuntimeQuota{
-			Provider:     provider,
-			Account:      id,
-			LimitHit:     strings.EqualFold(account.Status, "exceeded"),
-			UsedPct:      usedPct,
-			ResetsAt:     parseRobotTimestamp(account.ResetAt),
-			IsActive:     account.IsActive,
-			Healthy:      healthy,
-			HealthReason: strings.TrimSpace(string(account.ReasonCode)),
-			CollectedAt:  collectedAt,
-			StaleAfter:   staleAfter,
+			Provider:      provider,
+			Account:       id,
+			LimitHit:      strings.EqualFold(account.Status, "exceeded"),
+			UsedPct:       usedPct,
+			UsedPctKnown:  usedPctKnown,
+			UsedPctSource: usedPctSource,
+			ResetsAt:      parseRobotTimestamp(account.ResetAt),
+			IsActive:      account.IsActive,
+			Healthy:       healthy,
+			HealthReason:  strings.TrimSpace(string(account.ReasonCode)),
+			CollectedAt:   collectedAt,
+			StaleAfter:    staleAfter,
 		}
 		rows[runtimeQuotaKey(provider, id)] = row
 	}
@@ -6087,14 +6586,17 @@ func runtimeQuotaKey(provider, account string) string {
 	return strings.TrimSpace(provider) + "\x00" + strings.TrimSpace(account)
 }
 
-func quotaUsedPercent(account adapters.AccountQuota) float64 {
+func quotaUsedPercent(account adapters.AccountQuota) (float64, bool, state.RuntimeQuotaUsedPctSource) {
+	if account.UsagePercent != nil {
+		return *account.UsagePercent, true, state.RuntimeQuotaUsedPctSourceProvider
+	}
 	if account.TokensLimit > 0 {
-		return float64(account.TokensUsed) / float64(account.TokensLimit) * 100
+		return float64(account.TokensUsed) / float64(account.TokensLimit) * 100, true, state.RuntimeQuotaUsedPctSourceTokens
 	}
 	if account.RequestsLimit > 0 {
-		return float64(account.RequestsUsed) / float64(account.RequestsLimit) * 100
+		return float64(account.RequestsUsed) / float64(account.RequestsLimit) * 100, true, state.RuntimeQuotaUsedPctSourceRequests
 	}
-	return 0
+	return 0, false, state.RuntimeQuotaUsedPctSourceUnknown
 }
 
 func sortedMapKeys[T any](items map[string]T) []string {
@@ -6142,6 +6644,94 @@ func jsonStringOrEmpty(value any) string {
 		return ""
 	}
 	return string(data)
+}
+
+func decodeDisclosureMetadata(value string) *adapters.DisclosureMetadata {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	var disclosure adapters.DisclosureMetadata
+	if err := json.Unmarshal([]byte(trimmed), &disclosure); err != nil {
+		return nil
+	}
+	return &disclosure
+}
+
+func decodeDisclosureMetadataList(value string) []adapters.DisclosureMetadata {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	var disclosures []adapters.DisclosureMetadata
+	if err := json.Unmarshal([]byte(trimmed), &disclosures); err != nil {
+		return nil
+	}
+	return disclosures
+}
+
+func decodeStringList(value string) []string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(trimmed), &items); err != nil {
+		return nil
+	}
+	return items
+}
+
+func statusHandoffFromRuntime(row *state.RuntimeHandoff) *HandoffSummary {
+	if row == nil {
+		return nil
+	}
+	summary := &HandoffSummary{
+		Session:            strings.TrimSpace(row.SessionName),
+		Goal:               strings.TrimSpace(row.Goal),
+		GoalDisclosure:     decodeDisclosureMetadata(row.GoalDisclosure),
+		Now:                strings.TrimSpace(row.NowText),
+		NowDisclosure:      decodeDisclosureMetadata(row.NowDisclosure),
+		Status:             strings.TrimSpace(row.Status),
+		ActiveBeads:        decodeStringList(row.ActiveBeads),
+		AgentMailThreads:   decodeStringList(row.AgentMailThreads),
+		Blockers:           decodeStringList(row.Blockers),
+		BlockerDisclosures: decodeDisclosureMetadataList(row.BlockerDisclosures),
+		Files:              decodeStringList(row.Files),
+	}
+	if row.UpdatedAt != nil && !row.UpdatedAt.IsZero() {
+		summary.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	return summary
+}
+
+func statusHandoffFromAdapter(handoff *adapters.HandoffSummary) *HandoffSummary {
+	if handoff == nil {
+		return nil
+	}
+	summary := &HandoffSummary{
+		Session:          strings.TrimSpace(handoff.Session),
+		Goal:             strings.TrimSpace(handoff.Goal),
+		Now:              strings.TrimSpace(handoff.Now),
+		Status:           strings.TrimSpace(handoff.Status),
+		UpdatedAt:        strings.TrimSpace(handoff.UpdatedAt),
+		ActiveBeads:      append([]string(nil), handoff.ActiveBeads...),
+		AgentMailThreads: append([]string(nil), handoff.AgentMailThreads...),
+		Blockers:         append([]string(nil), handoff.Blockers...),
+		Files:            append([]string(nil), handoff.Files...),
+	}
+	if handoff.GoalDisclosure != nil {
+		disclosure := *handoff.GoalDisclosure
+		summary.GoalDisclosure = &disclosure
+	}
+	if handoff.NowDisclosure != nil {
+		disclosure := *handoff.NowDisclosure
+		summary.NowDisclosure = &disclosure
+	}
+	if len(handoff.BlockerDisclosures) > 0 {
+		summary.BlockerDisclosures = append([]adapters.DisclosureMetadata(nil), handoff.BlockerDisclosures...)
+	}
+	return summary
 }
 
 func parseRobotTimestamp(value string) *time.Time {
@@ -6458,20 +7048,21 @@ func buildCorrelationGraph() *GraphCorrelation {
 			if i >= maxSummaries {
 				break
 			}
+			includeExamples := false
 			summary, err := agentMailClient.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
 				ProjectKey:      wd,
 				ThreadID:        tid,
-				IncludeExamples: false,
+				IncludeExamples: &includeExamples,
 			})
 			if err != nil {
 				corr.Errors = append(corr.Errors, fmt.Sprintf("summarize_thread %s: %v", tid, err))
 				continue
 			}
 			thread := corr.MailSummary[tid]
-			thread.Participants = summary.Participants
+			thread.Participants = summary.Summary.Participants
 			corr.MailSummary[tid] = thread
 
-			for _, participant := range summary.Participants {
+			for _, participant := range summary.Summary.Participants {
 				a := assignmentByAgent[participant]
 				if a == nil {
 					a = &GraphAgentAssignment{

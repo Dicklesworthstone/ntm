@@ -445,6 +445,7 @@ type SendAndAckOutput struct {
 func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	// First, send the message
 	sentAt := time.Now().UTC()
+	trace := normalizeActuationTrace(opts.RequestID, opts.CorrelationID, opts.IdempotencyKey)
 
 	redactCfg := normalizeSendRedactionConfig(opts.Redaction)
 	messageToSend, preview, redactionSummary, redactionWarnings, blocked := applySendMessageRedaction(opts.Message, redactCfg)
@@ -454,7 +455,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			errMsg = fmt.Sprintf("refusing to proceed: potential secrets detected (%s) (redaction mode: block)", parts)
 		}
 		errResp := NewErrorResponse(fmt.Errorf("%s", errMsg), "SENSITIVE_DATA_BLOCKED", "Re-run with --allow-secret to bypass, or use --redact=warn/--redact=redact")
-		return &SendAndAckOutput{
+		return finalizeTerminalSendAndAckActuation(trace, opts, &SendAndAckOutput{
 			RobotResponse: errResp,
 			Send: SendOutput{
 				RobotResponse:  errResp,
@@ -477,12 +478,12 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				Pending:       []string{},
 				Failed:        []AckFailure{{Pane: "send", Reason: "blocked by redaction"}},
 			},
-		}, nil
+		}), nil
 	}
 	opts.Message = messageToSend
 
 	if !tmux.SessionExists(opts.Session) {
-		return &SendAndAckOutput{
+		return finalizeTerminalSendAndAckActuation(trace, opts, &SendAndAckOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("session '%s' not found", opts.Session),
 				ErrCodeSessionNotFound,
@@ -517,12 +518,12 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				Pending:       []string{},
 				Failed:        []AckFailure{{Pane: "session", Reason: "send failed"}},
 			},
-		}, nil
+		}), nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return &SendAndAckOutput{
+		return finalizeTerminalSendAndAckActuation(trace, opts, &SendAndAckOutput{
 			RobotResponse: NewErrorResponse(
 				err,
 				ErrCodeInternalError,
@@ -557,7 +558,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				Pending:       []string{},
 				Failed:        []AckFailure{{Pane: "panes", Reason: "failed to get panes"}},
 			},
-		}, nil
+		}), nil
 	}
 
 	// Build exclusion map
@@ -640,6 +641,8 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		MessagePreview: preview,
 	}
 
+	publishSendActuationRequest(trace, opts.SendOptions, targetKeys, preview)
+
 	// Send to all targets
 	for i, pane := range targetPanes {
 		paneKey := fmt.Sprintf("%d", pane.Index)
@@ -665,6 +668,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		sendOutput.Error = fmt.Sprintf("%d of %d sends failed", len(sendOutput.Failed), len(sendOutput.Targets))
 		sendOutput.ErrorCode = ErrCodeInternalError
 	}
+	publishSendActuationOutcome(trace, opts.SendOptions, sendOutput)
 
 	// Now wait for acknowledgments (only for successful sends)
 	ackOutput := AckOutput{
@@ -754,6 +758,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	}
 
 	ackOutput.CompletedAt = time.Now().UTC()
+	publishSendActuationVerification(trace, opts, sendOutput, ackOutput)
 
 	combined := NewRobotResponse(true)
 	if !sendOutput.Success {

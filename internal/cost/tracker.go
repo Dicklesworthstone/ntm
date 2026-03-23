@@ -154,7 +154,7 @@ func (t *CostTracker) SaveToDir(dir string) error {
 	}
 
 	costPath := filepath.Join(ntmDir, "costs.json")
-	
+
 	// Create atomic temp file
 	tmpFile, err := os.CreateTemp(ntmDir, "costs-*.json")
 	if err != nil {
@@ -176,7 +176,7 @@ func (t *CostTracker) SaveToDir(dir string) error {
 		tmpFile.Close()
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	
+
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}

@@ -147,14 +147,16 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 				waitTime := r.minInterval - elapsed
 				r.mu.Unlock()
 
+				timer := time.NewTimer(waitTime)
 				select {
 				case <-ctx.Done():
+					timer.Stop()
 					r.mu.Lock()
 					r.waiting--
 					r.stats.DeniedRequests++
 					r.mu.Unlock()
 					return ctx.Err()
-				case <-time.After(waitTime):
+				case <-timer.C:
 				}
 
 				r.mu.Lock()
@@ -196,14 +198,16 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 
 		r.mu.Unlock()
 
+		timer := time.NewTimer(waitDuration)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			r.mu.Lock()
 			r.waiting--
 			r.stats.DeniedRequests++
 			r.mu.Unlock()
 			return ctx.Err()
-		case <-time.After(waitDuration):
+		case <-timer.C:
 		}
 
 		r.mu.Lock()

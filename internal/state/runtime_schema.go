@@ -255,8 +255,45 @@ func (r *RuntimeCoordination) IsFresh() bool {
 }
 
 // =============================================================================
+// Runtime Handoff
+// =============================================================================
+
+// RuntimeHandoff is a cached projection of the latest normalized handoff state.
+type RuntimeHandoff struct {
+	SessionName        string     `json:"session_name"`
+	Status             string     `json:"status,omitempty"`
+	Goal               string     `json:"goal,omitempty"`
+	GoalDisclosure     string     `json:"goal_disclosure,omitempty"` // JSON DisclosureMetadata
+	NowText            string     `json:"now,omitempty"`
+	NowDisclosure      string     `json:"now_disclosure,omitempty"` // JSON DisclosureMetadata
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
+	ActiveBeads        string     `json:"active_beads,omitempty"`        // JSON []string
+	AgentMailThreads   string     `json:"agent_mail_threads,omitempty"`  // JSON []string
+	Blockers           string     `json:"blockers,omitempty"`            // JSON []string
+	BlockerDisclosures string     `json:"blocker_disclosures,omitempty"` // JSON []DisclosureMetadata
+	Files              string     `json:"files,omitempty"`               // JSON []string
+	CollectedAt        time.Time  `json:"collected_at"`
+	StaleAfter         time.Time  `json:"stale_after"`
+}
+
+// IsFresh returns true if the handoff projection is within its staleness threshold.
+func (r *RuntimeHandoff) IsFresh() bool {
+	return time.Now().Before(r.StaleAfter)
+}
+
+// =============================================================================
 // Runtime Quota
 // =============================================================================
+
+// RuntimeQuotaUsedPctSource identifies where runtime_quota.used_pct came from.
+type RuntimeQuotaUsedPctSource string
+
+const (
+	RuntimeQuotaUsedPctSourceUnknown  RuntimeQuotaUsedPctSource = "unknown"
+	RuntimeQuotaUsedPctSourceProvider RuntimeQuotaUsedPctSource = "provider"
+	RuntimeQuotaUsedPctSourceTokens   RuntimeQuotaUsedPctSource = "tokens"
+	RuntimeQuotaUsedPctSourceRequests RuntimeQuotaUsedPctSource = "requests"
+)
 
 // RuntimeQuota is a cached projection of API rate limit state.
 type RuntimeQuota struct {
@@ -265,9 +302,11 @@ type RuntimeQuota struct {
 	Account  string `json:"account"`
 
 	// State
-	LimitHit bool       `json:"limit_hit"`
-	UsedPct  float64    `json:"used_pct"`
-	ResetsAt *time.Time `json:"resets_at,omitempty"`
+	LimitHit      bool                      `json:"limit_hit"`
+	UsedPct       float64                   `json:"used_pct"`
+	UsedPctKnown  bool                      `json:"used_pct_known"`
+	UsedPctSource RuntimeQuotaUsedPctSource `json:"used_pct_source"`
+	ResetsAt      *time.Time                `json:"resets_at,omitempty"`
 
 	// Active account
 	IsActive bool `json:"is_active"`
@@ -371,6 +410,54 @@ type StoredAttentionEvent struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+// AttentionState represents durable operator state for an attention item.
+type AttentionState string
+
+const (
+	AttentionStateNew          AttentionState = "new"
+	AttentionStateSeen         AttentionState = "seen"
+	AttentionStateAcknowledged AttentionState = "acknowledged"
+	AttentionStateSnoozed      AttentionState = "snoozed"
+	AttentionStateDismissed    AttentionState = "dismissed"
+)
+
+// AttentionItemState is durable operator-controlled state for an attention item.
+// Item identity is stable across recurrence when the source event has a dedup key;
+// otherwise it falls back to a cursor-scoped key for one-off events.
+type AttentionItemState struct {
+	ItemKey  string `json:"item_key"`
+	DedupKey string `json:"dedup_key,omitempty"`
+
+	State AttentionState `json:"state"`
+
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy string     `json:"acknowledged_by,omitempty"`
+
+	SnoozedUntil *time.Time `json:"snoozed_until,omitempty"`
+
+	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
+	DismissedBy string     `json:"dismissed_by,omitempty"`
+
+	Pinned   bool       `json:"pinned"`
+	PinnedAt *time.Time `json:"pinned_at,omitempty"`
+	PinnedBy string     `json:"pinned_by,omitempty"`
+
+	Muted   bool       `json:"muted"`
+	MutedAt *time.Time `json:"muted_at,omitempty"`
+	MutedBy string     `json:"muted_by,omitempty"`
+
+	OverridePriority  string     `json:"override_priority,omitempty"`
+	OverrideReason    string     `json:"override_reason,omitempty"`
+	OverrideExpiresAt *time.Time `json:"override_expires_at,omitempty"`
+
+	ResurfacingPolicy string `json:"resurfacing_policy,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // AttentionReplayWindow describes the currently replayable cursor window.
 // It excludes expired rows so callers can make explicit cursor-expiry decisions.
 type AttentionReplayWindow struct {
@@ -407,8 +494,11 @@ func (w AttentionReplayWindow) CursorExpired(sinceCursor int64) bool {
 // Incident represents a tracked incident with lifecycle.
 type Incident struct {
 	// Identity
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Fingerprint string `json:"fingerprint"`
+	Family      string `json:"family"`
+	Category    string `json:"category"`
 
 	// State
 	Status   IncidentStatus `json:"status"`

@@ -66,7 +66,7 @@ import (
 
 // AttentionContractVersion is the semantic version of the attention feed contract.
 // Increment major version for breaking changes, minor for additions, patch for fixes.
-const AttentionContractVersion = "1.0.0"
+const AttentionContractVersion = "1.1.0"
 
 // =============================================================================
 // Event Categories and Types
@@ -85,6 +85,9 @@ const (
 
 	// EventCategoryAgent events relate to agent behavior and activity.
 	EventCategoryAgent EventCategory = "agent"
+
+	// EventCategoryActuation events relate to explicit operator-triggered actions.
+	EventCategoryActuation EventCategory = "actuation"
 
 	// EventCategoryFile events relate to file system changes.
 	EventCategoryFile EventCategory = "file"
@@ -142,6 +145,13 @@ const (
 	EventTypeMailUnread          EventType = "mail.unread"
 	EventTypePaneContextHot      EventType = "pane.context_hot"
 	EventTypeReservationConflict EventType = "reservation.conflict"
+)
+
+// Actuation events
+const (
+	EventTypeActuationRequested EventType = "actuation.requested"
+	EventTypeActuationOutcome   EventType = "actuation.outcome"
+	EventTypeActuationVerified  EventType = "actuation.verified"
 )
 
 // File events
@@ -276,7 +286,7 @@ type AttentionEvent struct {
 	Pane int `json:"pane,omitempty"`
 
 	// Category is the coarse-grained event classification.
-	// Required. One of: session, pane, agent, file, mail, bead, system, alert.
+	// Required. One of: session, pane, agent, actuation, file, mail, bead, system, alert.
 	Category EventCategory `json:"category"`
 
 	// Type is the fine-grained event type within the category.

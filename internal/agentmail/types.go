@@ -421,7 +421,7 @@ type ContactPolicyResult struct {
 type SummarizeThreadOptions struct {
 	ProjectKey      string
 	ThreadID        string
-	IncludeExamples bool
+	IncludeExamples *bool
 	LLMMode         *bool
 	LLMModel        string
 }
