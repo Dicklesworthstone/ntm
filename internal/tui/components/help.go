@@ -357,6 +357,8 @@ func PaletteHelpSections() []HelpSection {
 			Hints: []KeyHint{
 				{Key: "Enter", Desc: "Select command"},
 				{Key: "1-4", Desc: "Select target (in target phase)"},
+				{Key: "e", Desc: "Edit prompt before sending (in target phase)"},
+				{Key: "Ctrl+S", Desc: "Save edit and return to target selection"},
 				{Key: "Ctrl+P", Desc: "Pin / unpin command"},
 				{Key: "Ctrl+F", Desc: "Favorite / unfavorite command"},
 				{Key: "Type", Desc: "Filter commands"},

@@ -73,8 +73,8 @@ func TestPhaseConstants(t *testing.T) {
 	if PhaseCommand == PhaseTarget {
 		t.Error("PhaseCommand and PhaseTarget should be distinct")
 	}
-	if PhaseTarget == PhaseConfirm {
-		t.Error("PhaseTarget and PhaseConfirm should be distinct")
+	if PhaseTarget == PhaseEdit {
+		t.Error("PhaseTarget and PhaseEdit should be distinct")
 	}
 }
 
