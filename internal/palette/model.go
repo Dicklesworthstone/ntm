@@ -539,6 +539,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				editWidth = 30
 			}
 			m.editInput.SetWidth(editWidth)
+
+			// Recalculate height to match available vertical space.
+			lines := strings.Count(m.editInput.Value(), "\n") + 3
+			maxHeight := msg.Height - 14
+			if maxHeight < 4 {
+				maxHeight = 4
+			}
+			if lines > maxHeight {
+				lines = maxHeight
+			}
+			if lines < 4 {
+				lines = 4
+			}
+			m.editInput.SetHeight(lines)
 		}
 		return m, nil
 
@@ -613,7 +627,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if key.Matches(msg, keys.Help) {
+		if m.phase != PhaseEdit && key.Matches(msg, keys.Help) {
 			m.showHelp = true
 			return m, nil
 		}
@@ -817,6 +831,7 @@ func (m *Model) updateCommandPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return *m, nil
 			}
 			m.selected = &m.filtered[m.cursor]
+			m.editDraft = ""
 			m.phase = PhaseTarget
 		}
 
@@ -877,6 +892,7 @@ func (m *Model) selectByNumber(n int) bool {
 		idx := m.visualOrder[visualPos]
 		m.cursor = idx
 		m.selected = &m.filtered[idx]
+		m.editDraft = ""
 		return true
 	}
 	return false
@@ -887,6 +903,7 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Back):
 		m.phase = PhaseCommand
 		m.selected = nil
+		m.editDraft = ""
 
 	case key.Matches(msg, keys.Quit):
 		m.quitting = true
@@ -977,7 +994,7 @@ func (m *Model) updateEditPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.phase = PhaseTarget
 		return *m, nil
 
-	case key.Matches(msg, keys.Quit):
+	case msg.Type == tea.KeyCtrlC:
 		m.quitting = true
 		return *m, tea.Quit
 	}
