@@ -602,6 +602,21 @@ claude = "claude --project-override"
 			t.Errorf("expected error to mention project config, got=%v", err)
 		}
 	})
+
+	t.Run("returns error for invalid global config", func(t *testing.T) {
+		badGlobalPath := filepath.Join(globalDir, "bad-config.toml")
+		if err := os.WriteFile(badGlobalPath, []byte("invalid { toml"), 0644); err != nil {
+			t.Fatalf("writing bad global config: %v", err)
+		}
+
+		_, err := LoadMerged(projectDir, badGlobalPath)
+		if err == nil {
+			t.Fatal("expected error for invalid global config")
+		}
+		if !strings.Contains(err.Error(), "global config") {
+			t.Errorf("expected error to mention global config, got=%v", err)
+		}
+	})
 }
 
 func TestMergeConfig(t *testing.T) {
@@ -696,6 +711,79 @@ func TestMergeConfig(t *testing.T) {
 		}
 		if result.PaletteState.Favorites[0] != "project-fav" {
 			t.Errorf("expected project-fav first, got=%s", result.PaletteState.Favorites[0])
+		}
+	})
+}
+
+func TestMergeConfig_ProjectAlerts(t *testing.T) {
+	t.Run("explicit false overrides global enabled without zeroing thresholds", func(t *testing.T) {
+		global := Default()
+		enabled := false
+		project := &ProjectConfig{
+			Alerts: &ProjectAlerts{
+				Enabled: &enabled,
+			},
+		}
+
+		result := MergeConfig(global, project, "/project")
+		if result.Alerts.Enabled {
+			t.Fatal("expected project alerts.enabled=false to override global config")
+		}
+		if result.Alerts.AgentStuckMinutes != DefaultAlertsConfig().AgentStuckMinutes {
+			t.Fatalf("AgentStuckMinutes = %d, want default %d", result.Alerts.AgentStuckMinutes, DefaultAlertsConfig().AgentStuckMinutes)
+		}
+		if result.Alerts.MailBacklogThreshold != DefaultAlertsConfig().MailBacklogThreshold {
+			t.Fatalf("MailBacklogThreshold = %d, want default %d", result.Alerts.MailBacklogThreshold, DefaultAlertsConfig().MailBacklogThreshold)
+		}
+	})
+
+	t.Run("partial project alert overrides preserve other global values", func(t *testing.T) {
+		global := Default()
+		global.Alerts.Enabled = true
+		global.Alerts.AgentStuckMinutes = 7
+		global.Alerts.DiskLowThresholdGB = 9.5
+		global.Alerts.ContextWarningThreshold = 68.0
+
+		beadStaleHours := 72
+		project := &ProjectConfig{
+			Alerts: &ProjectAlerts{
+				BeadStaleHours: &beadStaleHours,
+			},
+		}
+
+		result := MergeConfig(global, project, "/project")
+		if !result.Alerts.Enabled {
+			t.Fatal("expected unspecified alerts.enabled to preserve global true")
+		}
+		if result.Alerts.AgentStuckMinutes != 7 {
+			t.Fatalf("AgentStuckMinutes = %d, want 7", result.Alerts.AgentStuckMinutes)
+		}
+		if result.Alerts.DiskLowThresholdGB != 9.5 {
+			t.Fatalf("DiskLowThresholdGB = %v, want 9.5", result.Alerts.DiskLowThresholdGB)
+		}
+		if result.Alerts.ContextWarningThreshold != 68.0 {
+			t.Fatalf("ContextWarningThreshold = %v, want 68.0", result.Alerts.ContextWarningThreshold)
+		}
+		if result.Alerts.BeadStaleHours != 72 {
+			t.Fatalf("BeadStaleHours = %d, want 72", result.Alerts.BeadStaleHours)
+		}
+	})
+
+	t.Run("project can override context warning threshold independently", func(t *testing.T) {
+		global := Default()
+		threshold := 91.5
+		project := &ProjectConfig{
+			Alerts: &ProjectAlerts{
+				ContextWarningThreshold: &threshold,
+			},
+		}
+
+		result := MergeConfig(global, project, "/project")
+		if result.Alerts.ContextWarningThreshold != 91.5 {
+			t.Fatalf("ContextWarningThreshold = %v, want 91.5", result.Alerts.ContextWarningThreshold)
+		}
+		if result.Alerts.AgentStuckMinutes != DefaultAlertsConfig().AgentStuckMinutes {
+			t.Fatalf("AgentStuckMinutes = %d, want default %d", result.Alerts.AgentStuckMinutes, DefaultAlertsConfig().AgentStuckMinutes)
 		}
 	})
 }

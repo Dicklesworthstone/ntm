@@ -177,23 +177,25 @@ func DefaultCheckpointsConfig() CheckpointsConfig {
 
 // AlertsConfig holds configuration for the alert system
 type AlertsConfig struct {
-	Enabled              bool    `toml:"enabled"`                // Top-level toggle for alerts
-	AgentStuckMinutes    int     `toml:"agent_stuck_minutes"`    // Minutes without output before alerting
-	DiskLowThresholdGB   float64 `toml:"disk_low_threshold_gb"`  // Minimum free disk space (GB)
-	MailBacklogThreshold int     `toml:"mail_backlog_threshold"` // Unread messages before alerting
-	BeadStaleHours       int     `toml:"bead_stale_hours"`       // Hours before in-progress bead is stale
-	ResolvedPruneMinutes int     `toml:"resolved_prune_minutes"` // How long to keep resolved alerts
+	Enabled                 bool    `toml:"enabled"`                   // Top-level toggle for alerts
+	AgentStuckMinutes       int     `toml:"agent_stuck_minutes"`       // Minutes without output before alerting
+	DiskLowThresholdGB      float64 `toml:"disk_low_threshold_gb"`     // Minimum free disk space (GB)
+	MailBacklogThreshold    int     `toml:"mail_backlog_threshold"`    // Unread messages before alerting
+	BeadStaleHours          int     `toml:"bead_stale_hours"`          // Hours before in-progress bead is stale
+	ContextWarningThreshold float64 `toml:"context_warning_threshold"` // Context usage percentage that triggers a warning
+	ResolvedPruneMinutes    int     `toml:"resolved_prune_minutes"`    // How long to keep resolved alerts
 }
 
 // DefaultAlertsConfig returns sensible alert defaults
 func DefaultAlertsConfig() AlertsConfig {
 	return AlertsConfig{
-		Enabled:              true,
-		AgentStuckMinutes:    5,
-		DiskLowThresholdGB:   5.0,
-		MailBacklogThreshold: 10,
-		BeadStaleHours:       24,
-		ResolvedPruneMinutes: 60,
+		Enabled:                 true,
+		AgentStuckMinutes:       5,
+		DiskLowThresholdGB:      5.0,
+		MailBacklogThreshold:    10,
+		BeadStaleHours:          24,
+		ContextWarningThreshold: 75.0,
+		ResolvedPruneMinutes:    60,
 	}
 }
 
@@ -2651,6 +2653,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "disk_low_threshold_gb = %.1f  # Minimum free disk space (GB)\n", cfg.Alerts.DiskLowThresholdGB)
 	fmt.Fprintf(w, "mail_backlog_threshold = %d  # Unread messages before alerting\n", cfg.Alerts.MailBacklogThreshold)
 	fmt.Fprintf(w, "bead_stale_hours = %d       # Hours before in-progress bead is stale\n", cfg.Alerts.BeadStaleHours)
+	fmt.Fprintf(w, "context_warning_threshold = %.1f # Context usage percentage that triggers a warning\n", cfg.Alerts.ContextWarningThreshold)
 	fmt.Fprintf(w, "resolved_prune_minutes = %d # How long to keep resolved alerts\n", cfg.Alerts.ResolvedPruneMinutes)
 	fmt.Fprintln(w)
 
@@ -3206,6 +3209,14 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Alerts.AgentStuckMinutes, nil
 		case "disk_low_threshold_gb":
 			return cfg.Alerts.DiskLowThresholdGB, nil
+		case "mail_backlog_threshold":
+			return cfg.Alerts.MailBacklogThreshold, nil
+		case "bead_stale_hours":
+			return cfg.Alerts.BeadStaleHours, nil
+		case "context_warning_threshold":
+			return cfg.Alerts.ContextWarningThreshold, nil
+		case "resolved_prune_minutes":
+			return cfg.Alerts.ResolvedPruneMinutes, nil
 		}
 	case "checkpoints":
 		if len(parts) < 2 {
@@ -3460,6 +3471,10 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
 	addDiff("alerts.agent_stuck_minutes", defaults.Alerts.AgentStuckMinutes, cfg.Alerts.AgentStuckMinutes)
 	addDiff("alerts.disk_low_threshold_gb", defaults.Alerts.DiskLowThresholdGB, cfg.Alerts.DiskLowThresholdGB)
+	addDiff("alerts.mail_backlog_threshold", defaults.Alerts.MailBacklogThreshold, cfg.Alerts.MailBacklogThreshold)
+	addDiff("alerts.bead_stale_hours", defaults.Alerts.BeadStaleHours, cfg.Alerts.BeadStaleHours)
+	addDiff("alerts.context_warning_threshold", defaults.Alerts.ContextWarningThreshold, cfg.Alerts.ContextWarningThreshold)
+	addDiff("alerts.resolved_prune_minutes", defaults.Alerts.ResolvedPruneMinutes, cfg.Alerts.ResolvedPruneMinutes)
 
 	// Checkpoints
 	addDiff("checkpoints.enabled", defaults.Checkpoints.Enabled, cfg.Checkpoints.Enabled)
@@ -3623,6 +3638,18 @@ func Validate(cfg *Config) []error {
 	}
 	if cfg.Alerts.DiskLowThresholdGB < 0 {
 		errs = append(errs, fmt.Errorf("alerts.disk_low_threshold_gb: must be non-negative, got %.1f", cfg.Alerts.DiskLowThresholdGB))
+	}
+	if cfg.Alerts.MailBacklogThreshold < 0 {
+		errs = append(errs, fmt.Errorf("alerts.mail_backlog_threshold: must be non-negative, got %d", cfg.Alerts.MailBacklogThreshold))
+	}
+	if cfg.Alerts.BeadStaleHours < 0 {
+		errs = append(errs, fmt.Errorf("alerts.bead_stale_hours: must be non-negative, got %d", cfg.Alerts.BeadStaleHours))
+	}
+	if cfg.Alerts.ContextWarningThreshold < 0 || cfg.Alerts.ContextWarningThreshold > 100 {
+		errs = append(errs, fmt.Errorf("alerts.context_warning_threshold: must be between 0 and 100, got %.1f", cfg.Alerts.ContextWarningThreshold))
+	}
+	if cfg.Alerts.ResolvedPruneMinutes < 0 {
+		errs = append(errs, fmt.Errorf("alerts.resolved_prune_minutes: must be non-negative, got %d", cfg.Alerts.ResolvedPruneMinutes))
 	}
 
 	// Validate checkpoints

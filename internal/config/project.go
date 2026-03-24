@@ -16,6 +16,7 @@ import (
 type ProjectConfig struct {
 	Project      ProjectMeta         `toml:"project"`
 	Defaults     ProjectDefaults     `toml:"defaults"`
+	Alerts       *ProjectAlerts      `toml:"alerts"`
 	Palette      ProjectPalette      `toml:"palette"`
 	PaletteState PaletteState        `toml:"palette_state"`
 	Templates    ProjectTemplates    `toml:"templates"`
@@ -40,6 +41,18 @@ type ProjectIntegrations struct {
 // ProjectDefaults holds default settings for the project
 type ProjectDefaults struct {
 	Agents map[string]int `toml:"agents"` // e.g., { cc = 2, cod = 1 }
+}
+
+// ProjectAlerts holds project-scoped alert overrides. Pointer fields preserve
+// the distinction between "unset" and explicit zero/false values.
+type ProjectAlerts struct {
+	Enabled                 *bool    `toml:"enabled"`
+	AgentStuckMinutes       *int     `toml:"agent_stuck_minutes"`
+	DiskLowThresholdGB      *float64 `toml:"disk_low_threshold_gb"`
+	MailBacklogThreshold    *int     `toml:"mail_backlog_threshold"`
+	BeadStaleHours          *int     `toml:"bead_stale_hours"`
+	ContextWarningThreshold *float64 `toml:"context_warning_threshold"`
+	ResolvedPruneMinutes    *int     `toml:"resolved_prune_minutes"`
 }
 
 // ProjectPalette holds palette configuration

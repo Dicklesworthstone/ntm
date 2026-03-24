@@ -174,6 +174,10 @@ func TestGetValue_Alerts(t *testing.T) {
 		{"alerts.enabled"},
 		{"alerts.agent_stuck_minutes"},
 		{"alerts.disk_low_threshold_gb"},
+		{"alerts.mail_backlog_threshold"},
+		{"alerts.bead_stale_hours"},
+		{"alerts.context_warning_threshold"},
+		{"alerts.resolved_prune_minutes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -1059,6 +1063,10 @@ func TestValidate_NegativeAlerts(t *testing.T) {
 	cfg := Default()
 	cfg.Alerts.AgentStuckMinutes = -1
 	cfg.Alerts.DiskLowThresholdGB = -0.5
+	cfg.Alerts.MailBacklogThreshold = -2
+	cfg.Alerts.BeadStaleHours = -3
+	cfg.Alerts.ContextWarningThreshold = 150
+	cfg.Alerts.ResolvedPruneMinutes = -4
 	errs := Validate(cfg)
 	alertCount := 0
 	for _, e := range errs {
@@ -1066,8 +1074,8 @@ func TestValidate_NegativeAlerts(t *testing.T) {
 			alertCount++
 		}
 	}
-	if alertCount < 2 {
-		t.Errorf("expected at least 2 alert errors, got %d", alertCount)
+	if alertCount < 6 {
+		t.Errorf("expected at least 6 alert errors, got %d", alertCount)
 	}
 }
 

@@ -12,8 +12,7 @@ func LoadMerged(cwd, globalPath string) (*Config, error) {
 	// Load global
 	cfg, err := Load(globalPath)
 	if err != nil {
-		// If global missing, use defaults
-		cfg = Default()
+		return nil, fmt.Errorf("loading global config: %w", err)
 	}
 
 	// Find project config
@@ -54,6 +53,31 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 	// Merge Defaults
 	if len(project.Defaults.Agents) > 0 {
 		global.ProjectDefaults = project.Defaults.Agents
+	}
+
+	// Merge Alerts
+	if project.Alerts != nil {
+		if project.Alerts.Enabled != nil {
+			global.Alerts.Enabled = *project.Alerts.Enabled
+		}
+		if project.Alerts.AgentStuckMinutes != nil {
+			global.Alerts.AgentStuckMinutes = *project.Alerts.AgentStuckMinutes
+		}
+		if project.Alerts.DiskLowThresholdGB != nil {
+			global.Alerts.DiskLowThresholdGB = *project.Alerts.DiskLowThresholdGB
+		}
+		if project.Alerts.MailBacklogThreshold != nil {
+			global.Alerts.MailBacklogThreshold = *project.Alerts.MailBacklogThreshold
+		}
+		if project.Alerts.BeadStaleHours != nil {
+			global.Alerts.BeadStaleHours = *project.Alerts.BeadStaleHours
+		}
+		if project.Alerts.ContextWarningThreshold != nil {
+			global.Alerts.ContextWarningThreshold = *project.Alerts.ContextWarningThreshold
+		}
+		if project.Alerts.ResolvedPruneMinutes != nil {
+			global.Alerts.ResolvedPruneMinutes = *project.Alerts.ResolvedPruneMinutes
+		}
 	}
 
 	// Merge Palette File
