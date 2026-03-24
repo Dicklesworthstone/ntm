@@ -194,12 +194,15 @@ func TestGetDocs_QuickstartMentionsJSONDocs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDocs returned error: %v", err)
 	}
-	if len(output.Sections) == 0 {
+	if output.Content == nil {
+		t.Fatal("expected content, got nil")
+	}
+	if len(output.Content.Sections) == 0 {
 		t.Fatal("quickstart topic should include sections")
 	}
 
 	var discovery string
-	for _, section := range output.Sections {
+	for _, section := range output.Content.Sections {
 		if section.Heading == "Discovery" {
 			discovery = section.Body
 			break
