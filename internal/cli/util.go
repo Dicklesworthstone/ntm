@@ -289,6 +289,20 @@ func normalizeConfiguredProjectBase(base string, allowPrefix bool) (string, erro
 	return matches[0], nil
 }
 
+func defaultProjectScopedSession(projectDir string) string {
+	if current := strings.TrimSpace(tmux.GetCurrentSession()); current != "" {
+		return current
+	}
+
+	if sessionList, err := tmux.ListSessions(); err == nil {
+		if inferred, _ := inferSessionFromCWD(sessionList); inferred != "" {
+			return inferred
+		}
+	}
+
+	return filepath.Base(projectDir)
+}
+
 func resolveExplicitSessionName(input string, sessions []tmux.Session, allowPrefix bool) (string, string, error) {
 	return sessionPkg.ResolveExplicitSessionName(input, sessions, allowPrefix)
 }

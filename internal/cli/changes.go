@@ -71,12 +71,17 @@ func newConflictsCmd() *cobra.Command {
 }
 
 func runChanges(sessionFilter string) error {
+	resolvedSessionFilter, err := normalizeTrackedSessionFilter(sessionFilter)
+	if err != nil {
+		return err
+	}
+
 	changes := tracker.RecordedChanges()
 
 	// Filter and sort
 	var filtered []tracker.RecordedFileChange
 	for _, c := range changes {
-		if sessionFilter == "" || c.Session == sessionFilter {
+		if resolvedSessionFilter == "" || c.Session == resolvedSessionFilter {
 			filtered = append(filtered, c)
 		}
 	}
@@ -137,6 +142,11 @@ func runChanges(sessionFilter string) error {
 }
 
 func runConflicts(sessionFilter, since string, limit int) error {
+	resolvedSessionFilter, err := normalizeTrackedSessionFilter(sessionFilter)
+	if err != nil {
+		return err
+	}
+
 	window := 24 * time.Hour
 	if since != "" {
 		if d, err := time.ParseDuration(since); err == nil && d > 0 {
@@ -144,7 +154,7 @@ func runConflicts(sessionFilter, since string, limit int) error {
 		}
 	}
 
-	conflicts := tracker.ConflictsSince(time.Now().Add(-window), sessionFilter)
+	conflicts := tracker.ConflictsSince(time.Now().Add(-window), resolvedSessionFilter)
 	sort.Slice(conflicts, func(i, j int) bool {
 		return conflicts[i].LastAt.After(conflicts[j].LastAt)
 	})
@@ -184,4 +194,12 @@ func runConflicts(sessionFilter, since string, limit int) error {
 	}
 
 	return nil
+}
+
+func normalizeTrackedSessionFilter(session string) (string, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return "", nil
+	}
+	return normalizeProjectScopedSessionName(session, !IsJSONOutput())
 }

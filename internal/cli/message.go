@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -173,9 +172,11 @@ This marks the message as both read and acknowledged.`,
 func resolveMessageScope(session string) (string, string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		if err := tmux.ValidateSessionName(session); err != nil {
-			return "", "", fmt.Errorf("invalid session name: %w", err)
+		resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+		if err != nil {
+			return "", "", err
 		}
+		session = resolved
 	}
 
 	projectDir := ""
@@ -189,7 +190,7 @@ func resolveMessageScope(session string) (string, string, error) {
 	}
 
 	if session == "" {
-		session = filepath.Base(projectDir)
+		session = defaultProjectScopedSession(projectDir)
 	}
 	return projectDir, fmt.Sprintf("ntm_%s", session), nil
 }

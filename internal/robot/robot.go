@@ -1965,7 +1965,7 @@ API Design Principles (see docs/robot-api-design.md):
 -----------------------------------------------------
 1. Global commands: bool flags (--robot-status, --robot-plan)
 2. Session-scoped: =SESSION syntax (--robot-send=myproj, --robot-tail=myproj)
-3. Modifiers: unprefixed global flags (--limit, --offset, --since, --type)
+3. Modifiers: unprefixed global flags (--limit, --offset, and selected shared flags like --since and --type)
 4. Output: JSON by default, TOON for token-efficient (--robot-format=toon)
 `)
 	for _, section := range robotHelpSections {
@@ -1989,8 +1989,8 @@ Common Modifiers:
 --offset=N      Pagination offset for list commands
 --robot-limit=N  Explicit pagination alias for robot list outputs
 --robot-offset=N Explicit pagination alias for robot list outputs
---since=DURATION  Time filter (1d, 7d, 30d, ISO8601, or duration like 1h)
---type=TYPE     Agent type filter (claude, codex, gemini)
+--since=VALUE   Time filter for commands that support it (history accepts durations/ISO8601; snapshot requires RFC3339)
+--type=TYPE     Agent type filter for commands that support it (claude, codex, gemini)
 --panes=X,Y     Pane filter (comma-separated indices)
 --dry-run       Preview without executing
 --verbose       Detailed output
@@ -4205,7 +4205,7 @@ type SnapshotReplayWindowInfo struct {
 	Supported       bool   `json:"supported"`
 	Reason          string `json:"reason,omitempty"`           // Why replay is/isn't supported
 	OldestCursor    int64  `json:"oldest_cursor"`              // Earliest cursor still in retention
-	LatestCursor    int64  `json:"latest_cursor"`              // Most recent cursor (use for --since)
+	LatestCursor    int64  `json:"latest_cursor"`              // Most recent cursor (use for --since-cursor)
 	EventCount      int    `json:"event_count"`                // Events in the replay window
 	OldestTimestamp string `json:"oldest_timestamp,omitempty"` // RFC3339 timestamp of oldest event
 	LatestTimestamp string `json:"latest_timestamp,omitempty"` // RFC3339 timestamp of latest event

@@ -395,6 +395,10 @@ func runContextRotationPending(sessionFilter string) error {
 	var err error
 
 	if sessionFilter != "" {
+		sessionFilter, err = normalizeProjectScopedSessionName(sessionFilter, !IsJSONOutput())
+		if err != nil {
+			return err
+		}
 		pending, err = ctxmon.GetPendingRotationsForSession(sessionFilter)
 	} else {
 		pending, err = ctxmon.GetAllPendingRotations()

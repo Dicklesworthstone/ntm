@@ -485,6 +485,9 @@ func cloneSchemaBindings(src map[string]interface{}) map[string]interface{} {
 }
 
 func schemaTypeForCommand(name string, schemaByType map[string]interface{}) string {
+	if registrySurfaceOmitsSchemaType(name) {
+		return ""
+	}
 	if _, ok := schemaByType[name]; ok {
 		return name
 	}
@@ -493,6 +496,18 @@ func schemaTypeForCommand(name string, schemaByType map[string]interface{}) stri
 		return candidate
 	}
 	return ""
+}
+
+func registrySurfaceOmitsSchemaType(name string) bool {
+	switch name {
+	case "attention":
+		// The attention surface is versioned by the dedicated attention
+		// contract/capabilities metadata rather than the generic schema_type
+		// projection used by most robot surfaces.
+		return true
+	default:
+		return false
+	}
 }
 
 func sortedSchemaTypes(schemaByType map[string]interface{}) []string {

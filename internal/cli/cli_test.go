@@ -20,10 +20,12 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionpkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
@@ -208,6 +210,75 @@ func TestResolveMessageScopeFallsBackToProjectRoot(t *testing.T) {
 	}
 }
 
+func TestResolveMessageScopeInfersLabeledSessionFromCurrentProject(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "messageproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	fullSession := "messageproject--frontend"
+	_ = tmux.KillSession(fullSession)
+	if err := tmux.CreateSession(fullSession, projectDir); err != nil {
+		t.Fatalf("CreateSession(%q): %v", fullSession, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(fullSession) })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, gotAgent, err := resolveMessageScope("")
+	if err != nil {
+		t.Fatalf("resolveMessageScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	wantAgent := "ntm_" + fullSession
+	if gotAgent != wantAgent {
+		t.Fatalf("agent name = %q, want %q", gotAgent, wantAgent)
+	}
+}
+
+func TestResolveMessageScopeNormalizesExplicitPrefix(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "messageprefix")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, gotAgent, err := resolveMessageScope("messagep")
+	if err != nil {
+		t.Fatalf("resolveMessageScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	if gotAgent != "ntm_messageprefix" {
+		t.Fatalf("agent name = %q, want %q", gotAgent, "ntm_messageprefix")
+	}
+}
+
 func TestResolveMessageScopeRejectsInvalidSessionName(t *testing.T) {
 	_, _, err := resolveMessageScope("../escape")
 	if err == nil {
@@ -324,6 +395,44 @@ func TestResolveWorktreeScopeFallsBackToProjectRoot(t *testing.T) {
 	}
 }
 
+func TestResolveWorktreeScopeInfersLabeledSessionFromCurrentProject(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "scopeproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	fullSession := "scopeproject--frontend"
+	_ = tmux.KillSession(fullSession)
+	if err := tmux.CreateSession(fullSession, projectDir); err != nil {
+		t.Fatalf("CreateSession(%q): %v", fullSession, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(fullSession) })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, gotSession, err := resolveWorktreeScope("")
+	if err != nil {
+		t.Fatalf("resolveWorktreeScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	if gotSession != fullSession {
+		t.Fatalf("session = %q, want %q", gotSession, fullSession)
+	}
+}
+
 func TestResolveWorktreeScopeRejectsInvalidSessionName(t *testing.T) {
 	_, _, err := resolveWorktreeScope("../escape")
 	if err == nil {
@@ -382,6 +491,44 @@ func TestResolveContextBuildScopeFallsBackToProjectRoot(t *testing.T) {
 	}
 	if gotSession != filepath.Base(projectDir) {
 		t.Fatalf("session = %q, want %q", gotSession, filepath.Base(projectDir))
+	}
+}
+
+func TestResolveContextBuildScopeInfersLabeledSessionFromCurrentProject(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "contextscope")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	fullSession := "contextscope--frontend"
+	_ = tmux.KillSession(fullSession)
+	if err := tmux.CreateSession(fullSession, projectDir); err != nil {
+		t.Fatalf("CreateSession(%q): %v", fullSession, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(fullSession) })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, gotSession, err := resolveContextBuildScope("")
+	if err != nil {
+		t.Fatalf("resolveContextBuildScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	if gotSession != fullSession {
+		t.Fatalf("session = %q, want %q", gotSession, fullSession)
 	}
 }
 
@@ -799,6 +946,158 @@ func TestResolveRollbackSessionsNormalizesExplicitPrefix(t *testing.T) {
 	}
 	if liveSession != fullSession {
 		t.Fatalf("live session = %q, want %q", liveSession, fullSession)
+	}
+}
+
+func TestRunChangesNormalizesExplicitPrefix(t *testing.T) {
+	origStore := tracker.GlobalFileChanges
+	store := tracker.NewFileChangeStore(100)
+	tracker.GlobalFileChanges = store
+	t.Cleanup(func() { tracker.GlobalFileChanges = origStore })
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "changeproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	oldJSON := jsonOutput
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	jsonOutput = false
+	t.Cleanup(func() {
+		cfg = oldCfg
+		jsonOutput = oldJSON
+	})
+
+	store.Add(tracker.RecordedFileChange{
+		Timestamp: time.Now(),
+		Session:   "changeproject",
+		Agents:    []string{"agent-1"},
+		Change: tracker.FileChange{
+			Path: filepath.Join(projectDir, "file.go"),
+			Type: tracker.FileModified,
+		},
+	})
+
+	out, err := captureStdout(t, func() error { return runChanges("changep") })
+	if err != nil {
+		t.Fatalf("runChanges() error = %v", err)
+	}
+	if strings.Contains(out, "No file changes recorded.") {
+		t.Fatalf("expected recorded change output, got %q", out)
+	}
+	if !strings.Contains(out, "agent-1") {
+		t.Fatalf("expected agent name in output, got %q", out)
+	}
+}
+
+func TestRunConflictsNormalizesExplicitPrefix(t *testing.T) {
+	origStore := tracker.GlobalFileChanges
+	store := tracker.NewFileChangeStore(100)
+	tracker.GlobalFileChanges = store
+	t.Cleanup(func() { tracker.GlobalFileChanges = origStore })
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "conflictproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	oldJSON := jsonOutput
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	jsonOutput = false
+	t.Cleanup(func() {
+		cfg = oldCfg
+		jsonOutput = oldJSON
+	})
+
+	path := filepath.Join(projectDir, "file.go")
+	store.Add(tracker.RecordedFileChange{
+		Timestamp: time.Now().Add(-2 * time.Minute),
+		Session:   "conflictproject",
+		Agents:    []string{"agent-1"},
+		Change: tracker.FileChange{
+			Path: path,
+			Type: tracker.FileModified,
+		},
+	})
+	store.Add(tracker.RecordedFileChange{
+		Timestamp: time.Now().Add(-1 * time.Minute),
+		Session:   "conflictproject",
+		Agents:    []string{"agent-2"},
+		Change: tracker.FileChange{
+			Path: path,
+			Type: tracker.FileModified,
+		},
+	})
+
+	out, err := captureStdout(t, func() error { return runConflicts("conflictp", "24h", 10) })
+	if err != nil {
+		t.Fatalf("runConflicts() error = %v", err)
+	}
+	if strings.Contains(out, "No conflicts detected.") {
+		t.Fatalf("expected conflict output, got %q", out)
+	}
+	if !strings.Contains(out, "conflictproject") {
+		t.Fatalf("expected session name in output, got %q", out)
+	}
+	if !strings.Contains(out, "file.go") {
+		t.Fatalf("expected conflicted file in output, got %q", out)
+	}
+}
+
+func TestRunContextRotationPendingNormalizesExplicitPrefix(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "pending.jsonl")
+	origStore := ctxmon.DefaultPendingRotationStore
+	ctxmon.DefaultPendingRotationStore = ctxmon.NewPendingRotationStoreWithPath(storePath)
+	t.Cleanup(func() { ctxmon.DefaultPendingRotationStore = origStore })
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "rotationproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	oldJSON := jsonOutput
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	jsonOutput = true
+	t.Cleanup(func() {
+		cfg = oldCfg
+		jsonOutput = oldJSON
+	})
+
+	if err := ctxmon.AddPendingRotation(&ctxmon.PendingRotation{
+		AgentID:        "agent-1",
+		SessionName:    "rotationproject",
+		ContextPercent: 91.2,
+		CreatedAt:      time.Now(),
+		TimeoutAt:      time.Now().Add(5 * time.Minute),
+		DefaultAction:  ctxmon.ConfirmRotate,
+		WorkDir:        projectDir,
+	}); err != nil {
+		t.Fatalf("AddPendingRotation() error = %v", err)
+	}
+
+	out, err := captureStdout(t, func() error { return runContextRotationPending("rotationp") })
+	if err != nil {
+		t.Fatalf("runContextRotationPending() error = %v", err)
+	}
+
+	var result PendingRotationsResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; output=%q", err, out)
+	}
+	if result.Count != 1 {
+		t.Fatalf("result.Count = %d, want 1", result.Count)
+	}
+	if len(result.Pending) != 1 {
+		t.Fatalf("len(result.Pending) = %d, want 1", len(result.Pending))
+	}
+	if result.Pending[0].SessionName != "rotationproject" {
+		t.Fatalf("result.Pending[0].SessionName = %q, want %q", result.Pending[0].SessionName, "rotationproject")
 	}
 }
 
@@ -2662,6 +2961,94 @@ func TestRobotSnapshotInvalidSince(t *testing.T) {
 	// Command handles this internally with os.Exit, so we can't catch the error easily
 	// But it shouldn't panic
 	_ = rootCmd.Execute()
+}
+
+func TestResolveRobotHistoryAliases_PrefersCanonicalSharedFlags(t *testing.T) {
+	resetFlags()
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("since", "", "")
+	cmd.Flags().String("type", "", "")
+	if err := cmd.Flags().Set("since", "1h"); err != nil {
+		t.Fatalf("set since: %v", err)
+	}
+	if err := cmd.Flags().Set("type", "claude"); err != nil {
+		t.Fatalf("set type: %v", err)
+	}
+
+	robotSince = "1h"
+	robotSendType = "claude"
+
+	if got := resolveRobotHistorySince(cmd); got != "1h" {
+		t.Fatalf("resolveRobotHistorySince() = %q, want %q", got, "1h")
+	}
+	if got := resolveRobotHistoryType(cmd); got != "claude" {
+		t.Fatalf("resolveRobotHistoryType() = %q, want %q", got, "claude")
+	}
+}
+
+func TestResolveRobotHistoryAliases_PrefersHistorySpecificFlags(t *testing.T) {
+	resetFlags()
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("since", "", "")
+	cmd.Flags().String("type", "", "")
+	if err := cmd.Flags().Set("since", "1h"); err != nil {
+		t.Fatalf("set since: %v", err)
+	}
+	if err := cmd.Flags().Set("type", "claude"); err != nil {
+		t.Fatalf("set type: %v", err)
+	}
+
+	robotSince = "1h"
+	robotSendType = "claude"
+	robotHistorySince = "2026-03-01T00:00:00Z"
+	robotHistoryType = "codex"
+
+	if got := resolveRobotHistorySince(cmd); got != "2026-03-01T00:00:00Z" {
+		t.Fatalf("resolveRobotHistorySince() = %q, want history-specific value", got)
+	}
+	if got := resolveRobotHistoryType(cmd); got != "codex" {
+		t.Fatalf("resolveRobotHistoryType() = %q, want history-specific value", got)
+	}
+}
+
+func TestResolveRobotSharedFlags_AdditionalCommands(t *testing.T) {
+	resetFlags()
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("since", "", "")
+	cmd.Flags().String("type", "", "")
+	if err := cmd.Flags().Set("since", "45m"); err != nil {
+		t.Fatalf("set since: %v", err)
+	}
+	if err := cmd.Flags().Set("type", "gemini"); err != nil {
+		t.Fatalf("set type: %v", err)
+	}
+
+	robotSince = "45m"
+	robotSendType = "gemini"
+	robotDiffSince = "15m"
+	robotSummarySince = "30m"
+	robotTokensSince = ""
+	robotWaitType = ""
+	robotRouteType = ""
+
+	if got := resolveRobotTokensSince(cmd); got != "45m" {
+		t.Fatalf("resolveRobotTokensSince() = %q, want %q", got, "45m")
+	}
+	if got := resolveRobotDiffSince(cmd); got != "45m" {
+		t.Fatalf("resolveRobotDiffSince() = %q, want %q", got, "45m")
+	}
+	if got := resolveRobotSummarySince(cmd); got != "45m" {
+		t.Fatalf("resolveRobotSummarySince() = %q, want %q", got, "45m")
+	}
+	if got := resolveRobotWaitType(cmd); got != "gemini" {
+		t.Fatalf("resolveRobotWaitType() = %q, want %q", got, "gemini")
+	}
+	if got := resolveRobotRouteType(cmd); got != "gemini" {
+		t.Fatalf("resolveRobotRouteType() = %q, want %q", got, "gemini")
+	}
 }
 
 // TestRobotTailExecutes tests robot-tail flag executes

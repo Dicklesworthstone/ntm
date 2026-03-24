@@ -819,7 +819,7 @@ Shell Integration:
 		if robotTokens {
 			opts := robot.TokensOptions{
 				Days:      robotTokensDays,
-				Since:     robotTokensSince,
+				Since:     resolveRobotTokensSince(cmd),
 				GroupBy:   robotTokensGroupBy,
 				Session:   robotTokensSession,
 				AgentType: robotTokensAgent,
@@ -839,9 +839,9 @@ Shell Integration:
 			opts := robot.HistoryOptions{
 				Session:   robotHistory,
 				Pane:      robotHistoryPane,
-				AgentType: robotHistoryType,
+				AgentType: resolveRobotHistoryType(cmd),
 				Last:      robotHistoryLast,
-				Since:     robotHistorySince,
+				Since:     resolveRobotHistorySince(cmd),
 				Stats:     robotHistoryStats,
 				Limit:     pagination.Limit,
 				Offset:    pagination.Offset,
@@ -908,7 +908,7 @@ Shell Integration:
 				Timeout:           timeout,
 				PollInterval:      poll,
 				PaneIndices:       paneFilter,
-				AgentType:         robotWaitType,
+				AgentType:         resolveRobotWaitType(cmd),
 				WaitForAny:        robotWaitAny,
 				ExitOnError:       robotWaitOnError,
 				RequireTransition: robotWaitTransition,
@@ -928,7 +928,7 @@ Shell Integration:
 			opts := robot.RouteOptions{
 				Session:      robotRoute,
 				Strategy:     robot.StrategyName(robotRouteStrategy),
-				AgentType:    robotRouteType,
+				AgentType:    resolveRobotRouteType(cmd),
 				ExcludePanes: excludePanes,
 			}
 			exitCode := robot.PrintRoute(opts)
@@ -1859,7 +1859,7 @@ Shell Integration:
 		// Robot-diff handler for comparing agent activity (synthesis)
 		if robotDiff != "" {
 			// Parse duration
-			since, err := util.ParseDurationWithDefault(robotDiffSince, time.Minute, "diff-since")
+			since, err := util.ParseDurationWithDefault(resolveRobotDiffSince(cmd), time.Minute, "diff-since")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: invalid --diff-since: %v\n", err)
 				os.Exit(1)
@@ -1963,7 +1963,7 @@ Shell Integration:
 
 		// Robot-summary handler for session activity summary
 		if robotSummary != "" {
-			since, err := util.ParseDurationWithDefault(robotSummarySince, time.Minute, "summary-since")
+			since, err := util.ParseDurationWithDefault(resolveRobotSummarySince(cmd), time.Minute, "summary-since")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: invalid --summary-since: %v\n", err)
 				os.Exit(1)
@@ -2846,7 +2846,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotDocs, "robot-docs", "", "Get documentation for a topic (JSON). Topics: quickstart, commands, examples, exit-codes. Example: ntm --robot-docs=quickstart")
 	rootCmd.Flags().BoolVar(&robotPlan, "robot-plan", false, "Get bv execution plan with parallelizable tracks (JSON). Example: ntm --robot-plan")
 	rootCmd.Flags().BoolVar(&robotSnapshot, "robot-snapshot", false, "Unified state: sessions + beads + alerts + mail. Use --since for delta. Example: ntm --robot-snapshot")
-	rootCmd.Flags().StringVar(&robotSince, "since", "", "RFC3339 timestamp for delta snapshot. Optional with --robot-snapshot. Example: --since=2025-12-15T10:00:00Z")
+	rootCmd.Flags().StringVar(&robotSince, "since", "", "Shared time filter for commands that support --since. Snapshot uses RFC3339; history/diff/summary accept duration or ISO8601; tokens accepts ISO8601 or YYYY-MM-DD. Examples: --since=2025-12-15T10:00:00Z, --since=1h")
 	rootCmd.Flags().BoolVar(&robotEvents, "robot-events", false, "Stream attention events since cursor. Use for raw replay/feed. Example: ntm --robot-events --since-cursor=42 --events-limit=50")
 	rootCmd.Flags().Int64Var(&robotEventsSinceCursor, "since-cursor", 0, "Cursor position to replay from. Optional with --robot-events. Example: --since-cursor=42")
 	rootCmd.Flags().IntVar(&robotEventsLimit, "events-limit", 100, "Max events to return. Optional with --robot-events. Example: --events-limit=50")
@@ -2965,7 +2965,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSendEnter, "enter", true, "Send Enter after pasting message (default: true). Use --enter=false to paste without submitting")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "submit", true, "Alias for --enter")
 	rootCmd.Flags().BoolVar(&robotSendAll, "all", false, "Include user pane (default: agents only). Optional with --robot-send, --robot-interrupt, and --robot-support-bundle")
-	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude|cc, codex|cod, gemini|gmi, cursor, windsurf, aider. Works with --robot-send, --robot-ack, --robot-interrupt, and --robot-errors")
+	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude|cc, codex|cod, gemini|gmi, cursor, windsurf, aider. Works with --robot-history, --robot-wait, --robot-route, --robot-send, --robot-ack, --robot-interrupt, and --robot-errors")
 	rootCmd.Flags().StringVar(&robotSendExclude, "exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-send. Example: --exclude=0,3")
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")
 
@@ -3483,14 +3483,12 @@ func init() {
 
 	// Alerts prefixed flags → canonical forms
 	rootCmd.Flags().MarkDeprecated("alerts-severity", "use --severity instead")
-	rootCmd.Flags().MarkDeprecated("alerts-type", "use --type instead")
 	rootCmd.Flags().MarkDeprecated("alerts-session", "use --session instead")
 
 	// Beads prefixed flags → canonical forms
 	rootCmd.Flags().MarkDeprecated("beads-status", "use --status instead")
 	rootCmd.Flags().MarkDeprecated("beads-priority", "use --priority instead")
 	rootCmd.Flags().MarkDeprecated("beads-assignee", "use --assignee instead")
-	rootCmd.Flags().MarkDeprecated("beads-type", "use --type instead")
 	rootCmd.Flags().MarkDeprecated("beads-limit", "use --limit instead")
 
 	// Relations prefixed flags → canonical forms
@@ -3765,6 +3763,44 @@ func init() {
 		}
 		rootCmd.AddCommand(cmd)
 	}
+}
+
+func resolveRobotSharedFlag(cmd *cobra.Command, specificFlagName string, specificValue string, sharedFlagName string, sharedValue string) string {
+	if cmd != nil && specificFlagName != "" && cmd.Flags().Changed(specificFlagName) {
+		return specificValue
+	}
+	if cmd != nil && sharedFlagName != "" && cmd.Flags().Changed(sharedFlagName) {
+		return sharedValue
+	}
+	return specificValue
+}
+
+func resolveRobotHistoryType(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "history-type", robotHistoryType, "type", robotSendType)
+}
+
+func resolveRobotHistorySince(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "history-since", robotHistorySince, "since", robotSince)
+}
+
+func resolveRobotTokensSince(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "tokens-since", robotTokensSince, "since", robotSince)
+}
+
+func resolveRobotWaitType(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "wait-type", robotWaitType, "type", robotSendType)
+}
+
+func resolveRobotRouteType(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "route-type", robotRouteType, "type", robotSendType)
+}
+
+func resolveRobotDiffSince(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "diff-since", robotDiffSince, "since", robotSince)
+}
+
+func resolveRobotSummarySince(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "summary-since", robotSummarySince, "since", robotSince)
 }
 
 func newVersionCmd() *cobra.Command {

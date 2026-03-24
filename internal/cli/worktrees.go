@@ -2,13 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/worktrees"
 )
 
@@ -235,32 +233,23 @@ in the worktree.`,
 func resolveWorktreeScope(session string) (string, string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		if err := tmux.ValidateSessionName(session); err != nil {
-			return "", "", fmt.Errorf("invalid session name: %w", err)
+		resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+		if err != nil {
+			return "", "", err
 		}
-		if tmux.IsInstalled() {
-			if sessionList, err := tmux.ListSessions(); err == nil {
-				allowPrefix := !IsJSONOutput()
-				if resolved, _, err := resolveExplicitSessionName(session, sessionList, allowPrefix); err == nil {
-					session = resolved
-				}
-			}
-		}
+		session = resolved
 	}
 	if session == "" {
-		session = strings.TrimSpace(tmux.GetCurrentSession())
-	}
-	if session != "" {
-		projectDir := resolveProjectDirForSession(session, true)
+		projectDir := GetProjectRoot()
 		if projectDir == "" {
 			return "", "", fmt.Errorf("getting project root failed")
 		}
-		return projectDir, session, nil
+		return projectDir, defaultProjectScopedSession(projectDir), nil
 	}
 
-	projectDir := GetProjectRoot()
+	projectDir := resolveProjectDirForSession(session, true)
 	if projectDir == "" {
 		return "", "", fmt.Errorf("getting project root failed")
 	}
-	return projectDir, filepath.Base(projectDir), nil
+	return projectDir, session, nil
 }
