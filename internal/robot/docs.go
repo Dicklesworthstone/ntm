@@ -156,8 +156,8 @@ Start with --robot-status to understand current state.`,
 			{
 				Name:        "basic_session",
 				Description: "Create a session with Claude agents",
-				Command:     "ntm --robot-spawn=myproject --spawn-cc=2 --spawn-wait",
-				Notes:       "The --spawn-wait flag blocks until agents are ready",
+				Command:     "ntm --robot-spawn=myproject --spawn-cc=2 --spawn-wait --timeout=30s",
+				Notes:       "The --spawn-wait flag blocks until agents are ready; tune the wait with --timeout",
 			},
 			{
 				Name:        "send_prompt",
@@ -253,7 +253,7 @@ func getExamplesContent() *DocsContent {
 			{
 				Name:        "single_agent",
 				Description: "Create session with single Claude agent",
-				Command:     "ntm --robot-spawn=myproject --spawn-cc=1 --spawn-wait",
+				Command:     "ntm --robot-spawn=myproject --spawn-cc=1 --spawn-wait --timeout=30s",
 				Notes:       "Best for focused, single-task work",
 			},
 			{
@@ -309,14 +309,14 @@ func getExamplesContent() *DocsContent {
 			{
 				Name:        "wait_for_idle",
 				Description: "Wait for all agents to become idle",
-				Command:     "ntm --robot-wait=proj --wait-until=idle --wait-timeout=5m",
+				Command:     "ntm --robot-wait=proj --wait-until=idle --timeout=5m",
 				Notes:       "Blocks until condition met or timeout",
 			},
 			{
 				Name:        "wait_for_attention",
 				Description: "Wait for the next action-required attention signal",
-				Command:     "ntm --robot-wait=proj --wait-until=action_required --wait-timeout=2m",
-				Notes:       "Useful after taking a snapshot when you want the next operator-relevant wakeup",
+				Command:     "ntm --robot-wait=proj --wait-until=action_required --attention-cursor=42 --profile=operator --timeout=2m",
+				Notes:       "Useful after taking a snapshot when you want the next operator-relevant wakeup with explicit cursor handoff",
 			},
 			{
 				Name:        "handoff_to_human",

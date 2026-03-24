@@ -132,8 +132,8 @@ func TestGetDocs_Examples(t *testing.T) {
 	}
 
 	for _, ex := range output.Content.Examples {
-		if strings.Contains(ex.Command, "--ack-timeout") || strings.Contains(ex.Command, "--ack-poll") {
-			t.Fatalf("examples topic still uses deprecated ack modifiers: %q", ex.Command)
+		if strings.Contains(ex.Command, "--ack-timeout") || strings.Contains(ex.Command, "--ack-poll") || strings.Contains(ex.Command, "--wait-timeout") || strings.Contains(ex.Command, "--wait-poll") || strings.Contains(ex.Command, "--spawn-timeout") || strings.Contains(ex.Command, "--ready-timeout") {
+			t.Fatalf("examples topic still uses deprecated shared modifiers: %q", ex.Command)
 		}
 	}
 
@@ -146,6 +146,17 @@ func TestGetDocs_Examples(t *testing.T) {
 	}
 	if !foundCanonicalTrack {
 		t.Fatal("examples topic missing canonical send_and_track timeout example")
+	}
+
+	foundCanonicalWait := false
+	for _, ex := range output.Content.Examples {
+		if ex.Name == "wait_for_attention" && strings.Contains(ex.Command, "--attention-cursor=42") && strings.Contains(ex.Command, "--timeout=2m") {
+			foundCanonicalWait = true
+			break
+		}
+	}
+	if !foundCanonicalWait {
+		t.Fatal("examples topic missing canonical wait_for_attention cursor/timeout example")
 	}
 }
 

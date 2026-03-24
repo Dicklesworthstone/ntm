@@ -2,6 +2,7 @@ package robot
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
@@ -1719,6 +1721,46 @@ func TestPrintReplayDryRun(t *testing.T) {
 	if err != nil {
 		// It's OK if it errors due to missing history
 		t.Logf("PrintReplay dry-run returned: %v", err)
+	}
+}
+
+func TestPrintReplayUsesRequestedSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldDataHome := os.Getenv("XDG_DATA_HOME")
+	if err := os.Setenv("XDG_DATA_HOME", tmpDir); err != nil {
+		t.Fatalf("Setenv: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("XDG_DATA_HOME", oldDataHome)
+	})
+
+	history.Clear()
+
+	entry := history.NewEntry("origin-session", []string{"0"}, "echo hello", history.SourceCLI)
+	entry.SetSuccess()
+	if err := history.Append(entry); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	output, err := captureStdout(t, func() error {
+		return PrintReplay(ReplayOptions{
+			Session:   "target-session",
+			HistoryID: entry.ID,
+		})
+	})
+	if err != nil {
+		t.Fatalf("PrintReplay returned error: %v", err)
+	}
+
+	var result SendOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse replay send output: %v", err)
+	}
+	if result.Session != "target-session" {
+		t.Fatalf("Session = %q, want %q", result.Session, "target-session")
+	}
+	if result.ErrorCode != ErrCodeSessionNotFound {
+		t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeSessionNotFound)
 	}
 }
 

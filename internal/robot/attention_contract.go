@@ -465,11 +465,14 @@ var AttentionCommands = []AttentionCommand{
 		Args: []CommandArg{
 			{Name: "--robot-wait=<session>", Type: "SESSION", Required: true, Description: "Session to wait on"},
 			{Name: "--wait-until", Type: "string", Required: true, Description: "Condition name (idle, complete, generating, healthy, attention, action_required, mail_pending, context_hot, etc.)"},
-			{Name: "--wait-timeout", Type: "duration", Required: false, Description: "Max wait time (default: 5m)"},
-			{Name: "--wait-panes", Type: "string", Required: false, Description: "Scope to pane indices"},
+			{Name: "--timeout", Type: "duration", Required: false, Description: "Max wait time (default: 5m)"},
+			{Name: "--panes", Type: "string", Required: false, Description: "Scope to pane indices"},
+			{Name: "--type", Type: "string", Required: false, Description: "Filter by agent type"},
+			{Name: "--attention-cursor", Type: "cursor", Required: false, Description: "Cursor handoff for attention-feed waits"},
+			{Name: "--profile", Type: "string", Required: false, Description: "Attention profile for attention-feed waits"},
 		},
 		Returns: "WaitOutput with condition, waited_seconds, and matched agents",
-		Example: "ntm --robot-wait=myproject --wait-until=idle --wait-timeout=30s",
+		Example: "ntm --robot-wait=myproject --wait-until=idle --timeout=30s",
 	},
 	{
 		Name:     "--robot-attention",

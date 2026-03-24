@@ -178,7 +178,7 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 				RobotResponse: NewErrorResponse(
 					fmt.Errorf("timeout after %v", opts.Timeout),
 					ErrCodeTimeout,
-					"Try increasing --wait-timeout or check agent status with --robot-activity",
+					"Try increasing --timeout (or deprecated --wait-timeout) or check agent status with --robot-activity",
 				),
 				Session:       opts.Session,
 				Condition:     opts.Condition,
@@ -216,7 +216,7 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 					RobotResponse: NewErrorResponse(
 						fmt.Errorf("no panes match the filter criteria"),
 						ErrCodePaneNotFound,
-						"Check --wait-panes and --type (or deprecated --wait-type) filters",
+						"Check --panes (or deprecated --wait-panes) and --type (or deprecated --wait-type) filters",
 					),
 					Session:   opts.Session,
 					Condition: opts.Condition,

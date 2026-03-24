@@ -2612,9 +2612,10 @@ type ReplayOptions struct {
 // This function returns the data struct directly, enabling CLI/REST parity.
 // Note: When DryRun is false, this executes the replay and returns nil (send handles output).
 func GetReplay(opts ReplayOptions) (*ReplayOutput, error) {
+	targetSession := strings.TrimSpace(opts.Session)
 	output := &ReplayOutput{
 		RobotResponse: NewRobotResponse(true),
-		Session:       opts.Session,
+		Session:       targetSession,
 		HistoryID:     opts.HistoryID,
 		TargetPanes:   []int{},
 	}
@@ -2654,6 +2655,11 @@ func GetReplay(opts ReplayOptions) (*ReplayOutput, error) {
 		}, nil
 	}
 
+	if targetSession == "" {
+		targetSession = target.Session
+		output.Session = targetSession
+	}
+
 	output.OriginalCmd = target.Prompt
 	// Convert string targets to int
 	for _, t := range target.Targets {
@@ -2678,7 +2684,7 @@ func GetReplay(opts ReplayOptions) (*ReplayOutput, error) {
 	paneFilter := append([]string{}, target.Targets...)
 
 	sendOpts := SendOptions{
-		Session: target.Session,
+		Session: targetSession,
 		Message: target.Prompt,
 		Panes:   paneFilter,
 	}
@@ -2708,8 +2714,12 @@ func PrintReplay(opts ReplayOptions) error {
 		entries, _ := history.ReadRecent(100)
 		for i := range entries {
 			if entries[i].ID == opts.HistoryID {
+				targetSession := strings.TrimSpace(opts.Session)
+				if targetSession == "" {
+					targetSession = entries[i].Session
+				}
 				sendOpts := SendOptions{
-					Session: entries[i].Session,
+					Session: targetSession,
 					Message: entries[i].Prompt,
 					Panes:   append([]string{}, entries[i].Targets...),
 				}

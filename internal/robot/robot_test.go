@@ -882,6 +882,9 @@ func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
 	for _, want := range []string{
 		"--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339)",
 		"--type=TYPE     Agent type filter for commands that support it (claude, codex, gemini, cursor, windsurf, aider)",
+		"--timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait",
+		"--strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work",
+		"--msg=TEXT      Shared message payload for send, ack echo detection, and interrupt retasks",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)

@@ -255,6 +255,8 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 	routeCmd := findCommand("route")
 	sendCmd := findCommand("send")
 	ackCmd := findCommand("ack")
+	interruptCmd := findCommand("interrupt")
+	spawnCmd := findCommand("spawn")
 
 	for _, tc := range []struct {
 		command RobotCommandInfo
@@ -262,10 +264,12 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 	}{
 		{command: diffCmd, flags: []string{"--since"}},
 		{command: summaryCmd, flags: []string{"--since"}},
-		{command: waitCmd, flags: []string{"--type", "--attention-cursor", "--profile"}},
-		{command: routeCmd, flags: []string{"--type"}},
+		{command: waitCmd, flags: []string{"--timeout", "--poll", "--panes", "--type", "--attention-cursor", "--profile", "--any"}},
+		{command: routeCmd, flags: []string{"--strategy", "--type", "--exclude"}},
 		{command: sendCmd, flags: []string{"--timeout", "--poll"}},
 		{command: ackCmd, flags: []string{"--timeout", "--poll"}},
+		{command: interruptCmd, flags: []string{"--msg", "--all", "--force", "--no-wait", "--timeout"}},
+		{command: spawnCmd, flags: []string{"--spawn-wait", "--timeout", "--spawn-assign-work", "--strategy"}},
 	} {
 		for _, want := range tc.flags {
 			found := false
@@ -291,9 +295,14 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 			t.Fatalf("summary example still uses deprecated flag name: %q", example)
 		}
 	}
+	for _, example := range waitCmd.Examples {
+		if strings.Contains(example, "--wait-timeout") || strings.Contains(example, "--wait-poll") || strings.Contains(example, "--wait-panes") || strings.Contains(example, "--wait-any") {
+			t.Fatalf("wait example still uses deprecated shared modifiers: %q", example)
+		}
+	}
 	for _, example := range routeCmd.Examples {
-		if strings.Contains(example, "--route-type") {
-			t.Fatalf("route example still uses deprecated type flag: %q", example)
+		if strings.Contains(example, "--route-type") || strings.Contains(example, "--route-strategy") || strings.Contains(example, "--route-exclude") {
+			t.Fatalf("route example still uses deprecated route modifiers: %q", example)
 		}
 	}
 	for _, example := range sendCmd.Examples {
@@ -304,6 +313,16 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 	for _, example := range ackCmd.Examples {
 		if strings.Contains(example, "--ack-timeout") || strings.Contains(example, "--ack-poll") {
 			t.Fatalf("ack example still uses deprecated ack modifiers: %q", example)
+		}
+	}
+	for _, example := range interruptCmd.Examples {
+		if strings.Contains(example, "--interrupt-msg") || strings.Contains(example, "--interrupt-all") || strings.Contains(example, "--interrupt-force") || strings.Contains(example, "--interrupt-timeout") {
+			t.Fatalf("interrupt example still uses deprecated interrupt modifiers: %q", example)
+		}
+	}
+	for _, example := range spawnCmd.Examples {
+		if strings.Contains(example, "--spawn-timeout") || strings.Contains(example, "--ready-timeout") || strings.Contains(example, "--spawn-assign-strategy") {
+			t.Fatalf("spawn example still uses deprecated spawn modifiers: %q", example)
 		}
 	}
 }

@@ -1994,7 +1994,14 @@ Common Modifiers:
 --robot-offset=N Explicit pagination alias for robot list outputs
 --since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339)
 --type=TYPE     Agent type filter for commands that support it (claude, codex, gemini, cursor, windsurf, aider)
+--timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait
+--poll=VALUE    Shared polling interval for wait/ack/send --track
+--strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work
+--exclude=X,Y   Exclude pane indices for commands that support it
+--msg=TEXT      Shared message payload for send, ack echo detection, and interrupt retasks
 --panes=X,Y     Pane filter (comma-separated indices)
+--all           Include the user pane for commands that support it
+--force         Force commands that support it past their normal safety checks
 --dry-run       Preview without executing
 --verbose       Detailed output
 
