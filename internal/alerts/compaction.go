@@ -132,19 +132,22 @@ type CompactionEventOutput struct {
 
 // NewCompactionEventOutput creates a CompactionEventOutput for robot mode JSON.
 func NewCompactionEventOutput(data CompactionAlertData, status string) CompactionEventOutput {
-	return CompactionEventOutput{
-		Type:            "context_compaction",
-		AgentID:         data.AgentID,
-		Method:          data.Method,
-		UsageBefore:     data.UsageBefore,
-		UsageAfter:      data.UsageAfter,
-		TokensBefore:    data.TokensBefore,
-		TokensAfter:     data.TokensAfter,
-		TokensReclaimed: data.TokensBefore - data.TokensAfter,
-		Status:          status,
-		Error:           data.Error,
-		DurationMs:      data.DurationMs,
-		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
-		SessionName:     data.Session,
+	output := CompactionEventOutput{
+		Type:         "context_compaction",
+		AgentID:      data.AgentID,
+		Method:       data.Method,
+		UsageBefore:  data.UsageBefore,
+		UsageAfter:   data.UsageAfter,
+		TokensBefore: data.TokensBefore,
+		TokensAfter:  data.TokensAfter,
+		Status:       status,
+		Error:        data.Error,
+		DurationMs:   data.DurationMs,
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		SessionName:  data.Session,
 	}
+	if status == "completed" && data.TokensBefore > data.TokensAfter {
+		output.TokensReclaimed = data.TokensBefore - data.TokensAfter
+	}
+	return output
 }

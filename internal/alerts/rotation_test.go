@@ -256,6 +256,23 @@ func TestNewRotationEventOutput(t *testing.T) {
 	}
 }
 
+func TestNewRotationEventOutputStartedUsesAgentIDFallback(t *testing.T) {
+	data := RotationAlertData{
+		AgentID:      "agent-1",
+		Session:      "test-session",
+		ContextUsage: 88.5,
+	}
+
+	output := NewRotationEventOutput(data, "started")
+
+	if output.OldAgent != "agent-1" {
+		t.Errorf("expected OldAgent fallback 'agent-1', got %s", output.OldAgent)
+	}
+	if output.NewAgent != "" {
+		t.Errorf("expected NewAgent to be empty for started event, got %s", output.NewAgent)
+	}
+}
+
 func TestNewRotationEventOutputWithError(t *testing.T) {
 	data := RotationAlertData{
 		AgentID:      "agent-1",
@@ -276,6 +293,43 @@ func TestNewRotationEventOutputWithError(t *testing.T) {
 	}
 	if output.NewAgent != "" {
 		t.Errorf("expected NewAgent to be empty on failure, got %s", output.NewAgent)
+	}
+}
+
+func TestEmitRotationFailedUsesOldAgentFallback(t *testing.T) {
+	tracker := GetGlobalTracker()
+	tracker.Clear()
+
+	EmitRotationStarted(RotationAlertData{
+		AgentID:      "old-agent",
+		Session:      "session-1",
+		ContextUsage: 94.0,
+	})
+
+	EmitRotationFailed(RotationAlertData{
+		OldAgentID:   "old-agent",
+		Session:      "session-1",
+		ContextUsage: 95.0,
+		Error:        "handoff timeout",
+	})
+
+	active := tracker.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active alert after failure, got %d", len(active))
+	}
+	if active[0].Type != AlertRotationFailed {
+		t.Fatalf("expected active alert type %s, got %s", AlertRotationFailed, active[0].Type)
+	}
+	if active[0].Context["agent_id"] != "old-agent" {
+		t.Fatalf("expected fallback context agent_id 'old-agent', got %v", active[0].Context["agent_id"])
+	}
+
+	resolved := tracker.GetResolved()
+	if len(resolved) != 1 {
+		t.Fatalf("expected started alert to resolve via fallback agent id, got %d resolved alerts", len(resolved))
+	}
+	if resolved[0].Type != AlertRotationStarted {
+		t.Fatalf("expected resolved alert type %s, got %s", AlertRotationStarted, resolved[0].Type)
 	}
 }
 

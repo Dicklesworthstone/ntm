@@ -3,6 +3,7 @@ package alerts
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,34 @@ type AlertsOutput struct {
 	Config      Config       `json:"config"`
 }
 
+func generatorOwnsAlertSource(source string) bool {
+	source = strings.TrimSpace(source)
+	return source == "agents" || strings.HasPrefix(source, "agents:") || source == "disk" || source == "beads"
+}
+
+func preserveUnmanagedAlertSources(active []Alert, failed []string) []string {
+	preserved := make(map[string]struct{}, len(failed))
+	merged := make([]string, 0, len(failed)+len(active))
+	for _, source := range failed {
+		if _, exists := preserved[source]; exists {
+			continue
+		}
+		preserved[source] = struct{}{}
+		merged = append(merged, source)
+	}
+	for _, alert := range active {
+		if generatorOwnsAlertSource(alert.Source) {
+			continue
+		}
+		if _, exists := preserved[alert.Source]; exists {
+			continue
+		}
+		preserved[alert.Source] = struct{}{}
+		merged = append(merged, alert.Source)
+	}
+	return merged
+}
+
 // GenerateAndTrack generates new alerts and updates the tracker
 func GenerateAndTrack(cfg Config) *Tracker {
 	tracker := GetGlobalTracker()
@@ -22,6 +51,9 @@ func GenerateAndTrack(cfg Config) *Tracker {
 
 	generator := NewGenerator(cfg)
 	detected, failed := generator.GenerateAll()
+	if cfg.Enabled {
+		failed = preserveUnmanagedAlertSources(tracker.GetActive(), failed)
+	}
 	tracker.Update(detected, failed)
 
 	return tracker

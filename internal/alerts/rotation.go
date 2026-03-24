@@ -3,6 +3,7 @@ package alerts
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,13 @@ type RotationAlertData struct {
 	SummaryTokens int     `json:"summary_tokens,omitempty"`
 	DurationMs    int64   `json:"duration_ms,omitempty"`
 	Error         string  `json:"error,omitempty"`
+}
+
+func rotatingAgentID(data RotationAlertData) string {
+	if agentID := strings.TrimSpace(data.OldAgentID); agentID != "" {
+		return agentID
+	}
+	return strings.TrimSpace(data.AgentID)
 }
 
 // EmitContextWarning emits a warning alert when an agent approaches context threshold.
@@ -67,25 +75,27 @@ func EmitRotationStarted(data RotationAlertData) {
 
 // EmitRotationComplete emits a success alert when rotation completes successfully.
 func EmitRotationComplete(data RotationAlertData) {
+	agentID := rotatingAgentID(data)
+
 	// Resolve any pending rotation_started alert
 	tracker := GetGlobalTracker()
-	startedID := generateAlertID(AlertRotationStarted, data.Session, data.OldAgentID)
+	startedID := generateAlertID(AlertRotationStarted, data.Session, agentID)
 	tracker.ManualResolve(startedID)
 
 	// Also resolve the context warning if it exists
-	warningID := generateAlertID(AlertContextWarning, data.Session, data.OldAgentID)
+	warningID := generateAlertID(AlertContextWarning, data.Session, agentID)
 	tracker.ManualResolve(warningID)
 
 	alert := Alert{
-		ID:       generateAlertID(AlertRotationComplete, data.Session, data.OldAgentID),
+		ID:       generateAlertID(AlertRotationComplete, data.Session, agentID),
 		Type:     AlertRotationComplete,
 		Severity: SeverityInfo,
 		Source:   "context_rotation",
-		Message:  fmt.Sprintf("Agent %s rotated to %s successfully", data.OldAgentID, data.NewAgentID),
+		Message:  fmt.Sprintf("Agent %s rotated to %s successfully", agentID, data.NewAgentID),
 		Session:  data.Session,
 		Pane:     data.Pane,
 		Context: map[string]interface{}{
-			"old_agent_id":   data.OldAgentID,
+			"old_agent_id":   agentID,
 			"new_agent_id":   data.NewAgentID,
 			"summary_tokens": data.SummaryTokens,
 			"duration_ms":    data.DurationMs,
@@ -100,21 +110,23 @@ func EmitRotationComplete(data RotationAlertData) {
 
 // EmitRotationFailed emits an error alert when rotation fails.
 func EmitRotationFailed(data RotationAlertData) {
+	agentID := rotatingAgentID(data)
+
 	// Resolve any pending rotation_started alert
 	tracker := GetGlobalTracker()
-	startedID := generateAlertID(AlertRotationStarted, data.Session, data.AgentID)
+	startedID := generateAlertID(AlertRotationStarted, data.Session, agentID)
 	tracker.ManualResolve(startedID)
 
 	alert := Alert{
-		ID:       generateAlertID(AlertRotationFailed, data.Session, data.AgentID),
+		ID:       generateAlertID(AlertRotationFailed, data.Session, agentID),
 		Type:     AlertRotationFailed,
 		Severity: SeverityError,
 		Source:   "context_rotation",
-		Message:  fmt.Sprintf("Failed to rotate agent %s: %s", data.AgentID, data.Error),
+		Message:  fmt.Sprintf("Failed to rotate agent %s: %s", agentID, data.Error),
 		Session:  data.Session,
 		Pane:     data.Pane,
 		Context: map[string]interface{}{
-			"agent_id":      data.AgentID,
+			"agent_id":      agentID,
 			"context_usage": data.ContextUsage,
 			"error":         data.Error,
 			"duration_ms":   data.DurationMs,
@@ -146,7 +158,7 @@ type RotationEventOutput struct {
 func NewRotationEventOutput(data RotationAlertData, status string) RotationEventOutput {
 	return RotationEventOutput{
 		Type:          "context_rotation",
-		OldAgent:      data.OldAgentID,
+		OldAgent:      rotatingAgentID(data),
 		NewAgent:      data.NewAgentID,
 		UsagePercent:  data.ContextUsage,
 		SummaryTokens: data.SummaryTokens,

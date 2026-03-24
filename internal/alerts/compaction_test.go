@@ -268,6 +268,8 @@ func TestNewCompactionEventOutputWithError(t *testing.T) {
 		Session:      "test-session",
 		ContextUsage: 95.0,
 		Method:       "summarize",
+		TokensBefore: 180000,
+		TokensAfter:  50000,
 		Error:        "failed to summarize context",
 		DurationMs:   1500,
 	}
@@ -282,6 +284,9 @@ func TestNewCompactionEventOutputWithError(t *testing.T) {
 	}
 	if output.Method != "summarize" {
 		t.Errorf("expected Method 'summarize', got %s", output.Method)
+	}
+	if output.TokensReclaimed != 0 {
+		t.Errorf("expected TokensReclaimed 0 on failed output, got %d", output.TokensReclaimed)
 	}
 }
 

@@ -184,6 +184,203 @@ func TestTrackerRefresh(t *testing.T) {
 	if active[0].Count != initialCount+1 {
 		t.Errorf("expected count to increment, got %d (was %d)", active[0].Count, initialCount)
 	}
+
+	updated := Alert{
+		ID:       "refresh",
+		Type:     AlertAgentError,
+		Severity: SeverityWarning,
+		Source:   "updated-source",
+		Message:  "Refresh test updated",
+		Session:  "proj",
+		Pane:     "%2",
+		Context:  map[string]interface{}{"usage": 92.0},
+	}
+	tracker.Update([]Alert{updated}, nil)
+
+	active = tracker.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 alert after second refresh, got %d", len(active))
+	}
+	if active[0].Message != "Refresh test updated" {
+		t.Errorf("expected message to refresh, got %q", active[0].Message)
+	}
+	if active[0].Source != "updated-source" {
+		t.Errorf("expected source to refresh, got %q", active[0].Source)
+	}
+	if active[0].Session != "proj" {
+		t.Errorf("expected session to refresh, got %q", active[0].Session)
+	}
+	if active[0].Pane != "%2" {
+		t.Errorf("expected pane to refresh, got %q", active[0].Pane)
+	}
+	if got, ok := active[0].Context["usage"].(float64); !ok || got != 92.0 {
+		t.Errorf("expected context usage to refresh to 92.0, got %v", active[0].Context["usage"])
+	}
+}
+
+func TestTrackerGettersCloneContextMap(t *testing.T) {
+	cfg := DefaultConfig()
+	tracker := NewTracker(cfg)
+
+	tracker.AddAlert(Alert{
+		ID:       "clone-context",
+		Type:     AlertAgentError,
+		Severity: SeverityWarning,
+		Message:  "context map aliasing",
+		Context:  map[string]interface{}{"usage": 88.0},
+	})
+
+	active := tracker.GetActive()
+	active[0].Context["usage"] = 12.0
+
+	fetched, ok := tracker.GetByID("clone-context")
+	if !ok {
+		t.Fatal("expected alert to be present")
+	}
+	if got := fetched.Context["usage"]; got != 88.0 {
+		t.Fatalf("tracker state was mutated through GetActive result: usage=%v", got)
+	}
+
+	filtered := tracker.GetActiveFiltered(nil, nil)
+	filtered[0].Context["usage"] = 33.0
+	fetched, ok = tracker.GetByID("clone-context")
+	if !ok {
+		t.Fatal("expected alert to be present after filtered fetch")
+	}
+	if got := fetched.Context["usage"]; got != 88.0 {
+		t.Fatalf("tracker state was mutated through GetActiveFiltered result: usage=%v", got)
+	}
+
+	allActive, _ := tracker.GetAll()
+	allActive[0].Context["usage"] = 44.0
+	fetched, ok = tracker.GetByID("clone-context")
+	if !ok {
+		t.Fatal("expected alert to be present after GetAll")
+	}
+	if got := fetched.Context["usage"]; got != 88.0 {
+		t.Fatalf("tracker state was mutated through GetAll result: usage=%v", got)
+	}
+
+	fetched.Context["usage"] = 55.0
+	final, ok := tracker.GetByID("clone-context")
+	if !ok {
+		t.Fatal("expected alert to be present after GetByID")
+	}
+	if got := final.Context["usage"]; got != 88.0 {
+		t.Fatalf("tracker state was mutated through GetByID result: usage=%v", got)
+	}
+}
+
+func TestTrackerClonesIncomingContextMaps(t *testing.T) {
+	cfg := DefaultConfig()
+	tracker := NewTracker(cfg)
+
+	incoming := Alert{
+		ID:       "incoming-context",
+		Type:     AlertAgentError,
+		Severity: SeverityWarning,
+		Message:  "incoming context aliasing",
+		Context:  map[string]interface{}{"usage": 90.0},
+	}
+	tracker.AddAlert(incoming)
+
+	incoming.Context["usage"] = 5.0
+
+	stored, ok := tracker.GetByID("incoming-context")
+	if !ok {
+		t.Fatal("expected stored alert")
+	}
+	if got := stored.Context["usage"]; got != 90.0 {
+		t.Fatalf("tracker state was mutated through AddAlert caller map: usage=%v", got)
+	}
+
+	refresh := Alert{
+		ID:       "incoming-context",
+		Type:     AlertAgentError,
+		Severity: SeverityWarning,
+		Message:  "incoming context aliasing refresh",
+		Context:  map[string]interface{}{"usage": 95.0},
+	}
+	tracker.Update([]Alert{refresh}, nil)
+	refresh.Context["usage"] = 1.0
+
+	stored, ok = tracker.GetByID("incoming-context")
+	if !ok {
+		t.Fatal("expected stored alert after refresh")
+	}
+	if got := stored.Context["usage"]; got != 95.0 {
+		t.Fatalf("tracker state was mutated through Update caller map: usage=%v", got)
+	}
+}
+
+func TestTrackerReturnsAlertsInDeterministicOrder(t *testing.T) {
+	cfg := DefaultConfig()
+	tracker := NewTracker(cfg)
+
+	base := time.Date(2026, 3, 24, 15, 0, 0, 0, time.UTC)
+	tracker.active["b"] = &Alert{
+		ID:        "b",
+		Type:      AlertAgentError,
+		Severity:  SeverityWarning,
+		Message:   "second",
+		CreatedAt: base,
+	}
+	tracker.active["a"] = &Alert{
+		ID:        "a",
+		Type:      AlertAgentError,
+		Severity:  SeverityWarning,
+		Message:   "first by id",
+		CreatedAt: base,
+	}
+	tracker.active["c"] = &Alert{
+		ID:        "c",
+		Type:      AlertDiskLow,
+		Severity:  SeverityError,
+		Message:   "latest",
+		CreatedAt: base.Add(time.Minute),
+	}
+	resolvedAt := base.Add(2 * time.Minute)
+	tracker.resolved = []*Alert{
+		{
+			ID:         "resolved-b",
+			Type:       AlertDiskLow,
+			Severity:   SeverityWarning,
+			Message:    "resolved second",
+			CreatedAt:  base.Add(3 * time.Minute),
+			ResolvedAt: &resolvedAt,
+		},
+		{
+			ID:         "resolved-a",
+			Type:       AlertAgentError,
+			Severity:   SeverityInfo,
+			Message:    "resolved first",
+			CreatedAt:  base.Add(3 * time.Minute),
+			ResolvedAt: &resolvedAt,
+		},
+	}
+
+	active := tracker.GetActive()
+	if got := []string{active[0].ID, active[1].ID, active[2].ID}; strings.Join(got, ",") != "a,b,c" {
+		t.Fatalf("GetActive order = %v, want [a b c]", got)
+	}
+
+	filtered := tracker.GetActiveFiltered(nil, nil)
+	if got := []string{filtered[0].ID, filtered[1].ID, filtered[2].ID}; strings.Join(got, ",") != "a,b,c" {
+		t.Fatalf("GetActiveFiltered order = %v, want [a b c]", got)
+	}
+
+	gotByAllActive, gotByAllResolved := tracker.GetAll()
+	if got := []string{gotByAllActive[0].ID, gotByAllActive[1].ID, gotByAllActive[2].ID}; strings.Join(got, ",") != "a,b,c" {
+		t.Fatalf("GetAll active order = %v, want [a b c]", got)
+	}
+	if got := []string{gotByAllResolved[0].ID, gotByAllResolved[1].ID}; strings.Join(got, ",") != "resolved-a,resolved-b" {
+		t.Fatalf("GetAll resolved order = %v, want [resolved-a resolved-b]", got)
+	}
+
+	resolved := tracker.GetResolved()
+	if got := []string{resolved[0].ID, resolved[1].ID}; strings.Join(got, ",") != "resolved-a,resolved-b" {
+		t.Fatalf("GetResolved order = %v, want [resolved-a resolved-b]", got)
+	}
 }
 
 func TestTrackerSeverityEscalation(t *testing.T) {
@@ -467,6 +664,40 @@ func TestTrackerAddAlert(t *testing.T) {
 	}
 	if found.Severity != SeverityError {
 		t.Errorf("expected severity to escalate to error, got %s", found.Severity)
+	}
+
+	alert1.Message = "Alert 1 updated"
+	alert1.Source = "context_rotation"
+	alert1.Session = "proj"
+	alert1.Pane = "%3"
+	alert1.Context = map[string]interface{}{"usage": 88.0}
+	tracker.AddAlert(alert1)
+
+	active = tracker.GetActive()
+	found = nil
+	for _, a := range active {
+		if a.ID == "add-1" {
+			found = &a
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected to find alert add-1 after second refresh")
+	}
+	if found.Message != "Alert 1 updated" {
+		t.Errorf("expected message to refresh, got %q", found.Message)
+	}
+	if found.Source != "context_rotation" {
+		t.Errorf("expected source to refresh, got %q", found.Source)
+	}
+	if found.Session != "proj" {
+		t.Errorf("expected session to refresh, got %q", found.Session)
+	}
+	if found.Pane != "%3" {
+		t.Errorf("expected pane to refresh, got %q", found.Pane)
+	}
+	if got, ok := found.Context["usage"].(float64); !ok || got != 88.0 {
+		t.Errorf("expected context usage to refresh to 88.0, got %v", found.Context["usage"])
 	}
 }
 
@@ -913,6 +1144,50 @@ func TestGenerateAndTrack_DisabledResolvesExisting(t *testing.T) {
 	if resolved[0].ID != "seed" {
 		t.Errorf("resolved[0].ID = %q, want %q", resolved[0].ID, "seed")
 	}
+}
+
+func TestPreserveUnmanagedAlertSources(t *testing.T) {
+	active := []Alert{
+		{ID: "rotation", Source: "context_rotation"},
+		{ID: "compaction", Source: "context_compaction"},
+		{ID: "agent", Source: "agents:proj"},
+		{ID: "blank", Source: ""},
+		{ID: "rotation-dup", Source: "context_rotation"},
+	}
+
+	merged := preserveUnmanagedAlertSources(active, []string{"disk", "beads", "disk"})
+	got := strings.Join(merged, ",")
+	want := "disk,beads,context_rotation,context_compaction,"
+	if got != want {
+		t.Fatalf("preserveUnmanagedAlertSources() = %q, want %q", got, want)
+	}
+}
+
+func TestGenerateAndTrack_PreservesEventBasedAlerts(t *testing.T) {
+	tracker := GetGlobalTracker()
+	tracker.Clear()
+
+	tracker.AddAlert(Alert{
+		ID:       "seed-event-alert",
+		Type:     AlertRotationStarted,
+		Severity: SeverityInfo,
+		Source:   "context_rotation",
+		Message:  "rotation started",
+		Session:  "proj",
+	})
+
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+
+	GenerateAndTrack(cfg)
+
+	active, _ := tracker.GetAll()
+	for _, alert := range active {
+		if alert.ID == "seed-event-alert" {
+			return
+		}
+	}
+	t.Fatal("expected event-based alert to remain active after GenerateAndTrack")
 }
 
 func TestGetAlertStrings_DisabledReturnsEmpty(t *testing.T) {

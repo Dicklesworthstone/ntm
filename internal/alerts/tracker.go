@@ -1,9 +1,49 @@
 package alerts
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
+
+func cloneAlertContext(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func cloneAlertValue(alert Alert) Alert {
+	alert.Context = cloneAlertContext(alert.Context)
+	return alert
+}
+
+func cloneAlertPtr(alert *Alert) *Alert {
+	if alert == nil {
+		return nil
+	}
+	cloned := cloneAlertValue(*alert)
+	return &cloned
+}
+
+func sortAlerts(alerts []Alert) {
+	sort.Slice(alerts, func(i, j int) bool {
+		if !alerts[i].CreatedAt.Equal(alerts[j].CreatedAt) {
+			return alerts[i].CreatedAt.Before(alerts[j].CreatedAt)
+		}
+		if alerts[i].ID != alerts[j].ID {
+			return alerts[i].ID < alerts[j].ID
+		}
+		if alerts[i].Type != alerts[j].Type {
+			return alerts[i].Type < alerts[j].Type
+		}
+		return alerts[i].Session < alerts[j].Session
+	})
+}
 
 // Tracker manages the lifecycle of alerts
 type Tracker struct {
@@ -44,20 +84,10 @@ func (t *Tracker) Update(detected []Alert, failedChecks []string) {
 		seenIDs[alert.ID] = true
 
 		if existing, ok := t.active[alert.ID]; ok {
-			// Refresh existing alert
-			existing.LastSeenAt = now
-			existing.Count++
-			// Update severity if it increased
-			if severityRank(alert.Severity) > severityRank(existing.Severity) {
-				existing.Severity = alert.Severity
-			}
-			// Update context if present
-			if alert.Context != nil {
-				existing.Context = alert.Context
-			}
+			refreshAlert(existing, alert, now)
 		} else {
 			// Add new alert
-			alertCopy := alert
+			alertCopy := cloneAlertValue(alert)
 			alertCopy.CreatedAt = now
 			alertCopy.LastSeenAt = now
 			alertCopy.Count = 1
@@ -91,8 +121,9 @@ func (t *Tracker) GetActive() []Alert {
 
 	alerts := make([]Alert, 0, len(t.active))
 	for _, alert := range t.active {
-		alerts = append(alerts, *alert)
+		alerts = append(alerts, cloneAlertValue(*alert))
 	}
+	sortAlerts(alerts)
 	return alerts
 }
 
@@ -111,8 +142,9 @@ func (t *Tracker) GetActiveFiltered(alertType *AlertType, minSeverity *Severity)
 		if minSeverity != nil && severityRank(alert.Severity) < severityRank(*minSeverity) {
 			continue
 		}
-		alerts = append(alerts, *alert)
+		alerts = append(alerts, cloneAlertValue(*alert))
 	}
+	sortAlerts(alerts)
 	return alerts
 }
 
@@ -123,8 +155,9 @@ func (t *Tracker) GetResolved() []Alert {
 
 	alerts := make([]Alert, len(t.resolved))
 	for i, alert := range t.resolved {
-		alerts[i] = *alert
+		alerts[i] = cloneAlertValue(*alert)
 	}
+	sortAlerts(alerts)
 	return alerts
 }
 
@@ -135,13 +168,15 @@ func (t *Tracker) GetAll() (active []Alert, resolved []Alert) {
 
 	active = make([]Alert, 0, len(t.active))
 	for _, alert := range t.active {
-		active = append(active, *alert)
+		active = append(active, cloneAlertValue(*alert))
 	}
+	sortAlerts(active)
 
 	resolved = make([]Alert, len(t.resolved))
 	for i, alert := range t.resolved {
-		resolved[i] = *alert
+		resolved[i] = cloneAlertValue(*alert)
 	}
+	sortAlerts(resolved)
 
 	return active, resolved
 }
@@ -152,14 +187,12 @@ func (t *Tracker) GetByID(id string) (*Alert, bool) {
 	defer t.mu.RUnlock()
 
 	if alert, ok := t.active[id]; ok {
-		alertCopy := *alert
-		return &alertCopy, true
+		return cloneAlertPtr(alert), true
 	}
 
 	for _, alert := range t.resolved {
 		if alert.ID == id {
-			alertCopy := *alert
-			return &alertCopy, true
+			return cloneAlertPtr(alert), true
 		}
 	}
 
@@ -222,24 +255,40 @@ func (t *Tracker) AddAlert(alert Alert) {
 	now := time.Now()
 
 	if existing, ok := t.active[alert.ID]; ok {
-		// Refresh existing alert
-		existing.LastSeenAt = now
-		existing.Count++
-		// Update severity if it increased
-		if severityRank(alert.Severity) > severityRank(existing.Severity) {
-			existing.Severity = alert.Severity
-		}
-		// Update context if present
-		if alert.Context != nil {
-			existing.Context = alert.Context
-		}
+		refreshAlert(existing, alert, now)
 	} else {
 		// Add new alert
-		alertCopy := alert
+		alertCopy := cloneAlertValue(alert)
 		alertCopy.CreatedAt = now
 		alertCopy.LastSeenAt = now
 		alertCopy.Count = 1
 		t.active[alert.ID] = &alertCopy
+	}
+}
+
+func refreshAlert(existing *Alert, incoming Alert, now time.Time) {
+	existing.LastSeenAt = now
+	existing.Count++
+	if severityRank(incoming.Severity) > severityRank(existing.Severity) {
+		existing.Severity = incoming.Severity
+	}
+	if incoming.Message != "" {
+		existing.Message = incoming.Message
+	}
+	if incoming.Source != "" {
+		existing.Source = incoming.Source
+	}
+	if incoming.Session != "" {
+		existing.Session = incoming.Session
+	}
+	if incoming.Pane != "" {
+		existing.Pane = incoming.Pane
+	}
+	if incoming.BeadID != "" {
+		existing.BeadID = incoming.BeadID
+	}
+	if incoming.Context != nil {
+		existing.Context = cloneAlertContext(incoming.Context)
 	}
 }
 
