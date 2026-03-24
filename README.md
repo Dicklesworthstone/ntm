@@ -6,6 +6,7 @@
 
 <div align="center">
 
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/ntm)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)
 ![License](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)
