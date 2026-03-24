@@ -187,6 +187,7 @@ func getCommandsContent() *DocsContent {
 --robot-tail=SESSION: Capture recent pane output
 --robot-watch-bead=SESSION: Capture bead mentions + current bead status
 --robot-context=SESSION: Get context window usage
+--robot-activity=SESSION: Classify pane work state (idle/busy/error) with optional pane/type filters
 --robot-is-working=SESSION: Check if agents are busy
 --robot-diagnose=SESSION: Comprehensive health check
 --robot-health-restart-stuck=SESSION: Detect and restart stuck agents
@@ -196,6 +197,8 @@ func getCommandsContent() *DocsContent {
 				Heading: "Agent Control",
 				Body: `--robot-send=SESSION: Send message to panes
 --robot-interrupt=SESSION: Send Ctrl+C to agents
+--robot-restart-pane=SESSION: Immediate tmux respawn-pane -k restart with optional prompt/bead follow-up
+--robot-smart-restart=SESSION: Safety-checked restart with optional --hard-kill / --hard-kill-only fallback
 --robot-wait=SESSION: Wait for pane state or attention-feed condition
 --robot-overlay: Open dashboard overlay for human handoff (--overlay-session optional inside tmux)
 --robot-route=SESSION: Get routing recommendation`,
@@ -235,6 +238,7 @@ func getCommandsContent() *DocsContent {
 --robot-docs: Documentation (this command)
 --robot-version: Version and build info
 --robot-help: Human-readable help text
+--robot-support-bundle[=SESSION]: Generate a diagnostic bundle with redaction/privacy controls
 --robot-proxy-status: rust_proxy daemon/route status
 --robot-slb-pending: List SLB pending approvals
 --robot-slb-approve=ID: Approve SLB request
@@ -307,6 +311,12 @@ func getExamplesContent() *DocsContent {
 				Notes:       "Returns work state and recommendations",
 			},
 			{
+				Name:        "activity_filtered",
+				Description: "Inspect activity state for specific panes and agent types",
+				Command:     "ntm --robot-activity=proj --panes=1,2 --activity-type=claude,codex",
+				Notes:       "Useful when you want a lighter-weight pane classifier than a full diagnose pass",
+			},
+			{
 				Name:        "wait_for_idle",
 				Description: "Wait for all agents to become idle",
 				Command:     "ntm --robot-wait=proj --wait-until=idle --timeout=5m",
@@ -324,12 +334,30 @@ func getExamplesContent() *DocsContent {
 				Command:     "ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait",
 				Notes:       "Use this when an operator should jump directly to the relevant attention item instead of parsing free-form instructions",
 			},
+			{
+				Name:        "restart_with_bead",
+				Description: "Hard reset a pane and re-seed it with a bead-backed prompt",
+				Command:     "ntm --robot-restart-pane=proj --panes=2 --restart-bead=bd-abc12",
+				Notes:       "Useful when the pane is wedged but you want the relaunched agent to resume a specific bead immediately",
+			},
+			{
+				Name:        "smart_restart_hard_kill",
+				Description: "Escalate a safe restart to kill -9 fallback when soft exit is not working",
+				Command:     "ntm --robot-smart-restart=proj --panes=2 --hard-kill",
+				Notes:       "Prefer this over an immediate hard kill when you still want the usual working-state checks and structured restart sequence",
+			},
 			// Recovery
 			{
 				Name:        "delta_snapshot",
 				Description: "Get state changes since timestamp",
 				Command:     "ntm --robot-snapshot --since=2025-01-15T10:00:00Z",
 				Notes:       "Useful for resuming after interruption",
+			},
+			{
+				Name:        "support_bundle_redacted",
+				Description: "Generate a redacted support bundle for a session",
+				Command:     "ntm --robot-support-bundle=proj --bundle-since=1h --bundle-redact=redact",
+				Notes:       "Use --all to collect every session, and --allow-secret only when you intentionally want to bypass privacy blocking",
 			},
 			{
 				Name:        "diagnose_session",

@@ -276,6 +276,9 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 		"health-oauth": {
 			Sections: []string{"source_health", "quota"},
 		},
+		"activity": {
+			Sections: []string{"summary", "next_actions"},
+		},
 		"is-working": {
 			Sections: []string{"summary"},
 		},
@@ -283,6 +286,9 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			Sections: []string{"events"},
 		},
 		"monitor": {
+			Sections: []string{"source_health", "next_actions"},
+		},
+		"restart-pane": {
 			Sections: []string{"source_health", "next_actions"},
 		},
 		"smart-restart": {

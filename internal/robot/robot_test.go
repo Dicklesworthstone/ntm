@@ -784,7 +784,7 @@ func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
 	}
 
 	registry := GetRobotRegistry()
-	for _, name := range []string{"status", "send", "bulk-assign", "monitor", "schema", "mail-check", "bead-close", "history"} {
+	for _, name := range []string{"status", "send", "activity", "restart-pane", "bulk-assign", "monitor", "support-bundle", "schema", "mail-check", "bead-close", "history"} {
 		surface, ok := registry.Surface(name)
 		if !ok {
 			t.Fatalf("missing registry surface %q", name)
@@ -816,6 +816,67 @@ func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing required secondary flag hint %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestPrintHelp_IncludesRestartSurfaces(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp capture failed: %v", err)
+	}
+
+	for _, want := range []string{
+		"--robot-restart-pane=SESSION",
+		"--robot-smart-restart=SESSION",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestPrintHelp_IncludesActivitySurface(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp capture failed: %v", err)
+	}
+
+	if !strings.Contains(output, "--robot-activity=SESSION") {
+		t.Fatalf("help output missing --robot-activity surface:\n%s", output)
+	}
+}
+
+func TestGenerateSupportBundle_UsesBundleFlagNamesInValidationErrors(t *testing.T) {
+	output, err := GenerateSupportBundle(SupportBundleOptions{
+		Since: "not-a-duration",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSupportBundle returned unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected invalid duration to fail")
+	}
+	if !strings.Contains(output.Hint, "--bundle-since") {
+		t.Fatalf("support bundle hint should mention --bundle-since, got %q", output.Hint)
+	}
+
+	output, err = GenerateSupportBundle(SupportBundleOptions{
+		RedactMode: "bogus",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSupportBundle returned unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected invalid redact mode to fail")
+	}
+	if !strings.Contains(output.Hint, "--bundle-redact") {
+		t.Fatalf("support bundle hint should mention --bundle-redact, got %q", output.Hint)
 	}
 }
 

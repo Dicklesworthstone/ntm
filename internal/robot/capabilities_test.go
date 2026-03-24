@@ -257,6 +257,8 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 	ackCmd := findCommand("ack")
 	interruptCmd := findCommand("interrupt")
 	spawnCmd := findCommand("spawn")
+	restartPaneCmd := findCommand("restart-pane")
+	activityCmd := findCommand("activity")
 	isWorkingCmd := findCommand("is-working")
 	agentHealthCmd := findCommand("agent-health")
 	smartRestartCmd := findCommand("smart-restart")
@@ -275,9 +277,11 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 		{command: ackCmd, flags: []string{"--timeout", "--poll"}},
 		{command: interruptCmd, flags: []string{"--msg", "--all", "--force", "--no-wait", "--timeout"}},
 		{command: spawnCmd, flags: []string{"--spawn-wait", "--timeout", "--spawn-assign-work", "--strategy"}},
+		{command: restartPaneCmd, flags: []string{"--panes", "--type", "--all", "--dry-run", "--restart-bead", "--restart-prompt"}},
+		{command: activityCmd, flags: []string{"--panes", "--activity-type"}},
 		{command: isWorkingCmd, flags: []string{"--verbose"}},
 		{command: agentHealthCmd, flags: []string{"--verbose"}},
-		{command: smartRestartCmd, flags: []string{"--dry-run", "--verbose"}},
+		{command: smartRestartCmd, flags: []string{"--dry-run", "--verbose", "--hard-kill", "--hard-kill-only"}},
 		{command: pipelineRunCmd, flags: []string{"--dry-run"}},
 		{command: replayCmd, flags: []string{"--dry-run"}},
 	} {
@@ -335,6 +339,16 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 			t.Fatalf("spawn example still uses deprecated spawn modifiers: %q", example)
 		}
 	}
+	for _, example := range restartPaneCmd.Examples {
+		if strings.Contains(example, "--restart-pane-panes") || strings.Contains(example, "--restart-pane-type") || strings.Contains(example, "--restart-pane-dry-run") {
+			t.Fatalf("restart-pane example still uses imaginary prefixed modifiers: %q", example)
+		}
+	}
+	for _, example := range activityCmd.Examples {
+		if strings.Contains(example, "--activity-panes") {
+			t.Fatalf("activity example still uses imaginary prefixed pane flag: %q", example)
+		}
+	}
 	for _, example := range isWorkingCmd.Examples {
 		if strings.Contains(example, "--is-working-verbose") {
 			t.Fatalf("is-working example still uses deprecated verbose flag: %q", example)
@@ -359,6 +373,17 @@ func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *tes
 		if strings.Contains(example, "--replay-dry-run") {
 			t.Fatalf("replay example still uses deprecated dry-run flag: %q", example)
 		}
+	}
+
+	restartPanePanesRequired := false
+	for _, param := range restartPaneCmd.Parameters {
+		if param.Flag == "--panes" {
+			restartPanePanesRequired = param.Required
+			break
+		}
+	}
+	if restartPanePanesRequired {
+		t.Fatal("restart-pane should not require --panes; empty target set means all agent panes")
 	}
 }
 
@@ -1114,6 +1139,63 @@ func TestDocsContentMentionsOverlayHandoff(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected handoff_to_human example")
+	}
+}
+
+func TestDocsContentMentionsRestartSurfaces(t *testing.T) {
+	t.Parallel()
+
+	commands := getCommandsContent()
+	if commands == nil {
+		t.Fatal("getCommandsContent() returned nil")
+	}
+
+	foundAgentControl := false
+	for _, section := range commands.Sections {
+		if section.Heading != "Agent Control" {
+			continue
+		}
+		foundAgentControl = true
+		for _, want := range []string{"--robot-restart-pane", "--robot-smart-restart", "--hard-kill"} {
+			if !strings.Contains(section.Body, want) {
+				t.Fatalf("Agent Control docs should mention %q, got %q", want, section.Body)
+			}
+		}
+	}
+	if !foundAgentControl {
+		t.Fatal("Agent Control section not found")
+	}
+}
+
+func TestDocsContentMentionsActivityAndSupportBundle(t *testing.T) {
+	t.Parallel()
+
+	commands := getCommandsContent()
+	if commands == nil {
+		t.Fatal("getCommandsContent() returned nil")
+	}
+
+	foundStateInspection := false
+	foundUtilities := false
+	for _, section := range commands.Sections {
+		switch section.Heading {
+		case "State Inspection":
+			foundStateInspection = true
+			if !strings.Contains(section.Body, "--robot-activity=SESSION") {
+				t.Fatalf("State Inspection docs should mention --robot-activity, got %q", section.Body)
+			}
+		case "Utilities":
+			foundUtilities = true
+			if !strings.Contains(section.Body, "--robot-support-bundle") {
+				t.Fatalf("Utilities docs should mention --robot-support-bundle, got %q", section.Body)
+			}
+		}
+	}
+	if !foundStateInspection {
+		t.Fatal("State Inspection section not found")
+	}
+	if !foundUtilities {
+		t.Fatal("Utilities section not found")
 	}
 }
 

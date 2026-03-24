@@ -455,9 +455,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Get agent activity state (idle/busy/error) for all agents in a session.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-activity", Type: "string", Required: true, Description: "Session name"},
-				{Name: "activity-type", Flag: "--activity-type", Type: "string", Required: false, Description: "Filter by agent type: claude, codex, gemini"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to filter"},
+				{Name: "activity-type", Flag: "--activity-type", Type: "string", Required: false, Description: "Comma-separated agent types to filter: claude, codex, gemini"},
 			},
-			Examples: []string{"ntm --robot-activity=myproject --activity-type=claude"},
+			Examples: []string{
+				"ntm --robot-activity=myproject --activity-type=claude",
+				"ntm --robot-activity=myproject --panes=1,2 --activity-type=claude,codex",
+			},
 		},
 		{
 			Name:        "dashboard",
@@ -714,12 +718,21 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "restart-pane",
 			Flag:        "--robot-restart-pane",
 			Category:    "control",
-			Description: "Restart pane process (kill and respawn agent).",
+			Description: "Restart pane processes with tmux respawn-pane -k, optionally scoped by pane or agent type.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-restart-pane", Type: "string", Required: true, Description: "Session name"},
-				{Name: "panes", Flag: "--panes", Type: "string", Required: true, Description: "Pane indices to restart"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to restart"},
+				{Name: "type", Flag: "--type", Type: "string", Required: false, Description: "Filter restart targets by agent type"},
+				{Name: "all", Flag: "--all", Type: "bool", Required: false, Description: "Include the user pane when no explicit pane filter is provided"},
+				{Name: "dry-run", Flag: "--dry-run", Type: "bool", Required: false, Description: "Preview restart targets without executing"},
+				{Name: "restart-bead", Flag: "--restart-bead", Type: "string", Required: false, Description: "Bead id to assign after the restart and use for the synthesized prompt"},
+				{Name: "restart-prompt", Flag: "--restart-prompt", Type: "string", Required: false, Description: "Explicit prompt to send after restart; overrides the bead template"},
 			},
-			Examples: []string{"ntm --robot-restart-pane=proj --panes=1,2"},
+			Examples: []string{
+				"ntm --robot-restart-pane=proj --panes=1,2",
+				"ntm --robot-restart-pane=proj --type=claude --dry-run",
+				"ntm --robot-restart-pane=proj --panes=2 --restart-bead=bd-abc12",
+			},
 		},
 		{
 			Name:        "smart-restart",
@@ -734,10 +747,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "prompt", Flag: "--prompt", Type: "string", Required: false, Description: "Prompt to send after the restart"},
 				{Name: "lines", Flag: "--lines", Type: "int", Required: false, Default: "20", Description: "Lines captured per pane for safety checks"},
 				{Name: "verbose", Flag: "--verbose", Type: "bool", Required: false, Description: "Include extra debugging details in the response"},
+				{Name: "hard-kill", Flag: "--hard-kill", Type: "bool", Required: false, Description: "Use kill -9 fallback if the normal exit sequence fails"},
+				{Name: "hard-kill-only", Flag: "--hard-kill-only", Type: "bool", Required: false, Description: "Skip the normal exit sequence and go straight to kill -9"},
 			},
 			Examples: []string{
 				"ntm --robot-smart-restart=myproject --panes=2,3",
 				"ntm --robot-smart-restart=myproject --dry-run --prompt='resume work'",
+				"ntm --robot-smart-restart=myproject --panes=2 --hard-kill",
 			},
 		},
 		{
@@ -1693,11 +1709,11 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Category:    "utility",
 			Description: "Dismiss an alert.",
 			Parameters: []RobotParameter{
-				{Name: "alert-id", Flag: "--robot-dismiss-alert", Type: "string", Required: true, Description: "Alert ID to dismiss"},
+				{Name: "alert-id", Flag: "--robot-dismiss-alert", Type: "string", Required: false, Description: "Alert ID to dismiss; omit when using --dismiss-all"},
 				{Name: "dismiss-session", Flag: "--dismiss-session", Type: "string", Required: false, Description: "Scope dismissal to session"},
 				{Name: "dismiss-all", Flag: "--dismiss-all", Type: "bool", Required: false, Description: "Dismiss all matching alerts"},
 			},
-			Examples: []string{"ntm --robot-dismiss-alert=alert-abc123"},
+			Examples: []string{"ntm --robot-dismiss-alert=alert-abc123", "ntm --robot-dismiss-alert --dismiss-all"},
 		},
 		{
 			Name:        "palette",

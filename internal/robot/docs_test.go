@@ -158,6 +158,35 @@ func TestGetDocs_Examples(t *testing.T) {
 	if !foundCanonicalWait {
 		t.Fatal("examples topic missing canonical wait_for_attention cursor/timeout example")
 	}
+
+	foundRestartWithBead := false
+	foundSmartRestartHardKill := false
+	foundActivityFiltered := false
+	foundSupportBundleRedacted := false
+	for _, ex := range output.Content.Examples {
+		switch ex.Name {
+		case "restart_with_bead":
+			foundRestartWithBead = strings.Contains(ex.Command, "--robot-restart-pane=proj") && strings.Contains(ex.Command, "--restart-bead=bd-abc12")
+		case "smart_restart_hard_kill":
+			foundSmartRestartHardKill = strings.Contains(ex.Command, "--robot-smart-restart=proj") && strings.Contains(ex.Command, "--hard-kill")
+		case "activity_filtered":
+			foundActivityFiltered = strings.Contains(ex.Command, "--robot-activity=proj") && strings.Contains(ex.Command, "--panes=1,2")
+		case "support_bundle_redacted":
+			foundSupportBundleRedacted = strings.Contains(ex.Command, "--robot-support-bundle=proj") && strings.Contains(ex.Command, "--bundle-since=1h") && strings.Contains(ex.Command, "--bundle-redact=redact")
+		}
+	}
+	if !foundRestartWithBead {
+		t.Fatal("examples topic missing restart_with_bead example")
+	}
+	if !foundSmartRestartHardKill {
+		t.Fatal("examples topic missing smart_restart_hard_kill example")
+	}
+	if !foundActivityFiltered {
+		t.Fatal("examples topic missing activity_filtered example")
+	}
+	if !foundSupportBundleRedacted {
+		t.Fatal("examples topic missing support_bundle_redacted example")
+	}
 }
 
 func TestGetDocs_ExitCodes(t *testing.T) {

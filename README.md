@@ -718,6 +718,7 @@ ntm --robot-interrupt=SESSION --interrupt-msg="Stop"     # Send Ctrl+C
 ntm --robot-assign=SESSION --beads=bd-1,bd-2             # Assign work to agents
 ntm --robot-replay=SESSION --replay-id=ID                # Replay command from history
 ntm --robot-dismiss-alert=ALERT_ID                       # Dismiss an alert
+ntm --robot-dismiss-alert --dismiss-all                  # Dismiss all matching alerts
 ```
 
 **Bead Management:**
