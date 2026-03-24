@@ -357,3 +357,43 @@ func TestValidateMainConfigReferences_WarnsWhenPaletteFileIsDirectory(t *testing
 		t.Fatal("expected palette_file warning when configured path is a directory")
 	}
 }
+
+func TestValidateMainConfigReferences_WarnsWhenPromptFileIsDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Send.BasePromptFile = tmpDir
+
+	result := &ValidationResult{Valid: true, Errors: []ValidationIssue{}, Warnings: []ValidationIssue{}}
+	validateMainConfigReferences(cfg, result, false)
+
+	foundWarning := false
+	for _, warning := range result.Warnings {
+		if warning.Field == "send.base_prompt_file" {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatal("expected send.base_prompt_file warning when configured path is a directory")
+	}
+}
+
+func TestValidateMainConfigReferences_WarnsWhenConfiguredBinaryPathIsDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Integrations.RCH.BinaryPath = tmpDir
+
+	result := &ValidationResult{Valid: true, Errors: []ValidationIssue{}, Warnings: []ValidationIssue{}}
+	validateMainConfigReferences(cfg, result, false)
+
+	foundWarning := false
+	for _, warning := range result.Warnings {
+		if warning.Field == "integrations.rch.binary_path" {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatal("expected integrations.rch.binary_path warning when configured path is a directory")
+	}
+}

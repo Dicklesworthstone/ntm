@@ -283,6 +283,23 @@ func validateMainConfigReferences(cfg *config.Config, result *ValidationResult, 
 		}
 	}
 
+	validateRegularFileReference("send.base_prompt_file", cfg.Send.BasePromptFile, result)
+	validateRegularFileReference("prompts.cc_default_file", cfg.Prompts.CCDefaultFile, result)
+	validateRegularFileReference("prompts.cod_default_file", cfg.Prompts.CodDefaultFile, result)
+	validateRegularFileReference("prompts.gmi_default_file", cfg.Prompts.GmiDefaultFile, result)
+	if cfg.Encryption.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Encryption.KeySource), "file") {
+		validateRegularFileReference("encryption.key_file", cfg.Encryption.KeyFile, result)
+	}
+
+	validateBinaryReference("integrations.dcg.binary_path", cfg.Integrations.DCG.BinaryPath, result)
+	validateBinaryReference("integrations.caam.binary_path", cfg.Integrations.CAAM.BinaryPath, result)
+	validateBinaryReference("integrations.rch.binary_path", cfg.Integrations.RCH.BinaryPath, result)
+	validateBinaryReference("integrations.caut.binary_path", cfg.Integrations.Caut.BinaryPath, result)
+	validateBinaryReference("integrations.process_triage.binary_path", cfg.Integrations.ProcessTriage.BinaryPath, result)
+	validateBinaryReference("integrations.rano.binary_path", cfg.Integrations.Rano.BinaryPath, result)
+	validateBinaryReference("cass.binary_path", cfg.CASS.BinaryPath, result)
+	validateBinaryReference("scanner.ubs_path", cfg.Scanner.UBSPath, result)
+
 	// Check agent executables
 	validateAgentExecutables(cfg, result)
 
@@ -392,6 +409,45 @@ func validateProjectConfig(path string, result *ValidationResult, fix bool) {
 func regularFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func validateRegularFileReference(field, path string, result *ValidationResult) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	expanded := config.ExpandHome(path)
+	if regularFileExists(expanded) {
+		return
+	}
+	result.Warnings = append(result.Warnings, ValidationIssue{
+		Field:   field,
+		Message: fmt.Sprintf("file does not exist: %s", expanded),
+	})
+}
+
+func validateBinaryReference(field, binaryPath string, result *ValidationResult) {
+	if strings.TrimSpace(binaryPath) == "" {
+		return
+	}
+
+	expanded := config.ExpandHome(binaryPath)
+	if filepath.IsAbs(expanded) || strings.HasPrefix(binaryPath, "~") || strings.ContainsRune(binaryPath, filepath.Separator) {
+		if regularFileExists(expanded) {
+			return
+		}
+		result.Warnings = append(result.Warnings, ValidationIssue{
+			Field:   field,
+			Message: fmt.Sprintf("binary does not exist: %s", expanded),
+		})
+		return
+	}
+
+	if _, err := exec.LookPath(binaryPath); err != nil {
+		result.Warnings = append(result.Warnings, ValidationIssue{
+			Field:   field,
+			Message: fmt.Sprintf("binary not found on PATH: %s", binaryPath),
+		})
+	}
 }
 
 // validateRecipesFile validates a recipes.toml file.
