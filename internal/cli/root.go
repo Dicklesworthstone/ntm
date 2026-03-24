@@ -2193,7 +2193,7 @@ Shell Integration:
 		// Robot-account-status handler for CAAM account status
 		if robotAccountStatus {
 			opts := robot.AccountStatusOptions{
-				Provider: robotAccountStatusProvider,
+				Provider: resolveRobotProvider(cmd, "account-status-provider", robotAccountStatusProvider),
 			}
 			if err := robot.PrintAccountStatus(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2205,7 +2205,7 @@ Shell Integration:
 		// Robot-accounts-list handler for CAAM accounts list
 		if robotAccountsList {
 			opts := robot.AccountsListOptions{
-				Provider: robotAccountsListProvider,
+				Provider: resolveRobotProvider(cmd, "accounts-list-provider", robotAccountsListProvider),
 			}
 			if err := robot.PrintAccountsList(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2262,7 +2262,7 @@ Shell Integration:
 
 		// Robot-quota-check handler for caut quota check (single provider)
 		if robotQuotaCheck {
-			if err := robot.PrintQuotaCheck(robotQuotaCheckProvider); err != nil {
+			if err := robot.PrintQuotaCheck(resolveRobotProvider(cmd, "quota-check-provider", robotQuotaCheckProvider)); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -2335,10 +2335,10 @@ Shell Integration:
 				IncludeBodies: mailIncludeBodies,
 				UrgentOnly:    mailUrgentOnly,
 				Verbose:       mailVerbose,
-				Limit:         cassLimit,  // Use global --limit
+				Limit:         resolveRobotMailCheckLimit(cmd),
 				Offset:        mailOffset, // Pagination offset
-				Since:         cassSince,  // Use global --since (if set via --cass-since)
-				Until:         mailUntil,  // Date filter
+				Since:         resolveRobotMailCheckSince(cmd),
+				Until:         mailUntil, // Date filter
 			}
 			if err := robot.PrintMailCheck(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -3118,7 +3118,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotDocs, "robot-docs", "", "Get documentation for a topic (JSON). Topics: quickstart, commands, examples, exit-codes. Example: ntm --robot-docs=quickstart")
 	rootCmd.Flags().BoolVar(&robotPlan, "robot-plan", false, "Get bv execution plan with parallelizable tracks (JSON). Example: ntm --robot-plan")
 	rootCmd.Flags().BoolVar(&robotSnapshot, "robot-snapshot", false, "Unified state: sessions + beads + alerts + mail. Use --since for delta. Example: ntm --robot-snapshot")
-	rootCmd.Flags().StringVar(&robotSince, "since", "", "Shared time filter for commands that support --since. Snapshot uses RFC3339; history/diff/summary accept duration or RFC3339 timestamps; tokens accepts ISO8601 or YYYY-MM-DD. Examples: --since=2025-12-15T10:00:00Z, --since=1h")
+	rootCmd.Flags().StringVar(&robotSince, "since", "", "Shared time filter for commands that support --since. Snapshot uses RFC3339; history/diff/summary accept duration or RFC3339 timestamps; tokens accepts ISO8601 or YYYY-MM-DD; robot-mail-check accepts YYYY-MM-DD. Examples: --since=2025-12-15T10:00:00Z, --since=1h, --since=2025-12-15")
 	rootCmd.Flags().BoolVar(&robotEvents, "robot-events", false, "Stream attention events since cursor. Use for raw replay/feed. Example: ntm --robot-events --since-cursor=42 --events-limit=50")
 	rootCmd.Flags().Int64Var(&robotEventsSinceCursor, "since-cursor", 0, "Cursor position to replay from. Optional with --robot-events. Example: --since-cursor=42")
 	rootCmd.Flags().IntVar(&robotEventsLimit, "events-limit", 100, "Max events to return. Optional with --robot-events. Example: --events-limit=50")
@@ -3576,7 +3576,7 @@ func init() {
 
 	// Robot-quota-status and robot-quota-check flags for caut
 	rootCmd.Flags().BoolVar(&robotQuotaStatus, "robot-quota-status", false, "Show caut quota status for all providers. JSON output. Example: ntm --robot-quota-status")
-	rootCmd.Flags().BoolVar(&robotQuotaCheck, "robot-quota-check", false, "Check quota for specific provider. JSON output. Example: ntm --robot-quota-check --quota-check-provider=claude")
+	rootCmd.Flags().BoolVar(&robotQuotaCheck, "robot-quota-check", false, "Check quota for specific provider. JSON output. Example: ntm --robot-quota-check --provider=claude")
 	rootCmd.Flags().StringVar(&robotQuotaCheckProvider, "quota-check-provider", "", "Provider for quota check. Required with --robot-quota-check. Example: --quota-check-provider=claude")
 
 	// Robot-rano-stats flag for per-agent network stats
@@ -3600,7 +3600,7 @@ func init() {
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	rootCmd.Flags().BoolVar(&robotMailCheck, "robot-mail-check", false, "Check agent inboxes via Agent Mail. Requires --mail-project. JSON output. Example: ntm --robot-mail-check --mail-project=myproject")
 	rootCmd.Flags().StringVar(&mailProject, "mail-project", "", "Project for mail check. Required with --robot-mail-check. Example: --mail-project=myproject")
-	rootCmd.Flags().StringVar(&mailAgent, "mail-agent", "", "Filter to specific agent inbox. Optional with --robot-mail-check. Example: --mail-agent=cc_1")
+	rootCmd.Flags().StringVar(&mailAgent, "mail-agent", "", "Filter to specific agent inbox. Optional with --robot-mail-check; omit to aggregate project agents. Example: --mail-agent=cc_1")
 	rootCmd.Flags().StringVar(&mailThread, "thread", "", "Filter to specific thread. Optional with --robot-mail-check. Example: --thread=TKT-api-design")
 	rootCmd.Flags().StringVar(&mailStatus, "mail-status", "", "Filter by read status: read, unread, all. Optional with --robot-mail-check. Example: --mail-status=unread")
 	rootCmd.Flags().BoolVar(&mailIncludeBodies, "include-bodies", false, "Include full message bodies. Optional with --robot-mail-check")
@@ -4043,11 +4043,11 @@ func resolveRobotSharedFlag(cmd *cobra.Command, specificFlagName string, specifi
 	if cmd != nil && specificFlagName != "" && cmd.Flags().Changed(specificFlagName) {
 		return specificValue
 	}
-	if strings.TrimSpace(specificValue) != "" {
-		return specificValue
-	}
 	if cmd != nil && sharedFlagName != "" && cmd.Flags().Changed(sharedFlagName) {
 		return sharedValue
+	}
+	if strings.TrimSpace(specificValue) != "" {
+		return specificValue
 	}
 	return specificValue
 }
@@ -4100,6 +4100,30 @@ func resolveRobotDiffSince(cmd *cobra.Command) string {
 
 func resolveRobotSummarySince(cmd *cobra.Command) string {
 	return resolveRobotSharedFlag(cmd, "summary-since", robotSummarySince, "since", robotSince)
+}
+
+func resolveRobotMailCheckSince(cmd *cobra.Command) string {
+	return resolveRobotSharedFlag(cmd, "cass-since", cassSince, "since", robotSince)
+}
+
+func resolveRobotMailCheckLimit(cmd *cobra.Command) int {
+	if cmd != nil && cmd.Flags().Changed("cass-limit") {
+		return cassLimit
+	}
+	if cmd != nil && cmd.Flags().Changed("limit") {
+		return cassLimit
+	}
+	return 0
+}
+
+func resolveRobotProvider(cmd *cobra.Command, specificFlagName string, specificValue string) string {
+	sharedValue := ""
+	if cmd != nil {
+		if providerValue, err := cmd.Flags().GetString("provider"); err == nil {
+			sharedValue = providerValue
+		}
+	}
+	return resolveRobotSharedFlag(cmd, specificFlagName, specificValue, "provider", sharedValue)
 }
 
 func resolveRobotSpawnTimeout(cmd *cobra.Command) string {

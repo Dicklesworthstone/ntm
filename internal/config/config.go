@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -391,6 +393,69 @@ func DefaultRotationConfig() RotationConfig {
 	}
 }
 
+// ValidateAccountsConfig validates account management configuration.
+func ValidateAccountsConfig(cfg *AccountsConfig) error {
+	if cfg.ResetBufferMinutes < 0 {
+		return fmt.Errorf("reset_buffer_minutes: must be non-negative, got %d", cfg.ResetBufferMinutes)
+	}
+
+	validateEntries := func(provider string, entries []AccountEntry) error {
+		for i, entry := range entries {
+			if strings.TrimSpace(entry.Email) == "" {
+				return fmt.Errorf("%s[%d].email: must not be empty", provider, i)
+			}
+			if entry.Priority < 0 {
+				return fmt.Errorf("%s[%d].priority: must be non-negative, got %d", provider, i, entry.Priority)
+			}
+		}
+		return nil
+	}
+
+	if err := validateEntries("claude", cfg.Claude); err != nil {
+		return err
+	}
+	if err := validateEntries("codex", cfg.Codex); err != nil {
+		return err
+	}
+	if err := validateEntries("gemini", cfg.Gemini); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateRotationConfig validates account rotation configuration.
+func ValidateRotationConfig(cfg *RotationConfig) error {
+	if cfg.Thresholds.WarningPercent < 0 || cfg.Thresholds.WarningPercent > 100 {
+		return fmt.Errorf("thresholds.warning_percent: must be between 0 and 100, got %d", cfg.Thresholds.WarningPercent)
+	}
+	if cfg.Thresholds.CriticalPercent < 0 || cfg.Thresholds.CriticalPercent > 100 {
+		return fmt.Errorf("thresholds.critical_percent: must be between 0 and 100, got %d", cfg.Thresholds.CriticalPercent)
+	}
+	if cfg.Thresholds.WarningPercent > cfg.Thresholds.CriticalPercent {
+		return fmt.Errorf("thresholds.warning_percent (%d) must be <= thresholds.critical_percent (%d)", cfg.Thresholds.WarningPercent, cfg.Thresholds.CriticalPercent)
+	}
+	if cfg.Thresholds.RestartIfTokensAbove < 0 {
+		return fmt.Errorf("thresholds.restart_if_tokens_above: must be non-negative, got %.0f", cfg.Thresholds.RestartIfTokensAbove)
+	}
+	if cfg.Thresholds.RestartIfSessionHours < 0 {
+		return fmt.Errorf("thresholds.restart_if_session_hours: must be non-negative, got %d", cfg.Thresholds.RestartIfSessionHours)
+	}
+	for i, account := range cfg.Accounts {
+		switch account.Provider {
+		case "claude", "codex", "gemini":
+		default:
+			return fmt.Errorf("accounts[%d].provider: must be claude, codex, or gemini, got %q", i, account.Provider)
+		}
+		if strings.TrimSpace(account.Email) == "" {
+			return fmt.Errorf("accounts[%d].email: must not be empty", i)
+		}
+		if account.Priority < 0 {
+			return fmt.Errorf("accounts[%d].priority: must be non-negative, got %d", i, account.Priority)
+		}
+	}
+	return nil
+}
+
 // CASSConfig holds configuration for CASS (Coding Agent Session Search) integration
 type CASSConfig struct {
 	Enabled          bool   `toml:"enabled"`            // Top-level switch - disable all CASS features
@@ -469,6 +534,17 @@ func DefaultCASSConfig() CASSConfig {
 			ShowStatusIndicator:   true,
 		},
 	}
+}
+
+// ValidateGeminiSetupConfig validates Gemini post-spawn setup settings.
+func ValidateGeminiSetupConfig(cfg *GeminiSetupConfig) error {
+	if cfg.ReadyTimeoutSeconds < 0 {
+		return fmt.Errorf("ready_timeout_seconds: must be non-negative, got %d", cfg.ReadyTimeoutSeconds)
+	}
+	if cfg.ModelSelectTimeoutSeconds < 0 {
+		return fmt.Errorf("model_select_timeout_seconds: must be non-negative, got %d", cfg.ModelSelectTimeoutSeconds)
+	}
+	return nil
 }
 
 // AgentConfig defines the commands for each agent type
@@ -2405,6 +2481,23 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintln(w, "# https://github.com/Dicklesworthstone/ntm")
 	fmt.Fprintln(w)
 
+	sortedStringMapKeys := func(m map[string]string) []string {
+		keys := make([]string, 0, len(m))
+		for key := range m {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+	sortedStringSliceMapKeys := func(m map[string][]string) []string {
+		keys := make([]string, 0, len(m))
+		for key := range m {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
 	fmt.Fprintf(w, "# Base directory for projects\n")
 	fmt.Fprintf(w, "projects_base = %q\n", cfg.ProjectsBase)
 	fmt.Fprintln(w)
@@ -2723,7 +2816,8 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	if len(cfg.Encryption.Keyring) > 0 {
 		fmt.Fprintln(w, "[encryption.keyring]")
-		for keyID, value := range cfg.Encryption.Keyring {
+		for _, keyID := range sortedStringMapKeys(cfg.Encryption.Keyring) {
+			value := cfg.Encryption.Keyring[keyID]
 			fmt.Fprintf(w, "%q = %q\n", keyID, value)
 		}
 	} else {
@@ -2791,7 +2885,8 @@ func Print(cfg *Config, w io.Writer) error {
 	// Write Claude model aliases
 	fmt.Fprintln(w, "[models.claude]")
 	fmt.Fprintln(w, "# Claude model aliases (e.g., --cc=2:opus)")
-	for alias, fullName := range cfg.Models.Claude {
+	for _, alias := range sortedStringMapKeys(cfg.Models.Claude) {
+		fullName := cfg.Models.Claude[alias]
 		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
 	}
 	fmt.Fprintln(w)
@@ -2799,7 +2894,8 @@ func Print(cfg *Config, w io.Writer) error {
 	// Write Codex model aliases
 	fmt.Fprintln(w, "[models.codex]")
 	fmt.Fprintln(w, "# Codex model aliases (e.g., --cod=2:max)")
-	for alias, fullName := range cfg.Models.Codex {
+	for _, alias := range sortedStringMapKeys(cfg.Models.Codex) {
+		fullName := cfg.Models.Codex[alias]
 		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
 	}
 	fmt.Fprintln(w)
@@ -2807,7 +2903,8 @@ func Print(cfg *Config, w io.Writer) error {
 	// Write Gemini model aliases
 	fmt.Fprintln(w, "[models.gemini]")
 	fmt.Fprintln(w, "# Gemini model aliases (e.g., --gmi=1:flash)")
-	for alias, fullName := range cfg.Models.Gemini {
+	for _, alias := range sortedStringMapKeys(cfg.Models.Gemini) {
+		fullName := cfg.Models.Gemini[alias]
 		fmt.Fprintf(w, "%s = %q\n", alias, fullName)
 	}
 	fmt.Fprintln(w)
@@ -2849,6 +2946,19 @@ func Print(cfg *Config, w io.Writer) error {
 		eventItems = append(eventItems, fmt.Sprintf("\"%s\"", e))
 	}
 	fmt.Fprintf(w, "events = [%s]  # Events to notify on\n", strings.Join(eventItems, ", "))
+	fmt.Fprintf(w, "primary = %q\n", cfg.Notifications.Primary)
+	fmt.Fprintf(w, "fallback = %q\n", cfg.Notifications.Fallback)
+	fmt.Fprintln(w)
+
+	if len(cfg.Notifications.Routing) > 0 {
+		fmt.Fprintln(w, "[notifications.routing]")
+		for _, key := range sortedStringSliceMapKeys(cfg.Notifications.Routing) {
+			fmt.Fprintf(w, "%q = %s\n", key, renderTOMLStringArray(cfg.Notifications.Routing[key]))
+		}
+	} else {
+		fmt.Fprintln(w, "# [notifications.routing]")
+		fmt.Fprintln(w, "# \"agent.crashed\" = [ \"desktop\", \"filebox\" ]")
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[notifications.desktop]")
@@ -2867,6 +2977,15 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "method = %q\n", cfg.Notifications.Webhook.Method)
 	fmt.Fprintf(w, "template = %q\n", cfg.Notifications.Webhook.Template)
+	if len(cfg.Notifications.Webhook.Headers) > 0 {
+		fmt.Fprintln(w, "[notifications.webhook.headers]")
+		for _, key := range sortedStringMapKeys(cfg.Notifications.Webhook.Headers) {
+			fmt.Fprintf(w, "%q = %q\n", key, cfg.Notifications.Webhook.Headers[key])
+		}
+	} else {
+		fmt.Fprintln(w, "# [notifications.webhook.headers]")
+		fmt.Fprintln(w, "# Authorization = \"Bearer <token>\"")
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[notifications.shell]")
@@ -2886,6 +3005,12 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "path = %q\n", cfg.Notifications.Log.Path)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[notifications.filebox]")
+	fmt.Fprintln(w, "# File inbox notifications for offline review")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Notifications.FileBox.Enabled)
+	fmt.Fprintf(w, "path = %q\n", cfg.Notifications.FileBox.Path)
+	fmt.Fprintln(w)
+
 	// Write resilience configuration
 	fmt.Fprintln(w, "[resilience]")
 	fmt.Fprintln(w, "# Agent auto-restart and recovery configuration")
@@ -2893,6 +3018,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "max_restarts = %d            # Max restarts per agent before giving up\n", cfg.Resilience.MaxRestarts)
 	fmt.Fprintf(w, "restart_delay_seconds = %d  # Seconds to wait before restarting\n", cfg.Resilience.RestartDelaySeconds)
 	fmt.Fprintf(w, "health_check_seconds = %d   # Seconds between health checks\n", cfg.Resilience.HealthCheckSeconds)
+	fmt.Fprintf(w, "crash_threshold = %d        # Consecutive failures before restart\n", cfg.Resilience.CrashThreshold)
 	fmt.Fprintf(w, "notify_on_crash = %t       # Send notification when agent crashes\n", cfg.Resilience.NotifyOnCrash)
 	fmt.Fprintf(w, "notify_on_max_restarts = %t # Notify when max restarts exceeded\n", cfg.Resilience.NotifyOnMaxRestarts)
 	fmt.Fprintln(w)
@@ -2921,22 +3047,27 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "reset_buffer_minutes = %d   # Minutes before reset to consider available\n", cfg.Accounts.ResetBufferMinutes)
 	fmt.Fprintln(w)
 
-	// Write Claude accounts if any
-	if len(cfg.Accounts.Claude) > 0 {
-		for _, acct := range cfg.Accounts.Claude {
-			fmt.Fprintln(w, "[[accounts.claude]]")
-			fmt.Fprintf(w, "email = %q\n", acct.Email)
-			fmt.Fprintf(w, "alias = %q\n", acct.Alias)
-			fmt.Fprintf(w, "priority = %d\n", acct.Priority)
-			fmt.Fprintln(w)
+	writeAccountEntries := func(section string, accounts []AccountEntry) {
+		if len(accounts) > 0 {
+			for _, acct := range accounts {
+				fmt.Fprintf(w, "[[accounts.%s]]\n", section)
+				fmt.Fprintf(w, "email = %q\n", acct.Email)
+				fmt.Fprintf(w, "alias = %q\n", acct.Alias)
+				fmt.Fprintf(w, "priority = %d\n", acct.Priority)
+				fmt.Fprintln(w)
+			}
+			return
 		}
-	} else {
-		fmt.Fprintln(w, "# [[accounts.claude]]")
-		fmt.Fprintln(w, "# email = \"primary@gmail.com\"")
+		fmt.Fprintf(w, "# [[accounts.%s]]\n", section)
+		fmt.Fprintln(w, "# email = \"primary@example.com\"")
 		fmt.Fprintln(w, "# alias = \"main\"")
 		fmt.Fprintln(w, "# priority = 1")
 		fmt.Fprintln(w)
 	}
+
+	writeAccountEntries("claude", cfg.Accounts.Claude)
+	writeAccountEntries("codex", cfg.Accounts.Codex)
+	writeAccountEntries("gemini", cfg.Accounts.Gemini)
 
 	// Write rotation configuration
 	fmt.Fprintln(w, "[rotation]")
@@ -2944,8 +3075,28 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "enabled = %t               # Top-level toggle\n", cfg.Rotation.Enabled)
 	fmt.Fprintf(w, "prefer_restart = %t        # Prefer restart over account switch\n", cfg.Rotation.PreferRestart)
 	fmt.Fprintf(w, "auto_open_browser = %t     # Auto-open browser for auth\n", cfg.Rotation.AutoOpenBrowser)
+	fmt.Fprintf(w, "auto_trigger = %t          # Show notification when rate limit detected\n", cfg.Rotation.AutoTrigger)
+	fmt.Fprintf(w, "auto_initiate = %t         # Automatically start rotation when possible\n", cfg.Rotation.AutoInitiate)
 	fmt.Fprintf(w, "continuation_prompt = %q\n", cfg.Rotation.ContinuationPrompt)
 	fmt.Fprintln(w)
+
+	if len(cfg.Rotation.Accounts) > 0 {
+		for _, acct := range cfg.Rotation.Accounts {
+			fmt.Fprintln(w, "[[rotation.accounts]]")
+			fmt.Fprintf(w, "provider = %q\n", acct.Provider)
+			fmt.Fprintf(w, "email = %q\n", acct.Email)
+			fmt.Fprintf(w, "alias = %q\n", acct.Alias)
+			fmt.Fprintf(w, "priority = %d\n", acct.Priority)
+			fmt.Fprintln(w)
+		}
+	} else {
+		fmt.Fprintln(w, "# [[rotation.accounts]]")
+		fmt.Fprintln(w, "# provider = \"claude\"")
+		fmt.Fprintln(w, "# email = \"primary@example.com\"")
+		fmt.Fprintln(w, "# alias = \"main\"")
+		fmt.Fprintln(w, "# priority = 1")
+		fmt.Fprintln(w)
+	}
 
 	fmt.Fprintln(w, "[rotation.thresholds]")
 	fmt.Fprintf(w, "warning_percent = %d        # Show warning at this quota %%\n", cfg.Rotation.Thresholds.WarningPercent)
@@ -2986,11 +3137,47 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "timeout = %q\n", cfg.Scanner.Defaults.Timeout)
 	fmt.Fprintf(w, "parallel = %t\n", cfg.Scanner.Defaults.Parallel)
 	fmt.Fprintf(w, "exclude = %s\n", renderTOMLStringArray(cfg.Scanner.Defaults.Exclude))
+	fmt.Fprintf(w, "languages = %s\n", renderTOMLStringArray(cfg.Scanner.Defaults.Languages))
+	fmt.Fprintln(w)
+
+	writeThresholdConfig := func(name string, threshold ThresholdConfig) {
+		fmt.Fprintf(w, "[scanner.thresholds.%s]\n", name)
+		fmt.Fprintf(w, "block_critical = %t\n", threshold.BlockCritical)
+		fmt.Fprintf(w, "fail_critical = %t\n", threshold.FailCritical)
+		fmt.Fprintf(w, "block_errors = %d\n", threshold.BlockErrors)
+		fmt.Fprintf(w, "fail_errors = %d\n", threshold.FailErrors)
+		fmt.Fprintf(w, "show_warnings = %t\n", threshold.ShowWarnings)
+		fmt.Fprintf(w, "show_info = %t\n", threshold.ShowInfo)
+		fmt.Fprintln(w)
+	}
+
+	writeThresholdConfig("pre_commit", cfg.Scanner.Thresholds.PreCommit)
+	writeThresholdConfig("ci", cfg.Scanner.Thresholds.CI)
+	writeThresholdConfig("dashboard", cfg.Scanner.Thresholds.Dashboard)
+	writeThresholdConfig("interactive", cfg.Scanner.Thresholds.Interactive)
+
+	fmt.Fprintln(w, "[scanner.tools]")
+	fmt.Fprintf(w, "enabled = %s\n", renderTOMLStringArray(cfg.Scanner.Tools.Enabled))
+	fmt.Fprintf(w, "disabled = %s\n", renderTOMLStringArray(cfg.Scanner.Tools.Disabled))
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[scanner.beads]")
+	fmt.Fprintf(w, "auto_create = %t\n", cfg.Scanner.Beads.AutoCreate)
+	fmt.Fprintf(w, "min_severity = %q\n", cfg.Scanner.Beads.MinSeverity)
+	fmt.Fprintf(w, "auto_close = %t\n", cfg.Scanner.Beads.AutoClose)
+	fmt.Fprintf(w, "labels = %s\n", renderTOMLStringArray(cfg.Scanner.Beads.Labels))
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[scanner.notifications]")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Scanner.Notifications.Enabled)
+	fmt.Fprintf(w, "on_new_critical = %t\n", cfg.Scanner.Notifications.OnNewCritical)
+	fmt.Fprintf(w, "summary_after_scan = %t\n", cfg.Scanner.Notifications.SummaryAfterScan)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[cass]")
 	fmt.Fprintln(w, "# CASS (Coding Agent Session Search) configuration")
 	fmt.Fprintf(w, "enabled = %t\n", cfg.CASS.Enabled)
+	fmt.Fprintf(w, "show_install_hints = %t\n", cfg.CASS.ShowInstallHints)
 	fmt.Fprintf(w, "timeout = %d\n", cfg.CASS.Timeout)
 	if cfg.CASS.BinaryPath != "" {
 		fmt.Fprintf(w, "binary_path = %q\n", cfg.CASS.BinaryPath)
@@ -3434,6 +3621,18 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		return cfg.PaletteFile, nil
 	case "suggestions_enabled":
 		return cfg.SuggestionsEnabled, nil
+	case "palette":
+		return cfg.Palette, nil
+	case "palette_state":
+		if len(parts) < 2 {
+			return cfg.PaletteState, nil
+		}
+		switch parts[1] {
+		case "pinned":
+			return cfg.PaletteState.Pinned, nil
+		case "favorites":
+			return cfg.PaletteState.Favorites, nil
+		}
 	case "agents":
 		if len(parts) < 2 {
 			return cfg.Agents, nil
@@ -3445,6 +3644,16 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Agents.Codex, nil
 		case "gemini":
 			return cfg.Agents.Gemini, nil
+		case "cursor":
+			return cfg.Agents.Cursor, nil
+		case "windsurf":
+			return cfg.Agents.Windsurf, nil
+		case "aider":
+			return cfg.Agents.Aider, nil
+		case "plugins":
+			return cfg.Agents.Plugins, nil
+		case "default_count":
+			return cfg.Agents.DefaultCount, nil
 		}
 	case "tmux":
 		if len(parts) < 2 {
@@ -3457,6 +3666,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Tmux.PaletteKey, nil
 		case "pane_init_delay_ms":
 			return cfg.Tmux.PaneInitDelayMs, nil
+		case "history_limit":
+			return cfg.Tmux.HistoryLimit, nil
 		case "activity_indicators":
 			if len(parts) < 3 {
 				return cfg.Tmux.ActivityIndicators, nil
@@ -3468,6 +3679,28 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Tmux.ActivityIndicators.ActiveSeconds, nil
 			case "stalled_seconds":
 				return cfg.Tmux.ActivityIndicators.StalledSeconds, nil
+			}
+		}
+	case "robot":
+		if len(parts) < 2 {
+			return cfg.Robot, nil
+		}
+		switch parts[1] {
+		case "verbosity":
+			return cfg.Robot.Verbosity, nil
+		case "output":
+			if len(parts) < 3 {
+				return cfg.Robot.Output, nil
+			}
+			switch parts[2] {
+			case "format":
+				return cfg.Robot.Output.Format, nil
+			case "pretty":
+				return cfg.Robot.Output.Pretty, nil
+			case "timestamps":
+				return cfg.Robot.Output.Timestamps, nil
+			case "compress":
+				return cfg.Robot.Output.Compress, nil
 			}
 		}
 	case "agent_mail":
@@ -3683,8 +3916,96 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Checkpoints.Enabled, nil
 		case "before_broadcast":
 			return cfg.Checkpoints.BeforeBroadcast, nil
+		case "before_add_agents":
+			return cfg.Checkpoints.BeforeAddAgents, nil
 		case "max_auto_checkpoints":
 			return cfg.Checkpoints.MaxAutoCheckpoints, nil
+		case "scrollback_lines":
+			return cfg.Checkpoints.ScrollbackLines, nil
+		case "include_git":
+			return cfg.Checkpoints.IncludeGit, nil
+		case "auto_checkpoint_on_spawn":
+			return cfg.Checkpoints.AutoCheckpointOnSpawn, nil
+		case "interval_minutes":
+			return cfg.Checkpoints.IntervalMinutes, nil
+		case "on_rotation":
+			return cfg.Checkpoints.OnRotation, nil
+		case "on_error":
+			return cfg.Checkpoints.OnError, nil
+		}
+	case "notifications":
+		if len(parts) < 2 {
+			return cfg.Notifications, nil
+		}
+		switch parts[1] {
+		case "enabled":
+			return cfg.Notifications.Enabled, nil
+		case "events":
+			return cfg.Notifications.Events, nil
+		case "primary":
+			return cfg.Notifications.Primary, nil
+		case "fallback":
+			return cfg.Notifications.Fallback, nil
+		case "routing":
+			return cfg.Notifications.Routing, nil
+		case "desktop":
+			if len(parts) < 3 {
+				return cfg.Notifications.Desktop, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Notifications.Desktop.Enabled, nil
+			case "title":
+				return cfg.Notifications.Desktop.Title, nil
+			}
+		case "webhook":
+			if len(parts) < 3 {
+				return cfg.Notifications.Webhook, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Notifications.Webhook.Enabled, nil
+			case "url":
+				return cfg.Notifications.Webhook.URL, nil
+			case "template":
+				return cfg.Notifications.Webhook.Template, nil
+			case "method":
+				return cfg.Notifications.Webhook.Method, nil
+			case "headers":
+				return cfg.Notifications.Webhook.Headers, nil
+			}
+		case "shell":
+			if len(parts) < 3 {
+				return cfg.Notifications.Shell, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Notifications.Shell.Enabled, nil
+			case "command":
+				return cfg.Notifications.Shell.Command, nil
+			case "pass_json":
+				return cfg.Notifications.Shell.PassJSON, nil
+			}
+		case "log":
+			if len(parts) < 3 {
+				return cfg.Notifications.Log, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Notifications.Log.Enabled, nil
+			case "path":
+				return cfg.Notifications.Log.Path, nil
+			}
+		case "filebox":
+			if len(parts) < 3 {
+				return cfg.Notifications.FileBox, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Notifications.FileBox.Enabled, nil
+			case "path":
+				return cfg.Notifications.FileBox.Path, nil
+			}
 		}
 	case "resilience":
 		if len(parts) < 2 {
@@ -3695,6 +4016,28 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Resilience.AutoRestart, nil
 		case "max_restarts":
 			return cfg.Resilience.MaxRestarts, nil
+		case "restart_delay_seconds":
+			return cfg.Resilience.RestartDelaySeconds, nil
+		case "health_check_seconds":
+			return cfg.Resilience.HealthCheckSeconds, nil
+		case "crash_threshold":
+			return cfg.Resilience.CrashThreshold, nil
+		case "notify_on_crash":
+			return cfg.Resilience.NotifyOnCrash, nil
+		case "notify_on_max_restarts":
+			return cfg.Resilience.NotifyOnMaxRestarts, nil
+		case "rate_limit":
+			if len(parts) < 3 {
+				return cfg.Resilience.RateLimit, nil
+			}
+			switch parts[2] {
+			case "detect":
+				return cfg.Resilience.RateLimit.Detect, nil
+			case "notify":
+				return cfg.Resilience.RateLimit.Notify, nil
+			case "patterns":
+				return cfg.Resilience.RateLimit.Patterns, nil
+			}
 		}
 	case "context_rotation":
 		if len(parts) < 2 {
@@ -3707,6 +4050,18 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.ContextRotation.WarningThreshold, nil
 		case "rotate_threshold":
 			return cfg.ContextRotation.RotateThreshold, nil
+		case "summary_max_tokens":
+			return cfg.ContextRotation.SummaryMaxTokens, nil
+		case "min_session_age_sec":
+			return cfg.ContextRotation.MinSessionAgeSec, nil
+		case "try_compact_first":
+			return cfg.ContextRotation.TryCompactFirst, nil
+		case "require_confirm":
+			return cfg.ContextRotation.RequireConfirm, nil
+		case "confirm_timeout_sec":
+			return cfg.ContextRotation.ConfirmTimeoutSec, nil
+		case "default_confirm_action":
+			return cfg.ContextRotation.DefaultConfirmAction, nil
 		}
 	case "context":
 		if len(parts) < 2 {
@@ -4101,6 +4456,10 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		switch parts[1] {
 		case "enabled":
 			return cfg.CASS.Enabled, nil
+		case "show_install_hints":
+			return cfg.CASS.ShowInstallHints, nil
+		case "binary_path":
+			return cfg.CASS.BinaryPath, nil
 		case "timeout":
 			return cfg.CASS.Timeout, nil
 		case "context":
@@ -4123,6 +4482,212 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			case "prefer_same_project":
 				return cfg.CASS.Context.PreferSameProject, nil
 			}
+		case "duplicates":
+			if len(parts) < 3 {
+				return cfg.CASS.Duplicates, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.CASS.Duplicates.Enabled, nil
+			case "similarity_threshold":
+				return cfg.CASS.Duplicates.SimilarityThreshold, nil
+			case "lookback_days":
+				return cfg.CASS.Duplicates.LookbackDays, nil
+			case "prompt_on_match":
+				return cfg.CASS.Duplicates.PromptOnMatch, nil
+			}
+		case "search":
+			if len(parts) < 3 {
+				return cfg.CASS.Search, nil
+			}
+			switch parts[2] {
+			case "default_limit":
+				return cfg.CASS.Search.DefaultLimit, nil
+			case "default_fields":
+				return cfg.CASS.Search.DefaultFields, nil
+			case "include_meta":
+				return cfg.CASS.Search.IncludeMeta, nil
+			}
+		case "tui":
+			if len(parts) < 3 {
+				return cfg.CASS.TUI, nil
+			}
+			switch parts[2] {
+			case "show_activity_sparkline":
+				return cfg.CASS.TUI.ShowActivitySparkline, nil
+			case "show_status_indicator":
+				return cfg.CASS.TUI.ShowStatusIndicator, nil
+			}
+		}
+	case "scanner":
+		if len(parts) < 2 {
+			return cfg.Scanner, nil
+		}
+		switch parts[1] {
+		case "ubs_path":
+			return cfg.Scanner.UBSPath, nil
+		case "defaults":
+			if len(parts) < 3 {
+				return cfg.Scanner.Defaults, nil
+			}
+			switch parts[2] {
+			case "timeout":
+				return cfg.Scanner.Defaults.Timeout, nil
+			case "parallel":
+				return cfg.Scanner.Defaults.Parallel, nil
+			case "exclude":
+				return cfg.Scanner.Defaults.Exclude, nil
+			case "languages":
+				return cfg.Scanner.Defaults.Languages, nil
+			}
+		case "thresholds":
+			if len(parts) < 3 {
+				return cfg.Scanner.Thresholds, nil
+			}
+			var threshold *ThresholdConfig
+			switch parts[2] {
+			case "pre_commit":
+				threshold = &cfg.Scanner.Thresholds.PreCommit
+			case "ci":
+				threshold = &cfg.Scanner.Thresholds.CI
+			case "dashboard":
+				threshold = &cfg.Scanner.Thresholds.Dashboard
+			case "interactive":
+				threshold = &cfg.Scanner.Thresholds.Interactive
+			}
+			if threshold != nil {
+				if len(parts) < 4 {
+					return *threshold, nil
+				}
+				switch parts[3] {
+				case "block_critical":
+					return threshold.BlockCritical, nil
+				case "fail_critical":
+					return threshold.FailCritical, nil
+				case "block_errors":
+					return threshold.BlockErrors, nil
+				case "fail_errors":
+					return threshold.FailErrors, nil
+				case "show_warnings":
+					return threshold.ShowWarnings, nil
+				case "show_info":
+					return threshold.ShowInfo, nil
+				}
+			}
+		case "tools":
+			if len(parts) < 3 {
+				return cfg.Scanner.Tools, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Scanner.Tools.Enabled, nil
+			case "disabled":
+				return cfg.Scanner.Tools.Disabled, nil
+			}
+		case "beads":
+			if len(parts) < 3 {
+				return cfg.Scanner.Beads, nil
+			}
+			switch parts[2] {
+			case "auto_create":
+				return cfg.Scanner.Beads.AutoCreate, nil
+			case "min_severity":
+				return cfg.Scanner.Beads.MinSeverity, nil
+			case "auto_close":
+				return cfg.Scanner.Beads.AutoClose, nil
+			case "labels":
+				return cfg.Scanner.Beads.Labels, nil
+			}
+		case "notifications":
+			if len(parts) < 3 {
+				return cfg.Scanner.Notifications, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Scanner.Notifications.Enabled, nil
+			case "on_new_critical":
+				return cfg.Scanner.Notifications.OnNewCritical, nil
+			case "summary_after_scan":
+				return cfg.Scanner.Notifications.SummaryAfterScan, nil
+			}
+		}
+	case "accounts":
+		if len(parts) < 2 {
+			return cfg.Accounts, nil
+		}
+		switch parts[1] {
+		case "state_file":
+			return cfg.Accounts.StateFile, nil
+		case "auto_rotate":
+			return cfg.Accounts.AutoRotate, nil
+		case "reset_buffer_minutes":
+			return cfg.Accounts.ResetBufferMinutes, nil
+		case "claude":
+			return cfg.Accounts.Claude, nil
+		case "codex":
+			return cfg.Accounts.Codex, nil
+		case "gemini":
+			return cfg.Accounts.Gemini, nil
+		}
+	case "rotation":
+		if len(parts) < 2 {
+			return cfg.Rotation, nil
+		}
+		switch parts[1] {
+		case "enabled":
+			return cfg.Rotation.Enabled, nil
+		case "prefer_restart":
+			return cfg.Rotation.PreferRestart, nil
+		case "auto_open_browser":
+			return cfg.Rotation.AutoOpenBrowser, nil
+		case "auto_trigger":
+			return cfg.Rotation.AutoTrigger, nil
+		case "auto_initiate":
+			return cfg.Rotation.AutoInitiate, nil
+		case "continuation_prompt":
+			return cfg.Rotation.ContinuationPrompt, nil
+		case "accounts":
+			return cfg.Rotation.Accounts, nil
+		case "thresholds":
+			if len(parts) < 3 {
+				return cfg.Rotation.Thresholds, nil
+			}
+			switch parts[2] {
+			case "warning_percent":
+				return cfg.Rotation.Thresholds.WarningPercent, nil
+			case "critical_percent":
+				return cfg.Rotation.Thresholds.CriticalPercent, nil
+			case "restart_if_tokens_above":
+				return cfg.Rotation.Thresholds.RestartIfTokensAbove, nil
+			case "restart_if_session_hours":
+				return cfg.Rotation.Thresholds.RestartIfSessionHours, nil
+			}
+		case "dashboard":
+			if len(parts) < 3 {
+				return cfg.Rotation.Dashboard, nil
+			}
+			switch parts[2] {
+			case "show_quota_bars":
+				return cfg.Rotation.Dashboard.ShowQuotaBars, nil
+			case "show_account_status":
+				return cfg.Rotation.Dashboard.ShowAccountStatus, nil
+			case "show_reset_timers":
+				return cfg.Rotation.Dashboard.ShowResetTimers, nil
+			}
+		}
+	case "gemini_setup":
+		if len(parts) < 2 {
+			return cfg.GeminiSetup, nil
+		}
+		switch parts[1] {
+		case "auto_select_pro_model":
+			return cfg.GeminiSetup.AutoSelectProModel, nil
+		case "ready_timeout_seconds":
+			return cfg.GeminiSetup.ReadyTimeoutSeconds, nil
+		case "model_select_timeout_seconds":
+			return cfg.GeminiSetup.ModelSelectTimeoutSeconds, nil
+		case "verbose":
+			return cfg.GeminiSetup.Verbose, nil
 		}
 	case "health":
 		if len(parts) < 2 {
@@ -4184,15 +4749,16 @@ func Diff(cfg *Config) []ConfigDiff {
 	// Helper to add diff if values differ
 	// Key is set to path for uniqueness in JSON output
 	addDiff := func(path string, def, cur interface{}) {
-		if fmt.Sprintf("%v", def) != fmt.Sprintf("%v", cur) {
-			diffs = append(diffs, ConfigDiff{
-				Key:     path, // Use path as key for uniqueness
-				Path:    path,
-				Default: def,
-				Current: cur,
-				Source:  "config", // Could be enhanced to track actual source
-			})
+		if reflect.DeepEqual(def, cur) {
+			return
 		}
+		diffs = append(diffs, ConfigDiff{
+			Key:     path, // Use path as key for uniqueness
+			Path:    path,
+			Default: def,
+			Current: cur,
+			Source:  "config", // Could be enhanced to track actual source
+		})
 	}
 
 	// Top-level settings
@@ -4201,20 +4767,35 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("help_verbosity", defaults.HelpVerbosity, cfg.HelpVerbosity)
 	addDiff("palette_file", defaults.PaletteFile, cfg.PaletteFile)
 	addDiff("suggestions_enabled", defaults.SuggestionsEnabled, cfg.SuggestionsEnabled)
+	addDiff("palette", defaults.Palette, cfg.Palette)
+	addDiff("palette_state.pinned", defaults.PaletteState.Pinned, cfg.PaletteState.Pinned)
+	addDiff("palette_state.favorites", defaults.PaletteState.Favorites, cfg.PaletteState.Favorites)
 
 	// Agents
 	addDiff("agents.claude", defaults.Agents.Claude, cfg.Agents.Claude)
 	addDiff("agents.codex", defaults.Agents.Codex, cfg.Agents.Codex)
 	addDiff("agents.gemini", defaults.Agents.Gemini, cfg.Agents.Gemini)
+	addDiff("agents.cursor", defaults.Agents.Cursor, cfg.Agents.Cursor)
+	addDiff("agents.windsurf", defaults.Agents.Windsurf, cfg.Agents.Windsurf)
+	addDiff("agents.aider", defaults.Agents.Aider, cfg.Agents.Aider)
 	addDiff("agents.plugins", defaults.Agents.Plugins, cfg.Agents.Plugins)
+	addDiff("agents.default_count", defaults.Agents.DefaultCount, cfg.Agents.DefaultCount)
 
 	// Tmux
 	addDiff("tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)
 	addDiff("tmux.palette_key", defaults.Tmux.PaletteKey, cfg.Tmux.PaletteKey)
 	addDiff("tmux.pane_init_delay_ms", defaults.Tmux.PaneInitDelayMs, cfg.Tmux.PaneInitDelayMs)
+	addDiff("tmux.history_limit", defaults.Tmux.HistoryLimit, cfg.Tmux.HistoryLimit)
 	addDiff("tmux.activity_indicators.enabled", defaults.Tmux.ActivityIndicators.Enabled, cfg.Tmux.ActivityIndicators.Enabled)
 	addDiff("tmux.activity_indicators.active_seconds", defaults.Tmux.ActivityIndicators.ActiveSeconds, cfg.Tmux.ActivityIndicators.ActiveSeconds)
 	addDiff("tmux.activity_indicators.stalled_seconds", defaults.Tmux.ActivityIndicators.StalledSeconds, cfg.Tmux.ActivityIndicators.StalledSeconds)
+
+	// Robot
+	addDiff("robot.verbosity", defaults.Robot.Verbosity, cfg.Robot.Verbosity)
+	addDiff("robot.output.format", defaults.Robot.Output.Format, cfg.Robot.Output.Format)
+	addDiff("robot.output.pretty", defaults.Robot.Output.Pretty, cfg.Robot.Output.Pretty)
+	addDiff("robot.output.timestamps", defaults.Robot.Output.Timestamps, cfg.Robot.Output.Timestamps)
+	addDiff("robot.output.compress", defaults.Robot.Output.Compress, cfg.Robot.Output.Compress)
 
 	// Agent Mail
 	addDiff("agent_mail.enabled", defaults.AgentMail.Enabled, cfg.AgentMail.Enabled)
@@ -4265,6 +4846,14 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("integrations.process_triage.on_stuck", defaults.Integrations.ProcessTriage.OnStuck, cfg.Integrations.ProcessTriage.OnStuck)
 	addDiff("integrations.process_triage.use_rano_data", defaults.Integrations.ProcessTriage.UseRanoData, cfg.Integrations.ProcessTriage.UseRanoData)
 
+	// Models
+	addDiff("models.default_claude", defaults.Models.DefaultClaude, cfg.Models.DefaultClaude)
+	addDiff("models.default_codex", defaults.Models.DefaultCodex, cfg.Models.DefaultCodex)
+	addDiff("models.default_gemini", defaults.Models.DefaultGemini, cfg.Models.DefaultGemini)
+	addDiff("models.claude", defaults.Models.Claude, cfg.Models.Claude)
+	addDiff("models.codex", defaults.Models.Codex, cfg.Models.Codex)
+	addDiff("models.gemini", defaults.Models.Gemini, cfg.Models.Gemini)
+
 	// Alerts
 	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
 	addDiff("alerts.agent_stuck_minutes", defaults.Alerts.AgentStuckMinutes, cfg.Alerts.AgentStuckMinutes)
@@ -4277,11 +4866,47 @@ func Diff(cfg *Config) []ConfigDiff {
 	// Checkpoints
 	addDiff("checkpoints.enabled", defaults.Checkpoints.Enabled, cfg.Checkpoints.Enabled)
 	addDiff("checkpoints.before_broadcast", defaults.Checkpoints.BeforeBroadcast, cfg.Checkpoints.BeforeBroadcast)
+	addDiff("checkpoints.before_add_agents", defaults.Checkpoints.BeforeAddAgents, cfg.Checkpoints.BeforeAddAgents)
 	addDiff("checkpoints.max_auto_checkpoints", defaults.Checkpoints.MaxAutoCheckpoints, cfg.Checkpoints.MaxAutoCheckpoints)
+	addDiff("checkpoints.scrollback_lines", defaults.Checkpoints.ScrollbackLines, cfg.Checkpoints.ScrollbackLines)
+	addDiff("checkpoints.include_git", defaults.Checkpoints.IncludeGit, cfg.Checkpoints.IncludeGit)
+	addDiff("checkpoints.auto_checkpoint_on_spawn", defaults.Checkpoints.AutoCheckpointOnSpawn, cfg.Checkpoints.AutoCheckpointOnSpawn)
+	addDiff("checkpoints.interval_minutes", defaults.Checkpoints.IntervalMinutes, cfg.Checkpoints.IntervalMinutes)
+	addDiff("checkpoints.on_rotation", defaults.Checkpoints.OnRotation, cfg.Checkpoints.OnRotation)
+	addDiff("checkpoints.on_error", defaults.Checkpoints.OnError, cfg.Checkpoints.OnError)
+
+	// Notifications
+	addDiff("notifications.enabled", defaults.Notifications.Enabled, cfg.Notifications.Enabled)
+	addDiff("notifications.events", defaults.Notifications.Events, cfg.Notifications.Events)
+	addDiff("notifications.primary", defaults.Notifications.Primary, cfg.Notifications.Primary)
+	addDiff("notifications.fallback", defaults.Notifications.Fallback, cfg.Notifications.Fallback)
+	addDiff("notifications.routing", defaults.Notifications.Routing, cfg.Notifications.Routing)
+	addDiff("notifications.desktop.enabled", defaults.Notifications.Desktop.Enabled, cfg.Notifications.Desktop.Enabled)
+	addDiff("notifications.desktop.title", defaults.Notifications.Desktop.Title, cfg.Notifications.Desktop.Title)
+	addDiff("notifications.webhook.enabled", defaults.Notifications.Webhook.Enabled, cfg.Notifications.Webhook.Enabled)
+	addDiff("notifications.webhook.url", defaults.Notifications.Webhook.URL, cfg.Notifications.Webhook.URL)
+	addDiff("notifications.webhook.template", defaults.Notifications.Webhook.Template, cfg.Notifications.Webhook.Template)
+	addDiff("notifications.webhook.method", defaults.Notifications.Webhook.Method, cfg.Notifications.Webhook.Method)
+	addDiff("notifications.webhook.headers", defaults.Notifications.Webhook.Headers, cfg.Notifications.Webhook.Headers)
+	addDiff("notifications.shell.enabled", defaults.Notifications.Shell.Enabled, cfg.Notifications.Shell.Enabled)
+	addDiff("notifications.shell.command", defaults.Notifications.Shell.Command, cfg.Notifications.Shell.Command)
+	addDiff("notifications.shell.pass_json", defaults.Notifications.Shell.PassJSON, cfg.Notifications.Shell.PassJSON)
+	addDiff("notifications.log.enabled", defaults.Notifications.Log.Enabled, cfg.Notifications.Log.Enabled)
+	addDiff("notifications.log.path", defaults.Notifications.Log.Path, cfg.Notifications.Log.Path)
+	addDiff("notifications.filebox.enabled", defaults.Notifications.FileBox.Enabled, cfg.Notifications.FileBox.Enabled)
+	addDiff("notifications.filebox.path", defaults.Notifications.FileBox.Path, cfg.Notifications.FileBox.Path)
 
 	// Resilience
 	addDiff("resilience.auto_restart", defaults.Resilience.AutoRestart, cfg.Resilience.AutoRestart)
 	addDiff("resilience.max_restarts", defaults.Resilience.MaxRestarts, cfg.Resilience.MaxRestarts)
+	addDiff("resilience.restart_delay_seconds", defaults.Resilience.RestartDelaySeconds, cfg.Resilience.RestartDelaySeconds)
+	addDiff("resilience.health_check_seconds", defaults.Resilience.HealthCheckSeconds, cfg.Resilience.HealthCheckSeconds)
+	addDiff("resilience.crash_threshold", defaults.Resilience.CrashThreshold, cfg.Resilience.CrashThreshold)
+	addDiff("resilience.notify_on_crash", defaults.Resilience.NotifyOnCrash, cfg.Resilience.NotifyOnCrash)
+	addDiff("resilience.notify_on_max_restarts", defaults.Resilience.NotifyOnMaxRestarts, cfg.Resilience.NotifyOnMaxRestarts)
+	addDiff("resilience.rate_limit.detect", defaults.Resilience.RateLimit.Detect, cfg.Resilience.RateLimit.Detect)
+	addDiff("resilience.rate_limit.notify", defaults.Resilience.RateLimit.Notify, cfg.Resilience.RateLimit.Notify)
+	addDiff("resilience.rate_limit.patterns", defaults.Resilience.RateLimit.Patterns, cfg.Resilience.RateLimit.Patterns)
 
 	// Context pack options
 	addDiff("context.ms_skills", defaults.Context.MSSkills, cfg.Context.MSSkills)
@@ -4361,6 +4986,12 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("context_rotation.enabled", defaults.ContextRotation.Enabled, cfg.ContextRotation.Enabled)
 	addDiff("context_rotation.warning_threshold", defaults.ContextRotation.WarningThreshold, cfg.ContextRotation.WarningThreshold)
 	addDiff("context_rotation.rotate_threshold", defaults.ContextRotation.RotateThreshold, cfg.ContextRotation.RotateThreshold)
+	addDiff("context_rotation.summary_max_tokens", defaults.ContextRotation.SummaryMaxTokens, cfg.ContextRotation.SummaryMaxTokens)
+	addDiff("context_rotation.min_session_age_sec", defaults.ContextRotation.MinSessionAgeSec, cfg.ContextRotation.MinSessionAgeSec)
+	addDiff("context_rotation.try_compact_first", defaults.ContextRotation.TryCompactFirst, cfg.ContextRotation.TryCompactFirst)
+	addDiff("context_rotation.require_confirm", defaults.ContextRotation.RequireConfirm, cfg.ContextRotation.RequireConfirm)
+	addDiff("context_rotation.confirm_timeout_sec", defaults.ContextRotation.ConfirmTimeoutSec, cfg.ContextRotation.ConfirmTimeoutSec)
+	addDiff("context_rotation.default_confirm_action", defaults.ContextRotation.DefaultConfirmAction, cfg.ContextRotation.DefaultConfirmAction)
 
 	// Ensemble defaults
 	addDiff("ensemble.default_ensemble", defaults.Ensemble.DefaultEnsemble, cfg.Ensemble.DefaultEnsemble)
@@ -4390,6 +5021,8 @@ func Diff(cfg *Config) []ConfigDiff {
 
 	// CASS
 	addDiff("cass.enabled", defaults.CASS.Enabled, cfg.CASS.Enabled)
+	addDiff("cass.show_install_hints", defaults.CASS.ShowInstallHints, cfg.CASS.ShowInstallHints)
+	addDiff("cass.binary_path", defaults.CASS.BinaryPath, cfg.CASS.BinaryPath)
 	addDiff("cass.timeout", defaults.CASS.Timeout, cfg.CASS.Timeout)
 
 	// CASS Context
@@ -4400,6 +5033,63 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("cass.context.min_relevance", defaults.CASS.Context.MinRelevance, cfg.CASS.Context.MinRelevance)
 	addDiff("cass.context.skip_if_context_above", defaults.CASS.Context.SkipIfContextAbove, cfg.CASS.Context.SkipIfContextAbove)
 	addDiff("cass.context.prefer_same_project", defaults.CASS.Context.PreferSameProject, cfg.CASS.Context.PreferSameProject)
+	addDiff("cass.duplicates.enabled", defaults.CASS.Duplicates.Enabled, cfg.CASS.Duplicates.Enabled)
+	addDiff("cass.duplicates.similarity_threshold", defaults.CASS.Duplicates.SimilarityThreshold, cfg.CASS.Duplicates.SimilarityThreshold)
+	addDiff("cass.duplicates.lookback_days", defaults.CASS.Duplicates.LookbackDays, cfg.CASS.Duplicates.LookbackDays)
+	addDiff("cass.duplicates.prompt_on_match", defaults.CASS.Duplicates.PromptOnMatch, cfg.CASS.Duplicates.PromptOnMatch)
+	addDiff("cass.search.default_limit", defaults.CASS.Search.DefaultLimit, cfg.CASS.Search.DefaultLimit)
+	addDiff("cass.search.default_fields", defaults.CASS.Search.DefaultFields, cfg.CASS.Search.DefaultFields)
+	addDiff("cass.search.include_meta", defaults.CASS.Search.IncludeMeta, cfg.CASS.Search.IncludeMeta)
+	addDiff("cass.tui.show_activity_sparkline", defaults.CASS.TUI.ShowActivitySparkline, cfg.CASS.TUI.ShowActivitySparkline)
+	addDiff("cass.tui.show_status_indicator", defaults.CASS.TUI.ShowStatusIndicator, cfg.CASS.TUI.ShowStatusIndicator)
+
+	// Scanner
+	addDiff("scanner.ubs_path", defaults.Scanner.UBSPath, cfg.Scanner.UBSPath)
+	addDiff("scanner.defaults.timeout", defaults.Scanner.Defaults.Timeout, cfg.Scanner.Defaults.Timeout)
+	addDiff("scanner.defaults.parallel", defaults.Scanner.Defaults.Parallel, cfg.Scanner.Defaults.Parallel)
+	addDiff("scanner.defaults.exclude", defaults.Scanner.Defaults.Exclude, cfg.Scanner.Defaults.Exclude)
+	addDiff("scanner.defaults.languages", defaults.Scanner.Defaults.Languages, cfg.Scanner.Defaults.Languages)
+	addDiff("scanner.thresholds.pre_commit", defaults.Scanner.Thresholds.PreCommit, cfg.Scanner.Thresholds.PreCommit)
+	addDiff("scanner.thresholds.ci", defaults.Scanner.Thresholds.CI, cfg.Scanner.Thresholds.CI)
+	addDiff("scanner.thresholds.dashboard", defaults.Scanner.Thresholds.Dashboard, cfg.Scanner.Thresholds.Dashboard)
+	addDiff("scanner.thresholds.interactive", defaults.Scanner.Thresholds.Interactive, cfg.Scanner.Thresholds.Interactive)
+	addDiff("scanner.tools.enabled", defaults.Scanner.Tools.Enabled, cfg.Scanner.Tools.Enabled)
+	addDiff("scanner.tools.disabled", defaults.Scanner.Tools.Disabled, cfg.Scanner.Tools.Disabled)
+	addDiff("scanner.beads.auto_create", defaults.Scanner.Beads.AutoCreate, cfg.Scanner.Beads.AutoCreate)
+	addDiff("scanner.beads.min_severity", defaults.Scanner.Beads.MinSeverity, cfg.Scanner.Beads.MinSeverity)
+	addDiff("scanner.beads.auto_close", defaults.Scanner.Beads.AutoClose, cfg.Scanner.Beads.AutoClose)
+	addDiff("scanner.beads.labels", defaults.Scanner.Beads.Labels, cfg.Scanner.Beads.Labels)
+	addDiff("scanner.notifications.enabled", defaults.Scanner.Notifications.Enabled, cfg.Scanner.Notifications.Enabled)
+	addDiff("scanner.notifications.on_new_critical", defaults.Scanner.Notifications.OnNewCritical, cfg.Scanner.Notifications.OnNewCritical)
+	addDiff("scanner.notifications.summary_after_scan", defaults.Scanner.Notifications.SummaryAfterScan, cfg.Scanner.Notifications.SummaryAfterScan)
+
+	// Accounts and rotation
+	addDiff("accounts.state_file", defaults.Accounts.StateFile, cfg.Accounts.StateFile)
+	addDiff("accounts.auto_rotate", defaults.Accounts.AutoRotate, cfg.Accounts.AutoRotate)
+	addDiff("accounts.reset_buffer_minutes", defaults.Accounts.ResetBufferMinutes, cfg.Accounts.ResetBufferMinutes)
+	addDiff("accounts.claude", defaults.Accounts.Claude, cfg.Accounts.Claude)
+	addDiff("accounts.codex", defaults.Accounts.Codex, cfg.Accounts.Codex)
+	addDiff("accounts.gemini", defaults.Accounts.Gemini, cfg.Accounts.Gemini)
+	addDiff("rotation.enabled", defaults.Rotation.Enabled, cfg.Rotation.Enabled)
+	addDiff("rotation.prefer_restart", defaults.Rotation.PreferRestart, cfg.Rotation.PreferRestart)
+	addDiff("rotation.auto_open_browser", defaults.Rotation.AutoOpenBrowser, cfg.Rotation.AutoOpenBrowser)
+	addDiff("rotation.auto_trigger", defaults.Rotation.AutoTrigger, cfg.Rotation.AutoTrigger)
+	addDiff("rotation.auto_initiate", defaults.Rotation.AutoInitiate, cfg.Rotation.AutoInitiate)
+	addDiff("rotation.continuation_prompt", defaults.Rotation.ContinuationPrompt, cfg.Rotation.ContinuationPrompt)
+	addDiff("rotation.accounts", defaults.Rotation.Accounts, cfg.Rotation.Accounts)
+	addDiff("rotation.thresholds.warning_percent", defaults.Rotation.Thresholds.WarningPercent, cfg.Rotation.Thresholds.WarningPercent)
+	addDiff("rotation.thresholds.critical_percent", defaults.Rotation.Thresholds.CriticalPercent, cfg.Rotation.Thresholds.CriticalPercent)
+	addDiff("rotation.thresholds.restart_if_tokens_above", defaults.Rotation.Thresholds.RestartIfTokensAbove, cfg.Rotation.Thresholds.RestartIfTokensAbove)
+	addDiff("rotation.thresholds.restart_if_session_hours", defaults.Rotation.Thresholds.RestartIfSessionHours, cfg.Rotation.Thresholds.RestartIfSessionHours)
+	addDiff("rotation.dashboard.show_quota_bars", defaults.Rotation.Dashboard.ShowQuotaBars, cfg.Rotation.Dashboard.ShowQuotaBars)
+	addDiff("rotation.dashboard.show_account_status", defaults.Rotation.Dashboard.ShowAccountStatus, cfg.Rotation.Dashboard.ShowAccountStatus)
+	addDiff("rotation.dashboard.show_reset_timers", defaults.Rotation.Dashboard.ShowResetTimers, cfg.Rotation.Dashboard.ShowResetTimers)
+
+	// Gemini setup
+	addDiff("gemini_setup.auto_select_pro_model", defaults.GeminiSetup.AutoSelectProModel, cfg.GeminiSetup.AutoSelectProModel)
+	addDiff("gemini_setup.ready_timeout_seconds", defaults.GeminiSetup.ReadyTimeoutSeconds, cfg.GeminiSetup.ReadyTimeoutSeconds)
+	addDiff("gemini_setup.model_select_timeout_seconds", defaults.GeminiSetup.ModelSelectTimeoutSeconds, cfg.GeminiSetup.ModelSelectTimeoutSeconds)
+	addDiff("gemini_setup.verbose", defaults.GeminiSetup.Verbose, cfg.GeminiSetup.Verbose)
 
 	// Health monitoring
 	addDiff("health.enabled", defaults.Health.Enabled, cfg.Health.Enabled)
@@ -4531,6 +5221,26 @@ func Validate(cfg *Config) []error {
 		errs = append(errs, fmt.Errorf("file_reservation: %w", err))
 	}
 
+	// Validate scanner config
+	if err := ValidateScannerConfig(&cfg.Scanner); err != nil {
+		errs = append(errs, fmt.Errorf("scanner: %w", err))
+	}
+
+	// Validate account management config
+	if err := ValidateAccountsConfig(&cfg.Accounts); err != nil {
+		errs = append(errs, fmt.Errorf("accounts: %w", err))
+	}
+
+	// Validate account rotation config
+	if err := ValidateRotationConfig(&cfg.Rotation); err != nil {
+		errs = append(errs, fmt.Errorf("rotation: %w", err))
+	}
+
+	// Validate Gemini post-spawn setup config
+	if err := ValidateGeminiSetupConfig(&cfg.GeminiSetup); err != nil {
+		errs = append(errs, fmt.Errorf("gemini_setup: %w", err))
+	}
+
 	// Validate memory config
 	if err := ValidateMemoryConfig(&cfg.Memory); err != nil {
 		errs = append(errs, fmt.Errorf("memory: %w", err))
@@ -4601,6 +5311,9 @@ func Validate(cfg *Config) []error {
 	if cfg.Checkpoints.MaxAutoCheckpoints < 0 {
 		errs = append(errs, fmt.Errorf("checkpoints.max_auto_checkpoints: must be non-negative, got %d", cfg.Checkpoints.MaxAutoCheckpoints))
 	}
+	if cfg.Checkpoints.BeforeAddAgents < 0 {
+		errs = append(errs, fmt.Errorf("checkpoints.before_add_agents: must be non-negative, got %d", cfg.Checkpoints.BeforeAddAgents))
+	}
 	if cfg.Checkpoints.ScrollbackLines < 0 {
 		errs = append(errs, fmt.Errorf("checkpoints.scrollback_lines: must be non-negative, got %d", cfg.Checkpoints.ScrollbackLines))
 	}
@@ -4614,6 +5327,12 @@ func Validate(cfg *Config) []error {
 	}
 	if cfg.Resilience.RestartDelaySeconds < 0 {
 		errs = append(errs, fmt.Errorf("resilience.restart_delay_seconds: must be non-negative, got %d", cfg.Resilience.RestartDelaySeconds))
+	}
+	if cfg.Resilience.HealthCheckSeconds < 0 {
+		errs = append(errs, fmt.Errorf("resilience.health_check_seconds: must be non-negative, got %d", cfg.Resilience.HealthCheckSeconds))
+	}
+	if cfg.Resilience.CrashThreshold < 0 {
+		errs = append(errs, fmt.Errorf("resilience.crash_threshold: must be non-negative, got %d", cfg.Resilience.CrashThreshold))
 	}
 
 	// Validate CASS timeout
@@ -4637,6 +5356,15 @@ func Validate(cfg *Config) []error {
 	if cfg.CASS.Context.LookbackDays < 0 {
 		errs = append(errs, fmt.Errorf("cass.context.lookback_days: must be non-negative, got %d", cfg.CASS.Context.LookbackDays))
 	}
+	if cfg.CASS.Duplicates.SimilarityThreshold < 0 || cfg.CASS.Duplicates.SimilarityThreshold > 1 {
+		errs = append(errs, fmt.Errorf("cass.duplicates.similarity_threshold: must be between 0.0 and 1.0, got %.2f", cfg.CASS.Duplicates.SimilarityThreshold))
+	}
+	if cfg.CASS.Duplicates.LookbackDays < 0 {
+		errs = append(errs, fmt.Errorf("cass.duplicates.lookback_days: must be non-negative, got %d", cfg.CASS.Duplicates.LookbackDays))
+	}
+	if cfg.CASS.Search.DefaultLimit < 0 {
+		errs = append(errs, fmt.Errorf("cass.search.default_limit: must be non-negative, got %d", cfg.CASS.Search.DefaultLimit))
+	}
 
 	// Validate tmux settings
 	if cfg.Tmux.DefaultPanes < 1 {
@@ -4644,6 +5372,9 @@ func Validate(cfg *Config) []error {
 	}
 	if cfg.Tmux.PaneInitDelayMs < 0 {
 		errs = append(errs, fmt.Errorf("tmux.pane_init_delay_ms: must be non-negative, got %d", cfg.Tmux.PaneInitDelayMs))
+	}
+	if cfg.Tmux.HistoryLimit < 0 {
+		errs = append(errs, fmt.Errorf("tmux.history_limit: must be non-negative, got %d", cfg.Tmux.HistoryLimit))
 	}
 
 	return errs

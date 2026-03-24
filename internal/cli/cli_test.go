@@ -9,7 +9,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"text/template"
@@ -2658,7 +2657,7 @@ func TestUpgradeAssetNamingConsistency(t *testing.T) {
 	t.Logf("Current platform produces: binary=%q, archive=%q", realBinary, realArchive)
 }
 
-// TestParseRobotSinceWindowAcceptsRFC3339(t *testing.T) {
+func TestParseRobotSinceWindowAcceptsRFC3339(t *testing.T) {
 	resetFlags()
 
 	sinceTS := time.Now().UTC().Add(-90 * time.Minute).Truncate(time.Second)
@@ -2682,6 +2681,129 @@ func TestParseRobotSinceWindowRejectsFutureTimestamp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "future") {
 		t.Fatalf("parseRobotSinceWindow() error = %q, want future timestamp message", err)
+	}
+}
+
+func TestResolveRobotMailCheckUsesSharedCanonicalFlags(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("since", "", "")
+	cmd.Flags().String("cass-since", "", "")
+	cmd.Flags().Int("limit", 10, "")
+	cmd.Flags().Int("cass-limit", 10, "")
+
+	robotSince = "2025-01-01"
+	cassLimit = 25
+	if err := cmd.Flags().Set("since", robotSince); err != nil {
+		t.Fatalf("set since: %v", err)
+	}
+	if err := cmd.Flags().Set("limit", "25"); err != nil {
+		t.Fatalf("set limit: %v", err)
+	}
+
+	if got := resolveRobotMailCheckSince(cmd); got != robotSince {
+		t.Fatalf("resolveRobotMailCheckSince() = %q, want %q", got, robotSince)
+	}
+	if got := resolveRobotMailCheckLimit(cmd); got != 25 {
+		t.Fatalf("resolveRobotMailCheckLimit() = %d, want 25", got)
+	}
+}
+
+func TestResolveRobotMailCheckLimitDefaultsToCommandBehavior(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Int("limit", 10, "")
+	cmd.Flags().Int("cass-limit", 10, "")
+
+	cassLimit = 10
+	if got := resolveRobotMailCheckLimit(cmd); got != 0 {
+		t.Fatalf("resolveRobotMailCheckLimit() = %d, want 0 so command can use its own default", got)
+	}
+}
+
+func TestResolveRobotMailCheckSincePrefersDeprecatedAliasWhenExplicitlySet(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("since", "", "")
+	cmd.Flags().String("cass-since", "", "")
+
+	cassSince = "2025-02-01"
+	if err := cmd.Flags().Set("cass-since", cassSince); err != nil {
+		t.Fatalf("set cass-since: %v", err)
+	}
+
+	if got := resolveRobotMailCheckSince(cmd); got != cassSince {
+		t.Fatalf("resolveRobotMailCheckSince() = %q, want deprecated explicit value %q", got, cassSince)
+	}
+}
+
+func TestResolveRobotSharedFlagUsesCanonicalSharedValueWhenSpecificHasDefault(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("strategy", "", "")
+
+	robotRouteStrategy = "least-loaded"
+	robotAssignStrategy = "balanced"
+	if err := cmd.Flags().Set("strategy", "balanced"); err != nil {
+		t.Fatalf("set strategy: %v", err)
+	}
+
+	if got := resolveRobotRouteStrategy(cmd); got != "balanced" {
+		t.Fatalf("resolveRobotRouteStrategy() = %q, want %q", got, "balanced")
+	}
+}
+
+func TestResolveRobotProviderUsesSharedCanonicalFlags(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("provider", "", "")
+	cmd.Flags().String("account-status-provider", "", "")
+	cmd.Flags().String("accounts-list-provider", "", "")
+	cmd.Flags().String("quota-check-provider", "", "")
+
+	if err := cmd.Flags().Set("provider", "claude"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+
+	if got := resolveRobotProvider(cmd, "account-status-provider", robotAccountStatusProvider); got != "claude" {
+		t.Fatalf("resolveRobotProvider(account-status) = %q, want claude", got)
+	}
+	if got := resolveRobotProvider(cmd, "accounts-list-provider", robotAccountsListProvider); got != "claude" {
+		t.Fatalf("resolveRobotProvider(accounts-list) = %q, want claude", got)
+	}
+	if got := resolveRobotProvider(cmd, "quota-check-provider", robotQuotaCheckProvider); got != "claude" {
+		t.Fatalf("resolveRobotProvider(quota-check) = %q, want claude", got)
+	}
+}
+
+func TestResolveRobotProviderPrefersDeprecatedAliasWhenExplicitlySet(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("provider", "", "")
+	cmd.Flags().String("accounts-list-provider", "", "")
+
+	if err := cmd.Flags().Set("provider", "claude"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	robotAccountsListProvider = "openai"
+	if err := cmd.Flags().Set("accounts-list-provider", "openai"); err != nil {
+		t.Fatalf("set accounts-list-provider: %v", err)
+	}
+
+	if got := resolveRobotProvider(cmd, "accounts-list-provider", robotAccountsListProvider); got != "openai" {
+		t.Fatalf("resolveRobotProvider() = %q, want deprecated explicit value %q", got, "openai")
 	}
 }
 

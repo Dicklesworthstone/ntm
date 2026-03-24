@@ -2010,7 +2010,7 @@ Common Modifiers:
 --offset=N      Pagination offset for list commands
 --robot-limit=N  Explicit pagination alias for robot list outputs
 --robot-offset=N Explicit pagination alias for robot list outputs
---since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339)
+--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)
 --type=TYPE     Agent type filter for commands that support it (claude, codex, gemini, cursor, windsurf, aider)
 --timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait
 --poll=VALUE    Shared polling interval for wait/ack/send --track
@@ -3586,7 +3586,9 @@ func getReadyIssueIDs() map[string]bool {
 	var issues []struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal([]byte(output), &issues); err != nil {
+	if issues, err = bv.UnmarshalBdList[struct {
+		ID string `json:"id"`
+	}](output); err != nil {
 		return ready
 	}
 
@@ -4305,7 +4307,7 @@ type SnapshotAgent struct {
 	State            string  `json:"state"`
 	LastOutputAgeSec int     `json:"last_output_age_sec"`
 	OutputTailLines  int     `json:"output_tail_lines"`
-	CurrentBead      *string `json:"current_bead"`
+	CurrentBead      *string `json:"current_bead,omitempty"`
 	PendingMail      int     `json:"pending_mail"`
 }
 
@@ -8105,7 +8107,7 @@ type GraphAgentAssignment struct {
 // GraphBeadNode summarizes bead status and relationships.
 type GraphBeadNode struct {
 	Status     string   `json:"status"`
-	AssignedTo *string  `json:"assigned_to"`
+	AssignedTo *string  `json:"assigned_to,omitempty"`
 	BlockedBy  []string `json:"blocked_by"`
 	Blocking   []string `json:"blocking"`
 	Title      string   `json:"title,omitempty"`

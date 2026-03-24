@@ -235,6 +235,50 @@ func TestBuildCommandRegistry_HistoryCommandUsesCanonicalFlags(t *testing.T) {
 	}
 }
 
+func TestBuildCommandRegistry_MailCheckUsesCanonicalSharedFlags(t *testing.T) {
+	t.Parallel()
+
+	var mailCheckCmd RobotCommandInfo
+	for _, cmd := range buildCommandRegistry() {
+		if cmd.Name == "mail-check" {
+			mailCheckCmd = cmd
+			break
+		}
+	}
+	if mailCheckCmd.Name == "" {
+		t.Fatal("missing mail-check command")
+	}
+
+	wantFlags := []string{"--mail-project", "--mail-agent", "--thread", "--mail-status", "--include-bodies", "--urgent-only", "--mail-verbose", "--limit", "--mail-offset", "--since", "--mail-until"}
+	for _, want := range wantFlags {
+		found := false
+		for _, param := range mailCheckCmd.Parameters {
+			if param.Flag == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("mail-check parameters missing %q: %+v", want, mailCheckCmd.Parameters)
+		}
+	}
+
+	for _, param := range mailCheckCmd.Parameters {
+		if param.Flag == "--cass-since" {
+			t.Fatalf("mail-check still exposes deprecated --cass-since in registry: %+v", mailCheckCmd.Parameters)
+		}
+		if param.Flag == "--limit" && param.Default != "20" {
+			t.Fatalf("mail-check --limit default = %q, want 20", param.Default)
+		}
+	}
+
+	for _, example := range mailCheckCmd.Examples {
+		if strings.Contains(example, "--cass-since") {
+			t.Fatalf("mail-check example still uses deprecated --cass-since: %q", example)
+		}
+	}
+}
+
 func TestBuildCommandRegistry_UsesCanonicalSharedFlagsForAdjacentCommands(t *testing.T) {
 	t.Parallel()
 

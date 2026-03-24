@@ -49,11 +49,55 @@ func TestGetHistoryPagination(t *testing.T) {
 	if output.AgentHints.PagesRemaining == nil || *output.AgentHints.PagesRemaining != 1 {
 		t.Fatalf("expected _agent_hints.pages_remaining=1, got %+v", output.AgentHints)
 	}
+	if output.AgentHints.Summary != "Showing 1 of 3 commands" {
+		t.Fatalf("expected paginated summary to reflect page size, got %q", output.AgentHints.Summary)
+	}
 	if len(output.Entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(output.Entries))
 	}
 	if output.Entries[0].Prompt != "second" {
 		t.Fatalf("expected second entry, got %q", output.Entries[0].Prompt)
+	}
+}
+
+func TestGetHistoryPagination_WithFiltersSummarizesFilteredAndTotal(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tempDir)
+
+	session := "history-pagination-filtered-session"
+	entries := []*history.HistoryEntry{
+		history.NewEntry(session, []string{"1"}, "claude 1", history.SourceCLI),
+		history.NewEntry(session, []string{"1"}, "claude 2", history.SourceCLI),
+		history.NewEntry(session, []string{"2"}, "codex 1", history.SourceCLI),
+		history.NewEntry(session, []string{"2"}, "codex 2", history.SourceCLI),
+	}
+	for i, entry := range entries {
+		if i < 2 {
+			entry.SetAgentTypes([]string{"cc"})
+		} else {
+			entry.SetAgentTypes([]string{"cod"})
+		}
+		entry.SetSuccess()
+	}
+
+	if err := history.BatchAppend(entries); err != nil {
+		t.Fatalf("failed to write history: %v", err)
+	}
+
+	output, err := GetHistory(HistoryOptions{
+		Session:   session,
+		AgentType: "claude",
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("GetHistory failed: %v", err)
+	}
+
+	if output.AgentHints == nil {
+		t.Fatal("expected agent hints, got nil")
+	}
+	if output.AgentHints.Summary != "Showing 1 of 2 commands (from 4 total)" {
+		t.Fatalf("expected filtered paginated summary, got %q", output.AgentHints.Summary)
 	}
 }
 

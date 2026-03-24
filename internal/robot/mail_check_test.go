@@ -2,6 +2,8 @@ package robot
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -85,16 +87,14 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 			opts: MailCheckOptions{
 				Project: "/data/projects/test",
 				Since:   "invalid-date",
-				Until:   "2025-12-31",
 			},
 			wantErr: true,
-			errMsg:  "invalid --cass-since date format",
+			errMsg:  "invalid --since date format",
 		},
 		{
 			name: "invalid until date format",
 			opts: MailCheckOptions{
 				Project: "/data/projects/test",
-				Since:   "2025-01-01",
 				Until:   "invalid-date",
 			},
 			wantErr: true,
@@ -108,7 +108,25 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 				Until:   "2025-01-01",
 			},
 			wantErr: true,
-			errMsg:  "--mail-until date cannot be before --cass-since date",
+			errMsg:  "--mail-until date cannot be before --since date",
+		},
+		{
+			name: "negative limit rejected",
+			opts: MailCheckOptions{
+				Project: "/data/projects/test",
+				Limit:   -1,
+			},
+			wantErr: true,
+			errMsg:  "--limit cannot be negative",
+		},
+		{
+			name: "negative offset rejected",
+			opts: MailCheckOptions{
+				Project: "/data/projects/test",
+				Offset:  -1,
+			},
+			wantErr: true,
+			errMsg:  "--mail-offset cannot be negative",
 		},
 	}
 
@@ -310,6 +328,177 @@ func TestMailCheckOutputValidationError(t *testing.T) {
 	}
 }
 
+func TestMailCheckValidationErrorRetainsCanonicalFilters(t *testing.T) {
+	thread := "TKT-123"
+	output, err := GetMailCheck(MailCheckOptions{
+		Project: "/data/projects/test",
+		Thread:  thread,
+		Since:   "invalid-date",
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck should not return Go error, got: %v", err)
+	}
+
+	if output.Success {
+		t.Fatal("expected Success=false for validation error")
+	}
+	if output.Filters.Status != "all" {
+		t.Fatalf("filters.status = %q, want %q", output.Filters.Status, "all")
+	}
+	if output.Filters.Thread == nil || *output.Filters.Thread != thread {
+		t.Fatalf("filters.thread = %+v, want %q", output.Filters.Thread, thread)
+	}
+	if output.Filters.Since == nil || *output.Filters.Since != "invalid-date" {
+		t.Fatalf("filters.since = %+v, want invalid-date", output.Filters.Since)
+	}
+	if !strings.Contains(output.Error, "--since") {
+		t.Fatalf("error = %q, want canonical --since wording", output.Error)
+	}
+	if !strings.Contains(output.Hint, "--since") {
+		t.Fatalf("hint = %q, want canonical --since guidance", output.Hint)
+	}
+}
+
+func TestGetMailCheck_DefaultsZeroLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		switch req.Method {
+		case "tools/call":
+			params, ok := req.Params.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected params map, got %T", req.Params)
+			}
+			switch params["name"] {
+			case "health_check":
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  json.RawMessage(`{"status":"ok"}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			case "fetch_inbox":
+				args, _ := params["arguments"].(map[string]interface{})
+				if got := int(args["limit"].(float64)); got != 21 {
+					t.Fatalf("fetch_inbox limit = %d, want 21 default (20 + 1 overfetch)", got)
+				}
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: json.RawMessage(`{"result":[
+						{"id":1,"subject":"One","from":"BlueLake","created_ts":"2026-01-01T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"body one"},
+						{"id":2,"subject":"Two","from":"GreenStone","created_ts":"2026-01-02T00:00:00Z","importance":"urgent","ack_required":true,"kind":"to","body_md":"body two"}
+					]}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			default:
+				t.Fatalf("unexpected tool name: %v", params["name"])
+			}
+		default:
+			t.Fatalf("unexpected method: %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	output, err := GetMailCheck(MailCheckOptions{
+		Project: "/data/projects/test",
+		Agent:   "BlueLake",
+		Limit:   0,
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("GetMailCheck success = false, error=%q", output.Error)
+	}
+	if output.Count != 2 {
+		t.Fatalf("Count = %d, want 2", output.Count)
+	}
+	if len(output.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(output.Messages))
+	}
+	if output.HasMore {
+		t.Fatal("HasMore = true, want false for two-message result under default limit")
+	}
+}
+
+func TestGetMailCheck_HasMoreUsesOverfetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		switch req.Method {
+		case "tools/call":
+			params, ok := req.Params.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected params map, got %T", req.Params)
+			}
+			switch params["name"] {
+			case "health_check":
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  json.RawMessage(`{"status":"ok"}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			case "fetch_inbox":
+				args, _ := params["arguments"].(map[string]interface{})
+				if got := int(args["limit"].(float64)); got != 2 {
+					t.Fatalf("fetch_inbox limit = %d, want 2 (1 + 1 overfetch)", got)
+				}
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: json.RawMessage(`{"result":[
+						{"id":1,"subject":"One","from":"BlueLake","created_ts":"2026-01-02T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"body one"},
+						{"id":2,"subject":"Two","from":"GreenStone","created_ts":"2026-01-01T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"body two"}
+					]}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			default:
+				t.Fatalf("unexpected tool name: %v", params["name"])
+			}
+		default:
+			t.Fatalf("unexpected method: %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	output, err := GetMailCheck(MailCheckOptions{
+		Project: "/data/projects/test",
+		Agent:   "BlueLake",
+		Limit:   1,
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("GetMailCheck success = false, error=%q", output.Error)
+	}
+	if output.Count != 1 {
+		t.Fatalf("Count = %d, want 1", output.Count)
+	}
+	if !output.HasMore {
+		t.Fatal("HasMore = false, want true when overfetch found another message")
+	}
+	if output.AgentHints == nil || output.AgentHints.NextOffset == nil || *output.AgentHints.NextOffset != 1 {
+		t.Fatalf("NextOffset = %+v, want 1", output.AgentHints)
+	}
+}
+
 // TestTruncateStringMail tests the string truncation helper.
 func TestTruncateStringMail(t *testing.T) {
 	tests := []struct {
@@ -393,6 +582,251 @@ func TestMailCheckFiltersJSON(t *testing.T) {
 	}
 	if decoded["thread"] != "TKT-123" {
 		t.Errorf("thread mismatch: got %v", decoded["thread"])
+	}
+}
+
+func TestMailCheckFiltersOmitUnsetOptionalFields(t *testing.T) {
+	filters := MailCheckFilters{
+		Status:     "all",
+		UrgentOnly: false,
+	}
+
+	data, err := json.Marshal(filters)
+	if err != nil {
+		t.Fatalf("failed to marshal filters: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal filters: %v", err)
+	}
+
+	for _, field := range []string{"thread", "since", "until"} {
+		if _, exists := decoded[field]; exists {
+			t.Fatalf("%s should be omitted when unset: %s", field, string(data))
+		}
+	}
+}
+
+func TestMailCheckMessageBodyOmittedWhenBodiesDisabled(t *testing.T) {
+	msg := agentmail.InboxMessage{
+		ID:        9,
+		From:      "BlueLake",
+		Subject:   "Coordination",
+		BodyMD:    "some detailed body",
+		CreatedTS: agentmail.FlexTime{},
+	}
+
+	output := mailCheckMessageFromInbox(msg, "GreenStone", false)
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("failed to marshal message: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+	if _, exists := decoded["body"]; exists {
+		t.Fatalf("body should be omitted when includeBodies=false: %s", string(data))
+	}
+}
+
+func TestGetMailCheck_AggregatesProjectAgentsWhenAgentOmitted(t *testing.T) {
+	const wantSince = "2026-01-01T00:00:00Z"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		switch req.Method {
+		case "tools/call":
+			params, ok := req.Params.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected params map, got %T", req.Params)
+			}
+			switch params["name"] {
+			case "health_check":
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  json.RawMessage(`{"status":"ok"}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			case "fetch_inbox":
+				args, _ := params["arguments"].(map[string]interface{})
+				agentName, _ := args["agent_name"].(string)
+				if got, _ := args["since_ts"].(string); got != wantSince {
+					t.Fatalf("fetch_inbox since_ts = %q, want %q", got, wantSince)
+				}
+				var result json.RawMessage
+				switch agentName {
+				case "BlueLake":
+					result = json.RawMessage(`{"result":[
+						{"id":1,"subject":"Shared","from":"Alice","created_ts":"2026-01-02T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"shared body"},
+						{"id":2,"subject":"Blue only","from":"Bob","created_ts":"2026-01-03T00:00:00Z","importance":"urgent","ack_required":true,"kind":"to","body_md":"blue body","read_at":"2026-01-03T01:00:00Z"}
+					]}`)
+				case "GreenStone":
+					result = json.RawMessage(`{"result":[
+						{"id":1,"subject":"Shared","from":"Alice","created_ts":"2026-01-02T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"shared body","read_at":"2026-01-02T01:00:00Z"},
+						{"id":3,"subject":"Green only","from":"Carol","created_ts":"2026-01-01T00:00:00Z","importance":"normal","ack_required":false,"kind":"to","body_md":"green body"}
+					]}`)
+				default:
+					t.Fatalf("unexpected fetch_inbox agent_name: %q", agentName)
+				}
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  result,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			default:
+				t.Fatalf("unexpected tool name: %v", params["name"])
+			}
+		case "resources/read":
+			resp := agentmail.JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: json.RawMessage(`{
+					"contents":[{"text":"[{\"id\":1,\"name\":\"BlueLake\",\"program\":\"codex-cli\",\"model\":\"gpt-5\",\"task_description\":\"blue\",\"inception_ts\":\"2026-01-01T00:00:00Z\",\"last_active_ts\":\"2026-01-01T00:00:00Z\",\"project_id\":1},{\"id\":2,\"name\":\"GreenStone\",\"program\":\"claude-code\",\"model\":\"opus\",\"task_description\":\"green\",\"inception_ts\":\"2026-01-01T00:00:00Z\",\"last_active_ts\":\"2026-01-01T00:00:00Z\",\"project_id\":1},{\"id\":3,\"name\":\"HumanOverseer\",\"program\":\"human\",\"model\":\"human\",\"task_description\":\"human\",\"inception_ts\":\"2026-01-01T00:00:00Z\",\"last_active_ts\":\"2026-01-01T00:00:00Z\",\"project_id\":1}]"}]
+				}`),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			t.Fatalf("unexpected method: %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	output, err := GetMailCheck(MailCheckOptions{
+		Project: "/data/projects/test",
+		Since:   "2026-01-01",
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("GetMailCheck success = false, error=%q", output.Error)
+	}
+	if output.Agent != "" {
+		t.Fatalf("Agent = %q, want project-wide aggregate with empty agent", output.Agent)
+	}
+	if output.TotalMessages != 3 || output.Count != 3 {
+		t.Fatalf("total/count = %d/%d, want 3/3", output.TotalMessages, output.Count)
+	}
+	if output.Unread != 2 {
+		t.Fatalf("Unread = %d, want 2", output.Unread)
+	}
+	if output.Urgent != 1 {
+		t.Fatalf("Urgent = %d, want 1", output.Urgent)
+	}
+	if len(output.Messages) != 3 {
+		t.Fatalf("len(Messages) = %d, want 3", len(output.Messages))
+	}
+	if output.Messages[0].ID != 2 || output.Messages[1].ID != 1 || output.Messages[2].ID != 3 {
+		t.Fatalf("unexpected message order: %+v", output.Messages)
+	}
+	if output.Messages[1].To != "BlueLake, GreenStone" {
+		t.Fatalf("shared message recipients = %q, want %q", output.Messages[1].To, "BlueLake, GreenStone")
+	}
+	if output.Messages[1].Read {
+		t.Fatal("shared aggregate message should remain unread when any recipient is unread")
+	}
+}
+
+func TestGetMailCheck_BackfillsWhenThreadFilterNeedsOlderMatches(t *testing.T) {
+	fetchLimits := []int{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		switch req.Method {
+		case "tools/call":
+			params, ok := req.Params.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected params map, got %T", req.Params)
+			}
+			switch params["name"] {
+			case "health_check":
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  json.RawMessage(`{"status":"ok"}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			case "fetch_inbox":
+				args, _ := params["arguments"].(map[string]interface{})
+				limit := int(args["limit"].(float64))
+				fetchLimits = append(fetchLimits, limit)
+				var result json.RawMessage
+				if limit <= 1 {
+					result = json.RawMessage(`{"result":[
+						{"id":11,"subject":"Newest other thread","from":"BlueLake","created_ts":"2026-01-03T00:00:00Z","thread_id":"OTHER","importance":"normal","ack_required":false,"kind":"to","body_md":"other"}
+					]}`)
+				} else {
+					result = json.RawMessage(`{"result":[
+						{"id":11,"subject":"Newest other thread","from":"BlueLake","created_ts":"2026-01-03T00:00:00Z","thread_id":"OTHER","importance":"normal","ack_required":false,"kind":"to","body_md":"other"},
+						{"id":10,"subject":"Target thread","from":"GreenStone","created_ts":"2026-01-02T00:00:00Z","thread_id":"TKT-123","importance":"urgent","ack_required":true,"kind":"to","body_md":"target"}
+					]}`)
+				}
+				resp := agentmail.JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  result,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			default:
+				t.Fatalf("unexpected tool name: %v", params["name"])
+			}
+		default:
+			t.Fatalf("unexpected method: %s", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	output, err := GetMailCheck(MailCheckOptions{
+		Project: "/data/projects/test",
+		Agent:   "BlueLake",
+		Thread:  "TKT-123",
+		Limit:   1,
+	})
+	if err != nil {
+		t.Fatalf("GetMailCheck returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("GetMailCheck success = false, error=%q", output.Error)
+	}
+	if len(fetchLimits) < 2 {
+		t.Fatalf("expected backfill fetches, got limits %v", fetchLimits)
+	}
+	if fetchLimits[0] != 1 {
+		t.Fatalf("first fetch limit = %d, want 1", fetchLimits[0])
+	}
+	if fetchLimits[1] <= fetchLimits[0] {
+		t.Fatalf("backfill should increase fetch limit, got %v", fetchLimits)
+	}
+	if output.Count != 1 || len(output.Messages) != 1 {
+		t.Fatalf("count/messages = %d/%d, want 1/1", output.Count, len(output.Messages))
+	}
+	if output.Messages[0].ID != 10 {
+		t.Fatalf("message ID = %d, want 10 after thread-filter backfill", output.Messages[0].ID)
+	}
+	if output.TotalMessages != 1 {
+		t.Fatalf("total_messages = %d, want 1", output.TotalMessages)
 	}
 }
 

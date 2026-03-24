@@ -3,6 +3,7 @@ package robot
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,9 +31,9 @@ type MailCheckOutput struct {
 type MailCheckFilters struct {
 	Status     string  `json:"status"` // all, read, unread
 	UrgentOnly bool    `json:"urgent_only"`
-	Thread     *string `json:"thread"`
-	Since      *string `json:"since"`
-	Until      *string `json:"until"`
+	Thread     *string `json:"thread,omitempty"`
+	Since      *string `json:"since,omitempty"`
+	Until      *string `json:"until,omitempty"`
 }
 
 // MailCheckMessage represents a message in the mail check output
@@ -44,7 +45,7 @@ type MailCheckMessage struct {
 	SubjectDisclosure *adapters.DisclosureMetadata `json:"subject_disclosure,omitempty"`
 	Preview           string                       `json:"preview,omitempty"`
 	PreviewDisclosure *adapters.DisclosureMetadata `json:"preview_disclosure,omitempty"`
-	Body              *string                      `json:"body"` // null unless --include-bodies
+	Body              *string                      `json:"body,omitempty"` // present only with --include-bodies when a body preview is available
 	BodyDisclosure    *adapters.DisclosureMetadata `json:"body_disclosure,omitempty"`
 	ThreadID          *string                      `json:"thread_id,omitempty"`
 	Importance        string                       `json:"importance"`
@@ -77,10 +78,178 @@ type MailCheckOptions struct {
 	Until         string // YYYY-MM-DD
 }
 
+type mailCheckInboxEntry struct {
+	Message    agentmail.InboxMessage
+	Recipients []string
+	AllRead    bool
+}
+
+const mailCheckBackfillLimit = 1000
+
+func buildMailCheckFilters(opts MailCheckOptions) MailCheckFilters {
+	filters := MailCheckFilters{
+		Status:     opts.Status,
+		UrgentOnly: opts.UrgentOnly,
+	}
+	if filters.Status == "" {
+		filters.Status = "all"
+	}
+	if opts.Thread != "" {
+		filters.Thread = &opts.Thread
+	}
+	if opts.Since != "" {
+		filters.Since = &opts.Since
+	}
+	if opts.Until != "" {
+		filters.Until = &opts.Until
+	}
+	return filters
+}
+
+func fetchMailCheckEntries(ctx context.Context, client *agentmail.Client, opts MailCheckOptions, fetchLimit int, sinceTS *time.Time) ([]mailCheckInboxEntry, error) {
+	if opts.Agent != "" {
+		msgs, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+			ProjectKey:    opts.Project,
+			AgentName:     opts.Agent,
+			UrgentOnly:    opts.UrgentOnly,
+			IncludeBodies: opts.IncludeBodies,
+			Limit:         fetchLimit,
+			SinceTS:       sinceTS,
+		})
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]mailCheckInboxEntry, 0, len(msgs))
+		for _, msg := range msgs {
+			entries = append(entries, mailCheckInboxEntry{
+				Message:    msg,
+				Recipients: []string{opts.Agent},
+				AllRead:    msg.ReadAt != nil,
+			})
+		}
+		return entries, nil
+	}
+
+	agents, err := client.ListProjectAgents(ctx, opts.Project)
+	if err != nil {
+		return nil, fmt.Errorf("list_agents failed: %w", err)
+	}
+
+	byID := make(map[int]*mailCheckInboxEntry)
+	for _, agent := range agents {
+		agentName := strings.TrimSpace(agent.Name)
+		if agentName == "" || agentName == "HumanOverseer" {
+			continue
+		}
+
+		msgs, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+			ProjectKey:    opts.Project,
+			AgentName:     agentName,
+			UrgentOnly:    opts.UrgentOnly,
+			IncludeBodies: opts.IncludeBodies,
+			Limit:         fetchLimit,
+			SinceTS:       sinceTS,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("fetch_inbox for %s: %w", agentName, err)
+		}
+
+		for _, msg := range msgs {
+			entry, ok := byID[msg.ID]
+			if !ok {
+				msgCopy := msg
+				byID[msg.ID] = &mailCheckInboxEntry{
+					Message:    msgCopy,
+					Recipients: []string{agentName},
+					AllRead:    msg.ReadAt != nil,
+				}
+				continue
+			}
+			entry.Recipients = append(entry.Recipients, agentName)
+			entry.AllRead = entry.AllRead && msg.ReadAt != nil
+		}
+	}
+
+	entries := make([]mailCheckInboxEntry, 0, len(byID))
+	for _, entry := range byID {
+		sort.Strings(entry.Recipients)
+		entries = append(entries, *entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		ti := entries[i].Message.CreatedTS.Time
+		tj := entries[j].Message.CreatedTS.Time
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return entries[i].Message.ID > entries[j].Message.ID
+	})
+	return entries, nil
+}
+
+func mailCheckNeedsBackfill(opts MailCheckOptions) bool {
+	return opts.Thread != "" || opts.Status == "read" || opts.Status == "unread" || opts.Until != ""
+}
+
+func filterMailCheckEntries(entries []mailCheckInboxEntry, opts MailCheckOptions) ([]mailCheckInboxEntry, error) {
+	filtered := entries
+
+	if opts.Thread != "" {
+		threadFiltered := make([]mailCheckInboxEntry, 0, len(filtered))
+		for _, entry := range filtered {
+			if entry.Message.ThreadID != nil && *entry.Message.ThreadID == opts.Thread {
+				threadFiltered = append(threadFiltered, entry)
+			}
+		}
+		filtered = threadFiltered
+	}
+
+	switch opts.Status {
+	case "read":
+		statusFiltered := make([]mailCheckInboxEntry, 0, len(filtered))
+		for _, entry := range filtered {
+			if entry.AllRead {
+				statusFiltered = append(statusFiltered, entry)
+			}
+		}
+		filtered = statusFiltered
+	case "unread":
+		statusFiltered := make([]mailCheckInboxEntry, 0, len(filtered))
+		for _, entry := range filtered {
+			if !entry.AllRead {
+				statusFiltered = append(statusFiltered, entry)
+			}
+		}
+		filtered = statusFiltered
+	}
+
+	if opts.Until != "" {
+		untilDate, err := parseMailCheckDate(opts.Until)
+		if err != nil {
+			return nil, err
+		}
+		untilDate = untilDate.Add(24 * time.Hour)
+		dateFiltered := make([]mailCheckInboxEntry, 0, len(filtered))
+		for _, entry := range filtered {
+			if entry.Message.CreatedTS.Before(untilDate) {
+				dateFiltered = append(dateFiltered, entry)
+			}
+		}
+		filtered = dateFiltered
+	}
+
+	return filtered, nil
+}
+
 // Validate checks that options are valid
 func (o *MailCheckOptions) Validate() error {
 	if o.Project == "" {
 		return fmt.Errorf("--mail-project is required")
+	}
+	if o.Limit < 0 {
+		return fmt.Errorf("--limit cannot be negative")
+	}
+	if o.Offset < 0 {
+		return fmt.Errorf("--mail-offset cannot be negative")
 	}
 
 	// Validate status value
@@ -88,22 +257,29 @@ func (o *MailCheckOptions) Validate() error {
 		return fmt.Errorf("invalid --mail-status value %q: must be read, unread, or all", o.Status)
 	}
 
-	// Validate date range
-	if o.Since != "" && o.Until != "" {
-		sinceDate, err := time.Parse("2006-01-02", o.Since)
+	var sinceDate *time.Time
+	if o.Since != "" {
+		parsed, err := parseMailCheckDate(o.Since)
 		if err != nil {
-			return fmt.Errorf("invalid --cass-since date format: expected YYYY-MM-DD")
+			return fmt.Errorf("invalid --since date format: expected YYYY-MM-DD")
 		}
-		untilDate, err := time.Parse("2006-01-02", o.Until)
+		sinceDate = &parsed
+	}
+	if o.Until != "" {
+		untilDate, err := parseMailCheckDate(o.Until)
 		if err != nil {
 			return fmt.Errorf("invalid --mail-until date format: expected YYYY-MM-DD")
 		}
-		if untilDate.Before(sinceDate) {
-			return fmt.Errorf("--mail-until date cannot be before --cass-since date")
+		if sinceDate != nil && untilDate.Before(*sinceDate) {
+			return fmt.Errorf("--mail-until date cannot be before --since date")
 		}
 	}
 
 	return nil
+}
+
+func parseMailCheckDate(raw string) (time.Time, error) {
+	return time.Parse("2006-01-02", raw)
 }
 
 // GetMailCheck checks agent mail inbox and returns the results.
@@ -112,13 +288,10 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 	// Validate options first
 	if err := opts.Validate(); err != nil {
 		return &MailCheckOutput{
-			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --mail-project and related mail filter flags"),
+			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --mail-project, --since, --mail-until, and related mail filter flags"),
 			Project:       opts.Project,
 			Messages:      []MailCheckMessage{},
-			Filters: MailCheckFilters{
-				Status:     opts.Status,
-				UrgentOnly: opts.UrgentOnly,
-			},
+			Filters:       buildMailCheckFilters(opts),
 		}, nil
 	}
 
@@ -135,96 +308,78 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 			),
 			Project:  opts.Project,
 			Messages: []MailCheckMessage{},
-			Filters: MailCheckFilters{
-				Status:     opts.Status,
-				UrgentOnly: opts.UrgentOnly,
-			},
+			Filters:  buildMailCheckFilters(opts),
 		}, nil
 	}
 
-	// Build fetch options
-	fetchOpts := agentmail.FetchInboxOptions{
-		ProjectKey:    opts.Project,
-		AgentName:     opts.Agent,
-		UrgentOnly:    opts.UrgentOnly,
-		IncludeBodies: opts.IncludeBodies,
-		Limit:         opts.Limit,
+	effectiveLimit := opts.Limit
+	if effectiveLimit <= 0 {
+		effectiveLimit = 20
 	}
 
-	// Set default limit if not specified
-	if fetchOpts.Limit <= 0 {
-		fetchOpts.Limit = 20
-	}
+	fetchLimit := effectiveLimit + opts.Offset + 1
 
-	// Parse since date
+	var sinceTS *time.Time
 	if opts.Since != "" {
-		sinceDate, _ := time.Parse("2006-01-02", opts.Since)
-		fetchOpts.SinceTS = &sinceDate
+		parsedSince, err := parseMailCheckDate(opts.Since)
+		if err != nil {
+			return &MailCheckOutput{
+				RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --since"),
+				Project:       opts.Project,
+				Agent:         opts.Agent,
+				Messages:      []MailCheckMessage{},
+				Filters:       buildMailCheckFilters(opts),
+			}, nil
+		}
+		sinceTS = &parsedSince
 	}
 
-	// Fetch messages
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	messages, err := client.FetchInbox(ctx, fetchOpts)
-	if err != nil {
-		return &MailCheckOutput{
-			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to fetch inbox"),
-			Project:       opts.Project,
-			Agent:         opts.Agent,
-			Messages:      []MailCheckMessage{},
-			Filters: MailCheckFilters{
-				Status:     opts.Status,
-				UrgentOnly: opts.UrgentOnly,
-			},
-		}, nil
+	needCount := opts.Offset + effectiveLimit
+	if needCount < effectiveLimit {
+		needCount = effectiveLimit
 	}
 
-	// Apply additional filtering not supported by agentmail client
-	filtered := messages
+	var entries []mailCheckInboxEntry
+	var filtered []mailCheckInboxEntry
+	var err error
+	for {
+		entries, err = fetchMailCheckEntries(ctx, client, opts, fetchLimit, sinceTS)
+		if err != nil {
+			return &MailCheckOutput{
+				RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to fetch inbox"),
+				Project:       opts.Project,
+				Agent:         opts.Agent,
+				Messages:      []MailCheckMessage{},
+				Filters:       buildMailCheckFilters(opts),
+			}, nil
+		}
 
-	// Filter by thread
-	if opts.Thread != "" {
-		var threadFiltered []agentmail.InboxMessage
-		for _, msg := range filtered {
-			if msg.ThreadID != nil && *msg.ThreadID == opts.Thread {
-				threadFiltered = append(threadFiltered, msg)
-			}
+		filtered, err = filterMailCheckEntries(entries, opts)
+		if err != nil {
+			return &MailCheckOutput{
+				RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --mail-until"),
+				Project:       opts.Project,
+				Agent:         opts.Agent,
+				Messages:      []MailCheckMessage{},
+				Filters:       buildMailCheckFilters(opts),
+			}, nil
 		}
-		filtered = threadFiltered
-	}
 
-	// Filter by read status
-	switch opts.Status {
-	case "read":
-		var statusFiltered []agentmail.InboxMessage
-		for _, msg := range filtered {
-			if msg.ReadAt != nil {
-				statusFiltered = append(statusFiltered, msg)
-			}
+		if !mailCheckNeedsBackfill(opts) || len(filtered) > needCount || len(entries) < fetchLimit || fetchLimit >= mailCheckBackfillLimit {
+			break
 		}
-		filtered = statusFiltered
-	case "unread":
-		var statusFiltered []agentmail.InboxMessage
-		for _, msg := range filtered {
-			if msg.ReadAt == nil {
-				statusFiltered = append(statusFiltered, msg)
-			}
-		}
-		filtered = statusFiltered
-	}
 
-	// Filter by until date
-	if opts.Until != "" {
-		untilDate, _ := time.Parse("2006-01-02", opts.Until)
-		untilDate = untilDate.Add(24 * time.Hour) // Include entire day
-		var dateFiltered []agentmail.InboxMessage
-		for _, msg := range filtered {
-			if msg.CreatedTS.Before(untilDate) {
-				dateFiltered = append(dateFiltered, msg)
-			}
+		nextFetchLimit := fetchLimit * 2
+		if nextFetchLimit <= fetchLimit {
+			nextFetchLimit = fetchLimit + effectiveLimit
 		}
-		filtered = dateFiltered
+		if nextFetchLimit > mailCheckBackfillLimit {
+			nextFetchLimit = mailCheckBackfillLimit
+		}
+		fetchLimit = nextFetchLimit
 	}
 
 	// Calculate counts before pagination
@@ -233,8 +388,9 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 	urgentCount := 0
 	var oldestUnread *time.Time
 
-	for _, msg := range filtered {
-		if msg.ReadAt == nil {
+	for _, entry := range filtered {
+		msg := entry.Message
+		if !entry.AllRead {
 			unreadCount++
 			if oldestUnread == nil || msg.CreatedTS.Before(*oldestUnread) {
 				t := msg.CreatedTS.Time
@@ -255,34 +411,18 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 
 	// Apply limit
 	hasMore := false
-	if len(filtered) > opts.Limit {
+	if len(filtered) > effectiveLimit {
 		hasMore = true
-		filtered = filtered[:opts.Limit]
+		filtered = filtered[:effectiveLimit]
 	}
 
 	// Convert to output format
 	outputMsgs := make([]MailCheckMessage, len(filtered))
-	for i, msg := range filtered {
-		outputMsgs[i] = mailCheckMessageFromInbox(msg, opts.Agent, opts.IncludeBodies)
+	for i, entry := range filtered {
+		outputMsgs[i] = mailCheckMessageFromEntry(entry, opts.IncludeBodies)
 	}
 
-	// Build filters object
-	filters := MailCheckFilters{
-		Status:     opts.Status,
-		UrgentOnly: opts.UrgentOnly,
-	}
-	if opts.Thread != "" {
-		filters.Thread = &opts.Thread
-	}
-	if opts.Since != "" {
-		filters.Since = &opts.Since
-	}
-	if opts.Until != "" {
-		filters.Until = &opts.Until
-	}
-	if filters.Status == "" {
-		filters.Status = "all"
-	}
+	filters := buildMailCheckFilters(opts)
 
 	// Build agent hints
 	var hints *MailCheckAgentHints
@@ -297,9 +437,13 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 		}
 
 		if hasMore {
-			nextOffset := opts.Offset + opts.Limit
+			nextOffset := opts.Offset + len(outputMsgs)
 			hints.NextOffset = &nextOffset
-			pagesRemaining := (totalMessages - opts.Offset - opts.Limit + opts.Limit - 1) / opts.Limit
+			remaining := totalMessages - nextOffset
+			pagesRemaining := 0
+			if remaining > 0 {
+				pagesRemaining = (remaining + effectiveLimit - 1) / effectiveLimit
+			}
 			if pagesRemaining < 0 {
 				pagesRemaining = 0
 			}
@@ -339,7 +483,8 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 	}, nil
 }
 
-func mailCheckMessageFromInbox(msg agentmail.InboxMessage, recipient string, includeBodies bool) MailCheckMessage {
+func mailCheckMessageFromEntry(entry mailCheckInboxEntry, includeBodies bool) MailCheckMessage {
+	msg := entry.Message
 	subject, subjectDisclosure := adapters.NormalizeDisclosureText(msg.Subject)
 	bodyText, bodyDisclosure := adapters.NormalizeDisclosureText(msg.BodyMD)
 
@@ -356,6 +501,7 @@ func mailCheckMessageFromInbox(msg agentmail.InboxMessage, recipient string, inc
 		body = &b
 	}
 
+	recipient := strings.Join(entry.Recipients, ", ")
 	return MailCheckMessage{
 		ID:                msg.ID,
 		From:              msg.From,
@@ -369,9 +515,17 @@ func mailCheckMessageFromInbox(msg agentmail.InboxMessage, recipient string, inc
 		ThreadID:          msg.ThreadID,
 		Importance:        msg.Importance,
 		AckRequired:       msg.AckRequired,
-		Read:              msg.ReadAt != nil,
+		Read:              entry.AllRead,
 		Timestamp:         msg.CreatedTS.Format(time.RFC3339),
 	}
+}
+
+func mailCheckMessageFromInbox(msg agentmail.InboxMessage, recipient string, includeBodies bool) MailCheckMessage {
+	return mailCheckMessageFromEntry(mailCheckInboxEntry{
+		Message:    msg,
+		Recipients: []string{recipient},
+		AllRead:    msg.ReadAt != nil,
+	}, includeBodies)
 }
 
 // PrintMailCheck outputs mail check results as JSON.

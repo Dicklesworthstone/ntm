@@ -1014,7 +1014,7 @@ func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339)",
+		"--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)",
 		"--type=TYPE     Agent type filter for commands that support it (claude, codex, gemini, cursor, windsurf, aider)",
 		"--timeout=VALUE Shared timeout for wait/ack/interrupt and spawn --spawn-wait",
 		"--strategy=NAME Strategy override for assign, route, and spawn --spawn-assign-work",
@@ -2438,6 +2438,50 @@ func TestSnapshotAgentMarshal(t *testing.T) {
 	}
 	if result.CurrentBead == nil || *result.CurrentBead != "ntm-123" {
 		t.Error("CurrentBead not correctly marshaled")
+	}
+}
+
+func TestSnapshotAgentMarshal_OmitsNilCurrentBead(t *testing.T) {
+	agent := SnapshotAgent{
+		Pane:             "0.1",
+		Type:             "claude",
+		State:            "active",
+		LastOutputAgeSec: 30,
+		OutputTailLines:  20,
+	}
+
+	data, err := json.Marshal(agent)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if _, exists := decoded["current_bead"]; exists {
+		t.Fatalf("current_bead should be omitted when nil: %s", string(data))
+	}
+}
+
+func TestGraphBeadNodeMarshal_OmitsNilAssignedTo(t *testing.T) {
+	node := GraphBeadNode{
+		Status:    "open",
+		BlockedBy: []string{},
+		Blocking:  []string{},
+	}
+
+	data, err := json.Marshal(node)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if _, exists := decoded["assigned_to"]; exists {
+		t.Fatalf("assigned_to should be omitted when nil: %s", string(data))
 	}
 }
 

@@ -1982,10 +1982,28 @@ func TestPrintIncludesRemainingLiveConfigSections(t *testing.T) {
 
 	wantSections := []string{
 		"suggestions_enabled = ",
+		"history_limit = ",
+		"[robot.output]",
 		"[integrations.caam]",
 		"[integrations.rch]",
 		"[integrations.caut]",
 		"[integrations.process_triage]",
+		"[[accounts.codex]]",
+		"[[accounts.gemini]]",
+		"auto_trigger = ",
+		"auto_initiate = ",
+		"[[rotation.accounts]]",
+		"[scanner.thresholds.pre_commit]",
+		"[scanner.tools]",
+		"[scanner.beads]",
+		"[scanner.notifications]",
+		"primary = ",
+		"fallback = ",
+		"[notifications.routing]",
+		"[notifications.webhook.headers]",
+		"[notifications.filebox]",
+		"crash_threshold = ",
+		"show_install_hints = ",
 		"[recovery]",
 		"[cleanup]",
 		"[assign]",
@@ -1996,6 +2014,7 @@ func TestPrintIncludesRemainingLiveConfigSections(t *testing.T) {
 		"[encryption]",
 		"[send]",
 		"[prompts]",
+		"[gemini_setup]",
 	}
 	for _, want := range wantSections {
 		if !strings.Contains(output, want) {

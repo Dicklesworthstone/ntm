@@ -33,10 +33,10 @@ type ProjectMeta struct {
 
 // ProjectIntegrations declares optional integrations for the project.
 type ProjectIntegrations struct {
-	AgentMail bool `toml:"agent_mail"`
-	Beads     bool `toml:"beads"`
-	CASS      bool `toml:"cass"`
-	CM        bool `toml:"cm"`
+	AgentMail *bool `toml:"agent_mail"`
+	Beads     *bool `toml:"beads"`
+	CASS      *bool `toml:"cass"`
+	CM        *bool `toml:"cm"`
 }
 
 // ProjectDefaults holds default settings for the project
@@ -322,12 +322,6 @@ func renderProjectConfig(projectName, created string) ([]byte, error) {
 name = {{quote .ProjectName}}
 created = {{quote .Created}}
 
-[agents]
-default_count = 3
-# claude = "claude --project ..."
-# codex = "codex"
-# gemini = "gemini"
-
 [integrations]
 agent_mail = true
 beads = true
@@ -335,6 +329,8 @@ cass = true
 cm = true
 
 [defaults]
+# Project-level spawn defaults. Use these instead of [agents], because
+# project configs intentionally do not override agent command templates.
 # agents = { cc = 2, cod = 1 }
 
 [palette]

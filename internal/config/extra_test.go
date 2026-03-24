@@ -346,7 +346,7 @@ func TestInitProjectConfigScaffolding(t *testing.T) {
 		}
 
 		contentStr := string(content)
-		expectedSections := []string{"[project]", "[integrations]", "[defaults]", "[palette]", "[palette_state]", "[templates]", "[agents]"}
+		expectedSections := []string{"[project]", "[integrations]", "[defaults]", "[palette]", "[palette_state]", "[templates]"}
 		for _, section := range expectedSections {
 			if !strings.Contains(contentStr, section) {
 				t.Errorf("config missing section: %s", section)

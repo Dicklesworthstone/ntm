@@ -55,6 +55,17 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 		global.ProjectDefaults = project.Defaults.Agents
 	}
 
+	// Merge project-scoped integration toggles that have direct runtime equivalents.
+	if project.Integrations.AgentMail != nil {
+		global.AgentMail.Enabled = *project.Integrations.AgentMail
+	}
+	if project.Integrations.CASS != nil {
+		global.CASS.Enabled = *project.Integrations.CASS
+	}
+	if project.Integrations.CM != nil {
+		global.Memory.Enabled = *project.Integrations.CM
+	}
+
 	// Merge Alerts
 	if project.Alerts != nil {
 		if project.Alerts.Enabled != nil {

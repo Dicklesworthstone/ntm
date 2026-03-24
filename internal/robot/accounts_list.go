@@ -22,7 +22,7 @@ type AccountInfo struct {
 	Current      bool    `json:"current"`
 	UsagePercent int     `json:"usage_percent,omitempty"`
 	RateLimited  bool    `json:"rate_limited,omitempty"`
-	Cooldown     *string `json:"cooldown"` // nil when no cooldown, RFC3339 string when active
+	Cooldown     *string `json:"cooldown,omitempty"` // RFC3339 string when active
 }
 
 // AccountsListOptions contains options for the accounts list command

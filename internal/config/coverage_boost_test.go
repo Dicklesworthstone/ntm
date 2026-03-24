@@ -170,13 +170,24 @@ func TestGetValue_ConfigServiceRemainingSections(t *testing.T) {
 	tests := []struct {
 		path string
 	}{
+		{"agents.cursor"},
 		{"help_verbosity"},
 		{"palette_file"},
 		{"suggestions_enabled"},
+		{"palette"},
+		{"palette_state.pinned"},
+		{"tmux.history_limit"},
+		{"robot.verbosity"},
+		{"robot.output.timestamps"},
 		{"integrations.caam.enabled"},
 		{"integrations.rch.preferred_worker"},
 		{"integrations.caut.currency"},
 		{"integrations.process_triage.on_stuck"},
+		{"models.codex"},
+		{"checkpoints.before_add_agents"},
+		{"notifications.webhook.method"},
+		{"resilience.rate_limit.detect"},
+		{"context_rotation.default_confirm_action"},
 		{"recovery.max_recovery_tokens"},
 		{"cleanup.max_age_hours"},
 		{"assign.strategy"},
@@ -185,6 +196,18 @@ func TestGetValue_ConfigServiceRemainingSections(t *testing.T) {
 		{"send.base_prompt_file"},
 		{"prompts.gmi_default_file"},
 		{"models.default_claude"},
+		{"cass.show_install_hints"},
+		{"cass.duplicates.prompt_on_match"},
+		{"cass.search.default_limit"},
+		{"cass.tui.show_status_indicator"},
+		{"scanner.defaults.languages"},
+		{"scanner.thresholds.pre_commit.block_critical"},
+		{"scanner.beads.labels"},
+		{"scanner.notifications.enabled"},
+		{"accounts.codex"},
+		{"rotation.auto_trigger"},
+		{"rotation.dashboard.show_reset_timers"},
+		{"gemini_setup.verbose"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -1489,6 +1512,59 @@ func TestMergeConfig_ProjectDefaults(t *testing.T) {
 	}
 }
 
+func TestMergeConfig_ProjectIntegrationToggles(t *testing.T) {
+	t.Parallel()
+
+	global := Default()
+	global.AgentMail.Enabled = true
+	global.CASS.Enabled = true
+	global.Memory.Enabled = true
+
+	disable := false
+	project := &ProjectConfig{
+		Integrations: ProjectIntegrations{
+			AgentMail: &disable,
+			CASS:      &disable,
+			CM:        &disable,
+		},
+	}
+
+	result := MergeConfig(global, project, t.TempDir())
+	if result.AgentMail.Enabled {
+		t.Error("AgentMail.Enabled should be false after project override")
+	}
+	if result.CASS.Enabled {
+		t.Error("CASS.Enabled should be false after project override")
+	}
+	if result.Memory.Enabled {
+		t.Error("Memory.Enabled should be false after project override")
+	}
+}
+
+func TestMergeConfig_ProjectIntegrationOmitPreservesGlobal(t *testing.T) {
+	t.Parallel()
+
+	global := Default()
+	global.AgentMail.Enabled = true
+	global.CASS.Enabled = true
+	global.Memory.Enabled = true
+
+	project := &ProjectConfig{
+		Integrations: ProjectIntegrations{},
+	}
+
+	result := MergeConfig(global, project, t.TempDir())
+	if !result.AgentMail.Enabled {
+		t.Error("AgentMail.Enabled should remain true when project omits agent_mail")
+	}
+	if !result.CASS.Enabled {
+		t.Error("CASS.Enabled should remain true when project omits cass")
+	}
+	if !result.Memory.Enabled {
+		t.Error("Memory.Enabled should remain true when project omits cm")
+	}
+}
+
 func TestMergeConfig_PaletteFileTraversal(t *testing.T) {
 	t.Parallel()
 	global := Default()
@@ -1719,11 +1795,21 @@ func TestValidate_WiresSectionSpecificValidators(t *testing.T) {
 	cfg := Default()
 	cfg.Tmux.ActivityIndicators.ActiveSeconds = 0
 	cfg.FileReservation.DefaultTTLMin = 0
+	cfg.Scanner.Defaults.Timeout = "nope"
 	cfg.Memory.QueryTimeoutSeconds = 0
 	cfg.Integrations.Rano.PollIntervalMs = 50
+	cfg.Accounts.ResetBufferMinutes = -1
 	cfg.SessionRecovery.MaxRecoveryTokens = -1
 	cfg.Cleanup.MaxAgeHours = -1
 	cfg.Assign.Strategy = "nonsense"
+	cfg.Checkpoints.BeforeAddAgents = -1
+	cfg.Resilience.HealthCheckSeconds = -1
+	cfg.Resilience.CrashThreshold = -1
+	cfg.CASS.Duplicates.SimilarityThreshold = 2
+	cfg.CASS.Search.DefaultLimit = -1
+	cfg.Tmux.HistoryLimit = -1
+	cfg.Rotation.Thresholds.WarningPercent = 101
+	cfg.GeminiSetup.ReadyTimeoutSeconds = -1
 	cfg.Swarm.Enabled = true
 	cfg.Swarm.Tier1Threshold = 10
 	cfg.Swarm.Tier2Threshold = 10
@@ -1736,11 +1822,21 @@ func TestValidate_WiresSectionSpecificValidators(t *testing.T) {
 	wantPaths := []string{
 		"tmux.activity_indicators",
 		"file_reservation",
+		"scanner",
 		"memory",
 		"integrations.rano",
+		"accounts",
 		"recovery.max_recovery_tokens",
 		"cleanup.max_age_hours",
 		"assign.strategy",
+		"checkpoints.before_add_agents",
+		"resilience.health_check_seconds",
+		"resilience.crash_threshold",
+		"cass.duplicates.similarity_threshold",
+		"cass.search.default_limit",
+		"tmux.history_limit",
+		"rotation",
+		"gemini_setup",
 		"swarm",
 	}
 	for _, want := range wantPaths {
@@ -1788,10 +1884,19 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 	t.Parallel()
 	cfg := Default()
 	defaults := Default()
+	cfg.Agents.Cursor = "cursor-agent"
+	cfg.PaletteState.Pinned = []string{"fresh_review"}
+	cfg.Tmux.HistoryLimit = defaults.Tmux.HistoryLimit + 100
+	cfg.Robot.Output.Timestamps = !defaults.Robot.Output.Timestamps
 	cfg.Integrations.CAAM.AlertThreshold = defaults.Integrations.CAAM.AlertThreshold + 1
 	cfg.Integrations.RCH.PreferredWorker = "worker-2"
 	cfg.Integrations.Caut.Currency = "EUR"
 	cfg.Integrations.ProcessTriage.OnStuck = "ignore"
+	cfg.Models.Codex = map[string]string{"max": "gpt-5.5-codex"}
+	cfg.Checkpoints.OnError = !defaults.Checkpoints.OnError
+	cfg.Notifications.Webhook.Headers = map[string]string{"X-Test": "1"}
+	cfg.Resilience.RateLimit.Patterns = []string{"quota exceeded"}
+	cfg.ContextRotation.DefaultConfirmAction = "compact"
 	cfg.SessionRecovery.MaxRecoveryTokens = defaults.SessionRecovery.MaxRecoveryTokens + 500
 	cfg.Cleanup.MaxAgeHours = defaults.Cleanup.MaxAgeHours + 1
 	cfg.Assign.Strategy = "quality"
@@ -1799,13 +1904,27 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 	cfg.Encryption.KeyFormat = "base64"
 	cfg.Send.BasePromptFile = "/tmp/base-prompt.md"
 	cfg.Prompts.CCDefaultFile = "/tmp/claude-prompt.md"
+	cfg.CASS.Duplicates.LookbackDays = defaults.CASS.Duplicates.LookbackDays + 1
+	cfg.Scanner.Tools.Disabled = []string{"shellcheck"}
+	cfg.Accounts.Codex = []AccountEntry{{Email: "codex@example.com", Alias: "cod", Priority: 2}}
+	cfg.Rotation.AutoTrigger = !defaults.Rotation.AutoTrigger
+	cfg.GeminiSetup.Verbose = !defaults.GeminiSetup.Verbose
 
 	diffs := Diff(cfg)
 	wantPaths := []string{
+		"agents.cursor",
+		"palette_state.pinned",
+		"tmux.history_limit",
+		"robot.output.timestamps",
 		"integrations.caam.alert_threshold",
 		"integrations.rch.preferred_worker",
 		"integrations.caut.currency",
 		"integrations.process_triage.on_stuck",
+		"models.codex",
+		"checkpoints.on_error",
+		"notifications.webhook.headers",
+		"resilience.rate_limit.patterns",
+		"context_rotation.default_confirm_action",
 		"recovery.max_recovery_tokens",
 		"cleanup.max_age_hours",
 		"assign.strategy",
@@ -1813,6 +1932,11 @@ func TestDiff_ConfigServiceRemainingSections(t *testing.T) {
 		"encryption.key_format",
 		"send.base_prompt_file",
 		"prompts.cc_default_file",
+		"cass.duplicates.lookback_days",
+		"scanner.tools.disabled",
+		"accounts.codex",
+		"rotation.auto_trigger",
+		"gemini_setup.verbose",
 	}
 	for _, want := range wantPaths {
 		if !hasConfigDiffPath(diffs, want) {

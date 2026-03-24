@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -167,6 +168,66 @@ func DefaultScannerConfig() ScannerConfig {
 			SummaryAfterScan: false,
 		},
 	}
+}
+
+// ValidateScannerConfig validates UBS scanner configuration.
+func ValidateScannerConfig(cfg *ScannerConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Defaults.Timeout != "" {
+		dur, err := time.ParseDuration(cfg.Defaults.Timeout)
+		if err != nil {
+			return fmt.Errorf("defaults.timeout: %w", err)
+		}
+		if dur <= 0 {
+			return fmt.Errorf("defaults.timeout: must be greater than zero, got %q", cfg.Defaults.Timeout)
+		}
+	}
+
+	validateThreshold := func(path string, threshold ThresholdConfig) error {
+		if threshold.BlockErrors < 0 {
+			return fmt.Errorf("%s.block_errors: must be non-negative, got %d", path, threshold.BlockErrors)
+		}
+		if threshold.FailErrors < -1 {
+			return fmt.Errorf("%s.fail_errors: must be -1 or greater, got %d", path, threshold.FailErrors)
+		}
+		return nil
+	}
+	if err := validateThreshold("thresholds.pre_commit", cfg.Thresholds.PreCommit); err != nil {
+		return err
+	}
+	if err := validateThreshold("thresholds.ci", cfg.Thresholds.CI); err != nil {
+		return err
+	}
+	if err := validateThreshold("thresholds.dashboard", cfg.Thresholds.Dashboard); err != nil {
+		return err
+	}
+	if err := validateThreshold("thresholds.interactive", cfg.Thresholds.Interactive); err != nil {
+		return err
+	}
+
+	allowedSeverity := map[string]bool{
+		"critical": true,
+		"error":    true,
+		"warning":  true,
+		"info":     true,
+	}
+	if cfg.Beads.MinSeverity != "" && !allowedSeverity[strings.ToLower(strings.TrimSpace(cfg.Beads.MinSeverity))] {
+		return fmt.Errorf("beads.min_severity: must be one of critical, error, warning, info; got %q", cfg.Beads.MinSeverity)
+	}
+
+	disabled := make(map[string]struct{}, len(cfg.Tools.Disabled))
+	for _, tool := range cfg.Tools.Disabled {
+		disabled[tool] = struct{}{}
+	}
+	for _, tool := range cfg.Tools.Enabled {
+		if _, ok := disabled[tool]; ok {
+			return fmt.Errorf("tools: %q cannot be both enabled and disabled", tool)
+		}
+	}
+
+	return nil
 }
 
 // GetTimeout returns the timeout as a time.Duration

@@ -286,6 +286,42 @@ func TestOutputTypesHaveRequiredJSONTags(t *testing.T) {
 	})
 }
 
+func TestAccountsListOutput_OmitsNilCooldown(t *testing.T) {
+	output := AccountsListOutput{
+		RobotResponse: NewRobotResponse(true),
+		Accounts: []AccountInfo{
+			{
+				Provider: "claude",
+				ID:       "acc-1",
+				Current:  true,
+			},
+		},
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	accounts, ok := decoded["accounts"].([]any)
+	if !ok || len(accounts) != 1 {
+		t.Fatalf("accounts = %#v, want one account", decoded["accounts"])
+	}
+
+	account, ok := accounts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first account = %#v, want object", accounts[0])
+	}
+	if _, exists := account["cooldown"]; exists {
+		t.Fatalf("cooldown should be omitted when nil: %s", string(data))
+	}
+}
+
 // TestArrayFieldsNeverNull verifies critical array fields are initialized.
 func TestArrayFieldsNeverNull(t *testing.T) {
 	// Test that array fields in output types are initialized to empty slices

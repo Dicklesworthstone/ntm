@@ -249,7 +249,16 @@ func generateHistoryHints(output HistoryOutput, opts HistoryOptions) *HistoryAge
 	} else if output.Total == 0 {
 		hints.Summary = "No command history for this session"
 	} else {
-		hints.Summary = fmt.Sprintf("Showing %d of %d commands", output.Filtered, output.Total)
+		shown := output.Filtered
+		totalVisible := output.Total
+		if output.Pagination != nil {
+			shown = output.Pagination.Count
+			totalVisible = output.Filtered
+		}
+		hints.Summary = fmt.Sprintf("Showing %d of %d commands", shown, totalVisible)
+		if output.Pagination != nil && output.Filtered != output.Total {
+			hints.Summary += fmt.Sprintf(" (from %d total)", output.Total)
+		}
 		if opts.Pane != "" {
 			hints.Summary += fmt.Sprintf(" (pane %s)", opts.Pane)
 		}

@@ -380,21 +380,21 @@ func TestProjectConfig_DefaultIntegrations(t *testing.T) {
 	}
 
 	// Default config template enables all integrations
-	if !cfg.Integrations.AgentMail {
+	if cfg.Integrations.AgentMail == nil || !*cfg.Integrations.AgentMail {
 		t.Error("expected AgentMail integration enabled by default")
 	}
-	if !cfg.Integrations.Beads {
+	if cfg.Integrations.Beads == nil || !*cfg.Integrations.Beads {
 		t.Error("expected Beads integration enabled by default")
 	}
-	if !cfg.Integrations.CASS {
+	if cfg.Integrations.CASS == nil || !*cfg.Integrations.CASS {
 		t.Error("expected CASS integration enabled by default")
 	}
-	if !cfg.Integrations.CM {
+	if cfg.Integrations.CM == nil || !*cfg.Integrations.CM {
 		t.Error("expected CM integration enabled by default")
 	}
 
 	t.Logf("TEST: ProjectConfig_DefaultIntegrations | AgentMail: %v | Beads: %v | CASS: %v | CM: %v",
-		cfg.Integrations.AgentMail, cfg.Integrations.Beads, cfg.Integrations.CASS, cfg.Integrations.CM)
+		*cfg.Integrations.AgentMail, *cfg.Integrations.Beads, *cfg.Integrations.CASS, *cfg.Integrations.CM)
 }
 
 // TestRenderProjectConfig verifies config template rendering
@@ -420,12 +420,15 @@ func TestRenderProjectConfig(t *testing.T) {
 		t.Error("config missing created timestamp")
 	}
 
-	if !strings.Contains(contentStr, "[agents]") {
-		t.Error("config missing [agents] section")
-	}
-
 	if !strings.Contains(contentStr, "[integrations]") {
 		t.Error("config missing [integrations] section")
+	}
+
+	if !strings.Contains(contentStr, "# Project-level spawn defaults. Use these instead of [agents], because") {
+		t.Error("config missing defaults guidance comment")
+	}
+	if strings.Contains(contentStr, "\n[agents]\n") {
+		t.Error("config should not scaffold a project-level [agents] section")
 	}
 
 	t.Logf("TEST: RenderProjectConfig | ProjectName: %s | Output length: %d", projectName, len(content))
@@ -557,23 +560,25 @@ func TestProjectMeta(t *testing.T) {
 func TestProjectIntegrations(t *testing.T) {
 	t.Parallel()
 
+	tVal := true
+	fVal := false
 	integrations := ProjectIntegrations{
-		AgentMail: true,
-		Beads:     true,
-		CASS:      false,
-		CM:        true,
+		AgentMail: &tVal,
+		Beads:     &tVal,
+		CASS:      &fVal,
+		CM:        &tVal,
 	}
 
-	if !integrations.AgentMail {
+	if integrations.AgentMail == nil || !*integrations.AgentMail {
 		t.Error("AgentMail should be true")
 	}
-	if !integrations.Beads {
+	if integrations.Beads == nil || !*integrations.Beads {
 		t.Error("Beads should be true")
 	}
-	if integrations.CASS {
+	if integrations.CASS == nil || *integrations.CASS {
 		t.Error("CASS should be false")
 	}
-	if !integrations.CM {
+	if integrations.CM == nil || !*integrations.CM {
 		t.Error("CM should be true")
 	}
 }
