@@ -7793,7 +7793,7 @@ func normalizedCoordinationProblemEvent(ts time.Time, session string, problem ad
 		if len(agents) > 0 {
 			details["holders"] = agents
 		}
-		actions = attentionConflictActions(session, robotFirstNonEmpty(attentionStringDetail(details, "path"), attentionStringDetail(details, "pattern")), "Inspect the conflicting reservation state")
+		actions = attentionReservationConflictActions(session, details, "Inspect the conflicting reservation state")
 	case "file_conflict":
 		reasonCode = adapters.ReasonCoordinationFileConflict
 		category = EventCategoryFile

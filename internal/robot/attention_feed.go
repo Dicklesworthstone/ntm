@@ -2040,7 +2040,7 @@ func ptAttentionSession(session, pane string) string {
 }
 
 // PublishMailPending creates and appends a mail_pending signal for unread mail.
-func (f *AttentionFeed) PublishMailPending(from, to, subject string, messageID int, threadID string) AttentionEvent {
+func (f *AttentionFeed) PublishMailPending(projectKey, from, to, subject string, messageID int, threadID string) AttentionEvent {
 	event := AttentionEvent{
 		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
 		Category:      EventCategoryMail,
@@ -2050,25 +2050,20 @@ func (f *AttentionFeed) PublishMailPending(from, to, subject string, messageID i
 		Severity:      SeverityInfo,
 		Summary:       fmt.Sprintf("New mail from %s: %s", from, subject),
 		Details: map[string]any{
-			"from":       from,
-			"to":         to,
-			"subject":    subject,
-			"message_id": messageID,
-			"thread_id":  threadID,
+			"project_key": projectKey,
+			"from":        from,
+			"to":          to,
+			"subject":     subject,
+			"message_id":  messageID,
+			"thread_id":   threadID,
 		},
-		NextActions: []NextAction{
-			{
-				Action: "robot-mail-read",
-				Args:   fmt.Sprintf("--message-id=%d", messageID),
-				Reason: "Read message",
-			},
-		},
+		NextActions: attentionMailCheckActions(projectKey, to, threadID, true, "Inspect the unread message"),
 	}
 	return f.Append(annotateAttentionSignal(event))
 }
 
 // PublishMailAckRequired creates and appends a mail_ack_required signal for messages needing acknowledgment.
-func (f *AttentionFeed) PublishMailAckRequired(from, to, subject string, messageID int, threadID string) AttentionEvent {
+func (f *AttentionFeed) PublishMailAckRequired(projectKey, from, to, subject string, messageID int, threadID string) AttentionEvent {
 	event := AttentionEvent{
 		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
 		Category:      EventCategoryMail,
@@ -2078,6 +2073,7 @@ func (f *AttentionFeed) PublishMailAckRequired(from, to, subject string, message
 		Severity:      SeverityWarning,
 		Summary:       fmt.Sprintf("Ack required from %s: %s", from, subject),
 		Details: map[string]any{
+			"project_key":  projectKey,
 			"from":         from,
 			"to":           to,
 			"subject":      subject,
@@ -2085,18 +2081,7 @@ func (f *AttentionFeed) PublishMailAckRequired(from, to, subject string, message
 			"thread_id":    threadID,
 			"ack_required": true,
 		},
-		NextActions: []NextAction{
-			{
-				Action: "robot-mail-ack",
-				Args:   fmt.Sprintf("--message-id=%d", messageID),
-				Reason: "Acknowledge message",
-			},
-			{
-				Action: "robot-mail-read",
-				Args:   fmt.Sprintf("--message-id=%d", messageID),
-				Reason: "Read message first",
-			},
-		},
+		NextActions: attentionMailCheckActions(projectKey, to, threadID, false, "Inspect the message before acknowledging it"),
 	}
 	return f.Append(annotateAttentionSignal(event))
 }
@@ -2366,8 +2351,7 @@ var supportedAttentionActionNames = map[string]struct{}{
 	"robot-events":               {},
 	"robot-graph":                {},
 	"robot-inspect-coordination": {},
-	"robot-mail-ack":             {},
-	"robot-mail-read":            {},
+	"robot-mail-check":           {},
 	"robot-plan":                 {},
 	"robot-send":                 {},
 	"robot-snapshot":             {},
@@ -3658,6 +3642,44 @@ func attentionReservationConflictActions(session string, details map[string]any,
 		actions = append(actions, attentionConflictActions(session, attentionStringDetail(details, "path"), "Inspect related session activity")...)
 	}
 	return actions
+}
+
+func attentionMailCheckActions(projectKey, agentName, threadID string, unreadOnly bool, reason string) []NextAction {
+	projectKey = strings.TrimSpace(projectKey)
+	if projectKey == "" {
+		return []NextAction{attentionStatusNextAction(reason)}
+	}
+
+	args := []string{
+		"--robot-mail-check",
+		fmt.Sprintf("--mail-project=%s", attentionCommandArgValue(projectKey)),
+	}
+	if unreadOnly {
+		args = append(args, "--mail-status=unread")
+	}
+	if agentName = strings.TrimSpace(agentName); agentName != "" {
+		args = append(args, fmt.Sprintf("--mail-agent=%s", attentionCommandArgValue(agentName)))
+	}
+	if threadID = strings.TrimSpace(threadID); threadID != "" {
+		args = append(args, fmt.Sprintf("--thread=%s", attentionCommandArgValue(threadID)))
+	}
+
+	return []NextAction{{
+		Action: "robot-mail-check",
+		Args:   strings.Join(args, " "),
+		Reason: reason,
+	}}
+}
+
+func attentionCommandArgValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return `""`
+	}
+	if strings.ContainsAny(value, " \t\n\"'") {
+		return strconv.Quote(value)
+	}
+	return value
 }
 
 func attentionReservationConflictAgent(details map[string]any) string {

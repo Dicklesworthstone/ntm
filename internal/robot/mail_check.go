@@ -48,6 +48,7 @@ type MailCheckMessage struct {
 	BodyDisclosure    *adapters.DisclosureMetadata `json:"body_disclosure,omitempty"`
 	ThreadID          *string                      `json:"thread_id,omitempty"`
 	Importance        string                       `json:"importance"`
+	AckRequired       bool                         `json:"ack_required"`
 	Read              bool                         `json:"read"`
 	Timestamp         string                       `json:"timestamp"`
 }
@@ -367,6 +368,7 @@ func mailCheckMessageFromInbox(msg agentmail.InboxMessage, recipient string, inc
 		BodyDisclosure:    bodyDisclosure,
 		ThreadID:          msg.ThreadID,
 		Importance:        msg.Importance,
+		AckRequired:       msg.AckRequired,
 		Read:              msg.ReadAt != nil,
 		Timestamp:         msg.CreatedTS.Format(time.RFC3339),
 	}

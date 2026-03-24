@@ -2458,6 +2458,15 @@ func TestPublishNormalizedAttentionSignals_DeduplicatesRefreshOutput(t *testing.
 			if event.Actionability != ActionabilityActionRequired {
 				t.Fatalf("reservation conflict actionability = %q, want %q", event.Actionability, ActionabilityActionRequired)
 			}
+			var sawInspectCoordination bool
+			for _, action := range event.NextActions {
+				if action.Action == "robot-inspect-coordination" {
+					sawInspectCoordination = true
+				}
+			}
+			if !sawInspectCoordination {
+				t.Fatalf("reservation conflict next actions = %+v, want robot-inspect-coordination guidance", event.NextActions)
+			}
 		}
 	}
 
@@ -2468,6 +2477,64 @@ func TestPublishNormalizedAttentionSignals_DeduplicatesRefreshOutput(t *testing.
 
 func float64Pointer(v float64) *float64 {
 	return &v
+}
+
+func TestPublishMailPending_UsesRobotMailCheckAction(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+
+	event := feed.PublishMailPending("/data/projects/ntm", "GreenStone", "BlueLake", "Need review", 42, "br-42")
+
+	if len(event.NextActions) != 1 {
+		t.Fatalf("NextActions len = %d, want 1", len(event.NextActions))
+	}
+	action := event.NextActions[0]
+	if action.Action != "robot-mail-check" {
+		t.Fatalf("action = %q, want %q", action.Action, "robot-mail-check")
+	}
+	if strings.Contains(action.Args, "robot-mail-read") || strings.Contains(action.Args, "robot-mail-ack") {
+		t.Fatalf("args = %q, want canonical robot-mail-check command", action.Args)
+	}
+	for _, want := range []string{
+		"--robot-mail-check",
+		"--mail-project=/data/projects/ntm",
+		"--mail-agent=BlueLake",
+		"--thread=br-42",
+		"--mail-status=unread",
+	} {
+		if !strings.Contains(action.Args, want) {
+			t.Fatalf("args = %q, want substring %q", action.Args, want)
+		}
+	}
+}
+
+func TestPublishMailAckRequired_UsesRobotMailCheckAction(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+
+	event := feed.PublishMailAckRequired("/data/projects/ntm", "GreenStone", "BlueLake", "Need ack", 77, "br-77")
+
+	if len(event.NextActions) != 1 {
+		t.Fatalf("NextActions len = %d, want 1", len(event.NextActions))
+	}
+	action := event.NextActions[0]
+	if action.Action != "robot-mail-check" {
+		t.Fatalf("action = %q, want %q", action.Action, "robot-mail-check")
+	}
+	if strings.Contains(action.Args, "robot-mail-read") || strings.Contains(action.Args, "robot-mail-ack") {
+		t.Fatalf("args = %q, want canonical robot-mail-check command", action.Args)
+	}
+	for _, want := range []string{
+		"--robot-mail-check",
+		"--mail-project=/data/projects/ntm",
+		"--mail-agent=BlueLake",
+		"--thread=br-77",
+	} {
+		if !strings.Contains(action.Args, want) {
+			t.Fatalf("args = %q, want substring %q", action.Args, want)
+		}
+	}
+	if strings.Contains(action.Args, "--mail-status=unread") {
+		t.Fatalf("args = %q, want ack-required follow-up to avoid unread-only filtering", action.Args)
+	}
 }
 
 type stubAttentionStore struct {

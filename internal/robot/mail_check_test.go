@@ -168,6 +168,7 @@ func TestMailCheckOutputJSONSerialization(t *testing.T) {
 				BodyDisclosure:    &adapters.DisclosureMetadata{DisclosureState: "visible", Preview: "Test body content", RedactionMode: "redact"},
 				ThreadID:          &thread,
 				Importance:        "high",
+				AckRequired:       true,
 				Read:              false,
 				Timestamp:         "2025-01-20T14:30:00Z",
 			},
@@ -206,6 +207,9 @@ func TestMailCheckOutputJSONSerialization(t *testing.T) {
 	if len(decoded.Messages) != len(output.Messages) {
 		t.Errorf("messages count mismatch: got %d, want %d", len(decoded.Messages), len(output.Messages))
 	}
+	if len(decoded.Messages) > 0 && decoded.Messages[0].AckRequired != output.Messages[0].AckRequired {
+		t.Errorf("ack_required mismatch: got %v, want %v", decoded.Messages[0].AckRequired, output.Messages[0].AckRequired)
+	}
 	if decoded.HasMore != output.HasMore {
 		t.Errorf("has_more mismatch: got %v, want %v", decoded.HasMore, output.HasMore)
 	}
@@ -223,13 +227,14 @@ func TestMailCheckMessageFromInboxAppliesDisclosureControl(t *testing.T) {
 	thread := "bd-j9jo3.3.5"
 	secret := strings.Repeat("s", 20)
 	msg := agentmail.InboxMessage{
-		ID:         7,
-		From:       "BlueLake",
-		Subject:    "Rotate credential",
-		BodyMD:     "Need token=" + secret + " and " + strings.Repeat("harmless coordination detail ", 8),
-		ThreadID:   &thread,
-		Importance: "urgent",
-		CreatedTS:  agentmail.FlexTime{},
+		ID:          7,
+		From:        "BlueLake",
+		Subject:     "Rotate credential",
+		BodyMD:      "Need token=" + secret + " and " + strings.Repeat("harmless coordination detail ", 8),
+		ThreadID:    &thread,
+		Importance:  "urgent",
+		AckRequired: true,
+		CreatedTS:   agentmail.FlexTime{},
 	}
 
 	safe := mailCheckMessageFromInbox(msg, "GreenStone", true)
@@ -251,6 +256,9 @@ func TestMailCheckMessageFromInboxAppliesDisclosureControl(t *testing.T) {
 	}
 	if safe.BodyDisclosure == nil || safe.BodyDisclosure.DisclosureState != "redacted" {
 		t.Fatalf("expected redacted body disclosure, got %+v", safe.BodyDisclosure)
+	}
+	if !safe.AckRequired {
+		t.Fatal("AckRequired = false, want true from inbox message")
 	}
 }
 
