@@ -649,48 +649,83 @@ func writeStubBr(t *testing.T, beadID string) {
 	path := filepath.Join(dir, "br")
 	script := `#!/bin/sh
 set -e
-for arg in "$@"; do
-  case "$arg" in
-    create)
-      echo "Created ` + beadID + `: stub"
-      exit 0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --lock-timeout)
+      shift 2
       ;;
-    new)
-      echo "{\"id\":\"` + beadID + `\",\"title\":\"Created\"}"
-      exit 0
+    --no-db)
+      shift
       ;;
-    list)
-      echo "[{\"id\":\"` + beadID + `\",\"title\":\"Listed\"}]"
-      exit 0
-      ;;
-    stats)
-      echo "{\"open\":1}"
-      exit 0
-      ;;
-    ready)
-      echo "[]"
-      exit 0
-      ;;
-    blocked)
-      echo "[]"
-      exit 0
-      ;;
-    close)
-      echo "{\"id\":\"` + beadID + `\"}"
-      exit 0
-      ;;
-    show)
-      echo "{\"id\":\"` + beadID + `\",\"title\":\"Show\"}"
-      exit 0
+    *)
+      break
       ;;
   esac
 done
-for arg in "$@"; do
-  if [ "$arg" = "update" ]; then
-    echo "Updated"
+cmd1="${1:-}"
+cmd2="${2:-}"
+case "$cmd1:$cmd2" in
+  dep:list)
+    echo "[{\"issue_id\":\"$3\",\"depends_on_id\":\"bd-dep\",\"type\":\"blocks\",\"title\":\"Dep\",\"status\":\"open\",\"priority\":2}]"
     exit 0
-  fi
-done
+    ;;
+  dep:add)
+    echo "{\"issue_id\":\"$3\",\"depends_on_id\":\"$4\",\"type\":\"blocks\"}"
+    exit 0
+    ;;
+  dep:remove)
+    echo "{\"issue_id\":\"$3\",\"depends_on_id\":\"$4\",\"removed\":true}"
+    exit 0
+    ;;
+esac
+case "$cmd1" in
+  create)
+    for arg in "$@"; do
+      case "$arg" in
+        new|--label|--blocked-by)
+          echo "unexpected legacy create arg: $arg" >&2
+          exit 2
+          ;;
+      esac
+    done
+    echo "{\"id\":\"` + beadID + `\",\"title\":\"Created\",\"labels\":[\"api\",\"triaged\"],\"dependencies\":[{\"issue_id\":\"` + beadID + `\",\"depends_on_id\":\"bd-dep\",\"type\":\"blocks\"}]}"
+    exit 0
+    ;;
+  list)
+    echo "{\"issues\":[{\"id\":\"` + beadID + `\",\"title\":\"Listed\"}]}"
+    exit 0
+    ;;
+  stats)
+    echo "{\"open\":1}"
+    exit 0
+    ;;
+  ready)
+    echo "[]"
+    exit 0
+    ;;
+  blocked)
+    echo "[]"
+    exit 0
+    ;;
+  close)
+    echo "{\"id\":\"` + beadID + `\"}"
+    exit 0
+    ;;
+  show)
+    echo "[{\"id\":\"` + beadID + `\",\"title\":\"Show\"}]"
+    exit 0
+    ;;
+  update)
+    for arg in "$@"; do
+      if [ "$arg" = "--label" ]; then
+        echo "unexpected legacy update arg: $arg" >&2
+        exit 2
+      fi
+    done
+    echo "[{\"id\":\"` + beadID + `\",\"title\":\"Updated\",\"labels\":[\"api\",\"triaged\"]}]"
+    exit 0
+    ;;
+esac
 echo "OK"
 `
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {

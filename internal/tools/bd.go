@@ -123,17 +123,34 @@ func (a *BDAdapter) Version(ctx context.Context) (Version, error) {
 func (a *BDAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	caps := []Capability{CapRobotMode}
 
-	version, err := a.Version(ctx)
+	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
+	defer cancel()
+
+	binary, _, err := a.workingBinary(ctx, a.binaryCandidates())
 	if err != nil {
 		return caps, nil
 	}
 
-	// bd 0.20+ has daemon mode
-	if version.AtLeast(Version{Major: 0, Minor: 20, Patch: 0}) {
+	if a.supportsDaemonMode(ctx, binary) {
 		caps = append(caps, CapDaemonMode)
 	}
 
 	return caps, nil
+}
+
+func (a *BDAdapter) supportsDaemonMode(ctx context.Context, binary string) bool {
+	cmd := exec.CommandContext(ctx, binary, "help", "daemon")
+	cmd.WaitDelay = time.Second
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	return true
 }
 
 // Health checks if bd is functioning correctly

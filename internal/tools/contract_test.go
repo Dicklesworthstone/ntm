@@ -1052,6 +1052,16 @@ func TestBDAdapterWithFakeTools(t *testing.T) {
 	if !health.Healthy {
 		t.Errorf("Health() = unhealthy: %s", health.Message)
 	}
+
+	caps, err := adapter.Capabilities(ctx)
+	if err != nil {
+		t.Fatalf("Capabilities() error: %v", err)
+	}
+	for _, cap := range caps {
+		if cap == CapDaemonMode {
+			t.Fatalf("Capabilities() should not report daemon mode for the fake br tool")
+		}
+	}
 }
 
 func TestBDAdapterPrefersBrWhenAvailable(t *testing.T) {
