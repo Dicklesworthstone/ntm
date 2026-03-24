@@ -62,7 +62,7 @@ type EventsOutput struct {
 	Events []AttentionEvent `json:"events"`
 
 	// NextCursor is the cursor to use for the next request.
-	// Use this as --since-cursor for the next call to continue from here.
+	// Use this as --since-cursor for the next --robot-events call to continue from here.
 	NextCursor int64 `json:"next_cursor"`
 
 	// HasMore indicates if more events exist beyond limit.
@@ -460,9 +460,9 @@ func filterAttentionEventsByProfile(events []AttentionEvent, profile string) []A
 }
 
 func buildAttentionNextCommand(opts AttentionOptions, cursor int64) string {
-	parts := []string{fmt.Sprintf("ntm --robot-attention --since-cursor=%d", cursor)}
+	parts := []string{fmt.Sprintf("ntm --robot-attention --attention-cursor=%d", cursor)}
 	if opts.Session != "" {
-		parts = append(parts, fmt.Sprintf("--session=%s", opts.Session))
+		parts = append(parts, fmt.Sprintf("--attention-session=%s", opts.Session))
 	}
 	if opts.Profile != "" {
 		parts = append(parts, fmt.Sprintf("--profile=%s", opts.Profile))
@@ -695,7 +695,7 @@ type DigestResponse struct {
 	CursorStart int64 `json:"cursor_start"`
 
 	// CursorEnd is the latest cursor included in this digest.
-	// Use this as --since-cursor for the next call.
+	// Use this as --since-cursor for the next --robot-events call.
 	CursorEnd int64 `json:"cursor_end"`
 
 	// PeriodStart is the RFC3339 timestamp of the earliest event.
@@ -938,7 +938,7 @@ type AttentionCursorInfo struct {
 	StartCursor int64 `json:"start_cursor"`
 
 	// EndCursor is the cursor at the time of wake/timeout.
-	// Use this as --since-cursor for the next --robot-attention call.
+	// Use this as --attention-cursor for the next --robot-attention call.
 	EndCursor int64 `json:"end_cursor"`
 
 	// OldestCursor is the oldest cursor still available in the feed.
@@ -1087,9 +1087,6 @@ func PrintAttention(opts AttentionOptions) int {
 	// Build replay window info
 	stats := feed.Stats()
 	resyncCmd := "ntm --robot-snapshot"
-	if opts.Session != "" {
-		resyncCmd = fmt.Sprintf("ntm --robot-snapshot --session=%s", opts.Session)
-	}
 	replayWindow := &SnapshotReplayWindowInfo{
 		Supported:       true,
 		OldestCursor:    stats.OldestCursor,

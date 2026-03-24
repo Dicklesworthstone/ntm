@@ -19,9 +19,9 @@
 //
 // The canonical operator loop is:
 //  1. Bootstrap: --robot-snapshot → get current state
-//  2. Stream: --robot-events --since=<cursor> → receive events since cursor
+//  2. Stream: --robot-events --since-cursor=<cursor> → receive events since cursor
 //  3. Digest: --robot-digest → get aggregated summary (optional)
-//  4. Wait: --robot-wait --condition=<name> → block until condition met
+//  4. Wait: --robot-wait=<session> --wait-until=<name> → block until condition met
 //  5. Attention: --robot-attention → get actionable items requiring response
 //  6. Act: --robot-send, --robot-interrupt, etc. → execute commands
 //  7. Loop: goto step 2 with new cursor
@@ -441,46 +441,47 @@ var AttentionCommands = []AttentionCommand{
 		Name:     "--robot-events",
 		Synopsis: "Stream events since cursor",
 		Args: []CommandArg{
-			{Name: "--since", Type: "cursor|RFC3339", Required: false, Description: "Start position (cursor int or timestamp)"},
-			{Name: "--limit", Type: "int", Required: false, Description: "Max events to return (default: 100)"},
-			{Name: "--category", Type: "string", Required: false, Description: "Filter by category"},
-			{Name: "--type", Type: "string", Required: false, Description: "Filter by event type"},
-			{Name: "--session", Type: "string", Required: false, Description: "Filter by session"},
+			{Name: "--since-cursor", Type: "cursor", Required: false, Description: "Start cursor (0 = beginning)"},
+			{Name: "--events-limit", Type: "int", Required: false, Description: "Max events to return (default: 100)"},
+			{Name: "--events-category", Type: "string", Required: false, Description: "Filter by category"},
+			{Name: "--events-actionability", Type: "string", Required: false, Description: "Filter by actionability"},
+			{Name: "--events-session", Type: "string", Required: false, Description: "Filter by session"},
 		},
 		Returns: "EventsOutput with events array and next_cursor",
-		Example: "ntm --robot-events --since=42 --limit=50",
+		Example: "ntm --robot-events --since-cursor=42 --events-limit=50",
 	},
 	{
 		Name:     "--robot-digest",
 		Synopsis: "Get aggregated summary of recent activity",
 		Args: []CommandArg{
-			{Name: "--window", Type: "duration", Required: false, Description: "Aggregation window (default: 5m)"},
-			{Name: "--session", Type: "string", Required: false, Description: "Scope to session"},
+			{Name: "--profile", Type: "string", Required: false, Description: "Attention profile: operator, debug, minimal, alerts"},
 		},
-		Returns: "DigestOutput with counts, highlights, and attention items",
-		Example: "ntm --robot-digest --window=10m",
+		Returns: "DigestResponse with counts, highlights, and attention items",
+		Example: "ntm --robot-digest --profile=minimal",
 	},
 	{
 		Name:     "--robot-wait",
 		Synopsis: "Block until condition is met",
 		Args: []CommandArg{
-			{Name: "--condition", Type: "string", Required: true, Description: "Condition name (idle, complete, generating, healthy, event, mail, bead_ready)"},
-			{Name: "--timeout", Type: "duration", Required: false, Description: "Max wait time (default: 60s)"},
-			{Name: "--session", Type: "string", Required: false, Description: "Scope to session"},
-			{Name: "--pane", Type: "int", Required: false, Description: "Scope to pane"},
+			{Name: "--robot-wait=<session>", Type: "SESSION", Required: true, Description: "Session to wait on"},
+			{Name: "--wait-until", Type: "string", Required: true, Description: "Condition name (idle, complete, generating, healthy, attention, action_required, mail_pending, context_hot, etc.)"},
+			{Name: "--wait-timeout", Type: "duration", Required: false, Description: "Max wait time (default: 5m)"},
+			{Name: "--wait-panes", Type: "string", Required: false, Description: "Scope to pane indices"},
 		},
 		Returns: "WaitOutput with condition, waited_seconds, and matched agents",
-		Example: "ntm --robot-wait --condition=idle --session=myproject --timeout=30s",
+		Example: "ntm --robot-wait=myproject --wait-until=idle --wait-timeout=30s",
 	},
 	{
 		Name:     "--robot-attention",
 		Synopsis: "Get items requiring operator response",
 		Args: []CommandArg{
-			{Name: "--session", Type: "string", Required: false, Description: "Scope to session"},
-			{Name: "--min-severity", Type: "string", Required: false, Description: "Minimum severity (default: warning)"},
+			{Name: "--attention-cursor", Type: "cursor", Required: false, Description: "Continue from a previous attention cursor"},
+			{Name: "--attention-session", Type: "string", Required: false, Description: "Scope to session"},
+			{Name: "--attention-timeout", Type: "duration", Required: false, Description: "Max wait time (default: 5m)"},
+			{Name: "--attention-condition", Type: "string", Required: false, Description: "Condition to wait for: attention, action_required, mail_pending"},
 		},
 		Returns: "AttentionOutput with action_required items and suggested actions",
-		Example: "ntm --robot-attention --min-severity=error",
+		Example: "ntm --robot-attention --attention-cursor=42 --attention-condition=action_required",
 	},
 }
 

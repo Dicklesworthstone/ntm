@@ -149,7 +149,7 @@ func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
 			RobotResponse: NewErrorResponse(
 				nil,
 				ErrCodeInvalidFlag,
-				"Specify a provider with --quota-check-provider=<name>",
+				"Specify a provider with --provider=<name> (alias: --quota-check-provider)",
 			),
 			Provider: provider,
 		}, nil

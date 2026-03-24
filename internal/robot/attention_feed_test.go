@@ -4080,7 +4080,7 @@ func TestAttentionResponse_Fields(t *testing.T) {
 			StartCursor:  10,
 			EndCursor:    42,
 			OldestCursor: 1,
-			NextCommand:  "ntm --robot-attention --since-cursor=42",
+			NextCommand:  "ntm --robot-attention --attention-cursor=42",
 		},
 	}
 
@@ -4107,7 +4107,7 @@ func TestAttentionCursorInfo_NextCommand(t *testing.T) {
 		StartCursor:  10,
 		EndCursor:    50,
 		OldestCursor: 1,
-		NextCommand:  "ntm --robot-attention --since-cursor=50 --session=proj",
+		NextCommand:  "ntm --robot-attention --attention-cursor=50 --attention-session=proj",
 	}
 
 	if info.NextCommand == "" {
@@ -4297,11 +4297,11 @@ func TestPrintAttention_ProfileShapesDigestAndNextCommand(t *testing.T) {
 	if len(resp.Digest.Buckets.Background) != 0 {
 		t.Fatalf("Digest background bucket len = %d, want 0", len(resp.Digest.Buckets.Background))
 	}
-	if !strings.Contains(resp.CursorInfo.NextCommand, "--since-cursor=") {
-		t.Fatalf("NextCommand = %q, want --since-cursor", resp.CursorInfo.NextCommand)
+	if !strings.Contains(resp.CursorInfo.NextCommand, "--attention-cursor=") {
+		t.Fatalf("NextCommand = %q, want --attention-cursor", resp.CursorInfo.NextCommand)
 	}
-	if !strings.Contains(resp.CursorInfo.NextCommand, "--session=proj") {
-		t.Fatalf("NextCommand = %q, want session handoff", resp.CursorInfo.NextCommand)
+	if !strings.Contains(resp.CursorInfo.NextCommand, "--attention-session=proj") {
+		t.Fatalf("NextCommand = %q, want attention-session handoff", resp.CursorInfo.NextCommand)
 	}
 	if !strings.Contains(resp.CursorInfo.NextCommand, "--profile=operator") {
 		t.Fatalf("NextCommand = %q, want profile handoff", resp.CursorInfo.NextCommand)

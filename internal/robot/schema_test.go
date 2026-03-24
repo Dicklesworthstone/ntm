@@ -356,11 +356,31 @@ func TestGetSchemaTypes(t *testing.T) {
 		typeSet[tp] = true
 	}
 
-	expected := []string{"status", "spawn", "health", "assign"}
+	expected := []string{"status", "spawn", "health", "assign", "mail_check", "ensemble_suggest", "xf_search", "dashboard", "setup_status", "slb_approve"}
 	for _, exp := range expected {
 		if !typeSet[exp] {
 			t.Errorf("expected type %q not found in schema types", exp)
 		}
+	}
+}
+
+func TestGetSchema_NewlyWiredRobotTypes(t *testing.T) {
+	for _, schemaType := range []string{"dashboard", "setup_status", "slb_approve", "mail_check"} {
+		t.Run(schemaType, func(t *testing.T) {
+			output, err := GetSchema(schemaType)
+			if err != nil {
+				t.Fatalf("GetSchema(%s): %v", schemaType, err)
+			}
+			if !output.Success {
+				t.Fatalf("GetSchema(%s) returned error response: %+v", schemaType, output.RobotResponse)
+			}
+			if output.Schema == nil {
+				t.Fatalf("GetSchema(%s) returned nil schema", schemaType)
+			}
+			if output.Schema.Type != "object" {
+				t.Fatalf("GetSchema(%s) type = %q, want object", schemaType, output.Schema.Type)
+			}
+		})
 	}
 }
 

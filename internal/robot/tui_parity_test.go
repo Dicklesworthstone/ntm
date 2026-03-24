@@ -70,7 +70,7 @@ func TestPrintDashboardMarkdown_IncludesAttentionSection(t *testing.T) {
 			},
 			UnsupportedSignals: []string{"bead_orphaned"},
 			NextSteps: []NextAction{
-				{Action: "robot-attention", Args: "--robot-attention --since-cursor=12", Reason: "Continue the operator loop"},
+				{Action: "robot-attention", Args: "--robot-attention --attention-cursor=12", Reason: "Continue the operator loop"},
 			},
 		},
 	}

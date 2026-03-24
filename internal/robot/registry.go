@@ -234,6 +234,9 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 		"assign": {
 			Sections: []string{"work", "next_actions"},
 		},
+		"bulk-assign": {
+			Sections: []string{"work", "next_actions"},
+		},
 		"triage": {
 			Sections: []string{"work", "next_actions"},
 		},
@@ -249,20 +252,95 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 		"capabilities": {
 			Sections: []string{"command_catalog"},
 		},
+		"schema": {
+			Sections: []string{"command_catalog"},
+		},
 		"docs": {
 			Sections: []string{"command_catalog"},
 		},
 		"mail": {
 			Sections: []string{"coordination"},
 		},
+		"mail-check": {
+			Sections: []string{"coordination", "next_actions"},
+		},
 		"history": {
 			Sections: []string{"events"},
+		},
+		"errors": {
+			Sections: []string{"events", "source_health"},
 		},
 		"agent-health": {
 			Sections: []string{"source_health", "next_actions"},
 		},
+		"health-oauth": {
+			Sections: []string{"source_health", "quota"},
+		},
 		"is-working": {
 			Sections: []string{"summary"},
+		},
+		"logs": {
+			Sections: []string{"events"},
+		},
+		"monitor": {
+			Sections: []string{"source_health", "next_actions"},
+		},
+		"smart-restart": {
+			Sections: []string{"source_health", "next_actions"},
+		},
+		"support-bundle": {
+			Sections: []string{"source_health", "events"},
+		},
+		"agent-names": {
+			Sections: []string{"sessions"},
+		},
+		"controller-spawn": {
+			Sections: []string{"sessions", "next_actions"},
+		},
+		"context-inject": {
+			Sections: []string{"sessions", "next_actions"},
+		},
+		"env": {
+			Sections: []string{"source_health"},
+		},
+		"quota-status": {
+			Sections: []string{"quota"},
+		},
+		"quota-check": {
+			Sections: []string{"quota", "next_actions"},
+		},
+		"account-status": {
+			Sections: []string{"quota"},
+		},
+		"accounts-list": {
+			Sections: []string{"quota"},
+		},
+		"switch-account": {
+			Sections: []string{"quota", "next_actions"},
+		},
+		"default-prompts": {
+			Sections: []string{"command_catalog"},
+		},
+		"profile-list": {
+			Sections: []string{"command_catalog"},
+		},
+		"profile-show": {
+			Sections: []string{"command_catalog"},
+		},
+		"xf-search": {
+			Sections: []string{"events"},
+		},
+		"xf-status": {
+			Sections: []string{"source_health"},
+		},
+		"cass-insights": {
+			Sections: []string{"events"},
+		},
+		"ensemble-suggest": {
+			Sections: []string{"next_actions"},
+		},
+		"ensemble-stop": {
+			Sections: []string{"sessions", "next_actions"},
 		},
 		"proxy-status": {
 			Sections: []string{"source_health"},

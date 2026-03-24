@@ -1867,13 +1867,19 @@ var robotHelpSections = []robotHelpSection{
 		Title: "Session Operations",
 		SurfaceNames: []string{
 			"spawn",
+			"controller-spawn",
+			"agent-names",
+			"context-inject",
 			"ensemble_spawn",
 			"send",
 			"tail",
 			"ensemble",
+			"ensemble-suggest",
+			"ensemble-stop",
 			"interrupt",
 			"overlay",
 			"is-working",
+			"smart-restart",
 			"wait",
 		},
 		Postlude: `                        Conditions: idle, complete, generating, healthy
@@ -1887,6 +1893,7 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 		Title: "Work Distribution",
 		SurfaceNames: []string{
 			"assign",
+			"bulk-assign",
 			"beads-list",
 			"bead-claim",
 			"bead-create",
@@ -1901,15 +1908,36 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 			"graph",
 			"context",
 			"health",
+			"agent-health",
+			"health-oauth",
 			"diagnose",
+			"errors",
+			"logs",
+			"monitor",
+			"support-bundle",
 		},
 	},
 	{
 		Title: "Tool Bridges",
 		SurfaceNames: []string{
 			"cass-search",
+			"cass-context",
+			"cass-insights",
+			"schema",
+			"mail-check",
+			"env",
+			"quota-status",
+			"quota-check",
+			"account-status",
+			"accounts-list",
+			"switch-account",
+			"xf-search",
+			"xf-status",
 			"acfs-status",
 			"setup-status",
+			"default-prompts",
+			"profile-list",
+			"profile-show",
 			"giil-fetch",
 			"jfp-search",
 			"jfp-install",
@@ -1981,17 +2009,17 @@ The recommended tending loop for operator agents:
 
   1. Bootstrap:  ntm --robot-snapshot
      → Get system state + latest_cursor + replay_window
-  2. Attend:     ntm --robot-attention --since-cursor=<cursor>
+  2. Attend:     ntm --robot-attention --attention-cursor=<cursor>
      → Sleep until attention needed, wake with digest + reason
   3. Act:        ntm --robot-send=proj --msg="fix X"
      → Execute the suggested action
-  4. Loop:       Use cursor from step 2 response as --since-cursor
+  4. Loop:       Use cursor from step 2 response as --attention-cursor
      → Repeat from step 2
 
 If cursor expires: re-run --robot-snapshot to resync.
 
 Attention Feed Commands:
-  --robot-events         Raw event replay (--since-cursor=N, --limit=50)
+  --robot-events         Raw event replay (--since-cursor=N, --events-limit=50)
   --robot-digest         Aggregated summary of recent changes
   --robot-attention      Wait-then-digest (the one obvious tending command)
   --robot-overlay        Human handoff actuator (optionally non-blocking with --overlay-no-wait)
@@ -2018,7 +2046,7 @@ Common Workflows:
 - Send+wait:    ntm --robot-send=proj --msg="do X" --track
 - Handoff:      ntm --robot-overlay --overlay-session=proj --overlay-cursor=42 --overlay-no-wait
 - Bootstrap:    ntm --robot-snapshot   # use latest_cursor + replay_window for follow-up
-- Tending:      ntm --robot-attention --since-cursor=42  # wait-then-digest loop
+- Tending:      ntm --robot-attention --attention-cursor=42  # wait-then-digest loop
 - Recover:      ntm --robot-snapshot   # resync after cursor expiration
 
 Tips for AI Agents:
@@ -4170,7 +4198,7 @@ type SnapshotOutput struct {
 // SnapshotReplayWindowInfo describes the currently replayable cursor window.
 // This gives operators a mechanical handoff boundary for replay-oriented commands.
 // The snapshot bootstrap contract is:
-//   - Use `latest_cursor` as the starting point for --robot-events --since=<cursor>
+//   - Use `latest_cursor` as the starting point for --robot-events --since-cursor=<cursor>
 //   - If `supported` is false, see `reason` for why replay is unavailable
 //   - If a cursor expires, use `resync_command` to get a fresh snapshot
 type SnapshotReplayWindowInfo struct {
@@ -5266,7 +5294,7 @@ func buildSnapshotAttentionSummary(feed *AttentionFeed) *SnapshotAttentionSummar
 		}
 		summary.NextSteps = append(summary.NextSteps, NextAction{
 			Action: "robot-events",
-			Args:   fmt.Sprintf("--robot-events --since=%d --limit=20", since),
+			Args:   fmt.Sprintf("--robot-events --since-cursor=%d --events-limit=20", since),
 			Reason: fmt.Sprintf("Inspect the %d surfaced action-required event(s) in the current replay window", len(summary.TopItems)),
 		})
 	}
@@ -5280,7 +5308,7 @@ func buildSnapshotAttentionSummary(feed *AttentionFeed) *SnapshotAttentionSummar
 	if len(summary.NextSteps) < 3 && stats.NewestCursor > 0 {
 		summary.NextSteps = append(summary.NextSteps, NextAction{
 			Action: "robot-events",
-			Args:   fmt.Sprintf("--robot-events --since=%d --limit=20", stats.NewestCursor),
+			Args:   fmt.Sprintf("--robot-events --since-cursor=%d --events-limit=20", stats.NewestCursor),
 			Reason: "Continue following new attention events from the snapshot cursor",
 		})
 	}

@@ -21,7 +21,7 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 			name:    "missing project",
 			opts:    MailCheckOptions{},
 			wantErr: true,
-			errMsg:  "--project is required",
+			errMsg:  "--mail-project is required",
 		},
 		{
 			name: "valid minimal",
@@ -54,7 +54,7 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 				Status:  "invalid",
 			},
 			wantErr: true,
-			errMsg:  "invalid --status value",
+			errMsg:  "invalid --mail-status value",
 		},
 		{
 			name: "valid status read",
@@ -88,7 +88,7 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 				Until:   "2025-12-31",
 			},
 			wantErr: true,
-			errMsg:  "invalid --since date format",
+			errMsg:  "invalid --cass-since date format",
 		},
 		{
 			name: "invalid until date format",
@@ -98,7 +98,7 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 				Until:   "invalid-date",
 			},
 			wantErr: true,
-			errMsg:  "invalid --until date format",
+			errMsg:  "invalid --mail-until date format",
 		},
 		{
 			name: "until before since",
@@ -108,7 +108,7 @@ func TestMailCheckOptionsValidate(t *testing.T) {
 				Until:   "2025-01-01",
 			},
 			wantErr: true,
-			errMsg:  "--until date cannot be before --since date",
+			errMsg:  "--mail-until date cannot be before --cass-since date",
 		},
 	}
 

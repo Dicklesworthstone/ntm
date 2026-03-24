@@ -893,7 +893,7 @@ func TestBuildSnapshotAttentionSummary_UsesReplayWindowAndEventActions(t *testin
 	if summary.NextSteps[0].Action != expectedAction.Action || summary.NextSteps[0].Args != expectedAction.Args {
 		t.Fatalf("first next step = %+v, want event-provided action %+v", summary.NextSteps[0], expectedAction)
 	}
-	if !hasSnapshotNextAction(summary.NextSteps, "robot-events", "--robot-events --since=3 --limit=20") {
+	if !hasSnapshotNextAction(summary.NextSteps, "robot-events", "--robot-events --since-cursor=3 --events-limit=20") {
 		t.Fatalf("expected follow-cursor next step in %+v", summary.NextSteps)
 	}
 }

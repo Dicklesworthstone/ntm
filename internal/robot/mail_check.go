@@ -79,26 +79,26 @@ type MailCheckOptions struct {
 // Validate checks that options are valid
 func (o *MailCheckOptions) Validate() error {
 	if o.Project == "" {
-		return fmt.Errorf("--project is required")
+		return fmt.Errorf("--mail-project is required")
 	}
 
 	// Validate status value
 	if o.Status != "" && o.Status != "all" && o.Status != "read" && o.Status != "unread" {
-		return fmt.Errorf("invalid --status value %q: must be read, unread, or all", o.Status)
+		return fmt.Errorf("invalid --mail-status value %q: must be read, unread, or all", o.Status)
 	}
 
 	// Validate date range
 	if o.Since != "" && o.Until != "" {
 		sinceDate, err := time.Parse("2006-01-02", o.Since)
 		if err != nil {
-			return fmt.Errorf("invalid --since date format: expected YYYY-MM-DD")
+			return fmt.Errorf("invalid --cass-since date format: expected YYYY-MM-DD")
 		}
 		untilDate, err := time.Parse("2006-01-02", o.Until)
 		if err != nil {
-			return fmt.Errorf("invalid --until date format: expected YYYY-MM-DD")
+			return fmt.Errorf("invalid --mail-until date format: expected YYYY-MM-DD")
 		}
 		if untilDate.Before(sinceDate) {
-			return fmt.Errorf("--until date cannot be before --since date")
+			return fmt.Errorf("--mail-until date cannot be before --cass-since date")
 		}
 	}
 
@@ -111,7 +111,7 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 	// Validate options first
 	if err := opts.Validate(); err != nil {
 		return &MailCheckOutput{
-			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --project and filter flags"),
+			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --mail-project and related mail filter flags"),
 			Project:       opts.Project,
 			Messages:      []MailCheckMessage{},
 			Filters: MailCheckFilters{

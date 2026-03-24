@@ -44,7 +44,7 @@ func GetXFSearch(opts XFSearchOptions) (*XFSearchOutput, error) {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("query is required"),
 			ErrCodeInvalidFlag,
-			"Provide a search query, e.g., --robot-xf-search --query='error handling'",
+			"Provide a search query, e.g., --robot-xf-search='error handling'",
 		)
 		return output, nil
 	}

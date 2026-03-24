@@ -784,7 +784,7 @@ func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
 	}
 
 	registry := GetRobotRegistry()
-	for _, name := range []string{"status", "send", "bead-close", "history"} {
+	for _, name := range []string{"status", "send", "bulk-assign", "monitor", "schema", "mail-check", "bead-close", "history"} {
 		surface, ok := registry.Surface(name)
 		if !ok {
 			t.Fatalf("missing registry surface %q", name)
@@ -811,9 +811,40 @@ func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
 	for _, want := range []string{
 		"--question=QUESTION",
 		"--bead-title=BEAD_TITLE",
+		"--mail-project=MAIL_PROJECT",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing required secondary flag hint %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestPrintHelp_UsesCurrentAttentionLoopFlags(t *testing.T) {
+	output, err := captureStdout(t, func() error {
+		PrintHelp()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintHelp capture failed: %v", err)
+	}
+
+	for _, want := range []string{
+		"--robot-events         Raw event replay (--since-cursor=N, --events-limit=50)",
+		"ntm --robot-attention --attention-cursor=<cursor>",
+		"ntm --robot-attention --attention-cursor=42",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing %q:\n%s", want, output)
+		}
+	}
+
+	for _, stale := range []string{
+		"--robot-events         Raw event replay (--since-cursor=N, --limit=50)",
+		"ntm --robot-attention --since-cursor=<cursor>",
+		"ntm --robot-attention --since-cursor=42",
+	} {
+		if strings.Contains(output, stale) {
+			t.Fatalf("help output still contains stale attention-loop text %q:\n%s", stale, output)
 		}
 	}
 }

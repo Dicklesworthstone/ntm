@@ -1,6 +1,11 @@
 package robot
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -128,6 +133,73 @@ func TestBuildCommandRegistryExamples(t *testing.T) {
 	}
 }
 
+func TestBuildCommandRegistry_AttentionCommandsUseLiveFlagNames(t *testing.T) {
+	t.Parallel()
+
+	findCommand := func(name string) RobotCommandInfo {
+		t.Helper()
+		for _, cmd := range buildCommandRegistry() {
+			if cmd.Name == name {
+				return cmd
+			}
+		}
+		t.Fatalf("missing command %q", name)
+		return RobotCommandInfo{}
+	}
+
+	events := findCommand("events")
+	wantEventFlags := []string{
+		"--since-cursor",
+		"--events-limit",
+		"--events-category",
+		"--events-session",
+		"--events-actionability",
+	}
+	for _, want := range wantEventFlags {
+		found := false
+		for _, param := range events.Parameters {
+			if param.Flag == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("events parameters missing %q: %+v", want, events.Parameters)
+		}
+	}
+	for _, example := range events.Examples {
+		if strings.Contains(example, "--limit=") {
+			t.Fatalf("events example still uses stale --limit flag: %q", example)
+		}
+	}
+
+	attention := findCommand("attention")
+	wantAttentionFlags := []string{
+		"--attention-cursor",
+		"--attention-session",
+		"--attention-timeout",
+		"--attention-poll",
+		"--attention-condition",
+	}
+	for _, want := range wantAttentionFlags {
+		found := false
+		for _, param := range attention.Parameters {
+			if param.Flag == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("attention parameters missing %q: %+v", want, attention.Parameters)
+		}
+	}
+	for _, example := range attention.Examples {
+		if strings.Contains(example, "--since-cursor=") || strings.Contains(example, "--timeout=") || strings.Contains(example, "--condition=") {
+			t.Fatalf("attention example still uses stale flag names: %q", example)
+		}
+	}
+}
+
 func TestBuildCommandRegistryParameterFields(t *testing.T) {
 	t.Parallel()
 
@@ -209,6 +281,68 @@ func TestBuildCommandRegistry_IncludesRobotOverlay(t *testing.T) {
 	}
 
 	t.Fatal("missing --robot-overlay in command registry")
+}
+
+func TestBuildCommandRegistry_MatchesRootRobotCommandFlags(t *testing.T) {
+	t.Parallel()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	rootPath := filepath.Join(filepath.Dir(currentFile), "..", "cli", "root.go")
+	data, err := os.ReadFile(rootPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", rootPath, err)
+	}
+
+	re := regexp.MustCompile(`rootCmd\.Flags\(\)\.\w+Var(?:P)?\(&[^,]+,\s*"([^"]+)"`)
+	excluded := map[string]struct{}{
+		"robot-format":        {},
+		"robot-output-format": {},
+		"robot-verbosity":     {},
+		"robot-limit":         {},
+		"robot-offset":        {},
+		"robot-guard":         {},
+	}
+
+	rootFlags := make(map[string]struct{})
+	for _, match := range re.FindAllStringSubmatch(string(data), -1) {
+		if len(match) != 2 {
+			continue
+		}
+		name := match[1]
+		if !strings.HasPrefix(name, "robot-") {
+			continue
+		}
+		if _, skip := excluded[name]; skip {
+			continue
+		}
+		rootFlags["--"+name] = struct{}{}
+	}
+
+	registryFlags := make(map[string]struct{})
+	for _, command := range buildCommandRegistry() {
+		registryFlags[command.Flag] = struct{}{}
+	}
+
+	missing := diffSortedKeys(rootFlags, registryFlags)
+	extra := diffSortedKeys(registryFlags, rootFlags)
+	if len(missing) != 0 || len(extra) != 0 {
+		t.Fatalf("robot command registry drifted from root flags\nmissing in registry: %v\nextra in registry: %v", missing, extra)
+	}
+}
+
+func diffSortedKeys(left, right map[string]struct{}) []string {
+	var diff []string
+	for key := range left {
+		if _, ok := right[key]; ok {
+			continue
+		}
+		diff = append(diff, key)
+	}
+	sort.Strings(diff)
+	return diff
 }
 
 // =============================================================================
