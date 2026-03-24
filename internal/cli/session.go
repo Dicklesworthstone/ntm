@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -1771,7 +1772,11 @@ func maxInt(a, b int) int {
 // isMonitorAlive checks whether the resilience monitor process is running
 // for the given session by looking for the "internal-monitor <session>" process.
 func isMonitorAlive(session string) bool {
-	// pgrep -f searches the full command line
-	err := exec.Command("pgrep", "-f", "ntm internal-monitor "+session).Run()
+	// Use an anchored regex pattern to avoid false positives from processes
+	// whose paths or arguments happen to contain "ntm". The pattern matches
+	// the binary name at a word boundary followed by the exact subcommand
+	// and session name.
+	pattern := `\bntm\s+internal-monitor\s+` + regexp.QuoteMeta(session) + `\b`
+	err := exec.Command("pgrep", "-f", pattern).Run()
 	return err == nil
 }
