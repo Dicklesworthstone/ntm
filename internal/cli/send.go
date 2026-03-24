@@ -2356,6 +2356,11 @@ func buildKillResponse(session string, force bool, tags []string, noHooks bool, 
 		// Finalize timeline persistence before killing the session
 		_ = state.EndSessionTimeline(session) // Ignore error - not critical
 
+		// Kill the monitor process before destroying the session (same as runKill)
+		if output, err := exec.Command("pkill", "-f", `\bntm\s+internal-monitor\s+`+regexp.QuoteMeta(session)).CombinedOutput(); err != nil {
+			_ = output // Monitor may not be running — that's fine
+		}
+
 		if err := tmux.KillSession(session); err != nil {
 			return nil, err
 		}
