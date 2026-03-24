@@ -276,7 +276,7 @@ const (
 //	  "summary": "Agent cc_1 transitioned from generating to idle",
 //	  "details": {"from_state": "generating", "to_state": "idle", "duration_ms": 45000},
 //	  "next_actions": [
-//	    {"action": "robot-tail", "args": "--session=myproject --pane=2 --lines=50"}
+//	    {"action": "robot-tail", "args": "--robot-tail=myproject --panes=2 --lines=50"}
 //	  ]
 //	}
 type AttentionEvent struct {
@@ -1212,13 +1212,13 @@ var ExampleAttention = `{
         "agents": ["cc_1", "cc_2"]
       },
       "next_actions": [
-        {"action": "robot-diff", "args": "--session=myproject cc_1 cc_2", "reason": "Compare agent outputs"},
-        {"action": "robot-locks", "args": "--session=myproject", "reason": "Check file reservations"}
+        {"action": "robot-diff", "args": "--robot-diff=myproject", "reason": "Compare agent outputs"},
+        {"action": "robot-inspect-coordination", "args": "--robot-inspect-coordination=BlueLake", "reason": "Inspect agent coordination state"}
       ]
     }
   ],
   "suggested_actions": [
-    {"action": "robot-interrupt", "args": "--session=myproject --pane=2", "reason": "Stop conflicting agent"}
+    {"action": "robot-interrupt", "args": "--robot-interrupt=myproject --panes=2", "reason": "Stop conflicting agent"}
   ],
   "counts": {
     "error": 1,

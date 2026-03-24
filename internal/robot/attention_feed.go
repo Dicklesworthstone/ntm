@@ -2358,22 +2358,22 @@ func (f *AttentionFeed) heartbeatLoop() {
 // =============================================================================
 
 var supportedAttentionActionNames = map[string]struct{}{
-	"robot-attention":  {},
-	"robot-bead-show":  {},
-	"robot-context":    {},
-	"robot-diff":       {},
-	"robot-digest":     {},
-	"robot-events":     {},
-	"robot-graph":      {},
-	"robot-locks":      {},
-	"robot-mail-ack":   {},
-	"robot-mail-read":  {},
-	"robot-plan":       {},
-	"robot-send":       {},
-	"robot-snapshot":   {},
-	"robot-status":     {},
-	"robot-tail":       {},
-	"robot-watch-bead": {},
+	"robot-attention":            {},
+	"robot-bead-show":            {},
+	"robot-context":              {},
+	"robot-diff":                 {},
+	"robot-digest":               {},
+	"robot-events":               {},
+	"robot-graph":                {},
+	"robot-inspect-coordination": {},
+	"robot-mail-ack":             {},
+	"robot-mail-read":            {},
+	"robot-plan":                 {},
+	"robot-send":                 {},
+	"robot-snapshot":             {},
+	"robot-status":               {},
+	"robot-tail":                 {},
+	"robot-watch-bead":           {},
 }
 
 var suppressedLoggedAttentionReasons = map[ntmevents.EventType]string{
@@ -2702,10 +2702,7 @@ func NewBusAttentionEvent(event ntmevents.BusEvent) (AttentionEvent, bool) {
 			"holders":         e.Holders,
 			"conflict_kind":   "reservation",
 		}
-		nextActions := []NextAction{
-			attentionStatusNextAction("Inspect file reservations with --robot-locks"),
-			{Action: "robot-locks", Args: fmt.Sprintf("%s --all-agents --json", e.Session), Reason: "View all active file reservations"},
-		}
+		nextActions := attentionReservationConflictActions(e.Session, details, "Inspect the conflicting reservation state")
 		return attentionFromBusStruct(e.BaseEvent, "event_bus.conflict", details, EventCategoryFile, EventTypeFileConflict, ActionabilityActionRequired, SeverityWarning, summary, nextActions), true
 	case ntmevents.FileConflictEvent:
 		agents := strings.Join(e.Agents, ", ")
@@ -2715,10 +2712,7 @@ func NewBusAttentionEvent(event ntmevents.BusEvent) (AttentionEvent, bool) {
 			"agents":        e.Agents,
 			"conflict_kind": "file",
 		}
-		nextActions := []NextAction{
-			attentionStatusNextAction("Inspect which agents are editing this file"),
-			{Action: "robot-diff", Args: e.Session, Reason: "Compare agent outputs for conflict resolution"},
-		}
+		nextActions := attentionConflictActions(e.Session, e.Path, "Compare agent outputs for conflict resolution")
 		return attentionFromBusStruct(e.BaseEvent, "event_bus.conflict", details, EventCategoryFile, EventTypeFileConflict, ActionabilityActionRequired, SeverityWarning, summary, nextActions), true
 	case ntmevents.WebhookEvent:
 		return attentionFromWebhookEvent(e), true
@@ -2840,7 +2834,7 @@ func NewFileConflictEvent(session string, filePath string, agents []string) Atte
 		NextActions: []NextAction{
 			{
 				Action: "robot-diff",
-				Args:   fmt.Sprintf("--session=%s --file=%s", session, filePath),
+				Args:   fmt.Sprintf("--robot-diff=%s", session),
 				Reason: "Compare agent changes",
 			},
 		},
@@ -2889,7 +2883,7 @@ func NewReservationConflictEvent(conflict watcher.FileConflict) (AttentionEvent,
 		Severity:      SeverityWarning,
 		Summary:       attentionSummary(conflict.SessionName, conflict.RequestorPane, summary),
 		Details:       details,
-		NextActions:   attentionConflictActions(conflict.SessionName, path, "Inspect the conflicting reservation state"),
+		NextActions:   attentionReservationConflictActions(conflict.SessionName, details, "Inspect the conflicting reservation state"),
 	}), true
 }
 
@@ -3295,7 +3289,7 @@ func applyAttentionSignalPolicy(event AttentionEvent, signal string) AttentionEv
 		event.Actionability = maxAttentionActionability(event.Actionability, ActionabilityActionRequired)
 		event.Severity = maxAttentionSeverity(event.Severity, SeverityWarning)
 		if len(event.NextActions) == 0 {
-			event.NextActions = attentionConflictActions(event.Session, attentionConflictPath(event), "Inspect the conflicting reservation state")
+			event.NextActions = attentionReservationConflictActions(event.Session, event.Details, "Inspect the conflicting reservation state")
 		}
 	case attentionSignalFileConflict:
 		event.Actionability = maxAttentionActionability(event.Actionability, ActionabilityActionRequired)
@@ -3621,18 +3615,40 @@ func attentionSeverityRank(level Severity) int {
 }
 
 func attentionConflictActions(session, path, reason string) []NextAction {
-	path = strings.TrimSpace(path)
 	if session == "" {
 		return []NextAction{attentionStatusNextAction(reason)}
 	}
-	if !strings.ContainsAny(path, "*?[") {
-		return []NextAction{{
-			Action: "robot-diff",
-			Args:   fmt.Sprintf("--session=%s --file=%s", session, path),
-			Reason: reason,
-		}}
+	return []NextAction{{
+		Action: "robot-diff",
+		Args:   fmt.Sprintf("--robot-diff=%s", session),
+		Reason: reason,
+	}}
+}
+
+func attentionReservationConflictActions(session string, details map[string]any, reason string) []NextAction {
+	actions := []NextAction{attentionStatusNextAction(reason)}
+	if agentName := attentionReservationConflictAgent(details); agentName != "" {
+		actions = append(actions, NextAction{
+			Action: "robot-inspect-coordination",
+			Args:   fmt.Sprintf("--robot-inspect-coordination=%s", agentName),
+			Reason: "Inspect the agent coordination state behind the reservation conflict",
+		})
 	}
-	return []NextAction{attentionStatusNextAction(reason)}
+	if session != "" {
+		actions = append(actions, attentionConflictActions(session, attentionStringDetail(details, "path"), "Inspect related session activity")...)
+	}
+	return actions
+}
+
+func attentionReservationConflictAgent(details map[string]any) string {
+	if agentName := attentionStringDetail(details, "requestor_agent"); agentName != "" {
+		return agentName
+	}
+	holders := attentionStringSliceDetail(details, "holders")
+	if len(holders) > 0 {
+		return holders[0]
+	}
+	return ""
 }
 
 func attentionConflictPath(event AttentionEvent) string {

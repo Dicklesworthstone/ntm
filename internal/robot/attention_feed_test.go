@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
+	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 func newTestAttentionFeed(t *testing.T) *AttentionFeed {
@@ -3295,7 +3296,7 @@ func TestAttentionEvent_JSONSerialization(t *testing.T) {
 			"key": "value",
 		},
 		NextActions: []NextAction{
-			{Action: "robot-tail", Args: "--session=myproject", Reason: "Check output"},
+			{Action: "robot-tail", Args: "--robot-tail=myproject --panes=2 --lines=50", Reason: "Check output"},
 		},
 	}
 
@@ -3463,6 +3464,27 @@ func TestNewBusAttentionEvent_ReservationConflict(t *testing.T) {
 	if len(att.NextActions) == 0 {
 		t.Error("NextActions must suggest follow-up commands")
 	}
+	foundInspectCoordination := false
+	for _, action := range att.NextActions {
+		if strings.Contains(action.Args, "--session=") {
+			t.Errorf("NextAction args should not use stale --session form: %q", action.Args)
+		}
+		if strings.Contains(action.Args, "--file=") {
+			t.Errorf("NextAction args should not use unsupported --file form: %q", action.Args)
+		}
+		if action.Action == "robot-locks" {
+			t.Errorf("NextActions should not reference nonexistent robot-locks action: %+v", action)
+		}
+		if action.Action == "robot-inspect-coordination" {
+			foundInspectCoordination = true
+			if action.Args != "--robot-inspect-coordination=BlueLake" {
+				t.Errorf("inspect-coordination args = %q, want %q", action.Args, "--robot-inspect-coordination=BlueLake")
+			}
+		}
+	}
+	if !foundInspectCoordination {
+		t.Error("NextActions should include robot-inspect-coordination guidance")
+	}
 }
 
 func TestNewBusAttentionEvent_FileConflict(t *testing.T) {
@@ -3501,6 +3523,64 @@ func TestNewBusAttentionEvent_FileConflict(t *testing.T) {
 	}
 	if len(att.NextActions) == 0 {
 		t.Error("NextActions must suggest follow-up commands")
+	}
+	foundDiff := false
+	for _, action := range att.NextActions {
+		if strings.Contains(action.Args, "--session=") {
+			t.Errorf("NextAction args should not use stale --session form: %q", action.Args)
+		}
+		if strings.Contains(action.Args, "--file=") {
+			t.Errorf("NextAction args should not use unsupported --file form: %q", action.Args)
+		}
+		if action.Action == "robot-diff" {
+			foundDiff = true
+			if action.Args != "--robot-diff=myproject" {
+				t.Errorf("robot-diff args = %q, want %q", action.Args, "--robot-diff=myproject")
+			}
+		}
+	}
+	if !foundDiff {
+		t.Error("NextActions should include robot-diff guidance")
+	}
+}
+
+func TestNewReservationConflictEvent_UsesCanonicalNextActions(t *testing.T) {
+	t.Parallel()
+
+	conflict := watcher.FileConflict{
+		Path:           "internal/auth/handler.go",
+		RequestorAgent: "BlueLake",
+		RequestorPane:  "cc_1",
+		SessionName:    "myproject",
+		Holders:        []string{"GreenCastle", "RedMountain"},
+		DetectedAt:     time.Date(2026, 3, 24, 5, 0, 0, 0, time.UTC),
+	}
+
+	att, ok := NewReservationConflictEvent(conflict)
+	if !ok {
+		t.Fatal("expected watcher reservation conflict to normalize")
+	}
+
+	foundInspectCoordination := false
+	for _, action := range att.NextActions {
+		if strings.Contains(action.Args, "--session=") {
+			t.Errorf("NextAction args should not use stale --session form: %q", action.Args)
+		}
+		if strings.Contains(action.Args, "--file=") {
+			t.Errorf("NextAction args should not use unsupported --file form: %q", action.Args)
+		}
+		if action.Action == "robot-locks" {
+			t.Errorf("NextActions should not reference nonexistent robot-locks action: %+v", action)
+		}
+		if action.Action == "robot-inspect-coordination" {
+			foundInspectCoordination = true
+			if action.Args != "--robot-inspect-coordination=BlueLake" {
+				t.Errorf("inspect-coordination args = %q, want %q", action.Args, "--robot-inspect-coordination=BlueLake")
+			}
+		}
+	}
+	if !foundInspectCoordination {
+		t.Error("NextActions should include robot-inspect-coordination guidance")
 	}
 }
 
