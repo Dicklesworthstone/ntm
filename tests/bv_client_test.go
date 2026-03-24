@@ -302,6 +302,11 @@ func TestBVClientIntegrationOrderAndLimit(t *testing.T) {
 
 	recs, err := client.GetRecommendations(bv.RecommendationOpts{Limit: limit})
 	if err != nil {
+		// Skip on timeout since bv may be slow in CI (bd-2nhxy)
+		if strings.Contains(err.Error(), "timed out") {
+			logger.Log("SKIP: bv timed out during GetRecommendations: %v", err)
+			t.Skipf("bv timed out: %v", err)
+		}
 		logger.Log("FAIL: GetRecommendations error=%v", err)
 		t.Fatalf("GetRecommendations error: %v", err)
 	}

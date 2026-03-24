@@ -125,8 +125,8 @@ func TestDeleteManifest_NotFound(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 
 	err := DeleteManifest("nonexistent")
-	if err == nil {
-		t.Error("expected error for deleting non-existent manifest")
+	if err != nil {
+		t.Errorf("DeleteManifest on non-existent manifest should be idempotent, got error: %v", err)
 	}
 }
 
