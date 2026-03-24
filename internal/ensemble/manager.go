@@ -147,7 +147,13 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	orchestrator.TmuxClient = m.tmuxClient()
 
 	plan := &swarm.SwarmPlan{Sessions: []swarm.SessionSpec{sessionSpec}}
-	createResult, _ := orchestrator.CreateSessions(plan)
+	createResult, createErr := orchestrator.CreateSessions(plan)
+	if createErr != nil || createResult == nil {
+		state.Status = EnsembleError
+		state.Error = fmt.Sprintf("session creation failed: %v", createErr)
+		_ = SaveSession(cfg.SessionName, state)
+		return state, fmt.Errorf("create ensemble session: %w", createErr)
+	}
 	if len(createResult.Sessions) == 0 || createResult.Sessions[0].Error != nil {
 		err := errors.New("failed to create ensemble session")
 		if len(createResult.Sessions) > 0 && createResult.Sessions[0].Error != nil {

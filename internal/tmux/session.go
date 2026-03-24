@@ -258,6 +258,11 @@ func ListSessions() ([]Session, error) {
 
 // GetSession returns detailed info about a session
 func (c *Client) GetSession(name string) (*Session, error) {
+	// Validate session name to prevent tmux format string injection in the
+	// -f filter below, which embeds the name into a #{==:...} expression.
+	if err := ValidateSessionName(name); err != nil {
+		return nil, fmt.Errorf("invalid session name: %w", err)
+	}
 	if !c.SessionExists(name) {
 		return nil, fmt.Errorf("session '%s' not found", name)
 	}
@@ -1478,6 +1483,10 @@ func GetPaneLastActivityAge(paneID string) (time.Duration, error) {
 
 // IsAttached checks if a session is currently attached
 func (c *Client) IsAttached(session string) bool {
+	// Validate session name to prevent tmux format string injection.
+	if err := ValidateSessionName(session); err != nil {
+		return false
+	}
 	output, err := c.Run("list-sessions", "-F", "#{session_name}:#{session_attached}", "-f", fmt.Sprintf("#{==:#{session_name},%s}", session))
 	if err != nil || output == "" {
 		return false

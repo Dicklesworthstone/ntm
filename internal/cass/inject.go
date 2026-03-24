@@ -2,6 +2,7 @@
 package cass
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -123,7 +124,9 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 	}
 	args = append(args, "--", query)
 
-	cmd := exec.Command(binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, args...)
 	output, err := cmd.Output()
 	result.QueryTime = time.Since(start)
 

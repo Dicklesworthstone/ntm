@@ -88,7 +88,10 @@ func (s *EnsembleStore) SaveEnsemble(e *EnsembleSession) error {
 			return fmt.Errorf("update ensemble session: %w", err)
 		}
 
-		rows, _ := result.RowsAffected()
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("rows affected: %w", rowsErr)
+		}
 		if rows == 0 {
 			_, err := tx.Exec(`
 				INSERT INTO ensemble_sessions
@@ -242,7 +245,10 @@ func (s *EnsembleStore) UpdateStatus(sessionName string, status string) error {
 		return fmt.Errorf("update ensemble status: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("ensemble session not found: %s", sessionName)
 	}
@@ -270,7 +276,10 @@ func (s *EnsembleStore) UpdateAssignmentStatus(sessionName, modeID, status strin
 		return fmt.Errorf("update assignment status: %w", err)
 	}
 
-	rows, _ := result.RowsAffected()
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("rows affected: %w", rowsErr)
+	}
 	if rows == 0 {
 		return fmt.Errorf("assignment not found: %s/%s", sessionName, modeID)
 	}
@@ -372,7 +381,10 @@ func (s *EnsembleStore) DeleteEnsemble(sessionName string) error {
 			return fmt.Errorf("delete ensemble: %w", err)
 		}
 
-		rows, _ := result.RowsAffected()
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("rows affected: %w", rowsErr)
+		}
 		if rows == 0 {
 			return fmt.Errorf("ensemble session not found: %s", sessionName)
 		}
