@@ -289,7 +289,8 @@ func runEnsembleExport(w io.Writer, name string, opts ensembleExportOptions) err
 		return fmt.Errorf("close output file: %w", err)
 	}
 
-	info, err := f.Stat()
+	// Use os.Stat after close (f.Stat on closed file is undefined)
+	info, err := os.Stat(outputPath)
 	size := 0
 	if err == nil {
 		size = int(info.Size())

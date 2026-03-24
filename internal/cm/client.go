@@ -154,7 +154,10 @@ type OutcomeReport struct {
 
 // RecordOutcome sends feedback about rule effectiveness.
 func (c *Client) RecordOutcome(ctx context.Context, report OutcomeReport) error {
-	data, _ := json.Marshal(report)
+	data, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("marshal outcome report: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/outcome", bytes.NewReader(data))
 	if err != nil {
 		return err

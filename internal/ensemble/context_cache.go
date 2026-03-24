@@ -34,9 +34,27 @@ type ContextFingerprint struct {
 
 // cacheKey returns a stable hash for the fingerprint.
 func (f ContextFingerprint) cacheKey() string {
-	data, _ := json.Marshal(f)
+	data, err := json.Marshal(f)
+	if err != nil {
+		// Fallback to field-based key if marshal fails
+		fallback := f.fallbackCacheKeyMaterial()
+		sum := sha256.Sum256([]byte(fallback))
+		return hex.EncodeToString(sum[:])[:16]
+	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+func (f ContextFingerprint) fallbackCacheKeyMaterial() string {
+	return fmt.Sprintf(
+		"%s:%s:%s:%s:%s:%s",
+		f.ProjectRoot,
+		f.GitHead,
+		f.GitStatus,
+		f.ReadmeHash,
+		f.QuestionHash,
+		f.ModeKey,
+	)
 }
 
 type cachedContextPack struct {

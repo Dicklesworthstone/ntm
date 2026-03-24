@@ -138,6 +138,23 @@ func TestContextFingerprint_CacheKey_Deterministic(t *testing.T) {
 	}
 }
 
+func TestContextFingerprint_FallbackCacheKeyMaterial_UsesAllFields(t *testing.T) {
+	fp := ContextFingerprint{
+		ProjectRoot:  "/tmp/demo",
+		GitHead:      "deadbeef",
+		GitStatus:    "dirty",
+		ReadmeHash:   "readme",
+		QuestionHash: "question",
+		ModeKey:      "mode-a",
+	}
+
+	got := fp.fallbackCacheKeyMaterial()
+	want := "/tmp/demo:deadbeef:dirty:readme:question:mode-a"
+	if got != want {
+		t.Fatalf("fallbackCacheKeyMaterial() = %q, want %q", got, want)
+	}
+}
+
 func TestNewContextPackCache_DefaultDirAndLogger(t *testing.T) {
 	cacheBase := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheBase)

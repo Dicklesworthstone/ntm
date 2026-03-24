@@ -4197,7 +4197,11 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		}
 
 		cursorExpiredEvent := attentionCursorExpiredPayload(cursorErr, feed.Stats().NewestCursor)
-		data, _ := json.Marshal(cursorExpiredEvent)
+		data, marshalErr := json.Marshal(cursorExpiredEvent)
+		if marshalErr != nil {
+			log.Printf("SSE: failed to marshal cursor expired event: %v", marshalErr)
+			return
+		}
 		if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", data); err != nil {
 			return
 		}
@@ -4226,7 +4230,11 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 		"oldest_cursor": attentionReplayEarliestCursor(prepared.stats),
 		"newest_cursor": prepared.stats.NewestCursor,
 	}
-	connData, _ := json.Marshal(connEvent)
+	connData, marshalErr := json.Marshal(connEvent)
+	if marshalErr != nil {
+		log.Printf("SSE: failed to marshal connection event: %v", marshalErr)
+		return
+	}
 	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connData); err != nil {
 		return
 	}
@@ -4360,7 +4368,11 @@ func (s *Server) handleAttentionStreamV1(w http.ResponseWriter, r *http.Request)
 				heartbeat["last_event_time"] = lastEventTime.Format(time.RFC3339Nano)
 				heartbeat["idle_ms"] = time.Since(lastEventTime).Milliseconds()
 			}
-			data, _ := json.Marshal(heartbeat)
+			data, marshalErr := json.Marshal(heartbeat)
+			if marshalErr != nil {
+				log.Printf("SSE: failed to marshal heartbeat: %v", marshalErr)
+				return
+			}
 			if _, err := fmt.Fprintf(w, "event: heartbeat\ndata: %s\n\n", data); err != nil {
 				return
 			}
