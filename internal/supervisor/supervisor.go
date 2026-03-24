@@ -641,11 +641,5 @@ func DefaultSpecs() []DaemonSpec {
 			PortFlag:    "--port",
 			DefaultPort: 8765,
 		},
-		{
-			Name:      "bd",
-			Command:   "bd",
-			Args:      []string{"daemon", "--start", "--foreground", "--auto-commit", "--interval", "5s"},
-			HealthCmd: []string{"bd", "daemon", "--health"},
-		},
 	}
 }

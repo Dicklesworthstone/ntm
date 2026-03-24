@@ -107,7 +107,7 @@ func runMonitor(session string) error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize supervisor: %v\n", err)
 	} else {
-		// Start default daemons (bd, cm, am)
+		// Start default daemons (cm, am)
 		for _, spec := range supervisor.DefaultSpecs() {
 			if err := sup.Start(spec); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to start daemon %s: %v\n", spec.Name, err)

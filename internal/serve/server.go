@@ -2448,7 +2448,6 @@ func performDoctorCheckAPI(ctx context.Context) map[string]interface{} {
 	}{
 		{"agent-mail", 8765},
 		{"cm-server", 8766},
-		{"bd-daemon", 8767},
 	}
 
 	dialer := &net.Dialer{Timeout: time.Second}

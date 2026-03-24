@@ -2217,9 +2217,7 @@ Shell Integration:
 		// Robot-switch-account handler for CAAM account switching
 		if robotSwitchAccount != "" {
 			opts := robot.ParseSwitchAccountArg(robotSwitchAccount)
-			opts.Pane = robotSwitchAccountPane
-			if opts.Pane == "" && robotHistoryPane != "" {
-				// switch-account-pane is deprecated in favor of --pane
+			if robotHistoryPane != "" {
 				opts.Pane = robotHistoryPane
 			}
 			if err := robot.PrintSwitchAccount(opts); err != nil {
@@ -3026,8 +3024,7 @@ var (
 	helpFull    bool // show full help (default behavior)
 
 	// Robot-switch-account flags for CAAM account switching
-	robotSwitchAccount     string // provider or provider:account format
-	robotSwitchAccountPane string // optional pane filter
+	robotSwitchAccount string // provider or provider:account format
 
 	// Robot-account-status and robot-accounts-list flags for CAAM
 	robotAccountStatus         bool   // --robot-account-status flag
@@ -3542,7 +3539,6 @@ func init() {
 
 	// Robot-switch-account flags for CAAM account switching
 	rootCmd.Flags().StringVar(&robotSwitchAccount, "robot-switch-account", "", "Switch CAAM account for provider. Format: provider or provider:account. Example: ntm --robot-switch-account=claude")
-	rootCmd.Flags().StringVar(&robotSwitchAccountPane, "switch-account-pane", "", "Filter to specific pane. Optional with --robot-switch-account. Example: --switch-account-pane=agent-1")
 
 	// Robot-account-status and robot-accounts-list flags for CAAM
 	rootCmd.Flags().BoolVar(&robotAccountStatus, "robot-account-status", false, "Show CAAM account status per provider. JSON output. Example: ntm --robot-account-status")
@@ -3638,7 +3634,7 @@ func init() {
 
 	// --pane and --last, --stats for history
 	// Note: --type already defined at line 1689 for robotSendType (used by --robot-send)
-	rootCmd.Flags().StringVar(&robotHistoryPane, "pane", "", "Filter by pane ID. Optional with --robot-history and --robot-switch-account")
+	rootCmd.Flags().StringVar(&robotHistoryPane, "pane", "", "Filter by pane ID. Optional with --robot-history")
 	rootCmd.Flags().IntVar(&robotHistoryLast, "last", 0, "Show last N entries")
 	rootCmd.Flags().BoolVar(&robotHistoryStats, "stats", false, "Show statistics instead of entries")
 
@@ -3818,7 +3814,6 @@ func init() {
 	rootCmd.Flags().MarkDeprecated("account-status-provider", "use --provider instead")
 	rootCmd.Flags().MarkDeprecated("accounts-list-provider", "use --provider instead")
 	rootCmd.Flags().MarkDeprecated("quota-check-provider", "use --provider instead")
-	rootCmd.Flags().MarkDeprecated("switch-account-pane", "use --pane instead")
 
 	// Triage prefixed flags → canonical forms
 	rootCmd.Flags().MarkDeprecated("triage-limit", "use --limit instead")

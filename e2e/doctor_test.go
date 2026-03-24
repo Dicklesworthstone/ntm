@@ -330,7 +330,6 @@ func TestDoctorDaemonsCheck(t *testing.T) {
 	expectedDaemons := map[string]bool{
 		"agent-mail": false,
 		"cm-server":  false,
-		"bd-daemon":  false,
 	}
 
 	for _, daemon := range report.Daemons {
@@ -658,7 +657,6 @@ func TestDoctorDaemonPortsPopulated(t *testing.T) {
 	expectedPorts := map[string]int{
 		"agent-mail": 8765,
 		"cm-server":  8766,
-		"bd-daemon":  8767,
 	}
 
 	for _, daemon := range report.Daemons {

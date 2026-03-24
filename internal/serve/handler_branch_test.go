@@ -5538,7 +5538,7 @@ func TestHandleBeadsInProgress_BrInstalledBadDir(t *testing.T) {
 	}
 }
 
-// --- handleBeadsDaemonStatus: br installed, temp dir (hits error → returns 200 with running:false) ---
+// --- handleBeadsDaemonStatus: br installed, daemon unsupported in current br ---
 
 func TestHandleBeadsDaemonStatus_BrInstalledBadDir(t *testing.T) {
 	if !bv.IsBdInstalled() {
@@ -5551,20 +5551,12 @@ func TestHandleBeadsDaemonStatus_BrInstalledBadDir(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleBeadsDaemonStatus(w, req)
 
-	// The daemon status handler returns 200 with running:false on error
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	var resp map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp["running"] != false {
-		t.Errorf("running=%v, want false", resp["running"])
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status=%d, want 501; body=%s", w.Code, w.Body.String())
 	}
 }
 
-// --- handleBeadsDaemonStart: br installed, temp dir ---
+// --- handleBeadsDaemonStart: br installed, daemon unsupported in current br ---
 
 func TestHandleBeadsDaemonStart_BrInstalledBadDir(t *testing.T) {
 	if !bv.IsBdInstalled() {
@@ -5577,13 +5569,12 @@ func TestHandleBeadsDaemonStart_BrInstalledBadDir(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleBeadsDaemonStart(w, req)
 
-	// Will fail → 500
-	if w.Code == http.StatusServiceUnavailable {
-		t.Fatal("should not get 503 when br is installed")
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status=%d, want 501; body=%s", w.Code, w.Body.String())
 	}
 }
 
-// --- handleBeadsDaemonStop: br installed, temp dir ---
+// --- handleBeadsDaemonStop: br installed, daemon unsupported in current br ---
 
 func TestHandleBeadsDaemonStop_BrInstalledBadDir(t *testing.T) {
 	if !bv.IsBdInstalled() {
@@ -5596,8 +5587,8 @@ func TestHandleBeadsDaemonStop_BrInstalledBadDir(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleBeadsDaemonStop(w, req)
 
-	if w.Code == http.StatusServiceUnavailable {
-		t.Fatal("should not get 503 when br is installed")
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status=%d, want 501; body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -7035,9 +7026,8 @@ func TestHandleBeadsDaemonStatus_WithProjectDir(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.handleBeadsDaemonStatus(rec, req)
 
-	// Daemon may or may not be running: 200 either way per handler logic
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (handler returns 200 even when daemon not running)", rec.Code)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", rec.Code)
 	}
 }
 
@@ -7888,8 +7878,11 @@ func TestHandleGetBead_WithProjectDir(t *testing.T) {
 	if rec.Code == http.StatusOK {
 		var resp map[string]interface{}
 		json.NewDecoder(rec.Body).Decode(&resp)
-		if _, ok := resp["bead"]; !ok {
+		bead, ok := resp["bead"]
+		if !ok {
 			t.Error("expected 'bead' in success response")
+		} else if _, ok := bead.(map[string]interface{}); !ok {
+			t.Errorf("expected normalized bead object, got %T", bead)
 		}
 	}
 }

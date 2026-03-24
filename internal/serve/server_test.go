@@ -2063,7 +2063,7 @@ func TestHandleCreateBeadSuccess(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads", strings.NewReader(`{"title":"Test bead","priority":"P2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads", strings.NewReader(`{"title":"Test bead","priority":"P2","labels":["api","triaged"],"blocked_by":["bd-dep"]}`))
 	rec := httptest.NewRecorder()
 	srv.handleCreateBead(rec, req)
 
@@ -2077,6 +2077,13 @@ func TestHandleCreateBeadSuccess(t *testing.T) {
 	}
 	if _, ok := resp["bead"]; !ok {
 		t.Fatalf("missing bead in response")
+	}
+	bead, ok := resp["bead"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("bead payload type = %T, want object", resp["bead"])
+	}
+	if bead["id"] != "bd-2" {
+		t.Fatalf("bead id = %v, want %q", bead["id"], "bd-2")
 	}
 }
 
@@ -2174,8 +2181,19 @@ func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get status=%d, want %d", getRec.Code, http.StatusOK)
 	}
+	var getResp map[string]interface{}
+	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	bead, ok := getResp["bead"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("get bead payload type = %T, want object", getResp["bead"])
+	}
+	if bead["id"] != "bd-5" {
+		t.Fatalf("get bead id = %v, want %q", bead["id"], "bd-5")
+	}
 
-	updateReq := httptest.NewRequest(http.MethodPatch, "/api/v1/beads/bd-5", strings.NewReader(`{"title":"Updated"}`))
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/v1/beads/bd-5", strings.NewReader(`{"title":"Updated","labels":["api","triaged"]}`))
 	upCtx := chi.NewRouteContext()
 	upCtx.URLParams.Add("id", "bd-5")
 	updateReq = updateReq.WithContext(context.WithValue(updateReq.Context(), chi.RouteCtxKey, upCtx))
@@ -2183,6 +2201,17 @@ func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
 	srv.handleUpdateBead(updateRec, updateReq)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status=%d, want %d", updateRec.Code, http.StatusOK)
+	}
+	var updateResp map[string]interface{}
+	if err := json.NewDecoder(updateRec.Body).Decode(&updateResp); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	updatedBead, ok := updateResp["bead"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("update bead payload type = %T, want object", updateResp["bead"])
+	}
+	if updatedBead["title"] != "Updated" {
+		t.Fatalf("updated bead title = %v, want %q", updatedBead["title"], "Updated")
 	}
 
 	closeReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-5/close", nil)
@@ -2206,6 +2235,55 @@ func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
 	}
 }
 
+func TestHandleListAddRemoveBeadDepsWithStubBr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-7")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/bd-7/deps", nil)
+	listCtx := chi.NewRouteContext()
+	listCtx.URLParams.Add("id", "bd-7")
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), chi.RouteCtxKey, listCtx))
+	listRec := httptest.NewRecorder()
+	srv.handleListBeadDeps(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list deps status=%d, want %d", listRec.Code, http.StatusOK)
+	}
+	var listResp map[string]interface{}
+	if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list deps response: %v", err)
+	}
+	deps, ok := listResp["dependencies"].([]interface{})
+	if !ok || len(deps) != 1 {
+		t.Fatalf("dependencies payload = %#v, want single dependency row", listResp["dependencies"])
+	}
+
+	addReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-7/deps", strings.NewReader(`{"blocked_by":"bd-dep"}`))
+	addCtx := chi.NewRouteContext()
+	addCtx.URLParams.Add("id", "bd-7")
+	addReq = addReq.WithContext(context.WithValue(addReq.Context(), chi.RouteCtxKey, addCtx))
+	addRec := httptest.NewRecorder()
+	srv.handleAddBeadDep(addRec, addReq)
+	if addRec.Code != http.StatusCreated {
+		t.Fatalf("add dep status=%d, want %d", addRec.Code, http.StatusCreated)
+	}
+
+	removeReq := httptest.NewRequest(http.MethodDelete, "/api/v1/beads/bd-7/deps/bd-dep", nil)
+	removeCtx := chi.NewRouteContext()
+	removeCtx.URLParams.Add("id", "bd-7")
+	removeCtx.URLParams.Add("depId", "bd-dep")
+	removeReq = removeReq.WithContext(context.WithValue(removeReq.Context(), chi.RouteCtxKey, removeCtx))
+	removeRec := httptest.NewRecorder()
+	srv.handleRemoveBeadDep(removeRec, removeReq)
+	if removeRec.Code != http.StatusOK {
+		t.Fatalf("remove dep status=%d, want %d", removeRec.Code, http.StatusOK)
+	}
+}
+
 func TestHandleBeadsDaemonAndSync(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stub br uses sh")
@@ -2218,29 +2296,29 @@ func TestHandleBeadsDaemonAndSync(t *testing.T) {
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/daemon/status", nil)
 	statusRec := httptest.NewRecorder()
 	srv.handleBeadsDaemonStatus(statusRec, statusReq)
-	if statusRec.Code != http.StatusOK {
-		t.Fatalf("daemon status=%d, want %d", statusRec.Code, http.StatusOK)
+	if statusRec.Code != http.StatusNotImplemented {
+		t.Fatalf("daemon status=%d, want %d", statusRec.Code, http.StatusNotImplemented)
 	}
 	var statusResp map[string]interface{}
 	if err := json.NewDecoder(statusRec.Body).Decode(&statusResp); err != nil {
 		t.Fatalf("decode status response: %v", err)
 	}
-	if statusResp["running"] != true {
-		t.Fatalf("running=%v, want true", statusResp["running"])
+	if statusResp["error_code"] != ErrCodeNotImplemented {
+		t.Fatalf("daemon status error_code=%v, want %q", statusResp["error_code"], ErrCodeNotImplemented)
 	}
 
 	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/start", nil)
 	startRec := httptest.NewRecorder()
 	srv.handleBeadsDaemonStart(startRec, startReq)
-	if startRec.Code != http.StatusOK {
-		t.Fatalf("daemon start=%d, want %d", startRec.Code, http.StatusOK)
+	if startRec.Code != http.StatusNotImplemented {
+		t.Fatalf("daemon start=%d, want %d", startRec.Code, http.StatusNotImplemented)
 	}
 
 	stopReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/stop", nil)
 	stopRec := httptest.NewRecorder()
 	srv.handleBeadsDaemonStop(stopRec, stopReq)
-	if stopRec.Code != http.StatusOK {
-		t.Fatalf("daemon stop=%d, want %d", stopRec.Code, http.StatusOK)
+	if stopRec.Code != http.StatusNotImplemented {
+		t.Fatalf("daemon stop=%d, want %d", stopRec.Code, http.StatusNotImplemented)
 	}
 
 	syncReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/sync", nil)
@@ -3719,6 +3797,38 @@ func TestHealthV1Endpoint(t *testing.T) {
 	}
 	if _, ok := resp["timestamp"]; !ok {
 		t.Error("Expected timestamp field")
+	}
+}
+
+func TestPerformDoctorCheckAPI_DaemonList(t *testing.T) {
+	report := performDoctorCheckAPI(context.Background())
+
+	daemonsAny, ok := report["daemons"]
+	if !ok {
+		t.Fatal("expected daemons in doctor report")
+	}
+	daemons, ok := daemonsAny.([]map[string]interface{})
+	if !ok {
+		t.Fatalf("daemons type = %T, want []map[string]interface{}", daemonsAny)
+	}
+	if len(daemons) != 2 {
+		t.Fatalf("daemon count = %d, want 2", len(daemons))
+	}
+
+	names := map[string]bool{}
+	for _, daemon := range daemons {
+		name, _ := daemon["name"].(string)
+		names[name] = true
+	}
+
+	if !names["agent-mail"] {
+		t.Fatal("expected agent-mail daemon probe")
+	}
+	if !names["cm-server"] {
+		t.Fatal("expected cm-server daemon probe")
+	}
+	if names["bd-daemon"] {
+		t.Fatal("did not expect bd-daemon probe")
 	}
 }
 

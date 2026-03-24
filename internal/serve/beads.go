@@ -7,11 +7,20 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
+
+func normalizeSingularBeadPayload(payload interface{}) interface{} {
+	beads, ok := payload.([]interface{})
+	if !ok || len(beads) != 1 {
+		return payload
+	}
+	return beads[0]
+}
 
 // Beads-specific error codes
 const (
@@ -162,8 +171,8 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build bd new command
-	args := []string{"new", req.Title, "--json"}
+	// Build br create command using the live CLI contract.
+	args := []string{"create", req.Title, "--json"}
 	if req.Description != "" {
 		args = append(args, "--description", req.Description)
 	}
@@ -176,11 +185,11 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 	if req.Parent != "" {
 		args = append(args, "--parent", req.Parent)
 	}
-	for _, label := range req.Labels {
-		args = append(args, "--label", label)
+	if len(req.Labels) > 0 {
+		args = append(args, "--labels", strings.Join(req.Labels, ","))
 	}
-	for _, blocked := range req.BlockedBy {
-		args = append(args, "--blocked-by", blocked)
+	if len(req.BlockedBy) > 0 {
+		args = append(args, "--deps", strings.Join(req.BlockedBy, ","))
 	}
 
 	output, err := bv.RunBd(s.projectDir, args...)
@@ -199,6 +208,7 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 		}, reqID)
 		return
 	}
+	bead = normalizeSingularBeadPayload(bead)
 
 	// Publish WebSocket event
 	if s.wsHub != nil {
@@ -233,6 +243,7 @@ func (s *Server) handleGetBead(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to parse bead", nil, reqID)
 		return
 	}
+	bead = normalizeSingularBeadPayload(bead)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"bead": bead,
@@ -271,8 +282,8 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 	if req.Assignee != nil {
 		args = append(args, "--assignee", *req.Assignee)
 	}
-	for _, label := range req.Labels {
-		args = append(args, "--label", label)
+	if req.Labels != nil {
+		args = append(args, "--set-labels", strings.Join(req.Labels, ","))
 	}
 
 	output, err := bv.RunBd(s.projectDir, args...)
@@ -289,6 +300,7 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 		}, reqID)
 		return
 	}
+	bead = normalizeSingularBeadPayload(bead)
 
 	// Publish WebSocket event
 	if s.wsHub != nil {
@@ -326,6 +338,7 @@ func (s *Server) handleCloseBead(w http.ResponseWriter, r *http.Request) {
 		}, reqID)
 		return
 	}
+	bead = normalizeSingularBeadPayload(bead)
 
 	// Publish WebSocket event
 	if s.wsHub != nil {
@@ -380,6 +393,7 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 		}, reqID)
 		return
 	}
+	bead = normalizeSingularBeadPayload(bead)
 
 	// Publish WebSocket event
 	if s.wsHub != nil {
@@ -440,8 +454,8 @@ func (s *Server) handleBeadsReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var beads []interface{}
-	if err := json.Unmarshal([]byte(output), &beads); err != nil {
+	beads, err := bv.UnmarshalBdList[map[string]interface{}](output)
+	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to parse ready beads", nil, reqID)
 		return
 	}
@@ -468,8 +482,8 @@ func (s *Server) handleBeadsBlocked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var beads []interface{}
-	if err := json.Unmarshal([]byte(output), &beads); err != nil {
+	beads, err := bv.UnmarshalBdList[map[string]interface{}](output)
+	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to parse blocked beads", nil, reqID)
 		return
 	}
@@ -496,8 +510,8 @@ func (s *Server) handleBeadsInProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var beads []interface{}
-	if err := json.Unmarshal([]byte(output), &beads); err != nil {
+	beads, err := bv.UnmarshalBdList[map[string]interface{}](output)
+	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to parse in-progress beads", nil, reqID)
 		return
 	}
@@ -520,7 +534,7 @@ func (s *Server) handleListBeadDeps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "deps", beadID, "--json")
+	output, err := bv.RunBd(s.projectDir, "dep", "list", beadID, "--json")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -564,7 +578,7 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "link", beadID, req.BlockedBy, "--json")
+	output, err := bv.RunBd(s.projectDir, "dep", "add", beadID, req.BlockedBy, "--json")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -599,7 +613,7 @@ func (s *Server) handleRemoveBeadDep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "unlink", beadID, depID, "--json")
+	output, err := bv.RunBd(s.projectDir, "dep", "remove", beadID, depID, "--json")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
@@ -754,28 +768,7 @@ func (s *Server) handleBeadsDaemonStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "daemon", "status", "--json")
-	if err != nil {
-		// Daemon might not be running, return status anyway
-		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-			"running": false,
-			"error":   err.Error(),
-		}, reqID)
-		return
-	}
-
-	var status interface{}
-	if err := json.Unmarshal([]byte(output), &status); err != nil {
-		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-			"running": true,
-			"output":  output,
-		}, reqID)
-		return
-	}
-
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"status": status,
-	}, reqID)
+	writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented, "br daemon commands are not supported by the installed br version", nil, reqID)
 }
 
 // handleBeadsDaemonStart handles POST /api/v1/beads/daemon/start
@@ -788,16 +781,7 @@ func (s *Server) handleBeadsDaemonStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "daemon", "start", "--json")
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		return
-	}
-
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"started": true,
-		"output":  output,
-	}, reqID)
+	writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented, "br daemon commands are not supported by the installed br version", nil, reqID)
 }
 
 // handleBeadsDaemonStop handles POST /api/v1/beads/daemon/stop
@@ -810,16 +794,7 @@ func (s *Server) handleBeadsDaemonStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "daemon", "stop", "--json")
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		return
-	}
-
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"stopped": true,
-		"output":  output,
-	}, reqID)
+	writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented, "br daemon commands are not supported by the installed br version", nil, reqID)
 }
 
 // handleBeadsSync handles POST /api/v1/beads/sync

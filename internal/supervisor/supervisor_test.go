@@ -380,9 +380,6 @@ func TestDefaultSpecs(t *testing.T) {
 	if !names["am"] {
 		t.Error("DefaultSpecs() missing 'am' daemon")
 	}
-	if !names["bd"] {
-		t.Error("DefaultSpecs() missing 'bd' daemon")
-	}
 }
 
 // TestHealthCheck tests the HTTP health check functionality
