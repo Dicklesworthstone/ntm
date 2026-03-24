@@ -2404,7 +2404,7 @@ func buildProjectionBackedStatus(store *state.Store, cfg *config.Config, opts Pa
 		output.DegradedSources = append(output.DegradedSources, output.Sources.Degraded...)
 	}
 
-	statusApplyAlertCounts(output, alerts.GetActiveAlerts(alerts.DefaultConfig()))
+	statusApplyAlertCounts(output, alerts.GetActiveAlerts(alertConfigForProject(cfg, "")))
 	statusFinalize(output, opts)
 	return output, nil
 }
@@ -2487,7 +2487,7 @@ func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptio
 		output.Summary.MailUrgent = 0
 	}
 	if len(output.AlertCounts) == 0 {
-		statusApplyAlertCounts(output, alerts.GetActiveAlerts(alerts.DefaultConfig()))
+		statusApplyAlertCounts(output, alerts.GetActiveAlerts(alertConfigForProject(cfg, resolvedProjectDir)))
 	}
 
 	statusFinalize(output, opts)
@@ -4178,6 +4178,7 @@ func alertConfigForProject(cfg *config.Config, projectDir string) alerts.Config 
 			cfg.Alerts.DiskLowThresholdGB,
 			cfg.Alerts.MailBacklogThreshold,
 			cfg.Alerts.BeadStaleHours,
+			cfg.Alerts.ContextWarningThreshold,
 			cfg.Alerts.ResolvedPruneMinutes,
 			resolvedProject,
 		)
@@ -8556,7 +8557,12 @@ type AlertsOutput struct {
 // GetAlertsDetailed returns all alerts.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetAlertsDetailed(includeResolved bool) (*AlertsOutput, error) {
-	alertCfg := alerts.DefaultConfig()
+	wd := mustGetwd()
+	cfg, err := config.LoadMerged(wd, config.DefaultPath())
+	if err != nil {
+		cfg = config.Default()
+	}
+	alertCfg := alertConfigForProject(cfg, wd)
 	tracker := alerts.GenerateAndTrack(alertCfg)
 
 	active, resolved := tracker.GetAll()

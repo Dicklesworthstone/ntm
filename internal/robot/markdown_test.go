@@ -189,12 +189,13 @@ func TestAlertConfigForProject_UsesExplicitProjectDir(t *testing.T) {
 
 	cfg := &config.Config{
 		Alerts: config.AlertsConfig{
-			Enabled:              true,
-			AgentStuckMinutes:    12,
-			DiskLowThresholdGB:   4.5,
-			MailBacklogThreshold: 9,
-			BeadStaleHours:       36,
-			ResolvedPruneMinutes: 90,
+			Enabled:                 true,
+			AgentStuckMinutes:       12,
+			DiskLowThresholdGB:      4.5,
+			MailBacklogThreshold:    9,
+			BeadStaleHours:          36,
+			ContextWarningThreshold: 88.0,
+			ResolvedPruneMinutes:    90,
 		},
 		ProjectsBase: "/tmp/wrong-base",
 	}
@@ -208,6 +209,9 @@ func TestAlertConfigForProject_UsesExplicitProjectDir(t *testing.T) {
 	}
 	if got.BeadStaleHours != 36 {
 		t.Fatalf("BeadStaleHours = %d, want 36", got.BeadStaleHours)
+	}
+	if got.ContextWarningThreshold != 88.0 {
+		t.Fatalf("ContextWarningThreshold = %v, want 88.0", got.ContextWarningThreshold)
 	}
 	if !got.Enabled {
 		t.Fatal("expected enabled alert config")

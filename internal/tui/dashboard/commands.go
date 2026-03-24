@@ -136,6 +136,7 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 				cfg.Alerts.DiskLowThresholdGB,
 				cfg.Alerts.MailBacklogThreshold,
 				cfg.Alerts.BeadStaleHours,
+				cfg.Alerts.ContextWarningThreshold,
 				cfg.Alerts.ResolvedPruneMinutes,
 				projectDir,
 			)

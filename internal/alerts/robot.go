@@ -78,14 +78,15 @@ func formatAlertString(alert Alert) string {
 }
 
 // ToConfigAlerts converts config.AlertsConfig to alerts.Config
-func ToConfigAlerts(enabled bool, agentStuckMinutes int, diskLowThresholdGB float64, mailBacklogThreshold, beadStaleHours, resolvedPruneMinutes int, projectsDir string) Config {
+func ToConfigAlerts(enabled bool, agentStuckMinutes int, diskLowThresholdGB float64, mailBacklogThreshold, beadStaleHours int, contextWarningThreshold float64, resolvedPruneMinutes int, projectsDir string) Config {
 	return Config{
-		Enabled:              enabled,
-		AgentStuckMinutes:    agentStuckMinutes,
-		DiskLowThresholdGB:   diskLowThresholdGB,
-		MailBacklogThreshold: mailBacklogThreshold,
-		BeadStaleHours:       beadStaleHours,
-		ResolvedPruneMinutes: resolvedPruneMinutes,
-		ProjectsDir:          projectsDir,
+		Enabled:                 enabled,
+		AgentStuckMinutes:       agentStuckMinutes,
+		DiskLowThresholdGB:      diskLowThresholdGB,
+		MailBacklogThreshold:    mailBacklogThreshold,
+		BeadStaleHours:          beadStaleHours,
+		ContextWarningThreshold: contextWarningThreshold,
+		ResolvedPruneMinutes:    resolvedPruneMinutes,
+		ProjectsDir:             projectsDir,
 	}
 }

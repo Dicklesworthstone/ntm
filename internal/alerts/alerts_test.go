@@ -555,7 +555,7 @@ func TestTruncateString_UTF8(t *testing.T) {
 func TestToConfigAlerts(t *testing.T) {
 	t.Parallel()
 
-	cfg := ToConfigAlerts(true, 10, 2.5, 20, 48, 120, "/tmp/projects")
+	cfg := ToConfigAlerts(true, 10, 2.5, 20, 48, 82.5, 120, "/tmp/projects")
 	if !cfg.Enabled {
 		t.Error("expected Enabled=true")
 	}
@@ -567,6 +567,9 @@ func TestToConfigAlerts(t *testing.T) {
 	}
 	if cfg.MailBacklogThreshold != 20 {
 		t.Errorf("MailBacklogThreshold = %d, want 20", cfg.MailBacklogThreshold)
+	}
+	if cfg.ContextWarningThreshold != 82.5 {
+		t.Errorf("ContextWarningThreshold = %f, want 82.5", cfg.ContextWarningThreshold)
 	}
 	if cfg.BeadStaleHours != 48 {
 		t.Errorf("BeadStaleHours = %d, want 48", cfg.BeadStaleHours)

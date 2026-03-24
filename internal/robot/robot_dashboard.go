@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 )
@@ -41,6 +42,10 @@ func GetDashboard() (*DashboardOutput, error) {
 	fleet := "ntm"
 	if wd != "" {
 		fleet = filepath.Base(wd)
+	}
+	cfg, err := config.LoadMerged(wd, config.DefaultPath())
+	if err != nil {
+		cfg = config.Default()
 	}
 
 	output := &DashboardOutput{
@@ -117,7 +122,7 @@ func GetDashboard() (*DashboardOutput, error) {
 	}
 
 	// Alerts (best-effort)
-	alertCfg := alerts.DefaultConfig()
+	alertCfg := alertConfigForProject(cfg, wd)
 	activeAlerts := alerts.GetActiveAlerts(alertCfg)
 	for _, a := range activeAlerts {
 		output.Alerts = append(output.Alerts, AlertInfo{

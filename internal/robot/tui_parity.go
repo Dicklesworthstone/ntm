@@ -3044,17 +3044,9 @@ func GetAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) (*TUIAlertsOutput, 
 		Alerts:        []TUIAlertInfo{},
 	}
 
-	// Get alerts from the alerts package
-	alertCfg := alerts.DefaultConfig()
-	if cfg != nil && cfg.Alerts.Enabled {
-		alertCfg = alerts.Config{
-			Enabled:              cfg.Alerts.Enabled,
-			AgentStuckMinutes:    cfg.Alerts.AgentStuckMinutes,
-			DiskLowThresholdGB:   cfg.Alerts.DiskLowThresholdGB,
-			MailBacklogThreshold: cfg.Alerts.MailBacklogThreshold,
-			BeadStaleHours:       cfg.Alerts.BeadStaleHours,
-		}
-	}
+	// Use the same project-aware alert config path as the rest of robot mode so
+	// disabled/custom alert settings remain authoritative here too.
+	alertCfg := alertConfigForProject(cfg, "")
 	alertList := alerts.GetActiveAlerts(alertCfg)
 
 	now := time.Now()

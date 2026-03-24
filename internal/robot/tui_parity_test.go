@@ -465,6 +465,37 @@ func TestPrintAlertsTUINilConfig(t *testing.T) {
 	}
 }
 
+func TestGetAlertsTUIRespectsDisabledAlertsConfig(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+	t.Cleanup(func() {
+		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
+	})
+
+	tracker.AddAlert(alerts.Alert{
+		ID:       "disabled-alert",
+		Type:     alerts.AlertAgentError,
+		Severity: alerts.SeverityWarning,
+		Message:  "should be suppressed",
+		Session:  "proj",
+	})
+
+	cfg := config.Default()
+	cfg.Alerts.Enabled = false
+
+	result, err := GetAlertsTUI(cfg, TUIAlertsOptions{})
+	if err != nil {
+		t.Fatalf("GetAlertsTUI failed: %v", err)
+	}
+	if result.Count != 0 {
+		t.Fatalf("Count = %d, want 0 when alerts are disabled", result.Count)
+	}
+	if len(result.Alerts) != 0 {
+		t.Fatalf("Alerts = %+v, want none when alerts are disabled", result.Alerts)
+	}
+}
+
 // =============================================================================
 // PrintDismissAlert Tests
 // =============================================================================

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/privacy"
@@ -2851,6 +2852,150 @@ func TestGetStatusWithProjectionStoreUsesRuntimeProjection(t *testing.T) {
 	}
 	if result.Beads != nil || result.GraphMetrics != nil || result.AgentMail != nil {
 		t.Fatalf("legacy status extras should be empty, got beads=%v graph=%v agent_mail=%v", result.Beads, result.GraphMetrics, result.AgentMail)
+	}
+}
+
+func TestGetStatusWithOptionsRespectsDisabledAlertsConfig(t *testing.T) {
+	oldStore := currentProjectionStore()
+	SetProjectionStore(nil)
+	t.Cleanup(func() {
+		SetProjectionStore(oldStore)
+	})
+
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+	t.Cleanup(func() {
+		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
+	})
+	tracker.AddAlert(alerts.Alert{
+		ID:       "status-disabled-alert",
+		Type:     alerts.AlertAgentError,
+		Severity: alerts.SeverityWarning,
+		Message:  "should be suppressed",
+		Session:  "proj",
+	})
+
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir .ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte("[alerts]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir project dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	result, err := GetStatusWithOptions(PaginationOptions{})
+	if err != nil {
+		t.Fatalf("GetStatusWithOptions: %v", err)
+	}
+	if len(result.AlertCounts) != 0 {
+		t.Fatalf("AlertCounts = %+v, want no alerts when disabled in config", result.AlertCounts)
+	}
+}
+
+func TestGetDashboardRespectsDisabledAlertsConfig(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+	t.Cleanup(func() {
+		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
+	})
+	tracker.AddAlert(alerts.Alert{
+		ID:       "dashboard-disabled-alert",
+		Type:     alerts.AlertAgentError,
+		Severity: alerts.SeverityWarning,
+		Message:  "should be suppressed",
+		Session:  "proj",
+	})
+
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir .ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte("[alerts]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir project dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	result, err := GetDashboard()
+	if err != nil {
+		t.Fatalf("GetDashboard: %v", err)
+	}
+	if len(result.Alerts) != 0 {
+		t.Fatalf("Alerts = %+v, want none when disabled in config", result.Alerts)
+	}
+	if result.AlertSummary == nil {
+		t.Fatal("AlertSummary = nil, want non-nil summary")
+	}
+	if result.AlertSummary.TotalActive != 0 {
+		t.Fatalf("AlertSummary.TotalActive = %d, want 0 when alerts are disabled", result.AlertSummary.TotalActive)
+	}
+}
+
+func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+	t.Cleanup(func() {
+		alerts.SetGlobalTrackerConfig(alerts.DefaultConfig())
+	})
+	tracker.AddAlert(alerts.Alert{
+		ID:       "detailed-disabled-alert",
+		Type:     alerts.AlertAgentError,
+		Severity: alerts.SeverityWarning,
+		Message:  "should be suppressed",
+		Session:  "proj",
+	})
+
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir .ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte("[alerts]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir project dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	result, err := GetAlertsDetailed(false)
+	if err != nil {
+		t.Fatalf("GetAlertsDetailed: %v", err)
+	}
+	if result.Enabled {
+		t.Fatal("Enabled = true, want false when alerts are disabled in config")
+	}
+	if len(result.Active) != 0 {
+		t.Fatalf("Active = %+v, want no alerts when disabled in config", result.Active)
+	}
+	if result.Summary.TotalActive != 0 {
+		t.Fatalf("Summary.TotalActive = %d, want 0 when alerts are disabled", result.Summary.TotalActive)
 	}
 }
 
