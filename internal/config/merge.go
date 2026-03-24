@@ -84,7 +84,7 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 	if project.Palette.File != "" {
 		// Prevent traversal
 		cleanFile := filepath.Clean(project.Palette.File)
-		if strings.Contains(cleanFile, "..") || strings.HasPrefix(cleanFile, string(filepath.Separator)) {
+		if isUnsafeProjectRelativePath(cleanFile) {
 			// Don't error, just ignore unsafe path
 			fmt.Printf("Warning: ignoring unsafe project palette path: %s\n", project.Palette.File)
 		} else {
@@ -118,6 +118,17 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 	global.PaletteState.Favorites = mergeStringListPreferFirst(project.PaletteState.Favorites, global.PaletteState.Favorites)
 
 	return global
+}
+
+func isUnsafeProjectRelativePath(cleanPath string) bool {
+	if cleanPath == "" {
+		return false
+	}
+	if filepath.IsAbs(cleanPath) {
+		return true
+	}
+	parentPrefix := ".." + string(filepath.Separator)
+	return cleanPath == ".." || strings.HasPrefix(cleanPath, parentPrefix)
 }
 
 func mergeStringListPreferFirst(primary, secondary []string) []string {

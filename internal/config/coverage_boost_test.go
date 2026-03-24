@@ -1468,6 +1468,35 @@ func TestMergeConfig_PaletteFileNotFound(t *testing.T) {
 	}
 }
 
+func TestMergeConfig_PaletteFileAllowsDoubleDotFilename(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ntmDir := filepath.Join(dir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paletteContent := "## Testing\n### dotted-cmd | Dotted Command\nAllowed double-dot filename\n"
+	if err := os.WriteFile(filepath.Join(ntmDir, "palette..md"), []byte(paletteContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	global := Default()
+	project := &ProjectConfig{
+		Palette: ProjectPalette{File: "palette..md"},
+	}
+	result := MergeConfig(global, project, dir)
+	found := false
+	for _, cmd := range result.Palette {
+		if cmd.Key == "dotted-cmd" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected palette command from palette..md to be loaded")
+	}
+}
+
 func TestMergeConfig_PaletteStatePreferFirst(t *testing.T) {
 	t.Parallel()
 	global := Default()
