@@ -283,7 +283,7 @@ Session: %s
 Privacy Mode: enabled
 Time: %s
 
-To include private content, use: ntm --robot-support-bundle=%s --allow-persist
+To include private content, use: ntm --robot-support-bundle=%s --allow-secret
 `, session, time.Now().Format(time.RFC3339), session)
 		gen.AddFile(
 			fmt.Sprintf("sessions/%s/PRIVACY_SUPPRESSED.txt", session),

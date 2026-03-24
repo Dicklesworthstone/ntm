@@ -148,7 +148,7 @@ This separation enables reliable parsing while providing useful context for debu
 			{
 				Heading: "Discovery",
 				Body: `Use --robot-capabilities for machine-readable API schema.
-Use --robot-docs=<topic> for human-readable documentation.
+Use --robot-docs=<topic> for topic-scoped JSON documentation.
 Start with --robot-status to understand current state.`,
 			},
 		},

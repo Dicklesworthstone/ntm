@@ -189,6 +189,33 @@ func TestGetDocs_Examples(t *testing.T) {
 	}
 }
 
+func TestGetDocs_QuickstartMentionsJSONDocs(t *testing.T) {
+	output, err := GetDocs("quickstart")
+	if err != nil {
+		t.Fatalf("GetDocs returned error: %v", err)
+	}
+	if len(output.Sections) == 0 {
+		t.Fatal("quickstart topic should include sections")
+	}
+
+	var discovery string
+	for _, section := range output.Sections {
+		if section.Heading == "Discovery" {
+			discovery = section.Body
+			break
+		}
+	}
+	if discovery == "" {
+		t.Fatal("quickstart topic missing Discovery section")
+	}
+	if !strings.Contains(discovery, "topic-scoped JSON documentation") {
+		t.Fatalf("Discovery section should describe --robot-docs as JSON docs, got %q", discovery)
+	}
+	if strings.Contains(discovery, "human-readable documentation") {
+		t.Fatalf("Discovery section should not describe --robot-docs as human-readable docs, got %q", discovery)
+	}
+}
+
 func TestGetDocs_ExitCodes(t *testing.T) {
 	output, err := GetDocs("exit-codes")
 	if err != nil {

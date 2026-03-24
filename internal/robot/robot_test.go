@@ -1,11 +1,13 @@
 package robot
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -878,6 +881,75 @@ func TestGenerateSupportBundle_UsesBundleFlagNamesInValidationErrors(t *testing.
 	if !strings.Contains(output.Hint, "--bundle-redact") {
 		t.Fatalf("support bundle hint should mention --bundle-redact, got %q", output.Hint)
 	}
+}
+
+func TestGenerateSupportBundle_PrivacySuppressedHintUsesAllowSecret(t *testing.T) {
+	skipSlowRobotShortIntegrationTest(t, "support bundle privacy hint test uses real tmux integration")
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := "ntm_test_bundle_privacy_" + time.Now().Format("150405")
+	if err := tmux.CreateSession(sessionName, ""); err != nil {
+		t.Fatalf("failed to create test session: %v", err)
+	}
+	defer tmux.KillSession(sessionName)
+
+	original := privacy.GetDefaultManager()
+	t.Cleanup(func() { privacy.SetDefaultManager(original) })
+
+	mgr := privacy.New(config.PrivacyConfig{
+		Enabled:                  true,
+		DisableScrollbackCapture: true,
+		RequireExplicitPersist:   true,
+	})
+	mgr.RegisterSession(sessionName, true, false)
+	privacy.SetDefaultManager(mgr)
+
+	outputPath := filepath.Join(t.TempDir(), "bundle.zip")
+	output, err := GenerateSupportBundle(SupportBundleOptions{
+		Session:    sessionName,
+		OutputPath: outputPath,
+		Format:     "zip",
+		NTMVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSupportBundle returned unexpected error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected support bundle generation to succeed, got error=%q hint=%q", output.Error, output.Hint)
+	}
+
+	reader, err := zip.OpenReader(output.Path)
+	if err != nil {
+		t.Fatalf("open bundle zip: %v", err)
+	}
+	defer reader.Close()
+
+	wantPath := "sessions/" + sessionName + "/PRIVACY_SUPPRESSED.txt"
+	for _, file := range reader.File {
+		if file.Name != wantPath {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", wantPath, err)
+		}
+		defer rc.Close()
+
+		body, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("read %s: %v", wantPath, err)
+		}
+		text := string(body)
+		if !strings.Contains(text, "--allow-secret") {
+			t.Fatalf("privacy suppression hint should mention --allow-secret, got %q", text)
+		}
+		if strings.Contains(text, "--allow-persist") {
+			t.Fatalf("privacy suppression hint should not mention stale --allow-persist flag, got %q", text)
+		}
+		return
+	}
+
+	t.Fatalf("bundle missing %s", wantPath)
 }
 
 func TestPrintHelp_UsesCurrentAttentionLoopFlags(t *testing.T) {
