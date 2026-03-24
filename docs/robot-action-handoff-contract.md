@@ -185,7 +185,7 @@ Resync is required when:
     "resync_cursor": "evt_1711082700000000123",
     "resync_action": {
       "action": "robot-snapshot",
-      "args": "--session=myproject",
+      "args": "--robot-snapshot",
       "reason": "Refresh state before resuming event stream"
     }
   }

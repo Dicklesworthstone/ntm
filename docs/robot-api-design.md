@@ -118,8 +118,8 @@ These flags are shared across many commands and MUST NOT be tool-prefixed:
 | `--all` | Include user pane (default: agent panes only) | send, interrupt |
 | `--lines=N` | Lines to capture | tail, inspect |
 | `--query=Q` | Search query | search commands |
-| `--type=T` | Filter by type | activity, alerts, beads |
-| `--session=S` | Filter by session | alerts, palette |
+| `--type=T` | Filter by agent type | send, ack, interrupt, activity, wait, route, history |
+| `--attention-session=S` | Filter attention by session | attention |
 | `--timeout=D` | Operation timeout | wait, ack, interrupt |
 | `--verbose` | Detailed output | status, health commands |
 | `--dry-run` | Preview without executing | send, spawn, restart |
@@ -130,14 +130,14 @@ Note: `--robot-limit` and `--robot-offset` are accepted as explicit aliases for 
 **Example (Correct):**
 ```bash
 ntm --robot-cass-search --query="auth" --limit=20 --since=7d
-ntm --robot-alerts --type=error --session=myproject
+ntm --robot-alerts --alerts-type=error --alerts-session=myproject
 ntm --robot-wait=myproject --timeout=2m --panes=1,2
 ```
 
 **Example (Deprecated):**
 ```bash
 ntm --robot-cass-search="auth" --cass-limit=20 --cass-since=7d  # Old pattern
-ntm --robot-alerts --alerts-type=error --alerts-session=myproject  # Old pattern
+ntm --robot-alerts --type=error --session=myproject  # Old pattern
 ```
 
 ### 2.2 Tool-Specific Modifiers

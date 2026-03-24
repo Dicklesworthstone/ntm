@@ -439,7 +439,7 @@ Get prioritized items that currently need attention.
 ```bash
 ntm --robot-attention
 ntm --robot-attention --limit=5
-ntm --robot-attention --session=myproject
+ntm --robot-attention --attention-session=myproject
 ```
 
 **Response:**
@@ -965,7 +965,7 @@ Log contract mismatches when commands cannot satisfy guarantees:
     },
     {
       "label": "Check tokens",
-      "command": "ntm --robot-tokens --session=myproject"
+      "command": "ntm --robot-tokens --tokens-session=myproject"
     }
   ]
 }
