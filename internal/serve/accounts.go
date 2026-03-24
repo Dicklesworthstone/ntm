@@ -301,6 +301,9 @@ func (s *Server) handleAccountHistoryV1(w http.ResponseWriter, r *http.Request) 
 	if limitStr != "" {
 		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
 			limit = parsed
+			if limit > 1000 {
+				limit = 1000
+			}
 		}
 	}
 

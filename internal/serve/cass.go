@@ -305,9 +305,18 @@ func (s *Server) handleCASSSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// Cap user-provided limits to prevent resource exhaustion
+	searchLimit := req.Limit
+	if searchLimit <= 0 || searchLimit > 500 {
+		searchLimit = 500
+	}
+	searchMaxTokens := req.MaxTokens
+	if searchMaxTokens > 50000 {
+		searchMaxTokens = 50000
+	}
 	opts := cass.SearchOptions{
 		Query:     req.Query,
-		Limit:     req.Limit,
+		Limit:     searchLimit,
 		Offset:    req.Offset,
 		Agent:     req.Agent,
 		Workspace: req.Workspace,
@@ -315,7 +324,7 @@ func (s *Server) handleCASSSearch(w http.ResponseWriter, r *http.Request) {
 		Until:     req.Until,
 		Cursor:    req.Cursor,
 		Fields:    req.Fields,
-		MaxTokens: req.MaxTokens,
+		MaxTokens: searchMaxTokens,
 		Aggregate: req.Aggregate,
 		Explain:   req.Explain,
 		Highlight: req.Highlight,

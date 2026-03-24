@@ -4615,17 +4615,17 @@ func (s *Server) handleAttentionDigestV1(w http.ResponseWriter, r *http.Request)
 	opts := robot.DefaultAttentionDigestOptions()
 
 	if arl := r.URL.Query().Get("action_required_limit"); arl != "" {
-		if parsed, err := strconv.Atoi(arl); err == nil && parsed >= 0 {
+		if parsed, err := strconv.Atoi(arl); err == nil && parsed >= 0 && parsed <= 1000 {
 			opts.ActionRequiredLimit = parsed
 		}
 	}
 	if il := r.URL.Query().Get("interesting_limit"); il != "" {
-		if parsed, err := strconv.Atoi(il); err == nil && parsed >= 0 {
+		if parsed, err := strconv.Atoi(il); err == nil && parsed >= 0 && parsed <= 1000 {
 			opts.InterestingLimit = parsed
 		}
 	}
 	if bl := r.URL.Query().Get("background_limit"); bl != "" {
-		if parsed, err := strconv.Atoi(bl); err == nil && parsed >= 0 {
+		if parsed, err := strconv.Atoi(bl); err == nil && parsed >= 0 && parsed <= 1000 {
 			opts.BackgroundLimit = parsed
 		}
 	}
