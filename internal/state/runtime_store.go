@@ -2940,6 +2940,9 @@ func (s *Store) ClearStaleProjections(olderThan time.Duration) error {
 	}
 
 	for _, table := range tables {
+		if !isValidTableName(table) {
+			return fmt.Errorf("invalid table name: %s", table)
+		}
 		_, err := s.db.Exec(
 			fmt.Sprintf("DELETE FROM %s WHERE stale_after < ?", table),
 			cutoff,
@@ -2949,6 +2952,21 @@ func (s *Store) ClearStaleProjections(olderThan time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// isValidTableName checks that a table name contains only alphanumeric
+// characters and underscores. This is a defense-in-depth measure even though
+// the table names originate from a hardcoded list.
+func isValidTableName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // =============================================================================

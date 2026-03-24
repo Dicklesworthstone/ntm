@@ -16,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/archive"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
@@ -43,6 +44,10 @@ func runMonitor(session string) error {
 	if err != nil {
 		return fmt.Errorf("loading manifest: %w", err)
 	}
+
+	// Close the singleton ensemble state store on exit so the underlying
+	// SQLite database is not leaked.
+	defer ensemble.CloseDefaultStateStore()
 
 	// Register signal handler early so signals during startup are handled
 	// gracefully instead of causing an abrupt exit.

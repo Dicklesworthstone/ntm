@@ -138,6 +138,14 @@ func defaultSQLiteStore() (*StateStore, error) {
 	return defaultStateStore.store, defaultStateStore.err
 }
 
+// CloseDefaultStateStore closes the singleton state store. It is safe to call
+// even if the store was never opened or has already been closed.
+func CloseDefaultStateStore() {
+	if defaultStateStore.store != nil {
+		_ = defaultStateStore.store.Close()
+	}
+}
+
 func toStateSession(session *EnsembleSession) *state.EnsembleSession {
 	if session == nil {
 		return nil

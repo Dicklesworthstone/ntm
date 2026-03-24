@@ -87,7 +87,7 @@ const (
 	WaitConditionRateLimited = "rate_limited"
 )
 
-// Wait condition constants - attention-based conditions (require --since-cursor)
+// Wait condition constants - attention-based conditions (require --attention-cursor)
 const (
 	WaitConditionAttention           = "attention"
 	WaitConditionActionRequired      = "action_required"
