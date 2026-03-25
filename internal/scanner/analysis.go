@@ -41,6 +41,9 @@ type AnalysisResult struct {
 // AnalyzeImpact analyzes scan findings against the beads dependency graph.
 // Returns findings sorted by their impact on project progress.
 func AnalyzeImpact(result *ScanResult, existingBeadIDs map[string]string) (*AnalysisResult, error) {
+	if result == nil {
+		return nil, fmt.Errorf("scan result is nil")
+	}
 	ar := &AnalysisResult{
 		HighImpactFindings: make([]ImpactAnalysis, 0),
 		Hotspots:           make([]Hotspot, 0),

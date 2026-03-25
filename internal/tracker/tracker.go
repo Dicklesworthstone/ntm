@@ -5,6 +5,7 @@ package tracker
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io/fs"
 	"log"
@@ -493,7 +494,9 @@ func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState,
 func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error) {
 	// git status --porcelain --no-renames (shows modified and untracked, splits renames)
 	// Note: Avoid -uall flag which can cause memory issues on large repos
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain", "--no-renames")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain", "--no-renames")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -582,7 +585,9 @@ func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error
 func gitCheckIgnored(root string, entries []fileEntry) (map[string]bool, error) {
 	result := make(map[string]bool)
 
-	cmd := exec.Command("git", "-C", root, "check-ignore", "-z", "--stdin")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-z", "--stdin")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

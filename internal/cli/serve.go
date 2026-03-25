@@ -202,11 +202,16 @@ func runServe(opts serveOptions) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+	sigDone := make(chan struct{})
+	defer close(sigDone)
 
 	go func() {
-		<-sigCh
-		fmt.Println("\nReceived shutdown signal")
-		cancel()
+		select {
+		case <-sigCh:
+			fmt.Println("\nReceived shutdown signal")
+			cancel()
+		case <-sigDone:
+		}
 	}()
 
 	scheme := "http"

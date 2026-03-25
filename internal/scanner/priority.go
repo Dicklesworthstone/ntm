@@ -43,6 +43,9 @@ type PriorityReport struct {
 
 // ComputePriorities calculates smart priorities combining severity and graph position.
 func ComputePriorities(result *ScanResult, existingBeadIDs map[string]string) (*PriorityReport, error) {
+	if result == nil {
+		return nil, fmt.Errorf("scan result is nil")
+	}
 	report := &PriorityReport{
 		Findings: make([]PrioritizedFinding, 0, len(result.Findings)),
 	}

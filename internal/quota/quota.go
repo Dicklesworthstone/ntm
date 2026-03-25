@@ -191,7 +191,8 @@ func (t *Tracker) updateCache(paneID string, info *QuotaInfo) {
 	}
 }
 
-// StartPolling begins continuous quota polling for a pane
+// StartPolling begins continuous quota polling for a pane.
+// Safe for concurrent calls — old pollers are cancelled before new ones start.
 func (t *Tracker) StartPolling(ctx context.Context, paneID string, provider Provider) {
 	t.mu.Lock()
 
@@ -200,16 +201,18 @@ func (t *Tracker) StartPolling(ctx context.Context, paneID string, provider Prov
 		handle.cancel()
 		delete(t.pollers, paneID)
 	}
+
+	// Create and register the new poller under the same lock to prevent
+	// concurrent StartPolling calls from leaking goroutines (the old code
+	// had a window between unlock and re-lock where a second call could
+	// overwrite the handle, losing the cancel function).
+	pollCtx, cancel := context.WithCancel(ctx)
+	handle := &pollerHandle{cancel: cancel}
+	t.pollers[paneID] = handle
 	t.mu.Unlock()
 
-	handle := &pollerHandle{}
-	ready := make(chan context.CancelFunc, 1)
-
 	go func() {
-		pollCtx, cancel := context.WithCancel(ctx)
-		ready <- cancel
 		defer cancel()
-
 		t.pollLoop(pollCtx, paneID, provider)
 
 		t.mu.Lock()
@@ -218,12 +221,6 @@ func (t *Tracker) StartPolling(ctx context.Context, paneID string, provider Prov
 		}
 		t.mu.Unlock()
 	}()
-
-	cancel := <-ready
-	t.mu.Lock()
-	handle.cancel = cancel
-	t.pollers[paneID] = handle
-	t.mu.Unlock()
 }
 
 // StopPolling stops polling for a pane

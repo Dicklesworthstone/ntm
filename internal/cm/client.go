@@ -271,9 +271,9 @@ func (c *CLIClient) GetContext(ctx context.Context, task string) (*CLIContextRes
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		// Check if context was cancelled
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("cm context timed out after %v", c.timeout)
+		// Check if context was cancelled or timed out
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("cm context %v after %v", ctx.Err(), c.timeout)
 		}
 		// Non-zero exit but may still have valid JSON (e.g., empty results)
 		// Try to parse stdout anyway

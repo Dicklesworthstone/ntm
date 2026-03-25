@@ -1,12 +1,14 @@
 package encryption
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // KeyConfig holds key resolution parameters.
@@ -99,9 +101,12 @@ func resolveFromCommand(cmd string) (string, error) {
 	if cmd == "" {
 		return "", fmt.Errorf("encryption.key_command is required when key_source=command")
 	}
-	out, err := exec.Command("sh", "-c", cmd).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).Output()
 	if err != nil {
-		return "", fmt.Errorf("key command %q failed: %w", cmd, err)
+		// Don't include the command string in the error — it may contain secrets
+		return "", fmt.Errorf("key command failed: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

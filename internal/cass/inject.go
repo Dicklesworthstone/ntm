@@ -552,10 +552,12 @@ func countInjectedItems(context string, format InjectionFormat) int {
 	}
 }
 
+// sessionDateRe compiled once at package level (called per-hit during filtering).
+var sessionDateRe = regexp.MustCompile(`(\d{4})/(\d{2})/(\d{2})`)
+
 // ExtractSessionDate attempts to extract a date from a CASS session file path.
 func ExtractSessionDate(path string) time.Time {
-	re := regexp.MustCompile(`(\d{4})/(\d{2})/(\d{2})`)
-	matches := re.FindStringSubmatch(path)
+	matches := sessionDateRe.FindStringSubmatch(path)
 	if len(matches) >= 4 {
 		year, _ := strconv.Atoi(matches[1])
 		month, _ := strconv.Atoi(matches[2])

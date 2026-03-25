@@ -162,6 +162,9 @@ type BeadSpec struct {
 
 // CreateBeadsFromFindings creates beads from scan findings.
 func CreateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResult, error) {
+	if result == nil {
+		return nil, fmt.Errorf("scan result is nil")
+	}
 	br := &BridgeResult{
 		BeadIDs:  make([]string, 0),
 		Messages: make([]string, 0),
@@ -368,6 +371,9 @@ func shortenPath(path string) string {
 
 // UpdateBeadsFromFindings closes beads for findings that no longer appear.
 func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResult, error) {
+	if result == nil {
+		return nil, fmt.Errorf("scan result is nil")
+	}
 	br := &BridgeResult{
 		Messages: make([]string, 0),
 	}

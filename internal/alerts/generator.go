@@ -290,7 +290,12 @@ func (g *Generator) checkStaleBeads() []Alert {
 
 	wd := g.config.ProjectsDir
 	if wd == "" {
-		wd, _ = os.Getwd()
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			slog.Warn("checkStaleBeads: failed to get working directory", "error", err)
+			return nil
+		}
 	}
 	// Get all in-progress beads (limit 100)
 	beads := bv.GetInProgressList(wd, 100)
@@ -327,7 +332,12 @@ func (g *Generator) checkStaleBeads() []Alert {
 func (g *Generator) checkDependencyCycles() *Alert {
 	wd := g.config.ProjectsDir
 	if wd == "" {
-		wd, _ = os.Getwd()
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			slog.Warn("checkDependencyCycles: failed to get working directory", "error", err)
+			return nil
+		}
 	}
 	// Run bv --robot-insights and check for cycles
 	insights, err := bv.GetInsights(wd)

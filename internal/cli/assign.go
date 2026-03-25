@@ -451,11 +451,16 @@ func runWatchMode(cmd *cobra.Command, session string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+	sigDone := make(chan struct{})
+	defer close(sigDone)
 
 	go func() {
-		<-sigCh
-		watchLoop.logf("Received interrupt signal, shutting down gracefully...")
-		cancel()
+		select {
+		case <-sigCh:
+			watchLoop.logf("Received interrupt signal, shutting down gracefully...")
+			cancel()
+		case <-sigDone:
+		}
 	}()
 
 	// Do initial assignment pass

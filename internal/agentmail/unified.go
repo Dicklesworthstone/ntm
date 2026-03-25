@@ -3,6 +3,7 @@ package agentmail
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"time"
@@ -71,7 +72,9 @@ func (m *UnifiedMessenger) Inbox(ctx context.Context) ([]UnifiedMessage, error) 
 			IncludeBodies: true,
 		}
 		inbox, err := m.amClient.FetchInbox(ctx, opts)
-		if err == nil {
+		if err != nil {
+			slog.Warn("agent mail inbox fetch failed", "error", err)
+		} else {
 			for _, msg := range inbox {
 				unified = append(unified, UnifiedMessage{
 					ID:        fmt.Sprintf("am-%d", msg.ID),
@@ -88,7 +91,9 @@ func (m *UnifiedMessenger) Inbox(ctx context.Context) ([]UnifiedMessage, error) 
 	// Fetch from BD
 	if m.bdClient != nil {
 		bdInbox, err := m.bdClient.Inbox(ctx, false, false)
-		if err == nil {
+		if err != nil {
+			slog.Warn("bd inbox fetch failed", "error", err)
+		} else {
 			for _, msg := range bdInbox {
 				unified = append(unified, UnifiedMessage{
 					ID:        fmt.Sprintf("bd-%s", msg.ID),

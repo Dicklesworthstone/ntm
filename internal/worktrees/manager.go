@@ -2,12 +2,25 @@
 package worktrees
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// gitTimeout is the maximum duration for any git command in the worktrees package.
+const gitTimeout = 30 * time.Second
+
+// gitCmd creates an exec.CommandContext with the standard git timeout.
+func gitCmd(args ...string) *exec.Cmd {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	_ = cancel // cancel is managed by the context; GC handles cleanup
+	return cmd
+}
 
 // WorktreeManager manages Git worktrees for agent isolation
 type WorktreeManager struct {
@@ -59,7 +72,7 @@ func (m *WorktreeManager) CreateForAgent(agentName string) (*WorktreeInfo, error
 	}
 
 	// Create the worktree with new branch
-	cmd := exec.Command("git", "worktree", "add", "-b", info.BranchName, worktreePath)
+	cmd := gitCmd( "worktree", "add", "-b", info.BranchName, worktreePath)
 	cmd.Dir = m.projectPath
 
 	output, err := cmd.CombinedOutput()
@@ -120,14 +133,14 @@ func (m *WorktreeManager) MergeBack(agentName string) error {
 	branchName := fmt.Sprintf("ntm/%s/%s", m.session, agentName)
 
 	// Switch to the canonical main branch in the primary worktree.
-	cmd := exec.Command("git", "checkout", "main")
+	cmd := gitCmd( "checkout", "main")
 	cmd.Dir = m.projectPath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to checkout main branch: %w", err)
 	}
 
 	// Merge the agent's branch
-	cmd = exec.Command("git", "merge", branchName, "--no-ff", "-m",
+	cmd = gitCmd( "merge", branchName, "--no-ff", "-m",
 		fmt.Sprintf("Merge agent %s work from session %s", agentName, m.session))
 	cmd.Dir = m.projectPath
 
@@ -145,13 +158,13 @@ func (m *WorktreeManager) RemoveWorktree(agentName string) error {
 	branchName := fmt.Sprintf("ntm/%s/%s", m.session, agentName)
 
 	// Remove the worktree
-	cmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
+	cmd := gitCmd( "worktree", "remove", worktreePath, "--force")
 	cmd.Dir = m.projectPath
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// If removal failed, try to prune and remove manually
-		cmd = exec.Command("git", "worktree", "prune")
+		cmd = gitCmd( "worktree", "prune")
 		cmd.Dir = m.projectPath
 		_ = cmd.Run() // Ignore errors for prune
 
@@ -162,7 +175,7 @@ func (m *WorktreeManager) RemoveWorktree(agentName string) error {
 	}
 
 	// Delete the branch
-	cmd = exec.Command("git", "branch", "-D", branchName)
+	cmd = gitCmd( "branch", "-D", branchName)
 	cmd.Dir = m.projectPath
 	_ = cmd.Run() // Ignore errors as branch might not exist
 
@@ -205,7 +218,7 @@ func (m *WorktreeManager) isValidWorktree(worktreePath string) bool {
 	}
 
 	// Check if it's recognized by git worktree list
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd := gitCmd( "worktree", "list", "--porcelain")
 	cmd.Dir = m.projectPath
 	output, err := cmd.Output()
 	if err != nil {

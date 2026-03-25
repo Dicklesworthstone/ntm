@@ -935,6 +935,9 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // enterEditPhase opens the prompt editor, pre-populating with any existing draft.
 func (m *Model) enterEditPhase() tea.Cmd {
+	if m.selected == nil {
+		return nil
+	}
 	prompt := m.selected.Prompt
 	if m.editDraft != "" {
 		prompt = m.editDraft

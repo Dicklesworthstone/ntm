@@ -16,6 +16,9 @@ import (
 
 // NotifyScanResults sends scan results to relevant agents via Agent Mail.
 func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey string) error {
+	if result == nil {
+		return nil
+	}
 	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
 	if !client.IsAvailable() {
 		return nil

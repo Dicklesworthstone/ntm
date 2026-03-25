@@ -90,8 +90,12 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 			}
 		} else {
 			// Fall back to home directory
-			home, _ := os.UserHomeDir()
-			workDir = home
+			home, err := os.UserHomeDir()
+			if err != nil {
+				workDir = os.TempDir()
+			} else {
+				workDir = home
+			}
 		}
 	}
 

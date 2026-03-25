@@ -3,6 +3,7 @@ package updater
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,7 +70,7 @@ func checkForUpdates(client *http.Client, url, currentVersion string) (*UpdateIn
 	}
 
 	var rel Release
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
 		return nil, err
 	}
 

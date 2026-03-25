@@ -108,12 +108,18 @@ func NewEffectivenessIntegrator(config *EffectivenessConfig) *EffectivenessInteg
 // RefreshCapabilities updates the capability matrix with effectiveness scores.
 // Should be called periodically or before assignment decisions.
 func (ei *EffectivenessIntegrator) RefreshCapabilities() error {
-	if !ei.config.Enabled {
+	// Snapshot config fields under lock to avoid races with SetMode
+	ei.mu.RLock()
+	enabled := ei.config.Enabled
+	windowDays := ei.config.WindowDays
+	ei.mu.RUnlock()
+
+	if !enabled {
 		return nil
 	}
 
 	// Query all effectiveness scores
-	scores, err := ei.tracker.QueryAllEffectiveness(ei.config.WindowDays)
+	scores, err := ei.tracker.QueryAllEffectiveness(windowDays)
 	if err != nil {
 		return fmt.Errorf("querying effectiveness: %w", err)
 	}
@@ -237,6 +243,11 @@ type AgentEffectivenessRank struct {
 func (ei *EffectivenessIntegrator) RankAgentsForTask(taskType string) (*EffectivenessRanking, error) {
 	task := ParseTaskType(taskType)
 
+	// Snapshot config weight under lock to avoid race with SetMode
+	ei.mu.RLock()
+	effWeight := ei.config.EffectivenessWeight()
+	ei.mu.RUnlock()
+
 	ranking := &EffectivenessRanking{
 		TaskType: taskType,
 		Mode:     ei.GetMode(),
@@ -262,7 +273,7 @@ func (ei *EffectivenessIntegrator) RankAgentsForTask(taskType string) (*Effectiv
 			rank.Confidence = eff.Confidence
 
 			// Apply effectiveness weight
-			weight := ei.config.EffectivenessWeight() * eff.Confidence
+			weight := effWeight * eff.Confidence
 			rank.Score = baseScore*(1-weight) + eff.Score*weight
 
 			rank.Explanation = fmt.Sprintf("base=%.2f, eff=%.2f (%d samples), weight=%.2f",

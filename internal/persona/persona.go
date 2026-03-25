@@ -5,6 +5,7 @@ package persona
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -336,7 +337,10 @@ func DefaultUserPath() string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "ntm", "personas.toml")
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "" // Caller handles empty path gracefully (file won't exist)
+	}
 	return filepath.Join(home, ".config", "ntm", "personas.toml")
 }
 
@@ -358,7 +362,7 @@ func LoadRegistry(projectDir string) (*Registry, error) {
 		registry.AddSet(&s)
 	}
 
-	// 2. Load user personas
+	// 2. Load user personas (ignore file-not-found; report parse errors)
 	userPath := DefaultUserPath()
 	if cfg, err := LoadFromFile(userPath); err == nil {
 		for i := range cfg.Personas {
@@ -367,10 +371,11 @@ func LoadRegistry(projectDir string) (*Registry, error) {
 		for i := range cfg.PersonaSets {
 			registry.AddSet(&cfg.PersonaSets[i])
 		}
+	} else if !os.IsNotExist(err) {
+		slog.Warn("failed to load user personas", "path", userPath, "error", err)
 	}
-	// Ignore file not found errors for user personas
 
-	// 3. Load project personas
+	// 3. Load project personas (ignore file-not-found; report parse errors)
 	if projectDir != "" {
 		projectPath := filepath.Join(projectDir, DefaultProjectPath())
 		if cfg, err := LoadFromFile(projectPath); err == nil {
@@ -380,8 +385,9 @@ func LoadRegistry(projectDir string) (*Registry, error) {
 			for i := range cfg.PersonaSets {
 				registry.AddSet(&cfg.PersonaSets[i])
 			}
+		} else if !os.IsNotExist(err) {
+			slog.Warn("failed to load project personas", "path", projectPath, "error", err)
 		}
-		// Ignore file not found errors for project personas
 	}
 
 	// 4. Resolve inheritance chains

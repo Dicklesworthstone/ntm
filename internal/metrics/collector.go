@@ -346,6 +346,13 @@ func (c *Collector) LoadSnapshot(name string) (*MetricsReport, error) {
 
 // CompareSnapshots compares two snapshots and returns the differences.
 func (c *Collector) CompareSnapshots(baseline, current *MetricsReport) *ComparisonResult {
+	if baseline == nil || current == nil {
+		return &ComparisonResult{
+			APICallDeltas: make(map[string]int64),
+			Improvements:  make([]string, 0),
+			Regressions:   make([]string, 0),
+		}
+	}
 	result := &ComparisonResult{
 		BaselineTime:  baseline.GeneratedAt,
 		CurrentTime:   current.GeneratedAt,

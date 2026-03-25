@@ -138,6 +138,9 @@ func (t *CostTracker) LoadFromDir(dir string) error {
 	if err := json.Unmarshal(data, &sessions); err != nil {
 		return fmt.Errorf("parse costs file: %w", err)
 	}
+	if sessions == nil {
+		sessions = make(map[string]*SessionCost)
+	}
 
 	t.sessions = sessions
 	return nil

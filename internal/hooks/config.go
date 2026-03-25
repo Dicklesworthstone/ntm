@@ -192,7 +192,10 @@ func DefaultCommandHooksPath() string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "ntm", "hooks.toml")
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
 	return filepath.Join(home, ".config", "ntm", "hooks.toml")
 }
 
@@ -247,7 +250,10 @@ func LoadCommandHooksFromMainConfig(mainConfigPath string) (*CommandHooksConfig,
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 			mainConfigPath = filepath.Join(xdg, "ntm", "config.toml")
 		} else {
-			home, _ := os.UserHomeDir()
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, nil // No config to load
+			}
 			mainConfigPath = filepath.Join(home, ".config", "ntm", "config.toml")
 		}
 	}
@@ -281,7 +287,10 @@ func DefaultCommandHooksDir() string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "ntm", "hooks")
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
 	return filepath.Join(home, ".config", "ntm", "hooks")
 }
 
@@ -357,8 +366,10 @@ func (h *CommandHook) ExpandWorkDir(sessionName, projectDir string) string {
 
 	// Expand ~/ prefix
 	if strings.HasPrefix(workDir, "~/") {
-		home, _ := os.UserHomeDir()
-		workDir = filepath.Join(home, workDir[2:])
+		if home, err := os.UserHomeDir(); err == nil {
+			workDir = filepath.Join(home, workDir[2:])
+		}
+		// If UserHomeDir fails, leave workDir with ~/ prefix (will fail cleanly downstream)
 	}
 
 	// Expand variables

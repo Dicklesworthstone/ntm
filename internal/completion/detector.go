@@ -220,12 +220,20 @@ func (d *CompletionDetector) checkAll(ctx context.Context, events chan<- Complet
 
 				// Update assignment store
 				if event.IsFailed {
-					_ = d.Store.MarkFailed(a.BeadID, event.FailReason)
+					if err := d.Store.MarkFailed(a.BeadID, event.FailReason); err != nil {
+						slog.Warn("failed to mark assignment as failed", "bead", a.BeadID, "error", err)
+					}
 				} else {
-					_ = d.Store.MarkCompleted(a.BeadID)
+					if err := d.Store.MarkCompleted(a.BeadID); err != nil {
+						slog.Warn("failed to mark assignment as completed", "bead", a.BeadID, "error", err)
+					}
 				}
 
-				events <- *event
+				select {
+				case events <- *event:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
@@ -242,7 +250,7 @@ func (d *CompletionDetector) checkAssignment(ctx context.Context, a *assignment.
 	target := fmt.Sprintf("%s.%d", d.Session, a.Pane)
 
 	// 1. Check if pane exists
-	panes, err := tmux.GetPanes(d.Session)
+	panes, err := tmux.GetPanesContext(ctx, d.Session)
 	if err != nil {
 		return nil // Can't check, try later
 	}
@@ -271,7 +279,7 @@ func (d *CompletionDetector) checkAssignment(ctx context.Context, a *assignment.
 	// 2. Check bead status via br (most reliable)
 	if d.isBrAvailable() {
 		if closed, err := d.checkBeadClosed(ctx, a.BeadID); err == nil && closed {
-			output, _ := tmux.CapturePaneOutput(target, d.Config.CaptureLines)
+			output, _ := tmux.CapturePaneOutputContext(ctx, target, d.Config.CaptureLines)
 			return &CompletionEvent{
 				Pane:      a.Pane,
 				AgentType: a.AgentType,
@@ -285,7 +293,7 @@ func (d *CompletionDetector) checkAssignment(ctx context.Context, a *assignment.
 	}
 
 	// 3. Capture pane output for pattern/idle detection
-	output, err := tmux.CapturePaneOutput(target, d.Config.CaptureLines)
+	output, err := tmux.CapturePaneOutputContext(ctx, target, d.Config.CaptureLines)
 	if err != nil {
 		// Can't capture, rely on bead polling
 		return nil
@@ -384,7 +392,9 @@ func (d *CompletionDetector) CheckNow(pane int) (*CompletionEvent, error) {
 		return nil, fmt.Errorf("no active assignment for pane %d", pane)
 	}
 
-	return d.checkAssignment(context.Background(), target), nil
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return d.checkAssignment(ctx, target), nil
 }
 
 // isBrAvailable checks if the br CLI is available (cached)
