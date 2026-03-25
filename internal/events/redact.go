@@ -86,8 +86,9 @@ func RedactEvent(event *Event) *Event {
 	return &redacted
 }
 
-// redactDataMap redacts string values in a data map.
-// It redacts all string values (safe strings remain unchanged unless they match a redaction pattern).
+// redactDataMap recursively redacts string values in a data map.
+// Handles nested maps and slices to ensure secrets in deeply-nested
+// JSON-derived structures are caught.
 func redactDataMap(data map[string]interface{}) map[string]interface{} {
 	if data == nil {
 		return nil
@@ -95,13 +96,27 @@ func redactDataMap(data map[string]interface{}) map[string]interface{} {
 
 	result := make(map[string]interface{}, len(data))
 	for k, v := range data {
-		if s, ok := v.(string); ok {
-			result[k] = redactString(s)
-		} else {
-			result[k] = v
-		}
+		result[k] = redactValue(v)
 	}
 	return result
+}
+
+// redactValue recursively redacts a single value (string, map, or slice).
+func redactValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case string:
+		return redactString(val)
+	case map[string]interface{}:
+		return redactDataMap(val)
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, elem := range val {
+			out[i] = redactValue(elem)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // RedactionSummary represents a summary of redaction findings for event logging.

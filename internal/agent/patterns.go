@@ -68,7 +68,7 @@ var (
 	// causing agents to always appear idle even while actively working.
 	ccIdlePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`>\s*$`),      // Prompt waiting for input
-		regexp.MustCompile(`(?m)^>\s*`),  // Prompt start (handles user typing)
+		regexp.MustCompile(`(?m)^>\s*$`), // Prompt line (empty prompt waiting for input)
 		regexp.MustCompile(`Human:\s*$`), // Conversation mode prompt
 		regexp.MustCompile(`waiting for input`),
 		regexp.MustCompile(`\?\s*$`), // Question prompt
@@ -170,7 +170,7 @@ var (
 	// gmiMemoryPattern extracts memory usage.
 	// Less precise than Codex percentage but still useful.
 	// Example: "gemini-3-pro-preview /model | 396.8 MB"
-	gmiMemoryPattern = regexp.MustCompile(`(\d+\.?\d*)\s*MB`)
+	gmiMemoryPattern = regexp.MustCompile(`/model\s*\|\s*(\d+\.?\d*)\s*MB`)
 
 	// gmiYoloPattern detects YOLO mode status.
 	// YOLO mode affects execution behavior (auto-approve commands).
@@ -424,6 +424,9 @@ func extractInt(pattern *regexp.Regexp, text string) *int64 {
 // getLastNLines returns the last n lines of text.
 // If the text has fewer than n lines, returns the entire text.
 func getLastNLines(text string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	lines := strings.Split(text, "\n")
 	if len(lines) <= n {
 		return text

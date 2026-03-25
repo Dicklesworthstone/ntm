@@ -367,9 +367,14 @@ func (c *SessionCoordinator) formatConflictNotification(conflict *Conflict) stri
 	return sb.String()
 }
 
+// conflictIDCounter provides monotonically increasing IDs to avoid collisions
+// when multiple conflicts are generated in the same nanosecond.
+var conflictIDCounter uint64
+
 // generateConflictID generates a unique ID for a conflict.
 func generateConflictID(pattern string) string {
-	return fmt.Sprintf("conflict-%d-%s", time.Now().UnixNano()%10000, sanitizeForID(pattern))
+	conflictIDCounter++
+	return fmt.Sprintf("conflict-%d-%d-%s", time.Now().UnixNano(), conflictIDCounter, sanitizeForID(pattern))
 }
 
 // sanitizeForID creates a safe ID component from a string.
