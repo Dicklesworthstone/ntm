@@ -4,6 +4,7 @@ package completion
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -79,12 +80,13 @@ type CompletionDetector struct {
 
 	mu              sync.RWMutex
 	activityTracker map[int]*activityState // pane -> activity state
-	recentEvents    map[string]time.Time   // beadID -> last event time (for dedup)
+	recentEvents    map[string]time.Time   // assignment attempt key -> last event time (for dedup)
 	brAvailable     *bool                  // nil = unknown, cached after first check
 }
 
 // activityState tracks output activity per pane
 type activityState struct {
+	assignmentKey  string
 	lastOutputTime time.Time
 	lastOutput     string
 	burstStarted   time.Time
@@ -208,12 +210,12 @@ func (d *CompletionDetector) checkAll(ctx context.Context, events chan<- Complet
 			if event := d.checkAssignment(ctx, a); event != nil {
 				// Check dedup window
 				d.mu.Lock()
-				lastEvent, exists := d.recentEvents[a.BeadID]
-				if exists && time.Since(lastEvent) < d.Config.DedupWindow {
+				now := time.Now()
+				if !d.recordEventLocked(a, now) {
 					d.mu.Unlock()
 					continue
 				}
-				d.recentEvents[a.BeadID] = time.Now()
+				delete(d.activityTracker, a.Pane)
 				d.mu.Unlock()
 
 				// Update assignment store
@@ -325,6 +327,44 @@ func (d *CompletionDetector) checkAssignment(ctx context.Context, a *assignment.
 	return nil
 }
 
+func assignmentAttemptKey(a *assignment.Assignment) string {
+	if a == nil {
+		return ""
+	}
+
+	timestamp := a.AssignedAt
+	if timestamp.IsZero() {
+		if a.StartedAt != nil {
+			timestamp = *a.StartedAt
+		} else {
+			return fmt.Sprintf("%s:%d", a.BeadID, a.Pane)
+		}
+	}
+	return fmt.Sprintf("%s:%d:%s", a.BeadID, a.Pane, timestamp.UTC().Format(time.RFC3339Nano))
+}
+
+func (d *CompletionDetector) pruneExpiredRecentEventsLocked(now time.Time) {
+	if len(d.recentEvents) == 0 {
+		return
+	}
+	for key, lastEvent := range d.recentEvents {
+		if now.Sub(lastEvent) >= d.Config.DedupWindow {
+			delete(d.recentEvents, key)
+		}
+	}
+}
+
+func (d *CompletionDetector) recordEventLocked(a *assignment.Assignment, now time.Time) bool {
+	d.pruneExpiredRecentEventsLocked(now)
+	key := assignmentAttemptKey(a)
+	lastEvent, exists := d.recentEvents[key]
+	if exists && now.Sub(lastEvent) < d.Config.DedupWindow {
+		return false
+	}
+	d.recentEvents[key] = now
+	return true
+}
+
 // CheckNow performs an immediate check for a specific pane
 func (d *CompletionDetector) CheckNow(pane int) (*CompletionEvent, error) {
 	if d.Store == nil {
@@ -371,7 +411,7 @@ func (d *CompletionDetector) isBrAvailable() bool {
 	d.brAvailable = &available
 
 	if !available && d.Config.GracefulDegrading {
-		fmt.Println("[DETECT] br CLI unavailable, using pattern matching and idle detection")
+		slog.Debug("completion detector using fallback detection because br CLI is unavailable", "session", d.Session)
 	}
 
 	return available
@@ -425,9 +465,11 @@ func (d *CompletionDetector) checkIdle(a *assignment.Assignment, output string, 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	key := assignmentAttemptKey(a)
 	state, exists := d.activityTracker[a.Pane]
-	if !exists {
+	if !exists || state.assignmentKey != key {
 		state = &activityState{
+			assignmentKey:  key,
 			lastOutputTime: time.Now(),
 			lastOutput:     output,
 		}

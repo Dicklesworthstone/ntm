@@ -1,14 +1,41 @@
 package completion
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 )
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+	return <-done
+}
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -277,6 +304,40 @@ func TestIdleDetection(t *testing.T) {
 	}
 }
 
+func TestIdleDetectionResetsForNewAssignmentOnSamePane(t *testing.T) {
+	store := assignment.NewStore("test-session")
+	cfg := DefaultConfig()
+	cfg.IdleThreshold = 10 * time.Millisecond
+	d := NewWithConfig("test-session", store, cfg)
+
+	now := time.Now()
+	first := &assignment.Assignment{
+		BeadID:     "bd-old",
+		Pane:       0,
+		AgentType:  "claude",
+		AssignedAt: now,
+	}
+	second := &assignment.Assignment{
+		BeadID:     "bd-new",
+		Pane:       0,
+		AgentType:  "claude",
+		AssignedAt: now.Add(time.Second),
+	}
+
+	if event := d.checkIdle(first, "initial output", now); event != nil {
+		t.Fatal("first assignment should initialize idle tracking without completing")
+	}
+	if event := d.checkIdle(first, "updated output", now); event != nil {
+		t.Fatal("first assignment should not complete when output changes")
+	}
+
+	time.Sleep(15 * time.Millisecond)
+
+	if event := d.checkIdle(second, "updated output", second.AssignedAt); event != nil {
+		t.Fatalf("new assignment should not inherit stale idle state, got %+v", event)
+	}
+}
+
 func TestWatchCancellation(t *testing.T) {
 	store := assignment.NewStore("test-session")
 	cfg := DefaultConfig()
@@ -306,12 +367,12 @@ func TestDeduplication(t *testing.T) {
 
 	// Record an event
 	d.mu.Lock()
-	d.recentEvents["bd-test"] = time.Now()
+	d.recentEvents["bd-test:0:attempt"] = time.Now()
 	d.mu.Unlock()
 
 	// Check if within dedup window
 	d.mu.RLock()
-	lastEvent, exists := d.recentEvents["bd-test"]
+	lastEvent, exists := d.recentEvents["bd-test:0:attempt"]
 	d.mu.RUnlock()
 
 	if !exists {
@@ -319,6 +380,42 @@ func TestDeduplication(t *testing.T) {
 	}
 	if time.Since(lastEvent) >= d.Config.DedupWindow {
 		t.Error("Event should be within dedup window")
+	}
+}
+
+func TestRecordEventLockedScopesDedupToAssignmentAttempt(t *testing.T) {
+	d := New("test-session", nil)
+	d.Config.DedupWindow = 100 * time.Millisecond
+
+	now := time.Now()
+	first := &assignment.Assignment{
+		BeadID:     "bd-test",
+		Pane:       0,
+		AssignedAt: now,
+	}
+	retry := &assignment.Assignment{
+		BeadID:     "bd-test",
+		Pane:       0,
+		AssignedAt: now.Add(time.Second),
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if !d.recordEventLocked(first, now) {
+		t.Fatal("first event should be recorded")
+	}
+	if d.recordEventLocked(first, now.Add(10*time.Millisecond)) {
+		t.Fatal("same assignment attempt should be deduplicated within the window")
+	}
+
+	d.recentEvents["stale"] = now.Add(-time.Second)
+
+	if !d.recordEventLocked(retry, now.Add(10*time.Millisecond)) {
+		t.Fatal("retry attempt should not inherit the previous attempt's dedup state")
+	}
+	if _, exists := d.recentEvents["stale"]; exists {
+		t.Fatal("expired dedup entries should be pruned")
 	}
 }
 
@@ -340,6 +437,21 @@ func TestBrAvailableCaching(t *testing.T) {
 	defer d.mu.RUnlock()
 	if d.brAvailable == nil {
 		t.Error("brAvailable cache should be set after first call")
+	}
+}
+
+func TestIsBrAvailable_DoesNotWriteStdoutWhenUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	d := New("test-session", nil)
+	output := captureStdout(t, func() {
+		if d.isBrAvailable() {
+			t.Fatal("expected br to be unavailable in isolated PATH")
+		}
+	})
+
+	if output != "" {
+		t.Fatalf("expected no stdout output, got %q", output)
 	}
 }
 

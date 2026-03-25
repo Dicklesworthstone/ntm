@@ -1,10 +1,12 @@
 package serve
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -129,6 +131,7 @@ type redactingResponseWriter struct {
 	statusCode  int
 	wroteHeader bool
 	finalized   bool
+	hijacked    bool
 	mu          sync.Mutex
 }
 
@@ -161,7 +164,7 @@ func (rw *redactingResponseWriter) finalize() {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 
-	if rw.finalized {
+	if rw.finalized || rw.hijacked {
 		return
 	}
 	rw.finalized = true
@@ -202,14 +205,17 @@ func (rw *redactingResponseWriter) Flush() {
 	if !rw.finalized {
 		rw.finalized = true // Switch to passthrough mode
 
+		if rw.wroteHeader {
+			rw.ResponseWriter.WriteHeader(rw.statusCode)
+			rw.wroteHeader = false
+		}
+
 		// Flush any already-buffered content first
 		body := rw.buffer.Bytes()
 		if len(body) > 0 {
-			if rw.wroteHeader {
-				rw.ResponseWriter.WriteHeader(rw.statusCode)
-				rw.wroteHeader = false
+			if _, err := rw.ResponseWriter.Write(body); err != nil {
+				log.Printf("redact: failed to flush buffered streaming body: %v", err)
 			}
-			rw.ResponseWriter.Write(body) //nolint:errcheck
 			rw.buffer.Reset()
 		}
 	}
@@ -218,6 +224,37 @@ func (rw *redactingResponseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack preserves websocket and other upgraded connection flows when redaction
+// middleware wraps the response writer.
+func (rw *redactingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+
+	rw.mu.Lock()
+	rw.hijacked = true
+	rw.finalized = true
+	rw.buffer.Reset()
+	rw.mu.Unlock()
+
+	return hijacker.Hijack()
+}
+
+// Push preserves optional HTTP/2 server push support when available.
+func (rw *redactingResponseWriter) Push(target string, opts *http.PushOptions) error {
+	pusher, ok := rw.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, opts)
+}
+
+// Unwrap exposes the underlying response writer for ResponseController callers.
+func (rw *redactingResponseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }
 
 // isJSONContent checks if the content type is JSON.

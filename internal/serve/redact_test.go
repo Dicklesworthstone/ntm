@@ -1,9 +1,11 @@
 package serve
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -520,6 +522,103 @@ func TestRedactingResponseWriter(t *testing.T) {
 	})
 
 	t.Log("TEST: TestRedactingResponseWriter - passed")
+}
+
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+	writeCalls       int
+	writeHeaderCalls int
+	conn             net.Conn
+	peer             net.Conn
+}
+
+func newHijackableRecorder() *hijackableRecorder {
+	return &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *hijackableRecorder) WriteHeader(code int) {
+	r.writeHeaderCalls++
+	r.ResponseRecorder.WriteHeader(code)
+}
+
+func (r *hijackableRecorder) Write(b []byte) (int, error) {
+	r.writeCalls++
+	return r.ResponseRecorder.Write(b)
+}
+
+func (r *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	serverConn, clientConn := net.Pipe()
+	r.conn = serverConn
+	r.peer = clientConn
+	return serverConn, bufio.NewReadWriter(bufio.NewReader(serverConn), bufio.NewWriter(serverConn)), nil
+}
+
+func (r *hijackableRecorder) closeConns() {
+	if r.conn != nil {
+		_ = r.conn.Close()
+	}
+	if r.peer != nil {
+		_ = r.peer.Close()
+	}
+}
+
+func TestRedactionMiddleware_PreservesHijacker(t *testing.T) {
+	s := &Server{
+		redactionCfg: &RedactionConfig{
+			Enabled: true,
+			Config:  redaction.Config{Mode: redaction.ModeRedact},
+		},
+	}
+
+	handler := s.redactionMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("wrapped response writer does not implement http.Hijacker")
+		}
+		if _, _, err := hijacker.Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	rr := newHijackableRecorder()
+	t.Cleanup(rr.closeConns)
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.writeCalls != 0 {
+		t.Fatalf("expected no body writes after hijack, got %d", rr.writeCalls)
+	}
+	if rr.writeHeaderCalls != 0 {
+		t.Fatalf("expected no header writes after hijack, got %d", rr.writeHeaderCalls)
+	}
+}
+
+func TestRedactingResponseWriter_FlushPreservesStatusWithoutBufferedBody(t *testing.T) {
+	rr := httptest.NewRecorder()
+	rw := &redactingResponseWriter{
+		ResponseWriter: rr,
+		cfg:            redaction.Config{Mode: redaction.ModeRedact},
+		summary:        &RedactionSummary{},
+		categories:     make(map[string]int),
+		buffer:         &bytes.Buffer{},
+	}
+
+	rw.Header().Set("Content-Type", "text/event-stream")
+	rw.WriteHeader(http.StatusAccepted)
+	rw.Flush()
+	if _, err := rw.Write([]byte("event: ping\n\n")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusAccepted)
+	}
+	if got := rr.Body.String(); got != "event: ping\n\n" {
+		t.Fatalf("body = %q, want %q", got, "event: ping\n\n")
+	}
 }
 
 // =============================================================================

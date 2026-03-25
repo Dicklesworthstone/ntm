@@ -5364,6 +5364,9 @@ func TestHandleCASSSearch_ValidQuery(t *testing.T) {
 	if !cassInstalled() {
 		t.Skip("cass not installed")
 	}
+	if !cassSearchOperational(t) {
+		t.Skip("cass search backend not operational")
+	}
 	s, _ := setupTestServer(t)
 
 	body := `{"query":"test","limit":1}`
@@ -5952,6 +5955,21 @@ func TestHandleBeadsRecipes_BvInstalled(t *testing.T) {
 func cassInstalled() bool {
 	c := cass.NewClient()
 	return c.IsInstalled()
+}
+
+func cassSearchOperational(t *testing.T) bool {
+	t.Helper()
+
+	client := cass.NewClient()
+	if !client.IsInstalled() {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.SearchQuick(ctx, "test")
+	return err == nil
 }
 
 // =============================================================================
