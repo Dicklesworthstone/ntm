@@ -53,7 +53,6 @@ type InterruptOptions struct {
 	NoWait          bool     // Don't wait for ready state after interrupt
 	TimeoutMs       int      // Timeout for waiting for ready state (default 10000)
 	PollMs          int      // Poll interval (default 300)
-	PreserveContext bool     // Log context before interrupt (for potential resume)
 	DryRun          bool     // Preview mode: show what would happen without executing
 	RequestID       string   // External request identifier for REST parity
 	CorrelationID   string   // Correlation identifier for tracing request/outcome/verification

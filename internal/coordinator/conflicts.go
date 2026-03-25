@@ -62,6 +62,13 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context) ([]Conflict, err
 
 	conflicts := detectReservationConflictsAt(reservations, time.Now())
 	d.mu.Lock()
+	// Prune old conflicts to prevent unbounded growth
+	now := time.Now()
+	for id, c := range d.conflicts {
+		if now.Sub(c.DetectedAt) > time.Hour {
+			delete(d.conflicts, id)
+		}
+	}
 	for i := range conflicts {
 		conflict := conflicts[i]
 		d.conflicts[conflict.ID] = &conflict
@@ -233,6 +240,12 @@ func sortHolders(holders []Holder) {
 
 // NegotiateConflict attempts to resolve a conflict by requesting release from lower-priority holders.
 func (c *SessionCoordinator) NegotiateConflict(ctx context.Context, conflict *Conflict, requester string) error {
+	if conflict == nil {
+		return fmt.Errorf("conflict is nil")
+	}
+	if requester == "" {
+		return fmt.Errorf("requester is empty")
+	}
 	if c.mailClient == nil {
 		return fmt.Errorf("agent mail not available")
 	}
@@ -289,6 +302,9 @@ func (c *SessionCoordinator) NegotiateConflict(ctx context.Context, conflict *Co
 
 // NotifyConflict sends a notification about a conflict without requesting resolution.
 func (c *SessionCoordinator) NotifyConflict(ctx context.Context, conflict *Conflict) error {
+	if conflict == nil {
+		return fmt.Errorf("conflict is nil")
+	}
 	if c.mailClient == nil {
 		return nil
 	}
@@ -297,6 +313,9 @@ func (c *SessionCoordinator) NotifyConflict(ctx context.Context, conflict *Confl
 	var recipients []string
 	for _, h := range conflict.Holders {
 		recipients = append(recipients, h.AgentName)
+	}
+	if len(recipients) == 0 {
+		return nil // No one to notify
 	}
 
 	body := c.formatConflictNotification(conflict)

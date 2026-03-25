@@ -35,14 +35,19 @@ type RedactionSummary struct {
 // It scans JSON request bodies and response bodies for secrets and redacts or blocks as configured.
 func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Snapshot config under lock to avoid races with SetRedactionConfig
+		s.mu.Lock()
+		rcfg := s.redactionCfg
+		s.mu.Unlock()
+
 		// Skip if redaction not enabled
-		if s.redactionCfg == nil || !s.redactionCfg.Enabled || s.redactionCfg.Config.Mode == redaction.ModeOff {
+		if rcfg == nil || !rcfg.Enabled || rcfg.Config.Mode == redaction.ModeOff {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		reqID := requestIDFromContext(r.Context())
-		cfg := s.redactionCfg.Config
+		cfg := rcfg.Config
 
 		// Track findings for summary
 		summary := &RedactionSummary{
@@ -53,7 +58,7 @@ func (s *Server) redactionMiddleware(next http.Handler) http.Handler {
 		categories := make(map[string]int)
 
 		// Handle request body redaction for JSON content
-		if r.Body != nil && r.ContentLength > 0 {
+		if r.Body != nil && r.ContentLength != 0 {
 			contentType := r.Header.Get("Content-Type")
 			if isJSONContent(contentType) {
 				// Limit request body to 10MB to prevent DoS/OOM
@@ -143,6 +148,10 @@ func (rw *redactingResponseWriter) Write(b []byte) (int, error) {
 		rw.statusCode = http.StatusOK
 		rw.wroteHeader = true
 	}
+	// After Flush() is called, write directly (streaming passthrough mode)
+	if rw.finalized {
+		return rw.ResponseWriter.Write(b)
+	}
 	// Buffer the response for redaction
 	return rw.buffer.Write(b)
 }
@@ -184,11 +193,29 @@ func (rw *redactingResponseWriter) finalize() {
 	}
 }
 
-// Flush implements http.Flusher for streaming responses.
+// Flush implements http.Flusher for streaming responses (SSE, chunked).
+// Once Flush is called, the writer switches to passthrough mode — subsequent
+// writes go directly to the underlying ResponseWriter without buffering,
+// since streaming responses can't be buffered-then-redacted as a whole.
 func (rw *redactingResponseWriter) Flush() {
+	rw.mu.Lock()
+	if !rw.finalized {
+		rw.finalized = true // Switch to passthrough mode
+
+		// Flush any already-buffered content first
+		body := rw.buffer.Bytes()
+		if len(body) > 0 {
+			if rw.wroteHeader {
+				rw.ResponseWriter.WriteHeader(rw.statusCode)
+				rw.wroteHeader = false
+			}
+			rw.ResponseWriter.Write(body) //nolint:errcheck
+			rw.buffer.Reset()
+		}
+	}
+	rw.mu.Unlock()
+
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
-		// For streaming, we can't buffer - just pass through
-		rw.finalize()
 		f.Flush()
 	}
 }
@@ -278,9 +305,13 @@ func (s *Server) SetRedactionConfig(cfg *RedactionConfig) {
 	s.redactionCfg = cfg
 }
 
-// GetRedactionConfig returns the current redaction configuration.
+// GetRedactionConfig returns a copy of the current redaction configuration.
 func (s *Server) GetRedactionConfig() *RedactionConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.redactionCfg
+	if s.redactionCfg == nil {
+		return nil
+	}
+	cp := *s.redactionCfg
+	return &cp
 }
