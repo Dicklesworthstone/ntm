@@ -2547,7 +2547,7 @@ func TestBeadActionMarshal(t *testing.T) {
 		Priority:  1,
 		Impact:    0.85,
 		Reasoning: []string{"High centrality", "Blocks 3 items"},
-		Command:   "bd update ntm-123 --status in_progress",
+		Command:   "br update ntm-123 --status in_progress",
 		IsReady:   true,
 		BlockedBy: nil,
 	}
@@ -2586,7 +2586,7 @@ func TestBeadActionMarshalWithBlockers(t *testing.T) {
 		Priority:  2,
 		Impact:    0.65,
 		Reasoning: []string{"Depends on other tasks"},
-		Command:   "bd update ntm-456 --status in_progress",
+		Command:   "br update ntm-456 --status in_progress",
 		IsReady:   false,
 		BlockedBy: []string{"ntm-123", "ntm-789"},
 	}

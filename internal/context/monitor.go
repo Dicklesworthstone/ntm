@@ -5,108 +5,19 @@ package context
 import (
 	"encoding/json"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/models"
 )
-
-// modelDateSuffixRegex matches date suffixes like -20251101 in model names
-var modelDateSuffixRegex = regexp.MustCompile(`-\d{8}$`)
-
-// ContextLimits maps model names to their context window sizes in tokens.
-// These are approximate values based on published specifications.
-var ContextLimits = map[string]int64{
-	// Claude models
-	"claude-sonnet-4":   200000,
-	"claude-opus-4":     200000,
-	"claude-opus-4.5":   200000,
-	"claude-haiku":      200000,
-	"claude-3-opus":     200000,
-	"claude-3-sonnet":   200000,
-	"claude-3-haiku":    200000,
-	"claude-3.5-sonnet": 200000,
-	"claude-3.5-haiku":  200000,
-	"claude-sonnet-4-5": 200000,
-	"claude-opus-4-5":   200000,
-
-	// OpenAI models
-	"gpt-4":       128000,
-	"gpt-4-turbo": 128000,
-	"gpt-4o":      128000,
-	"gpt-4o-mini": 128000,
-	"gpt-5":       256000,
-	"gpt-5-codex": 256000,
-	"o1":          128000,
-	"o1-mini":     128000,
-	"o1-preview":  128000,
-	"o3-mini":     200000,
-
-	// Google models
-	"gemini-2.0-flash":      1000000,
-	"gemini-2.0-flash-lite": 1000000,
-	"gemini-1.5-pro":        1000000,
-	"gemini-1.5-flash":      1000000,
-	"gemini-pro":            32000,
-
-	// Default fallback
-	"default": 128000,
-}
-
-var (
-	sortedContextKeys []string
-	sortKeysOnce      sync.Once
-)
-
-func getSortedContextKeys() []string {
-	sortKeysOnce.Do(func() {
-		var keys []string
-		for k := range ContextLimits {
-			keys = append(keys, k)
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			return len(keys[i]) > len(keys[j])
-		})
-		sortedContextKeys = keys
-	})
-	return sortedContextKeys
-}
 
 // GetContextLimit returns the context limit for a model.
-// Returns the default limit if the model is not found.
+// Delegates to the canonical registry in internal/models.
 func GetContextLimit(model string) int64 {
-	// Try exact match first
-	if limit, ok := ContextLimits[model]; ok {
-		return limit
-	}
-
-	// Try normalized name (lowercase, remove version suffixes)
-	normalized := normalizeModelName(model)
-	if limit, ok := ContextLimits[normalized]; ok {
-		return limit
-	}
-
-	// Try prefix matching for families
-	keys := getSortedContextKeys()
-
-	modelLower := strings.ToLower(model)
-	for _, key := range keys {
-		if strings.HasPrefix(modelLower, key) {
-			return ContextLimits[key]
-		}
-	}
-
-	return ContextLimits["default"]
-}
-
-// normalizeModelName normalizes a model name for lookup.
-func normalizeModelName(model string) string {
-	model = strings.ToLower(model)
-	// Remove date suffixes like -20251101
-	model = modelDateSuffixRegex.ReplaceAllString(model, "")
-	return model
+	return int64(models.GetContextLimit(model))
 }
 
 // EstimationMethod identifies how the estimate was computed.
@@ -213,7 +124,7 @@ func ParseRobotModeContext(output string) *ContextEstimate {
 
 	// Apply default limit if none was found in the data
 	if !hasLimit {
-		contextLimit = float64(ContextLimits["default"])
+		contextLimit = float64(models.DefaultContextLimit)
 	}
 
 	if !hasUsed || contextLimit == 0 {

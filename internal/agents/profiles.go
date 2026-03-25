@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/models"
 )
 
 // AgentType represents the type of AI coding agent.
@@ -81,7 +83,7 @@ func (pm *ProfileMatcher) loadDefaults() {
 	pm.profiles[AgentTypeClaude] = &AgentProfile{
 		Type:          AgentTypeClaude,
 		Model:         "claude-opus-4-6",
-		ContextBudget: 180000,
+		ContextBudget: models.GetTokenBudget("cc"),
 		Specializations: []Specialization{
 			SpecComplex,
 			SpecArchitecture,
@@ -101,7 +103,7 @@ func (pm *ProfileMatcher) loadDefaults() {
 	pm.profiles[AgentTypeCodex] = &AgentProfile{
 		Type:          AgentTypeCodex,
 		Model:         "gpt-5.3-codex",
-		ContextBudget: 120000,
+		ContextBudget: models.GetTokenBudget("cod"),
 		Specializations: []Specialization{
 			SpecQuick,
 			SpecRefactorSmall,
@@ -120,7 +122,7 @@ func (pm *ProfileMatcher) loadDefaults() {
 	pm.profiles[AgentTypeGemini] = &AgentProfile{
 		Type:          AgentTypeGemini,
 		Model:         "gemini-3-pro-preview",
-		ContextBudget: 100000,
+		ContextBudget: models.GetTokenBudget("gmi"),
 		Specializations: []Specialization{
 			SpecResearch,
 			SpecDocs,

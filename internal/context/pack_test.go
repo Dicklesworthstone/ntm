@@ -574,17 +574,21 @@ func TestOptimizeFilesForBudget_PriorityOrder(t *testing.T) {
 func TestTokenBudgets(t *testing.T) {
 	t.Parallel()
 
-	if TokenBudgets["cc"] != 180000 {
-		t.Errorf("cc budget = %d, want 180000", TokenBudgets["cc"])
+	cc := GetTokenBudget("cc")
+	if cc < 170000 || cc > 190000 {
+		t.Errorf("cc budget = %d, want ~180000", cc)
 	}
-	if TokenBudgets["cod"] != 120000 {
-		t.Errorf("cod budget = %d, want 120000", TokenBudgets["cod"])
+	cod := GetTokenBudget("cod")
+	if cod < 200000 || cod > 260000 {
+		t.Errorf("cod budget = %d, want ~240000", cod)
 	}
-	if TokenBudgets["gmi"] != 100000 {
-		t.Errorf("gmi budget = %d, want 100000", TokenBudgets["gmi"])
+	gmi := GetTokenBudget("gmi")
+	if gmi < 90000 || gmi > 110000 {
+		t.Errorf("gmi budget = %d, want ~100000", gmi)
 	}
-	if TokenBudgets["default"] != 100000 {
-		t.Errorf("default budget = %d, want 100000", TokenBudgets["default"])
+	def := GetTokenBudget("unknown")
+	if def < 90000 || def > 110000 {
+		t.Errorf("default budget = %d, want ~100000", def)
 	}
 }
 

@@ -32,25 +32,25 @@ func TestGetContextLimit(t *testing.T) {
 	}
 }
 
-func TestNormalizeModelName(t *testing.T) {
+func TestGetContextLimit_DateSuffixStripping(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		input    string
-		expected string
+		input string
+		want  int64
 	}{
-		{"claude-opus-4-5-20251101", "claude-opus-4-5"},
-		{"gpt-4-turbo-20240101", "gpt-4-turbo"},
-		{"gemini-pro", "gemini-pro"},
-		{"Claude-Opus-4", "claude-opus-4"},
+		{"claude-opus-4-5-20251101", 200000},
+		{"gpt-4-turbo-20240101", 128000},
+		{"gemini-pro", 32000},
+		{"Claude-Opus-4", 200000},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			t.Parallel()
-			got := normalizeModelName(tt.input)
-			if got != tt.expected {
-				t.Errorf("normalizeModelName(%q) = %q, want %q", tt.input, got, tt.expected)
+			got := GetContextLimit(tt.input)
+			if got != tt.want {
+				t.Errorf("GetContextLimit(%q) = %d, want %d", tt.input, got, tt.want)
 			}
 		})
 	}

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/models"
 )
 
 // TestMultiModelEstimation tests token counting accuracy across different model families.
@@ -359,7 +361,7 @@ func TestEdgeCases(t *testing.T) {
 	t.Run("unknown model", func(t *testing.T) {
 		t.Parallel()
 		limit := GetContextLimit("totally-unknown-model-xyz")
-		if limit != ContextLimits["default"] {
+		if limit != int64(models.DefaultContextLimit) {
 			t.Errorf("unknown model should return default limit, got %d", limit)
 		}
 	})

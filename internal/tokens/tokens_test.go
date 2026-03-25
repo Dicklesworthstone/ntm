@@ -62,7 +62,7 @@ func TestGetContextLimit(t *testing.T) {
 	}{
 		{"claude-3-5-sonnet", 200000},
 		{"gpt-4", 128000},
-		{"gemini-pro", 1000000},
+		{"gemini-pro", 32000},
 		{"unknown-model", 128000}, // Default
 	}
 
@@ -233,11 +233,11 @@ func TestMultiModelContextLimits(t *testing.T) {
 		{"gpt4-turbo", 128000},
 		{"o1", 128000},
 		{"o1-mini", 128000},
-		{"codex", 128000},
+		{"codex", 256000},
 
 		// Google models
 		{"gemini", 1000000},
-		{"gemini-pro", 1000000},
+		{"gemini-pro", 32000},
 		{"gemini-flash", 1000000},
 		{"gemini-ultra", 1000000},
 
@@ -411,7 +411,7 @@ func TestUsageInfoComprehensive(t *testing.T) {
 		{
 			name:     "text on Gemini (large context)",
 			text:     string(make([]byte, 10000)),
-			model:    "gemini-pro",
+			model:    "gemini-2.0-flash",
 			minUsage: 0.1,
 			maxUsage: 1.0, // ~2.8k / 1M = ~0.28%
 		},

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Dicklesworthstone/ntm/internal/models"
 )
 
 // EstimateTokens provides a rough token count estimate.
@@ -97,97 +99,14 @@ func EstimateWithOverhead(visibleText string, multiplier float64) int {
 	return int(float64(visible) * multiplier)
 }
 
-// ContextLimits maps model identifiers to their approximate context limits.
-// These are conservative estimates and may change as models are updated.
-var ContextLimits = map[string]int{
-	// Anthropic Claude models
-	"opus":        200000,
-	"opus-4":      200000,
-	"claude-opus": 200000,
-	"sonnet":      200000,
-	"sonnet-4":    200000,
-	"sonnet-3.5":  200000,
-	"haiku":       200000,
-	"haiku-3":     200000,
-
-	// OpenAI models
-	"gpt4":       128000,
-	"gpt-4":      128000,
-	"gpt4o":      128000,
-	"gpt-4o":     128000,
-	"gpt4-turbo": 128000,
-	"o1":         128000,
-	"o1-mini":    128000,
-	"codex":      128000,
-
-	// Google models
-	"gemini":     1000000,
-	"pro":        1000000,
-	"gemini-pro": 1000000,
-	"flash":      1000000,
-	"ultra":      1000000,
-}
-
-// DefaultContextLimit is used when a model isn't recognized
-const DefaultContextLimit = 128000
+// DefaultContextLimit is used when a model isn't recognized.
+// Delegates to the canonical registry in internal/models.
+const DefaultContextLimit = models.DefaultContextLimit
 
 // GetContextLimit returns the context limit for a given model identifier.
-// Returns DefaultContextLimit if the model is not recognized.
+// Delegates to the canonical registry in internal/models.
 func GetContextLimit(model string) int {
-	normalized := normalizeModel(model)
-	if limit, ok := ContextLimits[normalized]; ok {
-		return limit
-	}
-	return DefaultContextLimit
-}
-
-// normalizeModel converts model names to a canonical form for lookup.
-// Handles common variations: "claude-3.5-sonnet" -> "sonnet-3.5"
-func normalizeModel(model string) string {
-	model = strings.ToLower(strings.TrimSpace(model))
-
-	// Handle Claude model naming conventions
-	if strings.Contains(model, "claude") {
-		if strings.Contains(model, "opus") {
-			return "opus"
-		}
-		if strings.Contains(model, "sonnet") {
-			if strings.Contains(model, "3.5") || strings.Contains(model, "35") {
-				return "sonnet-3.5"
-			}
-			return "sonnet"
-		}
-		if strings.Contains(model, "haiku") {
-			return "haiku"
-		}
-	}
-
-	// Handle OpenAI model naming
-	if strings.Contains(model, "gpt") {
-		if strings.Contains(model, "4o") {
-			return "gpt4o"
-		}
-		if strings.Contains(model, "4") {
-			return "gpt4"
-		}
-	}
-
-	// Handle Gemini naming
-	if strings.Contains(model, "gemini") {
-		if strings.Contains(model, "pro") {
-			return "gemini-pro"
-		}
-		if strings.Contains(model, "flash") {
-			return "flash"
-		}
-		if strings.Contains(model, "ultra") {
-			return "ultra"
-		}
-		return "gemini"
-	}
-
-	// Return as-is for direct lookups
-	return model
+	return models.GetContextLimit(model)
 }
 
 // UsagePercentage calculates what percentage of context is used.

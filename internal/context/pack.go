@@ -10,16 +10,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
-// TokenBudgets defines context limits per agent type
-var TokenBudgets = map[string]int{
-	"cc":      180000, // Claude Opus 4.5
-	"cod":     120000, // OpenAI Codex
-	"gmi":     100000, // Google Gemini
-	"default": 100000,
+// GetTokenBudget returns the safe working token budget for an agent type.
+// Delegates to the canonical registry in internal/models.
+func GetTokenBudget(agentType string) int {
+	return models.GetTokenBudget(agentType)
 }
 
 // BudgetAllocation defines percentage allocation per component
@@ -141,11 +140,8 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	}
 	globalCacheMu.RUnlock()
 
-	// Determine budget
-	budget := TokenBudgets[opts.AgentType]
-	if budget == 0 {
-		budget = TokenBudgets["default"]
-	}
+	// Determine budget from canonical registry
+	budget := GetTokenBudget(opts.AgentType)
 
 	// Initialize pack
 	pack := &ContextPackFull{

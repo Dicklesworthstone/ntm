@@ -25,6 +25,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/git"
+	"github.com/Dicklesworthstone/ntm/internal/models"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
@@ -1836,7 +1837,7 @@ type BeadAction struct {
 	Priority      int            `json:"priority"`
 	Impact        float64        `json:"impact_score"`
 	Reasoning     []string       `json:"reasoning"`
-	Command       string         `json:"command"`              // e.g., "bd update ntm-xyz --status in_progress"
+	Command       string         `json:"command"`              // e.g., "br update ntm-xyz --status in_progress"
 	IsReady       bool           `json:"is_ready"`             // true if no blockers
 	BlockedBy     []string       `json:"blocked_by,omitempty"` // blocking bead IDs
 	GraphPosition *GraphPosition `json:"graph_position,omitempty"`
@@ -3539,7 +3540,7 @@ func getBeadRecommendations(limit int) ([]BeadAction, []string) {
 			Priority:  rec.SuggestedPriority,
 			Impact:    rec.ImpactScore,
 			Reasoning: rec.Reasoning,
-			Command:   fmt.Sprintf("bd update %s --status in_progress", rec.IssueID),
+			Command:   fmt.Sprintf("br update %s --status in_progress", rec.IssueID),
 			IsReady:   isReady,
 		}
 
@@ -3603,13 +3604,13 @@ func getReadyIssueIDs() map[string]bool {
 func getBlockersForIssue(issueID string) []string {
 	var blockers []string
 
-	// Try to run bd show <id> --json to get dependencies
+	// Try to run br show <id> --json to get dependencies
 	output, err := bv.RunBd("", "show", issueID, "--json")
 	if err != nil {
 		return blockers
 	}
 
-	// Parse JSON - bd show returns an array with one element
+	// Parse JSON - br show returns an array with one element
 	var issues []struct {
 		Dependencies []struct {
 			ID     string `json:"id"`
@@ -8426,14 +8427,14 @@ func buildCorrelationGraph() *GraphCorrelation {
 	}
 
 	// Fill dependency edges for in-progress beads (best-effort, bounded).
-	if _, err := exec.LookPath("bd"); err == nil {
+	if _, err := exec.LookPath("br"); err == nil {
 		for beadID, node := range corr.BeadGraph {
 			if node.Status != "in_progress" {
 				continue
 			}
 			blockedBy, deps, err := getBeadNeighbors(wd, beadID, "down")
 			if err != nil {
-				corr.Errors = append(corr.Errors, fmt.Sprintf("bd dep tree down %s: %v", beadID, err))
+				corr.Errors = append(corr.Errors, fmt.Sprintf("br dep tree down %s: %v", beadID, err))
 			} else {
 				node.BlockedBy = blockedBy
 				for _, dep := range deps {
@@ -8452,7 +8453,7 @@ func buildCorrelationGraph() *GraphCorrelation {
 
 			blocking, deps, err := getBeadNeighbors(wd, beadID, "up")
 			if err != nil {
-				corr.Errors = append(corr.Errors, fmt.Sprintf("bd dep tree up %s: %v", beadID, err))
+				corr.Errors = append(corr.Errors, fmt.Sprintf("br dep tree up %s: %v", beadID, err))
 			} else {
 				node.Blocking = blocking
 				for _, dep := range deps {
@@ -8518,12 +8519,12 @@ func getBeadNeighbors(dir, issueID, direction string) ([]string, []bdDepTreeNode
 
 	out, err := bv.RunBd(dir, "dep", "tree", issueID, "--direction="+direction, "--max-depth=1", "--json")
 	if err != nil {
-		return nil, nil, fmt.Errorf("bd dep tree: %w", err)
+		return nil, nil, fmt.Errorf("br dep tree: %w", err)
 	}
 
 	var nodes []bdDepTreeNode
 	if err := json.Unmarshal([]byte(out), &nodes); err != nil {
-		return nil, nil, fmt.Errorf("parse bd dep tree json: %w", err)
+		return nil, nil, fmt.Errorf("parse br dep tree json: %w", err)
 	}
 
 	seen := make(map[string]bool)
@@ -9063,7 +9064,7 @@ func PrintTerse(cfg *config.Config) error {
 // ensureProjectWithRetry wraps EnsureProject with a small retry window for
 // transient SQLite lock contention on the Agent Mail server.
 func ensureProjectWithRetry(ctx context.Context, client *agentmail.Client, projectKey string) (*agentmail.Project, error) {
-	const maxAttempts = 4
+	const maxAttempts = 4 // Canonical default: config.RetryConfig.DB.MaxAttempts
 	backoff := 100 * time.Millisecond
 
 	var lastErr error
@@ -9284,22 +9285,10 @@ func getUsageLevel(pct float64) string {
 	}
 }
 
-// getContextLimit returns the context window limit for a model
+// getContextLimit returns the context window limit for a model.
+// Delegates to the canonical registry in internal/models.
 func getContextLimit(model string) int {
-	switch model {
-	case "opus", "sonnet":
-		return 200000
-	case "haiku":
-		return 200000
-	case "gpt4", "o4-mini":
-		return 128000
-	case "o1", "o3":
-		return 200000
-	case "gemini", "pro", "flash":
-		return 1000000
-	default:
-		return 128000 // Conservative default
-	}
+	return models.GetContextLimit(model)
 }
 
 // generateContextHints creates agent hints based on usage patterns

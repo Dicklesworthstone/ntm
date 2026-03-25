@@ -3,6 +3,8 @@ package agents
 import (
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/models"
 )
 
 func TestNewProfileMatcher(t *testing.T) {
@@ -19,8 +21,9 @@ func TestNewProfileMatcher(t *testing.T) {
 	if claude == nil {
 		t.Fatal("Claude profile should exist")
 	}
-	if claude.ContextBudget != 180000 {
-		t.Errorf("Claude context budget should be 180000, got %d", claude.ContextBudget)
+	expectedClaude := models.GetTokenBudget("cc")
+	if claude.ContextBudget != expectedClaude {
+		t.Errorf("Claude context budget should be %d, got %d", expectedClaude, claude.ContextBudget)
 	}
 	if len(claude.Specializations) == 0 {
 		t.Error("Claude should have specializations")
@@ -31,8 +34,9 @@ func TestNewProfileMatcher(t *testing.T) {
 	if codex == nil {
 		t.Fatal("Codex profile should exist")
 	}
-	if codex.ContextBudget != 120000 {
-		t.Errorf("Codex context budget should be 120000, got %d", codex.ContextBudget)
+	expectedCodex := models.GetTokenBudget("cod")
+	if codex.ContextBudget != expectedCodex {
+		t.Errorf("Codex context budget should be %d, got %d", expectedCodex, codex.ContextBudget)
 	}
 
 	// Check Gemini profile
@@ -40,8 +44,9 @@ func TestNewProfileMatcher(t *testing.T) {
 	if gemini == nil {
 		t.Fatal("Gemini profile should exist")
 	}
-	if gemini.ContextBudget != 100000 {
-		t.Errorf("Gemini context budget should be 100000, got %d", gemini.ContextBudget)
+	expectedGemini := models.GetTokenBudget("gmi")
+	if gemini.ContextBudget != expectedGemini {
+		t.Errorf("Gemini context budget should be %d, got %d", expectedGemini, gemini.ContextBudget)
 	}
 }
 
@@ -79,11 +84,13 @@ func TestGetProfileByName(t *testing.T) {
 func TestScoreAssignment_ContextBudget(t *testing.T) {
 	pm := NewProfileMatcher()
 
-	// Task that exceeds Gemini's context budget
+	// Use a token count that exceeds Gemini's budget but not Claude's or Codex's.
+	// Gemini budget is ~100K (10% of 1M), Claude is ~180K, Codex is ~240K.
+	gmiBudget := models.GetTokenBudget("gmi")
 	task := TaskInfo{
 		Title:           "Large refactoring task",
 		Type:            "epic",
-		EstimatedTokens: 150000, // Exceeds Gemini (100K) and Codex (120K)
+		EstimatedTokens: gmiBudget + 10000, // Exceeds Gemini budget
 	}
 
 	// Should fail for Gemini
@@ -95,13 +102,13 @@ func TestScoreAssignment_ContextBudget(t *testing.T) {
 		t.Errorf("Score should be 0 for tasks exceeding budget, got %f", result.Score)
 	}
 
-	// Should fail for Codex
+	// Should succeed for Codex (budget ~240K, well above task)
 	result = pm.ScoreAssignment(AgentTypeCodex, task)
-	if result.CanHandle {
-		t.Error("Codex should not be able to handle task exceeding context budget")
+	if !result.CanHandle {
+		t.Error("Codex should be able to handle task within context budget")
 	}
 
-	// Should succeed for Claude (180K budget)
+	// Should succeed for Claude (budget ~180K)
 	result = pm.ScoreAssignment(AgentTypeClaude, task)
 	if !result.CanHandle {
 		t.Error("Claude should be able to handle task within context budget")
