@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -51,6 +52,7 @@ type Server struct {
 	host          string
 	port          int
 	publicBaseURL string
+	version       string
 	eventBus      *events.EventBus
 	stateStore    *state.Store
 	server        *http.Server
@@ -97,10 +99,18 @@ type attentionHeartbeatSourceSummary struct {
 	degradedReasons []string
 }
 
+// Attention heartbeat intervals control how frequently the attention feed
+// polls for updates in different states.
+// These serve as defaults; override via [serve.attention] in config.toml.
 const (
-	attentionHeartbeatIdleInterval         = 5 * time.Second
+	// attentionHeartbeatIdleInterval is the poll interval when no events are occurring.
+	attentionHeartbeatIdleInterval = 5 * time.Second
+	// attentionHeartbeatHighActivityInterval is used during sustained high event rates
+	// to reduce CPU overhead from frequent polling.
 	attentionHeartbeatHighActivityInterval = 30 * time.Second
-	attentionHeartbeatRecoveryInterval     = time.Second
+	// attentionHeartbeatRecoveryInterval is used when catching up after a gap in data,
+	// polling more frequently to quickly reconstruct state.
+	attentionHeartbeatRecoveryInterval = time.Second
 )
 
 // AuthMode configures authentication for the server.
@@ -148,10 +158,13 @@ type Config struct {
 	Auth          AuthConfig
 	// AllowedOrigins controls CORS origin allowlist. Empty means default localhost only.
 	AllowedOrigins []string
+	// Version is the build version string (set via ldflags). Used by /api/v1/version.
+	Version string
 }
 
 const (
-	defaultPort         = 7337
+	// DefaultPort is the default port for the NTM HTTP server.
+	DefaultPort         = 7337
 	defaultJWKSCacheTTL = 10 * time.Minute
 )
 
@@ -774,7 +787,7 @@ func defaultLocalOrigins() []string {
 
 func applyDefaults(cfg *Config) {
 	if cfg.Port == 0 {
-		cfg.Port = defaultPort
+		cfg.Port = DefaultPort
 	}
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
@@ -836,6 +849,7 @@ func New(cfg Config) *Server {
 		host:               cfg.Host,
 		port:               cfg.Port,
 		publicBaseURL:      cfg.PublicBaseURL,
+		version:            cfg.Version,
 		eventBus:           cfg.EventBus,
 		stateStore:         cfg.StateStore,
 		auth:               cfg.Auth,
@@ -2247,10 +2261,14 @@ func (s *Server) handleHealthV1(w http.ResponseWriter, r *http.Request) {
 // handleVersionV1 handles GET /api/v1/version.
 func (s *Server) handleVersionV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
+	v := s.version
+	if v == "" {
+		v = "dev"
+	}
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"version":     "1.0.0", // TODO: inject from build
+		"version":     v,
 		"api_version": "v1",
-		"go_version":  "1.25",
+		"go_version":  runtime.Version(),
 	}, reqID)
 }
 

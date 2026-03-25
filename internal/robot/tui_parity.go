@@ -3506,19 +3506,19 @@ func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
 		Beads:         []BeadListItem{},
 	}
 
-	// Check if bv/bd is installed
-	if !bv.IsInstalled() {
+	// Check if the beads CLI is installed.
+	if !bv.IsBdInstalled() {
 		return &BeadsListOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("beads system not available"),
 				ErrCodeDependencyMissing,
-				"Install bv/bd or run 'bd init' in your project",
+				"Install br or run 'br init' in your project",
 			),
 			Beads: []BeadListItem{},
 		}, nil
 	}
 
-	// Build bd list command with filters
+	// Build br list command with filters
 	args := []string{"list", "--json"}
 
 	// Add status filter
@@ -3545,14 +3545,14 @@ func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
 		args = append(args, "--type="+opts.Type)
 	}
 
-	// Execute bd list
+	// Execute br list
 	result, err := bv.RunBd("", args...)
 	if err != nil {
 		// Check if this is just "no beads" vs actual error
 		if strings.Contains(err.Error(), "no .beads") || strings.Contains(err.Error(), "not initialized") {
 			output.AgentHints = &AgentHints{
 				Summary: "Beads not initialized in this project",
-				Notes:   []string{"Run 'bd init' to initialize beads tracking"},
+				Notes:   []string{"Run 'br init' to initialize beads tracking"},
 			}
 			return output, nil
 		}
@@ -3560,7 +3560,7 @@ func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("failed to list beads: %w", err),
 				ErrCodeInternalError,
-				"Check that bd is installed and .beads/ exists",
+				"Check that br is installed and .beads/ exists",
 			),
 			Beads: []BeadListItem{},
 		}, nil
@@ -3746,13 +3746,13 @@ func GetBeadClaim(opts BeadClaimOptions) (*BeadClaimOutput, error) {
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
 				ErrCodeInvalidFlag,
-				"Use 'bd list --status=open' to see available beads",
+				"Use 'br list --status=open' to see available beads",
 			),
 			BeadID: opts.BeadID,
 		}, nil
 	}
 
-	// Parse bead info - bd show returns an array
+	// Parse bead info - br show returns an array
 	var beadInfo []struct {
 		ID     string `json:"id"`
 		Title  string `json:"title"`
@@ -3807,7 +3807,7 @@ func GetBeadClaim(opts BeadClaimOptions) (*BeadClaimOutput, error) {
 	output.Claimed = true
 	output.AgentHints = &AgentHints{
 		Summary: fmt.Sprintf("Claimed bead %s: %s", opts.BeadID, truncateString(output.Title, 50)),
-		Notes:   []string{"Use 'bd close " + opts.BeadID + "' when complete"},
+		Notes:   []string{"Use 'br close " + opts.BeadID + "' when complete"},
 	}
 
 	return output, nil
@@ -3876,7 +3876,7 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 		Labels:        opts.Labels,
 	}
 
-	// Build bd create command
+	// Build br create command
 	args := []string{
 		"create",
 		"--json",
@@ -3900,7 +3900,7 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("failed to create bead: %w", err),
 				ErrCodeInternalError,
-				"Check bd is installed and .beads/ directory exists",
+				"Check br is installed and .beads/ directory exists",
 			),
 			Title:    opts.Title,
 			Type:     opts.Type,
@@ -3909,7 +3909,7 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 	}
 
 	// Parse the result to get the bead ID
-	// bd create returns a single object, not an array
+	// br create returns a single object, not an array
 	var singleResult struct {
 		ID string `json:"id"`
 	}
@@ -3962,8 +3962,8 @@ func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 	output.AgentHints = &AgentHints{
 		Summary: fmt.Sprintf("Created %s: %s", output.BeadID, truncateString(output.Title, 40)),
 		Notes: []string{
-			fmt.Sprintf("Claim with: bd update %s --status=in_progress", output.BeadID),
-			fmt.Sprintf("View with: bd show %s", output.BeadID),
+			fmt.Sprintf("Claim with: br update %s --status=in_progress", output.BeadID),
+			fmt.Sprintf("View with: br show %s", output.BeadID),
 		},
 		Warnings: depWarnings, // Preserve any dependency warnings
 	}
@@ -4038,13 +4038,13 @@ func GetBeadShow(opts BeadShowOptions) (*BeadShowOutput, error) {
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
 				ErrCodeInvalidFlag,
-				"Use 'bd list' to see available beads",
+				"Use 'br list' to see available beads",
 			),
 			BeadID: opts.BeadID,
 		}, nil
 	}
 
-	// Parse bead info - bd show returns an array with detailed info
+	// Parse bead info - br show returns an array with detailed info
 	// Dependencies/dependents are arrays of objects with id/title/etc.
 	type depInfo struct {
 		ID    string `json:"id"`
@@ -4109,7 +4109,7 @@ func GetBeadShow(opts BeadShowOptions) (*BeadShowOutput, error) {
 		})
 		notes = append(notes, fmt.Sprintf("Claim with: ntm --robot-bead-claim=%s", opts.BeadID))
 	case "in_progress":
-		notes = append(notes, fmt.Sprintf("Close when done: bd close %s", opts.BeadID))
+		notes = append(notes, fmt.Sprintf("Close when done: br close %s", opts.BeadID))
 		if output.Assignee != "" {
 			notes = append(notes, fmt.Sprintf("Currently assigned to: %s", output.Assignee))
 		}

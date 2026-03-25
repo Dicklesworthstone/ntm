@@ -162,13 +162,14 @@ func (m *BeadsPanel) View() string {
 			reason := m.summary.Reason
 			isNotInitialized := strings.Contains(reason, "no .beads") ||
 				strings.Contains(reason, "bv not installed") ||
-				strings.Contains(reason, "bd not installed")
+				strings.Contains(reason, "bd not installed") ||
+				strings.Contains(reason, "br not installed")
 			if isNotInitialized {
 				// Show subtle "not initialized" message instead of error
 				content.WriteString(components.RenderEmptyState(components.EmptyStateOptions{
 					Icon:        components.IconExternal,
 					Title:       "Beads not initialized",
-					Description: "Run 'bd init' in your project",
+					Description: "Run 'br init' in your project",
 					Action:      "to enable issue tracking",
 					Width:       w,
 					Centered:    true,

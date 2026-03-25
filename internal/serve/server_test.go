@@ -2054,6 +2054,32 @@ func TestHandleListBeadsStub(t *testing.T) {
 	}
 }
 
+func TestHandleListBeadsStubWithLabelFilter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-1")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads?label=api", nil)
+	rec := httptest.NewRecorder()
+	srv.handleListBeads(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := int(resp["count"].(float64)); got != 1 {
+		t.Fatalf("count=%d, want 1", got)
+	}
+}
+
 func TestHandleCreateBeadSuccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stub br uses sh")

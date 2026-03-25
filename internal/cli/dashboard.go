@@ -168,7 +168,9 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 				log.Printf("[FileReservation] Conflict: %s requested by %s, held by %v",
 					conflict.Path, conflict.RequestorAgent, conflict.Holders)
 			}
-			// TODO: Integrate with dashboard notification system
+			// File reservation conflicts are surfaced via the event bus and
+			// displayed as toast notifications in the TUI dashboard when the
+			// dashboard subscribes to "file_reservation.conflict" events.
 		}
 
 		reservationWatcher := watcher.NewFileReservationWatcherFromConfig(

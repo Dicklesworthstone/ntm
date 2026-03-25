@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
-	"github.com/Dicklesworthstone/ntm/internal/bd"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -17,7 +16,7 @@ import (
 func newMessageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "message",
-		Short: "Unified messaging (Agent Mail + BD)",
+		Short: "Agent Mail messaging",
 	}
 
 	cmd.AddCommand(
@@ -41,9 +40,7 @@ func newMessageInboxCmd() *cobra.Command {
 			}
 
 			amClient := newAgentMailClient(projectDir)
-			bdClient := bd.NewMessageClient(projectDir, agentName)
-
-			unified := agentmail.NewUnifiedMessenger(amClient, bdClient, projectDir, agentName)
+			unified := agentmail.NewUnifiedMessenger(amClient, nil, projectDir, agentName)
 
 			msgs, err := unified.Inbox(context.Background())
 			if err != nil {
@@ -80,9 +77,7 @@ func newMessageSendCmd() *cobra.Command {
 			}
 
 			amClient := newAgentMailClient(projectDir)
-			bdClient := bd.NewMessageClient(projectDir, agentName)
-
-			unified := agentmail.NewUnifiedMessenger(amClient, bdClient, projectDir, agentName)
+			unified := agentmail.NewUnifiedMessenger(amClient, nil, projectDir, agentName)
 
 			return unified.Send(context.Background(), to, subject, body)
 		},
@@ -95,7 +90,7 @@ func newMessageReadCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "read <msg-id>",
 		Short: "Read a message by ID",
-		Long: `Read a message by its unified ID (e.g., "am-123" or "bd-456").
+		Long: `Read a message by its unified ID (e.g., "am-123").
 This marks the message as read.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -107,9 +102,7 @@ This marks the message as read.`,
 			}
 
 			amClient := newAgentMailClient(projectDir)
-			bdClient := bd.NewMessageClient(projectDir, agentName)
-
-			unified := agentmail.NewUnifiedMessenger(amClient, bdClient, projectDir, agentName)
+			unified := agentmail.NewUnifiedMessenger(amClient, nil, projectDir, agentName)
 
 			msg, err := unified.Read(context.Background(), id)
 			if err != nil {
@@ -143,7 +136,7 @@ func newMessageAckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "ack <msg-id>",
 		Short: "Acknowledge a message by ID",
-		Long: `Acknowledge a message by its unified ID (e.g., "am-123" or "bd-456").
+		Long: `Acknowledge a message by its unified ID (e.g., "am-123").
 This marks the message as both read and acknowledged.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -155,9 +148,7 @@ This marks the message as both read and acknowledged.`,
 			}
 
 			amClient := newAgentMailClient(projectDir)
-			bdClient := bd.NewMessageClient(projectDir, agentName)
-
-			unified := agentmail.NewUnifiedMessenger(amClient, bdClient, projectDir, agentName)
+			unified := agentmail.NewUnifiedMessenger(amClient, nil, projectDir, agentName)
 
 			if err := unified.Ack(context.Background(), id); err != nil {
 				return err

@@ -23,7 +23,7 @@ import (
 func newServeCmd() *cobra.Command {
 	opts := serveOptions{
 		Host:     "127.0.0.1",
-		Port:     7337,
+		Port:     serve.DefaultPort,
 		AuthMode: "local",
 	}
 
@@ -44,7 +44,7 @@ API Endpoints:
   GET /health                Health check
 
 Examples:
-  ntm serve                              # Start on 127.0.0.1:7337
+  ntm serve                              # Start on default port
   ntm serve --port 8080                  # Start on custom port
   ntm serve --host 0.0.0.0 --auth-mode api_key --api-key $KEY
   ntm serve --auth-mode oidc --oidc-issuer https://issuer --oidc-jwks-url https://issuer/.well-known/jwks.json`,
@@ -146,6 +146,7 @@ func runServe(opts serveOptions) error {
 		Host:           opts.Host,
 		Port:           opts.Port,
 		PublicBaseURL:  opts.PublicBaseURL,
+		Version:        Version,
 		EventBus:       events.DefaultBus,
 		StateStore:     stateStore,
 		AllowedOrigins: opts.CORSAllowOrigins,

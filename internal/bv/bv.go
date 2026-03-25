@@ -664,7 +664,7 @@ func RunBd(dir string, args ...string) (string, error) {
 		args = append([]string{"--lock-timeout", "5000"}, args...)
 	}
 
-	const maxAttempts = 6
+	const maxAttempts = 6 // Canonical default: config.RetryConfig.DB.MaxAttempts
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 
@@ -861,7 +861,7 @@ func IsBdInstalled() bool {
 	return err == nil
 }
 
-// GetBeadsSummary attempts to get bead statistics from bd command
+// GetBeadsSummary attempts to get bead statistics from the br command.
 func GetBeadsSummary(dir string, limit int) *BeadsSummary {
 	result := &BeadsSummary{}
 
@@ -888,13 +888,19 @@ func GetBeadsSummary(dir string, limit int) *BeadsSummary {
 		return result
 	}
 
+	if !IsBdInstalled() {
+		result.Available = false
+		result.Reason = "br not installed"
+		return result
+	}
+
 	result.Project = dir
 
-	// Try to run bd stats --json to get summary
+	// Try to run br stats --json to get summary
 	statsOutput, err := RunBd(dir, "stats", "--json")
 	if err != nil {
 		result.Available = false
-		result.Reason = fmt.Sprintf("bd stats failed: %v", err)
+		result.Reason = fmt.Sprintf("br stats failed: %v", err)
 		return result
 	}
 

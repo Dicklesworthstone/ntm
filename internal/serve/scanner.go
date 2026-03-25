@@ -745,8 +745,8 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 	// Create bead via br CLI
 	labels := append([]string{"bug", "scanner"}, req.Labels...)
 	args := []string{"--title", title, "--priority", priority, "--type", "bug"}
-	for _, label := range labels {
-		args = append(args, "--label", label)
+	if len(labels) > 0 {
+		args = append(args, "--labels", strings.Join(labels, ","))
 	}
 
 	output, err := bv.RunBd(s.projectDir, append([]string{"create"}, args...)...)
@@ -946,15 +946,28 @@ func (s *Server) handleBugsNotify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO: Implement actual notification channels (webhook, slack, email)
-	// For now, just log and return success
 	slog.Info("bugs notify request", "request_id", reqID, "channel", req.Channel,
 		"endpoint", req.Endpoint, "findings_count", len(toNotify))
 
-	s.publishScannerEvent("scanner.notify", map[string]interface{}{
+	// Publish notification event (consumed by webhook subscribers and WebSocket clients)
+	notifyPayload := map[string]interface{}{
 		"channel":        req.Channel,
 		"findings_count": len(toNotify),
-	})
+		"min_severity":   minSeverity,
+	}
+	if len(toNotify) > 0 {
+		summaries := make([]map[string]interface{}, 0, len(toNotify))
+		for _, f := range toNotify {
+			summaries = append(summaries, map[string]interface{}{
+				"file":     f.Finding.File,
+				"line":     f.Finding.Line,
+				"severity": string(f.Finding.Severity),
+				"message":  f.Finding.Message,
+			})
+		}
+		notifyPayload["findings"] = summaries
+	}
+	s.publishScannerEvent("scanner.notify", notifyPayload)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"notified":       true,
@@ -1011,12 +1024,30 @@ func generateFindingID(scanID string, f scanner.Finding) string {
 
 // extractBeadID extracts bead ID from br create output
 func extractBeadID(output string) string {
-	// Output format: "Created bd-xxxxx: Title"
+	var single struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(output), &single); err == nil && single.ID != "" {
+		return single.ID
+	}
+
+	var list []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(output), &list); err == nil {
+		for _, item := range list {
+			if item.ID != "" {
+				return item.ID
+			}
+		}
+	}
+
+	// Legacy text output format: "Created bd-xxxxx: Title"
 	parts := strings.SplitN(output, ":", 2)
 	if len(parts) >= 1 {
 		words := strings.Fields(parts[0])
 		for _, w := range words {
-			if strings.HasPrefix(w, "bd-") || strings.HasPrefix(w, "ntm-") {
+			if strings.HasPrefix(w, "bd-") || strings.HasPrefix(w, "br-") || strings.HasPrefix(w, "ntm-") {
 				return w
 			}
 		}

@@ -218,7 +218,7 @@ func CreateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 	return br, nil
 }
 
-// createBead calls bd create with the given spec.
+// createBead calls br create with the given spec.
 func createBead(spec BeadSpec) (string, error) {
 	args := []string{
 		"create",
@@ -235,7 +235,7 @@ func createBead(spec BeadSpec) (string, error) {
 
 	output, err := bv.RunBd("", args...)
 	if err != nil {
-		return "", fmt.Errorf("bd create failed: %w", err)
+		return "", fmt.Errorf("br create failed: %w", err)
 	}
 
 	id, err := parseCreatedBeadID(output)
@@ -246,7 +246,7 @@ func createBead(spec BeadSpec) (string, error) {
 }
 
 func parseCreatedBeadID(output string) (string, error) {
-	// bd create returns a single object, but tolerate array output as a fallback.
+	// br create returns a single object, but tolerate array output as a fallback.
 	var singleResult struct {
 		ID string `json:"id"`
 	}
@@ -261,7 +261,7 @@ func parseCreatedBeadID(output string) (string, error) {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal([]byte(output), &arrayResult); err != nil {
-		return "", fmt.Errorf("parsing bd output: %w", err)
+		return "", fmt.Errorf("parsing br output: %w", err)
 	}
 	if len(arrayResult) == 0 || arrayResult[0].ID == "" {
 		return "", fmt.Errorf("no bead ID returned")
@@ -433,7 +433,7 @@ func UpdateBeadsFromFindings(result *ScanResult, cfg BridgeConfig) (*BridgeResul
 func closeBead(id string) error {
 	_, err := bv.RunBd("", "close", id)
 	if err != nil {
-		return fmt.Errorf("bd close failed: %w", err)
+		return fmt.Errorf("br close failed: %w", err)
 	}
 	return nil
 }

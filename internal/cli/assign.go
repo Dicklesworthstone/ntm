@@ -3162,7 +3162,10 @@ func GetNewlyUnblockedBeads(completedBeadID string, verbose bool) (*DependencyAw
 
 	// Get current triage recommendations (fresh data) with retry logic
 	var recommendations []bv.TriageRecommendation
-	maxRetries := 3
+	maxRetries := 3 // Default
+	if cfg != nil {
+		maxRetries, _ = cfg.Retry.RetryPolicyFor("assign")
+	}
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -3334,7 +3337,7 @@ func CheckCycles(verbose bool) ([][]string, error) {
 	client := bv.NewBVClient()
 	client.WorkspacePath = wd
 
-	maxRetries := 2
+	maxRetries := 2 // Lower than default for non-critical cycle check
 	var insights *bv.Insights
 	var lastErr error
 

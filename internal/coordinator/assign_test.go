@@ -197,8 +197,8 @@ func TestFormatAssignmentMessage(t *testing.T) {
 	if !strings.Contains(body, "High impact") {
 		t.Error("expected reasons in message")
 	}
-	if !strings.Contains(body, "bd show") {
-		t.Error("expected bd show instruction in message")
+	if !strings.Contains(body, "br show") {
+		t.Error("expected br show instruction in message")
 	}
 }
 

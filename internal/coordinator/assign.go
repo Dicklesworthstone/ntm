@@ -266,11 +266,11 @@ func (c *SessionCoordinator) formatAssignmentMessage(assignment *WorkAssignment,
 	}
 
 	sb.WriteString("## Instructions\n\n")
-	sb.WriteString("1. Review the bead with `bd show " + assignment.BeadID + "`\n")
-	sb.WriteString("2. Claim the work with `bd update " + assignment.BeadID + " --status in_progress`\n")
+	sb.WriteString("1. Review the bead with `br show " + assignment.BeadID + "`\n")
+	sb.WriteString("2. Claim the work with `br update " + assignment.BeadID + " --status in_progress`\n")
 	sb.WriteString("3. Reserve any files you'll modify\n")
 	sb.WriteString("4. Implement and test\n")
-	sb.WriteString("5. Close with `bd close " + assignment.BeadID + "`\n")
+	sb.WriteString("5. Close with `br close " + assignment.BeadID + "`\n")
 	sb.WriteString("6. Commit with `.beads/` changes\n\n")
 
 	sb.WriteString("Please acknowledge this message when you begin work.\n")

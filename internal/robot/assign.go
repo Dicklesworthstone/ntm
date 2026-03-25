@@ -304,9 +304,13 @@ func GetAssign(opts AssignOptions) (*AssignOutput, error) {
 	output.Recommendations = recommendations
 
 	// Add blocked beads (beads with unmet dependencies)
-	// Note: GetReadyPreview already filters to ready beads, so blocked beads
-	// would come from a separate query. For now, we'll leave this empty.
-	// In a future enhancement, we could query bd blocked.
+	blockedBeads := bv.GetBlockedList(wd, 20)
+	for _, b := range blockedBeads {
+		output.BlockedBeads = append(output.BlockedBeads, BlockedBead{
+			ID:    b.ID,
+			Title: b.Title,
+		})
+	}
 
 	// Build summary
 	output.Summary = AssignSummary{
@@ -515,7 +519,7 @@ func generateAssignHints(recs []AssignRecommend, idleAgents []string, readyBeads
 
 	// Generate suggested commands
 	for _, rec := range recs {
-		cmd := fmt.Sprintf("bd update %s --assignee=pane%s", rec.AssignBead, rec.Agent)
+		cmd := fmt.Sprintf("br update %s --assignee=pane%s", rec.AssignBead, rec.Agent)
 		hints.SuggestedCommands = append(hints.SuggestedCommands, cmd)
 	}
 

@@ -17,7 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 )
 
-func TestExtractBeadID(t *testing.T) {
+func TestExtractBeadID_JSONAndLegacyFormats(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -376,6 +376,26 @@ func TestHandleCreateBeadFromFindingSuccess(t *testing.T) {
 	}
 }
 
+func TestExtractBeadID(t *testing.T) {
+	t.Run("json object", func(t *testing.T) {
+		if got := extractBeadID(`{"id":"bd-123","title":"Created"}`); got != "bd-123" {
+			t.Fatalf("extractBeadID(json object) = %q, want %q", got, "bd-123")
+		}
+	})
+
+	t.Run("json array", func(t *testing.T) {
+		if got := extractBeadID(`[{"id":"ntm-456"}]`); got != "ntm-456" {
+			t.Fatalf("extractBeadID(json array) = %q, want %q", got, "ntm-456")
+		}
+	})
+
+	t.Run("legacy text", func(t *testing.T) {
+		if got := extractBeadID(`Created br-789: Example`); got != "br-789" {
+			t.Fatalf("extractBeadID(legacy text) = %q, want %q", got, "br-789")
+		}
+	})
+}
+
 func TestHandleCreateBeadFromFindingBadJSON(t *testing.T) {
 	resetScannerStoreForTest()
 	addTestFinding("scan-1", "finding-1", scanner.SeverityWarning, "main.go", "security", false, "")
@@ -692,6 +712,12 @@ case "$cmd1" in
     exit 0
     ;;
   list)
+    for arg in "$@"; do
+      if [ "$arg" = "--label" ]; then
+        echo "unexpected legacy list arg: $arg" >&2
+        exit 2
+      fi
+    done
     echo "{\"issues\":[{\"id\":\"` + beadID + `\",\"title\":\"Listed\"}]}"
     exit 0
     ;;

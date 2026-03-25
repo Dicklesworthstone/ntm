@@ -27,6 +27,7 @@ const (
 	ErrCodeBeadsUnavailable = "BEADS_UNAVAILABLE"
 	ErrCodeBeadNotFound     = "BEAD_NOT_FOUND"
 	ErrCodeBVUnavailable    = "BV_UNAVAILABLE"
+	beadsUnavailableMessage = "br (beads_rust) is not installed"
 )
 
 // Beads request/response types
@@ -110,7 +111,7 @@ func (s *Server) handleListBeads(w http.ResponseWriter, r *http.Request) {
 	slog.Info("list beads", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -119,13 +120,13 @@ func (s *Server) handleListBeads(w http.ResponseWriter, r *http.Request) {
 	label := r.URL.Query().Get("label")
 	assignee := r.URL.Query().Get("assignee")
 
-	// Build bd command args
+	// Build br command args
 	args := []string{"list", "--json"}
 	if status != "" {
 		args = append(args, "--status", status)
 	}
 	if label != "" {
-		args = append(args, "--label", label)
+		args = append(args, "--labels", label)
 	}
 	if assignee != "" {
 		args = append(args, "--assignee", assignee)
@@ -156,7 +157,7 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 	slog.Info("create bead", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -228,7 +229,7 @@ func (s *Server) handleGetBead(w http.ResponseWriter, r *http.Request) {
 	slog.Info("get bead", "request_id", reqID, "bead_id", beadID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -258,7 +259,7 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 	slog.Info("update bead", "request_id", reqID, "bead_id", beadID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -268,7 +269,7 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build bd update command
+	// Build br update command
 	args := []string{"update", beadID, "--json"}
 	if req.Title != nil {
 		args = append(args, "--title", *req.Title)
@@ -320,7 +321,7 @@ func (s *Server) handleCloseBead(w http.ResponseWriter, r *http.Request) {
 	slog.Info("close bead", "request_id", reqID, "bead_id", beadID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -362,7 +363,7 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 	slog.Info("claim bead", "request_id", reqID, "bead_id", beadID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -377,7 +378,7 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use bd update to set assignee and status to in_progress
+	// Use br update to set assignee and status to in_progress
 	output, err := bv.RunBd(s.projectDir, "update", beadID, "--assignee", req.Assignee, "--status", "in_progress", "--json")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -417,7 +418,7 @@ func (s *Server) handleBeadsStats(w http.ResponseWriter, r *http.Request) {
 	slog.Info("get beads stats", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -444,7 +445,7 @@ func (s *Server) handleBeadsReady(w http.ResponseWriter, r *http.Request) {
 	slog.Info("get ready beads", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -472,7 +473,7 @@ func (s *Server) handleBeadsBlocked(w http.ResponseWriter, r *http.Request) {
 	slog.Info("get blocked beads", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -500,7 +501,7 @@ func (s *Server) handleBeadsInProgress(w http.ResponseWriter, r *http.Request) {
 	slog.Info("get in-progress beads", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -530,7 +531,7 @@ func (s *Server) handleListBeadDeps(w http.ResponseWriter, r *http.Request) {
 	slog.Info("list bead dependencies", "request_id", reqID, "bead_id", beadID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -563,7 +564,7 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 	slog.Info("add bead dependency", "request_id", reqID, "bead_id", beadID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -609,7 +610,7 @@ func (s *Server) handleRemoveBeadDep(w http.ResponseWriter, r *http.Request) {
 	slog.Info("remove bead dependency", "request_id", reqID, "bead_id", beadID, "dep_id", depID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -764,7 +765,7 @@ func (s *Server) handleBeadsDaemonStatus(w http.ResponseWriter, r *http.Request)
 	slog.Info("get beads daemon status", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -777,7 +778,7 @@ func (s *Server) handleBeadsDaemonStart(w http.ResponseWriter, r *http.Request) 
 	slog.Info("start beads daemon", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -790,7 +791,7 @@ func (s *Server) handleBeadsDaemonStop(w http.ResponseWriter, r *http.Request) {
 	slog.Info("stop beads daemon", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -803,7 +804,7 @@ func (s *Server) handleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	slog.Info("sync beads", "request_id", reqID)
 
 	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, "bd (beads_rust) is not installed", nil, reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 

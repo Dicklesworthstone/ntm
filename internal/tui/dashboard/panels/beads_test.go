@@ -324,13 +324,22 @@ func TestBeadsPanelViewUnavailableWithReason(t *testing.T) {
 		t.Error("expected view to contain 'Beads not initialized' for bv not installed case")
 	}
 
+	summaryBrMissing := bv.BeadsSummary{Available: false, Reason: "br not installed"}
+	panel.SetData(summaryBrMissing, nil, nil)
+
+	viewBrMissing := panel.View()
+
+	if !strings.Contains(viewBrMissing, "Beads not initialized") {
+		t.Error("expected view to contain 'Beads not initialized' for br not installed case")
+	}
+
 	// Test actual error case - should show error with refresh hint
-	summary2 := bv.BeadsSummary{Available: false, Reason: "bd stats failed: connection refused"}
+	summary2 := bv.BeadsSummary{Available: false, Reason: "br stats failed: connection refused"}
 	panel.SetData(summary2, nil, nil)
 
 	view2 := panel.View()
 
-	if !strings.Contains(view2, "bd stats failed") {
+	if !strings.Contains(view2, "br stats failed") {
 		t.Error("expected view to contain error reason for actual failures")
 	}
 	if !strings.Contains(view2, "Press r") {

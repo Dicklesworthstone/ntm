@@ -600,9 +600,10 @@ func newSpawnCmd() *cobra.Command {
 	// Interactive wizard flag
 	var interactive bool
 
-	// Pre-load plugins to avoid double loading in RunE
-	// TODO: This runs eagerly during init() which slows down startup for all commands.
-	// Fixing this requires refactoring how dynamic flags are registered.
+	// Load plugins eagerly — required for dynamic flag registration on the cobra
+	// command. Plugin loading is fast (directory scan + TOML parse) but if it
+	// becomes a bottleneck, consider lazy flag registration via cobra's
+	// TraverseRunHooks or a PersistentPreRunE on the spawn subcommand.
 	configDir := filepath.Dir(config.DefaultPath())
 	pluginsDir := filepath.Join(configDir, "agents")
 	loadedPlugins, _ := plugins.LoadAgentPlugins(pluginsDir)

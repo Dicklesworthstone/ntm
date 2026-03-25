@@ -2,6 +2,8 @@ package bv
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -123,11 +125,7 @@ func TestCheckDrift_EarlyValidation(t *testing.T) {
 }
 
 func TestGetBeadsSummary_EarlyValidation(t *testing.T) {
-	t.Parallel()
-
 	t.Run("missing_project_dir", func(t *testing.T) {
-		t.Parallel()
-
 		res := GetBeadsSummary("/path/that/does/not/exist", 3)
 		if res.Available {
 			t.Fatalf("Available = true, want false")
@@ -138,8 +136,6 @@ func TestGetBeadsSummary_EarlyValidation(t *testing.T) {
 	})
 
 	t.Run("missing_beads_dir", func(t *testing.T) {
-		t.Parallel()
-
 		dir := t.TempDir()
 		res := GetBeadsSummary(dir, 3)
 		if res.Available {
@@ -147,6 +143,22 @@ func TestGetBeadsSummary_EarlyValidation(t *testing.T) {
 		}
 		if !strings.Contains(res.Reason, "no .beads/ directory") {
 			t.Fatalf("Reason = %q, want contains %q", res.Reason, "no .beads/ directory")
+		}
+	})
+
+	t.Run("missing_br_binary_with_beads_dir", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, ".beads"), 0755); err != nil {
+			t.Fatalf("mkdir .beads: %v", err)
+		}
+		t.Setenv("PATH", "")
+
+		res := GetBeadsSummary(dir, 3)
+		if res.Available {
+			t.Fatalf("Available = true, want false")
+		}
+		if res.Reason != "br not installed" {
+			t.Fatalf("Reason = %q, want %q", res.Reason, "br not installed")
 		}
 	})
 }

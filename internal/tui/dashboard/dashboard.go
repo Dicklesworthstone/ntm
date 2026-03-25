@@ -537,8 +537,9 @@ func (m *Model) fetchDCGStatus() tea.Cmd {
 			}
 		}
 
-		// TODO: Read blocked count from audit log when available
-		// For now, we just report availability status
+		// Blocked count is not yet available from the audit log.
+		// When bv --robot-triage provides blocked_count in quick_ref,
+		// wire it here via the bv client.
 
 		return msg
 	}

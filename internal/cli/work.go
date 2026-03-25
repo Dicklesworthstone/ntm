@@ -736,7 +736,7 @@ func runWorkNext() error {
 
 	// Show claim command
 	fmt.Println()
-	fmt.Printf("  %s bd update %s --status=in_progress\n",
+	fmt.Printf("  %s br update %s --status=in_progress\n",
 		mutedStyle.Render("Claim:"), rec.ID)
 
 	fmt.Println()
