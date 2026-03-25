@@ -53,7 +53,6 @@ const agentsTemplate = `# AGENTS.md - NTM Agent Instructions
 - ensure_project then register_agent using the absolute project path
 - reserve files before editing (file_reservation_paths)
 - fetch_inbox, acknowledge_message, send_message for coordination
-- Respect Agent Mail locks when present; check beads/bv for task assignments.
 
 ## Context Tools
 - cass search "query" --robot --limit 5
