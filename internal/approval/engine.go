@@ -207,17 +207,8 @@ func (e *Engine) Check(ctx context.Context, id string) (*state.Approval, error) 
 
 	// Check if expired
 	if approval.Status == state.ApprovalPending && time.Now().After(approval.ExpiresAt) {
-		approval.Status = state.ApprovalExpired
-		if err := e.store.UpdateApproval(approval); err != nil {
-			return nil, fmt.Errorf("update expired approval: %w", err)
-		}
-
-		// Emit expiry event
-		if e.eventBus != nil {
-			e.eventBus.Publish(events.BaseEvent{
-				Type:      "approval.expired",
-				Timestamp: time.Now().UTC(),
-			})
+		if err := e.expireApproval(approval, time.Now().UTC()); err != nil {
+			return nil, err
 		}
 	}
 
@@ -237,32 +228,25 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 		return fmt.Errorf("approval not found: %s", id)
 	}
 
-	// Check status
-	if approval.Status != state.ApprovalPending {
-		return fmt.Errorf("approval is not pending (status: %s)", approval.Status)
+	now := time.Now().UTC()
+	if err := e.ensurePendingApproval(approval); err != nil {
+		return err
 	}
-
-	// Check expiry
-	if time.Now().After(approval.ExpiresAt) {
-		approval.Status = state.ApprovalExpired
-		_ = e.store.UpdateApproval(approval) // Best-effort update before returning error
+	expired, err := e.expireIfNeeded(approval, now)
+	if err != nil {
+		return err
+	}
+	if expired {
 		return fmt.Errorf("approval has expired")
 	}
-
-	// Check SLB (two-person rule)
-	if approval.RequiresSLB {
-		if approverID == approval.RequestedBy {
-			return fmt.Errorf("SLB violation: approver cannot be the same as requester")
-		}
-
-		// Check if approver is in allowed list
-		if len(e.config.ApproverList) > 0 && !contains(e.config.ApproverList, approverID) {
-			return fmt.Errorf("SLB violation: %s is not an authorized approver", approverID)
-		}
+	if len(e.config.ApproverList) > 0 && !contains(e.config.ApproverList, approverID) {
+		return fmt.Errorf("%s is not an authorized approver", approverID)
+	}
+	if approval.RequiresSLB && approverID == approval.RequestedBy {
+		return fmt.Errorf("SLB violation: approver cannot be the same as requester")
 	}
 
 	// Update approval
-	now := time.Now().UTC()
 	approval.Status = state.ApprovalApproved
 	approval.ApprovedBy = approverID
 	approval.ApprovedAt = &now
@@ -303,13 +287,19 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 		return fmt.Errorf("approval not found: %s", id)
 	}
 
-	// Check status
-	if approval.Status != state.ApprovalPending {
-		return fmt.Errorf("approval is not pending (status: %s)", approval.Status)
+	now := time.Now().UTC()
+	if err := e.ensurePendingApproval(approval); err != nil {
+		return err
+	}
+	expired, err := e.expireIfNeeded(approval, now)
+	if err != nil {
+		return err
+	}
+	if expired {
+		return fmt.Errorf("approval has expired")
 	}
 
 	// Update approval
-	now := time.Now().UTC()
 	approval.Status = state.ApprovalDenied
 	approval.ApprovedBy = approverID // Record who denied
 	approval.ApprovedAt = &now
@@ -404,15 +394,7 @@ func (e *Engine) ListPending(ctx context.Context) ([]state.Approval, error) {
 	for _, a := range approvals {
 		if a.Status == state.ApprovalPending && now.After(a.ExpiresAt) {
 			// Mark as expired (best-effort, continue even if update fails)
-			a.Status = state.ApprovalExpired
-			_ = e.store.UpdateApproval(&a)
-
-			if e.eventBus != nil {
-				e.eventBus.Publish(events.BaseEvent{
-					Type:      "approval.expired",
-					Timestamp: time.Now().UTC(),
-				})
-			}
+			_ = e.expireApproval(&a, now.UTC())
 		} else if a.Status == state.ApprovalPending {
 			pending = append(pending, a)
 		}
@@ -431,16 +413,8 @@ func (e *Engine) ExpireStale(ctx context.Context) (int, error) {
 
 	count := 0
 	for _, a := range approvals {
-		a.Status = state.ApprovalExpired
-		if err := e.store.UpdateApproval(&a); err == nil {
+		if err := e.expireApproval(&a, time.Now().UTC()); err == nil {
 			count++
-
-			if e.eventBus != nil {
-				e.eventBus.Publish(events.BaseEvent{
-					Type:      "approval.expired",
-					Timestamp: time.Now().UTC(),
-				})
-			}
 		}
 	}
 
@@ -511,6 +485,38 @@ func (e *Engine) notifyApprovalDecision(appr *state.Approval, decision string) {
 		Session: appr.CorrelationID,
 		Details: details,
 	})
+}
+
+func (e *Engine) ensurePendingApproval(approval *state.Approval) error {
+	if approval.Status != state.ApprovalPending {
+		return fmt.Errorf("approval is not pending (status: %s)", approval.Status)
+	}
+	return nil
+}
+
+func (e *Engine) expireIfNeeded(approval *state.Approval, now time.Time) (bool, error) {
+	if !now.After(approval.ExpiresAt) {
+		return false, nil
+	}
+	if err := e.expireApproval(approval, now); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (e *Engine) expireApproval(approval *state.Approval, now time.Time) error {
+	approval.Status = state.ApprovalExpired
+	if err := e.store.UpdateApproval(approval); err != nil {
+		return fmt.Errorf("update expired approval: %w", err)
+	}
+	if e.eventBus != nil {
+		e.eventBus.Publish(events.BaseEvent{
+			Type:      "approval.expired",
+			Timestamp: now,
+		})
+	}
+	e.notifyWaiters(approval.ID)
+	return nil
 }
 
 // contains checks if a string is in a slice.

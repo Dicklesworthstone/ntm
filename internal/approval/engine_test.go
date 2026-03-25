@@ -198,6 +198,35 @@ func TestSLBApproverList(t *testing.T) {
 	}
 }
 
+func TestApproverListAppliesToNonSLB(t *testing.T) {
+	store := setupTestStore(t)
+	cfg := DefaultConfig()
+	cfg.ApproverList = []string{"admin"}
+	engine := New(store, nil, nil, cfg)
+
+	ctx := context.Background()
+	approval, _ := engine.Request(ctx, RequestParams{
+		Action:      "test_action",
+		Resource:    "test_resource",
+		RequestedBy: "requester",
+	})
+
+	err := engine.Approve(ctx, approval.ID, "bob")
+	if err == nil {
+		t.Fatal("non-admin should not be able to approve when ApproverList is set")
+	}
+
+	checked, _ := engine.Check(ctx, approval.ID)
+	if checked.Status != state.ApprovalPending {
+		t.Fatalf("approval should remain pending after rejected approver, got %s", checked.Status)
+	}
+
+	err = engine.Approve(ctx, approval.ID, "admin")
+	if err != nil {
+		t.Fatalf("admin should be able to approve non-SLB request: %v", err)
+	}
+}
+
 func TestExpiry(t *testing.T) {
 	store := setupTestStore(t)
 	engine := New(store, nil, nil, DefaultConfig())
@@ -311,6 +340,63 @@ func TestWaitForApproval(t *testing.T) {
 
 	if result.Status != state.ApprovalApproved {
 		t.Errorf("Status should be approved, got %s", result.Status)
+	}
+}
+
+func TestWaitForApprovalWakesWhenLateApproveExpiresRequest(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	ctx := context.Background()
+	approval, _ := engine.Request(ctx, RequestParams{
+		Action:      "test_action",
+		Resource:    "test_resource",
+		RequestedBy: "requester",
+		ExpiresIn:   20 * time.Millisecond,
+	})
+
+	type waitResult struct {
+		approval *state.Approval
+		err      error
+	}
+	done := make(chan waitResult, 1)
+	go func() {
+		result, err := engine.WaitForApproval(ctx, approval.ID, time.Second)
+		done <- waitResult{approval: result, err: err}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		engine.waitersMu.Lock()
+		waiterCount := len(engine.waiters[approval.ID])
+		engine.waitersMu.Unlock()
+		if waiterCount > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waiter was not registered")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if err := engine.Approve(ctx, approval.ID, "approver"); err == nil {
+		t.Fatal("late approval should fail once request has expired")
+	}
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("WaitForApproval returned error: %v", result.err)
+		}
+		if result.approval == nil {
+			t.Fatal("WaitForApproval returned nil approval")
+		}
+		if result.approval.Status != state.ApprovalExpired {
+			t.Fatalf("expected expired status, got %s", result.approval.Status)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("WaitForApproval did not wake after approval expired")
 	}
 }
 
@@ -516,6 +602,34 @@ func TestDenyAlreadyApproved(t *testing.T) {
 	err := engine.Deny(ctx, appr.ID, "carol", "too late")
 	if err == nil {
 		t.Error("should not be able to deny an already-approved request")
+	}
+}
+
+func TestDenyExpiredRequestMarksExpired(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	ctx := context.Background()
+	appr, _ := engine.Request(ctx, RequestParams{
+		Action:      "test",
+		Resource:    "res",
+		RequestedBy: "alice",
+		ExpiresIn:   1 * time.Millisecond,
+	})
+
+	time.Sleep(10 * time.Millisecond)
+
+	err := engine.Deny(ctx, appr.ID, "bob", "too late")
+	if err == nil {
+		t.Fatal("expected denial of expired request to fail")
+	}
+
+	checked, err := engine.Check(ctx, appr.ID)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if checked.Status != state.ApprovalExpired {
+		t.Fatalf("expected expired status after late denial, got %s", checked.Status)
 	}
 }
 
