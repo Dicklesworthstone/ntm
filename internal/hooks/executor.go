@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -181,25 +182,18 @@ func (e *Executor) runSingleHook(ctx context.Context, hook *CommandHook, execCtx
 
 // buildEnvironment creates the environment for hook execution
 func buildEnvironment(hook *CommandHook, execCtx ExecutionContext) []string {
-	// Start with current environment
-	env := os.Environ()
+	env := normalizeEnvironment(os.Environ())
+	env = setEnvironmentValue(env, "NTM_SESSION", execCtx.SessionName)
+	env = setEnvironmentValue(env, "NTM_PROJECT_DIR", execCtx.ProjectDir)
+	env = setEnvironmentValue(env, "NTM_PANE", execCtx.Pane)
 
-	// Add standard NTM variables
-	ntmEnv := map[string]string{
-		"NTM_SESSION":     execCtx.SessionName,
-		"NTM_PROJECT_DIR": execCtx.ProjectDir,
-		"NTM_PANE":        execCtx.Pane,
-	}
-
-	// Add hook event
 	if hook != nil {
-		ntmEnv["NTM_HOOK_EVENT"] = string(hook.Event)
+		env = setEnvironmentValue(env, "NTM_HOOK_EVENT", string(hook.Event))
 		if hook.Name != "" {
-			ntmEnv["NTM_HOOK_NAME"] = hook.Name
+			env = setEnvironmentValue(env, "NTM_HOOK_NAME", hook.Name)
 		}
 	}
 
-	// Add message for send hooks (truncated for safety)
 	if execCtx.Message != "" {
 		msg := execCtx.Message
 		if len(msg) > 1000 {
@@ -219,26 +213,61 @@ func buildEnvironment(hook *CommandHook, execCtx ExecutionContext) []string {
 				msg = msg[:prevI] + "..."
 			}
 		}
-		ntmEnv["NTM_MESSAGE"] = msg
+		env = setEnvironmentValue(env, "NTM_MESSAGE", msg)
 	}
 
-	// Merge NTM env
-	for k, v := range ntmEnv {
-		env = append(env, k+"="+v)
-	}
-
-	// Add hook-specific env
 	if hook != nil && hook.Env != nil {
-		for k, v := range hook.Env {
-			env = append(env, k+"="+v)
+		env = mergeEnvironmentMap(env, hook.Env)
+	}
+
+	if execCtx.AdditionalEnv != nil {
+		env = mergeEnvironmentMap(env, execCtx.AdditionalEnv)
+	}
+
+	return env
+}
+
+func normalizeEnvironment(base []string) []string {
+	normalized := make([]string, 0, len(base))
+	indexByKey := make(map[string]int, len(base))
+	for _, entry := range base {
+		key, value, found := strings.Cut(entry, "=")
+		if !found {
+			key = entry
+			value = ""
+		}
+		envEntry := key + "=" + value
+		if idx, exists := indexByKey[key]; exists {
+			normalized[idx] = envEntry
+			continue
+		}
+		indexByKey[key] = len(normalized)
+		normalized = append(normalized, envEntry)
+	}
+	return normalized
+}
+
+func setEnvironmentValue(env []string, key, value string) []string {
+	prefix := key + "="
+	entry := prefix + value
+	for i, existing := range env {
+		if strings.HasPrefix(existing, prefix) {
+			env[i] = entry
+			return env
 		}
 	}
+	return append(env, entry)
+}
 
-	// Add additional context env
-	for k, v := range execCtx.AdditionalEnv {
-		env = append(env, k+"="+v)
+func mergeEnvironmentMap(env []string, overrides map[string]string) []string {
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
 	}
-
+	sort.Strings(keys)
+	for _, key := range keys {
+		env = setEnvironmentValue(env, key, overrides[key])
+	}
 	return env
 }
 

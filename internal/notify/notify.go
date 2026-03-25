@@ -4,6 +4,7 @@ package notify
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
+
+var notificationCommandTimeout = 10 * time.Second
 
 // EventType represents the type of notification event
 type EventType string
@@ -161,8 +164,40 @@ func expandEnvVars(s string) string {
 	return os.ExpandEnv(s)
 }
 
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneRoutingMap(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for key, values := range in {
+		out[key] = append([]string(nil), values...)
+	}
+	return out
+}
+
+func cloneConfig(cfg Config) Config {
+	cloned := cfg
+	cloned.Events = append([]string(nil), cfg.Events...)
+	cloned.Routing = cloneRoutingMap(cfg.Routing)
+	cloned.Webhook.Headers = cloneStringMap(cfg.Webhook.Headers)
+	return cloned
+}
+
 // New creates a new Notifier with the given configuration
 func New(cfg Config) *Notifier {
+	cfg = cloneConfig(cfg)
+
 	// Expand environment variables in config values
 	cfg.Webhook.URL = expandEnvVars(cfg.Webhook.URL)
 	cfg.Shell.Command = expandEnvVars(cfg.Shell.Command)
@@ -400,8 +435,17 @@ func (n *Notifier) sendDesktop(event Event) error {
 // sendMacOSNotification sends a notification on macOS using osascript
 func sendMacOSNotification(title, message string) error {
 	script := fmt.Sprintf(`display notification %q with title %q`, message, title)
-	cmd := exec.Command("osascript", "-e", script)
-	return cmd.Run()
+	ctx, cancel := context.WithTimeout(context.Background(), notificationCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("osascript timed out after %s", notificationCommandTimeout)
+		}
+		return err
+	}
+	return nil
 }
 
 // sendLinuxNotification sends a notification on Linux using notify-send
@@ -409,8 +453,17 @@ func sendLinuxNotification(title, message string) error {
 	if _, err := exec.LookPath("notify-send"); err != nil {
 		return fmt.Errorf("notify-send not found")
 	}
-	cmd := exec.Command("notify-send", title, message)
-	return cmd.Run()
+	ctx, cancel := context.WithTimeout(context.Background(), notificationCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "notify-send", title, message)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("notify-send timed out after %s", notificationCommandTimeout)
+		}
+		return err
+	}
+	return nil
 }
 
 // jsonEscape escapes a string for safe embedding in JSON.
@@ -504,7 +557,10 @@ func (n *Notifier) sendShell(event Event) error {
 	cmdStr := n.config.Shell.Command
 	cmdStr = util.ExpandPath(cmdStr)
 
-	cmd := exec.Command("sh", "-c", cmdStr)
+	ctx, cancel := context.WithTimeout(context.Background(), notificationCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 
 	// Pass event as JSON via stdin if configured
 	if n.config.Shell.PassJSON {
@@ -527,7 +583,13 @@ func (n *Notifier) sendShell(event Event) error {
 		fmt.Sprintf("NTM_EVENT_AGENT=%s", sanitize(event.Agent)),
 	)
 
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("shell notification timed out after %s", notificationCommandTimeout)
+		}
+		return err
+	}
+	return nil
 }
 
 // sendLog appends to a log file
@@ -653,9 +715,12 @@ func (n *Notifier) sendFileBox(event Event) error {
 }
 
 // Close closes any open resources.
-// Currently a no-op as log files are opened/closed per write, but retained
-// for future extensibility (e.g., cached file handles, persistent connections).
+// Log and filebox writes open/close per operation, but webhook delivery owns an
+// http.Client and may retain idle keepalive connections.
 func (n *Notifier) Close() error {
+	if n.httpClient != nil {
+		n.httpClient.CloseIdleConnections()
+	}
 	return nil
 }
 

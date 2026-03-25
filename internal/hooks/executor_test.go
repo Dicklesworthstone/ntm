@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+func envValuesByKey(env []string) map[string][]string {
+	values := make(map[string][]string)
+	for _, entry := range env {
+		key, value, found := strings.Cut(entry, "=")
+		if !found {
+			key = entry
+			value = ""
+		}
+		values[key] = append(values[key], value)
+	}
+	return values
+}
+
 func TestNewExecutor(t *testing.T) {
 	t.Run("nil config uses empty", func(t *testing.T) {
 		exec := NewExecutor(nil)
@@ -294,6 +307,37 @@ func TestExecutorEnvironment(t *testing.T) {
 		results, _ := exec.RunHooksForEvent(context.Background(), EventPreSpawn, execCtx)
 		if len(results) != 1 || !strings.Contains(results[0].Stdout, "extra-value") {
 			t.Error("additional env var should be set")
+		}
+	})
+
+	t.Run("environment keys are deduplicated with explicit precedence", func(t *testing.T) {
+		t.Setenv("NTM_SESSION", "parent-session")
+		t.Setenv("SHARED_VAR", "parent-value")
+		t.Setenv("HOOK_ONLY", "parent-hook")
+
+		env := buildEnvironment(&CommandHook{
+			Event: EventPreSpawn,
+			Env: map[string]string{
+				"HOOK_ONLY":   "hook-value",
+				"SHARED_VAR":  "hook-value",
+				"NTM_SESSION": "hook-session",
+			},
+		}, ExecutionContext{
+			SessionName: "runtime-session",
+			AdditionalEnv: map[string]string{
+				"SHARED_VAR": "context-value",
+			},
+		})
+
+		values := envValuesByKey(env)
+		if got := values["NTM_SESSION"]; len(got) != 1 || got[0] != "hook-session" {
+			t.Fatalf("NTM_SESSION values = %#v, want [hook-session]", got)
+		}
+		if got := values["HOOK_ONLY"]; len(got) != 1 || got[0] != "hook-value" {
+			t.Fatalf("HOOK_ONLY values = %#v, want [hook-value]", got)
+		}
+		if got := values["SHARED_VAR"]; len(got) != 1 || got[0] != "context-value" {
+			t.Fatalf("SHARED_VAR values = %#v, want [context-value]", got)
 		}
 	})
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -174,29 +175,30 @@ func detectWorkDir(sessionName string, panes []tmux.Pane) string {
 
 // getGitInfo extracts git branch, remote, and commit from a directory.
 func getGitInfo(dir string) (branch, remote, commit string) {
+	return getGitInfoWithTimeout(dir, 5*time.Second)
+}
+
+func getGitInfoWithTimeout(dir string, timeout time.Duration) (branch, remote, commit string) {
 	if dir == "" {
 		return "", "", ""
 	}
 
-	// Get current branch
-	branchOutput, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if err == nil {
-		branch = strings.TrimSpace(string(branchOutput))
-	}
-
-	// Get remote URL
-	remoteOutput, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
-	if err == nil {
-		remote = strings.TrimSpace(string(remoteOutput))
-	}
-
-	// Get current commit
-	commitOutput, err := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
-	if err == nil {
-		commit = strings.TrimSpace(string(commitOutput))
-	}
+	branch = runGitInfoCommand(dir, timeout, "rev-parse", "--abbrev-ref", "HEAD")
+	remote = runGitInfoCommand(dir, timeout, "remote", "get-url", "origin")
+	commit = runGitInfoCommand(dir, timeout, "rev-parse", "--short", "HEAD")
 
 	return branch, remote, commit
+}
+
+func runGitInfoCommand(dir string, timeout time.Duration, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	output, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // getLayout gets the current tmux layout for the session.

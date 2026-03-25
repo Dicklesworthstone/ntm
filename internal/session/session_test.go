@@ -392,6 +392,22 @@ func TestStorageOperations_RejectEmptySanitizedName(t *testing.T) {
 	}
 }
 
+func TestRestore_NilState(t *testing.T) {
+	t.Parallel()
+
+	if err := Restore(nil, RestoreOptions{Name: "nil-state"}); err == nil {
+		t.Fatal("Restore(nil, ...) should fail")
+	}
+}
+
+func TestRestoreAgents_NilState(t *testing.T) {
+	t.Parallel()
+
+	if err := RestoreAgents("nil-state", nil, AgentCommands{}); err == nil {
+		t.Fatal("RestoreAgents with nil state should fail")
+	}
+}
+
 func TestDelete_Basic(t *testing.T) {
 	_, cleanup := setupTestStorage(t)
 	defer cleanup()

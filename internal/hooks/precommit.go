@@ -125,7 +125,9 @@ func RunPreCommit(ctx context.Context, repoPath string, config PreCommitConfig) 
 
 // getStagedFiles returns a list of staged file paths.
 func getStagedFiles(repoPath string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "diff", "--name-only", "--cached", "--diff-filter=ACMR")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "diff", "--name-only", "--cached", "--diff-filter=ACMR")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err

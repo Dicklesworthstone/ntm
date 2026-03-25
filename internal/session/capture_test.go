@@ -3,7 +3,9 @@ package session
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 // setupSessionGitRepo creates a temp git repo with an initial commit and
@@ -92,6 +94,52 @@ func TestGetGitInfo_NonExistentDir(t *testing.T) {
 	branch, remote, commit := getGitInfo("/tmp/nonexistent-session-test-dir-99999")
 	if branch != "" || remote != "" || commit != "" {
 		t.Error("expected all empty for nonexistent dir")
+	}
+}
+
+func TestGetGitInfoWithTimeout_UsesIndependentCommandBudgets(t *testing.T) {
+	tmpBin := t.TempDir()
+	logFile := filepath.Join(tmpBin, "git-invocations.log")
+	gitPath := filepath.Join(tmpBin, "git")
+	script := `#!/bin/sh
+sleep 0.08
+printf '%s\n' "$3 $4 $5" >> "$NTM_GITINFO_LOG"
+case "$3 $4 $5" in
+  "rev-parse --abbrev-ref HEAD")
+    printf 'main\n'
+    ;;
+  "remote get-url origin")
+    printf 'https://example.com/repo.git\n'
+    ;;
+  "rev-parse --short HEAD")
+    printf 'abcdef0\n'
+    ;;
+esac
+`
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	t.Setenv("PATH", tmpBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NTM_GITINFO_LOG", logFile)
+
+	branch, remote, commit := getGitInfoWithTimeout(t.TempDir(), 100*time.Millisecond)
+	if branch != "main" {
+		t.Fatalf("branch = %q, want main", branch)
+	}
+	if remote != "https://example.com/repo.git" {
+		t.Fatalf("remote = %q, want fake remote", remote)
+	}
+	if commit != "abcdef0" {
+		t.Fatalf("commit = %q, want abcdef0", commit)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	if got := string(data); got != "rev-parse --abbrev-ref HEAD\nremote get-url origin\nrev-parse --short HEAD\n" {
+		t.Fatalf("unexpected fake git invocations:\n%s", got)
 	}
 }
 

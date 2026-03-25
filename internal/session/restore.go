@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +17,10 @@ import (
 
 // Restore recreates a session from saved state.
 func Restore(state *SessionState, opts RestoreOptions) (err error) {
+	if state == nil {
+		return fmt.Errorf("session state is nil")
+	}
+
 	name := opts.Name
 	if name == "" {
 		name = state.Name
@@ -25,10 +30,7 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 	auditStart := time.Now()
 	sessionCreated := false
 	killedExisting := false
-	panesPlanned := 0
-	if state != nil {
-		panesPlanned = len(state.Panes)
-	}
+	panesPlanned := len(state.Panes)
 	_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.restore", map[string]interface{}{
 		"phase":          "start",
 		"session":        name,
@@ -50,10 +52,8 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 			"duration_ms":     time.Since(auditStart).Milliseconds(),
 			"correlation_id":  correlationID,
 		}
-		if state != nil {
-			payload["work_dir"] = state.WorkDir
-			payload["layout"] = state.Layout
-		}
+		payload["work_dir"] = state.WorkDir
+		payload["layout"] = state.Layout
 		if err != nil {
 			payload["error"] = err.Error()
 		}
@@ -180,14 +180,15 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 // RestoreAgents launches the agents in the restored session.
 // This is separated from Restore to allow for customization.
 func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands) (err error) {
+	if state == nil {
+		return fmt.Errorf("session state is nil")
+	}
+
 	correlationID := audit.NewCorrelationID()
 	auditStart := time.Now()
 	attempted := 0
 	launched := 0
-	planned := 0
-	if state != nil {
-		planned = len(state.Panes)
-	}
+	planned := len(state.Panes)
 	_ = audit.LogEvent(sessionName, audit.EventTypeSpawn, audit.ActorSystem, "session.restore.agents", map[string]interface{}{
 		"phase":          "start",
 		"session":        sessionName,
@@ -344,7 +345,9 @@ func applyLayout(session, layout string) error {
 
 // getCurrentGitBranch returns the current git branch for a directory.
 func getCurrentGitBranch(dir string) string {
-	output, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return ""
 	}

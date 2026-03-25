@@ -4,12 +4,14 @@
 package hooks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Common errors returned by the hooks package.
@@ -76,7 +78,10 @@ func (m *Manager) Install(hookType HookType, force bool) error {
 
 	// Check if hook already exists
 	if _, err := os.Stat(hookPath); err == nil {
-		content, _ := os.ReadFile(hookPath)
+		content, readErr := os.ReadFile(hookPath)
+		if readErr != nil {
+			return fmt.Errorf("reading existing hook %s: %w", hookPath, readErr)
+		}
 		if isNTMHook(string(content)) {
 			// Already an NTM hook, just overwrite
 			force = true
@@ -197,7 +202,9 @@ func (m *Manager) HooksDir() string {
 
 // findGitRoot finds the root of the git repository.
 func findGitRoot(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", ErrNotGitRepo

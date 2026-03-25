@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,31 @@ func TestNewNotifier(t *testing.T) {
 	}
 	if !n.enabledSet[EventAgentError] {
 		t.Error("EventAgentError should be enabled")
+	}
+}
+
+type closeTrackingTransport struct {
+	closed bool
+}
+
+func (t *closeTrackingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closed = true
+}
+
+func TestNotifierCloseClosesIdleHTTPConnections(t *testing.T) {
+	n := New(DefaultConfig())
+	transport := &closeTrackingTransport{}
+	n.httpClient.Transport = transport
+
+	if err := n.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !transport.closed {
+		t.Fatal("Close() should close idle HTTP connections")
 	}
 }
 
@@ -406,6 +432,44 @@ func TestEnvVarExpansion(t *testing.T) {
 	}
 }
 
+func TestNewNotifier_ClonesMutableConfigState(t *testing.T) {
+	t.Setenv("TEST_NOTIFY_HEADER", "expanded-token")
+
+	cfg := Config{
+		Enabled: true,
+		Events:  []string{"agent.error"},
+		Routing: map[string][]string{
+			"agent.error": {"log"},
+		},
+		Webhook: WebhookConfig{
+			Enabled: true,
+			URL:     "https://example.com/hook",
+			Headers: map[string]string{
+				"Authorization": "Bearer ${TEST_NOTIFY_HEADER}",
+			},
+		},
+	}
+
+	n := New(cfg)
+
+	if got := cfg.Webhook.Headers["Authorization"]; got != "Bearer ${TEST_NOTIFY_HEADER}" {
+		t.Fatalf("caller header mutated to %q", got)
+	}
+	if got := n.config.Webhook.Headers["Authorization"]; got != "Bearer expanded-token" {
+		t.Fatalf("notifier header = %q, want expanded value", got)
+	}
+
+	cfg.Webhook.Headers["Authorization"] = "mutated"
+	cfg.Routing["agent.error"][0] = "filebox"
+
+	if got := n.config.Webhook.Headers["Authorization"]; got != "Bearer expanded-token" {
+		t.Fatalf("notifier header changed after caller mutation: %q", got)
+	}
+	if got := n.config.Routing["agent.error"][0]; got != "log" {
+		t.Fatalf("notifier routing changed after caller mutation: %q", got)
+	}
+}
+
 func TestChannelConstants(t *testing.T) {
 	// Verify channel constants are defined
 	channels := []ChannelName{
@@ -557,6 +621,34 @@ func TestNotifierClose(t *testing.T) {
 	// Second close should also be fine
 	if err := n.Close(); err != nil {
 		t.Errorf("Close() second call error: %v", err)
+	}
+}
+
+func TestSendShell_TimesOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell timeout test requires sh and sleep")
+	}
+
+	oldTimeout := notificationCommandTimeout
+	notificationCommandTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		notificationCommandTimeout = oldTimeout
+	})
+
+	n := New(Config{
+		Enabled: true,
+		Shell: ShellConfig{
+			Enabled: true,
+			Command: "sleep 1",
+		},
+	})
+
+	err := n.sendShell(Event{Type: EventAgentError, Message: "timeout"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
 

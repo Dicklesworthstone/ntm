@@ -91,6 +91,14 @@ func TestCommandHookValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "whitespace command",
+			hook: CommandHook{
+				Event:   EventPreSpawn,
+				Command: "   \t  ",
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid event",
 			hook: CommandHook{
 				Event:   CommandEvent("invalid-event"),

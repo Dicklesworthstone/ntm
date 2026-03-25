@@ -124,7 +124,7 @@ type CommandHooksConfig struct {
 
 // Validate checks if the command hook configuration is valid
 func (h *CommandHook) Validate() error {
-	if h.Command == "" {
+	if strings.TrimSpace(h.Command) == "" {
 		return fmt.Errorf("hook command cannot be empty")
 	}
 	if !IsValidCommandEvent(string(h.Event)) {
