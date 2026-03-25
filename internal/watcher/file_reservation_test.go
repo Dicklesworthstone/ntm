@@ -939,6 +939,150 @@ func TestRenewReservationsContinuesAfterPaneLevelFailure(t *testing.T) {
 	}
 }
 
+func TestRecordPaneOutputUnchangedOutputDoesNotRefreshReservation(t *testing.T) {
+	t.Parallel()
+
+	w := NewFileReservationWatcher()
+	lastActivity := time.Now().Add(-time.Minute)
+	output := "Edited: /file.go"
+
+	w.mu.Lock()
+	w.paneOutputs["%1"] = output
+	w.activeReservations["%1"] = &PaneReservation{
+		PaneID:       "%1",
+		AgentName:    "TestAgent",
+		LastActivity: lastActivity,
+		LastOutput:   output,
+	}
+	w.mu.Unlock()
+
+	if processed := w.recordPaneOutput("%1", output, time.Now()); processed {
+		t.Fatal("expected unchanged pane output to be ignored")
+	}
+
+	reservations := w.GetActiveReservations()
+	got := reservations["%1"]
+	if got == nil {
+		t.Fatal("expected reservation to remain tracked")
+	}
+	if !got.LastActivity.Equal(lastActivity) {
+		t.Fatalf("expected LastActivity to remain %v, got %v", lastActivity, got.LastActivity)
+	}
+}
+
+func TestRecordPaneOutputChangedOutputRefreshesReservation(t *testing.T) {
+	t.Parallel()
+
+	w := NewFileReservationWatcher()
+	lastActivity := time.Now().Add(-time.Minute)
+	oldOutput := "Edited: /file.go"
+	newOutput := "Thinking about next step"
+	now := time.Now()
+
+	w.mu.Lock()
+	w.paneOutputs["%1"] = oldOutput
+	w.activeReservations["%1"] = &PaneReservation{
+		PaneID:       "%1",
+		AgentName:    "TestAgent",
+		LastActivity: lastActivity,
+		LastOutput:   oldOutput,
+	}
+	w.mu.Unlock()
+
+	if processed := w.recordPaneOutput("%1", newOutput, now); !processed {
+		t.Fatal("expected changed pane output to be processed")
+	}
+
+	reservations := w.GetActiveReservations()
+	got := reservations["%1"]
+	if got == nil {
+		t.Fatal("expected reservation to remain tracked")
+	}
+	if !got.LastActivity.Equal(now) {
+		t.Fatalf("expected LastActivity to refresh to %v, got %v", now, got.LastActivity)
+	}
+	if got.LastOutput != newOutput {
+		t.Fatalf("expected LastOutput %q, got %q", newOutput, got.LastOutput)
+	}
+}
+
+func TestReleaseIdleReservationsKeepsPaneOutputStateToSuppressStaleOutput(t *testing.T) {
+	t.Parallel()
+
+	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
+		"release_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			return map[string]interface{}{"released": 1}, nil
+		},
+	})
+	defer server.Close()
+
+	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
+	w := NewFileReservationWatcher(
+		WithWatcherClient(client),
+		WithProjectDir("/test/project"),
+		WithIdleTimeout(time.Minute),
+	)
+
+	output := "Edited: /file.go"
+	w.mu.Lock()
+	w.paneOutputs["%1"] = output
+	w.activeReservations["%1"] = &PaneReservation{
+		PaneID:        "%1",
+		AgentName:     "TestAgent",
+		Files:         []string{"/file.go"},
+		ReservationID: []int{1},
+		LastActivity:  time.Now().Add(-2 * time.Minute),
+		LastOutput:    output,
+	}
+	w.mu.Unlock()
+
+	w.releaseIdleReservations(context.Background())
+
+	reservations := w.GetActiveReservations()
+	if reservations["%1"] != nil {
+		t.Fatal("expected idle reservation to be released")
+	}
+
+	w.mu.Lock()
+	trackedOutput := w.paneOutputs["%1"]
+	w.mu.Unlock()
+	if trackedOutput != output {
+		t.Fatalf("expected pane output state to be retained after release, got %q", trackedOutput)
+	}
+
+	if processed := w.recordPaneOutput("%1", output, time.Now()); processed {
+		t.Fatal("expected stale unchanged output to be ignored after release")
+	}
+}
+
+func TestPrepareReservationAttemptSeedsLastOutputForNewReservation(t *testing.T) {
+	t.Parallel()
+
+	w := NewFileReservationWatcher()
+	now := time.Now()
+	output := "Edited: /file.go"
+
+	agentName, newFiles := w.prepareReservationAttempt("%1", "test-session", output, []string{"/file.go"}, now)
+	if agentName != "test-session_%1" {
+		t.Fatalf("expected derived agent name, got %q", agentName)
+	}
+	if len(newFiles) != 1 || newFiles[0] != "/file.go" {
+		t.Fatalf("expected new files to include /file.go, got %v", newFiles)
+	}
+
+	reservations := w.GetActiveReservations()
+	got := reservations["%1"]
+	if got == nil {
+		t.Fatal("expected reservation to be created")
+	}
+	if got.LastOutput != output {
+		t.Fatalf("expected LastOutput %q, got %q", output, got.LastOutput)
+	}
+	if !got.LastActivity.Equal(now) {
+		t.Fatalf("expected LastActivity %v, got %v", now, got.LastActivity)
+	}
+}
+
 // TestFilePathPatterns tests that all pattern categories are present.
 func TestFilePathPatterns(t *testing.T) {
 	expectedAgents := []string{"claude", "codex", "gemini", "*"}

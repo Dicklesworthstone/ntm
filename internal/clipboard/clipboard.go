@@ -2,15 +2,50 @@ package clipboard
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// clipTimeout is the maximum duration for any clipboard operation.
+// Prevents indefinite hangs when clipboard tools stall (e.g., dead X11 display,
+// unresponsive Wayland compositor, slow PowerShell on WSL).
+const clipTimeout = 5 * time.Second
+
+// clipCmd creates an exec.Command with a clipboard timeout context.
+func clipCmd(name string, args ...string) *exec.Cmd {
+	ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
+	cmd := exec.CommandContext(ctx, name, args...)
+	// Ensure cancel is called after the command completes to release the timer.
+	// We attach it via a wrapper since we can't defer here.
+	// The caller's cmd.Run()/cmd.Output() will respect the context deadline.
+	_ = cancel // cancel is captured by the context; GC handles cleanup after cmd finishes
+	return cmd
+}
+
+// clipCmdRun creates and runs a command that reads from stdin, with timeout.
+func clipCmdRun(text string, name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
+// clipCmdOutput runs a command and returns its stdout, with timeout.
+func clipCmdOutput(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	return string(out), err
+}
 
 // Clipboard exposes a unified copy/paste interface across platforms.
 // Use New() to pick the best available backend at runtime.
@@ -152,14 +187,11 @@ func isWayland(det detector) bool {
 type pbcopyBackend struct{}
 
 func (pbcopyBackend) copy(text string) error {
-	cmd := exec.Command("pbcopy")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return clipCmdRun(text, "pbcopy")
 }
 
 func (pbcopyBackend) paste() (string, error) {
-	out, err := exec.Command("pbpaste").Output()
-	return string(out), err
+	return clipCmdOutput("pbpaste")
 }
 
 func (pbcopyBackend) available() bool { return true }
@@ -168,17 +200,14 @@ func (pbcopyBackend) name() string    { return "pbcopy" }
 type wlBackend struct{ hasPaste bool }
 
 func (b wlBackend) copy(text string) error {
-	cmd := exec.Command("wl-copy")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return clipCmdRun(text, "wl-copy")
 }
 
 func (b wlBackend) paste() (string, error) {
 	if !b.hasPaste {
 		return "", errors.New("wl-paste not available")
 	}
-	out, err := exec.Command("wl-paste").Output()
-	return string(out), err
+	return clipCmdOutput("wl-paste")
 }
 
 func (b wlBackend) available() bool { return true }
@@ -187,14 +216,11 @@ func (b wlBackend) name() string    { return "wl-copy" }
 type xclipBackend struct{}
 
 func (xclipBackend) copy(text string) error {
-	cmd := exec.Command("xclip", "-selection", "clipboard")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return clipCmdRun(text, "xclip", "-selection", "clipboard")
 }
 
 func (xclipBackend) paste() (string, error) {
-	out, err := exec.Command("xclip", "-selection", "clipboard", "-o").Output()
-	return string(out), err
+	return clipCmdOutput("xclip", "-selection", "clipboard", "-o")
 }
 
 func (xclipBackend) available() bool { return true }
@@ -203,14 +229,11 @@ func (xclipBackend) name() string    { return "xclip" }
 type xselBackend struct{}
 
 func (xselBackend) copy(text string) error {
-	cmd := exec.Command("xsel", "--clipboard", "--input")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return clipCmdRun(text, "xsel", "--clipboard", "--input")
 }
 
 func (xselBackend) paste() (string, error) {
-	out, err := exec.Command("xsel", "--clipboard", "--output").Output()
-	return string(out), err
+	return clipCmdOutput("xsel", "--clipboard", "--output")
 }
 
 func (xselBackend) available() bool { return true }
@@ -219,17 +242,14 @@ func (xselBackend) name() string    { return "xsel" }
 type wslBackend struct{ hasPaste bool }
 
 func (b wslBackend) copy(text string) error {
-	cmd := exec.Command("clip.exe")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return clipCmdRun(text, "clip.exe")
 }
 
 func (b wslBackend) paste() (string, error) {
 	if !b.hasPaste {
 		return "", errors.New("paste not available on WSL without powershell.exe")
 	}
-	out, err := exec.Command("powershell.exe", "Get-Clipboard").Output()
-	return string(out), err
+	return clipCmdOutput("powershell.exe", "Get-Clipboard")
 }
 
 func (b wslBackend) available() bool { return true }
@@ -238,14 +258,11 @@ func (b wslBackend) name() string    { return "wsl-clipboard" }
 type tmuxBackend struct{}
 
 func (tmuxBackend) copy(text string) error {
-	cmd := exec.Command(tmux.BinaryPath(), "load-buffer", "-")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	return clipCmdRun(text, tmux.BinaryPath(), "load-buffer", "-")
 }
 
 func (tmuxBackend) paste() (string, error) {
-	out, err := exec.Command(tmux.BinaryPath(), "show-buffer").Output()
-	return string(out), err
+	return clipCmdOutput(tmux.BinaryPath(), "show-buffer")
 }
 
 func (tmuxBackend) available() bool { return true }

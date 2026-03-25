@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -15,6 +16,7 @@ import (
 
 // WorktreeService provides high-level git worktree isolation services
 type WorktreeService struct {
+	mu       sync.Mutex
 	managers map[string]*WorktreeManager // project path -> manager
 	config   *config.Config
 }
@@ -139,7 +141,7 @@ func (ws *WorktreeService) AutoProvisionSession(ctx context.Context, sessionName
 		}
 
 		// Generate cd command for the pane
-		changeDirCommand := fmt.Sprintf("cd %s", worktreeInfo.Path)
+		changeDirCommand := fmt.Sprintf("cd %s", tmux.ShellQuote(worktreeInfo.Path))
 
 		provision := WorktreeProvision{
 			PaneID:       agentPane.PaneID,
@@ -246,8 +248,12 @@ func (ws *WorktreeService) GetSessionWorktreeStatus(ctx context.Context, session
 
 // Helper methods
 
-// getManager gets or creates a worktree manager for a project
+// getManager gets or creates a worktree manager for a project.
+// Thread-safe: protects the managers map with a mutex.
 func (ws *WorktreeService) getManager(projectDir string) (*WorktreeManager, error) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+
 	if manager, exists := ws.managers[projectDir]; exists {
 		return manager, nil
 	}
@@ -312,9 +318,15 @@ func (ws *WorktreeService) changeDirectoryInPane(paneID, workingDir string) erro
 
 // GetAllWorktrees returns worktrees across all managed projects
 func (ws *WorktreeService) GetAllWorktrees(ctx context.Context) (map[string][]*WorktreeInfo, error) {
-	result := make(map[string][]*WorktreeInfo)
+	ws.mu.Lock()
+	snapshot := make(map[string]*WorktreeManager, len(ws.managers))
+	for k, v := range ws.managers {
+		snapshot[k] = v
+	}
+	ws.mu.Unlock()
 
-	for projectDir, manager := range ws.managers {
+	result := make(map[string][]*WorktreeInfo)
+	for projectDir, manager := range snapshot {
 		worktrees, err := manager.ListWorktrees(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list worktrees for %s: %w", projectDir, err)
@@ -327,7 +339,14 @@ func (ws *WorktreeService) GetAllWorktrees(ctx context.Context) (map[string][]*W
 
 // CleanupStaleWorktrees removes stale worktrees across all managed projects
 func (ws *WorktreeService) CleanupStaleWorktrees(ctx context.Context, maxAge time.Duration) error {
-	for _, manager := range ws.managers {
+	ws.mu.Lock()
+	snapshot := make([]*WorktreeManager, 0, len(ws.managers))
+	for _, v := range ws.managers {
+		snapshot = append(snapshot, v)
+	}
+	ws.mu.Unlock()
+
+	for _, manager := range snapshot {
 		if err := manager.CleanupStaleWorktrees(ctx, maxAge); err != nil {
 			return err
 		}

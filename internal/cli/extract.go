@@ -304,11 +304,11 @@ blockLoop:
 			action = "create"
 		}
 
-		// Check for risky paths
+		// Check for risky paths — use cleanPath for all subsequent operations
 		cleanPath := filepath.Clean(block.FilePath)
 		isRisky := filepath.IsAbs(cleanPath) || strings.HasPrefix(cleanPath, "..") || strings.Contains(cleanPath, "/..")
 
-		fmt.Printf("[%d] %s %s (%s)\n", i+1, action, block.FilePath, langDisplay)
+		fmt.Printf("[%d] %s %s (%s)\n", i+1, action, cleanPath, langDisplay)
 
 		if isRisky {
 			fmt.Printf("    %s Blocked: path escapes current directory\n", "\033[31m✗\033[0m")
@@ -317,7 +317,7 @@ blockLoop:
 		}
 
 		// Check if file exists
-		_, err := os.Stat(block.FilePath)
+		_, err := os.Stat(cleanPath)
 		fileExists := err == nil
 
 		if fileExists && !block.IsNew {
@@ -332,12 +332,19 @@ blockLoop:
 
 		switch strings.ToLower(strings.TrimSpace(response)) {
 		case "y", "yes":
-			// Write the file
-			if err := os.WriteFile(block.FilePath, []byte(block.Content), 0644); err != nil {
+			// Ensure parent directory exists for nested paths
+			if dir := filepath.Dir(cleanPath); dir != "." && dir != "" {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					fmt.Printf("    ✗ Failed to create directory: %v\n", err)
+					continue
+				}
+			}
+			// Write the file (use cleanPath, not the raw block.FilePath)
+			if err := os.WriteFile(cleanPath, []byte(block.Content), 0644); err != nil {
 				fmt.Printf("    ✗ Failed to write: %v\n", err)
 				continue
 			}
-			fmt.Printf("    ✓ Applied to %s\n", block.FilePath)
+			fmt.Printf("    ✓ Applied to %s\n", cleanPath)
 			applied++
 		case "s", "skip":
 			fmt.Printf("Skipping remaining blocks\n")

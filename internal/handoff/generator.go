@@ -386,7 +386,9 @@ func (g *Generator) hasGitContext() bool {
 		if strings.TrimSpace(g.projectDir) == "" {
 			return
 		}
-		cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-work-tree")
 		cmd.Dir = g.projectDir
 		out, err := cmd.Output()
 		if err != nil {
@@ -399,7 +401,9 @@ func (g *Generator) hasGitContext() bool {
 }
 
 func (g *Generator) getGitModified() ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "HEAD")
 	cmd.Dir = g.projectDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -409,7 +413,9 @@ func (g *Generator) getGitModified() ([]string, error) {
 }
 
 func (g *Generator) getGitUntracked() ([]string, error) {
-	cmd := exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
 	cmd.Dir = g.projectDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -419,7 +425,9 @@ func (g *Generator) getGitUntracked() ([]string, error) {
 }
 
 func (g *Generator) getGitBranch() (string, error) {
-	cmd := exec.Command("git", "branch", "--show-current")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current")
 	cmd.Dir = g.projectDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -429,7 +437,9 @@ func (g *Generator) getGitBranch() (string, error) {
 }
 
 func (g *Generator) getRecentCommits(n int) ([]string, error) {
-	cmd := exec.Command("git", "log", fmt.Sprintf("-%d", n), "--oneline")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "log", fmt.Sprintf("-%d", n), "--oneline")
 	cmd.Dir = g.projectDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -735,7 +745,9 @@ func (g *Generator) getInProgressBeads(agentName string) ([]string, error) {
 		args = append(args, "--assignee", agentName)
 	}
 
-	cmd := exec.Command("br", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "br", args...)
 	cmd.Dir = g.projectDir
 
 	out, err := cmd.Output()

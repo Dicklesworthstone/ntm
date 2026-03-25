@@ -1069,9 +1069,11 @@ func yamlMarshal(h *handoff.Handoff) ([]byte, error) {
 // Returns modified, untracked, and deleted files.
 func getGitFileChanges(projectDir string) []FileChange {
 	var changes []FileChange
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	// Get modified files from git diff
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "HEAD")
 	cmd.Dir = projectDir
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -1087,7 +1089,7 @@ func getGitFileChanges(projectDir string) []FileChange {
 	}
 
 	// Get untracked files
-	cmd = exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	cmd = exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
 	cmd.Dir = projectDir
 	out.Reset()
 	cmd.Stdout = &out
@@ -1103,7 +1105,7 @@ func getGitFileChanges(projectDir string) []FileChange {
 	}
 
 	// Get deleted files from git status
-	cmd = exec.Command("git", "diff", "--name-only", "--diff-filter=D", "HEAD")
+	cmd = exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=D", "HEAD")
 	cmd.Dir = projectDir
 	out.Reset()
 	cmd.Stdout = &out

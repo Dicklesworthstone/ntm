@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+// safeSessionPrefix returns the first 8 characters of a session ID, padding
+// with zeros if shorter to prevent slice-bounds panics.
+func safeSessionPrefix(sessionID string) string {
+	if len(sessionID) >= 8 {
+		return sessionID[:8]
+	}
+	return sessionID + strings.Repeat("0", 8-len(sessionID))
+}
+
 // WorktreeManager handles git worktree creation and management for agent isolation
 type WorktreeManager struct {
 	projectDir string
@@ -44,7 +53,7 @@ type WorktreeInfo struct {
 // ProvisionWorktree creates an isolated worktree for an agent
 func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, sessionID string) (*WorktreeInfo, error) {
 	// Generate a unique worktree name
-	worktreeName := fmt.Sprintf("agent-%s-%s", agentName, sessionID[:8])
+	worktreeName := fmt.Sprintf("agent-%s-%s", agentName, safeSessionPrefix(sessionID))
 	workingDir := filepath.Join(wm.baseRepo, "..", worktreeName)
 
 	// Check if worktree already exists
@@ -56,7 +65,7 @@ func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, ses
 	}
 
 	// Create a new branch for this agent
-	branchName := fmt.Sprintf("agent/%s/%s", agentName, sessionID[:8])
+	branchName := fmt.Sprintf("agent/%s/%s", agentName, safeSessionPrefix(sessionID))
 
 	// Get current branch and commit for base
 	currentBranch, err := wm.getCurrentBranch()
@@ -105,9 +114,9 @@ func (wm *WorktreeManager) ListWorktrees(ctx context.Context) ([]*WorktreeInfo, 
 
 // RemoveWorktree removes a worktree and its associated branch
 func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessionID string) error {
-	worktreeName := fmt.Sprintf("agent-%s-%s", agentName, sessionID[:8])
+	worktreeName := fmt.Sprintf("agent-%s-%s", agentName, safeSessionPrefix(sessionID))
 	workingDir := filepath.Join(wm.baseRepo, "..", worktreeName)
-	branchName := fmt.Sprintf("agent/%s/%s", agentName, sessionID[:8])
+	branchName := fmt.Sprintf("agent/%s/%s", agentName, safeSessionPrefix(sessionID))
 
 	// Remove the worktree
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", workingDir)
@@ -149,7 +158,7 @@ func (wm *WorktreeManager) CleanupStaleWorktrees(ctx context.Context, maxAge tim
 			parts := strings.Split(wt.Branch, "/")
 			if len(parts) >= 3 {
 				agentName := parts[1]
-				sessionID := parts[2] + "00000000" // Pad to ensure minimum length
+				sessionID := parts[2] // safeSessionPrefix handles short IDs
 				if err := wm.RemoveWorktree(ctx, agentName, sessionID); err != nil {
 					// Log error but continue cleanup
 					fmt.Printf("Warning: failed to remove stale worktree for %s: %v\n", wt.Path, err)
@@ -185,9 +194,15 @@ func (wm *WorktreeManager) SyncWorktree(ctx context.Context, worktreePath string
 
 // Helper methods
 
-// IsGitRepository checks if a directory is a git repository
+// IsGitRepository checks if a directory is a git repository.
+// Returns false for empty dir to prevent false positives from CWD.
 func IsGitRepository(dir string) bool {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	if dir == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
 	cmd.Dir = dir
 	err := cmd.Run()
 	return err == nil
@@ -208,7 +223,9 @@ func (wm *WorktreeManager) worktreeExists(name string) (bool, error) {
 
 // getCurrentBranch returns the current branch name
 func (wm *WorktreeManager) getCurrentBranch() (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = wm.baseRepo
 	output, err := cmd.Output()
 	if err != nil {
@@ -219,7 +236,9 @@ func (wm *WorktreeManager) getCurrentBranch() (string, error) {
 
 // getCommitHash returns the current commit hash for a worktree
 func (wm *WorktreeManager) getCommitHash(worktreePath string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
 	if err != nil {
