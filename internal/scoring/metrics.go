@@ -258,9 +258,10 @@ func (w Weights) Sum() float64 {
 }
 
 // Normalize adjusts weights to sum to 1.0.
+// Negative sums (malformed config) are treated as zero — weights are left unchanged.
 func (w *Weights) Normalize() {
 	sum := w.Sum()
-	if sum == 0 || sum == 1.0 {
+	if sum <= 0 || sum == 1.0 {
 		return
 	}
 	w.Completion /= sum

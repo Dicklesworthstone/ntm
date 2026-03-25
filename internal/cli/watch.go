@@ -147,10 +147,15 @@ func runWatch(session string, opts watchOptions) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-sigChan
-		fmt.Println("\n\nWatch mode stopped.")
-		cancel()
+		select {
+		case <-sigChan:
+			fmt.Println("\n\nWatch mode stopped.")
+			cancel()
+		case <-done:
+		}
 	}()
 
 	// Get theme for colors

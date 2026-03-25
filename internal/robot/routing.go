@@ -377,31 +377,29 @@ func NewAgentScorerWithReservations(cfg RoutingConfig, client *agentmail.Client,
 }
 
 // NewAgentScorerFromConfig creates a scorer using config file settings.
-// Falls back to DefaultRoutingConfig() for any zero-value fields.
+// Callers should pass a config loaded via config.Load() or config.Default(),
+// which already include canonical routing defaults.
 func NewAgentScorerFromConfig(cfg *config.Config) *AgentScorer {
 	routingCfg := DefaultRoutingConfig()
 
 	if cfg != nil {
 		r := cfg.Routing
-		if r.ContextWeight > 0 {
-			routingCfg.ContextWeight = r.ContextWeight
-		}
-		if r.StateWeight > 0 {
-			routingCfg.StateWeight = r.StateWeight
-		}
-		if r.RecencyWeight > 0 {
-			routingCfg.RecencyWeight = r.RecencyWeight
-		}
-		if r.AffinityBonus > 0 {
-			routingCfg.AffinityBonus = r.AffinityBonus
-		}
-		if r.ExcludeContextAbove > 0 {
-			routingCfg.ExcludeContextAbove = r.ExcludeContextAbove
-		}
-		// Bool fields: only override from config if the [routing] section is
-		// explicitly present (indicated by any non-zero weight). Otherwise TOML
-		// zero-values would silently disable features like ExcludeIfGenerating.
-		if r.ContextWeight > 0 || r.StateWeight > 0 || r.RecencyWeight > 0 {
+		if r != (config.RoutingConfig{}) {
+			if r.ContextWeight > 0 {
+				routingCfg.ContextWeight = r.ContextWeight
+			}
+			if r.StateWeight > 0 {
+				routingCfg.StateWeight = r.StateWeight
+			}
+			if r.RecencyWeight > 0 {
+				routingCfg.RecencyWeight = r.RecencyWeight
+			}
+			if r.AffinityBonus > 0 {
+				routingCfg.AffinityBonus = r.AffinityBonus
+			}
+			if r.ExcludeContextAbove > 0 {
+				routingCfg.ExcludeContextAbove = r.ExcludeContextAbove
+			}
 			routingCfg.AffinityEnabled = r.AffinityEnabled
 			routingCfg.ExcludeIfGenerating = r.ExcludeIfGenerating
 			routingCfg.ExcludeIfRateLimited = r.ExcludeIfRateLimited

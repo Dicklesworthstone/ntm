@@ -76,9 +76,12 @@ func RedactEntry(entry *HistoryEntry) *HistoryEntry {
 		return entry
 	}
 
-	// Create a copy with redacted prompt.
+	// Create a copy with redacted fields.
 	// redactPrompt handles warn/redact/block modes.
 	redacted := *entry
 	redacted.Prompt = redactPrompt(entry.Prompt)
+	if redacted.Error != "" {
+		redacted.Error = redactPrompt(entry.Error)
+	}
 	return &redacted
 }

@@ -163,7 +163,7 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 	if len(spec.Panes) > 0 {
 		title := o.formatPaneTitle(spec.Name, spec.Panes[0])
 		if err := o.setPaneTitleWithRetry(client, firstPaneID, title); err != nil {
-			// Non-fatal, continue
+			slog.Warn("[SessionOrchestrator] set_pane_title_failed", "session", spec.Name, "pane", firstPaneID, "error", err)
 		}
 	}
 	result.PaneIDs = append(result.PaneIDs, firstPaneID)
@@ -197,7 +197,7 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 		// Set pane title
 		title := o.formatPaneTitle(spec.Name, paneSpec)
 		if err := o.setPaneTitleWithRetry(client, paneID, title); err != nil {
-			// Non-fatal, continue
+			slog.Warn("[SessionOrchestrator] set_pane_title_failed", "session", spec.Name, "pane", paneID, "error", err)
 		}
 
 		result.PaneIDs = append(result.PaneIDs, paneID)
@@ -205,7 +205,7 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 
 	// Apply tiled layout for even pane distribution
 	if err := client.ApplyTiledLayout(spec.Name); err != nil {
-		// Non-fatal, panes are still created
+		slog.Warn("[SessionOrchestrator] apply_tiled_layout_failed", "session", spec.Name, "error", err)
 	}
 
 	return result

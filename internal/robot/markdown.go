@@ -449,7 +449,7 @@ func writeFallbackWorkMarkdown(sb *strings.Builder, summary *bv.BeadsSummary, op
 }
 
 func writeSnapshotAlertsMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, opts MarkdownOptions) {
-	totalActive, critical, warning := alertSummaryCounts(snapshot)
+	totalActive, critical, warning, info := alertSummaryCounts(snapshot)
 	if totalActive == 0 {
 		if opts.Compact {
 			sb.WriteString("### Alerts: none\n\n")
@@ -466,10 +466,13 @@ func writeSnapshotAlertsMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, 
 	if warning > 0 {
 		fmt.Fprintf(sb, ", %d warning", warning)
 	}
+	if info > 0 {
+		fmt.Fprintf(sb, ", %d info", info)
+	}
 	sb.WriteString(")\n")
 
 	if opts.Compact {
-		fmt.Fprintf(sb, "- critical:%d warning:%d total:%d\n\n", critical, warning, totalActive)
+		fmt.Fprintf(sb, "- critical:%d warning:%d info:%d total:%d\n\n", critical, warning, info, totalActive)
 		return
 	}
 
@@ -487,12 +490,13 @@ func writeSnapshotAlertsMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, 
 	sb.WriteString("\n")
 }
 
-func alertSummaryCounts(snapshot *SnapshotOutput) (totalActive, critical, warning int) {
+func alertSummaryCounts(snapshot *SnapshotOutput) (totalActive, critical, warning, info int) {
 	if snapshot.AlertSummary != nil {
 		totalActive = snapshot.AlertSummary.TotalActive
 		critical = snapshot.AlertSummary.BySeverity["critical"]
 		warning = snapshot.AlertSummary.BySeverity["warning"]
-		return totalActive, critical, warning
+		info = snapshot.AlertSummary.BySeverity["info"]
+		return totalActive, critical, warning, info
 	}
 
 	totalActive = len(snapshot.AlertsDetailed)
@@ -502,9 +506,11 @@ func alertSummaryCounts(snapshot *SnapshotOutput) (totalActive, critical, warnin
 			critical++
 		case "warning":
 			warning++
+		case "info":
+			info++
 		}
 	}
-	return totalActive, critical, warning
+	return totalActive, critical, warning, info
 }
 
 func alertSeverityOrder(s alerts.Severity) int {

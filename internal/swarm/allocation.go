@@ -24,6 +24,9 @@ func NewAllocationCalculator(cfg *config.SwarmConfig) *AllocationCalculator {
 
 // CalculateTier returns the tier number (1, 2, or 3) for a given bead count.
 func (ac *AllocationCalculator) CalculateTier(beadCount int) int {
+	if ac.Config == nil {
+		return 3 // Conservative default tier when config is missing
+	}
 	if beadCount >= ac.Config.Tier1Threshold {
 		return 1
 	}

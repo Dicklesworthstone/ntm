@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -490,6 +491,9 @@ func (t *Tracker) AnalyzeTrend(q Query, windowDays int) (*TrendAnalysis, error) 
 	// Calculate change percentage
 	if analysis.EarlierAvg > 0 {
 		analysis.ChangePercent = ((analysis.RecentAvg - analysis.EarlierAvg) / analysis.EarlierAvg) * 100
+	} else if analysis.RecentAvg > 0 {
+		// Earlier was zero but recent is positive → treat as 100% improvement
+		analysis.ChangePercent = 100
 	}
 
 	// Calculate standard deviation
@@ -504,9 +508,9 @@ func (t *Tracker) AnalyzeTrend(q Query, windowDays int) (*TrendAnalysis, error) 
 	// A change is significant if > 1 standard deviation
 	threshold := 5.0 // minimum 5% threshold
 	if analysis.AvgScore > 0 {
-		threshold = analysis.StdDev * 100 / analysis.AvgScore // as percentage
-		if threshold < 5 {
-			threshold = 5
+		adaptiveThreshold := analysis.StdDev * 100 / analysis.AvgScore // as percentage
+		if adaptiveThreshold > threshold {
+			threshold = adaptiveThreshold
 		}
 	}
 
@@ -636,16 +640,13 @@ func DefaultTracker() *Tracker {
 	return globalTracker
 }
 
-// sqrt computes square root using Newton's method (avoiding math import).
+// sqrt computes square root. Uses math.Sqrt for correctness across all input
+// ranges (the previous Newton's method diverged to NaN for large inputs).
 func sqrt(x float64) float64 {
 	if x <= 0 {
 		return 0
 	}
-	z := x / 2
-	for i := 0; i < 10; i++ {
-		z = z - (z*z-x)/(2*z)
-	}
-	return z
+	return math.Sqrt(x)
 }
 
 // DefaultDecayFactor is the half-life in days for score decay.
@@ -805,30 +806,16 @@ func (t *Tracker) QueryAllEffectiveness(windowDays int) (map[string]map[string]*
 	return result, nil
 }
 
-// exp2 computes 2^x using a simple approximation (avoiding math import).
+// exp2 computes 2^x. Uses math.Exp2 for correctness (the previous Taylor
+// series approximation lost precision for negative exponents near -10).
 func exp2(x float64) float64 {
-	if x == 0 {
-		return 1
-	}
 	if x < -10 {
-		return 0 // Very small, treat as zero
+		return 0
 	}
 	if x > 10 {
-		return 1024 // Cap at reasonable maximum
+		return 1024
 	}
-
-	// Use ln(2) ≈ 0.693147 and e^x approximation
-	// 2^x = e^(x * ln(2))
-	y := x * 0.693147 // ln(2)
-
-	// Taylor series for e^y: 1 + y + y²/2 + y³/6 + y⁴/24 + ...
-	result := 1.0
-	term := 1.0
-	for i := 1; i <= 12; i++ {
-		term *= y / float64(i)
-		result += term
-	}
-	return result
+	return math.Exp2(x)
 }
 
 // minFloat returns the smaller of two float64 values.

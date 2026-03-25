@@ -109,11 +109,11 @@ type Config struct {
 // RetryConfig provides unified retry policy settings. Individual subsystems
 // can override the global defaults via subsystem-specific sections.
 type RetryConfig struct {
-	MaxAttempts   int `toml:"max_attempts"`    // Global default max retry attempts (default: 3)
-	InitialDelayMs int `toml:"initial_delay_ms"` // Initial delay between retries in ms (default: 1000)
-	MaxDelayMs    int `toml:"max_delay_ms"`     // Maximum delay cap in ms (default: 30000)
-	BackoffFactor float64 `toml:"backoff_factor"` // Exponential backoff multiplier (default: 2.0)
-	Jitter        bool    `toml:"jitter"`          // Add random jitter to delays (default: true)
+	MaxAttempts    int     `toml:"max_attempts"`     // Global default max retry attempts (default: 3)
+	InitialDelayMs int     `toml:"initial_delay_ms"` // Initial delay between retries in ms (default: 1000)
+	MaxDelayMs     int     `toml:"max_delay_ms"`     // Maximum delay cap in ms (default: 30000)
+	BackoffFactor  float64 `toml:"backoff_factor"`   // Exponential backoff multiplier (default: 2.0)
+	Jitter         bool    `toml:"jitter"`           // Add random jitter to delays (default: true)
 
 	// Subsystem-specific overrides (inherit global values if zero/empty)
 	Webhook    RetryOverride `toml:"webhook"`
@@ -140,9 +140,9 @@ func DefaultRetryConfig() RetryConfig {
 		MaxDelayMs:     30000,
 		BackoffFactor:  2.0,
 		Jitter:         true,
-		Webhook:    RetryOverride{MaxAttempts: 5},
-		Scheduler:  RetryOverride{MaxAttempts: 5},
-		DB:         RetryOverride{MaxAttempts: 6},
+		Webhook:        RetryOverride{MaxAttempts: 5},
+		Scheduler:      RetryOverride{MaxAttempts: 5},
+		DB:             RetryOverride{MaxAttempts: 6},
 	}
 }
 
@@ -186,15 +186,31 @@ func (c *RetryConfig) RetryPolicyFor(subsystem string) (maxAttempts int, initial
 // RoutingConfig holds agent routing/scoring configuration.
 // Mirrors internal/robot.RoutingConfig for TOML deserialization without import cycles.
 type RoutingConfig struct {
-	ContextWeight       float64 `toml:"context_weight"`
-	StateWeight         float64 `toml:"state_weight"`
-	RecencyWeight       float64 `toml:"recency_weight"`
-	AffinityEnabled     bool    `toml:"affinity_enabled"`
-	AffinityBonus       float64 `toml:"affinity_bonus"`
-	ExcludeContextAbove float64 `toml:"exclude_context_above"`
-	ExcludeIfGenerating bool    `toml:"exclude_if_generating"`
-	ExcludeIfRateLimited bool   `toml:"exclude_if_rate_limited"`
-	ExcludeIfErrorState bool    `toml:"exclude_if_error"`
+	ContextWeight        float64 `toml:"context_weight"`
+	StateWeight          float64 `toml:"state_weight"`
+	RecencyWeight        float64 `toml:"recency_weight"`
+	AffinityEnabled      bool    `toml:"affinity_enabled"`
+	AffinityBonus        float64 `toml:"affinity_bonus"`
+	ExcludeContextAbove  float64 `toml:"exclude_context_above"`
+	ExcludeIfGenerating  bool    `toml:"exclude_if_generating"`
+	ExcludeIfRateLimited bool    `toml:"exclude_if_rate_limited"`
+	ExcludeIfErrorState  bool    `toml:"exclude_if_error"`
+}
+
+// DefaultRoutingConfig returns the canonical routing defaults used when
+// config files omit the [routing] section entirely.
+func DefaultRoutingConfig() RoutingConfig {
+	return RoutingConfig{
+		ContextWeight:        0.4,
+		StateWeight:          0.4,
+		RecencyWeight:        0.2,
+		AffinityEnabled:      false,
+		AffinityBonus:        20.0,
+		ExcludeContextAbove:  85.0,
+		ExcludeIfGenerating:  true,
+		ExcludeIfRateLimited: true,
+		ExcludeIfErrorState:  true,
+	}
 }
 
 // RobotConfig holds defaults for robot output behavior.
@@ -2166,6 +2182,8 @@ func Default() *Config {
 		Privacy:         DefaultPrivacyConfig(),
 		Encryption:      DefaultEncryptionConfig(),
 		SpawnPacing:     DefaultSpawnPacingConfig(),
+		Retry:           DefaultRetryConfig(),
+		Routing:         DefaultRoutingConfig(),
 	}
 
 	// Apply safety profile defaults (standard/safe/paranoid).

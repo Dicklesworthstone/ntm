@@ -121,7 +121,7 @@ func runMonitor(session string) error {
 	// Load plugins to populate config
 	configDir := filepath.Dir(config.DefaultPath())
 	pluginsDir := filepath.Join(configDir, "agents")
-	if loadedPlugins, err := plugins.LoadAgentPlugins(pluginsDir); err == nil {
+	if loadedPlugins, err := plugins.LoadAgentPlugins(pluginsDir); err == nil && cfg != nil {
 		if cfg.Agents.Plugins == nil {
 			cfg.Agents.Plugins = make(map[string]string)
 		}

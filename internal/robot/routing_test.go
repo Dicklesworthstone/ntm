@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
 func TestDefaultRoutingConfig(t *testing.T) {
@@ -1283,6 +1284,49 @@ func TestNewAgentScorerFromConfig(t *testing.T) {
 	}
 	if cfg.RecencyWeight != 0.2 {
 		t.Errorf("RecencyWeight = %f, want 0.2", cfg.RecencyWeight)
+	}
+}
+
+func TestNewAgentScorerFromConfig_ZeroValueConfigUsesDefaults(t *testing.T) {
+	scorer := NewAgentScorerFromConfig(&config.Config{})
+
+	if scorer.config.ContextWeight != 0.4 {
+		t.Fatalf("ContextWeight = %f, want 0.4", scorer.config.ContextWeight)
+	}
+	if !scorer.config.ExcludeIfGenerating {
+		t.Fatal("ExcludeIfGenerating should default to true for zero-value config")
+	}
+	if !scorer.config.ExcludeIfRateLimited {
+		t.Fatal("ExcludeIfRateLimited should default to true for zero-value config")
+	}
+	if !scorer.config.ExcludeIfErrorState {
+		t.Fatal("ExcludeIfErrorState should default to true for zero-value config")
+	}
+}
+
+func TestNewAgentScorerFromConfig_BoolOnlyOverrides(t *testing.T) {
+	cfg := config.Default()
+	cfg.Routing.AffinityEnabled = true
+	cfg.Routing.ExcludeIfGenerating = false
+	cfg.Routing.ExcludeIfRateLimited = false
+	cfg.Routing.ExcludeIfErrorState = false
+
+	scorer := NewAgentScorerFromConfig(cfg)
+
+	if !scorer.config.AffinityEnabled {
+		t.Fatal("AffinityEnabled should be true when enabled in config")
+	}
+	if scorer.config.ExcludeIfGenerating {
+		t.Fatal("ExcludeIfGenerating should be false when disabled in config")
+	}
+	if scorer.config.ExcludeIfRateLimited {
+		t.Fatal("ExcludeIfRateLimited should be false when disabled in config")
+	}
+	if scorer.config.ExcludeIfErrorState {
+		t.Fatal("ExcludeIfErrorState should be false when disabled in config")
+	}
+	if scorer.config.ContextWeight != 0.4 {
+		t.Fatalf("ContextWeight = %f, want default 0.4", scorer.config.ContextWeight)
 	}
 }
 

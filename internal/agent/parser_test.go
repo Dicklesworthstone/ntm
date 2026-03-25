@@ -634,6 +634,37 @@ func TestParser_FileData_Codex_Idle(t *testing.T) {
 	}
 }
 
+func TestParser_Parse_Codex_ChevronPromptIdle(t *testing.T) {
+	p := NewParser()
+	output := `OpenAI Codex CLI v1.2.3
+
+Done reviewing the current implementation.
+Token usage: total=85,432 input=80,001 output=5,431
+72% context left · ? for shortcuts
+› Write tests for @internal/agent/patterns.go`
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeCodex {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeCodex)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for Codex chevron prompt")
+	}
+	if state.IsWorking {
+		t.Error("Expected IsWorking=false when Codex is waiting at chevron prompt")
+	}
+	if state.ContextRemaining == nil {
+		t.Fatal("Expected ContextRemaining to be set for Codex chevron prompt")
+	}
+	if *state.ContextRemaining != 72.0 {
+		t.Errorf("ContextRemaining = %.1f, want 72.0", *state.ContextRemaining)
+	}
+}
+
 func TestParser_FileData_Codex_RateLimit(t *testing.T) {
 	p := NewParser()
 	output := loadTestData(t, "cod_ratelimit.txt")

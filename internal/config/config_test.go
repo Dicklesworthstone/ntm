@@ -32,6 +32,70 @@ func TestDefault(t *testing.T) {
 	if len(cfg.Palette) == 0 {
 		t.Error("Default palette should have commands")
 	}
+
+	if cfg.Retry.MaxAttempts != 3 {
+		t.Errorf("Retry.MaxAttempts = %d, want 3", cfg.Retry.MaxAttempts)
+	}
+	if cfg.Retry.InitialDelayMs != 1000 {
+		t.Errorf("Retry.InitialDelayMs = %d, want 1000", cfg.Retry.InitialDelayMs)
+	}
+	if cfg.Retry.MaxDelayMs != 30000 {
+		t.Errorf("Retry.MaxDelayMs = %d, want 30000", cfg.Retry.MaxDelayMs)
+	}
+	if cfg.Routing.ContextWeight != 0.4 {
+		t.Errorf("Routing.ContextWeight = %f, want 0.4", cfg.Routing.ContextWeight)
+	}
+	if cfg.Routing.ExcludeIfGenerating != true {
+		t.Errorf("Routing.ExcludeIfGenerating = %t, want true", cfg.Routing.ExcludeIfGenerating)
+	}
+	if cfg.Routing.ExcludeIfRateLimited != true {
+		t.Errorf("Routing.ExcludeIfRateLimited = %t, want true", cfg.Routing.ExcludeIfRateLimited)
+	}
+	if cfg.Routing.ExcludeIfErrorState != true {
+		t.Errorf("Routing.ExcludeIfErrorState = %t, want true", cfg.Routing.ExcludeIfErrorState)
+	}
+}
+
+func TestLoadRoutingBoolOnlyOverridesPreserveDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `
+[routing]
+affinity_enabled = true
+exclude_if_generating = false
+exclude_if_rate_limited = false
+exclude_if_error = false
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if !cfg.Routing.AffinityEnabled {
+		t.Fatal("Routing.AffinityEnabled should be true when set in TOML")
+	}
+	if cfg.Routing.ExcludeIfGenerating {
+		t.Fatal("Routing.ExcludeIfGenerating should be false when overridden in TOML")
+	}
+	if cfg.Routing.ExcludeIfRateLimited {
+		t.Fatal("Routing.ExcludeIfRateLimited should be false when overridden in TOML")
+	}
+	if cfg.Routing.ExcludeIfErrorState {
+		t.Fatal("Routing.ExcludeIfErrorState should be false when overridden in TOML")
+	}
+	if cfg.Routing.ContextWeight != 0.4 {
+		t.Fatalf("Routing.ContextWeight = %f, want default 0.4", cfg.Routing.ContextWeight)
+	}
+	if cfg.Routing.StateWeight != 0.4 {
+		t.Fatalf("Routing.StateWeight = %f, want default 0.4", cfg.Routing.StateWeight)
+	}
+	if cfg.Routing.RecencyWeight != 0.2 {
+		t.Fatalf("Routing.RecencyWeight = %f, want default 0.2", cfg.Routing.RecencyWeight)
+	}
 }
 
 func TestExpandHome(t *testing.T) {

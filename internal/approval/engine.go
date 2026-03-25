@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +162,7 @@ func (e *Engine) enqueueSLBRequest(ctx context.Context, params RequestParams) (s
 	raw, err := adapter.Request(ctx, command, params.Reason)
 	if err != nil {
 		// Graceful fallback to internal approvals if SLB is unavailable or errors.
+		slog.Warn("SLB adapter request failed, falling back to internal approval", "error", err, "command", command)
 		return "", nil
 	}
 

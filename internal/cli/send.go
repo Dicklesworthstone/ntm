@@ -3426,9 +3426,14 @@ func runSendBatch(opts SendOptions) error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	defer close(done) // Unblocks the goroutine on normal return
 	go func() {
-		<-sigCh
-		cancel()
+		select {
+		case <-sigCh:
+			cancel()
+		case <-done:
+		}
 	}()
 	defer signal.Stop(sigCh)
 
