@@ -4,7 +4,9 @@ package context
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -179,23 +181,29 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, va
 	shortType := agentTypeShort(agentType)
 	title := tmux.FormatPaneName(session, shortType, index, variant)
 	if err := tmux.SetPaneTitle(paneID, title); err != nil {
-		return paneID, fmt.Errorf("setting pane title: %w", err)
+		// Clean up orphaned pane on failure
+		_ = tmux.KillPane(paneID)
+		return "", fmt.Errorf("setting pane title: %w", err)
 	}
 
 	// Get the agent command
 	agentCmd := s.getAgentCommand(agentType)
 	cmd, err := tmux.BuildPaneCommand(workDir, agentCmd)
 	if err != nil {
-		return paneID, fmt.Errorf("building command: %w", err)
+		_ = tmux.KillPane(paneID)
+		return "", fmt.Errorf("building command: %w", err)
 	}
 
 	// Launch the agent
 	if err := tmux.SendKeys(paneID, cmd, true); err != nil {
-		return paneID, fmt.Errorf("launching agent: %w", err)
+		_ = tmux.KillPane(paneID)
+		return "", fmt.Errorf("launching agent: %w", err)
 	}
 
-	// Apply tiled layout
-	_ = tmux.ApplyTiledLayout(session)
+	// Apply tiled layout (best-effort)
+	if err := tmux.ApplyTiledLayout(session); err != nil {
+		slog.Warn("failed to apply tiled layout after spawn", "session", session, "error", err)
+	}
 
 	return paneID, nil
 }
@@ -248,7 +256,12 @@ func (s *DefaultPaneSpawner) getAgentCommand(agentType string) string {
 		}
 	}
 
-	return defaults[agentType]
+	if cmd, ok := defaults[agentType]; ok {
+		return cmd
+	}
+	// Fall back to using the agent type name as the command.
+	// This handles unknown/future agent types that match their CLI name.
+	return agentType
 }
 
 func (tmuxPaneInputSender) SendKeys(paneID, text string, enter bool) error {
@@ -312,6 +325,8 @@ func agentTypeLong(shortType string) string {
 
 // Rotator coordinates agent rotation when context window is exhausted.
 type Rotator struct {
+	mu sync.RWMutex // Protects history and pending
+
 	monitor   *ContextMonitor
 	compactor *Compactor
 	summary   *SummaryGenerator
@@ -740,7 +755,10 @@ func (r *Rotator) tryCompaction(agentID, paneID string) *CompactionResult {
 	time.Sleep(cmd.WaitTime)
 
 	// Finish and evaluate
-	result, _ := r.compactor.FinishCompaction(state)
+	result, err := r.compactor.FinishCompaction(state)
+	if err != nil {
+		slog.Warn("compaction finish failed", "error", err)
+	}
 	return result
 }
 

@@ -22,7 +22,7 @@ type AMAdapter struct {
 func NewAMAdapter() *AMAdapter {
 	return &AMAdapter{
 		BaseAdapter: NewBaseAdapter(ToolAM, "mcp-agent-mail"),
-		serverURL:   "http://127.0.0.1:8765",
+		serverURL:   "http://127.0.0.1:8765", // Base URL without /mcp/ path (appended per-request)
 	}
 }
 

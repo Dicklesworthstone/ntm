@@ -443,10 +443,10 @@ func TestRESTBeadsListEmpty(t *testing.T) {
 
 	resp := client.get("/api/v1/beads")
 
-	// Beads endpoint depends on bd (beads_rust) being installed
+	// Beads endpoint depends on br (beads_rust) being installed
 	// If not installed, expect 503 Service Unavailable
 	if resp.StatusCode == http.StatusServiceUnavailable {
-		logger.Log("Beads unavailable (bd not installed) - expected in test environment")
+		logger.Log("Beads unavailable (br not installed) - expected in test environment")
 		return
 	}
 

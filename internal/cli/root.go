@@ -3351,7 +3351,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "System state as markdown tables. LLM-friendly, ~50% fewer tokens than JSON")
 	rootCmd.Flags().BoolVar(&robotMarkdownCompact, "md-compact", false, "Ultra-compact markdown: abbreviations, minimal whitespace. Use with --robot-markdown")
 	rootCmd.Flags().StringVar(&robotMarkdownSession, "md-session", "", "Filter to one session. Optional with --robot-markdown. Example: --md-session=myproject")
-	rootCmd.Flags().StringVar(&robotMarkdownSections, "md-sections", "", "Include only specific sections: sessions,beads,alerts,mail. Example: --md-sections=sessions,beads")
+	rootCmd.Flags().StringVar(&robotMarkdownSections, "md-sections", "", "Include only specific sections: summary,sessions,work,alerts,attention. Example: --md-sections=summary,sessions")
 	rootCmd.Flags().IntVar(&robotMarkdownMaxBeads, "md-max-beads", 0, "Max beads per category (0=default). Optional with --robot-markdown")
 	rootCmd.Flags().IntVar(&robotMarkdownMaxAlerts, "md-max-alerts", 0, "Max alerts to show (0=default). Optional with --robot-markdown")
 

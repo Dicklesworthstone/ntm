@@ -267,7 +267,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 					continue
 				}
 
-				agentType := translateAgentTypeForStatus(detectAgentType(targetPane.Title))
+				agentType := detectAgentType(targetPane.Title)
 				state := determineState(captured, agentType)
 
 				if state == "idle" {
