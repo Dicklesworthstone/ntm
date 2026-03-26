@@ -162,8 +162,11 @@ func GetDashboard() (*DashboardOutput, error) {
 	output.FileChanges = statusOutput.FileChanges
 
 	// Agent Mail summary (best-effort)
-	cwd, _ := os.Getwd()
-	output.AgentMail, _, _ = fetchAgentMailData(cwd)
+	if cwd, err := os.Getwd(); err != nil {
+		output.AgentMail = &SnapshotAgentMail{Available: false, Reason: "unable to determine working directory"}
+	} else {
+		output.AgentMail, _, _ = fetchAgentMailData(cwd)
+	}
 
 	// Attention feed summary (best-effort)
 	output.Attention = buildSnapshotAttentionSummary(GetAttentionFeed())
