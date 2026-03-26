@@ -1,0 +1,66 @@
+{
+  "scenario_id": "healthy-session-001",
+  "description": "Baseline healthy session with three active agents and no incidents",
+  "session": {
+    "name": "test-session",
+    "label": "",
+    "project_path": "/tmp/test-project",
+    "attached": true,
+    "window_count": 1,
+    "pane_count": 4,
+    "agent_count": 3,
+    "active_agents": 2,
+    "idle_agents": 1,
+    "error_agents": 0,
+    "health_status": "healthy"
+  },
+  "agents": [
+    {
+      "id": "test-session:1",
+      "session_name": "test-session",
+      "pane": "1",
+      "agent_type": "claude",
+      "state": "active",
+      "health_status": "healthy",
+      "pending_mail": 0
+    },
+    {
+      "id": "test-session:2",
+      "session_name": "test-session",
+      "pane": "2",
+      "agent_type": "codex",
+      "state": "active",
+      "health_status": "healthy",
+      "pending_mail": 0
+    },
+    {
+      "id": "test-session:3",
+      "session_name": "test-session",
+      "pane": "3",
+      "agent_type": "gemini",
+      "state": "idle",
+      "health_status": "healthy",
+      "pending_mail": 0
+    }
+  ],
+  "source_health": {
+    "tmux_status": "fresh",
+    "beads_status": "fresh",
+    "mail_status": "fresh",
+    "pt_status": "fresh",
+    "degraded_sources": []
+  },
+  "quota": {
+    "rate_limit_remaining": 900,
+    "rate_limit_limit": 1000,
+    "daily_used": 5000,
+    "daily_limit": 100000,
+    "exhausted": false
+  },
+  "incidents": [],
+  "expected_outputs": {
+    "status_success": true,
+    "snapshot_success": true,
+    "attention_item_count": 0
+  }
+}

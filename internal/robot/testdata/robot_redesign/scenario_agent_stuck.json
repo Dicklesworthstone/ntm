@@ -1,0 +1,72 @@
+{
+  "scenario_id": "agent-stuck-001",
+  "description": "Session with a stuck agent triggering an incident",
+  "session": {
+    "name": "test-session",
+    "label": "",
+    "project_path": "/tmp/test-project",
+    "attached": true,
+    "window_count": 1,
+    "pane_count": 4,
+    "agent_count": 3,
+    "active_agents": 1,
+    "idle_agents": 1,
+    "error_agents": 1,
+    "health_status": "warning"
+  },
+  "agents": [
+    {
+      "id": "test-session:1",
+      "session_name": "test-session",
+      "pane": "1",
+      "agent_type": "claude",
+      "state": "active",
+      "health_status": "healthy",
+      "pending_mail": 0
+    },
+    {
+      "id": "test-session:2",
+      "session_name": "test-session",
+      "pane": "2",
+      "agent_type": "codex",
+      "state": "error",
+      "state_reason": "no output for 5 minutes",
+      "health_status": "critical",
+      "pending_mail": 0
+    },
+    {
+      "id": "test-session:3",
+      "session_name": "test-session",
+      "pane": "3",
+      "agent_type": "gemini",
+      "state": "idle",
+      "health_status": "healthy",
+      "pending_mail": 0
+    }
+  ],
+  "source_health": {
+    "tmux_status": "fresh",
+    "beads_status": "fresh",
+    "mail_status": "fresh",
+    "pt_status": "fresh",
+    "degraded_sources": []
+  },
+  "incidents": [
+    {
+      "id": "inc-stuck-001",
+      "type": "agent_stuck",
+      "status": "open",
+      "session": "test-session",
+      "severity": "warning",
+      "title": "Agent stuck: codex pane 2",
+      "resource_type": "pane",
+      "resource_id": "2"
+    }
+  ],
+  "expected_outputs": {
+    "status_success": true,
+    "snapshot_success": true,
+    "attention_item_count": 1,
+    "incident_count": 1
+  }
+}
