@@ -220,10 +220,11 @@ go test ./e2e/... -run Overlay
 
 ### Golden Fixtures
 
-Located in `internal/robot/testdata/`:
-- `golden_snapshot*.json` - Canonical snapshot outputs
-- `golden_events*.json` - Event envelope examples
-- `golden_attention*.json` - Attention response fixtures
+Located in `internal/robot/testdata/robot_redesign/`:
+- `goldens/schema_*.golden.json` - Canonical schema outputs
+- `goldens/error_*.golden.json` - Error response fixtures
+- `goldens/registry_surfaces.golden.json` - Registry surface metadata
+- `scenario_*.json` - Test scenario fixtures (healthy, degraded, stuck)
 
 ---
 
