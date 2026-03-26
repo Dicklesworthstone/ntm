@@ -249,6 +249,22 @@ func TerseSectionLimits() SectionLimits {
 	}
 }
 
+// DashboardSectionLimits returns limits suitable for interactive TUI dashboard.
+// These limits are higher than robot mode to support scrollable panels.
+func DashboardSectionLimits() SectionLimits {
+	return SectionLimits{
+		Sessions:             50,
+		WorkReady:            25,
+		WorkBlocked:          15,
+		WorkInProgress:       20,
+		Alerts:               50,
+		AttentionAction:      30,
+		AttentionInteresting: 20,
+		AttentionBackground:  10,
+		Incidents:            20,
+	}
+}
+
 // =============================================================================
 // Section Projection Result
 // =============================================================================
@@ -663,4 +679,132 @@ func projectAttentionSection(snapshot *SnapshotOutput, opts SectionProjectionOpt
 
 	section := NewProjectedSection(SectionAttention, snapshot.AttentionSummary).WithFormatHints(hints)
 	return section
+}
+
+// =============================================================================
+// Dashboard Section Projections
+// =============================================================================
+//
+// Dashboard projections provide richer data than robot mode summaries, suitable
+// for interactive TUI panels with scrolling and selection. They use the same
+// section model and truncation semantics to ensure conceptual alignment.
+
+// DashboardAttentionData contains full attention events for dashboard use.
+// Unlike SnapshotAttentionSummary which provides only counts and top 3 items,
+// this provides the full event list with consistent truncation metadata.
+type DashboardAttentionData struct {
+	// Events is the list of attention events (may be truncated).
+	Events []AttentionEvent `json:"events"`
+
+	// Summary provides aggregate counts for orientation.
+	Summary *SnapshotAttentionSummary `json:"summary,omitempty"`
+
+	// FeedAvailable indicates whether the attention feed is running.
+	FeedAvailable bool `json:"feed_available"`
+}
+
+// GetDashboardAttentionSection returns an attention section with full events
+// suitable for TUI dashboard display. Returns a ProjectedSection with consistent
+// truncation metadata.
+//
+// Unlike projectAttentionSection which returns SnapshotAttentionSummary (counts
+// and top 3 items), this returns full events for interactive scrolling.
+//
+// For alerts, use ProjectSections with the snapshot's AlertsDetailed field -
+// the existing projectAlertsSection handles alerts appropriately.
+func GetDashboardAttentionSection(limits SectionLimits) ProjectedSection {
+	hints := DefaultSectionFormatHints(SectionAttention)
+
+	feed := PeekAttentionFeed()
+	if feed == nil {
+		section := NewProjectedSection(SectionAttention, DashboardAttentionData{
+			FeedAvailable: false,
+		}).WithFormatHints(hints)
+		return section.WithOmission("unavailable", "attention feed not running")
+	}
+
+	// Get events from feed
+	stats := feed.Stats()
+	maxEvents := limits.AttentionAction + limits.AttentionInteresting + limits.AttentionBackground
+	if maxEvents <= 0 {
+		maxEvents = 60 // Default for dashboard
+	}
+
+	replayLimit := stats.Count
+	if replayLimit > maxEvents {
+		replayLimit = maxEvents
+	}
+
+	events, _, err := feed.Replay(0, replayLimit)
+	if err != nil {
+		section := NewProjectedSection(SectionAttention, DashboardAttentionData{
+			FeedAvailable: true,
+		}).WithFormatHints(hints)
+		return section.WithOmission("error", "failed to replay attention events")
+	}
+
+	// Filter to action_required and interesting (exclude background for dashboard)
+	filtered := make([]AttentionEvent, 0, len(events))
+	for _, ev := range events {
+		if ev.Actionability == ActionabilityActionRequired ||
+			ev.Actionability == ActionabilityInteresting {
+			filtered = append(filtered, ev)
+		}
+	}
+
+	// Build summary from feed
+	summary := buildSnapshotAttentionSummary(feed)
+
+	data := DashboardAttentionData{
+		Events:        filtered,
+		Summary:       summary,
+		FeedAvailable: true,
+	}
+
+	section := NewProjectedSection(SectionAttention, data).WithFormatHints(hints)
+
+	// Report truncation if we limited the results
+	if stats.Count > maxEvents {
+		section = section.WithTruncation(stats.Count, stats.Count-len(filtered),
+			"limit", "use --robot-attention for full event replay")
+	}
+
+	return section
+}
+
+// =============================================================================
+// Terse and TOON Alignment
+// =============================================================================
+//
+// Terse and TOON renderers are aligned with the section model:
+//
+// 1. DATA ALIGNMENT: Both use GetSnapshot() which provides the same data
+//    that section projections consume. The data path is unified at the
+//    snapshot level.
+//
+// 2. FORMAT HINTS: SectionFormatHints includes TerseFormat and TOONSchema
+//    fields that guide how each section should be rendered in these formats.
+//
+// 3. TRUNCATION: While terse shows only summary counts (not individual items),
+//    the section model's truncation metadata is available if needed.
+//
+// For rendering with explicit section model usage:
+//
+//   projection := ProjectSections(snapshot, SectionProjectionOptions{
+//       Limits: TerseSectionLimits(),
+//   })
+//   for _, section := range projection.Sections {
+//       hints := section.FormatHints
+//       if hints != nil && hints.TerseFormat != "" {
+//           // Use TerseFormat to render this section
+//       }
+//   }
+
+// GetTerseProjection returns a section projection optimized for terse output.
+// This provides the same data as GetTerse but wrapped in the section model
+// for consistent access patterns.
+func GetTerseProjection(snapshot *SnapshotOutput) *SectionProjection {
+	return ProjectSections(snapshot, SectionProjectionOptions{
+		Limits: TerseSectionLimits(),
+	})
 }

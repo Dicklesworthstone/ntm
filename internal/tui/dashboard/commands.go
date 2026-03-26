@@ -152,7 +152,8 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 	}
 }
 
-// fetchAttentionCmd reads attention events from the feed.
+// fetchAttentionCmd reads attention events via the shared section model.
+// This aligns dashboard attention with other renderers (JSON, markdown, terse).
 func (m *Model) fetchAttentionCmd() tea.Cmd {
 	gen := m.nextGen(refreshAttention)
 	requestedCursor := m.requestedAttentionCursor
@@ -168,31 +169,33 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		feed := robot.PeekAttentionFeed()
-		if feed == nil {
+		// Use the shared section model for attention data.
+		// This ensures consistent filtering and truncation with other renderers.
+		section := robot.GetDashboardAttentionSection(robot.DashboardSectionLimits())
+
+		// Check if section is omitted (feed unavailable)
+		if section.IsOmitted() {
 			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
 		}
 
-		replayLimit := attentionPanelReplayHint
-		if statsCount := feed.Stats().Count; statsCount < replayLimit {
-			replayLimit = statsCount
-		}
-		if replayLimit < attentionPanelMaxItems {
-			replayLimit = attentionPanelMaxItems
-		}
-		events, _, err := feed.Replay(0, replayLimit)
-		if err != nil {
+		// Extract dashboard attention data from the projected section
+		data, ok := section.Data.(robot.DashboardAttentionData)
+		if !ok {
 			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
 		}
 
-		items := make([]panels.AttentionItem, 0, len(events)+1)
-		for _, ev := range events {
-			if !includeAttentionEvent(ev) {
-				continue
-			}
+		if !data.FeedAvailable {
+			return AttentionUpdateMsg{FeedAvailable: false, Gen: gen}
+		}
+
+		// Convert events to panel items
+		items := make([]panels.AttentionItem, 0, len(data.Events)+1)
+		for _, ev := range data.Events {
 			items = append(items, attentionItemFromEvent(ev, paneAgents))
 		}
-		if requested := requestedAttentionItem(feed, paneAgents, requestedCursor); requested != nil &&
+
+		// Handle requested cursor (for cursor navigation)
+		if requested := requestedAttentionItem(robot.PeekAttentionFeed(), paneAgents, requestedCursor); requested != nil &&
 			!containsAttentionCursor(items, requested.Cursor) {
 			items = append(items, *requested)
 		}
@@ -201,7 +204,12 @@ func (m *Model) fetchAttentionCmd() tea.Cmd {
 		sortAttentionItems(items)
 		items = trimAttentionItems(items, attentionPanelMaxItems, requestedCursor)
 
-		return AttentionUpdateMsg{Items: items, FeedAvailable: true, Gen: gen}
+		return AttentionUpdateMsg{
+			Items:         items,
+			FeedAvailable: true,
+			Gen:           gen,
+			Truncated:     section.IsTruncated(),
+		}
 	}
 }
 

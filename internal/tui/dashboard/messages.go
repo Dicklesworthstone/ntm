@@ -142,6 +142,7 @@ type AlertsUpdateMsg struct {
 type AttentionUpdateMsg struct {
 	Items         []panels.AttentionItem
 	FeedAvailable bool
+	Truncated     bool   // True if the section model truncated results
 	Gen           uint64
 }
 
