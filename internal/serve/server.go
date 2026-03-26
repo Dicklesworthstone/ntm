@@ -947,9 +947,19 @@ func (s *Server) buildRouter() chi.Router {
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/zoom", s.handleSessionZoomV1)
 		r.With(s.RequirePermission(PermWriteSessions)).Post("/sessions/{id}/view", s.handleSessionViewV1)
 
-		// Robot endpoints (read-only)
+		// Robot endpoints (read-only) - thin adapters over robot package (bd-j9jo3.8.1)
 		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/status", s.handleRobotStatusV1)
 		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/health", s.handleRobotHealthV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/snapshot", s.handleRobotSnapshotV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/digest", s.handleRobotDigestV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/attention", s.handleRobotAttentionV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/dashboard", s.handleRobotDashboardV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/terse", s.handleRobotTerseV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/triage", s.handleRobotTriageV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/plan", s.handleRobotPlanV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/graph", s.handleRobotGraphV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/activity", s.handleRobotActivityV1)
+		r.With(s.RequirePermission(PermReadHealth)).Get("/robot/alerts", s.handleRobotAlertsV1)
 
 		// Panes API - manage tmux panes within sessions
 		r.Route("/sessions/{sessionId}/panes", func(r chi.Router) {
@@ -2627,15 +2637,190 @@ func (s *Server) handleRobotStatusV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot status", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotHealthV1 handles GET /api/v1/robot/health.
 func (s *Server) handleRobotHealthV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"note": "full robot health requires robot package integration",
-	}, reqID)
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetHealth()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot health", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
+// handleRobotSnapshotV1 handles GET /api/v1/robot/snapshot.
+func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetSnapshotWithOptions(nil, robot.PaginationOptions{})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotDigestV1 handles GET /api/v1/robot/digest.
+func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetDigest(robot.DigestOptions{})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotAttentionV1 handles GET /api/v1/robot/attention.
+// Returns attention digest with focus on action-required items (non-blocking).
+func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	// Use digest with attention-focused profile
+	output, err := robot.GetDigest(robot.DigestOptions{
+		Profile:             r.URL.Query().Get("profile"),
+		ActionRequiredLimit: 10,
+		InterestingLimit:    5,
+		BackgroundLimit:     3,
+	})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotDashboardV1 handles GET /api/v1/robot/dashboard.
+func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetDashboard()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotTerseV1 handles GET /api/v1/robot/terse.
+func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetTerse(nil)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotTriageV1 handles GET /api/v1/robot/triage.
+func (s *Server) handleRobotTriageV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetTriage(robot.TriageOptions{})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotPlanV1 handles GET /api/v1/robot/plan.
+func (s *Server) handleRobotPlanV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetPlan()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotGraphV1 handles GET /api/v1/robot/graph.
+func (s *Server) handleRobotGraphV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	output, err := robot.GetGraph()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotActivityV1 handles GET /api/v1/robot/activity.
+func (s *Server) handleRobotActivityV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	session := r.URL.Query().Get("session")
+	output, err := robot.GetActivity(robot.ActivityOptions{Session: session})
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
+}
+
+// handleRobotAlertsV1 handles GET /api/v1/robot/alerts.
+func (s *Server) handleRobotAlertsV1(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFromContext(r.Context())
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+	includeResolved := r.URL.Query().Get("include_resolved") == "true"
+	output, err := robot.GetAlertsDetailed(includeResolved)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, output)
 }
 
 // =============================================================================

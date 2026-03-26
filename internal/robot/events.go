@@ -862,6 +862,131 @@ func PrintDigest(opts DigestOptions) error {
 	})
 }
 
+// GetDigest returns a token-efficient digest of what changed since a cursor.
+// This returns the data struct directly for REST/API parity with CLI.
+func GetDigest(opts DigestOptions) (*DigestResponse, error) {
+	feed := GetAttentionFeed()
+	if feed == nil {
+		return &DigestResponse{
+			RobotResponse: NewErrorResponse(
+				errors.New("attention feed not initialized"),
+				"FEED_UNAVAILABLE",
+				"The attention feed service is not running",
+			),
+			ByCategory:      map[EventCategory]int{},
+			ByActionability: map[Actionability]int{},
+			Buckets: AttentionDigestBuckets{
+				ActionRequired: []AttentionDigestItem{},
+				Interesting:    []AttentionDigestItem{},
+				Background:     []AttentionDigestItem{},
+			},
+			ActiveIncidents: []SnapshotIncident{},
+			Suppressed:      AttentionDigestSuppression{ByReason: map[string]int{}},
+		}, nil
+	}
+
+	// Build digest options from CLI options
+	digestOpts := AttentionDigestOptions{
+		Session:             opts.Session,
+		ActionRequiredLimit: opts.ActionRequiredLimit,
+		InterestingLimit:    opts.InterestingLimit,
+		BackgroundLimit:     opts.BackgroundLimit,
+		IncludeTrace:        opts.IncludeTrace,
+	}
+	digestOpts = applyProfileToDigestOptions(opts.Profile, digestOpts)
+
+	// Apply defaults if not specified
+	if digestOpts.ActionRequiredLimit <= 0 {
+		digestOpts.ActionRequiredLimit = 5
+	}
+	if digestOpts.InterestingLimit <= 0 {
+		digestOpts.InterestingLimit = 4
+	}
+	if digestOpts.BackgroundLimit <= 0 {
+		digestOpts.BackgroundLimit = 3
+	}
+
+	// Build the digest
+	digest, err := feed.Digest(opts.SinceCursor, digestOpts)
+	if err != nil {
+		var cursorErr *CursorExpiredError
+		if errors.As(err, &cursorErr) {
+			details := cursorErr.ToDetails()
+			return &DigestResponse{
+				RobotResponse: NewErrorResponse(
+					cursorErr,
+					ErrCodeCursorExpired,
+					details.ResyncCommand,
+				),
+				ByCategory:      map[EventCategory]int{},
+				ByActionability: map[Actionability]int{},
+				Buckets: AttentionDigestBuckets{
+					ActionRequired: []AttentionDigestItem{},
+					Interesting:    []AttentionDigestItem{},
+					Background:     []AttentionDigestItem{},
+				},
+				ActiveIncidents: []SnapshotIncident{},
+				Suppressed:      AttentionDigestSuppression{ByReason: map[string]int{}},
+				ReplayWindow: &SnapshotReplayWindowInfo{
+					Supported:       true,
+					OldestCursor:    details.EarliestCursor,
+					RetentionPeriod: details.RetentionPeriod,
+					ResyncCommand:   details.ResyncCommand,
+				},
+			}, nil
+		}
+		return &DigestResponse{
+			RobotResponse:   NewErrorResponse(err, ErrCodeInternalError, ""),
+			ByCategory:      map[EventCategory]int{},
+			ByActionability: map[Actionability]int{},
+			Buckets: AttentionDigestBuckets{
+				ActionRequired: []AttentionDigestItem{},
+				Interesting:    []AttentionDigestItem{},
+				Background:     []AttentionDigestItem{},
+			},
+			ActiveIncidents: []SnapshotIncident{},
+			Suppressed:      AttentionDigestSuppression{ByReason: map[string]int{}},
+		}, nil
+	}
+
+	// Build replay window info
+	stats := feed.Stats()
+	replayWindow := &SnapshotReplayWindowInfo{
+		Supported:       true,
+		OldestCursor:    stats.OldestCursor,
+		LatestCursor:    stats.NewestCursor,
+		RetentionPeriod: stats.RetentionPeriod.String(),
+		ResyncCommand:   "ntm --robot-snapshot",
+	}
+	activeIncidents, err := snapshotIncidentsFromStore(currentProjectionStore())
+	if err != nil {
+		activeIncidents = []SnapshotIncident{}
+	}
+
+	return &DigestResponse{
+		RobotResponse: RobotResponse{
+			Success:      true,
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			Version:      AttentionContractVersion,
+			OutputFormat: "json",
+		},
+		CursorStart:      digest.CursorStart,
+		CursorEnd:        digest.CursorEnd,
+		PeriodStart:      digest.PeriodStart,
+		PeriodEnd:        digest.PeriodEnd,
+		EventCount:       digest.EventCount,
+		ByCategory:       digest.ByCategory,
+		ByActionability:  digest.ByActionability,
+		Buckets:          digest.Buckets,
+		Suppressed:       digest.Suppressed,
+		Summary:          digest.Summary,
+		PrioritizedQueue: digest.PrioritizedQueue,
+		ActiveIncidents:  activeIncidents,
+		Trace:            digest.Trace,
+		ReplayWindow:     replayWindow,
+	}, nil
+}
+
 // =============================================================================
 // --robot-attention Command Implementation (br-t540i)
 // =============================================================================
