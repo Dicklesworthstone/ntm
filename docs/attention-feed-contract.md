@@ -3,9 +3,10 @@
 > **Authoritative specification for the ntm attention feed system.**
 > This document defines the JSON semantics, event envelopes, cursor mechanics, and operator loop for AI agents consuming ntm's attention feed.
 
-**Status:** DRAFT (Phase 0 contract ratification)
-**Bead:** br-aa0nj
+**Status:** IMPLEMENTED
+**Bead:** br-aa0nj (initial), bd-j9jo3.9.4 (refresh)
 **Created:** 2026-03-21
+**Updated:** 2026-03-26
 
 ---
 
@@ -990,8 +991,9 @@ Log contract mismatches when commands cannot satisfy guarantees:
 
 ## Appendix B: Changelog
 
+- **2026-03-26:** Status updated to IMPLEMENTED; aligned with robot redesign (bd-j9jo3.9.4)
 - **2026-03-21:** Initial contract (br-aa0nj)
 
 ---
 
-*Reference: br-aa0nj*
+*Reference: br-aa0nj, bd-j9jo3.9.4*

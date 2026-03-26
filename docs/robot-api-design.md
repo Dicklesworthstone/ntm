@@ -11,7 +11,7 @@ NTM's robot mode provides a JSON API for AI agents and automation tools to inter
 1. **Predictable** - Consistent patterns across all commands
 2. **Discoverable** - Self-documenting via `--robot-capabilities`
 3. **Ergonomic** - Minimal typing, logical flag names
-4. **Backward-compatible** - Breaking changes require deprecation period
+4. **Correct** - Do it right with no tech debt (no backwards compatibility guarantees in early development)
 
 ---
 
@@ -399,13 +399,18 @@ Every robot command must document:
 
 ---
 
-## 12. Backward Compatibility
+## 12. API Evolution
 
-- JSON output is the default and must remain stable
+> **Note:** This project is in early development with no external users. We do not
+> maintain backwards compatibility guarantees. See AGENTS.md for the authoritative
+> policy: "We do not care about backwards compatibility—we're in early development
+> with no users. We want to do things the RIGHT way with NO TECH DEBT."
+
+- JSON output is the default format
 - TOON format is opt-in via `--robot-format=toon`
-- Schema changes must be additive (new fields ok, removal requires deprecation)
-- Deprecation period: 2 minor versions before removal
-- Old prefixed flags remain as aliases during deprecation
+- Schema changes are made as needed—additive changes are preferred but breaking changes are allowed
+- Old prefixed flags may be removed without deprecation period
+- If you depend on specific behavior, pin to a specific commit or version
 
 ---
 
@@ -733,5 +738,5 @@ OUTPUT FORMAT
 
 ---
 
-*Last updated: 2026-01-27*
-*Reference: bd-3045p, bd-12nbo*
+*Last updated: 2026-03-26*
+*Reference: bd-3045p, bd-12nbo, bd-j9jo3.9.4*
