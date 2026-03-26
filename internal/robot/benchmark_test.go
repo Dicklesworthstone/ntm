@@ -19,7 +19,7 @@ package robot
 import (
 	"encoding/json"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -453,14 +453,14 @@ func BenchmarkAttentionFeed_MixedWorkload(b *testing.B) {
 		Summary:       "New event",
 	}
 
+	// Use atomic counter to alternate between writers and readers
+	var workerID uint64
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		isWriter := false
-		var mu sync.Mutex
-		mu.Lock()
-		isWriter = !isWriter
-		mu.Unlock()
+		// Each goroutine gets assigned as writer or reader based on order
+		id := atomic.AddUint64(&workerID, 1)
+		isWriter := id%2 == 0
 
 		for pb.Next() {
 			if isWriter {
