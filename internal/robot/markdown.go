@@ -785,3 +785,264 @@ func RenderSuggestedActions(actions []SuggestedAction) string {
 	}
 	return strings.TrimSpace(b.String())
 }
+
+// =============================================================================
+// Section Projection-Based Markdown Rendering (bd-j9jo3.6.5)
+// =============================================================================
+
+// RenderMarkdownFromProjection renders markdown from a SectionProjection.
+// This function demonstrates how markdown is a thin projection over the shared
+// section model, ensuring format changes don't imply semantic changes.
+func RenderMarkdownFromProjection(proj *SectionProjection, compact bool) string {
+	if proj == nil {
+		return "_No data available._\n"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## NTM Status\n")
+	fmt.Fprintf(&sb, "_Generated: %s_\n\n", proj.Timestamp)
+
+	for _, section := range proj.Sections {
+		if section.IsOmitted() {
+			// Skip omitted sections but note them if verbose
+			continue
+		}
+
+		heading := section.Name
+		if section.FormatHints != nil && section.FormatHints.MarkdownHeading != "" {
+			heading = section.FormatHints.MarkdownHeading
+		}
+
+		switch section.Name {
+		case SectionSummary:
+			renderMarkdownSummary(&sb, section, compact)
+		case SectionSessions:
+			renderMarkdownSessions(&sb, section, heading, compact)
+		case SectionWork:
+			renderMarkdownWork(&sb, section, heading, compact)
+		case SectionAlerts:
+			renderMarkdownAlerts(&sb, section, heading, compact)
+		case SectionAttention:
+			renderMarkdownAttention(&sb, section, heading, compact)
+		default:
+			// Generic section rendering
+			fmt.Fprintf(&sb, "### %s\n", heading)
+			if section.Data != nil {
+				fmt.Fprintf(&sb, "%v\n", section.Data)
+			}
+			sb.WriteString("\n")
+		}
+
+		// Add truncation notice if applicable
+		if section.IsTruncated() {
+			fmt.Fprintf(&sb, "_(%d items omitted; %s)_\n\n",
+				section.Truncation.TruncatedCount,
+				section.Truncation.ResumptionHint)
+		}
+	}
+
+	// Add projection metadata if there were omissions
+	if proj.Metadata != nil && len(proj.Metadata.SectionsOmitted) > 0 {
+		sb.WriteString("---\n_Omitted sections: ")
+		first := true
+		for name := range proj.Metadata.SectionsOmitted {
+			if !first {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(name)
+			first = false
+		}
+		sb.WriteString("_\n")
+	}
+
+	return sb.String()
+}
+
+func renderMarkdownSummary(sb *strings.Builder, section ProjectedSection, compact bool) {
+	sb.WriteString("### Summary\n")
+
+	// Handle both pointer and value types for StatusSummary
+	var summary *StatusSummary
+	switch v := section.Data.(type) {
+	case *StatusSummary:
+		summary = v
+	case StatusSummary:
+		summary = &v
+	default:
+		sb.WriteString("_Summary unavailable._\n\n")
+		return
+	}
+	if summary == nil {
+		sb.WriteString("_Summary unavailable._\n\n")
+		return
+	}
+
+	if compact {
+		fmt.Fprintf(sb,
+			"- sessions:%d agents:%d ready:%d in_progress:%d alerts:%d mail:%d health:%s\n\n",
+			summary.TotalSessions,
+			summary.TotalAgents,
+			summary.ReadyWork,
+			summary.InProgress,
+			summary.AlertsActive,
+			summary.MailUnread,
+			firstNonEmptyString(summary.HealthStatus, "unknown"),
+		)
+		return
+	}
+
+	sb.WriteString("| Key | Value |\n")
+	sb.WriteString("|---|---|\n")
+	fmt.Fprintf(sb, "| Sessions | %d |\n", summary.TotalSessions)
+	fmt.Fprintf(sb, "| Agents | %d |\n", summary.TotalAgents)
+	fmt.Fprintf(sb, "| Ready Work | %d |\n", summary.ReadyWork)
+	fmt.Fprintf(sb, "| In Progress | %d |\n", summary.InProgress)
+	fmt.Fprintf(sb, "| Active Alerts | %d |\n", summary.AlertsActive)
+	fmt.Fprintf(sb, "| Unread Mail | %d |\n", summary.MailUnread)
+	if status := firstNonEmptyString(summary.HealthStatus); status != "" {
+		fmt.Fprintf(sb, "| Health | %s |\n", escapeMarkdownCell(status, 80))
+	}
+	sb.WriteString("\n")
+}
+
+func renderMarkdownSessions(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
+	sessions, ok := section.Data.([]SnapshotSession)
+	if !ok || sessions == nil {
+		sessions = []SnapshotSession{}
+	}
+
+	if len(sessions) == 0 {
+		if compact {
+			fmt.Fprintf(sb, "### %s: none\n\n", heading)
+		} else {
+			fmt.Fprintf(sb, "### %s\nNo active sessions.\n\n", heading)
+		}
+		return
+	}
+
+	fmt.Fprintf(sb, "### %s (%d)\n", heading, len(sessions))
+
+	if compact {
+		for _, sess := range sessions {
+			typeCounts, stateCounts := snapshotSessionCounts(sess.Agents)
+			attached := ""
+			if sess.Attached {
+				attached = "*"
+			}
+			fmt.Fprintf(sb,
+				"- %s%s: %d agents (cc:%d cod:%d gmi:%d) w:%d i:%d e:%d\n",
+				sess.Name,
+				attached,
+				len(sess.Agents),
+				typeCounts["claude"],
+				typeCounts["codex"],
+				typeCounts["gemini"],
+				stateCounts["working"],
+				stateCounts["idle"],
+				stateCounts["error"],
+			)
+		}
+		sb.WriteString("\n")
+		return
+	}
+
+	// Full table format
+	sb.WriteString("| Session | Agents | Types | States | Attached |\n")
+	sb.WriteString("|---|---|---|---|---|\n")
+	for _, sess := range sessions {
+		typeCounts, stateCounts := snapshotSessionCounts(sess.Agents)
+		types := fmt.Sprintf("cc:%d cod:%d gmi:%d",
+			typeCounts["claude"], typeCounts["codex"], typeCounts["gemini"])
+		states := fmt.Sprintf("w:%d i:%d e:%d",
+			stateCounts["working"], stateCounts["idle"], stateCounts["error"])
+		attached := "no"
+		if sess.Attached {
+			attached = "yes"
+		}
+		fmt.Fprintf(sb, "| %s | %d | %s | %s | %s |\n",
+			sess.Name, len(sess.Agents), types, states, attached)
+	}
+	sb.WriteString("\n")
+}
+
+func renderMarkdownWork(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
+	fmt.Fprintf(sb, "### %s\n", heading)
+
+	if section.Data == nil {
+		sb.WriteString("_No work data available._\n\n")
+		return
+	}
+
+	// Work section may contain various types depending on snapshot structure
+	// For now, render a generic representation
+	sb.WriteString("Work data present.\n\n")
+}
+
+func renderMarkdownAlerts(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
+	fmt.Fprintf(sb, "### %s\n", heading)
+
+	if section.Data == nil {
+		sb.WriteString("_No alerts._\n\n")
+		return
+	}
+
+	// Try to extract alerts from the section data
+	type alertData struct {
+		Alerts  []AlertInfo       `json:"alerts"`
+		Summary *AlertSummaryInfo `json:"summary,omitempty"`
+	}
+
+	switch data := section.Data.(type) {
+	case alertData:
+		if len(data.Alerts) == 0 {
+			sb.WriteString("_No active alerts._\n\n")
+			return
+		}
+		for _, a := range data.Alerts {
+			fmt.Fprintf(sb, "- [%s] %s\n", strings.ToUpper(a.Severity), a.Message)
+		}
+	case *AlertSummaryInfo:
+		if data == nil || data.TotalActive == 0 {
+			sb.WriteString("_No active alerts._\n\n")
+			return
+		}
+		critical := data.BySeverity["critical"]
+		warning := data.BySeverity["warning"]
+		fmt.Fprintf(sb, "Total: %d (critical: %d, warning: %d)\n",
+			data.TotalActive, critical, warning)
+	default:
+		sb.WriteString("_Alert data format not recognized._\n")
+	}
+	sb.WriteString("\n")
+}
+
+func renderMarkdownAttention(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {
+	fmt.Fprintf(sb, "### %s\n", heading)
+
+	summary, ok := section.Data.(*SnapshotAttentionSummary)
+	if !ok || summary == nil {
+		sb.WriteString("_Attention feed unavailable._\n\n")
+		return
+	}
+
+	backgroundCount := summary.TotalEvents - summary.ActionRequiredCount - summary.InterestingCount
+	if backgroundCount < 0 {
+		backgroundCount = 0
+	}
+
+	if compact {
+		fmt.Fprintf(sb, "- %d! action, %d? interesting, %dB background\n\n",
+			summary.ActionRequiredCount,
+			summary.InterestingCount,
+			backgroundCount,
+		)
+		return
+	}
+
+	sb.WriteString("| Category | Count |\n")
+	sb.WriteString("|---|---|\n")
+	fmt.Fprintf(sb, "| Action Required | %d |\n", summary.ActionRequiredCount)
+	fmt.Fprintf(sb, "| Interesting | %d |\n", summary.InterestingCount)
+	fmt.Fprintf(sb, "| Background | %d |\n", backgroundCount)
+	sb.WriteString("\n")
+}
