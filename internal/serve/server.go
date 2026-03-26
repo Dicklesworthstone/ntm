@@ -2685,7 +2685,17 @@ func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot snapshot", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotDigestV1 handles GET /api/v1/robot/digest.
@@ -2699,7 +2709,17 @@ func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot digest", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotAttentionV1 handles GET /api/v1/robot/attention.
@@ -2720,7 +2740,17 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot attention", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotDashboardV1 handles GET /api/v1/robot/dashboard.
@@ -2734,7 +2764,17 @@ func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) 
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot dashboard", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotTerseV1 handles GET /api/v1/robot/terse.
@@ -2748,7 +2788,17 @@ func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot terse", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotTriageV1 handles GET /api/v1/robot/triage.
@@ -2762,7 +2812,17 @@ func (s *Server) handleRobotTriageV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot triage", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotPlanV1 handles GET /api/v1/robot/plan.
@@ -2776,7 +2836,17 @@ func (s *Server) handleRobotPlanV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot plan", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotGraphV1 handles GET /api/v1/robot/graph.
@@ -2790,7 +2860,17 @@ func (s *Server) handleRobotGraphV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot graph", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotActivityV1 handles GET /api/v1/robot/activity.
@@ -2805,7 +2885,17 @@ func (s *Server) handleRobotActivityV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot activity", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // handleRobotAlertsV1 handles GET /api/v1/robot/alerts.
@@ -2820,7 +2910,17 @@ func (s *Server) handleRobotAlertsV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
-	writeJSON(w, http.StatusOK, output)
+	data, err := toJSONMap(output)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to encode robot alerts", map[string]interface{}{
+			"error": err.Error(),
+		}, reqID)
+		return
+	}
+	if reqID != "" {
+		data["request_id"] = reqID
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // =============================================================================
