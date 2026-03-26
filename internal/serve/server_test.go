@@ -6612,3 +6612,233 @@ func TestPrepareAttentionStream_CursorExpired(t *testing.T) {
 		t.Fatal("subscriber should be released after cursor-expired setup failure")
 	}
 }
+
+// TestWSAttentionSubscription tests WebSocket attention subscription with durable semantics.
+func TestWSAttentionSubscription(t *testing.T) {
+	t.Parallel()
+
+	// Install test attention feed
+	feed, stats := installServeTestAttentionFeed(t)
+	_ = stats
+
+	// Create server and client
+	srv := New(Config{})
+	srv.ensureWSHubRunning()
+	defer srv.wsHub.Stop()
+
+	client := &WSClient{
+		id:     "attention-ws-client",
+		hub:    srv.wsHub,
+		send:   make(chan []byte, 256),
+		topics: make(map[string]struct{}),
+	}
+
+	// Test subscription with cursor
+	msg := WSMessage{
+		Type:      WSMsgSubscribe,
+		RequestID: "sub-req-1",
+		Data: map[string]interface{}{
+			"topics":       []interface{}{"attention"},
+			"since_cursor": float64(0), // Start from beginning
+		},
+	}
+
+	result := client.handleAttentionSubscribe(msg, []string{"attention"})
+
+	// Verify subscription result
+	if result["subscribed"] != true {
+		t.Fatalf("expected subscribed=true, got %v", result["subscribed"])
+	}
+	if result["error"] != nil {
+		t.Fatalf("unexpected error: %v", result["error"])
+	}
+
+	// Verify cursor info is present
+	if _, ok := result["oldest_cursor"]; !ok {
+		t.Fatal("expected oldest_cursor in result")
+	}
+	if _, ok := result["newest_cursor"]; !ok {
+		t.Fatal("expected newest_cursor in result")
+	}
+
+	// Verify attention subscription is active
+	client.attentionSubMu.Lock()
+	sub := client.attentionSub
+	client.attentionSubMu.Unlock()
+
+	if sub == nil || !sub.Active {
+		t.Fatal("expected attention subscription to be active")
+	}
+
+	// Publish an event and verify it's delivered
+	feed.Append(robot.AttentionEvent{
+		Ts:            time.Now().UTC().Format(time.RFC3339),
+		Session:       "test-session",
+		Category:      robot.EventCategoryAgent,
+		Type:          robot.EventTypeAgentStateChange,
+		Actionability: robot.ActionabilityInteresting,
+		Severity:      robot.SeverityInfo,
+		Summary:       "Test event for WebSocket",
+	})
+
+	// Wait for event delivery
+	select {
+	case msg := <-client.send:
+		var event WSEvent
+		if err := json.Unmarshal(msg, &event); err != nil {
+			t.Fatalf("failed to unmarshal event: %v", err)
+		}
+		if event.Topic != "attention" {
+			t.Fatalf("expected topic=attention, got %s", event.Topic)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for attention event")
+	}
+
+	// Clean up
+	client.cancelAttentionSubscription()
+}
+
+// TestWSAttentionSubscriptionCursorExpired tests cursor expiration handling.
+func TestWSAttentionSubscriptionCursorExpired(t *testing.T) {
+	t.Parallel()
+
+	// Install test attention feed with known state
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       10,
+		RetentionPeriod:   time.Millisecond,
+		HeartbeatInterval: 0,
+	})
+
+	// Publish events to establish cursor range
+	for i := 0; i < 5; i++ {
+		feed.Append(robot.AttentionEvent{
+			Ts:       time.Now().UTC().Format(time.RFC3339),
+			Category: robot.EventCategoryAgent,
+			Type:     robot.EventTypeAgentStateChange,
+			Summary:  "Event " + strconv.Itoa(i),
+		})
+	}
+
+	// Wait for retention to expire
+	time.Sleep(10 * time.Millisecond)
+
+	// Publish more events to shift the window
+	for i := 0; i < 5; i++ {
+		feed.Append(robot.AttentionEvent{
+			Ts:       time.Now().UTC().Format(time.RFC3339),
+			Category: robot.EventCategoryAgent,
+			Type:     robot.EventTypeAgentStateChange,
+			Summary:  "New Event " + strconv.Itoa(i),
+		})
+	}
+
+	oldFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() { robot.SetAttentionFeed(oldFeed) })
+
+	// Create client and try to subscribe with old cursor
+	client := &WSClient{
+		id:     "cursor-expired-client",
+		hub:    NewWSHub(),
+		send:   make(chan []byte, 256),
+		topics: make(map[string]struct{}),
+	}
+
+	msg := WSMessage{
+		Type:      WSMsgSubscribe,
+		RequestID: "sub-expired",
+		Data: map[string]interface{}{
+			"topics":       []interface{}{"attention"},
+			"since_cursor": float64(1), // Very old cursor
+		},
+	}
+
+	result := client.handleAttentionSubscribe(msg, []string{"attention"})
+
+	// Verify cursor expiration error
+	if result["error_code"] != robot.ErrCodeCursorExpired {
+		t.Fatalf("expected error_code=%s, got %v", robot.ErrCodeCursorExpired, result["error_code"])
+	}
+	if result["resync_hint"] == nil {
+		t.Fatal("expected resync_hint in cursor expired response")
+	}
+}
+
+// TestPartitionAttentionTopics tests topic partitioning.
+func TestPartitionAttentionTopics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		topics         []string
+		wantAttention  []string
+		wantRegular    []string
+	}{
+		{
+			name:          "all attention",
+			topics:        []string{"attention", "attention:session1"},
+			wantAttention: []string{"attention", "attention:session1"},
+			wantRegular:   nil,
+		},
+		{
+			name:          "all regular",
+			topics:        []string{"sessions:*", "beads:*"},
+			wantAttention: nil,
+			wantRegular:   []string{"sessions:*", "beads:*"},
+		},
+		{
+			name:          "mixed",
+			topics:        []string{"attention", "sessions:*", "attention:project"},
+			wantAttention: []string{"attention", "attention:project"},
+			wantRegular:   []string{"sessions:*"},
+		},
+		{
+			name:          "empty",
+			topics:        nil,
+			wantAttention: nil,
+			wantRegular:   nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			attention, regular := partitionAttentionTopics(tc.topics)
+			if len(attention) != len(tc.wantAttention) {
+				t.Errorf("attention topics = %v, want %v", attention, tc.wantAttention)
+			}
+			if len(regular) != len(tc.wantRegular) {
+				t.Errorf("regular topics = %v, want %v", regular, tc.wantRegular)
+			}
+		})
+	}
+}
+
+// TestIsAttentionTopic tests attention topic detection.
+func TestIsAttentionTopic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		topic string
+		want  bool
+	}{
+		{"attention", true},
+		{"attention:session1", true},
+		{"attention:*", true},
+		{"sessions:*", false},
+		{"beads:*", false},
+		{"", false},
+		{"attentionFoo", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.topic, func(t *testing.T) {
+			t.Parallel()
+			got := isAttentionTopic(tc.topic)
+			if got != tc.want {
+				t.Errorf("isAttentionTopic(%q) = %v, want %v", tc.topic, got, tc.want)
+			}
+		})
+	}
+}

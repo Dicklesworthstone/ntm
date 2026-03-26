@@ -462,6 +462,51 @@ type WSError struct {
 	Message   string        `json:"message"`
 }
 
+// WSAttentionSub tracks attention-specific subscription state for a WebSocket client.
+// This enables durable attention semantics: cursor replay, cursor expiration,
+// operator state filtering, and transport parity with SSE.
+type WSAttentionSub struct {
+	// Active indicates whether attention streaming is active for this client.
+	Active bool `json:"active"`
+
+	// Cursor is the last event cursor delivered to this client.
+	// Used for replay deduplication and heartbeat reporting.
+	Cursor int64 `json:"cursor"`
+
+	// SinceCursor is the cursor from which streaming started.
+	SinceCursor int64 `json:"since_cursor"`
+
+	// Session filters events to a specific session (empty = all).
+	Session string `json:"session,omitempty"`
+
+	// Profile is the attention profile name (e.g., "operator", "minimal").
+	Profile string `json:"profile,omitempty"`
+
+	// CategoryFilter limits events to these categories.
+	CategoryFilter []string `json:"category_filter,omitempty"`
+
+	// ActionabilityFilter limits events to these actionability levels.
+	ActionabilityFilter []string `json:"actionability_filter,omitempty"`
+
+	// ExcludeMuted excludes items with muted operator state.
+	ExcludeMuted bool `json:"exclude_muted"`
+
+	// ExcludeSnoozed excludes items that are currently snoozed.
+	ExcludeSnoozed bool `json:"exclude_snoozed"`
+
+	// StartedAt is when this subscription started.
+	StartedAt time.Time `json:"started_at"`
+
+	// EventCount is the number of events delivered since subscription started.
+	EventCount int64 `json:"event_count"`
+
+	// DroppedCount is events dropped due to backpressure.
+	DroppedCount uint64 `json:"dropped_count"`
+
+	// unsubscribe is the function to stop the feed subscription.
+	unsubscribe func()
+}
+
 // WSClient represents a connected WebSocket client.
 type WSClient struct {
 	id         string
@@ -472,6 +517,10 @@ type WSClient struct {
 	topicsMu   sync.RWMutex
 	authClaims map[string]interface{}
 	closeOnce  sync.Once
+
+	// Attention subscription state for durable attention semantics.
+	attentionSub   *WSAttentionSub
+	attentionSubMu sync.Mutex
 }
 
 // WSHub manages WebSocket connections and topic routing.
@@ -3997,6 +4046,8 @@ var authContextKey = ctxKeyAuth{}
 // readPump reads messages from the WebSocket connection.
 func (c *WSClient) readPump() {
 	defer func() {
+		// Cancel attention subscription before unregistering
+		c.cancelAttentionSubscription()
 		c.hub.UnregisterClient(c)
 		c.closeOnce.Do(func() {
 			if err := c.conn.Close(); err != nil {
@@ -4148,11 +4199,29 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 		}
 	}
 
-	c.Subscribe(topics)
-	c.sendAck(msg.RequestID, map[string]interface{}{
+	// Check for attention topic subscriptions with durable semantics
+	attentionTopics, regularTopics := partitionAttentionTopics(topics)
+
+	// Handle regular topics
+	if len(regularTopics) > 0 {
+		c.Subscribe(regularTopics)
+	}
+
+	// Handle attention topics with durable semantics (cursor, replay, filters)
+	var attentionResult map[string]interface{}
+	if len(attentionTopics) > 0 {
+		attentionResult = c.handleAttentionSubscribe(msg, attentionTopics)
+	}
+
+	// Build response
+	response := map[string]interface{}{
 		"subscribed": topics,
 		"total":      len(c.Topics()),
-	})
+	}
+	if attentionResult != nil {
+		response["attention"] = attentionResult
+	}
+	c.sendAck(msg.RequestID, response)
 }
 
 // handleUnsubscribe processes an unsubscribe request.
@@ -4174,6 +4243,13 @@ func (c *WSClient) handleUnsubscribe(msg WSMessage) {
 		if str, ok := t.(string); ok {
 			topics = append(topics, str)
 		}
+	}
+
+	// Check if any attention topics are being unsubscribed
+	attentionTopics, _ := partitionAttentionTopics(topics)
+	if len(attentionTopics) > 0 {
+		// Cancel the attention subscription
+		c.cancelAttentionSubscription()
 	}
 
 	c.Unsubscribe(topics)
@@ -4231,6 +4307,339 @@ func (c *WSClient) canSubscribe(topic string) bool {
 	// - Check if user has access to specific session
 	// - Check if user has agent-type filter permissions
 	return true
+}
+
+// partitionAttentionTopics separates attention topics from regular topics.
+// Attention topics ("attention", "attention:*") get special durable semantics.
+func partitionAttentionTopics(topics []string) (attention, regular []string) {
+	for _, topic := range topics {
+		if isAttentionTopic(topic) {
+			attention = append(attention, topic)
+		} else {
+			regular = append(regular, topic)
+		}
+	}
+	return attention, regular
+}
+
+// isAttentionTopic checks if a topic is an attention feed topic.
+func isAttentionTopic(topic string) bool {
+	return topic == "attention" || strings.HasPrefix(topic, "attention:")
+}
+
+// handleAttentionSubscribe processes attention topic subscriptions with durable semantics.
+// Supports cursor-based replay, filtering, and operator attention state.
+//
+// Subscription options in msg.Data:
+//   - since_cursor: int64 - Replay from cursor (0 = beginning, -1 = now)
+//   - session: string - Filter to session
+//   - profile: string - Attention profile (operator, minimal, debug, alerts)
+//   - category: []string - Filter by event categories
+//   - actionability: []string - Filter by actionability levels
+//   - exclude_muted: bool - Skip muted items
+//   - exclude_snoozed: bool - Skip snoozed items
+func (c *WSClient) handleAttentionSubscribe(msg WSMessage, topics []string) map[string]interface{} {
+	// Extract subscription options
+	sinceCursor := int64(0)
+	if sc, ok := msg.Data["since_cursor"]; ok {
+		switch v := sc.(type) {
+		case float64:
+			sinceCursor = int64(v)
+		case int64:
+			sinceCursor = v
+		case int:
+			sinceCursor = int64(v)
+		}
+	}
+
+	session := ""
+	if s, ok := msg.Data["session"].(string); ok {
+		session = s
+	}
+
+	profile := ""
+	if p, ok := msg.Data["profile"].(string); ok {
+		profile = p
+	}
+
+	categoryFilter := extractStringSlice(msg.Data["category"])
+	actionabilityFilter := extractStringSlice(msg.Data["actionability"])
+
+	excludeMuted := false
+	if em, ok := msg.Data["exclude_muted"].(bool); ok {
+		excludeMuted = em
+	}
+
+	excludeSnoozed := false
+	if es, ok := msg.Data["exclude_snoozed"].(bool); ok {
+		excludeSnoozed = es
+	}
+
+	// Get the attention feed
+	feed := robot.GetAttentionFeed()
+	if feed == nil {
+		return map[string]interface{}{
+			"error":      "attention_feed_unavailable",
+			"error_code": "ATTENTION_UNAVAILABLE",
+		}
+	}
+
+	// Check for cursor expiration before subscribing
+	stats := feed.Stats()
+	if expired, earliest := attentionCursorExpired(sinceCursor, stats); expired {
+		return map[string]interface{}{
+			"error":          "cursor_expired",
+			"error_code":     robot.ErrCodeCursorExpired,
+			"oldest_cursor":  earliest,
+			"newest_cursor":  stats.NewestCursor,
+			"resync_hint":    "Resync via --robot-snapshot, then resubscribe with since_cursor=-1",
+			"resync_command": fmt.Sprintf("ntm --robot-snapshot"),
+		}
+	}
+
+	// Cancel any existing attention subscription
+	c.cancelAttentionSubscription()
+
+	// Create new attention subscription
+	sub := &WSAttentionSub{
+		Active:              true,
+		Cursor:              sinceCursor,
+		SinceCursor:         sinceCursor,
+		Session:             session,
+		Profile:             profile,
+		CategoryFilter:      categoryFilter,
+		ActionabilityFilter: actionabilityFilter,
+		ExcludeMuted:        excludeMuted,
+		ExcludeSnoozed:      excludeSnoozed,
+		StartedAt:           time.Now(),
+	}
+
+	// Subscribe to the feed with filtering
+	sub.unsubscribe = feed.Subscribe(func(event robot.AttentionEvent) {
+		c.deliverAttentionEvent(event, topics)
+	})
+
+	// Store subscription
+	c.attentionSubMu.Lock()
+	c.attentionSub = sub
+	c.attentionSubMu.Unlock()
+
+	// Also subscribe to regular topics so hub broadcasts reach us
+	c.Subscribe(topics)
+
+	// Perform replay if cursor is not "start from now"
+	var replayCount int
+	var replayError string
+	if sinceCursor >= 0 {
+		events, _, err := feed.Replay(sinceCursor, stats.Count)
+		if err != nil {
+			var cursorErr *robot.CursorExpiredError
+			if errors.As(err, &cursorErr) {
+				replayError = "cursor_expired_during_replay"
+			} else {
+				replayError = err.Error()
+			}
+		} else {
+			// Deliver replayed events
+			replayCount = c.deliverAttentionReplay(events, topics, sub)
+		}
+	}
+
+	// Build response
+	result := map[string]interface{}{
+		"subscribed":    true,
+		"topics":        topics,
+		"since_cursor":  sinceCursor,
+		"oldest_cursor": attentionReplayEarliestCursor(stats),
+		"newest_cursor": stats.NewestCursor,
+		"replay_count":  replayCount,
+	}
+	if session != "" {
+		result["session_filter"] = session
+	}
+	if profile != "" {
+		result["profile"] = profile
+	}
+	if replayError != "" {
+		result["replay_error"] = replayError
+	}
+	return result
+}
+
+// cancelAttentionSubscription stops any existing attention subscription.
+func (c *WSClient) cancelAttentionSubscription() {
+	c.attentionSubMu.Lock()
+	defer c.attentionSubMu.Unlock()
+
+	if c.attentionSub != nil && c.attentionSub.unsubscribe != nil {
+		c.attentionSub.unsubscribe()
+	}
+	c.attentionSub = nil
+}
+
+// deliverAttentionEvent delivers a single attention event to the client.
+// Applies subscription filters and tracks cursor position.
+func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []string) {
+	c.attentionSubMu.Lock()
+	sub := c.attentionSub
+	c.attentionSubMu.Unlock()
+
+	if sub == nil || !sub.Active {
+		return
+	}
+
+	// Skip events already sent during replay
+	if event.Cursor <= sub.Cursor {
+		return
+	}
+
+	// Skip transport heartbeat events (handled separately)
+	if event.Type == robot.EventType(robot.DefaultTransportLiveness.HeartbeatType) {
+		return
+	}
+
+	// Apply session filter
+	if sub.Session != "" && event.Session != sub.Session {
+		return
+	}
+
+	// Apply category/actionability filters
+	if !matchesAttentionFilters(event, sub.CategoryFilter, sub.Session, sub.ActionabilityFilter) {
+		return
+	}
+
+	// Determine target topic
+	topic := "attention"
+	if event.Session != "" {
+		sessionTopic := "attention:" + event.Session
+		for _, t := range topics {
+			if t == sessionTopic {
+				topic = sessionTopic
+				break
+			}
+		}
+	}
+
+	// Build event envelope
+	wsEvent := &WSEvent{
+		Type:      WSMsgEvent,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Seq:       event.Cursor, // Use attention cursor as seq for correlation
+		Topic:     topic,
+		EventType: string(event.Type),
+		Data:      event,
+	}
+
+	data, err := json.Marshal(wsEvent)
+	if err != nil {
+		return
+	}
+
+	// Send with backpressure tracking
+	sent := c.trySend(data, func() {
+		c.attentionSubMu.Lock()
+		if c.attentionSub != nil {
+			c.attentionSub.DroppedCount++
+		}
+		c.attentionSubMu.Unlock()
+		log.Printf("ws attention: dropped event cursor=%d client=%s", event.Cursor, c.id)
+	})
+
+	if sent {
+		c.attentionSubMu.Lock()
+		if c.attentionSub != nil {
+			c.attentionSub.Cursor = event.Cursor
+			c.attentionSub.EventCount++
+		}
+		c.attentionSubMu.Unlock()
+	}
+}
+
+// deliverAttentionReplay delivers replayed attention events to the client.
+// Returns the count of events delivered.
+func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics []string, sub *WSAttentionSub) int {
+	if sub == nil {
+		return 0
+	}
+
+	delivered := 0
+	for _, event := range events {
+		// Skip events before cursor
+		if event.Cursor <= sub.SinceCursor {
+			continue
+		}
+
+		// Skip transport heartbeats
+		if event.Type == robot.EventType(robot.DefaultTransportLiveness.HeartbeatType) {
+			continue
+		}
+
+		// Apply filters
+		if sub.Session != "" && event.Session != sub.Session {
+			continue
+		}
+		if !matchesAttentionFilters(event, sub.CategoryFilter, sub.Session, sub.ActionabilityFilter) {
+			continue
+		}
+
+		// Determine topic
+		topic := "attention"
+		if event.Session != "" {
+			sessionTopic := "attention:" + event.Session
+			for _, t := range topics {
+				if t == sessionTopic {
+					topic = sessionTopic
+					break
+				}
+			}
+		}
+
+		// Build replay event
+		wsEvent := &WSEvent{
+			Type:      WSMsgEvent,
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Seq:       event.Cursor,
+			Topic:     topic,
+			EventType: string(event.Type),
+			Data:      event,
+		}
+
+		data, err := json.Marshal(wsEvent)
+		if err != nil {
+			continue
+		}
+
+		if c.trySend(data, nil) {
+			delivered++
+			c.attentionSubMu.Lock()
+			if c.attentionSub != nil && event.Cursor > c.attentionSub.Cursor {
+				c.attentionSub.Cursor = event.Cursor
+			}
+			c.attentionSubMu.Unlock()
+		}
+	}
+
+	return delivered
+}
+
+// extractStringSlice extracts a string slice from an interface{}.
+func extractStringSlice(v interface{}) []string {
+	if v == nil {
+		return nil
+	}
+	switch arr := v.(type) {
+	case []string:
+		return arr
+	case []interface{}:
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 func (c *WSClient) trySend(data []byte, onDrop func()) (ok bool) {
