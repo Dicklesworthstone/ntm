@@ -589,7 +589,7 @@ func TestIntegration_ConcurrentFeedAccess(t *testing.T) {
 	// Concurrent publishers
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
-		go func(id int) {
+		go func() {
 			defer wg.Done()
 			for i := 0; i < eventCount/goroutines; i++ {
 				event := AttentionEvent{
@@ -600,7 +600,7 @@ func TestIntegration_ConcurrentFeedAccess(t *testing.T) {
 				}
 				feed.Append(event)
 			}
-		}(g)
+		}()
 	}
 
 	wg.Wait()
