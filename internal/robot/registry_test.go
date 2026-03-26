@@ -256,3 +256,181 @@ func TestGetRobotRegistry_ReturnsDetachedRegistrySnapshots(t *testing.T) {
 		t.Fatal("GetRobotRegistry returned shared schema types slice")
 	}
 }
+
+func TestGetRobotRegistry_ConsumerMetadataPopulated(t *testing.T) {
+	t.Parallel()
+
+	registry := GetRobotRegistry()
+
+	// Verify key surfaces have consumer metadata
+	keySurfaces := []struct {
+		name                    string
+		expectConsumerGuidance  bool
+		expectBoundedness       bool
+		expectFollowUp          bool
+		expectAttentionOps      bool
+		expectExplainability    bool
+	}{
+		{
+			name:                   "status",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+			expectFollowUp:         true,
+		},
+		{
+			name:                   "snapshot",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+			expectFollowUp:         true,
+			expectExplainability:   true,
+		},
+		{
+			name:                   "attention",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+			expectFollowUp:         true,
+			expectAttentionOps:     true,
+			expectExplainability:   true,
+		},
+		{
+			name:                   "terse",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+		},
+		{
+			name:                   "capabilities",
+			expectConsumerGuidance: true,
+		},
+	}
+
+	for _, tc := range keySurfaces {
+		surface, ok := registry.Surface(tc.name)
+		if !ok {
+			t.Fatalf("missing surface %q", tc.name)
+		}
+		if tc.expectConsumerGuidance && surface.ConsumerGuidance == nil {
+			t.Errorf("surface %q: expected consumer_guidance but got nil", tc.name)
+		}
+		if tc.expectBoundedness && surface.Boundedness == nil {
+			t.Errorf("surface %q: expected boundedness but got nil", tc.name)
+		}
+		if tc.expectFollowUp && surface.FollowUp == nil {
+			t.Errorf("surface %q: expected follow_up but got nil", tc.name)
+		}
+		if tc.expectAttentionOps && surface.AttentionOps == nil {
+			t.Errorf("surface %q: expected attention_ops but got nil", tc.name)
+		}
+		if tc.expectExplainability && surface.Explainability == nil {
+			t.Errorf("surface %q: expected explainability but got nil", tc.name)
+		}
+	}
+
+	// Verify attention surface has rich attention ops metadata
+	attention, _ := registry.Surface("attention")
+	if attention.AttentionOps != nil {
+		if !attention.AttentionOps.SupportsAcknowledge {
+			t.Error("attention surface should support acknowledge")
+		}
+		if !attention.AttentionOps.SupportsSnooze {
+			t.Error("attention surface should support snooze")
+		}
+		if !attention.AttentionOps.SupportsPin {
+			t.Error("attention surface should support pin")
+		}
+	}
+
+	// Verify snapshot has action handoff metadata
+	snapshot, _ := registry.Surface("snapshot")
+	if snapshot.ActionHandoff == nil {
+		t.Error("snapshot should have action_handoff metadata")
+	} else if !snapshot.ActionHandoff.SupportsActions {
+		t.Error("snapshot should support actions")
+	}
+}
+
+func TestGetRobotRegistry_SectionConsumerMetadataPopulated(t *testing.T) {
+	t.Parallel()
+
+	registry := GetRobotRegistry()
+
+	// Verify key sections have consumer metadata
+	keySections := []struct {
+		name                   string
+		expectConsumerGuidance bool
+		expectBoundedness      bool
+		expectExplainability   bool
+	}{
+		{
+			name:                   "summary",
+			expectConsumerGuidance: true,
+		},
+		{
+			name:                   "sessions",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+			expectExplainability:   true,
+		},
+		{
+			name:                   "work",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+			expectExplainability:   true,
+		},
+		{
+			name:                   "attention",
+			expectConsumerGuidance: true,
+			expectBoundedness:      true,
+			expectExplainability:   true,
+		},
+		{
+			name:                   "incidents",
+			expectConsumerGuidance: true,
+			expectExplainability:   true,
+		},
+	}
+
+	for _, tc := range keySections {
+		section, ok := registry.Section(tc.name)
+		if !ok {
+			t.Fatalf("missing section %q", tc.name)
+		}
+		if tc.expectConsumerGuidance && section.ConsumerGuidance == nil {
+			t.Errorf("section %q: expected consumer_guidance but got nil", tc.name)
+		}
+		if tc.expectBoundedness && section.Boundedness == nil {
+			t.Errorf("section %q: expected boundedness but got nil", tc.name)
+		}
+		if tc.expectExplainability && section.Explainability == nil {
+			t.Errorf("section %q: expected explainability but got nil", tc.name)
+		}
+	}
+}
+
+func TestGetRobotRegistry_ConsumerMetadataClonedOnLookup(t *testing.T) {
+	t.Parallel()
+
+	registry := GetRobotRegistry()
+
+	first, ok := registry.Surface("snapshot")
+	if !ok {
+		t.Fatal("missing surface snapshot")
+	}
+	second, ok := registry.Surface("snapshot")
+	if !ok {
+		t.Fatal("missing surface snapshot on second lookup")
+	}
+
+	// Verify consumer metadata is cloned, not shared
+	if first.ConsumerGuidance != nil && second.ConsumerGuidance != nil {
+		first.ConsumerGuidance.IntendedUse = "mutated"
+		if second.ConsumerGuidance.IntendedUse == "mutated" {
+			t.Error("ConsumerGuidance not properly cloned")
+		}
+	}
+	if first.FollowUp != nil && second.FollowUp != nil && len(first.FollowUp.InspectSurfaces) > 0 {
+		first.FollowUp.InspectSurfaces[0] = "mutated"
+		if len(second.FollowUp.InspectSurfaces) > 0 && second.FollowUp.InspectSurfaces[0] == "mutated" {
+			t.Error("FollowUp.InspectSurfaces not properly cloned")
+		}
+	}
+}
