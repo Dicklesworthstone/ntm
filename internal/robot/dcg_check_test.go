@@ -10,7 +10,7 @@ import (
 )
 
 func TestGetDCGCheck_MissingCommand(t *testing.T) {
-	out, err := GetDCGCheck("")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: ""})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestGetDCGCheck_MissingDCG(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("PATH", tmpDir)
 
-	out, err := GetDCGCheck("rm -rf /tmp")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: "rm -rf /tmp"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestGetDCGCheck_Allowed(t *testing.T) {
 	writeFakeDCG(t, tmpDir)
 	t.Setenv("PATH", tmpDir)
 
-	out, err := GetDCGCheck("echo hello")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: "echo hello"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestGetDCGCheck_Blocked(t *testing.T) {
 	writeFakeDCG(t, tmpDir)
 	t.Setenv("PATH", tmpDir)
 
-	out, err := GetDCGCheck("rm -rf /tmp")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: "rm -rf /tmp"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestGetDCGCheck_TimestampIncluded(t *testing.T) {
 	writeFakeDCG(t, tmpDir)
 	t.Setenv("PATH", tmpDir)
 
-	out, err := GetDCGCheck("ls")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: "ls"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestGetDCGCheck_CommandEchoed(t *testing.T) {
 	writeFakeDCG(t, tmpDir)
 	t.Setenv("PATH", tmpDir)
 
-	out, err := GetDCGCheck("echo hello world")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: "echo hello world"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestGetDCGCheck_VersionIncluded(t *testing.T) {
 	writeFakeDCG(t, tmpDir)
 	t.Setenv("PATH", tmpDir)
 
-	out, err := GetDCGCheck("ls")
+	out, err := GetDCGCheckWithOptions(DCGCheckOptions{Command: "ls"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

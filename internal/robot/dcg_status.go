@@ -152,12 +152,6 @@ type DCGCheckOptions struct {
 	Verbose bool   // Optional: include detailed analysis
 }
 
-// GetDCGCheck preflights an arbitrary shell command via DCG (no execution).
-// Deprecated: use GetDCGCheckWithOptions for full functionality.
-func GetDCGCheck(command string) (*DCGCheckOutput, error) {
-	return GetDCGCheckWithOptions(DCGCheckOptions{Command: command})
-}
-
 // GetDCGCheckWithOptions preflights an arbitrary shell command via DCG (no execution).
 // It accepts extended options for context, working directory, and verbose mode.
 func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
@@ -279,12 +273,6 @@ func GetDCGCheckWithOptions(opts DCGCheckOptions) (*DCGCheckOutput, error) {
 	output.Reason = "allowed" // Backwards compatibility
 	output.Rationale = "Command passed DCG checks"
 	return output, nil
-}
-
-// PrintDCGCheck handles the --robot-dcg-check / --robot-guard command.
-// Deprecated: use PrintDCGCheckWithOptions for full functionality.
-func PrintDCGCheck(command string) error {
-	return PrintDCGCheckWithOptions(DCGCheckOptions{Command: command})
 }
 
 // PrintDCGCheckWithOptions handles the --robot-dcg-check command with extended options.

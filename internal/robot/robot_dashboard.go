@@ -162,7 +162,8 @@ func GetDashboard() (*DashboardOutput, error) {
 	output.FileChanges = statusOutput.FileChanges
 
 	// Agent Mail summary (best-effort)
-	output.AgentMail = buildSnapshotAgentMail()
+	cwd, _ := os.Getwd()
+	output.AgentMail, _, _ = fetchAgentMailData(cwd)
 
 	// Attention feed summary (best-effort)
 	output.Attention = buildSnapshotAttentionSummary(GetAttentionFeed())

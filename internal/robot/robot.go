@@ -4157,17 +4157,6 @@ func resolveAgentsForSession(panes []tmux.Pane, mailAgents []agentmail.Agent) ma
 	return mapping
 }
 
-// buildSnapshotAgentMail assembles Agent Mail state for robot snapshot.
-// Deprecated: Use fetchAgentMailData instead.
-func buildSnapshotAgentMail() *SnapshotAgentMail {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return &SnapshotAgentMail{Available: false, Reason: "unable to determine working directory"}
-	}
-	summary, _, _ := fetchAgentMailData(cwd)
-	return summary
-}
-
 func alertConfigForProject(cfg *config.Config, projectDir string) alerts.Config {
 	resolvedProject := strings.TrimSpace(projectDir)
 	if resolvedProject == "" {
