@@ -97,6 +97,13 @@ func TestTUIInspectorProfilesExist(t *testing.T) {
 	expected := []string{
 		"ntm-toast-animation.env",
 		"ntm-fuzzy-filter.env",
+		// bd-jynig: TUI Inspector capture profiles for new tui-upgrade features
+		"ntm-context-progress.env",
+		"ntm-table-view.env",
+		"ntm-spawn-wizard.env",
+		"ntm-sparkline-status.env",
+		"ntm-scroll-indicators.env",
+		"ntm-toast-stacking.env",
 	}
 	for _, profile := range expected {
 		path := filepath.Join(root, "profiles", profile)
