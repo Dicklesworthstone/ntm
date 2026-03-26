@@ -30,10 +30,12 @@ func TestIntegration_SourceOutageAndRecovery(t *testing.T) {
 	clock := NewFixedClock(0)
 
 	// Phase 1: All sources healthy
+	// Note: Use source names that have mappings in ComputeDegradedFeatures
+	// ("beads", "tmux", "caut" have feature mappings; "quota" does not)
 	t.Log("PHASE_1: all sources healthy")
 	results := []adapters.AdapterResult{
 		{Name: "beads", Available: true, CollectedAt: clock.Now()},
-		{Name: "quota", Available: true, CollectedAt: clock.Now()},
+		{Name: "caut", Available: true, CollectedAt: clock.Now()},
 		{Name: "tmux", Available: true, CollectedAt: clock.Now()},
 	}
 	config := adapters.DefaultSourceHealthConfig()
@@ -44,14 +46,17 @@ func TestIntegration_SourceOutageAndRecovery(t *testing.T) {
 	}
 	recorder.RecordSourceHealthChange(nil, nil)
 
-	// Phase 2: Quota source becomes unavailable
-	t.Log("PHASE_2: quota source outage")
+	// Phase 2: Caut (quota) source becomes unavailable
+	t.Log("PHASE_2: caut source outage")
 	clock.Advance(time.Minute)
+	// Update all sources' CollectedAt to current time (except the failing one)
+	results[0] = adapters.AdapterResult{Name: "beads", Available: true, CollectedAt: clock.Now()}
 	results[1] = adapters.AdapterResult{
-		Name:      "quota",
+		Name:      "caut",
 		Available: false,
 		Error:     context.DeadlineExceeded,
 	}
+	results[2] = adapters.AdapterResult{Name: "tmux", Available: true, CollectedAt: clock.Now()}
 	health = adapters.ComputeSourceHealth(results, config, clock.Now())
 
 	if health.AllFresh {
@@ -60,22 +65,21 @@ func TestIntegration_SourceOutageAndRecovery(t *testing.T) {
 	if len(health.Degraded) != 1 {
 		t.Errorf("phase 2: expected 1 degraded source, got %d", len(health.Degraded))
 	}
-	recorder.RecordSourceHealthChange([]string{"quota"}, nil)
+	recorder.RecordSourceHealthChange([]string{"caut"}, nil)
 
 	degraded := adapters.ComputeDegradedFeatures(health)
 	if len(degraded) == 0 {
-		t.Error("phase 2: expected degraded features during quota outage")
+		t.Error("phase 2: expected degraded features during caut outage")
 	}
 	t.Logf("DEGRADED_FEATURES during outage: %d features affected", len(degraded))
 
-	// Phase 3: Quota source recovers
-	t.Log("PHASE_3: quota source recovery")
+	// Phase 3: Caut source recovers
+	t.Log("PHASE_3: caut source recovery")
 	clock.Advance(time.Minute)
-	results[1] = adapters.AdapterResult{
-		Name:        "quota",
-		Available:   true,
-		CollectedAt: clock.Now(),
-	}
+	// Update all sources' CollectedAt to current time
+	results[0] = adapters.AdapterResult{Name: "beads", Available: true, CollectedAt: clock.Now()}
+	results[1] = adapters.AdapterResult{Name: "caut", Available: true, CollectedAt: clock.Now()}
+	results[2] = adapters.AdapterResult{Name: "tmux", Available: true, CollectedAt: clock.Now()}
 	health = adapters.ComputeSourceHealth(results, config, clock.Now())
 
 	if !health.AllFresh {
@@ -84,7 +88,7 @@ func TestIntegration_SourceOutageAndRecovery(t *testing.T) {
 	if len(health.Degraded) != 0 {
 		t.Errorf("phase 3: expected 0 degraded sources after recovery, got %d", len(health.Degraded))
 	}
-	recorder.RecordSourceHealthChange(nil, []string{"quota"})
+	recorder.RecordSourceHealthChange(nil, []string{"caut"})
 
 	t.Logf("SCENARIO_COMPLETE scenario_id=%s observations=%d", scenarioID, len(recorder.observations))
 }
@@ -199,17 +203,19 @@ func TestIntegration_AttentionFeedCursorContinuity(t *testing.T) {
 
 	// Replay from beginning
 	oldestCursor := stats.OldestCursor
-	events, newCursor, err := feed.Replay(oldestCursor-1, 5)
+	events, _, err := feed.Replay(oldestCursor-1, 5)
 	if err != nil {
 		t.Fatalf("replay failed: %v", err)
 	}
 	if len(events) != 5 {
 		t.Errorf("expected 5 events from replay, got %d", len(events))
 	}
-	recorder.RecordCursor(newCursor)
+	// Use the last returned event's cursor as the continuation point
+	lastCursor := events[len(events)-1].Cursor
+	recorder.RecordCursor(lastCursor)
 
-	// Continue replay from where we left off
-	events2, _, err := feed.Replay(newCursor, 10)
+	// Continue replay from where we left off (use last event cursor, not newestInFeed)
+	events2, _, err := feed.Replay(lastCursor, 10)
 	if err != nil {
 		t.Fatalf("second replay failed: %v", err)
 	}
@@ -365,8 +371,9 @@ func TestIntegration_DuplicateEventSuppression(t *testing.T) {
 	config := DefaultAttentionFeedConfig()
 	config.JournalSize = 100
 	feed := NewAttentionFeed(config)
+	dedupWindow := 5 * time.Minute
 
-	// Publish first event
+	// Publish first event using AppendDeduplicated to populate dedup map
 	event1 := AttentionEvent{
 		Ts:       time.Now().UTC().Format(time.RFC3339Nano),
 		Category: EventCategoryAgent,
@@ -374,7 +381,10 @@ func TestIntegration_DuplicateEventSuppression(t *testing.T) {
 		Summary:  "duplicate test",
 		DedupKey: "unique-key-123",
 	}
-	result1 := feed.Append(event1)
+	result1, published1 := feed.AppendDeduplicated(event1, dedupWindow)
+	if !published1 {
+		t.Fatal("first event should be published")
+	}
 	recorder.RecordCursor(result1.Cursor)
 
 	// Try to publish duplicate with same dedup key
@@ -385,17 +395,18 @@ func TestIntegration_DuplicateEventSuppression(t *testing.T) {
 		Summary:  "duplicate test",
 		DedupKey: "unique-key-123",
 	}
-	result2, suppressed := feed.AppendDeduplicated(event2, 5*time.Minute)
+	result2, published2 := feed.AppendDeduplicated(event2, dedupWindow)
 	recorder.Record(TestObservation{
 		Cursor:            result2.Cursor,
 		SuppressionMarker: "cooldown",
 	})
 
-	if !suppressed {
+	if published2 {
 		t.Error("expected duplicate event to be suppressed")
 	}
-	if result2.Cursor != result1.Cursor {
-		t.Errorf("suppressed event should return original cursor: got %d, want %d", result2.Cursor, result1.Cursor)
+	// When suppressed, result2 is zero value
+	if result2.Cursor != 0 {
+		t.Errorf("suppressed event should return zero cursor, got %d", result2.Cursor)
 	}
 
 	stats := feed.Stats()
@@ -417,7 +428,7 @@ func TestIntegration_CooldownResurfacing(t *testing.T) {
 	feed := NewAttentionFeed(config)
 	cooldown := 100 * time.Millisecond
 
-	// Publish initial event
+	// Publish initial event using AppendDeduplicated to populate dedup map
 	event1 := AttentionEvent{
 		Ts:       time.Now().UTC().Format(time.RFC3339Nano),
 		Category: EventCategoryAgent,
@@ -425,12 +436,15 @@ func TestIntegration_CooldownResurfacing(t *testing.T) {
 		Summary:  "resurfacing test",
 		DedupKey: "resurface-key",
 	}
-	result1 := feed.Append(event1)
+	result1, published1 := feed.AppendDeduplicated(event1, cooldown)
+	if !published1 {
+		t.Fatal("first event should be published")
+	}
 	recorder.RecordCursor(result1.Cursor)
 
 	// Immediate duplicate should be suppressed
-	_, suppressed := feed.AppendDeduplicated(event1, cooldown)
-	if !suppressed {
+	_, published2 := feed.AppendDeduplicated(event1, cooldown)
+	if published2 {
 		t.Error("immediate duplicate should be suppressed")
 	}
 
@@ -445,13 +459,13 @@ func TestIntegration_CooldownResurfacing(t *testing.T) {
 		Summary:  "resurfacing test after cooldown",
 		DedupKey: "resurface-key",
 	}
-	result2, suppressed := feed.AppendDeduplicated(event2, cooldown)
+	result2, published3 := feed.AppendDeduplicated(event2, cooldown)
 	recorder.Record(TestObservation{
 		Cursor:              result2.Cursor,
 		ResurfacingDecision: "allowed",
 	})
 
-	if suppressed {
+	if !published3 {
 		t.Error("event should resurface after cooldown")
 	}
 	if result2.Cursor == result1.Cursor {
@@ -517,8 +531,10 @@ func TestIntegration_OperatorSnoozeAndExpiry(t *testing.T) {
 	scenarioID := NewScenarioID("operator_snooze", 10)
 	recorder := NewTestRecorder(t, scenarioID, true)
 
-	snoozeDuration := 100 * time.Millisecond
-	snoozeUntil := time.Now().Add(snoozeDuration)
+	// Use 2 second duration to avoid RFC3339 sub-second truncation issues
+	snoozeDuration := 2 * time.Second
+	// Add a full second buffer to ensure we're safely in the future after RFC3339 truncation
+	snoozeUntil := time.Now().Add(snoozeDuration).Truncate(time.Second).Add(time.Second)
 
 	state := &OperatorAttentionState{
 		ItemID:      "item-456",
@@ -540,7 +556,7 @@ func TestIntegration_OperatorSnoozeAndExpiry(t *testing.T) {
 	}
 
 	// Wait for snooze to expire
-	time.Sleep(snoozeDuration + 50*time.Millisecond)
+	time.Sleep(snoozeDuration + time.Second)
 
 	// Check snooze has expired
 	if state.IsSnoozed(time.Now()) {
