@@ -4503,8 +4503,8 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []st
 		return
 	}
 
-	// Apply category/actionability filters
-	if !matchesAttentionFilters(event, sub.CategoryFilter, sub.Session, sub.ActionabilityFilter) {
+	// Apply category/actionability filters (session already checked above)
+	if !matchesAttentionFilters(event, sub.CategoryFilter, "", sub.ActionabilityFilter) {
 		return
 	}
 
@@ -4578,7 +4578,8 @@ func (c *WSClient) deliverAttentionReplay(events []robot.AttentionEvent, topics 
 		if sub.Session != "" && event.Session != sub.Session {
 			continue
 		}
-		if !matchesAttentionFilters(event, sub.CategoryFilter, sub.Session, sub.ActionabilityFilter) {
+		// Session already checked above
+		if !matchesAttentionFilters(event, sub.CategoryFilter, "", sub.ActionabilityFilter) {
 			continue
 		}
 
