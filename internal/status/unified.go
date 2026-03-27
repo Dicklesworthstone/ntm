@@ -95,10 +95,10 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 		return StateError, errType
 	}
 
-	// Check if at prompt (for cases with recent activity - might still be processing)
-	if isAtPrompt {
-		return StateIdle, ErrorNone
-	}
+	// If at prompt but with recent activity, trust the activity signal —
+	// agents often print prompt-like characters (>, ❯) as part of active
+	// output (code examples, progress indicators, partial lines). Only
+	// classify as idle when velocity is genuinely low (handled above).
 	// Heuristic: for user panes with empty output, treat as idle
 	if agentType == "" || agentType == "user" {
 		if strings.TrimSpace(output) == "" {
@@ -111,6 +111,13 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 		return StateWorking, ErrorNone
 	}
 
+	// At prompt with no recent activity but didn't pass the isLowVelocity
+	// check above — this means activity threshold was borderline. Trust
+	// the prompt detection in this case since velocity has settled.
+	if isAtPrompt {
+		return StateIdle, ErrorNone
+	}
+
 	// Heuristic: if no recent activity and output suggests agent is waiting,
 	// prefer idle over unknown. This catches cases where:
 	// - The prompt pattern isn't recognized but the agent is clearly done
@@ -120,16 +127,11 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 		return StateIdle, ErrorNone
 	}
 
-	// For known AI agent types (cc, cod, gmi), default to idle when state
-	// cannot be determined. These agents are almost always either working
-	// (actively generating output) or idle (waiting for input). The "unknown"
-	// state provides little value and causes confusion in the dashboard.
-	// Only truly indeterminate user/shell panes should show "unknown".
-	if isKnownAgentType(agentType) {
-		return StateIdle, ErrorNone
-	}
-
-	// Default to unknown only for user/shell panes when we truly can't determine state
+	// For known AI agent types (cc, cod, gmi) with no recent activity and no
+	// prompt detected, use the looksLikeIdle heuristic above. If that didn't
+	// match either, default to unknown rather than falsely reporting idle —
+	// false idle readings cause operators to send redundant prompts and miss
+	// that agents are actually working.
 	return StateUnknown, ErrorNone
 }
 

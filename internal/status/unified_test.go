@@ -857,6 +857,14 @@ func TestDetermineState(t *testing.T) {
 			wantError:    ErrorNone,
 		},
 		{
+			name:         "prompt-like output with recent activity is working not idle",
+			output:       "Searching codebase...\n> grep -r 'auth' internal/\nFound 42 matches",
+			agentType:    "cc",
+			lastActivity: time.Now().Add(-2 * time.Second),
+			wantState:    StateWorking, // Recent activity trumps prompt-like pattern
+			wantError:    ErrorNone,
+		},
+		{
 			name:         "user pane empty is idle",
 			output:       "",
 			agentType:    "user",
@@ -881,11 +889,11 @@ func TestDetermineState(t *testing.T) {
 			wantError:    ErrorNone,
 		},
 		{
-			name:         "known agent type defaults to idle when indeterminate",
+			name:         "known agent type defaults to unknown when indeterminate",
 			output:       "Still processing the very long task that has been running for a while now",
 			agentType:    "cc",
 			lastActivity: time.Now().Add(-60 * time.Second),
-			wantState:    StateIdle, // Known agent types default to idle, not unknown
+			wantState:    StateUnknown, // Prefer unknown over false idle to avoid misleading operators
 			wantError:    ErrorNone,
 		},
 		{
