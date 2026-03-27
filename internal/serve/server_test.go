@@ -5542,8 +5542,11 @@ func TestToJSONMap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("toJSONMap(nil) error: %v", err)
 		}
-		if m != nil {
-			t.Errorf("toJSONMap(nil) = %v, want nil", m)
+		if m == nil {
+			t.Error("toJSONMap(nil) returned nil, want non-nil empty map")
+		}
+		if len(m) != 0 {
+			t.Errorf("toJSONMap(nil) = %v, want empty map", m)
 		}
 	})
 
