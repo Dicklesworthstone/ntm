@@ -12,6 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Status represents the overall health status of an agent
@@ -213,23 +214,21 @@ func checkAgent(ctx context.Context, pa tmux.PaneActivity) AgentHealth {
 		return agent
 	}
 
-	// Check for error patterns
-	issues := detectErrors(output)
-
-	// Check for rate limit and parse wait time (including exit code detection)
+	// Check for rate limit and parse wait time (preferred authoritative source)
 	detection := ratelimit.DetectRateLimit(output)
 	if detection.RateLimited {
-		if !hasRateLimitIssue(issues) {
-			issues = append(issues, Issue{Type: "rate_limit", Message: "Rate limit detected"})
-		}
+		agent.Issues = append(agent.Issues, Issue{Type: "rate_limit", Message: "Rate limit detected"})
 		agent.RateLimited = true
 		agent.WaitSeconds = detection.WaitSeconds
-	} else if hasRateLimitIssue(issues) {
-		agent.RateLimited = true
-		agent.WaitSeconds = ratelimit.ParseWaitSeconds(output)
 	}
 
-	agent.Issues = issues
+	// Check for other error patterns (skipping rate limit since we already checked)
+	otherIssues := detectErrors(output)
+	for _, issue := range otherIssues {
+		if issue.Type != "rate_limit" {
+			agent.Issues = append(agent.Issues, issue)
+		}
+	}
 
 	// Determine activity level
 	agent.Activity = detectActivity(output, pa.LastActivity, string(pa.Pane.Type))
@@ -364,10 +363,7 @@ func detectProgress(output string, activity ActivityLevel, issues []Issue) *Prog
 	stageIndicators := make(map[ProgressStage][]string)
 
 	// Only analyze the last portion of output (most recent context)
-	recentOutput := output
-	if len(output) > 2000 {
-		recentOutput = output[len(output)-2000:]
-	}
+	recentOutput := util.SafeSliceFromEnd(output, 2000)
 
 	for stage, patterns := range progressPatterns {
 		for _, p := range patterns {

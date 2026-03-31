@@ -164,7 +164,7 @@ func (ic *IncrementalCreator) Create(sessionName, name string, baseCheckpointID 
 	inc.Changes.SessionChange = ic.computeSessionChange(base.Session, current.Session)
 
 	// Save the incremental checkpoint
-	if err := ic.save(inc); err != nil {
+	if err := ic.save(inc, base.WorkingDir); err != nil {
 		return nil, fmt.Errorf("saving incremental checkpoint: %w", err)
 	}
 
@@ -327,7 +327,7 @@ func (ic *IncrementalCreator) computeSessionChange(base, current SessionState) *
 }
 
 // save persists the incremental checkpoint to disk.
-func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint) error {
+func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint, repoDir string) error {
 	dir := ic.incrementalDir(inc.SessionName, inc.ID)
 
 	// Create directory
@@ -365,7 +365,7 @@ func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint) error {
 
 	// Save git patch if commits differ
 	if inc.Changes.GitChange != nil && inc.Changes.GitChange.FromCommit != inc.Changes.GitChange.ToCommit {
-		patch, err := generateGitPatch(inc.Changes.GitChange.FromCommit, inc.Changes.GitChange.ToCommit)
+		patch, err := generateGitPatch(repoDir, inc.Changes.GitChange.FromCommit, inc.Changes.GitChange.ToCommit)
 		if err == nil && patch != "" {
 			patchPath := filepath.Join(dir, IncrementalPatchFile)
 			if err := util.AtomicWriteFile(patchPath, []byte(patch), 0600); err != nil {
@@ -395,12 +395,17 @@ func (ic *IncrementalCreator) incrementalDir(sessionName, incrementalID string) 
 }
 
 // generateGitPatch generates a git diff patch between two commits.
-func generateGitPatch(fromCommit, toCommit string) (string, error) {
+func generateGitPatch(repoDir, fromCommit, toCommit string) (string, error) {
 	if fromCommit == "" || toCommit == "" {
 		return "", nil
 	}
 
-	cmd := exec.Command("git", "diff", fromCommit+".."+toCommit)
+	var cmd *exec.Cmd
+	if repoDir != "" {
+		cmd = exec.Command("git", "-C", repoDir, "diff", fromCommit+".."+toCommit)
+	} else {
+		cmd = exec.Command("git", "diff", fromCommit+".."+toCommit)
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("generating git diff: %w", err)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // ScanAndRedact scans input for sensitive content and optionally redacts it.
@@ -130,6 +131,7 @@ func deduplicateMatches(matches []match) []match {
 	}
 
 	// Sort by priority (descending) so higher priority matches get first pick.
+	// For same priority, prefer earlier matches.
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].priority != matches[j].priority {
 			return matches[i].priority > matches[j].priority
@@ -137,22 +139,21 @@ func deduplicateMatches(matches []match) []match {
 		return matches[i].start < matches[j].start
 	})
 
-	// Track which byte positions are covered by kept matches.
-	maxEnd := 0
-	for _, m := range matches {
-		if m.end > maxEnd {
-			maxEnd = m.end
-		}
-	}
-
-	covered := make([]bool, maxEnd+1)
 	var result []match
-
 	for _, m := range matches {
-		// Check if any part of this match overlaps with already-covered bytes.
 		overlaps := false
-		for i := m.start; i < m.end; i++ {
-			if covered[i] {
+		for _, kept := range result {
+			// Check for overlap with already kept higher-priority matches.
+			// Overlap exists if max(m.start, kept.start) < min(m.end, kept.end)
+			start := m.start
+			if kept.start > start {
+				start = kept.start
+			}
+			end := m.end
+			if kept.end < end {
+				end = kept.end
+			}
+			if start < end {
 				overlaps = true
 				break
 			}
@@ -160,10 +161,6 @@ func deduplicateMatches(matches []match) []match {
 
 		if !overlaps {
 			result = append(result, m)
-			// Mark this range as covered.
-			for i := m.start; i < m.end; i++ {
-				covered[i] = true
-			}
 		}
 	}
 
@@ -191,22 +188,38 @@ func applyRedactions(input string, findings []Finding) string {
 		return input
 	}
 
-	// Sort findings by start position (descending) to replace from end to start.
-	// This preserves the offsets for earlier replacements.
+	// Sort findings by start position (ascending).
 	sorted := make([]Finding, len(findings))
 	copy(sorted, findings)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Start > sorted[j].Start
+		return sorted[i].Start < sorted[j].Start
 	})
 
-	result := input
+	var sb strings.Builder
+	sb.Grow(len(input)) // Estimate capacity
+
+	lastPos := 0
 	for _, f := range sorted {
-		if f.Start >= 0 && f.End <= len(result) && f.Start < f.End {
-			result = result[:f.Start] + f.Redacted + result[f.End:]
+		if f.Start < lastPos {
+			continue // Overlap (should already be handled by deduplicateMatches)
 		}
+		if f.Start > len(input) || f.End > len(input) || f.Start > f.End {
+			continue // Invalid finding
+		}
+
+		// Write text before the match
+		sb.WriteString(input[lastPos:f.Start])
+		// Write the redacted placeholder
+		sb.WriteString(f.Redacted)
+		lastPos = f.End
 	}
 
-	return result
+	// Write remaining text
+	if lastPos < len(input) {
+		sb.WriteString(input[lastPos:])
+	}
+
+	return sb.String()
 }
 
 // Scan performs read-only detection without redaction.

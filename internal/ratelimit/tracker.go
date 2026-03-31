@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -362,8 +363,35 @@ func (t *RateLimitTracker) LoadFromDir(dir string) error {
 		}
 		t.state = pd.State
 	}
+
 	if pd.History != nil {
-		t.history = pd.History
+		// Merge history instead of overwriting
+		for provider, events := range pd.History {
+			existing := t.history[provider]
+			for _, newEv := range events {
+				// Simple deduplication: avoid adding if an event with same action
+				// exists within 1 second of this timestamp.
+				duplicate := false
+				for _, oldEv := range existing {
+					if oldEv.Action == newEv.Action &&
+						oldEv.Time.Sub(newEv.Time).Abs() < time.Second {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					existing = append(existing, newEv)
+				}
+			}
+			// Re-sort and cap
+			sort.Slice(existing, func(i, j int) bool {
+				return existing[i].Time.Before(existing[j].Time)
+			})
+			if len(existing) > 100 {
+				existing = existing[len(existing)-100:]
+			}
+			t.history[provider] = existing
+		}
 	}
 
 	return nil
@@ -431,6 +459,8 @@ func NormalizeProvider(provider string) string {
 		return "openai"
 	case "google", "gemini", "gmi":
 		return "google"
+	case "ollama":
+		return "ollama"
 	default:
 		return provider
 	}
@@ -521,13 +551,9 @@ func DetectRateLimit(output string) RateLimitDetection {
 		}
 	}
 
-	if status.DetectErrorInOutput(output) == status.ErrorRateLimit {
-		detection.RateLimited = true
-		detection.Source = detectionSourceOutput
-		return detection
-	}
-
-	for _, et := range status.DetectAllErrorsInOutput(output) {
+	// Single call to detect errors
+	errs := status.DetectAllErrorsInOutput(output)
+	for _, et := range errs {
 		if et == status.ErrorRateLimit {
 			detection.RateLimited = true
 			detection.Source = detectionSourceOutput

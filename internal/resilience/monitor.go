@@ -149,6 +149,14 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 			agentCmdTemplate = m.cfg.Agents.Codex
 		case tmux.AgentGemini:
 			agentCmdTemplate = m.cfg.Agents.Gemini
+		case tmux.AgentOllama:
+			agentCmdTemplate = m.cfg.Agents.Ollama
+		case tmux.AgentCursor:
+			agentCmdTemplate = m.cfg.Agents.Cursor
+		case tmux.AgentWindsurf:
+			agentCmdTemplate = m.cfg.Agents.Windsurf
+		case tmux.AgentAider:
+			agentCmdTemplate = m.cfg.Agents.Aider
 		default:
 			// Check plugins
 			if cmd, ok := m.cfg.Agents.Plugins[string(p.Type)]; ok {
@@ -262,7 +270,11 @@ func (m *Monitor) GetAgentStates() map[string]AgentState {
 func (m *Monitor) monitorLoop(ctx context.Context) {
 	defer close(m.done)
 
-	checkInterval := time.Duration(m.cfg.Resilience.HealthCheckSeconds) * time.Second
+	m.mu.RLock()
+	healthCheckSeconds := m.cfg.Resilience.HealthCheckSeconds
+	m.mu.RUnlock()
+
+	checkInterval := time.Duration(healthCheckSeconds) * time.Second
 	if checkInterval < time.Second {
 		checkInterval = 10 * time.Second // Minimum 10 seconds
 	}
@@ -288,8 +300,12 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 	isAliveFn := isChildAliveFn
 	hooksMu.RUnlock()
 
-	// Get health status for the session
-	sessionHealth, err := checkFn(ctx, m.session)
+	m.mu.RLock()
+	session := m.session
+	m.mu.RUnlock()
+
+	// Get health status for the session WITHOUT holding the monitor lock (slow IO)
+	sessionHealth, err := checkFn(ctx, session)
 	if err != nil {
 		log.Printf("[resilience] health check failed: %v", err)
 		return
@@ -474,9 +490,15 @@ func (m *Monitor) recordRateLimitHit(agentType string, waitSeconds int) {
 	}
 	provider := ratelimit.NormalizeProvider(agentType)
 	tracker.RecordRateLimitWithCooldown(provider, "send", waitSeconds)
-	if err := tracker.SaveToDir(m.projectDir); err != nil {
-		log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
-	}
+
+	// Persist asynchronously
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		if err := tracker.SaveToDir(m.projectDir); err != nil {
+			log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
+		}
+	}()
 }
 
 func (m *Monitor) recordRateLimitSuccess(agentType string) {
@@ -486,9 +508,15 @@ func (m *Monitor) recordRateLimitSuccess(agentType string) {
 	}
 	provider := ratelimit.NormalizeProvider(agentType)
 	tracker.RecordSuccess(provider)
-	if err := tracker.SaveToDir(m.projectDir); err != nil {
-		log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
-	}
+
+	// Persist asynchronously
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		if err := tracker.SaveToDir(m.projectDir); err != nil {
+			log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
+		}
+	}()
 }
 
 func (m *Monitor) ensureRateLimitTracker() *ratelimit.RateLimitTracker {
@@ -695,17 +723,15 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 	}
 
 	m.mu.Lock()
-	// Check if still in crashed state (could have been stopped)
+	// Check if still in crashed state (could have been stopped or manually fixed)
 	currentAgent, ok := m.agents[agent.PaneID]
 	if !ok || currentAgent.Healthy {
 		m.mu.Unlock()
 		return
 	}
-	currentAgent.RestartCount++
 	// Copy fields while holding lock to avoid race
 	agentCommand := currentAgent.Command
 	shellPID := currentAgent.ShellPID
-	restartCount := currentAgent.RestartCount
 	m.mu.Unlock()
 
 	// Re-run the agent command in the pane
@@ -724,7 +750,6 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 		m.mu.Lock()
 		if a, ok := m.agents[agent.PaneID]; ok {
 			a.Healthy = true
-			a.RestartCount-- // Undo the increment since we didn't actually restart
 		}
 		m.mu.Unlock()
 		return
@@ -735,21 +760,29 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 		return
 	}
 
-	log.Printf("[resilience] Agent %s restarted (attempt %d/%d)",
-		agent.PaneID, restartCount, m.cfg.Resilience.MaxRestarts)
+	m.mu.Lock()
+	var finalRestartCount int
+	if a, ok := m.agents[agent.PaneID]; ok {
+		a.RestartCount++
+		a.Healthy = true
+		a.LastRestart = time.Now()
+		finalRestartCount = a.RestartCount
+		log.Printf("[resilience] Agent %s restarted (attempt %d/%d)",
+			agent.PaneID, a.RestartCount, m.cfg.Resilience.MaxRestarts)
+	}
+	m.mu.Unlock()
 
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookAgentRestarted,
 		m.session,
 		agent.PaneID,
 		agent.AgentType,
-		fmt.Sprintf("Agent %s restarted (attempt %d/%d)", agent.AgentType, restartCount, m.cfg.Resilience.MaxRestarts),
+		"Agent restarted successfully",
 		map[string]string{
 			"project_dir":   m.projectDir,
 			"pane_index":    fmt.Sprintf("%d", agent.PaneIndex),
-			"restart_count": fmt.Sprintf("%d", restartCount),
-			"max_restarts":  fmt.Sprintf("%d", m.cfg.Resilience.MaxRestarts),
 			"auto_restart":  fmt.Sprintf("%t", m.autoRestart),
+			"restart_count": fmt.Sprintf("%d", finalRestartCount),
 		},
 	))
 
@@ -761,9 +794,9 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 			Pane:    agent.PaneID,
 			Agent:   agent.AgentType,
 			Message: fmt.Sprintf("Agent %s restarted (attempt %d/%d)",
-				agent.AgentType, restartCount, m.cfg.Resilience.MaxRestarts),
+				agent.AgentType, finalRestartCount, m.cfg.Resilience.MaxRestarts),
 			Details: map[string]string{
-				"restart_count": fmt.Sprintf("%d", restartCount),
+				"restart_count": fmt.Sprintf("%d", finalRestartCount),
 				"max_restarts":  fmt.Sprintf("%d", m.cfg.Resilience.MaxRestarts),
 			},
 		}

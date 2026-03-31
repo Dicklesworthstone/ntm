@@ -46,6 +46,8 @@ type StateChange struct {
 // StateTracker maintains a ring buffer of state changes
 type StateTracker struct {
 	changes []StateChange
+	cursor  int  // Next write position (oldest element if full)
+	full    bool // Whether the buffer has wrapped around
 	maxAge  time.Duration
 	maxSize int
 	mu      sync.RWMutex
@@ -87,17 +89,19 @@ func (t *StateTracker) Record(change StateChange) {
 		change.Timestamp = time.Now()
 	}
 
-	// Prune old entries first
-	t.pruneOld()
-
-	// If at capacity, remove oldest (copy to new slice to avoid pinning old backing array)
-	if len(t.changes) >= t.maxSize {
-		surviving := make([]StateChange, len(t.changes)-1, t.maxSize)
-		copy(surviving, t.changes[1:])
-		t.changes = surviving
+	// Prune old entries if we haven't wrapped yet.
+	// Once full, we overwrite oldest instead of shifting.
+	if !t.full {
+		t.pruneOld()
 	}
 
-	t.changes = append(t.changes, change)
+	if len(t.changes) < t.maxSize {
+		t.changes = append(t.changes, change)
+	} else {
+		t.full = true
+		t.changes[t.cursor] = change
+		t.cursor = (t.cursor + 1) % t.maxSize
+	}
 }
 
 // Since returns all changes since the given timestamp
@@ -106,7 +110,19 @@ func (t *StateTracker) Since(ts time.Time) []StateChange {
 	defer t.mu.RUnlock()
 
 	result := make([]StateChange, 0)
-	for _, change := range t.changes {
+	count := len(t.changes)
+	if count == 0 {
+		return result
+	}
+
+	start := 0
+	if t.full {
+		start = t.cursor
+	}
+
+	for i := 0; i < count; i++ {
+		idx := (start + i) % count
+		change := t.changes[idx]
 		if change.Timestamp.After(ts) {
 			// Deep copy Details to prevent data races
 			newChange := change
@@ -127,8 +143,17 @@ func (t *StateTracker) All() []StateChange {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	result := make([]StateChange, 0, len(t.changes))
-	for _, change := range t.changes {
+	count := len(t.changes)
+	result := make([]StateChange, 0, count)
+
+	start := 0
+	if t.full {
+		start = t.cursor
+	}
+
+	for i := 0; i < count; i++ {
+		idx := (start + i) % count
+		change := t.changes[idx]
 		// Deep copy Details to prevent data races
 		newChange := change
 		if change.Details != nil {
@@ -154,11 +179,15 @@ func (t *StateTracker) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.changes = make([]StateChange, 0, t.maxSize)
+	t.cursor = 0
+	t.full = false
 }
 
 // pruneOld removes changes older than maxAge (must be called with lock held)
 func (t *StateTracker) pruneOld() {
-	if len(t.changes) == 0 {
+	if len(t.changes) == 0 || t.full {
+		// Circular buffer doesn't support easy middle-pruning without shifting.
+		// For StateTracker, we rely on maxSize to bound memory, and filter by age during query.
 		return
 	}
 
@@ -173,7 +202,7 @@ func (t *StateTracker) pruneOld() {
 	}
 
 	if keepFrom > 0 && keepFrom <= len(t.changes) {
-		surviving := make([]StateChange, len(t.changes)-keepFrom)
+		surviving := make([]StateChange, len(t.changes)-keepFrom, t.maxSize)
 		copy(surviving, t.changes[keepFrom:])
 		t.changes = surviving
 	}
@@ -401,12 +430,19 @@ func DefaultSnapshotOptions(root string) SnapshotOptions {
 	}
 }
 
+// isGitRepo checks if a directory is a git repository
+func isGitRepo(root string) bool {
+	gitDir := filepath.Join(root, ".git")
+	_, err := os.Stat(gitDir)
+	return err == nil
+}
+
 // SnapshotDirectory walks a directory and captures file modtime/size.
 // Returns a map keyed by absolute path.
 func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState, error) {
 	// Optimization: If this is a git repo, use git status for fast scanning
 	// This avoids walking the entire directory tree (stat storm).
-	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
+	if isGitRepo(root) {
 		if snap, err := SnapshotGit(root, opts); err == nil {
 			return snap, nil
 		}
@@ -492,6 +528,11 @@ func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState,
 // This is O(1) git operation + O(N) stat calls for *dirty files only*,
 // compared to O(M) stat calls for *all files* with WalkDir.
 func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error) {
+	// First check if git is available
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, fmt.Errorf("git binary not found")
+	}
+
 	// git status --porcelain --no-renames (shows modified and untracked, splits renames)
 	// Note: Avoid -uall flag which can cause memory issues on large repos
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -742,7 +783,7 @@ type RecordedFileChange struct {
 
 // FileChangeStore keeps a bounded buffer of recent file changes.
 type FileChangeStore struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	limit   int
 	entries []RecordedFileChange
 	cursor  int  // Next write position (oldest element if full)
@@ -784,8 +825,8 @@ func (s *FileChangeStore) Add(entry RecordedFileChange) {
 
 // Since returns changes after the provided timestamp.
 func (s *FileChangeStore) Since(ts time.Time) []RecordedFileChange {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	results := make([]RecordedFileChange, 0)
 	count := len(s.entries)
@@ -810,8 +851,8 @@ func (s *FileChangeStore) Since(ts time.Time) []RecordedFileChange {
 
 // All returns a copy of all recorded changes.
 func (s *FileChangeStore) All() []RecordedFileChange {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	count := len(s.entries)
 	results := make([]RecordedFileChange, count)
