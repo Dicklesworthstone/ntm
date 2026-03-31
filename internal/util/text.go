@@ -194,3 +194,67 @@ func SafeSlice(s string, maxLen int) string {
 	}
 	return s[:lastValid]
 }
+
+// SafeSliceFromEnd truncates a string to at most maxLen bytes from the end,
+// ensuring the cut is at a rune boundary.
+func SafeSliceFromEnd(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	start := len(s) - maxLen
+	// Find the next valid rune start to avoid partial characters
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
+}
+
+// GetLastNLines returns the last n lines of text efficiently.
+// If the text has fewer than n lines, returns the entire text.
+func GetLastNLines(text string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+
+	// Search from the end for the n-th newline
+	count := 0
+	for i := len(text) - 1; i >= 0; i-- {
+		if text[i] == '\n' {
+			count++
+			if count == n {
+				return text[i+1:]
+			}
+		}
+	}
+
+	return text
+}
+
+// CountNonEmptyLines counts lines that have non-whitespace content.
+func CountNonEmptyLines(content string) int {
+	count := 0
+	inLine := false
+	hasContent := false
+
+	for _, r := range content {
+		if r == '\n' {
+			if hasContent {
+				count++
+			}
+			inLine = false
+			hasContent = false
+		} else {
+			inLine = true
+			if r != ' ' && r != '\t' && r != '\r' {
+				hasContent = true
+			}
+		}
+	}
+
+	// Count last line if it has content and no trailing newline
+	if inLine && hasContent {
+		count++
+	}
+
+	return count
+}
