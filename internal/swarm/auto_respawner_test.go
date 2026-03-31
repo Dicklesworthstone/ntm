@@ -330,7 +330,7 @@ func TestAutoRespawnerKillAgentSequences(t *testing.T) {
 			r := NewAutoRespawner().WithTmuxClient(mock)
 
 			t.Logf("[TEST] killAgent agentType=%s", tt.agentType)
-			if err := r.killAgent("test:1.1", tt.agentType); err != nil {
+			if err := r.killAgent(context.Background(), "test:1.1", tt.agentType); err != nil {
 				t.Fatalf("killAgent failed: %v", err)
 			}
 
@@ -363,7 +363,7 @@ func TestAutoRespawnerKillWithFallbackGraceful(t *testing.T) {
 	}
 
 	t.Log("[TEST] killWithFallback graceful exit path")
-	if err := r.killWithFallback("test:1.1", "cc"); err != nil {
+	if err := r.killWithFallback(context.Background(), "test:1.1", "cc"); err != nil {
 		t.Fatalf("killWithFallback failed: %v", err)
 	}
 	if called {
@@ -386,7 +386,7 @@ func TestAutoRespawnerKillWithFallbackForceKill(t *testing.T) {
 	}
 
 	t.Log("[TEST] killWithFallback force kill path")
-	if err := r.killWithFallback("test:1.1", "cc"); err != nil {
+	if err := r.killWithFallback(context.Background(), "test:1.1", "cc"); err != nil {
 		t.Fatalf("killWithFallback failed: %v", err)
 	}
 	if !called {
@@ -739,10 +739,16 @@ func TestGetAgentCommand(t *testing.T) {
 		{"cc", "cc"},
 		{"claude", "cc"},
 		{"claude-code", "cc"},
+		{"claude_code", "cc"},
 		{"cod", "cod"},
 		{"codex", "cod"},
+		{"codex-cli", "cod"},
+		{"openai-codex", "cod"},
 		{"gmi", "gmi"},
 		{"gemini", "gmi"},
+		{"gemini_cli", "gmi"},
+		{"google-gemini", "gmi"},
+		{"ws", "windsurf"},
 		{"unknown", "unknown"},
 	}
 
@@ -1006,7 +1012,7 @@ func TestAutoRespawnerKillWithFallbackPromptCharacterInsideLineStillForceKills(t
 		return nil
 	}
 
-	if err := r.killWithFallback("test:1.1", "cc"); err != nil {
+	if err := r.killWithFallback(context.Background(), "test:1.1", "cc"); err != nil {
 		t.Fatalf("killWithFallback failed: %v", err)
 	}
 	if !called {
@@ -1163,10 +1169,13 @@ func TestAgentReadyPatterns(t *testing.T) {
 		{"cc", 5, "Claude"},
 		{"claude", 5, "Claude"},
 		{"claude-code", 5, "Claude"},
+		{"claude_code", 5, "Claude"},
 		{"cod", 3, "Codex"},
 		{"codex", 3, "Codex"},
+		{"codex-cli", 3, "Codex"},
 		{"gmi", 2, "Gemini"},
 		{"gemini", 2, "Gemini"},
+		{"gemini_cli", 2, "Gemini"},
 		{"unknown", 3, ">"}, // generic patterns
 	}
 
@@ -1196,7 +1205,7 @@ func TestCdToProjectNoLookup(t *testing.T) {
 	r := NewAutoRespawner()
 	// No ProjectPathLookup set
 
-	err := r.cdToProject("test:1.1")
+	err := r.cdToProject(context.Background(), "test:1.1")
 
 	if err != nil {
 		t.Errorf("expected nil error when no lookup configured, got %v", err)
@@ -1210,7 +1219,7 @@ func TestCdToProjectEmptyPath(t *testing.T) {
 		return "" // Empty path
 	})
 
-	err := r.cdToProject("test:1.1")
+	err := r.cdToProject(context.Background(), "test:1.1")
 
 	if err != nil {
 		t.Errorf("expected nil error for empty path, got %v", err)
@@ -1256,9 +1265,12 @@ func TestGetMarchingOrdersAgentSpecific(t *testing.T) {
 		{"cc", "Claude prompt", "config/cc"},
 		{"claude", "Claude prompt", "config/cc"},
 		{"claude-code", "Claude prompt", "config/cc"},
+		{"claude_code", "Claude prompt", "config/cc"},
 		{"cod", "Codex prompt", "config/cod"},
 		{"codex", "Codex prompt", "config/cod"},
-		{"gmi", "Default prompt", "config/default"},     // Not in config, fallback to default
+		{"codex-cli", "Codex prompt", "config/cod"},
+		{"gmi", "Default prompt", "config/default"}, // Not in config, fallback to default
+		{"gemini_cli", "Default prompt", "config/default"},
 		{"unknown", "Default prompt", "config/default"}, // Not in config, fallback to default
 	}
 
@@ -1319,12 +1331,18 @@ func TestNormalizeAgentType(t *testing.T) {
 		{"cc", "cc"},
 		{"claude", "cc"},
 		{"claude-code", "cc"},
+		{"claude_code", "cc"},
 		{"cod", "cod"},
 		{"codex", "cod"},
+		{"codex-cli", "cod"},
+		{"openai-codex", "cod"},
 		{" CodEx ", "cod"},
 		{"gmi", "gmi"},
 		{"gemini", "gmi"},
+		{"gemini_cli", "gmi"},
+		{"google-gemini", "gmi"},
 		{" GEMINI ", "gmi"},
+		{" ws ", "windsurf"},
 		{"unknown", "unknown"},
 	}
 
@@ -1617,6 +1635,72 @@ func TestAutoRespawnerContextCancellation(t *testing.T) {
 	t.Log("[TEST] Context cancellation handled correctly")
 }
 
+func TestAutoRespawnerStopCancelsInFlightRespawn(t *testing.T) {
+	ld := NewLimitDetector()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mock := &mockTmuxClient{
+		captureSeq: []string{"$", ">"},
+		sendKeysHook: func(paneID, text string, enter bool) error {
+			if text == "\x1b" {
+				select {
+				case <-started:
+				default:
+					close(started)
+				}
+				<-release
+			}
+			return nil
+		},
+	}
+
+	r := NewAutoRespawner().
+		WithTmuxClient(mock).
+		WithLimitDetector(ld).
+		WithConfig(AutoRespawnerConfig{
+			ExitWaitTimeout:    20 * time.Millisecond,
+			ExitPollInterval:   5 * time.Millisecond,
+			AgentReadyDelay:    20 * time.Millisecond,
+			ClearPaneDelay:     0,
+			MaxRetriesPerPane:  3,
+			RetryResetDuration: time.Hour,
+		})
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	ld.eventChan <- LimitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "gmi",
+		Pattern:     "limit",
+		DetectedAt:  time.Now(),
+	}
+
+	select {
+	case <-started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected respawn to begin before Stop")
+	}
+
+	r.Stop()
+	close(release)
+
+	time.Sleep(100 * time.Millisecond)
+
+	mock.mu.Lock()
+	calls := append([]sendKeysCall(nil), mock.sendKeysCalls...)
+	mock.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected Stop to cancel in-flight respawn after first key send, got %d calls: %+v", len(calls), calls)
+	}
+	if calls[0].text != "\x1b" {
+		t.Fatalf("expected only the initial Gemini escape key to be sent before cancellation, got %+v", calls[0])
+	}
+}
+
 // TestAutoRespawnerProcessLimitEventsIntegration tests the event processing loop
 // with simulated limit events.
 func TestAutoRespawnerProcessLimitEventsIntegration(t *testing.T) {
@@ -1784,7 +1868,7 @@ func TestAutoRespawnerClearPane(t *testing.T) {
 
 	t.Log("[TEST] Testing clearPane")
 
-	err := r.clearPane("test:1.1")
+	err := r.clearPane(context.Background(), "test:1.1")
 	if err != nil {
 		t.Fatalf("clearPane failed: %v", err)
 	}
@@ -1818,7 +1902,7 @@ func TestAutoRespawnerCdToProject(t *testing.T) {
 
 	t.Log("[TEST] Testing cdToProject")
 
-	err := r.cdToProject("test:1.1")
+	err := r.cdToProject(context.Background(), "test:1.1")
 	if err != nil {
 		t.Fatalf("cdToProject failed: %v", err)
 	}
@@ -1855,7 +1939,7 @@ func TestAutoRespawnerWaitForAgentReadyTimeout(t *testing.T) {
 	t.Log("[TEST] Testing waitForAgentReady timeout")
 
 	startTime := time.Now()
-	err := r.waitForAgentReady("test:1.1", "cc")
+	err := r.waitForAgentReady(context.Background(), "test:1.1", "cc")
 	elapsed := time.Since(startTime)
 
 	t.Logf("[TEST] Wait completed in %v", elapsed)
@@ -1889,7 +1973,7 @@ func TestAutoRespawnerWaitForAgentReadySuccess(t *testing.T) {
 	t.Log("[TEST] Testing waitForAgentReady success")
 
 	startTime := time.Now()
-	err := r.waitForAgentReady("test:1.1", "cc")
+	err := r.waitForAgentReady(context.Background(), "test:1.1", "cc")
 	elapsed := time.Since(startTime)
 
 	t.Logf("[TEST] Wait completed in %v", elapsed)

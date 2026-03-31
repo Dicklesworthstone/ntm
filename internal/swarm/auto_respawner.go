@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	ntmcontext "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -298,7 +299,7 @@ func (r *AutoRespawner) Start(ctx context.Context) (err error) {
 		"max_retries", r.Config.MaxRetriesPerPane)
 
 	// Start the event processing goroutine
-	go r.processLimitEvents()
+	go r.processLimitEvents(childCtx)
 
 	return nil
 }
@@ -325,12 +326,15 @@ func (r *AutoRespawner) Stop() {
 }
 
 // processLimitEvents listens for limit events and triggers respawns.
-func (r *AutoRespawner) processLimitEvents() {
+func (r *AutoRespawner) processLimitEvents(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	events := r.LimitDetector.Events()
 
 	for {
 		select {
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			return
 		case event, ok := <-events:
 			if !ok {
@@ -355,7 +359,7 @@ func (r *AutoRespawner) processLimitEvents() {
 			r.recordRetryAttempt(event.SessionPane)
 
 			// Attempt respawn
-			_ = r.Respawn(event)
+			_ = r.respawn(ctx, event)
 		}
 	}
 }
@@ -397,6 +401,14 @@ func (r *AutoRespawner) recordRetryAttempt(sessionPane string) {
 
 // Respawn performs the full respawn sequence for an agent after a limit hit.
 func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
+	return r.respawn(context.Background(), event)
+}
+
+func (r *AutoRespawner) respawn(ctx context.Context, event LimitEvent) *RespawnResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	sessionPane := event.SessionPane
 	agentType := event.AgentType
 	start := time.Now()
@@ -410,8 +422,15 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 		"session_pane", sessionPane,
 		"agent_type", agentType)
 
+	if err := ctx.Err(); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("respawn canceled: %v", err)
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	// Step 1: Kill the stuck agent
-	if err := r.killWithFallback(sessionPane, agentType); err != nil {
+	if err := r.killWithFallback(ctx, sessionPane, agentType); err != nil {
 		result.Success = false
 		result.Error = fmt.Sprintf("kill agent failed: %v", err)
 		result.Duration = time.Since(start)
@@ -422,6 +441,13 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 			"error", err,
 			"duration", result.Duration)
 
+		return result
+	}
+
+	if err := ctx.Err(); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("respawn canceled: %v", err)
+		result.Duration = time.Since(start)
 		return result
 	}
 
@@ -453,20 +479,41 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("respawn canceled: %v", err)
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	// Step 3: Clear the pane
-	if err := r.clearPane(sessionPane); err != nil {
+	if err := r.clearPane(ctx, sessionPane); err != nil {
 		r.logger().Warn("[AutoRespawner] clear_pane_failed",
 			"session_pane", sessionPane,
 			"error", err)
 		// Continue anyway - not fatal
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("respawn canceled: %v", err)
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	// Step 4: Change to project directory (if configured)
-	if err := r.cdToProject(sessionPane); err != nil {
+	if err := r.cdToProject(ctx, sessionPane); err != nil {
 		r.logger().Warn("[AutoRespawner] cd_project_failed",
 			"session_pane", sessionPane,
 			"error", err)
 		// Continue anyway - agent may work from wrong directory
+	}
+
+	if err := ctx.Err(); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("respawn canceled: %v", err)
+		result.Duration = time.Since(start)
+		return result
 	}
 
 	// Step 5: Respawn the agent
@@ -484,8 +531,15 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 		return result
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("respawn canceled: %v", err)
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	// Step 6: Wait for agent to be ready
-	if err := r.waitForAgentReady(sessionPane, agentType); err != nil {
+	if err := r.waitForAgentReady(ctx, sessionPane, agentType); err != nil {
 		r.logger().Warn("[AutoRespawner] ready_timeout",
 			"session_pane", sessionPane,
 			"agent_type", agentType,
@@ -494,7 +548,7 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 	}
 
 	// Step 7: Re-inject marching orders
-	if r.PromptInjector != nil {
+	if err := ctx.Err(); err == nil && r.PromptInjector != nil {
 		prompt, source := r.getMarchingOrders(agentType)
 		r.logger().Info("[AutoRespawner] marching_orders_selected",
 			"session_pane", sessionPane,
@@ -531,7 +585,7 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 }
 
 // killAgent sends the appropriate kill sequence for the agent type.
-func (r *AutoRespawner) killAgent(sessionPane, agentType string) error {
+func (r *AutoRespawner) killAgent(ctx context.Context, sessionPane, agentType string) error {
 	r.logger().Info("[AutoRespawner] killing_agent",
 		"session_pane", sessionPane,
 		"method", agentType)
@@ -541,36 +595,63 @@ func (r *AutoRespawner) killAgent(sessionPane, agentType string) error {
 	switch agentType {
 	case "cc", "claude", "claude-code":
 		// Claude: Double Ctrl+C with 100ms gap (CRITICAL timing)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "\x03", false); err != nil {
 			return fmt.Errorf("send first ctrl-c: %w", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		if !sleepWithContext(ctx, 100*time.Millisecond) {
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "\x03", false); err != nil {
 			return fmt.Errorf("send second ctrl-c: %w", err)
 		}
 
 	case "cod", "codex":
 		// Codex: /exit command
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "/exit", true); err != nil {
 			return fmt.Errorf("send /exit: %w", err)
 		}
 
 	case "gmi", "gemini":
 		// Gemini: Escape then Ctrl+C
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "\x1b", false); err != nil {
 			return fmt.Errorf("send escape: %w", err)
 		}
-		time.Sleep(50 * time.Millisecond)
+		if !sleepWithContext(ctx, 50*time.Millisecond) {
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "\x03", false); err != nil {
 			return fmt.Errorf("send ctrl-c: %w", err)
 		}
 
 	default:
 		// Default: Double Ctrl+C (safe fallback)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "\x03", false); err != nil {
 			return fmt.Errorf("send first ctrl-c: %w", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		if !sleepWithContext(ctx, 100*time.Millisecond) {
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := client.SendKeys(sessionPane, "\x03", false); err != nil {
 			return fmt.Errorf("send second ctrl-c: %w", err)
 		}
@@ -580,14 +661,14 @@ func (r *AutoRespawner) killAgent(sessionPane, agentType string) error {
 }
 
 // killWithFallback tries graceful kill first, then force kill if needed.
-func (r *AutoRespawner) killWithFallback(sessionPane, agentType string) error {
-	if err := r.killAgent(sessionPane, agentType); err != nil {
+func (r *AutoRespawner) killWithFallback(ctx context.Context, sessionPane, agentType string) error {
+	if err := r.killAgent(ctx, sessionPane, agentType); err != nil {
 		r.logger().Warn("[AutoRespawner] graceful_kill_failed",
 			"session_pane", sessionPane,
 			"error", err)
 	}
 
-	if r.waitForExit(sessionPane) {
+	if r.waitForExit(ctx, sessionPane) {
 		return nil
 	}
 
@@ -595,7 +676,9 @@ func (r *AutoRespawner) killWithFallback(sessionPane, agentType string) error {
 		return err
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	if !sleepWithContext(ctx, 500*time.Millisecond) {
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -656,7 +739,7 @@ func (r *AutoRespawner) getPanePID(sessionPane string) (int, error) {
 
 // waitForExit waits for agent to terminate, returns true if exited.
 // It checks the pane output for shell prompt indicators.
-func (r *AutoRespawner) waitForExit(sessionPane string) bool {
+func (r *AutoRespawner) waitForExit(ctx context.Context, sessionPane string) bool {
 	timeout := r.Config.ExitWaitTimeout
 	if timeout == 0 {
 		timeout = 5 * time.Second
@@ -690,7 +773,11 @@ func (r *AutoRespawner) waitForExit(sessionPane string) bool {
 	}
 
 	for time.Now().Before(deadline) {
-		<-ticker.C
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
 		if checkOnce() {
 			return true
 		}
@@ -700,6 +787,26 @@ func (r *AutoRespawner) waitForExit(sessionPane string) bool {
 		"session_pane", sessionPane,
 		"timeout", timeout)
 	return false
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	if ctx == nil {
+		time.Sleep(d)
+		return true
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // isShellPrompt checks if the output indicates a shell prompt.
@@ -746,14 +853,19 @@ func (r *AutoRespawner) capturePaneOutput(sessionPane string, lines int) string 
 }
 
 // clearPane sends the clear command to reset the terminal.
-func (r *AutoRespawner) clearPane(sessionPane string) error {
+func (r *AutoRespawner) clearPane(ctx context.Context, sessionPane string) error {
 	client := r.tmuxClient()
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := client.SendKeys(sessionPane, "clear", true); err != nil {
 		return fmt.Errorf("send clear: %w", err)
 	}
 
-	time.Sleep(r.Config.ClearPaneDelay)
+	if !sleepWithContext(ctx, r.Config.ClearPaneDelay) {
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -766,7 +878,7 @@ func (r *AutoRespawner) projectForPane(sessionPane string) string {
 }
 
 // cdToProject changes to the project directory if a path is available.
-func (r *AutoRespawner) cdToProject(sessionPane string) error {
+func (r *AutoRespawner) cdToProject(ctx context.Context, sessionPane string) error {
 	if r.ProjectPathLookup == nil {
 		return nil // No lookup configured, skip
 	}
@@ -781,6 +893,9 @@ func (r *AutoRespawner) cdToProject(sessionPane string) error {
 	client := r.tmuxClient()
 
 	// Use shell escaping for paths with spaces
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cdCmd := fmt.Sprintf("cd %q", projectPath)
 	if err := client.SendKeys(sessionPane, cdCmd, true); err != nil {
 		return fmt.Errorf("cd to project: %w", err)
@@ -790,7 +905,9 @@ func (r *AutoRespawner) cdToProject(sessionPane string) error {
 		"session_pane", sessionPane,
 		"path", projectPath)
 
-	time.Sleep(r.Config.ClearPaneDelay) // Wait for cd to complete
+	if !sleepWithContext(ctx, r.Config.ClearPaneDelay) {
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -828,23 +945,23 @@ func (r *AutoRespawner) spawnAgent(sessionPane, agentType string) error {
 
 // getAgentCommand returns the command to launch an agent.
 func (r *AutoRespawner) getAgentCommand(agentType string) string {
-	switch agentType {
-	case "cc", "claude", "claude-code":
+	switch normalizeAutoRespawnerAgentType(agentType) {
+	case "cc":
 		return "cc"
-	case "cod", "codex":
+	case "cod":
 		return "cod"
-	case "gmi", "gemini":
+	case "gmi":
 		return "gmi"
 	case "cursor":
 		return "cursor"
-	case "windsurf", "ws":
+	case "windsurf":
 		return "windsurf"
 	case "aider":
 		return "aider"
 	case "ollama":
 		return "ollama"
 	default:
-		return agentType
+		return strings.TrimSpace(agentType)
 	}
 }
 
@@ -875,38 +992,21 @@ func (r *AutoRespawner) getMarchingOrders(agentType string) (string, string) {
 
 // normalizeAgentType converts agent type aliases to canonical forms.
 func (r *AutoRespawner) normalizeAgentType(agentType string) string {
-	switch strings.ToLower(strings.TrimSpace(agentType)) {
-	case "cc", "claude", "claude-code":
-		return "cc"
-	case "cod", "codex":
-		return "cod"
-	case "gmi", "gemini":
-		return "gmi"
-	case "cursor":
-		return "cursor"
-	case "windsurf", "ws":
-		return "windsurf"
-	case "aider":
-		return "aider"
-	case "ollama":
-		return "ollama"
-	default:
-		return agentType
-	}
+	return normalizeAutoRespawnerAgentType(agentType)
 }
 
 // agentReadyPatterns returns the patterns that indicate an agent is ready.
 func agentReadyPatterns(agentType string) []string {
-	switch agentType {
-	case "cc", "claude", "claude-code":
+	switch normalizeAutoRespawnerAgentType(agentType) {
+	case "cc":
 		return []string{"Claude", "Opus", "Sonnet", "Haiku", ">"}
-	case "cod", "codex":
+	case "cod":
 		return []string{"Codex", "codex>", "?"}
-	case "gmi", "gemini":
+	case "gmi":
 		return []string{"Gemini", ">"}
 	case "cursor":
 		return []string{"Cursor", ">", "$"}
-	case "windsurf", "ws":
+	case "windsurf":
 		return []string{"Windsurf", ">", "$"}
 	case "aider":
 		return []string{"Aider", ">"}
@@ -917,8 +1017,16 @@ func agentReadyPatterns(agentType string) []string {
 	}
 }
 
+func normalizeAutoRespawnerAgentType(agentType string) string {
+	normalized := strings.ToLower(strings.TrimSpace(agentType))
+	if normalized == "" {
+		return ""
+	}
+	return string(agent.AgentType(normalized).Canonical())
+}
+
 // waitForAgentReady waits for agent startup indicators in pane output.
-func (r *AutoRespawner) waitForAgentReady(sessionPane, agentType string) error {
+func (r *AutoRespawner) waitForAgentReady(ctx context.Context, sessionPane, agentType string) error {
 	timeout := r.Config.AgentReadyDelay
 	if timeout == 0 {
 		timeout = 5 * time.Second
@@ -952,7 +1060,11 @@ func (r *AutoRespawner) waitForAgentReady(sessionPane, agentType string) error {
 	}
 
 	for time.Now().Before(deadline) {
-		<-ticker.C
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 		if checkReady() {
 			return nil
 		}
