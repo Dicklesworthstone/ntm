@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 // ---------------------------------------------------------------------------
@@ -155,10 +157,13 @@ func TestControllerInput_AgentTypeDefaults(t *testing.T) {
 	}{
 		{"cc maps to claude", "cc", "claude", false},
 		{"claude maps to claude", "claude", "claude", false},
+		{"claude_code maps to claude", "claude_code", "claude", false},
 		{"cod maps to codex", "cod", "codex", false},
 		{"codex maps to codex", "codex", "codex", false},
+		{"codex-cli maps to codex", "codex-cli", "codex", false},
 		{"gmi maps to gemini", "gmi", "gemini", false},
 		{"gemini maps to gemini", "gemini", "gemini", false},
+		{"google-gemini maps to gemini", "google-gemini", "gemini", false},
 		{"unknown type errors", "foo", "", true},
 		{"empty defaults to cc", "", "claude", false},
 	}
@@ -171,13 +176,21 @@ func TestControllerInput_AgentTypeDefaults(t *testing.T) {
 			}
 			var agentTypeFull string
 			var err error
-			switch agentType {
-			case "cc", "claude":
+			switch robot.ResolveAgentType(agentType) {
+			case "claude":
 				agentTypeFull = "claude"
-			case "cod", "codex":
+			case "codex":
 				agentTypeFull = "codex"
-			case "gmi", "gemini":
+			case "gemini":
 				agentTypeFull = "gemini"
+			case "cursor":
+				agentTypeFull = "cursor"
+			case "windsurf":
+				agentTypeFull = "windsurf"
+			case "aider":
+				agentTypeFull = "aider"
+			case "ollama":
+				agentTypeFull = "ollama"
 			default:
 				err = &agentTypeError{agentType: agentType}
 			}

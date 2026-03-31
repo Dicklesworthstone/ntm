@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -67,6 +68,27 @@ type ensembleStatusOutput struct {
 	StatusCounts   ensembleStatusCounts         `json:"status_counts,omitempty" yaml:"status_counts,omitempty"`
 	Assignments    []ensembleAssignmentRow      `json:"assignments,omitempty" yaml:"assignments,omitempty"`
 	Contributions  *ensemble.ContributionReport `json:"contributions,omitempty" yaml:"contributions,omitempty"`
+}
+
+func normalizeEnsembleAgentType(value string) string {
+	switch agentpkg.AgentType(value).Canonical() {
+	case agentpkg.AgentTypeClaudeCode:
+		return "cc"
+	case agentpkg.AgentTypeCodex:
+		return "cod"
+	case agentpkg.AgentTypeGemini:
+		return "gmi"
+	case agentpkg.AgentTypeCursor:
+		return "cursor"
+	case agentpkg.AgentTypeWindsurf:
+		return "windsurf"
+	case agentpkg.AgentTypeAider:
+		return "aider"
+	case agentpkg.AgentTypeOllama:
+		return "ollama"
+	default:
+		return ""
+	}
 }
 
 func newEnsembleCmd() *cobra.Command {

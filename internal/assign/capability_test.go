@@ -133,16 +133,24 @@ func TestParseAgentType(t *testing.T) {
 	}{
 		{"cc", tmux.AgentClaude},
 		{"claude", tmux.AgentClaude},
+		{"claude-code", tmux.AgentClaude},
+		{"claude_code", tmux.AgentClaude},
 		{"Claude", tmux.AgentClaude},
 		{"CC", tmux.AgentClaude}, // uppercase short code
 		{"cod", tmux.AgentCodex},
 		{"codex", tmux.AgentCodex},
+		{"codex-cli", tmux.AgentCodex},
+		{"openai-codex", tmux.AgentCodex},
 		{"Codex", tmux.AgentCodex},
 		{"COD", tmux.AgentCodex}, // uppercase short code
 		{"gmi", tmux.AgentGemini},
 		{"gemini", tmux.AgentGemini},
+		{"gemini_cli", tmux.AgentGemini},
+		{"google-gemini", tmux.AgentGemini},
 		{"Gemini", tmux.AgentGemini},
 		{"GMI", tmux.AgentGemini}, // uppercase short code
+		{"ws", tmux.AgentWindsurf},
+		{"  codex-cli  ", tmux.AgentCodex},
 	}
 
 	for _, tc := range tests {

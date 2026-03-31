@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -240,14 +241,14 @@ func buildControllerResponse(opts ControllerInput) (*ControllerResponse, error) 
 	// Resolve agent type to full name
 	var agentTypeFull string
 	var agentCmdTemplate string
-	switch agentType {
-	case "cc", "claude":
+	switch robot.ResolveAgentType(agentType) {
+	case "claude":
 		agentTypeFull = "claude"
 		agentCmdTemplate = cfg.Agents.Claude
-	case "cod", "codex":
+	case "codex":
 		agentTypeFull = "codex"
 		agentCmdTemplate = cfg.Agents.Codex
-	case "gmi", "gemini":
+	case "gemini":
 		agentTypeFull = "gemini"
 		agentCmdTemplate = cfg.Agents.Gemini
 	case "cursor":

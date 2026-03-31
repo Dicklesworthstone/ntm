@@ -259,6 +259,9 @@ func TestResolveSpawnAssignAgentType(t *testing.T) {
 		want                     string
 	}{
 		{"explicit agent", "Claude", false, false, false, "claude"},
+		{"explicit short code", "CC", false, false, false, "claude"},
+		{"explicit cli alias", "codex-cli", false, false, false, "codex"},
+		{"explicit spaced alias", " google-gemini ", false, false, false, "gemini"},
 		{"cc only flag", "", true, false, false, "claude"},
 		{"cod only flag", "", false, true, false, "codex"},
 		{"gmi only flag", "", false, false, true, "gemini"},

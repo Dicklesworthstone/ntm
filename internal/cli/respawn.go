@@ -179,25 +179,7 @@ func runRespawn(session string, force bool, panesFlag string, agentType string, 
 	return nil
 }
 
-// normalizeAgentType normalizes agent type aliases to canonical form
+// normalizeAgentType normalizes agent type aliases to canonical form.
 func normalizeAgentType(t string) string {
-	t = strings.ToLower(strings.TrimSpace(t))
-	switch t {
-	case "cc", "claude", "claude-code":
-		return "claude"
-	case "cod", "codex", "openai-codex":
-		return "codex"
-	case "gmi", "gemini", "google-gemini":
-		return "gemini"
-	case "cursor":
-		return "cursor"
-	case "windsurf", "ws":
-		return "windsurf"
-	case "aider":
-		return "aider"
-	case "ollama":
-		return "ollama"
-	default:
-		return t
-	}
+	return robot.ResolveAgentType(t)
 }

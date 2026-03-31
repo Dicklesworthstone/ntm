@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -236,24 +237,24 @@ func GetAgentScoreByString(agentType string, taskType string) float64 {
 // ParseAgentType converts a string to AgentType.
 // Supports both short codes (cc, cod, gmi) and full names (claude, codex, gemini).
 func ParseAgentType(s string) tmux.AgentType {
-	s = strings.ToLower(s)
-	switch s {
-	case "cc", "claude":
+	trimmed := strings.TrimSpace(s)
+	switch agent.AgentType(trimmed).Canonical() {
+	case agent.AgentTypeClaudeCode:
 		return tmux.AgentClaude
-	case "cod", "codex":
+	case agent.AgentTypeCodex:
 		return tmux.AgentCodex
-	case "gmi", "gemini":
+	case agent.AgentTypeGemini:
 		return tmux.AgentGemini
-	case "cursor":
+	case agent.AgentTypeCursor:
 		return tmux.AgentCursor
-	case "windsurf":
+	case agent.AgentTypeWindsurf:
 		return tmux.AgentWindsurf
-	case "aider":
+	case agent.AgentTypeAider:
 		return tmux.AgentAider
-	case "ollama":
+	case agent.AgentTypeOllama:
 		return tmux.AgentOllama
 	default:
-		return tmux.AgentType(s)
+		return tmux.AgentType(strings.ToLower(trimmed))
 	}
 }
 

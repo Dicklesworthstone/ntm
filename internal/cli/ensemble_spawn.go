@@ -533,19 +533,6 @@ func parseAgentMix(value string) (map[string]int, error) {
 	return mix, nil
 }
 
-func normalizeEnsembleAgentType(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "cc", "claude", "claude-code":
-		return "cc"
-	case "cod", "codex":
-		return "cod"
-	case "gmi", "gemini":
-		return "gmi"
-	default:
-		return ""
-	}
-}
-
 // ensembleDryRunOutput represents the JSON output for dry-run mode.
 type ensembleDryRunOutput struct {
 	Success     bool                     `json:"success"`

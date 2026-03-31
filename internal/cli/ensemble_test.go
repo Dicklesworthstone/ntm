@@ -111,6 +111,42 @@ func TestImpactToBeadPriority(t *testing.T) {
 	}
 }
 
+func TestNormalizeEnsembleAgentType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"cc", "cc"},
+		{"claude", "cc"},
+		{"claude-code", "cc"},
+		{"claude_code", "cc"},
+		{"cod", "cod"},
+		{"codex", "cod"},
+		{"codex-cli", "cod"},
+		{"openai-codex", "cod"},
+		{"gmi", "gmi"},
+		{"gemini", "gmi"},
+		{"gemini_cli", "gmi"},
+		{"google-gemini", "gmi"},
+		{"cursor", "cursor"},
+		{"ws", "windsurf"},
+		{"aider", "aider"},
+		{"ollama", "ollama"},
+		{"unknown", ""},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := normalizeEnsembleAgentType(tt.input); got != tt.want {
+				t.Fatalf("normalizeEnsembleAgentType(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunBrCreateParsesID(t *testing.T) {
 	prev := runBrCommand
 	t.Cleanup(func() { runBrCommand = prev })

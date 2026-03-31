@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agent/ollama"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
@@ -40,6 +41,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/resilience"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
@@ -154,7 +156,7 @@ func parseEnvDurationMs(key string) (time.Duration, error) {
 
 func resolveSpawnAssignAgentType(agent string, ccOnly, codOnly, gmiOnly bool) string {
 	if strings.TrimSpace(agent) != "" {
-		return strings.ToLower(agent)
+		return robot.ResolveAgentType(agent)
 	}
 	if ccOnly {
 		return "claude"
@@ -169,16 +171,16 @@ func resolveSpawnAssignAgentType(agent string, ccOnly, codOnly, gmiOnly bool) st
 }
 
 func parseLocalFallbackProvider(raw string) (AgentType, error) {
-	provider := strings.ToLower(strings.TrimSpace(raw))
+	provider := strings.TrimSpace(raw)
 	if provider == "" {
 		return AgentTypeCodex, nil
 	}
-	switch provider {
-	case "cc", "claude", "claude-code":
+	switch agentpkg.AgentType(provider).Canonical() {
+	case agentpkg.AgentTypeClaudeCode:
 		return AgentTypeClaude, nil
-	case "cod", "codex", "openai-codex":
+	case agentpkg.AgentTypeCodex:
 		return AgentTypeCodex, nil
-	case "gmi", "gemini", "google-gemini":
+	case agentpkg.AgentTypeGemini:
 		return AgentTypeGemini, nil
 	default:
 		return "", fmt.Errorf("invalid --local-fallback-provider %q (expected one of: cc|cod|gmi)", raw)
