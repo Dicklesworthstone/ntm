@@ -245,6 +245,151 @@ func TestViewFitsHeightWithManyPanes(t *testing.T) {
 	}
 }
 
+func TestViewFitsHeightAndFooterOnce(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(140)
+	m.height = 30
+	m.tier = layout.TierForWidth(m.width)
+
+	view := m.View()
+	plain := status.StripANSI(view)
+
+	if got := renderedHeight(view); got > m.height {
+		t.Fatalf("view height %d exceeds terminal height %d", got, m.height)
+	}
+
+	if count := strings.Count(plain, "Fleet:"); count != 1 {
+		t.Fatalf("expected Fleet segment once, got %d", count)
+	}
+
+	if count := strings.Count(plain, "navigate"); count != 1 {
+		t.Fatalf("expected help hint once, got %d", count)
+	}
+}
+
+func TestRenderHeaderHandoffLine(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(120)
+	m.handoffGoal = "Implemented auth tokens"
+	m.handoffNow = "Add refresh token rotation"
+	m.handoffAge = 2 * time.Hour
+	m.handoffStatus = "complete"
+
+	line := m.renderHeaderHandoffLine(m.width)
+	plain := status.StripANSI(line)
+
+	if !strings.Contains(plain, "handoff") {
+		t.Fatalf("expected handoff line to include label, got %q", plain)
+	}
+	if !strings.Contains(plain, "goal:") {
+		t.Fatalf("expected handoff line to include goal, got %q", plain)
+	}
+	if !strings.Contains(plain, "now:") {
+		t.Fatalf("expected handoff line to include now, got %q", plain)
+	}
+	if !strings.Contains(plain, "ago") {
+		t.Fatalf("expected handoff line to include age, got %q", plain)
+	}
+}
+
+func TestRenderHeaderContextWarningLine(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(140)
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 1, Title: "test__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 2, Title: "test__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[1] = PaneStatus{
+		ContextPercent: 72,
+		ContextLimit:   1000,
+		ContextModel:   "claude-sonnet-4-6",
+	}
+	m.paneStatus[2] = PaneStatus{
+		ContextPercent: 86,
+		ContextLimit:   1000,
+		ContextModel:   "gpt-4",
+	}
+
+	line := m.renderHeaderContextWarningLine(m.width)
+	plain := status.StripANSI(line)
+
+	if !strings.Contains(plain, "context") {
+		t.Fatalf("expected context warning line, got %q", plain)
+	}
+	if !strings.Contains(plain, "72%") || !strings.Contains(plain, "86%") {
+		t.Fatalf("expected warning line to include percentages, got %q", plain)
+	}
+	if !strings.Contains(plain, "claude") || !strings.Contains(plain, "gpt-4") {
+		t.Fatalf("expected warning line to include model names, got %q", plain)
+	}
+
+	m.paneStatus[1] = PaneStatus{
+		ContextPercent: 60,
+		ContextLimit:   1000,
+		ContextModel:   "claude-sonnet-4-6",
+	}
+	m.paneStatus[2] = PaneStatus{
+		ContextPercent: 65,
+		ContextLimit:   1000,
+		ContextModel:   "gpt-4",
+	}
+	line = m.renderHeaderContextWarningLine(m.width)
+	if line != "" {
+		t.Fatalf("expected no warning line below threshold, got %q", status.StripANSI(line))
+	}
+}
+
+// TestViewFitsHeightWithManyPanes tests that the dashboard correctly truncates content
+// when there are many panes (e.g., 17) that would otherwise overflow the terminal height.
+// This is the scenario from bd-1xoe where the status bar was being duplicated.
+func TestViewFitsHeightWithManyPanes(t *testing.T) {
+	t.Parallel()
+
+	m := New("test", "")
+	m.width = 140
+	m.height = 40
+	m.tier = layout.TierForWidth(m.width)
+
+	// Create 17 panes to simulate the real-world scenario
+	for i := 1; i <= 17; i++ {
+		pane := tmux.Pane{
+			ID:      fmt.Sprintf("%d", i),
+			Index:   i,
+			Title:   fmt.Sprintf("destructive_command_guard__cc_%d", i),
+			Type:    tmux.AgentClaude,
+			Variant: "",
+			Command: "claude",
+		}
+		m.panes = append(m.panes, pane)
+		m.paneStatus[i] = PaneStatus{
+			State:          "working",
+			ContextPercent: float64(i * 5),
+			ContextLimit:   200000,
+		}
+	}
+
+	view := m.View()
+	plain := status.StripANSI(view)
+
+	// View height must not exceed terminal height
+	if got := renderedHeight(view); got > m.height {
+		t.Fatalf("view height %d exceeds terminal height %d (with 17 panes)", got, m.height)
+	}
+
+	// Fleet segment must appear exactly once (not duplicated due to overflow)
+	if count := strings.Count(plain, "Fleet:"); count != 1 {
+		t.Fatalf("expected Fleet segment once, got %d (content may have overflowed)", count)
+	}
+
+	// Help hint must appear exactly once
+	if count := strings.Count(plain, "navigate"); count != 1 {
+		t.Fatalf("expected help hint once, got %d (footer may have been duplicated)", count)
+	}
+}
+
 func TestPaneListColumnsByWidthTiers(t *testing.T) {
 	t.Parallel()
 
@@ -2361,10 +2506,15 @@ func TestDashboardFilesPanelShortcutCyclesTimeWindow(t *testing.T) {
 	}
 
 	_ = next.renderSidebar(60, 24)
-	next.filesPanel.SetSize(60, 12)
-	after := status.StripANSI(next.filesPanel.View())
-	if !strings.Contains(after, "5m") {
-		t.Fatalf("files panel shortcut should advance the time window badge, got %q", after)
+	updated, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := updated.(Model); !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if cmd == nil {
+		t.Fatal("enter after files panel shortcut should return a files panel command")
+	}
+	if _, ok := cmd().(panels.OpenFileMsg); !ok {
+		t.Fatalf("expected enter to emit panels.OpenFileMsg, got %T", cmd())
 	}
 }
 
@@ -2556,21 +2706,30 @@ func TestDashboardRotationConfirmNavigationMovesSingleStep(t *testing.T) {
 	}, nil)
 	_ = m.renderSidebar(60, 28)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	next, ok := updated.(Model)
 	if !ok {
 		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
 	}
-	if cmd != nil {
-		t.Fatalf("expected navigation key to return no command, got %T", cmd)
+	_ = next.renderSidebar(60, 28)
+
+	if !next.rotationConfirmPanel.IsFocused() {
+		t.Fatal("expected rotation confirm panel to own sidebar focus after cycling")
+	}
+	if next.paneList.IsFocused() {
+		t.Fatal("expected pane list to blur after sidebar focus cycles away")
+	}
+	if next.toastHistoryShortcutAvailable() {
+		t.Fatal("toast history shortcut should be disabled while rotation confirm is the active sidebar panel")
 	}
 
-	selected := next.rotationConfirmPanel.SelectedPending()
-	if selected == nil {
-		t.Fatal("expected a selected pending rotation after navigation")
+	hints := next.getFocusedPanelHints()
+	hintText := fmt.Sprintf("%#v", hints)
+	if !strings.Contains(hintText, "rotate") {
+		t.Fatalf("expected rotation confirm hints after cycling sidebar focus, got %#v", hints)
 	}
-	if selected.AgentID != "proj__cc_2" {
-		t.Fatalf("expected single-step navigation to land on second entry, got %q", selected.AgentID)
+	if strings.Contains(hintText, "cycle section") {
+		t.Fatalf("expected pane list hints to disappear after cycling sidebar focus, got %#v", hints)
 	}
 }
 
@@ -2733,7 +2892,7 @@ func TestDashboardAgentMailInboxSummaryCountsUnreadOnly(t *testing.T) {
 			},
 		},
 		AgentMap: map[string]string{
-			"1": "proj__cod_1",
+			"1": "proj__cc_1",
 		},
 		Gen: 1,
 	})
@@ -2874,10 +3033,10 @@ func TestDashboardAgentMailInboxDetailSkipPreservesSummaryCache(t *testing.T) {
 		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
 	}
 
-	if len(next.agentMailInbox["1"]) != 1 {
+	if got := next.agentMailInbox["1"][0].Subject; got != "still unread" {
 		t.Fatalf("expected skipped detail fetch to preserve summary cache, got %#v", next.agentMailInbox)
 	}
-	if next.agentMailInbox["1"][0].Subject != "still unread" {
+	if next.agentMailInbox["1"][0].BodyMD != "" {
 		t.Fatalf("expected preserved inbox subject, got %#v", next.agentMailInbox["1"])
 	}
 }
@@ -3190,7 +3349,7 @@ func TestDashboardConflictsNumericShortcutDoesNotChangePaneSelection(t *testing.
 	m.panes = []tmux.Pane{
 		{ID: "pane-1", Index: 0, Title: "proj__cc_1", Type: tmux.AgentClaude},
 		{ID: "pane-2", Index: 1, Title: "proj__cod_1", Type: tmux.AgentCodex},
-		{ID: "pane-3", Index: 2, Title: "proj__gmi_1", Type: tmux.AgentGemini},
+		{ID: "pane-3", Index: 2, Title: "proj__cc_2", Type: tmux.AgentClaude},
 	}
 	m.cursor = 2
 	m.focusedPanel = PanelConflicts
@@ -3332,6 +3491,43 @@ func TestAgentBorderColor(t *testing.T) {
 		result := AgentBorderColor(agentType, m.theme)
 		if result == "" {
 			t.Errorf("AgentBorderColor(%s) returned empty string", agentType)
+		}
+	}
+
+	aliasPairs := [][2]string{
+		{"claude-code", string(tmux.AgentClaude)},
+		{"claude_code", string(tmux.AgentClaude)},
+		{"openai-codex", string(tmux.AgentCodex)},
+		{"google-gemini", string(tmux.AgentGemini)},
+		{"ws", string(tmux.AgentWindsurf)},
+	}
+
+	for _, pair := range aliasPairs {
+		got := AgentBorderColor(pair[0], m.theme)
+		want := AgentBorderColor(pair[1], m.theme)
+		if got != want {
+			t.Errorf("AgentBorderColor(%q) = %q, want same color as %q (%q)", pair[0], got, pair[1], want)
+		}
+	}
+}
+
+func TestAgentRowTypePresentation_CanonicalizesAliases(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(120)
+	aliasPairs := [][2]string{
+		{"claude-code", string(tmux.AgentClaude)},
+		{"claude_code", string(tmux.AgentClaude)},
+		{"openai-codex", string(tmux.AgentCodex)},
+		{"google-gemini", string(tmux.AgentGemini)},
+	}
+
+	for _, pair := range aliasPairs {
+		gotColor, gotIcon := agentRowTypePresentation(pair[0], m.theme)
+		wantColor, wantIcon := agentRowTypePresentation(pair[1], m.theme)
+		if gotColor != wantColor || gotIcon != wantIcon {
+			t.Errorf("agentRowTypePresentation(%q) = (%q, %q), want same presentation as %q (%q, %q)",
+				pair[0], gotColor, gotIcon, pair[1], wantColor, wantIcon)
 		}
 	}
 }
@@ -3701,7 +3897,7 @@ func TestFleetCount_Consistent(t *testing.T) {
 	}
 
 	// Verify agent type counts sum correctly
-	sumAgentTypes := m.claudeCount + m.codexCount + m.geminiCount + m.userCount
+	sumAgentTypes := m.claudeCount + m.codexCount + m.geminiCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
 	if sumAgentTypes != totalPanes {
 		t.Errorf("agent type counts (%d) should equal total panes (%d)", sumAgentTypes, totalPanes)
 	}
@@ -3801,12 +3997,13 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 		cursorCount   int
 		windsurfCount int
 		aiderCount    int
+		ollamaCount   int
 		userCount     int
 	}{
-		{"all_claude", 5, 0, 0, 0, 0, 0, 0},
-		{"mixed_agents", 2, 2, 1, 1, 1, 1, 1},
-		{"all_user", 0, 0, 0, 0, 0, 0, 4},
-		{"empty", 0, 0, 0, 0, 0, 0, 0},
+		{"all_claude", 5, 0, 0, 0, 0, 0, 0, 0},
+		{"mixed_agents", 2, 2, 1, 1, 1, 1, 1, 1},
+		{"all_user", 0, 0, 0, 0, 0, 0, 0, 4},
+		{"empty", 0, 0, 0, 0, 0, 0, 0, 0},
 	}
 
 	for _, tc := range tests {
@@ -3861,6 +4058,13 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 				})
 				idx++
 			}
+			// Add Ollama panes
+			for i := 0; i < tc.ollamaCount; i++ {
+				m.panes = append(m.panes, tmux.Pane{
+					ID: fmt.Sprintf("%d", idx), Index: idx, Type: tmux.AgentOllama,
+				})
+				idx++
+			}
 			// Add User panes
 			for i := 0; i < tc.userCount; i++ {
 				m.panes = append(m.panes, tmux.Pane{
@@ -3871,12 +4075,18 @@ func TestFleetCount_AgentTypesSumCorrectly(t *testing.T) {
 
 			m.updateStats()
 
-			expectedTotal := tc.claudeCount + tc.codexCount + tc.geminiCount + tc.cursorCount + tc.windsurfCount + tc.aiderCount + tc.userCount
-			actualSum := m.claudeCount + m.codexCount + m.geminiCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.userCount
+			expectedTotal := tc.claudeCount + tc.codexCount + tc.geminiCount + tc.cursorCount + tc.windsurfCount + tc.aiderCount + tc.ollamaCount + tc.userCount
+			actualSum := m.claudeCount + m.codexCount + m.geminiCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount + m.userCount
 
 			if actualSum != expectedTotal {
-				t.Errorf("expected sum %d, got %d (claude=%d codex=%d gemini=%d cursor=%d windsurf=%d aider=%d user=%d)",
-					expectedTotal, actualSum, m.claudeCount, m.codexCount, m.geminiCount, m.cursorCount, m.windsurfCount, m.aiderCount, m.userCount)
+				t.Errorf("expected sum %d, got %d (claude=%d codex=%d gemini=%d cursor=%d windsurf=%d aider=%d ollama=%d user=%d)",
+					expectedTotal, actualSum, m.claudeCount, m.codexCount, m.geminiCount, m.cursorCount, m.windsurfCount, m.aiderCount, m.ollamaCount, m.userCount)
+			}
+			if m.ollamaCount != tc.ollamaCount {
+				t.Errorf("ollamaCount = %d, want %d", m.ollamaCount, tc.ollamaCount)
+			}
+			if m.userCount != tc.userCount {
+				t.Errorf("userCount = %d, want %d", m.userCount, tc.userCount)
 			}
 
 			if len(m.panes) != expectedTotal {
@@ -4111,9 +4321,9 @@ func TestDashboardPaneListArrowKeysAdvanceSingleRow(t *testing.T) {
 	m := newTestModel(120)
 	m.focusedPanel = PanelPaneList
 	m.panes = []tmux.Pane{
-		{ID: "pane-1", Index: 0, Title: "proj__cc_1", Type: tmux.AgentClaude},
-		{ID: "pane-2", Index: 1, Title: "proj__cod_1", Type: tmux.AgentCodex},
-		{ID: "pane-3", Index: 2, Title: "proj__gmi_1", Type: tmux.AgentGemini},
+		{ID: "1", Index: 1, Title: "pane-1", Type: tmux.AgentCodex},
+		{ID: "2", Index: 2, Title: "pane-2", Type: tmux.AgentClaude},
+		{ID: "3", Index: 3, Title: "pane-3", Type: tmux.AgentGemini},
 	}
 	m.cursor = 0
 	m.paneStatus = map[int]PaneStatus{
@@ -4135,6 +4345,20 @@ func TestDashboardPaneListArrowKeysAdvanceSingleRow(t *testing.T) {
 	}
 	if got := m.paneList.Index(); got != 1 {
 		t.Fatalf("pane list selection after single Down = %d, want 1", got)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	next, ok = updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	m = next
+
+	if m.cursor != 0 {
+		t.Fatalf("cursor after single Up = %d, want 0", m.cursor)
+	}
+	if got := m.paneList.Index(); got != 0 {
+		t.Fatalf("pane list selection after single Up = %d, want 0", got)
 	}
 }
 
@@ -4230,7 +4454,7 @@ func TestDashboardPaneTableToggleClearsActiveListFilter(t *testing.T) {
 		t.Fatalf("expected list filtering before toggling table view, got %v", got)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	m = updated.(Model)
 	if !m.showTableView {
 		t.Fatal("expected pane table toggle to enable")

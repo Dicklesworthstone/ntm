@@ -203,7 +203,7 @@ func (m *RateLimitPanel) formatAgentRow(agent robot.AgentOAuthHealth, width int,
 
 // shortAgentType returns a short agent type identifier
 func (m *RateLimitPanel) shortAgentType(agentType string) string {
-	switch agentType {
+	switch robot.ResolveAgentType(agentType) {
 	case "claude":
 		return "cc"
 	case "codex":
@@ -211,6 +211,7 @@ func (m *RateLimitPanel) shortAgentType(agentType string) string {
 	case "gemini":
 		return "gmi"
 	default:
+		agentType = robot.ResolveAgentType(agentType)
 		return agentType[:min(3, len(agentType))]
 	}
 }

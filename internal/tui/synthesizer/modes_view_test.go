@@ -8,7 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 func TestNewModeVisualization(t *testing.T) {
@@ -423,6 +425,9 @@ func TestModeVisualization_View_AgentTypes(t *testing.T) {
 			{ModeID: "mode-a", AgentType: "cc", Status: ensemble.AssignmentActive},
 			{ModeID: "mode-b", AgentType: "cod", Status: ensemble.AssignmentPending},
 			{ModeID: "mode-c", AgentType: "gmi", Status: ensemble.AssignmentDone},
+			{ModeID: "mode-d", AgentType: "openai-codex", Status: ensemble.AssignmentDone},
+			{ModeID: "mode-e", AgentType: "ws", Status: ensemble.AssignmentDone},
+			{ModeID: "mode-f", AgentType: "user", Status: ensemble.AssignmentDone},
 		},
 	}
 
@@ -430,7 +435,7 @@ func TestModeVisualization_View_AgentTypes(t *testing.T) {
 	mv.SetSize(100, 30)
 	mv.SetData("test", sess, nil, nil, nil)
 
-	view := mv.View()
+	view := status.StripANSI(mv.View())
 	if !strings.Contains(view, "cc") {
 		t.Errorf("expected 'cc' agent type in view, got %q", view)
 	}
@@ -439,6 +444,75 @@ func TestModeVisualization_View_AgentTypes(t *testing.T) {
 	}
 	if !strings.Contains(view, "gmi") {
 		t.Errorf("expected 'gmi' agent type in view, got %q", view)
+	}
+	if strings.Contains(view, "openai-codex") {
+		t.Errorf("expected canonicalized agent label, got raw alias in %q", view)
+	}
+	if !strings.Contains(view, "ws") {
+		t.Errorf("expected 'ws' agent type in view, got %q", view)
+	}
+	if !strings.Contains(view, "usr") {
+		t.Errorf("expected 'usr' agent type in view, got %q", view)
+	}
+}
+
+func TestModeAssignmentAgentLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType string
+		want      string
+	}{
+		{"claude alias", "claude-code", "cc"},
+		{"codex alias", "openai-codex", "cod"},
+		{"gemini alias", "google-gemini", "gmi"},
+		{"cursor", "cursor", "cur"},
+		{"windsurf alias", "ws", "ws"},
+		{"aider", "aider", "aid"},
+		{"ollama", "ollama", "oll"},
+		{"user", "user", "usr"},
+		{"unknown", "mystery", "mys"},
+		{"empty", "", "unk"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := modeAssignmentAgentLabel(tc.agentType); got != tc.want {
+				t.Fatalf("modeAssignmentAgentLabel(%q) = %q, want %q", tc.agentType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestModeAssignmentAgentColor(t *testing.T) {
+	t.Parallel()
+
+	current := theme.Current()
+	tests := []struct {
+		name      string
+		agentType string
+		want      string
+	}{
+		{"claude", "claude", string(current.Claude)},
+		{"codex alias", "openai-codex", string(current.Codex)},
+		{"gemini alias", "google-gemini", string(current.Gemini)},
+		{"cursor", "cursor", string(current.Cursor)},
+		{"windsurf alias", "ws", string(current.Windsurf)},
+		{"aider", "aider", string(current.Aider)},
+		{"ollama", "ollama", string(current.Ollama)},
+		{"user", "user", string(current.User)},
+		{"unknown", "mystery", string(current.Subtext)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := string(modeAssignmentAgentColor(tc.agentType, current)); got != tc.want {
+				t.Fatalf("modeAssignmentAgentColor(%q) = %q, want %q", tc.agentType, got, tc.want)
+			}
+		})
 	}
 }
 

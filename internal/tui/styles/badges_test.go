@@ -15,10 +15,14 @@ func TestAgentBadge(t *testing.T) {
 	}{
 		{"claude", "claude"},
 		{"cc", "claude"},
+		{"claude_code", "claude"},
 		{"codex", "codex"},
 		{"cod", "codex"},
+		{"openai-codex", "codex"},
 		{"gemini", "gemini"},
 		{"gmi", "gemini"},
+		{"google-gemini", "gemini"},
+		{"ws", "windsurf"},
 		{"user", "user"},
 		{"unknown", "unknown"},
 	}
@@ -43,8 +47,11 @@ func TestAgentBadgeWithCount(t *testing.T) {
 		count     int
 	}{
 		{"claude", 3},
+		{"claude_code", 2},
 		{"codex", 1},
+		{"openai-codex", 4},
 		{"gemini", 5},
+		{"google-gemini", 6},
 		{"user", 0},
 	}
 

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
@@ -303,18 +304,7 @@ func (c *ContextPanel) View() string {
 			statusIcon = "●"
 		}
 
-		// Agent type color
-		var typeColor lipgloss.Color
-		switch agent.AgentType {
-		case "cc":
-			typeColor = t.Claude
-		case "cod":
-			typeColor = t.Codex
-		case "gmi":
-			typeColor = t.Gemini
-		default:
-			typeColor = t.Text
-		}
+		typeColor := contextAgentTypeColor(agent.AgentType, t)
 
 		// Name (use pane ID if no agent name)
 		displayName := agent.AgentName
@@ -372,6 +362,29 @@ func (c *ContextPanel) View() string {
 	}
 
 	return boxStyle.Render(FitToHeight(content.String(), h-4))
+}
+
+func contextAgentTypeColor(agentType string, t theme.Theme) lipgloss.Color {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		return t.Claude
+	case agent.AgentTypeCodex:
+		return t.Codex
+	case agent.AgentTypeGemini:
+		return t.Gemini
+	case agent.AgentTypeCursor:
+		return t.Cursor
+	case agent.AgentTypeWindsurf:
+		return t.Windsurf
+	case agent.AgentTypeAider:
+		return t.Aider
+	case agent.AgentTypeOllama:
+		return t.Ollama
+	case agent.AgentTypeUser:
+		return t.User
+	default:
+		return t.Text
+	}
 }
 
 // formatMinutes formats a duration in minutes to a human-readable string.

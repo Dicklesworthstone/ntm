@@ -21,6 +21,7 @@ type TickerData struct {
 	CursorCount   int
 	WindsurfCount int
 	AiderCount    int
+	OllamaCount   int
 	UserCount     int
 
 	// Alerts
@@ -242,6 +243,9 @@ func (m *TickerPanel) buildPlainFleetSegment() string {
 		}
 		if m.data.AiderCount > 0 {
 			agentParts = append(agentParts, fmt.Sprintf("A:%d", m.data.AiderCount))
+		}
+		if m.data.OllamaCount > 0 {
+			agentParts = append(agentParts, fmt.Sprintf("Oll:%d", m.data.OllamaCount))
 		}
 		if m.data.UserCount > 0 {
 			agentParts = append(agentParts, fmt.Sprintf("U:%d", m.data.UserCount))

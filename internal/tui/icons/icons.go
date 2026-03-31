@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // IconSet contains all icons used in the TUI
@@ -436,22 +438,22 @@ func IsASCII() bool {
 
 // AgentIcon returns the icon for an agent type
 func (i IconSet) AgentIcon(agentType string) string {
-	switch agentType {
-	case "cc", "claude":
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
 		return i.Claude
-	case "cod", "codex":
+	case agent.AgentTypeCodex:
 		return i.Codex
-	case "gmi", "gemini":
+	case agent.AgentTypeGemini:
 		return i.Gemini
-	case "cursor":
+	case agent.AgentTypeCursor:
 		return i.Cursor
-	case "windsurf", "ws":
+	case agent.AgentTypeWindsurf:
 		return i.Windsurf
-	case "aider":
+	case agent.AgentTypeAider:
 		return i.Aider
-	case "ollama":
+	case agent.AgentTypeOllama:
 		return i.Ollama
-	case "user":
+	case agent.AgentTypeUser:
 		return i.Terminal
 	default:
 		return i.Robot

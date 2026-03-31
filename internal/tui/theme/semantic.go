@@ -2,7 +2,11 @@
 // This file defines role-based colors that map to theme colors.
 package theme
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
+)
 
 // SemanticPalette provides role-based color names for UI elements.
 // Use these instead of raw colors for consistent theming.
@@ -154,22 +158,22 @@ func Semantic() SemanticPalette {
 
 // AgentColor returns the color for a given agent type string.
 func (p SemanticPalette) AgentColor(agentType string) lipgloss.Color {
-	switch agentType {
-	case "claude", "cc":
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
 		return p.AgentClaude
-	case "codex", "cod":
+	case agent.AgentTypeCodex:
 		return p.AgentCodex
-	case "gemini", "gmi":
+	case agent.AgentTypeGemini:
 		return p.AgentGemini
-	case "cursor":
+	case agent.AgentTypeCursor:
 		return p.AgentCursor
-	case "windsurf":
+	case agent.AgentTypeWindsurf:
 		return p.AgentWindsurf
-	case "aider":
+	case agent.AgentTypeAider:
 		return p.AgentAider
-	case "ollama":
+	case agent.AgentTypeOllama:
 		return p.AgentOllama
-	case "user":
+	case agent.AgentTypeUser:
 		return p.AgentUser
 	default:
 		return p.AgentUnknown

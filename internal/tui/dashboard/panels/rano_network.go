@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -279,12 +280,12 @@ func renderRanoProviderBreakdown(t theme.Theme, width int, rows []RanoNetworkRow
 }
 
 func providerFromAgentType(agentType string) string {
-	switch strings.ToLower(strings.TrimSpace(agentType)) {
-	case "cc", "claude", "claudecode":
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
 		return "anthropic"
-	case "cod", "codex":
+	case agent.AgentTypeCodex:
 		return "openai"
-	case "gmi", "gemini":
+	case agent.AgentTypeGemini:
 		return "google"
 	default:
 		return "unknown"

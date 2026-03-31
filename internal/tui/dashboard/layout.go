@@ -570,23 +570,7 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 	idxStyle := lipgloss.NewStyle().Foreground(t.Overlay)
 	parts = append(parts, idxStyle.Render(fmt.Sprintf("%2d", row.Index)))
 
-	// Type icon with per-agent color (pulses when working)
-	var typeColor lipgloss.Color
-	var typeIcon string
-	switch row.Type {
-	case "cc":
-		typeColor = t.Claude
-		typeIcon = "󰗣"
-	case "cod":
-		typeColor = t.Codex
-		typeIcon = "󰘦"
-	case "gmi":
-		typeColor = t.Gemini
-		typeIcon = "󰇮"
-	default:
-		typeColor = t.Green
-		typeIcon = "󰄛"
-	}
+	typeColor, typeIcon := agentRowTypePresentation(row.Type, t)
 
 	// Apply pulse animation when agent is actively working
 	if row.Status == "working" && row.Tick > 0 {
@@ -776,6 +760,19 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		return lipgloss.NewStyle().Background(t.Surface0).Render(firstLine)
 	}
 	return firstLine
+}
+
+func agentRowTypePresentation(agentType string, t theme.Theme) (lipgloss.Color, string) {
+	switch tmux.AgentType(agentType).Canonical() {
+	case tmux.AgentClaude:
+		return t.Claude, "󰗣"
+	case tmux.AgentCodex:
+		return t.Codex, "󰘦"
+	case tmux.AgentGemini:
+		return t.Gemini, "󰇮"
+	default:
+		return t.Green, "󰄛"
+	}
 }
 
 // RenderPaneDetail renders the detail panel for a selected pane
@@ -1171,24 +1168,24 @@ func WorkingSpinnerFrame(tick int) string {
 // AgentBorderColor returns the theme color for a given agent type.
 // Each agent type has a unique color: Claude=purple/Mauve, Codex=blue, Gemini=yellow, User=green.
 func AgentBorderColor(agentType string, t theme.Theme) lipgloss.Color {
-	switch agentType {
-	case "cc", "claude":
+	switch tmux.AgentType(agentType).Canonical() {
+	case tmux.AgentClaude:
 		return t.Claude
-	case "cod", "codex":
+	case tmux.AgentCodex:
 		return t.Codex
-	case "gmi", "gemini":
+	case tmux.AgentGemini:
 		return t.Gemini
-	case "cursor":
+	case tmux.AgentCursor:
 		return t.Claude
-	case "windsurf":
+	case tmux.AgentWindsurf:
 		return t.Codex
-	case "aider":
+	case tmux.AgentAider:
 		return t.Gemini
-	case "ollama":
+	case tmux.AgentOllama:
 		// Fallback to a distinct color if missing from theme,
 		// but typically we'd use t.Text if we don't have a specific color
 		return t.Text
-	case "user":
+	case tmux.AgentUser:
 		return t.User
 	default:
 		return t.Text

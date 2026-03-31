@@ -3,6 +3,9 @@ package components
 import (
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 func enableAnimationsForTest(t *testing.T) {
@@ -91,13 +94,65 @@ func TestRenderSection(t *testing.T) {
 }
 
 func TestRenderAgentBadge(t *testing.T) {
-	tests := []string{"claude", "cc", "codex", "cod", "gemini", "gmi", "unknown"}
+	tests := []string{"claude", "cc", "codex", "cod", "gemini", "gmi", "cursor", "windsurf", "aider", "ollama", "user", "unknown"}
 
 	for _, agent := range tests {
 		t.Run(agent, func(t *testing.T) {
 			result := RenderAgentBadge(agent)
 			if result == "" {
 				t.Errorf("RenderAgentBadge(%q) should return non-empty string", agent)
+			}
+		})
+	}
+}
+
+func TestRenderAgentBadgeStyle(t *testing.T) {
+	currentTheme := theme.Current()
+	currentIcons := icons.Current()
+
+	tests := []struct {
+		name      string
+		agentType string
+		wantColor string
+		wantIcon  string
+	}{
+		{"claude", "claude", string(currentTheme.Claude), currentIcons.Claude},
+		{"codex alias", "openai-codex", string(currentTheme.Codex), currentIcons.Codex},
+		{"gemini alias", "google-gemini", string(currentTheme.Gemini), currentIcons.Gemini},
+		{"cursor", "cursor", string(currentTheme.Cursor), currentIcons.Cursor},
+		{"windsurf alias", "ws", string(currentTheme.Windsurf), currentIcons.Windsurf},
+		{"aider", "aider", string(currentTheme.Aider), currentIcons.Aider},
+		{"ollama", "ollama", string(currentTheme.Ollama), currentIcons.Ollama},
+		{"user", "user", string(currentTheme.User), currentIcons.User},
+		{"unknown", "mystery", string(currentTheme.Green), ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotColor, gotIcon := renderAgentBadgeStyle(tc.agentType, currentTheme, currentIcons)
+			if gotColor != tc.wantColor || gotIcon != tc.wantIcon {
+				t.Fatalf("renderAgentBadgeStyle(%q) = (%q, %q), want (%q, %q)", tc.agentType, gotColor, gotIcon, tc.wantColor, tc.wantIcon)
+			}
+		})
+	}
+}
+
+func TestRenderAgentBadgeCanonicalizesLabel(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		wantLabel string
+	}{
+		{"codex alias", "openai-codex", "CODEX"},
+		{"gemini alias", "google-gemini", "GEMINI"},
+		{"windsurf alias", "ws", "WINDSURF"},
+		{"empty", "", "UNKNOWN"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RenderAgentBadge(tc.agentType); !strings.Contains(got, tc.wantLabel) {
+				t.Fatalf("RenderAgentBadge(%q) = %q, want label %q", tc.agentType, got, tc.wantLabel)
 			}
 		})
 	}
@@ -1271,7 +1326,7 @@ func TestDashboardHelpOptionsFrom(t *testing.T) {
 		}
 	})
 
-	t.Run("debug forces full", func(t *testing.T) {
+	t.Run("debug_adds_debug_hints", func(t *testing.T) {
 		opts := DashboardHelpOptionsFrom("minimal", true)
 		if opts.Verbosity != DashboardHelpVerbosityFull {
 			t.Fatalf("expected full verbosity when debug, got %v", opts.Verbosity)

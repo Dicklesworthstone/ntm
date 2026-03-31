@@ -522,6 +522,14 @@ func (m Model) renderStatsBar() string {
 			Padding(0, 1).
 			Render(fmt.Sprintf("%s %d", ic.Robot, m.aiderCount)))
 	}
+	if m.ollamaCount > 0 {
+		parts = append(parts, lipgloss.NewStyle().
+			Background(t.Success).
+			Foreground(t.Base).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("%s %d", ic.Robot, m.ollamaCount)))
+	}
 	if m.userCount > 0 {
 		parts = append(parts, lipgloss.NewStyle().
 			Background(t.Green).

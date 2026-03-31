@@ -47,6 +47,7 @@ func TestTickerPanelSetData(t *testing.T) {
 		ClaudeCount:     2,
 		CodexCount:      2,
 		GeminiCount:     1,
+		OllamaCount:     1,
 		CriticalAlerts:  1,
 		WarningAlerts:   2,
 		InfoAlerts:      0,
@@ -65,6 +66,9 @@ func TestTickerPanelSetData(t *testing.T) {
 	}
 	if panel.data.ClaudeCount != 2 {
 		t.Errorf("expected ClaudeCount 2, got %d", panel.data.ClaudeCount)
+	}
+	if panel.data.OllamaCount != 1 {
+		t.Errorf("expected OllamaCount 1, got %d", panel.data.OllamaCount)
 	}
 	if !panel.data.MailConnected {
 		t.Error("expected MailConnected to be true")
@@ -158,16 +162,17 @@ func TestTickerPanelBuildFleetSegment(t *testing.T) {
 		{
 			name: "with all agent types",
 			data: TickerData{
-				TotalAgents:   9,
-				ActiveAgents:  7,
+				TotalAgents:   10,
+				ActiveAgents:  8,
 				ClaudeCount:   2,
 				CodexCount:    2,
 				GeminiCount:   2,
 				CursorCount:   1,
 				WindsurfCount: 1,
 				AiderCount:    1,
+				OllamaCount:   1,
 			},
-			contains: []string{"Fleet", "7 active / 9 total", "C:2", "X:2", "G:2", "Cur:1", "W:1", "A:1"},
+			contains: []string{"Fleet", "8 active / 10 total", "C:2", "X:2", "G:2", "Cur:1", "W:1", "A:1", "Oll:1"},
 		},
 		{
 			name: "with only Claude",

@@ -78,8 +78,11 @@ func TestRateLimitPanel_ShortAgentType(t *testing.T) {
 		want      string
 	}{
 		{"claude", "claude", "cc"},
+		{"claude alias", "claude_code", "cc"},
 		{"codex", "codex", "cod"},
+		{"codex alias", "openai-codex", "cod"},
 		{"gemini", "gemini", "gmi"},
+		{"gemini alias", "google-gemini", "gmi"},
 		{"short unknown", "ab", "ab"},
 		{"medium unknown", "custom", "cus"},
 		{"long unknown", "verylongname", "ver"},

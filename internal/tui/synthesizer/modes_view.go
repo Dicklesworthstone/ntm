@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
@@ -237,15 +238,10 @@ func (m ModeVisualization) renderAssignmentLine(i int, a ensemble.ModeAssignment
 
 	tierChip := ensemble.TierChip(modeTier)
 
-	agent := strings.TrimSpace(a.AgentType)
-	agentStyle := lipgloss.NewStyle().Foreground(t.Subtext)
-	switch strings.ToLower(agent) {
-	case "cc", "claude":
-		agentStyle = lipgloss.NewStyle().Foreground(t.Claude).Bold(true)
-	case "cod", "codex":
-		agentStyle = lipgloss.NewStyle().Foreground(t.Codex).Bold(true)
-	case "gmi", "gemini":
-		agentStyle = lipgloss.NewStyle().Foreground(t.Gemini).Bold(true)
+	agentLabel := modeAssignmentAgentLabel(a.AgentType)
+	agentStyle := lipgloss.NewStyle().Foreground(modeAssignmentAgentColor(a.AgentType, t))
+	if agentLabel != "unk" {
+		agentStyle = agentStyle.Bold(true)
 	}
 
 	statusIcon := assignmentStatusIcon(a.Status)
@@ -274,9 +270,59 @@ func (m ModeVisualization) renderAssignmentLine(i int, a ensemble.ModeAssignment
 		lineStyle.Render(idxLabel) + " " +
 		layout.TruncateWidthDefault(label, labelWidth) + "  " +
 		tierChip + "  " +
-		agentStyle.Render(fmt.Sprintf("%-6s", agent)) + " " +
+		agentStyle.Render(fmt.Sprintf("%-6s", agentLabel)) + " " +
 		lipgloss.NewStyle().Foreground(t.Subtext).Render(statusIcon) + " " +
 		bar
+}
+
+func modeAssignmentAgentLabel(agentType string) string {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		return "cc"
+	case agent.AgentTypeCodex:
+		return "cod"
+	case agent.AgentTypeGemini:
+		return "gmi"
+	case agent.AgentTypeCursor:
+		return "cur"
+	case agent.AgentTypeWindsurf:
+		return "ws"
+	case agent.AgentTypeAider:
+		return "aid"
+	case agent.AgentTypeOllama:
+		return "oll"
+	case agent.AgentTypeUser:
+		return "usr"
+	default:
+		trimmed := strings.TrimSpace(strings.ToLower(agentType))
+		if trimmed == "" {
+			return "unk"
+		}
+		return trimmed[:min(3, len(trimmed))]
+	}
+}
+
+func modeAssignmentAgentColor(agentType string, t theme.Theme) lipgloss.Color {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		return t.Claude
+	case agent.AgentTypeCodex:
+		return t.Codex
+	case agent.AgentTypeGemini:
+		return t.Gemini
+	case agent.AgentTypeCursor:
+		return t.Cursor
+	case agent.AgentTypeWindsurf:
+		return t.Windsurf
+	case agent.AgentTypeAider:
+		return t.Aider
+	case agent.AgentTypeOllama:
+		return t.Ollama
+	case agent.AgentTypeUser:
+		return t.User
+	default:
+		return t.Subtext
+	}
 }
 
 func (m ModeVisualization) selectedPaneIndex() (int, bool) {

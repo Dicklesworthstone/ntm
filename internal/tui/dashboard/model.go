@@ -138,6 +138,7 @@ type Model struct {
 	cursorCount   int
 	windsurfCount int
 	aiderCount    int
+	ollamaCount   int
 	userCount     int
 
 	// Theme

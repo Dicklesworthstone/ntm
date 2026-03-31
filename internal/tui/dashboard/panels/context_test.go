@@ -192,6 +192,35 @@ func TestContextPanel_Keybindings(t *testing.T) {
 	}
 }
 
+func TestContextAgentTypeColor_CanonicalizesAliases(t *testing.T) {
+	t.Parallel()
+
+	panel := NewContextPanel()
+	aliasPairs := [][2]string{
+		{"claude_code", "cc"},
+		{"openai-codex", "cod"},
+		{"google-gemini", "gmi"},
+		{"ws", "windsurf"},
+	}
+
+	for _, pair := range aliasPairs {
+		got := contextAgentTypeColor(pair[0], panel.theme)
+		want := contextAgentTypeColor(pair[1], panel.theme)
+		if got != want {
+			t.Errorf("contextAgentTypeColor(%q) = %q, want same color as %q (%q)", pair[0], got, pair[1], want)
+		}
+	}
+}
+
+func TestContextAgentTypeColor_User(t *testing.T) {
+	t.Parallel()
+
+	panel := NewContextPanel()
+	if got := contextAgentTypeColor("user", panel.theme); got != panel.theme.User {
+		t.Fatalf("contextAgentTypeColor(user) = %q, want %q", got, panel.theme.User)
+	}
+}
+
 func TestFormatMinutes(t *testing.T) {
 	tests := []struct {
 		minutes  float64

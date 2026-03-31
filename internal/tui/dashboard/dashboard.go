@@ -1456,10 +1456,12 @@ func (m *Model) fullRefresh(cancelInFlight bool) []tea.Cmd {
 	}
 	if !m.fetchingHistory {
 		m.fetchingHistory = true
+		m.lastHistoryFetch = now
 		cmds = append(cmds, m.fetchHistoryCmd())
 	}
 	if !m.fetchingFileChanges {
 		m.fetchingFileChanges = true
+		m.lastFileChangesFetch = now
 		cmds = append(cmds, m.fetchFileChangesCmd())
 	}
 	if !m.fetchingCassContext {
@@ -1778,7 +1780,7 @@ func (m Model) fetchHealthCmd() tea.Cmd {
 	}
 }
 
-func (m Model) fetchEnsembleModesData() tea.Cmd {
+func (m *Model) fetchEnsembleModesData() tea.Cmd {
 	sessionName := m.session
 	panes := make([]tmux.Pane, len(m.panes))
 	copy(panes, m.panes)
@@ -2540,7 +2542,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		warmupCmds = append(warmupCmds, m.fetchAgentMailStatus())
 		if !m.fetchingMailInbox {
 			m.fetchingMailInbox = true
-			m.lastMailInboxFetch = time.Now()
+			m.lastMailInboxFetch = now
 			warmupCmds = append(warmupCmds, m.fetchAgentMailInboxes())
 		}
 		if !m.fetchingPTHealth {
@@ -2549,22 +2551,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !m.fetchingPendingRot {
 			m.fetchingPendingRot = true
-			m.lastPendingFetch = time.Now()
+			m.lastPendingFetch = now
 			warmupCmds = append(warmupCmds, m.fetchPendingRotations())
 		}
 		if !m.fetchingCheckpoint {
 			m.fetchingCheckpoint = true
-			m.lastCheckpointFetch = time.Now()
+			m.lastCheckpointFetch = now
 			warmupCmds = append(warmupCmds, m.fetchCheckpointStatus())
 		}
 		if !m.fetchingHandoff {
 			m.fetchingHandoff = true
-			m.lastHandoffFetch = time.Now()
+			m.lastHandoffFetch = now
 			warmupCmds = append(warmupCmds, m.fetchHandoffCmd())
 		}
-		if !m.fetchingSpawn && m.spawnPanel != nil {
+		if !m.fetchingSpawn {
 			m.fetchingSpawn = true
-			m.lastSpawnFetch = time.Now()
+			m.lastSpawnFetch = now
 			warmupCmds = append(warmupCmds, m.fetchSpawnStateCmd())
 		}
 
@@ -3540,6 +3542,7 @@ func (m *Model) updateStats() {
 	m.cursorCount = 0
 	m.windsurfCount = 0
 	m.aiderCount = 0
+	m.ollamaCount = 0
 	m.userCount = 0
 
 	for _, p := range m.panes {
@@ -3556,6 +3559,8 @@ func (m *Model) updateStats() {
 			m.windsurfCount++
 		case tmux.AgentAider:
 			m.aiderCount++
+		case tmux.AgentOllama:
+			m.ollamaCount++
 		default:
 			m.userCount++
 		}
@@ -3605,7 +3610,7 @@ func (m *Model) updateTickerData() {
 	if activeAgents == 0 && len(m.panes) > 0 {
 		// Status detection hasn't populated yet; show total agents as placeholder
 		// This prevents showing "0/17" when we simply haven't fetched status yet
-		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.cursorCount + m.windsurfCount + m.aiderCount
+		activeAgents = m.claudeCount + m.codexCount + m.geminiCount + m.cursorCount + m.windsurfCount + m.aiderCount + m.ollamaCount
 	}
 
 	// Count alerts by severity
@@ -3631,6 +3636,7 @@ func (m *Model) updateTickerData() {
 		CursorCount:      m.cursorCount,
 		WindsurfCount:    m.windsurfCount,
 		AiderCount:       m.aiderCount,
+		OllamaCount:      m.ollamaCount,
 		UserCount:        m.userCount,
 		CriticalAlerts:   critAlerts,
 		WarningAlerts:    warnAlerts,
@@ -4745,15 +4751,14 @@ func timelineAgentID(pane tmux.Pane, fallbackType, fallbackID string) string {
 		return pane.Title
 	}
 
-	if fallbackType != "" {
-		suffix := strings.TrimPrefix(fallbackID, "%")
-		if suffix == "" {
-			suffix = "0"
-		}
-		return fmt.Sprintf("%s_%s", fallbackType, suffix)
+	if fallbackType == "" {
+		return fallbackID
 	}
-
-	return fallbackID
+	suffix := strings.TrimPrefix(fallbackID, "%")
+	if suffix == "" {
+		suffix = "0"
+	}
+	return fmt.Sprintf("%s_%s", fallbackType, suffix)
 }
 
 func timelineAgentType(pane tmux.Pane, fallbackType string) tmux.AgentType {
