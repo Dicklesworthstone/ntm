@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mattn/go-isatty"
@@ -22,9 +23,75 @@ import (
 )
 
 // parseEditorCommand splits the editor string into command and arguments.
-// It handles simple spaces.
+// It honors basic shell-style quoting so editor paths with spaces still work.
 func parseEditorCommand(editor string) (string, []string) {
-	parts := strings.Fields(editor)
+	editor = strings.TrimSpace(editor)
+	if editor == "" {
+		return "", nil
+	}
+
+	var (
+		parts        []string
+		current      strings.Builder
+		quote        rune
+		escaped      bool
+		tokenStarted bool
+	)
+
+	flush := func() {
+		if !tokenStarted && current.Len() == 0 {
+			return
+		}
+		parts = append(parts, current.String())
+		current.Reset()
+		tokenStarted = false
+	}
+
+	for _, r := range editor {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			tokenStarted = true
+			escaped = false
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			tokenStarted = true
+		case quote == '"':
+			switch r {
+			case '"':
+				quote = 0
+			case '\\':
+				escaped = true
+			default:
+				current.WriteRune(r)
+				tokenStarted = true
+			}
+		default:
+			switch {
+			case r == '\'' || r == '"':
+				quote = r
+				tokenStarted = true
+			case r == '\\':
+				escaped = true
+				tokenStarted = true
+			case unicode.IsSpace(r):
+				flush()
+			default:
+				current.WriteRune(r)
+				tokenStarted = true
+			}
+		}
+	}
+
+	if escaped {
+		current.WriteRune('\\')
+	}
+	flush()
+
 	if len(parts) == 0 {
 		return "", nil
 	}
