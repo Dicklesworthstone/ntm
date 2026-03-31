@@ -26,6 +26,7 @@ type agentMailClient interface {
 	SendMessage(ctx context.Context, opts SendMessageOptions) (*SendResult, error)
 	MarkMessageRead(ctx context.Context, projectKey, agentName string, messageID int) (*MessageReadResult, error)
 	AcknowledgeMessage(ctx context.Context, projectKey, agentName string, messageID int) (*MessageAckResult, error)
+	GetMessage(ctx context.Context, projectKey string, messageID int) (*Message, error)
 }
 
 type bdMessageClient interface {
@@ -160,36 +161,48 @@ func (m *UnifiedMessenger) Read(ctx context.Context, id string) (*UnifiedMessage
 				return nil, fmt.Errorf("invalid agent mail message ID: %w", err)
 			}
 
-			// Fetch inbox to get message content (Agent Mail MCP doesn't have get-single-message)
-			opts := FetchInboxOptions{
-				ProjectKey:    m.projectKey,
-				AgentName:     m.agentName,
-				Limit:         100, // Reasonable limit to find the message
-				IncludeBodies: true,
-			}
-			inbox, err := m.amClient.FetchInbox(ctx, opts)
+			// Use the direct tool to fetch the message (much more efficient than scanning inbox)
+			found, err := m.amClient.GetMessage(ctx, m.projectKey, msgID)
 			if err != nil {
-				return nil, fmt.Errorf("fetch inbox: %w", err)
-			}
+				// Fallback to inbox scan if GetMessage is not supported or fails
+				slog.Debug("get_message failed, falling back to inbox scan", "error", err)
 
-			// Helper to find message in inbox
-			findMsg := func(list []InboxMessage) *InboxMessage {
-				for _, msg := range list {
-					if msg.ID == msgID {
-						return &msg
-					}
+				opts := FetchInboxOptions{
+					ProjectKey:    m.projectKey,
+					AgentName:     m.agentName,
+					Limit:         100,
+					IncludeBodies: true,
 				}
-				return nil
-			}
+				inbox, err := m.amClient.FetchInbox(ctx, opts)
+				if err != nil {
+					return nil, fmt.Errorf("fetch inbox fallback: %w", err)
+				}
 
-			found := findMsg(inbox)
+				// Helper to find message in inbox
+				findMsg := func(list []InboxMessage) *Message {
+					for _, msg := range list {
+						if msg.ID == msgID {
+							return &Message{
+								ID:        msg.ID,
+								From:      msg.From,
+								Subject:   msg.Subject,
+								BodyMD:    msg.BodyMD,
+								CreatedTS: msg.CreatedTS,
+							}
+						}
+					}
+					return nil
+				}
 
-			// If not found, try fetching deeper history (up to 1000)
-			if found == nil {
-				opts.Limit = 1000
-				inbox, err = m.amClient.FetchInbox(ctx, opts)
-				if err == nil {
-					found = findMsg(inbox)
+				found = findMsg(inbox)
+
+				// If not found, try fetching deeper history (up to 1000)
+				if found == nil {
+					opts.Limit = 1000
+					inbox, err = m.amClient.FetchInbox(ctx, opts)
+					if err == nil {
+						found = findMsg(inbox)
+					}
 				}
 			}
 

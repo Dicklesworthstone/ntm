@@ -20,10 +20,37 @@ type fakeAMClient struct {
 
 	readCalls []int
 	ackCalls  []int
+
+	getMessageCalls []int
+	getMessageErr   error
 }
 
 func (f *fakeAMClient) IsAvailable() bool {
 	return f.available
+}
+
+func (f *fakeAMClient) GetMessage(ctx context.Context, projectKey string, messageID int) (*Message, error) {
+	f.getMessageCalls = append(f.getMessageCalls, messageID)
+	if f.getMessageErr != nil {
+		return nil, f.getMessageErr
+	}
+
+	// Try to find in inbox responses
+	for _, response := range f.inboxResponses {
+		for _, msg := range response {
+			if msg.ID == messageID {
+				return &Message{
+					ID:        msg.ID,
+					From:      msg.From,
+					Subject:   msg.Subject,
+					BodyMD:    msg.BodyMD,
+					CreatedTS: msg.CreatedTS,
+				}, nil
+			}
+		}
+	}
+
+	return nil, ErrMessageNotFound
 }
 
 func (f *fakeAMClient) FetchInbox(ctx context.Context, opts FetchInboxOptions) ([]InboxMessage, error) {
@@ -208,6 +235,9 @@ func TestUnifiedMessengerRead_AgentMailMarksRead(t *testing.T) {
 	if msg.ID != "am-42" || msg.Channel != "agentmail" {
 		t.Fatalf("unexpected message: %+v", msg)
 	}
+	if len(am.getMessageCalls) != 1 || am.getMessageCalls[0] != 42 {
+		t.Fatalf("expected GetMessage called with 42, got %+v", am.getMessageCalls)
+	}
 	if len(am.readCalls) != 1 || am.readCalls[0] != 42 {
 		t.Fatalf("expected MarkMessageRead called with 42, got %+v", am.readCalls)
 	}
@@ -217,6 +247,8 @@ func TestUnifiedMessengerRead_AgentMailFetchesDeeperHistory(t *testing.T) {
 	now := time.Now()
 	am := &fakeAMClient{
 		available: true,
+		// Force GetMessage to fail to test the fallback inbox scanning logic
+		getMessageErr: errors.New("not implemented"),
 		inboxResponses: [][]InboxMessage{
 			{{ID: 1, From: "skip", Subject: "skip", BodyMD: "skip", CreatedTS: FlexTime{now}}},
 			{{ID: 99, From: "found", Subject: "ok", BodyMD: "ok", CreatedTS: FlexTime{now}}},

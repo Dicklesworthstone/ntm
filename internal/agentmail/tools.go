@@ -20,7 +20,9 @@ func (c *Client) EnsureProject(ctx context.Context, projectKey string) (*Project
 		"human_key": projectKey,
 	}
 
-	result, err := c.callTool(ctx, "ensure_project", args)
+	// Use retry logic for project creation as it's often the first call made
+	// by multiple agents starting simultaneously.
+	result, err := c.callToolWithBusyRetry(ctx, "ensure_project", args, 3*time.Second, 3)
 	if err != nil {
 		return nil, err
 	}
