@@ -36,7 +36,7 @@ func TestWorktreeInfo(t *testing.T) {
 		t.Error("Expected error message for non-existent worktree")
 	}
 
-	expectedPath := filepath.Join(projectDir, ".ntm", "worktrees", "test-agent")
+	expectedPath := manager.worktreePath("test-agent")
 	if info.Path != expectedPath {
 		t.Errorf("Expected path %s, got %s", expectedPath, info.Path)
 	}
@@ -52,7 +52,7 @@ func TestCreateForAgent_ExistingWorktreeSkipsGit(t *testing.T) {
 	projectDir := t.TempDir()
 	manager := NewManager(projectDir, "test-session")
 
-	worktreePath := filepath.Join(projectDir, ".ntm", "worktrees", "agent-1")
+	worktreePath := manager.worktreePath("agent-1")
 	if err := os.MkdirAll(worktreePath, 0755); err != nil {
 		t.Fatalf("failed to create worktree dir: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestCreateForAgent_ExistingWorktreeSkipsGit(t *testing.T) {
 		t.Errorf("expected empty error for existing worktree, got %q", info.Error)
 	}
 
-	expectedPath := filepath.Join(projectDir, ".ntm", "worktrees", "agent-1")
+	expectedPath := manager.worktreePath("agent-1")
 	if info.Path != expectedPath {
 		t.Errorf("expected path %s, got %s", expectedPath, info.Path)
 	}
@@ -85,7 +85,7 @@ func TestCreateForAgent_MkdirAllFailure(t *testing.T) {
 	manager := NewManager(projectDir, "test-session")
 
 	// Create a file where the worktrees directory should be to force MkdirAll failure.
-	worktreesPath := filepath.Join(projectDir, ".ntm", "worktrees")
+	worktreesPath := manager.sessionRoot()
 	if err := os.MkdirAll(filepath.Dir(worktreesPath), 0755); err != nil {
 		t.Fatalf("failed to create .ntm dir: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestListWorktrees_EmptyDirReturnsEmpty(t *testing.T) {
 	projectDir := t.TempDir()
 	manager := NewManager(projectDir, "test-session")
 
-	worktreesDir := filepath.Join(projectDir, ".ntm", "worktrees")
+	worktreesDir := manager.sessionRoot()
 	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
 		t.Fatalf("failed to create worktrees dir: %v", err)
 	}
@@ -140,8 +140,8 @@ func TestCleanup_RemovesEmptyWorktreesDir(t *testing.T) {
 	projectDir := t.TempDir()
 	manager := NewManager(projectDir, "test-session")
 
-	worktreesDir := filepath.Join(projectDir, ".ntm", "worktrees")
-	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
+	worktreesDir := manager.worktreesRoot()
+	if err := os.MkdirAll(manager.sessionRoot(), 0755); err != nil {
 		t.Fatalf("failed to create worktrees dir: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestListWorktrees_WithDirectoriesAndFiles(t *testing.T) {
 	projectDir := t.TempDir()
 	manager := NewManager(projectDir, "test-session")
 
-	worktreesDir := filepath.Join(projectDir, ".ntm", "worktrees")
+	worktreesDir := manager.sessionRoot()
 
 	// Create agent directories
 	for _, name := range []string{"cc-1", "cod-2", "gmi-3"} {
@@ -234,7 +234,7 @@ func TestGetWorktreeForAgent_ExistingWorktree(t *testing.T) {
 	manager := NewManager(projectDir, "sess-123")
 
 	// Create the worktree directory
-	worktreePath := filepath.Join(projectDir, ".ntm", "worktrees", "agent-cc")
+	worktreePath := manager.worktreePath("agent-cc")
 	if err := os.MkdirAll(worktreePath, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -285,6 +285,82 @@ func TestGetWorktreeForAgent_MultipleSessions(t *testing.T) {
 	if info2.BranchName != "ntm/session-beta/agent-1" {
 		t.Errorf("session-beta branch = %q", info2.BranchName)
 	}
+	if info1.Path == info2.Path {
+		t.Errorf("expected different paths for different sessions, got %q", info1.Path)
+	}
+	if info1.Path != m1.worktreePath("agent-1") {
+		t.Errorf("session-alpha path = %q", info1.Path)
+	}
+	if info2.Path != m2.worktreePath("agent-1") {
+		t.Errorf("session-beta path = %q", info2.Path)
+	}
+}
+
+func TestListWorktrees_IsolatedBySession(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	alpha := NewManager(projectDir, "session-alpha")
+	beta := NewManager(projectDir, "session-beta")
+
+	if err := os.MkdirAll(alpha.worktreePath("agent-1"), 0755); err != nil {
+		t.Fatalf("mkdir alpha worktree: %v", err)
+	}
+	if err := os.MkdirAll(beta.worktreePath("agent-1"), 0755); err != nil {
+		t.Fatalf("mkdir beta worktree: %v", err)
+	}
+
+	alphaWorktrees, err := alpha.ListWorktrees()
+	if err != nil {
+		t.Fatalf("alpha ListWorktrees: %v", err)
+	}
+	if len(alphaWorktrees) != 1 {
+		t.Fatalf("expected 1 alpha worktree, got %d", len(alphaWorktrees))
+	}
+	if alphaWorktrees[0].Path != alpha.worktreePath("agent-1") {
+		t.Fatalf("alpha path = %q, want %q", alphaWorktrees[0].Path, alpha.worktreePath("agent-1"))
+	}
+
+	betaWorktrees, err := beta.ListWorktrees()
+	if err != nil {
+		t.Fatalf("beta ListWorktrees: %v", err)
+	}
+	if len(betaWorktrees) != 1 {
+		t.Fatalf("expected 1 beta worktree, got %d", len(betaWorktrees))
+	}
+	if betaWorktrees[0].Path != beta.worktreePath("agent-1") {
+		t.Fatalf("beta path = %q, want %q", betaWorktrees[0].Path, beta.worktreePath("agent-1"))
+	}
+}
+
+func TestCleanup_DoesNotRemoveOtherSessionWorktrees(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	alpha := NewManager(projectDir, "session-alpha")
+	beta := NewManager(projectDir, "session-beta")
+
+	if err := os.MkdirAll(alpha.worktreePath("agent-1"), 0755); err != nil {
+		t.Fatalf("mkdir alpha worktree: %v", err)
+	}
+	if err := os.MkdirAll(beta.worktreePath("agent-1"), 0755); err != nil {
+		t.Fatalf("mkdir beta worktree: %v", err)
+	}
+
+	if err := alpha.Cleanup(); err != nil && !strings.Contains(err.Error(), "cleanup errors") {
+		t.Fatalf("alpha Cleanup: %v", err)
+	}
+	if _, err := os.Stat(beta.worktreePath("agent-1")); err != nil {
+		t.Fatalf("beta worktree should remain after alpha cleanup: %v", err)
+	}
+
+	betaWorktrees, err := beta.ListWorktrees()
+	if err != nil {
+		t.Fatalf("beta ListWorktrees after alpha cleanup: %v", err)
+	}
+	if len(betaWorktrees) != 1 {
+		t.Fatalf("expected beta worktree to survive alpha cleanup, got %d entries", len(betaWorktrees))
+	}
 }
 
 func TestCreateForAgent_BranchNameFormat(t *testing.T) {
@@ -294,7 +370,7 @@ func TestCreateForAgent_BranchNameFormat(t *testing.T) {
 	manager := NewManager(projectDir, "my-session")
 
 	// Pre-create the directory so it returns early without calling git
-	worktreePath := filepath.Join(projectDir, ".ntm", "worktrees", "my-agent")
+	worktreePath := manager.worktreePath("my-agent")
 	if err := os.MkdirAll(worktreePath, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -316,7 +392,7 @@ func TestCreateForAgent_PathFormat(t *testing.T) {
 	manager := NewManager(projectDir, "sess")
 
 	// Pre-create to avoid git call
-	worktreePath := filepath.Join(projectDir, ".ntm", "worktrees", "agent-cc")
+	worktreePath := manager.worktreePath("agent-cc")
 	if err := os.MkdirAll(worktreePath, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -326,7 +402,7 @@ func TestCreateForAgent_PathFormat(t *testing.T) {
 		t.Fatalf("CreateForAgent: %v", err)
 	}
 
-	expectedPath := filepath.Join(projectDir, ".ntm", "worktrees", "agent-cc")
+	expectedPath := manager.worktreePath("agent-cc")
 	if info.Path != expectedPath {
 		t.Errorf("Path = %q, want %q", info.Path, expectedPath)
 	}
@@ -466,7 +542,7 @@ func TestCleanup_ErrorAggregation(t *testing.T) {
 	manager := NewManager(projectDir, "sess")
 
 	// Create worktree directories manually (no real git)
-	worktreesDir := filepath.Join(projectDir, ".ntm", "worktrees")
+	worktreesDir := manager.sessionRoot()
 	for _, name := range []string{"agent-1", "agent-2"} {
 		if err := os.MkdirAll(filepath.Join(worktreesDir, name), 0755); err != nil {
 			t.Fatalf("mkdir: %v", err)
@@ -519,7 +595,7 @@ func TestIsValidWorktree_NoGitFile(t *testing.T) {
 	}
 
 	// isValidWorktree is private, test through GetWorktreeForAgent
-	wtDir := filepath.Join(projectDir, ".ntm", "worktrees", "test-agent")
+	wtDir := manager.worktreePath("test-agent")
 	if err := os.MkdirAll(wtDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

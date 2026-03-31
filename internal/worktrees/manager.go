@@ -46,6 +46,18 @@ func NewManager(projectPath, session string) *WorktreeManager {
 	}
 }
 
+func (m *WorktreeManager) worktreesRoot() string {
+	return filepath.Join(m.projectPath, ".ntm", "worktrees")
+}
+
+func (m *WorktreeManager) sessionRoot() string {
+	return filepath.Join(m.worktreesRoot(), m.session)
+}
+
+func (m *WorktreeManager) worktreePath(agentName string) string {
+	return filepath.Join(m.sessionRoot(), agentName)
+}
+
 // CreateForAgent creates a new worktree for the specified agent
 func (m *WorktreeManager) CreateForAgent(agentName string) (*WorktreeInfo, error) {
 	info := &WorktreeInfo{
@@ -55,10 +67,10 @@ func (m *WorktreeManager) CreateForAgent(agentName string) (*WorktreeInfo, error
 	}
 
 	// Construct worktree path
-	worktreePath := filepath.Join(m.projectPath, ".ntm", "worktrees", agentName)
+	worktreePath := m.worktreePath(agentName)
 	info.Path = worktreePath
 
-	// Ensure .ntm/worktrees directory exists
+	// Ensure the session-specific worktree directory exists.
 	worktreeDir := filepath.Dir(worktreePath)
 	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
 		info.Error = fmt.Sprintf("failed to create worktree directory: %v", err)
@@ -72,7 +84,7 @@ func (m *WorktreeManager) CreateForAgent(agentName string) (*WorktreeInfo, error
 	}
 
 	// Create the worktree with new branch
-	cmd := gitCmd( "worktree", "add", "-b", info.BranchName, worktreePath)
+	cmd := gitCmd("worktree", "add", "-b", info.BranchName, worktreePath)
 	cmd.Dir = m.projectPath
 
 	output, err := cmd.CombinedOutput()
@@ -87,7 +99,7 @@ func (m *WorktreeManager) CreateForAgent(agentName string) (*WorktreeInfo, error
 
 // ListWorktrees returns information about all worktrees for the current session
 func (m *WorktreeManager) ListWorktrees() ([]*WorktreeInfo, error) {
-	worktreesDir := filepath.Join(m.projectPath, ".ntm", "worktrees")
+	worktreesDir := m.sessionRoot()
 
 	// Check if worktrees directory exists
 	if _, err := os.Stat(worktreesDir); os.IsNotExist(err) {
@@ -133,14 +145,14 @@ func (m *WorktreeManager) MergeBack(agentName string) error {
 	branchName := fmt.Sprintf("ntm/%s/%s", m.session, agentName)
 
 	// Switch to the canonical main branch in the primary worktree.
-	cmd := gitCmd( "checkout", "main")
+	cmd := gitCmd("checkout", "main")
 	cmd.Dir = m.projectPath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to checkout main branch: %w", err)
 	}
 
 	// Merge the agent's branch
-	cmd = gitCmd( "merge", branchName, "--no-ff", "-m",
+	cmd = gitCmd("merge", branchName, "--no-ff", "-m",
 		fmt.Sprintf("Merge agent %s work from session %s", agentName, m.session))
 	cmd.Dir = m.projectPath
 
@@ -154,17 +166,17 @@ func (m *WorktreeManager) MergeBack(agentName string) error {
 
 // RemoveWorktree removes a specific agent's worktree
 func (m *WorktreeManager) RemoveWorktree(agentName string) error {
-	worktreePath := filepath.Join(m.projectPath, ".ntm", "worktrees", agentName)
+	worktreePath := m.worktreePath(agentName)
 	branchName := fmt.Sprintf("ntm/%s/%s", m.session, agentName)
 
 	// Remove the worktree
-	cmd := gitCmd( "worktree", "remove", worktreePath, "--force")
+	cmd := gitCmd("worktree", "remove", worktreePath, "--force")
 	cmd.Dir = m.projectPath
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// If removal failed, try to prune and remove manually
-		cmd = gitCmd( "worktree", "prune")
+		cmd = gitCmd("worktree", "prune")
 		cmd.Dir = m.projectPath
 		_ = cmd.Run() // Ignore errors for prune
 
@@ -175,7 +187,7 @@ func (m *WorktreeManager) RemoveWorktree(agentName string) error {
 	}
 
 	// Delete the branch
-	cmd = gitCmd( "branch", "-D", branchName)
+	cmd = gitCmd("branch", "-D", branchName)
 	cmd.Dir = m.projectPath
 	_ = cmd.Run() // Ignore errors as branch might not exist
 
@@ -196,8 +208,12 @@ func (m *WorktreeManager) Cleanup() error {
 		}
 	}
 
-	// Remove the worktrees directory if empty
-	worktreesDir := filepath.Join(m.projectPath, ".ntm", "worktrees")
+	// Remove the session directory if empty, then the shared root if it is empty too.
+	sessionDir := m.sessionRoot()
+	if entries, err := os.ReadDir(sessionDir); err == nil && len(entries) == 0 {
+		_ = os.Remove(sessionDir) // Ignore error for optional cleanup
+	}
+	worktreesDir := m.worktreesRoot()
 	if entries, err := os.ReadDir(worktreesDir); err == nil && len(entries) == 0 {
 		_ = os.Remove(worktreesDir) // Ignore error for optional cleanup
 	}
@@ -218,7 +234,7 @@ func (m *WorktreeManager) isValidWorktree(worktreePath string) bool {
 	}
 
 	// Check if it's recognized by git worktree list
-	cmd := gitCmd( "worktree", "list", "--porcelain")
+	cmd := gitCmd("worktree", "list", "--porcelain")
 	cmd.Dir = m.projectPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -230,7 +246,7 @@ func (m *WorktreeManager) isValidWorktree(worktreePath string) bool {
 
 // GetWorktreeForAgent returns worktree information for a specific agent
 func (m *WorktreeManager) GetWorktreeForAgent(agentName string) (*WorktreeInfo, error) {
-	worktreePath := filepath.Join(m.projectPath, ".ntm", "worktrees", agentName)
+	worktreePath := m.worktreePath(agentName)
 	branchName := fmt.Sprintf("ntm/%s/%s", m.session, agentName)
 
 	info := &WorktreeInfo{

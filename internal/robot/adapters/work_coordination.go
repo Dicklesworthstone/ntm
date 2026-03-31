@@ -537,15 +537,17 @@ func summarizeMail(inboxByAgent map[string][]agentmail.InboxMessage, now time.Ti
 		stats := AgentMailStats{}
 		var latestAt time.Time
 		for _, msg := range inbox {
-			stats.Unread++
-			mail.TotalUnread++
-			if strings.EqualFold(msg.Importance, "urgent") {
-				stats.Urgent++
-				mail.UrgentUnread++
-			}
 			if msg.AckRequired {
 				stats.Pending++
 				mail.PendingAck++
+			}
+			if msg.ReadAt == nil {
+				stats.Unread++
+				mail.TotalUnread++
+				if strings.EqualFold(msg.Importance, "urgent") {
+					stats.Urgent++
+					mail.UrgentUnread++
+				}
 			}
 			if msg.CreatedTS.After(parseTimestamp(mail.LatestMessage)) {
 				mail.LatestMessage = FormatTimestamp(msg.CreatedTS.Time)

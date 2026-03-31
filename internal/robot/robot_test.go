@@ -5662,6 +5662,63 @@ func TestIsAgentMailDBLockError(t *testing.T) {
 	}
 }
 
+func TestGetInboxTallyAndCountInboxIgnoreReadMessages(t *testing.T) {
+	t.Parallel()
+
+	readAt := &agentmail.FlexTime{Time: time.Now()}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+
+		params, _ := req.Params.(map[string]interface{})
+		urgentOnly, _ := params["urgent_only"].(bool)
+
+		var messages []agentmail.InboxMessage
+		if urgentOnly {
+			messages = []agentmail.InboxMessage{
+				{ID: 1, Subject: "read urgent", Importance: "urgent", ReadAt: readAt},
+				{ID: 2, Subject: "unread urgent", Importance: "urgent"},
+			}
+		} else {
+			messages = []agentmail.InboxMessage{
+				{ID: 1, Subject: "read urgent", Importance: "urgent", ReadAt: readAt},
+				{ID: 2, Subject: "unread urgent", Importance: "urgent", AckRequired: true},
+				{ID: 3, Subject: "unread normal", Importance: "normal"},
+			}
+		}
+
+		result, err := json.Marshal(messages)
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  result,
+		}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := agentmail.NewClient(agentmail.WithBaseURL(server.URL + "/"))
+	ctx := context.Background()
+
+	tally := getInboxTally(ctx, client, "/data/projects/ntm", "BlueLake", 10)
+	if tally.Total != 3 || tally.Unread != 2 || tally.Urgent != 1 || tally.PendingAck != 1 {
+		t.Fatalf("unexpected inbox tally: %+v", tally)
+	}
+	if got := countInbox(ctx, client, "/data/projects/ntm", "BlueLake", false); got != 2 {
+		t.Fatalf("countInbox(unread) = %d, want 2", got)
+	}
+	if got := countInbox(ctx, client, "/data/projects/ntm", "BlueLake", true); got != 1 {
+		t.Fatalf("countInbox(urgent) = %d, want 1", got)
+	}
+}
+
 // =============================================================================
 // Snapshot Attention Summary Tests (br-slg9g)
 // =============================================================================

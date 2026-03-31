@@ -369,6 +369,36 @@ func TestNormalizeCoordinationRedactsHandoffFreeText(t *testing.T) {
 	}
 }
 
+func TestNormalizeCoordinationMailIgnoresReadMessagesForUnreadCounts(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 22, 4, 0, 0, 0, time.UTC)
+	readAt := &agentmail.FlexTime{Time: now.Add(-time.Minute)}
+
+	section := NormalizeCoordination(CoordinationInputs{
+		InboxByAgent: map[string][]agentmail.InboxMessage{
+			"BlueLake": {
+				{ID: 1, Subject: "read urgent", Importance: "urgent", ReadAt: readAt},
+				{ID: 2, Subject: "unread urgent", Importance: "urgent", AckRequired: true, CreatedTS: agentmail.FlexTime{Time: now}},
+				{ID: 3, Subject: "unread normal", Importance: "normal", CreatedTS: agentmail.FlexTime{Time: now.Add(-time.Minute)}},
+			},
+		},
+		Now:              now,
+		ThreadStaleAfter: time.Hour,
+	})
+
+	if section.Mail == nil {
+		t.Fatal("expected mail summary")
+	}
+	if section.Mail.TotalUnread != 2 || section.Mail.UrgentUnread != 1 || section.Mail.PendingAck != 1 {
+		t.Fatalf("unexpected mail summary: %+v", section.Mail)
+	}
+	blue := section.Mail.ByAgent["BlueLake"]
+	if blue.Unread != 2 || blue.Urgent != 1 || blue.Pending != 1 {
+		t.Fatalf("unexpected agent mail stats: %+v", blue)
+	}
+}
+
 func TestNormalizeCoordinationMarksLongSafeHandoffPreviewOnly(t *testing.T) {
 	t.Parallel()
 

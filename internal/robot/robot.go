@@ -2880,7 +2880,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 		inboxByName[a.Name] = tally
 
 		output.Messages.Total += tally.Total
-		output.Messages.Unread += tally.Total
+		output.Messages.Unread += tally.Unread
 		output.Messages.Urgent += tally.Urgent
 		output.Messages.PendingAck += tally.PendingAck
 	}
@@ -2909,7 +2909,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 						entry.AgentName = agentName
 						entry.Program = a.Program
 						entry.Model = a.Model
-						entry.UnreadCount = tally.Total
+						entry.UnreadCount = tally.Unread
 						entry.UrgentCount = tally.Urgent
 						entry.LastActiveTs = a.LastActiveTS.Time
 					}
@@ -2930,7 +2930,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 				AgentName:    a.Name,
 				Program:      a.Program,
 				Model:        a.Model,
-				UnreadCount:  tally.Total,
+				UnreadCount:  tally.Unread,
 				UrgentCount:  tally.Urgent,
 				LastActiveTs: a.LastActiveTS.Time,
 			})
@@ -2949,7 +2949,7 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 				AgentName:    a.Name,
 				Program:      a.Program,
 				Model:        a.Model,
-				UnreadCount:  tally.Total,
+				UnreadCount:  tally.Unread,
 				UrgentCount:  tally.Urgent,
 				LastActiveTs: a.LastActiveTS.Time,
 			})
@@ -3014,6 +3014,7 @@ type AgentMailConflict struct {
 
 type inboxTally struct {
 	Total      int
+	Unread     int
 	Urgent     int
 	PendingAck int
 }
@@ -3033,11 +3034,15 @@ func getInboxTally(ctx context.Context, client *agentmail.Client, projectKey, ag
 
 	tally := inboxTally{Total: len(msgs)}
 	for _, msg := range msgs {
-		if strings.EqualFold(msg.Importance, "urgent") {
-			tally.Urgent++
-		}
 		if msg.AckRequired {
 			tally.PendingAck++
+		}
+		if msg.ReadAt != nil {
+			continue
+		}
+		tally.Unread++
+		if strings.EqualFold(msg.Importance, "urgent") {
+			tally.Urgent++
 		}
 	}
 	return tally
@@ -9276,7 +9281,13 @@ func countInbox(ctx context.Context, client *agentmail.Client, projectKey, agent
 	if err != nil {
 		return 0
 	}
-	return len(msgs)
+	count := 0
+	for _, msg := range msgs {
+		if msg.ReadAt == nil {
+			count++
+		}
+	}
+	return count
 }
 
 // ContextOutput is the structured output for --robot-context
