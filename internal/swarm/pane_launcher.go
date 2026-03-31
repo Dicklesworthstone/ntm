@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
@@ -19,6 +18,9 @@ type PaneLauncher struct {
 	// TmuxClient for sending commands to panes.
 	// If nil, the default tmux client is used.
 	TmuxClient *tmux.Client
+
+	// SessionOrchestrator for cached session targeting.
+	SessionOrchestrator *SessionOrchestrator
 
 	// CmdBuilder generates agent launch commands.
 	// If nil, a default builder is created.
@@ -37,34 +39,31 @@ type PaneLauncher struct {
 
 	// RateLimitTracker enables adaptive throttling for Codex.
 	RateLimitTracker *ratelimit.RateLimitTracker
-
-	targetingMu    sync.Mutex
-	targetingCache map[string]swarmSessionTargeting
 }
 
 // NewPaneLauncher creates a new PaneLauncher with default settings.
 func NewPaneLauncher() *PaneLauncher {
 	return &PaneLauncher{
-		TmuxClient:       nil,
-		CmdBuilder:       nil,
-		CDDelay:          100 * time.Millisecond,
-		ValidatePaths:    true,
-		Logger:           slog.Default(),
-		RateLimitTracker: nil,
-		targetingCache:   make(map[string]swarmSessionTargeting),
+		TmuxClient:          nil,
+		SessionOrchestrator: NewSessionOrchestrator(),
+		CmdBuilder:          nil,
+		CDDelay:             100 * time.Millisecond,
+		ValidatePaths:       true,
+		Logger:              slog.Default(),
+		RateLimitTracker:    nil,
 	}
 }
 
 // NewPaneLauncherWithClient creates a PaneLauncher with a custom tmux client.
 func NewPaneLauncherWithClient(client *tmux.Client) *PaneLauncher {
 	return &PaneLauncher{
-		TmuxClient:       client,
-		CmdBuilder:       nil,
-		CDDelay:          100 * time.Millisecond,
-		ValidatePaths:    true,
-		Logger:           slog.Default(),
-		RateLimitTracker: nil,
-		targetingCache:   make(map[string]swarmSessionTargeting),
+		TmuxClient:          client,
+		SessionOrchestrator: NewSessionOrchestratorWithClient(client),
+		CmdBuilder:          nil,
+		CDDelay:             100 * time.Millisecond,
+		ValidatePaths:       true,
+		Logger:              slog.Default(),
+		RateLimitTracker:    nil,
 	}
 }
 
@@ -122,34 +121,25 @@ func (pl *PaneLauncher) logger() *slog.Logger {
 	return slog.Default()
 }
 
+func (pl *PaneLauncher) sessionOrchestrator() *SessionOrchestrator {
+	if pl.SessionOrchestrator != nil {
+		return pl.SessionOrchestrator
+	}
+	return NewSessionOrchestrator()
+}
+
 func (pl *PaneLauncher) resolveSessionTargeting(ctx context.Context, sessionName string) (swarmSessionTargeting, bool) {
 	if sessionName == "" {
 		return swarmSessionTargeting{}, false
 	}
 
-	pl.targetingMu.Lock()
-	if pl.targetingCache != nil {
-		if cached, ok := pl.targetingCache[sessionName]; ok {
-			pl.targetingMu.Unlock()
-			return cached, true
-		}
-	}
-	pl.targetingMu.Unlock()
-
-	targeting, err := resolveSwarmSessionTargeting(ctx, pl.tmuxClient(), sessionName)
+	targeting, err := pl.sessionOrchestrator().resolveTargeting(ctx, sessionName)
 	if err != nil {
 		pl.logger().Warn("[PaneLauncher] session_targeting_resolve_failed",
 			"session", sessionName,
 			"error", err)
 		return swarmSessionTargeting{}, false
 	}
-
-	pl.targetingMu.Lock()
-	if pl.targetingCache == nil {
-		pl.targetingCache = make(map[string]swarmSessionTargeting)
-	}
-	pl.targetingCache[sessionName] = targeting
-	pl.targetingMu.Unlock()
 
 	return targeting, true
 }
@@ -395,22 +385,20 @@ func (pl *PaneLauncher) LaunchSwarm(ctx context.Context, plan *SwarmPlan, stagge
 
 	for _, sessionSpec := range plan.Sessions {
 		sessionResult, err := pl.LaunchSession(ctx, sessionSpec, staggerDelay)
+		if sessionResult != nil {
+			result.Successful += sessionResult.Successful
+			result.Failed += sessionResult.Failed
+			result.Results = append(result.Results, sessionResult.Results...)
+			result.Errors = append(result.Errors, sessionResult.Errors...)
+		}
+
 		if err != nil {
 			// Context cancelled - stop launching
 			if ctx.Err() != nil {
-				result.Successful += sessionResult.Successful
-				result.Failed += sessionResult.Failed
-				result.Results = append(result.Results, sessionResult.Results...)
-				result.Errors = append(result.Errors, sessionResult.Errors...)
 				result.Duration = time.Since(start)
 				return result, ctx.Err()
 			}
 		}
-
-		result.Successful += sessionResult.Successful
-		result.Failed += sessionResult.Failed
-		result.Results = append(result.Results, sessionResult.Results...)
-		result.Errors = append(result.Errors, sessionResult.Errors...)
 	}
 
 	result.Duration = time.Since(start)
