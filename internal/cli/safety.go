@@ -107,138 +107,107 @@ func runSafetyStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// TUI output
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	fmt.Println()
-	fmt.Println(titleStyle.Render("NTM Safety Status"))
+	fmt.Printf("  %s\n", titleStyle.Render("NTM Safety System Status"))
 	fmt.Println()
 
-	// Wrapper status
+	statusStr := warnStyle.Render("Not Installed")
+	if wrapperInstalled || hookInstalled {
+		statusStr = okStyle.Render("Installed")
+	}
+	fmt.Printf("  %s %s\n", labelStyle.Render("Overall Status:"), statusStr)
+
 	if wrapperInstalled {
-		fmt.Printf("  %s PATH wrappers installed (%s)\n", okStyle.Render("✓"), wrapperDir)
+		fmt.Printf("  %s %s (%s)\n", labelStyle.Render("Shell Wrappers:"), okStyle.Render("Active"), gitWrapper)
 	} else {
-		fmt.Printf("  %s PATH wrappers not installed\n", warnStyle.Render("○"))
+		fmt.Printf("  %s %s\n", labelStyle.Render("Shell Wrappers:"), warnStyle.Render("Inactive"))
 	}
 
-	// Hook status
 	if hookInstalled {
-		fmt.Printf("  %s Claude Code hook installed\n", okStyle.Render("✓"))
+		fmt.Printf("  %s %s (%s)\n", labelStyle.Render("Claude Hook:   "), okStyle.Render("Active"), hookPath)
 	} else {
-		fmt.Printf("  %s Claude Code hook not installed\n", warnStyle.Render("○"))
+		fmt.Printf("  %s %s\n", labelStyle.Render("Claude Hook:   "), warnStyle.Render("Inactive"))
 	}
 
-	// Policy status
 	fmt.Println()
-	fmt.Println("  Policy rules:")
-	fmt.Printf("    %s blocked patterns\n", mutedStyle.Render(fmt.Sprintf("%d", blocked)))
-	fmt.Printf("    %s approval-required patterns\n", mutedStyle.Render(fmt.Sprintf("%d", approval)))
-	fmt.Printf("    %s explicitly allowed patterns\n", mutedStyle.Render(fmt.Sprintf("%d", allowed)))
-
+	fmt.Printf("  %s\n", titleStyle.Render("Active Policy"))
 	if policyPath != "" {
-		fmt.Printf("    %s\n", mutedStyle.Render("Custom: "+policyPath))
+		fmt.Printf("  %s %s\n", labelStyle.Render("Source: "), policyPath)
 	} else {
-		fmt.Printf("    %s\n", mutedStyle.Render("Using default policy"))
+		fmt.Printf("  %s %s\n", labelStyle.Render("Source: "), "Built-in Defaults")
 	}
-
-	// Installation hint
-	if !wrapperInstalled && !hookInstalled {
-		fmt.Println()
-		fmt.Printf("  %s\n", mutedStyle.Render("Run 'ntm safety install' to enable protection"))
-	}
-
+	fmt.Printf("  %s %d blocked, %d approval required, %d allowed rules\n",
+		labelStyle.Render("Rules:  "), blocked, approval, allowed)
 	fmt.Println()
+
 	return nil
 }
 
 func newSafetyBlockedCmd() *cobra.Command {
 	var hours int
-	var limit int
 
 	cmd := &cobra.Command{
 		Use:   "blocked",
-		Short: "Show blocked command history",
+		Short: "Show history of blocked commands",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSafetyBlocked(hours, limit)
+			return runSafetyBlocked(hours)
 		},
 	}
 
-	cmd.Flags().IntVar(&hours, "hours", 24, "Show blocked commands from last N hours")
-	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Maximum entries to show")
+	cmd.Flags().IntVar(&hours, "hours", 24, "Show events from the last N hours")
 
 	return cmd
 }
 
-// BlockedResponse is the JSON output for blocked commands.
-type BlockedResponse struct {
-	output.TimestampedResponse
-	Entries []policy.BlockedEntry `json:"entries"`
-	Count   int                   `json:"count"`
-}
-
-func runSafetyBlocked(hours, limit int) error {
-	entries, err := policy.RecentBlocked("", hours)
+func runSafetyBlocked(hours int) error {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("reading blocked log: %w", err)
+		return fmt.Errorf("getting home directory: %w", err)
 	}
+	logPath := filepath.Join(home, ".ntm", "logs", "blocked.jsonl")
 
-	// Limit entries
-	if len(entries) > limit {
-		entries = entries[len(entries)-limit:]
+	entries, err := policy.RecentBlocked(logPath, hours)
+	if err != nil {
+		return err
 	}
 
 	if IsJSONOutput() {
-		return output.PrintJSON(BlockedResponse{
-			TimestampedResponse: output.NewTimestamped(),
-			Entries:             entries,
-			Count:               len(entries),
-		})
+		return output.PrintJSON(entries)
 	}
 
 	// TUI output
 	if len(entries) == 0 {
-		fmt.Println("No blocked commands in the last", hours, "hours")
+		fmt.Printf("\n  No blocked commands in the last %d hours.\n\n", hours)
 		return nil
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
-	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 	fmt.Println()
-	fmt.Println(titleStyle.Render(fmt.Sprintf("Blocked Commands (last %d hours)", hours)))
+	fmt.Printf("  %s\n", titleStyle.Render(fmt.Sprintf("Blocked Commands (Last %d Hours)", hours)))
 	fmt.Println()
 
 	for _, e := range entries {
-		ts := e.Timestamp.Format("01/02 15:04")
-		fmt.Printf("  %s %s\n", mutedStyle.Render(ts), errorStyle.Render(e.Command))
-		if e.Reason != "" {
-			fmt.Printf("           %s\n", mutedStyle.Render(e.Reason))
-		}
-		if e.Session != "" {
-			fmt.Printf("           %s\n", mutedStyle.Render("Session: "+e.Session))
-		}
+		ts := e.Timestamp.Local().Format("2006-01-02 15:04:05")
+		fmt.Printf("  [%s] %s\n", ts, e.Command)
+		fmt.Printf("    Reason: %s\n", e.Reason)
+		fmt.Println()
 	}
 
-	fmt.Println()
 	return nil
 }
 
 func newSafetyCheckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "check <command>",
-		Short: "Check if a command would be blocked",
-		Long: `Check if a shell command would be blocked by the current safety policy.
-
-If the command you are checking contains flags like --hard, use "--" to stop flag parsing:
-  ntm safety check -- git reset --hard
-  ntm --json safety check -- git reset --hard`,
-		Args: cobra.MinimumNArgs(1),
+		Short: "Check a command against safety policy",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			command := strings.Join(args, " ")
-			return runSafetyCheck(command)
+			return runSafetyCheck(strings.Join(args, " "))
 		},
 	}
 }
@@ -329,10 +298,10 @@ func runSafetyCheck(command string) error {
 		fmt.Println()
 	}
 
-	// Exit with code 1 for blocked commands (both JSON and TUI modes).
-	// This is critical for wrapper scripts that rely on exit code.
-	if exitCode == 1 {
-		os.Exit(1)
+	// Exit with code 1 for blocked or approval-required commands (both JSON and TUI modes).
+	// This is critical for wrapper scripts that rely on exit code to intercept commands.
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 
 	return nil
@@ -396,8 +365,9 @@ func evaluateSafetyCheck(command string) (CheckResponse, int, error) {
 		resp.DCG = dcg
 	}
 
+	// Exit code 1 for Block or Approve (to block execution in wrapper scripts)
 	exitCode := 0
-	if resp.Action == string(policy.ActionBlock) {
+	if resp.Action == string(policy.ActionBlock) || resp.Action == string(policy.ActionApprove) {
 		exitCode = 1
 	}
 	return resp, exitCode, nil
@@ -409,7 +379,7 @@ func newSafetyInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install safety wrappers and hooks",
-		Long: `Install PATH wrappers and Claude Code hooks for destructive command protection.
+		Long: `Install the NTM safety system.
 
 This installs:
   1. Shell wrappers in ~/.ntm/bin/ that intercept git and rm commands
@@ -580,8 +550,7 @@ func installWrapper(path, content string, force bool) error {
 
 func writeDefaultPolicy(path string) error {
 	// NOTE: Allowed patterns are checked FIRST (take precedence over blocked).
-	// This is how we handle --force-with-lease: allow it explicitly, then block --force.
-	// Go's regexp doesn't support lookaheads (?!...), so we use precedence instead.
+	// Precedence order is: allowed > blocked > approval_required
 	content := `# NTM Safety Policy
 # Patterns are regular expressions matched against commands
 #
@@ -594,39 +563,29 @@ allowed:
     reason: "Safe force push (prevents overwriting others' work)"
   - pattern: 'git\s+reset\s+--soft'
     reason: "Soft reset preserves changes in staging"
-  - pattern: 'git\s+reset\s+HEAD~?\d*$'
+  - pattern: 'git\s+reset\s+HEAD~?\d*$' 
     reason: "Mixed reset preserves working directory"
 
 # Blocked patterns (dangerous commands)
 blocked:
   - pattern: 'git\s+reset\s+--hard'
     reason: "Hard reset loses uncommitted changes"
-  - pattern: 'git\s+clean\s+.*(-fd|-df|-f\s+-d|-d\s+-f)'
+  - pattern: 'git\s+clean(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|$)'
     reason: "Removes untracked files permanently"
-  - pattern: 'git\s+push\s+.*--force'
+  - pattern: 'git\s+push(\s+.*?)?\s(-[\w]*f[\w]*|--force)(\s|$)'
     reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+.*\s-f(\s|$)'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+-f(\s|$)'
-    reason: "Force push can overwrite remote history"
-  - pattern: 'git\s+push\s+.*(\s\+|:\+)'
+  - pattern: 'git\s+push(\s+.*?)?\s(\+|:\+)'
     reason: "Force push via +refspec can overwrite remote history"
-  - pattern: 'rm\s+-rf\s+/+$'
-    reason: "Recursive delete of root is catastrophic"
-  - pattern: 'rm\s+-rf\s+~'
-    reason: "Recursive delete of home directory"
-  - pattern: 'rm\s+-rf\s+\*'
-    reason: "Recursive delete of everything in current directory"
+  - pattern: 'rm\s+-rf\s+(/|~|\*|\.|\.\.)(/|\s|$)'
+    reason: "Critical recursive deletion"
   - pattern: 'git\s+branch\s+-D'
     reason: "Force delete branch loses unmerged work"
-  - pattern: 'git\s+stash\s+drop'
-    reason: "Dropping stash loses saved work"
-  - pattern: 'git\s+stash\s+clear'
-    reason: "Clearing all stashes loses saved work"
+  - pattern: 'git\s+stash\s+(drop|clear)'
+    reason: "Losing stashed work"
 
 # Approval required (potentially dangerous, need confirmation)
 approval_required:
-  - pattern: 'git\s+rebase\s+-i'
+  - pattern: 'git\s+rebase(\s+.*?)?\s(-i|--interactive)'
     reason: "Interactive rebase rewrites history"
   - pattern: 'git\s+commit\s+--amend'
     reason: "Amending rewrites history"
@@ -656,13 +615,21 @@ fi
 check_result=$(ntm safety check "git $*" --json 2>&1)
 exit_code=$?
 
-# ntm safety check exits 0 for allow/approve, 1 for block
-if [ $exit_code -eq 1 ]; then
-    # Command was blocked
+# ntm safety check exits 0 for allow, 1 for block/approve
+if [ $exit_code -ne 0 ]; then
+    action=$(echo "$check_result" | jq -r '.action // "block"' 2>/dev/null)
     reason=$(echo "$check_result" | jq -r '.reason // "Policy violation"' 2>/dev/null)
-    echo "NTM Safety: Command blocked" >&2
-    echo "  Reason: $reason" >&2
-    echo "  Command: git $*" >&2
+    
+    if [ "$action" = "approve" ]; then
+        echo "NTM Safety: Command requires approval" >&2
+        echo "  Reason: $reason" >&2
+        echo "  Command: git $*" >&2
+        echo "  Run 'ntm approve list' to see pending requests." >&2
+    else
+        echo "NTM Safety: Command blocked" >&2
+        echo "  Reason: $reason" >&2
+        echo "  Command: git $*" >&2
+    fi
 
     # Log the blocked command (use jq for proper JSON escaping)
     mkdir -p "$HOME/.ntm/logs"
@@ -670,10 +637,11 @@ if [ $exit_code -eq 1 ]; then
         jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --arg cmd "git $*" \
               --arg reason "${reason:-Policy violation}" \
-              '{timestamp: $ts, command: $cmd, reason: $reason, action: "block"}' >> "$HOME/.ntm/logs/blocked.jsonl"
+              --arg action "$action" \
+              '{timestamp: $ts, command: $cmd, reason: $reason, action: $action}' >> "$HOME/.ntm/logs/blocked.jsonl"
     else
         # Fallback without proper escaping (best effort)
-        echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"action\":\"block\"}" >> "$HOME/.ntm/logs/blocked.jsonl"
+        echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"action\":\"$action\"}" >> "$HOME/.ntm/logs/blocked.jsonl"
     fi
 
     exit 1
@@ -696,13 +664,21 @@ fi
 check_result=$(ntm safety check "rm $*" --json 2>&1)
 exit_code=$?
 
-# ntm safety check exits 0 for allow/approve, 1 for block
-if [ $exit_code -eq 1 ]; then
-    # Command was blocked
+# ntm safety check exits 0 for allow, 1 for block/approve
+if [ $exit_code -ne 0 ]; then
+    action=$(echo "$check_result" | jq -r '.action // "block"' 2>/dev/null)
     reason=$(echo "$check_result" | jq -r '.reason // "Policy violation"' 2>/dev/null)
-    echo "NTM Safety: Command blocked" >&2
-    echo "  Reason: $reason" >&2
-    echo "  Command: rm $*" >&2
+    
+    if [ "$action" = "approve" ]; then
+        echo "NTM Safety: Command requires approval" >&2
+        echo "  Reason: $reason" >&2
+        echo "  Command: rm $*" >&2
+        echo "  Run 'ntm approve list' to see pending requests." >&2
+    else
+        echo "NTM Safety: Command blocked" >&2
+        echo "  Reason: $reason" >&2
+        echo "  Command: rm $*" >&2
+    fi
 
     # Log the blocked command (use jq for proper JSON escaping)
     mkdir -p "$HOME/.ntm/logs"
@@ -710,10 +686,11 @@ if [ $exit_code -eq 1 ]; then
         jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --arg cmd "rm $*" \
               --arg reason "${reason:-Policy violation}" \
-              '{timestamp: $ts, command: $cmd, reason: $reason, action: "block"}' >> "$HOME/.ntm/logs/blocked.jsonl"
+              --arg action "$action" \
+              '{timestamp: $ts, command: $cmd, reason: $reason, action: $action}' >> "$HOME/.ntm/logs/blocked.jsonl"
     else
         # Fallback without proper escaping (best effort)
-        echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"action\":\"block\"}" >> "$HOME/.ntm/logs/blocked.jsonl"
+        echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"action\":\"$action\"}" >> "$HOME/.ntm/logs/blocked.jsonl"
     fi
 
     exit 1
@@ -743,9 +720,9 @@ fi
 check_result=$(ntm safety check "$COMMAND" --json 2>&1)
 exit_code=$?
 
-# ntm safety check exits 0 for allow/approve, 1 for block
-if [ $exit_code -eq 1 ]; then
-    # Command was blocked
+# ntm safety check exits 0 for allow, 1 for block/approve
+if [ $exit_code -ne 0 ]; then
+    action=$(echo "$check_result" | jq -r '.action // "block"' 2>/dev/null)
     reason=$(echo "$check_result" | jq -r '.reason // "Policy violation"' 2>/dev/null)
 
     # Log the blocked command (use jq for proper JSON escaping)
@@ -758,14 +735,20 @@ if [ $exit_code -eq 1 ]; then
               --arg agent "$agent" \
               --arg cmd "$COMMAND" \
               --arg reason "${reason:-Policy violation}" \
-              '{timestamp: $ts, session: $session, agent: $agent, command: $cmd, reason: $reason, action: "block"}' >> "$HOME/.ntm/logs/blocked.jsonl"
+              --arg action "$action" \
+              '{timestamp: $ts, session: $session, agent: $agent, command: $cmd, reason: $reason, action: $action}' >> "$HOME/.ntm/logs/blocked.jsonl"
     else
         # Fallback without proper escaping (best effort)
-        echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"action\":\"block\"}" >> "$HOME/.ntm/logs/blocked.jsonl"
+        echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"action\":\"$action\"}" >> "$HOME/.ntm/logs/blocked.jsonl"
     fi
 
     # Return error to Claude Code
-    echo "BLOCKED: $reason"
+    if [ "$action" = "approve" ]; then
+        echo "APPROVAL REQUIRED: $reason"
+        echo "Run 'ntm approve list' to see pending requests."
+    else
+        echo "BLOCKED: $reason"
+    fi
     exit 1
 fi
 
