@@ -294,6 +294,34 @@ codex> `
 	}
 }
 
+func TestParser_ParseWithHint_NormalizesAliasHints(t *testing.T) {
+	t.Parallel()
+
+	p := NewParser()
+	output := `Processing your request...
+Token usage: total=150,000 input=140,000 output=10,000
+47% context left · ? for shortcuts
+codex> `
+
+	state, err := p.ParseWithHint(output, AgentType(" CodEx "))
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+
+	if state.Type != AgentTypeCodex {
+		t.Fatalf("Type = %v, want %v", state.Type, AgentTypeCodex)
+	}
+	if state.ContextRemaining == nil || *state.ContextRemaining != 47.0 {
+		t.Fatalf("ContextRemaining = %v, want 47.0", state.ContextRemaining)
+	}
+	if state.TokensUsed == nil || *state.TokensUsed != 150000 {
+		t.Fatalf("TokensUsed = %v, want 150000", state.TokensUsed)
+	}
+	if !state.IsIdle {
+		t.Fatal("Expected IsIdle=true for Codex prompt with alias hint")
+	}
+}
+
 func TestParser_Parse_Codex_LowContext(t *testing.T) {
 	p := NewParser()
 	output := `Some work done...

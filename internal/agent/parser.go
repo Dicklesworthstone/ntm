@@ -43,8 +43,8 @@ func (p *parserImpl) ParseWithHint(output string, hint AgentType) (*AgentState, 
 	}
 
 	// Step 1: Detect agent type
-	if hint != AgentTypeUnknown {
-		state.Type = hint
+	if canonicalHint := hint.Canonical(); canonicalHint.IsValid() {
+		state.Type = canonicalHint
 	} else {
 		state.Type = p.DetectAgentType(cleanOutput)
 	}
@@ -495,4 +495,3 @@ func (p *parserImpl) calculateConfidence(state *AgentState) float64 {
 
 	return confidence
 }
-

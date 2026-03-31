@@ -46,6 +46,8 @@ func TestAgentType_DisplayName(t *testing.T) {
 		{AgentTypeWindsurf, "Windsurf"},
 		{AgentTypeAider, "Aider"},
 		{AgentTypeUser, "User"},
+		{AgentType("codex"), "Codex CLI"},
+		{AgentType(" gemini "), "Gemini CLI"},
 		{AgentTypeUnknown, "Unknown"},
 		{AgentType("anything-else"), "Unknown"},
 	}
@@ -53,6 +55,38 @@ func TestAgentType_DisplayName(t *testing.T) {
 	for _, tt := range tests {
 		if got := tt.at.DisplayName(); got != tt.want {
 			t.Errorf("AgentType(%q).DisplayName() = %q, want %q", tt.at, got, tt.want)
+		}
+	}
+}
+
+func TestAgentType_Canonical(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		at   AgentType
+		want AgentType
+	}{
+		{AgentTypeClaudeCode, AgentTypeClaudeCode},
+		{AgentType("claude"), AgentTypeClaudeCode},
+		{AgentType(" Claude-Code "), AgentTypeClaudeCode},
+		{AgentType("claude_code"), AgentTypeClaudeCode},
+		{AgentType("codex"), AgentTypeCodex},
+		{AgentType("codex-cli"), AgentTypeCodex},
+		{AgentType("openai"), AgentTypeCodex},
+		{AgentType("openai-codex"), AgentTypeCodex},
+		{AgentType(" GMI "), AgentTypeGemini},
+		{AgentType("google"), AgentTypeGemini},
+		{AgentType("gemini_cli"), AgentTypeGemini},
+		{AgentType("google-gemini"), AgentTypeGemini},
+		{AgentType("ws"), AgentTypeWindsurf},
+		{AgentType("unknown"), AgentTypeUnknown},
+		{AgentType(" custom "), AgentType("custom")},
+		{AgentType(""), AgentType("")},
+	}
+
+	for _, tt := range tests {
+		if got := tt.at.Canonical(); got != tt.want {
+			t.Errorf("AgentType(%q).Canonical() = %q, want %q", tt.at, got, tt.want)
 		}
 	}
 }
@@ -72,6 +106,8 @@ func TestAgentType_IsValid(t *testing.T) {
 		{AgentTypeWindsurf, true},
 		{AgentTypeAider, true},
 		{AgentTypeUser, true},
+		{AgentType("codex"), true},
+		{AgentType(" gemini "), true},
 		{AgentTypeUnknown, false},
 		{AgentType("invalid"), false},
 		{AgentType(""), false},

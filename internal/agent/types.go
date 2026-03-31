@@ -28,9 +28,36 @@ func (t AgentType) String() string {
 	return string(t)
 }
 
+// Canonical normalizes aliases and formatting drift into the canonical short form
+// used throughout tmux metadata and parser dispatch.
+func (t AgentType) Canonical() AgentType {
+	switch strings.ToLower(strings.TrimSpace(string(t))) {
+	case "cc", "claude", "claude-code", "claude_code":
+		return AgentTypeClaudeCode
+	case "cod", "codex", "codex-cli", "codex_cli", "openai", "openai-codex", "openai_codex":
+		return AgentTypeCodex
+	case "gmi", "gemini", "gemini-cli", "gemini_cli", "google", "google-ai", "google_ai", "google-gemini", "google_gemini":
+		return AgentTypeGemini
+	case "cursor":
+		return AgentTypeCursor
+	case "windsurf", "ws":
+		return AgentTypeWindsurf
+	case "aider":
+		return AgentTypeAider
+	case "ollama":
+		return AgentTypeOllama
+	case "user":
+		return AgentTypeUser
+	case "unknown":
+		return AgentTypeUnknown
+	default:
+		return AgentType(strings.TrimSpace(string(t)))
+	}
+}
+
 // DisplayName returns a human-readable name for the agent type.
 func (t AgentType) DisplayName() string {
-	switch t {
+	switch t.Canonical() {
 	case AgentTypeClaudeCode:
 		return "Claude Code"
 	case AgentTypeCodex:
@@ -54,7 +81,7 @@ func (t AgentType) DisplayName() string {
 
 // ProfileName returns the friendly display name for the agent type (short form).
 func (t AgentType) ProfileName() string {
-	switch t {
+	switch t.Canonical() {
 	case AgentTypeClaudeCode:
 		return "Claude"
 	case AgentTypeCodex:
@@ -84,7 +111,7 @@ func (t AgentType) ProfileName() string {
 
 // IsValid returns true if this is a known agent type.
 func (t AgentType) IsValid() bool {
-	switch t {
+	switch t.Canonical() {
 	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeOllama, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeUser:
 		return true
 	default:
@@ -95,10 +122,10 @@ func (t AgentType) IsValid() bool {
 // NeedsDoubleEnter returns true if the agent type typically requires a double-Enter
 // sequence to recognize input (often due to internal buffering or TUI quirks).
 func (t AgentType) NeedsDoubleEnter() bool {
-	switch strings.ToLower(strings.TrimSpace(string(t))) {
-	case string(AgentTypeCodex), "codex":
+	switch t.Canonical() {
+	case AgentTypeCodex:
 		return true
-	case string(AgentTypeGemini), "gemini":
+	case AgentTypeGemini:
 		// Gemini may also benefit from double-Enter in some cases
 		return true
 	default:
