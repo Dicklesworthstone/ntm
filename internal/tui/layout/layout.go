@@ -166,14 +166,28 @@ func TruncateWidth(s string, maxWidth int, suffix string) string {
 // truncateToWidth removes characters from the end until string fits in maxWidth.
 func truncateToWidth(s string, maxWidth int) string {
 	runes := []rune(s)
-	for len(runes) > 0 {
-		candidate := string(runes)
-		if lipgloss.Width(candidate) <= maxWidth {
-			return candidate
-		}
-		runes = runes[:len(runes)-1]
+	
+	// Fast path for empty or zero
+	if len(runes) == 0 || maxWidth <= 0 {
+		return ""
 	}
-	return ""
+
+	// Binary search for the maximum length that fits
+	low, high := 0, len(runes)
+	best := 0
+	
+	for low <= high {
+		mid := low + (high - low) / 2
+		candidate := string(runes[:mid])
+		if lipgloss.Width(candidate) <= maxWidth {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	
+	return string(runes[:best])
 }
 
 // TruncateWidthDefault is a convenience wrapper for TruncateWidth using "…".
@@ -182,74 +196,9 @@ func TruncateWidthDefault(s string, maxWidth int) string {
 }
 
 // TruncateMiddle truncates a string by removing characters from the middle,
-// preserving both the beginning and end. This is useful when the end of a string
-// contains distinguishing information (like numbered suffixes or file extensions).
-//
-// The function allocates 1/3 of available space to the beginning and 2/3 to the end,
-// ensuring that differentiating suffixes are preserved while keeping some context
-// from the start.
-//
-// Examples:
-//   - "destructive_command_guard_cc_16" (width 20) -> "destru…guard_cc_16"
-//   - "short" (width 20) -> "short" (no truncation needed)
-//   - "abcdefghij" (width 7) -> "ab…hij"
+// preserving both the beginning and end.
 func TruncateMiddle(s string, maxWidth int) string {
-	if maxWidth <= 0 {
-		return ""
-	}
-
-	// Fast path: string already fits
-	currentWidth := lipgloss.Width(s)
-	if currentWidth <= maxWidth {
-		return s
-	}
-
-	ellipsis := "…"
-	ellipsisWidth := lipgloss.Width(ellipsis)
-	available := maxWidth - ellipsisWidth
-
-	// Need at least 2 characters (1 start + 1 end) plus ellipsis
-	if available < 2 {
-		return truncateToWidth(s, maxWidth)
-	}
-
-	// Allocate 1/3 to start, 2/3 to end (end usually has unique info)
-	endChars := (available * 2) / 3
-	startChars := available - endChars
-
-	// Ensure minimum of 1 char on each side
-	if startChars < 1 {
-		startChars = 1
-		endChars = available - 1
-	}
-	if endChars < 1 {
-		endChars = 1
-		startChars = available - 1
-	}
-
-	runes := []rune(s)
-
-	// Find the start portion that fits in startChars width
-	startRunes := runes
-	for len(startRunes) > 0 && lipgloss.Width(string(startRunes)) > startChars {
-		startRunes = startRunes[:len(startRunes)-1]
-	}
-
-	// Find the end portion that fits in endChars width
-	endRunes := runes
-	for len(endRunes) > 0 && lipgloss.Width(string(endRunes)) > endChars {
-		endRunes = endRunes[1:]
-	}
-
-	// Combine: start + ellipsis + end
-	result := string(startRunes) + ellipsis + string(endRunes)
-
-	// Final safety check - truncate if still too wide
-	if lipgloss.Width(result) > maxWidth {
-		return truncateToWidth(result, maxWidth)
-	}
-
-	return result
+	return TruncateMiddleWidth(s, maxWidth, "…")
 }
 
 // TruncateMiddleWidth is like TruncateMiddle but with a custom ellipsis string.
@@ -285,14 +234,36 @@ func TruncateMiddleWidth(s string, maxWidth int, ellipsis string) string {
 
 	runes := []rune(s)
 
-	startRunes := runes
-	for len(startRunes) > 0 && lipgloss.Width(string(startRunes)) > startChars {
-		startRunes = startRunes[:len(startRunes)-1]
+	// Binary search for start portion
+	low, high := 0, len(runes)
+	bestStart := 0
+	for low <= high {
+		mid := low + (high - low) / 2
+		if lipgloss.Width(string(runes[:mid])) <= startChars {
+			bestStart = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
 	}
+	startRunes := runes[:bestStart]
 
-	endRunes := runes
-	for len(endRunes) > 0 && lipgloss.Width(string(endRunes)) > endChars {
-		endRunes = endRunes[1:]
+	// Binary search for end portion
+	low, high = 0, len(runes)
+	bestEnd := len(runes)
+	for low <= high {
+		mid := low + (high - low) / 2
+		if lipgloss.Width(string(runes[mid:])) <= endChars {
+			bestEnd = mid
+			high = mid - 1
+		} else {
+			low = mid + 1
+		}
+	}
+	
+	var endRunes []rune
+	if bestEnd < len(runes) {
+		endRunes = runes[bestEnd:]
 	}
 
 	result := string(startRunes) + ellipsis + string(endRunes)
@@ -359,18 +330,26 @@ func TruncatePaneTitle(title string, maxWidth int) string {
 		return TruncateWidthDefault(suffix, maxWidth)
 	}
 
-	// Truncate prefix to fit
+	// Truncate prefix to fit using binary search
 	prefixRunes := []rune(prefix)
-	for len(prefixRunes) > 0 {
-		candidate := string(prefixRunes) + ellipsis + suffix
+	low, high := 0, len(prefixRunes)
+	best := 0
+	
+	for low <= high {
+		mid := low + (high - low) / 2
+		candidate := string(prefixRunes[:mid]) + ellipsis + suffix
 		if lipgloss.Width(candidate) <= maxWidth {
-			return candidate
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
 		}
-		prefixRunes = prefixRunes[:len(prefixRunes)-1]
 	}
 
-	// Fallback: just the suffix
-	return TruncateWidthDefault(suffix, maxWidth)
+	if best == 0 {
+		return TruncateWidthDefault(suffix, maxWidth)
+	}
+	return string(prefixRunes[:best]) + ellipsis + suffix
 }
 
 // SplitProportions returns left/right widths for split view given total width.

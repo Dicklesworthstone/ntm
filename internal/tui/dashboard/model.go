@@ -221,6 +221,7 @@ type Model struct {
 	ollamaModelMemory map[string]int64 // model name -> bytes
 	lastOllamaPSFetch time.Time
 	ollamaPSError     error
+	fetchingOllamaPS  bool
 
 	// Health badge (bv drift status)
 	healthStatus  string // "ok", "warning", "critical", "no_baseline", "unavailable"

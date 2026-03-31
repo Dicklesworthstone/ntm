@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 )
@@ -300,26 +301,39 @@ func fetchOllamaPS(ctx context.Context, host string) (map[string]int64, error) {
 	return out, nil
 }
 
+// OllamaPSResultMsg is the result of fetching Ollama PS data.
+type OllamaPSResultMsg struct {
+	Memory map[string]int64
+	Err    error
+}
+
+func fetchOllamaPSCmd(host string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+		defer cancel()
+		mem, err := fetchOllamaPS(ctx, host)
+		return OllamaPSResultMsg{Memory: mem, Err: err}
+	}
+}
+
 func isLocalAgentType(agentType string) bool {
 	return strings.EqualFold(agentType, string(agent.AgentTypeOllama))
 }
 
-func (m *Model) refreshOllamaPSIfNeeded(now time.Time) {
-	// Only refresh occasionally; the dashboard is a TUI and should avoid blocking.
+func (m *Model) refreshOllamaPSIfNeeded(now time.Time) tea.Cmd {
+	if m.fetchingOllamaPS {
+		return nil
+	}
+
+	// Only refresh occasionally
 	if !m.lastOllamaPSFetch.IsZero() && now.Sub(m.lastOllamaPSFetch) < 5*time.Second {
-		return
+		return nil
 	}
 
-	host := ollamaHostFromEnv()
-	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
-	defer cancel()
-
-	mem, err := fetchOllamaPS(ctx, host)
+	m.fetchingOllamaPS = true
 	m.lastOllamaPSFetch = now
-	if err != nil {
-		m.ollamaPSError = err
-		return
-	}
-	m.ollamaPSError = nil
-	m.ollamaModelMemory = mem
+	host := ollamaHostFromEnv()
+	
+	return fetchOllamaPSCmd(host)
 }
+

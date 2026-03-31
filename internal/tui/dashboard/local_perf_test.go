@@ -179,7 +179,19 @@ func TestModelRefreshOllamaPSIfNeeded_SkipWhenFresh(t *testing.T) {
 	m := &Model{lastOllamaPSFetch: time.Now()}
 	prev := m.lastOllamaPSFetch
 
-	m.refreshOllamaPSIfNeeded(time.Now())
+	cmd := m.refreshOllamaPSIfNeeded(time.Now())
+	if cmd == nil {
+		t.Fatal("expected tea.Cmd")
+	}
+	msg := cmd()
+	
+	switch result := msg.(type) {
+	case OllamaPSResultMsg:
+		m.ollamaPSError = result.Err
+		m.fetchingOllamaPS = false
+	default:
+		t.Fatalf("unexpected msg type: %T", msg)
+	}
 	if !m.lastOllamaPSFetch.Equal(prev) {
 		t.Fatal("expected refresh to be skipped when cache is fresh")
 	}
@@ -189,7 +201,19 @@ func TestModelRefreshOllamaPSIfNeeded_SetsErrorOnFailure(t *testing.T) {
 	t.Setenv("NTM_OLLAMA_HOST", "http://127.0.0.1:1")
 	m := &Model{}
 	now := time.Now()
-	m.refreshOllamaPSIfNeeded(now)
+	cmd := m.refreshOllamaPSIfNeeded(now)
+	if cmd == nil {
+		t.Fatal("expected tea.Cmd")
+	}
+	msg := cmd()
+	
+	switch result := msg.(type) {
+	case OllamaPSResultMsg:
+		m.ollamaPSError = result.Err
+		m.fetchingOllamaPS = false
+	default:
+		t.Fatalf("unexpected msg type: %T", msg)
+	}
 
 	if m.ollamaPSError == nil {
 		t.Fatal("expected fetch error")
@@ -211,7 +235,19 @@ func TestModelRefreshOllamaPSIfNeeded_Success(t *testing.T) {
 
 	t.Setenv("NTM_OLLAMA_HOST", srv.URL)
 	m := &Model{}
-	m.refreshOllamaPSIfNeeded(time.Now())
+	cmd := m.refreshOllamaPSIfNeeded(time.Now())
+	if cmd == nil {
+		t.Fatal("expected tea.Cmd")
+	}
+	msg := cmd()
+	
+	switch result := msg.(type) {
+	case OllamaPSResultMsg:
+		m.ollamaPSError = result.Err
+		m.fetchingOllamaPS = false
+	default:
+		t.Fatalf("unexpected msg type: %T", msg)
+	}
 
 	if m.ollamaPSError != nil {
 		t.Fatalf("unexpected fetch error: %v", m.ollamaPSError)

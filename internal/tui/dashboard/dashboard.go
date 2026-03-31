@@ -2089,7 +2089,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Refresh /api/ps memory occasionally and map by model name (pane variant).
 					if found && currentPane.Variant != "" {
-						m.refreshOllamaPSIfNeeded(time.Now())
+						if cmd := m.refreshOllamaPSIfNeeded(time.Now()); cmd != nil {
+							cmds = append(cmds, cmd)
+						}
 						if m.ollamaModelMemory != nil {
 							if mem, ok := m.ollamaModelMemory[currentPane.Variant]; ok {
 								ps.LocalMemoryBytes = mem
@@ -2251,7 +2253,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if hasOllama {
-			m.refreshOllamaPSIfNeeded(msg.Time)
+			if cmd := m.refreshOllamaPSIfNeeded(msg.Time); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 
 		timelineUpdated := false
@@ -2409,6 +2413,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.markUpdated(refreshScan, time.Now())
 		}
 		return m, followUp
+
+	case OllamaPSResultMsg:
+		m.fetchingOllamaPS = false
+		m.ollamaPSError = msg.Err
+		if msg.Err == nil {
+			m.ollamaModelMemory = msg.Memory
+		}
+		return m, nil
 
 	case AgentMailUpdateMsg:
 		if !m.acceptUpdate(refreshAgentMail, msg.Gen) {
