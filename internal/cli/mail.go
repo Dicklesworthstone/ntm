@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -340,18 +341,17 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 		return enc.Encode(msgs)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Project Inbox: %s\n", filepath.Base(projectKey))
+	fmt.Fprintf(cmd.OutOrStdout(), "Project Inbox: %s\n", sanitizeMailDisplayField(filepath.Base(projectKey)))
 	for _, m := range msgs {
 		prefix := ""
 		if strings.EqualFold(m.Importance, "urgent") || strings.EqualFold(m.Importance, "high") {
 			prefix = "[URGENT] "
 		}
-		// Sanitize output to prevent escape sequence injection
-		subject := status.StripANSI(m.Subject)
-		from := status.StripANSI(m.From)
+		subject := sanitizeMailDisplayField(m.Subject)
+		from := sanitizeMailDisplayField(m.From)
 		var recipients []string
 		for _, r := range m.Recipients {
-			recipients = append(recipients, status.StripANSI(r))
+			recipients = append(recipients, sanitizeMailDisplayField(r))
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "%s%s\n", prefix, subject)
@@ -360,6 +360,21 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 		}
 	}
 	return nil
+}
+
+func sanitizeMailDisplayField(value string) string {
+	clean := status.StripANSI(value)
+	clean = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		default:
+			return r
+		}
+	}, clean)
+	return strings.Join(strings.Fields(clean), " ")
 }
 
 // mailAction represents the kind of mailbox mutation to apply.
@@ -494,6 +509,9 @@ func runMailMark(cmd *cobra.Command, session, agent string, action mailAction, i
 			if fromAgent != "" && !strings.EqualFold(msg.From, fromAgent) {
 				continue
 			}
+			if !mailMessageMatchesAction(msg, action) {
+				continue
+			}
 			if !all && !urgent && fromAgent == "" {
 				// No filters and no IDs: avoid marking everything accidentally
 				break
@@ -548,6 +566,17 @@ func runMailMark(cmd *cobra.Command, session, agent string, action mailAction, i
 	}
 
 	return nil
+}
+
+func mailMessageMatchesAction(msg agentmail.InboxMessage, action mailAction) bool {
+	switch action {
+	case mailActionRead:
+		return msg.ReadAt == nil
+	case mailActionAck:
+		return msg.AckRequired
+	default:
+		return true
+	}
 }
 
 // runMailSendOverseer sends a Human Overseer message via the Agent Mail HTTP API.

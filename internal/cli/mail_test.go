@@ -644,6 +644,53 @@ func TestMailReadWithFilters(t *testing.T) {
 	}
 }
 
+func TestMailReadWithAllSkipsAlreadyReadMessages(t *testing.T) {
+	readAt := &agentmail.FlexTime{Time: time.Now()}
+	inbox := []agentmail.InboxMessage{
+		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}, ReadAt: readAt},
+		{ID: 2, From: "BlueBear", Importance: "normal", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
+	}
+	stub := newMailStub(t, inbox)
+	defer stub.Close()
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	if err := runMailMark(cmd, "mysession", "TestAgent", mailActionRead, nil, false, "", true, 50); err != nil {
+		t.Fatalf("runMailMark: %v", err)
+	}
+
+	if len(stub.readIDs) != 1 || stub.readIDs[0] != 2 {
+		t.Fatalf("expected only unread message to be marked read, got %v", stub.readIDs)
+	}
+}
+
+func TestMailAckWithAllSkipsMessagesWithoutAckRequirement(t *testing.T) {
+	inbox := []agentmail.InboxMessage{
+		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
+		{ID: 2, From: "BlueBear", Importance: "normal", CreatedTS: agentmail.FlexTime{Time: time.Now()}, AckRequired: true},
+	}
+	stub := newMailStub(t, inbox)
+	defer stub.Close()
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	if err := runMailMark(cmd, "mysession", "TestAgent", mailActionAck, nil, false, "", true, 50); err != nil {
+		t.Fatalf("runMailMark: %v", err)
+	}
+
+	if len(stub.ackIDs) != 1 || stub.ackIDs[0] != 2 {
+		t.Fatalf("expected only ack-required message to be acknowledged, got %v", stub.ackIDs)
+	}
+}
+
 func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 	resetFlags()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -805,6 +852,50 @@ func TestRunMailInboxUsesSessionProjectDir(t *testing.T) {
 	}
 	if stub.fetchCalls[0].Project != projectKey {
 		t.Fatalf("expected inbox project %q, got %q", projectKey, stub.fetchCalls[0].Project)
+	}
+}
+
+func TestRunMailInboxSanitizesDisplayFields(t *testing.T) {
+	stub := newMailStub(t, []agentmail.InboxMessage{
+		{
+			ID:         12,
+			Subject:    "Build failed\n\x1b[31mspoofed\x1b[0m",
+			From:       "Mallory\r\nTeam",
+			Importance: "high",
+			CreatedTS:  agentmail.FlexTime{Time: time.Now()},
+		},
+	})
+	stub.listAgents = []agentmail.Agent{{Name: "Blue\tLake"}}
+	defer stub.Close()
+
+	projectKey := GetProjectRoot()
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(projectKey)
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := runMailInbox(cmd, stub, "", false, "", false, 50, false); err != nil {
+		t.Fatalf("runMailInbox() error = %v", err)
+	}
+
+	rendered := out.String()
+	if strings.Contains(rendered, "\x1b[31m") {
+		t.Fatalf("rendered output still contains ANSI escape: %q", rendered)
+	}
+	if strings.Contains(rendered, "Build failed\nspoofed") {
+		t.Fatalf("rendered output still contains injected newline: %q", rendered)
+	}
+	if strings.Contains(rendered, "Mallory\r\nTeam") {
+		t.Fatalf("rendered output still contains raw CRLF sender: %q", rendered)
+	}
+	if !strings.Contains(rendered, "[URGENT] Build failed spoofed") {
+		t.Fatalf("expected sanitized subject, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Mallory Team → Blue Lake") {
+		t.Fatalf("expected sanitized sender/recipient line, got %q", rendered)
 	}
 }
 
