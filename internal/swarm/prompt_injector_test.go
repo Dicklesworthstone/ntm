@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestNewPromptInjector(t *testing.T) {
@@ -86,15 +87,15 @@ func TestNeedsDoubleEnter(t *testing.T) {
 		{"cc", false},
 		{"claude", false},
 		{"cod", true},
-		{"codex", true},
+		{"codex", false},
 		{"gmi", true},
-		{"gemini", true},
+		{"gemini", false},
 		{"unknown", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.agentType, func(t *testing.T) {
-			result := needsDoubleEnter(tt.agentType)
+			result := tmux.AgentType(tt.agentType).NeedsDoubleEnter()
 			if result != tt.expected {
 				t.Errorf("needsDoubleEnter(%q) = %v, want %v", tt.agentType, result, tt.expected)
 			}
@@ -490,8 +491,8 @@ func TestPromptInjector_DoubleEnterQuirkHandling(t *testing.T) {
 		{
 			name:        "codex_alias_double_enter",
 			agentType:   "codex",
-			needsDouble: true,
-			description: "Codex alias needs double Enter to submit",
+			needsDouble: false,
+			description: "Raw alias is not normalized here; canonical cod uses double Enter",
 		},
 		{
 			name:        "gemini_double_enter",
@@ -502,8 +503,8 @@ func TestPromptInjector_DoubleEnterQuirkHandling(t *testing.T) {
 		{
 			name:        "gemini_alias_double_enter",
 			agentType:   "gemini",
-			needsDouble: true,
-			description: "Gemini alias may need double Enter",
+			needsDouble: false,
+			description: "Raw alias is not normalized here; canonical gmi uses double Enter",
 		},
 		{
 			name:        "unknown_single_enter",
@@ -517,7 +518,7 @@ func TestPromptInjector_DoubleEnterQuirkHandling(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Logf("[TEST] Agent: %s, Description: %s", tc.agentType, tc.description)
 
-			result := needsDoubleEnter(tc.agentType)
+			result := tmux.AgentType(tc.agentType).NeedsDoubleEnter()
 			t.Logf("[TEST] needsDoubleEnter(%q) = %v", tc.agentType, result)
 
 			if result != tc.needsDouble {

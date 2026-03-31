@@ -3,6 +3,8 @@ package agent
 import (
 	"regexp"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func TestMatchAny(t *testing.T) {
@@ -338,7 +340,7 @@ func TestGetLastNLines(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := getLastNLines(tt.text, tt.n)
+			result := util.GetLastNLines(tt.text, tt.n)
 			// Count lines in result
 			var lineCount int
 			if result == "" {

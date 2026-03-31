@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // =============================================================================
@@ -357,8 +358,14 @@ func TestOrchestrator_StartNewAgentSession(t *testing.T) {
 			return "built-cmd", nil
 		}
 		var sent string
-		orch.sendKeys = func(paneID, keys string, enter bool) error {
+		var sentPane string
+		var sentEnter bool
+		var sentAgentType tmux.AgentType
+		orch.sendKeysForAgent = func(paneID, keys string, enter bool, agentType tmux.AgentType) error {
+			sentPane = paneID
 			sent = keys
+			sentEnter = enter
+			sentAgentType = agentType
 			return nil
 		}
 
@@ -386,8 +393,17 @@ func TestOrchestrator_StartNewAgentSession(t *testing.T) {
 		if buildCmd != "sanitized-cmd" {
 			t.Errorf("build cmd = %q, want %q", buildCmd, "sanitized-cmd")
 		}
+		if sentPane != ctx.PaneID {
+			t.Errorf("sent pane = %q, want %q", sentPane, ctx.PaneID)
+		}
 		if sent != "built-cmd" {
 			t.Errorf("sent keys = %q, want %q", sent, "built-cmd")
+		}
+		if !sentEnter {
+			t.Error("expected sendKeysForAgent enter=true")
+		}
+		if sentAgentType != tmux.AgentClaude {
+			t.Errorf("sent agent type = %q, want %q", sentAgentType, tmux.AgentClaude)
 		}
 	})
 

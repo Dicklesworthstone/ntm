@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1084,6 +1085,31 @@ func TestDefaultAutoRespawnerConfigExitWait(t *testing.T) {
 	if cfg.ExitPollInterval != 500*time.Millisecond {
 		t.Errorf("expected ExitPollInterval 500ms, got %v", cfg.ExitPollInterval)
 	}
+}
+
+func splitLines(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func trimWhitespace(s string) string {
+	return strings.TrimSpace(s)
+}
+
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWithProjectPathLookup(t *testing.T) {
