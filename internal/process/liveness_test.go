@@ -111,9 +111,11 @@ func TestGetProcessState_CurrentProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProcessState(%d) error = %v", pid, err)
 	}
-	// Current test process should be R (running) or S (sleeping)
-	if state != "R" && state != "S" {
-		t.Errorf("GetProcessState(%d) state = %q, want R or S", pid, state)
+	// The current test process should report a live, non-terminal state.
+	// Under load Linux can legitimately report D (disk sleep) or other
+	// non-terminal codes, so don't overfit this to only R/S.
+	if state == "" || state == "Z" || state == "X" || state == "x" {
+		t.Errorf("GetProcessState(%d) state = %q, want a live non-terminal state", pid, state)
 	}
 	if name == "" {
 		t.Error("GetProcessState() name should not be empty")

@@ -106,6 +106,7 @@ type AgentMailInboxDetailMsg struct {
 	PaneID   string
 	Messages []agentmail.InboxMessage
 	Err      error
+	Skipped  bool
 	Gen      uint64
 }
 
@@ -142,7 +143,7 @@ type AlertsUpdateMsg struct {
 type AttentionUpdateMsg struct {
 	Items         []panels.AttentionItem
 	FeedAvailable bool
-	Truncated     bool   // True if the section model truncated results
+	Truncated     bool // True if the section model truncated results
 	Gen           uint64
 }
 
@@ -178,6 +179,12 @@ type FileChangeMsg struct {
 	Changes []tracker.RecordedFileChange
 	Err     error
 	Gen     uint64
+}
+
+// FileOpenResultMsg reports the outcome of launching an editor for a file.
+type FileOpenResultMsg struct {
+	Path string
+	Err  error
 }
 
 // CASSContextMsg is sent when relevant context is found.

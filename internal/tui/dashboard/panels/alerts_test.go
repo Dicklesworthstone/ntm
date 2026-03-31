@@ -101,11 +101,20 @@ func TestAlertsPanelKeybindings(t *testing.T) {
 		actions[b.Action] = true
 	}
 
-	if !actions["dismiss"] {
-		t.Error("expected 'dismiss' action in keybindings")
+	if !actions["page_up"] {
+		t.Error("expected 'page_up' action in keybindings")
 	}
-	if !actions["ack_all"] {
-		t.Error("expected 'ack_all' action in keybindings")
+	if !actions["page_down"] {
+		t.Error("expected 'page_down' action in keybindings")
+	}
+	if !actions["top"] {
+		t.Error("expected 'top' action in keybindings")
+	}
+	if !actions["bottom"] {
+		t.Error("expected 'bottom' action in keybindings")
+	}
+	if actions["dismiss"] || actions["ack_all"] {
+		t.Error("alerts keybindings should not advertise unsupported dismiss/ack_all actions")
 	}
 }
 

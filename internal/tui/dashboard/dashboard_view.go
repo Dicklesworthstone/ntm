@@ -695,7 +695,9 @@ func (m Model) renderDCGBadge() string {
 
 	var bgColor, fgColor lipgloss.Color
 	var icon, label string
-	if !m.dcgAvailable {
+	if m.dcgError != nil {
+		bgColor, fgColor, icon, label = t.Yellow, t.Base, "⚠", "DCG error"
+	} else if !m.dcgAvailable {
 		bgColor, fgColor, icon, label = t.Yellow, t.Base, "⚠", "DCG missing"
 	} else if m.dcgBlocked > 0 {
 		bgColor, fgColor = t.Lavender, t.Base
@@ -1133,20 +1135,18 @@ func (m Model) getFocusedPanelHints() []components.KeyHint {
 			keybindings = m.historyPanel.Keybindings()
 		}
 	case PanelSidebar:
-		if m.timelinePanel != nil && m.timelinePanel.IsFocused() {
-			keybindings = m.timelinePanel.Keybindings()
-		} else if m.filesPanel != nil && m.filesPanel.IsFocused() {
-			keybindings = m.filesPanel.Keybindings()
-		} else if m.cassPanel != nil && m.cassPanel.IsFocused() {
-			keybindings = m.cassPanel.Keybindings()
-		} else if m.historyPanel != nil && m.historyPanel.IsFocused() {
-			keybindings = m.historyPanel.Keybindings()
-		} else if m.metricsPanel != nil && m.metricsPanel.IsFocused() {
-			keybindings = m.metricsPanel.Keybindings()
+		if ref, ok := m.sidebarActivePanelRef(); ok {
+			keybindings = ref.panel.Keybindings()
 		}
 	}
 
 	var hints []components.KeyHint
+	if m.focusedPanel == PanelSidebar && len(m.sidebarInteractivePanels()) > 1 {
+		hints = append(hints, components.KeyHint{
+			Key:  "J/K",
+			Desc: "cycle section",
+		})
+	}
 	for _, kb := range keybindings {
 		action := kb.Action
 		if action == "up" || action == "down" {

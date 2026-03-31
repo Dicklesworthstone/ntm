@@ -465,13 +465,15 @@ func TestRenderDCGBadge(t *testing.T) {
 		enabled      bool
 		available    bool
 		blocked      int
+		err          error
 		wantEmpty    bool
 		wantContains string
 	}{
-		{"not enabled", false, false, 0, true, ""},
-		{"enabled not available", true, false, 0, false, "DCG missing"},
-		{"enabled available no blocks", true, true, 0, false, "DCG"},
-		{"enabled available with blocks", true, true, 3, false, "DCG 3 blocked"},
+		{"not enabled", false, false, 0, nil, true, ""},
+		{"enabled error", true, true, 3, errors.New("dcg failed"), false, "DCG error"},
+		{"enabled not available", true, false, 0, nil, false, "DCG missing"},
+		{"enabled available no blocks", true, true, 0, nil, false, "DCG"},
+		{"enabled available with blocks", true, true, 3, nil, false, "DCG 3 blocked"},
 	}
 
 	for _, tc := range tests {
@@ -482,6 +484,7 @@ func TestRenderDCGBadge(t *testing.T) {
 				dcgEnabled:   tc.enabled,
 				dcgAvailable: tc.available,
 				dcgBlocked:   tc.blocked,
+				dcgError:     tc.err,
 			}
 			got := m.renderDCGBadge()
 			if tc.wantEmpty && got != "" {

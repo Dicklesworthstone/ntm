@@ -430,6 +430,26 @@ func (m *HistoryPanel) selectedEntry() (history.HistoryEntry, bool) {
 	return m.visibleEntries[m.cursor], true
 }
 
+func (m *HistoryPanel) selectedEntryID() string {
+	entry, ok := m.selectedEntry()
+	if !ok {
+		return ""
+	}
+	return entry.ID
+}
+
+func historyEntryIndexByID(entries []history.HistoryEntry, id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, entry := range entries {
+		if entry.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 func (m *HistoryPanel) moveCursor(delta int) {
 	if len(m.visibleEntries) == 0 {
 		m.cursor = 0
@@ -463,13 +483,27 @@ func (m *HistoryPanel) moveCursor(delta int) {
 }
 
 func (m *HistoryPanel) applyFilters() {
+	selectedID := m.selectedEntryID()
 	m.visibleEntries = m.visibleEntries[:0]
 
 	// Preserve existing UX: show error state even if data is missing.
 	if m.err != nil {
 		m.visibleEntries = append(m.visibleEntries, m.entries...)
+		if idx := historyEntryIndexByID(m.visibleEntries, selectedID); idx >= 0 {
+			m.cursor = idx
+			m.offset = idx
+			if m.tableInit {
+				m.rebuildTableRows()
+				m.syncOffsetFromTable()
+			}
+			return
+		}
 		m.cursor = 0
 		m.offset = 0
+		if m.tableInit {
+			m.rebuildTableRows()
+			m.syncOffsetFromTable()
+		}
 		return
 	}
 
@@ -503,9 +537,16 @@ func (m *HistoryPanel) applyFilters() {
 	if len(m.visibleEntries) == 0 {
 		m.cursor = 0
 		m.offset = 0
+		if m.tableInit {
+			m.rebuildTableRows()
+			m.syncOffsetFromTable()
+		}
 		return
 	}
-	if m.cursor >= len(m.visibleEntries) {
+
+	if idx := historyEntryIndexByID(m.visibleEntries, selectedID); idx >= 0 {
+		m.cursor = idx
+	} else if m.cursor >= len(m.visibleEntries) {
 		m.cursor = len(m.visibleEntries) - 1
 	}
 	if m.cursor < 0 {
@@ -520,6 +561,7 @@ func (m *HistoryPanel) applyFilters() {
 
 	if m.tableInit {
 		m.rebuildTableRows()
+		m.syncOffsetFromTable()
 	}
 }
 

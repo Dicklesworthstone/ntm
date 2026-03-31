@@ -92,6 +92,29 @@ func TestCASSPanelSetDataWithError(t *testing.T) {
 	}
 }
 
+func TestCASSPanelSetDataWithErrorClearsStaleHits(t *testing.T) {
+	panel := NewCASSPanel()
+	now := time.Now()
+
+	panel.SetData([]cass.SearchHit{
+		{Title: "Session: stale hit", Score: 0.90, CreatedAt: ptrFlexTime(now)},
+	}, nil)
+	if len(panel.hits) != 1 {
+		t.Fatalf("expected initial hit, got %d", len(panel.hits))
+	}
+
+	panel.SetData([]cass.SearchHit{
+		{Title: "Session: stale hit", Score: 0.90, CreatedAt: ptrFlexTime(now)},
+	}, errors.New("cass unavailable"))
+
+	if !panel.HasError() {
+		t.Fatal("expected panel error")
+	}
+	if len(panel.hits) != 0 {
+		t.Fatalf("expected hits to clear on error, got %d", len(panel.hits))
+	}
+}
+
 func TestCASSPanelKeybindings(t *testing.T) {
 	panel := NewCASSPanel()
 	bindings := panel.Keybindings()
@@ -102,6 +125,11 @@ func TestCASSPanelKeybindings(t *testing.T) {
 	actions := make(map[string]bool)
 	for _, b := range bindings {
 		actions[b.Action] = true
+		if b.Action == "search" {
+			if keys := b.Key.Keys(); len(keys) != 1 || keys[0] != "ctrl+s" {
+				t.Fatalf("search binding keys = %v, want [ctrl+s]", keys)
+			}
+		}
 	}
 
 	for _, action := range []string{"search", "down", "up"} {
@@ -209,6 +237,71 @@ func TestCASSPanelViewportNavigationKeepsSelectionVisible(t *testing.T) {
 	}
 	if !strings.Contains(view, "result 08") {
 		t.Fatalf("expected selected hit to remain visible, view=%q", view)
+	}
+}
+
+func TestCASSPanelSetDataPreservesSelectedHitAcrossResort(t *testing.T) {
+	panel := NewCASSPanel()
+	now := time.Now()
+	lineOne := 12
+	lineTwo := 27
+
+	panel.SetData([]cass.SearchHit{
+		{
+			SessionID:  "sess-a",
+			SourcePath: "/tmp/a.jsonl",
+			LineNumber: &lineOne,
+			Title:      "Alpha",
+			Score:      0.90,
+			MatchType:  "title",
+			Agent:      "codex",
+			CreatedAt:  ptrFlexTime(now.Add(-2 * time.Hour)),
+		},
+		{
+			SessionID:  "sess-b",
+			SourcePath: "/tmp/b.jsonl",
+			LineNumber: &lineTwo,
+			Title:      "Bravo",
+			Score:      0.40,
+			MatchType:  "title",
+			Agent:      "codex",
+			CreatedAt:  ptrFlexTime(now.Add(-1 * time.Hour)),
+		},
+	}, nil)
+	panel.cursor = 1
+
+	panel.SetData([]cass.SearchHit{
+		{
+			SessionID:  "sess-a",
+			SourcePath: "/tmp/a.jsonl",
+			LineNumber: &lineOne,
+			Title:      "Alpha",
+			Score:      0.20,
+			MatchType:  "title",
+			Agent:      "codex",
+			CreatedAt:  ptrFlexTime(now.Add(-2 * time.Hour)),
+		},
+		{
+			SessionID:  "sess-b",
+			SourcePath: "/tmp/b.jsonl",
+			LineNumber: &lineTwo,
+			Title:      "Bravo",
+			Score:      0.95,
+			MatchType:  "title",
+			Agent:      "codex",
+			CreatedAt:  ptrFlexTime(now.Add(-1 * time.Hour)),
+		},
+	}, nil)
+
+	selected, ok := panel.selectedHit()
+	if !ok {
+		t.Fatal("expected selected hit after refresh")
+	}
+	if selected.SessionID != "sess-b" {
+		t.Fatalf("expected selection to stay on sess-b across resort, got %q", selected.SessionID)
+	}
+	if panel.cursor != 0 {
+		t.Fatalf("expected cursor to move with the selected hit after resort, got %d", panel.cursor)
 	}
 }
 

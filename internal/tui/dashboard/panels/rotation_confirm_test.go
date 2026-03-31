@@ -1,6 +1,7 @@
 package panels
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,87 @@ func TestRotationConfirmPanel_Selection(t *testing.T) {
 	panel.SetData(pending, nil) // Should adjust selection
 	if panel.data.Selected != 2 {
 		t.Errorf("expected selection clamped to 2, got %d", panel.data.Selected)
+	}
+}
+
+func TestRotationConfirmPanel_ErrorClearsPendingSelection(t *testing.T) {
+	t.Parallel()
+
+	panel := NewRotationConfirmPanel()
+	pending := []*context.PendingRotation{
+		{AgentID: "agent1", TimeoutAt: time.Now().Add(time.Minute)},
+	}
+	panel.SetData(pending, nil)
+
+	panel.SetData(pending, errors.New("refresh failed"))
+
+	if !panel.HasError() {
+		t.Fatal("expected panel error to be set")
+	}
+	if panel.HasPending() {
+		t.Fatal("expected pending rotations to be cleared on error")
+	}
+	if pending := panel.SelectedPending(); pending != nil {
+		t.Fatalf("expected no selected pending rotation on error, got %v", pending.AgentID)
+	}
+}
+
+func TestRotationConfirmPanelSetDataPreservesSelectedAgentAcrossReorder(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	panel := NewRotationConfirmPanel()
+	panel.SetData([]*context.PendingRotation{
+		{AgentID: "agent1", TimeoutAt: now.Add(3 * time.Minute)},
+		{AgentID: "agent2", TimeoutAt: now.Add(2 * time.Minute)},
+		{AgentID: "agent3", TimeoutAt: now.Add(1 * time.Minute)},
+	}, nil)
+	panel.data.Selected = 1
+
+	panel.SetData([]*context.PendingRotation{
+		{AgentID: "agent3", TimeoutAt: now.Add(1 * time.Minute)},
+		{AgentID: "agent1", TimeoutAt: now.Add(3 * time.Minute)},
+		{AgentID: "agent2", TimeoutAt: now.Add(2 * time.Minute)},
+	}, nil)
+
+	selected := panel.SelectedPending()
+	if selected == nil {
+		t.Fatal("expected selected pending rotation after reorder")
+	}
+	if selected.AgentID != "agent2" {
+		t.Fatalf("selected agent = %q, want agent2", selected.AgentID)
+	}
+	if panel.data.Selected != 2 {
+		t.Fatalf("selected index = %d, want 2", panel.data.Selected)
+	}
+}
+
+func TestRotationConfirmPanelSetDataPreservesSelectedAgentWhenEarlierItemRemoved(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	panel := NewRotationConfirmPanel()
+	panel.SetData([]*context.PendingRotation{
+		{AgentID: "agent1", TimeoutAt: now.Add(3 * time.Minute)},
+		{AgentID: "agent2", TimeoutAt: now.Add(2 * time.Minute)},
+		{AgentID: "agent3", TimeoutAt: now.Add(1 * time.Minute)},
+	}, nil)
+	panel.data.Selected = 1
+
+	panel.SetData([]*context.PendingRotation{
+		{AgentID: "agent2", TimeoutAt: now.Add(2 * time.Minute)},
+		{AgentID: "agent3", TimeoutAt: now.Add(1 * time.Minute)},
+	}, nil)
+
+	selected := panel.SelectedPending()
+	if selected == nil {
+		t.Fatal("expected selected pending rotation after removal")
+	}
+	if selected.AgentID != "agent2" {
+		t.Fatalf("selected agent = %q, want agent2", selected.AgentID)
+	}
+	if panel.data.Selected != 0 {
+		t.Fatalf("selected index = %d, want 0", panel.data.Selected)
 	}
 }
 

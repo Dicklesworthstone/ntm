@@ -2,10 +2,13 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestLocalPerfTracker_TokensPerSecond(t *testing.T) {
@@ -248,5 +251,32 @@ func TestModelRefreshOllamaPSIfNeeded_Success(t *testing.T) {
 	}
 	if m.ollamaModelMemory == nil || m.ollamaModelMemory["mistral:7b"] != 1234 {
 		t.Fatalf("unexpected memory map: %#v", m.ollamaModelMemory)
+	}
+}
+
+func TestDashboardOllamaPSErrorClearsStalePaneMemory(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 0, Title: "session__ollama_1_mistral", Type: tmux.AgentOllama, Variant: "mistral:7b"},
+	}
+	m.ollamaModelMemory = map[string]int64{"mistral:7b": 1234}
+	m.paneStatus[0] = PaneStatus{LocalMemoryBytes: 1234}
+
+	updated, _ := m.Update(OllamaPSResultMsg{Err: errors.New("ollama /api/ps unavailable")})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if next.ollamaPSError == nil {
+		t.Fatal("expected ollama ps error to be recorded")
+	}
+	if next.ollamaModelMemory != nil {
+		t.Fatalf("expected stale ollama memory cache to clear, got %#v", next.ollamaModelMemory)
+	}
+	if next.paneStatus[0].LocalMemoryBytes != 0 {
+		t.Fatalf("expected stale pane memory to clear, got %d", next.paneStatus[0].LocalMemoryBytes)
 	}
 }

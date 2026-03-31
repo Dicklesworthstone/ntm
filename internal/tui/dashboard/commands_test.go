@@ -243,7 +243,22 @@ func TestFetchHistoryCmd(t *testing.T) {
 }
 
 func TestFetchFileChangesCmd(t *testing.T) {
-	t.Parallel()
+	origStore := tracker.GlobalFileChanges
+	store := tracker.NewFileChangeStore(100)
+	tracker.GlobalFileChanges = store
+	t.Cleanup(func() { tracker.GlobalFileChanges = origStore })
+
+	now := time.Now()
+	store.Add(tracker.RecordedFileChange{
+		Timestamp: now.Add(-30 * time.Minute),
+		Session:   "s",
+		Change:    tracker.FileChange{Path: "/older.go", Type: tracker.FileModified},
+	})
+	store.Add(tracker.RecordedFileChange{
+		Timestamp: now.Add(-2 * time.Minute),
+		Session:   "s",
+		Change:    tracker.FileChange{Path: "/recent.go", Type: tracker.FileModified},
+	})
 
 	m := newTestModel(120)
 	cmd := m.fetchFileChangesCmd()
@@ -254,9 +269,15 @@ func TestFetchFileChangesCmd(t *testing.T) {
 		t.Fatalf("expected FileChangeMsg, got %T", msg)
 	}
 
-	// Should return a slice (possibly empty) of changes
-	// We don't expect a panic
-	_ = fileChangeMsg
+	if len(fileChangeMsg.Changes) != 2 {
+		t.Fatalf("expected full bounded file-change buffer, got %d entries", len(fileChangeMsg.Changes))
+	}
+	if fileChangeMsg.Changes[0].Change.Path != "/older.go" {
+		t.Fatalf("expected older buffered change to be returned for wider panel windows, got %q first", fileChangeMsg.Changes[0].Change.Path)
+	}
+	if fileChangeMsg.Changes[1].Change.Path != "/recent.go" {
+		t.Fatalf("expected recent change second, got %q", fileChangeMsg.Changes[1].Change.Path)
+	}
 }
 
 func TestFetchCASSContextCmd_NoCass(t *testing.T) {

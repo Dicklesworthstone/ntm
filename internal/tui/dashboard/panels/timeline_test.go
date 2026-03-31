@@ -395,27 +395,32 @@ func TestTimelinePanel_Keybindings(t *testing.T) {
 	panel := NewTimelinePanel()
 	bindings := panel.Keybindings()
 
-	expectedActions := map[string]bool{
-		"zoom_in":        false,
-		"zoom_out":       false,
-		"scroll_back":    false,
-		"scroll_forward": false,
-		"jump_now":       false,
-		"details":        false,
+	expectedActions := map[string]string{
+		"zoom_in":        "+",
+		"zoom_out":       "-",
+		"scroll_back":    "left",
+		"scroll_forward": "right",
+		"jump_now":       "0",
+		"details":        "enter",
 	}
 
 	for _, b := range bindings {
-		if _, ok := expectedActions[b.Action]; ok {
-			expectedActions[b.Action] = true
+		if wantKey, ok := expectedActions[b.Action]; ok {
 			t.Logf("TIMELINE_TEST: Keybinding | Action=%s Description=%q",
 				b.Action, b.Description)
+			keys := b.Key.Keys()
+			if len(keys) == 0 {
+				t.Fatalf("binding %q should expose at least one key", b.Action)
+			}
+			if keys[0] != wantKey {
+				t.Errorf("binding %q key = %q, want %q", b.Action, keys[0], wantKey)
+			}
+			delete(expectedActions, b.Action)
 		}
 	}
 
-	for action, found := range expectedActions {
-		if !found {
-			t.Errorf("missing keybinding for action %q", action)
-		}
+	for action := range expectedActions {
+		t.Errorf("missing keybinding for action %q", action)
 	}
 }
 
@@ -652,6 +657,34 @@ func TestTimelinePanel_CursorBounds(t *testing.T) {
 	t.Log("TIMELINE_TEST: Cursor bounds maintained correctly")
 }
 
+func TestTimelinePanelSetDataPreservesSelectedAgentAcrossRefresh(t *testing.T) {
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	panel.SetData(TimelineData{Events: []state.AgentEvent{
+		{AgentID: "cc_2", State: state.TimelineIdle, Timestamp: now},
+		{AgentID: "cod_1", State: state.TimelineIdle, Timestamp: now},
+	}}, nil)
+	panel.cursor = 1
+
+	panel.SetData(TimelineData{Events: []state.AgentEvent{
+		{AgentID: "cc_1", State: state.TimelineIdle, Timestamp: now},
+		{AgentID: "cc_2", State: state.TimelineIdle, Timestamp: now},
+		{AgentID: "cod_1", State: state.TimelineIdle, Timestamp: now},
+	}}, nil)
+
+	agentID, ok := panel.selectedAgentID()
+	if !ok {
+		t.Fatal("expected selected agent after refresh")
+	}
+	if agentID != "cod_1" {
+		t.Fatalf("expected selection to stay on cod_1 across agent-list refresh, got %q", agentID)
+	}
+	if panel.cursor != 2 {
+		t.Fatalf("expected cursor to move with cod_1 after inserted agent, got %d", panel.cursor)
+	}
+}
+
 func TestTimelinePanel_MarkerTypes(t *testing.T) {
 	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerTypes | Testing marker type symbols")
 
@@ -829,6 +862,63 @@ func TestTimelinePanel_MarkerNavigation(t *testing.T) {
 	t.Logf("TIMELINE_TEST: Marker navigation tests completed")
 }
 
+func TestTimelinePanelSetDataPreservesSelectedMarkerAcrossInsertedMarkers(t *testing.T) {
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	panel.SetData(TimelineData{Markers: []state.TimelineMarker{
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-20 * time.Minute)},
+		{ID: "m3", AgentID: "cc_1", Type: state.MarkerCompletion, Timestamp: now.Add(-10 * time.Minute)},
+	}}, nil)
+	panel.markerIndex = 1
+
+	panel.SetData(TimelineData{Markers: []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerStart, Timestamp: now.Add(-25 * time.Minute)},
+		{ID: "m2", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-20 * time.Minute)},
+		{ID: "m3", AgentID: "cc_1", Type: state.MarkerCompletion, Timestamp: now.Add(-10 * time.Minute)},
+	}}, nil)
+
+	if panel.markerIndex != 2 {
+		t.Fatalf("expected marker index to follow marker m3 after insertion, got %d", panel.markerIndex)
+	}
+	visible := panel.getVisibleMarkers()
+	if panel.markerIndex < 0 || panel.markerIndex >= len(visible) {
+		t.Fatal("expected a valid selected marker after refresh")
+	}
+	if visible[panel.markerIndex].ID != "m3" {
+		t.Fatalf("expected marker selection to stay on m3, got %q", visible[panel.markerIndex].ID)
+	}
+}
+
+func TestTimelinePanelSetDataClearsRemovedOverlayMarker(t *testing.T) {
+	panel := NewTimelinePanel()
+	now := time.Now()
+
+	panel.SetData(TimelineData{Markers: []state.TimelineMarker{
+		{ID: "m1", AgentID: "cc_1", Type: state.MarkerPrompt, Timestamp: now.Add(-10 * time.Minute)},
+	}}, nil)
+	panel.markerIndex = 0
+	panel.selectedMarker = &state.TimelineMarker{
+		ID:        "m1",
+		AgentID:   "cc_1",
+		Type:      state.MarkerPrompt,
+		Timestamp: now.Add(-10 * time.Minute),
+	}
+	panel.showOverlay = true
+
+	panel.SetData(TimelineData{Markers: nil}, nil)
+
+	if panel.markerIndex != -1 {
+		t.Fatalf("expected removed marker selection to clear, got %d", panel.markerIndex)
+	}
+	if panel.selectedMarker != nil {
+		t.Fatalf("expected removed overlay marker to be cleared, got %q", panel.selectedMarker.ID)
+	}
+	if panel.showOverlay {
+		t.Fatal("expected overlay to close when selected marker disappears")
+	}
+}
+
 func TestTimelinePanel_MarkerSelection(t *testing.T) {
 	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerSelection | Testing marker selection state")
 
@@ -990,24 +1080,29 @@ func TestTimelinePanel_MarkerKeybindings(t *testing.T) {
 	panel := NewTimelinePanel()
 	bindings := panel.Keybindings()
 
-	expectedActions := map[string]bool{
-		"next_marker":  false,
-		"prev_marker":  false,
-		"first_marker": false,
-		"close":        false,
+	expectedActions := map[string]string{
+		"next_marker":  "]",
+		"prev_marker":  "[",
+		"first_marker": "f",
+		"close":        "esc",
 	}
 
 	for _, b := range bindings {
-		if _, ok := expectedActions[b.Action]; ok {
-			expectedActions[b.Action] = true
+		if wantKey, ok := expectedActions[b.Action]; ok {
 			t.Logf("TIMELINE_TEST: MarkerKeybinding | Action=%s Description=%q", b.Action, b.Description)
+			keys := b.Key.Keys()
+			if len(keys) == 0 {
+				t.Fatalf("binding %q should expose at least one key", b.Action)
+			}
+			if keys[0] != wantKey {
+				t.Errorf("binding %q key = %q, want %q", b.Action, keys[0], wantKey)
+			}
+			delete(expectedActions, b.Action)
 		}
 	}
 
-	for action, found := range expectedActions {
-		if !found {
-			t.Errorf("missing keybinding for marker action %q", action)
-		}
+	for action := range expectedActions {
+		t.Errorf("missing keybinding for marker action %q", action)
 	}
 }
 

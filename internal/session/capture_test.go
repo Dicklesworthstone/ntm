@@ -98,11 +98,13 @@ func TestGetGitInfo_NonExistentDir(t *testing.T) {
 }
 
 func TestGetGitInfoWithTimeout_UsesIndependentCommandBudgets(t *testing.T) {
+	const perCommandBudget = 150 * time.Millisecond
+
 	tmpBin := t.TempDir()
 	logFile := filepath.Join(tmpBin, "git-invocations.log")
 	gitPath := filepath.Join(tmpBin, "git")
 	script := `#!/bin/sh
-sleep 0.08
+sleep 0.07
 printf '%s\n' "$3 $4 $5" >> "$NTM_GITINFO_LOG"
 case "$3 $4 $5" in
   "rev-parse --abbrev-ref HEAD")
@@ -123,7 +125,11 @@ esac
 	t.Setenv("PATH", tmpBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("NTM_GITINFO_LOG", logFile)
 
-	branch, remote, commit := getGitInfoWithTimeout(t.TempDir(), 100*time.Millisecond)
+	start := time.Now()
+	branch, remote, commit := getGitInfoWithTimeout(t.TempDir(), perCommandBudget)
+	if elapsed := time.Since(start); elapsed < perCommandBudget {
+		t.Fatalf("total runtime = %v, want > %v to prove commands did not share one timeout budget", elapsed, perCommandBudget)
+	}
 	if branch != "main" {
 		t.Fatalf("branch = %q, want main", branch)
 	}

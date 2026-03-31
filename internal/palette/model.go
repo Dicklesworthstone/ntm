@@ -591,6 +591,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ReloadMsg:
 		m.commands = msg.Commands
 		m.updateFiltered()
+		m.reconcileSelectionAfterReload()
 		return m, nil
 
 	case XFSearchResultsMsg:
@@ -1004,6 +1005,34 @@ func (m *Model) updateEditPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.editInput, cmd = m.editInput.Update(msg)
 	return *m, cmd
+}
+
+func (m *Model) reconcileSelectionAfterReload() {
+	if m.selected == nil {
+		return
+	}
+
+	// XF results are ephemeral selections rather than config-backed palette items.
+	// Keep them stable across palette config reloads.
+	if m.selected.Key == "xf-result" {
+		return
+	}
+
+	selectedKey := strings.TrimSpace(m.selected.Key)
+	if selectedKey != "" {
+		for i := range m.commands {
+			if strings.TrimSpace(m.commands[i].Key) == selectedKey {
+				m.selected = &m.commands[i]
+				return
+			}
+		}
+	}
+
+	m.selected = nil
+	m.editDraft = ""
+	if m.phase == PhaseTarget || m.phase == PhaseEdit {
+		m.phase = PhaseCommand
+	}
 }
 
 func (m *Model) updateFiltered() {

@@ -93,14 +93,26 @@ func TestMetricsPanelKeybindings(t *testing.T) {
 		t.Error("expected non-empty keybindings")
 	}
 
-	actions := make(map[string]bool)
+	actions := make(map[string]string)
 	for _, b := range bindings {
-		actions[b.Action] = true
+		keys := b.Key.Keys()
+		if len(keys) == 0 {
+			t.Fatalf("binding %q should expose at least one key", b.Action)
+		}
+		actions[b.Action] = keys[0]
 	}
 
-	for _, action := range []string{"toggle_coverage", "toggle_redundancy", "toggle_velocity", "toggle_conflicts"} {
-		if !actions[action] {
+	expected := map[string]string{
+		"toggle_coverage":   "c",
+		"toggle_redundancy": "r",
+		"toggle_velocity":   "v",
+		"toggle_conflicts":  "x",
+	}
+	for action, wantKey := range expected {
+		if gotKey, ok := actions[action]; !ok {
 			t.Errorf("expected action %q in keybindings", action)
+		} else if gotKey != wantKey {
+			t.Errorf("binding %q key = %q, want %q", action, gotKey, wantKey)
 		}
 	}
 }

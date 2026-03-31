@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,17 +15,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
+	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
+	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 func newTestModel(width int) Model {
@@ -636,6 +643,60 @@ func TestSidebarRendersCASSContext(t *testing.T) {
 	}
 }
 
+func TestDashboardCASSContextErrorClearsStaleSidebarEntries(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.historyPanel = nil
+	m.filesPanel = nil
+
+	createdAt := &cass.FlexTime{Time: time.Now().Add(-2 * time.Hour)}
+	staleHits := []cass.SearchHit{
+		{
+			Title:     "Session: stale auth refactor",
+			Score:     0.90,
+			CreatedAt: createdAt,
+		},
+	}
+
+	updated, _ := m.Update(CASSContextMsg{Hits: staleHits, Gen: 1})
+	m2, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if len(m2.cassContext) != 1 {
+		t.Fatalf("expected stale CASS hit to be loaded, got %d", len(m2.cassContext))
+	}
+
+	updated, _ = m2.Update(CASSContextMsg{Err: errors.New("cass lookup failed"), Gen: 2})
+	m3, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if m3.cassError == nil {
+		t.Fatal("expected CASS error to be recorded")
+	}
+	if len(m3.cassContext) != 0 {
+		t.Fatalf("expected stale CASS hits to clear on error, got %d", len(m3.cassContext))
+	}
+	if m3.cassPanel == nil {
+		t.Fatal("expected CASS panel to exist")
+	}
+	if !m3.cassPanel.HasError() {
+		t.Fatal("expected CASS panel to reflect the error")
+	}
+
+	out := status.StripANSI(m3.renderSidebar(60, 25))
+	if strings.Contains(out, "stale auth refactor") {
+		t.Fatalf("expected stale CASS hit to disappear after error, got:\n%s", out)
+	}
+	if !strings.Contains(out, "cass lookup failed") {
+		t.Fatalf("expected sidebar to show the CASS error, got:\n%s", out)
+	}
+}
+
 func TestSidebarRendersFileChanges(t *testing.T) {
 	t.Parallel()
 
@@ -660,6 +721,65 @@ func TestSidebarRendersFileChanges(t *testing.T) {
 	out := status.StripANSI(m.renderSidebar(60, 25))
 	if !strings.Contains(out, "main.go") {
 		t.Fatalf("expected sidebar to include file change; got:\n%s", out)
+	}
+}
+
+func TestDashboardFileChangeErrorClearsStaleSidebarEntries(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.historyPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = nil
+
+	now := time.Now().Add(-2 * time.Minute)
+	changes := []tracker.RecordedFileChange{
+		{
+			Timestamp: now,
+			Session:   "test",
+			Agents:    []string{"BluePond"},
+			Change: tracker.FileChange{
+				Path: "/src/main.go",
+				Type: tracker.FileModified,
+			},
+		},
+	}
+
+	updated, _ := m.Update(FileChangeMsg{Changes: changes, Gen: 1})
+	m, _ = updated.(Model)
+
+	updated, _ = m.Update(FileChangeMsg{
+		Err: errors.New("watch not running"),
+		Gen: 2,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if len(next.fileChanges) != 0 {
+		t.Fatalf("expected stale file changes to clear on error, got %#v", next.fileChanges)
+	}
+	if next.fileChangesError == nil {
+		t.Fatal("expected file change error to be recorded")
+	}
+
+	rendered := status.StripANSI(next.renderSidebar(60, 25))
+	if strings.Contains(rendered, "main.go") {
+		t.Fatalf("expected stale file entry to disappear after error, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Error") {
+		t.Fatalf("expected sidebar to show files error state, got:\n%s", rendered)
+	}
+
+	updated, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := updated.(Model); !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if cmd != nil {
+		t.Fatalf("expected enter on errored files panel with no entries to do nothing, got %T", cmd)
 	}
 }
 
@@ -707,6 +827,115 @@ func TestSidebarRendersMetricsAndHistoryPanelsWhenSpaceAllows(t *testing.T) {
 	}
 	if !strings.Contains(out, "Command History") {
 		t.Fatalf("expected sidebar to include history panel title; got:\n%s", out)
+	}
+}
+
+func TestDashboardMetricsErrorClearsStaleSnapshot(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	m.focusedPanel = PanelSidebar
+	m.historyPanel = nil
+	m.filesPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = nil
+
+	updated, _ := m.Update(MetricsUpdateMsg{
+		Data: panels.MetricsData{
+			Coverage: &ensemble.CoverageReport{Overall: 0.5},
+			Conflicts: &ensemble.ConflictDensity{
+				TotalConflicts:    3,
+				ResolvedConflicts: 1,
+			},
+		},
+		Gen: 1,
+	})
+	m, _ = updated.(Model)
+
+	updated, _ = m.Update(MetricsUpdateMsg{
+		Err: errors.New("metrics backend down"),
+		Gen: 2,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if next.metricsData.Coverage != nil || next.metricsData.Conflicts != nil || next.metricsData.Redundancy != nil || next.metricsData.Velocity != nil {
+		t.Fatalf("expected stale metrics snapshot to clear on error, got %#v", next.metricsData)
+	}
+	if next.metricsError == nil {
+		t.Fatal("expected metrics error to be recorded")
+	}
+
+	rendered := status.StripANSI(next.renderSidebar(60, 25))
+	if strings.Contains(rendered, "Coverage: 50%") || strings.Contains(rendered, "Conflicts: 3 detected") {
+		t.Fatalf("expected stale metrics to disappear after error, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Coverage: N/A") {
+		t.Fatalf("expected cleared metrics view after error, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Error") {
+		t.Fatalf("expected sidebar to show metrics error state, got:\n%s", rendered)
+	}
+}
+
+func TestDashboardHistoryErrorClearsStaleReplayableEntries(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.filesPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = nil
+
+	updated, _ := m.Update(HistoryUpdateMsg{
+		Entries: []history.HistoryEntry{
+			{
+				ID:        "1",
+				Timestamp: time.Now().UTC(),
+				Session:   "test",
+				Targets:   []string{"1"},
+				Prompt:    "Hello from stale history",
+				Source:    history.SourceCLI,
+				Success:   true,
+			},
+		},
+		Gen: 1,
+	})
+	m, _ = updated.(Model)
+
+	updated, _ = m.Update(HistoryUpdateMsg{
+		Err: errors.New("history backend unavailable"),
+		Gen: 2,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if len(next.cmdHistory) != 0 {
+		t.Fatalf("expected stale history to clear on error, got %#v", next.cmdHistory)
+	}
+	if next.historyError == nil {
+		t.Fatal("expected history error to be recorded")
+	}
+
+	rendered := status.StripANSI(next.renderSidebar(60, 25))
+	if strings.Contains(rendered, "Hello from stale history") {
+		t.Fatalf("expected stale history prompt to disappear after error, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Error") {
+		t.Fatalf("expected sidebar to show history error state, got:\n%s", rendered)
+	}
+
+	updated, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := updated.(Model); !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if cmd != nil {
+		t.Fatalf("expected enter on errored history panel with no entries to do nothing, got %T", cmd)
 	}
 }
 
@@ -1081,6 +1310,120 @@ func TestDashboardSpawnWizardReportsAddFailure(t *testing.T) {
 	}
 }
 
+func TestDashboardOpenFileMsgSchedulesEditorProcess(t *testing.T) {
+	oldBuild := dashboardBuildEditorCommand
+	oldExec := dashboardExecProcess
+	defer func() {
+		dashboardBuildEditorCommand = oldBuild
+		dashboardExecProcess = oldExec
+	}()
+
+	projectDir := t.TempDir()
+	targetPath := filepath.Join(projectDir, "relative.go")
+	if err := os.WriteFile(targetPath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+
+	var (
+		gotBuildPath string
+		gotCmd       *exec.Cmd
+	)
+	dashboardBuildEditorCommand = func(path string) (*exec.Cmd, error) {
+		gotBuildPath = path
+		return exec.Command("true"), nil
+	}
+	dashboardExecProcess = func(cmd *exec.Cmd, fn tea.ExecCallback) tea.Cmd {
+		gotCmd = cmd
+		return func() tea.Msg { return fn(nil) }
+	}
+
+	m := newTestModel(140)
+	m.projectDir = projectDir
+
+	updated, cmd := m.Update(panels.OpenFileMsg{
+		Change: tracker.RecordedFileChange{
+			Change: tracker.FileChange{
+				Path: "relative.go",
+				Type: tracker.FileModified,
+			},
+		},
+	})
+	m = updated.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected editor command")
+	}
+	if gotBuildPath != targetPath {
+		t.Fatalf("build path = %q, want %q", gotBuildPath, targetPath)
+	}
+	if gotCmd == nil {
+		t.Fatal("expected ExecProcess to receive a command")
+	}
+	if gotCmd.Dir != projectDir {
+		t.Fatalf("editor dir = %q, want %q", gotCmd.Dir, projectDir)
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("expected nil completion message on clean exit, got %T", msg)
+	}
+}
+
+func TestDashboardOpenFileMsgRejectsDeletedFile(t *testing.T) {
+	oldBuild := dashboardBuildEditorCommand
+	oldExec := dashboardExecProcess
+	defer func() {
+		dashboardBuildEditorCommand = oldBuild
+		dashboardExecProcess = oldExec
+	}()
+
+	buildCalled := false
+	execCalled := false
+	dashboardBuildEditorCommand = func(path string) (*exec.Cmd, error) {
+		buildCalled = true
+		return exec.Command("true"), nil
+	}
+	dashboardExecProcess = func(cmd *exec.Cmd, fn tea.ExecCallback) tea.Cmd {
+		execCalled = true
+		return nil
+	}
+
+	m := newTestModel(140)
+
+	updated, cmd := m.Update(panels.OpenFileMsg{
+		Change: tracker.RecordedFileChange{
+			Change: tracker.FileChange{
+				Path: "/tmp/deleted.go",
+				Type: tracker.FileDeleted,
+			},
+		},
+	})
+	m = updated.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected immediate error command")
+	}
+
+	msg := cmd()
+	result, ok := msg.(FileOpenResultMsg)
+	if !ok {
+		t.Fatalf("expected FileOpenResultMsg, got %T", msg)
+	}
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "deleted file") {
+		t.Fatalf("result err = %v, want deleted-file error", result.Err)
+	}
+	if buildCalled {
+		t.Fatal("editor command builder should not run for deleted files")
+	}
+	if execCalled {
+		t.Fatal("ExecProcess should not run for deleted files")
+	}
+
+	updated, _ = m.Update(result)
+	m = updated.(Model)
+	if !strings.Contains(m.healthMessage, "deleted file") {
+		t.Fatalf("healthMessage = %q, want deleted-file explanation", m.healthMessage)
+	}
+}
+
 func TestKeyboardNavigationCursorMovement(t *testing.T) {
 	t.Parallel()
 
@@ -1121,6 +1464,36 @@ func TestKeyboardNavigationCursorMovement(t *testing.T) {
 	m = updated.(Model)
 	if m.cursor != 0 {
 		t.Fatalf("expected cursor to stay at 0 when moving up, got %d", m.cursor)
+	}
+}
+
+func TestDashboardPauseKeyTogglesRefreshAndResumesWithFetch(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(120)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if !next.refreshPaused {
+		t.Fatal("expected pause key to pause auto-refresh")
+	}
+	if cmd != nil {
+		t.Fatalf("expected pausing to avoid scheduling a refresh, got %T", cmd)
+	}
+
+	updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	next, ok = updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if next.refreshPaused {
+		t.Fatal("expected second pause keypress to resume auto-refresh")
+	}
+	if cmd == nil {
+		t.Fatal("expected resuming auto-refresh to schedule an immediate refresh batch")
 	}
 }
 
@@ -1902,6 +2275,1022 @@ func TestRenderMetricsPanel(t *testing.T) {
 	result := m.renderMetricsPanel(50, 10)
 	if result == "" {
 		t.Error("renderMetricsPanel should not return empty string")
+	}
+}
+
+func TestDashboardMetricsPanelShortcutOverridesContextRefresh(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.timelinePanel = nil
+	m.cassPanel = nil
+	m.historyPanel = nil
+	m.filesPanel = nil
+	m.metricsPanel = panels.NewMetricsPanel()
+	metricsData := panels.MetricsData{
+		Coverage: &ensemble.CoverageReport{
+			Overall: 0.5,
+			PerCategory: map[ensemble.ModeCategory]ensemble.CategoryCoverage{
+				ensemble.CategoryFormal: {
+					Category:   ensemble.CategoryFormal,
+					TotalModes: 2,
+					UsedModes:  []string{"deductive"},
+					Coverage:   0.5,
+				},
+			},
+		},
+	}
+	m.metricsData = metricsData
+	m.metricsPanel.SetData(metricsData, nil)
+
+	m.metricsPanel.SetSize(60, 12)
+	before := status.StripANSI(m.metricsPanel.View())
+	if strings.Contains(before, "Formal") {
+		t.Fatalf("collapsed metrics panel should not render coverage details, got %q", before)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	_ = next.renderSidebar(60, 24)
+	next.metricsPanel.SetSize(60, 12)
+	after := status.StripANSI(next.metricsPanel.View())
+	if !strings.Contains(after, "Formal") {
+		t.Fatalf("coverage shortcut should expand details inside the dashboard, got %q", after)
+	}
+}
+
+func TestDashboardFilesPanelShortcutCyclesTimeWindow(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.historyPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = nil
+	m.filesPanel = panels.NewFilesPanel()
+	now := time.Now()
+	changes := []tracker.RecordedFileChange{
+		{
+			Timestamp: now,
+			Change: tracker.FileChange{
+				Path: "internal/tui/dashboard/panels/files.go",
+				Type: tracker.FileModified,
+			},
+			Agents: []string{"BlackMaple"},
+		},
+	}
+	m.fileChanges = changes
+	m.filesPanel.SetData(changes, nil)
+	m.filesPanel.SetSize(60, 12)
+
+	before := status.StripANSI(m.filesPanel.View())
+	if !strings.Contains(before, "15m") {
+		t.Fatalf("default files panel window badge missing from %q", before)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	_ = next.renderSidebar(60, 24)
+	next.filesPanel.SetSize(60, 12)
+	after := status.StripANSI(next.filesPanel.View())
+	if !strings.Contains(after, "5m") {
+		t.Fatalf("files panel shortcut should advance the time window badge, got %q", after)
+	}
+}
+
+func TestDashboardFilesPanelEnterEmitsOpenFileMsg(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.historyPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = nil
+	m.filesPanel = panels.NewFilesPanel()
+	changes := []tracker.RecordedFileChange{
+		{
+			Timestamp: now,
+			Change: tracker.FileChange{
+				Path: "internal/tui/dashboard/panels/files.go",
+				Type: tracker.FileModified,
+			},
+			Agents: []string{"BlackMaple"},
+		},
+	}
+	m.fileChanges = changes
+	m.filesPanel.SetData(changes, nil)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := updated.(Model); !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if cmd == nil {
+		t.Fatal("enter on focused files panel should return an open-file command")
+	}
+	if _, ok := cmd().(panels.OpenFileMsg); !ok {
+		t.Fatalf("expected enter on files panel to emit panels.OpenFileMsg, got %T", cmd())
+	}
+}
+
+func TestDashboardTimelineShortcutSelectsNextMarker(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.metricsPanel = nil
+	m.historyPanel = nil
+	m.filesPanel = nil
+	m.cassPanel = nil
+	m.timelinePanel = panels.NewTimelinePanel()
+	m.timelinePanel.SetData(panels.TimelineData{
+		Events: []state.AgentEvent{
+			{AgentID: "cc_1", State: state.TimelineWorking, Timestamp: now.Add(-5 * time.Minute)},
+		},
+		Markers: []state.TimelineMarker{
+			{ID: "m1", AgentID: "cc_1", SessionID: "test", Type: state.MarkerPrompt, Timestamp: now.Add(-2 * time.Minute)},
+		},
+		Stats: state.TimelineStats{
+			TotalAgents: 1,
+			TotalEvents: 1,
+			OldestEvent: now.Add(-5 * time.Minute),
+			NewestEvent: now,
+		},
+	}, nil)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	_ = next.renderSidebar(60, 24)
+	updated, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := updated.(Model); !ok {
+		t.Fatalf("Update() returned %T after enter, want dashboard.Model", updated)
+	}
+	if cmd == nil {
+		t.Fatal("enter after next-marker shortcut should return a details command")
+	}
+	msg := cmd()
+	if _, ok := msg.(panels.MarkerSelectMsg); !ok {
+		t.Fatalf("expected marker details command after next-marker shortcut, got %T", msg)
+	}
+}
+
+func TestDashboardSidebarRendersRotationConfirmPanelWhenPending(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.rotationConfirmPanel.SetData([]*ctxmon.PendingRotation{
+		{
+			AgentID:        "proj__cc_1",
+			SessionName:    "proj",
+			ContextPercent: 93,
+			TimeoutAt:      now.Add(30 * time.Second),
+			DefaultAction:  ctxmon.ConfirmRotate,
+		},
+	}, nil)
+
+	rendered := status.StripANSI(m.renderSidebar(60, 28))
+	if !strings.Contains(rendered, "Pending Rotations") {
+		t.Fatalf("sidebar should render the pending rotations panel, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "proj__cc_1") {
+		t.Fatalf("sidebar should include the pending rotation agent, got %q", rendered)
+	}
+}
+
+func TestDashboardRotationConfirmShortcutsOverrideGlobalBindings(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	tests := []struct {
+		name   string
+		key    rune
+		action ctxmon.ConfirmAction
+	}{
+		{name: "rotate", key: 'r', action: ctxmon.ConfirmRotate},
+		{name: "compact", key: 'c', action: ctxmon.ConfirmCompact},
+		{name: "ignore", key: 'i', action: ctxmon.ConfirmIgnore},
+		{name: "postpone", key: 'p', action: ctxmon.ConfirmPostpone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(200)
+			m.focusedPanel = PanelSidebar
+			m.rotationConfirmPanel.SetData([]*ctxmon.PendingRotation{
+				{
+					AgentID:        "proj__cc_1",
+					SessionName:    "proj",
+					ContextPercent: 93,
+					TimeoutAt:      now.Add(30 * time.Second),
+					DefaultAction:  ctxmon.ConfirmRotate,
+				},
+			}, nil)
+			_ = m.renderSidebar(60, 28)
+
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{tt.key}})
+			if _, ok := updated.(Model); !ok {
+				t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+			}
+			if cmd == nil {
+				t.Fatalf("key %q should trigger a rotation confirm command", string(tt.key))
+			}
+
+			msg := cmd()
+			actionMsg, ok := msg.(panels.RotationConfirmActionMsg)
+			if !ok {
+				t.Fatalf("expected RotationConfirmActionMsg, got %T", msg)
+			}
+			if actionMsg.Action != tt.action {
+				t.Fatalf("action = %v, want %v", actionMsg.Action, tt.action)
+			}
+		})
+	}
+}
+
+func TestDashboardRotationConfirmNavigationMovesSingleStep(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.rotationConfirmPanel.SetData([]*ctxmon.PendingRotation{
+		{
+			AgentID:        "proj__cc_1",
+			SessionName:    "proj",
+			ContextPercent: 93,
+			TimeoutAt:      now.Add(30 * time.Second),
+			DefaultAction:  ctxmon.ConfirmRotate,
+		},
+		{
+			AgentID:        "proj__cc_2",
+			SessionName:    "proj",
+			ContextPercent: 94,
+			TimeoutAt:      now.Add(45 * time.Second),
+			DefaultAction:  ctxmon.ConfirmRotate,
+		},
+		{
+			AgentID:        "proj__cc_3",
+			SessionName:    "proj",
+			ContextPercent: 95,
+			TimeoutAt:      now.Add(60 * time.Second),
+			DefaultAction:  ctxmon.ConfirmRotate,
+		},
+	}, nil)
+	_ = m.renderSidebar(60, 28)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if cmd != nil {
+		t.Fatalf("expected navigation key to return no command, got %T", cmd)
+	}
+
+	selected := next.rotationConfirmPanel.SelectedPending()
+	if selected == nil {
+		t.Fatal("expected a selected pending rotation after navigation")
+	}
+	if selected.AgentID != "proj__cc_2" {
+		t.Fatalf("expected single-step navigation to land on second entry, got %q", selected.AgentID)
+	}
+}
+
+func TestDashboardRotationConfirmErrorLeavesGlobalRefreshAvailable(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.rotationConfirmPanel.SetData(nil, errors.New("pending rotation refresh failed"))
+	_ = m.renderSidebar(60, 28)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if cmd == nil {
+		t.Fatal("expected global refresh command when rotation panel is only showing an error")
+	}
+	if next.rotationConfirmPanel.HasPending() {
+		t.Fatal("expected error state to remain non-pending during refresh")
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from global refresh, got %T", cmd())
+	}
+	if len(batch) == 0 {
+		t.Fatal("expected global refresh batch to schedule follow-up work")
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryClearsStaleBadgesOnEmptyRefresh(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.panes = []tmux.Pane{
+		{ID: "pane-1", Index: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "pane-2", Index: 2, Title: "proj__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[1] = PaneStatus{MailUnread: 3, MailUrgent: 1}
+	m.paneStatus[2] = PaneStatus{MailUnread: 2, MailUrgent: 0}
+	m.agentMailUnread = 5
+	m.agentMailUrgent = 1
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"pane-1": {
+			{ID: 1, Subject: "urgent", Importance: "urgent"},
+		},
+		"pane-2": {
+			{ID: 2, Subject: "normal", Importance: "normal"},
+		},
+	}
+	m.agentMailAgents = map[string]string{
+		"pane-1": "proj__cc_1",
+		"pane-2": "proj__cod_1",
+	}
+
+	updated, _ := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes:    map[string][]agentmail.InboxMessage{},
+		AgentMap:   map[string]string{},
+		Gen:        1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if next.agentMailUnread != 0 || next.agentMailUrgent != 0 {
+		t.Fatalf("expected summary totals to clear, got unread=%d urgent=%d", next.agentMailUnread, next.agentMailUrgent)
+	}
+	if next.paneStatus[1].MailUnread != 0 || next.paneStatus[1].MailUrgent != 0 {
+		t.Fatalf("expected pane-1 mail badge state to clear, got %+v", next.paneStatus[1])
+	}
+	if next.paneStatus[2].MailUnread != 0 || next.paneStatus[2].MailUrgent != 0 {
+		t.Fatalf("expected pane-2 mail badge state to clear, got %+v", next.paneStatus[2])
+	}
+	if len(next.agentMailInbox) != 0 {
+		t.Fatalf("expected inbox cache to clear, got %#v", next.agentMailInbox)
+	}
+	if len(next.agentMailAgents) != 0 {
+		t.Fatalf("expected agent map to clear, got %#v", next.agentMailAgents)
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryAppliesPartialResultsOnError(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.panes = []tmux.Pane{
+		{ID: "pane-1", Index: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "pane-2", Index: 2, Title: "proj__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[1] = PaneStatus{MailUnread: 4, MailUrgent: 1}
+	m.paneStatus[2] = PaneStatus{MailUnread: 2, MailUrgent: 0}
+	m.agentMailUnread = 6
+	m.agentMailUrgent = 1
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"pane-1": {
+			{ID: 10, Subject: "old", Importance: "urgent"},
+		},
+		"pane-2": {
+			{ID: 11, Subject: "stale", Importance: "normal"},
+		},
+	}
+	m.agentMailAgents = map[string]string{
+		"pane-1": "proj__cc_1",
+		"pane-2": "proj__cod_1",
+	}
+
+	updated, _ := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"pane-2": {
+				{ID: 21, Subject: "new urgent", Importance: "urgent"},
+			},
+		},
+		AgentMap: map[string]string{
+			"pane-1": "proj__cc_1",
+			"pane-2": "proj__cod_1",
+		},
+		Err: errors.New("transient inbox fetch failure"),
+		Gen: 1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if next.agentMailUnread != 1 || next.agentMailUrgent != 1 {
+		t.Fatalf("expected partial fresh totals to apply, got unread=%d urgent=%d", next.agentMailUnread, next.agentMailUrgent)
+	}
+	if next.paneStatus[1].MailUnread != 0 || next.paneStatus[1].MailUrgent != 0 {
+		t.Fatalf("expected missing pane state to clear after partial refresh, got %+v", next.paneStatus[1])
+	}
+	if next.paneStatus[2].MailUnread != 1 || next.paneStatus[2].MailUrgent != 1 {
+		t.Fatalf("expected successful pane state to update, got %+v", next.paneStatus[2])
+	}
+	if len(next.agentMailInbox["pane-2"]) != 1 {
+		t.Fatalf("expected successful pane inbox to be retained, got %#v", next.agentMailInbox)
+	}
+	if _, ok := next.agentMailInbox["pane-1"]; ok {
+		t.Fatalf("expected stale pane inbox cache to be cleared, got %#v", next.agentMailInbox)
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryCountsUnreadOnly(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	readAt := &agentmail.FlexTime{Time: time.Now()}
+
+	updated, _ := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"1": {
+				{ID: 1, Subject: "read urgent", Importance: "urgent", ReadAt: readAt},
+				{ID: 2, Subject: "unread normal", Importance: "normal"},
+				{ID: 3, Subject: "unread urgent", Importance: "urgent"},
+			},
+		},
+		AgentMap: map[string]string{
+			"1": "proj__cod_1",
+		},
+		Gen: 1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if next.agentMailUnread != 2 || next.agentMailUrgent != 1 {
+		t.Fatalf("expected unread/urgent totals to ignore read messages, got unread=%d urgent=%d", next.agentMailUnread, next.agentMailUrgent)
+	}
+	if next.paneStatus[1].MailUnread != 2 || next.paneStatus[1].MailUrgent != 1 {
+		t.Fatalf("expected pane unread/urgent badge state to ignore read messages, got %+v", next.paneStatus[1])
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryPublishesAttentionOnlyForUnread(t *testing.T) {
+	lockAttentionFeedForTest(t)
+
+	oldFeed := robot.GetAttentionFeed()
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+	})
+
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{
+		JournalSize:       16,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	robot.SetAttentionFeed(feed)
+
+	m := newTestModel(200)
+	readAt := &agentmail.FlexTime{Time: time.Now()}
+
+	updated, _ := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"1": {
+				{ID: 1, Subject: "already read", Importance: "normal", ReadAt: readAt},
+				{ID: 2, Subject: "needs ack", Importance: "normal", AckRequired: true},
+			},
+		},
+		AgentMap: map[string]string{
+			"1": "proj__cod_1",
+		},
+		Gen: 1,
+	})
+	if _, ok := updated.(Model); !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	events, _, err := feed.Replay(0, 10)
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	sawUnread := false
+	for _, event := range events {
+		var messageID int
+		switch value := event.Details["message_id"].(type) {
+		case int:
+			messageID = value
+		case int64:
+			messageID = int(value)
+		case float64:
+			messageID = int(value)
+		default:
+			continue
+		}
+		if messageID == 1 {
+			t.Fatalf("expected read message not to emit attention, got event %+v", event)
+		}
+		if messageID == 2 {
+			sawUnread = true
+		}
+	}
+	if !sawUnread {
+		t.Fatalf("expected unread message to emit attention, got events %+v", events)
+	}
+}
+
+func TestDashboardAgentMailOfflineRefreshClearsStaleLockDetails(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	m.agentMailAvailable = true
+	m.agentMailConnected = true
+	m.agentMailLocks = 2
+	m.agentMailLockInfo = []AgentMailLockInfo{
+		{
+			PathPattern: "internal/tui/dashboard/dashboard.go",
+			AgentName:   "GoldenMarsh",
+			Exclusive:   true,
+			ExpiresIn:   "42m",
+		},
+	}
+
+	updated, _ := m.Update(AgentMailUpdateMsg{
+		Available:    true,
+		Connected:    false,
+		ArchiveFound: true,
+		Gen:          1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if next.agentMailLocks != 0 {
+		t.Fatalf("expected stale lock count to clear, got %d", next.agentMailLocks)
+	}
+	if len(next.agentMailLockInfo) != 0 {
+		t.Fatalf("expected stale lock details to clear, got %#v", next.agentMailLockInfo)
+	}
+
+	rendered := status.StripANSI(next.renderSidebar(60, 25))
+	if strings.Contains(rendered, "dashboard.go") || strings.Contains(rendered, "GoldenMarsh") {
+		t.Fatalf("expected stale lock details to disappear from sidebar, got:\n%s", rendered)
+	}
+}
+
+func TestDashboardAgentMailInboxDetailSkipPreservesSummaryCache(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"1": {
+			{ID: 7, Subject: "still unread", Importance: "normal"},
+		},
+	}
+
+	updated, _ := m.Update(AgentMailInboxDetailMsg{
+		PaneID:  "1",
+		Skipped: true,
+		Gen:     1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if len(next.agentMailInbox["1"]) != 1 {
+		t.Fatalf("expected skipped detail fetch to preserve summary cache, got %#v", next.agentMailInbox)
+	}
+	if next.agentMailInbox["1"][0].Subject != "still unread" {
+		t.Fatalf("expected preserved inbox subject, got %#v", next.agentMailInbox["1"])
+	}
+}
+
+func TestDashboardInboxToggleTogglesDetailMode(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"1": {
+			{ID: 7, Subject: "needs detail", Importance: "normal"},
+		},
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if !next.showInboxDetails {
+		t.Fatal("expected inbox toggle to enable detail mode")
+	}
+	if cmd == nil {
+		t.Fatal("expected enabling inbox details to schedule a detail fetch")
+	}
+
+	updated, cmd = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	next, ok = updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if next.showInboxDetails {
+		t.Fatal("expected inbox toggle to disable detail mode")
+	}
+	if cmd != nil {
+		t.Fatalf("expected disabling inbox details to avoid follow-up fetch, got %T", cmd)
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryPreservesFetchedBodiesAndRefetchesNewIDs(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.showInboxDetails = true
+	m.agentMailInboxBodyCache[7] = "cached detail body"
+	m.agentMailInboxBodyKnown[7] = true
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"1": {
+			{ID: 7, Subject: "old subject", Importance: "normal", BodyMD: "cached detail body"},
+		},
+	}
+
+	updated, cmd := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"1": {
+				{ID: 7, Subject: "fresh subject", Importance: "normal"},
+				{ID: 8, Subject: "new message", Importance: "high"},
+			},
+		},
+		AgentMap: map[string]string{
+			"1": "proj__cc_1",
+		},
+		Gen: 1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if got := next.agentMailInbox["1"][0].Subject; got != "fresh subject" {
+		t.Fatalf("expected fresh summary subject, got %q", got)
+	}
+	if got := next.agentMailInbox["1"][0].BodyMD; got != "cached detail body" {
+		t.Fatalf("expected cached body to survive summary refresh, got %q", got)
+	}
+	if got := next.agentMailInbox["1"][1].BodyMD; got != "" {
+		t.Fatalf("expected new summary-only message to remain bodyless until detail fetch, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected detail mode to refetch bodies for newly seen message IDs")
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryGenIndependentFromDetailFetch(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	summaryGen := m.nextGen(refreshAgentMailInbox)
+	_ = m.nextGen(refreshAgentMailInboxDetail)
+
+	updated, _ := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"1": {
+				{ID: 7, Subject: "summary still lands", Importance: "normal"},
+			},
+		},
+		AgentMap: map[string]string{
+			"1": "proj__cc_1",
+		},
+		Gen: summaryGen,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if got := len(next.agentMailInbox["1"]); got != 1 {
+		t.Fatalf("expected summary update to remain valid after detail fetch started, got %d messages", got)
+	}
+}
+
+func TestDashboardAgentMailInboxDetailMergesBodiesIntoCurrentSummary(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"1": {
+			{ID: 7, Subject: "fresh subject", Importance: "normal"},
+			{ID: 9, Subject: "new summary message", Importance: "high"},
+		},
+	}
+
+	updated, _ := m.Update(AgentMailInboxDetailMsg{
+		PaneID: "1",
+		Messages: []agentmail.InboxMessage{
+			{ID: 7, Subject: "stale subject", Importance: "normal", BodyMD: "detail body"},
+			{ID: 8, Subject: "older extra message", Importance: "normal", BodyMD: "ignored"},
+		},
+		Gen: 1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if got := len(next.agentMailInbox["1"]); got != 2 {
+		t.Fatalf("expected detail refresh to preserve current summary shape, got %d messages", got)
+	}
+	if got := next.agentMailInbox["1"][0].Subject; got != "fresh subject" {
+		t.Fatalf("expected current summary metadata to win, got subject %q", got)
+	}
+	if got := next.agentMailInbox["1"][0].BodyMD; got != "detail body" {
+		t.Fatalf("expected detail body to merge onto current summary, got %q", got)
+	}
+	if got := next.agentMailInbox["1"][1].ID; got != 9 {
+		t.Fatalf("expected newer summary-only message to remain visible, got ID %d", got)
+	}
+	if got := next.agentMailInboxBodyCache[7]; got != "detail body" {
+		t.Fatalf("expected detail body cache to be updated, got %q", got)
+	}
+}
+
+func TestDashboardAgentMailInboxDetailDoesNotRepopulateClearedSummary(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{}
+
+	updated, _ := m.Update(AgentMailInboxDetailMsg{
+		PaneID: "1",
+		Messages: []agentmail.InboxMessage{
+			{ID: 7, Subject: "stale subject", Importance: "normal", BodyMD: "detail body"},
+		},
+		Gen: 1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if msgs, ok := next.agentMailInbox["1"]; ok && len(msgs) > 0 {
+		t.Fatalf("expected stale detail refresh not to repopulate cleared summary, got %#v", msgs)
+	}
+	if got := next.agentMailInboxBodyCache[7]; got != "detail body" {
+		t.Fatalf("expected detail body cache to still be updated, got %q", got)
+	}
+}
+
+func TestDashboardAgentMailInboxSummaryClearsStaleDetailErrors(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.agentMailInboxErrors["1"] = errors.New("stale detail failure")
+
+	updated, _ := m.Update(AgentMailInboxSummaryMsg{
+		ProjectKey: "proj",
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"1": {
+				{ID: 7, Subject: "fresh summary", Importance: "normal"},
+			},
+		},
+		AgentMap: map[string]string{
+			"1": "proj__cc_1",
+		},
+		Gen: 1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if _, ok := next.agentMailInboxErrors["1"]; ok {
+		t.Fatalf("expected summary refresh to clear stale detail errors, got %#v", next.agentMailInboxErrors)
+	}
+}
+
+func TestDashboardRenderPaneDetailShowsInboxBodiesAndErrorsWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.showInboxDetails = true
+	m.agentMailInbox = map[string][]agentmail.InboxMessage{
+		"1": {
+			{
+				ID:         7,
+				Subject:    "needs context",
+				Importance: "normal",
+				BodyMD:     "First detail line\nSecond detail line",
+			},
+		},
+	}
+	m.agentMailInboxBodyKnown[7] = true
+	m.agentMailInboxErrors["1"] = errors.New("detail fetch failed")
+
+	rendered := status.StripANSI(m.renderPaneDetail(60))
+	if !strings.Contains(rendered, "needs context") {
+		t.Fatalf("expected inbox subject in detail view, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "First detail line") {
+		t.Fatalf("expected inbox body preview in detail view, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "detail error: detail fetch failed") {
+		t.Fatalf("expected inbox detail error in detail view, got:\n%s", rendered)
+	}
+}
+
+func TestDashboardMailRefreshAlsoSchedulesInboxSummary(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.fetchingMailInbox = false
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if !next.fetchingMailInbox {
+		t.Fatal("expected mail refresh to trigger inbox summary refresh")
+	}
+	if cmd == nil {
+		t.Fatal("expected batched mail refresh command")
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from mail refresh, got %T", cmd())
+	}
+	if len(batch) < 2 {
+		t.Fatalf("expected mail refresh to schedule status and inbox fetches, got %d commands", len(batch))
+	}
+}
+
+func TestDashboardDCGStatusErrorClearsStaleBadgeState(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.dcgEnabled = true
+	m.dcgAvailable = true
+	m.dcgVersion = "1.2.3"
+	m.dcgBlocked = 4
+	m.dcgLastBlocked = "rm -rf /tmp/nope"
+
+	updated, _ := m.Update(DCGStatusUpdateMsg{
+		Enabled: true,
+		Err:     errors.New("dcg probe failed"),
+		Gen:     1,
+	})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+
+	if !next.dcgEnabled {
+		t.Fatal("expected DCG enabled state to follow the latest message")
+	}
+	if next.dcgAvailable {
+		t.Fatal("expected DCG availability to clear on error")
+	}
+	if next.dcgVersion != "" {
+		t.Fatalf("expected DCG version to clear on error, got %q", next.dcgVersion)
+	}
+	if next.dcgBlocked != 0 {
+		t.Fatalf("expected blocked count to clear on error, got %d", next.dcgBlocked)
+	}
+	if next.dcgLastBlocked != "" {
+		t.Fatalf("expected last blocked command to clear on error, got %q", next.dcgLastBlocked)
+	}
+	if next.dcgError == nil {
+		t.Fatal("expected DCG error to be recorded")
+	}
+}
+
+func TestDashboardConflictsNumericShortcutDoesNotChangePaneSelection(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(200)
+	m.panes = []tmux.Pane{
+		{ID: "pane-1", Index: 0, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "pane-2", Index: 1, Title: "proj__cod_1", Type: tmux.AgentCodex},
+		{ID: "pane-3", Index: 2, Title: "proj__gmi_1", Type: tmux.AgentGemini},
+	}
+	m.cursor = 2
+	m.focusedPanel = PanelConflicts
+	m.conflictsPanel = panels.NewConflictsPanel()
+	m.conflictsPanel.Focus()
+	m.conflictsPanel.AddConflict(watcher.FileConflict{
+		Path:           "/tmp/file.go",
+		RequestorAgent: "Requester",
+		Holders:        []string{"Holder"},
+		DetectedAt:     time.Now(),
+	})
+	m.conflictsPanel.SetActionHandler(func(conflict watcher.FileConflict, action watcher.ConflictAction) error {
+		return nil
+	})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	if next.cursor != 2 {
+		t.Fatalf("conflicts action should not change pane cursor, got %d want 2", next.cursor)
+	}
+	if cmd == nil {
+		t.Fatal("conflicts action key should return an action command")
+	}
+	if _, ok := cmd().(panels.ConflictActionResultMsg); !ok {
+		t.Fatalf("expected ConflictActionResultMsg, got %T", cmd())
+	}
+}
+
+func TestDashboardSidebarCyclesActiveSubpanelAndHints(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	m := newTestModel(200)
+	m.focusedPanel = PanelSidebar
+	m.historyPanel = nil
+	m.filesPanel = nil
+	m.cassPanel = nil
+
+	metricsData := panels.MetricsData{
+		Coverage: &ensemble.CoverageReport{Overall: 0.5},
+	}
+	m.metricsData = metricsData
+	m.metricsPanel.SetData(metricsData, nil)
+	m.timelinePanel.SetData(panels.TimelineData{
+		Events: []state.AgentEvent{
+			{AgentID: "cc_1", State: state.TimelineWorking, Timestamp: now.Add(-5 * time.Minute)},
+		},
+		Markers: []state.TimelineMarker{
+			{ID: "m1", AgentID: "cc_1", SessionID: "test", Type: state.MarkerPrompt, Timestamp: now.Add(-2 * time.Minute)},
+		},
+		Stats: state.TimelineStats{
+			TotalAgents: 1,
+			TotalEvents: 1,
+			OldestEvent: now.Add(-5 * time.Minute),
+			NewestEvent: now,
+		},
+	}, nil)
+
+	_ = m.renderSidebar(60, 28)
+	if !m.metricsPanel.IsFocused() {
+		t.Fatal("expected metrics panel to own sidebar focus initially")
+	}
+	if m.timelinePanel.IsFocused() {
+		t.Fatal("expected timeline panel to start unfocused while metrics is active")
+	}
+	if !m.toastHistoryShortcutAvailable() {
+		t.Fatal("toast history shortcut should stay available while timeline is not the active sidebar panel")
+	}
+	initialHints := m.getFocusedPanelHints()
+	if len(initialHints) == 0 || initialHints[0].Desc != "cycle section" {
+		t.Fatalf("expected sidebar hints to expose section cycling, got %#v", initialHints)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'J'}})
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
+	}
+	_ = next.renderSidebar(60, 28)
+
+	if !next.timelinePanel.IsFocused() {
+		t.Fatal("expected timeline panel to own sidebar focus after cycling")
+	}
+	if next.metricsPanel.IsFocused() {
+		t.Fatal("expected metrics panel to blur after sidebar focus cycles away")
+	}
+	if next.toastHistoryShortcutAvailable() {
+		t.Fatal("toast history shortcut should be disabled while timeline is the active sidebar panel")
+	}
+
+	hints := next.getFocusedPanelHints()
+	hintText := fmt.Sprintf("%#v", hints)
+	if !strings.Contains(hintText, "details") {
+		t.Fatalf("expected timeline hints after cycling sidebar focus, got %#v", hints)
+	}
+	if strings.Contains(hintText, "toggle_coverage") {
+		t.Fatalf("expected metrics hints to disappear after cycling sidebar focus, got %#v", hints)
 	}
 }
 

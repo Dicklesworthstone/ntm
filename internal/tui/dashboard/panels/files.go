@@ -94,6 +94,11 @@ func (m *FilesPanel) Init() tea.Cmd {
 	return nil
 }
 
+// OpenFileMsg is sent when the user wants to open the selected file in an editor.
+type OpenFileMsg struct {
+	Change tracker.RecordedFileChange
+}
+
 // Update implements tea.Model
 func (m *FilesPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.IsFocused() {
@@ -147,10 +152,15 @@ func (m *FilesPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncOffsetFromScroll()
 			m.syncScrollBody()
 			return m, nil
-		case msg.Type == tea.KeyTab:
+		case msg.Type == tea.KeyEnter:
+			change, ok := m.selectedChange()
+			if !ok {
+				return m, nil
+			}
+			return m, func() tea.Msg { return OpenFileMsg{Change: change} }
+		case msg.Type == tea.KeyTab || msg.String() == "t":
 			m.timeWindow = (m.timeWindow + 1) % 4
-			m.changes = m.filterByTimeWindow(m.allChanges)
-			m.clampCursor()
+			m.refreshVisibleChanges()
 			m.syncScrollBody()
 			m.ensureCursorVisible()
 			m.syncOffsetFromScroll()
@@ -173,12 +183,20 @@ func (m *FilesPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // SetData updates the file changes
 func (m *FilesPanel) SetData(changes []tracker.RecordedFileChange, err error) {
 	m.allChanges = append([]tracker.RecordedFileChange(nil), changes...)
-	m.changes = m.filterByTimeWindow(m.allChanges)
+	m.refreshVisibleChanges()
 	m.err = err
-	m.clampCursor()
 	m.syncScrollBody()
 	m.ensureCursorVisible()
 	m.syncOffsetFromScroll()
+}
+
+func (m *FilesPanel) refreshVisibleChanges() {
+	selectedKey, hasSelection := m.selectedChangeKey()
+	m.changes = m.filterByTimeWindow(m.allChanges)
+	if hasSelection && m.selectChangeByKey(selectedKey) {
+		return
+	}
+	m.clampCursor()
 }
 
 // filterByTimeWindow filters changes based on the current time window
@@ -211,7 +229,7 @@ func (m *FilesPanel) HandlesOwnHeight() bool {
 func (m *FilesPanel) Keybindings() []Keybinding {
 	return []Keybinding{
 		{
-			Key:         key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "window")),
+			Key:         key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "window")),
 			Description: "Cycle time window",
 			Action:      "cycle_window",
 		},
@@ -327,6 +345,45 @@ func (m *FilesPanel) renderBody() string {
 	}
 
 	return strings.TrimRight(body.String(), "\n")
+}
+
+func (m *FilesPanel) selectedChange() (tracker.RecordedFileChange, bool) {
+	if len(m.changes) == 0 || m.cursor < 0 || m.cursor >= len(m.changes) {
+		return tracker.RecordedFileChange{}, false
+	}
+	return m.changes[m.cursor], true
+}
+
+func (m *FilesPanel) selectedChangeKey() (string, bool) {
+	change, ok := m.selectedChange()
+	if !ok {
+		return "", false
+	}
+	return fileChangeKey(change), true
+}
+
+func (m *FilesPanel) selectChangeByKey(target string) bool {
+	if target == "" {
+		return false
+	}
+	for i, change := range m.changes {
+		if fileChangeKey(change) == target {
+			m.cursor = i
+			return true
+		}
+	}
+	return false
+}
+
+func fileChangeKey(change tracker.RecordedFileChange) string {
+	return fmt.Sprintf(
+		"%s\x00%s\x00%s\x00%s\x00%s",
+		change.Timestamp.UTC().Format(time.RFC3339Nano),
+		change.Session,
+		change.Change.Path,
+		change.Change.Type,
+		strings.Join(change.Agents, "\x1f"),
+	)
 }
 
 func (m *FilesPanel) clampCursor() {

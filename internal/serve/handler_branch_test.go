@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,30 @@ func TestServeMemoryDaemonHelperProcess(t *testing.T) {
 		return
 	case "memory-daemon-exit-immediately":
 		os.Exit(0)
+	case "memory-daemon-write-pid":
+		pidPath := os.Getenv("NTM_SERVE_HELPER_PID_PATH")
+		if pidPath == "" {
+			os.Exit(2)
+		}
+		port, err := strconv.Atoi(os.Getenv("NTM_SERVE_HELPER_PORT"))
+		if err != nil {
+			os.Exit(2)
+		}
+		if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+			os.Exit(2)
+		}
+		pidInfo := map[string]interface{}{
+			"pid":        os.Getpid(),
+			"port":       port,
+			"started_at": time.Now().UTC().Format(time.RFC3339),
+		}
+		data, err := json.Marshal(pidInfo)
+		if err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(pidPath, data, 0o644); err != nil {
+			os.Exit(2)
+		}
 	case "memory-daemon":
 	default:
 		return
@@ -5956,6 +5981,97 @@ func TestHandleMemoryDaemonStart_CmInstalled(t *testing.T) {
 	}
 	// Wait briefly for the async goroutine
 	time.Sleep(50 * time.Millisecond)
+}
+
+func TestLimitedLogBufferCapsOutput(t *testing.T) {
+	buf := newLimitedLogBuffer(5)
+
+	if n, err := buf.Write([]byte("abcdef")); err != nil || n != 6 {
+		t.Fatalf("first write = (%d, %v), want (6, nil)", n, err)
+	}
+	if got := buf.String(); got != "abcde\n...[truncated]" {
+		t.Fatalf("buffer after first write = %q", got)
+	}
+
+	if n, err := buf.Write([]byte("gh")); err != nil || n != 2 {
+		t.Fatalf("second write = (%d, %v), want (2, nil)", n, err)
+	}
+	if got := buf.String(); got != "abcde\n...[truncated]" {
+		t.Fatalf("buffer after overflow write = %q", got)
+	}
+}
+
+func TestStartMemoryDaemonAsync_KeepsDaemonAliveAfterStartup(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
+	if err := os.MkdirAll(pidsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll pidsDir: %v", err)
+	}
+
+	srv := New(Config{})
+	srv.projectDir = tmpDir
+
+	oldCommand := memoryDaemonCommand
+	oldDelay := memoryDaemonStartupDelay
+	oldStore := memoryStore
+	memoryStore = NewMemoryStore()
+	memoryDaemonStartupDelay = 50 * time.Millisecond
+	pidPath := filepath.Join(pidsDir, "cm-test-session.pid")
+	memoryDaemonCommand = func(projectDir string, port int) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestServeMemoryDaemonHelperProcess")
+		cmd.Env = append(os.Environ(),
+			"NTM_SERVE_HELPER_PROCESS=memory-daemon-write-pid",
+			"NTM_SERVE_HELPER_PID_PATH="+pidPath,
+			fmt.Sprintf("NTM_SERVE_HELPER_PORT=%d", port),
+		)
+		return cmd
+	}
+	defer func() {
+		info := memoryStore.GetDaemonInfo()
+		if info != nil && info.PID > 0 {
+			_ = stopMemoryDaemonProcess(info.PID, 2*time.Second)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			latest := memoryStore.GetDaemonInfo()
+			if latest == nil || latest.State == DaemonStateStopped {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		memoryDaemonCommand = oldCommand
+		memoryDaemonStartupDelay = oldDelay
+		memoryStore = oldStore
+	}()
+
+	srv.startMemoryDaemonAsync(8234, "test-session")
+
+	info := memoryStore.GetDaemonInfo()
+	if info == nil {
+		t.Fatal("expected daemon info to be recorded")
+	}
+	if info.State != DaemonStateRunning {
+		t.Fatalf("state = %v, want running", info.State)
+	}
+	if info.PID <= 0 {
+		t.Fatalf("pid = %d, want live helper pid", info.PID)
+	}
+	if info.Port != 8234 {
+		t.Fatalf("port = %d, want 8234", info.Port)
+	}
+	if info.SessionID != "test-session" {
+		t.Fatalf("session_id = %q, want test-session", info.SessionID)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	if !process.IsAlive(info.PID) {
+		t.Fatalf("helper pid %d died after startup returned; daemon start should not self-cancel", info.PID)
+	}
+
+	if latest := memoryStore.GetDaemonInfo(); latest == nil || latest.State != DaemonStateRunning {
+		t.Fatalf("daemon state after startup = %+v, want running", latest)
+	}
 }
 
 // --- handleMemoryDaemonStart: bad JSON body ---

@@ -327,7 +327,6 @@ func DashboardHelpBarHints(opts DashboardHelpOptions) []KeyHint {
 			{Key: "Tab", Desc: "panels"},
 			{Key: "1-9", Desc: "select"},
 			{Key: "z", Desc: "zoom"},
-			{Key: "s", Desc: "send"},
 			{Key: "r", Desc: "refresh"},
 		}
 		if opts.Debug {

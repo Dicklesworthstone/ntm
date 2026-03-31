@@ -147,16 +147,16 @@ func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.zoomLevel--
 				m.timeWindow = m.windowForZoom()
 			}
-		case "n":
+		case "n", "0":
 			// Jump to now
 			m.timeOffset = 0
-		case "tab":
+		case "tab", "]":
 			// Navigate to next marker
 			m.selectNextMarker()
-		case "shift+tab":
+		case "shift+tab", "[":
 			// Navigate to previous marker
 			m.selectPrevMarker()
-		case "m":
+		case "m", "f":
 			// Jump to first marker in view
 			m.selectFirstMarkerInView()
 		case "enter":
@@ -197,21 +197,101 @@ func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // SetData updates the timeline data
 func (m *TimelinePanel) SetData(data TimelineData, err error) {
+	selectedAgentID, hasSelectedAgent := m.selectedAgentID()
+	selectedMarkerID, overlayOpen := m.selectedMarkerState()
+
 	m.data = data
 	m.err = err
 	if err == nil {
 		m.SetLastUpdate(time.Now())
 	}
-	// Keep cursor within bounds
+
 	agents := m.getAgentList()
-	if m.cursor >= len(agents) {
-		m.cursor = len(agents) - 1
+	if hasSelectedAgent && m.restoreCursorByAgentID(selectedAgentID) {
+		// keep logical agent selection across sorted agent-list refreshes
+	} else {
+		if m.cursor >= len(agents) {
+			m.cursor = len(agents) - 1
+		}
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
+	m.restoreMarkerSelection(selectedMarkerID, overlayOpen)
 	if m.tableInit {
 		m.table.SetCursor(m.cursor)
+	}
+}
+
+func (m *TimelinePanel) selectedAgentID() (string, bool) {
+	agents := m.getAgentList()
+	if len(agents) == 0 || m.cursor < 0 || m.cursor >= len(agents) {
+		return "", false
+	}
+	return agents[m.cursor], true
+}
+
+func (m *TimelinePanel) restoreCursorByAgentID(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	for i, candidate := range m.getAgentList() {
+		if candidate == agentID {
+			m.cursor = i
+			return true
+		}
+	}
+	return false
+}
+
+func (m *TimelinePanel) selectedMarkerState() (string, bool) {
+	if m.showOverlay && m.selectedMarker != nil {
+		return m.selectedMarker.ID, true
+	}
+	if m.markerIndex < 0 {
+		return "", false
+	}
+	visibleMarkers := m.getVisibleMarkers()
+	if m.markerIndex >= len(visibleMarkers) {
+		return "", false
+	}
+	return visibleMarkers[m.markerIndex].ID, false
+}
+
+func (m *TimelinePanel) markerByID(id string) *state.TimelineMarker {
+	if id == "" {
+		return nil
+	}
+	for i := range m.data.Markers {
+		if m.data.Markers[i].ID == id {
+			return &m.data.Markers[i]
+		}
+	}
+	return nil
+}
+
+func (m *TimelinePanel) restoreMarkerSelection(markerID string, overlayOpen bool) {
+	visibleMarkers := m.getVisibleMarkers()
+	m.markerIndex = -1
+	m.selectedMarker = nil
+	m.showOverlay = false
+
+	if markerID == "" {
+		return
+	}
+
+	for i, marker := range visibleMarkers {
+		if marker.ID == markerID {
+			m.markerIndex = i
+			break
+		}
+	}
+
+	if overlayOpen {
+		if marker := m.markerByID(markerID); marker != nil {
+			m.selectedMarker = marker
+			m.showOverlay = true
+		}
 	}
 }
 
@@ -239,22 +319,22 @@ func (m *TimelinePanel) Keybindings() []Keybinding {
 			Action:      "scroll_forward",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "now")),
+			Key:         key.NewBinding(key.WithKeys("0"), key.WithHelp("0", "now")),
 			Description: "Jump to now",
 			Action:      "jump_now",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("tab"), key.WithHelp("Tab", "next marker")),
+			Key:         key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "next marker")),
 			Description: "Navigate to next marker",
 			Action:      "next_marker",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("S-Tab", "prev marker")),
+			Key:         key.NewBinding(key.WithKeys("["), key.WithHelp("[", "prev marker")),
 			Description: "Navigate to previous marker",
 			Action:      "prev_marker",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "first marker")),
+			Key:         key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "first marker")),
 			Description: "Jump to first marker in view",
 			Action:      "first_marker",
 		},

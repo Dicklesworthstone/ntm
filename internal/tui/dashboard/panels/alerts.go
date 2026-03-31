@@ -102,14 +102,24 @@ func (m *AlertsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *AlertsPanel) Keybindings() []Keybinding {
 	return []Keybinding{
 		{
-			Key:         key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dismiss")),
-			Description: "Dismiss selected alert",
-			Action:      "dismiss",
+			Key:         key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "up")),
+			Description: "Scroll up",
+			Action:      "page_up",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "ack all")),
-			Description: "Acknowledge all alerts",
-			Action:      "ack_all",
+			Key:         key.NewBinding(key.WithKeys("pgdn"), key.WithHelp("pgdn", "down")),
+			Description: "Scroll down",
+			Action:      "page_down",
+		},
+		{
+			Key:         key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
+			Description: "Jump to top",
+			Action:      "top",
+		},
+		{
+			Key:         key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
+			Description: "Jump to bottom",
+			Action:      "bottom",
 		},
 	}
 }

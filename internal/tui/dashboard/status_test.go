@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
+	pt "github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
@@ -95,6 +97,113 @@ func TestStatusUpdateBatchesOllamaRefreshCmd(t *testing.T) {
 	}
 }
 
+func TestStatusUpdateErrorClearsStaleLiveStatus(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 0, Title: "session__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[0] = PaneStatus{
+		State:                "working",
+		TokenVelocity:        120,
+		LocalTokensPerSecond: 4.5,
+		LocalTotalTokens:     300,
+		LocalLastLatency:     150 * time.Millisecond,
+		LocalAvgLatency:      200 * time.Millisecond,
+		LocalMemoryBytes:     1 << 20,
+		LocalTPSHistory:      []float64{2.5, 4.5},
+	}
+	m.agentStatuses["%1"] = status.AgentStatus{
+		PaneID:     "%1",
+		State:      status.StateWorking,
+		LastOutput: "stale output",
+	}
+
+	updated, _ := m.Update(StatusUpdateMsg{
+		Err:  errors.New("status refresh failed"),
+		Time: time.Now(),
+	})
+	m2 := updated.(Model)
+
+	if m2.statusFetchErr == nil {
+		t.Fatal("expected status fetch error to be recorded")
+	}
+	ps := m2.paneStatus[0]
+	if ps.State != "" {
+		t.Fatalf("expected stale pane state to clear, got %q", ps.State)
+	}
+	if ps.TokenVelocity != 0 {
+		t.Fatalf("expected stale token velocity to clear, got %v", ps.TokenVelocity)
+	}
+	if ps.LocalTokensPerSecond != 0 || ps.LocalTotalTokens != 0 || ps.LocalLastLatency != 0 || ps.LocalAvgLatency != 0 || ps.LocalMemoryBytes != 0 || len(ps.LocalTPSHistory) != 0 {
+		t.Fatalf("expected stale local perf snapshot to clear, got %+v", ps)
+	}
+	if _, ok := m2.agentStatuses["%1"]; ok {
+		t.Fatal("expected stale agent status snapshot to clear")
+	}
+	rows := BuildPaneTableRows(m2.panes, m2.agentStatuses, m2.paneStatus, nil, nil, nil, 0, m2.theme)
+	if got := rows[0].Status; got != "unknown" {
+		t.Fatalf("expected stale row status to clear, got %q", got)
+	}
+	if len(m2.aggregateVelocityHistory) == 0 {
+		t.Fatal("expected aggregate velocity history sample to be recorded")
+	}
+	if got := m2.aggregateVelocityHistory[len(m2.aggregateVelocityHistory)-1]; got != 0 {
+		t.Fatalf("expected cleared aggregate velocity sample to be 0, got %v", got)
+	}
+}
+
+func TestStatusUpdateSuccessClearsMissingPaneSnapshots(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 0, Title: "session__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 1, Title: "session__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[0] = PaneStatus{State: "working", TokenVelocity: 100}
+	m.paneStatus[1] = PaneStatus{
+		State:                "idle",
+		TokenVelocity:        80,
+		LocalTokensPerSecond: 3.5,
+		LocalTotalTokens:     200,
+		LocalTPSHistory:      []float64{3.5},
+	}
+	m.agentStatuses["%1"] = status.AgentStatus{PaneID: "%1", State: status.StateWorking}
+	m.agentStatuses["%2"] = status.AgentStatus{PaneID: "%2", State: status.StateIdle, LastOutput: "stale"}
+
+	now := time.Now()
+	updated, _ := m.Update(StatusUpdateMsg{
+		Statuses: []status.AgentStatus{
+			{
+				PaneID:    "%1",
+				State:     status.StateIdle,
+				UpdatedAt: now,
+			},
+		},
+		Time: now,
+	})
+	m2 := updated.(Model)
+
+	if got := m2.paneStatus[0].State; got != "idle" {
+		t.Fatalf("expected pane 0 state to refresh, got %q", got)
+	}
+	if _, ok := m2.agentStatuses["%1"]; !ok {
+		t.Fatal("expected pane 0 status snapshot to remain present")
+	}
+	if ps := m2.paneStatus[1]; ps.State != "" || ps.TokenVelocity != 0 || ps.LocalTokensPerSecond != 0 || ps.LocalTotalTokens != 0 || len(ps.LocalTPSHistory) != 0 {
+		t.Fatalf("expected missing pane status snapshot to clear, got %+v", ps)
+	}
+	if _, ok := m2.agentStatuses["%2"]; ok {
+		t.Fatal("expected missing pane agent status snapshot to clear")
+	}
+	rows := BuildPaneTableRows(m2.panes, m2.agentStatuses, m2.paneStatus, nil, nil, nil, 0, m2.theme)
+	if got := rows[1].Status; got != "unknown" {
+		t.Fatalf("expected missing pane row status to clear, got %q", got)
+	}
+}
+
 func TestSessionDataUpdateBatchesOllamaRefreshCmd(t *testing.T) {
 	t.Parallel()
 
@@ -140,6 +249,162 @@ func TestSessionDataUpdateBatchesOllamaRefreshCmd(t *testing.T) {
 		// A single-command batch may collapse to the direct command result.
 	default:
 		t.Fatalf("expected Ollama refresh result, got %T", result)
+	}
+}
+
+func TestPendingRotationsUpdateErrorClearsStalePendingData(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	stale := []*ctxmon.PendingRotation{
+		{AgentID: "agent1", TimeoutAt: time.Now().Add(time.Minute)},
+	}
+	m.pendingRotations = stale
+	m.rotationConfirmPanel.SetData(stale, nil)
+
+	updated, _ := m.Update(PendingRotationsUpdateMsg{
+		Err: errors.New("pending rotations fetch failed"),
+	})
+	m2 := updated.(Model)
+
+	if m2.pendingRotationsErr == nil {
+		t.Fatal("expected pending rotations error to be recorded")
+	}
+	if len(m2.pendingRotations) != 0 {
+		t.Fatalf("expected stale pending rotations to be cleared, got %d", len(m2.pendingRotations))
+	}
+	if !m2.rotationConfirmPanel.HasError() {
+		t.Fatal("expected rotation confirm panel to surface the error")
+	}
+	if m2.rotationConfirmPanel.HasPending() {
+		t.Fatal("expected rotation confirm panel pending state to be cleared on error")
+	}
+	if pending := m2.rotationConfirmPanel.SelectedPending(); pending != nil {
+		t.Fatalf("expected no selected pending rotation on error, got %v", pending.AgentID)
+	}
+}
+
+func TestHealthUpdateErrorClearsStalePaneHealthDetails(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 0, Title: "session__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 1, Title: "session__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[0] = PaneStatus{
+		HealthStatus:  "error",
+		HealthIssues:  []string{"rate limit"},
+		RestartCount:  3,
+		UptimeSeconds: 120,
+	}
+	m.paneStatus[1] = PaneStatus{
+		HealthStatus:  "warning",
+		HealthIssues:  []string{"slow response"},
+		RestartCount:  1,
+		UptimeSeconds: 60,
+	}
+
+	updated, _ := m.Update(HealthUpdateMsg{Err: errors.New("health refresh failed")})
+	m2 := updated.(Model)
+
+	for _, idx := range []int{0, 1} {
+		ps := m2.paneStatus[idx]
+		if ps.HealthStatus != "" {
+			t.Fatalf("expected pane %d health status to clear, got %q", idx, ps.HealthStatus)
+		}
+		if len(ps.HealthIssues) != 0 {
+			t.Fatalf("expected pane %d health issues to clear, got %v", idx, ps.HealthIssues)
+		}
+		if ps.RestartCount != 0 {
+			t.Fatalf("expected pane %d restart count to clear, got %d", idx, ps.RestartCount)
+		}
+		if ps.UptimeSeconds != 0 {
+			t.Fatalf("expected pane %d uptime to clear, got %d", idx, ps.UptimeSeconds)
+		}
+	}
+}
+
+func TestHealthUpdateSuccessClearsMissingPaneHealthDetails(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 0, Title: "session__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 1, Title: "session__cod_1", Type: tmux.AgentCodex},
+	}
+	m.paneStatus[0] = PaneStatus{
+		HealthStatus:  "warning",
+		HealthIssues:  []string{"old warning"},
+		RestartCount:  2,
+		UptimeSeconds: 45,
+	}
+	m.paneStatus[1] = PaneStatus{
+		HealthStatus:  "error",
+		HealthIssues:  []string{"old error"},
+		RestartCount:  5,
+		UptimeSeconds: 90,
+	}
+
+	updated, _ := m.Update(HealthUpdateMsg{
+		Health: map[string]PaneHealthInfo{
+			"%1": {
+				Status:       "ok",
+				Issues:       []string{"fresh"},
+				RestartCount: 1,
+				Uptime:       300,
+			},
+		},
+	})
+	m2 := updated.(Model)
+
+	if got := m2.paneStatus[0].HealthStatus; got != "ok" {
+		t.Fatalf("expected pane 0 health status to update, got %q", got)
+	}
+	if got := m2.paneStatus[0].HealthIssues; len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("expected pane 0 health issues to update, got %v", got)
+	}
+	if got := m2.paneStatus[0].RestartCount; got != 1 {
+		t.Fatalf("expected pane 0 restart count to update, got %d", got)
+	}
+	if got := m2.paneStatus[0].UptimeSeconds; got != 300 {
+		t.Fatalf("expected pane 0 uptime to update, got %d", got)
+	}
+
+	if ps := m2.paneStatus[1]; ps.HealthStatus != "" || len(ps.HealthIssues) != 0 || ps.RestartCount != 0 || ps.UptimeSeconds != 0 {
+		t.Fatalf("expected pane 1 stale health state to clear, got %+v", ps)
+	}
+}
+
+func TestPTHealthStatesNilClearsStaleClassification(t *testing.T) {
+	t.Parallel()
+
+	m := New("session", "")
+	m.panes = []tmux.Pane{
+		{ID: "%1", Index: 0, Title: "session__cc_1", Type: tmux.AgentClaude},
+	}
+	m.healthStates = map[string]*pt.AgentState{
+		"session__cc_1": {
+			Pane:           "session__cc_1",
+			Classification: pt.ClassStuck,
+			Since:          time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	before := BuildPaneTableRows(m.panes, nil, m.paneStatus, nil, nil, m.healthStates, 0, m.theme)
+	if got := before[0].HealthClass; got != pt.ClassStuck {
+		t.Fatalf("expected initial health class stuck, got %q", got)
+	}
+
+	updated, _ := m.Update(PTHealthStatesMsg{States: nil})
+	m2 := updated.(Model)
+	if m2.healthStates != nil {
+		t.Fatalf("expected PT health states to clear, got %#v", m2.healthStates)
+	}
+
+	after := BuildPaneTableRows(m2.panes, nil, m2.paneStatus, nil, nil, m2.healthStates, 0, m2.theme)
+	if got := after[0].HealthClass; got != pt.ClassUnknown {
+		t.Fatalf("expected stale PT classification to clear, got %q", got)
 	}
 }
 

@@ -202,7 +202,7 @@ func (m *MetricsPanel) View() string {
 	content.WriteString(headerStyle.Render(title) + "\n")
 
 	if m.err != nil {
-		content.WriteString(components.ErrorState(m.err.Error(), "Press r to retry", w-4) + "\n")
+		content.WriteString(components.ErrorState(m.err.Error(), "Refresh data to retry", w-4) + "\n")
 	}
 
 	bodySections := []string{

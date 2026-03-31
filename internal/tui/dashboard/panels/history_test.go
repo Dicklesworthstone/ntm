@@ -115,6 +115,37 @@ func TestHistoryPanelSetEntriesCursorBounds(t *testing.T) {
 	}
 }
 
+func TestHistoryPanelSetEntriesPreservesSelectedEntryIDAcrossRefresh(t *testing.T) {
+	panel := NewHistoryPanel()
+
+	initial := []history.HistoryEntry{
+		{ID: "entry-a", Prompt: "Alpha"},
+		{ID: "entry-b", Prompt: "Bravo"},
+		{ID: "entry-c", Prompt: "Charlie"},
+	}
+	panel.SetEntries(initial, nil)
+	panel.cursor = 1
+
+	refreshed := []history.HistoryEntry{
+		{ID: "entry-new", Prompt: "Newest"},
+		{ID: "entry-a", Prompt: "Alpha"},
+		{ID: "entry-b", Prompt: "Bravo"},
+		{ID: "entry-c", Prompt: "Charlie"},
+	}
+	panel.SetEntries(refreshed, nil)
+
+	entry, ok := panel.selectedEntry()
+	if !ok {
+		t.Fatal("expected selected entry after refresh")
+	}
+	if entry.ID != "entry-b" {
+		t.Fatalf("expected selection to stay on entry-b across refresh, got %q", entry.ID)
+	}
+	if panel.cursor != 2 {
+		t.Fatalf("expected cursor to move with entry-b after inserted row, got %d", panel.cursor)
+	}
+}
+
 func TestHistoryPanelSetEntriesEmpty(t *testing.T) {
 	panel := NewHistoryPanel()
 	panel.cursor = 5 // Invalid cursor

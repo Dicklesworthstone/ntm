@@ -2,6 +2,7 @@ package components
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -96,11 +97,85 @@ func TestCassSearchUpdateSearchResults(t *testing.T) {
 func TestCassSearchClearsOnEmptyQuery(t *testing.T) {
 	model := NewCassSearch(nil)
 	model.searchID = 1
+	model.searching = true
+	model.err = errors.New("stale error")
 	model.list.SetItems([]list.Item{listItemStub{}})
 
 	updated, _ := model.Update(performSearchMsg{id: 1, query: ""})
 	if len(updated.list.Items()) != 0 {
 		t.Fatalf("expected items to be cleared, got %d", len(updated.list.Items()))
+	}
+	if updated.searching {
+		t.Fatal("expected searching to be cleared for empty query")
+	}
+	if updated.err != nil {
+		t.Fatalf("expected error to be cleared for empty query, got %v", updated.err)
+	}
+}
+
+func TestCassSearchErrorClearsStaleResults(t *testing.T) {
+	model := NewCassSearch(nil)
+	model.searchID = 1
+	model.searching = true
+	model.list.SetItems([]list.Item{listItemStub{}})
+
+	updated, _ := model.Update(searchResultMsg{id: 1, err: errors.New("search failed")})
+	if updated.searching {
+		t.Fatal("expected searching to be false after error")
+	}
+	if updated.err == nil {
+		t.Fatal("expected error to be recorded")
+	}
+	if len(updated.list.Items()) != 0 {
+		t.Fatalf("expected stale items to be cleared, got %d", len(updated.list.Items()))
+	}
+}
+
+func TestCassSearchSuccessClearsPreviousError(t *testing.T) {
+	model := NewCassSearch(nil)
+	model.searchID = 1
+	model.err = errors.New("stale error")
+
+	updated, _ := model.Update(searchResultMsg{
+		id: 1,
+		results: &cass.SearchResponse{
+			Hits: []cass.SearchHit{{
+				Title:      "Recovered",
+				Agent:      "cod",
+				SourcePath: "path/to/session",
+			}},
+		},
+	})
+	if updated.err != nil {
+		t.Fatalf("expected stale error to be cleared, got %v", updated.err)
+	}
+	if len(updated.list.Items()) != 1 {
+		t.Fatalf("expected 1 recovered result, got %d", len(updated.list.Items()))
+	}
+}
+
+func TestCassSearchNilResultsClearsItemsWithoutError(t *testing.T) {
+	model := NewCassSearch(nil)
+	model.searchID = 1
+	model.list.SetItems([]list.Item{listItemStub{}})
+
+	updated, _ := model.Update(searchResultMsg{id: 1, results: nil})
+	if updated.err != nil {
+		t.Fatalf("expected nil error for nil results payload, got %v", updated.err)
+	}
+	if len(updated.list.Items()) != 0 {
+		t.Fatalf("expected nil results to clear items, got %d", len(updated.list.Items()))
+	}
+}
+
+func TestCassSearchViewShowsGenericError(t *testing.T) {
+	model := NewCassSearch(nil)
+	model.SetSize(60, 10)
+	model.err = errors.New("search failed")
+
+	view := model.View()
+	if !contains(view, "search failed") {
+		t.Fatalf("expected generic error to be shown, got: %q", view)
 	}
 }
 

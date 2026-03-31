@@ -68,6 +68,115 @@ var dashboardRunAddAgents = func(ctx context.Context, projectDir, session string
 	return trimmed, nil
 }
 
+var dashboardBuildEditorCommand = buildDashboardEditorCommand
+var dashboardExecProcess = tea.ExecProcess
+
+func buildDashboardEditorCommand(path string) (*exec.Cmd, error) {
+	editor := strings.TrimSpace(os.Getenv("EDITOR"))
+	if editor == "" {
+		editor = "vi"
+	}
+
+	parts := strings.Fields(editor)
+	if len(parts) == 0 || !dashboardEditorTokensSafe(parts) {
+		parts = []string{"vi"}
+	}
+
+	cmdPath, err := exec.LookPath(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("editor not found: %w", err)
+	}
+
+	args := append(parts[1:], path)
+	return exec.Command(cmdPath, args...), nil
+}
+
+func dashboardEditorTokensSafe(tokens []string) bool {
+	for _, token := range tokens {
+		if strings.ContainsAny(token, ";&|<>`$\n\r") {
+			return false
+		}
+	}
+	return true
+}
+
+func resolveDashboardFilePath(projectDir, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("no file selected")
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+
+	base := strings.TrimSpace(projectDir)
+	if base == "" {
+		var err error
+		base, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve current directory: %w", err)
+		}
+	}
+	return filepath.Clean(filepath.Join(base, path)), nil
+}
+
+func (m Model) openFileInEditor(change tracker.RecordedFileChange) tea.Cmd {
+	displayPath := strings.TrimSpace(change.Change.Path)
+	if change.Change.Type == tracker.FileDeleted {
+		return func() tea.Msg {
+			return FileOpenResultMsg{
+				Path: displayPath,
+				Err:  fmt.Errorf("cannot open deleted file"),
+			}
+		}
+	}
+
+	resolvedPath, err := resolveDashboardFilePath(m.projectDir, displayPath)
+	if err != nil {
+		return func() tea.Msg {
+			return FileOpenResultMsg{Path: displayPath, Err: err}
+		}
+	}
+
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return func() tea.Msg {
+			return FileOpenResultMsg{
+				Path: resolvedPath,
+				Err:  fmt.Errorf("file unavailable: %w", err),
+			}
+		}
+	}
+	if info.IsDir() {
+		return func() tea.Msg {
+			return FileOpenResultMsg{
+				Path: resolvedPath,
+				Err:  fmt.Errorf("cannot open directory in editor"),
+			}
+		}
+	}
+
+	cmd, err := dashboardBuildEditorCommand(resolvedPath)
+	if err != nil {
+		return func() tea.Msg {
+			return FileOpenResultMsg{Path: resolvedPath, Err: err}
+		}
+	}
+	if projectDir := strings.TrimSpace(m.projectDir); projectDir != "" {
+		cmd.Dir = projectDir
+	}
+
+	return dashboardExecProcess(cmd, func(err error) tea.Msg {
+		if err == nil {
+			return nil
+		}
+		return FileOpenResultMsg{
+			Path: resolvedPath,
+			Err:  fmt.Errorf("editor exited with error: %w", err),
+		}
+	})
+}
+
 func (m Model) runSpawnWizardAdd(result panels.SpawnWizardResult) tea.Cmd {
 	session := m.session
 	projectDir := m.projectDir
@@ -373,9 +482,9 @@ func (m *Model) fetchHistoryCmd() tea.Cmd {
 func (m *Model) fetchFileChangesCmd() tea.Cmd {
 	gen := m.nextGen(refreshFiles)
 	return func() tea.Msg {
-		// Get changes from last 5 minutes
-		since := time.Now().Add(-5 * time.Minute)
-		changes := tracker.RecordedChangesSince(since)
+		// The files panel owns time-window filtering, so fetch the full
+		// bounded change buffer instead of hard-capping the producer at 5m.
+		changes := tracker.RecordedChanges()
 		return FileChangeMsg{Changes: changes, Gen: gen}
 	}
 }

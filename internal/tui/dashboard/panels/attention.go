@@ -70,11 +70,23 @@ func NewAttentionPanel() *AttentionPanel {
 
 // SetData updates the panel with attention items.
 func (m *AttentionPanel) SetData(items []AttentionItem, feedAvailable bool) {
+	selectedCursor := int64(0)
+	if selected := m.SelectedItem(); selected != nil {
+		selectedCursor = selected.Cursor
+	}
+
 	m.items = append(m.items[:0], items...)
 	sort.SliceStable(m.items, func(i, j int) bool {
 		return attentionItemLess(m.items[i], m.items[j])
 	})
 	m.feedAvailable = feedAvailable
+
+	if selectedCursor > 0 {
+		if m.SelectCursor(selectedCursor) || m.SelectNearestCursor(selectedCursor) {
+			return
+		}
+	}
+
 	// Clamp cursor to valid range
 	if m.cursor >= len(m.items) {
 		m.cursor = len(m.items) - 1

@@ -140,6 +140,50 @@ func TestReloadMsgClearsCommandsWhenReloadedEmpty(t *testing.T) {
 	}
 }
 
+func TestReloadMsgClearsSelectedCommandWhenRemoved(t *testing.T) {
+	m := New("test-session", testCommands)
+	m.selected = &m.commands[0]
+	m.phase = PhaseTarget
+	m.editDraft = "keep me?"
+
+	updated, _ := m.Update(ReloadMsg{Commands: []config.PaletteCmd{
+		{Key: "other", Label: "Other", Category: "Quick Actions", Prompt: "Something else"},
+	}})
+	result := updated.(Model)
+
+	if result.selected != nil {
+		t.Fatal("expected removed selected command to be cleared")
+	}
+	if result.phase != PhaseCommand {
+		t.Fatalf("expected palette to return to command phase, got %v", result.phase)
+	}
+	if result.editDraft != "" {
+		t.Fatalf("expected edit draft to be cleared, got %q", result.editDraft)
+	}
+}
+
+func TestReloadMsgRefreshesSelectedCommandPrompt(t *testing.T) {
+	m := New("test-session", testCommands)
+	m.selected = &m.commands[0]
+	m.phase = PhaseTarget
+
+	reloaded := append([]config.PaletteCmd(nil), testCommands...)
+	reloaded[0].Prompt = "Fix the bug with updated context"
+
+	updated, _ := m.Update(ReloadMsg{Commands: reloaded})
+	result := updated.(Model)
+
+	if result.selected == nil {
+		t.Fatal("expected selected command to remain available after reload")
+	}
+	if result.selected.Prompt != "Fix the bug with updated context" {
+		t.Fatalf("expected selected prompt to refresh, got %q", result.selected.Prompt)
+	}
+	if result.phase != PhaseTarget {
+		t.Fatalf("expected phase to stay on target selection, got %v", result.phase)
+	}
+}
+
 func TestUpdateAnimationTick(t *testing.T) {
 	t.Setenv("NTM_ANIMATIONS", "1")
 	t.Setenv("TMUX", "")

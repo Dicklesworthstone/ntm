@@ -79,6 +79,51 @@ type MemoryStore struct {
 	lastCheck  time.Time
 }
 
+type limitedLogBuffer struct {
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newLimitedLogBuffer(limit int) *limitedLogBuffer {
+	if limit <= 0 {
+		limit = 8 * 1024
+	}
+	return &limitedLogBuffer{limit: limit}
+}
+
+func (b *limitedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	originalLen := len(p)
+	if b.limit <= 0 {
+		return originalLen, nil
+	}
+	remaining := b.limit - b.buf.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return originalLen, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		b.truncated = true
+	}
+	_, _ = b.buf.Write(p)
+	return originalLen, nil
+}
+
+func (b *limitedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if !b.truncated {
+		return b.buf.String()
+	}
+	return b.buf.String() + "\n...[truncated]"
+}
+
 // NewMemoryStore creates a new memory store
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
@@ -101,7 +146,17 @@ func (s *MemoryStore) SetDaemonInfo(info *MemoryDaemonInfo) {
 }
 
 // Global memory store
-var memoryStore = NewMemoryStore()
+var (
+	memoryStore = NewMemoryStore()
+	// A long-lived daemon must not inherit a request-scoped or function-scoped
+	// context, otherwise it will be killed as soon as startup returns.
+	memoryDaemonCommand = func(projectDir string, port int) *exec.Cmd {
+		cmd := exec.Command("cm", "serve", "--port", fmt.Sprintf("%d", port))
+		cmd.Dir = projectDir
+		return cmd
+	}
+	memoryDaemonStartupDelay = 2 * time.Second
+)
 
 // Request/Response types
 
@@ -732,16 +787,25 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 
 // startMemoryDaemonAsync starts the memory daemon in the background
 func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// The daemon must outlive this startup helper, so use a plain exec.Cmd.
+	cmd := memoryDaemonCommand(s.projectDir, port)
+	if cmd == nil {
+		slog.Error("failed to build memory daemon command")
+		memoryStore.SetDaemonInfo(&MemoryDaemonInfo{State: DaemonStateStopped})
+		s.publishMemoryEvent("memory.daemon.failed", map[string]interface{}{
+			"error": "memory daemon command was nil",
+		})
+		return
+	}
+	if cmd.Dir == "" {
+		cmd.Dir = s.projectDir
+	}
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = 2 * time.Second
+	}
 
-	// Run cm serve command
-	cmd := exec.CommandContext(ctx, "cm", "serve", "--port", fmt.Sprintf("%d", port))
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = s.projectDir
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := newLimitedLogBuffer(8 * 1024)
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
 		slog.Error("failed to start memory daemon", "error", err)
@@ -755,7 +819,7 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 	go s.watchMemoryDaemonExit(cmd, sessionID)
 
 	// Wait a moment for the daemon to start
-	time.Sleep(2 * time.Second)
+	time.Sleep(memoryDaemonStartupDelay)
 
 	// Check if it's running
 	daemonInfo := s.checkMemoryDaemon()

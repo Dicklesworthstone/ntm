@@ -91,6 +91,40 @@ func TestKeyMapFullHelp(t *testing.T) {
 	if !foundPaneView {
 		t.Fatal("FullHelp() missing pane table toggle key 'v'")
 	}
+
+	for _, group := range groups {
+		for _, binding := range group {
+			for _, keyName := range binding.Keys() {
+				if keyName == "s" {
+					t.Fatal("FullHelp() should not advertise dead send binding 's'")
+				}
+				if keyName == "left" || keyName == "right" || keyName == "h" || keyName == "l" {
+					t.Fatal("FullHelp() should not advertise dead global left/right bindings")
+				}
+			}
+		}
+	}
+
+	tabCount := 0
+	shiftTabCount := 0
+	for _, group := range groups {
+		for _, binding := range group {
+			for _, keyName := range binding.Keys() {
+				if keyName == "tab" {
+					tabCount++
+				}
+				if keyName == "shift+tab" {
+					shiftTabCount++
+				}
+			}
+		}
+	}
+	if tabCount != 1 {
+		t.Fatalf("FullHelp() should advertise tab exactly once, got %d occurrences", tabCount)
+	}
+	if shiftTabCount != 1 {
+		t.Fatalf("FullHelp() should advertise shift+tab exactly once, got %d occurrences", shiftTabCount)
+	}
 }
 
 // TestKeyMapBindingsHaveHelp verifies all returned bindings have help text.

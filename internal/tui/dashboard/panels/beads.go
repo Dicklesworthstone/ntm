@@ -80,19 +80,24 @@ func (m *BeadsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *BeadsPanel) Keybindings() []Keybinding {
 	return []Keybinding{
 		{
-			Key:         key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "claim")),
-			Description: "Claim selected bead",
-			Action:      "claim",
+			Key:         key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "up")),
+			Description: "Scroll up",
+			Action:      "page_up",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open")),
-			Description: "Open bead details",
-			Action:      "open",
+			Key:         key.NewBinding(key.WithKeys("pgdn"), key.WithHelp("pgdn", "down")),
+			Description: "Scroll down",
+			Action:      "page_down",
 		},
 		{
-			Key:         key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
-			Description: "Create new bead",
-			Action:      "new",
+			Key:         key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
+			Description: "Jump to top",
+			Action:      "top",
+		},
+		{
+			Key:         key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
+			Description: "Jump to bottom",
+			Action:      "bottom",
 		},
 	}
 }

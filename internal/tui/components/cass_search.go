@@ -106,9 +106,12 @@ func (m CassSearchModel) Update(msg tea.Msg) (CassSearchModel, tea.Cmd) {
 			break // Stale
 		}
 		if msg.query == "" {
+			m.searching = false
+			m.err = nil
 			m.list.SetItems(nil)
 			break
 		}
+		m.err = nil
 		m.searching = true
 		cmds = append(cmds, m.performSearch(msg.id, msg.query))
 
@@ -119,7 +122,12 @@ func (m CassSearchModel) Update(msg tea.Msg) (CassSearchModel, tea.Cmd) {
 		m.searching = false
 		if msg.err != nil {
 			m.err = msg.err
-			// Maybe show error in list?
+			m.list.SetItems(nil)
+			break
+		}
+		m.err = nil
+		if msg.results == nil {
+			m.list.SetItems(nil)
 			break
 		}
 		items := make([]list.Item, len(msg.results.Hits))
@@ -175,8 +183,11 @@ func (m CassSearchModel) View() string {
 			Render("CASS is not installed.\n\nInstall with: brew install cass\nThen try again.")
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		m.textInput.View(),
-		m.list.View(),
-	)
+	parts := []string{m.textInput.View()}
+	if m.err != nil {
+		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("204"))
+		parts = append(parts, errorStyle.Render(m.err.Error()))
+	}
+	parts = append(parts, m.list.View())
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }

@@ -1335,6 +1335,9 @@ func TestDashboardHelpVerbosityMapping(t *testing.T) {
 		if !hasDesc(hints, "zoom") || !hasDesc(hints, "refresh") {
 			t.Fatalf("expected full hints to include zoom/refresh, got %#v", hints)
 		}
+		if hasDesc(hints, "send") {
+			t.Fatalf("expected full hints to omit dead send action, got %#v", hints)
+		}
 	})
 
 	t.Run("debug_adds_debug_hints", func(t *testing.T) {

@@ -149,6 +149,64 @@ func TestConflictsPanel_SetConflicts(t *testing.T) {
 	}
 }
 
+func TestConflictsPanelSetConflictsPreservesSelectedConflictAcrossReorder(t *testing.T) {
+	panel := NewConflictsPanel()
+
+	panel.SetConflicts([]watcher.FileConflict{
+		{Path: "/test/file1.go", RequestorAgent: "Agent1", Holders: []string{"HolderA"}},
+		{Path: "/test/file2.go", RequestorAgent: "Agent2", Holders: []string{"HolderB"}},
+	})
+	panel.selectedIndex = 1
+	panel.selectedAction = 2
+
+	panel.SetConflicts([]watcher.FileConflict{
+		{Path: "/test/file2.go", RequestorAgent: "Agent2", Holders: []string{"HolderB", "HolderC"}},
+		{Path: "/test/file1.go", RequestorAgent: "Agent1", Holders: []string{"HolderA"}},
+		{Path: "/test/file3.go", RequestorAgent: "Agent3", Holders: []string{"HolderD"}},
+	})
+
+	selected := panel.SelectedConflict()
+	if selected == nil {
+		t.Fatal("expected selected conflict after refresh")
+	}
+	if selected.Path != "/test/file2.go" || selected.RequestorAgent != "Agent2" {
+		t.Fatalf("expected selection to remain on Agent2 conflict, got %+v", *selected)
+	}
+	if panel.selectedIndex != 0 {
+		t.Fatalf("expected selectedIndex to move with reordered conflict, got %d", panel.selectedIndex)
+	}
+	if panel.selectedAction != 2 {
+		t.Fatalf("expected selectedAction to remain armed for the same conflict, got %d", panel.selectedAction)
+	}
+}
+
+func TestConflictsPanelSetConflictsResetsActionWhenSelectedConflictDisappears(t *testing.T) {
+	panel := NewConflictsPanel()
+
+	panel.SetConflicts([]watcher.FileConflict{
+		{Path: "/test/file1.go", RequestorAgent: "Agent1", Holders: []string{"HolderA"}},
+		{Path: "/test/file2.go", RequestorAgent: "Agent2", Holders: []string{"HolderB"}},
+	})
+	panel.selectedIndex = 1
+	panel.selectedAction = 2
+
+	panel.SetConflicts([]watcher.FileConflict{
+		{Path: "/test/file1.go", RequestorAgent: "Agent1", Holders: []string{"HolderA"}},
+		{Path: "/test/file3.go", RequestorAgent: "Agent3", Holders: []string{"HolderC"}},
+	})
+
+	selected := panel.SelectedConflict()
+	if selected == nil {
+		t.Fatal("expected a fallback selected conflict after refresh")
+	}
+	if selected.Path == "/test/file2.go" && selected.RequestorAgent == "Agent2" {
+		t.Fatalf("expected removed conflict selection to clear, still got %+v", *selected)
+	}
+	if panel.selectedAction != 0 {
+		t.Fatalf("expected selectedAction to reset to wait after selection changed, got %d", panel.selectedAction)
+	}
+}
+
 func TestConflictsPanel_Update_Navigation(t *testing.T) {
 	panel := NewConflictsPanel()
 	panel.Focus()
@@ -198,6 +256,35 @@ func TestConflictsPanel_Update_NotFocused(t *testing.T) {
 	// Should not change when not focused
 	if updatedPanel.selectedIndex != 0 {
 		t.Errorf("When not focused, selectedIndex should not change, got %v", updatedPanel.selectedIndex)
+	}
+}
+
+func TestConflictsPanelRemoveConflictPreservesSelectedConflictWhenEarlierConflictRemoved(t *testing.T) {
+	panel := NewConflictsPanel()
+
+	panel.SetConflicts([]watcher.FileConflict{
+		{Path: "/test/file1.go", RequestorAgent: "Agent1", Holders: []string{"HolderA"}},
+		{Path: "/test/file2.go", RequestorAgent: "Agent2", Holders: []string{"HolderB"}},
+		{Path: "/test/file3.go", RequestorAgent: "Agent3", Holders: []string{"HolderC"}},
+		{Path: "/test/file4.go", RequestorAgent: "Agent4", Holders: []string{"HolderD"}},
+	})
+	panel.selectedIndex = 2
+	panel.selectedAction = 1
+
+	panel.RemoveConflict("/test/file2.go", "Agent2")
+
+	selected := panel.SelectedConflict()
+	if selected == nil {
+		t.Fatal("expected selected conflict after removal")
+	}
+	if selected.Path != "/test/file3.go" || selected.RequestorAgent != "Agent3" {
+		t.Fatalf("expected selection to remain on file3 after removing earlier conflict, got %+v", *selected)
+	}
+	if panel.selectedIndex != 1 {
+		t.Fatalf("expected selectedIndex to follow preserved conflict, got %d", panel.selectedIndex)
+	}
+	if panel.selectedAction != 1 {
+		t.Fatalf("expected selectedAction to remain unchanged when same conflict stays selected, got %d", panel.selectedAction)
 	}
 }
 

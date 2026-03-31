@@ -251,11 +251,65 @@ func TestAttentionPanelCursorContinuityAcrossUpdates(t *testing.T) {
 
 	// Selection should persist across update (cursor 50 still exists)
 	selected2 := panel.SelectedItem()
-	if selected2 == nil {
-		t.Fatal("expected selection to persist after update")
+	if selected2 == nil || selected2.Cursor != 50 {
+		t.Fatalf("expected selection to remain on cursor 50 after update, got %+v", selected2)
+	}
+}
+
+func TestAttentionPanelSetDataPreservesSelectionAcrossInsertedItems(t *testing.T) {
+	t.Parallel()
+
+	panel := NewAttentionPanel()
+	panel.SetSize(80, 18)
+
+	items1 := []AttentionItem{
+		{Summary: "oldest", Cursor: 10, Timestamp: time.Now().Add(-3 * time.Minute)},
+		{Summary: "target", Cursor: 20, Timestamp: time.Now().Add(-2 * time.Minute)},
+	}
+	panel.SetData(items1, true)
+	if !panel.SelectCursor(20) {
+		t.Fatal("expected initial selection on cursor 20")
 	}
 
-	t.Logf("CURSOR_CONTINUITY before=%d after=%d", selected1.Cursor, selected2.Cursor)
+	items2 := []AttentionItem{
+		{Summary: "newest", Cursor: 40, Timestamp: time.Now()},
+		{Summary: "newer", Cursor: 30, Timestamp: time.Now().Add(-time.Minute)},
+		{Summary: "target", Cursor: 20, Timestamp: time.Now().Add(-2 * time.Minute)},
+	}
+	panel.SetData(items2, true)
+
+	selected := panel.SelectedItem()
+	if selected == nil || selected.Cursor != 20 {
+		t.Fatalf("expected selection to stay on cursor 20 after insertions, got %+v", selected)
+	}
+}
+
+func TestAttentionPanelSetDataFallsBackToNearestCursorWhenSelectionRemoved(t *testing.T) {
+	t.Parallel()
+
+	panel := NewAttentionPanel()
+	panel.SetSize(80, 18)
+
+	items1 := []AttentionItem{
+		{Summary: "older", Cursor: 40, Timestamp: time.Now().Add(-3 * time.Minute)},
+		{Summary: "target", Cursor: 42, Timestamp: time.Now().Add(-2 * time.Minute)},
+		{Summary: "newer", Cursor: 44, Timestamp: time.Now().Add(-time.Minute)},
+	}
+	panel.SetData(items1, true)
+	if !panel.SelectCursor(42) {
+		t.Fatal("expected initial selection on cursor 42")
+	}
+
+	items2 := []AttentionItem{
+		{Summary: "older", Cursor: 40, Timestamp: time.Now().Add(-3 * time.Minute)},
+		{Summary: "newer", Cursor: 44, Timestamp: time.Now()},
+	}
+	panel.SetData(items2, true)
+
+	selected := panel.SelectedItem()
+	if selected == nil || selected.Cursor != 44 {
+		t.Fatalf("expected nearest surviving cursor 44 after removal, got %+v", selected)
+	}
 }
 
 func TestAttentionPanelGracefulDegradationWhenFeedUnavailable(t *testing.T) {

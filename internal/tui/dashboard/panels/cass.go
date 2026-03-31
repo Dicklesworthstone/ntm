@@ -120,25 +120,72 @@ func (m *CASSPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *CASSPanel) SetData(hits []cass.SearchHit, err error) {
+	selectedKey := ""
+	if selected, ok := m.selectedHit(); ok {
+		selectedKey = cassHitKey(selected)
+	}
+
 	m.err = err
+	if err != nil {
+		hits = nil
+	}
 
 	m.hits = append([]cass.SearchHit(nil), hits...)
 	sort.SliceStable(m.hits, func(i, j int) bool {
 		return m.hits[i].Score > m.hits[j].Score
 	})
 
-	if m.cursor >= len(m.hits) {
-		m.cursor = len(m.hits) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.offset > m.cursor {
-		m.offset = m.cursor
+	if selectedKey != "" && m.selectHitByKey(selectedKey) {
+		if m.offset > m.cursor {
+			m.offset = m.cursor
+		}
+	} else {
+		if m.cursor >= len(m.hits) {
+			m.cursor = len(m.hits) - 1
+		}
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+		if m.offset > m.cursor {
+			m.offset = m.cursor
+		}
 	}
 	m.syncScrollBody()
 	m.ensureCursorVisible()
 	m.syncOffsetFromScroll()
+}
+
+func (m *CASSPanel) selectedHit() (cass.SearchHit, bool) {
+	if len(m.hits) == 0 || m.cursor < 0 || m.cursor >= len(m.hits) {
+		return cass.SearchHit{}, false
+	}
+	return m.hits[m.cursor], true
+}
+
+func (m *CASSPanel) selectHitByKey(target string) bool {
+	for i, hit := range m.hits {
+		if cassHitKey(hit) == target {
+			m.cursor = i
+			return true
+		}
+	}
+	return false
+}
+
+func cassHitKey(hit cass.SearchHit) string {
+	line := 0
+	if hit.LineNumber != nil {
+		line = *hit.LineNumber
+	}
+	return fmt.Sprintf("%s|%s|%d|%s|%s|%s|%s",
+		hit.SessionID,
+		hit.SourcePath,
+		line,
+		hit.Title,
+		hit.MatchType,
+		hit.Agent,
+		hit.CreatedAtTime().UTC().Format(time.RFC3339Nano),
+	)
 }
 
 func (m *CASSPanel) HasError() bool {
@@ -153,7 +200,7 @@ func (m *CASSPanel) HandlesOwnHeight() bool {
 func (m *CASSPanel) Keybindings() []Keybinding {
 	return []Keybinding{
 		{
-			Key:         key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
+			Key:         key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "search")),
 			Description: "Manual CASS search",
 			Action:      "search",
 		},

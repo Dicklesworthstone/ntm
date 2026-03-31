@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -150,7 +151,8 @@ func (m Model) toastHistoryShortcutAvailable() bool {
 	if m.focusedPanel == PanelBeads {
 		return false
 	}
-	if m.focusedPanel == PanelSidebar && m.timelinePanel != nil && m.timelinePanel.IsFocused() {
+	if m.focusedPanel == PanelSidebar && m.timelinePanel != nil &&
+		m.sidebarActivePanelID() == m.timelinePanel.Config().ID {
 		return false
 	}
 	return true
@@ -236,6 +238,64 @@ func (m Model) currentAggregateVelocity() float64 {
 		total += ps.TokenVelocity
 	}
 	return total
+}
+
+func clearPaneHealthDetails(ps PaneStatus) PaneStatus {
+	ps.HealthStatus = ""
+	ps.HealthIssues = nil
+	ps.RestartCount = 0
+	ps.UptimeSeconds = 0
+	return ps
+}
+
+func clearPaneLiveStatus(ps PaneStatus) PaneStatus {
+	ps.State = ""
+	ps.TokenVelocity = 0
+	ps.LocalTokensPerSecond = 0
+	ps.LocalTotalTokens = 0
+	ps.LocalLastLatency = 0
+	ps.LocalAvgLatency = 0
+	ps.LocalMemoryBytes = 0
+	ps.LocalTPSHistory = nil
+	return ps
+}
+
+func (m *Model) clearAllPaneHealthDetails() {
+	for idx, ps := range m.paneStatus {
+		m.paneStatus[idx] = clearPaneHealthDetails(ps)
+	}
+}
+
+func (m *Model) clearAllPaneLiveStatus() {
+	for idx, ps := range m.paneStatus {
+		m.paneStatus[idx] = clearPaneLiveStatus(ps)
+	}
+	m.agentStatuses = make(map[string]status.AgentStatus)
+}
+
+func (m *Model) applyOllamaMemorySnapshot(memory map[string]int64) {
+	if len(memory) == 0 {
+		m.ollamaModelMemory = nil
+	} else {
+		m.ollamaModelMemory = make(map[string]int64, len(memory))
+		for modelName, bytes := range memory {
+			m.ollamaModelMemory[modelName] = bytes
+		}
+	}
+
+	for _, pane := range m.panes {
+		if pane.Type != tmux.AgentOllama {
+			continue
+		}
+		ps := m.paneStatus[pane.Index]
+		ps.LocalMemoryBytes = 0
+		if m.ollamaModelMemory != nil && pane.Variant != "" {
+			if mem, ok := m.ollamaModelMemory[pane.Variant]; ok {
+				ps.LocalMemoryBytes = mem
+			}
+		}
+		m.paneStatus[pane.Index] = ps
+	}
 }
 
 // fetchHealthStatus performs the health check via bv
@@ -780,7 +840,7 @@ func (m *Model) fetchAgentMailInboxes() tea.Cmd {
 
 // fetchAgentMailInboxDetails fetches message bodies for a single agent.
 func (m *Model) fetchAgentMailInboxDetails(pane tmux.Pane) tea.Cmd {
-	gen := m.nextGen(refreshAgentMailInbox)
+	gen := m.nextGen(refreshAgentMailInboxDetail)
 	projectKey := resolveAgentMailProjectKey(m.session, m.projectDir)
 	sessionName := m.session
 	paneID := pane.ID
@@ -788,22 +848,25 @@ func (m *Model) fetchAgentMailInboxDetails(pane tmux.Pane) tea.Cmd {
 
 	return func() tea.Msg {
 		if projectKey == "" || sessionName == "" {
-			return AgentMailInboxDetailMsg{PaneID: paneID, Gen: gen}
+			return AgentMailInboxDetailMsg{PaneID: paneID, Skipped: true, Gen: gen}
 		}
 
 		client := m.newAgentMailClient(projectKey)
 		if client == nil || !client.IsAvailable() {
-			return AgentMailInboxDetailMsg{PaneID: paneID, Gen: gen}
+			return AgentMailInboxDetailMsg{PaneID: paneID, Skipped: true, Gen: gen}
 		}
 
 		registry, err := agentmail.LoadBestSessionAgentRegistry(sessionName, projectKey)
-		if err != nil || registry == nil {
+		if err != nil {
 			return AgentMailInboxDetailMsg{PaneID: paneID, Err: err, Gen: gen}
+		}
+		if registry == nil {
+			return AgentMailInboxDetailMsg{PaneID: paneID, Skipped: true, Gen: gen}
 		}
 
 		agentName, ok := registry.GetAgent(paneTitle, paneID)
 		if !ok {
-			return AgentMailInboxDetailMsg{PaneID: paneID, Gen: gen}
+			return AgentMailInboxDetailMsg{PaneID: paneID, Skipped: true, Gen: gen}
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -823,6 +886,82 @@ func (m *Model) fetchAgentMailInboxDetails(pane tmux.Pane) tea.Cmd {
 			Gen:      gen,
 		}
 	}
+}
+
+func cloneInboxMessages(msgs []agentmail.InboxMessage) []agentmail.InboxMessage {
+	return append([]agentmail.InboxMessage(nil), msgs...)
+}
+
+func (m *Model) hydrateInboxBodies(msgs []agentmail.InboxMessage) []agentmail.InboxMessage {
+	hydrated := cloneInboxMessages(msgs)
+	for i := range hydrated {
+		if m.agentMailInboxBodyKnown[hydrated[i].ID] {
+			hydrated[i].BodyMD = m.agentMailInboxBodyCache[hydrated[i].ID]
+		}
+	}
+	return hydrated
+}
+
+func mergeInboxBodies(base, detail []agentmail.InboxMessage) []agentmail.InboxMessage {
+	if len(base) == 0 {
+		return nil
+	}
+	if len(detail) == 0 {
+		return cloneInboxMessages(base)
+	}
+
+	detailByID := make(map[int]string, len(detail))
+	for _, msg := range detail {
+		detailByID[msg.ID] = msg.BodyMD
+	}
+
+	merged := cloneInboxMessages(base)
+	for i := range merged {
+		if body, ok := detailByID[merged[i].ID]; ok {
+			merged[i].BodyMD = body
+		}
+	}
+
+	return merged
+}
+
+func (m *Model) rememberInboxBodies(msgs []agentmail.InboxMessage) {
+	for _, msg := range msgs {
+		m.agentMailInboxBodyKnown[msg.ID] = true
+		m.agentMailInboxBodyCache[msg.ID] = msg.BodyMD
+	}
+}
+
+func (m *Model) selectedPaneInboxDetailCmd() tea.Cmd {
+	if !m.showInboxDetails || m.cursor < 0 || m.cursor >= len(m.panes) {
+		return nil
+	}
+
+	pane := m.panes[m.cursor]
+	msgs := m.agentMailInbox[pane.ID]
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	for _, msg := range msgs {
+		if !m.agentMailInboxBodyKnown[msg.ID] {
+			return m.fetchAgentMailInboxDetails(pane)
+		}
+	}
+
+	return nil
+}
+
+func renderInboxBodyPreview(body string, width int) string {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return ""
+	}
+	if width < 12 {
+		width = 12
+	}
+	wrapped := wordwrap.String(trimmed, width)
+	return strings.TrimRight(truncateToHeight(wrapped, 3), "\n")
 }
 
 // fetchCheckpointStatus fetches checkpoint status for the session
@@ -976,6 +1115,185 @@ type SessionDataWithOutputMsg struct {
 	FocusedOnly       bool
 	Err               error
 	Gen               uint64
+}
+
+type sidebarPanelRef struct {
+	id    string
+	panel panels.Panel
+}
+
+func (m Model) sidebarInteractivePanels() []sidebarPanelRef {
+	refs := make([]sidebarPanelRef, 0, 6)
+
+	if m.rotationConfirmPanel != nil && (m.rotationConfirmPanel.HasPending() || m.rotationConfirmPanel.HasError()) {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.rotationConfirmPanel.Config().ID,
+			panel: m.rotationConfirmPanel,
+		})
+	}
+	if m.metricsPanel != nil && (m.metricsError != nil || hasMetricsData(m.metricsData)) {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.metricsPanel.Config().ID,
+			panel: m.metricsPanel,
+		})
+	}
+	if m.historyPanel != nil && (len(m.cmdHistory) > 0 || m.historyError != nil) {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.historyPanel.Config().ID,
+			panel: m.historyPanel,
+		})
+	}
+	if m.filesPanel != nil && (len(m.fileChanges) > 0 || m.fileChangesError != nil) {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.filesPanel.Config().ID,
+			panel: m.filesPanel,
+		})
+	}
+	if m.cassPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.cassPanel.Config().ID,
+			panel: m.cassPanel,
+		})
+	}
+	if m.timelinePanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.timelinePanel.Config().ID,
+			panel: m.timelinePanel,
+		})
+	}
+
+	return refs
+}
+
+func (m Model) sidebarActivePanelID() string {
+	refs := m.sidebarInteractivePanels()
+	if len(refs) == 0 {
+		return ""
+	}
+	for _, ref := range refs {
+		if ref.id == m.sidebarActivePanel {
+			return ref.id
+		}
+	}
+	return refs[0].id
+}
+
+func (m Model) sidebarActivePanelRef() (sidebarPanelRef, bool) {
+	activeID := m.sidebarActivePanelID()
+	if activeID == "" {
+		return sidebarPanelRef{}, false
+	}
+	for _, ref := range m.sidebarInteractivePanels() {
+		if ref.id == activeID {
+			return ref, true
+		}
+	}
+	return sidebarPanelRef{}, false
+}
+
+func (m *Model) cycleSidebarActivePanel(dir int) bool {
+	refs := m.sidebarInteractivePanels()
+	if len(refs) == 0 {
+		m.sidebarActivePanel = ""
+		return false
+	}
+	if dir == 0 {
+		m.sidebarActivePanel = m.sidebarActivePanelID()
+		return false
+	}
+	if len(refs) == 1 {
+		m.sidebarActivePanel = refs[0].id
+		return false
+	}
+
+	currentID := m.sidebarActivePanelID()
+	currentIndex := 0
+	for i, ref := range refs {
+		if ref.id == currentID {
+			currentIndex = i
+			break
+		}
+	}
+
+	nextIndex := (currentIndex + dir + len(refs)) % len(refs)
+	m.sidebarActivePanel = refs[nextIndex].id
+	return true
+}
+
+func sidebarPanelMatchesKey(msg tea.KeyMsg, ref sidebarPanelRef) bool {
+	for _, kb := range ref.panel.Keybindings() {
+		if key.Matches(msg, kb.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) activateSidebarPanelForKey(msg tea.KeyMsg) bool {
+	refs := m.sidebarInteractivePanels()
+	if len(refs) == 0 {
+		m.sidebarActivePanel = ""
+		return false
+	}
+
+	currentID := m.sidebarActivePanelID()
+	for _, ref := range refs {
+		if ref.id == currentID && sidebarPanelMatchesKey(msg, ref) {
+			return false
+		}
+	}
+
+	var matches []string
+	for _, ref := range refs {
+		if sidebarPanelMatchesKey(msg, ref) {
+			matches = append(matches, ref.id)
+		}
+	}
+
+	if len(matches) == 1 && matches[0] != currentID {
+		m.sidebarActivePanel = matches[0]
+		return true
+	}
+
+	return false
+}
+
+func (m *Model) syncSidebarPanelFocusState() {
+	if m.rotationConfirmPanel != nil {
+		m.rotationConfirmPanel.Blur()
+	}
+	if m.ranoNetworkPanel != nil {
+		m.ranoNetworkPanel.Blur()
+	}
+	if m.rchPanel != nil {
+		m.rchPanel.Blur()
+	}
+	if m.costPanel != nil {
+		m.costPanel.Blur()
+	}
+	if m.metricsPanel != nil {
+		m.metricsPanel.Blur()
+	}
+	if m.historyPanel != nil {
+		m.historyPanel.Blur()
+	}
+	if m.filesPanel != nil {
+		m.filesPanel.Blur()
+	}
+	if m.cassPanel != nil {
+		m.cassPanel.Blur()
+	}
+	if m.timelinePanel != nil {
+		m.timelinePanel.Blur()
+	}
+
+	if m.focusedPanel != PanelSidebar {
+		return
+	}
+	if ref, ok := m.sidebarActivePanelRef(); ok {
+		m.sidebarActivePanel = ref.id
+		ref.panel.Focus()
+	}
 }
 
 func (m *Model) fetchSessionDataWithOutputs() tea.Cmd {
@@ -1546,6 +1864,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle replay request from history panel
 		return m, m.executeReplay(msg.Entry)
 
+	case panels.OpenFileMsg:
+		return m, m.openFileInEditor(msg.Change)
+
 	case panels.CopyMsg:
 		clip, err := clipboard.New()
 		if err != nil {
@@ -1557,6 +1878,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.healthMessage = "Copied prompt to clipboard"
+		return m, nil
+
+	case FileOpenResultMsg:
+		if msg.Err != nil {
+			target := strings.TrimSpace(msg.Path)
+			if target == "" {
+				target = "selected file"
+			} else {
+				target = filepath.Base(target)
+			}
+			m.healthMessage = fmt.Sprintf("Open failed for %s: %v", target, msg.Err)
+		}
 		return m, nil
 
 	// [tui-upgrade: bd-uz09d] Handle spawn wizard completion
@@ -1727,10 +2060,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.fetchingPTHealth = false
-		if msg.States != nil {
-			m.healthStates = msg.States
-			m.markUpdated(refreshPTHealth, time.Now())
-		}
+		m.healthStates = msg.States
+		m.markUpdated(refreshPTHealth, time.Now())
 		return m, nil
 
 	case MetricsUpdateMsg:
@@ -1742,7 +2073,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.metricsError = msg.Err
-		if msg.Err == nil {
+		if msg.Err != nil {
+			m.metricsData = panels.MetricsData{}
+		} else {
 			m.metricsData = msg.Data
 			m.markUpdated(refreshMetrics, time.Now())
 		}
@@ -1758,7 +2091,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.historyError = msg.Err
-		if msg.Err == nil {
+		if msg.Err != nil {
+			m.cmdHistory = nil
+		} else {
 			m.cmdHistory = msg.Entries
 			m.markUpdated(refreshHistory, time.Now())
 		}
@@ -1774,7 +2109,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.fileChangesError = msg.Err
-		if msg.Err == nil {
+		if msg.Err != nil {
+			m.fileChanges = nil
+		} else {
 			m.fileChanges = msg.Changes
 			m.markUpdated(refreshFiles, time.Now())
 		}
@@ -1789,7 +2126,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.fetchingCassContext = false
 		m.cassError = msg.Err
-		m.cassContext = msg.Hits
+		if msg.Err != nil {
+			m.cassContext = nil
+		} else {
+			m.cassContext = msg.Hits
+		}
 		if m.cassPanel != nil {
 			m.cassPanel.SetData(m.cassContext, m.cassError)
 		}
@@ -2258,6 +2599,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Status refreshes are authoritative. Clear the previous live-status snapshot
+		// before applying the latest detector results so errors/partial responses do
+		// not leave stale activity badges, output, or token velocity visible.
+		m.clearAllPaneLiveStatus()
+
 		timelineUpdated := false
 		for _, st := range msg.Statuses {
 			idx, ok := paneIndexByID[st.PaneID]
@@ -2327,27 +2673,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case HealthUpdateMsg:
-		if msg.Err == nil && msg.Health != nil {
-			// Build pane ID to index lookup
-			paneIndexByID := make(map[string]int)
-			for _, p := range m.panes {
-				paneIndexByID[p.ID] = p.Index
+		m.clearAllPaneHealthDetails()
+		if msg.Err != nil || msg.Health == nil {
+			return m, nil
+		}
+
+		// Build index lookup for current panes.
+		paneIndexByID := make(map[string]int)
+		for _, p := range m.panes {
+			paneIndexByID[p.ID] = p.Index
+		}
+
+		// Apply the latest authoritative health snapshot.
+		for paneID, healthInfo := range msg.Health {
+			idx, ok := paneIndexByID[paneID]
+			if !ok {
+				continue
 			}
 
-			// Update pane status with health info
-			for paneID, healthInfo := range msg.Health {
-				idx, ok := paneIndexByID[paneID]
-				if !ok {
-					continue
-				}
-
-				ps := m.paneStatus[idx]
-				ps.HealthStatus = healthInfo.Status
-				ps.HealthIssues = healthInfo.Issues
-				ps.RestartCount = healthInfo.RestartCount
-				ps.UptimeSeconds = healthInfo.Uptime
-				m.paneStatus[idx] = ps
-			}
+			ps := m.paneStatus[idx]
+			ps.HealthStatus = healthInfo.Status
+			ps.HealthIssues = healthInfo.Issues
+			ps.RestartCount = healthInfo.RestartCount
+			ps.UptimeSeconds = healthInfo.Uptime
+			m.paneStatus[idx] = ps
 		}
 		return m, nil
 
@@ -2418,8 +2767,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case OllamaPSResultMsg:
 		m.fetchingOllamaPS = false
 		m.ollamaPSError = msg.Err
-		if msg.Err == nil {
-			m.ollamaModelMemory = msg.Memory
+		if msg.Err != nil {
+			m.applyOllamaMemorySnapshot(nil)
+		} else {
+			m.applyOllamaMemorySnapshot(msg.Memory)
 		}
 		return m, nil
 
@@ -2430,8 +2781,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentMailAvailable = msg.Available
 		m.agentMailConnected = msg.Connected
 		m.agentMailArchiveFound = msg.ArchiveFound
-		m.agentMailLocks = msg.Locks
-		m.agentMailLockInfo = msg.LockInfo
+		if msg.Available && msg.Connected {
+			m.agentMailLocks = msg.Locks
+			m.agentMailLockInfo = append([]AgentMailLockInfo(nil), msg.LockInfo...)
+		} else {
+			m.agentMailLocks = 0
+			m.agentMailLockInfo = nil
+		}
 		m.markUpdated(refreshAgentMail, time.Now())
 		return m, nil
 
@@ -2439,71 +2795,93 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.acceptUpdate(refreshAgentMailInbox, msg.Gen) {
 			return m, nil
 		}
+		now := time.Now()
 		m.fetchingMailInbox = false
-		m.lastMailInboxFetch = time.Now()
-
-		if msg.Err == nil {
-			m.agentMailInbox = msg.Inboxes
-			m.agentMailAgents = msg.AgentMap
-
-			// Build index lookup for current panes
-			paneIndexByID := make(map[string]int)
-			for _, p := range m.panes {
-				paneIndexByID[p.ID] = p.Index
-			}
-
-			// Calculate totals and update per-pane status
-			unread := 0
-			urgent := 0
-			attentionFeed := robot.GetAttentionFeed()
-			for paneID, msgs := range msg.Inboxes {
-				paneUnread := len(msgs)
-				paneUrgent := 0
-				toAgent := msg.AgentMap[paneID]
-				for _, mm := range msgs {
-					if strings.EqualFold(mm.Importance, "urgent") {
-						paneUrgent++
-					}
-					// Emit attention signals for new unread messages
-					if _, seen := m.seenMailAttentionIDs[mm.ID]; !seen {
-						m.seenMailAttentionIDs[mm.ID] = struct{}{}
-						threadID := ""
-						if mm.ThreadID != nil {
-							threadID = *mm.ThreadID
-						}
-						if mm.AckRequired {
-							attentionFeed.PublishMailAckRequired(msg.ProjectKey, mm.From, toAgent, mm.Subject, mm.ID, threadID)
-						} else {
-							attentionFeed.PublishMailPending(msg.ProjectKey, mm.From, toAgent, mm.Subject, mm.ID, threadID)
-						}
-					}
-				}
-				unread += paneUnread
-				urgent += paneUrgent
-
-				// Update pane status
-				if idx, ok := paneIndexByID[paneID]; ok {
-					ps := m.paneStatus[idx]
-					ps.MailUnread = paneUnread
-					ps.MailUrgent = paneUrgent
-					m.paneStatus[idx] = ps
-				}
-			}
-			m.agentMailUnread = unread
-			m.agentMailUrgent = urgent
-			m.markUpdated(refreshAgentMailInbox, time.Now())
+		m.lastMailInboxFetch = now
+		m.agentMailInbox = make(map[string][]agentmail.InboxMessage, len(msg.Inboxes))
+		m.agentMailInboxErrors = make(map[string]error)
+		for paneID, inbox := range msg.Inboxes {
+			m.agentMailInbox[paneID] = m.hydrateInboxBodies(inbox)
 		}
-		return m, nil
+		m.agentMailAgents = make(map[string]string, len(msg.AgentMap))
+		for paneID, agentName := range msg.AgentMap {
+			m.agentMailAgents[paneID] = agentName
+		}
+
+		// Each summary is authoritative for the current unread badge state.
+		for idx, ps := range m.paneStatus {
+			ps.MailUnread = 0
+			ps.MailUrgent = 0
+			m.paneStatus[idx] = ps
+		}
+
+		// Build index lookup for current panes
+		paneIndexByID := make(map[string]int)
+		for _, p := range m.panes {
+			paneIndexByID[p.ID] = p.Index
+		}
+
+		// Calculate totals and update per-pane status.
+		// Partial fetch failures still contribute successful fresh results instead
+		// of leaving the previous summary visible.
+		unread := 0
+		urgent := 0
+		attentionFeed := robot.GetAttentionFeed()
+		for paneID, msgs := range m.agentMailInbox {
+			paneUnread := 0
+			paneUrgent := 0
+			toAgent := m.agentMailAgents[paneID]
+			for _, mm := range msgs {
+				if mm.ReadAt != nil {
+					continue
+				}
+				paneUnread++
+				if strings.EqualFold(mm.Importance, "urgent") {
+					paneUrgent++
+				}
+				// Emit attention signals for new unread messages.
+				if _, seen := m.seenMailAttentionIDs[mm.ID]; !seen {
+					m.seenMailAttentionIDs[mm.ID] = struct{}{}
+					threadID := ""
+					if mm.ThreadID != nil {
+						threadID = *mm.ThreadID
+					}
+					if mm.AckRequired {
+						attentionFeed.PublishMailAckRequired(msg.ProjectKey, mm.From, toAgent, mm.Subject, mm.ID, threadID)
+					} else {
+						attentionFeed.PublishMailPending(msg.ProjectKey, mm.From, toAgent, mm.Subject, mm.ID, threadID)
+					}
+				}
+			}
+			unread += paneUnread
+			urgent += paneUrgent
+
+			if idx, ok := paneIndexByID[paneID]; ok {
+				ps := m.paneStatus[idx]
+				ps.MailUnread = paneUnread
+				ps.MailUrgent = paneUrgent
+				m.paneStatus[idx] = ps
+			}
+		}
+		m.agentMailUnread = unread
+		m.agentMailUrgent = urgent
+		m.markUpdated(refreshAgentMailInbox, now)
+		return m, m.selectedPaneInboxDetailCmd()
 
 	case AgentMailInboxDetailMsg:
-		if !m.acceptUpdate(refreshAgentMailInbox, msg.Gen) {
+		if !m.acceptUpdate(refreshAgentMailInboxDetail, msg.Gen) {
+			return m, nil
+		}
+		if msg.Skipped {
 			return m, nil
 		}
 		if msg.Err != nil {
 			m.agentMailInboxErrors[msg.PaneID] = msg.Err
 		} else {
 			delete(m.agentMailInboxErrors, msg.PaneID)
-			m.agentMailInbox[msg.PaneID] = msg.Messages
+			m.rememberInboxBodies(msg.Messages)
+			m.agentMailInbox[msg.PaneID] = mergeInboxBodies(m.agentMailInbox[msg.PaneID], msg.Messages)
+			m.markUpdated(refreshAgentMailInboxDetail, time.Now())
 		}
 		return m, nil
 
@@ -2571,10 +2949,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.fetchingDCG = false
 		m.lastDCGFetch = time.Now()
+		m.dcgEnabled = msg.Enabled
 		if msg.Err != nil {
+			m.dcgAvailable = false
+			m.dcgVersion = ""
+			m.dcgBlocked = 0
+			m.dcgLastBlocked = ""
 			m.dcgError = msg.Err
 		} else {
-			m.dcgEnabled = msg.Enabled
 			m.dcgAvailable = msg.Available
 			m.dcgVersion = msg.Version
 			m.dcgBlocked = msg.Blocked
@@ -2591,7 +2973,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetchingPendingRot = false
 		m.lastPendingFetch = time.Now()
 		m.pendingRotationsErr = msg.Err
-		if msg.Err == nil {
+		if msg.Err != nil {
+			m.pendingRotations = nil
+		} else {
 			m.pendingRotations = msg.Pending
 			m.markUpdated(refreshPendingRotations, time.Now())
 		}
@@ -2663,13 +3047,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 				m.paneList.Select(m.cursor)
 			}
-			return m, nil
+			return m, m.selectedPaneInboxDetailCmd()
 		case tea.MouseButtonWheelDown:
 			if m.cursor < len(m.panes)-1 {
 				m.cursor++
 				m.paneList.Select(m.cursor)
 			}
-			return m, nil
+			return m, m.selectedPaneInboxDetailCmd()
 		case tea.MouseButtonLeft:
 			if msg.Action == tea.MouseActionPress {
 				// Click to dismiss toasts (individual toast hit-testing)
@@ -2705,7 +3089,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.setFocusedPanel(PanelPaneList)
 						m.cursor = paneIndex
 						m.paneList.Select(m.cursor)
-						return m, nil
+						return m, m.selectedPaneInboxDetailCmd()
 					}
 				}
 			}
@@ -2758,6 +3142,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.exitPopupOverlay()
 		}
 
+		if m.focusedPanel == PanelSidebar {
+			switch msg.String() {
+			case "J":
+				m.cycleSidebarActivePanel(1)
+				m.syncSidebarPanelFocusState()
+				return m, nil
+			case "K":
+				m.cycleSidebarActivePanel(-1)
+				m.syncSidebarPanelFocusState()
+				return m, nil
+			}
+			m.activateSidebarPanelForKey(msg)
+			m.syncSidebarPanelFocusState()
+		}
+
+		if m.focusedPanel == PanelSidebar && m.rotationConfirmPanel != nil &&
+			m.sidebarActivePanelID() == m.rotationConfirmPanel.Config().ID &&
+			m.rotationConfirmPanel.HasPending() {
+			switch msg.String() {
+			case "r", "c", "i", "p":
+				var cmd tea.Cmd
+				_, cmd = m.rotationConfirmPanel.Update(msg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
+		}
+
+		if m.focusedPanel == PanelSidebar && m.metricsPanel != nil &&
+			m.sidebarActivePanelID() == m.metricsPanel.Config().ID {
+			switch strings.ToLower(msg.String()) {
+			case "c", "r", "v", "x":
+				var cmd tea.Cmd
+				_, cmd = m.metricsPanel.Update(msg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
+		}
+
+		if m.focusedPanel == PanelConflicts && m.conflictsPanel != nil {
+			switch msg.String() {
+			case "1", "2", "3":
+				var cmd tea.Cmd
+				_, cmd = m.conflictsPanel.Update(msg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
+		}
+
 		if key.Matches(msg, dashKeys.ViewToggle) && m.focusedPanel == PanelPaneList && m.tier >= layout.TierSplit {
 			if !m.showTableView {
 				m.paneList.ResetFilter()
@@ -2775,6 +3213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paneList, cmd = m.paneList.Update(msg)
 			m.syncCursorFromPaneList()
 			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			if cmd := m.selectedPaneInboxDetailCmd(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 			if len(cmds) > 0 {
@@ -2857,6 +3298,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.paneTable != nil {
 						m.paneTable.Select(m.cursor)
 					}
+					if cmd := m.selectedPaneInboxDetailCmd(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
 			}
 
@@ -2869,6 +3313,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.paneTable != nil {
 						m.paneTable.Select(m.cursor)
 					}
+					if cmd := m.selectedPaneInboxDetailCmd(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
 			}
 
@@ -2880,15 +3327,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Force context refresh (same as regular refresh but with user intent to see context)
 			return m, tea.Batch(m.fullRefresh(true)...)
 
+		case key.Matches(msg, dashKeys.Pause):
+			m.refreshPaused = !m.refreshPaused
+			if !m.refreshPaused {
+				return m, tea.Batch(m.fullRefresh(true)...)
+			}
+			return m, nil
+
 		case key.Matches(msg, dashKeys.MailRefresh):
 			// Refresh Agent Mail data
-			return m, m.fetchAgentMailStatus()
+			cmds := []tea.Cmd{m.fetchAgentMailStatus()}
+			if !m.fetchingMailInbox {
+				m.fetchingMailInbox = true
+				m.lastMailInboxFetch = time.Now()
+				cmds = append(cmds, m.fetchAgentMailInboxes())
+			}
+			return m, tea.Batch(cmds...)
 
 		case key.Matches(msg, dashKeys.InboxToggle):
-			if m.cursor >= 0 && m.cursor < len(m.panes) {
-				p := m.panes[m.cursor]
-				return m, m.fetchAgentMailInboxDetails(p)
+			m.showInboxDetails = !m.showInboxDetails
+			if m.showInboxDetails {
+				return m, m.selectedPaneInboxDetailCmd()
 			}
+			return m, nil
 
 		case key.Matches(msg, dashKeys.Checkpoint):
 			// Create a new checkpoint for the session
@@ -2910,36 +3371,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.handleAttentionZoom(item.SourcePane, item.Cursor)
 				}
 			}
-			return m, nil
 
 		// Number quick-select
 		case key.Matches(msg, dashKeys.Num1):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(1)
+			if cmd := m.selectByNumber(1); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num2):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(2)
+			if cmd := m.selectByNumber(2); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num3):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(3)
+			if cmd := m.selectByNumber(3); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num4):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(4)
+			if cmd := m.selectByNumber(4); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num5):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(5)
+			if cmd := m.selectByNumber(5); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num6):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(6)
+			if cmd := m.selectByNumber(6); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num7):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(7)
+			if cmd := m.selectByNumber(7); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num8):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(8)
+			if cmd := m.selectByNumber(8); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, dashKeys.Num9):
 			paneListKeyHandled = m.focusedPanel == PanelPaneList && m.paneList.FilterState() == list.Filtering
-			m.selectByNumber(9)
+			if cmd := m.selectByNumber(9); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		switch m.focusedPanel {
 		case PanelPaneList:
@@ -2948,6 +3426,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.paneList, cmd = m.paneList.Update(msg)
 				m.syncCursorFromPaneList()
 				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				if cmd := m.selectedPaneInboxDetailCmd(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 			}
@@ -2961,40 +3442,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case PanelSidebar:
-			// For sidebar, forward to the focused sub-panel
-			if m.timelinePanel != nil && m.timelinePanel.IsFocused() {
+			if ref, ok := m.sidebarActivePanelRef(); ok {
 				var cmd tea.Cmd
-				_, cmd = m.timelinePanel.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			} else if m.historyPanel != nil && m.historyPanel.IsFocused() {
-				var cmd tea.Cmd
-				_, cmd = m.historyPanel.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			} else if m.filesPanel != nil && m.filesPanel.IsFocused() {
-				var cmd tea.Cmd
-				_, cmd = m.filesPanel.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			} else if m.cassPanel != nil && m.cassPanel.IsFocused() {
-				var cmd tea.Cmd
-				_, cmd = m.cassPanel.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			} else if m.costPanel != nil && m.costPanel.IsFocused() {
-				var cmd tea.Cmd
-				_, cmd = m.costPanel.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			} else if m.metricsPanel != nil && m.metricsPanel.IsFocused() {
-				var cmd tea.Cmd
-				_, cmd = m.metricsPanel.Update(msg)
+				_, cmd = ref.panel.Update(msg)
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -3033,14 +3483,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Also forward to rotation confirm panel when it has pending rotations
-		if m.rotationConfirmPanel != nil && m.rotationConfirmPanel.HasPending() && m.rotationConfirmPanel.IsFocused() {
-			var cmd tea.Cmd
-			_, cmd = m.rotationConfirmPanel.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
 	}
 
 	if len(cmds) > 0 {
@@ -3049,11 +3491,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) selectByNumber(n int) {
+func (m *Model) selectByNumber(n int) tea.Cmd {
 	idx := n - 1
 	if idx >= 0 && idx < len(m.panes) {
 		m.cursor = idx
+		if m.paneList.Index() != m.cursor {
+			m.paneList.Select(m.cursor)
+		}
+		if m.paneTable != nil {
+			m.paneTable.Select(m.cursor)
+		}
+		return m.selectedPaneInboxDetailCmd()
 	}
+	return nil
 }
 
 func (m *Model) cycleFocus(dir int) {
@@ -4559,6 +5009,12 @@ func (m Model) renderSidebar(width, height int) string {
 		return ""
 	}
 
+	activeSidebarID := ""
+	if m.focusedPanel == PanelSidebar {
+		activeSidebarID = m.sidebarActivePanelID()
+	}
+	m.syncSidebarPanelFocusState()
+
 	// Keep the sidebar compact by only embedding the attention panel when it is
 	// actively relevant. Split/wide layouts render attention in the primary
 	// detail slot when focused; ultra layouts surface it here when focused or
@@ -4578,6 +5034,23 @@ func (m Model) renderSidebar(width, height int) string {
 			panelHeight = height
 		}
 		lines = append(lines, m.renderAttentionPanel(width, panelHeight), "")
+	}
+
+	if m.rotationConfirmPanel != nil && height > 0 &&
+		(m.rotationConfirmPanel.HasPending() || m.rotationConfirmPanel.HasError()) {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.rotationConfirmPanel.Config().MinHeight {
+			if panelHeight > 12 {
+				panelHeight = 12
+			}
+			if activeSidebarID == m.rotationConfirmPanel.Config().ID {
+				m.rotationConfirmPanel.Focus()
+			}
+			m.rotationConfirmPanel.SetSize(width, panelHeight)
+			lines = append(lines, m.rotationConfirmPanel.View(), "")
+		}
 	}
 
 	headerStyle := lipgloss.NewStyle().
@@ -4630,12 +5103,6 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 16 {
 				panelHeight = 16
 			}
-
-			if m.focusedPanel == PanelSidebar {
-				m.ranoNetworkPanel.Focus()
-			} else {
-				m.ranoNetworkPanel.Blur()
-			}
 			m.ranoNetworkPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.ranoNetworkPanel.View())
 		}
@@ -4649,12 +5116,6 @@ func (m Model) renderSidebar(width, height int) string {
 		if panelHeight >= m.rchPanel.Config().MinHeight {
 			if panelHeight > 18 {
 				panelHeight = 18
-			}
-
-			if m.focusedPanel == PanelSidebar {
-				m.rchPanel.Focus()
-			} else {
-				m.rchPanel.Blur()
 			}
 			m.rchPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.rchPanel.View())
@@ -4670,12 +5131,6 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 14 {
 				panelHeight = 14
 			}
-
-			if m.focusedPanel == PanelSidebar {
-				m.costPanel.Focus()
-			} else {
-				m.costPanel.Blur()
-			}
 			m.costPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.costPanel.View())
 		}
@@ -4690,11 +5145,8 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 14 {
 				panelHeight = 14
 			}
-
-			if m.focusedPanel == PanelSidebar {
+			if activeSidebarID == m.metricsPanel.Config().ID {
 				m.metricsPanel.Focus()
-			} else {
-				m.metricsPanel.Blur()
 			}
 			m.metricsPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.metricsPanel.View())
@@ -4710,11 +5162,8 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 14 {
 				panelHeight = 14
 			}
-
-			if m.focusedPanel == PanelSidebar {
+			if activeSidebarID == m.historyPanel.Config().ID {
 				m.historyPanel.Focus()
-			} else {
-				m.historyPanel.Blur()
 			}
 			m.historyPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.historyPanel.View())
@@ -4730,11 +5179,8 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 14 {
 				panelHeight = 14
 			}
-
-			if m.focusedPanel == PanelSidebar {
+			if activeSidebarID == m.filesPanel.Config().ID {
 				m.filesPanel.Focus()
-			} else {
-				m.filesPanel.Blur()
 			}
 			m.filesPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.filesPanel.View())
@@ -4750,11 +5196,8 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 14 {
 				panelHeight = 14
 			}
-
-			if m.focusedPanel == PanelSidebar {
+			if activeSidebarID == m.cassPanel.Config().ID {
 				m.cassPanel.Focus()
-			} else {
-				m.cassPanel.Blur()
 			}
 			m.cassPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.cassPanel.View())
@@ -4770,11 +5213,8 @@ func (m Model) renderSidebar(width, height int) string {
 			if panelHeight > 16 {
 				panelHeight = 16
 			}
-
-			if m.focusedPanel == PanelSidebar {
+			if activeSidebarID == m.timelinePanel.Config().ID {
 				m.timelinePanel.Focus()
-			} else {
-				m.timelinePanel.Blur()
 			}
 			m.timelinePanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.timelinePanel.View())
@@ -5292,6 +5732,14 @@ func (m Model) renderPaneDetail(width int) string {
 		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Lavender).Render("Inbox"))
 		lines = append(lines, "")
 
+		if m.showInboxDetails {
+			if err, ok := m.agentMailInboxErrors[p.ID]; ok {
+				errLine := layout.TruncateWidthDefault("detail error: "+err.Error(), width-4)
+				lines = append(lines, lipgloss.NewStyle().Foreground(t.Red).Render("  "+errLine))
+				lines = append(lines, "")
+			}
+		}
+
 		count := 0
 		for _, msg := range msgs {
 			if count >= 5 {
@@ -5309,6 +5757,20 @@ func (m Model) renderPaneDetail(width int) string {
 
 			subject := layout.TruncateWidthDefault(msg.Subject, width-4)
 			lines = append(lines, lipgloss.NewStyle().Foreground(style).Render(fmt.Sprintf("  %s %s", icon, subject)))
+			if m.showInboxDetails {
+				preview := renderInboxBodyPreview(msg.BodyMD, width-6)
+				detailStyle := lipgloss.NewStyle().Foreground(t.Subtext)
+				switch {
+				case preview != "":
+					for _, line := range strings.Split(preview, "\n") {
+						lines = append(lines, detailStyle.Render("    "+line))
+					}
+				case m.agentMailInboxBodyKnown[msg.ID]:
+					lines = append(lines, detailStyle.Render("    (empty body)"))
+				default:
+					lines = append(lines, detailStyle.Render("    (body pending refresh)"))
+				}
+			}
 			count++
 		}
 		if len(msgs) > 5 {

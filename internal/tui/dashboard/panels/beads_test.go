@@ -117,14 +117,20 @@ func TestBeadsPanelKeybindings(t *testing.T) {
 		actions[b.Action] = true
 	}
 
-	if !actions["claim"] {
-		t.Error("expected 'claim' action in keybindings")
+	if !actions["page_up"] {
+		t.Error("expected 'page_up' action in keybindings")
 	}
-	if !actions["open"] {
-		t.Error("expected 'open' action in keybindings")
+	if !actions["page_down"] {
+		t.Error("expected 'page_down' action in keybindings")
 	}
-	if !actions["new"] {
-		t.Error("expected 'new' action in keybindings")
+	if !actions["top"] {
+		t.Error("expected 'top' action in keybindings")
+	}
+	if !actions["bottom"] {
+		t.Error("expected 'bottom' action in keybindings")
+	}
+	if actions["claim"] || actions["open"] || actions["new"] {
+		t.Error("beads keybindings should not advertise unsupported claim/open/new actions")
 	}
 }
 

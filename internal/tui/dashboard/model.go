@@ -82,6 +82,7 @@ const (
 	refreshSpawn
 	refreshAgentMail
 	refreshAgentMailInbox
+	refreshAgentMailInboxDetail
 	refreshRouting
 	refreshRCH
 	refreshRanoNetwork
@@ -116,9 +117,13 @@ type Model struct {
 	paneList     list.Model
 	paneDelegate paneDelegate
 	focusedPanel PanelID
-	focusRing    FocusRing
-	quitting     bool
-	err          error
+	// Tracks the active interactive panel inside PanelSidebar.
+	// The sidebar can render multiple subpanels at once, but only one should
+	// visually own focus and receive keyboard input at a time.
+	sidebarActivePanel string
+	focusRing          FocusRing
+	quitting           bool
+	err                error
 
 	// Diagnostics (opt-in)
 	showDiagnostics     bool
@@ -245,6 +250,8 @@ type Model struct {
 	agentMailLockInfo        []AgentMailLockInfo // Lock details for display
 	agentMailInbox           map[string][]agentmail.InboxMessage
 	agentMailInboxErrors     map[string]error
+	agentMailInboxBodyCache  map[int]string
+	agentMailInboxBodyKnown  map[int]bool
 	agentMailAgents          map[string]string // paneID -> agent name
 	fetchingMailInbox        bool
 	lastMailInboxFetch       time.Time
@@ -551,6 +558,8 @@ func New(session, projectDir string) Model {
 		healthMessage:              "",
 		agentMailInbox:             make(map[string][]agentmail.InboxMessage),
 		agentMailInboxErrors:       make(map[string]error),
+		agentMailInboxBodyCache:    make(map[int]string),
+		agentMailInboxBodyKnown:    make(map[int]bool),
 		agentMailAgents:            make(map[string]string),
 		seenMailAttentionIDs:       make(map[int]struct{}),
 		helpVerbosity:              "full",

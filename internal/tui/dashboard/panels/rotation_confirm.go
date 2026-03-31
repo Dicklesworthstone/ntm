@@ -127,15 +127,20 @@ func (p *RotationConfirmPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // SetData updates the panel with pending rotation data.
 func (p *RotationConfirmPanel) SetData(pending []*context.PendingRotation, err error) {
-	p.data.Pending = pending
+	selectedAgentID, hasSelection := p.selectedAgentID()
+	if err != nil {
+		pending = nil
+	}
+	p.data.Pending = append([]*context.PendingRotation(nil), pending...)
 	p.err = err
 	if err == nil {
 		p.SetLastUpdate(time.Now())
 	}
-	// Adjust selection if out of bounds
-	if p.data.Selected >= len(pending) {
-		p.data.Selected = max(0, len(pending)-1)
+
+	if hasSelection && p.selectPendingByAgentID(selectedAgentID) {
+		return
 	}
+	p.clampSelection()
 }
 
 // HasPending returns true if there are pending rotations.
@@ -154,6 +159,38 @@ func (p *RotationConfirmPanel) SelectedPending() *context.PendingRotation {
 		return p.data.Pending[p.data.Selected]
 	}
 	return nil
+}
+
+func (p *RotationConfirmPanel) selectedAgentID() (string, bool) {
+	selected := p.SelectedPending()
+	if selected == nil {
+		return "", false
+	}
+	return selected.AgentID, true
+}
+
+func (p *RotationConfirmPanel) selectPendingByAgentID(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	for i, pending := range p.data.Pending {
+		if pending != nil && pending.AgentID == agentID {
+			p.data.Selected = i
+			return true
+		}
+	}
+	return false
+}
+
+func (p *RotationConfirmPanel) clampSelection() {
+	switch {
+	case len(p.data.Pending) == 0:
+		p.data.Selected = 0
+	case p.data.Selected < 0:
+		p.data.Selected = 0
+	case p.data.Selected >= len(p.data.Pending):
+		p.data.Selected = len(p.data.Pending) - 1
+	}
 }
 
 // Keybindings returns rotation confirmation panel specific shortcuts.

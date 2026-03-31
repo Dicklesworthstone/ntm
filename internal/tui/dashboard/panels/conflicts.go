@@ -52,11 +52,18 @@ func (m *ConflictsPanel) SetActionHandler(handler watcher.ConflictActionHandler)
 
 // SetConflicts updates the list of active conflicts.
 func (m *ConflictsPanel) SetConflicts(conflicts []watcher.FileConflict) {
-	m.conflicts = conflicts
-	// Reset selection if out of bounds
-	if m.selectedIndex >= len(conflicts) {
+	selectedKey, hadSelection := m.selectedConflictKey()
+	m.conflicts = append([]watcher.FileConflict(nil), conflicts...)
+	if len(m.conflicts) == 0 {
 		m.selectedIndex = 0
+		m.selectedAction = 0
+		return
 	}
+	if hadSelection && m.selectConflictByKey(selectedKey) {
+		return
+	}
+	m.clampSelectedIndex()
+	m.selectedAction = 0
 }
 
 // AddConflict adds a new conflict to the list if not already present.
@@ -74,12 +81,21 @@ func (m *ConflictsPanel) AddConflict(conflict watcher.FileConflict) {
 
 // RemoveConflict removes a conflict by path and requestor.
 func (m *ConflictsPanel) RemoveConflict(path, requestorAgent string) {
+	selectedKey, hadSelection := m.selectedConflictKey()
+	removedKey := conflictKeyFromParts(path, requestorAgent)
 	for i, c := range m.conflicts {
 		if c.Path == path && c.RequestorAgent == requestorAgent {
 			m.conflicts = append(m.conflicts[:i], m.conflicts[i+1:]...)
-			if m.selectedIndex >= len(m.conflicts) && m.selectedIndex > 0 {
-				m.selectedIndex--
+			if len(m.conflicts) == 0 {
+				m.selectedIndex = 0
+				m.selectedAction = 0
+				return
 			}
+			if hadSelection && selectedKey != removedKey && m.selectConflictByKey(selectedKey) {
+				return
+			}
+			m.clampSelectedIndex()
+			m.selectedAction = 0
 			return
 		}
 	}
@@ -108,6 +124,45 @@ func (m *ConflictsPanel) SelectedConflict() *watcher.FileConflict {
 		return nil
 	}
 	return &m.conflicts[m.selectedIndex]
+}
+
+func conflictKey(conflict watcher.FileConflict) string {
+	return conflictKeyFromParts(conflict.Path, conflict.RequestorAgent)
+}
+
+func conflictKeyFromParts(path, requestorAgent string) string {
+	return path + "\x00" + requestorAgent
+}
+
+func (m *ConflictsPanel) selectedConflictKey() (string, bool) {
+	conflict := m.SelectedConflict()
+	if conflict == nil {
+		return "", false
+	}
+	return conflictKey(*conflict), true
+}
+
+func (m *ConflictsPanel) selectConflictByKey(target string) bool {
+	for i, conflict := range m.conflicts {
+		if conflictKey(conflict) == target {
+			m.selectedIndex = i
+			return true
+		}
+	}
+	return false
+}
+
+func (m *ConflictsPanel) clampSelectedIndex() {
+	if len(m.conflicts) == 0 {
+		m.selectedIndex = 0
+		return
+	}
+	if m.selectedIndex >= len(m.conflicts) {
+		m.selectedIndex = len(m.conflicts) - 1
+	}
+	if m.selectedIndex < 0 {
+		m.selectedIndex = 0
+	}
 }
 
 // Init implements tea.Model

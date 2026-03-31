@@ -120,15 +120,26 @@ func TestFilesPanelKeybindings(t *testing.T) {
 	}
 
 	// Check for expected bindings
-	actions := make(map[string]bool)
+	actions := make(map[string]string)
 	for _, b := range bindings {
-		actions[b.Action] = true
+		keys := b.Key.Keys()
+		if len(keys) == 0 {
+			t.Fatalf("binding %q should expose at least one key", b.Action)
+		}
+		actions[b.Action] = keys[0]
 	}
 
-	expected := []string{"cycle_window", "open", "down", "up"}
-	for _, action := range expected {
-		if !actions[action] {
+	expected := map[string]string{
+		"cycle_window": "t",
+		"open":         "enter",
+		"down":         "j",
+		"up":           "k",
+	}
+	for action, wantKey := range expected {
+		if gotKey, ok := actions[action]; !ok {
 			t.Errorf("expected keybinding action %q not found", action)
+		} else if gotKey != wantKey {
+			t.Errorf("binding %q key = %q, want %q", action, gotKey, wantKey)
 		}
 	}
 }
@@ -460,6 +471,68 @@ func TestFilesPanelCursorBounds(t *testing.T) {
 	}
 }
 
+func TestFilesPanelSetDataPreservesSelectedChangeAcrossInsertedRefresh(t *testing.T) {
+	panel := NewFilesPanel()
+	panel.timeWindow = WindowAll
+	now := time.Now()
+
+	initial := []tracker.RecordedFileChange{
+		{Timestamp: now.Add(-1 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/a.go", Type: tracker.FileAdded}},
+		{Timestamp: now.Add(-2 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/b.go", Type: tracker.FileModified}},
+		{Timestamp: now.Add(-3 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/c.go", Type: tracker.FileDeleted}},
+	}
+	panel.SetData(initial, nil)
+	panel.cursor = 1
+
+	refreshed := []tracker.RecordedFileChange{
+		{Timestamp: now, Session: "s", Change: tracker.FileChange{Path: "/new.go", Type: tracker.FileAdded}},
+		initial[0],
+		initial[1],
+		initial[2],
+	}
+	panel.SetData(refreshed, nil)
+
+	selected, ok := panel.selectedChange()
+	if !ok {
+		t.Fatal("expected selected change after refresh")
+	}
+	if selected.Change.Path != "/b.go" {
+		t.Fatalf("selected path = %q, want /b.go", selected.Change.Path)
+	}
+	if panel.cursor != 2 {
+		t.Fatalf("cursor = %d, want 2", panel.cursor)
+	}
+}
+
+func TestFilesPanelTimeWindowCyclePreservesSelectedChangeWhenEarlierEntryDrops(t *testing.T) {
+	panel := NewFilesPanel()
+	panel.Focus()
+	panel.timeWindow = Window1h
+	now := time.Now()
+
+	changes := []tracker.RecordedFileChange{
+		{Timestamp: now.Add(-30 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/old.go", Type: tracker.FileAdded}},
+		{Timestamp: now.Add(-1 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/recent.go", Type: tracker.FileAdded}},
+		{Timestamp: now.Add(-10 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/keep.go", Type: tracker.FileModified}},
+		{Timestamp: now.Add(-2 * time.Minute), Session: "s", Change: tracker.FileChange{Path: "/another.go", Type: tracker.FileDeleted}},
+	}
+	panel.SetData(changes, nil)
+	panel.cursor = 2
+
+	panel.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	selected, ok := panel.selectedChange()
+	if !ok {
+		t.Fatal("expected selected change after time-window cycle")
+	}
+	if selected.Change.Path != "/keep.go" {
+		t.Fatalf("selected path = %q, want /keep.go", selected.Change.Path)
+	}
+	if panel.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1", panel.cursor)
+	}
+}
+
 func TestFilesPanelMultipleAgents(t *testing.T) {
 	panel := NewFilesPanel()
 	panel.SetSize(80, 20)
@@ -545,5 +618,38 @@ func TestFilesPanelViewportNavigationKeepsSelectionVisible(t *testing.T) {
 	}
 	if !strings.Contains(view, "file08.go") {
 		t.Fatalf("expected selected file to remain visible, view=%q", view)
+	}
+}
+
+func TestFilesPanelUpdateEnterEmitsOpenFileMsg(t *testing.T) {
+	panel := NewFilesPanel()
+	panel.SetSize(80, 20)
+	panel.Focus()
+	now := time.Now()
+
+	panel.SetData([]tracker.RecordedFileChange{
+		{
+			Timestamp: now,
+			Session:   "s",
+			Agents:    []string{"Agent"},
+			Change: tracker.FileChange{
+				Path: "/tmp/open-me.go",
+				Type: tracker.FileModified,
+			},
+		},
+	}, nil)
+
+	_, cmd := panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected open command on enter")
+	}
+
+	msg := cmd()
+	openMsg, ok := msg.(OpenFileMsg)
+	if !ok {
+		t.Fatalf("expected OpenFileMsg, got %T", msg)
+	}
+	if openMsg.Change.Change.Path != "/tmp/open-me.go" {
+		t.Fatalf("open path = %q, want /tmp/open-me.go", openMsg.Change.Change.Path)
 	}
 }

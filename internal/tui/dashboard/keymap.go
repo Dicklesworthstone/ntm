@@ -12,12 +12,9 @@ import (
 type KeyMap struct {
 	Up             key.Binding
 	Down           key.Binding
-	Left           key.Binding
-	Right          key.Binding
 	Zoom           key.Binding
 	NextPanel      key.Binding // Tab to cycle panels
 	PrevPanel      key.Binding // Shift+Tab to cycle back
-	Send           key.Binding
 	Refresh        key.Binding
 	Pause          key.Binding
 	Quit           key.Binding
@@ -57,8 +54,8 @@ func (k KeyMap) ShortHelp() []key.Binding {
 // Implements help.KeyMap interface.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Left, k.Right, k.Zoom},                                                 // Navigation
-		{k.Tab, k.ShiftTab, k.NextPanel, k.ViewToggle, k.Send},                                  // Panels & Actions
+		{k.Up, k.Down, k.Zoom},                                                                  // Navigation
+		{k.NextPanel, k.PrevPanel, k.ViewToggle},                                                // Panels & Actions
 		{k.Refresh, k.ContextRefresh, k.MailRefresh, k.CassSearch},                              // Data
 		{k.Help, k.Quit, k.Pause, k.Diagnostics, k.ToastDismiss, k.ToastHistory, k.SpawnWizard}, // Control
 	}
@@ -82,12 +79,9 @@ func newHelpModel(t theme.Theme) help.Model {
 var dashKeys = KeyMap{
 	Up:             key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 	Down:           key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-	Left:           key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "left")),
-	Right:          key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "right")),
 	Zoom:           key.NewBinding(key.WithKeys("z", "enter"), key.WithHelp("z/enter", "zoom")),
 	NextPanel:      key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
 	PrevPanel:      key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev panel")),
-	Send:           key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send prompt")),
 	Refresh:        key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 	Pause:          key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume auto-refresh")),
 	Quit:           key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
