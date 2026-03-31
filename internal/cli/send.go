@@ -2419,26 +2419,9 @@ func generateKillSummary(session string) (*summary.SessionSummary, error) {
 		return nil, fmt.Errorf("failed to get panes: %w", err)
 	}
 
-	// Build agent outputs by capturing pane content
-	var outputs []summary.AgentOutput
-	for _, pane := range panes {
-		agentType := string(pane.Type)
-		if agentType == "" || agentType == "unknown" {
-			continue // Skip non-agent panes
-		}
-
-		// Capture output (500 lines)
-		out, err := tmux.CapturePaneOutput(pane.ID, 500)
-		if err != nil {
-			slog.Default().Debug("failed to capture pane output for summary", "pane_id", pane.ID, "error", err)
-		}
-
-		outputs = append(outputs, summary.AgentOutput{
-			AgentID:   pane.ID,
-			AgentType: agentType,
-			Output:    out,
-		})
-	}
+	outputs := collectSummaryAgentOutputs(panes, tmux.CapturePaneOutput, func(pane tmux.Pane, err error) {
+		slog.Default().Debug("failed to capture pane output for summary", "pane_id", pane.ID, "error", err)
+	})
 
 	if len(outputs) == 0 {
 		return nil, fmt.Errorf("no agent outputs to summarize")

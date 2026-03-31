@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -449,17 +450,7 @@ func printPaneOutput(pane tmux.Pane, output string, opts watchOptions, t theme.T
 	}
 
 	// Create prefix style based on agent type
-	var prefixColor lipgloss.Color
-	switch pane.Type {
-	case tmux.AgentClaude:
-		prefixColor = t.Claude
-	case tmux.AgentCodex:
-		prefixColor = t.Codex
-	case tmux.AgentGemini:
-		prefixColor = t.Gemini
-	default:
-		prefixColor = t.Green
-	}
+	prefixColor := paneOutputPrefixColor(pane.Type, t)
 
 	// Build prefix
 	prefix := pane.Title
@@ -504,6 +495,29 @@ func printPaneOutput(pane tmux.Pane, output string, opts watchOptions, t theme.T
 					line)
 			}
 		}
+	}
+}
+
+func paneOutputPrefixColor(agentType tmux.AgentType, t theme.Theme) lipgloss.Color {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		return t.Claude
+	case agent.AgentTypeCodex:
+		return t.Codex
+	case agent.AgentTypeGemini:
+		return t.Gemini
+	case agent.AgentTypeCursor:
+		return t.Cursor
+	case agent.AgentTypeWindsurf:
+		return t.Windsurf
+	case agent.AgentTypeAider:
+		return t.Aider
+	case agent.AgentTypeOllama:
+		return t.Ollama
+	case agent.AgentTypeUser:
+		return t.User
+	default:
+		return t.Green
 	}
 }
 

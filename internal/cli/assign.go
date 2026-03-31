@@ -751,7 +751,7 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 	totalAgents := 0
 
 	for _, pane := range panes {
-		agentType := detectAgentTypeFromTitle(pane.Title)
+		agentType := agentTypeForPane(pane)
 		if agentType == "user" || agentType == "unknown" {
 			continue
 		}
@@ -857,7 +857,7 @@ func generateRecommendations(panes []tmux.Pane, beads []bv.BeadPreview, strategy
 		}
 
 		bead := beads[beadIdx]
-		agentType := detectAgentTypeFromTitle(pane.Title)
+		agentType := agentTypeForPane(pane)
 		model := detectModelFromTitle(agentType, pane.Title)
 
 		confidence := calculateMatchConfidence(agentType, bead, strategy)
@@ -919,20 +919,7 @@ func determineAgentState(scrollback, agentTypeStr string) string {
 	// Use the robust agent parser
 	parser := agent.NewParser()
 
-	// Map string type to AgentType hint
-	var hint agent.AgentType
-	switch strings.ToLower(agentTypeStr) {
-	case "claude", "cc", "cc_added":
-		hint = agent.AgentTypeClaudeCode
-	case "codex", "cod", "codex_added":
-		hint = agent.AgentTypeCodex
-	case "gemini", "gmi", "gemini_added":
-		hint = agent.AgentTypeGemini
-	default:
-		hint = agent.AgentTypeUnknown
-	}
-
-	state, err := parser.ParseWithHint(scrollback, hint)
+	state, err := parser.ParseWithHint(scrollback, normalizedAssignAgentHint(agentTypeStr))
 	if err != nil {
 		return "unknown"
 	}
@@ -945,6 +932,24 @@ func determineAgentState(scrollback, agentTypeStr string) string {
 	}
 
 	return "unknown"
+}
+
+func normalizedAssignAgentHint(agentTypeStr string) agent.AgentType {
+	normalized := strings.ToLower(strings.TrimSpace(agentTypeStr))
+	normalized = strings.TrimSuffix(normalized, "_added")
+
+	switch canonical := agent.AgentType(normalized).Canonical(); canonical {
+	case agent.AgentTypeClaudeCode,
+		agent.AgentTypeCodex,
+		agent.AgentTypeGemini,
+		agent.AgentTypeCursor,
+		agent.AgentTypeWindsurf,
+		agent.AgentTypeAider,
+		agent.AgentTypeOllama:
+		return canonical
+	default:
+		return agent.AgentTypeUnknown
+	}
 }
 
 func assignmentAgentName(session, agentType string, paneIndex int) string {
@@ -1279,7 +1284,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	var idleAgents []assignAgentInfo
 
 	for _, pane := range panes {
-		at := detectAgentTypeFromTitle(pane.Title)
+		at := agentTypeForPane(pane)
 		if at == "user" || at == "unknown" {
 			continue
 		}
@@ -2655,7 +2660,7 @@ func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error
 		return err
 	}
 
-	agentType := detectAgentTypeFromTitle(targetPane.Title)
+	agentType := agentTypeForPane(*targetPane)
 
 	// Load assignment store
 	store, err := assignment.LoadStore(session)
@@ -2851,7 +2856,7 @@ func runReassignment(cmd *cobra.Command, session string) error {
 			}
 			return err
 		}
-		targetAgentType = detectAgentTypeFromTitle(targetPane.Title)
+		targetAgentType = agentTypeForPane(*targetPane)
 		if targetAgentType == "user" || targetAgentType == "unknown" {
 			err = fmt.Errorf("pane %d is not an agent pane (type: %s)", assignToPane, targetAgentType)
 			if IsJSONOutput() {
@@ -3549,7 +3554,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	}
 
 	// Detect agent type and state
-	agentType := detectAgentTypeFromTitle(targetPane.Title)
+	agentType := agentTypeForPane(*targetPane)
 	if agentType == "user" || agentType == "unknown" {
 		err = fmt.Errorf("pane %d is not an agent pane (type: %s)", opts.Pane, agentType)
 		if IsJSONOutput() {
@@ -3943,6 +3948,14 @@ func PerformAutoReassignment(completedBeadID string, opts *AutoReassignOptions) 
 
 // getIdleAgents returns a list of idle agents that can take new assignments
 func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgentInfo, error) {
+	normalizedFilter := ""
+	if agentTypeFilter != "" {
+		normalizedFilter = robot.ResolveAgentType(agentTypeFilter)
+		if normalizedFilter == "" || normalizedFilter == "unknown" || normalizedFilter == "user" {
+			return nil, fmt.Errorf("invalid agent type filter %q", agentTypeFilter)
+		}
+	}
+
 	// Get panes from tmux
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
@@ -3952,13 +3965,13 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 	var idleAgents []assignAgentInfo
 
 	for _, pane := range panes {
-		agentType := detectAgentTypeFromTitle(pane.Title)
+		agentType := agentTypeForPane(pane)
 		if agentType == "user" || agentType == "unknown" {
 			continue
 		}
 
 		// Apply agent type filter
-		if agentTypeFilter != "" && agentType != agentTypeFilter {
+		if normalizedFilter != "" && agentType != normalizedFilter {
 			continue
 		}
 

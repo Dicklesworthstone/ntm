@@ -907,6 +907,49 @@ func TestDetectModelFromTitle(t *testing.T) {
 	}
 }
 
+func TestDetermineAgentState_NormalizesAliasHints(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		agentType  string
+		scrollback string
+		want       string
+	}{
+		{
+			name:      "codex alias with whitespace",
+			agentType: " openai-codex ",
+			scrollback: "Processing your request...\n" +
+				"Token usage: total=150,000 input=140,000 output=10,000\n" +
+				"47% context left · ? for shortcuts\n" +
+				"codex> ",
+			want: "idle",
+		},
+		{
+			name:       "cursor added event suffix",
+			agentType:  "cursor_added",
+			scrollback: "Done editing.\ncursor> ",
+			want:       "idle",
+		},
+		{
+			name:       "windsurf short alias",
+			agentType:  "ws",
+			scrollback: "Generating code...\nsearching for references",
+			want:       "working",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := determineAgentState(tc.scrollback, tc.agentType); got != tc.want {
+				t.Fatalf("determineAgentState(%q, %q) = %q, want %q", tc.scrollback, tc.agentType, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParsePriorityString(t *testing.T) {
 	t.Parallel()
 

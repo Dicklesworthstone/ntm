@@ -90,41 +90,7 @@ func runRespawn(session string, force bool, panesFlag string, agentType string, 
 	for _, p := range paneFilter {
 		paneFilterMap[p] = true
 	}
-	hasPaneFilter := len(paneFilterMap) > 0
-
-	// Determine which panes to restart
-	var targetPanes []tmux.Pane
-	for _, pane := range panes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
-
-		// Check specific pane filter
-		if hasPaneFilter && !paneFilterMap[paneKey] && !paneFilterMap[pane.ID] {
-			continue
-		}
-
-		// Filter by type if specified
-		if agentType != "" {
-			detectedType := robot.DetectAgentType(pane.Title)
-			targetType := normalizeAgentType(agentType)
-			currentType := normalizeAgentType(detectedType)
-			if targetType != currentType {
-				continue
-			}
-		}
-
-		// Skip user panes by default unless --all or specific pane filter
-		if !all && !hasPaneFilter && agentType == "" {
-			detectedType := robot.DetectAgentType(pane.Title)
-			if pane.Index == 0 && detectedType == "unknown" {
-				continue
-			}
-			if detectedType == "user" {
-				continue
-			}
-		}
-
-		targetPanes = append(targetPanes, pane)
-	}
+	targetPanes := selectRespawnTargets(panes, paneFilterMap, agentType, all)
 
 	if len(targetPanes) == 0 {
 		fmt.Println("No panes matched the filter criteria.")
@@ -135,7 +101,7 @@ func runRespawn(session string, force bool, panesFlag string, agentType string, 
 	if dryRun {
 		fmt.Printf("Would restart %d pane(s) in session '%s':\n", len(targetPanes), session)
 		for _, pane := range targetPanes {
-			agentType := robot.DetectAgentType(pane.Title)
+			agentType := respawnPaneAgentType(pane)
 			fmt.Printf("  - Pane %d: %s (%s)\n", pane.Index, pane.ID, agentType)
 		}
 		return nil
@@ -177,6 +143,46 @@ func runRespawn(session string, force bool, panesFlag string, agentType string, 
 	}
 
 	return nil
+}
+
+func selectRespawnTargets(panes []tmux.Pane, paneFilterMap map[string]bool, agentType string, all bool) []tmux.Pane {
+	hasPaneFilter := len(paneFilterMap) > 0
+	targetType := normalizeAgentType(agentType)
+
+	var targetPanes []tmux.Pane
+	for _, pane := range panes {
+		paneKey := fmt.Sprintf("%d", pane.Index)
+
+		if hasPaneFilter && !paneFilterMap[paneKey] && !paneFilterMap[pane.ID] {
+			continue
+		}
+
+		currentType := respawnPaneAgentType(pane)
+		if targetType != "" && targetType != currentType {
+			continue
+		}
+
+		// By default only restart agent panes. Explicit pane filters and --all opt out.
+		if !all && !hasPaneFilter && targetType == "" {
+			if pane.Index == 0 && currentType == "unknown" {
+				continue
+			}
+			if currentType == "user" {
+				continue
+			}
+		}
+
+		targetPanes = append(targetPanes, pane)
+	}
+
+	return targetPanes
+}
+
+func respawnPaneAgentType(pane tmux.Pane) string {
+	if resolved := normalizeAgentType(string(pane.Type)); resolved != "" && resolved != "unknown" {
+		return resolved
+	}
+	return normalizeAgentType(robot.DetectAgentType(pane.Title))
 }
 
 // normalizeAgentType normalizes agent type aliases to canonical form.

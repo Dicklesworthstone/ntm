@@ -90,6 +90,9 @@ func TestModelNameForPane(t *testing.T) {
 	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentGemini}); got != "gemini-2.0-flash" {
 		t.Errorf("default gemini model = %q", got)
 	}
+	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentOllama}); got != "llama3" {
+		t.Errorf("default ollama model = %q", got)
+	}
 	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentUser}); got != "" {
 		t.Errorf("default user model = %q, want empty", got)
 	}
@@ -98,6 +101,7 @@ func TestModelNameForPane(t *testing.T) {
 	cfg.Models.DefaultClaude = "claude-test"
 	cfg.Models.DefaultCodex = "codex-test"
 	cfg.Models.DefaultGemini = "gemini-test"
+	cfg.Models.DefaultOllama = "ollama-test"
 
 	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentClaude}); got != "claude-test" {
 		t.Errorf("cfg claude model = %q", got)
@@ -108,8 +112,14 @@ func TestModelNameForPane(t *testing.T) {
 	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentGemini}); got != "gemini-test" {
 		t.Errorf("cfg gemini model = %q", got)
 	}
+	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentOllama}); got != "ollama-test" {
+		t.Errorf("cfg ollama model = %q", got)
+	}
 
 	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentClaude, Variant: "custom-variant"}); got != "custom-variant" {
 		t.Errorf("variant override = %q", got)
+	}
+	if got := modelNameForPane(tmux.Pane{Type: tmux.AgentType("ollama"), Variant: "mistral"}); got != "mistral" {
+		t.Errorf("ollama variant override = %q", got)
 	}
 }

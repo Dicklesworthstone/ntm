@@ -14,6 +14,7 @@ import (
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -252,14 +253,14 @@ func buildRebalanceWorkloads(store *assignment.AssignmentStore, panes []tmux.Pan
 
 	var workloads []RebalanceWorkload
 	for _, pane := range panes {
-		// Skip pane 0 (user pane)
-		if pane.Index == 0 {
-			continue
-		}
-
 		agentType := paneAgentType[pane.Index]
 		if agentType == "" {
-			agentType = detectAgentTypeFromTitle(pane.Title)
+			agentType = agentTypeForPane(pane)
+		} else {
+			agentType = robot.ResolveAgentType(agentType)
+		}
+		if agentType == "user" || agentType == "unknown" {
+			continue
 		}
 
 		// Apply filter

@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -290,19 +291,33 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 }
 
 func detectAgentTypeFromPane(pane tmux.Pane) string {
-	// Use the pane's Type field which is already parsed
-	switch pane.Type {
+	switch tmux.AgentType(pane.Type).Canonical() {
 	case tmux.AgentClaude:
 		return "claude"
 	case tmux.AgentCodex:
 		return "codex"
 	case tmux.AgentGemini:
 		return "gemini"
+	case tmux.AgentCursor:
+		return "cursor"
+	case tmux.AgentWindsurf:
+		return "windsurf"
+	case tmux.AgentAider:
+		return "aider"
+	case tmux.AgentOllama:
+		return "ollama"
 	case tmux.AgentUser:
 		return "user"
 	default:
 		return "unknown"
 	}
+}
+
+func agentTypeForPane(pane tmux.Pane) string {
+	if agentType := detectAgentTypeFromPane(pane); agentType != "" && agentType != "unknown" {
+		return agentType
+	}
+	return detectAgentTypeFromTitle(pane.Title)
 }
 
 func passesFilter(agentType string, pane tmux.Pane, opts activityOptions) bool {
@@ -436,16 +451,7 @@ func renderActivityTUI(result *activityResult, watchMode bool) error {
 
 	// Agent type color helper
 	agentStyle := func(agentType string) lipgloss.Style {
-		switch agentType {
-		case "claude":
-			return lipgloss.NewStyle().Foreground(t.Claude)
-		case "codex":
-			return lipgloss.NewStyle().Foreground(t.Codex)
-		case "gemini":
-			return lipgloss.NewStyle().Foreground(t.Gemini)
-		default:
-			return lipgloss.NewStyle().Foreground(t.Text)
-		}
+		return lipgloss.NewStyle().Foreground(activityAgentTypeColor(agentType, t))
 	}
 
 	// Build header
@@ -555,4 +561,27 @@ func formatActivityDuration(d time.Duration) string {
 	hours := int(d.Hours())
 	mins := int(d.Minutes()) % 60
 	return fmt.Sprintf("%dh%dm", hours, mins)
+}
+
+func activityAgentTypeColor(agentType string, t theme.Theme) lipgloss.Color {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		return t.Claude
+	case agent.AgentTypeCodex:
+		return t.Codex
+	case agent.AgentTypeGemini:
+		return t.Gemini
+	case agent.AgentTypeCursor:
+		return t.Cursor
+	case agent.AgentTypeWindsurf:
+		return t.Windsurf
+	case agent.AgentTypeAider:
+		return t.Aider
+	case agent.AgentTypeOllama:
+		return t.Ollama
+	case agent.AgentTypeUser:
+		return t.User
+	default:
+		return t.Text
+	}
 }

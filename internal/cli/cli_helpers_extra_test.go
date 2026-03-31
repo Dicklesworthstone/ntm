@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 // =============================================================================
@@ -22,6 +25,11 @@ func TestDetectAgentTypeFromPane(t *testing.T) {
 		{"claude", tmux.Pane{Type: tmux.AgentClaude}, "claude"},
 		{"codex", tmux.Pane{Type: tmux.AgentCodex}, "codex"},
 		{"gemini", tmux.Pane{Type: tmux.AgentGemini}, "gemini"},
+		{"cursor", tmux.Pane{Type: tmux.AgentCursor}, "cursor"},
+		{"windsurf", tmux.Pane{Type: tmux.AgentWindsurf}, "windsurf"},
+		{"aider", tmux.Pane{Type: tmux.AgentAider}, "aider"},
+		{"ollama", tmux.Pane{Type: tmux.AgentOllama}, "ollama"},
+		{"codex alias canonicalized", tmux.Pane{Type: tmux.AgentType("openai-codex")}, "codex"},
 		{"user", tmux.Pane{Type: tmux.AgentUser}, "user"},
 		{"unknown", tmux.Pane{Type: tmux.AgentUnknown}, "unknown"},
 		{"empty type", tmux.Pane{Type: ""}, "unknown"},
@@ -34,6 +42,287 @@ func TestDetectAgentTypeFromPane(t *testing.T) {
 			got := detectAgentTypeFromPane(tc.pane)
 			if got != tc.want {
 				t.Errorf("detectAgentTypeFromPane(%v) = %q, want %q", tc.pane.Type, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentTypeForPanePrefersTmuxTypeAndFallsBackToTitle(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		pane tmux.Pane
+		want string
+	}{
+		{"tmux type wins over custom title", tmux.Pane{Type: tmux.AgentClaude, Title: "notes"}, "claude"},
+		{"tmux user type wins over misleading title", tmux.Pane{Type: tmux.AgentUser, Title: "project__cc_1"}, "user"},
+		{"falls back to legacy title parsing", tmux.Pane{Type: "", Title: "project__cod_2"}, "codex"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := agentTypeForPane(tc.pane); got != tc.want {
+				t.Errorf("agentTypeForPane(%+v) = %q, want %q", tc.pane, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCollectSummaryAgentOutputsUsesParsedPaneType(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{ID: "%1", Type: tmux.AgentClaude, Title: "custom-title"},
+		{ID: "%2", Type: tmux.AgentUser, Title: "claude-looking-shell"},
+		{ID: "%3", Type: tmux.AgentType("openai-codex"), Title: "other-title"},
+	}
+
+	outputs := collectSummaryAgentOutputs(panes, func(id string, lines int) (string, error) {
+		if lines != 500 {
+			t.Fatalf("capture lines = %d, want 500", lines)
+		}
+		return "out:" + id, nil
+	}, nil)
+
+	if len(outputs) != 2 {
+		t.Fatalf("collectSummaryAgentOutputs() returned %d outputs, want 2", len(outputs))
+	}
+	if outputs[0].AgentID != "%1" || outputs[0].AgentType != "claude" {
+		t.Fatalf("first output = %+v, want claude %%1", outputs[0])
+	}
+	if outputs[1].AgentID != "%3" || outputs[1].AgentType != "codex" {
+		t.Fatalf("second output = %+v, want codex %%3", outputs[1])
+	}
+}
+
+func TestCollectReadyAgentPanesUsesParsedPaneType(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{ID: "%1", Index: 1, Type: tmux.AgentClaude, Title: "notes"},
+		{ID: "%2", Index: 2, Type: tmux.AgentUser, Title: "claude-shell"},
+		{ID: "%3", Index: 3, Type: tmux.AgentType("openai-codex"), Title: "custom"},
+	}
+
+	outputs := map[string]string{
+		"%1": "claude> ",
+		"%2": "$ ",
+		"%3": "codex> ",
+	}
+
+	ready, totalAgents := collectReadyAgentPanes(panes, func(id string) (string, error) {
+		return outputs[id], nil
+	})
+
+	if totalAgents != 2 {
+		t.Fatalf("collectReadyAgentPanes() totalAgents = %d, want 2", totalAgents)
+	}
+	if len(ready) != 2 {
+		t.Fatalf("collectReadyAgentPanes() returned %d ready panes, want 2", len(ready))
+	}
+	if ready[0].ID != "%1" || ready[1].ID != "%3" {
+		t.Fatalf("ready panes = %+v, want %%1 and %%3", ready)
+	}
+}
+
+func TestGenerateRecommendationsUsesParsedPaneType(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{ID: "%1", Index: 1, Type: tmux.AgentClaude, Title: "notes"},
+		{ID: "%2", Index: 2, Type: tmux.AgentUser, Title: "project__cc_2"},
+		{ID: "%3", Index: 3, Type: tmux.AgentType("openai-codex"), Title: "custom"},
+	}
+
+	beads := []struct {
+		id    string
+		title string
+	}{
+		{id: "bd-1", title: "Fix auth"},
+		{id: "bd-2", title: "Review queue"},
+	}
+
+	recs := generateRecommendations(
+		panes,
+		[]bv.BeadPreview{
+			{ID: beads[0].id, Title: beads[0].title},
+			{ID: beads[1].id, Title: beads[1].title},
+		},
+		"balanced",
+		[]string{"1", "3"},
+	)
+
+	if len(recs) != 2 {
+		t.Fatalf("generateRecommendations() returned %d recs, want 2", len(recs))
+	}
+	if recs[0].AgentType != "claude" || recs[0].Agent != "1" {
+		t.Fatalf("first recommendation = %+v, want pane 1 claude", recs[0])
+	}
+	if recs[1].AgentType != "codex" || recs[1].Agent != "3" {
+		t.Fatalf("second recommendation = %+v, want pane 3 codex", recs[1])
+	}
+}
+
+func TestIncrementAgentCounts(t *testing.T) {
+	t.Parallel()
+
+	counts := output.AgentCountsResponse{}
+	incrementAgentCounts(&counts, tmux.AgentClaude)
+	incrementAgentCounts(&counts, tmux.AgentOllama)
+	incrementAgentCounts(&counts, tmux.AgentType("openai-codex"))
+	incrementAgentCounts(&counts, tmux.AgentUser)
+	incrementAgentCounts(&counts, tmux.AgentType("mystery"))
+
+	if counts.Claude != 1 {
+		t.Fatalf("Claude = %d, want 1", counts.Claude)
+	}
+	if counts.Ollama != 1 {
+		t.Fatalf("Ollama = %d, want 1", counts.Ollama)
+	}
+	if counts.Codex != 1 {
+		t.Fatalf("Codex = %d, want 1", counts.Codex)
+	}
+	if counts.User != 2 {
+		t.Fatalf("User = %d, want 2", counts.User)
+	}
+	if counts.Total != 5 {
+		t.Fatalf("Total = %d, want 5", counts.Total)
+	}
+}
+
+func TestDashboardPaneTypeSummary(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{Type: tmux.AgentClaude},
+		{Type: tmux.AgentOllama},
+		{Type: tmux.AgentCursor},
+		{Type: tmux.AgentWindsurf},
+		{Type: tmux.AgentAider},
+		{Type: tmux.AgentUser},
+		{Type: tmux.AgentType("openai-codex")},
+		{Type: tmux.AgentUnknown},
+	}
+
+	got := dashboardPaneTypeSummary(panes)
+	want := "Claude=1 Codex=1 Gemini=0 Cursor=1 Windsurf=1 Aider=1 Ollama=1 User=1 Other=1"
+	if got != want {
+		t.Fatalf("dashboardPaneTypeSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestPaneOutputPrefixColor(t *testing.T) {
+	t.Parallel()
+
+	current := theme.Current()
+	tests := []struct {
+		name      string
+		agentType tmux.AgentType
+		want      string
+	}{
+		{"claude", tmux.AgentClaude, string(current.Claude)},
+		{"codex alias canonicalized", tmux.AgentType("openai-codex"), string(current.Codex)},
+		{"cursor", tmux.AgentCursor, string(current.Cursor)},
+		{"windsurf", tmux.AgentWindsurf, string(current.Windsurf)},
+		{"aider", tmux.AgentAider, string(current.Aider)},
+		{"ollama", tmux.AgentOllama, string(current.Ollama)},
+		{"user", tmux.AgentUser, string(current.User)},
+		{"unknown fallback", tmux.AgentUnknown, string(current.Green)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := string(paneOutputPrefixColor(tc.agentType, current)); got != tc.want {
+				t.Fatalf("paneOutputPrefixColor(%v) = %q, want %q", tc.agentType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShortAgentTypeLocal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType string
+		want      string
+	}{
+		{"claude", "claude", "cc"},
+		{"codex alias", "openai-codex", "cod"},
+		{"gemini alias", "google-gemini", "gmi"},
+		{"cursor", "cursor", "cur"},
+		{"windsurf alias", "ws", "ws"},
+		{"aider", "aider", "aid"},
+		{"ollama", "ollama", "oll"},
+		{"user", "user", "usr"},
+		{"unknown", "mystery", "mys"},
+		{"empty", "", "unk"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shortAgentTypeLocal(tc.agentType); got != tc.want {
+				t.Fatalf("shortAgentTypeLocal(%q) = %q, want %q", tc.agentType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLogsAgentTypeColor(t *testing.T) {
+	t.Parallel()
+
+	current := theme.Current()
+	tests := []struct {
+		name      string
+		agentType string
+		want      string
+	}{
+		{"claude", "claude", string(current.Claude)},
+		{"codex alias", "openai-codex", string(current.Codex)},
+		{"gemini alias", "google-gemini", string(current.Gemini)},
+		{"cursor", "cursor", string(current.Cursor)},
+		{"windsurf", "windsurf", string(current.Windsurf)},
+		{"aider", "aider", string(current.Aider)},
+		{"ollama", "ollama", string(current.Ollama)},
+		{"user", "user", string(current.User)},
+		{"unknown", "mystery", string(current.Text)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := string(logsAgentTypeColor(tc.agentType, current)); got != tc.want {
+				t.Fatalf("logsAgentTypeColor(%q) = %q, want %q", tc.agentType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAggregatedLogPrefix(t *testing.T) {
+	t.Parallel()
+
+	current := theme.Current()
+	tests := []struct {
+		name      string
+		agentType string
+		pane      int
+		want      string
+	}{
+		{"claude", "claude", 2, "[cc:2]"},
+		{"codex alias", "openai-codex", 3, "[cod:3]"},
+		{"windsurf", "windsurf", 4, "[ws:4]"},
+		{"user", "user", 5, "[usr:5]"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := stripANSI(aggregatedLogPrefix(tc.agentType, tc.pane, current)); got != tc.want {
+				t.Fatalf("aggregatedLogPrefix(%q, %d) = %q, want %q", tc.agentType, tc.pane, got, tc.want)
 			}
 		})
 	}

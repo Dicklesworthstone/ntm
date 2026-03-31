@@ -356,19 +356,6 @@ func runErrors(session string, opts ErrorsOptions) error {
 				context = append(context, lines[j])
 			}
 
-			// Determine agent type string
-			agentType := "unknown"
-			switch pane.Type {
-			case tmux.AgentClaude:
-				agentType = "claude"
-			case tmux.AgentCodex:
-				agentType = "codex"
-			case tmux.AgentGemini:
-				agentType = "gemini"
-			case tmux.AgentUser:
-				agentType = "user"
-			}
-
 			allErrors = append(allErrors, ErrorEntry{
 				Timestamp: time.Now(),
 				Session:   session,
@@ -378,7 +365,7 @@ func runErrors(session string, opts ErrorsOptions) error {
 				Content:   line,
 				MatchType: matchType,
 				Context:   context,
-				AgentType: agentType,
+				AgentType: detectAgentTypeFromPane(pane),
 			})
 		}
 	}

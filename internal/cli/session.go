@@ -421,6 +421,9 @@ func runList(tags []string, project ...string) error {
 				if s.AgentCounts.Gemini > 0 {
 					parts = append(parts, fmt.Sprintf("%d GMI", s.AgentCounts.Gemini))
 				}
+				if s.AgentCounts.Ollama > 0 {
+					parts = append(parts, fmt.Sprintf("%d OLL", s.AgentCounts.Ollama))
+				}
 				if s.AgentCounts.Cursor > 0 {
 					parts = append(parts, fmt.Sprintf("%d CUR", s.AgentCounts.Cursor))
 				}
@@ -542,35 +545,11 @@ func buildSessionListResponse(tags []string, project string) (output.ListRespons
 			item.PaneCount = len(panes)
 
 			// Count agent types
-			var claudeCount, codexCount, geminiCount, cursorCount, windsurfCount, aiderCount, userCount int
+			counts := output.AgentCountsResponse{}
 			for _, p := range panes {
-				switch p.Type {
-				case tmux.AgentClaude:
-					claudeCount++
-				case tmux.AgentCodex:
-					codexCount++
-				case tmux.AgentGemini:
-					geminiCount++
-				case tmux.AgentCursor:
-					cursorCount++
-				case tmux.AgentWindsurf:
-					windsurfCount++
-				case tmux.AgentAider:
-					aiderCount++
-				default:
-					userCount++
-				}
+				incrementAgentCounts(&counts, p.Type)
 			}
-			item.AgentCounts = &output.AgentCountsResponse{
-				Claude:   claudeCount,
-				Codex:    codexCount,
-				Gemini:   geminiCount,
-				Cursor:   cursorCount,
-				Windsurf: windsurfCount,
-				Aider:    aiderCount,
-				User:     userCount,
-				Total:    len(panes),
-			}
+			item.AgentCounts = &counts
 		}
 		items[i] = item
 	}
@@ -699,24 +678,9 @@ func buildStatusResponse(session string, opts statusOptions) (output.StatusRespo
 	}
 
 	// Calculate counts
-	var ccCount, codCount, gmiCount, cursorCount, windsurfCount, aiderCount, otherCount int
+	counts := output.AgentCountsResponse{}
 	for _, p := range panes {
-		switch p.Type {
-		case tmux.AgentClaude:
-			ccCount++
-		case tmux.AgentCodex:
-			codCount++
-		case tmux.AgentGemini:
-			gmiCount++
-		case tmux.AgentCursor:
-			cursorCount++
-		case tmux.AgentWindsurf:
-			windsurfCount++
-		case tmux.AgentAider:
-			aiderCount++
-		default:
-			otherCount++
-		}
+		incrementAgentCounts(&counts, p.Type)
 	}
 
 	// Estimate context usage per pane (best-effort)
@@ -752,16 +716,7 @@ func buildStatusResponse(session string, opts statusOptions) (output.StatusRespo
 		Exists:              true,
 		Attached:            attached,
 		WorkingDirectory:    dir,
-		AgentCounts: output.AgentCountsResponse{
-			Claude:   ccCount,
-			Codex:    codCount,
-			Gemini:   gmiCount,
-			Cursor:   cursorCount,
-			Windsurf: windsurfCount,
-			Aider:    aiderCount,
-			User:     otherCount,
-			Total:    len(panes),
-		},
+		AgentCounts:         counts,
 	}
 
 	if handoffGoal != "" || handoffNow != "" || handoffStatus != "" {
@@ -1059,25 +1014,18 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 	}
 
 	// Calculate counts
-	var ccCount, codCount, gmiCount, cursorCount, windsurfCount, aiderCount, otherCount int
+	counts := output.AgentCountsResponse{}
 	for _, p := range panes {
-		switch p.Type {
-		case tmux.AgentClaude:
-			ccCount++
-		case tmux.AgentCodex:
-			codCount++
-		case tmux.AgentGemini:
-			gmiCount++
-		case tmux.AgentCursor:
-			cursorCount++
-		case tmux.AgentWindsurf:
-			windsurfCount++
-		case tmux.AgentAider:
-			aiderCount++
-		default:
-			otherCount++
-		}
+		incrementAgentCounts(&counts, p.Type)
 	}
+	ccCount := counts.Claude
+	codCount := counts.Codex
+	gmiCount := counts.Gemini
+	ollamaCount := counts.Ollama
+	cursorCount := counts.Cursor
+	windsurfCount := counts.Windsurf
+	aiderCount := counts.Aider
+	otherCount := counts.User
 
 	// Estimate context usage per pane (best-effort)
 	contextByIndex := make(map[int]paneContextUsage)
@@ -1124,6 +1072,7 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 	claude := color(t.Claude)
 	codex := color(t.Codex)
 	gemini := color(t.Gemini)
+	ollama := color(t.Ollama)
 
 	ic := icons.Current()
 
@@ -1199,6 +1148,9 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 		case tmux.AgentGemini:
 			typeColor = gemini
 			typeIcon = ic.Gemini
+		case tmux.AgentOllama:
+			typeColor = ollama
+			typeIcon = ic.Ollama
 		default:
 			typeColor = success
 			typeIcon = ic.Robot
@@ -1367,6 +1319,9 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 	if gmiCount > 0 {
 		fmt.Fprintf(w, "    %s%s Gemini%s  %s%d instance(s)%s\n", gemini, ic.Gemini, reset, text, gmiCount, reset)
 	}
+	if ollamaCount > 0 {
+		fmt.Fprintf(w, "    %s%s Ollama%s %s%d instance(s)%s\n", ollama, ic.Ollama, reset, text, ollamaCount, reset)
+	}
 	if cursorCount > 0 {
 		fmt.Fprintf(w, "    %s%s Cursor%s  %s%d instance(s)%s\n", success, ic.Robot, reset, text, cursorCount, reset)
 	}
@@ -1380,7 +1335,7 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 		fmt.Fprintf(w, "    %s%s User%s    %s%d pane(s)%s\n", success, ic.User, reset, text, otherCount, reset)
 	}
 
-	totalAgents := ccCount + codCount + gmiCount + cursorCount + windsurfCount + aiderCount
+	totalAgents := ccCount + codCount + gmiCount + ollamaCount + cursorCount + windsurfCount + aiderCount
 	if totalAgents == 0 {
 		fmt.Fprintf(w, "    %sNo agents running%s\n", overlay, reset)
 	}
@@ -1706,8 +1661,9 @@ func modelNameForPane(p tmux.Pane) string {
 	if p.Variant != "" {
 		return p.Variant
 	}
+	agentType := tmux.AgentType(p.Type).Canonical()
 	if cfg != nil {
-		switch p.Type {
+		switch agentType {
 		case tmux.AgentClaude:
 			if cfg.Models.DefaultClaude != "" {
 				return cfg.Models.DefaultClaude
@@ -1720,15 +1676,21 @@ func modelNameForPane(p tmux.Pane) string {
 			if cfg.Models.DefaultGemini != "" {
 				return cfg.Models.DefaultGemini
 			}
+		case tmux.AgentOllama:
+			if cfg.Models.DefaultOllama != "" {
+				return cfg.Models.DefaultOllama
+			}
 		}
 	}
-	switch p.Type {
+	switch agentType {
 	case tmux.AgentClaude:
 		return "claude-sonnet-4-6"
 	case tmux.AgentCodex:
 		return "gpt-4"
 	case tmux.AgentGemini:
 		return "gemini-2.0-flash"
+	case tmux.AgentOllama:
+		return "llama3"
 	default:
 		return ""
 	}

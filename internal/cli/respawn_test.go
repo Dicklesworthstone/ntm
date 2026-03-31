@@ -47,6 +47,55 @@ func TestNormalizeAgentType(t *testing.T) {
 	}
 }
 
+func TestRespawnPaneAgentTypePrefersParsedPaneType(t *testing.T) {
+	t.Parallel()
+
+	pane := tmux.Pane{
+		Title:   "custom status title",
+		Type:    tmux.AgentCodex,
+		Command: "codex --unsafe-mode",
+	}
+
+	if got := respawnPaneAgentType(pane); got != "codex" {
+		t.Fatalf("respawnPaneAgentType() = %q, want %q", got, "codex")
+	}
+}
+
+func TestSelectRespawnTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},
+		{ID: "%1", Index: 1, Title: "build monitor", Type: tmux.AgentClaude, Command: "claude"},
+		{ID: "%2", Index: 2, Title: "notes", Type: tmux.AgentCodex, Command: "codex"},
+	}
+
+	targets := selectRespawnTargets(panes, nil, "codex", false)
+	if len(targets) != 1 {
+		t.Fatalf("selectRespawnTargets() returned %d panes, want 1", len(targets))
+	}
+	if targets[0].ID != "%2" {
+		t.Fatalf("selectRespawnTargets() picked %s, want %%2", targets[0].ID)
+	}
+}
+
+func TestSelectRespawnTargetsSkipsUserPaneByDefault(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},
+		{ID: "%1", Index: 1, Title: "agent output", Type: tmux.AgentClaude, Command: "claude"},
+	}
+
+	targets := selectRespawnTargets(panes, nil, "", false)
+	if len(targets) != 1 {
+		t.Fatalf("selectRespawnTargets() returned %d panes, want 1", len(targets))
+	}
+	if targets[0].ID != "%1" {
+		t.Fatalf("selectRespawnTargets() picked %s, want %%1", targets[0].ID)
+	}
+}
+
 func TestRespawnRequiresSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 

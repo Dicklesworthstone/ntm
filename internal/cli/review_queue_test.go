@@ -158,6 +158,25 @@ func TestDetectIdleAgents_LastTaskInfo(t *testing.T) {
 	}
 }
 
+func TestDetectIdleAgents_UsesParsedPaneType(t *testing.T) {
+	t.Parallel()
+
+	store := assignment.NewStore("test-session")
+	panes := []tmux.Pane{
+		{Index: 1, Type: tmux.AgentClaude, Title: "notes", Active: true},
+		{Index: 2, Type: tmux.AgentUser, Title: "__cc_2", Active: true},
+		{Index: 3, Type: tmux.AgentType("openai-codex"), Title: "custom", Active: true},
+	}
+
+	idle := detectIdleAgents(store, panes, "cc", 0)
+	if len(idle) != 1 {
+		t.Fatalf("expected 1 idle agent matching cc, got %d", len(idle))
+	}
+	if idle[0].Pane != 1 || idle[0].AgentType != "claude" {
+		t.Fatalf("idle agent = %+v, want pane 1 claude", idle[0])
+	}
+}
+
 // =============================================================================
 // assignSuggestionsToAgents
 // =============================================================================

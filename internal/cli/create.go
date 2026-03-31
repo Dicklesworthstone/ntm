@@ -562,3 +562,30 @@ func agentTypeToString(t tmux.AgentType) string {
 		return "unknown"
 	}
 }
+
+func incrementAgentCounts(counts *output.AgentCountsResponse, t tmux.AgentType) {
+	if counts == nil {
+		return
+	}
+
+	switch tmux.AgentType(t).Canonical() {
+	case tmux.AgentClaude:
+		counts.Claude++
+	case tmux.AgentCodex:
+		counts.Codex++
+	case tmux.AgentGemini:
+		counts.Gemini++
+	case tmux.AgentOllama:
+		counts.Ollama++
+	case tmux.AgentCursor:
+		counts.Cursor++
+	case tmux.AgentWindsurf:
+		counts.Windsurf++
+	case tmux.AgentAider:
+		counts.Aider++
+	default:
+		counts.User++
+	}
+
+	counts.Total++
+}

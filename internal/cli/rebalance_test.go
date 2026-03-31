@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestCalculateImbalanceScore(t *testing.T) {
@@ -200,6 +201,23 @@ func TestRebalanceWorkloadCounts(t *testing.T) {
 	}
 	if counts[3] != 0 {
 		t.Errorf("expected pane 3 count = 0, got %d", counts[3])
+	}
+}
+
+func TestBuildRebalanceWorkloads_UsesParsedPaneType(t *testing.T) {
+	store := assignment.NewStore("test-session")
+	panes := []tmux.Pane{
+		{Index: 1, Type: tmux.AgentClaude, Title: "notes", Active: true},
+		{Index: 2, Type: tmux.AgentUser, Title: "__cc_2", Active: true},
+		{Index: 3, Type: tmux.AgentType("openai-codex"), Title: "custom", Active: true},
+	}
+
+	workloads := buildRebalanceWorkloads(store, panes, "cod")
+	if len(workloads) != 1 {
+		t.Fatalf("expected 1 workload matching cod, got %d", len(workloads))
+	}
+	if workloads[0].Pane != 3 || workloads[0].AgentType != "codex" {
+		t.Fatalf("workload = %+v, want pane 3 codex", workloads[0])
 	}
 }
 

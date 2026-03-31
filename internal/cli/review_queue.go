@@ -226,16 +226,14 @@ func detectIdleAgents(store *assignment.AssignmentStore, panes []tmux.Pane, filt
 
 	var idle []IdleAgent
 	for _, pane := range panes {
-		// Skip pane 0 (user pane)
-		if pane.Index == 0 {
-			continue
-		}
-
 		if busyPanes[pane.Index] {
 			continue
 		}
 
-		agentType := detectAgentTypeFromTitle(pane.Title)
+		agentType := agentTypeForPane(pane)
+		if agentType == "user" || agentType == "unknown" {
+			continue
+		}
 
 		// Apply filter
 		if filter != "" && !matchesReviewQueueFilter(agentType, filter) {

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestIsValidCondition(t *testing.T) {
@@ -54,6 +55,29 @@ func TestDetectAgentType(t *testing.T) {
 				t.Errorf("detectAgentType(%q) = %q, want %q", tt.title, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFilterPanesForWait_UsesParsedPaneType(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{Index: 0, Type: tmux.AgentUser, Title: "project__cc_0"},
+		{Index: 1, Type: tmux.AgentClaude, Title: "notes"},
+		{Index: 2, Type: tmux.AgentType("openai-codex"), Title: "custom"},
+	}
+
+	filtered := filterPanesForWait(panes, WaitOptions{PaneIndex: -1, AgentType: "codex"})
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 pane after codex filter, got %d", len(filtered))
+	}
+	if filtered[0].Index != 2 {
+		t.Fatalf("filtered pane = %+v, want pane 2", filtered[0])
+	}
+
+	filtered = filterPanesForWait(panes, WaitOptions{PaneIndex: -1})
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 agent panes with no filter, got %d", len(filtered))
 	}
 }
 

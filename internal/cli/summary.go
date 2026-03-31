@@ -174,22 +174,7 @@ func runSummary(args []string, sinceStr, format string, recent, regenerate bool)
 	}
 
 	// Build agent outputs
-	var outputs []summary.AgentOutput
-	for _, pane := range panes {
-		agentType := string(pane.Type)
-		if agentType == "" || agentType == "unknown" {
-			continue // Skip non-agent panes
-		}
-
-		// Capture output (500 lines)
-		out, _ := tmux.CapturePaneOutput(pane.ID, 500)
-
-		outputs = append(outputs, summary.AgentOutput{
-			AgentID:   pane.ID,
-			AgentType: agentType,
-			Output:    out,
-		})
-	}
+	outputs := collectSummaryAgentOutputs(panes, tmux.CapturePaneOutput, nil)
 
 	opts := summary.Options{
 		Session:        session,
@@ -623,4 +608,31 @@ func loadArchiveOutputs(path string) ([]summary.AgentOutput, error) {
 		})
 	}
 	return outputs, nil
+}
+
+func collectSummaryAgentOutputs(
+	panes []tmux.Pane,
+	capture func(string, int) (string, error),
+	onCaptureError func(tmux.Pane, error),
+) []summary.AgentOutput {
+	outputs := make([]summary.AgentOutput, 0, len(panes))
+	for _, pane := range panes {
+		agentType := detectAgentTypeFromPane(pane)
+		if agentType == "" || agentType == "unknown" || agentType == "user" {
+			continue
+		}
+
+		out, err := capture(pane.ID, 500)
+		if err != nil && onCaptureError != nil {
+			onCaptureError(pane, err)
+		}
+
+		outputs = append(outputs, summary.AgentOutput{
+			AgentID:   pane.ID,
+			AgentType: agentType,
+			Output:    out,
+		})
+	}
+
+	return outputs
 }

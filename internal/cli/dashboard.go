@@ -33,7 +33,7 @@ func newDashboardCmd() *cobra.Command {
 
 The dashboard shows:
 - Visual grid of all panes with agent types
-- Agent counts (Claude, Codex, Gemini)
+- Pane type counts across all supported agents
 - Quick actions for zooming and sending commands
 
 If no session is specified:
@@ -302,22 +302,10 @@ func runDashboardPlain(w io.Writer, errW io.Writer, session string) error {
 	}
 
 	// Count agents by type
-	counts := make(map[string]int)
-	for _, p := range panes {
-		counts[string(p.Type)]++
-	}
-
 	// Header
 	fmt.Fprintf(w, "Session: %s\n", session)
 	fmt.Fprintf(w, "Panes: %d\n", len(panes))
-	fmt.Fprintf(w, "Agents: Claude=%d Codex=%d Gemini=%d Cursor=%d Windsurf=%d Aider=%d Other=%d\n",
-		counts[string(tmux.AgentClaude)],
-		counts[string(tmux.AgentCodex)],
-		counts[string(tmux.AgentGemini)],
-		counts[string(tmux.AgentCursor)],
-		counts[string(tmux.AgentWindsurf)],
-		counts[string(tmux.AgentAider)],
-		counts[string(tmux.AgentUser)]+counts[string(tmux.AgentUnknown)])
+	fmt.Fprintf(w, "Pane Types: %s\n", dashboardPaneTypeSummary(panes))
 	fmt.Fprintln(w, strings.Repeat("-", 60))
 
 	// Pane details
@@ -339,6 +327,42 @@ func runDashboardPlain(w io.Writer, errW io.Writer, session string) error {
 	}
 
 	return nil
+}
+
+func dashboardPaneTypeSummary(panes []tmux.Pane) string {
+	counts := map[string]int{
+		"claude":   0,
+		"codex":    0,
+		"gemini":   0,
+		"cursor":   0,
+		"windsurf": 0,
+		"aider":    0,
+		"ollama":   0,
+		"user":     0,
+		"other":    0,
+	}
+
+	for _, pane := range panes {
+		switch normalizedType := normalizeAgentType(string(pane.Type)); normalizedType {
+		case "claude", "codex", "gemini", "cursor", "windsurf", "aider", "ollama", "user":
+			counts[normalizedType]++
+		default:
+			counts["other"]++
+		}
+	}
+
+	return fmt.Sprintf(
+		"Claude=%d Codex=%d Gemini=%d Cursor=%d Windsurf=%d Aider=%d Ollama=%d User=%d Other=%d",
+		counts["claude"],
+		counts["codex"],
+		counts["gemini"],
+		counts["cursor"],
+		counts["windsurf"],
+		counts["aider"],
+		counts["ollama"],
+		counts["user"],
+		counts["other"],
+	)
 }
 
 func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup bool, attentionCursor int64) error {

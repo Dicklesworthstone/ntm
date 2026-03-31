@@ -2143,25 +2143,8 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 				Command:       p.Command,
 				PromptDelayMs: paneDelays[p.Index].Milliseconds(),
 			}
-			switch p.Type {
-			case tmux.AgentClaude:
-				agentCounts.Claude++
-			case tmux.AgentCodex:
-				agentCounts.Codex++
-			case tmux.AgentGemini:
-				agentCounts.Gemini++
-			case tmux.AgentCursor:
-				agentCounts.Cursor++
-			case tmux.AgentWindsurf:
-				agentCounts.Windsurf++
-			case tmux.AgentAider:
-				agentCounts.Aider++
-			default:
-				// Other/plugin agents
-				agentCounts.User++ // Maybe separate category?
-			}
+			incrementAgentCounts(&agentCounts, p.Type)
 		}
-		agentCounts.Total = agentCounts.Claude + agentCounts.Codex + agentCounts.Gemini + agentCounts.Cursor + agentCounts.Windsurf + agentCounts.Aider + agentCounts.User
 
 		// Build stagger config if enabled
 		var staggerCfg *output.StaggerConfig
@@ -3579,21 +3562,8 @@ func waitForAgentsReady(session string, timeout time.Duration) (int, error) {
 		}
 
 		readyCount := 0
-		agentCount := 0
-
-		for _, pane := range panes {
-			at := detectAgentTypeFromTitle(pane.Title)
-			if at == "user" || at == "unknown" {
-				continue
-			}
-			agentCount++
-
-			scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
-			state := determineAgentState(scrollback, at)
-			if state == "idle" {
-				readyCount++
-			}
-		}
+		readyPanes, agentCount := collectReadyAgentPanes(panes, tmux.CaptureForStatusDetection)
+		readyCount = len(readyPanes)
 
 		lastReady = readyCount
 		lastAgents = agentCount
@@ -3622,21 +3592,12 @@ func sendInitPromptToReadyAgents(session, prompt string) (int, error) {
 		return 0, fmt.Errorf("failed to get panes: %w", err)
 	}
 
+	readyPanes, _ := collectReadyAgentPanes(panes, tmux.CaptureForStatusDetection)
+
 	agentsReached := 0
 	var errs []string
 
-	for _, pane := range panes {
-		at := detectAgentTypeFromTitle(pane.Title)
-		if at == "user" || at == "unknown" {
-			continue
-		}
-
-		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
-		state := determineAgentState(scrollback, at)
-		if state != "idle" {
-			continue
-		}
-
+	for _, pane := range readyPanes {
 		if err := sendPromptWithDoubleEnterForAgent(pane.ID, prompt, pane.Type); err != nil {
 			errs = append(errs, fmt.Sprintf("pane %d: %v", pane.Index, err))
 			continue
@@ -3649,6 +3610,26 @@ func sendInitPromptToReadyAgents(session, prompt string) (int, error) {
 	}
 
 	return agentsReached, nil
+}
+
+func collectReadyAgentPanes(panes []tmux.Pane, capture func(string) (string, error)) ([]tmux.Pane, int) {
+	readyPanes := make([]tmux.Pane, 0, len(panes))
+	agentCount := 0
+
+	for _, pane := range panes {
+		agentType := detectAgentTypeFromPane(pane)
+		if agentType == "user" || agentType == "unknown" {
+			continue
+		}
+		agentCount++
+
+		scrollback, _ := capture(pane.ID)
+		if determineAgentState(scrollback, agentType) == "idle" {
+			readyPanes = append(readyPanes, pane)
+		}
+	}
+
+	return readyPanes, agentCount
 }
 
 // runAssignmentPhase executes the assignment phase after spawn.

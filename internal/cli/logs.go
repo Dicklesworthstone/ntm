@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -200,29 +201,8 @@ func runLogsAggregated(opts robot.LogsOptions) error {
 
 	th := theme.Current()
 
-	// Color map for different agent types
-	agentColors := map[string]lipgloss.Color{
-		"claude": th.Pink,
-		"cc":     th.Pink,
-		"codex":  th.Green,
-		"cod":    th.Green,
-		"gemini": th.Blue,
-		"gmi":    th.Blue,
-	}
-
 	for _, entry := range logsOutput.Entries {
-		// Get color for this agent type
-		color := th.Text
-		if c, ok := agentColors[entry.AgentType]; ok {
-			color = c
-		}
-
-		// Format: [cc:2] line content
-		prefix := lipgloss.NewStyle().
-			Foreground(color).
-			Bold(true).
-			Render(fmt.Sprintf("[%s:%d]", robot.FormatAggregatedLog(entry)[:3], entry.Pane))
-
+		prefix := aggregatedLogPrefix(entry.AgentType, entry.Pane, th)
 		fmt.Printf("%s %s\n", prefix, entry.Line)
 	}
 
@@ -252,16 +232,6 @@ func runLogsFollow(opts robot.LogsOptions) error {
 	}
 
 	th := theme.Current()
-
-	// Color map for different agent types
-	agentColors := map[string]lipgloss.Color{
-		"claude": th.Pink,
-		"cc":     th.Pink,
-		"codex":  th.Green,
-		"cod":    th.Green,
-		"gemini": th.Blue,
-		"gmi":    th.Blue,
-	}
 
 	// Set up signal handling
 	ctx, cancel := context.WithCancel(context.Background())
@@ -322,19 +292,7 @@ func runLogsFollow(opts robot.LogsOptions) error {
 						_ = json.NewEncoder(os.Stdout).Encode(jsonEntry)
 					} else {
 						// Human-readable output
-						color := th.Text
-						if c, ok := agentColors[entry.AgentType]; ok {
-							color = c
-						}
-
-						shortType := robot.FormatAggregatedLog(robot.AggregatedLogEntry{
-							AgentType: entry.AgentType,
-						})[:3]
-
-						prefix := lipgloss.NewStyle().
-							Foreground(color).
-							Bold(true).
-							Render(fmt.Sprintf("[%s:%d]", shortType, entry.Pane))
+						prefix := aggregatedLogPrefix(entry.AgentType, entry.Pane, th)
 
 						timestamp := lipgloss.NewStyle().
 							Foreground(th.Subtext).
@@ -356,17 +314,63 @@ func parsePanesArgLocal(s string) ([]int, error) {
 
 // Helper for short agent type formatting
 func shortAgentTypeLocal(agentType string) string {
-	switch strings.ToLower(agentType) {
-	case "claude":
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
 		return "cc"
-	case "codex":
+	case agent.AgentTypeCodex:
 		return "cod"
-	case "gemini":
+	case agent.AgentTypeGemini:
 		return "gmi"
+	case agent.AgentTypeCursor:
+		return "cur"
+	case agent.AgentTypeWindsurf:
+		return "ws"
+	case agent.AgentTypeAider:
+		return "aid"
+	case agent.AgentTypeOllama:
+		return "oll"
+	case agent.AgentTypeUser:
+		return "usr"
+	case agent.AgentTypeUnknown:
+		return "unk"
 	default:
+		agentType = strings.TrimSpace(strings.ToLower(agentType))
+		if agentType == "" {
+			return "unk"
+		}
 		if len(agentType) > 3 {
 			return agentType[:3]
 		}
 		return agentType
 	}
+}
+
+func logsAgentTypeColor(agentType string, th theme.Theme) lipgloss.Color {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeClaudeCode:
+		return th.Claude
+	case agent.AgentTypeCodex:
+		return th.Codex
+	case agent.AgentTypeGemini:
+		return th.Gemini
+	case agent.AgentTypeCursor:
+		return th.Cursor
+	case agent.AgentTypeWindsurf:
+		return th.Windsurf
+	case agent.AgentTypeAider:
+		return th.Aider
+	case agent.AgentTypeOllama:
+		return th.Ollama
+	case agent.AgentTypeUser:
+		return th.User
+	default:
+		return th.Text
+	}
+}
+
+func aggregatedLogPrefix(agentType string, pane int, th theme.Theme) string {
+	return lipgloss.NewStyle().
+		Foreground(logsAgentTypeColor(agentType, th)).
+		Bold(true).
+		Render(fmt.Sprintf("[%s:%d]", shortAgentTypeLocal(agentType), pane))
 }

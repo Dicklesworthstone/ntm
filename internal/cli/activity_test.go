@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 func TestStateIcon(t *testing.T) {
@@ -200,6 +201,36 @@ func TestPassesFilter(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("passesFilter(%q, %v, %+v) = %v, want %v",
 					tt.agentType, tt.pane, tt.opts, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActivityAgentTypeColor(t *testing.T) {
+	t.Parallel()
+
+	current := theme.Current()
+	tests := []struct {
+		name      string
+		agentType string
+		want      string
+	}{
+		{"claude", "claude", string(current.Claude)},
+		{"codex alias", "openai-codex", string(current.Codex)},
+		{"gemini alias", "google-gemini", string(current.Gemini)},
+		{"cursor", "cursor", string(current.Cursor)},
+		{"windsurf alias", "ws", string(current.Windsurf)},
+		{"aider", "aider", string(current.Aider)},
+		{"ollama", "ollama", string(current.Ollama)},
+		{"user", "user", string(current.User)},
+		{"unknown", "mystery", string(current.Text)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := string(activityAgentTypeColor(tc.agentType, current)); got != tc.want {
+				t.Fatalf("activityAgentTypeColor(%q) = %q, want %q", tc.agentType, got, tc.want)
 			}
 		})
 	}

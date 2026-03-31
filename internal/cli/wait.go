@@ -177,6 +177,13 @@ func runWait(w io.Writer, opts WaitOptions) error {
 	if !isValidCondition(opts.Condition) {
 		return fmt.Errorf("invalid condition '%s': must be one of idle, complete, generating, healthy", opts.Condition)
 	}
+	if opts.AgentType != "" {
+		rawAgentType := opts.AgentType
+		opts.AgentType = robot.ResolveAgentType(opts.AgentType)
+		if opts.AgentType == "" || opts.AgentType == "unknown" || opts.AgentType == "user" {
+			return fmt.Errorf("invalid agent type '%s'", strings.TrimSpace(rawAgentType))
+		}
+	}
 
 	// Start waiting
 	fmt.Fprintf(w, "%s⏳%s Waiting for '%s' until %s (timeout: %v)...\n",
@@ -215,8 +222,7 @@ func runWait(w io.Writer, opts WaitOptions) error {
 		var activities []*robot.AgentActivity
 		for _, pane := range filteredPanes {
 			classifier := monitor.GetOrCreate(pane.ID)
-			// Set agent type if we can detect it from pane name
-			if at := detectAgentType(pane.Title); at != "" {
+			if at := agentTypeForPane(pane); at != "" && at != "unknown" && at != "user" {
 				classifier.SetAgentType(at)
 			}
 			activity, err := classifier.Classify()
@@ -276,8 +282,8 @@ func filterPanesForWait(panes []tmux.Pane, opts WaitOptions) []tmux.Pane {
 	var result []tmux.Pane
 
 	for _, pane := range panes {
-		// Skip user pane (index 0 typically has no agent type indicator)
-		if detectAgentType(pane.Title) == "" && pane.Index == 0 {
+		paneType := agentTypeForPane(pane)
+		if paneType == "user" || paneType == "unknown" {
 			continue
 		}
 
@@ -288,7 +294,6 @@ func filterPanesForWait(panes []tmux.Pane, opts WaitOptions) []tmux.Pane {
 
 		// Filter by agent type
 		if opts.AgentType != "" {
-			paneType := detectAgentType(pane.Title)
 			if !strings.EqualFold(paneType, opts.AgentType) {
 				continue
 			}
