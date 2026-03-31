@@ -255,6 +255,52 @@ func TestMemoryStore_SetAndGetDaemonInfo(t *testing.T) {
 	}
 }
 
+func TestMemoryStore_GetDaemonInfoReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	startedAt := time.Now().UTC()
+	expectedStartedAt := startedAt
+	input := &MemoryDaemonInfo{
+		State:     DaemonStateRunning,
+		PID:       4321,
+		Port:      8200,
+		StartedAt: &startedAt,
+		SessionID: "sess-copy",
+	}
+	store.SetDaemonInfo(input)
+
+	input.State = DaemonStateStopped
+	input.PID = 9999
+	if input.StartedAt != nil {
+		*input.StartedAt = input.StartedAt.Add(time.Hour)
+	}
+
+	got := store.GetDaemonInfo()
+	got.State = DaemonStateStopped
+	got.PID = 1111
+	if got.StartedAt != nil {
+		*got.StartedAt = got.StartedAt.Add(2 * time.Hour)
+	}
+
+	refetched := store.GetDaemonInfo()
+	if refetched.State != DaemonStateRunning {
+		t.Fatalf("state = %q, want %q", refetched.State, DaemonStateRunning)
+	}
+	if refetched.PID != 4321 {
+		t.Fatalf("pid = %d, want 4321", refetched.PID)
+	}
+	if refetched.Port != 8200 {
+		t.Fatalf("port = %d, want 8200", refetched.Port)
+	}
+	if refetched.StartedAt == nil || !refetched.StartedAt.Equal(expectedStartedAt) {
+		t.Fatalf("started_at = %v, want %v", refetched.StartedAt, expectedStartedAt)
+	}
+	if refetched.SessionID != "sess-copy" {
+		t.Fatalf("session_id = %q, want sess-copy", refetched.SessionID)
+	}
+}
+
 func TestMemoryStore_SetDaemonInfo_Overwrite(t *testing.T) {
 	t.Parallel()
 

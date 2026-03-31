@@ -4394,6 +4394,59 @@ func TestHandleMemoryDaemonStatus_CMNotInstalled(t *testing.T) {
 	}
 }
 
+func TestHandleMemoryDaemonStatus_ReportsStartingState(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	fakeBinDir := t.TempDir()
+	fakeCM := filepath.Join(fakeBinDir, "cm")
+	if err := os.WriteFile(fakeCM, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile fake cm: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir)
+
+	oldStore := memoryStore
+	memoryStore = NewMemoryStore()
+	t.Cleanup(func() {
+		memoryStore = oldStore
+	})
+
+	startedAt := time.Now().UTC().Truncate(time.Second)
+	memoryStore.SetDaemonInfo(&MemoryDaemonInfo{
+		State:     DaemonStateStarting,
+		Port:      8200,
+		StartedAt: &startedAt,
+		SessionID: "rest-starting",
+	})
+
+	srv := New(Config{})
+	srv.projectDir = tmpDir
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/memory/daemon/status", nil)
+	srv.handleMemoryDaemonStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["installed"] != true {
+		t.Fatalf("installed=%v, want true", resp["installed"])
+	}
+	if resp["state"] != string(DaemonStateStarting) {
+		t.Fatalf("state=%v, want %q", resp["state"], DaemonStateStarting)
+	}
+	if resp["port"] != float64(8200) {
+		t.Fatalf("port=%v, want 8200", resp["port"])
+	}
+	if resp["session_id"] != "rest-starting" {
+		t.Fatalf("session_id=%v, want rest-starting", resp["session_id"])
+	}
+}
+
 // --- Memory outcome: valid status values reach daemon check ---
 
 func TestHandleMemoryOutcome_ValidStatuses(t *testing.T) {
@@ -6071,6 +6124,66 @@ func TestStartMemoryDaemonAsync_KeepsDaemonAliveAfterStartup(t *testing.T) {
 
 	if latest := memoryStore.GetDaemonInfo(); latest == nil || latest.State != DaemonStateRunning {
 		t.Fatalf("daemon state after startup = %+v, want running", latest)
+	}
+}
+
+func TestStartMemoryDaemonAsync_DoesNotAdoptDifferentDaemonPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
+	if err := os.MkdirAll(pidsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll pidsDir: %v", err)
+	}
+
+	foreignPID := map[string]interface{}{
+		"pid":        os.Getpid(),
+		"port":       9999,
+		"started_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(foreignPID)
+	if err != nil {
+		t.Fatalf("Marshal foreign pid: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pidsDir, "cm-other-session.pid"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile foreign pid: %v", err)
+	}
+
+	srv := New(Config{})
+	srv.projectDir = tmpDir
+
+	oldCommand := memoryDaemonCommand
+	oldDelay := memoryDaemonStartupDelay
+	oldStore := memoryStore
+	memoryStore = NewMemoryStore()
+	memoryDaemonStartupDelay = 50 * time.Millisecond
+	memoryDaemonCommand = func(projectDir string, port int) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestServeMemoryDaemonHelperProcess")
+		cmd.Env = append(os.Environ(), "NTM_SERVE_HELPER_PROCESS=memory-daemon")
+		return cmd
+	}
+	defer func() {
+		info := memoryStore.GetDaemonInfo()
+		if info != nil && info.PID > 0 {
+			_ = stopMemoryDaemonProcess(info.PID, 2*time.Second)
+		}
+		memoryDaemonCommand = oldCommand
+		memoryDaemonStartupDelay = oldDelay
+		memoryStore = oldStore
+	}()
+
+	srv.startMemoryDaemonAsync(8234, "test-session")
+
+	info := memoryStore.GetDaemonInfo()
+	if info == nil {
+		t.Fatal("expected daemon info to be recorded")
+	}
+	if info.State != DaemonStateStopped {
+		t.Fatalf("state = %v, want stopped when only another daemon port is present", info.State)
+	}
+	if info.Port != 0 {
+		t.Fatalf("port = %d, want 0 after failed startup validation", info.Port)
+	}
+	if info.SessionID != "" {
+		t.Fatalf("session_id = %q, want empty after failed startup validation", info.SessionID)
 	}
 }
 

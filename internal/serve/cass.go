@@ -86,6 +86,18 @@ type limitedLogBuffer struct {
 	truncated bool
 }
 
+func cloneMemoryDaemonInfo(info *MemoryDaemonInfo) *MemoryDaemonInfo {
+	if info == nil {
+		return nil
+	}
+	cloned := *info
+	if info.StartedAt != nil {
+		startedAt := *info.StartedAt
+		cloned.StartedAt = &startedAt
+	}
+	return &cloned
+}
+
 func newLimitedLogBuffer(limit int) *limitedLogBuffer {
 	if limit <= 0 {
 		limit = 8 * 1024
@@ -135,14 +147,14 @@ func NewMemoryStore() *MemoryStore {
 func (s *MemoryStore) GetDaemonInfo() *MemoryDaemonInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.daemonInfo
+	return cloneMemoryDaemonInfo(s.daemonInfo)
 }
 
 // SetDaemonInfo updates daemon info
 func (s *MemoryStore) SetDaemonInfo(info *MemoryDaemonInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.daemonInfo = info
+	s.daemonInfo = cloneMemoryDaemonInfo(info)
 }
 
 // Global memory store
@@ -654,8 +666,7 @@ func (s *Server) handleMemoryDaemonStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Check for running daemon by looking for PID file
-	daemonInfo := s.checkMemoryDaemon()
+	daemonInfo := s.currentMemoryDaemonInfo()
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"installed":  true,
@@ -665,6 +676,32 @@ func (s *Server) handleMemoryDaemonStatus(w http.ResponseWriter, r *http.Request
 		"started_at": daemonInfo.StartedAt,
 		"session_id": daemonInfo.SessionID,
 	}, reqID)
+}
+
+func (s *Server) currentMemoryDaemonInfo() *MemoryDaemonInfo {
+	current := memoryStore.GetDaemonInfo()
+	if current != nil {
+		switch current.State {
+		case DaemonStateStarting:
+			live := s.checkMemoryDaemon()
+			if live.State == DaemonStateRunning && current.Port > 0 && live.Port == current.Port {
+				memoryStore.SetDaemonInfo(live)
+				return live
+			}
+			return current
+		case DaemonStateStopping:
+			if current.PID > 0 && process.IsAlive(current.PID) {
+				return current
+			}
+			stopped := &MemoryDaemonInfo{State: DaemonStateStopped}
+			memoryStore.SetDaemonInfo(stopped)
+			return stopped
+		}
+	}
+
+	live := s.checkMemoryDaemon()
+	memoryStore.SetDaemonInfo(live)
+	return live
 }
 
 // checkMemoryDaemon checks if the memory daemon is running
@@ -761,9 +798,6 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 
 	slog.Info("starting memory daemon", "request_id", reqID, "port", port, "session_id", sessionID)
 
-	// Start daemon in background
-	go s.startMemoryDaemonAsync(port, sessionID)
-
 	// Update store
 	memoryStore.SetDaemonInfo(&MemoryDaemonInfo{
 		State:     DaemonStateStarting,
@@ -776,6 +810,10 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 		"port":       port,
 		"session_id": sessionID,
 	})
+
+	// Start daemon in background after publishing the transitional state so
+	// immediate status checks do not race a failed startup and revert to "stopped".
+	go s.startMemoryDaemonAsync(port, sessionID)
 
 	writeSuccessResponse(w, http.StatusAccepted, map[string]interface{}{
 		"state":      DaemonStateStarting,
@@ -821,9 +859,10 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 	// Wait a moment for the daemon to start
 	time.Sleep(memoryDaemonStartupDelay)
 
-	// Check if it's running
+	// Check if the daemon that came up is the one we requested. A broad PID-file
+	// scan can otherwise misattribute another cm daemon and falsely report success.
 	daemonInfo := s.checkMemoryDaemon()
-	if daemonInfo.State == DaemonStateRunning {
+	if daemonInfo.State == DaemonStateRunning && daemonInfo.Port == port {
 		memoryStore.SetDaemonInfo(daemonInfo)
 		s.publishMemoryEvent("memory.daemon.started", map[string]interface{}{
 			"pid":        daemonInfo.PID,
@@ -831,7 +870,7 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 			"session_id": daemonInfo.SessionID,
 		})
 	} else {
-		slog.Warn("memory daemon may have failed to start", "stderr", stderr.String())
+		slog.Warn("memory daemon may have failed to start", "port", port, "stderr", stderr.String())
 		memoryStore.SetDaemonInfo(&MemoryDaemonInfo{State: DaemonStateStopped})
 		s.publishMemoryEvent("memory.daemon.failed", map[string]interface{}{
 			"error": "daemon did not start successfully",
