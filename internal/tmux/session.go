@@ -380,58 +380,11 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 			continue
 		}
 
-		parts := strings.Split(line, sep)
-		if len(parts) < 9 {
-			continue
-		}
-
-		index, err := strconv.Atoi(parts[1])
+		p, err := parsePaneLine(line, sep)
 		if err != nil {
 			continue
 		}
-		width, err := strconv.Atoi(parts[4])
-		if err != nil {
-			continue
-		}
-		height, err := strconv.Atoi(parts[5])
-		if err != nil {
-			continue
-		}
-		active := parts[6] == "1"
-		pid, err := strconv.Atoi(parts[7])
-		if err != nil {
-			continue
-		}
-		windowIndex, err := strconv.Atoi(parts[8])
-		if err != nil {
-			continue
-		}
-
-		pane := Pane{
-			ID:          parts[0],
-			Index:       index,
-			WindowIndex: windowIndex,
-			Title:       parts[2],
-			Command:     parts[3],
-			Width:       width,
-			Height:      height,
-			Active:      active,
-			PID:         pid,
-		}
-
-		// Parse pane title using regex to extract type, index, variant, and tags
-		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
-		pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
-
-		// Fallback: if title didn't match NTM format, try detecting from process command
-		// This handles cases where shell prompts or tmux hooks change the pane title
-		if pane.Type == AgentUser && pane.Command != "" {
-			if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
-				pane.Type = detected
-			}
-		}
-
-		panes = append(panes, pane)
+		panes = append(panes, *p)
 	}
 
 	return panes, nil
@@ -478,53 +431,13 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		}
 
 		sessionName := parts[0]
-		index, err := strconv.Atoi(parts[2])
-		if err != nil {
-			continue
-		}
-		width, err := strconv.Atoi(parts[5])
-		if err != nil {
-			continue
-		}
-		height, err := strconv.Atoi(parts[6])
-		if err != nil {
-			continue
-		}
-		active := parts[7] == "1"
-		pid, err := strconv.Atoi(parts[8])
-		if err != nil {
-			continue
-		}
-		windowIndex, err := strconv.Atoi(parts[9])
+		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index
+		p, err := parsePaneFromParts(parts[1:8], parts[8:])
 		if err != nil {
 			continue
 		}
 
-		pane := Pane{
-			ID:          parts[1],
-			Index:       index,
-			WindowIndex: windowIndex,
-			Title:       parts[3],
-			Command:     parts[4],
-			Width:       width,
-			Height:      height,
-			Active:      active,
-			PID:         pid,
-		}
-
-		// Parse pane title using regex to extract type, index, variant, and tags
-		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
-		pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
-
-		// Fallback: if title didn't match NTM format, try detecting from process command
-		// This handles cases where shell prompts or tmux hooks change the pane title
-		if pane.Type == AgentUser && pane.Command != "" {
-			if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
-				pane.Type = detected
-			}
-		}
-
-		panesBySession[sessionName] = append(panesBySession[sessionName], pane)
+		panesBySession[sessionName] = append(panesBySession[sessionName], *p)
 	}
 
 	return panesBySession, nil
@@ -985,15 +898,15 @@ func (c *Client) loadBufferLocal(bufferName, content string) error {
 
 // loadBufferRemote loads content into a tmux buffer for remote operations.
 func (c *Client) loadBufferRemote(bufferName, content string) error {
-	// For remote, we need to pipe the content through ssh
-	// Use printf with escaped content to avoid shell interpretation issues
-	quotedContent := ShellQuote(content)
-	remoteCmd := fmt.Sprintf("printf %%s %s | tmux load-buffer -b %s -", quotedContent, ShellQuote(bufferName))
+	// For remote, we need to pipe the content through ssh's stdin
+	// instead of passing it on the command line to avoid ARG_MAX limits.
+	remoteCmd := fmt.Sprintf("tmux load-buffer -b %s -", ShellQuote(bufferName))
 	sshArgs := []string{"--", c.Remote, "/bin/sh", "-c", ShellQuote(remoteCmd)}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd.Stdin = strings.NewReader(content)
 	cmd.WaitDelay = 2 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -1383,28 +1296,15 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			continue
 		}
 
-		index, err := strconv.Atoi(parts[1])
+		// Use the common parser for the first few fields
+		// We re-join to use the helper, or we can just parse manually.
+		// Refactoring to a unified parts-based parser is better.
+		p, err := parsePaneFromParts(parts[:8], parts[8:]) // Skip index 7 (last_activity)
 		if err != nil {
 			continue
 		}
-		width, err := strconv.Atoi(parts[4])
-		if err != nil {
-			continue
-		}
-		height, err := strconv.Atoi(parts[5])
-		if err != nil {
-			continue
-		}
-		active := parts[6] == "1"
+
 		rawTimestamp := strings.TrimSpace(parts[7])
-		pid, err := strconv.Atoi(parts[8])
-		if err != nil {
-			continue
-		}
-		windowIndex, err := strconv.Atoi(parts[9])
-		if err != nil {
-			continue
-		}
 		now := time.Now()
 		lastActivity, err := parsePaneActivityTimestamp(rawTimestamp, now)
 		if err != nil {
@@ -1412,37 +1312,62 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			lastActivity = now
 		}
 
-		pane := Pane{
-			ID:          parts[0],
-			Index:       index,
-			WindowIndex: windowIndex,
-			Title:       parts[2],
-			Command:     parts[3],
-			Width:       width,
-			Height:      height,
-			Active:      active,
-			PID:         pid,
-		}
-
-		// Parse pane title using regex to extract type, index, variant, and tags
-		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
-		pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
-
-		// Fallback: if title didn't match NTM format, try detecting from process command
-		// This handles cases where shell prompts or tmux hooks change the pane title
-		if pane.Type == AgentUser && pane.Command != "" {
-			if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
-				pane.Type = detected
-			}
-		}
-
 		panes = append(panes, PaneActivity{
-			Pane:         pane,
+			Pane:         *p,
 			LastActivity: lastActivity,
 		})
 	}
 
 	return panes, nil
+}
+
+// parsePaneLine parses a single line from list-panes format into a Pane.
+func parsePaneLine(line, sep string) (*Pane, error) {
+	parts := strings.Split(line, sep)
+	if len(parts) < 9 {
+		return nil, fmt.Errorf("insufficient parts: %d", len(parts))
+	}
+	return parsePaneFromParts(parts[:7], parts[7:])
+}
+
+// parsePaneFromParts constructs a Pane from pre-split parts.
+// parts1: id, index, title, command, width, height, active
+// parts2: pid, window_index
+func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
+	if len(parts1) < 7 || len(parts2) < 2 {
+		return nil, fmt.Errorf("insufficient parts")
+	}
+
+	index, _ := strconv.Atoi(parts1[1])
+	width, _ := strconv.Atoi(parts1[4])
+	height, _ := strconv.Atoi(parts1[5])
+	active := parts1[6] == "1"
+	pid, _ := strconv.Atoi(parts2[0])
+	windowIndex, _ := strconv.Atoi(parts2[1])
+
+	pane := &Pane{
+		ID:          parts1[0],
+		Index:       index,
+		WindowIndex: windowIndex,
+		Title:       parts1[2],
+		Command:     parts1[3],
+		Width:       width,
+		Height:      height,
+		Active:      active,
+		PID:         pid,
+	}
+
+	// Parse pane title using regex to extract type, index, variant, and tags
+	pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
+
+	// Fallback: if title didn't match NTM format, try detecting from process command
+	if pane.Type == AgentUser && pane.Command != "" {
+		if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
+			pane.Type = detected
+		}
+	}
+
+	return pane, nil
 }
 
 func parsePaneActivityTimestamp(raw string, now time.Time) (time.Time, error) {

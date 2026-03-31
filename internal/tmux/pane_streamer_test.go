@@ -53,23 +53,24 @@ func TestStreamEvent_Fields(t *testing.T) {
 }
 
 func TestSimpleHash(t *testing.T) {
-	// Short strings return as-is
+	// All strings get hashed to a fixed-length hex string
 	short := "hello"
-	if hash := simpleHash(short); hash != short {
-		t.Errorf("expected short hash to equal string, got %s", hash)
+	hash := simpleHash(short)
+	if len(hash) != 16 {
+		t.Errorf("expected 16-char hex hash, got %d chars: %s", len(hash), hash)
 	}
 
 	// Long strings get hashed
-	long := "this is a very long string that exceeds 64 characters and should be hashed differently"
-	hash := simpleHash(long)
-	if hash == long {
-		t.Error("expected long string to be hashed")
+	long := "this is a very long string that exceeds 64 characters and should be hashed consistently"
+	hashL := simpleHash(long)
+	if len(hashL) != 16 {
+		t.Errorf("expected 16-char hex hash for long string, got %s", hashL)
 	}
 
 	// Different strings should produce different hashes
 	long2 := "this is a very long string that exceeds 64 characters but ends with something else"
 	hash2 := simpleHash(long2)
-	if hash == hash2 {
+	if hashL == hash2 {
 		t.Error("expected different strings to produce different hashes")
 	}
 }
@@ -434,24 +435,21 @@ func TestSimpleHash_ExactlyBoundary(t *testing.T) {
 		t.Fatalf("test string should be exactly 64 chars, got %d", len(exactly64))
 	}
 
-	// Exactly 64 chars should NOT be hashed (condition is < 64)
+	// All lengths are now hashed consistently
 	hash := simpleHash(exactly64)
-	if hash == exactly64 {
-		t.Log("64-char string returned as-is (boundary)")
+	if len(hash) != 16 {
+		t.Errorf("expected 16-char hex hash, got %s", hash)
 	}
 
-	// 63 chars should be returned as-is
+	// 63 chars
 	chars63 := exactly64[:63]
 	hash63 := simpleHash(chars63)
-	if hash63 != chars63 {
-		t.Errorf("expected 63-char string to be returned as-is, got different: %s", hash63)
+	if len(hash63) != 16 {
+		t.Errorf("expected 16-char hex hash for 63-char string, got %s", hash63)
 	}
 
-	// 65 chars should be hashed
-	chars65 := exactly64 + "x"
-	hash65 := simpleHash(chars65)
-	if hash65 == chars65 {
-		t.Error("expected 65-char string to be hashed, but got original")
+	if hash == hash63 {
+		t.Error("expected different hashes for different lengths")
 	}
 }
 

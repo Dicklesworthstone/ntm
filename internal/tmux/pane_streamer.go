@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"os"
@@ -29,7 +30,7 @@ type StreamCallback func(event StreamEvent)
 
 // PaneStreamerConfig configures the pane streamer.
 type PaneStreamerConfig struct {
-	// FIFODir is where named pipes are created (default: /tmp/ntm_pane_streams)
+	// FIFODir is where named pipes are created (default: secure user-specific dir)
 	FIFODir string
 
 	// MaxLinesPerEvent limits lines per WebSocket event (default: 100)
@@ -48,12 +49,26 @@ type PaneStreamerConfig struct {
 // DefaultPaneStreamerConfig returns sensible defaults.
 func DefaultPaneStreamerConfig() PaneStreamerConfig {
 	return PaneStreamerConfig{
-		FIFODir:              "/tmp/ntm_pane_streams",
+		FIFODir:              defaultFIFODir(),
 		MaxLinesPerEvent:     100,
 		FlushInterval:        50 * time.Millisecond,
 		FallbackPollInterval: 500 * time.Millisecond,
 		FallbackPollLines:    LinesHealthCheck,
 	}
+}
+
+func defaultFIFODir() string {
+	stateDir := os.Getenv("XDG_STATE_HOME")
+	if stateDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			stateDir = filepath.Join(home, ".local", "state")
+		} else {
+			// Fallback if no home dir
+			return filepath.Join(os.TempDir(), fmt.Sprintf("ntm_streams_%d", os.Getuid()))
+		}
+	}
+	return filepath.Join(stateDir, "ntm", "streams")
 }
 
 // PaneStreamer streams output from a single pane.
@@ -79,11 +94,12 @@ type PaneStreamer struct {
 // NewPaneStreamer creates a streamer for the given pane target.
 func NewPaneStreamer(client *Client, target string, callback StreamCallback, cfg PaneStreamerConfig) *PaneStreamer {
 	if cfg.FIFODir == "" {
-		cfg.FIFODir = "/tmp/ntm_pane_streams"
+		cfg.FIFODir = defaultFIFODir()
 	}
 	if cfg.MaxLinesPerEvent <= 0 {
 		cfg.MaxLinesPerEvent = 100
 	}
+
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = 50 * time.Millisecond
 	}
@@ -299,7 +315,9 @@ func (ps *PaneStreamer) runFIFOReader() {
 				select {
 				case errCh <- err:
 				case <-stopCh:
+					return
 				case <-ctx.Done():
+					return
 				}
 				return
 			}
@@ -390,13 +408,11 @@ func (ps *PaneStreamer) runPollingLoop() {
 	}
 }
 
-// simpleHash computes a simple hash for deduplication.
+// simpleHash computes a robust hash for deduplication.
 func simpleHash(s string) string {
-	// Use length + first 32 chars + last 32 chars as a quick hash
-	if len(s) < 64 {
-		return s
-	}
-	return fmt.Sprintf("%d:%s:%s", len(s), s[:32], s[len(s)-32:])
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	return fmt.Sprintf("%016x", h.Sum64())
 }
 
 // StreamManager manages multiple pane streamers.
