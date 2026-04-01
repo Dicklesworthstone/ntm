@@ -29,12 +29,23 @@ func TestDetectAgentTypeFromTitle(t *testing.T) {
 		{"gemini via __gmi prefix", "myproject__gmi_1", "gemini"},
 		{"gemini via keyword", "gemini-pro session", "gemini"},
 
+		// New agent detection
+		{"cursor via __cursor prefix", "myproject__cursor_1", "cursor"},
+		{"windsurf via __windsurf prefix", "myproject__windsurf_2", "windsurf"},
+		{"windsurf via __ws prefix", "myproject__ws_2", "windsurf"},
+		{"aider via __aider prefix", "myproject__aider_3", "aider"},
+		{"ollama via __ollama prefix", "myproject__ollama_4", "ollama"},
+
 		// User detection
 		{"user via __user prefix", "myproject__user_1", "user"},
 		{"user via keyword", "user terminal", "user"},
 
+		// Session names can themselves contain double underscores
+		{"session name with embedded double underscore", "my__project__cc_1", "claude"},
+
 		// Unknown
 		{"unknown agent type", "random-pane-title", "unknown"},
+		{"partial token should stay unknown", "project__ccidental_1", "unknown"},
 		{"empty title", "", "unknown"},
 	}
 

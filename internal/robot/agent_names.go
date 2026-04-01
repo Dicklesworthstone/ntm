@@ -270,16 +270,20 @@ func resolveAgentTypeForNaming(pane tmuxPaneInfo) string {
 func detectAgentTypeFromTitle(title string) string {
 	lower := strings.ToLower(title)
 
-	if strings.Contains(lower, "__cc_") || strings.Contains(lower, "__claude") {
-		return "claude"
+	if idx := strings.LastIndex(lower, "__"); idx >= 0 && idx+2 < len(lower) {
+		typePart := lower[idx+2:]
+		if underscore := strings.IndexByte(typePart, '_'); underscore >= 0 {
+			typePart = typePart[:underscore]
+		}
+		if resolved := ResolveAgentType(typePart); resolved != "" && resolved != "unknown" {
+			return resolved
+		}
 	}
-	if strings.Contains(lower, "__cod_") || strings.Contains(lower, "__codex") {
-		return "codex"
+
+	if detected := DetectAgentType(lower); detected != "unknown" {
+		return detected
 	}
-	if strings.Contains(lower, "__gmi_") || strings.Contains(lower, "__gemini") {
-		return "gemini"
-	}
-	if strings.Contains(lower, "__user") {
+	if strings.Contains(lower, "user") {
 		return "user"
 	}
 	return ""

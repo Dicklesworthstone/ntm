@@ -883,16 +883,48 @@ func generateRecommendations(panes []tmux.Pane, beads []bv.BeadPreview, strategy
 // detectAgentTypeFromTitle determines agent type from pane title
 func detectAgentTypeFromTitle(title string) string {
 	title = strings.ToLower(title)
-	if strings.Contains(title, "__cc") || strings.Contains(title, "claude") {
+
+	if idx := strings.LastIndex(title, "__"); idx >= 0 && idx+2 < len(title) {
+		typePart := title[idx+2:]
+		if underscore := strings.IndexByte(typePart, '_'); underscore >= 0 {
+			typePart = typePart[:underscore]
+		}
+		switch agent.AgentType(typePart).Canonical() {
+		case agent.AgentTypeClaudeCode:
+			return "claude"
+		case agent.AgentTypeCodex:
+			return "codex"
+		case agent.AgentTypeGemini:
+			return "gemini"
+		case agent.AgentTypeCursor:
+			return "cursor"
+		case agent.AgentTypeWindsurf:
+			return "windsurf"
+		case agent.AgentTypeAider:
+			return "aider"
+		case agent.AgentTypeOllama:
+			return "ollama"
+		case agent.AgentTypeUser:
+			return "user"
+		}
+	}
+
+	switch {
+	case strings.Contains(title, "claude"):
 		return "claude"
-	}
-	if strings.Contains(title, "__cod") || strings.Contains(title, "codex") {
+	case strings.Contains(title, "codex"):
 		return "codex"
-	}
-	if strings.Contains(title, "__gmi") || strings.Contains(title, "gemini") {
+	case strings.Contains(title, "gemini"):
 		return "gemini"
-	}
-	if strings.Contains(title, "__user") || strings.Contains(title, "user") {
+	case strings.Contains(title, "cursor"):
+		return "cursor"
+	case strings.Contains(title, "windsurf"):
+		return "windsurf"
+	case strings.Contains(title, "aider"):
+		return "aider"
+	case strings.Contains(title, "ollama"):
+		return "ollama"
+	case strings.Contains(title, "user"):
 		return "user"
 	}
 	return "unknown"

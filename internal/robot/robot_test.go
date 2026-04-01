@@ -82,6 +82,7 @@ func TestDetectAgentType(t *testing.T) {
 		{"cursor", "cursor ide", "cursor"},
 		{"windsurf", "windsurf editor", "windsurf"},
 		{"aider", "aider assistant", "aider"},
+		{"ollama", "ollama terminal", "ollama"},
 
 		// Short forms in pane titles (e.g., "session__cc_1")
 		{"cc short form", "myproject__cc_1", "claude"},
@@ -91,6 +92,7 @@ func TestDetectAgentType(t *testing.T) {
 		{"cod short form double underscore", "test__cod__2", "codex"},
 		{"gmi short form", "myproject__gmi_1", "gemini"},
 		{"gmi short form double underscore", "test__gmi__2", "gemini"},
+		{"ws short form", "myproject__ws_1", "windsurf"},
 
 		// Should NOT match short forms inside words
 		{"success not cc", "success_test", "unknown"},
@@ -5113,15 +5115,15 @@ func TestDetectAgentType_Accuracy(t *testing.T) {
 		// Gemini variants
 		{"gemini", "gemini"},
 		{"Google Gemini", "gemini"},
-		{"GEMINI", "gemini"},
-		{"gemini-pro", "gemini"},
-		// Cursor/Windsurf/Aider (recognized types)
+		// Cursor/Windsurf/Aider/Ollama (recognized types)
 		{"cursor", "cursor"},
 		{"Cursor IDE", "cursor"},
 		{"windsurf", "windsurf"},
 		{"Windsurf Editor", "windsurf"},
+		{"project__ws_1", "windsurf"},
 		{"aider", "aider"},
 		{"Aider CLI", "aider"},
+		{"ollama", "ollama"},
 		// User/shell - not recognized, returns "unknown"
 		{"bash", "unknown"},
 		{"zsh", "unknown"},

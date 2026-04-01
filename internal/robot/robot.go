@@ -3681,6 +3681,8 @@ func detectAgentType(title string) string {
 		return "codex"
 	case containsShortForm(titleLower, "gmi"):
 		return "gemini"
+	case containsShortForm(titleLower, "ws"):
+		return "windsurf"
 	}
 
 	return "unknown"
