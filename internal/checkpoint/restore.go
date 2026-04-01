@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -135,7 +138,6 @@ func (r *Restorer) RestoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (*
 			}
 		}
 	}
-
 	// Check for existing session
 	if tmux.SessionExists(cp.SessionName) {
 		if !opts.Force {
@@ -164,6 +166,7 @@ func (r *Restorer) RestoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (*
 			result.Warnings = append(result.Warnings, warning)
 		}
 	}
+	restoreDir := effectiveRestoreDir(workDir)
 
 	if opts.DryRun {
 		// Simulate what would happen
@@ -173,17 +176,22 @@ func (r *Restorer) RestoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (*
 	}
 
 	// Create the session
-	if err := r.createSession(cp, workDir); err != nil {
+	if err := r.createSession(cp, restoreDir); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
 	}
 
 	// Create additional panes to match checkpoint layout
-	panesCreated, err := r.restoreLayout(cp, workDir)
+	panesCreated, err := r.restoreLayout(cp, restoreDir)
 	if err != nil {
 		result.Warnings = append(result.Warnings,
 			fmt.Sprintf("layout restoration incomplete: %v", err))
 	}
 	result.PanesRestored = panesCreated
+
+	if err := r.restoreAgents(cp, restoreDir); err != nil {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("agent restoration incomplete: %v", err))
+	}
 
 	// Inject context if requested
 	if opts.InjectContext {
@@ -195,16 +203,16 @@ func (r *Restorer) RestoreFromCheckpoint(cp *Checkpoint, opts RestoreOptions) (*
 		}
 	}
 
+	if err := r.restoreActivePane(cp); err != nil {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("active pane restoration failed: %v", err))
+	}
+
 	return result, nil
 }
 
 // createSession creates the initial tmux session.
 func (r *Restorer) createSession(cp *Checkpoint, workDir string) error {
-	// Default to temp dir if no workDir
-	if workDir == "" {
-		workDir = os.TempDir()
-	}
-
 	if err := tmux.CreateSession(cp.SessionName, workDir); err != nil {
 		return err
 	}
@@ -213,8 +221,9 @@ func (r *Restorer) createSession(cp *Checkpoint, workDir string) error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Set the title of the first pane if we have pane info
-	if len(cp.Session.Panes) > 0 {
-		firstPane := cp.Session.Panes[0]
+	panes := sortedCheckpointPanes(cp.Session.Panes)
+	if len(panes) > 0 {
+		firstPane := panes[0]
 		if firstPane.Title != "" {
 			panes, err := tmux.GetPanes(cp.SessionName)
 			if err == nil && len(panes) > 0 {
@@ -228,19 +237,47 @@ func (r *Restorer) createSession(cp *Checkpoint, workDir string) error {
 
 // restoreLayout creates additional panes to match the checkpoint layout.
 func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
-	if workDir == "" {
-		workDir = os.TempDir()
+	paneStates := sortedCheckpointPanes(cp.Session.Panes)
+	if len(paneStates) == 0 {
+		return 0, nil
 	}
 
-	// First pane was created with the session, so we start at 1
+	// First pane was created with the session, so we start at 1.
 	panesCreated := 1
+	lastWindowIndex := paneStates[0].WindowIndex
 
-	// Create additional panes
-	for i := 1; i < len(cp.Session.Panes); i++ {
-		paneState := cp.Session.Panes[i]
+	for i := 1; i < len(paneStates); i++ {
+		paneState := paneStates[i]
 
-		// Split to create new pane
-		paneID, err := tmux.SplitWindow(cp.SessionName, workDir)
+		var (
+			paneID string
+			err    error
+		)
+
+		if paneState.WindowIndex != lastWindowIndex {
+			paneID, err = tmux.DefaultClient.Run(
+				"new-window",
+				"-P",
+				"-F",
+				"#{pane_id}",
+				"-t",
+				cp.SessionName,
+				"-c",
+				workDir,
+			)
+			lastWindowIndex = paneState.WindowIndex
+		} else {
+			paneID, err = tmux.DefaultClient.Run(
+				"split-window",
+				"-t",
+				cp.SessionName,
+				"-c",
+				workDir,
+				"-P",
+				"-F",
+				"#{pane_id}",
+			)
+		}
 		if err != nil {
 			return panesCreated, fmt.Errorf("creating pane %d: %w", i, err)
 		}
@@ -267,15 +304,99 @@ func (r *Restorer) restoreLayout(cp *Checkpoint, workDir string) (int, error) {
 	return panesCreated, nil
 }
 
+func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
+	panes, err := tmux.GetPanes(cp.SessionName)
+	if err != nil {
+		return fmt.Errorf("getting panes: %w", err)
+	}
+
+	sortedStates := sortedCheckpointPanes(cp.Session.Panes)
+	sortedPanes := sortedTmuxPanes(panes)
+	attempted := 0
+	launched := 0
+
+	for i, paneState := range sortedStates {
+		if i >= len(sortedPanes) {
+			break
+		}
+
+		agentCmd := restorableAgentCommand(paneState)
+		if agentCmd == "" {
+			continue
+		}
+
+		attempted++
+		cmd, err := tmux.BuildPaneCommand(workDir, agentCmd)
+		if err != nil {
+			slog.Warn("checkpoint restore: failed to build pane command",
+				"session", cp.SessionName,
+				"pane_index", paneState.Index,
+				"window_index", paneState.WindowIndex,
+				"agent_type", paneState.AgentType,
+				"error", err)
+			continue
+		}
+
+		if err := tmux.SendKeysForAgent(sortedPanes[i].ID, cmd, true, tmux.AgentType(paneState.AgentType)); err != nil {
+			slog.Warn("checkpoint restore: failed to relaunch pane command",
+				"session", cp.SessionName,
+				"pane_index", paneState.Index,
+				"window_index", paneState.WindowIndex,
+				"agent_type", paneState.AgentType,
+				"command", agentCmd,
+				"error", err)
+			continue
+		}
+		launched++
+	}
+
+	if attempted > 0 && launched == 0 {
+		return fmt.Errorf("all %d agent launch attempts failed", attempted)
+	}
+	if launched != attempted {
+		return fmt.Errorf("launched %d of %d agent panes", launched, attempted)
+	}
+	return nil
+}
+
+func (r *Restorer) restoreActivePane(cp *Checkpoint) error {
+	if cp.Session.ActivePaneIndex < 0 || cp.Session.ActivePaneIndex >= len(cp.Session.Panes) {
+		return nil
+	}
+
+	panes, err := tmux.GetPanes(cp.SessionName)
+	if err != nil {
+		return fmt.Errorf("getting panes: %w", err)
+	}
+	targetPane, ok := restoredPaneForCheckpointIndex(cp, panes, cp.Session.ActivePaneIndex)
+	if !ok {
+		return nil
+	}
+	return tmux.DefaultClient.RunSilent("select-pane", "-t", targetPane.ID)
+}
+
 // applyLayout applies a tmux layout string to a session.
 func (r *Restorer) applyLayout(sessionName, layout string) error {
-	firstWin, err := tmux.GetFirstWindow(sessionName)
+	if layout == "" {
+		layout = "tiled"
+	}
+
+	output, err := tmux.DefaultClient.Run("list-windows", "-t", sessionName, "-F", "#{window_index}")
 	if err != nil {
 		return err
 	}
 
-	target := fmt.Sprintf("%s:%d", sessionName, firstWin)
-	return tmux.DefaultClient.RunSilent("select-layout", "-t", target, layout)
+	for _, win := range strings.Split(strings.TrimSpace(output), "\n") {
+		if win == "" {
+			continue
+		}
+		target := fmt.Sprintf("%s:%s", sessionName, win)
+		if err := tmux.DefaultClient.RunSilent("select-layout", "-t", target, layout); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // injectContext sends scrollback content to restored agents.
@@ -291,11 +412,10 @@ func (r *Restorer) injectContext(cp *Checkpoint, maxLines int) error {
 			continue
 		}
 
-		// Find corresponding restored pane
-		if i >= len(panes) {
+		targetPane, ok := restoredPaneForCheckpointIndex(cp, panes, i)
+		if !ok {
 			continue
 		}
-		targetPane := panes[i]
 
 		// Load scrollback content
 		content, err := r.loadPaneScrollback(cp.SessionName, cp.ID, paneState.ID)
@@ -449,6 +569,121 @@ func workingDirectoryIssue(workDir string, err error) string {
 		return fmt.Sprintf("working directory is not a directory: %s", workDir)
 	default:
 		return fmt.Sprintf("working directory inaccessible: %s (%v)", workDir, err)
+	}
+}
+
+func effectiveRestoreDir(workDir string) string {
+	if strings.TrimSpace(workDir) == "" {
+		return os.TempDir()
+	}
+	return workDir
+}
+
+func sortedCheckpointPanes(panes []PaneState) []PaneState {
+	sorted := make([]PaneState, len(panes))
+	copy(sorted, panes)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].WindowIndex != sorted[j].WindowIndex {
+			return sorted[i].WindowIndex < sorted[j].WindowIndex
+		}
+		return sorted[i].Index < sorted[j].Index
+	})
+	return sorted
+}
+
+func sortedTmuxPanes(panes []tmux.Pane) []tmux.Pane {
+	sorted := make([]tmux.Pane, len(panes))
+	copy(sorted, panes)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].WindowIndex != sorted[j].WindowIndex {
+			return sorted[i].WindowIndex < sorted[j].WindowIndex
+		}
+		return sorted[i].Index < sorted[j].Index
+	})
+	return sorted
+}
+
+func restoredPaneForCheckpointIndex(cp *Checkpoint, panes []tmux.Pane, checkpointIndex int) (tmux.Pane, bool) {
+	if checkpointIndex < 0 || checkpointIndex >= len(cp.Session.Panes) {
+		return tmux.Pane{}, false
+	}
+
+	sortedPanes := sortedTmuxPanes(panes)
+	restoredIndex := restoredPaneIndexForCheckpointIndex(cp.Session.Panes, checkpointIndex)
+	if restoredIndex < 0 || restoredIndex >= len(sortedPanes) {
+		return tmux.Pane{}, false
+	}
+	return sortedPanes[restoredIndex], true
+}
+
+func restoredPaneIndexForCheckpointIndex(checkpointPanes []PaneState, checkpointIndex int) int {
+	if checkpointIndex < 0 || checkpointIndex >= len(checkpointPanes) {
+		return -1
+	}
+
+	target := checkpointPanes[checkpointIndex]
+	sorted := sortedCheckpointPanes(checkpointPanes)
+	for i, candidate := range sorted {
+		if sameCheckpointPane(target, candidate) {
+			return i
+		}
+	}
+	return -1
+}
+
+func sameCheckpointPane(a, b PaneState) bool {
+	if a.ID != "" && b.ID != "" {
+		return a.ID == b.ID
+	}
+	return a.WindowIndex == b.WindowIndex &&
+		a.Index == b.Index &&
+		a.Title == b.Title &&
+		a.AgentType == b.AgentType
+}
+
+func restorableAgentCommand(pane PaneState) string {
+	agentType := agent.AgentType(pane.AgentType).Canonical()
+	if !agentType.IsValid() || agentType == agent.AgentTypeUser || agentType == agent.AgentTypeUnknown {
+		return ""
+	}
+
+	command := strings.TrimSpace(pane.Command)
+	if command != "" && !looksLikeShellCommand(command) {
+		return command
+	}
+
+	switch agentType {
+	case agent.AgentTypeClaudeCode:
+		return "claude"
+	case agent.AgentTypeCodex:
+		return "codex"
+	case agent.AgentTypeGemini:
+		return "gemini"
+	case agent.AgentTypeCursor:
+		return "cursor"
+	case agent.AgentTypeWindsurf:
+		return "windsurf"
+	case agent.AgentTypeAider:
+		return "aider"
+	case agent.AgentTypeOllama:
+		return "ollama"
+	default:
+		return ""
+	}
+}
+
+func looksLikeShellCommand(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+
+	name := strings.ToLower(filepath.Base(fields[0]))
+	switch name {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh":
+		return true
+	default:
+		return false
 	}
 }
 

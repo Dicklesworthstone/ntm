@@ -5,9 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // =============================================================================
@@ -225,6 +229,73 @@ func TestCapturer_GetByIndex(t *testing.T) {
 				t.Errorf("GetByIndex(%d).Name = %q, want %q", tt.index, cp.Name, tt.wantName)
 			}
 		})
+	}
+}
+
+func TestCapturer_captureSessionState_UsesSessionSelectedPaneAcrossWindows(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	storage := NewStorageWithDir(t.TempDir())
+	capturer := NewCapturerWithStorage(storage)
+	sessionName := "cpcap-" + time.Now().Format("150405000000")
+	workDir := t.TempDir()
+
+	if err := tmux.CreateSession(sessionName, workDir); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	t.Cleanup(func() {
+		if tmux.SessionExists(sessionName) {
+			_ = tmux.KillSession(sessionName)
+		}
+	})
+
+	if err := tmux.DefaultClient.RunSilent("new-window", "-d", "-t", sessionName, "-c", workDir); err != nil {
+		t.Fatalf("new-window failed: %v", err)
+	}
+
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes failed: %v", err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("len(panes) = %d, want 2", len(panes))
+	}
+	sort.Slice(panes, func(i, j int) bool {
+		if panes[i].WindowIndex != panes[j].WindowIndex {
+			return panes[i].WindowIndex < panes[j].WindowIndex
+		}
+		return panes[i].Index < panes[j].Index
+	})
+
+	if err := tmux.DefaultClient.RunSilent("select-pane", "-t", panes[0].ID); err != nil {
+		t.Fatalf("select-pane failed: %v", err)
+	}
+
+	state, err := capturer.captureSessionState(sessionName)
+	if err != nil {
+		t.Fatalf("captureSessionState failed: %v", err)
+	}
+	if len(state.Panes) != 2 {
+		t.Fatalf("len(state.Panes) = %d, want 2", len(state.Panes))
+	}
+
+	selectedPaneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_id}")
+	if err != nil {
+		t.Fatalf("display-message pane_id failed: %v", err)
+	}
+
+	expectedIndex := -1
+	for i := range state.Panes {
+		if state.Panes[i].ID == selectedPaneID {
+			expectedIndex = i
+			break
+		}
+	}
+	if expectedIndex < 0 {
+		t.Fatalf("selected pane %q not found in captured panes %#v", selectedPaneID, state.Panes)
+	}
+	if state.ActivePaneIndex != expectedIndex {
+		t.Fatalf("ActivePaneIndex = %d, want %d for selected pane %q", state.ActivePaneIndex, expectedIndex, selectedPaneID)
 	}
 }
 

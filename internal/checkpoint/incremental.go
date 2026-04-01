@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,13 +66,17 @@ type PaneChange struct {
 	// Compressed is the compressed diff content
 	Compressed []byte `json:"-"`
 	// AgentType may have changed
-	AgentType string `json:"agent_type,omitempty"`
+	AgentType *string `json:"agent_type,omitempty"`
 	// Title may have changed
-	Title string `json:"title,omitempty"`
+	Title *string `json:"title,omitempty"`
+	// Command may have changed
+	Command *string `json:"command,omitempty"`
 	// Removed indicates pane was removed
 	Removed bool `json:"removed,omitempty"`
 	// Added indicates pane is new (not in base)
 	Added bool `json:"added,omitempty"`
+	// Pane captures added-pane metadata needed to reconstruct the pane on replay
+	Pane *PaneState `json:"pane,omitempty"`
 }
 
 // GitChange represents changes to git state since the base checkpoint.
@@ -97,11 +102,11 @@ type GitChange struct {
 // SessionChange represents changes to session layout.
 type SessionChange struct {
 	// Layout changed
-	Layout string `json:"layout,omitempty"`
+	Layout *string `json:"layout,omitempty"`
 	// ActivePaneIndex changed
-	ActivePaneIndex int `json:"active_pane_index,omitempty"`
+	ActivePaneIndex *int `json:"active_pane_index,omitempty"`
 	// PaneCount changed
-	PaneCount int `json:"pane_count,omitempty"`
+	PaneCount *int `json:"pane_count,omitempty"`
 }
 
 // IncrementalCreator creates incremental checkpoints from a base.
@@ -195,17 +200,42 @@ func (ic *IncrementalCreator) computePaneChanges(sessionName string, base, curre
 			// Pane exists in both - check for changes
 			change := PaneChange{}
 			hasChanges := false
+			metadataChanged := false
 
 			// Check agent type change
 			if basePane.AgentType != currentPane.AgentType {
-				change.AgentType = currentPane.AgentType
+				agentType := currentPane.AgentType
+				change.AgentType = &agentType
 				hasChanges = true
+				metadataChanged = true
 			}
 
 			// Check title change
 			if basePane.Title != currentPane.Title {
-				change.Title = currentPane.Title
+				title := currentPane.Title
+				change.Title = &title
 				hasChanges = true
+				metadataChanged = true
+			}
+
+			// Check command change
+			if basePane.Command != currentPane.Command {
+				command := currentPane.Command
+				change.Command = &command
+				hasChanges = true
+				metadataChanged = true
+			}
+
+			if basePane.Index != currentPane.Index ||
+				basePane.WindowIndex != currentPane.WindowIndex ||
+				basePane.Width != currentPane.Width ||
+				basePane.Height != currentPane.Height {
+				metadataChanged = true
+				hasChanges = true
+			}
+
+			if metadataChanged {
+				change.Pane = paneMetadataSnapshot(currentPane)
 			}
 
 			// Compute scrollback diff
@@ -239,6 +269,7 @@ func (ic *IncrementalCreator) computePaneChanges(sessionName string, base, curre
 				Added:       true,
 				NewLines:    countLines(currentScrollback),
 				DiffContent: currentScrollback,
+				Pane:        paneMetadataSnapshot(currentPanes[paneID]),
 			}
 		}
 	}
@@ -306,17 +337,20 @@ func (ic *IncrementalCreator) computeSessionChange(base, current SessionState) *
 	hasChanges := false
 
 	if base.Layout != current.Layout {
-		change.Layout = current.Layout
+		layout := current.Layout
+		change.Layout = &layout
 		hasChanges = true
 	}
 
 	if base.ActivePaneIndex != current.ActivePaneIndex {
-		change.ActivePaneIndex = current.ActivePaneIndex
+		activePaneIndex := current.ActivePaneIndex
+		change.ActivePaneIndex = &activePaneIndex
 		hasChanges = true
 	}
 
 	if len(base.Panes) != len(current.Panes) {
-		change.PaneCount = len(current.Panes)
+		paneCount := len(current.Panes)
+		change.PaneCount = &paneCount
 		hasChanges = true
 	}
 
@@ -449,24 +483,24 @@ func (ir *IncrementalResolver) Resolve(sessionName, incrementalID string) (*Chec
 
 	// Create a deep copy of base and apply changes.
 	// Shallow copy shares the Panes slice — deep copy to avoid corrupting the original.
-	resolved := *base
-	if base.Session.Panes != nil {
-		resolved.Session.Panes = make([]PaneState, len(base.Session.Panes))
-		copy(resolved.Session.Panes, base.Session.Panes)
-	}
+	resolved := cloneCheckpointForMutation(base)
 	resolved.ID = fmt.Sprintf("resolved-%s", incrementalID)
 	resolved.CreatedAt = inc.CreatedAt
 	resolved.Description = fmt.Sprintf("Resolved from incremental %s (base: %s)", incrementalID, inc.BaseCheckpointID)
 
+	var desiredActivePaneIndex *int
+
 	// Apply session changes
 	if inc.Changes.SessionChange != nil {
-		if inc.Changes.SessionChange.Layout != "" {
-			resolved.Session.Layout = inc.Changes.SessionChange.Layout
+		if inc.Changes.SessionChange.Layout != nil {
+			resolved.Session.Layout = *inc.Changes.SessionChange.Layout
 		}
-		if inc.Changes.SessionChange.ActivePaneIndex != 0 {
-			resolved.Session.ActivePaneIndex = inc.Changes.SessionChange.ActivePaneIndex
+		if inc.Changes.SessionChange.ActivePaneIndex != nil {
+			desiredActivePaneIndex = inc.Changes.SessionChange.ActivePaneIndex
 		}
 	}
+
+	activePaneID := sessionActivePaneID(resolved.Session)
 
 	// Apply pane changes
 	for paneID, change := range inc.Changes.PaneChanges {
@@ -477,12 +511,7 @@ func (ir *IncrementalResolver) Resolve(sessionName, incrementalID string) (*Chec
 		}
 
 		if change.Added {
-			// Add new pane (basic info only for now)
-			// Full scrollback would need to be loaded from the diff file
-			newPane := PaneState{
-				ID:              paneID,
-				ScrollbackLines: change.NewLines,
-			}
+			newPane := paneStateFromAddedChange(paneID, change)
 			resolved.Session.Panes = append(resolved.Session.Panes, newPane)
 			continue
 		}
@@ -490,11 +519,17 @@ func (ir *IncrementalResolver) Resolve(sessionName, incrementalID string) (*Chec
 		// Update existing pane
 		for i := range resolved.Session.Panes {
 			if resolved.Session.Panes[i].ID == paneID {
-				if change.AgentType != "" {
-					resolved.Session.Panes[i].AgentType = change.AgentType
+				if change.AgentType != nil {
+					resolved.Session.Panes[i].AgentType = *change.AgentType
 				}
-				if change.Title != "" {
-					resolved.Session.Panes[i].Title = change.Title
+				if change.Title != nil {
+					resolved.Session.Panes[i].Title = *change.Title
+				}
+				if change.Command != nil {
+					resolved.Session.Panes[i].Command = *change.Command
+				}
+				if change.Pane != nil {
+					applyPaneMetadata(&resolved.Session.Panes[i], *change.Pane)
 				}
 				if change.NewLines > 0 {
 					resolved.Session.Panes[i].ScrollbackLines += change.NewLines
@@ -503,6 +538,9 @@ func (ir *IncrementalResolver) Resolve(sessionName, incrementalID string) (*Chec
 			}
 		}
 	}
+
+	sortCheckpointPanes(resolved.Session.Panes)
+	resolved.Session.ActivePaneIndex = resolvedActivePaneIndex(resolved.Session.Panes, activePaneID, desiredActivePaneIndex)
 
 	// Apply git changes
 	if inc.Changes.GitChange != nil {
@@ -636,19 +674,23 @@ func (ir *IncrementalResolver) ChainResolve(sessionName, incrementalID string) (
 
 // applyIncremental applies an incremental's changes to a checkpoint.
 func (ir *IncrementalResolver) applyIncremental(base *Checkpoint, inc *IncrementalCheckpoint) (*Checkpoint, error) {
-	resolved := *base
+	resolved := cloneCheckpointForMutation(base)
 	resolved.CreatedAt = inc.CreatedAt
 	resolved.Description = fmt.Sprintf("Applied incremental %s", inc.ID)
 
+	var desiredActivePaneIndex *int
+
 	// Apply session changes
 	if inc.Changes.SessionChange != nil {
-		if inc.Changes.SessionChange.Layout != "" {
-			resolved.Session.Layout = inc.Changes.SessionChange.Layout
+		if inc.Changes.SessionChange.Layout != nil {
+			resolved.Session.Layout = *inc.Changes.SessionChange.Layout
 		}
-		if inc.Changes.SessionChange.ActivePaneIndex != 0 {
-			resolved.Session.ActivePaneIndex = inc.Changes.SessionChange.ActivePaneIndex
+		if inc.Changes.SessionChange.ActivePaneIndex != nil {
+			desiredActivePaneIndex = inc.Changes.SessionChange.ActivePaneIndex
 		}
 	}
+
+	activePaneID := sessionActivePaneID(resolved.Session)
 
 	// Apply pane changes
 	for paneID, change := range inc.Changes.PaneChanges {
@@ -658,21 +700,24 @@ func (ir *IncrementalResolver) applyIncremental(base *Checkpoint, inc *Increment
 		}
 
 		if change.Added {
-			newPane := PaneState{
-				ID:              paneID,
-				ScrollbackLines: change.NewLines,
-			}
+			newPane := paneStateFromAddedChange(paneID, change)
 			resolved.Session.Panes = append(resolved.Session.Panes, newPane)
 			continue
 		}
 
 		for i := range resolved.Session.Panes {
 			if resolved.Session.Panes[i].ID == paneID {
-				if change.AgentType != "" {
-					resolved.Session.Panes[i].AgentType = change.AgentType
+				if change.AgentType != nil {
+					resolved.Session.Panes[i].AgentType = *change.AgentType
 				}
-				if change.Title != "" {
-					resolved.Session.Panes[i].Title = change.Title
+				if change.Title != nil {
+					resolved.Session.Panes[i].Title = *change.Title
+				}
+				if change.Command != nil {
+					resolved.Session.Panes[i].Command = *change.Command
+				}
+				if change.Pane != nil {
+					applyPaneMetadata(&resolved.Session.Panes[i], *change.Pane)
 				}
 				if change.NewLines > 0 {
 					resolved.Session.Panes[i].ScrollbackLines += change.NewLines
@@ -681,6 +726,9 @@ func (ir *IncrementalResolver) applyIncremental(base *Checkpoint, inc *Increment
 			}
 		}
 	}
+
+	sortCheckpointPanes(resolved.Session.Panes)
+	resolved.Session.ActivePaneIndex = resolvedActivePaneIndex(resolved.Session.Panes, activePaneID, desiredActivePaneIndex)
 
 	// Apply git changes
 	if inc.Changes.GitChange != nil {
@@ -697,6 +745,102 @@ func (ir *IncrementalResolver) applyIncremental(base *Checkpoint, inc *Increment
 	resolved.PaneCount = len(resolved.Session.Panes)
 
 	return &resolved, nil
+}
+
+func cloneCheckpointForMutation(base *Checkpoint) Checkpoint {
+	cloned := *base
+	if base.Session.Panes != nil {
+		cloned.Session.Panes = make([]PaneState, len(base.Session.Panes))
+		copy(cloned.Session.Panes, base.Session.Panes)
+	}
+	normalizeSessionPaneOrder(&cloned.Session)
+	return cloned
+}
+
+func paneStateFromAddedChange(paneID string, change PaneChange) PaneState {
+	newPane := PaneState{
+		ID:              paneID,
+		ScrollbackLines: change.NewLines,
+	}
+	if change.Pane != nil {
+		newPane = *change.Pane
+	}
+	if newPane.ID == "" {
+		newPane.ID = paneID
+	}
+	newPane.ScrollbackFile = ""
+	if change.NewLines != 0 || newPane.ScrollbackLines == 0 {
+		newPane.ScrollbackLines = change.NewLines
+	}
+	return newPane
+}
+
+func paneMetadataSnapshot(pane PaneState) *PaneState {
+	snapshot := pane
+	// Resolved incrementals do not materialize scrollback files from temporary checkpoints.
+	snapshot.ScrollbackFile = ""
+	return &snapshot
+}
+
+func applyPaneMetadata(target *PaneState, source PaneState) {
+	target.Index = source.Index
+	target.WindowIndex = source.WindowIndex
+	target.Title = source.Title
+	target.AgentType = source.AgentType
+	target.Command = source.Command
+	target.Width = source.Width
+	target.Height = source.Height
+}
+
+func normalizeSessionPaneOrder(session *SessionState) {
+	if session == nil {
+		return
+	}
+	activePaneID := sessionActivePaneID(*session)
+	sortCheckpointPanes(session.Panes)
+	session.ActivePaneIndex = resolvedActivePaneIndex(session.Panes, activePaneID, nil)
+}
+
+func sortCheckpointPanes(panes []PaneState) {
+	sort.SliceStable(panes, func(i, j int) bool {
+		if panes[i].WindowIndex != panes[j].WindowIndex {
+			return panes[i].WindowIndex < panes[j].WindowIndex
+		}
+		if panes[i].Index != panes[j].Index {
+			return panes[i].Index < panes[j].Index
+		}
+		return panes[i].ID < panes[j].ID
+	})
+}
+
+func sessionActivePaneID(session SessionState) string {
+	if session.ActivePaneIndex < 0 || session.ActivePaneIndex >= len(session.Panes) {
+		return ""
+	}
+	return session.Panes[session.ActivePaneIndex].ID
+}
+
+func resolvedActivePaneIndex(panes []PaneState, activePaneID string, desired *int) int {
+	if desired != nil {
+		if *desired < 0 || *desired >= len(panes) {
+			if len(panes) == 0 {
+				return 0
+			}
+			return 0
+		}
+		return *desired
+	}
+	if activePaneID != "" {
+		for i := range panes {
+			if panes[i].ID == activePaneID {
+				return i
+			}
+		}
+	}
+	if len(panes) == 0 {
+		return 0
+	}
+	return 0
 }
 
 // StorageSavings calculates the approximate storage savings of an incremental checkpoint.

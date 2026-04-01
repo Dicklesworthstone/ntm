@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 func TestRestoreOptions_Defaults(t *testing.T) {
@@ -781,6 +784,214 @@ func TestRestorer_checkGitState_CommitMismatch(t *testing.T) {
 	warning := r.checkGitState(cp, repoDir)
 	if !strings.Contains(warning, "git commit mismatch") {
 		t.Fatalf("expected commit mismatch warning, got %q", warning)
+	}
+}
+
+func TestFromTmuxPane_PreservesWindowIndex(t *testing.T) {
+	state := FromTmuxPane(tmux.Pane{
+		ID:          "%9",
+		Index:       2,
+		WindowIndex: 3,
+		Title:       "demo__cc_1",
+		Type:        tmux.AgentClaude,
+		Command:     "claude",
+		Width:       120,
+		Height:      40,
+	})
+
+	if state.WindowIndex != 3 {
+		t.Fatalf("WindowIndex = %d, want 3", state.WindowIndex)
+	}
+}
+
+func TestRestorableAgentCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		pane PaneState
+		want string
+	}{
+		{
+			name: "custom non-shell command is preserved",
+			pane: PaneState{AgentType: "cc", Command: "/usr/local/bin/custom-claude-wrapper --fast"},
+			want: "/usr/local/bin/custom-claude-wrapper --fast",
+		},
+		{
+			name: "shell command falls back to default agent binary",
+			pane: PaneState{AgentType: "codex", Command: "zsh"},
+			want: "codex",
+		},
+		{
+			name: "missing command falls back to default agent binary",
+			pane: PaneState{AgentType: "google-gemini"},
+			want: "gemini",
+		},
+		{
+			name: "user panes are skipped",
+			pane: PaneState{AgentType: "user", Command: "bash"},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := restorableAgentCommand(tt.pane); got != tt.want {
+				t.Fatalf("restorableAgentCommand(%+v) = %q, want %q", tt.pane, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSortedCheckpointPanes(t *testing.T) {
+	panes := []PaneState{
+		{WindowIndex: 2, Index: 0, Title: "w2p0"},
+		{WindowIndex: 0, Index: 1, Title: "w0p1"},
+		{WindowIndex: 0, Index: 0, Title: "w0p0"},
+		{WindowIndex: 1, Index: 0, Title: "w1p0"},
+	}
+
+	sorted := sortedCheckpointPanes(panes)
+	gotTitles := []string{sorted[0].Title, sorted[1].Title, sorted[2].Title, sorted[3].Title}
+	wantTitles := []string{"w0p0", "w0p1", "w1p0", "w2p0"}
+	for i := range wantTitles {
+		if gotTitles[i] != wantTitles[i] {
+			t.Fatalf("sorted title at %d = %q, want %q", i, gotTitles[i], wantTitles[i])
+		}
+	}
+}
+
+func TestRestoredPaneIndexForCheckpointIndex_UnsortedCheckpointOrder(t *testing.T) {
+	panes := []PaneState{
+		{ID: "%b", WindowIndex: 1, Index: 0, Title: "w1p0"},
+		{ID: "%a", WindowIndex: 0, Index: 0, Title: "w0p0"},
+		{ID: "%c", WindowIndex: 1, Index: 1, Title: "w1p1"},
+	}
+
+	tests := []struct {
+		checkpointIndex int
+		want            int
+	}{
+		{checkpointIndex: 0, want: 1},
+		{checkpointIndex: 1, want: 0},
+		{checkpointIndex: 2, want: 2},
+	}
+
+	for _, tt := range tests {
+		if got := restoredPaneIndexForCheckpointIndex(panes, tt.checkpointIndex); got != tt.want {
+			t.Fatalf("restoredPaneIndexForCheckpointIndex(%d) = %d, want %d", tt.checkpointIndex, got, tt.want)
+		}
+	}
+}
+
+func TestRestorer_RestoreFromCheckpoint_RelaunchesCommandsAcrossWindows(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	workDir := t.TempDir()
+	r := NewRestorerWithStorage(NewStorageWithDir(t.TempDir()))
+	sessionName := "cprestore-" + time.Now().Format("150405000000")
+
+	cp := &Checkpoint{
+		ID:          "test-checkpoint",
+		SessionName: sessionName,
+		WorkingDir:  workDir,
+		Session: SessionState{
+			Panes: []PaneState{
+				{
+					Index:       0,
+					WindowIndex: 1,
+					Title:       sessionName + "__cursor_1",
+					AgentType:   "cursor",
+					Command:     "sleep 30",
+					ID:          "%old-1",
+				},
+				{
+					Index:       0,
+					WindowIndex: 0,
+					Title:       sessionName + "__cc_1",
+					AgentType:   "cc",
+					Command:     "sleep 30",
+					ID:          "%old-0",
+				},
+				{
+					Index:       1,
+					WindowIndex: 1,
+					Title:       sessionName + "__cursor_2",
+					AgentType:   "cursor",
+					Command:     "sleep 30",
+					ID:          "%old-2",
+				},
+			},
+			ActivePaneIndex: 0,
+		},
+	}
+
+	t.Cleanup(func() {
+		if tmux.SessionExists(sessionName) {
+			_ = tmux.KillSession(sessionName)
+		}
+	})
+
+	result, err := r.RestoreFromCheckpoint(cp, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("RestoreFromCheckpoint failed: %v", err)
+	}
+	if result.PanesRestored != 3 {
+		t.Fatalf("PanesRestored = %d, want 3 (warnings=%v)", result.PanesRestored, result.Warnings)
+	}
+
+	var sorted []tmux.Pane
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		panes, err := tmux.GetPanes(sessionName)
+		if err != nil {
+			t.Fatalf("GetPanes failed: %v", err)
+		}
+		if len(panes) != 3 {
+			t.Fatalf("len(panes) = %d, want 3", len(panes))
+		}
+
+		sorted = sortedTmuxPanes(panes)
+		if sorted[0].Command == "sleep" && sorted[1].Command == "sleep" && sorted[2].Command == "sleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"timed out waiting for restored commands; commands=[%q %q %q] active=[%v %v %v]",
+				sorted[0].Command,
+				sorted[1].Command,
+				sorted[2].Command,
+				sorted[0].Active,
+				sorted[1].Active,
+				sorted[2].Active,
+			)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if sorted[0].WindowIndex == sorted[1].WindowIndex {
+		t.Fatalf("window indexes = [%d %d %d], want first pane in its own window", sorted[0].WindowIndex, sorted[1].WindowIndex, sorted[2].WindowIndex)
+	}
+	if sorted[1].WindowIndex != sorted[2].WindowIndex {
+		t.Fatalf("window indexes = [%d %d %d], want panes 2 and 3 in the same window", sorted[0].WindowIndex, sorted[1].WindowIndex, sorted[2].WindowIndex)
+	}
+	if sorted[1].WindowIndex <= sorted[0].WindowIndex {
+		t.Fatalf("window indexes = [%d %d %d], want ascending order", sorted[0].WindowIndex, sorted[1].WindowIndex, sorted[2].WindowIndex)
+	}
+	if sorted[0].Title != sessionName+"__cc_1" {
+		t.Fatalf("first pane title = %q, want %q", sorted[0].Title, sessionName+"__cc_1")
+	}
+	if sorted[1].Title != sessionName+"__cursor_1" {
+		t.Fatalf("second pane title = %q, want %q", sorted[1].Title, sessionName+"__cursor_1")
+	}
+	if sorted[2].Title != sessionName+"__cursor_2" {
+		t.Fatalf("third pane title = %q, want %q", sorted[2].Title, sessionName+"__cursor_2")
+	}
+
+	activePaneID, err := tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_id}")
+	if err != nil {
+		t.Fatalf("display-message active pane failed: %v", err)
+	}
+	if activePaneID != sorted[1].ID {
+		t.Fatalf("active pane id = %q, want %q", activePaneID, sorted[1].ID)
 	}
 }
 

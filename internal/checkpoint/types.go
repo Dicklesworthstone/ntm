@@ -90,6 +90,8 @@ type SessionState struct {
 type PaneState struct {
 	// Index is the pane index in the session
 	Index int `json:"index"`
+	// WindowIndex is the window index containing this pane
+	WindowIndex int `json:"window_index"`
 	// ID is the tmux pane ID (e.g., "%0")
 	ID string `json:"id"`
 	// Title is the pane title
@@ -144,13 +146,14 @@ func (c *Checkpoint) HasGitPatch() bool {
 // FromTmuxPane converts a tmux.Pane to PaneState.
 func FromTmuxPane(p tmux.Pane) PaneState {
 	return PaneState{
-		Index:     p.Index,
-		ID:        p.ID,
-		Title:     p.Title,
-		AgentType: string(p.Type),
-		Command:   p.Command,
-		Width:     p.Width,
-		Height:    p.Height,
+		Index:       p.Index,
+		WindowIndex: p.WindowIndex,
+		ID:          p.ID,
+		Title:       p.Title,
+		AgentType:   string(p.Type),
+		Command:     p.Command,
+		Width:       p.Width,
+		Height:      p.Height,
 	}
 }
 

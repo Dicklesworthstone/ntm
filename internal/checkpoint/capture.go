@@ -157,6 +157,18 @@ func (c *Capturer) captureSessionState(sessionName string) (SessionState, error)
 		paneStates = append(paneStates, state)
 	}
 
+	activePaneID, err := getSessionActivePaneID(sessionName)
+	if err != nil {
+		slog.Warn("failed to capture selected pane id, falling back to pane_active", "session", sessionName, "error", err)
+	} else {
+		for i := range paneStates {
+			if paneStates[i].ID == activePaneID {
+				activeIndex = i
+				break
+			}
+		}
+	}
+
 	// Get layout string
 	layout, err := getSessionLayout(sessionName)
 	if err != nil {
@@ -245,6 +257,16 @@ func getSessionDir(sessionName string) (string, error) {
 // getSessionLayout gets the tmux layout string for a session.
 func getSessionLayout(sessionName string) (string, error) {
 	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", sessionName, "#{window_layout}")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+func getSessionActivePaneID(sessionName string) (string, error) {
+	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", sessionName, "#{pane_id}")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
