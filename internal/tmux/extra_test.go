@@ -274,6 +274,36 @@ func TestStripTags(t *testing.T) {
 	}
 }
 
+func TestPaneTitleSessionAndSuffix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		title       string
+		wantSession string
+		wantSuffix  string
+	}{
+		{"project__cc_1", "project", "cc_1"},
+		{"my__project__cursor_2", "my__project", "cursor_2"},
+		{"my__project__cod_3_opus[frontend]", "my__project", "cod_3_opus[frontend]"},
+		{"__cc_1", "", "cc_1"},
+		{"plain_title", "", ""},
+		{"", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			t.Parallel()
+
+			if got := PaneTitleSession(tt.title); got != tt.wantSession {
+				t.Fatalf("PaneTitleSession(%q) = %q, want %q", tt.title, got, tt.wantSession)
+			}
+			if got := PaneTitleSuffix(tt.title); got != tt.wantSuffix {
+				t.Fatalf("PaneTitleSuffix(%q) = %q, want %q", tt.title, got, tt.wantSuffix)
+			}
+		})
+	}
+}
+
 func TestParseTags(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

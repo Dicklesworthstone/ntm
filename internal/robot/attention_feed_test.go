@@ -66,6 +66,14 @@ func digestTestEvent(cursor int64, category EventCategory, eventType EventType, 
 	}
 }
 
+func TestPtAttentionSessionUsesFinalSeparator(t *testing.T) {
+	t.Parallel()
+
+	if got := ptAttentionSession("", "my__project__cc_1"); got != "my__project" {
+		t.Fatalf("ptAttentionSession() = %q, want %q", got, "my__project")
+	}
+}
+
 // =============================================================================
 // Cursor Allocator Tests
 // =============================================================================

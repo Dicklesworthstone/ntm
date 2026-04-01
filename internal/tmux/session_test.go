@@ -1324,6 +1324,30 @@ func TestFormatPaneName(t *testing.T) {
 			variant:   "",
 			want:      "proj__user_0",
 		},
+		{
+			name:      "claude alias canonicalized",
+			session:   "proj",
+			agentType: "claude",
+			index:     2,
+			variant:   "",
+			want:      "proj__cc_2",
+		},
+		{
+			name:      "codex alias canonicalized",
+			session:   "proj",
+			agentType: "openai-codex",
+			index:     3,
+			variant:   "gpt5",
+			want:      "proj__cod_3_gpt5",
+		},
+		{
+			name:      "unknown plugin type preserved",
+			session:   "proj",
+			agentType: "custom-plugin",
+			index:     1,
+			variant:   "",
+			want:      "proj__custom-plugin_1",
+		},
 	}
 
 	for _, tt := range tests {

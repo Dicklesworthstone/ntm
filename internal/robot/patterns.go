@@ -199,6 +199,8 @@ func (lib *PatternLibrary) Match(content string, agentType string) []PatternMatc
 	lib.mu.RLock()
 	defer lib.mu.RUnlock()
 
+	agentType = normalizeAgentType(agentType)
+
 	var matches []PatternMatch
 
 	for _, p := range lib.Patterns {
@@ -240,6 +242,8 @@ func (lib *PatternLibrary) MatchFirst(content string, agentType string) *Pattern
 func (lib *PatternLibrary) MatchByCategory(content string, agentType string, category PatternCategory) []PatternMatch {
 	lib.mu.RLock()
 	defer lib.mu.RUnlock()
+
+	agentType = normalizeAgentType(agentType)
 
 	var matches []PatternMatch
 
@@ -357,6 +361,8 @@ func (lib *PatternLibrary) GetPatternsByCategory(category PatternCategory) []Pat
 func (lib *PatternLibrary) GetPatternsByAgent(agentType string) []Pattern {
 	lib.mu.RLock()
 	defer lib.mu.RUnlock()
+
+	agentType = normalizeAgentType(agentType)
 
 	var result []Pattern
 	for _, p := range lib.Patterns {

@@ -4746,8 +4746,8 @@ func timelineAgentID(pane tmux.Pane, fallbackType, fallbackID string) string {
 	}
 
 	if pane.Title != "" {
-		if parts := strings.SplitN(pane.Title, "__", 2); len(parts) == 2 && parts[1] != "" {
-			return parts[1]
+		if suffix := tmux.PaneTitleSuffix(pane.Title); suffix != "" {
+			return suffix
 		}
 		return pane.Title
 	}

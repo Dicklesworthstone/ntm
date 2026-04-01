@@ -67,6 +67,15 @@ func maxRenderedLineWidth(s string) int {
 	return maxWidth
 }
 
+func TestTimelineAgentIDUsesFinalSeparator(t *testing.T) {
+	t.Parallel()
+
+	pane := tmux.Pane{Title: "my__project__cc_2"}
+	if got := timelineAgentID(pane, "", ""); got != "cc_2" {
+		t.Fatalf("timelineAgentID() = %q, want %q", got, "cc_2")
+	}
+}
+
 func renderedHeight(s string) int {
 	plain := strings.TrimRight(status.StripANSI(s), "\n")
 	if plain == "" {

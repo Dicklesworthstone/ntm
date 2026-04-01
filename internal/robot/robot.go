@@ -3145,14 +3145,23 @@ func agentTypeFromProgram(program string) string {
 }
 
 func normalizedProgramType(program string) string {
-	p := strings.ToLower(program)
-	switch {
-	case strings.Contains(p, "claude"):
+	switch agentTypeFromProgram(program) {
+	case "cc":
 		return "claude"
-	case strings.Contains(p, "codex"):
+	case "cod":
 		return "codex"
-	case strings.Contains(p, "gemini"):
+	case "gmi":
 		return "gemini"
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "aider":
+		return "aider"
+	case "ollama":
+		return "ollama"
+	case "user":
+		return "user"
 	default:
 		return "unknown"
 	}
@@ -8494,17 +8503,22 @@ func buildCorrelationGraph() *GraphCorrelation {
 		if err != nil {
 			corr.Errors = append(corr.Errors, fmt.Sprintf("tmux list_sessions: %v", err))
 		} else {
-			agentsByType := groupAgentsByType(agents)
 			for _, sess := range sessions {
 				panes, err := tmux.GetPanes(sess.Name)
 				if err != nil {
 					continue
 				}
+				mapping := resolveAgentsForSession(panes, agents)
+				if len(mapping) == 0 {
+					continue
+				}
 				paneInfos := parseNTMPanes(panes)
-				for _, paneType := range []string{"cc", "cod", "gmi"} {
-					mapping := assignAgentsToPanes(paneInfos[paneType], agentsByType[paneType])
-					for _, pane := range paneInfos[paneType] {
-						agentName := mapping[pane.Label]
+				for paneType, infos := range paneInfos {
+					for _, pane := range infos {
+						agentName := mapping[pane.Key]
+						if agentName == "" {
+							agentName = mapping[pane.Label]
+						}
 						if agentName == "" {
 							continue
 						}

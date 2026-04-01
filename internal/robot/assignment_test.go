@@ -78,3 +78,54 @@ func TestResolveAgentsForSessionUsesPaneIDForCustomTitles(t *testing.T) {
 		t.Fatalf("mapping[%%2] = %q, want %q", mapping["%2"], "GreenStone")
 	}
 }
+
+func TestResolveAgentsForSessionSupportsCursorPanes(t *testing.T) {
+	now := time.Now()
+	agents := []agentmail.Agent{
+		{
+			Name:        "SilverField",
+			Program:     "cursor",
+			InceptionTS: agentmail.FlexTime{Time: now.Add(-2 * time.Hour)},
+		},
+		{
+			Name:        "AmberRiver",
+			Program:     "cursor",
+			InceptionTS: agentmail.FlexTime{Time: now.Add(-1 * time.Hour)},
+		},
+	}
+
+	panes := []tmux.Pane{
+		{ID: "%7", Index: 7, NTMIndex: 1, Type: tmux.AgentCursor, Title: "proj__cursor_1"},
+		{ID: "%8", Index: 8, NTMIndex: 2, Type: tmux.AgentCursor, Title: "proj__cursor_2"},
+	}
+
+	mapping := resolveAgentsForSession(panes, agents)
+	if len(mapping) != 2 {
+		t.Fatalf("mapping len = %d, want 2 (%v)", len(mapping), mapping)
+	}
+	if mapping["%7"] != "SilverField" {
+		t.Fatalf("mapping[%%7] = %q, want %q", mapping["%7"], "SilverField")
+	}
+	if mapping["%8"] != "AmberRiver" {
+		t.Fatalf("mapping[%%8] = %q, want %q", mapping["%8"], "AmberRiver")
+	}
+}
+
+func TestNormalizedProgramTypeSupportsModernAgents(t *testing.T) {
+	tests := []struct {
+		program string
+		want    string
+	}{
+		{program: "cursor", want: "cursor"},
+		{program: "windsurf", want: "windsurf"},
+		{program: "aider", want: "aider"},
+		{program: "ollama", want: "ollama"},
+		{program: "mystery-cli", want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		if got := normalizedProgramType(tt.program); got != tt.want {
+			t.Fatalf("normalizedProgramType(%q) = %q, want %q", tt.program, got, tt.want)
+		}
+	}
+}

@@ -350,6 +350,7 @@ func TestDeriveAgentTypeFromID(t *testing.T) {
 		{"myproject__cod_2", "codex"},
 		{"myproject__gmi_3", "gemini"},
 		{"myproject__cc_1_opus", "claude"},
+		{"my__project__cursor_4", "cursor"},
 		{"invalid", "unknown"},
 		{"", "unknown"},
 	}

@@ -993,3 +993,46 @@ func TestPatternLibraryGetPatternsByAgentEmpty(t *testing.T) {
 		t.Error("should include wildcard patterns for unknown agent")
 	}
 }
+
+func TestMatchFirstPattern_NormalizesAgentAliases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		agentType   string
+		content     string
+		wantPattern string
+	}{
+		{name: "claude short alias", agentType: "cc", content: "Welcome back", wantPattern: "claude_welcome"},
+		{name: "claude long alias", agentType: "claude_code", content: "Claude Code v1.2.3", wantPattern: "claude_code_version"},
+		{name: "codex short alias", agentType: "cod", content: "12% context left", wantPattern: "codex_context_left"},
+		{name: "codex provider alias", agentType: "openai-codex", content: "12% context left", wantPattern: "codex_context_left"},
+		{name: "gemini short alias", agentType: "gmi", content: "gemini>", wantPattern: "gemini_prompt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			match := MatchFirstPattern(tt.content, tt.agentType)
+			if match == nil {
+				t.Fatalf("MatchFirstPattern(%q, %q) = nil, want %q", tt.content, tt.agentType, tt.wantPattern)
+			}
+			if match.Pattern != tt.wantPattern {
+				t.Fatalf("MatchFirstPattern(%q, %q) pattern = %q, want %q", tt.content, tt.agentType, match.Pattern, tt.wantPattern)
+			}
+		})
+	}
+}
+
+func TestGetPatternsByAgent_NormalizesAlias(t *testing.T) {
+	t.Parallel()
+
+	patterns := DefaultLibrary.GetPatternsByAgent("cc")
+	for _, pattern := range patterns {
+		if pattern.Name == "claude_welcome" {
+			return
+		}
+	}
+
+	t.Fatal("GetPatternsByAgent(\"cc\") did not include claude-specific patterns")
+}

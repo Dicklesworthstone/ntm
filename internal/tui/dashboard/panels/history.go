@@ -778,8 +778,8 @@ func formatHistoryPaneLabel(p tmux.Pane) string {
 		return fmt.Sprintf("%s_%d", p.Type, p.NTMIndex)
 	}
 	if p.Title != "" {
-		if parts := strings.SplitN(p.Title, "__", 2); len(parts) == 2 && parts[1] != "" {
-			return parts[1]
+		if suffix := tmux.PaneTitleSuffix(p.Title); suffix != "" {
+			return suffix
 		}
 		return p.Title
 	}

@@ -872,11 +872,10 @@ func extractAgentIndex(agentID string) int {
 // e.g., "myproject__cc_2" -> "claude", "myproject__cod_1" -> "codex"
 func deriveAgentTypeFromID(agentID string) string {
 	// Format: session__type_index
-	parts := strings.Split(agentID, "__")
-	if len(parts) < 2 {
+	typePart := tmux.PaneTitleSuffix(agentID)
+	if typePart == "" {
 		return "unknown"
 	}
-	typePart := parts[1]
 	// typePart is like "cc_2" or "cod_1_variant"
 	typeParts := strings.Split(typePart, "_")
 	// strings.Split always returns at least one element, so typeParts[0] is safe

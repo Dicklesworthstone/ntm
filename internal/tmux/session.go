@@ -720,6 +720,26 @@ func stripTags(title string) string {
 	return title
 }
 
+// PaneTitleSuffix returns the portion of an NTM pane title after the final
+// session separator "__". It preserves any variant or tag suffixes.
+func PaneTitleSuffix(title string) string {
+	title = strings.TrimSpace(title)
+	if idx := strings.LastIndex(title, "__"); idx >= 0 && idx+2 < len(title) {
+		return title[idx+2:]
+	}
+	return ""
+}
+
+// PaneTitleSession returns the session portion of an NTM pane title before the
+// final session separator "__".
+func PaneTitleSession(title string) string {
+	title = strings.TrimSpace(title)
+	if idx := strings.LastIndex(title, "__"); idx >= 0 {
+		return title[:idx]
+	}
+	return ""
+}
+
 // Default delays before sending Enter key (milliseconds)
 const (
 	// DefaultEnterDelay is for AI agent TUIs (Claude, Codex, Gemini) which have
@@ -790,7 +810,12 @@ func (c *Client) SendKeysWithDelay(target, keys string, enter bool, enterDelay t
 
 // FormatPaneName formats a pane title according to NTM convention
 func FormatPaneName(session string, agentType string, index int, variant string) string {
-	base := fmt.Sprintf("%s__%s_%d", session, agentType, index)
+	normalizedType := strings.TrimSpace(agentType)
+	if canonical := AgentType(normalizedType).Canonical(); canonical.IsValid() {
+		normalizedType = string(canonical)
+	}
+
+	base := fmt.Sprintf("%s__%s_%d", session, normalizedType, index)
 	if variant != "" {
 		return fmt.Sprintf("%s_%s", base, variant)
 	}

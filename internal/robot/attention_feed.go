@@ -17,6 +17,7 @@ import (
 	ntmevents "github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
@@ -2046,11 +2047,8 @@ func ptAttentionSession(session, pane string) string {
 	if pane == "" {
 		return ""
 	}
-	if strings.Contains(pane, "__") {
-		parts := strings.SplitN(pane, "__", 2)
-		if candidate := strings.TrimSpace(parts[0]); candidate != "" {
-			return candidate
-		}
+	if candidate := strings.TrimSpace(tmux.PaneTitleSession(pane)); candidate != "" {
+		return candidate
 	}
 	return ""
 }

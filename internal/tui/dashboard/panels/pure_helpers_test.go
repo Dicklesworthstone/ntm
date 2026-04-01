@@ -233,6 +233,11 @@ func TestFormatHistoryPaneLabel(t *testing.T) {
 			pane: tmux.Pane{Index: 5},
 			want: "5",
 		},
+		{
+			name: "embedded_double_underscore_session",
+			pane: tmux.Pane{Title: "my__project__cod_2"},
+			want: "cod_2",
+		},
 	}
 
 	for _, tt := range tests {
