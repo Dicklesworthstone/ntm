@@ -460,3 +460,27 @@ func TestProficiencyConfigPath_XDGOverride(t *testing.T) {
 		t.Errorf("ProficiencyConfigPath = %q, want %q", path, expected)
 	}
 }
+
+func TestLoadProficiency_UsesSelectedConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
+	t.Setenv("NTM_CONFIG", filepath.Join(tmpDir, "custom-root", "config.toml"))
+
+	cfg, err := LoadProficiency()
+	if err != nil {
+		t.Fatalf("LoadProficiency failed: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("LoadProficiency returned nil config")
+	}
+
+	wantPath := filepath.Join(tmpDir, "custom-root", "proficiency.json")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("selected-config proficiency file missing: %v", err)
+	}
+
+	legacyPath := filepath.Join(tmpDir, "xdg", "ntm", "proficiency.json")
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy XDG proficiency path should remain untouched, stat err = %v", err)
+	}
+}

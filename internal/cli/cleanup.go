@@ -339,14 +339,9 @@ type CleanupStats struct {
 	Errors       int
 }
 
-// lastCleanupFile returns the path to the file tracking last cleanup time
+// lastCleanupFile returns the path to the file tracking last cleanup time.
 func lastCleanupFile() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), ".ntm-last-cleanup")
-	}
-	configDir := filepath.Join(home, ".config", "ntm")
-	return filepath.Join(configDir, ".last-cleanup")
+	return filepath.Join(selectedConfigDir(), ".last-cleanup")
 }
 
 // shouldRunStartupCleanup checks if enough time has passed since the last cleanup

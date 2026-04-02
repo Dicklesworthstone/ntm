@@ -314,6 +314,34 @@ func TestSessionProfileCRUD(t *testing.T) {
 	})
 }
 
+func TestSaveSessionProfile_UsesSelectedConfigPath(t *testing.T) {
+	oldCfgFile := cfgFile
+	oldDirFunc := sessionProfileDirFunc
+	defer func() {
+		cfgFile = oldCfgFile
+		sessionProfileDirFunc = oldDirFunc
+	}()
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
+	cfgFile = filepath.Join(tmpDir, "custom-root", "config.toml")
+	sessionProfileDirFunc = sessionProfileDir
+
+	if err := SaveSessionProfile("selected", SessionProfile{CC: 1}); err != nil {
+		t.Fatalf("SaveSessionProfile failed: %v", err)
+	}
+
+	wantPath := filepath.Join(tmpDir, "custom-root", "profiles", "selected.toml")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("selected-config profile missing: %v", err)
+	}
+
+	legacyPath := filepath.Join(tmpDir, "xdg", "ntm", "profiles", "selected.toml")
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy XDG profile path should remain untouched, stat err = %v", err)
+	}
+}
+
 func TestSaveSessionProfile_InvalidName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

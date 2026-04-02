@@ -3400,6 +3400,40 @@ func TestConfigResetCmdUsesGlobalConfigFlag(t *testing.T) {
 	}
 }
 
+func TestLastCleanupFileUsesGlobalConfigFlag(t *testing.T) {
+	resetFlags()
+	oldCfg, oldCfgFile := cfg, cfgFile
+	cfg = nil
+	cfgFile = ""
+	startup.ResetConfig()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		startup.ResetConfig()
+	})
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
+	customPath := filepath.Join(tmpDir, "custom", "ntm.toml")
+	cfgFile = customPath
+
+	got := lastCleanupFile()
+	want := filepath.Join(tmpDir, "custom", ".last-cleanup")
+	if got != want {
+		t.Fatalf("lastCleanupFile() = %q, want %q", got, want)
+	}
+
+	markCleanupDone()
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("selected-config cleanup marker missing: %v", err)
+	}
+
+	legacyPath := filepath.Join(tmpDir, "xdg", "ntm", ".last-cleanup")
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy cleanup marker path should remain untouched, stat err = %v", err)
+	}
+}
+
 func TestConfigGetUsesProjectMergedConfig(t *testing.T) {
 	resetFlags()
 	oldCfg, oldCfgFile := cfg, cfgFile

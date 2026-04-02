@@ -81,14 +81,7 @@ func decodeSessionProfile(name string, data []byte) (*SessionProfile, error) {
 
 // sessionProfileDir returns the directory where profiles are stored.
 func sessionProfileDir() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "ntm", "profiles")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".config", "ntm", "profiles")
+	return filepath.Join(selectedConfigDir(), "profiles")
 }
 
 // sessionProfileDirFunc allows tests to override the profile directory.

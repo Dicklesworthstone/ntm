@@ -50,16 +50,9 @@ type PromotionRecord struct {
 	Reason string    `json:"reason"` // "manual", "auto", "reset"
 }
 
-// proficiencyConfigPath returns the path to proficiency.json
+// proficiencyConfigPath returns the path to proficiency.json.
 func proficiencyConfigPath() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "ntm", "proficiency.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".config", "ntm", "proficiency.json")
+	return filepath.Join(filepath.Dir(DefaultPath()), "proficiency.json")
 }
 
 // DefaultProficiencyConfig returns a new proficiency config with sensible defaults.
