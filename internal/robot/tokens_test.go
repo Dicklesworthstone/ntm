@@ -145,6 +145,7 @@ func TestAggregateTokenStats(t *testing.T) {
 					"claude_count": float64(3),
 					"codex_count":  float64(2),
 					"gemini_count": float64(1),
+					"ollama_count": float64(4),
 				},
 			},
 			{
@@ -165,6 +166,15 @@ func TestAggregateTokenStats(t *testing.T) {
 					"target_types":     "cod",
 				},
 			},
+			{
+				Type:      events.EventPromptSend,
+				Timestamp: time.Date(2026, 1, 15, 10, 15, 0, 0, time.UTC),
+				Data: map[string]interface{}{
+					"estimated_tokens": float64(75),
+					"prompt_length":    float64(250),
+					"target_types":     "ollama",
+				},
+			},
 		}
 
 		output := aggregateTokenStats(eventList, 7, "", "agent")
@@ -173,6 +183,9 @@ func TestAggregateTokenStats(t *testing.T) {
 		}
 		if output.AgentStats["codex"].Spawned != 2 {
 			t.Errorf("expected 2 codex spawns, got %d", output.AgentStats["codex"].Spawned)
+		}
+		if output.AgentStats["ollama"].Spawned != 4 {
+			t.Errorf("expected 4 ollama spawns, got %d", output.AgentStats["ollama"].Spawned)
 		}
 	})
 

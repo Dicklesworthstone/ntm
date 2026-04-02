@@ -91,6 +91,7 @@ type AgentCountsResponse struct {
 	Windsurf int `json:"windsurf"`
 	Aider    int `json:"aider"`
 	User     int `json:"user,omitempty"`
+	Other    int `json:"other,omitempty"`
 	Total    int `json:"total"`
 }
 
@@ -139,6 +140,7 @@ type AddResponse struct {
 	AddedClaude   int            `json:"added_claude"`
 	AddedCodex    int            `json:"added_codex"`
 	AddedGemini   int            `json:"added_gemini"`
+	AddedOllama   int            `json:"added_ollama"`
 	AddedCursor   int            `json:"added_cursor"`
 	AddedWindsurf int            `json:"added_windsurf"`
 	AddedAider    int            `json:"added_aider"`

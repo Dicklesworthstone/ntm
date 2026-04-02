@@ -4519,7 +4519,10 @@ func TestParseAgentTypes(t *testing.T) {
 		{"agents keyword", "agents", []string{"claude", "codex", "gemini"}},
 		{"cursor", "cursor", []string{"cursor"}},
 		{"windsurf", "windsurf", []string{"windsurf"}},
+		{"windsurf short alias", "ws", []string{"windsurf"}},
 		{"aider", "aider", []string{"aider"}},
+		{"ollama", "ollama", []string{"ollama"}},
+		{"modern aliases and dedupe", "openai-codex,ws,ollama,codex", []string{"codex", "windsurf", "ollama"}},
 		{"mixed case", "CC,CODEX", []string{"claude", "codex"}},
 	}
 

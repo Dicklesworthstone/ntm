@@ -291,6 +291,9 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 			if aider, ok := event.Data["aider_count"].(float64); ok && aider > 0 {
 				agentSpawns["aider"] += int(aider)
 			}
+			if ollama, ok := event.Data["ollama_count"].(float64); ok && ollama > 0 {
+				agentSpawns["ollama"] += int(ollama)
+			}
 
 		case events.EventAgentSpawn:
 			// Track model info
@@ -452,35 +455,49 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 	return output
 }
 
+func isTrackedAgentType(agentType string) bool {
+	switch agentType {
+	case "claude", "codex", "gemini", "cursor", "windsurf", "aider", "ollama":
+		return true
+	default:
+		return false
+	}
+}
+
 // parseAgentTypes extracts agent type names from target_types string
 func parseAgentTypes(targets string) []string {
-	var result []string
-	targets = strings.ToLower(targets)
+	legacyAll := false
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
 
-	if strings.Contains(targets, "cc") || strings.Contains(targets, "claude") {
-		result = append(result, "claude")
-	}
-	if strings.Contains(targets, "cod") || strings.Contains(targets, "codex") {
-		result = append(result, "codex")
-	}
-	if strings.Contains(targets, "gmi") || strings.Contains(targets, "gemini") {
-		result = append(result, "gemini")
-	}
-	if strings.Contains(targets, "cursor") {
-		result = append(result, "cursor")
-	}
-	if strings.Contains(targets, "windsurf") {
-		result = append(result, "windsurf")
-	}
-	if strings.Contains(targets, "aider") {
-		result = append(result, "aider")
-	}
-	if strings.Contains(targets, "all") || strings.Contains(targets, "agents") {
-		if len(result) == 0 {
-			result = []string{"claude", "codex", "gemini"}
+	for _, part := range strings.Split(strings.ToLower(targets), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
+		switch {
+		case part == "all" || part == "agents" || part == "all-agents":
+			legacyAll = true
+			continue
+		case strings.HasPrefix(part, "pane:"):
+			continue
+		case strings.HasPrefix(part, "tags:["):
+			continue
+		}
+		normalized := ResolveAgentType(part)
+		if !isTrackedAgentType(normalized) {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
 	}
 
+	if legacyAll && len(result) == 0 {
+		return []string{"claude", "codex", "gemini"}
+	}
 	return result
 }
 

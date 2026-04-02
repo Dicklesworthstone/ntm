@@ -315,11 +315,12 @@ func TestToMap(t *testing.T) {
 		ClaudeCount: 2,
 		CodexCount:  1,
 		CursorCount: 1,
+		OllamaCount: 1,
 		WorkDir:     "/path",
 	}
 
 	m := ToMap(data)
-	if m["claude_count"] != 2 || m["codex_count"] != 1 || m["cursor_count"] != 1 || m["work_dir"] != "/path" {
+	if m["claude_count"] != 2 || m["codex_count"] != 1 || m["cursor_count"] != 1 || m["ollama_count"] != 1 || m["work_dir"] != "/path" {
 		t.Errorf("ToMap(SessionCreateData) produced unexpected map: %v", m)
 	}
 }
@@ -336,10 +337,11 @@ func TestToMap_AllTypes(t *testing.T) {
 			CursorCount:   1,
 			WindsurfCount: 1,
 			AiderCount:    1,
+			OllamaCount:   2,
 			WorkDir:       "/work",
 			Recipe:        "code-review",
 		})
-		if m["claude_count"] != 3 || m["codex_count"] != 2 || m["gemini_count"] != 1 || m["cursor_count"] != 1 || m["windsurf_count"] != 1 || m["aider_count"] != 1 {
+		if m["claude_count"] != 3 || m["codex_count"] != 2 || m["gemini_count"] != 1 || m["cursor_count"] != 1 || m["windsurf_count"] != 1 || m["aider_count"] != 1 || m["ollama_count"] != 2 {
 			t.Errorf("unexpected counts: %v", m)
 		}
 		if m["work_dir"] != "/work" || m["recipe"] != "code-review" {
