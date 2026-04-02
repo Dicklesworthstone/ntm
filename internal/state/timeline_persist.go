@@ -46,7 +46,7 @@ type TimelineHeader struct {
 // TimelinePersistConfig configures timeline persistence behavior.
 type TimelinePersistConfig struct {
 	// BaseDir is the directory where timelines are stored.
-	// Default: ~/.local/share/ntm/timelines
+	// Default: selected config dir/timelines, then XDG_DATA_HOME/ntm/timelines, then ~/.local/share/ntm/timelines
 	BaseDir string
 
 	// MaxTimelines is the maximum number of timelines to retain.
@@ -66,13 +66,21 @@ type TimelinePersistConfig struct {
 
 // DefaultTimelinePersistConfig returns sensible defaults.
 func DefaultTimelinePersistConfig() TimelinePersistConfig {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
+	baseDir := ""
+	if cfgPath := expandSelectedConfigPath(os.Getenv("NTM_CONFIG")); cfgPath != "" {
+		baseDir = filepath.Join(filepath.Dir(cfgPath), "timelines")
+	} else if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		baseDir = filepath.Join(xdg, "ntm", "timelines")
+	} else {
+		homeDir, err := os.UserHomeDir()
+		if err != nil || homeDir == "" {
+			homeDir = os.TempDir()
+		}
+		baseDir = filepath.Join(homeDir, ".local", "share", "ntm", "timelines")
 	}
 
 	return TimelinePersistConfig{
-		BaseDir:            filepath.Join(homeDir, ".local", "share", "ntm", "timelines"),
+		BaseDir:            baseDir,
 		MaxTimelines:       30,
 		CompressOlderThan:  24 * time.Hour,
 		CheckpointInterval: 5 * time.Minute,

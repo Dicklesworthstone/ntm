@@ -314,9 +314,11 @@ func listCheckpointSessions(storage *checkpoint.Storage) ([]string, error) {
 
 	var sessions []string
 	for _, entry := range entries {
-		if entry.IsDir() {
-			sessions = append(sessions, entry.Name())
+		checkpoints, err := storage.List(entry.Name())
+		if err != nil || len(checkpoints) == 0 {
+			continue
 		}
+		sessions = append(sessions, entry.Name())
 	}
 	sort.Strings(sessions)
 	return sessions, nil

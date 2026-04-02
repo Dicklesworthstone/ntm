@@ -483,6 +483,30 @@ func TestDefaultTimelinePersistConfig(t *testing.T) {
 	t.Log("PASS: Default config has sensible values")
 }
 
+func TestDefaultTimelinePersistConfigRespectsXDGDataHome(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpDir, "xdg-data"))
+
+	config := DefaultTimelinePersistConfig()
+	want := filepath.Join(tmpDir, "xdg-data", "ntm", "timelines")
+	if config.BaseDir != want {
+		t.Fatalf("BaseDir = %q, want %q", config.BaseDir, want)
+	}
+}
+
+func TestDefaultTimelinePersistConfigRespectsSelectedConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpDir, "xdg-data"))
+	t.Setenv("NTM_CONFIG", filepath.Join(tmpDir, "custom-root", "config.toml"))
+
+	config := DefaultTimelinePersistConfig()
+	want := filepath.Join(tmpDir, "custom-root", "timelines")
+	if config.BaseDir != want {
+		t.Fatalf("BaseDir = %q, want %q", config.BaseDir, want)
+	}
+}
+
 func TestCompressTimeline(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
