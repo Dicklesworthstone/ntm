@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -85,15 +84,8 @@ type serveOptions struct {
 }
 
 func runServe(opts serveOptions) error {
-	// Get state store path
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-	dbPath := filepath.Join(home, ".config", "ntm", "state.db")
-
 	// Open state store
-	stateStore, err := state.Open(dbPath)
+	stateStore, err := state.Open("")
 	if err != nil {
 		return fmt.Errorf("open state store: %w", err)
 	}

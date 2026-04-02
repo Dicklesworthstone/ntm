@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -108,14 +107,7 @@ type ApprovalResult struct {
 }
 
 func getApprovalEngine() (*approval.Engine, *state.Store, error) {
-	// Get state store path from config
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, nil, fmt.Errorf("get home dir: %w", err)
-	}
-	dbPath := filepath.Join(home, ".config", "ntm", "state.db")
-
-	store, err := state.Open(dbPath)
+	store, err := state.Open("")
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state store: %w", err)
 	}

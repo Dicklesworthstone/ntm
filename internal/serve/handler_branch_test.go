@@ -10445,8 +10445,10 @@ func TestHandleListCheckpoints_WithFakeCheckpoint(t *testing.T) {
 	// Create fake checkpoint
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "list-sess", "cp-list-1")
 	os.MkdirAll(cpDir, 0755)
-	metadata := `{"version":1,"id":"cp-list-1","name":"list-test","session_name":"list-sess","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":2}`
+	metadata := `{"version":1,"id":"cp-list-1","name":"list-test","session_name":"list-sess","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":2,"session":{"panes":[{"id":"%0","index":0},{"id":"%1","index":1}]}}`
 	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	sessionData := `{"panes":[{"id":"%0","index":0},{"id":"%1","index":1}]}`
+	os.WriteFile(filepath.Join(cpDir, "session.json"), []byte(sessionData), 0644)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "list-sess")
@@ -10477,8 +10479,10 @@ func TestHandleListCheckpoints_WithDetailsFakeCP(t *testing.T) {
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "det-sess", "cp-det-1")
 	os.MkdirAll(cpDir, 0755)
-	metadata := `{"version":1,"id":"cp-det-1","name":"detail-test","description":"with details","session_name":"det-sess","working_dir":"/tmp/proj","created_at":"2025-06-01T12:00:00Z","pane_count":3}`
+	metadata := `{"version":1,"id":"cp-det-1","name":"detail-test","description":"with details","session_name":"det-sess","working_dir":"/tmp/proj","created_at":"2025-06-01T12:00:00Z","pane_count":3,"session":{"panes":[{"id":"%0","index":0},{"id":"%1","index":1},{"id":"%2","index":2}]}}`
 	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	sessionData := `{"panes":[{"id":"%0","index":0},{"id":"%1","index":1},{"id":"%2","index":2}]}`
+	os.WriteFile(filepath.Join(cpDir, "session.json"), []byte(sessionData), 0644)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "det-sess")

@@ -19,15 +19,23 @@ type Store struct {
 	path string
 }
 
+// DefaultPath returns the default state store path.
+func DefaultPath() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "ntm", "state.db")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, ".config", "ntm", "state.db")
+}
+
 // Open opens or creates a SQLite database at the given path.
-// If the path is empty, it defaults to ~/.config/ntm/state.db.
+// If the path is empty, it defaults to the user state DB under XDG or ~/.config.
 func Open(path string) (*Store, error) {
 	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("get home dir: %w", err)
-		}
-		path = filepath.Join(home, ".config", "ntm", "state.db")
+		path = DefaultPath()
 	}
 
 	// Ensure parent directory exists
