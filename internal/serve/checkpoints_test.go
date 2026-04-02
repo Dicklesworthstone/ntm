@@ -190,6 +190,7 @@ func TestCheckpointToResponse(t *testing.T) {
 			Name:        "detailed",
 			SessionName: "dev",
 			CreatedAt:   now,
+			PaneCount:   3,
 			Session: checkpoint.SessionState{
 				Panes: []checkpoint.PaneState{
 					{AgentType: "cc"},
@@ -216,6 +217,28 @@ func TestCheckpointToResponse(t *testing.T) {
 		}
 		if len(resp.Session.AgentTypes) != 2 {
 			t.Errorf("Session.AgentTypes = %v, want [cc cod]", resp.Session.AgentTypes)
+		}
+	})
+
+	t.Run("metadata only details preserve stored pane count", func(t *testing.T) {
+		t.Parallel()
+		cp := &checkpoint.Checkpoint{
+			ID:          "cp-metadata-only",
+			Name:        "metadata-only",
+			SessionName: "dev",
+			CreatedAt:   now,
+			PaneCount:   3,
+		}
+
+		resp := checkpointToResponse(cp, true)
+		if resp.Session == nil {
+			t.Fatal("Session should be populated when includeDetails is true")
+		}
+		if resp.Session.PaneCount != 3 {
+			t.Errorf("Session.PaneCount = %d, want 3", resp.Session.PaneCount)
+		}
+		if len(resp.Session.AgentTypes) != 0 {
+			t.Errorf("Session.AgentTypes = %v, want empty", resp.Session.AgentTypes)
 		}
 	})
 

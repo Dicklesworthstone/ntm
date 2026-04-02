@@ -26,7 +26,8 @@ import (
 	"database/sql"
 
 	"github.com/go-chi/chi/v5"
-	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
@@ -10471,6 +10472,26 @@ func TestHandleListCheckpoints_WithDetailsFakeCP(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+
+	var resp struct {
+		Checkpoints []struct {
+			Session *struct {
+				PaneCount int `json:"pane_count"`
+			} `json:"session,omitempty"`
+		} `json:"checkpoints"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Checkpoints) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(resp.Checkpoints))
+	}
+	if resp.Checkpoints[0].Session == nil {
+		t.Fatal("expected session details in response")
+	}
+	if resp.Checkpoints[0].Session.PaneCount != 3 {
+		t.Fatalf("session pane_count = %d, want 3", resp.Checkpoints[0].Session.PaneCount)
+	}
 }
 
 // --- handleGetCheckpoint: success with fake checkpoint data ---
@@ -10893,6 +10914,69 @@ func TestHandleVerifyCheckpoint_FakeCheckpoint(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleVerifyCheckpoint_SessionMismatchReturnsInvalidResult(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "vfy-sess-mismatch", "vfy-cp-mismatch")
+	if err := os.MkdirAll(cpDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	cp := checkpoint.Checkpoint{
+		Version:     1,
+		ID:          "vfy-cp-mismatch",
+		Name:        "verify-mismatch",
+		SessionName: "vfy-sess-mismatch",
+		WorkingDir:  tmpHome,
+		CreatedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Session: checkpoint.SessionState{
+			Panes: []checkpoint.PaneState{{Index: 0, ID: "%0", Title: "metadata"}},
+		},
+		PaneCount: 1,
+	}
+	metadata, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatalf("Marshal checkpoint failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), metadata, 0644); err != nil {
+		t.Fatalf("WriteFile metadata.json failed: %v", err)
+	}
+
+	sessionData, err := json.Marshal(checkpoint.SessionState{
+		Panes: []checkpoint.PaneState{{Index: 0, ID: "%0", Title: "session-file"}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal session state failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "session.json"), sessionData, 0644); err != nil {
+		t.Fatalf("WriteFile session.json failed: %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "vfy-sess-mismatch")
+	rctx.URLParams.Add("checkpointId", "vfy-cp-mismatch")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/vfy-sess-mismatch/checkpoints/vfy-cp-mismatch/verify", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleVerifyCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"valid":false`) {
+		t.Fatalf("expected invalid result, got: %s", body)
+	}
+	if !strings.Contains(body, "session state mismatch") {
+		t.Fatalf("expected session mismatch in response, got: %s", body)
 	}
 }
 
@@ -11432,7 +11516,7 @@ func TestWSEventStore_CleanupRemovesExpired(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "ws_cleanup.db")
 
-	db, err := sql.Open("sqlite3", dbPath+"?_journal=WAL")
+	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(dbPath, "journal_mode(WAL)"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -11909,8 +11993,36 @@ func TestHandleRollback_WithGitPatch(t *testing.T) {
 `
 	os.WriteFile(filepath.Join(cpDir, "changes.patch"), []byte(patchContent), 0644)
 
-	metadata := fmt.Sprintf(`{"version":1,"id":"cp-patch","name":"patch-test","session_name":"rb-patch","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"%s","branch":"main","is_dirty":false,"patch_file":"changes.patch"}}`, gitDir, commitHash)
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	cp := checkpoint.Checkpoint{
+		Version:     1,
+		ID:          "cp-patch",
+		Name:        "patch-test",
+		SessionName: "rb-patch",
+		WorkingDir:  gitDir,
+		CreatedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Session: checkpoint.SessionState{
+			Panes: []checkpoint.PaneState{
+				{Index: 0, ID: "%0", Title: "pane0"},
+			},
+		},
+		Git: checkpoint.GitState{
+			Commit:    commitHash,
+			Branch:    "main",
+			IsDirty:   false,
+			PatchFile: "changes.patch",
+		},
+		PaneCount: 1,
+	}
+	metadata, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatalf("Marshal checkpoint failed: %v", err)
+	}
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), metadata, 0644)
+	sessionJSON, err := json.Marshal(cp.Session)
+	if err != nil {
+		t.Fatalf("Marshal session state failed: %v", err)
+	}
+	os.WriteFile(filepath.Join(cpDir, "session.json"), sessionJSON, 0644)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-patch")
@@ -11931,6 +12043,97 @@ func TestHandleRollback_WithGitPatch(t *testing.T) {
 	bodyStr := rec.Body.String()
 	if !strings.Contains(bodyStr, "git_restored") {
 		t.Fatalf("expected git_restored in response, got: %s", bodyStr)
+	}
+}
+
+func TestHandleRollback_WithInvalidGitPatchPathWarns(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	gitDir := filepath.Join(tmpHome, "work-patch-invalid")
+	os.MkdirAll(gitDir, 0755)
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = gitDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	os.WriteFile(filepath.Join(gitDir, "hello.txt"), []byte("hello"), 0644)
+	cmd := exec.Command("git", "add", ".")
+	cmd.Dir = gitDir
+	cmd.CombinedOutput()
+	cmd = exec.Command("git", "commit", "-m", "initial")
+	cmd.Dir = gitDir
+	cmd.CombinedOutput()
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = gitDir
+	commitOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse failed: %v", err)
+	}
+	commitHash := strings.TrimSpace(string(commitOut))
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-patch-invalid", "cp-patch-invalid")
+	os.MkdirAll(cpDir, 0755)
+	cp := checkpoint.Checkpoint{
+		Version:     1,
+		ID:          "cp-patch-invalid",
+		Name:        "patch-test-invalid",
+		SessionName: "rb-patch-invalid",
+		WorkingDir:  gitDir,
+		CreatedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Session: checkpoint.SessionState{
+			Panes: []checkpoint.PaneState{
+				{Index: 0, ID: "%0", Title: "pane0"},
+			},
+		},
+		Git: checkpoint.GitState{
+			Commit:    commitHash,
+			Branch:    "main",
+			IsDirty:   false,
+			PatchFile: "../../escape.patch",
+		},
+		PaneCount: 1,
+	}
+	metadata, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatalf("Marshal checkpoint failed: %v", err)
+	}
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), metadata, 0644)
+	sessionJSON, err := json.Marshal(cp.Session)
+	if err != nil {
+		t.Fatalf("Marshal session state failed: %v", err)
+	}
+	os.WriteFile(filepath.Join(cpDir, "session.json"), sessionJSON, 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "rb-patch-invalid")
+
+	body := `{"checkpoint_ref":"cp-patch-invalid","dry_run":false,"no_git":false,"no_stash":true}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-patch-invalid/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, "patch load failed") {
+		t.Fatalf("expected patch load warning, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "invalid artifact path") {
+		t.Fatalf("expected invalid artifact path warning, got: %s", bodyStr)
 	}
 }
 

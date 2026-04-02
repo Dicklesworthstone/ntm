@@ -1640,6 +1640,22 @@ func TestHandlePolicyValidateV1_WithContent(t *testing.T) {
 	}
 }
 
+func TestHandlePolicyValidateV1_WithUnknownField(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	content := `{"content":"version: 1\nblocked:\n  - pattern: 'rm -rf /'\nlegacy: true"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/validate",
+		strings.NewReader(content))
+	req.Header.Set("Content-Length", "100")
+	rec := httptest.NewRecorder()
+	srv.handlePolicyValidateV1(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"valid":false`) {
+		t.Fatalf("expected strict unknown-field rejection, got %s", rec.Body.String())
+	}
+}
+
 func TestHandlePolicyValidateV1_NoContent(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	// No body - should validate file-based policy
@@ -1650,6 +1666,17 @@ func TestHandlePolicyValidateV1_NoContent(t *testing.T) {
 	// Returns 200 with valid/invalid status (never errors with HTTP error)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestHandlePolicyUpdateV1_UnknownField(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy",
+		strings.NewReader(`{"content":"version: 1\nblocked:\n  - pattern: 'rm -rf /'\nlegacy: true"}`))
+	rec := httptest.NewRecorder()
+	srv.handlePolicyUpdateV1(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", rec.Code, rec.Body.String())
 	}
 }
 

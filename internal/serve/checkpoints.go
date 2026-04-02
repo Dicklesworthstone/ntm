@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -382,15 +381,17 @@ func (s *Server) handleVerifyCheckpoint(w http.ResponseWriter, r *http.Request) 
 	reqID := requestIDFromContext(r.Context())
 
 	storage := checkpoint.NewStorage()
-	cp, err := storage.Load(sessionName, checkpointID)
+	exists, err := storage.HasCheckpointPath(sessionName, checkpointID)
 	if err != nil {
-		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
-			fmt.Sprintf("checkpoint not found: %s", checkpointID),
-			nil, reqID)
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil, reqID)
+		return
+	}
+	if !exists {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("checkpoint not found: %s", checkpointID), nil, reqID)
 		return
 	}
 
-	result := cp.Verify(storage)
+	result := checkpoint.VerifyStoredCheckpoint(storage, sessionName, checkpointID)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"valid":             result.Valid,
@@ -720,9 +721,13 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 		// Apply git patch if available
 		if cp.HasGitPatch() {
-			patchPath := filepath.Join(storage.CheckpointDir(sessionName, cp.ID), cp.Git.PatchFile)
-			if err := gitApplyPatch(workDir, patchPath); err != nil {
-				resp.Warnings = append(resp.Warnings, fmt.Sprintf("patch apply failed: %v", err))
+			patch, err := storage.LoadGitPatch(sessionName, cp.ID)
+			if err != nil {
+				resp.Warnings = append(resp.Warnings, fmt.Sprintf("patch load failed: %v", err))
+			} else if patch != "" {
+				if err := gitApplyPatch(workDir, patch); err != nil {
+					resp.Warnings = append(resp.Warnings, fmt.Sprintf("patch apply failed: %v", err))
+				}
 			}
 		}
 
@@ -788,7 +793,7 @@ func checkpointToResponse(cp *checkpoint.Checkpoint, includeDetails bool) Checkp
 			}
 		}
 		resp.Session = &CheckpointSessionSummary{
-			PaneCount:       len(cp.Session.Panes),
+			PaneCount:       cp.PaneCount,
 			ActivePaneIndex: cp.Session.ActivePaneIndex,
 			Layout:          cp.Session.Layout,
 			AgentTypes:      agentTypes,
@@ -838,10 +843,14 @@ func gitCheckout(workDir, ref string) error {
 	return err
 }
 
-// gitApplyPatch applies a git patch file.
-func gitApplyPatch(workDir, patchPath string) error {
-	_, err := runGit(workDir, "apply", patchPath)
-	return err
+// gitApplyPatch applies patch content to a working tree.
+func gitApplyPatch(workDir, patch string) error {
+	cmd := exec.Command("git", "-C", workDir, "apply", "--3way", "-")
+	cmd.Stdin = strings.NewReader(patch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git apply --3way: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // runGit runs a git command and returns the output.

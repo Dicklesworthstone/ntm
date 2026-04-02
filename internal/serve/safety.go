@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"gopkg.in/yaml.v3"
 
 	"github.com/Dicklesworthstone/ntm/internal/policy"
 )
@@ -548,8 +547,8 @@ func (s *Server) handlePolicyUpdateV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the YAML
-	var p policy.Policy
-	if err := yaml.Unmarshal([]byte(req.Content), &p); err != nil {
+	p, err := policy.DecodeYAML([]byte(req.Content))
+	if err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
 			fmt.Sprintf("invalid YAML: %v", err), nil, reqID)
 		return
@@ -633,8 +632,8 @@ func (s *Server) handlePolicyValidateV1(w http.ResponseWriter, r *http.Request) 
 
 	if req.Content != "" {
 		// Validate provided content
-		var p policy.Policy
-		if err := yaml.Unmarshal([]byte(req.Content), &p); err != nil {
+		p, err := policy.DecodeYAML([]byte(req.Content))
+		if err != nil {
 			errors = append(errors, fmt.Sprintf("invalid YAML: %v", err))
 			data, _ := toJSONMap(PolicyValidateResponse{
 				Valid:    false,
@@ -704,8 +703,8 @@ func (s *Server) handlePolicyValidateV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var p policy.Policy
-	if err := yaml.Unmarshal(fileData, &p); err != nil {
+	p, err := policy.DecodeYAML(fileData)
+	if err != nil {
 		errors = append(errors, fmt.Sprintf("invalid YAML: %v", err))
 		data, _ := toJSONMap(PolicyValidateResponse{
 			Valid:      false,

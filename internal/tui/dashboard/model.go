@@ -661,7 +661,7 @@ func (m Model) startConfigWatcher() tea.Cmd {
 
 	sub := m.configSub
 	return func() tea.Msg {
-		closer, err := config.Watch(func(cfg *config.Config) {
+		closer, err := config.Watch(m.projectDir, func(cfg *config.Config) {
 			select {
 			case sub <- cfg:
 			default:

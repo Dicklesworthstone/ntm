@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 )
 
 // testStoreFile creates a file-backed test store. This avoids in-memory SQLite's
@@ -15,7 +15,7 @@ import (
 func testStoreFile(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=ON")
+	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(dbPath, "foreign_keys(1)"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

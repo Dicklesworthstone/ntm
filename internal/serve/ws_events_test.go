@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 )
 
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
@@ -15,7 +15,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(dbPath, "journal_mode(WAL)"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

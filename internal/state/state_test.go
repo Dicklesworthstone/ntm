@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
 )
 
 // testStore creates a test store with in-memory SQLite and runs migrations.
@@ -16,10 +16,12 @@ func testStore(t *testing.T) *Store {
 	t.Helper()
 
 	// Use in-memory SQLite for tests - no WAL mode needed
-	db, err := sql.Open("sqlite3", ":memory:?_foreign_keys=ON")
+	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.MemoryDSN("foreign_keys(1)"))
 	if err != nil {
 		t.Fatalf("Open in-memory db error: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
