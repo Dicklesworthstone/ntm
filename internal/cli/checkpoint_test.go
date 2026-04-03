@@ -211,7 +211,7 @@ func TestListCheckpointSessions(t *testing.T) {
 		t.Errorf("expected empty sessions, got %v", sessions)
 	}
 
-	// Create a session directory
+	// Create an empty session directory; it should not count as a session with checkpoints.
 	sessDir := filepath.Join(tmpDir, "test-session")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		t.Fatalf("failed to create session dir: %v", err)
@@ -221,8 +221,47 @@ func TestListCheckpointSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listCheckpointSessions error: %v", err)
 	}
+	if sessions != nil && len(sessions) > 0 {
+		t.Errorf("expected empty sessions for bare session dir, got %v", sessions)
+	}
+
+	cp := &checkpoint.Checkpoint{
+		ID:          "cp-001",
+		SessionName: "test-session",
+		CreatedAt:   time.Now(),
+		Session: checkpoint.SessionState{
+			Panes: []checkpoint.PaneState{{ID: "%0", Index: 0}},
+		},
+		PaneCount: 1,
+	}
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("Save() failed: %v", err)
+	}
+
+	sessions, err = listCheckpointSessions(storage)
+	if err != nil {
+		t.Fatalf("listCheckpointSessions error after save: %v", err)
+	}
 	if len(sessions) != 1 || sessions[0] != "test-session" {
 		t.Errorf("expected [test-session], got %v", sessions)
+	}
+}
+
+func TestListCheckpointSessions_SkipsSymlinkSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := checkpoint.NewStorageWithDir(tmpDir)
+
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(tmpDir, "symlink-session")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	sessions, err := listCheckpointSessions(storage)
+	if err != nil {
+		t.Fatalf("listCheckpointSessions error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected symlink-backed session dir to be skipped, got %v", sessions)
 	}
 }
 

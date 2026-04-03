@@ -3,6 +3,7 @@ package handoff
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -135,6 +136,63 @@ version: "1.0"
 		}
 		if h.Goal != "Test goal" {
 			t.Errorf("expected 'Test goal', got %q", h.Goal)
+		}
+	})
+
+	t.Run("falls back when newest handoff is malformed", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "test-session", "2025-01-01-1200.yaml", `
+goal: "Valid goal"
+now: "Valid now"
+version: "1.0"
+`)
+		createHandoffFile(t, tmpDir, "test-session", "2025-01-02-1200.yaml", `
+goal: [invalid yaml
+this is not valid
+`)
+
+		h, _, err := r.FindLatest("test-session")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if h == nil {
+			t.Fatal("expected fallback handoff, got nil")
+		}
+		if h.Goal != "Valid goal" {
+			t.Fatalf("expected fallback to valid older handoff, got %q", h.Goal)
+		}
+	})
+
+	t.Run("skips symlinked newest handoff file", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "test-session", "2025-01-01-1200.yaml", `
+goal: "Valid goal"
+now: "Valid now"
+version: "1.0"
+`)
+		outsidePath := filepath.Join(t.TempDir(), "outside.yaml")
+		if err := os.WriteFile(outsidePath, []byte("goal: external\nnow: external\n"), 0o644); err != nil {
+			t.Fatalf("failed to write outside file: %v", err)
+		}
+		linkPath := filepath.Join(tmpDir, ".ntm", "handoffs", "test-session", "2025-01-02-1200.yaml")
+		if err := os.Symlink(outsidePath, linkPath); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+
+		h, path, err := r.FindLatest("test-session")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if h == nil {
+			t.Fatal("expected valid handoff, got nil")
+		}
+		if h.Goal != "Valid goal" {
+			t.Fatalf("expected symlinked newest file to be skipped, got %q", h.Goal)
+		}
+		if strings.HasSuffix(path, "2025-01-02-1200.yaml") {
+			t.Fatalf("expected symlink path to be skipped, got %s", path)
 		}
 	})
 }
@@ -407,6 +465,31 @@ now: "Updated now"
 			t.Errorf("expected 'Updated goal' after mod time change, got %q", goal2)
 		}
 	})
+
+	t.Run("skips symlinked newest file", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "test", "2025-01-01.yaml", `
+goal: "Valid goal"
+now: "Valid now"
+`)
+		outsidePath := filepath.Join(t.TempDir(), "outside.yaml")
+		if err := os.WriteFile(outsidePath, []byte("goal: external\nnow: external\n"), 0o644); err != nil {
+			t.Fatalf("failed to write outside file: %v", err)
+		}
+		linkPath := filepath.Join(tmpDir, ".ntm", "handoffs", "test", "2025-01-02.yaml")
+		if err := os.Symlink(outsidePath, linkPath); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+
+		goal, now, err := r.ExtractGoalNow("test")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if goal != "Valid goal" || now != "Valid now" {
+			t.Fatalf("expected fallback to regular file, got goal=%q now=%q", goal, now)
+		}
+	})
 }
 
 func TestInvalidateCache(t *testing.T) {
@@ -513,6 +596,35 @@ now: "Test"
 			t.Errorf("expected 1 handoff (not subdirectory), got %d", len(metas))
 		}
 	})
+
+	t.Run("skips symlinked yaml files", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "test", "2025-01-01.yaml", `
+goal: "Visible"
+now: "Visible"
+status: complete
+`)
+		outsidePath := filepath.Join(t.TempDir(), "outside.yaml")
+		if err := os.WriteFile(outsidePath, []byte("goal: external\nnow: external\nstatus: blocked\n"), 0o644); err != nil {
+			t.Fatalf("failed to write outside file: %v", err)
+		}
+		linkPath := filepath.Join(tmpDir, ".ntm", "handoffs", "test", "2025-01-02.yaml")
+		if err := os.Symlink(outsidePath, linkPath); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+
+		metas, err := r.ListHandoffs("test")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(metas) != 1 {
+			t.Fatalf("expected only regular handoff to be listed, got %d", len(metas))
+		}
+		if filepath.Base(metas[0].Path) != "2025-01-01.yaml" {
+			t.Fatalf("expected regular file to remain, got %s", metas[0].Path)
+		}
+	})
 }
 
 func TestListSessions(t *testing.T) {
@@ -535,6 +647,24 @@ func TestListSessions(t *testing.T) {
 		// Should be sorted alphabetically
 		if sessions[0] != "alpha" || sessions[1] != "beta" || sessions[2] != "gamma" {
 			t.Errorf("unexpected session order: %v", sessions)
+		}
+	})
+
+	t.Run("skips empty session directories", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "visible", "handoff.yaml", "goal: A\nnow: A")
+		emptyDir := filepath.Join(tmpDir, ".ntm", "handoffs", "empty")
+		if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+			t.Fatalf("failed to create empty dir: %v", err)
+		}
+
+		sessions, err := r.ListSessions()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sessions) != 1 || sessions[0] != "visible" {
+			t.Fatalf("expected only visible session, got %v", sessions)
 		}
 	})
 
@@ -567,6 +697,24 @@ func TestListSessions(t *testing.T) {
 
 		if len(sessions) != 1 || sessions[0] != "visible" {
 			t.Errorf("expected only 'visible' session, got %v", sessions)
+		}
+	})
+
+	t.Run("skips symlink-backed session directories", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "visible", "handoff.yaml", "goal: A\nnow: A")
+		outsideDir := t.TempDir()
+		if err := os.Symlink(outsideDir, filepath.Join(tmpDir, ".ntm", "handoffs", "linked")); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+
+		sessions, err := r.ListSessions()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sessions) != 1 || sessions[0] != "visible" {
+			t.Fatalf("expected only visible session, got %v", sessions)
 		}
 	})
 }

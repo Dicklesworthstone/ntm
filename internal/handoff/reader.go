@@ -48,6 +48,27 @@ type HandoffMeta struct {
 	IsAuto  bool
 }
 
+func discoverHandoffYAMLPaths(dir string, entries []os.DirEntry) []string {
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") || e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		path := filepath.Join(dir, e.Name())
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue
+		}
+		paths = append(paths, path)
+	}
+
+	sort.Slice(paths, func(i, j int) bool {
+		return filepath.Base(paths[i]) > filepath.Base(paths[j])
+	})
+	return paths
+}
+
 // NewReader creates a Reader for the given project directory.
 func NewReader(projectDir string) *Reader {
 	return &Reader{
@@ -91,42 +112,36 @@ func (r *Reader) FindLatest(sessionName string) (*Handoff, string, error) {
 		return nil, "", fmt.Errorf("readdir failed: %w", err)
 	}
 
-	// Find YAML files (exclude .archive directory)
-	var yamlFiles []os.DirEntry
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") {
-			yamlFiles = append(yamlFiles, e)
-		}
-	}
-
-	if len(yamlFiles) == 0 {
+	yamlPaths := discoverHandoffYAMLPaths(dir, entries)
+	if len(yamlPaths) == 0 {
 		r.logger.Debug("no handoff files found", "session", sessionName)
 		return nil, "", nil
 	}
 
-	// Sort by name descending (timestamps in filename = chronological)
-	sort.Slice(yamlFiles, func(i, j int) bool {
-		return yamlFiles[i].Name() > yamlFiles[j].Name()
-	})
+	var lastErr error
+	for _, path := range yamlPaths {
+		h, err := r.Read(path)
+		if err != nil {
+			lastErr = err
+			r.logger.Warn("skipping unreadable handoff while finding latest",
+				"path", path,
+				"error", err,
+			)
+			continue
+		}
 
-	// Read most recent
-	path := filepath.Join(dir, yamlFiles[0].Name())
-	h, err := r.Read(path)
-	if err != nil {
-		r.logger.Error("failed to read latest handoff",
+		r.logger.Debug("found latest handoff",
+			"session", sessionName,
 			"path", path,
-			"error", err,
+			"goal", truncateForLog(h.Goal, 30),
 		)
-		return nil, "", err
+		return h, path, nil
 	}
 
-	r.logger.Debug("found latest handoff",
-		"session", sessionName,
-		"path", path,
-		"goal", truncateForLog(h.Goal, 30),
-	)
-
-	return h, path, nil
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return nil, "", nil
 }
 
 // FindLatestAny returns the most recent handoff across all sessions.
@@ -227,72 +242,68 @@ func (r *Reader) ExtractGoalNow(sessionName string) (goal, now string, err error
 		return "", "", err
 	}
 
-	// Find most recent YAML
-	var latest string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") {
-			if e.Name() > latest {
-				latest = e.Name()
-			}
-		}
-	}
-	if latest == "" {
+	yamlPaths := discoverHandoffYAMLPaths(dir, entries)
+	if len(yamlPaths) == 0 {
 		return "", "", nil
 	}
 
-	path := filepath.Join(dir, latest)
+	var lastErr error
+	for _, path := range yamlPaths {
+		// Check cache
+		r.cacheMu.RLock()
+		entry, ok := r.goalNowCache[path]
+		r.cacheMu.RUnlock()
 
-	// Check cache
-	r.cacheMu.RLock()
-	entry, ok := r.goalNowCache[path]
-	r.cacheMu.RUnlock()
-
-	if ok {
-		// Check if cache is still valid
-		info, err := os.Stat(path)
-		if err == nil && info.ModTime().Equal(entry.modTime) && time.Since(entry.fetchedAt) < r.cacheExpiry {
-			r.logger.Debug("cache hit for goal/now",
-				"path", path,
-				"age_ms", time.Since(entry.fetchedAt).Milliseconds(),
-			)
-			return entry.goal, entry.now, nil
+		if ok {
+			// Check if cache is still valid
+			info, err := os.Stat(path)
+			if err == nil && info.ModTime().Equal(entry.modTime) && time.Since(entry.fetchedAt) < r.cacheExpiry {
+				r.logger.Debug("cache hit for goal/now",
+					"path", path,
+					"age_ms", time.Since(entry.fetchedAt).Milliseconds(),
+				)
+				return entry.goal, entry.now, nil
+			}
 		}
+
+		r.logger.Debug("cache miss for goal/now, reading file", "path", path)
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		goal, now = extractGoalNowFromContent(content)
+
+		info, _ := os.Stat(path)
+		modTime := time.Time{}
+		if info != nil {
+			modTime = info.ModTime()
+		}
+
+		r.cacheMu.Lock()
+		r.goalNowCache[path] = goalNowEntry{
+			goal:      goal,
+			now:       now,
+			fetchedAt: time.Now(),
+			modTime:   modTime,
+		}
+		r.cacheMu.Unlock()
+
+		r.logger.Debug("extracted goal/now",
+			"path", path,
+			"goal_len", len(goal),
+			"now_len", len(now),
+		)
+
+		return goal, now, nil
 	}
 
-	// Cache miss or expired - read file
-	r.logger.Debug("cache miss for goal/now, reading file", "path", path)
-
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", err
+	if lastErr != nil {
+		return "", "", lastErr
 	}
-
-	// Fast regex extraction
-	goal, now = extractGoalNowFromContent(content)
-
-	// Update cache
-	info, _ := os.Stat(path)
-	modTime := time.Time{}
-	if info != nil {
-		modTime = info.ModTime()
-	}
-
-	r.cacheMu.Lock()
-	r.goalNowCache[path] = goalNowEntry{
-		goal:      goal,
-		now:       now,
-		fetchedAt: time.Now(),
-		modTime:   modTime,
-	}
-	r.cacheMu.Unlock()
-
-	r.logger.Debug("extracted goal/now",
-		"path", path,
-		"goal_len", len(goal),
-		"now_len", len(now),
-	)
-
-	return goal, now, nil
+	return "", "", nil
 }
 
 // InvalidateCache clears the goal/now cache.
@@ -318,22 +329,20 @@ func (r *Reader) ListHandoffs(sessionName string) ([]HandoffMeta, error) {
 	}
 
 	var metas []HandoffMeta
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-
-		path := filepath.Join(dir, e.Name())
-		info, _ := e.Info()
+	for _, path := range discoverHandoffYAMLPaths(dir, entries) {
+		info, _ := os.Stat(path)
 
 		// Quick extract goal/now without full parse
-		goal, _, _ := r.extractGoalNowDirect(path)
+		goal, _, err := r.extractGoalNowDirect(path)
+		if err != nil {
+			continue
+		}
 
 		meta := HandoffMeta{
 			Path:    path,
 			Session: sessionName,
 			Goal:    goal,
-			IsAuto:  strings.HasPrefix(e.Name(), "auto-handoff-"),
+			IsAuto:  strings.HasPrefix(filepath.Base(path), "auto-handoff-"),
 		}
 
 		if info != nil {
@@ -377,9 +386,14 @@ func (r *Reader) ListSessions() ([]string, error) {
 
 	var sessions []string
 	for _, e := range entries {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-			sessions = append(sessions, e.Name())
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
 		}
+		h, _, err := r.FindLatest(e.Name())
+		if err != nil || h == nil {
+			continue
+		}
+		sessions = append(sessions, e.Name())
 	}
 
 	sort.Strings(sessions)
