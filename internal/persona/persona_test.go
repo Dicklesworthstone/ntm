@@ -1289,6 +1289,7 @@ func TestLoadRegistry_ProjectPersonaExtendsUserPersonaWithoutAgentType(t *testin
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	t.Setenv("NTM_CONFIG", filepath.Join(tmpDir, "custom-root", "config.toml"))
 
 	userContent := `
 [[personas]]

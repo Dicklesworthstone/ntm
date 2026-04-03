@@ -234,9 +234,11 @@ Examples:
 func resolveAssignProjectDir(session string) (string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		if err := tmux.ValidateSessionName(session); err != nil {
-			return "", fmt.Errorf("invalid session name: %w", err)
+		resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+		if err != nil {
+			return "", err
 		}
+		session = resolved
 	}
 
 	projectDir := resolveProjectDirForSession(session, true)

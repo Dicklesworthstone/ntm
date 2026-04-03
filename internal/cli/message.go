@@ -171,8 +171,13 @@ func resolveMessageScope(session string) (string, string, error) {
 	}
 
 	projectDir := ""
+	var err error
 	if session != "" {
-		projectDir = resolveProjectDirForSession(session, true)
+		projectDir, err = resolveExplicitProjectDirForSession(session)
+		if err != nil {
+			return "", "", err
+		}
+		projectDir = refineAgentMailProjectKey(session, projectDir)
 	} else {
 		projectDir = GetProjectRoot()
 	}
@@ -183,5 +188,16 @@ func resolveMessageScope(session string) (string, string, error) {
 	if session == "" {
 		session = defaultProjectScopedSession(projectDir)
 	}
-	return projectDir, fmt.Sprintf("ntm_%s", session), nil
+	projectDir = refineAgentMailProjectKey(session, projectDir)
+
+	if agentName := resolveSessionPaneAgentName(session, projectDir); agentName != "" {
+		return projectDir, agentName, nil
+	}
+
+	agentName := fmt.Sprintf("ntm_%s", session)
+	if info, err := agentmail.LoadBestSessionAgent(session, projectDir); err == nil && info != nil && strings.TrimSpace(info.AgentName) != "" {
+		agentName = info.AgentName
+	}
+
+	return projectDir, agentName, nil
 }

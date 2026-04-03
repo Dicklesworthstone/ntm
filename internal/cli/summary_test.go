@@ -152,7 +152,7 @@ func TestParseSummaryFormat(t *testing.T) {
 func TestResolveProjectDir_EmptySession(t *testing.T) {
 	t.Parallel()
 	wd := t.TempDir()
-	got, err := resolveProjectDir("", wd)
+	got, err := resolveProjectDir("", wd, false)
 	if err != nil {
 		t.Fatalf("resolveProjectDir empty session error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestResolveProjectDir_EmptySession(t *testing.T) {
 func TestResolveProjectDir_InvalidSession(t *testing.T) {
 	t.Parallel()
 	wd := t.TempDir()
-	_, err := resolveProjectDir("../escape", wd)
+	_, err := resolveProjectDir("../escape", wd, true)
 	if err == nil {
 		t.Fatal("expected invalid session error")
 	}
@@ -194,12 +194,76 @@ func TestResolveProjectDir_UsesConfiguredProjectPrefix(t *testing.T) {
 	}
 	defer os.Chdir(oldWd)
 
-	got, err := resolveProjectDir("mypro", wd)
+	got, err := resolveProjectDir("mypro", wd, true)
 	if err != nil {
 		t.Fatalf("resolveProjectDir() error = %v", err)
 	}
 	if got != projectDir {
 		t.Fatalf("resolveProjectDir() = %q, want %q", got, projectDir)
+	}
+}
+
+func TestResolveProjectDir_ExplicitRejectsWorkspaceFallback(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		_ = os.Chdir(origWd)
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	wd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wd, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir wd git: %v", err)
+	}
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	_, err := resolveProjectDir("ntm", wd, true)
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
+func TestResolveProjectDir_ExplicitUsesSavedSessionAgentProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		_ = os.Chdir(origWd)
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	wd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wd, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir wd git: %v", err)
+	}
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir actual git: %v", err)
+	}
+	saveSessionAgentForTest(t, "ntm", actualProject, "GreenCastle")
+
+	got, err := resolveProjectDir("ntm", wd, true)
+	if err != nil {
+		t.Fatalf("resolveProjectDir() error = %v", err)
+	}
+	if got != actualProject {
+		t.Fatalf("resolveProjectDir() = %q, want %q", got, actualProject)
 	}
 }
 

@@ -384,32 +384,73 @@ func LoadFromFile(path string) (*PersonasConfig, error) {
 	return &cfg, nil
 }
 
-// DefaultUserPath returns the default user personas file path.
-func DefaultUserPath() string {
+func userPathCandidates() []string {
+	seen := make(map[string]struct{})
+	candidates := make([]string, 0, 3)
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		clean := filepath.Clean(path)
+		if _, ok := seen[clean]; ok {
+			return
+		}
+		seen[clean] = struct{}{}
+		candidates = append(candidates, path)
+	}
+
 	if env := os.Getenv("NTM_CONFIG"); env != "" {
 		dir := filepath.Dir(env)
-		// Expand ~/ in path if present
+		// Expand ~/ in path if present.
 		if strings.HasPrefix(dir, "~/") {
 			if home, err := os.UserHomeDir(); err == nil {
 				dir = filepath.Join(home, dir[2:])
 			}
 		}
-		return filepath.Join(dir, "personas.toml")
+		add(filepath.Join(dir, "personas.toml"))
 	}
 
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "ntm", "personas.toml")
+		add(filepath.Join(xdg, "ntm", "personas.toml"))
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "" // Caller handles empty path gracefully (file won't exist)
+
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".config", "ntm", "personas.toml"))
 	}
-	return filepath.Join(home, ".config", "ntm", "personas.toml")
+
+	return candidates
+}
+
+// DefaultUserPath returns the default user personas file path.
+func DefaultUserPath() string {
+	candidates := userPathCandidates()
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
 }
 
 // DefaultProjectPath returns the default project personas file path.
 func DefaultProjectPath() string {
 	return ".ntm/personas.toml"
+}
+
+// LoadUserConfig loads the first available user personas config from the active
+// candidate path list. If no user personas file exists, it returns nil, "", nil.
+// If a candidate file exists but is invalid, it returns an error instead of
+// silently falling through to a later path.
+func LoadUserConfig() (*PersonasConfig, string, error) {
+	for _, path := range userPathCandidates() {
+		cfg, err := LoadFromFile(path)
+		if err == nil {
+			return cfg, path, nil
+		}
+		if os.IsNotExist(err) {
+			continue
+		}
+		return nil, path, fmt.Errorf("loading user personas: %w", err)
+	}
+	return nil, "", nil
 }
 
 // LoadRegistry loads personas from all sources and returns a registry.
@@ -425,17 +466,16 @@ func LoadRegistry(projectDir string) (*Registry, error) {
 		registry.AddSet(&s)
 	}
 
-	// 2. Load user personas (ignore file-not-found; invalid content is an error)
-	userPath := DefaultUserPath()
-	if cfg, err := LoadFromFile(userPath); err == nil {
+	// 2. Load user personas (missing is fine; invalid content is an error)
+	if cfg, _, err := LoadUserConfig(); err == nil && cfg != nil {
 		for i := range cfg.Personas {
 			registry.Add(&cfg.Personas[i])
 		}
 		for i := range cfg.PersonaSets {
 			registry.AddSet(&cfg.PersonaSets[i])
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("loading user personas: %w", err)
+	} else if err != nil {
+		return nil, err
 	}
 
 	// 3. Load project personas (ignore file-not-found; invalid content is an error)

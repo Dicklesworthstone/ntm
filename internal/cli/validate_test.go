@@ -322,6 +322,7 @@ extends = "base"
 			t.Fatalf("failed to create project persona dir: %v", err)
 		}
 		t.Setenv("XDG_CONFIG_HOME", xdgDir)
+		t.Setenv("NTM_CONFIG", filepath.Join(tmpDir, "custom-root", "config.toml"))
 
 		userContent := `
 [[personas]]
@@ -348,6 +349,52 @@ extends = "base"
 
 		if len(result.Errors) != 0 {
 			t.Fatalf("project persona extending user persona should not error: %v", result.Errors)
+		}
+	})
+
+	t.Run("project persona reports invalid active user personas file", func(t *testing.T) {
+		projectDir := filepath.Join(tmpDir, "invalid-user-project")
+		customRoot := filepath.Join(tmpDir, "custom-root-invalid")
+		if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0755); err != nil {
+			t.Fatalf("failed to create project persona dir: %v", err)
+		}
+		if err := os.MkdirAll(customRoot, 0755); err != nil {
+			t.Fatalf("failed to create custom config dir: %v", err)
+		}
+		t.Setenv("NTM_CONFIG", filepath.Join(customRoot, "config.toml"))
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "unused-xdg"))
+
+		userContent := `
+[[personas]]
+name = "broken"
+agent_type = "claude"
+legacy = true
+`
+		if err := os.WriteFile(filepath.Join(customRoot, "personas.toml"), []byte(userContent), 0644); err != nil {
+			t.Fatalf("failed to write invalid user personas: %v", err)
+		}
+
+		projectPath := filepath.Join(projectDir, ".ntm", "personas.toml")
+		projectContent := `
+[[personas]]
+name = "child"
+extends = "base"
+`
+		if err := os.WriteFile(projectPath, []byte(projectContent), 0644); err != nil {
+			t.Fatalf("failed to write project personas: %v", err)
+		}
+
+		result := &ValidationResult{Valid: true, Errors: []ValidationIssue{}, Warnings: []ValidationIssue{}}
+		validatePersonasFile(projectPath, result)
+
+		if len(result.Errors) == 0 {
+			t.Fatal("invalid active user personas file should produce errors")
+		}
+		if !strings.Contains(result.Errors[0].Message, "loading user personas") {
+			t.Fatalf("unexpected error: %v", result.Errors[0].Message)
+		}
+		if !strings.Contains(result.Errors[0].Message, "legacy") {
+			t.Fatalf("unexpected error: %v", result.Errors[0].Message)
 		}
 	})
 

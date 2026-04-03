@@ -76,7 +76,7 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 		return err
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session, projectKey)
+	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
 	}

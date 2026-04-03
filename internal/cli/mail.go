@@ -19,7 +19,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
-	utilpkg "github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func newMailCmd() *cobra.Command {
@@ -192,6 +191,31 @@ func resolveAgentMailScope(session string) (string, string, error) {
 	return resolveAgentMailScopeWithPreference(session, true)
 }
 
+func resolveAgentMailCommandScope(session string) (string, string, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return resolveAgentMailScope("")
+	}
+
+	resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+	if err != nil {
+		return "", "", err
+	}
+
+	if projectKey, err := resolveExplicitProjectDirForSession(resolved); err == nil {
+		projectKey = refineAgentMailProjectKey(resolved, projectKey)
+		if projectKey != "" {
+			return resolved, projectKey, nil
+		}
+	}
+
+	projectKey := refineAgentMailProjectKey(resolved, GetProjectRoot())
+	if projectKey == "" {
+		return "", "", fmt.Errorf("getting project root failed")
+	}
+	return resolved, projectKey, nil
+}
+
 func resolveAgentMailScopeWithPreference(session string, preferSession bool) (string, string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
@@ -200,7 +224,7 @@ func resolveAgentMailScopeWithPreference(session string, preferSession bool) (st
 			return "", "", err
 		}
 		session = resolved
-		projectKey := resolveProjectDirForSession(session, preferSession)
+		projectKey := resolveCommandProjectDirForSession(session, !preferSession)
 		projectKey = refineAgentMailProjectKey(session, projectKey)
 		if projectKey == "" {
 			return "", "", fmt.Errorf("getting project root failed")
@@ -220,10 +244,10 @@ func refineAgentMailProjectKey(sessionName, projectKey string) string {
 		return projectKey
 	}
 	if registry, err := agentmail.LoadBestSessionAgentRegistry(sessionName, projectKey); err == nil && registry != nil {
-		projectKey = utilpkg.BestProjectDir(projectKey, registry.ProjectKey)
+		projectKey = bestUsableProjectDir(registry.ProjectKey, projectKey)
 	}
 	if info, err := agentmail.LoadBestSessionAgent(sessionName, projectKey); err == nil && info != nil {
-		projectKey = utilpkg.BestProjectDir(projectKey, info.ProjectKey)
+		projectKey = bestUsableProjectDir(info.ProjectKey, projectKey)
 	}
 	return projectKey
 }
@@ -231,6 +255,10 @@ func refineAgentMailProjectKey(sessionName, projectKey string) string {
 // runMailInbox aggregates messages across agents and writes to cmd output.
 func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, sessionAgents bool, agentFilter string, urgent bool, limit int, jsonFmt bool) error {
 	preferSession := strings.TrimSpace(session) != ""
+	var (
+		projectKey string
+		err        error
+	)
 
 	// Filter to session agents if requested
 	if sessionAgents {
@@ -249,7 +277,11 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 		}
 	}
 
-	session, projectKey, err := resolveAgentMailScopeWithPreference(session, preferSession)
+	if strings.TrimSpace(session) == "" {
+		session, projectKey, err = resolveAgentMailScopeWithPreference(session, preferSession)
+	} else {
+		session, projectKey, err = resolveAgentMailCommandScope(session)
+	}
 	if err != nil {
 		return err
 	}
@@ -285,9 +317,10 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 		if err != nil {
 			return fmt.Errorf("getting session panes: %w", err)
 		}
+		registry, _ := agentmail.LoadBestSessionAgentRegistry(session, projectKey)
 		sessionSet := make(map[string]bool)
 		for _, p := range panes {
-			name := resolveAgentName(p)
+			name := resolvePaneAgentName(p, registry)
 			if name != "" {
 				sessionSet[name] = true
 			}
@@ -424,11 +457,10 @@ func newMailMarkCmd(action mailAction) *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
-			if agent == "" {
-				agent = os.Getenv("AGENT_NAME")
-			}
-			if agent == "" {
-				return fmt.Errorf("--agent is required (or set AGENT_NAME)")
+
+			resolvedAgent, err := resolveMailAgentIdentity(session, agent)
+			if err != nil {
+				return err
 			}
 			if limit <= 0 {
 				return fmt.Errorf("--limit must be greater than 0")
@@ -439,7 +471,7 @@ func newMailMarkCmd(action mailAction) *cobra.Command {
 				return err
 			}
 
-			return runMailMark(cmd, session, agent, action, ids, urgent, fromAgent, all, limit)
+			return runMailMark(cmd, session, resolvedAgent, action, ids, urgent, fromAgent, all, limit)
 		},
 	}
 
@@ -450,6 +482,76 @@ func newMailMarkCmd(action mailAction) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 50, "max messages to consider when using --all/filters")
 
 	return cmd
+}
+
+func resolveMailAgentIdentity(session, agent string) (string, error) {
+	agent = strings.TrimSpace(agent)
+	if agent != "" {
+		return agent, nil
+	}
+
+	resolvedSession, projectKey, err := resolveAgentMailCommandScope(session)
+	if err != nil {
+		return "", err
+	}
+	if agentName := resolveSessionPaneAgentName(resolvedSession, projectKey); agentName != "" {
+		return agentName, nil
+	}
+	if info, err := loadResolvedSessionAgent(resolvedSession, projectKey); err == nil && info != nil && strings.TrimSpace(info.AgentName) != "" {
+		return info.AgentName, nil
+	}
+
+	if envAgent := strings.TrimSpace(os.Getenv("AGENT_NAME")); envAgent != "" {
+		return envAgent, nil
+	}
+
+	return "", fmt.Errorf("--agent is required (or set AGENT_NAME)")
+}
+
+func loadResolvedSessionAgent(session, projectKey string) (*agentmail.SessionAgentInfo, error) {
+	if strings.TrimSpace(session) == "" {
+		return nil, nil
+	}
+	return agentmail.LoadBestSessionAgent(session, projectKey)
+}
+
+func resolveSessionPaneAgentName(session, projectKey string) string {
+	if strings.TrimSpace(session) == "" {
+		return ""
+	}
+	paneID := strings.TrimSpace(os.Getenv("TMUX_PANE"))
+	if paneID == "" {
+		return ""
+	}
+
+	registry, err := agentmail.LoadBestSessionAgentRegistry(session, projectKey)
+	if err != nil || registry == nil {
+		return ""
+	}
+	if name, ok := registry.GetAgent("", paneID); ok && strings.TrimSpace(name) != "" {
+		return name
+	}
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return ""
+	}
+	for _, pane := range panes {
+		if pane.ID != paneID {
+			continue
+		}
+		return resolvePaneAgentName(pane, registry)
+	}
+	return ""
+}
+
+func resolvePaneAgentName(p tmux.Pane, registry *agentmail.SessionAgentRegistry) string {
+	if registry != nil {
+		if name, ok := registry.GetAgent(p.Title, p.ID); ok && strings.TrimSpace(name) != "" {
+			return name
+		}
+	}
+	return resolveAgentName(p)
 }
 
 // parseMessageIDs converts a slice of strings to ints.
@@ -478,7 +580,7 @@ type markSummary struct {
 }
 
 func runMailMark(cmd *cobra.Command, session, agent string, action mailAction, ids []int, urgent bool, fromAgent string, all bool, limit int) error {
-	_, projectKey, err := resolveAgentMailScope(session)
+	_, projectKey, err := resolveAgentMailCommandScope(session)
 	if err != nil {
 		return err
 	}
@@ -595,7 +697,7 @@ func mailMessageMatchesAction(msg agentmail.InboxMessage, action mailAction) boo
 
 // runMailSendOverseer sends a Human Overseer message via the Agent Mail HTTP API.
 func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subject, body, threadID string, all bool) error {
-	resolvedSession, projectKey, err := resolveAgentMailScope(session)
+	resolvedSession, projectKey, err := resolveAgentMailCommandScope(session)
 	if err != nil {
 		return err
 	}

@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -174,5 +176,69 @@ func TestNormalizedProviderName_CanonicalizesFallbacks(t *testing.T) {
 				t.Fatalf("normalizedProviderName(%q) = %q, want %q", tt.agentType, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveRotationProjectDirRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveRotationProjectDir("ntm", false)
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
+func TestResolveRotationProjectDirAllowsWorkspaceFallbackForInferredSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveRotationProjectDir("ntm", true)
+	if err != nil {
+		t.Fatalf("resolveRotationProjectDir() error = %v", err)
+	}
+	if got != cwdRepo {
+		t.Fatalf("resolveRotationProjectDir() = %q, want %q", got, cwdRepo)
 	}
 }

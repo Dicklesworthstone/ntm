@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // MockMailClient implements MailClient interface for testing
@@ -210,5 +214,69 @@ func TestRunMailInbox(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunMailInboxSessionAgentsUsesSavedRegistryIdentity(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	isolateSessionAgentStorage(t)
+
+	projectsBase := t.TempDir()
+	projectKey := filepath.Join(projectsBase, "mailinboxregistry")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	session := "mailinboxregistry"
+	_ = tmux.KillSession(session)
+	if err := tmux.CreateSession(session, projectKey); err != nil {
+		t.Fatalf("CreateSession(%q): %v", session, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("GetPanes(%q): %v", session, err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("expected at least one pane")
+	}
+
+	saveSessionAgentRegistryForTest(t, session, projectKey, "", panes[0].ID, "GreenCastle")
+
+	client := &MockMailClient{
+		Available: true,
+		ProjKey:   projectKey,
+		Agents: []agentmail.Agent{
+			{Name: "GreenCastle"},
+		},
+		Inboxes: map[string][]agentmail.InboxMessage{
+			"GreenCastle": {
+				{
+					ID:         7,
+					Subject:    "Registry scoped message",
+					From:       "BlueLake",
+					CreatedTS:  agentmail.FlexTime{Time: time.Now()},
+					Importance: "normal",
+				},
+			},
+		},
+	}
+
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runMailInbox(cmd, client, session, true, "", false, 10, false); err != nil {
+		t.Fatalf("runMailInbox() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Registry scoped message") {
+		t.Fatalf("expected registry-backed message in output, got:\n%s", output)
 	}
 }

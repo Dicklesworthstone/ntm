@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -587,20 +586,21 @@ func shouldStartInternalMonitor() bool {
 
 // SpawnOptions configures session creation and agent spawning
 type SpawnOptions struct {
-	Session       string
-	Agents        []FlatAgent
-	CCCount       int
-	CodCount      int
-	GmiCount      int
-	CursorCount   int
-	WindsurfCount int
-	AiderCount    int
-	OllamaCount   int
-	UserPane      bool
-	AutoRestart   bool
-	RecipeName    string
-	PersonaMap    map[string]*persona.Persona
-	PluginMap     map[string]plugins.AgentPlugin
+	Session            string
+	ProjectDirOverride string
+	Agents             []FlatAgent
+	CCCount            int
+	CodCount           int
+	GmiCount           int
+	CursorCount        int
+	WindsurfCount      int
+	AiderCount         int
+	OllamaCount        int
+	UserPane           bool
+	AutoRestart        bool
+	RecipeName         string
+	PersonaMap         map[string]*persona.Persona
+	PluginMap          map[string]plugins.AgentPlugin
 
 	// Profile mapping: list of persona names to map to agents in order
 	ProfileList []*persona.Persona
@@ -1346,7 +1346,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		totalAgents = len(opts.Agents)
 	}
 
-	dir, err := resolveCreationProjectDirForSession(opts.Session)
+	dir, err := resolveSpawnProjectDir(opts)
 	if err != nil {
 		return outputError(err)
 	}
@@ -2161,7 +2161,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			if err == nil {
 				// Kill any existing monitor to prevent duplicates
 				if isMonitorAlive(opts.Session) {
-					_ = exec.Command("pkill", "-f", `\bntm\s+internal-monitor\s+`+regexp.QuoteMeta(opts.Session)).Run()
+					_ = exec.Command("pkill", "-f", monitorProcessPattern(opts.Session)).Run()
 					time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
 				}
 
@@ -2545,6 +2545,17 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 	}
 
 	return nil
+}
+
+func resolveSpawnProjectDir(opts SpawnOptions) (string, error) {
+	projectDir := strings.TrimSpace(opts.ProjectDirOverride)
+	if projectDir != "" {
+		if !filepath.IsAbs(projectDir) {
+			return "", fmt.Errorf("spawn project dir override must be absolute")
+		}
+		return filepath.Clean(projectDir), nil
+	}
+	return resolveCreationProjectDirForSession(opts.Session)
 }
 
 func appendOllamaAgentSpecs(agentSpecs *AgentSpecs, localCount, ollamaCount int, localModel string) (string, error) {
@@ -3259,7 +3270,7 @@ func loadRecoveryMessages(ctx context.Context, sessionName, workingDir string) (
 }
 
 func resolveRecoveryAgentName(sessionName, workingDir string) string {
-	info, err := agentmail.LoadSessionAgent(sessionName, workingDir)
+	info, err := loadResolvedSessionAgent(sessionName, workingDir)
 	if err == nil && info != nil && info.AgentName != "" {
 		return info.AgentName
 	}

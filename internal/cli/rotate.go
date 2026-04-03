@@ -58,7 +58,7 @@ Examples:
 			session = res.Session
 
 			if allLimited {
-				return rotateAllLimited(session, targetAccount, dryRun)
+				return rotateAllLimited(session, targetAccount, dryRun, res.Inferred)
 			}
 
 			if paneIndex < 0 {
@@ -111,7 +111,7 @@ Examples:
 			if preserveContext {
 				return executeReauthRotation(session, paneIndex, paneID, provider, time.Duration(timeout)*time.Second)
 			}
-			return executeRestartRotation(session, paneIndex, paneID, provider, targetAccount, modelAlias)
+			return executeRestartRotation(session, paneIndex, paneID, provider, targetAccount, modelAlias, res.Inferred)
 		},
 	}
 
@@ -130,7 +130,7 @@ Examples:
 	return cmd
 }
 
-func rotateAllLimited(session, targetAccount string, dryRun bool) error {
+func rotateAllLimited(session, targetAccount string, dryRun bool, inferred bool) error {
 	// 1. Identify limited panes
 	fmt.Printf("Scanning session '%s' for rate-limited panes...\n", session)
 	panes, err := tmux.GetPanes(session)
@@ -198,7 +198,10 @@ func rotateAllLimited(session, targetAccount string, dryRun bool) error {
 
 	// Batch Rotation Flow
 	orchestrator := auth.NewOrchestrator(cfg)
-	projectDir := resolveProjectDirForSession(session, true)
+	projectDir, err := resolveRotationProjectDir(session, inferred)
+	if err != nil {
+		return err
+	}
 
 	// 1. Terminate all
 	fmt.Println("\nStep 1/3: Terminating sessions...")
@@ -254,10 +257,21 @@ func rotateAllLimited(session, targetAccount string, dryRun bool) error {
 	return nil
 }
 
-func executeRestartRotation(session string, paneIdx int, paneID, provider, targetAccount, modelAlias string) error {
+func resolveRotationProjectDir(session string, inferred bool) (string, error) {
+	projectDir := resolveCommandProjectDirForSession(session, inferred)
+	if projectDir == "" {
+		return "", fmt.Errorf("getting project root failed")
+	}
+	return projectDir, nil
+}
+
+func executeRestartRotation(session string, paneIdx int, paneID, provider, targetAccount, modelAlias string, inferred bool) error {
 	// Initialize Orchestrator
 	orchestrator := auth.NewOrchestrator(cfg)
-	projectDir := resolveProjectDirForSession(session, true)
+	projectDir, err := resolveRotationProjectDir(session, inferred)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("╔════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║  ACCOUNT ROTATION - Restart Strategy                   ║\n")

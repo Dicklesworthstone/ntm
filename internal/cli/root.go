@@ -2503,9 +2503,9 @@ func resolveRobotSessionProjectScope(sessionName string) (string, string, error)
 		return "", "", err
 	}
 
-	projectDir := resolveProjectDirForSession(resolved, true)
-	if projectDir == "" {
-		return "", "", fmt.Errorf("getting project root failed")
+	projectDir, err := resolveExplicitProjectDirForSession(resolved)
+	if err != nil {
+		return "", "", err
 	}
 
 	return resolved, projectDir, nil

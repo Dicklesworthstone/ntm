@@ -95,7 +95,7 @@ func runSummary(args []string, sinceStr, format string, recent, regenerate bool)
 	}
 
 	wd, _ := os.Getwd()
-	projectDir, err := resolveProjectDir(sessionArg, wd)
+	projectDir, err := resolveProjectDir(sessionArg, wd, strings.TrimSpace(sessionArg) != "")
 	if err != nil {
 		return err
 	}
@@ -151,7 +151,7 @@ func runSummary(args []string, sinceStr, format string, recent, regenerate bool)
 	}
 	res.ExplainIfInferred(os.Stderr)
 	session := res.Session
-	projectDir, err = resolveProjectDir(session, wd)
+	projectDir, err = resolveProjectDir(session, wd, !res.Inferred)
 	if err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func runSummaryList(format string) error {
 	}
 
 	wd, _ := os.Getwd()
-	projectDir, err := resolveProjectDir("", wd)
+	projectDir, err := resolveProjectDir("", wd, false)
 	if err != nil {
 		return err
 	}
@@ -248,14 +248,21 @@ func parseSummaryFormat(format string) (summary.SummaryFormat, bool, error) {
 	}
 }
 
-func resolveProjectDir(session, wd string) (string, error) {
+func resolveProjectDir(session, wd string, explicit bool) (string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
 		resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
 		if err != nil {
 			return "", err
 		}
-		if dir := resolveProjectDirForSession(resolved, true); dir != "" {
+		if explicit {
+			dir, err := resolveExplicitProjectDirForSession(resolved)
+			if err != nil {
+				return "", err
+			}
+			return dir, nil
+		}
+		if dir := resolveCommandProjectDirForSession(resolved, true); dir != "" {
 			return dir, nil
 		}
 	}
@@ -417,7 +424,7 @@ func regenerateSummaryFromArchive(sessionArg string, format summary.SummaryForma
 		sessionName = sessionArg
 	}
 	if projectDir == "" {
-		projectDir, err = resolveProjectDir(sessionName, wd)
+		projectDir, err = resolveProjectDir(sessionName, wd, strings.TrimSpace(sessionArg) != "")
 		if err != nil {
 			return err
 		}

@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -101,5 +104,89 @@ func TestFilterPanesCanonicalizesAliases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveWatchProjectDir_ExplicitUsesSavedSessionProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saveSessionAgentForTest(t, "ntm", actualProject, "GreenCastle")
+
+	got, err := resolveWatchProjectDir("ntm", false)
+	if err != nil {
+		t.Fatalf("resolveWatchProjectDir() error = %v", err)
+	}
+	if got != actualProject {
+		t.Fatalf("resolveWatchProjectDir() = %q, want %q", got, actualProject)
+	}
+}
+
+func TestResolveWatchProjectDir_ExplicitRejectsWorkspaceFallback(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := resolveWatchProjectDir("ntm", false); err == nil {
+		t.Fatal("expected missing project root error")
+	}
+}
+
+func TestWatchEventMatchesPattern_UsesWatchRootRelativePath(t *testing.T) {
+	t.Parallel()
+
+	watchRoot := filepath.Join(string(filepath.Separator), "tmp", "actual-project")
+	eventPath := filepath.Join(watchRoot, "internal", "cli", "watch.go")
+	if !watchEventMatchesPattern("internal/cli/*.go", watchRoot, eventPath) {
+		t.Fatalf("watchEventMatchesPattern should match nested path relative to watch root")
+	}
+}
+
+func TestWatchEventMatchesPattern_RejectsOutsideWatchRoot(t *testing.T) {
+	t.Parallel()
+
+	watchRoot := filepath.Join(string(filepath.Separator), "tmp", "actual-project")
+	eventPath := filepath.Join(string(filepath.Separator), "tmp", "other-project", "internal", "cli", "watch.go")
+	if watchEventMatchesPattern("internal/cli/*.go", watchRoot, eventPath) {
+		t.Fatalf("watchEventMatchesPattern should reject paths outside the watch root")
 	}
 }

@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
@@ -226,5 +229,74 @@ func TestFormatAgentTypeCanonicalizesAliases(t *testing.T) {
 	got = formatAgentType("ws", theme.Plain, icons.ASCII)
 	if got != "W windsurf" {
 		t.Errorf("formatAgentType() = %q, want %q", got, "W windsurf")
+	}
+}
+
+func TestDetermineSourceUsesUserConfigFallbackPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	userDir := filepath.Join(tmpDir, "xdg", "ntm")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(project) failed: %v", err)
+	}
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(user) failed: %v", err)
+	}
+
+	t.Setenv("NTM_CONFIG", filepath.Join(tmpDir, "custom-root", "config.toml"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
+
+	content := `
+[[personas]]
+name = "user-only"
+agent_type = "claude"
+system_prompt = "prompt"
+`
+	userPath := filepath.Join(userDir, "personas.toml")
+	if err := os.WriteFile(userPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(user personas) failed: %v", err)
+	}
+
+	got := determineSourceFromProjectDir("user-only", projectDir)
+	if !strings.Contains(got, userPath) {
+		t.Fatalf("determineSourceFromProjectDir() = %q, want path containing %q", got, userPath)
+	}
+}
+
+func TestDetermineSourcePrefersProjectOverBuiltinAndUser(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	userDir := filepath.Join(tmpDir, "xdg", "ntm")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(project) failed: %v", err)
+	}
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(user) failed: %v", err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
+
+	userContent := `
+[[personas]]
+name = "architect"
+agent_type = "claude"
+system_prompt = "user override"
+`
+	if err := os.WriteFile(filepath.Join(userDir, "personas.toml"), []byte(userContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(user personas) failed: %v", err)
+	}
+
+	projectContent := `
+[[personas]]
+name = "architect"
+agent_type = "codex"
+system_prompt = "project override"
+`
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "personas.toml"), []byte(projectContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(project personas) failed: %v", err)
+	}
+
+	if got := determineSourceFromProjectDir("architect", projectDir); got != "project (.ntm/personas.toml)" {
+		t.Fatalf("determineSourceFromProjectDir() = %q, want %q", got, "project (.ntm/personas.toml)")
 	}
 }

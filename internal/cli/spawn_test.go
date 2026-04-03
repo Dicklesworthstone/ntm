@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,48 @@ import (
 func TestShouldStartInternalMonitor_IsDisabledUnderGoTest(t *testing.T) {
 	if shouldStartInternalMonitor() {
 		t.Fatal("expected internal monitor to be disabled under go test")
+	}
+}
+
+func TestResolveSpawnProjectDirUsesOverride(t *testing.T) {
+	projectDir := t.TempDir()
+
+	got, err := resolveSpawnProjectDir(SpawnOptions{
+		Session:            "resume-target",
+		ProjectDirOverride: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("resolveSpawnProjectDir() error = %v", err)
+	}
+	if got != projectDir {
+		t.Fatalf("project dir = %q, want %q", got, projectDir)
+	}
+}
+
+func TestResolveSpawnProjectDirRejectsRelativeOverride(t *testing.T) {
+	_, err := resolveSpawnProjectDir(SpawnOptions{
+		Session:            "resume-target",
+		ProjectDirOverride: "relative/project",
+	})
+	if err == nil {
+		t.Fatal("expected relative override error")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("expected absolute-path error, got %v", err)
+	}
+}
+
+func TestMonitorProcessPattern_MatchesExactSessionOnly(t *testing.T) {
+	pattern := regexp.MustCompile(monitorProcessPatternForExecutable("/usr/local/bin/ntm-dev", "proj"))
+
+	if !pattern.MatchString("/usr/local/bin/ntm-dev internal-monitor proj") {
+		t.Fatal("expected exact executable/session monitor command to match")
+	}
+	if pattern.MatchString("/usr/local/bin/ntm-dev internal-monitor proj2") {
+		t.Fatal("expected prefix-sharing session name not to match")
+	}
+	if pattern.MatchString("/usr/local/bin/ntm-dev2 internal-monitor proj") {
+		t.Fatal("expected prefix-sharing executable name not to match")
 	}
 }
 

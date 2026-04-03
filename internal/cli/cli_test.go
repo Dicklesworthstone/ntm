@@ -97,6 +97,28 @@ func resetFlags() {
 	robotFormat = ""
 }
 
+func isolateSessionAgentStorage(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
+func createCLIWorkspaceProjectRoot(t *testing.T) (string, string) {
+	t.Helper()
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace git dir: %v", err)
+	}
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested workspace dir: %v", err)
+	}
+
+	return root, nested
+}
+
 func TestResolveRobotFormat_DefaultAuto(t *testing.T) {
 	resetFlags()
 	t.Setenv("NTM_ROBOT_FORMAT", "")
@@ -196,6 +218,8 @@ func TestRunQuickUsesDefaultProjectsBaseWhenConfigNil(t *testing.T) {
 }
 
 func TestResolveMessageScopeUsesSessionProjectDir(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, "mysession")
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
@@ -225,7 +249,33 @@ func TestResolveMessageScopeUsesSessionProjectDir(t *testing.T) {
 	}
 }
 
+func TestResolveMessageScopeRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	_, _, err := resolveMessageScope("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
 func TestResolveMessageScopeFallsBackToProjectRoot(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	projectDir := t.TempDir()
 
 	oldWd, _ := os.Getwd()
@@ -249,6 +299,7 @@ func TestResolveMessageScopeFallsBackToProjectRoot(t *testing.T) {
 
 func TestResolveMessageScopeInfersLabeledSessionFromCurrentProject(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
+	isolateSessionAgentStorage(t)
 
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, "messageproject")
@@ -287,6 +338,8 @@ func TestResolveMessageScopeInfersLabeledSessionFromCurrentProject(t *testing.T)
 }
 
 func TestResolveMessageScopeNormalizesExplicitPrefix(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, "messageprefix")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -313,6 +366,117 @@ func TestResolveMessageScopeNormalizesExplicitPrefix(t *testing.T) {
 	}
 	if gotAgent != "ntm_messageprefix" {
 		t.Fatalf("agent name = %q, want %q", gotAgent, "ntm_messageprefix")
+	}
+}
+
+func TestResolveMessageScopeUsesSavedSessionAgentIdentity(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	projectsBase := t.TempDir()
+	resolvedProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(resolvedProject, 0o755); err != nil {
+		t.Fatalf("mkdir resolved project: %v", err)
+	}
+	actualProject := t.TempDir()
+	saveSessionAgentForTest(t, "mysession", actualProject, "GreenCastle")
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, gotAgent, err := resolveMessageScope("mysession")
+	if err != nil {
+		t.Fatalf("resolveMessageScope() error = %v", err)
+	}
+	if gotDir != actualProject {
+		t.Fatalf("project dir = %q, want %q", gotDir, actualProject)
+	}
+	if gotAgent != "GreenCastle" {
+		t.Fatalf("agent name = %q, want %q", gotAgent, "GreenCastle")
+	}
+}
+
+func TestResolveMessageScopeUsesSavedSessionAgentWhenInferringSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	projectDir := t.TempDir()
+	session := filepath.Base(projectDir)
+	saveSessionAgentForTest(t, session, projectDir, "BlueLake")
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, gotAgent, err := resolveMessageScope("")
+	if err != nil {
+		t.Fatalf("resolveMessageScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	if gotAgent != "BlueLake" {
+		t.Fatalf("agent name = %q, want %q", gotAgent, "BlueLake")
+	}
+}
+
+func TestResolveMessageScopeUsesCurrentPaneRegistryIdentity(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	isolateSessionAgentStorage(t)
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "messagepaneidentity")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	session := "messagepaneidentity"
+	_ = tmux.KillSession(session)
+	if err := tmux.CreateSession(session, projectDir); err != nil {
+		t.Fatalf("CreateSession(%q): %v", session, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("GetPanes(%q): %v", session, err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("expected at least one pane")
+	}
+
+	saveSessionAgentForTest(t, session, projectDir, "BlueLake")
+	saveSessionAgentRegistryForTest(t, session, projectDir, "", panes[0].ID, "GreenCastle")
+	t.Setenv("TMUX_PANE", panes[0].ID)
+
+	gotDir, gotAgent, err := resolveMessageScope(session)
+	if err != nil {
+		t.Fatalf("resolveMessageScope() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+	if gotAgent != "GreenCastle" {
+		t.Fatalf("agent name = %q, want %q", gotAgent, "GreenCastle")
 	}
 }
 
@@ -350,6 +514,30 @@ func TestResolvePipelineProjectDirForSessionUsesSessionProjectDir(t *testing.T) 
 	}
 	if gotDir != projectDir {
 		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+}
+
+func TestResolvePipelineProjectDirForSessionRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	_, err := resolvePipelineProjectDirForSession("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
 	}
 }
 
@@ -422,6 +610,30 @@ func TestResolveRobotSessionProjectScopeNormalizesExplicitPrefix(t *testing.T) {
 	}
 	if gotDir != projectDir {
 		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+}
+
+func TestResolveRobotSessionProjectScopeRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotSession, gotDir, err := resolveRobotSessionProjectScope("robotmissing")
+	if err == nil {
+		t.Fatalf("expected missing session project error, got session=%q dir=%q", gotSession, gotDir)
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
 	}
 }
 
@@ -566,6 +778,30 @@ func TestResolveWorktreeScopeUsesSessionProjectDir(t *testing.T) {
 	}
 }
 
+func TestResolveWorktreeScopeRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	_, _, err := resolveWorktreeScope("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
 func TestResolveWorktreeScopeFallsBackToProjectRoot(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -665,6 +901,30 @@ func TestResolveContextBuildScopeUsesCurrentSessionProjectDir(t *testing.T) {
 	}
 }
 
+func TestResolveContextBuildScopeRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	_, _, err := resolveContextBuildScope("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
 func TestResolveContextBuildScopeFallsBackToProjectRoot(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -734,6 +994,44 @@ func TestResolveContextBuildScopeRejectsInvalidSessionName(t *testing.T) {
 	}
 }
 
+func TestResolveContextBuildScopeUsesSavedSessionAgentProjectKey(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	projectsBase := t.TempDir()
+	resolvedProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(resolvedProject, 0o755); err != nil {
+		t.Fatalf("mkdir resolved project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir actual project git dir: %v", err)
+	}
+	saveSessionAgentForTest(t, "mysession", actualProject, "GreenCastle")
+
+	gotDir, gotSession, err := resolveContextBuildScope("mysession")
+	if err != nil {
+		t.Fatalf("resolveContextBuildScope() error = %v", err)
+	}
+	if gotDir != actualProject {
+		t.Fatalf("project dir = %q, want saved session agent project %q", gotDir, actualProject)
+	}
+	if gotSession != "mysession" {
+		t.Fatalf("session = %q, want %q", gotSession, "mysession")
+	}
+}
+
 func TestResolveEnsembleProjectDirForSessionUsesSessionProjectDir(t *testing.T) {
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, "mysession")
@@ -753,6 +1051,57 @@ func TestResolveEnsembleProjectDirForSessionUsesSessionProjectDir(t *testing.T) 
 	defer os.Chdir(oldWd)
 
 	gotDir, err := resolveEnsembleProjectDirForSession("mysession")
+	if err != nil {
+		t.Fatalf("resolveEnsembleProjectDirForSession() error = %v", err)
+	}
+	if gotDir != projectDir {
+		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+}
+
+func TestResolveEnsembleProjectDirForSessionRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	_, err := resolveEnsembleProjectDirForSession("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
+func TestResolveEnsembleProjectDirForSessionResolvesProjectScopedPrefix(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "myproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	gotDir, err := resolveEnsembleProjectDirForSession("mypro")
 	if err != nil {
 		t.Fatalf("resolveEnsembleProjectDirForSession() error = %v", err)
 	}
@@ -887,6 +1236,33 @@ func TestResolvePipelineProjectDirForSessionFallsBackToProjectRootFromNestedDir(
 	}
 }
 
+func TestResolvePipelineProjectDirForSessionResolvesProjectScopedPrefix(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "myproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	got, err := resolvePipelineProjectDirForSession("mypro")
+	if err != nil {
+		t.Fatalf("resolvePipelineProjectDirForSession() error = %v", err)
+	}
+	if got != projectDir {
+		t.Fatalf("project dir = %q, want %q", got, projectDir)
+	}
+}
+
 func TestResolvePipelineSessionRejectsInvalidSessionName(t *testing.T) {
 	_, err := resolvePipelineSession("../escape", nil)
 	if err == nil {
@@ -924,6 +1300,30 @@ func TestResolveResumeScopeUsesSessionProjectDir(t *testing.T) {
 	}
 	if got != projectDir {
 		t.Fatalf("project dir = %q, want %q", got, projectDir)
+	}
+}
+
+func TestResolveResumeScopeRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	_, _, err := resolveResumeScope("mysession", true)
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
 	}
 }
 
@@ -965,6 +1365,48 @@ func TestResolveResumeScopeResolvesStoredHandoffSessionPrefix(t *testing.T) {
 	}
 	if gotDir != projectDir {
 		t.Fatalf("project dir = %q, want %q", gotDir, projectDir)
+	}
+}
+
+func TestResolveResumeSourceProjectDirUsesHandoffSourceProject(t *testing.T) {
+	sourceProject := t.TempDir()
+	handoffPath := filepath.Join(sourceProject, ".ntm", "handoffs", "sourcesession", "2026-04-03-1200.yaml")
+	if err := os.MkdirAll(filepath.Dir(handoffPath), 0o755); err != nil {
+		t.Fatalf("mkdir handoff dir: %v", err)
+	}
+	if err := os.WriteFile(handoffPath, []byte("goal: test\nnow: now\n"), 0o644); err != nil {
+		t.Fatalf("write handoff: %v", err)
+	}
+
+	projectsBase := t.TempDir()
+	staleProject := filepath.Join(projectsBase, "newsession")
+	if err := os.MkdirAll(staleProject, 0o755); err != nil {
+		t.Fatalf("mkdir stale project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	projectDir, err := resolveResumeSourceProjectDir("newsession", "sourcesession", handoffPath, true)
+	if err != nil {
+		t.Fatalf("resolveResumeSourceProjectDir() error = %v", err)
+	}
+	if projectDir != sourceProject {
+		t.Fatalf("project dir = %q, want %q", projectDir, sourceProject)
+	}
+}
+
+func TestProjectDirFromHandoffPathSupportsArchive(t *testing.T) {
+	projectDir := t.TempDir()
+	archivedPath := filepath.Join(projectDir, ".ntm", "handoffs", "mysession", ".archive", "2026-04-03-1200.yaml")
+
+	got, ok := projectDirFromHandoffPath(archivedPath)
+	if !ok {
+		t.Fatal("expected project dir to be inferred from archived handoff path")
+	}
+	if got != projectDir {
+		t.Fatalf("project dir = %q, want %q", got, projectDir)
 	}
 }
 
@@ -1973,6 +2415,111 @@ func TestStatusCmdRequiresArg(t *testing.T) {
 	}
 }
 
+func TestResolveAddSetupScopeResolvesProjectScopedPrefix(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	origWd, _ := os.Getwd()
+	cfg = config.Default()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		_ = os.Chdir(origWd)
+	})
+
+	base := t.TempDir()
+	projectsBase := filepath.Join(base, "projects")
+	projectDir := filepath.Join(projectsBase, "demo")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".beads"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(project .beads) failed: %v", err)
+	}
+	cfg.ProjectsBase = projectsBase
+
+	unrelatedWd := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(unrelatedWd, 0o755); err != nil {
+		t.Fatalf("MkdirAll(unrelated wd) failed: %v", err)
+	}
+	if err := os.Chdir(unrelatedWd); err != nil {
+		t.Fatalf("Chdir(unrelated wd) failed: %v", err)
+	}
+
+	resolvedSession, dir, err := resolveAddSetupScope("de")
+	if err == nil {
+		if resolvedSession != "demo" {
+			t.Fatalf("resolved session = %q, want %q", resolvedSession, "demo")
+		}
+		if dir != projectDir {
+			t.Fatalf("project dir = %q, want %q", dir, projectDir)
+		}
+		return
+	}
+	t.Fatalf("resolveAddSetupScope() error = %v", err)
+}
+
+func TestResolveAddSetupScopeRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	origWd, _ := os.Getwd()
+	cfg = config.Default()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		_ = os.Chdir(origWd)
+	})
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+	cfg.ProjectsBase = filepath.Join(root, "projects-base")
+
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("Chdir(workspace nested) failed: %v", err)
+	}
+
+	_, _, err := resolveAddSetupScope("demo")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if got := err.Error(); !strings.Contains(got, "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
+func TestResolveAddSetupScopeRejectsAmbiguousProjectScopedPrefix(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	origWd, _ := os.Getwd()
+	cfg = config.Default()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		_ = os.Chdir(origWd)
+	})
+
+	base := t.TempDir()
+	projectsBase := filepath.Join(base, "projects")
+	for _, name := range []string{"demo", "design"} {
+		projectDir := filepath.Join(projectsBase, name)
+		if err := os.MkdirAll(projectDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s project dir) failed: %v", name, err)
+		}
+	}
+	cfg.ProjectsBase = projectsBase
+
+	unrelatedWd := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(unrelatedWd, 0o755); err != nil {
+		t.Fatalf("MkdirAll(unrelated wd) failed: %v", err)
+	}
+	if err := os.Chdir(unrelatedWd); err != nil {
+		t.Fatalf("Chdir(unrelated wd) failed: %v", err)
+	}
+
+	_, _, err := resolveAddSetupScope("de")
+	if err == nil {
+		t.Fatal("expected ambiguous prefix error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ambiguous") {
+		t.Fatalf("expected ambiguous prefix error, got %v", err)
+	}
+}
+
 // TestAddCmdRequiresSession tests add command requires session name
 func TestAddCmdRequiresSession(t *testing.T) {
 	resetFlags()
@@ -2392,6 +2939,8 @@ Use project palette.
 }
 
 func TestPaletteConfigContextDirPrefersExplicitSessionProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	oldCfg := cfg
 	oldCfgFile := cfgFile
 	origWd, _ := os.Getwd()
@@ -2409,6 +2958,9 @@ func TestPaletteConfigContextDirPrefersExplicitSessionProject(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(project dir) failed: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".beads"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(project beads dir) failed: %v", err)
+	}
 	cfg.ProjectsBase = projectsBase
 
 	unrelatedWd := filepath.Join(base, "elsewhere")
@@ -2419,12 +2971,90 @@ func TestPaletteConfigContextDirPrefersExplicitSessionProject(t *testing.T) {
 		t.Fatalf("Chdir(unrelated wd) failed: %v", err)
 	}
 
-	if got := paletteConfigContextDir("ntm", true); got != projectDir {
+	got, err := paletteConfigContextDir("ntm", true)
+	if err != nil {
+		t.Fatalf("paletteConfigContextDir() error = %v", err)
+	}
+	if got != projectDir {
 		t.Fatalf("paletteConfigContextDir() = %q, want %q", got, projectDir)
 	}
 }
 
+func TestPaletteConfigContextDirResolvesProjectScopedPrefix(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	oldCfgFile := cfgFile
+	origWd, _ := os.Getwd()
+	cfgFile = ""
+	cfg = config.Default()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		_ = os.Chdir(origWd)
+	})
+
+	base := t.TempDir()
+	projectsBase := filepath.Join(base, "projects")
+	projectDir := filepath.Join(projectsBase, "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(project dir) failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".beads"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(project beads dir) failed: %v", err)
+	}
+	cfg.ProjectsBase = projectsBase
+
+	unrelatedWd := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(unrelatedWd, 0o755); err != nil {
+		t.Fatalf("MkdirAll(unrelated wd) failed: %v", err)
+	}
+	if err := os.Chdir(unrelatedWd); err != nil {
+		t.Fatalf("Chdir(unrelated wd) failed: %v", err)
+	}
+
+	got, err := paletteConfigContextDir("de", true)
+	if err != nil {
+		t.Fatalf("paletteConfigContextDir() error = %v", err)
+	}
+	if got != projectDir {
+		t.Fatalf("paletteConfigContextDir() = %q, want %q", got, projectDir)
+	}
+}
+
+func TestPaletteConfigContextDirRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	oldCfgFile := cfgFile
+	origWd, _ := os.Getwd()
+	cfgFile = ""
+	cfg = config.Default()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		_ = os.Chdir(origWd)
+	})
+
+	root, nested := createCLIWorkspaceProjectRoot(t)
+	cfg.ProjectsBase = filepath.Join(root, "projects-base")
+
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("Chdir(workspace nested) failed: %v", err)
+	}
+
+	_, err := paletteConfigContextDir("demo", true)
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
 func TestLoadPaletteRuntimeConfigPrefersExplicitSessionProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	oldCfg := cfg
 	oldCfgFile := cfgFile
 	origWd, _ := os.Getwd()
@@ -2490,6 +3120,57 @@ Use project palette.
 	}
 	if !found {
 		t.Fatalf("expected runtime palette to include project_cmd, got %#v", loaded.Palette)
+	}
+}
+
+func TestLoadPaletteRuntimeConfigRejectsAmbiguousExplicitSessionPrefix(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	oldCfg := cfg
+	oldCfgFile := cfgFile
+	origWd, _ := os.Getwd()
+	cfgFile = ""
+	cfg = config.Default()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		_ = os.Chdir(origWd)
+	})
+
+	base := t.TempDir()
+	globalPath := filepath.Join(base, "global", "ntm.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(global dir) failed: %v", err)
+	}
+	if err := os.WriteFile(globalPath, []byte(`theme = "nord"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(global config) failed: %v", err)
+	}
+	cfgFile = globalPath
+
+	projectsBase := filepath.Join(base, "projects")
+	for _, name := range []string{"demo", "design"} {
+		projectDir := filepath.Join(projectsBase, name)
+		if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s .ntm) failed: %v", name, err)
+		}
+	}
+	cfg.ProjectsBase = projectsBase
+
+	unrelatedWd := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(unrelatedWd, 0o755); err != nil {
+		t.Fatalf("MkdirAll(unrelated wd) failed: %v", err)
+	}
+	if err := os.Chdir(unrelatedWd); err != nil {
+		t.Fatalf("Chdir(unrelated wd) failed: %v", err)
+	}
+
+	_, err := loadPaletteRuntimeConfig("de", true)
+	if err == nil {
+		t.Fatal("expected ambiguous explicit session prefix error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ambiguous") {
+		t.Fatalf("expected ambiguous prefix error, got %v", err)
 	}
 }
 

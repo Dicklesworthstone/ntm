@@ -14,6 +14,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/palette"
@@ -370,6 +371,37 @@ func defaultProjectScopedSession(projectDir string) string {
 	return filepath.Base(projectDir)
 }
 
+func storedSessionCandidatesFromDir(baseDir string) ([]tmux.Session, error) {
+	baseDir = strings.TrimSpace(baseDir)
+	if baseDir == "" {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	candidates := make([]tmux.Session, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := tmux.ValidateSessionName(entry.Name()); err != nil {
+			continue
+		}
+		candidates = append(candidates, tmux.Session{Name: entry.Name()})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Name < candidates[j].Name
+	})
+	return candidates, nil
+}
+
 func resolveExplicitSessionName(input string, sessions []tmux.Session, allowPrefix bool) (string, string, error) {
 	return sessionPkg.ResolveExplicitSessionName(input, sessions, allowPrefix)
 }
@@ -568,6 +600,47 @@ func GetProjectRoot() string {
 	return utilpkg.ResolveProjectDir("")
 }
 
+func projectDirCandidatesForSession(session string, includeCWDHint bool) (string, string, string) {
+	cwdProject := utilpkg.ResolveProjectDir("")
+
+	activeCfg := cfg
+	if activeCfg == nil {
+		activeCfg = config.Default()
+	}
+
+	sessionProject := ""
+	savedProject := ""
+	if session != "" && activeCfg != nil {
+		sessionProject = activeCfg.GetProjectDir(session)
+	}
+	if session != "" {
+		registryHints := []string{sessionProject}
+		if includeCWDHint {
+			registryHints = append(registryHints, cwdProject)
+		}
+		if registry, err := agentmail.LoadBestSessionAgentRegistry(session, registryHints...); err == nil && registry != nil {
+			savedProject = bestUsableProjectDir(savedProject, registry.ProjectKey)
+		}
+		infoHints := []string{savedProject, sessionProject}
+		if includeCWDHint {
+			infoHints = append(infoHints, cwdProject)
+		}
+		if info, err := agentmail.LoadBestSessionAgent(session, infoHints...); err == nil && info != nil {
+			savedProject = bestUsableProjectDir(savedProject, info.ProjectKey)
+		}
+	}
+
+	return cwdProject, sessionProject, savedProject
+}
+
+func bestUsableProjectDir(candidates ...string) string {
+	best := utilpkg.BestProjectDir(candidates...)
+	if utilpkg.ProjectDirScore(best) <= 0 {
+		return ""
+	}
+	return best
+}
+
 // resolveProjectDirForSession chooses the project directory for a session-aware command.
 // Explicit session arguments prefer the configured session directory, while inferred
 // sessions prefer the current workspace so robot/TUI commands don't drift into
@@ -580,28 +653,59 @@ func resolveProjectDirForSession(session string, preferSession bool) string {
 		}
 	}
 
-	cwdProject := utilpkg.ResolveProjectDir("")
-
-	activeCfg := cfg
-	if activeCfg == nil {
-		activeCfg = config.Default()
-	}
-
-	sessionProject := ""
-	if session != "" && activeCfg != nil {
-		sessionProject = activeCfg.GetProjectDir(session)
-	}
+	cwdProject, sessionProject, savedProject := projectDirCandidatesForSession(session, true)
 
 	if preferSession {
-		if best := utilpkg.BestProjectDir(sessionProject, cwdProject); best != "" {
+		if saved := bestUsableProjectDir(savedProject); saved != "" {
+			return saved
+		}
+		if best := bestUsableProjectDir(savedProject, sessionProject, cwdProject); best != "" {
 			return best
 		}
 	}
 
-	if best := utilpkg.BestProjectDir(cwdProject, sessionProject); best != "" {
+	if best := bestUsableProjectDir(cwdProject, savedProject, sessionProject); best != "" {
 		return best
 	}
 	return ""
+}
+
+// resolveExplicitProjectDirForSession resolves the project directory for commands that
+// were given an explicit session argument. Unlike resolveProjectDirForSession, this must
+// not fall back to the caller's current workspace: explicit-session commands should
+// operate on the session's saved/configured project or fail closed.
+func resolveExplicitProjectDirForSession(session string) (string, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return "", fmt.Errorf("session is required")
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return "", err
+	}
+
+	_, sessionProject, savedProject := projectDirCandidatesForSession(session, false)
+	if projectDir := bestUsableProjectDir(savedProject, sessionProject); projectDir != "" {
+		return projectDir, nil
+	}
+
+	return "", fmt.Errorf("getting project root failed")
+}
+
+// resolveCommandProjectDirForSession resolves the working directory for a
+// session-aware command after the session name has already been resolved.
+// Explicit session arguments must fail closed rather than inheriting the
+// caller's current workspace; inferred sessions keep the existing workspace
+// fallback behavior.
+func resolveCommandProjectDirForSession(session string, inferred bool) string {
+	if inferred {
+		return resolveProjectDirForSession(session, true)
+	}
+
+	projectDir, err := resolveExplicitProjectDirForSession(session)
+	if err != nil {
+		return ""
+	}
+	return projectDir
 }
 
 // resolveCreationProjectDirForSession resolves the configured project directory for

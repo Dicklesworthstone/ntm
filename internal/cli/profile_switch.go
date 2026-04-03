@@ -185,11 +185,7 @@ func resolveProfileSwitchProjectDir(sessionName string) (string, error) {
 		sessionName = res.Session
 	}
 
-	projectDir := resolveProjectDirForSession(sessionName, true)
-	if projectDir == "" {
-		return "", fmt.Errorf("getting project root failed")
-	}
-	return projectDir, nil
+	return resolveExplicitProjectDirForSession(sessionName)
 }
 
 // parseAgentID parses an agent ID like "cc_1" into canonical type and index.

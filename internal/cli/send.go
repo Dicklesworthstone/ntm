@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -1114,6 +1113,47 @@ func runSendInternal(opts SendOptions) (err error) {
 	failed := 0
 	seedUsed := int64(0)
 
+	outputError := func(err error) error {
+		histErr = err
+		if jsonOutput {
+			code := ""
+			if redactionBlocked {
+				code = "SENSITIVE_DATA_BLOCKED"
+			}
+			result := SendResult{
+				Success: false,
+				Session: session,
+				Redaction: func() *RedactionSummary {
+					if redactionSummary == nil {
+						return nil
+					}
+					cp := *redactionSummary
+					return &cp
+				}(),
+				Warnings:  redactionWarnings,
+				Blocked:   redactionBlocked,
+				ErrorCode: code,
+				Error:     err.Error(),
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(result)
+			// Return error to ensure non-zero exit code
+			// Since SilenceErrors is true, Cobra won't print the error message again
+			return err
+		}
+		return err
+	}
+
+	if redactionBlocked {
+		return outputError(redactionBlockedError{summary: *redactionSummary})
+	}
+
+	sessionInferred, err := false, error(nil)
+	session, sessionInferred, err = resolveSendSessionForCommand(session)
+	if err != nil {
+		return outputError(err)
+	}
+	opts.Session = session
+
 	// Audit: send command start (redacted preview only)
 	_ = audit.LogEvent(session, audit.EventTypeSend, audit.ActorUser, "send", map[string]interface{}{
 		"phase":          "start",
@@ -1174,40 +1214,6 @@ func runSendInternal(opts SendOptions) (err error) {
 		}
 		_ = sessionPkg.SavePrompt(promptEntry)
 	}()
-
-	outputError := func(err error) error {
-		histErr = err
-		if jsonOutput {
-			code := ""
-			if redactionBlocked {
-				code = "SENSITIVE_DATA_BLOCKED"
-			}
-			result := SendResult{
-				Success: false,
-				Session: session,
-				Redaction: func() *RedactionSummary {
-					if redactionSummary == nil {
-						return nil
-					}
-					cp := *redactionSummary
-					return &cp
-				}(),
-				Warnings:  redactionWarnings,
-				Blocked:   redactionBlocked,
-				ErrorCode: code,
-				Error:     err.Error(),
-			}
-			_ = json.NewEncoder(os.Stdout).Encode(result)
-			// Return error to ensure non-zero exit code
-			// Since SilenceErrors is true, Cobra won't print the error message again
-			return err
-		}
-		return err
-	}
-
-	if redactionBlocked {
-		return outputError(redactionBlockedError{summary: *redactionSummary})
-	}
 
 	// Smart routing: select best agent automatically.
 	// Explicit pane selection (--pane/--panes) wins over automatic routing.
@@ -1277,7 +1283,7 @@ func runSendInternal(opts SendOptions) (err error) {
 
 	// CASS Duplicate Detection
 	if opts.CassCheck {
-		if err := checkCassDuplicates(session, prompt, opts.CassSimilarity, opts.CassCheckDays); err != nil {
+		if err := checkCassDuplicates(session, sessionInferred, prompt, opts.CassSimilarity, opts.CassCheckDays); err != nil {
 			if err.Error() == "aborted by user" {
 				fmt.Println("Aborted.")
 				return nil
@@ -1288,26 +1294,6 @@ func runSendInternal(opts SendOptions) (err error) {
 				fmt.Printf("Warning: CASS duplicate check failed: %v\n", err)
 			}
 		}
-	}
-
-	if err := tmux.EnsureInstalled(); err != nil {
-		return outputError(err)
-	}
-
-	{
-		res, err := ResolveSession(session, os.Stdout)
-		if err != nil {
-			return outputError(err)
-		}
-		if res.Session == "" {
-			return outputError(fmt.Errorf("session is required"))
-		}
-		session = res.Session
-		opts.Session = res.Session
-	}
-
-	if !tmux.SessionExists(session) {
-		return outputError(fmt.Errorf("session '%s' not found", session))
 	}
 
 	// Initialize hook executor
@@ -1330,7 +1316,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	// Build execution context for hooks
 	hookCtx := hooks.ExecutionContext{
 		SessionName: session,
-		ProjectDir:  getSessionWorkingDir(session),
+		ProjectDir:  getSessionWorkingDir(session, sessionInferred),
 		Message:     prompt,
 		AdditionalEnv: map[string]string{
 			"NTM_SEND_TARGETS": targetDesc,
@@ -1932,12 +1918,13 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 		return fmt.Errorf("session is required")
 	}
 	session = res.Session
+	sessionInferred := res.Inferred
 
 	if !tmux.SessionExists(session) {
 		return fmt.Errorf("session '%s' not found", session)
 	}
 
-	dir := resolveProjectDirForSession(session, true)
+	dir := getSessionWorkingDir(session, sessionInferred)
 	auditStart := time.Now()
 	auditAborted := false
 	auditKilled := false
@@ -2023,7 +2010,7 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 	// Generate summary before killing if requested
 	if summarize {
 		fmt.Println("Generating session summary...")
-		summaryResult, err := generateKillSummary(session)
+		summaryResult, err := generateKillSummary(session, sessionInferred)
 		if err != nil {
 			fmt.Printf("⚠ Summary generation failed: %v\n", err)
 		} else {
@@ -2102,7 +2089,7 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 	}
 
 	// Kill the monitor process before destroying the session
-	if output, err := exec.Command("pkill", "-f", `\bntm\s+internal-monitor\s+`+regexp.QuoteMeta(session)).CombinedOutput(); err != nil {
+	if output, err := exec.Command("pkill", "-f", monitorProcessPattern(session)).CombinedOutput(); err != nil {
 		// Monitor may not be running — that's fine
 		_ = output
 	}
@@ -2204,7 +2191,7 @@ func buildKillResponse(session string, force bool, tags []string, noHooks bool, 
 		return nil, fmt.Errorf("session '%s' not found", session)
 	}
 
-	dir := resolveProjectDirForSession(session, true)
+	dir := getSessionWorkingDir(session, false)
 	auditStart := time.Now()
 	auditScope := "session"
 	if len(tags) > 0 {
@@ -2302,7 +2289,7 @@ func buildKillResponse(session string, force bool, tags []string, noHooks bool, 
 	var summaryResult *summary.SessionSummary
 	if summarize {
 		var err error
-		summaryResult, err = generateKillSummary(session)
+		summaryResult, err = generateKillSummary(session, false)
 		if err != nil {
 			// Non-fatal - continue with kill but note the error
 			summaryResult = nil
@@ -2368,7 +2355,7 @@ func buildKillResponse(session string, force bool, tags []string, noHooks bool, 
 		_ = state.EndSessionTimeline(session) // Ignore error - not critical
 
 		// Kill the monitor process before destroying the session (same as runKill)
-		if output, err := exec.Command("pkill", "-f", `\bntm\s+internal-monitor\s+`+regexp.QuoteMeta(session)).CombinedOutput(); err != nil {
+		if output, err := exec.Command("pkill", "-f", monitorProcessPattern(session)).CombinedOutput(); err != nil {
 			_ = output // Monitor may not be running — that's fine
 		}
 
@@ -2423,7 +2410,7 @@ func buildKillResponse(session string, force bool, tags []string, noHooks bool, 
 
 // generateKillSummary generates a session summary for use before killing.
 // It captures pane outputs and runs them through the summary generator.
-func generateKillSummary(session string) (*summary.SessionSummary, error) {
+func generateKillSummary(session string, inferred bool) (*summary.SessionSummary, error) {
 	// Get panes from session
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
@@ -2438,7 +2425,7 @@ func generateKillSummary(session string) (*summary.SessionSummary, error) {
 		return nil, fmt.Errorf("no agent outputs to summarize")
 	}
 
-	projectDir := resolveProjectDirForSession(session, true)
+	projectDir := getSessionWorkingDir(session, inferred)
 	if projectDir == "" {
 		return nil, fmt.Errorf("getting project root failed")
 	}
@@ -2530,9 +2517,10 @@ func buildTargetDescription(targetCC, targetCod, targetGmi, targetAll, skipFirst
 	return strings.Join(targets, ",")
 }
 
-// getSessionWorkingDir returns the working directory for a session
-func getSessionWorkingDir(session string) string {
-	return resolveProjectDirForSession(session, true)
+// getSessionWorkingDir returns the working directory for a resolved session,
+// preserving workspace fallback only for inferred-session commands.
+func getSessionWorkingDir(session string, inferred bool) string {
+	return resolveCommandProjectDirForSession(session, inferred)
 }
 
 // boolToStr converts a boolean to "true" or "false" string
@@ -2811,7 +2799,25 @@ func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.Bl
 	}
 }
 
-func checkCassDuplicates(session, prompt string, threshold float64, days int) error {
+func resolveSendSessionForCommand(session string) (string, bool, error) {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return "", false, err
+	}
+
+	res, err := ResolveSession(session, os.Stdout)
+	if err != nil {
+		return "", false, err
+	}
+	if res.Session == "" {
+		return "", false, fmt.Errorf("session is required")
+	}
+	if !tmux.SessionExists(res.Session) {
+		return "", false, fmt.Errorf("session '%s' not found", res.Session)
+	}
+	return res.Session, res.Inferred, nil
+}
+
+func checkCassDuplicates(session string, inferred bool, prompt string, threshold float64, days int) error {
 	var opts []cass.ClientOption
 	if cfg != nil && cfg.CASS.BinaryPath != "" {
 		opts = append(opts, cass.WithBinaryPath(cfg.CASS.BinaryPath))
@@ -2822,7 +2828,10 @@ func checkCassDuplicates(session, prompt string, threshold float64, days int) er
 	}
 
 	// Get workspace from session
-	dir := resolveProjectDirForSession(session, true)
+	dir := getSessionWorkingDir(session, inferred)
+	if dir == "" {
+		return fmt.Errorf("getting project root failed")
+	}
 
 	since := fmt.Sprintf("%dd", days)
 

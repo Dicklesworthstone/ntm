@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -237,6 +238,87 @@ func TestGetPromptContentFromArgs(t *testing.T) {
 				t.Errorf("source: got %q, want %q", gotSrc, tt.wantSrc)
 			}
 		})
+	}
+}
+
+func TestGetSessionWorkingDirRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := getSessionWorkingDir("ntm", false); got != "" {
+		t.Fatalf("getSessionWorkingDir explicit = %q, want empty", got)
+	}
+}
+
+func TestGetSessionWorkingDirAllowsWorkspaceFallbackForInferredSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := getSessionWorkingDir("ntm", true); got != cwdRepo {
+		t.Fatalf("getSessionWorkingDir inferred = %q, want %q", got, cwdRepo)
+	}
+}
+
+func TestResolveSendSessionForCommandNormalizesExplicitPrefix(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := fmt.Sprintf("ntm-send-prefix-%d", time.Now().UnixNano())
+	prefix := sessionName[:len(sessionName)-4]
+	workDir := t.TempDir()
+
+	_ = tmux.KillSession(sessionName)
+	if err := tmux.CreateSession(sessionName, workDir); err != nil {
+		t.Fatalf("CreateSession(%q): %v", sessionName, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	gotSession, inferred, err := resolveSendSessionForCommand(prefix)
+	if err != nil {
+		t.Fatalf("resolveSendSessionForCommand() error = %v", err)
+	}
+	if inferred {
+		t.Fatal("expected explicit prefix not to be inferred")
+	}
+	if gotSession != sessionName {
+		t.Fatalf("resolveSendSessionForCommand() session = %q, want %q", gotSession, sessionName)
 	}
 }
 

@@ -1095,6 +1095,41 @@ func TestResolveHandoffProjectDirRejectsInvalidSessionName(t *testing.T) {
 	}
 }
 
+func TestResolveHandoffProjectDirRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace git dir: %v", err)
+	}
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir cwd: %v", err)
+	}
+
+	_, err := resolveHandoffProjectDir("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
 func TestResolveHandoffProjectDirUsesSavedSessionAgentProjectKey(t *testing.T) {
 	origCfg := cfg
 	origDir, _ := os.Getwd()
@@ -1126,6 +1161,37 @@ func TestResolveHandoffProjectDirUsesSavedSessionAgentProjectKey(t *testing.T) {
 	}
 	if projectDir != actualProject {
 		t.Fatalf("resolveHandoffProjectDir() = %q, want saved session agent project %q", projectDir, actualProject)
+	}
+}
+
+func TestResolveHandoffProjectDirResolvesProjectScopedPrefix(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "myproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir cwd: %v", err)
+	}
+
+	got, err := resolveHandoffProjectDir("mypro")
+	if err != nil {
+		t.Fatalf("resolveHandoffProjectDir() error = %v", err)
+	}
+	if got != projectDir {
+		t.Fatalf("resolveHandoffProjectDir() = %q, want %q", got, projectDir)
 	}
 }
 

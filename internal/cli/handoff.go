@@ -16,7 +16,6 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func newHandoffCmd() *cobra.Command {
@@ -840,14 +839,16 @@ func resolveHandoffProjectDir(sessionName string) (string, error) {
 		}
 		return projectDir, nil
 	}
-	if err := tmux.ValidateSessionName(sessionName); err != nil {
-		return "", fmt.Errorf("invalid session name: %w", err)
+	resolved, err := normalizeProjectScopedSessionName(sessionName, !IsJSONOutput())
+	if err != nil {
+		return "", err
 	}
-	projectDir := resolveProjectDirForSession(sessionName, true)
+	sessionName = resolved
+	projectDir, err := resolveExplicitProjectDirForSession(sessionName)
+	if err != nil {
+		return "", err
+	}
 	projectDir = refineAgentMailProjectKey(sessionName, projectDir)
-	if projectDir == "" {
-		return "", fmt.Errorf("getting project root failed")
-	}
 	return projectDir, nil
 }
 

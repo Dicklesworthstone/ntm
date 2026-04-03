@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -680,12 +681,12 @@ func buildStatusResponse(session string, opts statusOptions) (output.StatusRespo
 		panes = filtered
 	}
 
-	dir := resolveProjectDirForSession(session, true)
+	dir := resolveCommandProjectDirForSession(session, false)
 
 	// Load handoff info (best-effort)
 	var handoffGoal, handoffNow, handoffStatus, handoffPath string
 	var handoffAge time.Duration
-	{
+	if dir != "" {
 		reader := handoff.NewReader(dir)
 		if goal, now, err := reader.ExtractGoalNow(session); err == nil {
 			handoffGoal = goal
@@ -979,6 +980,7 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 		return outputError(err)
 	}
 
+	sessionInferred := false
 	{
 		res, err := ResolveSession(session, w)
 		if err != nil {
@@ -988,6 +990,7 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 			return outputError(fmt.Errorf("session is required"))
 		}
 		session = res.Session
+		sessionInferred = res.Inferred
 	}
 
 	if !tmux.SessionExists(session) {
@@ -1017,12 +1020,12 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 		panes = filtered
 	}
 
-	dir := resolveProjectDirForSession(session, true)
+	dir := resolveCommandProjectDirForSession(session, sessionInferred)
 
 	// Load handoff info (best-effort)
 	var handoffGoal, handoffNow, handoffStatus string
 	var handoffAge time.Duration
-	{
+	if dir != "" {
 		reader := handoff.NewReader(dir)
 		if goal, now, err := reader.ExtractGoalNow(session); err == nil {
 			handoffGoal = goal
@@ -1593,7 +1596,11 @@ func runStatusWatch(w io.Writer, session string, opts statusOptions) error {
 // updateSessionActivity updates the Agent Mail activity for a session.
 // This is non-blocking and silently ignores errors.
 func updateSessionActivity(sessionName string) {
-	projectKey := refineAgentMailProjectKey(sessionName, resolveProjectDirForSession(sessionName, true))
+	projectKey, err := resolveExplicitProjectDirForSession(sessionName)
+	if err != nil {
+		return
+	}
+	projectKey = refineAgentMailProjectKey(sessionName, projectKey)
 	if projectKey == "" {
 		return
 	}
@@ -1753,12 +1760,27 @@ func maxInt(a, b int) int {
 
 // isMonitorAlive checks whether the resilience monitor process is running
 // for the given session by looking for the "internal-monitor <session>" process.
+func monitorProcessPatternForExecutable(executablePath, session string) string {
+	execName := strings.TrimSpace(filepath.Base(executablePath))
+	if execName == "" {
+		execName = "ntm"
+	}
+	return `(?:^|[[:space:]])(?:[^[:space:]]*/)?` + regexp.QuoteMeta(execName) + `\s+internal-monitor\s+` + regexp.QuoteMeta(session) + `(?:\b|$)`
+}
+
+func monitorProcessPattern(session string) string {
+	executablePath, err := os.Executable()
+	if err != nil {
+		executablePath = "ntm"
+	}
+	return monitorProcessPatternForExecutable(executablePath, session)
+}
+
 func isMonitorAlive(session string) bool {
 	// Use an anchored regex pattern to avoid false positives from processes
 	// whose paths or arguments happen to contain "ntm". The pattern matches
 	// the binary name at a word boundary followed by the exact subcommand
 	// and session name.
-	pattern := `\bntm\s+internal-monitor\s+` + regexp.QuoteMeta(session) + `\b`
-	err := exec.Command("pgrep", "-f", pattern).Run()
+	err := exec.Command("pgrep", "-f", monitorProcessPattern(session)).Run()
 	return err == nil
 }

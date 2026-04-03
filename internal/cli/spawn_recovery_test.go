@@ -101,6 +101,18 @@ func TestListRecoveryReservations_FollowsEffectiveFallbackAgentName(t *testing.T
 	}
 }
 
+func TestResolveRecoveryAgentNameUsesSavedSessionAgentIdentity(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	sessionName := "session-1"
+	actualProject := t.TempDir()
+	saveSessionAgentForTest(t, sessionName, actualProject, "GreenCastle")
+
+	if got := resolveRecoveryAgentName(sessionName, t.TempDir()); got != "GreenCastle" {
+		t.Fatalf("expected saved session agent name, got %q", got)
+	}
+}
+
 func TestBuildRecoveryReservationTransferOptions_UsesResolvedAgentName(t *testing.T) {
 	oldCfg := cfg
 	defer func() { cfg = oldCfg }()

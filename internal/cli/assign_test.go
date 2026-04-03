@@ -248,6 +248,58 @@ func TestResolveAssignProjectDirRejectsInvalidSessionName(t *testing.T) {
 	}
 }
 
+func TestResolveAssignProjectDirUsesSavedSessionAgentProjectKey(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	root, nested := createAssignProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir actual project git dir: %v", err)
+	}
+	saveSessionAgentForTest(t, "demo", actualProject, "GreenCastle")
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	got, err := resolveAssignProjectDir("demo")
+	if err != nil {
+		t.Fatalf("resolveAssignProjectDir() error = %v", err)
+	}
+	if got != actualProject {
+		t.Fatalf("resolveAssignProjectDir() = %q, want saved session agent project %q", got, actualProject)
+	}
+}
+
+func TestResolveAssignProjectDirResolvesProjectScopedPrefix(t *testing.T) {
+	root, nested := createAssignProjectRoot(t)
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	got, err := resolveAssignProjectDir("de")
+	if err != nil {
+		t.Fatalf("resolveAssignProjectDir() error = %v", err)
+	}
+	if got != root {
+		t.Fatalf("resolveAssignProjectDir() = %q, want %q", got, root)
+	}
+}
+
 func TestReleaseFileReservationsWithIDsUsesResolvedProjectDir(t *testing.T) {
 	root, nested := createAssignProjectRoot(t)
 

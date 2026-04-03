@@ -237,6 +237,13 @@ func runResume(cmd *cobra.Command, sessionName, fromPath string, spawn, inject, 
 	}
 
 	if spawn {
+		if fromPath != "" {
+			allowPrefix := !jsonFormat && !IsJSONOutput()
+			projectDir, err = resolveResumeSourceProjectDir(sessionName, h.Session, path, allowPrefix)
+			if err != nil {
+				return err
+			}
+		}
 		return spawnWithHandoff(cmd, sessionName, h, path, handoffInfo,
 			ccCount, codCount, gmiCount, projectDir, jsonFormat)
 	}
@@ -328,34 +335,17 @@ func spawnWithHandoff(cmd *cobra.Command, sessionName string, h *handoff.Handoff
 		return fmt.Errorf("session %q already exists; use --inject to add context to existing session", sessionName)
 	}
 
-	// Build spawn args
-	args := []string{"spawn", sessionName}
-	if ccCount > 0 {
-		args = append(args, fmt.Sprintf("--cc=%d", ccCount))
-	}
-	if codCount > 0 {
-		args = append(args, fmt.Sprintf("--cod=%d", codCount))
-	}
-	if gmiCount > 0 {
-		args = append(args, fmt.Sprintf("--gmi=%d", gmiCount))
-	}
-	args = append(args, "--no-hooks") // We'll send context ourselves
-
-	slog.Debug("executing spawn", "args", args)
-
-	// Execute spawn via cobra command lookup
-	spawnCmd, _, err := cmd.Root().Find(args)
-	if err != nil {
-		return fmt.Errorf("failed to find spawn command: %w", err)
+	opts := SpawnOptions{
+		Session:            sessionName,
+		ProjectDirOverride: projectDir,
+		CCCount:            ccCount,
+		CodCount:           codCount,
+		GmiCount:           gmiCount,
+		UserPane:           true,
+		NoHooks:            true,
 	}
 
-	// Reset flags and set them properly
-	spawnCmd.Flags().Set("cc", fmt.Sprintf("%d", ccCount))
-	spawnCmd.Flags().Set("cod", fmt.Sprintf("%d", codCount))
-	spawnCmd.Flags().Set("gmi", fmt.Sprintf("%d", gmiCount))
-	spawnCmd.Flags().Set("no-hooks", "true")
-
-	if err := spawnCmd.RunE(spawnCmd, []string{sessionName}); err != nil {
+	if err := spawnSessionLogic(opts); err != nil {
 		slog.Error("spawn failed", "session", sessionName, "error", err)
 		return fmt.Errorf("spawn failed: %w", err)
 	}
@@ -499,9 +489,9 @@ func resolveResumeScope(sessionName string, allowPrefix bool) (string, string, e
 		return resolvedStoredSession, configuredProjectDir, nil
 	}
 
-	projectDir := resolveProjectDirForSession(resolvedSession, true)
-	if projectDir == "" {
-		return "", "", fmt.Errorf("getting project root failed")
+	projectDir, err := resolveExplicitProjectDirForSession(resolvedSession)
+	if err != nil {
+		return "", "", err
 	}
 
 	reader := handoff.NewReader(projectDir)
@@ -510,6 +500,54 @@ func resolveResumeScope(sessionName string, allowPrefix bool) (string, string, e
 		return "", "", err
 	}
 	return resolvedSession, projectDir, nil
+}
+
+func resolveResumeSourceProjectDir(sessionName, handoffSession, handoffPath string, allowPrefix bool) (string, error) {
+	if projectDir, ok := projectDirFromHandoffPath(handoffPath); ok {
+		return projectDir, nil
+	}
+
+	explicitSession := strings.TrimSpace(sessionName)
+	if explicitSession != "" && explicitSession != strings.TrimSpace(handoffSession) {
+		return resolveCreationProjectDirForSession(explicitSession)
+	}
+
+	effectiveSession := explicitSession
+	if effectiveSession == "" {
+		effectiveSession = strings.TrimSpace(handoffSession)
+	}
+	if effectiveSession == "" {
+		return "", fmt.Errorf("getting project root failed")
+	}
+
+	_, projectDir, err := resolveResumeScope(effectiveSession, allowPrefix)
+	if err != nil {
+		return "", err
+	}
+	return projectDir, nil
+}
+
+func projectDirFromHandoffPath(path string) (string, bool) {
+	dir := filepath.Clean(strings.TrimSpace(path))
+	if dir == "" || dir == "." {
+		return "", false
+	}
+
+	for {
+		if filepath.Base(dir) == "handoffs" && filepath.Base(filepath.Dir(dir)) == ".ntm" {
+			projectDir := filepath.Clean(filepath.Dir(filepath.Dir(dir)))
+			if projectDir == "" || projectDir == "." {
+				return "", false
+			}
+			return projectDir, true
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 func resolveStoredResumeProjectDir(sessionName string, allowPrefix bool) (string, string, bool, error) {
@@ -545,17 +583,12 @@ func resolveStoredHandoffSessionName(sessionName string, reader *handoff.Reader,
 		return sessionName, false, nil
 	}
 
-	sessions, err := reader.ListSessions()
+	candidates, err := storedSessionCandidatesFromDir(reader.BaseDir())
 	if err != nil {
 		return "", false, fmt.Errorf("list handoff sessions: %w", err)
 	}
-	if len(sessions) == 0 {
+	if len(candidates) == 0 {
 		return sessionName, false, nil
-	}
-
-	candidates := make([]tmux.Session, 0, len(sessions))
-	for _, name := range sessions {
-		candidates = append(candidates, tmux.Session{Name: name})
 	}
 
 	resolved, _, err := resolveExplicitSessionName(sessionName, candidates, allowPrefix)

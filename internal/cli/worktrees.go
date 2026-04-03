@@ -247,9 +247,9 @@ func resolveWorktreeScope(session string) (string, string, error) {
 		return projectDir, defaultProjectScopedSession(projectDir), nil
 	}
 
-	projectDir := resolveProjectDirForSession(session, true)
-	if projectDir == "" {
-		return "", "", fmt.Errorf("getting project root failed")
+	projectDir, err := resolveExplicitProjectDirForSession(session)
+	if err != nil {
+		return "", "", err
 	}
 	return projectDir, session, nil
 }

@@ -492,7 +492,15 @@ func resolveGitProjectDir(session string) (string, string, error) {
 		return "", "", err
 	}
 
-	workDir := resolveProjectDirForSession(session, true)
+	workDir := ""
+	if strings.TrimSpace(session) == "" {
+		workDir = resolveProjectDirForSession(session, true)
+	} else {
+		workDir, err = resolveExplicitProjectDirForSession(session)
+		if err != nil {
+			return "", "", err
+		}
+	}
 	workDir = resolveGitAgentMailProjectKey(session, workDir)
 	if workDir == "" {
 		return "", "", fmt.Errorf("getting project root failed")

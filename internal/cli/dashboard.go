@@ -384,7 +384,6 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 	}
 	res.ExplainIfInferred(errW)
 	session = res.Session
-	sessionExplicit := strings.TrimSpace(session) != "" && !res.Inferred
 
 	// Auto-popup: if we're inside tmux AND inside the same session we're
 	// monitoring, launch as an overlay popup instead of consuming a pane.
@@ -409,17 +408,24 @@ func runDashboard(w io.Writer, errW io.Writer, session string, debug bool, popup
 		initialPanes = nil
 	}
 
-	projectDir := resolveProjectDirForSession(session, sessionExplicit)
-
-	// Validate project directory exists, warn if not
-	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
-		fmt.Fprintf(errW, "Warning: project directory does not exist: %s\n", projectDir)
-		fmt.Fprintf(errW, "Some features (beads, file tracking) may not work correctly.\n")
-		fmt.Fprintf(errW, "Check your projects_base setting in config: ntm config show\n\n")
+	projectDir := resolveCommandProjectDirForSession(session, res.Inferred)
+	if projectDir == "" && !res.Inferred {
+		return fmt.Errorf("getting project root failed")
 	}
 
-	if stopWatcher := startDashboardReservationWatcher(session, projectDir); stopWatcher != nil {
-		defer stopWatcher()
+	// Validate project directory exists, warn if not
+	if projectDir != "" {
+		if _, err := os.Stat(projectDir); os.IsNotExist(err) {
+			fmt.Fprintf(errW, "Warning: project directory does not exist: %s\n", projectDir)
+			fmt.Fprintf(errW, "Some features (beads, file tracking) may not work correctly.\n")
+			fmt.Fprintf(errW, "Check your projects_base setting in config: ntm config show\n\n")
+		}
+	}
+
+	if projectDir != "" {
+		if stopWatcher := startDashboardReservationWatcher(session, projectDir); stopWatcher != nil {
+			defer stopWatcher()
+		}
 	}
 
 	action, err := dashboard.RunWithOptions(session, projectDir, dashboard.RunOptions{

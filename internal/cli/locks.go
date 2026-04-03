@@ -85,9 +85,18 @@ func runLocks(session string, allAgents bool) error {
 		return err
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session, projectKey)
+	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
+	}
+	if sessionAgent == nil && !allAgents {
+		if IsJSONOutput() {
+			result := LocksResult{Success: false, Session: session, ProjectKey: projectKey, Error: "Session has no Agent Mail identity"}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(result)
+		}
+		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
 	}
 
 	agentName := ""
@@ -276,7 +285,7 @@ func runForceRelease(session string, reservationID int, note string, notify, ski
 		return err
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session, projectKey)
+	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
 	}
@@ -431,7 +440,7 @@ func runRenewLocks(session string, extendMinutes int) error {
 		return err
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session, projectKey)
+	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
 	}

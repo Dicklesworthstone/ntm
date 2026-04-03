@@ -260,7 +260,10 @@ func buildControllerResponse(opts ControllerInput) (*ControllerResponse, error) 
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
 	}
 
-	dir := resolveProjectDirForSession(session, true)
+	dir, err := resolveExplicitProjectDirForSession(session)
+	if err != nil {
+		return nil, err
+	}
 
 	// Render the agent command template (fixes raw {{}} being sent to shell)
 	agentCmd, err := config.GenerateAgentCommand(agentCmdTemplate, config.AgentTemplateVars{

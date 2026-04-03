@@ -813,14 +813,12 @@ Examples:
 func resolvePipelineProjectDirForSession(session string) (string, error) {
 	session = strings.TrimSpace(session)
 	if session != "" {
-		if err := tmux.ValidateSessionName(session); err != nil {
-			return "", fmt.Errorf("invalid session name: %w", err)
+		resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+		if err != nil {
+			return "", err
 		}
-		projectDir := resolveProjectDirForSession(session, true)
-		if projectDir == "" {
-			return "", fmt.Errorf("getting project root failed")
-		}
-		return projectDir, nil
+		session = resolved
+		return resolveExplicitProjectDirForSession(session)
 	}
 
 	projectDir := GetProjectRoot()

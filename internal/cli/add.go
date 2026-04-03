@@ -116,14 +116,11 @@ func newAddCmd() *cobra.Command {
 				}
 				sessionName = config.FormatSessionName(sessionName, label)
 			}
-			if err := tmux.ValidateSessionName(sessionName); err != nil {
+			resolvedSessionName, dir, err := resolveAddSetupScope(sessionName)
+			if err != nil {
 				return err
 			}
-
-			dir := resolveProjectDirForSession(sessionName, true)
-			if dir == "" {
-				return fmt.Errorf("getting project root failed")
-			}
+			sessionName = resolvedSessionName
 
 			// Update CASS config from flags
 			if contextLimit > 0 {
@@ -277,7 +274,10 @@ func runAdd(opts AddOptions) error {
 		return outputError(fmt.Errorf("no agents specified"))
 	}
 
-	dir := resolveProjectDirForSession(session, true)
+	dir, err := resolveExplicitProjectDirForSession(session)
+	if err != nil {
+		return outputError(err)
+	}
 
 	// Enable project webhooks (if configured) so add lifecycle events can fan out.
 	// Best-effort: failures should not block add.
@@ -744,4 +744,26 @@ func resolveAddSession(session string) (string, error) {
 		return "", fmt.Errorf("session is required")
 	}
 	return res.Session, nil
+}
+
+func resolveAddSetupScope(session string) (string, string, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return "", "", fmt.Errorf("session is required")
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return "", "", err
+	}
+
+	resolvedSession, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+	if err != nil {
+		return "", "", err
+	}
+
+	projectDir, err := resolveExplicitProjectDirForSession(resolvedSession)
+	if err != nil {
+		return "", "", err
+	}
+
+	return resolvedSession, projectDir, nil
 }

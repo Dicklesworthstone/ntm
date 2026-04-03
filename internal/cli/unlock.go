@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 )
 
 func newUnlockCmd() *cobra.Command {
@@ -59,7 +57,7 @@ func runUnlock(session string, patterns []string, all bool) error {
 		return err
 	}
 
-	sessionAgent, err := agentmail.LoadSessionAgent(session, projectKey)
+	sessionAgent, err := loadResolvedSessionAgent(session, projectKey)
 	if err != nil {
 		return fmt.Errorf("loading session agent: %w", err)
 	}

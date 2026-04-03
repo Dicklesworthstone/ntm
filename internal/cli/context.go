@@ -183,9 +183,9 @@ func resolveContextBuildScope(session string) (string, string, error) {
 			return "", "", err
 		}
 		session = resolved
-		projectDir := resolveProjectDirForSession(session, true)
-		if projectDir == "" {
-			return "", "", fmt.Errorf("getting project root failed")
+		projectDir, err := resolveExplicitProjectDirForSession(session)
+		if err != nil {
+			return "", "", err
 		}
 		return projectDir, session, nil
 	}
@@ -403,9 +403,9 @@ Use --files to override the file list.`,
 			session := res.Session
 
 			// Resolve project directory
-			projectDir := resolveProjectDirForSession(session, true)
-			if projectDir == "" {
-				return fmt.Errorf("getting project root failed")
+			projectDir, err := resolveExplicitProjectDirForSession(session)
+			if err != nil {
+				return err
 			}
 
 			// Determine files to inject

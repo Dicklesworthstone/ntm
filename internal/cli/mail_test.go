@@ -447,6 +447,15 @@ func saveSessionAgentForTest(t *testing.T, session, projectKey, agentName string
 	}
 }
 
+func saveSessionAgentRegistryForTest(t *testing.T, session, projectKey, paneTitle, paneID, agentName string) {
+	t.Helper()
+	registry := agentmail.NewSessionAgentRegistry(session, projectKey)
+	registry.AddAgent(paneTitle, paneID, agentName)
+	if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatalf("save session agent registry: %v", err)
+	}
+}
+
 func execCommand(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	resetFlags()
@@ -466,6 +475,7 @@ func TestMailMarkRequiresSelector(t *testing.T) {
 	stub := newMailStub(t, inbox)
 	defer stub.Close()
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Setenv("AGENT_NAME", "EnvAgent")
 
@@ -480,6 +490,7 @@ func TestMailMarkRequiresAgentOrEnv(t *testing.T) {
 	stub := newMailStub(t, inbox)
 	defer stub.Close()
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 
 	_, err := execCommand(t, "mail", "ack", "mysession", "5")
@@ -488,11 +499,78 @@ func TestMailMarkRequiresAgentOrEnv(t *testing.T) {
 	}
 }
 
+func TestMailAckUsesSavedSessionAgentWhenEnvMissing(t *testing.T) {
+	inbox := []agentmail.InboxMessage{}
+	stub := newMailStub(t, inbox)
+	defer stub.Close()
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+
+	projectKey := GetProjectRoot()
+	saveSessionAgentForTest(t, "mysession", projectKey, "GreenCastle")
+
+	if _, err := execCommand(t, "mail", "ack", "mysession", "42", "--json"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(stub.ackIDs) != 1 || stub.ackIDs[0] != 42 {
+		t.Fatalf("expected ack of id 42, got %v", stub.ackIDs)
+	}
+	if len(stub.ackAgents) != 1 || stub.ackAgents[0] != "GreenCastle" {
+		t.Fatalf("expected saved session agent GreenCastle, got %v", stub.ackAgents)
+	}
+}
+
+func TestResolveMailAgentIdentityUsesCurrentPaneRegistryIdentity(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+	isolateSessionAgentStorage(t)
+
+	projectsBase := t.TempDir()
+	projectKey := filepath.Join(projectsBase, "mailpaneidentity")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	session := "mailpaneidentity"
+	_ = tmux.KillSession(session)
+	if err := tmux.CreateSession(session, projectKey); err != nil {
+		t.Fatalf("CreateSession(%q): %v", session, err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(session) })
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("GetPanes(%q): %v", session, err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("expected at least one pane")
+	}
+
+	saveSessionAgentForTest(t, session, projectKey, "BlueLake")
+	saveSessionAgentRegistryForTest(t, session, projectKey, "", panes[0].ID, "GreenCastle")
+	t.Setenv("TMUX_PANE", panes[0].ID)
+	t.Setenv("AGENT_NAME", "EnvAgent")
+
+	got, err := resolveMailAgentIdentity(session, "")
+	if err != nil {
+		t.Fatalf("resolveMailAgentIdentity() error = %v", err)
+	}
+	if got != "GreenCastle" {
+		t.Fatalf("resolveMailAgentIdentity() = %q, want %q", got, "GreenCastle")
+	}
+}
+
 func TestMailAckUsesEnvAgent(t *testing.T) {
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
 	defer stub.Close()
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Setenv("AGENT_NAME", "EnvAgent")
 
@@ -514,6 +592,7 @@ func TestMailMarkReportsErrorsInJSON(t *testing.T) {
 	stub.failIDs[99] = "already acknowledged"
 	defer stub.Close()
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Setenv("AGENT_NAME", "EnvAgent")
 
@@ -597,6 +676,7 @@ func TestMailMarkJSONPartialSuccess(t *testing.T) {
 	stub.failIDs[7] = "already read"
 	defer stub.Close()
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Setenv("AGENT_NAME", "EnvAgent")
 
@@ -1013,6 +1093,7 @@ func TestResolveAgentMailProjectKeyUsesSavedSessionAgentProjectKey(t *testing.T)
 			t.Errorf("restore working directory: %v", err)
 		}
 	})
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	projectsBase := t.TempDir()
 	cfg = &config.Config{ProjectsBase: projectsBase}
@@ -1024,8 +1105,8 @@ func TestResolveAgentMailProjectKeyUsesSavedSessionAgentProjectKey(t *testing.T)
 
 	session := "mysession"
 	actualProject := filepath.Join(t.TempDir(), "actual-project")
-	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir actual project git dir: %v", err)
+	if err := os.MkdirAll(actualProject, 0o755); err != nil {
+		t.Fatalf("mkdir actual project: %v", err)
 	}
 	saveSessionAgentForTest(t, session, actualProject, "GreenCastle")
 
@@ -1090,6 +1171,81 @@ func TestUpdateSessionActivityUsesSavedSessionAgentProjectKey(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionActivityIgnoresCWDMatchedWrongProject(t *testing.T) {
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+
+	cfg = &config.Config{ProjectsBase: filepath.Join(t.TempDir(), "projects")}
+
+	wrongProject := filepath.Join(t.TempDir(), "wrong-project")
+	if err := os.MkdirAll(filepath.Join(wrongProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir wrong project git dir: %v", err)
+	}
+	actualProject := filepath.Join(t.TempDir(), "actual-project")
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir actual project git dir: %v", err)
+	}
+	if err := os.Chdir(wrongProject); err != nil {
+		t.Fatalf("chdir wrong project: %v", err)
+	}
+
+	session := "mysession"
+	wrongTime := time.Now().Add(-2 * time.Hour)
+	wrongInfo := &agentmail.SessionAgentInfo{
+		AgentName:    "WrongLake",
+		ProjectKey:   wrongProject,
+		RegisteredAt: wrongTime,
+		LastActiveAt: wrongTime,
+	}
+	if err := agentmail.SaveSessionAgent(session, wrongProject, wrongInfo); err != nil {
+		t.Fatalf("save wrong session agent: %v", err)
+	}
+	actualTime := time.Now().Add(-time.Hour)
+	actualInfo := &agentmail.SessionAgentInfo{
+		AgentName:    "RightLake",
+		ProjectKey:   actualProject,
+		RegisteredAt: actualTime,
+		LastActiveAt: actualTime,
+	}
+	if err := agentmail.SaveSessionAgent(session, actualProject, actualInfo); err != nil {
+		t.Fatalf("save actual session agent: %v", err)
+	}
+
+	updateSessionActivity(session)
+
+	updatedWrong, err := agentmail.LoadSessionAgent(session, wrongProject)
+	if err != nil {
+		t.Fatalf("load wrong session agent: %v", err)
+	}
+	if updatedWrong == nil {
+		t.Fatal("expected wrong session agent")
+	}
+	if !updatedWrong.LastActiveAt.Equal(wrongTime) {
+		t.Fatalf("expected wrong project timestamp to remain %v, got %v", wrongTime, updatedWrong.LastActiveAt)
+	}
+
+	updatedActual, err := agentmail.LoadSessionAgent(session, actualProject)
+	if err != nil {
+		t.Fatalf("load actual session agent: %v", err)
+	}
+	if updatedActual == nil {
+		t.Fatal("expected actual session agent")
+	}
+	if !updatedActual.LastActiveAt.After(actualTime) {
+		t.Fatalf("expected actual project timestamp to advance beyond %v, got %v", actualTime, updatedActual.LastActiveAt)
+	}
+}
+
 func TestResolveAgentMailScopeWithPreferenceNormalizesExplicitPrefix(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
@@ -1128,6 +1284,119 @@ func TestResolveAgentMailScopeWithPreferenceNormalizesExplicitPrefix(t *testing.
 	}
 	if resolvedProjectKey != projectKey {
 		t.Fatalf("resolved project key = %q, want %q", resolvedProjectKey, projectKey)
+	}
+}
+
+func TestResolveAgentMailScopeWithPreferenceRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		_ = os.Chdir(origWd)
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	wd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wd, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir wd git: %v", err)
+	}
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	_, _, err := resolveAgentMailScopeWithPreference("ntm", true)
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
+func TestResolveAgentMailCommandScopeFallsBackToCurrentProjectRootForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		_ = os.Chdir(origWd)
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	projectRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir project root git: %v", err)
+	}
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	resolvedSession, projectKey, err := resolveAgentMailCommandScope("mysession")
+	if err != nil {
+		t.Fatalf("resolveAgentMailCommandScope() error = %v", err)
+	}
+	if resolvedSession != "mysession" {
+		t.Fatalf("resolved session = %q, want %q", resolvedSession, "mysession")
+	}
+	if projectKey != projectRoot {
+		t.Fatalf("project key = %q, want %q", projectKey, projectRoot)
+	}
+}
+
+func TestResolveAgentMailCommandScopePrefersSavedSessionAgentProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		_ = os.Chdir(origWd)
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd project git: %v", err)
+	}
+	if err := os.Chdir(cwdProject); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir actual project git: %v", err)
+	}
+	saveSessionAgentForTest(t, "mysession", actualProject, "GreenCastle")
+
+	_, projectKey, err := resolveAgentMailCommandScope("mysession")
+	if err != nil {
+		t.Fatalf("resolveAgentMailCommandScope() error = %v", err)
+	}
+	if projectKey != actualProject {
+		t.Fatalf("project key = %q, want %q", projectKey, actualProject)
+	}
+}
+
+func TestRefineAgentMailProjectKeyIgnoresUnusableSavedProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd project git: %v", err)
+	}
+
+	staleProject := filepath.Join(t.TempDir(), "missing-project")
+	saveSessionAgentForTest(t, "mysession", staleProject, "GreenCastle")
+
+	got := refineAgentMailProjectKey("mysession", cwdProject)
+	if got != cwdProject {
+		t.Fatalf("refineAgentMailProjectKey() = %q, want %q", got, cwdProject)
 	}
 }
 
@@ -1201,6 +1470,38 @@ func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 	}
 }
 
+func TestRunLocksRequiresSessionAgentUnlessAllAgents(t *testing.T) {
+	resetFlags()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	projectsBase := t.TempDir()
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(t.TempDir())
+
+	err := runLocks("mysession", false)
+	if err == nil {
+		t.Fatal("expected missing session-agent identity error")
+	}
+	if !strings.Contains(err.Error(), "has no Agent Mail identity") {
+		t.Fatalf("expected missing identity error, got %v", err)
+	}
+	if len(stub.listCalls) != 0 {
+		t.Fatalf("expected no list call when identity is missing, got %d", len(stub.listCalls))
+	}
+}
+
 func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -1233,6 +1534,44 @@ func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	}
 	if got := stub.releaseCalls[0].Project; got != projectKey {
 		t.Fatalf("expected release project %q, got %q", projectKey, got)
+	}
+}
+
+func TestRunUnlockUsesSavedSessionAgentIdentityAndProjectKey(t *testing.T) {
+	resetFlags()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	projectsBase := t.TempDir()
+	configuredProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(configuredProject, 0o755); err != nil {
+		t.Fatalf("mkdir configured project: %v", err)
+	}
+
+	actualProject := t.TempDir()
+	session := "mysession"
+	saveSessionAgentForTest(t, session, actualProject, "GreenCastle")
+
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(t.TempDir())
+
+	if err := runUnlock(session, []string{"internal/cli/*.go"}, false); err != nil {
+		t.Fatalf("runUnlock: %v", err)
+	}
+	if len(stub.releaseCalls) != 1 {
+		t.Fatalf("expected one release call, got %d", len(stub.releaseCalls))
+	}
+	if got := stub.releaseCalls[0].Project; got != actualProject {
+		t.Fatalf("expected release project %q, got %q", actualProject, got)
+	}
+	if got := stub.releaseCalls[0].Agent; got != "GreenCastle" {
+		t.Fatalf("expected release agent %q, got %q", "GreenCastle", got)
 	}
 }
 

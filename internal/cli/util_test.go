@@ -6,7 +6,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -637,6 +639,8 @@ func TestInferSessionFromCWD_LabelDisambiguation(t *testing.T) {
 }
 
 func TestResolveProjectDirForSession_PrefersCWDForInferredSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	origCfg := cfg
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {
@@ -668,6 +672,8 @@ func TestResolveProjectDirForSession_PrefersCWDForInferredSession(t *testing.T) 
 }
 
 func TestResolveProjectDirForSession_PrefersConfiguredDirForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	origCfg := cfg
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {
@@ -702,6 +708,8 @@ func TestResolveProjectDirForSession_PrefersConfiguredDirForExplicitSession(t *t
 }
 
 func TestResolveProjectDirForSession_ExplicitFallsBackToUsableWorkspace(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	origCfg := cfg
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {
@@ -732,7 +740,48 @@ func TestResolveProjectDirForSession_ExplicitFallsBackToUsableWorkspace(t *testi
 	}
 }
 
+func TestResolveProjectDirForSession_PrefersSavedSessionAgentProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	configProject := filepath.Join(projectsBase, "ntm")
+	if err := os.MkdirAll(configProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saveSessionAgentForTest(t, "ntm", actualProject, "GreenCastle")
+
+	got := resolveProjectDirForSession("ntm", true)
+	if got != actualProject {
+		t.Errorf("resolveProjectDirForSession saved project = %q, want %q", got, actualProject)
+	}
+}
+
 func TestResolveProjectDirForSession_InvalidSessionReturnsEmpty(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
 	origCfg := cfg
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {
@@ -756,6 +805,188 @@ func TestResolveProjectDirForSession_InvalidSessionReturnsEmpty(t *testing.T) {
 	got := resolveProjectDirForSession("../escape", true)
 	if got != "" {
 		t.Fatalf("resolveProjectDirForSession invalid = %q, want empty", got)
+	}
+}
+
+func TestResolveExplicitProjectDirForSession_RejectsWorkspaceFallback(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveExplicitProjectDirForSession("ntm")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
+	}
+}
+
+func TestResolveExplicitProjectDirForSession_UsesSavedSessionAgentProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saveSessionAgentForTest(t, "ntm", actualProject, "GreenCastle")
+
+	got, err := resolveExplicitProjectDirForSession("ntm")
+	if err != nil {
+		t.Fatalf("resolveExplicitProjectDirForSession() error = %v", err)
+	}
+	if got != actualProject {
+		t.Fatalf("resolveExplicitProjectDirForSession() = %q, want %q", got, actualProject)
+	}
+}
+
+func TestResolveCommandProjectDirForSession_ExplicitRejectsWorkspaceFallback(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveCommandProjectDirForSession("ntm", false); got != "" {
+		t.Fatalf("resolveCommandProjectDirForSession explicit = %q, want empty", got)
+	}
+}
+
+func TestResolveCommandProjectDirForSession_InferredAllowsWorkspaceFallback(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	projectsBase := t.TempDir()
+	cfg = &config.Config{ProjectsBase: projectsBase}
+
+	cwdRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveCommandProjectDirForSession("ntm", true); got != cwdRepo {
+		t.Fatalf("resolveCommandProjectDirForSession inferred = %q, want %q", got, cwdRepo)
+	}
+}
+
+func TestResolveExplicitProjectDirForSession_IgnoresCWDMatchedSavedProject(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	cfg = &config.Config{ProjectsBase: t.TempDir()}
+
+	wrongProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wrongProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	actualProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(actualProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chdir(wrongProject); err != nil {
+		t.Fatal(err)
+	}
+
+	session := "ntm"
+	wrongInfo := &agentmail.SessionAgentInfo{
+		AgentName:    "WrongLake",
+		ProjectKey:   wrongProject,
+		RegisteredAt: time.Now().Add(-2 * time.Hour),
+		LastActiveAt: time.Now().Add(-2 * time.Hour),
+	}
+	if err := agentmail.SaveSessionAgent(session, wrongProject, wrongInfo); err != nil {
+		t.Fatalf("save wrong session agent: %v", err)
+	}
+	actualInfo := &agentmail.SessionAgentInfo{
+		AgentName:    "RightLake",
+		ProjectKey:   actualProject,
+		RegisteredAt: time.Now().Add(-time.Hour),
+		LastActiveAt: time.Now().Add(-time.Hour),
+	}
+	if err := agentmail.SaveSessionAgent(session, actualProject, actualInfo); err != nil {
+		t.Fatalf("save actual session agent: %v", err)
+	}
+
+	got, err := resolveExplicitProjectDirForSession(session)
+	if err != nil {
+		t.Fatalf("resolveExplicitProjectDirForSession() error = %v", err)
+	}
+	if got != actualProject {
+		t.Fatalf("resolveExplicitProjectDirForSession() = %q, want %q", got, actualProject)
 	}
 }
 

@@ -166,11 +166,18 @@ func runWatch(session string, opts watchOptions) error {
 	if opts.watchPattern != "" && opts.watchBead != "" {
 		return fmt.Errorf("--pattern and --bead cannot be used together")
 	}
+	watchProjectDir := ""
+	if opts.watchPattern != "" || opts.watchBead != "" {
+		watchProjectDir, err = resolveWatchProjectDir(session, res.Inferred)
+		if err != nil {
+			return err
+		}
+	}
 	if opts.watchPattern != "" {
-		return runFileWatch(ctx, session, opts, t)
+		return runFileWatch(ctx, session, watchProjectDir, opts, t)
 	}
 	if opts.watchBead != "" {
-		return runBeadWatch(ctx, session, opts, t)
+		return runBeadWatch(ctx, session, watchProjectDir, opts, t)
 	}
 
 	// Start watching
@@ -274,7 +281,51 @@ func watchLoop(ctx context.Context, session string, opts watchOptions, t theme.T
 	}
 }
 
-func runBeadWatch(ctx context.Context, session string, opts watchOptions, t theme.Theme) error {
+func resolveWatchProjectDir(session string, inferred bool) (string, error) {
+	if dir := strings.TrimSpace(resolveCommandProjectDirForSession(session, inferred)); dir != "" {
+		return dir, nil
+	}
+	if inferred {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(cwd) != "" {
+			return cwd, nil
+		}
+	}
+	return "", fmt.Errorf("getting project root failed")
+}
+
+func watchEventMatchesPattern(pattern, watchRoot, eventPath string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	if strings.Contains(pattern, string(os.PathSeparator)) || strings.Contains(pattern, "/") {
+		rootAbs, err := filepath.Abs(watchRoot)
+		if err != nil {
+			return false
+		}
+		eventAbs, err := filepath.Abs(eventPath)
+		if err != nil {
+			return false
+		}
+		rel, err := filepath.Rel(rootAbs, eventAbs)
+		if err != nil {
+			return false
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return false
+		}
+		matched, _ := filepath.Match(filepath.ToSlash(pattern), filepath.ToSlash(rel))
+		return matched
+	}
+	matched, _ := filepath.Match(pattern, filepath.Base(eventPath))
+	return matched
+}
+
+func runBeadWatch(ctx context.Context, session, projectDir string, opts watchOptions, t theme.Theme) error {
 	mentionRE, err := beadMentionRegexp(opts.watchBead)
 	if err != nil {
 		return err
@@ -356,7 +407,7 @@ func runBeadWatch(ctx context.Context, session string, opts watchOptions, t them
 		}
 
 		if lastStatusCheck.IsZero() || time.Since(lastStatusCheck) >= statusPoll {
-			status, statusErr := bv.GetBeadStatus("", opts.watchBead)
+			status, statusErr := bv.GetBeadStatus(projectDir, opts.watchBead)
 			if statusErr != nil {
 				status = "unknown"
 			}
@@ -515,36 +566,20 @@ func paneOutputPrefixColor(agentType tmux.AgentType, t theme.Theme) lipgloss.Col
 	}
 }
 
-func runFileWatch(ctx context.Context, session string, opts watchOptions, t theme.Theme) error {
+func runFileWatch(ctx context.Context, session, watchRoot string, opts watchOptions, t theme.Theme) error {
 	if opts.watchCommand == "" {
 		return fmt.Errorf("--command is required with --pattern")
 	}
 
-	fmt.Printf("\nWatching files matching '%s' in current directory...\n", opts.watchPattern)
+	fmt.Printf("\nWatching files matching '%s' in %s...\n", opts.watchPattern, watchRoot)
 	fmt.Printf("Will run command: %s\n", opts.watchCommand)
 	fmt.Println("Press Ctrl+C to stop")
 
 	handler := func(events []watcher.Event) {
 		matched := false
 		for _, e := range events {
-			// Check if pattern contains path separators
-			if strings.Contains(opts.watchPattern, string(os.PathSeparator)) || strings.Contains(opts.watchPattern, "/") {
-				// Match against relative path
-				rel, err := filepath.Rel(".", e.Path)
-				if err == nil {
-					if m, _ := filepath.Match(opts.watchPattern, rel); m {
-						matched = true
-					}
-				}
-			} else {
-				// Match against base name
-				name := filepath.Base(e.Path)
-				if m, _ := filepath.Match(opts.watchPattern, name); m {
-					matched = true
-				}
-			}
-
-			if matched {
+			if watchEventMatchesPattern(opts.watchPattern, watchRoot, e.Path) {
+				matched = true
 				if !opts.noColor {
 					fmt.Printf("File changed: %s\n", e.Path)
 				}
@@ -596,7 +631,7 @@ func runFileWatch(ctx context.Context, session string, opts watchOptions, t them
 	}
 	defer w.Close()
 
-	if err := w.Add("."); err != nil {
+	if err := w.Add(watchRoot); err != nil {
 		return fmt.Errorf("failed to watch directory: %w", err)
 	}
 

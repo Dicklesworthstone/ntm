@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -169,5 +170,40 @@ func TestResolveGitProjectDirUsesSavedSessionAgentProjectKey(t *testing.T) {
 	}
 	if workDir != actualProject {
 		t.Fatalf("resolveGitProjectDir() workDir = %q, want saved session agent project %q", workDir, actualProject)
+	}
+}
+
+func TestResolveGitProjectDirRejectsWorkspaceFallbackForExplicitSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	origCfg := cfg
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() {
+		cfg = origCfg
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace git dir: %v", err)
+	}
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+
+	cfg = &config.Config{ProjectsBase: filepath.Join(root, "projects-base")}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir cwd: %v", err)
+	}
+
+	_, _, err := resolveGitProjectDir("mysession")
+	if err == nil {
+		t.Fatal("expected missing session project error")
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		t.Fatalf("expected project root error, got %v", err)
 	}
 }

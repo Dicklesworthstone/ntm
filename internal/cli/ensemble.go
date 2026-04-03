@@ -1134,7 +1134,7 @@ func streamEnsembleSynthesis(
 		return fmt.Errorf("--resume requires --run-id")
 	}
 
-	store, err := newEnsembleCheckpointStore()
+	store, err := newEnsembleCheckpointStoreForSession(session)
 	if err != nil {
 		return fmt.Errorf("open checkpoint store: %w", err)
 	}
@@ -1633,11 +1633,23 @@ func renderExportFindingsOutput(w io.Writer, payload exportFindingsOutput, forma
 
 func loadExportFindingsContext(w io.Writer, session string, opts exportFindingsOptions) (*exportFindingsContext, error) {
 	if opts.RunID != "" {
-		ctx, err := loadExportFindingsFromRun(opts.RunID)
+		projectDir := ""
+		if strings.TrimSpace(session) != "" {
+			resolvedSession, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+			if err != nil {
+				return nil, err
+			}
+			projectDir, err = resolveExplicitProjectDirForSession(resolvedSession)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		ctx, err := loadExportFindingsFromRun(opts.RunID, projectDir)
 		if err != nil {
 			return nil, err
 		}
-		projectDir, err := resolveEnsembleProjectDirForSession(ctx.Session)
+		projectDir, err = resolveEnsembleProjectDirForSession(ctx.Session)
 		if err != nil {
 			return nil, err
 		}
@@ -1676,19 +1688,25 @@ func resolveEnsembleProjectDirForSession(session string) (string, error) {
 		}
 		return projectDir, nil
 	}
-	if err := tmux.ValidateSessionName(session); err != nil {
-		return "", fmt.Errorf("invalid session name: %w", err)
+	resolved, err := normalizeProjectScopedSessionName(session, !IsJSONOutput())
+	if err != nil {
+		return "", err
 	}
+	session = resolved
 
-	projectDir := resolveProjectDirForSession(session, true)
-	if projectDir == "" {
-		return "", fmt.Errorf("getting project root failed")
-	}
-	return projectDir, nil
+	return resolveExplicitProjectDirForSession(session)
 }
 
-func loadExportFindingsFromRun(runID string) (*exportFindingsContext, error) {
-	store, err := newEnsembleCheckpointStore()
+func loadExportFindingsFromRun(runID, projectDir string) (*exportFindingsContext, error) {
+	var (
+		store *ensemble.CheckpointStore
+		err   error
+	)
+	if strings.TrimSpace(projectDir) != "" {
+		store, err = newEnsembleCheckpointStoreForProject(projectDir)
+	} else {
+		store, err = newEnsembleCheckpointStore()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open checkpoint store: %w", err)
 	}
@@ -2230,12 +2248,25 @@ func resolveEnsembleSession(session string, w io.Writer) (SessionResolution, err
 	return ResolveSessionWithOptions(session, w, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
 }
 
-func newEnsembleCheckpointStore() (*ensemble.CheckpointStore, error) {
-	projectDir := GetProjectRoot()
+func newEnsembleCheckpointStoreForSession(session string) (*ensemble.CheckpointStore, error) {
+	projectDir, err := resolveEnsembleProjectDirForSession(session)
+	if err != nil {
+		return nil, err
+	}
+	return newEnsembleCheckpointStoreForProject(projectDir)
+}
+
+func newEnsembleCheckpointStoreForProject(projectDir string) (*ensemble.CheckpointStore, error) {
+	projectDir = strings.TrimSpace(projectDir)
 	if projectDir == "" {
 		return nil, fmt.Errorf("getting project root failed")
 	}
 	return ensemble.NewCheckpointStore(filepath.Join(projectDir, ".ntm"))
+}
+
+func newEnsembleCheckpointStore() (*ensemble.CheckpointStore, error) {
+	projectDir := GetProjectRoot()
+	return newEnsembleCheckpointStoreForProject(projectDir)
 }
 
 func runEnsembleProvenance(w io.Writer, session, findingID string, opts provenanceOptions) error {

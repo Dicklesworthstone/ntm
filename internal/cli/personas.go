@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -399,46 +400,31 @@ func renderTags(tags []string, th theme.Theme) string {
 
 // determineSource returns the source of a persona (built-in, user, or project)
 func determineSource(name string) string {
-	// Check if it's a built-in persona
-	for _, bp := range persona.BuiltinPersonas() {
-		if strings.EqualFold(bp.Name, name) {
-			// Could be overridden, so check for user/project files
-			// For simplicity, we'll report based on file existence
-			cwd, _ := os.Getwd()
-			projectPath := cwd + "/.ntm/personas.toml"
-			if cfg, err := persona.LoadFromFile(projectPath); err == nil {
-				for _, p := range cfg.Personas {
-					if strings.EqualFold(p.Name, name) {
-						return "project (.ntm/personas.toml)"
-					}
-				}
-			}
-			if cfg, err := persona.LoadFromFile(persona.DefaultUserPath()); err == nil {
-				for _, p := range cfg.Personas {
-					if strings.EqualFold(p.Name, name) {
-						return "user (~/.config/ntm/personas.toml)"
-					}
-				}
-			}
-			return "built-in"
-		}
-	}
-
-	// Not a builtin name - check user and project
 	cwd, _ := os.Getwd()
-	projectPath := cwd + "/.ntm/personas.toml"
+	return determineSourceFromProjectDir(name, cwd)
+}
+
+func determineSourceFromProjectDir(name, projectDir string) string {
+	projectPath := filepath.Join(projectDir, persona.DefaultProjectPath())
 	if cfg, err := persona.LoadFromFile(projectPath); err == nil {
 		for _, p := range cfg.Personas {
 			if strings.EqualFold(p.Name, name) {
-				return "project (.ntm/personas.toml)"
+				return fmt.Sprintf("project (%s)", persona.DefaultProjectPath())
 			}
 		}
 	}
-	if cfg, err := persona.LoadFromFile(persona.DefaultUserPath()); err == nil {
+
+	if cfg, userPath, err := persona.LoadUserConfig(); err == nil && cfg != nil {
 		for _, p := range cfg.Personas {
 			if strings.EqualFold(p.Name, name) {
-				return "user (~/.config/ntm/personas.toml)"
+				return fmt.Sprintf("user (%s)", userPath)
 			}
+		}
+	}
+
+	for _, bp := range persona.BuiltinPersonas() {
+		if strings.EqualFold(bp.Name, name) {
+			return "built-in"
 		}
 	}
 

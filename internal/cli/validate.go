@@ -548,15 +548,16 @@ func buildValidationPersonaRegistry(path string, primary *persona.PersonasConfig
 	}
 
 	if isProjectPersonasPath(path) {
-		userPath := persona.DefaultUserPath()
-		if userPath != "" && filepath.Clean(userPath) != filepath.Clean(path) {
-			if userCfg, err := persona.LoadFromFile(userPath); err == nil {
-				for i := range userCfg.Personas {
-					registry.Add(&userCfg.Personas[i])
-				}
-				for i := range userCfg.PersonaSets {
-					registry.AddSet(&userCfg.PersonaSets[i])
-				}
+		userCfg, userPath, err := persona.LoadUserConfig()
+		if err != nil {
+			return nil, err
+		}
+		if userCfg != nil && filepath.Clean(userPath) != filepath.Clean(path) {
+			for i := range userCfg.Personas {
+				registry.Add(&userCfg.Personas[i])
+			}
+			for i := range userCfg.PersonaSets {
+				registry.AddSet(&userCfg.PersonaSets[i])
 			}
 		}
 	}

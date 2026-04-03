@@ -3,12 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 )
 
@@ -299,6 +301,145 @@ func TestLoadCompareInput_LoadsCheckpointRunFromProjectRoot(t *testing.T) {
 	}
 	if len(input.Outputs) != 1 || input.Outputs[0].Thesis != "Checkpoint thesis" {
 		t.Fatalf("Outputs = %+v, want checkpoint output", input.Outputs)
+	}
+}
+
+func TestNewEnsembleCheckpointStoreForSessionUsesSessionProjectDir(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:       "session-scoped-run",
+		SessionName: "mysession",
+		Question:    "where should this checkpoint go?",
+		Status:      ensemble.EnsembleActive,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	sessionMetaPath := filepath.Join(sessionProject, ".ntm", "ensemble-checkpoints", meta.RunID, "_meta.json")
+	if _, err := os.Stat(sessionMetaPath); err != nil {
+		t.Fatalf("expected metadata under session project, got stat error: %v", err)
+	}
+
+	cwdMetaPath := filepath.Join(cwdProject, ".ntm", "ensemble-checkpoints", meta.RunID, "_meta.json")
+	if _, err := os.Stat(cwdMetaPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no metadata under cwd project, stat err = %v", err)
+	}
+}
+
+func TestLoadExportFindingsContextRunIDUsesProvidedSessionProjectDir(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "export-run",
+		SessionName:  "mysession",
+		Question:     "What should we export?",
+		Status:       ensemble.EnsembleComplete,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	checkpoint := ensemble.ModeCheckpoint{
+		ModeID: "mode-a",
+		Status: string(ensemble.AssignmentDone),
+		Output: &ensemble.ModeOutput{
+			ModeID: "mode-a",
+			Thesis: "Export thesis",
+			TopFindings: []ensemble.Finding{{
+				Finding:    "Export finding",
+				Impact:     ensemble.ImpactMedium,
+				Confidence: 0.8,
+			}},
+			Confidence:  0.8,
+			GeneratedAt: time.Now(),
+		},
+		CapturedAt: time.Now(),
+	}
+	if err := store.SaveCheckpoint(meta.RunID, checkpoint); err != nil {
+		t.Fatalf("SaveCheckpoint() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	ctx, err := loadExportFindingsContext(io.Discard, "mysession", exportFindingsOptions{RunID: meta.RunID})
+	if err != nil {
+		t.Fatalf("loadExportFindingsContext() error = %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("expected export findings context")
+	}
+	if ctx.ProjectDir != sessionProject {
+		t.Fatalf("ProjectDir = %q, want %q", ctx.ProjectDir, sessionProject)
+	}
+	if ctx.RunID != meta.RunID {
+		t.Fatalf("RunID = %q, want %q", ctx.RunID, meta.RunID)
+	}
+	if len(ctx.Outputs) != 1 || ctx.Outputs[0].Thesis != "Export thesis" {
+		t.Fatalf("Outputs = %+v, want exported checkpoint output", ctx.Outputs)
 	}
 }
 

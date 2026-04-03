@@ -40,8 +40,8 @@ func resolveCheckpointStorageSessionArg(session string) (string, error) {
 	}
 	allowPrefix := !IsJSONOutput()
 	storage := checkpoint.NewStorage()
-	if storedSessions, err := listCheckpointSessions(storage); err == nil {
-		if resolved, _, err := resolveExplicitSessionName(session, checkpointSessionCandidates(storedSessions), allowPrefix); err == nil {
+	if storedSessions, err := storedSessionCandidatesFromDir(storage.BaseDir); err == nil {
+		if resolved, _, err := resolveExplicitSessionName(session, storedSessions, allowPrefix); err == nil {
 			return resolved, nil
 		} else {
 			var re *sessionPkg.ResolveExplicitSessionNameError
@@ -67,14 +67,6 @@ func resolveCheckpointStorageSessionArg(session string) (string, error) {
 		}
 	}
 	return session, nil
-}
-
-func checkpointSessionCandidates(names []string) []tmux.Session {
-	sessions := make([]tmux.Session, 0, len(names))
-	for _, name := range names {
-		sessions = append(sessions, tmux.Session{Name: name})
-	}
-	return sessions
 }
 
 func newCheckpointCmd() *cobra.Command {
