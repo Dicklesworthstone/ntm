@@ -162,17 +162,25 @@ func (r *Reader) FindLatestAny() (*Handoff, string, error) {
 	var newestTime time.Time
 
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		h, path, err := r.FindLatest(e.Name())
 		if err != nil || h == nil {
 			continue
 		}
-		if h.CreatedAt.After(newestTime) {
+
+		candidateTime := h.CreatedAt
+		if candidateTime.IsZero() {
+			if info, statErr := os.Stat(path); statErr == nil {
+				candidateTime = info.ModTime()
+			}
+		}
+
+		if newest == nil || candidateTime.After(newestTime) {
 			newest = h
 			newestPath = path
-			newestTime = h.CreatedAt
+			newestTime = candidateTime
 		}
 	}
 

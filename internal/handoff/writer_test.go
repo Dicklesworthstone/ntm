@@ -129,6 +129,25 @@ func TestWriterEnsureDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second EnsureDir failed: %v", err)
 	}
+
+	t.Run("rejects symlinked session directories", func(t *testing.T) {
+		outsideDir := t.TempDir()
+		linkPath := filepath.Join(tmpDir, ".ntm", "handoffs", "linked")
+		if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+			t.Fatalf("failed to create handoff base: %v", err)
+		}
+		if err := os.Symlink(outsideDir, linkPath); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+
+		err := w.EnsureDir("linked")
+		if err == nil {
+			t.Fatal("expected symlinked session directory to be rejected")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("expected symlink error, got %v", err)
+		}
+	})
 }
 
 func TestWriterWrite(t *testing.T) {
@@ -177,6 +196,29 @@ func TestWriterWrite(t *testing.T) {
 	}
 	if parsed.Version != HandoffVersion {
 		t.Errorf("version mismatch: got %q", parsed.Version)
+	}
+}
+
+func TestWriterWriteRejectsSymlinkedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	outsideDir := t.TempDir()
+	linkPath := filepath.Join(tmpDir, ".ntm", "handoffs", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("failed to create handoff base: %v", err)
+	}
+	if err := os.Symlink(outsideDir, linkPath); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	h := New("linked").WithGoalAndNow("Goal", "Now")
+	_, err := w.Write(h, "through-symlink")
+	if err == nil {
+		t.Fatal("expected write through symlinked session dir to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
 	}
 }
 
@@ -392,6 +434,51 @@ func TestWriterRotation(t *testing.T) {
 	}
 }
 
+func TestWriterRotationSkipsSymlinkedYAMLFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriterWithOptions(tmpDir, 2, nil)
+
+	h := New("test").WithGoalAndNow("Goal", "Now")
+	if _, err := w.Write(h, "first"); err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+	if _, err := w.Write(h, "second"); err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+
+	dir := filepath.Join(tmpDir, ".ntm", "handoffs", "test")
+	outsidePath := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outsidePath, []byte("goal: external\nnow: external\n"), 0o644); err != nil {
+		t.Fatalf("failed to write outside file: %v", err)
+	}
+	linkPath := filepath.Join(dir, "2000-01-01_00-00_linked.yaml")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	if _, err := w.Write(h, "third"); err != nil {
+		t.Fatalf("third write failed: %v", err)
+	}
+
+	if _, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("expected symlinked yaml to be left untouched, got %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	yamlCount := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") && e.Type()&os.ModeSymlink == 0 {
+			yamlCount++
+		}
+	}
+	if yamlCount != 2 {
+		t.Fatalf("expected 2 regular yaml files after rotation, got %d", yamlCount)
+	}
+}
+
 func TestWriterArchive(t *testing.T) {
 	tmpDir := t.TempDir()
 	w := NewWriter(tmpDir)
@@ -442,6 +529,55 @@ func TestWriterArchiveAlreadyArchived(t *testing.T) {
 	}
 }
 
+func TestWriterArchiveRejectsSymlinkedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	outsideDir := t.TempDir()
+	linkDir := filepath.Join(tmpDir, ".ntm", "handoffs", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkDir), 0o755); err != nil {
+		t.Fatalf("failed to create handoff base: %v", err)
+	}
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	path := filepath.Join(linkDir, "escape.yaml")
+	err := w.Archive(path)
+	if err == nil {
+		t.Fatal("expected archive through symlinked session dir to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
+func TestWriterArchiveRejectsSymlinkedArchiveDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	h := New("test").WithGoalAndNow("Goal", "Now")
+	path, err := w.Write(h, "to-archive")
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	dir := filepath.Dir(path)
+	archiveDir := filepath.Join(dir, ".archive")
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, archiveDir); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	err = w.Archive(path)
+	if err == nil {
+		t.Fatal("expected archive to reject symlinked archive dir")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
 func TestWriterDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 	w := NewWriter(tmpDir)
@@ -473,6 +609,28 @@ func TestWriterDeleteOutsideBaseDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not within handoff directory") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWriterDeleteRejectsPathThroughSymlinkedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	outsideDir := t.TempDir()
+	linkDir := filepath.Join(tmpDir, ".ntm", "handoffs", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkDir), 0o755); err != nil {
+		t.Fatalf("failed to create handoff base: %v", err)
+	}
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	err := w.Delete(filepath.Join(linkDir, "escape.yaml"))
+	if err == nil {
+		t.Fatal("expected delete through symlinked session dir to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
 	}
 }
 

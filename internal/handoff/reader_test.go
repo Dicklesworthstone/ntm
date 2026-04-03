@@ -227,6 +227,75 @@ created_at: 2025-01-02T10:00:00Z
 		}
 	})
 
+	t.Run("falls back to file modtime when created_at is missing", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		olderPath := createHandoffFile(t, tmpDir, "session-a", "handoff.yaml", `
+goal: "Session A goal"
+now: "Session A now"
+version: "1.0"
+`)
+		newerPath := createHandoffFile(t, tmpDir, "session-b", "handoff.yaml", `
+goal: "Session B goal"
+now: "Session B now"
+version: "1.0"
+`)
+
+		olderTime := time.Now().Add(-2 * time.Hour)
+		newerTime := time.Now().Add(-1 * time.Hour)
+		if err := os.Chtimes(olderPath, olderTime, olderTime); err != nil {
+			t.Fatalf("failed to set older mtime: %v", err)
+		}
+		if err := os.Chtimes(newerPath, newerTime, newerTime); err != nil {
+			t.Fatalf("failed to set newer mtime: %v", err)
+		}
+
+		h, path, err := r.FindLatestAny()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if h == nil {
+			t.Fatal("expected handoff, got nil")
+		}
+		if h.Goal != "Session B goal" {
+			t.Fatalf("expected newest modtime handoff, got %q", h.Goal)
+		}
+		if path != newerPath {
+			t.Fatalf("expected newest modtime path %s, got %s", newerPath, path)
+		}
+	})
+
+	t.Run("skips hidden session directories", func(t *testing.T) {
+		r, tmpDir := setupTestReader(t)
+
+		createHandoffFile(t, tmpDir, "visible", "handoff.yaml", `
+goal: "Visible goal"
+now: "Visible now"
+version: "1.0"
+created_at: 2025-01-01T10:00:00Z
+`)
+		createHandoffFile(t, tmpDir, ".hidden", "handoff.yaml", `
+goal: "Hidden goal"
+now: "Hidden now"
+version: "1.0"
+created_at: 2025-01-02T10:00:00Z
+`)
+
+		h, path, err := r.FindLatestAny()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if h == nil {
+			t.Fatal("expected handoff, got nil")
+		}
+		if h.Goal != "Visible goal" {
+			t.Fatalf("expected visible handoff, got %q", h.Goal)
+		}
+		if !strings.Contains(path, filepath.Join("visible", "handoff.yaml")) {
+			t.Fatalf("expected visible session path, got %s", path)
+		}
+	})
+
 	t.Run("returns nil when no handoffs exist", func(t *testing.T) {
 		r, _ := setupTestReader(t)
 

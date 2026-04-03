@@ -55,6 +55,171 @@ func NewWriterWithOptions(projectDir string, maxPerDir int, logger *slog.Logger)
 	}
 }
 
+func normalizeWriterSessionName(sessionName string) (string, error) {
+	if sessionName == "" {
+		sessionName = "general"
+	}
+	if sessionName != "general" && !sessionNameRegex.MatchString(sessionName) {
+		return "", fmt.Errorf("invalid session name: %s", sessionName)
+	}
+	return sessionName, nil
+}
+
+func ensureNoSymlinkComponents(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+
+	volume := filepath.VolumeName(absPath)
+	remainder := strings.TrimPrefix(absPath, volume)
+	sep := string(filepath.Separator)
+	remainder = strings.TrimPrefix(remainder, sep)
+
+	current := volume + sep
+	if current == "" {
+		current = sep
+	}
+
+	for _, part := range strings.Split(remainder, sep) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("lstat %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path %s traverses symlinked component %s", path, current)
+		}
+	}
+
+	return nil
+}
+
+func ensureSafeDir(path string) error {
+	if err := ensureNoSymlinkComponents(path); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("mkdir failed: %w", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("directory %s is a symlink", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path %s is not a directory", path)
+	}
+
+	return nil
+}
+
+func (w *Writer) ensureSessionDir(sessionName string) (string, error) {
+	sessionName, err := normalizeWriterSessionName(sessionName)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureSafeDir(w.baseDir); err != nil {
+		return "", err
+	}
+
+	dir := filepath.Join(w.baseDir, sessionName)
+	if err := ensureSafeDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func (w *Writer) sessionDirPath(sessionName string) (string, error) {
+	sessionName, err := normalizeWriterSessionName(sessionName)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureNoSymlinkComponents(w.baseDir); err != nil {
+		return "", err
+	}
+
+	dir := filepath.Join(w.baseDir, sessionName)
+	if err := ensureNoSymlinkComponents(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func visibleYAMLPaths(paths []string) []string {
+	filtered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.HasPrefix(filepath.Base(path), ".") {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
+}
+
+func (w *Writer) validateManagedHandoffPath(path string) (string, string, error) {
+	if path == "" {
+		return "", "", fmt.Errorf("path is required")
+	}
+	if !strings.HasSuffix(filepath.Base(path), ".yaml") {
+		return "", "", fmt.Errorf("path %s is not a handoff yaml file", path)
+	}
+
+	absBase, err := filepath.Abs(w.baseDir)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid base dir: %w", err)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid path: %w", err)
+	}
+
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid path: %w", err)
+	}
+	parentEscape := ".." + string(filepath.Separator)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, parentEscape) {
+		return "", "", fmt.Errorf("path %s is not within handoff directory", path)
+	}
+
+	if err := ensureNoSymlinkComponents(absBase); err != nil {
+		return "", "", err
+	}
+	if err := ensureNoSymlinkComponents(absPath); err != nil {
+		return "", "", err
+	}
+
+	info, err := os.Lstat(absPath)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return "", "", fmt.Errorf("path %s is not a regular handoff file", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("lstat %s: %w", path, err)
+	}
+
+	return absPath, rel, nil
+}
+
+func pathContainsArchiveDir(rel string) bool {
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == ".archive" {
+			return true
+		}
+	}
+	return false
+}
+
 // Write saves a handoff to the appropriate directory using atomic write.
 // The description is sanitized to kebab-case for use in the filename.
 // Returns the path to the written file.
@@ -86,7 +251,8 @@ func (w *Writer) Write(h *Handoff, description string) (string, error) {
 	}
 
 	// Ensure directory exists
-	if err := w.EnsureDir(h.Session); err != nil {
+	dir, err := w.ensureSessionDir(h.Session)
+	if err != nil {
 		return "", err
 	}
 
@@ -104,7 +270,7 @@ func (w *Writer) Write(h *Handoff, description string) (string, error) {
 		time.Now().Format("2006-01-02_15-04"),
 		desc,
 	)
-	path := filepath.Join(w.baseDir, h.Session, filename)
+	path := filepath.Join(dir, filename)
 
 	// Serialize to YAML
 	data, err := yaml.Marshal(h)
@@ -161,7 +327,8 @@ func (w *Writer) WriteAuto(h *Handoff) (string, error) {
 	}
 
 	// Ensure directory
-	if err := w.EnsureDir(h.Session); err != nil {
+	dir, err := w.ensureSessionDir(h.Session)
+	if err != nil {
 		return "", err
 	}
 
@@ -177,7 +344,7 @@ func (w *Writer) WriteAuto(h *Handoff) (string, error) {
 	filename := fmt.Sprintf("auto-handoff-%s.yaml",
 		time.Now().Format("2006-01-02T15-04-05"),
 	)
-	path := filepath.Join(w.baseDir, h.Session, filename)
+	path := filepath.Join(dir, filename)
 
 	// Serialize
 	data, err := yaml.Marshal(h)
@@ -210,18 +377,13 @@ func (w *Writer) WriteAuto(h *Handoff) (string, error) {
 
 // EnsureDir creates the handoff directory for a session if needed.
 func (w *Writer) EnsureDir(sessionName string) error {
-	if sessionName == "" {
-		sessionName = "general"
-	}
-
-	dir := filepath.Join(w.baseDir, sessionName)
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	dir, err := w.ensureSessionDir(sessionName)
+	if err != nil {
 		w.logger.Error("failed to create handoff directory",
-			"dir", dir,
+			"session", sessionName,
 			"error", err,
 		)
-		return fmt.Errorf("mkdir failed: %w", err)
+		return err
 	}
 
 	w.logger.Debug("ensured handoff directory", "dir", dir)
@@ -303,11 +465,10 @@ func (w *Writer) atomicWrite(path string, data []byte) error {
 
 // checkRotation moves old handoffs to .archive if count exceeds maxPerDir.
 func (w *Writer) checkRotation(sessionName string) error {
-	if sessionName == "" {
-		sessionName = "general"
+	dir, err := w.sessionDirPath(sessionName)
+	if err != nil {
+		return err
 	}
-
-	dir := filepath.Join(w.baseDir, sessionName)
 	archiveDir := filepath.Join(dir, ".archive")
 
 	entries, err := os.ReadDir(dir)
@@ -318,13 +479,7 @@ func (w *Writer) checkRotation(sessionName string) error {
 		return err
 	}
 
-	// Count YAML files (exclude .archive dir and hidden files)
-	var yamlFiles []os.DirEntry
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") && !strings.HasPrefix(e.Name(), ".") {
-			yamlFiles = append(yamlFiles, e)
-		}
-	}
+	yamlFiles := visibleYAMLPaths(discoverHandoffYAMLPaths(dir, entries))
 
 	// Check rotation needs: since we're about to write a new file,
 	// rotate if count >= maxPerDir to make room
@@ -334,11 +489,11 @@ func (w *Writer) checkRotation(sessionName string) error {
 
 	// Sort by name ascending (older files have earlier timestamps in name)
 	sort.Slice(yamlFiles, func(i, j int) bool {
-		return yamlFiles[i].Name() < yamlFiles[j].Name()
+		return filepath.Base(yamlFiles[i]) < filepath.Base(yamlFiles[j])
 	})
 
 	// Create archive dir
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+	if err := ensureSafeDir(archiveDir); err != nil {
 		return err
 	}
 
@@ -346,8 +501,8 @@ func (w *Writer) checkRotation(sessionName string) error {
 	toMove := len(yamlFiles) - w.maxPerDir + 1
 	moved := 0
 	for i := 0; i < toMove; i++ {
-		oldPath := filepath.Join(dir, yamlFiles[i].Name())
-		newPath := filepath.Join(archiveDir, yamlFiles[i].Name())
+		oldPath := yamlFiles[i]
+		newPath := filepath.Join(archiveDir, filepath.Base(yamlFiles[i]))
 		if err := os.Rename(oldPath, newPath); err != nil {
 			w.logger.Warn("failed to archive handoff",
 				"path", oldPath,
@@ -534,30 +689,20 @@ func (w *Writer) Delete(path string) error {
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
-	// Verify path is within our base directory (safety check)
-	absPath, err := filepath.Abs(path)
+	safePath, _, err := w.validateManagedHandoffPath(path)
 	if err != nil {
-		return fmt.Errorf("invalid path: %w", err)
-	}
-	absBase, err := filepath.Abs(w.baseDir)
-	if err != nil {
-		return fmt.Errorf("invalid base dir: %w", err)
-	}
-	// Use path separator suffix to prevent sibling directory bypass
-	// (e.g., "handoffsXXX" shouldn't match "handoffs")
-	if !strings.HasPrefix(absPath, absBase+string(filepath.Separator)) && absPath != absBase {
-		return fmt.Errorf("path %s is not within handoff directory", path)
+		return err
 	}
 
-	if err := os.Remove(path); err != nil {
+	if err := os.Remove(safePath); err != nil {
 		w.logger.Error("failed to delete handoff",
-			"path", path,
+			"path", safePath,
 			"error", err,
 		)
 		return fmt.Errorf("delete failed: %w", err)
 	}
 
-	w.logger.Info("handoff deleted", "path", path)
+	w.logger.Info("handoff deleted", "path", safePath)
 	return nil
 }
 
@@ -566,38 +711,28 @@ func (w *Writer) Archive(path string) error {
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
-	// Verify path is within our base directory
-	absPath, err := filepath.Abs(path)
+	safePath, rel, err := w.validateManagedHandoffPath(path)
 	if err != nil {
-		return fmt.Errorf("invalid path: %w", err)
-	}
-	absBase, err := filepath.Abs(w.baseDir)
-	if err != nil {
-		return fmt.Errorf("invalid base dir: %w", err)
-	}
-	// Use path separator suffix to prevent sibling directory bypass
-	// (e.g., "handoffsXXX" shouldn't match "handoffs")
-	if !strings.HasPrefix(absPath, absBase+string(filepath.Separator)) && absPath != absBase {
-		return fmt.Errorf("path %s is not within handoff directory", path)
+		return err
 	}
 
 	// Don't archive files already in .archive
-	if strings.Contains(path, "/.archive/") {
+	if pathContainsArchiveDir(rel) {
 		return fmt.Errorf("file is already archived")
 	}
 
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(safePath)
 	archiveDir := filepath.Join(dir, ".archive")
 
 	// Ensure archive dir exists
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+	if err := ensureSafeDir(archiveDir); err != nil {
 		return fmt.Errorf("create archive dir failed: %w", err)
 	}
 
-	newPath := filepath.Join(archiveDir, filepath.Base(path))
-	if err := os.Rename(path, newPath); err != nil {
+	newPath := filepath.Join(archiveDir, filepath.Base(safePath))
+	if err := os.Rename(safePath, newPath); err != nil {
 		w.logger.Error("failed to archive handoff",
-			"from", path,
+			"from", safePath,
 			"to", newPath,
 			"error", err,
 		)
@@ -605,7 +740,7 @@ func (w *Writer) Archive(path string) error {
 	}
 
 	w.logger.Info("handoff archived",
-		"from", path,
+		"from", safePath,
 		"to", newPath,
 	)
 	return nil
@@ -670,11 +805,16 @@ func (w *Writer) CleanArchive(sessionName string, olderThan time.Duration) (int,
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
-	if sessionName == "" {
-		sessionName = "general"
+	sessionDir, err := w.sessionDirPath(sessionName)
+	if err != nil {
+		return 0, err
 	}
 
-	archiveDir := filepath.Join(w.baseDir, sessionName, ".archive")
+	archiveDir := filepath.Join(sessionDir, ".archive")
+	if err := ensureNoSymlinkComponents(archiveDir); err != nil {
+		return 0, err
+	}
+
 	entries, err := os.ReadDir(archiveDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -686,18 +826,13 @@ func (w *Writer) CleanArchive(sessionName string, olderThan time.Duration) (int,
 	cutoff := time.Now().Add(-olderThan)
 	removed := 0
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-
-		info, err := e.Info()
+	for _, path := range visibleYAMLPaths(discoverHandoffYAMLPaths(archiveDir, entries)) {
+		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
 
 		if info.ModTime().Before(cutoff) {
-			path := filepath.Join(archiveDir, e.Name())
 			if err := os.Remove(path); err != nil {
 				w.logger.Warn("failed to remove old archived handoff",
 					"path", path,
