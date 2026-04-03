@@ -443,6 +443,296 @@ func TestLoadExportFindingsContextRunIDUsesProvidedSessionProjectDir(t *testing.
 	}
 }
 
+func TestLoadCompareInputRunIDUsesConfiguredProjectsBaseWhenCWDDiffers(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "compare-cross-project-run",
+		SessionName:  "mysession",
+		Question:     "What changed?",
+		Status:       ensemble.EnsembleComplete,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	checkpoint := ensemble.ModeCheckpoint{
+		ModeID: "mode-a",
+		Status: string(ensemble.AssignmentDone),
+		Output: &ensemble.ModeOutput{
+			ModeID: "mode-a",
+			Thesis: "Cross-project thesis",
+			TopFindings: []ensemble.Finding{{
+				Finding:    "Cross-project finding",
+				Impact:     ensemble.ImpactMedium,
+				Confidence: 0.8,
+			}},
+			Confidence:  0.8,
+			GeneratedAt: time.Now(),
+		},
+		CapturedAt: time.Now(),
+	}
+	if err := store.SaveCheckpoint(meta.RunID, checkpoint); err != nil {
+		t.Fatalf("SaveCheckpoint() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	oldInstalled := compareTmuxInstalled
+	compareTmuxInstalled = func() bool { return false }
+	t.Cleanup(func() { compareTmuxInstalled = oldInstalled })
+
+	input, err := loadCompareInput(meta.RunID)
+	if err != nil {
+		t.Fatalf("loadCompareInput() error = %v", err)
+	}
+	if input.RunID != meta.RunID {
+		t.Fatalf("RunID = %q, want %q", input.RunID, meta.RunID)
+	}
+	if len(input.Outputs) != 1 || input.Outputs[0].Thesis != "Cross-project thesis" {
+		t.Fatalf("Outputs = %+v, want cross-project checkpoint output", input.Outputs)
+	}
+}
+
+func TestLoadExportFindingsContextRunIDUsesConfiguredProjectsBaseWithoutSession(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "export-run-no-session",
+		SessionName:  "mysession",
+		Question:     "What should we export?",
+		Status:       ensemble.EnsembleComplete,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	checkpoint := ensemble.ModeCheckpoint{
+		ModeID: "mode-a",
+		Status: string(ensemble.AssignmentDone),
+		Output: &ensemble.ModeOutput{
+			ModeID: "mode-a",
+			Thesis: "Export thesis without session",
+			TopFindings: []ensemble.Finding{{
+				Finding:    "Export finding without session",
+				Impact:     ensemble.ImpactMedium,
+				Confidence: 0.8,
+			}},
+			Confidence:  0.8,
+			GeneratedAt: time.Now(),
+		},
+		CapturedAt: time.Now(),
+	}
+	if err := store.SaveCheckpoint(meta.RunID, checkpoint); err != nil {
+		t.Fatalf("SaveCheckpoint() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	ctx, err := loadExportFindingsContext(io.Discard, "", exportFindingsOptions{RunID: meta.RunID})
+	if err != nil {
+		t.Fatalf("loadExportFindingsContext() error = %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("expected export findings context")
+	}
+	if ctx.ProjectDir != sessionProject {
+		t.Fatalf("ProjectDir = %q, want %q", ctx.ProjectDir, sessionProject)
+	}
+	if ctx.RunID != meta.RunID {
+		t.Fatalf("RunID = %q, want %q", ctx.RunID, meta.RunID)
+	}
+}
+
+func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "resume-cross-project-run",
+		SessionName:  "mysession",
+		Question:     "Resume me",
+		Status:       ensemble.EnsembleActive,
+		CompletedIDs: []string{"mode-a"},
+		PendingIDs:   []string{"mode-b"},
+		TotalModes:   2,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	if err := runEnsembleResume(&buf, meta.RunID, "json", false, true); err != nil {
+		t.Fatalf("runEnsembleResume() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal resume output: %v", err)
+	}
+	if !payload.Success {
+		t.Fatalf("expected success, got payload %+v", payload)
+	}
+	if payload.RunID != meta.RunID || payload.Session != meta.SessionName {
+		t.Fatalf("payload = %+v, want run %q session %q", payload, meta.RunID, meta.SessionName)
+	}
+}
+
+func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "rerun-cross-project-run",
+		SessionName:  "mysession",
+		Question:     "Rerun me",
+		Status:       ensemble.EnsembleActive,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	if err := runEnsembleRerunMode(&buf, meta.RunID, "mode-a", "json", false); err != nil {
+		t.Fatalf("runEnsembleRerunMode() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal rerun output: %v", err)
+	}
+	if !payload.Success {
+		t.Fatalf("expected success, got payload %+v", payload)
+	}
+	if payload.RunID != meta.RunID || payload.Session != meta.SessionName {
+		t.Fatalf("payload = %+v, want run %q session %q", payload, meta.RunID, meta.SessionName)
+	}
+}
+
 func TestRunEnsembleCompare_AllowsCheckpointRunsWithoutTmux(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {

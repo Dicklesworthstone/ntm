@@ -132,7 +132,7 @@ func runEnsembleCompare(w io.Writer, runAID, runBID string, opts compareOptions)
 
 // loadCompareInput loads an ensemble session and constructs a CompareInput.
 func loadCompareInput(runID string) (*ensemble.CompareInput, error) {
-	store, storeErr := newEnsembleCheckpointStore()
+	store, _, storeErr := resolveEnsembleCheckpointStoreForRunID(runID)
 	checkpointExists := storeErr == nil && store.RunExists(runID)
 
 	liveExists := false
@@ -242,7 +242,7 @@ func loadLiveCompareInput(runID string) (*ensemble.CompareInput, error) {
 }
 
 func loadCheckpointCompareInput(runID string) (*ensemble.CompareInput, error) {
-	store, err := newEnsembleCheckpointStore()
+	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
 	if err != nil {
 		return nil, fmt.Errorf("open checkpoint store: %w", err)
 	}

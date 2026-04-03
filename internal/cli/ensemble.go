@@ -23,6 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -1705,7 +1706,7 @@ func loadExportFindingsFromRun(runID, projectDir string) (*exportFindingsContext
 	if strings.TrimSpace(projectDir) != "" {
 		store, err = newEnsembleCheckpointStoreForProject(projectDir)
 	} else {
-		store, err = newEnsembleCheckpointStore()
+		store, _, err = resolveEnsembleCheckpointStoreForRunID(runID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open checkpoint store: %w", err)
@@ -2269,6 +2270,81 @@ func newEnsembleCheckpointStore() (*ensemble.CheckpointStore, error) {
 	return newEnsembleCheckpointStoreForProject(projectDir)
 }
 
+func ensembleCheckpointProjectCandidates() []string {
+	activeCfg := cfg
+	if activeCfg == nil {
+		activeCfg = config.Default()
+	}
+
+	candidates := make([]string, 0, 8)
+	seen := make(map[string]struct{})
+	addCandidate := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		if absDir, err := filepath.Abs(config.ExpandHome(dir)); err == nil {
+			dir = absDir
+		}
+		dir = filepath.Clean(dir)
+		if _, ok := seen[dir]; ok {
+			return
+		}
+		seen[dir] = struct{}{}
+		candidates = append(candidates, dir)
+	}
+
+	addCandidate(GetProjectRoot())
+
+	if activeCfg == nil {
+		return candidates
+	}
+
+	projectsBase := strings.TrimSpace(config.ExpandHome(activeCfg.ProjectsBase))
+	if projectsBase == "" {
+		return candidates
+	}
+	entries, err := os.ReadDir(projectsBase)
+	if err != nil {
+		return candidates
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		addCandidate(filepath.Join(projectsBase, entry.Name()))
+	}
+
+	return candidates
+}
+
+func resolveEnsembleCheckpointStoreForRunID(runID string) (*ensemble.CheckpointStore, string, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, "", fmt.Errorf("run id is required")
+	}
+
+	matches := make([]string, 0, 2)
+	for _, projectDir := range ensembleCheckpointProjectCandidates() {
+		metaPath := filepath.Join(projectDir, ".ntm", "ensemble-checkpoints", runID, "_meta.json")
+		if info, err := os.Stat(metaPath); err == nil && !info.IsDir() {
+			matches = append(matches, projectDir)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		store, err := newEnsembleCheckpointStore()
+		return store, "", err
+	case 1:
+		store, err := newEnsembleCheckpointStoreForProject(matches[0])
+		return store, matches[0], err
+	default:
+		sort.Strings(matches)
+		return nil, "", fmt.Errorf("checkpoint run %q is ambiguous across projects: %s", runID, strings.Join(matches, ", "))
+	}
+}
+
 func runEnsembleProvenance(w io.Writer, session, findingID string, opts provenanceOptions) error {
 	format := strings.ToLower(strings.TrimSpace(opts.Format))
 	if format == "" {
@@ -2535,9 +2611,15 @@ func runEnsembleResume(w io.Writer, runID, format string, quiet, skipDone bool) 
 		format = "json"
 	}
 
-	store, err := newEnsembleCheckpointStore()
+	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
 	if err != nil {
-		return fmt.Errorf("open checkpoint store: %w", err)
+		result := checkpointResumeOutput{
+			GeneratedAt: output.Timestamp(),
+			RunID:       runID,
+			Success:     false,
+			Error:       err.Error(),
+		}
+		return renderCheckpointResumeOutput(w, result, format, quiet)
 	}
 
 	if !store.RunExists(runID) {
@@ -2663,9 +2745,15 @@ func runEnsembleRerunMode(w io.Writer, runID, modeRef, format string, quiet bool
 		format = "json"
 	}
 
-	store, err := newEnsembleCheckpointStore()
+	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
 	if err != nil {
-		return fmt.Errorf("open checkpoint store: %w", err)
+		errPayload := checkpointResumeOutput{
+			GeneratedAt: output.Timestamp(),
+			RunID:       runID,
+			Success:     false,
+			Error:       err.Error(),
+		}
+		return renderCheckpointResumeOutput(w, errPayload, format, quiet)
 	}
 
 	if !store.RunExists(runID) {
