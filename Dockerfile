@@ -8,8 +8,11 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy go mod files first for better caching
+# Copy module metadata first for better caching.
+# This repo uses a local replace for Bubble Tea, so its module files must be
+# present before `go mod download`.
 COPY go.mod go.sum ./
+COPY third_party/bubbletea/go.mod third_party/bubbletea/go.sum ./third_party/bubbletea/
 RUN go mod download
 
 # Copy source

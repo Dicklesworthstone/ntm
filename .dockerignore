@@ -1,0 +1,8 @@
+.git
+.gomodcache
+.beads
+.beads_snapshot*
+dist
+*.test
+ntm
+coverage.out
