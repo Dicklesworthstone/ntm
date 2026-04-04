@@ -107,7 +107,7 @@ func run(dir string, args ...string) (string, error) {
 		}
 
 		// Handle transient database locks (SQLite)
-		if attempt < maxAttempts && (strings.Contains(stderrStr, "database is locked") || 
+		if attempt < maxAttempts && (strings.Contains(stderrStr, "database is locked") ||
 			strings.Contains(stdoutStr, "database is locked") ||
 			strings.Contains(stderrStr, "database is busy")) {
 			time.Sleep(transientBeadsDBBackoff(attempt))

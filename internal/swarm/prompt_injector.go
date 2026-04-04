@@ -107,9 +107,9 @@ func NewPromptInjector() *PromptInjector {
 		TmuxClient:          nil,
 		SessionOrchestrator: NewSessionOrchestrator(),
 		StaggerDelay:        300 * time.Millisecond,
-		EnterDelay:       100 * time.Millisecond,
-		DoubleEnterDelay: 500 * time.Millisecond,
-		Logger:           slog.Default(),
+		EnterDelay:          100 * time.Millisecond,
+		DoubleEnterDelay:    500 * time.Millisecond,
+		Logger:              slog.Default(),
 		Templates: map[string]string{
 			"default": DefaultMarchingOrders,
 			"review":  ReviewTemplate,

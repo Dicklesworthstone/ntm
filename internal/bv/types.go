@@ -135,7 +135,7 @@ type BeadsSummary struct {
 type BeadPreview struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
-	Priority string `json:"priority"` // e.g., "P0", "P1"
+	Priority string `json:"priority"`       // e.g., "P0", "P1"
 	Type     string `json:"type,omitempty"` // task, bug, feature, epic, etc.
 }
 

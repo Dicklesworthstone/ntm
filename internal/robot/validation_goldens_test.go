@@ -49,13 +49,13 @@ type GoldenFile struct {
 
 // GoldenComparison captures the diff between expected and actual.
 type GoldenComparison struct {
-	GoldenPath   string
-	SchemaID     string
-	Matched      bool
-	AddedFields  []string
+	GoldenPath    string
+	SchemaID      string
+	Matched       bool
+	AddedFields   []string
 	RemovedFields []string
 	ChangedFields []string
-	DiffSummary  string
+	DiffSummary   string
 }
 
 // readGolden reads a golden file and returns its contents.
@@ -365,13 +365,13 @@ func logSchemaChange(t *testing.T, tc schemaGoldenTest, comparison GoldenCompari
 
 // RegistryGolden captures stable registry metadata.
 type RegistryGolden struct {
-	SurfaceCount    int                     `json:"surface_count"`
-	SectionCount    int                     `json:"section_count"`
-	CategoryCount   int                     `json:"category_count"`
-	SchemaTypeCount int                     `json:"schema_type_count"`
-	Surfaces        []SurfaceGoldenEntry    `json:"surfaces"`
-	Categories      []string                `json:"categories"`
-	SchemaTypes     []string                `json:"schema_types"`
+	SurfaceCount    int                  `json:"surface_count"`
+	SectionCount    int                  `json:"section_count"`
+	CategoryCount   int                  `json:"category_count"`
+	SchemaTypeCount int                  `json:"schema_type_count"`
+	Surfaces        []SurfaceGoldenEntry `json:"surfaces"`
+	Categories      []string             `json:"categories"`
+	SchemaTypes     []string             `json:"schema_types"`
 }
 
 // SurfaceGoldenEntry is a pinned surface descriptor.
@@ -734,22 +734,22 @@ func TestContract_ErrorCodeStability(t *testing.T) {
 
 	// These error codes must remain stable
 	stableErrorCodes := map[string]string{
-		"SESSION_NOT_FOUND":   ErrCodeSessionNotFound,
-		"PANE_NOT_FOUND":      ErrCodePaneNotFound,
-		"INVALID_FLAG":        ErrCodeInvalidFlag,
-		"TIMEOUT":             ErrCodeTimeout,
-		"NOT_IMPLEMENTED":     ErrCodeNotImplemented,
-		"DEPENDENCY_MISSING":  ErrCodeDependencyMissing,
-		"INTERNAL_ERROR":      ErrCodeInternalError,
-		"PERMISSION_DENIED":   ErrCodePermissionDenied,
-		"RESOURCE_BUSY":       ErrCodeResourceBusy,
-		"SOFT_EXIT_FAILED":    ErrCodeSoftExitFailed,
-		"HARD_KILL_FAILED":    ErrCodeHardKillFailed,
-		"SHELL_NOT_RETURNED":  ErrCodeShellNotReturned,
-		"CC_LAUNCH_FAILED":    ErrCodeCCLaunchFailed,
-		"CC_INIT_TIMEOUT":     ErrCodeCCInitTimeout,
-		"BEAD_NOT_FOUND":      ErrCodeBeadNotFound,
-		"PROMPT_SEND_FAILED":  ErrCodePromptSendFailed,
+		"SESSION_NOT_FOUND":  ErrCodeSessionNotFound,
+		"PANE_NOT_FOUND":     ErrCodePaneNotFound,
+		"INVALID_FLAG":       ErrCodeInvalidFlag,
+		"TIMEOUT":            ErrCodeTimeout,
+		"NOT_IMPLEMENTED":    ErrCodeNotImplemented,
+		"DEPENDENCY_MISSING": ErrCodeDependencyMissing,
+		"INTERNAL_ERROR":     ErrCodeInternalError,
+		"PERMISSION_DENIED":  ErrCodePermissionDenied,
+		"RESOURCE_BUSY":      ErrCodeResourceBusy,
+		"SOFT_EXIT_FAILED":   ErrCodeSoftExitFailed,
+		"HARD_KILL_FAILED":   ErrCodeHardKillFailed,
+		"SHELL_NOT_RETURNED": ErrCodeShellNotReturned,
+		"CC_LAUNCH_FAILED":   ErrCodeCCLaunchFailed,
+		"CC_INIT_TIMEOUT":    ErrCodeCCInitTimeout,
+		"BEAD_NOT_FOUND":     ErrCodeBeadNotFound,
+		"PROMPT_SEND_FAILED": ErrCodePromptSendFailed,
 	}
 
 	for expected, actual := range stableErrorCodes {

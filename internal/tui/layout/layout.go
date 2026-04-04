@@ -166,7 +166,7 @@ func TruncateWidth(s string, maxWidth int, suffix string) string {
 // truncateToWidth removes characters from the end until string fits in maxWidth.
 func truncateToWidth(s string, maxWidth int) string {
 	runes := []rune(s)
-	
+
 	// Fast path for empty or zero
 	if len(runes) == 0 || maxWidth <= 0 {
 		return ""
@@ -175,9 +175,9 @@ func truncateToWidth(s string, maxWidth int) string {
 	// Binary search for the maximum length that fits
 	low, high := 0, len(runes)
 	best := 0
-	
+
 	for low <= high {
-		mid := low + (high - low) / 2
+		mid := low + (high-low)/2
 		candidate := string(runes[:mid])
 		if lipgloss.Width(candidate) <= maxWidth {
 			best = mid
@@ -186,7 +186,7 @@ func truncateToWidth(s string, maxWidth int) string {
 			high = mid - 1
 		}
 	}
-	
+
 	return string(runes[:best])
 }
 
@@ -238,7 +238,7 @@ func TruncateMiddleWidth(s string, maxWidth int, ellipsis string) string {
 	low, high := 0, len(runes)
 	bestStart := 0
 	for low <= high {
-		mid := low + (high - low) / 2
+		mid := low + (high-low)/2
 		if lipgloss.Width(string(runes[:mid])) <= startChars {
 			bestStart = mid
 			low = mid + 1
@@ -252,7 +252,7 @@ func TruncateMiddleWidth(s string, maxWidth int, ellipsis string) string {
 	low, high = 0, len(runes)
 	bestEnd := len(runes)
 	for low <= high {
-		mid := low + (high - low) / 2
+		mid := low + (high-low)/2
 		if lipgloss.Width(string(runes[mid:])) <= endChars {
 			bestEnd = mid
 			high = mid - 1
@@ -260,7 +260,7 @@ func TruncateMiddleWidth(s string, maxWidth int, ellipsis string) string {
 			low = mid + 1
 		}
 	}
-	
+
 	var endRunes []rune
 	if bestEnd < len(runes) {
 		endRunes = runes[bestEnd:]
@@ -334,9 +334,9 @@ func TruncatePaneTitle(title string, maxWidth int) string {
 	prefixRunes := []rune(prefix)
 	low, high := 0, len(prefixRunes)
 	best := 0
-	
+
 	for low <= high {
-		mid := low + (high - low) / 2
+		mid := low + (high-low)/2
 		candidate := string(prefixRunes[:mid]) + ellipsis + suffix
 		if lipgloss.Width(candidate) <= maxWidth {
 			best = mid

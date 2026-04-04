@@ -722,7 +722,7 @@ func (t *TimelineTracker) PruneMarkers() int {
 	defer t.mu.Unlock()
 
 	cutoff := time.Now().Add(-t.config.RetentionDuration)
-	
+
 	keepFrom := -1
 	for i, m := range t.markers {
 		if m.Timestamp.After(cutoff) {

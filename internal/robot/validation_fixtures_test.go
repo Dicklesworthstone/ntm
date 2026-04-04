@@ -161,14 +161,14 @@ func RuntimeSessionFixture(opts SessionFixtureOptions) *state.RuntimeSession {
 
 // AgentFixtureOptions configures agent fixture generation.
 type AgentFixtureOptions struct {
-	SessionName    string
-	Pane           int
-	AgentType      string
-	State          state.AgentState
-	HealthStatus   state.HealthStatus
-	CurrentBead    string
-	PendingMail    int
-	Clock          *FixedClock
+	SessionName  string
+	Pane         int
+	AgentType    string
+	State        state.AgentState
+	HealthStatus state.HealthStatus
+	CurrentBead  string
+	PendingMail  int
+	Clock        *FixedClock
 }
 
 // DefaultAgentFixtureOptions returns sensible defaults for agent fixtures.
@@ -526,13 +526,13 @@ func NewSourceHealthFixture(opts SourceHealthFixtureOptions) *SourceHealthFixtur
 
 // QuotaFixtureOptions configures quota state fixtures.
 type QuotaFixtureOptions struct {
-	RateLimitRemaining  int
-	RateLimitLimit      int
-	DailyUsed           int
-	DailyLimit          int
-	QuotaResetIn        time.Duration
-	Exhausted           bool
-	Clock               *FixedClock
+	RateLimitRemaining int
+	RateLimitLimit     int
+	DailyUsed          int
+	DailyLimit         int
+	QuotaResetIn       time.Duration
+	Exhausted          bool
+	Clock              *FixedClock
 }
 
 // DefaultQuotaFixtureOptions returns healthy quota defaults.

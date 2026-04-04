@@ -200,7 +200,7 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 		format = "json" // --json flag overrides default
 	}
 
-	projectDir, err := resolveHandoffProjectDir(sessionName)
+	projectDir, err := resolveWorkspaceBackedHandoffProjectDir(sessionName)
 	if err != nil {
 		return err
 	}
@@ -361,7 +361,7 @@ func runHandoffLedger(cmd *cobra.Command, sessionName string, jsonFormat bool) e
 		return err
 	}
 
-	projectDir, err := resolveHandoffProjectDir(sessionName)
+	projectDir, err := resolveWorkspaceBackedHandoffProjectDir(sessionName)
 	if err != nil {
 		return err
 	}
@@ -560,7 +560,7 @@ func runHandoffList(cmd *cobra.Command, sessionName string, limit int, jsonForma
 		sessionName = normalizedSession
 	}
 
-	projectDir, err := resolveHandoffProjectDir(sessionName)
+	projectDir, err := resolveWorkspaceBackedHandoffProjectDir(sessionName)
 	if err != nil {
 		return err
 	}
@@ -850,6 +850,25 @@ func resolveHandoffProjectDir(sessionName string) (string, error) {
 	}
 	projectDir = refineAgentMailProjectKey(sessionName, projectDir)
 	return projectDir, nil
+}
+
+func resolveWorkspaceBackedHandoffProjectDir(sessionName string) (string, error) {
+	projectDir, err := resolveHandoffProjectDir(sessionName)
+	if err == nil {
+		return projectDir, nil
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		return "", err
+	}
+
+	if projectRoot := strings.TrimSpace(GetProjectRoot()); projectRoot != "" {
+		return projectRoot, nil
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil && strings.TrimSpace(cwd) != "" {
+		return cwd, nil
+	}
+
+	return "", err
 }
 
 func generateDescription(goal string) string {

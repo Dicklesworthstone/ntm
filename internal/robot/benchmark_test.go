@@ -736,15 +736,15 @@ func TestPayloadSize_AttentionDigest(t *testing.T) {
 	t.Parallel()
 
 	scenarios := []struct {
-		name        string
-		sessions    int
-		agents      int
-		events      int
-		maxBytes    int // regression threshold
+		name     string
+		sessions int
+		agents   int
+		events   int
+		maxBytes int // regression threshold
 	}{
-		{"small", scenarioSmallSessions, scenarioSmallAgents, scenarioSmallEvents, 10 * 1024},       // 10KB
-		{"medium", scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents, 50 * 1024},   // 50KB
-		{"large", scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents, 200 * 1024},      // 200KB
+		{"small", scenarioSmallSessions, scenarioSmallAgents, scenarioSmallEvents, 10 * 1024},     // 10KB
+		{"medium", scenarioMediumSessions, scenarioMediumAgents, scenarioMediumEvents, 50 * 1024}, // 50KB
+		{"large", scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents, 200 * 1024},    // 200KB
 	}
 
 	for _, sc := range scenarios {

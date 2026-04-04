@@ -13,10 +13,9 @@ import (
 func setupTestProficiency(t *testing.T) (cleanup func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	return func() {
-		os.Unsetenv("XDG_CONFIG_HOME")
-	}
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("NTM_CONFIG", "")
+	return func() {}
 }
 
 func TestLevelShowDisplaysCurrentTier(t *testing.T) {

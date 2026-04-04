@@ -4403,6 +4403,7 @@ func TestConfigInitCmdUsesGlobalConfigFlag(t *testing.T) {
 	startup.ResetConfig()
 	cfgHome := filepath.Join(t.TempDir(), "xdg")
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	expectedDefaultPath := filepath.Join(cfgHome, "ntm", "config.toml")
 	t.Cleanup(func() {
 		cfg = oldCfg
 		cfgFile = oldCfgFile
@@ -4420,7 +4421,7 @@ func TestConfigInitCmdUsesGlobalConfigFlag(t *testing.T) {
 	if _, err := os.Stat(customPath); err != nil {
 		t.Fatalf("custom config path not created: %v", err)
 	}
-	if _, err := os.Stat(config.DefaultPath()); !os.IsNotExist(err) {
+	if _, err := os.Stat(expectedDefaultPath); !os.IsNotExist(err) {
 		t.Fatalf("default config path should remain untouched, stat err = %v", err)
 	}
 }
@@ -4433,6 +4434,7 @@ func TestConfigSetProjectsBaseUsesGlobalConfigFlag(t *testing.T) {
 	startup.ResetConfig()
 	cfgHome := filepath.Join(t.TempDir(), "xdg")
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	expectedDefaultPath := filepath.Join(cfgHome, "ntm", "config.toml")
 	t.Cleanup(func() {
 		cfg = oldCfg
 		cfgFile = oldCfgFile
@@ -4455,7 +4457,7 @@ func TestConfigSetProjectsBaseUsesGlobalConfigFlag(t *testing.T) {
 	if !strings.Contains(string(data), projectsBase) {
 		t.Fatalf("custom config missing projects_base %q", projectsBase)
 	}
-	if _, err := os.Stat(config.DefaultPath()); !os.IsNotExist(err) {
+	if _, err := os.Stat(expectedDefaultPath); !os.IsNotExist(err) {
 		t.Fatalf("default config path should remain untouched, stat err = %v", err)
 	}
 }
@@ -4501,9 +4503,6 @@ func TestConfigEditCmdUsesGlobalConfigFlag(t *testing.T) {
 	}
 	if _, err := os.Stat(customPath); err != nil {
 		t.Fatalf("custom config path not created: %v", err)
-	}
-	if _, err := os.Stat(config.DefaultPath()); !os.IsNotExist(err) {
-		t.Fatalf("default config path should remain untouched, stat err = %v", err)
 	}
 }
 

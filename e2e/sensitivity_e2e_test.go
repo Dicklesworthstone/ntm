@@ -204,14 +204,14 @@ func TestSensitivityE2E_SnapshotNoLeak(t *testing.T) {
 
 	// Check for common secret patterns that should NOT appear
 	forbiddenPatterns := []string{
-		"ghp_",         // GitHub PAT prefix
-		"sk-ant-",      // Anthropic key prefix
-		"xoxb-",        // Slack bot token prefix
-		"AKIA",         // AWS access key prefix
-		"Bearer sk-",   // Bearer token with secret
-		"password=",    // Password in URL
-		"secret_key=",  // Secret key parameter
-		"api_secret=",  // API secret parameter
+		"ghp_",        // GitHub PAT prefix
+		"sk-ant-",     // Anthropic key prefix
+		"xoxb-",       // Slack bot token prefix
+		"AKIA",        // AWS access key prefix
+		"Bearer sk-",  // Bearer token with secret
+		"password=",   // Password in URL
+		"secret_key=", // Secret key parameter
+		"api_secret=", // API secret parameter
 	}
 
 	leaksFound := []string{}
@@ -246,7 +246,7 @@ func TestSensitivityE2E_SnapshotNoLeak(t *testing.T) {
 	}
 
 	h.RecordStep("snapshot sensitivity verified", map[string]any{
-		"leaks_found": len(leaksFound),
+		"leaks_found":                len(leaksFound),
 		"has_redaction_placeholders": strings.Contains(output, "[REDACTED:"),
 	})
 }
@@ -471,10 +471,10 @@ func TestSensitivityE2E_JSONSerializationNoLeak(t *testing.T) {
 	// Verify no secrets in reserialized output
 	reserializedStr := string(reserialized)
 	secretIndicators := []string{
-		"ghp_xxxx",     // GitHub PAT
-		"sk-ant-api",   // Anthropic key
-		"AKIAIOSFOD",   // AWS access key
-		"xoxb-1234",    // Slack bot token
+		"ghp_xxxx",   // GitHub PAT
+		"sk-ant-api", // Anthropic key
+		"AKIAIOSFOD", // AWS access key
+		"xoxb-1234",  // Slack bot token
 	}
 
 	for _, indicator := range secretIndicators {

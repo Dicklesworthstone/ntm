@@ -185,6 +185,51 @@ func copyBeadsFixtureFile(srcPath, dstPath string, mode os.FileMode) error {
 	return dst.Close()
 }
 
+func writeCheckpointFixtureFromMetadataJSON(t *testing.T, cpDir string, metadata string) {
+	t.Helper()
+
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll checkpoint dir failed: %v", err)
+	}
+
+	var cp checkpoint.Checkpoint
+	if err := json.Unmarshal([]byte(metadata), &cp); err != nil {
+		t.Fatalf("Unmarshal checkpoint metadata failed: %v", err)
+	}
+
+	if cp.Version == 0 {
+		cp.Version = 1
+	}
+	if cp.PaneCount > 0 && len(cp.Session.Panes) == 0 {
+		cp.Session.Panes = make([]checkpoint.PaneState, cp.PaneCount)
+		for i := 0; i < cp.PaneCount; i++ {
+			cp.Session.Panes[i] = checkpoint.PaneState{
+				Index:       i,
+				WindowIndex: 0,
+				ID:          fmt.Sprintf("%%%d", i),
+				Title:       fmt.Sprintf("pane-%d", i),
+			}
+		}
+	}
+	cp.PaneCount = len(cp.Session.Panes)
+
+	metadataBytes, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatalf("Marshal checkpoint metadata failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), metadataBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile metadata.json failed: %v", err)
+	}
+
+	sessionBytes, err := json.Marshal(cp.Session)
+	if err != nil {
+		t.Fatalf("Marshal session state failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "session.json"), sessionBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile session.json failed: %v", err)
+	}
+}
+
 // =============================================================================
 // RequirePermission / RequireRole — nil role-context branch
 // =============================================================================
@@ -10384,9 +10429,8 @@ func TestHandleExportCheckpoint_TarGzSuccess(t *testing.T) {
 
 	// Create fake checkpoint directory with metadata.json
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-cp")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"test-cp","name":"test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "test-session")
@@ -10420,9 +10464,8 @@ func TestHandleExportCheckpoint_ZipSuccess(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-cp2")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"test-cp2","name":"test2","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "test-session")
@@ -10454,9 +10497,8 @@ func TestHandleExportCheckpoint_Download(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-cp3")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"test-cp3","name":"dl-test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "test-session")
@@ -10486,9 +10528,8 @@ func TestHandleRollback_DryRun(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-rb")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"test-rb","name":"rollback-test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def","branch":"main"}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "test-session")
@@ -10515,9 +10556,8 @@ func TestHandleRollback_NoGitState(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-rb2")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"test-rb2","name":"no-git","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "test-session")
@@ -10773,9 +10813,8 @@ func TestHandleGetCheckpoint_FakeCheckpointSuccess(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "get-sess", "cp-get-1")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-get-1","name":"get-test","session_name":"get-sess","working_dir":"/tmp","created_at":"2025-01-15T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "get-sess")
@@ -10801,10 +10840,9 @@ func TestHandleRollback_NoWorkingDir(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nowd", "cp-nowd")
-	os.MkdirAll(cpDir, 0755)
 	// working_dir is empty string
 	metadata := `{"version":1,"id":"cp-nowd","name":"no-wd","session_name":"rb-nowd","working_dir":"","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main"}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-nowd")
@@ -10835,10 +10873,9 @@ func TestHandleRollback_DryRunDirtyStash(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dirty", "cp-dirty")
-	os.MkdirAll(cpDir, 0755)
 	// IsDirty=true to exercise the stash warning path
 	metadata := `{"version":1,"id":"cp-dirty","name":"dirty-test","session_name":"rb-dirty","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-dirty")
@@ -10873,9 +10910,8 @@ func TestHandleRollback_DryRunNoGitFlag(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nogit", "cp-nogit")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-nogit","name":"nogit-test","session_name":"rb-nogit","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-nogit")
@@ -10937,9 +10973,8 @@ func TestHandleExportCheckpoint_PostWithFlags(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "exp-post", "cp-post")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-post","name":"post-test","session_name":"exp-post","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "exp-post")
@@ -11168,9 +11203,8 @@ func TestHandleVerifyCheckpoint_FakeCheckpoint(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "vfy-sess2", "vfy-cp2")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"vfy-cp2","name":"verify-test","session_name":"vfy-sess2","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "vfy-sess2")
@@ -11410,9 +11444,8 @@ func TestHandleRestoreCheckpoint_WithDryRunOptions(t *testing.T) {
 
 	// Create fake checkpoint
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rs-dry", "cp-dry")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-dry","name":"dry-run","session_name":"rs-dry","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rs-dry")
@@ -11601,9 +11634,8 @@ func TestHandleExportCheckpoint_GetWithRedactSecrets(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "exp-redact", "cp-redact")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-redact","name":"redact-test","session_name":"exp-redact","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "exp-redact")
@@ -11924,9 +11956,8 @@ func TestHandleRollback_FakeGitCheckpointNoGit(t *testing.T) {
 
 	// Create fake checkpoint with git state
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-git", "cp-git")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-git","name":"git-test","session_name":"rb-git","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-git")
@@ -11955,9 +11986,8 @@ func TestHandleRollback_DryRunDirtyNoStash(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dns", "cp-dns")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-dns","name":"dns-test","session_name":"rb-dns","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":true}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-dns")
@@ -12044,9 +12074,8 @@ func TestHandleRollback_FullGitIntegration(t *testing.T) {
 
 	// Create fake checkpoint pointing to this commit
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-full", "cp-full")
-	os.MkdirAll(cpDir, 0755)
 	metadata := fmt.Sprintf(`{"version":1,"id":"cp-full","name":"full-test","session_name":"rb-full","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"%s","branch":"main","is_dirty":true}}`, gitDir, commitHash)
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-full")
@@ -12081,9 +12110,8 @@ func TestHandleRollback_NoGitSuccess(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nog", "cp-nog")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-nog","name":"no-git","session_name":"rb-nog","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-nog")
@@ -12153,9 +12181,8 @@ func TestHandleExportCheckpoint_TarGzFormat(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "exp-tgz", "cp-tgz")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-tgz","name":"tgz-test","session_name":"exp-tgz","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "exp-tgz")
@@ -12486,9 +12513,8 @@ func TestHandleRollback_CleanRepo(t *testing.T) {
 
 	// Create fake checkpoint pointing to this commit — no dirty state
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-clean", "cp-clean")
-	os.MkdirAll(cpDir, 0755)
 	metadata := fmt.Sprintf(`{"version":1,"id":"cp-clean","name":"clean-test","session_name":"rb-clean","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"%s","branch":"main","is_dirty":false}}`, gitDir, commitHash)
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "rb-clean")
@@ -12524,9 +12550,8 @@ func TestHandleExportCheckpoint_PostTarGzFormat(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "exp-post-tgz", "cp-ptgz")
-	os.MkdirAll(cpDir, 0755)
 	metadata := `{"version":1,"id":"cp-ptgz","name":"post-tgz","session_name":"exp-post-tgz","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
-	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("sessionName", "exp-post-tgz")

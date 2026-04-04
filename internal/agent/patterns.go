@@ -29,7 +29,7 @@ var (
 	// ccContextWarnings indicates the agent is running low on context.
 	// Claude Code doesn't give explicit percentages, so we rely on warning messages.
 
-ccContextWarnings = []string{
+	ccContextWarnings = []string{
 		"this conversation is getting long",
 		"context limit",
 		"context is at its limit",

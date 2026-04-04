@@ -60,24 +60,38 @@ func Open(path string) (*Store, error) {
 		path = DefaultPath()
 	}
 
-	// Ensure parent directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create state dir: %w", err)
+	pragmas := []string{"busy_timeout(5000)", "foreign_keys(1)"}
+	dsn := ""
+	inMemory := path == ":memory:"
+	if inMemory {
+		// In-memory databases cannot use WAL, and multiple pooled connections would
+		// each see their own isolated database. Keep a single shared connection.
+		dsn = sqliteutil.MemoryDSN(pragmas...)
+	} else {
+		// Ensure parent directory exists
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create state dir: %w", err)
+		}
+		dsn = sqliteutil.FileDSN(path, append(pragmas, "journal_mode(WAL)")...)
 	}
 
-	// Open with WAL mode and other optimizations
-	dsn := sqliteutil.FileDSN(path, "busy_timeout(5000)", "foreign_keys(1)", "journal_mode(WAL)")
 	db, err := sql.Open(sqliteutil.DriverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Set connection pool settings
-	// We allow multiple connections for concurrent reads (enabled by WAL mode).
-	// Writes are serialized by the Store's mutex to avoid SQLITE_BUSY.
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	// Set connection pool settings.
+	// File-backed DBs allow concurrent reads under WAL mode. In-memory DBs must
+	// stay on a single connection so migrations and subsequent queries see the
+	// same database instance.
+	if inMemory {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+	}
 	db.SetConnMaxLifetime(0) // Don't close idle connections
 
 	// Verify connection

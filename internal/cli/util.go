@@ -691,6 +691,31 @@ func resolveExplicitProjectDirForSession(session string) (string, error) {
 	return "", fmt.Errorf("getting project root failed")
 }
 
+// resolveWorkspaceProjectDirForExplicitSession keeps strict session/project
+// resolution first, but falls back to the current workspace for commands whose
+// persisted data is intentionally local to the active project (for example
+// handoff files under .ntm/). This preserves explicit-session safety for most
+// commands while still allowing project-local commands to work in offline or
+// ad-hoc workspaces.
+func resolveWorkspaceProjectDirForExplicitSession(session string) (string, error) {
+	projectDir, err := resolveExplicitProjectDirForSession(session)
+	if err == nil {
+		return projectDir, nil
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		return "", err
+	}
+
+	if projectRoot := strings.TrimSpace(GetProjectRoot()); projectRoot != "" {
+		return filepath.Clean(projectRoot), nil
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil && strings.TrimSpace(cwd) != "" {
+		return filepath.Clean(cwd), nil
+	}
+
+	return "", err
+}
+
 // resolveCommandProjectDirForSession resolves the working directory for a
 // session-aware command after the session name has already been resolved.
 // Explicit session arguments must fail closed rather than inheriting the

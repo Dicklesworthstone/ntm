@@ -35,6 +35,26 @@ func testStore(t *testing.T) *Store {
 	return store
 }
 
+func TestOpenMemoryStore(t *testing.T) {
+	t.Parallel()
+
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("Migrate() error: %v", err)
+	}
+
+	if store.Path() != ":memory:" {
+		t.Fatalf("Path() = %q, want %q", store.Path(), ":memory:")
+	}
+}
+
 // ======================
 // Schema Types Tests
 // ======================

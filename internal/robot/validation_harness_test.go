@@ -23,25 +23,25 @@ import (
 
 // TestObservation records a single observation during test execution.
 type TestObservation struct {
-	Timestamp         time.Time              `json:"timestamp"`
-	ScenarioID        ScenarioID             `json:"scenario_id"`
-	SchemaID          string                 `json:"schema_id,omitempty"`
-	RequestID         string                 `json:"request_id,omitempty"`
-	IdempotencyKey    string                 `json:"idempotency_key,omitempty"`
-	Cursor            int64                  `json:"cursor,omitempty"`
-	SourceHealthDelta []string               `json:"source_health_delta,omitempty"`
-	DegradedFeatures  []string               `json:"degraded_features,omitempty"`
-	IncidentID        string                 `json:"incident_id,omitempty"`
-	OperatorTransition string                `json:"operator_transition,omitempty"`
-	SuppressionMarker string                 `json:"suppression_marker,omitempty"`
-	ResurfacingDecision string               `json:"resurfacing_decision,omitempty"`
-	PayloadSize       int                    `json:"payload_size,omitempty"`
-	ErrorCode         string                 `json:"error_code,omitempty"`
-	RemediationHint   string                 `json:"remediation_hint,omitempty"`
-	DiagnosticHandle  string                 `json:"diagnostic_handle,omitempty"`
-	EvidenceSummary   string                 `json:"evidence_summary,omitempty"`
-	DurationMs        int64                  `json:"duration_ms,omitempty"`
-	Extra             map[string]interface{} `json:"extra,omitempty"`
+	Timestamp           time.Time              `json:"timestamp"`
+	ScenarioID          ScenarioID             `json:"scenario_id"`
+	SchemaID            string                 `json:"schema_id,omitempty"`
+	RequestID           string                 `json:"request_id,omitempty"`
+	IdempotencyKey      string                 `json:"idempotency_key,omitempty"`
+	Cursor              int64                  `json:"cursor,omitempty"`
+	SourceHealthDelta   []string               `json:"source_health_delta,omitempty"`
+	DegradedFeatures    []string               `json:"degraded_features,omitempty"`
+	IncidentID          string                 `json:"incident_id,omitempty"`
+	OperatorTransition  string                 `json:"operator_transition,omitempty"`
+	SuppressionMarker   string                 `json:"suppression_marker,omitempty"`
+	ResurfacingDecision string                 `json:"resurfacing_decision,omitempty"`
+	PayloadSize         int                    `json:"payload_size,omitempty"`
+	ErrorCode           string                 `json:"error_code,omitempty"`
+	RemediationHint     string                 `json:"remediation_hint,omitempty"`
+	DiagnosticHandle    string                 `json:"diagnostic_handle,omitempty"`
+	EvidenceSummary     string                 `json:"evidence_summary,omitempty"`
+	DurationMs          int64                  `json:"duration_ms,omitempty"`
+	Extra               map[string]interface{} `json:"extra,omitempty"`
 }
 
 // TestRecorder accumulates observations for a test scenario.
@@ -584,12 +584,12 @@ func (d *ResponseDiff) String() string {
 
 // BenchmarkMeasurement records performance measurements.
 type BenchmarkMeasurement struct {
-	Operation    string        `json:"operation"`
-	DurationNs   int64         `json:"duration_ns"`
-	PayloadBytes int           `json:"payload_bytes,omitempty"`
-	ItemCount    int           `json:"item_count,omitempty"`
-	Cursor       int64         `json:"cursor,omitempty"`
-	ScenarioID   ScenarioID    `json:"scenario_id,omitempty"`
+	Operation    string     `json:"operation"`
+	DurationNs   int64      `json:"duration_ns"`
+	PayloadBytes int        `json:"payload_bytes,omitempty"`
+	ItemCount    int        `json:"item_count,omitempty"`
+	Cursor       int64      `json:"cursor,omitempty"`
+	ScenarioID   ScenarioID `json:"scenario_id,omitempty"`
 }
 
 // BenchmarkRecorder accumulates benchmark measurements.

@@ -38,15 +38,15 @@ import "time"
 
 // Section name constants for use across renderers.
 const (
-	SectionSummary     = "summary"
-	SectionSessions    = "sessions"
-	SectionWork        = "work"
-	SectionAlerts      = "alerts"
-	SectionAttention   = "attention"
+	SectionSummary      = "summary"
+	SectionSessions     = "sessions"
+	SectionWork         = "work"
+	SectionAlerts       = "alerts"
+	SectionAttention    = "attention"
 	SectionCoordination = "coordination"
-	SectionQuota       = "quota"
-	SectionIncidents   = "incidents"
-	SectionHealth      = "health"
+	SectionQuota        = "quota"
+	SectionIncidents    = "incidents"
+	SectionHealth       = "health"
 	SectionReplayWindow = "replay_window"
 )
 
@@ -193,15 +193,15 @@ type SectionProjectionOptions struct {
 
 // SectionLimits controls per-section item limits.
 type SectionLimits struct {
-	Sessions         int
-	WorkReady        int
-	WorkBlocked      int
-	WorkInProgress   int
-	Alerts           int
-	AttentionAction  int
+	Sessions             int
+	WorkReady            int
+	WorkBlocked          int
+	WorkInProgress       int
+	Alerts               int
+	AttentionAction      int
 	AttentionInteresting int
 	AttentionBackground  int
-	Incidents        int
+	Incidents            int
 }
 
 // DefaultSectionLimits returns sensible default limits.

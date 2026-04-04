@@ -116,7 +116,7 @@ func newAddCmd() *cobra.Command {
 				}
 				sessionName = config.FormatSessionName(sessionName, label)
 			}
-			resolvedSessionName, dir, err := resolveAddSetupScope(sessionName)
+			resolvedSessionName, dir, err := resolveWorkspaceAddSetupScope(sessionName)
 			if err != nil {
 				return err
 			}
@@ -274,7 +274,7 @@ func runAdd(opts AddOptions) error {
 		return outputError(fmt.Errorf("no agents specified"))
 	}
 
-	dir, err := resolveExplicitProjectDirForSession(session)
+	dir, err := resolveWorkspaceProjectDirForExplicitSession(session)
 	if err != nil {
 		return outputError(err)
 	}
@@ -761,6 +761,36 @@ func resolveAddSetupScope(session string) (string, string, error) {
 	}
 
 	projectDir, err := resolveExplicitProjectDirForSession(resolvedSession)
+	if err != nil {
+		return "", "", err
+	}
+
+	return resolvedSession, projectDir, nil
+}
+
+func resolveWorkspaceAddSetupScope(session string) (string, string, error) {
+	resolvedSession, projectDir, err := resolveAddSetupScope(session)
+	if err == nil {
+		return resolvedSession, projectDir, nil
+	}
+	if !strings.Contains(err.Error(), "getting project root failed") {
+		return "", "", err
+	}
+
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return "", "", fmt.Errorf("session is required")
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return "", "", err
+	}
+
+	resolvedSession, err = normalizeProjectScopedSessionName(session, !IsJSONOutput())
+	if err != nil {
+		return "", "", err
+	}
+
+	projectDir, err = resolveWorkspaceProjectDirForExplicitSession(resolvedSession)
 	if err != nil {
 		return "", "", err
 	}

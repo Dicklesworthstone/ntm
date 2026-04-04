@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 )
@@ -333,7 +334,6 @@ func (m *Model) refreshOllamaPSIfNeeded(now time.Time) tea.Cmd {
 	m.fetchingOllamaPS = true
 	m.lastOllamaPSFetch = now
 	host := ollamaHostFromEnv()
-	
+
 	return fetchOllamaPSCmd(host)
 }
-
