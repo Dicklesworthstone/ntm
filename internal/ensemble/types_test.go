@@ -164,6 +164,7 @@ func TestEnsembleStatus_IsTerminal(t *testing.T) {
 		terminal bool
 	}{
 		{EnsembleSpawning, false},
+		{EnsembleReady, false},
 		{EnsembleInjecting, false},
 		{EnsembleActive, false},
 		{EnsembleSynthesizing, false},

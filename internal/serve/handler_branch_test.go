@@ -2225,7 +2225,7 @@ func TestHandleValidatePipeline_ValidInlineContent(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	// Minimal valid workflow YAML
-	body := `{"workflow_content":"name: test\nsteps:\n  - name: step1\n    type: send\n    pane: 0\n    content: hello\n"}`
+	body := `{"workflow_content":"schema_version: v1\nname: test\nsteps:\n  - id: step1\n    name: step1\n    pane: 0\n    prompt: hello\n"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/validate", strings.NewReader(body))
 
 	srv.handleValidatePipeline(rec, req)
@@ -2654,9 +2654,9 @@ func TestHandleRestoreCheckpoint_NotFound(t *testing.T) {
 
 	srv.handleRestoreCheckpoint(rec, req)
 
-	// Restore will fail because checkpoint doesn't exist
-	if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusBadRequest && rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want error code; body: %s", rec.Code, rec.Body.String())
+	// Exact missing checkpoints now fail closed with NOT_FOUND.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2737,6 +2737,41 @@ func TestHandleExportCheckpoint_GetDefaultFormat(t *testing.T) {
 	// Default format is tar.gz; checkpoint not found → 404
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleExportCheckpoint_InvalidCheckpointReturnsBadRequest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	checkpointID := "broken-export"
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata): %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", checkpointID)
+	req := httptest.NewRequest("GET", "/api/v1/sessions/test-session/checkpoints/"+checkpointID+"/export?format=tar.gz", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "failed to load checkpoint") {
+		t.Fatalf("expected load failure in body, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "checkpoint not found") {
+		t.Fatalf("expected invalid checkpoint to be distinct from not found, got %s", rec.Body.String())
 	}
 }
 
@@ -2887,6 +2922,66 @@ func TestHandleGetCheckpoint_Branch_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleGetCheckpoint_InvalidCheckpointReturnsBadRequest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	checkpointID := "broken-get"
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata): %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", checkpointID)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/checkpoints/"+checkpointID, nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleGetCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "failed to load checkpoint") {
+		t.Fatalf("expected load failure in body, got %s", body)
+	}
+	if strings.Contains(body, "checkpoint not found") {
+		t.Fatalf("expected invalid checkpoint load failure, got not found body: %s", body)
+	}
+}
+
+func TestHandleGetCheckpoint_InvalidSessionNameReturnsBadRequest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "../escape")
+	rctx.URLParams.Add("checkpointId", "cp-valid")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/escape/checkpoints/cp-valid", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleGetCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "invalid session name") {
+		t.Fatalf("expected invalid session name error in body, got %s", body)
+	}
+	if strings.Contains(body, "checkpoint not found") {
+		t.Fatalf("expected invalid session name error, got not found body: %s", body)
 	}
 }
 
@@ -8803,6 +8898,46 @@ func TestHandleDeleteCheckpoint_NotFound(t *testing.T) {
 	}
 }
 
+func TestHandleDeleteCheckpoint_DeletesInvalidCheckpointEntry(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	checkpointID := "broken-delete"
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata): %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", checkpointID)
+	req := httptest.NewRequest("DELETE", "/api/v1/sessions/test-session/checkpoints/"+checkpointID, nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleDeleteCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, rec.Body.String())
+	}
+	if decoded["invalid_checkpoint"] != true {
+		t.Fatalf("invalid_checkpoint = %#v, want true", decoded["invalid_checkpoint"])
+	}
+	if _, err := os.Stat(cpDir); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint dir still exists after delete: err=%v", err)
+	}
+}
+
 // --- logRedactionSummary fallback path (JSON marshal error) ---
 
 func TestLogRedactionSummary_MarshalError(t *testing.T) {
@@ -10401,6 +10536,70 @@ func TestHandleRollback_NoGitState(t *testing.T) {
 	}
 }
 
+func TestHandleRollback_InvalidCheckpointReferenceReturnsBadRequest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	checkpointID := "broken-rb"
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata): %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+
+	body := `{"checkpoint_ref":"broken-rb"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test-session/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, "failed to load checkpoint") {
+		t.Fatalf("expected load failure in body, got %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "checkpoint not found") {
+		t.Fatalf("expected invalid checkpoint load failure, got not found body: %s", bodyStr)
+	}
+}
+
+func TestHandleRollback_InvalidSessionNameReturnsBadRequest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "../escape")
+
+	body := `{"checkpoint_ref":"cp-valid"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/escape/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	respBody := rec.Body.String()
+	if !strings.Contains(respBody, "invalid session name") {
+		t.Fatalf("expected invalid session name error in body, got %s", respBody)
+	}
+	if strings.Contains(respBody, "checkpoint not found") {
+		t.Fatalf("expected invalid session name error, got not found body: %s", respBody)
+	}
+}
+
 // --- handleDeleteCheckpoint: successful delete with fake checkpoint ---
 
 func TestHandleDeleteCheckpoint_Success(t *testing.T) {
@@ -10466,6 +10665,53 @@ func TestHandleListCheckpoints_WithFakeCheckpoint(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &resp)
 	if count, ok := resp["count"].(float64); !ok || count != 1 {
 		t.Fatalf("expected count=1, got %v", resp["count"])
+	}
+}
+
+func TestHandleListCheckpoints_InvalidOnlySessionIncludesInvalidIDs(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	checkpointID := "broken-list"
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "invalid-list-sess", checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata): %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "invalid-list-sess")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/invalid-list-sess/checkpoints", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleListCheckpoints(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Count                int      `json:"count"`
+		InvalidCheckpoints   bool     `json:"invalid_checkpoints_present"`
+		InvalidCheckpointIDs []string `json:"invalid_checkpoint_ids"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v; body=%s", err, rec.Body.String())
+	}
+	if resp.Count != 0 {
+		t.Fatalf("count = %d, want 0", resp.Count)
+	}
+	if !resp.InvalidCheckpoints {
+		t.Fatalf("invalid_checkpoints_present = false, want true")
+	}
+	if len(resp.InvalidCheckpointIDs) != 1 || resp.InvalidCheckpointIDs[0] != checkpointID {
+		t.Fatalf("invalid_checkpoint_ids = %v, want [%s]", resp.InvalidCheckpointIDs, checkpointID)
 	}
 }
 
@@ -11113,6 +11359,44 @@ func TestHandleRestoreCheckpoint_CheckpointNotFound(t *testing.T) {
 	// Should fail because checkpoint doesn't exist
 	if rec.Code == http.StatusOK {
 		t.Fatalf("expected error for nonexistent checkpoint, got 200")
+	}
+}
+
+func TestHandleRestoreCheckpoint_InvalidCheckpointReturnsBadRequest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	checkpointID := "broken-restore"
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", cpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata): %v", err)
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", checkpointID)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test-session/checkpoints/"+checkpointID+"/restore", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRestoreCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "failed to load checkpoint") {
+		t.Fatalf("expected load failure in body, got %s", body)
+	}
+	if strings.Contains(body, "failed to restore checkpoint") {
+		t.Fatalf("expected pre-restore load failure, got restore failure body: %s", body)
 	}
 }
 

@@ -178,6 +178,45 @@ func (s *Server) registerCheckpointRoutes(r chi.Router) {
 	})
 }
 
+func loadExactCheckpointOrWriteError(w http.ResponseWriter, storage *checkpoint.Storage, sessionName, checkpointID, reqID string) (*checkpoint.Checkpoint, bool) {
+	cp, err := storage.Load(sessionName, checkpointID)
+	if err == nil {
+		return cp, true
+	}
+
+	exists, existsErr := storage.HasCheckpointPath(sessionName, checkpointID)
+	if existsErr != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, existsErr.Error(), nil, reqID)
+		return nil, false
+	}
+	if !exists {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
+			fmt.Sprintf("checkpoint not found: %s", checkpointID), nil, reqID)
+		return nil, false
+	}
+
+	writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+		fmt.Sprintf("failed to load checkpoint: %v", err), nil, reqID)
+	return nil, false
+}
+
+func writeCheckpointRefLoadFailureIfExact(w http.ResponseWriter, storage *checkpoint.Storage, sessionName, checkpointRef string, resolveErr error, reqID string) bool {
+	if !checkpoint.IsValidCheckpointID(checkpointRef) {
+		return false
+	}
+	exists, existsErr := storage.HasCheckpointPath(sessionName, checkpointRef)
+	if existsErr != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, existsErr.Error(), nil, reqID)
+		return true
+	}
+	if !exists {
+		return false
+	}
+	writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+		fmt.Sprintf("failed to load checkpoint: %v", resolveErr), nil, reqID)
+	return true
+}
+
 // handleListCheckpoints lists all checkpoints for a session.
 func (s *Server) handleListCheckpoints(w http.ResponseWriter, r *http.Request) {
 	sessionName := chi.URLParam(r, "sessionName")
@@ -200,6 +239,13 @@ func (s *Server) handleListCheckpoints(w http.ResponseWriter, r *http.Request) {
 			"failed to list checkpoints", nil, reqID)
 		return
 	}
+	invalidIDs, err := storage.InvalidCheckpointIDs(sessionName)
+	if err != nil {
+		log.Printf("REST: invalid checkpoint list failed session=%s error=%v request_id=%s", sessionName, err, reqID)
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+			"failed to inspect checkpoint state", nil, reqID)
+		return
+	}
 
 	// Convert to response format
 	items := make([]CheckpointResponse, 0, len(checkpoints))
@@ -208,9 +254,11 @@ func (s *Server) handleListCheckpoints(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"session_name": sessionName,
-		"count":        len(items),
-		"checkpoints":  items,
+		"session_name":                sessionName,
+		"count":                       len(items),
+		"checkpoints":                 items,
+		"invalid_checkpoints_present": len(invalidIDs) > 0,
+		"invalid_checkpoint_ids":      invalidIDs,
 	}, reqID)
 }
 
@@ -280,6 +328,9 @@ func (s *Server) handleGetCheckpoint(w http.ResponseWriter, r *http.Request) {
 	// Parse checkpoint reference (can be ID, name, or ~N notation)
 	cp, err := capturer.ParseCheckpointRef(sessionName, checkpointID)
 	if err != nil {
+		if writeCheckpointRefLoadFailureIfExact(w, storage, sessionName, checkpointID, err, reqID) {
+			return
+		}
 		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
 			fmt.Sprintf("checkpoint not found: %s", checkpointID),
 			nil, reqID)
@@ -299,11 +350,19 @@ func (s *Server) handleDeleteCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	storage := checkpoint.NewStorage()
 
-	// First verify checkpoint exists
-	if !storage.Exists(sessionName, checkpointID) {
-		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
-			fmt.Sprintf("checkpoint not found: %s", checkpointID), nil, reqID)
-		return
+	deletingInvalid := false
+	if _, err := storage.Load(sessionName, checkpointID); err != nil {
+		exists, existsErr := storage.HasCheckpointPath(sessionName, checkpointID)
+		if existsErr != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, existsErr.Error(), nil, reqID)
+			return
+		}
+		if !exists {
+			writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
+				fmt.Sprintf("checkpoint not found: %s", checkpointID), nil, reqID)
+			return
+		}
+		deletingInvalid = true
 	}
 
 	if err := storage.Delete(sessionName, checkpointID); err != nil {
@@ -318,8 +377,9 @@ func (s *Server) handleDeleteCheckpoint(w http.ResponseWriter, r *http.Request) 
 		sessionName, checkpointID, reqID)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"deleted":       true,
-		"checkpoint_id": checkpointID,
+		"deleted":            true,
+		"checkpoint_id":      checkpointID,
+		"invalid_checkpoint": deletingInvalid,
 	}, reqID)
 }
 
@@ -338,6 +398,10 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 
 	storage := checkpoint.NewStorage()
 	restorer := checkpoint.NewRestorerWithStorage(storage)
+	cp, ok := loadExactCheckpointOrWriteError(w, storage, sessionName, checkpointID, reqID)
+	if !ok {
+		return
+	}
 
 	opts := checkpoint.RestoreOptions{
 		Force:           req.Force,
@@ -348,7 +412,7 @@ func (s *Server) handleRestoreCheckpoint(w http.ResponseWriter, r *http.Request)
 		ScrollbackLines: req.ScrollbackLines,
 	}
 
-	result, err := restorer.Restore(sessionName, checkpointID, opts)
+	result, err := restorer.RestoreFromCheckpoint(cp, opts)
 	if err != nil {
 		log.Printf("REST: checkpoint restore failed session=%s id=%s error=%v request_id=%s",
 			sessionName, checkpointID, err, reqID)
@@ -452,10 +516,21 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	storage := checkpoint.NewStorage()
 
-	// Check checkpoint exists
-	if !storage.Exists(sessionName, checkpointID) {
-		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
-			fmt.Sprintf("checkpoint not found: %s", checkpointID), nil, reqID)
+	// Check checkpoint exists and is loadable. Exact malformed checkpoint IDs
+	// should report a load failure rather than "not found".
+	if _, err := storage.Load(sessionName, checkpointID); err != nil {
+		exists, existsErr := storage.HasCheckpointPath(sessionName, checkpointID)
+		if existsErr != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, existsErr.Error(), nil, reqID)
+			return
+		}
+		if !exists {
+			writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
+				fmt.Sprintf("checkpoint not found: %s", checkpointID), nil, reqID)
+			return
+		}
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("failed to load checkpoint: %v", err), nil, reqID)
 		return
 	}
 
@@ -665,6 +740,9 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	// Parse checkpoint reference
 	cp, err := capturer.ParseCheckpointRef(sessionName, checkpointRef)
 	if err != nil {
+		if writeCheckpointRefLoadFailureIfExact(w, storage, sessionName, checkpointRef, err, reqID) {
+			return
+		}
 		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
 			fmt.Sprintf("checkpoint not found: %s", checkpointRef),
 			nil, reqID)

@@ -75,6 +75,7 @@ type EnsembleSummary struct {
 	Completed     int `json:"completed"`
 	Working       int `json:"working"`
 	Pending       int `json:"pending"`
+	Errors        int `json:"errors,omitempty"`
 	CoreModes     int `json:"core_modes"`
 	AdvancedModes int `json:"advanced_modes"`
 }
@@ -105,18 +106,17 @@ func GetEnsemble(session string) (*EnsembleOutput, error) {
 		return output, nil
 	}
 
-	if !tmux.SessionExists(session) {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("session '%s' not found", session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-		return output, nil
-	}
-
 	state, err := ensemble.LoadSession(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !tmux.SessionExists(session) {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("session '%s' not found", session),
+					ErrCodeSessionNotFound,
+					"Use 'ntm list' to see available sessions",
+				)
+				return output, nil
+			}
 			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("ensemble state not found for session '%s'", session),
 				ErrCodeEnsembleNotFound,
@@ -187,7 +187,7 @@ func GetEnsemble(session string) (*EnsembleOutput, error) {
 		case ensemble.AssignmentPending:
 			output.Summary.Pending++
 		case ensemble.AssignmentError:
-			output.Summary.Pending++
+			output.Summary.Errors++
 		default:
 			output.Summary.Pending++
 		}
@@ -286,6 +286,9 @@ func buildEnsembleHints(output EnsembleOutput) *AgentHints {
 	total := output.Summary.TotalModes
 	if total > 0 {
 		hints.Summary = fmt.Sprintf("%d/%d modes complete, %d working, %d pending", output.Summary.Completed, total, output.Summary.Working, output.Summary.Pending)
+		if output.Summary.Errors > 0 {
+			hints.Summary += fmt.Sprintf(", %d errors", output.Summary.Errors)
+		}
 	}
 
 	if output.Summary.Pending > 0 || output.Summary.Working > 0 {
@@ -293,6 +296,13 @@ func buildEnsembleHints(output EnsembleOutput) *AgentHints {
 			Action:   "wait",
 			Target:   "ensemble modes",
 			Reason:   "modes are still running or pending",
+			Priority: 1,
+		})
+	} else if output.Summary.Errors > 0 {
+		hints.SuggestedActions = append(hints.SuggestedActions, RobotAction{
+			Action:   "review",
+			Target:   "failed ensemble modes",
+			Reason:   "one or more modes failed and need investigation",
 			Priority: 1,
 		})
 	} else if total > 0 && output.Ensemble.Synthesis.Status == "ready" {

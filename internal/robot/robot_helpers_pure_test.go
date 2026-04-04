@@ -280,7 +280,8 @@ func TestBuildEnsembleHints_Actions(t *testing.T) {
 		output := EnsembleOutput{
 			Summary: EnsembleSummary{
 				TotalModes: 2,
-				Completed:  2,
+				Completed:  1,
+				Errors:     1,
 			},
 			Ensemble: EnsembleState{
 				Modes: []EnsembleMode{
@@ -302,6 +303,19 @@ func TestBuildEnsembleHints_Actions(t *testing.T) {
 		}
 		if !found {
 			t.Error("expected error warning in hints")
+		}
+
+		reviewFound := false
+		for _, action := range hints.SuggestedActions {
+			if action.Action == "review" {
+				reviewFound = true
+			}
+			if action.Action == "wait" {
+				t.Fatalf("did not expect wait action when only errors remain: %+v", hints.SuggestedActions)
+			}
+		}
+		if !reviewFound {
+			t.Error("expected review action in hints")
 		}
 	})
 

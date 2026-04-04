@@ -124,26 +124,23 @@ func (s *StateStore) Delete(sessionName string) error {
 
 var defaultStateStore struct {
 	mu    sync.Mutex
-	once  sync.Once
 	store *StateStore
-	err   error
 }
 
 func defaultSQLiteStore() (*StateStore, error) {
-	defaultStateStore.once.Do(func() {
-		s, err := NewStateStore("")
-		if err != nil {
-			err = fmt.Errorf("open ensemble state store: %w", err)
-		}
-		// sync.Once guarantees happens-before, so no mutex needed here.
-		// The outer mutex (below) guards against concurrent CloseDefaultStateStore.
-		defaultStateStore.store = s
-		defaultStateStore.err = err
-	})
 	defaultStateStore.mu.Lock()
-	s, err := defaultStateStore.store, defaultStateStore.err
-	defaultStateStore.mu.Unlock()
-	return s, err
+	defer defaultStateStore.mu.Unlock()
+
+	if defaultStateStore.store != nil {
+		return defaultStateStore.store, nil
+	}
+
+	store, err := NewStateStore("")
+	if err != nil {
+		return nil, fmt.Errorf("open ensemble state store: %w", err)
+	}
+	defaultStateStore.store = store
+	return store, nil
 }
 
 // CloseDefaultStateStore closes the singleton state store. It is safe to call

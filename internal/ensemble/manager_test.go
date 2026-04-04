@@ -879,3 +879,43 @@ func TestMarkAssignmentsSkipped(t *testing.T) {
 		t.Fatalf("assignment[0] status = %q, want %q", assignments[0].Status, AssignmentPending)
 	}
 }
+
+func TestSpawnCompletionStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		skipInject   bool
+		successes    int
+		injectErrors int
+		skippedModes int
+		want         EnsembleStatus
+	}{
+		{
+			name:       "skip inject leaves session ready",
+			skipInject: true,
+			want:       EnsembleReady,
+		},
+		{
+			name:         "all injections failed",
+			injectErrors: 2,
+			want:         EnsembleError,
+		},
+		{
+			name:         "all injections skipped",
+			skippedModes: 3,
+			want:         EnsembleError,
+		},
+		{
+			name:      "successful injection activates session",
+			successes: 1,
+			want:      EnsembleActive,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := spawnCompletionStatus(tt.skipInject, tt.successes, tt.injectErrors, tt.skippedModes); got != tt.want {
+				t.Fatalf("spawnCompletionStatus(%v, %d, %d, %d) = %q, want %q", tt.skipInject, tt.successes, tt.injectErrors, tt.skippedModes, got, tt.want)
+			}
+		})
+	}
+}

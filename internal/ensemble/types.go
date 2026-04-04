@@ -311,6 +311,8 @@ type EnsembleStatus string
 const (
 	// EnsembleSpawning means agents are being created.
 	EnsembleSpawning EnsembleStatus = "spawning"
+	// EnsembleReady means panes and assignments exist but prompts have not been injected yet.
+	EnsembleReady EnsembleStatus = "ready"
 	// EnsembleInjecting means preambles are being sent to agents.
 	EnsembleInjecting EnsembleStatus = "injecting"
 	// EnsembleActive means agents are analyzing the question.

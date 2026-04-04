@@ -1,8 +1,13 @@
 package ensemble
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewOutputCollector(t *testing.T) {
@@ -131,6 +136,174 @@ func TestOutputCollector_AddRaw_InvalidJSON(t *testing.T) {
 	}
 	if collector.ErrorCount() != 1 {
 		t.Errorf("ErrorCount = %d, want 1", collector.ErrorCount())
+	}
+}
+
+func TestOutputCollector_CollectFromSavedOutputs(t *testing.T) {
+	cfg := DefaultOutputCollectorConfig()
+	collector := NewOutputCollector(cfg)
+
+	output := ModeOutput{
+		ModeID: "saved-mode",
+		Thesis: "Saved output thesis",
+		TopFindings: []Finding{
+			{
+				Finding:    "Saved finding",
+				Impact:     ImpactMedium,
+				Confidence: 0.8,
+			},
+		},
+		Confidence: 0.9,
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal output: %v", err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "saved-mode.json")
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write saved output: %v", err)
+	}
+
+	session := &EnsembleSession{
+		SessionName: "offline-ensemble",
+		Assignments: []ModeAssignment{
+			{ModeID: "saved-mode", Status: AssignmentDone, OutputPath: outputPath},
+		},
+	}
+
+	if err := collector.CollectFromSavedOutputs(session); err != nil {
+		t.Fatalf("CollectFromSavedOutputs returned error: %v", err)
+	}
+	if collector.Count() != 1 {
+		t.Fatalf("collector.Count() = %d, want 1", collector.Count())
+	}
+	if collector.Outputs[0].ModeID != "saved-mode" {
+		t.Fatalf("mode_id = %q, want %q", collector.Outputs[0].ModeID, "saved-mode")
+	}
+}
+
+func TestOutputCollector_CollectFromSavedOutputs_MissingOutputPath(t *testing.T) {
+	cfg := DefaultOutputCollectorConfig()
+	collector := NewOutputCollector(cfg)
+
+	session := &EnsembleSession{
+		SessionName: "offline-ensemble",
+		Assignments: []ModeAssignment{
+			{ModeID: "missing-mode", Status: AssignmentDone},
+		},
+	}
+
+	if err := collector.CollectFromSavedOutputs(session); err != nil {
+		t.Fatalf("CollectFromSavedOutputs returned error: %v", err)
+	}
+	if collector.Count() != 0 {
+		t.Fatalf("collector.Count() = %d, want 0", collector.Count())
+	}
+	if collector.ErrorCount() != 1 {
+		t.Fatalf("collector.ErrorCount() = %d, want 1", collector.ErrorCount())
+	}
+}
+
+func TestCollectModeOutputs_MergesCapturedAndSavedOutputs(t *testing.T) {
+	captured := []CapturedOutput{
+		{
+			ModeID: "captured-mode",
+			Parsed: &ModeOutput{
+				ModeID: "captured-mode",
+				Thesis: "Captured thesis",
+				TopFindings: []Finding{{
+					Finding:    "Captured finding",
+					Impact:     ImpactMedium,
+					Confidence: 0.8,
+				}},
+				Confidence:  0.8,
+				GeneratedAt: time.Now().UTC(),
+			},
+		},
+	}
+
+	savedOutput := strings.TrimSpace(`
+mode_id: saved-mode
+thesis: Saved thesis
+top_findings:
+  - finding: Saved finding
+    impact: medium
+    confidence: 0.9
+confidence: 0.9
+`)
+	savedPath := filepath.Join(t.TempDir(), "saved-mode.yaml")
+	if err := os.WriteFile(savedPath, []byte(savedOutput), 0o644); err != nil {
+		t.Fatalf("write saved output: %v", err)
+	}
+
+	session := &EnsembleSession{
+		SessionName: "merge-session",
+		Assignments: []ModeAssignment{
+			{ModeID: "captured-mode", Status: AssignmentDone},
+			{ModeID: "saved-mode", Status: AssignmentDone, OutputPath: savedPath},
+		},
+	}
+
+	collector, err := CollectModeOutputs(session, captured)
+	if err != nil {
+		t.Fatalf("CollectModeOutputs returned error: %v", err)
+	}
+	if collector.Count() != 2 {
+		t.Fatalf("collector.Count() = %d, want 2", collector.Count())
+	}
+	if collector.Outputs[0].ModeID != "captured-mode" || collector.Outputs[1].ModeID != "saved-mode" {
+		t.Fatalf("mode order = [%s %s], want [captured-mode saved-mode]", collector.Outputs[0].ModeID, collector.Outputs[1].ModeID)
+	}
+}
+
+func TestCollectModeOutputs_PrefersCapturedOutputOverSavedOutput(t *testing.T) {
+	savedOutput := strings.TrimSpace(`
+mode_id: duplicate-mode
+thesis: Saved thesis
+top_findings:
+  - finding: Saved finding
+    impact: medium
+    confidence: 0.6
+confidence: 0.6
+`)
+	savedPath := filepath.Join(t.TempDir(), "duplicate-mode.yaml")
+	if err := os.WriteFile(savedPath, []byte(savedOutput), 0o644); err != nil {
+		t.Fatalf("write saved output: %v", err)
+	}
+
+	session := &EnsembleSession{
+		SessionName: "prefer-live-session",
+		Assignments: []ModeAssignment{
+			{ModeID: "duplicate-mode", Status: AssignmentDone, OutputPath: savedPath},
+		},
+	}
+	captured := []CapturedOutput{
+		{
+			ModeID: "duplicate-mode",
+			Parsed: &ModeOutput{
+				ModeID: "duplicate-mode",
+				Thesis: "Captured thesis",
+				TopFindings: []Finding{{
+					Finding:    "Captured finding",
+					Impact:     ImpactHigh,
+					Confidence: 0.95,
+				}},
+				Confidence:  0.95,
+				GeneratedAt: time.Now().UTC(),
+			},
+		},
+	}
+
+	collector, err := CollectModeOutputs(session, captured)
+	if err != nil {
+		t.Fatalf("CollectModeOutputs returned error: %v", err)
+	}
+	if collector.Count() != 1 {
+		t.Fatalf("collector.Count() = %d, want 1", collector.Count())
+	}
+	if collector.Outputs[0].Thesis != "Captured thesis" {
+		t.Fatalf("thesis = %q, want %q", collector.Outputs[0].Thesis, "Captured thesis")
 	}
 }
 

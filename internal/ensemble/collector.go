@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -349,6 +351,112 @@ func (c *OutputCollector) CollectFromCapturesFiltered(captured []CapturedOutput,
 	}
 
 	return nil
+}
+
+// CollectFromSavedOutputs loads completed mode outputs from persisted output files.
+// This is used when an ensemble session is no longer live in tmux but saved mode
+// outputs are still available on disk.
+func (c *OutputCollector) CollectFromSavedOutputs(session *EnsembleSession) error {
+	if c == nil {
+		return errors.New("collector is nil")
+	}
+	if session == nil {
+		return errors.New("ensemble session is nil")
+	}
+
+	validator := NewSchemaValidator()
+
+	for _, assignment := range session.Assignments {
+		if assignment.Status != AssignmentDone {
+			continue
+		}
+
+		path := strings.TrimSpace(assignment.OutputPath)
+		if path == "" {
+			c.ValidationErrors[assignment.ModeID] = []string{"missing output_path for completed mode"}
+			continue
+		}
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			c.ValidationErrors[assignment.ModeID] = []string{fmt.Sprintf("read saved output %q: %v", path, err)}
+			continue
+		}
+
+		parsed, _, err := validator.ParseNormalizeAndValidate(string(raw), assignment.ModeID)
+		if err != nil {
+			c.ValidationErrors[assignment.ModeID] = []string{fmt.Sprintf("parse saved output %q: %v", path, err)}
+			continue
+		}
+		if parsed == nil {
+			c.ValidationErrors[assignment.ModeID] = []string{fmt.Sprintf("empty saved output %q", path)}
+			continue
+		}
+
+		parsed.RawOutput = string(raw)
+		normalizeOutput(parsed)
+		if err := c.Add(*parsed); err != nil {
+			return fmt.Errorf("add saved output %s: %w", assignment.ModeID, err)
+		}
+	}
+
+	return nil
+}
+
+// CollectModeOutputs merges live-captured and saved outputs for a session.
+// Captured outputs win per mode when both sources exist; saved outputs fill in
+// missing modes. Validation errors for a mode are cleared once a valid output
+// for that mode is available from either source.
+func CollectModeOutputs(session *EnsembleSession, captured []CapturedOutput) (*OutputCollector, error) {
+	if session == nil {
+		return nil, errors.New("ensemble session is nil")
+	}
+
+	collector := NewOutputCollector(DefaultOutputCollectorConfig())
+	if err := collector.CollectFromCapturesFiltered(captured, nil); err != nil {
+		return nil, fmt.Errorf("collect captured outputs: %w", err)
+	}
+
+	collectedModes := make(map[string]struct{}, len(collector.Outputs))
+	for _, output := range collector.Outputs {
+		collectedModes[output.ModeID] = struct{}{}
+		delete(collector.ValidationErrors, output.ModeID)
+	}
+
+	savedCollector := NewOutputCollector(DefaultOutputCollectorConfig())
+	if err := savedCollector.CollectFromSavedOutputs(session); err != nil {
+		return nil, fmt.Errorf("collect saved outputs: %w", err)
+	}
+
+	for _, output := range savedCollector.Outputs {
+		if _, exists := collectedModes[output.ModeID]; exists {
+			delete(collector.ValidationErrors, output.ModeID)
+			continue
+		}
+		if err := collector.Add(output); err != nil {
+			return nil, fmt.Errorf("add saved output %s: %w", output.ModeID, err)
+		}
+		collectedModes[output.ModeID] = struct{}{}
+		delete(collector.ValidationErrors, output.ModeID)
+	}
+
+	for modeID, errs := range savedCollector.ValidationErrors {
+		if _, exists := collectedModes[modeID]; exists {
+			continue
+		}
+		if _, exists := collector.ValidationErrors[modeID]; !exists {
+			collector.ValidationErrors[modeID] = errs
+		}
+	}
+
+	sort.Slice(collector.Outputs, func(i, j int) bool {
+		if collector.Outputs[i].ModeID == collector.Outputs[j].ModeID {
+			return collector.Outputs[i].GeneratedAt.Before(collector.Outputs[j].GeneratedAt)
+		}
+		return collector.Outputs[i].ModeID < collector.Outputs[j].ModeID
+	})
+
+	return collector, nil
 }
 
 // normalizeOutput applies default values to zero-valued fields.

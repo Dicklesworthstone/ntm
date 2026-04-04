@@ -3,6 +3,9 @@ package robot
 import (
 	"encoding/json"
 	"testing"
+	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 )
 
 // TestEnvelope_EnsembleModes verifies envelope compliance for --robot-ensemble-modes.
@@ -137,6 +140,81 @@ func TestEnvelope_EnsembleSynthesize(t *testing.T) {
 	}
 
 	t.Log("TEST: TestEnvelope_EnsembleSynthesize - assertion: envelope compliant on error")
+}
+
+func TestGetEnsemble_UsesPersistedStateWhenSessionOffline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-robot",
+		Question:          "Summarize offline run",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	output, err := GetEnsemble(state.SessionName)
+	if err != nil {
+		t.Fatalf("GetEnsemble error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success for persisted offline ensemble state, got error=%q code=%q", output.Error, output.ErrorCode)
+	}
+	if output.Ensemble.Status != ensemble.EnsembleStopped.String() {
+		t.Fatalf("status = %q, want %q", output.Ensemble.Status, ensemble.EnsembleStopped)
+	}
+	if output.Summary.Completed != 1 {
+		t.Fatalf("completed = %d, want 1", output.Summary.Completed)
+	}
+}
+
+func TestGetEnsembleStop_MarksOfflineActiveStateStopped(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-stop-robot",
+		Question:          "Stop this offline run",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentActive},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	output, err := GetEnsembleStop(state.SessionName, EnsembleStopOptions{})
+	if err != nil {
+		t.Fatalf("GetEnsembleStop error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error=%q code=%q", output.Error, output.ErrorCode)
+	}
+	if output.Result.FinalStatus != ensemble.EnsembleStopped.String() {
+		t.Fatalf("final status = %q, want %q", output.Result.FinalStatus, ensemble.EnsembleStopped)
+	}
+
+	saved, err := ensemble.LoadSession(state.SessionName)
+	if err != nil {
+		t.Fatalf("LoadSession after robot stop error: %v", err)
+	}
+	if saved.Status != ensemble.EnsembleStopped {
+		t.Fatalf("saved status = %q, want %q", saved.Status, ensemble.EnsembleStopped)
+	}
 }
 
 // TestEnvelope_EnsembleModesError verifies error envelope compliance.

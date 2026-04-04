@@ -1,11 +1,14 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -201,6 +204,91 @@ func TestFetchMetricsCmd_NoPanes(t *testing.T) {
 	// With no panes, metrics should be empty
 	if metricsMsg.Data.Coverage != nil || metricsMsg.Data.Redundancy != nil || metricsMsg.Data.Velocity != nil || metricsMsg.Data.Conflicts != nil {
 		t.Error("expected empty metrics data with no panes")
+	}
+}
+
+func TestLoadSpawnState_ExpiresCompletedStateAfterGracePeriod(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, ".ntm", "spawn-state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	state := spawnState{
+		BatchID:        "batch-test",
+		StartedAt:      time.Now().Add(-time.Minute),
+		StaggerSeconds: 60,
+		TotalAgents:    1,
+		CompletedAt:    time.Now().Add(-(spawnStateCompletionGracePeriod + time.Second)),
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loaded, err := loadSpawnState(projectDir)
+	if err != nil {
+		t.Fatalf("loadSpawnState() error = %v", err)
+	}
+	if loaded != nil {
+		t.Fatalf("loadSpawnState() = %#v, want nil for expired state", loaded)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected expired spawn state file to be removed, stat err = %v", err)
+	}
+}
+
+func TestNewDashboardAddAgentsCommand_ValidatesSession(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := newDashboardAddAgentsCommand(context.Background(), "/tmp/project", "proj", panels.SpawnWizardResult{
+		CCCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("newDashboardAddAgentsCommand(valid) error = %v", err)
+	}
+	if !filepath.IsAbs(cmd.Path) {
+		t.Fatalf("cmd.Path = %q, want absolute path", cmd.Path)
+	}
+	if got, want := cmd.Dir, filepath.Clean("/tmp/project"); got != want {
+		t.Fatalf("cmd.Dir = %q, want %q", got, want)
+	}
+	if _, err := newDashboardAddAgentsCommand(context.Background(), "/tmp/project", "bad:name", panels.SpawnWizardResult{
+		CCCount: 1,
+	}); err == nil {
+		t.Fatal("expected invalid session name to be rejected")
+	}
+}
+
+func TestDashboardEditorTokensSafe_RejectsPositionalArgs(t *testing.T) {
+	t.Parallel()
+
+	if !dashboardEditorTokensSafe([]string{"code", "-w"}) {
+		t.Fatal("expected simple editor tokens to be allowed")
+	}
+	if dashboardEditorTokensSafe([]string{"vim", "bad;arg"}) {
+		t.Fatal("expected metacharacter token to be rejected")
+	}
+}
+
+func TestResolveDashboardEditorPreset_FallsBackForUnknownOrUnsafeEditor(t *testing.T) {
+	t.Parallel()
+
+	if got := resolveDashboardEditorPreset("code --wait"); got != dashboardEditorPresetVSCode {
+		t.Fatalf("resolveDashboardEditorPreset(code) = %v, want %v", got, dashboardEditorPresetVSCode)
+	}
+
+	if got := resolveDashboardEditorPreset("./bin/editor"); got != dashboardEditorPresetVi {
+		t.Fatalf("resolveDashboardEditorPreset(relative) = %v, want %v", got, dashboardEditorPresetVi)
+	}
+
+	if got := resolveDashboardEditorPreset("vim;rm -rf /"); got != dashboardEditorPresetVi {
+		t.Fatalf("resolveDashboardEditorPreset(unsafe) = %v, want %v", got, dashboardEditorPresetVi)
 	}
 }
 

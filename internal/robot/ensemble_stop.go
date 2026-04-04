@@ -85,19 +85,17 @@ func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOut
 		return output, nil
 	}
 
-	if !tmux.SessionExists(session) {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("session '%s' not found", session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-		return output, nil
-	}
-
-	// Load ensemble session state
 	state, err := ensemble.LoadSession(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !tmux.SessionExists(session) {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("session '%s' not found", session),
+					ErrCodeSessionNotFound,
+					"Use 'ntm list' to see available sessions",
+				)
+				return output, nil
+			}
 			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("ensemble state not found for session '%s'", session),
 				ErrCodeEnsembleNotFound,
@@ -114,11 +112,31 @@ func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOut
 	}
 
 	output.Result.PrevStatus = state.Status.String()
+	sessionLive := tmux.SessionExists(session)
 
 	// Check if already stopped
 	if state.Status.IsTerminal() {
 		output.Result.FinalStatus = state.Status.String()
 		output.Result.Message = fmt.Sprintf("Ensemble already in terminal state: %s", state.Status)
+		output.AgentHints = &AgentHints{
+			Summary: output.Result.Message,
+		}
+		return output, nil
+	}
+
+	if !sessionLive {
+		state.Status = ensemble.EnsembleStopped
+		if err := ensemble.SaveSession(session, state); err != nil {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("failed to save stopped state: %w", err),
+				ErrCodeInternalError,
+				"State store may require manual cleanup",
+			)
+			output.Result.FinalStatus = output.Result.PrevStatus
+			return output, nil
+		}
+		output.Result.FinalStatus = ensemble.EnsembleStopped.String()
+		output.Result.Message = fmt.Sprintf("Ensemble session already absent; marked state stopped (previously %s)", output.Result.PrevStatus)
 		output.AgentHints = &AgentHints{
 			Summary: output.Result.Message,
 		}

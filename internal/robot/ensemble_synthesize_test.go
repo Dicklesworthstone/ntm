@@ -1,7 +1,13 @@
 package robot
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 )
 
 func TestGetEnsembleSynthesize_EmptySession(t *testing.T) {
@@ -68,6 +74,57 @@ func TestGetEnsembleSynthesize_InvalidFormat(t *testing.T) {
 	}
 
 	t.Log("TEST: TestGetEnsembleSynthesize_InvalidFormat - assertion: invalid format handled")
+}
+
+func TestGetEnsembleSynthesize_UsesSavedOutputsWhenSessionOffline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "robot-offline-output.yaml")
+	modeOutput := strings.TrimSpace(`
+thesis: Robot offline thesis
+top_findings:
+  - finding: Robot offline finding
+    impact: medium
+    confidence: 0.8
+confidence: 0.8
+`)
+	if err := os.WriteFile(outputPath, []byte(modeOutput), 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "robot-offline-synth",
+		Question:          "Synthesize saved outputs",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	output, err := GetEnsembleSynthesize(EnsembleSynthesizeOptions{
+		Session: state.SessionName,
+		Format:  "json",
+	})
+	if err != nil {
+		t.Fatalf("GetEnsembleSynthesize failed: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error=%q code=%q", output.Error, output.ErrorCode)
+	}
+	if output.Status != "complete" {
+		t.Fatalf("status = %q, want complete", output.Status)
+	}
+	if output.Report == nil || output.Report.FindingsCount != 1 {
+		t.Fatalf("report = %+v, want 1 finding", output.Report)
+	}
 }
 
 func TestBuildSynthesizeHints_Complete(t *testing.T) {

@@ -82,20 +82,19 @@ func GetEnsembleSynthesize(opts EnsembleSynthesizeOptions) (*EnsembleSynthesizeO
 		return output, nil
 	}
 
-	// Check session exists
-	if !tmux.SessionExists(opts.Session) {
-		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("session '%s' not found", opts.Session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-		return output, nil
-	}
-
 	// Load ensemble state
 	state, err := ensemble.LoadSession(opts.Session)
+	sessionLive := tmux.IsInstalled() && tmux.SessionExists(opts.Session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !sessionLive {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("session '%s' not found", opts.Session),
+					ErrCodeSessionNotFound,
+					"Use 'ntm list' to see available sessions",
+				)
+				return output, nil
+			}
 			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("ensemble state not found for session '%s'", opts.Session),
 				ErrCodeEnsembleNotFound,
@@ -180,30 +179,37 @@ func GetEnsembleSynthesize(opts EnsembleSynthesizeOptions) (*EnsembleSynthesizeO
 
 	// Collect outputs from assignments
 	collector := ensemble.NewOutputCollector(ensemble.DefaultOutputCollectorConfig())
-	for _, assignment := range state.Assignments {
-		if assignment.Status != ensemble.AssignmentDone {
-			continue
-		}
-		if assignment.OutputPath == "" {
-			continue
-		}
+	var captured []ensemble.CapturedOutput
+	if sessionLive {
+		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
+		captured, _ = capture.CaptureAll(state)
+	}
 
-		// Read output from file
-		rawOutput, readErr := os.ReadFile(assignment.OutputPath)
-		if readErr != nil {
-			// Non-fatal - continue collecting other outputs
-			continue
-		}
-
-		if err := collector.AddRaw(assignment.ModeID, string(rawOutput)); err != nil {
-			// Non-fatal - continue collecting other outputs
-			continue
+	collected, err := ensemble.CollectModeOutputs(state, captured)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to collect mode outputs: %w", err),
+			ErrCodeInternalError,
+			"Check ensemble output files and tmux session state",
+		)
+		output.Status = "error"
+		return output, nil
+	}
+	for _, modeOutput := range collected.Outputs {
+		if err := collector.Add(modeOutput); err != nil {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("failed to collect output %s: %w", modeOutput.ModeID, err),
+				ErrCodeInternalError,
+				"Check collected outputs",
+			)
+			output.Status = "error"
+			return output, nil
 		}
 	}
 
 	if len(collector.Outputs) == 0 {
 		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("no valid outputs collected from %d completed modes", readyCount),
+			fmt.Errorf("no valid outputs collected from %d completed modes (errors: %d)", readyCount, collected.ErrorCount()),
 			ErrCodeOutputSchemaInvalid,
 			"Mode outputs may not have been captured correctly",
 		)

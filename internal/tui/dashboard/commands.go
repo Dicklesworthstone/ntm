@@ -21,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -32,30 +33,19 @@ const (
 	spawnWizardProgressToastID = "spawn-wizard-progress"
 )
 
+type dashboardEditorPreset int
+
+const (
+	dashboardEditorPresetVi dashboardEditorPreset = iota
+	dashboardEditorPresetVSCode
+	dashboardEditorPresetZed
+	dashboardEditorPresetNano
+)
+
 var dashboardRunAddAgents = func(ctx context.Context, projectDir, session string, result panels.SpawnWizardResult) (string, error) {
-	exe, err := os.Executable()
+	cmd, err := newDashboardAddAgentsCommand(ctx, projectDir, session, result)
 	if err != nil {
-		return "", fmt.Errorf("locate ntm executable: %w", err)
-	}
-
-	args := []string{"add", session}
-	if result.CCCount > 0 {
-		args = append(args, fmt.Sprintf("--cc=%d", result.CCCount))
-	}
-	if result.CodCount > 0 {
-		args = append(args, fmt.Sprintf("--cod=%d", result.CodCount))
-	}
-	if result.GmiCount > 0 {
-		args = append(args, fmt.Sprintf("--gmi=%d", result.GmiCount))
-	}
-	if len(args) == 2 {
-		return "", fmt.Errorf("no agents requested")
-	}
-
-	cmd := exec.CommandContext(ctx, exe, args...)
-	cmd.WaitDelay = 2 * time.Second
-	if strings.TrimSpace(projectDir) != "" {
-		cmd.Dir = projectDir
+		return "", err
 	}
 	output, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(output))
@@ -71,33 +61,114 @@ var dashboardRunAddAgents = func(ctx context.Context, projectDir, session string
 var dashboardBuildEditorCommand = buildDashboardEditorCommand
 var dashboardExecProcess = tea.ExecProcess
 
+func dashboardCurrentExecutablePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate ntm executable: %w", err)
+	}
+	exe = filepath.Clean(exe)
+	if !filepath.IsAbs(exe) {
+		return "", fmt.Errorf("ntm executable path must be absolute: %q", exe)
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		return "", fmt.Errorf("stat ntm executable: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("ntm executable path is a directory: %q", exe)
+	}
+	return exe, nil
+}
+
+func newDashboardAddAgentsCommand(ctx context.Context, projectDir, session string, result panels.SpawnWizardResult) (*exec.Cmd, error) {
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return nil, fmt.Errorf("invalid session name: %w", err)
+	}
+	exe, err := dashboardCurrentExecutablePath()
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{"add", session}
+	if result.CCCount > 0 {
+		args = append(args, fmt.Sprintf("--cc=%d", result.CCCount))
+	}
+	if result.CodCount > 0 {
+		args = append(args, fmt.Sprintf("--cod=%d", result.CodCount))
+	}
+	if result.GmiCount > 0 {
+		args = append(args, fmt.Sprintf("--gmi=%d", result.GmiCount))
+	}
+	if len(args) == 2 {
+		return nil, fmt.Errorf("no agents requested")
+	}
+
+	cmd := exec.CommandContext(ctx, exe, args...)
+	cmd.WaitDelay = 2 * time.Second
+	if dir := strings.TrimSpace(projectDir); dir != "" {
+		cmd.Dir = filepath.Clean(dir)
+	}
+	return cmd, nil
+}
+
 func buildDashboardEditorCommand(path string) (*exec.Cmd, error) {
-	editor := strings.TrimSpace(os.Getenv("EDITOR"))
-	if editor == "" {
-		editor = "vi"
+	editorName := "vi"
+	args := []string{path}
+	switch resolveDashboardEditorPreset(os.Getenv("EDITOR")) {
+	case dashboardEditorPresetVSCode:
+		editorName = "code"
+		args = []string{"-w", path}
+	case dashboardEditorPresetZed:
+		editorName = "zed"
+		args = []string{"--wait", path}
+	case dashboardEditorPresetNano:
+		editorName = "nano"
 	}
 
-	parts := strings.Fields(editor)
-	if len(parts) == 0 || !dashboardEditorTokensSafe(parts) {
-		parts = []string{"vi"}
-	}
-
-	cmdPath, err := exec.LookPath(parts[0])
+	cmdPath, err := exec.LookPath(editorName)
 	if err != nil {
 		return nil, fmt.Errorf("editor not found: %w", err)
 	}
+	if !filepath.IsAbs(cmdPath) {
+		cmdPath, err = filepath.Abs(cmdPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve editor path: %w", err)
+		}
+	}
 
-	args := append(parts[1:], path)
 	return exec.Command(cmdPath, args...), nil
 }
 
 func dashboardEditorTokensSafe(tokens []string) bool {
 	for _, token := range tokens {
+		if token == "" {
+			return false
+		}
 		if strings.ContainsAny(token, ";&|<>`$\n\r") {
 			return false
 		}
 	}
 	return true
+}
+
+func resolveDashboardEditorPreset(editor string) dashboardEditorPreset {
+	parts := strings.Fields(strings.TrimSpace(editor))
+	if len(parts) == 0 || !dashboardEditorTokensSafe(parts) {
+		return dashboardEditorPresetVi
+	}
+	switch strings.ToLower(filepath.Base(parts[0])) {
+	case "code", "code-insiders", "cursor", "codium", "subl", "sublime_text", "mate":
+		return dashboardEditorPresetVSCode
+	case "zed":
+		return dashboardEditorPresetZed
+	case "vi", "vim", "nvim", "nano", "hx", "helix", "micro", "emacs", "emacsclient", "less":
+		if strings.ToLower(filepath.Base(parts[0])) == "nano" {
+			return dashboardEditorPresetNano
+		}
+		return dashboardEditorPresetVi
+	default:
+		return dashboardEditorPresetVi
+	}
 }
 
 func resolveDashboardFilePath(projectDir, path string) (string, error) {
@@ -667,6 +738,8 @@ type spawnPromptStatus struct {
 	SentAt      time.Time `json:"sent_at,omitempty"`
 }
 
+const spawnStateCompletionGracePeriod = 5 * time.Second
+
 // loadSpawnState reads spawn state from disk
 func loadSpawnState(projectDir string) (*spawnState, error) {
 	path := filepath.Join(projectDir, ".ntm", "spawn-state.json")
@@ -682,6 +755,12 @@ func loadSpawnState(projectDir string) (*spawnState, error) {
 	var state spawnState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
+	}
+	if !state.CompletedAt.IsZero() && !state.CompletedAt.Add(spawnStateCompletionGracePeriod).After(time.Now()) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		return nil, nil
 	}
 
 	return &state, nil

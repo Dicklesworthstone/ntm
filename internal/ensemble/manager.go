@@ -188,7 +188,7 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	}
 
 	state.Assignments = assignments
-	state.Status = EnsembleInjecting
+	state.Status = spawnCompletionStatus(cfg.SkipInject, 0, 0, 0)
 	if saveErr := SaveSession(cfg.SessionName, state); saveErr != nil {
 		logger.Warn("ensemble state save failed", "session", cfg.SessionName, "error", saveErr)
 	}
@@ -299,14 +299,16 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 		successes++
 	}
 
-	if successes == 0 && len(injectErrors) > 0 {
-		state.Status = EnsembleError
-		state.Error = "all injections failed"
-	} else if successes == 0 && len(skippedModes) > 0 {
-		state.Status = EnsembleError
-		state.Error = "all injections skipped due to timeout"
-	} else {
-		state.Status = EnsembleActive
+	state.Status = spawnCompletionStatus(false, successes, len(injectErrors), len(skippedModes))
+	switch state.Status {
+	case EnsembleError:
+		if successes == 0 && len(injectErrors) > 0 {
+			state.Error = "all injections failed"
+		} else if successes == 0 && len(skippedModes) > 0 {
+			state.Error = "all injections skipped due to timeout"
+		}
+	default:
+		state.Error = ""
 	}
 
 	if len(skippedModes) > 0 {
@@ -324,6 +326,19 @@ func (m *EnsembleManager) SpawnEnsemble(ctx context.Context, cfg *EnsembleConfig
 	}
 
 	return state, errors.Join(injectErrors...)
+}
+
+func spawnCompletionStatus(skipInject bool, successes, injectErrors, skippedModes int) EnsembleStatus {
+	if skipInject {
+		return EnsembleReady
+	}
+	if successes == 0 && injectErrors > 0 {
+		return EnsembleError
+	}
+	if successes == 0 && skippedModes > 0 {
+		return EnsembleError
+	}
+	return EnsembleActive
 }
 
 func (m *EnsembleManager) tmuxClient() *tmux.Client {

@@ -526,7 +526,7 @@ func TestBuildEnsembleHints(t *testing.T) {
 	t.Run("error mode adds warning", func(t *testing.T) {
 		t.Parallel()
 		output := EnsembleOutput{
-			Summary: EnsembleSummary{TotalModes: 2, Completed: 2},
+			Summary: EnsembleSummary{TotalModes: 2, Completed: 1, Errors: 1},
 			Ensemble: EnsembleState{
 				Modes: []EnsembleMode{
 					{ID: "m1", Status: "done"},
@@ -548,6 +548,19 @@ func TestBuildEnsembleHints(t *testing.T) {
 		if !foundErrorWarning {
 			t.Errorf("expected error warning, got warnings: %v", got.Warnings)
 		}
+
+		foundReview := false
+		for _, a := range got.SuggestedActions {
+			if a.Action == "review" {
+				foundReview = true
+			}
+			if a.Action == "wait" {
+				t.Fatalf("did not expect 'wait' action when only errors remain: %+v", got.SuggestedActions)
+			}
+		}
+		if !foundReview {
+			t.Errorf("expected review action, got actions: %+v", got.SuggestedActions)
+		}
 	})
 
 	t.Run("summary format", func(t *testing.T) {
@@ -561,6 +574,22 @@ func TestBuildEnsembleHints(t *testing.T) {
 			t.Fatal("expected non-nil hints")
 		}
 		want := "2/4 modes complete, 1 working, 1 pending"
+		if got.Summary != want {
+			t.Errorf("Summary = %q, want %q", got.Summary, want)
+		}
+	})
+
+	t.Run("summary format includes errors", func(t *testing.T) {
+		t.Parallel()
+		output := EnsembleOutput{
+			Summary:  EnsembleSummary{TotalModes: 3, Completed: 1, Working: 0, Pending: 0, Errors: 2},
+			Ensemble: EnsembleState{Modes: []EnsembleMode{}, Synthesis: EnsembleSynthesis{Status: "error"}},
+		}
+		got := buildEnsembleHints(output)
+		if got == nil {
+			t.Fatal("expected non-nil hints")
+		}
+		want := "1/3 modes complete, 0 working, 0 pending, 2 errors"
 		if got.Summary != want {
 			t.Errorf("Summary = %q, want %q", got.Summary, want)
 		}
