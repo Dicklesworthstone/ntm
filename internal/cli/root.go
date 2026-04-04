@@ -545,7 +545,12 @@ Shell Integration:
 			return
 		}
 		if robotEnsemble != "" {
-			if err := robot.PrintEnsemble(robotEnsemble); err != nil {
+			session, err := resolveRobotOfflineCapableSession(robotEnsemble)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if err := robot.PrintEnsemble(session); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -559,11 +564,16 @@ Shell Integration:
 			return
 		}
 		if robotEnsembleStop != "" {
+			session, err := resolveRobotOfflineCapableSession(robotEnsembleStop)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 			opts := robot.EnsembleStopOptions{
 				Force:     robotEnsembleStopForce,
 				NoCollect: robotEnsembleStopNoCollect,
 			}
-			if err := robot.PrintEnsembleStop(robotEnsembleStop, opts); err != nil {
+			if err := robot.PrintEnsembleStop(session, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -2458,6 +2468,14 @@ func resolveRobotLiveSession(sessionName string) (string, error) {
 		return "", fmt.Errorf("session is required")
 	}
 	return normalizeExplicitLiveSessionName(sessionName, !IsJSONOutput())
+}
+
+func resolveRobotOfflineCapableSession(sessionName string) (string, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return "", fmt.Errorf("session is required")
+	}
+	return normalizeProjectScopedSessionName(sessionName, !IsJSONOutput())
 }
 
 func resolveOptionalRobotLiveSession(sessionName string) (string, error) {

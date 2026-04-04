@@ -72,9 +72,19 @@ Examples:
 			}
 
 			// Load checkpoint
-			capturer := checkpoint.NewCapturer()
+			storage := checkpoint.NewStorage()
+			capturer := checkpoint.NewCapturerWithStorage(storage)
 			cp, err := capturer.ParseCheckpointRef(storageSession, checkpointRef)
 			if err != nil {
+				if checkpoint.IsValidCheckpointID(strings.TrimSpace(checkpointRef)) {
+					exists, existsErr := storage.HasCheckpointPath(storageSession, checkpointRef)
+					if existsErr != nil {
+						return fmt.Errorf("finding checkpoint: %w", existsErr)
+					}
+					if exists {
+						return fmt.Errorf("loading checkpoint: %w", err)
+					}
+				}
 				return fmt.Errorf("finding checkpoint: %w", err)
 			}
 

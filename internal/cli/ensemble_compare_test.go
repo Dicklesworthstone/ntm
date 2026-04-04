@@ -302,6 +302,21 @@ func TestLoadCompareInput_LoadsCheckpointRunFromProjectRoot(t *testing.T) {
 	if len(input.Outputs) != 1 || input.Outputs[0].Thesis != "Checkpoint thesis" {
 		t.Fatalf("Outputs = %+v, want checkpoint output", input.Outputs)
 	}
+	if input.Contributions == nil {
+		t.Fatal("Contributions = nil, want populated report for checkpoint compare input")
+	}
+	if len(input.Contributions.Scores) != 1 {
+		t.Fatalf("len(Contributions.Scores) = %d, want 1", len(input.Contributions.Scores))
+	}
+	if input.Contributions.Scores[0].FindingsCount != 1 {
+		t.Fatalf("FindingsCount = %d, want 1", input.Contributions.Scores[0].FindingsCount)
+	}
+	if input.Contributions.Scores[0].Score <= 0 {
+		t.Fatalf("Score = %f, want > 0", input.Contributions.Scores[0].Score)
+	}
+	if input.SynthesisOutput == "" {
+		t.Fatal("SynthesisOutput = empty, want synthesized checkpoint summary")
+	}
 }
 
 func TestNewEnsembleCheckpointStoreForSessionUsesSessionProjectDir(t *testing.T) {
@@ -606,6 +621,93 @@ func TestLoadExportFindingsContextRunIDUsesConfiguredProjectsBaseWithoutSession(
 	}
 }
 
+func TestLoadExportFindingsContextRunIDPreservesResolvedProjectForNonProjectScopedSession(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "actual-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForProject(projectDir)
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForProject() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "export-run-nonproject-session",
+		SessionName:  "review-session-prod",
+		Question:     "What should we export?",
+		Status:       ensemble.EnsembleComplete,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	checkpoint := ensemble.ModeCheckpoint{
+		ModeID: "mode-a",
+		Status: string(ensemble.AssignmentDone),
+		Output: &ensemble.ModeOutput{
+			ModeID: "mode-a",
+			Thesis: "Export thesis from arbitrary session",
+			TopFindings: []ensemble.Finding{{
+				Finding:    "Export finding from arbitrary session",
+				Impact:     ensemble.ImpactMedium,
+				Confidence: 0.8,
+			}},
+			Confidence:  0.8,
+			GeneratedAt: time.Now(),
+		},
+		CapturedAt: time.Now(),
+	}
+	if err := store.SaveCheckpoint(meta.RunID, checkpoint); err != nil {
+		t.Fatalf("SaveCheckpoint() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	ctx, err := loadExportFindingsContext(io.Discard, "", exportFindingsOptions{RunID: meta.RunID})
+	if err != nil {
+		t.Fatalf("loadExportFindingsContext() error = %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("expected export findings context")
+	}
+	if ctx.ProjectDir != projectDir {
+		t.Fatalf("ProjectDir = %q, want %q", ctx.ProjectDir, projectDir)
+	}
+	if ctx.Session != meta.SessionName {
+		t.Fatalf("Session = %q, want %q", ctx.Session, meta.SessionName)
+	}
+	if ctx.RunID != meta.RunID {
+		t.Fatalf("RunID = %q, want %q", ctx.RunID, meta.RunID)
+	}
+	if len(ctx.Outputs) != 1 || ctx.Outputs[0].Thesis != "Export thesis from arbitrary session" {
+		t.Fatalf("Outputs = %+v, want exported checkpoint output", ctx.Outputs)
+	}
+}
+
 func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 	projectsBase := t.TempDir()
 	sessionProject := filepath.Join(projectsBase, "mysession")
@@ -670,6 +772,127 @@ func TestRunEnsembleResumeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 	}
 }
 
+func TestRunEnsembleResumeSkipDoneFalseIncludesCompletedModes(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir .ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	store, err := newEnsembleCheckpointStore()
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStore() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "resume-include-completed-run",
+		SessionName:  "mysession",
+		Question:     "Resume me",
+		Status:       ensemble.EnsembleActive,
+		CompletedIDs: []string{"mode-a"},
+		PendingIDs:   []string{"mode-b"},
+		ErrorIDs:     []string{"mode-c"},
+		TotalModes:   3,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runEnsembleResume(&buf, meta.RunID, "json", false, false); err != nil {
+		t.Fatalf("runEnsembleResume() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal resume output: %v", err)
+	}
+	if !payload.Success {
+		t.Fatalf("expected success, got payload %+v", payload)
+	}
+	if payload.Resumed != 3 {
+		t.Fatalf("Resumed = %d, want 3", payload.Resumed)
+	}
+	if payload.Skipped != 0 {
+		t.Fatalf("Skipped = %d, want 0", payload.Skipped)
+	}
+}
+
+func TestRunEnsembleResume_InvalidMetadataReturnsStructuredFailure(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm", "ensemble-checkpoints", "resume-invalid-meta-run"), 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "ensemble-checkpoints", "resume-invalid-meta-run", "_meta.json"), []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("write invalid metadata: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	if err := runEnsembleResume(&buf, "resume-invalid-meta-run", "json", false, true); err != nil {
+		t.Fatalf("runEnsembleResume() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal resume output: %v", err)
+	}
+	if payload.Success {
+		t.Fatalf("expected failure, got payload %+v", payload)
+	}
+	if !strings.Contains(payload.Error, "load checkpoint metadata:") {
+		t.Fatalf("Error = %q, want structured metadata load failure", payload.Error)
+	}
+}
+
+func TestRunEnsembleResume_InvalidRunIDReturnsStructuredFailure(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir ntm dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	if err := runEnsembleResume(&buf, "../escape", "json", false, true); err != nil {
+		t.Fatalf("runEnsembleResume() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal resume output: %v", err)
+	}
+	if payload.Success {
+		t.Fatalf("expected failure, got payload %+v", payload)
+	}
+	if !strings.Contains(payload.Error, "invalid run ID") {
+		t.Fatalf("Error = %q, want invalid run ID failure", payload.Error)
+	}
+}
+
 func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T) {
 	projectsBase := t.TempDir()
 	sessionProject := filepath.Join(projectsBase, "mysession")
@@ -730,6 +953,166 @@ func TestRunEnsembleRerunModeUsesConfiguredRunProjectWhenCWDDiffers(t *testing.T
 	}
 	if payload.RunID != meta.RunID || payload.Session != meta.SessionName {
 		t.Fatalf("payload = %+v, want run %q session %q", payload, meta.RunID, meta.SessionName)
+	}
+}
+
+func TestRunEnsembleRerunModeRejectsUnknownModeInCheckpointRun(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir .ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	store, err := newEnsembleCheckpointStore()
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStore() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "rerun-missing-mode-run",
+		SessionName:  "mysession",
+		Question:     "Rerun me",
+		Status:       ensemble.EnsembleActive,
+		CompletedIDs: []string{"deductive"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runEnsembleRerunMode(&buf, meta.RunID, "bayesian", "json", false); err != nil {
+		t.Fatalf("runEnsembleRerunMode() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal rerun output: %v", err)
+	}
+	if payload.Success {
+		t.Fatalf("expected failure, got payload %+v", payload)
+	}
+	if !strings.Contains(payload.Error, "not found in checkpoint run") {
+		t.Fatalf("Error = %q, want checkpoint run mode-not-found message", payload.Error)
+	}
+}
+
+func TestRunEnsembleRerunMode_InvalidMetadataReturnsStructuredFailure(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm", "ensemble-checkpoints", "rerun-invalid-meta-run"), 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".ntm", "ensemble-checkpoints", "rerun-invalid-meta-run", "_meta.json"), []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("write invalid metadata: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	if err := runEnsembleRerunMode(&buf, "rerun-invalid-meta-run", "deductive", "json", false); err != nil {
+		t.Fatalf("runEnsembleRerunMode() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal rerun output: %v", err)
+	}
+	if payload.Success {
+		t.Fatalf("expected failure, got payload %+v", payload)
+	}
+	if !strings.Contains(payload.Error, "load checkpoint metadata:") {
+		t.Fatalf("Error = %q, want structured metadata load failure", payload.Error)
+	}
+}
+
+func TestRunEnsembleRerunModeResolvesProjectScopedModeCode(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(filepath.Join(sessionProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir session ntm dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionProject, ".ntm", "modes.toml"), []byte(`
+[[modes]]
+id = "custom-project-mode"
+name = "Custom Project Mode"
+category = "Meta"
+short_desc = "Custom project mode"
+code = "L9"
+`), 0o644); err != nil {
+		t.Fatalf("write project modes: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForSession("mysession")
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForSession() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "rerun-project-mode-code-run",
+		SessionName:  "mysession",
+		Question:     "Rerun me",
+		Status:       ensemble.EnsembleActive,
+		CompletedIDs: []string{"custom-project-mode"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	ensemble.ResetGlobalCatalog()
+	t.Cleanup(ensemble.ResetGlobalCatalog)
+
+	var buf bytes.Buffer
+	if err := runEnsembleRerunMode(&buf, meta.RunID, "L9", "json", false); err != nil {
+		t.Fatalf("runEnsembleRerunMode() error = %v", err)
+	}
+
+	var payload checkpointResumeOutput
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal rerun output: %v", err)
+	}
+	if !payload.Success {
+		t.Fatalf("expected success, got payload %+v", payload)
+	}
+	if !strings.Contains(payload.Message, "custom-project-mode") {
+		t.Fatalf("Message = %q, want canonical custom mode id", payload.Message)
 	}
 }
 
@@ -871,6 +1254,585 @@ func TestLoadCompareInputRejectsAmbiguousLiveSessionAndCheckpointRun(t *testing.
 	}
 	if !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous identifier error, got %v", err)
+	}
+}
+
+func TestLoadCompareInput_UsesPersistedOfflineSessionWithoutTmux(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "mode-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "mode-a",
+		Thesis: "Offline thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Offline finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-compare-session",
+		Question:          "What changed?",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "mode-a", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	oldInstalled := compareTmuxInstalled
+	oldSessionExists := compareSessionExists
+	compareTmuxInstalled = func() bool { return false }
+	compareSessionExists = func(string) bool { return false }
+	t.Cleanup(func() {
+		compareTmuxInstalled = oldInstalled
+		compareSessionExists = oldSessionExists
+	})
+
+	input, err := loadCompareInput(state.SessionName)
+	if err != nil {
+		t.Fatalf("loadCompareInput() error = %v", err)
+	}
+	if input.RunID != state.SessionName {
+		t.Fatalf("RunID = %q, want %q", input.RunID, state.SessionName)
+	}
+	if len(input.Outputs) != 1 {
+		t.Fatalf("len(Outputs) = %d, want 1", len(input.Outputs))
+	}
+	if input.Outputs[0].ModeID != "mode-a" {
+		t.Fatalf("ModeID = %q, want %q", input.Outputs[0].ModeID, "mode-a")
+	}
+	if input.Contributions == nil {
+		t.Fatal("Contributions = nil, want populated report")
+	}
+	if len(input.Contributions.Scores) != 1 {
+		t.Fatalf("len(Contributions.Scores) = %d, want 1", len(input.Contributions.Scores))
+	}
+	if input.Contributions.Scores[0].FindingsCount != 1 {
+		t.Fatalf("FindingsCount = %d, want 1", input.Contributions.Scores[0].FindingsCount)
+	}
+	if input.Contributions.Scores[0].Score <= 0 {
+		t.Fatalf("Score = %f, want > 0", input.Contributions.Scores[0].Score)
+	}
+	if input.SynthesisOutput == "" {
+		t.Fatal("SynthesisOutput = empty, want synthesized summary")
+	}
+}
+
+func TestLoadCompareInput_NormalizesConfiguredProjectScopedOfflineSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	projectsBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectsBase, "compareproject"), 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	outputPath := filepath.Join(t.TempDir(), "normalized-offline-compare-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "mode-a",
+		Thesis: "Normalized offline thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Normalized offline finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "compareproject",
+		Question:          "What changed in this project-scoped offline session?",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "mode-a", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	oldInstalled := compareTmuxInstalled
+	oldSessionExists := compareSessionExists
+	compareTmuxInstalled = func() bool { return false }
+	compareSessionExists = func(string) bool { return false }
+	t.Cleanup(func() {
+		compareTmuxInstalled = oldInstalled
+		compareSessionExists = oldSessionExists
+	})
+
+	input, err := loadCompareInput("comparepro")
+	if err != nil {
+		t.Fatalf("loadCompareInput() error = %v", err)
+	}
+	if input.RunID != state.SessionName {
+		t.Fatalf("RunID = %q, want %q", input.RunID, state.SessionName)
+	}
+	if len(input.Outputs) != 1 || input.Outputs[0].ModeID != "mode-a" {
+		t.Fatalf("Outputs = %+v, want normalized offline output", input.Outputs)
+	}
+}
+
+func TestLoadCompareInput_PrefersPersistedSynthesisOutput(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "persisted-synthesis-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "mode-a",
+		Thesis: "Recomputed thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Persisted synthesis finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-persisted-synthesis-session",
+		Question:          "Which synthesis should compare use?",
+		Status:            ensemble.EnsembleComplete,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		SynthesisOutput:   "Persisted final synthesis output",
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "mode-a", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	oldInstalled := compareTmuxInstalled
+	oldSessionExists := compareSessionExists
+	compareTmuxInstalled = func() bool { return false }
+	compareSessionExists = func(string) bool { return false }
+	t.Cleanup(func() {
+		compareTmuxInstalled = oldInstalled
+		compareSessionExists = oldSessionExists
+	})
+
+	input, err := loadCompareInput(state.SessionName)
+	if err != nil {
+		t.Fatalf("loadCompareInput() error = %v", err)
+	}
+	if input.SynthesisOutput != state.SynthesisOutput {
+		t.Fatalf("SynthesisOutput = %q, want %q", input.SynthesisOutput, state.SynthesisOutput)
+	}
+}
+
+func TestLoadExportFindingsFromSession_UsesSavedOutputsWhenSessionOffline(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "export-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "mode-a",
+		Thesis: "Export thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Export finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.7,
+		}},
+		Confidence:  0.7,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-export-session",
+		Question:          "Export offline findings",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "mode-a", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	ctx, err := loadExportFindingsFromSession(state.SessionName)
+	if err != nil {
+		t.Fatalf("loadExportFindingsFromSession() error = %v", err)
+	}
+	if ctx.Session != state.SessionName {
+		t.Fatalf("Session = %q, want %q", ctx.Session, state.SessionName)
+	}
+	if len(ctx.Outputs) != 1 {
+		t.Fatalf("len(Outputs) = %d, want 1", len(ctx.Outputs))
+	}
+	if ctx.Outputs[0].ModeID != "mode-a" {
+		t.Fatalf("ModeID = %q, want %q", ctx.Outputs[0].ModeID, "mode-a")
+	}
+}
+
+func TestResolveSynthesisResumeSessionUsesRunIDAcrossProjects(t *testing.T) {
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "session-project")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForProject(sessionProject)
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForProject() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "synth-resume-cross-project-run",
+		SessionName:  "review-session-prod",
+		Question:     "Resume me",
+		Status:       ensemble.EnsembleStopped,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	session, err := resolveSynthesisResumeSession("", meta.RunID, io.Discard)
+	if err != nil {
+		t.Fatalf("resolveSynthesisResumeSession() error = %v", err)
+	}
+	if session != meta.SessionName {
+		t.Fatalf("session = %q, want %q", session, meta.SessionName)
+	}
+}
+
+func TestResolveSynthesisResumeSessionNormalizesOfflineSessionAlias(t *testing.T) {
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "resumeproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForProject(projectDir)
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForProject() error = %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "synth-resume-alias-run",
+		SessionName:  "resumeproject--analysis",
+		Question:     "Resume me by alias",
+		Status:       ensemble.EnsembleStopped,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	session, err := resolveSynthesisResumeSession("resumepro--analysis", meta.RunID, io.Discard)
+	if err != nil {
+		t.Fatalf("resolveSynthesisResumeSession() error = %v", err)
+	}
+	if session != meta.SessionName {
+		t.Fatalf("session = %q, want %q", session, meta.SessionName)
+	}
+}
+
+func TestRunEnsembleSynthesizeResumeUsesRunProjectForGenericSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	projectsBase := t.TempDir()
+	sessionProject := filepath.Join(projectsBase, "session-project")
+	if err := os.MkdirAll(sessionProject, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	outputPath := filepath.Join(t.TempDir(), "resume-synth-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "mode-a",
+		Thesis: "Resume synthesis thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Resume synthesis finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "review-session-prod",
+		Question:          "Resume streaming synthesis",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "mode-a", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	store, err := newEnsembleCheckpointStoreForProject(sessionProject)
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForProject() error = %v", err)
+	}
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "synth-stream-cross-project-run",
+		SessionName:  state.SessionName,
+		Question:     state.Question,
+		Status:       state.Status,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+	if err := store.SaveSynthesisCheckpoint(meta.RunID, ensemble.SynthesisCheckpoint{
+		RunID:       meta.RunID,
+		SessionName: state.SessionName,
+		LastIndex:   0,
+	}); err != nil {
+		t.Fatalf("SaveSynthesisCheckpoint() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	if err := runEnsembleSynthesize(&buf, state.SessionName, synthesizeOptions{
+		Format: "json",
+		Stream: true,
+		Resume: true,
+		RunID:  meta.RunID,
+	}); err != nil {
+		t.Fatalf("runEnsembleSynthesize() error = %v", err)
+	}
+	if strings.TrimSpace(buf.String()) == "" {
+		t.Fatal("streamed synthesis output = empty, want resumed chunks")
+	}
+}
+
+func TestRunEnsembleSynthesizeResumeRejectsCheckpointSessionMismatch(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, "session-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir session project: %v", err)
+	}
+
+	cwdProject := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwdProject, ".ntm"), 0o755); err != nil {
+		t.Fatalf("mkdir cwd ntm: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".ntm", "config.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write cwd config: %v", err)
+	}
+	nestedDir := filepath.Join(cwdProject, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	store, err := newEnsembleCheckpointStoreForProject(projectDir)
+	if err != nil {
+		t.Fatalf("newEnsembleCheckpointStoreForProject() error = %v", err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "resume-mismatch-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "mode-a",
+		Thesis: "Mismatch thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Mismatch finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "resume-mismatch-session",
+		Question:          "Resume mismatch",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "mode-a", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	meta := ensemble.CheckpointMetadata{
+		RunID:        "synth-stream-mismatch-run",
+		SessionName:  "different-session",
+		Question:     state.Question,
+		Status:       state.Status,
+		CompletedIDs: []string{"mode-a"},
+		TotalModes:   1,
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata() error = %v", err)
+	}
+	if err := store.SaveSynthesisCheckpoint(meta.RunID, ensemble.SynthesisCheckpoint{
+		RunID:       meta.RunID,
+		SessionName: meta.SessionName,
+		LastIndex:   0,
+	}); err != nil {
+		t.Fatalf("SaveSynthesisCheckpoint() error = %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(nestedDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	err = runEnsembleSynthesize(&buf, state.SessionName, synthesizeOptions{
+		Format: "json",
+		Stream: true,
+		Resume: true,
+		RunID:  meta.RunID,
+	})
+	if err == nil {
+		t.Fatal("runEnsembleSynthesize() error = nil, want checkpoint/session mismatch")
+	}
+	if !strings.Contains(err.Error(), "belongs to session") {
+		t.Fatalf("error = %v, want session mismatch message", err)
 	}
 }
 

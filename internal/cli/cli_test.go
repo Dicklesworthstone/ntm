@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionpkg "github.com/Dicklesworthstone/ntm/internal/session"
@@ -713,6 +715,40 @@ func TestResolveOptionalRobotLiveSessionAllowsEmpty(t *testing.T) {
 	}
 }
 
+func TestResolveRobotOfflineCapableSessionNormalizesConfiguredProjectPrefix(t *testing.T) {
+	origCfg := cfg
+	origJSON := jsonOutput
+	t.Cleanup(func() {
+		cfg = origCfg
+		jsonOutput = origJSON
+	})
+
+	projectsBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectsBase, "robotproject"), 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	jsonOutput = false
+
+	got, err := resolveRobotOfflineCapableSession("robotpro")
+	if err != nil {
+		t.Fatalf("resolveRobotOfflineCapableSession() error = %v", err)
+	}
+	if got != "robotproject" {
+		t.Fatalf("session = %q, want %q", got, "robotproject")
+	}
+}
+
+func TestResolveRobotOfflineCapableSessionRejectsInvalidSessionName(t *testing.T) {
+	_, err := resolveRobotOfflineCapableSession("../escape")
+	if err == nil {
+		t.Fatal("expected invalid session error")
+	}
+	if !strings.Contains(err.Error(), "invalid session name") {
+		t.Fatalf("expected invalid session error, got %v", err)
+	}
+}
+
 func TestResolveRobotSessionFilterNormalizesExplicitPrefix(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
@@ -1208,6 +1244,414 @@ func TestResolveEnsembleSessionRejectsInvalidSessionName(t *testing.T) {
 	}
 }
 
+func TestRunEnsembleStatus_UsesPersistedStateWhenSessionOffline(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-status",
+		Question:          "What happened?",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runEnsembleStatus(&buf, state.SessionName, ensembleStatusOptions{Format: "json"}); err != nil {
+		t.Fatalf("runEnsembleStatus error: %v", err)
+	}
+
+	var out ensembleStatusOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal status output: %v", err)
+	}
+	if !out.Exists {
+		t.Fatal("expected status output to exist for persisted offline session")
+	}
+	if out.Status != ensemble.EnsembleStopped.String() {
+		t.Fatalf("status = %q, want %q", out.Status, ensemble.EnsembleStopped)
+	}
+	if !out.SynthesisReady {
+		t.Fatal("expected synthesis_ready=true when persisted offline session has completed outputs")
+	}
+}
+
+func TestRunEnsembleStatus_AllErrorSessionNotSynthesisReady(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-errors",
+		Question:          "Why did this fail?",
+		Status:            ensemble.EnsembleError,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentError, Error: "failed"},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runEnsembleStatus(&buf, state.SessionName, ensembleStatusOptions{Format: "json"}); err != nil {
+		t.Fatalf("runEnsembleStatus error: %v", err)
+	}
+
+	var out ensembleStatusOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal status output: %v", err)
+	}
+	if out.SynthesisReady {
+		t.Fatal("expected synthesis_ready=false when all assignments errored")
+	}
+	if out.StatusCounts.Error != 1 {
+		t.Fatalf("error count = %d, want 1", out.StatusCounts.Error)
+	}
+}
+
+func TestRunEnsembleStop_MarksOfflineActiveStateStopped(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-stop",
+		Question:          "Stop this orphaned run",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentActive},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runEnsembleStop(&buf, state.SessionName, ensembleStopOptions{Format: "json", Yes: true})
+	if err != nil {
+		t.Fatalf("runEnsembleStop error: %v", err)
+	}
+
+	var out ensembleStopOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal stop output: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success, got message=%q error=%q", out.Message, out.Error)
+	}
+	if out.FinalStatus != ensemble.EnsembleStopped.String() {
+		t.Fatalf("final status = %q, want %q", out.FinalStatus, ensemble.EnsembleStopped)
+	}
+
+	saved, err := ensemble.LoadSession(state.SessionName)
+	if err != nil {
+		t.Fatalf("LoadSession after stop error: %v", err)
+	}
+	if saved.Status != ensemble.EnsembleStopped {
+		t.Fatalf("saved status = %q, want %q", saved.Status, ensemble.EnsembleStopped)
+	}
+}
+
+func TestRunEnsembleSynthesize_UsesSavedOutputsWhenSessionOffline(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "offline-synth-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "deductive",
+		Thesis: "Offline synthesis thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Offline synthesis finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-synthesize",
+		Question:          "Synthesize this offline run",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runEnsembleSynthesize(&buf, state.SessionName, synthesizeOptions{Format: "json"}); err != nil {
+		t.Fatalf("runEnsembleSynthesize error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "\"summary\"") {
+		t.Fatalf("expected synthesized JSON output, got %q", buf.String())
+	}
+}
+
+func TestRunEnsembleSynthesize_RejectsResumeWithoutStream(t *testing.T) {
+	var buf bytes.Buffer
+	err := runEnsembleSynthesize(&buf, "missing-session", synthesizeOptions{
+		Resume: true,
+	})
+	if err == nil {
+		t.Fatal("runEnsembleSynthesize() error = nil, want invalid flag error")
+	}
+	if !strings.Contains(err.Error(), "--resume requires --stream") {
+		t.Fatalf("error = %v, want --resume requires --stream", err)
+	}
+}
+
+func TestRunEnsembleSynthesize_RejectsResumeWithoutRunID(t *testing.T) {
+	var buf bytes.Buffer
+	err := runEnsembleSynthesize(&buf, "missing-session", synthesizeOptions{
+		Stream: true,
+		Resume: true,
+	})
+	if err == nil {
+		t.Fatal("runEnsembleSynthesize() error = nil, want invalid flag error")
+	}
+	if !strings.Contains(err.Error(), "--resume requires --run-id") {
+		t.Fatalf("error = %v, want --resume requires --run-id", err)
+	}
+}
+
+func TestRunEnsembleSynthesize_RejectsRunIDWithoutStream(t *testing.T) {
+	var buf bytes.Buffer
+	err := runEnsembleSynthesize(&buf, "missing-session", synthesizeOptions{
+		RunID: "checkpoint-run",
+	})
+	if err == nil {
+		t.Fatal("runEnsembleSynthesize() error = nil, want invalid flag error")
+	}
+	if !strings.Contains(err.Error(), "--run-id requires --stream") {
+		t.Fatalf("error = %v, want --run-id requires --stream", err)
+	}
+}
+
+func TestResolveEnsembleStateCommandSession_ExplicitOfflineSession(t *testing.T) {
+	res, err := resolveEnsembleStateCommandSession("offline-explicit-session", io.Discard)
+	if err != nil {
+		t.Fatalf("resolveEnsembleStateCommandSession() error = %v", err)
+	}
+	if res.Session != "offline-explicit-session" {
+		t.Fatalf("Session = %q, want %q", res.Session, "offline-explicit-session")
+	}
+	if res.Inferred {
+		t.Fatal("expected explicit session resolution, got inferred")
+	}
+}
+
+func TestNewEnsembleSynthesizeCmd_AllowsExplicitOfflineSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "offline-synth-cmd-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "deductive",
+		Thesis: "Offline synth command thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Offline synth command finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.8,
+		}},
+		Confidence:  0.8,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-synth-command-session",
+		Question:          "Synthesize this explicit offline session",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	cmd := newEnsembleSynthesizeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{state.SessionName, "--format", "json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "\"summary\"") {
+		t.Fatalf("expected synthesized JSON output, got %q", out.String())
+	}
+}
+
+func TestNewEnsembleStopCmd_AllowsExplicitOfflineSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-stop-command-session",
+		Question:          "Stop this explicit offline session",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentActive},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	cmd := newEnsembleStopCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{state.SessionName, "--yes", "--format", "json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "\"success\": true") {
+		t.Fatalf("expected successful stop JSON output, got %q", out.String())
+	}
+}
+
+func TestNewEnsembleProvenanceCmd_AllowsExplicitOfflineSession(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "offline-provenance-cmd-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "deductive",
+		Thesis: "Offline provenance command thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Offline provenance command finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.75,
+		}},
+		Confidence:  0.75,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-provenance-command-session",
+		Question:          "Show provenance for this explicit offline session",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	cmd := newEnsembleProvenanceCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--session", state.SessionName, "--all", "--format", "json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "\"chains\"") {
+		t.Fatalf("expected provenance JSON output, got %q", out.String())
+	}
+}
+
+func TestRunEnsembleProvenance_UsesSavedOutputsWhenSessionOffline(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	outputPath := filepath.Join(t.TempDir(), "offline-provenance-output.json")
+	modeOutput := ensemble.ModeOutput{
+		ModeID: "deductive",
+		Thesis: "Offline provenance thesis",
+		TopFindings: []ensemble.Finding{{
+			Finding:    "Offline provenance finding",
+			Impact:     ensemble.ImpactMedium,
+			Confidence: 0.75,
+		}},
+		Confidence:  0.75,
+		GeneratedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(modeOutput)
+	if err != nil {
+		t.Fatalf("marshal mode output: %v", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		t.Fatalf("write mode output: %v", err)
+	}
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "offline-ensemble-provenance",
+		Question:          "Show provenance for this offline run",
+		Status:            ensemble.EnsembleStopped,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+		Assignments: []ensemble.ModeAssignment{
+			{ModeID: "deductive", PaneName: "pane-1", AgentType: "cc", Status: ensemble.AssignmentDone, OutputPath: outputPath},
+		},
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runEnsembleProvenance(&buf, state.SessionName, "", provenanceOptions{Format: "json", Stats: true}); err != nil {
+		t.Fatalf("runEnsembleProvenance error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "\"stats\"") {
+		t.Fatalf("expected provenance stats JSON, got %q", buf.String())
+	}
+}
+
 func TestResolvePipelineProjectDirForSessionFallsBackToProjectRootFromNestedDir(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".ntm"), 0755); err != nil {
@@ -1580,6 +2024,41 @@ func TestResolveRollbackSessionsNormalizesExplicitPrefix(t *testing.T) {
 	}
 	if liveSession != fullSession {
 		t.Fatalf("live session = %q, want %q", liveSession, fullSession)
+	}
+}
+
+func TestRollbackCmd_InvalidCheckpointReportsLoadFailure(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	storage := checkpoint.NewStorage()
+	sessionName := "rollback-invalid"
+	checkpointID := "broken-rb"
+	cpDir := filepath.Join(storage.BaseDir, sessionName, checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	cmd := newRollbackCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{sessionName, checkpointID, "--no-git"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want load failure")
+	}
+	if !strings.Contains(err.Error(), "loading checkpoint:") {
+		t.Fatalf("error = %q, want loading checkpoint context", err)
+	}
+	if strings.Contains(err.Error(), "no checkpoint found matching") {
+		t.Fatalf("error = %q, want exact invalid checkpoint load failure", err)
 	}
 }
 

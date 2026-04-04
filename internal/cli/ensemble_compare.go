@@ -132,6 +132,11 @@ func runEnsembleCompare(w io.Writer, runAID, runBID string, opts compareOptions)
 
 // loadCompareInput loads an ensemble session and constructs a CompareInput.
 func loadCompareInput(runID string) (*ensemble.CompareInput, error) {
+	return loadCompareInputResolved(runID, false)
+}
+
+func loadCompareInputResolved(runID string, retried bool) (*ensemble.CompareInput, error) {
+	runID = strings.TrimSpace(runID)
 	store, _, storeErr := resolveEnsembleCheckpointStoreForRunID(runID)
 	checkpointExists := storeErr == nil && store.RunExists(runID)
 
@@ -139,32 +144,38 @@ func loadCompareInput(runID string) (*ensemble.CompareInput, error) {
 	if compareTmuxInstalled() {
 		liveExists = compareSessionExists(runID)
 	}
+	state, stateErr := ensemble.LoadSession(runID)
+	stateExists := stateErr == nil
+	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("load session: %w", stateErr)
+	}
+
+	if !retried && !checkpointExists && !liveExists && !stateExists {
+		resolved, err := normalizeOfflineCapableEnsembleSessionName(runID, !IsJSONOutput())
+		if err == nil && resolved != "" && resolved != runID {
+			return loadCompareInputResolved(resolved, true)
+		}
+	}
 
 	switch {
-	case checkpointExists && liveExists:
-		return nil, fmt.Errorf("identifier %q is ambiguous: both a live session and a checkpoint run exist", runID)
+	case checkpointExists && (liveExists || stateExists):
+		return nil, fmt.Errorf("identifier %q is ambiguous: both ensemble session state and a checkpoint run exist", runID)
 	case checkpointExists:
 		return loadCheckpointCompareInputFromStore(store, runID)
+	case stateExists:
+		return loadLiveCompareInput(runID, state, liveExists)
 	case liveExists:
-		return loadLiveCompareInput(runID)
+		return nil, fmt.Errorf("no ensemble running in session '%s'", runID)
 	case storeErr != nil && !compareTmuxInstalled():
 		return nil, fmt.Errorf("open checkpoint store: %w", storeErr)
 	case !compareTmuxInstalled():
 		return nil, fmt.Errorf("checkpoint run %q not found and tmux is not installed", runID)
 	default:
-		return nil, fmt.Errorf("no live session or checkpoint run found for %q", runID)
+		return nil, fmt.Errorf("no ensemble session state or checkpoint run found for %q", runID)
 	}
 }
 
-func loadLiveCompareInput(runID string) (*ensemble.CompareInput, error) {
-	state, err := ensemble.LoadSession(runID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no ensemble running in session '%s'", runID)
-		}
-		return nil, fmt.Errorf("load session: %w", err)
-	}
-
+func loadLiveCompareInput(runID string, state *ensemble.EnsembleSession, sessionLive bool) (*ensemble.CompareInput, error) {
 	// Extract mode IDs from assignments
 	modeIDs := make([]string, 0, len(state.Assignments))
 	for _, a := range state.Assignments {
@@ -172,53 +183,33 @@ func loadLiveCompareInput(runID string) (*ensemble.CompareInput, error) {
 	}
 	sort.Strings(modeIDs)
 
-	// Capture outputs
-	capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-	captured, err := capture.CaptureAll(state)
+	outputs, err := loadEnsembleModeOutputs(state, sessionLive)
 	if err != nil {
-		slog.Warn("failed to capture outputs for comparison",
-			"session", runID,
-			"error", err,
-		)
+		return nil, err
 	}
 
-	outputs := make([]ensemble.ModeOutput, 0, len(captured))
-	for _, cap := range captured {
-		if cap.Parsed == nil {
-			continue
-		}
-		parsed := *cap.Parsed
-		if parsed.ModeID == "" {
-			parsed.ModeID = cap.ModeID
-		}
-		outputs = append(outputs, parsed)
-	}
+	return buildCompareInput(runID, state.Question, modeIDs, outputs, state.SynthesisOutput), nil
+}
 
-	// Set up provenance tracker
-	provenance := ensemble.NewProvenanceTracker(state.Question, modeIDs)
-
-	// Try to get contributions
+func buildCompareInput(runID, question string, modeIDs []string, outputs []ensemble.ModeOutput, persistedSynthesis string) *ensemble.CompareInput {
+	provenance := ensemble.NewProvenanceTracker(question, modeIDs)
 	var contributions *ensemble.ContributionReport
-	if len(outputs) > 0 {
-		tracker := ensemble.NewContributionTracker()
-		ensemble.TrackOriginalFindings(tracker, outputs)
-		contributions = tracker.GenerateReport()
-	}
-
-	// Try to get synthesis output
-	var synthesisOutput string
+	synthesisOutput := persistedSynthesis
 	if len(outputs) > 0 {
 		synth, synthErr := ensemble.NewSynthesizer(ensemble.DefaultSynthesisConfig())
 		if synthErr == nil {
 			input := &ensemble.SynthesisInput{
 				Outputs:          outputs,
-				OriginalQuestion: state.Question,
+				OriginalQuestion: question,
 				Config:           synth.Config,
 				Provenance:       provenance,
 			}
 			result, synthErr := synth.Synthesize(input)
 			if synthErr == nil {
-				synthesisOutput = result.Summary
+				if synthesisOutput == "" {
+					synthesisOutput = result.Summary
+				}
+				contributions = result.Contributions
 			}
 		}
 	}
@@ -238,7 +229,7 @@ func loadLiveCompareInput(runID string) (*ensemble.CompareInput, error) {
 		Provenance:      provenance,
 		Contributions:   contributions,
 		SynthesisOutput: synthesisOutput,
-	}, nil
+	}
 }
 
 func loadCheckpointCompareInput(runID string) (*ensemble.CompareInput, error) {
@@ -289,22 +280,7 @@ func loadCheckpointCompareInputFromStore(store *ensemble.CheckpointStore, runID 
 	}
 	sort.Strings(modeIDs)
 
-	provenance := ensemble.NewProvenanceTracker(meta.Question, modeIDs)
-
-	var contributions *ensemble.ContributionReport
-	if len(outputs) > 0 {
-		tracker := ensemble.NewContributionTracker()
-		ensemble.TrackOriginalFindings(tracker, outputs)
-		contributions = tracker.GenerateReport()
-	}
-
-	return &ensemble.CompareInput{
-		RunID:         runID,
-		ModeIDs:       modeIDs,
-		Outputs:       outputs,
-		Provenance:    provenance,
-		Contributions: contributions,
-	}, nil
+	return buildCompareInput(runID, meta.Question, modeIDs, outputs, ""), nil
 }
 
 func writeCompareResult(w io.Writer, result *ensemble.ComparisonResult, opts compareOptions, format string) error {

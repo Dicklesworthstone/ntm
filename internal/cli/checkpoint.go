@@ -247,6 +247,7 @@ Examples:
 					Session                   string                   `json:"session"`
 					Checkpoints               []*checkpoint.Checkpoint `json:"checkpoints"`
 					InvalidCheckpointsPresent bool                     `json:"invalid_checkpoints_present,omitempty"`
+					InvalidCheckpointIDs      []string                 `json:"invalid_checkpoint_ids,omitempty"`
 				}
 				var result []sessionInfo
 				for _, sess := range sessions {
@@ -258,10 +259,15 @@ Examples:
 					if err != nil {
 						return fmt.Errorf("checking checkpoint candidates for session %q: %w", sess, err)
 					}
+					invalidIDs, err := storage.InvalidCheckpointIDs(sess)
+					if err != nil {
+						return fmt.Errorf("listing invalid checkpoints for session %q: %w", sess, err)
+					}
 					result = append(result, sessionInfo{
 						Session:                   sess,
 						Checkpoints:               cps,
 						InvalidCheckpointsPresent: hasCandidates && len(cps) == 0,
+						InvalidCheckpointIDs:      invalidIDs,
 					})
 				}
 				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
@@ -283,9 +289,17 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("checking checkpoint candidates for session %q: %w", sess, err)
 				}
+				invalidIDs, err := storage.InvalidCheckpointIDs(sess)
+				if err != nil {
+					return fmt.Errorf("listing invalid checkpoints for session %q: %w", sess, err)
+				}
 				if len(cps) == 0 {
 					if hasCandidates {
-						fmt.Printf("  %s%s%s (%s)\n\n", colorize(t.Primary), sess, "\033[0m", "invalid checkpoints present")
+						fmt.Printf("  %s%s%s (%s)\n", colorize(t.Primary), sess, "\033[0m", "invalid checkpoints present")
+						if len(invalidIDs) > 0 {
+							fmt.Printf("    invalid entries: %s\n", strings.Join(invalidIDs, ", "))
+						}
+						fmt.Println()
 					}
 					continue
 				}
@@ -302,6 +316,9 @@ Examples:
 						desc = fmt.Sprintf(" - %s", truncateStr(cp.Description, 30))
 					}
 					fmt.Printf("    %s (%s)%s%s\n", cp.ID, age, gitMark, desc)
+				}
+				if len(invalidIDs) > 0 {
+					fmt.Printf("    invalid entries: %s\n", strings.Join(invalidIDs, ", "))
 				}
 				fmt.Println()
 			}
@@ -340,6 +357,10 @@ func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
 	if err != nil {
 		return fmt.Errorf("listing checkpoints: %w", err)
 	}
+	invalidIDs, err := storage.InvalidCheckpointIDs(session)
+	if err != nil {
+		return fmt.Errorf("listing invalid checkpoints: %w", err)
+	}
 
 	if len(cps) == 0 {
 		hasCandidates, err := storage.HasCheckpointCandidates(session)
@@ -352,10 +373,14 @@ func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
 				"checkpoints":                 []interface{}{},
 				"count":                       0,
 				"invalid_checkpoints_present": hasCandidates,
+				"invalid_checkpoint_ids":      invalidIDs,
 			})
 		}
 		if hasCandidates {
 			fmt.Printf("Session %q has checkpoint entries on disk, but none could be loaded.\n", session)
+			if len(invalidIDs) > 0 {
+				fmt.Printf("Invalid checkpoint entries: %s\n", strings.Join(invalidIDs, ", "))
+			}
 			return nil
 		}
 		fmt.Printf("No checkpoints for session %q.\n", session)
@@ -364,9 +389,10 @@ func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
 
 	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"session":     session,
-			"checkpoints": cps,
-			"count":       len(cps),
+			"session":                session,
+			"checkpoints":            cps,
+			"count":                  len(cps),
+			"invalid_checkpoint_ids": invalidIDs,
 		})
 	}
 
@@ -387,6 +413,9 @@ func listSessionCheckpoints(storage *checkpoint.Storage, session string) error {
 		fmt.Printf("  %s%s%s  %s  %d pane(s)%s%s\n",
 			colorize(t.Primary), cp.ID, "\033[0m",
 			age, cp.PaneCount, gitMark, desc)
+	}
+	if len(invalidIDs) > 0 {
+		fmt.Printf("\nInvalid checkpoint entries: %s\n", strings.Join(invalidIDs, ", "))
 	}
 
 	return nil
@@ -503,14 +532,24 @@ Examples:
 
 			storage := checkpoint.NewStorage()
 
-			// Verify checkpoint exists
+			deletingInvalid := false
 			if _, err := storage.Load(session, id); err != nil {
-				return fmt.Errorf("checkpoint not found: %w", err)
+				exists, existsErr := storage.HasCheckpointPath(session, id)
+				if existsErr != nil {
+					return fmt.Errorf("checking checkpoint: %w", existsErr)
+				}
+				if !exists {
+					return fmt.Errorf("checkpoint not found: %w", err)
+				}
+				deletingInvalid = true
 			}
 
 			if !force && !jsonOutput {
 				title := fmt.Sprintf("Delete checkpoint %s?", id)
 				desc := fmt.Sprintf("This checkpoint for session '%s' will be permanently removed.", session)
+				if deletingInvalid {
+					desc = fmt.Sprintf("This invalid checkpoint entry for session '%s' will be permanently removed.", session)
+				}
 				if !confirmHuhDestructive(title, desc) {
 					fmt.Println("Aborted.")
 					return nil
@@ -523,14 +562,19 @@ Examples:
 
 			if jsonOutput {
 				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-					"deleted": true,
-					"session": session,
-					"id":      id,
+					"deleted":            true,
+					"session":            session,
+					"id":                 id,
+					"invalid_checkpoint": deletingInvalid,
 				})
 			}
 
 			t := theme.Current()
-			fmt.Printf("%s\u2713%s Deleted checkpoint: %s\n", colorize(t.Success), "\033[0m", id)
+			if deletingInvalid {
+				fmt.Printf("%s\u2713%s Deleted invalid checkpoint entry: %s\n", colorize(t.Success), "\033[0m", id)
+			} else {
+				fmt.Printf("%s\u2713%s Deleted checkpoint: %s\n", colorize(t.Success), "\033[0m", id)
+			}
 
 			return nil
 		},
@@ -594,6 +638,34 @@ Examples:
 			capturer := checkpoint.NewCapturer()
 			cp, err := capturer.ParseCheckpointRef(sessionName, checkpointRef)
 			if err != nil {
+				if checkpoint.IsValidCheckpointID(strings.TrimSpace(checkpointRef)) {
+					storage := checkpoint.NewStorage()
+					exists, existsErr := storage.HasCheckpointPath(sessionName, checkpointRef)
+					if existsErr != nil {
+						if jsonOutput {
+							_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+								"success":        false,
+								"session":        sessionName,
+								"checkpoint_ref": checkpointRef,
+								"error":          existsErr.Error(),
+							})
+							return fmt.Errorf("finding checkpoint: %w", existsErr)
+						}
+						return fmt.Errorf("finding checkpoint: %w", existsErr)
+					}
+					if exists {
+						if jsonOutput {
+							_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+								"success":        false,
+								"session":        sessionName,
+								"checkpoint_ref": checkpointRef,
+								"error":          err.Error(),
+							})
+							return fmt.Errorf("loading checkpoint: %w", err)
+						}
+						return fmt.Errorf("loading checkpoint: %w", err)
+					}
+				}
 				if jsonOutput {
 					_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 						"success":        false,
@@ -793,12 +865,18 @@ func verifySingleCheckpoint(storage *checkpoint.Storage, session, id string) err
 	result := checkpoint.VerifyStoredCheckpoint(storage, session, id)
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 			"session": session,
 			"id":      id,
 			"valid":   result.Valid,
 			"checks":  result,
-		})
+		}); err != nil {
+			return err
+		}
+		if !result.Valid {
+			return fmt.Errorf("verification failed with %d error(s)", len(result.Errors))
+		}
+		return nil
 	}
 
 	t := theme.Current()
@@ -880,12 +958,18 @@ func verifyAllCheckpoints(storage *checkpoint.Storage, session string) error {
 	}
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 			"session":     session,
 			"checkpoints": results,
 			"valid_count": validCount,
 			"total_count": len(results),
-		})
+		}); err != nil {
+			return err
+		}
+		if validCount < len(results) {
+			return fmt.Errorf("%d checkpoint(s) failed verification", len(results)-validCount)
+		}
+		return nil
 	}
 
 	t := theme.Current()
@@ -952,9 +1036,17 @@ Examples:
 
 			storage := checkpoint.NewStorage()
 
-			// Verify checkpoint exists
+			// Verify checkpoint exists and is loadable. Invalid exact-ID entries should
+			// be reported as load failures, not as "not found".
 			if _, err := storage.Load(session, id); err != nil {
-				return fmt.Errorf("checkpoint not found: %w", err)
+				exists, existsErr := storage.HasCheckpointPath(session, id)
+				if existsErr != nil {
+					return fmt.Errorf("checking checkpoint: %w", existsErr)
+				}
+				if !exists {
+					return fmt.Errorf("checkpoint not found: %w", err)
+				}
+				return fmt.Errorf("loading checkpoint: %w", err)
 			}
 
 			// Determine output path

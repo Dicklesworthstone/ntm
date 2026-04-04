@@ -67,6 +67,107 @@ func TestMonitorProcessPattern_MatchesExactSessionOnly(t *testing.T) {
 	}
 }
 
+func TestResolveSpawnPanePrompt_UsesZeroBasedAgentOrder(t *testing.T) {
+	t.Parallel()
+
+	opts := SpawnOptions{
+		Prompt:         "global fallback",
+		MarchingOrders: map[int]string{0: "first agent task", 1: "second agent task"},
+		DefaultPrompts: config.PromptsConfig{
+			CCDefault:  "claude default",
+			CodDefault: "codex default",
+		},
+	}
+
+	firstPrompt, err := resolveSpawnPanePrompt(opts, AgentTypeClaude, 0)
+	if err != nil {
+		t.Fatalf("resolveSpawnPanePrompt(first) error = %v", err)
+	}
+	if firstPrompt != "claude default\n\nfirst agent task" {
+		t.Fatalf("first prompt = %q, want %q", firstPrompt, "claude default\n\nfirst agent task")
+	}
+
+	secondPrompt, err := resolveSpawnPanePrompt(opts, AgentTypeCodex, 1)
+	if err != nil {
+		t.Fatalf("resolveSpawnPanePrompt(second) error = %v", err)
+	}
+	if secondPrompt != "codex default\n\nsecond agent task" {
+		t.Fatalf("second prompt = %q, want %q", secondPrompt, "codex default\n\nsecond agent task")
+	}
+}
+
+func TestSpawnHasPromptDelivery_RecognizesDefaultAndMarchingPrompts(t *testing.T) {
+	t.Parallel()
+
+	if !spawnHasPromptDelivery(SpawnOptions{
+		Agents: []FlatAgent{{Type: AgentTypeClaude, Index: 1}},
+		DefaultPrompts: config.PromptsConfig{
+			CCDefault: "default instructions",
+		},
+	}) {
+		t.Fatal("expected default prompt to count as prompt delivery")
+	}
+
+	if !spawnHasPromptDelivery(SpawnOptions{
+		Agents:         []FlatAgent{{Type: AgentTypeClaude, Index: 1}, {Type: AgentTypeGemini, Index: 1}},
+		MarchingOrders: map[int]string{1: "second agent only"},
+	}) {
+		t.Fatal("expected marching orders to count as prompt delivery")
+	}
+
+	if spawnHasPromptDelivery(SpawnOptions{
+		Agents: []FlatAgent{{Type: AgentTypeClaude, Index: 1}},
+	}) {
+		t.Fatal("expected no prompt delivery when no prompt sources are configured")
+	}
+}
+
+func TestNewInternalMonitorCommand_ValidatesSessionAndExecutable(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := newInternalMonitorCommand("proj")
+	if err != nil {
+		t.Fatalf("newInternalMonitorCommand(valid) error = %v", err)
+	}
+	if !filepath.IsAbs(cmd.Path) {
+		t.Fatalf("command path = %q, want absolute path", cmd.Path)
+	}
+	if got, want := cmd.Args, []string{cmd.Path, "internal-monitor", "proj"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("command args = %#v, want %#v", got, want)
+	}
+
+	if _, err := newInternalMonitorCommand("bad:name"); err == nil {
+		t.Fatal("expected invalid session name to be rejected")
+	}
+}
+
+func TestWaitForSpawnSetupCompletion_Interrupted(t *testing.T) {
+	t.Parallel()
+
+	setupDone := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	sigChan <- os.Interrupt
+
+	err := waitForSpawnSetupCompletion(setupDone, sigChan, true)
+	if err == nil {
+		t.Fatal("expected interrupt error")
+	}
+	if !strings.Contains(err.Error(), "spawn interrupted") {
+		t.Fatalf("error = %v, want interrupt context", err)
+	}
+}
+
+func TestWaitForSpawnSetupCompletion_Completes(t *testing.T) {
+	t.Parallel()
+
+	setupDone := make(chan struct{})
+	close(setupDone)
+
+	if err := waitForSpawnSetupCompletion(setupDone, make(chan os.Signal), true); err != nil {
+		t.Fatalf("waitForSpawnSetupCompletion() error = %v, want nil", err)
+	}
+}
+
 func TestSpawnSessionLogic(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 

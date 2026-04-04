@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -188,7 +189,7 @@ Use --show-contributions to include mode contribution scores (requires completed
 			if len(args) > 0 {
 				session = args[0]
 			}
-			res, err := resolveEnsembleSession(session, cmd.OutOrStdout())
+			res, err := resolveEnsembleStateCommandSession(session, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -259,7 +260,7 @@ Flags:
 			if len(args) > 0 {
 				session = args[0]
 			}
-			res, err := resolveEnsembleSession(session, cmd.OutOrStdout())
+			res, err := resolveEnsembleStateCommandSession(session, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -289,17 +290,12 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 		format = "json"
 	}
 
-	if err := tmux.EnsureInstalled(); err != nil {
-		return err
-	}
-	if !tmux.SessionExists(session) {
-		return fmt.Errorf("session '%s' not found", session)
-	}
-
-	// Load ensemble session state
-	state, err := ensemble.LoadSession(session)
+	state, sessionLive, err := loadEnsembleStateWithRuntimePresence(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !sessionLive {
+				return fmt.Errorf("session '%s' not found", session)
+			}
 			return fmt.Errorf("no ensemble running in session '%s'", session)
 		}
 		return fmt.Errorf("load session: %w", err)
@@ -315,6 +311,22 @@ func runEnsembleStop(w io.Writer, session string, opts ensembleStopOptions) erro
 			FinalStatus: state.Status.String(),
 		}
 		return renderEnsembleStopOutput(w, result, format, opts.Quiet)
+	}
+
+	if !sessionLive {
+		prevStatus := state.Status.String()
+		state.Status = ensemble.EnsembleStopped
+		if err := ensemble.SaveSession(session, state); err != nil {
+			return fmt.Errorf("save stopped state: %w", err)
+		}
+		return renderEnsembleStopOutput(w, ensembleStopOutput{
+			GeneratedAt: output.Timestamp(),
+			Session:     session,
+			Success:     true,
+			Message:     fmt.Sprintf("Ensemble session already absent; marked state stopped (previously %s)", prevStatus),
+			Stopped:     0,
+			FinalStatus: ensemble.EnsembleStopped.String(),
+		}, format, opts.Quiet)
 	}
 
 	slog.Default().Info("ensemble stop initiated",
@@ -489,28 +501,12 @@ func runEnsembleStatus(w io.Writer, session string, opts ensembleStatusOptions) 
 		format = "json"
 	}
 
-	if err := tmux.EnsureInstalled(); err != nil {
-		return err
-	}
-	if !tmux.SessionExists(session) {
-		return fmt.Errorf("session '%s' not found", session)
-	}
-
-	queryStart := time.Now()
-	panes, err := tmux.GetPanes(session)
-	queryDuration := time.Since(queryStart)
-	if err != nil {
-		return err
-	}
-	slog.Default().Info("ensemble status tmux query",
-		"session", session,
-		"panes", len(panes),
-		"duration_ms", queryDuration.Milliseconds(),
-	)
-
-	state, err := ensemble.LoadSession(session)
+	state, sessionLive, err := loadEnsembleStateWithRuntimePresence(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !sessionLive {
+				return fmt.Errorf("session '%s' not found", session)
+			}
 			return renderEnsembleStatus(w, ensembleStatusOutput{
 				GeneratedAt: output.Timestamp(),
 				Session:     session,
@@ -520,12 +516,31 @@ func runEnsembleStatus(w io.Writer, session string, opts ensembleStatusOptions) 
 		return err
 	}
 
+	if sessionLive {
+		queryStart := time.Now()
+		panes, err := tmux.GetPanes(session)
+		queryDuration := time.Since(queryStart)
+		if err != nil {
+			return err
+		}
+		slog.Default().Info("ensemble status tmux query",
+			"session", session,
+			"panes", len(panes),
+			"duration_ms", queryDuration.Milliseconds(),
+		)
+	} else {
+		slog.Default().Info("ensemble status using persisted state without live tmux session",
+			"session", session,
+			"status", state.Status,
+		)
+	}
+
 	catalog, _ := ensemble.GlobalCatalog()
 	preset, budget := resolveEnsembleBudget(state)
 	assignments, counts := buildEnsembleAssignments(state, catalog, budget.MaxTokensPerMode)
 
 	totalEstimate := budget.MaxTokensPerMode * len(assignments)
-	synthesisReady := counts.Pending == 0 && counts.Working == 0 && len(assignments) > 0
+	synthesisReady := counts.Done > 0 && counts.Pending == 0 && counts.Working == 0
 
 	slog.Default().Info("ensemble status counts",
 		"session", session,
@@ -567,15 +582,28 @@ func runEnsembleStatus(w io.Writer, session string, opts ensembleStatusOptions) 
 	return renderEnsembleStatus(w, outputData, format)
 }
 
-// computeContributions collects outputs and computes mode contribution scores.
-func computeContributions(state *ensemble.EnsembleSession, catalog *ensemble.ModeCatalog) (*ensemble.ContributionReport, error) {
-	capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-	captured, err := capture.CaptureAll(state)
-	if err != nil {
-		return nil, fmt.Errorf("capture outputs: %w", err)
+func ensembleSessionRuntimeExists(session string) bool {
+	if strings.TrimSpace(session) == "" {
+		return false
 	}
+	if !tmux.IsInstalled() {
+		return false
+	}
+	return tmux.SessionExists(session)
+}
 
-	// Convert to ModeOutputs
+func loadEnsembleStateWithRuntimePresence(session string) (*ensemble.EnsembleSession, bool, error) {
+	state, err := ensemble.LoadSession(session)
+	if err == nil {
+		return state, ensembleSessionRuntimeExists(session), nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ensembleSessionRuntimeExists(session), err
+	}
+	return nil, false, err
+}
+
+func capturedModeOutputs(captured []ensemble.CapturedOutput) []ensemble.ModeOutput {
 	outputs := make([]ensemble.ModeOutput, 0, len(captured))
 	for _, cap := range captured {
 		if cap.Parsed == nil {
@@ -587,7 +615,51 @@ func computeContributions(state *ensemble.EnsembleSession, catalog *ensemble.Mod
 		}
 		outputs = append(outputs, parsed)
 	}
+	return outputs
+}
 
+func loadEnsembleModeOutputs(state *ensemble.EnsembleSession, sessionLive bool) ([]ensemble.ModeOutput, error) {
+	if state == nil {
+		return nil, fmt.Errorf("ensemble session is nil")
+	}
+
+	var captured []ensemble.CapturedOutput
+	if sessionLive {
+		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
+		var err error
+		captured, err = capture.CaptureAll(state)
+		if err != nil {
+			slog.Default().Warn("failed to capture live ensemble outputs; falling back to saved outputs",
+				"session", state.SessionName,
+				"error", err,
+			)
+		}
+		if len(capturedModeOutputs(captured)) == 0 {
+			slog.Default().Warn("captured no valid live ensemble outputs; falling back to saved outputs",
+				"session", state.SessionName,
+			)
+		}
+	}
+
+	collector, err := ensemble.CollectModeOutputs(state, captured)
+	if err != nil {
+		return nil, fmt.Errorf("collect mode outputs: %w", err)
+	}
+	if collector.Count() == 0 {
+		if sessionLive {
+			return nil, fmt.Errorf("no valid outputs available for session '%s' (errors: %d)", state.SessionName, collector.ErrorCount())
+		}
+		return nil, fmt.Errorf("no saved outputs available for session '%s' (errors: %d)", state.SessionName, collector.ErrorCount())
+	}
+	return collector.Outputs, nil
+}
+
+// computeContributions collects outputs and computes mode contribution scores.
+func computeContributions(state *ensemble.EnsembleSession, catalog *ensemble.ModeCatalog) (*ensemble.ContributionReport, error) {
+	outputs, err := loadEnsembleModeOutputs(state, ensembleSessionRuntimeExists(state.SessionName))
+	if err != nil {
+		return nil, err
+	}
 	if len(outputs) == 0 {
 		return nil, fmt.Errorf("no valid outputs to analyze")
 	}
@@ -836,11 +908,21 @@ Streaming:
 Use --force to synthesize even if some agents haven't completed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateSynthesizeOptions(opts); err != nil {
+				return err
+			}
 			session := ""
 			if len(args) > 0 {
 				session = args[0]
 			}
-			res, err := resolveEnsembleSession(session, cmd.OutOrStdout())
+			if opts.Resume && strings.TrimSpace(opts.RunID) != "" {
+				resumeSession, err := resolveSynthesisResumeSession(session, opts.RunID, cmd.OutOrStdout())
+				if err != nil {
+					return err
+				}
+				return runEnsembleSynthesize(cmd.OutOrStdout(), resumeSession, opts)
+			}
+			res, err := resolveEnsembleStateCommandSession(session, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -867,18 +949,31 @@ Use --force to synthesize even if some agents haven't completed.`,
 	return cmd
 }
 
+func validateSynthesizeOptions(opts synthesizeOptions) error {
+	runID := strings.TrimSpace(opts.RunID)
+	if opts.Resume && !opts.Stream {
+		return fmt.Errorf("--resume requires --stream")
+	}
+	if opts.Resume && runID == "" {
+		return fmt.Errorf("--resume requires --run-id")
+	}
+	if !opts.Stream && runID != "" {
+		return fmt.Errorf("--run-id requires --stream")
+	}
+	return nil
+}
+
 func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) error {
-	if err := tmux.EnsureInstalled(); err != nil {
+	if err := validateSynthesizeOptions(opts); err != nil {
 		return err
 	}
-	if !tmux.SessionExists(session) {
-		return fmt.Errorf("session '%s' not found", session)
-	}
 
-	// Load ensemble session state
-	state, err := ensemble.LoadSession(session)
+	state, sessionLive, err := loadEnsembleStateWithRuntimePresence(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !sessionLive {
+				return fmt.Errorf("session '%s' not found", session)
+			}
 			return fmt.Errorf("no ensemble running in session '%s'", session)
 		}
 		return fmt.Errorf("load session: %w", err)
@@ -904,17 +999,16 @@ func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) 
 	logger := slog.Default()
 	logger.Info("ensemble synthesis starting",
 		"session", session,
+		"session_live", sessionLive,
 		"ready", ready,
 		"pending", pending,
 		"working", working,
 		"force", opts.Force,
 	)
 
-	// Create output capture and collector
-	capture := ensemble.NewOutputCapture(tmux.DefaultClient)
 	collector := ensemble.NewOutputCollector(ensemble.DefaultOutputCollectorConfig())
 
-	cacheEnabled := opts.UseCache && !opts.NoCache
+	cacheEnabled := sessionLive && opts.UseCache && !opts.NoCache
 	collectedModes := make(map[string]bool)
 	cacheFingerprints := make(map[string]ensemble.ModeOutputFingerprint)
 	var outputCache *ensemble.ModeOutputCache
@@ -997,46 +1091,58 @@ func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) 
 		}
 	}
 
-	// Collect outputs from panes for cache misses
-	if len(collectedModes) < len(state.Assignments) {
-		captured, err := capture.CaptureAll(state)
+	// Collect outputs from panes for cache misses when the session is still live.
+	var captured []ensemble.CapturedOutput
+	if sessionLive && len(collectedModes) < len(state.Assignments) {
+		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
+		var err error
+		captured, err = capture.CaptureAll(state)
 		if err != nil {
 			if len(collectedModes) == 0 {
-				return fmt.Errorf("collect outputs: %w", err)
-			}
-			logger.Warn("capture outputs failed; continuing with cached outputs", "error", err)
-		} else {
-			if err := collector.CollectFromCapturesFiltered(captured, func(cap ensemble.CapturedOutput) bool {
-				return !collectedModes[cap.ModeID]
-			}); err != nil {
-				return fmt.Errorf("collect outputs: %w", err)
-			}
-
-			if cacheEnabled && outputCache != nil {
-				for _, cap := range captured {
-					if collectedModes[cap.ModeID] {
-						continue
-					}
-					if cap.Parsed == nil {
-						continue
-					}
-					if err := cap.Parsed.Validate(); err != nil {
-						continue
-					}
-					fingerprint, ok := cacheFingerprints[cap.ModeID]
-					if !ok {
-						continue
-					}
-					if err := outputCache.Put(fingerprint, cap.Parsed); err != nil {
-						logger.Warn("mode output cache write failed", "mode_id", cap.ModeID, "error", err)
-					}
-				}
+				logger.Warn("capture outputs failed; falling back to saved outputs", "error", err)
+			} else {
+				logger.Warn("capture outputs failed; continuing with cached outputs", "error", err)
 			}
 		}
 	}
 
+	availableOutputs, err := ensemble.CollectModeOutputs(state, captured)
+	if err != nil {
+		return fmt.Errorf("collect outputs: %w", err)
+	}
+	for _, modeOutput := range availableOutputs.Outputs {
+		if collectedModes[modeOutput.ModeID] {
+			continue
+		}
+		if err := collector.Add(modeOutput); err != nil {
+			return fmt.Errorf("add output %s: %w", modeOutput.ModeID, err)
+		}
+		collectedModes[modeOutput.ModeID] = true
+		if cacheEnabled && outputCache != nil {
+			fingerprint, ok := cacheFingerprints[modeOutput.ModeID]
+			if !ok {
+				continue
+			}
+			outputCopy := modeOutput
+			if err := outputCache.Put(fingerprint, &outputCopy); err != nil {
+				logger.Warn("mode output cache write failed", "mode_id", modeOutput.ModeID, "error", err)
+			}
+		}
+	}
+	for modeID, errs := range availableOutputs.ValidationErrors {
+		if collectedModes[modeID] {
+			continue
+		}
+		if _, exists := collector.ValidationErrors[modeID]; !exists {
+			collector.ValidationErrors[modeID] = errs
+		}
+	}
+
 	if collector.Count() == 0 {
-		return fmt.Errorf("no valid outputs collected (errors: %d)", collector.ErrorCount())
+		if sessionLive {
+			return fmt.Errorf("no valid outputs collected (errors: %d)", collector.ErrorCount())
+		}
+		return fmt.Errorf("no saved outputs collected (errors: %d)", collector.ErrorCount())
 	}
 
 	logger.Info("ensemble outputs collected",
@@ -1135,26 +1241,40 @@ func streamEnsembleSynthesis(
 		return fmt.Errorf("--resume requires --run-id")
 	}
 
-	store, err := newEnsembleCheckpointStoreForSession(session)
-	if err != nil {
-		return fmt.Errorf("open checkpoint store: %w", err)
-	}
-
+	var (
+		store *ensemble.CheckpointStore
+		err   error
+	)
 	runID := strings.TrimSpace(opts.RunID)
 	resumeIndex := 0
 	if opts.Resume {
+		store, _, err = resolveEnsembleCheckpointStoreForRunID(runID)
+		if err != nil {
+			return fmt.Errorf("open checkpoint store: %w", err)
+		}
 		if !store.RunExists(runID) {
 			return fmt.Errorf("checkpoint run '%s' not found", runID)
 		}
-		if _, err := store.LoadMetadata(runID); err != nil {
+		meta, err := store.LoadMetadata(runID)
+		if err != nil {
 			return fmt.Errorf("load checkpoint metadata: %w", err)
+		}
+		if checkpointSession := strings.TrimSpace(meta.SessionName); checkpointSession != "" && checkpointSession != session {
+			return fmt.Errorf("checkpoint run '%s' belongs to session '%s', not '%s'", runID, checkpointSession, session)
 		}
 		checkpoint, err := store.LoadSynthesisCheckpoint(runID)
 		if err != nil {
 			return fmt.Errorf("load synthesis checkpoint: %w", err)
 		}
+		if checkpointSession := strings.TrimSpace(checkpoint.SessionName); checkpointSession != "" && checkpointSession != session {
+			return fmt.Errorf("synthesis checkpoint '%s' belongs to session '%s', not '%s'", runID, checkpointSession, session)
+		}
 		resumeIndex = checkpoint.LastIndex
 	} else {
+		store, err = newEnsembleCheckpointStoreForSession(session)
+		if err != nil {
+			return fmt.Errorf("open checkpoint store: %w", err)
+		}
 		if runID == "" {
 			runID = buildSynthesisRunID(session)
 		}
@@ -1281,6 +1401,41 @@ func streamEnsembleSynthesis(
 	)
 
 	return nil
+}
+
+func resolveSynthesisResumeSession(session, runID string, _ io.Writer) (string, error) {
+	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
+	if err != nil {
+		return "", fmt.Errorf("open checkpoint store: %w", err)
+	}
+	if !store.RunExists(runID) {
+		return "", fmt.Errorf("checkpoint run '%s' not found", runID)
+	}
+	meta, err := store.LoadMetadata(runID)
+	if err != nil {
+		return "", fmt.Errorf("load checkpoint metadata: %w", err)
+	}
+	checkpointSession := strings.TrimSpace(meta.SessionName)
+	if checkpointSession == "" {
+		return "", fmt.Errorf("checkpoint run '%s' missing session name", runID)
+	}
+
+	requested := strings.TrimSpace(session)
+	if requested == "" {
+		return checkpointSession, nil
+	}
+	if requested == checkpointSession {
+		return checkpointSession, nil
+	}
+	resolvedRequested, err := normalizeOfflineCapableEnsembleSessionName(requested, !IsJSONOutput())
+	if err != nil {
+		return "", err
+	}
+	requested = resolvedRequested
+	if requested != checkpointSession {
+		return "", fmt.Errorf("checkpoint run '%s' belongs to session '%s', not '%s'", runID, checkpointSession, session)
+	}
+	return checkpointSession, nil
 }
 
 func buildSynthesisRunID(session string) string {
@@ -1650,15 +1805,17 @@ func loadExportFindingsContext(w io.Writer, session string, opts exportFindingsO
 		if err != nil {
 			return nil, err
 		}
-		projectDir, err = resolveEnsembleProjectDirForSession(ctx.Session)
-		if err != nil {
-			return nil, err
+		if ctx.ProjectDir == "" {
+			projectDir, err = resolveEnsembleProjectDirForSession(ctx.Session)
+			if err != nil {
+				return nil, err
+			}
+			ctx.ProjectDir = projectDir
 		}
-		ctx.ProjectDir = projectDir
 		return ctx, nil
 	}
 
-	res, err := resolveEnsembleSession(session, w)
+	res, err := resolveEnsembleStateCommandSession(session, w)
 	if err != nil {
 		return nil, err
 	}
@@ -1700,13 +1857,15 @@ func resolveEnsembleProjectDirForSession(session string) (string, error) {
 
 func loadExportFindingsFromRun(runID, projectDir string) (*exportFindingsContext, error) {
 	var (
-		store *ensemble.CheckpointStore
-		err   error
+		store              *ensemble.CheckpointStore
+		resolvedProjectDir string
+		err                error
 	)
 	if strings.TrimSpace(projectDir) != "" {
+		resolvedProjectDir = projectDir
 		store, err = newEnsembleCheckpointStoreForProject(projectDir)
 	} else {
-		store, _, err = resolveEnsembleCheckpointStoreForRunID(runID)
+		store, resolvedProjectDir, err = resolveEnsembleCheckpointStoreForRunID(runID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open checkpoint store: %w", err)
@@ -1737,49 +1896,29 @@ func loadExportFindingsFromRun(runID, projectDir string) (*exportFindingsContext
 	}
 
 	return &exportFindingsContext{
-		Question: meta.Question,
-		Session:  meta.SessionName,
-		RunID:    runID,
-		Outputs:  outputs,
+		Question:   meta.Question,
+		Session:    meta.SessionName,
+		RunID:      runID,
+		ProjectDir: resolvedProjectDir,
+		Outputs:    outputs,
 	}, nil
 }
 
 func loadExportFindingsFromSession(session string) (*exportFindingsContext, error) {
-	if err := tmux.EnsureInstalled(); err != nil {
-		return nil, err
-	}
-	if !tmux.SessionExists(session) {
-		return nil, fmt.Errorf("session '%s' not found", session)
-	}
-
-	state, err := ensemble.LoadSession(session)
+	state, sessionLive, err := loadEnsembleStateWithRuntimePresence(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !sessionLive {
+				return nil, fmt.Errorf("session '%s' not found", session)
+			}
 			return nil, fmt.Errorf("no ensemble running in session '%s'", session)
 		}
 		return nil, fmt.Errorf("load session: %w", err)
 	}
 
-	capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-	captured, err := capture.CaptureAll(state)
+	outputs, err := loadEnsembleModeOutputs(state, sessionLive)
 	if err != nil {
-		return nil, fmt.Errorf("capture outputs: %w", err)
-	}
-
-	outputs := make([]ensemble.ModeOutput, 0, len(captured))
-	for _, cap := range captured {
-		if cap.Parsed == nil {
-			continue
-		}
-		parsed := *cap.Parsed
-		if parsed.ModeID == "" {
-			parsed.ModeID = cap.ModeID
-		}
-		outputs = append(outputs, parsed)
-	}
-
-	if len(outputs) == 0 {
-		return nil, fmt.Errorf("no valid outputs captured for session '%s'", session)
+		return nil, err
 	}
 
 	return &exportFindingsContext{
@@ -2218,7 +2357,7 @@ Formats:
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := opts.Session
-			res, err := resolveEnsembleSession(session, cmd.OutOrStdout())
+			res, err := resolveEnsembleStateCommandSession(session, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -2247,6 +2386,62 @@ Formats:
 
 func resolveEnsembleSession(session string, w io.Writer) (SessionResolution, error) {
 	return ResolveSessionWithOptions(session, w, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
+}
+
+func resolveEnsembleStateCommandSession(session string, w io.Writer) (SessionResolution, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return resolveEnsembleSession("", w)
+	}
+	resolved, err := normalizeOfflineCapableEnsembleSessionName(session, !IsJSONOutput())
+	if err != nil {
+		return SessionResolution{}, err
+	}
+	return SessionResolution{
+		Session:  resolved,
+		Reason:   "explicit session",
+		Inferred: false,
+	}, nil
+}
+
+func normalizeOfflineCapableEnsembleSessionName(session string, allowPrefix bool) (string, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return "", fmt.Errorf("session is required")
+	}
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return "", fmt.Errorf("invalid session name: %w", err)
+	}
+
+	if sessionList, err := tmux.ListSessions(); err == nil {
+		resolved, _, err := resolveExplicitSessionName(session, sessionList, allowPrefix)
+		if err == nil {
+			session = resolved
+		} else {
+			var resolveErr *sessionPkg.ResolveExplicitSessionNameError
+			if errors.As(err, &resolveErr) && resolveErr.Kind == sessionPkg.ResolveExplicitSessionNameErrorAmbiguous {
+				return "", err
+			}
+		}
+	}
+
+	if !allowPrefix {
+		return session, nil
+	}
+
+	resolvedBase, err := normalizeConfiguredProjectBase(config.SessionBase(session), allowPrefix)
+	if err != nil {
+		return "", fmt.Errorf("session %q is ambiguous: %w", session, err)
+	}
+	if resolvedBase == "" || resolvedBase == config.SessionBase(session) {
+		return session, nil
+	}
+
+	label := config.SessionLabel(session)
+	if label == "" {
+		return resolvedBase, nil
+	}
+	return config.FormatSessionName(resolvedBase, label), nil
 }
 
 func newEnsembleCheckpointStoreForSession(session string) (*ensemble.CheckpointStore, error) {
@@ -2319,10 +2514,11 @@ func ensembleCheckpointProjectCandidates() []string {
 }
 
 func resolveEnsembleCheckpointStoreForRunID(runID string) (*ensemble.CheckpointStore, string, error) {
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return nil, "", fmt.Errorf("run id is required")
+	normalizedRunID, err := ensemble.NormalizeCheckpointRunID(runID)
+	if err != nil {
+		return nil, "", err
 	}
+	runID = normalizedRunID
 
 	matches := make([]string, 0, 2)
 	for _, projectDir := range ensembleCheckpointProjectCandidates() {
@@ -2354,17 +2550,12 @@ func runEnsembleProvenance(w io.Writer, session, findingID string, opts provenan
 		format = "json"
 	}
 
-	if err := tmux.EnsureInstalled(); err != nil {
-		return err
-	}
-	if !tmux.SessionExists(session) {
-		return fmt.Errorf("session '%s' not found", session)
-	}
-
-	// Load ensemble session state
-	state, err := ensemble.LoadSession(session)
+	state, sessionLive, err := loadEnsembleStateWithRuntimePresence(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if !sessionLive {
+				return fmt.Errorf("session '%s' not found", session)
+			}
 			return fmt.Errorf("no ensemble running in session '%s'", session)
 		}
 		return fmt.Errorf("load session: %w", err)
@@ -2377,23 +2568,9 @@ func runEnsembleProvenance(w io.Writer, session, findingID string, opts provenan
 	}
 	tracker := ensemble.NewProvenanceTracker(state.Question, modeIDs)
 
-	// Load outputs and record provenance
-	capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-	captured, err := capture.CaptureAll(state)
+	outputs, err := loadEnsembleModeOutputs(state, sessionLive)
 	if err != nil {
-		slog.Default().Warn("failed to capture outputs for provenance", "error", err)
-	}
-
-	outputs := make([]ensemble.ModeOutput, 0, len(captured))
-	for _, cap := range captured {
-		if cap.Parsed == nil {
-			continue
-		}
-		parsed := *cap.Parsed
-		if parsed.ModeID == "" {
-			parsed.ModeID = cap.ModeID
-		}
-		outputs = append(outputs, parsed)
+		slog.Default().Warn("failed to load outputs for provenance", "error", err)
 	}
 
 	if len(outputs) > 0 {
@@ -2635,7 +2812,13 @@ func runEnsembleResume(w io.Writer, runID, format string, quiet, skipDone bool) 
 
 	meta, err := store.LoadMetadata(runID)
 	if err != nil {
-		return fmt.Errorf("load checkpoint metadata: %w", err)
+		errPayload := checkpointResumeOutput{
+			GeneratedAt: output.Timestamp(),
+			RunID:       runID,
+			Success:     false,
+			Error:       fmt.Sprintf("load checkpoint metadata: %v", err),
+		}
+		return renderCheckpointResumeOutput(w, errPayload, format, quiet)
 	}
 
 	slog.Default().Info("resuming ensemble run",
@@ -2650,6 +2833,10 @@ func runEnsembleResume(w io.Writer, runID, format string, quiet, skipDone bool) 
 	toRun := append([]string{}, meta.PendingIDs...)
 	toRun = append(toRun, meta.ErrorIDs...)
 	skipped := len(meta.CompletedIDs)
+	if !skipDone {
+		toRun = append(toRun, meta.CompletedIDs...)
+		skipped = 0
+	}
 
 	result := checkpointResumeOutput{
 		GeneratedAt: output.Timestamp(),
@@ -2745,7 +2932,7 @@ func runEnsembleRerunMode(w io.Writer, runID, modeRef, format string, quiet bool
 		format = "json"
 	}
 
-	store, _, err := resolveEnsembleCheckpointStoreForRunID(runID)
+	store, projectDir, err := resolveEnsembleCheckpointStoreForRunID(runID)
 	if err != nil {
 		errPayload := checkpointResumeOutput{
 			GeneratedAt: output.Timestamp(),
@@ -2768,12 +2955,49 @@ func runEnsembleRerunMode(w io.Writer, runID, modeRef, format string, quiet bool
 
 	meta, err := store.LoadMetadata(runID)
 	if err != nil {
-		return fmt.Errorf("load checkpoint metadata: %w", err)
+		errPayload := checkpointResumeOutput{
+			GeneratedAt: output.Timestamp(),
+			RunID:       runID,
+			Success:     false,
+			Error:       fmt.Sprintf("load checkpoint metadata: %v", err),
+		}
+		return renderCheckpointResumeOutput(w, errPayload, format, quiet)
+	}
+
+	modeID := strings.TrimSpace(modeRef)
+	if !checkpointRunContainsMode(meta, modeID) {
+		catalog, err := loadModeCatalogForProjectDir(projectDir)
+		if err != nil {
+			return fmt.Errorf("load mode catalog: %w", err)
+		}
+		resolvedModeID, _, err := resolveModeID(modeRef, catalog)
+		if err != nil {
+			errPayload := checkpointResumeOutput{
+				GeneratedAt: output.Timestamp(),
+				RunID:       runID,
+				Session:     meta.SessionName,
+				Success:     false,
+				Error:       err.Error(),
+			}
+			return renderCheckpointResumeOutput(w, errPayload, format, quiet)
+		}
+		modeID = resolvedModeID
+		if !checkpointRunContainsMode(meta, modeID) {
+			errPayload := checkpointResumeOutput{
+				GeneratedAt: output.Timestamp(),
+				RunID:       runID,
+				Session:     meta.SessionName,
+				Success:     false,
+				Error:       fmt.Sprintf("mode %q not found in checkpoint run '%s'", modeID, runID),
+			}
+			return renderCheckpointResumeOutput(w, errPayload, format, quiet)
+		}
 	}
 
 	slog.Default().Info("rerunning mode",
 		"run_id", runID,
-		"mode", modeRef,
+		"mode", modeID,
+		"mode_ref", modeRef,
 		"session", meta.SessionName,
 	)
 
@@ -2783,10 +3007,40 @@ func runEnsembleRerunMode(w io.Writer, runID, modeRef, format string, quiet bool
 		Session:     meta.SessionName,
 		Success:     true,
 		Resumed:     1,
-		Message:     fmt.Sprintf("Re-running mode '%s' in run '%s'", modeRef, runID),
+		Message:     fmt.Sprintf("Re-running mode '%s' in run '%s'", modeID, runID),
 	}
 
 	return renderCheckpointResumeOutput(w, result, format, quiet)
+}
+
+func loadModeCatalogForProjectDir(projectDir string) (*ensemble.ModeCatalog, error) {
+	loader := ensemble.NewModeLoader()
+	if strings.TrimSpace(projectDir) != "" {
+		loader.ProjectDir = projectDir
+	}
+	return loader.Load()
+}
+
+func checkpointRunContainsMode(meta *ensemble.CheckpointMetadata, modeID string) bool {
+	if meta == nil || strings.TrimSpace(modeID) == "" {
+		return false
+	}
+	for _, candidate := range meta.CompletedIDs {
+		if candidate == modeID {
+			return true
+		}
+	}
+	for _, candidate := range meta.PendingIDs {
+		if candidate == modeID {
+			return true
+		}
+	}
+	for _, candidate := range meta.ErrorIDs {
+		if candidate == modeID {
+			return true
+		}
+	}
+	return false
 }
 
 func newEnsembleCleanCheckpointsCmd() *cobra.Command {

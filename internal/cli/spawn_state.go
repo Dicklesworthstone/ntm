@@ -12,6 +12,7 @@ import (
 )
 
 const spawnStatePath = ".ntm/spawn-state.json"
+const spawnStateCompletionGracePeriod = 5 * time.Second
 
 // SpawnState tracks the stagger schedule for dashboard display.
 // Written by spawn command, read by dashboard for countdown display.
@@ -180,8 +181,21 @@ func LoadSpawnState(projectDir string) (*SpawnState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("parse spawn state: %w", err)
 	}
+	if shouldExpireSpawnState(state.CompletedAt, time.Now()) {
+		if err := ClearSpawnState(projectDir); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 
 	return &state, nil
+}
+
+func shouldExpireSpawnState(completedAt, now time.Time) bool {
+	if completedAt.IsZero() {
+		return false
+	}
+	return !completedAt.Add(spawnStateCompletionGracePeriod).After(now)
 }
 
 // ClearSpawnState removes the spawn state file.

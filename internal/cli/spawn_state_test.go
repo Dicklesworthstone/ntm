@@ -165,6 +165,28 @@ func TestLoadSpawnStateNotExists(t *testing.T) {
 	}
 }
 
+func TestLoadSpawnState_ExpiresCompletedStateAfterGracePeriod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	state := NewSpawnState("batch-test", 60, 1)
+	state.MarkComplete()
+	state.CompletedAt = time.Now().Add(-(spawnStateCompletionGracePeriod + time.Second))
+	if err := state.Save(tmpDir); err != nil {
+		t.Fatalf("failed to save expired state: %v", err)
+	}
+
+	loaded, err := LoadSpawnState(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadSpawnState() error = %v", err)
+	}
+	if loaded != nil {
+		t.Fatalf("LoadSpawnState() = %#v, want nil for expired state", loaded)
+	}
+	if SpawnStateExists(tmpDir) {
+		t.Fatal("expected expired spawn state file to be removed")
+	}
+}
+
 func TestClearSpawnState(t *testing.T) {
 	tmpDir := t.TempDir()
 

@@ -339,6 +339,275 @@ func TestListSessionCheckpoints_JSONMarksInvalidOnlySession(t *testing.T) {
 	if decoded["invalid_checkpoints_present"] != true {
 		t.Fatalf("invalid_checkpoints_present = %v, want true", decoded["invalid_checkpoints_present"])
 	}
+	invalidIDs, ok := decoded["invalid_checkpoint_ids"].([]interface{})
+	if !ok || len(invalidIDs) != 1 || invalidIDs[0] != "20251210-120000-broken" {
+		t.Fatalf("invalid_checkpoint_ids = %#v, want [20251210-120000-broken]", decoded["invalid_checkpoint_ids"])
+	}
+}
+
+func TestListSessionCheckpoints_JSONIncludesInvalidIDsAlongsideValidCheckpoints(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := checkpoint.NewStorageWithDir(tmpDir)
+
+	sessionName := "mixed-session"
+	valid := &checkpoint.Checkpoint{
+		Version:     checkpoint.CurrentVersion,
+		ID:          "20251210-120100-valid",
+		Name:        "valid",
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: checkpoint.SessionState{
+			Panes: []checkpoint.PaneState{{ID: "%0", Index: 0}},
+		},
+		PaneCount: 1,
+	}
+	if err := storage.Save(valid); err != nil {
+		t.Fatalf("Save(valid): %v", err)
+	}
+
+	cpDir := filepath.Join(tmpDir, sessionName, "20251210-120000-broken")
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("failed to create checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, checkpoint.MetadataFile), []byte("{"), 0o600); err != nil {
+		t.Fatalf("failed to write invalid metadata: %v", err)
+	}
+
+	oldJSONOutput := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSONOutput })
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe(): %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	callErr := listSessionCheckpoints(storage, sessionName)
+	if err := w.Close(); err != nil {
+		t.Fatalf("stdout close: %v", err)
+	}
+	if callErr != nil {
+		t.Fatalf("listSessionCheckpoints error: %v", callErr)
+	}
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading stdout: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("decoding JSON output: %v\noutput=%s", err, out)
+	}
+	if decoded["count"] != float64(1) {
+		t.Fatalf("count = %v, want 1", decoded["count"])
+	}
+	invalidIDs, ok := decoded["invalid_checkpoint_ids"].([]interface{})
+	if !ok || len(invalidIDs) != 1 || invalidIDs[0] != "20251210-120000-broken" {
+		t.Fatalf("invalid_checkpoint_ids = %#v, want [20251210-120000-broken]", decoded["invalid_checkpoint_ids"])
+	}
+}
+
+func TestCheckpointDeleteCmd_DeletesInvalidCheckpointEntry(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage := checkpoint.NewStorage()
+	sessionName := "delete-invalid-session"
+	checkpointID := "20251210-120000-broken"
+	cpDir := filepath.Join(storage.BaseDir, sessionName, checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("failed to create checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, checkpoint.MetadataFile), []byte("{"), 0o600); err != nil {
+		t.Fatalf("failed to write invalid metadata: %v", err)
+	}
+
+	cmd := newCheckpointDeleteCmd()
+	cmd.SetArgs([]string{sessionName, checkpointID, "--force"})
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe(): %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute(): %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("stdout close: %v", err)
+	}
+	if _, err := io.ReadAll(r); err != nil {
+		t.Fatalf("reading stdout: %v", err)
+	}
+
+	exists, err := storage.HasCheckpointPath(sessionName, checkpointID)
+	if err != nil {
+		t.Fatalf("HasCheckpointPath(): %v", err)
+	}
+	if exists {
+		t.Fatal("invalid checkpoint entry still exists after delete command")
+	}
+}
+
+func TestVerifySingleCheckpoint_JSONReturnsErrorForInvalidCheckpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := checkpoint.NewStorageWithDir(tmpDir)
+
+	sessionName := "verify-invalid-session"
+	checkpointID := "20251210-120000-broken"
+	cpDir := filepath.Join(tmpDir, sessionName, checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("failed to create checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, checkpoint.MetadataFile), []byte("{"), 0o600); err != nil {
+		t.Fatalf("failed to write invalid metadata: %v", err)
+	}
+
+	oldJSONOutput := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSONOutput })
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe(): %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	callErr := verifySingleCheckpoint(storage, sessionName, checkpointID)
+	if err := w.Close(); err != nil {
+		t.Fatalf("stdout close: %v", err)
+	}
+	if callErr == nil {
+		t.Fatal("verifySingleCheckpoint() error = nil, want verification failure")
+	}
+	if !strings.Contains(callErr.Error(), "verification failed") {
+		t.Fatalf("verifySingleCheckpoint() error = %v, want verification failure context", callErr)
+	}
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading stdout: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("decoding JSON output: %v\noutput=%s", err, out)
+	}
+	if decoded["valid"] != false {
+		t.Fatalf("valid = %v, want false", decoded["valid"])
+	}
+	if decoded["id"] != checkpointID {
+		t.Fatalf("id = %v, want %s", decoded["id"], checkpointID)
+	}
+}
+
+func TestVerifyAllCheckpoints_JSONReturnsErrorForInvalidCheckpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := checkpoint.NewStorageWithDir(tmpDir)
+
+	sessionName := "verify-all-invalid-session"
+	valid := &checkpoint.Checkpoint{
+		Version:     checkpoint.CurrentVersion,
+		ID:          "20251210-120100-valid",
+		Name:        "valid",
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: checkpoint.SessionState{
+			Panes: []checkpoint.PaneState{{ID: "%0", Index: 0}},
+		},
+		PaneCount: 1,
+	}
+	if err := storage.Save(valid); err != nil {
+		t.Fatalf("Save(valid): %v", err)
+	}
+
+	invalidID := "20251210-120000-broken"
+	cpDir := filepath.Join(tmpDir, sessionName, invalidID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("failed to create checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, checkpoint.MetadataFile), []byte("{"), 0o600); err != nil {
+		t.Fatalf("failed to write invalid metadata: %v", err)
+	}
+
+	oldJSONOutput := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSONOutput })
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe(): %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	callErr := verifyAllCheckpoints(storage, sessionName)
+	if err := w.Close(); err != nil {
+		t.Fatalf("stdout close: %v", err)
+	}
+	if callErr == nil {
+		t.Fatal("verifyAllCheckpoints() error = nil, want verification failure")
+	}
+	if !strings.Contains(callErr.Error(), "1 checkpoint(s) failed verification") {
+		t.Fatalf("verifyAllCheckpoints() error = %v, want verification failure count", callErr)
+	}
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading stdout: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("decoding JSON output: %v\noutput=%s", err, out)
+	}
+	if decoded["valid_count"] != float64(1) {
+		t.Fatalf("valid_count = %v, want 1", decoded["valid_count"])
+	}
+	if decoded["total_count"] != float64(2) {
+		t.Fatalf("total_count = %v, want 2", decoded["total_count"])
+	}
+}
+
+func TestCheckpointExportCmd_InvalidCheckpointReportsLoadFailure(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage := checkpoint.NewStorage()
+	sessionName := "export-invalid-session"
+	checkpointID := "20251210-120000-broken"
+	cpDir := filepath.Join(storage.BaseDir, sessionName, checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("failed to create checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, checkpoint.MetadataFile), []byte("{"), 0o600); err != nil {
+		t.Fatalf("failed to write invalid metadata: %v", err)
+	}
+
+	cmd := newCheckpointExportCmd()
+	outputPath := filepath.Join(t.TempDir(), "checkpoint.tar.gz")
+	cmd.SetArgs([]string{sessionName, checkpointID, "--output", outputPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want load failure for invalid checkpoint")
+	}
+	if !strings.Contains(err.Error(), "loading checkpoint:") {
+		t.Fatalf("Execute() error = %v, want load failure context", err)
+	}
+	if strings.Contains(err.Error(), "checkpoint not found") {
+		t.Fatalf("Execute() error = %v, want invalid checkpoint to be distinguished from not found", err)
+	}
 }
 
 // listCheckpointSessionsWithDir is a helper for testing that accepts a custom directory.
@@ -449,5 +718,40 @@ func TestCheckpointRestoreCmdFlags(t *testing.T) {
 	scrollback := cmd.Flags().Lookup("scrollback")
 	if scrollback.DefValue != "0" {
 		t.Errorf("scrollback default = %s, want 0", scrollback.DefValue)
+	}
+}
+
+func TestCheckpointRestoreCmd_InvalidCheckpointReportsLoadFailure(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	storage := checkpoint.NewStorage()
+	sessionName := "restore-invalid"
+	checkpointID := "broken-restore"
+	cpDir := filepath.Join(storage.BaseDir, sessionName, checkpointID)
+	if err := os.MkdirAll(cpDir, 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	cmd := newCheckpointRestoreCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{sessionName, checkpointID, "--dry-run"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want load failure")
+	}
+	if !strings.Contains(err.Error(), "loading checkpoint:") {
+		t.Fatalf("error = %q, want loading checkpoint context", err)
+	}
+	if strings.Contains(err.Error(), "finding checkpoint: no checkpoint found matching") {
+		t.Fatalf("error = %q, want exact invalid checkpoint load failure", err)
 	}
 }

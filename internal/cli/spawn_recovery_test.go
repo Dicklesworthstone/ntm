@@ -3,11 +3,14 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 )
@@ -147,6 +150,45 @@ func TestBuildRecoveryReservationTransferOptions_UsesResolvedAgentName(t *testin
 	}
 	if len(opts.Reservations) != 1 || opts.Reservations[0].PathPattern != "internal/a.go" {
 		t.Fatalf("expected reservations to be preserved, got %#v", opts.Reservations)
+	}
+}
+
+func TestLoadRecoveryCheckpoint_NoCheckpointsReturnsNil(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cp, err := loadRecoveryCheckpoint("recovery-empty-session")
+	if err != nil {
+		t.Fatalf("loadRecoveryCheckpoint() error = %v, want nil", err)
+	}
+	if cp != nil {
+		t.Fatalf("loadRecoveryCheckpoint() = %#v, want nil", cp)
+	}
+}
+
+func TestLoadRecoveryCheckpoint_InvalidLatestCheckpointReturnsError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	storage := checkpoint.NewStorage()
+	sessionName := "recovery-invalid-session"
+	invalidDir := storage.CheckpointDir(sessionName, "20260101-120000-bad")
+	if err := os.MkdirAll(invalidDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) failed: %v", invalidDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(invalidDir, checkpoint.MetadataFile), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile(metadata) failed: %v", err)
+	}
+
+	cp, err := loadRecoveryCheckpoint(sessionName)
+	if err == nil {
+		t.Fatal("loadRecoveryCheckpoint() error = nil, want invalid checkpoint error")
+	}
+	if cp != nil {
+		t.Fatalf("loadRecoveryCheckpoint() = %#v, want nil", cp)
+	}
+	if !strings.Contains(err.Error(), "checkpoint selection blocked by invalid checkpoint") {
+		t.Fatalf("loadRecoveryCheckpoint() error = %v, want invalid checkpoint context", err)
 	}
 }
 

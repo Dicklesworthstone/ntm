@@ -657,7 +657,7 @@ type SpawnOptions struct {
 	AllowPersist bool // Allow persistence even in privacy mode
 
 	// Marching orders: pane-specific initialization prompts (bd-2lodn)
-	MarchingOrders map[int]string // pane index (0-based) -> prompt
+	MarchingOrders map[int]string // agent pane order (0-based, excludes user pane) -> prompt
 
 	// Per-agent-type default prompts (bd-2ywo)
 	DefaultPrompts config.PromptsConfig
@@ -1272,7 +1272,7 @@ Examples:
 	cmd.Flags().BoolVar(&allowPersist, "allow-persist", false, "Allow persistence operations even in privacy mode")
 
 	// Marching orders: pane-specific initialization prompts (bd-2lodn)
-	cmd.Flags().StringVar(&marchingOrdersFile, "marching-orders", "", "File with pane-specific prompts (format: pane:N <prompt>)")
+	cmd.Flags().StringVar(&marchingOrdersFile, "marching-orders", "", "File with agent-pane prompts in spawn order, excluding any user pane (format: pane:N <prompt>)")
 
 	// Profile flags for mapping personas to agents
 	cmd.Flags().StringVar(&profilesFlag, "profiles", "", "Comma-separated list of profile/persona names to map to agents in order")
@@ -1653,7 +1653,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 	// Spawn state for dashboard display (only used when stagger is enabled)
 	var spawnState *SpawnState
 	staggerInterval := resolveStaggerInterval(effectiveStaggerMode, opts, rateLimitTracker)
-	if effectiveStaggerMode != "none" && effectiveStaggerMode != "" && opts.Prompt != "" {
+	if effectiveStaggerMode != "none" && effectiveStaggerMode != "" && spawnHasPromptDelivery(opts) {
 		spawnState = NewSpawnState(spawnCtx.BatchID, int(staggerInterval.Seconds()), len(opts.Agents))
 	}
 	isStaggered := effectiveStaggerMode != "none" && effectiveStaggerMode != "" && staggerInterval > 0
@@ -1958,12 +1958,18 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		// This prevents sequential blocking and ensures correct ordering (Context -> Prompt)
 		setupWg.Add(1)
 
+		panePrompt, promptResolveErr := resolveSpawnPanePrompt(opts, agent.Type, staggerAgentIdx)
+		if promptResolveErr != nil && !IsJSONOutput() {
+			fmt.Printf("⚠ Warning: failed to resolve default prompt for %s agent %d: %v\n", agent.Type, agent.Index, promptResolveErr)
+		}
+		hasPrompt := panePrompt != ""
+
 		// Capture vars for closure
 		pID := pane.ID
 		pTitle := title
 		idx := agent.Index
 
-		go func(paneID, paneTitle string, idx int, agentType AgentType, agent FlatAgent) {
+		go func(paneID, paneTitle string, idx int, agentType AgentType, agent FlatAgent, panePrompt string, hasPrompt bool) {
 			defer setupWg.Done()
 
 			// Gemini post-spawn setup: auto-select Pro model
@@ -1989,29 +1995,6 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 					}
 				}
 			}
-
-			// Determine if we have a user prompt to send.
-			// Marching orders (pane-specific prompts) take precedence over global --prompt.
-			panePrompt := opts.Prompt
-			if mo, ok := opts.MarchingOrders[idx]; ok {
-				panePrompt = mo
-			}
-
-			// Prepend per-agent-type default prompt if configured (bd-2ywo).
-			if defaultPrompt, err := opts.DefaultPrompts.ResolveForType(string(agentType)); err != nil {
-				if !IsJSONOutput() {
-					fmt.Printf("⚠ Warning: failed to resolve default prompt for %s agent %d: %v\n", agentType, idx, err)
-				}
-			} else if defaultPrompt != "" {
-				if panePrompt == "" {
-					// If no explicit prompt was provided, still send the default prompt so agents
-					// come up with the expected behavioral baseline.
-					panePrompt = defaultPrompt
-				} else {
-					panePrompt = defaultPrompt + "\n\n" + panePrompt
-				}
-			}
-			hasPrompt := panePrompt != ""
 
 			// Inject CASS context if available
 			// Only send separately if we DON'T have a prompt to combine it with
@@ -2081,10 +2064,10 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 					}
 				}
 			}
-		}(pID, pTitle, idx, agent.Type, agent)
+		}(pID, pTitle, idx, agent.Type, agent, panePrompt, hasPrompt)
 
 		// Schedule staggered prompt delivery in spawn state (Main Thread)
-		if isStaggered && opts.Prompt != "" {
+		if isStaggered && hasPrompt {
 			scheduledAt := time.Now().Add(promptDelay)
 
 			// Add to spawn state for dashboard display
@@ -2157,16 +2140,20 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			}
 		} else {
 			// Launch monitor in background
-			exe, err := os.Executable()
-			if err == nil {
-				// Kill any existing monitor to prevent duplicates
-				if isMonitorAlive(opts.Session) {
-					_ = exec.Command("pkill", "-f", monitorProcessPattern(opts.Session)).Run()
+			if isMonitorAlive(opts.Session) {
+				if err := killExistingMonitorProcess(opts.Session); err == nil {
 					time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
+				} else if !IsJSONOutput() {
+					output.PrintWarningf("Failed to stop existing session monitor: %v", err)
 				}
+			}
 
-				cmd := exec.Command(exe, "internal-monitor", opts.Session)
-
+			cmd, err := newInternalMonitorCommand(opts.Session)
+			if err != nil {
+				if !IsJSONOutput() {
+					output.PrintWarningf("Failed to prepare session monitor: %v", err)
+				}
+			} else {
 				// Setup logging
 				logDir := resilience.LogDir()
 				if err := os.MkdirAll(logDir, 0755); err == nil {
@@ -2198,29 +2185,11 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		}
 	}
 
-	// Set up signal handling for graceful interruption during stagger wait
+	// Set up signal handling for graceful interruption during stagger wait.
+	// Return an error instead of calling os.Exit so deferred audit and cleanup still run.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	isJSON := IsJSONOutput()
-
-	sigDone := make(chan struct{})
-	defer close(sigDone)
 	defer signal.Stop(sigChan)
-
-	go func() {
-		select {
-		case <-sigChan:
-			// If interrupted, we just print a warning. The monitor is already running.
-			// The spawn command will exit, killing the goroutines sending prompts.
-			if !isJSON {
-				fmt.Println("\n⚠ Spawn interrupted. Some prompts may not have been delivered.")
-				fmt.Println("ℹ Session monitor is running (agents will auto-restart if they crash).")
-			}
-			os.Exit(1)
-		case <-sigDone:
-			return
-		}
-	}()
 
 	// Wait for staggered prompt delivery to complete (if any)
 	if maxStaggerDelay > 0 {
@@ -2229,8 +2198,14 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		}
 	}
 
-	// Wait for parallel setup tasks (and staggered prompts) to complete
-	setupWg.Wait()
+	setupDone := make(chan struct{})
+	go func() {
+		setupWg.Wait()
+		close(setupDone)
+	}()
+	if err := waitForSpawnSetupCompletion(setupDone, sigChan, IsJSONOutput()); err != nil {
+		return outputError(err)
+	}
 
 	if maxStaggerDelay > 0 {
 		if !IsJSONOutput() {
@@ -2242,11 +2217,6 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			if err := spawnState.Save(dir); err != nil && !IsJSONOutput() {
 				fmt.Printf("⚠ Warning: failed to save final spawn state: %v\n", err)
 			}
-			// Remove state file after a short delay to let dashboard catch the completion
-			go func() {
-				time.Sleep(5 * time.Second)
-				_ = ClearSpawnState(dir)
-			}()
 		}
 	}
 
@@ -2545,6 +2515,92 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 	}
 
 	return nil
+}
+
+func resolveSpawnPanePrompt(opts SpawnOptions, agentType AgentType, agentOrder int) (string, error) {
+	panePrompt := opts.Prompt
+	if mo, ok := opts.MarchingOrders[agentOrder]; ok {
+		panePrompt = mo
+	}
+
+	defaultPrompt, err := opts.DefaultPrompts.ResolveForType(string(agentType))
+	if err != nil {
+		return panePrompt, err
+	}
+	if defaultPrompt == "" {
+		return panePrompt, nil
+	}
+	if panePrompt == "" {
+		return defaultPrompt, nil
+	}
+	return defaultPrompt + "\n\n" + panePrompt, nil
+}
+
+func spawnHasPromptDelivery(opts SpawnOptions) bool {
+	for agentOrder, agent := range opts.Agents {
+		panePrompt, err := resolveSpawnPanePrompt(opts, agent.Type, agentOrder)
+		if panePrompt != "" {
+			return true
+		}
+		if err != nil {
+			continue
+		}
+	}
+	return false
+}
+
+func currentExecutablePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve current executable: %w", err)
+	}
+	exe = filepath.Clean(exe)
+	if !filepath.IsAbs(exe) {
+		return "", fmt.Errorf("current executable path must be absolute: %q", exe)
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		return "", fmt.Errorf("stat current executable: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("current executable path is a directory: %q", exe)
+	}
+	return exe, nil
+}
+
+func newInternalMonitorCommand(session string) (*exec.Cmd, error) {
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return nil, fmt.Errorf("invalid session name: %w", err)
+	}
+	exe, err := currentExecutablePath()
+	if err != nil {
+		return nil, err
+	}
+	return exec.Command(exe, "internal-monitor", session), nil
+}
+
+func killExistingMonitorProcess(session string) error {
+	if err := tmux.ValidateSessionName(session); err != nil {
+		return fmt.Errorf("invalid session name: %w", err)
+	}
+	pattern := monitorProcessPattern(session)
+	if strings.TrimSpace(pattern) == "" {
+		return errors.New("empty monitor process pattern")
+	}
+	return exec.Command("pkill", "-f", pattern).Run()
+}
+
+func waitForSpawnSetupCompletion(setupDone <-chan struct{}, sigChan <-chan os.Signal, isJSON bool) error {
+	select {
+	case <-setupDone:
+		return nil
+	case <-sigChan:
+		if !isJSON {
+			fmt.Println("\n⚠ Spawn interrupted. Some prompts may not have been delivered.")
+			fmt.Println("ℹ Session monitor is running (agents will auto-restart if they crash).")
+		}
+		return errors.New("spawn interrupted before all prompts were delivered")
+	}
 }
 
 func resolveSpawnProjectDir(opts SpawnOptions) (string, error) {
@@ -3407,6 +3463,9 @@ func loadRecoveryCheckpoint(sessionName string) (*RecoveryCheckpoint, error) {
 	storage := checkpoint.NewStorage()
 	cp, err := storage.GetLatest(sessionName)
 	if err != nil {
+		if errors.Is(err, checkpoint.ErrNoCheckpoints) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if cp == nil {
