@@ -142,8 +142,9 @@ func parseBeadForDedup(title, desc string) (signature, file string) {
 				parts := strings.SplitN(fileLine, ":", 3)
 				if len(parts) >= 2 {
 					file = parts[0]
-					// Reconstruct signature: file:line:rule or file:line:ubs
-					signature = fileLine + ":ubs"
+					// Reconstruct signature with LegacyRuleID when the
+					// original rule is unknown (legacy bead format).
+					signature = fileLine + ":" + LegacyRuleID
 				}
 			}
 			break

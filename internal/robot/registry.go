@@ -31,6 +31,7 @@ type RobotSurfaceDescriptor struct {
 	Category    string               `json:"category"`
 	Summary     string               `json:"summary"`
 	Description string               `json:"description"`
+	Note        string               `json:"note,omitempty"`
 	SchemaID    string               `json:"schema_id"`
 	SchemaType  string               `json:"schema_type,omitempty"`
 	Sections    []string             `json:"sections,omitempty"`
@@ -290,6 +291,7 @@ func buildRobotRegistry() *RobotRegistry {
 			Category:         command.Category,
 			Summary:          summarizeDescription(command.Description),
 			Description:      command.Description,
+			Note:             command.Note,
 			SchemaID:         firstNonEmptyString(meta.SchemaID, defaultRobotSchemaID(command.Name)),
 			SchemaType:       firstNonEmptyString(meta.SchemaType, schemaTypeForCommand(command.Name, schemaByType)),
 			Sections:         cloneStrings(meta.Sections),

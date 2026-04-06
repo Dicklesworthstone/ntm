@@ -312,7 +312,7 @@ type CASSContextOutput struct {
 // CASSContextSession represents a session in context output
 type CASSContextSession struct {
 	Summary   string   `json:"summary"`
-	KeyPoints []string `json:"key_points"`
+	KeyPoints []string `json:"key_points,omitempty"`
 	Source    string   `json:"source"`
 	Agent     string   `json:"agent"`
 	When      string   `json:"when"`
@@ -367,14 +367,13 @@ func GetCASSContext(query string) (*CASSContextOutput, error) {
 		}
 
 		session := CASSContextSession{
-			Summary: hit.Title, // Use title as summary for now
+			Summary: hit.Title,
 			Source:  hit.SourcePath,
 			Agent:   hit.Agent,
 			When:    when,
 		}
-		// Extract potential key points from snippet?
-		// For now just empty or placeholder
-		session.KeyPoints = []string{}
+		// KeyPoints left nil (omitted from JSON via omitempty) because
+		// CASS SearchHit does not provide structured key-point data.
 
 		output.RelevantSessions = append(output.RelevantSessions, session)
 		suggestions = append(suggestions, fmt.Sprintf("session '%s' (%s)", hit.Title, hit.Agent))

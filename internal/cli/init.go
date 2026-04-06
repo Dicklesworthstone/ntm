@@ -16,9 +16,6 @@ import (
 )
 
 func newInitCmd() *cobra.Command {
-	var template string
-	var agents string
-	var autoSpawn bool
 	var nonInteractive bool
 	var force bool
 	var noHooks bool
@@ -37,9 +34,6 @@ Git hooks installed (unless --no-hooks):
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := initOptions{
-				Template:       template,
-				Agents:         agents,
-				AutoSpawn:      autoSpawn,
 				NonInteractive: nonInteractive,
 				Force:          force,
 				NoHooks:        noHooks,
@@ -51,9 +45,6 @@ Git hooks installed (unless --no-hooks):
 		},
 	}
 
-	cmd.Flags().StringVar(&template, "template", "", "Project template (go, python, node, rust)")
-	cmd.Flags().StringVar(&agents, "agents", "", "Agent spec for auto-spawn (e.g. cc=2,cod=1,gmi=1)")
-	cmd.Flags().BoolVar(&autoSpawn, "auto-spawn", false, "Spawn agents after initialization")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Disable prompts; fail on missing info")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing .ntm directory")
 	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "Skip git hooks installation")
@@ -63,9 +54,6 @@ Git hooks installed (unless --no-hooks):
 
 type initOptions struct {
 	TargetDir      string
-	Template       string
-	Agents         string
-	AutoSpawn      bool
 	NonInteractive bool
 	Force          bool
 	NoHooks        bool
@@ -115,9 +103,6 @@ func runProjectInit(opts initOptions) error {
 	_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.project_init", map[string]interface{}{
 		"phase":           "start",
 		"project_path":    absTarget,
-		"template":        opts.Template,
-		"agents":          opts.Agents,
-		"auto_spawn":      opts.AutoSpawn,
 		"non_interactive": opts.NonInteractive,
 		"force":           opts.Force,
 		"no_hooks":        opts.NoHooks,
@@ -168,9 +153,6 @@ func runProjectInit(opts initOptions) error {
 			"created_files":   result.CreatedFiles,
 			"agent_mail":      registered,
 			"hooks_installed": hooksInstalled,
-			"template":        opts.Template,
-			"agents":          opts.Agents,
-			"auto_spawn":      opts.AutoSpawn,
 			"non_interactive": opts.NonInteractive,
 			"force":           opts.Force,
 			"no_hooks":        opts.NoHooks,
@@ -203,13 +185,6 @@ func runProjectInit(opts initOptions) error {
 	}
 	if hooksWarning != "" {
 		output.PrintWarningf("Git hooks: %s", hooksWarning)
-	}
-
-	if opts.Template != "" {
-		output.PrintWarning("Template setup not yet implemented for init")
-	}
-	if opts.Agents != "" || opts.AutoSpawn {
-		output.PrintWarning("Auto-spawn not yet implemented for init")
 	}
 
 	return nil
@@ -625,7 +600,7 @@ alias dnt='ntm deps'
 	            return
 	            ;;
 	          --robot-ensemble-spawn)
-	            COMPREPLY=($(compgen -W "--preset --modes --question --agents --assignment --allow-advanced --budget-total --budget-per-agent --no-cache --no-questions --project" -- "$cur"))
+	            COMPREPLY=($(compgen -W "--preset --modes --question --agents --assignment --allow-advanced --budget-total --budget-per-agent --no-cache --project" -- "$cur"))
 	            return
 	            ;;
 	        esac

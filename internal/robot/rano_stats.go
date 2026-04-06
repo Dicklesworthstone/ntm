@@ -49,7 +49,9 @@ type RanoPaneStats struct {
 	Providers    map[string]RanoProviderAgg `json:"providers,omitempty"`
 }
 
-// RanoProviderAgg is a placeholder for provider breakdowns (if available).
+// RanoProviderAgg aggregates network stats per API provider.
+// Currently unpopulated because rano does not yet expose per-provider breakdowns;
+// the field is retained with omitempty so the schema is ready when rano adds support.
 type RanoProviderAgg struct {
 	Connections int   `json:"connections,omitempty"`
 	BytesSent   int64 `json:"bytes_sent,omitempty"`
@@ -272,7 +274,6 @@ func aggregateRanoStats(
 				PaneTitle: identity.PaneTitle,
 				AgentType: string(identity.AgentType),
 				NTMIndex:  identity.NTMIndex,
-				Providers: map[string]RanoProviderAgg{},
 			}
 		}
 

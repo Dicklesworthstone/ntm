@@ -1,8 +1,8 @@
 package quota
 
-// Codex quota parsing
-// NOTE: Actual output formats need to be researched.
-// These patterns are placeholders based on expected similar structure.
+// Codex quota parsing — heuristic patterns, not validated against real CLI output.
+// These parsers attempt best-effort extraction but may not match actual Codex CLI formats.
+// Returns found=false when no patterns match, which callers should treat as "unknown" not "zero".
 
 import (
 	"regexp"
@@ -30,7 +30,6 @@ var codexStatusPatterns = struct {
 }
 
 // parseCodexUsage parses Codex usage output
-// TODO: Update patterns after researching actual Codex CLI output
 func parseCodexUsage(info *QuotaInfo, output string) (bool, error) {
 	found := false
 

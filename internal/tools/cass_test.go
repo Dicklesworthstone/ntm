@@ -42,7 +42,7 @@ func TestCASSAdapter_BuildQueries(t *testing.T) {
 	}
 }
 
-func TestCASSAdapter_EnhanceAndFilterNoop(t *testing.T) {
+func TestCASSAdapter_EnhanceAndFilterPassthrough(t *testing.T) {
 	t.Parallel()
 
 	a := NewCASSAdapter()

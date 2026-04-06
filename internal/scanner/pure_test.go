@@ -28,7 +28,7 @@ func TestParseBeadForDedup(t *testing.T) {
 			name:     "file line in description",
 			title:    "some finding",
 			desc:     "**File:** `internal/robot/robot.go:42`\nSome details",
-			wantSig:  "internal/robot/robot.go:42:ubs",
+			wantSig:  "internal/robot/robot.go:42:ubs-legacy",
 			wantFile: "internal/robot/robot.go",
 		},
 		{
@@ -42,7 +42,7 @@ func TestParseBeadForDedup(t *testing.T) {
 			name:     "rule with spaces is not treated as rule id",
 			title:    "[WARNING] some long message: explanation",
 			desc:     "**File:** `pkg/util.go:5`\n",
-			wantSig:  "pkg/util.go:5:ubs",
+			wantSig:  "pkg/util.go:5:ubs-legacy",
 			wantFile: "pkg/util.go",
 		},
 		{
@@ -70,14 +70,14 @@ func TestParseBeadForDedup(t *testing.T) {
 			name:     "title without severity bracket",
 			title:    "plain title",
 			desc:     "**File:** `foo.go:1`\n",
-			wantSig:  "foo.go:1:ubs",
+			wantSig:  "foo.go:1:ubs-legacy",
 			wantFile: "foo.go",
 		},
 		{
 			name:     "file line at end of description",
 			title:    "test",
 			desc:     "First line\nSecond line\n**File:** `a.go:99`\nLast",
-			wantSig:  "a.go:99:ubs",
+			wantSig:  "a.go:99:ubs-legacy",
 			wantFile: "a.go",
 		},
 		{

@@ -1,8 +1,8 @@
 package quota
 
-// Gemini quota parsing
-// NOTE: Actual output formats need to be researched.
-// These patterns are placeholders based on expected similar structure.
+// Gemini quota parsing — heuristic patterns, not validated against real CLI output.
+// These parsers attempt best-effort extraction but may not match actual Gemini CLI formats.
+// Returns found=false when no patterns match, which callers should treat as "unknown" not "zero".
 
 import (
 	"regexp"
@@ -32,7 +32,6 @@ var geminiStatusPatterns = struct {
 }
 
 // parseGeminiUsage parses Gemini usage output
-// TODO: Update patterns after researching actual Gemini CLI output
 func parseGeminiUsage(info *QuotaInfo, output string) (bool, error) {
 	found := false
 

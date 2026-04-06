@@ -429,69 +429,6 @@ func TestHandleSessionEventsV1_EmptyFiltered(t *testing.T) {
 }
 
 // =============================================================================
-// handleHistoryV1 / handleHistoryStatsV1 — missing session param
-// =============================================================================
-
-func skip_TestHandleHistoryV1_MissingSession(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/history", nil) // no session param
-
-	srv.handleHistoryV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func skip_TestHandleHistoryStatsV1_MissingSession(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/history/stats", nil) // no session param
-
-	srv.handleHistoryStatsV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// =============================================================================
-// handleMetricsSnapshotSaveV1 — success path
-// =============================================================================
-
-func skip_TestHandleMetricsSnapshotSaveV1_Success(t *testing.T) {
-	t.Parallel()
-	srv, store := setupTestServer(t)
-	createTestSessionForServe(t, store, "snap-session")
-
-	rec := httptest.NewRecorder()
-	body := `{"name":"test-snap","session":"snap-session"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/metrics/snapshot", strings.NewReader(body))
-
-	srv.handleMetricsSnapshotSaveV1(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp map[string]interface{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if resp["name"] != "test-snap" {
-		t.Errorf("name = %v, want test-snap", resp["name"])
-	}
-	if resp["saved"] != true {
-		t.Errorf("saved = %v, want true", resp["saved"])
-	}
-}
-
-// =============================================================================
 // IdempotencyStore cleanup — ticker expiry branch
 // =============================================================================
 
@@ -1144,152 +1081,6 @@ func TestHandleAgentWaitV1_KernelError(t *testing.T) {
 	}
 }
 
-func skip_TestHandleAgentRouteV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/noexist/agents/route?prompt=test", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "noexist")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	srv.handleAgentRouteV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleAgentActivityV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/noexist/agents/activity", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "noexist")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	srv.handleAgentActivityV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleAgentHealthV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/noexist/agents/health", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "noexist")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	srv.handleAgentHealthV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleAgentContextV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/noexist/agents/context", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "noexist")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	srv.handleAgentContextV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleAgentRestartV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/noexist/agents/restart", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "noexist")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	srv.handleAgentRestartV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-// =============================================================================
-// Output handlers — missing session validation
-// =============================================================================
-
-func skip_TestHandleOutputTailV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/tail?session=noexist&pane=0", nil)
-
-	srv.handleOutputTailV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleOutputDiffV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/diff?session=noexist&pane=0", nil)
-
-	srv.handleOutputDiffV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleOutputSummaryV1_KernelError(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/summary?session=noexist&pane=0", nil)
-
-	srv.handleOutputSummaryV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleContextBuildV1_EmptyBody(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/context/build", strings.NewReader(""))
-
-	srv.handleContextBuildV1(rec, req)
-
-	// Empty body should be rejected as bad request
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
 // =============================================================================
 // handlePolicyUpdateV1 — invalid YAML and validation branches
 // =============================================================================
@@ -1607,110 +1398,6 @@ func TestHandlePaneInterruptV1_InvalidIndex(t *testing.T) {
 }
 
 // =============================================================================
-// handleContextBuildV1 — missing question field
-// =============================================================================
-
-func skip_TestHandleContextBuildV1_MissingQuestion(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	body := `{"project_dir":"/tmp","bead_id":"test"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/context/build", strings.NewReader(body))
-
-	srv.handleContextBuildV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// =============================================================================
-// handleContextStatsV1 — missing session param
-// =============================================================================
-
-func skip_TestHandleContextStatsV1_MissingSession(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/context/stats", nil)
-
-	srv.handleContextStatsV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func skip_TestHandleContextStatsV1_WithLinesParam(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	// Use session name that doesn't exist in tmux
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/context/stats?session=__nonexistent_session_12345__&lines=50", nil)
-
-	srv.handleContextStatsV1(rec, req)
-
-	// robot.GetContext may succeed with empty data or error — verify it doesn't panic
-	// and returns a valid HTTP response
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-// =============================================================================
-// handleRouteV1 — missing session + invalid exclude
-// =============================================================================
-
-func skip_TestHandleRouteV1_MissingSession(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/route", nil)
-
-	srv.handleRouteV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-func skip_TestHandleRouteV1_InvalidExclude(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/route?session=test&exclude=abc", nil)
-
-	srv.handleRouteV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-// =============================================================================
-// handleWaitV1 — missing session
-// =============================================================================
-
-func skip_TestHandleWaitV1_MissingSession(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/wait", nil)
-
-	srv.handleWaitV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-// =============================================================================
 // handleAgentSendV1 — empty message
 // =============================================================================
 
@@ -1931,53 +1618,6 @@ func TestHandleAddBeadDep_InvalidBody(t *testing.T) {
 }
 
 // =============================================================================
-// handleContextGetV1 — nil stateStore
-// =============================================================================
-
-func skip_TestHandleContextGetV1_NilStore(t *testing.T) {
-	t.Parallel()
-	srv := New(Config{})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/context/test-id", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("contextId", "test-id")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	srv.handleContextGetV1(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-}
-
-// =============================================================================
-// handleContextCacheClearV1 — always returns 200
-// =============================================================================
-
-func skip_TestHandleContextCacheClearV1_Success(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/context/cache", nil)
-
-	srv.handleContextCacheClearV1(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-
-	var resp map[string]interface{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if resp["cleared"] != true {
-		t.Errorf("cleared = %v, want true", resp["cleared"])
-	}
-}
-
-// =============================================================================
 // handleGetConfigV1 — returns safe config fields
 // =============================================================================
 
@@ -2178,65 +1818,8 @@ func TestHandlePaneInterruptV1_TmuxError(t *testing.T) {
 }
 
 // =============================================================================
-// FOURTH BATCH: handleWaitV1 query param branches, pipeline handlers,
-// checkMemoryDaemon, jobs handlers
+// Pipeline handlers, checkMemoryDaemon, jobs handlers
 // =============================================================================
-
-// handleWaitV1 — query param parsing branches
-
-func skip_TestHandleWaitV1_WithAllQueryParams(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	// Exercise all query param parsing: timeout, poll, panes, count, condition,
-	// agent_type, any, exit_on_error, require_transition
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/wait?session=__nonexist__&timeout=1s&poll=100ms&panes=0,1,2&count=3"+
-			"&condition=idle&agent_type=cc&any=true&exit_on_error=true&require_transition=true",
-		nil)
-
-	srv.handleWaitV1(rec, req)
-
-	// Will call robot.GetWait with a nonexistent session — expect timeout or error
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleWaitV1_InvalidTimeoutAndPoll(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	// Invalid durations should be silently ignored (use defaults)
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/wait?session=__nonexist__&timeout=notaduration&poll=invalid&panes=abc,2&count=-1",
-		nil)
-
-	srv.handleWaitV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
-
-func skip_TestHandleWaitV1_EmptyPanesAndCount(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	rec := httptest.NewRecorder()
-	// Empty panes param, zero count — exercises the "no panes" and "parsed <= 0" branches
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/wait?session=__nonexist__&panes=&count=0",
-		nil)
-
-	srv.handleWaitV1(rec, req)
-
-	if rec.Code == 0 {
-		t.Fatal("expected non-zero status code")
-	}
-}
 
 // handleValidatePipeline — inline content branches
 
@@ -4644,47 +4227,8 @@ func TestHandleMemoryContext_EmptyTaskBranch(t *testing.T) {
 }
 
 // =============================================================================
-// Batch 10: WebSocket stub, JWKS, context build, robot health branches
+// Batch 10: JWKS, context build, robot health branches
 // =============================================================================
-
-// --- handleWS branches ---
-
-func TestHandleWS_MethodNotAllowed(t *testing.T) {
-	t.Parallel()
-	srv := New(Config{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/ws", nil)
-	srv.handleWS(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status=%d, want 405; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestHandleWS_NotWebSocketUpgrade(t *testing.T) {
-	t.Parallel()
-	srv := New(Config{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	// No Upgrade header
-	srv.handleWS(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d, want 400; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestHandleWS_WebSocketUpgrade(t *testing.T) {
-	t.Parallel()
-	srv := New(Config{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Connection", "Upgrade")
-	srv.handleWS(rec, req)
-	// Should return "not implemented" stub
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status=%d, want 501; body: %s", rec.Code, rec.Body.String())
-	}
-}
 
 // --- handleRobotHealth: method not allowed ---
 
@@ -4912,38 +4456,6 @@ func TestJWKSCache_GetKey_CachedEmptyKid(t *testing.T) {
 	}
 	if fetchCount != 1 {
 		t.Errorf("expected 1 fetch (cache hit), got %d", fetchCount)
-	}
-}
-
-// --- handleContextBuildV1: valid question ---
-
-func skip_TestHandleContextBuildV1_ValidQuestion(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	body := `{"question":"what does this project do?"}`
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/context/build", strings.NewReader(body))
-	srv.handleContextBuildV1(rec, req)
-
-	// Should either succeed (200) or fail (500) depending on ensemble generator
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d, want 200 or 500; body: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func skip_TestHandleContextBuildV1_WithProjectDir(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	body := fmt.Sprintf(`{"question":"test","project_dir":"%s"}`, t.TempDir())
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/context/build", strings.NewReader(body))
-	srv.handleContextBuildV1(rec, req)
-
-	// Ensemble generator may succeed or fail
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d, want 200 or 500; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -5499,29 +5011,6 @@ func TestAuditStore_CleanupRemovesOldRecords(t *testing.T) {
 	}
 }
 
-// --- handleRouteV1: valid exclude parameter ---
-
-func skip_TestHandleRouteV1_ValidExclude(t *testing.T) {
-	t.Parallel()
-	s, _ := setupTestServer(t)
-	// Provide session + valid exclude; will fail at robot.GetRoute (no tmux) but
-	// exercises the exclude parsing success path
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/route?session=test-sess&exclude=0,2&strategy=round-robin", nil)
-	w := httptest.NewRecorder()
-	s.handleRouteV1(w, req)
-	// Robot will fail since no tmux session exists, but we get past the exclude parsing
-	// Accept either 200 (with error in body) or 400 (robot error)
-	if w.Code == http.StatusBadRequest {
-		var resp map[string]interface{}
-		if err := json.NewDecoder(w.Body).Decode(&resp); err == nil {
-			// Should NOT be about exclude parsing — that succeeded
-			if msg, ok := resp["message"].(string); ok && strings.Contains(msg, "invalid exclude") {
-				t.Errorf("exclude should have parsed successfully, got: %s", msg)
-			}
-		}
-	}
-}
-
 // --- handleAgentWaitV1: custom timeout_ms and poll_ms ---
 
 func TestHandleAgentWaitV1_CustomTimeoutAndPoll(t *testing.T) {
@@ -5872,60 +5361,6 @@ func TestHandleBeadsInProgress_BrInstalledBadDir(t *testing.T) {
 
 	if w.Code == http.StatusServiceUnavailable {
 		t.Fatal("should not get 503 when br is installed")
-	}
-}
-
-// --- handleBeadsDaemonStatus: br installed, daemon unsupported in current br ---
-
-func TestHandleBeadsDaemonStatus_BrInstalledBadDir(t *testing.T) {
-	if !bv.IsBdInstalled() {
-		t.Skip("br not installed")
-	}
-	s, _ := setupTestServer(t)
-	s.projectDir = t.TempDir()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/daemon/status", nil)
-	w := httptest.NewRecorder()
-	s.handleBeadsDaemonStatus(w, req)
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status=%d, want 501; body=%s", w.Code, w.Body.String())
-	}
-}
-
-// --- handleBeadsDaemonStart: br installed, daemon unsupported in current br ---
-
-func TestHandleBeadsDaemonStart_BrInstalledBadDir(t *testing.T) {
-	if !bv.IsBdInstalled() {
-		t.Skip("br not installed")
-	}
-	s, _ := setupTestServer(t)
-	s.projectDir = t.TempDir()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/start", nil)
-	w := httptest.NewRecorder()
-	s.handleBeadsDaemonStart(w, req)
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status=%d, want 501; body=%s", w.Code, w.Body.String())
-	}
-}
-
-// --- handleBeadsDaemonStop: br installed, daemon unsupported in current br ---
-
-func TestHandleBeadsDaemonStop_BrInstalledBadDir(t *testing.T) {
-	if !bv.IsBdInstalled() {
-		t.Skip("br not installed")
-	}
-	s, _ := setupTestServer(t)
-	s.projectDir = t.TempDir()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/stop", nil)
-	w := httptest.NewRecorder()
-	s.handleBeadsDaemonStop(w, req)
-
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status=%d, want 501; body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -7517,23 +6952,6 @@ func TestHandleListBeadDeps_WithProjectDir(t *testing.T) {
 	}
 }
 
-func TestHandleBeadsDaemonStatus_WithProjectDir(t *testing.T) {
-	t.Parallel()
-	if !bv.IsBdInstalled() {
-		t.Skip("br not installed")
-	}
-	srv, _ := setupTestServer(t)
-	srv.projectDir = reserveSharedBeadsProjectDir(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/daemon/status", nil)
-	rec := httptest.NewRecorder()
-	srv.handleBeadsDaemonStatus(rec, req)
-
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501", rec.Code)
-	}
-}
-
 func TestHandleClaimBead_WithProjectDir(t *testing.T) {
 	t.Parallel()
 	if !bv.IsBdInstalled() {
@@ -7717,40 +7135,6 @@ func TestHandleAgentSendV1_ValidSession_Branch(t *testing.T) {
 	}
 }
 
-func skip_TestHandleAgentContextV1_WithLinesParam(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	// Exercise the lines query param parsing
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/agents/context?lines=50", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "test-session")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	srv.handleAgentContextV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleAgentContextV1_InvalidLinesParam(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/agents/context?lines=notanumber", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "test-session")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	srv.handleAgentContextV1(rec, req)
-	// Invalid lines param → 400
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
 func TestHandleAgentInterruptV1_ValidBody_Branch(t *testing.T) {
 	t.Parallel()
 	srv, _ := setupTestServer(t)
@@ -7763,93 +7147,6 @@ func TestHandleAgentInterruptV1_ValidBody_Branch(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.handleAgentInterruptV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleAgentRestartV1_ValidBody_Branch(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	body := `{"panes":["0"],"agent_type":"claude","all":false,"dry_run":true}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test-session/agents/restart", strings.NewReader(body))
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "test-session")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	srv.handleAgentRestartV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- Output handlers with valid session (exercises robot.Get* error path) ---
-
-func skip_TestHandleOutputTailV1_WithSessionAndPanes(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/tail?session=test-session&lines=20&panes=0,1", nil)
-	rec := httptest.NewRecorder()
-	srv.handleOutputTailV1(rec, req)
-
-	// robot.GetTail fails (no tmux) → 500
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleOutputDiffV1_WithSessionAndSince(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/diff?session=test-session&since=30m", nil)
-	rec := httptest.NewRecorder()
-	srv.handleOutputDiffV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleOutputFilesV1_WithSessionAndParams(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/files?session=test-session&window=1h&limit=50", nil)
-	rec := httptest.NewRecorder()
-	srv.handleOutputFilesV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleOutputSummaryV1_WithSessionAndSince(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/summary?session=test-session&since=1h", nil)
-	rec := httptest.NewRecorder()
-	srv.handleOutputSummaryV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- Metrics handler with params ---
-
-func skip_TestHandleMetricsV1_WithSessionAndPeriod(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics?session=test-session&period=1h", nil)
-	rec := httptest.NewRecorder()
-	srv.handleMetricsV1(rec, req)
-
 	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 200 or 500", rec.Code)
 	}
@@ -8096,104 +7393,6 @@ func TestHandleSetPaneTitleV1_ValidParams(t *testing.T) {
 	}
 }
 
-// --- Agent activity/health with valid session ---
-
-func skip_TestHandleAgentActivityV1_ValidSession_Branch(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/agents/activity", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "test-session")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	srv.handleAgentActivityV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleAgentHealthV1_ValidSession_Branch(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/agents/health", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "test-session")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	srv.handleAgentHealthV1(rec, req)
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- Palette with query params ---
-
-func skip_TestHandlePaletteV1_WithCategoryAndSearch(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/palette?session=test-session&category=agents&search=restart", nil)
-	rec := httptest.NewRecorder()
-	srv.handlePaletteV1(rec, req)
-
-	// robot.GetPalette may succeed or fail
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- History with query params ---
-
-func skip_TestHandleHistoryV1_WithAllParams(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/history?session=test-session&pane=0&agent_type=claude&since=1h&last=20", nil)
-	rec := httptest.NewRecorder()
-	srv.handleHistoryV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleHistoryStatsV1_WithSession(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/history/stats?session=test-session", nil)
-	rec := httptest.NewRecorder()
-	srv.handleHistoryStatsV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- Wait with all query params ---
-
-func skip_TestHandleWaitV1_WithAllParams(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/wait?session=test-session&condition=idle&timeout=1s&poll=100ms&panes=0,1&agent_type=claude&any=true&exit_on_error=true&require_transition=true&count=2",
-		nil)
-	rec := httptest.NewRecorder()
-	srv.handleWaitV1(rec, req)
-
-	// robot.GetWait with no tmux → error code 2 → 400
-	if rec.Code != http.StatusOK && rec.Code != http.StatusBadRequest &&
-		rec.Code != http.StatusRequestTimeout && rec.Code != http.StatusConflict &&
-		rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200, 400, 408, 409, or 500", rec.Code)
-	}
-}
-
 // --- Safety blocked with params ---
 
 func TestHandleSafetyBlockedV1_WithHoursAndLimit(t *testing.T) {
@@ -8203,21 +7402,6 @@ func TestHandleSafetyBlockedV1_WithHoursAndLimit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/safety/blocked?hours=1&limit=5", nil)
 	rec := httptest.NewRecorder()
 	srv.handleSafetyBlockedV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- Context stats with session + lines ---
-
-func skip_TestHandleContextStatsV1_WithSessionAndLines(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/context/stats?session=test-session&lines=500", nil)
-	rec := httptest.NewRecorder()
-	srv.handleContextStatsV1(rec, req)
 
 	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 200 or 500", rec.Code)
@@ -8470,44 +7654,6 @@ func TestHandlePolicyUpdateV1_ValidContent(t *testing.T) {
 
 	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-// --- Git sync with dry_run + pull_only ---
-
-func skip_TestHandleGitSyncV1_DryRunPullOnly(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	body := `{"session":"test","pull_only":true,"dry_run":true}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/git/sync", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	srv.handleGitSyncV1(rec, req)
-
-	// We're in a git repo, so should not get NOT_GIT_REPO error
-	if rec.Code == http.StatusBadRequest {
-		var resp map[string]interface{}
-		json.NewDecoder(rec.Body).Decode(&resp)
-		if code, _ := resp["error_code"].(string); code == "NOT_GIT_REPO" {
-			t.Skip("not in git repo")
-		}
-	}
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200 or 500", rec.Code)
-	}
-}
-
-func skip_TestHandleGitSyncV1_PushOnlyDryRun(t *testing.T) {
-	t.Parallel()
-	srv, _ := setupTestServer(t)
-
-	body := `{"session":"test","push_only":true,"dry_run":true}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/git/sync", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	srv.handleGitSyncV1(rec, req)
-
-	if rec.Code != http.StatusOK && rec.Code != http.StatusBadRequest && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 200, 400, or 500", rec.Code)
 	}
 }
 
@@ -9684,23 +8830,6 @@ func TestHandleSafetyBlockedV1_DefaultParams(t *testing.T) {
 	}
 }
 
-// --- handleMetricsV1 exercises robot.GetMetrics ---
-
-func skip_TestHandleMetricsV1_WithPeriod(t *testing.T) {
-	t.Parallel()
-	s, _ := setupTestServer(t)
-
-	req := httptest.NewRequest("GET", "/api/v1/metrics?session=test&period=1h", nil)
-	rec := httptest.NewRecorder()
-
-	s.handleMetricsV1(rec, req)
-
-	// robot.GetMetrics may succeed or fail — either exercises the code
-	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 200 or 500, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
 // --- handleAgentInterruptV1 with valid session exercises past validation ---
 
 func TestHandleAgentInterruptV1_ValidSession(t *testing.T) {
@@ -9720,43 +8849,6 @@ func TestHandleAgentInterruptV1_ValidSession(t *testing.T) {
 	// Should pass validation, attempt tmux interaction → 500
 	if rec.Code == http.StatusBadRequest {
 		t.Fatal("valid session should not return 400")
-	}
-}
-
-// --- handleAgentRestartV1 with valid session ---
-
-func skip_TestHandleAgentRestartV1_ValidSession(t *testing.T) {
-	t.Parallel()
-	s, _ := setupTestServer(t)
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("sessionId", "test-session")
-	body := strings.NewReader(`{"pane_index":0}`)
-	req := httptest.NewRequest("POST", "/api/v1/sessions/test-session/agent/restart", body)
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	s.handleAgentRestartV1(rec, req)
-
-	if rec.Code == http.StatusBadRequest {
-		t.Fatal("valid session should not return 400")
-	}
-}
-
-// --- handlePaletteV1 with search param ---
-
-func skip_TestHandlePaletteV1_WithSearch(t *testing.T) {
-	t.Parallel()
-	s, _ := setupTestServer(t)
-
-	req := httptest.NewRequest("GET", "/api/v1/palette?search=test", nil)
-	rec := httptest.NewRecorder()
-
-	s.handlePaletteV1(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -11041,83 +10133,6 @@ func TestHandleRollback_DefaultRefToLatest(t *testing.T) {
 	// Should 404 because "latest" resolves to nothing
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// =============================================================================
-// Batch 26 – missing-parameter validation branches across server.go handlers
-// =============================================================================
-
-// --- handleAgentActivityV1: missing sessionId ---
-
-func skip_TestHandleAgentActivityV1_MissingSessionID(t *testing.T) {
-	s, _ := setupTestServer(t)
-
-	rctx := chi.NewRouteContext()
-
-	req := httptest.NewRequest("GET", "/api/v1/sessions//agents/activity", nil)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	s.handleAgentActivityV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// --- handleAgentHealthV1: missing sessionId ---
-
-func skip_TestHandleAgentHealthV1_MissingSessionID(t *testing.T) {
-	s, _ := setupTestServer(t)
-
-	rctx := chi.NewRouteContext()
-
-	req := httptest.NewRequest("GET", "/api/v1/sessions//agents/health", nil)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	s.handleAgentHealthV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// --- handleAgentContextV1: missing sessionId ---
-
-func skip_TestHandleAgentContextV1_MissingSessionID(t *testing.T) {
-	s, _ := setupTestServer(t)
-
-	rctx := chi.NewRouteContext()
-
-	req := httptest.NewRequest("GET", "/api/v1/sessions//agents/context", nil)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	s.handleAgentContextV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// --- handleAgentRestartV1: missing sessionId ---
-
-func skip_TestHandleAgentRestartV1_MissingSessionID(t *testing.T) {
-	s, _ := setupTestServer(t)
-
-	rctx := chi.NewRouteContext()
-
-	req := httptest.NewRequest("POST", "/api/v1/sessions//agents/restart", strings.NewReader(`{}`))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-
-	s.handleAgentRestartV1(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

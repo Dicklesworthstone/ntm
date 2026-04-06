@@ -742,6 +742,10 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// Apply hysteresis
 	finalState := sc.applyHysteresis(proposedState, confidence, trigger)
 
+	// Check whether any matched pattern is a rate-limit indicator so the
+	// RateLimited flag on AgentActivity is set from real pattern evidence.
+	rateLimited := isRateLimitPatternMatch(matches)
+
 	// Build result
 	activity := &AgentActivity{
 		PaneID:           sc.velocityTracker.PaneID,
@@ -753,9 +757,33 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 		DetectedPatterns: detectedPatterns,
 		StateHistory:     sc.getHistoryCopy(),
 		LastOutput:       sc.velocityTracker.LastOutputTime(),
+		RateLimited:      rateLimited,
 	}
 
 	return activity, nil
+}
+
+// rateLimitPatternNames lists the pattern names from defaultPatterns() that
+// indicate API rate-limiting. Keeping this as a set allows O(1) lookup when
+// scanning pattern matches from the classifier.
+var rateLimitPatternNames = map[string]bool{
+	"rate_limit_text":   true,
+	"http_429":          true,
+	"too_many_requests": true,
+	"quota_exceeded":    true,
+}
+
+// isRateLimitPatternMatch returns true if any PatternMatch corresponds to a
+// known rate-limit pattern.  This bridges the gap between the generic
+// CategoryError classification and the explicit RateLimited flag that wait
+// conditions and health surfaces depend on.
+func isRateLimitPatternMatch(matches []PatternMatch) bool {
+	for _, m := range matches {
+		if rateLimitPatternNames[m.Pattern] {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyState determines state based on velocity and patterns.

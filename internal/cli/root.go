@@ -535,7 +535,6 @@ Shell Integration:
 				BudgetTotal:   robotEnsembleBudgetTotal,
 				BudgetPerMode: robotEnsembleBudgetPerMode,
 				NoCache:       robotEnsembleNoCache,
-				NoQuestions:   robotEnsembleNoQuestions,
 				ProjectDir:    robotEnsembleProject,
 			}
 			if err := robot.PrintEnsembleSpawn(opts, cfg); err != nil {
@@ -2679,7 +2678,6 @@ var (
 	robotEnsembleBudgetTotal   int    // total token budget override
 	robotEnsembleBudgetPerMode int    // per-mode token budget override
 	robotEnsembleNoCache       bool   // disable context cache
-	robotEnsembleNoQuestions   bool   // skip targeted questions
 	robotEnsembleProject       string // project directory override
 	robotEnsembleSuggest       string // question for ensemble suggestion
 	robotEnsembleSuggestIDOnly bool   // output only preset name
@@ -3207,7 +3205,6 @@ func init() {
 	rootCmd.Flags().IntVar(&robotEnsembleBudgetTotal, "budget-total", 0, "Override total token budget for ensemble spawn")
 	rootCmd.Flags().IntVar(&robotEnsembleBudgetPerMode, "budget-per-agent", 0, "Override per-agent token cap for ensemble spawn")
 	rootCmd.Flags().BoolVar(&robotEnsembleNoCache, "no-cache", false, "Bypass context cache for ensemble spawn")
-	rootCmd.Flags().BoolVar(&robotEnsembleNoQuestions, "no-questions", false, "Skip targeted questions during ensemble spawn (future)")
 	rootCmd.Flags().StringVar(&robotEnsembleProject, "project", "", "Project directory override for robot commands (e.g., ensemble spawn, JFP install)")
 	rootCmd.Flags().StringVar(&robotEnsembleSuggest, "robot-ensemble-suggest", "", "Suggest best ensemble preset for a question. Example: ntm --robot-ensemble-suggest=\"What security issues exist?\"")
 	rootCmd.Flags().BoolVar(&robotEnsembleSuggestIDOnly, "suggest-id-only", false, "Output only preset name with --robot-ensemble-suggest")

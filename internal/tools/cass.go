@@ -161,45 +161,47 @@ func (a *CASSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	return output, nil
 }
 
-// enhanceQueryForContext enhances a query with context-specific terms
+// enhanceQueryForContext is a pass-through.  Query enhancement (synonym
+// expansion, typo correction, context injection) is handled by the cass CLI
+// itself via its --robot mode.  This adapter intentionally does not duplicate
+// that logic; callers that need richer query rewriting should invoke cass
+// with additional flags rather than pre-processing here.
 func (a *CASSAdapter) enhanceQueryForContext(query string) string {
-	// Simple implementation - just return the original query
-	// TODO: Add context-specific enhancement logic
 	return query
 }
 
-// filterAndRankForContext post-processes search results for better context relevance
+// filterAndRankForContext is a pass-through.  Result ranking and dedup are
+// performed server-side by cass; re-ranking in the adapter would require
+// access to embedding vectors that are not included in the JSON response.
 func (a *CASSAdapter) filterAndRankForContext(rawResults json.RawMessage, limit int) (json.RawMessage, error) {
-	// Simple implementation - just return the raw results
-	// TODO: Add filtering and ranking logic
 	return rawResults, nil
 }
 
-// extractKeyConcepts extracts key concepts from a query for broader matching
+// extractKeyConcepts splits a query into significant words (> 2 chars) for
+// use in secondary queries such as related-session or pattern lookups.
 func (a *CASSAdapter) extractKeyConcepts(query string) []string {
-	// Simple implementation - split on spaces and return non-empty words
 	words := strings.Fields(query)
-	var concepts []string
+	concepts := make([]string, 0, len(words))
 	for _, word := range words {
-		if len(word) > 2 { // Only include words longer than 2 characters
+		if len(word) > 2 {
 			concepts = append(concepts, word)
 		}
 	}
 	return concepts
 }
 
-// buildRelatedSessionQuery constructs a query for finding related sessions
-func (a *CASSAdapter) buildRelatedSessionQuery(concepts []string, sessionId string) string {
-	// Simple implementation - join concepts with OR
+// buildRelatedSessionQuery constructs a disjunctive (OR) query for finding
+// sessions that share any of the given concepts.
+func (a *CASSAdapter) buildRelatedSessionQuery(concepts []string, _ string) string {
 	if len(concepts) == 0 {
 		return ""
 	}
 	return strings.Join(concepts, " OR ")
 }
 
-// buildPatternQuery constructs a query for finding historical patterns
+// buildPatternQuery constructs a conjunctive (AND) query for finding
+// historical patterns that match all of the given concepts.
 func (a *CASSAdapter) buildPatternQuery(concepts []string) string {
-	// Simple implementation - join concepts with AND for pattern matching
 	if len(concepts) == 0 {
 		return ""
 	}

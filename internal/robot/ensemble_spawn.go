@@ -33,7 +33,6 @@ type EnsembleSpawnOptions struct {
 	BudgetTotal   int
 	BudgetPerMode int
 	NoCache       bool
-	NoQuestions   bool
 	ProjectDir    string
 }
 
@@ -251,9 +250,6 @@ func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleS
 	if opts.NoCache {
 		ensembleCfg.Cache = ensemble.CacheConfig{Enabled: false}
 		ensembleCfg.CacheOverride = true
-	}
-	if opts.NoQuestions {
-		output.Warnings = append(output.Warnings, "no-questions is not implemented yet; flag ignored")
 	}
 	if opts.BudgetPerMode > 0 {
 		ensembleCfg.Budget.MaxTokensPerMode = opts.BudgetPerMode

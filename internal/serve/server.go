@@ -950,9 +950,6 @@ func (s *Server) buildRouter() chi.Router {
 	// SSE event stream (no versioning)
 	r.Get("/events", s.handleEventStream)
 
-	// WebSocket stub (no versioning)
-	r.Get("/ws", s.handleWS)
-
 	// Kernel registry introspection (legacy path used by the web dashboard palette)
 	r.With(s.RequirePermission(PermReadHealth)).Get("/api/kernel/commands", s.handleKernelCommands)
 
@@ -1036,11 +1033,6 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(s.RequirePermission(PermWriteAgents)).Post("/send", s.handleAgentSendV1)
 			r.With(s.RequirePermission(PermWriteAgents)).Post("/interrupt", s.handleAgentInterruptV1)
 			r.With(s.RequirePermission(PermWriteAgents)).Post("/wait", s.handleAgentWaitV1)
-			// 			r.With(s.RequirePermission(PermReadAgents)).Get("/route", s.handleAgentRouteV1)
-			// 			r.With(s.RequirePermission(PermReadAgents)).Get("/activity", s.handleAgentActivityV1)
-			// 			r.With(s.RequirePermission(PermReadAgents)).Get("/health", s.handleAgentHealthV1)
-			// 			r.With(s.RequirePermission(PermReadAgents)).Get("/context", s.handleAgentContextV1)
-			// 			r.With(s.RequirePermission(PermWriteAgents)).Post("/restart", s.handleAgentRestartV1)
 		})
 
 		// Jobs API - read requires PermReadJobs, write requires PermWriteJobs
@@ -1070,60 +1062,6 @@ func (s *Server) buildRouter() chi.Router {
 		// Checkpoint and Rollback API
 		s.registerCheckpointRoutes(r)
 
-		// Metrics API - performance and analytics data
-		r.Route("/metrics", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermReadHealth)).Get("/", s.handleMetricsV1)
-			// 			r.With(s.RequirePermission(PermReadHealth)).Get("/compare", s.handleMetricsCompareV1)
-			// 			r.With(s.RequirePermission(PermReadHealth)).Get("/export", s.handleMetricsExportV1)
-			// 			r.With(s.RequirePermission(PermWriteSessions)).Post("/snapshot", s.handleMetricsSnapshotSaveV1)
-			// 			r.With(s.RequirePermission(PermReadHealth)).Get("/snapshots", s.handleMetricsSnapshotListV1)
-		})
-
-		// Analytics API - aggregated session analytics
-		// 		r.With(s.RequirePermission(PermReadHealth)).Get("/analytics", s.handleAnalyticsV1)
-
-		// Context API - context pack management
-		r.Route("/context", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermWriteSessions)).Post("/build", s.handleContextBuildV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/{contextId}", s.handleContextGetV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/stats", s.handleContextStatsV1)
-			// 			r.With(s.RequirePermission(PermWriteSessions)).Delete("/cache", s.handleContextCacheClearV1)
-		})
-
-		// Git API - git coordination with Agent Mail
-		r.Route("/git", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermWriteSessions)).Post("/sync", s.handleGitSyncV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/status", s.handleGitStatusV1)
-		})
-
-		// Output API - pane output capture and analysis
-		r.Route("/output", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/tail", s.handleOutputTailV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/diff", s.handleOutputDiffV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/files", s.handleOutputFilesV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/summary", s.handleOutputSummaryV1)
-		})
-
-		// Palette API - command palette information
-		r.Route("/palette", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/", s.handlePaletteV1)
-		})
-
-		// History API - command history
-		r.Route("/history", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/", s.handleHistoryV1)
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/stats", s.handleHistoryStatsV1)
-		})
-
-		// Route API - agent routing recommendations
-		r.Route("/route", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/", s.handleRouteV1)
-		})
-
-		// Wait API - agent state polling
-		r.Route("/wait", func(r chi.Router) {
-			// 			r.With(s.RequirePermission(PermReadSessions)).Get("/", s.handleWaitV1)
-		})
 
 		// Safety, Policy, and Approvals API
 		s.registerSafetyRoutes(r)
@@ -1902,19 +1840,6 @@ func (s *Server) handleRobotHealth(w http.ResponseWriter, r *http.Request) {
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"note":      "full robot health requires robot package integration",
 	})
-}
-
-// handleWS handles the WebSocket endpoint stub.
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !isWebSocketUpgrade(r) {
-		writeError(w, http.StatusBadRequest, "websocket upgrade required")
-		return
-	}
-	writeError(w, http.StatusNotImplemented, "websocket hub not implemented")
 }
 
 // handleEventStream handles SSE event streaming at /events.

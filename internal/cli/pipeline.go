@@ -292,8 +292,6 @@ Examples:
 
 // newPipelineStatusCmd creates the "pipeline status" subcommand
 func newPipelineStatusCmd() *cobra.Command {
-	var watch bool
-
 	cmd := &cobra.Command{
 		Use:   "status [run-id]",
 		Short: "Check pipeline status",
@@ -306,10 +304,7 @@ Examples:
   ntm pipeline status run-20241230-123456-abcd
 
   # List all running pipelines
-  ntm pipeline status
-
-  # Watch for updates (TODO)
-  ntm pipeline status run-20241230-123456-abcd --watch`,
+  ntm pipeline status`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -334,8 +329,6 @@ Examples:
 			return showPipelineStatus(runID)
 		},
 	}
-
-	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for updates")
 
 	return cmd
 }

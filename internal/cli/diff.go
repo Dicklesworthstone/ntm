@@ -13,7 +13,6 @@ import (
 
 func newDiffCmd() *cobra.Command {
 	var unified bool
-	var sideBySide bool
 	var codeOnly bool
 
 	cmd := &cobra.Command{
@@ -40,18 +39,17 @@ Examples:
 				pane1 = args[0]
 				pane2 = args[1]
 			}
-			return runDiff(session, pane1, pane2, unified, sideBySide, codeOnly)
+			return runDiff(session, pane1, pane2, unified, codeOnly)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&unified, "unified", "u", false, "Show unified diff")
-	cmd.Flags().BoolVar(&sideBySide, "side-by-side", false, "Show side-by-side diff (not implemented yet)")
 	cmd.Flags().BoolVar(&codeOnly, "code-only", false, "Compare only extracted code blocks")
 
 	return cmd
 }
 
-func runDiff(session, pane1ID, pane2ID string, unified, sideBySide, codeOnly bool) error {
+func runDiff(session, pane1ID, pane2ID string, unified, codeOnly bool) error {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -121,8 +119,6 @@ func runDiff(session, pane1ID, pane2ID string, unified, sideBySide, codeOnly boo
 	if unified {
 		fmt.Println("\nDiff:")
 		fmt.Println(diffRes.UnifiedDiff)
-	} else if sideBySide {
-		fmt.Println("\nSide-by-side diff is not implemented yet. Using summary.")
 	}
 
 	return nil

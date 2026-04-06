@@ -595,10 +595,12 @@ func meetsSingleWaitCondition(activity *AgentActivity, condition string) bool {
 		return activity.State == StateStalled
 
 	case WaitConditionRateLimited:
-		// Rate limited is detected via specific patterns in the agent output
-		// For now, we map it to the stalled state with rate-limit indicators
-		// This is a placeholder until we have proper rate-limit detection
-		return activity.State == StateError && activity.RateLimited
+		// RateLimited is set by the StateClassifier when it detects known
+		// rate-limit patterns (rate_limit_text, http_429, too_many_requests,
+		// quota_exceeded) in the pane output.  The classifier categorises
+		// these as StateError, but we check the flag directly so the wait
+		// condition fires regardless of the state enum.
+		return activity.RateLimited
 
 	default:
 		// Attention-based conditions don't apply to individual pane activity

@@ -438,66 +438,6 @@ func TestParityEnvelopeFieldsConsistent(t *testing.T) {
 }
 
 // =============================================================================
-// Output Summary Parity (requires session context)
-// =============================================================================
-
-func skip_TestParityOutputSummaryHandler(t *testing.T) {
-	srv, _ := setupTestServer(t)
-
-	// Call without session - should fail with informative error
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/output/summary", nil)
-	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "test-123"))
-	rec := httptest.NewRecorder()
-
-	srv.handleOutputSummaryV1(rec, req)
-
-	// Should return 400 Bad Request when session is missing
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("output/summary without session returned %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to parse error response: %v", err)
-	}
-
-	// Should have error message
-	if _, ok := resp["error"]; !ok {
-		t.Error("error response missing 'error' field")
-	}
-}
-
-// =============================================================================
-// Metrics Export Parity
-// =============================================================================
-
-func skip_TestParityMetricsExportHandler(t *testing.T) {
-	srv, _ := setupTestServer(t)
-
-	// Call metrics export
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/export", nil)
-	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "test-123"))
-	rec := httptest.NewRecorder()
-
-	srv.handleMetricsExportV1(rec, req)
-
-	// Should return 200 OK (format defaults to json)
-	if rec.Code != http.StatusOK {
-		t.Errorf("metrics/export returned %d, want %d", rec.Code, http.StatusOK)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	// Should have success=true
-	if resp["success"] != true {
-		t.Error("metrics/export should return success=true")
-	}
-}
-
-// =============================================================================
 // Pane Capture Parity (stub - requires live session)
 // =============================================================================
 

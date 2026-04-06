@@ -1,8 +1,13 @@
 //go:build !ensemble_experimental
 // +build !ensemble_experimental
 
-// Package robot provides machine-readable output for AI agents.
-// ensemble_spawn_stub.go provides a stub when ensemble_experimental is disabled.
+// Ensemble spawn is gated behind the ensemble_experimental build tag.
+// This is intentional: ensemble spawn creates complex multi-branch tmux
+// layouts that are still being stabilized. Other ensemble commands
+// (modes, run, compare, stop, suggest) work in the default build.
+//
+// To enable: go build -tags ensemble_experimental ./cmd/ntm
+
 package robot
 
 import (
@@ -24,7 +29,6 @@ type EnsembleSpawnOptions struct {
 	BudgetTotal   int
 	BudgetPerMode int
 	NoCache       bool
-	NoQuestions   bool
 	ProjectDir    string
 }
 

@@ -282,12 +282,12 @@ func TestExtractSignatureFromDesc(t *testing.T) {
 		{
 			name: "legacy format fallback",
 			desc: "**File:** `old/path.go:99`\n\nOther content",
-			want: "old/path.go:99:ubs",
+			want: "old/path.go:99:ubs-legacy",
 		},
 		{
 			name: "legacy format with column",
 			desc: "**File:** `old/path.go:99:5`\n\nOther content",
-			want: "old/path.go:99:5:ubs",
+			want: "old/path.go:99:5:ubs-legacy",
 		},
 		{
 			name: "no signature detectable",

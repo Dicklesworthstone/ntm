@@ -21,6 +21,7 @@ type RobotCommandInfo struct {
 	Category    string               `json:"category"`
 	Summary     string               `json:"summary,omitempty"`
 	Description string               `json:"description"`
+	Note        string               `json:"note,omitempty"`
 	SchemaID    string               `json:"schema_id,omitempty"`
 	SchemaType  string               `json:"schema_type,omitempty"`
 	Sections    []string             `json:"sections,omitempty"`
@@ -98,6 +99,7 @@ func buildCapabilitiesCommandCatalog(surfaces []RobotSurfaceDescriptor) []RobotC
 			Category:    surface.Category,
 			Summary:     surface.Summary,
 			Description: surface.Description,
+			Note:        surface.Note,
 			SchemaID:    surface.SchemaID,
 			SchemaType:  surface.SchemaType,
 			Sections:    cloneStrings(surface.Sections),
@@ -902,6 +904,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Flag:        "--robot-ensemble-spawn",
 			Category:    "ensemble",
 			Description: "Spawn a reasoning ensemble session with mode assignments.",
+			Note:        "Requires build tag: ensemble_experimental. Default build returns NOT_IMPLEMENTED.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-ensemble-spawn", Type: "string", Required: true, Description: "Session name to create"},
 				{Name: "preset", Flag: "--preset", Type: "string", Required: false, Description: "Ensemble preset name (required unless --modes is set)"},
@@ -913,7 +916,6 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "budget-total", Flag: "--budget-total", Type: "int", Required: false, Description: "Override total token budget"},
 				{Name: "budget-per-agent", Flag: "--budget-per-agent", Type: "int", Required: false, Description: "Override per-agent token cap"},
 				{Name: "no-cache", Flag: "--no-cache", Type: "bool", Required: false, Description: "Bypass context pack cache"},
-				{Name: "no-questions", Flag: "--no-questions", Type: "bool", Required: false, Description: "Skip targeted questions (future)"},
 				{Name: "project", Flag: "--project", Type: "string", Required: false, Description: "Project directory override"},
 			},
 			Examples: []string{

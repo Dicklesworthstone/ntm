@@ -2311,7 +2311,7 @@ func TestHandleListAddRemoveBeadDepsWithStubBr(t *testing.T) {
 	}
 }
 
-func TestHandleBeadsDaemonAndSync(t *testing.T) {
+func TestHandleBeadsSync(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stub br uses sh")
 	}
@@ -2319,34 +2319,6 @@ func TestHandleBeadsDaemonAndSync(t *testing.T) {
 
 	srv, _ := setupTestServer(t)
 	srv.projectDir = t.TempDir()
-
-	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/daemon/status", nil)
-	statusRec := httptest.NewRecorder()
-	srv.handleBeadsDaemonStatus(statusRec, statusReq)
-	if statusRec.Code != http.StatusNotImplemented {
-		t.Fatalf("daemon status=%d, want %d", statusRec.Code, http.StatusNotImplemented)
-	}
-	var statusResp map[string]interface{}
-	if err := json.NewDecoder(statusRec.Body).Decode(&statusResp); err != nil {
-		t.Fatalf("decode status response: %v", err)
-	}
-	if statusResp["error_code"] != ErrCodeNotImplemented {
-		t.Fatalf("daemon status error_code=%v, want %q", statusResp["error_code"], ErrCodeNotImplemented)
-	}
-
-	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/start", nil)
-	startRec := httptest.NewRecorder()
-	srv.handleBeadsDaemonStart(startRec, startReq)
-	if startRec.Code != http.StatusNotImplemented {
-		t.Fatalf("daemon start=%d, want %d", startRec.Code, http.StatusNotImplemented)
-	}
-
-	stopReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/stop", nil)
-	stopRec := httptest.NewRecorder()
-	srv.handleBeadsDaemonStop(stopRec, stopReq)
-	if stopRec.Code != http.StatusNotImplemented {
-		t.Fatalf("daemon stop=%d, want %d", stopRec.Code, http.StatusNotImplemented)
-	}
 
 	syncReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/sync", nil)
 	syncRec := httptest.NewRecorder()
@@ -3678,26 +3650,6 @@ func TestAuthMiddlewareMTLS(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("valid mtls cert status = %d, want %d", rec.Code, http.StatusOK)
-	}
-}
-
-func TestWebSocketRejectedWithoutToken(t *testing.T) {
-	srv := New(Config{
-		Auth: AuthConfig{
-			Mode:   AuthModeAPIKey,
-			APIKey: "secret",
-		},
-	})
-	handler := srv.authMiddleware(http.HandlerFunc(srv.handleWS))
-
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("ws unauth status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 

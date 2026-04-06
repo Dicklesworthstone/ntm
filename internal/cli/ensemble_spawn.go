@@ -33,7 +33,6 @@ type ensembleSpawnOptions struct {
 	Synthesis        string
 	BudgetTotal      int
 	BudgetPerMode    int
-	NoQuestions      bool
 	NoCache          bool
 	NoInject         bool
 	Project          string
@@ -101,7 +100,6 @@ func bindEnsembleSharedFlags(cmd *cobra.Command, opts *ensembleSpawnOptions) {
 	cmd.Flags().StringVar(&opts.Synthesis, "synthesis", "", "Synthesis strategy override")
 	cmd.Flags().IntVar(&opts.BudgetTotal, "budget-total", 0, "Override total token budget")
 	cmd.Flags().IntVar(&opts.BudgetPerMode, "budget-per-agent", 0, "Override per-agent token cap")
-	cmd.Flags().BoolVar(&opts.NoQuestions, "no-questions", false, "Skip targeted questions (future)")
 	cmd.Flags().BoolVar(&opts.NoCache, "no-cache", false, "Bypass context pack cache")
 	cmd.Flags().BoolVar(&opts.NoInject, "no-inject", false, "Create session without injecting prompts")
 	cmd.Flags().StringVar(&opts.Project, "project", "", "Project directory (default: current dir)")

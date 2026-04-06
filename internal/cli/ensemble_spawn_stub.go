@@ -1,6 +1,13 @@
 //go:build !ensemble_experimental
 // +build !ensemble_experimental
 
+// Ensemble spawn is gated behind the ensemble_experimental build tag.
+// This is intentional: ensemble spawn creates complex multi-branch tmux
+// layouts that are still being stabilized. Other ensemble commands
+// (modes, run, compare, stop, suggest) work in the default build.
+//
+// To enable: go build -tags ensemble_experimental ./cmd/ntm
+
 package cli
 
 import (
@@ -26,7 +33,6 @@ type ensembleSpawnOptions struct {
 	Synthesis     string
 	BudgetTotal   int
 	BudgetPerMode int
-	NoQuestions   bool
 	NoCache       bool
 	NoInject      bool
 	Project       string

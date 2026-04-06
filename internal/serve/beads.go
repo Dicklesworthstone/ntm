@@ -82,11 +82,6 @@ func (s *Server) registerBeadsRoutes(r chi.Router) {
 		r.With(s.RequirePermission(PermReadBeads)).Get("/priority", s.handleBeadsPriority)
 		r.With(s.RequirePermission(PermReadBeads)).Get("/recipes", s.handleBeadsRecipes)
 
-		// Daemon control
-		r.With(s.RequirePermission(PermReadBeads)).Get("/daemon/status", s.handleBeadsDaemonStatus)
-		r.With(s.RequirePermission(PermWriteBeads)).Post("/daemon/start", s.handleBeadsDaemonStart)
-		r.With(s.RequirePermission(PermWriteBeads)).Post("/daemon/stop", s.handleBeadsDaemonStop)
-
 		// Sync
 		r.With(s.RequirePermission(PermWriteBeads)).Post("/sync", s.handleBeadsSync)
 
@@ -755,47 +750,6 @@ func (s *Server) handleBeadsRecipes(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"recipes": recipes,
 	}, reqID)
-}
-
-// Daemon Control Endpoints
-
-// handleBeadsDaemonStatus handles GET /api/v1/beads/daemon/status
-func (s *Server) handleBeadsDaemonStatus(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	slog.Info("get beads daemon status", "request_id", reqID)
-
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
-	writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented, "br daemon commands are not supported by the installed br version", nil, reqID)
-}
-
-// handleBeadsDaemonStart handles POST /api/v1/beads/daemon/start
-func (s *Server) handleBeadsDaemonStart(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	slog.Info("start beads daemon", "request_id", reqID)
-
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
-	writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented, "br daemon commands are not supported by the installed br version", nil, reqID)
-}
-
-// handleBeadsDaemonStop handles POST /api/v1/beads/daemon/stop
-func (s *Server) handleBeadsDaemonStop(w http.ResponseWriter, r *http.Request) {
-	reqID := requestIDFromContext(r.Context())
-	slog.Info("stop beads daemon", "request_id", reqID)
-
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
-	writeErrorResponse(w, http.StatusNotImplemented, ErrCodeNotImplemented, "br daemon commands are not supported by the installed br version", nil, reqID)
 }
 
 // handleBeadsSync handles POST /api/v1/beads/sync

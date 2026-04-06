@@ -1716,52 +1716,25 @@ type paneInfo struct {
 	State     string
 }
 
-// getPanesForSession gets pane info for a session (stub - uses tmux package).
+// getPanesForSession gets pane info for a session using tmux.GetPanes.
 func getPanesForSession(session string) ([]paneInfo, error) {
-	// Import tmux package and get panes
-	// This is a simplified version - the actual implementation will use tmux.GetPanes
-	cmd := exec.Command(tmux.BinaryPath(), "list-panes", "-t", session, "-F", "#{pane_id}|#{pane_title}|#{pane_current_command}")
-	output, err := cmd.Output()
+	tmuxPanes, err := tmux.GetPanes(session)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get panes: %w", err)
 	}
 
 	var panes []paneInfo
-	for _, line := range strings.Split(string(output), "\n") {
-		if line == "" {
+	for _, tp := range tmuxPanes {
+		agentType := string(tp.Type)
+		if agentType == "" || agentType == "unknown" {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) < 2 {
-			continue
-		}
-		pane := paneInfo{
-			ID:    parts[0],
-			Title: parts[1],
-			State: "idle",
-		}
-		// Infer agent type from title
-		title := strings.ToLower(pane.Title)
-		switch {
-		case strings.Contains(title, "claude") || strings.Contains(title, "cc_"):
-			pane.AgentType = "claude"
-		case strings.Contains(title, "codex") || strings.Contains(title, "cod_"):
-			pane.AgentType = "codex"
-		case strings.Contains(title, "gemini") || strings.Contains(title, "gmi_"):
-			pane.AgentType = "gemini"
-		case strings.Contains(title, "cursor"):
-			pane.AgentType = "cursor"
-		case strings.Contains(title, "windsurf") || strings.Contains(title, "ws_"):
-			pane.AgentType = "windsurf"
-		case strings.Contains(title, "aider"):
-			pane.AgentType = "aider"
-		case strings.Contains(title, "ollama"):
-			pane.AgentType = "ollama"
-		default:
-			// Skip non-agent panes
-			continue
-		}
-		panes = append(panes, pane)
+		panes = append(panes, paneInfo{
+			ID:        tp.ID,
+			Title:     tp.Title,
+			AgentType: agentType,
+			State:     "idle",
+		})
 	}
 
 	return panes, nil

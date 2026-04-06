@@ -86,6 +86,14 @@ func SeverityMeetsThreshold(sev, threshold Severity) bool {
 	return sevVal <= threshVal
 }
 
+// LegacyRuleID is used as the rule-ID component in finding signatures when
+// the original rule ID is unknown.  Legacy bead descriptions created before
+// explicit **Signature:** lines were added store only file:line in the
+// **File:** markdown field.  When we reconstruct a dedup signature from that
+// legacy format we append this constant so the signature has a consistent
+// three-part structure (file:line:rule).
+const LegacyRuleID = "ubs-legacy"
+
 // FindingSignature generates a unique signature for a finding.
 // Used for deduplication against existing beads.
 func FindingSignature(f Finding) string {
@@ -319,7 +327,10 @@ func extractSignatureFromDesc(desc string) string {
 		}
 	}
 
-	// Fallback: look for "**File:** `path:line" pattern (legacy format)
+	// Fallback: look for "**File:** `path:line" pattern (legacy format).
+	// These descriptions predate the explicit **Signature:** line, so we
+	// reconstruct a three-part signature using LegacyRuleID as the rule
+	// component to keep the format consistent (file:line:rule).
 	lines := strings.Split(desc, "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "**File:**") {
@@ -328,8 +339,7 @@ func extractSignatureFromDesc(desc string) string {
 			end := strings.LastIndex(line, "`")
 			if start != -1 && end > start {
 				fileLine := line[start+1 : end]
-				// Add placeholder for rule since we don't have it
-				return fileLine + ":ubs"
+				return fileLine + ":" + LegacyRuleID
 			}
 		}
 	}

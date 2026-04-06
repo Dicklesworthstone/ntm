@@ -292,6 +292,16 @@ func shortAgentType(agentType string) string {
 		return "cod"
 	case "gemini":
 		return "gmi"
+	case "cursor":
+		return "cur"
+	case "windsurf":
+		return "ws"
+	case "aider":
+		return "aid"
+	case "ollama":
+		return "oll"
+	case "user":
+		return "usr"
 	default:
 		agentType = normalizeAgentType(agentType)
 		if len(agentType) > 3 {
