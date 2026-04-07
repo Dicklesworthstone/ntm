@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -1009,21 +1010,9 @@ func renderMarkdownAlerts(sb *strings.Builder, section ProjectedSection, heading
 		return
 	}
 
-	// Try to extract alerts from the section data
-	type alertData struct {
-		Alerts  []AlertInfo       `json:"alerts"`
-		Summary *AlertSummaryInfo `json:"summary,omitempty"`
-	}
-
+	// Try to extract alerts from the section data using reflection/JSON round-trip
+	// since the data may be an anonymous struct from projectAlertsSection
 	switch data := section.Data.(type) {
-	case alertData:
-		if len(data.Alerts) == 0 {
-			sb.WriteString("_No active alerts._\n\n")
-			return
-		}
-		for _, a := range data.Alerts {
-			fmt.Fprintf(sb, "- [%s] %s\n", strings.ToUpper(a.Severity), a.Message)
-		}
 	case *AlertSummaryInfo:
 		if data == nil || data.TotalActive == 0 {
 			sb.WriteString("_No active alerts._\n\n")
@@ -1033,10 +1022,47 @@ func renderMarkdownAlerts(sb *strings.Builder, section ProjectedSection, heading
 		warning := data.BySeverity["warning"]
 		fmt.Fprintf(sb, "Total: %d (critical: %d, warning: %d)\n",
 			data.TotalActive, critical, warning)
+	case []AlertInfo:
+		if len(data) == 0 {
+			sb.WriteString("_No active alerts._\n\n")
+			return
+		}
+		for _, a := range data {
+			fmt.Fprintf(sb, "- [%s] %s\n", strings.ToUpper(a.Severity), a.Message)
+		}
 	default:
-		sb.WriteString("_Alert data format not recognized._\n")
+		// Try to extract via map access for anonymous structs
+		if m, ok := toMapViaJSON(data); ok {
+			if alerts, ok := m["alerts"].([]any); ok && len(alerts) > 0 {
+				for _, raw := range alerts {
+					if a, ok := raw.(map[string]any); ok {
+						sev, _ := a["severity"].(string)
+						msg, _ := a["message"].(string)
+						fmt.Fprintf(sb, "- [%s] %s\n", strings.ToUpper(sev), msg)
+					}
+				}
+			} else {
+				sb.WriteString("_No active alerts._\n")
+			}
+		} else {
+			sb.WriteString("_Alert data format not recognized._\n")
+		}
 	}
 	sb.WriteString("\n")
+}
+
+// toMapViaJSON converts a struct to map[string]any via JSON marshaling.
+// This handles anonymous structs that can't be type-asserted directly.
+func toMapViaJSON(v any) (map[string]any, bool) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 func renderMarkdownAttention(sb *strings.Builder, section ProjectedSection, heading string, compact bool) {

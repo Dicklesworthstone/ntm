@@ -710,8 +710,7 @@ type DashboardAttentionData struct {
 // Unlike projectAttentionSection which returns SnapshotAttentionSummary (counts
 // and top 3 items), this returns full events for interactive scrolling.
 //
-// For alerts, use ProjectSections with the snapshot's AlertsDetailed field -
-// the existing projectAlertsSection handles alerts appropriately.
+// For alerts, use ProjectSections with the snapshot's AlertsDetailed field.
 func GetDashboardAttentionSection(limits SectionLimits) ProjectedSection {
 	hints := DefaultSectionFormatHints(SectionAttention)
 
@@ -807,4 +806,68 @@ func GetTerseProjection(snapshot *SnapshotOutput) *SectionProjection {
 	return ProjectSections(snapshot, SectionProjectionOptions{
 		Limits: TerseSectionLimits(),
 	})
+}
+
+// GetDashboardAlertsSection returns an alerts section with full alert data
+// suitable for TUI dashboard display.
+func GetDashboardAlertsSection(limits SectionLimits) ProjectedSection {
+	hints := DefaultSectionFormatHints(SectionAlerts)
+
+	tracker := alertTrackerGlobal
+	if tracker == nil {
+		section := NewProjectedSection(SectionAlerts, DashboardAlertsData{}).WithFormatHints(hints)
+		return section.WithOmission("unavailable", "alert tracker not initialized")
+	}
+
+	activeAlerts := tracker.GetActive()
+
+	// Convert to AlertInfo
+	alertInfos := make([]AlertInfo, 0, len(activeAlerts))
+	for _, a := range activeAlerts {
+		alertInfos = append(alertInfos, AlertInfo{
+			ID:        a.ID,
+			Source:    string(a.Source),
+			Type:      string(a.Type),
+			Severity:  string(a.Severity),
+			Message:   a.Message,
+			CreatedAt: a.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	// Apply limit
+	limit := limits.Alerts
+	if limit <= 0 {
+		limit = DashboardSectionLimits().Alerts
+	}
+
+	original := len(alertInfos)
+	truncated := 0
+	if len(alertInfos) > limit {
+		truncated = len(alertInfos) - limit
+		alertInfos = alertInfos[:limit]
+	}
+
+	// Build summary
+	var summary *AlertSummaryInfo
+	if tracker != nil {
+		summary = &AlertSummaryInfo{
+			TotalActive: original,
+			BySeverity:  make(map[string]int),
+		}
+		for _, a := range activeAlerts {
+			summary.BySeverity[string(a.Severity)]++
+		}
+	}
+
+	data := DashboardAlertsData{
+		Alerts:  alertInfos,
+		Summary: summary,
+	}
+
+	section := NewProjectedSection(SectionAlerts, data).WithFormatHints(hints)
+	if truncated > 0 {
+		section = section.WithTruncation(original, truncated, "limit", "all alerts shown in panel")
+	}
+
+	return section
 }

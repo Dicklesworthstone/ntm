@@ -3,7 +3,11 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 func TestWorkCmd(t *testing.T) {
@@ -110,6 +114,49 @@ func TestResolveTriageFormat(t *testing.T) {
 			t.Parallel()
 			if got := resolveTriageFormat(tc.input); got != tc.want {
 				t.Errorf("resolveTriageFormat(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkLabelCommandsSmoke(t *testing.T) {
+	t.Setenv("PATH", filepath.Join(repoRoot(t), "testdata", "faketools")+":"+os.Getenv("PATH"))
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "label-health text output",
+			args: []string{"work", "label-health"},
+			want: []string{"Label Health", "backend", "warning", "Velocity:", "Staleness:", "Blocked: 3"},
+		},
+		{
+			name: "label-flow text output",
+			args: []string{"work", "label-flow"},
+			want: []string{"Label Flow Analysis", "Bottleneck Labels:", "backend", "Top Dependencies:", "backend", "frontend", "(2)"},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resetFlags()
+
+			out, err := captureStdout(t, func() error {
+				rootCmd.SetArgs(tc.args)
+				return rootCmd.Execute()
+			})
+			if err != nil {
+				t.Fatalf("Execute(%v) failed: %v", tc.args, err)
+			}
+
+			plain := status.StripANSI(out)
+			for _, want := range tc.want {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("output missing %q\noutput:\n%s", want, plain)
+				}
 			}
 		})
 	}

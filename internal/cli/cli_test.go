@@ -26,9 +26,11 @@ import (
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionpkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/startup"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -2582,12 +2584,230 @@ func TestConfigShowJSONIncludesSafetyProfile(t *testing.T) {
 
 // TestDepsCmdExecutes tests the deps command runs
 func TestDepsCmdExecutes(t *testing.T) {
-	resetFlags()
-	rootCmd.SetArgs([]string{"deps"})
+	fakeToolsDir := filepath.Join(repoRoot(t), "testdata", "faketools")
+	toolDir := t.TempDir()
+	writeFakeVersionTool(t, toolDir, "tmux", "tmux 3.4")
 
-	err := rootCmd.Execute()
-	// deps may exit 1 if missing required deps, but shouldn't panic
-	_ = err
+	t.Setenv("PATH", toolDir+":"+fakeToolsDir+":"+os.Getenv("PATH"))
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+
+	resetFlags()
+	rootCmd.SetArgs([]string{"--json", "deps"})
+
+	out, err := captureStdout(t, func() error {
+		return rootCmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("Execute() failed: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("expected deps command to emit JSON output")
+	}
+}
+
+func TestDepsCmdSmoke(t *testing.T) {
+	fakeToolsDir := filepath.Join(repoRoot(t), "testdata", "faketools")
+	toolDir := t.TempDir()
+
+	for _, tool := range []struct {
+		name    string
+		version string
+	}{
+		{name: "tmux", version: "tmux 3.4"},
+		{name: "claude", version: "claude 1.0.0"},
+		{name: "codex", version: "codex 0.1.0"},
+		{name: "gemini", version: "gemini 0.9.0"},
+		{name: "fzf", version: "fzf 0.55.0"},
+		{name: "git", version: "git version 2.49.0"},
+	} {
+		writeFakeVersionTool(t, toolDir, tool.name, tool.version)
+	}
+
+	t.Setenv("PATH", toolDir+":"+fakeToolsDir+":"+os.Getenv("PATH"))
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+
+	t.Run("json output", func(t *testing.T) {
+		resetFlags()
+
+		out, err := captureStdout(t, func() error {
+			rootCmd.SetArgs([]string{"--json", "deps"})
+			return rootCmd.Execute()
+		})
+		if err != nil {
+			t.Fatalf("Execute() failed: %v", err)
+		}
+
+		var resp output.DepsResponse
+		if err := json.Unmarshal([]byte(out), &resp); err != nil {
+			t.Fatalf("unmarshal deps JSON: %v\noutput=%s", err, out)
+		}
+		if !resp.AllInstalled {
+			t.Fatalf("AllInstalled = false, want true")
+		}
+
+		depsByName := make(map[string]output.DependencyCheck, len(resp.Dependencies))
+		for _, dep := range resp.Dependencies {
+			depsByName[dep.Name] = dep
+		}
+
+		for _, name := range []string{"tmux", "Claude Code", "OpenAI Codex", "Gemini CLI", "fzf", "git"} {
+			dep, ok := depsByName[name]
+			if !ok {
+				t.Fatalf("missing dependency %q in response: %+v", name, resp.Dependencies)
+			}
+			if !dep.Installed {
+				t.Fatalf("dependency %q marked not installed", name)
+			}
+			if dep.Path == "" {
+				t.Fatalf("dependency %q missing path", name)
+			}
+		}
+
+		agentMail, ok := depsByName["Agent Mail"]
+		if !ok {
+			t.Fatalf("missing Agent Mail check in response: %+v", resp.Dependencies)
+		}
+		if agentMail.Installed {
+			t.Fatalf("Agent Mail should be unavailable in smoke test response")
+		}
+	})
+
+	t.Run("verbose text output", func(t *testing.T) {
+		resetFlags()
+
+		out, err := captureStdout(t, func() error {
+			rootCmd.SetArgs([]string{"deps", "-v"})
+			return rootCmd.Execute()
+		})
+		if err != nil {
+			t.Fatalf("Execute() failed: %v", err)
+		}
+
+		plain := status.StripANSI(out)
+		for _, want := range []string{
+			"NTM Dependency Check",
+			"Required:",
+			"tmux",
+			"AI Agents:",
+			"Claude Code",
+			"OpenAI Codex",
+			"Gemini CLI",
+			"Recommended:",
+			"fzf",
+			"git",
+			"Services:",
+			"Agent Mail",
+			"Flywheel Tools:",
+			"All required dependencies installed.",
+		} {
+			if !strings.Contains(plain, want) {
+				t.Fatalf("verbose deps output missing %q\noutput:\n%s", want, plain)
+			}
+		}
+	})
+}
+
+func TestDepsCmdSmokeMissingOptionalTools(t *testing.T) {
+	toolDir := t.TempDir()
+	writeFakeVersionTool(t, toolDir, "tmux", "tmux 3.4")
+
+	t.Setenv("PATH", toolDir)
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+
+	resetFlags()
+
+	out, err := captureStdout(t, func() error {
+		rootCmd.SetArgs([]string{"deps", "-v"})
+		return rootCmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("Execute() failed: %v", err)
+	}
+
+	plain := status.StripANSI(out)
+	for _, want := range []string{
+		"tmux",
+		"Claude Code",
+		"Install: npm install -g @anthropic-ai/claude-code",
+		"OpenAI Codex",
+		"Install: npm install -g @openai/codex",
+		"Gemini CLI",
+		"Install: npm install -g @google/gemini-cli",
+		"Agent Mail",
+		"Flywheel Tools:",
+		"No AI agents installed.",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing expected degraded deps output %q\noutput:\n%s", want, plain)
+		}
+	}
+}
+
+func TestCheckDepWithPathKeepsVersionOutputOnNonZeroExit(t *testing.T) {
+	toolDir := t.TempDir()
+	expectedPath := filepath.Join(toolDir, "codex")
+	writeFakeVersionToolWithExit(t, toolDir, "codex", "codex-cli 0.999.0", 17)
+
+	t.Setenv("PATH", toolDir)
+
+	status, version, path := checkDepWithPath(depCheck{
+		Name:        "OpenAI Codex",
+		Command:     "codex",
+		VersionArgs: []string{"--version"},
+	})
+
+	if status != "found" {
+		t.Fatalf("status = %q, want %q", status, "found")
+	}
+	if version != "codex-cli 0.999.0" {
+		t.Fatalf("version = %q, want %q", version, "codex-cli 0.999.0")
+	}
+	if path != expectedPath {
+		t.Fatalf("path = %q, want %q", path, expectedPath)
+	}
+}
+
+func TestCheckDepWithPathReturnsInstalledWithoutVersionWhenCommandIsSilent(t *testing.T) {
+	toolDir := t.TempDir()
+	expectedPath := filepath.Join(toolDir, "gemini")
+	writeFakeVersionToolWithExit(t, toolDir, "gemini", "", 9)
+
+	t.Setenv("PATH", toolDir)
+
+	status, version, path := checkDepWithPath(depCheck{
+		Name:        "Gemini CLI",
+		Command:     "gemini",
+		VersionArgs: []string{"--version"},
+	})
+
+	if status != "found" {
+		t.Fatalf("status = %q, want %q", status, "found")
+	}
+	if version != "" {
+		t.Fatalf("version = %q, want empty string", version)
+	}
+	if path != expectedPath {
+		t.Fatalf("path = %q, want %q", path, expectedPath)
+	}
+}
+
+func writeFakeVersionTool(t *testing.T, dir, name, version string) {
+	t.Helper()
+	writeFakeVersionToolWithExit(t, dir, name, version, 0)
+}
+
+func writeFakeVersionToolWithExit(t *testing.T, dir, name, version string, exitCode int) {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	script := "#!/bin/sh\n"
+	if version != "" {
+		script += fmt.Sprintf("printf '%%s\\n' %q\n", version)
+	}
+	script += fmt.Sprintf("exit %d\n", exitCode)
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
 }
 
 // TestListCmdExecutes tests list command executes

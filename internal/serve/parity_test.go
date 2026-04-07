@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
 // =============================================================================
@@ -100,6 +104,121 @@ func compareNormalized(t *testing.T, name string, expected, actual map[string]an
 	}
 
 	return false
+}
+
+func decodeResponseMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("failed to decode JSON response: %v\nBody: %s", err, string(body))
+	}
+	return resp
+}
+
+func requireArrayField(t *testing.T, resp map[string]any, field string, wantLen int) []any {
+	t.Helper()
+
+	raw, ok := resp[field]
+	if !ok {
+		t.Fatalf("response missing %q field", field)
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("response field %q has type %T, want []any", field, raw)
+	}
+	if wantLen >= 0 && len(items) != wantLen {
+		t.Fatalf("%s len = %d, want %d", field, len(items), wantLen)
+	}
+	return items
+}
+
+func requireObjectField(t *testing.T, resp map[string]any, field string) map[string]any {
+	t.Helper()
+
+	raw, ok := resp[field]
+	if !ok {
+		t.Fatalf("response missing %q field", field)
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("response field %q has type %T, want object", field, raw)
+	}
+	return obj
+}
+
+func seedRobotAPIContractState(t *testing.T, store *state.Store, bus *events.EventBus) (liveSessionID, emptySessionID string) {
+	t.Helper()
+
+	now := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+	liveSessionID = "contract-live"
+	emptySessionID = "contract-empty"
+
+	for _, sess := range []state.Session{
+		{
+			ID:          liveSessionID,
+			Name:        liveSessionID,
+			ProjectPath: "/tmp/contract-live",
+			CreatedAt:   now,
+			Status:      state.SessionActive,
+		},
+		{
+			ID:          emptySessionID,
+			Name:        emptySessionID,
+			ProjectPath: "/tmp/contract-empty",
+			CreatedAt:   now.Add(-time.Minute),
+			Status:      state.SessionActive,
+		},
+	} {
+		sess := sess
+		if err := store.CreateSession(&sess); err != nil {
+			t.Fatalf("create session %q: %v", sess.ID, err)
+		}
+	}
+
+	lastSeen := now
+	if err := store.CreateAgent(&state.Agent{
+		ID:         "agent-1",
+		SessionID:  liveSessionID,
+		Name:       "BlueLake",
+		Type:       state.AgentTypeCodex,
+		Model:      "gpt-5",
+		TmuxPaneID: "%1",
+		LastSeen:   &lastSeen,
+		Status:     state.AgentWorking,
+	}); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	bus.PublishSync(events.BaseEvent{
+		Type:      string(events.EventPromptSend),
+		Timestamp: now,
+		Session:   liveSessionID,
+	})
+
+	return liveSessionID, emptySessionID
+}
+
+func prepareRobotAPIContractEnv(t *testing.T) {
+	t.Helper()
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	tmpWD := t.TempDir()
+	if err := os.Chdir(tmpWD); err != nil {
+		t.Fatalf("chdir %s: %v", tmpWD, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origWD); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	// Keep core system tools available while forcing optional helpers like bv/br
+	// to fail fast instead of probing the real repository.
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 }
 
 // findDifferences returns human-readable difference descriptions.
@@ -290,6 +409,59 @@ func TestParityRobotStatusEndpoint(t *testing.T) {
 	t.Logf("Robot status REST response has %d fields", len(restNorm))
 }
 
+func TestParityRobotStatusV1Endpoint(t *testing.T) {
+	prepareRobotAPIContractEnv(t)
+
+	srv, store := setupTestServer(t)
+	liveSessionID, _ := seedRobotAPIContractState(t, store, srv.eventBus)
+
+	robot.SetProjectionStore(store)
+	robotOutput, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
+	if err != nil {
+		t.Fatalf("robot.GetStatusWithOptions failed: %v", err)
+	}
+
+	robotJSON, err := json.Marshal(robotOutput)
+	if err != nil {
+		t.Fatalf("failed to marshal robot output: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/robot/status", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("REST robot/status v1 returned %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	resp := decodeResponseMap(t, rec.Body.Bytes())
+	if resp["success"] != true {
+		t.Fatal("robot/status v1 should return success=true")
+	}
+	if _, ok := resp["request_id"].(string); !ok {
+		t.Fatalf("robot/status v1 missing request_id: %+v", resp)
+	}
+
+	sessions := requireArrayField(t, resp, "sessions", -1)
+	foundLiveSession := false
+	for _, raw := range sessions {
+		session, ok := raw.(map[string]any)
+		if ok && session["name"] == liveSessionID {
+			foundLiveSession = true
+			break
+		}
+	}
+	if !foundLiveSession {
+		t.Fatalf("robot/status v1 missing seeded session %q in %+v", liveSessionID, sessions)
+	}
+
+	robotNorm := normalizeForParity(t, robotJSON)
+	restNorm := normalizeForParity(t, rec.Body.Bytes())
+	if !compareNormalized(t, "robot/status v1", robotNorm, restNorm) {
+		t.Fatal("robot/status v1 parity mismatch")
+	}
+}
+
 // =============================================================================
 // Version Parity Test
 // =============================================================================
@@ -387,6 +559,170 @@ func TestParityCapabilitiesOutput(t *testing.T) {
 	}
 
 	t.Logf("Capabilities output validated: %d fields", len(robotNorm))
+}
+
+func TestV1RobotAPIContractSmoke(t *testing.T) {
+	prepareRobotAPIContractEnv(t)
+
+	srv, store := setupTestServer(t)
+	liveSessionID, emptySessionID := seedRobotAPIContractState(t, store, srv.eventBus)
+
+	tests := []struct {
+		name     string
+		path     string
+		wantCode int
+		check    func(t *testing.T, resp map[string]any)
+	}{
+		{
+			name:     "health",
+			path:     "/api/v1/health",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				if resp["success"] != true {
+					t.Fatalf("success = %v, want true", resp["success"])
+				}
+				if resp["status"] != "healthy" {
+					t.Fatalf("status = %v, want healthy", resp["status"])
+				}
+				if _, ok := resp["timestamp"].(string); !ok {
+					t.Fatalf("health missing timestamp: %+v", resp)
+				}
+				if _, ok := resp["request_id"].(string); !ok {
+					t.Fatalf("health missing request_id: %+v", resp)
+				}
+			},
+		},
+		{
+			name:     "capabilities",
+			path:     "/api/v1/capabilities",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				requireArrayField(t, resp, "commands", -1)
+				requireArrayField(t, resp, "categories", -1)
+				requireObjectField(t, resp, "attention")
+				if _, ok := resp["version"].(string); !ok {
+					t.Fatalf("capabilities missing version: %+v", resp)
+				}
+				if _, ok := resp["request_id"].(string); !ok {
+					t.Fatalf("capabilities missing request_id: %+v", resp)
+				}
+			},
+		},
+		{
+			name:     "sessions",
+			path:     "/api/v1/sessions",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				sessions := requireArrayField(t, resp, "sessions", 2)
+				if resp["count"] != float64(len(sessions)) {
+					t.Fatalf("count = %v, want %d", resp["count"], len(sessions))
+				}
+			},
+		},
+		{
+			name:     "session detail",
+			path:     "/api/v1/sessions/" + liveSessionID,
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				session := requireObjectField(t, resp, "session")
+				if session["id"] != liveSessionID {
+					t.Fatalf("session.id = %v, want %s", session["id"], liveSessionID)
+				}
+				if session["status"] != string(state.SessionActive) {
+					t.Fatalf("session.status = %v, want %s", session["status"], state.SessionActive)
+				}
+			},
+		},
+		{
+			name:     "empty events",
+			path:     "/api/v1/sessions/" + emptySessionID + "/events",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				events := requireArrayField(t, resp, "events", 0)
+				if resp["count"] != float64(len(events)) {
+					t.Fatalf("count = %v, want %d", resp["count"], len(events))
+				}
+				if resp["session_id"] != emptySessionID {
+					t.Fatalf("session_id = %v, want %s", resp["session_id"], emptySessionID)
+				}
+			},
+		},
+		{
+			name:     "populated events",
+			path:     "/api/v1/sessions/" + liveSessionID + "/events",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				eventList := requireArrayField(t, resp, "events", 1)
+				if resp["count"] != float64(len(eventList)) {
+					t.Fatalf("count = %v, want %d", resp["count"], len(eventList))
+				}
+				event := eventList[0].(map[string]any)
+				if event["session"] != liveSessionID {
+					t.Fatalf("event.session = %v, want %s", event["session"], liveSessionID)
+				}
+				if event["type"] != string(events.EventPromptSend) {
+					t.Fatalf("event.type = %v, want %s", event["type"], events.EventPromptSend)
+				}
+			},
+		},
+		{
+			name:     "robot health",
+			path:     "/api/v1/robot/health",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				requireObjectField(t, resp, "sessions")
+				requireArrayField(t, resp, "alerts", -1)
+				if _, ok := resp["request_id"].(string); !ok {
+					t.Fatalf("robot health missing request_id: %+v", resp)
+				}
+			},
+		},
+		{
+			name:     "missing session",
+			path:     "/api/v1/sessions/missing-session",
+			wantCode: http.StatusNotFound,
+			check: func(t *testing.T, resp map[string]any) {
+				t.Helper()
+				if resp["success"] != false {
+					t.Fatalf("success = %v, want false", resp["success"])
+				}
+				if resp["error_code"] != ErrCodeNotFound {
+					t.Fatalf("error_code = %v, want %s", resp["error_code"], ErrCodeNotFound)
+				}
+				if _, ok := resp["error"].(string); !ok {
+					t.Fatalf("missing error field: %+v", resp)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantCode, rec.Body.String())
+			}
+
+			resp := decodeResponseMap(t, rec.Body.Bytes())
+			if _, ok := resp["timestamp"].(string); !ok {
+				t.Fatalf("response missing timestamp: %+v", resp)
+			}
+			if _, ok := resp["request_id"].(string); !ok {
+				t.Fatalf("response missing request_id: %+v", resp)
+			}
+			tc.check(t, resp)
+		})
+	}
 }
 
 // =============================================================================
