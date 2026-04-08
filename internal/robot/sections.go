@@ -30,7 +30,11 @@
 // semantically requires a different presentation.
 package robot
 
-import "time"
+import (
+	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
+)
 
 // =============================================================================
 // Section Names (Canonical)
@@ -808,12 +812,18 @@ func GetTerseProjection(snapshot *SnapshotOutput) *SectionProjection {
 	})
 }
 
+// DashboardAlertsData contains alert data for TUI dashboard display.
+type DashboardAlertsData struct {
+	Alerts  []AlertInfo       `json:"alerts"`
+	Summary *AlertSummaryInfo `json:"summary,omitempty"`
+}
+
 // GetDashboardAlertsSection returns an alerts section with full alert data
 // suitable for TUI dashboard display.
 func GetDashboardAlertsSection(limits SectionLimits) ProjectedSection {
 	hints := DefaultSectionFormatHints(SectionAlerts)
 
-	tracker := alertTrackerGlobal
+	tracker := alerts.GetGlobalTracker()
 	if tracker == nil {
 		section := NewProjectedSection(SectionAlerts, DashboardAlertsData{}).WithFormatHints(hints)
 		return section.WithOmission("unavailable", "alert tracker not initialized")
@@ -826,7 +836,6 @@ func GetDashboardAlertsSection(limits SectionLimits) ProjectedSection {
 	for _, a := range activeAlerts {
 		alertInfos = append(alertInfos, AlertInfo{
 			ID:        a.ID,
-			Source:    string(a.Source),
 			Type:      string(a.Type),
 			Severity:  string(a.Severity),
 			Message:   a.Message,
