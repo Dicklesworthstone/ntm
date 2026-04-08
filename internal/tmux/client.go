@@ -82,12 +82,17 @@ func (c *Client) cbRecordSuccess() {
 func (c *Client) cbRecordFailure() {
 	n := c.cbFailures.Add(1)
 	if n >= int64(cbMaxFailures) {
+		wasAlreadyOpen := c.cbOpenUntil.Load() != 0
 		deadline := time.Now().Add(cbBackoffDuration).UnixNano()
 		c.cbOpenUntil.Store(deadline)
 		c.cbProbing.Store(false)
-		slog.Warn("tmux circuit breaker opened",
-			"consecutive_failures", n,
-			"backoff", cbBackoffDuration.String())
+		// Log only on the transition from closed to open, not on
+		// every subsequent failure or half-open probe failure.
+		if !wasAlreadyOpen {
+			slog.Warn("tmux circuit breaker opened",
+				"consecutive_failures", n,
+				"backoff", cbBackoffDuration.String())
+		}
 	}
 }
 
@@ -172,12 +177,47 @@ func (c *Client) RunContext(ctx context.Context, args ...string) (string, error)
 		out, err = runSSHContext(ctx, "--", c.Remote, remoteCmd)
 	}
 
-	if err != nil {
+	if err != nil && isInfrastructureError(err) {
 		c.cbRecordFailure()
 	} else {
+		// Both success (err==nil) and application-level errors (tmux ran
+		// but returned non-zero) prove tmux is responsive.  Reset the
+		// consecutive infrastructure failure counter.
 		c.cbRecordSuccess()
 	}
 	return out, err
+}
+
+// isInfrastructureError returns true for errors indicating the tmux
+// process itself is unavailable (timeouts, exec failures, connection
+// errors) as opposed to tmux responding normally with an error status.
+func isInfrastructureError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Context timeout or cancellation → tmux is hung or too slow.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	// exec.Error means the binary couldn't be started at all (not found,
+	// permission denied).
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return true
+	}
+	// exec.ExitError means the process ran and exited non-zero.  For local
+	// tmux this is an application-level error ("session not found" etc.).
+	// For SSH, exit code 255 specifically indicates a connection/protocol
+	// failure — that IS an infrastructure error.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.ExitCode() == 255 {
+			return true // SSH connection failure
+		}
+		return false // normal non-zero exit from tmux
+	}
+	// Unknown error type — conservatively treat as infrastructure failure.
+	return true
 }
 
 // ShellQuote returns a POSIX-shell-safe single-quoted string.

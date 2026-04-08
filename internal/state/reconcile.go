@@ -1,9 +1,9 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -35,6 +35,14 @@ func (s *Store) ReconcileSessions() (*ReconcileResult, error) {
 	// Build a set of live tmux session names for O(1) lookup.
 	liveSessions, err := tmux.ListSessions()
 	if err != nil {
+		// If the circuit breaker is open, we cannot determine whether
+		// sessions are alive or dead — skip reconciliation entirely
+		// rather than aggressively terminating everything.
+		if errors.Is(err, tmux.ErrCircuitOpen) {
+			slog.Warn("reconcile: skipped, tmux circuit breaker is open",
+				"active_count", len(activeSessions))
+			return &ReconcileResult{Checked: 0}, nil
+		}
 		// tmux might not be running at all — that's fine, it means
 		// ALL active sessions in the store are stale.
 		slog.Warn("reconcile: tmux.ListSessions failed, treating all active sessions as stale",
@@ -62,9 +70,10 @@ func (s *Store) ReconcileSessions() (*ReconcileResult, error) {
 
 		sess.Status = SessionTerminated
 		if updateErr := s.UpdateSession(&sess); updateErr != nil {
-			errMsg := fmt.Sprintf("reconcile: update session %s (%s): %v", sess.Name, sess.ID, updateErr)
-			slog.Error(errMsg)
-			result.Errors = append(result.Errors, errMsg)
+			slog.Error("reconcile: failed to update session",
+				"session_name", sess.Name, "session_id", sess.ID, "error", updateErr)
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("%s (%s): %v", sess.Name, sess.ID, updateErr))
 			continue
 		}
 		result.Terminated = append(result.Terminated, sess.Name)
@@ -74,8 +83,7 @@ func (s *Store) ReconcileSessions() (*ReconcileResult, error) {
 		slog.Info("reconcile: completed",
 			"checked", result.Checked,
 			"terminated", len(result.Terminated),
-			"errors", len(result.Errors),
-			"timestamp", time.Now().UTC().Format(time.RFC3339))
+			"errors", len(result.Errors))
 	}
 
 	return result, nil
