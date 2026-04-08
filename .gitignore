@@ -107,7 +107,7 @@ storage.sqlite3.corrupt-*
 storage.sqlite3-shm.corrupt-*
 storage.sqlite3-wal.corrupt-*
 .env
-.claude/settings.local.json
+.claude/
 .gomodcache/
 
 # Go build cache (NEVER commit this — an agent did once, 3500+ files, 100+ MB)
