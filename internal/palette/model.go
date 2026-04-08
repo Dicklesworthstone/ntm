@@ -998,7 +998,7 @@ func (m *Model) updateEditPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.phase = PhaseTarget
 		return *m, nil
 
-	case msg.Type == tea.KeyCtrlC:
+	case key.Matches(msg, keys.Quit):
 		m.quitting = true
 		return *m, tea.Quit
 	}
