@@ -40,6 +40,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
@@ -1101,6 +1102,24 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Set the robot projection store once for the server's lifetime.
+	// The store never changes, so there is no need to set it per-handler.
+	if s.stateStore != nil {
+		robot.SetProjectionStore(s.stateStore)
+	}
+
+	// Reconcile state store with tmux reality on startup.
+	// Marks sessions as "terminated" if their tmux session no longer exists.
+	if s.stateStore != nil {
+		if result, err := s.stateStore.ReconcileSessions(); err != nil {
+			slog.Warn("state-tmux reconciliation failed on startup", "error", err)
+		} else if len(result.Terminated) > 0 {
+			slog.Info("state-tmux reconciliation completed",
+				"terminated", result.Terminated,
+				"checked", result.Checked)
+		}
+	}
+
 	// Start WebSocket hub
 	s.ensureWSHubRunning()
 	defer s.wsHub.Stop()
@@ -1816,9 +1835,6 @@ func (s *Server) handleRobotStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
-	}
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
 	}
 	output, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
 	if err != nil {
@@ -2549,6 +2565,36 @@ func performDoctorCheckAPI(ctx context.Context) map[string]interface{} {
 	return report
 }
 
+// validateSessionParam checks that a session ID from a URL parameter is
+// non-empty and satisfies tmux naming rules. It writes an error response and
+// returns false when validation fails, so callers can return early.
+func validateSessionParam(w http.ResponseWriter, sessionID, reqID string) bool {
+	if sessionID == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+		return false
+	}
+	if err := tmux.ValidateSessionName(sessionID); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, fmt.Sprintf("invalid session ID: %s", err.Error()), nil, reqID)
+		return false
+	}
+	return true
+}
+
+// validatePaneIdx parses a pane index string and validates it is non-negative.
+// It writes an error response and returns -1 when validation fails.
+func validatePaneIdx(w http.ResponseWriter, paneIdxStr, reqID string) int {
+	paneIdx := 0
+	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+		return -1
+	}
+	if paneIdx < 0 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "pane index must be non-negative", nil, reqID)
+		return -1
+	}
+	return paneIdx
+}
+
 // handleSessionsV1 handles GET /api/v1/sessions.
 func (s *Server) handleSessionsV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -2580,8 +2626,7 @@ func (s *Server) handleSessionV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "id")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -2665,9 +2710,6 @@ func (s *Server) handleSessionEventsV1(w http.ResponseWriter, r *http.Request, s
 // handleRobotStatusV1 handles GET /api/v1/robot/status.
 func (s *Server) handleRobotStatusV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetStatusWithOptions(robot.PaginationOptions{})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2689,9 +2731,6 @@ func (s *Server) handleRobotStatusV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotHealthV1 handles GET /api/v1/robot/health.
 func (s *Server) handleRobotHealthV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetHealth()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2713,9 +2752,6 @@ func (s *Server) handleRobotHealthV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotSnapshotV1 handles GET /api/v1/robot/snapshot.
 func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetSnapshotWithOptions(nil, robot.PaginationOptions{})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2737,9 +2773,6 @@ func (s *Server) handleRobotSnapshotV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotDigestV1 handles GET /api/v1/robot/digest.
 func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetDigest(robot.DigestOptions{})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2762,9 +2795,6 @@ func (s *Server) handleRobotDigestV1(w http.ResponseWriter, r *http.Request) {
 // Returns attention digest with focus on action-required items (non-blocking).
 func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	// Use digest with attention-focused profile
 	output, err := robot.GetDigest(robot.DigestOptions{
 		Profile:             r.URL.Query().Get("profile"),
@@ -2792,9 +2822,6 @@ func (s *Server) handleRobotAttentionV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotDashboardV1 handles GET /api/v1/robot/dashboard.
 func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetDashboard()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2816,9 +2843,6 @@ func (s *Server) handleRobotDashboardV1(w http.ResponseWriter, r *http.Request) 
 // handleRobotTerseV1 handles GET /api/v1/robot/terse.
 func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetTerse(nil)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2840,9 +2864,6 @@ func (s *Server) handleRobotTerseV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotTriageV1 handles GET /api/v1/robot/triage.
 func (s *Server) handleRobotTriageV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetTriage(robot.TriageOptions{})
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2864,9 +2885,6 @@ func (s *Server) handleRobotTriageV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotPlanV1 handles GET /api/v1/robot/plan.
 func (s *Server) handleRobotPlanV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetPlan()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2888,9 +2906,6 @@ func (s *Server) handleRobotPlanV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotGraphV1 handles GET /api/v1/robot/graph.
 func (s *Server) handleRobotGraphV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	output, err := robot.GetGraph()
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -2912,9 +2927,6 @@ func (s *Server) handleRobotGraphV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotActivityV1 handles GET /api/v1/robot/activity.
 func (s *Server) handleRobotActivityV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	session := r.URL.Query().Get("session")
 	output, err := robot.GetActivity(robot.ActivityOptions{Session: session})
 	if err != nil {
@@ -2937,9 +2949,6 @@ func (s *Server) handleRobotActivityV1(w http.ResponseWriter, r *http.Request) {
 // handleRobotAlertsV1 handles GET /api/v1/robot/alerts.
 func (s *Server) handleRobotAlertsV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
-	if s.stateStore != nil {
-		robot.SetProjectionStore(s.stateStore)
-	}
 	includeResolved := r.URL.Query().Get("include_resolved") == "true"
 	output, err := robot.GetAlertsDetailed(includeResolved)
 	if err != nil {
@@ -3007,8 +3016,7 @@ func (s *Server) handleSessionStatusV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "id")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3034,8 +3042,7 @@ func (s *Server) handleSessionAttachV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "id")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3066,8 +3073,7 @@ func (s *Server) handleSessionZoomV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "id")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3100,8 +3106,7 @@ func (s *Server) handleSessionViewV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "id")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3131,8 +3136,7 @@ func (s *Server) handleListPanesV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3171,14 +3175,12 @@ func (s *Server) handleGetPaneV1(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3223,14 +3225,12 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3245,6 +3245,19 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Policy check: reject text that matches a blocked safety pattern.
+	// Graceful degradation: if policy cannot be loaded, allow through.
+	if p, err := policy.LoadOrDefault(); err == nil {
+		if match := p.Check(req.Text); match != nil && match.Action == policy.ActionBlock {
+			slog.Warn("pane input blocked by policy",
+				"session", sessionID, "pane", paneIdx,
+				"pattern", match.Pattern, "request_id", reqID)
+			writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+				fmt.Sprintf("blocked by safety policy: %s", match.Reason), nil, reqID)
+			return
+		}
+	}
+
 	// Build pane target
 	paneTarget := fmt.Sprintf("%s:%d", sessionID, paneIdx)
 
@@ -3252,6 +3265,10 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+
+	slog.Info("pane input sent via API",
+		"session", sessionID, "pane", paneIdx,
+		"text_len", len(req.Text), "request_id", reqID)
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"sent": true,
@@ -3265,14 +3282,12 @@ func (s *Server) handlePaneInterruptV1(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3297,14 +3312,12 @@ func (s *Server) handlePaneOutputV1(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3348,14 +3361,12 @@ func (s *Server) handleGetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3385,14 +3396,12 @@ func (s *Server) handleSetPaneTitleV1(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3426,14 +3435,12 @@ func (s *Server) handleStartPaneStreamV1(w http.ResponseWriter, r *http.Request)
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3459,14 +3466,12 @@ func (s *Server) handleStopPaneStreamV1(w http.ResponseWriter, r *http.Request) 
 	sessionID := chi.URLParam(r, "sessionId")
 	paneIdxStr := chi.URLParam(r, "paneIdx")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
-	paneIdx := 0
-	if _, err := fmt.Sscanf(paneIdxStr, "%d", &paneIdx); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid pane index", nil, reqID)
+	paneIdx := validatePaneIdx(w, paneIdxStr, reqID)
+	if paneIdx < 0 {
 		return
 	}
 
@@ -3505,8 +3510,7 @@ func (s *Server) handleListAgentsV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3556,8 +3560,7 @@ func (s *Server) handleAgentSpawnV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3611,8 +3614,7 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3625,6 +3627,17 @@ func (s *Server) handleAgentSendV1(w http.ResponseWriter, r *http.Request) {
 	if req.Message == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "message required", nil, reqID)
 		return
+	}
+
+	// Policy check: reject messages that match a blocked safety pattern.
+	if p, err := policy.LoadOrDefault(); err == nil {
+		if match := p.Check(req.Message); match != nil && match.Action == policy.ActionBlock {
+			slog.Warn("agent send blocked by policy",
+				"session", sessionID, "pattern", match.Pattern, "request_id", reqID)
+			writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+				fmt.Sprintf("blocked by safety policy: %s", match.Reason), nil, reqID)
+			return
+		}
 	}
 
 	opts := robot.SendOptions{
@@ -3666,8 +3679,7 @@ func (s *Server) handleAgentInterruptV1(w http.ResponseWriter, r *http.Request) 
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 
@@ -3719,8 +3731,7 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
 
-	if sessionID == "" {
-		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "session ID required", nil, reqID)
+	if !validateSessionParam(w, sessionID, reqID) {
 		return
 	}
 

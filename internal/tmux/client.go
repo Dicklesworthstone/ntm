@@ -3,17 +3,41 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Client handles tmux operations, optionally on a remote host
+// ErrCircuitOpen is returned when the circuit breaker is open (tmux
+// has failed too many times consecutively and we are in backoff).
+var ErrCircuitOpen = errors.New("tmux circuit breaker open: too many consecutive failures, backing off")
+
+// Circuit breaker configuration.
+const (
+	// cbMaxFailures is the number of consecutive failures before the circuit
+	// opens and starts rejecting calls immediately during the backoff window.
+	cbMaxFailures = 5
+	// cbBackoffDuration is how long the circuit stays open before allowing a
+	// single probe call through (half-open state).
+	cbBackoffDuration = 10 * time.Second
+)
+
+// Client handles tmux operations, optionally on a remote host.
+// It includes a built-in circuit breaker that prevents hammering
+// the tmux server when it is consistently failing.
 type Client struct {
 	Remote string // "user@host" or empty for local
+
+	// Circuit breaker state
+	cbFailures  atomic.Int64 // consecutive failure count
+	cbOpenUntil atomic.Int64 // unix-nano timestamp when circuit closes (0 = closed)
+	cbProbing   atomic.Bool  // true when a half-open probe is in flight
 }
 
 // NewClient creates a new tmux client
@@ -23,6 +47,49 @@ func NewClient(remote string) *Client {
 
 // DefaultClient is the default local client
 var DefaultClient = NewClient("")
+
+// cbCheck returns ErrCircuitOpen if the circuit breaker is open and no
+// probe should be attempted.  In half-open state it allows exactly one
+// call through (the probe) and returns nil for that caller.
+func (c *Client) cbCheck() error {
+	openUntil := c.cbOpenUntil.Load()
+	if openUntil == 0 {
+		return nil // circuit closed
+	}
+	if time.Now().UnixNano() < openUntil {
+		// Still in backoff window. Allow one probe through.
+		if c.cbProbing.CompareAndSwap(false, true) {
+			return nil // this caller is the half-open probe
+		}
+		return ErrCircuitOpen
+	}
+	// Backoff expired — close circuit, allow traffic.
+	c.cbOpenUntil.Store(0)
+	c.cbFailures.Store(0)
+	c.cbProbing.Store(false)
+	return nil
+}
+
+// cbRecordSuccess resets the circuit breaker to a healthy state.
+func (c *Client) cbRecordSuccess() {
+	c.cbFailures.Store(0)
+	c.cbOpenUntil.Store(0)
+	c.cbProbing.Store(false)
+}
+
+// cbRecordFailure increments the consecutive failure count and opens
+// the circuit once the threshold is reached.
+func (c *Client) cbRecordFailure() {
+	n := c.cbFailures.Add(1)
+	if n >= int64(cbMaxFailures) {
+		deadline := time.Now().Add(cbBackoffDuration).UnixNano()
+		c.cbOpenUntil.Store(deadline)
+		c.cbProbing.Store(false)
+		slog.Warn("tmux circuit breaker opened",
+			"consecutive_failures", n,
+			"backoff", cbBackoffDuration.String())
+	}
+}
 
 var (
 	tmuxBinaryOnce sync.Once
@@ -82,18 +149,35 @@ func (c *Client) Run(args ...string) (string, error) {
 }
 
 // RunContext executes a tmux command with cancellation support.
+// It checks the circuit breaker before executing and records the
+// result (success or failure) to update circuit state.
 func (c *Client) RunContext(ctx context.Context, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if c.Remote == "" {
-		return runLocalContext(ctx, args...)
+
+	// Circuit breaker: reject early if tmux has been consistently failing.
+	if err := c.cbCheck(); err != nil {
+		return "", err
 	}
 
-	// Remote execution via ssh
-	remoteCmd := buildRemoteShellCommand("tmux", args...)
-	// Use "--" to prevent Remote from being parsed as an ssh option.
-	return runSSHContext(ctx, "--", c.Remote, remoteCmd)
+	var out string
+	var err error
+	if c.Remote == "" {
+		out, err = runLocalContext(ctx, args...)
+	} else {
+		// Remote execution via ssh
+		remoteCmd := buildRemoteShellCommand("tmux", args...)
+		// Use "--" to prevent Remote from being parsed as an ssh option.
+		out, err = runSSHContext(ctx, "--", c.Remote, remoteCmd)
+	}
+
+	if err != nil {
+		c.cbRecordFailure()
+	} else {
+		c.cbRecordSuccess()
+	}
+	return out, err
 }
 
 // ShellQuote returns a POSIX-shell-safe single-quoted string.
