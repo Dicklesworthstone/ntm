@@ -109,6 +109,18 @@ func TestResolveExplicitSessionName(t *testing.T) {
 	}
 }
 
+func TestResolveSessionWithOptionsRejectsInvalidExplicitSessionName(t *testing.T) {
+	t.Parallel()
+
+	_, err := ResolveSessionWithOptions("../escape", nil, SessionResolveOptions{})
+	if err == nil {
+		t.Fatal("expected invalid session error")
+	}
+	if !strings.Contains(err.Error(), "invalid session name") {
+		t.Fatalf("expected invalid session error, got %v", err)
+	}
+}
+
 func TestTruncateWithEllipsis_Util(t *testing.T) {
 	t.Parallel()
 

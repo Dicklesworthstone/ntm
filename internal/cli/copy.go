@@ -162,7 +162,7 @@ func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) 
 
 	t := theme.Current()
 
-	res, err := ResolveSession(session, w)
+	res, err := ResolveSessionWithOptions(session, w, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
 	if err != nil {
 		return err
 	}

@@ -119,7 +119,7 @@ func runSessionsSave(sessionName string, opts session.SaveOptions) error {
 		return err
 	}
 
-	res, err := ResolveSession(sessionName, os.Stdout)
+	res, err := ResolveSessionWithOptions(sessionName, os.Stdout, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
 	if err != nil {
 		if IsJSONOutput() {
 			return output.PrintJSON(output.NewError(err.Error()))

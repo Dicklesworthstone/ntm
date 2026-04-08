@@ -79,7 +79,7 @@ func runSave(w io.Writer, session, outputDir string, lines int, filter AgentFilt
 
 	t := theme.Current()
 
-	res, err := ResolveSession(session, w)
+	res, err := ResolveSessionWithOptions(session, w, SessionResolveOptions{TreatAsJSON: IsJSONOutput()})
 	if err != nil {
 		return err
 	}
