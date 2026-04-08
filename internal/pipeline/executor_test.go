@@ -2689,6 +2689,7 @@ func TestExecuteStep_UsesWorkflowRetryPolicy(t *testing.T) {
 		ID:         "step1",
 		PromptFile: "/nonexistent/prompt.txt",
 		RetryCount: 2,
+		RetryDelay: Duration{Duration: time.Millisecond},
 	}
 
 	workflow := &Workflow{

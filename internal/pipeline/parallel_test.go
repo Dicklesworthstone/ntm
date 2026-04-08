@@ -139,6 +139,7 @@ func TestExecuteParallel_UsesWorkflowRetryPolicyForSubsteps(t *testing.T) {
 				ID:         "step1",
 				PromptFile: "/nonexistent/prompt.txt",
 				RetryCount: 2,
+				RetryDelay: Duration{Duration: time.Millisecond},
 			},
 		},
 	}
