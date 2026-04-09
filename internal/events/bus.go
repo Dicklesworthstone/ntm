@@ -86,6 +86,7 @@ func (b *EventBus) Subscribe(eventType string, handler EventHandler) Unsubscribe
 				// Remove handler by replacing with last and truncating
 				n := len(handlers)
 				handlers[i] = handlers[n-1]
+				handlers[n-1] = handlerEntry{} // Clear to prevent memory leak of the handler closure
 				b.subscribers[eventType] = handlers[:n-1]
 				return
 			}
