@@ -836,8 +836,8 @@ func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOp
 	}
 	defer resp.Body.Close()
 
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	// Read response body (limit to 10MB to prevent DoS/OOM)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil, NewAPIError("overseer_send", 0, err)
 	}
