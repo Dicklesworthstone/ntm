@@ -158,16 +158,16 @@ func (l *Logger) Close() error {
 // maybeRotate checks if rotation is needed and performs it.
 func (l *Logger) maybeRotate() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	// Only rotate once per day at most (check under lock to avoid TOCTOU)
 	if time.Since(l.lastRotation) < 24*time.Hour {
+		l.mu.Unlock()
 		return
 	}
 
 	l.lastRotation = time.Now()
+	l.mu.Unlock()
 
-	// Perform rotation
+	// Perform rotation without holding the lock for the entire process
 	if err := l.rotateOldEntries(); err != nil {
 		// Log rotation errors but don't fail
 		slog.Warn("event log rotation error", "error", err)
@@ -175,40 +175,53 @@ func (l *Logger) maybeRotate() {
 }
 
 // rotateOldEntries removes entries older than retention period using streaming.
+// It avoids blocking concurrent LogEvent calls and guarantees no events are lost.
 func (l *Logger) rotateOldEntries() error {
-	// Create temp file for filtered logs
-	tmpFile, err := os.CreateTemp(filepath.Dir(l.path), "events-rotate-*.jsonl")
+	oldPath := l.path + ".old"
+	tmpPath := l.path + ".tmp"
+
+	// 1. Swap the active log file out quickly
+	l.mu.Lock()
+	if l.file != nil {
+		l.file.Close()
+		l.file = nil
+	}
+	if err := os.Rename(l.path, oldPath); err != nil && !os.IsNotExist(err) {
+		l.mu.Unlock()
+		return fmt.Errorf("renaming to old path: %w", err)
+	}
+	// Create fresh log file for incoming events
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		l.mu.Unlock()
+		return fmt.Errorf("reopening active log file: %w", err)
+	}
+	l.file = f
+	l.mu.Unlock()
+
+	// Ensure cleanup of oldPath if something panics
+	defer os.Remove(oldPath)
+	defer os.Remove(tmpPath)
+
+	// 2. Filter old events into tmpPath (can take a long time, lock is NOT held)
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		if tmpPath != "" {
-			os.Remove(tmpPath) // Cleanup on error
-		}
-	}()
 
-	// Open source file for reading
-	// We need to read from the current path, but we have l.file open for writing.
-	// It's safer to open a separate read handle.
-	srcFile, err := os.Open(l.path)
+	srcFile, err := os.Open(oldPath)
 	if err != nil {
 		tmpFile.Close()
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("opening source file: %w", err)
+		return fmt.Errorf("opening old log file: %w", err)
 	}
-	defer srcFile.Close()
 
 	cutoff := time.Now().AddDate(0, 0, -l.retentionDays)
 	scanner := bufio.NewScanner(srcFile)
-	// Set max line size for large events (10MB), start with 64KB
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
-
-	// Buffer for writing to temp file
 	writer := bufio.NewWriter(tmpFile)
-	// Note: tmpFile is closed explicitly in all code paths below; no defer Close here.
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -216,76 +229,65 @@ func (l *Logger) rotateOldEntries() error {
 			continue
 		}
 
-		// Decrypt for timestamp inspection
 		plain, decErr := decryptJSONLine(line)
 		if decErr != nil {
-			// Keep lines we can't decrypt
-			if _, err := writer.Write(line); err != nil {
-				tmpFile.Close()
-				return err
-			}
+			writer.Write(line)
 			writer.WriteByte('\n')
 			continue
 		}
 
 		var event Event
 		if err := json.Unmarshal(plain, &event); err != nil {
-			// Keep malformed entries
-			if _, err := writer.Write(line); err != nil {
-				tmpFile.Close()
-				return err
-			}
+			writer.Write(line)
 			writer.WriteByte('\n')
 			continue
 		}
 
 		if event.Timestamp.After(cutoff) {
-			// Re-encrypt if encryption is enabled (write original encrypted line)
-			if _, err := writer.Write(line); err != nil {
-				tmpFile.Close()
-				return err
-			}
+			writer.Write(line)
 			writer.WriteByte('\n')
 		}
 	}
 
+	srcFile.Close()
 	if err := scanner.Err(); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("scanning log file: %w", err)
+		return fmt.Errorf("scanning old log file: %w", err)
 	}
-
 	if err := writer.Flush(); err != nil {
 		tmpFile.Close()
 		return fmt.Errorf("flushing temp file: %w", err)
 	}
 
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
+	// 3. Merge the newly arrived events from active l.path into tmpPath and swap back
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Sync and close active file
+	l.file.Sync()
+	l.file.Close()
+
+	// Open active file to read new events
+	activeReader, err := os.Open(l.path)
+	if err == nil {
+		_, _ = io.Copy(tmpFile, activeReader)
+		activeReader.Close()
 	}
 
-	// Now swap the files
-	// First close our write handle
-	if l.file != nil {
-		l.file.Close()
-		l.file = nil
-	}
+	tmpFile.Close()
 
-	// Rename temp to target (atomic replace)
+	// Swap tmp file to become the new active log file
 	if err := os.Rename(tmpPath, l.path); err != nil {
-		// Attempt to reopen original if rename fails
-		if f, openErr := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); openErr == nil {
-			l.file = f
-		}
-		return fmt.Errorf("renaming temp file: %w", err)
+		// Recovery fallback
+		l.file, _ = os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		return fmt.Errorf("renaming tmp to active: %w", err)
 	}
-	tmpPath = "" // Prevent deferred os.Remove from removing the successfully renamed file
 
-	// Reopen file for appending
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	// Reopen active file
+	l.file, err = os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("reopening log file: %w", err)
+		return fmt.Errorf("reopening final log file: %w", err)
 	}
-	l.file = f
 
 	return nil
 }
