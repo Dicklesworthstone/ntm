@@ -323,28 +323,24 @@ func (q *JobQueue) CancelSession(sessionName string) []*SpawnJob {
 	defer q.mu.Unlock()
 
 	var cancelled []*SpawnJob
-	var toRemove []int
+	var retained jobHeap
 
-	for i, job := range q.jobs {
+	for _, job := range q.jobs {
 		if job.SessionName == sessionName {
 			job.Cancel()
 			cancelled = append(cancelled, job)
-			toRemove = append(toRemove, i)
+			delete(q.byID, job.ID)
+		} else {
+			retained = append(retained, job)
 		}
 	}
 
-	// Remove in reverse order to maintain indices
-	for i := len(toRemove) - 1; i >= 0; i-- {
-		idx := toRemove[i]
-		heap.Remove(&q.jobs, idx)
+	if len(cancelled) > 0 {
+		q.jobs = retained
+		heap.Init(&q.jobs)
+		delete(q.sessionCounts, sessionName)
+		q.stats.CurrentSize = len(q.jobs)
 	}
-
-	for _, job := range cancelled {
-		delete(q.byID, job.ID)
-	}
-
-	delete(q.sessionCounts, sessionName)
-	q.stats.CurrentSize = len(q.jobs)
 
 	return cancelled
 }
@@ -355,28 +351,24 @@ func (q *JobQueue) CancelBatch(batchID string) []*SpawnJob {
 	defer q.mu.Unlock()
 
 	var cancelled []*SpawnJob
-	var toRemove []int
+	var retained jobHeap
 
-	for i, job := range q.jobs {
+	for _, job := range q.jobs {
 		if job.BatchID == batchID {
 			job.Cancel()
 			cancelled = append(cancelled, job)
-			toRemove = append(toRemove, i)
+			delete(q.byID, job.ID)
+		} else {
+			retained = append(retained, job)
 		}
 	}
 
-	// Remove in reverse order
-	for i := len(toRemove) - 1; i >= 0; i-- {
-		idx := toRemove[i]
-		heap.Remove(&q.jobs, idx)
+	if len(cancelled) > 0 {
+		q.jobs = retained
+		heap.Init(&q.jobs)
+		delete(q.batchCounts, batchID)
+		q.stats.CurrentSize = len(q.jobs)
 	}
-
-	for _, job := range cancelled {
-		delete(q.byID, job.ID)
-	}
-
-	delete(q.batchCounts, batchID)
-	q.stats.CurrentSize = len(q.jobs)
 
 	return cancelled
 }
