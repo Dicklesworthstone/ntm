@@ -360,7 +360,7 @@ func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (respOut *Respo
 	}
 
 	var ollamaResp ollamaGenerateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&ollamaResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -521,7 +521,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]Model, error) {
 	}
 
 	var tagsResp ollamaTagsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&tagsResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 

@@ -283,7 +283,7 @@ func fetchOllamaPS(ctx context.Context, host string) (map[string]int64, error) {
 	}
 
 	var ps ollamaPSResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ps); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&ps); err != nil {
 		return nil, err
 	}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -94,7 +95,7 @@ func (c *Client) GetContext(ctx context.Context, task string) (*ContextResult, e
 	}
 
 	var result ContextResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&result); err != nil {
 		return nil, err
 	}
 	return &result, nil
