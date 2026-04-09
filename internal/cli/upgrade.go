@@ -790,7 +790,7 @@ func fetchLatestRelease() (*GitHubRelease, error) {
 		return nil, fmt.Errorf("no releases found - this is a development version")
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
 

@@ -471,7 +471,7 @@ func readEnsembleImportSource(input string, opts ensembleImportOptions) ([]byte,
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, "", fmt.Errorf("download failed: %s", resp.Status)
 		}
-		data, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 100*1024*1024))
 		if err != nil {
 			return nil, "", fmt.Errorf("read remote body: %w", err)
 		}
