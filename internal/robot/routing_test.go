@@ -1495,6 +1495,11 @@ func TestExtractFilePaths(t *testing.T) {
 			want:   []string{"src/main.go", "src/util.go"},
 		},
 		{
+			name:   "consecutive paths overlap bug",
+			prompt: "Update src/main.go src/util.go",
+			want:   []string{"src/main.go", "src/util.go"},
+		},
+		{
 			name:   "path in quotes",
 			prompt: `Fix the bug in "internal/config.yaml"`,
 			want:   []string{"internal/config.yaml"},

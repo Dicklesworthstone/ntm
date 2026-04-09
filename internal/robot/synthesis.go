@@ -412,7 +412,15 @@ func matchesWildcard(filePath, pattern string) bool {
 		if idx == -1 {
 			return false
 		}
+		// Single * should not cross directory boundaries
+		if strings.Contains(remaining[:idx], "/") {
+			return false
+		}
 		remaining = remaining[idx+len(part):]
+	}
+	// Check if any remaining trailing portion matched by a trailing * contains a slash
+	if len(parts) > 0 && parts[len(parts)-1] == "" && strings.Contains(remaining, "/") {
+		return false
 	}
 	return true
 }

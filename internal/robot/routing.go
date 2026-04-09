@@ -279,7 +279,8 @@ func (rc *ReservationCache) GetReservedPathsForAgent(agentName string) []string 
 // =============================================================================
 
 // filePathRegex matches common file path patterns in prompts.
-var filePathRegex = regexp.MustCompile(`(?:^|[\s"'(])([a-zA-Z0-9_./\-]+\.[a-zA-Z0-9]+)(?:[\s"'),:]|$)`)
+// Use lookahead-like logic by not consuming the trailing boundary to avoid overlap.
+var filePathRegex = regexp.MustCompile(`(?:^|[\s"'(])([a-zA-Z0-9_./\-]+\.[a-zA-Z0-9]+)`)
 
 // ExtractFilePaths extracts potential file paths from a prompt.
 // It looks for patterns like:
