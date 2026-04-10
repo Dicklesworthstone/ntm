@@ -141,6 +141,7 @@ type Tracker struct {
 	retentionDays int
 	enabled       bool
 	mu            sync.Mutex
+	lastPrune     time.Time
 }
 
 // TrackerOptions configures the score tracker.
@@ -212,8 +213,11 @@ func (t *Tracker) Record(score *Score) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if err := t.pruneLocked(now); err != nil {
-		return err
+	if now.Sub(t.lastPrune) > 24*time.Hour {
+		if err := t.pruneLocked(now); err != nil {
+			return err
+		}
+		t.lastPrune = now
 	}
 
 	f, err := os.OpenFile(t.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)

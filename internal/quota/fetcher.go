@@ -119,10 +119,15 @@ func (f *PTYFetcher) FetchQuota(ctx context.Context, paneID string, provider Pro
 				if found {
 					info.RawOutput = relevantOutput
 					// Optionally fetch status for additional info
-					statusOutput, err := f.fetchStatus(ctx, paneID, cmds.StatusCmd, captureLines, 2*time.Second)
-					if err == nil && statusOutput != "" {
-						parseStatusOutput(info, statusOutput, provider)
-						info.RawOutput += "\n---\n" + statusOutput
+					if cmds.StatusCmd != "" && cmds.StatusCmd != cmds.UsageCmd {
+						statusOutput, err := f.fetchStatus(ctx, paneID, cmds.StatusCmd, captureLines, 2*time.Second)
+						if err == nil && statusOutput != "" {
+							parseStatusOutput(info, statusOutput, provider)
+							info.RawOutput += "\n---\n" + statusOutput
+						}
+					} else if cmds.StatusCmd == cmds.UsageCmd {
+						// If they are the same command, parse the existing output for status data too
+						parseStatusOutput(info, relevantOutput, provider)
 					}
 					info.Error = "" // Clear any previous error
 					return info, nil
