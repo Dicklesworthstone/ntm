@@ -582,19 +582,26 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	// Check if client wants download or inline response
 	if r.URL.Query().Get("download") == "true" || r.Header.Get("Accept") == "application/octet-stream" {
-		// Stream file directly
-		data, err := os.ReadFile(tmpPath)
+		f, err := os.Open(tmpPath)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-				"failed to read export file", nil, reqID)
+				"failed to open export file", nil, reqID)
+			return
+		}
+		defer f.Close()
+
+		info, err := f.Stat()
+		if err != nil {
+			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+				"failed to stat export file", nil, reqID)
 			return
 		}
 
 		filename := fmt.Sprintf("%s_%s%s", sessionName, checkpointID, ext)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-		if _, err := w.Write(data); err != nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		if _, err := io.Copy(w, f); err != nil {
 			log.Printf("REST: failed to write checkpoint export data request_id=%s: %v", reqID, err)
 		}
 		return
