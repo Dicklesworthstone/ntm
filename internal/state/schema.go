@@ -294,9 +294,14 @@ func ApplyMigrations(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("begin transaction for migration %s: %w", filename, err)
 		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
 
 		if _, err := tx.Exec(content); err != nil {
-			_ = tx.Rollback() // best-effort rollback; we're returning the exec error
 			return fmt.Errorf("execute migration %s: %w", filename, err)
 		}
 
@@ -305,13 +310,13 @@ func ApplyMigrations(db *sql.DB) error {
 			"INSERT INTO _migrations (version, name) VALUES (?, ?)",
 			version, filename,
 		); err != nil {
-			_ = tx.Rollback() // best-effort rollback; we're returning the insert error
 			return fmt.Errorf("record migration %s: %w", filename, err)
 		}
 
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %s: %w", filename, err)
 		}
+		committed = true
 	}
 
 	return nil

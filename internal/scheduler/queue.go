@@ -453,9 +453,10 @@ func (f *FairScheduler) Enqueue(job *SpawnJob) {
 	f.queue.Enqueue(job)
 }
 
-// TryDequeue returns the next job that can run without violating fairness.
-// Returns nil if no eligible job is available.
-func (f *FairScheduler) TryDequeue() *SpawnJob {
+// TryDequeueWithCallbacks returns the next job that can run without violating fairness.
+// If acquire is provided, it is called before removing the job; if it returns false, the job is skipped.
+// If release is provided, it is called if the job was removed concurrently after acquire returned true.
+func (f *FairScheduler) TryDequeueWithCallbacks(acquire func(*SpawnJob) bool, release func(*SpawnJob)) *SpawnJob {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -473,6 +474,10 @@ func (f *FairScheduler) TryDequeue() *SpawnJob {
 			}
 		}
 
+		if acquire != nil && !acquire(job) {
+			continue
+		}
+
 		// This job can run, remove and return it
 		removed := f.queue.Remove(job.ID)
 		if removed != nil {
@@ -480,11 +485,19 @@ func (f *FairScheduler) TryDequeue() *SpawnJob {
 			if removed.BatchID != "" {
 				f.runningBatches[removed.BatchID]++
 			}
+			return removed
+		} else if release != nil {
+			release(job)
 		}
-		return removed
 	}
 
 	return nil
+}
+
+// TryDequeue returns the next job that can run without violating fairness.
+// Returns nil if no eligible job is available.
+func (f *FairScheduler) TryDequeue() *SpawnJob {
+	return f.TryDequeueWithCallbacks(nil, nil)
 }
 
 // MarkComplete marks a job as complete for fairness tracking.

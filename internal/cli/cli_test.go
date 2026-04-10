@@ -1186,7 +1186,6 @@ func TestResolveEnsembleProjectDirForSessionFallsBackToProjectRoot(t *testing.T)
 	}
 }
 
-
 func TestResolveGitProjectDirRejectsInvalidSessionName(t *testing.T) {
 	_, _, err := resolveGitProjectDir("../escape")
 	if err == nil {
@@ -1236,7 +1235,6 @@ func TestResolveAddSessionRejectsInvalidSessionName(t *testing.T) {
 		t.Fatalf("expected invalid session error, got %v", err)
 	}
 }
-
 
 func TestRunEnsembleStatus_UsesPersistedStateWhenSessionOffline(t *testing.T) {
 	isolateSessionAgentStorage(t)

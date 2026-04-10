@@ -404,14 +404,15 @@ func ParseWorkflows(content string) ([]WorkflowTemplate, error) {
 // ParseWorkflow parses a single workflow template from TOML content.
 func ParseWorkflow(content string) (*WorkflowTemplate, error) {
 	// Try array format first
-	workflows, err := ParseWorkflows(content)
-	if err == nil && len(workflows) > 0 {
-		return &workflows[0], nil
+	var file WorkflowsFile
+	md, err := toml.Decode(content, &file)
+	if err == nil && len(file.Workflows) > 0 && len(undecodedWorkflowFields(md)) == 0 {
+		return &file.Workflows[0], nil
 	}
 
 	// Try single workflow format
 	var tmpl WorkflowTemplate
-	md, err := toml.Decode(content, &tmpl)
+	md, err = toml.Decode(content, &tmpl)
 	if err != nil {
 		return nil, fmt.Errorf("parse TOML: %w", err)
 	}

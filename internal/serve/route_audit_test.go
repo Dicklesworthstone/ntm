@@ -72,25 +72,25 @@ func TestRouteAudit_NoEmptyGetHandlers(t *testing.T) {
 	// handling (e.g., SSE streams, WebSocket upgrades, routes needing DB,
 	// or routes that shell out to external tools and may be slow).
 	skipRoutes := map[string]string{
-		"/events":                        "SSE stream, not a request/response endpoint",
-		"/api/v1/ws":                     "WebSocket upgrade, not a request/response endpoint",
-		"/api/v1/attention/stream":       "SSE stream",
-		"/api/v1/openapi.json":           "generated OpenAPI spec may be empty without full config",
-		"/docs":                          "serves external HTML, may redirect",
-		"/docs/":                         "serves external HTML, may redirect",
-		"/api/sessions/{id}":             "requires valid session ID in state store",
-		"/api/sessions/{id}/agents":      "requires valid session ID",
-		"/api/sessions/{id}/events":      "requires valid session ID, SSE stream",
-		"/api/v1/sessions/{id}":          "requires valid session ID in state store",
-		"/api/v1/sessions/{id}/status":   "requires valid session ID",
-		"/api/v1/sessions/{id}/agents":   "requires valid session ID",
-		"/api/v1/sessions/{id}/events":   "requires valid session ID, SSE stream",
-		"/api/v1/attention/events":       "requires attention feed data",
-		"/api/v1/attention/digest":       "requires attention feed data",
-		"/api/v1/streaming/stats":        "requires streaming manager data",
-		"/api/v1/deps":                   "deps check shells out to verify installed tools",
-		"/api/v1/doctor":                 "doctor check shells out to external tools",
-		"/api/kernel/commands":           "kernel command list, tested separately",
+		"/events":                      "SSE stream, not a request/response endpoint",
+		"/api/v1/ws":                   "WebSocket upgrade, not a request/response endpoint",
+		"/api/v1/attention/stream":     "SSE stream",
+		"/api/v1/openapi.json":         "generated OpenAPI spec may be empty without full config",
+		"/docs":                        "serves external HTML, may redirect",
+		"/docs/":                       "serves external HTML, may redirect",
+		"/api/sessions/{id}":           "requires valid session ID in state store",
+		"/api/sessions/{id}/agents":    "requires valid session ID",
+		"/api/sessions/{id}/events":    "requires valid session ID, SSE stream",
+		"/api/v1/sessions/{id}":        "requires valid session ID in state store",
+		"/api/v1/sessions/{id}/status": "requires valid session ID",
+		"/api/v1/sessions/{id}/agents": "requires valid session ID",
+		"/api/v1/sessions/{id}/events": "requires valid session ID, SSE stream",
+		"/api/v1/attention/events":     "requires attention feed data",
+		"/api/v1/attention/digest":     "requires attention feed data",
+		"/api/v1/streaming/stats":      "requires streaming manager data",
+		"/api/v1/deps":                 "deps check shells out to verify installed tools",
+		"/api/v1/doctor":               "doctor check shells out to external tools",
+		"/api/kernel/commands":         "kernel command list, tested separately",
 	}
 
 	// Also skip routes with pane-specific or agent-specific path params,
@@ -109,10 +109,10 @@ func TestRouteAudit_NoEmptyGetHandlers(t *testing.T) {
 		"/cass/",
 		"/beads/",
 		"/safety/",
-		"/robot/",    // robot endpoints shell out to tmux/bv and can be slow
-		"/memory/",   // memory endpoints may call external tools
-		"/policy/",   // policy endpoints may invoke external tools
-		"/bugs/",     // bug reporting endpoints
+		"/robot/",  // robot endpoints shell out to tmux/bv and can be slow
+		"/memory/", // memory endpoints may call external tools
+		"/policy/", // policy endpoints may invoke external tools
+		"/bugs/",   // bug reporting endpoints
 	}
 
 	t.Run("registered_routes_not_empty", func(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -14,6 +15,16 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// liveThinkingWindowLines is the number of trailing lines from a pane
+// capture that are considered the "live" view for thinking-pattern
+// evaluation. CategoryThinking matches outside this window are treated
+// as historical scrollback and ignored. 15 lines is large enough to
+// contain the full codex spinner frame (bullet + progress + chevron +
+// context bar) even when the pane is rendering multi-line content, but
+// small enough that a 1-hour-old "• Working" bullet from a completed
+// tool call cannot mask the agent's current idle state.
+const liveThinkingWindowLines = 15
 
 // WatermarkStore is the interface for persisting velocity baselines across restarts.
 type WatermarkStore interface {
@@ -727,7 +738,9 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	content := sc.velocityTracker.LastCapture
 	velocity := sample.Velocity
 
-	// Detect patterns in content
+	// Detect patterns across the full capture. DetectedPatterns in the
+	// returned activity still reports every match so the UI surface is
+	// unchanged.
 	var detectedPatterns []string
 	matches := sc.patternLibrary.Match(content, sc.agentType)
 	for _, m := range matches {
@@ -736,8 +749,18 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	sc.lastPatterns = detectedPatterns
 	sc.lastOutputContent = content
 
+	// CategoryThinking patterns are re-evaluated against only the live
+	// tail of the buffer. Agent UIs (notably codex) leave historical
+	// "• Working (Xm Xs)" bullets in scrollback after tool calls finish,
+	// so matching them anywhere in the capture would falsely keep a
+	// long-idle pane in THINKING state. Dropping stale thinking matches
+	// lets classifyState fall through to the correct idle/unknown path.
+	liveContent := lastNLines(content, liveThinkingWindowLines)
+	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
+	effectiveMatches := filterThinkingToLive(matches, liveMatches)
+
 	// Calculate proposed state and confidence
-	proposedState, confidence, trigger := sc.classifyState(velocity, matches)
+	proposedState, confidence, trigger := sc.classifyState(velocity, effectiveMatches)
 
 	// Apply hysteresis
 	finalState := sc.applyHysteresis(proposedState, confidence, trigger)
@@ -786,6 +809,75 @@ func isRateLimitPatternMatch(matches []PatternMatch) bool {
 	return false
 }
 
+// lastNLines returns the last n non-empty-slice lines of s, preserving
+// their original order and the trailing newline structure. If s has
+// fewer than n lines it is returned unchanged. The scan is intentionally
+// cheap (single strings.Split) because it runs on every classifier tick.
+func lastNLines(s string, n int) string {
+	if n <= 0 || s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+// filterThinkingToLive returns a match slice equivalent to `full` but with
+// any CategoryThinking entry dropped unless a pattern with the same name
+// also appears in `live`. This forces thinking-category signals to come
+// from the recent (live) portion of the buffer rather than from stale
+// scrollback — historical "• Working (Xm Xs)" bullets left behind after
+// a tool call completes would otherwise keep the agent locked in THINKING
+// even after it has gone idle. Non-thinking categories (error, idle,
+// completion, …) are passed through unchanged so the existing capture-
+// wide guarantees for those classes still hold.
+func filterThinkingToLive(full, live []PatternMatch) []PatternMatch {
+	// Fast path: no thinking matches at all → nothing to filter.
+	hasThinking := false
+	for _, m := range full {
+		if m.Category == CategoryThinking {
+			hasThinking = true
+			break
+		}
+	}
+	if !hasThinking {
+		return full
+	}
+	// Second fast path: every thinking match in `full` is also in
+	// `live` → they're all live, nothing to drop.
+	liveThinking := make(map[string]struct{}, len(live))
+	for _, m := range live {
+		if m.Category == CategoryThinking {
+			liveThinking[m.Pattern] = struct{}{}
+		}
+	}
+	allLive := true
+	for _, m := range full {
+		if m.Category == CategoryThinking {
+			if _, ok := liveThinking[m.Pattern]; !ok {
+				allLive = false
+				break
+			}
+		}
+	}
+	if allLive {
+		return full
+	}
+	// Slow path: rebuild the slice dropping stale thinking matches.
+	out := make([]PatternMatch, 0, len(full))
+	for _, m := range full {
+		if m.Category == CategoryThinking {
+			if _, ok := liveThinking[m.Pattern]; !ok {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // classifyState determines state based on velocity and patterns.
 // Returns state, confidence, and trigger description.
 func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatch) (AgentState, float64, string) {
@@ -793,6 +885,20 @@ func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatc
 	for _, m := range matches {
 		if m.Category == CategoryError {
 			return StateError, 0.95, "error_pattern:" + m.Pattern
+		}
+	}
+
+	// Thinking indicators are positive evidence of active work and must
+	// outrank any co-present idle-prompt pattern. Several agent UIs keep
+	// rendering their prompt/input chrome (codex chevron, context status
+	// line) in the scrollback even while the agent is busy processing a
+	// tool call, so an idle-prompt match in that situation is UI noise
+	// rather than a waiting signal. When a dedicated thinking pattern is
+	// visible (e.g. "• Working", "esc to interrupt", spinner glyphs) we
+	// trust it over the presence of a prompt line.
+	for _, m := range matches {
+		if m.Category == CategoryThinking {
+			return StateThinking, 0.80, "thinking_pattern:" + m.Pattern
 		}
 	}
 
@@ -807,13 +913,6 @@ func (sc *StateClassifier) classifyState(velocity float64, matches []PatternMatc
 
 	if hasIdlePrompt && velocity < VelocityIdleThreshold {
 		return StateWaiting, 0.90, "idle_prompt"
-	}
-
-	// Check for thinking indicator
-	for _, m := range matches {
-		if m.Category == CategoryThinking {
-			return StateThinking, 0.80, "thinking_pattern:" + m.Pattern
-		}
 	}
 
 	// High velocity = generating

@@ -511,6 +511,10 @@ type AccountsConfig struct {
 	Claude             []AccountEntry `toml:"claude"`               // Claude accounts
 	Codex              []AccountEntry `toml:"codex"`                // Codex accounts
 	Gemini             []AccountEntry `toml:"gemini"`               // Gemini accounts
+	Cursor             []AccountEntry `toml:"cursor,omitempty"`     // Cursor accounts
+	Windsurf           []AccountEntry `toml:"windsurf,omitempty"`   // Windsurf accounts
+	Aider              []AccountEntry `toml:"aider,omitempty"`      // Aider accounts
+	Ollama             []AccountEntry `toml:"ollama,omitempty"`     // Ollama accounts
 }
 
 // DefaultAccountsConfig returns the default accounts configuration
@@ -522,6 +526,10 @@ func DefaultAccountsConfig() AccountsConfig {
 		Claude:             nil,
 		Codex:              nil,
 		Gemini:             nil,
+		Cursor:             nil,
+		Windsurf:           nil,
+		Aider:              nil,
+		Ollama:             nil,
 	}
 }
 
@@ -628,6 +636,18 @@ func ValidateAccountsConfig(cfg *AccountsConfig) error {
 		return err
 	}
 	if err := validateEntries("gemini", cfg.Gemini); err != nil {
+		return err
+	}
+	if err := validateEntries("cursor", cfg.Cursor); err != nil {
+		return err
+	}
+	if err := validateEntries("windsurf", cfg.Windsurf); err != nil {
+		return err
+	}
+	if err := validateEntries("aider", cfg.Aider); err != nil {
+		return err
+	}
+	if err := validateEntries("ollama", cfg.Ollama); err != nil {
 		return err
 	}
 	return nil
@@ -1937,8 +1957,8 @@ func LoadPaletteFromMarkdown(path string) ([]PaletteCmd, error) {
 			continue
 		}
 
-		// Comment: starts with # but not ## or ###
-		if strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "##") {
+		// Comment: starts with # but not ## or ### AND we are not inside a command block
+		if currentCmd == nil && strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "##") {
 			continue
 		}
 

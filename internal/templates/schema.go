@@ -102,6 +102,18 @@ type AgentsSpec struct {
 	// Gemini defines Google Gemini agent configuration.
 	Gemini *AgentTypeSpec `yaml:"gemini,omitempty"`
 
+	// Cursor defines Cursor agent configuration.
+	Cursor *AgentTypeSpec `yaml:"cursor,omitempty"`
+
+	// Windsurf defines Windsurf agent configuration.
+	Windsurf *AgentTypeSpec `yaml:"windsurf,omitempty"`
+
+	// Aider defines Aider agent configuration.
+	Aider *AgentTypeSpec `yaml:"aider,omitempty"`
+
+	// Ollama defines Ollama agent configuration.
+	Ollama *AgentTypeSpec `yaml:"ollama,omitempty"`
+
 	// UserPane controls whether a user pane is included (default: true).
 	UserPane *bool `yaml:"userPane,omitempty"`
 
@@ -419,6 +431,18 @@ func (t *SessionTemplate) GetAgentCount() int {
 	if t.Spec.Agents.Gemini != nil {
 		count += t.Spec.Agents.Gemini.Count
 	}
+	if t.Spec.Agents.Cursor != nil {
+		count += t.Spec.Agents.Cursor.Count
+	}
+	if t.Spec.Agents.Windsurf != nil {
+		count += t.Spec.Agents.Windsurf.Count
+	}
+	if t.Spec.Agents.Aider != nil {
+		count += t.Spec.Agents.Aider.Count
+	}
+	if t.Spec.Agents.Ollama != nil {
+		count += t.Spec.Agents.Ollama.Count
+	}
 	return count
 }
 
@@ -440,6 +464,18 @@ func (t *SessionTemplate) MergeFrom(parent *SessionTemplate) {
 	}
 	if parent.Spec.Agents.Gemini != nil && t.Spec.Agents.Gemini == nil {
 		t.Spec.Agents.Gemini = parent.Spec.Agents.Gemini
+	}
+	if parent.Spec.Agents.Cursor != nil && t.Spec.Agents.Cursor == nil {
+		t.Spec.Agents.Cursor = parent.Spec.Agents.Cursor
+	}
+	if parent.Spec.Agents.Windsurf != nil && t.Spec.Agents.Windsurf == nil {
+		t.Spec.Agents.Windsurf = parent.Spec.Agents.Windsurf
+	}
+	if parent.Spec.Agents.Aider != nil && t.Spec.Agents.Aider == nil {
+		t.Spec.Agents.Aider = parent.Spec.Agents.Aider
+	}
+	if parent.Spec.Agents.Ollama != nil && t.Spec.Agents.Ollama == nil {
+		t.Spec.Agents.Ollama = parent.Spec.Agents.Ollama
 	}
 	if parent.Spec.Agents.UserPane != nil && t.Spec.Agents.UserPane == nil {
 		t.Spec.Agents.UserPane = parent.Spec.Agents.UserPane
@@ -544,6 +580,34 @@ func (a *AgentsSpec) Validate() error {
 			return err
 		}
 		total += a.Gemini.TotalCount()
+	}
+
+	if a.Cursor != nil {
+		if err := a.Cursor.Validate("cursor"); err != nil {
+			return err
+		}
+		total += a.Cursor.TotalCount()
+	}
+
+	if a.Windsurf != nil {
+		if err := a.Windsurf.Validate("windsurf"); err != nil {
+			return err
+		}
+		total += a.Windsurf.TotalCount()
+	}
+
+	if a.Aider != nil {
+		if err := a.Aider.Validate("aider"); err != nil {
+			return err
+		}
+		total += a.Aider.TotalCount()
+	}
+
+	if a.Ollama != nil {
+		if err := a.Ollama.Validate("ollama"); err != nil {
+			return err
+		}
+		total += a.Ollama.TotalCount()
 	}
 
 	for _, p := range a.Personas {

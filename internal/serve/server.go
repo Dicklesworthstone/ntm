@@ -1063,7 +1063,6 @@ func (s *Server) buildRouter() chi.Router {
 		// Checkpoint and Rollback API
 		s.registerCheckpointRoutes(r)
 
-
 		// Safety, Policy, and Approvals API
 		s.registerSafetyRoutes(r)
 

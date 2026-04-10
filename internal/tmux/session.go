@@ -432,6 +432,8 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 
 		sessionName := parts[0]
 		// parts[1:] contains: id, index, title, command, width, height, active, pid, window_index
+		// parts[1:8] = id(0), index(1), title(2), command(3), width(4), height(5), active(6)
+		// parts[8:] = pid(0), window_index(1)
 		p, err := parsePaneFromParts(parts[1:8], parts[8:])
 		if err != nil {
 			continue
@@ -1326,10 +1328,10 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			continue
 		}
 
-		// Use the common parser for the first few fields
-		// We re-join to use the helper, or we can just parse manually.
-		// Refactoring to a unified parts-based parser is better.
-		p, err := parsePaneFromParts(parts[:8], parts[8:]) // Skip index 7 (last_activity)
+		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9)
+		// parts[:7] = id..active
+		// parts[8:] = pid, window_index
+		p, err := parsePaneFromParts(parts[:7], parts[8:])
 		if err != nil {
 			continue
 		}
@@ -1357,6 +1359,7 @@ func parsePaneLine(line, sep string) (*Pane, error) {
 	if len(parts) < 9 {
 		return nil, fmt.Errorf("insufficient parts: %d", len(parts))
 	}
+	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index
 	return parsePaneFromParts(parts[:7], parts[7:])
 }
 

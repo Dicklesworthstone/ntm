@@ -524,7 +524,7 @@ func TestRankAgentsForTaskWithEffectivenessData(t *testing.T) {
 	// gmi: 0.75*(1-0.6) + 0.99*0.6 = 0.30 + 0.594 = 0.894
 	// cc:  0.80*(1-0.6) + 0.20*0.6 = 0.32 + 0.12  = 0.44
 	// cod: 0.90*(1-0.6) + 0.30*0.6 = 0.36 + 0.18  = 0.54
-	
+
 	// Helper to find an agent's rank
 	getAgentRank := func(agentType string) *AgentEffectivenessRank {
 		for _, r := range ranking.Rankings {

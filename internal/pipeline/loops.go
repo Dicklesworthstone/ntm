@@ -559,8 +559,11 @@ func (le *LoopExecutor) resolveItems(expr string) ([]interface{}, error) {
 		return toInterfaceSlice(val)
 	}
 
-	// Try to resolve through substitutor
+	// Try to resolve through substitutor. This may read from state.Steps, so acquire stateMu.
+	le.executor.stateMu.RLock()
 	val, err := sub.Substitute(expr)
+	le.executor.stateMu.RUnlock()
+
 	if err != nil {
 		return nil, err
 	}

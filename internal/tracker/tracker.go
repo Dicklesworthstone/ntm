@@ -231,14 +231,23 @@ func (t *StateTracker) Coalesce() []CoalescedChange {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	if len(t.changes) == 0 {
+	count := len(t.changes)
+	if count == 0 {
 		return nil
 	}
 
 	result := make([]CoalescedChange, 0)
 	var current *CoalescedChange
 
-	for _, change := range t.changes {
+	start := 0
+	if t.full {
+		start = t.cursor
+	}
+
+	for i := 0; i < count; i++ {
+		idx := (start + i) % count
+		change := t.changes[idx]
+		
 		// Check if we can merge with current
 		if current != nil &&
 			current.Type == change.Type &&
@@ -276,7 +285,19 @@ func (t *StateTracker) SinceByType(ts time.Time, changeType ChangeType) []StateC
 	defer t.mu.RUnlock()
 
 	result := make([]StateChange, 0)
-	for _, change := range t.changes {
+	count := len(t.changes)
+	if count == 0 {
+		return result
+	}
+
+	start := 0
+	if t.full {
+		start = t.cursor
+	}
+
+	for i := 0; i < count; i++ {
+		idx := (start + i) % count
+		change := t.changes[idx]
 		if change.Timestamp.After(ts) && change.Type == changeType {
 			// Deep copy Details
 			newChange := change
@@ -298,7 +319,19 @@ func (t *StateTracker) SinceBySession(ts time.Time, session string) []StateChang
 	defer t.mu.RUnlock()
 
 	result := make([]StateChange, 0)
-	for _, change := range t.changes {
+	count := len(t.changes)
+	if count == 0 {
+		return result
+	}
+
+	start := 0
+	if t.full {
+		start = t.cursor
+	}
+
+	for i := 0; i < count; i++ {
+		idx := (start + i) % count
+		change := t.changes[idx]
 		if change.Timestamp.After(ts) && change.Session == session {
 			// Deep copy Details
 			newChange := change

@@ -1768,7 +1768,7 @@ func monitorProcessPatternForExecutable(executablePath, session string) string {
 	if execName == "" {
 		execName = "ntm"
 	}
-	return `(?:^|[[:space:]])(?:[^[:space:]]*/)?` + regexp.QuoteMeta(execName) + `\s+internal-monitor\s+` + regexp.QuoteMeta(session) + `(?:\b|$)`
+	return `(?:^|[[:space:]])(?:[^[:space:]]*/)?` + regexp.QuoteMeta(execName) + `[[:space:]]+internal-monitor[[:space:]]+` + regexp.QuoteMeta(session) + `(?:[[:space:]]|$)`
 }
 
 func monitorProcessPattern(session string) string {

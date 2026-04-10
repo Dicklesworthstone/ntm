@@ -101,6 +101,25 @@ func defaultPatterns() []Pattern {
 		{Name: "codex_context_left", RegexStr: `(?i)\b\d{1,3}%\s*context\s*left\b`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 96, Description: "Codex context status line"},
 		{Name: "codex_chevron_prompt", RegexStr: `(?m)^\s*›\s*.*$`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 92, Description: "Codex chevron prompt"},
 
+		// Codex active-work indicators. These must outrank codex_context_left /
+		// codex_chevron_prompt because codex keeps rendering its status bar and
+		// input chevron in the scrollback even while the agent is busy — the
+		// idle-prompt patterns above would otherwise mask a working agent.
+		// NOTE: these patterns are only evaluated against the *live tail* of
+		// the capture by StateClassifier.classifyInternal. Codex leaves
+		// historical "• Working (Xm Xs)" bullets in scrollback after tool
+		// calls finish, so matching them anywhere in the buffer would flip a
+		// long-idle pane into THINKING. See filterThinkingToLive().
+		{Name: "codex_working", RegexStr: `(?m)^\s*[•·◐◑◒◓⬤]\s*Working\b`, Agent: "codex", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Codex Working spinner (active tool/model call)"},
+		{Name: "codex_waiting_background", RegexStr: `(?m)^\s*[•·◐◑◒◓⬤]\s*Waiting\s+for\s+background\b`, Agent: "codex", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Codex waiting-for-background spinner (active background tool call)"},
+		// codex_esc_interrupt tolerates TUI line truncation: codex shortens
+		// the hint to "esc to i…" or "esc to in…" etc. when the pane is too
+		// narrow for the full word. \S* prevents matching across whitespace
+		// so we can't accidentally catch unrelated prose like "esc to i made
+		// a mistake".
+		{Name: "codex_esc_interrupt", RegexStr: `(?i)esc\s+to\s+i(?:nterrupt\b|\S*…|\S*\.\.\.)`, Agent: "codex", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Codex esc-to-interrupt hint, tolerant of TUI truncation (only shown during active work)"},
+		{Name: "codex_thinking_bullet", RegexStr: `(?m)^\s*[•·◐◑◒◓⬤]\s*Thinking\b`, Agent: "codex", State: StateThinking, Category: CategoryThinking, Priority: 115, Description: "Codex Thinking bullet (extended reasoning)"},
+
 		// Gemini patterns
 		{Name: "gemini_prompt", RegexStr: `(?i)gemini\s*>?\s*$`, Agent: "gemini", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Gemini prompt"},
 		{Name: "gemini_triple_arrow", RegexStr: `>>>\s*$`, Agent: "gemini", State: StateWaiting, Category: CategoryIdle, Priority: 90, Description: "Gemini triple arrow prompt"},

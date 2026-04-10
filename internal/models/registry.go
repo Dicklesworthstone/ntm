@@ -202,16 +202,24 @@ func GetContextLimit(model string) int {
 // to allocate as a safe working budget per agent type. The remainder is
 // reserved for system prompts, tool definitions, and overhead.
 var agentTypeBudgetPct = map[string]float64{
-	"cc":  0.90, // Claude: 90% of limit (well-documented system prompt overhead)
-	"cod": 0.94, // Codex: 94% of limit
-	"gmi": 0.10, // Gemini: 10% of 1M (still 100K tokens, avoids excessive context)
+	"cc":       0.90, // Claude: 90% of limit (well-documented system prompt overhead)
+	"cod":      0.94, // Codex: 94% of limit
+	"gmi":      0.10, // Gemini: 10% of 1M (still 100K tokens, avoids excessive context)
+	"cursor":   0.85, // Cursor
+	"windsurf": 0.85, // Windsurf
+	"aider":    0.85, // Aider
+	"ollama":   0.90, // Ollama
 }
 
 // agentTypeDefaultModels maps agent types to their default model for budget calculation.
 var agentTypeDefaultModels = map[string]string{
-	"cc":  "claude-opus-4",
-	"cod": "gpt-5-codex",
-	"gmi": "gemini-2.0-flash",
+	"cc":       "claude-opus-4",
+	"cod":      "gpt-5-codex",
+	"gmi":      "gemini-2.0-flash",
+	"cursor":   "claude-3.5-sonnet",
+	"windsurf": "claude-3.5-sonnet",
+	"aider":    "claude-3.5-sonnet",
+	"ollama":   "llama3",
 }
 
 // GetTokenBudget returns the safe working token budget for an agent type.

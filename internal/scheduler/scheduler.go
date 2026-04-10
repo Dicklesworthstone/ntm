@@ -672,24 +672,22 @@ func (s *Scheduler) processJobs(workerID int) {
 			}
 		}
 
-		// Try to get a job
-		job := s.queue.TryDequeue()
+		// Try to get a job with available agent caps
+		job := s.queue.TryDequeueWithCallbacks(
+			func(job *SpawnJob) bool {
+				if job.AgentType == "" {
+					return true
+				}
+				return s.agentCaps.TryAcquire(job.AgentType)
+			},
+			func(job *SpawnJob) {
+				if job.AgentType != "" {
+					s.agentCaps.Release(job.AgentType)
+				}
+			},
+		)
 		if job == nil {
 			return // No jobs available
-		}
-
-		// Check agent concurrency cap (non-blocking check first)
-		if job.AgentType != "" {
-			if !s.agentCaps.TryAcquire(job.AgentType) {
-				// At cap, put job back and try another
-				s.queue.Enqueue(job)
-
-				// Try to find a job for a different agent type
-				job = s.findJobWithAvailableCap()
-				if job == nil {
-					return // No jobs with available caps
-				}
-			}
 		}
 
 		// Wait for rate limit
@@ -714,25 +712,6 @@ func (s *Scheduler) processJobs(workerID int) {
 		// Execute the job
 		s.executeJob(workerID, job)
 	}
-}
-
-// findJobWithAvailableCap tries to find a job whose agent type has available capacity.
-func (s *Scheduler) findJobWithAvailableCap() *SpawnJob {
-	// Get all queued jobs and try to find one with available cap
-	jobs := s.queue.Queue().ListAll()
-	for _, job := range jobs {
-		if job.AgentType == "" || s.agentCaps.TryAcquire(job.AgentType) {
-			// Remove from queue if we got the cap
-			if s.queue.Queue().Remove(job.ID) != nil {
-				return job
-			}
-			// If removal failed, release the cap we just acquired
-			if job.AgentType != "" {
-				s.agentCaps.Release(job.AgentType)
-			}
-		}
-	}
-	return nil
 }
 
 // executeJob executes a single job.

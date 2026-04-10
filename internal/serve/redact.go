@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -187,6 +188,12 @@ func (rw *redactingResponseWriter) finalize() {
 			rw.categories[string(f.Category)]++
 		}
 		body = []byte(result.Output)
+	}
+
+	// Since we buffered the response (and potentially changed its length during redaction),
+	// we must update the Content-Length header to prevent HTTP protocol framing errors.
+	if rw.Header().Get("Content-Length") != "" {
+		rw.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	}
 
 	// Write the actual response

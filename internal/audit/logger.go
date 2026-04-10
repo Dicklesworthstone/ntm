@@ -371,6 +371,7 @@ func (al *AuditLogger) readLastEntry(fileSize int64) (*AuditEntry, error) {
 	const bufferSize = 4096
 	buf := make([]byte, bufferSize)
 	offset := fileSize
+	currentEnd := fileSize
 
 	for offset > 0 {
 		readSize := int64(bufferSize)
@@ -390,43 +391,51 @@ func (al *AuditLogger) readLastEntry(fileSize int64) (*AuditEntry, error) {
 				// Potential end of a line.
 				// If this is the very last byte of file, it's just the terminator of the last line.
 				if offset+int64(i) == fileSize-1 {
+					currentEnd = fileSize - 1
 					continue
 				}
 
 				// Found a newline. The line starts after this newline (or at file start).
 				lineStart := offset + int64(i) + 1
-				lineLen := fileSize - lineStart
+				lineLen := currentEnd - lineStart
+
+				nextEnd := offset + int64(i)
+
 				// Limit max line size to read
-				if lineLen > 10*1024*1024 {
+				if lineLen > 10*1024*1024 || lineLen <= 0 {
+					currentEnd = nextEnd
 					continue
 				}
 
 				lineBuf := make([]byte, lineLen)
 				if _, err := readFile.ReadAt(lineBuf, lineStart); err != nil && err != io.EOF {
+					currentEnd = nextEnd
 					continue
 				}
 
 				line := strings.TrimSpace(string(lineBuf))
-				if line == "" {
-					continue
+				if line != "" {
+					var entry AuditEntry
+					if err := json.Unmarshal([]byte(line), &entry); err == nil {
+						return &entry, nil
+					}
 				}
 
-				var entry AuditEntry
-				if err := json.Unmarshal([]byte(line), &entry); err == nil {
-					return &entry, nil
-				}
+				currentEnd = nextEnd
 			}
 		}
 	}
 
 	// If we reached start of file, try reading the first line
-	lineBuf := make([]byte, fileSize)
-	if _, err := readFile.ReadAt(lineBuf, 0); err == nil || err == io.EOF {
-		line := strings.TrimSpace(string(lineBuf))
-		if line != "" {
-			var entry AuditEntry
-			if err := json.Unmarshal([]byte(line), &entry); err == nil {
-				return &entry, nil
+	if currentEnd > 0 {
+		lineBuf := make([]byte, currentEnd)
+		if _, err := readFile.ReadAt(lineBuf, 0); err == nil || err == io.EOF {
+			line := strings.TrimSpace(string(lineBuf))
+			if line != "" {
+				var entry AuditEntry
+				if err := json.Unmarshal([]byte(line), &entry); err == nil {
+					return &entry, nil
+				}
 			}
 		}
 	}

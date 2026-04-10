@@ -262,6 +262,38 @@ func runSessionTemplatesShow(name string) error {
 		fmt.Printf("    %sGemini%s (gmi) x %d [model: %s]\n",
 			colorize(t.Primary), "\033[0m", tmpl.Spec.Agents.Gemini.Count, model)
 	}
+	if tmpl.Spec.Agents.Cursor != nil {
+		model := tmpl.Spec.Agents.Cursor.Model
+		if model == "" {
+			model = "default"
+		}
+		fmt.Printf("    %sCursor%s (cursor) x %d [model: %s]\n",
+			colorize(t.Primary), "\033[0m", tmpl.Spec.Agents.Cursor.Count, model)
+	}
+	if tmpl.Spec.Agents.Windsurf != nil {
+		model := tmpl.Spec.Agents.Windsurf.Model
+		if model == "" {
+			model = "default"
+		}
+		fmt.Printf("    %sWindsurf%s (windsurf) x %d [model: %s]\n",
+			colorize(t.Primary), "\033[0m", tmpl.Spec.Agents.Windsurf.Count, model)
+	}
+	if tmpl.Spec.Agents.Aider != nil {
+		model := tmpl.Spec.Agents.Aider.Model
+		if model == "" {
+			model = "default"
+		}
+		fmt.Printf("    %sAider%s (aider) x %d [model: %s]\n",
+			colorize(t.Primary), "\033[0m", tmpl.Spec.Agents.Aider.Count, model)
+	}
+	if tmpl.Spec.Agents.Ollama != nil {
+		model := tmpl.Spec.Agents.Ollama.Model
+		if model == "" {
+			model = "default"
+		}
+		fmt.Printf("    %sOllama%s (ollama) x %d [model: %s]\n",
+			colorize(t.Primary), "\033[0m", tmpl.Spec.Agents.Ollama.Count, model)
+	}
 	fmt.Println()
 
 	// Prompts section

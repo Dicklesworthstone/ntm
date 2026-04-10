@@ -242,7 +242,9 @@ func (s *Server) extractRoleFromClaims(claims map[string]interface{}) Role {
 				}
 			}
 		}
-		return maxRole
+		if maxRole != RoleViewer {
+			return maxRole
+		}
 	}
 
 	// 3. Custom claim path (e.g., "ntm_role" or "https://ntm.dev/role")

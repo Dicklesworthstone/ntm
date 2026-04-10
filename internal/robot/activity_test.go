@@ -608,6 +608,254 @@ func TestStateClassifier_classifyState(t *testing.T) {
 	}
 }
 
+// TestStateClassifier_ThinkingBeatsIdlePrompt guards against a regression
+// where codex panes (and any agent whose UI chrome persists in the
+// scrollback while busy) were classified as WAITING even while actively
+// working. Codex keeps rendering its chevron input line and context status
+// bar at all times, so those pattern matches appear alongside the real
+// "Working (…)" / "esc to interrupt" spinner lines when the agent is
+// busy. Whenever a positive thinking signal is present the classifier
+// must trust it over the idle-prompt pattern.
+func TestStateClassifier_ThinkingBeatsIdlePrompt(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test", nil)
+
+	// Simulate a codex working scrollback: both idle chrome (chevron +
+	// context status) AND positive thinking signals (working bullet +
+	// esc-to-interrupt) are present. Velocity is low because the agent
+	// is mid-tool-call and not streaming tokens.
+	matches := []PatternMatch{
+		{Pattern: "codex_chevron_prompt", Category: CategoryIdle, Priority: 92},
+		{Pattern: "codex_context_left", Category: CategoryIdle, Priority: 96},
+		{Pattern: "codex_working", State: StateThinking, Category: CategoryThinking, Priority: 115},
+		{Pattern: "codex_esc_interrupt", State: StateThinking, Category: CategoryThinking, Priority: 115},
+	}
+
+	state, conf, trigger := sc.classifyState(0.2, matches)
+
+	if state != StateThinking {
+		t.Fatalf("expected THINKING when positive work signals are present alongside idle chrome, got %s (trigger=%q)", state, trigger)
+	}
+	if conf < 0.80 {
+		t.Errorf("expected confidence >= 0.80 for thinking trigger, got %f", conf)
+	}
+	if trigger == "idle_prompt" {
+		t.Errorf("idle_prompt trigger fired even though a thinking pattern was present: %s", trigger)
+	}
+}
+
+// TestStateClassifier_IdleWhenNoThinkingSignal verifies the inverse:
+// when only idle patterns match (no thinking patterns), the classifier
+// must still return WAITING. This protects the common idle-codex path
+// from being accidentally broken by the thinking-first reorder.
+func TestStateClassifier_IdleWhenNoThinkingSignal(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test", nil)
+
+	// Idle codex pane: chevron + context line, no working bullet.
+	matches := []PatternMatch{
+		{Pattern: "codex_chevron_prompt", Category: CategoryIdle, Priority: 92},
+		{Pattern: "codex_context_left", Category: CategoryIdle, Priority: 96},
+	}
+
+	state, conf, trigger := sc.classifyState(0.0, matches)
+
+	if state != StateWaiting {
+		t.Fatalf("expected WAITING for idle codex pane without thinking signals, got %s (trigger=%q)", state, trigger)
+	}
+	if conf < 0.90 {
+		t.Errorf("expected confidence >= 0.90 for idle_prompt trigger, got %f", conf)
+	}
+}
+
+// TestStateClassifier_CodexWorkingScrollback exercises the full
+// classification pipeline against a captured codex pane snapshot from an
+// actively-working agent. Before the thinking-first reorder this
+// returned WAITING; after the fix it must return THINKING.
+func TestStateClassifier_CodexWorkingScrollback(t *testing.T) {
+	t.Parallel()
+
+	// Verbatim-shape snapshot of a busy codex pane: UI chrome (chevron
+	// and context status) is present, and so are the "Working" bullet
+	// and "esc to interrupt" hint. This is exactly what `ntm activity`
+	// previously misclassified as WAITING.
+	content := "" +
+		"• Working (4m 51s • esc to interrupt)\n" +
+		"› Improve documentation i\n" +
+		"  gpt-5.4 xhigh · 52% left · /data/projects/frankensqlite\n"
+
+	lib := NewPatternLibrary()
+	matches := lib.Match(content, "codex")
+
+	// Sanity: both idle chrome and thinking signals should match so the
+	// reorder fix is actually being exercised, not trivially bypassed.
+	var sawIdle, sawThinking bool
+	for _, m := range matches {
+		if m.Category == CategoryIdle {
+			sawIdle = true
+		}
+		if m.Category == CategoryThinking {
+			sawThinking = true
+		}
+	}
+	if !sawIdle {
+		t.Fatalf("expected idle chrome to match on codex working snapshot; got %+v", matches)
+	}
+	if !sawThinking {
+		t.Fatalf("expected thinking signal to match on codex working snapshot; got %+v", matches)
+	}
+
+	sc := NewStateClassifier("test", nil)
+	state, _, trigger := sc.classifyState(0.0, matches)
+	if state != StateThinking {
+		t.Fatalf("codex working scrollback misclassified: got state=%s trigger=%q, want THINKING", state, trigger)
+	}
+}
+
+// TestFilterThinkingToLive_DropsHistoricalBullets is the critical
+// regression test for the stale-scrollback false positive observed on
+// pane 7 during the frankensqlite swarm session: codex leaves
+// "• Working (Xm Xs)" bullets in scrollback after a tool call completes.
+// A classifier that naively runs CategoryThinking matches over the whole
+// capture would keep a long-dead pane in THINKING forever. This test
+// constructs a "historical working bullet above, idle chevron below"
+// snapshot and verifies the live-window filter drops the stale match.
+func TestFilterThinkingToLive_DropsHistoricalBullets(t *testing.T) {
+	t.Parallel()
+
+	// Content: a completed tool call with its "• Working" bullet high
+	// in scrollback, followed by 30+ lines of later output, ending in
+	// an idle codex chevron. The bullet is 40 lines above the visible
+	// bottom — well outside the 15-line live window.
+	var b strings.Builder
+	b.WriteString("• Working (7m 06s • esc to interrupt)\n")
+	b.WriteString("  └ Read cursor.rs\n")
+	b.WriteString("\n")
+	for i := 0; i < 30; i++ {
+		b.WriteString("    additional output line that scrolled past the live window\n")
+	}
+	b.WriteString("• I finished the exploration and have no more actions to run.\n")
+	b.WriteString("\n")
+	b.WriteString("›\n")
+	b.WriteString("\n")
+	b.WriteString("  gpt-5.4 xhigh · 47% left\n")
+	content := b.String()
+
+	lib := NewPatternLibrary()
+	full := lib.Match(content, "codex")
+	live := lib.Match(lastNLines(content, liveThinkingWindowLines), "codex")
+
+	// Sanity: full-capture scan SHOULD see the historical working
+	// bullet as a thinking match (this is the bug being fixed).
+	sawHistoricalThinking := false
+	for _, m := range full {
+		if m.Category == CategoryThinking && m.Pattern == "codex_working" {
+			sawHistoricalThinking = true
+			break
+		}
+	}
+	if !sawHistoricalThinking {
+		t.Fatalf("expected historical codex_working match in full-capture scan (test premise broken); got %+v", full)
+	}
+
+	// Live-window scan must NOT see the bullet — it scrolled past.
+	for _, m := range live {
+		if m.Category == CategoryThinking && m.Pattern == "codex_working" {
+			t.Fatalf("live-window scan unexpectedly saw historical codex_working bullet: %+v", live)
+		}
+	}
+
+	// The filter should drop the stale thinking match entirely.
+	filtered := filterThinkingToLive(full, live)
+	for _, m := range filtered {
+		if m.Category == CategoryThinking && m.Pattern == "codex_working" {
+			t.Fatalf("filterThinkingToLive failed to drop stale codex_working match: %+v", filtered)
+		}
+	}
+
+	// And now the full classifier run: with the stale bullet filtered,
+	// classifyState should see only the idle chevron + context line
+	// and return WAITING.
+	sc := NewStateClassifier("test", nil)
+	state, _, trigger := sc.classifyState(0.0, filtered)
+	if state != StateWaiting {
+		t.Fatalf("classifier returned %s (trigger=%q) on long-idle codex pane with historical Working bullet; want WAITING", state, trigger)
+	}
+}
+
+// TestFilterThinkingToLive_KeepsCurrentBullets is the inverse of the
+// stale-scrollback test: when the "• Working" bullet IS in the live
+// window (i.e. the pane is actively in a tool call), the filter must
+// keep it so the classifier still reports THINKING.
+func TestFilterThinkingToLive_KeepsCurrentBullets(t *testing.T) {
+	t.Parallel()
+
+	content := "" +
+		"  Explored connection.rs\n" +
+		"  Read shared_lock_table.rs\n" +
+		"\n" +
+		"• Working (23s • esc to interrupt)\n" +
+		"› Improve documentation i\n" +
+		"\n" +
+		"  gpt-5.4 xhigh · 68% left · /data/projects/frankensqlite\n"
+
+	lib := NewPatternLibrary()
+	full := lib.Match(content, "codex")
+	live := lib.Match(lastNLines(content, liveThinkingWindowLines), "codex")
+	filtered := filterThinkingToLive(full, live)
+
+	sawThinking := false
+	for _, m := range filtered {
+		if m.Category == CategoryThinking && m.Pattern == "codex_working" {
+			sawThinking = true
+			break
+		}
+	}
+	if !sawThinking {
+		t.Fatalf("live Working bullet was dropped by filterThinkingToLive: %+v", filtered)
+	}
+
+	sc := NewStateClassifier("test", nil)
+	state, _, trigger := sc.classifyState(0.0, filtered)
+	if state != StateThinking {
+		t.Fatalf("classifier returned %s (trigger=%q) on live working pane; want THINKING", state, trigger)
+	}
+}
+
+// TestLastNLines covers the off-by-one edges of the helper that feeds
+// the live-window thinking filter.
+func TestLastNLines(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"empty", "", 5, ""},
+		{"n_zero", "a\nb\nc", 0, "a\nb\nc"},
+		{"n_negative", "a\nb\nc", -1, "a\nb\nc"},
+		{"fewer_lines_than_window", "a\nb\nc", 10, "a\nb\nc"},
+		{"exact_line_count", "a\nb\nc", 3, "a\nb\nc"},
+		{"drop_leading", "a\nb\nc\nd\ne", 2, "d\ne"},
+		{"trailing_newline_preserved", "a\nb\nc\n", 2, "c\n"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := lastNLines(tc.in, tc.n)
+			if got != tc.want {
+				t.Errorf("lastNLines(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStateClassifier_applyHysteresis_ErrorImmediate(t *testing.T) {
 	sc := NewStateClassifier("test", nil)
 

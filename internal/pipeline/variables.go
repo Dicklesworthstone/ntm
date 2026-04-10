@@ -478,7 +478,7 @@ func (p *OutputParser) parseJSON(output string) (interface{}, error) {
 		// Try to find the matching end bracket
 		output = extractJSONBlock(output)
 		if err2 := json.Unmarshal([]byte(output), &result); err2 != nil {
-			return nil, fmt.Errorf("failed to parse JSON: %w", err)
+			return nil, fmt.Errorf("failed to parse JSON (initial error: %v, fallback error: %w)", err, err2)
 		}
 	}
 

@@ -142,6 +142,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	// Build dependency graph
 	e.graph = NewDependencyGraph(workflow)
 	if errors := e.graph.Validate(); len(errors) > 0 {
+		e.stateMu.Lock()
 		e.state.Status = StatusFailed
 		for _, err := range errors {
 			e.state.Errors = append(e.state.Errors, ExecutionError{
@@ -151,6 +152,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 				Fatal:     true,
 			})
 		}
+		e.stateMu.Unlock()
 		e.persistState()
 		return e.state, fmt.Errorf("workflow has dependency errors: %v", errors[0])
 	}
@@ -162,6 +164,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	err := e.executeWorkflow(ctx, workflow)
 
 	// Finalize state
+	e.stateMu.Lock()
 	e.state.FinishedAt = time.Now()
 	e.state.UpdatedAt = time.Now()
 
@@ -182,10 +185,12 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 			e.state.Status = StatusFailed
 			e.sendNotification(ctx, workflow, NotifyFailed)
 		}
+		e.stateMu.Unlock()
 		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
 	} else {
 		e.state.Status = StatusCompleted
 		e.sendNotification(ctx, workflow, NotifyCompleted)
+		e.stateMu.Unlock()
 		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
 	}
 
@@ -213,13 +218,20 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	ctx, timeoutCancel := context.WithTimeout(ctx, timeout)
 	defer timeoutCancel()
 
+	e.stateMu.Lock()
 	e.state = prior
 	if e.state.Steps == nil {
 		e.state.Steps = make(map[string]StepResult)
 	}
+	e.stateMu.Unlock()
+	
+	e.varMu.Lock()
 	if e.state.Variables == nil {
 		e.state.Variables = make(map[string]interface{})
 	}
+	e.varMu.Unlock()
+
+	e.stateMu.Lock()
 	if e.state.RunID == "" {
 		if e.config.RunID != "" {
 			e.state.RunID = e.config.RunID
@@ -243,12 +255,14 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	e.state.UpdatedAt = time.Now()
 	e.state.FinishedAt = time.Time{}
 	e.state.CurrentStep = ""
+	e.stateMu.Unlock()
 
 	e.progress = progress
 
 	// Build dependency graph
 	e.graph = NewDependencyGraph(workflow)
 	if errors := e.graph.Validate(); len(errors) > 0 {
+		e.stateMu.Lock()
 		e.state.Status = StatusFailed
 		for _, err := range errors {
 			e.state.Errors = append(e.state.Errors, ExecutionError{
@@ -258,6 +272,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 				Fatal:     true,
 			})
 		}
+		e.stateMu.Unlock()
 		e.persistState()
 		return e.state, fmt.Errorf("workflow has dependency errors: %v", errors[0])
 	}
@@ -272,6 +287,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 	err := e.executeWorkflow(ctx, workflow)
 
 	// Finalize state
+	e.stateMu.Lock()
 	e.state.FinishedAt = time.Now()
 	e.state.UpdatedAt = time.Now()
 
@@ -292,10 +308,12 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 			e.state.Status = StatusFailed
 			e.sendNotification(ctx, workflow, NotifyFailed)
 		}
+		e.stateMu.Unlock()
 		e.emitProgress("workflow_error", "", err.Error(), e.calculateProgress())
 	} else {
 		e.state.Status = StatusCompleted
 		e.sendNotification(ctx, workflow, NotifyCompleted)
+		e.stateMu.Unlock()
 		e.emitProgress("workflow_complete", "", "Workflow completed successfully", 1.0)
 	}
 
@@ -1319,10 +1337,12 @@ func (e *Executor) resolvePrompt(step *Step) (string, error) {
 // - Default values (${vars.x | "default"})
 // - Escaping (\${literal})
 // - Loop variables (${loop.item}, ${loop.index})
-// Thread-safe: acquires read lock on Variables for concurrent access during parallel execution.
+// Thread-safe: acquires read locks on Variables and Steps for concurrent access during parallel execution.
 func (e *Executor) substituteVariables(s string) string {
 	e.varMu.RLock()
 	defer e.varMu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	sub := NewSubstitutor(e.state, e.config.Session, e.state.WorkflowID)
 	result, _ := sub.Substitute(s)
 	return result
@@ -1337,10 +1357,12 @@ func (e *Executor) substituteVariables(s string) string {
 // - Contains operator (contains)
 // - Logical operators (AND, OR, NOT)
 // - Type coercion for numeric comparisons
-// Thread-safe: acquires read lock on Variables for concurrent access during parallel execution.
+// Thread-safe: acquires read locks on Variables and Steps for concurrent access during parallel execution.
 func (e *Executor) evaluateCondition(condition string) (bool, error) {
 	e.varMu.RLock()
 	defer e.varMu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	sub := NewSubstitutor(e.state, e.config.Session, e.state.WorkflowID)
 	return EvaluateCondition(condition, sub)
 }

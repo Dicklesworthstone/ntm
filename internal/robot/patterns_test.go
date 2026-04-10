@@ -77,6 +77,14 @@ func TestPatternLibrary_Match(t *testing.T) {
 		{"codex_prompt", "codex>", "codex", true, StateWaiting},
 		{"codex_context_left", "47% context left · ? for shortcuts", "codex", true, StateWaiting},
 		{"codex_chevron_prompt", "› Write tests for @filename", "codex", true, StateWaiting},
+		{"codex_working_bullet", "• Working (4m 51s • esc to interrupt)", "codex", true, StateThinking},
+		{"codex_working_middle_dot", "· Working on request", "codex", true, StateThinking},
+		{"codex_esc_interrupt_only", "(15s · esc to interrupt)", "codex", true, StateThinking},
+		{"codex_esc_interrupt_truncated_ellipsis", "• Waiting for background terminal (4m 45s • esc to i…)", "codex", true, StateThinking},
+		{"codex_esc_interrupt_truncated_ascii_dots", "(3s · esc to int...)", "codex", true, StateThinking},
+		{"codex_waiting_for_background", "• Waiting for background terminal (4m 45s • esc to i…)", "codex", true, StateThinking},
+		{"codex_waiting_middle_dot", "· Waiting for background cargo run", "codex", true, StateThinking},
+		{"codex_thinking_bullet", "• Thinking (3s)", "codex", true, StateThinking},
 		{"gemini_prompt", "gemini>", "gemini", true, StateWaiting},
 		{"rate_limit", "Rate limit exceeded", "*", true, StateError},
 		{"http_429", "HTTP 429 Too Many Requests", "*", true, StateError},
@@ -101,6 +109,58 @@ func TestPatternLibrary_Match(t *testing.T) {
 			} else {
 				if len(matches) > 0 {
 					t.Errorf("expected no match for %q, got %v", tt.content, matches)
+				}
+			}
+		})
+	}
+}
+
+// TestCodexEscInterruptDoesNotMatchProse guards the truncation-tolerant
+// `codex_esc_interrupt` regex against accidentally swallowing unrelated
+// text that happens to start with "esc to i". The regex uses \S* so it
+// cannot span whitespace, but it's easy to break when tweaking — keep
+// this test as an anti-regression tripwire.
+func TestCodexEscInterruptDoesNotMatchProse(t *testing.T) {
+	t.Parallel()
+
+	lib := NewPatternLibrary()
+
+	falsePositives := []string{
+		"esc to i made a mistake",                    // trailing prose
+		"The agent will esc to init something later", // mid-sentence
+		"escape to interrupt",                        // wrong prefix
+	}
+
+	for _, content := range falsePositives {
+		content := content
+		t.Run(content, func(t *testing.T) {
+			t.Parallel()
+			for _, m := range lib.Match(content, "codex") {
+				if m.Pattern == "codex_esc_interrupt" {
+					t.Errorf("codex_esc_interrupt matched false positive %q", content)
+				}
+			}
+		})
+	}
+}
+
+// TestCodexWorkingPatternsDoNotLeakToOtherAgents confirms the new
+// codex thinking patterns are agent-scoped so they don't accidentally
+// fire on claude / gemini panes whose scrollback happens to contain
+// words like "Working" or "Waiting".
+func TestCodexWorkingPatternsDoNotLeakToOtherAgents(t *testing.T) {
+	t.Parallel()
+
+	lib := NewPatternLibrary()
+
+	content := "• Working (4m 51s • esc to interrupt)"
+	for _, agent := range []string{"claude", "gemini"} {
+		agent := agent
+		t.Run(agent, func(t *testing.T) {
+			t.Parallel()
+			for _, m := range lib.Match(content, agent) {
+				if m.Pattern == "codex_working" || m.Pattern == "codex_esc_interrupt" || m.Pattern == "codex_waiting_background" {
+					t.Errorf("%s leaked to %s agent on content %q", m.Pattern, agent, content)
 				}
 			}
 		})

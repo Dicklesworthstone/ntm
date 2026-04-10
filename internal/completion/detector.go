@@ -482,6 +482,8 @@ func (d *CompletionDetector) checkIdle(a *assignment.Assignment, output string, 
 			assignmentKey:  key,
 			lastOutputTime: time.Now(),
 			lastOutput:     output,
+			burstActive:    true, // Start active so we can detect if it never outputs anything
+			burstStarted:   time.Now(),
 		}
 		d.activityTracker[a.Pane] = state
 		return nil

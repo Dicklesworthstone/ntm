@@ -702,12 +702,11 @@ func TestIdleDetectionNoBurstActive(t *testing.T) {
 	// Initialize state
 	d.checkIdle(a, "initial", now)
 
-	// Same output without burst - should not trigger completion
+	// Same output - should trigger completion because burstActive is initialized to true
 	time.Sleep(15 * time.Millisecond)
 	event := d.checkIdle(a, "initial", now)
-	// Without burst activity (no output change), idle detection shouldn't trigger
-	if event != nil {
-		t.Error("Idle detection should not trigger without prior activity burst")
+	if event == nil {
+		t.Error("Idle detection should trigger since burstActive is initialized to true")
 	}
 }
 

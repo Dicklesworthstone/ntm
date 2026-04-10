@@ -157,7 +157,12 @@ func (c *Client) IsAvailable() bool {
 
 	// Cache the result
 	c.availableCache.Store(available)
-	c.availableCacheTime.Store(time.Now().Unix())
+	if available {
+		c.availableCacheTime.Store(time.Now().Unix())
+	} else {
+		// Only cache failures for 2 seconds to allow quick recovery
+		c.availableCacheTime.Store(time.Now().Unix() - int64(AvailabilityCacheTTL.Seconds()) + 2)
+	}
 
 	return available
 }

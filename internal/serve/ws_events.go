@@ -293,6 +293,18 @@ func (s *WSEventStore) getFromBuffer(since int64, topic string, limit int) ([]WS
 // getFromDB retrieves events from the database.
 // Returns events and whether a reset is needed (cursor too old for DB too).
 func (s *WSEventStore) getFromDB(since int64, topic string, limit int) ([]WSStoredEvent, bool, error) {
+	// Check if since cursor is too old before querying
+	if since > 0 {
+		var minSeq sql.NullInt64
+		if err := s.db.QueryRow("SELECT MIN(seq) FROM ws_events").Scan(&minSeq); err != nil && err != sql.ErrNoRows {
+			return nil, false, fmt.Errorf("query min seq: %w", err)
+		}
+		if minSeq.Valid && since < minSeq.Int64-1 {
+			// Cursor is too old even for database
+			return nil, true, nil
+		}
+	}
+
 	var rows *sql.Rows
 	var err error
 
@@ -337,19 +349,6 @@ func (s *WSEventStore) getFromDB(since int64, topic string, limit int) ([]WSStor
 
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("iterate events: %w", err)
-	}
-
-	// Check if since cursor was too old (no events and since > 0)
-	if len(events) == 0 && since > 0 {
-		// Check if there are ANY events in the database
-		var minSeq sql.NullInt64
-		if err := s.db.QueryRow("SELECT MIN(seq) FROM ws_events").Scan(&minSeq); err != nil && err != sql.ErrNoRows {
-			return nil, false, fmt.Errorf("query min seq: %w", err)
-		}
-		if minSeq.Valid && since < minSeq.Int64-1 {
-			// Cursor is too old even for database
-			return nil, true, nil
-		}
 	}
 
 	return events, false, nil
