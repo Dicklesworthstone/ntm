@@ -150,7 +150,7 @@ func requireObjectField(t *testing.T, resp map[string]any, field string) map[str
 func seedRobotAPIContractState(t *testing.T, store *state.Store, bus *events.EventBus) (liveSessionID, emptySessionID string) {
 	t.Helper()
 
-	now := time.Date(2026, time.March, 26, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	liveSessionID = "contract-live"
 	emptySessionID = "contract-empty"
 
