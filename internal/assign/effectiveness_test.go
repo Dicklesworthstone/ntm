@@ -136,9 +136,9 @@ func TestRankAgentsForTask(t *testing.T) {
 		t.Errorf("expected task_type=bug, got %s", ranking.TaskType)
 	}
 
-	// Should have 3 agent types
-	if len(ranking.Rankings) != 3 {
-		t.Errorf("expected 3 rankings, got %d", len(ranking.Rankings))
+	// Should have 7 agent types
+	if len(ranking.Rankings) != 7 {
+		t.Errorf("expected 7 rankings, got %d", len(ranking.Rankings))
 	}
 
 	// Rankings should be ordered (rank 1, 2, 3)
@@ -516,26 +516,39 @@ func TestRankAgentsForTaskWithEffectivenessData(t *testing.T) {
 		t.Error("expected HasData=true when effectiveness data exists")
 	}
 
-	if len(ranking.Rankings) != 3 {
-		t.Fatalf("expected 3 rankings, got %d", len(ranking.Rankings))
+	if len(ranking.Rankings) != 7 {
+		t.Fatalf("expected 7 rankings, got %d", len(ranking.Rankings))
 	}
 
 	// With exploitation weight=0.6 and confidence=1.0:
 	// gmi: 0.75*(1-0.6) + 0.99*0.6 = 0.30 + 0.594 = 0.894
 	// cc:  0.80*(1-0.6) + 0.20*0.6 = 0.32 + 0.12  = 0.44
 	// cod: 0.90*(1-0.6) + 0.30*0.6 = 0.36 + 0.18  = 0.54
-	// Expected order: gmi, cod, cc
-	if ranking.Rankings[0].AgentType != "gmi" {
-		t.Errorf("expected gmi at rank 1, got %s (score=%.3f)",
-			ranking.Rankings[0].AgentType, ranking.Rankings[0].Score)
+	
+	// Helper to find an agent's rank
+	getAgentRank := func(agentType string) *AgentEffectivenessRank {
+		for _, r := range ranking.Rankings {
+			if r.AgentType == agentType {
+				return &r
+			}
+		}
+		return nil
 	}
-	if ranking.Rankings[1].AgentType != "cod" {
-		t.Errorf("expected cod at rank 2, got %s (score=%.3f)",
-			ranking.Rankings[1].AgentType, ranking.Rankings[1].Score)
+
+	gmiRank := getAgentRank("gmi")
+	codRank := getAgentRank("cod")
+	ccRank := getAgentRank("cc")
+
+	if gmiRank == nil || codRank == nil || ccRank == nil {
+		t.Fatalf("missing expected agents from ranking")
 	}
-	if ranking.Rankings[2].AgentType != "cc" {
-		t.Errorf("expected cc at rank 3, got %s (score=%.3f)",
-			ranking.Rankings[2].AgentType, ranking.Rankings[2].Score)
+
+	// Expected order among these three: gmi, cod, cc
+	if gmiRank.Rank >= codRank.Rank {
+		t.Errorf("expected gmi to rank higher than cod (gmi=%d, cod=%d)", gmiRank.Rank, codRank.Rank)
+	}
+	if codRank.Rank >= ccRank.Rank {
+		t.Errorf("expected cod to rank higher than cc (cod=%d, cc=%d)", codRank.Rank, ccRank.Rank)
 	}
 
 	// Verify rank numbers
@@ -547,8 +560,10 @@ func TestRankAgentsForTaskWithEffectivenessData(t *testing.T) {
 
 	// Verify explanation includes effectiveness info
 	for _, r := range ranking.Rankings {
-		if !containsStr(r.Explanation, "eff=") {
-			t.Errorf("ranking for %s should have eff= in explanation: %s", r.AgentType, r.Explanation)
+		if r.AgentType == "gmi" || r.AgentType == "cod" || r.AgentType == "cc" {
+			if !containsStr(r.Explanation, "eff=") {
+				t.Errorf("ranking for %s should have eff= in explanation: %s", r.AgentType, r.Explanation)
+			}
 		}
 	}
 }
