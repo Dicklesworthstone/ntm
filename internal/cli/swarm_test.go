@@ -151,7 +151,6 @@ func TestResolveSwarmInitialPrompt_PromptFileReadError(t *testing.T) {
 }
 
 func TestGlobToRegex(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -179,7 +178,6 @@ func TestGlobToRegex(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := globToRegex(tc.glob)
 			if got != tc.want {
 				t.Errorf("globToRegex(%q) = %q, want %q", tc.glob, got, tc.want)
@@ -189,7 +187,6 @@ func TestGlobToRegex(t *testing.T) {
 }
 
 func TestBuildSwarmPlanOutput(t *testing.T) {
-	t.Parallel()
 
 	plan := &swarm.SwarmPlan{
 		ScanDir:         "/projects",
@@ -261,7 +258,6 @@ func TestBuildSwarmPlanOutput(t *testing.T) {
 }
 
 func TestBuildSwarmPlanOutput_EmptyPlan(t *testing.T) {
-	t.Parallel()
 
 	plan := &swarm.SwarmPlan{
 		ScanDir:     "/empty",

@@ -9,7 +9,6 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestDetectAgentTypeFromTitle(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -51,7 +50,6 @@ func TestDetectAgentTypeFromTitle(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := detectAgentTypeFromTitle(tc.title)
 			if got != tc.want {
 				t.Errorf("detectAgentTypeFromTitle(%q) = %q, want %q", tc.title, got, tc.want)
@@ -65,7 +63,6 @@ func TestDetectAgentTypeFromTitle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFormatTokenCount(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -85,7 +82,6 @@ func TestFormatTokenCount(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := formatTokenCount(tc.tokens)
 			if got != tc.want {
 				t.Errorf("formatTokenCount(%d) = %q, want %q", tc.tokens, got, tc.want)

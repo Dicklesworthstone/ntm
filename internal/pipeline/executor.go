@@ -113,6 +113,8 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	if runID == "" {
 		runID = generateRunID()
 	}
+	
+	e.stateMu.Lock()
 	e.state = &ExecutionState{
 		RunID:        runID,
 		WorkflowID:   workflow.Name,
@@ -126,8 +128,10 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 		Errors:       []ExecutionError{},
 	}
 	e.progress = progress
+	e.stateMu.Unlock()
 
 	// Initialize variables with defaults and overrides
+	e.varMu.Lock()
 	for name, def := range workflow.Vars {
 		if def.Default != nil {
 			e.state.Variables[name] = def.Default
@@ -136,6 +140,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	for name, val := range vars {
 		e.state.Variables[name] = val
 	}
+	e.varMu.Unlock()
 
 	e.persistState()
 

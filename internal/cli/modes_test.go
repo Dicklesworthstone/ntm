@@ -18,7 +18,6 @@ import (
 // =============================================================================
 
 func TestRenderModesList_JSON(t *testing.T) {
-	t.Parallel()
 
 	payload := modesListOutput{
 		GeneratedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -50,7 +49,6 @@ func TestRenderModesList_JSON(t *testing.T) {
 }
 
 func TestRenderModesList_YAML(t *testing.T) {
-	t.Parallel()
 
 	payload := modesListOutput{
 		GeneratedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -77,7 +75,6 @@ func TestRenderModesList_YAML(t *testing.T) {
 }
 
 func TestRenderModesList_Text(t *testing.T) {
-	t.Parallel()
 
 	payload := modesListOutput{
 		Modes: []modesListRow{
@@ -99,7 +96,6 @@ func TestRenderModesList_Text(t *testing.T) {
 }
 
 func TestRenderModesList_TextEmpty(t *testing.T) {
-	t.Parallel()
 
 	payload := modesListOutput{
 		Modes: []modesListRow{},
@@ -122,7 +118,6 @@ func TestRenderModesList_TextEmpty(t *testing.T) {
 // =============================================================================
 
 func TestRenderModesExplain_JSON(t *testing.T) {
-	t.Parallel()
 
 	payload := modesExplainOutput{
 		GeneratedAt: output.Timestamp(),
@@ -152,7 +147,6 @@ func TestRenderModesExplain_JSON(t *testing.T) {
 }
 
 func TestRenderModesExplain_YAML(t *testing.T) {
-	t.Parallel()
 
 	payload := modesExplainOutput{
 		GeneratedAt: output.Timestamp(),
@@ -175,7 +169,6 @@ func TestRenderModesExplain_YAML(t *testing.T) {
 }
 
 func TestRenderModesExplain_Text(t *testing.T) {
-	t.Parallel()
 
 	payload := modesExplainOutput{
 		Card: &ensemble.ModeCard{
@@ -204,7 +197,6 @@ func TestRenderModesExplain_Text(t *testing.T) {
 // =============================================================================
 
 func TestNewModesCmd(t *testing.T) {
-	t.Parallel()
 
 	cmd := newModesCmd()
 	if cmd.Use != "modes" {
@@ -226,7 +218,6 @@ func TestNewModesCmd(t *testing.T) {
 }
 
 func TestNewModesListCmd_Flags(t *testing.T) {
-	t.Parallel()
 
 	cmd := newModesListCmd()
 	for _, flag := range []string{"format", "category", "tier", "all"} {

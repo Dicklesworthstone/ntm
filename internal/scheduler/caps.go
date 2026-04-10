@@ -328,12 +328,16 @@ func (ac *AgentCaps) Acquire(ctx context.Context, agentType string) error {
 	ac.waiters[agentType] = append(ac.waiters[agentType], waitCh)
 	ac.stats.TotalWaiting++
 
+	// Extract values for logging while holding lock
+	runningCount := ac.running[agentType]
+	currentCap := state.currentCap
+
 	ac.mu.Unlock()
 
 	slog.Debug("agent cap waiting",
 		"agent_type", agentType,
-		"running", ac.running[agentType],
-		"cap", state.currentCap,
+		"running", runningCount,
+		"cap", currentCap,
 	)
 
 	// Wait for slot

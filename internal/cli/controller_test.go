@@ -222,7 +222,6 @@ func (e *agentTypeError) Error() string {
 }
 
 func TestControllerAgentListCanonicalizesAliasesAndIncludesOllama(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 2, Type: tmux.AgentType("claude_code")},

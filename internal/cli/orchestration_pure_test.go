@@ -11,7 +11,6 @@ import (
 // =============================================================================
 
 func TestSendTargets_String_Empty(t *testing.T) {
-	t.Parallel()
 	var s SendTargets
 	if got := s.String(); got != "" {
 		t.Errorf("empty SendTargets.String() = %q, want %q", got, "")
@@ -19,7 +18,6 @@ func TestSendTargets_String_Empty(t *testing.T) {
 }
 
 func TestSendTargets_String_SingleNoVariant(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude}}
 	if got := s.String(); got != "cc" {
 		t.Errorf("SendTargets.String() = %q, want %q", got, "cc")
@@ -27,7 +25,6 @@ func TestSendTargets_String_SingleNoVariant(t *testing.T) {
 }
 
 func TestSendTargets_String_SingleWithVariant(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude, Variant: "opus"}}
 	if got := s.String(); got != "cc:opus" {
 		t.Errorf("SendTargets.String() = %q, want %q", got, "cc:opus")
@@ -35,7 +32,6 @@ func TestSendTargets_String_SingleWithVariant(t *testing.T) {
 }
 
 func TestSendTargets_String_Multiple(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{
 		{Type: AgentTypeClaude},
 		{Type: AgentTypeCodex, Variant: "mini"},
@@ -48,7 +44,6 @@ func TestSendTargets_String_Multiple(t *testing.T) {
 }
 
 func TestSendTargets_String_NilReceiver(t *testing.T) {
-	t.Parallel()
 	var s *SendTargets
 	if got := s.String(); got != "" {
 		t.Errorf("nil SendTargets.String() = %q, want %q", got, "")
@@ -60,7 +55,6 @@ func TestSendTargets_String_NilReceiver(t *testing.T) {
 // =============================================================================
 
 func TestSendTargets_Set_NoVariant(t *testing.T) {
-	t.Parallel()
 	var s SendTargets
 	err := s.Set("cc")
 	if err != nil {
@@ -76,7 +70,6 @@ func TestSendTargets_Set_NoVariant(t *testing.T) {
 }
 
 func TestSendTargets_Set_WithVariant(t *testing.T) {
-	t.Parallel()
 	var s SendTargets
 	err := s.Set("cc:opus")
 	if err != nil {
@@ -91,7 +84,6 @@ func TestSendTargets_Set_WithVariant(t *testing.T) {
 }
 
 func TestSendTargets_Set_Multiple(t *testing.T) {
-	t.Parallel()
 	var s SendTargets
 	_ = s.Set("cc")
 	_ = s.Set("cc:opus")
@@ -105,7 +97,6 @@ func TestSendTargets_Set_Multiple(t *testing.T) {
 // =============================================================================
 
 func TestHasTargetsForType_Found(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{
 		{Type: AgentTypeClaude},
 		{Type: AgentTypeCodex},
@@ -116,7 +107,6 @@ func TestHasTargetsForType_Found(t *testing.T) {
 }
 
 func TestHasTargetsForType_NotFound(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{
 		{Type: AgentTypeClaude},
 	}
@@ -126,7 +116,6 @@ func TestHasTargetsForType_NotFound(t *testing.T) {
 }
 
 func TestHasTargetsForType_Empty(t *testing.T) {
-	t.Parallel()
 	var s SendTargets
 	if s.HasTargetsForType(AgentTypeClaude) {
 		t.Error("expected HasTargetsForType on empty = false")
@@ -138,7 +127,6 @@ func TestHasTargetsForType_Empty(t *testing.T) {
 // =============================================================================
 
 func TestMatchesPane_TypeMatch(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude}}
 	pane := tmux.Pane{Index: 1, Type: tmux.AgentClaude}
 	if !s.MatchesPane(pane) {
@@ -147,7 +135,6 @@ func TestMatchesPane_TypeMatch(t *testing.T) {
 }
 
 func TestMatchesPane_TypeMismatch(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude}}
 	pane := tmux.Pane{Index: 1, Type: tmux.AgentCodex}
 	if s.MatchesPane(pane) {
@@ -156,7 +143,6 @@ func TestMatchesPane_TypeMismatch(t *testing.T) {
 }
 
 func TestMatchesPane_VariantMatch(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude, Variant: "opus"}}
 	pane := tmux.Pane{Index: 1, Type: tmux.AgentClaude, Variant: "opus"}
 	if !s.MatchesPane(pane) {
@@ -165,7 +151,6 @@ func TestMatchesPane_VariantMatch(t *testing.T) {
 }
 
 func TestMatchesPane_VariantMismatch(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude, Variant: "opus"}}
 	pane := tmux.Pane{Index: 1, Type: tmux.AgentClaude, Variant: "sonnet"}
 	if s.MatchesPane(pane) {
@@ -174,7 +159,6 @@ func TestMatchesPane_VariantMismatch(t *testing.T) {
 }
 
 func TestMatchesPane_NoVariantMatchesAll(t *testing.T) {
-	t.Parallel()
 	s := SendTargets{{Type: AgentTypeClaude}}
 	pane := tmux.Pane{Index: 1, Type: tmux.AgentClaude, Variant: "anything"}
 	if !s.MatchesPane(pane) {
@@ -183,7 +167,6 @@ func TestMatchesPane_NoVariantMatchesAll(t *testing.T) {
 }
 
 func TestMatchesSendTarget_Direct(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name   string
 		pane   tmux.Pane
@@ -223,7 +206,6 @@ func TestMatchesSendTarget_Direct(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := matchesSendTarget(tt.pane, tt.target)
 			if got != tt.want {
 				t.Errorf("matchesSendTarget() = %v, want %v", got, tt.want)
@@ -237,7 +219,6 @@ func TestMatchesSendTarget_Direct(t *testing.T) {
 // =============================================================================
 
 func TestPermuteBatchPrompts_Basic(t *testing.T) {
-	t.Parallel()
 	prompts := []BatchPrompt{
 		{Text: "A", Priority: 0},
 		{Text: "B", Priority: 1},
@@ -260,7 +241,6 @@ func TestPermuteBatchPrompts_Basic(t *testing.T) {
 }
 
 func TestPermuteBatchPrompts_LengthMismatch(t *testing.T) {
-	t.Parallel()
 	prompts := []BatchPrompt{{Text: "A"}, {Text: "B"}}
 	perm := []int{0} // wrong length
 	result := permuteBatchPrompts(prompts, perm)
@@ -274,7 +254,6 @@ func TestPermuteBatchPrompts_LengthMismatch(t *testing.T) {
 }
 
 func TestPermuteBatchPrompts_Identity(t *testing.T) {
-	t.Parallel()
 	prompts := []BatchPrompt{{Text: "X"}, {Text: "Y"}}
 	perm := []int{0, 1}
 	result := permuteBatchPrompts(prompts, perm)
@@ -284,7 +263,6 @@ func TestPermuteBatchPrompts_Identity(t *testing.T) {
 }
 
 func TestPermuteBatchPrompts_InvalidIndex(t *testing.T) {
-	t.Parallel()
 	prompts := []BatchPrompt{{Text: "A"}, {Text: "B"}}
 	perm := []int{0, 5} // out of bounds
 	result := permuteBatchPrompts(prompts, perm)
@@ -299,7 +277,6 @@ func TestPermuteBatchPrompts_InvalidIndex(t *testing.T) {
 // =============================================================================
 
 func TestPaneAgentLabel_WithTypeAndIndex(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 1, Type: tmux.AgentClaude, NTMIndex: 2}
 	got := paneAgentLabel(p)
 	if got != "cc_2" {
@@ -308,7 +285,6 @@ func TestPaneAgentLabel_WithTypeAndIndex(t *testing.T) {
 }
 
 func TestPaneAgentLabel_UserPane(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 0, Type: tmux.AgentUser}
 	got := paneAgentLabel(p)
 	if got != "user" {
@@ -317,7 +293,6 @@ func TestPaneAgentLabel_UserPane(t *testing.T) {
 }
 
 func TestPaneAgentLabel_TitleWithPrefix(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 3, Title: "__cc_1"}
 	got := paneAgentLabel(p)
 	if got != "cc_1" {
@@ -326,7 +301,6 @@ func TestPaneAgentLabel_TitleWithPrefix(t *testing.T) {
 }
 
 func TestPaneAgentLabel_TitleWithEmbeddedDoubleUnderscoreSession(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 3, Title: "my__project__cc_1"}
 	got := paneAgentLabel(p)
 	if got != "cc_1" {
@@ -335,7 +309,6 @@ func TestPaneAgentLabel_TitleWithEmbeddedDoubleUnderscoreSession(t *testing.T) {
 }
 
 func TestTimelineAgentIDFromPane_TitleWithEmbeddedDoubleUnderscoreSession(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 3, Title: "my__project__cod_2"}
 	got := timelineAgentIDFromPane(p)
 	if got != "cod_2" {
@@ -344,7 +317,6 @@ func TestTimelineAgentIDFromPane_TitleWithEmbeddedDoubleUnderscoreSession(t *tes
 }
 
 func TestPaneAgentLabel_TitleWithoutPrefix(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 3, Title: "custom_title"}
 	got := paneAgentLabel(p)
 	if got != "custom_title" {
@@ -353,7 +325,6 @@ func TestPaneAgentLabel_TitleWithoutPrefix(t *testing.T) {
 }
 
 func TestPaneAgentLabel_NoTypeNoTitle(t *testing.T) {
-	t.Parallel()
 	p := tmux.Pane{Index: 7}
 	got := paneAgentLabel(p)
 	if got != "pane_7" {
@@ -366,7 +337,6 @@ func TestPaneAgentLabel_NoTypeNoTitle(t *testing.T) {
 // =============================================================================
 
 func TestBuildSendDryRunEntries_Basic(t *testing.T) {
-	t.Parallel()
 	panes := []tmux.Pane{
 		{Index: 1, Type: tmux.AgentClaude, NTMIndex: 1},
 		{Index: 2, Type: tmux.AgentCodex, NTMIndex: 1},
@@ -393,7 +363,6 @@ func TestBuildSendDryRunEntries_Basic(t *testing.T) {
 }
 
 func TestBuildSendDryRunEntries_Empty(t *testing.T) {
-	t.Parallel()
 	entries := buildSendDryRunEntries(nil, "test", "manual")
 	if len(entries) != 0 {
 		t.Errorf("expected 0 entries for nil panes, got %d", len(entries))
@@ -408,7 +377,6 @@ func TestBuildSendDryRunEntries_Empty(t *testing.T) {
 // =============================================================================
 
 func TestSendTargetValue_SetTrue(t *testing.T) {
-	t.Parallel()
 	var targets SendTargets
 	v := newSendTargetValue(AgentTypeClaude, &targets)
 	err := v.Set("true")
@@ -427,7 +395,6 @@ func TestSendTargetValue_SetTrue(t *testing.T) {
 }
 
 func TestSendTargetValue_SetFalse(t *testing.T) {
-	t.Parallel()
 	var targets SendTargets
 	v := newSendTargetValue(AgentTypeClaude, &targets)
 	err := v.Set("false")
@@ -440,7 +407,6 @@ func TestSendTargetValue_SetFalse(t *testing.T) {
 }
 
 func TestSendTargetValue_SetVariant(t *testing.T) {
-	t.Parallel()
 	var targets SendTargets
 	v := newSendTargetValue(AgentTypeCodex, &targets)
 	err := v.Set("mini")
@@ -459,7 +425,6 @@ func TestSendTargetValue_SetVariant(t *testing.T) {
 }
 
 func TestSendTargetValue_SetEmpty(t *testing.T) {
-	t.Parallel()
 	var targets SendTargets
 	v := newSendTargetValue(AgentTypeClaude, &targets)
 	err := v.Set("")
@@ -475,7 +440,6 @@ func TestSendTargetValue_SetEmpty(t *testing.T) {
 }
 
 func TestSendTargetValue_IsBoolFlag(t *testing.T) {
-	t.Parallel()
 	var targets SendTargets
 	v := newSendTargetValue(AgentTypeClaude, &targets)
 	if !v.IsBoolFlag() {
@@ -484,7 +448,6 @@ func TestSendTargetValue_IsBoolFlag(t *testing.T) {
 }
 
 func TestSendTargetValue_Type(t *testing.T) {
-	t.Parallel()
 	var targets SendTargets
 	v := newSendTargetValue(AgentTypeClaude, &targets)
 	if got := v.Type(); got != "[variant]" {
@@ -497,7 +460,6 @@ func TestSendTargetValue_Type(t *testing.T) {
 // =============================================================================
 
 func TestPrintScalePlan_NoPanic(t *testing.T) {
-	t.Parallel()
 	// Ensure printScalePlan doesn't panic with various inputs
 	printScalePlan("test", map[string]int{"cc": 1}, map[string]int{"cc": 3}, []ScaleAction{
 		{ActionType: "spawn", AgentType: "cc", Count: 2},
@@ -505,7 +467,6 @@ func TestPrintScalePlan_NoPanic(t *testing.T) {
 }
 
 func TestPrintScalePlan_ScaleDown(t *testing.T) {
-	t.Parallel()
 	printScalePlan("test",
 		map[string]int{"cc": 5, "cod": 3},
 		map[string]int{"cc": 2, "cod": 3},
@@ -516,7 +477,6 @@ func TestPrintScalePlan_ScaleDown(t *testing.T) {
 }
 
 func TestPrintScalePlan_Empty(t *testing.T) {
-	t.Parallel()
 	printScalePlan("test", map[string]int{}, map[string]int{}, nil)
 }
 
@@ -525,7 +485,6 @@ func TestPrintScalePlan_Empty(t *testing.T) {
 // =============================================================================
 
 func TestPrintRebalanceReport_NoPanic(t *testing.T) {
-	t.Parallel()
 	resp := RebalanceResponse{
 		Session:        "test",
 		ImbalanceScore: 0.5,
@@ -543,7 +502,6 @@ func TestPrintRebalanceReport_NoPanic(t *testing.T) {
 }
 
 func TestPrintRebalanceReport_NoTransfers(t *testing.T) {
-	t.Parallel()
 	resp := RebalanceResponse{
 		Session:        "test",
 		ImbalanceScore: 0.1,
@@ -557,7 +515,6 @@ func TestPrintRebalanceReport_NoTransfers(t *testing.T) {
 }
 
 func TestPrintRebalanceReport_HighImbalance(t *testing.T) {
-	t.Parallel()
 	resp := RebalanceResponse{
 		Session:        "test",
 		ImbalanceScore: 0.9,
@@ -571,7 +528,6 @@ func TestPrintRebalanceReport_HighImbalance(t *testing.T) {
 }
 
 func TestPrintRebalanceReport_EmptyWorkloads(t *testing.T) {
-	t.Parallel()
 	resp := RebalanceResponse{
 		Session:        "test",
 		ImbalanceScore: 0.0,
@@ -587,7 +543,6 @@ func TestPrintRebalanceReport_EmptyWorkloads(t *testing.T) {
 // =============================================================================
 
 func TestOutputRebalanceJSON_Success(t *testing.T) {
-	t.Parallel()
 	// Just ensure it doesn't error on valid input
 	err := outputRebalanceJSON(map[string]string{"test": "value"})
 	if err != nil {
@@ -596,7 +551,6 @@ func TestOutputRebalanceJSON_Success(t *testing.T) {
 }
 
 func TestOutputRebalanceJSON_InvalidInput(t *testing.T) {
-	t.Parallel()
 	// Channels can't be marshaled
 	ch := make(chan int)
 	err := outputRebalanceJSON(ch)
@@ -610,7 +564,6 @@ func TestOutputRebalanceJSON_InvalidInput(t *testing.T) {
 // =============================================================================
 
 func TestOutputReviewQueueJSON_Success(t *testing.T) {
-	t.Parallel()
 	err := outputReviewQueueJSON(map[string]int{"count": 5})
 	if err != nil {
 		t.Errorf("outputReviewQueueJSON() error: %v", err)
@@ -618,7 +571,6 @@ func TestOutputReviewQueueJSON_Success(t *testing.T) {
 }
 
 func TestOutputReviewQueueJSON_InvalidInput(t *testing.T) {
-	t.Parallel()
 	ch := make(chan int)
 	err := outputReviewQueueJSON(ch)
 	if err == nil {

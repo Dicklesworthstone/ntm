@@ -48,7 +48,6 @@ func TestNormalizeAgentType(t *testing.T) {
 }
 
 func TestRespawnPaneAgentTypePrefersParsedPaneType(t *testing.T) {
-	t.Parallel()
 
 	pane := tmux.Pane{
 		Title:   "custom status title",
@@ -62,7 +61,6 @@ func TestRespawnPaneAgentTypePrefersParsedPaneType(t *testing.T) {
 }
 
 func TestSelectRespawnTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},
@@ -80,7 +78,6 @@ func TestSelectRespawnTargetsUsesParsedPaneTypeForFilters(t *testing.T) {
 }
 
 func TestSelectRespawnTargetsSkipsUserPaneByDefault(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{ID: "%0", Index: 0, Title: "shell", Type: tmux.AgentUser, Command: "zsh"},

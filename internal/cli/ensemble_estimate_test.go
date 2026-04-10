@@ -124,7 +124,6 @@ func testEstimateCatalog(t *testing.T) *ensemble.ModeCatalog {
 
 // TestSplitCommaSeparated tests the comma-separated string splitting helper
 func TestSplitCommaSeparated(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -162,7 +161,6 @@ func TestSplitCommaSeparated(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := splitCommaSeparated(tc.input)
 
 			// Handle nil vs empty slice comparison

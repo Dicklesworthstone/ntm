@@ -68,7 +68,6 @@ func TestMonitorProcessPattern_MatchesExactSessionOnly(t *testing.T) {
 }
 
 func TestResolveSpawnPanePrompt_UsesZeroBasedAgentOrder(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		Prompt:         "global fallback",
@@ -97,7 +96,6 @@ func TestResolveSpawnPanePrompt_UsesZeroBasedAgentOrder(t *testing.T) {
 }
 
 func TestSpawnHasPromptDelivery_RecognizesDefaultAndMarchingPrompts(t *testing.T) {
-	t.Parallel()
 
 	if !spawnHasPromptDelivery(SpawnOptions{
 		Agents: []FlatAgent{{Type: AgentTypeClaude, Index: 1}},
@@ -123,7 +121,6 @@ func TestSpawnHasPromptDelivery_RecognizesDefaultAndMarchingPrompts(t *testing.T
 }
 
 func TestNewInternalMonitorCommand_ValidatesSessionAndExecutable(t *testing.T) {
-	t.Parallel()
 
 	cmd, err := newInternalMonitorCommand("proj")
 	if err != nil {
@@ -142,7 +139,6 @@ func TestNewInternalMonitorCommand_ValidatesSessionAndExecutable(t *testing.T) {
 }
 
 func TestWaitForSpawnSetupCompletion_Interrupted(t *testing.T) {
-	t.Parallel()
 
 	setupDone := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
@@ -158,7 +154,6 @@ func TestWaitForSpawnSetupCompletion_Interrupted(t *testing.T) {
 }
 
 func TestWaitForSpawnSetupCompletion_Completes(t *testing.T) {
-	t.Parallel()
 
 	setupDone := make(chan struct{})
 	close(setupDone)
@@ -267,7 +262,6 @@ func TestSpawnSessionLogic(t *testing.T) {
 }
 
 func TestAppendOllamaAgentSpecs(t *testing.T) {
-	t.Parallel()
 
 	t.Run("no_agents_noop", func(t *testing.T) {
 		var specs AgentSpecs
@@ -333,7 +327,6 @@ func TestAppendOllamaAgentSpecs(t *testing.T) {
 }
 
 func TestParseLocalFallbackProvider(t *testing.T) {
-	t.Parallel()
 
 	testCases := []struct {
 		name    string
@@ -363,7 +356,6 @@ func TestParseLocalFallbackProvider(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got, err := parseLocalFallbackProvider(tc.input)
 			if tc.wantErr {
 				if err == nil {
@@ -382,7 +374,6 @@ func TestParseLocalFallbackProvider(t *testing.T) {
 }
 
 func TestHandleOllamaPreflightError_FallbackDisabled(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		Agents: []FlatAgent{{Type: AgentTypeOllama, Index: 1, Model: "codellama:latest"}},
@@ -401,7 +392,6 @@ func TestHandleOllamaPreflightError_FallbackDisabled(t *testing.T) {
 }
 
 func TestHandleOllamaPreflightError_FallbackEnabledReindexesAndRecounts(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		Agents: []FlatAgent{
@@ -454,7 +444,6 @@ func TestHandleOllamaPreflightError_FallbackEnabledReindexesAndRecounts(t *testi
 }
 
 func TestHandleOllamaPreflightError_NoOllamaAgentsStillFails(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		Agents:                []FlatAgent{{Type: AgentTypeClaude, Index: 1, Model: "sonnet"}},
@@ -753,7 +742,6 @@ func TestSpawnSessionLogic_Ollama(t *testing.T) {
 // bd-3f53: Tests for getMemoryContext and formatMemoryContext
 
 func TestFormatMemoryContext_Nil(t *testing.T) {
-	t.Parallel()
 
 	result := formatMemoryContext(nil)
 	if result != "" {
@@ -762,7 +750,6 @@ func TestFormatMemoryContext_Nil(t *testing.T) {
 }
 
 func TestFormatMemoryContext_EmptyResult(t *testing.T) {
-	t.Parallel()
 
 	result := formatMemoryContext(&cm.CLIContextResponse{
 		Success:         true,
@@ -776,7 +763,6 @@ func TestFormatMemoryContext_EmptyResult(t *testing.T) {
 }
 
 func TestFormatMemoryContext_RulesOnly(t *testing.T) {
-	t.Parallel()
 
 	resp := &cm.CLIContextResponse{
 		Success: true,
@@ -815,7 +801,6 @@ func TestFormatMemoryContext_RulesOnly(t *testing.T) {
 }
 
 func TestFormatMemoryContext_AntiPatternsOnly(t *testing.T) {
-	t.Parallel()
 
 	resp := &cm.CLIContextResponse{
 		Success:         true,
@@ -848,7 +833,6 @@ func TestFormatMemoryContext_AntiPatternsOnly(t *testing.T) {
 }
 
 func TestFormatMemoryContext_BothSections(t *testing.T) {
-	t.Parallel()
 
 	resp := &cm.CLIContextResponse{
 		Success: true,
@@ -888,7 +872,6 @@ func TestFormatMemoryContext_BothSections(t *testing.T) {
 }
 
 func TestGetMemoryContext_ConfigDisabled(t *testing.T) {
-	t.Parallel()
 
 	// Save and restore global config
 	oldCfg := cfg
@@ -905,7 +888,6 @@ func TestGetMemoryContext_ConfigDisabled(t *testing.T) {
 }
 
 func TestGetMemoryContext_NilConfig(t *testing.T) {
-	t.Parallel()
 
 	// Save and restore global config
 	oldCfg := cfg
@@ -920,7 +902,6 @@ func TestGetMemoryContext_NilConfig(t *testing.T) {
 }
 
 func TestGetMemoryContext_EmptyTask(t *testing.T) {
-	t.Parallel()
 
 	// Save and restore global config
 	oldCfg := cfg
@@ -939,7 +920,6 @@ func TestGetMemoryContext_EmptyTask(t *testing.T) {
 }
 
 func TestLegacySpawnTotalAgentCount_IncludesOllama(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		CCCount:       1,
@@ -957,7 +937,6 @@ func TestLegacySpawnTotalAgentCount_IncludesOllama(t *testing.T) {
 }
 
 func TestSpawnHookCountEnv_IncludesOllama(t *testing.T) {
-	t.Parallel()
 
 	env := spawnHookCountEnv(5, SpawnOptions{OllamaCount: 2, CursorCount: 3})
 	if env["NTM_AGENT_COUNT_OLLAMA"] != "2" {
@@ -969,7 +948,6 @@ func TestSpawnHookCountEnv_IncludesOllama(t *testing.T) {
 }
 
 func TestSpawnSessionCreatedEventFields_IncludeModernTypes(t *testing.T) {
-	t.Parallel()
 
 	fields := spawnSessionCreatedEventFields(SpawnOptions{
 		RecipeName:    "default",
@@ -989,7 +967,6 @@ func TestSpawnSessionCreatedEventFields_IncludeModernTypes(t *testing.T) {
 }
 
 func TestNormalizeSpawnOptions_ExpandsLegacyCountsIncludingOllama(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		CursorCount: 2,
@@ -1019,7 +996,6 @@ func TestNormalizeSpawnOptions_ExpandsLegacyCountsIncludingOllama(t *testing.T) 
 }
 
 func TestNormalizeSpawnOptions_RecomputesModernCountsFromAgents(t *testing.T) {
-	t.Parallel()
 
 	opts := SpawnOptions{
 		Agents: []FlatAgent{
@@ -1047,7 +1023,6 @@ func TestNormalizeSpawnOptions_RecomputesModernCountsFromAgents(t *testing.T) {
 }
 
 func TestProfileAssignmentWarning(t *testing.T) {
-	t.Parallel()
 
 	if msg := profileAssignmentWarning(0, 3); msg != "" {
 		t.Fatalf("profileAssignmentWarning(0, 3) = %q, want empty", msg)
@@ -1061,7 +1036,6 @@ func TestProfileAssignmentWarning(t *testing.T) {
 }
 
 func TestWizardAgentSpecs_IncludesModernTypes(t *testing.T) {
-	t.Parallel()
 
 	specs := wizardAgentSpecs(SpawnWizardResult{
 		CCCount:       1,
@@ -1092,7 +1066,6 @@ func TestWizardAgentSpecs_IncludesModernTypes(t *testing.T) {
 }
 
 func TestSpawnWizardResultFromCounts_IncludesModernTypes(t *testing.T) {
-	t.Parallel()
 
 	result := spawnWizardResultFromCounts(map[string]int{
 		"cc":       1,
@@ -1108,7 +1081,6 @@ func TestSpawnWizardResultFromCounts_IncludesModernTypes(t *testing.T) {
 }
 
 func TestFormatWizardAgentCountSummary_IncludesModernTypes(t *testing.T) {
-	t.Parallel()
 
 	got := formatWizardAgentCountSummary(map[string]int{
 		"cc":       1,
@@ -1127,7 +1099,6 @@ func TestFormatWizardAgentCountSummary_IncludesModernTypes(t *testing.T) {
 }
 
 func TestWizardLaunchAgentSpecs_ManualWizardKeepsCounts(t *testing.T) {
-	t.Parallel()
 
 	specs := wizardLaunchAgentSpecs(SpawnWizardResult{
 		CCCount:       1,
@@ -1150,7 +1121,6 @@ func TestWizardLaunchAgentSpecs_ManualWizardKeepsCounts(t *testing.T) {
 }
 
 func TestWizardLaunchAgentSpecs_RecipeAndTemplateSelectionsDeferCounts(t *testing.T) {
-	t.Parallel()
 
 	if specs := wizardLaunchAgentSpecs(SpawnWizardResult{CCCount: 2, Recipe: "review-team"}); len(specs) != 0 {
 		t.Fatalf("recipe selection specs = %+v, want empty", specs)

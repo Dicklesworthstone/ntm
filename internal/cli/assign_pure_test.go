@@ -15,7 +15,6 @@ import (
 // =============================================================================
 
 func TestIsBeadInCycle_Found(t *testing.T) {
-	t.Parallel()
 
 	cycles := [][]string{
 		{"bd-001", "bd-002", "bd-003"},
@@ -31,7 +30,6 @@ func TestIsBeadInCycle_Found(t *testing.T) {
 }
 
 func TestIsBeadInCycle_NotFound(t *testing.T) {
-	t.Parallel()
 
 	cycles := [][]string{
 		{"bd-001", "bd-002"},
@@ -43,7 +41,6 @@ func TestIsBeadInCycle_NotFound(t *testing.T) {
 }
 
 func TestIsBeadInCycle_EmptyCycles(t *testing.T) {
-	t.Parallel()
 
 	if IsBeadInCycle("bd-001", nil) {
 		t.Error("expected false for nil cycles")
@@ -58,7 +55,6 @@ func TestIsBeadInCycle_EmptyCycles(t *testing.T) {
 // =============================================================================
 
 func TestGetAgentStyle(t *testing.T) {
-	t.Parallel()
 
 	th := theme.Current()
 
@@ -75,7 +71,6 @@ func TestGetAgentStyle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			style := getAgentStyle(tt.agentType, th)
 			// Style should be usable — render something to verify no panic
 			rendered := style.Render("test")
@@ -91,7 +86,6 @@ func TestGetAgentStyle(t *testing.T) {
 // =============================================================================
 
 func TestGetPriorityStyle(t *testing.T) {
-	t.Parallel()
 
 	th := theme.Current()
 
@@ -108,7 +102,6 @@ func TestGetPriorityStyle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			style := getPriorityStyle(tt.priority, th)
 			rendered := style.Render("test")
 			if rendered == "" {
@@ -123,7 +116,6 @@ func TestGetPriorityStyle(t *testing.T) {
 // =============================================================================
 
 func TestMakeRetryEnvelope_Success(t *testing.T) {
-	t.Parallel()
 
 	data := &RetryData{
 		Summary: RetrySummary{TotalFailed: 3, RetriedCount: 2, SkippedCount: 1},
@@ -158,7 +150,6 @@ func TestMakeRetryEnvelope_Success(t *testing.T) {
 }
 
 func TestMakeRetryEnvelope_WithError(t *testing.T) {
-	t.Parallel()
 
 	env := makeRetryEnvelope("s", false, nil, "STORE_ERROR", "broken", []string{"w1"})
 
@@ -180,7 +171,6 @@ func TestMakeRetryEnvelope_WithError(t *testing.T) {
 }
 
 func TestMakeRetryEnvelope_JSONRoundtrip(t *testing.T) {
-	t.Parallel()
 
 	env := makeRetryEnvelope("sess", true, nil, "", "", nil)
 	data, err := json.Marshal(env)
@@ -202,7 +192,6 @@ func TestMakeRetryEnvelope_JSONRoundtrip(t *testing.T) {
 // =============================================================================
 
 func TestMakeDirectAssignEnvelope_Success(t *testing.T) {
-	t.Parallel()
 
 	data := &DirectAssignData{
 		Assignment: &DirectAssignItem{BeadID: "bd-1"},
@@ -228,7 +217,6 @@ func TestMakeDirectAssignEnvelope_Success(t *testing.T) {
 }
 
 func TestMakeDirectAssignEnvelope_WithError(t *testing.T) {
-	t.Parallel()
 
 	env := makeDirectAssignEnvelope("s", false, nil, "INVALID_ARGS", "bad", []string{"w"})
 
@@ -245,7 +233,6 @@ func TestMakeDirectAssignEnvelope_WithError(t *testing.T) {
 // =============================================================================
 
 func TestMarshalAssignOutput_Nil(t *testing.T) {
-	t.Parallel()
 
 	data, err := marshalAssignOutput(nil)
 	if err != nil {
@@ -257,7 +244,6 @@ func TestMarshalAssignOutput_Nil(t *testing.T) {
 }
 
 func TestShouldOfferAssignWatchOverlay(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name           string
@@ -275,7 +261,6 @@ func TestShouldOfferAssignWatchOverlay(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			if got := shouldOfferAssignWatchOverlay(tt.session, tt.inTmux, tt.currentSession); got != tt.want {
 				t.Fatalf("shouldOfferAssignWatchOverlay(%q, %v, %q) = %v, want %v", tt.session, tt.inTmux, tt.currentSession, got, tt.want)
 			}
@@ -284,7 +269,6 @@ func TestShouldOfferAssignWatchOverlay(t *testing.T) {
 }
 
 func TestBuildAssignWatchOverlayHint(t *testing.T) {
-	t.Parallel()
 
 	if got := buildAssignWatchOverlayHint("F12", false); got != "Hint: press F12 for the attention-aware dashboard overlay while assign --watch is running." {
 		t.Fatalf("existing binding hint = %q", got)
@@ -296,7 +280,6 @@ func TestBuildAssignWatchOverlayHint(t *testing.T) {
 }
 
 func TestBuildAssignWatchOverlayWarning(t *testing.T) {
-	t.Parallel()
 
 	got := buildAssignWatchOverlayWarning("F12", errors.New("boom"))
 	want := "Warning: Could not auto-set up the F12 overlay binding (boom); run 'ntm bind --overlay' if you want the attention-aware dashboard overlay shortcut."
@@ -306,7 +289,6 @@ func TestBuildAssignWatchOverlayWarning(t *testing.T) {
 }
 
 func TestPrepareAssignWatchOverlay_SkipsOutsideUsefulContext(t *testing.T) {
-	t.Parallel()
 
 	boundCalls := 0
 	ensureCalls := 0
@@ -337,7 +319,6 @@ func TestPrepareAssignWatchOverlay_SkipsOutsideUsefulContext(t *testing.T) {
 }
 
 func TestPrepareAssignWatchOverlay_UsesExistingBinding(t *testing.T) {
-	t.Parallel()
 
 	boundCalls := 0
 	ensureCalls := 0
@@ -377,7 +358,6 @@ func TestPrepareAssignWatchOverlay_UsesExistingBinding(t *testing.T) {
 }
 
 func TestPrepareAssignWatchOverlay_InstallsMissingBinding(t *testing.T) {
-	t.Parallel()
 
 	boundCalls := 0
 	ensureCalls := 0
@@ -417,7 +397,6 @@ func TestPrepareAssignWatchOverlay_InstallsMissingBinding(t *testing.T) {
 }
 
 func TestPrepareAssignWatchOverlay_ReportsBindingSetupFailure(t *testing.T) {
-	t.Parallel()
 
 	boundCalls := 0
 	ensureCalls := 0
@@ -452,10 +431,8 @@ func TestPrepareAssignWatchOverlay_ReportsBindingSetupFailure(t *testing.T) {
 }
 
 func TestPrepareAssignWatchOverlay_SkipsWhenBindingHooksUnavailable(t *testing.T) {
-	t.Parallel()
 
 	t.Run("missing isBound hook", func(t *testing.T) {
-		t.Parallel()
 
 		prep := prepareAssignWatchOverlay("proj", true, "proj", nil, func(string) error {
 			t.Fatal("ensureBinding should not be called when isBound is unavailable")
@@ -468,7 +445,6 @@ func TestPrepareAssignWatchOverlay_SkipsWhenBindingHooksUnavailable(t *testing.T
 	})
 
 	t.Run("missing ensureBinding hook", func(t *testing.T) {
-		t.Parallel()
 
 		prep := prepareAssignWatchOverlay("proj", true, "proj", func(string) bool { return false }, nil)
 		t.Logf("missing ensureBinding hook => prep=%+v", prep)
@@ -479,7 +455,6 @@ func TestPrepareAssignWatchOverlay_SkipsWhenBindingHooksUnavailable(t *testing.T
 }
 
 func TestAnnounceAssignWatchOverlay_SkipsEmptyPreparation(t *testing.T) {
-	t.Parallel()
 
 	var logs []string
 	announceAssignWatchOverlay(func(format string, args ...interface{}) {
@@ -492,7 +467,6 @@ func TestAnnounceAssignWatchOverlay_SkipsEmptyPreparation(t *testing.T) {
 }
 
 func TestAnnounceAssignWatchOverlay_LogsPreparedHintAndWarning(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -529,7 +503,6 @@ func TestAnnounceAssignWatchOverlay_LogsPreparedHintAndWarning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
 			var logs []string
 			announceAssignWatchOverlay(func(format string, args ...interface{}) {
@@ -549,7 +522,6 @@ func TestAnnounceAssignWatchOverlay_LogsPreparedHintAndWarning(t *testing.T) {
 }
 
 func TestAnnounceAssignWatchOverlay_WithPreparedScenarios(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -601,7 +573,6 @@ func TestAnnounceAssignWatchOverlay_WithPreparedScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
 			prep := tt.prepFn(t)
 			var logs []string
@@ -622,7 +593,6 @@ func TestAnnounceAssignWatchOverlay_WithPreparedScenarios(t *testing.T) {
 }
 
 func TestPrepareAndAnnounceAssignWatchOverlay(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name             string
@@ -704,7 +674,6 @@ func TestPrepareAndAnnounceAssignWatchOverlay(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
 			var logs []string
 			isBoundCalls := 0

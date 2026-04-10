@@ -6,7 +6,6 @@ import (
 )
 
 func TestOptionalDurationValueSet(t *testing.T) {
-	t.Parallel()
 
 	var dur time.Duration
 	var enabled bool

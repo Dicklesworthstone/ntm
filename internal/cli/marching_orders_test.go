@@ -7,7 +7,6 @@ import (
 )
 
 func TestParseMarchingOrders_Valid(t *testing.T) {
-	t.Parallel()
 	content := `# Agent assignments
 pane:0 Review the authentication module
 pane:1 Fix the database connection issue
@@ -33,7 +32,6 @@ pane:2 Write unit tests for the API layer
 }
 
 func TestParseMarchingOrders_CommentsAndBlanks(t *testing.T) {
-	t.Parallel()
 	content := `# This is a comment
 
 # Another comment
@@ -55,7 +53,6 @@ pane:0 Do the thing
 }
 
 func TestParseMarchingOrders_MissingFile(t *testing.T) {
-	t.Parallel()
 	_, err := ParseMarchingOrders("/nonexistent/path/marching.txt")
 	if err == nil {
 		t.Fatal("expected error for missing file")
@@ -63,7 +60,6 @@ func TestParseMarchingOrders_MissingFile(t *testing.T) {
 }
 
 func TestParseMarchingOrders_InvalidFormat(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name    string
 		content string
@@ -109,7 +105,6 @@ func TestParseMarchingOrders_InvalidFormat(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			path := writeTempFile(t, tc.content)
 			_, err := ParseMarchingOrders(path)
 			if err == nil {
@@ -123,7 +118,6 @@ func TestParseMarchingOrders_InvalidFormat(t *testing.T) {
 }
 
 func TestParseMarchingOrders_NonContiguousPanes(t *testing.T) {
-	t.Parallel()
 	content := `pane:0 First task
 pane:5 Fifth task
 pane:10 Tenth task
@@ -145,7 +139,6 @@ pane:10 Tenth task
 }
 
 func TestParseMarchingOrders_PromptWithSpecialChars(t *testing.T) {
-	t.Parallel()
 	content := `pane:0 Fix the bug in "auth.go" and run tests with --verbose
 pane:1 Check the API endpoint /api/v1/users?limit=10&offset=0
 `

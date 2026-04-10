@@ -11,7 +11,6 @@ import (
 )
 
 func TestFormatDuration(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -26,7 +25,6 @@ func TestFormatDuration(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := formatDuration(tc.in); got != tc.want {
 				t.Errorf("formatDuration(%s) = %q, want %q", tc.in, got, tc.want)
 			}
@@ -35,7 +33,6 @@ func TestFormatDuration(t *testing.T) {
 }
 
 func TestPaneLabel(t *testing.T) {
-	t.Parallel()
 
 	session := "myproject"
 	pane := tmux.Pane{Index: 2, Title: "myproject__cc_2"}
@@ -55,7 +52,6 @@ func TestPaneLabel(t *testing.T) {
 }
 
 func TestRenderProgressBar(t *testing.T) {
-	t.Parallel()
 
 	if got := renderProgressBar(50, 0); got != "" {
 		t.Errorf("renderProgressBar width 0 = %q, want empty", got)
@@ -128,7 +124,6 @@ func TestModelNameForPane(t *testing.T) {
 }
 
 func TestSessionPanePresentationCanonicalizesAliases(t *testing.T) {
-	t.Parallel()
 
 	th := theme.CatppuccinMocha
 	ic := icons.ASCII
@@ -153,7 +148,6 @@ func TestSessionPanePresentationCanonicalizesAliases(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			gotColor, gotIcon := sessionPanePresentation(tmux.Pane{Type: tc.agentType}, th, ic)
 			if gotColor != tc.wantColor {
 				t.Fatalf("sessionPanePresentation(%q) color = %q, want %q", tc.agentType, gotColor, tc.wantColor)
@@ -166,7 +160,6 @@ func TestSessionPanePresentationCanonicalizesAliases(t *testing.T) {
 }
 
 func TestModelNameForPaneCanonicalizesAliases(t *testing.T) {
-	t.Parallel()
 
 	oldCfg := cfg
 	cfg = nil
@@ -185,7 +178,6 @@ func TestModelNameForPaneCanonicalizesAliases(t *testing.T) {
 }
 
 func TestZoomPanePresentationCanonicalizesAliases(t *testing.T) {
-	t.Parallel()
 
 	th := theme.CatppuccinMocha
 	ic := icons.ASCII
@@ -206,7 +198,6 @@ func TestZoomPanePresentationCanonicalizesAliases(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			gotColor, gotIcon := zoomPanePresentation(tmux.Pane{Type: tc.agentType}, th, ic)
 			if gotColor != tc.wantColor {
 				t.Fatalf("zoomPanePresentation(%q) color = %q, want %q", tc.agentType, gotColor, tc.wantColor)

@@ -174,7 +174,6 @@ func TestPadRightWithDoubleWidth(t *testing.T) {
 // =============================================================================
 
 func TestStripANSI(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -194,7 +193,6 @@ func TestStripANSI(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := stripANSI(tc.input)
 			if got != tc.want {
 				t.Errorf("stripANSI(%q) = %q, want %q", tc.input, got, tc.want)

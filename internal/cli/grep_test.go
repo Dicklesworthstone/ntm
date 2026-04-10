@@ -8,7 +8,6 @@ import (
 )
 
 func TestHighlightMatch(t *testing.T) {
-	t.Parallel()
 
 	th := theme.Current()
 
@@ -30,7 +29,6 @@ func TestHighlightMatch(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := highlightMatch(tc.line, tc.pattern, tc.caseInsensitive, th)
 			if !strings.Contains(got, tc.wantContains) {
 				t.Errorf("highlightMatch(%q, %q, %v) = %q, want to contain %q",
@@ -40,7 +38,6 @@ func TestHighlightMatch(t *testing.T) {
 	}
 
 	t.Run("highlighted text has ANSI codes", func(t *testing.T) {
-		t.Parallel()
 		got := highlightMatch("hello world", "world", false, th)
 		if got == "hello world" {
 			t.Error("highlighted text should differ from original when match exists")

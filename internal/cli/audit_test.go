@@ -17,7 +17,6 @@ import (
 // --- Pure function tests (safe to run in parallel) ---
 
 func TestParseTimeArg_RFC3339(t *testing.T) {
-	t.Parallel()
 
 	input := "2026-01-15T10:30:00Z"
 	got, err := parseTimeArg(input)
@@ -31,7 +30,6 @@ func TestParseTimeArg_RFC3339(t *testing.T) {
 }
 
 func TestParseTimeArg_RelativeMinutes(t *testing.T) {
-	t.Parallel()
 
 	before := time.Now()
 	got, err := parseTimeArg("30m")
@@ -48,7 +46,6 @@ func TestParseTimeArg_RelativeMinutes(t *testing.T) {
 }
 
 func TestParseTimeArg_RelativeHours(t *testing.T) {
-	t.Parallel()
 
 	before := time.Now()
 	got, err := parseTimeArg("2h")
@@ -64,7 +61,6 @@ func TestParseTimeArg_RelativeHours(t *testing.T) {
 }
 
 func TestParseTimeArg_RelativeDays(t *testing.T) {
-	t.Parallel()
 
 	before := time.Now()
 	got, err := parseTimeArg("7d")
@@ -80,7 +76,6 @@ func TestParseTimeArg_RelativeDays(t *testing.T) {
 }
 
 func TestParseTimeArg_InvalidInput(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -94,7 +89,6 @@ func TestParseTimeArg_InvalidInput(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			_, err := parseTimeArg(tc.input)
 			if err == nil {
 				t.Errorf("parseTimeArg(%q) should error", tc.input)
@@ -106,7 +100,6 @@ func TestParseTimeArg_InvalidInput(t *testing.T) {
 // --- Command structure tests (safe to run in parallel) ---
 
 func TestNewAuditCmd_SubcommandRegistration(t *testing.T) {
-	t.Parallel()
 
 	cmd := newAuditCmd()
 	if cmd.Use != "audit" {
@@ -127,7 +120,6 @@ func TestNewAuditCmd_SubcommandRegistration(t *testing.T) {
 }
 
 func TestNewAuditShowCmd_Flags(t *testing.T) {
-	t.Parallel()
 
 	cmd := newAuditShowCmd()
 	if cmd.Use != "show <session>" {
@@ -143,7 +135,6 @@ func TestNewAuditShowCmd_Flags(t *testing.T) {
 }
 
 func TestNewAuditSearchCmd_Flags(t *testing.T) {
-	t.Parallel()
 
 	cmd := newAuditSearchCmd()
 	flags := []string{"sessions", "type", "actor", "target", "days", "limit"}
@@ -155,7 +146,6 @@ func TestNewAuditSearchCmd_Flags(t *testing.T) {
 }
 
 func TestNewAuditExportCmd_Flags(t *testing.T) {
-	t.Parallel()
 
 	cmd := newAuditExportCmd()
 	flags := []string{"format", "output"}

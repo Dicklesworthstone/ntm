@@ -12,7 +12,6 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestCompletionAgentID(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -30,7 +29,6 @@ func TestCompletionAgentID(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got, ok := completionAgentID(tc.pane)
 			if ok != tc.ok {
 				t.Fatalf("completionAgentID(%+v) ok = %v, want %v", tc.pane, ok, tc.ok)
@@ -43,7 +41,6 @@ func TestCompletionAgentID(t *testing.T) {
 }
 
 func TestFilterByPrefix(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -61,7 +58,6 @@ func TestFilterByPrefix(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := filterByPrefix(tc.options, tc.prefix)
 			if len(got) != tc.wantLen {
 				t.Errorf("filterByPrefix(%v, %q) returned %d items, want %d", tc.options, tc.prefix, len(got), tc.wantLen)
@@ -75,10 +71,8 @@ func TestFilterByPrefix(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCoerceDepsResponse(t *testing.T) {
-	t.Parallel()
 
 	t.Run("direct value", func(t *testing.T) {
-		t.Parallel()
 		resp := output.DepsResponse{AllInstalled: true}
 		got, err := coerceDepsResponse(resp)
 		if err != nil {
@@ -90,7 +84,6 @@ func TestCoerceDepsResponse(t *testing.T) {
 	})
 
 	t.Run("pointer value", func(t *testing.T) {
-		t.Parallel()
 		resp := &output.DepsResponse{AllInstalled: true}
 		got, err := coerceDepsResponse(resp)
 		if err != nil {
@@ -102,7 +95,6 @@ func TestCoerceDepsResponse(t *testing.T) {
 	})
 
 	t.Run("nil pointer", func(t *testing.T) {
-		t.Parallel()
 		var resp *output.DepsResponse
 		_, err := coerceDepsResponse(resp)
 		if err == nil {
@@ -111,7 +103,6 @@ func TestCoerceDepsResponse(t *testing.T) {
 	})
 
 	t.Run("unexpected type", func(t *testing.T) {
-		t.Parallel()
 		_, err := coerceDepsResponse("not a DepsResponse")
 		if err == nil {
 			t.Fatal("expected error for wrong type")
@@ -124,7 +115,6 @@ func TestCoerceDepsResponse(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAgentTypeToString(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -144,7 +134,6 @@ func TestAgentTypeToString(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := agentTypeToString(tc.in)
 			if got != tc.want {
 				t.Errorf("agentTypeToString(%q) = %q, want %q", tc.in, got, tc.want)

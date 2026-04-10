@@ -126,7 +126,6 @@ func errorMatchesAny(err string, matches []string) bool {
 }
 
 func TestQuotaProviderForAgentType_CanonicalizesAliases(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -142,7 +141,6 @@ func TestQuotaProviderForAgentType_CanonicalizesAliases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got, ok := quotaProviderForAgentType(tt.agentType)
 			if ok != tt.ok {
 				t.Fatalf("quotaProviderForAgentType(%q) ok = %v, want %v", tt.agentType, ok, tt.ok)
@@ -155,7 +153,6 @@ func TestQuotaProviderForAgentType_CanonicalizesAliases(t *testing.T) {
 }
 
 func TestNormalizedProviderName_CanonicalizesFallbacks(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -171,7 +168,6 @@ func TestNormalizedProviderName_CanonicalizesFallbacks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			if got := normalizedProviderName(tt.agentType); got != tt.want {
 				t.Fatalf("normalizedProviderName(%q) = %q, want %q", tt.agentType, got, tt.want)
 			}

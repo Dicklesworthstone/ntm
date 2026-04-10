@@ -13,7 +13,6 @@ import (
 // =============================================================================
 
 func TestAssignmentAgentName(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -29,7 +28,6 @@ func TestAssignmentAgentName(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := assignmentAgentName(tc.session, tc.agentType, tc.paneIndex)
 			if got != tc.want {
 				t.Errorf("assignmentAgentName(%q, %q, %d) = %q; want %q",
@@ -40,7 +38,6 @@ func TestAssignmentAgentName(t *testing.T) {
 }
 
 func TestCalculateMatchConfidence(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -118,7 +115,6 @@ func TestCalculateMatchConfidence(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := calculateMatchConfidence(tc.agentType, tc.bead, tc.strategy)
 			if got < tc.wantMin || got > tc.wantMax {
 				t.Errorf("calculateMatchConfidence(%q, %q, %q) = %f; want [%f, %f]",
@@ -129,7 +125,6 @@ func TestCalculateMatchConfidence(t *testing.T) {
 }
 
 func TestBuildReasoning(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -205,7 +200,6 @@ func TestBuildReasoning(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := buildReasoning(tc.agentType, tc.bead, tc.strategy)
 			if !strings.Contains(got, tc.wantSub) {
 				t.Errorf("buildReasoning(%q, %q, %q) = %q; want substring %q",
@@ -220,7 +214,6 @@ func TestBuildReasoning(t *testing.T) {
 // =============================================================================
 
 func TestNormalizeCommandLine(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		input string
@@ -236,7 +229,6 @@ func TestNormalizeCommandLine(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			t.Parallel()
 			got := normalizeCommandLine(tc.input)
 			if got != tc.want {
 				t.Errorf("normalizeCommandLine(%q) = %q; want %q", tc.input, got, tc.want)
@@ -250,7 +242,6 @@ func TestNormalizeCommandLine(t *testing.T) {
 // =============================================================================
 
 func TestResolveSpawnAssignAgentType(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name                     string
@@ -272,7 +263,6 @@ func TestResolveSpawnAssignAgentType(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := resolveSpawnAssignAgentType(tc.agent, tc.ccOnly, tc.codOnly, tc.gmiOnly)
 			if got != tc.want {
 				t.Errorf("resolveSpawnAssignAgentType(%q, %v, %v, %v) = %q; want %q",
@@ -287,7 +277,6 @@ func TestResolveSpawnAssignAgentType(t *testing.T) {
 // =============================================================================
 
 func TestParseDurationCLI(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -308,7 +297,6 @@ func TestParseDurationCLI(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got, err := parseDuration(tc.input)
 			if tc.wantErr {
 				if err == nil {

@@ -60,7 +60,6 @@ func TestDetectAgentType(t *testing.T) {
 }
 
 func TestFilterPanesForWait_UsesParsedPaneType(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser, Title: "project__cc_0"},

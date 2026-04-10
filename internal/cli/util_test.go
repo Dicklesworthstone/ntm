@@ -110,7 +110,6 @@ func TestResolveExplicitSessionName(t *testing.T) {
 }
 
 func TestResolveSessionWithOptionsRejectsInvalidExplicitSessionName(t *testing.T) {
-	t.Parallel()
 
 	_, err := ResolveSessionWithOptions("../escape", nil, SessionResolveOptions{})
 	if err == nil {
@@ -122,7 +121,6 @@ func TestResolveSessionWithOptionsRejectsInvalidExplicitSessionName(t *testing.T
 }
 
 func TestTruncateWithEllipsis_Util(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -142,7 +140,6 @@ func TestTruncateWithEllipsis_Util(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := truncateWithEllipsis(tc.input, tc.max)
 			if got != tc.want {
 				t.Errorf("truncateWithEllipsis(%q, %d) = %q, want %q", tc.input, tc.max, got, tc.want)
@@ -152,7 +149,6 @@ func TestTruncateWithEllipsis_Util(t *testing.T) {
 }
 
 func TestUniqueStrings_Util(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -170,7 +166,6 @@ func TestUniqueStrings_Util(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := uniqueStrings(tc.input)
 			if len(got) != len(tc.want) {
 				t.Fatalf("uniqueStrings(%v) len = %d, want %d", tc.input, len(got), len(tc.want))
@@ -185,7 +180,6 @@ func TestUniqueStrings_Util(t *testing.T) {
 }
 
 func TestCountAgentStates_Util(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name        string
@@ -238,7 +232,6 @@ func TestCountAgentStates_Util(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			state := &ensemble.EnsembleSession{Assignments: tc.assignments}
 			ready, pending, working := countAgentStates(state)
 			if ready != tc.wantReady {
@@ -255,7 +248,6 @@ func TestCountAgentStates_Util(t *testing.T) {
 }
 
 func TestEscapeShellQuotes(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -271,7 +263,6 @@ func TestEscapeShellQuotes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := escapeShellQuotes(tc.input)
 			if got != tc.want {
 				t.Errorf("escapeShellQuotes(%q) = %q, want %q", tc.input, got, tc.want)
@@ -282,7 +273,6 @@ func TestEscapeShellQuotes(t *testing.T) {
 
 // Verify uniqueStrings output is truly sorted
 func TestUniqueStrings_SortOrder(t *testing.T) {
-	t.Parallel()
 
 	input := []string{"zebra", "apple", "mango", "banana", "apple", "zebra"}
 	got := uniqueStrings(input)
@@ -297,7 +287,6 @@ func TestUniqueStrings_SortOrder(t *testing.T) {
 // =============================================================================
 
 func TestParseEditorCommand(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -318,7 +307,6 @@ func TestParseEditorCommand(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			cmd, args := parseEditorCommand(tc.editor)
 			if cmd != tc.wantCmd {
 				t.Errorf("parseEditorCommand(%q) cmd = %q, want %q", tc.editor, cmd, tc.wantCmd)
@@ -383,7 +371,6 @@ func TestBuildEditorCommandWithFallback(t *testing.T) {
 // =============================================================================
 
 func TestHasAnyTag(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name       string
@@ -404,7 +391,6 @@ func TestHasAnyTag(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := HasAnyTag(tc.paneTags, tc.filterTags)
 			if got != tc.want {
 				t.Errorf("HasAnyTag(%v, %v) = %v, want %v", tc.paneTags, tc.filterTags, got, tc.want)
@@ -418,7 +404,6 @@ func TestHasAnyTag(t *testing.T) {
 // =============================================================================
 
 func TestSanitizeFilename(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -440,7 +425,6 @@ func TestSanitizeFilename(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := SanitizeFilename(tc.input)
 			if got != tc.want {
 				t.Errorf("SanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
@@ -450,7 +434,6 @@ func TestSanitizeFilename(t *testing.T) {
 }
 
 func TestSanitizeFilename_LongName(t *testing.T) {
-	t.Parallel()
 
 	// Name longer than 50 chars should be truncated
 	long := strings.Repeat("a", 100)
@@ -465,7 +448,6 @@ func TestSanitizeFilename_LongName(t *testing.T) {
 // =============================================================================
 
 func TestOrderSessionsForSelection(t *testing.T) {
-	t.Parallel()
 
 	sessions := []tmux.Session{
 		{Name: "beta", Attached: false},

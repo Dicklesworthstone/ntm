@@ -6,7 +6,6 @@ import (
 )
 
 func TestMatchesNTMPattern(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -60,7 +59,6 @@ func TestMatchesNTMPattern(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := matchesNTMPattern(tc.input)
 			if result != tc.expected {
 				t.Errorf("matchesNTMPattern(%q) = %q; want %q", tc.input, result, tc.expected)
@@ -70,7 +68,6 @@ func TestMatchesNTMPattern(t *testing.T) {
 }
 
 func TestFormatCleanupDuration(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -103,7 +100,6 @@ func TestFormatCleanupDuration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := formatCleanupDuration(tc.duration)
 			if result != tc.expected {
 				t.Errorf("formatCleanupDuration(%v) = %q; want %q", tc.duration, result, tc.expected)
@@ -113,7 +109,6 @@ func TestFormatCleanupDuration(t *testing.T) {
 }
 
 func TestGetFileType(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -126,7 +121,6 @@ func TestGetFileType(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := getFileType(tc.isDir)
 			if result != tc.expected {
 				t.Errorf("getFileType(%v) = %q; want %q", tc.isDir, result, tc.expected)

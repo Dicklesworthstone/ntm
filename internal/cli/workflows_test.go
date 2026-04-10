@@ -8,7 +8,6 @@ import (
 )
 
 func TestCoordinationIcon(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -25,7 +24,6 @@ func TestCoordinationIcon(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := coordinationIcon(tc.coord)
 			if got != tc.want {
 				t.Errorf("coordinationIcon(%q) = %q, want %q", tc.coord, got, tc.want)
@@ -35,7 +33,6 @@ func TestCoordinationIcon(t *testing.T) {
 }
 
 func TestFormatTrigger(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -101,7 +98,6 @@ func TestFormatTrigger(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := formatTrigger(tc.trigger)
 			if got != tc.want {
 				t.Errorf("formatTrigger(%v) = %q, want %q", tc.trigger, got, tc.want)
@@ -111,7 +107,6 @@ func TestFormatTrigger(t *testing.T) {
 }
 
 func TestFormatTriggerContains(t *testing.T) {
-	t.Parallel()
 
 	// Test that output contains expected substrings for complex cases
 	tests := []struct {
@@ -133,7 +128,6 @@ func TestFormatTriggerContains(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := formatTrigger(tc.trigger)
 			for _, substr := range tc.contains {
 				if !strings.Contains(got, substr) {

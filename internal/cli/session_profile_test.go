@@ -343,7 +343,6 @@ func TestSaveSessionProfile_UsesSelectedConfigPath(t *testing.T) {
 }
 
 func TestSaveSessionProfile_InvalidName(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name string
 	}{
@@ -361,17 +360,14 @@ func TestSaveSessionProfile_InvalidName(t *testing.T) {
 }
 
 func TestSaveSessionProfile_InvalidConfig(t *testing.T) {
-	t.Parallel()
 	if err := SaveSessionProfile("negative", SessionProfile{CC: -1}); err == nil {
 		t.Fatal("expected error for negative agent count")
 	}
 }
 
 func TestApplySessionProfileToSpawnOptions(t *testing.T) {
-	t.Parallel()
 
 	t.Run("fills empty opts from profile", func(t *testing.T) {
-		t.Parallel()
 		tr := true
 		profile := &SessionProfile{
 			CC:        3,
@@ -425,7 +421,6 @@ func TestApplySessionProfileToSpawnOptions(t *testing.T) {
 	})
 
 	t.Run("explicit flags override profile", func(t *testing.T) {
-		t.Parallel()
 		profile := &SessionProfile{
 			CC:     5,
 			Cod:    5,
@@ -455,7 +450,6 @@ func TestApplySessionProfileToSpawnOptions(t *testing.T) {
 	})
 
 	t.Run("nil booleans do not set opts", func(t *testing.T) {
-		t.Parallel()
 		profile := &SessionProfile{CC: 1}
 		opts := &SpawnOptions{}
 		ApplySessionProfileToSpawnOptions(opts, profile)
@@ -472,7 +466,6 @@ func TestApplySessionProfileToSpawnOptions(t *testing.T) {
 	})
 
 	t.Run("init file loads content", func(t *testing.T) {
-		t.Parallel()
 		tmpFile := filepath.Join(t.TempDir(), "init.md")
 		os.WriteFile(tmpFile, []byte("  init prompt content  \n"), 0o644)
 
@@ -486,7 +479,6 @@ func TestApplySessionProfileToSpawnOptions(t *testing.T) {
 	})
 
 	t.Run("init file missing is silent", func(t *testing.T) {
-		t.Parallel()
 		profile := &SessionProfile{InitFile: "/nonexistent/init.md"}
 		opts := &SpawnOptions{}
 		ApplySessionProfileToSpawnOptions(opts, profile)

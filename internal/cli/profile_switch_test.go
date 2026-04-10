@@ -269,7 +269,6 @@ func TestFindPaneByAgentID(t *testing.T) {
 }
 
 func TestFormatProfileSwitchPaneTitlePreservesTags(t *testing.T) {
-	t.Parallel()
 
 	got := formatProfileSwitchPaneTitle("myproject", "cursor", 2, "reviewer", []string{"frontend", "ux"})
 	want := "myproject__cursor_2_reviewer[frontend,ux]"

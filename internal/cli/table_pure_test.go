@@ -10,7 +10,6 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestNewStyledTable(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("Name", "Status", "Age")
 	if tbl == nil {
@@ -22,7 +21,6 @@ func TestNewStyledTable(t *testing.T) {
 }
 
 func TestStyledTable_WithTitle(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("Col").WithTitle("My Table")
 	if tbl.title != "My Table" {
@@ -31,7 +29,6 @@ func TestStyledTable_WithTitle(t *testing.T) {
 }
 
 func TestStyledTable_WithFooter(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("Col").WithFooter("Page 1 of 3")
 	if tbl.footer != "Page 1 of 3" {
@@ -40,7 +37,6 @@ func TestStyledTable_WithFooter(t *testing.T) {
 }
 
 func TestStyledTable_WithStyle(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("Col").WithStyle(TableStyleMinimal)
 	if tbl.style != TableStyleMinimal {
@@ -49,7 +45,6 @@ func TestStyledTable_WithStyle(t *testing.T) {
 }
 
 func TestStyledTable_AddRow(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("Name", "Value")
 	tbl.AddRow("foo", "bar")
@@ -61,7 +56,6 @@ func TestStyledTable_AddRow(t *testing.T) {
 }
 
 func TestStyledTable_Render_Empty(t *testing.T) {
-	t.Parallel()
 
 	tbl := &StyledTable{}
 	got := tbl.Render()
@@ -71,7 +65,6 @@ func TestStyledTable_Render_Empty(t *testing.T) {
 }
 
 func TestStyledTable_Render_WithData(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("Name", "Age")
 	tbl.AddRow("Alice", "30")
@@ -92,7 +85,6 @@ func TestStyledTable_Render_WithData(t *testing.T) {
 }
 
 func TestStyledTable_String(t *testing.T) {
-	t.Parallel()
 
 	tbl := NewStyledTable("H")
 	tbl.AddRow("R")
@@ -107,7 +99,6 @@ func TestStyledTable_String(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPadRight(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -123,7 +114,6 @@ func TestPadRight(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := padRight(tt.s, tt.width)
 			if got != tt.want {
 				t.Errorf("padRight(%q, %d) = %q, want %q", tt.s, tt.width, got, tt.want)
@@ -137,7 +127,6 @@ func TestPadRight(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSuccessMessage(t *testing.T) {
-	t.Parallel()
 	got := SuccessMessage("done")
 	if got == "" {
 		t.Error("expected non-empty")
@@ -148,7 +137,6 @@ func TestSuccessMessage(t *testing.T) {
 }
 
 func TestErrorMessage(t *testing.T) {
-	t.Parallel()
 	got := ErrorMessage("failed")
 	if !strings.Contains(stripANSI(got), "failed") {
 		t.Error("should contain message text")
@@ -156,7 +144,6 @@ func TestErrorMessage(t *testing.T) {
 }
 
 func TestWarningMessage(t *testing.T) {
-	t.Parallel()
 	got := WarningMessage("caution")
 	if !strings.Contains(stripANSI(got), "caution") {
 		t.Error("should contain message text")
@@ -164,7 +151,6 @@ func TestWarningMessage(t *testing.T) {
 }
 
 func TestInfoMessage(t *testing.T) {
-	t.Parallel()
 	got := InfoMessage("note")
 	if !strings.Contains(stripANSI(got), "note") {
 		t.Error("should contain message text")
@@ -172,7 +158,6 @@ func TestInfoMessage(t *testing.T) {
 }
 
 func TestSectionHeader(t *testing.T) {
-	t.Parallel()
 	got := SectionHeader("Overview")
 	if got == "" {
 		t.Error("expected non-empty")
@@ -183,7 +168,6 @@ func TestSectionHeader(t *testing.T) {
 }
 
 func TestSectionDivider(t *testing.T) {
-	t.Parallel()
 	got := SectionDivider(40)
 	if got == "" {
 		t.Error("expected non-empty divider")
@@ -191,7 +175,6 @@ func TestSectionDivider(t *testing.T) {
 }
 
 func TestKeyValue(t *testing.T) {
-	t.Parallel()
 	got := KeyValue("Status", "running", 10)
 	stripped := stripANSI(got)
 	if !strings.Contains(stripped, "Status") || !strings.Contains(stripped, "running") {
@@ -200,7 +183,6 @@ func TestKeyValue(t *testing.T) {
 }
 
 func TestBadge(t *testing.T) {
-	t.Parallel()
 	got := Badge("OK", "46")
 	if got == "" {
 		t.Error("expected non-empty badge")
@@ -208,7 +190,6 @@ func TestBadge(t *testing.T) {
 }
 
 func TestSubtleText(t *testing.T) {
-	t.Parallel()
 	got := SubtleText("muted")
 	if !strings.Contains(stripANSI(got), "muted") {
 		t.Error("should contain text")
@@ -216,7 +197,6 @@ func TestSubtleText(t *testing.T) {
 }
 
 func TestBoldText(t *testing.T) {
-	t.Parallel()
 	got := BoldText("important")
 	if !strings.Contains(stripANSI(got), "important") {
 		t.Error("should contain text")
@@ -224,7 +204,6 @@ func TestBoldText(t *testing.T) {
 }
 
 func TestAccentText(t *testing.T) {
-	t.Parallel()
 	got := AccentText("highlight")
 	if !strings.Contains(stripANSI(got), "highlight") {
 		t.Error("should contain text")
@@ -236,7 +215,6 @@ func TestAccentText(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRuneWidth(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -249,7 +227,6 @@ func TestRuneWidth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := runeWidth(tt.s)
 			if tt.s == "" && got != 0 {
 				t.Errorf("runeWidth(%q) = %d, want 0", tt.s, got)

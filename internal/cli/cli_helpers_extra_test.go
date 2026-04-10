@@ -17,7 +17,6 @@ import (
 // =============================================================================
 
 func TestDetectAgentTypeFromPane(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -40,7 +39,6 @@ func TestDetectAgentTypeFromPane(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := detectAgentTypeFromPane(tc.pane)
 			if got != tc.want {
 				t.Errorf("detectAgentTypeFromPane(%v) = %q, want %q", tc.pane.Type, got, tc.want)
@@ -50,7 +48,6 @@ func TestDetectAgentTypeFromPane(t *testing.T) {
 }
 
 func TestAgentTypeForPanePrefersTmuxTypeAndFallsBackToTitle(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -64,7 +61,6 @@ func TestAgentTypeForPanePrefersTmuxTypeAndFallsBackToTitle(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := agentTypeForPane(tc.pane); got != tc.want {
 				t.Errorf("agentTypeForPane(%+v) = %q, want %q", tc.pane, got, tc.want)
 			}
@@ -73,7 +69,6 @@ func TestAgentTypeForPanePrefersTmuxTypeAndFallsBackToTitle(t *testing.T) {
 }
 
 func TestCollectSummaryAgentOutputsUsesParsedPaneType(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{ID: "%1", Type: tmux.AgentClaude, Title: "custom-title"},
@@ -100,7 +95,6 @@ func TestCollectSummaryAgentOutputsUsesParsedPaneType(t *testing.T) {
 }
 
 func TestCollectReadyAgentPanesUsesParsedPaneType(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 1, Type: tmux.AgentClaude, Title: "notes"},
@@ -130,7 +124,6 @@ func TestCollectReadyAgentPanesUsesParsedPaneType(t *testing.T) {
 }
 
 func TestPaneTitleTypeAndIndex(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -150,7 +143,6 @@ func TestPaneTitleTypeAndIndex(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			gotType, gotNum, gotOK := paneTitleTypeAndIndex(tc.title)
 			if gotType != tc.wantT || gotNum != tc.wantN || gotOK != tc.want {
 				t.Fatalf("paneTitleTypeAndIndex(%q) = (%q, %d, %v), want (%q, %d, %v)", tc.title, gotType, gotNum, gotOK, tc.wantT, tc.wantN, tc.want)
@@ -160,7 +152,6 @@ func TestPaneTitleTypeAndIndex(t *testing.T) {
 }
 
 func TestGenerateRecommendationsUsesParsedPaneType(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 1, Type: tmux.AgentClaude, Title: "notes"},
@@ -198,7 +189,6 @@ func TestGenerateRecommendationsUsesParsedPaneType(t *testing.T) {
 }
 
 func TestIncrementAgentCounts(t *testing.T) {
-	t.Parallel()
 
 	counts := output.AgentCountsResponse{}
 	incrementAgentCounts(&counts, tmux.AgentClaude)
@@ -228,7 +218,6 @@ func TestIncrementAgentCounts(t *testing.T) {
 }
 
 func TestDashboardPaneTypeSummary(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Type: tmux.AgentClaude},
@@ -249,7 +238,6 @@ func TestDashboardPaneTypeSummary(t *testing.T) {
 }
 
 func TestPaneOutputPrefixColor(t *testing.T) {
-	t.Parallel()
 
 	current := theme.Current()
 	tests := []struct {
@@ -269,7 +257,6 @@ func TestPaneOutputPrefixColor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := string(paneOutputPrefixColor(tc.agentType, current)); got != tc.want {
 				t.Fatalf("paneOutputPrefixColor(%v) = %q, want %q", tc.agentType, got, tc.want)
 			}
@@ -278,7 +265,6 @@ func TestPaneOutputPrefixColor(t *testing.T) {
 }
 
 func TestShortAgentTypeLocal(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -299,7 +285,6 @@ func TestShortAgentTypeLocal(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := shortAgentTypeLocal(tc.agentType); got != tc.want {
 				t.Fatalf("shortAgentTypeLocal(%q) = %q, want %q", tc.agentType, got, tc.want)
 			}
@@ -308,7 +293,6 @@ func TestShortAgentTypeLocal(t *testing.T) {
 }
 
 func TestLogsAgentTypeColor(t *testing.T) {
-	t.Parallel()
 
 	current := theme.Current()
 	tests := []struct {
@@ -329,7 +313,6 @@ func TestLogsAgentTypeColor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := string(logsAgentTypeColor(tc.agentType, current)); got != tc.want {
 				t.Fatalf("logsAgentTypeColor(%q) = %q, want %q", tc.agentType, got, tc.want)
 			}
@@ -338,7 +321,6 @@ func TestLogsAgentTypeColor(t *testing.T) {
 }
 
 func TestAggregatedLogPrefix(t *testing.T) {
-	t.Parallel()
 
 	current := theme.Current()
 	tests := []struct {
@@ -355,7 +337,6 @@ func TestAggregatedLogPrefix(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := stripANSI(aggregatedLogPrefix(tc.agentType, tc.pane, current)); got != tc.want {
 				t.Fatalf("aggregatedLogPrefix(%q, %d) = %q, want %q", tc.agentType, tc.pane, got, tc.want)
 			}
@@ -368,7 +349,6 @@ func TestAggregatedLogPrefix(t *testing.T) {
 // =============================================================================
 
 func TestUpdateAgentStats(t *testing.T) {
-	t.Parallel()
 
 	breakdown := make(map[string]AgentStats)
 
@@ -401,7 +381,6 @@ func TestUpdateAgentStats(t *testing.T) {
 // =============================================================================
 
 func TestFormatRedactionCategoryCounts(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name       string
@@ -416,7 +395,6 @@ func TestFormatRedactionCategoryCounts(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := formatRedactionCategoryCounts(tc.categories)
 			if got != tc.want {
 				t.Errorf("formatRedactionCategoryCounts(%v) = %q, want %q", tc.categories, got, tc.want)
@@ -430,7 +408,6 @@ func TestFormatRedactionCategoryCounts(t *testing.T) {
 // =============================================================================
 
 func TestRedactionBlockedError(t *testing.T) {
-	t.Parallel()
 
 	// With categories
 	err := redactionBlockedError{
@@ -464,7 +441,6 @@ func TestRedactionBlockedError(t *testing.T) {
 // =============================================================================
 
 func TestTruncateStringHealth(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -483,7 +459,6 @@ func TestTruncateStringHealth(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := truncateString(tc.s, tc.maxLen)
 			if got != tc.want {
 				t.Errorf("truncateString(%q, %d) = %q, want %q", tc.s, tc.maxLen, got, tc.want)
@@ -497,7 +472,6 @@ func TestTruncateStringHealth(t *testing.T) {
 // =============================================================================
 
 func TestAgentSpecsValue_SetAndType(t *testing.T) {
-	t.Parallel()
 
 	var specs AgentSpecs
 	val := NewAgentSpecsValue(AgentTypeClaude, &specs)
@@ -526,7 +500,6 @@ func TestAgentSpecsValue_SetAndType(t *testing.T) {
 // =============================================================================
 
 func TestAgentSpecsStringFormatting(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -544,7 +517,6 @@ func TestAgentSpecsStringFormatting(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := tc.specs.String()
 			if got != tc.want {
 				t.Errorf("String() = %q, want %q", got, tc.want)
@@ -554,7 +526,6 @@ func TestAgentSpecsStringFormatting(t *testing.T) {
 }
 
 func TestAppendMissingCountMapAgentSpecs_CanonicalizesModernTypes(t *testing.T) {
-	t.Parallel()
 
 	specs := AgentSpecs{{Type: AgentTypeCursor, Count: 1, Model: "existing"}}
 	appendMissingCountMapAgentSpecs(&specs, map[string]int{
@@ -579,7 +550,6 @@ func TestAppendMissingCountMapAgentSpecs_CanonicalizesModernTypes(t *testing.T) 
 }
 
 func TestAppendMissingRecipeAgentSpecs_PreservesModelsAndPersonas(t *testing.T) {
-	t.Parallel()
 
 	specs := AgentSpecs{}
 	personaMap := map[string]*persona.Persona{}
@@ -618,7 +588,6 @@ func TestAppendMissingRecipeAgentSpecs_PreservesModelsAndPersonas(t *testing.T) 
 }
 
 func TestFormatSpawnCountSummaryAndRecipeLabels_CanonicalizeAliases(t *testing.T) {
-	t.Parallel()
 
 	got := formatSpawnCountSummary(map[string]int{
 		"openai-codex": 2,

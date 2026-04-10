@@ -65,7 +65,6 @@ func TestFormatActivityDuration(t *testing.T) {
 }
 
 func TestPassesFilter(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -207,7 +206,6 @@ func TestPassesFilter(t *testing.T) {
 }
 
 func TestActivityAgentTypeColor(t *testing.T) {
-	t.Parallel()
 
 	current := theme.Current()
 	tests := []struct {
@@ -228,7 +226,6 @@ func TestActivityAgentTypeColor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := string(activityAgentTypeColor(tc.agentType, current)); got != tc.want {
 				t.Fatalf("activityAgentTypeColor(%q) = %q, want %q", tc.agentType, got, tc.want)
 			}

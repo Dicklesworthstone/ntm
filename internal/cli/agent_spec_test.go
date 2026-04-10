@@ -38,7 +38,6 @@ func TestParseAgentSpec_ModelValidation(t *testing.T) {
 // =============================================================================
 
 func TestAgentSpecs_TotalCount(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -52,7 +51,6 @@ func TestAgentSpecs_TotalCount(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := tc.specs.TotalCount()
 			if got != tc.want {
 				t.Errorf("TotalCount() = %d, want %d", got, tc.want)
@@ -66,7 +64,6 @@ func TestAgentSpecs_TotalCount(t *testing.T) {
 // =============================================================================
 
 func TestAgentSpecs_ByType(t *testing.T) {
-	t.Parallel()
 
 	specs := AgentSpecs{
 		{Type: AgentTypeClaude, Count: 2},
@@ -99,7 +96,6 @@ func TestAgentSpecs_ByType(t *testing.T) {
 // =============================================================================
 
 func TestAgentSpecs_Flatten(t *testing.T) {
-	t.Parallel()
 
 	specs := AgentSpecs{
 		{Type: AgentTypeClaude, Count: 2, Model: "sonnet"},
@@ -127,7 +123,6 @@ func TestAgentSpecs_Flatten(t *testing.T) {
 }
 
 func TestAgentSpecs_Flatten_Empty(t *testing.T) {
-	t.Parallel()
 
 	specs := AgentSpecs{}
 	flat := specs.Flatten()
@@ -141,7 +136,6 @@ func TestAgentSpecs_Flatten_Empty(t *testing.T) {
 // =============================================================================
 
 func TestResolveModel_Passthrough(t *testing.T) {
-	t.Parallel()
 
 	// With an explicit model spec, ResolveModel should pass through unknown aliases
 	got := ResolveModel(AgentTypeClaude, "my-custom-model-name")
@@ -151,7 +145,6 @@ func TestResolveModel_Passthrough(t *testing.T) {
 }
 
 func TestResolveModel_EmptySpecReturnsDefault(t *testing.T) {
-	t.Parallel()
 
 	// With empty modelSpec, result depends on cfg; either empty or a default
 	got := ResolveModel(AgentTypeClaude, "")
@@ -160,7 +153,6 @@ func TestResolveModel_EmptySpecReturnsDefault(t *testing.T) {
 }
 
 func TestValidateModelAlias_EmptyAlias(t *testing.T) {
-	t.Parallel()
 
 	// Empty alias should always be valid (nothing to validate)
 	err := ValidateModelAlias(AgentTypeClaude, "")
@@ -174,7 +166,6 @@ func TestValidateModelAlias_EmptyAlias(t *testing.T) {
 // =============================================================================
 
 func TestParseAgentSpec_ValidFormats(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -189,7 +180,6 @@ func TestParseAgentSpec_ValidFormats(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			spec, err := ParseAgentSpec(tc.value)
 			if err != nil {
 				t.Fatalf("ParseAgentSpec(%q) error: %v", tc.value, err)
@@ -205,7 +195,6 @@ func TestParseAgentSpec_ValidFormats(t *testing.T) {
 }
 
 func TestParseAgentSpec_InvalidFormats(t *testing.T) {
-	t.Parallel()
 
 	invalids := []string{
 		"",    // empty
@@ -217,7 +206,6 @@ func TestParseAgentSpec_InvalidFormats(t *testing.T) {
 
 	for _, v := range invalids {
 		t.Run(v, func(t *testing.T) {
-			t.Parallel()
 			_, err := ParseAgentSpec(v)
 			if err == nil {
 				t.Errorf("ParseAgentSpec(%q) expected error, got nil", v)

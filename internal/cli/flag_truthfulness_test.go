@@ -85,7 +85,6 @@ func TestFlagTruthfulness(t *testing.T) {
 
 // TestFlagTruthfulness_AllowlistDocumented ensures every allowlist entry has a justification.
 func TestFlagTruthfulness_AllowlistDocumented(t *testing.T) {
-	t.Parallel()
 
 	for flag, justification := range flagTruthfulnessAllowlist {
 		if strings.TrimSpace(justification) == "" {

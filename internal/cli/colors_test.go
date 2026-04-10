@@ -6,7 +6,6 @@ import (
 )
 
 func TestHexToRGB(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -27,7 +26,6 @@ func TestHexToRGB(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			r, g, b := hexToRGB(tc.hex)
 			if r != tc.wantR || g != tc.wantG || b != tc.wantB {
 				t.Errorf("hexToRGB(%q) = (%d, %d, %d), want (%d, %d, %d)",
@@ -38,7 +36,6 @@ func TestHexToRGB(t *testing.T) {
 }
 
 func TestFormatBytes(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -57,7 +54,6 @@ func TestFormatBytes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := formatBytes(tc.b)
 			if got != tc.want {
 				t.Errorf("formatBytes(%d) = %q, want %q", tc.b, got, tc.want)
@@ -67,7 +63,6 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestFormatCleanupBytes(t *testing.T) {
-	t.Parallel()
 
 	// formatCleanupBytes is an alias for formatBytes
 	got := formatCleanupBytes(1024)
@@ -78,7 +73,6 @@ func TestFormatCleanupBytes(t *testing.T) {
 }
 
 func TestColorToRGB(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -95,7 +89,6 @@ func TestColorToRGB(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := colorToRGB(tc.c)
 			if got != tc.want {
 				t.Errorf("colorToRGB(%v) = %q, want %q", tc.c, got, tc.want)
@@ -105,7 +98,6 @@ func TestColorToRGB(t *testing.T) {
 }
 
 func TestColorize(t *testing.T) {
-	t.Parallel()
 
 	// colorize wraps colorToRGB with ANSI prefix
 	got := colorize("#ff0000")

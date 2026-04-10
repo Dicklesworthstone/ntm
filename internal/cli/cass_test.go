@@ -97,7 +97,6 @@ func TestTruncateCassText(t *testing.T) {
 // TestTruncateCassText_MultibyteLoopFallthrough tests the fallthrough at
 // end of the for-range loop (line 513) when all rune starts fit within targetLen.
 func TestTruncateCassText_MultibyteLoopFallthrough(t *testing.T) {
-	t.Parallel()
 
 	// "aaaa🌍" = 8 bytes. maxLen=7, targetLen=4.
 	// Rune starts: 0,1,2,3,4. All <= 4. Loop completes. prevI=4.
@@ -113,7 +112,6 @@ func TestTruncateCassText_MultibyteLoopFallthrough(t *testing.T) {
 // TestTruncateCassText_SmallMaxLenLoopFallthrough tests line 500 (maxLen<=3 loop
 // completing without early return) which happens when all rune positions < maxLen.
 func TestTruncateCassText_SmallMaxLenLoopFallthrough(t *testing.T) {
-	t.Parallel()
 
 	// With a 2-byte rune at position 0 and maxLen=2:
 	// Rune starts: 0. i=0 (<2 ok), byteLen=1.

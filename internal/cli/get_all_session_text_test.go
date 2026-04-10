@@ -7,7 +7,6 @@ import (
 )
 
 func TestDetectRateLimit(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -41,7 +40,6 @@ func TestDetectRateLimit(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := detectRateLimit(tc.output)
 			if result != tc.expected {
 				t.Errorf("detectRateLimit(%q) = %v; want %v", tc.output, result, tc.expected)
@@ -51,7 +49,6 @@ func TestDetectRateLimit(t *testing.T) {
 }
 
 func TestDetectErrors(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -131,7 +128,6 @@ func TestDetectErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := detectErrors(tc.output)
 
 			if len(result) != tc.expectedLen {
@@ -149,7 +145,6 @@ func TestDetectErrors(t *testing.T) {
 }
 
 func TestDetectErrors_NoDuplicates(t *testing.T) {
-	t.Parallel()
 
 	output := "error: same error message here\nerror: same error message here\nerror: same error message here"
 	result := detectErrors(output)
@@ -161,7 +156,6 @@ func TestDetectErrors_NoDuplicates(t *testing.T) {
 }
 
 func TestDetectErrors_MaxThree(t *testing.T) {
-	t.Parallel()
 
 	output := `error: first unique error message
 error: second unique error message
@@ -178,7 +172,6 @@ error: fifth unique error message`
 }
 
 func TestGetAgentTypeShort_CanonicalizesAliases(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -194,7 +187,6 @@ func TestGetAgentTypeShort_CanonicalizesAliases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			if got := getAgentTypeShort(tt.in); got != tt.want {
 				t.Fatalf("getAgentTypeShort(%q) = %q, want %q", tt.in, got, tt.want)
 			}
@@ -203,7 +195,6 @@ func TestGetAgentTypeShort_CanonicalizesAliases(t *testing.T) {
 }
 
 func TestAnalyzePaneOutput_AliasTypesUseCanonicalStateDetection(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -219,7 +210,6 @@ func TestAnalyzePaneOutput_AliasTypesUseCanonicalStateDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			status := analyzePaneOutput(tmux.Pane{Index: 1, Type: tt.paneType}, tt.captured)
 			if status.Type != tt.wantType {
 				t.Fatalf("analyzePaneOutput type = %q, want %q", status.Type, tt.wantType)

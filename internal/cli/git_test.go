@@ -10,7 +10,6 @@ import (
 )
 
 func TestParseConflicts(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -80,7 +79,6 @@ More text after conflict.`,
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := parseConflicts(tc.output)
 
 			if len(result) != len(tc.expected) {

@@ -14,7 +14,6 @@ import (
 // =============================================================================
 
 func TestDetectIdleAgents_AllIdle(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	panes := []tmux.Pane{
@@ -37,7 +36,6 @@ func TestDetectIdleAgents_AllIdle(t *testing.T) {
 }
 
 func TestDetectIdleAgents_BusyAgentExcluded(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Fix bug", 1, "claude", "", "")
@@ -59,7 +57,6 @@ func TestDetectIdleAgents_BusyAgentExcluded(t *testing.T) {
 }
 
 func TestDetectIdleAgents_FilterByType(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	panes := []tmux.Pane{
@@ -82,7 +79,6 @@ func TestDetectIdleAgents_FilterByType(t *testing.T) {
 }
 
 func TestDetectIdleAgents_NoPanes(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	idle := detectIdleAgents(store, nil, "", 0)
@@ -93,7 +89,6 @@ func TestDetectIdleAgents_NoPanes(t *testing.T) {
 }
 
 func TestDetectIdleAgents_SkipsUserPane(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	panes := []tmux.Pane{
@@ -108,7 +103,6 @@ func TestDetectIdleAgents_SkipsUserPane(t *testing.T) {
 }
 
 func TestDetectIdleAgents_IdleThreshold(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 
@@ -136,7 +130,6 @@ func TestDetectIdleAgents_IdleThreshold(t *testing.T) {
 }
 
 func TestDetectIdleAgents_LastTaskInfo(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 
@@ -159,7 +152,6 @@ func TestDetectIdleAgents_LastTaskInfo(t *testing.T) {
 }
 
 func TestDetectIdleAgents_UsesParsedPaneType(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	panes := []tmux.Pane{
@@ -182,7 +174,6 @@ func TestDetectIdleAgents_UsesParsedPaneType(t *testing.T) {
 // =============================================================================
 
 func TestAssignSuggestionsToAgents_RoundRobin(t *testing.T) {
-	t.Parallel()
 
 	suggestions := []ReviewSuggestion{
 		{Prompt: "review A", Source: "agent_work"},
@@ -213,7 +204,6 @@ func TestAssignSuggestionsToAgents_RoundRobin(t *testing.T) {
 }
 
 func TestAssignSuggestionsToAgents_EmptySuggestions(t *testing.T) {
-	t.Parallel()
 
 	agents := []IdleAgent{{Pane: 1, AgentType: "claude"}}
 	result := assignSuggestionsToAgents(nil, agents)
@@ -224,7 +214,6 @@ func TestAssignSuggestionsToAgents_EmptySuggestions(t *testing.T) {
 }
 
 func TestAssignSuggestionsToAgents_EmptyAgents(t *testing.T) {
-	t.Parallel()
 
 	suggestions := []ReviewSuggestion{{Prompt: "review A"}}
 	result := assignSuggestionsToAgents(suggestions, nil)
@@ -235,7 +224,6 @@ func TestAssignSuggestionsToAgents_EmptyAgents(t *testing.T) {
 }
 
 func TestAssignSuggestionsToAgents_SingleAgent(t *testing.T) {
-	t.Parallel()
 
 	suggestions := []ReviewSuggestion{
 		{Prompt: "A"},
@@ -266,7 +254,6 @@ func TestAssignSuggestionsToAgents_SingleAgent(t *testing.T) {
 // =============================================================================
 
 func TestAgentLabel_WithName(t *testing.T) {
-	t.Parallel()
 
 	a := IdleAgent{Pane: 1, AgentType: "claude", AgentName: "BlueLake"}
 	if got := agentLabel(a); got != "BlueLake" {
@@ -275,7 +262,6 @@ func TestAgentLabel_WithName(t *testing.T) {
 }
 
 func TestAgentLabel_WithoutName(t *testing.T) {
-	t.Parallel()
 
 	a := IdleAgent{Pane: 3, AgentType: "codex"}
 	if got := agentLabel(a); got != "codex_3" {
@@ -288,7 +274,6 @@ func TestAgentLabel_WithoutName(t *testing.T) {
 // =============================================================================
 
 func TestMatchesReviewQueueFilter(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		agentType string
@@ -310,7 +295,6 @@ func TestMatchesReviewQueueFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.agentType+"_"+tt.filter, func(t *testing.T) {
-			t.Parallel()
 			got := matchesReviewQueueFilter(tt.agentType, tt.filter)
 			if got != tt.want {
 				t.Errorf("matchesReviewQueueFilter(%q, %q) = %v, want %v",
@@ -325,7 +309,6 @@ func TestMatchesReviewQueueFilter(t *testing.T) {
 // =============================================================================
 
 func TestMinInt(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		a, b, want int
@@ -349,7 +332,6 @@ func TestMinInt(t *testing.T) {
 // =============================================================================
 
 func TestGenerateReviewSuggestions_NoIdleAgents(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 	result := generateReviewSuggestions(store, nil, 5)
@@ -360,7 +342,6 @@ func TestGenerateReviewSuggestions_NoIdleAgents(t *testing.T) {
 }
 
 func TestGenerateReviewSuggestions_CompletedWork(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 
@@ -393,7 +374,6 @@ func TestGenerateReviewSuggestions_CompletedWork(t *testing.T) {
 }
 
 func TestGenerateReviewSuggestions_AgentWorkPromptFormat(t *testing.T) {
-	t.Parallel()
 
 	store := assignment.NewStore("test-session")
 
@@ -425,7 +405,6 @@ func TestGenerateReviewSuggestions_AgentWorkPromptFormat(t *testing.T) {
 // =============================================================================
 
 func TestReviewQueueResponse_EmptyState(t *testing.T) {
-	t.Parallel()
 
 	resp := ReviewQueueResponse{
 		Session:     "test",
@@ -449,7 +428,6 @@ func TestReviewQueueResponse_EmptyState(t *testing.T) {
 // =============================================================================
 
 func TestPrintReviewQueueReport_NoIdle(t *testing.T) {
-	t.Parallel()
 
 	resp := ReviewQueueResponse{
 		Session:     "test",
@@ -462,7 +440,6 @@ func TestPrintReviewQueueReport_NoIdle(t *testing.T) {
 }
 
 func TestPrintReviewQueueReport_WithSuggestions(t *testing.T) {
-	t.Parallel()
 
 	resp := ReviewQueueResponse{
 		Session: "test",
@@ -479,7 +456,6 @@ func TestPrintReviewQueueReport_WithSuggestions(t *testing.T) {
 }
 
 func TestPrintReviewQueueReport_IdleButNoSuggestions(t *testing.T) {
-	t.Parallel()
 
 	resp := ReviewQueueResponse{
 		Session: "test",

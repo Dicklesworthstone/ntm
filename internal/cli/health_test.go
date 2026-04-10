@@ -7,7 +7,6 @@ import (
 )
 
 func TestStatusSeverity(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -23,7 +22,6 @@ func TestStatusSeverity(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := statusSeverity(tc.status)
 			if got != tc.want {
 				t.Errorf("statusSeverity(%q) = %d, want %d", tc.status, got, tc.want)
@@ -33,7 +31,6 @@ func TestStatusSeverity(t *testing.T) {
 }
 
 func TestStatusSeverityOrdering(t *testing.T) {
-	t.Parallel()
 
 	// Verify severity ordering: OK < Warning < Error
 	okSev := statusSeverity(health.StatusOK)
@@ -49,7 +46,6 @@ func TestStatusSeverityOrdering(t *testing.T) {
 }
 
 func TestTruncateString(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -71,7 +67,6 @@ func TestTruncateString(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := truncateString(tc.s, tc.maxLen)
 			if got != tc.want {
 				t.Errorf("truncateString(%q, %d) = %q, want %q", tc.s, tc.maxLen, got, tc.want)
@@ -81,10 +76,8 @@ func TestTruncateString(t *testing.T) {
 }
 
 func TestCoerceHealthOutput(t *testing.T) {
-	t.Parallel()
 
 	t.Run("HealthOutput value passes through", func(t *testing.T) {
-		t.Parallel()
 		input := HealthOutput{Error: "test"}
 		result, err := coerceHealthOutput(input)
 		if err != nil {
@@ -96,7 +89,6 @@ func TestCoerceHealthOutput(t *testing.T) {
 	})
 
 	t.Run("HealthOutput pointer dereferences", func(t *testing.T) {
-		t.Parallel()
 		input := &HealthOutput{Error: "pointer test"}
 		result, err := coerceHealthOutput(input)
 		if err != nil {
@@ -108,7 +100,6 @@ func TestCoerceHealthOutput(t *testing.T) {
 	})
 
 	t.Run("nil pointer returns error", func(t *testing.T) {
-		t.Parallel()
 		var input *HealthOutput
 		_, err := coerceHealthOutput(input)
 		if err == nil {
@@ -117,7 +108,6 @@ func TestCoerceHealthOutput(t *testing.T) {
 	})
 
 	t.Run("wrong type returns error", func(t *testing.T) {
-		t.Parallel()
 		_, err := coerceHealthOutput("string value")
 		if err == nil {
 			t.Error("expected error for wrong type, got nil")
@@ -125,7 +115,6 @@ func TestCoerceHealthOutput(t *testing.T) {
 	})
 
 	t.Run("int type returns error", func(t *testing.T) {
-		t.Parallel()
 		_, err := coerceHealthOutput(42)
 		if err == nil {
 			t.Error("expected error for int type, got nil")

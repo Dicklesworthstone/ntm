@@ -408,7 +408,6 @@ func TestGetPromptContentFromFile(t *testing.T) {
 }
 
 func TestShuffledPermutation_DeterministicSeed(t *testing.T) {
-	t.Parallel()
 
 	seed := int64(12345)
 	seedUsed1, perm1 := shuffledPermutation(32, seed)
@@ -428,7 +427,6 @@ func TestShuffledPermutation_DeterministicSeed(t *testing.T) {
 }
 
 func TestShuffledPermutation_IsPermutation(t *testing.T) {
-	t.Parallel()
 
 	_, perm := shuffledPermutation(100, 999)
 	seen := make(map[int]bool, len(perm))
@@ -444,7 +442,6 @@ func TestShuffledPermutation_IsPermutation(t *testing.T) {
 }
 
 func TestPermutePanes_AppliesPermutation(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 10},
@@ -1268,7 +1265,6 @@ func TestFilterPanesForBatchAllUser(t *testing.T) {
 // --- Tests for base prompt feature (bd-3ejl) ---
 
 func TestApplyBasePrompt(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name string
 		base string
@@ -1309,7 +1305,6 @@ func TestApplyBasePrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := applyBasePrompt(tt.base, tt.user)
 			if got != tt.want {
 				t.Errorf("applyBasePrompt(%q, %q) = %q, want %q", tt.base, tt.user, got, tt.want)
@@ -1319,7 +1314,6 @@ func TestApplyBasePrompt(t *testing.T) {
 }
 
 func TestResolveBasePrompt_FlagPriority(t *testing.T) {
-	t.Parallel()
 	got, err := resolveBasePrompt("from flag", "", "from config", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1330,7 +1324,6 @@ func TestResolveBasePrompt_FlagPriority(t *testing.T) {
 }
 
 func TestResolveBasePrompt_FlagFilePriority(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "base.txt")
 	if err := os.WriteFile(path, []byte("from flag file\n"), 0644); err != nil {
@@ -1346,7 +1339,6 @@ func TestResolveBasePrompt_FlagFilePriority(t *testing.T) {
 }
 
 func TestResolveBasePrompt_ConfigValue(t *testing.T) {
-	t.Parallel()
 	got, err := resolveBasePrompt("", "", "from config", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1357,7 +1349,6 @@ func TestResolveBasePrompt_ConfigValue(t *testing.T) {
 }
 
 func TestResolveBasePrompt_ConfigFile(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "base_config.txt")
 	if err := os.WriteFile(path, []byte("  from config file  \n"), 0644); err != nil {
@@ -1373,7 +1364,6 @@ func TestResolveBasePrompt_ConfigFile(t *testing.T) {
 }
 
 func TestResolveBasePrompt_AllEmpty(t *testing.T) {
-	t.Parallel()
 	got, err := resolveBasePrompt("", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1384,7 +1374,6 @@ func TestResolveBasePrompt_AllEmpty(t *testing.T) {
 }
 
 func TestResolveBasePrompt_MissingFlagFile(t *testing.T) {
-	t.Parallel()
 	_, err := resolveBasePrompt("", "/nonexistent/base.txt", "", "")
 	if err == nil {
 		t.Fatal("expected error for missing flag file")
@@ -1395,7 +1384,6 @@ func TestResolveBasePrompt_MissingFlagFile(t *testing.T) {
 }
 
 func TestResolveBasePrompt_MissingConfigFile(t *testing.T) {
-	t.Parallel()
 	_, err := resolveBasePrompt("", "", "", "/nonexistent/base.txt")
 	if err == nil {
 		t.Fatal("expected error for missing config file")
@@ -1408,7 +1396,6 @@ func TestResolveBasePrompt_MissingConfigFile(t *testing.T) {
 // --- bd-2wzs: priority-order tests ---
 
 func TestParsePriorityAnnotation(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name string
 		text string
@@ -1427,7 +1414,6 @@ func TestParsePriorityAnnotation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := parsePriorityAnnotation(tt.text)
 			if got != tt.want {
 				t.Errorf("parsePriorityAnnotation(%q) = %d, want %d", tt.text, got, tt.want)
@@ -1437,10 +1423,8 @@ func TestParsePriorityAnnotation(t *testing.T) {
 }
 
 func TestSortBatchByPriority(t *testing.T) {
-	t.Parallel()
 
 	t.Run("sorts P0 before P2 before unset", func(t *testing.T) {
-		t.Parallel()
 		prompts := []BatchPrompt{
 			{Text: "unset", Source: "line:1", Priority: -1},
 			{Text: "p2", Source: "line:2", Priority: 2},
@@ -1459,7 +1443,6 @@ func TestSortBatchByPriority(t *testing.T) {
 	})
 
 	t.Run("stable sort preserves order within same priority", func(t *testing.T) {
-		t.Parallel()
 		prompts := []BatchPrompt{
 			{Text: "first-p1", Source: "line:1", Priority: 1},
 			{Text: "second-p1", Source: "line:2", Priority: 1},
@@ -1472,7 +1455,6 @@ func TestSortBatchByPriority(t *testing.T) {
 	})
 
 	t.Run("all unset preserves order", func(t *testing.T) {
-		t.Parallel()
 		prompts := []BatchPrompt{
 			{Text: "a", Priority: -1},
 			{Text: "b", Priority: -1},
@@ -1485,7 +1467,6 @@ func TestSortBatchByPriority(t *testing.T) {
 	})
 
 	t.Run("single element", func(t *testing.T) {
-		t.Parallel()
 		prompts := []BatchPrompt{{Text: "only", Priority: 3}}
 		sortBatchByPriority(prompts)
 		if prompts[0].Text != "only" {
@@ -1495,10 +1476,8 @@ func TestSortBatchByPriority(t *testing.T) {
 }
 
 func TestParseBatchFile_PriorityAnnotations(t *testing.T) {
-	t.Parallel()
 
 	t.Run("multi-line format extracts priority", func(t *testing.T) {
-		t.Parallel()
 		content := "---\n# priority: 0\nCritical fix\n---\n# priority: 2\nMedium task\n---\nNo priority\n"
 		dir := t.TempDir()
 		path := dir + "/batch.txt"
@@ -1524,7 +1503,6 @@ func TestParseBatchFile_PriorityAnnotations(t *testing.T) {
 	})
 
 	t.Run("simple format extracts priority from preceding comment", func(t *testing.T) {
-		t.Parallel()
 		content := "# priority: 1\nHigh priority task\nRegular task\n# priority: 3\nLow priority task\n"
 		dir := t.TempDir()
 		path := dir + "/batch.txt"
@@ -1551,7 +1529,6 @@ func TestParseBatchFile_PriorityAnnotations(t *testing.T) {
 }
 
 func TestFilterPanesForBatchCanonicalizesAliasTypes(t *testing.T) {
-	t.Parallel()
 
 	panes := []tmux.Pane{
 		{Index: 0, Type: tmux.AgentUser, Title: "user_0"},

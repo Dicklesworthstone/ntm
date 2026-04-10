@@ -913,7 +913,6 @@ func TestAssignAgentInfoHasPane(t *testing.T) {
 // ============================================================================
 
 func TestDetectModelFromTitle(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -949,7 +948,6 @@ func TestDetectModelFromTitle(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := detectModelFromTitle(tc.agentType, tc.title)
 			if result != tc.expected {
 				t.Errorf("detectModelFromTitle(%q, %q) = %q; want %q",
@@ -960,7 +958,6 @@ func TestDetectModelFromTitle(t *testing.T) {
 }
 
 func TestDetermineAgentState_NormalizesAliasHints(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name       string
@@ -993,7 +990,6 @@ func TestDetermineAgentState_NormalizesAliasHints(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 
 			if got := determineAgentState(tc.scrollback, tc.agentType); got != tc.want {
 				t.Fatalf("determineAgentState(%q, %q) = %q, want %q", tc.scrollback, tc.agentType, got, tc.want)
@@ -1003,7 +999,6 @@ func TestDetermineAgentState_NormalizesAliasHints(t *testing.T) {
 }
 
 func TestParsePriorityString(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -1032,7 +1027,6 @@ func TestParsePriorityString(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := parsePriorityString(tc.input)
 			if result != tc.expected {
 				t.Errorf("parsePriorityString(%q) = %d; want %d", tc.input, result, tc.expected)

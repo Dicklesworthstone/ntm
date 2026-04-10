@@ -6,7 +6,6 @@ import (
 )
 
 func TestFormatIdleDuration(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -38,7 +37,6 @@ func TestFormatIdleDuration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			result := formatIdleDuration(tc.duration)
 			if result != tc.expected {
 				t.Errorf("formatIdleDuration(%v) = %q; want %q", tc.duration, result, tc.expected)

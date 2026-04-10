@@ -13,7 +13,6 @@ import (
 // =============================================================================
 
 func TestInferTaskTypeFromBead(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -38,7 +37,6 @@ func TestInferTaskTypeFromBead(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			bead := bv.BeadPreview{Title: tc.title}
 			got := inferTaskTypeFromBead(bead)
 			if got != tc.want {
@@ -53,7 +51,6 @@ func TestInferTaskTypeFromBead(t *testing.T) {
 // =============================================================================
 
 func TestExpandPromptTemplate(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name         string
@@ -86,7 +83,6 @@ func TestExpandPromptTemplate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := expandPromptTemplate(tc.beadID, tc.title, tc.templateName, "")
 			for _, want := range tc.wantContains {
 				if !strings.Contains(got, want) {
@@ -102,7 +98,6 @@ func TestExpandPromptTemplate(t *testing.T) {
 // =============================================================================
 
 func TestPermuteBatchPrompts(t *testing.T) {
-	t.Parallel()
 
 	prompts := []BatchPrompt{
 		{Text: "first"},
@@ -146,7 +141,6 @@ func TestPermuteBatchPrompts(t *testing.T) {
 // =============================================================================
 
 func TestIsNonClaudeAgent(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -162,7 +156,6 @@ func TestIsNonClaudeAgent(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			pane := tmux.Pane{Type: tc.paneType}
 			got := isNonClaudeAgent(pane)
 			if got != tc.want {
@@ -177,7 +170,6 @@ func TestIsNonClaudeAgent(t *testing.T) {
 // =============================================================================
 
 func TestHasNonClaudeTargets(t *testing.T) {
-	t.Parallel()
 
 	// All claude - no non-claude targets
 	allClaude := []tmux.Pane{
@@ -216,7 +208,6 @@ func TestHasNonClaudeTargets(t *testing.T) {
 // =============================================================================
 
 func TestSendTargetValueSetAndIsBoolFlag(t *testing.T) {
-	t.Parallel()
 
 	var targets SendTargets
 	val := newSendTargetValue(AgentTypeClaude, &targets)
@@ -264,7 +255,6 @@ func TestSendTargetValueSetAndIsBoolFlag(t *testing.T) {
 // =============================================================================
 
 func TestSendTargetsHasTargetsForType(t *testing.T) {
-	t.Parallel()
 
 	targets := SendTargets{
 		{Type: AgentTypeClaude, Variant: ""},

@@ -11,7 +11,6 @@ import (
 // =============================================================================
 
 func TestAgentSpecsTotalCount(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -26,7 +25,6 @@ func TestAgentSpecsTotalCount(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := tc.specs.TotalCount(); got != tc.want {
 				t.Errorf("TotalCount() = %d, want %d", got, tc.want)
 			}
@@ -35,7 +33,6 @@ func TestAgentSpecsTotalCount(t *testing.T) {
 }
 
 func TestAgentSpecsByType(t *testing.T) {
-	t.Parallel()
 
 	specs := AgentSpecs{
 		{Type: AgentTypeClaude, Count: 2},
@@ -44,7 +41,6 @@ func TestAgentSpecsByType(t *testing.T) {
 	}
 
 	t.Run("filter claude", func(t *testing.T) {
-		t.Parallel()
 		got := specs.ByType(AgentTypeClaude)
 		if len(got) != 2 {
 			t.Errorf("ByType(cc) returned %d specs, want 2", len(got))
@@ -52,7 +48,6 @@ func TestAgentSpecsByType(t *testing.T) {
 	})
 
 	t.Run("filter codex", func(t *testing.T) {
-		t.Parallel()
 		got := specs.ByType(AgentTypeCodex)
 		if len(got) != 1 || got[0].Count != 3 {
 			t.Errorf("ByType(cod) = %+v, want 1 spec with count 3", got)
@@ -60,7 +55,6 @@ func TestAgentSpecsByType(t *testing.T) {
 	})
 
 	t.Run("filter gemini empty", func(t *testing.T) {
-		t.Parallel()
 		got := specs.ByType(AgentTypeGemini)
 		if len(got) != 0 {
 			t.Errorf("ByType(gmi) returned %d specs, want 0", len(got))
@@ -69,10 +63,8 @@ func TestAgentSpecsByType(t *testing.T) {
 }
 
 func TestAgentSpecsFlatten(t *testing.T) {
-	t.Parallel()
 
 	t.Run("empty", func(t *testing.T) {
-		t.Parallel()
 		var specs AgentSpecs
 		got := specs.Flatten()
 		if len(got) != 0 {
@@ -81,7 +73,6 @@ func TestAgentSpecsFlatten(t *testing.T) {
 	})
 
 	t.Run("single type", func(t *testing.T) {
-		t.Parallel()
 		specs := AgentSpecs{{Type: AgentTypeClaude, Count: 3, Model: "opus"}}
 		got := specs.Flatten()
 		if len(got) != 3 {
@@ -101,7 +92,6 @@ func TestAgentSpecsFlatten(t *testing.T) {
 	})
 
 	t.Run("mixed types", func(t *testing.T) {
-		t.Parallel()
 		specs := AgentSpecs{
 			{Type: AgentTypeClaude, Count: 2},
 			{Type: AgentTypeCodex, Count: 1},
@@ -122,10 +112,8 @@ func TestAgentSpecsFlatten(t *testing.T) {
 // =============================================================================
 
 func TestPersonaSpecsSetAndType(t *testing.T) {
-	t.Parallel()
 
 	t.Run("Set appends", func(t *testing.T) {
-		t.Parallel()
 		var specs PersonaSpecs
 		if err := specs.Set("reviewer"); err != nil {
 			t.Fatalf("Set(reviewer) error: %v", err)
@@ -142,7 +130,6 @@ func TestPersonaSpecsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Set invalid", func(t *testing.T) {
-		t.Parallel()
 		var specs PersonaSpecs
 		if err := specs.Set(""); err == nil {
 			t.Error("expected error for empty spec")
@@ -156,7 +143,6 @@ func TestPersonaSpecsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Type", func(t *testing.T) {
-		t.Parallel()
 		var specs PersonaSpecs
 		if got := specs.Type(); got != "name[:count]" {
 			t.Errorf("Type() = %q, want name[:count]", got)
@@ -164,7 +150,6 @@ func TestPersonaSpecsSetAndType(t *testing.T) {
 	})
 
 	t.Run("TotalCount", func(t *testing.T) {
-		t.Parallel()
 		specs := PersonaSpecs{
 			{Name: "a", Count: 2},
 			{Name: "b", Count: 3},
@@ -175,7 +160,6 @@ func TestPersonaSpecsSetAndType(t *testing.T) {
 	})
 
 	t.Run("String", func(t *testing.T) {
-		t.Parallel()
 		specs := PersonaSpecs{
 			{Name: "a", Count: 1},
 			{Name: "b", Count: 3},
@@ -193,7 +177,6 @@ func TestPersonaSpecsSetAndType(t *testing.T) {
 // =============================================================================
 
 func TestIntsToStrings(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -208,7 +191,6 @@ func TestIntsToStrings(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := intsToStrings(tc.ints)
 			if len(got) != len(tc.want) {
 				t.Fatalf("intsToStrings(%v) len = %d, want %d", tc.ints, len(got), len(tc.want))
@@ -223,10 +205,8 @@ func TestIntsToStrings(t *testing.T) {
 }
 
 func TestShuffledPermutation(t *testing.T) {
-	t.Parallel()
 
 	t.Run("deterministic with seed", func(t *testing.T) {
-		t.Parallel()
 		seed1, perm1 := shuffledPermutation(5, 12345)
 		seed2, perm2 := shuffledPermutation(5, 12345)
 		if seed1 != seed2 {
@@ -243,7 +223,6 @@ func TestShuffledPermutation(t *testing.T) {
 	})
 
 	t.Run("valid permutation", func(t *testing.T) {
-		t.Parallel()
 		_, perm := shuffledPermutation(10, 99)
 		seen := make(map[int]bool)
 		for _, v := range perm {
@@ -258,7 +237,6 @@ func TestShuffledPermutation(t *testing.T) {
 	})
 
 	t.Run("n=0", func(t *testing.T) {
-		t.Parallel()
 		_, perm := shuffledPermutation(0, 1)
 		if len(perm) != 0 {
 			t.Errorf("expected empty perm, got %v", perm)
@@ -266,7 +244,6 @@ func TestShuffledPermutation(t *testing.T) {
 	})
 
 	t.Run("n=1", func(t *testing.T) {
-		t.Parallel()
 		_, perm := shuffledPermutation(1, 1)
 		if len(perm) != 1 || perm[0] != 0 {
 			t.Errorf("expected [0], got %v", perm)
@@ -274,7 +251,6 @@ func TestShuffledPermutation(t *testing.T) {
 	})
 
 	t.Run("zero seed returns nonzero", func(t *testing.T) {
-		t.Parallel()
 		seed, _ := shuffledPermutation(5, 0)
 		if seed == 0 {
 			t.Error("expected non-zero seed when input seed is 0")
@@ -283,7 +259,6 @@ func TestShuffledPermutation(t *testing.T) {
 }
 
 func TestBoolToStr(t *testing.T) {
-	t.Parallel()
 	if got := boolToStr(true); got != "true" {
 		t.Errorf("boolToStr(true) = %q", got)
 	}
@@ -293,7 +268,6 @@ func TestBoolToStr(t *testing.T) {
 }
 
 func TestMatchesSendTarget(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -335,7 +309,6 @@ func TestMatchesSendTarget(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := matchesSendTarget(tc.pane, tc.target)
 			if got != tc.want {
 				t.Errorf("matchesSendTarget(%v, %v) = %v, want %v", tc.pane, tc.target, got, tc.want)
@@ -345,10 +318,8 @@ func TestMatchesSendTarget(t *testing.T) {
 }
 
 func TestPermutePanes(t *testing.T) {
-	t.Parallel()
 
 	t.Run("valid permutation", func(t *testing.T) {
-		t.Parallel()
 		panes := []tmux.Pane{
 			{Index: 0, Type: tmux.AgentClaude},
 			{Index: 1, Type: tmux.AgentCodex},
@@ -365,7 +336,6 @@ func TestPermutePanes(t *testing.T) {
 	})
 
 	t.Run("length mismatch returns original", func(t *testing.T) {
-		t.Parallel()
 		panes := []tmux.Pane{{Index: 0}}
 		perm := []int{0, 1}
 		got := permutePanes(panes, perm)
@@ -375,7 +345,6 @@ func TestPermutePanes(t *testing.T) {
 	})
 
 	t.Run("out of range index returns original", func(t *testing.T) {
-		t.Parallel()
 		panes := []tmux.Pane{{Index: 0}, {Index: 1}}
 		perm := []int{0, 99}
 		got := permutePanes(panes, perm)
@@ -391,10 +360,8 @@ func TestPermutePanes(t *testing.T) {
 // =============================================================================
 
 func TestToAgentSpecs(t *testing.T) {
-	t.Parallel()
 
 	t.Run("empty", func(t *testing.T) {
-		t.Parallel()
 		specs, names := ToAgentSpecs(nil)
 		if len(specs) != 0 {
 			t.Errorf("expected empty specs, got %+v", specs)
@@ -405,7 +372,6 @@ func TestToAgentSpecs(t *testing.T) {
 	})
 
 	t.Run("groups by type and model", func(t *testing.T) {
-		t.Parallel()
 		resolved := []ResolvedPersonaAgent{
 			{Type: AgentTypeClaude, Model: "opus"},
 			{Type: AgentTypeClaude, Model: "opus"},
@@ -427,10 +393,8 @@ func TestToAgentSpecs(t *testing.T) {
 // =============================================================================
 
 func TestStyledTableBuilderOps(t *testing.T) {
-	t.Parallel()
 
 	t.Run("basic construction", func(t *testing.T) {
-		t.Parallel()
 		tbl := NewStyledTable("Name", "Age", "City")
 		if tbl.RowCount() != 0 {
 			t.Errorf("RowCount() = %d, want 0", tbl.RowCount())
@@ -443,7 +407,6 @@ func TestStyledTableBuilderOps(t *testing.T) {
 	})
 
 	t.Run("builder methods return receiver", func(t *testing.T) {
-		t.Parallel()
 		tbl := NewStyledTable("A", "B")
 		ret := tbl.WithTitle("Test Title")
 		if ret != tbl {
@@ -460,7 +423,6 @@ func TestStyledTableBuilderOps(t *testing.T) {
 	})
 
 	t.Run("render non-empty", func(t *testing.T) {
-		t.Parallel()
 		tbl := NewStyledTable("Key", "Value")
 		tbl.AddRow("a", "1")
 		rendered := tbl.Render()
@@ -473,7 +435,6 @@ func TestStyledTableBuilderOps(t *testing.T) {
 	})
 
 	t.Run("render empty headers", func(t *testing.T) {
-		t.Parallel()
 		tbl := NewStyledTable()
 		if got := tbl.Render(); got != "" {
 			t.Errorf("Render() with no headers = %q, want empty", got)
@@ -481,7 +442,6 @@ func TestStyledTableBuilderOps(t *testing.T) {
 	})
 
 	t.Run("render all styles", func(t *testing.T) {
-		t.Parallel()
 		for _, style := range []TableStyle{TableStyleRounded, TableStyleSimple, TableStyleMinimal} {
 			tbl := NewStyledTable("A", "B").WithStyle(style)
 			tbl.AddRow("x", "y")
@@ -493,7 +453,6 @@ func TestStyledTableBuilderOps(t *testing.T) {
 }
 
 func TestMessageAndStyleHelpers(t *testing.T) {
-	t.Parallel()
 
 	// Test that message helpers return non-empty strings containing the message
 	helpers := map[string]func(string) string{
@@ -508,7 +467,6 @@ func TestMessageAndStyleHelpers(t *testing.T) {
 
 	for name, fn := range helpers {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			got := fn("test_content")
 			if got == "" {
 				t.Errorf("%s returned empty string", name)
@@ -522,7 +480,6 @@ func TestMessageAndStyleHelpers(t *testing.T) {
 }
 
 func TestMatchesLegacySendTypeFilterCanonicalizesAliases(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name      string
@@ -541,7 +498,6 @@ func TestMatchesLegacySendTypeFilterCanonicalizesAliases(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := matchesLegacySendTypeFilter(tc.pane, tc.targetCC, tc.targetCod, tc.targetGmi); got != tc.want {
 				t.Fatalf("matchesLegacySendTypeFilter(%v, %v, %v, %v) = %v, want %v", tc.pane, tc.targetCC, tc.targetCod, tc.targetGmi, got, tc.want)
 			}
@@ -550,7 +506,6 @@ func TestMatchesLegacySendTypeFilterCanonicalizesAliases(t *testing.T) {
 }
 
 func TestIsInterruptibleAgentPane(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name string
@@ -571,7 +526,6 @@ func TestIsInterruptibleAgentPane(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := isInterruptibleAgentPane(tc.pane); got != tc.want {
 				t.Fatalf("isInterruptibleAgentPane(%v) = %v, want %v", tc.pane, got, tc.want)
 			}

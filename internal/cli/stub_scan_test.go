@@ -298,7 +298,6 @@ func findRepoRoot(t *testing.T) string {
 
 // TestNoNewPlaceholders_AllowlistDocumented ensures every allowlist entry has a justification.
 func TestNoNewPlaceholders_AllowlistDocumented(t *testing.T) {
-	t.Parallel()
 
 	for file, labels := range placeholderAllowlist {
 		for label, justification := range labels {

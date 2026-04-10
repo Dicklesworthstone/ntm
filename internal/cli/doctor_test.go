@@ -45,7 +45,6 @@ func TestBuildSafetyDefaults(t *testing.T) {
 
 // TestBuildSafetyDefaults_NilConfig tests the nil cfg branch (line 459-461).
 func TestBuildSafetyDefaults_NilConfig(t *testing.T) {
-	t.Parallel()
 
 	got := buildSafetyDefaults(nil)
 	// nil config falls back to config.Default(), which has a non-empty Mode
@@ -56,7 +55,6 @@ func TestBuildSafetyDefaults_NilConfig(t *testing.T) {
 
 // TestBuildSafetyDefaults_EmptyRedactionMode tests the empty mode branch (line 464-466).
 func TestBuildSafetyDefaults_EmptyRedactionMode(t *testing.T) {
-	t.Parallel()
 
 	cfg := config.Default()
 	cfg.Redaction.Mode = "" // Empty mode should fall back to default

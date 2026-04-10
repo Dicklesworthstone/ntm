@@ -442,7 +442,6 @@ func TestOverlayPopupEnvVar(t *testing.T) {
 }
 
 func TestOverlayBindingHelpersAgree(t *testing.T) {
-	t.Parallel()
 
 	key := "F12"
 	cmd := overlayBindingCommand(key)

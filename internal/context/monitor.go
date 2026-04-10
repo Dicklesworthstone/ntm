@@ -414,8 +414,8 @@ func (m *ContextMonitor) UpdateFromRobotMode(agentID, output string) {
 // Uses the highest-confidence available strategy.
 func (m *ContextMonitor) GetEstimate(agentID string) *ContextEstimate {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	state := m.states[agentID]
-	m.mu.RUnlock()
 
 	if state == nil {
 		return nil

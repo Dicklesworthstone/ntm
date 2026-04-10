@@ -93,7 +93,6 @@ func TestWorkNextCmd(t *testing.T) {
 }
 
 func TestResolveTriageFormat(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		input string
@@ -111,7 +110,6 @@ func TestResolveTriageFormat(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.input, func(t *testing.T) {
-			t.Parallel()
 			if got := resolveTriageFormat(tc.input); got != tc.want {
 				t.Errorf("resolveTriageFormat(%q) = %q, want %q", tc.input, got, tc.want)
 			}

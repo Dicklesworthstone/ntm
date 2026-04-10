@@ -56,7 +56,6 @@ func TestInitCmd_NoArgs(t *testing.T) {
 
 // TestInitCmd_ExplicitPath verifies ntm init with explicit path argument
 func TestInitCmd_ExplicitPath(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -82,7 +81,6 @@ func TestInitCmd_ExplicitPath(t *testing.T) {
 
 // TestInitCmd_Force verifies --force flag overwrites existing config
 func TestInitCmd_Force(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -130,7 +128,6 @@ func TestInitCmd_Force(t *testing.T) {
 }
 
 func TestInitCmd_ForceRecoversFromCorruptConfig(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 	ntmDir := filepath.Join(tmpDir, ".ntm")
@@ -160,7 +157,6 @@ func TestInitCmd_ForceRecoversFromCorruptConfig(t *testing.T) {
 }
 
 func TestInitCmd_PartialInitCanBeResumed(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -202,7 +198,6 @@ func TestInitCmd_PartialInitCanBeResumed(t *testing.T) {
 }
 
 func TestInitCmd_ReadOnlyTargetDirDoesNotCreateNtmDir(t *testing.T) {
-	t.Parallel()
 
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based permission tests are not portable on Windows")
@@ -232,7 +227,6 @@ func TestInitCmd_ReadOnlyTargetDirDoesNotCreateNtmDir(t *testing.T) {
 }
 
 func TestInitCmd_NotGitRepoStillSucceedsWithHooksEnabled(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 	opts := initOptions{
@@ -247,7 +241,6 @@ func TestInitCmd_NotGitRepoStillSucceedsWithHooksEnabled(t *testing.T) {
 
 // TestInitCmd_NonExistentDir verifies error for non-existent target directory
 func TestInitCmd_NonExistentDir(t *testing.T) {
-	t.Parallel()
 
 	opts := initOptions{
 		TargetDir:      "/non/existent/path/surely/does/not/exist",
@@ -268,7 +261,6 @@ func TestInitCmd_NonExistentDir(t *testing.T) {
 
 // TestInitCmd_FileNotDir verifies error when target is a file, not directory
 func TestInitCmd_FileNotDir(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "not-a-dir")
@@ -295,7 +287,6 @@ func TestInitCmd_FileNotDir(t *testing.T) {
 
 // TestInitCmd_CreatesAllDirectories verifies all required directories are created
 func TestInitCmd_CreatesAllDirectories(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -333,7 +324,6 @@ func TestInitCmd_CreatesAllDirectories(t *testing.T) {
 
 // TestInitCmd_CreatesAllFiles verifies all required files are created
 func TestInitCmd_CreatesAllFiles(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -374,7 +364,6 @@ func TestInitCmd_CreatesAllFiles(t *testing.T) {
 
 // TestInitCmd_ConfigContainsProjectName verifies config.toml includes project name
 func TestInitCmd_ConfigContainsProjectName(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 	projectName := filepath.Base(tmpDir)
@@ -409,7 +398,6 @@ func TestInitCmd_ConfigContainsProjectName(t *testing.T) {
 
 // TestInitCmd_PreservesExistingFiles verifies existing files are not overwritten without --force
 func TestInitCmd_PreservesExistingFiles(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -445,7 +433,6 @@ func TestInitCmd_PreservesExistingFiles(t *testing.T) {
 
 // TestIsShellName verifies shell name detection
 func TestIsShellName(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -473,7 +460,6 @@ func TestIsShellName(t *testing.T) {
 
 // TestQuoteAlias verifies shell alias quoting
 func TestQuoteAlias(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -499,7 +485,6 @@ func TestQuoteAlias(t *testing.T) {
 
 // TestGenerateZsh verifies zsh shell integration output
 func TestGenerateZsh(t *testing.T) {
-	t.Parallel()
 
 	cfg := config.Default()
 	output := generateZsh(cfg)
@@ -532,7 +517,6 @@ func TestGenerateZsh(t *testing.T) {
 
 // TestGenerateBash verifies bash shell integration output
 func TestGenerateBash(t *testing.T) {
-	t.Parallel()
 
 	cfg := config.Default()
 	output := generateBash(cfg)
@@ -562,7 +546,6 @@ func TestGenerateBash(t *testing.T) {
 
 // TestGenerateFish verifies fish shell integration output
 func TestGenerateFish(t *testing.T) {
-	t.Parallel()
 
 	cfg := config.Default()
 	output := generateFish(cfg)
@@ -591,7 +574,6 @@ func TestGenerateFish(t *testing.T) {
 }
 
 func TestCompletionSources_EnsemblePresetsAndModesNonEmpty(t *testing.T) {
-	t.Parallel()
 
 	presets := listEnsemblePresetNames()
 	if len(presets) == 0 {
@@ -621,7 +603,6 @@ func TestCompletionSources_EnsemblePresetsAndModesNonEmpty(t *testing.T) {
 
 // TestRunShellInit_InvalidShell verifies error for unsupported shell
 func TestRunShellInit_InvalidShell(t *testing.T) {
-	t.Parallel()
 
 	err := runShellInit("powershell")
 	if err == nil {
@@ -670,7 +651,6 @@ claude = "echo custom-claude"
 
 // TestInstallGitHooks_NotGitRepo verifies hooks installation skips non-git directories
 func TestInstallGitHooks_NotGitRepo(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -693,7 +673,6 @@ func TestInstallGitHooks_NotGitRepo(t *testing.T) {
 
 // TestInstallGitHooks_GitRepo verifies hooks installation in a git repo
 func TestInstallGitHooks_GitRepo(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 
@@ -730,7 +709,6 @@ func TestInstallGitHooks_GitRepo(t *testing.T) {
 
 // TestInstallGitHooks_Force verifies force flag behavior
 func TestInstallGitHooks_Force(t *testing.T) {
-	t.Parallel()
 
 	tmpDir := t.TempDir()
 

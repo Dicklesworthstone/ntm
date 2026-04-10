@@ -2370,7 +2370,6 @@ func TestResolveRobotFormat_InvalidValueFallsBack(t *testing.T) {
 }
 
 func TestIsSessionMissingError(t *testing.T) {
-	t.Parallel()
 
 	cases := []struct {
 		name string
@@ -2387,7 +2386,6 @@ func TestIsSessionMissingError(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := isSessionMissingError(tc.err); got != tc.want {
 				t.Fatalf("isSessionMissingError(%v) = %v, want %v", tc.err, got, tc.want)
 			}

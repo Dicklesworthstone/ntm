@@ -11,7 +11,6 @@ import (
 // =============================================================================
 
 func TestFormatTargets(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -28,7 +27,6 @@ func TestFormatTargets(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := formatTargets(tc.targets)
 			if got != tc.want {
 				t.Errorf("formatTargets(%v) = %q, want %q", tc.targets, got, tc.want)
@@ -42,7 +40,6 @@ func TestFormatTargets(t *testing.T) {
 // =============================================================================
 
 func TestTruncateHistoryStr(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -90,7 +87,6 @@ func TestTruncateHistoryStr(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := truncateHistoryStr(tc.input, tc.maxLen)
 			if !tc.check(got) {
 				t.Errorf("truncateHistoryStr(%q, %d) = %q; %s", tc.input, tc.maxLen, got, tc.desc)
@@ -104,10 +100,8 @@ func TestTruncateHistoryStr(t *testing.T) {
 // =============================================================================
 
 func TestParseHistoryTimeFilter(t *testing.T) {
-	t.Parallel()
 
 	t.Run("empty string returns zero time", func(t *testing.T) {
-		t.Parallel()
 		got, err := parseHistoryTimeFilter("")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -118,7 +112,6 @@ func TestParseHistoryTimeFilter(t *testing.T) {
 	})
 
 	t.Run("whitespace returns zero time", func(t *testing.T) {
-		t.Parallel()
 		got, err := parseHistoryTimeFilter("   ")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -129,7 +122,6 @@ func TestParseHistoryTimeFilter(t *testing.T) {
 	})
 
 	t.Run("duration string", func(t *testing.T) {
-		t.Parallel()
 		before := time.Now()
 		got, err := parseHistoryTimeFilter("1h")
 		after := time.Now()
@@ -144,7 +136,6 @@ func TestParseHistoryTimeFilter(t *testing.T) {
 	})
 
 	t.Run("RFC3339 timestamp", func(t *testing.T) {
-		t.Parallel()
 		ts := "2025-01-15T10:30:00Z"
 		got, err := parseHistoryTimeFilter(ts)
 		if err != nil {
@@ -157,7 +148,6 @@ func TestParseHistoryTimeFilter(t *testing.T) {
 	})
 
 	t.Run("invalid input returns error", func(t *testing.T) {
-		t.Parallel()
 		_, err := parseHistoryTimeFilter("not-a-time-or-duration")
 		if err == nil {
 			t.Error("expected error for invalid input")
@@ -170,10 +160,8 @@ func TestParseHistoryTimeFilter(t *testing.T) {
 // =============================================================================
 
 func TestAgentSpecsSetAndType(t *testing.T) {
-	t.Parallel()
 
 	t.Run("Set appends specs", func(t *testing.T) {
-		t.Parallel()
 		var specs AgentSpecs
 		if err := specs.Set("3"); err != nil {
 			t.Fatalf("Set(3) error: %v", err)
@@ -191,7 +179,6 @@ func TestAgentSpecsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Set invalid returns error", func(t *testing.T) {
-		t.Parallel()
 		var specs AgentSpecs
 		if err := specs.Set(""); err == nil {
 			t.Error("expected error for empty spec")
@@ -202,7 +189,6 @@ func TestAgentSpecsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Type returns N[:model]", func(t *testing.T) {
-		t.Parallel()
 		var specs AgentSpecs
 		if specs.Type() != "N[:model]" {
 			t.Errorf("Type() = %q, want N[:model]", specs.Type())
@@ -215,10 +201,8 @@ func TestAgentSpecsSetAndType(t *testing.T) {
 // =============================================================================
 
 func TestSendTargetsSetAndType(t *testing.T) {
-	t.Parallel()
 
 	t.Run("Set without variant", func(t *testing.T) {
-		t.Parallel()
 		var targets SendTargets
 		if err := targets.Set("cc"); err != nil {
 			t.Fatalf("Set(cc) error: %v", err)
@@ -233,7 +217,6 @@ func TestSendTargetsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Set with variant", func(t *testing.T) {
-		t.Parallel()
 		var targets SendTargets
 		if err := targets.Set("cc:opus"); err != nil {
 			t.Fatalf("Set(cc:opus) error: %v", err)
@@ -244,7 +227,6 @@ func TestSendTargetsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Set accumulates", func(t *testing.T) {
-		t.Parallel()
 		var targets SendTargets
 		_ = targets.Set("cc:opus")
 		_ = targets.Set("cod:gpt4")
@@ -254,7 +236,6 @@ func TestSendTargetsSetAndType(t *testing.T) {
 	})
 
 	t.Run("Type returns [variant]", func(t *testing.T) {
-		t.Parallel()
 		var targets SendTargets
 		if targets.Type() != "[variant]" {
 			t.Errorf("Type() = %q, want [variant]", targets.Type())

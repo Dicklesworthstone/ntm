@@ -20,7 +20,6 @@ import (
 // --------------------------------------------------------------------------
 
 func TestRemediationMatrix(t *testing.T) {
-	t.Parallel()
 
 	// repoRoot resolves the project root from this file's location.
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -140,7 +139,6 @@ func TestRemediationMatrix(t *testing.T) {
 
 	for _, row := range rows {
 		t.Run(row.beadID+"_"+row.description, func(t *testing.T) {
-			t.Parallel()
 			row.check(t)
 		})
 	}
@@ -153,7 +151,6 @@ func TestRemediationMatrix(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestRemediatedFilesUseStructuredLogging(t *testing.T) {
-	t.Parallel()
 
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -176,7 +173,6 @@ func TestRemediatedFilesUseStructuredLogging(t *testing.T) {
 	for _, relPath := range remediatedFiles {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
-			t.Parallel()
 			data, err := os.ReadFile(filepath.Join(repoRoot, relPath))
 			if err != nil {
 				t.Fatalf("read %s: %v", relPath, err)

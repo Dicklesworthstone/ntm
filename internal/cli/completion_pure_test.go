@@ -9,7 +9,6 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestCompleteCommaSeparated(t *testing.T) {
-	t.Parallel()
 
 	options := []string{"cc", "cod", "gmi"}
 
@@ -27,7 +26,6 @@ func TestCompleteCommaSeparated(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := completeCommaSeparated(options, tt.toComplete)
 			if len(got) != tt.wantLen {
 				t.Errorf("completeCommaSeparated(%v, %q) = %v (len %d), want len %d",
@@ -42,7 +40,6 @@ func TestCompleteCommaSeparated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrefixMatches(t *testing.T) {
-	t.Parallel()
 
 	options := []string{"alpha", "beta", "gamma"}
 
@@ -60,7 +57,6 @@ func TestPrefixMatches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			got := prefixMatches(options, tt.prefix, tt.segment)
 			if len(got) != tt.wantLen {
 				t.Errorf("prefixMatches(%v, %q, %q) = %v (len %d), want len %d",

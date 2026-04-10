@@ -107,7 +107,6 @@ func TestResolveSummarySessionName(t *testing.T) {
 }
 
 func TestParseSummaryFormat(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name       string
@@ -129,7 +128,6 @@ func TestParseSummaryFormat(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			gotFormat, gotJSON, err := parseSummaryFormat(tc.input)
 			if tc.wantErr {
 				if err == nil {
@@ -151,7 +149,6 @@ func TestParseSummaryFormat(t *testing.T) {
 }
 
 func TestResolveProjectDir_EmptySession(t *testing.T) {
-	t.Parallel()
 	wd := t.TempDir()
 	got, err := resolveProjectDir("", wd, false)
 	if err != nil {
@@ -163,7 +160,6 @@ func TestResolveProjectDir_EmptySession(t *testing.T) {
 }
 
 func TestResolveProjectDir_InvalidSession(t *testing.T) {
-	t.Parallel()
 	wd := t.TempDir()
 	_, err := resolveProjectDir("../escape", wd, true)
 	if err == nil {
@@ -269,7 +265,6 @@ func TestResolveProjectDir_ExplicitUsesSavedSessionAgentProject(t *testing.T) {
 }
 
 func TestUniqueSessions(t *testing.T) {
-	t.Parallel()
 	now := time.Now()
 	files := []summaryFileInfo{
 		{Session: "beta", Timestamp: now},
@@ -289,7 +284,6 @@ func TestUniqueSessions(t *testing.T) {
 }
 
 func TestLatestSummary(t *testing.T) {
-	t.Parallel()
 	now := time.Now()
 	files := []summaryFileInfo{
 		{Session: "alpha", Timestamp: now.Add(2 * time.Hour)},
@@ -308,7 +302,6 @@ func TestLatestSummary(t *testing.T) {
 }
 
 func TestLatestSummaryForSession(t *testing.T) {
-	t.Parallel()
 	now := time.Now()
 	files := []summaryFileInfo{
 		{Session: "alpha", Timestamp: now.Add(2 * time.Hour)},

@@ -13,7 +13,6 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestRenderEnsembleStopOutput_JSON(t *testing.T) {
-	t.Parallel()
 
 	payload := ensembleStopOutput{
 		GeneratedAt: output.Timestamp(),
@@ -34,7 +33,6 @@ func TestRenderEnsembleStopOutput_JSON(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_YAML(t *testing.T) {
-	t.Parallel()
 
 	payload := ensembleStopOutput{
 		GeneratedAt: output.Timestamp(),
@@ -55,7 +53,6 @@ func TestRenderEnsembleStopOutput_YAML(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_YML(t *testing.T) {
-	t.Parallel()
 
 	payload := ensembleStopOutput{
 		GeneratedAt: output.Timestamp(),
@@ -75,7 +72,6 @@ func TestRenderEnsembleStopOutput_YML(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_TextWithCaptured(t *testing.T) {
-	t.Parallel()
 
 	payload := ensembleStopOutput{
 		GeneratedAt: output.Timestamp(),
@@ -102,7 +98,6 @@ func TestRenderEnsembleStopOutput_TextWithCaptured(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_TextWithError(t *testing.T) {
-	t.Parallel()
 
 	payload := ensembleStopOutput{
 		GeneratedAt: output.Timestamp(),
@@ -123,7 +118,6 @@ func TestRenderEnsembleStopOutput_TextWithError(t *testing.T) {
 }
 
 func TestRenderEnsembleStopOutput_InvalidFormat(t *testing.T) {
-	t.Parallel()
 
 	payload := ensembleStopOutput{
 		Session: "test",

@@ -112,7 +112,6 @@ func TestImpactToBeadPriority(t *testing.T) {
 }
 
 func TestNormalizeEnsembleAgentType(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		input string
@@ -430,7 +429,6 @@ func TestSelectFindingsByIDs(t *testing.T) {
 }
 
 func TestParseSelectionIndices(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -459,7 +457,6 @@ func TestParseSelectionIndices(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got, err := parseSelectionIndices(tc.input, tc.max)
 			if tc.wantErr {
 				if err == nil {
