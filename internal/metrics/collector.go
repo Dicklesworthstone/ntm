@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -516,7 +517,15 @@ func (r *MetricsReport) ExportJSON() ([]byte, error) {
 func (r *MetricsReport) ExportCSV() string {
 	var sb string
 	sb += "operation,count,min_ms,max_ms,avg_ms,p50_ms,p95_ms,p99_ms\n"
-	for op, stats := range r.LatencyStats {
+	// Sort keys for deterministic output
+	keys := make([]string, 0, len(r.LatencyStats))
+	for k := range r.LatencyStats {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, op := range keys {
+		stats := r.LatencyStats[op]
 		sb += fmt.Sprintf("%s,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
 			op, stats.Count, stats.MinMs, stats.MaxMs, stats.AvgMs,
 			stats.P50Ms, stats.P95Ms, stats.P99Ms)
