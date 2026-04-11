@@ -1067,7 +1067,7 @@ func TestGetInProgressBeadsNoBeads(t *testing.T) {
 	}
 
 	// br not available or no beads - should return nil
-	if beads != nil && len(beads) > 0 {
+	if len(beads) > 0 {
 		t.Logf("beads found (may be expected in dev environment): %v", beads)
 	}
 }

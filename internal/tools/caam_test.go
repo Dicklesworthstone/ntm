@@ -585,7 +585,7 @@ func TestRateLimitDetectorNilAdapter(t *testing.T) {
 	ctx := context.Background()
 	result := detector.TriggerAccountSwitch(ctx, event)
 	if result == nil {
-		t.Error("TriggerAccountSwitch should return event even with nil adapter")
+		t.Fatal("TriggerAccountSwitch should return event even with nil adapter")
 	}
 	if result.SwitchSuccess {
 		t.Error("SwitchSuccess should be false with nil adapter")

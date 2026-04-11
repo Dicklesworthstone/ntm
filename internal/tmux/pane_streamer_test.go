@@ -306,7 +306,7 @@ func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
 	}
 
 	ps := NewPaneStreamer(nil, "mysession:0", func(StreamEvent) {}, PaneStreamerConfig{FIFODir: fifoDirAsFile})
-	if err := ps.Start(nil); err == nil {
+	if err := ps.Start(context.TODO()); err == nil {
 		t.Fatalf("Start() expected error for FIFODir=%q, got nil", fifoDirAsFile)
 	}
 

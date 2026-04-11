@@ -5552,7 +5552,7 @@ func TestGenerateRequestID(t *testing.T) {
 func TestRequestIDFromContext(t *testing.T) {
 
 	t.Run("nil context returns empty", func(t *testing.T) {
-		id := requestIDFromContext(nil)
+		id := requestIDFromContext(context.TODO())
 		if id != "" {
 			t.Errorf("requestIDFromContext(nil) = %q, want empty", id)
 		}

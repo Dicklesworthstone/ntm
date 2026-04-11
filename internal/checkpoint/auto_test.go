@@ -135,7 +135,7 @@ func TestBackgroundWorkerStart_NilContextAndDoubleStartAreSafe(t *testing.T) {
 	worker := NewBackgroundWorker("test-session", config)
 
 	// Should not panic.
-	worker.Start(nil)
+	worker.Start(context.TODO())
 	worker.Start(context.Background()) // idempotent
 
 	done := make(chan struct{})

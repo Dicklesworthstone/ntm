@@ -44,7 +44,7 @@ func TestAtomicWriteFile(t *testing.T) {
 		// Check that permissions are at least as restrictive as requested
 		mode := info.Mode().Perm()
 		// On Unix, should be 0600; on Windows, this behaves differently
-		if mode&0077 != 0 && mode&0077 != mode&0077 {
+		if mode&0077 != 0 {
 			// Just check owner can read/write
 			if mode&0600 != 0600 {
 				t.Errorf("expected at least 0600 permissions, got %o", mode)

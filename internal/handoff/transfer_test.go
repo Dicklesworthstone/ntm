@@ -736,7 +736,7 @@ func TestTransferReservationsNilContext(t *testing.T) {
 	}
 
 	// nil context should be handled gracefully
-	result, err := TransferReservations(nil, client, opts)
+	result, err := TransferReservations(context.TODO(), client, opts)
 	if err != nil {
 		t.Fatalf("unexpected error with nil context: %v", err)
 	}

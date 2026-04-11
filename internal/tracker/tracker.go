@@ -247,7 +247,7 @@ func (t *StateTracker) Coalesce() []CoalescedChange {
 	for i := 0; i < count; i++ {
 		idx := (start + i) % count
 		change := t.changes[idx]
-		
+
 		// Check if we can merge with current
 		if current != nil &&
 			current.Type == change.Type &&

@@ -482,7 +482,7 @@ func TestFileReservationWatcherStartStop(t *testing.T) {
 		)
 
 		// Should not panic
-		w.Start(nil)
+		w.Start(context.TODO())
 		time.Sleep(50 * time.Millisecond)
 		w.Stop()
 

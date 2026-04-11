@@ -817,7 +817,7 @@ func TestParser_FileData_AllFiles(t *testing.T) {
 				t.Errorf("Parse failed for %s: %v", file, err)
 			}
 			if state == nil {
-				t.Errorf("Parse returned nil state for %s", file)
+				t.Fatalf("Parse returned nil state for %s", file)
 			}
 			// Every file should produce some type detection
 			if state.Confidence == 0 {

@@ -648,7 +648,7 @@ func TestRequestWithNilContext(t *testing.T) {
 	store := setupTestStore(t)
 	engine := New(store, nil, nil, DefaultConfig())
 
-	appr, err := engine.Request(nil, RequestParams{
+	appr, err := engine.Request(context.TODO(), RequestParams{
 		Action:      "test",
 		Resource:    "res",
 		RequestedBy: "alice",

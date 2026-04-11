@@ -274,7 +274,7 @@ func TestInitGlobalPoller(t *testing.T) {
 
 	poller := InitGlobalPoller(&cfg, alerter)
 	if poller == nil {
-		t.Error("InitGlobalPoller returned nil")
+		t.Fatal("InitGlobalPoller returned nil")
 	}
 
 	// Verify config was applied

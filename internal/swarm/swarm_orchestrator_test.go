@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -931,7 +932,7 @@ func TestSwarmOrchestrator_ShutdownFromPlan_NilPlan(t *testing.T) {
 	orchestrator := NewSwarmOrchestrator()
 	cfg := DefaultShutdownConfig()
 
-	result, err := orchestrator.ShutdownFromPlan(nil, nil, cfg)
+	result, err := orchestrator.ShutdownFromPlan(context.TODO(), nil, cfg)
 	if err != nil {
 		t.Errorf("[TEST] FAIL: unexpected error: %v", err)
 	}

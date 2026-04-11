@@ -196,7 +196,7 @@ func TestTrimStrings_AllBranches(t *testing.T) {
 			got := trimStrings(tc.in)
 			// nil and empty slice should both be nil
 			if tc.want == nil {
-				if got != nil && len(got) != 0 {
+				if len(got) != 0 {
 					t.Errorf("trimStrings(%v) = %v, want nil", tc.in, got)
 				}
 				return

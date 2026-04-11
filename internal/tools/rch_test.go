@@ -351,7 +351,7 @@ func TestRCHAdapterGetWorkers(t *testing.T) {
 		if err != nil {
 			t.Logf("GetWorkers returned error (expected when not installed): %v", err)
 		}
-		if workers != nil && len(workers) > 0 {
+		if len(workers) > 0 {
 			t.Error("GetWorkers returned workers but rch is not installed")
 		}
 	}

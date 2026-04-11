@@ -166,12 +166,12 @@ func (sp *ScrollablePanel) SetYOffset(offset int) {
 
 // LineDown scrolls down by n lines.
 func (sp *ScrollablePanel) LineDown(n int) {
-	sp.vp.LineDown(n)
+	sp.vp.ScrollDown(n)
 }
 
 // LineUp scrolls up by n lines.
 func (sp *ScrollablePanel) LineUp(n int) {
-	sp.vp.LineUp(n)
+	sp.vp.ScrollUp(n)
 }
 
 // HalfPageDown scrolls down by half a viewport.

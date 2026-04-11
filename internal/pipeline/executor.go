@@ -113,7 +113,7 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	if runID == "" {
 		runID = generateRunID()
 	}
-	
+
 	e.stateMu.Lock()
 	e.state = &ExecutionState{
 		RunID:        runID,
@@ -229,7 +229,7 @@ func (e *Executor) Resume(ctx context.Context, workflow *Workflow, prior *Execut
 		e.state.Steps = make(map[string]StepResult)
 	}
 	e.stateMu.Unlock()
-	
+
 	e.varMu.Lock()
 	if e.state.Variables == nil {
 		e.state.Variables = make(map[string]interface{})

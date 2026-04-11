@@ -209,7 +209,7 @@ func TestComputeDegradedFeatures_NilHealth(t *testing.T) {
 
 	features := ComputeDegradedFeatures(nil)
 
-	if features != nil && len(features) != 0 {
+	if len(features) != 0 {
 		t.Errorf("expected nil or empty slice for nil health, got %d", len(features))
 	}
 	t.Logf("DEGRADED_FEATURES nil_health")

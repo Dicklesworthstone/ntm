@@ -909,7 +909,7 @@ func TestGetContext_PartialResponse(t *testing.T) {
 		t.Errorf("[CM-ERROR] GetContext: unexpected error for partial response: %v", err)
 	}
 
-	if res.RelevantBullets == nil || len(res.RelevantBullets) == 0 {
+	if len(res.RelevantBullets) == 0 {
 		t.Error("[CM-FALLBACK] Expected partial data to be preserved")
 	}
 

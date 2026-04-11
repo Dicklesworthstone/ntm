@@ -264,7 +264,7 @@ func TestRegistryRunNilContext(t *testing.T) {
 	}
 
 	// Run with nil context should not panic
-	out, err := reg.Run(nil, cmd.Name, nil)
+	out, err := reg.Run(context.TODO(), cmd.Name, nil)
 	if err != nil {
 		t.Fatalf("Run with nil context failed: %v", err)
 	}

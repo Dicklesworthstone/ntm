@@ -741,7 +741,7 @@ func (ct *CodexThrottle) RecordRateLimit(paneID string, waitSeconds int) {
 	if waitSeconds > 0 {
 		cooldown = time.Duration(waitSeconds) * time.Second
 	}
-	
+
 	// Scale up cooldown on repeated rate limits (exponential backoff)
 	if ct.rateLimitCount > 1 {
 		multiplier := 1.0
@@ -750,7 +750,7 @@ func (ct *CodexThrottle) RecordRateLimit(paneID string, waitSeconds int) {
 		}
 		cooldown = time.Duration(float64(cooldown) * multiplier)
 	}
-	
+
 	if cooldown > MaxCooldownWindow {
 		cooldown = MaxCooldownWindow
 	}

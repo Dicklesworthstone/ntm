@@ -342,7 +342,7 @@ func (ps *PaneStreamer) runFIFOReader() {
 			if err != io.EOF && !strings.Contains(err.Error(), "file already closed") {
 				log.Printf("pipe-pane: read error for %s: %v", ps.target, err)
 			}
-			
+
 			// Check if we are actually stopping
 			select {
 			case <-stopCh:

@@ -446,12 +446,12 @@ func TestDetectShellEnv_ConfigPath(t *testing.T) {
 
 			info := detectShellEnv()
 
-			t.Logf("TEST: %s | Shell=%s | Home=%s | Expected ConfigPath=%s | Got ConfigPath=%s",
-				tt.name, tt.shell, tt.home, tt.wantConfigPath, info.ConfigPath)
-
 			if info == nil {
 				t.Fatal("detectShellEnv() returned nil")
 			}
+
+			t.Logf("TEST: %s | Shell=%s | Home=%s | Expected ConfigPath=%s | Got ConfigPath=%s",
+				tt.name, tt.shell, tt.home, tt.wantConfigPath, info.ConfigPath)
 
 			if info.ConfigPath != tt.wantConfigPath {
 				t.Errorf("ConfigPath = %q, want %q", info.ConfigPath, tt.wantConfigPath)
@@ -473,12 +473,12 @@ func TestDetectShellEnv_NoHome(t *testing.T) {
 
 	info := detectShellEnv()
 
-	t.Logf("TEST: no HOME | Shell=%s | HOME='' | Expected ConfigPath='' | Got ConfigPath=%s",
-		"/bin/zsh", info.ConfigPath)
-
 	if info == nil {
 		t.Fatal("detectShellEnv() returned nil")
 	}
+
+	t.Logf("TEST: no HOME | Shell=%s | HOME='' | Expected ConfigPath='' | Got ConfigPath=%s",
+		"/bin/zsh", info.ConfigPath)
 
 	if info.ConfigPath != "" {
 		t.Errorf("ConfigPath = %q, want empty when HOME not set", info.ConfigPath)

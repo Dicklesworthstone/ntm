@@ -389,7 +389,7 @@ func TestNewLoopExecutor(t *testing.T) {
 	loopExec := NewLoopExecutor(executor)
 
 	if loopExec == nil {
-		t.Error("expected non-nil LoopExecutor")
+		t.Fatal("expected non-nil LoopExecutor")
 	}
 	if loopExec.executor != executor {
 		t.Error("expected LoopExecutor to reference the original executor")

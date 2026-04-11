@@ -1155,7 +1155,7 @@ func TestSummarizeSessionEmptyOutput(t *testing.T) {
 func TestSummarizeSessionNilContext(t *testing.T) {
 	t.Logf("SUMMARY_TEST: TestSummarizeSessionNilContext | Testing nil context handling")
 
-	summary, err := SummarizeSession(nil, Options{
+	summary, err := SummarizeSession(context.TODO(), Options{
 		Session: "nilctx",
 		Outputs: []AgentOutput{{AgentID: "a1", AgentType: "cc", Output: "done"}},
 	})

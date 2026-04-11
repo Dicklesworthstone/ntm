@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -1625,7 +1626,7 @@ func TestReservationCacheNeedsRefresh(t *testing.T) {
 
 func TestReservationCacheRefreshWithNilClient(t *testing.T) {
 	cache := NewReservationCache(nil, "/test", 30*time.Second)
-	err := cache.Refresh(nil)
+	err := cache.Refresh(context.TODO())
 	if err != nil {
 		t.Errorf("Refresh with nil client should not error, got: %v", err)
 	}

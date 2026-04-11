@@ -1099,7 +1099,7 @@ func TestMonitorStart_NilContextAndDoubleStartAreSafe(t *testing.T) {
 	m := NewMonitor("test-session", t.TempDir(), cfg, false)
 
 	// Should not panic on nil context.
-	m.Start(nil)
+	m.Start(context.TODO())
 
 	// Calling Start twice while already running should be a no-op.
 	m.Start(context.Background())

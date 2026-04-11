@@ -820,13 +820,6 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 			fmt.Sprintf("%d beads won't be assigned - not enough idle agents", diff))
 	}
 
-	for _, b := range inProgress {
-		if b.UpdatedAt.IsZero() {
-			continue
-		}
-		// Check for stale beads (simplified)
-	}
-
 	output.AgentHints = hints
 
 	return output, nil

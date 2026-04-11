@@ -2310,7 +2310,7 @@ func TestIncrementalResolver_ListIncrementals_NoSession(t *testing.T) {
 		t.Fatalf("ListIncrementals() error = %v", err)
 	}
 
-	if incrementals != nil && len(incrementals) != 0 {
+	if len(incrementals) != 0 {
 		t.Errorf("ListIncrementals() = %v, want empty", incrementals)
 	}
 }

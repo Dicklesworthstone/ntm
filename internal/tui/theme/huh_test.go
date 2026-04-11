@@ -95,7 +95,7 @@ func TestHuhDestructiveThemeFrom_AllVariants(t *testing.T) {
 		t.Run(v.name, func(t *testing.T) {
 			theme := HuhDestructiveThemeFrom(v.theme)
 			if theme == nil {
-				t.Errorf("HuhDestructiveThemeFrom(%s) should not return nil", v.name)
+				t.Fatalf("HuhDestructiveThemeFrom(%s) should not return nil", v.name)
 			}
 
 			// Verify the button uses error color

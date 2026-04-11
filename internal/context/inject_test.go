@@ -423,13 +423,12 @@ func TestAlternateHeaderFormats(t *testing.T) {
 
 			summary := g.ParseAgentResponse("agent", "claude", "session", tc.input)
 
+			if summary == nil {
+				t.Fatal("summary should not be nil")
+			}
+
 			t.Logf("CONTEXT_TEST: HeaderFormats | Format=%s | CurrentTask=%q",
 				tc.name, summary.CurrentTask)
-
-			// Just verify no panics and reasonable output
-			if summary == nil {
-				t.Error("summary should not be nil")
-			}
 		})
 	}
 }

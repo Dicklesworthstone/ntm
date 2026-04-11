@@ -225,7 +225,7 @@ func TestLimitDetectorStopPane(t *testing.T) {
 func TestLimitDetectorStartPaneNilContext(t *testing.T) {
 	detector := NewLimitDetector()
 
-	if err := detector.StartPane(nil, "test:1.1", "cc"); err != nil {
+	if err := detector.StartPane(context.TODO(), "test:1.1", "cc"); err != nil {
 		t.Fatalf("StartPane with nil context failed: %v", err)
 	}
 	t.Cleanup(func() {
