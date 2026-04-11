@@ -689,6 +689,28 @@ func TestNewAuditStore_DefaultRetentionValues(t *testing.T) {
 	}
 }
 
+func TestNewAuditStore_UsesSingleSQLiteConnection(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewAuditStore(AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.db == nil {
+		t.Fatal("expected sqlite db to be configured")
+	}
+
+	stats := store.db.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
+	}
+}
+
 func TestNewAuditStore_DBOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{

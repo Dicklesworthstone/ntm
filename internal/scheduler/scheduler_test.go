@@ -553,6 +553,89 @@ func TestScheduler_CanRestartAfterStop(t *testing.T) {
 	}
 }
 
+func TestScheduler_DoesNotReplayStaleRetryAfterRestart(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxConcurrent = 1
+	cfg.GlobalRateLimit.Rate = 100
+	cfg.GlobalRateLimit.MinInterval = 0
+	cfg.DefaultRetries = 1
+	cfg.DefaultRetryDelay = 250 * time.Millisecond
+	cfg.Headroom.Enabled = false
+
+	scheduler := New(cfg)
+
+	var staleRuns int64
+	var freshRuns int64
+
+	scheduler.SetExecutor(func(ctx context.Context, job *SpawnJob) error {
+		if job.ID == "stale-retry" {
+			atomic.AddInt64(&staleRuns, 1)
+			return errors.New("retry me once")
+		}
+		atomic.AddInt64(&freshRuns, 1)
+		return nil
+	})
+
+	if err := scheduler.Start(); err != nil {
+		t.Fatalf("first Start() failed: %v", err)
+	}
+
+	if err := scheduler.Submit(NewSpawnJob("stale-retry", JobTypeSession, "test")); err != nil {
+		t.Fatalf("Submit(stale) failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&staleRuns) == 1 && scheduler.Stats().TotalRetried == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&staleRuns); got != 1 {
+		t.Fatalf("stale runs before restart = %d, want 1", got)
+	}
+	if got := scheduler.Stats().TotalRetried; got != 1 {
+		t.Fatalf("total retried before restart = %d, want 1", got)
+	}
+
+	scheduler.Stop()
+
+	scheduler.SetExecutor(func(ctx context.Context, job *SpawnJob) error {
+		if job.ID == "stale-retry" {
+			atomic.AddInt64(&staleRuns, 1)
+		} else {
+			atomic.AddInt64(&freshRuns, 1)
+		}
+		return nil
+	})
+
+	if err := scheduler.Start(); err != nil {
+		t.Fatalf("second Start() failed: %v", err)
+	}
+	defer scheduler.Stop()
+
+	if err := scheduler.Submit(NewSpawnJob("fresh-after-restart", JobTypeSession, "test")); err != nil {
+		t.Fatalf("Submit(fresh) failed: %v", err)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&freshRuns) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&freshRuns); got != 1 {
+		t.Fatalf("fresh runs after restart = %d, want 1", got)
+	}
+
+	time.Sleep(cfg.DefaultRetryDelay + 150*time.Millisecond)
+
+	if got := atomic.LoadInt64(&staleRuns); got != 1 {
+		t.Fatalf("stale retry executed after restart: got %d runs, want 1", got)
+	}
+}
+
 func TestScheduler_Progress(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxConcurrent = 1

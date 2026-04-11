@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -380,6 +381,92 @@ func TestAgentCaps_WaiterNotification(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("waiter did not complete in time")
+	}
+}
+
+func TestAgentCaps_CancelGrantedWaiterHandsOffReservation(t *testing.T) {
+	cfg := AgentCapsConfig{
+		Default: AgentCapConfig{
+			MaxConcurrent: 1,
+		},
+	}
+
+	caps := NewAgentCaps(cfg)
+	grantedWaiter := &agentCapWaiter{
+		ch:      make(chan struct{}, 1),
+		granted: true,
+	}
+	nextWaiter := &agentCapWaiter{ch: make(chan struct{}, 1)}
+
+	caps.mu.Lock()
+	caps.running["cc"] = 1
+	caps.stats.TotalRunning = 1
+	caps.waiters["cc"] = []*agentCapWaiter{nextWaiter}
+	caps.stats.TotalWaiting = 1
+	caps.cancelWaiter("cc", grantedWaiter)
+	running := caps.running["cc"]
+	totalRunning := caps.stats.TotalRunning
+	totalWaiting := caps.stats.TotalWaiting
+	nextGranted := nextWaiter.granted
+	caps.mu.Unlock()
+
+	if running != 1 {
+		t.Fatalf("running = %d, want 1 after handoff", running)
+	}
+	if totalRunning != 1 {
+		t.Fatalf("total running = %d, want 1 after handoff", totalRunning)
+	}
+	if totalWaiting != 0 {
+		t.Fatalf("total waiting = %d, want 0 after handoff", totalWaiting)
+	}
+	if !nextGranted {
+		t.Fatal("expected next waiter to inherit the released reservation")
+	}
+
+	select {
+	case <-nextWaiter.ch:
+	default:
+		t.Fatal("expected next waiter to be notified")
+	}
+}
+
+func TestAgentCaps_ResetUnblocksWaitersWithError(t *testing.T) {
+	cfg := AgentCapsConfig{
+		Default: AgentCapConfig{
+			MaxConcurrent: 1,
+		},
+	}
+
+	caps := NewAgentCaps(cfg)
+	if !caps.TryAcquire("cc") {
+		t.Fatal("expected initial acquire to succeed")
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- caps.Acquire(context.Background(), "cc")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if caps.Stats().TotalWaiting == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if caps.Stats().TotalWaiting != 1 {
+		t.Fatal("expected waiter to block before reset")
+	}
+
+	caps.Reset()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errAgentCapReset) {
+			t.Fatalf("err = %v, want %v", err, errAgentCapReset)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked acquire did not unblock after reset")
 	}
 }
 

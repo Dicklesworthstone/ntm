@@ -148,10 +148,18 @@ func NewAuditStore(cfg AuditStoreConfig) (*AuditStore, error) {
 
 	// Initialize SQLite database
 	if cfg.DBPath != "" {
-		db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(cfg.DBPath, "journal_mode(WAL)", "synchronous(NORMAL)"))
+		db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(
+			cfg.DBPath,
+			"journal_mode(WAL)",
+			"synchronous(NORMAL)",
+			"busy_timeout(5000)",
+			"foreign_keys(1)",
+		))
 		if err != nil {
 			return nil, fmt.Errorf("open audit db: %w", err)
 		}
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
 		store.db = db
 
 		if err := store.initSchema(); err != nil {

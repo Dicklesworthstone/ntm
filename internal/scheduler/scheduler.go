@@ -56,11 +56,12 @@ type Scheduler struct {
 	headroom *HeadroomGuard
 
 	// running state
-	started   atomic.Bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	jobNotify chan struct{}
+	started    atomic.Bool
+	generation atomic.Uint64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	jobNotify  chan struct{}
 
 	// stats tracks scheduler statistics.
 	stats Stats
@@ -326,6 +327,7 @@ func (s *Scheduler) Start() error {
 		return fmt.Errorf("executor not set")
 	}
 	s.resetRuntimeState()
+	s.generation.Add(1)
 	s.stats.StartedAt = time.Now()
 	s.mu.Unlock()
 
@@ -801,15 +803,7 @@ func (s *Scheduler) executeJob(workerID int, job *SpawnJob) {
 					"resource_error", resErr != nil && resErr.Retryable,
 				)
 
-				// Re-enqueue after delay
-				time.AfterFunc(delay, func() {
-					job.SetStatus(StatusPending)
-					s.queue.Enqueue(job)
-					select {
-					case s.jobNotify <- struct{}{}:
-					default:
-					}
-				})
+				s.scheduleRetry(job, delay)
 				return
 			} else if job.CanRetry() {
 				// Non-resource error that can still retry
@@ -820,15 +814,7 @@ func (s *Scheduler) executeJob(workerID int, job *SpawnJob) {
 					s.hooks.OnJobRetrying(job, job.RetryCount)
 				}
 
-				// Re-enqueue after standard delay
-				time.AfterFunc(job.RetryDelay, func() {
-					job.SetStatus(StatusPending)
-					s.queue.Enqueue(job)
-					select {
-					case s.jobNotify <- struct{}{}:
-					default:
-					}
-				})
+				s.scheduleRetry(job, job.RetryDelay)
 				return
 			} else {
 				job.SetStatus(StatusFailed)
@@ -870,6 +856,28 @@ func (s *Scheduler) executeJob(workerID int, job *SpawnJob) {
 	if job.Callback != nil {
 		job.Callback(job)
 	}
+}
+
+func (s *Scheduler) scheduleRetry(job *SpawnJob, delay time.Duration) {
+	generation := s.generation.Load()
+	time.AfterFunc(delay, func() {
+		if !s.started.Load() {
+			return
+		}
+		if s.generation.Load() != generation {
+			return
+		}
+		if s.ctx.Err() != nil || job.Context().Err() != nil {
+			return
+		}
+
+		job.SetStatus(StatusPending)
+		s.queue.Enqueue(job)
+		select {
+		case s.jobNotify <- struct{}{}:
+		default:
+		}
+	})
 }
 
 // generateID generates a random hex ID.

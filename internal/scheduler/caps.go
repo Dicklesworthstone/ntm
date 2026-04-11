@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"sync"
@@ -139,7 +140,7 @@ type AgentCaps struct {
 	caps map[string]*agentCapState
 
 	// waiters tracks goroutines waiting for capacity.
-	waiters map[string][]chan struct{}
+	waiters map[string][]*agentCapWaiter
 
 	// stats tracks cap statistics.
 	stats CapsStats
@@ -147,6 +148,13 @@ type AgentCaps struct {
 	// codexThrottle provides AIMD-based rate-limit throttling for cod agents.
 	// When non-nil, TryAcquire/Acquire for "cod" agents check the throttle first.
 	codexThrottle *ratelimit.CodexThrottle
+}
+
+var errAgentCapReset = errors.New("agent cap wait aborted by reset")
+
+type agentCapWaiter struct {
+	ch      chan struct{}
+	granted bool
 }
 
 // agentCapState tracks the state of caps for one agent type.
@@ -188,7 +196,7 @@ func NewAgentCaps(cfg AgentCapsConfig) *AgentCaps {
 		config:  cfg,
 		running: make(map[string]int),
 		caps:    make(map[string]*agentCapState),
-		waiters: make(map[string][]chan struct{}),
+		waiters: make(map[string][]*agentCapWaiter),
 		stats: CapsStats{
 			PerAgent: make(map[string]AgentCapStats),
 		},
@@ -300,6 +308,10 @@ func (ac *AgentCaps) TryAcquire(agentType string) bool {
 // Acquire blocks until a slot is available or context is cancelled.
 func (ac *AgentCaps) Acquire(ctx context.Context, agentType string) error {
 	agentType = canonicalSchedulerAgentTypeKey(agentType)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// First try without blocking
 	if ac.TryAcquire(agentType) {
 		return nil
@@ -324,8 +336,8 @@ func (ac *AgentCaps) Acquire(ctx context.Context, agentType string) error {
 	}
 
 	// Create wait channel
-	waitCh := make(chan struct{}, 1)
-	ac.waiters[agentType] = append(ac.waiters[agentType], waitCh)
+	waiter := &agentCapWaiter{ch: make(chan struct{}, 1)}
+	ac.waiters[agentType] = append(ac.waiters[agentType], waiter)
 	ac.stats.TotalWaiting++
 
 	// Extract values for logging while holding lock
@@ -344,12 +356,17 @@ func (ac *AgentCaps) Acquire(ctx context.Context, agentType string) error {
 	select {
 	case <-ctx.Done():
 		ac.mu.Lock()
-		ac.removeWaiter(agentType, waitCh)
-		ac.stats.TotalWaiting--
+		ac.cancelWaiter(agentType, waiter)
 		ac.mu.Unlock()
 		return ctx.Err()
-	case <-waitCh:
-		return nil
+	case <-waiter.ch:
+		ac.mu.Lock()
+		granted := waiter.granted
+		ac.mu.Unlock()
+		if granted {
+			return nil
+		}
+		return errAgentCapReset
 	}
 }
 
@@ -366,15 +383,38 @@ func (ac *AgentCaps) globalCapExceeded() bool {
 }
 
 // removeWaiter removes a waiter channel from the list.
-func (ac *AgentCaps) removeWaiter(agentType string, ch chan struct{}) {
+func (ac *AgentCaps) removeWaiter(agentType string, waiter *agentCapWaiter) bool {
 	agentType = canonicalSchedulerAgentTypeKey(agentType)
 	waiters := ac.waiters[agentType]
 	for i, w := range waiters {
-		if w == ch {
+		if w == waiter {
 			ac.waiters[agentType] = append(waiters[:i], waiters[i+1:]...)
-			return
+			return true
 		}
 	}
+	return false
+}
+
+// cancelWaiter undoes a blocked acquire when its context is cancelled.
+func (ac *AgentCaps) cancelWaiter(agentType string, waiter *agentCapWaiter) {
+	agentType = canonicalSchedulerAgentTypeKey(agentType)
+
+	if ac.removeWaiter(agentType, waiter) {
+		ac.stats.TotalWaiting--
+		return
+	}
+
+	if !waiter.granted {
+		return
+	}
+
+	if ac.running[agentType] > 0 {
+		ac.running[agentType]--
+		ac.stats.TotalRunning--
+	}
+
+	// Hand the released slot to the next waiter immediately if one exists.
+	ac.notifyWaiter(agentType)
 }
 
 // Release releases a slot for an agent type.
@@ -407,11 +447,12 @@ func (ac *AgentCaps) notifyWaiter(agentType string) {
 		ac.stats.TotalWaiting--
 
 		// Mark slot as acquired for the waiter
+		waiter.granted = true
 		ac.running[agentType]++
 		ac.stats.TotalRunning++
 
 		select {
-		case waiter <- struct{}{}:
+		case waiter.ch <- struct{}{}:
 		default:
 		}
 		return
@@ -426,10 +467,11 @@ func (ac *AgentCaps) notifyWaiter(agentType string) {
 					waiter := waiters[0]
 					ac.waiters[agent] = waiters[1:]
 					ac.stats.TotalWaiting--
+					waiter.granted = true
 					ac.running[agent]++
 					ac.stats.TotalRunning++
 					select {
-					case waiter <- struct{}{}:
+					case waiter.ch <- struct{}{}:
 					default:
 					}
 					return
@@ -747,8 +789,10 @@ func (ac *AgentCaps) Reset() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
+	oldWaiters := ac.waiters
 	ac.running = make(map[string]int)
 	ac.caps = make(map[string]*agentCapState)
+	ac.waiters = make(map[string][]*agentCapWaiter)
 	ac.stats = CapsStats{PerAgent: make(map[string]AgentCapStats)}
 
 	// Re-initialize from config
@@ -765,10 +809,10 @@ func (ac *AgentCaps) Reset() {
 	}
 
 	// Notify and clear all waiters
-	for agent, waiters := range ac.waiters {
-		for _, ch := range waiters {
-			close(ch)
+	for agent, waiters := range oldWaiters {
+		for _, waiter := range waiters {
+			close(waiter.ch)
 		}
-		ac.waiters[agent] = nil
+		oldWaiters[agent] = nil
 	}
 }
