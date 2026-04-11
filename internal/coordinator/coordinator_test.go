@@ -361,6 +361,81 @@ func TestStartStop(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+func TestStart_DoubleStartRejected(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+	c.config.PollInterval = 100 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("first Start failed: %v", err)
+	}
+	defer c.Stop()
+
+	if err := c.Start(ctx); err == nil {
+		t.Fatal("expected second Start to fail while coordinator is already running")
+	}
+}
+
+func TestStop_WaitsForInFlightMonitorCycle(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+	c.config.PollInterval = MinPollInterval
+	c.config.SendDigests = false
+
+	originalGetPanes := getPanesWithActivity
+	defer func() {
+		getPanesWithActivity = originalGetPanes
+	}()
+
+	var calls int
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+
+	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil
+		}
+		close(blocked)
+		<-release
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitor loop did not enter blocked update cycle")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before blocked monitor cycle was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not wait for blocked monitor cycle to finish")
+	}
+}
+
 func TestGenerateDigest(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 

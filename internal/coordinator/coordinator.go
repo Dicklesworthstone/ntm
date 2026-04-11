@@ -5,6 +5,7 @@ package coordinator
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -48,7 +49,9 @@ type SessionCoordinator struct {
 	// Control
 	ctx      context.Context
 	stopCh   chan struct{}
-	stopOnce sync.Once
+	wg       sync.WaitGroup
+	started  bool
+	stopping bool
 }
 
 // AgentState tracks the current state of an agent pane.
@@ -181,10 +184,18 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 		c.config.DigestInterval = DefaultCoordinatorConfig().DigestInterval
 	}
 
+	c.mu.Lock()
+	if c.started || c.stopping {
+		c.mu.Unlock()
+		return errors.New("coordinator already started")
+	}
+
 	// Store context and reset stop signal
 	c.ctx = ctx
 	c.stopCh = make(chan struct{})
-	c.stopOnce = sync.Once{}
+	c.started = true
+	c.stopping = false
+	c.mu.Unlock()
 
 	// Initialize monitor
 	c.monitor = NewAgentMonitor(c.session, c.mailClient, c.projectKey)
@@ -193,10 +204,12 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 	c.updateAgentStates()
 
 	// Start monitoring goroutine
+	c.wg.Add(1)
 	go c.monitorLoop()
 
 	// Start digest goroutine if enabled
 	if c.config.SendDigests {
+		c.wg.Add(1)
 		go c.digestLoop()
 	}
 
@@ -205,11 +218,25 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 
 // Stop halts coordinator operations.
 func (c *SessionCoordinator) Stop() {
-	c.stopOnce.Do(func() {
-		if c.stopCh != nil {
-			close(c.stopCh)
-		}
-	})
+	c.mu.Lock()
+	if !c.started || c.stopping {
+		c.mu.Unlock()
+		return
+	}
+	stopCh := c.stopCh
+	c.stopping = true
+	c.mu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+	}
+	c.wg.Wait()
+
+	c.mu.Lock()
+	c.stopCh = nil
+	c.started = false
+	c.stopping = false
+	c.mu.Unlock()
 }
 
 // Events returns the event channel for external listeners.
@@ -261,6 +288,8 @@ func (c *SessionCoordinator) GetIdleAgents() []*AgentState {
 
 // monitorLoop periodically updates agent states.
 func (c *SessionCoordinator) monitorLoop() {
+	defer c.wg.Done()
+
 	ticker := time.NewTicker(c.config.PollInterval)
 	defer ticker.Stop()
 
@@ -468,6 +497,8 @@ func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.Agent
 
 // digestLoop periodically sends digest summaries.
 func (c *SessionCoordinator) digestLoop() {
+	defer c.wg.Done()
+
 	ticker := time.NewTicker(c.config.DigestInterval)
 	defer ticker.Stop()
 

@@ -118,12 +118,16 @@ type AutoScanner struct {
 	config  AutoScannerConfig
 	scanner *Scanner
 	watcher *watcher.Watcher
+	scan    func(context.Context, string, ScanOptions) (*ScanResult, error)
 
-	mu            sync.Mutex
-	running       bool
-	lastScanTime  time.Time
-	lastResult    *ScanResult
-	pendingCancel context.CancelFunc
+	mu                sync.Mutex
+	running           bool
+	lastScanTime      time.Time
+	lastResult        *ScanResult
+	pendingCancel     context.CancelFunc
+	pendingGeneration uint64
+	scanGeneration    uint64
+	scanWG            sync.WaitGroup
 }
 
 // NewAutoScanner creates a new AutoScanner instance.
@@ -147,6 +151,7 @@ func NewAutoScanner(cfg AutoScannerConfig) (*AutoScanner, error) {
 	return &AutoScanner{
 		config:  cfg,
 		scanner: s,
+		scan:    s.Scan,
 	}, nil
 }
 
@@ -158,6 +163,7 @@ func NewAutoScannerWithScanner(cfg AutoScannerConfig, scanner *Scanner) *AutoSca
 	return &AutoScanner{
 		config:  cfg,
 		scanner: scanner,
+		scan:    scanner.Scan,
 	}
 }
 
@@ -201,27 +207,33 @@ func (a *AutoScanner) Start() error {
 // Stop stops watching and scanning.
 func (a *AutoScanner) Stop() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if !a.running {
+		a.mu.Unlock()
 		return nil
 	}
+
+	a.running = false
+	a.scanGeneration++
 
 	// Cancel any pending scan
 	if a.pendingCancel != nil {
 		a.pendingCancel()
 		a.pendingCancel = nil
+		a.pendingGeneration = 0
 	}
 
-	// Close watcher
-	if a.watcher != nil {
-		if err := a.watcher.Close(); err != nil {
+	w := a.watcher
+	a.watcher = nil
+	a.mu.Unlock()
+
+	if w != nil {
+		if err := w.Close(); err != nil {
+			a.scanWG.Wait()
 			return err
 		}
-		a.watcher = nil
 	}
 
-	a.running = false
+	a.scanWG.Wait()
 	return nil
 }
 
@@ -248,7 +260,7 @@ func (a *AutoScanner) LastResult() *ScanResult {
 
 // TriggerScan manually triggers a scan (useful for initial scan).
 func (a *AutoScanner) TriggerScan() {
-	go a.runScan()
+	a.launchScan(true)
 }
 
 // handleEvents processes file change events from the watcher.
@@ -260,7 +272,7 @@ func (a *AutoScanner) handleEvents(events []watcher.Event) {
 	}
 
 	// Trigger a scan
-	go a.runScan()
+	a.launchScan(false)
 }
 
 // filterEvents removes events for excluded paths.
@@ -342,7 +354,9 @@ func matchRecursivePattern(rel, pattern string) bool {
 }
 
 // runScan executes a UBS scan.
-func (a *AutoScanner) runScan() {
+func (a *AutoScanner) runScan(generation uint64) {
+	defer a.scanWG.Done()
+
 	a.mu.Lock()
 	// Cancel any previous pending scan
 	if a.pendingCancel != nil {
@@ -352,30 +366,58 @@ func (a *AutoScanner) runScan() {
 	// Create new context for this scan
 	ctx, cancel := context.WithTimeout(context.Background(), a.config.ScanTimeout)
 	a.pendingCancel = cancel
+	a.pendingGeneration = generation
+	scan := a.scan
+	projectDir := a.config.ProjectDir
+	scanOptions := a.config.ScanOptions
+	onScanStart := a.config.OnScanStart
+	onScanComplete := a.config.OnScanComplete
 	a.mu.Unlock()
 
 	defer cancel()
 
 	// Notify scan start
-	if a.config.OnScanStart != nil {
-		a.config.OnScanStart()
+	if onScanStart != nil {
+		onScanStart()
 	}
 
 	// Run the scan
-	result, err := a.scanner.Scan(ctx, a.config.ProjectDir, a.config.ScanOptions)
+	result, err := scan(ctx, projectDir, scanOptions)
+	completedAt := time.Now()
 
 	// Store result
 	a.mu.Lock()
-	a.lastScanTime = time.Now()
-	if err == nil {
-		a.lastResult = result
+	if a.pendingGeneration == generation {
+		a.pendingCancel = nil
+		a.pendingGeneration = 0
+	}
+	stale := generation != a.scanGeneration
+	if !stale {
+		a.lastScanTime = completedAt
+		if err == nil {
+			a.lastResult = result
+		}
 	}
 	a.mu.Unlock()
 
 	// Notify completion
-	if a.config.OnScanComplete != nil {
-		a.config.OnScanComplete(result, err)
+	if !stale && onScanComplete != nil {
+		onScanComplete(result, err)
 	}
+}
+
+func (a *AutoScanner) launchScan(allowWhenStopped bool) {
+	a.mu.Lock()
+	if !allowWhenStopped && !a.running {
+		a.mu.Unlock()
+		return
+	}
+	a.scanGeneration++
+	generation := a.scanGeneration
+	a.scanWG.Add(1)
+	a.mu.Unlock()
+
+	go a.runScan(generation)
 }
 
 // WatchAndScan is a convenience function that starts auto-scanning and blocks

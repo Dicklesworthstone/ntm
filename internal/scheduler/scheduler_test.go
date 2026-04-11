@@ -553,6 +553,53 @@ func TestScheduler_CanRestartAfterStop(t *testing.T) {
 	}
 }
 
+func TestScheduler_ConcurrentStartAllowsOnlyOneCaller(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxConcurrent = 1
+	cfg.Headroom.Enabled = false
+
+	scheduler := New(cfg)
+	scheduler.SetExecutor(func(ctx context.Context, job *SpawnJob) error {
+		return nil
+	})
+
+	const callers = 16
+	start := make(chan struct{})
+	results := make(chan error, callers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- scheduler.Start()
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+	defer scheduler.Stop()
+
+	successes := 0
+	failures := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else {
+			failures++
+		}
+	}
+
+	if successes != 1 {
+		t.Fatalf("successful Start calls = %d, want 1", successes)
+	}
+	if failures != callers-1 {
+		t.Fatalf("failed Start calls = %d, want %d", failures, callers-1)
+	}
+}
+
 func TestScheduler_DoesNotReplayStaleRetryAfterRestart(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxConcurrent = 1

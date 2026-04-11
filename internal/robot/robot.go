@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1977,8 +1978,8 @@ Use --all to include the user pane (index depends on tmux pane-base-index).
 	},
 }
 
-// PrintHelp outputs AI agent help documentation
-func PrintHelp() {
+// RenderHelp returns AI agent help documentation.
+func RenderHelp() string {
 	var builder strings.Builder
 	builder.WriteString(`ntm (Named Tmux Manager) AI Agent Interface
 =============================================
@@ -2093,7 +2094,12 @@ Tips for AI Agents:
 For complete API documentation: docs/robot-api-design.md
 For machine-readable schema:    ntm --robot-capabilities
 `)
-	fmt.Println(builder.String())
+	return builder.String()
+}
+
+// PrintHelp outputs AI agent help documentation.
+func PrintHelp() {
+	_, _ = io.WriteString(os.Stdout, RenderHelp())
 }
 
 func renderHelpCommandSection(section robotHelpSection) string {

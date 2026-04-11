@@ -492,9 +492,8 @@ func TestProgress_ReturnsNonNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSuccessCheck_NoPanic(t *testing.T) {
-	t.Parallel()
-
-	// SuccessCheck writes to os.Stdout; just verify it doesn't panic
+	// SuccessCheck writes to os.Stdout; keep this test serial so it does not
+	// race with stdout-capturing tests in this package.
 	SuccessCheck("test message")
 }
 

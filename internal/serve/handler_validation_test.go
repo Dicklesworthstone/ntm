@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -24,33 +21,7 @@ import (
 // setupValidationTestServer creates a server with store for validation tests.
 func setupValidationTestServer(t *testing.T) (*Server, *state.Store) {
 	t.Helper()
-
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := state.Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open store: %v", err)
-	}
-
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("Failed to migrate: %v", err)
-	}
-
-	t.Cleanup(func() {
-		store.Close()
-		os.Remove(dbPath)
-	})
-
-	eventBus := events.NewEventBus(100)
-
-	srv := New(Config{
-		Port:       0,
-		EventBus:   eventBus,
-		StateStore: store,
-	})
-
-	return srv, store
+	return setupTestServer(t)
 }
 
 // TestHandlerValidationMethodNotAllowed verifies METHOD_NOT_ALLOWED error codes.

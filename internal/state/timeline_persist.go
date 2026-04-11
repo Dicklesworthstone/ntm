@@ -92,9 +92,14 @@ type TimelinePersister struct {
 	mu     sync.RWMutex
 	config TimelinePersistConfig
 
-	// activeCheckpoints tracks checkpoint timers for active sessions
-	activeCheckpoints map[string]*time.Ticker
-	checkpointStop    map[string]chan struct{}
+	// checkpoints tracks active checkpoint workers for each session.
+	checkpoints map[string]*checkpointRunner
+}
+
+type checkpointRunner struct {
+	ticker *time.Ticker
+	stop   chan struct{}
+	done   chan struct{}
 }
 
 // NewTimelinePersister creates a new persister with the given configuration.
@@ -121,9 +126,8 @@ func NewTimelinePersister(config *TimelinePersistConfig) (*TimelinePersister, er
 	}
 
 	return &TimelinePersister{
-		config:            cfg,
-		activeCheckpoints: make(map[string]*time.Ticker),
-		checkpointStop:    make(map[string]chan struct{}),
+		config:      cfg,
+		checkpoints: make(map[string]*checkpointRunner),
 	}, nil
 }
 
@@ -393,37 +397,31 @@ func (p *TimelinePersister) StartCheckpoint(sessionID string, tracker *TimelineT
 		return
 	}
 
+	p.stopCheckpointRunner(normalizedSessionID)
+
+	runner := &checkpointRunner{
+		ticker: time.NewTicker(p.config.CheckpointInterval),
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Stop existing checkpoint if any
-	if stop, exists := p.checkpointStop[normalizedSessionID]; exists {
-		close(stop)
-		delete(p.checkpointStop, normalizedSessionID)
-	}
-	if ticker, exists := p.activeCheckpoints[normalizedSessionID]; exists {
-		ticker.Stop()
-		delete(p.activeCheckpoints, normalizedSessionID)
-	}
-
-	ticker := time.NewTicker(p.config.CheckpointInterval)
-	stop := make(chan struct{})
-
-	p.activeCheckpoints[normalizedSessionID] = ticker
-	p.checkpointStop[normalizedSessionID] = stop
+	p.checkpoints[normalizedSessionID] = runner
+	p.mu.Unlock()
 
 	go func() {
-		defer ticker.Stop()
+		defer close(runner.done)
+		defer runner.ticker.Stop()
 		for {
 			select {
-			case <-ticker.C:
+			case <-runner.ticker.C:
 				events := tracker.GetEventsForSession(normalizedSessionID, time.Time{})
 				if len(events) > 0 {
 					if err := p.SaveTimeline(normalizedSessionID, events); err != nil {
 						slog.Warn("timeline checkpoint: save failed", "session", normalizedSessionID, "error", err)
 					}
 				}
-			case <-stop:
+			case <-runner.stop:
 				return
 			}
 		}
@@ -436,18 +434,7 @@ func (p *TimelinePersister) StopCheckpoint(sessionID string) {
 	if err != nil {
 		return
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if stop, exists := p.checkpointStop[normalizedSessionID]; exists {
-		close(stop)
-		delete(p.checkpointStop, normalizedSessionID)
-	}
-	if ticker, exists := p.activeCheckpoints[normalizedSessionID]; exists {
-		ticker.Stop()
-		delete(p.activeCheckpoints, normalizedSessionID)
-	}
+	p.stopCheckpointRunner(normalizedSessionID)
 }
 
 // FinalizeSession saves the final state of a session's timeline and stops checkpointing.
@@ -495,17 +482,35 @@ func (p *TimelinePersister) GetTimelineInfo(sessionID string) (*TimelineInfo, er
 // Stop stops all active checkpoints and cleans up resources.
 func (p *TimelinePersister) Stop() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	runners := make([]*checkpointRunner, 0, len(p.checkpoints))
+	for sessionID, runner := range p.checkpoints {
+		runners = append(runners, runner)
+		delete(p.checkpoints, sessionID)
+	}
+	p.mu.Unlock()
 
-	for sessionID, stop := range p.checkpointStop {
-		close(stop)
-		delete(p.checkpointStop, sessionID)
+	for _, runner := range runners {
+		runner.ticker.Stop()
+		close(runner.stop)
+		<-runner.done
+	}
+}
+
+func (p *TimelinePersister) stopCheckpointRunner(sessionID string) {
+	p.mu.Lock()
+	runner, exists := p.checkpoints[sessionID]
+	if exists {
+		delete(p.checkpoints, sessionID)
+	}
+	p.mu.Unlock()
+
+	if !exists {
+		return
 	}
 
-	for sessionID, ticker := range p.activeCheckpoints {
-		ticker.Stop()
-		delete(p.activeCheckpoints, sessionID)
-	}
+	runner.ticker.Stop()
+	close(runner.stop)
+	<-runner.done
 }
 
 // Private helpers

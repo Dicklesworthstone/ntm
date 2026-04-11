@@ -38,11 +38,10 @@ import (
 func setupTestServer(t *testing.T) (*Server, *state.Store) {
 	t.Helper()
 
-	// Create temp database
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := state.Open(dbPath)
+	// Most serve tests only exercise handler logic and do not need a file-backed
+	// database. Use an isolated in-memory store to avoid repeated disk-backed
+	// open+migrate cycles across the large package test suite.
+	store, err := state.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open store: %v", err)
 	}
@@ -53,7 +52,6 @@ func setupTestServer(t *testing.T) (*Server, *state.Store) {
 
 	t.Cleanup(func() {
 		store.Close()
-		os.Remove(dbPath)
 	})
 
 	eventBus := events.NewEventBus(100)

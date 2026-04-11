@@ -1053,6 +1053,68 @@ func TestRestorableAgentCommand(t *testing.T) {
 	}
 }
 
+func TestExpectedPaneCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "plain command",
+			command: "claude --print",
+			want:    "claude",
+		},
+		{
+			name:    "custom wrapper path",
+			command: "/usr/local/bin/custom-claude-wrapper --fast",
+			want:    "custom-claude-wrapper",
+		},
+		{
+			name:    "leading env assignment",
+			command: `NODE_OPTIONS="--max-old-space-size=32768" claude --dangerously-skip-permissions`,
+			want:    "claude",
+		},
+		{
+			name:    "command substitution in env assignment",
+			command: `CODEX_SYSTEM_PROMPT="$(cat /tmp/system prompt.txt)" codex --search`,
+			want:    "codex",
+		},
+		{
+			name:    "env prefix with assignments",
+			command: "env FOO=bar codex --search",
+			want:    "codex",
+		},
+		{
+			name:    "env prefix with options",
+			command: "env -i FOO=bar codex --search",
+			want:    "codex",
+		},
+		{
+			name:    "absolute env wrapper path",
+			command: "/usr/bin/env FOO=bar codex --search",
+			want:    "codex",
+		},
+		{
+			name:    "exec prefix",
+			command: "exec codex --search",
+			want:    "codex",
+		},
+		{
+			name:    "env and exec prefixes",
+			command: "env FOO=bar exec codex --search",
+			want:    "codex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := expectedPaneCommand(tt.command); got != tt.want {
+				t.Fatalf("expectedPaneCommand(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSortedCheckpointPanes(t *testing.T) {
 	panes := []PaneState{
 		{WindowIndex: 2, Index: 0, Title: "w2p0"},

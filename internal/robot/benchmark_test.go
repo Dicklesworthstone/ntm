@@ -26,6 +26,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
+var raceDetectorEnabled bool
+
 // =============================================================================
 // Benchmark Scenario Sizes
 // =============================================================================
@@ -892,11 +894,19 @@ func TestDeduplicationEffectiveness(t *testing.T) {
 // Latency Regression Tests
 // =============================================================================
 
-// TestLatencyRegression_BuildDigest checks that digest building stays fast.
-func TestLatencyRegression_BuildDigest(t *testing.T) {
+func skipLatencyRegressionIfInstrumented(t *testing.T) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping latency regression test in short mode")
 	}
+	if raceDetectorEnabled {
+		t.Skip("skipping latency regression test under race detector")
+	}
+}
+
+// TestLatencyRegression_BuildDigest checks that digest building stays fast.
+func TestLatencyRegression_BuildDigest(t *testing.T) {
+	skipLatencyRegressionIfInstrumented(t)
 
 	fixture := newBenchmarkFixture(scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents)
 	opts := DefaultAttentionDigestOptions()
@@ -923,9 +933,7 @@ func TestLatencyRegression_BuildDigest(t *testing.T) {
 
 // TestLatencyRegression_Replay checks that replay stays fast.
 func TestLatencyRegression_Replay(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping latency regression test in short mode")
-	}
+	skipLatencyRegressionIfInstrumented(t)
 
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       100000,
@@ -967,9 +975,7 @@ func TestLatencyRegression_Replay(t *testing.T) {
 
 // TestLatencyRegression_Filter checks that filtering stays fast.
 func TestLatencyRegression_Filter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping latency regression test in short mode")
-	}
+	skipLatencyRegressionIfInstrumented(t)
 
 	fixture := newBenchmarkFixture(scenarioLargeSessions, scenarioLargeAgents, scenarioLargeEvents)
 	opts := EventsOptions{

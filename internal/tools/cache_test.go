@@ -88,4 +88,16 @@ func TestCache_Close_Idempotent(t *testing.T) {
 	default:
 		t.Fatalf("expected done channel to be closed")
 	}
+
+	cleanupStopped := make(chan struct{})
+	go func() {
+		c.cleanupWg.Wait()
+		close(cleanupStopped)
+	}()
+
+	select {
+	case <-cleanupStopped:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("expected Close() to wait for cleanup loop exit")
+	}
 }

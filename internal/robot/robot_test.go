@@ -679,19 +679,7 @@ func TestPrintVersion(t *testing.T) {
 }
 
 func TestPrintHelp(t *testing.T) {
-	// Capture output
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	PrintHelp()
-
-	w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	output := buf.String()
+	output := RenderHelp()
 
 	// Verify help content contains expected sections
 	expectedSections := []string{
@@ -717,13 +705,7 @@ func TestPrintHelp(t *testing.T) {
 }
 
 func TestPrintHelpOperatorLoopGuardrails(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, want := range []string{
 		"Wait-then-digest (the one obvious tending command)",
@@ -738,13 +720,7 @@ func TestPrintHelpOperatorLoopGuardrails(t *testing.T) {
 }
 
 func TestPrintHelp_AttentionLoopMatchesCapabilities(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	if !strings.Contains(output, "Attention Feed (Operator Loop)") {
 		t.Fatalf("help output missing operator loop section:\n%s", output)
@@ -781,13 +757,7 @@ func TestPrintHelp_AttentionLoopMatchesCapabilities(t *testing.T) {
 }
 
 func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	registry := GetRobotRegistry()
 	for _, name := range []string{"status", "send", "activity", "restart-pane", "bulk-assign", "monitor", "support-bundle", "schema", "mail-check", "bead-close", "history"} {
@@ -806,13 +776,7 @@ func TestPrintHelp_RegistryBackedCommandCatalog(t *testing.T) {
 }
 
 func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, want := range []string{
 		"--question=QUESTION",
@@ -826,13 +790,7 @@ func TestPrintHelp_IncludesRequiredSecondaryFlags(t *testing.T) {
 }
 
 func TestPrintHelp_IncludesRestartSurfaces(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, want := range []string{
 		"--robot-restart-pane=SESSION",
@@ -845,13 +803,7 @@ func TestPrintHelp_IncludesRestartSurfaces(t *testing.T) {
 }
 
 func TestPrintHelp_IncludesActivitySurface(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	if !strings.Contains(output, "--robot-activity=SESSION") {
 		t.Fatalf("help output missing --robot-activity surface:\n%s", output)
@@ -956,13 +908,7 @@ func TestGenerateSupportBundle_PrivacySuppressedHintUsesAllowSecret(t *testing.T
 }
 
 func TestPrintHelp_UsesCurrentAttentionLoopFlags(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, want := range []string{
 		"--robot-events         Raw event replay (--since-cursor=N, --events-limit=50)",
@@ -986,13 +932,7 @@ func TestPrintHelp_UsesCurrentAttentionLoopFlags(t *testing.T) {
 }
 
 func TestPrintHelp_MentionsExpandedWaitConditions(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, want := range []string{
 		"mail_ack_required",
@@ -1007,13 +947,7 @@ func TestPrintHelp_MentionsExpandedWaitConditions(t *testing.T) {
 }
 
 func TestPrintHelp_UsesCurrentSharedModifierDescriptions(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, want := range []string{
 		"--since=VALUE   Time filter for commands that support it (history, diff, and summary accept duration or RFC3339; snapshot requires RFC3339; mail-check uses YYYY-MM-DD)",
@@ -1050,13 +984,7 @@ func TestPrintHelp_CommandSectionsResolveAgainstRegistry(t *testing.T) {
 }
 
 func TestPrintHelp_RendersConfiguredSectionTitles(t *testing.T) {
-	output, err := captureStdout(t, func() error {
-		PrintHelp()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("PrintHelp capture failed: %v", err)
-	}
+	output := RenderHelp()
 
 	for _, section := range robotHelpSections {
 		if !strings.Contains(output, section.Title+":") {

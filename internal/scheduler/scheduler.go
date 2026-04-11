@@ -14,7 +14,8 @@ import (
 // Scheduler is the global spawn scheduler that serializes and paces
 // all pane and agent creation operations.
 type Scheduler struct {
-	mu sync.RWMutex
+	mu          sync.RWMutex
+	lifecycleMu sync.Mutex
 
 	// config is the scheduler configuration.
 	config Config
@@ -317,11 +318,14 @@ func (s *Scheduler) SetHooks(hooks Hooks) {
 
 // Start starts the scheduler workers.
 func (s *Scheduler) Start() error {
-	if s.started.Load() {
-		return fmt.Errorf("scheduler already started")
-	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 
 	s.mu.Lock()
+	if s.started.Load() {
+		s.mu.Unlock()
+		return fmt.Errorf("scheduler already started")
+	}
 	if s.executor == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("executor not set")
@@ -345,17 +349,25 @@ func (s *Scheduler) Start() error {
 
 // Stop gracefully stops the scheduler.
 func (s *Scheduler) Stop() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	if !s.started.Load() {
 		return
 	}
 
-	s.cancel()
-	s.wg.Wait()
+	cancel := s.cancel
+	headroom := s.headroom
 	s.started.Store(false)
 
+	if cancel != nil {
+		cancel()
+	}
+	s.wg.Wait()
+
 	// Stop the headroom guard
-	if s.headroom != nil {
-		s.headroom.Stop()
+	if headroom != nil {
+		headroom.Stop()
 	}
 
 	slog.Info("scheduler stopped")
@@ -570,7 +582,15 @@ func (s *Scheduler) Stats() Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	stats := s.stats
+	stats := Stats{
+		StartedAt:        s.stats.StartedAt,
+		AvgQueueTime:     s.stats.AvgQueueTime,
+		AvgExecutionTime: s.stats.AvgExecutionTime,
+	}
+	stats.TotalSubmitted = atomic.LoadInt64(&s.stats.TotalSubmitted)
+	stats.TotalCompleted = atomic.LoadInt64(&s.stats.TotalCompleted)
+	stats.TotalFailed = atomic.LoadInt64(&s.stats.TotalFailed)
+	stats.TotalRetried = atomic.LoadInt64(&s.stats.TotalRetried)
 	stats.CurrentQueueSize = s.queue.Queue().Len()
 	stats.CurrentRunning = len(s.running)
 	stats.IsPaused = s.paused.Load()

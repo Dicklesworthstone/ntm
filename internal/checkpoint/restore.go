@@ -338,18 +338,7 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 		}
 
 		attempted++
-		cmd, err := tmux.BuildPaneCommand(workDir, agentCmd)
-		if err != nil {
-			slog.Warn("checkpoint restore: failed to build pane command",
-				"session", cp.SessionName,
-				"pane_index", paneState.Index,
-				"window_index", paneState.WindowIndex,
-				"agent_type", paneState.AgentType,
-				"error", err)
-			continue
-		}
-
-		if err := tmux.SendKeysForAgent(sortedPanes[i].ID, cmd, true, tmux.AgentType(paneState.AgentType)); err != nil {
+		if err := relaunchRestoredPane(sortedPanes[i].ID, workDir, agentCmd); err != nil {
 			slog.Warn("checkpoint restore: failed to relaunch pane command",
 				"session", cp.SessionName,
 				"pane_index", paneState.Index,
@@ -369,6 +358,213 @@ func (r *Restorer) restoreAgents(cp *Checkpoint, workDir string) error {
 		return fmt.Errorf("launched %d of %d agent panes", launched, attempted)
 	}
 	return nil
+}
+
+func relaunchRestoredPane(paneID, workDir, agentCmd string) error {
+	safeCommand, err := tmux.SanitizePaneCommand(agentCmd)
+	if err != nil {
+		return err
+	}
+
+	expected := expectedPaneCommand(agentCmd)
+	if expected == "" {
+		return fmt.Errorf("determine expected pane command for %q", agentCmd)
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		// Respawn the pane directly into the target command instead of typing into
+		// a shell prompt. This avoids lost-input races while panes are still initializing.
+		if err := tmux.DefaultClient.RunSilent("respawn-pane", "-k", "-c", workDir, "-t", paneID, safeCommand); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := waitForPaneCommand(paneID, expected, 2*time.Second); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("pane %s did not start %q", paneID, expected)
+}
+
+func waitForPaneCommand(paneID, expected string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		current, err := currentPaneCommand(paneID)
+		if err == nil && current == expected {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("pane %s current command = %q, want %q", paneID, current, expected)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func currentPaneCommand(paneID string) (string, error) {
+	output, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_command}")
+	if err != nil {
+		return "", fmt.Errorf("getting pane current command: %w", err)
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func expectedPaneCommand(agentCmd string) string {
+	rest := strings.TrimSpace(agentCmd)
+	inEnvPrefix := false
+	for rest != "" {
+		token, remaining := nextShellToken(rest)
+		if token == "" {
+			return ""
+		}
+		rest = strings.TrimSpace(remaining)
+		baseToken := strings.ToLower(filepath.Base(trimMatchingQuotes(token)))
+		if baseToken == "env" {
+			inEnvPrefix = true
+			continue
+		}
+		if baseToken == "exec" {
+			continue
+		}
+		if inEnvPrefix && strings.HasPrefix(token, "-") {
+			continue
+		}
+		if isShellEnvAssignment(token) {
+			continue
+		}
+		return baseToken
+	}
+	return ""
+}
+
+func nextShellToken(command string) (string, string) {
+	const (
+		singleQuote = byte(39)
+		doubleQuote = byte(34)
+		backtick    = byte(96)
+		backslash   = byte(92)
+	)
+
+	start := 0
+	for start < len(command) && isShellWhitespace(command[start]) {
+		start++
+	}
+	command = command[start:]
+	if command == "" {
+		return "", ""
+	}
+
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	escaped := false
+	commandSubstDepth := 0
+
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if ch == backslash && !inSingle {
+			escaped = true
+			continue
+		}
+
+		if inSingle {
+			if ch == singleQuote {
+				inSingle = false
+			}
+			continue
+		}
+
+		if inDouble {
+			if ch == doubleQuote {
+				inDouble = false
+				continue
+			}
+		} else if inBacktick {
+			if ch == backtick {
+				inBacktick = false
+			}
+			continue
+		} else {
+			switch ch {
+			case singleQuote:
+				inSingle = true
+				continue
+			case doubleQuote:
+				inDouble = true
+				continue
+			case backtick:
+				inBacktick = true
+				continue
+			}
+		}
+
+		if !inSingle && !inBacktick && ch == '$' && i+1 < len(command) && command[i+1] == '(' {
+			commandSubstDepth++
+			i++
+			continue
+		}
+		if commandSubstDepth > 0 && !inSingle && !inBacktick && ch == ')' {
+			commandSubstDepth--
+			continue
+		}
+
+		if commandSubstDepth == 0 && !inDouble && !inBacktick && isShellWhitespace(ch) {
+			return command[:i], command[i:]
+		}
+	}
+
+	return command, ""
+}
+
+func isShellWhitespace(ch byte) bool {
+	return ch == ' ' || ch == byte(9) || ch == byte(10) || ch == byte(13)
+}
+
+func isShellEnvAssignment(token string) bool {
+	idx := strings.IndexByte(token, '=')
+	if idx <= 0 {
+		return false
+	}
+	name := token[:idx]
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if i == 0 {
+			if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && ch != '_' {
+				return false
+			}
+			continue
+		}
+		if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func trimMatchingQuotes(token string) string {
+	if len(token) >= 2 {
+		if (token[0] == byte(39) && token[len(token)-1] == byte(39)) || (token[0] == byte(34) && token[len(token)-1] == byte(34)) {
+			return token[1 : len(token)-1]
+		}
+	}
+	return token
 }
 
 func moveInitialWindow(sessionName string, targetWindowIndex int) error {

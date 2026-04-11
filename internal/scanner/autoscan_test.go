@@ -303,6 +303,146 @@ func TestAutoScanner_TriggerScan(t *testing.T) {
 	}
 }
 
+func TestAutoScanner_StopWaitsForInFlightScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultAutoScannerConfig(tmpDir)
+	cfg.ScanTimeout = time.Second
+
+	auto := NewAutoScannerWithScanner(cfg, &Scanner{binaryPath: "ubs"})
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+
+	auto.scan = func(ctx context.Context, path string, opts ScanOptions) (*ScanResult, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		<-release
+		return nil, ctx.Err()
+	}
+
+	if err := auto.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		_ = auto.Stop()
+	}()
+
+	auto.TriggerScan()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("scan did not start")
+	}
+
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- auto.Stop()
+	}()
+
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned before in-flight scan finished cleanup: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not wait for in-flight scan cleanup")
+	}
+}
+
+func TestAutoScanner_StaleScanDoesNotOverwriteLatestResult(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultAutoScannerConfig(tmpDir)
+	cfg.ScanTimeout = time.Second
+
+	auto := NewAutoScannerWithScanner(cfg, &Scanner{binaryPath: "ubs"})
+
+	firstStarted := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	completions := make(chan string, 2)
+	result1 := &ScanResult{Project: "first"}
+	result2 := &ScanResult{Project: "second"}
+
+	auto.config.OnScanComplete = func(result *ScanResult, err error) {
+		if err != nil {
+			completions <- "err"
+			return
+		}
+		if result == nil {
+			completions <- "nil"
+			return
+		}
+		completions <- result.Project
+	}
+
+	var mu sync.Mutex
+	calls := 0
+	auto.scan = func(ctx context.Context, path string, opts ScanOptions) (*ScanResult, error) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+
+		if call == 1 {
+			select {
+			case firstStarted <- struct{}{}:
+			default:
+			}
+			<-releaseFirst
+			return result1, nil
+		}
+
+		return result2, nil
+	}
+
+	auto.TriggerScan()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first scan did not start")
+	}
+
+	auto.TriggerScan()
+	close(releaseFirst)
+	auto.scanWG.Wait()
+
+	if got := auto.LastResult(); got != result2 {
+		t.Fatalf("LastResult = %#v, want latest result %#v", got, result2)
+	}
+	if auto.LastScanTime().IsZero() {
+		t.Fatal("expected LastScanTime to be set by latest scan")
+	}
+
+	select {
+	case got := <-completions:
+		if got != "second" {
+			t.Fatalf("first completion = %q, want second", got)
+		}
+	default:
+		t.Fatal("expected latest scan completion callback")
+	}
+
+	select {
+	case got := <-completions:
+		t.Fatalf("unexpected stale completion callback %q", got)
+	default:
+	}
+}
+
 func TestAutoScanner_FilterEvents(t *testing.T) {
 	cfg := DefaultAutoScannerConfig("/project")
 	auto := &AutoScanner{config: cfg}

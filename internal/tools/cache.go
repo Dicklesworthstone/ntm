@@ -20,11 +20,12 @@ type cacheEntry struct {
 
 // Cache provides thread-safe caching with TTL
 type Cache struct {
-	entries map[string]cacheEntry
-	ttl     time.Duration
-	mu      sync.RWMutex
-	done    chan struct{}
-	closed  bool
+	entries   map[string]cacheEntry
+	ttl       time.Duration
+	mu        sync.RWMutex
+	done      chan struct{}
+	closed    bool
+	cleanupWg sync.WaitGroup
 }
 
 // NewCache creates a new cache with the specified TTL.
@@ -45,6 +46,7 @@ func NewCache(ttl time.Duration) *Cache {
 	}
 
 	// Start cleanup goroutine
+	c.cleanupWg.Add(1)
 	go c.cleanupLoop()
 
 	return c
@@ -54,13 +56,17 @@ func NewCache(ttl time.Duration) *Cache {
 // The cache should not be used after Close is called.
 func (c *Cache) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
+		c.cleanupWg.Wait()
 		return
 	}
 	c.closed = true
-	close(c.done)
+	done := c.done
+	c.mu.Unlock()
+
+	close(done)
+	c.cleanupWg.Wait()
 }
 
 // Get retrieves a value from the cache
@@ -112,6 +118,7 @@ func (c *Cache) Clear() {
 
 // cleanupLoop periodically removes expired entries
 func (c *Cache) cleanupLoop() {
+	defer c.cleanupWg.Done()
 	ticker := time.NewTicker(c.ttl / 2)
 	defer ticker.Stop()
 

@@ -339,6 +339,129 @@ func TestWatcherClose(t *testing.T) {
 	}
 }
 
+func TestWatcherClose_WaitsForPollingLoopExit(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+
+	w, err := New(
+		func(events []Event) {},
+		WithPolling(true),
+		WithPollInterval(5*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		_ = w.Close()
+	}()
+
+	originalSnapshotEntries := w.snapshotEntries
+	w.snapshotEntries = func(root string, recursive bool, isIgnored func(string) bool) (map[string]fileMeta, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		return originalSnapshotEntries(root, recursive, isIgnored)
+	}
+
+	if err := w.Add(tmpDir); err != nil {
+		t.Fatalf("Add() failed: %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("polling scan did not start")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() failed: %v", err)
+		}
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close() returned before in-flight polling scan finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not wait for polling loop exit")
+	}
+}
+
+func TestWatcherClose_WaitsForDebouncedHandler(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "event.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+
+	w, err := New(
+		func(events []Event) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+		},
+		WithDebouncer(NewDebouncer(5*time.Millisecond)),
+	)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		_ = w.Close()
+	}()
+
+	w.handleEvent(fsnotify.Event{Name: testFile, Op: fsnotify.Write})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("debounced handler did not start")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() failed: %v", err)
+		}
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close() returned before debounced handler completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not wait for debounced handler completion")
+	}
+}
+
 func TestEventType(t *testing.T) {
 	tests := []struct {
 		name       string

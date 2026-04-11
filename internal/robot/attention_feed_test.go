@@ -562,6 +562,60 @@ func TestAttentionFeed_HeartbeatLoopDefersHeartbeatUntilQuiet(t *testing.T) {
 	}
 }
 
+func TestAttentionFeed_StopWaitsForHeartbeatDelivery(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       100,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 5 * time.Millisecond,
+	})
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+
+	unsub := feed.Subscribe(func(e AttentionEvent) {
+		if e.Type != EventType(DefaultTransportLiveness.HeartbeatType) {
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+	})
+	defer unsub()
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		feed.Stop()
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for heartbeat delivery to start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		feed.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop() returned before in-flight heartbeat delivery completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not wait for heartbeat delivery")
+	}
+}
+
 func TestAttentionFeed_ConcurrentAppend(t *testing.T) {
 	feed := NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       10000,

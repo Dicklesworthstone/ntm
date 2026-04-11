@@ -418,6 +418,7 @@ type AttentionFeed struct {
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
+	stopWg   sync.WaitGroup
 }
 
 type attentionDedupEntry struct {
@@ -501,6 +502,7 @@ func NewAttentionFeed(config AttentionFeedConfig, opts ...AttentionFeedOption) *
 
 	// Start heartbeat if configured
 	if config.HeartbeatInterval > 0 {
+		feed.stopWg.Add(1)
 		go feed.heartbeatLoop()
 	}
 
@@ -2262,6 +2264,7 @@ func (f *AttentionFeed) Stop() {
 	f.stopOnce.Do(func() {
 		close(f.stopCh)
 	})
+	f.stopWg.Wait()
 }
 
 // notifySubscribers sends an event to all registered handlers.
@@ -2300,6 +2303,7 @@ func (f *AttentionFeed) SubscriberCount() int {
 
 // heartbeatLoop emits periodic heartbeat events.
 func (f *AttentionFeed) heartbeatLoop() {
+	defer f.stopWg.Done()
 	if f.config.HeartbeatInterval <= 0 {
 		return
 	}

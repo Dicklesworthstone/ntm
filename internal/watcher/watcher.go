@@ -93,11 +93,17 @@ type Watcher struct {
 	recursive    bool
 
 	// Poll mode fields (for environments where fsnotify is unavailable)
-	pollMode     bool
-	pollInterval time.Duration
-	snapshots    map[string]fileMeta
-	closeCh      chan struct{}
-	forcePoll    bool
+	pollMode          bool
+	pollInterval      time.Duration
+	snapshots         map[string]fileMeta
+	closeCh           chan struct{}
+	forcePoll         bool
+	snapshotEntries   func(string, bool, func(string) bool) (map[string]fileMeta, error)
+	wg                sync.WaitGroup
+	deliveryMu        sync.Mutex
+	deliveryCond      *sync.Cond
+	activeDeliveries  int
+	closingDeliveries bool
 
 	mu            sync.Mutex
 	watchedPaths  map[string]bool
@@ -111,12 +117,14 @@ type Watcher struct {
 // Use WithRecursive to watch directories recursively.
 func New(handler Handler, opts ...Option) (*Watcher, error) {
 	w := &Watcher{
-		debouncer:    NewDebouncer(DefaultDebounceDuration),
-		handler:      handler,
-		eventFilter:  All,
-		watchedPaths: make(map[string]bool),
-		pollInterval: DefaultPollInterval,
+		debouncer:       NewDebouncer(DefaultDebounceDuration),
+		handler:         handler,
+		eventFilter:     All,
+		watchedPaths:    make(map[string]bool),
+		pollInterval:    DefaultPollInterval,
+		snapshotEntries: snapshotEntries,
 	}
+	w.deliveryCond = sync.NewCond(&w.deliveryMu)
 
 	for _, opt := range opts {
 		opt(w)
@@ -142,8 +150,10 @@ func New(handler Handler, opts ...Option) (*Watcher, error) {
 		}
 		w.snapshots = make(map[string]fileMeta)
 		w.closeCh = make(chan struct{})
+		w.wg.Add(1)
 		go w.runPoll()
 	} else {
+		w.wg.Add(1)
 		go w.run()
 	}
 
@@ -400,19 +410,31 @@ func (w *Watcher) Remove(path string) error {
 // Close stops the watcher and releases resources.
 func (w *Watcher) Close() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	if w.closed {
+		w.mu.Unlock()
+		w.closeDeliveries()
+		w.wg.Wait()
 		return nil
 	}
 
 	w.closed = true
+	pollMode := w.pollMode
+	closeCh := w.closeCh
+	fsWatcher := w.fsWatcher
+	w.mu.Unlock()
+
+	w.closeDeliveries()
 	w.debouncer.Cancel()
-	if w.pollMode {
-		close(w.closeCh)
-		return nil
+
+	var err error
+	if pollMode {
+		close(closeCh)
+	} else if fsWatcher != nil {
+		err = fsWatcher.Close()
 	}
-	return w.fsWatcher.Close()
+
+	w.wg.Wait()
+	return err
 }
 
 // WatchedPaths returns a slice of all currently watched paths.
@@ -429,6 +451,8 @@ func (w *Watcher) WatchedPaths() []string {
 
 // run processes events from fsnotify.
 func (w *Watcher) run() {
+	defer w.wg.Done()
+
 	for {
 		select {
 		case event, ok := <-w.fsWatcher.Events:
@@ -449,6 +473,8 @@ func (w *Watcher) run() {
 
 // runPoll processes events by periodically scanning watched paths when fsnotify is unavailable.
 func (w *Watcher) runPoll() {
+	defer w.wg.Done()
+
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
@@ -517,20 +543,7 @@ func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 	w.pendingEvents = append(w.pendingEvents, event)
 	w.mu.Unlock()
 
-	w.debouncer.Trigger(func() {
-		w.mu.Lock()
-		if w.closed {
-			w.mu.Unlock()
-			return
-		}
-		toDeliver := w.pendingEvents
-		w.pendingEvents = nil
-		w.mu.Unlock()
-
-		if len(toDeliver) > 0 && w.handler != nil {
-			w.handler(toDeliver)
-		}
-	})
+	w.triggerPendingEvents()
 }
 
 // pollOnce scans watched paths and emits events for changes since the last scan.
@@ -550,7 +563,7 @@ func (w *Watcher) pollOnce() {
 	// Scan the filesystem (slow operation, done without lock)
 	currentSnapshot := make(map[string]fileMeta)
 	for _, root := range roots {
-		entries, err := snapshotEntries(root, w.recursive, w.isIgnored)
+		entries, err := w.snapshotEntries(root, w.recursive, w.isIgnored)
 		if err != nil {
 			if w.errorHandler != nil {
 				w.errorHandler(err)
@@ -628,7 +641,16 @@ func (w *Watcher) pollOnce() {
 
 	w.pendingEvents = append(w.pendingEvents, events...)
 
+	w.triggerPendingEvents()
+}
+
+func (w *Watcher) triggerPendingEvents() {
 	w.debouncer.Trigger(func() {
+		if !w.beginDelivery() {
+			return
+		}
+		defer w.endDelivery()
+
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
@@ -642,6 +664,34 @@ func (w *Watcher) pollOnce() {
 			w.handler(toDeliver)
 		}
 	})
+}
+
+func (w *Watcher) beginDelivery() bool {
+	w.deliveryMu.Lock()
+	defer w.deliveryMu.Unlock()
+	if w.closingDeliveries {
+		return false
+	}
+	w.activeDeliveries++
+	return true
+}
+
+func (w *Watcher) endDelivery() {
+	w.deliveryMu.Lock()
+	w.activeDeliveries--
+	if w.activeDeliveries == 0 {
+		w.deliveryCond.Broadcast()
+	}
+	w.deliveryMu.Unlock()
+}
+
+func (w *Watcher) closeDeliveries() {
+	w.deliveryMu.Lock()
+	w.closingDeliveries = true
+	for w.activeDeliveries > 0 {
+		w.deliveryCond.Wait()
+	}
+	w.deliveryMu.Unlock()
 }
 
 // isWatched checks if path is covered by any currently watched path.
