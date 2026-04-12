@@ -11,9 +11,79 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
-## [Unreleased] (after v1.8.0)
+## [v1.13.0] -- 2026-04-12 [GitHub Release]
 
-**158 commits since v1.8.0** | Development ongoing as of 2026-03-21
+**56 commits since v1.12.1** — Lifecycle hardening, concurrency safety, and security improvements.
+
+### Lifecycle & Concurrency
+
+- **Graceful goroutine shutdown** across all subsystems with checkpoint restore via respawn-pane ([111f10e6](https://github.com/Dicklesworthstone/ntm/commit/111f10e6))
+- **Lifecycle mutex** to serialize Start/Stop across all background subsystems: coordinator, resilience monitor, autoscanner, timeline, persister, supervisor ([86a9f4b0](https://github.com/Dicklesworthstone/ntm/commit/86a9f4b0), [ff259a9a](https://github.com/Dicklesworthstone/ntm/commit/ff259a9a), [46e42a4e](https://github.com/Dicklesworthstone/ntm/commit/46e42a4e))
+- **ScannerStore deep-cloning**, executor snapshot race fix, and `t.Parallel()` removal across 90+ test files ([dc891e6d](https://github.com/Dicklesworthstone/ntm/commit/dc891e6d), [556c0ae5](https://github.com/Dicklesworthstone/ntm/commit/556c0ae5))
+- Release read lock before invoking replay handler to prevent callback deadlocks ([bd0f59cb](https://github.com/Dicklesworthstone/ntm/commit/bd0f59cb))
+- Event log rotation without blocking concurrent writers or losing events ([89f7fe53](https://github.com/Dicklesworthstone/ntm/commit/89f7fe53))
+- RWMutex and double-checked locking for triage cache ([f57638fd](https://github.com/Dicklesworthstone/ntm/commit/f57638fd))
+- Clear handler entry on unsubscribe to prevent closure memory leak ([15379029](https://github.com/Dicklesworthstone/ntm/commit/15379029))
+
+### Features
+
+- **Tmux circuit breaker** with session reconciliation and server startup hardening ([b3854367](https://github.com/Dicklesworthstone/ntm/commit/b3854367))
+- **Dashboard alerts section** with CLI/serve test coverage expansion ([9199bbd0](https://github.com/Dicklesworthstone/ntm/commit/9199bbd0))
+- **Poll-based Codex throttle gate** for Acquire() ([96df8386](https://github.com/Dicklesworthstone/ntm/commit/96df8386))
+- **Typed cap waiters** with reset abort, audit DB connection hardening ([83ba973f](https://github.com/Dicklesworthstone/ntm/commit/83ba973f))
+- Agent effectiveness ranking against all supported agent types ([b62cfbc1](https://github.com/Dicklesworthstone/ntm/commit/b62cfbc1))
+- Alert Source field exposed in all output paths, redaction config upgraded to reader locks ([fbcd2e7e](https://github.com/Dicklesworthstone/ntm/commit/fbcd2e7e))
+- Remove stubs and unimplemented features, add truthfulness tests and rate-limit detection ([420584cc](https://github.com/Dicklesworthstone/ntm/commit/420584cc))
+
+### Security Hardening
+
+- Bound HTTP JSON response bodies at 10 MiB with `io.LimitReader` ([1192ccce](https://github.com/Dicklesworthstone/ntm/commit/1192ccce), [4e8f9350](https://github.com/Dicklesworthstone/ntm/commit/4e8f9350))
+- Cap Agent Mail overseer response body at 10 MB to prevent DoS/OOM ([5ba4dd1d](https://github.com/Dicklesworthstone/ntm/commit/5ba4dd1d))
+- Stream checkpoint export bodies instead of buffering in memory ([e04472ff](https://github.com/Dicklesworthstone/ntm/commit/e04472ff))
+- Propagate auth claims through middleware and pick highest realm_access role ([6090f111](https://github.com/Dicklesworthstone/ntm/commit/6090f111))
+- Enforce directory boundary in wildcard glob matching ([0c09978f](https://github.com/Dicklesworthstone/ntm/commit/0c09978f))
+- Session name validation, race-safe config endpoints, policy check error logging ([b5e7315a](https://github.com/Dicklesworthstone/ntm/commit/b5e7315a))
+
+### Bug Fixes
+
+- Thinking signals now outrank co-present idle-prompt patterns, preventing false WAITING classification ([408fa8e4](https://github.com/Dicklesworthstone/ntm/commit/408fa8e4))
+- Distinguish infrastructure errors from application errors in circuit breaker ([d7700b8f](https://github.com/Dicklesworthstone/ntm/commit/d7700b8f))
+- Use `key.Matches` for quit binding in edit phase instead of raw KeyCtrlC ([f3ac4384](https://github.com/Dicklesworthstone/ntm/commit/f3ac4384))
+- Surface failed-iteration errors from loops; persist parallel state outside global mutex ([20cb58af](https://github.com/Dicklesworthstone/ntm/commit/20cb58af))
+- Deterministic ExportCSV rows in metrics collector ([e00f4ee5](https://github.com/Dicklesworthstone/ntm/commit/e00f4ee5))
+- Skip redundant status fetch when commands overlap, throttle score pruning to once per 24h ([28042ae5](https://github.com/Dicklesworthstone/ntm/commit/28042ae5))
+- Single ticker for worker periodic polling in scheduler ([17a87fb0](https://github.com/Dicklesworthstone/ntm/commit/17a87fb0))
+
+### Performance
+
+- Hoist runtime regex compilation to package-level vars ([cdebcc27](https://github.com/Dicklesworthstone/ntm/commit/cdebcc27))
+- Simplify CancelSession/CancelBatch with single-pass retain pattern ([ad7b1809](https://github.com/Dicklesworthstone/ntm/commit/ad7b1809))
+
+---
+
+## [v1.12.1] -- 2026-04-04 [GitHub Release]
+
+- fix(docker): restore release container builds
+
+## [v1.12.0] -- 2026-04-04 [GitHub Release]
+
+- Stabilize release gates
+
+## [v1.11.0] -- 2026-04-01 [GitHub Release]
+
+- Unblock release checks
+
+## [v1.10.0] -- 2026-03-25 [GitHub Release]
+
+- Incremental stability and CI improvements
+
+## [v1.9.0] -- 2026-03-24 [GitHub Release]
+
+- Major stability, TUI, and infrastructure release (see GitHub release notes for full details)
+
+## [Unreleased before v1.9.0] (after v1.8.0)
+
+**Development cycle between v1.8.0 and v1.9.0**
 
 ### TUI Overhaul ("Glamour Upgrade")
 

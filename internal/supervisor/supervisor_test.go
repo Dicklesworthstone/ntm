@@ -553,6 +553,15 @@ func TestStartWaitsForConcurrentShutdown(t *testing.T) {
 		close(stopped)
 	}()
 
+	// Wait for Shutdown to acquire lifecycleMu and call s.cancel().
+	// Shutdown closes shutdownCh before entering stopAllOwnedDaemons,
+	// which blocks on blocked.mu — so lifecycleMu is still held.
+	select {
+	case <-s.shutdownCh:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not acquire lifecycleMu")
+	}
+
 	startAttempt := make(chan error, 1)
 	go func() {
 		startAttempt <- s.Start(DaemonSpec{
