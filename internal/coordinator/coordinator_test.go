@@ -436,6 +436,71 @@ func TestStop_WaitsForInFlightMonitorCycle(t *testing.T) {
 	}
 }
 
+func TestStop_WaitsForConcurrentStartInitialization(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+	c.config.PollInterval = time.Hour
+	c.config.SendDigests = false
+
+	originalGetPanes := getPanesWithActivity
+	defer func() {
+		getPanesWithActivity = originalGetPanes
+	}()
+
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+
+	getPanesWithActivity = func(session string) ([]tmux.PaneActivity, error) {
+		close(blocked)
+		<-release
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer releaseOnce.Do(func() { close(release) })
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- c.Start(ctx)
+	}()
+
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not reach initial update")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before concurrent Start finished initializing")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not finish after releasing initial update")
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not wait for coordinator startup to finish")
+	}
+}
+
 func TestGenerateDigest(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 

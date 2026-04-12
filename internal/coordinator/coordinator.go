@@ -23,7 +23,8 @@ var (
 
 // SessionCoordinator manages agent coordination for a tmux session.
 type SessionCoordinator struct {
-	mu sync.RWMutex
+	mu          sync.RWMutex
+	lifecycleMu sync.Mutex
 
 	// Identity
 	session    string // tmux session name
@@ -47,7 +48,6 @@ type SessionCoordinator struct {
 	events chan CoordinatorEvent
 
 	// Control
-	ctx      context.Context
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
 	started  bool
@@ -158,7 +158,6 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		agents:     make(map[string]*AgentState),
 		config:     DefaultCoordinatorConfig(),
 		events:     make(chan CoordinatorEvent, 100),
-		ctx:        context.Background(),
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -184,15 +183,17 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 		c.config.DigestInterval = DefaultCoordinatorConfig().DigestInterval
 	}
 
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	if c.started || c.stopping {
 		c.mu.Unlock()
 		return errors.New("coordinator already started")
 	}
 
-	// Store context and reset stop signal
-	c.ctx = ctx
-	c.stopCh = make(chan struct{})
+	stopCh := make(chan struct{})
+	c.stopCh = stopCh
 	c.started = true
 	c.stopping = false
 	c.mu.Unlock()
@@ -205,12 +206,12 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 
 	// Start monitoring goroutine
 	c.wg.Add(1)
-	go c.monitorLoop()
+	go c.monitorLoop(ctx, stopCh)
 
 	// Start digest goroutine if enabled
 	if c.config.SendDigests {
 		c.wg.Add(1)
-		go c.digestLoop()
+		go c.digestLoop(ctx, stopCh)
 	}
 
 	return nil
@@ -218,12 +219,16 @@ func (c *SessionCoordinator) Start(ctx context.Context) error {
 
 // Stop halts coordinator operations.
 func (c *SessionCoordinator) Stop() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	if !c.started || c.stopping {
 		c.mu.Unlock()
 		return
 	}
 	stopCh := c.stopCh
+	c.started = false
 	c.stopping = true
 	c.mu.Unlock()
 
@@ -234,7 +239,6 @@ func (c *SessionCoordinator) Stop() {
 
 	c.mu.Lock()
 	c.stopCh = nil
-	c.started = false
 	c.stopping = false
 	c.mu.Unlock()
 }
@@ -287,7 +291,7 @@ func (c *SessionCoordinator) GetIdleAgents() []*AgentState {
 }
 
 // monitorLoop periodically updates agent states.
-func (c *SessionCoordinator) monitorLoop() {
+func (c *SessionCoordinator) monitorLoop(ctx context.Context, stopCh <-chan struct{}) {
 	defer c.wg.Done()
 
 	ticker := time.NewTicker(c.config.PollInterval)
@@ -295,9 +299,9 @@ func (c *SessionCoordinator) monitorLoop() {
 
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
-		case <-c.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			c.updateAgentStates()
@@ -496,7 +500,7 @@ func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.Agent
 }
 
 // digestLoop periodically sends digest summaries.
-func (c *SessionCoordinator) digestLoop() {
+func (c *SessionCoordinator) digestLoop(ctx context.Context, stopCh <-chan struct{}) {
 	defer c.wg.Done()
 
 	ticker := time.NewTicker(c.config.DigestInterval)
@@ -504,12 +508,12 @@ func (c *SessionCoordinator) digestLoop() {
 
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
-		case <-c.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
-			if err := c.SendDigest(c.ctx); err != nil {
+			if err := c.SendDigest(ctx); err != nil {
 				// Emit event for observability - don't stop the loop
 				select {
 				case c.events <- CoordinatorEvent{
