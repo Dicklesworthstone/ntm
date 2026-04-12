@@ -94,6 +94,8 @@ type AlertCallback func(Alert)
 type HealthMonitor struct {
 	mu sync.RWMutex
 
+	lifecycleMu sync.Mutex
+
 	config      *config.ProcessTriageConfig
 	pidMap      *rano.PIDMap
 	ptAdapter   *tools.PTAdapter
@@ -194,6 +196,9 @@ func NewHealthMonitor(cfg *config.ProcessTriageConfig, opts ...HealthMonitorOpti
 // Start begins the monitoring loop.
 // It's safe to call Start multiple times; subsequent calls are no-ops.
 func (m *HealthMonitor) Start() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.Lock()
 	if m.running {
 		m.mu.Unlock()
@@ -226,6 +231,9 @@ func (m *HealthMonitor) Start() error {
 // Stop halts the monitoring loop.
 // It blocks until the loop has fully stopped.
 func (m *HealthMonitor) Stop() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.Lock()
 	if !m.running {
 		m.mu.Unlock()

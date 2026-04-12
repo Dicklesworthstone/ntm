@@ -258,11 +258,12 @@ type BackgroundWorker struct {
 	config       AutoCheckpointConfig
 	sessionName  string
 
-	events  chan AutoEvent
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	started bool // tracks if the worker goroutine was actually started
+	events      chan AutoEvent
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	started     bool // tracks if the worker goroutine was actually started
 
 	// Statistics
 	checkpointCount int
@@ -292,6 +293,9 @@ func (w *BackgroundWorker) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+
 	w.mu.Lock()
 	if w.cancel != nil {
 		w.mu.Unlock()
@@ -315,9 +319,14 @@ func (w *BackgroundWorker) Start(ctx context.Context) {
 
 // Stop stops the background checkpoint worker gracefully.
 func (w *BackgroundWorker) Stop() {
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+
 	w.mu.Lock()
 	wasStarted := w.started
 	cancel := w.cancel
+	w.cancel = nil
+	w.started = false
 	w.mu.Unlock()
 
 	if cancel != nil {
@@ -325,11 +334,6 @@ func (w *BackgroundWorker) Stop() {
 	}
 
 	w.wg.Wait()
-
-	w.mu.Lock()
-	w.cancel = nil
-	w.started = false
-	w.mu.Unlock()
 
 	if wasStarted {
 		log.Printf("Stopped auto-checkpoint worker for session %s", w.sessionName)

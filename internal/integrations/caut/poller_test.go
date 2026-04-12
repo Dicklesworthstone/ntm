@@ -2,6 +2,9 @@ package caut
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -131,6 +134,163 @@ func TestUsagePoller_MultipleStopCalls(t *testing.T) {
 	poller.Stop()
 	poller.Stop()
 	poller.Stop()
+}
+
+func TestUsagePoller_StopCancelsBlockedInitialPoll(t *testing.T) {
+	cfg := config.DefaultCautConfig()
+	startedFile := installFakeCautBinary(t, true)
+	poller := NewUsagePoller(&cfg, nil)
+	poller.adapter.InvalidateAvailabilityCache()
+	t.Cleanup(poller.adapter.InvalidateAvailabilityCache)
+
+	if err := poller.Start(); err != nil {
+		t.Fatalf("Start failed with fake caut: %v", err)
+	}
+
+	waitForFile(t, startedFile, 2*time.Second)
+
+	stopped := make(chan struct{})
+	go func() {
+		poller.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not cancel blocked initial poll")
+	}
+
+	if poller.IsRunning() {
+		t.Fatal("poller should not be running after Stop")
+	}
+}
+
+func TestUsagePoller_StartWaitsForConcurrentStop(t *testing.T) {
+	cfg := config.DefaultCautConfig()
+	_ = installFakeCautBinary(t, false)
+	poller := NewUsagePoller(&cfg, nil)
+	poller.adapter.InvalidateAvailabilityCache()
+	t.Cleanup(poller.adapter.InvalidateAvailabilityCache)
+
+	poller.mu.Lock()
+	poller.running = true
+	poller.cancel = func() {}
+	poller.doneCh = make(chan struct{})
+	oldDone := poller.doneCh
+	poller.mu.Unlock()
+
+	stopped := make(chan struct{})
+	go func() {
+		poller.Stop()
+		close(stopped)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		poller.mu.RLock()
+		waiting := !poller.running && poller.cancel == nil && poller.doneCh == nil
+		poller.mu.RUnlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stop did not enter waiting state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	started := make(chan error, 1)
+	go func() {
+		started <- poller.Start()
+	}()
+
+	select {
+	case err := <-started:
+		t.Fatalf("Start returned before Stop finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(oldDone)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after prior worker completed")
+	}
+
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("Start failed after Stop finished: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not resume after Stop finished")
+	}
+
+	if !poller.IsRunning() {
+		t.Fatal("poller should be running after serialized restart")
+	}
+
+	poller.Stop()
+}
+
+func installFakeCautBinary(t *testing.T, blockUsage bool) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	startedFile := filepath.Join(dir, "usage-started")
+	scriptPath := filepath.Join(dir, "caut")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+started_file=%q
+case "${1:-}" in
+  --version)
+    printf '0.1.0\n'
+    ;;
+  status)
+    printf '{"running":true,"tracking":true,"provider_count":1,"providers":[{"name":"openai","enabled":true,"has_quota":true,"quota_used":10}],"quota_percent":10}\n'
+    ;;
+  usage)
+    if [ "${CAUT_TEST_BLOCK_USAGE:-}" = "1" ]; then
+      : > "$started_file"
+      sleep 30
+    else
+      printf '[]\n'
+    fi
+    ;;
+  *)
+    printf '{}\n'
+    ;;
+esac
+`, startedFile)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake caut script: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if blockUsage {
+		t.Setenv("CAUT_TEST_BLOCK_USAGE", "1")
+	} else {
+		t.Setenv("CAUT_TEST_BLOCK_USAGE", "0")
+	}
+
+	return startedFile
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestUsagePoller_PollNow_NoCaut(t *testing.T) {

@@ -694,6 +694,59 @@ func TestAutoRespawnerStartAndStop(t *testing.T) {
 	cancel()
 }
 
+func TestAutoRespawnerContinuesProcessingAfterLimitDetectorRestart(t *testing.T) {
+	mock := &mockTmuxClient{
+		captureSeq: []string{"$", ">"},
+		runOutput:  "12345",
+	}
+
+	ld := NewLimitDetector()
+	r := NewAutoRespawner().
+		WithTmuxClient(mock).
+		WithLimitDetector(ld).
+		WithConfig(AutoRespawnerConfig{
+			ExitWaitTimeout:   20 * time.Millisecond,
+			ExitPollInterval:  5 * time.Millisecond,
+			AgentReadyDelay:   20 * time.Millisecond,
+			ClearPaneDelay:    0,
+			MaxRetriesPerPane: 3,
+		})
+
+	r.forceKillFn = func(sessionPane string) error { return nil }
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer r.Stop()
+
+	if err := ld.StartPane(context.Background(), "test:1.1", "cc"); err != nil {
+		t.Fatalf("initial detector StartPane failed: %v", err)
+	}
+	ld.Stop()
+
+	if err := ld.StartPane(context.Background(), "test:1.1", "cc"); err != nil {
+		t.Fatalf("restart detector StartPane failed: %v", err)
+	}
+	defer ld.Stop()
+
+	ld.handleLimitEvent(&LimitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		Pattern:     "rate limit",
+		RawOutput:   "rate limit exceeded",
+		DetectedAt:  time.Now(),
+	})
+
+	select {
+	case event := <-r.Events():
+		if event.SessionPane != "test:1.1" {
+			t.Fatalf("respawn event session pane = %q, want test:1.1", event.SessionPane)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected respawn event after detector restart")
+	}
+}
+
 func TestAutoRespawnerRetryTracking(t *testing.T) {
 	r := NewAutoRespawner()
 	r.Config.MaxRetriesPerPane = 3
@@ -811,6 +864,45 @@ func TestAutoRespawnerEventsChannel(t *testing.T) {
 	// Verify it's the same channel
 	if ch != r.eventChan {
 		t.Error("Events() should return the internal event channel")
+	}
+}
+
+func TestAutoRespawnerEventsChannelPersistsAcrossRestart(t *testing.T) {
+	r := NewAutoRespawner()
+	ld := NewLimitDetector()
+	r.WithLimitDetector(ld)
+
+	events := r.Events()
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	r.Stop()
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("restart Start failed: %v", err)
+	}
+	defer r.Stop()
+
+	if r.Events() != events {
+		t.Fatal("Events() should keep the same channel across Stop/Start cycles")
+	}
+
+	result := &RespawnResult{
+		Success:     true,
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		RespawnedAt: time.Now(),
+	}
+	r.emitEvent(result)
+
+	select {
+	case got := <-events:
+		if got.SessionPane != result.SessionPane {
+			t.Fatalf("event session pane = %q, want %q", got.SessionPane, result.SessionPane)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for respawn event after restart")
 	}
 }
 
@@ -1745,10 +1837,25 @@ func TestAutoRespawnerStopCancelsInFlightRespawn(t *testing.T) {
 		t.Fatal("expected respawn to begin before Stop")
 	}
 
-	r.Stop()
+	stopDone := make(chan struct{})
+	go func() {
+		r.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before in-flight respawn was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	close(release)
 
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-stopDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Stop did not return after releasing in-flight respawn")
+	}
 
 	mock.mu.Lock()
 	calls := append([]sendKeysCall(nil), mock.sendKeysCalls...)

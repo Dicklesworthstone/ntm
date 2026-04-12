@@ -1211,6 +1211,117 @@ func TestStopWaitsForInFlightDelivery(t *testing.T) {
 	}
 }
 
+func TestStartWaitsForConcurrentStop(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+
+	m := NewManager(ManagerConfig{
+		QueueSize:   10,
+		WorkerCount: 1,
+	})
+	if err := m.Register(WebhookConfig{
+		ID:      "restart-during-stop",
+		URL:     "https://example.com/webhook",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("registration failed: %v", err)
+	}
+
+	m.httpClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+
+		select {
+		case <-release:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			}, nil
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer m.Stop()
+
+	if err := m.Dispatch(Event{Type: "test.restart-blocking"}); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for initial webhook request to start")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- m.Stop()
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for !m.stopping.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !m.stopping.Load() {
+		t.Fatal("stop did not begin before timeout")
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- m.Start()
+	}()
+
+	select {
+	case err := <-startDone:
+		t.Fatalf("Start returned before Stop completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("stop failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for stop")
+	}
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("restart failed after stop completed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart did not resume after stop completed")
+	}
+
+	if err := m.Dispatch(Event{Type: "test.restart-after-stop"}); err != nil {
+		t.Fatalf("dispatch after restart failed: %v", err)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.Stats().Deliveries >= 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stats := m.Stats()
+	t.Fatalf("expected restarted manager to deliver a second event, got %+v", stats)
+}
+
 func TestConcurrentDispatch(t *testing.T) {
 	t.Parallel()
 

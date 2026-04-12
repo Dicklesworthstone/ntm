@@ -518,6 +518,69 @@ func TestFileReservationWatcherStartStop(t *testing.T) {
 		w.Stop()
 		t.Logf("RESERVATION_TEST: stop_without_start completed safely")
 	})
+
+	t.Run("start waits for concurrent stop", func(t *testing.T) {
+		w := NewFileReservationWatcher()
+
+		w.mu.Lock()
+		w.stopCh = make(chan struct{})
+		w.mu.Unlock()
+
+		release := make(chan struct{})
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			<-release
+		}()
+
+		stopped := make(chan struct{})
+		go func() {
+			w.Stop()
+			close(stopped)
+		}()
+
+		deadline := time.Now().Add(time.Second)
+		for {
+			w.mu.Lock()
+			stopCh := w.stopCh
+			w.mu.Unlock()
+			if stopCh == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("Stop() did not begin before timeout")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		started := make(chan struct{}, 1)
+		go func() {
+			w.Start(context.Background())
+			started <- struct{}{}
+		}()
+
+		select {
+		case <-started:
+			t.Fatal("Start() returned before Stop() completed")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		close(release)
+
+		select {
+		case <-stopped:
+		case <-time.After(time.Second):
+			t.Fatal("Stop() did not return after worker released")
+		}
+
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("Start() did not resume after Stop() completed")
+		}
+
+		w.Stop()
+	})
 }
 
 func TestCheckPaneOutputsScansAgentPanes(t *testing.T) {

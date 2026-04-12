@@ -342,6 +342,81 @@ func TestCompactionTrigger_CanRestartAfterStop(t *testing.T) {
 	}
 }
 
+func TestCompactionTrigger_StartWaitsForConcurrentStop(t *testing.T) {
+	config := DefaultCompactionTriggerConfig()
+	config.AutoCompact = false
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	compactor := NewCompactor(monitor, DefaultCompactorConfig())
+	predictor := NewContextPredictor(DefaultPredictorConfig())
+
+	trigger := NewCompactionTrigger(config, monitor, compactor, predictor)
+
+	trigger.mu.Lock()
+	trigger.running = true
+	trigger.stopCh = make(chan struct{})
+	trigger.doneCh = make(chan struct{})
+	oldDone := trigger.doneCh
+	trigger.mu.Unlock()
+
+	stopped := make(chan struct{})
+	go func() {
+		trigger.Stop()
+		close(stopped)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		trigger.mu.RLock()
+		waiting := !trigger.running && trigger.stopCh == nil && trigger.doneCh == nil
+		trigger.mu.RUnlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stop did not enter waiting state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	started := make(chan struct{})
+	go func() {
+		trigger.Start()
+		close(started)
+	}()
+
+	select {
+	case <-started:
+		t.Fatal("Start returned before Stop finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(oldDone)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after prior loop completed")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not resume after Stop finished")
+	}
+
+	trigger.mu.RLock()
+	running := trigger.running
+	newStopCh := trigger.stopCh
+	newDoneCh := trigger.doneCh
+	trigger.mu.RUnlock()
+	if !running || newStopCh == nil || newDoneCh == nil {
+		t.Fatal("trigger did not restart after concurrent Stop")
+	}
+
+	trigger.Stop()
+}
+
 func TestCompactionTriggerEvent(t *testing.T) {
 	event := CompactionTriggerEvent{
 		AgentID:     "agent1",

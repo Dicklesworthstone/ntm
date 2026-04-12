@@ -161,6 +161,9 @@ type AutoRespawner struct {
 	// cancel stops all respawn goroutines.
 	cancel context.CancelFunc
 
+	// wg waits for background workers to exit during Stop().
+	wg sync.WaitGroup
+
 	// forceKillFn overrides forceKill behavior in tests (optional).
 	forceKillFn func(sessionPane string) error
 
@@ -267,7 +270,8 @@ func (r *AutoRespawner) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// Events returns the channel that emits respawn events.
+// Events returns the stable channel that emits respawn events.
+// Subscribers may keep this channel across Stop/Start cycles.
 func (r *AutoRespawner) Events() <-chan RespawnEvent {
 	return r.eventChan
 }
@@ -297,10 +301,7 @@ func (r *AutoRespawner) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("AutoRespawner already started")
 	}
 	r.ctx, r.cancel = childCtx, cancel
-	// Recreate event channel if it was closed by Stop()
-	if r.eventChan == nil {
-		r.eventChan = make(chan RespawnEvent, 100)
-	}
+	r.wg.Add(1)
 	r.mu.Unlock()
 
 	r.logger().Info("[AutoRespawner] starting",
@@ -317,25 +318,21 @@ func (r *AutoRespawner) Start(ctx context.Context) (err error) {
 func (r *AutoRespawner) Stop() {
 	r.mu.Lock()
 	cancel := r.cancel
-	eventChan := r.eventChan
 	r.cancel = nil
-	r.eventChan = nil
 	r.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
 
-	// Close the event channel to unblock readers
-	if eventChan != nil {
-		close(eventChan)
-	}
+	r.wg.Wait()
 
 	r.logger().Info("[AutoRespawner] stopped")
 }
 
 // processLimitEvents listens for limit events and triggers respawns.
 func (r *AutoRespawner) processLimitEvents(ctx context.Context) {
+	defer r.wg.Done()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1097,8 +1094,7 @@ func (r *AutoRespawner) emitEvent(result *RespawnResult) {
 		NewAccount:      result.NewAccount,
 	}
 
-	// Non-blocking send while holding the read lock so Stop() cannot close the
-	// channel between the nil check and the send.
+	// Send event to the stable subscription channel without blocking callers.
 	sent, available := r.trySendEvent(event)
 	if available && !sent {
 		r.logger().Warn("[AutoRespawner] event_channel_full",

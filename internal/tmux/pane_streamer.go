@@ -78,9 +78,10 @@ type PaneStreamer struct {
 	config   PaneStreamerConfig
 	callback StreamCallback
 
-	ctx    context.Context
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	lifecycleMu sync.Mutex
+	ctx         context.Context
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
 
 	fifoPath    string
 	seq         int64
@@ -126,6 +127,9 @@ func (ps *PaneStreamer) Start(ctx context.Context) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	ps.lifecycleMu.Lock()
+	defer ps.lifecycleMu.Unlock()
 
 	ps.mu.Lock()
 	if ps.running {
@@ -175,6 +179,9 @@ func (ps *PaneStreamer) Start(ctx context.Context) (err error) {
 
 // Stop stops streaming and cleans up.
 func (ps *PaneStreamer) Stop() {
+	ps.lifecycleMu.Lock()
+	defer ps.lifecycleMu.Unlock()
+
 	ps.mu.Lock()
 	if !ps.running {
 		ps.mu.Unlock()

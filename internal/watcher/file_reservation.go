@@ -55,6 +55,7 @@ type FileReservationWatcher struct {
 	capturePaneOutput  func(ctx context.Context, target string, lines int) (string, error)
 	paneOutputs        map[string]string           // paneID -> last captured output
 	activeReservations map[string]*PaneReservation // paneID -> reservation
+	lifecycleMu        sync.Mutex
 	mu                 sync.Mutex
 	stopCh             chan struct{}
 	wg                 sync.WaitGroup
@@ -169,6 +170,9 @@ func (w *FileReservationWatcher) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+
 	w.mu.Lock()
 	if w.stopCh != nil {
 		w.mu.Unlock()
@@ -192,6 +196,9 @@ func (w *FileReservationWatcher) Start(ctx context.Context) {
 
 // Stop halts the file reservation watcher and releases all reservations.
 func (w *FileReservationWatcher) Stop() {
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+
 	w.mu.Lock()
 	stopCh := w.stopCh
 	w.stopCh = nil

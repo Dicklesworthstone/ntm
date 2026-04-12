@@ -56,6 +56,7 @@ type CompactionTrigger struct {
 
 	// Tracking state
 	mu                sync.RWMutex
+	lifecycleMu       sync.Mutex
 	lastCompaction    map[string]time.Time // agentID -> last compaction time
 	activeCompactions map[string]bool      // agentID -> currently compacting
 
@@ -103,6 +104,9 @@ func (t *CompactionTrigger) SetCompactionCompleteHandler(handler func(Compaction
 // Start begins the background monitoring loop.
 // It is a no-op while the trigger is already running.
 func (t *CompactionTrigger) Start() {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
@@ -120,6 +124,9 @@ func (t *CompactionTrigger) Start() {
 
 // Stop halts the background monitoring loop. Safe to call multiple times.
 func (t *CompactionTrigger) Stop() {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+
 	t.mu.Lock()
 	if !t.running {
 		t.mu.Unlock()

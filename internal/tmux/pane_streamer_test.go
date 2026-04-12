@@ -411,6 +411,76 @@ func TestPaneStreamer_StopWithoutStart(t *testing.T) {
 	ps.Stop()
 }
 
+func TestPaneStreamer_StartWaitsForConcurrentStop(t *testing.T) {
+	callback := func(event StreamEvent) {}
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FIFODir = t.TempDir()
+
+	ps := NewPaneStreamer(DefaultClient, "nonexistent:0", callback, cfg)
+
+	ps.mu.Lock()
+	ps.running = true
+	ps.stopCh = make(chan struct{})
+	ps.mu.Unlock()
+
+	release := make(chan struct{})
+	ps.wg.Add(1)
+	go func() {
+		defer ps.wg.Done()
+		<-release
+	}()
+
+	stopped := make(chan struct{})
+	go func() {
+		ps.Stop()
+		close(stopped)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		ps.mu.Lock()
+		running := ps.running
+		ps.mu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stop did not begin before timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	started := make(chan error, 1)
+	go func() {
+		started <- ps.Start(context.Background())
+	}()
+
+	select {
+	case err := <-started:
+		t.Fatalf("Start returned before Stop completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after worker released")
+	}
+
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("Start returned unexpected error after Stop completed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not resume after Stop completed")
+	}
+
+	ps.Stop()
+}
+
 func TestStreamManager_StatsWithActiveStreams(t *testing.T) {
 	callback := func(event StreamEvent) {}
 	cfg := DefaultPaneStreamerConfig()

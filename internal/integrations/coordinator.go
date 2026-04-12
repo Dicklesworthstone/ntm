@@ -21,6 +21,8 @@ var coordinatorLogger = slog.Default().With("component", "integrations.coordinat
 type Coordinator struct {
 	mu sync.RWMutex
 
+	lifecycleMu sync.Mutex
+
 	caamAdapter  *tools.CAAMAdapter
 	cautPoller   *caut.UsagePoller
 	alertTracker *alerts.Tracker
@@ -125,6 +127,9 @@ func (c *Coordinator) SetSwitchCallback(cb SwitchCallback) {
 
 // Start begins monitoring for proactive switching opportunities.
 func (c *Coordinator) Start() error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -171,19 +176,21 @@ func (c *Coordinator) Start() error {
 
 // Stop halts the coordinator.
 func (c *Coordinator) Stop() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	if !c.running {
 		c.mu.Unlock()
 		return
 	}
-	close(c.stopCh)
-	c.mu.Unlock()
-
-	<-c.doneCh
-
-	c.mu.Lock()
 	c.running = false
+	stopCh := c.stopCh
+	doneCh := c.doneCh
 	c.mu.Unlock()
+
+	close(stopCh)
+	<-doneCh
 
 	coordinatorLogger.Info("caut-CAAM coordinator stopped")
 }

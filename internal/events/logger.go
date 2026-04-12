@@ -35,6 +35,8 @@ type Logger struct {
 	file          *os.File
 	eventCount    int
 	lastRotation  time.Time
+	closed        bool
+	rotationWg    sync.WaitGroup
 }
 
 // LoggerOptions configures the event logger.
@@ -92,12 +94,11 @@ func NewLogger(opts LoggerOptions) (*Logger, error) {
 // Log writes an event to the log file.
 // If redaction is configured via SetRedactionConfig, sensitive data is redacted before storage.
 func (l *Logger) Log(event *Event) error {
-	if !l.enabled || l.file == nil {
-		return nil
-	}
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if !l.enabled || l.closed || l.file == nil {
+		return nil
+	}
 
 	// Apply redaction if configured
 	eventToWrite := RedactEvent(event)
@@ -123,7 +124,11 @@ func (l *Logger) Log(event *Event) error {
 
 	// Check for rotation periodically
 	if l.eventCount%RotationCheckInterval == 0 {
-		go l.maybeRotate()
+		l.rotationWg.Add(1)
+		go func() {
+			defer l.rotationWg.Done()
+			l.maybeRotate()
+		}()
 	}
 
 	return nil
@@ -145,8 +150,18 @@ func (l *Logger) LogEvent(eventType EventType, session string, data interface{})
 // Close closes the log file.
 func (l *Logger) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	if l.closed {
+		l.mu.Unlock()
+		l.rotationWg.Wait()
+		return nil
+	}
+	l.closed = true
+	l.mu.Unlock()
 
+	l.rotationWg.Wait()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.file != nil {
 		err := l.file.Close()
 		l.file = nil
@@ -158,6 +173,10 @@ func (l *Logger) Close() error {
 // maybeRotate checks if rotation is needed and performs it.
 func (l *Logger) maybeRotate() {
 	l.mu.Lock()
+	if l.closed || !l.enabled || l.file == nil {
+		l.mu.Unlock()
+		return
+	}
 	// Only rotate once per day at most (check under lock to avoid TOCTOU)
 	if time.Since(l.lastRotation) < 24*time.Hour {
 		l.mu.Unlock()

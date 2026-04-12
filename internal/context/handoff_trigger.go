@@ -63,6 +63,7 @@ type HandoffTrigger struct {
 
 	// Tracking state
 	mu           sync.RWMutex
+	lifecycleMu  sync.Mutex
 	lastHandoff  map[string]time.Time // agentID -> last handoff time
 	lastWarning  map[string]time.Time // agentID -> last warning time
 	activeAgents map[string]bool      // agentID -> currently generating handoff
@@ -128,6 +129,9 @@ func (t *HandoffTrigger) SetTriggeredHandler(handler func(HandoffTriggerEvent)) 
 // Start begins the background monitoring loop.
 // It is a no-op while the trigger is already running.
 func (t *HandoffTrigger) Start() {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
@@ -151,6 +155,9 @@ func (t *HandoffTrigger) Start() {
 
 // Stop halts the background monitoring loop. Safe to call multiple times.
 func (t *HandoffTrigger) Stop() {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+
 	t.mu.Lock()
 	if !t.running {
 		t.mu.Unlock()

@@ -16,7 +16,8 @@ var pollerLogger = slog.Default().With("component", "caut.poller")
 
 // UsagePoller manages background polling of caut for usage data.
 type UsagePoller struct {
-	mu sync.RWMutex
+	mu          sync.RWMutex
+	lifecycleMu sync.Mutex
 
 	adapter  *tools.CautAdapter
 	cache    *UsageCache
@@ -24,8 +25,8 @@ type UsagePoller struct {
 	alerter  *alerts.Tracker
 	interval time.Duration
 
-	stopCh chan struct{}
 	doneCh chan struct{}
+	cancel context.CancelFunc
 
 	running bool
 }
@@ -43,22 +44,23 @@ func NewUsagePoller(cfg *config.CautConfig, alerter *alerts.Tracker) *UsagePolle
 		config:   cfg,
 		alerter:  alerter,
 		interval: interval,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
 	}
 }
 
 // Start begins background polling. It is safe to call multiple times;
 // subsequent calls are no-ops if already running.
 func (p *UsagePoller) Start() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
+	p.mu.RLock()
 	if p.running {
+		p.mu.RUnlock()
 		return nil
 	}
+	p.mu.RUnlock()
 
-	// Check if caut is available before starting
+	// Check if caut is available before starting.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -66,11 +68,18 @@ func (p *UsagePoller) Start() error {
 		return fmt.Errorf("caut is not available: binary not found or incompatible version")
 	}
 
+	runCtx, runCancel := context.WithCancel(context.Background())
+	p.mu.Lock()
 	p.running = true
-	p.stopCh = make(chan struct{})
+	p.cancel = runCancel
 	p.doneCh = make(chan struct{})
+	doneCh := p.doneCh
+	p.mu.Unlock()
 
-	go p.pollLoop()
+	go func() {
+		defer runCancel()
+		p.pollLoop(runCtx, doneCh)
+	}()
 
 	pollerLogger.Info("caut usage poller started", "interval", p.interval)
 	return nil
@@ -78,20 +87,28 @@ func (p *UsagePoller) Start() error {
 
 // Stop halts background polling. It blocks until the polling goroutine exits.
 func (p *UsagePoller) Stop() {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	p.mu.Lock()
 	if !p.running {
 		p.mu.Unlock()
 		return
 	}
-	close(p.stopCh)
-	p.mu.Unlock()
-
-	// Wait for the polling goroutine to finish
-	<-p.doneCh
-
-	p.mu.Lock()
+	cancel := p.cancel
+	doneCh := p.doneCh
 	p.running = false
+	p.cancel = nil
+	p.doneCh = nil
 	p.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	if doneCh != nil {
+		<-doneCh
+	}
 
 	pollerLogger.Info("caut usage poller stopped")
 }
@@ -127,43 +144,50 @@ func (p *UsagePoller) PollNow(ctx context.Context) error {
 }
 
 // pollLoop runs the background polling loop.
-func (p *UsagePoller) pollLoop() {
-	defer close(p.doneCh)
+func (p *UsagePoller) pollLoop(ctx context.Context, doneCh chan struct{}) {
+	defer close(doneCh)
 
-	// Initial poll immediately
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := p.poll(ctx); err != nil {
-		pollerLogger.Warn("initial caut poll failed", "error", err)
+	// Initial poll immediately.
+	if err := p.pollWithTimeout(ctx); err != nil {
+		if ctx.Err() == nil {
+			pollerLogger.Warn("initial caut poll failed", "error", err)
+		}
 	}
-	cancel()
 
-	ticker := time.NewTicker(p.interval)
+	p.mu.RLock()
+	currentInterval := p.interval
+	p.mu.RUnlock()
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			if err := p.poll(ctx); err != nil {
+			if err := p.pollWithTimeout(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				pollerLogger.Warn("caut poll failed", "error", err)
 				p.cache.SetError(err)
 			} else {
 				p.cache.ClearError()
 			}
-			cancel()
 
 			// Update ticker if interval changed
 			p.mu.RLock()
-			currentInterval := p.interval
+			currentInterval = p.interval
 			p.mu.RUnlock()
-			if ticker.C != nil {
-				ticker.Reset(currentInterval)
-			}
-
-		case <-p.stopCh:
-			return
+			ticker.Reset(currentInterval)
 		}
 	}
+}
+
+func (p *UsagePoller) pollWithTimeout(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	return p.poll(ctx)
 }
 
 // poll fetches current usage data and updates the cache.

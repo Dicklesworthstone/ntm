@@ -49,6 +49,62 @@ func TestLimitDetectorEvents(t *testing.T) {
 	}
 }
 
+func TestLimitDetectorEventsChannelPersistsAcrossStopAndRestart(t *testing.T) {
+	detector := NewLimitDetector()
+	events := detector.Events()
+
+	if err := detector.StartPane(context.Background(), "test:1.1", "cc"); err != nil {
+		t.Fatalf("StartPane failed: %v", err)
+	}
+
+	first := &LimitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		Pattern:     "rate limit",
+		RawOutput:   "rate limit exceeded",
+		DetectedAt:  time.Now(),
+	}
+	detector.handleLimitEvent(first)
+
+	select {
+	case got := <-events:
+		if got.SessionPane != first.SessionPane {
+			t.Fatalf("first event session pane = %q, want %q", got.SessionPane, first.SessionPane)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for first limit event")
+	}
+
+	detector.Stop()
+
+	if err := detector.StartPane(context.Background(), "test:1.1", "cc"); err != nil {
+		t.Fatalf("restart StartPane failed: %v", err)
+	}
+	defer detector.Stop()
+
+	if detector.Events() != events {
+		t.Fatal("Events() should keep the same channel across Stop/Start cycles")
+	}
+
+	second := &LimitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		Pattern:     "usage limit",
+		RawOutput:   "usage limit reached",
+		DetectedAt:  time.Now(),
+	}
+	detector.handleLimitEvent(second)
+
+	select {
+	case got := <-events:
+		if got.Pattern != second.Pattern {
+			t.Fatalf("second event pattern = %q, want %q", got.Pattern, second.Pattern)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for limit event after restart")
+	}
+}
+
 func TestLimitDetectorStartNilPlan(t *testing.T) {
 	detector := NewLimitDetector()
 	ctx := context.Background()

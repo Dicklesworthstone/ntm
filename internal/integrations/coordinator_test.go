@@ -336,6 +336,66 @@ func TestCoordinator_StopWhenNotRunning(t *testing.T) {
 	}
 }
 
+func TestCoordinator_StartWaitsForConcurrentStop(t *testing.T) {
+	cfg := &CoordinatorConfig{
+		CAAMEnabled: false,
+		CautEnabled: false,
+	}
+	coord := NewCoordinator(cfg)
+
+	coord.mu.Lock()
+	coord.running = true
+	coord.stopCh = make(chan struct{})
+	coord.doneCh = make(chan struct{})
+	coord.mu.Unlock()
+
+	stopped := make(chan struct{})
+	go func() {
+		coord.Stop()
+		close(stopped)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for coord.IsRunning() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if coord.IsRunning() {
+		t.Fatal("stop did not begin before timeout")
+	}
+
+	started := make(chan error, 1)
+	go func() {
+		started <- coord.Start()
+	}()
+
+	select {
+	case err := <-started:
+		t.Fatalf("Start returned before Stop completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(coord.doneCh)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after done channel closed")
+	}
+
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("Start returned error after Stop completed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not resume after Stop completed")
+	}
+
+	if coord.IsRunning() {
+		t.Fatal("Coordinator should remain stopped when integrations are disabled")
+	}
+}
+
 func TestCoordinator_OnCautAlert_InCooldown(t *testing.T) {
 	cfg := &CoordinatorConfig{
 		CAAMEnabled:        true,

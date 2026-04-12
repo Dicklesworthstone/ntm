@@ -19,6 +19,11 @@ type EventEmitter struct {
 	dropped atomic.Int64
 
 	startOnce sync.Once
+	closeOnce sync.Once
+	wg        sync.WaitGroup
+
+	mu     sync.RWMutex
+	closed bool
 }
 
 // NewEventEmitter creates an emitter for the given bus. If bus is nil, DefaultBus is used.
@@ -38,7 +43,16 @@ func NewEventEmitter(bus *EventBus, buffer int) *EventEmitter {
 // Start launches the background publisher loop (idempotent).
 func (e *EventEmitter) Start() {
 	e.startOnce.Do(func() {
+		e.mu.Lock()
+		if e.closed {
+			e.mu.Unlock()
+			return
+		}
+		e.wg.Add(1)
+		e.mu.Unlock()
+
 		go func() {
+			defer e.wg.Done()
 			for ev := range e.ch {
 				e.bus.Publish(ev)
 			}
@@ -52,6 +66,14 @@ func (e *EventEmitter) Emit(ev BusEvent) {
 		return
 	}
 	e.Start()
+
+	e.mu.RLock()
+	if e.closed {
+		e.mu.RUnlock()
+		return
+	}
+	defer e.mu.RUnlock()
+
 	select {
 	case e.ch <- ev:
 	default:
@@ -61,6 +83,17 @@ func (e *EventEmitter) Emit(ev BusEvent) {
 			slog.Default().Debug("event emitter dropped events (buffer full)", "dropped", n, "event_type", ev.EventType())
 		}
 	}
+}
+
+// Close stops the background publisher and waits for in-flight publishes to finish.
+func (e *EventEmitter) Close() {
+	e.closeOnce.Do(func() {
+		e.mu.Lock()
+		e.closed = true
+		close(e.ch)
+		e.mu.Unlock()
+		e.wg.Wait()
+	})
 }
 
 // Dropped returns the number of dropped events.

@@ -109,7 +109,8 @@ func (d *LimitDetector) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// Events returns the channel that emits limit events.
+// Events returns the stable channel that emits limit events.
+// Subscribers may keep this channel across Stop/Start cycles.
 func (d *LimitDetector) Events() <-chan LimitEvent {
 	return d.eventChan
 }
@@ -140,10 +141,6 @@ func (d *LimitDetector) Start(ctx context.Context, plan *SwarmPlan) error {
 	}
 	d.ctx, d.cancel = context.WithCancel(ctx)
 	monitorCtx := d.ctx
-	// Recreate event channel if it was closed by Stop()
-	if d.eventChan == nil {
-		d.eventChan = make(chan LimitEvent, 100)
-	}
 	d.mu.Unlock()
 
 	go func(ctx context.Context) {
@@ -267,11 +264,7 @@ func (d *LimitDetector) Stop() {
 	}
 	d.monitoredPanes = make(map[string]monitoredPane)
 
-	// Close the event channel to unblock readers
-	if d.eventChan != nil {
-		close(d.eventChan)
-		d.eventChan = nil
-	}
+	// Keep the event channel stable so subscribers survive Stop/Start cycles.
 }
 
 // CheckPane captures pane output and checks for limit patterns (synchronous).
@@ -398,8 +391,7 @@ func (d *LimitDetector) handleLimitEvent(event *LimitEvent) {
 		}
 	}
 
-	// Send event to channel (non-blocking), while holding the read lock so
-	// Stop() cannot close the channel between the nil check and the send.
+	// Send event to the stable subscription channel without blocking callers.
 	sent, available := d.trySendEvent(*event)
 	if available && !sent {
 		d.logger().Warn("[LimitDetector] event_channel_full",
@@ -412,7 +404,7 @@ func (d *LimitDetector) trySendEvent(event LimitEvent) (sent bool, available boo
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	if d.eventChan == nil {
+	if len(d.monitoredPanes) == 0 {
 		return false, false
 	}
 

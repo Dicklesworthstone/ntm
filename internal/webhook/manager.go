@@ -186,14 +186,16 @@ type WebhookManager struct {
 	httpClient *http.Client
 
 	// Lifecycle management
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	started    atomic.Bool
-	stopping   atomic.Bool
-	pending    atomic.Int64
-	deliveries atomic.Int64 // Total successful deliveries
-	failures   atomic.Int64 // Total failed deliveries
+	lifecycleMu sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	stopDone    chan struct{}
+	started     atomic.Bool
+	stopping    atomic.Bool
+	pending     atomic.Int64
+	deliveries  atomic.Int64 // Total successful deliveries
+	failures    atomic.Int64 // Total failed deliveries
 
 	// Logging callback (optional)
 	Logger func(format string, args ...interface{})
@@ -394,35 +396,79 @@ func (m *WebhookManager) sanitizeEvent(event Event) Event {
 
 // Start begins background processing of the webhook queue
 func (m *WebhookManager) Start() error {
-	if m.started.Swap(true) {
-		return errors.New("webhook manager already started")
-	}
+	for {
+		m.lifecycleMu.Lock()
+		if stopDone := m.stopDone; stopDone != nil {
+			select {
+			case <-stopDone:
+				if m.stopDone == stopDone {
+					m.stopDone = nil
+					m.ctx = nil
+					m.cancel = nil
+				}
+			default:
+				m.lifecycleMu.Unlock()
+				<-stopDone
+				continue
+			}
+		}
+		if m.started.Load() {
+			m.lifecycleMu.Unlock()
+			return errors.New("webhook manager already started")
+		}
 
-	m.ctx, m.cancel = newManagerContext()
-	m.stopping.Store(false)
+		m.ctx, m.cancel = newManagerContext()
+		m.stopping.Store(false)
+		m.started.Store(true)
 
-	// Start worker goroutines
-	for i := 0; i < m.config.WorkerCount; i++ {
+		// Start worker goroutines
+		for i := 0; i < m.config.WorkerCount; i++ {
+			m.wg.Add(1)
+			go m.worker(i)
+		}
+
+		// Start retry processor
 		m.wg.Add(1)
-		go m.worker(i)
+		go m.retryProcessor()
+		m.lifecycleMu.Unlock()
+
+		m.log("webhook manager started with %d workers", m.config.WorkerCount)
+		return nil
 	}
-
-	// Start retry processor
-	m.wg.Add(1)
-	go m.retryProcessor()
-
-	m.log("webhook manager started with %d workers", m.config.WorkerCount)
-	return nil
 }
 
 // Stop gracefully shuts down the manager
 func (m *WebhookManager) Stop() error {
-	if !m.started.Swap(false) {
+	m.lifecycleMu.Lock()
+	if stopDone := m.stopDone; stopDone != nil && !m.started.Load() {
+		m.lifecycleMu.Unlock()
+		<-stopDone
+		return nil
+	}
+	if !m.started.Load() {
+		m.lifecycleMu.Unlock()
 		return nil
 	}
 
-	m.log("stopping webhook manager...")
+	m.started.Store(false)
 	m.stopping.Store(true)
+	cancel := m.cancel
+	done := make(chan struct{})
+	m.stopDone = done
+	go func(done chan struct{}) {
+		m.wg.Wait()
+		close(done)
+		m.lifecycleMu.Lock()
+		if m.stopDone == done {
+			m.stopDone = nil
+			m.ctx = nil
+			m.cancel = nil
+		}
+		m.lifecycleMu.Unlock()
+	}(done)
+	m.lifecycleMu.Unlock()
+
+	m.log("stopping webhook manager...")
 
 	// Retries that have not started yet cannot outlive shutdown. Convert them to
 	// dead letters now so Stop only has to wait for queued or in-flight work.
@@ -434,17 +480,12 @@ func (m *WebhookManager) Stop() error {
 	}
 
 	// Cancel context to stop idle workers and in-flight retry waits.
-	m.cancel()
+	if cancel != nil {
+		cancel()
+	}
 
 	// Signal retry processor to wake up and exit.
 	m.retryCond.Broadcast()
-
-	// Wait for workers to finish within the remaining shutdown budget.
-	done := make(chan struct{})
-	go func() {
-		m.wg.Wait()
-		close(done)
-	}()
 
 	waitTimeout := time.Until(deadline)
 	if waitTimeout < 0 {
@@ -454,11 +495,11 @@ func (m *WebhookManager) Stop() error {
 	select {
 	case <-done:
 		m.log("webhook manager stopped gracefully")
+		return nil
 	case <-time.After(waitTimeout):
 		m.log("webhook manager stop timed out")
+		return errors.New("webhook manager stop timed out")
 	}
-
-	return nil
 }
 
 // Stats returns current manager statistics

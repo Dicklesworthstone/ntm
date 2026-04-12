@@ -210,6 +210,130 @@ func TestBackgroundWorker_SendEventDoesNothingWhenInactive(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_StopPreventsLateEvents(t *testing.T) {
+	config := AutoCheckpointConfig{
+		Enabled:         true,
+		IntervalMinutes: 0,
+		OnRotation:      true,
+	}
+
+	worker := NewBackgroundWorker("test-session", config)
+
+	worker.mu.Lock()
+	_, cancel := context.WithCancel(context.Background())
+	worker.cancel = cancel
+	worker.started = true
+	worker.wg.Add(1)
+	worker.mu.Unlock()
+	defer cancel()
+
+	stopDone := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(stopDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		worker.mu.Lock()
+		running := worker.started || worker.cancel != nil
+		worker.mu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker did not mark itself stopped before waiting")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	worker.SendEvent(AutoEvent{Type: EventRotation, SessionName: "test-session"})
+	if got := len(worker.events); got != 0 {
+		t.Fatalf("expected no queued events after Stop began, got %d", got)
+	}
+
+	worker.wg.Done()
+
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after worker released")
+	}
+}
+
+func TestBackgroundWorkerConcurrentStopAndRestart(t *testing.T) {
+	config := AutoCheckpointConfig{
+		Enabled:         true,
+		IntervalMinutes: 0,
+		OnRotation:      true,
+	}
+
+	worker := NewBackgroundWorker("test-session", config)
+
+	worker.mu.Lock()
+	_, cancel := context.WithCancel(context.Background())
+	worker.cancel = cancel
+	worker.started = true
+	worker.wg.Add(1)
+	worker.mu.Unlock()
+	defer cancel()
+
+	stopReturned := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(stopReturned)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		worker.mu.Lock()
+		stopping := !worker.started && worker.cancel == nil
+		worker.mu.Unlock()
+		if stopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stop did not enter waiting state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	startReturned := make(chan struct{})
+	go func() {
+		worker.Start(context.Background())
+		close(startReturned)
+	}()
+
+	select {
+	case <-startReturned:
+		t.Fatal("Start returned before in-flight Stop finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	worker.wg.Done()
+
+	select {
+	case <-stopReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after worker released")
+	}
+
+	select {
+	case <-startReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not resume after Stop completed")
+	}
+
+	worker.mu.Lock()
+	restarted := worker.started && worker.cancel != nil
+	worker.mu.Unlock()
+	if !restarted {
+		t.Fatal("worker did not restart after concurrent Stop completed")
+	}
+
+	worker.Stop()
+}
+
 func TestBackgroundWorker_StartDrainsStaleEvents(t *testing.T) {
 	config := AutoCheckpointConfig{
 		Enabled:         true,

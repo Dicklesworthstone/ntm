@@ -192,6 +192,66 @@ func TestRunningState(t *testing.T) {
 	// This would require mocking the ptAdapter
 }
 
+func TestHealthMonitor_StartWaitsForConcurrentStop(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	cfg := config.DefaultProcessTriageConfig()
+	m := NewHealthMonitor(&cfg)
+	m.ptAdapter.InvalidateStatusCache()
+
+	m.mu.Lock()
+	m.running = true
+	m.stopCh = make(chan struct{})
+	m.doneCh = make(chan struct{})
+	m.mu.Unlock()
+
+	stopped := make(chan struct{})
+	go func() {
+		m.Stop()
+		close(stopped)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for m.Running() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if m.Running() {
+		t.Fatal("stop did not begin before timeout")
+	}
+
+	started := make(chan error, 1)
+	go func() {
+		started <- m.Start()
+	}()
+
+	select {
+	case err := <-started:
+		t.Fatalf("Start returned before Stop completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(m.doneCh)
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after done channel closed")
+	}
+
+	select {
+	case err := <-started:
+		if err == nil {
+			t.Fatal("expected Start to fail when pt is unavailable")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not resume after Stop completed")
+	}
+
+	if m.Running() {
+		t.Fatal("monitor should remain stopped after failed start")
+	}
+}
+
 func TestGlobalMonitor(t *testing.T) {
 	// Note: This modifies global state, so be careful
 	m1 := GetGlobalMonitor()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,6 +218,73 @@ func TestLogger_MultipleEvents(t *testing.T) {
 
 	if nonEmpty != 5 {
 		t.Errorf("Got %d events, want 5", nonEmpty)
+	}
+}
+
+func TestLogger_CloseDoesNotReopenAfterQueuedRotation(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "events.jsonl")
+
+	old := time.Now().UTC().AddDate(0, 0, -(DefaultRetentionDays + 5))
+	payload := strings.Repeat("x", 2048)
+	var data bytes.Buffer
+	for i := 0; i < 8000; i++ {
+		line, err := json.Marshal(Event{
+			Timestamp: old,
+			Type:      EventSessionCreate,
+			Session:   "old",
+			Data: map[string]interface{}{
+				"payload": payload,
+				"index":   i,
+			},
+		})
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	if err := os.WriteFile(logPath, data.Bytes(), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	logger, err := NewLogger(LoggerOptions{
+		Path:          logPath,
+		RetentionDays: DefaultRetentionDays,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+
+	logger.lastRotation = time.Time{}
+	logger.rotationWg.Add(1)
+	go func() {
+		defer logger.rotationWg.Done()
+		logger.maybeRotate()
+	}()
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	logger.mu.Lock()
+	reopened := logger.file != nil
+	logger.mu.Unlock()
+	if reopened {
+		t.Fatal("logger reopened file after Close")
+	}
+
+	if err := logger.Log(NewEvent(EventSessionCreate, "after-close", nil)); err != nil {
+		t.Fatalf("Log after Close failed: %v", err)
+	}
+	logger.mu.Lock()
+	reopened = logger.file != nil
+	logger.mu.Unlock()
+	if reopened {
+		t.Fatal("logger reopened file after Log called after Close")
 	}
 }
 
