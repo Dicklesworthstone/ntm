@@ -190,6 +190,12 @@ func createAssignProjectRoot(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := t.TempDir()
+	// On macOS, t.TempDir() returns /var/folders/... but the code under test
+	// calls filepath.EvalSymlinks which canonicalises this to
+	// /private/var/folders/... — resolve up-front so expected values match.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".ntm"), 0755); err != nil {
 		t.Fatalf("creating .ntm dir: %v", err)
 	}

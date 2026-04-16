@@ -3,6 +3,7 @@ package alerts
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -342,7 +343,8 @@ func (g *Generator) checkDependencyCycles() *Alert {
 	// Run bv --robot-insights and check for cycles
 	insights, err := bv.GetInsights(wd)
 	if err != nil {
-		if !strings.Contains(err.Error(), "executable file not found") {
+		// Silently skip when bv is not installed; only warn on real errors.
+		if !errors.Is(err, bv.ErrNotInstalled) && !strings.Contains(err.Error(), "executable file not found") {
 			slog.Warn("failed to check dependency cycles", "tool", "bv", "error", err)
 		}
 		return nil

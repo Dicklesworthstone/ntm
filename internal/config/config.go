@@ -2537,6 +2537,14 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 	// 1. Initialize with defaults
 	cfg := Default()
 
+	// When the caller supplied an explicit working directory, do not let any
+	// palette that Default() auto-discovered from the ambient process cwd leak
+	// through. Reset to hardcoded defaults so the cwd-aware discovery below
+	// (step 4) is the sole source of palette selection for this load.
+	if strings.TrimSpace(cwd) != "" {
+		cfg.Palette = defaultPaletteCommands()
+	}
+
 	// 2. Read and unmarshal TOML over defaults
 	if data, err := os.ReadFile(path); err == nil {
 		// Pre-scan safety profile so we can apply profile defaults before decoding the rest.

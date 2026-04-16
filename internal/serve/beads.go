@@ -151,11 +151,8 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	slog.Info("create bead", "request_id", reqID)
 
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
+	// Validate the request body before checking external tool availability so
+	// malformed requests get a 400 regardless of whether bd is installed.
 	var req CreateBeadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
@@ -164,6 +161,11 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 
 	if req.Title == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "title is required", nil, reqID)
+		return
+	}
+
+	if !bv.IsBdInstalled() {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -253,14 +255,15 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("update bead", "request_id", reqID, "bead_id", beadID)
 
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
+	// Validate request body before checking external tool availability.
 	var req UpdateBeadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
+		return
+	}
+
+	if !bv.IsBdInstalled() {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -357,11 +360,7 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("claim bead", "request_id", reqID, "bead_id", beadID)
 
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
+	// Validate request body before checking external tool availability.
 	var req ClaimBeadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
@@ -370,6 +369,11 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 
 	if req.Assignee == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "assignee is required", nil, reqID)
+		return
+	}
+
+	if !bv.IsBdInstalled() {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
@@ -558,11 +562,7 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("add bead dependency", "request_id", reqID, "bead_id", beadID)
 
-	if !bv.IsBdInstalled() {
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
-		return
-	}
-
+	// Validate request body before checking external tool availability.
 	var req AddDependencyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
@@ -571,6 +571,11 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 
 	if req.BlockedBy == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "blocked_by is required", nil, reqID)
+		return
+	}
+
+	if !bv.IsBdInstalled() {
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 

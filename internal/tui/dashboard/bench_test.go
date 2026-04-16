@@ -189,6 +189,9 @@ func TestViewRenderTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping wall-clock render profile in -short mode")
 	}
+	if raceEnabled {
+		t.Skip("skipping wall-clock render profile under -race (2-10x slowdown makes the 16ms target meaningless)")
+	}
 	configureDashboardPerfEnv(t)
 	m := newBenchModel(200, 50, 20)
 	m.width = 200

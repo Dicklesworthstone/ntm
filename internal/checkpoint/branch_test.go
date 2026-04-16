@@ -63,7 +63,15 @@ func TestIsPathWithinDirResolved_ValidPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join(subDir, "file.txt")
+	// isPathWithinDirResolved calls filepath.EvalSymlinks which on macOS
+	// resolves /tmp -> /private/tmp and /var -> /private/var. Evaluate
+	// symlinks on the expected path the same way so the comparison is
+	// canonical-vs-canonical on every platform.
+	wantResolved, err := filepath.EvalSymlinks(subDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(subDir): %v", err)
+	}
+	want := filepath.Join(wantResolved, "file.txt")
 	if got != want {
 		t.Errorf("isPathWithinDirResolved = %q, want %q", got, want)
 	}

@@ -99,6 +99,11 @@ func TestSessionStore_RetriesAfterOpenFailure(t *testing.T) {
 
 	resetDefaultStateStoreForTest()
 	t.Setenv("HOME", badHome)
+	// Ensure DefaultPath() falls through to HOME instead of using ambient
+	// XDG_CONFIG_HOME / NTM_CONFIG that CI runners may pre-populate with a
+	// valid directory (which would defeat the "invalid HOME path" scenario).
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("NTM_CONFIG", "")
 
 	bad := &EnsembleSession{
 		SessionName:       "bad-open",

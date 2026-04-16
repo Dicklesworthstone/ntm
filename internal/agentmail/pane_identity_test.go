@@ -15,11 +15,18 @@ import (
 // the canonical format so any future divergence fails loudly.
 
 func TestCanonicalIdentityPathMatchesRustReference(t *testing.T) {
-	// Force the config base dir by exporting XDG_CONFIG_HOME for this test
-	// process. os.UserConfigDir honours XDG_CONFIG_HOME on Linux. Cannot use
-	// t.Parallel() alongside t.Setenv (Go runtime enforces this).
+	// Force the config base dir. os.UserConfigDir honours XDG_CONFIG_HOME on
+	// Linux but derives from $HOME on macOS ($HOME/Library/Application Support),
+	// so we set both and resolve the expected base via os.UserConfigDir to
+	// stay portable. Cannot use t.Parallel() alongside t.Setenv.
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir: %v", err)
+	}
 
 	projectKey := "/data/projects/backend"
 	paneID := "%3"
@@ -29,7 +36,7 @@ func TestCanonicalIdentityPathMatchesRustReference(t *testing.T) {
 	// Compute expected sha1[:12] independently to catch any drift.
 	h := sha1.Sum([]byte(projectKey))
 	expectedHash := hex.EncodeToString(h[:])[:12]
-	expected := filepath.Join(tmp, "agent-mail", "identity", expectedHash, "3")
+	expected := filepath.Join(base, "agent-mail", "identity", expectedHash, "3")
 
 	if got != expected {
 		t.Fatalf("canonical path mismatch:\n got: %s\nwant: %s", got, expected)
@@ -39,6 +46,7 @@ func TestCanonicalIdentityPathMatchesRustReference(t *testing.T) {
 func TestCanonicalIdentityPathCompositePaneKey(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
 
 	got := CanonicalIdentityPath("/p", "main:0:2")
 	if !strings.HasSuffix(got, "/main-0-2") {
@@ -70,6 +78,7 @@ func TestSanitizePaneID(t *testing.T) {
 func TestWriteIdentityAtomicRoundtrip(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
 
 	projectKey := "/a/b/c"
 	paneID := "%42"
@@ -98,6 +107,7 @@ func TestWriteIdentityAtomicRoundtrip(t *testing.T) {
 func TestWriteIdentityRejectsEmptyName(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
 
 	if _, err := WriteIdentity("/p", "%0", "   "); err == nil {
 		t.Fatal("expected error for empty/whitespace agent name")
@@ -188,6 +198,12 @@ func TestResolveIdentityReturnsEmptyWhenMissing(t *testing.T) {
 func TestRustContractCompatibility(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir: %v", err)
+	}
 
 	type vec struct {
 		projectKey string
@@ -204,7 +220,7 @@ func TestRustContractCompatibility(t *testing.T) {
 		got := CanonicalIdentityPath(c.projectKey, c.paneID)
 		h := sha1.Sum([]byte(c.projectKey))
 		expectedHash := hex.EncodeToString(h[:])[:12]
-		expected := filepath.Join(tmp, "agent-mail", "identity", expectedHash, c.want)
+		expected := filepath.Join(base, "agent-mail", "identity", expectedHash, c.want)
 		if got != expected {
 			t.Fatalf("Rust contract drift for (%q, %q):\n got: %s\nwant: %s",
 				c.projectKey, c.paneID, got, expected)

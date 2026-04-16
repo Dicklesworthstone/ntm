@@ -673,6 +673,9 @@ func TestInstallGitHooks_NotGitRepo(t *testing.T) {
 
 // TestInstallGitHooks_GitRepo verifies hooks installation in a git repo
 func TestInstallGitHooks_GitRepo(t *testing.T) {
+	if _, err := exec.LookPath("ntm"); err != nil {
+		t.Skip("ntm binary not on PATH; pre-commit hook generation cannot find ntm (e.g., fresh CI where go build places the binary in the repo root, not on PATH)")
+	}
 
 	tmpDir := t.TempDir()
 
@@ -709,6 +712,9 @@ func TestInstallGitHooks_GitRepo(t *testing.T) {
 
 // TestInstallGitHooks_Force verifies force flag behavior
 func TestInstallGitHooks_Force(t *testing.T) {
+	if _, err := exec.LookPath("ntm"); err != nil {
+		t.Skip("ntm binary not on PATH; pre-commit hook generation cannot find ntm (e.g., fresh CI where go build places the binary in the repo root, not on PATH)")
+	}
 
 	tmpDir := t.TempDir()
 
