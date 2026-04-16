@@ -24,6 +24,12 @@ type FileReservationConfigValues struct {
 
 // NewFileReservationWatcherFromConfig creates a FileReservationWatcher configured
 // from the provided config values.
+//
+// `agentName` is accepted only as a last-resort fallback; the watcher resolves
+// the actual registered Agent Mail identity for each pane via
+// agentmail.ResolveIdentity (see internal/agentmail/pane_identity.go and
+// issue #107). Callers should pass an empty string unless they have a
+// specific reason to override.
 func NewFileReservationWatcherFromConfig(
 	cfg FileReservationConfigValues,
 	client *agentmail.Client,
@@ -36,10 +42,23 @@ func NewFileReservationWatcherFromConfig(
 		return nil
 	}
 
+	// Default resolver: read the canonical pane-identity file written by
+	// ntm spawn (the same contract documented in pane_identity.go and
+	// mirrored by the mcp-agent-mail Rust reference implementation). If the
+	// file does not exist yet — for example because the pane has not yet
+	// finished registering with Agent Mail — the resolver returns "" and
+	// the watcher skips the reservation attempt rather than sending an
+	// unregistered agent_name.
+	resolver := func(paneID string) string {
+		name, _ := agentmail.ResolveIdentity(projectDir, paneID)
+		return name
+	}
+
 	opts := []FileReservationWatcherOption{
 		WithWatcherClient(client),
 		WithProjectDir(projectDir),
 		WithAgentName(agentName),
+		WithAgentNameResolver(resolver),
 		WithSessionFilter(sessionName),
 		WithDebug(cfg.Debug),
 	}

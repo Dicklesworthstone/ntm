@@ -1232,13 +1232,19 @@ func TestReleaseIdleReservationsKeepsPaneOutputStateToSuppressStaleOutput(t *tes
 func TestPrepareReservationAttemptSeedsLastOutputForNewReservation(t *testing.T) {
 	t.Parallel()
 
-	w := NewFileReservationWatcher()
+	// Post-#107: a resolver MUST return a real Agent Mail identity for the
+	// pane. Fabricating a name like `"<session>_<paneID>"` was the original
+	// bug — the synthetic name is not a registered Agent Mail agent, so the
+	// server rejected every reservation call. The watcher now takes an
+	// explicit resolver (or an AgentName fallback) and skips panes with no
+	// known identity.
+	w := NewFileReservationWatcher(WithAgentName("registered-agent-name"))
 	now := time.Now()
 	output := "Edited: /file.go"
 
 	agentName, newFiles := w.prepareReservationAttempt("%1", "test-session", output, []string{"/file.go"}, now)
-	if agentName != "test-session_%1" {
-		t.Fatalf("expected derived agent name, got %q", agentName)
+	if agentName != "registered-agent-name" {
+		t.Fatalf("expected resolver-provided agent name, got %q", agentName)
 	}
 	if len(newFiles) != 1 || newFiles[0] != "/file.go" {
 		t.Fatalf("expected new files to include /file.go, got %v", newFiles)
@@ -1254,6 +1260,64 @@ func TestPrepareReservationAttemptSeedsLastOutputForNewReservation(t *testing.T)
 	}
 	if !got.LastActivity.Equal(now) {
 		t.Fatalf("expected LastActivity %v, got %v", now, got.LastActivity)
+	}
+	if got.AgentName != "registered-agent-name" {
+		t.Fatalf("expected reservation AgentName 'registered-agent-name', got %q", got.AgentName)
+	}
+}
+
+// TestPrepareReservationAttemptSkipsUnresolvedPanes is the regression test
+// for issue #107: when no Agent Mail identity is registered for a pane, the
+// watcher must skip the reservation attempt instead of inventing a name.
+func TestPrepareReservationAttemptSkipsUnresolvedPanes(t *testing.T) {
+	t.Parallel()
+
+	// No AgentName fallback and no resolver - i.e. unknown pane identity.
+	w := NewFileReservationWatcher()
+	now := time.Now()
+
+	agentName, newFiles := w.prepareReservationAttempt("%7", "untracked-session", "out", []string{"/x.go"}, now)
+	if agentName != "" {
+		t.Fatalf("expected empty agent name when pane identity is unknown, got %q", agentName)
+	}
+	if len(newFiles) != 0 {
+		t.Fatalf("expected no new files when pane skipped, got %v", newFiles)
+	}
+	if _, exists := w.GetActiveReservations()["%7"]; exists {
+		t.Fatal("expected no reservation to be created for unresolved pane")
+	}
+}
+
+// TestPrepareReservationAttemptUsesResolver verifies that the per-pane
+// AgentNameResolver is consulted and its value is propagated to the
+// reservation. Guarantees the dashboard watcher uses the CANONICAL pane
+// identity (the name Agent Mail actually registered) rather than the tmux
+// session name, which was the original #107 bug.
+func TestPrepareReservationAttemptUsesResolver(t *testing.T) {
+	t.Parallel()
+
+	resolver := func(paneID string) string {
+		if paneID == "%3" {
+			return "BlueLake"
+		}
+		return ""
+	}
+	w := NewFileReservationWatcher(WithAgentNameResolver(resolver))
+	now := time.Now()
+
+	agentName, newFiles := w.prepareReservationAttempt("%3", "sess", "out", []string{"/a.go"}, now)
+	if agentName != "BlueLake" {
+		t.Fatalf("expected resolver's agent name, got %q", agentName)
+	}
+	if len(newFiles) != 1 {
+		t.Fatalf("expected 1 new file, got %v", newFiles)
+	}
+
+	// A different pane that the resolver does not know about must be
+	// skipped (no fallback name has been configured).
+	agentName2, newFiles2 := w.prepareReservationAttempt("%9", "sess", "out", []string{"/b.go"}, now)
+	if agentName2 != "" || len(newFiles2) != 0 {
+		t.Fatalf("expected unresolved pane to be skipped, got name=%q files=%v", agentName2, newFiles2)
 	}
 }
 

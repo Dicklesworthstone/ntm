@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -2856,18 +2854,14 @@ func registerSpawnedAgents(workingDir, sessionName string, agents []spawnedAgent
 			if !IsJSONOutput() {
 				output.PrintInfof("Reused existing identity for pane %d: %s", agent.paneIndex, existingName)
 			}
-			// Write canonical identity file (XDG-compliant persistent location)
-			identityContent := existingName + "\n" + fmt.Sprintf("%d", time.Now().Unix()) + "\n"
-			if canonPath, err := getIdentityFilePath(workingDir, agent.paneID); err == nil {
-				if writeErr := os.WriteFile(canonPath, []byte(identityContent), 0o600); writeErr != nil {
-					output.PrintWarningf("Failed to write canonical identity file %s: %v", canonPath, writeErr)
+			// Write canonical identity file (XDG-compliant, atomic, Agent-Mail-compatible).
+			if _, writeErr := agentmail.WriteIdentity(workingDir, agent.paneID, existingName); writeErr != nil {
+				if !IsJSONOutput() {
+					output.PrintWarningf("Failed to write canonical identity for pane %d: %v", agent.paneIndex, writeErr)
 				}
 			}
-			// Backward compat: also write to legacy /tmp/ location
-			{
-				legacyPath := legacyIdentityFilePath(workingDir, agent.paneID)
-				_ = os.WriteFile(legacyPath, []byte(existingName+"\n"), 0o600)
-			}
+			// Backward compat: also write to legacy /tmp/ location used by old notify hooks.
+			_ = agentmail.WriteLegacyCompatIdentity(workingDir, agent.paneID, existingName)
 			registry.AddAgent(agent.paneTitle, agent.paneID, existingName)
 			continue
 		}
@@ -2927,24 +2921,19 @@ func registerSpawnedAgents(workingDir, sessionName string, agents []spawnedAgent
 			}
 		}
 
-		// Write per-pane identity file so notify hooks can resolve AGENT_MAIL_AGENT.
-		// Path contract (must match notify_wrapper.sh and register_agent.sh):
-		//   Canonical: <XDG_STATE_HOME or ~/.local/state>/agent-mail/identity/<sha256(project_key)[0:12]>/<pane_id>
-		//   Legacy:    /tmp/agent-mail-name.<sha256(project_key)[0:12]>[.<pane_id>]
+		// Write per-pane identity file so Agent Mail and notify hooks can resolve
+		// AGENT_MAIL_AGENT. Canonical contract (see agentmail.CanonicalIdentityPath
+		// and the mcp-agent-mail Rust reference in pane_identity.rs):
+		//   Canonical: ~/.config/agent-mail/identity/<sha1(project_key)[0:12]>/<sanitized_pane_id>
+		//   Legacy:    /tmp/agent-mail-name.<sha1(project_key)[0:12]>.<sanitized_pane_id>
 		{
-			identityContent := registered.Name + "\n" + fmt.Sprintf("%d", time.Now().Unix()) + "\n"
-			if canonPath, err := getIdentityFilePath(workingDir, agent.paneID); err == nil {
-				if writeErr := os.WriteFile(canonPath, []byte(identityContent), 0o600); writeErr != nil {
-					if !IsJSONOutput() {
-						output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
-					}
+			if _, writeErr := agentmail.WriteIdentity(workingDir, agent.paneID, registered.Name); writeErr != nil {
+				if !IsJSONOutput() {
+					output.PrintWarningf("Failed to write identity file for pane %d: %v", agent.paneIndex, writeErr)
 				}
-			} else if !IsJSONOutput() {
-				output.PrintWarningf("Failed to resolve identity path for pane %d: %v", agent.paneIndex, err)
 			}
-			// Backward compat: also write to legacy /tmp/ location
-			legacyPath := legacyIdentityFilePath(workingDir, agent.paneID)
-			_ = os.WriteFile(legacyPath, []byte(registered.Name+"\n"), 0o600)
+			// Backward compat: legacy /tmp/ location is still consumed by older hooks.
+			_ = agentmail.WriteLegacyCompatIdentity(workingDir, agent.paneID, registered.Name)
 		}
 
 		status.AgentsRegistered++
@@ -2990,37 +2979,10 @@ func agentTypeToProgram(agentType string) string {
 	}
 }
 
-// getIdentityFilePath builds the canonical Agent Mail identity file path.
-// Convention: <state_dir>/agent-mail/identity/<sha256(projectKey)[0:12]>/<paneID>
-// Respects XDG_STATE_HOME; defaults to ~/.local/state.
-// Creates the parent directory (mode 0700) if it does not exist.
-func getIdentityFilePath(projectKey, paneID string) (string, error) {
-	stateDir := os.Getenv("XDG_STATE_HOME")
-	if stateDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		stateDir = filepath.Join(home, ".local", "state")
-	}
-	h := sha256.Sum256([]byte(projectKey))
-	projHash := hex.EncodeToString(h[:])[:12]
-	dir := filepath.Join(stateDir, "agent-mail", "identity", projHash)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("cannot create identity directory %s: %w", dir, err)
-	}
-	return filepath.Join(dir, paneID), nil
-}
-
-func legacyIdentityFilePath(projectKey, paneID string) string {
-	h := sha256.Sum256([]byte(projectKey))
-	projHash := hex.EncodeToString(h[:])[:12]
-	path := "/tmp/agent-mail-name." + projHash
-	if paneID != "" {
-		path += "." + paneID
-	}
-	return path
-}
+// Identity file path helpers moved to internal/agentmail/pane_identity.go so
+// they can be shared with the file reservation watcher and so they converge
+// on the same contract as the mcp-agent-mail Rust reference implementation.
+// See agentmail.CanonicalIdentityPath / agentmail.WriteIdentity.
 
 // getMemoryContext retrieves and formats CM (CASS Memory) memories for agent spawn.
 // Returns a formatted markdown string with project-specific rules and anti-patterns

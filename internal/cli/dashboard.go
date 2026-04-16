@@ -173,11 +173,18 @@ func startDashboardReservationWatcher(session, projectDir string) func() {
 			// dashboard subscribes to "file_reservation.conflict" events.
 		}
 
+		// Per-pane Agent Mail identity is resolved lazily from the canonical
+		// identity file written by spawn (see internal/agentmail/pane_identity.go
+		// and issue #107). Passing an empty fallback here means the watcher
+		// skips panes that do not yet have a registered identity instead of
+		// sending reservation calls under the tmux session name — which is
+		// almost never a registered Agent Mail agent and was the source of
+		// the red `file_reservation_paths` metrics reported in #107.
 		reservationWatcher := watcher.NewFileReservationWatcherFromConfig(
 			cfgValues,
 			amClient,
 			projectDir,
-			session, // Use session name as agent name
+			"",      // Fallback agent name (empty -> skip unresolved panes)
 			session, // Restrict watcher scans to this dashboard session
 			conflictCallback,
 		)

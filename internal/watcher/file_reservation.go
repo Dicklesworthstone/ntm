@@ -41,11 +41,18 @@ type PaneReservation struct {
 	LastOutput    string // Hash or truncated output to detect changes
 }
 
+// AgentNameResolver resolves a registered Agent Mail identity for a tmux pane.
+// Implementations should return the empty string to indicate that no identity
+// is available and the watcher should skip the pane (rather than fabricate a
+// name like the session name, which would not be a registered Agent Mail
+// identity and would cause the Agent Mail server to reject reservation calls).
+type AgentNameResolver func(paneID string) string
+
 // FileReservationWatcher monitors pane output and automatically reserves files.
 type FileReservationWatcher struct {
 	client             *agentmail.Client
 	projectDir         string
-	agentName          string
+	agentName          string // legacy fallback only; real name comes from agentNameResolver
 	sessionFilter      string
 	pollInterval       time.Duration
 	idleTimeout        time.Duration
@@ -53,6 +60,7 @@ type FileReservationWatcher struct {
 	captureLines       int
 	listAllPanes       func(ctx context.Context) (map[string][]tmux.Pane, error)
 	capturePaneOutput  func(ctx context.Context, target string, lines int) (string, error)
+	agentNameResolver  AgentNameResolver           // paneID -> registered agent name, or "" to skip
 	paneOutputs        map[string]string           // paneID -> last captured output
 	activeReservations map[string]*PaneReservation // paneID -> reservation
 	lifecycleMu        sync.Mutex
@@ -80,10 +88,28 @@ func WithProjectDir(dir string) FileReservationWatcherOption {
 	}
 }
 
-// WithAgentName sets the agent name for reservations.
+// WithAgentName sets the legacy fallback agent name for reservations. Most
+// callers should prefer WithAgentNameResolver; this option exists for tests
+// and for the rare case where a single agent name is appropriate for every
+// pane. When both are set, the resolver takes precedence; the fallback is
+// only used if the resolver returns "".
 func WithAgentName(name string) FileReservationWatcherOption {
 	return func(w *FileReservationWatcher) {
 		w.agentName = name
+	}
+}
+
+// WithAgentNameResolver sets a per-pane resolver that returns the registered
+// Agent Mail identity for a given tmux pane ID. The watcher calls this
+// resolver before every reservation attempt. If the resolver returns "", the
+// reservation is skipped (rather than being sent with a non-registered name,
+// which would cause the Agent Mail server to respond with an error and drive
+// the operator's error metrics red).
+//
+// See issue #107 for the original bug.
+func WithAgentNameResolver(resolver AgentNameResolver) FileReservationWatcherOption {
+	return func(w *FileReservationWatcher) {
+		w.agentNameResolver = resolver
 	}
 }
 
@@ -331,7 +357,10 @@ func (w *FileReservationWatcher) onFileEdit(
 	}
 
 	agentName, newFiles := w.prepareReservationAttempt(pane.ID, sessionName, output, files, now)
-	if len(newFiles) == 0 {
+	if agentName == "" || len(newFiles) == 0 {
+		// Either we have no registered identity for this pane yet (skip to
+		// avoid a noisy 'unknown agent_name' server error) or we already
+		// hold reservations covering every detected file.
 		return
 	}
 
@@ -557,6 +586,39 @@ func (w *FileReservationWatcher) RenewReservations(ctx context.Context) error {
 	return errors.Join(renewErrs...)
 }
 
+// resolveAgentName looks up the registered Agent Mail identity for a pane,
+// consulting (in order): (a) any existing reservation we already opened under
+// that pane (cached canonical name), (b) the configured AgentNameResolver,
+// (c) the legacy w.agentName fallback. Returns "" if no identity is known,
+// in which case callers MUST skip the reservation attempt.
+func (w *FileReservationWatcher) resolveAgentName(paneID string) string {
+	// If we already opened a reservation for this pane, prefer the cached
+	// canonical agent name rather than re-reading the identity file on
+	// every poll cycle.
+	w.mu.Lock()
+	if existing, ok := w.activeReservations[paneID]; ok && existing != nil && existing.AgentName != "" {
+		cached := existing.AgentName
+		w.mu.Unlock()
+		// If we also have a resolver, let it refresh the name (e.g. when a
+		// pane respawns with a new identity). Otherwise return the cached
+		// name immediately.
+		if w.agentNameResolver != nil {
+			if resolved := strings.TrimSpace(w.agentNameResolver(paneID)); resolved != "" {
+				return resolved
+			}
+		}
+		return cached
+	}
+	w.mu.Unlock()
+
+	if w.agentNameResolver != nil {
+		if resolved := strings.TrimSpace(w.agentNameResolver(paneID)); resolved != "" {
+			return resolved
+		}
+	}
+	return strings.TrimSpace(w.agentName)
+}
+
 func (w *FileReservationWatcher) prepareReservationAttempt(
 	paneID string,
 	sessionName string,
@@ -564,22 +626,44 @@ func (w *FileReservationWatcher) prepareReservationAttempt(
 	files []string,
 	now time.Time,
 ) (string, []string) {
+	// Resolve the registered Agent Mail identity for this pane OUTSIDE the
+	// lock (the resolver may touch the filesystem). If no identity is
+	// available we skip entirely instead of fabricating a name; sending a
+	// reservation with an unregistered agent_name is what drove #107's red
+	// error metrics in the first place.
+	resolvedName := w.resolveAgentName(paneID)
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	reservation, exists := w.activeReservations[paneID]
 	if !exists {
-		agentName := w.agentName
-		if agentName == "" {
-			agentName = sessionName + "_" + paneID
+		if resolvedName == "" {
+			// No registered identity yet and no legacy fallback — skip this
+			// reservation attempt. The pane will be retried on the next
+			// poll cycle once its identity file is written.
+			if w.debug {
+				log.Printf("[FileReservationWatcher] Skipping pane %s in session %s: no registered Agent Mail identity yet",
+					paneID, sessionName)
+			}
+			return "", nil
 		}
 		reservation = &PaneReservation{
 			PaneID:       paneID,
-			AgentName:    agentName,
+			AgentName:    resolvedName,
 			LastActivity: now,
 			LastOutput:   output,
 		}
 		w.activeReservations[paneID] = reservation
+	} else if resolvedName != "" && reservation.AgentName != resolvedName {
+		// Identity was (re)registered after a previous reservation was
+		// created under a fallback name; adopt the canonical value going
+		// forward so future calls carry the right agent_name.
+		if w.debug {
+			log.Printf("[FileReservationWatcher] Updating agent name for pane %s: %q -> %q",
+				paneID, reservation.AgentName, resolvedName)
+		}
+		reservation.AgentName = resolvedName
 	}
 
 	existingFiles := make(map[string]bool, len(reservation.Files))
