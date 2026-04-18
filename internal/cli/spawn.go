@@ -3316,7 +3316,38 @@ func fetchRecoveryInbox(ctx context.Context, client recoveryMailClient, projectK
 		}
 		lastErr = err
 	}
+	// #108: on a fresh project with no registered agents yet, every
+	// candidate resolves to "agent not found" — which is the expected
+	// empty-inbox state, not a warning-worthy failure. Treat it as an
+	// empty inbox so `ntm spawn` doesn't print an alarming "Recovery
+	// context: agent mail: fetch inbox: ... Agent '...' not found" line
+	// on first-run. Real fetch failures (network, auth, server error)
+	// still surface normally.
+	if isRecoveryEmptyInboxError(lastErr) {
+		return nil, "", nil
+	}
 	return nil, "", lastErr
+}
+
+// isRecoveryEmptyInboxError reports whether err indicates that the
+// recovery-inbox fetch failed because the target agent (or the
+// project's agent list) simply doesn't exist yet. On a brand-new
+// project, that is the expected first-run state, not an error worth
+// warning the user about.
+func isRecoveryEmptyInboxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, agentmail.ErrAgentNotRegistered) ||
+		errors.Is(err, agentmail.ErrNotFound) {
+		return true
+	}
+	// Fallback string match for server responses that pre-date the
+	// typed-error mapping (or come back through a wrapper that eats
+	// the sentinel).
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "has no registered agents") ||
+		(strings.Contains(msg, "agent") && strings.Contains(msg, "not found"))
 }
 
 func listRecoveryReservations(ctx context.Context, client recoveryMailClient, projectKey, sessionName, agentName string) ([]agentmail.FileReservation, string, error) {

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,71 @@ func TestFetchRecoveryInbox_ReturnsEffectiveFallbackAgentName(t *testing.T) {
 	}
 	if got := strings.Join(stub.fetchInboxAgents, ","); got != "GreenCastle,session-1" {
 		t.Fatalf("expected fetch order GreenCastle then session-1, got %q", got)
+	}
+}
+
+func TestFetchRecoveryInbox_FreshProjectAgentNotFoundIsNotAnError(t *testing.T) {
+	// Regression for #108: on a brand-new project with no registered
+	// agents, every candidate resolves to "agent not found" — which is
+	// the expected empty-inbox state. The caller should get (nil, "",
+	// nil), not a warning-worthy error.
+	typedErr := fmt.Errorf("%w: Agent 'platypus' not found. Project has no registered agents yet.", agentmail.ErrNotFound)
+	stub := &recoveryMailStub{
+		inboxErrByAgent: map[string]error{
+			"platypus": typedErr,
+		},
+	}
+
+	inbox, effectiveAgentName, err := fetchRecoveryInbox(context.Background(), stub, "/tmp/project", "platypus", "")
+	if err != nil {
+		t.Fatalf("fresh-project agent-not-found must resolve to empty inbox, got err=%v", err)
+	}
+	if len(inbox) != 0 {
+		t.Fatalf("expected empty inbox, got %#v", inbox)
+	}
+	if effectiveAgentName != "" {
+		t.Fatalf("expected empty effective agent name on fresh project, got %q", effectiveAgentName)
+	}
+}
+
+func TestFetchRecoveryInbox_RealFailuresStillPropagate(t *testing.T) {
+	// Make sure the #108 filter doesn't accidentally swallow real
+	// transport / auth / server errors that are not "agent not found".
+	stub := &recoveryMailStub{
+		inboxErrByAgent: map[string]error{
+			"session-1": agentmail.ErrServerUnavailable,
+		},
+	}
+
+	_, _, err := fetchRecoveryInbox(context.Background(), stub, "/tmp/project", "session-1", "")
+	if err == nil {
+		t.Fatalf("expected server-unavailable error to propagate, got nil")
+	}
+	if !errors.Is(err, agentmail.ErrServerUnavailable) {
+		t.Fatalf("expected wrapped ErrServerUnavailable, got %v", err)
+	}
+}
+
+func TestIsRecoveryEmptyInboxError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"ErrAgentNotRegistered", agentmail.ErrAgentNotRegistered, true},
+		{"ErrNotFound", agentmail.ErrNotFound, true},
+		{"wrapped agent-not-registered", fmt.Errorf("wrap: %w", agentmail.ErrAgentNotRegistered), true},
+		{"plain agent not found text", errors.New("tool error: Agent 'foo' not found"), true},
+		{"has no registered agents text", errors.New("Project 'x' has no registered agents yet"), true},
+		{"server unavailable", agentmail.ErrServerUnavailable, false},
+		{"generic error", errors.New("something blew up"), false},
+	}
+
+	for _, tc := range cases {
+		if got := isRecoveryEmptyInboxError(tc.err); got != tc.want {
+			t.Errorf("%s: isRecoveryEmptyInboxError(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
 	}
 }
 
