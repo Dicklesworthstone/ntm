@@ -3255,6 +3255,18 @@ func loadRecoveryMessages(ctx context.Context, sessionName, workingDir string) (
 		return nil, nil, nil, fmt.Errorf("fetch inbox: %w", err)
 	}
 
+	// #108: `fetchRecoveryInbox` signals "fresh project, no registered
+	// agents yet" by returning `(nil, "", nil)` — silenced empty-state.
+	// In that case the reservation-transfer and reservation-list calls
+	// below would hit the same "agent not found" response from the
+	// server (because the agent truly doesn't exist), and the transfer
+	// path would surface that as a `Reservation transfer:` warning
+	// rather than silencing it — trading one fresh-project warning for
+	// another. Short-circuit the whole bundle instead.
+	if effectiveAgentName == "" && len(inbox) == 0 {
+		return nil, nil, nil, nil
+	}
+
 	var msgs []RecoveryMessage
 	for _, m := range inbox {
 		msgs = append(msgs, RecoveryMessage{
