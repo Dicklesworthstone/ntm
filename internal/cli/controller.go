@@ -47,18 +47,32 @@ Current agents in this session:
 Your role is to coordinate work among the agents, prevent conflicts, and ensure quality.
 
 Key responsibilities:
-1. Monitor agent progress using ntm commands (ntm status, ntm view)
+1. Monitor agent progress using ntm's machine-readable --robot-* commands
 2. Detect and resolve conflicts between agents working on related code
 3. Ensure comprehensive test coverage
 4. Track overall progress toward session goals
 
-Available coordination commands:
-- ntm status {{.Session}} - Check session state
-- ntm view {{.Session}} - View agent outputs
-- ntm send {{.Session}} --panes=N --msg="..." - Send targeted messages
-- ntm interrupt {{.Session}} - Stop all agents if needed
+Available coordination commands (prefer --robot-* for structured state; avoid interactive TUIs):
 
-Start by reviewing the current state of the session.`
+State inspection (read-only, safe to call in a loop; pass SESSION as the flag value):
+- ntm --robot-snapshot                                     - JSON snapshot of all sessions, agents, work, and health
+- ntm --robot-status                                       - Tmux sessions, panes, and agent states (start here)
+- ntm --robot-activity={{.Session}}                        - Per-agent activity states (idle/busy/error)
+- ntm --robot-tail={{.Session}} --panes=N --lines=50       - Capture recent output from pane N
+- ntm --robot-attention --attention-session={{.Session}}   - Block until an agent needs attention (monitor loop)
+- ntm --robot-mail-check --mail-project={{.Session}}       - Check Agent Mail inbox for pending messages
+
+Actions (mutating; use deliberately):
+- ntm send {{.Session}} --pane N "message"                 - Send message to a single pane (positional arg, no --msg flag)
+- ntm send {{.Session}} --panes=1,2 "message"              - Send to multiple panes
+- ntm --robot-send={{.Session}} --panes=N --msg="..."      - Robot equivalent with structured JSON response
+- ntm --robot-interrupt={{.Session}} --panes=N             - Interrupt a pane without killing it
+
+Do NOT use 'ntm view' from controller context — it changes the human operator's visual layout
+and does not return output to you. Use --robot-tail or --robot-snapshot for inspection.
+
+Start by calling ntm --robot-snapshot to survey the current state, then ntm --robot-attention
+to wait for the first event that needs coordination.`
 
 func init() {
 	// Register sessions.controller command

@@ -42,11 +42,18 @@ func TestResolveControllerPrompt_DefaultTemplate(t *testing.T) {
 	}
 
 	// Verify the prompt mentions coordination commands with session name
-	if !strings.Contains(content, "ntm status myproject") {
-		t.Error("prompt should contain 'ntm status myproject'")
+	if !strings.Contains(content, "--robot-status-session=myproject") {
+		t.Error("prompt should contain '--robot-status-session=myproject'")
 	}
-	if !strings.Contains(content, "ntm view myproject") {
-		t.Error("prompt should contain 'ntm view myproject'")
+	if !strings.Contains(content, "ntm send myproject --pane") {
+		t.Error("prompt should contain 'ntm send myproject --pane'")
+	}
+	// Verify stale/disruptive commands are NOT in the prompt
+	if strings.Contains(content, "ntm view myproject") {
+		t.Error("prompt should NOT contain 'ntm view myproject' (changes human layout; use --robot-tail)")
+	}
+	if strings.Contains(content, "--panes=N --msg=") {
+		t.Error("prompt should NOT contain '--panes=N --msg=' (invalid flag for ntm send)")
 	}
 }
 
@@ -456,14 +463,26 @@ func TestDefaultControllerPromptContent(t *testing.T) {
 	if !strings.Contains(defaultControllerPrompt, "coordinate") {
 		t.Error("default prompt should mention coordination")
 	}
-	if !strings.Contains(defaultControllerPrompt, "ntm status") {
-		t.Error("default prompt should mention ntm status command")
+	// Prefer structured --robot-* commands over interactive TUIs (fix: #109)
+	if !strings.Contains(defaultControllerPrompt, "--robot-snapshot") {
+		t.Error("default prompt should mention --robot-snapshot for structured state")
 	}
-	if !strings.Contains(defaultControllerPrompt, "ntm view") {
-		t.Error("default prompt should mention ntm view command")
+	if !strings.Contains(defaultControllerPrompt, "--robot-attention") {
+		t.Error("default prompt should mention --robot-attention for event waiting")
+	}
+	if !strings.Contains(defaultControllerPrompt, "--robot-tail") {
+		t.Error("default prompt should mention --robot-tail for pane output inspection")
 	}
 	if !strings.Contains(defaultControllerPrompt, "ntm send") {
 		t.Error("default prompt should mention ntm send command")
+	}
+	// Verify the stale/disruptive examples from issue #109 are NOT present
+	if strings.Contains(defaultControllerPrompt, "--panes=N --msg=") {
+		t.Error("default prompt must not use invalid --msg flag for 'ntm send' (issue #109)")
+	}
+	// 'ntm view' changes the human operator's tmux layout; controller agents must not run it
+	if strings.Contains(defaultControllerPrompt, "- ntm view") {
+		t.Error("default prompt must not recommend 'ntm view' to the controller agent (issue #109)")
 	}
 }
 
