@@ -60,7 +60,7 @@ State inspection (read-only, safe to call in a loop; pass SESSION as the flag va
 - ntm --robot-activity={{.Session}}                        - Per-agent activity states (idle/busy/error)
 - ntm --robot-tail={{.Session}} --panes=N --lines=50       - Capture recent output from pane N
 - ntm --robot-attention --attention-session={{.Session}}   - Block until an agent needs attention (monitor loop)
-- ntm --robot-mail-check --mail-project={{.Session}}       - Check Agent Mail inbox for pending messages
+- ntm mail inbox {{.Session}} --json                       - Check Agent Mail inbox for pending messages
 
 Actions (mutating; use deliberately):
 - ntm send {{.Session}} --pane N "message"                 - Send message to a single pane (the message is a positional argument)
