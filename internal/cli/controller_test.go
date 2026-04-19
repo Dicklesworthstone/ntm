@@ -53,14 +53,13 @@ func TestResolveControllerPrompt_DefaultTemplate(t *testing.T) {
 		t.Error("prompt should NOT contain 'ntm view myproject' (changes human layout; use --robot-tail)")
 	}
 	// The bug in #109: the `ntm send` SUBCOMMAND does not accept --msg. Only
-	// the --robot-send GLOBAL flag does. So the broken combination was
-	// "ntm send <session> --panes=... --msg=...". Guard against that shape.
-	if strings.Contains(content, "ntm send myproject --panes") && strings.Contains(content, "--msg") {
-		// Check whether any line contains both `ntm send myproject` and `--msg`
-		for _, line := range strings.Split(content, "\n") {
-			if strings.Contains(line, "ntm send myproject") && strings.Contains(line, "--msg") {
-				t.Errorf("prompt line mixes 'ntm send' subcommand with invalid --msg flag: %q", line)
-			}
+	// the --robot-send GLOBAL flag does. Walk the rendered prompt line-by-line
+	// and fail if any single line mixes the subcommand with --msg — this
+	// catches the exact regression shape while still allowing the legitimate
+	// `ntm --robot-send=... --msg=...` example on its own line.
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "ntm send myproject") && strings.Contains(line, "--msg") {
+			t.Errorf("prompt line mixes 'ntm send' subcommand with invalid --msg flag: %q", line)
 		}
 	}
 }
