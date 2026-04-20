@@ -289,9 +289,9 @@ func Restore(snapshotPath string) error {
 }
 
 // removeIfEmptyObject deletes `path` iff it parses as an empty JSON object
-// `{}`. Any other content (parsed map has entries, non-JSON bytes, read
-// error) is a no-op return-nil so we never destroy content that may matter
-// to the user.
+// `{}`. Any other content — parsed map has entries, non-JSON bytes, JSON
+// `null` or non-object JSON, read error — is a no-op return-nil so we never
+// destroy content that may matter to the user.
 func removeIfEmptyObject(path string) error {
 	// #nosec G304 -- caller-supplied path (library function).
 	raw, err := os.ReadFile(path)
@@ -304,6 +304,14 @@ func removeIfEmptyObject(path string) error {
 	var parsed map[string]any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil //nolint:nilerr // content is non-JSON or structured differently — leave it alone.
+	}
+	// JSON `null` unmarshals into a map as nil (not an error, not an empty
+	// map). Treat that as "some non-object content we don't understand" and
+	// leave it alone, same as non-JSON bytes. Only an actually-empty object
+	// `{}` — which json.Unmarshal represents as a non-nil zero-length map —
+	// is safe to delete.
+	if parsed == nil {
+		return nil
 	}
 	if len(parsed) != 0 {
 		return nil

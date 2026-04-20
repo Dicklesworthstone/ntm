@@ -409,3 +409,35 @@ func TestRemoveIfEmptyObjectNoOpsOnNonJSON(t *testing.T) {
 		t.Errorf("non-JSON file should not have been removed: %v", err)
 	}
 }
+
+// JSON `null` unmarshals into a map as nil with len==0, which looks
+// deceptively like an empty object. removeIfEmptyObject must NOT delete
+// such a file — "null" is not `{}`, it's just unusual content we don't
+// understand.
+func TestRemoveIfEmptyObjectNoOpsOnJSONNull(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("null"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIfEmptyObject(path); err != nil {
+		t.Fatalf("removeIfEmptyObject: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("'null' content file should not have been removed: %v", err)
+	}
+}
+
+func TestRemoveIfEmptyObjectNoOpsOnJSONArray(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIfEmptyObject(path); err != nil {
+		t.Fatalf("removeIfEmptyObject: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("'[]' content file should not have been removed: %v", err)
+	}
+}
