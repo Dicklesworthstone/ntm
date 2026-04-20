@@ -279,3 +279,133 @@ func TestRestoreMissingSnapshotIsNoOp(t *testing.T) {
 		t.Errorf("Restore on absent snapshot should be a no-op, got %v", err)
 	}
 }
+
+func TestSnapshotRestoreWhenNoSettingsFileExistedPreSwarm(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	snap := filepath.Join(dir, "pre.json")
+
+	// Pre-swarm: user has no settings.json at all.
+	if _, err := os.Stat(settings); !os.IsNotExist(err) {
+		t.Fatalf("expected no settings.json pre-snapshot, got stat err=%v", err)
+	}
+	if err := Snapshot(settings, snap); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// Swarm creates settings.json with model set, as Claude Code does on
+	// --model invocations.
+	if err := WriteModel(settings, "sonnet-4.6"); err != nil {
+		t.Fatalf("swarm WriteModel: %v", err)
+	}
+	if _, err := os.Stat(settings); err != nil {
+		t.Fatalf("swarm should have created settings.json: %v", err)
+	}
+
+	if err := Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	// Post-restore: settings.json should be gone entirely — matches the
+	// pre-swarm state where no file existed.
+	if _, err := os.Stat(settings); !os.IsNotExist(err) {
+		t.Errorf("expected settings.json removed post-restore, got stat err=%v", err)
+	}
+
+	// Snapshot should also be consumed.
+	if _, err := os.Stat(snap); !os.IsNotExist(err) {
+		t.Errorf("expected snapshot removed post-restore, got stat err=%v", err)
+	}
+}
+
+func TestRestoreKeepsSettingsWithOtherFieldsWhenUserHadNoFile(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	snap := filepath.Join(dir, "pre.json")
+
+	// Pre-swarm: no settings.json.
+	if err := Snapshot(settings, snap); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// Swarm (or something else) creates settings.json with model AND some
+	// other fields (Claude Code might persist theme / MCP config changes
+	// during the swarm). We should not nuke those.
+	if err := os.WriteFile(settings, []byte(`{"model":"sonnet-4.6","theme":"dark","mcp_servers":["a","b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	// Post-restore: settings.json still exists (we don't know the provenance
+	// of `theme` / `mcp_servers`), but `model` is gone.
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatalf("settings should still exist: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, present := got["model"]; present {
+		t.Errorf("model should be removed, got: %v", got["model"])
+	}
+	if got["theme"] != "dark" {
+		t.Errorf("theme should be preserved, got: %v", got["theme"])
+	}
+	if servers, ok := got["mcp_servers"].([]any); !ok || len(servers) != 2 {
+		t.Errorf("mcp_servers should be preserved, got: %v", got["mcp_servers"])
+	}
+}
+
+func TestRemoveIfEmptyObjectNoOpsOnNonEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIfEmptyObject(path); err != nil {
+		t.Fatalf("removeIfEmptyObject: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("non-empty file should not have been removed: %v", err)
+	}
+}
+
+func TestRemoveIfEmptyObjectRemovesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIfEmptyObject(path); err != nil {
+		t.Fatalf("removeIfEmptyObject: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("empty file should have been removed, got stat err=%v", err)
+	}
+}
+
+func TestRemoveIfEmptyObjectNoOpsOnMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "absent.json")
+	if err := removeIfEmptyObject(path); err != nil {
+		t.Errorf("absent path should not error, got: %v", err)
+	}
+}
+
+func TestRemoveIfEmptyObjectNoOpsOnNonJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIfEmptyObject(path); err != nil {
+		t.Fatalf("removeIfEmptyObject: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("non-JSON file should not have been removed: %v", err)
+	}
+}

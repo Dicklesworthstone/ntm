@@ -36,6 +36,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SettingsFilename is the Claude Code CLI's settings file inside the
@@ -51,10 +52,8 @@ const ModelKey = "model"
 // CLI does (see coding_agent_usage_tracker#6 for the upstream-CLI contract).
 // Returns the path and whether it was resolved from the env var override.
 func ResolveClaudeSettingsPath() (string, bool, error) {
-	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
-		if trimmed := trimSpace(envDir); trimmed != "" {
-			return filepath.Join(trimmed, SettingsFilename), true, nil
-		}
+	if trimmed := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); trimmed != "" {
+		return filepath.Join(trimmed, SettingsFilename), true, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -73,7 +72,10 @@ func ResolveClaudeSettingsPath() (string, bool, error) {
 // both tell Restore that the user never had a persistent selection so
 // writing one now would be a novel change rather than a restoration.
 func ReadModel(settingsPath string) (string, bool, error) {
-	raw, err := os.ReadFile(settingsPath) // #nosec G304 — path comes from ResolveClaudeSettingsPath
+	// #nosec G304 -- caller-supplied path; this is a library function and
+	// trusts the caller to pass a settings-file path they chose (typically
+	// via ResolveClaudeSettingsPath).
+	raw, err := os.ReadFile(settingsPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", false, nil
@@ -108,7 +110,8 @@ func ReadModel(settingsPath string) (string, bool, error) {
 // rather than written as "". If that leaves the settings object empty and
 // the file did not exist to begin with, the empty file is not created.
 func WriteModel(settingsPath, model string) error {
-	raw, err := os.ReadFile(settingsPath) // #nosec G304
+	// #nosec G304 -- caller-supplied path (library function).
+	raw, err := os.ReadFile(settingsPath)
 	existed := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read %s: %w", settingsPath, err)
@@ -171,6 +174,17 @@ func WriteModel(settingsPath, model string) error {
 // It always writes snapshotPath (even when no model is set) so Restore can
 // distinguish "user had no model set" from "snapshot never ran."
 //
+// The snapshot also records whether settings.json existed at all pre-swarm.
+// That distinguishes three pre-swarm user states:
+//
+//   - No settings.json file at all         → SettingsFileExisted=false, HadModelField=false
+//   - settings.json exists, no `model`     → SettingsFileExisted=true,  HadModelField=false
+//   - settings.json exists, `model` set    → SettingsFileExisted=true,  HadModelField=true
+//
+// Restore needs the distinction so it can choose between "remove the
+// settings.json the swarm caused to materialize" and "leave settings.json
+// alone, just delete the model field."
+//
 // The snapshot JSON is stable and small; multiple swarms can read/write
 // their own snapshots concurrently as long as they use distinct paths.
 func Snapshot(settingsPath, snapshotPath string) error {
@@ -178,11 +192,14 @@ func Snapshot(settingsPath, snapshotPath string) error {
 	if err != nil {
 		return fmt.Errorf("read pre-launch model: %w", err)
 	}
+	_, statErr := os.Stat(settingsPath)
+	settingsFileExisted := statErr == nil
 	snap := snapshotFile{
-		Version:       snapshotFormatVersion,
-		SettingsPath:  settingsPath,
-		Model:         model,
-		HadModelField: hasModel,
+		Version:             snapshotFormatVersion,
+		SettingsPath:        settingsPath,
+		Model:               model,
+		HadModelField:       hasModel,
+		SettingsFileExisted: settingsFileExisted,
 	}
 	encoded, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -225,7 +242,8 @@ func Snapshot(settingsPath, snapshotPath string) error {
 // no-op rather than an error. This makes it safe to wire into every
 // shutdown code path (graceful, forced, signal) without coordination.
 func Restore(snapshotPath string) error {
-	raw, err := os.ReadFile(snapshotPath) // #nosec G304
+	// #nosec G304 -- caller-supplied snapshot path (library function).
+	raw, err := os.ReadFile(snapshotPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -240,15 +258,27 @@ func Restore(snapshotPath string) error {
 		return fmt.Errorf("snapshot missing settings_path; refusing to guess")
 	}
 
-	if snap.HadModelField {
+	switch {
+	case snap.HadModelField:
+		// User had a persisted model pre-swarm — put it back.
 		if err := WriteModel(snap.SettingsPath, snap.Model); err != nil {
 			return fmt.Errorf("restore model: %w", err)
 		}
-	} else {
-		// The user had no persistent model selection before the swarm, so
-		// "restoring" means removing whatever value the swarm wrote.
+	default:
+		// User had no persistent model selection — remove whatever the swarm wrote.
 		if err := WriteModel(snap.SettingsPath, ""); err != nil {
 			return fmt.Errorf("clear model: %w", err)
+		}
+		// If the user had NO settings.json pre-swarm but one exists now,
+		// and clearing the model field reduced it to an empty object `{}`,
+		// remove the file so the user's filesystem state matches pre-swarm.
+		// (If the file now has other fields — Claude Code or the swarm
+		// wrote them — we leave it alone rather than deleting content we
+		// don't understand the provenance of.)
+		if !snap.SettingsFileExisted {
+			if err := removeIfEmptyObject(snap.SettingsPath); err != nil {
+				return fmt.Errorf("remove empty post-restore settings: %w", err)
+			}
 		}
 	}
 
@@ -258,32 +288,38 @@ func Restore(snapshotPath string) error {
 	return nil
 }
 
+// removeIfEmptyObject deletes `path` iff it parses as an empty JSON object
+// `{}`. Any other content (parsed map has entries, non-JSON bytes, read
+// error) is a no-op return-nil so we never destroy content that may matter
+// to the user.
+func removeIfEmptyObject(path string) error {
+	// #nosec G304 -- caller-supplied path (library function).
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return nil //nolint:nilerr // intentional: non-structural errors on this inspection path are not fatal to Restore.
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil //nolint:nilerr // content is non-JSON or structured differently — leave it alone.
+	}
+	if len(parsed) != 0 {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	return nil
+}
+
 const snapshotFormatVersion = 1
 
 type snapshotFile struct {
-	Version       int    `json:"version"`
-	SettingsPath  string `json:"settings_path"`
-	Model         string `json:"model"`
-	HadModelField bool   `json:"had_model_field"`
-}
-
-// trimSpace without pulling strings for a single short util — keeps the
-// package stdlib-only except for encoding/json which is already required.
-func trimSpace(s string) string {
-	i, j := 0, len(s)
-	for i < j && isSpace(s[i]) {
-		i++
-	}
-	for j > i && isSpace(s[j-1]) {
-		j--
-	}
-	return s[i:j]
-}
-
-func isSpace(c byte) bool {
-	switch c {
-	case ' ', '\t', '\n', '\r', '\v', '\f':
-		return true
-	}
-	return false
+	Version             int    `json:"version"`
+	SettingsPath        string `json:"settings_path"`
+	Model               string `json:"model"`
+	HadModelField       bool   `json:"had_model_field"`
+	SettingsFileExisted bool   `json:"settings_file_existed"`
 }
