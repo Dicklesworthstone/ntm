@@ -441,3 +441,40 @@ func TestRemoveIfEmptyObjectNoOpsOnJSONArray(t *testing.T) {
 		t.Errorf("'[]' content file should not have been removed: %v", err)
 	}
 }
+
+// Adversarial: settings.json had a model pre-snapshot, but something
+// (rogue swarm agent, external process) deleted the file entirely
+// before Restore ran. Restore must put the model back — recreating
+// the file with at least the model field. Other sibling fields the
+// user had (theme, mcp_servers, etc.) are unrecoverable from this
+// snapshot since Snapshot only captures the model value, but at
+// minimum the Claude Code model selection itself must come back.
+func TestRestoreRecreatesDeletedSettingsFile(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	snap := filepath.Join(dir, "snap.json")
+
+	if err := os.WriteFile(settings, []byte(`{"model":"opus-4.7","theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Snapshot(settings, snap); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// Adversarial: something removed the settings file entirely.
+	if err := os.Remove(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	model, hasModel, err := ReadModel(settings)
+	if err != nil {
+		t.Fatalf("ReadModel: %v", err)
+	}
+	if !hasModel || model != "opus-4.7" {
+		t.Errorf("expected (opus-4.7, true), got (%q, %t)", model, hasModel)
+	}
+}
