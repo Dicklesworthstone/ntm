@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/claudeconfig"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -22,6 +23,123 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
+
+// ccSwarmSessionPatterns lists the tmux session-name globs NTM uses for
+// Claude Code swarm panes. It is the authoritative list used both for
+// pre-launch reconciliation (a stale Claude-model snapshot with no CC panes
+// alive is safe to restore) and for post-shutdown "is this the last CC
+// swarm?" checks (if no CC panes survive the stop, it's safe to restore).
+var ccSwarmSessionPatterns = []string{"cc_agents_*"}
+
+// snapshotClaudeModelForSwarm captures the user's pre-launch Claude Code
+// model selection into a durable snapshot file iff the swarm plan includes
+// at least one CC agent. Non-fatal: failure is logged but does not abort
+// the swarm launch (the feature degrades gracefully — worst case the
+// post-swarm restore is a no-op and the user's pre-launch model stays on
+// whatever the swarm ran with, which is the status quo before this feature).
+//
+// Returns the snapshot path on success (so shutdown paths can Restore from
+// the same location), or "" if snapshotting was skipped or failed.
+func snapshotClaudeModelForSwarm(plan *swarm.SwarmPlan, logger *slog.Logger) string {
+	if plan == nil || plan.TotalCC == 0 {
+		return ""
+	}
+	settingsPath, _, err := claudeconfig.ResolveClaudeSettingsPath()
+	if err != nil {
+		logger.Warn("[swarm] resolve_claude_settings_path_failed", "error", err)
+		return ""
+	}
+	snapshotPath, err := claudeconfig.ResolveSnapshotPath()
+	if err != nil {
+		logger.Warn("[swarm] resolve_snapshot_path_failed", "error", err)
+		return ""
+	}
+	created, err := claudeconfig.EnsureSnapshot(settingsPath, snapshotPath)
+	if err != nil {
+		logger.Warn("[swarm] snapshot_claude_model_failed",
+			"settings_path", settingsPath,
+			"snapshot_path", snapshotPath,
+			"error", err)
+		return snapshotPath // return path so Restore can still try later
+	}
+	if created {
+		logger.Info("[swarm] claude_model_snapshot_saved",
+			"settings_path", settingsPath,
+			"snapshot_path", snapshotPath)
+	} else {
+		logger.Debug("[swarm] claude_model_snapshot_already_present",
+			"snapshot_path", snapshotPath)
+	}
+	return snapshotPath
+}
+
+// reconcileStaleClaudeModelSnapshot restores the user's pre-launch Claude
+// Code model if a snapshot file is present but no CC swarm sessions are
+// still alive. This covers the "swarm crashed or was killed without running
+// `ntm swarm stop`" path — the next `ntm swarm ...` invocation will put the
+// original model back before doing anything else.
+//
+// Safe to call unconditionally; all branches are no-ops when there's no
+// snapshot or when CC sessions are still running.
+func reconcileStaleClaudeModelSnapshot(logger *slog.Logger) {
+	snapshotPath, err := claudeconfig.ResolveSnapshotPath()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(snapshotPath); err != nil {
+		return // no snapshot present → nothing to reconcile
+	}
+	// A snapshot exists. Only restore if there are no surviving CC swarm
+	// sessions — otherwise we'd clobber a running swarm's model injection.
+	alive, err := discoverSwarmSessions(ccSwarmSessionPatterns)
+	if err != nil {
+		logger.Warn("[swarm] reconcile_discover_sessions_failed", "error", err)
+		return
+	}
+	if len(alive) > 0 {
+		return
+	}
+	if err := claudeconfig.Restore(snapshotPath); err != nil {
+		logger.Warn("[swarm] reconcile_restore_failed",
+			"snapshot_path", snapshotPath,
+			"error", err)
+		return
+	}
+	logger.Info("[swarm] reconciled_stale_claude_model_snapshot",
+		"snapshot_path", snapshotPath)
+}
+
+// restoreClaudeModelAfterSwarmStop restores the user's pre-launch Claude
+// Code model value iff no CC swarm sessions remain alive after a stop.
+// Called from `ntm swarm stop` after GracefulShutdown completes. Idempotent
+// and safe when no snapshot exists.
+func restoreClaudeModelAfterSwarmStop(logger *slog.Logger) {
+	snapshotPath, err := claudeconfig.ResolveSnapshotPath()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(snapshotPath); err != nil {
+		return
+	}
+	alive, err := discoverSwarmSessions(ccSwarmSessionPatterns)
+	if err != nil {
+		logger.Warn("[swarm] restore_discover_sessions_failed", "error", err)
+		return
+	}
+	if len(alive) > 0 {
+		logger.Info("[swarm] claude_model_restore_deferred_cc_sessions_alive",
+			"remaining", len(alive))
+		return
+	}
+	if err := claudeconfig.Restore(snapshotPath); err != nil {
+		logger.Warn("[swarm] claude_model_restore_failed",
+			"snapshot_path", snapshotPath,
+			"error", err)
+		return
+	}
+	logger.Info("[swarm] claude_model_restored",
+		"snapshot_path", snapshotPath)
+}
 
 func newSwarmCmd() *cobra.Command {
 	var (
@@ -294,6 +412,16 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		Logger:              logger,
 		StaggerDelay:        staggerDelay,
 	}
+
+	// Reconcile any stale Claude Code model snapshot from a previous swarm
+	// that crashed / was killed before its shutdown path ran. Safe no-op when
+	// there's nothing to reconcile (issue #110).
+	reconcileStaleClaudeModelSnapshot(logger)
+
+	// Snapshot the user's pre-launch Claude Code model selection so that
+	// shutdown paths (graceful stop, crash recovery, next-launch reconcile)
+	// can restore it. Non-fatal on failure (issue #110).
+	_ = snapshotClaudeModelForSwarm(plan, logger)
 
 	execResult, err := executor.Execute(ctx, plan, initialPrompt)
 	if err != nil {
@@ -742,6 +870,11 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("shutdown failed: %w", err)
 			}
+
+			// Restore the user's pre-launch Claude Code model if no CC swarm
+			// sessions remain alive. Idempotent and safe when no snapshot
+			// was ever taken (issue #110).
+			restoreClaudeModelAfterSwarmStop(slog.Default())
 
 			// Output results
 			if jsonOutput {

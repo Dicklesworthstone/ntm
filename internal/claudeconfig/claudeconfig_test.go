@@ -521,3 +521,130 @@ func TestRestoreRecreatesDeletedSettingsFile(t *testing.T) {
 		t.Errorf("expected (opus-4.7, true), got (%q, %t)", model, hasModel)
 	}
 }
+
+func TestResolveSnapshotPathHonorsXDGStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/tmp/xdg-state")
+	got, err := ResolveSnapshotPath()
+	if err != nil {
+		t.Fatalf("ResolveSnapshotPath: %v", err)
+	}
+	if want := filepath.Join("/tmp/xdg-state", "ntm", SnapshotFilename); got != want {
+		t.Errorf("path = %q; want %q", got, want)
+	}
+}
+
+func TestResolveSnapshotPathFallsBackToLocalState(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	got, err := ResolveSnapshotPath()
+	if err != nil {
+		t.Fatalf("ResolveSnapshotPath: %v", err)
+	}
+	home, _ := os.UserHomeDir()
+	if want := filepath.Join(home, ".local", "state", "ntm", SnapshotFilename); got != want {
+		t.Errorf("path = %q; want %q", got, want)
+	}
+}
+
+func TestEnsureSnapshotCreatesWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	snap := filepath.Join(dir, "snap", "pre-swarm-claude-model.json")
+	if err := os.WriteFile(settings, []byte(`{"model":"opus-4.7"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := EnsureSnapshot(settings, snap)
+	if err != nil {
+		t.Fatalf("EnsureSnapshot: %v", err)
+	}
+	if !created {
+		t.Errorf("created = false; want true on fresh run")
+	}
+	if _, err := os.Stat(snap); err != nil {
+		t.Errorf("snapshot file missing after EnsureSnapshot: %v", err)
+	}
+}
+
+func TestEnsureSnapshotSkipsWhenAlreadyPresent(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	snap := filepath.Join(dir, "pre-swarm-claude-model.json")
+
+	// First swarm captured pre-launch state ("opus-4.7").
+	if err := os.WriteFile(settings, []byte(`{"model":"opus-4.7"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureSnapshot(settings, snap); err != nil {
+		t.Fatalf("first EnsureSnapshot: %v", err)
+	}
+
+	// Mid-run, the first swarm overwrote model -> "sonnet-4.6".
+	if err := os.WriteFile(settings, []byte(`{"model":"sonnet-4.6"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second overlapping swarm calls EnsureSnapshot; must NOT clobber the
+	// original snapshot with the mid-run value.
+	created, err := EnsureSnapshot(settings, snap)
+	if err != nil {
+		t.Fatalf("second EnsureSnapshot: %v", err)
+	}
+	if created {
+		t.Errorf("created = true; want false when snapshot already present")
+	}
+
+	// Restore should put back "opus-4.7", not "sonnet-4.6".
+	if err := Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	model, hasModel, err := ReadModel(settings)
+	if err != nil {
+		t.Fatalf("ReadModel: %v", err)
+	}
+	if !hasModel || model != "opus-4.7" {
+		t.Errorf("Restore wrote %q; want \"opus-4.7\" (overlapping-swarm scenario)", model)
+	}
+}
+
+func TestEnsureSnapshotThenRestoreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	snap := filepath.Join(dir, "pre-swarm-claude-model.json")
+
+	// Pre-swarm: user has haiku-4.5 + theme.
+	if err := os.WriteFile(settings, []byte(`{"model":"haiku-4.5","theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swarm launch: capture snapshot, then swarm sets model -> sonnet.
+	if _, err := EnsureSnapshot(settings, snap); err != nil {
+		t.Fatalf("EnsureSnapshot: %v", err)
+	}
+	if err := WriteModel(settings, "sonnet-4.6"); err != nil {
+		t.Fatalf("mid-run WriteModel: %v", err)
+	}
+
+	// Swarm end: restore.
+	if err := Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "haiku-4.5" {
+		t.Errorf("post-restore model = %v; want haiku-4.5", got["model"])
+	}
+	if got["theme"] != "dark" {
+		t.Errorf("theme lost across snapshot/mutate/restore cycle: %v", got["theme"])
+	}
+
+	// Restore twice is a no-op (snapshot file is gone).
+	if err := Restore(snap); err != nil {
+		t.Errorf("second Restore should be no-op, got: %v", err)
+	}
+}

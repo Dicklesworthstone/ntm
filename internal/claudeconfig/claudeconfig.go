@@ -39,6 +39,62 @@ import (
 	"strings"
 )
 
+// SnapshotFilename is the on-disk name of the pre-swarm model snapshot
+// written by Snapshot() and consumed by Restore(). Exposed as a constant so
+// callers outside the package can reason about the file (e.g. pruning stale
+// snapshots as part of reconciliation without re-opening them).
+const SnapshotFilename = "pre-swarm-claude-model.json"
+
+// ResolveSnapshotPath returns the canonical absolute path for the pre-swarm
+// model snapshot. The path lives under $XDG_STATE_HOME/ntm/ (falling back to
+// ~/.local/state/ntm/ when XDG_STATE_HOME is unset), matching the convention
+// used elsewhere in NTM for persistent per-user state (see pane_identity.go).
+//
+// A single snapshot file is deliberately shared across swarms: there is only
+// one ~/.claude/settings.json file for the user, so only one pre-swarm model
+// value exists to preserve. If a second swarm starts while the first is
+// still running, EnsureSnapshot leaves the existing snapshot alone (the
+// first swarm's Snapshot call already captured the user's pre-any-swarm
+// value; re-snapshotting now would just re-record the running swarm's
+// injected value and lose the original).
+func ResolveSnapshotPath() (string, error) {
+	stateDir := strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
+	if stateDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("locate home dir: %w", err)
+		}
+		stateDir = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateDir, "ntm", SnapshotFilename), nil
+}
+
+// EnsureSnapshot captures the current Claude Code model value into
+// snapshotPath iff no snapshot file already exists. This is the intended
+// pre-swarm entry point for callers: it is safe to invoke once per swarm
+// launch, on every swarm launch, without risking clobbering an earlier
+// swarm's captured pre-launch value.
+//
+// Returns (created, nil) where created=true means a fresh snapshot was
+// written, and created=false means a prior snapshot was already present and
+// left untouched.
+//
+// A non-nil error is returned only for structural failures (disk, JSON).
+// Callers should treat snapshot failures as non-fatal for the swarm launch
+// itself — i.e., log a warning and continue, since an unsnapshotted swarm
+// still works and only degrades the post-run restore behavior.
+func EnsureSnapshot(settingsPath, snapshotPath string) (bool, error) {
+	if _, err := os.Stat(snapshotPath); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat snapshot: %w", err)
+	}
+	if err := Snapshot(settingsPath, snapshotPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SettingsFilename is the Claude Code CLI's settings file inside the
 // CLAUDE_CONFIG_DIR (or ~/.claude by default). Public so tests can override.
 const SettingsFilename = "settings.json"
