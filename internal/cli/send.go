@@ -2842,6 +2842,21 @@ func checkCassDuplicates(session string, inferred bool, prompt string, threshold
 		Threshold: threshold,
 	})
 	if err != nil {
+		// CASS is installed but the user hasn't run `cass index --full`
+		// yet (issue acfs#266). Don't fail the send — the dedup check
+		// is best-effort, and a fresh install can't have any history
+		// to dedup against anyway. Warn the user once and proceed as
+		// if no duplicates were found.
+		if errors.Is(err, cass.ErrNotInitialized) {
+			if !jsonOutput {
+				fmt.Fprintf(os.Stderr,
+					"\033[33mwarning\033[0m: cass is installed but not initialized; "+
+						"skipping dedup check.\n"+
+						"        run \033[1mcass index --full\033[0m once to enable session "+
+						"deduplication on subsequent sends.\n")
+			}
+			return nil
+		}
 		return err
 	}
 

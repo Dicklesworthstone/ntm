@@ -24,7 +24,10 @@ case "$1" in
         exit 0
         ;;
     health)
-        echo '{"status": "healthy", "indexed_sessions": 100, "last_indexed": "2026-01-01T00:00:00Z"}'
+        # Mirror real cass's `health --json` shape: include `healthy`
+        # and `initialized` booleans so callers (e.g. ntm Health())
+        # can distinguish "uninitialized" from "broken." See acfs#266.
+        echo '{"status": "healthy", "healthy": true, "initialized": true, "indexed_sessions": 100, "last_indexed": "2026-01-01T00:00:00Z"}'
         exit 0
         ;;
     search)

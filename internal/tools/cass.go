@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -55,6 +56,18 @@ func (a *CASSAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 }
 
 // Health checks if cass is functioning
+//
+// Distinguishes three failure modes that previously all collapsed
+// into "not responding":
+//
+//   - cass not installed        — binary is not on PATH
+//   - cass installed, not init  — binary is fine, but the user has
+//     not run `cass index --full` yet, so search-backed code paths
+//     (dedup, context injection) fail with exit 3. Reported with
+//     a one-line install hint instead of a misleading "not
+//     responding" message (acfs#266).
+//   - cass at <path> not responding — anything else (process crash,
+//     missing dependencies, etc.).
 func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	start := time.Now()
 
@@ -67,11 +80,13 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 		}, nil
 	}
 
-	// Try health command
+	// Try health command in JSON mode so we can tell "uninitialized"
+	// from "broken" via a structured field instead of guessing from
+	// exit code alone.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "health")
+	cmd := exec.CommandContext(ctx, a.BinaryName(), "health", "--json")
 	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -79,7 +94,49 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	err := cmd.Run()
 	latency := time.Since(start)
 
+	// `cass health --json` may emit a JSON body with `initialized:false`
+	// AND set a non-zero exit code (3 = "no database — run cass index
+	// --full"), so check the JSON before treating the exit code as
+	// fatal.
+	type cassHealth struct {
+		Status      string `json:"status"`
+		Healthy     bool   `json:"healthy"`
+		Initialized bool   `json:"initialized"`
+	}
+	if body := stdout.Bytes(); len(body) > 0 {
+		var parsed cassHealth
+		if jerr := json.Unmarshal(body, &parsed); jerr == nil {
+			if !parsed.Initialized {
+				return &HealthStatus{
+					Healthy:     false,
+					Message:     "cass installed but not initialized (run: cass index --full)",
+					LastChecked: time.Now(),
+					Latency:     latency,
+				}, nil
+			}
+			if !parsed.Healthy && err == nil {
+				return &HealthStatus{
+					Healthy:     false,
+					Message:     fmt.Sprintf("cass reports unhealthy: %s", parsed.Status),
+					LastChecked: time.Now(),
+					Latency:     latency,
+				}, nil
+			}
+		}
+	}
+
 	if err != nil {
+		// Exit code 3 with no parseable JSON body still means
+		// "uninitialized" per cass --help.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			return &HealthStatus{
+				Healthy:     false,
+				Message:     "cass installed but not initialized (run: cass index --full)",
+				LastChecked: time.Now(),
+				Latency:     latency,
+			}, nil
+		}
 		return &HealthStatus{
 			Healthy:     false,
 			Message:     fmt.Sprintf("cass at %s not responding", path),
