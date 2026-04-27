@@ -3,8 +3,8 @@ description: HyperSync (leader-authoritative workspace replication fabric) spec 
 
 documents:
   readme: README.md
-  spec: PROPOSED_HYPERSYNC_SPEC__CODEX.md
-  implementation: PROPOSED_HYPERSYNC_SPEC__OPUS.md
+  spec: docs/planning/PROPOSED_HYPERSYNC_SPEC__CODEX.md
+  implementation: docs/planning/PROPOSED_HYPERSYNC_SPEC__OPUS.md
 
 oracle:
   model: "gpt-5.2-pro"
