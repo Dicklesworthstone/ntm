@@ -274,12 +274,12 @@ func runHealthOnce(session string) error {
 		// failure (e.g. session not found) but still produced a
 		// JSON-shaped report" case — those legitimately had an
 		// empty `OverallStatus` and slipped through the previous
-		// status-only check. Treat as severe (exit 2) to match
-		// the non-JSON SessionNotFoundError handling that returns
-		// a `fmt.Errorf` from `runHealthOnce`'s tail (cobra exits
-		// non-zero on any returned error).
+		// status-only check. Map to exit 1 to match the non-JSON
+		// path's `SessionNotFoundError` handling, which returns a
+		// `fmt.Errorf` and lets cobra exit 1 (the default
+		// returned-error code).
 		if output.Error != "" {
-			os.Exit(2)
+			os.Exit(1)
 		}
 		// A nil `SessionHealth` after a successful kernel return
 		// is degenerate — `buildHealthOutput` always populates
