@@ -117,8 +117,12 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 	agents := coord.GetAgents()
 	idleAgents := coord.GetIdleAgents()
 
-	// Use default coordinator config
+	// Honor [coordinator] settings from ~/.config/ntm/config.toml. Fall back
+	// to runtime defaults if the config file is missing or fails to parse.
 	coordConfig := coordinator.DefaultCoordinatorConfig()
+	if cfg, err := config.Load(selectedConfigPath()); err == nil && cfg != nil {
+		coordConfig = coordinatorConfigFromTOML(cfg.Coordinator, coordConfig)
+	}
 
 	if jsonOutput {
 		return outputCoordinatorStatusJSON(session, agents, idleAgents, coordConfig)
@@ -720,4 +724,33 @@ func runCoordinatorToggle(cmd *cobra.Command, args []string, enable bool, interv
 	fmt.Println()
 
 	return nil
+}
+
+// coordinatorConfigFromTOML maps the TOML mirror struct (already merged on
+// top of config.DefaultCoordinatorConfig() during config.Load) onto the
+// runtime coordinator.CoordinatorConfig. Durations are clamped to
+// coordinator.MinPollInterval / coordinator.MinDigestInterval to match the
+// existing validation inside SessionCoordinator.Start.
+func coordinatorConfigFromTOML(toml config.CoordinatorConfig, fallback coordinator.CoordinatorConfig) coordinator.CoordinatorConfig {
+	out := coordinator.CoordinatorConfig{
+		PollInterval:      toml.PollInterval,
+		DigestInterval:    toml.DigestInterval,
+		AutoAssign:        toml.AutoAssign,
+		IdleThreshold:     toml.IdleThreshold,
+		AssignOnlyIdle:    toml.AssignOnlyIdle,
+		ConflictNotify:    toml.ConflictNotify,
+		ConflictNegotiate: toml.ConflictNegotiate,
+		SendDigests:       toml.SendDigests,
+		HumanAgent:        toml.HumanAgent,
+	}
+	if out.PollInterval < coordinator.MinPollInterval {
+		out.PollInterval = coordinator.MinPollInterval
+	}
+	if out.DigestInterval < coordinator.MinDigestInterval {
+		out.DigestInterval = coordinator.MinDigestInterval
+	}
+	if strings.TrimSpace(out.HumanAgent) == "" {
+		out.HumanAgent = fallback.HumanAgent
+	}
+	return out
 }

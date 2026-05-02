@@ -103,9 +103,50 @@ type Config struct {
 	Prompts            PromptsConfig         `toml:"prompts"`          // Per-agent-type default prompts
 	Retry              RetryConfig           `toml:"retry"`            // Unified retry policy configuration
 	Routing            RoutingConfig         `toml:"routing"`          // Agent routing/scoring weights
+	Coordinator        CoordinatorConfig     `toml:"coordinator"`      // Session coordinator (digests, auto-assign, conflict handling)
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
+}
+
+// CoordinatorConfig holds session coordinator settings.
+// Mirrors internal/coordinator.CoordinatorConfig for TOML deserialization
+// without import cycles. BurntSushi/toml decodes time.Duration fields from
+// either nanosecond integers or duration strings (e.g. "30s", "5m").
+type CoordinatorConfig struct {
+	// Monitoring
+	PollInterval   time.Duration `toml:"poll_interval"`   // How often to poll agent status (default: 5s)
+	DigestInterval time.Duration `toml:"digest_interval"` // How often to send digests (default: 5m)
+
+	// Work assignment
+	AutoAssign     bool    `toml:"auto_assign"`      // Automatically assign work to idle agents
+	IdleThreshold  float64 `toml:"idle_threshold"`   // Seconds of inactivity before considering idle
+	AssignOnlyIdle bool    `toml:"assign_only_idle"` // Only assign to truly idle agents
+
+	// Conflict handling
+	ConflictNotify    bool `toml:"conflict_notify"`    // Notify when conflicts detected
+	ConflictNegotiate bool `toml:"conflict_negotiate"` // Attempt automatic conflict resolution
+
+	// Agent Mail
+	SendDigests bool   `toml:"send_digests"` // Send periodic digests to human
+	HumanAgent  string `toml:"human_agent"`  // Agent name to send digests to (default: "Human")
+}
+
+// DefaultCoordinatorConfig mirrors coordinator.DefaultCoordinatorConfig and
+// MUST be kept in sync with it. Drift here causes config.Load() defaults to
+// disagree with the runtime defaults exposed by `ntm coordinator status`.
+func DefaultCoordinatorConfig() CoordinatorConfig {
+	return CoordinatorConfig{
+		PollInterval:      5 * time.Second,
+		DigestInterval:    5 * time.Minute,
+		AutoAssign:        false,
+		IdleThreshold:     30.0,
+		AssignOnlyIdle:    true,
+		ConflictNotify:    true,
+		ConflictNegotiate: false,
+		SendDigests:       false,
+		HumanAgent:        "Human",
+	}
 }
 
 // RetryConfig provides unified retry policy settings. Individual subsystems
@@ -2380,6 +2421,7 @@ func Default() *Config {
 		SpawnPacing:     DefaultSpawnPacingConfig(),
 		Retry:           DefaultRetryConfig(),
 		Routing:         DefaultRoutingConfig(),
+		Coordinator:     DefaultCoordinatorConfig(),
 	}
 
 	// Apply safety profile defaults (standard/safe/paranoid).
