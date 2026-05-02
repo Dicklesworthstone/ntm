@@ -255,11 +255,18 @@ func runHealthOnce(session string) error {
 		}
 		// Print the JSON document first so automation can still
 		// parse the report. Only after that do we surface a non-OK
-		// outcome as a returned error so the process exits non-zero
-		// — the documented scripting contract that the previous
-		// code violated by always exiting 0 in JSON mode (#112).
-		// Root command has SilenceErrors=true so cobra won't print
-		// the error on top of the JSON.
+		// outcome via the documented severity ladder (#112) — the
+		// non-JSON path at the bottom of `renderHealthTUI` already
+		// uses `os.Exit(1)` for warning and `os.Exit(2)` for
+		// error; mirror that here so the contract is the same in
+		// both modes.
+		//
+		// `os.Exit` skips audit teardown (root.go's
+		// `logCommandAuditEnd` / `audit.CloseAll`), but that is
+		// the pre-existing trade-off the non-JSON path already
+		// made — keeping the two modes in lockstep is more
+		// valuable than smuggling a richer exit code through
+		// cobra.
 		if err := encodeHealthOutput(output); err != nil {
 			return err
 		}
@@ -267,21 +274,34 @@ func runHealthOnce(session string) error {
 		// failure (e.g. session not found) but still produced a
 		// JSON-shaped report" case — those legitimately had an
 		// empty `OverallStatus` and slipped through the previous
-		// status-only check.
+		// status-only check. Treat as severe (exit 2) to match
+		// the non-JSON SessionNotFoundError handling that returns
+		// a `fmt.Errorf` from `runHealthOnce`'s tail (cobra exits
+		// non-zero on any returned error).
 		if output.Error != "" {
-			return fmt.Errorf("session health: %s", output.Error)
+			os.Exit(2)
 		}
-		// Treat anything other than `StatusOK` as a non-zero
-		// outcome. This catches `StatusError` and `StatusWarning`
-		// (the documented severity ladder) plus `StatusUnknown`
-		// and the zero-value empty string, so future status
-		// additions don't silently regress to "exit 0 means
-		// healthy."
-		if output.SessionHealth != nil && output.SessionHealth.OverallStatus != health.StatusOK {
-			return fmt.Errorf(
-				"session health: %s",
-				output.SessionHealth.OverallStatus,
-			)
+		// A nil `SessionHealth` after a successful kernel return
+		// is degenerate — `buildHealthOutput` always populates
+		// the embedded pointer, even on the soft "session not
+		// found" path. Treat it as warning-level rather than
+		// silently exiting 0.
+		if output.SessionHealth == nil {
+			os.Exit(1)
+		}
+		// Mirror the severity ladder from the non-JSON path:
+		// `StatusError` → 2, anything else not-OK (warning,
+		// unknown, or the empty-string zero value) → 1, OK → 0.
+		switch output.SessionHealth.OverallStatus {
+		case health.StatusOK:
+			return nil
+		case health.StatusError:
+			os.Exit(2)
+		default:
+			// StatusWarning, StatusUnknown, "" — all map to
+			// exit 1 so future Status additions don't silently
+			// regress to a healthy exit code.
+			os.Exit(1)
 		}
 		return nil
 	}
