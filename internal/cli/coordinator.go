@@ -138,14 +138,22 @@ func outputCoordinatorStatusJSON(session string, agents map[string]*coordinator.
 		"agent_count": len(agents),
 		"idle_count":  len(idleAgents),
 		"agents":      agents,
+		// Mirror every CoordinatorConfig field the user can set in
+		// ~/.config/ntm/config.toml so `coordinator status --json` can be
+		// used to confirm whether a TOML override actually took effect at
+		// runtime. Pre-fix this map omitted assign_only_idle and human_agent,
+		// which meant a user toggling those keys in config.toml had no way
+		// to verify the change was applied — the symptom #111 was filed for.
 		"config": map[string]interface{}{
 			"auto_assign":        coordCfg.AutoAssign,
+			"assign_only_idle":   coordCfg.AssignOnlyIdle,
 			"send_digests":       coordCfg.SendDigests,
 			"conflict_notify":    coordCfg.ConflictNotify,
 			"conflict_negotiate": coordCfg.ConflictNegotiate,
 			"poll_interval":      coordCfg.PollInterval.String(),
 			"digest_interval":    coordCfg.DigestInterval.String(),
 			"idle_threshold":     coordCfg.IdleThreshold,
+			"human_agent":        coordCfg.HumanAgent,
 		},
 	}
 	return json.NewEncoder(os.Stdout).Encode(result)
@@ -206,12 +214,14 @@ func renderCoordinatorStatus(session string, agents map[string]*coordinator.Agen
 	fmt.Printf("  %s%s%s\n", "\033[2m", strings.Repeat("─", 60), "\033[0m")
 
 	printConfigBool("  Auto-assign:         ", coordCfg.AutoAssign)
+	printConfigBool("  Assign only idle:    ", coordCfg.AssignOnlyIdle)
 	printConfigBool("  Send digests:        ", coordCfg.SendDigests)
 	printConfigBool("  Conflict notify:     ", coordCfg.ConflictNotify)
 	printConfigBool("  Conflict negotiate:  ", coordCfg.ConflictNegotiate)
 	fmt.Printf("  Poll interval:       %s\n", coordCfg.PollInterval)
 	fmt.Printf("  Digest interval:     %s\n", coordCfg.DigestInterval)
 	fmt.Printf("  Idle threshold:      %.0fs\n", coordCfg.IdleThreshold)
+	fmt.Printf("  Human agent:         %s\n", coordCfg.HumanAgent)
 	fmt.Println()
 
 	return nil
