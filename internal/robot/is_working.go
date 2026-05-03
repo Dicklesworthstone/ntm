@@ -202,12 +202,19 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 		}
 	}
 
-	// Validate requested panes exist
+	// Validate requested panes exist and capture per-pane metadata so the
+	// parser can be hinted with the canonical agent type from tmux. Without
+	// this hint, the content-based detector races (e.g. a Codex pane whose
+	// scrollback contains Claude-flavored chrome can be classified as `cc`,
+	// which then misses Codex-specific work indicators and surfaces as
+	// `is_working=false`). See ntm#114.
 	paneExists := make(map[int]bool)
 	paneTargets := make(map[int]string)
+	paneHints := make(map[int]agent.AgentType)
 	for _, p := range allPanes {
 		paneExists[p.Index] = true
 		paneTargets[p.Index] = fmt.Sprintf("%s:%d.%d", opts.Session, p.WindowIndex, p.Index)
+		paneHints[p.Index] = agent.AgentType(paneAgentType(p)).Canonical()
 	}
 
 	// Create parser
@@ -244,8 +251,10 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 			continue
 		}
 
-		// Parse the output
-		state, err := parser.Parse(content)
+		// Parse the output. Hint with the tmux-tracked agent type so we don't
+		// misclassify Codex panes as Claude (or vice versa) when both agents'
+		// chrome appears in the scrollback.
+		state, err := parser.ParseWithHint(content, paneHints[paneIdx])
 		if err != nil {
 			output.Panes[paneKey] = PaneWorkStatus{
 				AgentType:            string(agent.AgentTypeUnknown),
