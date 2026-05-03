@@ -3799,6 +3799,10 @@ type TailOutput struct {
 	CapturedAt    time.Time             `json:"captured_at"`
 	Panes         map[string]PaneOutput `json:"panes"`
 	AgentHints    *TailAgentHints       `json:"_agent_hints,omitempty"`
+
+	// SourceHealth — same provenance contract as ActivityOutput. See ntm#117
+	// and docs/freshness-degraded-state-contract.md.
+	SourceHealth map[string]SourceHealthEntry `json:"source_health,omitempty"`
 }
 
 // TailAgentHints provides agent guidance specific to tail output
@@ -3814,6 +3818,11 @@ type PaneOutput struct {
 	State     string   `json:"state"` // active, idle, unknown
 	Lines     []string `json:"lines"`
 	Truncated bool     `json:"truncated"`
+
+	// PanePID is the tmux shell PID of this pane (`#{pane_pid}`). Populated
+	// additively so downstream watchdogs can detect respawns by comparing
+	// against the PID they last observed. See ntm#117.
+	PanePID int `json:"pane_pid,omitempty"`
 }
 
 // TailOptions configures the GetTail operation.
@@ -3843,6 +3852,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 		}, nil
 	}
 
+	tmuxCollectedAt := time.Now().UTC()
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
 		return &TailOutput{
@@ -3854,6 +3864,16 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			Session:    opts.Session,
 			CapturedAt: time.Now().UTC(),
 			Panes:      make(map[string]PaneOutput),
+			SourceHealth: map[string]SourceHealthEntry{
+				"tmux": {
+					Source:           "tmux",
+					Status:           "unavailable",
+					CollectedAt:      tmuxCollectedAt,
+					Provenance:       "live",
+					DegradedFeatures: []string{"pane_output", "pane_pid"},
+					CollectionError:  err.Error(),
+				},
+			},
 		}, nil
 	}
 
@@ -3862,6 +3882,16 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 		Session:       opts.Session,
 		CapturedAt:    time.Now().UTC(),
 		Panes:         make(map[string]PaneOutput),
+		SourceHealth: map[string]SourceHealthEntry{
+			"tmux": {
+				Source:        "tmux",
+				Status:        "fresh",
+				CollectedAt:   tmuxCollectedAt,
+				FreshnessSec:  time.Since(tmuxCollectedAt).Seconds(),
+				StaleAfterSec: 5.0,
+				Provenance:    "live",
+			},
+		},
 	}
 
 	// Build pane filter map
@@ -3888,6 +3918,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 				State:     "unknown",
 				Lines:     []string{},
 				Truncated: false,
+				PanePID:   pane.PID,
 			}
 			continue
 		}
@@ -3908,6 +3939,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			State:     state,
 			Lines:     outputLines,
 			Truncated: truncated,
+			PanePID:   pane.PID,
 		}
 	}
 
@@ -9606,6 +9638,14 @@ type ActivityOutput struct {
 	Agents     []AgentActivityInfo `json:"agents"`
 	Summary    ActivitySummary     `json:"summary"`
 	AgentHints *ActivityAgentHints `json:"_agent_hints,omitempty"`
+
+	// SourceHealth reports per-source freshness/provenance metadata for the
+	// data feeding this output. Populated for the `tmux` source today; the
+	// `degraded_features` slice names which output fields fall back to a
+	// stale or unavailable value when a source is unhealthy. See ntm#117 —
+	// downstream watchdogs must distinguish "live tmux observation" from
+	// "stale snapshot" before making restart/capacity decisions.
+	SourceHealth map[string]SourceHealthEntry `json:"source_health,omitempty"`
 }
 
 // AgentActivityInfo contains activity state for a single agent pane.
@@ -9619,6 +9659,29 @@ type AgentActivityInfo struct {
 	StateSince       string   `json:"state_since,omitempty"`       // RFC3339 timestamp
 	DetectedPatterns []string `json:"detected_patterns,omitempty"` // pattern names that matched
 	LastOutput       string   `json:"last_output,omitempty"`       // RFC3339 timestamp of last output
+
+	// PanePID is the tmux shell PID (`#{pane_pid}`) of the pane this
+	// observation came from. Populated additively so callers can detect a
+	// pane respawn — the pane index stays the same after restart, but
+	// PanePID changes. Without this, downstream watchdogs treat post-respawn
+	// observations as a silent continuation of the old observation stream
+	// and make wrong recovery decisions. See ntm#117.
+	PanePID int `json:"pane_pid,omitempty"`
+}
+
+// SourceHealthEntry describes the freshness of a source feeding a robot
+// output. Mirrors the contract in docs/freshness-degraded-state-contract.md
+// so downstream automation can decide whether to trust a field, retry, or
+// surface a degraded warning to its operator. See ntm#117.
+type SourceHealthEntry struct {
+	Source           string    `json:"source"`                      // e.g. "tmux"
+	Status           string    `json:"status"`                      // "fresh" | "stale" | "unavailable"
+	CollectedAt      time.Time `json:"collected_at"`                // when the source was last polled
+	FreshnessSec     float64   `json:"freshness_sec"`               // age in seconds at the moment this output was assembled
+	StaleAfterSec    float64   `json:"stale_after_sec,omitempty"`   // optional: callers should treat status=fresh as stale once this threshold is exceeded
+	Provenance       string    `json:"provenance"`                  // "live" | "cached" | "derived"
+	DegradedFeatures []string  `json:"degraded_features,omitempty"` // names of output fields that are stale/missing because of this source
+	CollectionError  string    `json:"collection_error,omitempty"`  // last error from the source (when status != "fresh")
 }
 
 // ActivitySummary provides aggregate state counts.
@@ -9662,14 +9725,47 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 		return output, nil
 	}
 
+	// Track tmux source health (ntm#117). Populated as a single observation
+	// — every agent in this output came from this tmux capture, so the
+	// freshness/provenance applies uniformly. On capture failure the entry
+	// flips to status=unavailable with degraded_features identifying the
+	// fields that are now stale or missing, rather than silently emitting
+	// an empty agent list.
+	tmuxCollectedAt := time.Now().UTC()
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
+		output.SourceHealth = map[string]SourceHealthEntry{
+			"tmux": {
+				Source:           "tmux",
+				Status:           "unavailable",
+				CollectedAt:      tmuxCollectedAt,
+				FreshnessSec:     0,
+				Provenance:       "live",
+				DegradedFeatures: []string{"agent_states", "pane_pid", "agent_list"},
+				CollectionError:  err.Error(),
+			},
+		}
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to get panes: %w", err),
 			ErrCodeInternalError,
 			"Check tmux is running and session is accessible",
 		)
 		return output, nil
+	}
+
+	// Mark tmux source as fresh — pane data was collected live from tmux
+	// just now. `stale_after_sec` is a hint that downstream watchdogs
+	// should re-poll if they see a freshness exceeding it; we conservatively
+	// suggest 5s for live observation.
+	output.SourceHealth = map[string]SourceHealthEntry{
+		"tmux": {
+			Source:        "tmux",
+			Status:        "fresh",
+			CollectedAt:   tmuxCollectedAt,
+			FreshnessSec:  time.Since(tmuxCollectedAt).Seconds(),
+			StaleAfterSec: 5.0,
+			Provenance:    "live",
+		},
 	}
 
 	output.Agents = make([]AgentActivityInfo, 0, len(panes))
@@ -9725,6 +9821,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 				AgentType:  agentType,
 				State:      string(StateUnknown),
 				Confidence: 0.0,
+				PanePID:    pane.PID,
 			})
 			output.Summary.ByState[string(StateUnknown)]++
 			continue
@@ -9739,6 +9836,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			Confidence:       activity.Confidence,
 			Velocity:         activity.Velocity,
 			DetectedPatterns: activity.DetectedPatterns,
+			PanePID:          pane.PID,
 		}
 
 		if !activity.StateSince.IsZero() {
