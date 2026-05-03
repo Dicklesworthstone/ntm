@@ -28,7 +28,8 @@ var supportedAdoptTypes = []adoptTypeSpec{
 	{Flag: "cursor", AgentType: agentpkg.AgentTypeCursor, Description: "Cursor agents", Example: "6"},
 	{Flag: "windsurf", AgentType: agentpkg.AgentTypeWindsurf, Description: "Windsurf agents", Example: "7"},
 	{Flag: "aider", AgentType: agentpkg.AgentTypeAider, Description: "Aider agents", Example: "8"},
-	{Flag: "ollama", AgentType: agentpkg.AgentTypeOllama, Description: "Ollama agents", Example: "9"},
+	{Flag: "oc", AgentType: agentpkg.AgentTypeOpencode, Description: "Opencode agents", Example: "9"},
+	{Flag: "ollama", AgentType: agentpkg.AgentTypeOllama, Description: "Ollama agents", Example: "10"},
 	{Flag: "user", AgentType: agentpkg.AgentTypeUser, Description: "User panes", Example: "10"},
 }
 
@@ -137,12 +138,13 @@ type AdoptedAgentCounts struct {
 	Cursor   int `json:"cursor"`
 	Windsurf int `json:"windsurf"`
 	Aider    int `json:"aider"`
+	Opencode int `json:"oc"`
 	Ollama   int `json:"ollama"`
 	User     int `json:"user"`
 }
 
 func (a AdoptedAgentCounts) Total() int {
-	return a.CC + a.Cod + a.Gmi + a.Cursor + a.Windsurf + a.Aider + a.Ollama + a.User
+	return a.CC + a.Cod + a.Gmi + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Ollama + a.User
 }
 
 func (a AdoptedAgentCounts) Summary() string {
@@ -173,6 +175,8 @@ func (a *AdoptedAgentCounts) increment(agentType agentpkg.AgentType) {
 		a.Windsurf++
 	case agentpkg.AgentTypeAider:
 		a.Aider++
+	case agentpkg.AgentTypeOpencode:
+		a.Opencode++
 	case agentpkg.AgentTypeOllama:
 		a.Ollama++
 	case agentpkg.AgentTypeUser:
@@ -194,6 +198,8 @@ func (a AdoptedAgentCounts) countFor(agentType agentpkg.AgentType) int {
 		return a.Windsurf
 	case agentpkg.AgentTypeAider:
 		return a.Aider
+	case agentpkg.AgentTypeOpencode:
+		return a.Opencode
 	case agentpkg.AgentTypeOllama:
 		return a.Ollama
 	case agentpkg.AgentTypeUser:

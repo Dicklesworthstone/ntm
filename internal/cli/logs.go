@@ -327,6 +327,8 @@ func shortAgentTypeLocal(agentType string) string {
 		return "ws"
 	case agent.AgentTypeAider:
 		return "aid"
+	case agent.AgentTypeOpencode:
+		return "oc"
 	case agent.AgentTypeOllama:
 		return "oll"
 	case agent.AgentTypeUser:

@@ -4497,6 +4497,7 @@ Examples:
 						"cursor":   effectiveCfg.Agents.Cursor,
 						"windsurf": effectiveCfg.Agents.Windsurf,
 						"aider":    effectiveCfg.Agents.Aider,
+						"oc":       effectiveCfg.Agents.Opencode,
 					},
 					"tmux": map[string]interface{}{
 						"default_panes":      effectiveCfg.Tmux.DefaultPanes,

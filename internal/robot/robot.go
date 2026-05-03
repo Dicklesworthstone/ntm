@@ -3711,7 +3711,8 @@ func detectAgentType(title string) string {
 }
 
 // DetectAgentType detects the agent type from a pane title.
-// Returns one of: "claude", "codex", "gemini", "cursor", "windsurf", "aider", or "unknown".
+// Returns one of: "claude", "codex", "gemini", "cursor", "windsurf",
+// "aider", "oc" (opencode), "ollama", or "unknown".
 func DetectAgentType(title string) string {
 	return detectAgentType(title)
 }

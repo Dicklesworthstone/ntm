@@ -121,7 +121,7 @@ func TestValidateAdoptAssignments(t *testing.T) {
 		{
 			name:        "no panes",
 			assignments: map[agentpkg.AgentType][]int{},
-			wantErr:     "use one or more of --cc, --cod, --gmi, --cursor, --windsurf, --aider, --ollama, or --user",
+			wantErr:     "use one or more of --cc, --cod, --gmi, --cursor, --windsurf, --aider, --oc, --ollama, or --user",
 		},
 	}
 

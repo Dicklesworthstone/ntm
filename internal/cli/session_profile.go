@@ -25,6 +25,7 @@ type SessionProfile struct {
 	Cursor    int    `toml:"cursor,omitempty" json:"cursor,omitempty"`
 	Windsurf  int    `toml:"windsurf,omitempty" json:"windsurf,omitempty"`
 	Aider     int    `toml:"aider,omitempty" json:"aider,omitempty"`
+	Opencode  int    `toml:"oc,omitempty" json:"oc,omitempty"`
 	UserPane  *bool  `toml:"user_pane,omitempty" json:"user_pane,omitempty"`
 	Prompt    string `toml:"prompt,omitempty" json:"prompt,omitempty"`
 	InitFile  string `toml:"init_file,omitempty" json:"init_file,omitempty"`
@@ -50,6 +51,7 @@ func (p SessionProfile) Validate() error {
 		"cursor":   p.Cursor,
 		"windsurf": p.Windsurf,
 		"aider":    p.Aider,
+		"oc":       p.Opencode,
 	}
 	for name, count := range counts {
 		if count < 0 {

@@ -457,7 +457,7 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 
 func isTrackedAgentType(agentType string) bool {
 	switch agentType {
-	case "claude", "codex", "gemini", "cursor", "windsurf", "aider", "ollama":
+	case "claude", "codex", "gemini", "cursor", "windsurf", "aider", "oc", "ollama":
 		return true
 	default:
 		return false

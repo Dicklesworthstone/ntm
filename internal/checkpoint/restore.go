@@ -959,6 +959,8 @@ func restorableAgentCommand(pane PaneState) string {
 		return "windsurf"
 	case agent.AgentTypeAider:
 		return "aider"
+	case agent.AgentTypeOpencode:
+		return "opencode"
 	case agent.AgentTypeOllama:
 		return "ollama"
 	default:
