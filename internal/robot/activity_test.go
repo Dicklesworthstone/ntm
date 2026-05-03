@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -1194,6 +1195,123 @@ func TestAgentActivityInfo(t *testing.T) {
 	if info.Confidence != 0.85 {
 		t.Errorf("expected confidence 0.85, got %f", info.Confidence)
 	}
+}
+
+// TestAgentActivityInfo_CaptureProvenance covers the per-pane capture
+// metadata added for ntm#117 deferred item #1. The fields are additive
+// and `omitempty`-tagged, so they must round-trip through JSON without
+// breaking consumers that don't know about them; they must also identify
+// pane-specific failures distinct from output-level source-health drops.
+func TestAgentActivityInfo_CaptureProvenance(t *testing.T) {
+	t.Run("live capture omits error and serializes provenance", func(t *testing.T) {
+		info := AgentActivityInfo{
+			Pane:               "0",
+			PaneIdx:            0,
+			AgentType:          "claude",
+			State:              "WAITING",
+			Confidence:         0.95,
+			PanePID:            12345,
+			CaptureCollectedAt: "2026-05-03T20:30:00Z",
+			CaptureProvenance:  "live",
+		}
+		blob, err := json.Marshal(info)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		s := string(blob)
+		if !strings.Contains(s, `"capture_provenance":"live"`) {
+			t.Errorf("expected capture_provenance=live in JSON, got %s", s)
+		}
+		if !strings.Contains(s, `"capture_collected_at":"2026-05-03T20:30:00Z"`) {
+			t.Errorf("expected capture_collected_at in JSON, got %s", s)
+		}
+		if strings.Contains(s, "capture_error") {
+			t.Errorf("happy-path live capture must omit capture_error, got %s", s)
+		}
+	})
+
+	t.Run("failed capture preserves error string", func(t *testing.T) {
+		info := AgentActivityInfo{
+			Pane:               "1",
+			PaneIdx:            1,
+			AgentType:          "codex",
+			State:              "UNKNOWN",
+			PanePID:            6789,
+			CaptureCollectedAt: "2026-05-03T20:30:01Z",
+			CaptureProvenance:  "unavailable",
+			CaptureError:       "tmux capture-pane: pane not found",
+		}
+		blob, err := json.Marshal(info)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		s := string(blob)
+		if !strings.Contains(s, `"capture_provenance":"unavailable"`) {
+			t.Errorf("expected capture_provenance=unavailable, got %s", s)
+		}
+		if !strings.Contains(s, "tmux capture-pane: pane not found") {
+			t.Errorf("expected capture_error preserved, got %s", s)
+		}
+	})
+
+	t.Run("zero values omit all capture fields", func(t *testing.T) {
+		info := AgentActivityInfo{Pane: "2", PaneIdx: 2, AgentType: "gemini", State: "WAITING"}
+		blob, err := json.Marshal(info)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		s := string(blob)
+		// Backwards-compat: a consumer pinned to the pre-#117 shape sees
+		// nothing new in their JSON unless the producer populates the fields.
+		for _, key := range []string{"capture_provenance", "capture_collected_at", "capture_error"} {
+			if strings.Contains(s, key) {
+				t.Errorf("zero-value AgentActivityInfo must omit %q (omitempty), got %s", key, s)
+			}
+		}
+	})
+}
+
+// TestPaneOutput_CaptureProvenance mirrors the activity-side test above
+// for `--robot-tail` (ntm#117 deferred item #1).
+func TestPaneOutput_CaptureProvenance(t *testing.T) {
+	t.Run("live capture", func(t *testing.T) {
+		p := PaneOutput{
+			Type:               "claude",
+			State:              "active",
+			Lines:              []string{"hello"},
+			PanePID:            42,
+			CaptureCollectedAt: "2026-05-03T20:31:00Z",
+			CaptureProvenance:  "live",
+		}
+		blob, _ := json.Marshal(p)
+		s := string(blob)
+		if !strings.Contains(s, `"capture_provenance":"live"`) {
+			t.Errorf("expected capture_provenance=live, got %s", s)
+		}
+		if strings.Contains(s, "capture_error") {
+			t.Errorf("happy path must omit capture_error, got %s", s)
+		}
+	})
+
+	t.Run("failed capture", func(t *testing.T) {
+		p := PaneOutput{
+			Type:               "claude",
+			State:              "unknown",
+			Lines:              []string{},
+			PanePID:            42,
+			CaptureCollectedAt: "2026-05-03T20:31:01Z",
+			CaptureProvenance:  "unavailable",
+			CaptureError:       "exit status 1",
+		}
+		blob, _ := json.Marshal(p)
+		s := string(blob)
+		if !strings.Contains(s, `"capture_provenance":"unavailable"`) {
+			t.Errorf("expected capture_provenance=unavailable, got %s", s)
+		}
+		if !strings.Contains(s, "exit status 1") {
+			t.Errorf("expected capture_error preserved, got %s", s)
+		}
+	})
 }
 
 func TestActivitySummary(t *testing.T) {

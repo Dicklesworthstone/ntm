@@ -3834,6 +3834,24 @@ type PaneOutput struct {
 	// additively so downstream watchdogs can detect respawns by comparing
 	// against the PID they last observed. See ntm#117.
 	PanePID int `json:"pane_pid,omitempty"`
+
+	// Per-pane capture provenance (ntm#117 follow-up). Output-level
+	// `source_health.tmux` answers "is anyone reachable"; these fields
+	// answer "which specific pane went dark". Populated for every pane,
+	// fresh or failed, so a watchdog polling --robot-tail across many
+	// sessions can pinpoint which panes are missing without reverse-
+	// engineering empty-Lines.
+	//
+	//   capture_collected_at  RFC 3339 timestamp the pane capture started.
+	//   capture_provenance    "live" when the capture succeeded;
+	//                         "unavailable" when tmux returned an error
+	//                         for this specific pane.
+	//   capture_error         the underlying tmux error string when
+	//                         capture_provenance == "unavailable". Omitted
+	//                         on the happy path.
+	CaptureCollectedAt string `json:"capture_collected_at,omitempty"`
+	CaptureProvenance  string `json:"capture_provenance,omitempty"`
+	CaptureError       string `json:"capture_error,omitempty"`
 }
 
 // TailOptions configures the GetTail operation.
@@ -3924,16 +3942,23 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			continue
 		}
 
-		// Capture pane output
+		// Capture pane output. Stamp the attempt time *before* the call so
+		// CaptureCollectedAt reflects when we asked tmux, not when it answered.
+		paneCapturedAt := time.Now().UTC().Format(time.RFC3339)
 		captured, err := tmux.CapturePaneOutput(pane.ID, opts.Lines)
 		if err != nil {
-			// Include empty output on error
+			// Include empty output on error, but populate per-pane
+			// provenance so a watchdog can pinpoint the failed pane
+			// instead of inferring "this pane went dark" from len(lines)==0.
 			output.Panes[paneKey] = PaneOutput{
-				Type:      paneAgentType(pane),
-				State:     "unknown",
-				Lines:     []string{},
-				Truncated: false,
-				PanePID:   pane.PID,
+				Type:               paneAgentType(pane),
+				State:              "unknown",
+				Lines:              []string{},
+				Truncated:          false,
+				PanePID:            pane.PID,
+				CaptureCollectedAt: paneCapturedAt,
+				CaptureProvenance:  "unavailable",
+				CaptureError:       err.Error(),
 			}
 			continue
 		}
@@ -3950,11 +3975,13 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 		truncated := len(outputLines) >= opts.Lines
 
 		output.Panes[paneKey] = PaneOutput{
-			Type:      agentType,
-			State:     state,
-			Lines:     outputLines,
-			Truncated: truncated,
-			PanePID:   pane.PID,
+			Type:               agentType,
+			State:              state,
+			Lines:              outputLines,
+			Truncated:          truncated,
+			PanePID:            pane.PID,
+			CaptureCollectedAt: paneCapturedAt,
+			CaptureProvenance:  "live",
 		}
 	}
 
@@ -9686,6 +9713,25 @@ type AgentActivityInfo struct {
 	// observations as a silent continuation of the old observation stream
 	// and make wrong recovery decisions. See ntm#117.
 	PanePID int `json:"pane_pid,omitempty"`
+
+	// Per-pane capture provenance (ntm#117 deferred item #1). Output-level
+	// `source_health.tmux` answers "is anyone reachable"; these fields
+	// answer "which specific pane went dark" when a fleet watchdog polls
+	// --robot-activity across many sessions and one pane's classification
+	// silently fails (today the pane appears with State=UNKNOWN and a
+	// classification error is dropped on the floor).
+	//
+	//   capture_collected_at  RFC 3339 timestamp the per-pane classification
+	//                         attempt started.
+	//   capture_provenance    "live" when the classifier ran cleanly;
+	//                         "unavailable" when classification returned an
+	//                         error (and we synthesized State=UNKNOWN).
+	//   capture_error         the underlying classifier error string when
+	//                         capture_provenance == "unavailable". Omitted
+	//                         on the happy path.
+	CaptureCollectedAt string `json:"capture_collected_at,omitempty"`
+	CaptureProvenance  string `json:"capture_provenance,omitempty"`
+	CaptureError       string `json:"capture_error,omitempty"`
 }
 
 // SourceHealthEntry describes the freshness of a source feeding a robot
@@ -9852,17 +9898,25 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			AgentType: agentType,
 		})
 
-		// Classify current state
+		// Classify current state. Stamp before the call so
+		// CaptureCollectedAt reflects when we asked, not when we got an answer.
+		paneCapturedAt := time.Now().UTC().Format(time.RFC3339)
 		activity, err := classifier.Classify()
 		if err != nil {
-			// Include with unknown state on error
+			// Include with unknown state on error, plus per-pane
+			// capture provenance so a watchdog can distinguish
+			// "this pane was classified UNKNOWN" from "this pane's
+			// classifier silently errored". See ntm#117 deferred item #1.
 			output.Agents = append(output.Agents, AgentActivityInfo{
-				Pane:       paneKey,
-				PaneIdx:    pane.Index,
-				AgentType:  agentType,
-				State:      string(StateUnknown),
-				Confidence: 0.0,
-				PanePID:    pane.PID,
+				Pane:               paneKey,
+				PaneIdx:            pane.Index,
+				AgentType:          agentType,
+				State:              string(StateUnknown),
+				Confidence:         0.0,
+				PanePID:            pane.PID,
+				CaptureCollectedAt: paneCapturedAt,
+				CaptureProvenance:  "unavailable",
+				CaptureError:       err.Error(),
 			})
 			output.Summary.ByState[string(StateUnknown)]++
 			continue
@@ -9870,14 +9924,16 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 
 		// Build agent info
 		info := AgentActivityInfo{
-			Pane:             paneKey,
-			PaneIdx:          pane.Index,
-			AgentType:        activity.AgentType,
-			State:            string(activity.State),
-			Confidence:       activity.Confidence,
-			Velocity:         activity.Velocity,
-			DetectedPatterns: activity.DetectedPatterns,
-			PanePID:          pane.PID,
+			Pane:               paneKey,
+			PaneIdx:            pane.Index,
+			AgentType:          activity.AgentType,
+			State:              string(activity.State),
+			Confidence:         activity.Confidence,
+			Velocity:           activity.Velocity,
+			DetectedPatterns:   activity.DetectedPatterns,
+			PanePID:            pane.PID,
+			CaptureCollectedAt: paneCapturedAt,
+			CaptureProvenance:  "live",
 		}
 
 		if !activity.StateSince.IsZero() {
