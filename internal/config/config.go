@@ -3030,6 +3030,9 @@ func Print(cfg *Config, w io.Writer) error {
 	if cfg.Agents.Aider != "" {
 		fmt.Fprintf(w, "aider = %q\n", cfg.Agents.Aider)
 	}
+	if cfg.Agents.Opencode != "" {
+		fmt.Fprintf(w, "oc = %q\n", cfg.Agents.Opencode)
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[tmux]")
