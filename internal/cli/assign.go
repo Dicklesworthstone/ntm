@@ -896,6 +896,8 @@ func detectAgentTypeFromTitle(title string) string {
 			return "windsurf"
 		case agent.AgentTypeAider:
 			return "aider"
+		case agent.AgentTypeOpencode:
+			return "oc"
 		case agent.AgentTypeOllama:
 			return "ollama"
 		case agent.AgentTypeUser:

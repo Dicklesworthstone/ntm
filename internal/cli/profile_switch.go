@@ -228,7 +228,7 @@ func findPaneByAgentID(panes []tmux.Pane, session, agentType string, agentIndex 
 
 func supportsProfileSwitchAgentType(agentType tmux.AgentType) bool {
 	switch agentType.Canonical() {
-	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOllama:
+	case tmux.AgentClaude, tmux.AgentCodex, tmux.AgentGemini, tmux.AgentCursor, tmux.AgentWindsurf, tmux.AgentAider, tmux.AgentOpencode, tmux.AgentOllama:
 		return true
 	default:
 		return false

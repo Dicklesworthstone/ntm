@@ -304,6 +304,8 @@ func detectAgentTypeFromPane(pane tmux.Pane) string {
 		return "windsurf"
 	case tmux.AgentAider:
 		return "aider"
+	case tmux.AgentOpencode:
+		return "oc"
 	case tmux.AgentOllama:
 		return "ollama"
 	case tmux.AgentUser:

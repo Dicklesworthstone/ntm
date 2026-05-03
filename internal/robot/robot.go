@@ -3685,6 +3685,8 @@ func detectAgentType(title string) string {
 		return "windsurf"
 	case strings.Contains(titleLower, "aider"):
 		return "aider"
+	case strings.Contains(titleLower, "opencode"):
+		return "oc"
 	case strings.Contains(titleLower, "ollama"):
 		return "ollama"
 	}
@@ -3701,6 +3703,8 @@ func detectAgentType(title string) string {
 		return "gemini"
 	case containsShortForm(titleLower, "ws"):
 		return "windsurf"
+	case containsShortForm(titleLower, "oc"):
+		return "oc"
 	}
 
 	return "unknown"
