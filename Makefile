@@ -3,8 +3,14 @@
 
 BINARY_NAME := ntm
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo "none")
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS := -ldflags "-s -w -X github.com/Dicklesworthstone/ntm/internal/cli.Version=$(VERSION)"
+BUILT_BY := make
+LDFLAGS := -ldflags "-s -w \
+	-X github.com/Dicklesworthstone/ntm/internal/cli.Version=$(VERSION) \
+	-X github.com/Dicklesworthstone/ntm/internal/cli.Commit=$(COMMIT) \
+	-X github.com/Dicklesworthstone/ntm/internal/cli.Date=$(BUILD_TIME) \
+	-X github.com/Dicklesworthstone/ntm/internal/cli.BuiltBy=$(BUILT_BY)"
 
 GO := go
 GOFLAGS := -trimpath
