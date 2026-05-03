@@ -45,8 +45,15 @@ var processPatterns = map[string]string{
 	"windsurf":     "windsurf",
 	"aider":        "aider",
 	"aider-chat":   "aider",
+	// `opencode` (https://opencode.ai) — note we deliberately do NOT add a
+	// bare `oc` pattern here because `processPatterns` uses substring match
+	// (`strings.Contains`), and `oc` collides with both the OpenShift CLI
+	// (a real binary named `oc`) and with any command containing the
+	// substring "oc" — e.g. `docker`, `localhost`, `procmon`. Detection
+	// must key on the unambiguous binary name `opencode`. Pane titles still
+	// use the short `oc` suffix because they are NTM-formatted (`__oc_N`)
+	// and parsed by the title regex, not by substring match.
 	"opencode":     "oc",
-	"oc":           "oc",
 	"ollama":       "ollama",
 }
 
