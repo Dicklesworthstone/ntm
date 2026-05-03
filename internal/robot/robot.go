@@ -5660,6 +5660,8 @@ func agentTypeString(t tmux.AgentType) string {
 		return "windsurf"
 	case tmux.AgentAider:
 		return "aider"
+	case tmux.AgentOpencode:
+		return "oc"
 	case tmux.AgentOllama:
 		return "ollama"
 	case tmux.AgentUser:
@@ -5727,6 +5729,8 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 		return "windsurf"
 	case tmux.AgentAider:
 		return "aider"
+	case tmux.AgentOpencode:
+		return "opencode"
 	case tmux.AgentOllama:
 		return defaults.DefaultOllama
 	default:
