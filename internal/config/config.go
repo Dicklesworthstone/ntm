@@ -472,10 +472,12 @@ type RateLimitConfig struct {
 	// AutoRotate is a co-located convenience for callers who think of the
 	// "switch accounts when a rate limit hits" behaviour as a property of
 	// rate-limit handling rather than rotation. When true, it is folded into
-	// `Rotation.AutoTrigger` at config load (the canonical knob) so the
-	// runtime path in internal/resilience/monitor.go stays single-sourced.
-	// Setting both `[resilience.rate_limit] auto_rotate` and
-	// `[rotation] auto_trigger` is supported; the OR of the two wins.
+	// `Rotation.Enabled` AND `Rotation.AutoTrigger` at config load — both
+	// are required for the runtime monitor in
+	// internal/resilience/monitor.go:494 to actually call
+	// `triggerRotationAssistance` when a rate limit fires. Setting both
+	// `[resilience.rate_limit] auto_rotate` and `[rotation] auto_trigger`
+	// is supported; the OR of the two wins.
 	AutoRotate bool `toml:"auto_rotate"`
 }
 
@@ -2623,12 +2625,16 @@ func loadWithCWD(path, cwd string) (*Config, error) {
 		cfg.Safety.Profile = normalizeSafetyProfile(cfg.Safety.Profile)
 
 		// Fold the [resilience.rate_limit] auto_rotate alias into the canonical
-		// [rotation] auto_trigger knob the runtime monitor consults
-		// (internal/resilience/monitor.go uses cfg.Rotation.AutoTrigger). The
-		// alias exists so users can configure "auto-rotate when a rate limit
-		// fires" co-located with the other rate-limit settings; both forms set
-		// to true are an OR. See ntm#113.
+		// rotation knobs the runtime monitor consults
+		// (internal/resilience/monitor.go:494 gates on `Enabled && AutoTrigger`).
+		// We flip BOTH because users who set the alias are opting into the
+		// rate-limit-driven rotation behaviour wholesale; setting only
+		// AutoTrigger without Enabled would silently no-op
+		// (Rotation.Enabled defaults to false). The alias exists so users can
+		// configure this intent co-located with the other rate-limit settings;
+		// both forms set to true are an OR. See ntm#113.
 		if cfg.Resilience.RateLimit.AutoRotate {
+			cfg.Rotation.Enabled = true
 			cfg.Rotation.AutoTrigger = true
 		}
 	} else if !os.IsNotExist(err) {

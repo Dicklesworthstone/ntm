@@ -8,12 +8,12 @@ import (
 
 // TestRateLimitAutoRotateAlias — repro from ntm#113 Gap 3. The TOML key
 // `[resilience.rate_limit] auto_rotate = true` must (a) parse cleanly through
-// the strict loader instead of being rejected as `unknown field`, and (b) set
-// `Rotation.AutoTrigger = true` so the runtime monitor in
-// internal/resilience/monitor.go (which keys on cfg.Rotation.AutoTrigger) acts
-// on it. The alias does not override an explicit
-// `[rotation] auto_trigger = false` to true unless the rate-limit alias is
-// itself true; setting both is an OR.
+// the strict loader instead of being rejected as `unknown field`, and (b)
+// flip BOTH `Rotation.Enabled` and `Rotation.AutoTrigger` so the runtime
+// monitor in internal/resilience/monitor.go (which gates on
+// `rotateConfig.Enabled && rotateConfig.AutoTrigger`) actually acts on it.
+// Flipping only AutoTrigger would silently no-op because Rotation.Enabled
+// defaults to false.
 func TestRateLimitAutoRotateAlias(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -38,12 +38,16 @@ auto_rotate = true
 	if !cfg.Rotation.AutoTrigger {
 		t.Errorf("Rotation.AutoTrigger = false, want true (alias should fold into canonical knob)")
 	}
+	if !cfg.Rotation.Enabled {
+		t.Errorf("Rotation.Enabled = false, want true (alias must enable rotation or AutoTrigger silently no-ops)")
+	}
 }
 
 // TestRateLimitAutoRotateAliasIsAdditive — the alias must NOT clobber an
 // explicit `[rotation] auto_trigger = true` to false when the alias is unset.
 // If the user has only `[rotation]` configured, the loader must leave it
-// alone.
+// alone (and not flip Rotation.Enabled either, since the alias is the
+// trigger for the dual-flip).
 func TestRateLimitAutoRotateAliasIsAdditive(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -65,5 +69,11 @@ auto_trigger = true
 	}
 	if !cfg.Rotation.AutoTrigger {
 		t.Errorf("Rotation.AutoTrigger = false, want true (TOML set it directly)")
+	}
+	// Rotation.Enabled was not set in TOML and the alias is unset, so it
+	// must keep its default (false). The dual-flip path must only fire on
+	// the alias.
+	if cfg.Rotation.Enabled {
+		t.Errorf("Rotation.Enabled = true unexpectedly; default is false and the alias is unset, so dual-flip must not fire")
 	}
 }
