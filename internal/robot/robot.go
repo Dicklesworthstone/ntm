@@ -3864,6 +3864,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 	}
 
 	tmuxCollectedAt := time.Now().UTC()
+	tmuxCollectedAtStr := tmuxCollectedAt.Format(time.RFC3339)
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
 		return &TailOutput{
@@ -3879,7 +3880,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 				"tmux": {
 					Source:           "tmux",
 					Status:           "unavailable",
-					CollectedAt:      tmuxCollectedAt,
+					CollectedAt:      tmuxCollectedAtStr,
 					FreshnessSec:     0,
 					StaleAfterSec:    5,
 					Provenance:       "live",
@@ -3900,7 +3901,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			"tmux": {
 				Source:        "tmux",
 				Status:        "fresh",
-				CollectedAt:   tmuxCollectedAt,
+				CollectedAt:   tmuxCollectedAtStr,
 				FreshnessSec:  int(time.Since(tmuxCollectedAt).Seconds()),
 				StaleAfterSec: 5,
 				Provenance:    "live",
@@ -9689,21 +9690,27 @@ type AgentActivityInfo struct {
 
 // SourceHealthEntry describes the freshness of a source feeding a robot
 // output. Field names, types, and JSON keys exactly match the documented
-// contract in docs/freshness-degraded-state-contract.md §2.2 so this surface
-// can be consumed interchangeably with the existing
+// contract in docs/freshness-degraded-state-contract.md §2.2, and the
+// timestamp fields use the same `string` (RFC 3339) shape as the existing
+// adapters.SourceInfo timestamps (UpdatedAt / DegradedSince / RetryingAt)
+// so this surface can be consumed interchangeably with the existing
 // adapters.SourceHealthSection used by --robot-status. See ntm#117.
 type SourceHealthEntry struct {
 	// Identity
 	Source string `json:"source"` // e.g. "tmux"
 	// Status enum: "fresh" | "stale" | "unavailable" | "unknown".
 	Status string `json:"status"`
-	// Timing — RFC 3339 timestamp + integer seconds. Integer (not float)
-	// matches the contract spec; downstream consumers parse `freshness_sec`
-	// and `stale_after_sec` as JSON numbers without surprise sub-second
-	// precision differences.
-	CollectedAt   time.Time `json:"collected_at"`
-	FreshnessSec  int       `json:"freshness_sec"`
-	StaleAfterSec int       `json:"stale_after_sec"`
+	// Timing — RFC 3339 timestamp + integer seconds. CollectedAt is a
+	// string (not time.Time) because the contract spec types it as a
+	// string and the matching adapters.SourceInfo timestamps are also
+	// strings; storing a Go time.Time here would marshal to RFC 3339Nano
+	// (sub-second precision) and silently surprise downstream consumers
+	// that expect the doc's stripped-to-seconds RFC 3339 shape. Integer
+	// FreshnessSec / StaleAfterSec match the contract for the same reason
+	// — float values would emit `0.000123` and break strict consumers.
+	CollectedAt   string `json:"collected_at"`
+	FreshnessSec  int    `json:"freshness_sec"`
+	StaleAfterSec int    `json:"stale_after_sec"`
 	// Degradation — degraded_features names which output fields are
 	// stale or missing because of this source. last_error / last_error_at
 	// are populated when status != "fresh"; they're optional in the
@@ -9763,13 +9770,14 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 	// fields that are now stale or missing, rather than silently emitting
 	// an empty agent list.
 	tmuxCollectedAt := time.Now().UTC()
+	tmuxCollectedAtStr := tmuxCollectedAt.Format(time.RFC3339)
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
 		output.SourceHealth = map[string]SourceHealthEntry{
 			"tmux": {
 				Source:           "tmux",
 				Status:           "unavailable",
-				CollectedAt:      tmuxCollectedAt,
+				CollectedAt:      tmuxCollectedAtStr,
 				FreshnessSec:     0,
 				StaleAfterSec:    5,
 				Provenance:       "live",
@@ -9794,7 +9802,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 		"tmux": {
 			Source:        "tmux",
 			Status:        "fresh",
-			CollectedAt:   tmuxCollectedAt,
+			CollectedAt:   tmuxCollectedAtStr,
 			FreshnessSec:  int(time.Since(tmuxCollectedAt).Seconds()),
 			StaleAfterSec: 5,
 			Provenance:    "live",

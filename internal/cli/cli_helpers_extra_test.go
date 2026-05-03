@@ -231,7 +231,7 @@ func TestDashboardPaneTypeSummary(t *testing.T) {
 	}
 
 	got := dashboardPaneTypeSummary(panes)
-	want := "Claude=1 Codex=1 Gemini=0 Cursor=1 Windsurf=1 Aider=1 Ollama=1 User=1 Other=1"
+	want := "Claude=1 Codex=1 Gemini=0 Cursor=1 Windsurf=1 Aider=1 Opencode=0 Ollama=1 User=1 Other=1"
 	if got != want {
 		t.Fatalf("dashboardPaneTypeSummary() = %q, want %q", got, want)
 	}
