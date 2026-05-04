@@ -1249,6 +1249,12 @@ func TestAgentActivityInfo_CaptureProvenance(t *testing.T) {
 		if !strings.Contains(s, `"capture_provenance":"unavailable"`) {
 			t.Errorf("expected capture_provenance=unavailable, got %s", s)
 		}
+		// CaptureCollectedAt is populated on the failure path too — that's
+		// the load-bearing fact for a watchdog correlating the failure
+		// with what was happening at that moment. Lock it down.
+		if !strings.Contains(s, `"capture_collected_at":"2026-05-03T20:30:01Z"`) {
+			t.Errorf("expected capture_collected_at on failure path, got %s", s)
+		}
 		if !strings.Contains(s, "tmux capture-pane: pane not found") {
 			t.Errorf("expected capture_error preserved, got %s", s)
 		}
@@ -1316,6 +1322,11 @@ func TestPaneOutput_CaptureProvenance(t *testing.T) {
 		s := string(blob)
 		if !strings.Contains(s, `"capture_provenance":"unavailable"`) {
 			t.Errorf("expected capture_provenance=unavailable, got %s", s)
+		}
+		// CaptureCollectedAt is populated on the failure path too — locking
+		// this down so a future refactor that drops it isn't silent.
+		if !strings.Contains(s, `"capture_collected_at":"2026-05-03T20:31:01Z"`) {
+			t.Errorf("expected capture_collected_at on failure path, got %s", s)
 		}
 		if !strings.Contains(s, "exit status 1") {
 			t.Errorf("expected capture_error preserved, got %s", s)
