@@ -693,6 +693,47 @@ func TestSendFlagNoOptDefVal(t *testing.T) {
 	_ = cmd // silence unused warning
 }
 
+func TestSendForceNonInteractiveFlagParses(t *testing.T) {
+	cmd := newSendCmd()
+	args := []string{"testsession", "--force-non-interactive", "hello world"}
+	cmd.SetArgs(args)
+
+	if err := cmd.ParseFlags(args); err != nil {
+		t.Fatalf("ParseFlags() unexpected error: %v", err)
+	}
+
+	flag := cmd.Flags().Lookup("force-non-interactive")
+	if flag == nil {
+		t.Fatal("expected --force-non-interactive flag to be registered")
+	}
+	if flag.Value.String() != "true" {
+		t.Fatalf("expected --force-non-interactive to parse true, got %q", flag.Value.String())
+	}
+
+	remainingArgs := cmd.Flags().Args()
+	if len(remainingArgs) < 2 || remainingArgs[1] != "hello world" {
+		t.Fatalf("expected prompt to remain positional, got %v", remainingArgs)
+	}
+}
+
+func TestSendJSONIncludesNonInteractiveForcedOnlyWhenTrue(t *testing.T) {
+	forced, err := json.Marshal(SendResult{Success: true, Session: "s", NonInteractiveForced: true})
+	if err != nil {
+		t.Fatalf("marshal forced result: %v", err)
+	}
+	if !strings.Contains(string(forced), `"non_interactive_forced":true`) {
+		t.Fatalf("expected forced JSON field, got %s", forced)
+	}
+
+	unforced, err := json.Marshal(SendResult{Success: true, Session: "s"})
+	if err != nil {
+		t.Fatalf("marshal unforced result: %v", err)
+	}
+	if strings.Contains(string(unforced), "non_interactive_forced") {
+		t.Fatalf("did not expect forced JSON field when false, got %s", unforced)
+	}
+}
+
 // TestParseBatchFile tests the batch file parser
 func TestParseBatchFile(t *testing.T) {
 	tmpDir := t.TempDir()
