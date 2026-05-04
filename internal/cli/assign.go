@@ -918,6 +918,8 @@ func detectAgentTypeFromTitle(title string) string {
 		return "windsurf"
 	case strings.Contains(title, "aider"):
 		return "aider"
+	case strings.Contains(title, "opencode"):
+		return "oc"
 	case strings.Contains(title, "ollama"):
 		return "ollama"
 	case strings.Contains(title, "user"):
