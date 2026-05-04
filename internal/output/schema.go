@@ -95,7 +95,7 @@ type AgentCountsResponse struct {
 	Cursor   int `json:"cursor"`
 	Windsurf int `json:"windsurf"`
 	Aider    int `json:"aider"`
-	Opencode int `json:"oc"`
+	Opencode int `json:"opencode"`
 	User     int `json:"user,omitempty"`
 	Other    int `json:"other,omitempty"`
 	Total    int `json:"total"`
@@ -150,7 +150,7 @@ type AddResponse struct {
 	AddedCursor   int            `json:"added_cursor"`
 	AddedWindsurf int            `json:"added_windsurf"`
 	AddedAider    int            `json:"added_aider"`
-	AddedOpencode int            `json:"added_oc"`
+	AddedOpencode int            `json:"added_opencode"`
 	TotalAdded    int            `json:"total_added"`
 	NewPanes      []PaneResponse `json:"new_panes,omitempty"`
 }
