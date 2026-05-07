@@ -1007,13 +1007,24 @@ Shell Integration:
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(2)
 			}
+			// bd-9296v: --pipeline-from-state requires --pipeline-start-from
+			// (mirrors the `ntm pipeline run --from-state` validation in
+			// internal/cli/pipeline.go) so an operator does not silently
+			// reuse prior step state without telling the run where to
+			// start.
+			if robotPipelineFromState != "" && robotPipelineStartFrom == "" {
+				fmt.Fprintln(os.Stderr, "Error: --pipeline-from-state requires --pipeline-start-from")
+				os.Exit(2)
+			}
 			opts := pipeline.PipelineRunOptions{
-				WorkflowFile: robotPipelineRun,
-				Session:      session,
-				ProjectDir:   projectDir,
-				Variables:    vars,
-				DryRun:       resolveRobotPipelineDryRun(cmd),
-				Background:   robotPipelineBG,
+				WorkflowFile:  robotPipelineRun,
+				Session:       session,
+				ProjectDir:    projectDir,
+				Variables:     vars,
+				DryRun:        resolveRobotPipelineDryRun(cmd),
+				Background:    robotPipelineBG,
+				StartFromStep: robotPipelineStartFrom,
+				FromState:     robotPipelineFromState,
 			}
 			exitCode := pipeline.PrintPipelineRun(opts)
 			os.Exit(exitCode)
@@ -2890,14 +2901,16 @@ var (
 	robotRouteExclude  string // comma-separated pane indices to exclude
 
 	// Robot-pipeline flags for workflow execution
-	robotPipelineRun     string // workflow file to run
-	robotPipelineStatus  string // run ID to check status
-	robotPipelineList    bool   // list all pipelines
-	robotPipelineCancel  string // run ID to cancel
-	robotPipelineSession string // session name for pipeline execution
-	robotPipelineVars    string // JSON variables for pipeline
-	robotPipelineDryRun  bool   // validate without executing
-	robotPipelineBG      bool   // run in background
+	robotPipelineRun       string // workflow file to run
+	robotPipelineStatus    string // run ID to check status
+	robotPipelineList      bool   // list all pipelines
+	robotPipelineCancel    string // run ID to cancel
+	robotPipelineSession   string // session name for pipeline execution
+	robotPipelineVars      string // JSON variables for pipeline
+	robotPipelineDryRun    bool   // validate without executing
+	robotPipelineBG        bool   // run in background
+	robotPipelineStartFrom string // bd-9296v: top-level step ID to start from (mirrors `ntm pipeline run --start-from`)
+	robotPipelineFromState string // bd-9296v: prior run ID whose persisted outputs feed steps skipped by --start-from
 
 	// TUI Parity robot flags - expose TUI dashboard functionality to AI agents
 	robotFiles           string // session name for file changes query
@@ -3478,6 +3491,8 @@ func init() {
 	rootCmd.Flags().StringVar(&robotPipelineVars, "pipeline-vars", "", "JSON variables for pipeline. Optional with --robot-pipeline-run. Example: --pipeline-vars='{\"env\":\"prod\"}'")
 	rootCmd.Flags().BoolVar(&robotPipelineDryRun, "pipeline-dry-run", false, "Validate workflow without executing. Optional with --robot-pipeline-run")
 	rootCmd.Flags().BoolVar(&robotPipelineBG, "pipeline-background", false, "Run pipeline in background. Optional with --robot-pipeline-run")
+	rootCmd.Flags().StringVar(&robotPipelineStartFrom, "pipeline-start-from", "", "Top-level step ID to start from. Optional with --robot-pipeline-run. Example: --pipeline-start-from=step-3")
+	rootCmd.Flags().StringVar(&robotPipelineFromState, "pipeline-from-state", "", "Prior run ID whose persisted outputs should be reused for steps skipped by --pipeline-start-from. Requires --pipeline-start-from.")
 
 	// TUI Parity robot flags - expose TUI dashboard functionality to AI agents
 	rootCmd.Flags().StringVar(&robotFiles, "robot-files", "", "Get file changes with agent attribution. Optional SESSION filter. Example: ntm --robot-files=myproject --files-window=15m")
