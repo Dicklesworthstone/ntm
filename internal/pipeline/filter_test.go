@@ -90,3 +90,37 @@ func TestEvaluateForeachFilterIntegerLiteral(t *testing.T) {
 		t.Fatal("EvaluateForeachFilter() = false, want true")
 	}
 }
+
+// TestEvaluateForeachFilterScalarItem covers bd-8cx7e: foreach over a list of
+// scalar items (e.g. ["a","b"]) must allow filters that reference the bare
+// item value with `item==a` or `${item}==a`. Previously the path resolver
+// fell through to pane lookup and surfaced an undefined-variable error.
+func TestEvaluateForeachFilterScalarItem(t *testing.T) {
+	for _, expr := range []string{"item==a", `${item}==a`, "item!=b"} {
+		got, err := EvaluateForeachFilter(expr, FilterContext{Item: "a"})
+		if err != nil {
+			t.Fatalf("EvaluateForeachFilter(%q) error = %v", expr, err)
+		}
+		if !got {
+			t.Fatalf("EvaluateForeachFilter(%q) = false, want true", expr)
+		}
+	}
+
+	got, err := EvaluateForeachFilter("item==a", FilterContext{Item: "b"})
+	if err != nil {
+		t.Fatalf("EvaluateForeachFilter() error = %v", err)
+	}
+	if got {
+		t.Fatal("EvaluateForeachFilter(item==a) for Item=b = true, want false")
+	}
+}
+
+func TestEvaluateForeachFilterBarePaneScalar(t *testing.T) {
+	got, err := EvaluateForeachFilter("pane==main:1", FilterContext{Pane: "main:1"})
+	if err != nil {
+		t.Fatalf("EvaluateForeachFilter() error = %v", err)
+	}
+	if !got {
+		t.Fatal("EvaluateForeachFilter(pane==main:1) for Pane='main:1' = false, want true")
+	}
+}

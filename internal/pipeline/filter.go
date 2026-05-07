@@ -299,6 +299,9 @@ func (o filterOperand) requiresResolution() bool {
 		return false
 	}
 	value := unwrapFilterReference(o.value)
+	if value == "item" || value == "pane" {
+		return true
+	}
 	return strings.HasPrefix(value, "item.") || strings.HasPrefix(value, "pane.")
 }
 
@@ -339,6 +342,18 @@ func parseFilterLiteral(value string) (interface{}, bool) {
 func resolveFilterBinding(name string, ctx FilterContext) (interface{}, error) {
 	name = strings.TrimSpace(name)
 	switch {
+	case name == "item":
+		// Bare item resolves to the iteration value itself so filters like
+		// item=="a" work for scalar foreach lists (bd-8cx7e).
+		if ctx.Item == nil {
+			return nil, fmt.Errorf("undefined filter variable %q", name)
+		}
+		return ctx.Item, nil
+	case name == "pane":
+		if ctx.Pane == nil {
+			return nil, fmt.Errorf("undefined filter variable %q", name)
+		}
+		return ctx.Pane, nil
 	case strings.HasPrefix(name, "item."):
 		return resolveFilterPath(ctx.Item, strings.TrimPrefix(name, "item."), name)
 	case strings.HasPrefix(name, "pane."):
