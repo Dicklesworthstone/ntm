@@ -68,6 +68,38 @@ func TestForeachAuthorModelFamilyForPanesPrefersPaneVocabulary(t *testing.T) {
 	}
 }
 
+func TestForeachAuthorModelFamilyForPanesIgnoresExcludedPanes(t *testing.T) {
+	// bd-i310h: an excluded pane (Excluded:true) must not be the source of
+	// the pane-vocabulary token used to map the author model family.
+	// Otherwise byModelFamilyDifference exact-compares the available panes
+	// against a token that came from a stale/excluded pane and silently
+	// routes same-family work to the wrong family.
+	strategyPanes := []paneStrategyPane{
+		{ID: "old", ModelFamily: "cc", Excluded: true},
+		{ID: "same", ModelFamily: "claude"},
+		{ID: "other", ModelFamily: "cod"},
+	}
+	item := map[string]interface{}{"author_model": "claude-sonnet-4"}
+
+	if got := foreachAuthorModelFamilyForPanes(item, strategyPanes); got != "claude" {
+		t.Fatalf("foreachAuthorModelFamilyForPanes() = %q, want claude (ignore excluded 'cc' pane)", got)
+	}
+
+	// Composing with byModelFamilyDifference: the comparison should see
+	// "claude" matching the available "same" pane, returning errNoModelFamilyPane
+	// because there is no AVAILABLE different-family pane in the claude
+	// canonical group; "other" is cod, and cc-pane is excluded.
+	got, _, err := byModelFamilyDifference(strategyPanes, foreachAuthorModelFamilyForPanes(item, strategyPanes))
+	if err != nil {
+		t.Fatalf("byModelFamilyDifference() error = %v", err)
+	}
+	// The expected pane is "other" (cod) since the author family resolves
+	// to "claude" and we must pick a DIFFERENT family pane that is available.
+	if got != "other" {
+		t.Fatalf("byModelFamilyDifference() = %q, want %q (different-family available pane)", got, "other")
+	}
+}
+
 func TestSelectForeachPaneByModelFamilyRoutesCanonicalToVariantPanes(t *testing.T) {
 	// Phase-6-style foreach over model families typically uses canonical tokens
 	// (cc, cod, gmi) or verbose names (claude-sonnet-4) in items, while panes
