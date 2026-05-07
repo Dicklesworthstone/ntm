@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -271,8 +272,12 @@ func scalarOrArrayItems(value interface{}) ([]interface{}, error) {
 
 func arrayLikeItems(value interface{}) ([]interface{}, error) {
 	switch v := value.(type) {
+	case nil:
+		return nil, fmt.Errorf("expected array-like value, got %T", value)
 	case []interface{}:
 		return v, nil
+	case []byte:
+		return nil, fmt.Errorf("expected array-like value, got %T", value)
 	case []string:
 		items := make([]interface{}, len(v))
 		for i, item := range v {
@@ -301,6 +306,19 @@ func arrayLikeItems(value interface{}) ([]interface{}, error) {
 		items := make([]interface{}, len(v))
 		for i, item := range v {
 			items[i] = item
+		}
+		return items, nil
+	}
+
+	// Reflection fallback so typed slices like []BeadRecord, []*Issue, or any
+	// other Go slice produced by a parsed step output (bd-682z9) fan out per
+	// element instead of being wrapped as a single iteration item.
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		items := make([]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			items[i] = rv.Index(i).Interface()
 		}
 		return items, nil
 	default:

@@ -42,6 +42,7 @@ func TestArrayLikeItemsRejectsNonSlice(t *testing.T) {
 		true,
 		map[string]interface{}{"k": "v"},
 		nil,
+		[]byte("blob"),
 	}
 	for _, in := range rejects {
 		_, err := arrayLikeItems(in)
@@ -51,6 +52,65 @@ func TestArrayLikeItemsRejectsNonSlice(t *testing.T) {
 		if !strings.Contains(err.Error(), "expected array-like") {
 			t.Errorf("arrayLikeItems(%T) error = %q, want 'expected array-like'", in, err)
 		}
+	}
+}
+
+// bd-682z9: typed slices produced by step parsed output (bead_query stores
+// ParsedData as []BeadRecord, future structured outputs will use other
+// concrete slice types) must fan out per element rather than being wrapped
+// as one iteration item.
+func TestArrayLikeItemsAcceptsTypedSlices(t *testing.T) {
+	beadRecords := []BeadRecord{
+		{ID: "bd-1", Title: "first"},
+		{ID: "bd-2", Title: "second"},
+	}
+	got, err := arrayLikeItems(beadRecords)
+	if err != nil {
+		t.Fatalf("arrayLikeItems([]BeadRecord) err = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2 — typed slice was wrapped instead of fanned out", len(got))
+	}
+	first, ok := got[0].(BeadRecord)
+	if !ok {
+		t.Fatalf("got[0] = %T, want BeadRecord — element type lost", got[0])
+	}
+	if first.ID != "bd-1" {
+		t.Fatalf("got[0].ID = %q, want bd-1", first.ID)
+	}
+
+	type widget struct{ N int }
+	widgets := []widget{{N: 7}, {N: 9}, {N: 11}}
+	got, err = arrayLikeItems(widgets)
+	if err != nil {
+		t.Fatalf("arrayLikeItems([]widget) err = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d items, want 3", len(got))
+	}
+
+	// Pointer slice: each element should be the original *widget, not
+	// dereferenced.
+	pwidgets := []*widget{{N: 1}, {N: 2}}
+	got, err = arrayLikeItems(pwidgets)
+	if err != nil {
+		t.Fatalf("arrayLikeItems([]*widget) err = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2", len(got))
+	}
+	if _, ok := got[0].(*widget); !ok {
+		t.Fatalf("got[0] = %T, want *widget", got[0])
+	}
+
+	// Fixed-size array support — same code path via reflect.
+	arr := [3]string{"a", "b", "c"}
+	got, err = arrayLikeItems(arr)
+	if err != nil {
+		t.Fatalf("arrayLikeItems([3]string) err = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d items, want 3", len(got))
 	}
 }
 
