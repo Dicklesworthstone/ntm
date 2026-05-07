@@ -424,10 +424,57 @@ func (s *Substitutor) substituteOnce(template string) (string, error, int) {
 		}
 
 		resolved++
-		return formatValue(value)
+		formatted := formatValue(value)
+		// bd-447se: values resolved from untrusted namespaces (step output,
+		// process env, bead_query) must not be re-processed by later passes
+		// of the substitution loop. Otherwise a step that prints
+		// `${env.GITHUB_TOKEN}` and a downstream `${steps.A.output}` form a
+		// secret-disclosure / control-flow injection vector. Replace any
+		// `${` sequences in the substituted value with the escape
+		// placeholder so the outer Substitute loop sees them as opaque
+		// data; restoreEscapedSubstitutions converts them back to literal
+		// `${` in the final output.
+		if isTerminalSubstitutionNamespace(varPath) {
+			formatted = sealTerminalValue(formatted)
+		}
+		return formatted
 	})
 
 	return result, firstErr, resolved
+}
+
+// isTerminalSubstitutionNamespace reports whether values resolved from this
+// variable path should be treated as opaque data rather than recursively
+// re-substituted. Author-controlled namespaces (vars, defaults, loop, pane,
+// runtime, session/timestamp/run_id/workflow) keep recursive expansion;
+// untrusted/external namespaces (step output, process env, bead query
+// records, agent output) are sealed to prevent
+// secret-disclosure / control-flow injection through external data
+// (bd-447se).
+func isTerminalSubstitutionNamespace(varPath string) bool {
+	path := strings.TrimSpace(varPath)
+	if path == "" {
+		return false
+	}
+	root := path
+	if idx := strings.IndexAny(path, ".["); idx >= 0 {
+		root = path[:idx]
+	}
+	switch root {
+	case "steps", "env", "bead_query", "agent":
+		return true
+	}
+	return false
+}
+
+// sealTerminalValue replaces every ${ in v with escapePlaceholder so the
+// next substitution pass treats it as data. Final restoreEscapedSubstitutions
+// reverts placeholders to literal ${ for output.
+func sealTerminalValue(v string) string {
+	if !strings.Contains(v, "${") {
+		return v
+	}
+	return strings.ReplaceAll(v, "${", escapePlaceholder)
 }
 
 func protectEscapedSubstitutions(template string) string {
