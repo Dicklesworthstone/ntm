@@ -19,12 +19,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
+
+// dispatchLogSeq is a process-local sequence counter that breaks ties when
+// two dispatch logs land in the same second + step ID. Combined with the
+// nanosecond timestamp it makes filenames sortable and unique even under
+// retry/recovery loops or rapid foreach fan-out (bd-45fs8).
+var dispatchLogSeq uint64
 
 // ExecutorConfig configures the executor behavior
 type ExecutorConfig struct {
@@ -1439,8 +1446,13 @@ func (e *Executor) writeDispatchLog(stepID, rendered string, opts ...dispatchLog
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	ts := time.Now().UTC().Format("20060102T150405Z")
-	filename := filepath.Join(logDir, fmt.Sprintf("dispatch-%s-%s.log", ts, sanitizeDispatchLogStepID(stepID)))
+	// Nanosecond precision + a process-local sequence counter so two writes
+	// from the same step in the same second (retry/recovery, foreach
+	// fan-out, rapid repeated runs) cannot collide on a filename and silently
+	// overwrite an earlier audit log (bd-45fs8). Sortable lexicographically.
+	ts := time.Now().UTC().Format("20060102T150405.000000000Z")
+	seq := atomic.AddUint64(&dispatchLogSeq, 1)
+	filename := filepath.Join(logDir, fmt.Sprintf("dispatch-%s-%06d-%s.log", ts, seq, sanitizeDispatchLogStepID(stepID)))
 	if err := os.WriteFile(filename, []byte(formatDispatchLog(opt, rendered)), 0o644); err != nil {
 		slog.Warn("failed to write dispatch log", "run_id", e.runIDForLog(), "step_id", stepID, "error", err, "path", filename)
 	}

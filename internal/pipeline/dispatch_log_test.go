@@ -74,6 +74,56 @@ func TestWriteDispatchLog_WritesAuditFile(t *testing.T) {
 	}
 }
 
+// bd-45fs8: two dispatch logs for the same step ID written in the same
+// second must NOT collide. Earlier filenames truncated to second precision
+// and dropped duplicates by overwriting; the audit chain silently lost
+// records under retry/recovery and rapid foreach fan-out.
+func TestWriteDispatchLog_TwoWritesInOneSecondLeaveTwoFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	executor := NewExecutor(ExecutorConfig{ProjectDir: tmpDir, Session: "audit-session"})
+
+	// Two back-to-back writes for the same step. Even on a sub-microsecond
+	// machine these will be in the same second, exposing the original bug.
+	for i := 0; i < 2; i++ {
+		executor.writeDispatchLog("retry-step", "body-"+string(rune('a'+i)), dispatchLogOptions{
+			Template: "MO.md",
+			PaneID:   "%1",
+			Session:  "audit-session",
+		})
+	}
+
+	entries, err := os.ReadDir(filepath.Join(tmpDir, "session-logs"))
+	if err != nil {
+		t.Fatalf("ReadDir(session-logs) returned error: %v", err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("dispatch log count = %d, want 2 (filenames collided): %v", len(entries), names)
+	}
+
+	// Both files should still be sortable (timestamp + seq prefix) and
+	// distinguishable.
+	if entries[0].Name() == entries[1].Name() {
+		t.Fatalf("filenames identical: %q", entries[0].Name())
+	}
+
+	// Verify the bodies are preserved — not just one body written twice.
+	bodies := make(map[string]bool)
+	for _, e := range entries {
+		content, err := os.ReadFile(filepath.Join(tmpDir, "session-logs", e.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", e.Name(), err)
+		}
+		bodies[string(content)] = true
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected two distinct bodies, got %d", len(bodies))
+	}
+}
+
 func TestExecuteTemplate_WritesFormattedDispatchLog(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "MO.md"), []byte("Hello <NAME>"), 0o644); err != nil {
