@@ -68,6 +68,40 @@ func TestForeachAuthorModelFamilyForPanesPrefersPaneVocabulary(t *testing.T) {
 	}
 }
 
+func TestSelectForeachPaneModelFamilyDifferenceTreatsGeminiVariantsAsSameFamily(t *testing.T) {
+	// Gemini panes are commonly stored with bare variant ModelFamily values
+	// like "pro", "flash", or "ultra" (paneMetadataFromTmuxPane variant
+	// fallback). Without grouping those under Gemini, by_model_family_difference
+	// would route a Gemini-authored item back to the same-family pane,
+	// defeating the cross-family debate contract.
+	cases := []struct {
+		name        string
+		variant     string
+		authorModel string
+	}{
+		{name: "pro variant", variant: "pro", authorModel: "gemini-pro"},
+		{name: "flash variant", variant: "flash", authorModel: "gemini-1.5-flash"},
+		{name: "ultra variant", variant: "ultra", authorModel: "google-gemini-ultra"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			strategyPanes := []paneStrategyPane{
+				{ID: "p1", ModelFamily: tc.variant},
+				{ID: "p2", ModelFamily: "cod"},
+			}
+			item := map[string]interface{}{"author_model": tc.authorModel}
+
+			got, _, _, err := selectForeachPane("by_model_family_difference", strategyPanes, nil, item, 0)
+			if err != nil {
+				t.Fatalf("selectForeachPane() error = %v", err)
+			}
+			if got != "p2" {
+				t.Fatalf("selectForeachPane() = %q, want p2 (Gemini-authored work must avoid the Gemini-variant pane)", got)
+			}
+		})
+	}
+}
+
 func TestSelectForeachPaneModelFamilyDifferenceTreatsClaudeVariantsAsSameFamily(t *testing.T) {
 	// Pane spawn paths set ModelFamily to bare variant names like "opus",
 	// "sonnet", or "haiku" via paneMetadataFromTmuxPane. Without grouping

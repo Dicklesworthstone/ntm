@@ -76,12 +76,18 @@ func modelFamilyGroup(raw string) string {
 		return "gemini"
 	}
 
-	// Bare Claude model variants used as pane.ModelFamily / item.author_model
-	// (e.g. "opus", "sonnet", "haiku") must group under Claude so the
+	// Bare model variants used as pane.ModelFamily / item.author_model
+	// (e.g. "opus", "sonnet", "haiku" for Claude; "pro", "flash", "ultra"
+	// for Gemini) must group under their canonical family so the
 	// cross-family adversarial contract treats them as same-family.
+	// paneMetadataFromTmuxPane sets pane.ModelFamily from tag → variant →
+	// type, so panes spawned without explicit model tags surface here as
+	// the bare variant name.
 	switch normalized {
 	case "opus", "sonnet", "haiku":
 		return "claude"
+	case "pro", "flash", "ultra":
+		return "gemini"
 	}
 
 	switch {
@@ -91,7 +97,8 @@ func modelFamilyGroup(raw string) string {
 		return "claude"
 	case strings.HasPrefix(normalized, "codex"), strings.HasPrefix(normalized, "openai"), strings.HasPrefix(normalized, "gpt"):
 		return "codex"
-	case strings.HasPrefix(normalized, "gemini"), strings.HasPrefix(normalized, "google"):
+	case strings.HasPrefix(normalized, "gemini"), strings.HasPrefix(normalized, "google"),
+		strings.HasPrefix(normalized, "flash"), strings.HasPrefix(normalized, "ultra"):
 		return "gemini"
 	default:
 		return ""
