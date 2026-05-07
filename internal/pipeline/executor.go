@@ -3251,6 +3251,16 @@ func findStepContainer(workflow *Workflow, stepID string) (parentID, kind string
 					return true
 				}
 			}
+			// bd-ctz1z: ForeachPane bodies are also synthetic, per-pane
+			// step expansions and must reject --start-from for the same
+			// reason as Foreach bodies (not graph-indexed, no top-level
+			// dependency edge). Without this branch, nested per-pane
+			// body steps slipped through the rejection.
+			if s.ForeachPane != nil && len(s.ForeachPane.Steps) > 0 {
+				if walk(s.ForeachPane.Steps, s, "foreach_pane") {
+					return true
+				}
+			}
 		}
 		return false
 	}

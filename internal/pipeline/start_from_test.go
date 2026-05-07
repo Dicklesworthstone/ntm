@@ -183,6 +183,47 @@ func TestStartFrom_InsideLoopBody_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestStartFrom_InsideForeachPaneBody_ReturnsForeachPaneRejection covers
+// bd-ctz1z: findStepContainer used to recurse only Step.Foreach bodies and
+// missed Step.ForeachPane. --start-from could therefore target a nested
+// per-pane body step and bypass the top-level-only contract. The
+// rejection now matches the foreach branch, with kind=foreach_pane in the
+// error message.
+func TestStartFrom_InsideForeachPaneBody_ReturnsForeachPaneRejection(t *testing.T) {
+	wf := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "start-from-foreach-pane",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{
+				ID: "fanout_pane",
+				ForeachPane: &ForeachConfig{
+					Items: `[1,2]`,
+					Steps: []Step{
+						{ID: "per_pane_child", Prompt: "child"},
+					},
+				},
+			},
+		},
+	}
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	cfg.StartFromStep = "per_pane_child"
+	e := NewExecutor(cfg)
+
+	_, err := e.Run(context.Background(), wf, nil, nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want foreach_pane-body error")
+	}
+	if !strings.Contains(err.Error(), "foreach_pane") || !strings.Contains(err.Error(), "fanout_pane") {
+		t.Fatalf("err = %v, want it to mention the foreach_pane container and parent id", err)
+	}
+	if strings.Contains(err.Error(), "not found in workflow") {
+		t.Fatalf("err = %v, want foreach_pane-body diagnostic, not graph 'not found' fallback", err)
+	}
+}
+
 func TestStartFrom_InsideForeachBody_ReturnsForeachRejection(t *testing.T) {
 	// Foreach body steps are not indexed in the dependency graph, so a naive
 	// graph-only lookup would report them as "not found in workflow" instead of
