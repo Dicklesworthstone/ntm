@@ -352,10 +352,13 @@ func (e *Executor) beginForeachState(stepID string, total int) int {
 	}
 	state.Total = total
 	state.UpdatedAt = now
+	// bd-p12ti: CompletedIterationIDs is the durable record of work safe to
+	// skip; CurrentIteration is only a cursor and must not jump past an
+	// incomplete gap. Always start at the first incomplete iteration so a
+	// persisted state with a gap (partial writes, force-resume edge cases,
+	// future out-of-order completion metadata) does not silently drop the
+	// missing iteration on resume.
 	start := firstIncompleteIteration(state.CompletedIterationIDs, stepID, total)
-	if state.CurrentIteration > start && state.CurrentIteration < total {
-		start = state.CurrentIteration
-	}
 	state.CurrentIteration = start
 	e.state.ForeachState[stepID] = state
 	return start

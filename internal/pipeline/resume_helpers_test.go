@@ -148,9 +148,23 @@ func TestResumeProgressBookkeepingHelpers(t *testing.T) {
 	}
 	executor.markForeachIterationCompleted("fanout", 0, 4)
 	executor.markForeachIterationCompleted("fanout", 2, 4)
+	// bd-p12ti: completed=[iter0, iter2] has a gap at iteration 1.
+	// markForeachIterationCompleted(2) bumps CurrentIteration to 3, but the
+	// durable completed set is authoritative — beginForeachState must start
+	// at the first gap (1), not jump past it to the cursor.
+	start = executor.beginForeachState("fanout", 4)
+	if start != 1 {
+		t.Fatalf("gap-aware foreach start = %d, want 1 (skip past gap is unsafe)", start)
+	}
+	if got := executor.state.ForeachState["fanout"].CurrentIteration; got != 1 {
+		t.Fatalf("CurrentIteration after gap-aware begin = %d, want 1", got)
+	}
+	// bd-p12ti regression guard: with no gaps and CurrentIteration ahead,
+	// resume legitimately starts at CurrentIteration.
+	executor.markForeachIterationCompleted("fanout", 1, 4)
 	start = executor.beginForeachState("fanout", 4)
 	if start != 3 {
-		t.Fatalf("next foreach iteration = %d, want persisted current iteration 3", start)
+		t.Fatalf("contiguous-complete foreach start = %d, want 3", start)
 	}
 	if got := firstIncompleteIteration([]string{"fanout_iter0", "fanout_iter2"}, "fanout", 4); got != 1 {
 		t.Fatalf("first gap incomplete iteration = %d, want 1", got)
