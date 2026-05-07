@@ -299,6 +299,40 @@ func TestResolveItems_JSONArrayLiteral(t *testing.T) {
 	}
 }
 
+func TestResolveItems_NestedVarsReference(t *testing.T) {
+	// bd-8tlee: ${vars.group.files} must walk into a nested map so workflow
+	// authors can group iteration sources without flattening them out.
+	r := IterationSourceResolver{}
+	vars := map[string]interface{}{
+		"group": map[string]interface{}{
+			"files": []interface{}{"a.go", "b.go"},
+		},
+	}
+
+	got, err := r.ResolveItems(context.Background(), "${vars.group.files}", vars)
+	if err != nil {
+		t.Fatalf("ResolveItems: %v", err)
+	}
+	if want := []interface{}{"a.go", "b.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolveItems = %#v, want %#v", got, want)
+	}
+}
+
+func TestResolveItems_NestedMissingFieldErrors(t *testing.T) {
+	// bd-8tlee: a missing nested field should surface a clear error rather
+	// than returning the literal placeholder.
+	r := IterationSourceResolver{}
+	vars := map[string]interface{}{
+		"group": map[string]interface{}{
+			"files": []interface{}{"a.go"},
+		},
+	}
+	_, err := r.ResolveItems(context.Background(), "${vars.group.missing}", vars)
+	if err == nil {
+		t.Fatal("ResolveItems error = nil, want missing-field error")
+	}
+}
+
 func TestResolveItems_VarsListReference(t *testing.T) {
 	r := &IterationSourceResolver{}
 	vars := map[string]interface{}{

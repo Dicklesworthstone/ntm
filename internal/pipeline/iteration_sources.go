@@ -251,15 +251,35 @@ func lookupItemsVariable(ref string, vars map[string]interface{}) (interface{}, 
 		return nil, fmt.Errorf("items reference ${%s}: no variables available", ref)
 	}
 
-	key := ref
-	if strings.HasPrefix(ref, "vars.") {
-		key = strings.TrimPrefix(ref, "vars.")
+	// bd-8tlee: support nested dotted paths so a workflow can drive items
+	// from a nested var map (${vars.group.files}) without falling back to
+	// flat map lookup. The leading vars. prefix is still stripped to keep
+	// compatibility with the existing flat-key fast path.
+	parts := strings.Split(ref, ".")
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("items reference ${%s}: empty reference", ref)
 	}
-	value, ok := vars[key]
+	start := 0
+	if parts[0] == "vars" {
+		start = 1
+	}
+	if start >= len(parts) {
+		return nil, fmt.Errorf("items reference ${%s}: missing variable name", ref)
+	}
+
+	value, ok := vars[parts[start]]
 	if !ok {
 		return nil, fmt.Errorf("items reference ${%s}: undefined variable", ref)
 	}
-	return value, nil
+	rest := parts[start+1:]
+	if len(rest) == 0 {
+		return value, nil
+	}
+	resolved, err := navigateNested(value, rest)
+	if err != nil {
+		return nil, fmt.Errorf("items reference ${%s}: %w", ref, err)
+	}
+	return resolved, nil
 }
 
 func scalarOrArrayItems(value interface{}) ([]interface{}, error) {
