@@ -277,6 +277,67 @@ func (e *Executor) executeOnFailureRecovery(ctx context.Context, step *Step, wor
 	return failed
 }
 
+// runPostPipelineSteps iterates Workflow.PostPipelineSteps in order after
+// the main step graph has finished. Each step runs through the regular
+// executeStep machinery so it inherits retries, on_failure, and routing.
+// Failures here are persisted into state.Steps but DO NOT change the
+// overall pipeline status — post-pipeline steps are for cleanup and
+// notification, not gating (bd-w6nth.5).
+func (e *Executor) runPostPipelineSteps(ctx context.Context, workflow *Workflow) {
+	if workflow == nil || len(workflow.PostPipelineSteps) == 0 {
+		return
+	}
+
+	for i := range workflow.PostPipelineSteps {
+		step := workflow.PostPipelineSteps[i]
+		if step.ID == "" {
+			step.ID = fmt.Sprintf("post_pipeline_%d", i+1)
+		}
+
+		e.stateMu.Lock()
+		e.state.CurrentStep = step.ID
+		e.state.UpdatedAt = time.Now()
+		e.stateMu.Unlock()
+
+		result := e.executeStep(ctx, &step, workflow)
+		if result.FinishedAt.IsZero() {
+			result.FinishedAt = time.Now()
+		}
+
+		e.stateMu.Lock()
+		e.state.Steps[step.ID] = result
+		e.state.UpdatedAt = time.Now()
+		if result.Status == StatusFailed && result.Error != nil {
+			slog.Warn("post_pipeline_step failed",
+				"run_id", e.state.RunID,
+				"workflow", workflow.Name,
+				"step_id", step.ID,
+				"error", result.Error.Message,
+			)
+			e.state.Errors = append(e.state.Errors, ExecutionError{
+				StepID:    step.ID,
+				Type:      "post_pipeline",
+				Message:   result.Error.Message,
+				Timestamp: time.Now(),
+				Fatal:     false,
+			})
+		}
+		e.stateMu.Unlock()
+
+		if step.OutputVar != "" && result.Status == StatusCompleted {
+			e.varMu.Lock()
+			e.state.Variables[step.OutputVar] = result.Output
+			if result.ParsedData != nil {
+				e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
+			}
+			StoreStepOutput(e.state, step.ID, result.Output, result.ParsedData)
+			e.varMu.Unlock()
+		}
+
+		e.persistState()
+	}
+}
+
 func (e *Executor) executeOnFailureAction(step *Step, failed StepResult) StepResult {
 	if step == nil {
 		return failed

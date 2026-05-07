@@ -259,6 +259,15 @@ func (e *Executor) Run(ctx context.Context, workflow *Workflow, vars map[string]
 	// Execute steps in dependency order
 	err = e.executeWorkflow(ctx, workflow)
 
+	// bd-w6nth.5: post_pipeline_steps run after the main step graph
+	// completes regardless of outcome (success, failure, or non-cancel
+	// error). Failures inside post-steps are recorded but do not flip the
+	// final pipeline status; cleanup, notifications, and hand-off
+	// dispatches must run even when the main pipeline failed.
+	if ctx.Err() == nil {
+		e.runPostPipelineSteps(ctx, workflow)
+	}
+
 	// Finalize state
 	if err != nil {
 		if ctx.Err() != nil {

@@ -703,6 +703,81 @@ func TestOnFailureActionNotSetOnSuccessSkipsRuntimeGuardedStep(t *testing.T) {
 	}
 }
 
+// TestRunPostPipelineStepsExecuteAfterMainSuccess covers bd-w6nth.5: when
+// the main pipeline graph completes successfully, post_pipeline_steps
+// must run and their results land in state.Steps.
+func TestRunPostPipelineStepsExecuteAfterMainSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultExecutorConfig("post-pipeline-success")
+	cfg.ProjectDir = tmpDir
+	executor := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "post-pipeline-success-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{ID: "main", Command: "echo main"},
+		},
+		PostPipelineSteps: []Step{
+			{ID: "notify", Command: "echo notified"},
+			{ID: "cleanup", Command: "echo cleaned"},
+		},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if state.Status != StatusCompleted {
+		t.Fatalf("state.Status = %q, want %q", state.Status, StatusCompleted)
+	}
+	for _, id := range []string{"notify", "cleanup"} {
+		got, ok := state.Steps[id]
+		if !ok {
+			t.Errorf("state.Steps[%q] missing — post_pipeline_step did not run", id)
+			continue
+		}
+		if got.Status != StatusCompleted {
+			t.Errorf("post_pipeline_step %q status = %q, want %q (error=%+v)", id, got.Status, StatusCompleted, got.Error)
+		}
+	}
+}
+
+// TestRunPostPipelineStepsRunAfterMainFailure covers bd-w6nth.5: post-
+// pipeline steps must run even when the main graph fails. The pipeline
+// status remains Failed; post-step results are still persisted.
+func TestRunPostPipelineStepsRunAfterMainFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultExecutorConfig("post-pipeline-fail")
+	cfg.ProjectDir = tmpDir
+	executor := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "post-pipeline-fail-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{ID: "main", Command: "exit 7"},
+		},
+		PostPipelineSteps: []Step{
+			{ID: "cleanup", Command: "echo cleaned"},
+		},
+	}
+
+	state, _ := executor.Run(context.Background(), workflow, nil, nil)
+	if state.Status != StatusFailed {
+		t.Fatalf("state.Status = %q, want %q after main failure", state.Status, StatusFailed)
+	}
+	cleanup, ok := state.Steps["cleanup"]
+	if !ok {
+		t.Fatal("post_pipeline_step 'cleanup' missing — must run even after main failure")
+	}
+	if cleanup.Status != StatusCompleted {
+		t.Errorf("cleanup status = %q, want %q (error=%+v)", cleanup.Status, StatusCompleted, cleanup.Error)
+	}
+}
+
 // TestOnFailureActionFiresInsideBranchBody covers bd-afwly: a failed step
 // inside a branch body with on_failure: fallback_to_ntm_inbox must set
 // the runtime variable and convert to StatusSkipped, matching the
