@@ -60,6 +60,22 @@ func validateOutputVarCollisions(step *Step, stepField string, result *Validatio
 			Message: fmt.Sprintf("parallel sub-steps share output_var %q: %s", name, strings.Join(ids, ", ")),
 			Hint:    "Default output_var_mode=aggregate stores a []string in declaration order; use distinct output_var names or output_var_mode:last to opt into last-completion semantics.",
 		})
+		// bd-ctxcf: a colliding output_var group must have a single
+		// unambiguous effective mode. parallelGroupOutputVarMode picks the
+		// first non-empty mode and silently ignores later conflicting ones,
+		// so a workflow that declares output_var_mode:collect on one substep
+		// and output_var_mode:last on another would store a different shape
+		// depending on declaration order. Reject the conflict at validation
+		// time so authors must pick one mode (typically by setting it on
+		// the parent step or making one declaration explicit).
+		if conflict := conflictingParallelOutputVarModes(step.Parallel.Steps, indices); conflict != nil {
+			result.addError(ParseError{
+				Field:   stepField + ".parallel.output_var_mode",
+				Message: fmt.Sprintf("parallel sub-steps share output_var %q with conflicting output_var_mode values: %s", name, strings.Join(conflict, ", ")),
+				Hint:    "Set output_var_mode on at most one sub-step in the group, or declare it on the parent step.",
+			})
+			continue
+		}
 		if parallelGroupOutputVarMode(step.Parallel.Steps, indices) == OutputVarModeLast {
 			result.addWarning(ParseError{
 				Field:   stepField + ".parallel.output_var_mode",
@@ -68,6 +84,32 @@ func validateOutputVarCollisions(step *Step, stepField string, result *Validatio
 			})
 		}
 	}
+}
+
+// conflictingParallelOutputVarModes returns the distinct non-empty
+// output_var_mode values declared across a set of colliding parallel
+// sub-step indices, or nil if at most one distinct non-empty mode exists.
+// "Non-empty" matters because a sub-step that omits the mode inherits the
+// group default and is not in conflict; only explicit, divergent values are.
+func conflictingParallelOutputVarModes(steps []Step, indices []int) []string {
+	seen := make(map[OutputVarMode]struct{})
+	var modes []string
+	for _, index := range indices {
+		mode := steps[index].OutputVarMode
+		if mode == "" {
+			continue
+		}
+		if _, ok := seen[mode]; ok {
+			continue
+		}
+		seen[mode] = struct{}{}
+		modes = append(modes, string(mode))
+	}
+	if len(modes) < 2 {
+		return nil
+	}
+	sort.Strings(modes)
+	return modes
 }
 
 func validateForeachOutputVarMode(foreach *ForeachConfig, stepMode OutputVarMode, outputVar string, field string, result *ValidationResult) {
