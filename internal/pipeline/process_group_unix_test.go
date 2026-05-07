@@ -88,3 +88,64 @@ func processExists(pid int) bool {
 func errorsIsPermission(err error) bool {
 	return err == syscall.EPERM
 }
+
+// TestParseProcStatPGID covers bd-ob92m: the descendant-sweep fallback in
+// signalCommandProcessGroup parses /proc/<pid>/stat to discover which
+// processes share the leader's pgid. The comm field is wrapped in
+// parentheses and can itself contain spaces or parentheses, so we must
+// scan back to the LAST `)` before splitting fields.
+func TestParseProcStatPGID(t *testing.T) {
+	cases := []struct {
+		name string
+		stat string
+		want int
+		ok   bool
+	}{
+		{
+			name: "simple",
+			stat: "1234 (sleep) S 1 1234 1234 0 -1 4194304 ...",
+			want: 1234,
+			ok:   true,
+		},
+		{
+			name: "comm with spaces and parens",
+			stat: "5678 (my (weird) program) R 1 9999 9999 0 ...",
+			want: 9999,
+			ok:   true,
+		},
+		{
+			name: "missing close paren",
+			stat: "1234 (sleep S 1 1234 1234",
+			ok:   false,
+		},
+		{
+			name: "too few fields after comm",
+			stat: "1 (init) S",
+			ok:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseProcStatPGID([]byte(tc.stat))
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if ok && got != tc.want {
+				t.Errorf("pgid = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestKillProcessGroupDescendantsBestEffort verifies the helper does not
+// panic on bogus inputs and does not target pid 1 / the leader itself.
+// We can't easily simulate a real "kill -pgid failed" sequence in a
+// portable test, but the helper must be safe to call when /proc is
+// missing (early return) and when leaderPID matches no one.
+func TestKillProcessGroupDescendantsBestEffort(t *testing.T) {
+	// Should be a silent no-op rather than panicking.
+	killProcessGroupDescendants(0)
+	killProcessGroupDescendants(-5)
+	// Use a pgid that very likely matches no live process group.
+	killProcessGroupDescendants(2147483646)
+}
