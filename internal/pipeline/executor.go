@@ -811,7 +811,16 @@ func (e *Executor) executeStepOnce(ctx context.Context, step *Step, workflow *Wo
 	}
 
 	// Substitute variables in prompt
-	prompt = e.substituteVariables(prompt)
+	prompt, err = e.substituteVariablesStrict(prompt)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = &StepError{
+			Type:      "substitution",
+			Message:   fmt.Sprintf("failed to substitute variables in prompt: %v", err),
+			Timestamp: time.Now(),
+		}
+		return result
+	}
 
 	// Find target pane
 	paneID, agentType, err := e.selectPane(step)
@@ -968,14 +977,32 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		AgentType: "command",
 	}
 
-	expandedCmd := e.substituteVariables(step.Command)
+	expandedCmd, err := e.substituteVariablesStrict(step.Command)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, "command", "substitution",
+			fmt.Sprintf("failed to substitute variables in command: %v", err),
+			"check that every ${var}, ${env.X}, ${steps.X.output}, and ${defaults.X} reference is defined",
+			err.Error())
+		result.FinishedAt = time.Now()
+		return result
+	}
 
 	// bd-6xlxl: run pipeline substitution over Args string values so
 	// `${vars.x}`, `${env.X}`, `${steps.s.output}`, etc. resolve before they
 	// are exported as environment variables. Without this, args:
 	// {TOKEN: "${env.API_TOKEN}"} ships the literal text instead of the
 	// runtime value.
-	expandedArgs := e.substituteCommandArgs(step.Args)
+	expandedArgs, argSubErr := e.substituteCommandArgsStrict(step.Args)
+	if argSubErr != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, "command", "substitution",
+			fmt.Sprintf("failed to substitute variables in args: %v", argSubErr),
+			"check that every ${var}, ${env.X}, ${steps.X.output}, and ${defaults.X} reference in args is defined",
+			argSubErr.Error())
+		result.FinishedAt = time.Now()
+		return result
+	}
 
 	argEnv, err := argsToEnv(expandedArgs)
 	if err != nil {
@@ -1259,7 +1286,16 @@ func (e *Executor) executeTemplate(ctx context.Context, step *Step, workflow *Wo
 		return result
 	}
 
-	rendered = e.substituteVariables(rendered)
+	rendered, err = e.substituteVariablesStrict(rendered)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = stepRuntimeError(step, "template", "substitution",
+			fmt.Sprintf("failed to substitute variables in rendered template: %v", err),
+			"check that every ${var}, ${env.X}, ${steps.X.output}, and ${defaults.X} reference in the template is defined",
+			err.Error())
+		result.FinishedAt = time.Now()
+		return result
+	}
 
 	paneID, agentType, err := e.selectPane(step)
 	if err != nil {
@@ -1893,7 +1929,16 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 			goto HANDLE_RESULT
 		}
 
-		prompt = e.substituteVariables(prompt)
+		prompt, err = e.substituteVariablesStrict(prompt)
+		if err != nil {
+			result.Status = StatusFailed
+			result.Error = &StepError{
+				Type:      "substitution",
+				Message:   fmt.Sprintf("failed to substitute variables in prompt: %v", err),
+				Timestamp: time.Now(),
+			}
+			goto HANDLE_RESULT
+		}
 
 		// Dry run mode
 		if e.config.DryRun {
@@ -2243,6 +2288,21 @@ func (e *Executor) resolvePrompt(step *Step) (string, error) {
 // - Loop variables (${loop.item}, ${loop.index})
 // Thread-safe: acquires read locks on Variables and Steps for concurrent access during parallel execution.
 func (e *Executor) substituteVariables(s string) string {
+	result, _ := e.substituteVariablesStrict(s)
+	return result
+}
+
+// substituteVariablesStrict runs the same substitution passes as
+// substituteVariables but propagates any unresolved-reference error (missing
+// env var, undefined ${vars.X}, recursion depth exceeded, etc.) to the caller.
+//
+// bd-bhcz7: the non-strict variant silently swallowed substitution errors,
+// so command/template/prompt steps could continue with literal `${env.MISSING}`
+// text instead of failing with the clear error promised by the substitution
+// layer. Runtime dispatch paths must use the strict form so the failure
+// surfaces on the StepResult instead of leaking unresolved placeholders into
+// shell exec or agent prompts.
+func (e *Executor) substituteVariablesStrict(s string) (string, error) {
 	e.varMu.RLock()
 	defer e.varMu.RUnlock()
 	e.stateMu.RLock()
@@ -2251,8 +2311,7 @@ func (e *Executor) substituteVariables(s string) string {
 	sub.SetDefaults(e.defaults)
 	sub.SetMaxDepth(e.limits.MaxSubstitutionDepth)
 	s = e.substituteRuntimeVariables(s)
-	result, _ := sub.Substitute(s)
-	return result
+	return sub.Substitute(s)
 }
 
 // substituteCommandArgs walks a step's Args map and runs the pipeline
@@ -2262,19 +2321,39 @@ func (e *Executor) substituteVariables(s string) string {
 // variables. Non-string values pass through unchanged — argValueString
 // handles their conversion downstream.
 func (e *Executor) substituteCommandArgs(args map[string]interface{}) map[string]interface{} {
+	out, _ := e.substituteCommandArgsStrict(args)
+	return out
+}
+
+// substituteCommandArgsStrict is the error-propagating variant used by the
+// command runtime path so a missing ${env.X} reference inside args fails the
+// step explicitly instead of silently shipping unresolved placeholders to
+// the child shell (bd-bhcz7). Returns the first substitution error
+// encountered while still producing a partial map for diagnostics.
+func (e *Executor) substituteCommandArgsStrict(args map[string]interface{}) (map[string]interface{}, error) {
 	if len(args) == 0 {
-		return args
+		return args, nil
 	}
 	out := make(map[string]interface{}, len(args))
+	var firstErr error
+	captureErr := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	for k, v := range args {
 		switch typed := v.(type) {
 		case string:
-			out[k] = e.substituteVariables(typed)
+			expanded, err := e.substituteVariablesStrict(typed)
+			captureErr(err)
+			out[k] = expanded
 		case []interface{}:
 			expanded := make([]interface{}, len(typed))
 			for i, item := range typed {
 				if s, ok := item.(string); ok {
-					expanded[i] = e.substituteVariables(s)
+					exp, err := e.substituteVariablesStrict(s)
+					captureErr(err)
+					expanded[i] = exp
 				} else {
 					expanded[i] = item
 				}
@@ -2284,7 +2363,7 @@ func (e *Executor) substituteCommandArgs(args map[string]interface{}) map[string
 			out[k] = v
 		}
 	}
-	return out
+	return out, firstErr
 }
 
 // evaluateCondition evaluates a when condition.

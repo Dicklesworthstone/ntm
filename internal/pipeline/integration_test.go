@@ -777,7 +777,7 @@ steps:
 
   - id: aggregator
     agent: claude
-    prompt: Aggregate from ${steps.parallel_producers}
+    prompt: Aggregate from ${steps.parallel_producers.output}
     depends_on:
       - parallel_producers
 `

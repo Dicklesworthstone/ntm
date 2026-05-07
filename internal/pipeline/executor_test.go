@@ -2768,7 +2768,7 @@ func TestExecutor_Run_DryRun_OutputVar(t *testing.T) {
 		Name: "test-output-var",
 		Steps: []Step{
 			{ID: "step1", Prompt: "set output", Agent: "claude", OutputVar: "result1"},
-			{ID: "step2", Prompt: "${result1}", Agent: "codex", DependsOn: []string{"step1"}},
+			{ID: "step2", Prompt: "${vars.result1}", Agent: "codex", DependsOn: []string{"step1"}},
 		},
 	}
 
