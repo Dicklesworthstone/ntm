@@ -35,7 +35,17 @@ func mapModelFamilyToPaneVocabulary(raw string, panes []paneStrategyPane) string
 		return ""
 	}
 
+	// bd-i310h: skip excluded panes when mapping the author family into
+	// pane vocabulary. byModelFamilyDifference only routes to available
+	// panes, so a stale or explicitly-excluded pane that happens to share
+	// the canonical family must not be the source of the token used for
+	// the cross-family comparison — otherwise byModelFamilyDifference
+	// would route same-family work back to a pane that should be filtered
+	// out.
 	for _, pane := range panes {
+		if !pane.available() {
+			continue
+		}
 		paneFamily := strings.TrimSpace(pane.ModelFamily)
 		if paneFamily == "" {
 			continue
@@ -50,6 +60,9 @@ func mapModelFamilyToPaneVocabulary(raw string, panes []paneStrategyPane) string
 		return normalized
 	}
 	for _, pane := range panes {
+		if !pane.available() {
+			continue
+		}
 		paneFamily := strings.TrimSpace(pane.ModelFamily)
 		if paneFamily == "" {
 			continue
