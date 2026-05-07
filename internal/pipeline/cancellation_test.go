@@ -100,3 +100,49 @@ func TestExecutor_Run_GlobalTimeoutRunsOnCancelSteps(t *testing.T) {
 		t.Fatalf("cleanup file = %q, want cleanup", string(data))
 	}
 }
+
+// TestExecutor_RunOnCancelSteps_HungCleanupRespectsTimeout covers
+// bd-new9w: a misbehaving cleanup step (sleep N seconds) must not block
+// the executor forever. The OnCancelTimeout caps each cleanup step's
+// wall-clock budget; the test sets it well below the cleanup sleep so
+// the cleanup phase returns within seconds rather than minutes.
+func TestExecutor_RunOnCancelSteps_HungCleanupRespectsTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultExecutorConfig("hung-cleanup")
+	cfg.ProjectDir = tmpDir
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "hung-cleanup",
+		Settings: WorkflowSettings{
+			Timeout:         Duration{Duration: 150 * time.Millisecond},
+			OnError:         ErrorActionFail,
+			OnCancelTimeout: Duration{Duration: 500 * time.Millisecond},
+			OnCancel: []Step{
+				{
+					ID:      "hung",
+					Command: "sleep 30",
+				},
+			},
+		},
+		Steps: []Step{
+			{ID: "slow", Command: "sleep 10"},
+		},
+	}
+
+	start := time.Now()
+	state, _ := e.Run(context.Background(), workflow, nil, nil)
+	elapsed := time.Since(start)
+
+	if elapsed > 10*time.Second {
+		t.Fatalf("Run() blocked for %s — OnCancelTimeout did not bound the hung cleanup", elapsed)
+	}
+	if state == nil || state.Status != StatusCancelled {
+		t.Fatalf("state.Status = %v, want cancelled", state)
+	}
+	hung := state.Steps["hung"]
+	if hung.Status == StatusCompleted {
+		t.Fatalf("hung cleanup completed despite 30s sleep vs 500ms cap; status=%q error=%+v", hung.Status, hung.Error)
+	}
+}

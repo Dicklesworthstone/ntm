@@ -495,6 +495,16 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 		return
 	}
 
+	// bd-new9w: each cleanup step runs under a fresh, cancellable context
+	// so that a misbehaving cleanup (slow NFS unlink, dead webhook, retry
+	// loop) cannot hang the executor indefinitely. The parent ctx is
+	// already cancelled at this point — using it would skip cleanup
+	// entirely (the cancellation contract added in bd-o1c5e).
+	cleanupTimeout := workflow.Settings.OnCancelTimeout.Duration
+	if cleanupTimeout <= 0 {
+		cleanupTimeout = 60 * time.Second
+	}
+
 	cleanupWorkflow := *workflow
 	for i := range workflow.Settings.OnCancel {
 		step := workflow.Settings.OnCancel[i]
@@ -507,7 +517,9 @@ func (e *Executor) runOnCancelSteps(workflow *Workflow) {
 		e.state.UpdatedAt = time.Now()
 		e.stateMu.Unlock()
 
-		result := e.executeStep(context.Background(), &step, &cleanupWorkflow)
+		stepCtx, stepCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		result := e.executeStep(stepCtx, &step, &cleanupWorkflow)
+		stepCancel()
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}

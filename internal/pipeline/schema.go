@@ -201,9 +201,15 @@ const (
 
 // WorkflowSettings contains global workflow configuration
 type WorkflowSettings struct {
-	Timeout          Duration     `yaml:"timeout,omitempty" toml:"timeout,omitempty" json:"timeout,omitempty"`    // Global timeout (e.g., "30m")
-	OnError          ErrorAction  `yaml:"on_error,omitempty" toml:"on_error,omitempty" json:"on_error,omitempty"` // fail, fail_fast, continue, retry
-	OnCancel         []Step       `yaml:"on_cancel,omitempty" toml:"on_cancel,omitempty" json:"on_cancel,omitempty"`
+	Timeout  Duration    `yaml:"timeout,omitempty" toml:"timeout,omitempty" json:"timeout,omitempty"`    // Global timeout (e.g., "30m")
+	OnError  ErrorAction `yaml:"on_error,omitempty" toml:"on_error,omitempty" json:"on_error,omitempty"` // fail, fail_fast, continue, retry
+	OnCancel []Step      `yaml:"on_cancel,omitempty" toml:"on_cancel,omitempty" json:"on_cancel,omitempty"`
+	// OnCancelTimeout caps the wall-clock budget for any single
+	// on_cancel cleanup step. Defaults to 60s when zero/unset; a misbehaving
+	// or hung cleanup step (slow NFS unlink, dead webhook, retry loop) cannot
+	// block the executor forever (bd-new9w). Set to a longer duration for
+	// genuinely heavy cleanup; never set to zero in user workflows.
+	OnCancelTimeout  Duration     `yaml:"on_cancel_timeout,omitempty" toml:"on_cancel_timeout,omitempty" json:"on_cancel_timeout,omitempty"`
 	Limits           LimitsConfig `yaml:"limits,omitempty" toml:"limits,omitempty" json:"limits,omitempty"`
 	LogDispatch      *bool        `yaml:"log_dispatch,omitempty" toml:"log_dispatch,omitempty" json:"log_dispatch,omitempty"`
 	NotifyOnComplete bool         `yaml:"notify_on_complete,omitempty" toml:"notify_on_complete,omitempty" json:"notify_on_complete,omitempty"`
