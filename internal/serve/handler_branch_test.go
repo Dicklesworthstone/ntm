@@ -89,6 +89,14 @@ func TestServeMemoryDaemonHelperProcess(t *testing.T) {
 
 func reserveSharedBeadsProjectDir(t *testing.T) string {
 	t.Helper()
+	// bd-cnhpd: handlers reached via this fixture shell out to a real `br`
+	// subprocess. Under fixture/lock contention RunBd retries up to 6× at a
+	// 30s per-attempt timeout, which can hold the -short suite for minutes.
+	// Skip in -short so `go test -short ./internal/serve/...` returns
+	// within its budget; full coverage still runs without -short.
+	if testing.Short() {
+		t.Skip("skipping br-backed handler test in -short mode (bd-cnhpd)")
+	}
 	projectDir := t.TempDir()
 	srcRoot := filepath.Join("/data/projects/ntm", ".beads")
 	dstRoot := filepath.Join(projectDir, ".beads")
