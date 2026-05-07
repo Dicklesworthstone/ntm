@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -399,7 +400,12 @@ func TestLoopMaxIterationsLiteralStillWorks(t *testing.T) {
 	}
 }
 
-func TestLoopMaxIterationsExprFallbackWarns(t *testing.T) {
+func TestLoopMaxIterationsExprFailsWhenUnresolvable(t *testing.T) {
+	// Safety caps must fail closed: an explicit max_iterations expression that
+	// cannot resolve to a positive integer (typo, missing default, malformed
+	// reference) must fail the loop step rather than silently substituting
+	// DefaultMaxIterations. Falling back would let an intended lower cap turn
+	// into 100 iterations — the opposite of the safety guarantee.
 	var buf bytes.Buffer
 	restore := capturePipelineLogs(t, &buf)
 	defer restore()
@@ -407,14 +413,14 @@ func TestLoopMaxIterationsExprFallbackWarns(t *testing.T) {
 	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
 	executor.defaults = map[string]interface{}{}
 	executor.state = &ExecutionState{
-		RunID:      "run-max-fallback",
-		WorkflowID: "workflow-max-fallback",
+		RunID:      "run-max-fail",
+		WorkflowID: "workflow-max-fail",
 		Variables:  make(map[string]interface{}),
 		Steps:      make(map[string]StepResult),
 	}
 
 	step := &Step{
-		ID: "max-fallback-step",
+		ID: "max-fail-step",
 		Loop: &LoopConfig{
 			Times:         3,
 			MaxIterations: IntOrExpr{Expr: "${defaults.unknown}"},
@@ -423,6 +429,49 @@ func TestLoopMaxIterationsExprFallbackWarns(t *testing.T) {
 
 	result := executor.loopExec.ExecuteLoop(context.Background(), step, &Workflow{})
 
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %v, want %v", result.Status, StatusFailed)
+	}
+	if result.Error == nil {
+		t.Fatalf("Error = nil, want structured StepError")
+	}
+	if result.Error.Type != "loop" {
+		t.Errorf("Error.Type = %q, want %q", result.Error.Type, "loop")
+	}
+	if !strings.Contains(result.Error.Message, "loop.max_iterations") {
+		t.Errorf("Error.Message = %q, want it to mention loop.max_iterations", result.Error.Message)
+	}
+	if result.Iterations != 0 {
+		t.Errorf("Iterations = %d, want 0 (loop must not run on unresolved cap)", result.Iterations)
+	}
+
+	events := parseJSONLEvents(t, &buf)
+	assertEvent(t, events, EventSubstWarn,
+		FieldStepID, "max-fail-step",
+		FieldSubstitutionKey, "loop.max_iterations",
+	)
+}
+
+func TestLoopMaxIterationsAbsentUsesDefault(t *testing.T) {
+	// Sanity check: when max_iterations is omitted entirely (zero value), the
+	// default safety cap still applies and the loop runs normally.
+	executor := NewExecutor(ExecutorConfig{Session: "test", DryRun: true})
+	executor.defaults = map[string]interface{}{}
+	executor.state = &ExecutionState{
+		RunID:      "run-max-absent",
+		WorkflowID: "workflow-max-absent",
+		Variables:  make(map[string]interface{}),
+		Steps:      make(map[string]StepResult),
+	}
+
+	step := &Step{
+		ID: "max-absent-step",
+		Loop: &LoopConfig{
+			Times: 3,
+		},
+	}
+
+	result := executor.loopExec.ExecuteLoop(context.Background(), step, &Workflow{})
 	if result.Status != StatusCompleted {
 		t.Fatalf("Status = %v, want %v; error=%v", result.Status, StatusCompleted, result.Error)
 	}
@@ -432,13 +481,6 @@ func TestLoopMaxIterationsExprFallbackWarns(t *testing.T) {
 	if got := step.Loop.MaxIterations.Value; got != DefaultMaxIterations {
 		t.Fatalf("MaxIterations.Value = %d, want %d", got, DefaultMaxIterations)
 	}
-
-	events := parseJSONLEvents(t, &buf)
-	assertEvent(t, events, EventSubstWarn,
-		FieldStepID, "max-fallback-step",
-		FieldSubstitutionKey, "loop.max_iterations",
-		"fallback", "100",
-	)
 }
 
 func TestLoopCancelledContext(t *testing.T) {

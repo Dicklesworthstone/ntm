@@ -118,7 +118,17 @@ func (le *LoopExecutor) executeForEach(ctx context.Context, step *Step, loop *Lo
 	total := len(items)
 
 	// Calculate max iterations
-	maxIterations := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(step, loop)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = &StepError{
+			Type:      "loop",
+			Message:   err.Error(),
+			Timestamp: time.Now(),
+		}
+		result.FinishedAt = time.Now()
+		return result
+	}
 	if total > maxIterations {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -228,7 +238,17 @@ func (le *LoopExecutor) executeWhile(ctx context.Context, step *Step, loop *Loop
 	}
 
 	// While loops require max_iterations for safety
-	maxIterations := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(step, loop)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = &StepError{
+			Type:      "loop",
+			Message:   err.Error(),
+			Timestamp: time.Now(),
+		}
+		result.FinishedAt = time.Now()
+		return result
+	}
 
 	varName := loop.As
 	if varName == "" {
@@ -361,7 +381,17 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 	}
 
 	// Apply max iterations limit
-	maxIterations := le.resolveMaxIterations(step, loop)
+	maxIterations, err := le.resolveMaxIterations(step, loop)
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = &StepError{
+			Type:      "loop",
+			Message:   err.Error(),
+			Timestamp: time.Now(),
+		}
+		result.FinishedAt = time.Now()
+		return result
+	}
 	if times > maxIterations {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -455,23 +485,30 @@ func (le *LoopExecutor) executeTimes(ctx context.Context, step *Step, loop *Loop
 	return result
 }
 
-func (le *LoopExecutor) resolveMaxIterations(step *Step, loop *LoopConfig) int {
+func (le *LoopExecutor) resolveMaxIterations(step *Step, loop *LoopConfig) (int, error) {
 	if loop == nil {
-		return DefaultMaxIterations
+		return DefaultMaxIterations, nil
 	}
 	return le.resolveIntOrExpr(step, "loop.max_iterations", &loop.MaxIterations, DefaultMaxIterations)
 }
 
-func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrExpr, fallback int) int {
+// resolveIntOrExpr resolves an IntOrExpr field. The fallback is only used when
+// the field is absent (nil or zero-valued) — an explicit literal or expression
+// that fails to resolve to a positive integer returns an error so the loop
+// step can fail closed. Silently substituting the default would let a typo in
+// a safety cap (e.g. ${defaults.unknown}) raise an intended lower bound and
+// run substantially more iterations than the author configured.
+func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrExpr, fallback int) (int, error) {
 	if value == nil {
-		return fallback
+		return fallback, nil
 	}
 	if value.Expr == "" {
 		if value.Value > 0 {
-			return value.Value
+			return value.Value, nil
 		}
+		// Field absent (zero value): use the default safety cap.
 		value.Value = fallback
-		return fallback
+		return fallback, nil
 	}
 
 	resolved, err := le.substituteIntExpr(value.Expr)
@@ -483,18 +520,16 @@ func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrE
 			err = fmt.Errorf("parse %q as positive integer: value must be greater than zero", resolved)
 		} else {
 			value.Value = parsed
-			return parsed
+			return parsed, nil
 		}
 	}
 
 	le.executor.stepLogger(step).Warn(EventSubstWarn,
 		FieldSubstitutionKey, field,
 		FieldSubstitutionResolved, value.Expr,
-		"fallback", fallback,
 		"error", err,
 	)
-	value.Value = fallback
-	return fallback
+	return 0, fmt.Errorf("resolve %s expression %q: %w", field, value.Expr, err)
 }
 
 func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
