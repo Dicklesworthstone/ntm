@@ -6,18 +6,22 @@ import (
 )
 
 const (
-	EventRunStart          = "pipeline.run.start"
-	EventRunComplete       = "pipeline.run.complete"
-	EventRunError          = "pipeline.run.error"
-	EventStepStart         = "pipeline.step.start"
-	EventStepComplete      = "pipeline.step.complete"
-	EventStepError         = "pipeline.step.error"
-	EventStepSkip          = "pipeline.step.skip"
-	EventStepRetry         = "pipeline.step.retry"
-	EventDispatch          = "pipeline.dispatch"
-	EventCommandExec       = "pipeline.command.exec"
-	EventCommandResult     = "pipeline.command.result"
-	EventCommandCancelled  = "pipeline.command.cancelled"
+	EventRunStart         = "pipeline.run.start"
+	EventRunComplete      = "pipeline.run.complete"
+	EventRunError         = "pipeline.run.error"
+	EventStepStart        = "pipeline.step.start"
+	EventStepComplete     = "pipeline.step.complete"
+	EventStepError        = "pipeline.step.error"
+	EventStepSkip         = "pipeline.step.skip"
+	EventStepRetry        = "pipeline.step.retry"
+	EventDispatch         = "pipeline.dispatch"
+	EventCommandExec      = "pipeline.command.exec"
+	EventCommandResult    = "pipeline.command.result"
+	EventCommandCancelled = "pipeline.command.cancelled"
+	// EventCommandHeartbeat is emitted periodically while a long-running
+	// command step is still executing, so dashboards can distinguish
+	// "still working" from "stuck" without tailing stdout (bd-zfdjd.7).
+	EventCommandHeartbeat  = "pipeline.command.heartbeat"
 	EventTemplateRender    = "pipeline.template.render"
 	EventTemplateCancelled = "pipeline.template.cancelled"
 	EventForeachStart      = "pipeline.foreach.start"

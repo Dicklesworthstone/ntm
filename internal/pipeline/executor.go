@@ -32,6 +32,12 @@ import (
 // retry/recovery loops or rapid foreach fan-out (bd-45fs8).
 var dispatchLogSeq uint64
 
+// commandHeartbeatInterval is the cadence at which executeCommand emits
+// EventCommandHeartbeat for a still-running command. Tests override this
+// to make heartbeat-cadence assertions tractable. Set to <=0 to disable.
+// (bd-zfdjd.7)
+var commandHeartbeatInterval = 30 * time.Second
+
 // ExecutorConfig configures the executor behavior
 type ExecutorConfig struct {
 	Session          string        // Required: tmux session name
@@ -1285,7 +1291,38 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		return result
 	}
 
+	// bd-zfdjd.7: emit periodic heartbeat events while the command runs so
+	// operators can distinguish "still working" from "stuck" without
+	// tailing stdout. The first tick fires at commandHeartbeatInterval, so
+	// short commands never emit one. Stops cleanly when waitCommand
+	// returns.
+	heartbeatDone := make(chan struct{})
+	go func() {
+		interval := commandHeartbeatInterval
+		if interval <= 0 {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				slog.Info(EventCommandHeartbeat,
+					"run_id", e.runIDForLog(),
+					"workflow", workflow.Name,
+					"step_id", step.ID,
+					"agent_type", "command",
+					FieldDurationMS, time.Since(result.StartedAt).Milliseconds(),
+					"bytes_captured", stdoutBuf.Len(),
+				)
+			}
+		}
+	}()
+
 	cleanup := waitCommandWithProcessGroupCleanup(cmdCtx, cmd)
+	close(heartbeatDone)
 	waitErr := cleanup.Err
 
 	output := strings.TrimSpace(stdoutBuf.String())

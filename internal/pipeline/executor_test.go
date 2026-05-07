@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -3292,6 +3294,64 @@ func TestExecuteCommand_DryRunRejectsInvalidArgEnvName(t *testing.T) {
 	}
 	if !strings.Contains(result.Error.Message, "invalid env var name") {
 		t.Fatalf("Error.Message = %q, want invalid env var name", result.Error.Message)
+	}
+}
+
+// TestExecuteCommand_HeartbeatEmittedForLongRunningCommand covers
+// bd-zfdjd.7: while a command is still executing the executor emits
+// pipeline.command.heartbeat events at commandHeartbeatInterval. The
+// production cadence is 30s; the test shrinks it via the package var so
+// a short sleep can verify ≥1 heartbeat lands.
+func TestExecuteCommand_HeartbeatEmittedForLongRunningCommand(t *testing.T) {
+	prev := commandHeartbeatInterval
+	commandHeartbeatInterval = 100 * time.Millisecond
+	t.Cleanup(func() { commandHeartbeatInterval = prev })
+
+	var buf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	e := newCommandTestExecutor(t)
+	step := &Step{
+		ID:      "long-runner",
+		Command: "sleep 0.4",
+	}
+	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("Status = %q, want %q; error = %+v", result.Status, StatusCompleted, result.Error)
+	}
+
+	if !strings.Contains(buf.String(), EventCommandHeartbeat) {
+		t.Fatalf("no %q event in slog stream — heartbeat goroutine did not fire during the 0.4s sleep\nlog:\n%s", EventCommandHeartbeat, buf.String())
+	}
+}
+
+// TestExecuteCommand_HeartbeatStopsAfterCommandCompletes guards against a
+// goroutine leak: heartbeats must stop firing once waitCommand returns.
+// We disable the interval via the package var, run the command, and
+// confirm zero heartbeat events made it into the log.
+func TestExecuteCommand_HeartbeatStopsAfterCommandCompletes(t *testing.T) {
+	prev := commandHeartbeatInterval
+	commandHeartbeatInterval = 50 * time.Millisecond
+	t.Cleanup(func() { commandHeartbeatInterval = prev })
+
+	var buf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	e := newCommandTestExecutor(t)
+	step := &Step{ID: "fast", Command: "true"}
+	_ = e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
+
+	// Wait long enough that an unbounded heartbeat goroutine would have
+	// fired several times.
+	time.Sleep(200 * time.Millisecond)
+
+	if strings.Contains(buf.String(), EventCommandHeartbeat) {
+		t.Fatalf("%q emitted after command completed — heartbeat goroutine leaked\nlog:\n%s", EventCommandHeartbeat, buf.String())
 	}
 }
 
