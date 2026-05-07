@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -165,10 +166,11 @@ func (m *MockTmuxClient) PasteKeys(target, content string, enter bool) error {
 
 	var response string
 	var delay time.Duration
+	var generation int64
 	hasScriptedResponse := false
 	if scripter != nil {
 		var err error
-		response, delay, err = scripter.nextResponse(content)
+		response, delay, generation, err = scripter.nextResponse(content)
 		if err != nil {
 			return err
 		}
@@ -193,7 +195,7 @@ func (m *MockTmuxClient) PasteKeys(target, content string, enter bool) error {
 	m.mu.Unlock()
 
 	if hasScriptedResponse {
-		m.deliverScriptedResponse(target, response, delay, scripter)
+		m.deliverScriptedResponse(target, response, delay, scripter, generation)
 	}
 	return nil
 }
@@ -209,8 +211,15 @@ func (m *MockTmuxClient) CapturePaneOutput(target string, lines int) (string, er
 	return tailMockLines(state.output, lines), nil
 }
 
-func (m *MockTmuxClient) deliverScriptedResponse(target, response string, delay time.Duration, scripter *AgentScripter) {
+func (m *MockTmuxClient) deliverScriptedResponse(target, response string, delay time.Duration, scripter *AgentScripter, generation int64) {
 	deliver := func() {
+		// Drop stale deliveries (bd-05x7b): if Reset bumped the scripter
+		// generation since this response was scheduled, the goroutine
+		// belongs to a previous test phase and must not contaminate the
+		// current pane state or produced count.
+		if !scripter.generationCurrent(generation) {
+			return
+		}
 		if err := m.AppendPaneOutput(target, response); err == nil {
 			scripter.markProduced()
 		}
@@ -273,6 +282,11 @@ type agentScriptRule struct {
 }
 
 // AgentScripter provides scriptable mock-agent responses for MockTmuxClient.
+//
+// generation is bumped on every Reset so delayed responses scheduled before
+// the reset can detect that they belong to a stale generation and silently
+// drop their delivery (bd-05x7b). Loaded with atomic.LoadInt64 inside the
+// delivery goroutine to avoid taking the rule mutex from background work.
 type AgentScripter struct {
 	mu              sync.Mutex
 	rules           []agentScriptRule
@@ -280,6 +294,7 @@ type AgentScripter struct {
 	hasDefault      bool
 	delay           time.Duration
 	produced        int
+	generation      int64
 }
 
 // NewAgentScripter creates an empty script table.
@@ -336,17 +351,30 @@ func (s *AgentScripter) Delay(delay time.Duration) *AgentScripter {
 	return s
 }
 
-// Reset marks all one-shot rules unused and resets the produced-response count.
+// Reset marks all one-shot rules unused and resets the produced-response
+// count. Bumps the generation counter so any in-flight delayed response
+// goroutines drop their delivery instead of contaminating the fresh state.
 func (s *AgentScripter) Reset() {
 	if s == nil {
 		return
 	}
+	atomic.AddInt64(&s.generation, 1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.rules {
 		s.rules[i].used = false
 	}
 	s.produced = 0
+}
+
+// generationCurrent reports whether the captured generation number is still
+// the live one. Called from the deliverScriptedResponse goroutine before
+// touching pane state.
+func (s *AgentScripter) generationCurrent(captured int64) bool {
+	if s == nil {
+		return false
+	}
+	return atomic.LoadInt64(&s.generation) == captured
 }
 
 // Wait blocks until at least count scripted responses have been appended.
@@ -373,9 +401,15 @@ func (s *AgentScripter) Wait(ctx context.Context, count int) error {
 	}
 }
 
-func (s *AgentScripter) nextResponse(prompt string) (string, time.Duration, error) {
+// nextResponse returns the next scripted response, the configured delay,
+// and the generation number that was current when the response was matched.
+// The generation is captured here (under s.mu) and re-checked atomically
+// inside deliverScriptedResponse so a Reset between match and delivery
+// invalidates the response.
+func (s *AgentScripter) nextResponse(prompt string) (string, time.Duration, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	generation := atomic.LoadInt64(&s.generation)
 	for i := range s.rules {
 		rule := &s.rules[i]
 		if rule.used {
@@ -383,13 +417,13 @@ func (s *AgentScripter) nextResponse(prompt string) (string, time.Duration, erro
 		}
 		if rule.matches(prompt) {
 			rule.used = true
-			return rule.response, s.delay, nil
+			return rule.response, s.delay, generation, nil
 		}
 	}
 	if s.hasDefault {
-		return s.defaultResponse, s.delay, nil
+		return s.defaultResponse, s.delay, generation, nil
 	}
-	return "", 0, fmt.Errorf("mock agent script has no response for prompt %q", truncatePrompt(prompt, 120))
+	return "", 0, 0, fmt.Errorf("mock agent script has no response for prompt %q", truncatePrompt(prompt, 120))
 }
 
 func (s *AgentScripter) markProduced() {

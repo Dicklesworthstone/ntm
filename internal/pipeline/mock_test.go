@@ -157,6 +157,90 @@ func TestAgentScripterSequentialResponses(t *testing.T) {
 	}
 }
 
+// bd-05x7b: Reset must invalidate any in-flight delayed scripter responses
+// so they don't append stale output or bump produced after the test enters
+// a fresh phase. We schedule a delivery with a long delay, Reset before the
+// timer fires, and assert that the pane never receives the stale response
+// and the produced count stays at 0.
+func TestAgentScripterResetCancelsInFlightDelayedResponses(t *testing.T) {
+	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
+	scripter := NewAgentScripter().
+		Match("ping", "STALE\n").
+		Delay(150 * time.Millisecond)
+	mock.SetAgentScripter(scripter)
+	t.Cleanup(mock.Reset)
+
+	if err := mock.PasteKeys("%1", "ping prompt", true); err != nil {
+		t.Fatalf("PasteKeys returned error: %v", err)
+	}
+
+	// Reset before the delay fires — the scheduled goroutine should observe
+	// the new generation and drop its delivery.
+	time.Sleep(20 * time.Millisecond)
+	mock.Reset()
+
+	// Wait long enough for the original timer to fire.
+	time.Sleep(250 * time.Millisecond)
+
+	output, err := mock.CapturePaneOutput("%1", 0)
+	if err != nil {
+		t.Fatalf("CapturePaneOutput returned error: %v", err)
+	}
+	if strings.Contains(output, "STALE") {
+		t.Fatalf("pane output contaminated by stale delayed response: %q", output)
+	}
+
+	// Reset clears produced; a stale delivery would have re-incremented it.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := scripter.Wait(ctx, 1); err == nil {
+		t.Fatal("scripter.Wait succeeded after Reset, expected stale delivery to be dropped")
+	}
+}
+
+// bd-05x7b: After Reset, a fresh delayed delivery should land cleanly even
+// though a stale generation goroutine is still in flight. Locks the
+// generation invariant: only deliveries from the current generation count.
+func TestAgentScripterResetAllowsFreshDeliveryAfterStaleDrop(t *testing.T) {
+	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
+	scripter := NewAgentScripter().
+		Match("first", "STALE\n").
+		Match("second", "FRESH\n").
+		Delay(150 * time.Millisecond)
+	mock.SetAgentScripter(scripter)
+	t.Cleanup(mock.Reset)
+
+	if err := mock.PasteKeys("%1", "first prompt", true); err != nil {
+		t.Fatalf("first PasteKeys returned error: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	mock.Reset()
+
+	// Re-arm with a same-pattern rule and dispatch fresh — the new generation
+	// should deliver normally.
+	scripter.Match("second", "FRESH\n")
+	if err := mock.PasteKeys("%1", "second prompt", true); err != nil {
+		t.Fatalf("second PasteKeys returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := scripter.Wait(ctx, 1); err != nil {
+		t.Fatalf("Wait for fresh delivery returned error: %v", err)
+	}
+
+	output, err := mock.CapturePaneOutput("%1", 0)
+	if err != nil {
+		t.Fatalf("CapturePaneOutput returned error: %v", err)
+	}
+	if strings.Contains(output, "STALE") {
+		t.Fatalf("pane output contaminated by stale delayed response: %q", output)
+	}
+	if !strings.Contains(output, "FRESH") {
+		t.Fatalf("pane output missing fresh delivery: %q", output)
+	}
+}
+
 func TestAgentScripterNoMatchReturnsClearError(t *testing.T) {
 	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
 	mock.SetAgentScripter(NewAgentScripter())
