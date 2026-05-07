@@ -539,6 +539,13 @@ func TestResumeRejectsLegacyStateWithOnlyUpdatedAt(t *testing.T) {
 }
 
 func TestResumeRejectsLegacyStateWithoutCheckpoint(t *testing.T) {
+	// bd-5uqtd: a true legacy state file lacks both LastCheckpointAt AND
+	// UpdatedAt. The previous version of this test left UpdatedAt set to
+	// `stale`, which let the pre-fix `checkpoint = state.UpdatedAt`
+	// fallback satisfy the guard, so the test passed against both buggy
+	// and fixed code. Zeroing UpdatedAt and StartedAt forces resumeCheckpointTime
+	// to walk step timestamps to discover the age — the path bd-omfqk's
+	// fix actually introduced.
 	workflow := &Workflow{
 		SchemaVersion: SchemaVersion,
 		Name:          "resume-legacy-stale",
@@ -551,8 +558,9 @@ func TestResumeRejectsLegacyStateWithoutCheckpoint(t *testing.T) {
 		WorkflowID: workflow.Name,
 		Session:    "session",
 		Status:     StatusRunning,
-		StartedAt:  stale.Add(-time.Hour),
-		UpdatedAt:  stale,
+		// StartedAt, UpdatedAt, LastCheckpointAt are all left zero so
+		// the only age signal is on the step result. resumeCheckpointTime
+		// must walk into Steps[].FinishedAt to discover the stale state.
 		Steps: map[string]StepResult{
 			"step": {
 				StepID:     "step",
