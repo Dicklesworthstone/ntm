@@ -340,6 +340,16 @@ func Validate(w *Workflow) ValidationResult {
 		validateStep(&step, fmt.Sprintf("steps[%d]", i), stepIDs, &result)
 	}
 
+	// bd-tpz1a: validate settings.on_cancel cleanup steps with the same rules
+	// and the same global step-ID namespace as normal steps. Without this,
+	// (a) malformed cleanup steps (no kind, missing required fields) only fail
+	// during cancellation cleanup at runtime and (b) cleanup IDs that collide
+	// with a normal step ID silently overwrite the cancelled step's persisted
+	// result inside runOnCancelSteps. validateOnCancelSteps assigns synthetic
+	// "on_cancel_N" IDs to bare entries before validation so duplicates with
+	// regular steps using those names are still detected.
+	validateOnCancelSteps(w.Settings.OnCancel, stepIDs, &result)
+
 	// Check for dependency cycles
 	if cycles := detectCycles(w.Steps); len(cycles) > 0 {
 		for _, cycle := range cycles {
@@ -364,6 +374,22 @@ func validateSettings(settings WorkflowSettings, result *ValidationResult) {
 			Message: fmt.Sprintf("invalid on_error value: %s", settings.OnError),
 			Hint:    "Valid values: fail, fail_fast, continue, retry",
 		})
+	}
+}
+
+// validateOnCancelSteps applies the regular validateStep rules to cleanup
+// steps declared under settings.on_cancel and registers their IDs in the
+// workflow-wide stepIDs map so collisions with regular step IDs surface as
+// validation errors. Empty IDs get the synthetic "on_cancel_N" identity that
+// runOnCancelSteps already assigns at runtime, keeping validation and
+// execution aligned.
+func validateOnCancelSteps(onCancel []Step, stepIDs map[string]bool, result *ValidationResult) {
+	for i := range onCancel {
+		step := onCancel[i]
+		if step.ID == "" {
+			step.ID = fmt.Sprintf("on_cancel_%d", i+1)
+		}
+		validateStep(&step, fmt.Sprintf("settings.on_cancel[%d]", i), stepIDs, result)
 	}
 }
 
