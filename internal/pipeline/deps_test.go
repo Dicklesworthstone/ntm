@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -76,6 +77,100 @@ func TestDependencyGraph_Validate_MissingDep(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected missing_dep error type")
+	}
+}
+
+// TestDependencyGraph_Validate_NestedBodyDep covers bd-mb6rd: a top-level
+// step that depends on the inline child of a parallel/loop container can
+// otherwise become ready before the container ran the body, letting
+// downstream steps consume missing or stale nested outputs. Validation
+// rejects the cross-container edge and tells the operator to depend on the
+// container itself.
+func TestDependencyGraph_Validate_NestedBodyDep(t *testing.T) {
+	w := &Workflow{
+		Steps: []Step{
+			{ID: "prep", Prompt: "prep"},
+			{
+				ID:        "group",
+				DependsOn: []string{"prep"},
+				Parallel: ParallelSpec{Steps: []Step{
+					{ID: "inner", Prompt: "inner"},
+				}},
+			},
+			{ID: "after", DependsOn: []string{"inner"}, Prompt: "after"},
+		},
+	}
+
+	g := NewDependencyGraph(w)
+	errors := g.Validate()
+
+	var found *DependencyError
+	for i := range errors {
+		if errors[i].Type == "nested_body_dep" {
+			found = &errors[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected nested_body_dep error, got %v", errors)
+	}
+	if !(found.Steps[0] == "after" && found.Steps[1] == "inner") {
+		t.Errorf("Steps = %v, want [after inner]", found.Steps)
+	}
+	if !strings.Contains(found.Message, "group") {
+		t.Errorf("Message = %q, want it to mention container parent %q", found.Message, "group")
+	}
+}
+
+// TestDependencyGraph_Validate_NestedBody_SiblingsAllowed asserts that
+// intra-container sibling depends_on (parallel children depending on each
+// other inside the same group) still validates: bd-mb6rd's rule rejects
+// only cross-container references, not legitimate sibling ordering.
+func TestDependencyGraph_Validate_NestedBody_SiblingsAllowed(t *testing.T) {
+	w := &Workflow{
+		Steps: []Step{
+			{
+				ID: "group",
+				Parallel: ParallelSpec{Steps: []Step{
+					{ID: "alpha", Prompt: "alpha"},
+					{ID: "beta", DependsOn: []string{"alpha"}, Prompt: "beta"},
+				}},
+			},
+		},
+	}
+
+	g := NewDependencyGraph(w)
+	errors := g.Validate()
+	for _, e := range errors {
+		if e.Type == "nested_body_dep" {
+			t.Errorf("intra-container sibling depends_on flagged as nested_body_dep: %v", e)
+		}
+	}
+}
+
+// TestDependencyGraph_Validate_NestedBody_NestedDepsTopLevelAllowed asserts
+// that a nested body step depending on a top-level step is fine — the
+// rule only fires when the *target* is nested in a container the *referer*
+// isn't part of.
+func TestDependencyGraph_Validate_NestedBody_NestedDepsTopLevelAllowed(t *testing.T) {
+	w := &Workflow{
+		Steps: []Step{
+			{ID: "prep", Prompt: "prep"},
+			{
+				ID: "group",
+				Parallel: ParallelSpec{Steps: []Step{
+					{ID: "inner", DependsOn: []string{"prep"}, Prompt: "inner"},
+				}},
+			},
+		},
+	}
+
+	g := NewDependencyGraph(w)
+	errors := g.Validate()
+	for _, e := range errors {
+		if e.Type == "nested_body_dep" {
+			t.Errorf("nested-on-top-level depends_on flagged as nested_body_dep: %v", e)
+		}
 	}
 }
 

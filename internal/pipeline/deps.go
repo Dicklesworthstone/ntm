@@ -16,6 +16,12 @@ type DependencyGraph struct {
 	executed      map[string]bool     // step ID -> has been executed
 	executedCount int                 // number of executed steps
 	failed        map[string]bool     // step ID -> has failed (for CONTINUE mode)
+	// container is the immediate parent container ID for steps nested in a
+	// parallel/loop body. Top-level steps are absent from this map.
+	// bd-mb6rd uses this to reject cross-container depends_on edges that
+	// would otherwise let downstream steps unblock before the container
+	// itself ran the nested body.
+	container map[string]string
 }
 
 // DependencyError represents an error in the dependency graph
@@ -47,17 +53,21 @@ func NewDependencyGraph(workflow *Workflow) *DependencyGraph {
 		remainingDeps: make(map[string]int),
 		executed:      make(map[string]bool),
 		failed:        make(map[string]bool),
+		container:     make(map[string]string),
 	}
 
 	// Add all steps including parallel sub-steps
-	var addSteps func(steps []Step)
-	addSteps = func(steps []Step) {
+	var addSteps func(steps []Step, parent string)
+	addSteps = func(steps []Step, parent string) {
 		for i := range steps {
 			step := &steps[i]
 			g.steps[step.ID] = step
 			g.edges[step.ID] = step.DependsOn
 			g.inDegree[step.ID] = len(step.DependsOn)
 			g.remainingDeps[step.ID] = len(step.DependsOn)
+			if parent != "" {
+				g.container[step.ID] = parent
+			}
 
 			// Build reverse edges
 			for _, dep := range step.DependsOn {
@@ -66,17 +76,17 @@ func NewDependencyGraph(workflow *Workflow) *DependencyGraph {
 
 			// Handle parallel sub-steps
 			if len(step.Parallel.Steps) > 0 {
-				addSteps(step.Parallel.Steps)
+				addSteps(step.Parallel.Steps, step.ID)
 			}
 
 			// Handle loop sub-steps
 			if step.Loop != nil {
-				addSteps(step.Loop.Steps)
+				addSteps(step.Loop.Steps, step.ID)
 			}
 		}
 	}
 
-	addSteps(workflow.Steps)
+	addSteps(workflow.Steps, "")
 	for id, remaining := range g.remainingDeps {
 		if remaining == 0 {
 			g.addReady(id)
@@ -89,8 +99,23 @@ func NewDependencyGraph(workflow *Workflow) *DependencyGraph {
 func (g *DependencyGraph) Validate() []DependencyError {
 	var errors []DependencyError
 
-	// Check for missing dependencies
-	for id, deps := range g.edges {
+	// Check for missing dependencies and cross-container references.
+	// bd-mb6rd: a step inside a parallel/loop body must not be depended on
+	// from outside that container — graph nodes for body steps share the
+	// flat dependency space, so a stale edge would let downstream steps
+	// unblock before the container itself executed the body. Allowed
+	// edges: (a) any depends_on whose target is top-level; (b) intra-
+	// container sibling depends_on (same parent). Reject everything else
+	// during validation so misconfigured workflows fail fast instead of
+	// silently running steps with missing/stale nested outputs.
+	edgeIDs := make([]string, 0, len(g.edges))
+	for id := range g.edges {
+		edgeIDs = append(edgeIDs, id)
+	}
+	sort.Strings(edgeIDs)
+	for _, id := range edgeIDs {
+		deps := g.edges[id]
+		refererParent := g.container[id]
 		for _, dep := range deps {
 			if _, exists := g.steps[dep]; !exists {
 				errors = append(errors, DependencyError{
@@ -98,7 +123,22 @@ func (g *DependencyGraph) Validate() []DependencyError {
 					Steps:   []string{id, dep},
 					Message: fmt.Sprintf("step %q depends on non-existent step %q", id, dep),
 				})
+				continue
 			}
+			refereeParent := g.container[dep]
+			if refereeParent == "" {
+				// Top-level target — always reachable.
+				continue
+			}
+			if refereeParent == refererParent {
+				// Same container — sibling dependency is fine.
+				continue
+			}
+			errors = append(errors, DependencyError{
+				Type:    "nested_body_dep",
+				Steps:   []string{id, dep},
+				Message: fmt.Sprintf("step %q depends on nested body step %q (inside container %q); top-level depends_on must reference the container, not its children", id, dep, refereeParent),
+			})
 		}
 	}
 
