@@ -410,9 +410,16 @@ func (s *AssignmentStore) Update(beadID string, update AssignmentUpdate) error {
 	return nil
 }
 
-// ValidTransitions defines valid state transitions
+// ValidTransitions defines valid state transitions.
+//
+// `StatusAssigned -> StatusCompleted` is permitted because beads can be closed
+// externally (via `br close` from another agent, or by the assigned agent
+// before the assignment store observed a `working` transition). The watch
+// loop correlates closures back into the store after the fact and would
+// otherwise drop those completions on the floor with an "invalid transition"
+// warning, leaving the assignment forever stuck in "assigned" (#124).
 var ValidTransitions = map[AssignmentStatus][]AssignmentStatus{
-	StatusAssigned:   {StatusWorking, StatusFailed},
+	StatusAssigned:   {StatusWorking, StatusCompleted, StatusFailed},
 	StatusWorking:    {StatusCompleted, StatusFailed, StatusReassigned},
 	StatusFailed:     {StatusAssigned}, // Retry
 	StatusCompleted:  {},               // Terminal

@@ -214,7 +214,10 @@ func TestStateTransitions(t *testing.T) {
 	}{
 		{"assigned to working", StatusAssigned, StatusWorking, true},
 		{"assigned to failed", StatusAssigned, StatusFailed, true},
-		{"assigned to completed", StatusAssigned, StatusCompleted, false},
+		// `assigned -> completed` is permitted because beads can close externally
+		// (br close from another agent) before the assignment store ever observed
+		// a `working` transition. See ValidTransitions docs and #124.
+		{"assigned to completed (external close)", StatusAssigned, StatusCompleted, true},
 		{"working to completed", StatusWorking, StatusCompleted, true},
 		{"working to failed", StatusWorking, StatusFailed, true},
 		{"working to reassigned", StatusWorking, StatusReassigned, true},
@@ -276,19 +279,49 @@ func TestInvalidTransition(t *testing.T) {
 	store := NewStore("test-session")
 	_, _ = store.Assign("bd-123", "Test bead", 1, "claude", "", "")
 
-	// Invalid transition: assigned -> completed (skips working)
-	err := store.UpdateStatus("bd-123", StatusCompleted)
+	// Invalid transition: completed -> assigned (terminal -> any).
+	// `assigned -> completed` is now valid (#124) because beads can close
+	// externally before the store ever observed a `working` transition.
+	_ = store.UpdateStatus("bd-123", StatusCompleted)
+	err := store.UpdateStatus("bd-123", StatusAssigned)
 	if err == nil {
-		t.Error("expected error for invalid transition, got nil")
+		t.Error("expected error for invalid transition completed->assigned, got nil")
 	}
 	if _, ok := err.(*InvalidTransitionError); !ok {
 		t.Errorf("expected InvalidTransitionError, got %T", err)
 	}
 
-	// Status should remain unchanged
+	// Status should remain completed
 	a := store.Get("bd-123")
-	if a.Status != StatusAssigned {
-		t.Errorf("expected status to remain assigned, got %s", a.Status)
+	if a.Status != StatusCompleted {
+		t.Errorf("expected status to remain completed, got %s", a.Status)
+	}
+}
+
+// TestExternalCloseTransitionsAssignedToCompleted verifies the #124 fix:
+// when br close happens externally before the agent ever reported "working",
+// the watch loop's correlation step must be able to mark the assignment as
+// completed without an "Invalid transition assigned -> completed" error
+// leaving the row stuck.
+func TestExternalCloseTransitionsAssignedToCompleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	store := NewStore("test-session-extclose")
+	_, _ = store.Assign("bd-456", "External close bead", 2, "claude", "", "")
+
+	// Skip Working — simulate br close fired externally before the agent
+	// reported any progress that would have moved us to Working.
+	if err := store.UpdateStatus("bd-456", StatusCompleted); err != nil {
+		t.Fatalf("assigned -> completed (external close) should be valid: %v", err)
+	}
+
+	a := store.Get("bd-456")
+	if a.Status != StatusCompleted {
+		t.Fatalf("status = %s, want completed", a.Status)
+	}
+	if a.CompletedAt == nil {
+		t.Error("CompletedAt should be set after assigned -> completed transition")
 	}
 }
 

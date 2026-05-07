@@ -988,7 +988,25 @@ func detectModelFromTitle(agentType, title string) string {
 	return ""
 }
 
-// determineAgentState checks if agent is idle or working
+// determineAgentState checks if agent is idle or working.
+//
+// Two layers of detection:
+//
+//  1. The legacy agent.Parser scrollback classifier provides idle/working/
+//     unknown verdicts based on prompt patterns and recent output structure.
+//
+//  2. A live-window thinking check (robot.IsLiveBusy) inspects the trailing
+//     window of the scrollback for THINKING-category patterns from the same
+//     library that `--robot-activity` consults. This catches the case where
+//     another orchestrator drove the pane via `ntm send` (so the assign
+//     ledger has no record), but the pane is still actively working — the
+//     live-window patterns ("• Working (...)", "esc to interrupt", etc.)
+//     are visible regardless of who started the work (#124).
+//
+// When the live-window check fires, it overrides any earlier idle verdict.
+// Without that override, watch-mode autonomous dispatch would inject
+// keystrokes into a busy pane the moment its assignment-ledger entry
+// expired or never existed.
 func determineAgentState(scrollback, agentTypeStr string) string {
 	// Use the robust agent parser
 	parser := agent.NewParser()
@@ -996,6 +1014,12 @@ func determineAgentState(scrollback, agentTypeStr string) string {
 	state, err := parser.ParseWithHint(scrollback, normalizedAssignAgentHint(agentTypeStr))
 	if err != nil {
 		return "unknown"
+	}
+
+	// Live-window THINKING check overrides any verdict — the legacy parser
+	// can miss in-flight work when the assignment store has no record.
+	if robot.IsLiveBusy(scrollback, agentTypeStr) {
+		return "working"
 	}
 
 	if state.IsIdle {

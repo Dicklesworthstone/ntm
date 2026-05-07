@@ -825,6 +825,31 @@ func isRateLimitPatternMatch(matches []PatternMatch) bool {
 	return false
 }
 
+// IsLiveBusy returns true when the trailing live-window of `scrollback`
+// contains any thinking-category pattern for `agentType`. This is a single-
+// snapshot heuristic — it cannot detect velocity-based GENERATING states
+// (those need two timestamped samples) — but it is the canonical way to ask
+// "would `--robot-activity` classify this pane as THINKING right now?"
+// using only the data that is cheap to capture from a tmux pane.
+//
+// Callers in the assign/dispatch path use this to honor live pane state
+// when deciding whether a pane is safe to dispatch to: legacy idle/working
+// scrollback parsers can miss in-flight work that came from another driver
+// (`ntm send`, an external orchestrator, manual operator) because the
+// internal assignment ledger has no record of it. The live-window check
+// closes that gap by reading the same surface that `--robot-activity` uses.
+func IsLiveBusy(scrollback string, agentType string) bool {
+	if scrollback == "" {
+		return false
+	}
+	live := lastNLines(scrollback, liveThinkingWindowLines)
+	if live == "" {
+		return false
+	}
+	matches := DefaultLibrary.MatchByCategory(live, agentType, CategoryThinking)
+	return len(matches) > 0
+}
+
 // lastNLines returns the last n non-empty-slice lines of s, preserving
 // their original order and the trailing newline structure. If s has
 // fewer than n lines it is returned unchanged. The scan is intentionally

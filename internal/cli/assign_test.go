@@ -1040,3 +1040,41 @@ func TestParsePriorityString(t *testing.T) {
 		})
 	}
 }
+
+// TestDetermineAgentStateLiveBusyOverride verifies the #124 fix: when the
+// pane scrollback's trailing live-window contains a THINKING-category pattern
+// (e.g. codex's "• Working (4m 51s • esc to interrupt)") the verdict must be
+// "working" regardless of what the legacy parser concludes — the pane is
+// busy and watch-mode autonomous dispatch must not target it.
+func TestDetermineAgentStateLiveBusyOverride(t *testing.T) {
+	// A scrollback that ends with a codex working bullet inside the
+	// live-window. Without the override, the legacy parser sometimes
+	// classifies this as idle when there's no fresh prompt yet.
+	scrollback := strings.Repeat("filler line\n", 200) +
+		"\n• Working (4m 51s • esc to interrupt)\n"
+
+	got := determineAgentState(scrollback, "codex")
+	if got != "working" {
+		t.Errorf("determineAgentState(busy codex pane) = %q, want \"working\"", got)
+	}
+}
+
+// TestDetermineAgentStateIgnoresStaleThinking verifies the override does NOT
+// trigger when a thinking pattern only exists deep in the scrollback (outside
+// the live-window). That historical bullet is from a completed tool call and
+// must not lock the agent in "working" forever.
+func TestDetermineAgentStateIgnoresStaleThinking(t *testing.T) {
+	// Thinking pattern early in the buffer, then enough trailing content to
+	// push it outside the live-window (15 trailing lines).
+	scrollback := "• Working (10s • esc to interrupt)\n" +
+		strings.Repeat("filler line that is unambiguously not thinking\n", 200) +
+		"\n>>>" // codex-shaped idle prompt
+
+	// We don't assert "idle" here (that depends on the legacy parser's
+	// agent-specific prompt detection), but we must NOT see "working" be
+	// forced by the override path on stale scrollback content.
+	got := determineAgentState(scrollback, "codex")
+	if got == "working" {
+		t.Errorf("determineAgentState(stale thinking pattern) = %q, must not be forced to working", got)
+	}
+}
