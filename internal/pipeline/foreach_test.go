@@ -715,3 +715,42 @@ func appendForeachLeafOutputs(outputs *[]string, result StepResult) {
 		}
 	}
 }
+
+func TestForeachMaxConcurrentBoundedByGlobalCap(t *testing.T) {
+	// bd-pwxh1: per-step foreach.max_concurrent must be capped by the
+	// global settings.limits.max_concurrent_foreach. Otherwise a workflow
+	// could set a low global safety limit and bypass it on a single step.
+	limits := LimitsConfig{MaxConcurrentForeach: 4}.EffectiveLimits()
+
+	cases := []struct {
+		name   string
+		config *ForeachConfig
+		want   int
+	}{
+		{name: "no per-step override uses global", config: &ForeachConfig{}, want: 4},
+		{name: "per-step under global is honored", config: &ForeachConfig{MaxConcurrent: 2}, want: 2},
+		{name: "per-step equal to global is honored", config: &ForeachConfig{MaxConcurrent: 4}, want: 4},
+		{name: "per-step above global clamps to global", config: &ForeachConfig{MaxConcurrent: 10000}, want: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := foreachMaxConcurrent(tc.config, limits); got != tc.want {
+				t.Fatalf("foreachMaxConcurrent() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestForeachMaxConcurrentZeroGlobalAllowsPerStep(t *testing.T) {
+	// When the global cap is zero/disabled, a per-step value still applies
+	// without being clamped to zero.
+	limits := LimitsConfig{}
+	limits.MaxConcurrentForeach = 0
+	if got := foreachMaxConcurrent(&ForeachConfig{MaxConcurrent: 8}, limits); got != 8 {
+		t.Fatalf("foreachMaxConcurrent(unbounded global, per-step=8) = %d, want 8", got)
+	}
+	// And a missing per-step value falls back to a safe minimum of 1.
+	if got := foreachMaxConcurrent(&ForeachConfig{}, limits); got != 1 {
+		t.Fatalf("foreachMaxConcurrent(unbounded global, no per-step) = %d, want 1", got)
+	}
+}
