@@ -238,6 +238,7 @@ func (e *Executor) prepareForeachIterations(ctx context.Context, parent *Step, c
 			return nil, fmt.Errorf("load panes for foreach assignment: %w", err)
 		}
 		strategyPanes = foreachStrategyPanes(panes)
+		strategyPanes = e.enrichStrategyPanesFromRoster(strategyPanes)
 	}
 
 	plans := make([]foreachIterationPlan, 0, len(items))

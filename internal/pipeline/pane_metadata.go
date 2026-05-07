@@ -417,6 +417,77 @@ func (e *Executor) lookupPaneMetadata(paneRef string) (PaneMetadata, error) {
 	return e.paneMetadataLoader().Lookup(paneRef)
 }
 
+// rosterDomainsByPaneRef loads pane domain ownership from the documented
+// structured roster sources (RESUME.md, .brenner_workspace/roster.yaml,
+// phase0_scope_decision.md) without going through the LoadPaneMetadataCache
+// short-circuit that prefers session metadata. Used to enrich foreach
+// strategy panes when the live tmux pane tags do not carry domain
+// information — typically the case for resumed or brennerbot-style
+// sessions whose authoritative domain mapping lives in roster files
+// rather than tmux tags.
+//
+// Returns a map keyed by both pane ID (e.g. "%2") and "%<index>" form so
+// callers can match against either reference. Session metadata always
+// wins: this loader is only consulted to fill empty Domains lists.
+func (e *Executor) rosterDomainsByPaneRef() map[string][]string {
+	if e == nil || e.config.ProjectDir == "" {
+		return nil
+	}
+	loaders := []func(string) ([]PaneMetadata, error){
+		paneMetadataFromResume,
+		paneMetadataFromRosterYAML,
+		paneMetadataFromPhase0Roster,
+	}
+	out := make(map[string][]string)
+	for _, loader := range loaders {
+		entries, err := loader(e.config.ProjectDir)
+		if err != nil || len(entries) == 0 {
+			continue
+		}
+		for _, meta := range entries {
+			if len(meta.Domains) == 0 {
+				continue
+			}
+			domainsCopy := append([]string(nil), meta.Domains...)
+			if meta.PaneID != "" {
+				if _, exists := out[meta.PaneID]; !exists {
+					out[meta.PaneID] = domainsCopy
+				}
+			}
+			if meta.Index != 0 {
+				key := fmt.Sprintf("%%%d", meta.Index)
+				if _, exists := out[key]; !exists {
+					out[key] = domainsCopy
+				}
+			}
+		}
+	}
+	return out
+}
+
+// enrichStrategyPanesFromRoster fills empty Domains lists on strategyPanes
+// using the structured roster sources. Panes that already carry domain
+// information from tmux tags are left unchanged so live session metadata
+// continues to win, per the source-priority contract from bd-6lkqr.1.
+func (e *Executor) enrichStrategyPanesFromRoster(strategyPanes []paneStrategyPane) []paneStrategyPane {
+	if e == nil || len(strategyPanes) == 0 {
+		return strategyPanes
+	}
+	rosterDomains := e.rosterDomainsByPaneRef()
+	if len(rosterDomains) == 0 {
+		return strategyPanes
+	}
+	for i, sp := range strategyPanes {
+		if len(sp.Domains) > 0 {
+			continue
+		}
+		if domains, ok := rosterDomains[sp.ID]; ok {
+			strategyPanes[i].Domains = append([]string(nil), domains...)
+		}
+	}
+	return strategyPanes
+}
+
 func (e *Executor) pushPaneMetadataVars(paneRef string) (VariableScope, error) {
 	meta, err := e.lookupPaneMetadata(paneRef)
 	if err != nil {

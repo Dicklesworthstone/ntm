@@ -316,3 +316,92 @@ func writeFile(t *testing.T, path, content string) {
 func TestPaneMetadataClientSatisfiesInterface(t *testing.T) {
 	var _ TmuxClient = (*countingPaneMetadataClient)(nil)
 }
+
+func TestEnrichStrategyPanesFromRosterFillsMissingDomains(t *testing.T) {
+	// foreachStrategyPanes only consults tmux pane tags for domains. Workflows
+	// that document pane→domain ownership in roster.yaml or phase0_scope_decision.md
+	// (per the bd-2ubxp.8 contract) would otherwise see empty Domains lists
+	// and round_robin_by_domain would silently fall back to plain round-robin.
+	dir := t.TempDir()
+	rosterDir := filepath.Join(dir, ".brenner_workspace")
+	if err := os.MkdirAll(rosterDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	writeFile(t, filepath.Join(rosterDir, "roster.yaml"), `
+panes:
+  - pane: 2
+    role: investigator
+    domain: [H-001, H-005]
+  - pane: 3
+    role: synthesizer
+    domain: [H-002]
+`)
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.ProjectDir = dir
+	e := NewExecutor(cfg)
+
+	// Simulate strategyPanes built from tmux panes that lack domain tags.
+	strategyPanes := []paneStrategyPane{
+		{ID: "%2", ModelFamily: "cod"},
+		{ID: "%3", ModelFamily: "gmi"},
+	}
+	got := e.enrichStrategyPanesFromRoster(strategyPanes)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if want := []string{"H-001", "H-005"}; !equalStringSlices(got[0].Domains, want) {
+		t.Errorf("got[0].Domains = %v, want %v", got[0].Domains, want)
+	}
+	if want := []string{"H-002"}; !equalStringSlices(got[1].Domains, want) {
+		t.Errorf("got[1].Domains = %v, want %v", got[1].Domains, want)
+	}
+
+	// Round-robin-by-domain over the enriched panes routes H-005 → %2.
+	paneID, err := roundRobinByDomain(got, "H-005", 0)
+	if err != nil {
+		t.Fatalf("roundRobinByDomain() error = %v", err)
+	}
+	if paneID != "%2" {
+		t.Fatalf("roundRobinByDomain() = %q, want %%2 (the H-005 owner)", paneID)
+	}
+}
+
+func TestEnrichStrategyPanesFromRosterRespectsExistingDomains(t *testing.T) {
+	// Session metadata wins per bd-6lkqr.1: when tmux tags already populated
+	// Domains, the roster sources must NOT overwrite that value.
+	dir := t.TempDir()
+	rosterDir := filepath.Join(dir, ".brenner_workspace")
+	if err := os.MkdirAll(rosterDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	writeFile(t, filepath.Join(rosterDir, "roster.yaml"), `
+panes:
+  - pane: 2
+    domain: [roster-domain]
+`)
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.ProjectDir = dir
+	e := NewExecutor(cfg)
+
+	strategyPanes := []paneStrategyPane{
+		{ID: "%2", ModelFamily: "cod", Domains: []string{"session-domain"}},
+	}
+	got := e.enrichStrategyPanesFromRoster(strategyPanes)
+	if want := []string{"session-domain"}; !equalStringSlices(got[0].Domains, want) {
+		t.Fatalf("got[0].Domains = %v, want %v (session metadata must win)", got[0].Domains, want)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
