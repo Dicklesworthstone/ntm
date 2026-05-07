@@ -982,3 +982,283 @@ func TestOnFailureActionFiresInsideParallelChild(t *testing.T) {
 		t.Fatalf("runtime failure action = %v, want fallback_to_ntm_inbox", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// bd-w6nth.6 brennerbot-flavored end-to-end integration tests
+// ---------------------------------------------------------------------------
+
+// TestBranchPhaseDispatchHonorsAllFiveResumeModes covers the brennerbot-resume.yaml
+// phase_dispatch contract: a single branches: map keyed by mode_to_resume must
+// route to exactly one body per resume mode. Without per-mode coverage a typo
+// in any branch entry silently falls through to "default" and resumes the
+// wrong phase; this test pins each of the five modes to its own command so a
+// regression in lookupBranch / parseBranchSteps shows up as a wrong-mode
+// dispatch rather than a generic failure.
+func TestBranchPhaseDispatchHonorsAllFiveResumeModes(t *testing.T) {
+	modes := []string{"phase_2", "phase_3", "phase_4", "phase_5", "phase_6"}
+
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			executor := NewExecutor(DefaultExecutorConfig("resume-phase-dispatch"))
+
+			workflow := &Workflow{
+				SchemaVersion: SchemaVersion,
+				Name:          "brennerbot-resume",
+				Settings:      DefaultWorkflowSettings(),
+				Steps: []Step{{
+					ID:     "phase_dispatch",
+					Branch: "${vars.mode_to_resume}",
+					Branches: map[string]interface{}{
+						"phase_2": map[string]interface{}{"id": "do_phase_2", "command": "echo dispatched-phase_2"},
+						"phase_3": map[string]interface{}{"id": "do_phase_3", "command": "echo dispatched-phase_3"},
+						"phase_4": map[string]interface{}{"id": "do_phase_4", "command": "echo dispatched-phase_4"},
+						"phase_5": map[string]interface{}{"id": "do_phase_5", "command": "echo dispatched-phase_5"},
+						"phase_6": map[string]interface{}{"id": "do_phase_6", "command": "echo dispatched-phase_6"},
+					},
+				}},
+			}
+
+			state, err := executor.Run(context.Background(), workflow, map[string]interface{}{
+				"mode_to_resume": mode,
+			}, nil)
+			if err != nil {
+				t.Fatalf("Run() error = %v, want nil", err)
+			}
+
+			dispatch := state.Steps["phase_dispatch"]
+			if dispatch.Status != StatusCompleted {
+				t.Fatalf("phase_dispatch status = %s, want completed; error=%+v", dispatch.Status, dispatch.Error)
+			}
+
+			wantToken := "dispatched-" + mode
+			if !strings.Contains(dispatch.Output, wantToken) {
+				t.Fatalf("phase_dispatch output for mode=%q = %q, want to contain %q", mode, dispatch.Output, wantToken)
+			}
+			for _, other := range modes {
+				if other == mode {
+					continue
+				}
+				if strings.Contains(dispatch.Output, "dispatched-"+other) {
+					t.Fatalf("phase_dispatch output for mode=%q leaked branch %q dispatch: %q",
+						mode, other, dispatch.Output)
+				}
+			}
+		})
+	}
+}
+
+// TestOnFailureFallbackToNtmInboxRoutesDownstreamCoordinations covers
+// brennerbot's register_mail soft-failure contract end-to-end: when register_mail
+// fails with on_failure: fallback_to_ntm_inbox, every downstream coordination
+// guarded by ${runtime.register_mail_failure_action} == "fallback_to_ntm_inbox"
+// must run, and any branch guarded by the inverse predicate must skip. Asserts
+// the chain end-to-end (not just the runtime variable) so a future regression
+// in when:-evaluation or skip propagation is caught.
+func TestOnFailureFallbackToNtmInboxRoutesDownstreamCoordinations(t *testing.T) {
+	executor := NewExecutor(DefaultExecutorConfig("register-mail-fallback"))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "brennerbot-register-mail-fallback",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{
+				ID:        "register_mail",
+				Command:   "exit 4",
+				OnFailure: OnFailureSpec{Action: "fallback_to_ntm_inbox"},
+			},
+			{
+				ID:        "coord_inbox_phase_3",
+				Command:   "echo phase_3-via-inbox",
+				DependsOn: []string{"register_mail"},
+				When:      `${runtime.register_mail_failure_action} == "fallback_to_ntm_inbox"`,
+			},
+			{
+				ID:        "coord_inbox_phase_4",
+				Command:   "echo phase_4-via-inbox",
+				DependsOn: []string{"register_mail"},
+				When:      `${runtime.register_mail_failure_action} == "fallback_to_ntm_inbox"`,
+			},
+			{
+				ID:        "coord_mcp_only",
+				Command:   "echo phase_3-via-mcp",
+				DependsOn: []string{"register_mail"},
+				When:      `${runtime.register_mail_failure_action} != "fallback_to_ntm_inbox"`,
+			},
+		},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil after handled on_failure action", err)
+	}
+
+	register := state.Steps["register_mail"]
+	if register.Status != StatusSkipped {
+		t.Fatalf("register_mail status = %s, want skipped", register.Status)
+	}
+	if register.SkipKind != SkipKindOnFailureAction {
+		t.Fatalf("register_mail SkipKind = %q, want %q", register.SkipKind, SkipKindOnFailureAction)
+	}
+	if got := state.Variables["runtime.register_mail_failure_action"]; got != "fallback_to_ntm_inbox" {
+		t.Fatalf("runtime failure action = %v, want fallback_to_ntm_inbox", got)
+	}
+
+	for _, id := range []string{"coord_inbox_phase_3", "coord_inbox_phase_4"} {
+		got, ok := state.Steps[id]
+		if !ok {
+			t.Fatalf("inbox-mode coordination %q missing from state.Steps", id)
+		}
+		if got.Status != StatusCompleted {
+			t.Fatalf("inbox-mode coordination %q status = %s, want completed; error=%+v", id, got.Status, got.Error)
+		}
+	}
+
+	mcp, ok := state.Steps["coord_mcp_only"]
+	if !ok {
+		t.Fatal("coord_mcp_only missing from state.Steps")
+	}
+	if mcp.Status != StatusSkipped {
+		t.Fatalf("coord_mcp_only status = %s, want skipped (when:-guard inverse), output=%q", mcp.Status, mcp.Output)
+	}
+}
+
+// TestOnFailurePaneTemplateRecoveryDispatchesMO03cToPaneOne covers
+// brennerbot's phase_3_third_alt_check soft-failure contract: when the check
+// step fails, the on_failure: {pane: 1, template: MO-03c-third-alternative.md}
+// recovery must render the MO and paste it onto pane 1. Asserts the rendered
+// content reaches the pane (not just that the recovery step finished) so a
+// regression in pane selection or template substitution is caught.
+func TestOnFailurePaneTemplateRecoveryDispatchesMO03cToPaneOne(t *testing.T) {
+	tmpDir := t.TempDir()
+	const moBody = "MO-03c third-alternative for hypothesis <HYPOTHESIS_ID>: " +
+		"investigate the <THIRD_ALT_REASON> alternative.\n"
+	if err := os.WriteFile(tmpDir+"/MO-03c-third-alternative.md", []byte(moBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex})
+	t.Cleanup(mock.Reset)
+
+	cfg := DefaultExecutorConfig("brennerbot-recovery")
+	cfg.ProjectDir = tmpDir
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(mock)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "brennerbot-phase-3",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:      "phase_3_third_alt_check",
+			Command: "exit 1",
+			OnFailure: OnFailureSpec{Fallback: map[string]interface{}{
+				"pane":     1,
+				"template": "MO-03c-third-alternative.md",
+				"params": map[string]interface{}{
+					"HYPOTHESIS_ID":    "${vars.hypothesis_id}",
+					"THIRD_ALT_REASON": "${vars.third_alt_reason}",
+				},
+			}},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, map[string]interface{}{
+		"hypothesis_id":    "H-7",
+		"third_alt_reason": "memory-pressure",
+	}, nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want original step failure")
+	}
+
+	if main := state.Steps["phase_3_third_alt_check"]; main.Status != StatusFailed {
+		t.Fatalf("phase_3_third_alt_check status = %s, want failed", main.Status)
+	}
+	recovery := state.Steps["phase_3_third_alt_check.on_failure"]
+	if recovery.Status != StatusCompleted {
+		t.Fatalf("recovery status = %s, want completed; error=%+v", recovery.Status, recovery.Error)
+	}
+
+	history, err := mock.PasteHistory("%1")
+	if err != nil {
+		t.Fatalf("PasteHistory(%%1) error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("PasteHistory length = %d, want 1 (MO-03c dispatch)", len(history))
+	}
+	wantContent := "MO-03c third-alternative for hypothesis H-7: " +
+		"investigate the memory-pressure alternative."
+	if !strings.Contains(history[0].Content, wantContent) {
+		t.Fatalf("recovery paste = %q, want substring %q", history[0].Content, wantContent)
+	}
+}
+
+// TestPostPipelineStepsDispatchesMO09HandbackTemplate covers
+// brennerbot-squad.yaml's MO-09 handback contract: when the main pipeline
+// completes, the post_pipeline_steps must dispatch the MO-09 handback template
+// to the originating pane. Asserts the MO content reaches the pane (not just
+// that the post-step finished) so a regression in runPostPipelineSteps' use of
+// the regular executeStep machinery is caught.
+func TestPostPipelineStepsDispatchesMO09HandbackTemplate(t *testing.T) {
+	tmpDir := t.TempDir()
+	const moBody = "MO-09 handback to <ORIGINATING_PANE>: methodology run " +
+		"<RUN_ID> complete.\n"
+	if err := os.WriteFile(tmpDir+"/MO-09-handback.md", []byte(moBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := NewMockTmuxClient(tmux.Pane{ID: "%9", Index: 9, Type: tmux.AgentCodex})
+	t.Cleanup(mock.Reset)
+
+	cfg := DefaultExecutorConfig("brennerbot-squad-handback")
+	cfg.ProjectDir = tmpDir
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(mock)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "brennerbot-squad",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{ID: "phase_8_freeze", Command: "echo phase-8-frozen"},
+		},
+		PostPipelineSteps: []Step{{
+			ID:       "mo_09_handback",
+			Template: "MO-09-handback.md",
+			Pane:     PaneSpec{Index: 9},
+			Wait:     WaitNone,
+			Params: map[string]interface{}{
+				"ORIGINATING_PANE": "9",
+				"RUN_ID":           "squad-run-2026-05-07",
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if state.Status != StatusCompleted {
+		t.Fatalf("state.Status = %s, want completed", state.Status)
+	}
+
+	handback, ok := state.Steps["mo_09_handback"]
+	if !ok {
+		t.Fatal("post_pipeline_step 'mo_09_handback' missing from state.Steps")
+	}
+	if handback.Status != StatusCompleted {
+		t.Fatalf("handback status = %s, want completed; error=%+v", handback.Status, handback.Error)
+	}
+
+	history, err := mock.PasteHistory("%9")
+	if err != nil {
+		t.Fatalf("PasteHistory(%%9) error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("PasteHistory length = %d, want 1 (MO-09 dispatch)", len(history))
+	}
+	wantContent := "MO-09 handback to 9: methodology run squad-run-2026-05-07 complete."
+	if !strings.Contains(history[0].Content, wantContent) {
+		t.Fatalf("handback paste = %q, want substring %q", history[0].Content, wantContent)
+	}
+}
