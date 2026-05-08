@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/commitlint"
 	"github.com/Dicklesworthstone/ntm/internal/robot/assurance"
 )
 
@@ -254,6 +255,64 @@ func TestAppendQueueDryReservationWarning(t *testing.T) {
 	}
 }
 
+func TestApplyCommitLintReportCopiesFindings(t *testing.T) {
+	report := CommitReadyResponse{
+		Success: true,
+		Agent:   "YellowBluff",
+	}
+	lintReport := commitlint.Report{
+		SafeToCommit: false,
+		Summary:      commitlint.Summary{Critical: 1},
+		Findings: []commitlint.Finding{{
+			Code:     "stale_beads_export",
+			Severity: commitlint.SeverityCritical,
+			Summary:  "beads export is stale",
+		}},
+		Notes: []string{"advisory only"},
+	}
+
+	applyCommitLintReport(&report, lintReport)
+
+	if report.SafeToCommit {
+		t.Fatalf("SafeToCommit=true, want false")
+	}
+	if report.Summary.Critical != 1 {
+		t.Fatalf("Summary=%+v, want one critical", report.Summary)
+	}
+	if !containsCommitReadyFinding(report.Findings, "stale_beads_export") {
+		t.Fatalf("findings=%v, want stale_beads_export", report.Findings)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("Errors=%v, want one critical status", report.Errors)
+	}
+}
+
+func TestAppendCommitReadyFindingMarksCriticalUnsafe(t *testing.T) {
+	report := CommitReadyResponse{
+		Success:      true,
+		SafeToCommit: true,
+	}
+
+	appendCommitReadyFinding(&report, commitlint.Finding{
+		Code:     "agent_mail_unavailable",
+		Severity: commitlint.SeverityCritical,
+		Summary:  "Agent Mail unavailable",
+	})
+
+	if report.SafeToCommit {
+		t.Fatalf("SafeToCommit=true, want false")
+	}
+	if report.Summary.Critical != 1 {
+		t.Fatalf("Summary=%+v, want one critical", report.Summary)
+	}
+	if !containsCommitReadyFinding(report.Findings, "agent_mail_unavailable") {
+		t.Fatalf("findings=%v, want agent_mail_unavailable", report.Findings)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("Errors=%v, want one critical status", report.Errors)
+	}
+}
+
 func mustMkdirAll(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -287,6 +346,15 @@ func containsStringSlice(items []string, target string) bool {
 func containsReasonCode(items []assurance.ReasonCode, target assurance.ReasonCode) bool {
 	for _, item := range items {
 		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCommitReadyFinding(items []commitlint.Finding, target string) bool {
+	for _, item := range items {
+		if item.Code == target {
 			return true
 		}
 	}

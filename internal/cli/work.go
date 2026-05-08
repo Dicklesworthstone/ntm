@@ -15,7 +15,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/commitlint"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot/assurance"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
@@ -45,12 +47,43 @@ Examples:
 	cmd.AddCommand(newWorkImpactCmd())
 	cmd.AddCommand(newWorkNextCmd())
 	cmd.AddCommand(newWorkQueueDryCmd())
+	cmd.AddCommand(newWorkCommitReadyCmd())
 	cmd.AddCommand(newWorkHistoryCmd())
 	cmd.AddCommand(newWorkForecastCmd())
 	cmd.AddCommand(newWorkGraphCmd())
 	cmd.AddCommand(newWorkLabelHealthCmd())
 	cmd.AddCommand(newWorkLabelFlowCmd())
 	cmd.AddCommand(newWorkBurndownCmd())
+
+	return cmd
+}
+
+func newWorkCommitReadyCmd() *cobra.Command {
+	var (
+		format         string
+		agentName      string
+		syncLagMinutes int
+	)
+
+	cmd := &cobra.Command{
+		Use:     "commit-ready",
+		Aliases: []string{"commit-readiness"},
+		Short:   "Check whether coordination state is safe for commit or handoff",
+		Long: `Check whether local git, Beads, Agent Mail, and reservation state are safe for commit or handoff.
+
+This command is advisory-only. It does not mutate files, claim beads, send mail, or release reservations.
+
+Examples:
+  ntm work commit-ready
+  ntm work commit-ready --format=json --agent=YellowBluff`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorkCommitReady(format, agentName, syncLagMinutes)
+		},
+	}
+
+	cmd.Flags().StringVar(&format, "format", "", "Output format: text or json")
+	cmd.Flags().StringVar(&agentName, "agent", "", "Agent Mail identity to verify reservations and urgent inbox")
+	cmd.Flags().IntVar(&syncLagMinutes, "sync-lag-minutes", 10, "Allowable mtime lag between .beads/beads.db and .beads/issues.jsonl")
 
 	return cmd
 }
@@ -861,7 +894,380 @@ type QueueDryRecipe struct {
 	Purpose string `json:"purpose"`
 }
 
+// CommitReadyResponse captures advisory pre-commit coordination evidence.
+type CommitReadyResponse struct {
+	output.TimestampedResponse
+	Success      bool                 `json:"success"`
+	Project      string               `json:"project"`
+	Agent        string               `json:"agent,omitempty"`
+	SafeToCommit bool                 `json:"safe_to_commit"`
+	Summary      commitlint.Summary   `json:"summary"`
+	Findings     []commitlint.Finding `json:"findings"`
+	Notes        []string             `json:"notes,omitempty"`
+	Evidence     CommitReadyEvidence  `json:"evidence"`
+	Warnings     []string             `json:"warnings,omitempty"`
+	Errors       []string             `json:"errors,omitempty"`
+}
+
+// CommitReadyEvidence stores the raw evidence used by commit-ready.
+type CommitReadyEvidence struct {
+	Git          CommitReadyGitEvidence         `json:"git"`
+	Sync         QueueDrySyncStatus             `json:"sync"`
+	Reservations CommitReadyReservationEvidence `json:"reservations"`
+	Mail         CommitReadyMailEvidence        `json:"mail"`
+}
+
+// CommitReadyGitEvidence summarizes local git state relevant to a commit.
+type CommitReadyGitEvidence struct {
+	Available       bool     `json:"available"`
+	Dirty           bool     `json:"dirty"`
+	ChangedFiles    []string `json:"changed_files,omitempty"`
+	StagedFiles     []string `json:"staged_files,omitempty"`
+	ModifiedFiles   []string `json:"modified_files,omitempty"`
+	UntrackedFiles  []string `json:"untracked_files,omitempty"`
+	ConflictedFiles []string `json:"conflicted_files,omitempty"`
+	Error           string   `json:"error,omitempty"`
+}
+
+// CommitReadyReservationEvidence reports whether changed files are reservation-covered.
+type CommitReadyReservationEvidence struct {
+	Available bool     `json:"available"`
+	Count     int      `json:"count"`
+	Holders   []string `json:"holders,omitempty"`
+	Error     string   `json:"error,omitempty"`
+}
+
+// CommitReadyMailEvidence summarizes urgent or acknowledgement-required inbox state.
+type CommitReadyMailEvidence struct {
+	Available        bool   `json:"available"`
+	Agent            string `json:"agent,omitempty"`
+	CheckedCount     int    `json:"checked_count"`
+	UrgentCount      int    `json:"urgent_count"`
+	AckRequiredCount int    `json:"ack_required_count"`
+	Error            string `json:"error,omitempty"`
+}
+
 const queueDryReservationTimeout = 2 * time.Second
+
+func runWorkCommitReady(format string, agentName string, syncLagMinutes int) error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	if syncLagMinutes < 1 {
+		syncLagMinutes = 1
+	}
+
+	report := collectCommitReadyReport(dir, agentName, time.Now().UTC(), time.Duration(syncLagMinutes)*time.Minute)
+	outputMode := strings.ToLower(strings.TrimSpace(format))
+	if outputMode == "" && jsonOutput {
+		outputMode = "json"
+	}
+	if outputMode == "json" {
+		return outputJSON(report)
+	}
+	return renderCommitReady(report)
+}
+
+func collectCommitReadyReport(dir string, agentName string, now time.Time, syncLagThreshold time.Duration) CommitReadyResponse {
+	agentName = resolveCommitReadyAgentName(agentName)
+	report := CommitReadyResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Success:             true,
+		Project:             dir,
+		Agent:               agentName,
+	}
+
+	gitInfo, gitErr := getGitInfo(dir)
+	if gitErr != nil {
+		report.Evidence.Git = CommitReadyGitEvidence{
+			Available: false,
+			Error:     gitErr.Error(),
+		}
+	} else {
+		changedFiles := commitReadyChangedFiles(gitInfo)
+		report.Evidence.Git = CommitReadyGitEvidence{
+			Available:       true,
+			Dirty:           gitInfo.Dirty || len(changedFiles) > 0,
+			ChangedFiles:    changedFiles,
+			StagedFiles:     sortedUniqueStrings(gitInfo.StagedFiles),
+			ModifiedFiles:   sortedUniqueStrings(gitInfo.ModifiedFiles),
+			UntrackedFiles:  sortedUniqueStrings(gitInfo.UntrackedFiles),
+			ConflictedFiles: sortedUniqueStrings(gitInfo.ConflictedFiles),
+		}
+	}
+
+	report.Evidence.Sync = evaluateQueueDrySync(dir, syncLagThreshold)
+	reservations, reservationsEvidence := collectCommitReadyReservations(dir, len(report.Evidence.Git.ChangedFiles) > 0 || agentName != "")
+	report.Evidence.Reservations = reservationsEvidence
+	inbox, mailEvidence := collectCommitReadyMail(dir, agentName)
+	report.Evidence.Mail = mailEvidence
+
+	lintReport := commitlint.Evaluate(commitlint.Inputs{
+		AgentName:                 agentName,
+		TouchedPaths:              report.Evidence.Git.ChangedFiles,
+		Reservations:              reservations,
+		Inbox:                     inbox,
+		Sync:                      commitReadySyncView(report.Evidence.Sync),
+		StaleReservationThreshold: commitlint.DefaultStaleReservationThreshold,
+		Now:                       now,
+	})
+	applyCommitLintReport(&report, lintReport)
+	if gitErr != nil {
+		report.Success = false
+		appendCommitReadyFinding(&report, commitlint.Finding{
+			Code:        "git_unavailable",
+			Severity:    commitlint.SeverityCritical,
+			Summary:     "git state could not be inspected",
+			Remediation: "run this command from a git worktree before committing",
+			Evidence:    evidenceList(report.Evidence.Git.Error),
+		})
+	}
+	if len(report.Evidence.Git.ConflictedFiles) > 0 {
+		appendCommitReadyFinding(&report, commitlint.Finding{
+			Code:        "git_conflicts",
+			Severity:    commitlint.SeverityCritical,
+			Summary:     "unresolved git conflicts are present",
+			Remediation: "resolve conflicted files before committing",
+			Evidence:    report.Evidence.Git.ConflictedFiles,
+		})
+	}
+	if reservationsEvidence.Error != "" && (len(report.Evidence.Git.ChangedFiles) > 0 || agentName != "") {
+		appendCommitReadyFinding(&report, commitlint.Finding{
+			Code:        "agent_mail_unavailable",
+			Severity:    commitlint.SeverityCritical,
+			Summary:     "Agent Mail reservations could not be verified",
+			Remediation: "retry after Agent Mail recovers, or verify reservations manually before committing",
+			Evidence:    evidenceList(reservationsEvidence.Error),
+		})
+	}
+	if mailEvidence.Error != "" && agentName != "" && !commitReadyHasFindingCode(report.Findings, "agent_mail_unavailable") {
+		appendCommitReadyFinding(&report, commitlint.Finding{
+			Code:        "agent_mail_unavailable",
+			Severity:    commitlint.SeverityCritical,
+			Summary:     "Agent Mail inbox could not be checked",
+			Remediation: "retry after Agent Mail recovers, or inspect urgent/ack-required mail manually",
+			Evidence:    evidenceList(mailEvidence.Error),
+		})
+	}
+	return report
+}
+
+func resolveCommitReadyAgentName(agentName string) string {
+	agentName = strings.TrimSpace(agentName)
+	if agentName != "" {
+		return agentName
+	}
+	return strings.TrimSpace(os.Getenv("AGENT_NAME"))
+}
+
+func commitReadyChangedFiles(info *GitInfo) []string {
+	if info == nil {
+		return nil
+	}
+	files := make([]string, 0, len(info.StagedFiles)+len(info.ModifiedFiles)+len(info.UntrackedFiles)+len(info.ConflictedFiles))
+	files = append(files, info.StagedFiles...)
+	files = append(files, info.ModifiedFiles...)
+	files = append(files, info.UntrackedFiles...)
+	files = append(files, info.ConflictedFiles...)
+	return sortedUniqueStrings(files)
+}
+
+func collectCommitReadyReservations(projectDir string, needed bool) ([]commitlint.ReservationView, CommitReadyReservationEvidence) {
+	var evidence CommitReadyReservationEvidence
+	if !needed {
+		return nil, evidence
+	}
+	client := newAgentMailClient(projectDir)
+	if !client.IsAvailable() {
+		evidence.Error = "Agent Mail server unavailable"
+		return nil, evidence
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationTimeout)
+	defer cancel()
+
+	reservations, err := fetchActiveReservations(ctx, client, projectDir, "", true)
+	if err != nil {
+		evidence.Error = err.Error()
+		return nil, evidence
+	}
+
+	evidence.Available = true
+	evidence.Count = len(reservations)
+	holderSet := make(map[string]struct{})
+	views := make([]commitlint.ReservationView, 0, len(reservations))
+	for _, r := range reservations {
+		if strings.TrimSpace(r.AgentName) != "" {
+			holderSet[r.AgentName] = struct{}{}
+		}
+		views = append(views, commitlint.ReservationView{
+			ID:          r.ID,
+			PathPattern: r.PathPattern,
+			AgentName:   r.AgentName,
+			Exclusive:   r.Exclusive,
+			CreatedAt:   r.CreatedTS.UTC(),
+			ExpiresAt:   r.ExpiresTS.UTC(),
+		})
+	}
+	for holder := range holderSet {
+		evidence.Holders = append(evidence.Holders, holder)
+	}
+	sort.Strings(evidence.Holders)
+	return views, evidence
+}
+
+func collectCommitReadyMail(projectDir string, agentName string) ([]commitlint.InboxView, CommitReadyMailEvidence) {
+	evidence := CommitReadyMailEvidence{
+		Agent: agentName,
+	}
+	if agentName == "" {
+		return nil, evidence
+	}
+
+	client := newAgentMailClient(projectDir)
+	if !client.IsAvailable() {
+		evidence.Error = "Agent Mail server unavailable"
+		return nil, evidence
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationTimeout)
+	defer cancel()
+
+	messages, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+		ProjectKey:    projectDir,
+		AgentName:     agentName,
+		UrgentOnly:    true,
+		Limit:         50,
+		IncludeBodies: false,
+	})
+	if err != nil {
+		evidence.Error = err.Error()
+		return nil, evidence
+	}
+
+	evidence.Available = true
+	evidence.CheckedCount = len(messages)
+	views := make([]commitlint.InboxView, 0, len(messages))
+	for _, msg := range messages {
+		importance := strings.ToLower(strings.TrimSpace(msg.Importance))
+		if importance == "urgent" || importance == "high" {
+			evidence.UrgentCount++
+		}
+		if msg.AckRequired {
+			evidence.AckRequiredCount++
+		}
+		var readAt *time.Time
+		if msg.ReadAt != nil {
+			t := msg.ReadAt.UTC()
+			readAt = &t
+		}
+		views = append(views, commitlint.InboxView{
+			ID:          msg.ID,
+			Subject:     msg.Subject,
+			From:        msg.From,
+			Importance:  msg.Importance,
+			AckRequired: msg.AckRequired,
+			ReadAt:      readAt,
+		})
+	}
+	return views, evidence
+}
+
+func commitReadySyncView(status QueueDrySyncStatus) commitlint.SyncView {
+	return commitlint.SyncView{
+		HasLocalBeadsDB: status.HasLocalBeadsDB,
+		NeedsFlush:      status.NeedsFlush,
+		Status:          status.Status,
+	}
+}
+
+func applyCommitLintReport(report *CommitReadyResponse, lintReport commitlint.Report) {
+	if report == nil {
+		return
+	}
+	report.SafeToCommit = lintReport.SafeToCommit
+	report.Summary = lintReport.Summary
+	report.Findings = append([]commitlint.Finding(nil), lintReport.Findings...)
+	report.Notes = append([]string(nil), lintReport.Notes...)
+	for _, finding := range report.Findings {
+		appendCommitReadyStatus(report, finding)
+	}
+}
+
+func appendCommitReadyFinding(report *CommitReadyResponse, finding commitlint.Finding) {
+	if report == nil {
+		return
+	}
+	report.Findings = append(report.Findings, finding)
+	switch finding.Severity {
+	case commitlint.SeverityCritical:
+		report.Summary.Critical++
+		report.SafeToCommit = false
+	case commitlint.SeverityWarning:
+		report.Summary.Warning++
+	case commitlint.SeverityInfo:
+		report.Summary.Info++
+	}
+	appendCommitReadyStatus(report, finding)
+}
+
+func appendCommitReadyStatus(report *CommitReadyResponse, finding commitlint.Finding) {
+	switch finding.Severity {
+	case commitlint.SeverityCritical:
+		report.Errors = append(report.Errors, finding.Code+": "+finding.Summary)
+	case commitlint.SeverityWarning:
+		report.Warnings = append(report.Warnings, finding.Code+": "+finding.Summary)
+	}
+}
+
+func commitReadyHasFindingCode(findings []commitlint.Finding, code string) bool {
+	for _, finding := range findings {
+		if finding.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func evidenceList(items ...string) []string {
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func sortedUniqueStrings(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = normalizeCommitReadyPath(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func normalizeCommitReadyPath(value string) string {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "./")
+	return strings.Trim(value, "/")
+}
 
 func runWorkQueueDry(format string, staleHours, commitLimit, syncLagMinutes, maxStaleEntries int) error {
 	dir, err := os.Getwd()
@@ -1195,6 +1601,93 @@ func queueDryRecipes() []QueueDryRecipe {
 			Purpose: "Record one concrete follow-up instead of widening scope without traceability.",
 		},
 	}
+}
+
+func renderCommitReady(report CommitReadyResponse) error {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+
+	fmt.Println()
+	fmt.Println(titleStyle.Render("Commit Readiness"))
+	fmt.Println()
+	fmt.Printf("  Project: %s\n", report.Project)
+	if report.Agent != "" {
+		fmt.Printf("  Agent: %s\n", report.Agent)
+	} else {
+		fmt.Println("  Agent: " + mutedStyle.Render("not provided"))
+	}
+
+	status := okStyle.Render("SAFE")
+	if !report.SafeToCommit {
+		status = errStyle.Render("BLOCKED")
+	}
+	fmt.Printf("  Status: %s\n", status)
+	fmt.Println()
+
+	gitStatus := "clean"
+	if report.Evidence.Git.Dirty {
+		gitStatus = "dirty"
+	}
+	if !report.Evidence.Git.Available {
+		gitStatus = "unavailable"
+	}
+	fmt.Printf("  Git: %s", gitStatus)
+	if len(report.Evidence.Git.ChangedFiles) > 0 {
+		fmt.Printf(" (%d changed)", len(report.Evidence.Git.ChangedFiles))
+	}
+	fmt.Println()
+	if len(report.Evidence.Git.ChangedFiles) > 0 {
+		fmt.Printf("    Changed: %s\n", strings.Join(report.Evidence.Git.ChangedFiles, ", "))
+	}
+
+	fmt.Printf("  Beads sync: %s\n", report.Evidence.Sync.Status)
+	if report.Evidence.Sync.NeedsFlush {
+		fmt.Printf("    %s\n", warnStyle.Render("DB is newer than issues.jsonl; run br sync --flush-only"))
+	}
+
+	if report.Evidence.Reservations.Available {
+		fmt.Printf("  Reservations: %d active project-wide\n", report.Evidence.Reservations.Count)
+		if len(report.Evidence.Reservations.Holders) > 0 {
+			fmt.Printf("    Holders: %s\n", strings.Join(report.Evidence.Reservations.Holders, ", "))
+		}
+	} else if report.Evidence.Reservations.Error != "" {
+		fmt.Printf("  Reservations: %s\n", warnStyle.Render(report.Evidence.Reservations.Error))
+	}
+
+	if report.Evidence.Mail.Available {
+		fmt.Printf("  Agent Mail: checked=%d urgent=%d ack_required=%d\n", report.Evidence.Mail.CheckedCount, report.Evidence.Mail.UrgentCount, report.Evidence.Mail.AckRequiredCount)
+	} else if report.Evidence.Mail.Error != "" {
+		fmt.Printf("  Agent Mail: %s\n", warnStyle.Render(report.Evidence.Mail.Error))
+	}
+
+	if len(report.Findings) > 0 {
+		fmt.Println()
+		fmt.Println(mutedStyle.Render("  Findings:"))
+		for _, finding := range report.Findings {
+			style := mutedStyle
+			switch finding.Severity {
+			case commitlint.SeverityCritical:
+				style = errStyle
+			case commitlint.SeverityWarning:
+				style = warnStyle
+			case commitlint.SeverityInfo:
+				style = okStyle
+			}
+			fmt.Printf("    - %s %s: %s\n", style.Render(string(finding.Severity)), finding.Code, finding.Summary)
+			if finding.Remediation != "" {
+				fmt.Printf("      Fix: %s\n", finding.Remediation)
+			}
+			if len(finding.Evidence) > 0 {
+				fmt.Printf("      Evidence: %s\n", strings.Join(finding.Evidence, ", "))
+			}
+		}
+	}
+
+	fmt.Println()
+	return nil
 }
 
 func renderQueueDry(report QueueDryResponse) error {
