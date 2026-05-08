@@ -295,12 +295,16 @@ func TestIsWorkingOutputStructure(t *testing.T) {
 	}
 }
 
-// TestIsLiveBusyOverridesIdleVerdict_Codex verifies the predicate that drives
-// the #133 fix: when a Codex pane shows live "Working …" + "esc to interrupt"
-// chrome, IsLiveBusy must say true so that GetIsWorking forces IsWorking=true,
-// IsIdle=false, and Recommendation=DO_NOT_INTERRUPT regardless of what the
-// legacy parser concluded. Without this, the same scrollback that
-// --robot-activity classifies as THINKING was being marked SAFE_TO_RESTART.
+// TestIsLiveBusyOverridesIdleVerdict_Codex pins the predicate that drives the
+// #133 fix: when a Codex pane shows live "Working …" + "esc to interrupt"
+// chrome, IsLiveBusy must return true so GetIsWorking forces IsWorking=true /
+// IsIdle=false and re-derives the recommendation from the corrected state.
+// Without this, the same scrollback that --robot-activity classifies as
+// THINKING was being marked SAFE_TO_RESTART by --robot-is-working.
+//
+// The negative case pins that an idle codex prompt does not trip the override
+// — otherwise every pane would be locked into the working bucket after any
+// ambient match.
 func TestIsLiveBusyOverridesIdleVerdict_Codex(t *testing.T) {
 	scrollback := `> previous user prompt
 
@@ -312,9 +316,6 @@ func TestIsLiveBusyOverridesIdleVerdict_Codex(t *testing.T) {
 		t.Fatalf("IsLiveBusy(<codex working scrollback>, %q) = false, expected true; the live-window override would not fire and SAFE_TO_RESTART would leak through", agent.AgentTypeCodex.String())
 	}
 
-	// Idle pane (no thinking chrome in the live window) should not trigger
-	// the override — otherwise we would falsely lock every pane into
-	// DO_NOT_INTERRUPT after a single ambient match.
 	idleScrollback := `> previous user prompt
 
   Done.
@@ -322,7 +323,7 @@ func TestIsLiveBusyOverridesIdleVerdict_Codex(t *testing.T) {
 codex>
 `
 	if IsLiveBusy(idleScrollback, agent.AgentTypeCodex.String()) {
-		t.Fatalf("IsLiveBusy(<idle codex prompt>, %q) = true, expected false; this would lock idle panes into DO_NOT_INTERRUPT", agent.AgentTypeCodex.String())
+		t.Fatalf("IsLiveBusy(<idle codex prompt>, %q) = true, expected false; this would falsely keep idle panes out of the SAFE_TO_RESTART bucket", agent.AgentTypeCodex.String())
 	}
 }
 

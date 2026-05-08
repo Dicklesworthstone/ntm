@@ -293,12 +293,29 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 		// `internal/cli/assign.go::determineAgentState` already applies the
 		// same override before dispatch; this brings the restart/health
 		// surfaces into agreement with --robot-activity / IsLiveBusy.
+		//
+		// Re-derive the recommendation from the corrected state so we keep
+		// higher-priority signals (RateLimitedWait, ErrorState,
+		// ContextLowContinue) when they apply, and only fall through to
+		// DoNotInterrupt when the only thing the legacy parser was wrong
+		// about was IsWorking/IsIdle. Mutating `state.IsWorking` and
+		// `state.IsIdle` is safe: ParseWithHint returns a freshly-allocated
+		// *AgentState per call, and only state.RawSample is read after this
+		// point — that field is not touched by the override.
 		if IsLiveBusy(content, paneHints[paneIdx].String()) {
+			state.IsWorking = true
+			state.IsIdle = false
 			status.IsWorking = true
 			status.IsIdle = false
-			status.Recommendation = string(agent.RecommendDoNotInterrupt)
-			status.RecommendationReason = "Live-window thinking patterns detected (matches --robot-activity THINKING)"
-			status.Indicators.Work = append(status.Indicators.Work, "live_window_thinking")
+			status.Recommendation = string(state.GetRecommendation())
+			status.RecommendationReason = getRecommendationReason(state)
+			// Defensive copy: append might extend the underlying array of
+			// state.WorkIndicators in place if it has spare capacity. Even
+			// though the parser is not known to reuse slices today, copying
+			// keeps the override marker stable regardless of parser internals.
+			work := make([]string, len(status.Indicators.Work), len(status.Indicators.Work)+1)
+			copy(work, status.Indicators.Work)
+			status.Indicators.Work = append(work, "live_window_thinking")
 		}
 
 		// Ensure indicators are never nil
