@@ -98,12 +98,21 @@ type activityOptions struct {
 }
 
 func runActivity(session string, opts activityOptions) error {
+	// bd-ixy2t: emit a JSON envelope on early-fail when --json is set so
+	// automation pipelines (`ntm activity --json | jq ...`) always see a
+	// parseable failure on stdout instead of a stderr "Error:" line.
 	if err := tmux.EnsureInstalled(); err != nil {
+		if jsonOutput {
+			return outputActivityError(session, err)
+		}
 		return err
 	}
 
 	res, err := ResolveSession(session, os.Stdout)
 	if err != nil {
+		if jsonOutput {
+			return outputActivityError(session, err)
+		}
 		return err
 	}
 	if res.Session == "" {

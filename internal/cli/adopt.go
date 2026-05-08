@@ -249,18 +249,29 @@ func (r *AdoptResult) JSON() interface{} {
 }
 
 func runAdopt(opts AdoptOptions) error {
-	if err := tmux.EnsureInstalled(); err != nil {
-		return err
-	}
-
 	// bd-usgfy: emitAdoptFailure writes the success:false JSON envelope and
 	// signals non-zero exit via errJSONFailure so automation scripts gating
 	// on `$?` don't treat the failure as success (parity with #125).
+	// bd-ixy2t: hoisted above the tmux.EnsureInstalled() check so the
+	// early-fail path also emits a parseable envelope when --json is set —
+	// previously a missing tmux binary surfaced as a raw stderr error and
+	// `ntm adopt --json | jq ...` parsed empty stdin.
 	emitAdoptFailure := func(result *AdoptResult) error {
 		if encErr := output.New(output.WithJSON(jsonOutput)).Output(result); encErr != nil {
 			return encErr
 		}
 		return jsonFailureExit()
+	}
+
+	if err := tmux.EnsureInstalled(); err != nil {
+		if jsonOutput {
+			return emitAdoptFailure(&AdoptResult{
+				Success: false,
+				Session: opts.Session,
+				Error:   err.Error(),
+			})
+		}
+		return err
 	}
 
 	if !tmux.SessionExists(opts.Session) {

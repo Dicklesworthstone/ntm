@@ -270,3 +270,87 @@ func TestOutputActivityError_ReturnsJSONFailureSentinel(t *testing.T) {
 		t.Fatalf("outputActivityError returned %v, want errJSONFailure", err)
 	}
 }
+
+// TestRunActivity_EarlyFailRoutesThroughJSONEnvelope covers bd-ixy2t: when
+// --json is set, runActivity's early-fail paths (tmux.EnsureInstalled,
+// ResolveSession) must emit a parseable failure envelope instead of
+// returning the raw error. Pre-fix, automation pipelines like
+// `ntm activity --json | jq -r .session` got a stderr "Error:" line and
+// empty stdin to jq.
+//
+// We exercise the ResolveSession failure site (it can be triggered
+// deterministically by passing an invalid session name) and assert
+// runActivity returns errJSONFailure — proving the fix routed the early
+// error through outputActivityError instead of returning it raw.
+func TestRunActivity_EarlyFailRoutesThroughJSONEnvelope(t *testing.T) {
+	prevJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	origStdout := os.Stdout
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("os.Pipe error = %v", pipeErr)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, r)
+		close(done)
+	}()
+
+	// Invalid session name (spaces) trips tmux.ValidateSessionName inside
+	// ResolveSession, which is one of the bd-ixy2t early-fail sites.
+	err := runActivity("not a valid name", activityOptions{})
+	_ = w.Close()
+	<-done
+
+	if !errors.Is(err, errJSONFailure) {
+		t.Fatalf("runActivity returned %v, want errJSONFailure (early-fail must route through outputActivityError)", err)
+	}
+}
+
+// TestRunAdopt_EarlyFailRoutesThroughJSONEnvelope covers bd-ixy2t for
+// the adopt path: the tmux.EnsureInstalled failure site (only deterministic
+// early-fail in runAdopt without injecting a tmux failure) must route
+// through emitAdoptFailure when --json is set. We can't make a real
+// tmux disappear in-process, but the symmetric SessionExists failure
+// already proves the JSON envelope helper fires; this test locks the
+// jsonOutput contract specifically for the SessionExists branch with a
+// session name guaranteed not to exist, so the closure runs and the
+// errJSONFailure sentinel propagates up.
+func TestRunAdopt_SessionMissingRoutesThroughJSONEnvelope(t *testing.T) {
+	if !tmux.IsInstalled() {
+		t.Skip("tmux not installed; the SessionExists path requires a working tmux client")
+	}
+	prevJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	origStdout := os.Stdout
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("os.Pipe error = %v", pipeErr)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, r)
+		close(done)
+	}()
+
+	// Session that doesn't exist trips the SessionExists branch — the
+	// emitAdoptFailure closure now lives above the tmux.EnsureInstalled
+	// gate so the routing contract holds for both early-fail sites.
+	err := runAdopt(AdoptOptions{Session: "ntm-bd-ixy2t-nonexistent-session"})
+	_ = w.Close()
+	<-done
+
+	if !errors.Is(err, errJSONFailure) {
+		t.Fatalf("runAdopt returned %v, want errJSONFailure", err)
+	}
+}
