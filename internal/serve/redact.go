@@ -361,5 +361,24 @@ func (s *Server) GetRedactionConfig() *RedactionConfig {
 		return nil
 	}
 	cp := *s.redactionCfg
+	// bd-oekc2: redaction.Config carries reference-typed fields that
+	// the shallow struct copy above aliases with the server's live
+	// state. Deep-copy each so the godoc's "copy" promise holds —
+	// callers acting on the returned config (for read-modify-write
+	// via SetRedactionConfig, or for export/diagnostic dumps) cannot
+	// leak mutations back into the running server.
+	if cp.Config.Allowlist != nil {
+		cp.Config.Allowlist = append([]string(nil), cp.Config.Allowlist...)
+	}
+	if cp.Config.ExtraPatterns != nil {
+		patterns := make(map[redaction.Category][]string, len(cp.Config.ExtraPatterns))
+		for k, v := range cp.Config.ExtraPatterns {
+			patterns[k] = append([]string(nil), v...)
+		}
+		cp.Config.ExtraPatterns = patterns
+	}
+	if cp.Config.DisabledCategories != nil {
+		cp.Config.DisabledCategories = append([]redaction.Category(nil), cp.Config.DisabledCategories...)
+	}
 	return &cp
 }
