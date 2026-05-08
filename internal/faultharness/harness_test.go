@@ -72,6 +72,71 @@ func TestApply_DeadlineExceededHonorsCtxCancel(t *testing.T) {
 	}
 }
 
+// bd-otcf0: ModeDeadlineExceeded must report ACTUAL elapsed time in
+// Result.Latency, not the requested Behavior.Latency. Pre-fix the
+// branch always assigned spent = b.Latency regardless of how Sleep
+// returned, so a ctx that fired early was invisible in the result.
+func TestApply_DeadlineExceededReportsActualSpentNotRequestedBudget(t *testing.T) {
+	t.Parallel()
+
+	// Healthy ctx: FakeClock.Sleep advances NowTime by the full
+	// Latency, so the bracketed clock.Now().Sub(before) equals
+	// b.Latency. This is the "no early cancel" case.
+	c := newFakeClock()
+	r := Apply(context.Background(), c, Behavior{
+		Mode:    ModeDeadlineExceeded,
+		Latency: 5 * time.Second,
+	}, nil)
+	if r.Latency != 5*time.Second {
+		t.Errorf("uncancelled ctx: Latency = %v, want 5s (full budget consumed)", r.Latency)
+	}
+
+	// Pre-cancelled ctx: FakeClock.Sleep early-returns ctx.Err()
+	// WITHOUT advancing NowTime, so the bracketed delta is 0. Pre-fix
+	// the branch reported b.Latency=5s here, masking the cancel.
+	c2 := newFakeClock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r2 := Apply(ctx, c2, Behavior{
+		Mode:    ModeDeadlineExceeded,
+		Latency: 5 * time.Second,
+	}, nil)
+	if r2.Latency != 0 {
+		t.Errorf("pre-cancelled ctx: Latency = %v, want 0 (ctx fired before any time was spent)", r2.Latency)
+	}
+	if !errors.Is(r2.Err, context.DeadlineExceeded) {
+		t.Errorf("Err = %v, want context.DeadlineExceeded regardless of ctx state", r2.Err)
+	}
+}
+
+// Defensive cap: even if a custom clock returns a backwards or
+// over-budget delta, Result.Latency stays in [0, b.Latency]. This is
+// the bd-otcf0 fix's safety net for pluggable clocks.
+func TestApply_DeadlineExceededLatencyIsClampedToBudget(t *testing.T) {
+	t.Parallel()
+	c := &runawayClock{advance: 1 * time.Hour}
+	r := Apply(context.Background(), c, Behavior{
+		Mode:    ModeDeadlineExceeded,
+		Latency: 5 * time.Second,
+	}, nil)
+	if r.Latency != 5*time.Second {
+		t.Errorf("Latency = %v, want clamped to 5s budget", r.Latency)
+	}
+}
+
+// runawayClock advances NowTime by `advance` on every Sleep regardless
+// of the requested duration. Used to test Apply's defensive clamp.
+type runawayClock struct {
+	now     time.Time
+	advance time.Duration
+}
+
+func (c *runawayClock) Now() time.Time { return c.now }
+func (c *runawayClock) Sleep(_ context.Context, _ time.Duration) error {
+	c.now = c.now.Add(c.advance)
+	return nil
+}
+
 func TestApply_Unavailable(t *testing.T) {
 	t.Parallel()
 	r := Apply(context.Background(), newFakeClock(), Behavior{Mode: ModeUnavailable}, nil)

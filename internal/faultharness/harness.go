@@ -242,12 +242,25 @@ func Apply(ctx context.Context, clock Clock, b Behavior, healthyPayload []byte) 
 
 	case ModeDeadlineExceeded:
 		// Sleep up to Latency or until ctx fires. Either way, the
-		// caller observes a deadline-exceeded error.
-		err := clock.Sleep(ctx, b.Latency)
-		spent := b.Latency
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			// ctx fired first; treat that as the actual spend.
-			spent = b.Latency // FakeClock has already added Latency; for RealClock the deadline cut us short, but we don't have a way to read it back without more wiring. Keep it simple.
+		// caller observes a deadline-exceeded error. Result.Latency
+		// reports the ACTUAL elapsed time (via clock.Now() bracketing
+		// the Sleep call) rather than the requested budget — so a
+		// caller whose ctx fires after 100ms while Latency was 5s
+		// sees Latency≈100ms in the result, not 5s. Pre-bd-otcf0 the
+		// branch always reported b.Latency regardless of how Sleep
+		// returned, masking ctx-cancel paths under RealClock.
+		before := clock.Now()
+		_ = clock.Sleep(ctx, b.Latency)
+		spent := clock.Now().Sub(before)
+		// Defensive cap: a clock that ran backwards or was advanced
+		// past the requested budget would otherwise emit a misleading
+		// spent. The harness contract is "the harness spent this
+		// long" — at most b.Latency, never less than zero.
+		if spent < 0 {
+			spent = 0
+		}
+		if spent > b.Latency {
+			spent = b.Latency
 		}
 		return Result{
 			Latency: spent,
