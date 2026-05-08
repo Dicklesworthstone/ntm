@@ -3971,6 +3971,9 @@ func TestLimitsConfig_EffectiveLimits_Defaults(t *testing.T) {
 	if lc.MaxSubstitutionDepth != DefaultMaxSubstitutionDepth {
 		t.Errorf("MaxSubstitutionDepth=%d, want %d", lc.MaxSubstitutionDepth, DefaultMaxSubstitutionDepth)
 	}
+	if lc.SubstepParallelMax != DefaultSubstepParallelMax {
+		t.Errorf("SubstepParallelMax=%d, want %d", lc.SubstepParallelMax, DefaultSubstepParallelMax)
+	}
 }
 
 func TestLimitsConfig_EffectiveLimits_Override(t *testing.T) {

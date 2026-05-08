@@ -236,6 +236,7 @@ type LimitsConfig struct {
 	MaxCommandStderrBytes int64 `yaml:"max_command_stderr_bytes,omitempty" toml:"max_command_stderr_bytes,omitempty" json:"max_command_stderr_bytes,omitempty"`
 	MaxCommandStdinBytes  int64 `yaml:"max_command_stdin_bytes,omitempty" toml:"max_command_stdin_bytes,omitempty" json:"max_command_stdin_bytes,omitempty"`
 	MaxForeachRounds      int   `yaml:"max_foreach_rounds,omitempty" toml:"max_foreach_rounds,omitempty" json:"max_foreach_rounds,omitempty"`
+	SubstepParallelMax    int   `yaml:"substep_parallel_max,omitempty" toml:"substep_parallel_max,omitempty" json:"substep_parallel_max,omitempty"`
 	MaxTemplateBytes      int64 `yaml:"max_template_bytes,omitempty" toml:"max_template_bytes,omitempty" json:"max_template_bytes,omitempty"`
 	MaxStepCountTotal     int   `yaml:"max_step_count_total,omitempty" toml:"max_step_count_total,omitempty" json:"max_step_count_total,omitempty"`
 	MaxSubstitutionDepth  int   `yaml:"max_substitution_recursion,omitempty" toml:"max_substitution_recursion,omitempty" json:"max_substitution_recursion,omitempty"`
@@ -247,6 +248,7 @@ const (
 	DefaultMaxCommandStdoutBytes = 16 * 1024 * 1024 // 16 MB
 	DefaultMaxCommandStderrBytes = 4 * 1024 * 1024  // 4 MB
 	DefaultMaxCommandStdinBytes  = 1 * 1024 * 1024  // 1 MB (bd-1ka2t)
+	DefaultSubstepParallelMax    = 8                // bd-dmjn3
 	DefaultMaxTemplateBytes      = 256 * 1024       // 256 KB
 	DefaultMaxStepCountTotal     = 100000
 	DefaultMaxSubstitutionDepth  = 8
@@ -271,6 +273,9 @@ func (lc LimitsConfig) EffectiveLimits() LimitsConfig {
 	}
 	if lc.MaxForeachRounds <= 0 {
 		lc.MaxForeachRounds = DefaultMaxRounds
+	}
+	if lc.SubstepParallelMax <= 0 {
+		lc.SubstepParallelMax = DefaultSubstepParallelMax
 	}
 	if lc.MaxTemplateBytes <= 0 {
 		lc.MaxTemplateBytes = DefaultMaxTemplateBytes

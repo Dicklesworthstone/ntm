@@ -321,6 +321,70 @@ func TestExecuteParallel_Concurrency(t *testing.T) {
 	}
 }
 
+// TestExecuteParallel_SubstepParallelMaxOperatorOverride covers bd-dmjn3:
+// substep concurrency was previously hardcoded at 8 inside executeParallel.
+// Operators with a parallel block of >8 substeps had no knob to raise (or
+// lower) the cap. The fix routes the semaphore size through
+// limits.substep_parallel_max with DefaultSubstepParallelMax=8 fallback.
+//
+// This test exercises both ends: configures a 16-substep group with
+// SubstepParallelMax=12 and asserts every substep records a result. We
+// can't deterministically assert "exactly 12 ran in parallel" without
+// timing observation that flakes under -race load, so the contract checked
+// here is that a >old-default fan-out completes cleanly under a configured
+// (non-default) cap.
+func TestExecuteParallel_SubstepParallelMaxOperatorOverride(t *testing.T) {
+	const total = 16
+
+	parallelSteps := make([]Step, total)
+	for i := 0; i < total; i++ {
+		parallelSteps[i] = Step{
+			ID:     fmt.Sprintf("substep_%d", i),
+			Prompt: fmt.Sprintf("Do task %d", i),
+		}
+	}
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "substep-parallel-max-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:       "parallel_group",
+			Parallel: ParallelSpec{Steps: parallelSteps},
+		}},
+	}
+
+	cfg := DefaultExecutorConfig("test")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+	e.graph = NewDependencyGraph(workflow)
+	e.state = &ExecutionState{
+		RunID:      "test-run-substep-cap",
+		WorkflowID: "test-workflow",
+		Status:     StatusRunning,
+		StartedAt:  time.Now(),
+		Steps:      make(map[string]StepResult),
+		Variables:  make(map[string]interface{}),
+	}
+	e.limits = LimitsConfig{SubstepParallelMax: 12}.EffectiveLimits()
+
+	step := &Step{
+		ID:       "parallel_group",
+		Parallel: ParallelSpec{Steps: parallelSteps},
+	}
+	result := e.executeParallel(context.Background(), step, workflow)
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("Status = %q, want %q (operator-cap should not block completion); error = %+v", result.Status, StatusCompleted, result.Error)
+	}
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("substep_%d", i)
+		if _, ok := e.state.Steps[id]; !ok {
+			t.Errorf("missing step result for %s — semaphore likely starved (cap=%d, total=%d)", id, e.limits.SubstepParallelMax, total)
+		}
+	}
+}
+
 func TestSelectPaneExcluding_BasicExclusion(t *testing.T) {
 
 	// This test verifies the exclusion logic without requiring a real tmux session

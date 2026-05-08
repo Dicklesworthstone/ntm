@@ -1890,8 +1890,15 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 	usedPanes := make(map[string]bool)
 	var panesMu sync.Mutex
 
-	// Semaphore to limit concurrency (max 8 parallel steps)
-	sem := make(chan struct{}, 8)
+	// bd-dmjn3: substep concurrency is sourced from
+	// limits.substep_parallel_max (default DefaultSubstepParallelMax=8)
+	// so workflows with large parallel blocks can opt into a higher fan-out
+	// without patching the constant.
+	substepLimit := e.limits.SubstepParallelMax
+	if substepLimit <= 0 {
+		substepLimit = DefaultSubstepParallelMax
+	}
+	sem := make(chan struct{}, substepLimit)
 
 	for i, pStep := range step.Parallel.Steps {
 		// bd-qbymk: when resuming a parallel group whose parent never
