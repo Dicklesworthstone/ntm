@@ -3561,6 +3561,16 @@ func loadRecoveryCheckpoint(sessionName, workingDir string) (*RecoveryCheckpoint
 	if !checkpointWorkingDirMatches(cp.WorkingDir, workingDir) {
 		// Recorded working dir disagrees with the spawn directory — refuse to
 		// surface the checkpoint as recovery context for a different repo.
+		// bd-1cr5k: emit a Warn-level diagnostic so operators investigating
+		// "where did my recovery context go?" can correlate the silent drop
+		// with a working-dir mismatch instead of staring at empty output.
+		slog.Warn("recovery checkpoint rejected: working_dir mismatch",
+			"session", sessionName,
+			"checkpoint_working_dir", cp.WorkingDir,
+			"spawn_working_dir", workingDir,
+			"checkpoint_id", cp.ID,
+			"hint", "checkpoint was recorded against a different repo with the same session name; recovery context is intentionally suppressed (#131)",
+		)
 		return nil, nil
 	}
 
