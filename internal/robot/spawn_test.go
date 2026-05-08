@@ -297,7 +297,18 @@ func TestSpawnOptions_DryRunIncludesAdmission(t *testing.T) {
 		DryRun:     true,
 	}
 
-	resp, err := GetSpawn(opts, config.Default())
+	// Hoist the agent cap above any plausible runner state so this
+	// test is environment-independent. With bd-1oenb's fix the
+	// admission cap counts running + requested vs MaxAgents; the
+	// real-tmux RunningAgents on a CI/agent-swarm host would
+	// otherwise trip the default cap before the request is even
+	// considered.
+	cfg := config.Default()
+	cfg.SpawnPacing.AgentCaps.ClaudeMaxConcurrent = 1024
+	cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent = 1024
+	cfg.SpawnPacing.AgentCaps.GeminiMaxConcurrent = 1024
+
+	resp, err := GetSpawn(opts, cfg)
 	if err != nil {
 		t.Fatalf("GetSpawn returned error: %v", err)
 	}
@@ -433,6 +444,11 @@ func TestSpawnOptions_MultipleAgentTypes(t *testing.T) {
 	}
 
 	cfg := config.Default()
+	// Hoist agent caps so bd-1oenb's running+requested cap check
+	// doesn't refuse the spawn on a busy runner (default caps are 7).
+	cfg.SpawnPacing.AgentCaps.ClaudeMaxConcurrent = 1024
+	cfg.SpawnPacing.AgentCaps.CodexMaxConcurrent = 1024
+	cfg.SpawnPacing.AgentCaps.GeminiMaxConcurrent = 1024
 	// Use fast echo commands
 	cfg.Agents.Claude = "echo claude_test"
 	cfg.Agents.Codex = "echo codex_test"

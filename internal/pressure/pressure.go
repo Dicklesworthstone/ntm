@@ -10,6 +10,7 @@ package pressure
 
 import (
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -216,8 +217,15 @@ func EvaluateSpawnAdmission(in SpawnAdmissionInput) SpawnAdmission {
 		Limiting:            limiting,
 		Sources:             spawnAdmissionSources(in.Pressure),
 	}
+	// postSpawnAgents is what the host would be running AFTER this
+	// admission. The cap exists to bound concurrent agents — running +
+	// requested must stay under MaxAgents. Pre-fix the cap check only
+	// looked at requestedAgents, so 10 running + 5 requested with a cap
+	// of 12 was admitted (15 > 12) — the tmux-derived RunningAgents
+	// field was collected and reported but never enforced (bd-1oenb).
+	postSpawnAgents := runningAgents + requestedAgents
 	if maxAgents > 0 {
-		out.AgentHeadroom = maxAgents - requestedAgents
+		out.AgentHeadroom = maxAgents - postSpawnAgents
 		if out.AgentHeadroom < 0 {
 			out.AgentHeadroom = 0
 		}
@@ -228,10 +236,13 @@ func EvaluateSpawnAdmission(in SpawnAdmissionInput) SpawnAdmission {
 		out.Decision = SpawnAdmissionRefuse
 		out.Reason = "invalid_request"
 		out.Hint = "specify at least one agent"
-	case maxAgents > 0 && requestedAgents > maxAgents:
+	case maxAgents > 0 && postSpawnAgents > maxAgents:
 		out.Decision = SpawnAdmissionRefuse
 		out.Reason = "agent_limit_exceeded"
-		out.Hint = "reduce requested agents or raise spawn_pacing agent caps"
+		out.Hint = "running " + strconv.Itoa(runningAgents) +
+			" + requested " + strconv.Itoa(requestedAgents) +
+			" exceeds cap " + strconv.Itoa(maxAgents) +
+			"; reduce requested agents or raise spawn_pacing agent caps"
 	case largeSpawn && pressureLevel >= LevelCritical:
 		out.Decision = SpawnAdmissionRefuse
 		out.Reason = "pressure_critical"

@@ -103,6 +103,11 @@ func TestMergeBudgets_ZeroOverridePreservesBase(t *testing.T) {
 
 func TestEvaluateSpawnAdmission_AdmitsWithHeadroom(t *testing.T) {
 	t.Parallel()
+	// 5 running + 3 requested = 8 post-spawn; cap 10 leaves 2 headroom.
+	// (Pre-bd-1oenb the cap check ignored RunningAgents and reported
+	// AgentHeadroom = MaxAgents - RequestedAgents = 7 - 3 = 4 against
+	// a cap of 7 even with 5 already running. Fixed inputs reflect
+	// the corrected post-spawn-vs-cap accounting.)
 	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
 		Session:             "proj",
 		RequestedAgents:     3,
@@ -111,7 +116,7 @@ func TestEvaluateSpawnAdmission_AdmitsWithHeadroom(t *testing.T) {
 		CurrentPanes:        8,
 		RunningAgents:       5,
 		RunningSessions:     2,
-		MaxAgents:           7,
+		MaxAgents:           10,
 		LargeSpawnThreshold: 4,
 		Pressure: buildSnapshot(fixedClock()(), []Reading{
 			{Source: SourceCPU, Value: 0.20, Unit: "ratio"},
@@ -127,8 +132,8 @@ func TestEvaluateSpawnAdmission_AdmitsWithHeadroom(t *testing.T) {
 	if admission.ProjectedPanes != 11 {
 		t.Errorf("ProjectedPanes = %d, want 11", admission.ProjectedPanes)
 	}
-	if admission.AgentHeadroom != 4 {
-		t.Errorf("AgentHeadroom = %d, want 4", admission.AgentHeadroom)
+	if admission.AgentHeadroom != 2 {
+		t.Errorf("AgentHeadroom = %d, want 2 (10 - 5 - 3)", admission.AgentHeadroom)
 	}
 }
 
@@ -195,6 +200,77 @@ func TestEvaluateSpawnAdmission_RefusesAgentLimit(t *testing.T) {
 	}
 	if admission.AgentHeadroom != 0 {
 		t.Errorf("AgentHeadroom = %d, want 0", admission.AgentHeadroom)
+	}
+}
+
+// bd-1oenb: the cap check must consult RunningAgents, not just the
+// requested-batch size. A request that fits the per-batch check
+// (requested <= cap) but cumulatively pushes the host past the cap
+// (running + requested > cap) MUST be refused.
+func TestEvaluateSpawnAdmission_RefusesWhenRunningPlusRequestedExceedsCap(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:         "proj",
+		RequestedAgents: 5,
+		RequestedPanes:  6,
+		RunningAgents:   10,
+		MaxAgents:       12,
+	})
+	if admission.Decision != SpawnAdmissionRefuse {
+		t.Fatalf("Decision = %s, want refuse (10 running + 5 requested = 15 > cap 12)", admission.Decision)
+	}
+	if admission.Reason != "agent_limit_exceeded" {
+		t.Errorf("Reason = %q, want agent_limit_exceeded", admission.Reason)
+	}
+	if admission.AgentHeadroom != 0 {
+		t.Errorf("AgentHeadroom = %d, want 0 (already over cap)", admission.AgentHeadroom)
+	}
+	// The new hint must surface running + requested + cap so the
+	// operator can see why the request was rejected.
+	for _, want := range []string{"running 10", "requested 5", "cap 12"} {
+		if !strings.Contains(admission.Hint, want) {
+			t.Errorf("Hint = %q, want substring %q", admission.Hint, want)
+		}
+	}
+}
+
+// Companion: a request that fits cleanly under the cap once running
+// is accounted for must STILL be admitted. Pre-fix this test was
+// already passing (because the old code ignored running entirely);
+// post-fix it confirms the correct path still works.
+func TestEvaluateSpawnAdmission_AdmitsWhenRunningPlusRequestedFitsCap(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:         "proj",
+		RequestedAgents: 5,
+		RequestedPanes:  6,
+		RunningAgents:   5,
+		MaxAgents:       12,
+	})
+	if admission.Decision != SpawnAdmissionAdmit {
+		t.Fatalf("Decision = %s, want admit (5 running + 5 requested = 10 <= cap 12)", admission.Decision)
+	}
+	if admission.AgentHeadroom != 2 {
+		t.Errorf("AgentHeadroom = %d, want 2 (12 - 5 - 5)", admission.AgentHeadroom)
+	}
+}
+
+// Boundary: running + requested == cap exactly is admitted (the cap
+// is inclusive of the post-spawn count).
+func TestEvaluateSpawnAdmission_AdmitsAtExactCap(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:         "proj",
+		RequestedAgents: 7,
+		RequestedPanes:  8,
+		RunningAgents:   5,
+		MaxAgents:       12,
+	})
+	if admission.Decision != SpawnAdmissionAdmit {
+		t.Fatalf("Decision = %s, want admit at exact cap (5 + 7 == 12)", admission.Decision)
+	}
+	if admission.AgentHeadroom != 0 {
+		t.Errorf("AgentHeadroom = %d, want 0 (sitting at cap)", admission.AgentHeadroom)
 	}
 }
 
