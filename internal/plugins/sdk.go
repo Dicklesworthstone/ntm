@@ -111,8 +111,24 @@ var (
 // across List calls.
 type AdapterRegistry struct {
 	mu      sync.RWMutex
-	plugins map[string]Plugin
+	plugins map[string]*pluginEntry
 	hostCtx PluginContext
+	// closed is set when Shutdown has run; subsequent Register calls
+	// fail-close, and any in-flight Init that completes after Shutdown
+	// invokes its plugin's Shutdown to avoid leaking a freshly-init'd
+	// orphan into a defunct registry (bd-dl6ek).
+	closed bool
+}
+
+// pluginEntry tracks one slot in the registry. ready=false means
+// Register has reserved the name slot but the plugin's Init has not
+// yet returned successfully — the plugin is intentionally NOT
+// visible via Get / List / FindByCapability so consumers cannot
+// invoke it before Init completes (bd-dl6ek). Once Init returns
+// nil, the registering goroutine flips ready=true under r.mu.
+type pluginEntry struct {
+	p     Plugin
+	ready bool
 }
 
 // NewAdapterRegistry returns a registry seeded with the host context
@@ -122,10 +138,14 @@ func NewAdapterRegistry(ctx PluginContext) *AdapterRegistry {
 		ctx.SDKVersion = SDKVersion
 	}
 	return &AdapterRegistry{
-		plugins: make(map[string]Plugin),
+		plugins: make(map[string]*pluginEntry),
 		hostCtx: ctx,
 	}
 }
+
+// ErrRegistryClosed is returned by Register when the registry's
+// Shutdown has already been called. The closed state is permanent.
+var ErrRegistryClosed = errors.New("plugin registry closed")
 
 // HostContext returns the PluginContext the registry will pass into
 // future Init calls. Useful for diagnostics.
@@ -141,7 +161,11 @@ func (r *AdapterRegistry) HostContext() PluginContext {
 // returned (with the original error wrapped).
 //
 // Register is fail-closed: any validation failure is surfaced to the
-// caller and no partial state is retained.
+// caller and no partial state is retained. The plugin is NOT visible
+// to Get/List/FindByCapability until Init returns nil, so concurrent
+// observers cannot invoke a plugin whose Init is still in flight
+// (bd-dl6ek). The name slot is reserved during Init so a concurrent
+// Register call for the same name still gets ErrPluginAlreadyRegistered.
 func (r *AdapterRegistry) Register(p Plugin) error {
 	if p == nil {
 		return fmt.Errorf("%w: nil plugin", ErrPluginMalformed)
@@ -155,81 +179,117 @@ func (r *AdapterRegistry) Register(p Plugin) error {
 	name := p.Name()
 
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: cannot register %s", ErrRegistryClosed, name)
+	}
 	if _, ok := r.plugins[name]; ok {
 		r.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrPluginAlreadyRegistered, name)
 	}
-	r.plugins[name] = p
+	entry := &pluginEntry{p: p, ready: false}
+	r.plugins[name] = entry
 	r.mu.Unlock()
 
-	if err := p.Init(r.hostCtx); err != nil {
-		r.mu.Lock()
+	// Init runs OUTSIDE the lock so it does not block other registry
+	// operations on unrelated plugins. The slot is reserved by the
+	// non-ready entry; observers filter on ready=true.
+	initErr := p.Init(r.hostCtx)
+
+	r.mu.Lock()
+	registryClosed := r.closed
+	if initErr != nil {
 		delete(r.plugins, name)
 		r.mu.Unlock()
-		return fmt.Errorf("%w: %s: %v", ErrPluginInitFailed, name, err)
+		return fmt.Errorf("%w: %s: %v", ErrPluginInitFailed, name, initErr)
 	}
+	if registryClosed {
+		// Shutdown ran while our Init was in flight. Don't mark the
+		// entry ready — drop it from the map and clean up the freshly
+		// init'd plugin so the contract "After Shutdown returns, no
+		// further calls into the plugin are made" still holds for the
+		// registry as a whole.
+		delete(r.plugins, name)
+		r.mu.Unlock()
+		_ = p.Shutdown()
+		return fmt.Errorf("%w: %s init completed after shutdown", ErrRegistryClosed, name)
+	}
+	entry.ready = true
+	r.mu.Unlock()
 	return nil
 }
 
 // Unregister removes a plugin and calls its Shutdown. Returns
-// ErrPluginNotFound if the plugin is not present. Shutdown errors are
-// returned verbatim; the plugin is removed regardless so the caller
-// can retry registration with a corrected implementation.
+// ErrPluginNotFound if the plugin is not present OR is still
+// initializing — only ready (Init-completed) plugins can be
+// Unregistered. Shutdown errors are returned verbatim; the plugin is
+// removed regardless so the caller can retry registration with a
+// corrected implementation.
 func (r *AdapterRegistry) Unregister(name string) error {
 	r.mu.Lock()
-	p, ok := r.plugins[name]
-	if !ok {
+	entry, ok := r.plugins[name]
+	if !ok || !entry.ready {
 		r.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrPluginNotFound, name)
 	}
 	delete(r.plugins, name)
 	r.mu.Unlock()
-	return p.Shutdown()
+	return entry.p.Shutdown()
 }
 
 // Get returns the plugin with the given name, or ErrPluginNotFound.
+// In-flight registrations (Init not yet returned) are reported as
+// not found so consumers cannot invoke a plugin before its Init
+// contract is satisfied (bd-dl6ek).
 func (r *AdapterRegistry) Get(name string) (Plugin, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.plugins[name]
-	if !ok {
+	entry, ok := r.plugins[name]
+	if !ok || !entry.ready {
 		return nil, fmt.Errorf("%w: %s", ErrPluginNotFound, name)
 	}
-	return p, nil
+	return entry.p, nil
 }
 
 // List returns all registered plugins in deterministic alphabetical
-// order. The returned slice is a snapshot — safe to mutate.
+// order. The returned slice is a snapshot — safe to mutate. Plugins
+// whose Init has not yet completed are excluded.
 func (r *AdapterRegistry) List() []Plugin {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]Plugin, 0, len(r.plugins))
 	names := make([]string, 0, len(r.plugins))
-	for n := range r.plugins {
-		names = append(names, n)
+	for n, entry := range r.plugins {
+		if entry.ready {
+			names = append(names, n)
+		}
 	}
 	sort.Strings(names)
+	out := make([]Plugin, 0, len(names))
 	for _, n := range names {
-		out = append(out, r.plugins[n])
+		out = append(out, r.plugins[n].p)
 	}
 	return out
 }
 
 // FindByCapability returns plugins advertising the given capability,
-// sorted alphabetically by Name. The host can use this to dispatch
-// work without naming individual plugins.
+// sorted alphabetically by Name. In-flight registrations are
+// excluded — the host cannot dispatch work to a plugin whose Init
+// has not yet completed.
 func (r *AdapterRegistry) FindByCapability(c Capability) []Plugin {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	type entry struct {
+	type match struct {
 		name string
 		p    Plugin
 	}
-	var matches []entry
-	for n, p := range r.plugins {
-		for _, cap := range p.Capabilities() {
+	var matches []match
+	for n, entry := range r.plugins {
+		if !entry.ready {
+			continue
+		}
+		for _, cap := range entry.p.Capabilities() {
 			if cap == c {
-				matches = append(matches, entry{name: n, p: p})
+				matches = append(matches, match{name: n, p: entry.p})
 				break
 			}
 		}
@@ -242,21 +302,32 @@ func (r *AdapterRegistry) FindByCapability(c Capability) []Plugin {
 	return out
 }
 
-// Shutdown calls Shutdown on every registered plugin in deterministic
-// order and clears the registry. Per-plugin Shutdown errors are
-// collected via errors.Join so the caller sees them all even when one
-// fails first.
+// Shutdown calls Shutdown on every ready plugin in deterministic
+// order, marks the registry closed, and clears the ready entries.
+// Per-plugin Shutdown errors are collected via errors.Join so the
+// caller sees them all even when one fails first.
+//
+// Plugins whose Init is still in flight are NOT invoked — their
+// Init contract has not been satisfied, so the inverse "Shutdown
+// after Init" promise has nothing to honor. The closed flag means
+// any in-flight Init that returns successfully after this point
+// will see registryClosed=true and clean up its own plugin via
+// p.Shutdown(), so no orphan can leak past Shutdown's return.
+// Subsequent Register calls fail with ErrRegistryClosed.
 func (r *AdapterRegistry) Shutdown() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.closed = true
 	names := make([]string, 0, len(r.plugins))
-	for n := range r.plugins {
-		names = append(names, n)
+	for n, entry := range r.plugins {
+		if entry.ready {
+			names = append(names, n)
+		}
 	}
 	sort.Strings(names)
 	var joined error
 	for _, n := range names {
-		if err := r.plugins[n].Shutdown(); err != nil {
+		if err := r.plugins[n].p.Shutdown(); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("plugin %s: %w", n, err))
 		}
 		delete(r.plugins, n)

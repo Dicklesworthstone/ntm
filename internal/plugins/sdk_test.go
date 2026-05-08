@@ -2,8 +2,10 @@ package plugins
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakePlugin is a small Plugin implementation that lets tests control
@@ -304,6 +306,229 @@ func TestRegistry_FailureIsolation(t *testing.T) {
 	}
 	if got := len(r.List()); got != 2 {
 		t.Errorf("registry size = %d, want 2 (alpha + charlie, bravo rejected)", got)
+	}
+}
+
+// slowInitPlugin blocks Init on a release channel so tests can hold
+// a registration in-flight and exercise the bd-dl6ek windows where
+// the plugin is reserved in the map but not yet ready for callers.
+type slowInitPlugin struct {
+	fakePlugin
+	release <-chan struct{}
+}
+
+func (p *slowInitPlugin) Init(ctx PluginContext) error {
+	// Mark entry FIRST so tests can detect Init has started, THEN
+	// block. Reversing this order deadlocks any test that gates the
+	// channel-close on initCount > 0.
+	p.fakePlugin.initCount.Add(1)
+	c := ctx
+	p.fakePlugin.gotCtx.Store(&c)
+	if p.release != nil {
+		<-p.release
+	}
+	return p.fakePlugin.initErr
+}
+
+func newSlowPlugin(name string, release <-chan struct{}) *slowInitPlugin {
+	return &slowInitPlugin{
+		fakePlugin: fakePlugin{
+			name:    name,
+			version: "1.0.0",
+			minSDK:  "1.0",
+			caps:    []Capability{CapabilityAgentLauncher},
+		},
+		release: release,
+	}
+}
+
+// bd-dl6ek: Get / List / FindByCapability must NOT surface a plugin
+// whose Init is still in flight. The pre-fix code stored the plugin
+// in the map before Init returned, so observers could fetch and
+// invoke a not-yet-initialized plugin.
+func TestRegister_PluginIsInvisibleUntilInitReturns(t *testing.T) {
+	t.Parallel()
+	r := newRegistry()
+	release := make(chan struct{})
+	p := newSlowPlugin("slow", release)
+
+	registerDone := make(chan error, 1)
+	go func() { registerDone <- r.Register(p) }()
+
+	// Wait until Register has reserved the slot but is blocked on Init.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if p.initCount.Load() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if p.initCount.Load() == 0 {
+		t.Fatalf("Init never started; race window not opened")
+	}
+
+	// While Init is blocked: Get / List / FindByCapability must all
+	// behave as if the plugin doesn't exist.
+	if got, err := r.Get("slow"); err == nil || got != nil {
+		t.Errorf("Get returned in-flight plugin: got=%v err=%v", got, err)
+	} else if !errors.Is(err, ErrPluginNotFound) {
+		t.Errorf("Get err = %v, want ErrPluginNotFound", err)
+	}
+	if list := r.List(); len(list) != 0 {
+		t.Errorf("List = %v, want empty (in-flight plugin must not surface)", list)
+	}
+	if matches := r.FindByCapability(CapabilityAgentLauncher); len(matches) != 0 {
+		t.Errorf("FindByCapability = %v, want empty during in-flight Init", matches)
+	}
+
+	// Slot is reserved: a second Register for the same name must
+	// see ErrPluginAlreadyRegistered, not silently double-init.
+	if err := r.Register(newGoodPlugin("slow")); !errors.Is(err, ErrPluginAlreadyRegistered) {
+		t.Errorf("concurrent Register err = %v, want ErrPluginAlreadyRegistered", err)
+	}
+
+	close(release)
+	if err := <-registerDone; err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// After Init returns, the plugin becomes visible.
+	if got, err := r.Get("slow"); err != nil || got == nil {
+		t.Errorf("Get after Init: got=%v err=%v", got, err)
+	}
+}
+
+// bd-dl6ek: Shutdown must NOT invoke Shutdown on a plugin whose Init
+// is still in flight. The pre-fix code iterated the map and called
+// Shutdown on every entry, including not-yet-init'd plugins.
+func TestShutdown_DoesNotInvokeNotReadyPlugin(t *testing.T) {
+	t.Parallel()
+	r := newRegistry()
+	release := make(chan struct{})
+	p := newSlowPlugin("slow", release)
+
+	registerDone := make(chan error, 1)
+	go func() { registerDone <- r.Register(p) }()
+
+	// Wait for Init to be in flight.
+	for p.initCount.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+
+	// Shutdown the registry while the slow plugin's Init is blocked.
+	// The not-yet-ready plugin must NOT have its Shutdown invoked.
+	if err := r.Shutdown(); err != nil {
+		t.Errorf("Shutdown err = %v, want nil (no ready plugins)", err)
+	}
+	if got := p.shutdownCount.Load(); got != 0 {
+		t.Errorf("not-ready plugin Shutdown call count = %d, want 0", got)
+	}
+
+	// Now release Init. Since the registry is closed, Register's
+	// completion path must call Shutdown on the just-init'd plugin
+	// (so it doesn't leak past Shutdown's return) and surface
+	// ErrRegistryClosed.
+	close(release)
+	regErr := <-registerDone
+	if !errors.Is(regErr, ErrRegistryClosed) {
+		t.Errorf("Register after Shutdown err = %v, want ErrRegistryClosed", regErr)
+	}
+	if got := p.shutdownCount.Load(); got != 1 {
+		t.Errorf("post-shutdown Init plugin Shutdown call count = %d, want 1", got)
+	}
+}
+
+// Subsequent Register calls fail-close after Shutdown.
+func TestRegister_AfterShutdownFailsClosed(t *testing.T) {
+	t.Parallel()
+	r := newRegistry()
+	if err := r.Shutdown(); err != nil {
+		t.Fatalf("initial Shutdown: %v", err)
+	}
+	err := r.Register(newGoodPlugin("p"))
+	if !errors.Is(err, ErrRegistryClosed) {
+		t.Errorf("Register err = %v, want ErrRegistryClosed", err)
+	}
+}
+
+// Unregister of an in-flight plugin returns ErrPluginNotFound — the
+// plugin is reserved but not yet usable, so the contract treats it
+// as "not present" from the consumer's perspective.
+func TestUnregister_InFlightPluginIsNotFound(t *testing.T) {
+	t.Parallel()
+	r := newRegistry()
+	release := make(chan struct{})
+	p := newSlowPlugin("slow", release)
+
+	registerDone := make(chan error, 1)
+	go func() { registerDone <- r.Register(p) }()
+
+	for p.initCount.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+
+	// Unregister must not see the in-flight plugin.
+	if err := r.Unregister("slow"); !errors.Is(err, ErrPluginNotFound) {
+		t.Errorf("Unregister of in-flight plugin err = %v, want ErrPluginNotFound", err)
+	}
+	if got := p.shutdownCount.Load(); got != 0 {
+		t.Errorf("Unregister leaked Shutdown call to not-ready plugin: count = %d", got)
+	}
+
+	close(release)
+	if err := <-registerDone; err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Now the plugin is ready and Unregister works normally.
+	if err := r.Unregister("slow"); err != nil {
+		t.Errorf("Unregister after Init: %v", err)
+	}
+}
+
+// Race-detector test: many goroutines registering, listing, and
+// shutting down concurrently must not produce data races.
+func TestRegistry_RaceFreeUnderConcurrentRegisterListShutdown(t *testing.T) {
+	t.Parallel()
+	r := newRegistry()
+
+	const writers = 8
+	const readers = 8
+	const iterations = 50
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				name := "p_" + string(rune('a'+seed)) + "_" + string(rune('0'+(j%10)))
+				_ = r.Register(newGoodPlugin(name))
+			}
+		}(i)
+	}
+	for i := 0; i < readers; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_ = r.List()
+				_ = r.FindByCapability(CapabilityAgentLauncher)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_, _ = r.Get("p_a_0")
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Shutdown should not panic regardless of the final state.
+	if err := r.Shutdown(); err != nil {
+		t.Logf("Shutdown returned %v (acceptable — joined plugin errors)", err)
 	}
 }
 
