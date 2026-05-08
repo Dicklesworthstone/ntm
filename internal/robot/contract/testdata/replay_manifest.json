@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "description": "Robot-mode contract replay corpus (bd-fxj4f.1). Each fixture pins a captured envelope shape so the contract assertions stay green across surface refactors. Adding a surface = one fixture per outcome (success / failure / unavailable). Stdout payloads are inline so the harness stays repo-local.",
+  "fixtures": [
+    {
+      "name": "robot_status_success",
+      "command": "ntm --robot-status",
+      "mode": "success",
+      "exit_code": 0,
+      "capability_name": "robot-status",
+      "stdout": {
+        "success": true,
+        "timestamp": "2026-05-08T12:00:00Z",
+        "version": "1.0.0",
+        "output_format": "auto",
+        "sessions": [],
+        "panes": [],
+        "agents": []
+      },
+      "critical_arrays": ["sessions", "panes", "agents"],
+      "notes": "Empty-state happy path: all three required arrays are present as []."
+    },
+    {
+      "name": "robot_send_session_not_found",
+      "command": "ntm --robot-send=ghost --msg='hi'",
+      "mode": "failure",
+      "exit_code": 1,
+      "capability_name": "robot-send",
+      "expected_error_code": "SESSION_NOT_FOUND",
+      "stdout": {
+        "success": false,
+        "timestamp": "2026-05-08T12:00:00Z",
+        "version": "1.0.0",
+        "output_format": "auto",
+        "error": "session 'ghost' does not exist",
+        "error_code": "SESSION_NOT_FOUND",
+        "hint": "list sessions: ntm --robot-status"
+      },
+      "notes": "Documented failure: success=false, non-empty error + error_code, exit code 1."
+    },
+    {
+      "name": "robot_cass_status_unavailable",
+      "command": "ntm --robot-cass-status",
+      "mode": "unavailable",
+      "exit_code": 2,
+      "capability_name": "robot-cass-status",
+      "expected_error_code": "NOT_IMPLEMENTED",
+      "stdout": {
+        "success": false,
+        "timestamp": "2026-05-08T12:00:00Z",
+        "version": "1.0.0",
+        "output_format": "auto",
+        "error": "cass binary not installed; falling back to no-op",
+        "error_code": "NOT_IMPLEMENTED",
+        "hint": "install cass to enable cross-agent search"
+      },
+      "notes": "Unavailable: success=false with NOT_IMPLEMENTED error_code and exit code 2 (the documented 'unavailable' value)."
+    }
+  ]
+}
