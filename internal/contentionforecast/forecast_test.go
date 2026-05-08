@@ -317,6 +317,62 @@ func TestCompute_AlternativesProposedForBroadPatterns(t *testing.T) {
 	}
 }
 
+// bd-r8ybt: the catch-all patterns "**" and "/**" earn the maximum
+// broad-glob penalty (0.6) but pre-fix produced no alternatives —
+// "**" failed the HasSuffix("/**") check and "/**" produced an empty
+// prefix that rejected every relative path. After the fix, these
+// patterns derive alternatives from the top-level directory of each
+// observed touch / bead path so an operator narrows from "**" to a
+// concrete "<top_dir>/**".
+func TestCompute_AlternativesProposedForCatchAllPattern(t *testing.T) {
+	t.Parallel()
+	now := clock()
+	for _, pat := range []string{"**", "/**"} {
+		t.Run(pat, func(t *testing.T) {
+			in := Inputs{
+				Now: now,
+				Reservations: []ReservationEpisode{
+					{PathPattern: pat, AgentName: "A", AcquiredAt: now.Add(-1 * time.Hour), Conflicted: true},
+					{PathPattern: pat, AgentName: "B", AcquiredAt: now.Add(-30 * time.Minute), Conflicted: true},
+				},
+				TouchedPaths: []TouchedPath{
+					{Path: "internal/auth/session.go", TouchCount: 8, LastTouched: now.Add(-1 * time.Hour)},
+					{Path: "internal/auth/permissions.go", TouchCount: 5, LastTouched: now.Add(-2 * time.Hour)},
+					{Path: "internal/parity/parity.go", TouchCount: 3, LastTouched: now.Add(-2 * time.Hour)},
+				},
+			}
+			f := Compute(in)
+			var top *Hotspot
+			for i := range f.Hotspots {
+				if f.Hotspots[i].PathPattern == pat {
+					top = &f.Hotspots[i]
+				}
+			}
+			if top == nil {
+				t.Fatalf("hotspot for %q missing", pat)
+			}
+			if len(top.Alternatives) == 0 {
+				t.Errorf("Alternatives empty for catch-all pattern %q; want narrower suggestions derived from top-level directories", pat)
+			}
+			// The "internal" top-level directory dominates the touched
+			// paths (3 paths under internal/, only 1 of those under
+			// internal/parity vs 2 under internal/auth). Catch-all
+			// alternatives extract the FIRST path segment, so we
+			// expect "internal/**" as a high-ranked suggestion.
+			hasInternal := false
+			for _, a := range top.Alternatives {
+				if a == "internal/**" {
+					hasInternal = true
+					break
+				}
+			}
+			if !hasInternal {
+				t.Errorf("Alternatives = %v, want one to be 'internal/**' (top-level dir of every touched path)", top.Alternatives)
+			}
+		})
+	}
+}
+
 func TestCompute_DeterministicSort(t *testing.T) {
 	t.Parallel()
 	now := clock()

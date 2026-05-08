@@ -482,7 +482,22 @@ func patternCoversPath(pattern, path string) bool {
 
 // suggestAlternatives proposes narrower scopes for a broad pattern
 // based on which sub-paths actually saw activity.
+//
+// bd-r8ybt: the catch-all patterns "" / "**" / "/**" all earn the
+// maximum broad-glob penalty (0.6) but pre-fix produced no
+// alternatives — "**" failed the HasSuffix("/**") check, and "/**"
+// produced an empty prefix that rejected every relative path. For
+// these patterns, derive alternatives from the top-level directory
+// segment of each observed touch / bead path so an operator narrows
+// from "**" to a concrete "<top_dir>/**".
 func suggestAlternatives(pattern string, touched []TouchedPath, beads []ClosedBead) []string {
+	pattern = strings.TrimSpace(pattern)
+
+	// Catch-all branch for the maximally-broad shapes.
+	if pattern == "" || pattern == "**" || pattern == "/**" {
+		return suggestTopLevelAlternatives(touched, beads)
+	}
+
 	if !strings.HasSuffix(pattern, "/**") {
 		return nil
 	}
@@ -511,12 +526,51 @@ func suggestAlternatives(pattern string, touched []TouchedPath, beads []ClosedBe
 	if len(subdirs) == 0 {
 		return nil
 	}
+	return formatTopAlternatives(subdirs, prefix+"/")
+}
+
+// suggestTopLevelAlternatives is the catch-all branch used when the
+// pattern is "**" / "/**" / "". It extracts the top-level directory
+// from each observed path and emits "<top_dir>/**" suggestions.
+func suggestTopLevelAlternatives(touched []TouchedPath, beads []ClosedBead) []string {
+	tops := make(map[string]int)
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		// Strip a leading "/" so absolute and relative paths share the
+		// same top-level segment.
+		p = strings.TrimPrefix(p, "/")
+		if p == "" {
+			return
+		}
+		if idx := strings.IndexByte(p, '/'); idx > 0 {
+			tops[p[:idx]]++
+		}
+	}
+	for _, t := range touched {
+		add(t.Path)
+	}
+	for _, b := range beads {
+		for _, p := range b.Paths {
+			add(p)
+		}
+	}
+	if len(tops) == 0 {
+		return nil
+	}
+	return formatTopAlternatives(tops, "")
+}
+
+// formatTopAlternatives sorts a directory-frequency map by count desc /
+// name asc, caps at 3, and renders each entry as "<prefix><name>/**".
+// Shared between the prefixed and catch-all suggestion paths so output
+// shape stays consistent across the two branches.
+func formatTopAlternatives(counts map[string]int, prefix string) []string {
 	type kv struct {
 		name  string
 		count int
 	}
-	pairs := make([]kv, 0, len(subdirs))
-	for k, v := range subdirs {
+	pairs := make([]kv, 0, len(counts))
+	for k, v := range counts {
 		pairs = append(pairs, kv{k, v})
 	}
 	sort.Slice(pairs, func(i, j int) bool {
@@ -530,7 +584,7 @@ func suggestAlternatives(pattern string, touched []TouchedPath, beads []ClosedBe
 	}
 	out := make([]string, len(pairs))
 	for i, p := range pairs {
-		out[i] = prefix + "/" + p.name + "/**"
+		out[i] = prefix + p.name + "/**"
 	}
 	return out
 }
