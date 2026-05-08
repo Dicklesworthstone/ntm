@@ -124,7 +124,13 @@ type SyntheticMetrics struct {
 	LatencyMaxMicros        int64  `json:"latency_max_micros"`
 	SyntheticDurationMicros int64  `json:"synthetic_duration_micros"`
 	MemoryGrowthBytes       int64  `json:"memory_growth_bytes"`
-	GoroutinesLeaked        int    `json:"goroutines_leaked"`
+	// Goroutines is the absolute goroutine count after the run.
+	// Preserved alongside GoroutinesLeaked so a steady-state leak
+	// (per-run delta = 0 but absolute count drifts upward) remains
+	// observable, and so historical artifacts written under the
+	// pre-bd-75unj schema parse cleanly.
+	Goroutines       int `json:"goroutines"`
+	GoroutinesLeaked int `json:"goroutines_leaked"`
 }
 
 // Run executes a deterministic in-memory scenario.
@@ -234,6 +240,7 @@ func (h *SyntheticHarness) Run(ctx context.Context, scenario SyntheticScenario) 
 		LatencyMaxMicros:        syntheticPercentile(latencies, 100),
 		SyntheticDurationMicros: int64(result.CompletedAt.Sub(result.StartedAt) / time.Microsecond),
 		MemoryGrowthBytes:       nonNegativeMemoryGrowth(before, after),
+		Goroutines:              goroutinesAfter,
 		GoroutinesLeaked:        nonNegativeIntDelta(goroutinesBefore, goroutinesAfter),
 	}
 
@@ -246,6 +253,7 @@ func (h *SyntheticHarness) Run(ctx context.Context, scenario SyntheticScenario) 
 		"command_count", result.Metrics.CommandCount,
 		"latency_p95_micros", result.Metrics.LatencyP95Micros,
 		"memory_growth_bytes", result.Metrics.MemoryGrowthBytes,
+		"goroutines", result.Metrics.Goroutines,
 		"goroutines_leaked", result.Metrics.GoroutinesLeaked)
 
 	return result, nil
