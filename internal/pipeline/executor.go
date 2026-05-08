@@ -1205,9 +1205,15 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 		// command so authors dry-running a step that pipes meaningful
 		// stdin (e.g. `Stdin: ${steps.A.output}`) can verify substitution
 		// end-to-end without actually executing.
-		msg := "Would execute command: " + truncatePrompt(expandedCmd, 200)
+		// bd-82zsc: sanitize before truncating — both fields can carry
+		// ${steps.X.output}/${vars.X}/${env.X} bytes that may contain
+		// ANSI/OSC/C0 sequences (e.g. clear-screen, clipboard hijack)
+		// which would otherwise reach the operator's terminal during
+		// --dry-run, the same attack class bd-lqz30 patched for
+		// description fields.
+		msg := "Would execute command: " + truncatePrompt(SanitizeDescriptionForTerminal(expandedCmd), 200)
 		if expandedStdin != "" {
-			msg += "\n  with stdin (truncated): " + truncatePrompt(expandedStdin, 200)
+			msg += "\n  with stdin (truncated): " + truncatePrompt(SanitizeDescriptionForTerminal(expandedStdin), 200)
 		}
 		result.Status = StatusCompleted
 		result.Output = dryRunOutput(step, msg)

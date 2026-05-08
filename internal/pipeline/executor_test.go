@@ -3153,6 +3153,43 @@ func TestExecuteCommand_DryRun_OmitsStdinWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestExecuteCommand_DryRun_SanitizesControlBytes covers bd-82zsc: dry-run
+// banner output for command steps must scrub ANSI/OSC/C0 control bytes from
+// expandedCmd and expandedStdin. Both fields can carry attacker-controlled
+// substitution payloads (e.g. ${steps.X.output} where X is an upstream
+// agent), so unsanitized output would let a workflow hijack the operator's
+// terminal during --dry-run — the same attack class bd-lqz30 patched for
+// description fields. Each control byte must round-trip as '?'.
+func TestExecuteCommand_DryRun_SanitizesControlBytes(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	e.config.DryRun = true
+	// Pre-stage a prior step output containing an ANSI clear-screen +
+	// cursor-home sequence and a BEL — exactly what a malicious upstream
+	// agent might emit to derail the operator's terminal.
+	e.state.Steps["evil"] = StepResult{Output: "\x1b[2J\x1b[H\x07payload"}
+
+	step := &Step{
+		ID:      "dryrun-sanitize",
+		Command: "cat ${steps.evil.output}",
+		Stdin:   "${steps.evil.output}",
+	}
+	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("Status = %q, want %q; error = %+v", result.Status, StatusCompleted, result.Error)
+	}
+	// No raw ESC, BEL, or other C0 controls (besides whitespace already
+	// folded by truncatePrompt) may survive into the dry-run output.
+	for _, b := range []byte(result.Output) {
+		if b == '\x1b' || b == '\x07' || b == '\x00' {
+			t.Fatalf("dry-run output contains unsanitized control byte 0x%02x: %q", b, result.Output)
+		}
+	}
+	if !strings.Contains(result.Output, "payload") {
+		t.Errorf("dry-run output dropped the trailing payload after sanitizing controls: %q", result.Output)
+	}
+}
+
 func TestExecuteCommand_Timeout(t *testing.T) {
 	e := newCommandTestExecutor(t)
 	step := &Step{
