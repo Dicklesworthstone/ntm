@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,6 +87,17 @@ func (c *SessionCoordinator) GenerateDigest() DigestSummary {
 
 		digest.AgentStatuses = append(digest.AgentStatuses, status)
 	}
+
+	// bd-c9wr1: c.agents is a map and Go iterates maps in randomized
+	// order, so two GenerateDigest calls against the same state would
+	// otherwise produce different AgentStatuses orderings and
+	// different Alerts sequences. Sort both for byte-stable output —
+	// PaneIndex for AgentStatuses (intuitive for human readers),
+	// alphabetical for Alerts.
+	sort.Slice(digest.AgentStatuses, func(i, j int) bool {
+		return digest.AgentStatuses[i].PaneIndex < digest.AgentStatuses[j].PaneIndex
+	})
+	sort.Strings(digest.Alerts)
 
 	return digest
 }

@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -829,5 +830,42 @@ func TestFormatDigestMarkdown_IdleForDash(t *testing.T) {
 	// Empty IdleFor should render as "-"
 	if !strings.Contains(body, "| - |") {
 		t.Error("expected '-' for empty IdleFor in table")
+	}
+}
+
+// bd-c9wr1: GenerateDigest must produce byte-stable JSON across
+// repeated calls against the same state. Pre-fix the c.agents map
+// iteration was randomized and two calls returned different
+// AgentStatuses orderings — sibling of bd-aj2qv (evidencebudget).
+func TestGenerateDigest_StableOrderingAcrossCalls(t *testing.T) {
+	c := New("s", "/tmp/test", nil, "Agent")
+	c.mu.Lock()
+	for i, paneID := range []string{"%0", "%1", "%2", "%3", "%4"} {
+		c.agents[paneID] = &AgentState{
+			PaneID:       paneID,
+			PaneIndex:    i,
+			AgentType:    "cc",
+			Status:       robot.StateError,
+			ContextUsage: 90,
+		}
+	}
+	c.mu.Unlock()
+
+	var prev string
+	const iterations = 50
+	for i := 0; i < iterations; i++ {
+		d := c.GenerateDigest()
+		// Marshal both order-sensitive slices to a single byte sequence
+		// so any drift in either is caught.
+		b1, _ := json.Marshal(d.AgentStatuses)
+		b2, _ := json.Marshal(d.Alerts)
+		current := string(b1) + "|" + string(b2)
+		if i == 0 {
+			prev = current
+			continue
+		}
+		if current != prev {
+			t.Fatalf("digest drifted on call %d:\nprev: %s\nnow:  %s", i, prev, current)
+		}
 	}
 }
