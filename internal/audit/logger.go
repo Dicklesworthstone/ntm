@@ -270,7 +270,14 @@ func getRedactionConfig() redaction.Config {
 	redactionMu.RLock()
 	defer redactionMu.RUnlock()
 	if redactionCfgSet {
-		return redactionCfg
+		// bd-ijgum: bd-pmdpn extracted DeepCopy and applied it to the
+		// Get path in checkpoint/events/history/session/serve, but the
+		// audit getter was overlooked and still returned redactionCfg
+		// directly — value-copying Mode but aliasing the reference-typed
+		// Allowlist / ExtraPatterns / DisabledCategories. Return a
+		// deep copy so the symmetric-Set/Get DeepCopy invariant holds
+		// for audit too.
+		return redactionCfg.DeepCopy()
 	}
 	return redaction.Config{Mode: redaction.ModeRedact}
 }

@@ -380,3 +380,41 @@ func TestShouldSkipAudit(t *testing.T) {
 		t.Fatalf("Expected shouldSkipAudit to return false when test flags are cleared")
 	}
 }
+
+// bd-ijgum: getRedactionConfig must deep-copy the stored redaction.Config
+// so a caller mutating the returned slices/map cannot reach back into
+// the shared state. Pre-fix the getter returned redactionCfg directly,
+// value-copying Mode but aliasing Allowlist / ExtraPatterns /
+// DisabledCategories. bd-pmdpn'\''s symmetric Set/Get DeepCopy invariant
+// was missed on this getter.
+func TestGetRedactionConfig_DeepCopiesSliceMapFields(t *testing.T) {
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
+	original := &redaction.Config{
+		Mode:               redaction.ModeRedact,
+		Allowlist:          []string{"^foo$"},
+		ExtraPatterns:      map[redaction.Category][]string{"api_key": {"^xyz$"}},
+		DisabledCategories: []redaction.Category{"email"},
+	}
+	SetRedactionConfig(original)
+
+	got := getRedactionConfig()
+	// Mutate the returned struct's reference-typed fields. Pre-fix
+	// these mutations leaked back into the stored config because the
+	// getter returned redactionCfg by value (Allowlist etc. shared
+	// the same backing array).
+	got.Allowlist[0] = "MUTATED"
+	got.ExtraPatterns["api_key"][0] = "MUTATED"
+	got.DisabledCategories[0] = "MUTATED"
+
+	got2 := getRedactionConfig()
+	if got2.Allowlist[0] != "^foo$" {
+		t.Errorf("getter leaked Allowlist mutation: %q", got2.Allowlist[0])
+	}
+	if got2.ExtraPatterns["api_key"][0] != "^xyz$" {
+		t.Errorf("getter leaked ExtraPatterns mutation: %q", got2.ExtraPatterns["api_key"][0])
+	}
+	if got2.DisabledCategories[0] != "email" {
+		t.Errorf("getter leaked DisabledCategories mutation: %q", got2.DisabledCategories[0])
+	}
+}
