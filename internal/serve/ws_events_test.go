@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,10 +16,18 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(dbPath, "journal_mode(WAL)"))
+	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(
+		dbPath,
+		"journal_mode(WAL)",
+		"synchronous(NORMAL)",
+		"busy_timeout(5000)",
+		"foreign_keys(1)",
+	))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Create schema
 	schema := `
@@ -291,7 +300,9 @@ func TestWSEventStore_CursorReset(t *testing.T) {
 func TestStreamResetMessage(t *testing.T) {
 	reset := NewStreamReset("sessions:proj1", "cursor_expired", 100, 50)
 
-	if reset.Type != "stream.reset" {
+	switch reset.Type {
+	case "stream.reset":
+	default:
 		t.Errorf("expected type stream.reset, got %s", reset.Type)
 	}
 	if reset.CurrentSeq != 100 {
@@ -545,7 +556,9 @@ func TestWSEventStore_ConcurrentPublish(t *testing.T) {
 	defer cleanup()
 
 	cfg := WSEventStoreConfig{
-		BufferSize:       1000,
+		// Force GetSince(0) to fall back to SQLite. If concurrent inserts
+		// hit SQLITE_BUSY and are lost, the expected count below catches it.
+		BufferSize:       10,
 		RetentionSeconds: 3600,
 		CleanupInterval:  time.Hour,
 	}
@@ -555,24 +568,32 @@ func TestWSEventStore_ConcurrentPublish(t *testing.T) {
 	// Concurrent publishers
 	numPublishers := 5
 	eventsPerPublisher := 20
-	done := make(chan bool)
+	errs := make(chan error, numPublishers*eventsPerPublisher)
+	var wg sync.WaitGroup
 
 	for p := 0; p < numPublishers; p++ {
+		wg.Add(1)
 		go func(publisherID int) {
+			defer wg.Done()
 			topic := "panes:proj:" + string(rune('0'+publisherID))
 			for i := 0; i < eventsPerPublisher; i++ {
-				store.Store(topic, "pane.output", map[string]interface{}{
+				if _, err := store.Store(topic, "pane.output", map[string]interface{}{
 					"publisher": publisherID,
 					"idx":       i,
-				})
+				}); err != nil {
+					errs <- err
+				}
 			}
-			done <- true
 		}(p)
 	}
 
 	// Wait for all publishers
-	for p := 0; p < numPublishers; p++ {
-		<-done
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("store event: %v", err)
+		}
 	}
 
 	// Verify all events stored
