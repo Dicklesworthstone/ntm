@@ -3,6 +3,7 @@ package evidencebudget
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/faultharness"
@@ -142,5 +143,14 @@ func sourceListFromResults(results map[string]faultharness.Result) []map[string]
 		}
 		out = append(out, entry)
 	}
+	// bd-aj2qv: Go map iteration is randomized, so without this sort
+	// two calls with identical inputs produce envelopes whose `sources`
+	// arrays differ byte-for-byte — encoding/json sorts map keys but not
+	// slice elements. Sort by `name` so the surface envelope is stable
+	// across calls (matching the byte-stability guarantee sibling
+	// harness packages already provide via sort.SliceStable).
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["name"].(string) < out[j]["name"].(string)
+	})
 	return out
 }

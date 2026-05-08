@@ -309,6 +309,37 @@ func TestClassifyHealth_UnknownErrorDoesNotMasqueradeAsHealthy(t *testing.T) {
 	}
 }
 
+// bd-aj2qv: surface envelopes must be byte-stable across calls so
+// golden-snapshot tests of the --robot-* surfaces can rely on the
+// harness output. Pre-fix sourceListFromResults walked the results
+// map in randomized iteration order, producing different element
+// orderings of the `sources` array on different calls.
+func TestSurfaceEnvelopeIsByteStableAcrossCalls(t *testing.T) {
+	t.Parallel()
+	clock := newClock()
+	ctx := context.Background()
+	mail := healthy()
+	bv := healthy()
+	tmux := healthy()
+
+	var prev string
+	const iterations = 50
+	for i := 0; i < iterations; i++ {
+		eval := Evaluate(ctx, clock, CausalitySurface(ctx, clock, mail, bv, tmux))
+		data, err := json.Marshal(eval.Envelope)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if i == 0 {
+			prev = string(data)
+			continue
+		}
+		if string(data) != prev {
+			t.Fatalf("envelope drifted on call %d:\nprev: %s\nnow:  %s", i, prev, data)
+		}
+	}
+}
+
 // errSentinelType is a tiny helper so the test can synthesize
 // unknown errors without pulling in a third sentinel package.
 type errSentinelType string
