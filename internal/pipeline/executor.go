@@ -1186,8 +1186,16 @@ func (e *Executor) executeCommand(ctx context.Context, step *Step, workflow *Wor
 	}
 
 	if e.config.DryRun {
+		// bd-ziavr: surface the substituted Stdin payload alongside the
+		// command so authors dry-running a step that pipes meaningful
+		// stdin (e.g. `Stdin: ${steps.A.output}`) can verify substitution
+		// end-to-end without actually executing.
+		msg := "Would execute command: " + truncatePrompt(expandedCmd, 200)
+		if expandedStdin != "" {
+			msg += "\n  with stdin (truncated): " + truncatePrompt(expandedStdin, 200)
+		}
 		result.Status = StatusCompleted
-		result.Output = dryRunOutput(step, "Would execute command: "+truncatePrompt(expandedCmd, 200))
+		result.Output = dryRunOutput(step, msg)
 		result.FinishedAt = time.Now()
 		return result
 	}

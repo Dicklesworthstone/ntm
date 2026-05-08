@@ -3106,6 +3106,53 @@ func TestExecuteCommand_ExitCode(t *testing.T) {
 	}
 }
 
+// TestExecuteCommand_DryRun_IncludesStdinPayload covers bd-ziavr: a
+// dry-run command step that pipes meaningful Stdin must surface the
+// (substituted, truncated) stdin payload alongside the command line so
+// authors can verify substitution end-to-end without executing.
+func TestExecuteCommand_DryRun_IncludesStdinPayload(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	e.config.DryRun = true
+
+	step := &Step{
+		ID:      "dryrun-stdin",
+		Command: "tee /dev/null",
+		Stdin:   "hello-from-stdin-payload",
+	}
+	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("Status = %q, want %q; error: %+v", result.Status, StatusCompleted, result.Error)
+	}
+	if !strings.Contains(result.Output, "Would execute command:") {
+		t.Errorf("Output = %q, want to contain command line marker", result.Output)
+	}
+	if !strings.Contains(result.Output, "with stdin") {
+		t.Errorf("Output = %q, want to contain stdin marker", result.Output)
+	}
+	if !strings.Contains(result.Output, "hello-from-stdin-payload") {
+		t.Errorf("Output = %q, want to contain expanded stdin payload", result.Output)
+	}
+}
+
+// TestExecuteCommand_DryRun_OmitsStdinWhenEmpty covers the symmetric
+// case: a dry-run command step with no Stdin should produce only the
+// command line (no stale "with stdin:" header).
+func TestExecuteCommand_DryRun_OmitsStdinWhenEmpty(t *testing.T) {
+	e := newCommandTestExecutor(t)
+	e.config.DryRun = true
+
+	step := &Step{ID: "dryrun-no-stdin", Command: "echo hi"}
+	result := e.executeCommand(context.Background(), step, &Workflow{Name: "test"})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusCompleted)
+	}
+	if strings.Contains(result.Output, "with stdin") {
+		t.Errorf("Output = %q, must not contain stdin marker when Stdin is empty", result.Output)
+	}
+}
+
 func TestExecuteCommand_Timeout(t *testing.T) {
 	e := newCommandTestExecutor(t)
 	step := &Step{
