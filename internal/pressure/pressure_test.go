@@ -60,11 +60,11 @@ func TestMergeBudgets_TightestWins(t *testing.T) {
 		ScannerInterval:    5 * time.Second,
 	}
 	override := Budget{
-		MaxConcurrentSends: 4, // tighter
-		MaxPipelineFanout:  0, // unspecified, base wins
-		MaxBuildSlots:      32, // looser, base wins
-		DeferAtLevel:       LevelElevated, // less tolerant, override wins
-		DenyAtLevel:        LevelHigh,     // less tolerant, override wins
+		MaxConcurrentSends: 4,                // tighter
+		MaxPipelineFanout:  0,                // unspecified, base wins
+		MaxBuildSlots:      32,               // looser, base wins
+		DeferAtLevel:       LevelElevated,    // less tolerant, override wins
+		DenyAtLevel:        LevelHigh,        // less tolerant, override wins
 		ScannerInterval:    10 * time.Second, // longer interval = more conservative
 	}
 	got := MergeBudgets(base, override)
@@ -98,6 +98,103 @@ func TestMergeBudgets_ZeroOverridePreservesBase(t *testing.T) {
 	}
 	if got.DeferAtLevel != base.DeferAtLevel {
 		t.Errorf("DeferAtLevel = %s, want %s", got.DeferAtLevel, base.DeferAtLevel)
+	}
+}
+
+func TestEvaluateSpawnAdmission_AdmitsWithHeadroom(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:             "proj",
+		RequestedAgents:     3,
+		RequestedPanes:      4,
+		SessionPanes:        1,
+		CurrentPanes:        8,
+		RunningAgents:       5,
+		RunningSessions:     2,
+		MaxAgents:           7,
+		LargeSpawnThreshold: 4,
+		Pressure: buildSnapshot(fixedClock()(), []Reading{
+			{Source: SourceCPU, Value: 0.20, Unit: "ratio"},
+			{Source: SourceMemory, Value: 0.30, Unit: "ratio"},
+		}, DefaultThresholds()),
+	})
+	if admission.Decision != SpawnAdmissionAdmit {
+		t.Fatalf("Decision = %s, want admit", admission.Decision)
+	}
+	if admission.AdditionalPanes != 3 {
+		t.Errorf("AdditionalPanes = %d, want 3", admission.AdditionalPanes)
+	}
+	if admission.ProjectedPanes != 11 {
+		t.Errorf("ProjectedPanes = %d, want 11", admission.ProjectedPanes)
+	}
+	if admission.AgentHeadroom != 4 {
+		t.Errorf("AgentHeadroom = %d, want 4", admission.AgentHeadroom)
+	}
+}
+
+func TestEvaluateSpawnAdmission_DefersLargeSpawnUnderHighPressure(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:             "proj",
+		RequestedAgents:     4,
+		RequestedPanes:      5,
+		MaxAgents:           8,
+		LargeSpawnThreshold: 4,
+		Pressure: buildSnapshot(fixedClock()(), []Reading{
+			{Source: SourceCPU, Value: 0.85, Unit: "ratio"},
+		}, DefaultThresholds()),
+	})
+	if admission.Decision != SpawnAdmissionDefer {
+		t.Fatalf("Decision = %s, want defer", admission.Decision)
+	}
+	if admission.Reason != "pressure_high" {
+		t.Errorf("Reason = %q, want pressure_high", admission.Reason)
+	}
+	if !strings.Contains(admission.Hint, "cpu") {
+		t.Errorf("Hint = %q, want cpu", admission.Hint)
+	}
+	if !admission.LargeSpawn {
+		t.Error("LargeSpawn = false, want true")
+	}
+}
+
+func TestEvaluateSpawnAdmission_RefusesCriticalPressure(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:             "proj",
+		RequestedAgents:     6,
+		RequestedPanes:      7,
+		MaxAgents:           8,
+		LargeSpawnThreshold: 4,
+		Pressure: buildSnapshot(fixedClock()(), []Reading{
+			{Source: SourceMemory, Value: 0.95, Unit: "ratio"},
+		}, DefaultThresholds()),
+	})
+	if admission.Decision != SpawnAdmissionRefuse {
+		t.Fatalf("Decision = %s, want refuse", admission.Decision)
+	}
+	if admission.Reason != "pressure_critical" {
+		t.Errorf("Reason = %q, want pressure_critical", admission.Reason)
+	}
+}
+
+func TestEvaluateSpawnAdmission_RefusesAgentLimit(t *testing.T) {
+	t.Parallel()
+	admission := EvaluateSpawnAdmission(SpawnAdmissionInput{
+		Session:             "proj",
+		RequestedAgents:     9,
+		RequestedPanes:      10,
+		MaxAgents:           7,
+		LargeSpawnThreshold: 4,
+	})
+	if admission.Decision != SpawnAdmissionRefuse {
+		t.Fatalf("Decision = %s, want refuse", admission.Decision)
+	}
+	if admission.Reason != "agent_limit_exceeded" {
+		t.Errorf("Reason = %q, want agent_limit_exceeded", admission.Reason)
+	}
+	if admission.AgentHeadroom != 0 {
+		t.Errorf("AgentHeadroom = %d, want 0", admission.AgentHeadroom)
 	}
 }
 

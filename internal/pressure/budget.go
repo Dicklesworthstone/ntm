@@ -8,6 +8,7 @@ type Action string
 const (
 	ActionAgentSend      Action = "agent_send"
 	ActionAgentInterrupt Action = "agent_interrupt"
+	ActionSwarmSpawn     Action = "swarm_spawn"
 	ActionPipelineFanout Action = "pipeline_fanout"
 	ActionBuildOrTest    Action = "build_or_test"
 	ActionScannerScan    Action = "scanner_scan"

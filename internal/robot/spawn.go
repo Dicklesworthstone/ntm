@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -48,20 +50,21 @@ type SpawnOptions struct {
 // SpawnOutput is the structured output for --robot-spawn.
 type SpawnOutput struct {
 	RobotResponse
-	Session        string            `json:"session"`
-	CreatedAt      string            `json:"created_at"`
-	PresetUsed     string            `json:"preset_used,omitempty"`
-	WorkingDir     string            `json:"working_dir"`
-	Agents         []SpawnedAgent    `json:"agents"`
-	Layout         string            `json:"layout"`
-	TotalStartupMs int64             `json:"total_startup_ms"`
-	Error          string            `json:"error,omitempty"`
-	DryRun         bool              `json:"dry_run,omitempty"`
-	WouldCreate    []SpawnedAgent    `json:"would_create,omitempty"`
-	Mode           string            `json:"mode,omitempty"`            // "orchestrator" when AssignWork is enabled
-	Assignments    []SpawnAssignment `json:"assignments,omitempty"`     // Work assignments when AssignWork is enabled
-	AssignStrategy string            `json:"assign_strategy,omitempty"` // Strategy used for assignments
-	Recovery       *SpawnRecovery    `json:"recovery,omitempty"`        // Session recovery context from handoff
+	Session        string                   `json:"session"`
+	CreatedAt      string                   `json:"created_at"`
+	PresetUsed     string                   `json:"preset_used,omitempty"`
+	WorkingDir     string                   `json:"working_dir"`
+	Agents         []SpawnedAgent           `json:"agents"`
+	Layout         string                   `json:"layout"`
+	TotalStartupMs int64                    `json:"total_startup_ms"`
+	Error          string                   `json:"error,omitempty"`
+	DryRun         bool                     `json:"dry_run,omitempty"`
+	WouldCreate    []SpawnedAgent           `json:"would_create,omitempty"`
+	Mode           string                   `json:"mode,omitempty"`            // "orchestrator" when AssignWork is enabled
+	Assignments    []SpawnAssignment        `json:"assignments,omitempty"`     // Work assignments when AssignWork is enabled
+	AssignStrategy string                   `json:"assign_strategy,omitempty"` // Strategy used for assignments
+	Recovery       *SpawnRecovery           `json:"recovery,omitempty"`        // Session recovery context from handoff
+	Admission      *pressure.SpawnAdmission `json:"admission,omitempty"`       // Pre-spawn resource-pressure admission result
 }
 
 // SpawnRecovery contains session recovery context loaded from handoff.
@@ -98,6 +101,72 @@ type SpawnedAgent struct {
 	Ready     bool   `json:"ready"`
 	StartupMs int64  `json:"startup_ms"`
 	Error     string `json:"error,omitempty"`
+}
+
+func collectSpawnAdmissionInput(opts SpawnOptions, cfg *config.Config, totalAgents, totalPanes int) pressure.SpawnAdmissionInput {
+	input := pressure.SpawnAdmissionInput{
+		Session:         opts.Session,
+		RequestedAgents: totalAgents,
+		RequestedPanes:  totalPanes,
+	}
+
+	if cfg == nil || cfg.SpawnPacing.Enabled {
+		input.LargeSpawnThreshold = pressure.DefaultBudget().MaxPipelineFanout
+		if cfg != nil {
+			if cfg.SpawnPacing.MaxConcurrentSpawns > 0 {
+				input.LargeSpawnThreshold = cfg.SpawnPacing.MaxConcurrentSpawns
+			}
+			input.MaxAgents = spawnAdmissionAgentLimit(cfg)
+		}
+		input.Pressure = collectSystemPressureSnapshot()
+	}
+
+	panesBySession, err := tmux.GetAllPanes()
+	if err != nil {
+		return input
+	}
+	input.RunningSessions = len(panesBySession)
+	for session, panes := range panesBySession {
+		if session == opts.Session {
+			input.SessionPanes = len(panes)
+		}
+		input.CurrentPanes += len(panes)
+		for _, pane := range panes {
+			if isSpawnAdmissionAgentPane(pane) {
+				input.RunningAgents++
+			}
+		}
+	}
+	return input
+}
+
+func spawnAdmissionAgentLimit(cfg *config.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	caps := cfg.SpawnPacing.AgentCaps
+	total := 0
+	for _, cap := range []int{caps.ClaudeMaxConcurrent, caps.CodexMaxConcurrent, caps.GeminiMaxConcurrent} {
+		if cap > 0 {
+			total += cap
+		}
+	}
+	return total
+}
+
+func collectSystemPressureSnapshot() pressure.Snapshot {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	g := pressure.New(pressure.Config{
+		Mode:      pressure.ModeEnforce,
+		Providers: []pressure.Provider{pressure.NewSystemProvider()},
+	})
+	return g.Refresh(ctx)
+}
+
+func isSpawnAdmissionAgentPane(pane tmux.Pane) bool {
+	agentType := pane.Type.Canonical()
+	return agentType != "" && agentType != tmux.AgentUser
 }
 
 // GetSpawn creates a session with agents and returns structured output.
@@ -240,6 +309,18 @@ func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 	totalPanes := totalAgents
 	if !opts.NoUserPane {
 		totalPanes++
+	}
+
+	admission := pressure.EvaluateSpawnAdmission(collectSpawnAdmissionInput(opts, cfg, totalAgents, totalPanes))
+	output.Admission = &admission
+	if !opts.DryRun && admission.Decision != pressure.SpawnAdmissionAdmit {
+		output.Error = fmt.Sprintf("spawn admission %s: %s", admission.Decision, admission.Reason)
+		hint := admission.Hint
+		if hint == "" {
+			hint = "Reduce requested agents or wait for resource headroom"
+		}
+		output.RobotResponse = NewErrorResponse(fmt.Errorf("%s", output.Error), ErrCodeResourceBusy, hint)
+		return output, nil
 	}
 
 	// Dry-run mode: show what would happen without executing

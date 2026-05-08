@@ -222,6 +222,8 @@ func recommendation(action Action, limiting []Source) string {
 		return "offload to rch: " + joinShort(srcs)
 	case ActionPipelineFanout:
 		return "reduce parallelism: " + joinShort(srcs)
+	case ActionSwarmSpawn:
+		return "reduce spawn size or wait for headroom: " + joinShort(srcs)
 	case ActionAgentSend, ActionAgentInterrupt:
 		return "wait for headroom: " + joinShort(srcs)
 	case ActionScannerScan:

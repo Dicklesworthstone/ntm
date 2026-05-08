@@ -109,11 +109,163 @@ func Classify(v float64, t Thresholds) Level {
 
 // Snapshot is the aggregated pressure view at a point in time.
 type Snapshot struct {
-	TakenAt  time.Time         `json:"taken_at"`
-	Readings []Reading         `json:"readings"`
-	Levels   map[Source]Level  `json:"-"`
-	Overall  Level             `json:"-"`
-	Limiting []Source          `json:"-"`
+	TakenAt  time.Time        `json:"taken_at"`
+	Readings []Reading        `json:"readings"`
+	Levels   map[Source]Level `json:"-"`
+	Overall  Level            `json:"-"`
+	Limiting []Source         `json:"-"`
+}
+
+// SpawnAdmissionDecision is the robot-stable decision token for a
+// pre-spawn admission check.
+type SpawnAdmissionDecision string
+
+const (
+	SpawnAdmissionAdmit  SpawnAdmissionDecision = "admit"
+	SpawnAdmissionDefer  SpawnAdmissionDecision = "defer"
+	SpawnAdmissionRefuse SpawnAdmissionDecision = "refuse"
+)
+
+// SpawnAdmissionInput captures the signals used to decide whether a
+// requested swarm spawn should proceed. Count limits are optional: zero
+// means "not configured".
+type SpawnAdmissionInput struct {
+	Session             string
+	RequestedAgents     int
+	RequestedPanes      int
+	SessionPanes        int
+	CurrentPanes        int
+	RunningAgents       int
+	RunningSessions     int
+	MaxAgents           int
+	LargeSpawnThreshold int
+	Pressure            Snapshot
+}
+
+// SpawnAdmission is the robot-stable explanation for a pre-spawn
+// admission check.
+type SpawnAdmission struct {
+	Decision            SpawnAdmissionDecision `json:"decision"`
+	Reason              string                 `json:"reason"`
+	Hint                string                 `json:"hint,omitempty"`
+	Session             string                 `json:"session,omitempty"`
+	RequestedAgents     int                    `json:"requested_agents"`
+	RequestedPanes      int                    `json:"requested_panes"`
+	SessionPanes        int                    `json:"session_panes"`
+	AdditionalPanes     int                    `json:"additional_panes"`
+	CurrentPanes        int                    `json:"current_panes"`
+	ProjectedPanes      int                    `json:"projected_panes"`
+	RunningAgents       int                    `json:"running_agents"`
+	RunningSessions     int                    `json:"running_sessions"`
+	MaxAgents           int                    `json:"max_agents,omitempty"`
+	AgentHeadroom       int                    `json:"agent_headroom,omitempty"`
+	LargeSpawn          bool                   `json:"large_spawn"`
+	LargeSpawnThreshold int                    `json:"large_spawn_threshold,omitempty"`
+	PressureLevel       string                 `json:"pressure_level"`
+	Limiting            []string               `json:"limiting,omitempty"`
+	Sources             []SpawnAdmissionSource `json:"sources,omitempty"`
+}
+
+// SpawnAdmissionSource records the source-level pressure inputs used by
+// a spawn admission check.
+type SpawnAdmissionSource struct {
+	Source string  `json:"source"`
+	Value  float64 `json:"value"`
+	Unit   string  `json:"unit,omitempty"`
+	Level  string  `json:"level"`
+}
+
+// EvaluateSpawnAdmission converts pressure, pane, and agent-count
+// signals into an admit/defer/refuse decision. It is deliberately pure
+// so robot, session, and future scheduler callers can share the same
+// threshold behavior.
+func EvaluateSpawnAdmission(in SpawnAdmissionInput) SpawnAdmission {
+	requestedAgents := maxInt(in.RequestedAgents, 0)
+	requestedPanes := maxInt(in.RequestedPanes, 0)
+	sessionPanes := maxInt(in.SessionPanes, 0)
+	currentPanes := maxInt(in.CurrentPanes, 0)
+	runningAgents := maxInt(in.RunningAgents, 0)
+	runningSessions := maxInt(in.RunningSessions, 0)
+	maxAgents := maxInt(in.MaxAgents, 0)
+	largeThreshold := maxInt(in.LargeSpawnThreshold, 0)
+	additionalPanes := requestedPanes - sessionPanes
+	if additionalPanes < 0 {
+		additionalPanes = 0
+	}
+	projectedPanes := currentPanes + additionalPanes
+	largeSpawn := largeThreshold > 0 && requestedAgents >= largeThreshold
+	pressureLevel := in.Pressure.Overall
+	limiting := limitingStrings(in.Pressure.Limiting)
+
+	out := SpawnAdmission{
+		Decision:            SpawnAdmissionAdmit,
+		Reason:              "headroom_available",
+		Session:             in.Session,
+		RequestedAgents:     requestedAgents,
+		RequestedPanes:      requestedPanes,
+		SessionPanes:        sessionPanes,
+		AdditionalPanes:     additionalPanes,
+		CurrentPanes:        currentPanes,
+		ProjectedPanes:      projectedPanes,
+		RunningAgents:       runningAgents,
+		RunningSessions:     runningSessions,
+		MaxAgents:           maxAgents,
+		LargeSpawn:          largeSpawn,
+		LargeSpawnThreshold: largeThreshold,
+		PressureLevel:       pressureLevel.String(),
+		Limiting:            limiting,
+		Sources:             spawnAdmissionSources(in.Pressure),
+	}
+	if maxAgents > 0 {
+		out.AgentHeadroom = maxAgents - requestedAgents
+		if out.AgentHeadroom < 0 {
+			out.AgentHeadroom = 0
+		}
+	}
+
+	switch {
+	case requestedAgents == 0 || requestedPanes == 0:
+		out.Decision = SpawnAdmissionRefuse
+		out.Reason = "invalid_request"
+		out.Hint = "specify at least one agent"
+	case maxAgents > 0 && requestedAgents > maxAgents:
+		out.Decision = SpawnAdmissionRefuse
+		out.Reason = "agent_limit_exceeded"
+		out.Hint = "reduce requested agents or raise spawn_pacing agent caps"
+	case largeSpawn && pressureLevel >= LevelCritical:
+		out.Decision = SpawnAdmissionRefuse
+		out.Reason = "pressure_critical"
+		out.Hint = recommendation(ActionSwarmSpawn, in.Pressure.Limiting)
+	case largeSpawn && pressureLevel >= LevelHigh:
+		out.Decision = SpawnAdmissionDefer
+		out.Reason = "pressure_high"
+		out.Hint = recommendation(ActionSwarmSpawn, in.Pressure.Limiting)
+	}
+	return out
+}
+
+func spawnAdmissionSources(snap Snapshot) []SpawnAdmissionSource {
+	if len(snap.Readings) == 0 {
+		return nil
+	}
+	ordered := append([]Reading(nil), snap.Readings...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Source < ordered[j].Source })
+	out := make([]SpawnAdmissionSource, 0, len(ordered))
+	for _, r := range ordered {
+		lvl := LevelLow
+		if snap.Levels != nil {
+			lvl = snap.Levels[r.Source]
+		} else if thresholds, ok := DefaultThresholds()[r.Source]; ok {
+			lvl = Classify(r.Value, thresholds)
+		}
+		out = append(out, SpawnAdmissionSource{
+			Source: string(r.Source),
+			Value:  r.Value,
+			Unit:   r.Unit,
+			Level:  lvl.String(),
+		})
+	}
+	return out
 }
 
 // limitingSources returns the sources whose Level matches Overall, sorted
@@ -155,4 +307,11 @@ func buildSnapshot(now time.Time, readings []Reading, thresh map[Source]Threshol
 		Overall:  overall,
 		Limiting: limitingSources(levels, overall),
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
