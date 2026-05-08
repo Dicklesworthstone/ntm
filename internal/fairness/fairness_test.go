@@ -148,6 +148,109 @@ func TestDetect_AgentTypeMonopolyWarningBetween70And90(t *testing.T) {
 	}
 }
 
+// bd-vfwnv: zero must select the documented default (0.70 / 0.90),
+// negative must disable the corresponding check. Each gate is
+// independent — disabling warn while leaving crit enabled keeps
+// criticals firing on their own threshold, and vice versa.
+
+func monopolyDispatches80Percent() []Dispatch {
+	// 8 cc + 2 cod = 80 % cc share. Crosses warn (0.70) but not
+	// crit (0.90).
+	var dispatches []Dispatch
+	for i := 0; i < 8; i++ {
+		dispatches = append(dispatches, Dispatch{Lane: "x", AgentType: "cc", At: at(time.Duration(i) * time.Minute)})
+	}
+	for i := 0; i < 2; i++ {
+		dispatches = append(dispatches, Dispatch{Lane: "x", AgentType: "cod", At: at(time.Duration(8+i) * time.Minute)})
+	}
+	return dispatches
+}
+
+func TestDetect_MonopolyWarnZeroSelectsDefault(t *testing.T) {
+	t.Parallel()
+	r := Detect(Inputs{
+		Now:               clock(),
+		Dispatches:        monopolyDispatches80Percent(),
+		MonopolyRatioWarn: 0, // zero ≡ default 0.70 → warning fires at 0.80
+	})
+	if !findHasCode(r.Findings, "agent_type_monopoly_warning") {
+		t.Fatalf("MonopolyRatioWarn=0 must select default (0.70); cc=0.80 should warn: %+v", r.Findings)
+	}
+}
+
+func TestDetect_MonopolyWarnNegativeDisablesCheck(t *testing.T) {
+	t.Parallel()
+	r := Detect(Inputs{
+		Now:               clock(),
+		Dispatches:        monopolyDispatches80Percent(),
+		MonopolyRatioWarn: -1, // negative ≡ disabled
+	})
+	if findHasCode(r.Findings, "agent_type_monopoly_warning") {
+		t.Fatalf("MonopolyRatioWarn=-1 must disable the warn check; cc=0.80 should not warn: %+v", r.Findings)
+	}
+}
+
+func TestDetect_MonopolyWarnDisabledStillAllowsCriticalToFire(t *testing.T) {
+	t.Parallel()
+	// 19 cc + 1 cod = 95 % cc share. With warn disabled, crit should
+	// still fire because each gate is independent.
+	var dispatches []Dispatch
+	for i := 0; i < 19; i++ {
+		dispatches = append(dispatches, Dispatch{Lane: "x", AgentType: "cc", At: at(time.Duration(i) * time.Minute)})
+	}
+	dispatches = append(dispatches, Dispatch{Lane: "x", AgentType: "cod", At: at(19 * time.Minute)})
+
+	r := Detect(Inputs{
+		Now:               clock(),
+		Dispatches:        dispatches,
+		MonopolyRatioWarn: -1, // warn disabled
+	})
+	if !findHasCode(r.Findings, "agent_type_monopoly_critical") {
+		t.Fatalf("crit must still fire even when warn is disabled (cc=0.95 ≥ default 0.90): %+v", r.Findings)
+	}
+	if findHasCode(r.Findings, "agent_type_monopoly_warning") {
+		t.Errorf("warn fired despite disable sentinel: %+v", r.Findings)
+	}
+}
+
+func TestDetect_MonopolyCriticalNegativeDisablesCheck(t *testing.T) {
+	t.Parallel()
+	// 19 cc + 1 cod = 95 %. crit is disabled, warn (default 0.70)
+	// still fires. The finding should be 'warning', not 'critical'.
+	var dispatches []Dispatch
+	for i := 0; i < 19; i++ {
+		dispatches = append(dispatches, Dispatch{Lane: "x", AgentType: "cc", At: at(time.Duration(i) * time.Minute)})
+	}
+	dispatches = append(dispatches, Dispatch{Lane: "x", AgentType: "cod", At: at(19 * time.Minute)})
+
+	r := Detect(Inputs{
+		Now:                   clock(),
+		Dispatches:            dispatches,
+		MonopolyRatioCritical: -1, // crit disabled
+	})
+	if findHasCode(r.Findings, "agent_type_monopoly_critical") {
+		t.Fatalf("MonopolyRatioCritical=-1 must disable the crit gate: %+v", r.Findings)
+	}
+	if !findHasCode(r.Findings, "agent_type_monopoly_warning") {
+		t.Errorf("warn must still fire on its own threshold even with crit disabled: %+v", r.Findings)
+	}
+}
+
+func TestDetect_MonopolyBothDisabledProducesNoMonopolyFindings(t *testing.T) {
+	t.Parallel()
+	r := Detect(Inputs{
+		Now:                   clock(),
+		Dispatches:            monopolyDispatches80Percent(),
+		MonopolyRatioWarn:     -1,
+		MonopolyRatioCritical: -1,
+	})
+	for _, f := range r.Findings {
+		if strings.HasPrefix(f.Code, "agent_type_monopoly") {
+			t.Errorf("disable sentinel did not suppress %+v", f)
+		}
+	}
+}
+
 func TestDetect_NoMonopolyWhenSingleAgentType(t *testing.T) {
 	t.Parallel()
 	// One agent type alone does not trigger monopoly (degenerate case).

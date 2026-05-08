@@ -59,12 +59,25 @@ type Inputs struct {
 	WindowStart time.Time
 	WindowEnd   time.Time
 	// MonopolyRatioWarn is the per-agent-type dispatch fraction that
-	// triggers a warning. Default 0.70 (one type taking 70 %+ of
-	// dispatches). Set 0 to disable.
+	// triggers a warning. Sentinel handling:
+	//   - zero      → use default (0.70, one type taking 70 %+)
+	//   - negative  → disable the warning check entirely
+	//   - positive  → use that fraction as the threshold
+	//
+	// Pass a small negative value like -1 to suppress the check; a
+	// literal 0 is intentionally NOT the disable sentinel because
+	// callers that leave the field unset get the recommended default
+	// rather than accidentally turning off the detector.
 	MonopolyRatioWarn float64
 	// MonopolyRatioCritical is the per-agent-type dispatch fraction
-	// that triggers a critical finding. Default 0.90. Set 0 to
-	// disable.
+	// that triggers a critical finding. Same sentinel handling as
+	// MonopolyRatioWarn:
+	//   - zero      → use default (0.90)
+	//   - negative  → disable the critical check
+	//   - positive  → use that fraction as the threshold
+	//
+	// Disabling the critical check while leaving warn enabled is
+	// supported (the warning path still fires on its own threshold).
 	MonopolyRatioCritical float64
 	// Now lets tests pin the wall clock.
 	Now time.Time
@@ -112,6 +125,10 @@ func Detect(in Inputs) Report {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	// Zero selects the documented default. Negative is the documented
+	// "disable this check" sentinel and is passed through untouched
+	// so detectMonopoly can short-circuit the corresponding gate
+	// (bd-vfwnv).
 	monopolyWarn := in.MonopolyRatioWarn
 	if monopolyWarn == 0 {
 		monopolyWarn = 0.70
@@ -271,17 +288,25 @@ func detectMonopoly(stats []AgentTypeStats, warn, crit float64) []Finding {
 		// One type or zero — monopoly is a degenerate concept.
 		return nil
 	}
-	if len(stats) == 0 {
-		return nil
-	}
 	top := stats[0]
-	if top.Share < warn {
+
+	// Negative thresholds are the documented "disable this check"
+	// sentinel (bd-vfwnv). Each gate is independent: disabling the
+	// warn check while leaving crit enabled still emits criticals,
+	// and vice versa.
+	warnEnabled := warn > 0
+	critEnabled := crit > 0
+	fireCritical := critEnabled && top.Share >= crit
+	fireWarning := warnEnabled && top.Share >= warn
+
+	if !fireCritical && !fireWarning {
 		return nil
 	}
+
 	severity := SeverityWarning
 	code := "agent_type_monopoly_warning"
 	summary := "one agent type dominated dispatch in the observed window"
-	if top.Share >= crit {
+	if fireCritical {
 		severity = SeverityCritical
 		code = "agent_type_monopoly_critical"
 		summary = "one agent type monopolized dispatch in the observed window"
