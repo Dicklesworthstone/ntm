@@ -626,7 +626,21 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 		return iterResult
 	}
 
-	for round := 1; round <= maxRounds; round++ {
+	// bd-r2pan: resume from the round AFTER the highest fully-completed
+	// round watermark recorded in prior state. bd-qeatk's iteration-level
+	// skip handles the "every round finished" case (iteration is in
+	// CompletedIterationIDs); CompletedRounds covers the "interrupted
+	// mid-rounds" case where the iteration is NOT in CompletedIterationIDs
+	// and would otherwise re-dispatch every round from scratch, duplicating
+	// any side effects (commands, agent prompts) the rounds before the
+	// interruption already executed. Single-round iterations skip this.
+	iterID := loopIterationID(parent.ID, plan.Index)
+	startRound := 1
+	if maxRounds > 1 {
+		startRound = e.foreachIterationCompletedRounds(parent.ID, iterID) + 1
+	}
+
+	for round := startRound; round <= maxRounds; round++ {
 		// bd-2ubxp.20: bind round/rounds_remaining/loop.round on a derived
 		// context instead of writing to shared state.Variables, so parallel
 		// iterations don't race on each other's round values.
@@ -643,6 +657,12 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 		exit := e.runForeachIterationRound(roundCtx, parent, workflow, plan, parentOnError, stepsForRound, &iterResult)
 		if exit {
 			return iterResult
+		}
+		// bd-r2pan: round body completed cleanly (no cancel, no error,
+		// no break). Bump the round watermark so a subsequent resume
+		// starts at round+1 instead of replaying this one.
+		if maxRounds > 1 {
+			e.markForeachIterationRoundCompleted(parent.ID, iterID, round)
 		}
 	}
 	return markForeachIterationSkippedIfAllResultsSkipped(iterResult)

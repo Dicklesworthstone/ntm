@@ -70,15 +70,29 @@ type ResumeOptions struct {
 // before continuing. Without this the resumed loop would store loop.Collect
 // using only the iterations that ran on the resume, silently dropping the
 // outputs from iterations completed in the prior run.
+//
+// CompletedRounds (bd-r2pan) records the highest fully-completed round per
+// iteration ID for foreach steps with max_rounds > 1. bd-qeatk's iteration-
+// level CompletedIterationIDs only tracks iterations that finished every
+// round; an iteration interrupted mid-rounds is NOT in that set, so on
+// resume the iteration would re-dispatch from round 1, duplicating the
+// side effects of any rounds that had completed before the interruption.
+// CompletedRounds maps "<step>_iter<N>" → highest completed round so the
+// resume loop can skip rounds whose watermark already advanced. Empty/
+// missing entry means "no rounds completed", so legacy state files
+// upgrade cleanly (their resumes re-run all rounds, matching pre-bd-r2pan
+// behavior). Single-round iterations (max_rounds unset or 1) never write
+// here.
 type ForeachIterationState struct {
-	StepID                string        `json:"step_id"`
-	CurrentIteration      int           `json:"current_iteration"`
-	Total                 int           `json:"total"`
-	CompletedIterationIDs []string      `json:"completed_iteration_ids,omitempty"`
-	ItemsFingerprint      string        `json:"items_fingerprint,omitempty"`
-	CollectedOutputs      []interface{} `json:"collected_outputs,omitempty"`
-	StartedAt             time.Time     `json:"started_at,omitempty"`
-	UpdatedAt             time.Time     `json:"updated_at,omitempty"`
+	StepID                string         `json:"step_id"`
+	CurrentIteration      int            `json:"current_iteration"`
+	Total                 int            `json:"total"`
+	CompletedIterationIDs []string       `json:"completed_iteration_ids,omitempty"`
+	ItemsFingerprint      string         `json:"items_fingerprint,omitempty"`
+	CollectedOutputs      []interface{}  `json:"collected_outputs,omitempty"`
+	CompletedRounds       map[string]int `json:"completed_rounds,omitempty"`
+	StartedAt             time.Time      `json:"started_at,omitempty"`
+	UpdatedAt             time.Time      `json:"updated_at,omitempty"`
 }
 
 // ParallelGroupState records the persisted progress of a parallel step group.
@@ -574,6 +588,54 @@ func (e *Executor) markForeachIterationStarted(stepID string, iteration, total i
 	}
 	state.CurrentIteration = iteration
 	state.Total = total
+	state.UpdatedAt = time.Now()
+	e.state.ForeachState[stepID] = state
+}
+
+// foreachIterationCompletedRounds returns the highest fully-completed round
+// recorded for the given iteration ID, or 0 if none. Used by
+// executeForeachIteration to skip rounds on resume that have already
+// finished in a prior run (bd-r2pan).
+func (e *Executor) foreachIterationCompletedRounds(stepID, iterID string) int {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.state == nil || e.state.ForeachState == nil {
+		return 0
+	}
+	state, ok := e.state.ForeachState[stepID]
+	if !ok || state.CompletedRounds == nil {
+		return 0
+	}
+	return state.CompletedRounds[iterID]
+}
+
+// markForeachIterationRoundCompleted records that round N of the given
+// iteration finished cleanly so a subsequent resume can skip it (bd-r2pan).
+// Only called from the max_rounds path; single-round iterations don't write
+// here so legacy state files stay byte-identical to pre-bd-r2pan output.
+func (e *Executor) markForeachIterationRoundCompleted(stepID, iterID string, round int) {
+	if stepID == "" || iterID == "" || round <= 0 {
+		return
+	}
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.state == nil {
+		return
+	}
+	if e.state.ForeachState == nil {
+		e.state.ForeachState = make(map[string]ForeachIterationState)
+	}
+	state := e.state.ForeachState[stepID]
+	if state.StepID == "" {
+		state.StepID = stepID
+		state.StartedAt = time.Now()
+	}
+	if state.CompletedRounds == nil {
+		state.CompletedRounds = make(map[string]int)
+	}
+	if cur := state.CompletedRounds[iterID]; round > cur {
+		state.CompletedRounds[iterID] = round
+	}
 	state.UpdatedAt = time.Now()
 	e.state.ForeachState[stepID] = state
 }

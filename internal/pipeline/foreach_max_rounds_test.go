@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -499,6 +500,150 @@ func stepKeys(steps map[string]StepResult) []string {
 // (parent=fanout, iter=0, body step=echo_round).
 func buildExpectedRoundStepID(round int) string {
 	return "fanout_iter0_echo_round_round" + intToString(round)
+}
+
+// TestForeachMaxRounds_ResumeSkipsAlreadyCompletedRounds covers bd-r2pan:
+// when a foreach iteration is interrupted mid-rounds (process killed
+// between executeForeachIteration entry and markForeachIterationCompleted),
+// the iteration is NOT in CompletedIterationIDs (bd-qeatk only marks fully
+// finished iterations) and on resume re-dispatches every round from 1 —
+// duplicating the side effects of any rounds that had completed before
+// the interruption.
+//
+// The fix records each fully-completed round on a per-iteration watermark
+// (ForeachIterationState.CompletedRounds[iterID]) so the resume loop
+// starts at watermark+1 instead of round 1. Test pre-seeds a foreach
+// state with CompletedRounds[fanout_iter0]=2 and runs a max_rounds=4
+// foreach against a body step that records its round number to a counter
+// file. The expected result is that only rounds 3 and 4 execute (the
+// counter file gets two writes, not four), and the recorded watermark
+// advances to 4 after the run finishes.
+func TestForeachMaxRounds_ResumeSkipsAlreadyCompletedRounds(t *testing.T) {
+	tmpDir := t.TempDir()
+	counterPath := tmpDir + "/rounds.log"
+
+	cfg := DefaultExecutorConfig("max-rounds-resume")
+	cfg.ProjectDir = tmpDir
+	executor := NewExecutor(cfg)
+	executor.state = &ExecutionState{
+		RunID:      "run-r2pan",
+		WorkflowID: "wf",
+		Variables:  map[string]interface{}{},
+		Steps:      map[string]StepResult{},
+		ForeachState: map[string]ForeachIterationState{
+			"fanout": {
+				StepID:           "fanout",
+				Total:            1,
+				CurrentIteration: 0,
+				CompletedRounds:  map[string]int{"fanout_iter0": 2},
+			},
+		},
+		ParallelState: map[string]ParallelGroupState{},
+		InFlightSteps: map[string]InFlightStepState{},
+	}
+
+	step := &Step{
+		ID: "fanout",
+		Foreach: &ForeachConfig{
+			Items:     `["only"]`,
+			As:        "item",
+			MaxRounds: IntOrExpr{Value: 4},
+			Steps: []Step{{
+				ID:      "record_round",
+				Command: "echo round=${round} >> " + counterPath,
+			}},
+		},
+	}
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "r2pan",
+		Settings:      DefaultWorkflowSettings(),
+		Steps:         []Step{*step},
+	}
+
+	res := executor.executeForeach(context.Background(), step, workflow)
+	if res.Status != StatusCompleted {
+		t.Fatalf("status = %q, want %q; error = %+v", res.Status, StatusCompleted, res.Error)
+	}
+
+	// Only rounds 3 and 4 should have executed — rounds 1 and 2 must be
+	// skipped on resume because their watermark was already recorded.
+	body, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read counter file: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("counter file has %d lines (%q), want 2 — rounds 1/2 should have been skipped on resume", len(lines), body)
+	}
+	for _, want := range []string{"round=3", "round=4"} {
+		found := false
+		for _, line := range lines {
+			if line == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("counter file missing %q; got %q", want, body)
+		}
+	}
+
+	// Round watermark must advance to 4 after rounds 3+4 complete cleanly.
+	st, ok := executor.state.ForeachState["fanout"]
+	if !ok {
+		t.Fatal("ForeachState[fanout] missing after run")
+	}
+	if got := st.CompletedRounds["fanout_iter0"]; got != 4 {
+		t.Errorf("CompletedRounds[fanout_iter0] = %d, want 4 (watermark must advance after each clean round)", got)
+	}
+}
+
+// TestForeachMaxRounds_FreshRunRecordsRoundWatermark covers the other
+// side of bd-r2pan: a fresh foreach run with max_rounds > 1 must record
+// the round watermark per iteration so a subsequent resume can detect
+// progress. Without this, every resume re-runs all rounds from 1.
+func TestForeachMaxRounds_FreshRunRecordsRoundWatermark(t *testing.T) {
+	cfg := DefaultExecutorConfig("max-rounds-fresh-watermark")
+	cfg.ProjectDir = t.TempDir()
+	executor := NewExecutor(cfg)
+	executor.state = &ExecutionState{
+		RunID:         "run-r2pan-fresh",
+		WorkflowID:    "wf",
+		Variables:     map[string]interface{}{},
+		Steps:         map[string]StepResult{},
+		ForeachState:  map[string]ForeachIterationState{},
+		ParallelState: map[string]ParallelGroupState{},
+		InFlightSteps: map[string]InFlightStepState{},
+	}
+
+	step := &Step{
+		ID: "fanout",
+		Foreach: &ForeachConfig{
+			Items:     `["a","b"]`,
+			As:        "item",
+			MaxRounds: IntOrExpr{Value: 3},
+			Steps:     []Step{{ID: "noop", Command: "true"}},
+		},
+	}
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "r2pan-fresh",
+		Settings:      DefaultWorkflowSettings(),
+		Steps:         []Step{*step},
+	}
+
+	_ = executor.executeForeach(context.Background(), step, workflow)
+
+	st, ok := executor.state.ForeachState["fanout"]
+	if !ok {
+		t.Fatal("ForeachState[fanout] missing after fresh run")
+	}
+	for _, iterID := range []string{"fanout_iter0", "fanout_iter1"} {
+		if got := st.CompletedRounds[iterID]; got != 3 {
+			t.Errorf("CompletedRounds[%s] = %d, want 3 (every round must be recorded on a clean run)", iterID, got)
+		}
+	}
 }
 
 // TestForeachMaxRounds_NestedLoopWhenResolvesRoundOverlay covers bd-ypo73:
