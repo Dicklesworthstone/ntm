@@ -306,6 +306,37 @@ func TestCheckpointWorkingDirMatches(t *testing.T) {
 	}
 }
 
+// TestCheckpointWorkingDirMatches_ResolvesSymlinks covers bd-5n28k: the
+// same physical directory reached via two different paths (symlink, bind
+// mount, macOS /Users vs /private/var/Users, container workspace volumes)
+// must compare equal so a legitimate recovery checkpoint isn't silently
+// rejected when the checkpoint's pane_current_path was recorded through
+// one alias and the spawn dir was supplied via the other.
+func TestCheckpointWorkingDirMatches_ResolvesSymlinks(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("os.Symlink unsupported on this platform: %v", err)
+	}
+
+	if !checkpointWorkingDirMatches(real, link) {
+		t.Errorf("checkpointWorkingDirMatches(%q, %q) = false, want true (symlink should resolve to same dir)", real, link)
+	}
+	if !checkpointWorkingDirMatches(link, real) {
+		t.Errorf("checkpointWorkingDirMatches(%q, %q) = false, want true (symlink direction should not matter)", link, real)
+	}
+
+	// Sanity: a stale symlink target (EvalSymlinks errors) must still fall
+	// back to abs+clean so the symlink-free contract isn't regressed.
+	stale := filepath.Join(t.TempDir(), "stale")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "does-not-exist"), stale); err != nil {
+		t.Skipf("os.Symlink unsupported on this platform: %v", err)
+	}
+	if checkpointWorkingDirMatches(stale, real) {
+		t.Errorf("checkpointWorkingDirMatches(stale-symlink, real) = true, want false (stale should fall back to abs+clean and mismatch)")
+	}
+}
+
 // TestLoadRecoveryCheckpoint_RejectsCheckpointFromDifferentWorkingDir verifies
 // that a checkpoint recorded against /path/to/repoA is not surfaced as recovery
 // context for a spawn in /path/to/repoB even when the session name matches.

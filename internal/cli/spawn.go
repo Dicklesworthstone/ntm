@@ -3611,11 +3611,20 @@ func checkpointWorkingDirMatches(checkpointDir, spawnDir string) bool {
 		return true
 	}
 
+	// bd-5n28k: resolve symlinks so the same physical directory reached via
+	// two different paths (symlink, bind mount, macOS /Users vs
+	// /private/var/Users, container workspace volumes) compares equal. Fall
+	// back to the abs+clean path when EvalSymlinks fails (target gone,
+	// permission denied) so we don't regress the symlink-free contract.
 	canonical := func(p string) string {
-		if abs, err := filepath.Abs(p); err == nil {
-			return filepath.Clean(abs)
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return filepath.Clean(p)
 		}
-		return filepath.Clean(p)
+		if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+			return filepath.Clean(resolved)
+		}
+		return filepath.Clean(abs)
 	}
 
 	return canonical(checkpointDir) == canonical(spawnDir)
