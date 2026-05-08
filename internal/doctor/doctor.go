@@ -392,7 +392,17 @@ func checkMemory(v MemoryView) (CheckResult, []Finding) {
 		crit = 0.92
 	}
 	if v.UsedRatio <= 0 {
-		return CheckResult{Name: "memory", Status: CheckUnknown, Detail: "no probe data"}, nil
+		// bd-a7ky6: mirror disk/rch's no_probe Info finding so a TUI or
+		// agent iterating Report.Findings sees memory's probe failure
+		// surface the same way disk's does, instead of being silently
+		// observable only via CheckResult.Status.
+		return CheckResult{Name: "memory", Status: CheckUnknown, Detail: "no probe data"},
+			[]Finding{{
+				Code:     "memory.no_probe",
+				Check:    "memory",
+				Severity: SeverityInfo,
+				Summary:  "memory usage probe returned zero; check skipped",
+			}}
 	}
 	if v.UsedRatio >= crit {
 		return CheckResult{Name: "memory", Status: CheckFail},

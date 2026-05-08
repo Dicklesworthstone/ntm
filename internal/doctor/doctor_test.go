@@ -217,6 +217,40 @@ func TestEvaluate_MemoryCriticalFailsAndDocksScore(t *testing.T) {
 	}
 }
 
+// bd-a7ky6: a memory probe that returns UsedRatio<=0 must surface a
+// memory.no_probe Info finding so consumers iterating Report.Findings
+// see the failure the same way disk's no_probe and rch's
+// no_workers_known surface theirs. Pre-fix, the checkMemory path
+// returned (CheckUnknown, nil) and the failure was visible only via
+// CheckResult.Status — silently dropped from any TUI/agent that scans
+// Findings as the canonical operator-actionable list.
+func TestEvaluate_MemoryNoProbeEmitsInfoFinding(t *testing.T) {
+	t.Parallel()
+	in := healthy()
+	in.Memory = MemoryView{UsedRatio: 0}
+	r := Evaluate(in)
+	if !findHasCode(r.Findings, "memory.no_probe") {
+		t.Errorf("missing memory.no_probe: %+v", r.Findings)
+	}
+	for _, f := range r.Findings {
+		if f.Code == "memory.no_probe" {
+			if f.Severity != SeverityInfo {
+				t.Errorf("memory.no_probe Severity = %s, want info", f.Severity)
+			}
+			if f.Check != "memory" {
+				t.Errorf("memory.no_probe Check = %q, want memory", f.Check)
+			}
+		}
+	}
+	// Memory check must report Unknown so the score still subtracts -2,
+	// matching disk's behavior.
+	for _, c := range r.Checks {
+		if c.Name == "memory" && c.Status != CheckUnknown {
+			t.Errorf("memory Check.Status = %s, want unknown", c.Status)
+		}
+	}
+}
+
 func TestEvaluate_RchAllWorkersUnhealthyFails(t *testing.T) {
 	t.Parallel()
 	in := healthy()
