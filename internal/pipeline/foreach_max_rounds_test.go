@@ -204,6 +204,67 @@ func TestForeachMaxRounds_UnsetPreservesSingleRoundBehavior(t *testing.T) {
 	}
 }
 
+// TestForeachMaxRounds_NestedForeachKeepsRoundUnique covers bd-2ubxp.21 by
+// proving that a nested foreach inside a max_rounds body does NOT collide on
+// state.Steps across rounds. The outer body step's ID is suffixed with
+// `_round<N>` by rewriteRoundStepIDs; when that body step is itself a
+// foreach, materializeForeachSteps prefixes each nested step's ID with the
+// rewritten parent ID (`%s_iter%d_%s`), so round 1 and round 2 land at
+// distinct keys without any need to recurse into nested config inside
+// rewriteRoundStepIDs. This regression locks that contract.
+func TestForeachMaxRounds_NestedForeachKeepsRoundUnique(t *testing.T) {
+	executor := NewExecutor(DefaultExecutorConfig("max-rounds-nested-foreach"))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "max-rounds-nested-foreach-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID: "outer",
+			Foreach: &ForeachConfig{
+				Items:     `["only"]`,
+				As:        "item",
+				MaxRounds: IntOrExpr{Value: 2},
+				Steps: []Step{{
+					ID: "inner_fanout",
+					Foreach: &ForeachConfig{
+						Items: `["x","y"]`,
+						As:    "sub",
+						Steps: []Step{{
+							ID:      "leaf",
+							Command: "echo round=${round} sub=${sub}",
+						}},
+					},
+				}},
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+
+	// Each (round, sub-iter) cell must land under a distinct state.Steps key.
+	for round := 1; round <= 2; round++ {
+		for sub := 0; sub <= 1; sub++ {
+			key := "outer_iter0_inner_fanout_round" + intToString(round) +
+				"_iter" + intToString(sub) + "_leaf"
+			got, ok := state.Steps[key]
+			if !ok {
+				t.Fatalf("state.Steps[%q] missing — round %d sub-iter %d collided into a different key", key, round, sub)
+			}
+			if got.Status != StatusCompleted {
+				t.Fatalf("%s status=%s, want completed; error=%+v", key, got.Status, got.Error)
+			}
+			want := "round=" + intToString(round)
+			if !strings.Contains(got.Output, want) {
+				t.Errorf("%s output=%q, want to contain %q", key, got.Output, want)
+			}
+		}
+	}
+}
+
 // buildExpectedRoundStepID returns the state.Steps key for round N's
 // echo_round body step in the single-iteration max_rounds test fixtures
 // (parent=fanout, iter=0, body step=echo_round).
