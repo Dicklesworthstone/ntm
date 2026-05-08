@@ -285,6 +285,139 @@ func TestProviderMatrix_AllModesFlowThrough(t *testing.T) {
 	}
 }
 
+func TestRunRecoveryDrill_ClassifiesSwarmFailures(t *testing.T) {
+	t.Parallel()
+	clock := newFakeClock()
+	pipelineInterrupted := func(context.Context, Clock, Behavior) Result {
+		return Result{
+			Err:      context.Canceled,
+			Warnings: []string{"pipeline_interrupted"},
+		}
+	}
+	paneExited := func(context.Context, Clock, Behavior) Result {
+		return Result{
+			Err:      ErrUnavailable,
+			Warnings: []string{"pane_exited"},
+		}
+	}
+	checkpointRestore := func(ctx context.Context, clock Clock, b Behavior) Result {
+		return Apply(ctx, clock, b, []byte(`{"checkpoint":"ok"}`))
+	}
+
+	report := RunRecoveryDrill(context.Background(), clock, RecoveryDrill{
+		Name: "large-swarm-recovery",
+		Steps: []RecoveryDrillStep{
+			{
+				Name:     "tmux command latency",
+				Provider: "tmux",
+				Behavior: Behavior{Mode: ModeDeadlineExceeded, Latency: 3 * time.Second},
+				Run:      TmuxCaptureFake,
+			},
+			{
+				Name:     "pane exit",
+				Provider: "pane",
+				Behavior: Behavior{Mode: ModeUnavailable},
+				Run:      paneExited,
+			},
+			{
+				Name:     "agent mail unavailable",
+				Provider: "agent_mail",
+				Behavior: Behavior{Mode: ModeUnavailable},
+				Run:      MailReservationsFake,
+			},
+			{
+				Name:     "stale reservations",
+				Provider: "agent_mail",
+				Behavior: Behavior{
+					Mode:       ModeStaleCache,
+					StaleSince: clock.NowTime.Add(-45 * time.Minute),
+				},
+				Run: MailReservationsFake,
+			},
+			{
+				Name:     "interrupted pipeline step",
+				Provider: "pipeline",
+				Behavior: Behavior{Mode: ModeHealthy},
+				Run:      pipelineInterrupted,
+			},
+			{
+				Name:     "checkpoint restore malformed output",
+				Provider: "checkpoint",
+				Behavior: Behavior{Mode: ModeMalformedJSON},
+				Run:      checkpointRestore,
+			},
+		},
+	})
+
+	if report.Name != "large-swarm-recovery" {
+		t.Fatalf("Name = %q, want large-swarm-recovery", report.Name)
+	}
+	if len(report.Outcomes) != 6 {
+		t.Fatalf("Outcomes = %d, want 6", len(report.Outcomes))
+	}
+
+	tests := []struct {
+		index      int
+		name       string
+		diagnostic string
+		action     RecoveryAction
+	}{
+		{0, "tmux command latency", "tmux timed out", RecoveryActionRetryWithBackoff},
+		{1, "pane exit", "pane unavailable", RecoveryActionRetryWithBackoff},
+		{2, "agent mail unavailable", "agent_mail unavailable", RecoveryActionRetryWithBackoff},
+		{3, "stale reservations", "agent_mail returned stale data", RecoveryActionRefreshBeforeMutation},
+		{4, "interrupted pipeline step", "pipeline interrupted", RecoveryActionResumeFromCheckpoint},
+		{5, "checkpoint restore malformed output", "checkpoint returned malformed output", RecoveryActionRequestFreshSnapshot},
+	}
+	for _, tt := range tests {
+		got := report.Outcomes[tt.index]
+		if got.Name != tt.name {
+			t.Errorf("outcome[%d].Name = %q, want %q", tt.index, got.Name, tt.name)
+		}
+		if got.Diagnostic != tt.diagnostic {
+			t.Errorf("outcome[%d].Diagnostic = %q, want %q", tt.index, got.Diagnostic, tt.diagnostic)
+		}
+		if got.RecoveryAction != tt.action {
+			t.Errorf("outcome[%d].RecoveryAction = %q, want %q", tt.index, got.RecoveryAction, tt.action)
+		}
+	}
+	if report.Outcomes[0].Latency != 3*time.Second {
+		t.Errorf("tmux latency = %s, want 3s", report.Outcomes[0].Latency)
+	}
+	if report.Outcomes[3].StaleAge != 45*time.Minute+3*time.Second {
+		t.Errorf("stale age = %s, want 45m3s", report.Outcomes[3].StaleAge)
+	}
+	if !containsString(report.Outcomes[1].Warnings, "pane_exited") {
+		t.Errorf("pane warnings = %v, want pane_exited", report.Outcomes[1].Warnings)
+	}
+	if !errors.Is(report.Outcomes[4].Err, context.Canceled) {
+		t.Errorf("pipeline err = %v, want context.Canceled", report.Outcomes[4].Err)
+	}
+}
+
+func TestRunRecoveryDrill_MissingProviderEscalates(t *testing.T) {
+	t.Parallel()
+	report := RunRecoveryDrill(context.Background(), newFakeClock(), RecoveryDrill{
+		Name: "missing-provider",
+		Steps: []RecoveryDrillStep{
+			{Name: "unwired step", Provider: "robot"},
+		},
+	})
+	if len(report.Outcomes) != 1 {
+		t.Fatalf("Outcomes = %d, want 1", len(report.Outcomes))
+	}
+	got := report.Outcomes[0]
+	if got.Diagnostic != "robot unavailable" {
+		t.Errorf("Diagnostic = %q, want robot unavailable", got.Diagnostic)
+	}
+	if got.RecoveryAction != RecoveryActionRetryWithBackoff {
+		t.Errorf("RecoveryAction = %q, want %q", got.RecoveryAction, RecoveryActionRetryWithBackoff)
+	}
+	if !containsString(got.Warnings, "missing_provider") {
+		t.Errorf("Warnings = %v, want missing_provider", got.Warnings)
+	}
+}
+
 func containsString(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
