@@ -599,11 +599,48 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 		)
 	}()
 
-	for i := range plan.Steps {
+	// bd-2ubxp.14: max_rounds wraps each iteration's body in an inner round
+	// loop. When unset the resolver returns 1 and behavior is identical to
+	// the historical single-round path. Per-round IDs are suffixed so each
+	// round's nested results land under unique keys in state.Steps.
+	maxRounds, mrErr := e.resolveForeachMaxRounds(parent)
+	if mrErr != nil {
+		iterResult.Error = mrErr.Error()
+		return iterResult
+	}
+
+	for round := 1; round <= maxRounds; round++ {
+		releaseRound := e.pushRoundVars(round, maxRounds)
+
+		stepsForRound := plan.Steps
+		if maxRounds > 1 {
+			stepsForRound = rewriteRoundStepIDs(plan.Steps, round)
+		}
+
+		exit := e.runForeachIterationRound(ctx, parent, workflow, plan, parentOnError, stepsForRound, &iterResult)
+		releaseRound()
+		if exit {
+			return iterResult
+		}
+	}
+	return markForeachIterationSkippedIfAllResultsSkipped(iterResult)
+}
+
+// runForeachIterationRound executes one round of an iteration's body steps.
+// Returns true when the caller should stop running further rounds (ctx
+// cancelled, error not handled by on_error: continue, or loop_control fired).
+// Mutates iterResult in place by appending body step results, setting Control,
+// and storing nested step state via storeForeachNestedResult.
+//
+// Extracted from executeForeachIteration so max_rounds (bd-2ubxp.14) can call
+// the body loop once per round without duplicating the per-step ctx, control,
+// skip, and on_error handling.
+func (e *Executor) runForeachIterationRound(ctx context.Context, parent *Step, workflow *Workflow, plan foreachIterationPlan, parentOnError ErrorAction, stepsForRound []Step, iterResult *foreachIterationResult) bool {
+	for i := range stepsForRound {
 		select {
 		case <-ctx.Done():
 			cancelled := StepResult{
-				StepID:     plan.Steps[i].ID,
+				StepID:     stepsForRound[i].ID,
 				Status:     StatusCancelled,
 				StartedAt:  time.Now(),
 				FinishedAt: time.Now(),
@@ -615,29 +652,29 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 				},
 			}
 			iterResult.Results = append(iterResult.Results, cancelled)
-			e.storeForeachNestedResult(&plan.Steps[i], cancelled)
-			return iterResult
+			e.storeForeachNestedResult(&stepsForRound[i], cancelled)
+			return true
 		default:
 		}
 
-		if foreachControlOnlyStep(plan.Steps[i]) {
-			control, applies, err := e.foreachLoopControlDecision(plan.Steps[i])
+		if foreachControlOnlyStep(stepsForRound[i]) {
+			control, applies, err := e.foreachLoopControlDecision(stepsForRound[i])
 			if err != nil {
-				failed := failedForeachLoopControlCondition(plan.Steps[i], err)
+				failed := failedForeachLoopControlCondition(stepsForRound[i], err)
 				iterResult.Results = append(iterResult.Results, failed)
-				e.storeForeachNestedResult(&plan.Steps[i], failed)
+				e.storeForeachNestedResult(&stepsForRound[i], failed)
 				iterResult.Error = resultErrorMessage(failed)
-				return iterResult
+				return true
 			}
 			if applies {
 				iterResult.Control = control
 				e.logForeachLoopControl(control, workflow, parent, plan)
-				return iterResult
+				return true
 			}
 			continue
 		}
 
-		step := plan.Steps[i]
+		step := stepsForRound[i]
 		result := e.executeForeachNestedStep(ctx, &step, workflow)
 		iterResult.Results = append(iterResult.Results, result)
 		e.storeForeachNestedResult(&step, result)
@@ -661,7 +698,7 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 		if result.Status == StatusFailed || result.Status == StatusCancelled {
 			if resolveErrorAction(step.OnError, parentOnError) != ErrorActionContinue {
 				iterResult.Error = resultErrorMessage(result)
-				return iterResult
+				return true
 			}
 		}
 
@@ -669,11 +706,11 @@ func (e *Executor) executeForeachIteration(ctx context.Context, parent *Step, wo
 			if control, applies := foreachLoopControlValue(step); applies {
 				iterResult.Control = control
 				e.logForeachLoopControl(control, workflow, parent, plan)
-				return iterResult
+				return true
 			}
 		}
 	}
-	return markForeachIterationSkippedIfAllResultsSkipped(iterResult)
+	return false
 }
 
 func markForeachIterationSkippedIfAllResultsSkipped(result foreachIterationResult) foreachIterationResult {

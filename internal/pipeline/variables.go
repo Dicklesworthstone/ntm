@@ -618,6 +618,21 @@ func (s *Substitutor) resolveVar(path string) (interface{}, error) {
 		return time.Now().Format(time.RFC3339), nil
 	case "workflow":
 		return s.workflow, nil
+	case "round", "rounds_remaining":
+		// bd-2ubxp.14: top-level shortcut for foreach max_rounds bindings.
+		// The same values are also reachable via ${loop.round} /
+		// ${loop.rounds_remaining}; the bare form matches the spec.
+		if s.state == nil || s.state.Variables == nil {
+			return nil, fmt.Errorf("%s not set: foreach max_rounds binding only available inside an iteration body", parts[0])
+		}
+		v, ok := s.state.Variables[parts[0]]
+		if !ok {
+			return nil, fmt.Errorf("%s not set: foreach max_rounds binding only available inside an iteration body", parts[0])
+		}
+		if len(parts) > 1 {
+			return navigateNested(v, parts[1:])
+		}
+		return v, nil
 	default:
 		return nil, fmt.Errorf("unknown variable namespace: %s", parts[0])
 	}
