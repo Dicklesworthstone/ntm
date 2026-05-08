@@ -3223,8 +3223,19 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 }
 
 // loadRecoveryBeads loads in-progress, completed, and blocked beads from BV.
+//
+// Recovery context is trust-sensitive — surfacing rows from a parent repo's
+// .beads/ to a child directory's spawn would steer the new agent toward
+// unrelated work. We refuse to walk up: if the spawn working directory has
+// no local .beads/, return empty lists rather than letting br discover the
+// parent workspace. Generic bv list helpers preserve the walk-up behavior
+// for non-recovery callers (alerts, status displays). See #130.
 func loadRecoveryBeads(workingDir string) (inProgress, completed, blocked []RecoveryBead, err error) {
 	const limit = 10 // reasonable limit for recovery context
+
+	if !bv.HasLocalBeadsDB(workingDir) {
+		return nil, nil, nil, nil
+	}
 
 	// Get in-progress beads
 	ipList := bv.GetInProgressList(workingDir, limit)

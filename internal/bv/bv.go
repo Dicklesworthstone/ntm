@@ -656,9 +656,14 @@ func GetDependencyContext(dir string, n int) (*DependencyContext, error) {
 	return ctx, nil
 }
 
-// hasLocalBeadsDB returns true when `dir` itself contains a .beads directory.
-// Recovery list helpers use this to refuse to walk up into a parent repo's
-// work-item database when the child has none of its own (#130).
+// HasLocalBeadsDB returns true when `dir` itself contains a .beads directory.
+// Recovery callers use this to refuse to walk up into a parent repo's
+// work-item database when the child has none of its own (#130). Generic
+// list helpers (`GetInProgressList`, `GetRecentlyCompletedList`,
+// `GetBlockedList`) deliberately do not gate on this — they preserve br's
+// walk-up behavior so callers that *want* parent rows (alerts, status,
+// triage) keep working from a child directory. Recovery and other
+// trust-sensitive callers must pre-check.
 //
 // This deliberately does NOT use normalizeTriageDir / ResolveProjectDir,
 // because those helpers walk UP the filesystem to find a beads/git root —
@@ -669,7 +674,7 @@ func GetDependencyContext(dir string, n int) (*DependencyContext, error) {
 // An empty `dir` falls back to cwd. Any stat error is treated as "no local
 // db" so we err on the side of an empty recovery list rather than surfacing
 // parent rows.
-func hasLocalBeadsDB(dir string) bool {
+func HasLocalBeadsDB(dir string) bool {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		cwd, err := os.Getwd()
@@ -1026,16 +1031,14 @@ func GetReadyPreview(dir string, limit int) []BeadPreview {
 
 // GetInProgressList returns in-progress beads with assignees.
 //
-// Recovery contract: when the directory has no local .beads/ database, return
-// an empty list rather than letting br walk up the filesystem and surface a
-// parent repo's work items as if they belonged here (#130). Recovery context
-// is trust-sensitive — parent rows are worse than no rows.
+// br walks the filesystem upward to find a workspace root, so this can
+// return rows from a parent repo when the caller's directory has no local
+// .beads/. Callers that need a strict "this directory only" contract
+// (recovery context, anywhere parent-row bleed would be incorrect) should
+// gate via [`HasLocalBeadsDB`] before calling this and refuse to surface
+// the result if it returns false. See #130.
 func GetInProgressList(dir string, limit int) []BeadInProgress {
 	var items []BeadInProgress
-
-	if !hasLocalBeadsDB(dir) {
-		return items
-	}
 
 	output, err := RunBd(dir, "list", "--status=in_progress", "--json")
 	if err != nil {
@@ -1076,14 +1079,11 @@ func GetInProgressList(dir string, limit int) []BeadInProgress {
 // GetRecentlyCompletedList returns recently completed beads.
 // These are beads with status=done, ordered by completion time descending.
 //
-// Recovery contract: see GetInProgressList — short-circuit empty when the
-// directory has no local .beads/ database (#130).
+// Like [`GetInProgressList`] this will walk up to a parent .beads/ when the
+// directory has none of its own; callers that need a strict per-directory
+// view should pre-check [`HasLocalBeadsDB`] (#130).
 func GetRecentlyCompletedList(dir string, limit int) []BeadPreview {
 	var items []BeadPreview
-
-	if !hasLocalBeadsDB(dir) {
-		return items
-	}
 
 	output, err := RunBd(dir, "list", "--status=done", "--json")
 	if err != nil {
@@ -1117,14 +1117,11 @@ func GetRecentlyCompletedList(dir string, limit int) []BeadPreview {
 
 // GetBlockedList returns blocked beads (beads that are blocked by dependencies).
 //
-// Recovery contract: see GetInProgressList — short-circuit empty when the
-// directory has no local .beads/ database (#130).
+// Like [`GetInProgressList`] this will walk up to a parent .beads/ when the
+// directory has none of its own; callers that need a strict per-directory
+// view should pre-check [`HasLocalBeadsDB`] (#130).
 func GetBlockedList(dir string, limit int) []BeadPreview {
 	var items []BeadPreview
-
-	if !hasLocalBeadsDB(dir) {
-		return items
-	}
 
 	output, err := RunBd(dir, "blocked", "--json")
 	if err != nil {
