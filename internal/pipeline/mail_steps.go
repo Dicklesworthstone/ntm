@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
@@ -60,6 +61,31 @@ func (s *Step) hasMailStep() bool {
 		s.FileReservationPaths != nil ||
 		s.MailInboxCheck != nil ||
 		s.FileReservationRelease != nil
+}
+
+type agentMailClientCache struct {
+	mu        sync.Mutex
+	byProject map[string]*agentmail.Client
+}
+
+func (c *agentMailClientCache) get(projectKey string) *agentmail.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.byProject == nil {
+		c.byProject = make(map[string]*agentmail.Client)
+	}
+	if client := c.byProject[projectKey]; client != nil {
+		return client
+	}
+
+	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	c.byProject[projectKey] = client
+	return client
+}
+
+func (e *Executor) mailClient(projectKey string) *agentmail.Client {
+	return e.mailClients.get(projectKey)
 }
 
 // executeMailStep is the executor dispatch branch for Agent Mail step kinds.
@@ -135,7 +161,7 @@ func (e *Executor) executeMailSendStep(ctx context.Context, step *Step, result S
 		return failMailStep(result, "substitution", fmt.Sprintf("mail_send thread_id: %v", err))
 	}
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	client := e.mailClient(projectKey)
 	sent, err := client.SendMessage(ctx, agentmail.SendMessageOptions{
 		ProjectKey:  projectKey,
 		SenderName:  agentName,
@@ -176,7 +202,7 @@ func (e *Executor) executeFileReservationPathsStep(ctx context.Context, step *St
 		return failMailStep(result, "substitution", fmt.Sprintf("file_reservation_paths reason: %v", err))
 	}
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	client := e.mailClient(projectKey)
 	reservation, err := client.ReservePaths(ctx, agentmail.FileReservationOptions{
 		ProjectKey: projectKey,
 		AgentName:  agentName,
@@ -208,7 +234,7 @@ func (e *Executor) executeMailInboxCheckStep(ctx context.Context, step *Step, re
 		return failMailStep(result, "substitution", fmt.Sprintf("mail_inbox_check agent_name: %v", err))
 	}
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	client := e.mailClient(projectKey)
 	messages, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
 		ProjectKey: projectKey,
 		AgentName:  agentName,
@@ -249,7 +275,7 @@ func (e *Executor) executeFileReservationReleaseStep(ctx context.Context, step *
 		return failMailStep(result, "substitution", fmt.Sprintf("file_reservation_release paths: %v", err))
 	}
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	client := e.mailClient(projectKey)
 	released, err := client.ReleaseReservations(ctx, projectKey, agentName, paths, nil)
 	if err != nil {
 		return failMailStep(result, "agent_mail", fmt.Sprintf("file_reservation_release failed: %v", err))

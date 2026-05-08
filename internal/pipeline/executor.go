@@ -120,6 +120,8 @@ type Executor struct {
 	// bottleneck — actual iteration body execution still runs in parallel
 	// after materialize returns (bd-htmpq).
 	foreachMaterializeMu sync.Mutex
+
+	mailClients agentMailClientCache
 }
 
 // NewExecutor creates a new workflow executor

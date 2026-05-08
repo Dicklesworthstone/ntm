@@ -578,6 +578,15 @@ func TestExecutorRun_AgentMailStepsUseRuntimeFixture(t *testing.T) {
 			t.Fatalf("request[%d] tool = %q, want %q; requests=%+v", i, gotRequests[i].name, want, gotRequests)
 		}
 	}
+	cachedClients, cachedProject := func() (int, bool) {
+		executor.mailClients.mu.Lock()
+		defer executor.mailClients.mu.Unlock()
+		_, cachedProject := executor.mailClients.byProject["/data/projects/ntm"]
+		return len(executor.mailClients.byProject), cachedProject
+	}()
+	if cachedClients != 1 || !cachedProject {
+		t.Fatalf("cached Agent Mail clients = %d, has project cache = %v; want one client for /data/projects/ntm", cachedClients, cachedProject)
+	}
 	if got := gotRequests[1].args["reason"]; got != "bd-fxj4f.2" {
 		t.Fatalf("reservation reason = %#v, want thread from sent output_var parsed data", got)
 	}
