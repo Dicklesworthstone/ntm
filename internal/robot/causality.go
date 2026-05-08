@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -705,20 +706,32 @@ func readPipelineStateFile(path string) (*causalityPipelineState, error) {
 }
 
 func readPipelineStateFileWithLimit(path string, maxBytes int64) (*causalityPipelineState, error) {
-	if maxBytes > 0 {
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, err
-		}
-		if info.Size() > maxBytes {
-			return nil, fmt.Errorf("pipeline state file exceeds limit: %s (%d > %d)", path, info.Size(), maxBytes)
-		}
-	}
-
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+
+	var data []byte
+	if maxBytes > 0 {
+		// Read at most maxBytes+1 from the open FD so we can detect overflow
+		// without trusting a separate Stat() call. Bounds the actual read,
+		// so a file growing or a symlink swap between stat-and-read can't
+		// bypass the cap.
+		data, err = io.ReadAll(io.LimitReader(f, maxBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) > maxBytes {
+			return nil, fmt.Errorf("pipeline state file exceeds limit: %s (> %d bytes)", path, maxBytes)
+		}
+	} else {
+		data, err = io.ReadAll(f)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var st causalityPipelineState
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, err

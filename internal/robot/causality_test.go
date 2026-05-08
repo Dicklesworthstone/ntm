@@ -309,6 +309,53 @@ func TestReadPipelineStateFileWithLimit_AllowsSmallValidFile(t *testing.T) {
 	}
 }
 
+// bd-f5782: read must be FD-bounded, not Stat-then-ReadFile, so a file
+// growing or symlink swapping between size-check and read cannot bypass
+// the cap. We can't easily simulate a concurrent grow, but we can simulate
+// the post-fix invariant directly: a file that already exceeds the cap by
+// any amount must be rejected without allocating the full file's worth of
+// bytes — since the function only ever reads up to maxBytes+1, the test
+// passes a cap small enough that a buggy implementation would pre-Stat a
+// "fits" verdict and then read the whole oversized blob.
+func TestReadPipelineStateFileWithLimit_BoundsReadEvenWhenStatLies(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.json")
+
+	// 5 KiB on disk; cap at 1 KiB. Post-fix: io.LimitReader caps the
+	// read at 1025 bytes regardless of stat, returns "exceeds limit".
+	blob := strings.Repeat("y", 5*1024)
+	largeJSON := fmt.Sprintf(`{"run_id":"run-1","workflow_id":"wf","session":"s","status":"running","variables":{"blob":"%s"}}`, blob)
+	if err := os.WriteFile(path, []byte(largeJSON), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, err := readPipelineStateFileWithLimit(path, 1024)
+	if err == nil {
+		t.Fatal("expected exceeds-limit error, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("expected exceeds-limit error, got: %v", err)
+	}
+}
+
+func TestReadPipelineStateFileWithLimit_AcceptsExactlyMaxBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.json")
+
+	smallJSON := `{"run_id":"run-1","workflow_id":"wf","session":"s","status":"running"}`
+	if err := os.WriteFile(path, []byte(smallJSON), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	state, err := readPipelineStateFileWithLimit(path, int64(len(smallJSON)))
+	if err != nil {
+		t.Fatalf("file at exactly maxBytes should be accepted, got: %v", err)
+	}
+	if state == nil || state.RunID != "run-1" {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+}
+
 // bd-ogpsf: since/until must be threaded into mail/session/pipeline
 // loaders so they can short-circuit out-of-window data at the source
 // rather than load everything and discard at filter time.
