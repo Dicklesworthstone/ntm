@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3194,6 +3195,14 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 	}()
 
 	wg.Wait()
+
+	// bd-wnzhl: errs accumulates from 4 parallel goroutines under a
+	// mutex, so without sorting it ends up in goroutine-completion
+	// order — sibling of bd-brr6h / bd-c9wr1 / bd-aj2qv. Sort
+	// alphabetically so rc.Error.Details (and the printed warnings
+	// below) are byte-stable across runs with the same set of source
+	// failures.
+	sort.Strings(errs)
 
 	// Estimate tokens and truncate if needed
 	rc.TokenCount = estimateRecoveryTokens(rc)
