@@ -601,10 +601,20 @@ func (le *LoopExecutor) resolveIntOrExpr(step *Step, field string, value *IntOrE
 }
 
 func (le *LoopExecutor) substituteIntExpr(expr string) (string, error) {
-	le.executor.varMu.RLock()
-	defer le.executor.varMu.RUnlock()
+	// bd-eslpu: lock order is stateMu before varMu (matches the canonical
+	// pattern established in executor.go applyStartFrom and aligned in
+	// foreach_max_rounds.go resolveForeachMaxRounds via bd-8wo27). The
+	// previous order (varMu→stateMu) was an AB-BA pair against any
+	// goroutine using the canonical order — sync.RWMutex's writer-
+	// starvation guard would block a concurrent stateMu.RLock() behind
+	// a pending stateMu.Lock(), at the same time the canonical-order
+	// writer was waiting on varMu we held. The bd-8wo27 review missed
+	// this site because the deferred-form `defer varMu.RUnlock()` line
+	// between the two RLocks fooled regex-based scans.
 	le.executor.stateMu.RLock()
 	defer le.executor.stateMu.RUnlock()
+	le.executor.varMu.RLock()
+	defer le.executor.varMu.RUnlock()
 
 	workflowID := ""
 	if le.executor.state != nil {
