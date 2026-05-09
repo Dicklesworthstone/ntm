@@ -97,6 +97,17 @@ func canonicalSessionKey(sessionID string) string {
 }
 
 func canonicalAgentKey(agentName string) string {
+	// Mirror canonicalSessionKey behavior so already-safe identities keep
+	// their exact uniqueness-bearing form (for example repeated dashes).
+	// Collapsing those separators aliases distinct agents like
+	// "alpha--team" and "alpha-team" into one worktree key (bd-awrt5).
+	if isAlreadySafeWorktreeKey(agentName) {
+		return agentName
+	}
+	trimmedDots := strings.Trim(agentName, ".")
+	if trimmedDots != agentName && isAlreadySafeWorktreeKey(trimmedDots) {
+		return trimmedDots
+	}
 	return canonicalWorktreeKey(agentName, "agent")
 }
 

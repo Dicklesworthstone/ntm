@@ -101,14 +101,18 @@ func TestCanonicalAgentKey(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		in   string
-		want string
+		name  string
+		in    string
+		want  string
+		want2 string
 	}{
-		{"empty falls back", "", "agent"},
-		{"preserves normal agent type", "claude", "claude"},
-		{"normalizes path separators", "../evil/type", "evil-type"},
-		{"collapses punctuation", "***codex///agent***", "codex-agent"},
+		{"empty falls back", "", "agent", ""},
+		{"preserves normal agent type", "claude", "claude", ""},
+		{"preserves repeated safe separators", "alpha--team", "alpha--team", ""},
+		{"normalizes leading/trailing dot for git-ref safety", ".alpha--team.", "alpha--team", ""},
+		{"normalizes path separators", "../evil/type", "evil-type", ""},
+		{"collapses punctuation", "***codex///agent***", "codex-agent", ""},
+		{"distinct safe IDs remain distinct", "alpha--team", "alpha--team", "alpha-team"},
 	}
 
 	for _, tc := range tests {
@@ -116,6 +120,10 @@ func TestCanonicalAgentKey(t *testing.T) {
 			t.Parallel()
 			got := canonicalAgentKey(tc.in)
 			assertStringEqual(t, got, tc.want)
+			if tc.want2 != "" {
+				got2 := canonicalAgentKey(tc.want2)
+				assertStringNotEqual(t, got, got2)
+			}
 		})
 	}
 }
@@ -135,6 +143,29 @@ func TestWorktreeManager_ProvisionWorktreeSanitizesAgentName(t *testing.T) {
 	assertStringEqual(t, filepath.Base(info.Path), "agent-evil-type-sess-one")
 	assertStringEqual(t, info.Branch, "agent/evil-type/sess-one")
 	assertStringEqual(t, info.Agent, "evil-type")
+}
+
+func TestWorktreeManager_ProvisionWorktreeDistinctSafeAgentKeysDoNotAlias(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm, err := NewWorktreeManager(repo)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	first, err := wm.ProvisionWorktree(context.Background(), "alpha--team", "sess/one")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree first: %v", err)
+	}
+	second, err := wm.ProvisionWorktree(context.Background(), "alpha-team", "sess/one")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree second: %v", err)
+	}
+
+	assertStringEqual(t, filepath.Base(first.Path), "agent-alpha--team-sess-one")
+	assertStringEqual(t, filepath.Base(second.Path), "agent-alpha-team-sess-one")
+	assertStringNotEqual(t, first.Path, second.Path)
+	assertStringNotEqual(t, first.Branch, second.Branch)
+	assertStringNotEqual(t, first.Agent, second.Agent)
 }
 
 func TestWorktreeManager_ProvisionAndList_PreservesSanitizedHyphenatedAgent(t *testing.T) {
