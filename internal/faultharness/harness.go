@@ -292,11 +292,9 @@ func Apply(ctx context.Context, clock Clock, b Behavior, healthyPayload []byte) 
 		}
 
 	case ModeStaleCache:
-		stale := time.Time{}
 		var age time.Duration
 		if !b.StaleSince.IsZero() {
-			stale = b.StaleSince
-			age = clock.Now().Sub(stale)
+			age = clock.Now().Sub(b.StaleSince)
 			if age < 0 {
 				age = 0
 			}
