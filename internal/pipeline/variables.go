@@ -414,25 +414,21 @@ const escapedDollarPlaceholder = "\x00ESC_DOLLAR\x00"
 // Returns the substituted string and any errors encountered.
 func (s *Substitutor) Substitute(template string) (string, error) {
 	result := protectEscapedSubstitutions(template)
-	var firstErr error
 	maxDepth := s.effectiveMaxDepth()
 
 	for depth := 0; depth < maxDepth; depth++ {
-		next, err, resolved := s.substituteOnce(result)
+		next, resolved, err := s.substituteOnce(result)
 		next = protectEscapedSubstitutions(next)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			return restoreEscapedSubstitutions(next), firstErr
+			return restoreEscapedSubstitutions(next), err
 		}
 
 		result = next
 		if !varPattern.MatchString(result) {
-			return restoreEscapedSubstitutions(result), firstErr
+			return restoreEscapedSubstitutions(result), nil
 		}
 		if resolved == 0 {
-			return restoreEscapedSubstitutions(result), firstErr
+			return restoreEscapedSubstitutions(result), nil
 		}
 	}
 
@@ -447,7 +443,7 @@ func (s *Substitutor) Substitute(template string) (string, error) {
 	}
 }
 
-func (s *Substitutor) substituteOnce(template string) (string, error, int) {
+func (s *Substitutor) substituteOnce(template string) (string, int, error) {
 	var firstErr error
 	resolved := 0
 
@@ -497,7 +493,7 @@ func (s *Substitutor) substituteOnce(template string) (string, error, int) {
 		return formatted
 	})
 
-	return result, firstErr, resolved
+	return result, resolved, firstErr
 }
 
 // isTerminalSubstitutionNamespace reports whether values resolved from this
