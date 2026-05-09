@@ -75,6 +75,7 @@ type IdeaEvidenceSnapshot struct {
 	Sources         []CandidateSource         `json:"sources"`
 	ExistingWork    []ExistingWorkFingerprint `json:"existing_work"`
 	Candidates      []IdeaCandidate           `json:"candidates"`
+	OptionalSignals []OptionalSignal          `json:"optional_signals"`
 	DegradedSources []ValidationNote          `json:"degraded_sources"`
 	ValidationNotes []ValidationNote          `json:"validation_notes"`
 }
@@ -203,6 +204,22 @@ type ValidationNote struct {
 	Evidence []string           `json:"evidence"`
 }
 
+// OptionalSignal carries compact, redacted, source-attributed prior-knowledge
+// hints from optional adapters (CASS, CM, handoff summaries, assurance digests,
+// closed work history). It deliberately stores summaries and short snippets
+// rather than raw long conversation text, and never mutates beads or rankings.
+type OptionalSignal struct {
+	ID        string   `json:"id"`
+	SourceID  string   `json:"source_id"`
+	Kind      string   `json:"kind"`
+	Title     string   `json:"title,omitempty"`
+	Summary   string   `json:"summary,omitempty"`
+	Snippet   string   `json:"snippet,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
+	Evidence  []string `json:"evidence"`
+}
+
 func NewIdeaEvidenceSnapshot(project string) IdeaEvidenceSnapshot {
 	return IdeaEvidenceSnapshot{
 		Project: project,
@@ -222,6 +239,7 @@ func NewIdeaEvidenceSnapshot(project string) IdeaEvidenceSnapshot {
 		Sources:         []CandidateSource{},
 		ExistingWork:    []ExistingWorkFingerprint{},
 		Candidates:      []IdeaCandidate{},
+		OptionalSignals: []OptionalSignal{},
 		DegradedSources: []ValidationNote{},
 		ValidationNotes: []ValidationNote{},
 	}

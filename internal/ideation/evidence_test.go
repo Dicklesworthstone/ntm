@@ -11,7 +11,7 @@ func TestNewIdeaEvidenceSnapshotEmptyQueueStableJSON(t *testing.T) {
 	snapshot.Queue.CountsVerified = true
 
 	got := mustMarshalJSON(t, snapshot)
-	want := `{"project":"/repo","queue":{"open_count":0,"actionable_count":0,"blocked_count":0,"in_progress_count":0,"ready_count":0,"counts_verified":true,"source_ids":[]},"triage":{"top_ids":[],"graph_health":{"total_nodes":0,"total_edges":0,"density":0,"metrics":{},"evidence":[]},"status_summary":[],"warnings":[],"source_ids":[]},"documents":[],"closeout_proof":[],"git":[],"sources":[],"existing_work":[],"candidates":[],"degraded_sources":[],"validation_notes":[]}`
+	want := `{"project":"/repo","queue":{"open_count":0,"actionable_count":0,"blocked_count":0,"in_progress_count":0,"ready_count":0,"counts_verified":true,"source_ids":[]},"triage":{"top_ids":[],"graph_health":{"total_nodes":0,"total_edges":0,"density":0,"metrics":{},"evidence":[]},"status_summary":[],"warnings":[],"source_ids":[]},"documents":[],"closeout_proof":[],"git":[],"sources":[],"existing_work":[],"candidates":[],"optional_signals":[],"degraded_sources":[],"validation_notes":[]}`
 	if got != want {
 		t.Fatalf("stable JSON mismatch\n got: %s\nwant: %s", got, want)
 	}
