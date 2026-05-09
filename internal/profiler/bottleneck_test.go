@@ -117,8 +117,8 @@ func TestComputeHotspots_PhaseFilter(t *testing.T) {
 func TestComputeHotspots_TopN(t *testing.T) {
 	t.Parallel()
 	var spans []*Span
-	for i, dur := range []time.Duration{50, 40, 30, 20, 10} {
-		spans = append(spans, makeSpan(string(rune('a'+i)), "robot", dur*time.Millisecond, nil))
+	for i, ms := range []int{50, 40, 30, 20, 10} {
+		spans = append(spans, makeSpan(string(rune('a'+i)), "robot", time.Duration(ms)*time.Millisecond, nil))
 	}
 	snap := ComputeHotspots(spans, BottleneckOptions{TopN: 3, Now: fixedClock()})
 	if len(snap.Hotspots) != 3 {
@@ -207,8 +207,8 @@ func TestComputeTrend_NewUpDownStable(t *testing.T) {
 		{Name: "leaving", Phase: "robot", TotalMs: 5},
 	}}
 	curr := BottleneckSnapshot{Hotspots: []BottleneckHotspot{
-		{Name: "hot", Phase: "robot", TotalMs: 75}, // up
-		{Name: "warm", Phase: "robot", TotalMs: 19}, // stable (within threshold)
+		{Name: "hot", Phase: "robot", TotalMs: 75},   // up
+		{Name: "warm", Phase: "robot", TotalMs: 19},  // stable (within threshold)
 		{Name: "fresh", Phase: "robot", TotalMs: 30}, // new
 	}}
 	got := ComputeTrend(curr, prior, 5)
@@ -244,9 +244,9 @@ func TestComputeTrend_NegativeChangeMsTreatedAsZeroDisabled(t *testing.T) {
 		{Name: "flat", Phase: "robot", TotalMs: 30},
 	}}
 	curr := BottleneckSnapshot{Hotspots: []BottleneckHotspot{
-		{Name: "drop", Phase: "robot", TotalMs: 90},  // d = -10
-		{Name: "rise", Phase: "robot", TotalMs: 60},  // d = +10
-		{Name: "flat", Phase: "robot", TotalMs: 30},  // d = 0
+		{Name: "drop", Phase: "robot", TotalMs: 90}, // d = -10
+		{Name: "rise", Phase: "robot", TotalMs: 60}, // d = +10
+		{Name: "flat", Phase: "robot", TotalMs: 30}, // d = 0
 	}}
 
 	// Pre-fix this would misclassify "drop" as "up" and "flat" as "up"

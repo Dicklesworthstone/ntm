@@ -57,14 +57,14 @@ type PhaseSummary struct {
 // BottleneckSnapshot is the stable robot-readable surface for the
 // bottleneck dashboard. It is safe to serialize directly to JSON.
 type BottleneckSnapshot struct {
-	Success     bool                `json:"success"`
-	Timestamp   string              `json:"timestamp"`
-	WindowMs    float64             `json:"window_ms"`
-	SpanCount   int                 `json:"span_count"`
-	UnendedSpans int                `json:"unended_spans,omitempty"`
-	TotalMs     float64             `json:"total_ms"`
-	Hotspots    []BottleneckHotspot `json:"hotspots"`
-	Phases      []PhaseSummary      `json:"phases,omitempty"`
+	Success      bool                `json:"success"`
+	Timestamp    string              `json:"timestamp"`
+	WindowMs     float64             `json:"window_ms"`
+	SpanCount    int                 `json:"span_count"`
+	UnendedSpans int                 `json:"unended_spans,omitempty"`
+	TotalMs      float64             `json:"total_ms"`
+	Hotspots     []BottleneckHotspot `json:"hotspots"`
+	Phases       []PhaseSummary      `json:"phases,omitempty"`
 }
 
 // BottleneckOptions configures ComputeHotspots.
