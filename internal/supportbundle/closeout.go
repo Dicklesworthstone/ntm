@@ -4,6 +4,10 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
+	"github.com/Dicklesworthstone/ntm/internal/robot/assurance"
+	"github.com/Dicklesworthstone/ntm/internal/swarmslo"
 )
 
 // CloseoutSchemaVersion is the version of the closeout bundle JSON
@@ -122,8 +126,8 @@ type CloseoutBundle struct {
 	Beads             BeadsDelta            `json:"beads"`
 	Verifications     []VerificationEntry   `json:"verifications,omitempty"`
 	Reservations      []ReservationSnapshot `json:"active_reservations,omitempty"`
-	Mail              MailSnapshot         `json:"mail"`
-	Queue             QueueState           `json:"queue"`
+	Mail              MailSnapshot          `json:"mail"`
+	Queue             QueueState            `json:"queue"`
 	DegradedProviders []string              `json:"degraded_providers,omitempty"`
 	ResidualRisks     []ResidualRisk        `json:"residual_risks,omitempty"`
 	Counts            CloseoutCounts        `json:"counts"`
@@ -142,6 +146,79 @@ type CloseoutCounts struct {
 	VerificationsFailed int `json:"verifications_failed"`
 	ActiveReservations  int `json:"active_reservations"`
 	ResidualRisks       int `json:"residual_risks"`
+}
+
+// CloseoutProofSchemaVersion is the JSON contract for the composed
+// operator proof bundle.
+const CloseoutProofSchemaVersion = "ntm.closeout_proof.v1"
+
+// ProofState is the state of a proof section or the overall bundle.
+type ProofState string
+
+const (
+	ProofStatePresent  ProofState = "present"
+	ProofStateMissing  ProofState = "missing"
+	ProofStateStale    ProofState = "stale"
+	ProofStateDegraded ProofState = "degraded"
+	ProofStateFailing  ProofState = "failing"
+)
+
+// CloseoutProofInputs are already-collected evidence for a closeout
+// proof bundle. The reducer is pure: callers gather live Beads, Agent
+// Mail, pressure, SLO, git, and support-bundle facts first.
+type CloseoutProofInputs struct {
+	ProjectDir            string
+	Closeout              CloseoutBundle
+	Assurance             assurance.Digest
+	Pressure              pressure.RobotPressure
+	SLO                   swarmslo.RecommendationSummary
+	SupportBundlePath     string
+	ArtifactPaths         []string
+	MissingSources        []string
+	TrackerNeedsFlush     bool
+	DirtyWorktree         bool
+	StaleReservationAfter time.Duration
+	Now                   time.Time
+}
+
+// ProofSection is one source's contribution to the closeout proof.
+type ProofSection struct {
+	Name          string     `json:"name"`
+	State         ProofState `json:"state"`
+	Summary       string     `json:"summary"`
+	ReasonCodes   []string   `json:"reason_codes,omitempty"`
+	Evidence      []string   `json:"evidence,omitempty"`
+	Commands      []string   `json:"commands,omitempty"`
+	ArtifactPaths []string   `json:"artifact_paths,omitempty"`
+}
+
+// ProofLogRow is a structured log projection. It carries the fields
+// operators and robot consumers need without reinterpreting sections.
+type ProofLogRow struct {
+	GeneratedAt    time.Time  `json:"generated_at"`
+	ProjectDir     string     `json:"project_dir,omitempty"`
+	Section        string     `json:"section"`
+	QueueState     string     `json:"queue_state"`
+	ProofState     ProofState `json:"proof_state"`
+	SectionState   ProofState `json:"section_state"`
+	MissingSources []string   `json:"missing_sources"`
+	ArtifactPath   string     `json:"artifact_path,omitempty"`
+	ReasonCodes    []string   `json:"reason_codes,omitempty"`
+}
+
+// CloseoutProofBundle composes the closeout bundle with operator
+// assurance, pressure, SLO, and support-bundle evidence.
+type CloseoutProofBundle struct {
+	SchemaVersion   string         `json:"schema_version"`
+	GeneratedAt     time.Time      `json:"generated_at"`
+	ProjectDir      string         `json:"project_dir,omitempty"`
+	ProofState      ProofState     `json:"proof_state"`
+	SafeToStandDown bool           `json:"safe_to_stand_down"`
+	Sections        []ProofSection `json:"sections"`
+	Closeout        CloseoutBundle `json:"closeout"`
+	MissingSources  []string       `json:"missing_sources,omitempty"`
+	ArtifactPaths   []string       `json:"artifact_paths,omitempty"`
+	LogRows         []ProofLogRow  `json:"log_rows"`
 }
 
 // BuildCloseout reduces inputs into a CloseoutBundle. Pure: no I/O,
@@ -196,6 +273,504 @@ func BuildCloseout(in CloseoutInputs) CloseoutBundle {
 	// observed sequence — but the count fields are already aggregated.
 
 	return bundle
+}
+
+// BuildCloseoutProofBundle reduces closeout evidence into one
+// operator-facing proof artifact. It never gathers evidence itself.
+func BuildCloseoutProofBundle(in CloseoutProofInputs) CloseoutProofBundle {
+	now := in.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	staleReservationAfter := in.StaleReservationAfter
+	if staleReservationAfter <= 0 {
+		staleReservationAfter = 30 * time.Minute
+	}
+
+	missing := canonicalMissingSources(in.MissingSources)
+	artifacts := proofArtifactPaths(in.SupportBundlePath, in.ArtifactPaths)
+	out := CloseoutProofBundle{
+		SchemaVersion:  CloseoutProofSchemaVersion,
+		GeneratedAt:    now.UTC(),
+		ProjectDir:     strings.TrimSpace(in.ProjectDir),
+		Closeout:       in.Closeout,
+		MissingSources: missing.sorted(),
+		ArtifactPaths:  artifacts,
+	}
+
+	out.Sections = []ProofSection{
+		buildQueueProofSection(in.Closeout.Queue, missing),
+		buildMailProofSection(in.Closeout.Mail, missing),
+		buildReservationProofSection(in.Closeout.Reservations, now, staleReservationAfter, missing),
+		buildPressureProofSection(in.Pressure, missing),
+		buildSLOProofSection(in.SLO, missing),
+		buildAssuranceProofSection(in.Assurance, missing),
+		buildGitProofSection(in.Closeout, in.TrackerNeedsFlush, in.DirtyWorktree, missing),
+		buildSupportBundleProofSection(artifacts, missing),
+	}
+	out.ProofState = rollupProofState(out.Sections)
+	out.SafeToStandDown = out.ProofState == ProofStatePresent
+	out.LogRows = buildProofLogRows(out)
+	return out
+}
+
+// FormatCloseoutProofMarkdown renders a concise deterministic handoff
+// view. The JSON bundle remains the source of truth.
+func FormatCloseoutProofMarkdown(b CloseoutProofBundle) string {
+	var out strings.Builder
+	out.WriteString("# Closeout Proof\n\n")
+	out.WriteString("- state: ")
+	out.WriteString(string(b.ProofState))
+	out.WriteString("\n")
+	out.WriteString("- safe_to_stand_down: ")
+	if b.SafeToStandDown {
+		out.WriteString("true\n")
+	} else {
+		out.WriteString("false\n")
+	}
+	if b.ProjectDir != "" {
+		out.WriteString("- project_dir: ")
+		out.WriteString(markdownCell(b.ProjectDir))
+		out.WriteString("\n")
+	}
+	if len(b.MissingSources) > 0 {
+		out.WriteString("- missing_sources: ")
+		out.WriteString(strings.Join(b.MissingSources, ","))
+		out.WriteString("\n")
+	}
+	if len(b.ArtifactPaths) > 0 {
+		out.WriteString("- artifact_path: ")
+		out.WriteString(markdownCell(b.ArtifactPaths[0]))
+		out.WriteString("\n")
+	}
+	out.WriteString("\n| section | state | reasons | summary |\n")
+	out.WriteString("| --- | --- | --- | --- |\n")
+	for _, s := range b.Sections {
+		out.WriteString("| ")
+		out.WriteString(markdownCell(s.Name))
+		out.WriteString(" | ")
+		out.WriteString(string(s.State))
+		out.WriteString(" | ")
+		out.WriteString(markdownCell(strings.Join(s.ReasonCodes, ",")))
+		out.WriteString(" | ")
+		out.WriteString(markdownCell(s.Summary))
+		out.WriteString(" |\n")
+	}
+	return out.String()
+}
+
+type missingSourceSet map[string]struct{}
+
+func canonicalMissingSources(in []string) missingSourceSet {
+	set := make(missingSourceSet, len(in))
+	for _, raw := range in {
+		canonical := canonicalMissingSource(raw)
+		if canonical == "" {
+			continue
+		}
+		set[canonical] = struct{}{}
+	}
+	return set
+}
+
+func canonicalMissingSource(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "":
+		return ""
+	case "agentmail", "agent_mail", "mail":
+		return "agent_mail"
+	case "beads", "br", "queue":
+		return "queue"
+	case "agentmail_reservations", "reservations":
+		return "reservations"
+	case "pressure":
+		return "pressure"
+	case "slo", "swarmslo":
+		return "slo"
+	case "assurance", "digest", "contract":
+		return "assurance"
+	case "git", "tracker", "worktree":
+		return "git"
+	case "supportbundle", "support_bundle", "support-bundle":
+		return "support_bundle"
+	default:
+		return strings.TrimSpace(strings.ToLower(raw))
+	}
+}
+
+func (set missingSourceSet) has(name string) bool {
+	_, ok := set[name]
+	return ok
+}
+
+func (set missingSourceSet) sorted() []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func buildQueueProofSection(q QueueState, missing missingSourceSet) ProofSection {
+	if missing.has("queue") {
+		return missingProofSection("queue", "beads queue evidence was not loaded", "missing.queue")
+	}
+	evidence := []string{
+		"ready=" + itoa(q.Ready),
+		"in_progress=" + itoa(q.InProgress),
+		"blocked=" + itoa(q.Blocked),
+	}
+	if q.Ready > 0 || q.InProgress > 0 || q.Blocked > 0 || !q.QueueDry {
+		reasons := make([]string, 0, 3)
+		if q.Ready > 0 {
+			reasons = append(reasons, string(assurance.ReasonQuiescenceReadyWork))
+		}
+		if q.InProgress > 0 {
+			reasons = append(reasons, string(assurance.ReasonQuiescenceInProgressWork))
+		}
+		if q.Blocked > 0 {
+			reasons = append(reasons, string(assurance.ReasonQuiescencePendingWork))
+		}
+		if len(reasons) == 0 {
+			reasons = append(reasons, "queue.not_dry")
+		}
+		return ProofSection{
+			Name:        "queue",
+			State:       ProofStateFailing,
+			Summary:     "queue still has operator-visible work",
+			ReasonCodes: reasons,
+			Evidence:    evidence,
+		}
+	}
+	return ProofSection{
+		Name:        "queue",
+		State:       ProofStatePresent,
+		Summary:     "queue is dry",
+		ReasonCodes: []string{string(assurance.ReasonQuiescenceQueueDry)},
+		Evidence:    evidence,
+	}
+}
+
+func buildMailProofSection(mail MailSnapshot, missing missingSourceSet) ProofSection {
+	if missing.has("agent_mail") {
+		return missingProofSection("mail", "Agent Mail evidence was not loaded", "missing.agent_mail")
+	}
+	evidence := []string{
+		"unacked_urgent=" + itoa(mail.UnackedUrgent),
+		"pending_ack=" + itoa(mail.PendingAck),
+	}
+	switch {
+	case mail.UnackedUrgent > 0:
+		return ProofSection{
+			Name:        "mail",
+			State:       ProofStateFailing,
+			Summary:     "urgent ack-required mail remains",
+			ReasonCodes: []string{string(assurance.ReasonQuiescenceUrgentMail)},
+			Evidence:    evidence,
+		}
+	case mail.PendingAck > 0:
+		return ProofSection{
+			Name:        "mail",
+			State:       ProofStateDegraded,
+			Summary:     "mail awaits acknowledgement",
+			ReasonCodes: []string{string(assurance.ReasonQuiescencePendingAckMail)},
+			Evidence:    evidence,
+		}
+	default:
+		return ProofSection{
+			Name:        "mail",
+			State:       ProofStatePresent,
+			Summary:     "no pending mail acknowledgements",
+			ReasonCodes: []string{"mail.clear"},
+			Evidence:    evidence,
+		}
+	}
+}
+
+func buildReservationProofSection(reservations []ReservationSnapshot, now time.Time, staleAfter time.Duration, missing missingSourceSet) ProofSection {
+	if missing.has("reservations") {
+		return missingProofSection("reservations", "reservation evidence was not loaded", "missing.reservations")
+	}
+	if len(reservations) == 0 {
+		return ProofSection{
+			Name:        "reservations",
+			State:       ProofStatePresent,
+			Summary:     "no active reservations",
+			ReasonCodes: []string{"reservations.clear"},
+		}
+	}
+	evidence := make([]string, 0, len(reservations))
+	stale := false
+	for _, r := range reservations {
+		age := now.Sub(r.AcquiredAt)
+		if !r.AcquiredAt.IsZero() && age >= staleAfter {
+			stale = true
+		}
+		evidence = append(evidence, r.PathPattern+" by "+r.AgentName+" age="+age.Round(time.Second).String())
+	}
+	sort.Strings(evidence)
+	if stale {
+		return ProofSection{
+			Name:        "reservations",
+			State:       ProofStateStale,
+			Summary:     "active reservations include stale holds",
+			ReasonCodes: []string{string(assurance.ReasonReservationOverdue)},
+			Evidence:    evidence,
+		}
+	}
+	return ProofSection{
+		Name:        "reservations",
+		State:       ProofStateDegraded,
+		Summary:     "active reservations remain",
+		ReasonCodes: []string{string(assurance.ReasonReservationPathConflict)},
+		Evidence:    evidence,
+	}
+}
+
+func buildPressureProofSection(snapshot pressure.RobotPressure, missing missingSourceSet) ProofSection {
+	if missing.has("pressure") || strings.TrimSpace(snapshot.Overall) == "" {
+		return missingProofSection("pressure", "pressure evidence was not loaded", "missing.pressure")
+	}
+	evidence := []string{"overall=" + snapshot.Overall}
+	if len(snapshot.Limiting) > 0 {
+		evidence = append(evidence, "limiting="+strings.Join(snapshot.Limiting, ","))
+	}
+	switch snapshot.Overall {
+	case "critical":
+		return ProofSection{
+			Name:        "pressure",
+			State:       ProofStateFailing,
+			Summary:     "pressure is critical",
+			ReasonCodes: []string{"digest.source_degraded.pressure", "pressure.critical"},
+			Evidence:    evidence,
+		}
+	case "high", "elevated":
+		return ProofSection{
+			Name:        "pressure",
+			State:       ProofStateDegraded,
+			Summary:     "pressure is " + snapshot.Overall,
+			ReasonCodes: []string{"digest.source_degraded.pressure", "pressure." + snapshot.Overall},
+			Evidence:    evidence,
+		}
+	default:
+		return ProofSection{
+			Name:        "pressure",
+			State:       ProofStatePresent,
+			Summary:     "pressure is within closeout budget",
+			ReasonCodes: []string{"pressure.ok"},
+			Evidence:    evidence,
+		}
+	}
+}
+
+func buildSLOProofSection(slo swarmslo.RecommendationSummary, missing missingSourceSet) ProofSection {
+	if missing.has("slo") || slo.SchemaVersion == "" {
+		return missingProofSection("slo", "SLO evidence was not loaded", "missing.slo")
+	}
+	reasons := make([]string, 0, len(slo.Recommendations))
+	for _, r := range slo.Recommendations {
+		for _, code := range r.ReasonCodes {
+			reasons = append(reasons, string(code))
+		}
+	}
+	reasons = uniqueSortedCloseout(reasons)
+	evidence := []string{"recommendations=" + itoa(len(slo.Recommendations))}
+	if len(slo.Warnings) > 0 {
+		evidence = append(evidence, "warnings="+strings.Join(slo.Warnings, ","))
+	}
+	if !slo.Healthy {
+		return ProofSection{
+			Name:        "slo",
+			State:       ProofStateDegraded,
+			Summary:     "SLO recommendations require operator attention",
+			ReasonCodes: reasons,
+			Evidence:    evidence,
+		}
+	}
+	if len(reasons) == 0 {
+		reasons = []string{"slo.healthy"}
+	}
+	return ProofSection{
+		Name:        "slo",
+		State:       ProofStatePresent,
+		Summary:     "SLOs are healthy",
+		ReasonCodes: reasons,
+		Evidence:    evidence,
+	}
+}
+
+func buildAssuranceProofSection(digest assurance.Digest, missing missingSourceSet) ProofSection {
+	if missing.has("assurance") || digest.Status == "" {
+		return missingProofSection("assurance", "assurance digest was not loaded", "missing.assurance")
+	}
+	reasons := make([]string, 0, len(digest.ReasonCodes))
+	for _, c := range digest.ReasonCodes {
+		reasons = append(reasons, string(c))
+	}
+	reasons = uniqueSortedCloseout(reasons)
+	evidence := []string{"status=" + string(digest.Status)}
+	switch digest.Status {
+	case assurance.DigestStatusUnsafe:
+		return ProofSection{
+			Name:        "assurance",
+			State:       ProofStateFailing,
+			Summary:     digest.Summary,
+			ReasonCodes: reasons,
+			Evidence:    evidence,
+		}
+	case assurance.DigestStatusDegraded:
+		return ProofSection{
+			Name:        "assurance",
+			State:       ProofStateDegraded,
+			Summary:     digest.Summary,
+			ReasonCodes: reasons,
+			Evidence:    evidence,
+		}
+	default:
+		if len(reasons) == 0 {
+			reasons = []string{"assurance.healthy"}
+		}
+		return ProofSection{
+			Name:        "assurance",
+			State:       ProofStatePresent,
+			Summary:     digest.Summary,
+			ReasonCodes: reasons,
+			Evidence:    evidence,
+		}
+	}
+}
+
+func buildGitProofSection(closeout CloseoutBundle, trackerNeedsFlush, dirtyWorktree bool, missing missingSourceSet) ProofSection {
+	if missing.has("git") {
+		return missingProofSection("git", "git or tracker evidence was not loaded", "missing.git")
+	}
+	reasons := []string{}
+	evidence := []string{"commits=" + itoa(len(closeout.Commits))}
+	state := ProofStatePresent
+	summary := "git and tracker evidence is clean"
+	if dirtyWorktree {
+		state = ProofStateFailing
+		summary = "dirty worktree remains"
+		reasons = append(reasons, string(assurance.ReasonCloseoutDirtyWorktree))
+	}
+	if trackerNeedsFlush {
+		state = ProofStateFailing
+		summary = "tracker sync is dirty"
+		reasons = append(reasons, string(assurance.ReasonQuiescenceTrackerDirty))
+	}
+	if len(closeout.Commits) == 0 && state == ProofStatePresent {
+		state = ProofStateMissing
+		summary = "recent git commit evidence is missing"
+		reasons = append(reasons, string(assurance.ReasonCloseoutNoBeadReference))
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "git.clean")
+	}
+	return ProofSection{
+		Name:        "git",
+		State:       state,
+		Summary:     summary,
+		ReasonCodes: uniqueSortedCloseout(reasons),
+		Evidence:    evidence,
+	}
+}
+
+func buildSupportBundleProofSection(artifactPaths []string, missing missingSourceSet) ProofSection {
+	if missing.has("support_bundle") {
+		return missingProofSection("support_bundle", "support bundle evidence was not loaded", "missing.support_bundle")
+	}
+	if len(artifactPaths) == 0 {
+		return missingProofSection("support_bundle", "support bundle artifact path is missing", "missing.support_bundle")
+	}
+	return ProofSection{
+		Name:          "support_bundle",
+		State:         ProofStatePresent,
+		Summary:       "support bundle artifact path recorded",
+		ReasonCodes:   []string{"support_bundle.present"},
+		ArtifactPaths: append([]string(nil), artifactPaths...),
+	}
+}
+
+func missingProofSection(name, summary, reason string) ProofSection {
+	return ProofSection{
+		Name:        name,
+		State:       ProofStateMissing,
+		Summary:     summary,
+		ReasonCodes: []string{reason},
+	}
+}
+
+func rollupProofState(sections []ProofSection) ProofState {
+	state := ProofStatePresent
+	for _, s := range sections {
+		if proofStateRank(s.State) > proofStateRank(state) {
+			state = s.State
+		}
+	}
+	return state
+}
+
+func proofStateRank(state ProofState) int {
+	switch state {
+	case ProofStateFailing:
+		return 5
+	case ProofStateDegraded:
+		return 4
+	case ProofStateStale:
+		return 3
+	case ProofStateMissing:
+		return 2
+	case ProofStatePresent:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func buildProofLogRows(bundle CloseoutProofBundle) []ProofLogRow {
+	rows := make([]ProofLogRow, 0, len(bundle.Sections))
+	queueState := "work_remaining"
+	if bundle.Closeout.Queue.QueueDry {
+		queueState = "queue_dry"
+	}
+	artifactPath := ""
+	if len(bundle.ArtifactPaths) > 0 {
+		artifactPath = bundle.ArtifactPaths[0]
+	}
+	for _, section := range bundle.Sections {
+		missingSources := append([]string{}, bundle.MissingSources...)
+		rows = append(rows, ProofLogRow{
+			GeneratedAt:    bundle.GeneratedAt,
+			ProjectDir:     bundle.ProjectDir,
+			Section:        section.Name,
+			QueueState:     queueState,
+			ProofState:     bundle.ProofState,
+			SectionState:   section.State,
+			MissingSources: missingSources,
+			ArtifactPath:   artifactPath,
+			ReasonCodes:    append([]string(nil), section.ReasonCodes...),
+		})
+	}
+	return rows
+}
+
+func proofArtifactPaths(supportBundlePath string, extra []string) []string {
+	paths := make([]string, 0, 1+len(extra))
+	if strings.TrimSpace(supportBundlePath) != "" {
+		paths = append(paths, supportBundlePath)
+	}
+	paths = append(paths, extra...)
+	return uniqueSortedCloseout(paths)
+}
+
+func markdownCell(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	return strings.TrimSpace(s)
 }
 
 func dedupedBeadsDelta(b BeadsDelta) BeadsDelta {
@@ -320,7 +895,7 @@ func computeResidualRisks(b CloseoutBundle) []ResidualRisk {
 	sort.SliceStable(risks, func(i, j int) bool {
 		ri := riskRank(risks[i].Severity)
 		rj := riskRank(risks[j].Severity)
-		if ri != rj {
+		if ri < rj || ri > rj {
 			return ri > rj
 		}
 		return risks[i].Code < risks[j].Code
