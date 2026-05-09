@@ -137,6 +137,46 @@ func TestBuildStormInputFromRCHStatusDoesNotOverrideExplicitUnavailableAvailabil
 	}
 }
 
+func TestBuildStormInputFromRCHStatusPrefersWorkerRosterWhenSummariesAreInflated(t *testing.T) {
+	t.Parallel()
+
+	input := BuildStormInputFromRCHStatus(&tools.RCHStatus{
+		Enabled:      true,
+		WorkerCount:  8, // stale/inflated summary
+		HealthyCount: 8, // stale/inflated summary
+		Workers: []tools.RCHWorker{
+			{Name: "w1", Available: true, Healthy: true},
+			{Name: "w2", Available: true, Healthy: true},
+			{Name: "w3", Available: false, Healthy: true, Queue: 50},
+		},
+	}, &tools.RCHAvailability{
+		Available:    true,
+		Compatible:   true,
+		WorkerCount:  8,
+		HealthyCount: 8,
+	}, RCHBuildStormOptions{
+		RequestedBuilds: 3,
+	})
+
+	if input.WorkerCount != 3 {
+		t.Fatalf("WorkerCount = %d, want roster-derived 3", input.WorkerCount)
+	}
+	if input.HealthyWorkers != 2 {
+		t.Fatalf("HealthyWorkers = %d, want roster-derived 2 available+healthy workers", input.HealthyWorkers)
+	}
+	if input.QueueDepth != 0 {
+		t.Fatalf("QueueDepth = %d, want 0 (queued unavailable worker should not affect pressure)", input.QueueDepth)
+	}
+
+	report := pressure.EvaluateBuildStorm(input)
+	if strings.Compare(string(report.Decision), string(pressure.BuildStormDefer)) != 0 {
+		t.Fatalf("Decision = %s, want defer when requested builds exceed real remote headroom", report.Decision)
+	}
+	if strings.Compare(report.Reason, "rch_headroom_insufficient") != 0 {
+		t.Fatalf("Reason = %q, want rch_headroom_insufficient", report.Reason)
+	}
+}
+
 func TestEvaluateRCHBuildStormUsesReader(t *testing.T) {
 	t.Parallel()
 

@@ -77,22 +77,18 @@ func BuildStormInputFromRCHStatus(status *tools.RCHStatus, availability *tools.R
 	if availability == nil {
 		in.RCHCompatible = in.RCHAvailable
 	}
-	if status.WorkerCount > 0 {
+	if len(status.Workers) > 0 {
+		// Prefer the explicit worker roster over aggregate summaries when both
+		// are present; summary counts can drift stale relative to per-worker
+		// availability flags.
+		in.WorkerCount = len(status.Workers)
+	} else if status.WorkerCount > 0 {
 		in.WorkerCount = status.WorkerCount
-	} else if len(status.Workers) > 0 {
-		// When aggregate counts are absent, prefer the current workers payload
-		// over cached availability snapshots.
-		in.WorkerCount = len(status.Workers)
 	}
-	if len(status.Workers) > in.WorkerCount {
-		in.WorkerCount = len(status.Workers)
-	}
-	if status.HealthyCount > 0 {
+	if len(status.Workers) == 0 {
+		// With no per-worker roster, keep summary health as the best available
+		// signal (including zero).
 		in.HealthyWorkers = status.HealthyCount
-	} else if len(status.Workers) > 0 {
-		// status healthy_count may be omitted in some rch JSON variants. Avoid
-		// retaining stale cached health counts in that case.
-		in.HealthyWorkers = 0
 	}
 
 	busy := 0
@@ -110,7 +106,7 @@ func BuildStormInputFromRCHStatus(status *tools.RCHStatus, availability *tools.R
 			busy++
 		}
 	}
-	if in.HealthyWorkers == 0 {
+	if len(status.Workers) > 0 {
 		in.HealthyWorkers = healthyFromWorkers
 	}
 	in.BusyWorkers = busy
