@@ -139,6 +139,7 @@ func TestEvaluateQueueDryQuiescenceQueueDry(t *testing.T) {
 		Evidence: QueueDryEvidence{
 			ActionableCount: 0,
 			ReadyCount:      0,
+			CountsVerified:  true,
 			Sync: QueueDrySyncStatus{
 				Status: "in_sync",
 			},
@@ -162,6 +163,7 @@ func TestEvaluateQueueDryQuiescenceBlockedByPeer(t *testing.T) {
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
 			InProgressCount: 1,
+			CountsVerified:  true,
 			Reservations: QueueDryReservations{
 				Available: true,
 				Count:     1,
@@ -181,12 +183,39 @@ func TestEvaluateQueueDryQuiescenceBlockedByPeer(t *testing.T) {
 	}
 }
 
+func TestEvaluateQueueDryQuiescenceUnsafeReservationUnknown(t *testing.T) {
+	report := QueueDryResponse{
+		QueueDry: true,
+		Evidence: QueueDryEvidence{
+			ActionableCount: 0,
+			ReadyCount:      0,
+			CountsVerified:  true,
+			Reservations: QueueDryReservations{
+				Available: false,
+				Error:     "Agent Mail server unavailable",
+			},
+		},
+	}
+
+	got := evaluateQueueDryQuiescence(report)
+	if got.State != assurance.QuiescenceUnsafeToStandDown {
+		t.Fatalf("State = %q, want %q", got.State, assurance.QuiescenceUnsafeToStandDown)
+	}
+	if got.SafeToStandDown {
+		t.Fatalf("SafeToStandDown = true, want false")
+	}
+	if !containsReasonCode(got.ReasonCodes, assurance.ReasonReservationUnknown) {
+		t.Fatalf("reason codes = %v, want reservation unknown marker", got.ReasonCodes)
+	}
+}
+
 func TestEvaluateQueueDryQuiescenceUnsafeReadyWork(t *testing.T) {
 	report := QueueDryResponse{
 		QueueDry: false,
 		Evidence: QueueDryEvidence{
 			ActionableCount: 1,
 			ReadyCount:      1,
+			CountsVerified:  true,
 		},
 	}
 
@@ -203,6 +232,7 @@ func TestEvaluateQueueDryQuiescenceUnsafeDirtyTracker(t *testing.T) {
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
+			CountsVerified: true,
 			Sync: QueueDrySyncStatus{
 				NeedsFlush: true,
 			},
@@ -258,6 +288,27 @@ func TestCollectQueueDryReportWarnsWhenTriageUnavailable(t *testing.T) {
 	}
 	if !containsWarning(report.Warnings, "bv triage unavailable: bv timed out after 2s") {
 		t.Fatalf("warnings=%v, want triage timeout warning", report.Warnings)
+	}
+	if report.Evidence.CountsVerified {
+		t.Fatalf("CountsVerified=true, want false when both Beads summary and bv triage are unavailable")
+	}
+	if report.QueueDry {
+		t.Fatalf("QueueDry=true, want false when tracker counts are unavailable")
+	}
+	if report.Quiescence.SafeToStandDown {
+		t.Fatalf("SafeToStandDown=true, want false when tracker counts are unavailable")
+	}
+	if report.Quiescence.State != assurance.QuiescenceUnsafeToStandDown {
+		t.Fatalf("Quiescence.State=%q, want %q", report.Quiescence.State, assurance.QuiescenceUnsafeToStandDown)
+	}
+	if !containsReasonCode(report.Quiescence.ReasonCodes, assurance.ReasonQuiescenceTrackerUnknown) {
+		t.Fatalf("reason codes=%v, want tracker unknown", report.Quiescence.ReasonCodes)
+	}
+	if containsQueueDryRecommendation(report.Recommendations, "review_pass") {
+		t.Fatalf("recommendations=%v, should not recommend review_pass when tracker counts are unavailable", report.Recommendations)
+	}
+	if !containsQueueDryRecommendation(report.Recommendations, "refresh_triage") {
+		t.Fatalf("recommendations=%v, want refresh_triage when tracker counts are unavailable", report.Recommendations)
 	}
 }
 
@@ -384,6 +435,15 @@ func containsReasonCode(items []assurance.ReasonCode, target assurance.ReasonCod
 func containsWarning(items []string, substr string) bool {
 	for _, item := range items {
 		if strings.Contains(item, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsQueueDryRecommendation(items []QueueDryRecommendation, target string) bool {
+	for _, item := range items {
+		if item.Code == target {
 			return true
 		}
 	}

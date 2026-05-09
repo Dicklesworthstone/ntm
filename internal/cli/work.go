@@ -835,6 +835,7 @@ type QueueDryEvidence struct {
 	BlockedCount       int                  `json:"blocked_count"`
 	InProgressCount    int                  `json:"in_progress_count"`
 	ReadyCount         int                  `json:"ready_count"`
+	CountsVerified     bool                 `json:"counts_verified"`
 	TriageTopIDs       []string             `json:"triage_top_ids,omitempty"`
 	StaleInProgress    []QueueDryStaleIssue `json:"stale_in_progress,omitempty"`
 	Sync               QueueDrySyncStatus   `json:"sync"`
@@ -1327,6 +1328,7 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		report.Evidence.BlockedCount = summary.Blocked
 		report.Evidence.InProgressCount = summary.InProgress
 		report.Evidence.ReadyCount = summary.Ready
+		report.Evidence.CountsVerified = true
 		report.Evidence.StaleInProgress = findStaleInProgress(summary.InProgressList, now, staleThreshold, staleLimit)
 	}
 
@@ -1339,6 +1341,7 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		report.Evidence.ActionableCount = triage.Triage.QuickRef.ActionableCount
 		report.Evidence.BlockedCount = triage.Triage.QuickRef.BlockedCount
 		report.Evidence.InProgressCount = triage.Triage.QuickRef.InProgressCount
+		report.Evidence.CountsVerified = true
 		if report.Evidence.ReadyCount == 0 {
 			report.Evidence.ReadyCount = triage.Triage.QuickRef.ActionableCount
 		}
@@ -1366,7 +1369,7 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		})
 	}
 
-	report.QueueDry = report.Evidence.ActionableCount == 0 && report.Evidence.ReadyCount == 0
+	report.QueueDry = report.Evidence.CountsVerified && report.Evidence.ActionableCount == 0 && report.Evidence.ReadyCount == 0
 	report.Quiescence = evaluateQueueDryQuiescence(report)
 	report.Recommendations = buildQueueDryRecommendations(report)
 	report.Recipes = queueDryRecipes()
@@ -1375,13 +1378,47 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 }
 
 func evaluateQueueDryQuiescence(report QueueDryResponse) assurance.QuiescenceAssessment {
-	return assurance.EvaluateQuiescence(assurance.QuiescenceInput{
+	if !report.Evidence.CountsVerified {
+		return queueDryUnsafeQuiescence(
+			assurance.ReasonQuiescenceTrackerUnknown,
+			"tracker_counts_unavailable",
+			"queue state is unknown because tracker counts were unavailable",
+			"restore br/bv tracker access before standing down or creating queue-dry follow-up work",
+		)
+	}
+	assessment := assurance.EvaluateQuiescence(assurance.QuiescenceInput{
 		ReadyCount:             report.Evidence.ReadyCount,
 		ActionableCount:        report.Evidence.ActionableCount,
 		InProgressCount:        report.Evidence.InProgressCount,
 		ActiveReservationCount: report.Evidence.Reservations.Count,
 		TrackerNeedsFlush:      report.Evidence.Sync.NeedsFlush,
 	})
+	if assessment.SafeToStandDown && !report.Evidence.Reservations.Available {
+		return queueDryUnsafeQuiescence(
+			assurance.ReasonReservationUnknown,
+			"reservations_unavailable",
+			"queue appears dry, but reservation state could not be verified",
+			"restore Agent Mail reservation visibility before standing down",
+		)
+	}
+	return assessment
+}
+
+func queueDryUnsafeQuiescence(reason assurance.ReasonCode, evidence, summary, nextAction string) assurance.QuiescenceAssessment {
+	reasons := []assurance.ReasonCode{reason}
+	return assurance.QuiescenceAssessment{
+		State:           assurance.QuiescenceUnsafeToStandDown,
+		SafeToStandDown: false,
+		Signal: assurance.Signal{
+			Type:     assurance.SignalQuiescenceCandidate,
+			Status:   assurance.SignalStatusDegraded,
+			Reasons:  reasons,
+			Evidence: evidence,
+		},
+		ReasonCodes:         reasons,
+		Summary:             summary,
+		SuggestedNextAction: nextAction,
+	}
 }
 
 func findStaleInProgress(items []bv.BeadInProgress, now time.Time, threshold time.Duration, limit int) []QueueDryStaleIssue {
@@ -1708,9 +1745,12 @@ func renderQueueDry(report QueueDryResponse) error {
 	fmt.Println(titleStyle.Render("Queue-Dry Diagnostic"))
 	fmt.Println()
 	fmt.Printf("  Project: %s\n", report.Project)
-	if report.QueueDry {
+	switch {
+	case !report.Evidence.CountsVerified:
+		fmt.Printf("  Status: %s\n", warnStyle.Render("UNKNOWN - TRACKER UNAVAILABLE"))
+	case report.QueueDry:
 		fmt.Printf("  Status: %s\n", warnStyle.Render("QUEUE DRY"))
-	} else {
+	default:
 		fmt.Printf("  Status: %s\n", okStyle.Render("ACTIONABLE WORK EXISTS"))
 	}
 	fmt.Println()
