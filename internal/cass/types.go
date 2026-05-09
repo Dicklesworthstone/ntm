@@ -184,6 +184,7 @@ type DBInfo struct {
 	Exists        bool   `json:"exists"`
 	Opened        bool   `json:"opened"`
 	OpenSkipped   bool   `json:"open_skipped"`
+	CountsSkipped bool   `json:"counts_skipped"`
 	SizeBytes     int64  `json:"size_bytes"`
 	Healthy       bool   `json:"healthy"`
 	SessionCount  int64  `json:"session_count"`

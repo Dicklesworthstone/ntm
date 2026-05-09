@@ -51,11 +51,12 @@ type CASSStatusOutput struct {
 
 // CASSIndexStats holds index statistics
 type CASSIndexStats struct {
-	Exists        bool  `json:"exists"`
-	Fresh         bool  `json:"fresh"`
-	LastIndexedAt int64 `json:"last_indexed_at"`
-	Conversations int64 `json:"conversations"`
-	Messages      int64 `json:"messages"`
+	Exists        bool   `json:"exists"`
+	Fresh         bool   `json:"fresh"`
+	LastIndexedAt int64  `json:"last_indexed_at"`
+	Conversations *int64 `json:"conversations,omitempty"`
+	Messages      *int64 `json:"messages,omitempty"`
+	CountsSkipped bool   `json:"counts_skipped,omitempty"`
 }
 
 // GetCASSStatus collects CASS health and stats.
@@ -86,8 +87,11 @@ func GetCASSStatus() (*CASSStatusOutput, error) {
 		output.Index.Exists = true
 		output.Index.Fresh = status.Index.Healthy
 		output.Index.LastIndexedAt = status.LastIndexedAt.UnixMilli()
-		output.Index.Conversations = status.Conversations
-		output.Index.Messages = status.Messages
+		output.Index.CountsSkipped = status.Database.CountsSkipped
+		if !status.Database.CountsSkipped {
+			output.Index.Conversations = &status.Conversations
+			output.Index.Messages = &status.Messages
+		}
 	} else {
 		output.RobotResponse = NewErrorResponse(
 			err,

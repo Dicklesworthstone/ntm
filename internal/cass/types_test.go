@@ -296,6 +296,7 @@ func TestStatusResponseUnmarshalCurrentStatusSchema(t *testing.T) {
 			"exists": true,
 			"opened": true,
 			"path": "/home/user/.local/share/coding-agent-search/agent_search.db",
+			"counts_skipped": true,
 			"open_skipped": true
 		},
 		"pending": {
@@ -316,6 +317,9 @@ func TestStatusResponseUnmarshalCurrentStatusSchema(t *testing.T) {
 	}
 	if resp.Index.EffectiveLastIndexedAt(resp.LastIndexedAt).IsZero() {
 		t.Error("EffectiveLastIndexedAt() should use index.last_indexed_at")
+	}
+	if !resp.Database.CountsSkipped {
+		t.Error("Database.CountsSkipped should parse current cass status counts_skipped field")
 	}
 }
 
