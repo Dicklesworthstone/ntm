@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 )
 
 func TestSyntheticHarnessShortScenario(t *testing.T) {
@@ -37,7 +39,7 @@ func TestSyntheticHarnessShortScenario(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	if result.Metrics.TestRunID != "run-123" {
+	if strings.Compare(result.Metrics.TestRunID, "run-123") != 0 {
 		t.Fatalf("TestRunID = %q, want run-123", result.Metrics.TestRunID)
 	}
 	if result.Metrics.PaneCount != 4 {
@@ -63,7 +65,7 @@ func TestSyntheticHarnessShortScenario(t *testing.T) {
 		SyntheticStateCompleted,
 	}
 	for i, want := range wantStates {
-		if result.Panes[i].State != want {
+		if strings.Compare(string(result.Panes[i].State), string(want)) != 0 {
 			t.Fatalf("pane %d state = %q, want %q", i+1, result.Panes[i].State, want)
 		}
 		if result.Panes[i].CommandCount != 3 {
@@ -150,6 +152,66 @@ func TestSyntheticHarnessRejectsInvalidScenario(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSyntheticHarnessFeedsHostCapacityCalibration(t *testing.T) {
+	t.Parallel()
+
+	harness := NewSyntheticHarness(nil)
+	result, err := harness.Run(context.Background(), SyntheticScenario{
+		TestRunID:             "calibration-12",
+		Name:                  "calibration",
+		SessionName:           "synthetic_calibration",
+		PaneCount:             12,
+		CommandCount:          2,
+		OutputLinesPerCommand: 1,
+		StartTime:             time.Unix(1_700_000_050, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	evidence := pressure.EvidenceFromSyntheticRuns([]pressure.SyntheticCalibrationMetrics{
+		{
+			TestRunID:               result.Metrics.TestRunID,
+			ScenarioName:            result.Metrics.ScenarioName,
+			PaneCount:               result.Metrics.PaneCount,
+			CommandCount:            result.Metrics.CommandCount,
+			EventCount:              result.Metrics.EventCount,
+			LatencyP95Micros:        result.Metrics.LatencyP95Micros,
+			MemoryGrowthBytes:       result.Metrics.MemoryGrowthBytes,
+			GoroutinesLeaked:        result.Metrics.GoroutinesLeaked,
+			SyntheticDurationMicros: result.Metrics.SyntheticDurationMicros,
+		},
+	}, pressure.SyntheticCalibrationLimits{
+		MaxLatencyP95Micros:  result.Metrics.LatencyP95Micros + 1,
+		MaxMemoryGrowthBytes: result.Metrics.MemoryGrowthBytes + 1,
+	})
+	report := pressure.CalibrateHostCapacity(pressure.HostCapacityCalibrationInput{
+		ProfileID: "synthetic-host",
+		Now:       time.Unix(1_700_000_060, 0).UTC(),
+		Baseline: map[pressure.Source]pressure.Thresholds{
+			pressure.SourcePaneActivity: {Elevated: 4, High: 8, Critical: 16},
+		},
+		Evidence: evidence,
+	})
+
+	if !report.Success {
+		t.Fatal("calibration report Success = false")
+	}
+	if len(report.Recommendations) != 1 {
+		t.Fatalf("recommendations = %d, want 1", len(report.Recommendations))
+	}
+	rec := report.Recommendations[0]
+	if !rec.Apply || rec.Source != "pane_activity" {
+		t.Fatalf("recommendation = %+v, want applied pane_activity recommendation", rec)
+	}
+	if rec.ObservedCapacity != 12 {
+		t.Fatalf("ObservedCapacity = %.3f, want 12", rec.ObservedCapacity)
+	}
+	if len(report.LogRows) != 1 || report.LogRows[0].TestRunID != "calibration-12" {
+		t.Fatalf("log rows = %+v, want test_run_id calibration-12", report.LogRows)
 	}
 }
 
