@@ -333,3 +333,348 @@ func TestCompute_NegativeAckLatencyIsDropped(t *testing.T) {
 		t.Fatalf("Count = %d, want 1 (negative latency dropped)", d.Count)
 	}
 }
+
+func TestRecommend_HealthySLOsContinueCurrentSchedule(t *testing.T) {
+	t.Parallel()
+	summary := Summary{
+		GeneratedAt: clock(),
+		TimeToFirstAck: Distribution{
+			Count:      3,
+			P95Seconds: 20,
+		},
+		ReadyToClaim: Distribution{
+			Count:      3,
+			P95Seconds: 30,
+		},
+		ClaimToCloseout: Distribution{
+			Count:      3,
+			P95Seconds: 40,
+		},
+		ReservationContention: Distribution{
+			Count:      1,
+			P95Seconds: 5,
+		},
+		StaleInProgress: Distribution{
+			Count:      1,
+			P95Seconds: 50,
+		},
+	}
+
+	got := Recommend(RecommendationInput{Summary: summary, Thresholds: testRecommendationThresholds()})
+	if got.SchemaVersion != RecommendationSchemaVersion {
+		t.Fatalf("SchemaVersion = %q, want %q", got.SchemaVersion, RecommendationSchemaVersion)
+	}
+	if !got.Healthy {
+		t.Fatal("Healthy = false, want true for all metrics inside thresholds")
+	}
+	if len(got.Recommendations) != 1 {
+		t.Fatalf("Recommendations = %d, want exactly one continue recommendation: %+v", len(got.Recommendations), got.Recommendations)
+	}
+	rec := got.Recommendations[0]
+	if rec.Recommendation != RecommendationContinue {
+		t.Fatalf("Recommendation = %q, want %q", rec.Recommendation, RecommendationContinue)
+	}
+	if !containsRecommendationReason(rec.ReasonCodes, ReasonSLOHealthy) {
+		t.Fatalf("ReasonCodes = %v, want %s", rec.ReasonCodes, ReasonSLOHealthy)
+	}
+	if len(got.LogRows) != 1 {
+		t.Fatalf("LogRows = %d, want 1", len(got.LogRows))
+	}
+	row := got.LogRows[0]
+	if row.Metric != "scheduling" ||
+		row.Recommendation != RecommendationContinue ||
+		row.Confidence == 0 ||
+		!containsRecommendationReason(row.ReasonCodes, ReasonSLOHealthy) {
+		t.Fatalf("log row missing required scheduling fields: %+v", row)
+	}
+}
+
+func TestRecommend_HighMetricDistributionsMapToSchedulingActions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		summary    Summary
+		wantMetric string
+		wantAction RecommendationAction
+		wantReason RecommendationReasonCode
+	}{
+		{
+			name: "high ready-to-claim adds reviewer",
+			summary: Summary{
+				GeneratedAt:  clock(),
+				ReadyToClaim: Distribution{Count: 2, P95Seconds: 90},
+			},
+			wantMetric: "ready_to_claim",
+			wantAction: RecommendationAddReviewer,
+			wantReason: ReasonSLOReadyToClaimHigh,
+		},
+		{
+			name: "high claim-to-close splits bead",
+			summary: Summary{
+				GeneratedAt:     clock(),
+				ClaimToCloseout: Distribution{Count: 2, P95Seconds: 120},
+			},
+			wantMetric: "claim_to_closeout",
+			wantAction: RecommendationSplitBead,
+			wantReason: ReasonSLOClaimToCloseoutHigh,
+		},
+		{
+			name: "reservation contention renews reservation",
+			summary: Summary{
+				GeneratedAt:           clock(),
+				ReservationContention: Distribution{Count: 2, P95Seconds: 80},
+			},
+			wantMetric: "reservation_contention",
+			wantAction: RecommendationRenewReservation,
+			wantReason: ReasonSLOReservationContentionHigh,
+		},
+		{
+			name: "stale in-progress stops idle pane",
+			summary: Summary{
+				GeneratedAt:     clock(),
+				StaleInProgress: Distribution{Count: 2, P95Seconds: 120},
+			},
+			wantMetric: "stale_in_progress",
+			wantAction: RecommendationStopIdlePane,
+			wantReason: ReasonSLOStaleInProgressHigh,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Recommend(RecommendationInput{Summary: tt.summary, Thresholds: testRecommendationThresholds()})
+			if got.Healthy {
+				t.Fatal("Healthy = true, want false for threshold breach")
+			}
+			if len(got.Recommendations) != 1 {
+				t.Fatalf("Recommendations = %d, want 1: %+v", len(got.Recommendations), got.Recommendations)
+			}
+			rec := got.Recommendations[0]
+			if rec.Metric != tt.wantMetric {
+				t.Fatalf("Metric = %q, want %q", rec.Metric, tt.wantMetric)
+			}
+			if rec.Recommendation != tt.wantAction {
+				t.Fatalf("Recommendation = %q, want %q", rec.Recommendation, tt.wantAction)
+			}
+			if !containsRecommendationReason(rec.ReasonCodes, tt.wantReason) {
+				t.Fatalf("ReasonCodes = %v, want %s", rec.ReasonCodes, tt.wantReason)
+			}
+			if len(got.LogRows) != 1 {
+				t.Fatalf("LogRows = %d, want 1", len(got.LogRows))
+			}
+			assertLogRowCoversRecommendation(t, got.LogRows[0], rec)
+		})
+	}
+}
+
+func TestRecommend_PendingAcksReduceFanOut(t *testing.T) {
+	t.Parallel()
+	summary := Summary{
+		GeneratedAt:    clock(),
+		TimeToFirstAck: Distribution{Pending: 2},
+	}
+
+	got := Recommend(RecommendationInput{Summary: summary, Thresholds: testRecommendationThresholds()})
+	if len(got.Recommendations) != 1 {
+		t.Fatalf("Recommendations = %d, want 1: %+v", len(got.Recommendations), got.Recommendations)
+	}
+	rec := got.Recommendations[0]
+	if rec.Metric != "time_to_first_ack" {
+		t.Fatalf("Metric = %q, want time_to_first_ack", rec.Metric)
+	}
+	if rec.Recommendation != RecommendationReduceFanOut {
+		t.Fatalf("Recommendation = %q, want %q", rec.Recommendation, RecommendationReduceFanOut)
+	}
+	if rec.Pending != 2 {
+		t.Fatalf("Pending = %d, want 2", rec.Pending)
+	}
+	if !containsRecommendationReason(rec.ReasonCodes, ReasonSLOAckPending) {
+		t.Fatalf("ReasonCodes = %v, want %s", rec.ReasonCodes, ReasonSLOAckPending)
+	}
+	if len(got.LogRows) != 1 {
+		t.Fatalf("LogRows = %d, want 1", len(got.LogRows))
+	}
+	assertLogRowCoversRecommendation(t, got.LogRows[0], rec)
+}
+
+func TestRecommend_StableOrderingAndReasonCodes(t *testing.T) {
+	t.Parallel()
+	summary := Summary{
+		GeneratedAt: clock(),
+		TimeToFirstAck: Distribution{
+			Count:      2,
+			P95Seconds: 90,
+			Pending:    3,
+		},
+		ReadyToClaim: Distribution{
+			Count:      2,
+			P95Seconds: 80,
+		},
+		ClaimToCloseout: Distribution{
+			Count:      2,
+			P95Seconds: 100,
+		},
+		ReservationContention: Distribution{
+			Count:      2,
+			P95Seconds: 70,
+		},
+		StaleInProgress: Distribution{
+			Count:      2,
+			P95Seconds: 110,
+		},
+	}
+
+	got := Recommend(RecommendationInput{Summary: summary, Thresholds: testRecommendationThresholds()})
+	wantOrder := []string{
+		"time_to_first_ack",
+		"ready_to_claim",
+		"claim_to_closeout",
+		"reservation_contention",
+		"stale_in_progress",
+	}
+	if len(got.Recommendations) != len(wantOrder) {
+		t.Fatalf("Recommendations = %d, want %d: %+v", len(got.Recommendations), len(wantOrder), got.Recommendations)
+	}
+	for i, want := range wantOrder {
+		rec := got.Recommendations[i]
+		if rec.Metric != want {
+			t.Fatalf("Recommendations[%d].Metric = %q, want %q", i, rec.Metric, want)
+		}
+		if len(rec.ReasonCodes) == 0 {
+			t.Fatalf("Recommendations[%d] has no reason codes: %+v", i, rec)
+		}
+		assertLogRowCoversRecommendation(t, got.LogRows[i], rec)
+	}
+	first := got.Recommendations[0]
+	if !containsRecommendationReason(first.ReasonCodes, ReasonSLOAckLatencyHigh) ||
+		!containsRecommendationReason(first.ReasonCodes, ReasonSLOAckPending) {
+		t.Fatalf("time_to_first_ack reasons = %v, want latency and pending reasons", first.ReasonCodes)
+	}
+}
+
+func TestRecommend_MissingSourcesWarnAndDoNotReportHealthyZeroData(t *testing.T) {
+	t.Parallel()
+	summary := Summary{
+		GeneratedAt:    clock(),
+		TimeToFirstAck: Distribution{Missing: true},
+		ReadyToClaim:   Distribution{Missing: true},
+		Warnings:       []string{"agentmail unavailable: source not loaded"},
+	}
+
+	got := Recommend(RecommendationInput{Summary: summary, Thresholds: testRecommendationThresholds()})
+	if got.Healthy {
+		t.Fatal("Healthy = true, want false when sources are missing")
+	}
+	if len(got.Recommendations) != 2 {
+		t.Fatalf("Recommendations = %d, want one per missing metric: %+v", len(got.Recommendations), got.Recommendations)
+	}
+	for _, rec := range got.Recommendations {
+		if rec.Recommendation != RecommendationRefreshSource {
+			t.Fatalf("Recommendation = %q, want %q for missing source", rec.Recommendation, RecommendationRefreshSource)
+		}
+		if rec.Severity != RecommendationSeverityWatch {
+			t.Fatalf("Severity = %q, want %q", rec.Severity, RecommendationSeverityWatch)
+		}
+		if !containsRecommendationReason(rec.ReasonCodes, ReasonSLOMissingSource) {
+			t.Fatalf("ReasonCodes = %v, want %s", rec.ReasonCodes, ReasonSLOMissingSource)
+		}
+	}
+	if len(got.Warnings) == 0 {
+		t.Fatal("Warnings empty; want missing-source warnings")
+	}
+	if strings.Contains(strings.Join(got.Warnings, "\n"), "all_slo_metrics_within_thresholds") {
+		t.Fatalf("Warnings look like healthy evidence: %v", got.Warnings)
+	}
+}
+
+func TestBuildSchedulingRecommendationBundleIsRobotAndProofFriendlyJSON(t *testing.T) {
+	t.Parallel()
+	summary := Summary{
+		GeneratedAt:  clock(),
+		ReadyToClaim: Distribution{Count: 1, P95Seconds: 90},
+	}
+
+	bundle := BuildSchedulingRecommendationBundle(summary, testRecommendationThresholds())
+	if bundle.SchemaVersion != RecommendationSchemaVersion {
+		t.Fatalf("SchemaVersion = %q, want %q", bundle.SchemaVersion, RecommendationSchemaVersion)
+	}
+	if !bundle.GeneratedAt.Equal(clock()) {
+		t.Fatalf("GeneratedAt = %s, want %s", bundle.GeneratedAt, clock())
+	}
+	if len(bundle.Recommendations.LogRows) != 1 {
+		t.Fatalf("LogRows = %d, want 1", len(bundle.Recommendations.LogRows))
+	}
+	body, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal bundle: %v", err)
+	}
+	for _, want := range []string{
+		`"schema_version"`,
+		`"slo"`,
+		`"recommendations"`,
+		`"log_rows"`,
+		`"metric"`,
+		`"p95_seconds"`,
+		`"pending"`,
+		`"threshold"`,
+		`"recommendation"`,
+		`"confidence"`,
+		`"reason_codes"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("bundle JSON missing %s: %s", want, body)
+		}
+	}
+}
+
+func testRecommendationThresholds() RecommendationThresholds {
+	return RecommendationThresholds{
+		TimeToFirstAckP95Seconds:        60,
+		PendingAckCount:                 0,
+		ReadyToClaimP95Seconds:          60,
+		ClaimToCloseoutP95Seconds:       60,
+		ReservationContentionP95Seconds: 60,
+		StaleInProgressP95Seconds:       60,
+	}
+}
+
+func containsRecommendationReason(codes []RecommendationReasonCode, want RecommendationReasonCode) bool {
+	for _, code := range codes {
+		if code == want {
+			return true
+		}
+	}
+	return false
+}
+
+func assertLogRowCoversRecommendation(t *testing.T, row RecommendationLogRow, rec Recommendation) {
+	t.Helper()
+	if row.Metric != rec.Metric {
+		t.Fatalf("log metric = %q, want %q", row.Metric, rec.Metric)
+	}
+	if row.P95Seconds != rec.P95Seconds {
+		t.Fatalf("log p95_seconds = %v, want %v", row.P95Seconds, rec.P95Seconds)
+	}
+	if row.Pending != rec.Pending {
+		t.Fatalf("log pending = %d, want %d", row.Pending, rec.Pending)
+	}
+	if row.Threshold != rec.Threshold {
+		t.Fatalf("log threshold = %v, want %v", row.Threshold, rec.Threshold)
+	}
+	if row.Recommendation != rec.Recommendation {
+		t.Fatalf("log recommendation = %q, want %q", row.Recommendation, rec.Recommendation)
+	}
+	if row.Confidence != rec.Confidence {
+		t.Fatalf("log confidence = %v, want %v", row.Confidence, rec.Confidence)
+	}
+	if len(row.ReasonCodes) != len(rec.ReasonCodes) {
+		t.Fatalf("log reason codes = %v, want %v", row.ReasonCodes, rec.ReasonCodes)
+	}
+	for i := range row.ReasonCodes {
+		if row.ReasonCodes[i] != rec.ReasonCodes[i] {
+			t.Fatalf("log reason codes = %v, want %v", row.ReasonCodes, rec.ReasonCodes)
+		}
+	}
+}
