@@ -81,14 +81,19 @@ func (c *Client) NeedsReindex(ctx context.Context) (bool, string) {
 		return true, "CASS unavailable"
 	}
 
-	if status.Index.DocCount == 0 {
+	// Prefer the current schema's index.documents when legacy doc_count is
+	// absent, and avoid treating counts as authoritative when cass explicitly
+	// reports they were skipped.
+	docCount := firstNonZero(status.Index.DocCount, status.Index.Documents)
+	if docCount == 0 && !status.Database.CountsSkipped {
 		return true, "Index empty"
 	}
 
-	if !status.Index.LastUpdated.IsZero() {
-		if time.Since(status.Index.LastUpdated.Time) > 24*time.Hour {
+	lastIndexedAt := status.Index.EffectiveLastIndexedAt(status.LastIndexedAt)
+	if !lastIndexedAt.IsZero() {
+		if time.Since(lastIndexedAt) > 24*time.Hour {
 			return true, fmt.Sprintf("Index stale (last updated %s)",
-				time.Since(status.Index.LastUpdated.Time).Round(time.Minute))
+				time.Since(lastIndexedAt).Round(time.Minute))
 		}
 	}
 

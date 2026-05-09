@@ -3,10 +3,12 @@ package cass
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,5 +121,89 @@ func TestDefaultExecutor_OtherExitCodesUnchanged(t *testing.T) {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected wrapped *exec.ExitError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_NeedsReindex_CurrentSchemaUsesDocumentsField(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mockResp := fmt.Sprintf(`{
+		"healthy": true,
+		"index": {
+			"exists": true,
+			"status": "ready",
+			"fresh": true,
+			"documents": 42,
+			"last_indexed_at": %q
+		},
+		"database": {
+			"exists": true,
+			"opened": true,
+			"path": "/home/user/.local/share/coding-agent-search/agent_search.db"
+		}
+	}`, now)
+
+	client := NewClient(WithExecutor(&mockExecutor{output: []byte(mockResp), err: nil}))
+	needs, reason := client.NeedsReindex(context.Background())
+	if needs {
+		t.Fatalf("NeedsReindex() = true, want false (reason=%q)", reason)
+	}
+	if reason != "" {
+		t.Fatalf("NeedsReindex reason = %q, want empty", reason)
+	}
+}
+
+func TestClient_NeedsReindex_CurrentSchemaOpenSkippedDoesNotForceEmpty(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mockResp := fmt.Sprintf(`{
+		"healthy": true,
+		"index": {
+			"exists": true,
+			"status": "ready",
+			"fresh": true,
+			"last_indexed_at": %q
+		},
+		"database": {
+			"exists": true,
+			"opened": false,
+			"open_skipped": true,
+			"path": "/home/user/.local/share/coding-agent-search/agent_search.db"
+		}
+	}`, now)
+
+	client := NewClient(WithExecutor(&mockExecutor{output: []byte(mockResp), err: nil}))
+	needs, reason := client.NeedsReindex(context.Background())
+	if needs {
+		t.Fatalf("NeedsReindex() = true, want false when counts are skipped (reason=%q)", reason)
+	}
+	if reason != "" {
+		t.Fatalf("NeedsReindex reason = %q, want empty", reason)
+	}
+}
+
+func TestClient_NeedsReindex_CurrentSchemaStalenessUsesLastIndexedAt(t *testing.T) {
+	old := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	mockResp := fmt.Sprintf(`{
+		"healthy": true,
+		"index": {
+			"exists": true,
+			"status": "ready",
+			"fresh": true,
+			"documents": 5,
+			"last_indexed_at": %q
+		},
+		"database": {
+			"exists": true,
+			"opened": true,
+			"path": "/home/user/.local/share/coding-agent-search/agent_search.db"
+		}
+	}`, old)
+
+	client := NewClient(WithExecutor(&mockExecutor{output: []byte(mockResp), err: nil}))
+	needs, reason := client.NeedsReindex(context.Background())
+	if !needs {
+		t.Fatalf("NeedsReindex() = false, want true for stale last_indexed_at (reason=%q)", reason)
+	}
+	if !strings.Contains(reason, "Index stale") {
+		t.Fatalf("NeedsReindex reason = %q, want stale-index reason", reason)
 	}
 }
