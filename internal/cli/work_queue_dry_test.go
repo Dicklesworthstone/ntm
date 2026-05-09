@@ -355,6 +355,9 @@ func TestQueueDryIdeationDryQueueRendersRoadmap(t *testing.T) {
 	if got.Guard == nil || got.Guard.Recommendation != ideaplan.GuardRecommendationIdeate {
 		t.Fatalf("Guard=%+v, want ideate", got.Guard)
 	}
+	if got.Creation == nil || !got.Creation.DryRun || len(got.Creation.RemainingCommands) == 0 {
+		t.Fatalf("Creation=%+v, want dry-run creation preview", got.Creation)
+	}
 	if !containsQueueDryRecommendation(got.NextActions, "inspect_dry_run_bead_preview") {
 		t.Fatalf("next actions=%+v, want dry-run preview action", got.NextActions)
 	}
@@ -462,6 +465,26 @@ func TestQueueDryIdeationDryRunCommandsDoNotMutate(t *testing.T) {
 		if !strings.Contains(command, "br create --dry-run") {
 			t.Fatalf("command %q is not dry-run", command)
 		}
+	}
+}
+
+func TestQueueDryIdeationCreateBeadsRequiresConfirmation(t *testing.T) {
+	got := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{
+		Requested:   true,
+		CreateBeads: true,
+	})
+
+	if got.Status != "creation_blocked" {
+		t.Fatalf("Status=%q, want creation_blocked", got.Status)
+	}
+	if got.Creation == nil || got.Creation.Success {
+		t.Fatalf("Creation=%+v, want blocked creation report", got.Creation)
+	}
+	if !containsQueueDryCreationError(got.Creation, "creation_confirmation_required") {
+		t.Fatalf("Creation=%+v, want explicit confirmation error", got.Creation)
+	}
+	if !containsQueueDryRecommendation(got.NextActions, "resolve_creation_gate") {
+		t.Fatalf("next actions=%+v, want creation gate action", got.NextActions)
 	}
 }
 
@@ -631,6 +654,18 @@ func containsWarning(items []string, substr string) bool {
 
 func containsQueueDryRecommendation(items []QueueDryRecommendation, target string) bool {
 	for _, item := range items {
+		if item.Code == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsQueueDryCreationError(report *ideaplan.BeadCreationReport, target string) bool {
+	if report == nil {
+		return false
+	}
+	for _, item := range report.Errors {
 		if item.Code == target {
 			return true
 		}

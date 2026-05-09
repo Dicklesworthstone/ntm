@@ -248,6 +248,9 @@ func newWorkQueueDryCmd() *cobra.Command {
 		ideate          bool
 		force           bool
 		includeNextBest bool
+		createBeads     bool
+		confirmCreate   bool
+		planVersion     string
 	)
 
 	cmd := &cobra.Command{
@@ -261,13 +264,17 @@ Examples:
   ntm work queue-dry
   ntm work queue-dry --format=json
   ntm work queue-dry --ideate --format=markdown
+  ntm work queue-dry --ideate --create-beads --yes
   ntm work queue-dry --ideate --force --format=json
   ntm work queue-dry --stale-hours=24 --commits=5`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorkQueueDry(format, staleHours, commitLimit, syncLagMinutes, maxStaleEntries, QueueDryIdeationOptions{
-				Requested:       ideate,
+				Requested:       ideate || createBeads,
 				Force:           force,
 				IncludeNextBest: includeNextBest,
+				CreateBeads:     createBeads,
+				ConfirmCreate:   confirmCreate,
+				PlanVersion:     planVersion,
 			})
 		},
 	}
@@ -280,6 +287,9 @@ Examples:
 	cmd.Flags().BoolVar(&ideate, "ideate", false, "Render duplicate-aware queue-dry ideation as a dry-run roadmap")
 	cmd.Flags().BoolVar(&force, "force", false, "Preview ideation even when ready work exists or queue state is unverified")
 	cmd.Flags().BoolVar(&includeNextBest, "include-next-best", false, "Include next-best candidates after the top five in the dry-run roadmap")
+	cmd.Flags().BoolVar(&createBeads, "create-beads", false, "Create proposed beads through br after preview gates pass")
+	cmd.Flags().BoolVar(&confirmCreate, "yes", false, "Confirm mutating bead creation for --create-beads")
+	cmd.Flags().StringVar(&planVersion, "plan-version", "", "Plan version or review token recorded in creation output")
 
 	return cmd
 }
@@ -847,21 +857,26 @@ type QueueDryIdeationOptions struct {
 	Requested       bool
 	Force           bool
 	IncludeNextBest bool
+	CreateBeads     bool
+	ConfirmCreate   bool
+	PlanVersion     string
 }
 
 // QueueDryIdeationReport embeds the bd-e7xm1 dry-run planning pipeline in queue-dry output.
 type QueueDryIdeationReport struct {
-	Requested   bool                             `json:"requested"`
-	DryRun      bool                             `json:"dry_run"`
-	Forced      bool                             `json:"forced,omitempty"`
-	Status      string                           `json:"status"`
-	Reason      string                           `json:"reason"`
-	Snapshot    *ideaplan.IdeaEvidenceSnapshot   `json:"snapshot,omitempty"`
-	Ranking     *ideaplan.RankingResult          `json:"ranking,omitempty"`
-	Guard       *ideaplan.NoveltyGuardAssessment `json:"guard,omitempty"`
-	Roadmap     *ideaplan.RoadmapPlan            `json:"roadmap,omitempty"`
-	NextActions []QueueDryRecommendation         `json:"next_actions"`
-	Warnings    []string                         `json:"warnings,omitempty"`
+	Requested   bool                               `json:"requested"`
+	DryRun      bool                               `json:"dry_run"`
+	Forced      bool                               `json:"forced,omitempty"`
+	Status      string                             `json:"status"`
+	Reason      string                             `json:"reason"`
+	Snapshot    *ideaplan.IdeaEvidenceSnapshot     `json:"snapshot,omitempty"`
+	Ranking     *ideaplan.RankingResult            `json:"ranking,omitempty"`
+	Guard       *ideaplan.NoveltyGuardAssessment   `json:"guard,omitempty"`
+	Refinement  *ideaplan.CreationRefinementReport `json:"refinement,omitempty"`
+	Roadmap     *ideaplan.RoadmapPlan              `json:"roadmap,omitempty"`
+	Creation    *ideaplan.BeadCreationReport       `json:"creation,omitempty"`
+	NextActions []QueueDryRecommendation           `json:"next_actions"`
+	Warnings    []string                           `json:"warnings,omitempty"`
 }
 
 // QueueDryEvidence stores collected evidence for queue-dry analysis.
@@ -1372,7 +1387,7 @@ func skippedQueueDryIdeationReport(report QueueDryResponse, opts QueueDryIdeatio
 	}
 	return QueueDryIdeationReport{
 		Requested:   true,
-		DryRun:      true,
+		DryRun:      !opts.CreateBeads,
 		Forced:      opts.Force,
 		Status:      status,
 		Reason:      reason,
@@ -1446,12 +1461,24 @@ func buildQueueDryIdeationReport(report QueueDryResponse, snapshot ideaplan.Idea
 			"do not add a new top-level robot surface for queue-dry planning",
 		},
 	})
+	refinedRoadmap, refinement := ideaplan.RefinePlanForCreation(snapshot, roadmap, ideaplan.CreationRefinementOptions{MaxPasses: 3})
+	creation := ideaplan.RunBeadCreation(context.Background(), refinedRoadmap, ideaplan.BeadCreationOptions{
+		ProjectDir:      report.Project,
+		PlanVersion:     opts.PlanVersion,
+		CreateRequested: opts.CreateBeads,
+		Confirmed:       opts.ConfirmCreate,
+		AllowCreate:     guard.CreationAllowed && (report.QueueDry || opts.Force),
+	})
 
 	status := "rendered"
 	reason := "queue is dry; rendered duplicate-aware dry-run roadmap"
 	if opts.Force && !report.QueueDry {
 		status = "forced_preview"
 		reason = "force requested; rendered dry-run roadmap even though ready work or unverified tracker state exists"
+	}
+	if opts.CreateBeads && !creation.Success {
+		status = "creation_blocked"
+		reason = "creation requested, but creation gate did not pass"
 	}
 
 	return QueueDryIdeationReport{
@@ -1463,8 +1490,10 @@ func buildQueueDryIdeationReport(report QueueDryResponse, snapshot ideaplan.Idea
 		Snapshot:    &snapshot,
 		Ranking:     &ranking,
 		Guard:       &guard,
-		Roadmap:     &roadmap,
-		NextActions: queueDryIdeationNextActions(report, guard, roadmap),
+		Refinement:  &refinement,
+		Roadmap:     &refinedRoadmap,
+		Creation:    &creation,
+		NextActions: queueDryIdeationNextActions(report, guard, refinedRoadmap, creation),
 		Warnings:    queueDryIdeationWarnings(snapshot, report),
 	}
 }
@@ -1494,7 +1523,7 @@ func queueDryIdeationWarnings(snapshot ideaplan.IdeaEvidenceSnapshot, report Que
 	return sortedUniqueStrings(warnings)
 }
 
-func queueDryIdeationNextActions(report QueueDryResponse, guard ideaplan.NoveltyGuardAssessment, roadmap ideaplan.RoadmapPlan) []QueueDryRecommendation {
+func queueDryIdeationNextActions(report QueueDryResponse, guard ideaplan.NoveltyGuardAssessment, roadmap ideaplan.RoadmapPlan, creation ideaplan.BeadCreationReport) []QueueDryRecommendation {
 	actions := make([]QueueDryRecommendation, 0, len(report.Recommendations)+2)
 	if guard.Recommendation != ideaplan.GuardRecommendationIdeate {
 		actions = append(actions, QueueDryRecommendation{
@@ -1509,6 +1538,13 @@ func queueDryIdeationNextActions(report QueueDryResponse, guard ideaplan.Novelty
 			Code:     "inspect_dry_run_bead_preview",
 			Summary:  "inspect proposed bead previews; commands are dry-run only",
 			Evidence: fmt.Sprintf("%d proposed bead command(s)", roadmap.RenderedCount),
+		})
+	}
+	if creation.CreateRequested && !creation.Success {
+		actions = append(actions, QueueDryRecommendation{
+			Code:     "resolve_creation_gate",
+			Summary:  "creation was requested but did not pass all explicit gates",
+			Evidence: fmt.Sprintf("%d remaining command(s)", len(creation.RemainingCommands)),
 		})
 	}
 	return append(actions, report.Recommendations...)
@@ -2052,6 +2088,14 @@ func renderQueueDry(report QueueDryResponse) error {
 				fmt.Printf("    %s %s\n", mutedStyle.Render("Preview:"), command)
 			}
 		}
+		if report.Ideation.Creation != nil {
+			fmt.Printf("  Creation: success=%t dry_run=%t created=%d remaining=%d\n",
+				report.Ideation.Creation.Success,
+				report.Ideation.Creation.DryRun,
+				len(report.Ideation.Creation.Created),
+				len(report.Ideation.Creation.RemainingCommands),
+			)
+		}
 	}
 
 	if len(report.Warnings) > 0 {
@@ -2155,6 +2199,16 @@ func queueDryIdeationMarkdown(report QueueDryIdeationReport) string {
 		if len(report.Guard.ReasonCodes) > 0 {
 			fmt.Fprintf(&b, "- Guard reasons: %s\n", strings.Join(report.Guard.ReasonCodes, ", "))
 		}
+	}
+	if report.Refinement != nil {
+		fmt.Fprintf(&b, "- Refinement passes: %d\n", report.Refinement.Passes)
+		fmt.Fprintf(&b, "- Refinement changed plan: %t\n", report.Refinement.Changed)
+	}
+	if report.Creation != nil {
+		fmt.Fprintf(&b, "- Creation requested: %t\n", report.Creation.CreateRequested)
+		fmt.Fprintf(&b, "- Creation success: %t\n", report.Creation.Success)
+		fmt.Fprintf(&b, "- Created beads: %d\n", len(report.Creation.Created))
+		fmt.Fprintf(&b, "- Remaining create commands: %d\n", len(report.Creation.RemainingCommands))
 	}
 	if len(report.NextActions) > 0 {
 		b.WriteString("\n## Ideation Next Actions\n")
