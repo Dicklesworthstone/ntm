@@ -313,6 +313,43 @@ func TestWorktreeManager_parseWorktreeList_NoAgentWorktrees(t *testing.T) {
 	}
 }
 
+func TestWorktreeManager_parseWorktreeList_IgnoresAgentTextInParentPath(t *testing.T) {
+	t.Parallel()
+
+	wm := &WorktreeManager{}
+	output := "worktree /tmp/my-agent-repo/normal\nHEAD abc123\nbranch refs/heads/main\n"
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Fatalf("expected parent path containing agent- to be ignored, got %d worktrees", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_IncludesAgentBranchWithoutAgentBasename(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	worktreePath := filepath.Join(tmp, "normal-name")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	wm := &WorktreeManager{}
+	output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch refs/heads/agent/evil-type/sess-one\n", worktreePath)
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Fatalf("expected agent branch worktree, got %d worktrees", len(worktrees))
+	}
+	assertStringEqual(t, worktrees[0].Agent, "evil-type")
+}
+
 func TestWorktreeManager_parseWorktreeList_MultipleAgents(t *testing.T) {
 	t.Parallel()
 

@@ -390,13 +390,17 @@ func (wm *WorktreeManager) parseWorktreeList(output string) ([]*WorktreeInfo, er
 			}
 		}
 
-		// Only include agent worktrees
-		if path != "" && strings.Contains(path, "agent-") {
-			// Parse agent key from branch when possible. Fallback to the
-			// legacy basename parser only when branch metadata is missing.
+		// Only include agent worktrees. A parent directory may contain the
+		// string "agent-", so match the branch or the worktree basename
+		// instead of the full path.
+		if path != "" {
+			basename := filepath.Base(path)
 			agentName := parseBranchAgentKey(branch)
+			if agentName == "" && !strings.HasPrefix(basename, "agent-") {
+				continue
+			}
 			if agentName == "" {
-				agentName = parseLegacyAgentKeyFromWorktreeName(filepath.Base(path))
+				agentName = parseLegacyAgentKeyFromWorktreeName(basename)
 			}
 			if agentName == "" {
 				agentName = "unknown"
