@@ -170,6 +170,60 @@ ntm assign payments --auto --strategy=dependency
 ntm assign payments --beads=br-123,br-124 --agent=codex
 ```
 
+When `br` and `bv` report that no ready work exists, use the queue-dry flow to
+distinguish a genuinely empty queue from stale coordination state:
+
+```bash
+# Confirm the work queue first. Do not run bare bv; use robot output.
+br ready --json
+bv --robot-triage | jq '.triage.quick_ref'
+
+# Diagnose why the queue appears dry.
+ntm work queue-dry --format=json | jq '{queue_dry, evidence, recommendations}'
+
+# Render an advisory roadmap only after the dry queue is confirmed.
+ntm work queue-dry --ideate --format=json | jq '{
+  queue_dry,
+  ideation: {
+    status: .ideation.status,
+    guard: .ideation.guard.recommendation,
+    rendered: .ideation.roadmap.rendered_count,
+    preview: .ideation.creation.remaining_commands
+  },
+  warnings
+}'
+
+# The same plan is available as markdown for human review.
+ntm work queue-dry --ideate --format=markdown
+```
+
+Review the duplicate and novelty evidence before creating anything. If `br ready`
+has work, or `bv --robot-triage` shows actionable recommendations, claim that work
+instead of ideating. `--force` is only for an explicit preview when an operator wants
+to inspect the plan despite ready work or degraded tracker state.
+
+Gated creation is opt-in and still uses Beads as the source of truth:
+
+```bash
+# Re-check the preview and guard before mutating Beads.
+ntm work queue-dry --ideate --format=json | jq '.ideation.creation.remaining_commands'
+
+# Create proposed beads only after review. The plan version is an audit token.
+ntm work queue-dry --ideate --create-beads --yes --plan-version="$(git rev-parse --short HEAD)"
+
+# Validate the graph and export Beads state after any mutation.
+br dep cycles --json
+bv --robot-triage | jq '.triage.quick_ref'
+br sync --flush-only
+git add .beads/issues.jsonl
+```
+
+If Agent Mail, CASS, or CM are unavailable, `queue-dry --ideate` keeps running and
+marks those sources as degraded in `warnings`. Treat degraded Agent Mail reservation
+visibility as a coordination stop sign for mutating creation; fix coordination or use
+the non-mutating preview. Never edit `.beads/*.jsonl` directly, and use
+`ntm work queue-dry --help` for the current flag surface.
+
 ### 4. Coordination, Reservations, and Human Oversight
 
 NTM exposes Agent Mail and reservation workflows directly from the CLI. You can act as
