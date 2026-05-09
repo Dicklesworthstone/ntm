@@ -57,7 +57,7 @@ func TestCollectOptionalCASSParsesResults(t *testing.T) {
 	snapshot := NewIdeaEvidenceSnapshot(t.TempDir())
 	runner := fakeOptionalRunner{
 		outputs: map[string][]byte{
-			"cass search auth error --robot --limit 5 --fields minimal --days 30": []byte(`[{"id":"sess-a","title":"Auth review","summary":"OAuth flow with bearer eyJabcdef1234567890123456","agent":"claude","score":0.9,"modified_at":"2026-05-01T00:00:00Z"},{"id":"sess-b","title":"Auth fix","summary":"Email user@example.com asked","agent":"codex"}]`),
+			"cass search auth error --robot --limit 5 --fields minimal --days 30": []byte(`{"hits":[{"source_path":"/home/ubuntu/.codex/sessions/a.jsonl","line_number":42,"snippet":"OAuth flow with bearer eyJabcdef1234567890123456","agent":"claude","score":0.9,"modified_at":"2026-05-01T00:00:00Z"},{"id":"sess-b","title":"Auth fix","summary":"Email user@example.com asked","agent":"codex"}]}`),
 		},
 	}
 	collector := Collector{Runner: runner}
@@ -80,7 +80,31 @@ func TestCollectOptionalCASSParsesResults(t *testing.T) {
 	}
 }
 
-func TestCollectOptionalCASSContextErrorBecomesDegradedSource(t *testing.T) {
+func TestCollectOptionalCASSDoesNotTreatFreeTextQueryAsContextPath(t *testing.T) {
+	snapshot := NewIdeaEvidenceSnapshot(t.TempDir())
+	runner := fakeOptionalRunner{
+		outputs: map[string][]byte{
+			"cass search queue-dry ideation --robot --limit 5 --fields minimal --days 30": []byte(`{"hits":[]}`),
+		},
+		errs: map[string]error{
+			"cass context queue-dry ideation --json --limit 5": errors.New("context should not be called with a free-text query"),
+		},
+	}
+	collector := Collector{Runner: runner}
+	collector.CollectCASSSignals(context.Background(), &snapshot, OptionalAdapterOptions{
+		ProjectDir:  snapshot.Project,
+		CASSQueries: []string{"queue-dry ideation"},
+		CMQuery:     "queue-dry ideation",
+	})
+	if hasDegradedSource(snapshot, "cass:context") {
+		t.Fatalf("degraded=%+v, cass:context should not be called with a free-text query", snapshot.DegradedSources)
+	}
+	if source := findCandidateSource(snapshot, "cass:search"); source == nil || !source.Available {
+		t.Fatalf("sources=%+v, want available cass:search source", snapshot.Sources)
+	}
+}
+
+func TestCollectOptionalCASSSearchErrorBecomesDegradedSource(t *testing.T) {
 	snapshot := NewIdeaEvidenceSnapshot(t.TempDir())
 	runner := fakeOptionalRunner{
 		errs: map[string]error{
@@ -98,7 +122,7 @@ func TestCollectOptionalCMParsesContext(t *testing.T) {
 	snapshot := NewIdeaEvidenceSnapshot(t.TempDir())
 	runner := fakeOptionalRunner{
 		outputs: map[string][]byte{
-			"cm context queue-dry ideation --json --no-history": []byte(`{"relevantBullets":[{"id":"b-1","category":"debugging","summary":"Check tests at /home/jeff/repo/x","tags":["go"]}],"antiPatterns":[{"id":"b-2","category":"refactor","summary":"Don't reset --hard"}],"suggestedCassQueries":["auth error","supabase 5xx"]}`),
+			"cm context queue-dry ideation --json --limit 5": []byte(`{"success":true,"data":{"relevantBullets":[{"id":"b-1","category":"debugging","summary":"Check tests at /home/jeff/repo/x","tags":["go"]}],"antiPatterns":[{"id":"b-2","category":"refactor","summary":"Don't reset --hard"}],"suggestedCassQueries":["auth error","supabase 5xx"]}}`),
 		},
 	}
 	collector := Collector{Runner: runner}

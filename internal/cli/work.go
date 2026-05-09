@@ -1009,6 +1009,10 @@ var queueDryGetTriage = func(dir string) (*bv.TriageResponse, error) {
 	return bv.GetTriageWithTimeout(dir, queueDryTriageTimeout)
 }
 
+var queueDryCollectOptional = func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+	ideaplan.Collector{}.CollectOptional(ctx, snapshot, opts)
+}
+
 func runWorkCommitReady(format string, agentName string, syncLagMinutes int) error {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -1376,6 +1380,7 @@ func collectQueueDryIdeationReport(dir string, report QueueDryResponse, opts Que
 		ProjectDir: dir,
 	})
 	annotateQueueDryOptionalSources(&snapshot, report)
+	collectQueueDryOptionalSignals(context.Background(), &snapshot, dir)
 	return buildQueueDryIdeationReport(report, snapshot, opts)
 }
 
@@ -1415,27 +1420,18 @@ func annotateQueueDryOptionalSources(snapshot *ideaplan.IdeaEvidenceSnapshot, re
 		}
 	}
 	snapshot.RecordSource(agentMail)
+}
 
-	for _, source := range []ideaplan.CandidateSource{
-		{
-			ID:        "cass:context",
-			Kind:      ideaplan.SourceCASS,
-			Available: false,
-			Required:  false,
-			Error:     "optional CASS adapter unavailable in queue-dry CLI dry run",
-			Evidence:  []string{"bd-e7xm1.6 tracks bounded CASS adapter integration"},
-		},
-		{
-			ID:        "cm:context",
-			Kind:      ideaplan.SourceCM,
-			Available: false,
-			Required:  false,
-			Error:     "optional CM adapter unavailable in queue-dry CLI dry run",
-			Evidence:  []string{"bd-e7xm1.6 tracks bounded CM adapter integration"},
-		},
-	} {
-		snapshot.RecordSource(source)
+func collectQueueDryOptionalSignals(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, projectDir string) {
+	if snapshot == nil {
+		return
 	}
+	queueDryCollectOptional(ctx, snapshot, ideaplan.OptionalAdapterOptions{
+		ProjectDir:     projectDir,
+		CommandTimeout: 6 * time.Second,
+		CASSQueries:    []string{"queue-dry ideation"},
+		CMQuery:        "queue-dry ideation",
+	})
 }
 
 func buildQueueDryIdeationReport(report QueueDryResponse, snapshot ideaplan.IdeaEvidenceSnapshot, opts QueueDryIdeationOptions) QueueDryIdeationReport {

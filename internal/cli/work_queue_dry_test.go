@@ -406,7 +406,55 @@ func TestQueueDryIdeationForceAllowsNonDryPreview(t *testing.T) {
 	}
 }
 
+func TestQueueDryOptionalSignalsUseAdapter(t *testing.T) {
+	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+		if opts.ProjectDir != "/repo" {
+			t.Fatalf("ProjectDir=%q, want /repo", opts.ProjectDir)
+		}
+		if len(opts.CASSQueries) == 0 || opts.CASSQueries[0] != "queue-dry ideation" {
+			t.Fatalf("CASSQueries=%v, want queue-dry ideation", opts.CASSQueries)
+		}
+		if opts.CMQuery != "queue-dry ideation" {
+			t.Fatalf("CMQuery=%q, want queue-dry ideation", opts.CMQuery)
+		}
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cass:search", Kind: ideaplan.SourceCASS, Available: true, Evidence: []string{"cass search ok"}})
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cm:context", Kind: ideaplan.SourceCM, Available: true, Evidence: []string{"cm context ok"}})
+	})
+	defer restore()
+
+	snapshot := fixtureQueueDryIdeationSnapshot()
+	collectQueueDryOptionalSignals(context.Background(), &snapshot, "/repo")
+
+	for _, want := range []string{"cass:search", "cm:context"} {
+		source := findQueueDrySource(snapshot.Sources, want)
+		if source == nil || !source.Available {
+			t.Fatalf("source %q=%+v, want available", want, source)
+		}
+	}
+	if containsQueueDryValidationNote(snapshot.DegradedSources, "cass:context") || containsQueueDryValidationNote(snapshot.DegradedSources, "cm:context") {
+		t.Fatalf("degraded sources=%+v, did not expect hard-coded cass/cm degradation", snapshot.DegradedSources)
+	}
+}
+
 func TestQueueDryIdeationDegradedOptionalSourcesContinue(t *testing.T) {
+	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+		snapshot.RecordSource(ideaplan.CandidateSource{
+			ID:        "cass:search",
+			Kind:      ideaplan.SourceCASS,
+			Available: false,
+			Error:     "cass not installed in PATH",
+			Evidence:  []string{"missing cass"},
+		})
+		snapshot.RecordSource(ideaplan.CandidateSource{
+			ID:        "cm:context",
+			Kind:      ideaplan.SourceCM,
+			Available: false,
+			Error:     "cm not installed in PATH",
+			Evidence:  []string{"missing cm"},
+		})
+	})
+	defer restore()
+
 	report := fixtureQueueDryDiagnostic(true)
 	report.Evidence.Reservations = QueueDryReservations{
 		Available: false,
@@ -415,13 +463,14 @@ func TestQueueDryIdeationDegradedOptionalSourcesContinue(t *testing.T) {
 	report.Warnings = []string{"reservations_unavailable: Agent Mail server unavailable"}
 	snapshot := fixtureQueueDryIdeationSnapshot()
 	annotateQueueDryOptionalSources(&snapshot, report)
+	collectQueueDryOptionalSignals(context.Background(), &snapshot, "/repo")
 
 	got := buildQueueDryIdeationReport(report, snapshot, QueueDryIdeationOptions{Requested: true})
 
 	if got.Roadmap == nil || got.Roadmap.RenderedCount != 1 {
 		t.Fatalf("Roadmap=%+v, want roadmap despite degraded optional sources", got.Roadmap)
 	}
-	for _, want := range []string{"agent_mail:reservations", "cass:context", "cm:context"} {
+	for _, want := range []string{"agent_mail:reservations", "cass:search", "cm:context"} {
 		if !containsWarning(got.Warnings, want) {
 			t.Fatalf("warnings=%v, want degraded marker %q", got.Warnings, want)
 		}
@@ -498,6 +547,11 @@ func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
 	requireQueueDryGateCommand(t, "br")
 	requireQueueDryGateCommand(t, "bv")
 	requireQueueDryGateCommand(t, "git")
+	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cass:search", Kind: ideaplan.SourceCASS, Available: true, Evidence: []string{"cass search fixture"}})
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cm:context", Kind: ideaplan.SourceCM, Available: true, Evidence: []string{"cm context fixture"}})
+	})
+	defer restore()
 
 	const scenarioID = "queue-dry-temp-workspace-gate"
 	projectDir := t.TempDir()
@@ -970,6 +1024,33 @@ func containsWarning(items []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+func findQueueDrySource(items []ideaplan.CandidateSource, target string) *ideaplan.CandidateSource {
+	for i := range items {
+		if items[i].ID == target {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func containsQueueDryValidationNote(items []ideaplan.ValidationNote, substr string) bool {
+	for _, item := range items {
+		if strings.Contains(item.SourceID, substr) || strings.Contains(item.Message, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func stubQueueDryCollectOptional(t *testing.T, fn func(context.Context, *ideaplan.IdeaEvidenceSnapshot, ideaplan.OptionalAdapterOptions)) func() {
+	t.Helper()
+	previous := queueDryCollectOptional
+	queueDryCollectOptional = fn
+	return func() {
+		queueDryCollectOptional = previous
+	}
 }
 
 func containsQueueDryRecommendation(items []QueueDryRecommendation, target string) bool {

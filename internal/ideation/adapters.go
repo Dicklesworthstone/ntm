@@ -79,9 +79,8 @@ func (collector Collector) CollectOptional(ctx context.Context, snapshot *IdeaEv
 	sortOptionalSignals(snapshot.OptionalSignals)
 }
 
-// CollectCASSSignals shells out to `cass search`/`cass context`. When cass is
-// missing or the runner errors, a degraded source note is recorded — never a
-// fatal error.
+// CollectCASSSignals shells out to `cass search`. When cass is missing or the
+// runner errors, a degraded source note is recorded — never a fatal error.
 func (collector Collector) CollectCASSSignals(ctx context.Context, snapshot *IdeaEvidenceSnapshot, opts OptionalAdapterOptions) {
 	if snapshot == nil {
 		return
@@ -103,9 +102,6 @@ func (collector Collector) CollectCASSSignals(ctx context.Context, snapshot *Ide
 		}
 		collector.runCASSCommand(ctx, snapshot, opts, "cass:search", "cass_search", args, query)
 	}
-	if query := strings.TrimSpace(opts.CMQuery); query != "" {
-		collector.runCASSCommand(ctx, snapshot, opts, "cass:context", "cass_context", []string{"context", query, "--json", "--limit", "5"}, query)
-	}
 }
 
 // CollectCMSignals shells out to `cm context "<query>" --json`. Missing cm is
@@ -123,7 +119,7 @@ func (collector Collector) CollectCMSignals(ctx context.Context, snapshot *IdeaE
 	if query == "" {
 		query = "queue-dry ideation"
 	}
-	output, err := collector.runOptionalCommand(ctx, opts, "cm", []string{"context", query, "--json", "--no-history"})
+	output, err := collector.runOptionalCommand(ctx, opts, "cm", []string{"context", query, "--json", "--limit", "5"})
 	source := CandidateSource{
 		ID:        "cm:context",
 		Kind:      SourceCM,
@@ -292,6 +288,7 @@ func parseCASSOutput(output []byte, sourceID, kind, query string, opts OptionalA
 		Results          []cassResult `json:"results"`
 		HistorySnippets  []cassResult `json:"history_snippets"`
 		HistorySnippets2 []cassResult `json:"historySnippets"`
+		Hits             []cassResult `json:"hits"`
 	}
 	if err := json.Unmarshal(output, &wrapped); err != nil {
 		return nil
@@ -299,6 +296,7 @@ func parseCASSOutput(output []byte, sourceID, kind, query string, opts OptionalA
 	all := wrapped.Results
 	all = append(all, wrapped.HistorySnippets...)
 	all = append(all, wrapped.HistorySnippets2...)
+	all = append(all, wrapped.Hits...)
 	return cassResultsToSignals(all, sourceID, kind, query, opts)
 }
 
@@ -312,6 +310,8 @@ type cassResult struct {
 	ModifiedAt string  `json:"modified_at"`
 	UpdatedAt  string  `json:"updated_at"`
 	Path       string  `json:"path"`
+	SourcePath string  `json:"source_path"`
+	LineNumber int     `json:"line_number"`
 }
 
 func cassResultsToSignals(results []cassResult, sourceID, kind, query string, opts OptionalAdapterOptions) []OptionalSignal {
@@ -328,14 +328,18 @@ func cassResultsToSignals(results []cassResult, sourceID, kind, query string, op
 			break
 		}
 		id := strings.TrimSpace(item.ID)
-		if id == "" && item.Path != "" {
-			id = item.Path
+		path := firstNonEmpty(item.Path, item.SourcePath)
+		if id == "" && path != "" {
+			id = path
+			if item.LineNumber > 0 {
+				id = fmt.Sprintf("%s:%d", path, item.LineNumber)
+			}
 		}
 		if id == "" {
 			id = fmt.Sprintf("%s-%d", kind, len(out))
 		}
-		title := truncateForEvidence(item.Title, 80)
-		summary := redactAndTruncate(firstNonEmpty(item.Summary, item.Snippet), opts.PerSignalSummaryBytes)
+		title := truncateForEvidence(firstNonEmpty(item.Title, filepath.Base(path)), 80)
+		summary := redactAndTruncate(firstNonEmpty(item.Summary, item.Snippet, path), opts.PerSignalSummaryBytes)
 		snippet := redactAndTruncate(item.Snippet, opts.PerSignalSnippetBytes)
 		evidence := []string{"cass " + kind + " for query " + truncateForEvidence(query, 40)}
 		if item.Agent != "" {
@@ -362,6 +366,12 @@ func cassResultsToSignals(results []cassResult, sourceID, kind, query string, op
 func parseCMContextOutput(output []byte, sourceID string, opts OptionalAdapterOptions) []OptionalSignal {
 	if len(output) == 0 {
 		return nil
+	}
+	var wrapped struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(output, &wrapped); err == nil && len(wrapped.Data) > 0 {
+		output = wrapped.Data
 	}
 	var parsed struct {
 		RelevantBullets []struct {
