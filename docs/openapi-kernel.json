@@ -715,10 +715,10 @@
       "ErrorResponse": {
         "type": "object",
         "properties": {
-          "code": {
+          "error": {
             "type": "string"
           },
-          "error": {
+          "error_code": {
             "type": "string"
           },
           "success": {
@@ -731,7 +731,9 @@
         },
         "required": [
           "success",
-          "error"
+          "error",
+          "error_code",
+          "timestamp"
         ]
       },
       "SuccessResponse": {
@@ -749,7 +751,8 @@
           }
         },
         "required": [
-          "success"
+          "success",
+          "timestamp"
         ]
       }
     },

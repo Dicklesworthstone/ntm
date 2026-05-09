@@ -146,17 +146,17 @@ func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 						"message":   {Type: "string"},
 						"timestamp": {Type: "string", Format: "date-time"},
 					},
-					Required: []string{"success"},
+					Required: []string{"success", "timestamp"},
 				},
 				"ErrorResponse": {
 					Type: "object",
 					Properties: map[string]*Schema{
-						"success":   {Type: "boolean"},
-						"error":     {Type: "string"},
-						"code":      {Type: "string"},
-						"timestamp": {Type: "string", Format: "date-time"},
+						"success":    {Type: "boolean"},
+						"error":      {Type: "string"},
+						"error_code": {Type: "string"},
+						"timestamp":  {Type: "string", Format: "date-time"},
 					},
-					Required: []string{"success", "error"},
+					Required: []string{"success", "error", "error_code", "timestamp"},
 				},
 			},
 			SecuritySchemes: map[string]*SecurityScheme{
