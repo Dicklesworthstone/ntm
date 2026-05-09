@@ -85,6 +85,39 @@ func TestRenderRoadmapDependencyPreview(t *testing.T) {
 	}
 }
 
+func TestRenderRoadmapHonorsExplicitDefaultPriority(t *testing.T) {
+	cases := []struct {
+		name     string
+		priority *int
+		rank     int
+		want     int
+	}{
+		{name: "explicit P0", priority: intPtr(0), rank: 5, want: 0},
+		{name: "explicit P3", priority: intPtr(3), rank: 1, want: 3},
+		{name: "unset falls back to rank-based", priority: nil, rank: 1, want: 1},
+		{name: "unset rank 6 falls back to medium", priority: nil, rank: 6, want: 2},
+		{name: "out-of-range -1 is treated as unset", priority: intPtr(-1), rank: 5, want: 2},
+		{name: "out-of-range 9 is treated as unset", priority: intPtr(9), rank: 12, want: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := RankingResult{
+				Decision: RankingDecisionIdeate,
+				Selected: []RankedCandidate{{Rank: tc.rank, Candidate: IdeaCandidate{ID: "x", Title: "x", Overlap: OverlapVerdict{Kind: OverlapNovel}}, Score: 1}},
+			}
+			plan := RenderRoadmap(result, RoadmapRenderOptions{DefaultPriority: tc.priority})
+			if len(plan.ProposedBeads) != 1 {
+				t.Fatalf("expected 1 proposed bead, got %d", len(plan.ProposedBeads))
+			}
+			if got := plan.ProposedBeads[0].Priority; got != tc.want {
+				t.Fatalf("priority=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
 func TestRenderRoadmapCanIncludeNextBest(t *testing.T) {
 	first := RankedCandidate{Rank: 1, Candidate: IdeaCandidate{ID: "top", Title: "Top", Labels: []string{"queue-dry"}, Evidence: []string{"top evidence"}, Overlap: OverlapVerdict{Kind: OverlapNovel}}, Score: 4}
 	next := RankedCandidate{Rank: 6, Candidate: IdeaCandidate{ID: "next", Title: "Next", Labels: []string{"queue-dry"}, Evidence: []string{"next evidence"}, Overlap: OverlapVerdict{Kind: OverlapNovel}}, Score: 3}

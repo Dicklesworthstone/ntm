@@ -11,7 +11,7 @@ type RoadmapRenderOptions struct {
 	PlanID               string   `json:"plan_id,omitempty"`
 	ParentID             string   `json:"parent_id,omitempty"`
 	DefaultIssueType     string   `json:"default_issue_type,omitempty"`
-	DefaultPriority      int      `json:"default_priority,omitempty"`
+	DefaultPriority      *int     `json:"default_priority,omitempty"`
 	IncludeNextBest      bool     `json:"include_next_best,omitempty"`
 	AcceptanceCriteria   []string `json:"acceptance_criteria,omitempty"`
 	VerificationCommands []string `json:"verification_commands,omitempty"`
@@ -285,9 +285,9 @@ func duplicateNotes(candidate IdeaCandidate) []string {
 	return stableStrings(notes)
 }
 
-func priorityForRank(rank, fallback int) int {
-	if fallback >= 0 && fallback <= 4 {
-		return fallback
+func priorityForRank(rank int, fallback *int) int {
+	if fallback != nil && *fallback >= 0 && *fallback <= 4 {
+		return *fallback
 	}
 	switch {
 	case rank <= 3:
@@ -306,11 +306,8 @@ func normalizeRoadmapOptions(opts RoadmapRenderOptions) RoadmapRenderOptions {
 	if opts.DefaultIssueType == "" {
 		opts.DefaultIssueType = "task"
 	}
-	if opts.DefaultPriority == 0 {
-		opts.DefaultPriority = -1
-	}
-	if opts.DefaultPriority < 0 || opts.DefaultPriority > 4 {
-		opts.DefaultPriority = -1
+	if opts.DefaultPriority != nil && (*opts.DefaultPriority < 0 || *opts.DefaultPriority > 4) {
+		opts.DefaultPriority = nil
 	}
 	if len(opts.AcceptanceCriteria) == 0 {
 		opts.AcceptanceCriteria = []string{"candidate is implemented as a scoped, reviewable task", "output preserves duplicate and source evidence"}
