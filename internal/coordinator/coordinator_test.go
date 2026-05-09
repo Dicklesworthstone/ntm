@@ -953,3 +953,34 @@ func TestGenerateDigest_StableOrderingAcrossCalls_EmptyPaneIDCollision(t *testin
 		}
 	}
 }
+
+func TestGenerateDigest_StableOrderingAcrossCalls_AllSortFieldsCollide(t *testing.T) {
+	c := New("s", "/tmp/test", nil, "Agent")
+	c.mu.Lock()
+	for _, paneKey := range []string{"%z", "%a", "%m"} {
+		c.agents[paneKey] = &AgentState{
+			PaneID:       "",
+			PaneIndex:    0,
+			AgentType:    "cc",
+			Status:       robot.StateWaiting,
+			ContextUsage: 50,
+			CurrentTask:  "same",
+		}
+	}
+	c.mu.Unlock()
+
+	const iterations = 80
+	var prev string
+	for i := 0; i < iterations; i++ {
+		d := c.GenerateDigest()
+		b, _ := json.Marshal(d.AgentStatuses)
+		current := string(b)
+		if i == 0 {
+			prev = current
+			continue
+		}
+		if current != prev {
+			t.Fatalf("digest drifted on call %d with full-field collision:\nprev: %s\nnow:  %s", i, prev, current)
+		}
+	}
+}

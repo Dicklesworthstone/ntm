@@ -50,14 +50,19 @@ func (c *SessionCoordinator) GenerateDigest() DigestSummary {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	digest := DigestSummary{
-		Session:       c.session,
-		GeneratedAt:   time.Now(),
-		AgentCount:    len(c.agents),
-		AgentStatuses: make([]AgentDigestStatus, 0, len(c.agents)),
+	type digestAgentRow struct {
+		status  AgentDigestStatus
+		paneKey string
 	}
 
-	for _, agent := range c.agents {
+	digest := DigestSummary{
+		Session:     c.session,
+		GeneratedAt: time.Now(),
+		AgentCount:  len(c.agents),
+	}
+	agentRows := make([]digestAgentRow, 0, len(c.agents))
+
+	for paneKey, agent := range c.agents {
 		status := AgentDigestStatus{
 			PaneID:       agent.PaneID,
 			PaneIndex:    agent.PaneIndex,
@@ -88,50 +93,57 @@ func (c *SessionCoordinator) GenerateDigest() DigestSummary {
 			digest.Alerts = append(digest.Alerts, fmt.Sprintf("Agent %d (%s) context at %.0f%%", agent.PaneIndex, agent.AgentType, agent.ContextUsage))
 		}
 
-		digest.AgentStatuses = append(digest.AgentStatuses, status)
+		agentRows = append(agentRows, digestAgentRow{status: status, paneKey: paneKey})
 	}
 
 	// bd-c9wr1: c.agents is a map and Go iterates maps in randomized
 	// order, so two GenerateDigest calls against the same state would
 	// otherwise produce different AgentStatuses orderings and
 	// different Alerts sequences. Sort both for byte-stable output —
-	// PaneIndex for AgentStatuses with PaneID tie-breaker
-	// (PaneIndex alone can collide across windows), alphabetical
-	// for Alerts.
-	sort.Slice(digest.AgentStatuses, func(i, j int) bool {
-		ai := digest.AgentStatuses[i]
-		aj := digest.AgentStatuses[j]
+	// PaneIndex for AgentStatuses with multiple deterministic tie-breaks.
+	// The final pane-key tie-break ensures a total order even when all
+	// exported digest fields collide (e.g., empty/non-unique PaneID values).
+	sort.Slice(agentRows, func(i, j int) bool {
+		ai := agentRows[i]
+		aj := agentRows[j]
 
-		switch byPaneIndex := cmp.Compare(ai.PaneIndex, aj.PaneIndex); {
+		as := ai.status
+		bs := aj.status
+
+		switch byPaneIndex := cmp.Compare(as.PaneIndex, bs.PaneIndex); {
 		case byPaneIndex < 0:
 			return true
 		case byPaneIndex > 0:
 			return false
 		}
 
-		if byPaneID := strings.Compare(ai.PaneID, aj.PaneID); byPaneID != 0 {
+		if byPaneID := strings.Compare(as.PaneID, bs.PaneID); byPaneID != 0 {
 			return byPaneID < 0
 		}
-		if byAgentType := strings.Compare(ai.AgentType, aj.AgentType); byAgentType != 0 {
+		if byAgentType := strings.Compare(as.AgentType, bs.AgentType); byAgentType != 0 {
 			return byAgentType < 0
 		}
-		if byStatus := strings.Compare(ai.Status, aj.Status); byStatus != 0 {
+		if byStatus := strings.Compare(as.Status, bs.Status); byStatus != 0 {
 			return byStatus < 0
 		}
-		switch byContext := cmp.Compare(ai.ContextUsage, aj.ContextUsage); {
+		switch byContext := cmp.Compare(as.ContextUsage, bs.ContextUsage); {
 		case byContext < 0:
 			return true
 		case byContext > 0:
 			return false
 		}
-		if byIdle := strings.Compare(ai.IdleFor, aj.IdleFor); byIdle != 0 {
+		if byIdle := strings.Compare(as.IdleFor, bs.IdleFor); byIdle != 0 {
 			return byIdle < 0
 		}
-		if byTask := strings.Compare(ai.Task, aj.Task); byTask != 0 {
+		if byTask := strings.Compare(as.Task, bs.Task); byTask != 0 {
 			return byTask < 0
 		}
-		return false
+		return strings.Compare(ai.paneKey, aj.paneKey) < 0
 	})
+	digest.AgentStatuses = make([]AgentDigestStatus, 0, len(agentRows))
+	for _, row := range agentRows {
+		digest.AgentStatuses = append(digest.AgentStatuses, row.status)
+	}
 	sort.Strings(digest.Alerts)
 
 	return digest
