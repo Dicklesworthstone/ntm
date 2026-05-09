@@ -101,14 +101,14 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	type cassHealth struct {
 		Status            string   `json:"status"`
 		Healthy           bool     `json:"healthy"`
-		Initialized       bool     `json:"initialized"`
+		Initialized       *bool    `json:"initialized"`
 		Errors            []string `json:"errors"`
 		RecommendedAction string   `json:"recommended_action"`
 	}
 	if body := stdout.Bytes(); len(body) > 0 {
 		var parsed cassHealth
 		if jerr := json.Unmarshal(body, &parsed); jerr == nil {
-			if !parsed.Initialized {
+			if parsed.Initialized != nil && !*parsed.Initialized {
 				return &HealthStatus{
 					Healthy:     false,
 					Message:     "cass installed but not initialized (run: cass index --full)",
