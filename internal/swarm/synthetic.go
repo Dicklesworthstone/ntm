@@ -281,6 +281,10 @@ func (r *SyntheticRunResult) WriteArtifact(path string) error {
 
 const SyntheticExperimentSchemaVersion = "ntm.swarm.experiment.v1"
 
+// SyntheticOverloadRegressionSchemaVersion is the stable JSON contract for
+// overload regression corpus fixtures and comparison artifacts.
+const SyntheticOverloadRegressionSchemaVersion = "ntm.swarm.overload_regression.v1"
+
 // SyntheticExperimentGate identifies the cost class for a named scenario.
 type SyntheticExperimentGate string
 
@@ -361,6 +365,8 @@ type SyntheticExperimentMetrics struct {
 type SyntheticBackpressureArtifact struct {
 	SchemaVersion string                         `json:"schema_version"`
 	Decision      backpressure.Decision          `json:"decision"`
+	ErrorCode     string                         `json:"error_code,omitempty"`
+	RetryAfterMS  int64                          `json:"retry_after_ms,omitempty"`
 	ReasonCodes   []backpressure.ReasonCode      `json:"reason_codes"`
 	Surfaces      []backpressure.SurfaceSnapshot `json:"surfaces"`
 	DroppedCount  int64                          `json:"dropped_count"`
@@ -375,6 +381,7 @@ type SyntheticExperimentPaths struct {
 	Memory       string `json:"memory,omitempty"`
 	Goroutines   string `json:"goroutines,omitempty"`
 	Backpressure string `json:"backpressure,omitempty"`
+	Regression   string `json:"overload_regression,omitempty"`
 }
 
 // SyntheticExperimentResult classifies a run against its budget and baseline.
@@ -426,6 +433,127 @@ type SyntheticExperimentRow struct {
 	EventCount   int                       `json:"event_count"`
 	Result       SyntheticExperimentResult `json:"result"`
 	P95MS        float64                   `json:"p95_ms"`
+}
+
+// OverloadRegressionCorpus is a JSON fixture set for repaired overload
+// incidents. The fixtures are deliberately schema-first so future bug fixes can
+// add a case without depending on tmux or model CLIs.
+type OverloadRegressionCorpus struct {
+	SchemaVersion string                      `json:"schema_version"`
+	Guide         string                      `json:"guide,omitempty"`
+	Scenarios     []OverloadRegressionFixture `json:"scenarios"`
+}
+
+// OverloadRegressionFixture describes one overload incident regression case.
+type OverloadRegressionFixture struct {
+	ScenarioID          string                       `json:"scenario_id"`
+	SourceBug           string                       `json:"source_bug"`
+	Description         string                       `json:"description,omitempty"`
+	Gate                SyntheticExperimentGate      `json:"gate"`
+	Synthetic           SyntheticScenario            `json:"synthetic"`
+	BackpressureInputs  []OverloadSurfaceInput       `json:"backpressure_inputs"`
+	ExpectedSignals     OverloadExpectedSignals      `json:"expected_signals"`
+	ExpectedRobotErrors []OverloadExpectedRobotError `json:"expected_robot_errors,omitempty"`
+	ExpectedArtifacts   []OverloadExpectedArtifact   `json:"expected_artifacts"`
+	Tolerance           OverloadMetricTolerance      `json:"tolerance"`
+	Budget              SyntheticExperimentBudget    `json:"budget"`
+}
+
+// OverloadSurfaceInput is the JSON-stable fixture form of
+// backpressure.SurfaceInput.
+type OverloadSurfaceInput struct {
+	Surface        backpressure.Surface `json:"surface"`
+	Session        string               `json:"session,omitempty"`
+	Pane           string               `json:"pane,omitempty"`
+	Command        string               `json:"command,omitempty"`
+	QueueDepth     int                  `json:"queue_depth,omitempty"`
+	QueueCapacity  int                  `json:"queue_capacity,omitempty"`
+	DroppedCount   int64                `json:"dropped_count,omitempty"`
+	LatencyMS      int64                `json:"latency_ms,omitempty"`
+	ClientLagMS    int64                `json:"client_lag_ms,omitempty"`
+	SourceLoaded   bool                 `json:"source_loaded"`
+	MissingWarning string               `json:"missing_warning,omitempty"`
+}
+
+// OverloadExpectedSignals freezes the overload signals that must remain true
+// for a repaired incident.
+type OverloadExpectedSignals struct {
+	Decision        backpressure.Decision     `json:"decision,omitempty"`
+	ReasonCodes     []backpressure.ReasonCode `json:"reason_codes"`
+	MinDroppedCount int64                     `json:"min_dropped_count,omitempty"`
+	MinQueueDepth   int                       `json:"min_queue_depth,omitempty"`
+}
+
+// OverloadExpectedRobotError records stable robot error contract expectations.
+type OverloadExpectedRobotError struct {
+	ErrorCode    string                `json:"error_code"`
+	Decision     backpressure.Decision `json:"decision,omitempty"`
+	RetryAfterMS int64                 `json:"retry_after_ms,omitempty"`
+}
+
+// OverloadExpectedArtifact compares artifact presence by schema and kind,
+// not by brittle byte-for-byte timings.
+type OverloadExpectedArtifact struct {
+	Name          string `json:"name"`
+	SchemaVersion string `json:"schema_version"`
+}
+
+// OverloadMetricTolerance is the CI-safe metric envelope for one fixture.
+type OverloadMetricTolerance struct {
+	MaxLatencyP95MS             float64 `json:"max_latency_p95_ms,omitempty"`
+	MaxMemoryGrowthBytes        int64   `json:"max_memory_growth_bytes,omitempty"`
+	MaxGoroutinesLeaked         int     `json:"max_goroutines_leaked,omitempty"`
+	MinEventThroughputPerSecond float64 `json:"min_event_throughput_per_second,omitempty"`
+}
+
+// OverloadRegressionOptions configures a corpus run.
+type OverloadRegressionOptions struct {
+	Now          func() time.Time
+	Logger       *slog.Logger
+	ArtifactRoot string
+	Baselines    map[string]SyntheticExperimentArtifact
+	IncludeOptIn bool
+}
+
+// OverloadRegressionSummary is the robot-readable CI gate output.
+type OverloadRegressionSummary struct {
+	Success       bool                       `json:"success"`
+	SchemaVersion string                     `json:"schema_version"`
+	GeneratedAt   string                     `json:"generated_at"`
+	Results       []OverloadRegressionResult `json:"results"`
+	Warnings      []string                   `json:"warnings"`
+	Guide         string                     `json:"guide,omitempty"`
+}
+
+// OverloadRegressionResult is the per-scenario regression artifact.
+type OverloadRegressionResult struct {
+	SchemaVersion       string                       `json:"schema_version"`
+	ScenarioID          string                       `json:"scenario_id"`
+	SourceBug           string                       `json:"source_bug"`
+	ExpectedReasonCodes []backpressure.ReasonCode    `json:"expected_reason_codes"`
+	ExpectedRobotErrors []OverloadExpectedRobotError `json:"expected_robot_errors,omitempty"`
+	ExpectedArtifacts   []OverloadExpectedArtifact   `json:"expected_artifacts"`
+	Decision            backpressure.Decision        `json:"decision"`
+	ReasonCodes         []backpressure.ReasonCode    `json:"reason_codes"`
+	RobotErrorCodes     []string                     `json:"robot_error_codes"`
+	MeasuredMetrics     OverloadMeasuredMetrics      `json:"measured_metrics"`
+	ComparisonResult    SyntheticExperimentResult    `json:"comparison_result"`
+	Checks              []SyntheticExperimentCheck   `json:"checks"`
+	FailureReasons      []string                     `json:"failure_reasons"`
+	ArtifactPaths       SyntheticExperimentPaths     `json:"artifact_paths"`
+}
+
+// OverloadMeasuredMetrics are the compact observed metrics stored in corpus
+// artifacts.
+type OverloadMeasuredMetrics struct {
+	PaneCount                int     `json:"pane_count"`
+	CommandCount             int     `json:"command_count"`
+	LatencyP95MS             float64 `json:"latency_p95_ms"`
+	MemoryGrowthBytes        int64   `json:"memory_growth_bytes"`
+	GoroutinesLeaked         int     `json:"goroutines_leaked"`
+	EventThroughputPerSecond float64 `json:"event_throughput_per_second"`
+	DroppedCount             int64   `json:"dropped_count"`
+	MaxQueueDepth            int     `json:"max_queue_depth"`
 }
 
 // SyntheticExperimentScenarios returns the built-in scenario registry.
@@ -681,6 +809,221 @@ func BuildSyntheticExperimentSummary(artifacts []SyntheticExperimentArtifact, no
 	}
 }
 
+// ParseOverloadRegressionCorpus decodes and validates a JSON corpus fixture.
+func ParseOverloadRegressionCorpus(data []byte) (OverloadRegressionCorpus, error) {
+	var corpus OverloadRegressionCorpus
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		return OverloadRegressionCorpus{}, err
+	}
+	corpus = normalizeOverloadRegressionCorpus(corpus)
+	if err := validateOverloadRegressionCorpus(corpus); err != nil {
+		return OverloadRegressionCorpus{}, err
+	}
+	return corpus, nil
+}
+
+// BuiltInOverloadRegressionCorpus returns the short, CI-safe repaired incident
+// corpus. Larger benchmark/load cases belong behind opt-in gates.
+func BuiltInOverloadRegressionCorpus() OverloadRegressionCorpus {
+	start := time.Unix(1_700_050_000, 0).UTC()
+	return OverloadRegressionCorpus{
+		SchemaVersion: SyntheticOverloadRegressionSchemaVersion,
+		Guide:         OverloadRegressionCorpusGuide(),
+		Scenarios: []OverloadRegressionFixture{
+			{
+				ScenarioID:  "bd_8kglp_3_robot_backpressure_resource_busy",
+				SourceBug:   "bd-8kglp.3",
+				Description: "repaired robot backpressure overload path keeps RESOURCE_BUSY and reason codes stable",
+				Gate:        SyntheticExperimentGateShort,
+				Synthetic: SyntheticScenario{
+					TestRunID:             "corpus-bd-8kglp-3",
+					Name:                  "robot backpressure resource busy",
+					SessionName:           "synthetic_overload_robot",
+					PaneCount:             8,
+					CommandCount:          4,
+					OutputLinesPerCommand: 1,
+					Patterns: []SyntheticOutputPattern{
+						SyntheticPatternWorking,
+						SyntheticPatternRateLimit,
+						SyntheticPatternWaitingMail,
+						SyntheticPatternCompleted,
+					},
+					StartTime: start,
+				},
+				BackpressureInputs: []OverloadSurfaceInput{
+					{
+						Surface:       backpressure.SurfaceRobot,
+						Session:       "synthetic_overload_robot",
+						Command:       "robot-send",
+						QueueDepth:    640,
+						QueueCapacity: 640,
+						DroppedCount:  160,
+						LatencyMS:     6200,
+						SourceLoaded:  true,
+					},
+					{
+						Surface:      backpressure.SurfaceTmuxCapture,
+						Session:      "synthetic_overload_robot",
+						Pane:         "%4",
+						LatencyMS:    6100,
+						SourceLoaded: true,
+					},
+				},
+				ExpectedSignals: OverloadExpectedSignals{
+					Decision: backpressure.DecisionDegrade,
+					ReasonCodes: []backpressure.ReasonCode{
+						backpressure.ReasonDroppedOutput,
+						backpressure.ReasonQueueDepth,
+						backpressure.ReasonSlowCapture,
+						backpressure.ReasonSlowHandler,
+					},
+					MinDroppedCount: 100,
+					MinQueueDepth:   512,
+				},
+				ExpectedRobotErrors: []OverloadExpectedRobotError{
+					{
+						ErrorCode:    "RESOURCE_BUSY",
+						Decision:     backpressure.DecisionDegrade,
+						RetryAfterMS: backpressure.DefaultThresholds().DegradeRetryAfterMS,
+					},
+				},
+				ExpectedArtifacts: []OverloadExpectedArtifact{
+					{Name: "summary", SchemaVersion: SyntheticExperimentSchemaVersion},
+					{Name: "backpressure", SchemaVersion: SyntheticExperimentSchemaVersion},
+					{Name: "overload_regression", SchemaVersion: SyntheticOverloadRegressionSchemaVersion},
+				},
+				Tolerance: OverloadMetricTolerance{
+					MaxLatencyP95MS:             10,
+					MaxMemoryGrowthBytes:        32 << 20,
+					MaxGoroutinesLeaked:         0,
+					MinEventThroughputPerSecond: 1,
+				},
+				Budget: defaultSyntheticExperimentBudget("short"),
+			},
+		},
+	}
+}
+
+// OverloadRegressionCorpusGuide documents the minimum steps for adding a future
+// repaired incident to the corpus.
+func OverloadRegressionCorpusGuide() string {
+	return "Add one OverloadRegressionFixture with scenario_id, source_bug, synthetic inputs, backpressure_inputs, expected_signals.reason_codes, expected_robot_errors, expected_artifacts, and tolerance. Keep short gates CI-safe; put expensive scenarios behind benchmark or load opt-in gates."
+}
+
+// RunOverloadRegressionCorpus executes a corpus with no tmux or model CLIs.
+func RunOverloadRegressionCorpus(ctx context.Context, corpus OverloadRegressionCorpus, opts OverloadRegressionOptions) (OverloadRegressionSummary, error) {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	corpus = normalizeOverloadRegressionCorpus(corpus)
+	if err := validateOverloadRegressionCorpus(corpus); err != nil {
+		return OverloadRegressionSummary{}, err
+	}
+
+	summary := OverloadRegressionSummary{
+		Success:       true,
+		SchemaVersion: SyntheticOverloadRegressionSchemaVersion,
+		GeneratedAt:   now().UTC().Format(time.RFC3339Nano),
+		Results:       make([]OverloadRegressionResult, 0, len(corpus.Scenarios)),
+		Warnings:      []string{},
+		Guide:         corpus.Guide,
+	}
+	for _, fixture := range corpus.Scenarios {
+		scenario := syntheticExperimentScenarioForFixture(fixture)
+		if scenario.OptIn && !opts.IncludeOptIn {
+			summary.Warnings = append(summary.Warnings, fixture.ScenarioID+": opt-in scenario skipped")
+			continue
+		}
+		baseline := opts.Baselines[fixture.ScenarioID]
+		var baselinePtr *SyntheticExperimentArtifact
+		if baseline.SchemaVersion != "" {
+			baselinePtr = &baseline
+		}
+		artifact, err := RunSyntheticExperiment(ctx, scenario, SyntheticExperimentOptions{
+			Now:                now,
+			Logger:             logger,
+			ArtifactRoot:       opts.ArtifactRoot,
+			Baseline:           baselinePtr,
+			BackpressureInputs: overloadBackpressureInputs(fixture.BackpressureInputs),
+		})
+		if err != nil {
+			return OverloadRegressionSummary{}, err
+		}
+		if artifact.ArtifactPaths.Root != "" {
+			artifact.ArtifactPaths.Regression = artifact.ArtifactPaths.Root + string(os.PathSeparator) + "overload_regression.json"
+		}
+		result := BuildOverloadRegressionResult(fixture, artifact)
+		if result.ArtifactPaths.Regression != "" {
+			if err := writeJSONFile(result.ArtifactPaths.Regression, result); err != nil {
+				return OverloadRegressionSummary{}, err
+			}
+		}
+		if result.ComparisonResult == SyntheticExperimentFail || result.ComparisonResult == SyntheticExperimentSchemaMismatch {
+			summary.Success = false
+		}
+		summary.Results = append(summary.Results, result)
+		logger.Info("overload_regression_corpus_result",
+			"scenario_id", result.ScenarioID,
+			"source_bug", result.SourceBug,
+			"expected_reason_codes", result.ExpectedReasonCodes,
+			"measured_metrics", result.MeasuredMetrics,
+			"comparison_result", result.ComparisonResult,
+			"artifact_path", result.ArtifactPaths.Regression)
+	}
+	return summary, nil
+}
+
+// BuildOverloadRegressionResult compares one experiment artifact with its
+// expected overload contract.
+func BuildOverloadRegressionResult(fixture OverloadRegressionFixture, artifact SyntheticExperimentArtifact) OverloadRegressionResult {
+	fixture = normalizeOverloadRegressionFixture(fixture)
+	expectedReasons := sortedUniqueOverloadReasons(fixture.ExpectedSignals.ReasonCodes)
+	measured := OverloadMeasuredMetrics{
+		PaneCount:                artifact.Metrics.PaneCount,
+		CommandCount:             artifact.Metrics.CommandCount,
+		LatencyP95MS:             artifact.Metrics.LatencyP95MS,
+		MemoryGrowthBytes:        artifact.Metrics.MemoryGrowthBytes,
+		GoroutinesLeaked:         artifact.Metrics.GoroutinesLeaked,
+		EventThroughputPerSecond: artifact.Metrics.EventThroughputPerSecond,
+		DroppedCount:             artifact.Backpressure.DroppedCount,
+		MaxQueueDepth:            artifact.Backpressure.MaxQueueDepth,
+	}
+	checks := overloadToleranceChecks(artifact, fixture.Tolerance)
+	failures := overloadToleranceFailures(checks)
+	failures = append(failures, overloadSignalFailures(fixture.ExpectedSignals, artifact.Backpressure)...)
+	failures = append(failures, overloadRobotErrorFailures(fixture.ExpectedRobotErrors, artifact.Backpressure)...)
+	failures = append(failures, overloadArtifactFailures(fixture.ExpectedArtifacts, artifact.ArtifactPaths)...)
+
+	comparison := SyntheticExperimentPass
+	for _, check := range checks {
+		comparison = maxSyntheticExperimentResult(comparison, check.Result)
+	}
+	if len(failures) > 0 {
+		comparison = SyntheticExperimentFail
+	}
+	return OverloadRegressionResult{
+		SchemaVersion:       SyntheticOverloadRegressionSchemaVersion,
+		ScenarioID:          fixture.ScenarioID,
+		SourceBug:           fixture.SourceBug,
+		ExpectedReasonCodes: expectedReasons,
+		ExpectedRobotErrors: append([]OverloadExpectedRobotError(nil), fixture.ExpectedRobotErrors...),
+		ExpectedArtifacts:   append([]OverloadExpectedArtifact(nil), fixture.ExpectedArtifacts...),
+		Decision:            artifact.Backpressure.Decision,
+		ReasonCodes:         sortedUniqueOverloadReasons(artifact.Backpressure.ReasonCodes),
+		RobotErrorCodes:     overloadRobotErrorCodes(artifact.Backpressure),
+		MeasuredMetrics:     measured,
+		ComparisonResult:    comparison,
+		Checks:              checks,
+		FailureReasons:      nonNilStrings(uniqueSortedStrings(failures)),
+		ArtifactPaths:       artifact.ArtifactPaths,
+	}
+}
+
 // ScenarioPaneCount returns the pane count implied by the artifact row.
 func (a SyntheticExperimentArtifact) ScenarioPaneCount() int {
 	return a.Metrics.PaneCount
@@ -689,6 +1032,251 @@ func (a SyntheticExperimentArtifact) ScenarioPaneCount() int {
 // ScenarioCommandCount returns the command count implied by the artifact row.
 func (a SyntheticExperimentArtifact) ScenarioCommandCount() int {
 	return a.Metrics.CommandCount
+}
+
+func normalizeOverloadRegressionCorpus(corpus OverloadRegressionCorpus) OverloadRegressionCorpus {
+	if corpus.Guide == "" {
+		corpus.Guide = OverloadRegressionCorpusGuide()
+	}
+	scenarios := append([]OverloadRegressionFixture(nil), corpus.Scenarios...)
+	for i := range scenarios {
+		scenarios[i] = normalizeOverloadRegressionFixture(scenarios[i])
+	}
+	sort.SliceStable(scenarios, func(i, j int) bool {
+		return scenarios[i].ScenarioID < scenarios[j].ScenarioID
+	})
+	corpus.Scenarios = scenarios
+	return corpus
+}
+
+func normalizeOverloadRegressionFixture(f OverloadRegressionFixture) OverloadRegressionFixture {
+	f.ScenarioID = strings.TrimSpace(f.ScenarioID)
+	f.SourceBug = strings.TrimSpace(f.SourceBug)
+	if f.Gate == "" {
+		f.Gate = SyntheticExperimentGateShort
+	}
+	f.Synthetic = normalizeSyntheticScenario(f.Synthetic)
+	if f.Synthetic.TestRunID == "" {
+		f.Synthetic.TestRunID = sanitizeSyntheticID(f.ScenarioID)
+	}
+	if f.Synthetic.Name == "" {
+		f.Synthetic.Name = strings.ReplaceAll(f.ScenarioID, "_", " ")
+	}
+	f.Budget = normalizeSyntheticExperimentBudget(f.Budget)
+	f.Tolerance = normalizeOverloadMetricTolerance(f.Tolerance, f.Budget)
+	f.ExpectedSignals.ReasonCodes = sortedUniqueOverloadReasons(f.ExpectedSignals.ReasonCodes)
+	return f
+}
+
+func normalizeOverloadMetricTolerance(t OverloadMetricTolerance, budget SyntheticExperimentBudget) OverloadMetricTolerance {
+	if t.MaxLatencyP95MS <= 0 {
+		t.MaxLatencyP95MS = microsToMillis(budget.MaxLatencyP95Micros)
+	}
+	if t.MaxMemoryGrowthBytes <= 0 {
+		t.MaxMemoryGrowthBytes = budget.MaxMemoryGrowthBytes
+	}
+	if t.MinEventThroughputPerSecond <= 0 {
+		t.MinEventThroughputPerSecond = budget.MinEventThroughputPerSecond
+	}
+	return t
+}
+
+func validateOverloadRegressionCorpus(corpus OverloadRegressionCorpus) error {
+	if corpus.SchemaVersion != SyntheticOverloadRegressionSchemaVersion {
+		return fmt.Errorf("schema_version = %q, want %q", corpus.SchemaVersion, SyntheticOverloadRegressionSchemaVersion)
+	}
+	if len(corpus.Scenarios) == 0 {
+		return fmt.Errorf("at least one overload regression scenario is required")
+	}
+	seen := make(map[string]struct{}, len(corpus.Scenarios))
+	for _, fixture := range corpus.Scenarios {
+		if fixture.ScenarioID == "" {
+			return fmt.Errorf("scenario_id is required")
+		}
+		if _, ok := seen[fixture.ScenarioID]; ok {
+			return fmt.Errorf("duplicate scenario_id %q", fixture.ScenarioID)
+		}
+		seen[fixture.ScenarioID] = struct{}{}
+		if fixture.SourceBug == "" {
+			return fmt.Errorf("source_bug is required for scenario %q", fixture.ScenarioID)
+		}
+		if err := validateSyntheticScenario(fixture.Synthetic); err != nil {
+			return fmt.Errorf("scenario %q synthetic input: %w", fixture.ScenarioID, err)
+		}
+		if len(fixture.BackpressureInputs) == 0 {
+			return fmt.Errorf("backpressure_inputs are required for scenario %q", fixture.ScenarioID)
+		}
+		if fixture.ExpectedSignals.Decision == "" && len(fixture.ExpectedSignals.ReasonCodes) == 0 {
+			return fmt.Errorf("expected_signals are required for scenario %q", fixture.ScenarioID)
+		}
+		if len(fixture.ExpectedArtifacts) == 0 {
+			return fmt.Errorf("expected_artifacts are required for scenario %q", fixture.ScenarioID)
+		}
+	}
+	return nil
+}
+
+func syntheticExperimentScenarioForFixture(fixture OverloadRegressionFixture) SyntheticExperimentScenario {
+	return normalizeSyntheticExperimentScenario(SyntheticExperimentScenario{
+		ID:          fixture.ScenarioID,
+		Gate:        fixture.Gate,
+		Description: fixture.Description,
+		Synthetic:   fixture.Synthetic,
+		Budget:      fixture.Budget,
+		OptIn:       fixture.Gate != SyntheticExperimentGateShort,
+	})
+}
+
+func overloadBackpressureInputs(inputs []OverloadSurfaceInput) []backpressure.SurfaceInput {
+	out := make([]backpressure.SurfaceInput, 0, len(inputs))
+	for _, in := range inputs {
+		out = append(out, backpressure.SurfaceInput{
+			Surface:        in.Surface,
+			Session:        in.Session,
+			Pane:           in.Pane,
+			Command:        in.Command,
+			QueueDepth:     in.QueueDepth,
+			QueueCapacity:  in.QueueCapacity,
+			DroppedCount:   in.DroppedCount,
+			LatencyMS:      in.LatencyMS,
+			ClientLagMS:    in.ClientLagMS,
+			SourceLoaded:   in.SourceLoaded,
+			MissingWarning: in.MissingWarning,
+		})
+	}
+	return out
+}
+
+func overloadToleranceChecks(artifact SyntheticExperimentArtifact, tolerance OverloadMetricTolerance) []SyntheticExperimentCheck {
+	return []SyntheticExperimentCheck{
+		compareLowerIsBetter("latency_p95_ms", artifact.Metrics.LatencyP95MS, 0, tolerance.MaxLatencyP95MS, SyntheticExperimentBudget{}),
+		compareLowerIsBetter("memory_growth_bytes", float64(artifact.Metrics.MemoryGrowthBytes), 0, float64(tolerance.MaxMemoryGrowthBytes), SyntheticExperimentBudget{}),
+		compareLowerIsBetter("goroutines_leaked", float64(artifact.Metrics.GoroutinesLeaked), 0, float64(tolerance.MaxGoroutinesLeaked), SyntheticExperimentBudget{}),
+		compareHigherIsBetter("event_throughput_per_second", artifact.Metrics.EventThroughputPerSecond, 0, tolerance.MinEventThroughputPerSecond, SyntheticExperimentBudget{}),
+	}
+}
+
+func overloadToleranceFailures(checks []SyntheticExperimentCheck) []string {
+	failures := make([]string, 0)
+	for _, check := range checks {
+		if check.Result == SyntheticExperimentFail {
+			failures = append(failures, "tolerance."+check.Metric)
+		}
+	}
+	return failures
+}
+
+func overloadSignalFailures(expected OverloadExpectedSignals, got SyntheticBackpressureArtifact) []string {
+	failures := make([]string, 0)
+	if expected.Decision != "" && got.Decision != expected.Decision {
+		failures = append(failures, "signal.decision")
+	}
+	for _, want := range expected.ReasonCodes {
+		if !hasOverloadReason(got.ReasonCodes, want) {
+			failures = append(failures, "signal.reason."+string(want))
+		}
+	}
+	if expected.MinDroppedCount > 0 && got.DroppedCount < expected.MinDroppedCount {
+		failures = append(failures, "signal.dropped_count")
+	}
+	if expected.MinQueueDepth > 0 && got.MaxQueueDepth < expected.MinQueueDepth {
+		failures = append(failures, "signal.queue_depth")
+	}
+	return failures
+}
+
+func overloadRobotErrorFailures(expected []OverloadExpectedRobotError, got SyntheticBackpressureArtifact) []string {
+	failures := make([]string, 0)
+	for _, want := range expected {
+		if strings.TrimSpace(want.ErrorCode) != "" && got.ErrorCode != want.ErrorCode {
+			failures = append(failures, "robot_error."+want.ErrorCode)
+			continue
+		}
+		if want.Decision != "" && got.Decision != want.Decision {
+			failures = append(failures, "robot_error.decision")
+		}
+		if want.RetryAfterMS > 0 && got.RetryAfterMS != want.RetryAfterMS {
+			failures = append(failures, "robot_error.retry_after_ms")
+		}
+	}
+	return failures
+}
+
+func overloadArtifactFailures(expected []OverloadExpectedArtifact, paths SyntheticExperimentPaths) []string {
+	failures := make([]string, 0)
+	for _, want := range expected {
+		name := strings.TrimSpace(want.Name)
+		if artifactPathByName(paths, name) == "" {
+			failures = append(failures, "artifact.missing."+name)
+		}
+		if want.SchemaVersion != "" && artifactSchemaVersion(name) != want.SchemaVersion {
+			failures = append(failures, "artifact.schema."+name)
+		}
+	}
+	return failures
+}
+
+func overloadRobotErrorCodes(got SyntheticBackpressureArtifact) []string {
+	if strings.TrimSpace(got.ErrorCode) == "" {
+		return []string{}
+	}
+	return []string{got.ErrorCode}
+}
+
+func artifactPathByName(paths SyntheticExperimentPaths, name string) string {
+	switch strings.TrimSpace(name) {
+	case "summary":
+		return paths.Summary
+	case "latency":
+		return paths.Latency
+	case "memory", "mem":
+		return paths.Memory
+	case "goroutines":
+		return paths.Goroutines
+	case "backpressure":
+		return paths.Backpressure
+	case "overload_regression", "regression":
+		return paths.Regression
+	default:
+		return ""
+	}
+}
+
+func artifactSchemaVersion(name string) string {
+	switch strings.TrimSpace(name) {
+	case "overload_regression", "regression":
+		return SyntheticOverloadRegressionSchemaVersion
+	case "summary", "latency", "memory", "mem", "goroutines", "backpressure":
+		return SyntheticExperimentSchemaVersion
+	default:
+		return ""
+	}
+}
+
+func sortedUniqueOverloadReasons(in []backpressure.ReasonCode) []backpressure.ReasonCode {
+	seen := make(map[backpressure.ReasonCode]struct{}, len(in))
+	out := make([]backpressure.ReasonCode, 0, len(in))
+	for _, reason := range in {
+		if reason == "" {
+			continue
+		}
+		if _, ok := seen[reason]; ok {
+			continue
+		}
+		seen[reason] = struct{}{}
+		out = append(out, reason)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func hasOverloadReason(reasons []backpressure.ReasonCode, want backpressure.ReasonCode) bool {
+	for _, reason := range reasons {
+		if strings.Compare(string(reason), string(want)) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func syntheticLogger(h *SyntheticHarness) *slog.Logger {
@@ -999,6 +1587,8 @@ func syntheticBackpressureArtifact(snapshot backpressure.BackpressureSnapshot) S
 	return SyntheticBackpressureArtifact{
 		SchemaVersion: SyntheticExperimentSchemaVersion,
 		Decision:      snapshot.Decision,
+		ErrorCode:     snapshot.ErrorCode,
+		RetryAfterMS:  snapshot.RetryAfterMS,
 		ReasonCodes:   append([]backpressure.ReasonCode(nil), snapshot.ReasonCodes...),
 		Surfaces:      append([]backpressure.SurfaceSnapshot(nil), snapshot.Surfaces...),
 		DroppedCount:  dropped,
@@ -1155,6 +1745,24 @@ func nonNilStrings(in []string) []string {
 	return in
 }
 
+func uniqueSortedStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func nonNilExperimentPaths(in []SyntheticExperimentPaths) []SyntheticExperimentPaths {
 	if in == nil {
 		return []SyntheticExperimentPaths{}
@@ -1171,9 +1779,9 @@ func sanitizeSyntheticID(value string) string {
 			b.WriteRune(r)
 		case r >= '0' && r <= '9':
 			b.WriteRune(r)
-		case r == '-' || r == '_':
+		case strings.ContainsRune("-_", r):
 			b.WriteRune(r)
-		case r == ' ' || r == '/' || r == '.':
+		case strings.ContainsRune(" /.", r):
 			b.WriteByte('_')
 		}
 	}

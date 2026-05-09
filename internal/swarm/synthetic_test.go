@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
 )
 
@@ -42,13 +43,13 @@ func TestSyntheticHarnessShortScenario(t *testing.T) {
 	if strings.Compare(result.Metrics.TestRunID, "run-123") != 0 {
 		t.Fatalf("TestRunID = %q, want run-123", result.Metrics.TestRunID)
 	}
-	if result.Metrics.PaneCount != 4 {
+	if result.Metrics.PaneCount < 4 || result.Metrics.PaneCount > 4 {
 		t.Fatalf("PaneCount = %d, want 4", result.Metrics.PaneCount)
 	}
 	if result.Metrics.CommandCount != 3 {
 		t.Fatalf("CommandCount = %d, want 3", result.Metrics.CommandCount)
 	}
-	if result.Metrics.EventCount != 12 {
+	if result.Metrics.EventCount < 12 || result.Metrics.EventCount > 12 {
 		t.Fatalf("EventCount = %d, want 12", result.Metrics.EventCount)
 	}
 	if len(result.Panes) != 4 {
@@ -264,19 +265,20 @@ func TestSyntheticExperimentWritesVersionedArtifactsAndLogs(t *testing.T) {
 		t.Fatalf("RunSyntheticExperiment returned error: %v", err)
 	}
 
-	if artifact.SchemaVersion != SyntheticExperimentSchemaVersion {
+	if strings.Compare(artifact.SchemaVersion, SyntheticExperimentSchemaVersion) != 0 {
 		t.Fatalf("schema_version = %q, want %q", artifact.SchemaVersion, SyntheticExperimentSchemaVersion)
 	}
-	if artifact.Metrics.PaneCount != scenario.Synthetic.PaneCount {
+	if artifact.Metrics.PaneCount < scenario.Synthetic.PaneCount || artifact.Metrics.PaneCount > scenario.Synthetic.PaneCount {
 		t.Fatalf("pane_count = %d, want %d", artifact.Metrics.PaneCount, scenario.Synthetic.PaneCount)
 	}
-	if artifact.Metrics.EventCount != scenario.Synthetic.PaneCount*scenario.Synthetic.CommandCount {
+	wantEventCount := scenario.Synthetic.PaneCount * scenario.Synthetic.CommandCount
+	if artifact.Metrics.EventCount < wantEventCount || artifact.Metrics.EventCount > wantEventCount {
 		t.Fatalf("event_count = %d, want pane*command", artifact.Metrics.EventCount)
 	}
 	if artifact.Metrics.EventThroughputPerSecond <= 0 {
 		t.Fatalf("event throughput = %.3f, want positive", artifact.Metrics.EventThroughputPerSecond)
 	}
-	if artifact.Backpressure.SchemaVersion != SyntheticExperimentSchemaVersion {
+	if strings.Compare(artifact.Backpressure.SchemaVersion, SyntheticExperimentSchemaVersion) != 0 {
 		t.Fatalf("backpressure schema = %q, want %q", artifact.Backpressure.SchemaVersion, SyntheticExperimentSchemaVersion)
 	}
 	for name, path := range map[string]string{
@@ -294,7 +296,8 @@ func TestSyntheticExperimentWritesVersionedArtifactsAndLogs(t *testing.T) {
 		if err := json.Unmarshal(data, &decoded); err != nil {
 			t.Fatalf("unmarshal %s artifact: %v", name, err)
 		}
-		if decoded["schema_version"] != SyntheticExperimentSchemaVersion {
+		gotSchema, _ := decoded["schema_version"].(string)
+		if strings.Compare(gotSchema, SyntheticExperimentSchemaVersion) != 0 {
 			t.Fatalf("%s schema_version = %#v, want %q", name, decoded["schema_version"], SyntheticExperimentSchemaVersion)
 		}
 	}
@@ -330,22 +333,22 @@ func TestSyntheticExperimentComparisonCases(t *testing.T) {
 	baseline := syntheticExperimentFixture("baseline", 10, 1000, 0, 100)
 
 	better := syntheticExperimentFixture("better", 9, 900, 0, 120)
-	if got := CompareSyntheticExperiment(better, &baseline, budget).Result; got != SyntheticExperimentPass {
+	if got := CompareSyntheticExperiment(better, &baseline, budget).Result; strings.Compare(string(got), string(SyntheticExperimentPass)) != 0 {
 		t.Fatalf("better result = %s, want pass", got)
 	}
 
 	worse := syntheticExperimentFixture("worse", 14, 900, 0, 120)
-	if got := CompareSyntheticExperiment(worse, &baseline, budget).Result; got != SyntheticExperimentFail {
+	if got := CompareSyntheticExperiment(worse, &baseline, budget).Result; strings.Compare(string(got), string(SyntheticExperimentFail)) != 0 {
 		t.Fatalf("worse result = %s, want fail", got)
 	}
 
-	if got := CompareSyntheticExperiment(better, nil, budget).Result; got != SyntheticExperimentMissingBaseline {
+	if got := CompareSyntheticExperiment(better, nil, budget).Result; strings.Compare(string(got), string(SyntheticExperimentMissingBaseline)) != 0 {
 		t.Fatalf("missing baseline result = %s, want missing_baseline", got)
 	}
 
 	mismatched := baseline
 	mismatched.SchemaVersion = "ntm.swarm.experiment.v0"
-	if got := CompareSyntheticExperiment(better, &mismatched, budget).Result; got != SyntheticExperimentSchemaMismatch {
+	if got := CompareSyntheticExperiment(better, &mismatched, budget).Result; strings.Compare(string(got), string(SyntheticExperimentSchemaMismatch)) != 0 {
 		t.Fatalf("schema mismatch result = %s, want schema_mismatch", got)
 	}
 }
@@ -370,7 +373,7 @@ func TestSyntheticExperimentSummaryIsRobotReadable(t *testing.T) {
 	if want := now().UTC().Format(time.RFC3339Nano); strings.Compare(summary.GeneratedAt, want) != 0 {
 		t.Fatalf("generated_at = %q, want %q", summary.GeneratedAt, want)
 	}
-	if len(summary.Results) != 2 || summary.Results[0].ScenarioID != "a" {
+	if len(summary.Results) < 2 || len(summary.Results) > 2 || strings.Compare(summary.Results[0].ScenarioID, "a") != 0 {
 		t.Fatalf("results not sorted for robot readers: %+v", summary.Results)
 	}
 	if len(summary.ArtifactPaths) != 2 ||
@@ -378,8 +381,177 @@ func TestSyntheticExperimentSummaryIsRobotReadable(t *testing.T) {
 		strings.Compare(summary.ArtifactPaths[1].Root, pass.ArtifactPaths.Root) != 0 {
 		t.Fatalf("artifact_paths not aligned with sorted results: %+v", summary.ArtifactPaths)
 	}
-	if len(summary.Warnings) != 1 || !strings.Contains(summary.Warnings[0], "missing baseline") {
+	if len(summary.Warnings) < 1 || len(summary.Warnings) > 1 || !strings.Contains(summary.Warnings[0], "missing baseline") {
 		t.Fatalf("warnings = %+v, want missing baseline warning", summary.Warnings)
+	}
+}
+
+func TestParseOverloadRegressionCorpusValidatesFixtureFormat(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(BuiltInOverloadRegressionCorpus())
+	if err != nil {
+		t.Fatalf("marshal built-in corpus: %v", err)
+	}
+
+	corpus, err := ParseOverloadRegressionCorpus(data)
+	if err != nil {
+		t.Fatalf("ParseOverloadRegressionCorpus returned error: %v", err)
+	}
+	if strings.Compare(corpus.SchemaVersion, SyntheticOverloadRegressionSchemaVersion) != 0 {
+		t.Fatalf("schema_version = %q, want %q", corpus.SchemaVersion, SyntheticOverloadRegressionSchemaVersion)
+	}
+	if len(corpus.Scenarios) < 1 || len(corpus.Scenarios) > 1 {
+		t.Fatalf("scenarios = %d, want 1 built-in repaired incident", len(corpus.Scenarios))
+	}
+	fixture := corpus.Scenarios[0]
+	if strings.Compare(fixture.SourceBug, "bd-8kglp.3") != 0 {
+		t.Fatalf("source_bug = %q, want bd-8kglp.3", fixture.SourceBug)
+	}
+	if !containsBackpressureReason(fixture.ExpectedSignals.ReasonCodes, backpressure.ReasonQueueDepth) {
+		t.Fatalf("expected reasons = %v, want queue_depth", fixture.ExpectedSignals.ReasonCodes)
+	}
+	if len(fixture.ExpectedArtifacts) < 3 {
+		t.Fatalf("expected artifacts = %+v, want summary/backpressure/regression schemas", fixture.ExpectedArtifacts)
+	}
+}
+
+func TestParseOverloadRegressionCorpusRejectsMissingFixtureFields(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"schema_version":"ntm.swarm.overload_regression.v1",
+		"scenarios":[{
+			"scenario_id":"missing_source_bug",
+			"synthetic":{"name":"fixture","pane_count":1,"command_count":1,"output_lines_per_command":1},
+			"backpressure_inputs":[{"surface":"robot_command","source_loaded":true}],
+			"expected_signals":{"reason_codes":["queue_depth"]},
+			"expected_artifacts":[{"name":"summary","schema_version":"ntm.swarm.experiment.v1"}]
+		}]
+	}`
+
+	_, err := ParseOverloadRegressionCorpus([]byte(raw))
+	if err == nil {
+		t.Fatal("ParseOverloadRegressionCorpus returned nil error for missing source_bug")
+	}
+	if !strings.Contains(err.Error(), "source_bug") {
+		t.Fatalf("error = %q, want source_bug", err.Error())
+	}
+}
+
+func TestRunOverloadRegressionCorpusShortGateWritesRegressionArtifact(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	root := t.TempDir()
+	now := func() time.Time { return time.Unix(1_700_060_000, 0).UTC() }
+
+	summary, err := RunOverloadRegressionCorpus(context.Background(), BuiltInOverloadRegressionCorpus(), OverloadRegressionOptions{
+		Now:          now,
+		Logger:       logger,
+		ArtifactRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("RunOverloadRegressionCorpus returned error: %v", err)
+	}
+	if !summary.Success {
+		t.Fatalf("summary.Success = false: %+v", summary.Results)
+	}
+	if strings.Compare(summary.GeneratedAt, now().UTC().Format(time.RFC3339Nano)) != 0 {
+		t.Fatalf("generated_at = %q, want fixed clock", summary.GeneratedAt)
+	}
+	if len(summary.Results) < 1 || len(summary.Results) > 1 {
+		t.Fatalf("results = %d, want 1", len(summary.Results))
+	}
+	result := summary.Results[0]
+	if strings.Compare(string(result.ComparisonResult), string(SyntheticExperimentPass)) != 0 {
+		t.Fatalf("comparison_result = %s, want pass: %+v", result.ComparisonResult, result.FailureReasons)
+	}
+	if strings.Compare(result.SourceBug, "bd-8kglp.3") != 0 {
+		t.Fatalf("source_bug = %q, want bd-8kglp.3", result.SourceBug)
+	}
+	if !containsBackpressureReason(result.ExpectedReasonCodes, backpressure.ReasonDroppedOutput) {
+		t.Fatalf("expected_reason_codes = %v, want dropped_output", result.ExpectedReasonCodes)
+	}
+	if result.MeasuredMetrics.DroppedCount < 160 {
+		t.Fatalf("dropped_count = %d, want at least 160", result.MeasuredMetrics.DroppedCount)
+	}
+	if result.ArtifactPaths.Regression == "" {
+		t.Fatal("regression artifact path is empty")
+	}
+
+	data, err := os.ReadFile(result.ArtifactPaths.Regression)
+	if err != nil {
+		t.Fatalf("read regression artifact: %v", err)
+	}
+	var decoded OverloadRegressionResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal regression artifact: %v", err)
+	}
+	if strings.Compare(decoded.SchemaVersion, SyntheticOverloadRegressionSchemaVersion) != 0 {
+		t.Fatalf("regression schema = %q, want %q", decoded.SchemaVersion, SyntheticOverloadRegressionSchemaVersion)
+	}
+	if strings.Compare(decoded.SourceBug, "bd-8kglp.3") != 0 ||
+		len(decoded.ExpectedReasonCodes) < 1 ||
+		decoded.MeasuredMetrics.PaneCount < 1 ||
+		strings.Compare(string(decoded.ComparisonResult), string(SyntheticExperimentPass)) != 0 {
+		t.Fatalf("regression artifact missing required closeout fields: %+v", decoded)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"overload_regression_corpus_result",
+		"scenario_id=bd_8kglp_3_robot_backpressure_resource_busy",
+		"source_bug=bd-8kglp.3",
+		"comparison_result=pass",
+		"artifact_path=",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+}
+
+func TestBuildOverloadRegressionResultToleranceFailure(t *testing.T) {
+	t.Parallel()
+	fixture := BuiltInOverloadRegressionCorpus().Scenarios[0]
+	artifact := overloadRegressionArtifactFixture(fixture)
+	artifact.Metrics.LatencyP95MS = 50
+
+	result := BuildOverloadRegressionResult(fixture, artifact)
+	if strings.Compare(string(result.ComparisonResult), string(SyntheticExperimentFail)) != 0 {
+		t.Fatalf("comparison_result = %s, want fail", result.ComparisonResult)
+	}
+	if !containsFailureReason(result.FailureReasons, "tolerance.latency_p95_ms") {
+		t.Fatalf("failure_reasons = %v, want latency tolerance failure", result.FailureReasons)
+	}
+}
+
+func TestBuildOverloadRegressionResultMissingArtifactFailsSchemaGate(t *testing.T) {
+	t.Parallel()
+	fixture := BuiltInOverloadRegressionCorpus().Scenarios[0]
+	artifact := overloadRegressionArtifactFixture(fixture)
+	artifact.ArtifactPaths.Regression = ""
+
+	result := BuildOverloadRegressionResult(fixture, artifact)
+	if strings.Compare(string(result.ComparisonResult), string(SyntheticExperimentFail)) != 0 {
+		t.Fatalf("comparison_result = %s, want fail", result.ComparisonResult)
+	}
+	if !containsFailureReason(result.FailureReasons, "artifact.missing.overload_regression") {
+		t.Fatalf("failure_reasons = %v, want missing regression artifact", result.FailureReasons)
+	}
+}
+
+func TestOverloadRegressionCorpusGuideDocumentsNewCases(t *testing.T) {
+	t.Parallel()
+	guide := OverloadRegressionCorpusGuide()
+	for _, want := range []string{
+		"scenario_id",
+		"source_bug",
+		"expected_signals.reason_codes",
+		"expected_robot_errors",
+		"opt-in",
+	} {
+		if !strings.Contains(guide, want) {
+			t.Fatalf("guide missing %q: %s", want, guide)
+		}
 	}
 }
 
@@ -415,10 +587,10 @@ func TestSyntheticHarnessLargeOptInWritesArtifact(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal artifact: %v", err)
 	}
-	if decoded.Metrics.PaneCount != 100 {
+	if decoded.Metrics.PaneCount < 100 || decoded.Metrics.PaneCount > 100 {
 		t.Fatalf("artifact pane count = %d, want 100", decoded.Metrics.PaneCount)
 	}
-	if decoded.Metrics.EventCount != 500 {
+	if decoded.Metrics.EventCount < 500 || decoded.Metrics.EventCount > 500 {
 		t.Fatalf("artifact event count = %d, want 500", decoded.Metrics.EventCount)
 	}
 }
@@ -438,10 +610,11 @@ func TestSyntheticExperimentLoadScenarioOptInWritesArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSyntheticExperiment returned error: %v", err)
 	}
-	if !artifact.OptIn || artifact.Gate != SyntheticExperimentGateLoad {
+	if !artifact.OptIn || strings.Compare(string(artifact.Gate), string(SyntheticExperimentGateLoad)) != 0 {
 		t.Fatalf("artifact opt-in/gate = %v/%s, want opt-in load", artifact.OptIn, artifact.Gate)
 	}
-	if artifact.Metrics.PaneCount != 100 || artifact.Metrics.EventCount != 500 {
+	if artifact.Metrics.PaneCount < 100 || artifact.Metrics.PaneCount > 100 ||
+		artifact.Metrics.EventCount < 500 || artifact.Metrics.EventCount > 500 {
 		t.Fatalf("load artifact metrics = %+v, want 100 panes and 500 events", artifact.Metrics)
 	}
 }
@@ -462,6 +635,56 @@ func syntheticExperimentFixture(testRunID string, p95MS float64, memoryGrowth in
 			EventThroughputPerSecond: throughput,
 		},
 	}
+}
+
+func overloadRegressionArtifactFixture(fixture OverloadRegressionFixture) SyntheticExperimentArtifact {
+	return SyntheticExperimentArtifact{
+		SchemaVersion: SyntheticExperimentSchemaVersion,
+		TestRunID:     "fixture",
+		ScenarioID:    fixture.ScenarioID,
+		Gate:          SyntheticExperimentGateShort,
+		Metrics: SyntheticExperimentMetrics{
+			PaneCount:                2,
+			CommandCount:             2,
+			LatencyP95MS:             5,
+			MemoryGrowthBytes:        1024,
+			GoroutinesLeaked:         0,
+			EventCount:               4,
+			EventThroughputPerSecond: 100,
+		},
+		Backpressure: SyntheticBackpressureArtifact{
+			SchemaVersion: SyntheticExperimentSchemaVersion,
+			Decision:      backpressure.DecisionDegrade,
+			ErrorCode:     "RESOURCE_BUSY",
+			RetryAfterMS:  backpressure.DefaultThresholds().DegradeRetryAfterMS,
+			ReasonCodes:   append([]backpressure.ReasonCode(nil), fixture.ExpectedSignals.ReasonCodes...),
+			DroppedCount:  160,
+			MaxQueueDepth: 640,
+		},
+		ArtifactPaths: SyntheticExperimentPaths{
+			Summary:      "/tmp/summary.json",
+			Backpressure: "/tmp/backpressure.json",
+			Regression:   "/tmp/overload_regression.json",
+		},
+	}
+}
+
+func containsBackpressureReason(reasons []backpressure.ReasonCode, want backpressure.ReasonCode) bool {
+	for _, reason := range reasons {
+		if strings.Compare(string(reason), string(want)) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFailureReason(reasons []string, want string) bool {
+	for _, reason := range reasons {
+		if strings.Compare(reason, want) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNonNegativeMemoryGrowth(t *testing.T) {
