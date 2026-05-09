@@ -51,6 +51,39 @@ func TestIsGitRepository(t *testing.T) {
 	}
 }
 
+func TestCanonicalSessionKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		in    string
+		want  string
+		want2 string
+	}{
+		{"empty falls back", "", "session", ""},
+		{"preserves identity-bearing suffix", "alpha-team-claude-12", "alpha-team-claude-12", ""},
+		{"normalizes disallowed characters", "alpha team/claude:12", "alpha-team-claude-12", ""},
+		{"collapses repeated separators", "alpha---team***claude", "alpha-team-claude", ""},
+		{"distinct pane IDs remain distinct", "alpha-team-claude-1", "alpha-team-claude-1", "alpha-team-claude-2"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := canonicalSessionKey(tc.in)
+			if got != tc.want {
+				t.Fatalf("canonicalSessionKey(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if tc.want2 != "" {
+				got2 := canonicalSessionKey(tc.want2)
+				if got == got2 {
+					t.Fatalf("distinct IDs collided: %q and %q both -> %q", tc.in, tc.want2, got)
+				}
+			}
+		})
+	}
+}
+
 func TestWorktreeManager_worktreeExists(t *testing.T) {
 	t.Parallel()
 

@@ -142,9 +142,9 @@ func TestWorktreeService_CleanupStaleWorktrees_WithManagers(t *testing.T) {
 	}
 }
 
-// bd-y9ndb + bd-p0526: matching must avoid prefix overlap ("my" vs
-// "my-app") and still match the value actually stored in worktree
-// branches: safeSessionPrefix("<session>-<agent>-<num>").
+// bd-y9ndb + bd-l542u: matching must avoid prefix overlap ("my" vs
+// "my-app") and preserve uniqueness for full "<session>-<agent>-<num>"
+// identities stored through canonicalSessionKey(...).
 func TestSessionMatchesWorktree(t *testing.T) {
 	t.Parallel()
 
@@ -155,35 +155,39 @@ func TestSessionMatchesWorktree(t *testing.T) {
 		sessionID   string
 		want        bool
 	}{
-		// Pre-fix data-loss case, now in stored (truncated) branch format.
+		// Pre-fix data-loss cases.
 		{"shorter session must not match longer-named worktree",
-			"my", "claude", safeSessionPrefix("my-app-claude-1"), false},
+			"my", "claude", canonicalSessionKey("my-app-claude-1"), false},
 		{"prefix-overlap with same agent type must not match",
-			"app", "claude", safeSessionPrefix("app2-claude-1"), false},
+			"app", "claude", canonicalSessionKey("app2-claude-1"), false},
 		{"shared prefix with different middle segment must not match",
-			"foo", "codex", safeSessionPrefix("foo-bar-codex-1"), false},
+			"foo", "codex", canonicalSessionKey("foo-bar-codex-1"), false},
+		{"same first 8 chars but different session identity must not match",
+			"alpha-team-x", "claude", canonicalSessionKey("alpha-team-y-claude-1"), false},
 
-		// Happy paths — stored worktree IDs are safeSessionPrefix values.
+		// Happy paths.
 		{"autoprovisioned short session matches",
-			"my", "claude", safeSessionPrefix("my-claude-1"), true},
+			"my", "claude", canonicalSessionKey("my-claude-1"), true},
 		{"hyphenated session matches its own worktree",
-			"my-app", "claude", safeSessionPrefix("my-app-claude-1"), true},
+			"my-app", "claude", canonicalSessionKey("my-app-claude-1"), true},
 		{"multi-digit agent num matches",
-			"proj", "codex", safeSessionPrefix("proj-codex-12"), true},
+			"proj", "codex", canonicalSessionKey("proj-codex-12"), true},
 		{"deeply hyphenated session matches",
-			"a-b-c-d", "gemini", safeSessionPrefix("a-b-c-d-gemini-3"), true},
+			"a-b-c-d", "gemini", canonicalSessionKey("a-b-c-d-gemini-3"), true},
+		{"same session/type different pane matches only exact pane suffix",
+			"alpha-team", "claude", canonicalSessionKey("alpha-team-claude-2"), true},
 
 		// Negative paths — wrong agent type, missing num, etc.
 		{"wrong agent type does not match",
-			"my", "codex", safeSessionPrefix("my-claude-1"), false},
+			"my", "codex", canonicalSessionKey("my-claude-1"), false},
 		{"missing trailing num does not match",
 			"zz", "cc", "zz-cc-", false},
 		{"non-digit suffix for short base does not match",
 			"zz", "cc", "zz-cc-ab", false},
 		{"empty session never matches",
-			"", "claude", safeSessionPrefix("x-claude-1"), false},
+			"", "claude", canonicalSessionKey("x-claude-1"), false},
 		{"empty agent never matches",
-			"my", "", safeSessionPrefix("my-claude-1"), false},
+			"my", "", canonicalSessionKey("my-claude-1"), false},
 		{"empty session id never matches",
 			"my", "claude", "", false},
 	}

@@ -258,29 +258,17 @@ func (ws *WorktreeService) GetSessionWorktreeStatus(ctx context.Context, session
 // sessionMatchesWorktree reports whether sessionID corresponds to a
 // worktree owned by (sessionName, agentType). AutoProvisionSession
 // builds "<sessionName>-<agentType>-<agentNum>", then ProvisionWorktree
-// stores safeSessionPrefix(...) in the branch path. Match against the
-// stored prefix form, but keep the bd-y9ndb safety property that
-// sessionName="my" must not match a "my-app-..." worktree.
+// stores canonicalSessionKey(...) in the branch path.
 func sessionMatchesWorktree(sessionName, agentType, sessionID string) bool {
 	if sessionName == "" || agentType == "" || sessionID == "" {
 		return false
 	}
 
-	expectedBase := sessionName + "-" + agentType + "-"
-
-	// safeSessionPrefix stores the first 8 chars when the source is long.
-	// In the common case, the "<agentNum>" tail is truncated, so the only
-	// stable match key is the exact truncated prefix.
-	if len(expectedBase) >= 8 {
-		return strings.Compare(sessionID, expectedBase[:8]) == 0
-	}
-
-	// For very short IDs (<8 chars before agent num), the stored value may
-	// include an all-digit suffix from agentNum and/or zero padding.
-	if !strings.HasPrefix(sessionID, expectedBase) {
+	expectedPrefix := canonicalSessionKey(sessionName+"-"+agentType) + "-"
+	if !strings.HasPrefix(sessionID, expectedPrefix) {
 		return false
 	}
-	rest := sessionID[len(expectedBase):]
+	rest := sessionID[len(expectedPrefix):]
 	if rest == "" {
 		return false
 	}
