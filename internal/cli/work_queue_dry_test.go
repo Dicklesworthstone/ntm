@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,6 +233,34 @@ func TestQueueDryReservationTimeoutIsInteractive(t *testing.T) {
 	}
 }
 
+func TestQueueDryTriageTimeoutIsInteractive(t *testing.T) {
+	if queueDryTriageTimeout <= 0 {
+		t.Fatalf("queueDryTriageTimeout = %s, must be positive", queueDryTriageTimeout)
+	}
+	if queueDryTriageTimeout >= 5*time.Second {
+		t.Fatalf("queueDryTriageTimeout = %s, must be < 5s for an interactive diagnostic", queueDryTriageTimeout)
+	}
+}
+
+func TestCollectQueueDryReportWarnsWhenTriageUnavailable(t *testing.T) {
+	oldGetTriage := queueDryGetTriage
+	queueDryGetTriage = func(string) (*bv.TriageResponse, error) {
+		return nil, errors.New("bv timed out after 2s")
+	}
+	t.Cleanup(func() {
+		queueDryGetTriage = oldGetTriage
+	})
+
+	report := collectQueueDryReport(t.TempDir(), time.Now().UTC(), 24*time.Hour, 0, 10*time.Minute, 1)
+
+	if report.Evidence.TriageError != "bv timed out after 2s" {
+		t.Fatalf("TriageError=%q, want timeout text", report.Evidence.TriageError)
+	}
+	if !containsWarning(report.Warnings, "bv triage unavailable: bv timed out after 2s") {
+		t.Fatalf("warnings=%v, want triage timeout warning", report.Warnings)
+	}
+}
+
 func TestAppendQueueDryReservationWarning(t *testing.T) {
 	report := QueueDryResponse{
 		Evidence: QueueDryEvidence{
@@ -346,6 +375,15 @@ func containsStringSlice(items []string, target string) bool {
 func containsReasonCode(items []assurance.ReasonCode, target assurance.ReasonCode) bool {
 	for _, item := range items {
 		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWarning(items []string, substr string) bool {
+	for _, item := range items {
+		if strings.Contains(item, substr) {
 			return true
 		}
 	}

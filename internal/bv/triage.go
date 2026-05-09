@@ -48,9 +48,22 @@ func normalizeTriageDir(dir string) (string, error) {
 // GetTriage returns the complete triage analysis from bv --robot-triage.
 // Results are cached for TriageCacheTTL (default 30 seconds).
 func GetTriage(dir string) (*TriageResponse, error) {
+	return getTriageWithTimeout(dir, DefaultTimeout)
+}
+
+// GetTriageWithTimeout returns complete triage analysis with a caller-scoped
+// command timeout. Cached results are still reused when valid.
+func GetTriageWithTimeout(dir string, timeout time.Duration) (*TriageResponse, error) {
+	return getTriageWithTimeout(dir, timeout)
+}
+
+func getTriageWithTimeout(dir string, timeout time.Duration) (*TriageResponse, error) {
 	normalizedDir, err := normalizeTriageDir(dir)
 	if err != nil {
 		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = DefaultTimeout
 	}
 
 	triageCacheMu.RLock()
@@ -75,7 +88,7 @@ func GetTriage(dir string) (*TriageResponse, error) {
 	}
 	triageCacheMu.RUnlock()
 
-	output, err := run(normalizedDir, "--robot-triage")
+	output, err := runWithTimeout(normalizedDir, timeout, "--robot-triage")
 	if err != nil {
 		return nil, err
 	}

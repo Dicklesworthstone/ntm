@@ -301,9 +301,14 @@ func (q *JobQueue) ListAll() []*SpawnJob {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	jobs := make([]*SpawnJob, len(q.jobs))
+	jobs := make(jobHeap, len(q.jobs))
 	copy(jobs, q.jobs)
-	return jobs
+
+	ordered := make([]*SpawnJob, 0, len(jobs))
+	for len(jobs) > 0 {
+		ordered = append(ordered, heap.Pop(&jobs).(*SpawnJob))
+	}
+	return ordered
 }
 
 // ListBySession returns jobs for a specific session.

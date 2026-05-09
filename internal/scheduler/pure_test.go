@@ -325,6 +325,42 @@ func TestJobQueue_ListAll(t *testing.T) {
 	}
 }
 
+func TestJobQueue_ListAllReturnsPriorityOrder(t *testing.T) {
+	t.Parallel()
+
+	q := NewJobQueue()
+	now := time.Now()
+	blocked := NewSpawnJob("blocked", JobTypeSession, "blocked-session")
+	blocked.Priority = PriorityUrgent
+	blocked.CreatedAt = now
+	low := NewSpawnJob("low", JobTypeSession, "low-session")
+	low.Priority = PriorityLow
+	low.CreatedAt = now.Add(time.Second)
+	high := NewSpawnJob("high", JobTypeSession, "high-session")
+	high.Priority = PriorityHigh
+	high.CreatedAt = now.Add(2 * time.Second)
+
+	q.Enqueue(blocked)
+	q.Enqueue(low)
+	q.Enqueue(high)
+
+	all := q.ListAll()
+	if len(all) != 3 {
+		t.Fatalf("ListAll returned %d items, want 3", len(all))
+	}
+	got := []string{all[0].ID, all[1].ID, all[2].ID}
+	want := []string{"blocked", "high", "low"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ListAll order=%v, want %v", got, want)
+		}
+	}
+
+	if first := q.Dequeue(); first.ID != "blocked" {
+		t.Fatalf("ListAll mutated queue heap: first Dequeue()=%q, want blocked", first.ID)
+	}
+}
+
 func TestJobQueue_ListBySession(t *testing.T) {
 	t.Parallel()
 	q := NewJobQueue()
@@ -831,6 +867,31 @@ func TestFairScheduler_MultiSession(t *testing.T) {
 	d3 = fs.TryDequeue()
 	if d3 == nil {
 		t.Error("should dequeue after marking session complete")
+	}
+}
+
+func TestFairScheduler_TryDequeueSkipsBlockedRootInPriorityOrder(t *testing.T) {
+	t.Parallel()
+
+	fs := NewFairScheduler(FairSchedulerConfig{MaxPerSession: 1, MaxPerBatch: 0})
+	blocked := NewSpawnJob("blocked", JobTypeSession, "blocked-session")
+	blocked.Priority = PriorityUrgent
+	low := NewSpawnJob("low", JobTypeSession, "low-session")
+	low.Priority = PriorityLow
+	high := NewSpawnJob("high", JobTypeSession, "high-session")
+	high.Priority = PriorityHigh
+
+	fs.Enqueue(blocked)
+	fs.Enqueue(low)
+	fs.Enqueue(high)
+	fs.running["blocked-session"] = 1
+
+	got := fs.TryDequeue()
+	if got == nil {
+		t.Fatal("TryDequeue returned nil")
+	}
+	if got.ID != "high" {
+		t.Fatalf("TryDequeue()=%q, want high-priority eligible sibling before low", got.ID)
 	}
 }
 

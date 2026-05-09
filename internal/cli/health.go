@@ -304,7 +304,7 @@ func runHealthOnce(session string) error {
 		// Mirror the severity ladder from the non-JSON path:
 		// `StatusError` → 2, anything else not-OK (warning,
 		// unknown, or the empty-string zero value) → 1, OK → 0.
-		switch output.SessionHealth.OverallStatus {
+		switch output.OverallStatus {
 		case health.StatusOK:
 			return nil
 		case health.StatusError:

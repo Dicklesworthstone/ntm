@@ -947,7 +947,14 @@ type CommitReadyMailEvidence struct {
 	Error            string `json:"error,omitempty"`
 }
 
-const queueDryReservationTimeout = 2 * time.Second
+const (
+	queueDryReservationTimeout = 2 * time.Second
+	queueDryTriageTimeout      = 2 * time.Second
+)
+
+var queueDryGetTriage = func(dir string) (*bv.TriageResponse, error) {
+	return bv.GetTriageWithTimeout(dir, queueDryTriageTimeout)
+}
 
 func runWorkCommitReady(format string, agentName string, syncLagMinutes int) error {
 	dir, err := os.Getwd()
@@ -1323,7 +1330,7 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		report.Evidence.StaleInProgress = findStaleInProgress(summary.InProgressList, now, staleThreshold, staleLimit)
 	}
 
-	triage, triageErr := bv.GetTriage(dir)
+	triage, triageErr := queueDryGetTriage(dir)
 	if triageErr != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bv triage unavailable: %v", triageErr))
 		report.Evidence.TriageError = triageErr.Error()
