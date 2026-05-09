@@ -126,8 +126,9 @@ func (ws *WorktreeService) AutoProvisionSession(ctx context.Context, sessionName
 
 	// Provision worktrees for each agent pane
 	for _, agentPane := range agentPanes {
-		// Generate a unique session ID for this agent
-		sessionID := fmt.Sprintf("%s-%s-%d", sessionName, agentPane.AgentType, agentPane.AgentNum)
+		// Generate a session ID that uses the same canonical agent key as
+		// branch/worktree naming so cleanup/status matching remains consistent.
+		sessionID := buildSessionWorktreeID(sessionName, agentPane.AgentType, agentPane.AgentNum)
 
 		// Provision worktree
 		worktreeInfo, err := manager.ProvisionWorktree(ctx, agentPane.AgentType, sessionID)
@@ -257,8 +258,9 @@ func (ws *WorktreeService) GetSessionWorktreeStatus(ctx context.Context, session
 
 // sessionMatchesWorktree reports whether sessionID corresponds to a
 // worktree owned by (sessionName, agentType). AutoProvisionSession
-// builds "<sessionName>-<agentType>-<agentNum>", then ProvisionWorktree
-// stores canonicalSessionKey(...) in the branch path.
+// builds buildSessionWorktreeID(...) (session + canonical agent key +
+// pane number), then ProvisionWorktree stores canonicalSessionKey(...) in
+// the branch path.
 func sessionMatchesWorktree(sessionName, agentType, sessionID string) bool {
 	if sessionName == "" || agentType == "" || sessionID == "" {
 		return false
@@ -278,6 +280,10 @@ func sessionMatchesWorktree(sessionName, agentType, sessionID string) bool {
 		}
 	}
 	return true
+}
+
+func buildSessionWorktreeID(sessionName, agentType string, agentNum int) string {
+	return canonicalSessionKey(fmt.Sprintf("%s-%s-%d", sessionName, canonicalAgentKey(agentType), agentNum))
 }
 
 func isUserAgentType(agentType tmux.AgentType) bool {

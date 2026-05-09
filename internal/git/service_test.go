@@ -180,6 +180,8 @@ func TestSessionMatchesWorktree(t *testing.T) {
 			"alpha--team", "claude", canonicalSessionKey("alpha--team-claude-1"), true},
 		{"same session/type different pane matches only exact pane suffix",
 			"alpha-team", "claude", canonicalSessionKey("alpha-team-claude-2"), true},
+		{"sanitized agent key with canonicalized session id matches",
+			"sess", canonicalAgentKey("../evil/type"), buildSessionWorktreeID("sess", "../evil/type", 1), true},
 
 		// Negative paths — wrong agent type, missing num, etc.
 		{"wrong agent type does not match",
@@ -205,5 +207,15 @@ func TestSessionMatchesWorktree(t *testing.T) {
 					tc.sessionName, tc.agentType, tc.sessionID, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildSessionWorktreeIDCanonicalizesAgentType(t *testing.T) {
+	t.Parallel()
+
+	got := buildSessionWorktreeID("sess", "../evil/type", 1)
+	want := canonicalSessionKey("sess-evil-type-1")
+	if got != want {
+		t.Fatalf("buildSessionWorktreeID() = %q, want %q", got, want)
 	}
 }
