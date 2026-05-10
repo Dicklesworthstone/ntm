@@ -367,37 +367,26 @@ func TestExport_Zip_WithScrollbackAndRedaction(t *testing.T) {
 		t.Errorf("Expected at least 2 files (metadata + scrollback), got %d", len(manifest.Files))
 	}
 
-	// Open zip and check scrollback was redacted
-	r, err := zip.OpenReader(outputPath)
-	if err != nil {
-		t.Fatalf("Failed to open zip: %v", err)
+	content := string(readZipEntry(t, outputPath, "panes/pane__0.txt"))
+	if strings.Contains(content, "AKIAIOSFODNN7EXAMPLE") {
+		t.Error("Expected AWS key to be redacted in exported scrollback")
 	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		if f.Name == "panes/pane__0.txt" {
-			rc, err := f.Open()
-			if err != nil {
-				t.Fatalf("Failed to open scrollback in zip: %v", err)
-			}
-			data := make([]byte, 1024)
-			n, _ := rc.Read(data)
-			rc.Close()
-			content := string(data[:n])
-
-			if strings.Contains(content, "AKIAIOSFODNN7EXAMPLE") {
-				t.Error("Expected AWS key to be redacted in exported scrollback")
-			}
-			if !strings.Contains(content, "normal output") {
-				t.Error("Expected normal output to be preserved in exported scrollback")
-			}
-			return
-		}
+	if !strings.Contains(content, "normal output") {
+		t.Error("Expected normal output to be preserved in exported scrollback")
 	}
-	t.Error("Scrollback file not found in zip archive")
 }
 
 func TestExport_Zip_RedactsCompressedScrollback(t *testing.T) {
+	assertExportRedactsCompressedScrollback(t, FormatZip, "test-export-redact-gzip.zip", readZipEntry)
+}
+
+func TestExport_TarGz_RedactsCompressedScrollback(t *testing.T) {
+	assertExportRedactsCompressedScrollback(t, FormatTarGz, "test-export-redact-gzip.tar.gz", readTarGzEntry)
+}
+
+func assertExportRedactsCompressedScrollback(t *testing.T, format ExportFormat, archiveName string, readEntry func(*testing.T, string, string) []byte) {
+	t.Helper()
+
 	tmpDir := t.TempDir()
 	exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))
 	importStorage := NewStorageWithDir(filepath.Join(tmpDir, "import"))
@@ -448,15 +437,15 @@ func TestExport_Zip_RedactsCompressedScrollback(t *testing.T) {
 	SetRedactionConfig(&redaction.Config{Mode: redaction.ModeRedact})
 	t.Cleanup(func() { SetRedactionConfig(nil) })
 
-	outputPath := filepath.Join(tmpDir, "test-export-redact-gzip.zip")
+	outputPath := filepath.Join(tmpDir, archiveName)
 	opts := DefaultExportOptions()
-	opts.Format = FormatZip
+	opts.Format = format
 	opts.RedactSecrets = true
 	if _, err := exportStorage.Export(sessionName, checkpointID, outputPath, opts); err != nil {
 		t.Fatalf("Export failed: %v", err)
 	}
 
-	archivedData := readZipEntry(t, outputPath, scrollbackFile)
+	archivedData := readEntry(t, outputPath, scrollbackFile)
 	plainData, err := gzipDecompress(archivedData)
 	if err != nil {
 		t.Fatalf("exported compressed scrollback is not valid gzip: %v", err)
@@ -469,7 +458,7 @@ func TestExport_Zip_RedactsCompressedScrollback(t *testing.T) {
 		t.Fatal("expected normal output to be preserved in compressed exported scrollback")
 	}
 
-	sessionData := readZipEntry(t, outputPath, SessionFile)
+	sessionData := readEntry(t, outputPath, SessionFile)
 	var archivedSession SessionState
 	if err := json.Unmarshal(sessionData, &archivedSession); err != nil {
 		t.Fatalf("failed to parse archived session.json: %v", err)
