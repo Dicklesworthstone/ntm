@@ -832,6 +832,9 @@ func TestCheckpoint_VerifyManifest(t *testing.T) {
 		if !result.ChecksumsValid {
 			t.Error("ChecksumsValid = false, want true")
 		}
+		if !result.SchemaValid || !result.FilesPresent || !result.ConsistencyValid {
+			t.Fatalf("valid manifest returned inconsistent flags: schema=%v files=%v consistency=%v", result.SchemaValid, result.FilesPresent, result.ConsistencyValid)
+		}
 	})
 
 	t.Run("tampered file", func(t *testing.T) {

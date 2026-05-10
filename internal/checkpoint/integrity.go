@@ -441,13 +441,8 @@ func (c *Checkpoint) GenerateManifest(storage *Storage) (*FileManifest, error) {
 
 // VerifyManifest checks that all files match the manifest checksums.
 func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *IntegrityResult {
-	result := &IntegrityResult{
-		Valid:          true,
-		ChecksumsValid: true,
-		Errors:         []string{},
-		Details:        make(map[string]string),
-		Manifest:       manifest,
-	}
+	result := newIntegrityResult()
+	result.Manifest = manifest
 
 	if manifest == nil || len(manifest.Files) == 0 {
 		result.Warnings = append(result.Warnings, "no manifest provided, skipping checksum verification")
