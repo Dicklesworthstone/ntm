@@ -541,6 +541,12 @@ func TestCheckpoint_GenerateManifest(t *testing.T) {
 	if _, ok := manifest.Files[SessionFile]; !ok {
 		t.Error("Missing session.json in manifest")
 	}
+	if manifest.CreatedAt == "" {
+		t.Fatal("CreatedAt is empty, want generation timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, manifest.CreatedAt); err != nil {
+		t.Fatalf("CreatedAt = %q, want RFC3339 timestamp: %v", manifest.CreatedAt, err)
+	}
 
 	// Verify the hashes are valid hex strings
 	for path, hash := range manifest.Files {

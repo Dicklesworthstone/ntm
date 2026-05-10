@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // CurrentVersion is the current checkpoint format version.
@@ -348,7 +349,8 @@ func (c *Checkpoint) GenerateManifest(storage *Storage) (*FileManifest, error) {
 		return nil, err
 	}
 	manifest := &FileManifest{
-		Files: make(map[string]string),
+		Files:     make(map[string]string),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	// Hash metadata.json
