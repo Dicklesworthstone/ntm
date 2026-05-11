@@ -1728,6 +1728,9 @@ func TestVerifyManifest_MissingFileOnDisk(t *testing.T) {
 	if result.ChecksumsValid {
 		t.Error("ChecksumsValid should be false")
 	}
+	if result.FilesPresent {
+		t.Error("FilesPresent should be false")
+	}
 
 	foundMissing := false
 	for _, e := range result.Errors {

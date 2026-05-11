@@ -452,6 +452,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 	dir, err := storage.safeCheckpointDir(c.SessionName, c.ID)
 	if err != nil {
 		result.Valid = false
+		result.FilesPresent = false
 		result.ChecksumsValid = false
 		result.Errors = append(result.Errors, err.Error())
 		return result
@@ -482,6 +483,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 
 		fullPath, err := resolveExistingCheckpointArtifactPath(dir, relPath)
 		if err != nil {
+			result.FilesPresent = false
 			if errors.Is(err, os.ErrNotExist) {
 				result.Errors = append(result.Errors, fmt.Sprintf("file missing: %s", relPath))
 			} else {
@@ -492,6 +494,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 		}
 		actualHash, err := hashFile(fullPath)
 		if err != nil {
+			result.FilesPresent = false
 			if os.IsNotExist(err) {
 				result.Errors = append(result.Errors, fmt.Sprintf("file missing: %s", relPath))
 			} else {

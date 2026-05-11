@@ -905,6 +905,9 @@ func TestCheckpoint_VerifyManifest_RejectsSymlinkCanonicalFiles(t *testing.T) {
 	if result.Valid {
 		t.Fatalf("VerifyManifest() unexpectedly reported valid")
 	}
+	if result.FilesPresent {
+		t.Fatal("VerifyManifest() reported symlinked manifest file as present")
+	}
 	if len(result.Errors) == 0 || !strings.Contains(strings.Join(result.Errors, "\n"), "must not be a symlink") {
 		t.Fatalf("VerifyManifest() errors = %v, want symlink rejection", result.Errors)
 	}
