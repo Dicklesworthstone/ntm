@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -812,13 +813,16 @@ func validateTarImportEntry(header *tar.Header) (bool, error) {
 	if header == nil {
 		return false, fmt.Errorf("archive contains nil tar header")
 	}
-	if err := validateImportEntryName(header.Name); err != nil {
-		return false, err
-	}
 	switch header.Typeflag {
 	case tar.TypeReg, tar.TypeRegA:
+		if err := validateImportEntryName(header.Name); err != nil {
+			return false, err
+		}
 		return false, nil
 	case tar.TypeDir:
+		if err := validateImportDirectoryEntryName(header.Name); err != nil {
+			return false, err
+		}
 		return true, nil
 	default:
 		return false, fmt.Errorf("archive contains non-regular entry: %s", header.Name)
@@ -829,12 +833,15 @@ func validateZipImportEntry(f *zip.File) (bool, error) {
 	if f == nil {
 		return false, fmt.Errorf("archive contains nil zip entry")
 	}
-	if err := validateImportEntryName(f.Name); err != nil {
-		return false, err
-	}
 	info := f.FileInfo()
 	if info.IsDir() {
+		if err := validateImportDirectoryEntryName(f.Name); err != nil {
+			return false, err
+		}
 		return true, nil
+	}
+	if err := validateImportEntryName(f.Name); err != nil {
+		return false, err
 	}
 	if !info.Mode().IsRegular() {
 		return false, fmt.Errorf("archive contains non-regular entry: %s", f.Name)
@@ -842,12 +849,23 @@ func validateZipImportEntry(f *zip.File) (bool, error) {
 	return false, nil
 }
 
+func validateImportDirectoryEntryName(name string) error {
+	return validateImportEntryName(strings.TrimSuffix(name, "/"))
+}
+
 func validateImportEntryName(name string) error {
 	if name == "" {
 		return fmt.Errorf("archive contains empty entry name")
 	}
+	if strings.Contains(name, `\`) {
+		return fmt.Errorf("invalid path in archive (backslash path separator): %s", name)
+	}
 	if filepath.IsAbs(name) {
 		return fmt.Errorf("invalid path in archive (absolute path): %s", name)
+	}
+	cleanName := path.Clean(name)
+	if cleanName == "." || cleanName != name {
+		return fmt.Errorf("invalid path in archive (non-canonical path): %s", name)
 	}
 	if !isPathWithinDir(".", name) {
 		return fmt.Errorf("invalid path in archive (path traversal attempt): %s", name)

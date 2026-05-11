@@ -934,6 +934,68 @@ func TestImportZip_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestImportTarGz_RejectsNonCanonicalArchivePath(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "noncanonical-session"
+	checkpointID := "noncanonical-cp"
+	session := SessionState{
+		Panes: []PaneState{
+			{ID: "%0", Index: 0, ScrollbackFile: "panes/./pane__0.txt"},
+		},
+	}
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session:     session,
+		PaneCount:   1,
+	}
+	cpJSON, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionJSON := validSessionJSON(t, session)
+
+	archive := filepath.Join(tmpDir, "noncanonical.tar.gz")
+	buildTarGz(t, archive, map[string][]byte{
+		MetadataFile:          cpJSON,
+		SessionFile:           sessionJSON,
+		"panes/./pane__0.txt": []byte("aliased scrollback"),
+	})
+
+	_, err = storage.Import(archive, ImportOptions{VerifyChecksums: false})
+	if err == nil {
+		t.Fatal("expected import to reject non-canonical archive path")
+	}
+	if !strings.Contains(err.Error(), "non-canonical path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImportZip_AllowsCanonicalDirectoryEntries(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+
+	cpJSON := validCheckpointJSON(t, "zip-dir-session", "zip-dir-cp")
+	sessionJSON := validSessionJSON(t, SessionState{})
+
+	archive := filepath.Join(tmpDir, "with-dir.zip")
+	buildZip(t, archive, map[string][]byte{
+		MetadataFile: cpJSON,
+		SessionFile:  sessionJSON,
+		"panes/":     nil,
+	})
+
+	if _, err := storage.Import(archive, ImportOptions{VerifyChecksums: false}); err != nil {
+		t.Fatalf("import with canonical directory entry failed: %v", err)
+	}
+}
+
 // =============================================================================
 // Import tar.gz: corrupt checkpoint JSON
 // =============================================================================
