@@ -209,6 +209,95 @@ func TestExport_UnsupportedFormat(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsNonCanonicalArtifactReference(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "save-invalid-artifact"
+	checkpointID := "save-invalid-cp"
+	cpDir := storage.CheckpointDir(sessionName, checkpointID)
+	panesDir := filepath.Join(cpDir, PanesDir)
+	if err := os.MkdirAll(panesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(panesDir, "pane__0.txt"), []byte("scrollback"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		WorkingDir:  "/tmp/test",
+		CreatedAt:   time.Now(),
+		Session: SessionState{
+			Panes: []PaneState{
+				{ID: "%0", Index: 0, ScrollbackFile: "panes/./pane__0.txt"},
+			},
+		},
+		PaneCount: 1,
+	}
+
+	err := storage.Save(cp)
+	if err == nil {
+		t.Fatal("expected save to reject non-canonical artifact reference")
+	}
+	if !strings.Contains(err.Error(), "non-canonical path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExportRejectsNonCanonicalArtifactReference(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "export-invalid-artifact"
+	checkpointID := "export-invalid-cp"
+	cpDir := storage.CheckpointDir(sessionName, checkpointID)
+	panesDir := filepath.Join(cpDir, PanesDir)
+	if err := os.MkdirAll(panesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(panesDir, "pane__0.txt"), []byte("scrollback"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := SessionState{
+		Panes: []PaneState{
+			{ID: "%0", Index: 0, ScrollbackFile: "panes/./pane__0.txt"},
+		},
+	}
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		WorkingDir:  "/tmp/test",
+		CreatedAt:   time.Now(),
+		Session:     session,
+		PaneCount:   1,
+	}
+	if err := writeJSON(filepath.Join(cpDir, MetadataFile), cp); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(cpDir, SessionFile), session); err != nil {
+		t.Fatal(err)
+	}
+
+	archivePath := filepath.Join(tmpDir, "invalid-artifact.zip")
+	_, err := storage.Export(sessionName, checkpointID, archivePath, ExportOptions{
+		Format:            FormatZip,
+		IncludeScrollback: true,
+	})
+	if err == nil {
+		t.Fatal("expected export to reject non-canonical artifact reference")
+	}
+	if !strings.Contains(err.Error(), "non-canonical path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // =============================================================================
 // Export: auto-generated dest path
 // =============================================================================
@@ -668,6 +757,49 @@ func TestImportZip_RejectsGitPatchAliasToMetadata(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid git patch path") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImportZip_AllowsSafeCustomGitArtifactPaths(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "custom-git-artifacts-session"
+	checkpointID := "custom-git-artifacts-cp"
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Git: GitState{
+			PatchFile:  "git/custom.patch",
+			StatusFile: "git/custom.status",
+		},
+	}
+	cpJSON, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionJSON := validSessionJSON(t, SessionState{})
+
+	archive := filepath.Join(tmpDir, "custom-git-artifacts.zip")
+	buildZip(t, archive, map[string][]byte{
+		MetadataFile:        cpJSON,
+		SessionFile:         sessionJSON,
+		"git/custom.patch":  []byte("diff --git a/custom.go b/custom.go\n"),
+		"git/custom.status": []byte("M  custom.go\n"),
+	})
+
+	imported, err := storage.Import(archive, ImportOptions{VerifyChecksums: false})
+	if err != nil {
+		t.Fatalf("import with custom git artifact paths failed: %v", err)
+	}
+	if imported.Git.PatchFile != "git/custom.patch" {
+		t.Fatalf("PatchFile = %q", imported.Git.PatchFile)
+	}
+	if imported.Git.StatusFile != "git/custom.status" {
+		t.Fatalf("StatusFile = %q", imported.Git.StatusFile)
 	}
 }
 

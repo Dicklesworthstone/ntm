@@ -349,6 +349,9 @@ func resolveCheckpointArtifactPathSet(baseDir string, cp *Checkpoint) (map[strin
 	if cp == nil {
 		return paths, nil
 	}
+	if err := validateCheckpointArtifactReferences(cp); err != nil {
+		return nil, err
+	}
 
 	for _, pane := range cp.Session.Panes {
 		if pane.ScrollbackFile == "" {

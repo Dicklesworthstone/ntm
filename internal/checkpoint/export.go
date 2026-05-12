@@ -200,6 +200,9 @@ func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts
 
 	// Prepare checkpoint data (potentially with path rewriting)
 	cpData := rewriteCheckpointForExport(cp, opts)
+	if err := validateCheckpointArtifactReferences(cpData); err != nil {
+		return nil, fmt.Errorf("invalid checkpoint artifact references: %w", err)
+	}
 	redactedScrollbackFiles, err := prepareRedactedScrollbackArtifacts(cpDir, cpData, opts)
 	if err != nil {
 		return nil, err
@@ -1214,7 +1217,7 @@ func validateImportedManifestMetadata(manifest *ExportManifest, cp *Checkpoint) 
 }
 
 func validateImportedArchiveFiles(fileContents map[string][]byte, cp *Checkpoint) error {
-	if err := validateImportedArtifactReferences(cp); err != nil {
+	if err := validateCheckpointArtifactReferences(cp); err != nil {
 		return err
 	}
 
@@ -1253,7 +1256,7 @@ func validateImportedArchiveFiles(fileContents map[string][]byte, cp *Checkpoint
 	return nil
 }
 
-func validateImportedArtifactReferences(cp *Checkpoint) error {
+func validateCheckpointArtifactReferences(cp *Checkpoint) error {
 	for _, pane := range cp.Session.Panes {
 		if pane.ScrollbackFile == "" {
 			continue
@@ -1267,13 +1270,34 @@ func validateImportedArtifactReferences(cp *Checkpoint) error {
 		}
 	}
 
-	if cp.Git.PatchFile != "" && cp.Git.PatchFile != GitPatchFile {
-		return fmt.Errorf("invalid git patch path: expected %s, got %s", GitPatchFile, cp.Git.PatchFile)
+	if err := validateGitArtifactReference("git patch", cp.Git.PatchFile); err != nil {
+		return err
 	}
-	if cp.Git.StatusFile != "" && cp.Git.StatusFile != GitStatusFile {
-		return fmt.Errorf("invalid git status path: expected %s, got %s", GitStatusFile, cp.Git.StatusFile)
+	if err := validateGitArtifactReference("git status", cp.Git.StatusFile); err != nil {
+		return err
+	}
+	if cp.Git.PatchFile != "" && cp.Git.PatchFile == cp.Git.StatusFile {
+		return fmt.Errorf("invalid git artifact paths: patch and status must be distinct: %s", cp.Git.PatchFile)
 	}
 
+	return nil
+}
+
+func validateGitArtifactReference(kind, artifactPath string) error {
+	if artifactPath == "" {
+		return nil
+	}
+	if err := validateImportEntryName(artifactPath); err != nil {
+		return fmt.Errorf("invalid %s path: %w", kind, err)
+	}
+	cleanPath := filepath.ToSlash(filepath.Clean(artifactPath))
+	switch cleanPath {
+	case MetadataFile, SessionFile, "MANIFEST.json":
+		return fmt.Errorf("invalid %s path: must not alias reserved checkpoint file: %s", kind, artifactPath)
+	}
+	if cleanPath == PanesDir || strings.HasPrefix(cleanPath, PanesDir+"/") {
+		return fmt.Errorf("invalid %s path: must not be under %s/: %s", kind, PanesDir, artifactPath)
+	}
 	return nil
 }
 
