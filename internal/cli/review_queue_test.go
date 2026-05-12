@@ -511,6 +511,27 @@ func TestReviewQueue_GlobalJSONFlagSuppressesSlog(t *testing.T) {
 	}
 }
 
+func TestReviewQueue_FormatJSONSuppressesSlogCaseInsensitive(t *testing.T) {
+	prevJSON := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	prevLogger := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	_ = runReviewQueue("non-existent-session-ntm-134", "", 2*time.Minute, false, "JSON", 5)
+
+	if got := buf.String(); got != "" {
+		t.Fatalf(
+			"slog output captured under --format JSON; expected empty buffer because "+
+				"format handling should be case-insensitive. Got:\n%s",
+			got,
+		)
+	}
+}
+
 func TestReviewQueue_NonJSONLeavesSlogIntact(t *testing.T) {
 	prevJSON := jsonOutput
 	jsonOutput = false

@@ -117,7 +117,7 @@ func runReviewQueue(session, filter string, idleThreshold time.Duration, send bo
 	// flag. Before this fix, `ntm review-queue --json` fell through to
 	// the human-readable report path, contaminating stdout with prose
 	// when downstream tools (flywheel L85) tried to `jq` the output.
-	isJSON := formatOut == "json" || IsJSONOutput()
+	isJSON := strings.EqualFold(formatOut, "json") || IsJSONOutput()
 
 	// In JSON mode, suppress slog telemetry for the duration of this
 	// call so consumers that capture `2>&1` get a clean parseable
