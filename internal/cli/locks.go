@@ -296,11 +296,23 @@ func runLocksCheck(session, path string, pane int, taskID string) error {
 	case "free":
 		fmt.Printf("free: %s is not held by any agent\n", path)
 	case "held":
-		fmt.Printf("held: %s is reserved by %s (you), pattern=%q, expires=%s\n",
-			path, result.Holder.Agent, result.Holder.PathPattern, result.Holder.ExpiresAt)
+		// Defensive nil-check: under the current code path the loop
+		// above always sets Holder when state is "held"/"blocked", but
+		// a future refactor that sets State without Holder would crash
+		// terminal users here with a nil-deref panic. Cheap guard.
+		if result.Holder == nil {
+			fmt.Printf("held: %s (no holder details available)\n", path)
+		} else {
+			fmt.Printf("held: %s is reserved by %s (you), pattern=%q, expires=%s\n",
+				path, result.Holder.Agent, result.Holder.PathPattern, result.Holder.ExpiresAt)
+		}
 	case "blocked":
-		fmt.Printf("blocked: %s is reserved by %s, pattern=%q, expires=%s\n",
-			path, result.Holder.Agent, result.Holder.PathPattern, result.Holder.ExpiresAt)
+		if result.Holder == nil {
+			fmt.Printf("blocked: %s (no holder details available)\n", path)
+		} else {
+			fmt.Printf("blocked: %s is reserved by %s, pattern=%q, expires=%s\n",
+				path, result.Holder.Agent, result.Holder.PathPattern, result.Holder.ExpiresAt)
+		}
 	}
 	fmt.Printf("audit_token: %s\n", result.AuditToken)
 	return nil
