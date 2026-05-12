@@ -316,6 +316,10 @@ func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessio
 	workingDir := filepath.Join(wm.baseRepo, "..", worktreeName)
 	branchName := fmt.Sprintf("agent/%s/%s", agentKey, sessionKey)
 
+	return wm.removeWorktreePathAndBranch(ctx, workingDir, branchName)
+}
+
+func (wm *WorktreeManager) removeWorktreePathAndBranch(ctx context.Context, workingDir, branchName string) error {
 	// Remove the worktree
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", workingDir)
 	cmd.WaitDelay = 2 * time.Second
@@ -328,13 +332,15 @@ func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessio
 	}
 
 	// Remove the branch
-	cmd = exec.CommandContext(ctx, "git", "branch", "-D", branchName)
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = wm.baseRepo
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// If branch doesn't exist, that's OK
-		if !strings.Contains(string(output), "not found") {
-			return fmt.Errorf("failed to remove branch: %w\nOutput: %s", err, string(output))
+	if branchName != "" {
+		cmd = exec.CommandContext(ctx, "git", "branch", "-D", branchName)
+		cmd.WaitDelay = 2 * time.Second
+		cmd.Dir = wm.baseRepo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			// If branch doesn't exist, that's OK
+			if !strings.Contains(string(output), "not found") {
+				return fmt.Errorf("failed to remove branch: %w\nOutput: %s", err, string(output))
+			}
 		}
 	}
 
@@ -355,9 +361,7 @@ func (wm *WorktreeManager) CleanupStaleWorktrees(ctx context.Context, maxAge tim
 			// Extract agent and session info from branch name
 			parts := strings.Split(wt.Branch, "/")
 			if len(parts) >= 3 {
-				agentName := parts[1]
-				sessionID := parts[2] // canonicalSessionKey handles normalization
-				if err := wm.RemoveWorktree(ctx, agentName, sessionID); err != nil {
+				if err := wm.removeWorktreePathAndBranch(ctx, wt.Path, wt.Branch); err != nil {
 					// Log error but continue cleanup
 					fmt.Printf("Warning: failed to remove stale worktree for %s: %v\n", wt.Path, err)
 				}

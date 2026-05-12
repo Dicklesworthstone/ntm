@@ -203,8 +203,10 @@ func (ws *WorktreeService) CleanupSessionWorktrees(ctx context.Context, sessionN
 				// agentType and require the trailing portion to be all
 				// digits so "my" cannot match a "my-app-..." sessionID.
 				if sessionMatchesWorktree(sessionName, agentType, sessionID) {
-					// This worktree belongs to our session
-					if err := manager.RemoveWorktree(ctx, agentType, sessionID); err != nil {
+					// This worktree belongs to our session. Remove the exact
+					// path reported by git so cleanup still works for
+					// renamed or older worktree basename schemes.
+					if err := manager.removeWorktreePathAndBranch(ctx, wt.Path, wt.Branch); err != nil {
 						log.Printf("Warning: failed to remove worktree for %s: %v", sessionID, err)
 					}
 				}

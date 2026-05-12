@@ -2,6 +2,9 @@ package git
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -139,6 +142,30 @@ func TestWorktreeService_CleanupStaleWorktrees_WithManagers(t *testing.T) {
 	err = svc.CleanupStaleWorktrees(context.Background(), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("CleanupStaleWorktrees: %v", err)
+	}
+}
+
+func TestWorktreeService_CleanupSessionWorktrees_RemovesListedLegacyPath(t *testing.T) {
+	t.Parallel()
+
+	repo := setupGitRepo(t)
+	sessionName := filepath.Base(repo)
+	cfg := &config.Config{ProjectsBase: filepath.Dir(repo)}
+	svc := NewWorktreeService(cfg)
+
+	sessionID := canonicalSessionKey(sessionName + "-claude-1")
+	legacyPath := filepath.Join(repo, "..", "agent-claude-"+sessionID)
+	cmd := exec.Command("git", "worktree", "add", "-b", "agent/claude/"+sessionID, legacyPath)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("legacy git worktree add failed: %v\n%s", err, out)
+	}
+
+	if err := svc.CleanupSessionWorktrees(context.Background(), sessionName); err != nil {
+		t.Fatalf("CleanupSessionWorktrees: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy session worktree path to be gone, stat err=%v", err)
 	}
 }
 

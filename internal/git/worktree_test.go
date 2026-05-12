@@ -861,6 +861,39 @@ func TestWorktreeManager_CleanupStaleWorktrees(t *testing.T) {
 	}
 }
 
+func TestWorktreeManager_CleanupStaleWorktrees_RemovesListedLegacyPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+	legacyPath := filepath.Join(tmp, "..", "agent-a-b-c")
+	cmd := exec.Command("git", "worktree", "add", "-b", "agent/a-b/c", legacyPath)
+	cmd.Dir = tmp
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("legacy git worktree add failed: %v\n%s", err, out)
+	}
+
+	if err := wm.CleanupStaleWorktrees(ctx, 0); err != nil {
+		t.Fatalf("CleanupStaleWorktrees: %v", err)
+	}
+
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Fatalf("expected legacy worktree to be removed by listed path, got %d", len(worktrees))
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy worktree path to be gone, stat err=%v", err)
+	}
+}
+
 func TestWorktreeManager_CleanupStaleWorktrees_RecentKept(t *testing.T) {
 	t.Parallel()
 
