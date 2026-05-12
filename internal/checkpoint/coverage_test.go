@@ -976,6 +976,48 @@ func TestImportTarGz_RejectsNonCanonicalArchivePath(t *testing.T) {
 	}
 }
 
+func TestImportZip_RejectsColonArchivePath(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "colon-path-session"
+	checkpointID := "colon-path-cp"
+	session := SessionState{
+		Panes: []PaneState{
+			{ID: "%0", Index: 0, ScrollbackFile: "panes/pane:0.txt"},
+		},
+	}
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session:     session,
+		PaneCount:   1,
+	}
+	cpJSON, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionJSON := validSessionJSON(t, session)
+
+	archive := filepath.Join(tmpDir, "colon-path.zip")
+	buildZip(t, archive, map[string][]byte{
+		MetadataFile:       cpJSON,
+		SessionFile:        sessionJSON,
+		"panes/pane:0.txt": []byte("colon path scrollback"),
+	})
+
+	_, err = storage.Import(archive, ImportOptions{VerifyChecksums: false})
+	if err == nil {
+		t.Fatal("expected import to reject colon archive path")
+	}
+	if !strings.Contains(err.Error(), "colon path segment") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestImportZip_AllowsCanonicalDirectoryEntries(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

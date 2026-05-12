@@ -860,6 +860,11 @@ func validateImportEntryName(name string) error {
 	if strings.Contains(name, `\`) {
 		return fmt.Errorf("invalid path in archive (backslash path separator): %s", name)
 	}
+	for _, segment := range strings.Split(name, "/") {
+		if strings.Contains(segment, ":") {
+			return fmt.Errorf("invalid path in archive (colon path segment): %s", name)
+		}
+	}
 	if filepath.IsAbs(name) {
 		return fmt.Errorf("invalid path in archive (absolute path): %s", name)
 	}
