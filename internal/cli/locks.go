@@ -244,7 +244,7 @@ func runLocksCheck(session, path string, pane int, taskID string) error {
 		if r.ReleasedTS != nil {
 			continue
 		}
-		if !r.ExpiresTS.Time.IsZero() && r.ExpiresTS.Time.Before(now) {
+		if !r.ExpiresTS.IsZero() && r.ExpiresTS.Before(now) {
 			continue
 		}
 		matchPattern := locksComparableReservationPath(r.PathPattern, projectKey)
@@ -355,6 +355,8 @@ func locksNormalizeReservationPath(value string) string {
 	return strings.TrimPrefix(value, "./")
 }
 
+// locksComparableReservationPath maps absolute paths inside projectKey
+// back to the project-relative form Agent Mail reservations usually store.
 func locksComparableReservationPath(value, projectKey string) string {
 	value = locksNormalizeReservationPath(value)
 	projectKey = locksNormalizeReservationPath(projectKey)

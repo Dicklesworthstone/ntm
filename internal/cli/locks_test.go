@@ -154,6 +154,59 @@ func TestLocksCheckPathMatches_ExactAndPrefixAndGlobs(t *testing.T) {
 	}
 }
 
+func TestLocksComparableReservationPath_ProjectRelativeMatching(t *testing.T) {
+	t.Parallel()
+	projectKey := "/data/projects/ntm"
+	cases := []struct {
+		name        string
+		path        string
+		pattern     string
+		wantMatch   bool
+		wantPath    string
+		wantPattern string
+	}{
+		{
+			name:        "absolute_query_matches_relative_pattern",
+			path:        "/data/projects/ntm/internal/cli/locks.go",
+			pattern:     "internal/**",
+			wantMatch:   true,
+			wantPath:    "internal/cli/locks.go",
+			wantPattern: "internal/**",
+		},
+		{
+			name:        "relative_query_matches_absolute_pattern",
+			path:        "internal/cli/locks.go",
+			pattern:     "/data/projects/ntm/internal/**/*.go",
+			wantMatch:   true,
+			wantPath:    "internal/cli/locks.go",
+			wantPattern: "internal/**/*.go",
+		},
+		{
+			name:        "absolute_query_outside_project_stays_absolute",
+			path:        "/tmp/ntm/internal/cli/locks.go",
+			pattern:     "internal/**",
+			wantMatch:   false,
+			wantPath:    "/tmp/ntm/internal/cli/locks.go",
+			wantPattern: "internal/**",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPath := locksComparableReservationPath(tc.path, projectKey)
+			gotPattern := locksComparableReservationPath(tc.pattern, projectKey)
+			if gotPath != tc.wantPath {
+				t.Fatalf("comparable path = %q, want %q", gotPath, tc.wantPath)
+			}
+			if gotPattern != tc.wantPattern {
+				t.Fatalf("comparable pattern = %q, want %q", gotPattern, tc.wantPattern)
+			}
+			if got := locksCheckPathMatches(gotPath, gotPattern); got != tc.wantMatch {
+				t.Fatalf("locksCheckPathMatches(%q, %q) = %v, want %v", gotPath, gotPattern, got, tc.wantMatch)
+			}
+		})
+	}
+}
+
 // Pin the JSON envelope's contract: the four wrapper-facing fields
 // (state, holder, audit_token, observed_at) are present in the
 // stable shape, and `holder == null` cleanly distinguishes the
@@ -162,14 +215,15 @@ func TestLocksCheckPathMatches_ExactAndPrefixAndGlobs(t *testing.T) {
 // that drops `omitempty` would break their integration silently.
 func TestLocksCheckResult_FreeStateOmitsHolder(t *testing.T) {
 	t.Parallel()
+	observedAt := "2026-05-12T12:00:00Z"
 	r := LocksCheckResult{
 		Success:    true,
 		Session:    "myproject",
 		ProjectKey: "/data/projects/foo",
 		Path:       "src/auth.rs",
 		State:      "free",
-		ObservedAt: "2026-05-12T12:00:00Z",
-		AuditToken: "ntm:locks:check:foo:src/auth.rs:2026-05-12T12:00:00Z",
+		ObservedAt: observedAt,
+		AuditToken: newLocksCheckAuditToken("foo", "src/auth.rs", observedAt),
 	}
 	bytes, err := jsonMarshalIndent(r)
 	if err != nil {
@@ -192,6 +246,7 @@ func TestLocksCheckResult_FreeStateOmitsHolder(t *testing.T) {
 
 func TestLocksCheckResult_HeldStatePopulatesHolder(t *testing.T) {
 	t.Parallel()
+	observedAt := "2026-05-12T12:00:00Z"
 	r := LocksCheckResult{
 		Success:    true,
 		Session:    "myproject",
@@ -206,8 +261,8 @@ func TestLocksCheckResult_HeldStatePopulatesHolder(t *testing.T) {
 			PathPattern:   "src/auth.rs",
 			ReservationID: 42,
 		},
-		ObservedAt: "2026-05-12T12:00:00Z",
-		AuditToken: "ntm:locks:check:foo:src/auth.rs:2026-05-12T12:00:00Z",
+		ObservedAt: observedAt,
+		AuditToken: newLocksCheckAuditToken("foo", "src/auth.rs", observedAt),
 	}
 	bytes, err := jsonMarshalIndent(r)
 	if err != nil {
