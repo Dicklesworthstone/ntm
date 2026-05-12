@@ -638,6 +638,64 @@ func TestPrepareSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestPrepareSystemPromptRejectsInvalidPersonaName(t *testing.T) {
+	tmpDir := t.TempDir()
+	outsideDir := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Persona{
+		Name:         "../../outside/prompt",
+		AgentType:    "claude",
+		SystemPrompt: "should not be written",
+	}
+
+	if _, err := PrepareSystemPrompt(p, tmpDir); err == nil {
+		t.Fatal("PrepareSystemPrompt() error = nil, want invalid persona name")
+	} else if !strings.Contains(err.Error(), "invalid characters") {
+		t.Fatalf("PrepareSystemPrompt() error = %v, want invalid persona name", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "prompt.md")); !os.IsNotExist(err) {
+		t.Fatalf("PrepareSystemPrompt() wrote outside prompts directory, stat err = %v", err)
+	}
+}
+
+func TestPrepareSystemPromptRejectsPromptsSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	ntmDir := filepath.Join(projectDir, ".ntm")
+	outsideDir := filepath.Join(tmpDir, "outside-prompts")
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(ntmDir, "prompts")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	p := &Persona{
+		Name:         "architect",
+		AgentType:    "claude",
+		SystemPrompt: "should not be written",
+	}
+
+	if _, err := PrepareSystemPrompt(p, projectDir); err == nil {
+		t.Fatal("PrepareSystemPrompt() error = nil, want prompts symlink rejection")
+	} else if !strings.Contains(err.Error(), "prompts path must not be a symlink") {
+		t.Fatalf("PrepareSystemPrompt() error = %v, want prompts symlink rejection", err)
+	}
+	entries, err := os.ReadDir(outsideDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("PrepareSystemPrompt() wrote %d entries through prompts symlink", len(entries))
+	}
+}
+
 func TestPrepareSystemPromptWithContextFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -739,6 +797,61 @@ func TestPrepareContextFiles(t *testing.T) {
 	}
 }
 
+func TestPrepareContextFilesRejectsEscapingPattern(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	outsideDir := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Persona{
+		Name:         "test",
+		AgentType:    "claude",
+		ContextFiles: []string{"../outside/secret.txt"},
+	}
+	if _, err := PrepareContextFiles(p, projectDir); err == nil {
+		t.Fatal("PrepareContextFiles() error = nil, want escaping pattern rejection")
+	} else if !strings.Contains(err.Error(), "context_files pattern escapes project directory") {
+		t.Fatalf("PrepareContextFiles() error = %v, want escaping pattern rejection", err)
+	}
+}
+
+func TestPrepareContextFilesRejectsSymlinkEscape(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	outsideDir := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(projectDir, "linked")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	p := &Persona{
+		Name:         "test",
+		AgentType:    "claude",
+		ContextFiles: []string{"linked/secret.txt"},
+	}
+	if _, err := PrepareContextFiles(p, projectDir); err == nil {
+		t.Fatal("PrepareContextFiles() error = nil, want symlink escape rejection")
+	} else if !strings.Contains(err.Error(), "context file escapes project directory through symlink") {
+		t.Fatalf("PrepareContextFiles() error = %v, want symlink escape rejection", err)
+	}
+}
+
 func TestCleanupPromptFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -772,6 +885,35 @@ func TestCleanupPromptFiles(t *testing.T) {
 	// Verify directory is removed
 	if _, err := os.Stat(promptsDir); !os.IsNotExist(err) {
 		t.Error("prompts directory should be removed after cleanup")
+	}
+}
+
+func TestCleanupPromptFilesRejectsNtmSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	outsideNtmDir := filepath.Join(tmpDir, "outside-ntm")
+	outsidePromptsDir := filepath.Join(outsideNtmDir, "prompts")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsidePromptsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outsidePrompt := filepath.Join(outsidePromptsDir, "keep.md")
+	if err := os.WriteFile(outsidePrompt, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideNtmDir, filepath.Join(projectDir, ".ntm")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	if err := CleanupPromptFiles(projectDir); err == nil {
+		t.Fatal("CleanupPromptFiles() error = nil, want ntm symlink rejection")
+	} else if !strings.Contains(err.Error(), "ntm path must not be a symlink") {
+		t.Fatalf("CleanupPromptFiles() error = %v, want ntm symlink rejection", err)
+	}
+	if _, err := os.Stat(outsidePrompt); err != nil {
+		t.Fatalf("CleanupPromptFiles() removed outside prompt through .ntm symlink: %v", err)
 	}
 }
 
