@@ -451,6 +451,49 @@ func TestDefaultSpecs(t *testing.T) {
 	}
 }
 
+// Regression for ntm#137. `am` >= 0.2 split the `serve` subcommand
+// into `serve-http`/`serve-stdio`; the older bare `serve` form makes
+// the supervisor retry-storm with `unrecognized subcommand 'serve'`
+// and then give up after 5 attempts, taking out the multi-agent
+// pane's coordination transport. Pin the canonical args so a future
+// refactor can't silently revert to `serve`.
+func TestDefaultSpecsAgentMailUsesServeHTTP(t *testing.T) {
+	specs := DefaultSpecs()
+	var amSpec *DaemonSpec
+	for i := range specs {
+		if specs[i].Name == "am" {
+			amSpec = &specs[i]
+			break
+		}
+	}
+	if amSpec == nil {
+		t.Fatal("DefaultSpecs() missing 'am' daemon")
+	}
+	if len(amSpec.Args) == 0 {
+		t.Fatal("'am' daemon spec has no args")
+	}
+	if amSpec.Args[0] != "serve-http" {
+		t.Fatalf(
+			"'am' daemon must invoke `serve-http` (not %q) — "+
+				"`am serve` was removed in mcp-agent-mail >= 0.2 (ntm#137)",
+			amSpec.Args[0],
+		)
+	}
+	// `--no-tui` is non-negotiable: ntm runs the daemon in the
+	// background; an interactive TUI surface would race the
+	// pane-managing supervisor.
+	hasNoTUI := false
+	for _, a := range amSpec.Args {
+		if a == "--no-tui" {
+			hasNoTUI = true
+			break
+		}
+	}
+	if !hasNoTUI {
+		t.Fatalf("'am' daemon args must include --no-tui; got %v", amSpec.Args)
+	}
+}
+
 // TestHealthCheck tests the HTTP health check functionality
 func TestHealthCheck(t *testing.T) {
 	tmpDir := t.TempDir()

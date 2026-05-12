@@ -590,7 +590,7 @@ func runMailMark(cmd *cobra.Command, session, agent string, action mailAction, i
 	defer cancel()
 
 	if !client.IsAvailable() {
-		return fmt.Errorf("agent mail server not available at %s\nstart the server with: mcp-agent-mail serve", client.BaseURL())
+		return fmt.Errorf("agent mail server not available at %s\nstart the server with: am serve-http --host 127.0.0.1 --no-tui --no-auth", client.BaseURL())
 	}
 
 	// Ensure project exists (and agent registered)
@@ -720,7 +720,7 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 
 	// Check if Agent Mail is available
 	if !client.IsAvailable() {
-		return fmt.Errorf("agent mail server not available at %s\nstart the server with: mcp-agent-mail serve", client.BaseURL())
+		return fmt.Errorf("agent mail server not available at %s\nstart the server with: am serve-http --host 127.0.0.1 --no-tui --no-auth", client.BaseURL())
 	}
 
 	// Ensure project exists before proceeding

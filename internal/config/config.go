@@ -1272,6 +1272,26 @@ type AgentMailConfig struct {
 	Token        string `toml:"token"`         // Bearer token
 	AutoRegister bool   `toml:"auto_register"` // Auto-register sessions as agents
 	ProgramName  string `toml:"program_name"`  // Program identifier for registration
+	// SupervisorEnabled controls whether ntm spawns and manages the
+	// `am serve-http` daemon under its supervisor. Default true keeps
+	// the convenience path that auto-starts the daemon on `ntm spawn`.
+	// Set to false when running `am` under launchd/systemd/another
+	// external supervisor (e.g. `am service install`) — ntm then skips
+	// the lifecycle management entirely and the supervised slot becomes
+	// a no-op. Resolves the noise reported in ntm#137 for users who
+	// take ownership of the daemon themselves. Pointer + omitempty so
+	// the default-true semantics are clear on a fresh config (nil =>
+	// true; explicit `supervisor_enabled = false` => false).
+	SupervisorEnabled *bool `toml:"supervisor_enabled,omitempty"`
+}
+
+// SupervisorEnabledOrDefault returns the effective value of
+// SupervisorEnabled with the documented default-true semantics applied.
+func (a AgentMailConfig) SupervisorEnabledOrDefault() bool {
+	if a.SupervisorEnabled == nil {
+		return true
+	}
+	return *a.SupervisorEnabled
 }
 
 // IntegrationsConfig holds external tool integration settings.

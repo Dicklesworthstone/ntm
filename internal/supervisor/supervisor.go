@@ -677,9 +677,23 @@ func DefaultSpecs() []DaemonSpec {
 			DefaultPort: 8200,
 		},
 		{
+			// `am` >= 0.2 split the original `serve` subcommand into
+			// `serve-http` (HTTP transport, what ntm needs) and
+			// `serve-stdio`. Older binaries supporting bare `serve` are
+			// pre-0.2.0 and not on any current install; ntm pins to the
+			// `am` from the Dicklesworthstone tap, which has been 0.2+
+			// for the duration of this code path's life. See ntm#137.
+			//
+			// `--no-tui` keeps the supervised process headless (no
+			// curses surface that would conflict with ntm's tmux panes);
+			// `--host 127.0.0.1` locks the bind to loopback so the
+			// supervised daemon is not exposed beyond the local box.
+			// `--no-auth` matches the canonical args the launchd /
+			// systemd installers `am service install` produce — see
+			// the workaround documented in #137.
 			Name:        "am",
 			Command:     "am",
-			Args:        []string{"serve"},
+			Args:        []string{"serve-http", "--host", "127.0.0.1", "--no-tui", "--no-auth"},
 			HealthURL:   "http://127.0.0.1:8765/health/liveness",
 			PortFlag:    "--port",
 			DefaultPort: 8765,
