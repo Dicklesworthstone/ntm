@@ -16,6 +16,14 @@ export interface ConnectionConfig {
 
 const CONNECTION_KEY = "ntm-connection";
 export const DEFAULT_NTM_BASE_URL = "http://localhost:7337";
+export const DEFAULT_API_TIMEOUT_MS = 15_000;
+
+export function apiRequestSignal(timeoutMs = DEFAULT_API_TIMEOUT_MS): AbortSignal | undefined {
+  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
+    return undefined;
+  }
+  return AbortSignal.timeout(timeoutMs);
+}
 
 export function formatApiErrorMessage(error: unknown): string {
   if (typeof error === "string") {
@@ -173,11 +181,12 @@ export async function checkConnection(): Promise<{ ok: boolean; error?: string }
   try {
     const client = getClient();
     const response = await client.GET("/api/v1/health");
+    const responseError = (response as { error?: unknown }).error;
 
-    if (response.error) {
+    if (responseError) {
       return {
         ok: false,
-        error: `Server error: ${formatApiErrorMessage(response.error)}`,
+        error: `Server error: ${formatApiErrorMessage(responseError)}`,
       };
     }
 

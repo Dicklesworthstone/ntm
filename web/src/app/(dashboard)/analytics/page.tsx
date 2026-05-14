@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 
 interface ApiEnvelope {
   success?: boolean;
@@ -44,6 +44,7 @@ interface Reservation {
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${getBaseUrl()}${url}`, {
     ...options,
+    signal: options?.signal ?? apiRequestSignal(),
     headers: {
       "Content-Type": "application/json",
       ...getAuthHeaders(),

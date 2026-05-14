@@ -2460,12 +2460,27 @@ func shouldInitializeRobotPersistence(cmd *cobra.Command) bool {
 	}
 
 	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "--robot-") || arg == "--schema" {
+		if arg == "--schema" {
+			return true
+		}
+		if strings.HasPrefix(arg, "--robot-") && !robotFlagSkipsPersistence(arg) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func robotFlagSkipsPersistence(arg string) bool {
+	if i := strings.IndexByte(arg, '='); i >= 0 {
+		arg = arg[:i]
+	}
+	switch arg {
+	case "--robot-overlay":
+		return true
+	default:
+		return false
+	}
 }
 
 func initializeRobotPersistence() error {

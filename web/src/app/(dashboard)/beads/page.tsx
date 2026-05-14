@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 
 type BeadStatus = "open" | "in_progress" | "closed";
 
@@ -110,6 +110,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    signal: options.signal ?? apiRequestSignal(),
     headers,
   });
 
@@ -118,7 +119,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   if (raw) {
     try {
       data = JSON.parse(raw);
-    } catch (error) {
+    } catch {
       throw new Error("Invalid response from server.");
     }
   }
@@ -771,6 +772,7 @@ function GalaxyView({
   );
 
   const cycles = insights?.Cycles || [];
+  const errorMessage = error ? getErrorMessage(error) : null;
 
   return (
     <section className="rounded-lg border border-gray-200 bg-gradient-to-br from-gray-50 to-white p-4 dark:border-gray-700 dark:from-gray-900 dark:to-gray-800">
@@ -794,13 +796,13 @@ function GalaxyView({
         </div>
       )}
 
-      {error && (
+      {errorMessage && (
         <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
-          {getErrorMessage(error)}
+          {errorMessage}
         </div>
       )}
 
-      {!isLoading && !error && (
+      {!isLoading && !errorMessage && (
         <>
           {positioned.length === 0 ? (
             <div className="py-10 text-center text-sm text-gray-400">

@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 
 interface ApiEnvelope {
   success: boolean;
@@ -29,18 +29,6 @@ interface AccountInfo {
 
 interface AccountsListResponse extends ApiEnvelope {
   accounts: AccountInfo[];
-}
-
-interface ProviderStatus {
-  current: string;
-  usage_percent: number;
-  limit_reset?: string;
-  available_accounts: number;
-  rate_limited: boolean;
-}
-
-interface AccountStatusResponse extends ApiEnvelope {
-  accounts: Record<string, ProviderStatus>;
 }
 
 interface QuotaInfo {
@@ -98,6 +86,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    signal: options.signal ?? apiRequestSignal(),
     headers,
   });
 
@@ -256,7 +245,7 @@ export default function AccountsPage() {
     refetchInterval: 15000,
   });
 
-  const accountsList = accountsQuery.data?.accounts ?? [];
+  const accountsList = useMemo(() => accountsQuery.data?.accounts ?? [], [accountsQuery.data?.accounts]);
   const quotasList = quotaQuery.data?.quotas ?? [];
   const activeAccounts = activeQuery.data?.active ?? {};
   const autoRotateConfig = configQuery.data?.config;

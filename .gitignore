@@ -74,6 +74,7 @@ rustc-ice-*.txt
 *.snap.new
 sweep_*.png
 test_screenshot.png
+claude-upgrade-progress.json
 
 # E2E runtime lockfiles
 e2e/*.lock

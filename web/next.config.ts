@@ -24,7 +24,7 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/ws",
-        destination: `${ntmUrl.replace(/^http/, "ws")}/api/v1/ws`,
+        destination: `${ntmUrl}/api/v1/ws`,
       },
     ];
   },

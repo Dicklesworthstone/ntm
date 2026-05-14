@@ -102,6 +102,50 @@ func resetFlags() {
 	robotFormat = ""
 }
 
+func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
+	origArgs := os.Args
+	t.Cleanup(func() {
+		os.Args = origArgs
+	})
+
+	cmd := &cobra.Command{Use: "ntm"}
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{
+			name: "overlay only",
+			args: []string{"ntm", "--robot-overlay"},
+			want: false,
+		},
+		{
+			name: "overlay with value spelling",
+			args: []string{"ntm", "--robot-overlay=true"},
+			want: false,
+		},
+		{
+			name: "stateful robot flag",
+			args: []string{"ntm", "--robot-status"},
+			want: true,
+		},
+		{
+			name: "stateful flag still wins when mixed",
+			args: []string{"ntm", "--robot-overlay", "--robot-status"},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			if got := shouldInitializeRobotPersistence(cmd); got != tc.want {
+				t.Fatalf("shouldInitializeRobotPersistence() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func isolateSessionAgentStorage(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

@@ -10,7 +10,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 import { useConnection } from "@/lib/hooks/use-query";
 
 interface ApiEnvelope {
@@ -75,6 +75,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    signal: options.signal ?? apiRequestSignal(),
     headers,
   });
 
@@ -83,7 +84,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   if (raw) {
     try {
       data = JSON.parse(raw);
-    } catch (error) {
+    } catch {
       throw new Error("Invalid response from server.");
     }
   }

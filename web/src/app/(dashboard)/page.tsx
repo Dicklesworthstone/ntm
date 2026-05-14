@@ -34,9 +34,10 @@ export default function SessionsPage() {
     queryFn: async () => {
       const client = getClient();
       const response = await client.GET("/api/v1/sessions");
-      if (response.error) {
+      const responseError = (response as { error?: unknown }).error;
+      if (responseError) {
         throw new Error(
-          `Failed to fetch sessions: ${formatApiErrorMessage(response.error)}`
+          `Failed to fetch sessions: ${formatApiErrorMessage(responseError)}`
         );
       }
       return response.data as SessionsResponse | undefined;
@@ -44,7 +45,7 @@ export default function SessionsPage() {
     refetchInterval: 10000, // Poll every 10 seconds as backup
   });
 
-  const sessionList = sessions?.sessions || [];
+  const sessionList = useMemo(() => sessions?.sessions ?? [], [sessions?.sessions]);
   const filteredSessions = useMemo(() => {
     if (!filter) return sessionList;
     const query = filter.toLowerCase();

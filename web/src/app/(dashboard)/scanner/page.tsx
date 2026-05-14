@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getAuthHeaders, getBaseUrl } from '@/lib/api/client';
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from '@/lib/api/client';
 
 // Types based on scanner.go REST API
 interface ScanOptions {
@@ -90,6 +90,7 @@ interface ApiEnvelope {
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${getBaseUrl()}${url}`, {
     ...options,
+    signal: options?.signal ?? apiRequestSignal(),
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeaders(),
@@ -295,10 +296,8 @@ export default function ScannerPage() {
   const queryClient = useQueryClient();
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [showDismissed, setShowDismissed] = useState(false);
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
-
   // Scanner status
-  const { data: status, isLoading: statusLoading, error: statusError } = useQuery({
+  const { data: status, error: statusError } = useQuery({
     queryKey: ['scanner', 'status'],
     queryFn: () => fetchJSON<ScannerStatus>('/api/v1/scanner/status'),
     refetchInterval: 5000, // Poll while scan might be running

@@ -120,11 +120,13 @@ describe("NtmWebSocket", () => {
       ws.connect();
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      ws.subscribe("sessions:*");
+      const pending = ws.subscribe("sessions:*");
+      const rejection = expect(pending).rejects.toThrow("WebSocket disconnected");
       ws.disconnect();
 
       // Internal state should be cleared
       expect(ws.getState()).toBe("disconnected");
+      await rejection;
     });
 
     it("rejects pending subscription acknowledgements on disconnect", async () => {
@@ -132,9 +134,10 @@ describe("NtmWebSocket", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       const pending = ws.subscribe("sessions:*");
+      const rejection = expect(pending).rejects.toThrow("WebSocket disconnected");
       ws.disconnect();
 
-      await expect(pending).rejects.toThrow("WebSocket disconnected");
+      await rejection;
     });
   });
 

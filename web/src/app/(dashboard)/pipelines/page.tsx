@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 
 interface ApiEnvelope {
   success: boolean;
@@ -72,20 +72,6 @@ interface TemplatesResponse extends ApiEnvelope {
   count: number;
 }
 
-interface ValidationError {
-  field: string;
-  message: string;
-  hint?: string;
-}
-
-interface ValidationResponse extends ApiEnvelope {
-  valid: boolean;
-  errors: ValidationError[];
-  warnings: ValidationError[];
-  workflow_id: string;
-  step_count: number;
-}
-
 type Notice = { type: "success" | "error"; message: string };
 type StatusFilter = "all" | "running" | "completed" | "failed" | "cancelled";
 
@@ -99,6 +85,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    signal: options.signal ?? apiRequestSignal(),
     headers,
   });
 
@@ -237,7 +224,7 @@ export default function PipelinesPage() {
     refetchInterval: 2000,
   });
 
-  const pipelinesList = pipelinesQuery.data?.pipelines ?? [];
+  const pipelinesList = useMemo(() => pipelinesQuery.data?.pipelines ?? [], [pipelinesQuery.data?.pipelines]);
   const templatesList = templatesQuery.data?.templates ?? [];
 
   const filteredPipelines = useMemo(() => {
