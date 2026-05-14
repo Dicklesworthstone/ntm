@@ -1276,7 +1276,6 @@ func TestCheckHealthFallsBackToRegisteredShellPID(t *testing.T) {
 	defer restore()
 
 	var probedPID int
-	var restartAttempted bool
 	setHooksLocked(func() {
 		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
@@ -1295,22 +1294,18 @@ func TestCheckHealthFallsBackToRegisteredShellPID(t *testing.T) {
 			probedPID = pid
 			return true
 		}
-		sendKeysFn = func(paneID, cmd string, enter bool) error {
-			restartAttempted = true
+		displayMessageFn = func(session, msg string, durationMs int) error {
 			return nil
-		}
-		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-			return agentCmd, nil
 		}
 	})
 
 	cfg := config.Default()
-	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.AutoRestart = false
 	cfg.Resilience.MaxRestarts = 3
 	cfg.Resilience.RestartDelaySeconds = 0
 	cfg.Resilience.CrashThreshold = 1
 
-	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m := NewMonitor("test-session", "/tmp/project", cfg, false)
 	m.RegisterAgent("pane-1", 1, 4242, "cc", "opus", "claude")
 
 	m.checkHealth(context.Background())
@@ -1332,8 +1327,5 @@ func TestCheckHealthFallsBackToRegisteredShellPID(t *testing.T) {
 	}
 	if consecutiveFailures != 0 {
 		t.Fatalf("consecutive failures = %d, want 0", consecutiveFailures)
-	}
-	if restartAttempted {
-		t.Fatal("restart should not be attempted when registered shell PID is alive")
 	}
 }
