@@ -386,8 +386,12 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			// Single PID liveness check — store result to avoid TOCTOU race.
 			// The same pidAlive/pidKnown values drive both the guard and debounce.
 			var pidAlive, pidKnown bool
-			if agentHealth.ShellPID > 0 {
-				pidAlive = isAliveFn(agentHealth.ShellPID)
+			shellPID := agentHealth.ShellPID
+			if shellPID <= 0 {
+				shellPID = agentState.ShellPID
+			}
+			if shellPID > 0 {
+				pidAlive = isAliveFn(shellPID)
 				pidKnown = true
 			}
 
@@ -396,7 +400,7 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			if pidKnown && pidAlive {
 				agentState.ConsecutiveFailures = 0
 				log.Printf("[resilience] Agent %s: health check says unhealthy but PID %d has living children — skipping crash handling (false positive avoided)",
-					agentState.PaneID, agentHealth.ShellPID)
+					agentState.PaneID, shellPID)
 				continue
 			}
 

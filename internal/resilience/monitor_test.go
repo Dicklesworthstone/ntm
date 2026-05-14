@@ -21,6 +21,7 @@ func saveHooks() func() {
 	origSleep := sleepFn
 	origCheckSession := checkSessionFn
 	origDisplayMessage := displayMessageFn
+	origIsChildAlive := isChildAliveFn
 	hooksMu.Unlock()
 
 	return func() {
@@ -30,6 +31,7 @@ func saveHooks() func() {
 		sleepFn = origSleep
 		checkSessionFn = origCheckSession
 		displayMessageFn = origDisplayMessage
+		isChildAliveFn = origIsChildAlive
 		hooksMu.Unlock()
 	}
 }
@@ -1266,5 +1268,72 @@ func TestCheckHealthIsWorkingGuardSkipsCrash(t *testing.T) {
 	}
 	if restartAttempted {
 		t.Error("restart should not have been attempted for actively working agent")
+	}
+}
+
+func TestCheckHealthFallsBackToRegisteredShellPID(t *testing.T) {
+	restore := saveHooks()
+	defer restore()
+
+	var probedPID int
+	var restartAttempted bool
+	setHooksLocked(func() {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Issues:        []health.Issue{{Type: "crash", Message: "Process exited"}},
+					},
+				},
+			}, nil
+		}
+		isChildAliveFn = func(pid int) bool {
+			probedPID = pid
+			return true
+		}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			restartAttempted = true
+			return nil
+		}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
+
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = true
+	cfg.Resilience.MaxRestarts = 3
+	cfg.Resilience.RestartDelaySeconds = 0
+	cfg.Resilience.CrashThreshold = 1
+
+	m := NewMonitor("test-session", "/tmp/project", cfg, true)
+	m.RegisterAgent("pane-1", 1, 4242, "cc", "opus", "claude")
+
+	m.checkHealth(context.Background())
+
+	m.mu.RLock()
+	healthy := m.agents["pane-1"].Healthy
+	restartCount := m.agents["pane-1"].RestartCount
+	consecutiveFailures := m.agents["pane-1"].ConsecutiveFailures
+	m.mu.RUnlock()
+
+	if probedPID != 4242 {
+		t.Fatalf("probed PID = %d, want registered shell PID 4242", probedPID)
+	}
+	if !healthy {
+		t.Fatal("agent should remain healthy when registered shell PID is still alive")
+	}
+	if restartCount != 0 {
+		t.Fatalf("restart count = %d, want 0", restartCount)
+	}
+	if consecutiveFailures != 0 {
+		t.Fatalf("consecutive failures = %d, want 0", consecutiveFailures)
+	}
+	if restartAttempted {
+		t.Fatal("restart should not be attempted when registered shell PID is alive")
 	}
 }

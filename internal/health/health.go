@@ -220,6 +220,7 @@ func checkAgent(ctx context.Context, pa tmux.PaneActivity) AgentHealth {
 		ProcessStatus: ProcessUnknown,
 		Activity:      ActivityUnknown,
 		Issues:        []Issue{},
+		ShellPID:      pa.Pane.PID,
 	}
 
 	// Set last activity
