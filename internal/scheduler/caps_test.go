@@ -293,6 +293,64 @@ func TestAgentCaps_GlobalMax(t *testing.T) {
 	}
 }
 
+func TestAgentCaps_SetCapDoesNotBypassGlobalMaxForWaiter(t *testing.T) {
+	cfg := AgentCapsConfig{
+		Default:   AgentCapConfig{MaxConcurrent: 1},
+		GlobalMax: 1,
+	}
+	caps := NewAgentCaps(cfg)
+
+	if !caps.TryAcquire("other") {
+		t.Fatal("expected other agent to fill global cap")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- caps.Acquire(ctx, "cc")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if caps.Stats().TotalWaiting == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := caps.Stats().TotalWaiting; got != 1 {
+		t.Fatalf("waiting = %d, want 1", got)
+	}
+
+	caps.SetCap("cc", 2)
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("Acquire returned while global cap was full: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	if got := caps.GetRunning("cc"); got != 0 {
+		t.Fatalf("running cc = %d, want 0 while global cap is full", got)
+	}
+
+	caps.Release("other")
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Acquire after global release returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Acquire did not complete after global capacity was released")
+	}
+
+	if got := caps.GetRunning("cc"); got != 1 {
+		t.Fatalf("running cc = %d, want 1 after global release", got)
+	}
+}
+
 func TestAgentCaps_Stats(t *testing.T) {
 	cfg := AgentCapsConfig{
 		PerAgent: map[string]AgentCapConfig{

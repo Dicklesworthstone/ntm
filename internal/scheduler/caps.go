@@ -492,10 +492,11 @@ func (ac *AgentCaps) Release(agentType string) {
 }
 
 // notifyWaiter notifies one waiting goroutine that a slot is available.
-func (ac *AgentCaps) notifyWaiter(agentType string) {
+// It returns true when a waiter was granted capacity.
+func (ac *AgentCaps) notifyWaiter(agentType string) bool {
 	agentType = canonicalSchedulerAgentTypeKey(agentType)
 	// First try the specific agent type
-	if len(ac.waiters[agentType]) > 0 {
+	if len(ac.waiters[agentType]) > 0 && ac.canGrantWaiterLocked(agentType) {
 		waiter := ac.waiters[agentType][0]
 		ac.waiters[agentType] = ac.waiters[agentType][1:]
 		ac.stats.TotalWaiting--
@@ -509,15 +510,14 @@ func (ac *AgentCaps) notifyWaiter(agentType string) {
 		case waiter.ch <- struct{}{}:
 		default:
 		}
-		return
+		return true
 	}
 
 	// If global cap was the blocker, try notifying any agent type
 	if ac.config.GlobalMax > 0 {
 		for agent, waiters := range ac.waiters {
 			if len(waiters) > 0 {
-				state := ac.getCapState(agent)
-				if ac.running[agent] < state.currentCap {
+				if ac.canGrantWaiterLocked(agent) {
 					waiter := waiters[0]
 					ac.waiters[agent] = waiters[1:]
 					ac.stats.TotalWaiting--
@@ -528,11 +528,22 @@ func (ac *AgentCaps) notifyWaiter(agentType string) {
 					case waiter.ch <- struct{}{}:
 					default:
 					}
-					return
+					return true
 				}
 			}
 		}
 	}
+
+	return false
+}
+
+func (ac *AgentCaps) canGrantWaiterLocked(agentType string) bool {
+	state := ac.getCapState(agentType)
+	return ac.running[agentType] < state.currentCap && ac.hasGlobalCapacityLocked()
+}
+
+func (ac *AgentCaps) hasGlobalCapacityLocked() bool {
+	return ac.config.GlobalMax <= 0 || ac.stats.TotalRunning < ac.config.GlobalMax
 }
 
 // RecordFailure records a failure for an agent type, potentially triggering cooldown.
@@ -650,7 +661,9 @@ func (ac *AgentCaps) updateRampUp(agentType string, state *agentCapState) {
 
 				// Notify waiters about new capacity
 				for state.currentCap > ac.running[agentType] && len(ac.waiters[agentType]) > 0 {
-					ac.notifyWaiter(agentType)
+					if !ac.notifyWaiter(agentType) {
+						break
+					}
 				}
 			}
 		}
@@ -758,7 +771,9 @@ func (ac *AgentCaps) SetCap(agentType string, cap int) {
 	// Notify waiters if cap increased
 	if state.currentCap > oldCap {
 		for state.currentCap > ac.running[agentType] && len(ac.waiters[agentType]) > 0 {
-			ac.notifyWaiter(agentType)
+			if !ac.notifyWaiter(agentType) {
+				break
+			}
 		}
 	}
 }
@@ -783,7 +798,9 @@ func (ac *AgentCaps) ForceRampUp(agentType string) {
 
 		// Notify waiters
 		for state.currentCap > ac.running[agentType] && len(ac.waiters[agentType]) > 0 {
-			ac.notifyWaiter(agentType)
+			if !ac.notifyWaiter(agentType) {
+				break
+			}
 		}
 	}
 }
