@@ -12,7 +12,7 @@ permissions:
   attestations: write   # For artifact attestations
 
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.26"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
