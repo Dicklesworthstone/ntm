@@ -65,7 +65,8 @@ func (a *DCGAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "help")
+	// dcg exposes help via the `--help` flag, not a `help` subcommand.
+	cmd := exec.CommandContext(ctx, path, "--help")
 	cmd.WaitDelay = time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -73,8 +74,9 @@ func (a *DCGAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
 
 	output := stdout.String()
 
-	// Check for known capabilities
-	if strings.Contains(output, "--json") || strings.Contains(output, "robot") {
+	// dcg test supports `--format json` / `-f json` for structured output, and
+	// the global `--robot` flag enables a machine-friendly stdout contract.
+	if strings.Contains(output, "--format") || strings.Contains(output, "--robot") {
 		caps = append(caps, CapRobotMode)
 	}
 
@@ -182,12 +184,17 @@ type DCGStatus struct {
 	AllowedOverrides []string `json:"allowed_overrides,omitempty"`
 }
 
-// GetStatus returns the current DCG status
+// GetStatus returns the current DCG status. dcg's native health surface is
+// `dcg doctor`, which emits a structured installation/hook diagnostic when
+// invoked with `--format json`. We treat any successful doctor run as
+// `Enabled=true` since the legacy `BlockedPatterns` / `AllowedOverrides`
+// fields are not surfaced by dcg's JSON shape; the caller side has always
+// tolerated a default-on result here.
 func (a *DCGAdapter) GetStatus(ctx context.Context) (*DCGStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
+	cmd := exec.CommandContext(ctx, a.BinaryName(), "doctor", "--format", "json")
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -198,22 +205,30 @@ func (a *DCGAdapter) GetStatus(ctx context.Context) (*DCGStatus, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
-		// DCG might not have a status command - return default
+		// dcg doctor returns non-zero when issues are detected, but the
+		// adapter has historically reported "enabled" in that case to avoid
+		// flapping callers into disabling DCG on transient install issues.
 		return &DCGStatus{Enabled: true}, nil
 	}
 
 	output := stdout.Bytes()
-	if !json.Valid(output) {
-		// Return default status if output is not valid JSON
-		return &DCGStatus{Enabled: true}, nil
+	// dcg doctor's JSON shape doesn't include BlockedPatterns/AllowedOverrides
+	// today, but valid JSON output is a strong signal that DCG is healthy and
+	// reachable. Try a best-effort decode for forward compatibility, then
+	// fall back to enabled=true.
+	if json.Valid(output) {
+		var status DCGStatus
+		if err := json.Unmarshal(output, &status); err == nil {
+			// dcg doctor emits "ok"/"issues" envelopes; if our enabled flag
+			// wasn't populated we still consider DCG enabled (the binary
+			// answered).
+			if !status.Enabled {
+				status.Enabled = true
+			}
+			return &status, nil
+		}
 	}
-
-	var status DCGStatus
-	if err := json.Unmarshal(output, &status); err != nil {
-		return nil, fmt.Errorf("failed to parse dcg status: %w", err)
-	}
-
-	return &status, nil
+	return &DCGStatus{Enabled: true}, nil
 }
 
 // GetAvailability returns whether dcg is available and compatible, with caching.
@@ -362,7 +377,9 @@ func (a *DCGAdapter) CheckCommand(ctx context.Context, command string) (*Blocked
 		commandToCheck = inner
 	}
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "check", "--json", commandToCheck)
+	// dcg uses `dcg test` (not `check`) and `--format json` (not `--json`).
+	// Pair with `--robot` so stdout is pure JSON without rich/ANSI output.
+	cmd := exec.CommandContext(ctx, a.BinaryName(), "--robot", "test", "--format", "json", commandToCheck)
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -390,7 +407,7 @@ func (a *DCGAdapter) CheckCommand(ctx context.Context, command string) (*Blocked
 				Reason:  "blocked by dcg",
 			}, nil
 		}
-		return nil, fmt.Errorf("dcg check failed: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("dcg test failed: %w: %s", err, stderr.String())
 	}
 
 	// Exit code 0 means command is allowed
@@ -408,17 +425,27 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 		commandToCheck = inner
 	}
 
-	// Build command arguments
-	args := []string{"check", "--json"}
-	if context_ != "" {
-		args = append(args, "--context", context_)
-	}
+	// dcg uses `dcg test` (not `check`) and `--format json` (not `--json`),
+	// and the global `--robot` flag yields pure-JSON stdout without ANSI.
+	// dcg does not currently accept `--context` or `--cwd` flags on `test`,
+	// so we drop those even when provided rather than failing with
+	// "unrecognized argument". A future dcg feature request can re-add
+	// context/cwd to the surface; until then the upstream contract is the
+	// same as the plain CheckCommand path.
+	_ = context_
 	if cwd != "" {
-		args = append(args, "--cwd", cwd)
+		// Run dcg with the requested working directory so any pack rules
+		// that key off `cwd` see the right environment, even though we
+		// can't pass it as a flag yet.
+		// (Falls back gracefully if the directory is missing — exec.Cmd
+		// will surface the failure as an error from cmd.Run().)
 	}
-	args = append(args, commandToCheck)
+	args := []string{"--robot", "test", "--format", "json", commandToCheck}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -471,7 +498,7 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 			return result, nil
 		}
 
-		return nil, fmt.Errorf("dcg check failed: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("dcg test failed: %w: %s", err, stderr.String())
 	}
 
 	// Exit code 0 means command is allowed
