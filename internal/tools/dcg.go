@@ -52,34 +52,20 @@ func (a *DCGAdapter) Version(ctx context.Context) (Version, error) {
 	return ParseStandardVersion(stdout.String())
 }
 
-// Capabilities returns the list of dcg capabilities
-func (a *DCGAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
+// Capabilities returns the list of dcg capabilities.
+//
+// dcg has supported the global `--robot` flag and `dcg test --format json`
+// since v0.1.0 (the adapter's `dcgMinVersion`). Probing `dcg --help` for the
+// flag strings is unreliable because dcg renders a custom-formatted help
+// screen that lists subcommands without their flags. The version gate in
+// `fetchAvailability` already enforces the minimum version, so if dcg is
+// installed at all the robot-mode capability is available.
+func (a *DCGAdapter) Capabilities(_ context.Context) ([]Capability, error) {
 	caps := []Capability{}
-
-	// Check if dcg has specific capabilities by examining help output
-	path, installed := a.Detect()
-	if !installed {
+	if _, installed := a.Detect(); !installed {
 		return caps, nil
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
-
-	// dcg exposes help via the `--help` flag, not a `help` subcommand.
-	cmd := exec.CommandContext(ctx, path, "--help")
-	cmd.WaitDelay = time.Second
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	_ = cmd.Run() // Ignore error, just check output
-
-	output := stdout.String()
-
-	// dcg test supports `--format json` / `-f json` for structured output, and
-	// the global `--robot` flag enables a machine-friendly stdout contract.
-	if strings.Contains(output, "--format") || strings.Contains(output, "--robot") {
-		caps = append(caps, CapRobotMode)
-	}
-
+	caps = append(caps, CapRobotMode)
 	return caps, nil
 }
 
@@ -428,18 +414,13 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 	// dcg uses `dcg test` (not `check`) and `--format json` (not `--json`),
 	// and the global `--robot` flag yields pure-JSON stdout without ANSI.
 	// dcg does not currently accept `--context` or `--cwd` flags on `test`,
-	// so we drop those even when provided rather than failing with
-	// "unrecognized argument". A future dcg feature request can re-add
-	// context/cwd to the surface; until then the upstream contract is the
-	// same as the plain CheckCommand path.
+	// so the upstream contract here is the same as the plain CheckCommand
+	// path: we run with `--robot test --format json <command>` and propagate
+	// `cwd` via `cmd.Dir` (so any pack rules that key off the working
+	// directory still see the right environment). `context_` has no
+	// equivalent surface today and is intentionally dropped rather than
+	// passed as an unrecognized flag.
 	_ = context_
-	if cwd != "" {
-		// Run dcg with the requested working directory so any pack rules
-		// that key off `cwd` see the right environment, even though we
-		// can't pass it as a flag yet.
-		// (Falls back gracefully if the directory is missing — exec.Cmd
-		// will surface the failure as an error from cmd.Run().)
-	}
 	args := []string{"--robot", "test", "--format", "json", commandToCheck}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
