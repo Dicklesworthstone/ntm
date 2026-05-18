@@ -4036,14 +4036,24 @@ func preflightCodexAccountSupport(agents []FlatAgent) error {
 		return nil
 	}
 
-	hasDefaultCodex := false
+	// A Codex agent only hits the ChatGPT-billed-account failure mode if
+	// the effective resolved model is a `gpt-*-codex` family id. A bare
+	// `--cod=N` with `a.Model == ""` only means "no CLI override" — the
+	// resolved model still comes from `cfg.Models.DefaultCodex` (or, if
+	// that's unset, from `config.DefaultModels().DefaultCodex`). If the
+	// user has configured a non-codex default like `gpt-5.5`, the spawn
+	// is fine even on a ChatGPT account (#147).
+	hasUnsafeCodex := false
 	for _, a := range agents {
-		if a.Type == AgentTypeCodex && a.Model == "" {
-			hasDefaultCodex = true
+		if a.Type != AgentTypeCodex {
+			continue
+		}
+		if isCodexFamilyModel(effectiveCodexModel(a.Model)) {
+			hasUnsafeCodex = true
 			break
 		}
 	}
-	if !hasDefaultCodex {
+	if !hasUnsafeCodex {
 		return nil
 	}
 
@@ -4072,11 +4082,36 @@ func preflightCodexAccountSupport(agents []FlatAgent) error {
 func countDefaultCodex(agents []FlatAgent) int {
 	n := 0
 	for _, a := range agents {
-		if a.Type == AgentTypeCodex && a.Model == "" {
+		if a.Type == AgentTypeCodex && isCodexFamilyModel(effectiveCodexModel(a.Model)) {
 			n++
 		}
 	}
 	return n
+}
+
+// effectiveCodexModel resolves the Codex model that will actually be
+// used for an agent: the explicit CLI override if present, otherwise the
+// configured default, otherwise the compiled-in default. Mirrors the
+// resolution in modelNameForPane so the preflight check and the actual
+// spawn agree on which model the agent will run as.
+func effectiveCodexModel(cliModel string) string {
+	if cliModel != "" {
+		return cliModel
+	}
+	if cfg != nil && cfg.Models.DefaultCodex != "" {
+		return cfg.Models.DefaultCodex
+	}
+	return config.DefaultModels().DefaultCodex
+}
+
+// isCodexFamilyModel reports whether a model id is a `gpt-*-codex`
+// family id that OpenAI rejects with HTTP 400 on ChatGPT-billed
+// accounts. The check is suffix-based ("-codex") so it matches
+// gpt-5-codex, gpt-5.2-codex, gpt-5.3-codex, and any future
+// gpt-5.X-codex without an explicit allow-list update. Plain
+// `gpt-5`, `gpt-5.5`, etc. do not match and are considered safe.
+func isCodexFamilyModel(model string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(model)), "-codex")
 }
 
 // worktreeAgentName builds the directory-name component for an agent's
