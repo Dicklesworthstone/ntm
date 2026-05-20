@@ -18,13 +18,13 @@ func TestIsCodexFamilyModel(t *testing.T) {
 		{"gpt-5-codex", true},
 		{"gpt-5.2-codex", true},
 		{"gpt-5.3-codex", true},
-		{"GPT-5-CODEX", true},      // case-insensitive
-		{"  gpt-5-codex  ", true},  // whitespace tolerated
-		{"gpt-5.4-codex", true},    // future variants
+		{"GPT-5-CODEX", true},     // case-insensitive
+		{"  gpt-5-codex  ", true}, // whitespace tolerated
+		{"gpt-5.4-codex", true},   // future variants
 
 		// Non-codex gpt models — must NOT be flagged.
 		{"gpt-5", false},
-		{"gpt-5.5", false},   // the #147 reporter's configured default
+		{"gpt-5.5", false}, // the #147 reporter's configured default
 		{"gpt-5.3", false},
 		{"gpt-4", false},
 		{"gpt-4o", false},
