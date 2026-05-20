@@ -166,6 +166,11 @@ func TestAgentTypeFlag(t *testing.T) {
 		{" google_gemini ", "gmi"},
 		{"claude_code", "cc"},
 		{"ws", "windsurf"},
+		{"cursor", "cursor"},
+		{"aider", "aider"},
+		{"ollama", "ollama"},
+		{"opencode", "oc"},
+		{"oc", "oc"},
 		{"unknown", "cc"}, // defaults to cc
 	}
 

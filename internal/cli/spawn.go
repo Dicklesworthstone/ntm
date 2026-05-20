@@ -495,17 +495,6 @@ func validateProfileAgentDistribution(personaCounts, requestedCounts map[AgentTy
 	return nil
 }
 
-// countFlatAgentsByType tallies a flattened agent list by agent type. Used to
-// keep CCCount/CodCount/GmiCount (and friends) consistent after a persona set
-// expands into the concrete agent list.
-func countFlatAgentsByType(agents []FlatAgent) map[AgentType]int {
-	counts := make(map[AgentType]int)
-	for _, a := range agents {
-		counts[a.Type]++
-	}
-	return counts
-}
-
 // sortPanesForAssignment orders panes deterministically — by window index, then
 // pane index — so agent[i] always lands on the same pane regardless of the
 // order tmux list-panes happens to return. This is what makes persona→pane
@@ -709,9 +698,10 @@ type SpawnOptions struct {
 	PersonaMap         map[string]*persona.Persona
 	PluginMap          map[string]plugins.AgentPlugin
 
-	// Profile mapping: list of personas (from --profile-set/--profiles),
-	// expanded into concrete ordered agents via expandProfileAgents (ntm#149).
-	ProfileList []*persona.Persona
+	// Profiles from --profile-set/--profiles are expanded into concrete ordered
+	// agents (each carrying its persona) via expandProfileAgents before this
+	// struct is built, so they ride in Agents — there is no separate list here.
+	//
 	// ProfileSetName is the --profile-set name, surfaced in the post-launch
 	// persona→pane mapping. Empty for --profiles (comma list) spawns.
 	ProfileSetName string
@@ -1206,8 +1196,12 @@ Examples:
 			codCount := agentSpecs.ByType(AgentTypeCodex).TotalCount()
 			gmiCount := agentSpecs.ByType(AgentTypeGemini).TotalCount()
 
-			// Apply defaults
-			if len(agentSpecs) == 0 && len(cfg.ProjectDefaults) > 0 {
+			// Apply implicit project count defaults only when the user did not
+			// request a persona set/list. With --profile-set/--profiles the
+			// persona set is the authoritative agent spec (ntm#149), so folding
+			// in ProjectDefaults here would make expandProfileAgents validate
+			// the set against counts the user never asked for and fail closed.
+			if len(agentSpecs) == 0 && len(cfg.ProjectDefaults) > 0 && profilesFlag == "" && profileSetFlag == "" {
 				appendMissingCountMapAgentSpecs(&agentSpecs, cfg.ProjectDefaults)
 				ccCount = agentSpecs.ByType(AgentTypeClaude).TotalCount()
 				codCount = agentSpecs.ByType(AgentTypeCodex).TotalCount()
@@ -1316,7 +1310,6 @@ Examples:
 				StaggerDelay:            staggerDelay,
 				Stagger:                 staggerDuration,
 				StaggerEnabled:          staggerEnabled,
-				ProfileList:             profileList,
 				ProfileSetName:          profileSetFlag,
 				Assign:                  assignEnabled,
 				AssignStrategy:          assignStrategy,
@@ -1995,10 +1988,13 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			}
 		}
 
-		// Check if this is a persona agent and prepare system prompt
+		// Check if this is a persona agent and prepare system prompt.
+		// The model-keyed PersonaMap (recipe/quick-spawn personas) is skipped
+		// when this agent already carries a persona from --profile-set/--profiles
+		// expansion (handled below), so the two persona sources never overlap.
 		var systemPromptFile string
 		var personaName string
-		if opts.PersonaMap != nil {
+		if agent.Persona == nil && opts.PersonaMap != nil {
 			if p, ok := opts.PersonaMap[agent.Model]; ok {
 				personaName = p.Name
 				modelRequested = strings.TrimSpace(p.Model) != ""
@@ -2018,8 +2014,9 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 
 		// Persona attached during --profile-set/--profiles expansion (ntm#149).
 		// agent.Type already reflects the persona's own agent_type, so the
-		// command template selected above launches the right CLI. This takes
-		// precedence over the model-keyed PersonaMap above.
+		// command template selected above launches the right CLI. This is the
+		// counterpart to the PersonaMap branch above (the two are mutually
+		// exclusive: PersonaMap is skipped whenever agent.Persona is set).
 		if agent.Persona != nil {
 			profile := agent.Persona
 			personaName = profile.Name

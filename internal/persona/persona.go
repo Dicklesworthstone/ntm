@@ -92,6 +92,8 @@ func (p *Persona) AgentTypeFlag() string {
 		return "windsurf"
 	case agentpkg.AgentTypeAider:
 		return "aider"
+	case agentpkg.AgentTypeOpencode:
+		return "oc"
 	case agentpkg.AgentTypeOllama:
 		return "ollama"
 	default:
