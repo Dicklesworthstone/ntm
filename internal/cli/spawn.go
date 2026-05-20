@@ -1473,12 +1473,12 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		return outputError(fmt.Errorf("session '%s' already exists (--safety mode prevents reuse; use 'ntm kill %s' first)", opts.Session, opts.Session))
 	}
 
-	// Codex/ChatGPT preflight: when spawning Codex agents without an explicit
-	// model override, refuse loudly if the local `codex` auth is ChatGPT-billed.
-	// OpenAI rejects every `gpt-*-codex` model id with HTTP 400 on ChatGPT
-	// accounts, and the resulting pane *looks* alive (banner present, no
-	// exit) so orchestrators can't detect the failure until they read
-	// output. See ntm#142.
+	// Codex/ChatGPT preflight: when spawning an explicit `gpt-*-codex` Codex
+	// agent on a ChatGPT-billed login, advise about the "pane looks alive but
+	// rejects the first prompt" failure mode some accounts hit (ntm#142). It is
+	// only an advisory by default — that failure is not universal (ntm#155), so
+	// we let the local Codex CLI be the source of truth and proceed. Returns an
+	// error only in strict opt-in mode (NTM_CODEX_PREFLIGHT_STRICT).
 	if err := preflightCodexAccountSupport(opts.Agents); err != nil {
 		return outputError(err)
 	}
@@ -4140,27 +4140,55 @@ type SpawnInitResult struct {
 
 // waitForAgentsReady waits for spawned agents to show ready/idle prompts.
 // Returns the number of ready agents and any error.
-// preflightCodexAccountSupport checks whether any Codex agent in the
-// spawn batch would hit the "model not supported when using Codex with a
-// ChatGPT account" failure mode (ntm#142). OpenAI rejects every
-// `gpt-*-codex` model id on ChatGPT-billed accounts with HTTP 400, and
-// the resulting pane appears alive — so we refuse the spawn at planning
-// time when we can detect this case statically.
+// codexPreflightDecision is the outcome of the Codex/ChatGPT preflight for a
+// spawn batch that requests a gpt-*-codex model on a ChatGPT-billed login.
+type codexPreflightDecision int
+
+const (
+	codexAllow codexPreflightDecision = iota // proceed silently
+	codexWarn                                // proceed, but surface a non-blocking advisory
+	codexBlock                               // refuse the spawn (strict opt-in)
+)
+
+// decideCodexPreflight chooses how to handle a spawn that requests a
+// gpt-*-codex model on a ChatGPT-billed Codex login.
+//
+// This is deliberately NOT a hard rejection by default. The original guard
+// (ntm#142) assumed OpenAI rejects every gpt-*-codex id with HTTP 400 on
+// ChatGPT-billed accounts, but that is not universally true: recent Codex CLI
+// + ChatGPT plans run gpt-5.3-codex and answer prompts fine (proven in
+// ntm#155), while only some accounts/plans/regions still get the 400. The
+// local Codex CLI is the real source of truth, so blanket-refusing would strip
+// capability from operators who can use the model. We default to a
+// non-blocking advisory and let Codex return the real error if the account
+// can't use it. Operators who want fail-fast (e.g. unattended swarms where a
+// silently-rejecting pane is costly) opt into a hard block via strict.
+func decideCodexPreflight(unsafeCodexOnChatGPT, strict bool) codexPreflightDecision {
+	if !unsafeCodexOnChatGPT {
+		return codexAllow
+	}
+	if strict {
+		return codexBlock
+	}
+	return codexWarn
+}
+
+// preflightCodexAccountSupport advises (or, in strict mode, refuses) when a
+// Codex agent in the spawn batch requests a gpt-*-codex model on a
+// ChatGPT-billed login — the "pane looks alive but rejects the first prompt"
+// failure mode some accounts hit (ntm#142). Because that failure is not
+// universal (ntm#155), the default is a non-blocking advisory; see
+// decideCodexPreflight.
 //
 // Detection: run `codex login status`. The CLI prints `Logged in using
-// ChatGPT` for ChatGPT-billed accounts and `Logged in using API key`
-// for API-billed accounts. When the local codex binary is missing or
-// the command fails for any other reason, we silently allow the spawn
-// — we don't want to break setups where the operator has a working
-// flow we can't introspect.
-//
-// We only refuse when (1) at least one agent in the batch is Codex,
-// (2) that agent uses the default model (no explicit `--cod=N:model`
-// override), and (3) the login status is ChatGPT-billed.
+// ChatGPT` for ChatGPT-billed accounts. When the local codex binary is missing
+// or the command fails for any other reason, we silently allow the spawn — we
+// don't want to break setups where the operator has a working flow we can't
+// introspect.
 func preflightCodexAccountSupport(agents []FlatAgent) error {
 	// Escape hatches so tests and operators with bespoke Codex setups
-	// can opt out:
-	//   - `NTM_DISABLE_CODEX_PREFLIGHT=1` for explicit opt-out
+	// can opt out entirely:
+	//   - `NTM_DISABLE_CODEX_PREFLIGHT=1` skips the check (no advisory, no block)
 	//   - presence of the `test.v` flag (i.e. `go test`) — the test
 	//     harness has no business shelling out to a real codex CLI and
 	//     test machines may legitimately be ChatGPT-billed without it
@@ -4172,13 +4200,13 @@ func preflightCodexAccountSupport(agents []FlatAgent) error {
 		return nil
 	}
 
-	// A Codex agent only hits the ChatGPT-billed-account failure mode if
+	// A Codex agent only risks the ChatGPT-billed-account failure mode if
 	// the effective resolved model is a `gpt-*-codex` family id. A bare
 	// `--cod=N` with `a.Model == ""` only means "no CLI override" — the
 	// resolved model still comes from `cfg.Models.DefaultCodex` (or, if
-	// that's unset, from `config.DefaultModels().DefaultCodex`). If the
-	// user has configured a non-codex default like `gpt-5.5`, the spawn
-	// is fine even on a ChatGPT account (#147).
+	// that's unset, from `config.DefaultModels().DefaultCodex`). The default
+	// is `gpt-5.5`, so a bare `--cod=N` is fine even on a ChatGPT account
+	// (#147); this only fires for an explicit gpt-*-codex choice.
 	hasUnsafeCodex := false
 	for _, a := range agents {
 		if a.Type != AgentTypeCodex {
@@ -4202,17 +4230,25 @@ func preflightCodexAccountSupport(agents []FlatAgent) error {
 		// codex CLI missing or errored — don't second-guess the operator's setup.
 		return nil
 	}
-	if !strings.Contains(string(out), "Logged in using ChatGPT") {
-		return nil
-	}
+	isChatGPT := strings.Contains(string(out), "Logged in using ChatGPT")
 
-	// Suggest fixing only the default-model Codex agents — agents
-	// that already carry an explicit model (e.g. --cod=1:gpt-5) are
-	// already on a non-Codex model and pass the check.
-	return fmt.Errorf(
-		"refusing to spawn a `gpt-*-codex` Codex agent on a ChatGPT-billed account — OpenAI rejects `gpt-*-codex` model ids with HTTP 400 on ChatGPT accounts and the pane will look alive but reject the first prompt. Use the ChatGPT-compatible model instead: `--cod=%d:gpt-5.5` (the recommended Codex model on ChatGPT login), OR switch to an API key (Codex CLI > `codex login`) to keep using `gpt-*-codex` (see ntm#142)",
-		countDefaultCodex(agents),
-	)
+	strict := strings.TrimSpace(os.Getenv("NTM_CODEX_PREFLIGHT_STRICT")) != ""
+	n := countDefaultCodex(agents)
+	switch decideCodexPreflight(hasUnsafeCodex && isChatGPT, strict) {
+	case codexBlock:
+		return fmt.Errorf(
+			"refusing to spawn %d `gpt-*-codex` Codex agent(s) on a ChatGPT-billed account (NTM_CODEX_PREFLIGHT_STRICT is set). Some ChatGPT plans reject `gpt-*-codex` with HTTP 400; if yours supports it, unset NTM_CODEX_PREFLIGHT_STRICT, or use `--cod=%d:gpt-5.5` / a Codex API key (see ntm#155, ntm#142)",
+			n, n,
+		)
+	case codexWarn:
+		if !IsJSONOutput() {
+			output.PrintWarningf(
+				"%d Codex agent(s) request a `gpt-*-codex` model on a ChatGPT-billed login. Most ChatGPT plans run it fine, but some accounts get HTTP 400 — if a pane stays alive yet rejects the first prompt, switch to `--cod=N:gpt-5.5` or use a Codex API key (see ntm#155). Set NTM_CODEX_PREFLIGHT_STRICT=1 to fail fast instead.",
+				n,
+			)
+		}
+	}
+	return nil
 }
 
 func countDefaultCodex(agents []FlatAgent) int {

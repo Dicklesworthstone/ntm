@@ -6,6 +6,31 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
+// TestDecideCodexPreflight locks in the ntm#155 behavior: a gpt-*-codex model
+// on a ChatGPT-billed login is advised (warn), NOT blocked, by default —
+// because that failure mode is not universal and the Codex CLI is the source
+// of truth. Strict mode (opt-in) restores the hard block.
+func TestDecideCodexPreflight(t *testing.T) {
+	cases := []struct {
+		name                 string
+		unsafeCodexOnChatGPT bool
+		strict               bool
+		want                 codexPreflightDecision
+	}{
+		{"safe spawn, default", false, false, codexAllow},
+		{"safe spawn, strict", false, true, codexAllow},
+		{"risky spawn, default -> warn not block (ntm#155)", true, false, codexWarn},
+		{"risky spawn, strict -> block", true, true, codexBlock},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decideCodexPreflight(tc.unsafeCodexOnChatGPT, tc.strict); got != tc.want {
+				t.Errorf("decideCodexPreflight(%v, %v) = %d, want %d", tc.unsafeCodexOnChatGPT, tc.strict, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestIsCodexFamilyModel verifies the rule for "is this Codex model id
 // in the `gpt-*-codex` family that OpenAI rejects with HTTP 400 on
 // ChatGPT-billed accounts" (ntm#147).
