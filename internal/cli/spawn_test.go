@@ -1060,6 +1060,37 @@ func TestExpandProfileAgents_PersonaSetDrivesOrderAndType(t *testing.T) {
 	}
 }
 
+func TestExpandProfileAgents_SurvivesNormalizeSpawnOptions(t *testing.T) {
+	// Regression guard: normalizeSpawnOptions -> populateSpawnAgentsFromCounts
+	// must NOT regenerate Agents from the (zero) counts and strip the personas
+	// off an already-expanded persona-driven agent list. recomputeSpawnAgentCounts
+	// must then derive the counts from that list.
+	profiles := []*persona.Persona{
+		{Name: "architect", AgentType: "claude", Model: "opus"},
+		{Name: "developer", AgentType: "codex"},
+		{Name: "auditor", AgentType: "codex"},
+	}
+	expanded, err := expandProfileAgents(profiles, nil)
+	if err != nil {
+		t.Fatalf("expandProfileAgents: %v", err)
+	}
+
+	opts := SpawnOptions{Agents: expanded} // counts deliberately left at zero
+	normalizeSpawnOptions(&opts)
+
+	if len(opts.Agents) != 3 {
+		t.Fatalf("agents were stripped by normalize: got %d, want 3", len(opts.Agents))
+	}
+	for i, want := range []string{"architect", "developer", "auditor"} {
+		if opts.Agents[i].Persona == nil || opts.Agents[i].Persona.Name != want {
+			t.Fatalf("agent[%d] persona lost after normalize: %+v", i, opts.Agents[i].Persona)
+		}
+	}
+	if opts.CCCount != 1 || opts.CodCount != 2 {
+		t.Fatalf("counts not recomputed from expanded agents: cc=%d cod=%d, want cc=1 cod=2", opts.CCCount, opts.CodCount)
+	}
+}
+
 func TestExpandProfileAgents_MatchingRequestedCountsSucceeds(t *testing.T) {
 	// --cod=3 with a 3-codex persona set is consistent and must succeed.
 	profiles := []*persona.Persona{
