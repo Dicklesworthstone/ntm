@@ -151,8 +151,18 @@ var knownAgentTypes = map[string]bool{
 var knownAgentPromptPrefixes = regexp.MustCompile(`(?i)^(claude|codex|gemini|cursor|windsurf|aider|ollama)>\s*$`)
 
 // DetectIdleFromOutput analyzes output to determine if agent is idle.
-// It checks up to 3 non-empty lines from the end for prompt patterns.
-// This window allows detecting idle state even when there's trailing output.
+// It checks up to maxIdleDetectionLines non-empty lines from the end for prompt
+// patterns. This window allows detecting idle state even when the agent's TUI
+// renders multiple lines of status / hint / separator below the actual prompt
+// line — which is common in narrow tiled panes where Claude Code's status bar,
+// thinking-budget indicator, and input-box border together push the `❯` prompt
+// 5–15 visible lines above the last line of output.
+//
+// The previous 3-line window was too narrow for swarm setups with many tiled
+// panes (e.g. 16+ panes per session yielding ~18-char-wide × ~4–6-line-tall
+// viewports). In that geometry the bottom 3 non-empty lines are dominated by
+// the persistent status bar and the actual idle prompt is never inspected,
+// causing the pane to be misclassified as ActivityActive forever.
 func DetectIdleFromOutput(output string, agentType string) bool {
 	agentType = string(agent.AgentType(agentType).Canonical())
 
@@ -164,11 +174,8 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		return false
 	}
 
-	// Check up to 3 non-empty lines from the end for prompt patterns.
-	// This window allows detecting idle state even with some trailing output.
-	const maxLinesToCheck = 3
 	linesChecked := 0
-	for i := len(lines) - 1; i >= 0 && linesChecked < maxLinesToCheck; i-- {
+	for i := len(lines) - 1; i >= 0 && linesChecked < maxIdleDetectionLines; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -185,6 +192,14 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 	}
 	return false
 }
+
+// maxIdleDetectionLines is the maximum number of non-empty lines scanned from
+// the bottom of a pane capture when looking for an idle-prompt pattern. Sized
+// to cover Claude Code's typical "below the prompt" footer (status bar, hint
+// text, separator, input-box border, thinking-budget indicator) in narrow
+// tiled panes — empirically that footer is ~6–12 lines, so 20 gives headroom
+// without scanning the entire capture buffer.
+const maxIdleDetectionLines = 20
 
 // GetLastNonEmptyLine returns the last non-empty line from output
 func GetLastNonEmptyLine(output string) string {

@@ -311,19 +311,44 @@ func TestDetectIdleFromOutput_MultipleLines(t *testing.T) {
 		},
 		{
 			// Prompt within 3 non-empty lines is still detected
-			// "more" is checked (not prompt), "followup" is checked (not prompt),
-			// "claude>" is checked (is prompt!) -> returns true
 			name:      "prompt in third line from end",
 			output:    "claude>\nfollowup\nmore",
 			agentType: "cc",
-			expected:  true, // Actually true because we check 3 lines
+			expected:  true,
 		},
 		{
-			// Prompt beyond 3 non-empty lines
-			name:      "prompt beyond 3 lines",
+			// Prompt 5 lines back — within the 20-line window
+			name:      "prompt 5 lines from end",
 			output:    "claude>\na\nb\nc\nd",
 			agentType: "cc",
-			expected:  false, // Beyond the 3 line check window
+			expected:  true,
+		},
+		{
+			// Narrow tiled CC pane: status bar / separator / hint lines push the
+			// real ❯ prompt ~8 lines up. This is the regression case the 20-line
+			// window fixes — a fresh-session CC pane that is unambiguously idle
+			// but where the bottom-3-line heuristic only sees decorative footer.
+			name: "narrow tiled cc pane with footer noise",
+			output: "❯ \n" +
+				"───────────\n" +
+				"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n" +
+				"  ? for shortcu…\n" +
+				"  ● high · /eff…\n" +
+				"\n" +
+				"new task?\n" +
+				"  /cl…\n",
+			agentType: "cc",
+			expected:  true,
+		},
+		{
+			// Prompt beyond the 20-line window must still NOT be detected — guard
+			// against false positives from very-old prompt text in scrollback.
+			name: "prompt beyond 20 lines",
+			output: "claude>\n" +
+				"l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n" +
+				"l11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\nl21",
+			agentType: "cc",
+			expected:  false,
 		},
 		{
 			name:      "prompt as last line after work output",
