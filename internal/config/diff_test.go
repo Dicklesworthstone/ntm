@@ -110,6 +110,8 @@ func TestDiff_AgentMailSettings(t *testing.T) {
 	cfg.AgentMail.Enabled = false
 	cfg.AgentMail.URL = "http://custom:9999"
 	cfg.AgentMail.AutoRegister = false
+	supervise := true
+	cfg.AgentMail.SupervisorEnabled = &supervise
 
 	diffs := Diff(cfg)
 
@@ -122,6 +124,7 @@ func TestDiff_AgentMailSettings(t *testing.T) {
 		"agent_mail.enabled",
 		"agent_mail.url",
 		"agent_mail.auto_register",
+		"agent_mail.supervisor_enabled",
 	} {
 		if !paths[expected] {
 			t.Errorf("expected diff for %q, not found", expected)

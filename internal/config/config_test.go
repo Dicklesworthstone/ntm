@@ -54,6 +54,9 @@ func TestDefault(t *testing.T) {
 	if cfg.Routing.ExcludeIfErrorState != true {
 		t.Errorf("Routing.ExcludeIfErrorState = %t, want true", cfg.Routing.ExcludeIfErrorState)
 	}
+	if cfg.AgentMail.SupervisorEnabledOrDefault() {
+		t.Error("Agent Mail supervisor should be disabled by default so ntm does not own user am processes")
+	}
 }
 
 func TestLoadRoutingBoolOnlyOverridesPreserveDefaults(t *testing.T) {
@@ -231,6 +234,7 @@ enabled = true
 url = "http://localhost:9999/mcp/"
 auto_register = false
 program_name = "test-ntm"
+supervisor_enabled = true
 `
 	path := createTempConfig(t, content)
 
@@ -259,6 +263,9 @@ program_name = "test-ntm"
 	}
 	if cfg.Tmux.PaneInitDelayMs != 1500 {
 		t.Errorf("Expected pane_init_delay_ms 1500, got %d", cfg.Tmux.PaneInitDelayMs)
+	}
+	if !cfg.AgentMail.SupervisorEnabledOrDefault() {
+		t.Error("Expected supervisor_enabled true from config")
 	}
 	if cfg.AgentMail.URL != "http://localhost:9999/mcp/" {
 		t.Errorf("Expected URL http://localhost:9999/mcp/, got %s", cfg.AgentMail.URL)
@@ -664,6 +671,9 @@ func TestPrint(t *testing.T) {
 		if !strings.Contains(output, section) {
 			t.Errorf("Expected output to contain %s", section)
 		}
+	}
+	if !strings.Contains(output, "supervisor_enabled = false") {
+		t.Error("Expected printed config to make Agent Mail supervisor ownership explicit")
 	}
 }
 

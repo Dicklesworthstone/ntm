@@ -31,15 +31,16 @@ const (
 
 // DaemonSpec defines how to start and manage a daemon.
 type DaemonSpec struct {
-	Name        string   `json:"name"`         // Unique identifier: "cm", "bd", "am"
-	Command     string   `json:"command"`      // Command to run: "cm", "bd"
-	Args        []string `json:"args"`         // Arguments: ["serve", "--port", "8765"]
-	HealthURL   string   `json:"health_url"`   // Health check URL: "http://127.0.0.1:8765/health/liveness" or "/health"
-	HealthCmd   []string `json:"health_cmd"`   // Health check command: ["bd", "daemon", "--health"]
-	PortFlag    string   `json:"port_flag"`    // Flag to specify port: "--port"
-	DefaultPort int      `json:"default_port"` // Default port if none specified
-	WorkDir     string   `json:"work_dir"`     // Working directory for the daemon
-	Env         []string `json:"env"`          // Additional environment variables
+	Name           string   `json:"name"`             // Unique identifier: "cm", "bd", "am"
+	Command        string   `json:"command"`          // Command to run: "cm", "bd"
+	Args           []string `json:"args"`             // Arguments: ["serve", "--port", "8765"]
+	HealthURL      string   `json:"health_url"`       // Health check URL: "http://127.0.0.1:8765/health/liveness" or "/health"
+	HealthCmd      []string `json:"health_cmd"`       // Health check command: ["bd", "daemon", "--health"]
+	PortFlag       string   `json:"port_flag"`        // Flag to specify port: "--port"
+	DefaultPort    int      `json:"default_port"`     // Default port if none specified
+	NoPortFallback bool     `json:"no_port_fallback"` // Refuse random-port fallback when DefaultPort is occupied
+	WorkDir        string   `json:"work_dir"`         // Working directory for the daemon
+	Env            []string `json:"env"`              // Additional environment variables
 }
 
 // ManagedDaemon represents a running daemon process.
@@ -177,6 +178,9 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 	// Find available port
 	port := spec.DefaultPort
 	if !isPortAvailable(port) {
+		if spec.NoPortFallback {
+			return fmt.Errorf("daemon %s default port %d is already in use; not starting a second instance on a random port", spec.Name, spec.DefaultPort)
+		}
 		var err error
 		port, err = findAvailablePort()
 		if err != nil {
@@ -677,6 +681,10 @@ func DefaultSpecs() []DaemonSpec {
 			DefaultPort: 8200,
 		},
 		{
+			// This spec is used only when `[agent_mail].supervisor_enabled = true`.
+			// Agent Mail is externally managed by default so ntm does not
+			// compete with a user-owned `am` process on port 8765.
+			//
 			// `am` >= 0.2 split the original `serve` subcommand into
 			// `serve-http` (HTTP transport, what ntm needs) and
 			// `serve-stdio`. Older binaries supporting bare `serve` are
@@ -695,21 +703,17 @@ func DefaultSpecs() []DaemonSpec {
 			// `--no-auth` matches the canonical args the launchd /
 			// systemd installers `am service install` produce. This is
 			// safe for single-user workstations (the bind is loopback)
-			// but is a security trade-off on shared multi-user hosts:
-			// any other user on the same machine can hit the loopback
-			// API. Operators on shared hosts should set
-			// `[agent_mail].supervisor_enabled = false` in
-			// `~/.config/ntm/config.toml` and run `am serve-http`
-			// themselves with an auth-token configuration — ntm will
-			// then skip lifecycle management for the daemon. See
-			// `AgentMailConfig.SupervisorEnabled` for the opt-out
-			// docstring.
-			Name:        "am",
-			Command:     "am",
-			Args:        []string{"serve-http", "--host", "127.0.0.1", "--no-tui", "--no-auth"},
-			HealthURL:   "http://127.0.0.1:8765/health/liveness",
-			PortFlag:    "--port",
-			DefaultPort: 8765,
+			// but is a security trade-off on shared multi-user hosts.
+			// Those operators should keep the default external ownership
+			// and run `am serve-http` themselves with an auth-token
+			// configuration.
+			Name:           "am",
+			Command:        "am",
+			Args:           []string{"serve-http", "--host", "127.0.0.1", "--no-tui", "--no-auth"},
+			HealthURL:      "http://127.0.0.1:8765/health/liveness",
+			PortFlag:       "--port",
+			DefaultPort:    8765,
+			NoPortFallback: true,
 		},
 	}
 }

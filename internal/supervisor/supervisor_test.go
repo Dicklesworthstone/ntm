@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -491,6 +492,44 @@ func TestDefaultSpecsAgentMailUsesServeHTTP(t *testing.T) {
 	}
 	if !hasNoTUI {
 		t.Fatalf("'am' daemon args must include --no-tui; got %v", amSpec.Args)
+	}
+	if !amSpec.NoPortFallback {
+		t.Fatal("'am' daemon must refuse random-port fallback when 8765 is already occupied")
+	}
+}
+
+func TestStartNoPortFallbackRefusesOccupiedPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve port: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	s, err := New(Config{
+		SessionID:  "test-session",
+		ProjectDir: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer s.Shutdown()
+
+	err = s.Start(DaemonSpec{
+		Name:           "am",
+		Command:        "definitely-not-a-real-command",
+		DefaultPort:    port,
+		NoPortFallback: true,
+	})
+	if err == nil {
+		t.Fatal("expected occupied-port error")
+	}
+	if !strings.Contains(err.Error(), "already in use") || !strings.Contains(err.Error(), "random port") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := s.GetDaemon("am"); ok {
+		t.Fatal("daemon should not be registered after refusing occupied default port")
 	}
 }
 

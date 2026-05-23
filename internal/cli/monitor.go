@@ -106,16 +106,13 @@ func runMonitor(session string) error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize supervisor: %v\n", err)
 	} else {
-		// Start default daemons (cm, am). The `am` slot can be opted
-		// out of via `[agent_mail].supervisor_enabled = false` for
-		// users who run the daemon under launchd/systemd themselves
-		// (see ntm#137) — useful because the supervisor's restart
-		// limit otherwise fires harmless retry-storm log lines when an
-		// external process already holds port 8765.
-		amSupervised := cfg == nil || cfg.AgentMail.SupervisorEnabledOrDefault()
+		// Start default daemons. Agent Mail is external by default: ntm may
+		// use the configured MCP URL, but it must not start, stop, restart, or
+		// compete with a user-owned `am` unless explicitly opted in.
+		amSupervised := shouldSuperviseAgentMailDaemon()
 		for _, spec := range supervisor.DefaultSpecs() {
 			if spec.Name == "am" && !amSupervised {
-				fmt.Printf("Skipping daemon: am (supervisor_enabled = false; manage externally)\n")
+				fmt.Printf("Skipping daemon: am (Agent Mail is externally managed; set [agent_mail].supervisor_enabled = true to let ntm own it)\n")
 				continue
 			}
 			if err := sup.Start(spec); err != nil {
@@ -239,6 +236,13 @@ func runMonitor(session string) error {
 			captureSessionOutputs(session, lastOutputs)
 		}
 	}
+}
+
+func shouldSuperviseAgentMailDaemon() bool {
+	if cfg == nil || !cfg.AgentMail.Enabled {
+		return false
+	}
+	return cfg.AgentMail.SupervisorEnabledOrDefault()
 }
 
 func detectSessionTerminationCause(session string) string {

@@ -26,6 +26,32 @@ func TestShouldStartInternalMonitor_IsDisabledUnderGoTest(t *testing.T) {
 	}
 }
 
+func TestShouldSuperviseAgentMailDaemon_DefaultsExternal(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+
+	cfg = nil
+	if shouldSuperviseAgentMailDaemon() {
+		t.Fatal("nil config should not supervise Agent Mail")
+	}
+
+	cfg = config.Default()
+	if shouldSuperviseAgentMailDaemon() {
+		t.Fatal("default config should leave Agent Mail externally managed")
+	}
+
+	enabled := true
+	cfg.AgentMail.SupervisorEnabled = &enabled
+	if !shouldSuperviseAgentMailDaemon() {
+		t.Fatal("explicit supervisor_enabled=true should supervise Agent Mail")
+	}
+
+	cfg.AgentMail.Enabled = false
+	if shouldSuperviseAgentMailDaemon() {
+		t.Fatal("agent_mail.enabled=false should disable Agent Mail supervision")
+	}
+}
+
 func TestResolveSpawnProjectDirUsesOverride(t *testing.T) {
 	projectDir := t.TempDir()
 

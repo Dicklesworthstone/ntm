@@ -1273,23 +1273,19 @@ type AgentMailConfig struct {
 	AutoRegister bool   `toml:"auto_register"` // Auto-register sessions as agents
 	ProgramName  string `toml:"program_name"`  // Program identifier for registration
 	// SupervisorEnabled controls whether ntm spawns and manages the
-	// `am serve-http` daemon under its supervisor. Default true keeps
-	// the convenience path that auto-starts the daemon on `ntm spawn`.
-	// Set to false when running `am` under launchd/systemd/another
-	// external supervisor (e.g. `am service install`) — ntm then skips
-	// the lifecycle management entirely and the supervised slot becomes
-	// a no-op. Resolves the noise reported in ntm#137 for users who
-	// take ownership of the daemon themselves. Pointer + omitempty so
-	// the default-true semantics are clear on a fresh config (nil =>
-	// true; explicit `supervisor_enabled = false` => false).
+	// `am serve-http` daemon under its supervisor. Default false keeps
+	// Agent Mail ownership external: ntm may use the configured MCP URL,
+	// but it will not start, stop, restart, or compete with a user-owned
+	// `am` process on port 8765. Set to true only when you explicitly want
+	// ntm to own the Agent Mail daemon lifecycle for a session.
 	SupervisorEnabled *bool `toml:"supervisor_enabled,omitempty"`
 }
 
 // SupervisorEnabledOrDefault returns the effective value of
-// SupervisorEnabled with the documented default-true semantics applied.
+// SupervisorEnabled with the documented default-false semantics applied.
 func (a AgentMailConfig) SupervisorEnabledOrDefault() bool {
 	if a.SupervisorEnabled == nil {
-		return true
+		return false
 	}
 	return *a.SupervisorEnabled
 }
@@ -3114,6 +3110,9 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "auto_register = %t\n", cfg.AgentMail.AutoRegister)
 	fmt.Fprintf(w, "program_name = %q\n", cfg.AgentMail.ProgramName)
+	fmt.Fprintln(w, "# If true, ntm starts/stops `am serve-http` for session monitors.")
+	fmt.Fprintln(w, "# Default false prevents ntm from hijacking a user-owned Agent Mail server.")
+	fmt.Fprintf(w, "supervisor_enabled = %t\n", cfg.AgentMail.SupervisorEnabledOrDefault())
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[integrations]")
@@ -4230,6 +4229,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.AgentMail.AutoRegister, nil
 		case "program_name":
 			return cfg.AgentMail.ProgramName, nil
+		case "supervisor_enabled":
+			return cfg.AgentMail.SupervisorEnabledOrDefault(), nil
 		}
 	case "integrations":
 		if len(parts) < 2 {
@@ -5321,6 +5322,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("agent_mail.url", defaults.AgentMail.URL, cfg.AgentMail.URL)
 	addDiff("agent_mail.auto_register", defaults.AgentMail.AutoRegister, cfg.AgentMail.AutoRegister)
 	addDiff("agent_mail.program_name", defaults.AgentMail.ProgramName, cfg.AgentMail.ProgramName)
+	addDiff("agent_mail.supervisor_enabled", defaults.AgentMail.SupervisorEnabledOrDefault(), cfg.AgentMail.SupervisorEnabledOrDefault())
 
 	// Integrations (DCG)
 	addDiff("integrations.dcg.enabled", defaults.Integrations.DCG.Enabled, cfg.Integrations.DCG.Enabled)

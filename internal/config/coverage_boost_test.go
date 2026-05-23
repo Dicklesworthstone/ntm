@@ -119,6 +119,7 @@ func TestGetValue_AgentMail(t *testing.T) {
 		{"agent_mail.url", ""},
 		{"agent_mail.token", "[redacted]"},
 		{"agent_mail.auto_register", ""},
+		{"agent_mail.supervisor_enabled", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

@@ -4722,9 +4722,10 @@ Examples:
 						"rotate_threshold":  effectiveCfg.ContextRotation.RotateThreshold,
 					},
 					"agent_mail": map[string]interface{}{
-						"enabled":       effectiveCfg.AgentMail.Enabled,
-						"url":           effectiveCfg.AgentMail.URL,
-						"auto_register": effectiveCfg.AgentMail.AutoRegister,
+						"enabled":            effectiveCfg.AgentMail.Enabled,
+						"url":                effectiveCfg.AgentMail.URL,
+						"auto_register":      effectiveCfg.AgentMail.AutoRegister,
+						"supervisor_enabled": effectiveCfg.AgentMail.SupervisorEnabledOrDefault(),
 					},
 					"ensemble": map[string]interface{}{
 						"default_ensemble": effectiveCfg.Ensemble.DefaultEnsemble,
