@@ -77,9 +77,9 @@ func normalizeWriterSessionName(sessionName string) (string, error) {
 //
 // The replacement compares the canonical form of `absPath` against the
 // path itself: any in-tree symlink (e.g. .ntm/handoffs/linked pointing
-// at /etc) causes the canonical to diverge somewhere below the
-// system-level prefix and the call rejects. macOS's /var ↔ /private/var
-// substitution is the only divergence we tolerate.
+// at /etc) causes the canonical to diverge below the system-level
+// prefix and the call rejects. macOS's /var ↔ /private/var (and
+// /tmp, /etc) substitutions are the only divergences we tolerate.
 func ensureNoSymlinkComponents(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -97,37 +97,32 @@ func ensureNoSymlinkComponents(path string) error {
 		return nil
 	}
 
-	// Strip the longest common SUFFIX of absPath and canonical; the
-	// remaining prefixes are what differs. If only the known
-	// macOS-shaped system-level prefixes differ, accept.
-	abs := absPath
-	can := canonical
-	for filepath.Base(abs) == filepath.Base(can) {
-		absParent := filepath.Dir(abs)
-		canParent := filepath.Dir(can)
-		if absParent == abs || canParent == can {
-			break
-		}
-		abs = absParent
-		can = canParent
-	}
-
+	// macOS rewrites a leading /var, /tmp, or /etc to /private/var,
+	// /private/tmp, /private/etc. Recognise that exact substitution
+	// (in either direction) and accept the canonicalisation; anything
+	// else is project-controlled and must be rejected.
 	sep := string(filepath.Separator)
-	allowed := []struct{ raw, canon string }{
-		{raw: sep + "var", canon: sep + "private" + sep + "var"},
-		{raw: sep + "tmp", canon: sep + "private" + sep + "tmp"},
-		{raw: sep + "etc", canon: sep + "private" + sep + "etc"},
-	}
-	for _, kp := range allowed {
-		if (abs == kp.raw && can == kp.canon) || (abs == kp.canon && can == kp.raw) {
+	systemPrefixes := []string{sep + "var", sep + "tmp", sep + "etc"}
+	for _, p := range systemPrefixes {
+		privatePrefix := sep + "private" + p
+		// absPath uses raw prefix, canonical uses /private + prefix.
+		if (absPath == p || strings.HasPrefix(absPath, p+sep)) &&
+			canonical == privatePrefix+strings.TrimPrefix(absPath, p) {
+			return nil
+		}
+		// absPath uses canonical prefix, canonical uses raw — the
+		// reverse case (the supplied path was already canonical and
+		// EvalSymlinks returned the same thing or a raw-prefix
+		// equivalent). Kept for symmetry; not expected in practice.
+		if (absPath == privatePrefix || strings.HasPrefix(absPath, privatePrefix+sep)) &&
+			canonical == p+strings.TrimPrefix(absPath, privatePrefix) {
 			return nil
 		}
 	}
 
-	// Project-controlled symlink (or some other unexpected
-	// substitution): reject. Report the divergence at the *raw* side
-	// so the error names something the caller actually passed in.
-	return fmt.Errorf("path %s traverses symlinked component %s", path, abs)
+	// Report the divergence at the raw side so the error names
+	// something the caller actually passed in.
+	return fmt.Errorf("path %s traverses symlinked component %s", path, absPath)
 }
 
 // canonicalPath resolves all symlinks in absPath. If part of the path
