@@ -201,7 +201,7 @@ Examples:
 	cmd.Flags().IntVar(&assignLimit, "limit", 0, "Maximum number of assignments (0 = unlimited)")
 
 	// Agent type filters
-	cmd.Flags().StringVar(&assignAgentType, "agent", "", "Filter by agent type: claude, codex, gemini")
+	cmd.Flags().StringVar(&assignAgentType, "agent", "", "Filter by agent type: any, claude, codex, gemini")
 	cmd.Flags().BoolVar(&assignCCOnly, "cc-only", false, "Only assign to Claude agents (alias for --agent=claude)")
 	cmd.Flags().BoolVar(&assignCodOnly, "cod-only", false, "Only assign to Codex agents (alias for --agent=codex)")
 	cmd.Flags().BoolVar(&assignGmiOnly, "gmi-only", false, "Only assign to Gemini agents (alias for --agent=gemini)")
@@ -650,7 +650,7 @@ func buildAssignWatchOverlayWarning(key string, err error) string {
 func resolveAgentTypeFilter() string {
 	// Explicit --agent flag takes precedence
 	if assignAgentType != "" {
-		return robot.ResolveAgentType(assignAgentType)
+		return normalizeAssignAgentTypeFilter(assignAgentType)
 	}
 	// Convenience flags
 	if assignCCOnly {
@@ -663,6 +663,21 @@ func resolveAgentTypeFilter() string {
 		return "gemini"
 	}
 	return "" // No filter
+}
+
+func normalizeAssignAgentTypeFilter(agentTypeFilter string) string {
+	trimmed := strings.TrimSpace(agentTypeFilter)
+	switch strings.ToLower(trimmed) {
+	case "", "any", "all", "*":
+		return ""
+	default:
+		return robot.ResolveAgentType(trimmed)
+	}
+}
+
+func assignAgentTypeMatchesFilter(agentType, agentTypeFilter string) bool {
+	normalizedFilter := normalizeAssignAgentTypeFilter(agentTypeFilter)
+	return normalizedFilter == "" || agentType == normalizedFilter
 }
 
 func resolveAssignTimeout(timeout time.Duration) time.Duration {
@@ -1415,7 +1430,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		}
 
 		// Apply agent type filter
-		if opts.AgentTypeFilter != "" && at != opts.AgentTypeFilter {
+		if !assignAgentTypeMatchesFilter(at, opts.AgentTypeFilter) {
 			continue
 		}
 
@@ -4422,8 +4437,8 @@ func PerformAutoReassignment(completedBeadID string, opts *AutoReassignOptions) 
 func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgentInfo, error) {
 	normalizedFilter := ""
 	if agentTypeFilter != "" {
-		normalizedFilter = robot.ResolveAgentType(agentTypeFilter)
-		if normalizedFilter == "" || normalizedFilter == "unknown" || normalizedFilter == "user" {
+		normalizedFilter = normalizeAssignAgentTypeFilter(agentTypeFilter)
+		if normalizedFilter == "unknown" || normalizedFilter == "user" {
 			return nil, fmt.Errorf("invalid agent type filter %q", agentTypeFilter)
 		}
 	}

@@ -963,6 +963,30 @@ func TestDetectModelFromTitle(t *testing.T) {
 	}
 }
 
+func TestAssignAgentTypeFilterTreatsAnyAsNoFilter(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		filter    string
+		want      bool
+	}{
+		{name: "empty matches codex", agentType: "codex", filter: "", want: true},
+		{name: "any matches codex", agentType: "codex", filter: "any", want: true},
+		{name: "all matches claude", agentType: "claude", filter: "all", want: true},
+		{name: "star matches gemini", agentType: "gemini", filter: "*", want: true},
+		{name: "alias cod matches codex", agentType: "codex", filter: "cod", want: true},
+		{name: "claude excludes codex", agentType: "codex", filter: "claude", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := assignAgentTypeMatchesFilter(tc.agentType, tc.filter); got != tc.want {
+				t.Fatalf("assignAgentTypeMatchesFilter(%q, %q) = %v, want %v", tc.agentType, tc.filter, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDetermineAgentState_NormalizesAliasHints(t *testing.T) {
 
 	tests := []struct {
