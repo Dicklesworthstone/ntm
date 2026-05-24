@@ -1393,6 +1393,134 @@ func runAssignJSON(opts *AssignCommandOptions) error {
 	return json.NewEncoder(os.Stdout).Encode(envelope)
 }
 
+func getActiveAssignmentBeadIDs(session string) map[string]struct{} {
+	active := make(map[string]struct{})
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		return active
+	}
+	for _, item := range store.ListActive() {
+		active[item.BeadID] = struct{}{}
+	}
+	return active
+}
+
+func filterAssignableTriageRecommendations(recs []bv.TriageRecommendation, activeAssignments map[string]struct{}, verbose bool) ([]bv.BeadPreview, []SkippedItem) {
+	ready := make([]bv.BeadPreview, 0, len(recs))
+	skipped := make([]SkippedItem, 0)
+
+	for _, rec := range recs {
+		if item, skip := triageRecommendationSkipItem(rec, activeAssignments); skip {
+			skipped = append(skipped, item)
+			if verbose {
+				if len(item.BlockedByIDs) > 0 {
+					fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - %s: %v\n", rec.ID, item.Reason, item.BlockedByIDs)
+				} else {
+					fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - %s\n", rec.ID, item.Reason)
+				}
+			}
+			continue
+		}
+		ready = append(ready, bv.BeadPreview{
+			ID:       rec.ID,
+			Title:    rec.Title,
+			Priority: fmt.Sprintf("P%d", rec.Priority),
+		})
+	}
+
+	return ready, skipped
+}
+
+func triageRecommendationSkipItem(rec bv.TriageRecommendation, activeAssignments map[string]struct{}) (SkippedItem, bool) {
+	item := SkippedItem{BeadID: rec.ID, BeadTitle: rec.Title}
+
+	if len(rec.BlockedBy) > 0 {
+		item.Reason = "blocked_by_dependency"
+		item.BlockedByIDs = rec.BlockedBy
+		return item, true
+	}
+
+	if hasOperatorGatedLabel(rec.Labels) {
+		item.Reason = "operator_gated"
+		return item, true
+	}
+
+	switch normalizeBeadStatusForAssignment(rec.Status) {
+	case "", "open":
+		// assignable unless an assignment store entry says otherwise
+	case "in_progress":
+		item.Reason = "already_in_progress"
+		return item, true
+	case "blocked":
+		item.Reason = "blocked_status"
+		return item, true
+	case "closed", "resolved", "done":
+		item.Reason = "closed_status"
+		return item, true
+	default:
+		item.Reason = "not_open_status"
+		return item, true
+	}
+
+	if _, ok := activeAssignments[rec.ID]; ok {
+		item.Reason = "already_assigned"
+		return item, true
+	}
+
+	return SkippedItem{}, false
+}
+
+func normalizeBeadStatusForAssignment(status string) string {
+	status = strings.TrimSpace(strings.ToLower(status))
+	status = strings.ReplaceAll(status, "-", "_")
+	status = strings.ReplaceAll(status, " ", "_")
+	return status
+}
+
+func hasOperatorGatedLabel(labels []string) bool {
+	for _, label := range labels {
+		switch strings.TrimSpace(strings.ToLower(label)) {
+		case "operator-gated", "blocked-on-ivan", "blocked-on-operator", "needs-operator", "operator-action", "human-gated", "human-input", "business-input":
+			return true
+		}
+	}
+	return false
+}
+
+func filterAssignedReadyBeads(ready []bv.BeadPreview, skipped []SkippedItem, activeAssignments map[string]struct{}, verbose bool) ([]bv.BeadPreview, []SkippedItem) {
+	if len(activeAssignments) == 0 || len(ready) == 0 {
+		return ready, skipped
+	}
+
+	filtered := make([]bv.BeadPreview, 0, len(ready))
+	for _, bead := range ready {
+		if _, ok := activeAssignments[bead.ID]; ok {
+			skipped = append(skipped, SkippedItem{
+				BeadID:    bead.ID,
+				BeadTitle: bead.Title,
+				Reason:    "already_assigned",
+			})
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - already_assigned\n", bead.ID)
+			}
+			continue
+		}
+		filtered = append(filtered, bead)
+	}
+
+	return filtered, skipped
+}
+
+func countSkippedByReason(items []SkippedItem, reason string) int {
+	count := 0
+	for _, item := range items {
+		if item.Reason == reason {
+			count++
+		}
+	}
+	return count
+}
+
 // getAssignOutputEnhanced builds the enhanced assignment output
 func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced, error) {
 	if !tmux.SessionExists(opts.Session) {
@@ -1440,9 +1568,10 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 
 	// Enhanced error handling for BV unavailability and stale graphs
 	var readyBeads []bv.BeadPreview
-	var blockedBeads []SkippedItem
+	var skippedBeads []SkippedItem
 	var fallbackReason string
 	var triageErrors []string // Track errors before result is initialized
+	activeAssignmentBeads := getActiveAssignmentBeadIDs(opts.Session)
 
 	if err != nil {
 		fallbackReason = fmt.Sprintf("BV triage unavailable: %v", err)
@@ -1476,7 +1605,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 				// Add excluded beads to skipped list
 				for _, bead := range readyBeads {
 					if IsBeadInCycle(bead.ID, cycles) {
-						blockedBeads = append(blockedBeads, SkippedItem{
+						skippedBeads = append(skippedBeads, SkippedItem{
 							BeadID: bead.ID,
 							Reason: "in_dependency_cycle",
 						})
@@ -1487,32 +1616,15 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 			readyBeads = filteredBeads
 		}
 	} else {
-		// Filter blocked beads from recommendations
-		for _, rec := range allRecs {
-			// Skip if blocked by other beads
-			if len(rec.BlockedBy) > 0 {
-				blockedBeads = append(blockedBeads, SkippedItem{
-					BeadID:       rec.ID,
-					BeadTitle:    rec.Title,
-					Reason:       "blocked_by_dependency",
-					BlockedByIDs: rec.BlockedBy,
-				})
-				if opts.Verbose {
-					fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - blocked by: %v\n", rec.ID, rec.BlockedBy)
-				}
-				continue
-			}
-			// Convert TriageRecommendation to BeadPreview
-			readyBeads = append(readyBeads, bv.BeadPreview{
-				ID:       rec.ID,
-				Title:    rec.Title,
-				Priority: fmt.Sprintf("P%d", rec.Priority),
-			})
-		}
-		if opts.Verbose && len(blockedBeads) > 0 {
-			fmt.Fprintf(os.Stderr, "[DEP] Filtered %d blocked beads, %d actionable\n", len(blockedBeads), len(readyBeads))
+		var triageSkipped []SkippedItem
+		readyBeads, triageSkipped = filterAssignableTriageRecommendations(allRecs, activeAssignmentBeads, opts.Verbose)
+		skippedBeads = append(skippedBeads, triageSkipped...)
+		if opts.Verbose && len(triageSkipped) > 0 {
+			fmt.Fprintf(os.Stderr, "[DEP] Filtered %d non-actionable beads, %d actionable\n", len(triageSkipped), len(readyBeads))
 		}
 	}
+
+	readyBeads, skippedBeads = filterAssignedReadyBeads(readyBeads, skippedBeads, activeAssignmentBeads, opts.Verbose)
 
 	// Filter to specific beads if requested
 	if len(opts.BeadIDs) > 0 {
@@ -1527,14 +1639,14 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 			}
 		}
 		readyBeads = filtered
-		// Also filter blockedBeads to only include requested ones
-		var filteredBlocked []SkippedItem
-		for _, b := range blockedBeads {
+		// Also filter skippedBeads to only include requested ones
+		var filteredSkipped []SkippedItem
+		for _, b := range skippedBeads {
 			if beadSet[b.BeadID] {
-				filteredBlocked = append(filteredBlocked, b)
+				filteredSkipped = append(filteredSkipped, b)
 			}
 		}
-		blockedBeads = filteredBlocked
+		skippedBeads = filteredSkipped
 	}
 
 	// Filter out beads in dependency cycles (with warning)
@@ -1567,16 +1679,16 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	}
 
 	// Combine all skipped beads
-	allSkipped := append(blockedBeads, cyclicBeads...)
+	allSkipped := append(skippedBeads, cyclicBeads...)
 
 	result := &AssignOutputEnhanced{
 		Strategy:    opts.Strategy,
 		Assignments: make([]AssignmentItem, 0),
 		Skipped:     allSkipped, // Blocked + cyclic beads
 		Summary: AssignSummaryEnhanced{
-			TotalBeadCount:    len(readyBeads) + len(blockedBeads) + cycleWarnings,
+			TotalBeadCount:    len(readyBeads) + len(skippedBeads) + cycleWarnings,
 			ActionableCount:   len(readyBeads),
-			BlockedCount:      len(blockedBeads),
+			BlockedCount:      countSkippedByReason(skippedBeads, "blocked_by_dependency"),
 			IdleAgents:        len(idleAgents),
 			CycleWarningCount: cycleWarnings,
 		},
@@ -1591,7 +1703,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 				Reason: "no_idle_agents",
 			})
 		}
-		result.Summary.SkippedCount = len(readyBeads)
+		result.Summary.SkippedCount = len(result.Skipped)
 		return result, nil
 	}
 

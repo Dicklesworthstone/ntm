@@ -120,6 +120,118 @@ func TestTriageRecommendationToBeadPreviewConversion(t *testing.T) {
 	}
 }
 
+func TestFilterAssignableTriageRecommendationsRejectsNonReadyItems(t *testing.T) {
+	recs := []bv.TriageRecommendation{
+		{
+			ID:       "bd-open",
+			Title:    "Open bead",
+			Status:   "open",
+			Priority: 1,
+		},
+		{
+			ID:        "bd-dep-blocked",
+			Title:     "Dependency blocked bead",
+			Status:    "open",
+			Priority:  2,
+			BlockedBy: []string{"bd-parent"},
+		},
+		{
+			ID:       "bd-status-blocked",
+			Title:    "Status blocked bead",
+			Status:   "blocked",
+			Priority: 1,
+		},
+		{
+			ID:       "bd-in-progress",
+			Title:    "Already in progress bead",
+			Status:   "in_progress",
+			Priority: 1,
+		},
+		{
+			ID:       "bd-operator",
+			Title:    "Operator gated bead",
+			Status:   "open",
+			Priority: 1,
+			Labels:   []string{"operator-gated"},
+		},
+		{
+			ID:       "bd-assigned",
+			Title:    "Already assigned bead",
+			Status:   "open",
+			Priority: 1,
+		},
+		{
+			ID:       "bd-empty-status",
+			Title:    "Backward compatible missing status",
+			Priority: 0,
+		},
+	}
+
+	activeAssignments := map[string]struct{}{
+		"bd-assigned": {},
+	}
+
+	ready, skipped := filterAssignableTriageRecommendations(recs, activeAssignments, false)
+
+	if len(ready) != 2 {
+		t.Fatalf("ready count = %d, want 2 (%v)", len(ready), ready)
+	}
+	if ready[0].ID != "bd-open" || ready[0].Priority != "P1" {
+		t.Fatalf("first ready bead = %#v, want bd-open P1", ready[0])
+	}
+	if ready[1].ID != "bd-empty-status" || ready[1].Priority != "P0" {
+		t.Fatalf("second ready bead = %#v, want bd-empty-status P0", ready[1])
+	}
+
+	reasons := make(map[string]string)
+	var depBlockers []string
+	for _, item := range skipped {
+		reasons[item.BeadID] = item.Reason
+		if item.BeadID == "bd-dep-blocked" {
+			depBlockers = item.BlockedByIDs
+		}
+	}
+
+	expectedReasons := map[string]string{
+		"bd-dep-blocked":    "blocked_by_dependency",
+		"bd-status-blocked": "blocked_status",
+		"bd-in-progress":    "already_in_progress",
+		"bd-operator":       "operator_gated",
+		"bd-assigned":       "already_assigned",
+	}
+
+	for beadID, want := range expectedReasons {
+		if got := reasons[beadID]; got != want {
+			t.Errorf("skip reason for %s = %q, want %q", beadID, got, want)
+		}
+	}
+	if len(depBlockers) != 1 || depBlockers[0] != "bd-parent" {
+		t.Errorf("dependency blockers = %v, want [bd-parent]", depBlockers)
+	}
+}
+
+func TestFilterAssignedReadyBeadsRejectsActiveStoreItems(t *testing.T) {
+	ready := []bv.BeadPreview{
+		{ID: "bd-open", Title: "Open", Priority: "P1"},
+		{ID: "bd-active", Title: "Active", Priority: "P2"},
+	}
+	activeAssignments := map[string]struct{}{
+		"bd-active": {},
+	}
+
+	filtered, skipped := filterAssignedReadyBeads(ready, nil, activeAssignments, false)
+
+	if len(filtered) != 1 || filtered[0].ID != "bd-open" {
+		t.Fatalf("filtered ready = %#v, want only bd-open", filtered)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped count = %d, want 1", len(skipped))
+	}
+	if skipped[0].BeadID != "bd-active" || skipped[0].Reason != "already_assigned" {
+		t.Fatalf("skipped item = %#v, want bd-active already_assigned", skipped[0])
+	}
+}
+
 // TestBlockedBeadsReasonString tests that blocked reason string is correct
 func TestBlockedBeadsReasonString(t *testing.T) {
 	const expectedReason = "blocked_by_dependency"
