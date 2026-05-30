@@ -1487,28 +1487,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 			readyBeads = filteredBeads
 		}
 	} else {
-		// Filter blocked beads from recommendations
-		for _, rec := range allRecs {
-			// Skip if blocked by other beads
-			if len(rec.BlockedBy) > 0 {
-				blockedBeads = append(blockedBeads, SkippedItem{
-					BeadID:       rec.ID,
-					BeadTitle:    rec.Title,
-					Reason:       "blocked_by_dependency",
-					BlockedByIDs: rec.BlockedBy,
-				})
-				if opts.Verbose {
-					fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - blocked by: %v\n", rec.ID, rec.BlockedBy)
-				}
-				continue
-			}
-			// Convert TriageRecommendation to BeadPreview
-			readyBeads = append(readyBeads, bv.BeadPreview{
-				ID:       rec.ID,
-				Title:    rec.Title,
-				Priority: fmt.Sprintf("P%d", rec.Priority),
-			})
-		}
+		readyBeads, blockedBeads = partitionAssignableRecommendations(allRecs, opts.Verbose)
 		if opts.Verbose && len(blockedBeads) > 0 {
 			fmt.Fprintf(os.Stderr, "[DEP] Filtered %d blocked beads, %d actionable\n", len(blockedBeads), len(readyBeads))
 		}
@@ -1630,6 +1609,42 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	result.Summary.SkippedCount = len(result.Skipped)
 
 	return result, nil
+}
+
+func partitionAssignableRecommendations(recs []bv.TriageRecommendation, verbose bool) ([]bv.BeadPreview, []SkippedItem) {
+	readyBeads := make([]bv.BeadPreview, 0, len(recs))
+	blockedBeads := make([]SkippedItem, 0)
+
+	for _, rec := range recs {
+		if !bv.IsActionableRecommendation(rec) {
+			reason := "blocked_status"
+			if len(rec.BlockedBy) > 0 {
+				reason = "blocked_by_dependency"
+			}
+			blockedBeads = append(blockedBeads, SkippedItem{
+				BeadID:       rec.ID,
+				BeadTitle:    rec.Title,
+				Reason:       reason,
+				BlockedByIDs: append([]string(nil), rec.BlockedBy...),
+			})
+			if verbose {
+				if len(rec.BlockedBy) > 0 {
+					fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - blocked by: %v\n", rec.ID, rec.BlockedBy)
+				} else {
+					fmt.Fprintf(os.Stderr, "[DEP] Skipping %s - status=blocked\n", rec.ID)
+				}
+			}
+			continue
+		}
+
+		readyBeads = append(readyBeads, bv.BeadPreview{
+			ID:       rec.ID,
+			Title:    rec.Title,
+			Priority: fmt.Sprintf("P%d", rec.Priority),
+		})
+	}
+
+	return readyBeads, blockedBeads
 }
 
 // generateAssignmentsEnhanced creates assignment recommendations using the enhanced strategy logic.

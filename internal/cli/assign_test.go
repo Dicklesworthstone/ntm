@@ -137,6 +137,62 @@ func TestBlockedBeadsReasonString(t *testing.T) {
 	}
 }
 
+func TestPartitionAssignableRecommendationsSkipsBlockedStatusAndDependencies(t *testing.T) {
+	recs := []bv.TriageRecommendation{
+		{
+			ID:       "bd-ready",
+			Title:    "Ready bead",
+			Priority: 1,
+			Status:   "open",
+		},
+		{
+			ID:       "bd-blocked-status",
+			Title:    "Blocked by status only",
+			Priority: 2,
+			Status:   "blocked",
+		},
+		{
+			ID:       "bd-blocked-deps",
+			Title:    "Blocked by dependency",
+			Priority: 3,
+			Status:   "open",
+			BlockedBy: []string{
+				"bd-parent",
+			},
+		},
+	}
+
+	ready, blocked := partitionAssignableRecommendations(recs, false)
+
+	if len(ready) != 1 {
+		t.Fatalf("len(ready) = %d, want 1", len(ready))
+	}
+	if ready[0].ID != "bd-ready" {
+		t.Fatalf("ready[0].ID = %q, want bd-ready", ready[0].ID)
+	}
+
+	if len(blocked) != 2 {
+		t.Fatalf("len(blocked) = %d, want 2", len(blocked))
+	}
+
+	if blocked[0].BeadID != "bd-blocked-status" {
+		t.Fatalf("blocked[0].BeadID = %q, want bd-blocked-status", blocked[0].BeadID)
+	}
+	if blocked[0].Reason != "blocked_status" {
+		t.Fatalf("blocked[0].Reason = %q, want blocked_status", blocked[0].Reason)
+	}
+
+	if blocked[1].BeadID != "bd-blocked-deps" {
+		t.Fatalf("blocked[1].BeadID = %q, want bd-blocked-deps", blocked[1].BeadID)
+	}
+	if blocked[1].Reason != "blocked_by_dependency" {
+		t.Fatalf("blocked[1].Reason = %q, want blocked_by_dependency", blocked[1].Reason)
+	}
+	if len(blocked[1].BlockedByIDs) != 1 || blocked[1].BlockedByIDs[0] != "bd-parent" {
+		t.Fatalf("blocked[1].BlockedByIDs = %v, want [bd-parent]", blocked[1].BlockedByIDs)
+	}
+}
+
 // TestAssignOutputEnhancedStructure tests the output structure is correct for JSON
 func TestAssignOutputEnhancedStructure(t *testing.T) {
 	output := AssignOutputEnhanced{

@@ -176,6 +176,22 @@ func TestBVClientConvertRecommendation(t *testing.T) {
 			t.Fatalf("EstimatedSize = %q, want %q", out.EstimatedSize, "medium")
 		}
 	})
+
+	t.Run("blocked_status_without_blockers_is_not_actionable", func(t *testing.T) {
+		t.Parallel()
+
+		out := client.convertRecommendation(TriageRecommendation{
+			ID:        "bd-4",
+			Title:     "Blocked by status only",
+			Type:      "task",
+			Status:    "blocked",
+			BlockedBy: nil,
+		})
+
+		if out.IsActionable {
+			t.Fatalf("IsActionable = true, want false")
+		}
+	})
 }
 
 func TestBVClientBuildInsightsFromResponse(t *testing.T) {

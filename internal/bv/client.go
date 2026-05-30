@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -349,7 +350,7 @@ func (c *BVClient) convertRecommendation(rec TriageRecommendation) Recommendatio
 		UnblocksCount: len(rec.UnblocksIDs),
 		UnblocksIDs:   rec.UnblocksIDs,
 		BlockedByIDs:  rec.BlockedBy,
-		IsActionable:  len(rec.BlockedBy) == 0,
+		IsActionable:  IsActionableRecommendation(rec),
 		Tags:          rec.Labels,
 		Score:         rec.Score,
 		Action:        rec.Action,
@@ -366,6 +367,16 @@ func (c *BVClient) convertRecommendation(rec TriageRecommendation) Recommendatio
 	r.EstimatedSize = c.estimateSize(rec)
 
 	return r
+}
+
+// IsActionableRecommendation reports whether a triage recommendation should be
+// considered assignable. A bead that is already marked blocked is never
+// assignable, even if its dependency list is empty.
+func IsActionableRecommendation(rec TriageRecommendation) bool {
+	if strings.EqualFold(strings.TrimSpace(rec.Status), "blocked") {
+		return false
+	}
+	return len(rec.BlockedBy) == 0
 }
 
 // estimateSize estimates task size based on heuristics.
