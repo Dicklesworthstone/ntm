@@ -477,6 +477,12 @@ func TestConvertRecommendationStatusAware(t *testing.T) {
 		{"closed", false},
 		{"resolved", false},
 		{"done", false},
+		// Unknown statuses are NOT actionable — the allow-list mirrors the
+		// assignment classifier's `default` arm, so serve/FilterReady agree
+		// with `ntm assign` (a deny-list would wrongly mark these actionable).
+		{"review", false},
+		{"todo", false},
+		{"in_review", false},
 	}
 	for _, tc := range cases {
 		rec := client.convertRecommendation(TriageRecommendation{

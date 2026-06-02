@@ -341,24 +341,26 @@ func (c *BVClient) workDir() (string, error) {
 	return normalizeTriageDir(c.WorkspacePath)
 }
 
-// nonActionableStatuses are bead statuses that make a recommendation unsafe to
-// treat as ready work even when it carries no dependency blockers — e.g. a bead
-// with status=blocked but an empty blocked_by list. bv's --robot-triage output
-// is permissive (it surfaces blocked/in_progress/closed beads with non-zero
-// scores), so status must be consulted in addition to the blocker list.
-var nonActionableStatuses = map[string]struct{}{
-	"blocked":     {},
-	"in_progress": {},
-	"closed":      {},
-	"resolved":    {},
-	"done":        {},
+// actionableStatuses are the bead statuses considered ready to act on. This is
+// an allow-list mirroring the assignment-side classifier
+// (classifyTriageRecForAssignment in internal/cli/assign.go), which treats only
+// open/ready (and the empty default) as assignable and skips every other status
+// — including blocked/in_progress/closed and any unknown status — via its
+// `default` arm. Using the same allow-list keeps the serve API
+// (/api/v1/beads/recommend) and the FilterReady gate consistent with `ntm
+// assign`: a deny-list would report unknown statuses (e.g. "review", "todo") as
+// actionable here while assign skips them.
+var actionableStatuses = map[string]struct{}{
+	"":      {},
+	"open":  {},
+	"ready": {},
 }
 
 // isActionableRecommendation reports whether a triage recommendation is ready to
-// act on: it must have no dependency blockers AND not be in a non-actionable
-// status. This keeps the serve API (/api/v1/beads/recommend) and the FilterReady
-// gate consistent with the assignment-side classifier, so a status=blocked bead
-// with an empty blocked_by list is not reported as actionable.
+// act on: it must have no dependency blockers AND an actionable status. bv's
+// --robot-triage output is permissive (it surfaces blocked/in_progress/closed
+// beads with non-zero scores), so the status is consulted in addition to the
+// blocker list, using the same allow-list as the assignment classifier.
 func isActionableRecommendation(rec TriageRecommendation) bool {
 	if len(rec.BlockedBy) > 0 {
 		return false
@@ -366,8 +368,8 @@ func isActionableRecommendation(rec TriageRecommendation) bool {
 	canonical := strings.ToLower(strings.TrimSpace(rec.Status))
 	canonical = strings.ReplaceAll(canonical, "-", "_")
 	canonical = strings.ReplaceAll(canonical, " ", "_")
-	_, blocked := nonActionableStatuses[canonical]
-	return !blocked
+	_, ok := actionableStatuses[canonical]
+	return ok
 }
 
 // convertRecommendation converts a TriageRecommendation to our Recommendation format.
