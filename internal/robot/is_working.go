@@ -184,51 +184,37 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 		return output, nil
 	}
 
-	// Determine which panes to check
-	panesToCheck := opts.Panes
-	if len(panesToCheck) == 0 {
-		// Default: all panes except control pane (pane 1 with pane-base-index=1)
-		// Find minimum pane index to identify control pane
-		minIdx := -1
-		for _, p := range allPanes {
-			if minIdx == -1 || p.Index < minIdx {
-				minIdx = p.Index
-			}
-		}
-		for _, p := range allPanes {
-			if p.Index != minIdx { // Skip control pane (first pane)
-				panesToCheck = append(panesToCheck, p.Index)
-			}
-		}
-	}
+	// Determine which panes to check. This is window-aware (#170): a
+	// window-per-agent layout (N windows each with a single pane sharing
+	// window-local index 0) must NOT collapse to one entry, and the legacy
+	// "skip the global minimum index" control-pane heuristic excluded every
+	// pane in that layout (they all share the min), reporting total_panes:0.
+	selected := selectIsWorkingPanes(opts.Session, allPanes, opts.Panes)
 
-	// Validate requested panes exist and capture per-pane metadata so the
-	// parser can be hinted with the canonical agent type from tmux. Without
-	// this hint, the content-based detector races (e.g. a Codex pane whose
-	// scrollback contains Claude-flavored chrome can be classified as `cc`,
-	// which then misses Codex-specific work indicators and surfaces as
-	// `is_working=false`). See ntm#114.
-	paneExists := make(map[int]bool)
-	paneTargets := make(map[int]string)
-	paneHints := make(map[int]agent.AgentType)
-	for _, p := range allPanes {
-		paneExists[p.Index] = true
-		paneTargets[p.Index] = fmt.Sprintf("%s:%d.%d", opts.Session, p.WindowIndex, p.Index)
-		paneHints[p.Index] = agent.AgentType(paneAgentType(p)).Canonical()
-	}
+	// Whether the session spans multiple windows. When it does, a bare pane
+	// index is no longer a unique key, so the response map is keyed by the
+	// canonical "window.pane" address. Single-window sessions keep bare-index
+	// keys for backward compatibility with existing consumers.
+	multiWindow := sessionSpansMultipleWindows(allPanes)
 
 	// Create parser
 	parser := agent.NewParser()
 
-	// Process each pane
-	for _, paneIdx := range panesToCheck {
-		paneKey := strconv.Itoa(paneIdx)
+	// Track requested pane indices for the query echo (backward-compatible
+	// shape: []int of pane indices). Targets and metadata come from the
+	// selected pane objects directly.
+	requestedIndices := make([]int, 0, len(selected))
 
-		if !paneExists[paneIdx] {
+	// Process each selected pane.
+	for _, sel := range selected {
+		requestedIndices = append(requestedIndices, sel.Index)
+		paneKey := isWorkingPaneKey(sel, multiWindow)
+
+		if !sel.found {
 			output.Panes[paneKey] = PaneWorkStatus{
 				AgentType:            string(agent.AgentTypeUnknown),
 				Recommendation:       string(agent.RecommendErrorState),
-				RecommendationReason: fmt.Sprintf("Pane %d not found in session", paneIdx),
+				RecommendationReason: fmt.Sprintf("Pane %s not found in session", paneKey),
 				Confidence:           0.0,
 				Indicators:           WorkIndicators{Work: []string{}, Limit: []string{}},
 			}
@@ -236,8 +222,11 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 			continue
 		}
 
-		// Capture pane output
-		target := paneTargets[paneIdx]
+		// Capture pane output. The target uses the window.pane address so it
+		// resolves correctly regardless of pane-base-index / multi-window.
+		paneIdx := sel.Index
+		target := sel.target
+		paneHint := sel.hint
 		content, err := tmux.CapturePaneOutput(target, opts.LinesCaptured)
 		if err != nil {
 			output.Panes[paneKey] = PaneWorkStatus{
@@ -254,7 +243,7 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 		// Parse the output. Hint with the tmux-tracked agent type so we don't
 		// misclassify Codex panes as Claude (or vice versa) when both agents'
 		// chrome appears in the scrollback.
-		state, err := parser.ParseWithHint(content, paneHints[paneIdx])
+		state, err := parser.ParseWithHint(content, paneHint)
 		if err != nil {
 			output.Panes[paneKey] = PaneWorkStatus{
 				AgentType:            string(agent.AgentTypeUnknown),
@@ -365,10 +354,129 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 		output.Summary.ByRecommendation[rec] = append(output.Summary.ByRecommendation[rec], paneIdx)
 	}
 
-	output.Summary.TotalPanes = len(panesToCheck)
-	output.Query.PanesRequested = panesToCheck
+	output.Summary.TotalPanes = len(selected)
+	output.Query.PanesRequested = requestedIndices
 
 	return output, nil
+}
+
+// selectedPane bundles a chosen pane with the metadata GetIsWorking needs:
+// its tmux target (window.pane address), the agent-type hint from tmux, and a
+// found flag (false when the caller requested a pane index that doesn't exist).
+type selectedPane struct {
+	WindowIndex int
+	Index       int
+	target      string
+	hint        agent.AgentType
+	found       bool
+}
+
+// selectIsWorkingPanes resolves the set of panes to inspect for
+// --robot-is-working in a window-aware manner.
+//
+// When `requested` is non-empty, each requested bare index is matched against
+// the session. In a single-window session this is unambiguous. In a
+// multi-window session a bare index may match panes in several windows; we
+// include every match so the caller is never silently narrowed to one pane
+// (the dual of the adopt #170 fix). A requested index with no match yields a
+// not-found placeholder so the error surfaces in the response.
+//
+// When `requested` is empty (the "all non-control panes" default), selection is
+// grouped by window: within each window the lowest-index pane is treated as the
+// control pane and skipped IF the window holds more than one pane. A
+// window-per-agent layout (one pane per window) therefore includes every pane
+// instead of excluding them all under the old global-minimum heuristic.
+func selectIsWorkingPanes(session string, allPanes []tmux.Pane, requested []int) []selectedPane {
+	build := func(p tmux.Pane) selectedPane {
+		return selectedPane{
+			WindowIndex: p.WindowIndex,
+			Index:       p.Index,
+			target:      fmt.Sprintf("%s:%d.%d", session, p.WindowIndex, p.Index),
+			hint:        agent.AgentType(paneAgentType(p)).Canonical(),
+			found:       true,
+		}
+	}
+
+	if len(requested) > 0 {
+		byIndex := make(map[int][]tmux.Pane)
+		for _, p := range allPanes {
+			byIndex[p.Index] = append(byIndex[p.Index], p)
+		}
+		var out []selectedPane
+		for _, idx := range requested {
+			matches := byIndex[idx]
+			if len(matches) == 0 {
+				out = append(out, selectedPane{Index: idx, found: false})
+				continue
+			}
+			for _, p := range matches {
+				out = append(out, build(p))
+			}
+		}
+		return out
+	}
+
+	// Default: all non-control panes, window-aware.
+	panesByWindow := make(map[int][]tmux.Pane)
+	var windowOrder []int
+	for _, p := range allPanes {
+		if _, seen := panesByWindow[p.WindowIndex]; !seen {
+			windowOrder = append(windowOrder, p.WindowIndex)
+		}
+		panesByWindow[p.WindowIndex] = append(panesByWindow[p.WindowIndex], p)
+	}
+
+	var out []selectedPane
+	for _, win := range windowOrder {
+		wp := panesByWindow[win]
+		if len(wp) <= 1 {
+			// Single pane in this window: it is an agent pane, not a control
+			// pane. Include it (window-per-agent layout).
+			for _, p := range wp {
+				out = append(out, build(p))
+			}
+			continue
+		}
+		// Multiple panes: skip this window's lowest-index pane (control pane).
+		minIdx := wp[0].Index
+		for _, p := range wp[1:] {
+			if p.Index < minIdx {
+				minIdx = p.Index
+			}
+		}
+		for _, p := range wp {
+			if p.Index != minIdx {
+				out = append(out, build(p))
+			}
+		}
+	}
+	return out
+}
+
+// sessionSpansMultipleWindows reports whether the session's panes live in more
+// than one window. When true, bare pane indices are not unique keys.
+func sessionSpansMultipleWindows(allPanes []tmux.Pane) bool {
+	if len(allPanes) == 0 {
+		return false
+	}
+	first := allPanes[0].WindowIndex
+	for _, p := range allPanes[1:] {
+		if p.WindowIndex != first {
+			return true
+		}
+	}
+	return false
+}
+
+// isWorkingPaneKey returns the response-map key for a pane. Single-window
+// sessions use the bare pane index (backward compatible). Multi-window sessions
+// use the canonical "window.pane" address so window-per-agent layouts don't
+// collapse multiple panes onto one key.
+func isWorkingPaneKey(sel selectedPane, multiWindow bool) string {
+	if !multiWindow {
+		return strconv.Itoa(sel.Index)
+	}
+	return fmt.Sprintf("%d.%d", sel.WindowIndex, sel.Index)
 }
 
 // Ensure consistent timestamp formatting for all robot output

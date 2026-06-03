@@ -1,9 +1,11 @@
 package robot
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestDefaultIsWorkingOptions(t *testing.T) {
@@ -348,6 +350,129 @@ extracting archive ⠋
 `
 	if !IsLiveBusy(shellScrollback, agent.AgentTypeUser.String()) {
 		t.Fatalf("expected wildcard CategoryThinking match (braille_spinner) on shell scrollback with user hint; if this assertion changes, the GetIsWorking user-pane skip may no longer be needed")
+	}
+}
+
+// =============================================================================
+// Window-aware pane selection (#170)
+// =============================================================================
+//
+// In a window-per-agent layout (N windows × 1 pane all at window-local index 0)
+// the legacy selection (`skip the global minimum index`) excluded every pane,
+// and the bare-index response-map key collapsed N panes onto one entry. These
+// tests pin both the single-window (unchanged) and multi-window (fixed)
+// behavior of the pure selection helpers.
+
+// singleWindowSession models the classic layout: one window, a control pane and
+// two agent panes (pane-base-index = 1, so the control pane is index 1).
+func singleWindowSession() []tmux.Pane {
+	return []tmux.Pane{
+		{ID: "%0", WindowIndex: 0, Index: 1, Title: "ctrl"},
+		{ID: "%1", WindowIndex: 0, Index: 2, Title: "sess__cc_1"},
+		{ID: "%2", WindowIndex: 0, Index: 3, Title: "sess__cod_1"},
+	}
+}
+
+// windowPerAgentSession models the #170 layout: 3 windows, each with one pane at
+// index 0.
+func windowPerAgentSession() []tmux.Pane {
+	return []tmux.Pane{
+		{ID: "%0", WindowIndex: 0, Index: 0, Title: "sess__cc_1"},
+		{ID: "%1", WindowIndex: 1, Index: 0, Title: "sess__cod_1"},
+		{ID: "%2", WindowIndex: 2, Index: 0, Title: "sess__gmi_1"},
+	}
+}
+
+func selectedTargets(sel []selectedPane) []string {
+	out := make([]string, 0, len(sel))
+	for _, s := range sel {
+		out = append(out, s.target)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestSessionSpansMultipleWindows(t *testing.T) {
+	if sessionSpansMultipleWindows(singleWindowSession()) {
+		t.Error("single-window session reported as multi-window")
+	}
+	if !sessionSpansMultipleWindows(windowPerAgentSession()) {
+		t.Error("window-per-agent session not reported as multi-window")
+	}
+	if sessionSpansMultipleWindows(nil) {
+		t.Error("empty session reported as multi-window")
+	}
+}
+
+func TestSelectIsWorkingPanes_SingleWindowDefaultSkipsControlPane(t *testing.T) {
+	// Default selection (no requested panes): skip the window's lowest index
+	// (control pane = 1), keep agent panes 2 and 3. This is unchanged behavior.
+	sel := selectIsWorkingPanes("sess", singleWindowSession(), nil)
+	if len(sel) != 2 {
+		t.Fatalf("expected 2 non-control panes, got %d (%+v)", len(sel), sel)
+	}
+	gotTargets := selectedTargets(sel)
+	wantTargets := []string{"sess:0.2", "sess:0.3"}
+	for i, w := range wantTargets {
+		if gotTargets[i] != w {
+			t.Fatalf("target[%d] = %q, want %q (all: %v)", i, gotTargets[i], w, gotTargets)
+		}
+	}
+}
+
+func TestSelectIsWorkingPanes_WindowPerAgentDoesNotCollapse(t *testing.T) {
+	// The bug: every pane shares index 0, so the global-minimum heuristic
+	// excluded all of them (total_panes:0). Window-aware selection must keep
+	// every window's single pane and address each by window.pane.
+	sel := selectIsWorkingPanes("sess", windowPerAgentSession(), nil)
+	if len(sel) != 3 {
+		t.Fatalf("expected 3 panes (one per window), got %d (%+v)", len(sel), sel)
+	}
+	gotTargets := selectedTargets(sel)
+	wantTargets := []string{"sess:0.0", "sess:1.0", "sess:2.0"}
+	for i, w := range wantTargets {
+		if gotTargets[i] != w {
+			t.Fatalf("target[%d] = %q, want %q (all: %v)", i, gotTargets[i], w, gotTargets)
+		}
+	}
+}
+
+func TestSelectIsWorkingPanes_RequestedBareIndexMatchesAllWindows(t *testing.T) {
+	// An explicit `--panes=0` request against a window-per-agent layout must
+	// include every window's pane rather than silently narrowing to one.
+	sel := selectIsWorkingPanes("sess", windowPerAgentSession(), []int{0})
+	if len(sel) != 3 {
+		t.Fatalf("expected requested index 0 to match all 3 windows, got %d", len(sel))
+	}
+	gotTargets := selectedTargets(sel)
+	wantTargets := []string{"sess:0.0", "sess:1.0", "sess:2.0"}
+	for i, w := range wantTargets {
+		if gotTargets[i] != w {
+			t.Fatalf("target[%d] = %q, want %q", i, gotTargets[i], w)
+		}
+	}
+}
+
+func TestSelectIsWorkingPanes_RequestedMissingIndexIsNotFound(t *testing.T) {
+	sel := selectIsWorkingPanes("sess", singleWindowSession(), []int{9})
+	if len(sel) != 1 {
+		t.Fatalf("expected 1 placeholder, got %d", len(sel))
+	}
+	if sel[0].found {
+		t.Fatal("expected missing pane to be marked not-found")
+	}
+	if sel[0].Index != 9 {
+		t.Fatalf("expected placeholder Index 9, got %d", sel[0].Index)
+	}
+}
+
+func TestIsWorkingPaneKey(t *testing.T) {
+	p := selectedPane{WindowIndex: 2, Index: 0}
+	if got := isWorkingPaneKey(p, false); got != "0" {
+		t.Errorf("single-window key = %q, want bare index %q", got, "0")
+	}
+	if got := isWorkingPaneKey(p, true); got != "2.0" {
+		t.Errorf("multi-window key = %q, want %q", got, "2.0")
 	}
 }
 
