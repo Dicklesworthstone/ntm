@@ -26,6 +26,11 @@ type Persona struct {
 	Model        string   `toml:"model"`         // Model alias or full name
 	SystemPrompt string   `toml:"system_prompt"` // System prompt to inject
 	Temperature  *float64 `toml:"temperature,omitempty"`
+
+	// ReasoningEffort sets the model's reasoning budget, rendered into the
+	// Codex `model_reasoning_effort` flag at spawn time. Empty falls back to the
+	// agent-command template default. See FlatAgent.ReasoningEffort.
+	ReasoningEffort string `toml:"reasoning_effort,omitempty"`
 	ContextFiles []string `toml:"context_files,omitempty"` // Globs of files to include in context
 	Tags         []string `toml:"tags,omitempty"`
 
@@ -249,6 +254,7 @@ func mergePersonas(parent, child *Persona) *Persona {
 		Description:        child.Description,
 		AgentType:          child.AgentType,
 		Model:              child.Model,
+		ReasoningEffort:    child.ReasoningEffort,
 		SystemPrompt:       child.SystemPrompt,
 		Temperature:        child.Temperature,
 		Extends:            child.Extends,
@@ -278,6 +284,9 @@ func mergePersonas(parent, child *Persona) *Persona {
 	}
 	if merged.Model == "" {
 		merged.Model = parent.Model
+	}
+	if merged.ReasoningEffort == "" {
+		merged.ReasoningEffort = parent.ReasoningEffort
 	}
 	if merged.Temperature == nil && parent.Temperature != nil {
 		temp := *parent.Temperature

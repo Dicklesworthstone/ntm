@@ -441,10 +441,11 @@ func expandProfileAgents(profiles []*persona.Persona, requested AgentSpecs) ([]F
 		indices[at]++
 		personaCounts[at]++
 		agents = append(agents, FlatAgent{
-			Type:    at,
-			Index:   indices[at],
-			Model:   p.Model,
-			Persona: p,
+			Type:            at,
+			Index:           indices[at],
+			Model:           p.Model,
+			ReasoningEffort: p.ReasoningEffort,
+			Persona:         p,
 		})
 	}
 
@@ -1999,10 +2000,18 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		// expansion (handled below), so the two persona sources never overlap.
 		var systemPromptFile string
 		var personaName string
+		// Reasoning effort resolves from the persona when this agent carries one,
+		// otherwise from the (direct-spec) value already on the FlatAgent. The
+		// persona's setting always wins so `reasoning_effort` in personas.toml is
+		// honored for both PersonaMap and --profile-set spawns (ntm#171).
+		resolvedReasoningEffort := agent.ReasoningEffort
 		if agent.Persona == nil && opts.PersonaMap != nil {
 			if p, ok := opts.PersonaMap[agent.Model]; ok {
 				personaName = p.Name
 				modelRequested = strings.TrimSpace(p.Model) != ""
+				if strings.TrimSpace(p.ReasoningEffort) != "" {
+					resolvedReasoningEffort = p.ReasoningEffort
+				}
 				// Prepare system prompt file
 				promptFile, err := persona.PrepareSystemPrompt(p, dir)
 				if err != nil {
@@ -2028,6 +2037,9 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			if strings.TrimSpace(profile.Model) != "" {
 				modelRequested = true
 				resolvedModel = ResolveModel(agent.Type, profile.Model)
+			}
+			if strings.TrimSpace(profile.ReasoningEffort) != "" {
+				resolvedReasoningEffort = profile.ReasoningEffort
 			}
 			// Prepare system prompt file for the profile
 			promptFile, err := persona.PrepareSystemPrompt(profile, dir)
@@ -2064,7 +2076,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			ProjectDir:       dir,
 			SystemPromptFile: systemPromptFile,
 			PersonaName:      personaName,
-			ReasoningEffort:  agent.ReasoningEffort,
+			ReasoningEffort:  resolvedReasoningEffort,
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))

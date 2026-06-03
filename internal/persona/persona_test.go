@@ -1168,6 +1168,68 @@ func TestMergePersonasEdgeCases(t *testing.T) {
 	}
 }
 
+// TestReasoningEffortParseAndInherit covers ntm#171: `reasoning_effort` must be
+// parsed from personas.toml and follow the same child-overrides-parent
+// inheritance as `model`.
+func TestReasoningEffortParseAndInherit(t *testing.T) {
+	tmpDir := t.TempDir()
+	personasFile := filepath.Join(tmpDir, "personas.toml")
+
+	content := `
+[[personas]]
+name = "base"
+agent_type = "codex"
+model = "gpt-5.5"
+reasoning_effort = "high"
+
+[[personas]]
+name = "inherits"
+extends = "base"
+
+[[personas]]
+name = "overrides"
+extends = "base"
+reasoning_effort = "low"
+`
+	if err := os.WriteFile(personasFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(personasFile)
+	if err != nil {
+		t.Fatalf("LoadFromFile failed: %v", err)
+	}
+
+	// Direct parse off the on-disk key.
+	if got := cfg.Personas[0].ReasoningEffort; got != "high" {
+		t.Errorf("expected parsed reasoning_effort 'high', got %q", got)
+	}
+
+	r := NewRegistry()
+	for i := range cfg.Personas {
+		r.Add(&cfg.Personas[i])
+	}
+	if err := r.ResolveInheritance(); err != nil {
+		t.Fatalf("ResolveInheritance failed: %v", err)
+	}
+
+	inherits, ok := r.Get("inherits")
+	if !ok {
+		t.Fatal("expected to find 'inherits'")
+	}
+	if inherits.ReasoningEffort != "high" {
+		t.Errorf("child with no reasoning_effort should inherit parent's 'high', got %q", inherits.ReasoningEffort)
+	}
+
+	overrides, ok := r.Get("overrides")
+	if !ok {
+		t.Fatal("expected to find 'overrides'")
+	}
+	if overrides.ReasoningEffort != "low" {
+		t.Errorf("child reasoning_effort 'low' should win over parent, got %q", overrides.ReasoningEffort)
+	}
+}
+
 func TestLoadFromFileInvalidToml(t *testing.T) {
 	tmpDir := t.TempDir()
 	badFile := filepath.Join(tmpDir, "bad.toml")
