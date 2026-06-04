@@ -2931,9 +2931,13 @@ func runCodexGoalSend(session string, paneIndex int, body string) error {
 		if capErr == nil {
 			cls := codex.Classify(cap2)
 			lower := strings.ToLower(cap2)
+			// Engagement is asserted only by the classifier states or Codex's own
+			// descriptive palette text ("set or view the goal"). Do NOT match a
+			// bare "/goal" substring: that string is the literal we just typed and
+			// is echoed on the visible screen regardless of whether Codex actually
+			// opened the slash palette, which would falsely report engagement.
 			if cls.State == codex.StateGoalPalettePrimed ||
 				cls.State == codex.StateSlashPaletteOpen ||
-				strings.Contains(lower, "/goal") ||
 				strings.Contains(lower, "set or view the goal") {
 				res.PaletteEngaged = cls.State.String()
 				engaged = true

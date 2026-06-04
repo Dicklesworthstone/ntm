@@ -397,8 +397,12 @@ func DetectReplaceGoalDialog(content string) ReplaceGoalDialog {
 	// alternative to replacing — that option only exists because a current goal
 	// is active and Replace would close it. This is the affirmative, observable
 	// proof #168 requires before selecting Replace.
-	d.OldGoalClosed = strings.Contains(lower, "keep the current goal") ||
-		strings.Contains(lower, "replace current goal")
+	// Base the proof SOLELY on the "keep the current goal" option text: that
+	// option only renders when a current goal is active (Replace would close it),
+	// so it is the affirmative evidence a prior goal exists. The "replace current
+	// goal" label is option 1's own text and renders on every Replace modal, so it
+	// is NOT proof of a prior goal and must not satisfy the gate.
+	d.OldGoalClosed = strings.Contains(lower, "keep the current goal")
 
 	if m := newObjectiveRe.FindStringSubmatch(content); m != nil {
 		d.NewObjective = strings.TrimSpace(stripTrailingBox(m[1]))

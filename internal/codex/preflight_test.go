@@ -82,7 +82,7 @@ func TestPreflight_PerState(t *testing.T) {
 			content:     pfCodexLive,
 			wantState:   PreflightCodexLive,
 			wantAction:  ActionProceed,
-			wantMarkers: []string{"? for shortcuts", "% context left", "context", "›"},
+			wantMarkers: []string{"? for shortcuts", "% context left", "›"},
 		},
 		{
 			name:        "goal-in-progress",
@@ -122,6 +122,17 @@ func TestPreflight_PerState(t *testing.T) {
 		{
 			name:        "shell-no-codex",
 			content:     pfShellNoCodex,
+			wantState:   PreflightShellNoCodex,
+			wantAction:  ActionAlternatePane,
+			wantMarkers: []string{},
+		},
+		{
+			// Regression for the bare-"context" marker bug: a plain shell pane
+			// whose visible text merely contains the word "context" (a filename,
+			// git log, prose) must NOT be classified as live Codex, or
+			// send --codex-goal would blind-type into a non-Codex shell.
+			name:        "shell-with-context-word-not-codex",
+			content:     "user@host:~/proj$ cat context.md\n# Some context about the project\nuser@host:~/proj$ git log --oneline\nabc123 add context manager for auth\nuser@host:~/proj$ ",
 			wantState:   PreflightShellNoCodex,
 			wantAction:  ActionAlternatePane,
 			wantMarkers: []string{},

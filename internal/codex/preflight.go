@@ -259,7 +259,7 @@ var preflightRules = []preflightRule{
 			// a live Codex CLI at/near a prompt.
 			{Substr: "? for shortcuts", Why: "Codex idle prompt hint (agent/patterns.go codIdlePatterns)"},
 			{Substr: "% context left", Why: "Codex context status line (agent/patterns.go codContextPattern; lower-cased variant)"},
-			{Substr: "context", Why: "Codex status-bar 'Context N% left/used' segment (live Codex 0.137.0)"},
+			{Substr: "% context used", Why: "Codex context status line (used variant)"},
 			{Substr: "openai codex", Why: "Codex welcome banner '>_ OpenAI Codex (vX)' (live Codex 0.137.0)"},
 			{Substr: "codex>", Why: "Codex shell-style prompt (agent/patterns.go codIdlePatterns)"},
 			{Substr: "›", Why: "Codex chevron input prompt (agent/patterns.go codIdlePatterns)"},
