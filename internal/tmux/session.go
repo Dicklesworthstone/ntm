@@ -1161,6 +1161,21 @@ func SendEOF(target string) error {
 	return DefaultClient.SendEOF(target)
 }
 
+// SendNamedKey sends a single named tmux key to a pane (NOT literal text). Use
+// this for special keys like "Escape", "Up", "Down", "Tab", or "BSpace" that
+// must be delivered as key presses rather than the literal characters. The key
+// name is passed through to tmux send-keys unquoted (without -l), so it is
+// interpreted as a key name. The "--" guard prevents a leading-dash key name
+// from being parsed as a flag.
+func (c *Client) SendNamedKey(target, key string) error {
+	return c.RunSilent("send-keys", "-t", target, "--", key)
+}
+
+// SendNamedKey sends a single named tmux key to a pane (default client).
+func SendNamedKey(target, key string) error {
+	return DefaultClient.SendNamedKey(target, key)
+}
+
 // DisplayMessage shows a message in the tmux status line.
 // The "--" prevents msg from being interpreted as a tmux flag.
 func (c *Client) DisplayMessage(session, msg string, durationMs int) error {
@@ -1319,6 +1334,23 @@ func (c *Client) CapturePaneOutputContext(ctx context.Context, target string, li
 // CapturePaneOutput captures the output of a pane (default client)
 func CapturePaneOutput(target string, lines int) (string, error) {
 	return DefaultClient.CapturePaneOutput(target, lines)
+}
+
+// CapturePaneVisible captures ONLY the currently-visible screen of a pane (no
+// scrollback history). This is the right capture for classifying transient TUI
+// state — a live status bar / working footer is always on the visible screen,
+// whereas a deep scrollback capture can resurrect stale footers (e.g. an MCP
+// "esc to interrupt" startup line) that no longer reflect the pane's real state.
+// It uses `capture-pane -S 0` so the start row is the top of the visible region.
+func (c *Client) CapturePaneVisible(target string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCommandTimeout)
+	defer cancel()
+	return c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", "0")
+}
+
+// CapturePaneVisible captures only the visible screen of a pane (default client).
+func CapturePaneVisible(target string) (string, error) {
+	return DefaultClient.CapturePaneVisible(target)
 }
 
 // CapturePaneOutputContext captures the output of a pane with cancellation support (default client).

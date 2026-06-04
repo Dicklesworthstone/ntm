@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
+	"github.com/Dicklesworthstone/ntm/internal/codex"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/events"
@@ -543,6 +546,9 @@ func newSendCmd() *cobra.Command {
 	// Project filter (bd-3cu02.14)
 	var projectFilter string
 
+	// Codex goal-send mode (#165)
+	var codexGoal bool
+
 	cmd := &cobra.Command{
 		Use:   "send <session> [prompt]",
 		Short: "Send a prompt to agent panes",
@@ -623,6 +629,16 @@ func newSendCmd() *cobra.Command {
 				return fmt.Errorf("session name required (or use --project)")
 			}
 			session := args[0]
+
+			// Codex goal-send mode (#165): drive the Codex /goal slash command
+			// flow instead of the generic prompt-paste path.
+			if codexGoal {
+				body, _, err := getPromptContent(args[1:], promptFile, prefix, suffix)
+				if err != nil {
+					return err
+				}
+				return runCodexGoalSend(session, paneIndex, body)
+			}
 
 			// Resolve base prompt: flag > file > config (bd-3ejl)
 			var cfgBasePrompt, cfgBasePromptFile string
@@ -818,6 +834,12 @@ func newSendCmd() *cobra.Command {
 
 	// Project filter (bd-3cu02.14)
 	cmd.Flags().StringVar(&projectFilter, "project", "", "broadcast to all sessions for a base project name")
+
+	// Codex goal-send mode (#165): drive the Codex /goal slash command flow.
+	cmd.Flags().BoolVar(&codexGoal, "codex-goal", false,
+		"Drive the Codex /goal slash-command flow on --pane: type /goal, wait for the "+
+			"goal palette to engage, inject the packet body, submit, and emit a JSON "+
+			"receipt. Requires --pane and a codex-live pane. Use with --file for the packet.")
 
 	cmd.ValidArgsFunction = completeSessionArgs
 	_ = cmd.RegisterFlagCompletionFunc("pane", completePaneIndexes)
@@ -2767,6 +2789,193 @@ func sendPromptToPane(session string, p tmux.Pane, prompt string) error {
 	}
 	addTimelinePromptMarker(session, p, prompt)
 	return nil
+}
+
+// CodexGoalSendResult is the JSON receipt for `ntm send --codex-goal` (#165).
+type CodexGoalSendResult struct {
+	robot.RobotResponse
+
+	Session string `json:"session"`
+	Pane    int    `json:"pane"`
+
+	// TypedGoal is true once the "/goal" slash command was typed and the goal
+	// palette engaged (Codex showed the /goal command, not literal chat text).
+	TypedGoal bool `json:"typed_goal"`
+	// BodyInjected is true once the packet body was injected after engagement.
+	BodyInjected bool `json:"body_injected"`
+	// Submitted is true once the goal was submitted (Enter sent).
+	Submitted bool `json:"submitted"`
+	// SubmitAttempts counts how many submit (Enter) attempts were made.
+	SubmitAttempts int `json:"submit_attempts"`
+
+	// State is the terminal goal-send state: engaged / submitted / failed.
+	State string `json:"state"`
+	// PaletteEngaged records the palette state observed after typing /goal.
+	PaletteEngaged string `json:"palette_engaged"`
+	// PreflightBefore is the preflight state captured before driving the pane.
+	PreflightBefore string `json:"preflight_before"`
+	// ProvenanceHash is the sha256 of the pre-drive capture (audit trail).
+	ProvenanceHash string `json:"provenance_hash"`
+	// BodyPreview is a short preview of the injected packet body.
+	BodyPreview string `json:"body_preview"`
+	// Reason explains the outcome (especially on refusal/failure).
+	Reason string `json:"reason"`
+}
+
+// codexGoalEngageTimeout bounds the wait for the /goal palette to engage.
+var (
+	codexGoalEngageTimeout = 6 * time.Second
+	codexGoalPollInterval  = 400 * time.Millisecond
+)
+
+// runCodexGoalSend drives the Codex /goal slash-command flow on a single pane and
+// emits a deterministic JSON receipt (#165). It refuses unless the pane is
+// codex-live, types "/goal " as a real slash command, waits (via the palette/
+// preflight classifier) for the goal palette to engage, injects the packet body,
+// submits, and reports engaged / submitted / failed with provenance.
+func runCodexGoalSend(session string, paneIndex int, body string) error {
+	emitJSON := jsonOutput || IsJSONOutput()
+
+	// emit prints the single canonical receipt (JSON or human). On failure it
+	// records error_code/hint/error on the embedded envelope and returns
+	// errJSONFailure (JSON mode) or a plain error so Execute exits non-zero
+	// WITHOUT printing a second envelope.
+	emit := func(res CodexGoalSendResult, failErr error, code, hint string) error {
+		if failErr != nil {
+			res.Success = false
+			res.Error = failErr.Error()
+			res.ErrorCode = code
+			res.Hint = hint
+		}
+		if emitJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(res)
+			if failErr != nil {
+				return errors.Join(errJSONFailure, failErr)
+			}
+			return nil
+		}
+		fmt.Printf("Codex Goal Send\n===============\n\n")
+		fmt.Printf("Session: %s  Pane: %d\n", res.Session, res.Pane)
+		fmt.Printf("State:   %s\n", res.State)
+		fmt.Printf("Typed /goal: %v  Body injected: %v  Submitted: %v (attempts %d)\n",
+			res.TypedGoal, res.BodyInjected, res.Submitted, res.SubmitAttempts)
+		fmt.Printf("Reason:  %s\n", res.Reason)
+		return failErr
+	}
+
+	if err := tmux.EnsureInstalled(); err != nil {
+		return err
+	}
+	if paneIndex < 0 {
+		return robot.RobotError(
+			fmt.Errorf("--codex-goal requires an explicit --pane"),
+			robot.ErrCodeInvalidFlag,
+			"Pass --pane <n> identifying the Codex pane to drive",
+		)
+	}
+	if strings.TrimSpace(body) == "" {
+		return robot.RobotError(
+			fmt.Errorf("goal packet body is empty"),
+			robot.ErrCodeInvalidFlag,
+			"Provide the goal objective via --file <packet> or as the trailing argument",
+		)
+	}
+
+	target, content, err := resolveCodexPane(session, paneIndex, tmux.LinesFullContext)
+	if err != nil {
+		return err
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	res := CodexGoalSendResult{
+		RobotResponse:   robot.NewRobotResponse(false),
+		Session:         session,
+		Pane:            paneIndex,
+		ProvenanceHash:  hex.EncodeToString(sum[:]),
+		BodyPreview:     truncatePrompt(strings.TrimSpace(body), 80),
+		State:           "failed",
+		PaletteEngaged:  "none",
+		PreflightBefore: "",
+	}
+
+	// Gate: refuse unless the pane is codex-live (proceed-class).
+	pf := codex.Preflight(content)
+	res.PreflightBefore = pf.State.String()
+	if pf.Action != codex.ActionProceed {
+		res.Reason = fmt.Sprintf("refused: pane preflight=%s action=%s; not safe to drive a goal here. %s",
+			pf.State, pf.Action, pf.Reason)
+		return emit(res,
+			fmt.Errorf("pane not codex-live (preflight=%s)", pf.State),
+			robot.ErrCodeResourceBusy,
+			"Run 'ntm codex preflight' first; only drive a goal when state is codex-live/goal-completed",
+		)
+	}
+
+	// (1) Type "/goal " as a slash command (literal, no Enter) so Codex opens the
+	// slash palette and selects the /goal command rather than treating it as chat.
+	if err := tmux.SendKeys(target.ID, "/goal ", false); err != nil {
+		res.Reason = fmt.Sprintf("failed to type /goal: %v", err)
+		return emit(res, err, robot.ErrCodePromptSendFailed, "tmux send-keys for /goal failed")
+	}
+	res.TypedGoal = true
+
+	// (2) Wait for the goal palette to engage: Codex shows the /goal command
+	// entry / goal palette. Poll the palette+preflight classifiers until engaged
+	// or the bounded timeout elapses.
+	deadline := time.Now().Add(codexGoalEngageTimeout)
+	engaged := false
+	for time.Now().Before(deadline) {
+		cap2, capErr := tmux.CapturePaneVisible(target.ID)
+		if capErr == nil {
+			cls := codex.Classify(cap2)
+			lower := strings.ToLower(cap2)
+			if cls.State == codex.StateGoalPalettePrimed ||
+				cls.State == codex.StateSlashPaletteOpen ||
+				strings.Contains(lower, "/goal") ||
+				strings.Contains(lower, "set or view the goal") {
+				res.PaletteEngaged = cls.State.String()
+				engaged = true
+				break
+			}
+		}
+		time.Sleep(codexGoalPollInterval)
+	}
+	if !engaged {
+		res.State = "failed"
+		res.Reason = "the /goal palette did not engage within the timeout; Codex may have changed its slash-command UI"
+		return emit(res,
+			fmt.Errorf("goal palette did not engage"),
+			robot.ErrCodeTimeout,
+			"Verify Codex is at a quiescent prompt and that /goal is still a slash command in this Codex version",
+		)
+	}
+	res.State = "engaged"
+
+	// (3) Inject the packet body (single-line objective; literal, no Enter). If
+	// the body has newlines, flatten to spaces — /goal takes a one-line objective.
+	objective := strings.Join(strings.Fields(body), " ")
+	if err := tmux.SendKeys(target.ID, objective, false); err != nil {
+		res.Reason = fmt.Sprintf("failed to inject goal body: %v", err)
+		return emit(res, err, robot.ErrCodePromptSendFailed, "tmux send-keys for goal body failed")
+	}
+	res.BodyInjected = true
+
+	// (4) Submit (Enter). One attempt; /goal is a single-line command.
+	time.Sleep(tmux.DefaultEnterDelay)
+	res.SubmitAttempts = 1
+	if err := tmux.SendKeys(target.ID, "", true); err != nil {
+		res.Reason = fmt.Sprintf("failed to submit goal: %v", err)
+		return emit(res, err, robot.ErrCodePromptSendFailed, "tmux send-keys Enter (submit) failed")
+	}
+	res.Submitted = true
+	res.State = "submitted"
+	res.Success = true
+	res.Reason = "typed /goal, palette engaged, injected objective, and submitted. Use 'ntm codex wait-goal-engaged' to confirm engagement."
+
+	addTimelinePromptMarker(session, *target, "/goal "+objective)
+	return emit(res, nil, "", "")
 }
 
 func sendPromptWithDoubleEnter(paneID, prompt string) error {

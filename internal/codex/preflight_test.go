@@ -82,7 +82,7 @@ func TestPreflight_PerState(t *testing.T) {
 			content:     pfCodexLive,
 			wantState:   PreflightCodexLive,
 			wantAction:  ActionProceed,
-			wantMarkers: []string{"? for shortcuts", "% context left", "›"},
+			wantMarkers: []string{"? for shortcuts", "% context left", "context", "›"},
 		},
 		{
 			name:        "goal-in-progress",

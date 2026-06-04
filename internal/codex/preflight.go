@@ -187,14 +187,20 @@ var preflightRules = []preflightRule{
 		Action:   ActionRefuse,
 		Priority: 20,
 		Markers: []preflightMarker{
-			// CONSERVATIVE / ASSUMPTION: the exact replace-goal dialog copy could
-			// not be verified against a live Codex pane (the sandbox kills detached
-			// tmux panes). These are best-effort phrasings for a "replace the
-			// current goal?" modal. If absent, such a modal still classifies as a
-			// generic dialog → refuse (same safe direction), so a miss is non-fatal.
-			{Substr: "replace the current goal", Why: "replace-goal modal prompt (unverified rendering)", Assumed: true},
-			{Substr: "overwrite the existing goal", Why: "replace-goal modal prompt (unverified rendering)", Assumed: true},
-			{Substr: "a goal is already active", Why: "replace-goal modal preamble (unverified rendering)", Assumed: true},
+			// GROUNDED against live Codex 0.137.0: setting a second /goal while one
+			// is active opens a "Replace goal?" modal with these exact strings
+			// (verified live, NTM #168 implementation session). The modal renders:
+			//   Replace goal?
+			//   New objective: <text>
+			//   › 1. Replace current goal  Set the new objective and start it now
+			//     2. Cancel                Keep the current goal
+			//   Press enter to confirm or esc to go back
+			{Substr: "replace goal?", Why: "replace-goal modal header (live Codex 0.137.0)"},
+			{Substr: "replace current goal", Why: "replace-goal modal option 1 label (live Codex 0.137.0)"},
+			{Substr: "keep the current goal", Why: "replace-goal modal option 2 description (live Codex 0.137.0)"},
+			// Legacy/best-effort phrasings kept as a fallback for older/newer copy.
+			{Substr: "replace the current goal", Why: "replace-goal modal prompt (legacy/best-effort)", Assumed: true},
+			{Substr: "a goal is already active", Why: "replace-goal modal preamble (legacy/best-effort)", Assumed: true},
 		},
 	},
 	{
@@ -217,10 +223,12 @@ var preflightRules = []preflightRule{
 		Action:   ActionWait,
 		Priority: 40,
 		Markers: []preflightMarker{
-			// GROUNDED: Codex shows an "Esc to interrupt" footer while actively
-			// generating/working — a stable, observable working signal. Sending a
-			// goal while working would interrupt or queue.
-			{Substr: "esc to interrupt", Why: "Codex working footer shown while a task is in flight"},
+			// GROUNDED (verified live Codex 0.137.0): while actively working a goal
+			// Codex shows a "Working (Ns • esc to interrupt)" footer and a
+			// "Pursuing goal (Ns)" segment in its status bar. Sending a new goal
+			// while pursuing would open the replace-goal dialog or queue behind it.
+			{Substr: "esc to interrupt", Why: "Codex working footer shown while a task is in flight (live 0.137.0)"},
+			{Substr: "pursuing goal", Why: "Codex status-bar pursuing-goal segment while engaged (live 0.137.0)"},
 			// GROUNDED: Codex prints "(working)"/"Working" status during a turn.
 			{Substr: "working…", Why: "Codex in-progress status (ellipsis variant)"},
 			{Substr: "esc to cancel", Why: "Codex cancel-while-working footer variant"},
@@ -245,11 +253,14 @@ var preflightRules = []preflightRule{
 		Priority: 60,
 		Markers: []preflightMarker{
 			// GROUNDED in internal/agent/patterns.go (codIdlePatterns,
-			// codContextPattern, codHeaderPattern): a live Codex pane shows the
-			// idle prompt hint, the chevron prompt, and/or the "% context left"
-			// status line. Any of these confirms a live Codex CLI at/near a prompt.
+			// codContextPattern, codHeaderPattern) AND verified against live Codex
+			// 0.137.0: a live Codex pane shows the idle prompt hint, the chevron
+			// prompt, and/or a "Context N% left" status line. Any of these confirms
+			// a live Codex CLI at/near a prompt.
 			{Substr: "? for shortcuts", Why: "Codex idle prompt hint (agent/patterns.go codIdlePatterns)"},
-			{Substr: "% context left", Why: "Codex context status line (agent/patterns.go codContextPattern)"},
+			{Substr: "% context left", Why: "Codex context status line (agent/patterns.go codContextPattern; lower-cased variant)"},
+			{Substr: "context", Why: "Codex status-bar 'Context N% left/used' segment (live Codex 0.137.0)"},
+			{Substr: "openai codex", Why: "Codex welcome banner '>_ OpenAI Codex (vX)' (live Codex 0.137.0)"},
 			{Substr: "codex>", Why: "Codex shell-style prompt (agent/patterns.go codIdlePatterns)"},
 			{Substr: "›", Why: "Codex chevron input prompt (agent/patterns.go codIdlePatterns)"},
 		},
