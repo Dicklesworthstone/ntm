@@ -30,9 +30,9 @@ type Persona struct {
 	// ReasoningEffort sets the model's reasoning budget, rendered into the
 	// Codex `model_reasoning_effort` flag at spawn time. Empty falls back to the
 	// agent-command template default. See FlatAgent.ReasoningEffort.
-	ReasoningEffort string `toml:"reasoning_effort,omitempty"`
-	ContextFiles []string `toml:"context_files,omitempty"` // Globs of files to include in context
-	Tags         []string `toml:"tags,omitempty"`
+	ReasoningEffort string   `toml:"reasoning_effort,omitempty"`
+	ContextFiles    []string `toml:"context_files,omitempty"` // Globs of files to include in context
+	Tags            []string `toml:"tags,omitempty"`
 
 	// FocusPatterns are glob patterns indicating which files this persona "owns".
 	// Used for routing hints, dashboard display, and alert triggers.

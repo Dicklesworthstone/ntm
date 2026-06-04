@@ -1778,8 +1778,8 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		// not just the persona's display name. Lets orchestrators verify the
 		// persona→pane→prompt mapping after a --profile-set launch (ntm#159).
 		personaPromptSource string
-		command       string
-		promptDelay   time.Duration // Stagger delay before prompt delivery
+		command             string
+		promptDelay         time.Duration // Stagger delay before prompt delivery
 	}
 	var launchedAgents []launchedAgent
 
