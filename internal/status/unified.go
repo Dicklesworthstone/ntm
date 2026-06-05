@@ -378,6 +378,10 @@ func (d *UnifiedDetector) DetectAllContext(ctx context.Context, session string) 
 // If maxLen falls in the middle of a multi-byte rune, it advances to the next
 // valid rune boundary to avoid producing invalid UTF-8.
 func truncateOutput(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+
 	s = strings.TrimSpace(s)
 	if len(s) <= maxLen {
 		return s

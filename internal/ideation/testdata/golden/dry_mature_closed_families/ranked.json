@@ -1,0 +1,149 @@
+{
+  "decision": "ideate",
+  "summary": "selected 2 candidates and retained 0 next-best candidates",
+  "candidate_count": 2,
+  "selected": [
+    {
+      "rank": 1,
+      "candidate": {
+        "id": "novel-temp-workspace",
+        "title": "End-to-end queue-dry temp-workspace gate",
+        "summary": "Run the dry-run pipeline against a synthetic temp workspace to keep mutation paths inert.",
+        "labels": [
+          "queue-dry",
+          "testing"
+        ],
+        "keywords": [
+          "e2e",
+          "temp",
+          "workspace"
+        ],
+        "paths": null,
+        "source_ids": [
+          "br:closed"
+        ],
+        "evidence": [
+          "need a regression seal beyond unit goldens"
+        ],
+        "related_work": null,
+        "overlap": {
+          "kind": "novel",
+          "confidence": 0,
+          "evidence": [
+            "no matching open, in_progress, or recently closed work fingerprints"
+          ]
+        },
+        "novelty": {
+          "level": "high",
+          "score": 1,
+          "evidence": [
+            "novel overlap verdict"
+          ]
+        },
+        "validation_notes": null
+      },
+      "score": 3.232,
+      "factors": {
+        "robustness": 0.15,
+        "reliability": 0.15,
+        "performance": 0.15,
+        "ergonomics": 0.15,
+        "usefulness": 0.63,
+        "user_visible_value": 0.43,
+        "implementation_cost": 0.45,
+        "testability": 0.61,
+        "degraded_source_risk": 0,
+        "overlap": 0.7
+      },
+      "included": true,
+      "reasons": [
+        "degraded_source_risk=0.00",
+        "ergonomics=0.15",
+        "implementation_cost=0.45",
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap=novel confidence=0.00",
+        "performance=0.15",
+        "rank=1",
+        "reliability=0.15",
+        "robustness=0.15",
+        "testability=0.61",
+        "usefulness=0.63",
+        "user_visible_value=0.43"
+      ],
+      "exclusion_reasons": []
+    },
+    {
+      "rank": 2,
+      "candidate": {
+        "id": "novel-feedback-loop",
+        "title": "Idea effectiveness feedback loop",
+        "summary": "Track which queue-dry ideas became real beads to retire stale candidate generators.",
+        "labels": [
+          "feedback",
+          "queue-dry"
+        ],
+        "keywords": [
+          "effectiveness",
+          "feedback",
+          "loop"
+        ],
+        "paths": null,
+        "source_ids": [
+          "br:closed",
+          "bv:triage"
+        ],
+        "evidence": [
+          "closed tranche shows recurring duplicate-spam without effectiveness signal"
+        ],
+        "related_work": null,
+        "overlap": {
+          "kind": "novel",
+          "confidence": 0,
+          "evidence": [
+            "no matching open, in_progress, or recently closed work fingerprints"
+          ]
+        },
+        "novelty": {
+          "level": "high",
+          "score": 1,
+          "evidence": [
+            "novel overlap verdict"
+          ]
+        },
+        "validation_notes": null
+      },
+      "score": 3.008,
+      "factors": {
+        "robustness": 0.15,
+        "reliability": 0.15,
+        "performance": 0.15,
+        "ergonomics": 0.15,
+        "usefulness": 0.71,
+        "user_visible_value": 0.43,
+        "implementation_cost": 0.25,
+        "testability": 0.15,
+        "degraded_source_risk": 0,
+        "overlap": 0.7
+      },
+      "included": true,
+      "reasons": [
+        "degraded_source_risk=0.00",
+        "ergonomics=0.15",
+        "implementation_cost=0.25",
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap=novel confidence=0.00",
+        "performance=0.15",
+        "rank=2",
+        "reliability=0.15",
+        "robustness=0.15",
+        "testability=0.15",
+        "usefulness=0.71",
+        "user_visible_value=0.43"
+      ],
+      "exclusion_reasons": []
+    }
+  ],
+  "next_best": [],
+  "suppressed": [],
+  "notes": []
+}

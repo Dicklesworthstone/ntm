@@ -215,7 +215,7 @@ func (p ProgressBar) tick() tea.Cmd {
 }
 
 func progressRune(value string, fallback rune) rune {
-	runes := []rune(strings.TrimSpace(value))
+	runes := []rune(value)
 	if len(runes) == 0 {
 		return fallback
 	}

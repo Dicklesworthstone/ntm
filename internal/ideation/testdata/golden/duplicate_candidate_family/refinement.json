@@ -1,0 +1,43 @@
+{
+  "scenario_id": "duplicate_candidate_family",
+  "recommendation": "review_recent_work",
+  "ranking_decision": "ideate",
+  "ranking_summary": "selected 1 candidates and retained 0 next-best candidates",
+  "creation_allowed": false,
+  "candidate_count": 2,
+  "selected_count": 1,
+  "next_best_count": 0,
+  "suppressed_count": 1,
+  "duplicate_suppressed_count": 1,
+  "rendered_bead_count": 1,
+  "open_count": 0,
+  "ready_count": 0,
+  "actionable_count": 0,
+  "in_progress_count": 0,
+  "blocked_count": 0,
+  "queue_counts_verified": true,
+  "recent_closed_count": 1,
+  "recent_closed_bug_count": 0,
+  "selected_candidate_ids": [
+    "novel-feedback-effects"
+  ],
+  "next_best_candidate_ids": [],
+  "suppressed_candidate_ids": [
+    "dup-autopilot"
+  ],
+  "rendered_bead_refs": [
+    "${BEAD_ID_EFFECTS_FEEDBACK_NOVEL}"
+  ],
+  "degraded_source_ids": [],
+  "reason_codes": [
+    "duplicate_heavy_candidates"
+  ],
+  "evidence": [
+    "1 duplicate-suppressed candidates out of 2"
+  ],
+  "notes": [],
+  "next_actions": [
+    "inspect suppressed duplicate candidates for missed prior work",
+    "review recently closed work instead of creating new beads"
+  ]
+}

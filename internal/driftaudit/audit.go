@@ -85,10 +85,10 @@ type Finding struct {
 
 // Report is the full drift assessment.
 type Report struct {
-	GeneratedAt time.Time `json:"generated_at"`
-	Total       int       `json:"total"`
-	Drift       int       `json:"drift"`
-	Findings    []Finding `json:"findings,omitempty"`
+	GeneratedAt time.Time       `json:"generated_at"`
+	Total       int             `json:"total"`
+	Drift       int             `json:"drift"`
+	Findings    []Finding       `json:"findings,omitempty"`
 	Surfaces    []SurfaceTotals `json:"surfaces"`
 }
 
@@ -105,6 +105,7 @@ type SurfaceTotals struct {
 //   - critical: missing from capabilities (agents cannot discover).
 //   - warning: missing from help OR docs (human-visible gap).
 //   - info: missing from contract (test coverage gap).
+//
 // When a name is missing from multiple surfaces the highest severity
 // applies.
 //

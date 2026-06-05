@@ -251,6 +251,7 @@ func TestSurfaces_DegradedMatrixSmoke(t *testing.T) {
 //   - Result{Err: <unknown>, Warnings: ["..."]} → HealthSlow (the
 //     warnings arm fired with no err==nil precondition, preserving
 //     the warning string but losing the underlying error).
+//
 // Post-fix the classifier surfaces these as Unavailable / Degraded
 // so an operator dashboard can't read a non-nil-error result as OK.
 func TestClassifyHealth_UnknownErrorDoesNotMasqueradeAsHealthy(t *testing.T) {

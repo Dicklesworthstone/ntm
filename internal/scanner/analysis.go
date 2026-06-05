@@ -147,8 +147,9 @@ func AnalyzeImpact(result *ScanResult, existingBeadIDs map[string]string) (*Anal
 		ar.RecommendedOrder = ar.HighImpactFindings[:limit]
 	}
 
-	// Compute hotspots with graph centrality
-	ar.Hotspots = computeHotspots(result.Findings, keystoneMap)
+	// Compute hotspots with graph centrality when findings map to existing beads.
+	fileCentrality := buildFileCentrality(result.Findings, existingBeadIDs, keystoneMap)
+	ar.Hotspots = computeHotspots(result.Findings, fileCentrality)
 
 	return ar, nil
 }
@@ -175,7 +176,7 @@ func sortByImpact(findings []ImpactAnalysis) {
 }
 
 // computeHotspots groups findings by file and calculates hotspot scores.
-func computeHotspots(findings []Finding, keystoneMap map[string]float64) []Hotspot {
+func computeHotspots(findings []Finding, fileCentrality map[string]float64) []Hotspot {
 	// Group findings by file
 	byFile := make(map[string]*Hotspot)
 
@@ -208,11 +209,9 @@ func computeHotspots(findings []Finding, keystoneMap map[string]float64) []Hotsp
 		// Base score from findings
 		h.ImpactScore = float64(h.Critical)*10.0 + float64(h.Warning)*5.0 + float64(h.Info)*1.0
 
-		// Add centrality bonus if we have keystone data
-		// Note: keystoneMap keys are bead IDs, not files, so this is approximate
-		// A more sophisticated approach would track file→bead relationships
-		if keystoneMap != nil {
-			h.Centrality = estimateFileCentrality(h.File, keystoneMap)
+		// Add centrality bonus if the file has findings tied to keystone beads.
+		if fileCentrality != nil {
+			h.Centrality = estimateFileCentrality(h.File, fileCentrality)
 			h.ImpactScore += h.Centrality * 3.0
 		}
 
@@ -227,12 +226,42 @@ func computeHotspots(findings []Finding, keystoneMap map[string]float64) []Hotsp
 	return hotspots
 }
 
-// estimateFileCentrality estimates file centrality from keystone data.
-// This is a heuristic - in practice, we'd need file→bead mappings.
-func estimateFileCentrality(file string, keystoneMap map[string]float64) float64 {
-	// For now, return 0 as we don't have direct file→bead mapping
-	// A future improvement would track this relationship
-	return 0.0
+// buildFileCentrality maps files to the highest keystone score among their known UBS beads.
+func buildFileCentrality(findings []Finding, existingBeadIDs map[string]string, keystoneMap map[string]float64) map[string]float64 {
+	if len(findings) == 0 || len(existingBeadIDs) == 0 || len(keystoneMap) == 0 {
+		return nil
+	}
+
+	fileCentrality := make(map[string]float64)
+	for _, f := range findings {
+		beadID, ok := existingBeadIDs[FindingSignature(f)]
+		if !ok {
+			continue
+		}
+		score, ok := keystoneMap[beadID]
+		if !ok || score <= 0 {
+			continue
+		}
+		if score > fileCentrality[f.File] {
+			fileCentrality[f.File] = score
+		}
+	}
+	if len(fileCentrality) == 0 {
+		return nil
+	}
+	return fileCentrality
+}
+
+// estimateFileCentrality returns a precomputed centrality score for a file.
+func estimateFileCentrality(file string, fileCentrality map[string]float64) float64 {
+	if len(fileCentrality) == 0 {
+		return 0.0
+	}
+	score := fileCentrality[file]
+	if score < 0 {
+		return 0.0
+	}
+	return score
 }
 
 // FormatImpactReport generates a human-readable impact report.

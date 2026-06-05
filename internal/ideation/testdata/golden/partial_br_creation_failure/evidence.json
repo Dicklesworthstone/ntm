@@ -1,0 +1,134 @@
+{
+  "project": "/repo",
+  "queue": {
+    "open_count": 0,
+    "actionable_count": 0,
+    "blocked_count": 0,
+    "in_progress_count": 0,
+    "ready_count": 0,
+    "counts_verified": true,
+    "source_ids": []
+  },
+  "triage": {
+    "top_ids": [],
+    "graph_health": {
+      "total_nodes": 0,
+      "total_edges": 0,
+      "density": 0,
+      "metrics": {},
+      "evidence": []
+    },
+    "status_summary": [],
+    "warnings": [],
+    "source_ids": []
+  },
+  "documents": [],
+  "closeout_proof": [],
+  "git": [],
+  "sources": [
+    {
+      "id": "br:ready",
+      "kind": "br",
+      "available": true,
+      "required": true,
+      "evidence": [
+        "br ready collector"
+      ]
+    }
+  ],
+  "existing_work": [
+    {
+      "id": "bd-fxj4f.3",
+      "family_id": "bd-fxj4f",
+      "title": "Robot contract replay harness",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "contract",
+        "replay",
+        "robot"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-fxj4f"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "dup-replay",
+      "title": "Robot contract replay harness",
+      "summary": "Recreate the closed robot contract replay harness.",
+      "labels": [
+        "robot",
+        "queue-dry"
+      ],
+      "keywords": [
+        "robot",
+        "contract",
+        "replay"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "candidate generator did not check fxj4f closure"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    },
+    {
+      "id": "novel-temp-workspace-gate",
+      "title": "Queue-dry temp-workspace creation gate",
+      "summary": "Sandbox creation flow against a synthetic temp workspace to keep dry-run inert.",
+      "labels": [
+        "queue-dry",
+        "testing"
+      ],
+      "keywords": [
+        "temp",
+        "workspace",
+        "gate"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "creation flow lacked an isolation gate"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    }
+  ],
+  "optional_signals": [],
+  "degraded_sources": [],
+  "validation_notes": []
+}

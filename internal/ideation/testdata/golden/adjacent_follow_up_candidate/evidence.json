@@ -1,0 +1,107 @@
+{
+  "project": "/repo",
+  "queue": {
+    "open_count": 0,
+    "actionable_count": 0,
+    "blocked_count": 0,
+    "in_progress_count": 0,
+    "ready_count": 0,
+    "counts_verified": true,
+    "source_ids": []
+  },
+  "triage": {
+    "top_ids": [],
+    "graph_health": {
+      "total_nodes": 0,
+      "total_edges": 0,
+      "density": 0,
+      "metrics": {},
+      "evidence": []
+    },
+    "status_summary": [],
+    "warnings": [],
+    "source_ids": []
+  },
+  "documents": [],
+  "closeout_proof": [],
+  "git": [],
+  "sources": [
+    {
+      "id": "br:closed",
+      "kind": "br",
+      "available": true,
+      "evidence": [
+        "br closed collector"
+      ]
+    }
+  ],
+  "existing_work": [
+    {
+      "id": "bd-8kglp.4",
+      "family_id": "bd-8kglp",
+      "title": "RCH build storm backpressure",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "backpressure",
+        "rch"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-8kglp"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "follow-up-rch-evidence",
+      "title": "Use RCH backpressure history as queue-dry evidence",
+      "summary": "Reuse shipped RCH backpressure metrics to feed queue-dry ranking instead of duplicating it.",
+      "labels": [
+        "queue-dry",
+        "rch"
+      ],
+      "keywords": [
+        "rch",
+        "backpressure",
+        "evidence"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "prior work left a gap in feeding metrics into queue-dry ranking"
+      ],
+      "related_work": [
+        {
+          "id": "bd-8kglp.4",
+          "relationship": "follow_up",
+          "evidence": [
+            "remaining evidence gap from closed RCH bead"
+          ]
+        }
+      ],
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    }
+  ],
+  "optional_signals": [],
+  "degraded_sources": [],
+  "validation_notes": []
+}

@@ -1,0 +1,164 @@
+{
+  "decision": "ideate",
+  "summary": "selected 1 candidates and retained 0 next-best candidates",
+  "candidate_count": 2,
+  "selected": [
+    {
+      "rank": 1,
+      "candidate": {
+        "id": "novel-temp-workspace-gate",
+        "title": "Queue-dry temp-workspace creation gate",
+        "summary": "Sandbox creation flow against a synthetic temp workspace to keep dry-run inert.",
+        "labels": [
+          "queue-dry",
+          "testing"
+        ],
+        "keywords": [
+          "gate",
+          "temp",
+          "workspace"
+        ],
+        "paths": null,
+        "source_ids": [
+          "br:closed"
+        ],
+        "evidence": [
+          "creation flow lacked an isolation gate"
+        ],
+        "related_work": null,
+        "overlap": {
+          "kind": "novel",
+          "confidence": 0,
+          "evidence": [
+            "no matching open, in_progress, or recently closed work fingerprints"
+          ]
+        },
+        "novelty": {
+          "level": "high",
+          "score": 1,
+          "evidence": [
+            "novel overlap verdict"
+          ]
+        },
+        "validation_notes": null
+      },
+      "score": 3.192,
+      "factors": {
+        "robustness": 0.15,
+        "reliability": 0.15,
+        "performance": 0.15,
+        "ergonomics": 0.15,
+        "usefulness": 0.63,
+        "user_visible_value": 0.43,
+        "implementation_cost": 0.25,
+        "testability": 0.43,
+        "degraded_source_risk": 0,
+        "overlap": 0.7
+      },
+      "included": true,
+      "reasons": [
+        "degraded_source_risk=0.00",
+        "ergonomics=0.15",
+        "implementation_cost=0.25",
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap=novel confidence=0.00",
+        "performance=0.15",
+        "rank=1",
+        "reliability=0.15",
+        "robustness=0.15",
+        "testability=0.43",
+        "usefulness=0.63",
+        "user_visible_value=0.43"
+      ],
+      "exclusion_reasons": []
+    }
+  ],
+  "next_best": [],
+  "suppressed": [
+    {
+      "rank": 0,
+      "candidate": {
+        "id": "dup-replay",
+        "title": "Robot contract replay harness",
+        "summary": "Recreate the closed robot contract replay harness.",
+        "labels": [
+          "queue-dry",
+          "robot"
+        ],
+        "keywords": [
+          "contract",
+          "replay",
+          "robot"
+        ],
+        "paths": null,
+        "source_ids": [
+          "br:closed"
+        ],
+        "evidence": [
+          "candidate generator did not check fxj4f closure"
+        ],
+        "related_work": null,
+        "overlap": {
+          "kind": "exact_duplicate",
+          "work_id": "bd-fxj4f.3",
+          "family_id": "bd-fxj4f",
+          "confidence": 1,
+          "evidence": [
+            "candidate generator did not check fxj4f closure",
+            "known closed idea-wizard family bd-fxj4f",
+            "matched recently closed idea-wizard family bd-fxj4f",
+            "normalized title matches existing work bd-fxj4f.3",
+            "shared keywords: contract,replay,robot",
+            "shared labels: queue-dry",
+            "token overlap 0.57 with bd-fxj4f.3"
+          ]
+        },
+        "novelty": {
+          "level": "low",
+          "score": 0,
+          "evidence": [
+            "exact duplicate overlap verdict"
+          ]
+        },
+        "validation_notes": null
+      },
+      "score": 1.13,
+      "factors": {
+        "robustness": 0.15,
+        "reliability": 0.61,
+        "performance": 0.15,
+        "ergonomics": 0.15,
+        "usefulness": 0.63,
+        "user_visible_value": 0.61,
+        "implementation_cost": 0.25,
+        "testability": 0.15,
+        "degraded_source_risk": 0,
+        "overlap": -1
+      },
+      "included": false,
+      "reasons": [
+        "candidate generator did not check fxj4f closure",
+        "degraded_source_risk=0.00",
+        "ergonomics=0.15",
+        "implementation_cost=0.25",
+        "known closed idea-wizard family bd-fxj4f",
+        "matched recently closed idea-wizard family bd-fxj4f",
+        "normalized title matches existing work bd-fxj4f.3",
+        "overlap=exact_duplicate confidence=1.00",
+        "performance=0.15",
+        "reliability=0.61",
+        "robustness=0.15",
+        "shared keywords: contract,replay,robot",
+        "shared labels: queue-dry",
+        "testability=0.15",
+        "token overlap 0.57 with bd-fxj4f.3",
+        "usefulness=0.63",
+        "user_visible_value=0.61"
+      ],
+      "exclusion_reasons": [
+        "suppressed exact_duplicate overlap with bd-fxj4f.3"
+      ]
+    }
+  ],
+  "notes": []
+}

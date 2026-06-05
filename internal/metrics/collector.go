@@ -76,7 +76,7 @@ func (c *Collector) RecordAPICall(tool, operation string) {
 
 // RecordLatency records a latency measurement for an operation.
 func (c *Collector) RecordLatency(operation string, duration time.Duration) {
-	ms := float64(duration.Milliseconds())
+	ms := float64(duration.Nanoseconds()) / 1e6
 
 	c.mu.Lock()
 	c.latencies[operation] = append(c.latencies[operation], ms)
@@ -276,11 +276,7 @@ func calculateLatencyStats(samples []float64) LatencyStats {
 
 // sortFloat64s sorts a slice of float64 in place.
 func sortFloat64s(s []float64) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
+	sort.Float64s(s)
 }
 
 // average calculates the mean of a slice.

@@ -417,15 +417,28 @@ func (gl *GroupedList) Render() string {
 
 	var lines []string
 	currentGroup := -1
-	itemNum := 0
 
-	for i, fi := range gl.flatItems {
+	start := gl.scrollOffset
+	end := start + gl.MaxVisible
+	if end > len(gl.flatItems) {
+		end = len(gl.flatItems)
+	}
+
+	if start > 0 {
+		ic := icons.Current()
+		t := theme.Current()
+		scrollStyle := lipgloss.NewStyle().Foreground(t.Overlay)
+		lines = append(lines, scrollStyle.Render(fmt.Sprintf("  %s %d more above", ic.ArrowUp, start)))
+	}
+
+	for i := start; i < end; i++ {
+		fi := gl.flatItems[i]
 		// Add group header if entering new group
 		if fi.groupIndex != currentGroup {
 			currentGroup = fi.groupIndex
 			group := gl.Groups[fi.groupIndex]
 
-			if len(lines) > 0 {
+			if len(lines) > 0 && !strings.Contains(lines[len(lines)-1], "more above") {
 				lines = append(lines, "") // Spacing between groups
 			}
 
@@ -438,7 +451,7 @@ func (gl *GroupedList) Render() string {
 
 		isSelected := i == gl.Selected
 		item := fi.item
-		itemNum++
+		itemNum := i + 1
 
 		var line strings.Builder
 
@@ -475,6 +488,14 @@ func (gl *GroupedList) Render() string {
 		}
 
 		lines = append(lines, line.String())
+	}
+
+	remaining := len(gl.flatItems) - end
+	if remaining > 0 {
+		ic := icons.Current()
+		t := theme.Current()
+		scrollStyle := lipgloss.NewStyle().Foreground(t.Overlay)
+		lines = append(lines, scrollStyle.Render(fmt.Sprintf("  %s %d more below", ic.ArrowDown, remaining)))
 	}
 
 	return strings.Join(lines, "\n")

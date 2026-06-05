@@ -476,18 +476,36 @@ func (m *TimelinePanel) View() string {
 			overlayStartY = 0
 		}
 
-		// Merge overlay onto main content
+		// Merge overlay onto main content using standard string replacement.
+		// Since this strips ANSI from the replaced section, append padding and
+		// redraw the right border to keep the panel edge visually intact.
 		for i, overlayLine := range overlayLines {
 			targetLine := overlayStartY + i
 			if targetLine < len(mainLines) {
-				// Center horizontally
-				overlayWidth := lipgloss.Width(overlayLine)
 				mainWidth := lipgloss.Width(mainLines[targetLine])
+				overlayWidth := lipgloss.Width(overlayLine)
+
 				padLeft := (mainWidth - overlayWidth) / 2
 				if padLeft < 0 {
 					padLeft = 0
 				}
-				mainLines[targetLine] = strings.Repeat(" ", padLeft) + overlayLine
+
+				// Reconstruct line with left padding, overlay, and right padding to maintain width
+				padRight := mainWidth - padLeft - overlayWidth
+				if padRight < 0 {
+					padRight = 0
+				}
+
+				// Note: this wipes out background ANSI (including borders) for the entire line,
+				// but drawing borders manually is safer than trying to splice ANSI strings.
+				// A proper fix would require a terminal-cell grid compositor, which is too heavy here.
+				// We just redraw the right border character to keep it looking clean.
+				borderRight := lipgloss.NewStyle().Foreground(t.Surface1).Render("│")
+				if padRight > 0 {
+					mainLines[targetLine] = strings.Repeat(" ", padLeft) + overlayLine + strings.Repeat(" ", padRight-1) + borderRight
+				} else {
+					mainLines[targetLine] = strings.Repeat(" ", padLeft) + overlayLine
+				}
 			}
 		}
 		mainContent = strings.Join(mainLines, "\n")

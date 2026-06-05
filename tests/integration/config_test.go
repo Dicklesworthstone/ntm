@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -96,7 +95,7 @@ claude = "echo '` + customMarker + `' && sleep 30"
 
 	logger.Log("Created config with custom Claude command at %s", configPath)
 
-	sessionName := "test_custom_agent_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	sessionName := "test_custom_agent_" + strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
 
 	// Spawn session with custom config
 	out, err := logger.Exec(binary, "--config", configPath, "spawn", sessionName, "--cc=1", "--json")
@@ -241,11 +240,11 @@ func TestConfigPaletteFromMarkdown(t *testing.T) {
 
 ## Test Category
 
-### Markdown Test Command
+### markdown_test | Markdown Test Command
 This is a test command from markdown.
 It has multiple lines.
 
-### Another Markdown Command
+### another_markdown | Another Markdown Command
 Single line content.
 `
 	palettePath := filepath.Join(projectDir, "command_palette.md")
@@ -270,11 +269,49 @@ Single line content.
 		t.Fatalf("ntm config show failed: %v", err)
 	}
 
-	// Check that the output contains our markdown commands
-	outStr := string(out)
-	if !strings.Contains(outStr, "Markdown Test Command") && !strings.Contains(outStr, "markdown") {
-		logger.Log("Note: Markdown palette loading may not be implemented yet")
-		t.Skip("Markdown palette loading not implemented")
+	var configResult struct {
+		Palette []struct {
+			Key      string `json:"key"`
+			Label    string `json:"label"`
+			Prompt   string `json:"prompt"`
+			Category string `json:"category"`
+		} `json:"palette"`
+	}
+	if err := json.Unmarshal(out, &configResult); err != nil {
+		t.Fatalf("failed to parse config output: %v\nOutput: %s", err, string(out))
+	}
+
+	foundMarkdownTest := false
+	foundAnotherMarkdown := false
+	for _, cmd := range configResult.Palette {
+		switch cmd.Key {
+		case "markdown_test":
+			foundMarkdownTest = true
+			if cmd.Label != "Markdown Test Command" {
+				t.Fatalf("markdown_test label = %q, want %q", cmd.Label, "Markdown Test Command")
+			}
+			if cmd.Category != "Test Category" {
+				t.Fatalf("markdown_test category = %q, want %q", cmd.Category, "Test Category")
+			}
+			if want := "This is a test command from markdown.\nIt has multiple lines."; cmd.Prompt != want {
+				t.Fatalf("markdown_test prompt = %q, want %q", cmd.Prompt, want)
+			}
+		case "another_markdown":
+			foundAnotherMarkdown = true
+			if cmd.Label != "Another Markdown Command" {
+				t.Fatalf("another_markdown label = %q, want %q", cmd.Label, "Another Markdown Command")
+			}
+			if cmd.Prompt != "Single line content." {
+				t.Fatalf("another_markdown prompt = %q, want %q", cmd.Prompt, "Single line content.")
+			}
+		}
+	}
+
+	if !foundMarkdownTest {
+		t.Fatalf("markdown_test not found in palette: %#v", configResult.Palette)
+	}
+	if !foundAnotherMarkdown {
+		t.Fatalf("another_markdown not found in palette: %#v", configResult.Palette)
 	}
 
 	logger.Log("PASS: Palette commands loaded from markdown")

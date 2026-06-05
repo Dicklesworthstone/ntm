@@ -1,0 +1,100 @@
+{
+  "project": "/repo",
+  "queue": {
+    "open_count": 1,
+    "actionable_count": 0,
+    "blocked_count": 0,
+    "in_progress_count": 1,
+    "ready_count": 0,
+    "counts_verified": true,
+    "source_ids": []
+  },
+  "triage": {
+    "top_ids": [],
+    "graph_health": {
+      "total_nodes": 0,
+      "total_edges": 0,
+      "density": 0,
+      "metrics": {},
+      "evidence": []
+    },
+    "status_summary": [],
+    "warnings": [],
+    "source_ids": []
+  },
+  "documents": [],
+  "closeout_proof": [],
+  "git": [],
+  "sources": [
+    {
+      "id": "br:ready",
+      "kind": "br",
+      "available": true,
+      "required": true,
+      "evidence": [
+        "br ready collector"
+      ]
+    }
+  ],
+  "existing_work": [
+    {
+      "id": "bd-stale.1",
+      "family_id": "bd-stale",
+      "title": "Stale work that should be resolved",
+      "status": "in_progress",
+      "labels": [
+        "stale"
+      ],
+      "keywords": [
+        "stale",
+        "work"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:in_progress"
+      ],
+      "evidence": [
+        "in_progress \u003e 1h without commits"
+      ],
+      "updated_at": "2026-04-01T00:00:00Z"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "novel-pause-gate",
+      "title": "Pause-gate for stale in-progress beads",
+      "summary": "Detect stale in-progress beads and surface them before queue-dry ideation.",
+      "labels": [
+        "queue-dry",
+        "guard"
+      ],
+      "keywords": [
+        "stale",
+        "guard",
+        "pause"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:in_progress"
+      ],
+      "evidence": [
+        "stale in_progress bead detected by collector"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    }
+  ],
+  "optional_signals": [],
+  "degraded_sources": [],
+  "validation_notes": []
+}

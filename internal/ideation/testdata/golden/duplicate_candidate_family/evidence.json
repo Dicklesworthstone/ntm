@@ -1,0 +1,133 @@
+{
+  "project": "/repo",
+  "queue": {
+    "open_count": 0,
+    "actionable_count": 0,
+    "blocked_count": 0,
+    "in_progress_count": 0,
+    "ready_count": 0,
+    "counts_verified": true,
+    "source_ids": []
+  },
+  "triage": {
+    "top_ids": [],
+    "graph_health": {
+      "total_nodes": 0,
+      "total_edges": 0,
+      "density": 0,
+      "metrics": {},
+      "evidence": []
+    },
+    "status_summary": [],
+    "warnings": [],
+    "source_ids": []
+  },
+  "documents": [],
+  "closeout_proof": [],
+  "git": [],
+  "sources": [
+    {
+      "id": "br:ready",
+      "kind": "br",
+      "available": true,
+      "required": true,
+      "evidence": [
+        "br ready collector"
+      ]
+    }
+  ],
+  "existing_work": [
+    {
+      "id": "bd-2mb03.5",
+      "family_id": "bd-2mb03",
+      "title": "Queue-dry operator autopilot",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "autopilot",
+        "dry",
+        "queue"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-2mb03"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "dup-autopilot",
+      "title": "Queue dry operator autopilot",
+      "summary": "Reintroduce the queue-dry operator autopilot; same scope as bd-2mb03.5.",
+      "labels": [
+        "queue-dry",
+        "operator"
+      ],
+      "keywords": [
+        "queue",
+        "dry",
+        "autopilot"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "candidate generator did not check closed families"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    },
+    {
+      "id": "novel-feedback-effects",
+      "title": "Idea effectiveness feedback for closed candidates",
+      "summary": "Track candidate-to-bead conversions to retire stale generators.",
+      "labels": [
+        "feedback",
+        "queue-dry"
+      ],
+      "keywords": [
+        "feedback",
+        "effectiveness"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "closed tranche lacked an effectiveness signal"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    }
+  ],
+  "optional_signals": [],
+  "degraded_sources": [],
+  "validation_notes": []
+}

@@ -1,0 +1,56 @@
+{
+  "scenario_id": "partial_br_creation_failure",
+  "recommendation": "ideate",
+  "ranking_decision": "ideate",
+  "ranking_summary": "selected 1 candidates and retained 0 next-best candidates",
+  "creation_requested": true,
+  "creation_allowed": true,
+  "partial_creation_failure": true,
+  "candidate_count": 2,
+  "selected_count": 1,
+  "next_best_count": 0,
+  "suppressed_count": 1,
+  "duplicate_suppressed_count": 1,
+  "rendered_bead_count": 1,
+  "open_count": 0,
+  "ready_count": 0,
+  "actionable_count": 0,
+  "in_progress_count": 0,
+  "blocked_count": 0,
+  "queue_counts_verified": true,
+  "recent_closed_count": 1,
+  "recent_closed_bug_count": 0,
+  "selected_candidate_ids": [
+    "novel-temp-workspace-gate"
+  ],
+  "next_best_candidate_ids": [],
+  "suppressed_candidate_ids": [
+    "dup-replay"
+  ],
+  "rendered_bead_refs": [
+    "${BEAD_ID_GATE_NOVEL_TEMP_WORKSPACE}"
+  ],
+  "degraded_source_ids": [],
+  "reason_codes": [
+    "healthy_novel_candidates"
+  ],
+  "evidence": [
+    "1 ranked candidate(s) remain after duplicate checks"
+  ],
+  "notes": [
+    {
+      "code": "partial_creation_failure",
+      "severity": "warning",
+      "message": "creation request partially fulfilled: at least one candidate would be skipped",
+      "evidence": [
+        "duplicate-suppressed candidates would not have been created",
+        "selected candidates would have been created"
+      ]
+    }
+  ],
+  "next_actions": [
+    "expect partial creation: re-run with refreshed evidence after addressing duplicates",
+    "inspect suppressed duplicate candidates for missed prior work",
+    "review rendered dry-run roadmap before mutating beads"
+  ]
+}

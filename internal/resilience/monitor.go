@@ -325,9 +325,23 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 		return
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	type crashEvent struct {
+		agent  AgentState
+		reason string
+	}
+	type rateLimitEvent struct {
+		agent       AgentState
+		waitSeconds int
+	}
+	type rateLimitClearEvent struct {
+		agent AgentState
+	}
 
+	var crashes []crashEvent
+	var rateLimits []rateLimitEvent
+	var rateLimitClears []rateLimitClearEvent
+
+	m.mu.Lock()
 	// Build a map of pane health by pane ID
 	healthByPaneID := make(map[string]*health.AgentHealth)
 	for i := range sessionHealth.Agents {
@@ -342,7 +356,9 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 		// If pane doesn't exist anymore, agent crashed hard
 		if !exists {
 			if agentState.Healthy {
-				m.handleCrash(ctx, agentState, "Pane no longer exists")
+				agentState.Healthy = false
+				agentState.LastCrash = time.Now()
+				crashes = append(crashes, crashEvent{*agentState, "Pane no longer exists"})
 			}
 			continue
 		}
@@ -351,18 +367,16 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 		if m.cfg.Resilience.RateLimit.Detect && agentHealth.RateLimited {
 			// Only notify if this is a new rate limit event (not already rate limited)
 			if !agentState.RateLimited {
-				m.handleRateLimit(agentState, agentHealth.WaitSeconds)
+				agentState.RateLimited = true
+				agentState.LastRateLimitTime = time.Now()
+				agentState.WaitSeconds = agentHealth.WaitSeconds
+				rateLimits = append(rateLimits, rateLimitEvent{*agentState, agentHealth.WaitSeconds})
 			}
 		} else if agentState.RateLimited {
 			// Rate limit cleared
-			m.recordRateLimitSuccess(agentState.AgentType)
 			agentState.RateLimited = false
 			agentState.WaitSeconds = 0
-			log.Printf("[resilience] Agent %s rate limit cleared", agentState.PaneID)
-			// Notify Codex throttle of success (bd-3qoly)
-			if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex && m.codexThrottle != nil {
-				m.codexThrottle.RecordSuccess()
-			}
+			rateLimitClears = append(rateLimitClears, rateLimitClearEvent{*agentState})
 		}
 
 		// Check for error status or process exit
@@ -372,8 +386,12 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			// Single PID liveness check — store result to avoid TOCTOU race.
 			// The same pidAlive/pidKnown values drive both the guard and debounce.
 			var pidAlive, pidKnown bool
-			if agentHealth.ShellPID > 0 {
-				pidAlive = isAliveFn(agentHealth.ShellPID)
+			shellPID := agentHealth.ShellPID
+			if shellPID <= 0 {
+				shellPID = agentState.ShellPID
+			}
+			if shellPID > 0 {
+				pidAlive = isAliveFn(shellPID)
 				pidKnown = true
 			}
 
@@ -382,7 +400,7 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			if pidKnown && pidAlive {
 				agentState.ConsecutiveFailures = 0
 				log.Printf("[resilience] Agent %s: health check says unhealthy but PID %d has living children — skipping crash handling (false positive avoided)",
-					agentState.PaneID, agentHealth.ShellPID)
+					agentState.PaneID, shellPID)
 				continue
 			}
 
@@ -425,8 +443,10 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 				}
 
 				if agentState.ConsecutiveFailures >= threshold {
-					m.handleCrash(ctx, agentState, reason)
+					agentState.Healthy = false
+					agentState.LastCrash = time.Now()
 					agentState.ConsecutiveFailures = 0
+					crashes = append(crashes, crashEvent{*agentState, reason})
 				}
 			}
 		} else {
@@ -434,6 +454,18 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			agentState.ConsecutiveFailures = 0
 			agentState.Healthy = true
 		}
+	}
+	m.mu.Unlock()
+
+	// Process events outside the lock to prevent deadlocks with the event bus
+	for i := range rateLimitClears {
+		m.handleRateLimitCleared(&rateLimitClears[i].agent)
+	}
+	for i := range rateLimits {
+		m.handleRateLimit(&rateLimits[i].agent, rateLimits[i].waitSeconds)
+	}
+	for i := range crashes {
+		m.handleCrash(ctx, &crashes[i].agent, crashes[i].reason)
 	}
 }
 
@@ -447,12 +479,15 @@ func (m *Monitor) handleRateLimit(agentState *AgentState, waitSeconds int) {
 		agentState.PaneID, agentState.PaneIndex, agentState.AgentType, waitSeconds)
 
 	// Propagate to Codex throttle for cod agents (bd-3qoly)
-	if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex && m.codexThrottle != nil {
-		m.codexThrottle.RecordRateLimit(agentState.PaneID, waitSeconds)
-		status := m.codexThrottle.Status()
-		log.Printf("[resilience] Codex throttle engaged: phase=%s, allowed=%d/%d, cooldown=%s",
-			status.Phase, status.AllowedConcurrent, status.MaxConcurrent,
-			ratelimit.FormatDelay(status.CooldownRemaining))
+	if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex {
+		throttle := m.getCodexThrottle()
+		if throttle != nil {
+			throttle.RecordRateLimit(agentState.PaneID, waitSeconds)
+			status := throttle.Status()
+			log.Printf("[resilience] Codex throttle engaged: phase=%s, allowed=%d/%d, cooldown=%s",
+				status.Phase, status.AllowedConcurrent, status.MaxConcurrent,
+				ratelimit.FormatDelay(status.CooldownRemaining))
+		}
 	}
 
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
@@ -497,6 +532,45 @@ func (m *Monitor) handleRateLimit(agentState *AgentState, waitSeconds int) {
 	}()
 }
 
+func (m *Monitor) handleRateLimitCleared(agentState *AgentState) {
+	m.recordRateLimitSuccess(agentState.AgentType)
+	log.Printf("[resilience] Agent %s rate limit cleared", agentState.PaneID)
+
+	// Notify Codex throttle of success (bd-3qoly)
+	if agent.AgentType(agentState.AgentType).Canonical() == agent.AgentTypeCodex {
+		if throttle := m.getCodexThrottle(); throttle != nil {
+			throttle.RecordSuccess()
+		}
+	}
+}
+
+func (m *Monitor) getCodexThrottle() *ratelimit.CodexThrottle {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.codexThrottle
+}
+
+func (m *Monitor) getOrCreateRateLimitTracker() *ratelimit.RateLimitTracker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rateLimitTracker != nil {
+		return m.rateLimitTracker
+	}
+	if !m.cfg.Resilience.RateLimit.Detect {
+		return nil
+	}
+	tracker := ratelimit.NewRateLimitTracker(m.projectDir)
+	if err := tracker.LoadFromDir(m.projectDir); err != nil {
+		log.Printf("[resilience] Warning: failed to load rate limit history: %v", err)
+	}
+	m.rateLimitTracker = tracker
+	return tracker
+}
+
+func (m *Monitor) ensureRateLimitTracker() *ratelimit.RateLimitTracker {
+	return m.getOrCreateRateLimitTracker()
+}
+
 func (m *Monitor) recordRateLimitHit(agentType string, waitSeconds int) {
 	tracker := m.ensureRateLimitTracker()
 	if tracker == nil {
@@ -531,21 +605,6 @@ func (m *Monitor) recordRateLimitSuccess(agentType string) {
 			log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
 		}
 	}()
-}
-
-func (m *Monitor) ensureRateLimitTracker() *ratelimit.RateLimitTracker {
-	if m.rateLimitTracker != nil {
-		return m.rateLimitTracker
-	}
-	if !m.cfg.Resilience.RateLimit.Detect {
-		return nil
-	}
-	tracker := ratelimit.NewRateLimitTracker(m.projectDir)
-	if err := tracker.LoadFromDir(m.projectDir); err != nil {
-		log.Printf("[resilience] Warning: failed to load rate limit history: %v", err)
-	}
-	m.rateLimitTracker = tracker
-	return tracker
 }
 
 // triggerRotationAssistance sends a notification with rotation command or auto-initiates rotation

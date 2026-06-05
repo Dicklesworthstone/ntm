@@ -811,3 +811,31 @@ func TestCompile_AllErrorsJoinedAcrossSlices(t *testing.T) {
 		}
 	}
 }
+
+// bd-9iknu: recompiling after policy edits must not keep stale regex
+// from a previous successful compile when the new pattern is malformed.
+func TestCompile_RecompileMalformedPatternClearsStaleRegex(t *testing.T) {
+	p := &Policy{
+		Blocked: []Rule{
+			{Pattern: `git\s+reset\s+--hard`, Reason: "block hard reset"},
+		},
+	}
+	if err := p.compile(); err != nil {
+		t.Fatalf("initial compile failed: %v", err)
+	}
+	if p.Blocked[0].regex == nil {
+		t.Fatal("initial compile did not set regex")
+	}
+
+	// Mutate to malformed and recompile.
+	p.Blocked[0].Pattern = `(bad`
+	if err := p.compile(); err == nil {
+		t.Fatal("expected compile error after malformed pattern update")
+	}
+	if p.Blocked[0].regex != nil {
+		t.Fatal("stale regex survived malformed recompile; want nil")
+	}
+	if got := p.Check("git reset --hard HEAD~1"); got != nil {
+		t.Fatalf("Check matched using stale regex: %+v", got)
+	}
+}

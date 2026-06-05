@@ -1,0 +1,60 @@
+{
+  "plan_id": "non-dry-roadmap",
+  "dry_run": true,
+  "decision": "ideate",
+  "summary": "selected 1 candidates and retained 0 next-best candidates",
+  "rendered_count": 1,
+  "proposed_beads": [
+    {
+      "ref": "${BEAD_ID_FEATURE_NEW_TEMPTING}",
+      "candidate_id": "tempting-new-feature",
+      "rank": 1,
+      "score": 3.542,
+      "title": "Glamour cursor sparkles for the activity feed",
+      "issue_type": "task",
+      "priority": 1,
+      "labels": [
+        "idea-wizard",
+        "queue-dry",
+        "ux"
+      ],
+      "dependencies": [],
+      "description": "Cosmetic upgrade unrelated to the ready queue.\n\nCandidate tempting-new-feature ranked #1 with score 3.5420.\n\nOverlap: novel\n\nAcceptance criteria:\n- candidate is implemented as a scoped, reviewable task\n- output preserves duplicate and source evidence\n\nVerification commands:\n- git diff --check\n- go test -short ./internal/ideation/...\n- gofmt -l \u003ctouched-go-files\u003e\n\nNon-goals:\n- do not mutate Beads during dry-run rendering\n- do not require network or model calls\n\nDuplicate and overlap notes:\n- no matching open, in_progress, or recently closed work fingerprints\n- overlap verdict: novel\n\nSource evidence:\n- no matching open, in_progress, or recently closed work fingerprints\n- operator request from screenshot review",
+      "acceptance_criteria": [
+        "candidate is implemented as a scoped, reviewable task",
+        "output preserves duplicate and source evidence"
+      ],
+      "verification_commands": [
+        "git diff --check",
+        "go test -short ./internal/ideation/...",
+        "gofmt -l \u003ctouched-go-files\u003e"
+      ],
+      "non_goals": [
+        "do not mutate Beads during dry-run rendering",
+        "do not require network or model calls"
+      ],
+      "duplicate_notes": [
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap verdict: novel"
+      ],
+      "source_evidence": [
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "operator request from screenshot review"
+      ],
+      "overlap": {
+        "kind": "novel",
+        "confidence": 0,
+        "evidence": [
+          "no matching open, in_progress, or recently closed work fingerprints"
+        ]
+      },
+      "create_command": "br create --dry-run --title 'Glamour cursor sparkles for the activity feed' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,ux' --description 'Cosmetic upgrade unrelated to the ready queue.\\n\\nCandidate tempting-new-feature ranked #1 with score 3.5420.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- operator request from screenshot review'",
+      "dependency_commands": []
+    }
+  ],
+  "command_preview": [
+    "br create --dry-run --title 'Glamour cursor sparkles for the activity feed' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,ux' --description 'Cosmetic upgrade unrelated to the ready queue.\\n\\nCandidate tempting-new-feature ranked #1 with score 3.5420.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- operator request from screenshot review'"
+  ],
+  "dependency_preview": [],
+  "suppressed_candidates": []
+}

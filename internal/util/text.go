@@ -181,6 +181,9 @@ func FormatBytes(b int64) string {
 // SafeSlice truncates a string to maxLen bytes, ensuring the cut is at a rune boundary.
 // Unlike Truncate, it does not add an ellipsis.
 func SafeSlice(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
@@ -198,6 +201,9 @@ func SafeSlice(s string, maxLen int) string {
 // SafeSliceFromEnd truncates a string to at most maxLen bytes from the end,
 // ensuring the cut is at a rune boundary.
 func SafeSliceFromEnd(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}

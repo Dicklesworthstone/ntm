@@ -1,0 +1,67 @@
+{
+  "scenario_id": "degraded_optional_sources",
+  "recommendation": "ideate",
+  "ranking_decision": "ideate",
+  "ranking_summary": "selected 1 candidates and retained 0 next-best candidates",
+  "creation_allowed": true,
+  "candidate_count": 1,
+  "selected_count": 1,
+  "next_best_count": 0,
+  "suppressed_count": 0,
+  "duplicate_suppressed_count": 0,
+  "rendered_bead_count": 1,
+  "open_count": 0,
+  "ready_count": 0,
+  "actionable_count": 0,
+  "in_progress_count": 0,
+  "blocked_count": 0,
+  "queue_counts_verified": true,
+  "recent_closed_count": 0,
+  "recent_closed_bug_count": 0,
+  "selected_candidate_ids": [
+    "novel-degraded-aware"
+  ],
+  "next_best_candidate_ids": [],
+  "suppressed_candidate_ids": [],
+  "rendered_bead_refs": [
+    "${BEAD_ID_AWARE_DEGRADED_NOVEL}"
+  ],
+  "degraded_source_ids": [
+    "agent_mail",
+    "cass",
+    "cm"
+  ],
+  "reason_codes": [
+    "healthy_novel_candidates"
+  ],
+  "evidence": [
+    "1 ranked candidate(s) remain after duplicate checks"
+  ],
+  "notes": [
+    {
+      "code": "source_degraded",
+      "severity": "warning",
+      "message": "agent_mail unreachable",
+      "source_id": "agent_mail",
+      "evidence": []
+    },
+    {
+      "code": "source_degraded",
+      "severity": "warning",
+      "message": "cass binary missing",
+      "source_id": "cass",
+      "evidence": []
+    },
+    {
+      "code": "source_degraded",
+      "severity": "warning",
+      "message": "cm binary missing",
+      "source_id": "cm",
+      "evidence": []
+    }
+  ],
+  "next_actions": [
+    "review rendered dry-run roadmap before mutating beads",
+    "treat degraded optional sources as best-effort context"
+  ]
+}

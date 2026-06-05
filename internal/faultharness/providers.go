@@ -39,9 +39,9 @@ func MailReservationsFake(ctx context.Context, clock Clock, b Behavior) Result {
 func BVTriageHealthy() []byte {
 	body, _ := json.Marshal(map[string]interface{}{
 		"quick_ref": map[string]int{
-			"open_count":       2,
-			"actionable_count": 2,
-			"blocked_count":    0,
+			"open_count":        2,
+			"actionable_count":  2,
+			"blocked_count":     0,
 			"in_progress_count": 0,
 		},
 		"recommendations": []map[string]string{

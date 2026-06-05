@@ -64,10 +64,14 @@ func NewManager(repoPath string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	hooksDir, err := findGitPath(root, "hooks")
+	if err != nil {
+		return nil, err
+	}
 
 	return &Manager{
 		repoRoot: root,
-		hooksDir: filepath.Join(root, ".git", "hooks"),
+		hooksDir: hooksDir,
 	}, nil
 }
 
@@ -102,7 +106,7 @@ func (m *Manager) Install(hookType HookType, force bool) error {
 	}
 
 	// Write hook file
-	if err := os.WriteFile(hookPath, []byte(script), 0755); err != nil {
+	if err := writeHookFile(hookPath, script); err != nil {
 		return fmt.Errorf("writing hook: %w", err)
 	}
 
@@ -210,6 +214,58 @@ func findGitRoot(path string) (string, error) {
 		return "", ErrNotGitRepo
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func findGitPath(repoRoot, gitPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-path", gitPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolving git path %q: %w", gitPath, err)
+	}
+	path := strings.TrimSpace(string(output))
+	if path == "" {
+		return "", fmt.Errorf("resolving git path %q: empty path", gitPath)
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	return filepath.Join(repoRoot, path), nil
+}
+
+func writeHookFile(path, content string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating hooks directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".ntm-hook-*")
+	if err != nil {
+		return fmt.Errorf("creating temporary hook: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temporary hook: %w", err)
+	}
+	if err := tmp.Chmod(0755); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temporary hook: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temporary hook: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("installing hook: %w", err)
+	}
+	cleanup = false
+	return nil
 }
 
 // isNTMHook checks if a hook script is managed by NTM.

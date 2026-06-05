@@ -1,0 +1,73 @@
+{
+  "plan_id": "partial-roadmap",
+  "dry_run": true,
+  "decision": "ideate",
+  "summary": "selected 1 candidates and retained 0 next-best candidates",
+  "parent_id": "bd-e7xm1",
+  "rendered_count": 1,
+  "proposed_beads": [
+    {
+      "ref": "${BEAD_ID_GATE_NOVEL_TEMP_WORKSPACE}",
+      "candidate_id": "novel-temp-workspace-gate",
+      "rank": 1,
+      "score": 3.192,
+      "title": "Queue-dry temp-workspace creation gate",
+      "issue_type": "task",
+      "priority": 1,
+      "labels": [
+        "idea-wizard",
+        "queue-dry",
+        "testing"
+      ],
+      "parent": "bd-e7xm1",
+      "dependencies": [
+        {
+          "type": "parent-child",
+          "id": "bd-e7xm1"
+        }
+      ],
+      "description": "Sandbox creation flow against a synthetic temp workspace to keep dry-run inert.\n\nCandidate novel-temp-workspace-gate ranked #1 with score 3.1920.\n\nOverlap: novel\n\nAcceptance criteria:\n- candidate is implemented as a scoped, reviewable task\n- output preserves duplicate and source evidence\n\nVerification commands:\n- git diff --check\n- go test -short ./internal/ideation/...\n- gofmt -l \u003ctouched-go-files\u003e\n\nNon-goals:\n- do not mutate Beads during dry-run rendering\n- do not require network or model calls\n\nDuplicate and overlap notes:\n- no matching open, in_progress, or recently closed work fingerprints\n- overlap verdict: novel\n\nSource evidence:\n- creation flow lacked an isolation gate\n- no matching open, in_progress, or recently closed work fingerprints",
+      "acceptance_criteria": [
+        "candidate is implemented as a scoped, reviewable task",
+        "output preserves duplicate and source evidence"
+      ],
+      "verification_commands": [
+        "git diff --check",
+        "go test -short ./internal/ideation/...",
+        "gofmt -l \u003ctouched-go-files\u003e"
+      ],
+      "non_goals": [
+        "do not mutate Beads during dry-run rendering",
+        "do not require network or model calls"
+      ],
+      "duplicate_notes": [
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap verdict: novel"
+      ],
+      "source_evidence": [
+        "creation flow lacked an isolation gate",
+        "no matching open, in_progress, or recently closed work fingerprints"
+      ],
+      "overlap": {
+        "kind": "novel",
+        "confidence": 0,
+        "evidence": [
+          "no matching open, in_progress, or recently closed work fingerprints"
+        ]
+      },
+      "create_command": "br create --dry-run --title 'Queue-dry temp-workspace creation gate' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,testing' --description 'Sandbox creation flow against a synthetic temp workspace to keep dry-run inert.\\n\\nCandidate novel-temp-workspace-gate ranked #1 with score 3.1920.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- creation flow lacked an isolation gate\\n- no matching open, in_progress, or recently closed work fingerprints' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1'",
+      "dependency_commands": [
+        "br dep add --type 'parent-child' '${BEAD_ID_GATE_NOVEL_TEMP_WORKSPACE}' 'bd-e7xm1'"
+      ]
+    }
+  ],
+  "command_preview": [
+    "br create --dry-run --title 'Queue-dry temp-workspace creation gate' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,testing' --description 'Sandbox creation flow against a synthetic temp workspace to keep dry-run inert.\\n\\nCandidate novel-temp-workspace-gate ranked #1 with score 3.1920.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- creation flow lacked an isolation gate\\n- no matching open, in_progress, or recently closed work fingerprints' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1'"
+  ],
+  "dependency_preview": [
+    "br dep add --type 'parent-child' '${BEAD_ID_GATE_NOVEL_TEMP_WORKSPACE}' 'bd-e7xm1'"
+  ],
+  "suppressed_candidates": [
+    "dup-replay"
+  ]
+}

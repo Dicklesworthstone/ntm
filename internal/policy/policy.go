@@ -179,6 +179,9 @@ func (p *Policy) compile() error {
 	var errs error
 
 	for i := range p.Blocked {
+		// Always reset compiled state first so a recompile after policy edits
+		// cannot keep matching an old regex when the new pattern is invalid.
+		p.Blocked[i].regex = nil
 		re, err := regexp.Compile(p.Blocked[i].Pattern)
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("invalid blocked pattern %q: %w", p.Blocked[i].Pattern, err))
@@ -188,6 +191,7 @@ func (p *Policy) compile() error {
 	}
 
 	for i := range p.ApprovalRequired {
+		p.ApprovalRequired[i].regex = nil
 		re, err := regexp.Compile(p.ApprovalRequired[i].Pattern)
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("invalid approval_required pattern %q: %w", p.ApprovalRequired[i].Pattern, err))
@@ -197,6 +201,7 @@ func (p *Policy) compile() error {
 	}
 
 	for i := range p.Allowed {
+		p.Allowed[i].regex = nil
 		re, err := regexp.Compile(p.Allowed[i].Pattern)
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("invalid allowed pattern %q: %w", p.Allowed[i].Pattern, err))

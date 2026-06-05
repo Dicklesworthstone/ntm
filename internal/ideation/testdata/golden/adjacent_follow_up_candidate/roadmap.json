@@ -1,0 +1,87 @@
+{
+  "plan_id": "adjacent-roadmap",
+  "dry_run": true,
+  "decision": "ideate",
+  "summary": "selected 1 candidates and retained 0 next-best candidates",
+  "parent_id": "bd-e7xm1",
+  "rendered_count": 1,
+  "proposed_beads": [
+    {
+      "ref": "${BEAD_ID_EVIDENCE_FOLLOW_RCH_UP}",
+      "candidate_id": "follow-up-rch-evidence",
+      "rank": 1,
+      "score": 2.849,
+      "title": "Use RCH backpressure history as queue-dry evidence",
+      "issue_type": "task",
+      "priority": 1,
+      "labels": [
+        "idea-wizard",
+        "queue-dry",
+        "rch"
+      ],
+      "parent": "bd-e7xm1",
+      "dependencies": [
+        {
+          "type": "parent-child",
+          "id": "bd-e7xm1"
+        },
+        {
+          "type": "related",
+          "id": "bd-8kglp.4"
+        }
+      ],
+      "description": "Reuse shipped RCH backpressure metrics to feed queue-dry ranking instead of duplicating it.\n\nCandidate follow-up-rch-evidence ranked #1 with score 2.8490.\n\nOverlap: adjacent_follow_up\n\nRelated work: bd-8kglp.4\n\nAcceptance criteria:\n- candidate is implemented as a scoped, reviewable task\n- output preserves duplicate and source evidence\n\nVerification commands:\n- git diff --check\n- go test -short ./internal/ideation/...\n- gofmt -l \u003ctouched-go-files\u003e\n\nNon-goals:\n- do not mutate Beads during dry-run rendering\n- do not require network or model calls\n\nDuplicate and overlap notes:\n- candidate explicitly references bd-8kglp.4 as follow_up\n- matched recently closed idea-wizard family bd-8kglp\n- overlap family: bd-8kglp\n- overlap verdict: adjacent_follow_up\n- overlap work: bd-8kglp.4\n- remaining evidence gap from closed RCH bead\n\nSource evidence:\n- candidate explicitly references bd-8kglp.4 as follow_up\n- matched recently closed idea-wizard family bd-8kglp\n- prior work left a gap in feeding metrics into queue-dry ranking\n- remaining evidence gap from closed RCH bead",
+      "acceptance_criteria": [
+        "candidate is implemented as a scoped, reviewable task",
+        "output preserves duplicate and source evidence"
+      ],
+      "verification_commands": [
+        "git diff --check",
+        "go test -short ./internal/ideation/...",
+        "gofmt -l \u003ctouched-go-files\u003e"
+      ],
+      "non_goals": [
+        "do not mutate Beads during dry-run rendering",
+        "do not require network or model calls"
+      ],
+      "duplicate_notes": [
+        "candidate explicitly references bd-8kglp.4 as follow_up",
+        "matched recently closed idea-wizard family bd-8kglp",
+        "overlap family: bd-8kglp",
+        "overlap verdict: adjacent_follow_up",
+        "overlap work: bd-8kglp.4",
+        "remaining evidence gap from closed RCH bead"
+      ],
+      "source_evidence": [
+        "candidate explicitly references bd-8kglp.4 as follow_up",
+        "matched recently closed idea-wizard family bd-8kglp",
+        "prior work left a gap in feeding metrics into queue-dry ranking",
+        "remaining evidence gap from closed RCH bead"
+      ],
+      "overlap": {
+        "kind": "adjacent_follow_up",
+        "work_id": "bd-8kglp.4",
+        "family_id": "bd-8kglp",
+        "confidence": 0.85,
+        "evidence": [
+          "candidate explicitly references bd-8kglp.4 as follow_up",
+          "matched recently closed idea-wizard family bd-8kglp",
+          "remaining evidence gap from closed RCH bead"
+        ]
+      },
+      "create_command": "br create --dry-run --title 'Use RCH backpressure history as queue-dry evidence' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,rch' --description 'Reuse shipped RCH backpressure metrics to feed queue-dry ranking instead of duplicating it.\\n\\nCandidate follow-up-rch-evidence ranked #1 with score 2.8490.\\n\\nOverlap: adjacent_follow_up\\n\\nRelated work: bd-8kglp.4\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- candidate explicitly references bd-8kglp.4 as follow_up\\n- matched recently closed idea-wizard family bd-8kglp\\n- overlap family: bd-8kglp\\n- overlap verdict: adjacent_follow_up\\n- overlap work: bd-8kglp.4\\n- remaining evidence gap from closed RCH bead\\n\\nSource evidence:\\n- candidate explicitly references bd-8kglp.4 as follow_up\\n- matched recently closed idea-wizard family bd-8kglp\\n- prior work left a gap in feeding metrics into queue-dry ranking\\n- remaining evidence gap from closed RCH bead' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1,related:bd-8kglp.4'",
+      "dependency_commands": [
+        "br dep add --type 'parent-child' '${BEAD_ID_EVIDENCE_FOLLOW_RCH_UP}' 'bd-e7xm1'",
+        "br dep add --type 'related' '${BEAD_ID_EVIDENCE_FOLLOW_RCH_UP}' 'bd-8kglp.4'"
+      ]
+    }
+  ],
+  "command_preview": [
+    "br create --dry-run --title 'Use RCH backpressure history as queue-dry evidence' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,rch' --description 'Reuse shipped RCH backpressure metrics to feed queue-dry ranking instead of duplicating it.\\n\\nCandidate follow-up-rch-evidence ranked #1 with score 2.8490.\\n\\nOverlap: adjacent_follow_up\\n\\nRelated work: bd-8kglp.4\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- candidate explicitly references bd-8kglp.4 as follow_up\\n- matched recently closed idea-wizard family bd-8kglp\\n- overlap family: bd-8kglp\\n- overlap verdict: adjacent_follow_up\\n- overlap work: bd-8kglp.4\\n- remaining evidence gap from closed RCH bead\\n\\nSource evidence:\\n- candidate explicitly references bd-8kglp.4 as follow_up\\n- matched recently closed idea-wizard family bd-8kglp\\n- prior work left a gap in feeding metrics into queue-dry ranking\\n- remaining evidence gap from closed RCH bead' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1,related:bd-8kglp.4'"
+  ],
+  "dependency_preview": [
+    "br dep add --type 'parent-child' '${BEAD_ID_EVIDENCE_FOLLOW_RCH_UP}' 'bd-e7xm1'",
+    "br dep add --type 'related' '${BEAD_ID_EVIDENCE_FOLLOW_RCH_UP}' 'bd-8kglp.4'"
+  ],
+  "suppressed_candidates": []
+}

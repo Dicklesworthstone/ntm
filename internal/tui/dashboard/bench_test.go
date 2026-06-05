@@ -272,34 +272,31 @@ func TestSpringAnimationOverhead(t *testing.T) {
 		t.Skip("skipping spring overhead profile in -short mode")
 	}
 	configureDashboardPerfEnv(t)
-	m := newBenchModel(200, 50, 20)
 
-	// Baseline without springs
-	const iterations = 100
-	start := time.Now()
-	for i := 0; i < iterations; i++ {
-		_ = m.View()
-	}
-	baselineMs := durationPerIteration(time.Since(start), iterations, time.Millisecond)
+	const (
+		iterations = 100
+		samples    = 5
+	)
 
-	// With active springs
-	if m.dashboardSprings != nil {
-		m.focusedPanel = PanelPaneList
-		m.syncFocusAnimations()
-		m.focusedPanel = PanelAttention
-		m.syncFocusAnimations()
-	}
-
-	start = time.Now()
-	for i := 0; i < iterations; i++ {
+	baselineMs := minDashboardViewSample(samples, func() float64 {
+		return measureDashboardViewMS(newBenchModel(200, 50, 20), iterations, false)
+	})
+	withSpringsMs := minDashboardViewSample(samples, func() float64 {
+		m := newBenchModel(200, 50, 20)
 		if m.dashboardSprings != nil {
-			m.dashboardSprings.Tick()
+			m.focusedPanel = PanelPaneList
+			m.syncFocusAnimations()
+			m.focusedPanel = PanelAttention
+			m.syncFocusAnimations()
 		}
-		_ = m.View()
-	}
-	withSpringsMs := durationPerIteration(time.Since(start), iterations, time.Millisecond)
+		return measureDashboardViewMS(m, iterations, true)
+	})
 
 	overheadMs := withSpringsMs - baselineMs
+	if overheadMs < 0 {
+		overheadMs = 0
+	}
+
 	t.Logf("baseline View(): %.2fms", baselineMs)
 	t.Logf("with springs: %.2fms", withSpringsMs)
 	t.Logf("spring overhead: %.2fms", overheadMs)
@@ -309,6 +306,33 @@ func TestSpringAnimationOverhead(t *testing.T) {
 	if overheadMs > 1.0 {
 		t.Errorf("spring overhead too high: %.2fms (target <1ms)", overheadMs)
 	}
+}
+
+func measureDashboardViewMS(m Model, iterations int, tickSprings bool) float64 {
+	_ = m.View()
+
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		if tickSprings && m.dashboardSprings != nil {
+			m.dashboardSprings.Tick()
+		}
+		_ = m.View()
+	}
+	return durationPerIteration(time.Since(start), iterations, time.Millisecond)
+}
+
+func minDashboardViewSample(samples int, measure func() float64) float64 {
+	if samples <= 0 {
+		return 0
+	}
+
+	best := measure()
+	for i := 1; i < samples; i++ {
+		if current := measure(); current < best {
+			best = current
+		}
+	}
+	return best
 }
 
 // newBenchModel builds a dashboard model with synthetic panes for benchmarks.

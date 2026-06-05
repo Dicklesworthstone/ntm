@@ -1,12 +1,33 @@
 package scanner
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
+
+func expectStringEqual(t *testing.T, label, got, want string) {
+	t.Helper()
+	if strings.Compare(got, want) != 0 {
+		t.Errorf("%s = %q, want %q", label, got, want)
+	}
+}
+
+func expectBoolEqual(t *testing.T, label string, got, want bool) {
+	t.Helper()
+	if got {
+		if !want {
+			t.Errorf("%s = %v, want %v", label, got, want)
+		}
+		return
+	}
+	if want {
+		t.Errorf("%s = %v, want %v", label, got, want)
+	}
+}
 
 func TestParseBeadForDedup(t *testing.T) {
 	t.Parallel()
@@ -92,12 +113,8 @@ func TestParseBeadForDedup(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			gotSig, gotFile := parseBeadForDedup(tt.title, tt.desc)
-			if gotSig != tt.wantSig {
-				t.Errorf("signature = %q, want %q", gotSig, tt.wantSig)
-			}
-			if gotFile != tt.wantFile {
-				t.Errorf("file = %q, want %q", gotFile, tt.wantFile)
-			}
+			expectStringEqual(t, "signature", gotSig, tt.wantSig)
+			expectStringEqual(t, "file", gotFile, tt.wantFile)
 		})
 	}
 }
@@ -139,9 +156,7 @@ func TestDedupIndex_GetBeadID(t *testing.T) {
 	if !ok {
 		t.Error("expected GetBeadID to find the finding")
 	}
-	if id != "bd-456" {
-		t.Errorf("GetBeadID = %q, want %q", id, "bd-456")
-	}
+	expectStringEqual(t, "GetBeadID", id, "bd-456")
 
 	// Non-existent finding
 	other := Finding{File: "other.go", Line: 1}
@@ -201,9 +216,7 @@ func TestDedupIndex_CheckFindings(t *testing.T) {
 	if len(dups) != 1 {
 		t.Fatalf("CheckFindings dups count = %d, want 1", len(dups))
 	}
-	if dups[0].BeadID != "bd-existing" {
-		t.Errorf("duplicate bead ID = %q, want %q", dups[0].BeadID, "bd-existing")
-	}
+	expectStringEqual(t, "duplicate bead ID", dups[0].BeadID, "bd-existing")
 }
 
 func TestDedupIndex_CheckFindings_AllNew(t *testing.T) {
@@ -392,9 +405,7 @@ func TestScanOptionsFromConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			opts := ScanOptionsFromConfig(tt.cfg, tt.context)
-			if opts.FailOnWarning != tt.wantFOW {
-				t.Errorf("FailOnWarning = %v, want %v", opts.FailOnWarning, tt.wantFOW)
-			}
+			expectBoolEqual(t, "FailOnWarning", opts.FailOnWarning, tt.wantFOW)
 			if tt.wantLanguages != nil {
 				if len(opts.Languages) != len(tt.wantLanguages) {
 					t.Errorf("Languages count = %d, want %d", len(opts.Languages), len(tt.wantLanguages))
@@ -412,7 +423,7 @@ func TestScanOptionsFromConfig_Timeout(t *testing.T) {
 		},
 	}
 	opts := ScanOptionsFromConfig(cfg, "dashboard")
-	if opts.Timeout != 45*time.Second {
+	if opts.Timeout-45*time.Second != 0 {
 		t.Errorf("Timeout = %v, want 45s", opts.Timeout)
 	}
 }
@@ -439,9 +450,7 @@ func TestBridgeConfigFromConfig(t *testing.T) {
 				},
 			}
 			bc := BridgeConfigFromConfig(cfg)
-			if bc.MinSeverity != tt.wantSev {
-				t.Errorf("MinSeverity = %q, want %q", bc.MinSeverity, tt.wantSev)
-			}
+			expectStringEqual(t, "MinSeverity", string(bc.MinSeverity), string(tt.wantSev))
 			if bc.DryRun {
 				t.Error("expected DryRun to be false")
 			}
@@ -478,15 +487,24 @@ func TestShouldAutoCloseBeads(t *testing.T) {
 
 func TestEstimateFileCentrality(t *testing.T) {
 	t.Parallel()
-	// Currently a stub that returns 0.0
-	result := estimateFileCentrality("any/file.go", map[string]float64{"key": 1.0})
-	if result != 0.0 {
-		t.Errorf("estimateFileCentrality = %f, want 0.0", result)
+
+	result := estimateFileCentrality("any/file.go", map[string]float64{"any/file.go": 1.25})
+	if result != 1.25 {
+		t.Errorf("estimateFileCentrality = %f, want 1.25", result)
 	}
 
-	// Also works with nil map
+	result = estimateFileCentrality("any/file.go", map[string]float64{"other.go": 1.0})
+	if result != 0.0 {
+		t.Errorf("estimateFileCentrality with unmatched file = %f, want 0.0", result)
+	}
+
 	result = estimateFileCentrality("file.go", nil)
 	if result != 0.0 {
 		t.Errorf("estimateFileCentrality with nil map = %f, want 0.0", result)
+	}
+
+	result = estimateFileCentrality("file.go", map[string]float64{"file.go": -1.0})
+	if result != 0.0 {
+		t.Errorf("estimateFileCentrality with negative score = %f, want 0.0", result)
 	}
 }

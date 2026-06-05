@@ -812,7 +812,7 @@ func TestScanAndRedact_ExtraPatternsMalformedDoesNotBlockOthers(t *testing.T) {
 		Mode: ModeRedact,
 		ExtraPatterns: map[Category][]string{
 			"CUSTOM_TOKEN": {
-				`[unclosed-bracket`, // malformed
+				`[unclosed-bracket`,  // malformed
 				`MYORG-[A-Z0-9]{16}`, // valid; should still run
 			},
 		},

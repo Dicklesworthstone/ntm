@@ -22,9 +22,9 @@ type fakePlugin struct {
 	gotCtx        atomic.Pointer[PluginContext]
 }
 
-func (p *fakePlugin) Name() string             { return p.name }
-func (p *fakePlugin) Version() string          { return p.version }
-func (p *fakePlugin) MinSDKVersion() string    { return p.minSDK }
+func (p *fakePlugin) Name() string               { return p.name }
+func (p *fakePlugin) Version() string            { return p.version }
+func (p *fakePlugin) MinSDKVersion() string      { return p.minSDK }
 func (p *fakePlugin) Capabilities() []Capability { return p.caps }
 func (p *fakePlugin) Init(ctx PluginContext) error {
 	p.initCount.Add(1)

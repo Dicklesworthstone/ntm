@@ -15,14 +15,14 @@ func clock() time.Time {
 // the operator hopes for.
 func healthy() Inputs {
 	return Inputs{
-		Tmux:    TmuxView{Available: true, BinaryVersion: "tmux 3.4", ServerRunning: true},
+		Tmux:     TmuxView{Available: true, BinaryVersion: "tmux 3.4", ServerRunning: true},
 		Sessions: nil, // no sessions yet is a Pass
-		Mail:    MailView{Configured: false},
-		Beads:   BeadsView{HasLocalDB: false},
-		Disk:    DiskView{Path: "/", UsedRatio: 0.40},
-		Memory:  MemoryView{UsedRatio: 0.40},
-		Rch:     RchView{Configured: false},
-		Now:     clock(),
+		Mail:     MailView{Configured: false},
+		Beads:    BeadsView{HasLocalDB: false},
+		Disk:     DiskView{Path: "/", UsedRatio: 0.40},
+		Memory:   MemoryView{UsedRatio: 0.40},
+		Rch:      RchView{Configured: false},
+		Now:      clock(),
 	}
 }
 
@@ -277,9 +277,9 @@ func TestEvaluate_RchPartialHealthyWarns(t *testing.T) {
 func TestEvaluate_FindingsSortedBySeverityThenCheckThenCode(t *testing.T) {
 	t.Parallel()
 	in := healthy()
-	in.Tmux = TmuxView{Available: false}      // critical
+	in.Tmux = TmuxView{Available: false}                                         // critical
 	in.Sessions = []SessionView{{Name: "p", PaneCount: 4, UnresponsivePanes: 2}} // warning
-	in.Mail = MailView{Configured: true, Reachable: false}                        // critical
+	in.Mail = MailView{Configured: true, Reachable: false}                       // critical
 	r := Evaluate(in)
 	for i := 1; i < len(r.Findings); i++ {
 		ri := severityRank(r.Findings[i-1].Severity)
@@ -321,12 +321,12 @@ func TestEvaluate_ScoreFloorsAtZero(t *testing.T) {
 	t.Parallel()
 	in := Inputs{
 		Now:      clock(),
-		Tmux:     TmuxView{Available: false},                                  // -25
-		Sessions: nil,                                                          // pass
-		Mail:     MailView{Configured: true, Reachable: false},                // -25
-		Beads:    BeadsView{HasLocalDB: true, IssuesJSONLExists: false},       // -25
-		Disk:     DiskView{Path: "/", UsedRatio: 0.99},                         // -25
-		Memory:   MemoryView{UsedRatio: 0.99},                                  // -25
+		Tmux:     TmuxView{Available: false},                                    // -25
+		Sessions: nil,                                                           // pass
+		Mail:     MailView{Configured: true, Reachable: false},                  // -25
+		Beads:    BeadsView{HasLocalDB: true, IssuesJSONLExists: false},         // -25
+		Disk:     DiskView{Path: "/", UsedRatio: 0.99},                          // -25
+		Memory:   MemoryView{UsedRatio: 0.99},                                   // -25
 		Rch:      RchView{Configured: true, WorkersHealthy: 0, WorkersTotal: 8}, // -25
 	}
 	r := Evaluate(in)

@@ -454,14 +454,13 @@ func extractPendingInline(lines []string) []string {
 		}
 		lower := strings.ToLower(cleaned)
 		if strings.Contains(lower, "todo") || strings.HasPrefix(lower, "next:") || strings.HasPrefix(lower, "pending:") || strings.HasPrefix(lower, "remaining:") {
-			item := strings.TrimSpace(strings.TrimPrefix(cleaned, "TODO"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "todo"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "Next:"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "next:"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "Pending:"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "pending:"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "Remaining:"))
-			item = strings.TrimSpace(strings.TrimPrefix(item, "remaining:"))
+			item := cleaned
+			prefixes := []string{"TODO:", "TODO", "todo:", "todo", "Next:", "next:", "Pending:", "pending:", "Remaining:", "remaining:"}
+			for _, p := range prefixes {
+				item = strings.TrimPrefix(item, p)
+			}
+			item = strings.TrimLeft(item, ": ")
+			item = strings.TrimSpace(item)
 			if item != "" {
 				items = append(items, item)
 			}

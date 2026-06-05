@@ -78,10 +78,10 @@ type SessionView struct {
 
 // MailView is the Agent Mail reachability signal.
 type MailView struct {
-	Configured     bool   // true when the operator has Agent Mail wired up
-	Reachable      bool   // ping succeeded
-	LastError      string // last reachability error, if any
-	StaleSnapshot  bool   // last snapshot is older than the freshness window
+	Configured       bool   // true when the operator has Agent Mail wired up
+	Reachable        bool   // ping succeeded
+	LastError        string // last reachability error, if any
+	StaleSnapshot    bool   // last snapshot is older than the freshness window
 	StaleSnapshotAge time.Duration
 }
 
@@ -95,11 +95,11 @@ type BeadsView struct {
 
 // DiskView is the disk-pressure signal. UsedRatio in [0, 1].
 type DiskView struct {
-	Path           string
-	UsedRatio      float64
-	FreeBytes      uint64
-	WarnRatio      float64 // default 0.85
-	CriticalRatio  float64 // default 0.95
+	Path          string
+	UsedRatio     float64
+	FreeBytes     uint64
+	WarnRatio     float64 // default 0.85
+	CriticalRatio float64 // default 0.95
 }
 
 // MemoryView is the host-memory pressure signal.
@@ -136,7 +136,7 @@ type Inputs struct {
 
 // Report is the full readiness assessment.
 type Report struct {
-	GeneratedAt time.Time     `json:"generated_at"`
+	GeneratedAt time.Time `json:"generated_at"`
 	// Score in [0, 100]. 100 = every check passed; subtract 5 per
 	// Warn, 25 per Fail, capped at 0. Unknown checks subtract 2 each
 	// so a fully-degraded probe surface still produces a non-zero

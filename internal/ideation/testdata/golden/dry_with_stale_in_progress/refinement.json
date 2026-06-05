@@ -1,0 +1,50 @@
+{
+  "scenario_id": "dry_with_stale_in_progress",
+  "recommendation": "review_recent_work",
+  "ranking_decision": "ideate",
+  "ranking_summary": "selected 1 candidates and retained 0 next-best candidates",
+  "creation_requested": true,
+  "creation_allowed": false,
+  "candidate_count": 1,
+  "selected_count": 1,
+  "next_best_count": 0,
+  "suppressed_count": 0,
+  "duplicate_suppressed_count": 0,
+  "rendered_bead_count": 1,
+  "open_count": 1,
+  "ready_count": 0,
+  "actionable_count": 0,
+  "in_progress_count": 1,
+  "blocked_count": 0,
+  "queue_counts_verified": true,
+  "recent_closed_count": 0,
+  "recent_closed_bug_count": 0,
+  "selected_candidate_ids": [
+    "novel-pause-gate"
+  ],
+  "next_best_candidate_ids": [],
+  "suppressed_candidate_ids": [],
+  "rendered_bead_refs": [
+    "${BEAD_ID_GATE_NOVEL_PAUSE}"
+  ],
+  "degraded_source_ids": [],
+  "reason_codes": [
+    "stale_in_progress"
+  ],
+  "evidence": [
+    "stale in-progress work exists: bd-stale.1"
+  ],
+  "notes": [
+    {
+      "code": "creation_blocked",
+      "severity": "error",
+      "message": "mutating bead creation is blocked by novelty guard recommendation review_recent_work",
+      "evidence": [
+        "stale in-progress work exists: bd-stale.1"
+      ]
+    }
+  ],
+  "next_actions": [
+    "review recently closed work instead of creating new beads"
+  ]
+}

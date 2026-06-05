@@ -69,27 +69,15 @@ func initPatterns() {
 	patternsOnce.Do(func() {
 		compactionPatterns = []CompactionPattern{
 			{
-				Agent:    "claude",
+				Agent:    "cc",
 				Patterns: compilePatterns(claudePatterns),
 			},
 			{
-				Agent:    "cc", // alias for claude
-				Patterns: compilePatterns(claudePatterns),
-			},
-			{
-				Agent:    "codex",
+				Agent:    "cod",
 				Patterns: compilePatterns(codexPatterns),
 			},
 			{
-				Agent:    "cod", // alias for codex
-				Patterns: compilePatterns(codexPatterns),
-			},
-			{
-				Agent:    "gemini",
-				Patterns: compilePatterns(geminiPatterns),
-			},
-			{
-				Agent:    "gmi", // alias for gemini
+				Agent:    "gmi",
 				Patterns: compilePatterns(geminiPatterns),
 			},
 			{

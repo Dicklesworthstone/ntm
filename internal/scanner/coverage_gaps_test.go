@@ -123,10 +123,10 @@ func TestAnalyzeImpactHotspotsGenerated(t *testing.T) {
 }
 
 // =============================================================================
-// analysis.go: computeHotspots with keystoneMap
+// analysis.go: computeHotspots with file centrality
 // =============================================================================
 
-func TestComputeHotspotsWithKeystoneMap(t *testing.T) {
+func TestComputeHotspotsWithFileCentrality(t *testing.T) {
 	t.Parallel()
 
 	findings := []Finding{
@@ -134,21 +134,24 @@ func TestComputeHotspotsWithKeystoneMap(t *testing.T) {
 		{File: "b.go", Severity: SeverityWarning},
 	}
 
-	keystoneMap := map[string]float64{
-		"some-bead": 8.5,
+	fileCentrality := map[string]float64{
+		"a.go": 8.5,
 	}
 
-	hotspots := computeHotspots(findings, keystoneMap)
+	hotspots := computeHotspots(findings, fileCentrality)
 
 	if len(hotspots) != 2 {
 		t.Fatalf("expected 2 hotspots, got %d", len(hotspots))
 	}
 
-	// Centrality should be 0.0 since estimateFileCentrality always returns 0
-	for _, h := range hotspots {
-		if h.Centrality != 0.0 {
-			t.Errorf("expected centrality 0, got %f for %s", h.Centrality, h.File)
-		}
+	if hotspots[0].File != "a.go" {
+		t.Fatalf("expected a.go first, got %s", hotspots[0].File)
+	}
+	if hotspots[0].Centrality != 8.5 {
+		t.Errorf("expected a.go centrality 8.5, got %f", hotspots[0].Centrality)
+	}
+	if hotspots[1].Centrality != 0.0 {
+		t.Errorf("expected unmatched file centrality 0, got %f", hotspots[1].Centrality)
 	}
 }
 
@@ -168,10 +171,40 @@ func TestComputeHotspotsEmpty(t *testing.T) {
 func TestEstimateFileCentralityPure(t *testing.T) {
 	t.Parallel()
 
-	// Current implementation always returns 0.0
-	result := estimateFileCentrality("any.go", map[string]float64{"bead-1": 5.0})
-	if result != 0.0 {
-		t.Errorf("estimateFileCentrality expected 0.0, got %f", result)
+	result := estimateFileCentrality("any.go", map[string]float64{"any.go": 5.0})
+	if result != 5.0 {
+		t.Errorf("estimateFileCentrality expected 5.0, got %f", result)
+	}
+}
+
+func TestBuildFileCentrality(t *testing.T) {
+	t.Parallel()
+
+	low := Finding{File: "core.go", Line: 10, RuleID: "ubs-low"}
+	high := Finding{File: "core.go", Line: 20, RuleID: "ubs-high"}
+	other := Finding{File: "other.go", Line: 5, RuleID: "ubs-other"}
+
+	existingBeads := map[string]string{
+		FindingSignature(low):   "bd-low",
+		FindingSignature(high):  "bd-high",
+		FindingSignature(other): "bd-other",
+	}
+	keystones := map[string]float64{
+		"bd-low":   2.0,
+		"bd-high":  7.5,
+		"bd-other": 3.0,
+	}
+
+	result := buildFileCentrality([]Finding{low, high, other}, existingBeads, keystones)
+	if result["core.go"] != 7.5 {
+		t.Errorf("core.go centrality = %f, want 7.5", result["core.go"])
+	}
+	if result["other.go"] != 3.0 {
+		t.Errorf("other.go centrality = %f, want 3.0", result["other.go"])
+	}
+
+	if got := buildFileCentrality([]Finding{low}, nil, keystones); got != nil {
+		t.Errorf("expected nil without existing bead IDs, got %#v", got)
 	}
 }
 
@@ -191,7 +224,7 @@ func TestComputePrioritiesEmptyFindings(t *testing.T) {
 	if len(report.Findings) != 0 {
 		t.Errorf("expected 0 findings, got %d", len(report.Findings))
 	}
-	if report.Summary != "No findings to prioritize" {
+	if strings.Compare(report.Summary, "No findings to prioritize") != 0 {
 		t.Errorf("expected empty summary message, got %q", report.Summary)
 	}
 }
@@ -257,7 +290,7 @@ func TestComputePrioritiesWithBeadIDNoGraph(t *testing.T) {
 
 	pf := report.Findings[0]
 	// BeadID should be set
-	if pf.BeadID != "bd-12345" {
+	if strings.Compare(pf.BeadID, "bd-12345") != 0 {
 		t.Errorf("expected bead ID bd-12345, got %q", pf.BeadID)
 	}
 

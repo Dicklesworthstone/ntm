@@ -1,0 +1,127 @@
+{
+  "plan_id": "dry-mature-roadmap",
+  "dry_run": true,
+  "decision": "ideate",
+  "summary": "selected 2 candidates and retained 0 next-best candidates",
+  "parent_id": "bd-e7xm1",
+  "rendered_count": 2,
+  "proposed_beads": [
+    {
+      "ref": "${BEAD_ID_NOVEL_TEMP_WORKSPACE}",
+      "candidate_id": "novel-temp-workspace",
+      "rank": 1,
+      "score": 3.232,
+      "title": "End-to-end queue-dry temp-workspace gate",
+      "issue_type": "task",
+      "priority": 1,
+      "labels": [
+        "idea-wizard",
+        "queue-dry",
+        "testing"
+      ],
+      "parent": "bd-e7xm1",
+      "dependencies": [
+        {
+          "type": "parent-child",
+          "id": "bd-e7xm1"
+        }
+      ],
+      "description": "Run the dry-run pipeline against a synthetic temp workspace to keep mutation paths inert.\n\nCandidate novel-temp-workspace ranked #1 with score 3.2320.\n\nOverlap: novel\n\nAcceptance criteria:\n- candidate is implemented as a scoped, reviewable task\n- output preserves duplicate and source evidence\n\nVerification commands:\n- git diff --check\n- go test -short ./internal/ideation/...\n- gofmt -l \u003ctouched-go-files\u003e\n\nNon-goals:\n- do not mutate Beads during dry-run rendering\n- do not require network or model calls\n\nDuplicate and overlap notes:\n- no matching open, in_progress, or recently closed work fingerprints\n- overlap verdict: novel\n\nSource evidence:\n- need a regression seal beyond unit goldens\n- no matching open, in_progress, or recently closed work fingerprints",
+      "acceptance_criteria": [
+        "candidate is implemented as a scoped, reviewable task",
+        "output preserves duplicate and source evidence"
+      ],
+      "verification_commands": [
+        "git diff --check",
+        "go test -short ./internal/ideation/...",
+        "gofmt -l \u003ctouched-go-files\u003e"
+      ],
+      "non_goals": [
+        "do not mutate Beads during dry-run rendering",
+        "do not require network or model calls"
+      ],
+      "duplicate_notes": [
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap verdict: novel"
+      ],
+      "source_evidence": [
+        "need a regression seal beyond unit goldens",
+        "no matching open, in_progress, or recently closed work fingerprints"
+      ],
+      "overlap": {
+        "kind": "novel",
+        "confidence": 0,
+        "evidence": [
+          "no matching open, in_progress, or recently closed work fingerprints"
+        ]
+      },
+      "create_command": "br create --dry-run --title 'End-to-end queue-dry temp-workspace gate' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,testing' --description 'Run the dry-run pipeline against a synthetic temp workspace to keep mutation paths inert.\\n\\nCandidate novel-temp-workspace ranked #1 with score 3.2320.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- need a regression seal beyond unit goldens\\n- no matching open, in_progress, or recently closed work fingerprints' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1'",
+      "dependency_commands": [
+        "br dep add --type 'parent-child' '${BEAD_ID_NOVEL_TEMP_WORKSPACE}' 'bd-e7xm1'"
+      ]
+    },
+    {
+      "ref": "${BEAD_ID_FEEDBACK_LOOP_NOVEL}",
+      "candidate_id": "novel-feedback-loop",
+      "rank": 2,
+      "score": 3.008,
+      "title": "Idea effectiveness feedback loop",
+      "issue_type": "task",
+      "priority": 1,
+      "labels": [
+        "feedback",
+        "idea-wizard",
+        "queue-dry"
+      ],
+      "parent": "bd-e7xm1",
+      "dependencies": [
+        {
+          "type": "parent-child",
+          "id": "bd-e7xm1"
+        }
+      ],
+      "description": "Track which queue-dry ideas became real beads to retire stale candidate generators.\n\nCandidate novel-feedback-loop ranked #2 with score 3.0080.\n\nOverlap: novel\n\nAcceptance criteria:\n- candidate is implemented as a scoped, reviewable task\n- output preserves duplicate and source evidence\n\nVerification commands:\n- git diff --check\n- go test -short ./internal/ideation/...\n- gofmt -l \u003ctouched-go-files\u003e\n\nNon-goals:\n- do not mutate Beads during dry-run rendering\n- do not require network or model calls\n\nDuplicate and overlap notes:\n- no matching open, in_progress, or recently closed work fingerprints\n- overlap verdict: novel\n\nSource evidence:\n- closed tranche shows recurring duplicate-spam without effectiveness signal\n- no matching open, in_progress, or recently closed work fingerprints",
+      "acceptance_criteria": [
+        "candidate is implemented as a scoped, reviewable task",
+        "output preserves duplicate and source evidence"
+      ],
+      "verification_commands": [
+        "git diff --check",
+        "go test -short ./internal/ideation/...",
+        "gofmt -l \u003ctouched-go-files\u003e"
+      ],
+      "non_goals": [
+        "do not mutate Beads during dry-run rendering",
+        "do not require network or model calls"
+      ],
+      "duplicate_notes": [
+        "no matching open, in_progress, or recently closed work fingerprints",
+        "overlap verdict: novel"
+      ],
+      "source_evidence": [
+        "closed tranche shows recurring duplicate-spam without effectiveness signal",
+        "no matching open, in_progress, or recently closed work fingerprints"
+      ],
+      "overlap": {
+        "kind": "novel",
+        "confidence": 0,
+        "evidence": [
+          "no matching open, in_progress, or recently closed work fingerprints"
+        ]
+      },
+      "create_command": "br create --dry-run --title 'Idea effectiveness feedback loop' --type 'task' --priority 1 --labels 'feedback,idea-wizard,queue-dry' --description 'Track which queue-dry ideas became real beads to retire stale candidate generators.\\n\\nCandidate novel-feedback-loop ranked #2 with score 3.0080.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- closed tranche shows recurring duplicate-spam without effectiveness signal\\n- no matching open, in_progress, or recently closed work fingerprints' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1'",
+      "dependency_commands": [
+        "br dep add --type 'parent-child' '${BEAD_ID_FEEDBACK_LOOP_NOVEL}' 'bd-e7xm1'"
+      ]
+    }
+  ],
+  "command_preview": [
+    "br create --dry-run --title 'End-to-end queue-dry temp-workspace gate' --type 'task' --priority 1 --labels 'idea-wizard,queue-dry,testing' --description 'Run the dry-run pipeline against a synthetic temp workspace to keep mutation paths inert.\\n\\nCandidate novel-temp-workspace ranked #1 with score 3.2320.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- need a regression seal beyond unit goldens\\n- no matching open, in_progress, or recently closed work fingerprints' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1'",
+    "br create --dry-run --title 'Idea effectiveness feedback loop' --type 'task' --priority 1 --labels 'feedback,idea-wizard,queue-dry' --description 'Track which queue-dry ideas became real beads to retire stale candidate generators.\\n\\nCandidate novel-feedback-loop ranked #2 with score 3.0080.\\n\\nOverlap: novel\\n\\nAcceptance criteria:\\n- candidate is implemented as a scoped, reviewable task\\n- output preserves duplicate and source evidence\\n\\nVerification commands:\\n- git diff --check\\n- go test -short ./internal/ideation/...\\n- gofmt -l \u003ctouched-go-files\u003e\\n\\nNon-goals:\\n- do not mutate Beads during dry-run rendering\\n- do not require network or model calls\\n\\nDuplicate and overlap notes:\\n- no matching open, in_progress, or recently closed work fingerprints\\n- overlap verdict: novel\\n\\nSource evidence:\\n- closed tranche shows recurring duplicate-spam without effectiveness signal\\n- no matching open, in_progress, or recently closed work fingerprints' --parent 'bd-e7xm1' --deps 'parent-child:bd-e7xm1'"
+  ],
+  "dependency_preview": [
+    "br dep add --type 'parent-child' '${BEAD_ID_NOVEL_TEMP_WORKSPACE}' 'bd-e7xm1'",
+    "br dep add --type 'parent-child' '${BEAD_ID_FEEDBACK_LOOP_NOVEL}' 'bd-e7xm1'"
+  ],
+  "suppressed_candidates": []
+}

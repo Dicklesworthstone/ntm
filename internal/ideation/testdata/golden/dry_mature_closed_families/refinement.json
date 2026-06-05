@@ -1,0 +1,42 @@
+{
+  "scenario_id": "dry_mature_closed_families",
+  "recommendation": "ideate",
+  "ranking_decision": "ideate",
+  "ranking_summary": "selected 2 candidates and retained 0 next-best candidates",
+  "creation_allowed": true,
+  "candidate_count": 2,
+  "selected_count": 2,
+  "next_best_count": 0,
+  "suppressed_count": 0,
+  "duplicate_suppressed_count": 0,
+  "rendered_bead_count": 2,
+  "open_count": 0,
+  "ready_count": 0,
+  "actionable_count": 0,
+  "in_progress_count": 0,
+  "blocked_count": 0,
+  "queue_counts_verified": true,
+  "recent_closed_count": 4,
+  "recent_closed_bug_count": 0,
+  "selected_candidate_ids": [
+    "novel-feedback-loop",
+    "novel-temp-workspace"
+  ],
+  "next_best_candidate_ids": [],
+  "suppressed_candidate_ids": [],
+  "rendered_bead_refs": [
+    "${BEAD_ID_FEEDBACK_LOOP_NOVEL}",
+    "${BEAD_ID_NOVEL_TEMP_WORKSPACE}"
+  ],
+  "degraded_source_ids": [],
+  "reason_codes": [
+    "healthy_novel_candidates"
+  ],
+  "evidence": [
+    "2 ranked candidate(s) remain after duplicate checks"
+  ],
+  "notes": [],
+  "next_actions": [
+    "review rendered dry-run roadmap before mutating beads"
+  ]
+}

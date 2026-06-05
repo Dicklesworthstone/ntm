@@ -1,11 +1,14 @@
 package health
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestParseWaitTime(t *testing.T) {
@@ -84,6 +87,27 @@ func TestDetectErrorsForAgent_DetectsCrashBeyondShortLookbackWithoutPrompt(t *te
 	issues := detectErrorsForAgent(output, "cc")
 	if !hasIssueType(issues, "crash") {
 		t.Fatalf("detectErrorsForAgent missed unrecovered crash beyond short lookback: %+v", issues)
+	}
+}
+
+func TestCheckAgentCopiesPaneShellPIDBeforeCapture(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := checkAgent(ctx, tmux.PaneActivity{
+		Pane: tmux.Pane{
+			ID:    "%not-real",
+			Index: 7,
+			Type:  tmux.AgentCodex,
+			PID:   4242,
+		},
+	})
+
+	if got.ShellPID != 4242 {
+		t.Fatalf("ShellPID = %d, want 4242", got.ShellPID)
+	}
+	if got.Pane != 7 {
+		t.Fatalf("Pane = %d, want 7", got.Pane)
 	}
 }
 

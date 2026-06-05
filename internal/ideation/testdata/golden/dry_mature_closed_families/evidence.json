@@ -1,0 +1,208 @@
+{
+  "project": "/repo",
+  "queue": {
+    "open_count": 0,
+    "actionable_count": 0,
+    "blocked_count": 0,
+    "in_progress_count": 0,
+    "ready_count": 0,
+    "counts_verified": true,
+    "source_ids": []
+  },
+  "triage": {
+    "top_ids": [],
+    "graph_health": {
+      "total_nodes": 0,
+      "total_edges": 0,
+      "density": 0,
+      "metrics": {},
+      "evidence": []
+    },
+    "status_summary": [],
+    "warnings": [],
+    "source_ids": []
+  },
+  "documents": [],
+  "closeout_proof": [],
+  "git": [],
+  "sources": [
+    {
+      "id": "br:ready",
+      "kind": "br",
+      "available": true,
+      "required": true,
+      "evidence": [
+        "br ready collector"
+      ]
+    },
+    {
+      "id": "bv:triage",
+      "kind": "bv",
+      "available": true,
+      "required": true,
+      "evidence": [
+        "bv --robot-triage"
+      ]
+    }
+  ],
+  "existing_work": [
+    {
+      "id": "bd-2mb03.5",
+      "family_id": "bd-2mb03",
+      "title": "Queue-dry operator autopilot",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "autopilot",
+        "dry",
+        "queue"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-2mb03"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    },
+    {
+      "id": "bd-fxj4f.3",
+      "family_id": "bd-fxj4f",
+      "title": "Robot contract replay harness",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "contract",
+        "replay",
+        "robot"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-fxj4f"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    },
+    {
+      "id": "bd-8kglp.4",
+      "family_id": "bd-8kglp",
+      "title": "RCH build storm backpressure",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "backpressure",
+        "rch"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-8kglp"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    },
+    {
+      "id": "bd-3v1gs.2",
+      "family_id": "bd-3v1gs",
+      "title": "Idea wizard activity log",
+      "status": "closed",
+      "labels": [
+        "queue-dry"
+      ],
+      "keywords": [
+        "activity",
+        "log"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "known closed idea-wizard family bd-3v1gs"
+      ],
+      "updated_at": "2026-04-15T00:00:00Z"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "novel-feedback-loop",
+      "title": "Idea effectiveness feedback loop",
+      "summary": "Track which queue-dry ideas became real beads to retire stale candidate generators.",
+      "labels": [
+        "feedback",
+        "queue-dry"
+      ],
+      "keywords": [
+        "effectiveness",
+        "feedback",
+        "loop"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed",
+        "bv:triage"
+      ],
+      "evidence": [
+        "closed tranche shows recurring duplicate-spam without effectiveness signal"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    },
+    {
+      "id": "novel-temp-workspace",
+      "title": "End-to-end queue-dry temp-workspace gate",
+      "summary": "Run the dry-run pipeline against a synthetic temp workspace to keep mutation paths inert.",
+      "labels": [
+        "queue-dry",
+        "testing"
+      ],
+      "keywords": [
+        "e2e",
+        "temp",
+        "workspace"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "need a regression seal beyond unit goldens"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    }
+  ],
+  "optional_signals": [],
+  "degraded_sources": [],
+  "validation_notes": []
+}

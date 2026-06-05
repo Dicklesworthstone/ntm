@@ -823,7 +823,7 @@ func (ct *CodexThrottle) advanceStateLocked() {
 				ct.phase = ThrottleNormal
 				ct.affectedPanes = nil // Clear affected panes on full recovery
 			}
-			ct.lastRecoveryStep = now
+			ct.lastRecoveryStep = ct.lastRecoveryStep.Add(time.Duration(steps) * RecoveryCheckInterval)
 		}
 	}
 }

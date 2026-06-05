@@ -1,0 +1,93 @@
+{
+  "decision": "ideate",
+  "summary": "selected 1 candidates and retained 0 next-best candidates",
+  "candidate_count": 1,
+  "selected": [
+    {
+      "rank": 1,
+      "candidate": {
+        "id": "follow-up-rch-evidence",
+        "title": "Use RCH backpressure history as queue-dry evidence",
+        "summary": "Reuse shipped RCH backpressure metrics to feed queue-dry ranking instead of duplicating it.",
+        "labels": [
+          "queue-dry",
+          "rch"
+        ],
+        "keywords": [
+          "backpressure",
+          "evidence",
+          "rch"
+        ],
+        "paths": null,
+        "source_ids": [
+          "br:closed"
+        ],
+        "evidence": [
+          "prior work left a gap in feeding metrics into queue-dry ranking"
+        ],
+        "related_work": [
+          {
+            "id": "bd-8kglp.4",
+            "relationship": "follow_up",
+            "evidence": [
+              "remaining evidence gap from closed RCH bead"
+            ]
+          }
+        ],
+        "overlap": {
+          "kind": "adjacent_follow_up",
+          "work_id": "bd-8kglp.4",
+          "family_id": "bd-8kglp",
+          "confidence": 0.85,
+          "evidence": [
+            "candidate explicitly references bd-8kglp.4 as follow_up",
+            "matched recently closed idea-wizard family bd-8kglp",
+            "remaining evidence gap from closed RCH bead"
+          ]
+        },
+        "novelty": {
+          "level": "medium",
+          "score": 0.6,
+          "evidence": [
+            "adjacent follow-up overlap verdict"
+          ]
+        },
+        "validation_notes": null
+      },
+      "score": 2.849,
+      "factors": {
+        "robustness": 0.15,
+        "reliability": 0.15,
+        "performance": 0.15,
+        "ergonomics": 0.15,
+        "usefulness": 0.71,
+        "user_visible_value": 0.61,
+        "implementation_cost": 0.25,
+        "testability": 0.15,
+        "degraded_source_risk": 0,
+        "overlap": 0.45
+      },
+      "included": true,
+      "reasons": [
+        "candidate explicitly references bd-8kglp.4 as follow_up",
+        "degraded_source_risk=0.00",
+        "ergonomics=0.15",
+        "implementation_cost=0.25",
+        "matched recently closed idea-wizard family bd-8kglp",
+        "overlap=adjacent_follow_up confidence=0.85",
+        "performance=0.15",
+        "rank=1",
+        "reliability=0.15",
+        "remaining evidence gap from closed RCH bead",
+        "robustness=0.15",
+        "testability=0.15",
+        "usefulness=0.71",
+        "user_visible_value=0.61"
+      ],
+      "exclusion_reasons": []
+    }
+  ],
+  "next_best": [],
+  "suppressed": [],
+  "notes": []
+}

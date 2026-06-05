@@ -1,0 +1,134 @@
+{
+  "project": "/repo",
+  "queue": {
+    "open_count": 5,
+    "actionable_count": 3,
+    "blocked_count": 0,
+    "in_progress_count": 0,
+    "ready_count": 3,
+    "counts_verified": true,
+    "source_ids": []
+  },
+  "triage": {
+    "top_ids": [],
+    "graph_health": {
+      "total_nodes": 0,
+      "total_edges": 0,
+      "density": 0,
+      "metrics": {},
+      "evidence": []
+    },
+    "status_summary": [],
+    "warnings": [],
+    "source_ids": []
+  },
+  "documents": [],
+  "closeout_proof": [],
+  "git": [],
+  "sources": [
+    {
+      "id": "br:ready",
+      "kind": "br",
+      "available": true,
+      "required": true,
+      "evidence": [
+        "br ready collector"
+      ]
+    }
+  ],
+  "existing_work": [
+    {
+      "id": "bd-ready-01",
+      "title": "Implement priority queue alarm",
+      "status": "open",
+      "labels": [
+        "alarm"
+      ],
+      "keywords": [
+        "priority",
+        "queue"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:open"
+      ],
+      "evidence": [
+        "ready bead 01"
+      ]
+    },
+    {
+      "id": "bd-ready-02",
+      "title": "Investigate flake in bv graph health",
+      "status": "open",
+      "labels": [
+        "bv"
+      ],
+      "keywords": [
+        "flake",
+        "graph"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:open"
+      ],
+      "evidence": [
+        "ready bead 02"
+      ]
+    },
+    {
+      "id": "bd-ready-03",
+      "title": "Wire activity feed to overlay",
+      "status": "open",
+      "labels": [
+        "feed"
+      ],
+      "keywords": [
+        "activity",
+        "overlay"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:open"
+      ],
+      "evidence": [
+        "ready bead 03"
+      ]
+    }
+  ],
+  "candidates": [
+    {
+      "id": "tempting-new-feature",
+      "title": "Glamour cursor sparkles for the activity feed",
+      "summary": "Cosmetic upgrade unrelated to the ready queue.",
+      "labels": [
+        "ux"
+      ],
+      "keywords": [
+        "sparkles",
+        "cursor"
+      ],
+      "paths": null,
+      "source_ids": [
+        "br:closed"
+      ],
+      "evidence": [
+        "operator request from screenshot review"
+      ],
+      "related_work": null,
+      "overlap": {
+        "kind": "",
+        "confidence": 0,
+        "evidence": null
+      },
+      "novelty": {
+        "level": "",
+        "score": 0,
+        "evidence": null
+      },
+      "validation_notes": null
+    }
+  ],
+  "optional_signals": [],
+  "degraded_sources": [],
+  "validation_notes": []
+}

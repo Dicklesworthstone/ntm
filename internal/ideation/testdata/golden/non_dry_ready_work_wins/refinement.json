@@ -1,0 +1,51 @@
+{
+  "scenario_id": "non_dry_ready_work_wins",
+  "recommendation": "ideate",
+  "ranking_decision": "ideate",
+  "ranking_summary": "selected 1 candidates and retained 0 next-best candidates",
+  "creation_requested": true,
+  "creation_allowed": false,
+  "ready_work_exists": true,
+  "candidate_count": 1,
+  "selected_count": 1,
+  "next_best_count": 0,
+  "suppressed_count": 0,
+  "duplicate_suppressed_count": 0,
+  "rendered_bead_count": 1,
+  "open_count": 5,
+  "ready_count": 3,
+  "actionable_count": 3,
+  "in_progress_count": 0,
+  "blocked_count": 0,
+  "queue_counts_verified": true,
+  "recent_closed_count": 0,
+  "recent_closed_bug_count": 0,
+  "selected_candidate_ids": [
+    "tempting-new-feature"
+  ],
+  "next_best_candidate_ids": [],
+  "suppressed_candidate_ids": [],
+  "rendered_bead_refs": [
+    "${BEAD_ID_FEATURE_NEW_TEMPTING}"
+  ],
+  "degraded_source_ids": [],
+  "reason_codes": [
+    "healthy_novel_candidates"
+  ],
+  "evidence": [
+    "1 ranked candidate(s) remain after duplicate checks"
+  ],
+  "notes": [
+    {
+      "code": "ready_work_exists",
+      "severity": "error",
+      "message": "creation blocked: actionable queue work exists; resolve it before ideating",
+      "evidence": [
+        "br ready count=3"
+      ]
+    }
+  ],
+  "next_actions": [
+    "do existing ready work before ideating"
+  ]
+}
