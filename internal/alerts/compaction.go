@@ -80,6 +80,7 @@ func EmitCompactionComplete(data CompactionAlertData) {
 	}
 
 	tracker.AddAlert(alert)
+	tracker.resolveAfter(alert.ID, 15*time.Second)
 }
 
 // EmitCompactionFailed emits an error alert when compaction fails.
@@ -110,6 +111,7 @@ func EmitCompactionFailed(data CompactionAlertData) {
 	}
 
 	tracker.AddAlert(alert)
+	tracker.resolveAfter(alert.ID, 30*time.Second)
 }
 
 // CompactionEventOutput provides structured JSON output for compaction events.

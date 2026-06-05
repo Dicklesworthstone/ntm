@@ -87,11 +87,17 @@ func DefaultArchiverOptions(sessionName string) ArchiverOptions {
 
 // NewArchiver creates a new Archiver.
 func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
-	if opts.SessionName == "" {
+	if strings.TrimSpace(opts.SessionName) == "" {
 		return nil, fmt.Errorf("session name required")
 	}
 	if opts.OutputDir == "" {
 		opts.OutputDir = util.ExpandPath(DefaultOutputDir)
+	}
+	if opts.Interval < 0 {
+		return nil, fmt.Errorf("interval must be non-negative")
+	}
+	if opts.LinesPerCapture < 0 {
+		return nil, fmt.Errorf("lines per capture must be non-negative")
 	}
 	if opts.Interval == 0 {
 		opts.Interval = DefaultInterval
@@ -106,7 +112,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 	}
 
 	// Create archive file (one per session, append mode)
-	filename := fmt.Sprintf("%s_%s.jsonl", opts.SessionName, time.Now().Format("2006-01-02"))
+	filename := fmt.Sprintf("%s_%s.jsonl", util.SanitizeFilename(opts.SessionName), time.Now().Format("2006-01-02"))
 	filePath := filepath.Join(opts.OutputDir, filename)
 
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -129,6 +135,10 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 
 // Run starts the archive loop. It blocks until the context is cancelled.
 func (a *Archiver) Run(ctx context.Context) error {
+	if a.interval <= 0 {
+		return fmt.Errorf("archive interval must be positive")
+	}
+
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
 
@@ -163,9 +173,6 @@ func (a *Archiver) archiveNewContent(ctx context.Context) error {
 		return fmt.Errorf("getting session info: %w", err)
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	for _, pane := range session.Panes {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -199,6 +206,9 @@ func (a *Archiver) capturePane(ctx context.Context, pane tmux.Pane) error {
 	if err != nil {
 		return fmt.Errorf("capturing pane: %w", err)
 	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	// Get or create pane state
 	state, ok := a.paneStates[pane.Index]
@@ -394,29 +404,34 @@ func splitLines(s string) []string {
 
 // findOverlap finds the index in curr where new content starts after prev.
 func findOverlap(prev, curr []string) int {
-	if len(prev) == 0 {
+	if len(prev) == 0 || len(curr) == 0 {
 		return 0
 	}
 
-	// Look for the last few lines of prev appearing at the start of curr
-	// Check increasingly larger suffixes of prev
+	// Look for the largest suffix of prev anywhere in curr. Incremental tmux
+	// captures usually place the overlap at curr[0], but a partially redrawn
+	// prompt or status line can precede the repeated tail.
 	maxCheck := min(len(prev), 50) // Don't check too many lines
 	for suffixLen := maxCheck; suffixLen > 0; suffixLen-- {
 		suffix := prev[len(prev)-suffixLen:]
-		if startsWithLines(curr, suffix) {
-			return suffixLen
-		}
-	}
-
-	// No overlap found - check if curr is completely different
-	// If first line of prev appears anywhere in curr, find new content after it
-	for i, line := range curr {
-		if line == prev[len(prev)-1] {
-			return i + 1
+		if idx := indexOfLines(curr, suffix); idx >= 0 {
+			return idx + suffixLen
 		}
 	}
 
 	return 0 // All content is new
+}
+
+func indexOfLines(lines, needle []string) int {
+	if len(needle) == 0 || len(lines) < len(needle) {
+		return -1
+	}
+	for start := 0; start <= len(lines)-len(needle); start++ {
+		if startsWithLines(lines[start:], needle) {
+			return start
+		}
+	}
+	return -1
 }
 
 // startsWithLines checks if lines starts with prefix.

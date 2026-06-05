@@ -181,6 +181,21 @@ func TestAuditLogger_TamperEvidence(t *testing.T) {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
 
+	newline := strings.IndexByte(string(content), '\n')
+	if newline < 0 {
+		t.Fatal("Expected audit log to contain at least one newline")
+	}
+	trailingContent := string(content[:newline]) + " trailing-data" + string(content[newline:])
+	if err := ioutil.WriteFile(logPath, []byte(trailingContent), 0644); err != nil {
+		t.Fatalf("Failed to write trailing-data tampered file: %v", err)
+	}
+	if err := VerifyIntegrity(logPath); err == nil {
+		t.Error("Expected integrity verification to fail when a line has trailing data")
+	}
+	if err := ioutil.WriteFile(logPath, content, 0644); err != nil {
+		t.Fatalf("Failed to restore original audit log: %v", err)
+	}
+
 	// Replace part of the content
 	tamperedContent := string(content)
 	tamperedContent = tamperedContent[:len(tamperedContent)-10] + "tampered\n"

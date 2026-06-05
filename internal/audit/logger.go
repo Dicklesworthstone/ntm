@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -588,13 +589,21 @@ func VerifyIntegrity(logPath string) error {
 	var sequenceNum uint64
 
 	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+		line := scanner.Bytes()
+		if len(line) == 0 {
 			continue
 		}
 
 		var entry AuditEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&entry); err != nil {
+			return fmt.Errorf("invalid JSON in audit log: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				return fmt.Errorf("invalid JSON in audit log: trailing JSON value")
+			}
 			return fmt.Errorf("invalid JSON in audit log: %w", err)
 		}
 

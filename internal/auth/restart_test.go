@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +48,9 @@ func TestNewOrchestrator(t *testing.T) {
 	}
 	if orch.sanitizePaneCommand == nil {
 		t.Error("sanitizePaneCommand should be set")
+	}
+	if orch.promptBrowserAuth == nil {
+		t.Error("promptBrowserAuth should be set")
 	}
 	if orch.sleep == nil {
 		t.Error("sleep should be set")
@@ -237,6 +242,156 @@ func TestRestartContextFields(t *testing.T) {
 	}
 	if ctx.PaneIndex != 3 {
 		t.Errorf("PaneIndex = %d", ctx.PaneIndex)
+	}
+}
+
+// =============================================================================
+// PromptBrowserAuth
+// =============================================================================
+
+func TestPromptBrowserAuth(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	err := promptBrowserAuth(strings.NewReader("\n"), &out, "backup@example.com")
+	if err != nil {
+		t.Fatalf("promptBrowserAuth error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"Browser authentication required",
+		"backup@example.com",
+		"Press ENTER to continue",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt output missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestPromptBrowserAuthRequiresExplicitEnter(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	err := promptBrowserAuth(strings.NewReader(""), &out, "backup@example.com")
+	if err == nil {
+		t.Fatal("expected promptBrowserAuth to fail on EOF without ENTER confirmation")
+	}
+	if !strings.Contains(err.Error(), "confirmation") {
+		t.Fatalf("promptBrowserAuth error %q missing confirmation context", err)
+	}
+}
+
+func TestOrchestrator_ExecuteRestartStrategyPromptsBeforeStarting(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agents.Claude = "claude --model {{.Model}}"
+
+	orch := NewOrchestrator(cfg)
+	orch.sleep = func(time.Duration) {}
+	orch.captureOutput = func(string, int) (string, error) {
+		return "$ ", nil
+	}
+
+	var events []string
+	orch.sendKeys = func(paneID, keys string, enter bool) error {
+		events = append(events, "exit")
+		return nil
+	}
+	orch.sendInterrupt = func(paneID string) error {
+		events = append(events, "interrupt")
+		return nil
+	}
+	orch.promptBrowserAuth = func(email string) error {
+		if email != "backup@example.com" {
+			t.Errorf("prompt email = %q, want backup@example.com", email)
+		}
+		events = append(events, "prompt")
+		return nil
+	}
+	orch.sanitizePaneCommand = func(cmd string) (string, error) {
+		return cmd, nil
+	}
+	orch.buildPaneCommand = func(dir, cmd string) (string, error) {
+		return cmd, nil
+	}
+	orch.sendKeysForAgent = func(paneID, keys string, enter bool, agentType tmux.AgentType) error {
+		events = append(events, "start")
+		return nil
+	}
+
+	err := orch.ExecuteRestartStrategy(RestartContext{
+		PaneID:      "%1",
+		Provider:    "claude",
+		TargetEmail: "backup@example.com",
+		SessionName: "proj",
+		PaneIndex:   1,
+		ProjectDir:  "/data/projects/ntm",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteRestartStrategy error: %v", err)
+	}
+
+	promptIndex := -1
+	startIndex := -1
+	for i, event := range events {
+		switch event {
+		case "prompt":
+			promptIndex = i
+		case "start":
+			startIndex = i
+		}
+	}
+	if promptIndex < 0 {
+		t.Fatalf("events missing prompt: %v", events)
+	}
+	if startIndex < 0 {
+		t.Fatalf("events missing start: %v", events)
+	}
+	if promptIndex > startIndex {
+		t.Fatalf("prompt should happen before start, events: %v", events)
+	}
+}
+
+func TestOrchestrator_ExecuteRestartStrategyPromptFailureStopsRestart(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agents.Claude = "claude --model {{.Model}}"
+
+	orch := NewOrchestrator(cfg)
+	orch.sleep = func(time.Duration) {}
+	orch.captureOutput = func(string, int) (string, error) {
+		return "$ ", nil
+	}
+	orch.sendKeys = func(string, string, bool) error { return nil }
+	orch.sendInterrupt = func(string) error { return nil }
+	orch.promptBrowserAuth = func(string) error {
+		return io.EOF
+	}
+	orch.sanitizePaneCommand = func(cmd string) (string, error) { return cmd, nil }
+	orch.buildPaneCommand = func(_, cmd string) (string, error) { return cmd, nil }
+
+	started := false
+	orch.sendKeysForAgent = func(string, string, bool, tmux.AgentType) error {
+		started = true
+		return nil
+	}
+
+	err := orch.ExecuteRestartStrategy(RestartContext{
+		PaneID:      "%1",
+		Provider:    "claude",
+		TargetEmail: "backup@example.com",
+		SessionName: "proj",
+		PaneIndex:   1,
+		ProjectDir:  "/data/projects/ntm",
+	})
+	if err == nil {
+		t.Fatal("expected ExecuteRestartStrategy to fail when browser confirmation fails")
+	}
+	if !strings.Contains(err.Error(), "browser auth prompt") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if started {
+		t.Fatal("replacement agent started despite prompt failure")
 	}
 }
 

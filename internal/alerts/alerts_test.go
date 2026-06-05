@@ -159,6 +159,32 @@ func TestTrackerResolution(t *testing.T) {
 	}
 }
 
+func TestTrackerUpdate_AgentWideFailurePreservesSessionScopedAlerts(t *testing.T) {
+	cfg := DefaultConfig()
+	tracker := NewTracker(cfg)
+
+	tracker.Update([]Alert{
+		{ID: "agent-pane", Source: "agents:proj", Type: AlertAgentError, Severity: SeverityError, Message: "pane error"},
+		{ID: "disk", Source: "disk", Type: AlertDiskLow, Severity: SeverityWarning, Message: "disk low"},
+	}, nil)
+
+	tracker.Update(nil, []string{"agents"})
+
+	active, resolved := tracker.GetAll()
+	if len(active) != 1 {
+		t.Fatalf("expected only the session-scoped agent alert to stay active, got %d active: %+v", len(active), active)
+	}
+	if active[0].ID != "agent-pane" {
+		t.Fatalf("active alert = %q, want agent-pane", active[0].ID)
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("expected unrelated disk alert to resolve, got %d resolved: %+v", len(resolved), resolved)
+	}
+	if resolved[0].ID != "disk" {
+		t.Fatalf("resolved alert = %q, want disk", resolved[0].ID)
+	}
+}
+
 func TestTrackerRefresh(t *testing.T) {
 	cfg := DefaultConfig()
 	tracker := NewTracker(cfg)
@@ -431,6 +457,46 @@ func TestTrackerManualResolve(t *testing.T) {
 	ok = tracker.ManualResolve("nonexistent")
 	if ok {
 		t.Error("expected manual resolve of non-existent to fail")
+	}
+}
+
+func TestTrackerResolveIfUnchangedSkipsRefreshedAlert(t *testing.T) {
+	cfg := DefaultConfig()
+	tracker := NewTracker(cfg)
+
+	alert := Alert{
+		ID:       "auto-resolve",
+		Type:     AlertRotationComplete,
+		Severity: SeverityInfo,
+		Message:  "rotation complete",
+		Source:   "context_rotation",
+	}
+
+	tracker.AddAlert(alert)
+	stored, ok := tracker.GetByID(alert.ID)
+	if !ok {
+		t.Fatal("expected alert to be active")
+	}
+
+	tracker.AddAlert(alert)
+	if tracker.resolveIfUnchanged(alert.ID, stored.LastSeenAt, stored.Count) {
+		t.Fatal("old resolver should not resolve a refreshed alert")
+	}
+
+	active := tracker.GetActive()
+	if len(active) != 1 || active[0].ID != alert.ID {
+		t.Fatalf("expected refreshed alert to remain active, got %+v", active)
+	}
+
+	refreshed, ok := tracker.GetByID(alert.ID)
+	if !ok {
+		t.Fatal("expected refreshed alert to be active")
+	}
+	if !tracker.resolveIfUnchanged(alert.ID, refreshed.LastSeenAt, refreshed.Count) {
+		t.Fatal("current resolver should resolve unchanged alert")
+	}
+	if active := tracker.GetActive(); len(active) != 0 {
+		t.Fatalf("expected alert to resolve, got active=%+v", active)
 	}
 }
 

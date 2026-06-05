@@ -341,6 +341,7 @@ func TestWaitForApproval(t *testing.T) {
 	if result.Status != state.ApprovalApproved {
 		t.Errorf("Status should be approved, got %s", result.Status)
 	}
+	assertNoWaiterBucket(t, engine, approval.ID)
 }
 
 func TestWaitForApprovalWakesWhenLateApproveExpiresRequest(t *testing.T) {
@@ -420,6 +421,130 @@ func TestWaitForApprovalTimeout(t *testing.T) {
 	// Should still be pending after timeout
 	if result.Status != state.ApprovalPending {
 		t.Errorf("Status should be pending after timeout, got %s", result.Status)
+	}
+	assertNoWaiterBucket(t, engine, approval.ID)
+}
+
+func TestWaitForApprovalCleansWaiterBucketOnImmediateReturn(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	ctx := context.Background()
+	approval, err := engine.Request(ctx, RequestParams{
+		Action:      "test_action",
+		Resource:    "test_resource",
+		RequestedBy: "requester",
+	})
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if err := engine.Approve(ctx, approval.ID, "approver"); err != nil {
+		t.Fatalf("Approve failed: %v", err)
+	}
+
+	result, err := engine.WaitForApproval(ctx, approval.ID, time.Second)
+	if err != nil {
+		t.Fatalf("WaitForApproval failed: %v", err)
+	}
+	if result.Status != state.ApprovalApproved {
+		t.Fatalf("status = %s, want approved", result.Status)
+	}
+	assertNoWaiterBucket(t, engine, approval.ID)
+}
+
+func TestWaitForApprovalCleansWaiterBucketOnCheckError(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	const missingID = "missing-approval"
+	if _, err := engine.WaitForApproval(context.Background(), missingID, time.Second); err == nil {
+		t.Fatal("WaitForApproval returned nil error for missing approval")
+	}
+	assertNoWaiterBucket(t, engine, missingID)
+}
+
+// bd-e2qk2: pre-fix, WaitForApproval did Check-then-register. If
+// Approve() ran between the Check and the register-waitCh step, the
+// waiter missed the notification (its channel wasn't yet in the
+// e.waiters[id] slice when notifyWaiters fired) and the caller blocked
+// for the full timeout — even though the decision had already been
+// made. The fix is register-then-Check: register the waitCh first,
+// then re-check status; either the second Check sees the decision or
+// any future decision arrives via the registered channel.
+//
+// This test races Approve() against WaitForApproval with no artificial
+// delay, then asserts the call returns well within timeout (waitCh
+// unblocked OR second Check caught the decision). The test runs many
+// iterations to flush out the race window pre-fix.
+func TestWaitForApproval_NoRaceWithApproveBetweenCheckAndRegister(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+	ctx := context.Background()
+
+	const iterations = 200
+	const waitTimeout = 200 * time.Millisecond
+	// Acceptable delay after Approve has committed the decision. Pre-fix,
+	// when the race triggered, Approve completed promptly but WaitForApproval
+	// still slept until waitTimeout. Do not measure from before the goroutine
+	// is scheduled; busy CI can legitimately delay the approving goroutine.
+	const acceptableAfterApprove = 50 * time.Millisecond
+
+	for i := 0; i < iterations; i++ {
+		approval, err := engine.Request(ctx, RequestParams{
+			Action:      "race_action",
+			Resource:    "race_resource",
+			RequestedBy: "requester",
+		})
+		if err != nil {
+			t.Fatalf("iter %d Request: %v", i, err)
+		}
+
+		type approveResult struct {
+			at  time.Time
+			err error
+		}
+		approved := make(chan approveResult, 1)
+
+		// Race: approve immediately, no delay. Half the time this fires
+		// before WaitForApproval registers the waitCh; the fix makes
+		// the second Check catch the decision.
+		go func(id string) {
+			err := engine.Approve(ctx, id, "approver")
+			approved <- approveResult{at: time.Now(), err: err}
+		}(approval.ID)
+
+		start := time.Now()
+		result, err := engine.WaitForApproval(ctx, approval.ID, waitTimeout)
+		returnedAt := time.Now()
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("iter %d WaitForApproval: %v", i, err)
+		}
+		approve := <-approved
+		if approve.err != nil {
+			t.Fatalf("iter %d Approve: %v", i, approve.err)
+		}
+		if result.Status != state.ApprovalApproved {
+			t.Errorf("iter %d: status = %s, want approved", i, result.Status)
+		}
+		// Pre-fix: when the race triggered, this would equal waitTimeout.
+		// Post-fix: after Approve commits, WaitForApproval returns promptly
+		// because the second Check catches the decision or the waiter is
+		// notified. A slow approval goroutine is not itself a missed-wakeup bug.
+		if afterApprove := returnedAt.Sub(approve.at); afterApprove > acceptableAfterApprove {
+			t.Errorf("iter %d: WaitForApproval returned %v after Approve completed (total %v), want < %v",
+				i, afterApprove, elapsed, acceptableAfterApprove)
+		}
+	}
+}
+
+func assertNoWaiterBucket(t *testing.T, engine *Engine, id string) {
+	t.Helper()
+
+	engine.waitersMu.Lock()
+	defer engine.waitersMu.Unlock()
+	if waiters, ok := engine.waiters[id]; ok {
+		t.Fatalf("waiter bucket for %q still present with %d waiters", id, len(waiters))
 	}
 }
 

@@ -246,6 +246,7 @@ func (s *AssignmentStore) saveLocked() error {
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return &PersistenceError{Operation: "save", Path: tmpPath, Cause: err}
 	}
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Create backup of current file (if exists)
 	bakPath := s.path + ".bak"
@@ -264,7 +265,6 @@ func (s *AssignmentStore) saveLocked() error {
 // Assign creates or updates an assignment for a bead
 func (s *AssignmentStore) Assign(beadID, beadTitle string, pane int, agentType, agentName, prompt string) (*Assignment, error) {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	now := time.Now().UTC()
 	assignment := &Assignment{
@@ -286,6 +286,9 @@ func (s *AssignmentStore) Assign(beadID, beadTitle string, pane int, agentType, 
 		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
+	cloned := cloneAssignment(assignment)
+	s.mutex.Unlock()
+
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookBeadAssigned,
 		s.SessionName,
@@ -298,11 +301,11 @@ func (s *AssignmentStore) Assign(beadID, beadTitle string, pane int, agentType, 
 			"pane_index":  fmt.Sprintf("%d", pane),
 			"agent_type":  agentType,
 			"agent_name":  agentName,
-			"retry_count": fmt.Sprintf("%d", assignment.RetryCount),
+			"retry_count": fmt.Sprintf("%d", cloned.RetryCount),
 		},
 	))
 
-	return cloneAssignment(assignment), nil
+	return cloned, nil
 }
 
 // Get retrieves an assignment by bead ID
@@ -443,16 +446,17 @@ func isValidTransition(from, to AssignmentStatus) bool {
 // UpdateStatus changes the status of an assignment with validation
 func (s *AssignmentStore) UpdateStatus(beadID string, newStatus AssignmentStatus) error {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	assignment, ok := s.Assignments[beadID]
 	if !ok {
+		s.mutex.Unlock()
 		return fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
 	}
 
 	prevStatus := assignment.Status
 
 	if !isValidTransition(prevStatus, newStatus) {
+		s.mutex.Unlock()
 		return &InvalidTransitionError{
 			BeadID: beadID,
 			From:   prevStatus,
@@ -484,8 +488,14 @@ func (s *AssignmentStore) UpdateStatus(beadID string, newStatus AssignmentStatus
 		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
-	emitAssignmentStatusEvent(s.SessionName, assignment, newStatus, "")
-	s.maybeEmitAgentIdleLocked(assignment, prevStatus, newStatus)
+	emitIdle := s.shouldEmitAgentIdleLocked(assignment, prevStatus, newStatus)
+	cloned := cloneAssignment(assignment)
+	s.mutex.Unlock()
+
+	emitAssignmentStatusEvent(s.SessionName, cloned, newStatus, "")
+	if emitIdle {
+		emitAgentIdle(s.SessionName, cloned, prevStatus, newStatus)
+	}
 
 	return nil
 }
@@ -503,16 +513,17 @@ func (s *AssignmentStore) MarkCompleted(beadID string) error {
 // MarkFailed marks an assignment as failed with a reason
 func (s *AssignmentStore) MarkFailed(beadID, reason string) error {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	assignment, ok := s.Assignments[beadID]
 	if !ok {
+		s.mutex.Unlock()
 		return fmt.Errorf("[ASSIGN] Assignment not found: %s", beadID)
 	}
 
 	prevStatus := assignment.Status
 
 	if !isValidTransition(prevStatus, StatusFailed) {
+		s.mutex.Unlock()
 		return &InvalidTransitionError{
 			BeadID: beadID,
 			From:   prevStatus,
@@ -530,8 +541,14 @@ func (s *AssignmentStore) MarkFailed(beadID, reason string) error {
 		slog.Warn("failed to persist assignment store", "error", err)
 	}
 
-	emitAssignmentStatusEvent(s.SessionName, assignment, StatusFailed, reason)
-	s.maybeEmitAgentIdleLocked(assignment, prevStatus, StatusFailed)
+	emitIdle := s.shouldEmitAgentIdleLocked(assignment, prevStatus, StatusFailed)
+	cloned := cloneAssignment(assignment)
+	s.mutex.Unlock()
+
+	emitAssignmentStatusEvent(s.SessionName, cloned, StatusFailed, reason)
+	if emitIdle {
+		emitAgentIdle(s.SessionName, cloned, prevStatus, StatusFailed)
+	}
 
 	return nil
 }
@@ -711,15 +728,15 @@ func emitAssignmentStatusEvent(session string, a *Assignment, newStatus Assignme
 	}
 }
 
-func (s *AssignmentStore) maybeEmitAgentIdleLocked(a *Assignment, prevStatus, newStatus AssignmentStatus) {
+func (s *AssignmentStore) shouldEmitAgentIdleLocked(a *Assignment, prevStatus, newStatus AssignmentStatus) bool {
 	if a == nil {
-		return
+		return false
 	}
 	if prevStatus != StatusWorking {
-		return
+		return false
 	}
 	if newStatus != StatusCompleted && newStatus != StatusFailed {
-		return
+		return false
 	}
 
 	// Only emit idle when there are no remaining "working" assignments for this pane.
@@ -728,13 +745,17 @@ func (s *AssignmentStore) maybeEmitAgentIdleLocked(a *Assignment, prevStatus, ne
 			continue
 		}
 		if other.Pane == a.Pane && other.Status == StatusWorking {
-			return
+			return false
 		}
 	}
 
+	return true
+}
+
+func emitAgentIdle(session string, a *Assignment, prevStatus, newStatus AssignmentStatus) {
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
 		events.WebhookAgentIdle,
-		s.SessionName,
+		session,
 		fmt.Sprintf("%d", a.Pane),
 		a.AgentType,
 		"Agent idle (no active bead assignments)",

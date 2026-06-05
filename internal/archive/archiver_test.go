@@ -24,6 +24,28 @@ func TestNewArchiver(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects negative interval", func(t *testing.T) {
+		_, err := NewArchiver(ArchiverOptions{
+			SessionName: "test-session",
+			OutputDir:   tmpDir,
+			Interval:    -time.Second,
+		})
+		if err == nil || !strings.Contains(err.Error(), "interval") {
+			t.Fatalf("NewArchiver() error = %v, want interval validation error", err)
+		}
+	})
+
+	t.Run("rejects negative lines per capture", func(t *testing.T) {
+		_, err := NewArchiver(ArchiverOptions{
+			SessionName:     "test-session",
+			OutputDir:       tmpDir,
+			LinesPerCapture: -1,
+		})
+		if err == nil || !strings.Contains(err.Error(), "lines per capture") {
+			t.Fatalf("NewArchiver() error = %v, want lines per capture validation error", err)
+		}
+	})
+
 	t.Run("creates archiver with defaults", func(t *testing.T) {
 		a, err := NewArchiver(ArchiverOptions{
 			SessionName: "test-session",
@@ -81,6 +103,38 @@ func TestNewArchiver(t *testing.T) {
 			t.Error("archive file not created")
 		}
 	})
+}
+
+func TestNewArchiverSanitizesSessionNameForArchiveFilename(t *testing.T) {
+	dir := t.TempDir()
+	sessionName := "../escape"
+	a, err := NewArchiver(ArchiverOptions{
+		SessionName: sessionName,
+		OutputDir:   dir,
+	})
+	if err != nil {
+		t.Fatalf("NewArchiver() error: %v", err)
+	}
+	defer a.Close()
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*_*.jsonl"))
+	if err != nil {
+		t.Fatalf("Glob() error: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("archive files in output dir = %v, want exactly one sanitized file", matches)
+	}
+
+	filename := filepath.Base(matches[0])
+	if !strings.HasPrefix(filename, util.SanitizeFilename(sessionName)+"_") {
+		t.Fatalf("archive filename = %q, want sanitized session prefix", filename)
+	}
+	if filepath.Dir(matches[0]) != dir {
+		t.Fatalf("archive path escaped output dir: %s", matches[0])
+	}
+	if a.sessionName != sessionName {
+		t.Fatalf("logical session name = %q, want original %q", a.sessionName, sessionName)
+	}
 }
 
 func TestArchiver_WriteRecord(t *testing.T) {
@@ -211,6 +265,15 @@ func TestArchiver_RunContextCancellation(t *testing.T) {
 	// Should have exited quickly, but allow up to 2 seconds for slow CI/tmux
 	if elapsed > 2*time.Second {
 		t.Errorf("Run() took %v, expected < 2s", elapsed)
+	}
+}
+
+func TestArchiver_RunRejectsInvalidInterval(t *testing.T) {
+	a := &Archiver{interval: -time.Second}
+
+	err := a.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "interval") {
+		t.Fatalf("Run() error = %v, want interval validation error", err)
 	}
 }
 

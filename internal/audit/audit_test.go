@@ -385,7 +385,7 @@ func TestShouldSkipAudit(t *testing.T) {
 // so a caller mutating the returned slices/map cannot reach back into
 // the shared state. Pre-fix the getter returned redactionCfg directly,
 // value-copying Mode but aliasing Allowlist / ExtraPatterns /
-// DisabledCategories. bd-pmdpn'\''s symmetric Set/Get DeepCopy invariant
+// DisabledCategories. bd-pmdpn's symmetric Set/Get DeepCopy invariant
 // was missed on this getter.
 func TestGetRedactionConfig_DeepCopiesSliceMapFields(t *testing.T) {
 	t.Cleanup(func() { SetRedactionConfig(nil) })

@@ -106,6 +106,7 @@ func EmitRotationComplete(data RotationAlertData) {
 	}
 
 	tracker.AddAlert(alert)
+	tracker.resolveAfter(alert.ID, 15*time.Second)
 }
 
 // EmitRotationFailed emits an error alert when rotation fails.
@@ -137,6 +138,7 @@ func EmitRotationFailed(data RotationAlertData) {
 	}
 
 	tracker.AddAlert(alert)
+	tracker.resolveAfter(alert.ID, 30*time.Second)
 }
 
 // RotationEventOutput provides structured JSON output for rotation events.
