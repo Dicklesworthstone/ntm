@@ -27,7 +27,7 @@ export interface WSMessage {
   seq?: number;
   topic?: string;
   request_id?: string;
-  data?: Record<string, unknown>;
+  data?: unknown;
 }
 
 // Event message with typed data

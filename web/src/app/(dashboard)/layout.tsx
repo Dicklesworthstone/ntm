@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
+  apiRequestSignal,
   getAuthHeaders,
   getBaseUrl,
   getConnectionConfig,
@@ -112,6 +113,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    signal: options.signal ?? apiRequestSignal(),
     headers,
   });
 
@@ -120,7 +122,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   if (raw) {
     try {
       data = JSON.parse(raw);
-    } catch (error) {
+    } catch {
       throw new Error("Invalid response from server.");
     }
   }
@@ -185,7 +187,7 @@ function CommandPalette({
     enabled: open,
   });
 
-  const commands = commandsQuery.data?.commands || [];
+  const commands = useMemo(() => commandsQuery.data?.commands ?? [], [commandsQuery.data?.commands]);
   const filtered = useMemo(() => {
     if (!query) return commands;
     const q = query.toLowerCase();

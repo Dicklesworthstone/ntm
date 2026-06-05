@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAuthHeaders, getBaseUrl } from "@/lib/api/client";
+import { apiRequestSignal, getAuthHeaders, getBaseUrl } from "@/lib/api/client";
 
 interface ApiEnvelope {
   success: boolean;
@@ -119,6 +119,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    signal: options.signal ?? apiRequestSignal(),
     headers,
   });
 
@@ -269,7 +270,7 @@ export default function SafetyPage() {
   // Policy validation state
   const [validationResult, setValidationResult] = useState<PolicyValidateResponse | null>(null);
 
-  const approvalsList = approvalsQuery.data?.approvals ?? [];
+  const approvalsList = useMemo(() => approvalsQuery.data?.approvals ?? [], [approvalsQuery.data?.approvals]);
   const blockedList = blockedQuery.data?.entries ?? [];
 
   const selectedApproval = useMemo(() => {
