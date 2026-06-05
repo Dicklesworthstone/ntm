@@ -139,6 +139,25 @@ func TestSetTriageCacheTTLPure(t *testing.T) {
 	}
 }
 
+func TestGetTriageWithTimeoutIncludesRunLockWait(t *testing.T) {
+	InvalidateTriageCache()
+	triageRunMu.Lock()
+	defer triageRunMu.Unlock()
+
+	start := time.Now()
+	_, err := GetTriageWithTimeout(t.TempDir(), 20*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("GetTriageWithTimeout returned nil error while triage run lock was held")
+	}
+	if !strings.Contains(err.Error(), "bv timed out after 20ms") {
+		t.Fatalf("GetTriageWithTimeout error = %q, want timeout", err.Error())
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("GetTriageWithTimeout waited %s for held run lock, want bounded wait", elapsed)
+	}
+}
+
 // =============================================================================
 // triage.go: IsCacheValid
 // =============================================================================

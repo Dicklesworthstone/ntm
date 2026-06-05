@@ -184,6 +184,7 @@ type DBInfo struct {
 	Exists        bool   `json:"exists"`
 	Opened        bool   `json:"opened"`
 	OpenSkipped   bool   `json:"open_skipped"`
+	CountsSkipped bool   `json:"counts_skipped"`
 	SizeBytes     int64  `json:"size_bytes"`
 	Healthy       bool   `json:"healthy"`
 	SessionCount  int64  `json:"session_count"`
@@ -199,7 +200,7 @@ func (d DBInfo) SizeMB() float64 {
 // IsUsable returns true when either the legacy or current CASS status schema
 // reports that the canonical database can be opened.
 func (d DBInfo) IsUsable() bool {
-	return d.Healthy || d.Opened || (d.Exists && d.Path != "") || d.Path != ""
+	return d.Healthy || d.Opened || (d.Exists && d.Path != "")
 }
 
 // Pending tracks items waiting to be indexed
@@ -245,6 +246,12 @@ func (s *StatusResponse) UnmarshalJSON(data []byte) error {
 	}
 	if s.Database.IsUsable() {
 		s.Database.Healthy = true
+	}
+	// Older/current CASS schemas can report open_skipped without the newer
+	// counts_skipped flag. In that case, counts are unknown and callers should
+	// omit conversations/messages rather than surfacing misleading zeros.
+	if s.Database.OpenSkipped {
+		s.Database.CountsSkipped = true
 	}
 	if s.LastIndexedAt.IsZero() {
 		s.LastIndexedAt = FlexTime{Time: s.Index.EffectiveLastIndexedAt(FlexTime{})}

@@ -67,8 +67,15 @@ func IsInstalled() bool {
 // run executes bv with given args and returns stdout.
 // It includes retry logic for transient database locks.
 func run(dir string, args ...string) (string, error) {
+	return runWithTimeout(dir, DefaultTimeout, args...)
+}
+
+func runWithTimeout(dir string, timeout time.Duration, args ...string) (string, error) {
 	if !IsInstalled() {
 		return "", ErrNotInstalled
+	}
+	if timeout <= 0 {
+		timeout = DefaultTimeout
 	}
 
 	normalizedDir, err := normalizeTriageDir(dir)
@@ -77,8 +84,14 @@ func run(dir string, args ...string) (string, error) {
 	}
 
 	const maxAttempts = 3
+	deadline := time.Now().Add(timeout)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", fmt.Errorf("bv timed out after %v: %w", timeout, ErrTimeout)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
 
 		cmd := exec.CommandContext(ctx, "bv", args...)
 		cmd.Dir = normalizedDir
@@ -99,7 +112,7 @@ func run(dir string, args ...string) (string, error) {
 		stdoutStr := stdout.String()
 
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("bv timed out after %v", DefaultTimeout)
+			return "", fmt.Errorf("bv timed out after %v: %w", timeout, ErrTimeout)
 		}
 
 		if strings.Contains(stderrStr, "No baseline found") {
@@ -110,7 +123,11 @@ func run(dir string, args ...string) (string, error) {
 		if attempt < maxAttempts && (strings.Contains(stderrStr, "database is locked") ||
 			strings.Contains(stdoutStr, "database is locked") ||
 			strings.Contains(stderrStr, "database is busy")) {
-			time.Sleep(transientBeadsDBBackoff(attempt))
+			backoff := transientBeadsDBBackoff(attempt)
+			if time.Until(deadline) <= backoff {
+				return "", fmt.Errorf("bv timed out after %v: %w", timeout, ErrTimeout)
+			}
+			time.Sleep(backoff)
 			continue
 		}
 

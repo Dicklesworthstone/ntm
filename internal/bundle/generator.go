@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -96,8 +97,44 @@ func NewGenerator(config GeneratorConfig) *Generator {
 	}
 }
 
+// SanitizeArchivePath converts a user- or system-derived path into a safe
+// relative archive member name.
+func SanitizeArchivePath(relativePath string) (string, error) {
+	candidate := strings.ReplaceAll(relativePath, "\\", "/")
+	if strings.TrimSpace(candidate) == "" {
+		return "", fmt.Errorf("archive path is empty")
+	}
+	if strings.ContainsRune(candidate, 0) {
+		return "", fmt.Errorf("archive path %q contains a NUL byte", relativePath)
+	}
+	if path.IsAbs(candidate) {
+		return "", fmt.Errorf("archive path %q must be relative", relativePath)
+	}
+
+	for _, part := range strings.Split(candidate, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("archive path %q escapes bundle root", relativePath)
+		}
+		if strings.Contains(part, ":") {
+			return "", fmt.Errorf("archive path %q must not contain ':' segments", relativePath)
+		}
+	}
+
+	clean := path.Clean(candidate)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+		return "", fmt.Errorf("archive path %q escapes bundle root", relativePath)
+	}
+	return clean, nil
+}
+
 // AddFile adds a file to the bundle with optional redaction.
 func (g *Generator) AddFile(relativePath string, data []byte, contentType string, modTime time.Time) error {
+	archivePath, err := SanitizeArchivePath(relativePath)
+	if err != nil {
+		g.errors = append(g.errors, fmt.Sprintf("unsafe archive path: %s: %v", relativePath, err))
+		return err
+	}
+
 	// Apply redaction if mode is not off
 	var fileRedaction *FileRedaction
 	processedData := data
@@ -130,14 +167,14 @@ func (g *Generator) AddFile(relativePath string, data []byte, contentType string
 
 			// Block if configured
 			if result.Blocked {
-				g.errors = append(g.errors, fmt.Sprintf("blocked: %s contains %d secrets", relativePath, len(result.Findings)))
-				return fmt.Errorf("file %s blocked due to secrets", relativePath)
+				g.errors = append(g.errors, fmt.Sprintf("blocked: %s contains %d secrets", archivePath, len(result.Findings)))
+				return fmt.Errorf("file %s blocked due to secrets", archivePath)
 			}
 		}
 	}
 
 	g.files = append(g.files, bundleFile{
-		path:        relativePath,
+		path:        archivePath,
 		data:        processedData,
 		contentType: contentType,
 		redaction:   fileRedaction,
@@ -159,6 +196,20 @@ func (g *Generator) AddDirectory(basePath, relativeTo, contentType string) error
 			return nil
 		}
 
+		info, err := os.Lstat(path)
+		if err != nil {
+			g.errors = append(g.errors, fmt.Sprintf("stat error: %s: %v", path, err))
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			g.errors = append(g.errors, fmt.Sprintf("symlink skipped: %s", path))
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			g.errors = append(g.errors, fmt.Sprintf("non-regular file skipped: %s", path))
+			return nil
+		}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			g.errors = append(g.errors, fmt.Sprintf("read error: %s: %v", path, err))
@@ -170,13 +221,7 @@ func (g *Generator) AddDirectory(basePath, relativeTo, contentType string) error
 			relPath = path
 		}
 
-		info, _ := d.Info()
-		modTime := time.Time{}
-		if info != nil {
-			modTime = info.ModTime()
-		}
-
-		return g.AddFile(relPath, data, contentType, modTime)
+		return g.AddFile(relPath, data, contentType, info.ModTime())
 	})
 }
 
@@ -186,7 +231,7 @@ func (g *Generator) AddScrollback(paneName string, content string, lines int) er
 		content = limitLines(content, lines)
 	}
 	return g.AddFile(
-		filepath.Join("panes", paneName+".txt"),
+		fmt.Sprintf("panes/%s.txt", paneName),
 		[]byte(content),
 		ContentTypeScrollback,
 		time.Now(),

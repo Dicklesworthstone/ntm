@@ -59,6 +59,102 @@ func TestGenerator_AddFile(t *testing.T) {
 	}
 }
 
+func TestSanitizeArchivePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "plain", input: "test.txt", want: "test.txt"},
+		{name: "cleans", input: "./dir//test.txt", want: "dir/test.txt"},
+		{name: "backslashes", input: `dir\test.txt`, want: "dir/test.txt"},
+		{name: "empty", input: "", wantErr: true},
+		{name: "spaces only", input: "   ", wantErr: true},
+		{name: "absolute", input: "/tmp/test.txt", wantErr: true},
+		{name: "parent", input: "../test.txt", wantErr: true},
+		{name: "nested parent", input: "dir/../test.txt", wantErr: true},
+		{name: "windows drive", input: `C:\tmp\test.txt`, wantErr: true},
+		{name: "nested colon", input: "dir/file:ads.txt", wantErr: true},
+		{name: "scheme", input: "file://tmp/test.txt", wantErr: true},
+		{name: "nul byte", input: "dir/bad\x00name.txt", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SanitizeArchivePath(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("SanitizeArchivePath(%q) = %q, want error", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SanitizeArchivePath(%q) error = %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("SanitizeArchivePath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGenerator_AddFile_NormalizesArchivePath(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(GeneratorConfig{
+		NTMVersion:      "v1.0.0",
+		RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+	})
+
+	if err := gen.AddFile(`dir\test.txt`, []byte("content"), ContentTypeConfig, time.Now()); err != nil {
+		t.Fatalf("AddFile failed: %v", err)
+	}
+	if len(gen.files) != 1 {
+		t.Fatalf("files count = %d, want 1", len(gen.files))
+	}
+	if gen.files[0].path != "dir/test.txt" {
+		t.Fatalf("file path = %q, want dir/test.txt", gen.files[0].path)
+	}
+}
+
+func TestGenerator_AddFile_RejectsUnsafeArchivePath(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(GeneratorConfig{
+		NTMVersion:      "v1.0.0",
+		RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+	})
+
+	if err := gen.AddFile("../escape.txt", []byte("content"), ContentTypeConfig, time.Now()); err == nil {
+		t.Fatal("expected unsafe archive path error")
+	}
+	if len(gen.files) != 0 {
+		t.Fatalf("files count = %d, want 0", len(gen.files))
+	}
+	if len(gen.errors) == 0 || !strings.Contains(gen.errors[0], "unsafe archive path") {
+		t.Fatalf("expected unsafe archive path error entry, got %v", gen.errors)
+	}
+}
+
+func TestGenerator_AddScrollback_RejectsUnsafePaneName(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(GeneratorConfig{
+		NTMVersion:      "v1.0.0",
+		RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+	})
+
+	if err := gen.AddScrollback("../escape", "content", 0); err == nil {
+		t.Fatal("expected unsafe pane name error")
+	}
+	if len(gen.files) != 0 {
+		t.Fatalf("files count = %d, want 0", len(gen.files))
+	}
+}
+
 func TestGenerator_AddFile_WithRedaction(t *testing.T) {
 	config := GeneratorConfig{
 		NTMVersion: "v1.0.0",

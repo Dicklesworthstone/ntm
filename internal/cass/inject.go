@@ -133,9 +133,14 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 	result.QueryTime = time.Since(start)
 
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			result.Success = true
-			return result
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 || exitErr.ExitCode() == 3 {
+				// Exit 1: No results found
+				// Exit 3: CASS database uninitialized
+				// Both are graceful empty-result states for context injection
+				result.Success = true
+				return result
+			}
 		}
 		result.Error = err.Error()
 		return result

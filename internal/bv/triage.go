@@ -25,6 +25,23 @@ var (
 	triageRunMu     sync.Mutex
 )
 
+func acquireTriageRunLock(deadline time.Time, timeout time.Duration) (func(), error) {
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("bv timed out after %v", timeout)
+		}
+		if triageRunMu.TryLock() {
+			return triageRunMu.Unlock, nil
+		}
+		sleep := 10 * time.Millisecond
+		if remaining < sleep {
+			sleep = remaining
+		}
+		time.Sleep(sleep)
+	}
+}
+
 func normalizeTriageDir(dir string) (string, error) {
 	if dir == "" {
 		dir = util.ResolveProjectDir("")
@@ -48,10 +65,24 @@ func normalizeTriageDir(dir string) (string, error) {
 // GetTriage returns the complete triage analysis from bv --robot-triage.
 // Results are cached for TriageCacheTTL (default 30 seconds).
 func GetTriage(dir string) (*TriageResponse, error) {
+	return getTriageWithTimeout(dir, DefaultTimeout)
+}
+
+// GetTriageWithTimeout returns complete triage analysis with a caller-scoped
+// command timeout. Cached results are still reused when valid.
+func GetTriageWithTimeout(dir string, timeout time.Duration) (*TriageResponse, error) {
+	return getTriageWithTimeout(dir, timeout)
+}
+
+func getTriageWithTimeout(dir string, timeout time.Duration) (*TriageResponse, error) {
 	normalizedDir, err := normalizeTriageDir(dir)
 	if err != nil {
 		return nil, err
 	}
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	deadline := time.Now().Add(timeout)
 
 	triageCacheMu.RLock()
 	// Return cached result if still valid and for the same directory
@@ -63,8 +94,11 @@ func GetTriage(dir string) (*TriageResponse, error) {
 	triageCacheMu.RUnlock()
 
 	// Ensure only one runner fetches triage concurrently
-	triageRunMu.Lock()
-	defer triageRunMu.Unlock()
+	releaseRunLock, err := acquireTriageRunLock(deadline, timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRunLock()
 
 	// Double-check cache after acquiring run lock
 	triageCacheMu.RLock()
@@ -75,7 +109,11 @@ func GetTriage(dir string) (*TriageResponse, error) {
 	}
 	triageCacheMu.RUnlock()
 
-	output, err := run(normalizedDir, "--robot-triage")
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, fmt.Errorf("bv timed out after %v", timeout)
+	}
+	output, err := runWithTimeout(normalizedDir, remaining, "--robot-triage")
 	if err != nil {
 		return nil, err
 	}

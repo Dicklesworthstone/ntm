@@ -74,6 +74,32 @@ func TestAddDirectory_EmptyDir(t *testing.T) {
 	}
 }
 
+func TestAddDirectory_RejectsRelativeTraversal(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	relativeTo := t.TempDir()
+
+	gen := NewGenerator(GeneratorConfig{
+		NTMVersion:      "v1.0.0",
+		RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+	})
+
+	err := gen.AddDirectory(dir, relativeTo, ContentTypeConfig)
+	if err == nil {
+		t.Fatal("expected traversal error")
+	}
+	if len(gen.files) != 0 {
+		t.Fatalf("files count = %d, want 0", len(gen.files))
+	}
+	if len(gen.errors) == 0 || !strings.Contains(gen.errors[0], "unsafe archive path") {
+		t.Fatalf("expected unsafe archive path error entry, got %v", gen.errors)
+	}
+}
+
 func TestAddDirectory_UnreadableFile(t *testing.T) {
 	t.Parallel()
 
@@ -108,6 +134,35 @@ func TestAddDirectory_UnreadableFile(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected read error in gen.errors, got: %v", gen.errors)
+	}
+}
+
+func TestAddDirectory_SkipsSymlinkFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside secret"), 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(dir, "linked-secret.txt")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	gen := NewGenerator(GeneratorConfig{
+		NTMVersion:      "v1.0.0",
+		RedactionConfig: redaction.Config{Mode: redaction.ModeOff},
+	})
+
+	if err := gen.AddDirectory(dir, dir, ContentTypeConfig); err != nil {
+		t.Fatalf("AddDirectory: %v", err)
+	}
+	if len(gen.files) != 0 {
+		t.Fatalf("files count = %d, want 0", len(gen.files))
+	}
+	if len(gen.errors) == 0 || !strings.Contains(strings.Join(gen.errors, "\n"), "symlink skipped") {
+		t.Fatalf("expected symlink skipped error entry, got %v", gen.errors)
 	}
 }
 
