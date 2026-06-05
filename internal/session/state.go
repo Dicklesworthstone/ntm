@@ -45,13 +45,14 @@ type AgentConfig struct {
 	Cursor   int `json:"cursor"`
 	Windsurf int `json:"windsurf"`
 	Aider    int `json:"aider"`
+	Opencode int `json:"oc"`
 	Ollama   int `json:"ollama"`
 	User     int `json:"user"`
 }
 
 // Total returns the total number of agents.
 func (a AgentConfig) Total() int {
-	return a.Claude + a.Codex + a.Gemini + a.Cursor + a.Windsurf + a.Aider + a.Ollama + a.User
+	return a.Claude + a.Codex + a.Gemini + a.Cursor + a.Windsurf + a.Aider + a.Opencode + a.Ollama + a.User
 }
 
 // PaneState represents the state of a single pane.
@@ -76,6 +77,7 @@ type ConfigSnapshot struct {
 	CursorCmd   string `json:"cursor_cmd,omitempty"`
 	WindsurfCmd string `json:"windsurf_cmd,omitempty"`
 	AiderCmd    string `json:"aider_cmd,omitempty"`
+	OpencodeCmd string `json:"opencode_cmd,omitempty"`
 	OllamaCmd   string `json:"ollama_cmd,omitempty"`
 }
 
@@ -87,6 +89,7 @@ type AgentCommands struct {
 	Cursor   string
 	Windsurf string
 	Aider    string
+	Opencode string
 	Ollama   string
 }
 

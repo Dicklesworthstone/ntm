@@ -617,7 +617,7 @@ func TestCompressOldTimelines(t *testing.T) {
 	}
 }
 
-func TestCompressOldTimelines_DisabledWhenZero(t *testing.T) {
+func TestCompressOldTimelines_DisabledWhenNegative(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{
@@ -628,13 +628,33 @@ func TestCompressOldTimelines_DisabledWhenZero(t *testing.T) {
 		t.Fatalf("NewTimelinePersister: %v", err)
 	}
 
-	// Should return 0 immediately since compression is disabled
+	sessionID := "disabled-compression"
+	events := []AgentEvent{
+		{AgentID: "cc_1", SessionID: sessionID, State: TimelineWorking, Timestamp: time.Now().Add(-48 * time.Hour)},
+	}
+	if err := persister.SaveTimeline(sessionID, events); err != nil {
+		t.Fatalf("SaveTimeline: %v", err)
+	}
+
+	plainPath := filepath.Join(tmpDir, sessionID+".jsonl")
+	oldModTime := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(plainPath, oldModTime, oldModTime); err != nil {
+		t.Fatalf("age timeline file: %v", err)
+	}
+
+	// Should return 0 immediately since compression is disabled.
 	compressed, err := persister.CompressOldTimelines()
 	if err != nil {
 		t.Fatalf("CompressOldTimelines: %v", err)
 	}
 	if compressed != 0 {
 		t.Errorf("expected 0 compressed when disabled, got %d", compressed)
+	}
+	if _, err := os.Stat(plainPath); err != nil {
+		t.Fatalf("expected uncompressed file to remain: %v", err)
+	}
+	if _, err := os.Stat(plainPath + ".gz"); !os.IsNotExist(err) {
+		t.Fatalf("expected no compressed file when disabled, stat err=%v", err)
 	}
 }
 
@@ -1527,7 +1547,6 @@ func TestStartCheckpoint_DoesNotRacePastConcurrentStop(t *testing.T) {
 // StartCheckpoint that "lost" the map race leaks one goroutine that
 // keeps ticking until the test process exits.
 func TestStartCheckpoint_ConcurrentSameSessionDoesNotLeak(t *testing.T) {
-	t.Parallel()
 	tmpDir := t.TempDir()
 	persister, err := NewTimelinePersister(&TimelinePersistConfig{
 		BaseDir:            tmpDir,

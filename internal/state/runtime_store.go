@@ -962,19 +962,19 @@ func (tx *Tx) DeleteRuntimeCoordination(agentName string) error {
 // Runtime Handoff Operations
 // =============================================================================
 
-// UpsertRuntimeHandoff inserts or updates the latest runtime handoff projection.
+// UpsertRuntimeHandoff inserts or updates the runtime handoff projection
+// keyed by (session_name, working_dir). See ntm#135.
 func (s *Store) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(`
 		INSERT INTO runtime_handoff (
-			id, session_name, status, goal, goal_disclosure, now_text, now_disclosure,
+			session_name, working_dir, status, goal, goal_disclosure, now_text, now_disclosure,
 			updated_at, active_beads, agent_mail_threads, blockers, blocker_disclosures,
 			files, collected_at, stale_after
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			session_name = excluded.session_name,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_name, working_dir) DO UPDATE SET
 			status = excluded.status,
 			goal = excluded.goal,
 			goal_disclosure = excluded.goal_disclosure,
@@ -988,7 +988,7 @@ func (s *Store) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 			files = excluded.files,
 			collected_at = excluded.collected_at,
 			stale_after = excluded.stale_after`,
-		handoff.SessionName, nullableString(handoff.Status), nullableString(handoff.Goal),
+		handoff.SessionName, handoff.WorkingDir, nullableString(handoff.Status), nullableString(handoff.Goal),
 		nullableString(handoff.GoalDisclosure), nullableString(handoff.NowText),
 		nullableString(handoff.NowDisclosure), handoff.UpdatedAt,
 		nullableString(handoff.ActiveBeads), nullableString(handoff.AgentMailThreads),
@@ -1001,21 +1001,27 @@ func (s *Store) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 	return nil
 }
 
-// GetRuntimeHandoff retrieves the latest fresh runtime handoff projection.
+// GetRuntimeHandoff retrieves the most-recently-updated fresh runtime
+// handoff projection across all (session, working_dir) pairs.
+// Pre-ntm#135 callers used a singleton-keyed read; this signature
+// preserves their expected shape. New callers that need scoping should
+// use GetRuntimeHandoffByScope. See ntm#135.
 func (s *Store) GetRuntimeHandoff() (*RuntimeHandoff, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	handoff := &RuntimeHandoff{}
 	err := s.db.QueryRow(`
-		SELECT session_name, COALESCE(status, ''), COALESCE(goal, ''), COALESCE(goal_disclosure, ''),
+		SELECT session_name, working_dir, COALESCE(status, ''), COALESCE(goal, ''), COALESCE(goal_disclosure, ''),
 			COALESCE(now_text, ''), COALESCE(now_disclosure, ''), updated_at,
 			COALESCE(active_beads, ''), COALESCE(agent_mail_threads, ''), COALESCE(blockers, ''),
 			COALESCE(blocker_disclosures, ''), COALESCE(files, ''), collected_at, stale_after
 		FROM runtime_handoff
-		WHERE id = 1 AND stale_after > datetime('now')`,
+		WHERE stale_after > datetime('now')
+		ORDER BY COALESCE(updated_at, collected_at) DESC
+		LIMIT 1`,
 	).Scan(
-		&handoff.SessionName, &handoff.Status, &handoff.Goal, &handoff.GoalDisclosure,
+		&handoff.SessionName, &handoff.WorkingDir, &handoff.Status, &handoff.Goal, &handoff.GoalDisclosure,
 		&handoff.NowText, &handoff.NowDisclosure, &handoff.UpdatedAt,
 		&handoff.ActiveBeads, &handoff.AgentMailThreads, &handoff.Blockers,
 		&handoff.BlockerDisclosures, &handoff.Files, &handoff.CollectedAt, &handoff.StaleAfter,
@@ -1029,28 +1035,76 @@ func (s *Store) GetRuntimeHandoff() (*RuntimeHandoff, error) {
 	return handoff, nil
 }
 
-// DeleteRuntimeHandoff removes the latest runtime handoff projection.
+// GetRuntimeHandoffByScope retrieves the fresh runtime handoff
+// projection for a specific (session_name, working_dir) pair. Returns
+// nil without error when no fresh row exists for that scope. See
+// ntm#135.
+func (s *Store) GetRuntimeHandoffByScope(sessionName, workingDir string) (*RuntimeHandoff, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	handoff := &RuntimeHandoff{}
+	err := s.db.QueryRow(`
+		SELECT session_name, working_dir, COALESCE(status, ''), COALESCE(goal, ''), COALESCE(goal_disclosure, ''),
+			COALESCE(now_text, ''), COALESCE(now_disclosure, ''), updated_at,
+			COALESCE(active_beads, ''), COALESCE(agent_mail_threads, ''), COALESCE(blockers, ''),
+			COALESCE(blocker_disclosures, ''), COALESCE(files, ''), collected_at, stale_after
+		FROM runtime_handoff
+		WHERE session_name = ? AND working_dir = ? AND stale_after > datetime('now')`,
+		sessionName, workingDir,
+	).Scan(
+		&handoff.SessionName, &handoff.WorkingDir, &handoff.Status, &handoff.Goal, &handoff.GoalDisclosure,
+		&handoff.NowText, &handoff.NowDisclosure, &handoff.UpdatedAt,
+		&handoff.ActiveBeads, &handoff.AgentMailThreads, &handoff.Blockers,
+		&handoff.BlockerDisclosures, &handoff.Files, &handoff.CollectedAt, &handoff.StaleAfter,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get runtime handoff by scope: %w", err)
+	}
+	return handoff, nil
+}
+
+// DeleteRuntimeHandoff removes ALL runtime handoff projections. Pre-ntm#135
+// callers used a singleton-scoped delete; this preserves their semantics.
+// For scoped deletion use DeleteRuntimeHandoffByScope. See ntm#135.
 func (s *Store) DeleteRuntimeHandoff() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`DELETE FROM runtime_handoff WHERE id = 1`)
+	_, err := s.db.Exec(`DELETE FROM runtime_handoff`)
 	if err != nil {
 		return fmt.Errorf("delete runtime handoff: %w", err)
 	}
 	return nil
 }
 
-// UpsertRuntimeHandoff inserts or updates the latest runtime handoff projection in an existing transaction.
+// DeleteRuntimeHandoffByScope removes the runtime handoff projection for
+// the given (session_name, working_dir) pair. See ntm#135.
+func (s *Store) DeleteRuntimeHandoffByScope(sessionName, workingDir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM runtime_handoff WHERE session_name = ? AND working_dir = ?`, sessionName, workingDir)
+	if err != nil {
+		return fmt.Errorf("delete runtime handoff by scope: %w", err)
+	}
+	return nil
+}
+
+// UpsertRuntimeHandoff inserts or updates the runtime handoff projection
+// (keyed by session_name + working_dir; see ntm#135) inside an existing
+// transaction.
 func (tx *Tx) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 	_, err := tx.tx.Exec(`
 		INSERT INTO runtime_handoff (
-			id, session_name, status, goal, goal_disclosure, now_text, now_disclosure,
+			session_name, working_dir, status, goal, goal_disclosure, now_text, now_disclosure,
 			updated_at, active_beads, agent_mail_threads, blockers, blocker_disclosures,
 			files, collected_at, stale_after
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			session_name = excluded.session_name,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_name, working_dir) DO UPDATE SET
 			status = excluded.status,
 			goal = excluded.goal,
 			goal_disclosure = excluded.goal_disclosure,
@@ -1064,7 +1118,7 @@ func (tx *Tx) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 			files = excluded.files,
 			collected_at = excluded.collected_at,
 			stale_after = excluded.stale_after`,
-		handoff.SessionName, nullableString(handoff.Status), nullableString(handoff.Goal),
+		handoff.SessionName, handoff.WorkingDir, nullableString(handoff.Status), nullableString(handoff.Goal),
 		nullableString(handoff.GoalDisclosure), nullableString(handoff.NowText),
 		nullableString(handoff.NowDisclosure), handoff.UpdatedAt,
 		nullableString(handoff.ActiveBeads), nullableString(handoff.AgentMailThreads),
@@ -1077,11 +1131,25 @@ func (tx *Tx) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 	return nil
 }
 
-// DeleteRuntimeHandoff removes the latest runtime handoff projection in an existing transaction.
+// DeleteRuntimeHandoff removes ALL runtime handoff projections inside an
+// existing transaction. Pre-ntm#135 callers used a singleton-scoped
+// delete; this preserves their semantics. For scoped deletion use
+// DeleteRuntimeHandoffByScope. See ntm#135.
 func (tx *Tx) DeleteRuntimeHandoff() error {
-	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff WHERE id = 1`)
+	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff`)
 	if err != nil {
 		return fmt.Errorf("delete runtime handoff: %w", err)
+	}
+	return nil
+}
+
+// DeleteRuntimeHandoffByScope removes the runtime handoff projection for
+// the given (session_name, working_dir) pair inside an existing
+// transaction. See ntm#135.
+func (tx *Tx) DeleteRuntimeHandoffByScope(sessionName, workingDir string) error {
+	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff WHERE session_name = ? AND working_dir = ?`, sessionName, workingDir)
+	if err != nil {
+		return fmt.Errorf("delete runtime handoff by scope: %w", err)
 	}
 	return nil
 }

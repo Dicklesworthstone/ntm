@@ -290,6 +290,99 @@ func TestStorage_SaveScrollback_RejectsInvalidIdentifiers(t *testing.T) {
 	}
 }
 
+func TestStorage_ScrollbackWritesRejectPanesSymlink(t *testing.T) {
+	tests := []struct {
+		name        string
+		save        func(*Storage, string, string) (string, error)
+		outsideFile string
+	}{
+		{
+			name: "plain scrollback",
+			save: func(storage *Storage, sessionName, checkpointID string) (string, error) {
+				return storage.SaveScrollback(sessionName, checkpointID, "%0", "secret scrollback")
+			},
+			outsideFile: "pane__0.txt",
+		},
+		{
+			name: "compressed scrollback",
+			save: func(storage *Storage, sessionName, checkpointID string) (string, error) {
+				return storage.SaveCompressedScrollback(sessionName, checkpointID, "%0", []byte("compressed secret scrollback"))
+			},
+			outsideFile: "pane__0.txt.gz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			storage := NewStorageWithDir(tmpDir)
+			sessionName := "symlink-panes-session"
+			checkpointID := "20251210-120000-panes-symlink"
+			cpDir := storage.CheckpointDir(sessionName, checkpointID)
+			if err := os.MkdirAll(cpDir, 0755); err != nil {
+				t.Fatalf("MkdirAll() failed: %v", err)
+			}
+
+			outsideDir := filepath.Join(tmpDir, "outside-panes")
+			if err := os.MkdirAll(outsideDir, 0755); err != nil {
+				t.Fatalf("MkdirAll(outside) failed: %v", err)
+			}
+			if err := os.Symlink(outsideDir, filepath.Join(cpDir, PanesDir)); err != nil {
+				t.Skipf("cannot create symlink: %v", err)
+			}
+
+			_, err := tt.save(storage, sessionName, checkpointID)
+			if err == nil {
+				t.Fatal("scrollback write error = nil, want panes symlink rejection")
+			}
+			if !strings.Contains(err.Error(), "panes path must not be a symlink") {
+				t.Fatalf("scrollback write error = %v, want panes symlink rejection", err)
+			}
+			outsidePath := filepath.Join(outsideDir, tt.outsideFile)
+			if _, statErr := os.Stat(outsidePath); statErr == nil {
+				t.Fatalf("scrollback write escaped checkpoint root and created %s", outsidePath)
+			} else if !os.IsNotExist(statErr) {
+				t.Fatalf("stat outside file: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestStorage_SaveRejectsPanesSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+	sessionName := "save-symlink-panes-session"
+	checkpointID := "20251210-120000-save-panes-symlink"
+	cpDir := storage.CheckpointDir(sessionName, checkpointID)
+	if err := os.MkdirAll(cpDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+
+	outsideDir := filepath.Join(tmpDir, "outside-panes")
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(outside) failed: %v", err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(cpDir, PanesDir)); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	cp := &Checkpoint{
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: SessionState{Panes: []PaneState{
+			{Index: 0, ID: "%0"},
+		}},
+	}
+	err := storage.Save(cp)
+	if err == nil {
+		t.Fatal("Save() error = nil, want panes symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "panes path must not be a symlink") {
+		t.Fatalf("Save() error = %v, want panes symlink rejection", err)
+	}
+}
+
 func TestStorage_Save_RejectsInvalidArtifactPaths(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "ntm-checkpoint-test")
 	if err != nil {

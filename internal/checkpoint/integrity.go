@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // CurrentVersion is the current checkpoint format version.
@@ -348,7 +349,8 @@ func (c *Checkpoint) GenerateManifest(storage *Storage) (*FileManifest, error) {
 		return nil, err
 	}
 	manifest := &FileManifest{
-		Files: make(map[string]string),
+		Files:     make(map[string]string),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	// Hash metadata.json
@@ -439,13 +441,8 @@ func (c *Checkpoint) GenerateManifest(storage *Storage) (*FileManifest, error) {
 
 // VerifyManifest checks that all files match the manifest checksums.
 func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *IntegrityResult {
-	result := &IntegrityResult{
-		Valid:          true,
-		ChecksumsValid: true,
-		Errors:         []string{},
-		Details:        make(map[string]string),
-		Manifest:       manifest,
-	}
+	result := newIntegrityResult()
+	result.Manifest = manifest
 
 	if manifest == nil || len(manifest.Files) == 0 {
 		result.Warnings = append(result.Warnings, "no manifest provided, skipping checksum verification")
@@ -455,6 +452,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 	dir, err := storage.safeCheckpointDir(c.SessionName, c.ID)
 	if err != nil {
 		result.Valid = false
+		result.FilesPresent = false
 		result.ChecksumsValid = false
 		result.Errors = append(result.Errors, err.Error())
 		return result
@@ -485,6 +483,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 
 		fullPath, err := resolveExistingCheckpointArtifactPath(dir, relPath)
 		if err != nil {
+			result.FilesPresent = false
 			if errors.Is(err, os.ErrNotExist) {
 				result.Errors = append(result.Errors, fmt.Sprintf("file missing: %s", relPath))
 			} else {
@@ -495,6 +494,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 		}
 		actualHash, err := hashFile(fullPath)
 		if err != nil {
+			result.FilesPresent = false
 			if os.IsNotExist(err) {
 				result.Errors = append(result.Errors, fmt.Sprintf("file missing: %s", relPath))
 			} else {
@@ -505,7 +505,7 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 		}
 
 		if actualHash != expectedHash {
-			result.Errors = append(result.Errors, fmt.Sprintf("checksum mismatch: %s (expected %s, got %s)", relPath, expectedHash[:16]+"...", actualHash[:16]+"..."))
+			result.Errors = append(result.Errors, fmt.Sprintf("checksum mismatch: %s (expected %s, got %s)", relPath, hashDisplayPrefix(expectedHash), hashDisplayPrefix(actualHash)))
 			failed++
 		} else {
 			verified++
@@ -523,6 +523,14 @@ func (c *Checkpoint) VerifyManifest(storage *Storage, manifest *FileManifest) *I
 	result.Details["total"] = fmt.Sprintf("%d", len(manifest.Files))
 
 	return result
+}
+
+func hashDisplayPrefix(hash string) string {
+	const prefixLen = 16
+	if len(hash) <= prefixLen {
+		return hash
+	}
+	return hash[:prefixLen] + "..."
 }
 
 func expectedManifestFiles(c *Checkpoint) map[string]struct{} {

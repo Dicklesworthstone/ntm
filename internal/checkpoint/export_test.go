@@ -367,34 +367,214 @@ func TestExport_Zip_WithScrollbackAndRedaction(t *testing.T) {
 		t.Errorf("Expected at least 2 files (metadata + scrollback), got %d", len(manifest.Files))
 	}
 
-	// Open zip and check scrollback was redacted
-	r, err := zip.OpenReader(outputPath)
-	if err != nil {
-		t.Fatalf("Failed to open zip: %v", err)
+	content := string(readZipEntry(t, outputPath, "panes/pane__0.txt"))
+	if strings.Contains(content, "AKIAIOSFODNN7EXAMPLE") {
+		t.Error("Expected AWS key to be redacted in exported scrollback")
 	}
-	defer r.Close()
+	if !strings.Contains(content, "normal output") {
+		t.Error("Expected normal output to be preserved in exported scrollback")
+	}
+}
 
-	for _, f := range r.File {
-		if f.Name == "panes/pane__0.txt" {
-			rc, err := f.Open()
+func TestExport_Zip_RedactsCompressedScrollback(t *testing.T) {
+	assertExportRedactsCompressedScrollback(t, FormatZip, "test-export-redact-gzip.zip", readZipEntry)
+}
+
+func TestExport_TarGz_RedactsCompressedScrollback(t *testing.T) {
+	assertExportRedactsCompressedScrollback(t, FormatTarGz, "test-export-redact-gzip.tar.gz", readTarGzEntry)
+}
+
+func TestExportImport_DeduplicatesSharedScrollbackArtifact(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		format      ExportFormat
+		archiveName string
+		readEntry   func(*testing.T, string, string) []byte
+	}{
+		{name: "zip", format: FormatZip, archiveName: "shared-scrollback.zip", readEntry: readZipEntry},
+		{name: "tar.gz", format: FormatTarGz, archiveName: "shared-scrollback.tar.gz", readEntry: readTarGzEntry},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))
+			importStorage := NewStorageWithDir(filepath.Join(tmpDir, "import"))
+
+			sessionName := "shared-scrollback-session"
+			checkpointID := "20251210-143052-shared-scrollback"
+			cp := &Checkpoint{
+				Version:     CurrentVersion,
+				ID:          checkpointID,
+				SessionName: sessionName,
+				CreatedAt:   time.Now(),
+				Session: SessionState{
+					Panes: []PaneState{
+						{ID: "%0", Index: 0},
+						{ID: "%1", Index: 1},
+					},
+				},
+				PaneCount: 2,
+			}
+			if err := exportStorage.Save(cp); err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+			scrollbackFile, err := exportStorage.SaveScrollback(sessionName, checkpointID, "%0", "shared scrollback")
 			if err != nil {
-				t.Fatalf("Failed to open scrollback in zip: %v", err)
+				t.Fatalf("SaveScrollback failed: %v", err)
 			}
-			data := make([]byte, 1024)
-			n, _ := rc.Read(data)
-			rc.Close()
-			content := string(data[:n])
+			cp.Session.Panes[0].ScrollbackFile = scrollbackFile
+			cp.Session.Panes[1].ScrollbackFile = scrollbackFile
+			if err := exportStorage.Save(cp); err != nil {
+				t.Fatalf("Save with shared scrollback reference failed: %v", err)
+			}
 
-			if strings.Contains(content, "AKIAIOSFODNN7EXAMPLE") {
-				t.Error("Expected AWS key to be redacted in exported scrollback")
+			outputPath := filepath.Join(tmpDir, tc.archiveName)
+			opts := DefaultExportOptions()
+			opts.Format = tc.format
+			if _, err := exportStorage.Export(sessionName, checkpointID, outputPath, opts); err != nil {
+				t.Fatalf("Export failed: %v", err)
 			}
-			if !strings.Contains(content, "normal output") {
-				t.Error("Expected normal output to be preserved in exported scrollback")
+
+			manifestData := tc.readEntry(t, outputPath, "MANIFEST.json")
+			var manifest ExportManifest
+			if err := json.Unmarshal(manifestData, &manifest); err != nil {
+				t.Fatalf("failed to parse manifest: %v", err)
 			}
-			return
-		}
+			seen := 0
+			for _, file := range manifest.Files {
+				if file.Path == scrollbackFile {
+					seen++
+				}
+			}
+			if seen != 1 {
+				t.Fatalf("manifest listed shared scrollback %d times, want 1", seen)
+			}
+
+			imported, err := importStorage.Import(outputPath, DefaultImportOptions())
+			if err != nil {
+				t.Fatalf("Import failed: %v", err)
+			}
+			for _, pane := range imported.Session.Panes {
+				if pane.ScrollbackFile != scrollbackFile {
+					t.Fatalf("imported pane %s ScrollbackFile = %q, want %q", pane.ID, pane.ScrollbackFile, scrollbackFile)
+				}
+			}
+		})
 	}
-	t.Error("Scrollback file not found in zip archive")
+}
+
+func assertExportRedactsCompressedScrollback(t *testing.T, format ExportFormat, archiveName string, readEntry func(*testing.T, string, string) []byte) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	exportStorage := NewStorageWithDir(filepath.Join(tmpDir, "export"))
+	importStorage := NewStorageWithDir(filepath.Join(tmpDir, "import"))
+
+	sessionName := "test-session"
+	checkpointID := "20251210-143052-zip-redact-gzip"
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: SessionState{
+			Panes: []PaneState{
+				{ID: "%0", Index: 0},
+			},
+		},
+		PaneCount: 1,
+	}
+
+	if err := exportStorage.Save(cp); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	scrollbackContent := "normal output\nAKIAIOSFODNN7EXAMPLE secret in scrollback\nmore output"
+	compressed, err := gzipCompress([]byte(scrollbackContent))
+	if err != nil {
+		t.Fatalf("gzipCompress failed: %v", err)
+	}
+	scrollbackFile, err := exportStorage.SaveCompressedScrollback(sessionName, checkpointID, "%0", compressed)
+	if err != nil {
+		t.Fatalf("SaveCompressedScrollback failed: %v", err)
+	}
+	cp.Session.Panes[0].ScrollbackFile = scrollbackFile
+	cp.Session.Panes[0].ScrollbackLines = countLines(scrollbackContent)
+	cp.Session.Panes[0].Scrollback = &ScrollbackArtifactSummary{
+		Captured:          true,
+		ArtifactPreserved: true,
+		Compacted:         true,
+		Compression:       scrollbackCompressionGzip,
+		LineCount:         countLines(scrollbackContent),
+		RawBytes:          len(scrollbackContent),
+		StoredBytes:       int64(len(compressed)),
+	}
+	if err := exportStorage.Save(cp); err != nil {
+		t.Fatalf("Save with compressed scrollback reference failed: %v", err)
+	}
+
+	SetRedactionConfig(&redaction.Config{Mode: redaction.ModeRedact})
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
+	outputPath := filepath.Join(tmpDir, archiveName)
+	opts := DefaultExportOptions()
+	opts.Format = format
+	opts.RedactSecrets = true
+	if _, err := exportStorage.Export(sessionName, checkpointID, outputPath, opts); err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	archivedData := readEntry(t, outputPath, scrollbackFile)
+	plainData, err := gzipDecompress(archivedData)
+	if err != nil {
+		t.Fatalf("exported compressed scrollback is not valid gzip: %v", err)
+	}
+	plainText := string(plainData)
+	if strings.Contains(plainText, "AKIAIOSFODNN7EXAMPLE") {
+		t.Fatal("expected AWS key to be redacted in compressed exported scrollback")
+	}
+	if !strings.Contains(plainText, "normal output") {
+		t.Fatal("expected normal output to be preserved in compressed exported scrollback")
+	}
+
+	sessionData := readEntry(t, outputPath, SessionFile)
+	var archivedSession SessionState
+	if err := json.Unmarshal(sessionData, &archivedSession); err != nil {
+		t.Fatalf("failed to parse archived session.json: %v", err)
+	}
+	summary := archivedSession.Panes[0].Scrollback
+	if summary == nil {
+		t.Fatal("archived compressed scrollback summary is nil")
+	}
+	if summary.StoredBytes != int64(len(archivedData)) {
+		t.Fatalf("archived summary StoredBytes = %d, want %d", summary.StoredBytes, len(archivedData))
+	}
+	if summary.RawBytes != len(plainData) {
+		t.Fatalf("archived summary RawBytes = %d, want %d", summary.RawBytes, len(plainData))
+	}
+	if summary.LineCount != countLines(plainText) {
+		t.Fatalf("archived summary LineCount = %d, want %d", summary.LineCount, countLines(plainText))
+	}
+	if !summary.Compacted || summary.Compression != scrollbackCompressionGzip {
+		t.Fatalf("archived summary compaction = %v/%q, want gzip", summary.Compacted, summary.Compression)
+	}
+	if cp.Session.Panes[0].Scrollback.StoredBytes != int64(len(compressed)) {
+		t.Fatalf("export mutated original summary StoredBytes = %d, want %d", cp.Session.Panes[0].Scrollback.StoredBytes, len(compressed))
+	}
+
+	imported, err := importStorage.Import(outputPath, ImportOptions{})
+	if err != nil {
+		t.Fatalf("Import failed: %v", err)
+	}
+	loaded, err := importStorage.LoadPaneScrollback(imported.SessionName, imported.ID, imported.Session.Panes[0])
+	if err != nil {
+		t.Fatalf("LoadPaneScrollback imported compressed artifact failed: %v", err)
+	}
+	if strings.Contains(loaded, "AKIAIOSFODNN7EXAMPLE") {
+		t.Fatal("imported compressed scrollback still contains original AWS key")
+	}
+	if !strings.Contains(loaded, "normal output") {
+		t.Fatal("imported compressed scrollback lost normal output")
+	}
 }
 
 func TestExport_TarGz_FailsWhenReferencedScrollbackMissing(t *testing.T) {
@@ -1069,7 +1249,18 @@ func TestRewriteCheckpointForExport(t *testing.T) {
 			WorkingDir: "/data/projects/myapp",
 			Session: SessionState{
 				Panes: []PaneState{
-					{ID: "%0", ScrollbackFile: "panes/pane__0.txt", ScrollbackLines: 123},
+					{
+						ID:              "%0",
+						ScrollbackFile:  "panes/pane__0.txt",
+						ScrollbackLines: 123,
+						Scrollback: &ScrollbackArtifactSummary{
+							Captured:          true,
+							ArtifactPreserved: true,
+							Compacted:         true,
+							Compression:       scrollbackCompressionGzip,
+							LineCount:         123,
+						},
+					},
 				},
 			},
 			Git: GitState{
@@ -1086,10 +1277,13 @@ func TestRewriteCheckpointForExport(t *testing.T) {
 		if result.Session.Panes[0].ScrollbackFile != "" || result.Session.Panes[0].ScrollbackLines != 0 {
 			t.Fatalf("scrollback metadata = %+v, want cleared", result.Session.Panes[0])
 		}
+		if result.Session.Panes[0].Scrollback != nil {
+			t.Fatalf("scrollback summary = %+v, want cleared", result.Session.Panes[0].Scrollback)
+		}
 		if result.Git.PatchFile != "" {
 			t.Fatalf("Git.PatchFile = %q, want empty", result.Git.PatchFile)
 		}
-		if cp.Session.Panes[0].ScrollbackFile == "" || cp.Git.PatchFile == "" {
+		if cp.Session.Panes[0].ScrollbackFile == "" || cp.Session.Panes[0].Scrollback == nil || cp.Git.PatchFile == "" {
 			t.Fatal("original checkpoint was mutated")
 		}
 	})
@@ -1280,6 +1474,10 @@ func TestIsPathWithinDir(t *testing.T) {
 		{"traversal attack", "/base", "../../../etc/passwd", false},
 		{"double dot in middle", "/base", "sub/../other/file.txt", true},
 		{"absolute escape", "/base", "../../outside", false},
+		{"absolute inside base", "/base", "/base/file.txt", true},
+		{"absolute outside base", "/base", "/etc/passwd", false},
+		{"sibling prefix escape", "/base", "/base-other/file.txt", false},
+		{"dotdot prefix file", "/base", "..safe/file.txt", true},
 		{"current dir", "/base", ".", true},
 	}
 

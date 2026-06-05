@@ -674,13 +674,17 @@ func sanitizeDescription(desc string) string {
 
 // truncateLog truncates a string for logging purposes.
 func truncateLog(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
 	if max <= 3 {
 		return "" // Can't fit any content + "..."
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }
 
 // Delete removes a specific handoff file.

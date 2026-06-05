@@ -45,12 +45,20 @@ func (h *Handoff) Validate() ValidationErrors {
 	}
 
 	// Date format validation (if provided)
-	if h.Date != "" && !dateRegex.MatchString(h.Date) {
-		errs = append(errs, ValidationError{
-			Field:   "date",
-			Message: "must be YYYY-MM-DD format",
-			Value:   h.Date,
-		})
+	if h.Date != "" {
+		if !dateRegex.MatchString(h.Date) {
+			errs = append(errs, ValidationError{
+				Field:   "date",
+				Message: "must be YYYY-MM-DD format",
+				Value:   h.Date,
+			})
+		} else if _, err := time.Parse("2006-01-02", h.Date); err != nil {
+			errs = append(errs, ValidationError{
+				Field:   "date",
+				Message: "must be a valid calendar date",
+				Value:   h.Date,
+			})
+		}
 	}
 
 	// Status validation
@@ -80,8 +88,29 @@ func (h *Handoff) Validate() ValidationErrors {
 		})
 	}
 
-	// TokensPct validation (if tokens are set)
-	if h.TokensMax > 0 && h.TokensUsed > 0 {
+	// Token validation (if token context is provided)
+	if h.TokensUsed < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "tokens_used",
+			Message: "must be non-negative",
+			Value:   h.TokensUsed,
+		})
+	}
+	if h.TokensMax < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "tokens_max",
+			Message: "must be non-negative",
+			Value:   h.TokensMax,
+		})
+	}
+	if h.TokensMax > 0 && h.TokensUsed > h.TokensMax {
+		errs = append(errs, ValidationError{
+			Field:   "tokens_used",
+			Message: "must not exceed tokens_max",
+			Value:   h.TokensUsed,
+		})
+	}
+	if h.TokensMax > 0 || h.TokensUsed > 0 || h.TokensPct != 0 {
 		if h.TokensPct < 0 || h.TokensPct > 100 {
 			errs = append(errs, ValidationError{
 				Field:   "tokens_pct",
@@ -166,14 +195,15 @@ func truncate(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	// Need at least 4 chars to fit content + "..." (1 char + 3 for ellipsis)
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 // ValidateMinimal performs a minimal validation check for just the required fields.

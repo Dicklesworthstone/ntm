@@ -60,7 +60,13 @@ func Open(path string) (*Store, error) {
 		path = DefaultPath()
 	}
 
-	pragmas := []string{"busy_timeout(5000)", "foreign_keys(1)"}
+	pragmas := []string{
+		"busy_timeout(5000)",
+		"foreign_keys(1)",
+		"synchronous(NORMAL)",
+		"temp_store(MEMORY)",
+		"mmap_size(268435456)",
+	}
 	dsn := ""
 	inMemory := path == ":memory:"
 	if inMemory {

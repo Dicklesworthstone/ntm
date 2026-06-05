@@ -55,7 +55,7 @@ type TimelinePersistConfig struct {
 	MaxTimelines int
 
 	// CompressOlderThan compresses timelines older than this duration.
-	// Set to 0 to disable compression.
+	// Set to a negative duration to disable compression.
 	// Default: 24 hours
 	CompressOlderThan time.Duration
 
@@ -114,7 +114,7 @@ func NewTimelinePersister(config *TimelinePersistConfig) (*TimelinePersister, er
 		if config.MaxTimelines > 0 {
 			cfg.MaxTimelines = config.MaxTimelines
 		}
-		if config.CompressOlderThan > 0 {
+		if config.CompressOlderThan != 0 {
 			cfg.CompressOlderThan = config.CompressOlderThan
 		}
 		if config.CheckpointInterval > 0 {
@@ -673,45 +673,72 @@ func (p *TimelinePersister) readHeader(path string, compressed bool) (*TimelineH
 }
 
 func (p *TimelinePersister) compressTimeline(sessionID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	srcPath := p.getTimelinePath(sessionID, false)
 	dstPath := p.getTimelinePath(sessionID, true)
 
-	// Read original file
 	src, err := os.Open(srcPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open timeline for compression: %w", err)
 	}
-	defer src.Close()
+	srcOpen := true
+	defer func() {
+		if srcOpen {
+			_ = src.Close()
+		}
+	}()
 
-	// Create compressed file
-	dst, err := os.Create(dstPath)
+	tempFile, err := os.CreateTemp(filepath.Dir(dstPath), filepath.Base(dstPath)+".tmp-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create temp compressed timeline: %w", err)
 	}
-	defer dst.Close()
+	tempPath := tempFile.Name()
+	defer func() {
+		if tempFile != nil {
+			_ = tempFile.Close()
+		}
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
+	}()
 
-	gzWriter := gzip.NewWriter(dst)
+	gzWriter := gzip.NewWriter(tempFile)
 
 	if _, err := io.Copy(gzWriter, src); err != nil {
-		gzWriter.Close()
-		os.Remove(dstPath)
-		return err
+		_ = gzWriter.Close()
+		return fmt.Errorf("failed to write compressed timeline: %w", err)
 	}
 
-	// Close gzip writer to flush
 	if err := gzWriter.Close(); err != nil {
-		os.Remove(dstPath)
-		return err
+		return fmt.Errorf("failed to finish compressed timeline: %w", err)
 	}
 
-	// Sync compressed file to disk before removing source to prevent data loss on crash
-	if err := dst.Sync(); err != nil {
-		os.Remove(dstPath)
-		return err
+	if err := src.Close(); err != nil {
+		srcOpen = false
+		return fmt.Errorf("failed to close source timeline: %w", err)
+	}
+	srcOpen = false
+
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync compressed timeline: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close compressed timeline: %w", err)
+	}
+	tempFile = nil
+
+	if err := os.Rename(tempPath, dstPath); err != nil {
+		return fmt.Errorf("failed to replace compressed timeline: %w", err)
+	}
+	tempPath = ""
+
+	if err := os.Remove(srcPath); err != nil {
+		return fmt.Errorf("failed to remove uncompressed timeline after compression: %w", err)
 	}
 
-	// Remove original after successful compression
-	return os.Remove(srcPath)
+	return nil
 }
 
 func countUniqueAgents(events []AgentEvent) int {

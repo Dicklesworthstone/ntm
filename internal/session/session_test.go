@@ -611,6 +611,7 @@ func TestGetAgentCommand(t *testing.T) {
 		Cursor:   "cursor agent",
 		Windsurf: "windsurf start",
 		Aider:    "aider --watch",
+		Opencode: "opencode run",
 		Ollama:   "ollama serve",
 	}
 
@@ -631,6 +632,8 @@ func TestGetAgentCommand(t *testing.T) {
 		{"windsurf", "windsurf start"},
 		{"ws", "windsurf start"},
 		{"aider", "aider --watch"},
+		{"oc", "opencode run"},
+		{"opencode", "opencode run"},
 		{"ollama", "ollama serve"},
 		{"unknown", ""},
 		{"", ""},

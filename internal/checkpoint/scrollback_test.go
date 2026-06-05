@@ -40,6 +40,30 @@ func TestGzipCompressDecompress(t *testing.T) {
 	}
 }
 
+func TestGzipDecompressLimited_RejectsOversizedOutput(t *testing.T) {
+	data := []byte("0123456789")
+	compressed, err := gzipCompress(data)
+	if err != nil {
+		t.Fatalf("gzipCompress failed: %v", err)
+	}
+
+	got, err := gzipDecompressLimited(compressed, int64(len(data)))
+	if err != nil {
+		t.Fatalf("gzipDecompressLimited exact limit failed: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("gzipDecompressLimited exact limit = %q, want %q", string(got), string(data))
+	}
+
+	_, err = gzipDecompressLimited(compressed, int64(len(data)-1))
+	if err == nil {
+		t.Fatal("gzipDecompressLimited oversized output error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "decompressed scrollback exceeds limit") {
+		t.Fatalf("gzipDecompressLimited oversized output error = %v, want limit failure", err)
+	}
+}
+
 func TestGzipCompressionRatio(t *testing.T) {
 	// Highly compressible data (repeated pattern)
 	data := strings.Repeat("hello world this is a test\n", 1000)
@@ -331,6 +355,80 @@ func TestScrollbackCapture_SizeLimit(t *testing.T) {
 
 	if rawSizeMB <= maxAllowed {
 		t.Errorf("Expected rawSizeMB (%.2f) > maxAllowed (%.2f)", rawSizeMB, maxAllowed)
+	}
+}
+
+func TestScrollbackArtifactSummary_RecordsCompressedArtifact(t *testing.T) {
+	content := strings.Repeat("agent output line\n", 256)
+	compressed, err := gzipCompress([]byte(content))
+	if err != nil {
+		t.Fatalf("gzipCompress failed: %v", err)
+	}
+	config := ScrollbackConfig{
+		Lines:     5000,
+		Compress:  true,
+		MaxSizeMB: 10,
+	}
+	capture := &ScrollbackCapture{
+		PaneID:     "%0",
+		Lines:      config.Lines,
+		Content:    content,
+		Compressed: compressed,
+		Size:       int64(len(compressed)),
+	}
+
+	got := scrollbackArtifactSummary(capture, config, filepath.Join(PanesDir, "pane__0.txt.gz"))
+
+	if !got.Captured || !got.ArtifactPreserved {
+		t.Fatalf("summary captured/preserved = %v/%v, want true/true", got.Captured, got.ArtifactPreserved)
+	}
+	if !got.Compacted || got.Compression != scrollbackCompressionGzip {
+		t.Fatalf("summary compaction = %v/%q, want gzip", got.Compacted, got.Compression)
+	}
+	if got.LineCount != countLines(content) {
+		t.Fatalf("summary LineCount = %d, want %d", got.LineCount, countLines(content))
+	}
+	if got.RawBytes != len(content) {
+		t.Fatalf("summary RawBytes = %d, want %d", got.RawBytes, len(content))
+	}
+	if got.StoredBytes != int64(len(compressed)) {
+		t.Fatalf("summary StoredBytes = %d, want %d", got.StoredBytes, len(compressed))
+	}
+	if got.RequestedLines != config.Lines || got.MaxSizeMB != config.MaxSizeMB {
+		t.Fatalf("summary config = lines %d max %d, want %d/%d", got.RequestedLines, got.MaxSizeMB, config.Lines, config.MaxSizeMB)
+	}
+	if got.Skipped || got.Degraded || got.Reason != "" {
+		t.Fatalf("summary skip/degraded/reason = %v/%v/%q, want false/false/empty", got.Skipped, got.Degraded, got.Reason)
+	}
+}
+
+func TestScrollbackArtifactSummary_RecordsSkippedCapture(t *testing.T) {
+	config := ScrollbackConfig{
+		Lines:     2000,
+		Compress:  true,
+		MaxSizeMB: 1,
+	}
+	capture := &ScrollbackCapture{
+		PaneID:     "%0",
+		Lines:      config.Lines,
+		Content:    strings.Repeat("x", 1024),
+		Skipped:    true,
+		SkipReason: "compressed size exceeds limit",
+	}
+
+	got := scrollbackArtifactSummary(capture, config, "")
+
+	if got.Captured || got.ArtifactPreserved {
+		t.Fatalf("summary captured/preserved = %v/%v, want false/false", got.Captured, got.ArtifactPreserved)
+	}
+	if got.Compacted || got.Compression != "" || got.StoredBytes != 0 {
+		t.Fatalf("summary compaction = %v/%q stored=%d, want no compaction", got.Compacted, got.Compression, got.StoredBytes)
+	}
+	if !got.Skipped || !got.Degraded || got.Reason != capture.SkipReason {
+		t.Fatalf("summary skip/degraded/reason = %v/%v/%q, want true/true/%q", got.Skipped, got.Degraded, got.Reason, capture.SkipReason)
+	}
+	if got.RawBytes != len(capture.Content) {
+		t.Fatalf("summary RawBytes = %d, want %d", got.RawBytes, len(capture.Content))
 	}
 }
 

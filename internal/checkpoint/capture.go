@@ -258,36 +258,22 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 
 // getSessionDir gets the working directory for a session.
 func getSessionDir(sessionName string) (string, error) {
-	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", sessionName, "#{pane_current_path}")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out.String()), nil
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_current_path}")
 }
 
 // getSessionLayout gets the tmux layout string for a session.
 func getSessionLayout(sessionName string) (string, error) {
-	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", sessionName, "#{window_layout}")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out.String()), nil
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{window_layout}")
 }
 
 func getSessionWindowLayouts(sessionName string) ([]WindowLayoutState, error) {
-	cmd := exec.Command(tmux.BinaryPath(), "list-windows", "-t", sessionName, "-F", "#{window_index}\t#{window_layout}")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	out, err := tmux.DefaultClient.Run("list-windows", "-t", sessionName, "-F", "#{window_index}\t#{window_layout}")
+	if err != nil {
 		return nil, err
 	}
 
 	var layouts []WindowLayoutState
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
 			continue
 		}
@@ -317,13 +303,7 @@ func canUseLegacyLayoutFallback(panes []PaneState) bool {
 }
 
 func getSessionActivePaneID(sessionName string) (string, error) {
-	cmd := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", sessionName, "#{pane_id}")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out.String()), nil
+	return tmux.DefaultClient.Run("display-message", "-p", "-t", sessionName, "#{pane_id}")
 }
 
 // isGitRepo checks if a directory is a git repository.

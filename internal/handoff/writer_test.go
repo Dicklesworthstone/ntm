@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -96,6 +97,8 @@ func TestTruncateLog(t *testing.T) {
 		{"", 5, ""},
 		{"abc", 3, "abc"},
 		{"abcd", 3, ""},
+		{"éclair", 4, "é..."},
+		{"éclair", 3, ""},
 	}
 
 	for _, tt := range tests {
@@ -103,6 +106,9 @@ func TestTruncateLog(t *testing.T) {
 			got := truncateLog(tt.input, tt.max)
 			if got != tt.expected {
 				t.Errorf("truncateLog(%q, %d) = %q, want %q", tt.input, tt.max, got, tt.expected)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncateLog(%q, %d) returned invalid UTF-8: %q", tt.input, tt.max, got)
 			}
 		})
 	}

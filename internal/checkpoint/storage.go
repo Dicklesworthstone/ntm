@@ -233,6 +233,28 @@ func resolveExistingCheckpointArtifactPathBestEffort(baseDir, relPath string) (s
 	return "", false
 }
 
+func ensureCheckpointSubdir(baseDir, relPath, kind string) (string, error) {
+	if err := validateImportEntryName(relPath); err != nil {
+		return "", fmt.Errorf("invalid %s path: %w", kind, err)
+	}
+
+	dirPath, err := isPathWithinDirResolved(baseDir, relPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid %s path: %w", kind, err)
+	}
+	if err := validateExistingDirectoryPath(dirPath, kind); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return "", fmt.Errorf("creating %s directory: %w", kind, err)
+	}
+	if err := validateExistingDirectoryPath(dirPath, kind); err != nil {
+		return "", err
+	}
+
+	return dirPath, nil
+}
+
 // GitPatchPath returns the file path for the git patch.
 func (s *Storage) GitPatchPath(sessionName, checkpointID string) string {
 	return filepath.Join(s.CheckpointDir(sessionName, checkpointID), GitPatchFile)
@@ -309,10 +331,8 @@ func (s *Storage) Save(cp *Checkpoint) error {
 		return fmt.Errorf("creating checkpoint directory: %w", err)
 	}
 
-	// Create panes directory
-	panesDir := filepath.Join(dir, PanesDir)
-	if err := os.MkdirAll(panesDir, 0755); err != nil {
-		return fmt.Errorf("creating panes directory: %w", err)
+	if _, err := ensureCheckpointSubdir(dir, PanesDir, "panes"); err != nil {
+		return err
 	}
 
 	currentArtifacts, err := resolveCheckpointArtifactPathSet(dir, cp)
@@ -348,6 +368,9 @@ func resolveCheckpointArtifactPathSet(baseDir string, cp *Checkpoint) (map[strin
 	paths := make(map[string]struct{})
 	if cp == nil {
 		return paths, nil
+	}
+	if err := validateCheckpointArtifactReferences(cp); err != nil {
+		return nil, err
 	}
 
 	for _, pane := range cp.Session.Panes {
@@ -764,9 +787,9 @@ func (s *Storage) SaveScrollback(sessionName, checkpointID string, paneID string
 	if err != nil {
 		return "", err
 	}
-	panesDir := filepath.Join(dir, PanesDir)
-	if err := os.MkdirAll(panesDir, 0755); err != nil {
-		return "", fmt.Errorf("creating panes directory: %w", err)
+	panesDir, err := ensureCheckpointSubdir(dir, PanesDir, "panes")
+	if err != nil {
+		return "", err
 	}
 
 	// Use sanitized pane ID for filename to handle % and other chars

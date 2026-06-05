@@ -541,6 +541,12 @@ func TestCheckpoint_GenerateManifest(t *testing.T) {
 	if _, ok := manifest.Files[SessionFile]; !ok {
 		t.Error("Missing session.json in manifest")
 	}
+	if manifest.CreatedAt == "" {
+		t.Fatal("CreatedAt is empty, want generation timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, manifest.CreatedAt); err != nil {
+		t.Fatalf("CreatedAt = %q, want RFC3339 timestamp: %v", manifest.CreatedAt, err)
+	}
 
 	// Verify the hashes are valid hex strings
 	for path, hash := range manifest.Files {
@@ -826,6 +832,9 @@ func TestCheckpoint_VerifyManifest(t *testing.T) {
 		if !result.ChecksumsValid {
 			t.Error("ChecksumsValid = false, want true")
 		}
+		if !result.SchemaValid || !result.FilesPresent || !result.ConsistencyValid {
+			t.Fatalf("valid manifest returned inconsistent flags: schema=%v files=%v consistency=%v", result.SchemaValid, result.FilesPresent, result.ConsistencyValid)
+		}
 	})
 
 	t.Run("tampered file", func(t *testing.T) {
@@ -895,6 +904,9 @@ func TestCheckpoint_VerifyManifest_RejectsSymlinkCanonicalFiles(t *testing.T) {
 	result := cp.VerifyManifest(storage, manifest)
 	if result.Valid {
 		t.Fatalf("VerifyManifest() unexpectedly reported valid")
+	}
+	if result.FilesPresent {
+		t.Fatal("VerifyManifest() reported symlinked manifest file as present")
 	}
 	if len(result.Errors) == 0 || !strings.Contains(strings.Join(result.Errors, "\n"), "must not be a symlink") {
 		t.Fatalf("VerifyManifest() errors = %v, want symlink rejection", result.Errors)

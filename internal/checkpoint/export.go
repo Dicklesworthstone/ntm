@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,7 +29,12 @@ const (
 	FormatZip   ExportFormat = "zip"
 )
 
-var maxImportEntrySize int64 = 100 << 20
+const errImportArchiveTooLarge = "archive contents too large"
+
+var (
+	maxImportEntrySize    int64 = 100 << 20
+	maxImportArchiveBytes int64 = 1 << 30
+)
 
 // ExportOptions configures checkpoint export.
 type ExportOptions struct {
@@ -156,23 +162,30 @@ func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts
 
 	// Collect files to export
 	var files []string
-	files = append(files, MetadataFile)
-	files = append(files, SessionFile)
+	seenFiles := make(map[string]struct{})
+	addFile := func(file string) {
+		if file == "" {
+			return
+		}
+		if _, ok := seenFiles[file]; ok {
+			return
+		}
+		seenFiles[file] = struct{}{}
+		files = append(files, file)
+	}
+	addFile(MetadataFile)
+	addFile(SessionFile)
 
 	if opts.IncludeScrollback {
 		for _, pane := range cp.Session.Panes {
-			if pane.ScrollbackFile != "" {
-				files = append(files, pane.ScrollbackFile)
-			}
+			addFile(pane.ScrollbackFile)
 		}
 	}
 
-	if opts.IncludeGitPatch && cp.Git.PatchFile != "" {
-		files = append(files, cp.Git.PatchFile)
+	if opts.IncludeGitPatch {
+		addFile(cp.Git.PatchFile)
 	}
-	if cp.Git.StatusFile != "" {
-		files = append(files, cp.Git.StatusFile)
-	}
+	addFile(cp.Git.StatusFile)
 
 	// Create manifest
 	manifest := &ExportManifest{
@@ -187,13 +200,20 @@ func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts
 
 	// Prepare checkpoint data (potentially with path rewriting)
 	cpData := rewriteCheckpointForExport(cp, opts)
+	if err := validateCheckpointArtifactReferences(cpData); err != nil {
+		return nil, fmt.Errorf("invalid checkpoint artifact references: %w", err)
+	}
+	redactedScrollbackFiles, err := prepareRedactedScrollbackArtifacts(cpDir, cpData, opts)
+	if err != nil {
+		return nil, err
+	}
 
 	// Create the archive
 	switch opts.Format {
 	case FormatTarGz:
-		err = s.exportTarGz(destPath, cpDir, cpData, files, opts, manifest)
+		err = s.exportTarGz(destPath, cpDir, cpData, files, opts, manifest, redactedScrollbackFiles)
 	case FormatZip:
-		err = s.exportZip(destPath, cpDir, cpData, files, opts, manifest)
+		err = s.exportZip(destPath, cpDir, cpData, files, opts, manifest, redactedScrollbackFiles)
 	default:
 		return nil, fmt.Errorf("unsupported export format: %s", opts.Format)
 	}
@@ -205,18 +225,30 @@ func (s *Storage) Export(sessionName, checkpointID string, destPath string, opts
 	return manifest, nil
 }
 
-func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest) error {
+func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest, preparedFiles map[string][]byte) (err error) {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create export file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("closing export file: %w", closeErr)
+		}
+	}()
 
 	gw := gzip.NewWriter(f)
-	defer gw.Close()
+	defer func() {
+		if closeErr := gw.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("closing gzip export stream: %w", closeErr)
+		}
+	}()
 
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+	defer func() {
+		if closeErr := tw.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("closing tar export stream: %w", closeErr)
+		}
+	}()
 
 	// Write metadata.json
 	cpJSON, err := json.MarshalIndent(cp, "", "  ")
@@ -259,18 +291,16 @@ func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []st
 			continue
 		}
 
-		srcPath, err := resolveExistingCheckpointArtifactPath(cpDir, file)
-		if err != nil {
-			return fmt.Errorf("invalid checkpoint file path %s: %w", file, err)
-		}
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
-			return fmt.Errorf("failed to read checkpoint file %s: %w", file, err)
-		}
-
-		// Redact secrets from scrollback files
-		if opts.RedactSecrets && strings.HasPrefix(file, PanesDir+"/") {
-			data = redactSecrets(data)
+		data, prepared := preparedFiles[file]
+		if !prepared {
+			srcPath, err := resolveExistingCheckpointArtifactPath(cpDir, file)
+			if err != nil {
+				return fmt.Errorf("invalid checkpoint file path %s: %w", file, err)
+			}
+			data, err = os.ReadFile(srcPath)
+			if err != nil {
+				return fmt.Errorf("failed to read checkpoint file %s: %w", file, err)
+			}
 		}
 
 		checksum := sha256sum(data)
@@ -298,15 +328,23 @@ func (s *Storage) exportTarGz(destPath, cpDir string, cp *Checkpoint, files []st
 	return nil
 }
 
-func (s *Storage) exportZip(destPath, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest) error {
+func (s *Storage) exportZip(destPath, cpDir string, cp *Checkpoint, files []string, opts ExportOptions, manifest *ExportManifest, preparedFiles map[string][]byte) (err error) {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create export file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("closing export file: %w", closeErr)
+		}
+	}()
 
 	zw := zip.NewWriter(f)
-	defer zw.Close()
+	defer func() {
+		if closeErr := zw.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("closing zip export stream: %w", closeErr)
+		}
+	}()
 
 	// Write metadata.json
 	cpJSON, err := json.MarshalIndent(cp, "", "  ")
@@ -349,17 +387,16 @@ func (s *Storage) exportZip(destPath, cpDir string, cp *Checkpoint, files []stri
 			continue
 		}
 
-		srcPath, err := resolveExistingCheckpointArtifactPath(cpDir, file)
-		if err != nil {
-			return fmt.Errorf("invalid checkpoint file path %s: %w", file, err)
-		}
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
-			return fmt.Errorf("failed to read checkpoint file %s: %w", file, err)
-		}
-
-		if opts.RedactSecrets && strings.HasPrefix(file, PanesDir+"/") {
-			data = redactSecrets(data)
+		data, prepared := preparedFiles[file]
+		if !prepared {
+			srcPath, err := resolveExistingCheckpointArtifactPath(cpDir, file)
+			if err != nil {
+				return fmt.Errorf("invalid checkpoint file path %s: %w", file, err)
+			}
+			data, err = os.ReadFile(srcPath)
+			if err != nil {
+				return fmt.Errorf("failed to read checkpoint file %s: %w", file, err)
+			}
 		}
 
 		checksum := sha256sum(data)
@@ -409,24 +446,35 @@ func (s *Storage) Import(archivePath string, opts ImportOptions) (*Checkpoint, e
 	}
 }
 
-func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoint, error) {
+func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (result *Checkpoint, err error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open archive: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			result = nil
+			err = fmt.Errorf("closing archive file: %w", closeErr)
+		}
+	}()
 
 	gr, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gr.Close()
+	defer func() {
+		if closeErr := gr.Close(); err == nil && closeErr != nil {
+			result = nil
+			err = fmt.Errorf("closing gzip archive reader: %w", closeErr)
+		}
+	}()
 
 	tr := tar.NewReader(gr)
 
 	var manifest *ExportManifest
 	var cp *Checkpoint
 	fileContents := make(map[string][]byte)
+	var totalBytes int64
 
 	for {
 		header, err := tr.Next()
@@ -436,16 +484,24 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoi
 		if err != nil {
 			return nil, fmt.Errorf("failed to read tar entry: %w", err)
 		}
+		skipEntry, err := validateTarImportEntry(header)
+		if err != nil {
+			return nil, err
+		}
+		if skipEntry {
+			continue
+		}
+		if _, exists := fileContents[header.Name]; exists {
+			return nil, fmt.Errorf("archive contains duplicate entry: %s", header.Name)
+		}
 
 		data, err := readImportEntryLimited(tr, header.Name, maxImportEntrySize)
 		if err != nil {
 			return nil, err
 		}
-
-		if _, exists := fileContents[header.Name]; exists {
-			return nil, fmt.Errorf("archive contains duplicate entry: %s", header.Name)
+		if err := storeImportEntry(fileContents, &totalBytes, header.Name, data); err != nil {
+			return nil, err
 		}
-		fileContents[header.Name] = data
 
 		switch header.Name {
 		case "MANIFEST.json":
@@ -564,18 +620,35 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoi
 	return cp, nil
 }
 
-func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint, error) {
+func (s *Storage) importZip(archivePath string, opts ImportOptions) (result *Checkpoint, err error) {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open zip archive: %w", err)
 	}
-	defer zr.Close()
+	defer func() {
+		if closeErr := zr.Close(); err == nil && closeErr != nil {
+			result = nil
+			err = fmt.Errorf("closing zip archive: %w", closeErr)
+		}
+	}()
 
 	var manifest *ExportManifest
 	var cp *Checkpoint
 	fileContents := make(map[string][]byte)
+	var totalBytes int64
 
 	for _, f := range zr.File {
+		skipEntry, err := validateZipImportEntry(f)
+		if err != nil {
+			return nil, err
+		}
+		if skipEntry {
+			continue
+		}
+		if _, exists := fileContents[f.Name]; exists {
+			return nil, fmt.Errorf("archive contains duplicate entry: %s", f.Name)
+		}
+
 		rc, err := f.Open()
 		if err != nil {
 			return nil, fmt.Errorf("failed to open %s: %w", f.Name, err)
@@ -589,11 +662,9 @@ func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint
 		if closeErr != nil {
 			return nil, fmt.Errorf("failed to close %s: %w", f.Name, closeErr)
 		}
-
-		if _, exists := fileContents[f.Name]; exists {
-			return nil, fmt.Errorf("archive contains duplicate entry: %s", f.Name)
+		if err := storeImportEntry(fileContents, &totalBytes, f.Name, data); err != nil {
+			return nil, err
 		}
-		fileContents[f.Name] = data
 
 		switch f.Name {
 		case "MANIFEST.json":
@@ -741,6 +812,85 @@ func writeZipEntry(zw *zip.Writer, name string, data []byte) error {
 	return nil
 }
 
+func validateTarImportEntry(header *tar.Header) (bool, error) {
+	if header == nil {
+		return false, fmt.Errorf("archive contains nil tar header")
+	}
+	switch header.Typeflag {
+	case tar.TypeReg, tar.TypeRegA:
+		if err := validateImportEntryName(header.Name); err != nil {
+			return false, err
+		}
+		return false, nil
+	case tar.TypeDir:
+		if err := validateImportDirectoryEntryName(header.Name); err != nil {
+			return false, err
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("archive contains non-regular entry: %s", header.Name)
+	}
+}
+
+func validateZipImportEntry(f *zip.File) (bool, error) {
+	if f == nil {
+		return false, fmt.Errorf("archive contains nil zip entry")
+	}
+	info := f.FileInfo()
+	if info.IsDir() {
+		if err := validateImportDirectoryEntryName(f.Name); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if err := validateImportEntryName(f.Name); err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("archive contains non-regular entry: %s", f.Name)
+	}
+	return false, nil
+}
+
+func validateImportDirectoryEntryName(name string) error {
+	return validateImportEntryName(strings.TrimSuffix(name, "/"))
+}
+
+func validateImportEntryName(name string) error {
+	if name == "" {
+		return fmt.Errorf("archive contains empty entry name")
+	}
+	if strings.Contains(name, `\`) {
+		return fmt.Errorf("invalid path in archive (backslash path separator): %s", name)
+	}
+	for _, segment := range strings.Split(name, "/") {
+		if strings.Contains(segment, ":") {
+			return fmt.Errorf("invalid path in archive (colon path segment): %s", name)
+		}
+	}
+	if filepath.IsAbs(name) {
+		return fmt.Errorf("invalid path in archive (absolute path): %s", name)
+	}
+	cleanName := path.Clean(name)
+	if cleanName == "." || cleanName != name {
+		return fmt.Errorf("invalid path in archive (non-canonical path): %s", name)
+	}
+	if !isPathWithinDir(".", name) {
+		return fmt.Errorf("invalid path in archive (path traversal attempt): %s", name)
+	}
+	return nil
+}
+
+func storeImportEntry(fileContents map[string][]byte, totalBytes *int64, name string, data []byte) error {
+	nextTotal := *totalBytes + int64(len(data))
+	if nextTotal > maxImportArchiveBytes {
+		return fmt.Errorf("%s: exceeds %d bytes", errImportArchiveTooLarge, maxImportArchiveBytes)
+	}
+	fileContents[name] = data
+	*totalBytes = nextTotal
+	return nil
+}
+
 func readImportEntryLimited(r io.Reader, name string, limit int64) ([]byte, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("invalid import size limit for %s: %d", name, limit)
@@ -762,6 +912,56 @@ func sha256sum(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+type redactedScrollbackArtifact struct {
+	data        []byte
+	raw         []byte
+	compacted   bool
+	compression string
+}
+
+func prepareRedactedScrollbackArtifacts(cpDir string, cp *Checkpoint, opts ExportOptions) (map[string][]byte, error) {
+	if !opts.RedactSecrets || !opts.IncludeScrollback {
+		return nil, nil
+	}
+
+	prepared := make(map[string][]byte)
+	for i := range cp.Session.Panes {
+		pane := &cp.Session.Panes[i]
+		if pane.ScrollbackFile == "" {
+			continue
+		}
+
+		srcPath, err := resolveExistingCheckpointArtifactPath(cpDir, pane.ScrollbackFile)
+		if err != nil {
+			return nil, fmt.Errorf("invalid checkpoint file path %s: %w", pane.ScrollbackFile, err)
+		}
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read checkpoint file %s: %w", pane.ScrollbackFile, err)
+		}
+		artifact, err := redactScrollbackArtifact(pane.ScrollbackFile, data)
+		if err != nil {
+			return nil, fmt.Errorf("redacting scrollback file %s: %w", pane.ScrollbackFile, err)
+		}
+
+		prepared[pane.ScrollbackFile] = artifact.data
+		if pane.Scrollback != nil {
+			summary := *pane.Scrollback
+			summary.Captured = true
+			summary.ArtifactPreserved = true
+			summary.Compacted = artifact.compacted
+			summary.Compression = artifact.compression
+			summary.LineCount = countLines(string(artifact.raw))
+			summary.RawBytes = len(artifact.raw)
+			summary.StoredBytes = int64(len(artifact.data))
+			pane.Scrollback = &summary
+		}
+		pane.ScrollbackLines = countLines(string(artifact.raw))
+	}
+
+	return prepared, nil
+}
+
 func redactSecrets(data []byte) []byte {
 	redactionMu.RLock()
 	cfg := redactionConfig
@@ -780,9 +980,36 @@ func redactSecrets(data []byte) []byte {
 	return []byte(result.Output)
 }
 
+func redactScrollbackArtifact(path string, data []byte) (redactedScrollbackArtifact, error) {
+	if filepath.Ext(path) != ".gz" {
+		redacted := redactSecrets(data)
+		return redactedScrollbackArtifact{
+			data: redacted,
+			raw:  redacted,
+		}, nil
+	}
+
+	decompressed, err := gzipDecompress(data)
+	if err != nil {
+		return redactedScrollbackArtifact{}, fmt.Errorf("decompressing compressed scrollback: %w", err)
+	}
+	redacted := redactSecrets(decompressed)
+	recompressed, err := gzipCompress(redacted)
+	if err != nil {
+		return redactedScrollbackArtifact{}, fmt.Errorf("recompressing redacted scrollback: %w", err)
+	}
+	return redactedScrollbackArtifact{
+		data:        recompressed,
+		raw:         redacted,
+		compacted:   true,
+		compression: scrollbackCompressionGzip,
+	}, nil
+}
+
 func rewriteCheckpointForExport(cp *Checkpoint, opts ExportOptions) *Checkpoint {
 	result := *cp
 	result.Session.WindowLayouts = cloneWindowLayouts(cp.Session.WindowLayouts)
+	result.Session.Panes = clonePaneStatesForExport(cp.Session.Panes)
 	if opts.RewritePaths && result.WorkingDir != "" {
 		result.WorkingDir = "${WORKING_DIR}"
 	}
@@ -792,12 +1019,29 @@ func rewriteCheckpointForExport(cp *Checkpoint, opts ExportOptions) *Checkpoint 
 		for i := range result.Session.Panes {
 			result.Session.Panes[i].ScrollbackFile = ""
 			result.Session.Panes[i].ScrollbackLines = 0
+			result.Session.Panes[i].Scrollback = nil
 		}
 	}
 	if !opts.IncludeGitPatch {
 		result.Git.PatchFile = ""
 	}
 	return &result
+}
+
+func clonePaneStatesForExport(panes []PaneState) []PaneState {
+	if panes == nil {
+		return nil
+	}
+	cloned := make([]PaneState, len(panes))
+	copy(cloned, panes)
+	for i := range cloned {
+		if cloned[i].Scrollback == nil {
+			continue
+		}
+		summary := *cloned[i].Scrollback
+		cloned[i].Scrollback = &summary
+	}
+	return cloned
 }
 
 func validateImportOverwrite(cpDir string, fileContents map[string][]byte) error {
@@ -852,6 +1096,9 @@ func verifyImportChecksums(fileContents map[string][]byte, manifest *ExportManif
 	if manifest == nil {
 		return fmt.Errorf("checksum verification requested but archive missing MANIFEST.json")
 	}
+	if err := validateImportManifestEntries(fileContents, manifest); err != nil {
+		return err
+	}
 
 	for file, data := range fileContents {
 		if file == "MANIFEST.json" {
@@ -873,6 +1120,53 @@ func verifyImportChecksums(fileContents map[string][]byte, manifest *ExportManif
 		}
 		if _, ok := fileContents[file]; !ok {
 			return fmt.Errorf("manifest lists missing file: %s", file)
+		}
+	}
+
+	return nil
+}
+
+func validateImportManifestEntries(fileContents map[string][]byte, manifest *ExportManifest) error {
+	if len(manifest.Files) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(manifest.Files))
+	for _, entry := range manifest.Files {
+		if entry.Path == "MANIFEST.json" {
+			return fmt.Errorf("manifest must not list MANIFEST.json")
+		}
+		if err := validateImportEntryName(entry.Path); err != nil {
+			return fmt.Errorf("invalid manifest entry path %q: %w", entry.Path, err)
+		}
+		if _, ok := seen[entry.Path]; ok {
+			return fmt.Errorf("manifest contains duplicate file entry: %s", entry.Path)
+		}
+		seen[entry.Path] = struct{}{}
+
+		expectedSum, ok := manifest.Checksums[entry.Path]
+		if !ok {
+			return fmt.Errorf("manifest file entry missing checksum map entry for %s", entry.Path)
+		}
+		if entry.Checksum != expectedSum {
+			return fmt.Errorf("manifest entry checksum mismatch for %s: files entry has %s, checksums map has %s", entry.Path, entry.Checksum, expectedSum)
+		}
+
+		data, ok := fileContents[entry.Path]
+		if !ok {
+			return fmt.Errorf("manifest lists missing file: %s", entry.Path)
+		}
+		if entry.Size != int64(len(data)) {
+			return fmt.Errorf("manifest entry size mismatch for %s: expected %d, got %d", entry.Path, entry.Size, len(data))
+		}
+	}
+
+	for file := range manifest.Checksums {
+		if file == "MANIFEST.json" {
+			continue
+		}
+		if _, ok := seen[file]; !ok {
+			return fmt.Errorf("manifest checksums missing file entry for %s", file)
 		}
 	}
 
@@ -923,6 +1217,10 @@ func validateImportedManifestMetadata(manifest *ExportManifest, cp *Checkpoint) 
 }
 
 func validateImportedArchiveFiles(fileContents map[string][]byte, cp *Checkpoint) error {
+	if err := validateCheckpointArtifactReferences(cp); err != nil {
+		return err
+	}
+
 	expectedFiles := expectedManifestFiles(cp)
 	for name := range fileContents {
 		if name == "MANIFEST.json" {
@@ -958,12 +1256,60 @@ func validateImportedArchiveFiles(fileContents map[string][]byte, cp *Checkpoint
 	return nil
 }
 
+func validateCheckpointArtifactReferences(cp *Checkpoint) error {
+	for _, pane := range cp.Session.Panes {
+		if pane.ScrollbackFile == "" {
+			continue
+		}
+		if err := validateImportEntryName(pane.ScrollbackFile); err != nil {
+			return fmt.Errorf("invalid scrollback path for pane %s: %w", pane.ID, err)
+		}
+		cleanPath := filepath.ToSlash(filepath.Clean(pane.ScrollbackFile))
+		if cleanPath == PanesDir || !strings.HasPrefix(cleanPath, PanesDir+"/") {
+			return fmt.Errorf("invalid scrollback path for pane %s: must be under %s/: %s", pane.ID, PanesDir, pane.ScrollbackFile)
+		}
+	}
+
+	if err := validateGitArtifactReference("git patch", cp.Git.PatchFile); err != nil {
+		return err
+	}
+	if err := validateGitArtifactReference("git status", cp.Git.StatusFile); err != nil {
+		return err
+	}
+	if cp.Git.PatchFile != "" && cp.Git.PatchFile == cp.Git.StatusFile {
+		return fmt.Errorf("invalid git artifact paths: patch and status must be distinct: %s", cp.Git.PatchFile)
+	}
+
+	return nil
+}
+
+func validateGitArtifactReference(kind, artifactPath string) error {
+	if artifactPath == "" {
+		return nil
+	}
+	if err := validateImportEntryName(artifactPath); err != nil {
+		return fmt.Errorf("invalid %s path: %w", kind, err)
+	}
+	cleanPath := filepath.ToSlash(filepath.Clean(artifactPath))
+	switch cleanPath {
+	case MetadataFile, SessionFile, "MANIFEST.json":
+		return fmt.Errorf("invalid %s path: must not alias reserved checkpoint file: %s", kind, artifactPath)
+	}
+	if cleanPath == PanesDir || strings.HasPrefix(cleanPath, PanesDir+"/") {
+		return fmt.Errorf("invalid %s path: must not be under %s/: %s", kind, PanesDir, artifactPath)
+	}
+	return nil
+}
+
 // isPathWithinDir checks if a path (after cleaning) stays within the base directory.
 // This prevents path traversal attacks like "../../../etc/passwd".
 func isPathWithinDir(baseDir, targetPath string) bool {
 	// Clean and make absolute
 	cleanBase := filepath.Clean(baseDir)
-	fullPath := filepath.Join(cleanBase, targetPath)
+	fullPath := targetPath
+	if !filepath.IsAbs(fullPath) {
+		fullPath = filepath.Join(cleanBase, targetPath)
+	}
 	cleanPath := filepath.Clean(fullPath)
 
 	// The clean path must be within or equal to the base directory
@@ -973,8 +1319,7 @@ func isPathWithinDir(baseDir, targetPath string) bool {
 		return false
 	}
 
-	// If the relative path starts with "..", it's outside the base
-	return !strings.HasPrefix(rel, "..")
+	return !pathEscapesBase(rel)
 }
 
 // isPathWithinDirResolved validates a path after resolving symlinks to prevent TOCTOU attacks.
@@ -993,7 +1338,10 @@ func isPathWithinDirResolved(baseDir, targetPath string) (string, error) {
 	}
 
 	// Build the full path
-	fullPath := filepath.Join(resolvedBase, targetPath)
+	fullPath := targetPath
+	if !filepath.IsAbs(fullPath) {
+		fullPath = filepath.Join(resolvedBase, targetPath)
+	}
 
 	// For the target, resolve parent directories but not the final component
 	// (since we're about to create it). This catches symlink attacks in intermediate dirs.
@@ -1004,7 +1352,7 @@ func isPathWithinDirResolved(baseDir, targetPath string) (string, error) {
 	if err == nil {
 		// Verify the resolved parent is still within base
 		relParent, err := filepath.Rel(resolvedBase, resolvedParent)
-		if err != nil || strings.HasPrefix(relParent, "..") {
+		if err != nil || pathEscapesBase(relParent) {
 			return "", fmt.Errorf("symlink escape detected in path: %s", targetPath)
 		}
 		// Reconstruct full path with resolved parent
@@ -1014,9 +1362,13 @@ func isPathWithinDirResolved(baseDir, targetPath string) (string, error) {
 	// Final validation: clean path must be within resolved base
 	cleanPath := filepath.Clean(fullPath)
 	rel, err := filepath.Rel(resolvedBase, cleanPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || pathEscapesBase(rel) {
 		return "", fmt.Errorf("resolved path escapes base directory: %s", targetPath)
 	}
 
 	return cleanPath, nil
+}
+
+func pathEscapesBase(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
 }

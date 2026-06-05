@@ -63,6 +63,8 @@ type PaneChange struct {
 	NewLines int `json:"new_lines"`
 	// DiffFile is the relative path to the scrollback diff file
 	DiffFile string `json:"diff_file,omitempty"`
+	// DiffSummary describes how the scrollback diff artifact was preserved.
+	DiffSummary *ScrollbackArtifactSummary `json:"diff_summary,omitempty"`
 	// DiffContent is the new scrollback content (lines after base)
 	DiffContent string `json:"-"` // Not serialized, held in memory during processing
 	// Compressed is the compressed diff content
@@ -263,6 +265,7 @@ func (ic *IncrementalCreator) computePaneChanges(sessionName string, base, curre
 				if diff != "" {
 					change.NewLines = countLines(diff)
 					change.DiffContent = diff
+					change.DiffSummary = scrollbackDiffSummary(diff, change.NewLines, false, 0)
 					hasChanges = true
 				}
 			}
@@ -288,6 +291,7 @@ func (ic *IncrementalCreator) computePaneChanges(sessionName string, base, curre
 				Added:       true,
 				NewLines:    countLines(currentScrollback),
 				DiffContent: currentScrollback,
+				DiffSummary: scrollbackDiffSummary(currentScrollback, countLines(currentScrollback), false, 0),
 				Pane:        paneMetadataSnapshot(currentPanes[paneID]),
 			}
 		}
@@ -305,6 +309,28 @@ func (ic *IncrementalCreator) loadPaneScrollback(sessionName, checkpointID strin
 		return "", nil
 	}
 	return "", err
+}
+
+func scrollbackDiffSummary(content string, lines int, artifactPreserved bool, storedBytes int64) *ScrollbackArtifactSummary {
+	if content == "" {
+		return nil
+	}
+	return &ScrollbackArtifactSummary{
+		Captured:          content != "",
+		ArtifactPreserved: artifactPreserved,
+		Compacted:         artifactPreserved,
+		Compression:       mapCompressionName(artifactPreserved),
+		LineCount:         lines,
+		RawBytes:          len(content),
+		StoredBytes:       storedBytes,
+	}
+}
+
+func mapCompressionName(compacted bool) string {
+	if !compacted {
+		return ""
+	}
+	return scrollbackCompressionGzip
 }
 
 // computeScrollbackDiff returns the new lines in current that aren't in base.
@@ -514,9 +540,9 @@ func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint, repoDir string) e
 	}
 
 	// Save pane diffs
-	diffDir := filepath.Join(dir, DiffPanesDir)
-	if err := os.MkdirAll(diffDir, 0755); err != nil {
-		return fmt.Errorf("creating diff panes directory: %w", err)
+	diffDir, err := ensureCheckpointSubdir(dir, DiffPanesDir, "diff panes")
+	if err != nil {
+		return err
 	}
 
 	for paneID, change := range inc.Changes.PaneChanges {
@@ -536,6 +562,7 @@ func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint, repoDir string) e
 
 			// Update the change with file path
 			change.DiffFile = filepath.Join(DiffPanesDir, filename)
+			change.DiffSummary = scrollbackDiffSummary(change.DiffContent, change.NewLines, true, int64(len(compressed)))
 			change.DiffContent = "" // Clear content after saving
 			inc.Changes.PaneChanges[paneID] = change
 		}
@@ -1067,6 +1094,7 @@ func paneStateFromAddedChange(paneID string, change PaneChange) PaneState {
 		newPane.ID = paneID
 	}
 	newPane.ScrollbackFile = ""
+	newPane.Scrollback = nil
 	if change.NewLines != 0 || newPane.ScrollbackLines == 0 {
 		newPane.ScrollbackLines = change.NewLines
 	}
@@ -1077,6 +1105,7 @@ func paneMetadataSnapshot(pane PaneState) *PaneState {
 	snapshot := pane
 	// Resolved incrementals do not materialize scrollback files from temporary checkpoints.
 	snapshot.ScrollbackFile = ""
+	snapshot.Scrollback = nil
 	return &snapshot
 }
 
@@ -1110,6 +1139,7 @@ func applyPaneChange(target *PaneState, change PaneChange) {
 		// Resolved incrementals do not materialize a merged scrollback artifact,
 		// so retaining the base path would point at stale content.
 		target.ScrollbackFile = ""
+		target.Scrollback = nil
 	}
 }
 

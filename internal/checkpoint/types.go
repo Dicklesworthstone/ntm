@@ -98,6 +98,34 @@ type WindowLayoutState struct {
 	Layout string `json:"layout"`
 }
 
+// ScrollbackArtifactSummary records how a pane scrollback-like artifact was stored.
+type ScrollbackArtifactSummary struct {
+	// Captured indicates content was successfully captured before persistence.
+	Captured bool `json:"captured"`
+	// ArtifactPreserved indicates the complete content remains available by file path.
+	ArtifactPreserved bool `json:"artifact_preserved"`
+	// Compacted indicates the persisted artifact is compressed or otherwise compacted.
+	Compacted bool `json:"compacted"`
+	// Compression names the compaction format when Compacted is true.
+	Compression string `json:"compression,omitempty"`
+	// LineCount is the number of logical lines represented by the artifact.
+	LineCount int `json:"line_count,omitempty"`
+	// RawBytes is the uncompressed content size in bytes.
+	RawBytes int `json:"raw_bytes,omitempty"`
+	// StoredBytes is the persisted artifact size in bytes.
+	StoredBytes int64 `json:"stored_bytes,omitempty"`
+	// RequestedLines is the configured capture window when applicable.
+	RequestedLines int `json:"requested_lines,omitempty"`
+	// MaxSizeMB is the configured artifact size limit when applicable.
+	MaxSizeMB int `json:"max_size_mb,omitempty"`
+	// Skipped indicates capture or persistence was intentionally skipped.
+	Skipped bool `json:"skipped,omitempty"`
+	// Degraded indicates the artifact metadata describes incomplete capture.
+	Degraded bool `json:"degraded,omitempty"`
+	// Reason explains skipped or degraded artifact handling.
+	Reason string `json:"reason,omitempty"`
+}
+
 // PaneState captures the state of a single pane.
 type PaneState struct {
 	// Index is the pane index in the session
@@ -120,6 +148,8 @@ type PaneState struct {
 	ScrollbackFile string `json:"scrollback_file,omitempty"`
 	// ScrollbackLines is the number of lines captured
 	ScrollbackLines int `json:"scrollback_lines"`
+	// Scrollback describes how the scrollback artifact was preserved.
+	Scrollback *ScrollbackArtifactSummary `json:"scrollback,omitempty"`
 }
 
 // GitState captures the git repository state at checkpoint time.

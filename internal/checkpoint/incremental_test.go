@@ -362,6 +362,137 @@ func TestIncrementalCreatorCreate_UsesConfiguredStorageForCapturedDiffs(t *testi
 	if change.DiffFile == "" {
 		t.Fatalf("Create() pane diff file = %q, want saved diff path", change.DiffFile)
 	}
+	if change.DiffSummary == nil || !change.DiffSummary.ArtifactPreserved {
+		t.Fatalf("Create() pane diff summary = %+v, want preserved artifact metadata", change.DiffSummary)
+	}
+}
+
+func TestIncrementalCreatorSave_RecordsCompressedDiffSummary(t *testing.T) {
+	storage := NewStorageWithDir(t.TempDir())
+	creator := NewIncrementalCreatorWithStorage(storage)
+	sessionName := "test-session"
+	diffContent := strings.Repeat("new output line\n", 512)
+	newLines := countLines(diffContent)
+
+	inc := &IncrementalCheckpoint{
+		Version:          IncrementalVersion,
+		ID:               "inc-diff-summary",
+		SessionName:      sessionName,
+		BaseCheckpointID: "base",
+		BaseTimestamp:    time.Now().Add(-time.Hour),
+		CreatedAt:        time.Now(),
+		Changes: IncrementalChanges{
+			PaneChanges: map[string]PaneChange{
+				"%0": {
+					NewLines:    newLines,
+					DiffContent: diffContent,
+				},
+			},
+		},
+	}
+
+	if err := creator.save(inc, ""); err != nil {
+		t.Fatalf("save() error = %v", err)
+	}
+
+	change := inc.Changes.PaneChanges["%0"]
+	if change.DiffContent != "" {
+		t.Fatalf("save() kept DiffContent in memory = %q, want cleared", change.DiffContent)
+	}
+	if change.DiffFile == "" {
+		t.Fatal("save() DiffFile is empty, want saved diff artifact path")
+	}
+	if change.DiffSummary == nil {
+		t.Fatal("save() DiffSummary is nil, want compaction metadata")
+	}
+	assertCompressedDiffSummary(t, change.DiffSummary, diffContent, newLines)
+
+	loaded, err := NewIncrementalResolverWithStorage(storage).loadIncremental(sessionName, inc.ID)
+	if err != nil {
+		t.Fatalf("loadIncremental() error = %v", err)
+	}
+	loadedChange := loaded.Changes.PaneChanges["%0"]
+	if loadedChange.DiffContent != "" {
+		t.Fatalf("loaded DiffContent = %q, want empty", loadedChange.DiffContent)
+	}
+	assertCompressedDiffSummary(t, loadedChange.DiffSummary, diffContent, newLines)
+}
+
+func TestIncrementalCreatorSave_RejectsDiffPanesSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := NewStorageWithDir(tmpDir)
+	creator := NewIncrementalCreatorWithStorage(storage)
+	sessionName := "test-session"
+	incID := "inc-diff-panes-symlink"
+	incDir := filepath.Join(tmpDir, sessionName, "incremental", incID)
+	if err := os.MkdirAll(incDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(incremental dir) failed: %v", err)
+	}
+	outsideDir := filepath.Join(tmpDir, "outside-diffs")
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(outside dir) failed: %v", err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(incDir, DiffPanesDir)); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	inc := &IncrementalCheckpoint{
+		Version:          IncrementalVersion,
+		ID:               incID,
+		SessionName:      sessionName,
+		BaseCheckpointID: "base",
+		BaseTimestamp:    time.Now().Add(-time.Hour),
+		CreatedAt:        time.Now(),
+		Changes: IncrementalChanges{
+			PaneChanges: map[string]PaneChange{
+				"%0": {
+					NewLines:    1,
+					DiffContent: "new output line\n",
+				},
+			},
+		},
+	}
+
+	err := creator.save(inc, "")
+	if err == nil {
+		t.Fatal("save() error = nil, want diff panes symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "diff panes path must not be a symlink") {
+		t.Fatalf("save() error = %v, want diff panes symlink rejection", err)
+	}
+	entries, err := os.ReadDir(outsideDir)
+	if err != nil {
+		t.Fatalf("ReadDir(outside dir) failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("save() wrote %d entries outside checkpoint root via symlink", len(entries))
+	}
+}
+
+func assertCompressedDiffSummary(t *testing.T, summary *ScrollbackArtifactSummary, content string, lines int) {
+	t.Helper()
+
+	if !summary.Captured || !summary.ArtifactPreserved {
+		t.Fatalf("summary captured/preserved = %v/%v, want true/true", summary.Captured, summary.ArtifactPreserved)
+	}
+	if !summary.Compacted || summary.Compression != scrollbackCompressionGzip {
+		t.Fatalf("summary compaction = %v/%q, want gzip", summary.Compacted, summary.Compression)
+	}
+	if summary.LineCount != lines {
+		t.Fatalf("summary LineCount = %d, want %d", summary.LineCount, lines)
+	}
+	if summary.RawBytes != len(content) {
+		t.Fatalf("summary RawBytes = %d, want %d", summary.RawBytes, len(content))
+	}
+	if summary.StoredBytes <= 0 {
+		t.Fatalf("summary StoredBytes = %d, want > 0", summary.StoredBytes)
+	}
+	if summary.StoredBytes >= int64(summary.RawBytes) {
+		t.Fatalf("summary StoredBytes = %d, want less than raw %d", summary.StoredBytes, summary.RawBytes)
+	}
+	if summary.Skipped || summary.Degraded || summary.Reason != "" {
+		t.Fatalf("summary skip/degraded/reason = %v/%v/%q, want false/false/empty", summary.Skipped, summary.Degraded, summary.Reason)
+	}
 }
 
 func TestIncrementalCreator_computeGitChangeForCheckpoints_UsesRecordedGitArtifactPaths(t *testing.T) {
@@ -1211,7 +1342,19 @@ func TestIncrementalResolverApplyIncremental_ClearsStaleScrollbackFileWhenDiffAp
 		CreatedAt: time.Now().Add(-time.Hour),
 		Session: SessionState{
 			Panes: []PaneState{
-				{ID: "%0", Title: "Before", ScrollbackFile: "panes/base.txt", ScrollbackLines: 10},
+				{
+					ID:              "%0",
+					Title:           "Before",
+					ScrollbackFile:  "panes/base.txt",
+					ScrollbackLines: 10,
+					Scrollback: &ScrollbackArtifactSummary{
+						Captured:          true,
+						ArtifactPreserved: true,
+						Compacted:         true,
+						Compression:       scrollbackCompressionGzip,
+						LineCount:         10,
+					},
+				},
 			},
 		},
 		PaneCount: 1,
@@ -1242,8 +1385,14 @@ func TestIncrementalResolverApplyIncremental_ClearsStaleScrollbackFileWhenDiffAp
 	if resolved.Session.Panes[0].ScrollbackFile != "" {
 		t.Fatalf("applyIncremental().Session.Panes[0].ScrollbackFile = %q, want empty string", resolved.Session.Panes[0].ScrollbackFile)
 	}
+	if resolved.Session.Panes[0].Scrollback != nil {
+		t.Fatalf("applyIncremental().Session.Panes[0].Scrollback = %+v, want nil", resolved.Session.Panes[0].Scrollback)
+	}
 	if base.Session.Panes[0].ScrollbackFile != "panes/base.txt" {
 		t.Fatalf("applyIncremental() mutated base scrollback file to %q, want base path preserved", base.Session.Panes[0].ScrollbackFile)
+	}
+	if base.Session.Panes[0].Scrollback == nil {
+		t.Fatal("applyIncremental() mutated base scrollback summary to nil")
 	}
 }
 

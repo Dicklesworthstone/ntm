@@ -43,11 +43,19 @@ func (s *Store) ReconcileSessions() (*ReconcileResult, error) {
 				"active_count", len(activeSessions))
 			return &ReconcileResult{Checked: 0}, nil
 		}
-		// tmux might not be running at all — that's fine, it means
+		// If tmux is simply not running, that's fine, it means
 		// ALL active sessions in the store are stale.
-		slog.Warn("reconcile: tmux.ListSessions failed, treating all active sessions as stale",
-			"error", err, "active_count", len(activeSessions))
-		liveSessions = nil
+		if tmux.ClassifyCommandError(err).Kind == tmux.CommandErrorNoServer {
+			slog.Warn("reconcile: tmux.ListSessions failed (no server), treating all active sessions as stale",
+				"error", err, "active_count", len(activeSessions))
+			liveSessions = nil
+		} else {
+			// If it's some other transient error (like a SIGKILL to the exec process, memory limit, etc),
+			// skip reconciliation to avoid improperly destroying state.
+			slog.Warn("reconcile: skipped due to unexpected tmux error",
+				"error", err, "active_count", len(activeSessions))
+			return &ReconcileResult{Checked: 0}, nil
+		}
 	}
 
 	liveSet := make(map[string]struct{}, len(liveSessions))

@@ -290,33 +290,40 @@ func ApplyMigrations(db *sql.DB) error {
 			return err
 		}
 
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin transaction for migration %s: %w", filename, err)
-		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = tx.Rollback()
+		err = func() error {
+			tx, err := db.Begin()
+			if err != nil {
+				return fmt.Errorf("begin transaction for migration %s: %w", filename, err)
 			}
+			committed := false
+			defer func() {
+				if !committed {
+					_ = tx.Rollback()
+				}
+			}()
+
+			if _, err := tx.Exec(content); err != nil {
+				return fmt.Errorf("execute migration %s: %w", filename, err)
+			}
+
+			// Record migration
+			if _, err := tx.Exec(
+				"INSERT INTO _migrations (version, name) VALUES (?, ?)",
+				version, filename,
+			); err != nil {
+				return fmt.Errorf("record migration %s: %w", filename, err)
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit migration %s: %w", filename, err)
+			}
+			committed = true
+			return nil
 		}()
 
-		if _, err := tx.Exec(content); err != nil {
-			return fmt.Errorf("execute migration %s: %w", filename, err)
+		if err != nil {
+			return err
 		}
-
-		// Record migration
-		if _, err := tx.Exec(
-			"INSERT INTO _migrations (version, name) VALUES (?, ?)",
-			version, filename,
-		); err != nil {
-			return fmt.Errorf("record migration %s: %w", filename, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %s: %w", filename, err)
-		}
-		committed = true
 	}
 
 	return nil

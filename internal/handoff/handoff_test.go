@@ -3,6 +3,7 @@ package handoff
 import (
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -158,6 +159,16 @@ func TestValidation(t *testing.T) {
 				Date: "2026-01-15",
 			},
 			expectValid: true,
+		},
+		{
+			name: "invalid calendar date",
+			handoff: &Handoff{
+				Goal: "Test goal",
+				Now:  "Test now",
+				Date: "2026-02-31",
+			},
+			expectValid: false,
+			expectField: "date",
 		},
 		{
 			name: "invalid status",
@@ -496,19 +507,92 @@ func TestValidate_AllowsGeneralSession(t *testing.T) {
 }
 
 func TestValidate_TokensPctOutOfRange(t *testing.T) {
-	h := &Handoff{
-		Goal:       "Goal",
-		Now:        "Now",
-		Status:     StatusComplete,
-		Outcome:    OutcomeSucceeded,
-		TokensMax:  100,
-		TokensUsed: 50,
-		TokensPct:  150,
+	tests := []struct {
+		name       string
+		tokensMax  int
+		tokensUsed int
+		tokensPct  float64
+	}{
+		{
+			name:       "used and max set",
+			tokensMax:  100,
+			tokensUsed: 50,
+			tokensPct:  150,
+		},
+		{
+			name:      "max set with zero used",
+			tokensMax: 100,
+			tokensPct: 150,
+		},
+		{
+			name:      "pct set without counts",
+			tokensPct: -1,
+		},
 	}
 
-	errs := h.Validate()
-	if len(errs.ForField("tokens_pct")) != 1 {
-		t.Fatalf("expected tokens_pct validation error, got: %v", errs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Handoff{
+				Goal:       "Goal",
+				Now:        "Now",
+				Status:     StatusComplete,
+				Outcome:    OutcomeSucceeded,
+				TokensMax:  tt.tokensMax,
+				TokensUsed: tt.tokensUsed,
+				TokensPct:  tt.tokensPct,
+			}
+
+			errs := h.Validate()
+			if len(errs.ForField("tokens_pct")) != 1 {
+				t.Fatalf("expected tokens_pct validation error, got: %v", errs)
+			}
+		})
+	}
+}
+
+func TestValidate_InvalidTokenCounts(t *testing.T) {
+	tests := []struct {
+		name       string
+		tokensMax  int
+		tokensUsed int
+		field      string
+	}{
+		{
+			name:       "negative used",
+			tokensMax:  100,
+			tokensUsed: -1,
+			field:      "tokens_used",
+		},
+		{
+			name:      "negative max",
+			tokensMax: -1,
+			field:     "tokens_max",
+		},
+		{
+			name:       "used exceeds max",
+			tokensMax:  100,
+			tokensUsed: 101,
+			field:      "tokens_used",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Handoff{
+				Goal:       "Goal",
+				Now:        "Now",
+				Status:     StatusComplete,
+				Outcome:    OutcomeSucceeded,
+				TokensMax:  tt.tokensMax,
+				TokensUsed: tt.tokensUsed,
+				TokensPct:  0,
+			}
+
+			errs := h.Validate()
+			if len(errs.ForField(tt.field)) != 1 {
+				t.Fatalf("expected %s validation error, got: %v", tt.field, errs)
+			}
+		})
 	}
 }
 
@@ -648,6 +732,8 @@ func TestTruncate(t *testing.T) {
 		{"maxLen 0", "hello", 0, ""},
 		{"maxLen negative", "hello", -1, ""},
 		{"empty string", "", 5, ""},
+		{"unicode truncation", "éclair", 4, "é..."},
+		{"unicode short max", "éclair", 2, "éc"},
 	}
 
 	for _, tt := range tests {
@@ -655,6 +741,9 @@ func TestTruncate(t *testing.T) {
 			got := truncate(tt.input, tt.maxLen)
 			if got != tt.want {
 				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) returned invalid UTF-8: %q", tt.input, tt.maxLen, got)
 			}
 		})
 	}
