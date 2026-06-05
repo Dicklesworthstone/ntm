@@ -331,10 +331,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		if idleMatch {
 			lastIdle := lastLineIdxMatching(lastLines, ccIdlePatterns)
 			lastSpin := lastLineIdxMatching(lastLines, ccSpinnerActivePatterns)
-			if lastSpin > lastIdle {
-				return false
-			}
-			return true
+			return lastSpin <= lastIdle
 		}
 		return false
 	case AgentTypeCodex:

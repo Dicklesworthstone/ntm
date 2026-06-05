@@ -226,6 +226,9 @@ type ScoreResult struct {
 func (pm *ProfileMatcher) ScoreAssignment(agentType AgentType, task TaskInfo) ScoreResult {
 	pm.mu.RLock()
 	profile := pm.profiles[agentType]
+	if profile != nil {
+		profile = profile.copy()
+	}
 	pm.mu.RUnlock()
 
 	if profile == nil {

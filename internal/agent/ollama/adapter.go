@@ -147,9 +147,6 @@ func NewAdapterFromEnv() *Adapter {
 
 // Connect establishes a connection to the Ollama server
 func (a *Adapter) Connect(host string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if host == "" {
 		host = DefaultHost
 	}
@@ -160,13 +157,11 @@ func (a *Adapter) Connect(host string) error {
 		host = "http://" + host
 	}
 
-	a.host = host
-
 	// Test connection with a simple API call
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.host+"/api/tags", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", host+"/api/tags", nil)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConnectionFailed, err)
 	}
@@ -181,7 +176,10 @@ func (a *Adapter) Connect(host string) error {
 		return fmt.Errorf("%w: server returned %d", ErrConnectionFailed, resp.StatusCode)
 	}
 
+	a.mu.Lock()
+	a.host = host
 	a.connected = true
+	a.mu.Unlock()
 	return nil
 }
 
@@ -461,7 +459,7 @@ func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (stream <-c
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
-				tokenChan <- Token{Error: ctx.Err()}
+				_ = sendStreamToken(ctx, tokenChan, Token{Error: ctx.Err()})
 				return
 			default:
 			}
@@ -473,13 +471,15 @@ func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (stream <-c
 
 			var ollamaResp ollamaGenerateResponse
 			if err := json.Unmarshal(line, &ollamaResp); err != nil {
-				tokenChan <- Token{Error: fmt.Errorf("failed to parse stream: %w", err)}
+				_ = sendStreamToken(ctx, tokenChan, Token{Error: fmt.Errorf("failed to parse stream: %w", err)})
 				return
 			}
 
-			tokenChan <- Token{
+			if !sendStreamToken(ctx, tokenChan, Token{
 				Content: ollamaResp.Response,
 				Done:    ollamaResp.Done,
+			}) {
+				return
 			}
 
 			if ollamaResp.Done {
@@ -488,11 +488,26 @@ func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (stream <-c
 		}
 
 		if err := scanner.Err(); err != nil {
-			tokenChan <- Token{Error: fmt.Errorf("stream error: %w", err)}
+			_ = sendStreamToken(ctx, tokenChan, Token{Error: fmt.Errorf("stream error: %w", err)})
 		}
 	}()
 
 	return tokenChan, nil
+}
+
+func sendStreamToken(ctx context.Context, tokenChan chan<- Token, token Token) bool {
+	select {
+	case tokenChan <- token:
+		return true
+	default:
+	}
+
+	select {
+	case tokenChan <- token:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // ListModels returns all available models on the Ollama server

@@ -456,6 +456,27 @@ func TestStreamResponse_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestSendStreamTokenStopsWhenCanceledAndChannelFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tokenChan := make(chan Token, 1)
+	tokenChan <- Token{Content: "queued"}
+	cancel()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- sendStreamToken(ctx, tokenChan, Token{Content: "blocked"})
+	}()
+
+	select {
+	case sent := <-done:
+		if sent {
+			t.Fatal("sendStreamToken reported sent after context cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sendStreamToken blocked on a full channel after context cancellation")
+	}
+}
+
 func TestPullModel(t *testing.T) {
 	server := mockOllamaServer(t, map[string]http.HandlerFunc{
 		"/api/tags": func(w http.ResponseWriter, r *http.Request) {

@@ -29,7 +29,7 @@
 package agentmail
 
 import (
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // Not cryptographic; path namespace only.
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -70,42 +70,48 @@ func WriteIdentity(projectKey, paneID, agentName string) (string, error) {
 		return "", fmt.Errorf("agent name must not be empty")
 	}
 	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := writeIdentityFile(path, trimmed+"\n"); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func writeIdentityFile(path, content string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create identity dir %s: %w", dir, err)
+		return fmt.Errorf("create identity dir %s: %w", dir, err)
 	}
 	// Atomic write: temp file in the same directory, then rename.
 	tmp, err := os.CreateTemp(dir, ".identity-*")
 	if err != nil {
-		return "", fmt.Errorf("create temp identity file: %w", err)
+		return fmt.Errorf("create temp identity file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpPath) }
-	content := trimmed + "\n"
 	if _, err := tmp.WriteString(content); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return "", fmt.Errorf("write temp identity file: %w", err)
+		return fmt.Errorf("write temp identity file: %w", err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return "", fmt.Errorf("chmod temp identity file: %w", err)
+		return fmt.Errorf("chmod temp identity file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return "", fmt.Errorf("sync temp identity file: %w", err)
+		return fmt.Errorf("sync temp identity file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
-		return "", fmt.Errorf("close temp identity file: %w", err)
+		return fmt.Errorf("close temp identity file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		cleanup()
-		return "", fmt.Errorf("rename temp identity file: %w", err)
+		return fmt.Errorf("rename temp identity file: %w", err)
 	}
-	return path, nil
+	return nil
 }
 
 // ResolveIdentity returns the agent name stored for the given project/pane,
@@ -160,12 +166,9 @@ func ResolveIdentity(projectKey, paneID string) (name string, path string) {
 // Returns the resolved agent name (empty if none found).
 func MigrateLegacyIdentityIfNeeded(projectKey, paneID string) string {
 	canonical := CanonicalIdentityPath(projectKey, paneID)
-	if _, err := os.Stat(canonical); err == nil {
-		// Canonical already exists; nothing to do.
-		if v, ok := readIdentityFile(canonical); ok {
-			return v
-		}
-		return ""
+	if v, ok := readIdentityFile(canonical); ok {
+		// Canonical already exists with a valid regular identity file; nothing to do.
+		return v
 	}
 	name, found := ResolveIdentity(projectKey, paneID)
 	if found == "" || name == "" {
@@ -187,7 +190,7 @@ func WriteLegacyCompatIdentity(projectKey, paneID, agentName string) string {
 		return ""
 	}
 	p := fmt.Sprintf("/tmp/agent-mail-name.%s.%s", projectSha1Short(projectKey), sanitizePaneID(paneID))
-	if err := os.WriteFile(p, []byte(name+"\n"), 0o600); err != nil {
+	if err := writeIdentityFile(p, name+"\n"); err != nil {
 		return ""
 	}
 	return p
@@ -214,7 +217,7 @@ func configBaseDir() string {
 // projectSha1Short returns the lowercase hex SHA-1 of the project key,
 // truncated to projectHashLen characters. Matches the Rust implementation.
 func projectSha1Short(projectKey string) string {
-	h := sha1.Sum([]byte(projectKey)) // nolint:gosec // Not cryptographic; path namespace only.
+	h := sha1.Sum([]byte(projectKey)) //nolint:gosec // Not cryptographic; path namespace only.
 	full := hex.EncodeToString(h[:])
 	if len(full) < projectHashLen {
 		return full
@@ -267,6 +270,13 @@ func sanitizePaneID(paneID string) string {
 // contents and true, or ("", false) if the file does not exist or the content
 // is empty after trimming.
 func readIdentityFile(path string) (string, bool) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", false
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false

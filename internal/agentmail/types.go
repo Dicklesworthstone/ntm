@@ -164,8 +164,19 @@ type MessageDelivery struct {
 
 // HealthStatus represents the Agent Mail server health check response.
 type HealthStatus struct {
-	Status    string `json:"status"`
-	Timestamp string `json:"timestamp,omitempty"`
+	Status      string          `json:"status"`
+	Timestamp   string          `json:"timestamp,omitempty"`
+	HealthLevel string          `json:"health_level,omitempty"`
+	Recovery    *RecoveryStatus `json:"recovery,omitempty"`
+}
+
+// RecoveryStatus captures the recovery block returned by newer Agent Mail
+// health checks. Older servers omit it.
+type RecoveryStatus struct {
+	Mode       string `json:"mode,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	NextAction string `json:"next_action,omitempty"`
+	BundlePath string `json:"bundle_path,omitempty"`
 }
 
 // MessageReadResult contains the result of marking a message as read.

@@ -12,7 +12,7 @@
 package identityhygiene
 
 import (
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // path namespace, not cryptographic
 	"encoding/hex"
 	"sort"
 	"strings"
@@ -324,7 +324,7 @@ func projectHash(projectKey string) string {
 	if projectKey == "" {
 		return ""
 	}
-	sum := sha1.Sum([]byte(projectKey)) // nolint:gosec // path namespace, not cryptographic
+	sum := sha1.Sum([]byte(projectKey)) //nolint:gosec // path namespace, not cryptographic
 	full := hex.EncodeToString(sum[:])
 	if len(full) < 12 {
 		return full

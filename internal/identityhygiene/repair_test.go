@@ -119,8 +119,8 @@ func TestRepair_EmptyAllowedRootsForcesDryRunEvenIfRequestedMutating(t *testing.
 			LivePanes:        nil,
 			KnownProjectKeys: []string{"x"},
 		},
-		AllowedRoots: nil,    // no roots
-		DryRun:       false,  // caller asked to mutate
+		AllowedRoots: nil,   // no roots
+		DryRun:       false, // caller asked to mutate
 	})
 	if !rep.DryRun {
 		t.Fatalf("empty AllowedRoots must force DryRun, got DryRun=false")

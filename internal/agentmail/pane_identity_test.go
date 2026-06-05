@@ -1,7 +1,7 @@
 package agentmail
 
 import (
-	"crypto/sha1" // nolint:gosec // Not cryptographic; path namespace only.
+	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -114,6 +114,76 @@ func TestWriteIdentityRejectsEmptyName(t *testing.T) {
 	}
 }
 
+func TestResolveIdentityIgnoresCanonicalSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	projectKey := "/symlink/read"
+	paneID := "%11"
+	path := CanonicalIdentityPath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir identity dir: %v", err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside-identity")
+	if err := os.WriteFile(outsidePath, []byte("SpoofedName\n"), 0o600); err != nil {
+		t.Fatalf("write outside identity: %v", err)
+	}
+	if err := os.Symlink(outsidePath, path); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	name, foundPath := ResolveIdentity(projectKey, paneID)
+	if name != "" || foundPath != "" {
+		t.Fatalf("expected symlinked identity to be ignored, got name=%q path=%q", name, foundPath)
+	}
+}
+
+func TestWriteLegacyCompatIdentityDoesNotOverwriteSymlinkTarget(t *testing.T) {
+	projectKey := filepath.Join(t.TempDir(), "project")
+	paneID := "%legacy-symlink"
+	legacyPath := fmt.Sprintf("/tmp/agent-mail-name.%s.%s", projectSha1Short(projectKey), sanitizePaneID(paneID))
+	if _, err := os.Lstat(legacyPath); err == nil {
+		t.Skipf("legacy identity path already exists: %s", legacyPath)
+	}
+	t.Cleanup(func() { _ = os.Remove(legacyPath) })
+
+	outsidePath := filepath.Join(t.TempDir(), "outside-identity")
+	outsideContent := []byte("OutsideName\n")
+	if err := os.WriteFile(outsidePath, outsideContent, 0o600); err != nil {
+		t.Fatalf("write outside identity: %v", err)
+	}
+	if err := os.Symlink(outsidePath, legacyPath); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	writtenPath := WriteLegacyCompatIdentity(projectKey, paneID, "BlueLake")
+	if writtenPath != legacyPath {
+		t.Fatalf("legacy path = %q, want %q", writtenPath, legacyPath)
+	}
+	outside, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("read outside identity: %v", err)
+	}
+	if string(outside) != string(outsideContent) {
+		t.Fatalf("outside identity was overwritten: got %q, want %q", string(outside), string(outsideContent))
+	}
+	info, err := os.Lstat(legacyPath)
+	if err != nil {
+		t.Fatalf("lstat legacy identity: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("legacy identity path is still a symlink")
+	}
+	data, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("read legacy identity: %v", err)
+	}
+	if string(data) != "BlueLake\n" {
+		t.Fatalf("legacy identity content = %q, want %q", string(data), "BlueLake\n")
+	}
+}
+
 func TestResolveIdentityLegacyPathsInPriorityOrder(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -173,6 +243,63 @@ func TestMigrateLegacyIdentityIfNeeded(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) != "GreenOwl" {
 		t.Fatalf("canonical content mismatch: %q", string(data))
+	}
+}
+
+func TestMigrateLegacyIdentityReplacesInvalidCanonicalSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
+
+	projectKey := "/migrate/symlink"
+	paneID := "%6"
+
+	canonical := CanonicalIdentityPath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatalf("mkdir canonical dir: %v", err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside-identity")
+	outsideContent := []byte("SpoofedName\n")
+	if err := os.WriteFile(outsidePath, outsideContent, 0o600); err != nil {
+		t.Fatalf("write outside identity: %v", err)
+	}
+	if err := os.Symlink(outsidePath, canonical); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	oldPath := oldNtmStatePath(projectKey, paneID)
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o700); err != nil {
+		t.Fatalf("mkdir legacy dir: %v", err)
+	}
+	if err := os.WriteFile(oldPath, []byte("GreenOwl\n"), 0o600); err != nil {
+		t.Fatalf("write legacy identity: %v", err)
+	}
+
+	got := MigrateLegacyIdentityIfNeeded(projectKey, paneID)
+	if got != "GreenOwl" {
+		t.Fatalf("expected GreenOwl, got %q", got)
+	}
+	info, err := os.Lstat(canonical)
+	if err != nil {
+		t.Fatalf("lstat canonical identity: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("canonical identity is still a symlink")
+	}
+	canonicalData, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatalf("read canonical identity: %v", err)
+	}
+	if strings.TrimSpace(string(canonicalData)) != "GreenOwl" {
+		t.Fatalf("canonical content = %q, want GreenOwl", string(canonicalData))
+	}
+	outsideData, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("read outside identity: %v", err)
+	}
+	if string(outsideData) != string(outsideContent) {
+		t.Fatalf("outside identity was overwritten: got %q, want %q", string(outsideData), string(outsideContent))
 	}
 }
 

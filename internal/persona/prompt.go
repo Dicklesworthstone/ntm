@@ -22,11 +22,13 @@ func PrepareSystemPromptWithContext(p *Persona, projectDir string, ctx *Template
 	if p == nil || p.SystemPrompt == "" {
 		return "", nil
 	}
+	if err := validatePromptPersonaName(p.Name); err != nil {
+		return "", err
+	}
 
-	// Create prompts directory
-	promptsDir := filepath.Join(projectDir, ".ntm", "prompts")
-	if err := os.MkdirAll(promptsDir, 0755); err != nil {
-		return "", fmt.Errorf("creating prompts directory: %w", err)
+	promptsDir, err := ensurePromptsDir(projectDir)
+	if err != nil {
+		return "", err
 	}
 
 	// Load context if not provided
@@ -71,17 +73,22 @@ func PrepareContextFiles(p *Persona, projectDir string) (string, error) {
 
 	// Expand globs and collect file paths
 	for _, pattern := range p.ContextFiles {
-		// Handle relative patterns
-		fullPattern := pattern
-		if !filepath.IsAbs(pattern) {
-			fullPattern = filepath.Join(projectDir, pattern)
+		fullPattern, err := resolveContextPattern(projectDir, pattern)
+		if err != nil {
+			return "", err
 		}
 
 		matches, err := filepath.Glob(fullPattern)
 		if err != nil {
 			return "", fmt.Errorf("expanding glob %q: %w", pattern, err)
 		}
-		files = append(files, matches...)
+		for _, match := range matches {
+			resolved, err := resolveContextFile(projectDir, match)
+			if err != nil {
+				return "", err
+			}
+			files = append(files, resolved)
+		}
 	}
 
 	if len(files) == 0 {
@@ -300,7 +307,14 @@ func ExpandPromptVarsWithContext(content string, p *Persona, ctx *TemplateContex
 // CleanupPromptFiles removes prompt files for a session.
 // This should be called when a session is killed.
 func CleanupPromptFiles(projectDir string) error {
-	promptsDir := filepath.Join(projectDir, ".ntm", "prompts")
+	ntmDir := filepath.Join(projectDir, ".ntm")
+	if err := validatePromptDir(ntmDir, "ntm"); err != nil {
+		return err
+	}
+	promptsDir := filepath.Join(ntmDir, "prompts")
+	if err := validatePromptDir(promptsDir, "prompts"); err != nil {
+		return err
+	}
 
 	// Check if directory exists
 	if _, err := os.Stat(promptsDir); os.IsNotExist(err) {
@@ -309,4 +323,134 @@ func CleanupPromptFiles(projectDir string) error {
 
 	// Remove the entire prompts directory
 	return os.RemoveAll(promptsDir)
+}
+
+func validatePromptPersonaName(name string) error {
+	if !nameRegex.MatchString(name) {
+		return fmt.Errorf("persona name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", name)
+	}
+	return nil
+}
+
+func validatePromptDir(path, kind string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s path: %w", kind, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s path must not be a symlink: %s", kind, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s path is not a directory: %s", kind, path)
+	}
+	return nil
+}
+
+func ensurePromptsDir(projectDir string) (string, error) {
+	ntmDir := filepath.Join(projectDir, ".ntm")
+	if err := validatePromptDir(ntmDir, "ntm"); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		return "", fmt.Errorf("creating ntm directory: %w", err)
+	}
+	if err := validatePromptDir(ntmDir, "ntm"); err != nil {
+		return "", err
+	}
+
+	promptsDir := filepath.Join(ntmDir, "prompts")
+	if err := validatePromptDir(promptsDir, "prompts"); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		return "", fmt.Errorf("creating prompts directory: %w", err)
+	}
+	if err := validatePromptDir(promptsDir, "prompts"); err != nil {
+		return "", err
+	}
+
+	return promptsDir, nil
+}
+
+func resolveContextPattern(projectDir, pattern string) (string, error) {
+	if strings.TrimSpace(pattern) == "" {
+		return "", fmt.Errorf("context_files pattern cannot be empty")
+	}
+	fullPattern := pattern
+	if !filepath.IsAbs(pattern) {
+		fullPattern = filepath.Join(projectDir, pattern)
+	}
+	if err := ensureWithinProject(projectDir, fullPattern, "context_files pattern"); err != nil {
+		return "", err
+	}
+	return fullPattern, nil
+}
+
+func resolveContextFile(projectDir, path string) (string, error) {
+	if err := ensureWithinProject(projectDir, path, "context file"); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat context file %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("context file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("context file is not a regular file: %s", path)
+	}
+	if err := ensureResolvedWithinProject(projectDir, path, "context file"); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func ensureWithinProject(projectDir, path, kind string) error {
+	projectAbs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("resolving project directory: %w", err)
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s %q: %w", kind, path, err)
+	}
+	rel, err := filepath.Rel(projectAbs, pathAbs)
+	if err != nil {
+		return fmt.Errorf("checking %s %q: %w", kind, path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%s escapes project directory: %s", kind, path)
+	}
+	return nil
+}
+
+func ensureResolvedWithinProject(projectDir, path, kind string) error {
+	projectAbs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("resolving project directory: %w", err)
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s %q: %w", kind, path, err)
+	}
+	projectReal, err := filepath.EvalSymlinks(projectAbs)
+	if err != nil {
+		return fmt.Errorf("resolving project directory symlinks: %w", err)
+	}
+	pathReal, err := filepath.EvalSymlinks(pathAbs)
+	if err != nil {
+		return fmt.Errorf("resolving %s symlinks %q: %w", kind, path, err)
+	}
+	rel, err := filepath.Rel(projectReal, pathReal)
+	if err != nil {
+		return fmt.Errorf("checking resolved %s %q: %w", kind, path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%s escapes project directory through symlink: %s", kind, path)
+	}
+	return nil
 }
