@@ -132,6 +132,78 @@
         }
       }
     },
+    "/api/v1/prompt/preflight": {
+      "post": {
+        "tags": [
+          "prompt"
+        ],
+        "summary": "Lint and validate a prompt before sending",
+        "description": "Lint and validate a prompt before sending\n\n**Safety Level:** safe\n\n**Idempotent:** Yes - safe to retry",
+        "operationId": "prompt_preflight",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreflightInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResult"
+                },
+                "examples": {
+                  "preflight-basic": {
+                    "summary": "Check a prompt for issues",
+                    "value": ""
+                  },
+                  "preflight-strict": {
+                    "summary": "Check with strict mode (all warnings become errors)",
+                    "value": ""
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sessions": {
       "get": {
         "tags": [
@@ -647,6 +719,259 @@
         }
       }
     },
+    "/api/v1/sessions/{session}": {
+      "delete": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Kill a tmux session",
+        "description": "Kill a tmux session\n\n**Safety Level:** danger\n\n**Idempotent:** Yes - safe to retry",
+        "operationId": "sessions_kill",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionKillInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillResponse"
+                },
+                "examples": {
+                  "kill": {
+                    "summary": "Kill a session (prompts confirmation)",
+                    "value": ""
+                  },
+                  "kill-force": {
+                    "summary": "Kill without confirmation",
+                    "value": ""
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session}/controller": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Launch a dedicated controller agent in pane 1",
+        "description": "Launch a dedicated controller agent in pane 1\n\n**Safety Level:** safe",
+        "operationId": "sessions_controller",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControllerInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControllerResponse"
+                },
+                "examples": {
+                  "controller-codex": {
+                    "summary": "Launch controller using Codex agent",
+                    "value": ""
+                  },
+                  "controller-custom": {
+                    "summary": "Launch controller with custom prompt",
+                    "value": ""
+                  },
+                  "controller-default": {
+                    "summary": "Launch controller with default prompt",
+                    "value": ""
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session}/interrupt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Send Ctrl+C to all agent panes in a session",
+        "description": "Send Ctrl+C to all agent panes in a session\n\n**Safety Level:** safe\n\n**Idempotent:** Yes - safe to retry",
+        "operationId": "sessions_interrupt",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "description": "The session identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionInterruptInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptResponse"
+                },
+                "examples": {
+                  "interrupt": {
+                    "summary": "Send Ctrl+C to all agents",
+                    "value": ""
+                  },
+                  "interrupt-tags": {
+                    "summary": "Interrupt only panes with specific tag",
+                    "value": ""
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/version": {
       "get": {
         "tags": [
@@ -715,10 +1040,10 @@
       "ErrorResponse": {
         "type": "object",
         "properties": {
-          "code": {
+          "error": {
             "type": "string"
           },
-          "error": {
+          "error_code": {
             "type": "string"
           },
           "success": {
@@ -731,7 +1056,9 @@
         },
         "required": [
           "success",
-          "error"
+          "error",
+          "error_code",
+          "timestamp"
         ]
       },
       "SuccessResponse": {
@@ -749,13 +1076,16 @@
           }
         },
         "required": [
-          "success"
+          "success",
+          "timestamp"
         ]
       }
     },
     "securitySchemes": {
       "apiKey": {
         "type": "apiKey",
+        "name": "X-API-Key",
+        "in": "header",
         "description": "API key authentication via X-API-Key header"
       },
       "bearerAuth": {
@@ -774,6 +1104,10 @@
     {
       "name": "kernel",
       "description": "Operations related to kernel"
+    },
+    {
+      "name": "prompt",
+      "description": "Operations related to prompt"
     },
     {
       "name": "sessions",

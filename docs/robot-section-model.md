@@ -262,6 +262,41 @@ type SystemQuota struct {
 
 ---
 
+### 4.5.1 Resource Pressure Projection
+
+`--robot-snapshot` also exposes a compact `resource_pressure` object for
+large-swarm operators. It reuses the pressure governor's stable robot
+projection rather than inventing a snapshot-only schema.
+
+```go
+type RobotPressure struct {
+    Success           bool          `json:"success"`
+    Timestamp         string        `json:"timestamp"`
+    Mode              string        `json:"mode"` // observe|enforce
+    Overall           string        `json:"overall"` // low|normal|elevated|high|critical
+    Limiting          []string      `json:"limiting"`
+    RecommendedAction string        `json:"recommended_action"`
+    Enforcing         bool          `json:"enforcing"`
+    Sources           []RobotSource `json:"sources"`
+}
+
+type RobotSource struct {
+    Source string  `json:"source"` // cpu, memory, load, proc_count, rch_queue, ...
+    Value  float64 `json:"value"`
+    Unit   string  `json:"unit,omitempty"` // usually ratio
+    Level  string  `json:"level"`
+}
+```
+
+Operators should treat `overall=high|critical` as a reason to defer
+non-urgent large spawns or assignment bursts. `proc_count` is normalized
+against a host-scaled process budget (`max(CPU*256, 4096)` by default)
+so small laptops and 64+ core swarm hosts can use the same level tokens.
+
+**Used by:** snapshot, spawn admission, future assignment/backpressure gates
+
+---
+
 ### 4.6 Alerts Section
 
 Active alerts requiring attention.

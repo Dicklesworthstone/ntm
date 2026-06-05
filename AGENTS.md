@@ -46,7 +46,7 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 
 We only use **Go** in this project. This is a pure Go project — never introduce non-Go tooling for building or testing.
 
-- **Version:** Go 1.25+ (as specified in `go.mod`)
+- **Version:** Go 1.26.3+ (as specified in `go.mod`)
 - **Lockfiles:** `go.mod` and `go.sum` only
 - **Build:** `go build ./cmd/ntm`
 - **Format:** `gofmt` or `goimports`
