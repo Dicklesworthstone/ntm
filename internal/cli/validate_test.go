@@ -716,3 +716,67 @@ func TestValidateMainConfigReferences_WarnsWhenConfiguredBinaryPathIsDirectory(t
 		t.Fatal("expected integrations.rch.binary_path warning when configured path is a directory")
 	}
 }
+
+// Regression for ntm#136. Before the fix, validateAgentExecutables ran
+// `strings.Fields` against the *un-rendered* agent command template, so
+// directives like `{{if .Model}}gemini ...{{end}}` were tokenized into
+// `{{if`, `memLimitPrefix}}`, etc., and the subsequent `exec.LookPath`
+// emitted spurious "executable not found in PATH" warnings against the
+// template directives. After the fix, the validator renders the
+// template against a stub `AgentTemplateVars{}` first and only checks
+// the resulting concrete executable name.
+func TestValidateAgentExecutables_NoWarningsOnDefaultTemplates(t *testing.T) {
+	cfg := config.Default()
+	// Sanity: the defaults must include at least one template directive
+	// — otherwise the test would silently pass against a future schema
+	// that eliminates templates and the regression would re-emerge for
+	// any consumer that adds one.
+	hasTemplate := false
+	for _, cmd := range []string{cfg.Agents.Claude, cfg.Agents.Codex, cfg.Agents.Gemini} {
+		if config.IsTemplateCommand(cmd) {
+			hasTemplate = true
+			break
+		}
+	}
+	if !hasTemplate {
+		t.Fatal("test pre-condition: at least one default agent command must contain template syntax")
+	}
+
+	result := &ValidationResult{Valid: true, Warnings: []ValidationIssue{}}
+	validateAgentExecutables(cfg, result)
+
+	for _, w := range result.Warnings {
+		// The only legitimate warning here is the underlying executable
+		// (claude/codex/gemini) actually not being on PATH in the test
+		// environment. The bug surfaced as a warning whose Message
+		// contained literal Go template syntax (`{{`, `}}`). Pin against
+		// that — it can't ever be a real PATH lookup result.
+		if strings.Contains(w.Message, "{{") || strings.Contains(w.Message, "}}") {
+			t.Fatalf("regression: warning still contains template syntax: %+v", w)
+		}
+	}
+}
+
+func TestValidateAgentExecutables_BareCommandFlowsThrough(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agents.Claude = "/nonexistent/path/to/claude-binary"
+	cfg.Agents.Codex = ""
+	cfg.Agents.Gemini = ""
+
+	result := &ValidationResult{Valid: true, Warnings: []ValidationIssue{}}
+	validateAgentExecutables(cfg, result)
+
+	foundClaudeWarning := false
+	for _, w := range result.Warnings {
+		if w.Field == "agents.claude" &&
+			strings.Contains(w.Message, "/nonexistent/path/to/claude-binary") {
+			foundClaudeWarning = true
+		}
+	}
+	if !foundClaudeWarning {
+		t.Fatalf(
+			"expected agents.claude warning naming the missing binary; got %+v",
+			result.Warnings,
+		)
+	}
+}

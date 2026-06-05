@@ -11,6 +11,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func newGetAllSessionTextCmd() *cobra.Command {
@@ -110,15 +111,8 @@ func collectSessionStatus(sessionName string, lines int) sessionStatus {
 		return status
 	}
 
-	// Get first window index
-	firstWin, err := tmux.GetFirstWindow(sessionName)
-	if err != nil {
-		firstWin = 1
-	}
-
 	for _, pane := range panes {
-		target := fmt.Sprintf("%s:%d.%d", sessionName, firstWin, pane.Index)
-		captured, err := tmux.CapturePaneOutput(target, lines)
+		captured, err := tmux.CapturePaneOutput(pane.ID, lines)
 		if err != nil {
 			continue
 		}
@@ -204,7 +198,7 @@ func getLastMeaningfulLine(lines []string) string {
 		if line != "" && !isOnlyWhitespaceOrControl(line) {
 			// Truncate long lines
 			if len(line) > 60 {
-				return line[:57] + "..."
+				return util.Truncate(line, 60)
 			}
 			return line
 		}

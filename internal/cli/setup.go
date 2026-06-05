@@ -456,14 +456,16 @@ func splitLines(s string) []string {
 	if s == "" {
 		return []string{}
 	}
-	// Remove trailing newline to avoid empty last element
-	s = strings.TrimSuffix(s, "\n")
-	s = strings.TrimSuffix(s, "\r") // Handle lone \r at end
+	// Remove trailing line endings to avoid empty last elements.
+	s = strings.TrimRight(s, "\r\n")
+	if s == "" {
+		return []string{}
+	}
 
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {
-		// Handle Windows line endings by trimming trailing \r
-		lines = append(lines, strings.TrimSuffix(line, "\r"))
+		// Handle Windows line endings by trimming trailing \r bytes.
+		lines = append(lines, strings.TrimRight(line, "\r"))
 	}
 	return lines
 }
@@ -505,7 +507,12 @@ func registerAgentMailProject(projectPath, configPath string) (bool, string, err
 	registered := false
 	warning := ""
 
-	if !client.IsAvailable() {
+	available, timedOut := boolCallWithTimeout(3*time.Second, func() bool {
+		return client.IsAvailable()
+	})
+	if timedOut {
+		warning = "availability check timed out"
+	} else if !available {
 		warning = "server not available"
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -525,6 +532,23 @@ func registerAgentMailProject(projectPath, configPath string) (bool, string, err
 	}
 
 	return registered, warning, nil
+}
+
+func boolCallWithTimeout(timeout time.Duration, fn func() bool) (value bool, timedOut bool) {
+	resultCh := make(chan bool, 1)
+	go func() {
+		resultCh <- fn()
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case value = <-resultCh:
+		return value, false
+	case <-timer.C:
+		return false, true
+	}
 }
 
 func buildAgentMailProjectUpdates(projectKey string, registered bool, now time.Time) map[string]string {

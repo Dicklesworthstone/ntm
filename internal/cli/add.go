@@ -492,16 +492,12 @@ func runAdd(opts AddOptions) error {
 			var hookSources []string
 
 			if cfg.Integrations.DCG.Enabled && dcg.ShouldConfigureHooks(cfg.Integrations.DCG.Enabled, cfg.Integrations.DCG.BinaryPath) {
-				customWhitelist := cfg.Integrations.DCG.CustomWhitelist
-				if cfg.Integrations.RCH.Enabled && cfg.Integrations.RCH.DCGWhitelist {
-					customWhitelist = dcg.AppendRCHWhitelist(customWhitelist)
-				}
 				dcgOpts := dcg.DCGHookOptions{
 					BinaryPath:      cfg.Integrations.DCG.BinaryPath,
 					AuditLog:        cfg.Integrations.DCG.AuditLog,
-					Timeout:         5000, // 5 second timeout for hook
+					Timeout:         5,
 					CustomBlocklist: cfg.Integrations.DCG.CustomBlocklist,
-					CustomWhitelist: customWhitelist,
+					CustomWhitelist: cfg.Integrations.DCG.CustomWhitelist,
 				}
 				dcgConfig, err := dcg.GenerateHookConfig(dcgOpts)
 				if err == nil {
@@ -516,7 +512,7 @@ func runAdd(opts AddOptions) error {
 				rchHook, err := dcg.GenerateRCHHookEntry(dcg.RCHHookOptions{
 					BinaryPath: cfg.Integrations.RCH.BinaryPath,
 					Patterns:   cfg.Integrations.RCH.InterceptPatterns,
-					Timeout:    5000,
+					Timeout:    5,
 				})
 				if err == nil {
 					preToolHooks = append(preToolHooks, rchHook)

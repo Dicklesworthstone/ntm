@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,6 +86,45 @@ func TestFindGitRoot(t *testing.T) {
 	}
 }
 
+func runGuardTestGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmdArgs := append([]string{"-C", dir}, args...)
+	cmd := exec.Command("git", cmdArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, string(output))
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func initGuardTestGitRepoWithCommit(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "init", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, string(output))
+	}
+	runGuardTestGit(t, repo, "config", "user.email", "ntm-test@example.com")
+	runGuardTestGit(t, repo, "config", "user.name", "NTM Test")
+	runGuardTestGit(t, repo, "commit", "--allow-empty", "-m", "initial")
+	return repo
+}
+
+func TestFindGitHookPathLinkedWorktree(t *testing.T) {
+	t.Parallel()
+	repo := initGuardTestGitRepoWithCommit(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	runGuardTestGit(t, repo, "worktree", "add", linked)
+
+	got, err := findGitHookPath(linked, "pre-commit")
+	if err != nil {
+		t.Fatalf("findGitHookPath: %v", err)
+	}
+	want := filepath.Join(repo, ".git", "hooks", "pre-commit")
+	if got != want {
+		t.Fatalf("hook path = %q, want %q", got, want)
+	}
+}
+
 func TestInstallFallbackGuard(t *testing.T) {
 	// Create a temp directory
 	tmpDir, err := os.MkdirTemp("", "ntm-guards-test-*")
@@ -129,6 +170,42 @@ func TestInstallFallbackGuard(t *testing.T) {
 		if !bytes.Contains(content, []byte(check)) {
 			t.Errorf("expected %q in hook content", check)
 		}
+	}
+}
+
+func TestInstallFallbackGuardDoesNotOverwriteSymlinkTarget(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	hookPath := filepath.Join(tmpDir, "hooks", "pre-commit")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside-hook")
+	outsideContent := "#!/bin/bash\n# ntm-precommit-guard\necho outside\n"
+	if err := os.WriteFile(outsidePath, []byte(outsideContent), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsidePath, hookPath); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	if err := installFallbackGuard(hookPath, "/test/project", "/test/repo"); err != nil {
+		t.Fatalf("installFallbackGuard: %v", err)
+	}
+
+	outside, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("reading outside hook target: %v", err)
+	}
+	if string(outside) != outsideContent {
+		t.Fatalf("outside hook target was overwritten: got %q, want %q", string(outside), outsideContent)
+	}
+	info, err := os.Lstat(hookPath)
+	if err != nil {
+		t.Fatalf("lstat hook path: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("fallback hook path is still a symlink")
 	}
 }
 

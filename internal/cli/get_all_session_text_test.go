@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -191,6 +193,21 @@ func TestGetAgentTypeShort_CanonicalizesAliases(t *testing.T) {
 				t.Fatalf("getAgentTypeShort(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetLastMeaningfulLineTruncatesUTF8Safely(t *testing.T) {
+	line := strings.Repeat("a", 56) + "🌍tail"
+
+	got := getLastMeaningfulLine([]string{line})
+	if !utf8.ValidString(got) {
+		t.Fatalf("getLastMeaningfulLine returned invalid UTF-8: %q", got)
+	}
+	if len(got) > 60 {
+		t.Fatalf("getLastMeaningfulLine length = %d, want <= 60: %q", len(got), got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("getLastMeaningfulLine = %q, want truncated suffix", got)
 	}
 }
 

@@ -26,6 +26,7 @@ func newTmuxIntegrationTestConfig(projectsBase string) *config.Config {
 	testCfg.SessionRecovery.IncludeAgentMail = false
 	testCfg.SessionRecovery.IncludeBeadsContext = false
 	testCfg.SessionRecovery.IncludeCMMemories = false
+	testCfg.GeminiSetup.AutoSelectProModel = false
 
 	return testCfg
 }

@@ -58,8 +58,8 @@ func TestCoordinatorConfigFromTOMLPropagatesValues(t *testing.T) {
 // up. This matches the validation inside SessionCoordinator.Start.
 func TestCoordinatorConfigFromTOMLClampsBelowMinimumDurations(t *testing.T) {
 	toml := config.CoordinatorConfig{
-		PollInterval:   1 * time.Millisecond,        // below MinPollInterval
-		DigestInterval: 1 * time.Second,             // below MinDigestInterval
+		PollInterval:   1 * time.Millisecond, // below MinPollInterval
+		DigestInterval: 1 * time.Second,      // below MinDigestInterval
 		HumanAgent:     "X",
 	}
 	got := coordinatorConfigFromTOML(toml, coordinator.DefaultCoordinatorConfig())

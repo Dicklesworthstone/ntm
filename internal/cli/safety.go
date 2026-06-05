@@ -821,14 +821,29 @@ const claudeHookScript = `#!/bin/bash
 # NTM Safety Hook for Claude Code
 # PreToolUse hook that validates Bash commands
 
+# Claude Code command hooks receive the event payload as JSON on stdin.
+HOOK_INPUT="$(cat)"
+if [ -n "$HOOK_INPUT" ] && command -v jq >/dev/null 2>&1; then
+    TOOL_NAME="$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)"
+    COMMAND="$(printf '%s' "$HOOK_INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)"
+else
+    TOOL_NAME=""
+    COMMAND=""
+fi
+
+# Fall back to legacy env vars if a caller still provides them directly.
+if [ -z "$TOOL_NAME" ]; then
+    TOOL_NAME="${CLAUDE_TOOL_NAME:-}"
+fi
+if [ -z "$COMMAND" ]; then
+    COMMAND="${CLAUDE_TOOL_INPUT_command:-}"
+fi
+
 # Only process Bash tool calls
-TOOL_NAME="${CLAUDE_TOOL_NAME:-}"
 if [ "$TOOL_NAME" != "Bash" ]; then
     exit 0
 fi
 
-# Get the command from the tool input
-COMMAND="${CLAUDE_TOOL_INPUT_command:-}"
 if [ -z "$COMMAND" ]; then
     exit 0
 fi
@@ -861,12 +876,12 @@ if [ $exit_code -ne 0 ]; then
 
     # Return error to Claude Code
     if [ "$action" = "approve" ]; then
-        echo "APPROVAL REQUIRED: $reason"
-        echo "Run 'ntm approve list' to see pending requests."
+        echo "APPROVAL REQUIRED: $reason" >&2
+        echo "Run 'ntm approve list' to see pending requests." >&2
     else
-        echo "BLOCKED: $reason"
+        echo "BLOCKED: $reason" >&2
     fi
-    exit 1
+    exit 2
 fi
 
 exit 0

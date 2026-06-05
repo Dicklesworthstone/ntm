@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -165,8 +166,11 @@ func TestSplitLines(t *testing.T) {
 	}{
 		{"a\nb\nc", []string{"a", "b", "c"}},
 		{"a\nb\nc\n", []string{"a", "b", "c"}},
+		{"a\nb\nc\n\n", []string{"a", "b", "c"}},
+		{"a\r\nb\r\n\r\n", []string{"a", "b"}},
 		{"single", []string{"single"}},
 		{"", []string{}},
+		{"\n\n", []string{}},
 	}
 
 	for _, tc := range tests {
@@ -181,6 +185,40 @@ func TestSplitLines(t *testing.T) {
 			}
 		}
 	}
+}
+
+func FuzzSplitLines(f *testing.F) {
+	seeds := []string{
+		"",
+		"a\nb\nc",
+		"a\nb\nc\n\n",
+		"\n\n",
+		"a\r\nb\r\n",
+		"line\r\n\r\n",
+		"line\rinside\nnext",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, input string) {
+		if len(input) > 4096 {
+			t.Skip()
+		}
+
+		lines := splitLines(input)
+		if strings.TrimRight(input, "\r\n") == "" && len(lines) != 0 {
+			t.Fatalf("expected no lines for all-trailing-line-ending input, got %q", lines)
+		}
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			t.Fatalf("last line should not be empty for input %q: %q", input, lines)
+		}
+		for i, line := range lines {
+			if strings.HasSuffix(line, "\r") {
+				t.Fatalf("line %d still has trailing CR for input %q: %q", i, input, lines)
+			}
+		}
+	})
 }
 
 func TestSetupResponse(t *testing.T) {
@@ -247,5 +285,78 @@ agent_mail_registered_at = "2026-04-01T00:00:00Z"
 	}
 	if !bytes.Contains(content, []byte(`agent_mail_registered_at = ""`)) {
 		t.Fatalf("expected stale registered_at to be cleared, got:\n%s", content)
+	}
+}
+
+func FuzzUpdateTomlSection(f *testing.F) {
+	seeds := []string{
+		"",
+		"[integrations]\nagent_mail_registered = true\n",
+		"[project]\nname = \"demo\"\n\n[integrations]\nagent_mail = false\n",
+		"# comment\n[other]\nvalue = 1\n",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, initial string) {
+		if len(initial) > 4096 {
+			t.Skip()
+		}
+
+		configPath := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		updates := buildAgentMailProjectUpdates("/tmp/project", false, time.Date(2026, time.April, 3, 2, 20, 0, 0, time.UTC))
+		if err := updateTomlSection(configPath, "integrations", updates); err != nil {
+			t.Fatalf("updateTomlSection failed: %v", err)
+		}
+
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		if len(content) == 0 || content[len(content)-1] != '\n' {
+			t.Fatalf("updated config should end with newline, got %q", content)
+		}
+		for _, expected := range []string{
+			"agent_mail = true",
+			`agent_mail_project_key = "/tmp/project"`,
+			"agent_mail_registered = false",
+			`agent_mail_registered_at = ""`,
+		} {
+			if !strings.Contains(string(content), expected) {
+				t.Fatalf("expected %q in updated config, got:\n%s", expected, content)
+			}
+		}
+	})
+}
+
+func TestBoolCallWithTimeout_ReturnsValue(t *testing.T) {
+	value, timedOut := boolCallWithTimeout(50*time.Millisecond, func() bool {
+		return true
+	})
+	if timedOut {
+		t.Fatal("expected function to return before timeout")
+	}
+	if !value {
+		t.Fatal("expected true value from callback")
+	}
+}
+
+func TestBoolCallWithTimeout_TimesOut(t *testing.T) {
+	unblock := make(chan struct{})
+	value, timedOut := boolCallWithTimeout(10*time.Millisecond, func() bool {
+		<-unblock
+		return true
+	})
+	close(unblock)
+	if !timedOut {
+		t.Fatal("expected timeout for blocked callback")
+	}
+	if value {
+		t.Fatal("expected false value when timeout occurs")
 	}
 }

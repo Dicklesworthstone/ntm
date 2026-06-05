@@ -33,6 +33,47 @@ func TestParseAgentSpec_ModelValidation(t *testing.T) {
 	}
 }
 
+// ntm#140: the N:model:effort form threads a reasoning-effort hint
+// through to the agent template.
+func TestParseAgentSpec_ReasoningEffort(t *testing.T) {
+	tests := []struct {
+		value       string
+		wantCount   int
+		wantModel   string
+		wantEffort  string
+		expectError bool
+	}{
+		{"1", 1, "", "", false},
+		{"2:gpt-5", 2, "gpt-5", "", false},
+		{"1:gpt-5:medium", 1, "gpt-5", "medium", false},
+		{"3:gpt-5-codex:xhigh", 3, "gpt-5-codex", "xhigh", false},
+		{"1:gpt-5:", 1, "", "", true}, // empty effort segment rejected
+		{"1:gpt-5:bad effort", 1, "", "", true},
+		{"1:gpt-5:$(pwn)", 1, "", "", true},
+	}
+	for _, tt := range tests {
+		spec, err := ParseAgentSpec(tt.value)
+		if tt.expectError {
+			if err == nil {
+				t.Fatalf("expected error for %q; got spec=%+v", tt.value, spec)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", tt.value, err)
+		}
+		if spec.Count != tt.wantCount {
+			t.Errorf("%q: count=%d want %d", tt.value, spec.Count, tt.wantCount)
+		}
+		if spec.Model != tt.wantModel {
+			t.Errorf("%q: model=%q want %q", tt.value, spec.Model, tt.wantModel)
+		}
+		if spec.ReasoningEffort != tt.wantEffort {
+			t.Errorf("%q: effort=%q want %q", tt.value, spec.ReasoningEffort, tt.wantEffort)
+		}
+	}
+}
+
 // =============================================================================
 // TotalCount
 // =============================================================================
@@ -490,8 +531,8 @@ func TestAgentSpecsValue_SetWithType(t *testing.T) {
 	var specs AgentSpecs
 	v := NewAgentSpecsValue(AgentTypeClaude, &specs)
 
-	if v.Type() != "N[:model]" {
-		t.Errorf("Type() = %q, want N[:model]", v.Type())
+	if v.Type() != "N[:model[:effort]]" {
+		t.Errorf("Type() = %q, want N[:model[:effort]]", v.Type())
 	}
 
 	err := v.Set("2:opus")

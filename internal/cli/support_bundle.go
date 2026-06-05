@@ -19,6 +19,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/bundle"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -476,9 +477,6 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 			continue
 		}
 
-		// Get session info
-		sessionDir := fmt.Sprintf("sessions/%s", sess.Name)
-
 		// Create session snapshot
 		snapshot := map[string]interface{}{
 			"name":     sess.Name,
@@ -488,8 +486,12 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 		}
 
 		snapshotData, _ := json.MarshalIndent(snapshot, "", "  ")
+		snapshotPath, err := supportBundleSessionPath(sess.Name, "snapshot.json")
+		if err != nil {
+			return nil, err
+		}
 		files = append(files, bundleSessionFile{
-			path: filepath.Join(sessionDir, "snapshot.json"),
+			path: snapshotPath,
 			data: snapshotData,
 		})
 
@@ -528,14 +530,23 @@ func collectBundleSessionSnapshots(ctx context.Context, opts supportBundleOption
 				output, _ = redaction.Redact(output, *redactCfg)
 			}
 
+			panePath, err := supportBundleSessionPath(sess.Name, "panes", fmt.Sprintf("pane_%d.txt", pane.Index))
+			if err != nil {
+				return nil, err
+			}
 			files = append(files, bundleSessionFile{
-				path: filepath.Join(sessionDir, "panes", fmt.Sprintf("pane_%d.txt", pane.Index)),
+				path: panePath,
 				data: []byte(output),
 			})
 		}
 	}
 
 	return files, nil
+}
+
+func supportBundleSessionPath(session string, elems ...string) (string, error) {
+	parts := append([]string{"sessions", session}, elems...)
+	return bundle.SanitizeArchivePath(strings.Join(parts, "/"))
 }
 
 func addJSONToBundle(zw *zip.Writer, path string, v interface{}) (ManifestFile, error) {
@@ -547,7 +558,12 @@ func addJSONToBundle(zw *zip.Writer, path string, v interface{}) (ManifestFile, 
 }
 
 func addDataToBundle(zw *zip.Writer, path string, data []byte) (ManifestFile, error) {
-	w, err := zw.Create(path)
+	archivePath, err := bundle.SanitizeArchivePath(path)
+	if err != nil {
+		return ManifestFile{}, err
+	}
+
+	w, err := zw.Create(archivePath)
 	if err != nil {
 		return ManifestFile{}, err
 	}
@@ -558,7 +574,7 @@ func addDataToBundle(zw *zip.Writer, path string, data []byte) (ManifestFile, er
 	}
 
 	return ManifestFile{
-		Path:     path,
+		Path:     archivePath,
 		Size:     int64(n),
 		Checksum: bundleSHA256(data),
 	}, nil

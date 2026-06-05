@@ -155,9 +155,7 @@ func runConflicts(sessionFilter, since string, limit int) error {
 	}
 
 	conflicts := tracker.ConflictsSince(time.Now().Add(-window), resolvedSessionFilter)
-	sort.Slice(conflicts, func(i, j int) bool {
-		return conflicts[i].LastAt.After(conflicts[j].LastAt)
-	})
+	sortConflictsByLastAtThenPath(conflicts)
 	if limit > 0 && len(conflicts) > limit {
 		conflicts = conflicts[:limit]
 	}
@@ -194,6 +192,24 @@ func runConflicts(sessionFilter, since string, limit int) error {
 	}
 
 	return nil
+}
+
+// sortConflictsByLastAtThenPath sorts conflicts newest-LastAt first, with
+// Path as the tiebreaker so the result is deterministic in --json output
+// even when multiple conflicts share a LastAt timestamp.
+//
+// bd-68vr1: pre-fix the runChanges sort used sort.Slice (non-stable) on
+// LastAt alone. bd-rfzj1 made the upstream tracker.DetectConflicts output
+// byte-stable by sorting on (Path, LastAt, Severity), but the non-stable
+// re-sort here destroyed that order for tied timestamps. The explicit
+// Path tiebreaker decouples this output from the upstream sort shape.
+func sortConflictsByLastAtThenPath(conflicts []tracker.Conflict) {
+	sort.Slice(conflicts, func(i, j int) bool {
+		if !conflicts[i].LastAt.Equal(conflicts[j].LastAt) {
+			return conflicts[i].LastAt.After(conflicts[j].LastAt)
+		}
+		return conflicts[i].Path < conflicts[j].Path
+	})
 }
 
 func normalizeTrackedSessionFilter(session string) (string, error) {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -99,6 +100,50 @@ func resetFlags() {
 	robotSmartRestartHardKill = false
 	robotSmartRestartHardKillOnly = false
 	robotFormat = ""
+}
+
+func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
+	origArgs := os.Args
+	t.Cleanup(func() {
+		os.Args = origArgs
+	})
+
+	cmd := &cobra.Command{Use: "ntm"}
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{
+			name: "overlay only",
+			args: []string{"ntm", "--robot-overlay"},
+			want: false,
+		},
+		{
+			name: "overlay with value spelling",
+			args: []string{"ntm", "--robot-overlay=true"},
+			want: false,
+		},
+		{
+			name: "stateful robot flag",
+			args: []string{"ntm", "--robot-status"},
+			want: true,
+		},
+		{
+			name: "stateful flag still wins when mixed",
+			args: []string{"ntm", "--robot-overlay", "--robot-status"},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			if got := shouldInitializeRobotPersistence(cmd); got != tc.want {
+				t.Fatalf("shouldInitializeRobotPersistence() = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func isolateSessionAgentStorage(t *testing.T) {
@@ -1939,6 +1984,53 @@ func TestProjectDirFromHandoffPathSupportsArchive(t *testing.T) {
 	}
 	if got != projectDir {
 		t.Fatalf("project dir = %q, want %q", got, projectDir)
+	}
+}
+
+func TestAddDataToBundleSanitizesArchivePath(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	file, err := addDataToBundle(zw, `dir\test.txt`, []byte("content"))
+	if err != nil {
+		t.Fatalf("addDataToBundle() error = %v", err)
+	}
+	if file.Path != "dir/test.txt" {
+		t.Fatalf("manifest path = %q, want dir/test.txt", file.Path)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("read zip: %v", err)
+	}
+	if len(zr.File) != 1 {
+		t.Fatalf("zip entries = %d, want 1", len(zr.File))
+	}
+	if zr.File[0].Name != "dir/test.txt" {
+		t.Fatalf("zip entry = %q, want dir/test.txt", zr.File[0].Name)
+	}
+}
+
+func TestSupportBundleSessionPathRejectsTraversal(t *testing.T) {
+	if _, err := supportBundleSessionPath("../escape", "snapshot.json"); err == nil {
+		t.Fatal("expected unsafe session path error")
+	}
+}
+
+func TestAddDataToBundleRejectsUnsafeArchivePath(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	t.Cleanup(func() {
+		if err := zw.Close(); err != nil {
+			t.Logf("close zip: %v", err)
+		}
+	})
+
+	if _, err := addDataToBundle(zw, "../escape.txt", []byte("content")); err == nil {
+		t.Fatal("expected unsafe archive path error")
 	}
 }
 

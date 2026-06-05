@@ -609,8 +609,9 @@ func writePlanToFile(plan *swarm.SwarmPlan, path string) error {
 		os.Remove(tmpPath) // best-effort cleanup
 		return err
 	}
+	defer os.Remove(tmpPath) // cleaned up if Rename fails or panics
+
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // best-effort cleanup
 		return err
 	}
 	return nil

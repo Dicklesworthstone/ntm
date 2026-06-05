@@ -902,6 +902,7 @@ func TestGetMemoryContext_NilConfig(t *testing.T) {
 }
 
 func TestGetMemoryContext_EmptyTask(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 
 	// Save and restore global config
 	oldCfg := cfg

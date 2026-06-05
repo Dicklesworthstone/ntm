@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -25,6 +27,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/completion"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -84,12 +87,18 @@ var (
 
 const assignWatchOverlayKey = "F12"
 
+var collectAssignAllocationPressure = collectLiveAssignAllocationPressure
+
 // assignAgentInfo holds information about an agent pane for assignment matching
 type assignAgentInfo struct {
-	pane      tmux.Pane
-	agentType string
-	model     string
-	state     string
+	pane              tmux.Pane
+	agentType         string
+	model             string
+	state             string
+	scrollback        string
+	contextUsage      float64
+	activeAssignments int
+	resourceHeadroom  float64
 }
 
 func newAssignCmd() *cobra.Command {
@@ -697,21 +706,34 @@ type AssignOutputEnhanced struct {
 	Assignments []AssignmentItem      `json:"assignments"`
 	Skipped     []SkippedItem         `json:"skipped"`
 	Summary     AssignSummaryEnhanced `json:"summary"`
+	Allocation  *AssignAllocationView `json:"allocation,omitempty"`
 	Errors      []string              `json:"-"`
 }
 
 // AssignmentItem represents a single assignment in JSON output.
 type AssignmentItem struct {
-	BeadID     string  `json:"bead_id"`
-	BeadTitle  string  `json:"bead_title"`
-	Pane       int     `json:"pane"`
-	AgentType  string  `json:"agent_type"`
-	AgentName  string  `json:"agent_name"`
-	Status     string  `json:"status"`      // assigned|working|completed|failed
-	PromptSent bool    `json:"prompt_sent"` // Whether prompt was sent
-	AssignedAt string  `json:"assigned_at"` // ISO8601 timestamp
-	Score      float64 `json:"score,omitempty"`
-	Reasoning  string  `json:"-"`
+	BeadID          string                            `json:"bead_id"`
+	BeadTitle       string                            `json:"bead_title"`
+	Pane            int                               `json:"pane"`
+	AgentType       string                            `json:"agent_type"`
+	AgentName       string                            `json:"agent_name"`
+	Status          string                            `json:"status"`      // assigned|working|completed|failed
+	PromptSent      bool                              `json:"prompt_sent"` // Whether prompt was sent
+	AssignedAt      string                            `json:"assigned_at"` // ISO8601 timestamp
+	Score           float64                           `json:"score,omitempty"`
+	Reasoning       string                            `json:"reasoning,omitempty"`
+	ReasonCodes     []string                          `json:"reason_codes,omitempty"`
+	ScoreComponents *assign.AllocationScoreComponents `json:"score_components,omitempty"`
+}
+
+// AssignAllocationView is a compact JSON summary of the pressure-aware
+// allocation planner used by balanced assignment recommendations.
+type AssignAllocationView struct {
+	SchemaVersion   string   `json:"schema_version"`
+	Decision        string   `json:"decision"`
+	PressureMissing bool     `json:"pressure_missing,omitempty"`
+	BVMissing       bool     `json:"bv_missing,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
 }
 
 // SkippedItem represents a skipped bead
@@ -778,6 +800,10 @@ type DirectAssignFileReservations struct {
 type DirectAssignData struct {
 	Assignment       *DirectAssignItem             `json:"assignment"`
 	FileReservations *DirectAssignFileReservations `json:"file_reservations,omitempty"`
+	// Receipt is the wrapper-grade dispatch receipt — populated for
+	// both real dispatches and `--dry-run` planning so wrappers can
+	// drop their parallel dispatch log. See ntm#128.
+	Receipt *DispatchReceipt `json:"receipt,omitempty"`
 }
 
 // getAssignOutput builds the assignment output without printing
@@ -1399,10 +1425,11 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 
 		if state == "idle" {
 			idleAgents = append(idleAgents, assignAgentInfo{
-				pane:      pane,
-				agentType: at,
-				model:     model,
-				state:     state,
+				pane:       pane,
+				agentType:  at,
+				model:      model,
+				state:      state,
+				scrollback: scrollback,
 			})
 		}
 	}
@@ -1574,7 +1601,17 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	}
 
 	// Generate assignments using strategy
-	assignments := generateAssignmentsEnhanced(idleAgents, readyBeads, opts)
+	assignments, allocationPlan := generateAssignmentsEnhancedWithPlan(idleAgents, readyBeads, opts, fallbackReason == "")
+	result.Allocation = assignAllocationView(allocationPlan)
+	if allocationPlan != nil && allocationPlan.Decision == assign.AllocationDecisionDefer && len(assignments) == 0 {
+		for _, bead := range readyBeads {
+			result.Skipped = append(result.Skipped, SkippedItem{
+				BeadID:    bead.ID,
+				BeadTitle: bead.Title,
+				Reason:    string(assign.AllocationReasonCriticalPressure),
+			})
+		}
+	}
 
 	// Apply limit
 	if opts.Limit > 0 && len(assignments) > opts.Limit {
@@ -1595,8 +1632,31 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	return result, nil
 }
 
-// generateAssignmentsEnhanced creates assignment recommendations using the enhanced strategy logic
+// generateAssignmentsEnhanced creates assignment recommendations using the enhanced strategy logic.
 func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions) []AssignmentItem {
+	assignments, _ := generateAssignmentsEnhancedWithPlan(agents, beads, opts, true)
+	return assignments
+}
+
+func generateAssignmentsEnhancedWithPlan(agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions, bvAvailable bool) ([]AssignmentItem, *assign.AllocationPlan) {
+	if usesAllocationPlanner(opts) {
+		assignedAt := time.Now().UTC().Format(time.RFC3339)
+		plan := assign.PlanAllocations(buildAssignAllocationInput(agents, beads, opts, bvAvailable))
+		return assignmentItemsFromAllocationPlan(plan, assignedAt), &plan
+	}
+	return generateAssignmentsLegacy(agents, beads, opts), nil
+}
+
+func usesAllocationPlanner(opts *AssignCommandOptions) bool {
+	if opts == nil {
+		return true
+	}
+	strategy := strings.ToLower(strings.TrimSpace(opts.Strategy))
+	return strategy == "" || strategy == "balanced"
+}
+
+// generateAssignmentsLegacy preserves the explicit non-balanced strategy behavior.
+func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions) []AssignmentItem {
 	var assignments []AssignmentItem
 	assignedAt := time.Now().UTC().Format(time.RFC3339)
 	defaultStatus := string(assignment.StatusAssigned)
@@ -1826,6 +1886,238 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 	}
 
 	return assignments
+}
+
+func buildAssignAllocationInput(agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions, bvAvailable bool) assign.AllocationInput {
+	session := ""
+	if opts != nil {
+		session = opts.Session
+	}
+	stats := loadAssignAllocationStats(session)
+	allocationAgents := make([]assign.AllocationAgent, 0, len(agents))
+	totalActive := stats.totalActive
+	totalHeadroom := 0.0
+
+	for _, agentInfo := range agents {
+		agentID := assignAllocationAgentID(session, agentInfo)
+		active := agentInfo.activeAssignments + stats.activeByPane[agentInfo.pane.Index]
+		totalActive += agentInfo.activeAssignments
+		headroom := assignAgentResourceHeadroom(agentInfo, active)
+		totalHeadroom += headroom
+		allocationAgents = append(allocationAgents, assign.AllocationAgent{
+			ID:                agentID,
+			Session:           session,
+			PaneIndex:         agentInfo.pane.Index,
+			AgentType:         tmux.AgentType(agentInfo.agentType).Canonical(),
+			Idle:              agentInfo.state == "" || agentInfo.state == "idle",
+			ContextUsage:      clampAssignScore(agentInfo.contextUsage),
+			ActiveAssignments: active,
+			AssignmentLimit:   1,
+			ResourceHeadroom:  headroom,
+		})
+	}
+
+	sessionHeadroom := 0.0
+	if len(allocationAgents) > 0 {
+		sessionHeadroom = totalHeadroom / float64(len(allocationAgents))
+	}
+
+	return assign.AllocationInput{
+		ReadyBeads: buildAssignAllocationBeads(beads),
+		Agents:     allocationAgents,
+		Sessions: []assign.AllocationSession{{
+			Name:              session,
+			ActiveAssignments: totalActive,
+			AssignmentLimit:   totalActive + len(allocationAgents),
+			ResourceHeadroom:  sessionHeadroom,
+		}},
+		Pressure:    collectAssignAllocationPressure(),
+		Fairness:    assign.AllocationFairness{AgentRecentAssignments: stats.recentByAgent, SessionRecentAssignments: stats.recentBySession},
+		BVAvailable: bvAvailable,
+	}
+}
+
+type assignAllocationStats struct {
+	activeByPane    map[int]int
+	recentByAgent   map[string]int
+	recentBySession map[string]int
+	totalActive     int
+}
+
+func loadAssignAllocationStats(session string) assignAllocationStats {
+	stats := assignAllocationStats{
+		activeByPane:    make(map[int]int),
+		recentByAgent:   make(map[string]int),
+		recentBySession: make(map[string]int),
+	}
+	if strings.TrimSpace(session) == "" {
+		return stats
+	}
+	store, err := assignment.LoadStore(session)
+	if err != nil || store == nil {
+		return stats
+	}
+	for _, item := range store.ListActive() {
+		stats.activeByPane[item.Pane]++
+		stats.totalActive++
+		agentID := assignmentAgentName(session, item.AgentType, item.Pane)
+		stats.recentByAgent[agentID]++
+		stats.recentBySession[session]++
+	}
+	return stats
+}
+
+func buildAssignAllocationBeads(beads []bv.BeadPreview) []assign.AllocationReadyBead {
+	out := make([]assign.AllocationReadyBead, 0, len(beads))
+	for _, bead := range beads {
+		taskType := assign.TaskType(inferTaskTypeFromBead(bead))
+		out = append(out, assign.AllocationReadyBead{
+			ID:           bead.ID,
+			Title:        bead.Title,
+			TaskType:     taskType,
+			Priority:     parsePriorityString(bead.Priority),
+			ResourceCost: assignBeadResourceCost(bead, taskType),
+		})
+	}
+	return out
+}
+
+func assignBeadResourceCost(bead bv.BeadPreview, taskType assign.TaskType) float64 {
+	title := strings.ToLower(bead.Title)
+	if strings.Contains(title, "performance") ||
+		strings.Contains(title, "load") ||
+		strings.Contains(title, "large") ||
+		strings.Contains(title, "swarm") ||
+		strings.Contains(title, "benchmark") {
+		return 0.80
+	}
+	switch taskType {
+	case assign.TaskBug, assign.TaskDocs, assign.TaskDocumentation, assign.TaskTesting, assign.TaskChore:
+		return 0.35
+	case assign.TaskFeature, assign.TaskRefactor, assign.TaskAnalysis:
+		return 0.65
+	default:
+		return 0.50
+	}
+}
+
+func assignAllocationAgentID(session string, agentInfo assignAgentInfo) string {
+	if session != "" {
+		return assignmentAgentName(session, agentInfo.agentType, agentInfo.pane.Index)
+	}
+	return fmt.Sprintf("%s_%d", agentInfo.agentType, agentInfo.pane.Index)
+}
+
+func assignAgentResourceHeadroom(agentInfo assignAgentInfo, activeAssignments int) float64 {
+	if agentInfo.resourceHeadroom > 0 {
+		return clampAssignScore(agentInfo.resourceHeadroom)
+	}
+	contextPenalty := clampAssignScore(agentInfo.contextUsage) * 0.35
+	backlogPenalty := assignScrollbackBacklog(agentInfo.scrollback) * 0.25
+	activePenalty := min(float64(max(activeAssignments, 0))*0.20, 0.60)
+	return clampAssignScore(1.0 - contextPenalty - backlogPenalty - activePenalty)
+}
+
+func assignScrollbackBacklog(scrollback string) float64 {
+	if scrollback == "" {
+		return 0
+	}
+	linePressure := min(float64(strings.Count(scrollback, "\n"))/800.0, 1.0)
+	bytePressure := min(float64(len(scrollback))/200000.0, 1.0)
+	return max(linePressure, bytePressure)
+}
+
+func collectLiveAssignAllocationPressure() assign.AllocationPressure {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	g := pressure.New(pressure.Config{
+		Mode:      pressure.ModeObserve,
+		Providers: []pressure.Provider{pressure.NewSystemProvider()},
+	})
+	snapshot := g.Refresh(ctx)
+	if len(snapshot.Readings) == 0 {
+		return assign.AllocationPressure{}
+	}
+	return assign.AllocationPressure{
+		Available:     true,
+		Level:         snapshot.Overall.String(),
+		Limiting:      assignPressureLimitingSources(snapshot.Limiting),
+		AgentHeadroom: assignPressureAgentHeadroom(snapshot.Overall.String()),
+	}
+}
+
+func assignPressureLimitingSources(sources []pressure.Source) []string {
+	out := make([]string, 0, len(sources))
+	for _, source := range sources {
+		out = append(out, string(source))
+	}
+	return out
+}
+
+func assignPressureAgentHeadroom(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "critical":
+		return 0
+	case "high":
+		return 1
+	case "elevated":
+		return 2
+	default:
+		return 8
+	}
+}
+
+func assignmentItemsFromAllocationPlan(plan assign.AllocationPlan, assignedAt string) []AssignmentItem {
+	items := make([]AssignmentItem, 0, len(plan.Recommendations))
+	for _, recommendation := range plan.Recommendations {
+		components := recommendation.ScoreComponents
+		items = append(items, AssignmentItem{
+			BeadID:          recommendation.BeadID,
+			BeadTitle:       recommendation.BeadTitle,
+			Pane:            recommendation.PaneIndex,
+			AgentType:       string(recommendation.AgentType),
+			AgentName:       recommendation.AgentID,
+			Status:          string(assignment.StatusAssigned),
+			PromptSent:      false,
+			AssignedAt:      assignedAt,
+			Score:           recommendation.Score,
+			Reasoning:       recommendation.Reason,
+			ReasonCodes:     assignAllocationReasonStrings(recommendation.ReasonCodes),
+			ScoreComponents: &components,
+		})
+	}
+	return items
+}
+
+func assignAllocationReasonStrings(reasons []assign.AllocationReasonCode) []string {
+	out := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		out = append(out, string(reason))
+	}
+	return out
+}
+
+func assignAllocationView(plan *assign.AllocationPlan) *AssignAllocationView {
+	if plan == nil {
+		return nil
+	}
+	return &AssignAllocationView{
+		SchemaVersion:   plan.SchemaVersion,
+		Decision:        string(plan.Decision),
+		PressureMissing: plan.Summary.PressureMissing,
+		BVMissing:       plan.Summary.BVMissing,
+		Warnings:        append([]string(nil), plan.Warnings...),
+	}
+}
+
+func clampAssignScore(score float64) float64 {
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
 }
 
 // inferTaskTypeFromBead determines task type from bead metadata
@@ -3593,6 +3885,63 @@ type DirectAssignResult struct {
 	PaneWasBusy    bool                          `json:"pane_was_busy,omitempty"`
 	DepsIgnored    bool                          `json:"deps_ignored,omitempty"`
 	BlockedByBeads []string                      `json:"blocked_by_beads,omitempty"`
+	// Receipt is the wrapper-grade dispatch receipt — pane identity,
+	// prompt fingerprint, reservation outcome, transport status, and
+	// timestamp. Lets downstream automation drop their parallel
+	// dispatch log because the envelope itself is the proof of what
+	// was sent. See ntm#128.
+	Receipt *DispatchReceipt `json:"receipt,omitempty"`
+}
+
+// DispatchReceipt is the stable per-dispatch envelope wrappers consume.
+// Emitted by `ntm assign --pane …` whenever transport to the pane was
+// attempted (success OR transport failure). Refusals that abort before
+// transport (PANE_BUSY, BLOCKED) do not carry a receipt — the
+// envelope's Error/Assignment fields are the proof there. The watch
+// loop's `--dry-run` planner output does not emit per-bead receipts;
+// only the live `--pane` dispatch path does.
+// See ntm#128.
+type DispatchReceipt struct {
+	WorkItemID  string                  `json:"work_item_id"`
+	Pane        DispatchPaneRef         `json:"pane"`
+	Prompt      DispatchPromptInfo      `json:"prompt"`
+	Reservation *DispatchReservation    `json:"reservation,omitempty"`
+	Transport   DispatchTransportStatus `json:"transport"`
+	Timestamp   string                  `json:"timestamp"`
+	DryRun      bool                    `json:"dry_run,omitempty"`
+}
+
+// DispatchPaneRef identifies the pane the work was dispatched to.
+type DispatchPaneRef struct {
+	Session string `json:"session"`
+	Index   int    `json:"index"`
+	ID      string `json:"id,omitempty"`    // tmux %N pane id
+	Title   string `json:"title,omitempty"` // tmux pane title at dispatch time
+}
+
+// DispatchPromptInfo summarizes the prompt that was sent. The hash is
+// SHA-256 over the exact bytes; callers can match against their own
+// hash to confirm wire fidelity.
+type DispatchPromptInfo struct {
+	Length     int    `json:"length"`
+	HashSHA256 string `json:"hash_sha256"`
+	Source     string `json:"source,omitempty"` // e.g. "persona://implementer"
+}
+
+// DispatchReservation summarizes the file-reservation outcome at
+// dispatch time.
+type DispatchReservation struct {
+	Requested []string `json:"requested,omitempty"`
+	Granted   []string `json:"granted,omitempty"`
+	Conflicts []string `json:"conflicts,omitempty"`
+}
+
+// DispatchTransportStatus captures whether the prompt actually reached
+// the pane via tmux send-keys.
+type DispatchTransportStatus struct {
+	Sent       bool   `json:"sent"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
 }
 
 // makeDirectAssignEnvelope creates a standard assign envelope for direct pane assignment JSON output.
@@ -3756,16 +4105,23 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	assignItem.Prompt = prompt
 	assignItem.PromptSent = true
 
-	// Execute the assignment
-	if err := sendPromptWithDoubleEnter(targetPane.ID, prompt); err != nil {
+	// Execute the assignment. Time the transport so the dispatch receipt
+	// (ntm#128) can record duration for downstream automation that
+	// previously kept its own dispatch ledger.
+	transportStart := time.Now()
+	transportErr := sendPromptWithDoubleEnter(targetPane.ID, prompt)
+	transportDurationMs := time.Since(transportStart).Milliseconds()
+	receipt := buildDispatchReceipt(opts.Session, beadID, *targetPane, prompt, opts.Template, fileReservations, transportErr, transportDurationMs, false)
+
+	if transportErr != nil {
 		assignItem.PromptSent = false
-		errMsg := fmt.Sprintf("failed to send prompt: %v", err)
+		errMsg := fmt.Sprintf("failed to send prompt: %v", transportErr)
 
 		if IsJSONOutput() {
-			data := &DirectAssignData{Assignment: assignItem, FileReservations: fileReservations}
+			data := &DirectAssignData{Assignment: assignItem, FileReservations: fileReservations, Receipt: receipt}
 			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, data, "SEND_ERROR", errMsg, warnings))
 		}
-		return err
+		return transportErr
 	}
 
 	// Track in assignment store
@@ -3781,6 +4137,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 		data := &DirectAssignData{
 			Assignment:       assignItem,
 			FileReservations: fileReservations,
+			Receipt:          receipt,
 		}
 		return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, true, data, "", "", warnings))
 	}
@@ -4096,10 +4453,11 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 
 		if state == "idle" {
 			idleAgents = append(idleAgents, assignAgentInfo{
-				pane:      pane,
-				agentType: agentType,
-				model:     model,
-				state:     state,
+				pane:       pane,
+				agentType:  agentType,
+				model:      model,
+				state:      state,
+				scrollback: scrollback,
 			})
 			if verbose {
 				fmt.Fprintf(os.Stderr, "[AUTO] Found idle agent: pane %d (%s)\n", pane.Index, agentType)
@@ -4446,6 +4804,60 @@ func (w *WatchLoop) Summary() string {
 	}
 	return fmt.Sprintf("Watch session: %d assigned, %d completed, %d failed in %v%s",
 		w.totalAssigned, w.totalCompleted, w.totalFailed, duration, suffix)
+}
+
+// buildDispatchReceipt constructs the wrapper-grade dispatch receipt
+// surfaced to JSON callers of `ntm assign --pane`. Captures pane
+// identity, prompt fingerprint (length + SHA-256), reservation
+// outcome, and transport result with timing. See ntm#128.
+func buildDispatchReceipt(
+	session, workItemID string,
+	pane tmux.Pane,
+	prompt, templateSource string,
+	res *DirectAssignFileReservations,
+	transportErr error,
+	durationMs int64,
+	dryRun bool,
+) *DispatchReceipt {
+	r := &DispatchReceipt{
+		WorkItemID: workItemID,
+		Pane: DispatchPaneRef{
+			Session: session,
+			Index:   pane.Index,
+			ID:      pane.ID,
+			Title:   pane.Title,
+		},
+		Prompt: DispatchPromptInfo{
+			Length:     len(prompt),
+			HashSHA256: dispatchPromptHash(prompt),
+			Source:     templateSource,
+		},
+		Transport: DispatchTransportStatus{
+			Sent:       transportErr == nil && !dryRun,
+			DurationMs: durationMs,
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		DryRun:    dryRun,
+	}
+	if transportErr != nil {
+		r.Transport.Error = transportErr.Error()
+	}
+	if res != nil {
+		r.Reservation = &DispatchReservation{
+			Requested: res.Requested,
+			Granted:   res.Granted,
+			Conflicts: res.Denied,
+		}
+	}
+	return r
+}
+
+// dispatchPromptHash returns the SHA-256 of `prompt` hex-encoded so
+// wrappers can prove byte-for-byte equality without storing the prompt
+// itself in their logs.
+func dispatchPromptHash(prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return hex.EncodeToString(sum[:])
 }
 
 // runWatchMode implements the --watch flag for continuous auto-assignment

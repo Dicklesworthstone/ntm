@@ -631,6 +631,33 @@ func TestMailSendOverseer_RedactModeScrubsBodyAndSubject(t *testing.T) {
 	}
 }
 
+// TestMailSend_PreparedRedactionRequiresExplicitSubject pins the
+// regression for the leak that fresh-eyes review uncovered: when the
+// body source is a prepared-redaction handle, the auto-derived
+// subject (truncateSubject(body, 60)) would otherwise dump up to 60
+// chars of the raw token into the audit log and the JSON envelope
+// whenever the configured redaction patterns failed to match the
+// caller's specific token shape. The send must refuse without an
+// explicit `--subject`.
+func TestMailSend_PreparedRedactionRequiresExplicitSubject(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	handle, err := stashPreparedRedaction("aVeryLongSecretValueThatShouldNotLeakIntoTheSubject", "[REDACTED]", nil)
+	if err != nil {
+		t.Fatalf("stash: %v", err)
+	}
+
+	out, execErr := execCommand(t, "mail", "send", "mysession", "--to", "BlueLake", "--prepared-redaction", handle)
+	if execErr == nil {
+		t.Fatalf("expected refusal when --subject is missing; got out=%q", out)
+	}
+	if !strings.Contains(execErr.Error(), "explicit --subject") {
+		t.Fatalf("expected error to mention explicit --subject, got %q", execErr.Error())
+	}
+}
+
 func TestMailSendOverseer_BlockModeRefusesBeforeSend(t *testing.T) {
 	stub := newMailStub(t, nil)
 	defer stub.Close()
@@ -786,7 +813,7 @@ func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 
-	err := runUnlock(session, []string{"internal/cli/*.go"}, false)
+	err := runUnlock(session, []string{"internal/cli/*.go"}, false, -1, "")
 	if err == nil {
 		t.Fatal("expected unlock to fail when no requested reservations were released")
 	}
@@ -1526,7 +1553,7 @@ func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(t.TempDir())
 
-	if err := runUnlock(session, []string{"internal/cli/*.go"}, false); err != nil {
+	if err := runUnlock(session, []string{"internal/cli/*.go"}, false, -1, ""); err != nil {
 		t.Fatalf("runUnlock: %v", err)
 	}
 	if len(stub.releaseCalls) != 1 {
@@ -1561,7 +1588,7 @@ func TestRunUnlockUsesSavedSessionAgentIdentityAndProjectKey(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(t.TempDir())
 
-	if err := runUnlock(session, []string{"internal/cli/*.go"}, false); err != nil {
+	if err := runUnlock(session, []string{"internal/cli/*.go"}, false, -1, ""); err != nil {
 		t.Fatalf("runUnlock: %v", err)
 	}
 	if len(stub.releaseCalls) != 1 {

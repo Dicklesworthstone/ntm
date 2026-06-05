@@ -93,6 +93,44 @@ func sessionProfilePath(name string) string {
 	return filepath.Join(sessionProfileDirFunc(), name+".toml")
 }
 
+func sessionProfilePathInDir(dir, name string) string {
+	return filepath.Join(dir, name+".toml")
+}
+
+func validateSessionProfileDirPath(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat profiles directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("profiles directory must not be a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("profiles path is not a directory: %s", dir)
+	}
+	return nil
+}
+
+func validateSessionProfileFilePath(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat profile file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("profile file must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("profile path is not a regular file: %s", path)
+	}
+	return nil
+}
+
 // SaveSessionProfile writes a profile to disk.
 func SaveSessionProfile(name string, cfg SessionProfile) error {
 	if err := validateSessionProfileName(name); err != nil {
@@ -102,32 +140,61 @@ func SaveSessionProfile(name string, cfg SessionProfile) error {
 		return fmt.Errorf("invalid profile %q: %w", name, err)
 	}
 	dir := sessionProfileDirFunc()
+	if err := validateSessionProfileDirPath(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating profiles directory: %w", err)
 	}
-	f, err := os.Create(sessionProfilePath(name))
+	if err := validateSessionProfileDirPath(dir); err != nil {
+		return err
+	}
+	path := sessionProfilePathInDir(dir, name)
+	if err := validateSessionProfileFilePath(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("creating profile file: %w", err)
 	}
-	defer f.Close()
 	enc := toml.NewEncoder(f)
 	if err := enc.Encode(cfg); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("encoding profile: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing profile file: %w", err)
 	}
 	return nil
 }
 
-// LoadSessionProfile reads a profile from disk.
-func LoadSessionProfile(name string) (*SessionProfile, error) {
+func readSessionProfileData(name string) ([]byte, error) {
 	if err := validateSessionProfileName(name); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(sessionProfilePath(name))
+	dir := sessionProfileDirFunc()
+	if err := validateSessionProfileDirPath(dir); err != nil {
+		return nil, err
+	}
+	path := sessionProfilePathInDir(dir, name)
+	if err := validateSessionProfileFilePath(path); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("profile %q not found", name)
 		}
 		return nil, fmt.Errorf("reading profile: %w", err)
+	}
+	return data, nil
+}
+
+// LoadSessionProfile reads a profile from disk.
+func LoadSessionProfile(name string) (*SessionProfile, error) {
+	data, err := readSessionProfileData(name)
+	if err != nil {
+		return nil, err
 	}
 	return decodeSessionProfile(name, data)
 }
@@ -135,6 +202,9 @@ func LoadSessionProfile(name string) (*SessionProfile, error) {
 // ListSessionProfiles returns the names of all saved profiles (sorted).
 func ListSessionProfiles() ([]string, error) {
 	dir := sessionProfileDirFunc()
+	if err := validateSessionProfileDirPath(dir); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -146,6 +216,9 @@ func ListSessionProfiles() ([]string, error) {
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
 			continue
+		}
+		if e.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("profile file must not be a symlink: %s", filepath.Join(dir, e.Name()))
 		}
 		name := strings.TrimSuffix(e.Name(), ".toml")
 		if err := validateSessionProfileName(name); err != nil {
@@ -165,7 +238,14 @@ func DeleteSessionProfile(name string) error {
 	if err := validateSessionProfileName(name); err != nil {
 		return err
 	}
-	path := sessionProfilePath(name)
+	dir := sessionProfileDirFunc()
+	if err := validateSessionProfileDirPath(dir); err != nil {
+		return err
+	}
+	path := sessionProfilePathInDir(dir, name)
+	if err := validateSessionProfileFilePath(path); err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("profile %q not found", name)
@@ -303,14 +383,11 @@ func newSessionProfileShowCmd() *cobra.Command {
 		Short: "Show a saved profile",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if _, err := LoadSessionProfile(args[0]); err != nil {
+			data, err := readSessionProfileData(args[0])
+			if err != nil {
 				return err
 			}
-			data, err := os.ReadFile(sessionProfilePath(args[0]))
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("profile %q not found", args[0])
-				}
+			if _, err := decodeSessionProfile(args[0], data); err != nil {
 				return err
 			}
 			fmt.Print(string(data))

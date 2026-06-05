@@ -635,7 +635,11 @@ func runUpgrade(checkOnly, force, yes, strict, verbose bool) error {
 	}
 	defer os.RemoveAll(tempDir)
 
-	downloadPath := filepath.Join(tempDir, asset.Name)
+	downloadPath, err := safeJoinUnder(tempDir, asset.Name, "release asset")
+	if err != nil {
+		fmt.Println(errorStyle.Render("✗"))
+		return err
+	}
 	if err := downloadFile(downloadPath, asset.BrowserDownloadURL, asset.Size); err != nil {
 		fmt.Println(errorStyle.Render("✗"))
 		return fmt.Errorf("failed to download: %w", err)
@@ -1075,6 +1079,21 @@ var maxArchiveEntryBytes int64 = 1 << 30 // 1 GB
 // (bd-o7fx1).
 const archiveModeMask = os.ModeSetuid | os.ModeSetgid | os.ModeSticky
 
+func safeJoinUnder(baseDir, name, label string) (string, error) {
+	cleanName := filepath.Clean(strings.TrimSpace(name))
+	if cleanName == "." || !filepath.IsLocal(cleanName) {
+		return "", fmt.Errorf("illegal %s path: %s", label, name)
+	}
+
+	cleanBase := filepath.Clean(baseDir)
+	target := filepath.Join(cleanBase, cleanName)
+	rel, err := filepath.Rel(cleanBase, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("illegal %s path: %s", label, name)
+	}
+	return target, nil
+}
+
 // extractTarGz extracts a tar.gz file and returns the path to the ntm binary
 func extractTarGz(archivePath, destDir string) (string, error) {
 	f, err := os.Open(archivePath)
@@ -1101,10 +1120,9 @@ func extractTarGz(archivePath, destDir string) (string, error) {
 			return "", err
 		}
 
-		target := filepath.Join(destDir, header.Name)
-		// Check for Zip Slip vulnerability
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
-			return "", fmt.Errorf("illegal file path in archive: %s", header.Name)
+		target, err := safeJoinUnder(destDir, header.Name, "archive entry")
+		if err != nil {
+			return "", err
 		}
 
 		switch header.Typeflag {
@@ -1116,6 +1134,10 @@ func extractTarGz(archivePath, destDir string) (string, error) {
 			// Check if this is the ntm binary
 			if header.Name == "ntm" || filepath.Base(header.Name) == "ntm" {
 				binaryPath = target
+			}
+
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return "", err
 			}
 
 			// bd-o7fx1: defense-in-depth — strip setuid/setgid/sticky.
@@ -1167,10 +1189,9 @@ func extractZip(archivePath, destDir string) (string, error) {
 	}
 
 	for _, f := range r.File {
-		target := filepath.Join(destDir, f.Name)
-		// Check for Zip Slip vulnerability
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
-			return "", fmt.Errorf("illegal file path in archive: %s", f.Name)
+		target, err := safeJoinUnder(destDir, f.Name, "archive entry")
+		if err != nil {
+			return "", err
 		}
 
 		if f.FileInfo().IsDir() {

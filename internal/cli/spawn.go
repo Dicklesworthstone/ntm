@@ -619,13 +619,18 @@ type SpawnOptions struct {
 	NoCassContext    bool
 
 	// Recovery suppression (independent of CASS)
-	NoRecovery            bool
-	Prompt                string
-	InitPrompt            string
-	LocalModel            string
-	LocalHost             string
-	LocalFallback         bool
-	LocalFallbackProvider AgentType
+	NoRecovery bool
+	Prompt     string
+	InitPrompt string
+	// InitPromptWithAgentName, when true, prepends a deterministic
+	// `You are agent <session>_<type>_<idx>` preamble to the init prompt
+	// for each pane. Helps multi-agent prompts that key off identity
+	// (Agent Mail handles, beads ownership, etc.). See ntm#138.
+	InitPromptWithAgentName bool
+	LocalModel              string
+	LocalHost               string
+	LocalFallback           bool
+	LocalFallbackProvider   AgentType
 
 	// Hooks
 	NoHooks bool
@@ -660,6 +665,15 @@ type SpawnOptions struct {
 
 	// Git worktree isolation configuration
 	UseWorktrees bool // Enable git worktree isolation for agents
+	// WorktreeName, when set, overrides the auto-derived worktree directory
+	// name (the default is `<agent-type>_<index>`, e.g., `cc_1`). External
+	// orchestrators that drive ntm spawn for multiple labels but share an
+	// agent slot (`--cc=1` across `--label foo|bar|baz`) get matching
+	// `cc_1` directory names and silently share a single worktree — see
+	// ntm#145. Passing `--worktree-name foo` per spawn keeps the paths
+	// distinct. Only honored when len(Agents) == 1 (multi-agent spawns
+	// still need per-agent paths for the isolation contract to hold).
+	WorktreeName string
 
 	// Privacy mode configuration (bd-2u3tv)
 	PrivacyMode  bool // Enable privacy mode (no persistence)
@@ -797,6 +811,7 @@ func newSpawnCmd() *cobra.Command {
 	var contextDays int
 	var prompt string
 	var initPrompt string
+	var initPromptWithAgentName bool
 	var noHooks bool
 	var profilesFlag string
 	var profileSetFlag string
@@ -830,6 +845,7 @@ func newSpawnCmd() *cobra.Command {
 
 	// Git worktree isolation flag
 	var useWorktrees bool
+	var worktreeName string
 
 	// Privacy mode flag (bd-2u3tv)
 	var privacyMode bool
@@ -1157,46 +1173,48 @@ Examples:
 
 			assignAgentFilter := resolveSpawnAssignAgentType(assignAgentType, assignCCOnly, assignCodOnly, assignGmiOnly)
 			opts := SpawnOptions{
-				Session:               sessionName,
-				Agents:                agentSpecs.Flatten(),
-				CCCount:               ccCount,
-				CodCount:              codCount,
-				GmiCount:              gmiCount,
-				UserPane:              !noUserPane,
-				AutoRestart:           autoRestart,
-				RecipeName:            recipeName,
-				PersonaMap:            personaMap,
-				PluginMap:             pluginMap,
-				CassContextQuery:      contextQuery,
-				NoCassContext:         noCassContext,
-				NoRecovery:            noRecovery,
-				Prompt:                prompt,
-				InitPrompt:            initPrompt,
-				LocalModel:            localModel,
-				LocalHost:             localHost,
-				LocalFallback:         localFallback,
-				LocalFallbackProvider: fallbackProvider,
-				NoHooks:               noHooks,
-				Safety:                safety,
-				StaggerMode:           staggerMode,
-				StaggerDelay:          staggerDelay,
-				Stagger:               staggerDuration,
-				StaggerEnabled:        staggerEnabled,
-				ProfileList:           profileList,
-				Assign:                assignEnabled,
-				AssignStrategy:        assignStrategy,
-				AssignLimit:           assignLimit,
-				AssignReadyTimeout:    assignReadyTimeout,
-				AssignVerbose:         assignVerbose,
-				AssignQuiet:           assignQuiet,
-				AssignTimeout:         assignTimeout,
-				AssignAgentType:       assignAgentFilter,
-				UseWorktrees:          useWorktrees,
-				PrivacyMode:           privacyMode,
-				AllowPersist:          allowPersist,
-				MarchingOrders:        marchingOrders,
-				DefaultPrompts:        cfg.Prompts,
-				Label:                 label,
+				Session:                 sessionName,
+				Agents:                  agentSpecs.Flatten(),
+				CCCount:                 ccCount,
+				CodCount:                codCount,
+				GmiCount:                gmiCount,
+				UserPane:                !noUserPane,
+				AutoRestart:             autoRestart,
+				RecipeName:              recipeName,
+				PersonaMap:              personaMap,
+				PluginMap:               pluginMap,
+				CassContextQuery:        contextQuery,
+				NoCassContext:           noCassContext,
+				NoRecovery:              noRecovery,
+				Prompt:                  prompt,
+				InitPrompt:              initPrompt,
+				InitPromptWithAgentName: initPromptWithAgentName,
+				LocalModel:              localModel,
+				LocalHost:               localHost,
+				LocalFallback:           localFallback,
+				LocalFallbackProvider:   fallbackProvider,
+				NoHooks:                 noHooks,
+				Safety:                  safety,
+				StaggerMode:             staggerMode,
+				StaggerDelay:            staggerDelay,
+				Stagger:                 staggerDuration,
+				StaggerEnabled:          staggerEnabled,
+				ProfileList:             profileList,
+				Assign:                  assignEnabled,
+				AssignStrategy:          assignStrategy,
+				AssignLimit:             assignLimit,
+				AssignReadyTimeout:      assignReadyTimeout,
+				AssignVerbose:           assignVerbose,
+				AssignQuiet:             assignQuiet,
+				AssignTimeout:           assignTimeout,
+				AssignAgentType:         assignAgentFilter,
+				UseWorktrees:            useWorktrees,
+				WorktreeName:            worktreeName,
+				PrivacyMode:             privacyMode,
+				AllowPersist:            allowPersist,
+				MarchingOrders:          marchingOrders,
+				DefaultPrompts:          cfg.Prompts,
+				Label:                   label,
 			}
 
 			normalizeSpawnOptions(&opts)
@@ -1259,6 +1277,7 @@ Examples:
 	cmd.Flags().IntVar(&contextDays, "cass-context-days", 0, "Look back N days")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "Prompt to initialize agents with")
 	cmd.Flags().StringVar(&initPrompt, "init-prompt", "", "Prompt to send after agents are ready (used with --assign)")
+	cmd.Flags().BoolVar(&initPromptWithAgentName, "with-agent-name", false, "Prepend a `You are agent <name>` preamble to --init-prompt for each pane so agents know their deterministic identity. See ntm#138.")
 	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "Disable command hooks")
 	cmd.Flags().BoolVar(&safety, "safety", false, "Fail if session already exists (prevents accidental reuse)")
 
@@ -1277,6 +1296,7 @@ Examples:
 
 	// Git worktree isolation flag
 	cmd.Flags().BoolVar(&useWorktrees, "worktrees", false, "Enable git worktree isolation for agents (each agent gets isolated working directory)")
+	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Override the auto-derived worktree directory name (single-agent spawns only). Use this when external orchestrators spawn the same agent slot across multiple --label values — without it, the `cc_1` / `cod_1` paths collide. See ntm#145.")
 
 	// Privacy mode flags (bd-2u3tv)
 	cmd.Flags().BoolVar(&privacyMode, "privacy", false, "Enable privacy mode (disables persistence of session data)")
@@ -1344,6 +1364,16 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 	// Safety check: fail if session already exists (when --safety is enabled)
 	if opts.Safety && tmux.SessionExists(opts.Session) {
 		return outputError(fmt.Errorf("session '%s' already exists (--safety mode prevents reuse; use 'ntm kill %s' first)", opts.Session, opts.Session))
+	}
+
+	// Codex/ChatGPT preflight: when spawning Codex agents without an explicit
+	// model override, refuse loudly if the local `codex` auth is ChatGPT-billed.
+	// OpenAI rejects every `gpt-*-codex` model id with HTTP 400 on ChatGPT
+	// accounts, and the resulting pane *looks* alive (banner present, no
+	// exit) so orchestrators can't detect the failure until they read
+	// output. See ntm#142.
+	if err := preflightCodexAccountSupport(opts.Agents); err != nil {
+		return outputError(err)
 	}
 
 	// Calculate total agents - either from Agents slice or explicit counts (legacy path)
@@ -1522,13 +1552,21 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 	var worktreeManager *worktrees.WorktreeManager
 	if opts.UseWorktrees {
 		worktreeManager = worktrees.NewManager(dir, opts.Session)
+		// Reject `--worktree-name` for multi-agent spawns: it can't serve
+		// every agent without collapsing the isolation contract. See ntm#145.
+		if opts.WorktreeName != "" && len(opts.Agents) > 1 {
+			return outputError(fmt.Errorf(
+				"--worktree-name is only valid for single-agent spawns; got %d agents",
+				len(opts.Agents),
+			))
+		}
 		if !IsJSONOutput() {
 			steps.Start("Creating Git worktrees for agent isolation")
 		}
 
 		// Create worktree for each agent
 		for _, agent := range opts.Agents {
-			agentName := fmt.Sprintf("%s_%d", strings.ToLower(string(agent.Type)), agent.Index)
+			agentName := worktreeAgentName(agent, opts.WorktreeName)
 			if _, err := worktreeManager.CreateForAgent(agentName); err != nil {
 				if !IsJSONOutput() {
 					steps.Fail()
@@ -1777,16 +1815,12 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			var hookSources []string
 
 			if cfg.Integrations.DCG.Enabled && dcg.ShouldConfigureHooks(cfg.Integrations.DCG.Enabled, cfg.Integrations.DCG.BinaryPath) {
-				customWhitelist := cfg.Integrations.DCG.CustomWhitelist
-				if cfg.Integrations.RCH.Enabled && cfg.Integrations.RCH.DCGWhitelist {
-					customWhitelist = dcg.AppendRCHWhitelist(customWhitelist)
-				}
 				dcgOpts := dcg.DCGHookOptions{
 					BinaryPath:      cfg.Integrations.DCG.BinaryPath,
 					AuditLog:        cfg.Integrations.DCG.AuditLog,
-					Timeout:         5000, // 5 second timeout for hook
+					Timeout:         5,
 					CustomBlocklist: cfg.Integrations.DCG.CustomBlocklist,
-					CustomWhitelist: customWhitelist,
+					CustomWhitelist: cfg.Integrations.DCG.CustomWhitelist,
 				}
 				dcgConfig, err := dcg.GenerateHookConfig(dcgOpts)
 				if err == nil {
@@ -1801,7 +1835,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 				rchHook, err := dcg.GenerateRCHHookEntry(dcg.RCHHookOptions{
 					BinaryPath: cfg.Integrations.RCH.BinaryPath,
 					Patterns:   cfg.Integrations.RCH.InterceptPatterns,
-					Timeout:    5000,
+					Timeout:    5,
 				})
 				if err == nil {
 					preToolHooks = append(preToolHooks, rchHook)
@@ -1907,6 +1941,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 			ProjectDir:       dir,
 			SystemPromptFile: systemPromptFile,
 			PersonaName:      personaName,
+			ReasoningEffort:  agent.ReasoningEffort,
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
@@ -1942,7 +1977,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		// Use worktree directory if worktree isolation is enabled
 		workingDir := dir
 		if opts.UseWorktrees && worktreeManager != nil {
-			agentName := fmt.Sprintf("%s_%d", strings.ToLower(string(agent.Type)), agent.Index)
+			agentName := worktreeAgentName(agent, opts.WorktreeName)
 			if wtInfo, err := worktreeManager.GetWorktreeForAgent(agentName); err == nil && wtInfo.Created && wtInfo.Error == "" {
 				workingDir = wtInfo.Path
 			}
@@ -2373,7 +2408,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 
 			var initResult *SpawnInitResult
 			if opts.InitPrompt != "" {
-				agentsReached, initErr := sendInitPromptToReadyAgents(opts.Session, opts.InitPrompt)
+				agentsReached, initErr := sendInitPromptToReadyAgents(opts.Session, opts.InitPrompt, opts.InitPromptWithAgentName)
 				initResult = &SpawnInitResult{
 					PromptSent:    initErr == nil,
 					AgentsReached: agentsReached,
@@ -2513,7 +2548,7 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 
 		if opts.InitPrompt != "" {
 			steps.Start("Sending init prompt to ready agents")
-			agentsReached, initErr := sendInitPromptToReadyAgents(opts.Session, opts.InitPrompt)
+			agentsReached, initErr := sendInitPromptToReadyAgents(opts.Session, opts.InitPrompt, opts.InitPromptWithAgentName)
 			if initErr != nil {
 				steps.Warn()
 				output.PrintWarningf("Init prompt failed: %v", initErr)
@@ -3969,6 +4004,94 @@ type SpawnInitResult struct {
 
 // waitForAgentsReady waits for spawned agents to show ready/idle prompts.
 // Returns the number of ready agents and any error.
+// preflightCodexAccountSupport checks whether any Codex agent in the
+// spawn batch would hit the "model not supported when using Codex with a
+// ChatGPT account" failure mode (ntm#142). OpenAI rejects every
+// `gpt-*-codex` model id on ChatGPT-billed accounts with HTTP 400, and
+// the resulting pane appears alive — so we refuse the spawn at planning
+// time when we can detect this case statically.
+//
+// Detection: run `codex login status`. The CLI prints `Logged in using
+// ChatGPT` for ChatGPT-billed accounts and `Logged in using API key`
+// for API-billed accounts. When the local codex binary is missing or
+// the command fails for any other reason, we silently allow the spawn
+// — we don't want to break setups where the operator has a working
+// flow we can't introspect.
+//
+// We only refuse when (1) at least one agent in the batch is Codex,
+// (2) that agent uses the default model (no explicit `--cod=N:model`
+// override), and (3) the login status is ChatGPT-billed.
+func preflightCodexAccountSupport(agents []FlatAgent) error {
+	// Escape hatches so tests and operators with bespoke Codex setups
+	// can opt out:
+	//   - `NTM_DISABLE_CODEX_PREFLIGHT=1` for explicit opt-out
+	//   - presence of the `test.v` flag (i.e. `go test`) — the test
+	//     harness has no business shelling out to a real codex CLI and
+	//     test machines may legitimately be ChatGPT-billed without it
+	//     being a real spawn.
+	if os.Getenv("NTM_DISABLE_CODEX_PREFLIGHT") != "" {
+		return nil
+	}
+	if flag.Lookup("test.v") != nil {
+		return nil
+	}
+
+	hasDefaultCodex := false
+	for _, a := range agents {
+		if a.Type == AgentTypeCodex && a.Model == "" {
+			hasDefaultCodex = true
+			break
+		}
+	}
+	if !hasDefaultCodex {
+		return nil
+	}
+
+	// `codex login status` is fast (<1s) but bound the wait anyway so a
+	// broken/hung binary doesn't stall the spawn indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "codex", "login", "status").CombinedOutput()
+	if err != nil {
+		// codex CLI missing or errored — don't second-guess the operator's setup.
+		return nil
+	}
+	if !strings.Contains(string(out), "Logged in using ChatGPT") {
+		return nil
+	}
+
+	// Suggest fixing only the default-model Codex agents — agents
+	// that already carry an explicit model (e.g. --cod=1:gpt-5) are
+	// already on a non-Codex model and pass the check.
+	return fmt.Errorf(
+		"refusing to spawn default Codex agent on a ChatGPT-billed account — OpenAI rejects every `gpt-*-codex` model id with HTTP 400 on ChatGPT accounts and the pane will look alive but reject the first prompt. Either upgrade to an API key (Codex CLI > `codex login`) OR pass an explicit non-Codex model: `--cod=%d:gpt-5` (see ntm#142)",
+		countDefaultCodex(agents),
+	)
+}
+
+func countDefaultCodex(agents []FlatAgent) int {
+	n := 0
+	for _, a := range agents {
+		if a.Type == AgentTypeCodex && a.Model == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// worktreeAgentName builds the directory-name component for an agent's
+// worktree. The default is `<agent-type>_<index>` (e.g., `cc_1`), but when
+// `override` is non-empty (set via `--worktree-name`), that takes
+// precedence. The override is the escape hatch for external orchestrators
+// that spawn the same agent slot across multiple `--label` values: see
+// ntm#145 for the cross-contamination scenario.
+func worktreeAgentName(a FlatAgent, override string) string {
+	if override != "" {
+		return override
+	}
+	return fmt.Sprintf("%s_%d", strings.ToLower(string(a.Type)), a.Index)
+}
+
 func waitForAgentsReady(session string, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	pollInterval := 2 * time.Second
@@ -4002,7 +4125,12 @@ func waitForAgentsReady(session string, timeout time.Duration) (int, error) {
 
 // sendInitPromptToReadyAgents sends the init prompt to agents that appear idle.
 // Returns the number of agents that received the prompt.
-func sendInitPromptToReadyAgents(session, prompt string) (int, error) {
+//
+// When `withAgentName` is true, each pane receives a per-pane preamble
+// `You are agent <session>_<type>_<idx>. Use this name when registering
+// with Agent Mail or referring to yourself.` prepended to `prompt`.
+// See ntm#138.
+func sendInitPromptToReadyAgents(session, prompt string, withAgentName bool) (int, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return 0, nil
 	}
@@ -4018,7 +4146,18 @@ func sendInitPromptToReadyAgents(session, prompt string) (int, error) {
 	var errs []string
 
 	for _, pane := range readyPanes {
-		if err := sendPromptWithDoubleEnterForAgent(pane.ID, prompt, pane.Type); err != nil {
+		paneAgentType := detectAgentTypeFromPane(pane)
+		perPanePrompt := prompt
+		if withAgentName {
+			name := assignmentAgentName(session, paneAgentType, pane.Index)
+			if name != "" {
+				perPanePrompt = fmt.Sprintf(
+					"You are agent `%s`. Use this name when registering with Agent Mail or referring to yourself.\n\n%s",
+					name, prompt,
+				)
+			}
+		}
+		if err := sendPromptWithDoubleEnterForAgent(pane.ID, perPanePrompt, pane.Type); err != nil {
 			errs = append(errs, fmt.Sprintf("pane %d: %v", pane.Index, err))
 			continue
 		}

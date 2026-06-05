@@ -188,10 +188,10 @@ func TestAgentSpecsSetAndType(t *testing.T) {
 		}
 	})
 
-	t.Run("Type returns N[:model]", func(t *testing.T) {
+	t.Run("Type returns N[:model[:effort]]", func(t *testing.T) {
 		var specs AgentSpecs
-		if specs.Type() != "N[:model]" {
-			t.Errorf("Type() = %q, want N[:model]", specs.Type())
+		if specs.Type() != "N[:model[:effort]]" {
+			t.Errorf("Type() = %q, want N[:model[:effort]]", specs.Type())
 		}
 	})
 }

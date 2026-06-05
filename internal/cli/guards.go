@@ -95,7 +95,10 @@ func runGuardsInstall(projectKey string, force bool) error {
 		projectKey = repoPath
 	}
 
-	hookPath := filepath.Join(repoPath, ".git", "hooks", "pre-commit")
+	hookPath, err := findGitHookPath(repoPath, "pre-commit")
+	if err != nil {
+		return err
+	}
 
 	// Check if hook already exists
 	if !force && fileExists(hookPath) {
@@ -216,7 +219,7 @@ echo "[ntm-guard] Pre-commit check passed"
 exit 0
 `, safeProjectKey, safeRepoPath)
 
-	return os.WriteFile(hookPath, []byte(script), 0755)
+	return writeGuardHookFile(hookPath, script)
 }
 
 func newGuardsUninstallCmd() *cobra.Command {
@@ -249,7 +252,10 @@ func runGuardsUninstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a git repository: %w", err)
 	}
 
-	hookPath := filepath.Join(repoPath, ".git", "hooks", "pre-commit")
+	hookPath, err := findGitHookPath(repoPath, "pre-commit")
+	if err != nil {
+		return err
+	}
 
 	// Check if hook exists
 	if !fileExists(hookPath) {
@@ -370,7 +376,10 @@ func runGuardsStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	hookPath := filepath.Join(repoPath, ".git", "hooks", "pre-commit")
+	hookPath, err := findGitHookPath(repoPath, "pre-commit")
+	if err != nil {
+		return err
+	}
 
 	// Check MCP availability using the IsAvailable() method
 	client := agentmail.NewClient()
@@ -471,6 +480,56 @@ func findGitRoot(startPath string) (string, error) {
 		return "", fmt.Errorf("finding git root: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func findGitHookPath(repoPath, hookName string) (string, error) {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--git-path", "hooks/"+hookName)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolving git hook path: %w", err)
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", fmt.Errorf("resolving git hook path: empty path")
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	return filepath.Join(repoPath, path), nil
+}
+
+func writeGuardHookFile(path, content string) error {
+	hookDir := filepath.Dir(path)
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		return fmt.Errorf("creating hooks directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(hookDir, ".ntm-guard-*")
+	if err != nil {
+		return fmt.Errorf("creating temporary hook: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temporary hook: %w", err)
+	}
+	if err := tmp.Chmod(0755); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temporary hook: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temporary hook: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("installing hook: %w", err)
+	}
+	cleanup = false
+	return nil
 }
 
 // sanitizeForShellComment sanitizes a string for safe inclusion in a shell comment.

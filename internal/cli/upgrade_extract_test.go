@@ -74,6 +74,35 @@ func TestExtractTarGz_NormalEntryUnderCapSucceeds(t *testing.T) {
 	}
 }
 
+func TestExtractTarGz_NestedEntryWithoutDirectoryHeaderSucceeds(t *testing.T) {
+	archive := writeTarGzWithEntry(t, "release/ntm", []byte("hello"), 0o755)
+	dest := t.TempDir()
+
+	binaryPath, err := extractTarGz(archive, dest)
+	if err != nil {
+		t.Fatalf("extractTarGz failed: %v", err)
+	}
+	if filepath.Base(binaryPath) != "ntm" {
+		t.Errorf("binary path = %q, want path ending in ntm", binaryPath)
+	}
+	if _, err := os.Stat(binaryPath); err != nil {
+		t.Fatalf("stat extracted nested binary: %v", err)
+	}
+}
+
+func TestExtractTarGz_RejectsTraversalEntry(t *testing.T) {
+	archive := writeTarGzWithEntry(t, "../ntm", []byte("hello"), 0o755)
+	dest := t.TempDir()
+
+	_, err := extractTarGz(archive, dest)
+	if err == nil {
+		t.Fatal("extractTarGz returned nil error for traversal entry")
+	}
+	if !strings.Contains(err.Error(), "illegal archive entry path") {
+		t.Fatalf("error = %q, want illegal archive entry path", err.Error())
+	}
+}
+
 func TestExtractTarGz_EntryExceedsCapErrorsWithBombMessage(t *testing.T) {
 	prev := maxArchiveEntryBytes
 	maxArchiveEntryBytes = 1024 // 1 KB ceiling
@@ -146,6 +175,19 @@ func TestExtractZip_EntryExceedsCapErrorsWithBombMessage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "decompression bomb") {
 		t.Errorf("error = %q, want it to mention decompression bomb", err.Error())
+	}
+}
+
+func TestExtractZip_RejectsTraversalEntry(t *testing.T) {
+	archive := writeZipWithEntry(t, "../ntm", []byte("hello"))
+	dest := t.TempDir()
+
+	_, err := extractZip(archive, dest)
+	if err == nil {
+		t.Fatal("extractZip returned nil error for traversal entry")
+	}
+	if !strings.Contains(err.Error(), "illegal archive entry path") {
+		t.Fatalf("error = %q, want illegal archive entry path", err.Error())
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/coordinator"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
@@ -47,21 +48,22 @@ import (
 
 // SendResult is the JSON output for the send command.
 type SendResult struct {
-	Success              bool               `json:"success"`
-	Session              string             `json:"session"`
-	PromptPreview        string             `json:"prompt_preview,omitempty"`
-	NonInteractiveForced bool               `json:"non_interactive_forced,omitempty"`
-	Redaction            *RedactionSummary  `json:"redaction,omitempty"`
-	Warnings             []string           `json:"warnings,omitempty"`
-	Blocked              bool               `json:"blocked,omitempty"`
-	ErrorCode            string             `json:"error_code,omitempty"`
-	Randomized           bool               `json:"randomized,omitempty"`
-	SeedUsed             int64              `json:"seed_used,omitempty"`
-	Targets              []int              `json:"targets"`
-	Delivered            int                `json:"delivered"`
-	Failed               int                `json:"failed"`
-	RoutedTo             *SendRoutingResult `json:"routed_to,omitempty"`
-	Error                string             `json:"error,omitempty"`
+	Success              bool                                `json:"success"`
+	Session              string                              `json:"session"`
+	PromptPreview        string                              `json:"prompt_preview,omitempty"`
+	NonInteractiveForced bool                                `json:"non_interactive_forced,omitempty"`
+	Redaction            *RedactionSummary                   `json:"redaction,omitempty"`
+	Warnings             []string                            `json:"warnings,omitempty"`
+	Blocked              bool                                `json:"blocked,omitempty"`
+	ErrorCode            string                              `json:"error_code,omitempty"`
+	Randomized           bool                                `json:"randomized,omitempty"`
+	SeedUsed             int64                               `json:"seed_used,omitempty"`
+	Targets              []int                               `json:"targets"`
+	Delivered            int                                 `json:"delivered"`
+	Failed               int                                 `json:"failed"`
+	RoutedTo             *SendRoutingResult                  `json:"routed_to,omitempty"`
+	DispatchPacing       *coordinator.DispatchPacingDecision `json:"dispatch_pacing,omitempty"`
+	Error                string                              `json:"error,omitempty"`
 }
 
 type SendDryRunEntry struct {
@@ -74,19 +76,20 @@ type SendDryRunEntry struct {
 }
 
 type SendDryRunResult struct {
-	Success              bool               `json:"success"`
-	DryRun               bool               `json:"dry_run"`
-	Session              string             `json:"session"`
-	NonInteractiveForced bool               `json:"non_interactive_forced,omitempty"`
-	Redaction            *RedactionSummary  `json:"redaction,omitempty"`
-	Warnings             []string           `json:"warnings,omitempty"`
-	Blocked              bool               `json:"blocked,omitempty"`
-	ErrorCode            string             `json:"error_code,omitempty"`
-	Total                int                `json:"total"`
-	WouldSend            []SendDryRunEntry  `json:"would_send"`
-	RoutedTo             *SendRoutingResult `json:"routed_to,omitempty"`
-	Message              string             `json:"message,omitempty"`
-	Error                string             `json:"error,omitempty"`
+	Success              bool                                `json:"success"`
+	DryRun               bool                                `json:"dry_run"`
+	Session              string                              `json:"session"`
+	NonInteractiveForced bool                                `json:"non_interactive_forced,omitempty"`
+	Redaction            *RedactionSummary                   `json:"redaction,omitempty"`
+	Warnings             []string                            `json:"warnings,omitempty"`
+	Blocked              bool                                `json:"blocked,omitempty"`
+	ErrorCode            string                              `json:"error_code,omitempty"`
+	Total                int                                 `json:"total"`
+	WouldSend            []SendDryRunEntry                   `json:"would_send"`
+	RoutedTo             *SendRoutingResult                  `json:"routed_to,omitempty"`
+	DispatchPacing       *coordinator.DispatchPacingDecision `json:"dispatch_pacing,omitempty"`
+	Message              string                              `json:"message,omitempty"`
+	Error                string                              `json:"error,omitempty"`
 }
 
 // SendRoutingResult contains routing decision info for smart routing.
@@ -229,6 +232,10 @@ type SendOptions struct {
 	Randomize      bool  // Randomize send order for individualized prompts
 	Seed           int64 // Deterministic seed (only used when Randomize=true)
 	PriorityOrder  bool  // Sort batch prompts by priority (P0 first)
+	PaceDispatch   bool  // Include advisory dispatch pacing in JSON/dry-run output
+
+	// Runtime/test injection for advisory dispatch pacing.
+	DispatchPacingInput *coordinator.DispatchPacingInput
 
 	// Smart routing options
 	SmartRoute    bool   // Use smart routing to select best agent
@@ -370,13 +377,25 @@ func (s SendTargets) MatchesPane(pane tmux.Pane) bool {
 
 // matchesSendTarget checks if a pane matches a send target.
 func matchesSendTarget(pane tmux.Pane, target SendTarget) bool {
-	if normalizeAgentType(string(pane.Type)) != normalizeAgentType(string(target.Type)) {
+	if sendValueNotEqual(normalizeAgentType(string(pane.Type)), normalizeAgentType(string(target.Type))) {
 		return false
 	}
-	if target.Variant != "" && pane.Variant != target.Variant {
+	if sendValueNotEqual(target.Variant, "") && sendValueNotEqual(pane.Variant, target.Variant) {
 		return false
 	}
 	return true
+}
+
+func sendValueEqual[T comparable](left, right T) bool {
+	return left == right
+}
+
+func sendValueNotEqual[T comparable](left, right T) bool {
+	return !sendValueEqual(left, right)
+}
+
+func sendErrorIsNil(err error) bool {
+	return err == nil
 }
 
 func matchesLegacySendTypeFilter(pane tmux.Pane, targetCC, targetCod, targetGmi bool) bool {
@@ -509,6 +528,7 @@ func newSendCmd() *cobra.Command {
 	var randomize bool
 	var seed int64
 	var priorityOrder bool
+	var paceDispatch bool
 	var basePrompt string
 	var basePromptFile string
 
@@ -658,6 +678,7 @@ func newSendCmd() *cobra.Command {
 					Randomize:           randomize,
 					Seed:                seed,
 					PriorityOrder:       priorityOrder,
+					PaceDispatch:        paceDispatch,
 				}
 				return runSendBatch(batchOpts)
 			}
@@ -695,6 +716,7 @@ func newSendCmd() *cobra.Command {
 				DryRun:              dryRun,
 				Randomize:           randomize,
 				Seed:                seed,
+				PaceDispatch:        paceDispatch,
 			}
 
 			// Handle template-based prompts
@@ -777,6 +799,7 @@ func newSendCmd() *cobra.Command {
 	// Randomization flags
 	cmd.Flags().BoolVar(&randomize, "randomize", false, "Randomize send order for individualized prompts (reduces thundering herd)")
 	cmd.Flags().Int64Var(&seed, "seed", 0, "Deterministic seed for --randomize (0 = time-based)")
+	cmd.Flags().BoolVar(&paceDispatch, "pace-dispatch", false, "Include advisory dispatch pacing in JSON and dry-run output without changing send behavior")
 
 	// Priority ordering flag (bd-2wzs)
 	cmd.Flags().BoolVar(&priorityOrder, "priority-order", false, "Sort batch prompts by priority (P0 first, annotate with '# priority: N')")
@@ -816,7 +839,7 @@ func runSendProject(cmd *cobra.Command, project string, args []string, targets S
 
 	var matching []tmux.Session
 	for _, s := range sessions {
-		if config.SessionBase(s.Name) == project {
+		if sendValueEqual(config.SessionBase(s.Name), project) {
 			matching = append(matching, s)
 		}
 	}
@@ -1206,7 +1229,7 @@ func runSendInternal(opts SendOptions) (err error) {
 			"delivered":      delivered,
 			"failed":         failed,
 			"dry_run":        dryRun,
-			"success":        err == nil,
+			"success":        sendErrorIsNil(err),
 			"correlation_id": auditCorrelationID,
 		}
 		if err != nil {
@@ -1314,7 +1337,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	// CASS Duplicate Detection
 	if opts.CassCheck {
 		if err := checkCassDuplicates(session, sessionInferred, prompt, opts.CassSimilarity, opts.CassCheckDays, opts.ForceNonInteractive); err != nil {
-			if err.Error() == "aborted by user" {
+			if strings.Compare(err.Error(), "aborted by user") == 0 {
 				fmt.Println("Aborted.")
 				return nil
 			}
@@ -1416,7 +1439,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	var selectedPanes []tmux.Pane
 	if paneIndex >= 0 {
 		for _, p := range panes {
-			if p.Index == paneIndex {
+			if sendValueEqual(p.Index, paneIndex) {
 				selectedPanes = append(selectedPanes, p)
 				break
 			}
@@ -1491,7 +1514,7 @@ func runSendInternal(opts SendOptions) (err error) {
 				}
 			} else if noFilter {
 				// Default mode: skip non-agent panes
-				if p.Type == tmux.AgentUser {
+				if sendValueEqual(p.Type, tmux.AgentUser) {
 					continue
 				}
 			}
@@ -1515,6 +1538,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	}
 	histTargets = targetPanes
 	histAgentTypes = targetAgentTypes
+	dispatchPacing := buildDispatchPacingDecision(opts, session, selectedPanes)
 
 	if opts.Randomize && len(targetPanes) > 1 && !jsonOutput {
 		fmt.Fprintf(os.Stderr, "Randomized send order (seed=%d): %v\n", seedUsed, targetPanes)
@@ -1538,6 +1562,7 @@ func runSendInternal(opts SendOptions) (err error) {
 			Total:                len(entries),
 			WouldSend:            entries,
 			RoutedTo:             opts.routingResult,
+			DispatchPacing:       dispatchPacing,
 			Message:              "use without --dry-run to execute",
 		})
 	}
@@ -1562,6 +1587,7 @@ func runSendInternal(opts SendOptions) (err error) {
 					Delivered:            delivered,
 					Failed:               failed,
 					RoutedTo:             opts.routingResult,
+					DispatchPacing:       dispatchPacing,
 					Error:                err.Error(),
 				}
 				// bd-oqwmf: signal non-zero exit after the success:false envelope.
@@ -1586,6 +1612,7 @@ func runSendInternal(opts SendOptions) (err error) {
 				Delivered:            delivered,
 				Failed:               failed,
 				RoutedTo:             opts.routingResult,
+				DispatchPacing:       dispatchPacing,
 			}
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
@@ -1649,7 +1676,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	// JSON output mode
 	if jsonOutput {
 		result := SendResult{
-			Success:              failed == 0,
+			Success:              sendValueEqual(failed, 0),
 			Session:              session,
 			PromptPreview:        truncatePrompt(prompt, 50),
 			NonInteractiveForced: opts.ForceNonInteractive,
@@ -1661,6 +1688,7 @@ func runSendInternal(opts SendOptions) (err error) {
 			Delivered:            delivered,
 			Failed:               failed,
 			RoutedTo:             opts.routingResult,
+			DispatchPacing:       dispatchPacing,
 		}
 		if failed > 0 {
 			result.Error = fmt.Sprintf("%d pane(s) failed", failed)
@@ -1692,10 +1720,10 @@ func runSendInternal(opts SendOptions) (err error) {
 }
 
 func paneAgentLabel(p tmux.Pane) string {
-	if p.Type != tmux.AgentUnknown && p.Type != tmux.AgentUser && p.NTMIndex > 0 {
+	if sendValueNotEqual(p.Type, tmux.AgentUnknown) && sendValueNotEqual(p.Type, tmux.AgentUser) && p.NTMIndex > 0 {
 		return fmt.Sprintf("%s_%d", p.Type, p.NTMIndex)
 	}
-	if p.Type == tmux.AgentUser {
+	if sendValueEqual(p.Type, tmux.AgentUser) {
 		return "user"
 	}
 	if p.Title != "" {
@@ -1719,6 +1747,45 @@ func buildSendDryRunEntries(panes []tmux.Pane, prompt string, source string) []S
 		})
 	}
 	return entries
+}
+
+func buildDispatchPacingDecision(opts SendOptions, session string, panes []tmux.Pane) *coordinator.DispatchPacingDecision {
+	if !opts.PaceDispatch && opts.DispatchPacingInput == nil {
+		return nil
+	}
+
+	input := coordinator.DispatchPacingInput{
+		Session:          session,
+		RequestedTargets: len(panes),
+		PaneHealth:       dispatchPacingPaneHealth(panes),
+	}
+	if opts.DispatchPacingInput != nil {
+		input = *opts.DispatchPacingInput
+		if strings.Compare(strings.TrimSpace(input.Session), "") == 0 {
+			input.Session = session
+		}
+		if input.RequestedTargets <= 0 {
+			input.RequestedTargets = len(panes)
+		}
+		if len(input.PaneHealth) == 0 {
+			input.PaneHealth = dispatchPacingPaneHealth(panes)
+		}
+	}
+
+	decision := coordinator.EvaluateDispatchPacing(input)
+	return &decision
+}
+
+func dispatchPacingPaneHealth(panes []tmux.Pane) []coordinator.DispatchPaneHealth {
+	health := make([]coordinator.DispatchPaneHealth, 0, len(panes))
+	for _, pane := range panes {
+		health = append(health, coordinator.DispatchPaneHealth{
+			PaneIndex: pane.Index,
+			AgentType: pane.Type.Canonical().String(),
+			Healthy:   true,
+		})
+	}
+	return health
 }
 
 func printSendDryRunResult(result SendDryRunResult) error {
@@ -2172,7 +2239,7 @@ func runKillProject(w io.Writer, project string, force bool, tags []string, noHo
 
 	var targets []tmux.Session
 	for _, s := range sessions {
-		if config.SessionBase(s.Name) == project {
+		if sendValueEqual(config.SessionBase(s.Name), project) {
 			targets = append(targets, s)
 		}
 	}
@@ -2627,10 +2694,10 @@ func hasNonClaudeTargets(panes []tmux.Pane) bool {
 }
 
 func isNonClaudeAgent(p tmux.Pane) bool {
-	if p.Type == tmux.AgentUser {
+	if sendValueEqual(p.Type, tmux.AgentUser) {
 		return false
 	}
-	return p.Type != tmux.AgentClaude
+	return sendValueNotEqual(p.Type, tmux.AgentClaude)
 }
 
 func extractLikelyCommands(prompt string) []string {
@@ -2689,7 +2756,7 @@ func looksLikeShellCommand(line string) bool {
 }
 
 func sendPromptToPane(session string, p tmux.Pane, prompt string) error {
-	if p.Type == tmux.AgentUser {
+	if sendValueEqual(p.Type, tmux.AgentUser) {
 		if err := tmux.PasteKeys(p.ID, prompt, true); err != nil {
 			return err
 		}
@@ -2712,14 +2779,14 @@ func sendPromptWithDoubleEnterForAgent(paneID, prompt string, agentType tmux.Age
 }
 
 func addTimelinePromptMarker(session string, p tmux.Pane, prompt string) {
-	if session == "" {
+	if strings.Compare(session, "") == 0 {
 		return
 	}
-	if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+	if sendValueEqual(p.Type, tmux.AgentUser) || sendValueEqual(p.Type, tmux.AgentUnknown) {
 		return
 	}
 	agentID := timelineAgentIDFromPane(p)
-	if agentID == "" {
+	if strings.Compare(agentID, "") == 0 {
 		return
 	}
 	tracker := state.GetGlobalTimelineTracker()
@@ -2761,11 +2828,11 @@ func addTimelineStopMarkers(session string, panes []tmux.Pane) {
 	}
 
 	for _, p := range panes {
-		if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+		if sendValueEqual(p.Type, tmux.AgentUser) || sendValueEqual(p.Type, tmux.AgentUnknown) {
 			continue
 		}
 		agentID := timelineAgentIDFromPane(p)
-		if agentID == "" {
+		if strings.Compare(agentID, "") == 0 {
 			continue
 		}
 		tracker.AddMarker(state.TimelineMarker{
@@ -2778,10 +2845,10 @@ func addTimelineStopMarkers(session string, panes []tmux.Pane) {
 }
 
 func timelineAgentIDFromPane(p tmux.Pane) string {
-	if p.NTMIndex > 0 && p.Type != tmux.AgentUnknown && p.Type != tmux.AgentUser {
+	if p.NTMIndex > 0 && sendValueNotEqual(p.Type, tmux.AgentUnknown) && sendValueNotEqual(p.Type, tmux.AgentUser) {
 		return fmt.Sprintf("%s_%d", p.Type, p.NTMIndex)
 	}
-	if p.Title != "" {
+	if strings.Compare(p.Title, "") != 0 {
 		if suffix := tmux.PaneTitleSuffix(p.Title); suffix != "" {
 			return suffix
 		}
@@ -3124,7 +3191,7 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool, dr
 	// Summary
 	if jsonOutput {
 		result := map[string]interface{}{
-			"success":   failed == 0,
+			"success":   sendValueEqual(failed, 0),
 			"session":   session,
 			"delivered": delivered,
 			"failed":    failed,
@@ -3218,7 +3285,7 @@ func parseBatchFile(path string) ([]BatchPrompt, error) {
 		for i, line := range lines {
 			lineNo := i + 1
 			trimmed := strings.TrimSpace(line)
-			if trimmed == "---" {
+			if strings.Compare(trimmed, "---") == 0 {
 				flushBlock()
 				blockLines = nil
 				blockStartLine = 0
@@ -3303,14 +3370,14 @@ func sortBatchByPriority(prompts []BatchPrompt) {
 	sort.SliceStable(prompts, func(i, j int) bool {
 		pi, pj := prompts[i].Priority, prompts[j].Priority
 		// Both unset: preserve order
-		if pi == -1 && pj == -1 {
+		if sendValueEqual(pi, -1) && sendValueEqual(pj, -1) {
 			return false
 		}
 		// Unset sorts last
-		if pi == -1 {
+		if sendValueEqual(pi, -1) {
 			return false
 		}
-		if pj == -1 {
+		if sendValueEqual(pj, -1) {
 			return true
 		}
 		return pi < pj
@@ -3370,14 +3437,14 @@ func filterPanesForBatch(panes []tmux.Pane, opts SendOptions) []tmux.Pane {
 
 		// If no filters specified, include all non-user panes
 		if noFilter {
-			if p.Type != tmux.AgentUser {
+			if sendValueNotEqual(p.Type, tmux.AgentUser) {
 				filtered = append(filtered, p)
 			}
 			continue
 		}
 
 		// Skip user panes unless --all was specified
-		if p.Type == tmux.AgentUser {
+		if sendValueEqual(p.Type, tmux.AgentUser) {
 			continue
 		}
 

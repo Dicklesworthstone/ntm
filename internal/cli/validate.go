@@ -342,8 +342,35 @@ func validateAgentExecutables(cfg *config.Config, result *ValidationResult) {
 		if cmd == "" {
 			continue
 		}
-		// Extract the executable from the command, skipping env var assignments
-		parts := strings.Fields(cmd)
+		// The agent command is a Go template. Render it with the stub
+		// validation context (ModelRequested=false, all conditionals
+		// degrade to their defaults) before tokenizing — otherwise a
+		// template like `{{if .Model}}gemini --model {{shellQuote
+		// .Model}}{{end}}` parses as the literal tokens "{{if",
+		// "memLimitPrefix}}", etc. and trips the PATH lookup against
+		// template directives rather than the actual executable name.
+		rendered := cmd
+		if config.IsTemplateCommand(cmd) {
+			out, err := config.GenerateAgentCommand(cmd, config.AgentTemplateVars{})
+			if err != nil {
+				// Surface the template parse/exec error as a warning
+				// against the same field; do NOT fall back to the raw
+				// template (the resulting executable name is bogus).
+				result.Warnings = append(result.Warnings, ValidationIssue{
+					Field:   field,
+					Message: fmt.Sprintf("agent command template failed to render: %v", err),
+				})
+				continue
+			}
+			rendered = out
+		}
+
+		// Extract the executable from the rendered command, skipping env
+		// var assignments. After rendering, the first non-`=` token is
+		// the actual executable. An empty rendered command means every
+		// conditional evaluated to false — there's literally no
+		// executable being invoked, so there's nothing to check.
+		parts := strings.Fields(rendered)
 		exe := ""
 		for _, part := range parts {
 			// Skip environment variable assignments (e.g., NODE_OPTIONS="...")

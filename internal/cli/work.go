@@ -18,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/commitlint"
+	ideaplan "github.com/Dicklesworthstone/ntm/internal/ideation"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot/assurance"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
@@ -244,6 +245,12 @@ func newWorkQueueDryCmd() *cobra.Command {
 		commitLimit     int
 		syncLagMinutes  int
 		maxStaleEntries int
+		ideate          bool
+		force           bool
+		includeNextBest bool
+		createBeads     bool
+		confirmCreate   bool
+		planVersion     string
 	)
 
 	cmd := &cobra.Command{
@@ -256,17 +263,33 @@ This command is advisory-only. It does not claim, reopen, or create beads automa
 Examples:
   ntm work queue-dry
   ntm work queue-dry --format=json
+  ntm work queue-dry --ideate --format=markdown
+  ntm work queue-dry --ideate --create-beads --yes
+  ntm work queue-dry --ideate --force --format=json
   ntm work queue-dry --stale-hours=24 --commits=5`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWorkQueueDry(format, staleHours, commitLimit, syncLagMinutes, maxStaleEntries)
+			return runWorkQueueDry(format, staleHours, commitLimit, syncLagMinutes, maxStaleEntries, QueueDryIdeationOptions{
+				Requested:       ideate || createBeads,
+				Force:           force,
+				IncludeNextBest: includeNextBest,
+				CreateBeads:     createBeads,
+				ConfirmCreate:   confirmCreate,
+				PlanVersion:     planVersion,
+			})
 		},
 	}
 
-	cmd.Flags().StringVar(&format, "format", "", "Output format: text or json")
+	cmd.Flags().StringVar(&format, "format", "", "Output format: text, json, or markdown")
 	cmd.Flags().IntVar(&staleHours, "stale-hours", 24, "Mark in_progress beads older than this many hours as stale")
 	cmd.Flags().IntVar(&commitLimit, "commits", 5, "Number of recent commits to include in evidence")
 	cmd.Flags().IntVar(&syncLagMinutes, "sync-lag-minutes", 10, "Allowable mtime lag between .beads/beads.db and .beads/issues.jsonl")
 	cmd.Flags().IntVar(&maxStaleEntries, "max-stale", 10, "Maximum stale in_progress beads to include")
+	cmd.Flags().BoolVar(&ideate, "ideate", false, "Render duplicate-aware queue-dry ideation as a dry-run roadmap")
+	cmd.Flags().BoolVar(&force, "force", false, "Preview ideation even when ready work exists or queue state is unverified")
+	cmd.Flags().BoolVar(&includeNextBest, "include-next-best", false, "Include next-best candidates after the top five in the dry-run roadmap")
+	cmd.Flags().BoolVar(&createBeads, "create-beads", false, "Create proposed beads through br after preview gates pass")
+	cmd.Flags().BoolVar(&confirmCreate, "yes", false, "Confirm mutating bead creation for --create-beads")
+	cmd.Flags().StringVar(&planVersion, "plan-version", "", "Plan version or review token recorded in creation output")
 
 	return cmd
 }
@@ -822,10 +845,39 @@ type QueueDryResponse struct {
 	QueueDry        bool                           `json:"queue_dry"`
 	Evidence        QueueDryEvidence               `json:"evidence"`
 	Quiescence      assurance.QuiescenceAssessment `json:"quiescence"`
+	Ideation        *QueueDryIdeationReport        `json:"ideation,omitempty"`
 	Recommendations []QueueDryRecommendation       `json:"recommendations"`
 	Recipes         []QueueDryRecipe               `json:"recipes"`
 	Warnings        []string                       `json:"warnings,omitempty"`
 	Errors          []string                       `json:"errors,omitempty"`
+}
+
+// QueueDryIdeationOptions controls the advisory ideation dry-run path.
+type QueueDryIdeationOptions struct {
+	Requested       bool
+	Force           bool
+	IncludeNextBest bool
+	CreateBeads     bool
+	ConfirmCreate   bool
+	PlanVersion     string
+}
+
+// QueueDryIdeationReport embeds the bd-e7xm1 dry-run planning pipeline in queue-dry output.
+type QueueDryIdeationReport struct {
+	Requested     bool                               `json:"requested"`
+	DryRun        bool                               `json:"dry_run"`
+	Forced        bool                               `json:"forced,omitempty"`
+	Status        string                             `json:"status"`
+	Reason        string                             `json:"reason"`
+	Snapshot      *ideaplan.IdeaEvidenceSnapshot     `json:"snapshot,omitempty"`
+	Ranking       *ideaplan.RankingResult            `json:"ranking,omitempty"`
+	Guard         *ideaplan.NoveltyGuardAssessment   `json:"guard,omitempty"`
+	Effectiveness *ideaplan.EffectivenessReport      `json:"effectiveness,omitempty"`
+	Refinement    *ideaplan.CreationRefinementReport `json:"refinement,omitempty"`
+	Roadmap       *ideaplan.RoadmapPlan              `json:"roadmap,omitempty"`
+	Creation      *ideaplan.BeadCreationReport       `json:"creation,omitempty"`
+	NextActions   []QueueDryRecommendation           `json:"next_actions"`
+	Warnings      []string                           `json:"warnings,omitempty"`
 }
 
 // QueueDryEvidence stores collected evidence for queue-dry analysis.
@@ -835,6 +887,7 @@ type QueueDryEvidence struct {
 	BlockedCount       int                  `json:"blocked_count"`
 	InProgressCount    int                  `json:"in_progress_count"`
 	ReadyCount         int                  `json:"ready_count"`
+	CountsVerified     bool                 `json:"counts_verified"`
 	TriageTopIDs       []string             `json:"triage_top_ids,omitempty"`
 	StaleInProgress    []QueueDryStaleIssue `json:"stale_in_progress,omitempty"`
 	Sync               QueueDrySyncStatus   `json:"sync"`
@@ -867,10 +920,28 @@ type QueueDrySyncStatus struct {
 
 // QueueDryReservations reports active reservation metadata.
 type QueueDryReservations struct {
-	Available bool     `json:"available"`
-	Count     int      `json:"count"`
-	Holders   []string `json:"holders,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	Available          bool                        `json:"available"`
+	Count              int                         `json:"count"`
+	Holders            []string                    `json:"holders,omitempty"`
+	Status             string                      `json:"status,omitempty"`
+	Error              string                      `json:"error,omitempty"`
+	HealthReachable    bool                        `json:"health_reachable,omitempty"`
+	HealthStatus       string                      `json:"health_status,omitempty"`
+	HealthLevel        string                      `json:"health_level,omitempty"`
+	RecoveryMode       string                      `json:"recovery_mode,omitempty"`
+	RecoveryNextAction string                      `json:"recovery_next_action,omitempty"`
+	Coordination       *AgentMailCoordinationState `json:"coordination,omitempty"`
+	Diagnostics        []string                    `json:"diagnostics,omitempty"`
+}
+
+// AgentMailCoordinationState explains whether Agent Mail evidence is usable for
+// read-only diagnostics and whether mutation should be blocked until verified.
+type AgentMailCoordinationState struct {
+	Status          string `json:"status"`
+	ReadOnlySafe    bool   `json:"read_only_safe"`
+	MutationBlocked bool   `json:"mutation_blocked"`
+	Reason          string `json:"reason,omitempty"`
+	Remediation     string `json:"remediation,omitempty"`
 }
 
 // QueueDryCommit stores a compact git commit for operator context.
@@ -931,23 +1002,64 @@ type CommitReadyGitEvidence struct {
 
 // CommitReadyReservationEvidence reports whether changed files are reservation-covered.
 type CommitReadyReservationEvidence struct {
-	Available bool     `json:"available"`
-	Count     int      `json:"count"`
-	Holders   []string `json:"holders,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	Available          bool                        `json:"available"`
+	Count              int                         `json:"count"`
+	Holders            []string                    `json:"holders,omitempty"`
+	Status             string                      `json:"status,omitempty"`
+	Error              string                      `json:"error,omitempty"`
+	HealthReachable    bool                        `json:"health_reachable,omitempty"`
+	HealthStatus       string                      `json:"health_status,omitempty"`
+	HealthLevel        string                      `json:"health_level,omitempty"`
+	RecoveryMode       string                      `json:"recovery_mode,omitempty"`
+	RecoveryNextAction string                      `json:"recovery_next_action,omitempty"`
+	Coordination       *AgentMailCoordinationState `json:"coordination,omitempty"`
+	Diagnostics        []string                    `json:"diagnostics,omitempty"`
 }
 
 // CommitReadyMailEvidence summarizes urgent or acknowledgement-required inbox state.
 type CommitReadyMailEvidence struct {
-	Available        bool   `json:"available"`
-	Agent            string `json:"agent,omitempty"`
-	CheckedCount     int    `json:"checked_count"`
-	UrgentCount      int    `json:"urgent_count"`
-	AckRequiredCount int    `json:"ack_required_count"`
-	Error            string `json:"error,omitempty"`
+	Available          bool                        `json:"available"`
+	Agent              string                      `json:"agent,omitempty"`
+	CheckedCount       int                         `json:"checked_count"`
+	UrgentCount        int                         `json:"urgent_count"`
+	AckRequiredCount   int                         `json:"ack_required_count"`
+	Error              string                      `json:"error,omitempty"`
+	HealthReachable    bool                        `json:"health_reachable,omitempty"`
+	HealthStatus       string                      `json:"health_status,omitempty"`
+	HealthLevel        string                      `json:"health_level,omitempty"`
+	RecoveryMode       string                      `json:"recovery_mode,omitempty"`
+	RecoveryNextAction string                      `json:"recovery_next_action,omitempty"`
+	Coordination       *AgentMailCoordinationState `json:"coordination,omitempty"`
+	Diagnostics        []string                    `json:"diagnostics,omitempty"`
 }
 
-const queueDryReservationTimeout = 2 * time.Second
+const (
+	queueDryReservationTimeout       = 2 * time.Second
+	queueDryReservationHealthTimeout = 1 * time.Second
+	queueDryTriageTimeout            = 2 * time.Second
+)
+
+var queueDryGetTriage = func(dir string) (*bv.TriageResponse, error) {
+	return bv.GetTriageWithTimeout(dir, queueDryTriageTimeout)
+}
+
+var queueDryCollectOptional = func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+	ideaplan.Collector{}.CollectOptional(ctx, snapshot, opts)
+}
+
+var queueDryNewAgentMailClient = func(projectDir string) *agentmail.Client {
+	return newAgentMailClient(projectDir)
+}
+
+var queueDryFetchActiveReservations = fetchActiveReservations
+
+var queueDryAgentMailHealthCheck = func(ctx context.Context, client *agentmail.Client) (*agentmail.HealthStatus, error) {
+	return client.HealthCheck(ctx)
+}
+
+var commitReadyFetchInbox = func(ctx context.Context, client *agentmail.Client, opts agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error) {
+	return client.FetchInbox(ctx, opts)
+}
 
 func runWorkCommitReady(format string, agentName string, syncLagMinutes int) error {
 	dir, err := os.Getwd()
@@ -1034,20 +1146,22 @@ func collectCommitReadyReport(dir string, agentName string, now time.Time, syncL
 		})
 	}
 	if reservationsEvidence.Error != "" && (len(report.Evidence.Git.ChangedFiles) > 0 || agentName != "") {
+		remediation := commitReadyCoordinationRemediation(reservationsEvidence.Coordination, "retry after Agent Mail recovers, or verify reservations manually before committing")
 		appendCommitReadyFinding(&report, commitlint.Finding{
 			Code:        "agent_mail_unavailable",
 			Severity:    commitlint.SeverityCritical,
 			Summary:     "Agent Mail reservations could not be verified",
-			Remediation: "retry after Agent Mail recovers, or verify reservations manually before committing",
+			Remediation: remediation,
 			Evidence:    evidenceList(reservationsEvidence.Error),
 		})
 	}
 	if mailEvidence.Error != "" && agentName != "" && !commitReadyHasFindingCode(report.Findings, "agent_mail_unavailable") {
+		remediation := commitReadyCoordinationRemediation(mailEvidence.Coordination, "retry after Agent Mail recovers, or inspect urgent/ack-required mail manually")
 		appendCommitReadyFinding(&report, commitlint.Finding{
 			Code:        "agent_mail_unavailable",
 			Severity:    commitlint.SeverityCritical,
 			Summary:     "Agent Mail inbox could not be checked",
-			Remediation: "retry after Agent Mail recovers, or inspect urgent/ack-required mail manually",
+			Remediation: remediation,
 			Evidence:    evidenceList(mailEvidence.Error),
 		})
 	}
@@ -1079,23 +1193,20 @@ func collectCommitReadyReservations(projectDir string, needed bool) ([]commitlin
 	if !needed {
 		return nil, evidence
 	}
-	client := newAgentMailClient(projectDir)
-	if !client.IsAvailable() {
-		evidence.Error = "Agent Mail server unavailable"
-		return nil, evidence
-	}
+	client := queueDryNewAgentMailClient(projectDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationTimeout)
 	defer cancel()
 
-	reservations, err := fetchActiveReservations(ctx, client, projectDir, "", true)
+	reservations, err := queueDryFetchActiveReservations(ctx, client, projectDir, "", true)
 	if err != nil {
-		evidence.Error = err.Error()
-		return nil, evidence
+		return nil, commitReadyReservationEvidenceFromQueueDry(collectQueueDryReservationFailure(client, err))
 	}
 
 	evidence.Available = true
 	evidence.Count = len(reservations)
+	evidence.Status = "available"
+	evidence.Coordination = agentMailCoordinationAvailable()
 	holderSet := make(map[string]struct{})
 	views := make([]commitlint.ReservationView, 0, len(reservations))
 	for _, r := range reservations {
@@ -1126,16 +1237,12 @@ func collectCommitReadyMail(projectDir string, agentName string) ([]commitlint.I
 		return nil, evidence
 	}
 
-	client := newAgentMailClient(projectDir)
-	if !client.IsAvailable() {
-		evidence.Error = "Agent Mail server unavailable"
-		return nil, evidence
-	}
+	client := queueDryNewAgentMailClient(projectDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationTimeout)
 	defer cancel()
 
-	messages, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+	messages, err := commitReadyFetchInbox(ctx, client, agentmail.FetchInboxOptions{
 		ProjectKey:    projectDir,
 		AgentName:     agentName,
 		UrgentOnly:    true,
@@ -1144,10 +1251,16 @@ func collectCommitReadyMail(projectDir string, agentName string) ([]commitlint.I
 	})
 	if err != nil {
 		evidence.Error = err.Error()
+		applyAgentMailHealthToMailEvidence(client, &evidence)
+		evidence.Coordination = agentMailCoordinationBlocked(
+			"Agent Mail inbox state could not be verified",
+			agentMailCoordinationRemediation(evidence.RecoveryNextAction, classifyQueueDryReservationError(err), true),
+		)
 		return nil, evidence
 	}
 
 	evidence.Available = true
+	evidence.Coordination = agentMailCoordinationAvailable()
 	evidence.CheckedCount = len(messages)
 	views := make([]commitlint.InboxView, 0, len(messages))
 	for _, msg := range messages {
@@ -1173,6 +1286,96 @@ func collectCommitReadyMail(projectDir string, agentName string) ([]commitlint.I
 		})
 	}
 	return views, evidence
+}
+
+func agentMailCoordinationAvailable() *AgentMailCoordinationState {
+	return &AgentMailCoordinationState{
+		Status:          "verified",
+		ReadOnlySafe:    true,
+		MutationBlocked: false,
+		Reason:          "Agent Mail coordination state was verified",
+	}
+}
+
+func agentMailCoordinationBlocked(reason, remediation string) *AgentMailCoordinationState {
+	return &AgentMailCoordinationState{
+		Status:          "coordination_unknown",
+		ReadOnlySafe:    true,
+		MutationBlocked: true,
+		Reason:          strings.TrimSpace(reason),
+		Remediation:     strings.TrimSpace(remediation),
+	}
+}
+
+func commitReadyCoordinationRemediation(coordination *AgentMailCoordinationState, fallback string) string {
+	if coordination != nil && strings.TrimSpace(coordination.Remediation) != "" {
+		return strings.TrimSpace(coordination.Remediation)
+	}
+	return fallback
+}
+
+func commitReadyReservationEvidenceFromQueueDry(reservations QueueDryReservations) CommitReadyReservationEvidence {
+	return CommitReadyReservationEvidence(reservations)
+}
+
+func applyAgentMailHealthToMailEvidence(client *agentmail.Client, evidence *CommitReadyMailEvidence) {
+	if evidence == nil {
+		return
+	}
+	errText := strings.TrimSpace(evidence.Error)
+	if errText == "" {
+		errText = "unknown error"
+	}
+	evidence.Diagnostics = []string{"inbox lookup failed: " + errText}
+
+	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationHealthTimeout)
+	defer cancel()
+	health, healthErr := queueDryAgentMailHealthCheck(ctx, client)
+	if healthErr != nil {
+		evidence.Diagnostics = append(evidence.Diagnostics, "health_check failed: "+strings.TrimSpace(healthErr.Error()))
+		return
+	}
+
+	evidence.HealthReachable = true
+	evidence.HealthStatus = strings.TrimSpace(health.Status)
+	evidence.HealthLevel = strings.TrimSpace(health.HealthLevel)
+	if evidence.HealthStatus != "" || evidence.HealthLevel != "" {
+		evidence.Diagnostics = append(evidence.Diagnostics, "health_check "+strings.Join(queueDryKeyValues(map[string]string{
+			"status":       evidence.HealthStatus,
+			"health_level": evidence.HealthLevel,
+		}), " "))
+	}
+	if health.Recovery != nil {
+		evidence.RecoveryMode = strings.TrimSpace(health.Recovery.Mode)
+		evidence.RecoveryNextAction = strings.TrimSpace(health.Recovery.NextAction)
+		if evidence.RecoveryMode != "" || evidence.RecoveryNextAction != "" {
+			evidence.Diagnostics = append(evidence.Diagnostics, "recovery "+strings.Join(queueDryKeyValues(map[string]string{
+				"mode":        evidence.RecoveryMode,
+				"next_action": evidence.RecoveryNextAction,
+			}), " "))
+		}
+	}
+}
+
+func agentMailCoordinationRemediation(recoveryNextAction, status string, includeInbox bool) string {
+	recoveryNextAction = strings.TrimSpace(recoveryNextAction)
+	if recoveryNextAction != "" {
+		return recoveryNextAction + "; then rerun ntm work commit-ready --format=json before mutating Beads or committing"
+	}
+
+	manualCheck := "manually inspect active reservations"
+	if includeInbox {
+		manualCheck = "manually inspect active reservations and urgent or ack-required inbox messages"
+	}
+
+	switch strings.TrimSpace(status) {
+	case "server_unavailable":
+		return "start or restart Agent Mail, then rerun ntm work commit-ready --format=json; if Agent Mail cannot recover, " + manualCheck + " and document the override before mutating Beads or committing"
+	case "lookup_timeout", "resource_read_failed":
+		return "retry after Agent Mail coordination reads recover; if work is urgent, " + manualCheck + " and document the override before mutating Beads or committing"
+	default:
+		return "restore Agent Mail coordination visibility, then rerun ntm work commit-ready --format=json before mutating Beads or committing"
+	}
 }
 
 func commitReadySyncView(status QueueDrySyncStatus) commitlint.SyncView {
@@ -1224,7 +1427,7 @@ func appendCommitReadyStatus(report *CommitReadyResponse, finding commitlint.Fin
 
 func commitReadyHasFindingCode(findings []commitlint.Finding, code string) bool {
 	for _, finding := range findings {
-		if finding.Code == code {
+		if strings.Compare(finding.Code, code) == 0 {
 			return true
 		}
 	}
@@ -1269,7 +1472,7 @@ func normalizeCommitReadyPath(value string) string {
 	return strings.Trim(value, "/")
 }
 
-func runWorkQueueDry(format string, staleHours, commitLimit, syncLagMinutes, maxStaleEntries int) error {
+func runWorkQueueDry(format string, staleHours, commitLimit, syncLagMinutes, maxStaleEntries int, ideationOpts QueueDryIdeationOptions) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
@@ -1289,6 +1492,11 @@ func runWorkQueueDry(format string, staleHours, commitLimit, syncLagMinutes, max
 	}
 
 	report := collectQueueDryReport(dir, time.Now().UTC(), time.Duration(staleHours)*time.Hour, commitLimit, time.Duration(syncLagMinutes)*time.Minute, maxStaleEntries)
+	if ideationOpts.Requested {
+		ideationReport := collectQueueDryIdeationReport(dir, report, ideationOpts)
+		report.Ideation = &ideationReport
+	}
+
 	outputMode := strings.ToLower(strings.TrimSpace(format))
 	if outputMode == "" && jsonOutput {
 		outputMode = "json"
@@ -1296,7 +1504,204 @@ func runWorkQueueDry(format string, staleHours, commitLimit, syncLagMinutes, max
 	if outputMode == "json" {
 		return outputJSON(report)
 	}
+	if outputMode == "markdown" || outputMode == "md" {
+		return renderQueueDryMarkdown(report)
+	}
 	return renderQueueDry(report)
+}
+
+func collectQueueDryIdeationReport(dir string, report QueueDryResponse, opts QueueDryIdeationOptions) QueueDryIdeationReport {
+	if !opts.Force && !report.QueueDry {
+		return skippedQueueDryIdeationReport(report, opts)
+	}
+
+	snapshot := ideaplan.CollectLocalEvidence(context.Background(), ideaplan.CollectorOptions{
+		ProjectDir: dir,
+	})
+	annotateQueueDryOptionalSources(&snapshot, report)
+	collectQueueDryOptionalSignals(context.Background(), &snapshot, dir)
+	return buildQueueDryIdeationReport(report, snapshot, opts)
+}
+
+func skippedQueueDryIdeationReport(report QueueDryResponse, opts QueueDryIdeationOptions) QueueDryIdeationReport {
+	status := "skipped_unverified_queue"
+	reason := "queue state is unverified; use --force only if a human explicitly wants an ideation preview"
+	if report.Evidence.CountsVerified {
+		status = "skipped_ready_work"
+		reason = "ready or actionable work exists; work that queue before ideating, or pass --force for a preview"
+	}
+	return QueueDryIdeationReport{
+		Requested:   true,
+		DryRun:      !opts.CreateBeads,
+		Forced:      opts.Force,
+		Status:      status,
+		Reason:      reason,
+		NextActions: append([]QueueDryRecommendation(nil), report.Recommendations...),
+		Warnings:    sortedUniqueStrings(report.Warnings),
+	}
+}
+
+func annotateQueueDryOptionalSources(snapshot *ideaplan.IdeaEvidenceSnapshot, report QueueDryResponse) {
+	if snapshot == nil {
+		return
+	}
+	agentMail := ideaplan.CandidateSource{
+		ID:        "agent_mail:reservations",
+		Kind:      ideaplan.SourceAgentMail,
+		Available: report.Evidence.Reservations.Available,
+		Required:  false,
+		Evidence:  []string{"Agent Mail reservation visibility for queue-dry ideation"},
+	}
+	if !agentMail.Available {
+		agentMail.Error = strings.TrimSpace(report.Evidence.Reservations.Error)
+		if agentMail.Error == "" {
+			agentMail.Error = "Agent Mail server unavailable"
+		}
+	}
+	snapshot.RecordSource(agentMail)
+}
+
+func collectQueueDryOptionalSignals(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, projectDir string) {
+	if snapshot == nil {
+		return
+	}
+	queueDryCollectOptional(ctx, snapshot, ideaplan.OptionalAdapterOptions{
+		ProjectDir:     projectDir,
+		CommandTimeout: 6 * time.Second,
+		CASSQueries:    []string{"queue-dry ideation"},
+		CMQuery:        "queue-dry ideation",
+	})
+}
+
+func buildQueueDryIdeationReport(report QueueDryResponse, snapshot ideaplan.IdeaEvidenceSnapshot, opts QueueDryIdeationOptions) QueueDryIdeationReport {
+	ranking := ideaplan.RankCandidates(snapshot, ideaplan.DefaultRankOptions())
+	guard := ideaplan.AssessNoveltyGuard(snapshot, ranking, ideaplan.NoveltyGuardOptions{
+		ReservationStateUnknown: !report.Evidence.Reservations.Available,
+		ActiveReservationCount:  report.Evidence.Reservations.Count,
+		StaleInProgressIDs:      queueDryStaleIDs(report.Evidence.StaleInProgress),
+	})
+	roadmap := ideaplan.RenderRoadmap(ranking, ideaplan.RoadmapRenderOptions{
+		PlanID:          "queue-dry-ideation-dry-run",
+		ParentID:        "bd-e7xm1",
+		IncludeNextBest: opts.IncludeNextBest,
+		VerificationCommands: []string{
+			"gofmt -l <touched-go-files>",
+			"goimports -l <touched-go-files>",
+			"rch exec -- go test -short ./internal/ideation/...",
+			"rch exec -- go test -short ./internal/cli/...",
+			"git diff --check",
+		},
+		NonGoals: []string{
+			"do not mutate Beads during dry-run rendering",
+			"do not require network, real agents, or model calls",
+			"do not add a new top-level robot surface for queue-dry planning",
+		},
+	})
+	refinedRoadmap, refinement := ideaplan.RefinePlanForCreation(snapshot, roadmap, ideaplan.CreationRefinementOptions{MaxPasses: 3})
+	creation := ideaplan.RunBeadCreation(context.Background(), refinedRoadmap, ideaplan.BeadCreationOptions{
+		ProjectDir:      report.Project,
+		PlanVersion:     opts.PlanVersion,
+		CreateRequested: opts.CreateBeads,
+		Confirmed:       opts.ConfirmCreate,
+		AllowCreate:     guard.CreationAllowed && (report.QueueDry || opts.Force),
+	})
+	effectiveness := ideaplan.BuildEffectivenessReport(
+		ideaplan.EffectivenessEventsFromArtifacts(ranking, refinedRoadmap, creation),
+		ideaplan.EffectivenessOptions{ScenarioID: "queue-dry-ideation"},
+	)
+
+	status := "rendered"
+	reason := "queue is dry; rendered duplicate-aware dry-run roadmap"
+	if opts.Force && !report.QueueDry {
+		status = "forced_preview"
+		reason = "force requested; rendered dry-run roadmap even though ready work or unverified tracker state exists"
+	}
+	if opts.CreateBeads && !creation.Success {
+		status = "creation_blocked"
+		reason = "creation requested, but creation gate did not pass"
+	}
+
+	return QueueDryIdeationReport{
+		Requested:     true,
+		DryRun:        true,
+		Forced:        opts.Force,
+		Status:        status,
+		Reason:        reason,
+		Snapshot:      &snapshot,
+		Ranking:       &ranking,
+		Guard:         &guard,
+		Effectiveness: &effectiveness,
+		Refinement:    &refinement,
+		Roadmap:       &refinedRoadmap,
+		Creation:      &creation,
+		NextActions:   queueDryIdeationNextActions(report, guard, refinedRoadmap, creation),
+		Warnings:      queueDryIdeationWarnings(snapshot, report),
+	}
+}
+
+func queueDryStaleIDs(items []QueueDryStaleIssue) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.ID != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return sortedUniqueStrings(ids)
+}
+
+func queueDryIdeationWarnings(snapshot ideaplan.IdeaEvidenceSnapshot, report QueueDryResponse) []string {
+	warnings := append([]string{}, report.Warnings...)
+	for _, note := range snapshot.DegradedSources {
+		message := strings.TrimSpace(note.Message)
+		if message == "" {
+			message = "source unavailable"
+		}
+		if note.SourceID != "" {
+			message = note.SourceID + ": " + message
+		}
+		warnings = append(warnings, message)
+	}
+	return sortedUniqueStrings(warnings)
+}
+
+func queueDryIdeationNextActions(report QueueDryResponse, guard ideaplan.NoveltyGuardAssessment, roadmap ideaplan.RoadmapPlan, creation ideaplan.BeadCreationReport) []QueueDryRecommendation {
+	actions := make([]QueueDryRecommendation, 0, len(report.Recommendations)+2)
+	if guard.Recommendation != ideaplan.GuardRecommendationIdeate {
+		actions = append(actions, QueueDryRecommendation{
+			Code:     "respect_novelty_guard",
+			Summary:  "novelty guard recommends " + string(guard.Recommendation) + " before mutating beads",
+			Command:  commandForGuardRecommendation(guard.Recommendation),
+			Evidence: strings.Join(guard.ReasonCodes, ", "),
+		})
+	}
+	if roadmap.RenderedCount > 0 {
+		actions = append(actions, QueueDryRecommendation{
+			Code:     "inspect_dry_run_bead_preview",
+			Summary:  "inspect proposed bead previews; commands are dry-run only",
+			Evidence: fmt.Sprintf("%d proposed bead command(s)", roadmap.RenderedCount),
+		})
+	}
+	if creation.CreateRequested && !creation.Success {
+		actions = append(actions, QueueDryRecommendation{
+			Code:     "resolve_creation_gate",
+			Summary:  "creation was requested but did not pass all explicit gates",
+			Evidence: fmt.Sprintf("%d remaining command(s)", len(creation.RemainingCommands)),
+		})
+	}
+	return append(actions, report.Recommendations...)
+}
+
+func commandForGuardRecommendation(rec ideaplan.GuardRecommendation) string {
+	switch rec {
+	case ideaplan.GuardRecommendationReviewRecentWork:
+		return "ntm review-queue <session>"
+	case ideaplan.GuardRecommendationValidateCloseout:
+		return "ntm work alerts --critical-only"
+	case ideaplan.GuardRecommendationWaitForCoordination:
+		return "ntm work commit-ready --format=json"
+	default:
+		return ""
+	}
 }
 
 func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Duration, commitLimit int, syncLagThreshold time.Duration, staleLimit int) QueueDryResponse {
@@ -1320,10 +1725,11 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		report.Evidence.BlockedCount = summary.Blocked
 		report.Evidence.InProgressCount = summary.InProgress
 		report.Evidence.ReadyCount = summary.Ready
+		report.Evidence.CountsVerified = true
 		report.Evidence.StaleInProgress = findStaleInProgress(summary.InProgressList, now, staleThreshold, staleLimit)
 	}
 
-	triage, triageErr := bv.GetTriage(dir)
+	triage, triageErr := queueDryGetTriage(dir)
 	if triageErr != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bv triage unavailable: %v", triageErr))
 		report.Evidence.TriageError = triageErr.Error()
@@ -1332,6 +1738,7 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		report.Evidence.ActionableCount = triage.Triage.QuickRef.ActionableCount
 		report.Evidence.BlockedCount = triage.Triage.QuickRef.BlockedCount
 		report.Evidence.InProgressCount = triage.Triage.QuickRef.InProgressCount
+		report.Evidence.CountsVerified = true
 		if report.Evidence.ReadyCount == 0 {
 			report.Evidence.ReadyCount = triage.Triage.QuickRef.ActionableCount
 		}
@@ -1359,7 +1766,7 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		})
 	}
 
-	report.QueueDry = report.Evidence.ActionableCount == 0 && report.Evidence.ReadyCount == 0
+	report.QueueDry = report.Evidence.CountsVerified && report.Evidence.ActionableCount == 0 && report.Evidence.ReadyCount == 0
 	report.Quiescence = evaluateQueueDryQuiescence(report)
 	report.Recommendations = buildQueueDryRecommendations(report)
 	report.Recipes = queueDryRecipes()
@@ -1368,13 +1775,47 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 }
 
 func evaluateQueueDryQuiescence(report QueueDryResponse) assurance.QuiescenceAssessment {
-	return assurance.EvaluateQuiescence(assurance.QuiescenceInput{
+	if !report.Evidence.CountsVerified {
+		return queueDryUnsafeQuiescence(
+			assurance.ReasonQuiescenceTrackerUnknown,
+			"tracker_counts_unavailable",
+			"queue state is unknown because tracker counts were unavailable",
+			"restore br/bv tracker access before standing down or creating queue-dry follow-up work",
+		)
+	}
+	assessment := assurance.EvaluateQuiescence(assurance.QuiescenceInput{
 		ReadyCount:             report.Evidence.ReadyCount,
 		ActionableCount:        report.Evidence.ActionableCount,
 		InProgressCount:        report.Evidence.InProgressCount,
 		ActiveReservationCount: report.Evidence.Reservations.Count,
 		TrackerNeedsFlush:      report.Evidence.Sync.NeedsFlush,
 	})
+	if assessment.SafeToStandDown && !report.Evidence.Reservations.Available {
+		return queueDryUnsafeQuiescence(
+			assurance.ReasonReservationUnknown,
+			"reservations_unavailable",
+			"queue appears dry, but reservation state could not be verified",
+			"restore Agent Mail reservation visibility before standing down",
+		)
+	}
+	return assessment
+}
+
+func queueDryUnsafeQuiescence(reason assurance.ReasonCode, evidence, summary, nextAction string) assurance.QuiescenceAssessment {
+	reasons := []assurance.ReasonCode{reason}
+	return assurance.QuiescenceAssessment{
+		State:           assurance.QuiescenceUnsafeToStandDown,
+		SafeToStandDown: false,
+		Signal: assurance.Signal{
+			Type:     assurance.SignalQuiescenceCandidate,
+			Status:   assurance.SignalStatusDegraded,
+			Reasons:  reasons,
+			Evidence: evidence,
+		},
+		ReasonCodes:         reasons,
+		Summary:             summary,
+		SuggestedNextAction: nextAction,
+	}
 }
 
 func findStaleInProgress(items []bv.BeadInProgress, now time.Time, threshold time.Duration, limit int) []QueueDryStaleIssue {
@@ -1457,23 +1898,14 @@ func evaluateQueueDrySync(projectDir string, lagThreshold time.Duration) QueueDr
 }
 
 func collectQueueDryReservations(projectDir string) QueueDryReservations {
-	client := newAgentMailClient(projectDir)
-	if !client.IsAvailable() {
-		return QueueDryReservations{
-			Available: false,
-			Error:     "Agent Mail server unavailable",
-		}
-	}
+	client := queueDryNewAgentMailClient(projectDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationTimeout)
 	defer cancel()
 
-	reservations, err := fetchActiveReservations(ctx, client, projectDir, "", true)
+	reservations, err := queueDryFetchActiveReservations(ctx, client, projectDir, "", true)
 	if err != nil {
-		return QueueDryReservations{
-			Available: false,
-			Error:     err.Error(),
-		}
+		return collectQueueDryReservationFailure(client, err)
 	}
 
 	holdersSet := make(map[string]struct{})
@@ -1491,10 +1923,97 @@ func collectQueueDryReservations(projectDir string) QueueDryReservations {
 	sort.Strings(holders)
 
 	return QueueDryReservations{
-		Available: true,
-		Count:     len(reservations),
-		Holders:   holders,
+		Available:    true,
+		Count:        len(reservations),
+		Holders:      holders,
+		Status:       "available",
+		Coordination: agentMailCoordinationAvailable(),
 	}
+}
+
+func collectQueueDryReservationFailure(client *agentmail.Client, lookupErr error) QueueDryReservations {
+	status := classifyQueueDryReservationError(lookupErr)
+	errText := strings.TrimSpace(errorString(lookupErr))
+	out := QueueDryReservations{
+		Available:   false,
+		Status:      status,
+		Error:       errText,
+		Diagnostics: []string{"reservation lookup failed: " + errText},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), queueDryReservationHealthTimeout)
+	defer cancel()
+	health, healthErr := queueDryAgentMailHealthCheck(ctx, client)
+	if healthErr != nil {
+		out.Diagnostics = append(out.Diagnostics, "health_check failed: "+strings.TrimSpace(healthErr.Error()))
+		out.Coordination = agentMailCoordinationBlocked(
+			"Agent Mail reservation state could not be verified",
+			agentMailCoordinationRemediation(out.RecoveryNextAction, out.Status, false),
+		)
+		return out
+	}
+
+	out.HealthReachable = true
+	out.HealthStatus = strings.TrimSpace(health.Status)
+	out.HealthLevel = strings.TrimSpace(health.HealthLevel)
+	if out.HealthStatus != "" || out.HealthLevel != "" {
+		out.Diagnostics = append(out.Diagnostics, "health_check "+strings.Join(queueDryKeyValues(map[string]string{
+			"status":       out.HealthStatus,
+			"health_level": out.HealthLevel,
+		}), " "))
+	}
+	if health.Recovery != nil {
+		out.RecoveryMode = strings.TrimSpace(health.Recovery.Mode)
+		out.RecoveryNextAction = strings.TrimSpace(health.Recovery.NextAction)
+		if out.RecoveryMode != "" || out.RecoveryNextAction != "" {
+			out.Diagnostics = append(out.Diagnostics, "recovery "+strings.Join(queueDryKeyValues(map[string]string{
+				"mode":        out.RecoveryMode,
+				"next_action": out.RecoveryNextAction,
+			}), " "))
+		}
+	}
+	if out.HealthReachable {
+		out.Status = status + "_health_ok"
+	}
+	out.Coordination = agentMailCoordinationBlocked(
+		"Agent Mail reservation state could not be verified",
+		agentMailCoordinationRemediation(out.RecoveryNextAction, status, false),
+	)
+	return out
+}
+
+func classifyQueueDryReservationError(err error) string {
+	text := strings.ToLower(strings.TrimSpace(errorString(err)))
+	switch {
+	case text == "":
+		return "lookup_failed"
+	case strings.Contains(text, "timed out") || strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded"):
+		return "lookup_timeout"
+	case strings.Contains(text, "connection refused") || strings.Contains(text, "server unavailable") || strings.Contains(text, "no such host"):
+		return "server_unavailable"
+	case strings.Contains(text, "resources/read"):
+		return "resource_read_failed"
+	default:
+		return "lookup_failed"
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func queueDryKeyValues(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key, value := range values {
+		if strings.TrimSpace(value) != "" {
+			keys = append(keys, key+"="+strings.TrimSpace(value))
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func appendQueueDryReservationWarning(report *QueueDryResponse) {
@@ -1505,7 +2024,30 @@ func appendQueueDryReservationWarning(report *QueueDryResponse) {
 	if errText == "" {
 		errText = "unknown error"
 	}
-	report.Warnings = append(report.Warnings, "reservations_unavailable: "+errText)
+	parts := []string{"reservations_unavailable: " + errText}
+	if status := strings.TrimSpace(report.Evidence.Reservations.Status); status != "" {
+		parts = append(parts, "status="+status)
+	}
+	if report.Evidence.Reservations.HealthReachable {
+		parts = append(parts, "health_check=reachable")
+		if status := strings.TrimSpace(report.Evidence.Reservations.HealthStatus); status != "" {
+			parts = append(parts, "health_status="+status)
+		}
+		if level := strings.TrimSpace(report.Evidence.Reservations.HealthLevel); level != "" {
+			parts = append(parts, "health_level="+level)
+		}
+	}
+	if mode := strings.TrimSpace(report.Evidence.Reservations.RecoveryMode); mode != "" {
+		parts = append(parts, "recovery_mode="+mode)
+	}
+	if coordination := report.Evidence.Reservations.Coordination; coordination != nil {
+		if status := strings.TrimSpace(coordination.Status); status != "" {
+			parts = append(parts, "coordination_status="+status)
+		}
+		parts = append(parts, fmt.Sprintf("read_only_safe=%t", coordination.ReadOnlySafe))
+		parts = append(parts, fmt.Sprintf("mutation_blocked=%t", coordination.MutationBlocked))
+	}
+	report.Warnings = append(report.Warnings, strings.Join(parts, " "))
 }
 
 func buildQueueDryRecommendations(report QueueDryResponse) []QueueDryRecommendation {
@@ -1656,11 +2198,23 @@ func renderCommitReady(report CommitReadyResponse) error {
 	} else if report.Evidence.Reservations.Error != "" {
 		fmt.Printf("  Reservations: %s\n", warnStyle.Render(report.Evidence.Reservations.Error))
 	}
+	if coordination := report.Evidence.Reservations.Coordination; coordination != nil {
+		fmt.Printf("    Coordination: %s read_only_safe=%t mutation_blocked=%t\n", coordination.Status, coordination.ReadOnlySafe, coordination.MutationBlocked)
+		if coordination.Remediation != "" {
+			fmt.Printf("    Next: %s\n", coordination.Remediation)
+		}
+	}
 
 	if report.Evidence.Mail.Available {
 		fmt.Printf("  Agent Mail: checked=%d urgent=%d ack_required=%d\n", report.Evidence.Mail.CheckedCount, report.Evidence.Mail.UrgentCount, report.Evidence.Mail.AckRequiredCount)
 	} else if report.Evidence.Mail.Error != "" {
 		fmt.Printf("  Agent Mail: %s\n", warnStyle.Render(report.Evidence.Mail.Error))
+	}
+	if coordination := report.Evidence.Mail.Coordination; coordination != nil {
+		fmt.Printf("    Agent Mail coordination: %s read_only_safe=%t mutation_blocked=%t\n", coordination.Status, coordination.ReadOnlySafe, coordination.MutationBlocked)
+		if coordination.Remediation != "" {
+			fmt.Printf("    Next: %s\n", coordination.Remediation)
+		}
 	}
 
 	if len(report.Findings) > 0 {
@@ -1701,9 +2255,12 @@ func renderQueueDry(report QueueDryResponse) error {
 	fmt.Println(titleStyle.Render("Queue-Dry Diagnostic"))
 	fmt.Println()
 	fmt.Printf("  Project: %s\n", report.Project)
-	if report.QueueDry {
+	switch {
+	case !report.Evidence.CountsVerified:
+		fmt.Printf("  Status: %s\n", warnStyle.Render("UNKNOWN - TRACKER UNAVAILABLE"))
+	case report.QueueDry:
 		fmt.Printf("  Status: %s\n", warnStyle.Render("QUEUE DRY"))
-	} else {
+	default:
 		fmt.Printf("  Status: %s\n", okStyle.Render("ACTIONABLE WORK EXISTS"))
 	}
 	fmt.Println()
@@ -1745,6 +2302,12 @@ func renderQueueDry(report QueueDryResponse) error {
 	} else {
 		fmt.Printf("  Active reservations: unavailable (%s)\n", report.Evidence.Reservations.Error)
 	}
+	if coordination := report.Evidence.Reservations.Coordination; coordination != nil {
+		fmt.Printf("  Coordination: %s read_only_safe=%t mutation_blocked=%t\n", coordination.Status, coordination.ReadOnlySafe, coordination.MutationBlocked)
+		if coordination.Remediation != "" {
+			fmt.Printf("    Next: %s\n", coordination.Remediation)
+		}
+	}
 
 	if len(report.Evidence.StaleInProgress) > 0 {
 		fmt.Println()
@@ -1765,6 +2328,33 @@ func renderQueueDry(report QueueDryResponse) error {
 			if rec.Evidence != "" {
 				fmt.Printf("     %s %s\n", mutedStyle.Render("Evidence:"), rec.Evidence)
 			}
+		}
+	}
+
+	if report.Ideation != nil {
+		fmt.Println()
+		fmt.Println(titleStyle.Render("Ideation Dry Run:"))
+		fmt.Printf("  Status: %s\n", report.Ideation.Status)
+		fmt.Printf("  Reason: %s\n", report.Ideation.Reason)
+		if report.Ideation.Guard != nil {
+			fmt.Printf("  Guard: %s (creation_allowed=%t)\n", report.Ideation.Guard.Recommendation, report.Ideation.Guard.CreationAllowed)
+			if len(report.Ideation.Guard.ReasonCodes) > 0 {
+				fmt.Printf("    Reasons: %s\n", strings.Join(report.Ideation.Guard.ReasonCodes, ", "))
+			}
+		}
+		if report.Ideation.Roadmap != nil {
+			fmt.Printf("  Proposed beads: %d\n", report.Ideation.Roadmap.RenderedCount)
+			for _, command := range report.Ideation.Roadmap.CommandPreview {
+				fmt.Printf("    %s %s\n", mutedStyle.Render("Preview:"), command)
+			}
+		}
+		if report.Ideation.Creation != nil {
+			fmt.Printf("  Creation: success=%t dry_run=%t created=%d remaining=%d\n",
+				report.Ideation.Creation.Success,
+				report.Ideation.Creation.DryRun,
+				len(report.Ideation.Creation.Created),
+				len(report.Ideation.Creation.RemainingCommands),
+			)
 		}
 	}
 
@@ -1802,6 +2392,126 @@ func renderQueueDry(report QueueDryResponse) error {
 
 	fmt.Println()
 	return nil
+}
+
+func renderQueueDryMarkdown(report QueueDryResponse) error {
+	fmt.Print(queueDryMarkdown(report))
+	return nil
+}
+
+func queueDryMarkdown(report QueueDryResponse) string {
+	var b strings.Builder
+	b.WriteString("# Queue-Dry Diagnostic\n\n")
+	fmt.Fprintf(&b, "- Project: `%s`\n", report.Project)
+	fmt.Fprintf(&b, "- Queue dry: %t\n", report.QueueDry)
+	fmt.Fprintf(&b, "- Counts verified: %t\n", report.Evidence.CountsVerified)
+	fmt.Fprintf(&b, "- Open: %d\n", report.Evidence.OpenCount)
+	fmt.Fprintf(&b, "- Ready: %d\n", report.Evidence.ReadyCount)
+	fmt.Fprintf(&b, "- Actionable: %d\n", report.Evidence.ActionableCount)
+	fmt.Fprintf(&b, "- Blocked: %d\n", report.Evidence.BlockedCount)
+	fmt.Fprintf(&b, "- In progress: %d\n", report.Evidence.InProgressCount)
+	if report.Quiescence.State != "" {
+		fmt.Fprintf(&b, "- Quiescence: `%s` (safe_to_stand_down=%t)\n", report.Quiescence.State, report.Quiescence.SafeToStandDown)
+	}
+	if coordination := report.Evidence.Reservations.Coordination; coordination != nil {
+		fmt.Fprintf(&b, "- Coordination: `%s` (read_only_safe=%t mutation_blocked=%t)\n", coordination.Status, coordination.ReadOnlySafe, coordination.MutationBlocked)
+		if coordination.Remediation != "" {
+			fmt.Fprintf(&b, "- Coordination next action: %s\n", coordination.Remediation)
+		}
+	}
+	if len(report.Recommendations) > 0 {
+		b.WriteString("\n## Recommended Next Steps\n")
+		for _, rec := range report.Recommendations {
+			fmt.Fprintf(&b, "\n- `%s`: %s\n", rec.Code, rec.Summary)
+			if rec.Command != "" {
+				fmt.Fprintf(&b, "  - Command: `%s`\n", rec.Command)
+			}
+			if rec.Evidence != "" {
+				fmt.Fprintf(&b, "  - Evidence: %s\n", rec.Evidence)
+			}
+		}
+	}
+	if report.Ideation != nil {
+		b.WriteString("\n")
+		b.WriteString(queueDryIdeationMarkdown(*report.Ideation))
+	}
+	if len(report.Warnings) > 0 {
+		b.WriteString("\n## Warnings\n")
+		for _, warning := range report.Warnings {
+			fmt.Fprintf(&b, "\n- %s\n", warning)
+		}
+	}
+	if len(report.Errors) > 0 {
+		b.WriteString("\n## Errors\n")
+		for _, err := range report.Errors {
+			fmt.Fprintf(&b, "\n- %s\n", err)
+		}
+	}
+	return b.String()
+}
+
+func queueDryIdeationMarkdown(report QueueDryIdeationReport) string {
+	var b strings.Builder
+	b.WriteString("# Queue-Dry Ideation Dry Run\n\n")
+	fmt.Fprintf(&b, "- Dry run: %t\n", report.DryRun)
+	fmt.Fprintf(&b, "- Status: `%s`\n", report.Status)
+	fmt.Fprintf(&b, "- Forced: %t\n", report.Forced)
+	if report.Reason != "" {
+		fmt.Fprintf(&b, "- Reason: %s\n", report.Reason)
+	}
+	if report.Guard != nil {
+		fmt.Fprintf(&b, "- Guard recommendation: `%s`\n", report.Guard.Recommendation)
+		fmt.Fprintf(&b, "- Creation allowed: %t\n", report.Guard.CreationAllowed)
+		if len(report.Guard.ReasonCodes) > 0 {
+			fmt.Fprintf(&b, "- Guard reasons: %s\n", strings.Join(report.Guard.ReasonCodes, ", "))
+		}
+	}
+	if report.Refinement != nil {
+		fmt.Fprintf(&b, "- Refinement passes: %d\n", report.Refinement.Passes)
+		fmt.Fprintf(&b, "- Refinement changed plan: %t\n", report.Refinement.Changed)
+	}
+	if report.Effectiveness != nil {
+		fmt.Fprintf(&b, "- Effectiveness generated candidates: %d\n", report.Effectiveness.CandidateGeneratedCount)
+		fmt.Fprintf(&b, "- Effectiveness rendered candidates: %d\n", report.Effectiveness.RenderedCount)
+		if len(report.Effectiveness.CleanFamilyIDs) > 0 {
+			fmt.Fprintf(&b, "- Clean families: %s\n", strings.Join(report.Effectiveness.CleanFamilyIDs, ", "))
+		}
+		if len(report.Effectiveness.ChurnFamilyIDs) > 0 {
+			fmt.Fprintf(&b, "- Churn families: %s\n", strings.Join(report.Effectiveness.ChurnFamilyIDs, ", "))
+		}
+		if len(report.Effectiveness.LowYieldSourceIDs) > 0 {
+			fmt.Fprintf(&b, "- Low-yield sources: %s\n", strings.Join(report.Effectiveness.LowYieldSourceIDs, ", "))
+		}
+	}
+	if report.Creation != nil {
+		fmt.Fprintf(&b, "- Creation requested: %t\n", report.Creation.CreateRequested)
+		fmt.Fprintf(&b, "- Creation success: %t\n", report.Creation.Success)
+		fmt.Fprintf(&b, "- Created beads: %d\n", len(report.Creation.Created))
+		fmt.Fprintf(&b, "- Remaining create commands: %d\n", len(report.Creation.RemainingCommands))
+	}
+	if len(report.NextActions) > 0 {
+		b.WriteString("\n## Ideation Next Actions\n")
+		for _, action := range report.NextActions {
+			fmt.Fprintf(&b, "\n- `%s`: %s\n", action.Code, action.Summary)
+			if action.Command != "" {
+				fmt.Fprintf(&b, "  - Command: `%s`\n", action.Command)
+			}
+			if action.Evidence != "" {
+				fmt.Fprintf(&b, "  - Evidence: %s\n", action.Evidence)
+			}
+		}
+	}
+	if len(report.Warnings) > 0 {
+		b.WriteString("\n## Ideation Warnings\n")
+		for _, warning := range report.Warnings {
+			fmt.Fprintf(&b, "\n- %s\n", warning)
+		}
+	}
+	if report.Roadmap != nil {
+		b.WriteString("\n")
+		b.WriteString(ideaplan.RenderRoadmapMarkdown(*report.Roadmap))
+	}
+	return b.String()
 }
 
 // newWorkHistoryCmd creates the history command

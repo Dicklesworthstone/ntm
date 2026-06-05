@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
 func TestTruncateCassText(t *testing.T) {
 	tests := []struct {
@@ -70,6 +73,18 @@ func TestTruncateCassText(t *testing.T) {
 			expected: "hel",
 		},
 		{
+			name:     "maxLen 3 keeps exact three byte rune",
+			input:    "\xe2\x82\xacx",
+			maxLen:   3,
+			expected: "\xe2\x82\xac",
+		},
+		{
+			name:     "maxLen 3 keeps rune plus ascii",
+			input:    "\xc3\xa9ab",
+			maxLen:   3,
+			expected: "\xc3\xa9a",
+		},
+		{
 			name:     "maxLen 3 with short string unchanged",
 			input:    "hi",
 			maxLen:   3,
@@ -109,26 +124,15 @@ func TestTruncateCassText_MultibyteLoopFallthrough(t *testing.T) {
 	}
 }
 
-// TestTruncateCassText_SmallMaxLenLoopFallthrough tests line 500 (maxLen<=3 loop
-// completing without early return) which happens when all rune positions < maxLen.
+// TestTruncateCassText_SmallMaxLenLoopFallthrough tests the maxLen<=3 loop
+// completing without an early return when a single rune is wider than maxLen.
 func TestTruncateCassText_SmallMaxLenLoopFallthrough(t *testing.T) {
-
-	// With a 2-byte rune at position 0 and maxLen=2:
-	// Rune starts: 0. i=0 (<2 ok), byteLen=1.
-	// Loop ends. Next iteration: i=2 (the multi-byte rune occupies positions 0-1).
-	// Actually, for i := range s iterates over rune starts.
-	// "é" = 2 bytes. maxLen=3. Rune start: 0. i=0 (<3), byteLen=1. Loop ends.
-	// Falls through to return s[:3] which is "é" + 1 random byte - bad.
-	// Actually, "éa" = 3 bytes. maxLen=2, loop: i=0 (<2, byteLen=1), i=2 (>=2, returns s[:1]).
-	// That's the early return, not the fallthrough.
-	// For the fallthrough: need len(s) > maxLen (>3 bytes) but all rune starts < maxLen.
-	// "🌍" = 4 bytes, single rune. maxLen=3. Rune starts: 0. i=0 (<3). Loop ends.
-	// return s[:maxLen] = s[:3] — but that splits the rune. That's what line 500 does.
-	// This is the line 500 fallthrough for a single multi-byte rune.
 	got := truncateCassText("\xf0\x9f\x8c\x8d", 3)
-	// The function returns s[:3] which is 3 bytes of a 4-byte emoji.
-	if len(got) > 3 {
-		t.Errorf("truncateCassText(emoji, 3) length = %d, want <= 3", len(got))
+	if got != "" {
+		t.Errorf("truncateCassText(emoji, 3) = %q, want empty string", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncateCassText(emoji, 3) produced invalid UTF-8: %q", got)
 	}
 }
 

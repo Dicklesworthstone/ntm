@@ -561,9 +561,14 @@ func runSessionsRestore(savedName string, opts session.RestoreOptions, attach, l
 	if launchAgents {
 		if cfg != nil {
 			cmds := session.AgentCommands{
-				Claude: cfg.Agents.Claude,
-				Codex:  cfg.Agents.Codex,
-				Gemini: cfg.Agents.Gemini,
+				Claude:   cfg.Agents.Claude,
+				Codex:    cfg.Agents.Codex,
+				Gemini:   cfg.Agents.Gemini,
+				Cursor:   cfg.Agents.Cursor,
+				Windsurf: cfg.Agents.Windsurf,
+				Aider:    cfg.Agents.Aider,
+				Opencode: cfg.Agents.Opencode,
+				Ollama:   cfg.Agents.Ollama,
 			}
 			launchErr = session.RestoreAgents(restoredName, state, cmds)
 		}

@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -1511,7 +1513,7 @@ Shell Integration:
 				os.Exit(1)
 			}
 			if robotDiagnoseBrief {
-				if err := robot.PrintDiagnoseBrief(session); err != nil {
+				if err := robot.PrintDiagnoseBrief(cmd.Context(), session); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
@@ -1522,7 +1524,7 @@ Shell Integration:
 					Fix:     robotDiagnoseFix,
 					Brief:   robotDiagnoseBrief,
 				}
-				if err := robot.PrintDiagnose(opts); err != nil {
+				if err := robot.PrintDiagnose(cmd.Context(), opts); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
@@ -2434,7 +2436,18 @@ Shell Integration:
 
 func Execute() error {
 	defer closeRobotPersistence()
-	err := rootCmd.Execute()
+	// Install a signal-cancellable context at the root so handlers using
+	// `cmd.Context()` (diagnose, swarm, openapi, support_bundle, …) see
+	// cancellation when the user presses Ctrl-C. Without this, `cmd.Context()`
+	// is a background context that never cancels, making any context-aware
+	// API plumbed through cobra effectively non-cancellable. Commands with
+	// their own `signal.Notify`-based shutdown loops (serve, watch, monitor,
+	// send, …) continue to receive the OS signal directly — Go delivers it
+	// to every registered consumer — so adding a root-level consumer does
+	// not interfere with their existing shutdown logic.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err := rootCmd.ExecuteContext(ctx)
 	logCommandAuditEnd(err)
 	_ = audit.CloseAll()
 	if err != nil {
@@ -2460,12 +2473,27 @@ func shouldInitializeRobotPersistence(cmd *cobra.Command) bool {
 	}
 
 	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "--robot-") || arg == "--schema" {
+		if arg == "--schema" {
+			return true
+		}
+		if strings.HasPrefix(arg, "--robot-") && !robotFlagSkipsPersistence(arg) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func robotFlagSkipsPersistence(arg string) bool {
+	if i := strings.IndexByte(arg, '='); i >= 0 {
+		arg = arg[:i]
+	}
+	switch arg {
+	case "--robot-overlay":
+		return true
+	default:
+		return false
+	}
 }
 
 func initializeRobotPersistence() error {
@@ -4067,6 +4095,10 @@ func init() {
 		newWorkCmd(),
 		newEnsembleCmd(),
 		newModesCmd(),
+
+		// Agent-name navigation (ntm#139)
+		newSwitchAgentCmd(),
+		newMappingCmd(),
 
 		// Internal commands
 		newMonitorCmd(),

@@ -1,14 +1,21 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/commitlint"
+	ideaplan "github.com/Dicklesworthstone/ntm/internal/ideation"
 	"github.com/Dicklesworthstone/ntm/internal/robot/assurance"
 )
 
@@ -138,6 +145,7 @@ func TestEvaluateQueueDryQuiescenceQueueDry(t *testing.T) {
 		Evidence: QueueDryEvidence{
 			ActionableCount: 0,
 			ReadyCount:      0,
+			CountsVerified:  true,
 			Sync: QueueDrySyncStatus{
 				Status: "in_sync",
 			},
@@ -161,6 +169,7 @@ func TestEvaluateQueueDryQuiescenceBlockedByPeer(t *testing.T) {
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
 			InProgressCount: 1,
+			CountsVerified:  true,
 			Reservations: QueueDryReservations{
 				Available: true,
 				Count:     1,
@@ -180,12 +189,39 @@ func TestEvaluateQueueDryQuiescenceBlockedByPeer(t *testing.T) {
 	}
 }
 
+func TestEvaluateQueueDryQuiescenceUnsafeReservationUnknown(t *testing.T) {
+	report := QueueDryResponse{
+		QueueDry: true,
+		Evidence: QueueDryEvidence{
+			ActionableCount: 0,
+			ReadyCount:      0,
+			CountsVerified:  true,
+			Reservations: QueueDryReservations{
+				Available: false,
+				Error:     "Agent Mail server unavailable",
+			},
+		},
+	}
+
+	got := evaluateQueueDryQuiescence(report)
+	if got.State != assurance.QuiescenceUnsafeToStandDown {
+		t.Fatalf("State = %q, want %q", got.State, assurance.QuiescenceUnsafeToStandDown)
+	}
+	if got.SafeToStandDown {
+		t.Fatalf("SafeToStandDown = true, want false")
+	}
+	if !containsReasonCode(got.ReasonCodes, assurance.ReasonReservationUnknown) {
+		t.Fatalf("reason codes = %v, want reservation unknown marker", got.ReasonCodes)
+	}
+}
+
 func TestEvaluateQueueDryQuiescenceUnsafeReadyWork(t *testing.T) {
 	report := QueueDryResponse{
 		QueueDry: false,
 		Evidence: QueueDryEvidence{
 			ActionableCount: 1,
 			ReadyCount:      1,
+			CountsVerified:  true,
 		},
 	}
 
@@ -202,6 +238,7 @@ func TestEvaluateQueueDryQuiescenceUnsafeDirtyTracker(t *testing.T) {
 	report := QueueDryResponse{
 		QueueDry: true,
 		Evidence: QueueDryEvidence{
+			CountsVerified: true,
 			Sync: QueueDrySyncStatus{
 				NeedsFlush: true,
 			},
@@ -232,6 +269,223 @@ func TestQueueDryReservationTimeoutIsInteractive(t *testing.T) {
 	}
 }
 
+func TestCollectQueueDryReservationsSkipsHealthPreflight(t *testing.T) {
+	oldNewClient := queueDryNewAgentMailClient
+	oldFetchReservations := queueDryFetchActiveReservations
+	oldHealthCheck := queueDryAgentMailHealthCheck
+	t.Cleanup(func() {
+		queueDryNewAgentMailClient = oldNewClient
+		queueDryFetchActiveReservations = oldFetchReservations
+		queueDryAgentMailHealthCheck = oldHealthCheck
+	})
+
+	queueDryNewAgentMailClient = func(projectDir string) *agentmail.Client {
+		if projectDir != "/repo" {
+			t.Fatalf("projectDir=%q, want /repo", projectDir)
+		}
+		// If collectQueueDryReservations regresses to a health preflight,
+		// this deliberately unreachable endpoint makes the test fail before
+		// the reservation fetch seam can return a valid read-side snapshot.
+		return agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1/"))
+	}
+
+	fetchCalled := false
+	queueDryFetchActiveReservations = func(ctx context.Context, client *agentmail.Client, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error) {
+		fetchCalled = true
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("reservation lookup should have a deadline")
+		}
+		if projectKey != "/repo" || agentName != "" || !allAgents {
+			t.Fatalf("lookup args project=%q agent=%q allAgents=%v", projectKey, agentName, allAgents)
+		}
+		return []agentmail.FileReservation{
+			{ID: 42, AgentName: "BlueLake", PathPattern: "internal/cli/work.go"},
+		}, nil
+	}
+	queueDryAgentMailHealthCheck = func(context.Context, *agentmail.Client) (*agentmail.HealthStatus, error) {
+		t.Fatal("health check should only run after reservation lookup fails")
+		return nil, nil
+	}
+
+	got := collectQueueDryReservations("/repo")
+	if !fetchCalled {
+		t.Fatal("reservation fetch was not called")
+	}
+	if !got.Available || got.Count != 1 {
+		t.Fatalf("reservations=%+v, want one available reservation", got)
+	}
+	if len(got.Holders) != 1 || got.Holders[0] != "BlueLake" {
+		t.Fatalf("holders=%v, want [BlueLake]", got.Holders)
+	}
+	if got.Status != "available" {
+		t.Fatalf("status=%q, want available", got.Status)
+	}
+	if got.Coordination == nil || got.Coordination.Status != "verified" || got.Coordination.MutationBlocked {
+		t.Fatalf("coordination=%+v, want verified and mutation allowed", got.Coordination)
+	}
+}
+
+func TestCollectQueueDryReservationsTimeoutHealthOkExplainsSplit(t *testing.T) {
+	oldNewClient := queueDryNewAgentMailClient
+	oldFetchReservations := queueDryFetchActiveReservations
+	oldHealthCheck := queueDryAgentMailHealthCheck
+	t.Cleanup(func() {
+		queueDryNewAgentMailClient = oldNewClient
+		queueDryFetchActiveReservations = oldFetchReservations
+		queueDryAgentMailHealthCheck = oldHealthCheck
+	})
+
+	queueDryNewAgentMailClient = func(projectDir string) *agentmail.Client {
+		if projectDir != "/repo" {
+			t.Fatalf("projectDir=%q, want /repo", projectDir)
+		}
+		return agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1/"))
+	}
+	queueDryFetchActiveReservations = func(ctx context.Context, client *agentmail.Client, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("reservation lookup should have a deadline")
+		}
+		return nil, errors.New("listing reservations: agentmail: resources/read failed: request timed out")
+	}
+	queueDryAgentMailHealthCheck = func(ctx context.Context, client *agentmail.Client) (*agentmail.HealthStatus, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("health check should have a deadline")
+		}
+		return &agentmail.HealthStatus{
+			Status:      "ok",
+			HealthLevel: "green",
+			Recovery: &agentmail.RecoveryStatus{
+				Mode:       "corrupt",
+				NextAction: "Run am doctor repair --yes",
+			},
+		}, nil
+	}
+
+	got := collectQueueDryReservations("/repo")
+	if got.Available {
+		t.Fatalf("Available=true, want false while reservation listing failed: %+v", got)
+	}
+	if got.Status != "lookup_timeout_health_ok" {
+		t.Fatalf("Status=%q, want lookup_timeout_health_ok", got.Status)
+	}
+	if !got.HealthReachable || got.HealthStatus != "ok" || got.HealthLevel != "green" {
+		t.Fatalf("health fields=%+v, want reachable ok/green", got)
+	}
+	if strings.Compare(got.RecoveryMode, "corrupt") != 0 || !strings.Contains(got.RecoveryNextAction, "doctor repair") {
+		t.Fatalf("recovery fields=%+v, want corrupt recovery guidance", got)
+	}
+	if got.Coordination == nil || !got.Coordination.ReadOnlySafe || !got.Coordination.MutationBlocked {
+		t.Fatalf("coordination=%+v, want read-only safe diagnostics with mutation blocked", got.Coordination)
+	}
+	if !strings.Contains(got.Coordination.Remediation, "doctor repair") {
+		t.Fatalf("remediation=%q, want recovery next action", got.Coordination.Remediation)
+	}
+	for _, want := range []string{"reservation lookup failed", "status=ok", "recovery mode=corrupt"} {
+		if !containsWarning(got.Diagnostics, want) {
+			t.Fatalf("diagnostics=%v, want %q", got.Diagnostics, want)
+		}
+	}
+
+	report := QueueDryResponse{Evidence: QueueDryEvidence{Reservations: got}}
+	appendQueueDryReservationWarning(&report)
+	warning := strings.Join(report.Warnings, "\n")
+	for _, want := range []string{"status=lookup_timeout_health_ok", "health_check=reachable", "health_status=ok", "health_level=green", "recovery_mode=corrupt", "mutation_blocked=true"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("warning=%q, want %q", warning, want)
+		}
+	}
+}
+
+func TestCollectQueueDryReservationsServerUnavailableHealthFails(t *testing.T) {
+	oldNewClient := queueDryNewAgentMailClient
+	oldFetchReservations := queueDryFetchActiveReservations
+	oldHealthCheck := queueDryAgentMailHealthCheck
+	t.Cleanup(func() {
+		queueDryNewAgentMailClient = oldNewClient
+		queueDryFetchActiveReservations = oldFetchReservations
+		queueDryAgentMailHealthCheck = oldHealthCheck
+	})
+
+	queueDryNewAgentMailClient = func(string) *agentmail.Client {
+		return agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1/"))
+	}
+	queueDryFetchActiveReservations = func(context.Context, *agentmail.Client, string, string, bool) ([]agentmail.FileReservation, error) {
+		return nil, errors.New("connect: connection refused")
+	}
+	queueDryAgentMailHealthCheck = func(context.Context, *agentmail.Client) (*agentmail.HealthStatus, error) {
+		return nil, errors.New("health_check: connection refused")
+	}
+
+	got := collectQueueDryReservations("/repo")
+	if got.Available {
+		t.Fatalf("Available=true, want false: %+v", got)
+	}
+	if got.Status != "server_unavailable" {
+		t.Fatalf("Status=%q, want server_unavailable", got.Status)
+	}
+	if got.HealthReachable {
+		t.Fatalf("HealthReachable=true, want false")
+	}
+	if got.Coordination == nil || !got.Coordination.MutationBlocked {
+		t.Fatalf("coordination=%+v, want mutation blocked when server is unavailable", got.Coordination)
+	}
+	if !strings.Contains(got.Coordination.Remediation, "start or restart Agent Mail") {
+		t.Fatalf("remediation=%q, want restart guidance", got.Coordination.Remediation)
+	}
+	if !containsWarning(got.Diagnostics, "health_check failed") {
+		t.Fatalf("diagnostics=%v, want health failure", got.Diagnostics)
+	}
+}
+
+func TestQueueDryTriageTimeoutIsInteractive(t *testing.T) {
+	if queueDryTriageTimeout <= 0 {
+		t.Fatalf("queueDryTriageTimeout = %s, must be positive", queueDryTriageTimeout)
+	}
+	if queueDryTriageTimeout >= 5*time.Second {
+		t.Fatalf("queueDryTriageTimeout = %s, must be < 5s for an interactive diagnostic", queueDryTriageTimeout)
+	}
+}
+
+func TestCollectQueueDryReportWarnsWhenTriageUnavailable(t *testing.T) {
+	oldGetTriage := queueDryGetTriage
+	queueDryGetTriage = func(string) (*bv.TriageResponse, error) {
+		return nil, errors.New("bv timed out after 2s")
+	}
+	t.Cleanup(func() {
+		queueDryGetTriage = oldGetTriage
+	})
+
+	report := collectQueueDryReport(t.TempDir(), time.Now().UTC(), 24*time.Hour, 0, 10*time.Minute, 1)
+
+	if report.Evidence.TriageError != "bv timed out after 2s" {
+		t.Fatalf("TriageError=%q, want timeout text", report.Evidence.TriageError)
+	}
+	if !containsWarning(report.Warnings, "bv triage unavailable: bv timed out after 2s") {
+		t.Fatalf("warnings=%v, want triage timeout warning", report.Warnings)
+	}
+	if report.Evidence.CountsVerified {
+		t.Fatalf("CountsVerified=true, want false when both Beads summary and bv triage are unavailable")
+	}
+	if report.QueueDry {
+		t.Fatalf("QueueDry=true, want false when tracker counts are unavailable")
+	}
+	if report.Quiescence.SafeToStandDown {
+		t.Fatalf("SafeToStandDown=true, want false when tracker counts are unavailable")
+	}
+	if report.Quiescence.State != assurance.QuiescenceUnsafeToStandDown {
+		t.Fatalf("Quiescence.State=%q, want %q", report.Quiescence.State, assurance.QuiescenceUnsafeToStandDown)
+	}
+	if !containsReasonCode(report.Quiescence.ReasonCodes, assurance.ReasonQuiescenceTrackerUnknown) {
+		t.Fatalf("reason codes=%v, want tracker unknown", report.Quiescence.ReasonCodes)
+	}
+	if containsQueueDryRecommendation(report.Recommendations, "review_pass") {
+		t.Fatalf("recommendations=%v, should not recommend review_pass when tracker counts are unavailable", report.Recommendations)
+	}
+	if !containsQueueDryRecommendation(report.Recommendations, "refresh_triage") {
+		t.Fatalf("recommendations=%v, want refresh_triage when tracker counts are unavailable", report.Recommendations)
+	}
+}
+
 func TestAppendQueueDryReservationWarning(t *testing.T) {
 	report := QueueDryResponse{
 		Evidence: QueueDryEvidence{
@@ -253,6 +507,347 @@ func TestAppendQueueDryReservationWarning(t *testing.T) {
 	if !strings.Contains(report.Warnings[0], "context deadline exceeded") {
 		t.Fatalf("warning=%q, want original error text", report.Warnings[0])
 	}
+}
+
+func TestQueueDryIdeationDryQueueRendersRoadmap(t *testing.T) {
+	report := fixtureQueueDryDiagnostic(true)
+	snapshot := fixtureQueueDryIdeationSnapshot()
+
+	got := buildQueueDryIdeationReport(report, snapshot, QueueDryIdeationOptions{Requested: true})
+
+	if got.Status != "rendered" {
+		t.Fatalf("Status=%q, want rendered", got.Status)
+	}
+	if !got.DryRun {
+		t.Fatalf("DryRun=false, want true")
+	}
+	if got.Roadmap == nil || got.Roadmap.RenderedCount != 1 {
+		t.Fatalf("Roadmap=%+v, want one rendered candidate", got.Roadmap)
+	}
+	if got.Guard == nil || got.Guard.Recommendation != ideaplan.GuardRecommendationIdeate {
+		t.Fatalf("Guard=%+v, want ideate", got.Guard)
+	}
+	if got.Creation == nil || !got.Creation.DryRun || len(got.Creation.RemainingCommands) == 0 {
+		t.Fatalf("Creation=%+v, want dry-run creation preview", got.Creation)
+	}
+	if got.Effectiveness == nil || got.Effectiveness.CandidateGeneratedCount != 1 || got.Effectiveness.RenderedCount != 1 {
+		t.Fatalf("Effectiveness=%+v, want generated/rendered counts", got.Effectiveness)
+	}
+	if !containsQueueDryRecommendation(got.NextActions, "inspect_dry_run_bead_preview") {
+		t.Fatalf("next actions=%+v, want dry-run preview action", got.NextActions)
+	}
+}
+
+func TestQueueDryIdeationNonDrySkipsWithoutForce(t *testing.T) {
+	report := fixtureQueueDryDiagnostic(false)
+	report.Evidence.TriageTopIDs = []string{"bd-ready"}
+	report.Recommendations = buildQueueDryRecommendations(report)
+
+	got := skippedQueueDryIdeationReport(report, QueueDryIdeationOptions{Requested: true})
+
+	if got.Status != "skipped_ready_work" {
+		t.Fatalf("Status=%q, want skipped_ready_work", got.Status)
+	}
+	if got.Roadmap != nil {
+		t.Fatalf("Roadmap=%+v, want nil when ready work exists", got.Roadmap)
+	}
+	if !containsQueueDryRecommendation(got.NextActions, "claim_top_ready") {
+		t.Fatalf("next actions=%+v, want claim_top_ready", got.NextActions)
+	}
+}
+
+func TestQueueDryIdeationForceAllowsNonDryPreview(t *testing.T) {
+	report := fixtureQueueDryDiagnostic(false)
+	snapshot := fixtureQueueDryIdeationSnapshot()
+	snapshot.Queue.ActionableCount = 1
+	snapshot.Queue.ReadyCount = 1
+
+	got := buildQueueDryIdeationReport(report, snapshot, QueueDryIdeationOptions{Requested: true, Force: true})
+
+	if got.Status != "forced_preview" {
+		t.Fatalf("Status=%q, want forced_preview", got.Status)
+	}
+	if !got.Forced {
+		t.Fatalf("Forced=false, want true")
+	}
+	if got.Roadmap == nil || got.Roadmap.RenderedCount != 1 {
+		t.Fatalf("Roadmap=%+v, want forced preview roadmap", got.Roadmap)
+	}
+}
+
+func TestQueueDryOptionalSignalsUseAdapter(t *testing.T) {
+	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+		if opts.ProjectDir != "/repo" {
+			t.Fatalf("ProjectDir=%q, want /repo", opts.ProjectDir)
+		}
+		if len(opts.CASSQueries) == 0 || opts.CASSQueries[0] != "queue-dry ideation" {
+			t.Fatalf("CASSQueries=%v, want queue-dry ideation", opts.CASSQueries)
+		}
+		if opts.CMQuery != "queue-dry ideation" {
+			t.Fatalf("CMQuery=%q, want queue-dry ideation", opts.CMQuery)
+		}
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cass:search", Kind: ideaplan.SourceCASS, Available: true, Evidence: []string{"cass search ok"}})
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cm:context", Kind: ideaplan.SourceCM, Available: true, Evidence: []string{"cm context ok"}})
+	})
+	defer restore()
+
+	snapshot := fixtureQueueDryIdeationSnapshot()
+	collectQueueDryOptionalSignals(context.Background(), &snapshot, "/repo")
+
+	for _, want := range []string{"cass:search", "cm:context"} {
+		source := findQueueDrySource(snapshot.Sources, want)
+		if source == nil || !source.Available {
+			t.Fatalf("source %q=%+v, want available", want, source)
+		}
+	}
+	if containsQueueDryValidationNote(snapshot.DegradedSources, "cass:context") || containsQueueDryValidationNote(snapshot.DegradedSources, "cm:context") {
+		t.Fatalf("degraded sources=%+v, did not expect hard-coded cass/cm degradation", snapshot.DegradedSources)
+	}
+}
+
+func TestQueueDryIdeationDegradedOptionalSourcesContinue(t *testing.T) {
+	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+		snapshot.RecordSource(ideaplan.CandidateSource{
+			ID:        "cass:search",
+			Kind:      ideaplan.SourceCASS,
+			Available: false,
+			Error:     "cass not installed in PATH",
+			Evidence:  []string{"missing cass"},
+		})
+		snapshot.RecordSource(ideaplan.CandidateSource{
+			ID:        "cm:context",
+			Kind:      ideaplan.SourceCM,
+			Available: false,
+			Error:     "cm not installed in PATH",
+			Evidence:  []string{"missing cm"},
+		})
+	})
+	defer restore()
+
+	report := fixtureQueueDryDiagnostic(true)
+	report.Evidence.Reservations = QueueDryReservations{
+		Available: false,
+		Error:     "Agent Mail server unavailable",
+	}
+	report.Warnings = []string{"reservations_unavailable: Agent Mail server unavailable"}
+	snapshot := fixtureQueueDryIdeationSnapshot()
+	annotateQueueDryOptionalSources(&snapshot, report)
+	collectQueueDryOptionalSignals(context.Background(), &snapshot, "/repo")
+
+	got := buildQueueDryIdeationReport(report, snapshot, QueueDryIdeationOptions{Requested: true})
+
+	if got.Roadmap == nil || got.Roadmap.RenderedCount != 1 {
+		t.Fatalf("Roadmap=%+v, want roadmap despite degraded optional sources", got.Roadmap)
+	}
+	for _, want := range []string{"agent_mail:reservations", "cass:search", "cm:context"} {
+		if !containsWarning(got.Warnings, want) {
+			t.Fatalf("warnings=%v, want degraded marker %q", got.Warnings, want)
+		}
+	}
+	if got.Guard == nil || got.Guard.Recommendation != ideaplan.GuardRecommendationWaitForCoordination {
+		t.Fatalf("Guard=%+v, want wait_for_coordination when reservations unavailable", got.Guard)
+	}
+}
+
+func TestQueueDryIdeationJSONOutputContainsDryRunPreview(t *testing.T) {
+	ideationReport := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
+	report := fixtureQueueDryDiagnostic(true)
+	report.Ideation = &ideationReport
+
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent failed: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{`"dry_run": true`, `"command_preview"`, "br create --dry-run", `"guard"`, `"effectiveness"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("JSON missing %q\n%s", want, got)
+		}
+	}
+}
+
+func TestQueueDryIdeationMarkdownOutputContainsRoadmap(t *testing.T) {
+	ideationReport := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
+	report := fixtureQueueDryDiagnostic(true)
+	report.Ideation = &ideationReport
+
+	got := queueDryMarkdown(report)
+
+	for _, want := range []string{"# Queue-Dry Diagnostic", "# Queue-Dry Ideation Dry Run", "queue-dry-ideation-dry-run", "Creation allowed: true", "Effectiveness generated candidates: 1", "br create --dry-run"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("markdown missing %q\n%s", want, got)
+		}
+	}
+}
+
+func TestQueueDryIdeationDryRunCommandsDoNotMutate(t *testing.T) {
+	got := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{Requested: true})
+	if got.Roadmap == nil || len(got.Roadmap.CommandPreview) == 0 {
+		t.Fatalf("roadmap commands empty: %+v", got.Roadmap)
+	}
+	for _, command := range got.Roadmap.CommandPreview {
+		if !strings.Contains(command, "br create --dry-run") {
+			t.Fatalf("command %q is not dry-run", command)
+		}
+	}
+}
+
+func TestQueueDryIdeationCreateBeadsRequiresConfirmation(t *testing.T) {
+	got := buildQueueDryIdeationReport(fixtureQueueDryDiagnostic(true), fixtureQueueDryIdeationSnapshot(), QueueDryIdeationOptions{
+		Requested:   true,
+		CreateBeads: true,
+	})
+
+	if got.Status != "creation_blocked" {
+		t.Fatalf("Status=%q, want creation_blocked", got.Status)
+	}
+	if got.Creation == nil || got.Creation.Success {
+		t.Fatalf("Creation=%+v, want blocked creation report", got.Creation)
+	}
+	if !containsQueueDryCreationError(got.Creation, "creation_confirmation_required") {
+		t.Fatalf("Creation=%+v, want explicit confirmation error", got.Creation)
+	}
+	if !containsQueueDryRecommendation(got.NextActions, "resolve_creation_gate") {
+		t.Fatalf("next actions=%+v, want creation gate action", got.NextActions)
+	}
+}
+
+func TestQueueDryIdeationTempWorkspaceGate(t *testing.T) {
+	requireQueueDryGateCommand(t, "br")
+	requireQueueDryGateCommand(t, "bv")
+	requireQueueDryGateCommand(t, "git")
+	restore := stubQueueDryCollectOptional(t, func(ctx context.Context, snapshot *ideaplan.IdeaEvidenceSnapshot, opts ideaplan.OptionalAdapterOptions) {
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cass:search", Kind: ideaplan.SourceCASS, Available: true, Evidence: []string{"cass search fixture"}})
+		snapshot.RecordSource(ideaplan.CandidateSource{ID: "cm:context", Kind: ideaplan.SourceCM, Available: true, Evidence: []string{"cm context fixture"}})
+	})
+	defer restore()
+
+	const scenarioID = "queue-dry-temp-workspace-gate"
+	projectDir := t.TempDir()
+	artifactPath := filepath.Join(projectDir, "queue-dry-gate-report.json")
+	failurePath := filepath.Join(projectDir, "failure.txt")
+	mustWriteFile(t, filepath.Join(projectDir, "AGENTS.md"), []byte("# Test agent instructions\n"))
+	mustWriteFile(t, filepath.Join(projectDir, "README.md"), []byte("# Queue dry temp workspace\n"))
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "init")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "config", "user.email", "queue-dry@example.test")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "config", "user.name", "Queue Dry Test")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "add", "AGENTS.md", "README.md")
+	runQueueDryGateCommand(t, projectDir, failurePath, "git", "commit", "-m", "seed queue dry fixture")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "init", "--json")
+
+	closedID := createQueueDryGateBead(t, projectDir, failurePath, "Closed idea-wizard family")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "close", closedID, "--reason", "seeded closed family")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+	if ready := queueDryGateReadyIDs(t, projectDir, failurePath); len(ready) != 0 {
+		t.Fatalf("ready before dry-run=%v, want empty queue", ready)
+	}
+
+	report := collectQueueDryReport(projectDir, time.Now().UTC(), 24*time.Hour, 0, time.Minute, 5)
+	if !report.QueueDry {
+		t.Fatalf("QueueDry=false, evidence=%+v warnings=%v errors=%v", report.Evidence, report.Warnings, report.Errors)
+	}
+	dryRun := collectQueueDryIdeationReport(projectDir, report, QueueDryIdeationOptions{
+		Requested:   true,
+		PlanVersion: scenarioID + "-dry-run",
+	})
+	if dryRun.Roadmap == nil || dryRun.Roadmap.RenderedCount == 0 {
+		t.Fatalf("dry-run roadmap=%+v, want rendered candidates", dryRun.Roadmap)
+	}
+	if dryRun.Creation == nil || !dryRun.Creation.DryRun || len(dryRun.Creation.RemainingCommands) == 0 {
+		t.Fatalf("dry-run creation=%+v, want non-mutating command preview", dryRun.Creation)
+	}
+	if !containsWarning(dryRun.Warnings, "agent_mail:reservations") {
+		t.Fatalf("warnings=%v, want degraded Agent Mail source marker", dryRun.Warnings)
+	}
+	if ready := queueDryGateReadyIDs(t, projectDir, failurePath); len(ready) != 0 {
+		t.Fatalf("ready after dry-run=%v, want no Beads mutation", ready)
+	}
+
+	blocked := collectQueueDryIdeationReport(projectDir, report, QueueDryIdeationOptions{
+		Requested:     true,
+		CreateBeads:   true,
+		ConfirmCreate: true,
+		PlanVersion:   scenarioID + "-blocked-create",
+	})
+	if blocked.Status != "creation_blocked" || !containsQueueDryCreationError(blocked.Creation, "creation_blocked_by_guard") {
+		t.Fatalf("blocked status=%q creation=%+v, want guard-blocked degraded creation", blocked.Status, blocked.Creation)
+	}
+	if ready := queueDryGateReadyIDs(t, projectDir, failurePath); len(ready) != 0 {
+		t.Fatalf("ready after degraded create=%v, want no Beads mutation", ready)
+	}
+
+	creation := ideaplan.RunBeadCreation(context.Background(), queueDryGateCreationPlan(), ideaplan.BeadCreationOptions{
+		ProjectDir:      projectDir,
+		PlanVersion:     scenarioID + "-confirmed-create",
+		CreateRequested: true,
+		Confirmed:       true,
+		AllowCreate:     true,
+	})
+	if !creation.Success || len(creation.Created) != 1 {
+		t.Fatalf("creation=%+v, want one created bead and skipped duplicate", creation)
+	}
+	if len(creation.SkippedCandidates) != 1 {
+		t.Fatalf("skipped=%v, want one duplicate candidate skipped", creation.SkippedCandidates)
+	}
+	readyAfterCreate := queueDryGateReadyIDs(t, projectDir, failurePath)
+	if !containsStringSlice(readyAfterCreate, creation.Created[0].BeadID) {
+		t.Fatalf("ready after create=%v, want created bead %s", readyAfterCreate, creation.Created[0].BeadID)
+	}
+	cycles := queueDryGateDependencyCycles(t, projectDir, failurePath)
+	if cycles.Count != 0 {
+		t.Fatalf("dependency cycles=%+v, want none", cycles)
+	}
+	triage := queueDryGateBVTriage(t, projectDir, failurePath)
+	if triage.Triage.QuickRef.ActionableCount == 0 {
+		t.Fatalf("bv actionable count=0, want created bead visible in triage")
+	}
+	if triage.Triage.ProjectHealth.Graph.HasCycles {
+		t.Fatalf("bv graph reports cycles after controlled creation")
+	}
+
+	readyID := createQueueDryGateBead(t, projectDir, failurePath, "Existing ready work wins")
+	runQueueDryGateCommand(t, projectDir, failurePath, "br", "sync", "--flush-only")
+	nonDryReady := queueDryGateReadyIDs(t, projectDir, failurePath)
+	if !containsStringSlice(nonDryReady, readyID) {
+		t.Fatalf("ready after non-dry seed=%v, want %s", nonDryReady, readyID)
+	}
+	nonDryReport := queueDryGateNonDryReport(projectDir, nonDryReady)
+	if nonDryReport.QueueDry {
+		t.Fatalf("QueueDry=true after ready bead %s, want non-dry queue", readyID)
+	}
+	skipped := collectQueueDryIdeationReport(projectDir, nonDryReport, QueueDryIdeationOptions{
+		Requested:     true,
+		CreateBeads:   true,
+		ConfirmCreate: true,
+	})
+	if skipped.Status != "skipped_ready_work" || skipped.Creation != nil {
+		t.Fatalf("skipped=%+v, want ready work to win without creation", skipped)
+	}
+
+	artifact := map[string]any{
+		"scenario_id":                scenarioID,
+		"command":                    "ntm work queue-dry --ideate --format=json",
+		"exit_code":                  0,
+		"rendered_candidate_count":   dryRun.Roadmap.RenderedCount,
+		"created_bead_count":         len(creation.Created),
+		"duplicate_suppressed_count": dryRun.Guard.DuplicateSuppressedCount + len(creation.SkippedCandidates),
+		"artifact_path":              artifactPath,
+	}
+	data, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal artifact: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	t.Logf("scenario_id=%s command=%q exit_code=0 rendered_candidate_count=%d created_bead_count=%d duplicate_suppressed_count=%d artifact=%s",
+		scenarioID,
+		artifact["command"],
+		dryRun.Roadmap.RenderedCount,
+		len(creation.Created),
+		artifact["duplicate_suppressed_count"],
+		artifactPath,
+	)
 }
 
 func TestApplyCommitLintReportCopiesFindings(t *testing.T) {
@@ -313,6 +908,200 @@ func TestAppendCommitReadyFindingMarksCriticalUnsafe(t *testing.T) {
 	}
 }
 
+func TestCollectCommitReadyReservationsHealthyCoordination(t *testing.T) {
+	oldNewClient := queueDryNewAgentMailClient
+	oldFetchReservations := queueDryFetchActiveReservations
+	oldHealthCheck := queueDryAgentMailHealthCheck
+	t.Cleanup(func() {
+		queueDryNewAgentMailClient = oldNewClient
+		queueDryFetchActiveReservations = oldFetchReservations
+		queueDryAgentMailHealthCheck = oldHealthCheck
+	})
+
+	now := time.Now().UTC()
+	queueDryNewAgentMailClient = func(projectDir string) *agentmail.Client {
+		if projectDir != "/repo" {
+			t.Fatalf("projectDir=%q, want /repo", projectDir)
+		}
+		return agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1/"))
+	}
+	queueDryFetchActiveReservations = func(ctx context.Context, client *agentmail.Client, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("reservation lookup should have a deadline")
+		}
+		if projectKey != "/repo" || agentName != "" || !allAgents {
+			t.Fatalf("lookup args project=%q agent=%q allAgents=%v", projectKey, agentName, allAgents)
+		}
+		return []agentmail.FileReservation{{
+			ID:          7,
+			PathPattern: "internal/cli/work.go",
+			AgentName:   "TopazDeer",
+			Exclusive:   true,
+			CreatedTS:   agentmail.FlexTime{Time: now},
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(time.Hour)},
+		}}, nil
+	}
+	queueDryAgentMailHealthCheck = func(context.Context, *agentmail.Client) (*agentmail.HealthStatus, error) {
+		t.Fatal("health check should not run after successful reservation lookup")
+		return nil, nil
+	}
+
+	views, evidence := collectCommitReadyReservations("/repo", true)
+	if len(views) != 1 || views[0].AgentName != "TopazDeer" {
+		t.Fatalf("views=%+v, want TopazDeer reservation", views)
+	}
+	if !evidence.Available || evidence.Count != 1 || evidence.Status != "available" {
+		t.Fatalf("evidence=%+v, want available reservation evidence", evidence)
+	}
+	if evidence.Coordination == nil || evidence.Coordination.Status != "verified" || evidence.Coordination.MutationBlocked {
+		t.Fatalf("coordination=%+v, want verified and mutation allowed", evidence.Coordination)
+	}
+}
+
+func TestCollectCommitReadyReservationsTimeoutBlocksMutation(t *testing.T) {
+	oldNewClient := queueDryNewAgentMailClient
+	oldFetchReservations := queueDryFetchActiveReservations
+	oldHealthCheck := queueDryAgentMailHealthCheck
+	t.Cleanup(func() {
+		queueDryNewAgentMailClient = oldNewClient
+		queueDryFetchActiveReservations = oldFetchReservations
+		queueDryAgentMailHealthCheck = oldHealthCheck
+	})
+
+	queueDryNewAgentMailClient = func(string) *agentmail.Client {
+		return agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1/"))
+	}
+	queueDryFetchActiveReservations = func(context.Context, *agentmail.Client, string, string, bool) ([]agentmail.FileReservation, error) {
+		return nil, errors.New("listing reservations: resources/read failed: request timed out")
+	}
+	queueDryAgentMailHealthCheck = func(context.Context, *agentmail.Client) (*agentmail.HealthStatus, error) {
+		return &agentmail.HealthStatus{
+			Status:      "ok",
+			HealthLevel: "green",
+			Recovery: &agentmail.RecoveryStatus{
+				Mode:       "degraded_read_only",
+				NextAction: "Run `am doctor repair`",
+			},
+		}, nil
+	}
+
+	views, evidence := collectCommitReadyReservations("/repo", true)
+	if len(views) != 0 {
+		t.Fatalf("views=%+v, want none on lookup failure", views)
+	}
+	if evidence.Available || evidence.Status != "lookup_timeout_health_ok" {
+		t.Fatalf("evidence=%+v, want unavailable timeout with health reachable", evidence)
+	}
+	if evidence.Coordination == nil || !evidence.Coordination.ReadOnlySafe || !evidence.Coordination.MutationBlocked {
+		t.Fatalf("coordination=%+v, want read-only diagnostics with mutation blocked", evidence.Coordination)
+	}
+	if !strings.Contains(evidence.Coordination.Remediation, "am doctor repair") {
+		t.Fatalf("remediation=%q, want recovery guidance", evidence.Coordination.Remediation)
+	}
+}
+
+func TestCollectCommitReadyMailUnavailableBlocksMutation(t *testing.T) {
+	oldNewClient := queueDryNewAgentMailClient
+	oldHealthCheck := queueDryAgentMailHealthCheck
+	oldFetchInbox := commitReadyFetchInbox
+	t.Cleanup(func() {
+		queueDryNewAgentMailClient = oldNewClient
+		queueDryAgentMailHealthCheck = oldHealthCheck
+		commitReadyFetchInbox = oldFetchInbox
+	})
+
+	queueDryNewAgentMailClient = func(string) *agentmail.Client {
+		return agentmail.NewClient(agentmail.WithBaseURL("http://127.0.0.1:1/"))
+	}
+	commitReadyFetchInbox = func(ctx context.Context, client *agentmail.Client, opts agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("inbox lookup should have a deadline")
+		}
+		if opts.ProjectKey != "/repo" || opts.AgentName != "TopazDeer" || !opts.UrgentOnly {
+			t.Fatalf("opts=%+v, want urgent inbox check for TopazDeer", opts)
+		}
+		return nil, errors.New("fetch_inbox: connection refused")
+	}
+	queueDryAgentMailHealthCheck = func(context.Context, *agentmail.Client) (*agentmail.HealthStatus, error) {
+		return nil, errors.New("health_check: connection refused")
+	}
+
+	views, evidence := collectCommitReadyMail("/repo", "TopazDeer")
+	if len(views) != 0 {
+		t.Fatalf("views=%+v, want none on inbox failure", views)
+	}
+	if evidence.Available || evidence.Agent != "TopazDeer" {
+		t.Fatalf("evidence=%+v, want unavailable TopazDeer evidence", evidence)
+	}
+	if evidence.Coordination == nil || !evidence.Coordination.ReadOnlySafe || !evidence.Coordination.MutationBlocked {
+		t.Fatalf("coordination=%+v, want read-only diagnostics with mutation blocked", evidence.Coordination)
+	}
+	if !strings.Contains(evidence.Coordination.Remediation, "start or restart Agent Mail") {
+		t.Fatalf("remediation=%q, want restart guidance", evidence.Coordination.Remediation)
+	}
+	if !containsWarning(evidence.Diagnostics, "health_check failed") {
+		t.Fatalf("diagnostics=%v, want health_check failure", evidence.Diagnostics)
+	}
+}
+
+func fixtureQueueDryDiagnostic(dry bool) QueueDryResponse {
+	report := QueueDryResponse{
+		Success:  true,
+		QueueDry: dry,
+		Project:  "/repo",
+		Evidence: QueueDryEvidence{
+			CountsVerified: true,
+			Sync: QueueDrySyncStatus{
+				Status: "in_sync",
+			},
+			Reservations: QueueDryReservations{
+				Available: true,
+			},
+		},
+	}
+	if dry {
+		report.Evidence.ReadyCount = 0
+		report.Evidence.ActionableCount = 0
+	} else {
+		report.Evidence.ReadyCount = 1
+		report.Evidence.ActionableCount = 1
+	}
+	report.Quiescence = evaluateQueueDryQuiescence(report)
+	report.Recommendations = buildQueueDryRecommendations(report)
+	return report
+}
+
+func fixtureQueueDryIdeationSnapshot() ideaplan.IdeaEvidenceSnapshot {
+	snapshot := ideaplan.NewIdeaEvidenceSnapshot("/repo")
+	snapshot.Queue.CountsVerified = true
+	snapshot.Queue.OpenCount = 0
+	snapshot.Queue.ReadyCount = 0
+	snapshot.Queue.ActionableCount = 0
+	snapshot.Candidates = []ideaplan.IdeaCandidate{
+		{
+			ID:        "cli-dry-run",
+			Title:     "Queue-dry CLI dry-run preview",
+			Summary:   "Expose a duplicate-aware queue-dry roadmap preview through the existing work CLI.",
+			Labels:    []string{"cli", "queue-dry"},
+			Keywords:  []string{"cli", "operator", "queue", "dry", "test"},
+			SourceIDs: []string{"manual:fixture"},
+			Evidence:  []string{"queue is dry and operator requested a dry-run ideation preview"},
+			Overlap: ideaplan.OverlapVerdict{
+				Kind:       ideaplan.OverlapNovel,
+				Confidence: 0.9,
+				Evidence:   []string{"fixture candidate is intentionally novel"},
+			},
+		},
+	}
+	snapshot.RecordSource(ideaplan.CandidateSource{
+		ID:        "manual:fixture",
+		Kind:      ideaplan.SourceManual,
+		Available: true,
+		Evidence:  []string{"test fixture"},
+	})
+	return snapshot
+}
+
 func mustMkdirAll(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -334,6 +1123,187 @@ func mustChtimes(t *testing.T, path string, atime, mtime time.Time) {
 	}
 }
 
+func requireQueueDryGateCommand(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("%s not available: %v", name, err)
+	}
+}
+
+func runQueueDryGateCommand(t *testing.T, dir, failurePath, name string, args ...string) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return output
+	}
+	command := strings.TrimSpace(name + " " + strings.Join(args, " "))
+	exitCode := queueDryGateExitCode(err)
+	contents := strings.Join([]string{
+		"command: " + command,
+		"exit_code: " + strconv.Itoa(exitCode),
+		"error: " + err.Error(),
+		"output:",
+		string(output),
+	}, "\n")
+	if writeErr := os.WriteFile(failurePath, []byte(contents), 0644); writeErr != nil {
+		t.Logf("write failure artifact %s: %v", failurePath, writeErr)
+	}
+	t.Fatalf("command failed: %s\nexit_code=%d\nartifact=%s\noutput:\n%s", command, exitCode, failurePath, string(output))
+	return nil
+}
+
+func queueDryGateExitCode(err error) int {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
+func createQueueDryGateBead(t *testing.T, dir, failurePath, title string) string {
+	t.Helper()
+	output := runQueueDryGateCommand(t, dir, failurePath, "br", "create", title, "-t", "task", "-p", "2", "--json")
+	id, err := parseQueueDryGateCreatedID(output)
+	if err != nil {
+		t.Fatalf("parse created bead: %v\noutput:\n%s", err, string(output))
+	}
+	return id
+}
+
+func parseQueueDryGateCreatedID(output []byte) (string, error) {
+	var issue struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &issue); err == nil && issue.ID != "" {
+		return issue.ID, nil
+	}
+	var issues []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &issues); err == nil && len(issues) > 0 && issues[0].ID != "" {
+		return issues[0].ID, nil
+	}
+	return "", errors.New("br create JSON did not include id")
+}
+
+func queueDryGateReadyIDs(t *testing.T, dir, failurePath string) []string {
+	t.Helper()
+	output := runQueueDryGateCommand(t, dir, failurePath, "br", "ready", "--json")
+	var issues []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		t.Fatalf("parse br ready JSON: %v\noutput:\n%s", err, string(output))
+	}
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.ID != "" {
+			ids = append(ids, issue.ID)
+		}
+	}
+	return ids
+}
+
+type queueDryGateCycles struct {
+	Count int `json:"count"`
+}
+
+func queueDryGateDependencyCycles(t *testing.T, dir, failurePath string) queueDryGateCycles {
+	t.Helper()
+	output := runQueueDryGateCommand(t, dir, failurePath, "br", "dep", "cycles", "--json")
+	var cycles queueDryGateCycles
+	if err := json.Unmarshal(output, &cycles); err != nil {
+		t.Fatalf("parse br dep cycles JSON: %v\noutput:\n%s", err, string(output))
+	}
+	return cycles
+}
+
+type queueDryGateTriage struct {
+	Triage struct {
+		QuickRef struct {
+			ActionableCount int `json:"actionable_count"`
+		} `json:"quick_ref"`
+		ProjectHealth struct {
+			Graph struct {
+				HasCycles bool `json:"has_cycles"`
+			} `json:"graph"`
+		} `json:"project_health"`
+	} `json:"triage"`
+}
+
+func queueDryGateBVTriage(t *testing.T, dir, failurePath string) queueDryGateTriage {
+	t.Helper()
+	output := runQueueDryGateCommand(t, dir, failurePath, "bv", "--robot-triage")
+	var triage queueDryGateTriage
+	if err := json.Unmarshal(output, &triage); err != nil {
+		t.Fatalf("parse bv triage JSON: %v\noutput:\n%s", err, string(output))
+	}
+	return triage
+}
+
+func queueDryGateNonDryReport(projectDir string, readyIDs []string) QueueDryResponse {
+	report := QueueDryResponse{
+		Success:  true,
+		Project:  projectDir,
+		QueueDry: false,
+		Evidence: QueueDryEvidence{
+			OpenCount:       len(readyIDs),
+			ActionableCount: len(readyIDs),
+			ReadyCount:      len(readyIDs),
+			CountsVerified:  true,
+			TriageTopIDs:    append([]string(nil), readyIDs...),
+			Reservations:    QueueDryReservations{Available: true},
+		},
+	}
+	report.Recommendations = buildQueueDryRecommendations(report)
+	return report
+}
+
+func queueDryGateCreationPlan() ideaplan.RoadmapPlan {
+	return ideaplan.RoadmapPlan{
+		PlanID:        "queue-dry-temp-workspace-gate",
+		DryRun:        true,
+		Decision:      ideaplan.RankingDecisionIdeate,
+		Summary:       "controlled temp workspace creation plan",
+		RenderedCount: 2,
+		ProposedBeads: []ideaplan.ProposedBead{
+			{
+				Ref:                  "${BEAD_ID_TEMP_GATE}",
+				CandidateID:          "temp-workspace-gate",
+				Rank:                 1,
+				Score:                3.2,
+				Title:                "Queue-dry temp workspace creation gate",
+				IssueType:            "task",
+				Priority:             2,
+				Labels:               []string{"idea-wizard", "queue-dry", "testing"},
+				Description:          "Validate explicit queue-dry bead creation against an isolated temp workspace.",
+				AcceptanceCriteria:   []string{"created bead is visible to br ready", "bv triage reports no graph cycles"},
+				VerificationCommands: []string{"br ready --json", "bv --robot-triage"},
+				NonGoals:             []string{"do not write outside the temp workspace"},
+				Overlap:              ideaplan.OverlapVerdict{Kind: ideaplan.OverlapNovel, Confidence: 0.9},
+			},
+			{
+				Ref:                  "${BEAD_ID_DUPLICATE}",
+				CandidateID:          "duplicate-temp-workspace-gate",
+				Rank:                 2,
+				Score:                1.0,
+				Title:                "Duplicate temp workspace gate",
+				IssueType:            "task",
+				Priority:             2,
+				Description:          "Duplicate candidate that must not be created.",
+				AcceptanceCriteria:   []string{"duplicate candidate is skipped"},
+				VerificationCommands: []string{"br ready --json"},
+				Overlap:              ideaplan.OverlapVerdict{Kind: ideaplan.OverlapLikelyDuplicate, Confidence: 0.95},
+			},
+		},
+	}
+}
+
 func containsStringSlice(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
@@ -346,6 +1316,63 @@ func containsStringSlice(items []string, target string) bool {
 func containsReasonCode(items []assurance.ReasonCode, target assurance.ReasonCode) bool {
 	for _, item := range items {
 		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWarning(items []string, substr string) bool {
+	for _, item := range items {
+		if strings.Contains(item, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func findQueueDrySource(items []ideaplan.CandidateSource, target string) *ideaplan.CandidateSource {
+	for i := range items {
+		if items[i].ID == target {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func containsQueueDryValidationNote(items []ideaplan.ValidationNote, substr string) bool {
+	for _, item := range items {
+		if strings.Contains(item.SourceID, substr) || strings.Contains(item.Message, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func stubQueueDryCollectOptional(t *testing.T, fn func(context.Context, *ideaplan.IdeaEvidenceSnapshot, ideaplan.OptionalAdapterOptions)) func() {
+	t.Helper()
+	previous := queueDryCollectOptional
+	queueDryCollectOptional = fn
+	return func() {
+		queueDryCollectOptional = previous
+	}
+}
+
+func containsQueueDryRecommendation(items []QueueDryRecommendation, target string) bool {
+	for _, item := range items {
+		if item.Code == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsQueueDryCreationError(report *ideaplan.BeadCreationReport, target string) bool {
+	if report == nil {
+		return false
+	}
+	for _, item := range report.Errors {
+		if item.Code == target {
 			return true
 		}
 	}

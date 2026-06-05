@@ -2,7 +2,9 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -106,9 +108,24 @@ func TestEvaluateSafetyCheck_DCGBlocks_PromotesApprovalToBlock(t *testing.T) {
 	dir := t.TempDir()
 	dcgPath := filepath.Join(dir, "dcg")
 	script := `#!/bin/sh
-if [ "$1" = "check" ]; then
-  # dcg check --json <command>
-  cmd="$3"
+if [ "${1:-}" = "--robot" ]; then
+  shift
+fi
+
+if [ "${1:-}" = "test" ]; then
+  shift
+  cmd=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --format)
+        shift 2
+        ;;
+      *)
+        cmd="$1"
+        shift
+        ;;
+    esac
+  done
   echo "{\"command\":\"$cmd\",\"reason\":\"blocked by fake dcg\"}"
   exit 1
 fi
@@ -144,6 +161,71 @@ exit 0
 	}
 	if resp.DCG == nil || !resp.DCG.Available || !resp.DCG.Checked || !resp.DCG.Blocked {
 		t.Fatalf("expected dcg verdict populated and blocked=true; got %+v", resp.DCG)
+	}
+}
+
+func TestClaudeHookScriptReadsCurrentStdinPayload(t *testing.T) {
+	for _, want := range []string{
+		"HOOK_INPUT=\"$(cat)\"",
+		"'.tool_name // empty'",
+		"'.tool_input.command // empty'",
+		"exit 2",
+	} {
+		if !strings.Contains(claudeHookScript, want) {
+			t.Fatalf("claude hook script missing %q", want)
+		}
+	}
+	if strings.Contains(claudeHookScript, "exit 1\nfi\n\nexit 0") {
+		t.Fatal("claude hook script still uses non-blocking exit 1 for denied commands")
+	}
+}
+
+func TestClaudeHookScriptBlocksCurrentStdinPayload(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+
+	dir := t.TempDir()
+	fakeNTM := filepath.Join(dir, "ntm")
+	fakeScript := `#!/bin/sh
+if [ "${1:-}" = "safety" ] && [ "${2:-}" = "check" ]; then
+  echo '{"action":"block","reason":"blocked by fake safety"}'
+  exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(fakeNTM, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake ntm: %v", err)
+	}
+
+	hookPath := filepath.Join(dir, "ntm-safety.sh")
+	if err := os.WriteFile(hookPath, []byte(claudeHookScript), 0o755); err != nil {
+		t.Fatalf("write hook script: %v", err)
+	}
+
+	cmd := exec.Command("bash", hookPath)
+	cmd.Env = append(os.Environ(),
+		"HOME="+dir,
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	cmd.Stdin = strings.NewReader(`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo ok"}}`)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("hook script allowed fake blocked command; output=%s", output)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("hook script error has type %T: %v", err, err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("hook script exit code = %d, want 2; output=%s", exitErr.ExitCode(), output)
+	}
+	if !strings.Contains(string(output), "BLOCKED: blocked by fake safety") {
+		t.Fatalf("hook script output = %q, want blocked reason", output)
 	}
 }
 

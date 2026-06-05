@@ -425,7 +425,8 @@ func outputActivityError(session string, err error) error {
 		return encErr
 	}
 	// bd-usgfy: signal non-zero exit after writing the success:false envelope so
-	// `ntm activity --json` automation can gate on $? without re-parsing JSON.
+	// `ntm activity --json` automation can gate on $? without re-parsing JSON
+	// (parity with #125).
 	return jsonFailureExit()
 }
 

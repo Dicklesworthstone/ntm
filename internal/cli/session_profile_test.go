@@ -232,6 +232,68 @@ func TestSessionProfileCRUD(t *testing.T) {
 		sessionProfileDirFunc = func() string { return dir }
 	})
 
+	t.Run("save rejects symlink profiles directory", func(t *testing.T) {
+		parent := t.TempDir()
+		outsideDir := filepath.Join(parent, "outside-profiles")
+		if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+			t.Fatalf("mkdir outside profiles: %v", err)
+		}
+		linkDir := filepath.Join(parent, "profiles-link")
+		if err := os.Symlink(outsideDir, linkDir); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+		sessionProfileDirFunc = func() string { return linkDir }
+		t.Cleanup(func() { sessionProfileDirFunc = func() string { return dir } })
+
+		err := SaveSessionProfile("selected", SessionProfile{CC: 1})
+		if err == nil {
+			t.Fatal("expected profiles directory symlink rejection")
+		}
+		if !strings.Contains(err.Error(), "profiles directory must not be a symlink") {
+			t.Fatalf("expected profiles directory symlink error, got %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(outsideDir, "selected.toml")); !os.IsNotExist(err) {
+			t.Fatalf("SaveSessionProfile wrote through symlinked profiles directory, stat err = %v", err)
+		}
+	})
+
+	t.Run("profile file symlinks rejected", func(t *testing.T) {
+		subDir := t.TempDir()
+		outsideFile := filepath.Join(t.TempDir(), "outside.toml")
+		original := []byte("cc = 9\n")
+		if err := os.WriteFile(outsideFile, original, 0o644); err != nil {
+			t.Fatalf("write outside profile: %v", err)
+		}
+		if err := os.Symlink(outsideFile, filepath.Join(subDir, "linked.toml")); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+		sessionProfileDirFunc = func() string { return subDir }
+		t.Cleanup(func() { sessionProfileDirFunc = func() string { return dir } })
+
+		if err := SaveSessionProfile("linked", SessionProfile{CC: 1}); err == nil {
+			t.Fatal("expected save to reject profile symlink")
+		} else if !strings.Contains(err.Error(), "profile file must not be a symlink") {
+			t.Fatalf("expected profile symlink save error, got %v", err)
+		}
+		if _, err := LoadSessionProfile("linked"); err == nil {
+			t.Fatal("expected load to reject profile symlink")
+		} else if !strings.Contains(err.Error(), "profile file must not be a symlink") {
+			t.Fatalf("expected profile symlink load error, got %v", err)
+		}
+		if _, err := ListSessionProfiles(); err == nil {
+			t.Fatal("expected list to reject profile symlink")
+		} else if !strings.Contains(err.Error(), "profile file must not be a symlink") {
+			t.Fatalf("expected profile symlink list error, got %v", err)
+		}
+		got, err := os.ReadFile(outsideFile)
+		if err != nil {
+			t.Fatalf("read outside profile: %v", err)
+		}
+		if string(got) != string(original) {
+			t.Fatalf("outside profile content = %q, want %q", string(got), string(original))
+		}
+	})
+
 	t.Run("load invalid name rejected", func(t *testing.T) {
 		_, err := LoadSessionProfile("../escape")
 		if err == nil {

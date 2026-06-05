@@ -496,12 +496,16 @@ func truncateCassText(s string, maxLen int) string {
 	if maxLen <= 3 {
 		byteLen := 0
 		for i := range s {
-			if i >= maxLen {
+			if i > maxLen {
 				return s[:byteLen]
 			}
-			byteLen = i + 1 // Will be adjusted for multi-byte runes in next iteration
+			byteLen = i // Safe byte boundary *before* the rune that crosses maxLen
 		}
-		return s[:maxLen]
+		// If we finished the loop without crossing maxLen, the whole string fits
+		if len(s) > maxLen {
+			return s[:byteLen]
+		}
+		return s
 	}
 
 	// For maxLen >= 4, use ellipsis

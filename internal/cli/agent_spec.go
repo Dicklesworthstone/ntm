@@ -38,6 +38,12 @@ type AgentSpec struct {
 	Type  AgentType
 	Count int
 	Model string // Optional, empty = use default model
+	// ReasoningEffort is the model reasoning-budget hint (Codex's
+	// `-c model_reasoning_effort=...` knob and any future
+	// equivalents). Empty = template default. Set via the third
+	// colon-separated field in the spec (`N:model:effort`) or
+	// from per-persona configuration. See ntm#140.
+	ReasoningEffort string
 }
 
 // AgentSpecs is a slice of AgentSpec that implements the flag.Value interface
@@ -51,9 +57,12 @@ func (s *AgentSpecs) String() string {
 	}
 	var parts []string
 	for _, spec := range *s {
-		if spec.Model != "" {
+		switch {
+		case spec.Model != "" && spec.ReasoningEffort != "":
+			parts = append(parts, fmt.Sprintf("%d:%s:%s", spec.Count, spec.Model, spec.ReasoningEffort))
+		case spec.Model != "":
 			parts = append(parts, fmt.Sprintf("%d:%s", spec.Count, spec.Model))
-		} else {
+		default:
 			parts = append(parts, strconv.Itoa(spec.Count))
 		}
 	}
@@ -72,15 +81,18 @@ func (s *AgentSpecs) Set(value string) error {
 
 // Type returns the type name for pflag
 func (s *AgentSpecs) Type() string {
-	return "N[:model]"
+	return "N[:model[:effort]]"
 }
 
-// ParseAgentSpec parses a single agent specification string
-// Format: "N" or "N:model" where N is count, model is optional alias
+// ParseAgentSpec parses a single agent specification string.
+// Format: "N", "N:model", or "N:model:effort" where N is count, model is
+// optional alias, and effort is a reasoning-effort hint passed through to
+// the agent template (currently consumed by Codex's
+// `model_reasoning_effort` knob — see ntm#140).
 func ParseAgentSpec(value string) (AgentSpec, error) {
 	var spec AgentSpec
 
-	parts := strings.SplitN(value, ":", 2)
+	parts := strings.SplitN(value, ":", 3)
 	if len(parts) == 0 || parts[0] == "" {
 		return spec, fmt.Errorf("invalid agent spec: %q", value)
 	}
@@ -103,6 +115,17 @@ func ParseAgentSpec(value string) (AgentSpec, error) {
 			return spec, fmt.Errorf("invalid characters in model %q; allowed: letters, numbers, . _ / @ : + -", model)
 		}
 		spec.Model = model
+	}
+
+	if len(parts) > 2 {
+		effort := strings.TrimSpace(parts[2])
+		if effort == "" {
+			return spec, fmt.Errorf("empty reasoning effort in agent spec: %q", value)
+		}
+		if !modelPattern.MatchString(effort) {
+			return spec, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ / @ : + -", effort)
+		}
+		spec.ReasoningEffort = effort
 	}
 
 	return spec, nil
@@ -130,9 +153,10 @@ func (s AgentSpecs) ByType(t AgentType) AgentSpecs {
 
 // Flatten expands specs into individual agents with their models
 type FlatAgent struct {
-	Type  AgentType
-	Index int    // 1-based index within type
-	Model string // Resolved model (may be empty for default)
+	Type            AgentType
+	Index           int    // 1-based index within type
+	Model           string // Resolved model (may be empty for default)
+	ReasoningEffort string // Reasoning-effort hint (Codex `model_reasoning_effort`)
 }
 
 // Flatten expands all specs into individual agent entries
@@ -144,9 +168,10 @@ func (s AgentSpecs) Flatten() []FlatAgent {
 		for i := 0; i < spec.Count; i++ {
 			indices[spec.Type]++
 			result = append(result, FlatAgent{
-				Type:  spec.Type,
-				Index: indices[spec.Type],
-				Model: spec.Model,
+				Type:            spec.Type,
+				Index:           indices[spec.Type],
+				Model:           spec.Model,
+				ReasoningEffort: spec.ReasoningEffort,
 			})
 		}
 	}
@@ -238,5 +263,5 @@ func (v *agentSpecsValue) Set(value string) error {
 }
 
 func (v *agentSpecsValue) Type() string {
-	return "N[:model]"
+	return "N[:model[:effort]]"
 }

@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -467,4 +471,117 @@ func TestPrintReviewQueueReport_IdleButNoSuggestions(t *testing.T) {
 
 	// Just ensure it doesn't panic
 	printReviewQueueReport(resp)
+}
+
+// Regression for ntm#134. The bug had two symptoms:
+//
+//  1. `ntm review-queue <s> --json` (global --json flag) fell through to
+//     the human-readable report path because runReviewQueue only checked
+//     `formatOut == "json"`, so stdout was prose instead of JSON.
+//  2. Even with `--format json`, slog.Info telemetry could appear ahead of
+//     the JSON payload on any consumer that merged stderr into stdout
+//     (`2>&1`), blocking `jq` parsing.
+//
+// The fix flips both: isJSON now considers IsJSONOutput() too, and JSON
+// mode swaps slog.Default() to an io.Discard handler for the duration
+// of the call. This test pins the global-flag plumbing by exercising
+// runReviewQueue with `jsonOutput = true` and asserting the slog
+// suppression path activates.
+func TestReviewQueue_GlobalJSONFlagSuppressesSlog(t *testing.T) {
+	prevJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	prevLogger := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	// runReviewQueue requires a live tmux session, so we expect an
+	// error here. What we care about is the slog-suppression side
+	// effect happening before any failure.
+	_ = runReviewQueue("non-existent-session-ntm-134", "", 2*time.Minute, false, "", 5)
+
+	if got := buf.String(); got != "" {
+		t.Fatalf(
+			"slog output captured under JSON mode; expected empty buffer because "+
+				"slog.Default() should be routed to io.Discard. Got:\n%s",
+			got,
+		)
+	}
+}
+
+func TestReviewQueue_FormatJSONSuppressesSlogCaseInsensitive(t *testing.T) {
+	prevJSON := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	prevLogger := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	_ = runReviewQueue("non-existent-session-ntm-134", "", 2*time.Minute, false, "JSON", 5)
+
+	if got := buf.String(); got != "" {
+		t.Fatalf(
+			"slog output captured under --format JSON; expected empty buffer because "+
+				"format handling should be case-insensitive. Got:\n%s",
+			got,
+		)
+	}
+}
+
+func TestReviewQueue_NonJSONLeavesSlogIntact(t *testing.T) {
+	prevJSON := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = prevJSON })
+
+	prevLogger := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	_ = runReviewQueue("non-existent-session-ntm-134", "", 2*time.Minute, false, "", 5)
+
+	if buf.Len() == 0 {
+		t.Fatal(
+			"non-JSON mode unexpectedly produced no slog output; the runReviewQueue " +
+				"telemetry path is supposed to emit an [E2E-REVIEWQ] start record before " +
+				"the session lookup fails.",
+		)
+	}
+	if !strings.Contains(buf.String(), "[E2E-REVIEWQ] start") {
+		t.Fatalf(
+			"expected the start telemetry record in non-JSON mode; got %q",
+			buf.String(),
+		)
+	}
+}
+
+func TestOutputReviewQueueErrorReturnsJSONFailureSentinel(t *testing.T) {
+	out, err := captureStdout(t, func() error {
+		return outputReviewQueueError("demo-session", "boom")
+	})
+	if !errors.Is(err, errJSONFailure) {
+		t.Fatalf("outputReviewQueueError returned %v, want errJSONFailure", err)
+	}
+
+	var envelope struct {
+		Success bool   `json:"success"`
+		Session string `json:"session"`
+		Error   string `json:"error"`
+	}
+	if unmarshalErr := json.Unmarshal([]byte(out), &envelope); unmarshalErr != nil {
+		t.Fatalf("outputReviewQueueError wrote invalid JSON %q: %v", out, unmarshalErr)
+	}
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.Session != "demo-session" {
+		t.Fatalf("session = %q", envelope.Session)
+	}
+	if envelope.Error != "boom" {
+		t.Fatalf("error = %q", envelope.Error)
+	}
 }

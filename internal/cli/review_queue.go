@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"sort"
@@ -112,7 +113,24 @@ Examples:
 }
 
 func runReviewQueue(session, filter string, idleThreshold time.Duration, send bool, formatOut string, commitLimit int) error {
-	isJSON := formatOut == "json"
+	// Honor both the command-local `--format json` and the global `--json`
+	// flag. Before this fix, `ntm review-queue --json` fell through to
+	// the human-readable report path, contaminating stdout with prose
+	// when downstream tools (flywheel L85) tried to `jq` the output.
+	isJSON := strings.EqualFold(formatOut, "json") || IsJSONOutput()
+
+	// In JSON mode, suppress slog telemetry for the duration of this
+	// call so consumers that capture `2>&1` get a clean parseable
+	// stream. Default slog writes to stderr — which doesn't pollute
+	// stdout — but downstream wrappers commonly merge stderr into the
+	// pipe they parse, and a single `[E2E-REVIEWQ] start` log line
+	// blocks every subsequent `jq` invocation against the output.
+	if isJSON {
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+		defer slog.SetDefault(prev)
+	}
+
 	normalizedFilter, err := normalizeAgentTypeFilter(filter)
 	if err != nil {
 		if isJSON {
@@ -446,10 +464,11 @@ func outputReviewQueueError(session, errMsg string) error {
 		Error:               errMsg,
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
-	if err == nil {
-		fmt.Println(string(data))
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("%s", errMsg)
+	fmt.Println(string(data))
+	return errJSONFailure
 }
 
 func outputReviewQueueJSON(v interface{}) error {

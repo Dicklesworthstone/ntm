@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/cli/tiers"
@@ -802,6 +803,26 @@ func makeTestBead(id, title, priority string) bv.BeadPreview {
 	return bv.BeadPreview{ID: id, Title: title, Priority: priority}
 }
 
+func withAssignAllocationPressure(t *testing.T, pressure assign.AllocationPressure) {
+	t.Helper()
+	previous := collectAssignAllocationPressure
+	collectAssignAllocationPressure = func() assign.AllocationPressure {
+		return pressure
+	}
+	t.Cleanup(func() {
+		collectAssignAllocationPressure = previous
+	})
+}
+
+func hasAssignReasonCode(item AssignmentItem, reason string) bool {
+	for _, code := range item.ReasonCodes {
+		if code == reason {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Round-Robin strategy ---
 
 func TestGenerateAssignmentsEnhanced_RoundRobin_Basic(t *testing.T) {
@@ -1047,6 +1068,8 @@ func TestGenerateAssignmentsEnhanced_Dependency_LowPriority(t *testing.T) {
 // --- Balanced (default) strategy ---
 
 func TestGenerateAssignmentsEnhanced_Balanced_EvenSpread(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 8})
+
 	agents := []assignAgentInfo{
 		makeTestAgent(0, "claude"),
 		makeTestAgent(1, "codex"),
@@ -1063,23 +1086,25 @@ func TestGenerateAssignmentsEnhanced_Balanced_EvenSpread(t *testing.T) {
 	// Empty session → skips LoadStore
 	opts := &AssignCommandOptions{Strategy: "balanced", Session: ""}
 	got := generateAssignmentsEnhanced(agents, beads, opts)
-	if len(got) != 6 {
-		t.Fatalf("balanced: got %d assignments, want 6", len(got))
+	if len(got) != 3 {
+		t.Fatalf("balanced: got %d assignments, want 3", len(got))
 	}
-	// Balanced should spread work: count per agent
-	paneCounts := make(map[int]int)
+	// Balanced planner assigns at most one new bead to each idle agent.
+	panes := make(map[int]bool)
 	for _, a := range got {
-		paneCounts[a.Pane]++
-	}
-	// With 6 beads and 3 agents, each should get 2
-	for pane, count := range paneCounts {
-		if count != 2 {
-			t.Errorf("balanced: pane %d got %d beads, want 2", pane, count)
+		if panes[a.Pane] {
+			t.Errorf("balanced: duplicate pane assignment %d", a.Pane)
 		}
+		panes[a.Pane] = true
+	}
+	if len(panes) != 3 {
+		t.Errorf("balanced: used %d agents, want 3", len(panes))
 	}
 }
 
 func TestGenerateAssignmentsEnhanced_Balanced_SingleAgent(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 8})
+
 	agents := []assignAgentInfo{makeTestAgent(0, "claude")}
 	beads := []bv.BeadPreview{
 		makeTestBead("b1", "Task 1", "P1"),
@@ -1087,8 +1112,8 @@ func TestGenerateAssignmentsEnhanced_Balanced_SingleAgent(t *testing.T) {
 	}
 	opts := &AssignCommandOptions{Strategy: "balanced"}
 	got := generateAssignmentsEnhanced(agents, beads, opts)
-	if len(got) != 2 {
-		t.Fatalf("balanced single agent: got %d, want 2", len(got))
+	if len(got) != 1 {
+		t.Fatalf("balanced single agent: got %d, want 1", len(got))
 	}
 	for i, a := range got {
 		if a.Pane != 0 {
@@ -1098,11 +1123,117 @@ func TestGenerateAssignmentsEnhanced_Balanced_SingleAgent(t *testing.T) {
 }
 
 func TestGenerateAssignmentsEnhanced_Balanced_NoAgents(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "normal", AgentHeadroom: 8})
+
 	beads := []bv.BeadPreview{makeTestBead("b1", "Task", "P1")}
 	opts := &AssignCommandOptions{Strategy: "balanced"}
 	got := generateAssignmentsEnhanced(nil, beads, opts)
 	if len(got) != 0 {
 		t.Errorf("balanced with no agents: got %d, want 0", len(got))
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_BalancedPressurePrefersHeadroom(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "high", AgentHeadroom: 1})
+
+	lowHeadroom := makeTestAgent(0, "codex")
+	lowHeadroom.resourceHeadroom = 0.05
+	highHeadroom := makeTestAgent(1, "codex")
+	highHeadroom.resourceHeadroom = 0.95
+	agents := []assignAgentInfo{lowHeadroom, highHeadroom}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Performance benchmark load test", "P1"),
+	}
+
+	got, plan := generateAssignmentsEnhancedWithPlan(agents, beads, &AssignCommandOptions{Strategy: "balanced"}, true)
+	if plan == nil {
+		t.Fatal("balanced pressure assignment should return an allocation plan")
+	}
+	if plan.Decision != assign.AllocationDecisionRecommend {
+		t.Fatalf("plan decision = %q, want %q", plan.Decision, assign.AllocationDecisionRecommend)
+	}
+	if len(got) != 1 {
+		t.Fatalf("balanced pressure: got %d assignments, want 1", len(got))
+	}
+	if got[0].Pane != 1 {
+		t.Fatalf("balanced pressure picked pane %d, want high-headroom pane 1", got[0].Pane)
+	}
+	if !hasAssignReasonCode(got[0], string(assign.AllocationReasonResourcePressure)) {
+		t.Fatalf("reason codes = %v, want %q", got[0].ReasonCodes, assign.AllocationReasonResourcePressure)
+	}
+	if got[0].ScoreComponents == nil {
+		t.Fatal("balanced pressure assignment should expose score components")
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_BalancedPressureUnavailableFallsBack(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{})
+
+	agents := []assignAgentInfo{makeTestAgent(0, "claude")}
+	beads := []bv.BeadPreview{makeTestBead("b1", "Analyze flaky assignment path", "P1")}
+
+	got, plan := generateAssignmentsEnhancedWithPlan(agents, beads, &AssignCommandOptions{Strategy: "balanced"}, true)
+	if plan == nil {
+		t.Fatal("balanced assignment should return an allocation plan")
+	}
+	if len(got) != 1 {
+		t.Fatalf("balanced pressure missing: got %d assignments, want 1", len(got))
+	}
+	if !plan.Summary.PressureMissing {
+		t.Fatal("plan should mark pressure as missing")
+	}
+	if !hasAssignReasonCode(got[0], string(assign.AllocationReasonPressureMissing)) {
+		t.Fatalf("reason codes = %v, want %q", got[0].ReasonCodes, assign.AllocationReasonPressureMissing)
+	}
+	view := assignAllocationView(plan)
+	if view == nil || !view.PressureMissing || len(view.Warnings) == 0 {
+		t.Fatalf("allocation view = %#v, want pressure-missing warning", view)
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_BalancedBVUnavailableMarksMissing(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "low", AgentHeadroom: 4})
+
+	agents := []assignAgentInfo{makeTestAgent(0, "claude")}
+	beads := []bv.BeadPreview{makeTestBead("b1", "Investigate degraded triage path", "P1")}
+
+	got, plan := generateAssignmentsEnhancedWithPlan(agents, beads, &AssignCommandOptions{Strategy: "balanced"}, false)
+	if plan == nil {
+		t.Fatal("balanced assignment should return an allocation plan")
+	}
+	if len(got) != 1 {
+		t.Fatalf("bv missing: got %d assignments, want 1", len(got))
+	}
+	if !plan.Summary.BVMissing {
+		t.Fatal("plan should mark BV as missing when bvAvailable=false")
+	}
+	if !hasAssignReasonCode(got[0], string(assign.AllocationReasonBVMissing)) {
+		t.Fatalf("reason codes = %v, want %q", got[0].ReasonCodes, assign.AllocationReasonBVMissing)
+	}
+	view := assignAllocationView(plan)
+	if view == nil || !view.BVMissing {
+		t.Fatalf("allocation view = %#v, want bv-missing flag", view)
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_BalancedCriticalPressureDefers(t *testing.T) {
+	withAssignAllocationPressure(t, assign.AllocationPressure{Available: true, Level: "critical", AgentHeadroom: 0})
+
+	agents := []assignAgentInfo{makeTestAgent(0, "codex")}
+	beads := []bv.BeadPreview{makeTestBead("b1", "Implement large benchmark suite", "P0")}
+
+	got, plan := generateAssignmentsEnhancedWithPlan(agents, beads, &AssignCommandOptions{Strategy: "balanced"}, true)
+	if len(got) != 0 {
+		t.Fatalf("critical pressure: got %d assignments, want 0", len(got))
+	}
+	if plan == nil {
+		t.Fatal("critical pressure should return an allocation plan")
+	}
+	if plan.Decision != assign.AllocationDecisionDefer {
+		t.Fatalf("plan decision = %q, want %q", plan.Decision, assign.AllocationDecisionDefer)
+	}
+	if len(plan.UnassignedBeads) != 1 || plan.UnassignedBeads[0] != "b1" {
+		t.Fatalf("unassigned beads = %v, want [b1]", plan.UnassignedBeads)
 	}
 }
 
