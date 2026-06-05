@@ -175,8 +175,8 @@ func TestPhase4InvestigateForeachBeadsRoundRobinByDomain(t *testing.T) {
 		Steps: []Step{{
 			ID: "phase4_investigate",
 			Foreach: &ForeachConfig{
-				Beads:         "hypothesis,state:active",
-				PaneStrategy:  "round_robin_by_domain",
+				Beads:        "hypothesis,state:active",
+				PaneStrategy: "round_robin_by_domain",
 				Steps: []Step{{
 					ID:       "send_mo",
 					Template: "mo.md",
@@ -378,8 +378,8 @@ func TestPhase5AdjudicateForeachDebatesRotateAdjudicator(t *testing.T) {
 					ID:       "send_adjudication",
 					Template: "mo.md",
 					Params: map[string]interface{}{
-						"DEBATE_ID":  "${item.id}",
-						"CHAMPIONS":  "${item.champions}",
+						"DEBATE_ID": "${item.id}",
+						"CHAMPIONS": "${item.champions}",
 					},
 					Wait: WaitNone,
 				}},

@@ -9,8 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 const paneVariableKey = "pane"

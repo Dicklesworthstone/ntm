@@ -763,13 +763,15 @@ func DetectFileChanges(before, after map[string]FileState) []FileChange {
 
 		// Check for deletion if it existed in 'before' (dirty) and is now marked deleted in 'after'
 		if strings.Contains(afterState.GitStatus, "D") {
-			b := beforeState
-			changes = append(changes, FileChange{
-				Path:   path,
-				Type:   FileDeleted,
-				Before: &b,
-				After:  &afterState,
-			})
+			if !strings.Contains(beforeState.GitStatus, "D") {
+				b := beforeState
+				changes = append(changes, FileChange{
+					Path:   path,
+					Type:   FileDeleted,
+					Before: &b,
+					After:  &afterState,
+				})
+			}
 			continue
 		}
 
@@ -791,6 +793,10 @@ func DetectFileChanges(before, after map[string]FileState) []FileChange {
 		if _, ok := after[path]; !ok {
 			// Verify file is actually gone (handle git clean files missing from snapshot)
 			if _, err := os.Stat(path); err == nil {
+				continue
+			}
+
+			if strings.Contains(beforeState.GitStatus, "D") {
 				continue
 			}
 

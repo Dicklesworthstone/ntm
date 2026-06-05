@@ -303,4 +303,3 @@ func TestLockOrder_LoopSubstituteIntExprCanonicalOrder(t *testing.T) {
 
 	wg.Wait()
 }
-

@@ -50,11 +50,8 @@ func TestDaemonRestartOnCrash(t *testing.T) {
 		t.Fatal("GetDaemon() returned false")
 	}
 
-	// Should have attempted restarts
-	d.mu.RLock()
 	restarts := d.Restarts
 	state := d.State
-	d.mu.RUnlock()
 
 	if restarts == 0 {
 		t.Error("daemon should have restart count > 0")
@@ -105,10 +102,7 @@ func TestPortCollisionHandling(t *testing.T) {
 		t.Fatal("daemon not found")
 	}
 
-	// Should have been assigned a different port
-	d.mu.RLock()
 	assignedPort := d.Port
-	d.mu.RUnlock()
 
 	// Close our listener
 	ln.Close()
@@ -160,10 +154,8 @@ func TestMaxRestartBackoff(t *testing.T) {
 	var state DaemonState
 	for time.Now().Before(deadline) {
 		d, _ := s.GetDaemon("backoff-daemon")
-		d.mu.RLock()
 		restarts = d.Restarts
 		state = d.State
-		d.mu.RUnlock()
 
 		// With MaxRestarts=2, restarts will be 1, 2, then 3 (when it stops)
 		// restarts > maxRestarts means no more restarts will happen
@@ -308,9 +300,7 @@ func TestOrphanedPIDFile(t *testing.T) {
 		t.Fatal("daemon not found")
 	}
 
-	d.mu.RLock()
 	pid := d.PID
-	d.mu.RUnlock()
 
 	if pid == 99999 {
 		t.Error("daemon has orphaned PID, should have new PID")
@@ -427,9 +417,7 @@ func TestHealthCheckFlapping(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	d, _ := s.GetDaemon("flap-daemon")
-	d.mu.RLock()
 	state := d.State
-	d.mu.RUnlock()
 
 	// Daemon should still be starting/running despite health check failures
 	// (health check failures don't immediately kill the daemon)
@@ -471,9 +459,7 @@ func TestShutdownIsTimely(t *testing.T) {
 	if !exists {
 		t.Fatal("daemon not found")
 	}
-	d.mu.RLock()
 	state := d.State
-	d.mu.RUnlock()
 	if state != StateRunning && state != StateStarting {
 		t.Fatalf("daemon not running, state = %v", state)
 	}

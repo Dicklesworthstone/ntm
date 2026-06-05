@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -158,9 +159,15 @@ func (l *Loader) LoadAll() ([]WorkflowTemplate, error) {
 		}
 	}
 
-	// Add remaining workflows (user/project-defined)
-	for _, w := range workflows {
-		result = append(result, w)
+	// Add remaining workflows (user/project-defined) in deterministic order
+	var remainingNames []string
+	for name := range workflows {
+		remainingNames = append(remainingNames, name)
+	}
+	sort.Strings(remainingNames)
+
+	for _, name := range remainingNames {
+		result = append(result, workflows[name])
 	}
 
 	return result, nil

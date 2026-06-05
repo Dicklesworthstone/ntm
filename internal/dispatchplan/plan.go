@@ -70,26 +70,26 @@ const (
 type Candidate struct {
 	ID              string // dedupe key; if empty, not deduped
 	Source          Source
-	Priority        int  // lower = more important
-	EstimatedTokens int  // > 0
+	Priority        int // lower = more important
+	EstimatedTokens int // > 0
 	// Required marks a system-level header that always lands in the
 	// dispatch prompt regardless of caller-side gating. Required
 	// candidates bypass the EstimatedTokens<=0, source-disabled,
 	// agent-type-filter, AND budget gates; they still respect the
 	// duplicate-ID gate (a Required candidate whose ID was already
 	// emitted is recorded as ReasonOmittedDuplicate) (bd-njp52).
-	Required        bool     // bypasses every gate except duplicate-ID — see Reason mapping
-	AgentTypeFilter []string // when non-empty, non-Required candidates are only included if AgentType ∈ filter
-	Body            string   // opaque; not inspected by the planner
-	Description     string   // short label rendered in the report
+	Required        bool      // bypasses every gate except duplicate-ID — see Reason mapping
+	AgentTypeFilter []string  // when non-empty, non-Required candidates are only included if AgentType ∈ filter
+	Body            string    // opaque; not inspected by the planner
+	Description     string    // short label rendered in the report
 	CreatedAt       time.Time // tiebreaker for equal-priority candidates
 }
 
 // Inputs configures one Plan call.
 type Inputs struct {
-	AgentType   string
+	AgentType    string
 	BudgetTokens int
-	Candidates  []Candidate
+	Candidates   []Candidate
 
 	// DisabledSources lets the operator turn off whole sources
 	// (e.g. CASS off when the index is rebuilding) without filtering
@@ -102,13 +102,13 @@ type Inputs struct {
 // Decision is one row in the report explaining what happened to one
 // candidate.
 type Decision struct {
-	ID             string `json:"id,omitempty"`
-	Source         Source `json:"source"`
-	Description    string `json:"description,omitempty"`
-	Priority       int    `json:"priority"`
-	EstimatedTokens int   `json:"estimated_tokens"`
-	Reason         Reason `json:"reason"`
-	Detail         string `json:"detail,omitempty"`
+	ID              string `json:"id,omitempty"`
+	Source          Source `json:"source"`
+	Description     string `json:"description,omitempty"`
+	Priority        int    `json:"priority"`
+	EstimatedTokens int    `json:"estimated_tokens"`
+	Reason          Reason `json:"reason"`
+	Detail          string `json:"detail,omitempty"`
 }
 
 // PlanReport is the full envelope the planner emits.

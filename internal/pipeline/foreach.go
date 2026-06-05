@@ -488,7 +488,7 @@ func (e *Executor) executeForeachIterationsSequential(ctx context.Context, paren
 		// bd-qeatk: a prior run already completed this iteration; skip
 		// re-dispatch so commands/prompts don't duplicate side effects.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results = append(results, resumeCompletedForeachIteration(plan))
+			results = append(results, e.resumeCompletedForeachIteration(plan))
 			progress.iterationFinished()
 			continue
 		}
@@ -551,7 +551,7 @@ func (e *Executor) executeForeachIterationsParallel(ctx context.Context, parent 
 		}
 		// bd-qeatk: prior-run completion suppresses re-dispatch on resume.
 		if _, done := completedIters[loopIterationID(parent.ID, plan.Index)]; done {
-			results[i] = resumeCompletedForeachIteration(plan)
+			results[i] = e.resumeCompletedForeachIteration(plan)
 			progress.iterationFinished()
 			continue
 		}
@@ -1007,7 +1007,9 @@ func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, p
 	}
 	items := make([]collected, 0, len(iterations))
 	for i, iter := range iterations {
-		if iter.Skipped || iter.Error != "" {
+		// Resume-suppressed iterations are skipped for dispatch accounting,
+		// but can carry prior StepResults restored from persisted state.
+		if iter.Error != "" || (iter.Skipped && iter.SkipKind != SkipKindResumeAlreadyCompleted) {
 			continue
 		}
 		idx := matchingForeachBodyResultIndex(plans, i, parent.OutputVar)
@@ -1284,7 +1286,11 @@ func (e *Executor) substituteForeachString(s string, protected map[string]struct
 		value, found, err := e.resolveForeachAlias(varPath)
 		if found {
 			if err == nil {
-				return formatValue(value)
+				formatted := formatValue(value)
+				if isTerminalSubstitutionNamespace(varPath) {
+					formatted = sealTerminalValue(formatted)
+				}
+				return formatted
 			}
 			if hasDefault {
 				return defaultVal
@@ -1294,7 +1300,7 @@ func (e *Executor) substituteForeachString(s string, protected map[string]struct
 		return match
 	})
 
-	out := e.substituteVariables(rewritten)
+	out := e.substituteVariablesRetainingSeals(rewritten)
 	for _, ref := range refs {
 		out = strings.ReplaceAll(out, ref.token, ref.match)
 	}
@@ -1502,6 +1508,21 @@ func resumeCompletedForeachIteration(plan foreachIterationPlan) foreachIteration
 		SkipReason: "iteration completed in prior run; suppressed on resume",
 		SkipKind:   SkipKindResumeAlreadyCompleted,
 	}
+}
+
+func (e *Executor) resumeCompletedForeachIteration(plan foreachIterationPlan) foreachIterationResult {
+	result := resumeCompletedForeachIteration(plan)
+	if e == nil || e.state == nil || len(plan.Steps) == 0 {
+		return result
+	}
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	for _, step := range plan.Steps {
+		if prior, ok := e.state.Steps[step.ID]; ok {
+			result.Results = append(result.Results, prior)
+		}
+	}
+	return result
 }
 
 // foreachCompletedIterationIDs returns the durable set of iteration IDs that

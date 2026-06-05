@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"sort"
 	"time"
 )
 
@@ -52,6 +53,11 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 			for agent := range allAgents {
 				agentList = append(agentList, agent)
 			}
+			// bd-rfzj1: agentList is built from map iteration, which is
+			// non-deterministic. Sort so the per-conflict Agents field
+			// is byte-stable across calls — this slice flows directly
+			// into --robot-status / work-coordination JSON output.
+			sort.Strings(agentList)
 			for _, pc := range pathChanges {
 				if pc.Timestamp.After(last) {
 					last = pc.Timestamp
@@ -67,6 +73,20 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 			})
 		}
 	}
+	// bd-rfzj1: outer loop iterates byPath (a map), so the conflicts
+	// slice is appended in non-deterministic order. Sort by Path so two
+	// calls with identical inputs produce identical JSON. LastAt and
+	// Severity are tie-breakers for the rare case of identical Path
+	// (shouldn't happen because byPath is keyed by Path, but defensive).
+	sort.SliceStable(conflicts, func(i, j int) bool {
+		if conflicts[i].Path != conflicts[j].Path {
+			return conflicts[i].Path < conflicts[j].Path
+		}
+		if !conflicts[i].LastAt.Equal(conflicts[j].LastAt) {
+			return conflicts[i].LastAt.Before(conflicts[j].LastAt)
+		}
+		return conflicts[i].Severity < conflicts[j].Severity
+	})
 	return conflicts
 }
 

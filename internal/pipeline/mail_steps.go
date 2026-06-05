@@ -51,8 +51,8 @@ type FileReservationReleaseStep struct {
 
 // hasMailStep reports whether the step is configured as any of the Agent Mail
 // dispatch kinds. The runtime executor uses this to short-circuit the prompt
-// dispatch path so authors get a structured "not implemented" skip instead of
-// a misleading "step has no prompt or prompt_file" failure (bd-hz1tl).
+// dispatch path so Agent Mail work executes through MCP instead of falling
+// through to pane prompt validation (bd-hz1tl).
 func (s *Step) hasMailStep() bool {
 	if s == nil {
 		return false

@@ -2,6 +2,9 @@ package git
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -142,10 +145,33 @@ func TestWorktreeService_CleanupStaleWorktrees_WithManagers(t *testing.T) {
 	}
 }
 
-// bd-y9ndb: HasPrefix(sessionID, sessionName+"-") allowed sessionName="my"
-// to match sessionID="my-app-claude-1", which would have caused
-// CleanupSessionWorktrees to destroy the unrelated "my-app" session's
-// worktree. The fix anchors on agentType and requires an all-digit suffix.
+func TestWorktreeService_CleanupSessionWorktrees_RemovesListedLegacyPath(t *testing.T) {
+	t.Parallel()
+
+	repo := setupGitRepo(t)
+	sessionName := filepath.Base(repo)
+	cfg := &config.Config{ProjectsBase: filepath.Dir(repo)}
+	svc := NewWorktreeService(cfg)
+
+	sessionID := canonicalSessionKey(sessionName + "-claude-1")
+	legacyPath := filepath.Join(repo, "..", "agent-claude-"+sessionID)
+	cmd := exec.Command("git", "worktree", "add", "-b", "agent/claude/"+sessionID, legacyPath)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("legacy git worktree add failed: %v\n%s", err, out)
+	}
+
+	if err := svc.CleanupSessionWorktrees(context.Background(), sessionName); err != nil {
+		t.Fatalf("CleanupSessionWorktrees: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy session worktree path to be gone, stat err=%v", err)
+	}
+}
+
+// bd-y9ndb + bd-l542u: matching must avoid prefix overlap ("my" vs
+// "my-app") and preserve uniqueness for full "<session>-<agent>-<num>"
+// identities stored through canonicalSessionKey(...).
 func TestSessionMatchesWorktree(t *testing.T) {
 	t.Parallel()
 
@@ -156,45 +182,67 @@ func TestSessionMatchesWorktree(t *testing.T) {
 		sessionID   string
 		want        bool
 	}{
-		// Pre-fix data-loss cases — these MUST be false.
+		// Pre-fix data-loss cases.
 		{"shorter session must not match longer-named worktree",
-			"my", "claude", "my-app-claude-1", false},
+			"my", "claude", canonicalSessionKey("my-app-claude-1"), false},
 		{"prefix-overlap with same agent type must not match",
-			"app", "claude", "app2-claude-1", false},
+			"app", "claude", canonicalSessionKey("app2-claude-1"), false},
 		{"shared prefix with different middle segment must not match",
-			"foo", "codex", "foo-bar-codex-1", false},
+			"foo", "codex", canonicalSessionKey("foo-bar-codex-1"), false},
+		{"same first 8 chars but different session identity must not match",
+			"alpha-team-x", "claude", canonicalSessionKey("alpha-team-y-claude-1"), false},
+		{"single-dash session must not match double-dash worktree id",
+			"alpha-team", "claude", canonicalSessionKey("alpha--team-claude-1"), false},
 
-		// Happy paths — exact owner match.
-		{"plain session-agent-num matches",
-			"my", "claude", "my-claude-1", true},
+		// Happy paths.
+		{"autoprovisioned short session matches",
+			"my", "claude", canonicalSessionKey("my-claude-1"), true},
 		{"hyphenated session matches its own worktree",
-			"my-app", "claude", "my-app-claude-1", true},
+			"my-app", "claude", canonicalSessionKey("my-app-claude-1"), true},
 		{"multi-digit agent num matches",
-			"proj", "codex", "proj-codex-12", true},
+			"proj", "codex", canonicalSessionKey("proj-codex-12"), true},
 		{"deeply hyphenated session matches",
-			"a-b-c-d", "gemini", "a-b-c-d-gemini-3", true},
+			"a-b-c-d", "gemini", canonicalSessionKey("a-b-c-d-gemini-3"), true},
+		{"double-dash session matches its own worktree id",
+			"alpha--team", "claude", canonicalSessionKey("alpha--team-claude-1"), true},
+		{"same session/type different pane matches only exact pane suffix",
+			"alpha-team", "claude", canonicalSessionKey("alpha-team-claude-2"), true},
+		{"sanitized agent key with canonicalized session id matches",
+			"sess", canonicalAgentKey("../evil/type"), buildSessionWorktreeID("sess", "../evil/type", 1), true},
 
 		// Negative paths — wrong agent type, missing num, etc.
 		{"wrong agent type does not match",
-			"my", "codex", "my-claude-1", false},
+			"my", "codex", canonicalSessionKey("my-claude-1"), false},
 		{"missing trailing num does not match",
-			"my", "claude", "my-claude-", false},
-		{"non-digit suffix does not match",
-			"my", "claude", "my-claude-abc", false},
+			"zz", "cc", "zz-cc-", false},
+		{"non-digit suffix for short base does not match",
+			"zz", "cc", "zz-cc-ab", false},
 		{"empty session never matches",
-			"", "claude", "x-claude-1", false},
+			"", "claude", canonicalSessionKey("x-claude-1"), false},
 		{"empty agent never matches",
-			"my", "", "my-claude-1", false},
+			"my", "", canonicalSessionKey("my-claude-1"), false},
+		{"empty session id never matches",
+			"my", "claude", "", false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := sessionMatchesWorktree(tc.sessionName, tc.agentType, tc.sessionID)
-			if got != tc.want {
+			if (got && !tc.want) || (!got && tc.want) {
 				t.Errorf("sessionMatchesWorktree(%q, %q, %q) = %v, want %v",
 					tc.sessionName, tc.agentType, tc.sessionID, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildSessionWorktreeIDCanonicalizesAgentType(t *testing.T) {
+	t.Parallel()
+
+	got := buildSessionWorktreeID("sess", "../evil/type", 1)
+	want := canonicalSessionKey("sess-evil-type-1")
+	if got != want {
+		t.Fatalf("buildSessionWorktreeID() = %q, want %q", got, want)
 	}
 }

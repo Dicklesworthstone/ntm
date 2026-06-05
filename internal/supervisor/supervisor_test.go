@@ -269,6 +269,74 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+func TestGetDaemonReturnsSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	s, err := New(Config{
+		SessionID:  "test-session",
+		ProjectDir: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer s.Shutdown()
+
+	spec := DaemonSpec{
+		Name:      "snapshot-daemon",
+		Command:   "sleep",
+		Args:      []string{"10"},
+		HealthCmd: []string{"echo", "ok"},
+		Env:       []string{"SNAPSHOT_ORIGINAL=1"},
+	}
+	if err := s.Start(spec); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	spec.Args[0] = "mutated-input"
+	spec.HealthCmd[0] = "mutated-input"
+	spec.Env[0] = "mutated-input"
+
+	first, exists := s.GetDaemon("snapshot-daemon")
+	if !exists {
+		t.Fatal("GetDaemon() returned false")
+	}
+	if first.Spec.Args[0] != "10" {
+		t.Fatalf("GetDaemon() saw mutated input Args = %q, want %q", first.Spec.Args[0], "10")
+	}
+	if first.Spec.HealthCmd[0] != "echo" {
+		t.Fatalf("GetDaemon() saw mutated input HealthCmd = %q, want %q", first.Spec.HealthCmd[0], "echo")
+	}
+	if first.Spec.Env[0] != "SNAPSHOT_ORIGINAL=1" {
+		t.Fatalf("GetDaemon() saw mutated input Env = %q, want %q", first.Spec.Env[0], "SNAPSHOT_ORIGINAL=1")
+	}
+
+	first.State = StateFailed
+	first.OwnerID = "mutated-owner"
+	first.Spec.Args[0] = "mutated-snapshot"
+	first.Spec.HealthCmd[0] = "mutated-snapshot"
+	first.Spec.Env[0] = "mutated-snapshot"
+
+	second, exists := s.GetDaemon("snapshot-daemon")
+	if !exists {
+		t.Fatal("GetDaemon() returned false after snapshot mutation")
+	}
+	if second.State == StateFailed {
+		t.Fatal("mutating GetDaemon() snapshot changed daemon state")
+	}
+	if second.OwnerID != "test-session" {
+		t.Fatalf("mutating GetDaemon() snapshot changed owner = %q", second.OwnerID)
+	}
+	if second.Spec.Args[0] != "10" {
+		t.Fatalf("mutating GetDaemon() snapshot changed Args = %q", second.Spec.Args[0])
+	}
+	if second.Spec.HealthCmd[0] != "echo" {
+		t.Fatalf("mutating GetDaemon() snapshot changed HealthCmd = %q", second.Spec.HealthCmd[0])
+	}
+	if second.Spec.Env[0] != "SNAPSHOT_ORIGINAL=1" {
+		t.Fatalf("mutating GetDaemon() snapshot changed Env = %q", second.Spec.Env[0])
+	}
+}
+
 func TestPIDFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -380,6 +448,49 @@ func TestDefaultSpecs(t *testing.T) {
 	}
 	if !names["am"] {
 		t.Error("DefaultSpecs() missing 'am' daemon")
+	}
+}
+
+// Regression for ntm#137. `am` >= 0.2 split the `serve` subcommand
+// into `serve-http`/`serve-stdio`; the older bare `serve` form makes
+// the supervisor retry-storm with `unrecognized subcommand 'serve'`
+// and then give up after 5 attempts, taking out the multi-agent
+// pane's coordination transport. Pin the canonical args so a future
+// refactor can't silently revert to `serve`.
+func TestDefaultSpecsAgentMailUsesServeHTTP(t *testing.T) {
+	specs := DefaultSpecs()
+	var amSpec *DaemonSpec
+	for i := range specs {
+		if specs[i].Name == "am" {
+			amSpec = &specs[i]
+			break
+		}
+	}
+	if amSpec == nil {
+		t.Fatal("DefaultSpecs() missing 'am' daemon")
+	}
+	if len(amSpec.Args) == 0 {
+		t.Fatal("'am' daemon spec has no args")
+	}
+	if amSpec.Args[0] != "serve-http" {
+		t.Fatalf(
+			"'am' daemon must invoke `serve-http` (not %q) — "+
+				"`am serve` was removed in mcp-agent-mail >= 0.2 (ntm#137)",
+			amSpec.Args[0],
+		)
+	}
+	// `--no-tui` is non-negotiable: ntm runs the daemon in the
+	// background; an interactive TUI surface would race the
+	// pane-managing supervisor.
+	hasNoTUI := false
+	for _, a := range amSpec.Args {
+		if a == "--no-tui" {
+			hasNoTUI = true
+			break
+		}
+	}
+	if !hasNoTUI {
+		t.Fatalf("'am' daemon args must include --no-tui; got %v", amSpec.Args)
 	}
 }
 

@@ -374,7 +374,7 @@ func BuildExplanationFromMerge(
 	for _, mf := range merged.Findings {
 		conclusionID := mf.ProvenanceID
 		if conclusionID == "" {
-			conclusionID = GenerateFindingID(mf.SourceModes[0], mf.Finding.Finding)
+			conclusionID = GenerateFindingID(primarySourceMode(mf.SourceModes), mf.Finding.Finding)
 		}
 
 		tracker.RecordConclusion(
@@ -389,9 +389,11 @@ func BuildExplanationFromMerge(
 		if len(mf.SourceModes) > 1 {
 			tracker.SetConfidenceBasis(conclusionID,
 				fmt.Sprintf("Confirmed by %d modes: %s", len(mf.SourceModes), strings.Join(mf.SourceModes, ", ")))
-		} else {
+		} else if len(mf.SourceModes) == 1 {
 			tracker.SetConfidenceBasis(conclusionID,
 				fmt.Sprintf("Single source: %s", mf.SourceModes[0]))
+		} else {
+			tracker.SetConfidenceBasis(conclusionID, "No source mode metadata provided")
 		}
 
 		// Add provenance references
@@ -429,6 +431,13 @@ func BuildExplanationFromMerge(
 			0.0, // Recommendations don't have confidence
 		)
 	}
+}
+
+func primarySourceMode(sourceModes []string) string {
+	if len(sourceModes) == 0 {
+		return "unknown"
+	}
+	return sourceModes[0]
 }
 
 // BuildExplanationFromConflicts records conflict resolutions from audit report.

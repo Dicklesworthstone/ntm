@@ -205,6 +205,76 @@ func TestDetectConflicts_Empty(t *testing.T) {
 	}
 }
 
+// bd-rfzj1: pre-fix, DetectConflicts iterated a map for the outer loop AND
+// for each conflict's Agents list, so the result was non-deterministic in
+// both axes. Robot mode flows the slice directly into JSON, breaking
+// byte-stability for downstream replay tooling. Same family as bd-aj2qv,
+// bd-c9wr1, bd-brr6h, bd-wnzhl. Run the same input through DetectConflicts
+// repeatedly and assert the output is identical.
+func TestDetectConflicts_DeterministicOrder(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	// Build N paths each with M agents to maximise hash collisions on
+	// the map iteration. Use varied path strings so map bucket order
+	// is unlikely to coincidentally match insertion order.
+	changes := []RecordedFileChange{}
+	paths := []string{"/src/zzz.go", "/src/aaa.go", "/src/mmm.go", "/x/y.go", "/a/b/c.go", "/p/q.go"}
+	agents := []string{"agent_zzz", "agent_aaa", "agent_mmm", "agent_b"}
+	for _, p := range paths {
+		for i, a := range agents {
+			changes = append(changes, RecordedFileChange{
+				Timestamp: now.Add(time.Duration(-i) * time.Minute),
+				Session:   "s1",
+				Agents:    []string{a},
+				Change:    FileChange{Path: p, Type: FileModified},
+			})
+		}
+	}
+
+	first := DetectConflicts(changes)
+	if len(first) != len(paths) {
+		t.Fatalf("expected %d conflicts, got %d", len(paths), len(first))
+	}
+
+	// Run repeatedly to flush out instability.
+	for iter := 0; iter < 30; iter++ {
+		got := DetectConflicts(changes)
+		if len(got) != len(first) {
+			t.Fatalf("iteration %d: len mismatch — got %d, want %d", iter, len(got), len(first))
+		}
+		for i := range got {
+			if got[i].Path != first[i].Path {
+				t.Errorf("iteration %d: conflicts[%d].Path = %q, want %q (non-deterministic outer order)",
+					iter, i, got[i].Path, first[i].Path)
+			}
+			if len(got[i].Agents) != len(first[i].Agents) {
+				t.Fatalf("iteration %d: conflicts[%d].Agents len mismatch", iter, i)
+			}
+			for j := range got[i].Agents {
+				if got[i].Agents[j] != first[i].Agents[j] {
+					t.Errorf("iteration %d: conflicts[%d].Agents[%d] = %q, want %q (non-deterministic inner order)",
+						iter, i, j, got[i].Agents[j], first[i].Agents[j])
+				}
+			}
+		}
+	}
+
+	// Pin the actual order: paths sorted ascending, agents within each
+	// conflict sorted ascending.
+	wantPaths := []string{"/a/b/c.go", "/p/q.go", "/src/aaa.go", "/src/mmm.go", "/src/zzz.go", "/x/y.go"}
+	for i, want := range wantPaths {
+		if first[i].Path != want {
+			t.Errorf("conflicts[%d].Path = %q, want %q (sorted ascending)", i, first[i].Path, want)
+		}
+	}
+	wantAgentsFirst := []string{"agent_aaa", "agent_b", "agent_mmm", "agent_zzz"}
+	for i, want := range wantAgentsFirst {
+		if first[0].Agents[i] != want {
+			t.Errorf("conflicts[0].Agents[%d] = %q, want %q (sorted ascending)", i, first[0].Agents[i], want)
+		}
+	}
+}
+
 // =============================================================================
 // Global wrapper tests: DetectConflictsRecent, ConflictsSince
 // =============================================================================

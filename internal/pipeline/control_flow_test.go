@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -867,14 +868,10 @@ func TestOnSuccessExplicitIDsInsideForeachAreNamespaced(t *testing.T) {
 	}
 }
 
-// TestOnSuccessFiresForTopLevelParallel covers bd-h8lc4: the top-level
-// Parallel dispatch in executeStep early-returns BEFORE the retry-aware
-// OnSuccess hook at line 847, so without the bd-h8lc4 seam at the
-// dispatch site a workflow author writing a parallel step with
-// on_success children saw the schema accept the chain and the runtime
-// silently skip it. Lock the contract: when the parallel group reaches
-// StatusCompleted, every OnSuccess child must run and land in
-// state.Steps under the canonical <parent>_on_success_<child> key.
+// TestOnSuccessFiresForTopLevelParallel locks the composite-step contract:
+// when the parallel group reaches StatusCompleted, every OnSuccess child must
+// run and land in state.Steps under the canonical
+// <parent>_on_success_<child> key.
 func TestOnSuccessFiresForTopLevelParallel(t *testing.T) {
 	cfg := DefaultExecutorConfig("on-success-parallel")
 	cfg.DryRun = true
@@ -913,12 +910,9 @@ func TestOnSuccessFiresForTopLevelParallel(t *testing.T) {
 	}
 }
 
-// TestOnSuccessSkipsForFailedTopLevelParallel covers the negative leg of
-// bd-h8lc4: when the parallel group is not StatusCompleted (a substep
-// failed under fail_fast / fail), the OnSuccess chain must NOT run. This
-// matches the existing OnSuccess contract for command steps
-// (TestOnSuccessStepsSkipOnParentFailure) and prevents the bd-h8lc4 seam
-// from silently inverting the rule.
+// TestOnSuccessSkipsForFailedTopLevelParallel covers the negative leg: when
+// the parallel group is not StatusCompleted, the OnSuccess chain must NOT run.
+// This matches the existing OnSuccess contract for command steps.
 func TestOnSuccessSkipsForFailedTopLevelParallel(t *testing.T) {
 	cfg := DefaultExecutorConfig("on-success-parallel-fail")
 	cfg.DryRun = true
@@ -948,10 +942,256 @@ func TestOnSuccessSkipsForFailedTopLevelParallel(t *testing.T) {
 	}
 }
 
+func TestOnFailureActionFiresForFailedTopLevelParallel(t *testing.T) {
+	cfg := DefaultExecutorConfig("on-failure-parallel-parent")
+	cfg.DryRun = true
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex}))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "on-failure-parallel-parent-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:        "fan",
+			OnFailure: OnFailureSpec{Action: "fallback_to_ntm_inbox"},
+			Parallel: ParallelSpec{
+				Steps: []Step{{
+					ID:         "boom",
+					Pane:       PaneSpec{Index: 1},
+					PromptFile: "/this/path/does/not/exist.txt",
+				}},
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil after handled top-level parallel on_failure action", err)
+	}
+
+	fan := state.Steps["fan"]
+	if fan.Status != StatusSkipped {
+		t.Fatalf("fan status = %s, want skipped; error=%+v", fan.Status, fan.Error)
+	}
+	if fan.SkipKind != SkipKindOnFailureAction {
+		t.Fatalf("fan SkipKind = %q, want %q", fan.SkipKind, SkipKindOnFailureAction)
+	}
+	if got := state.Variables["runtime.fan_failure_action"]; got != "fallback_to_ntm_inbox" {
+		t.Fatalf("runtime failure action = %v, want fallback_to_ntm_inbox", got)
+	}
+	if child := state.Steps["fan_boom"]; child.Status != StatusFailed {
+		t.Fatalf("fan_boom status = %s, want failed before parent recovery", child.Status)
+	}
+}
+
+func TestOnFailureActionFiresForFailedTopLevelLoop(t *testing.T) {
+	executor := NewExecutor(DefaultExecutorConfig("on-failure-loop-parent"))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "on-failure-loop-parent-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:        "watch",
+			OnFailure: OnFailureSpec{Action: "fallback_to_ntm_inbox"},
+			Loop: &LoopConfig{
+				Times:         1,
+				MaxIterations: IntOrExpr{Value: 1},
+				Steps: []Step{{
+					ID:      "tick",
+					Command: "exit 7",
+				}},
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil after handled top-level loop on_failure action", err)
+	}
+
+	watch := state.Steps["watch"]
+	if watch.Status != StatusSkipped {
+		t.Fatalf("watch status = %s, want skipped; error=%+v", watch.Status, watch.Error)
+	}
+	if watch.SkipKind != SkipKindOnFailureAction {
+		t.Fatalf("watch SkipKind = %q, want %q", watch.SkipKind, SkipKindOnFailureAction)
+	}
+	if got := state.Variables["runtime.watch_failure_action"]; got != "fallback_to_ntm_inbox" {
+		t.Fatalf("runtime failure action = %v, want fallback_to_ntm_inbox", got)
+	}
+	if child := state.Steps["watch_iter0_tick"]; child.Status != StatusFailed {
+		t.Fatalf("watch_iter0_tick status = %s, want failed before parent recovery", child.Status)
+	}
+}
+
+func TestRetryFiresForFailedTopLevelParallel(t *testing.T) {
+	cfg := DefaultExecutorConfig("retry-parallel-parent")
+	cfg.DryRun = true
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex}))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "retry-parallel-parent-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:         "fan",
+			OnError:    ErrorActionRetry,
+			RetryCount: 2,
+			RetryDelay: Duration{Duration: time.Nanosecond},
+			Parallel: ParallelSpec{
+				Steps: []Step{{
+					ID:         "boom",
+					Pane:       PaneSpec{Index: 1},
+					PromptFile: "/this/path/does/not/exist.txt",
+				}},
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want exhausted retry failure")
+	}
+	fan := state.Steps["fan"]
+	if fan.Status != StatusFailed {
+		t.Fatalf("fan status = %s, want failed after retries", fan.Status)
+	}
+	if fan.Attempts != 3 {
+		t.Fatalf("fan attempts = %d, want 3", fan.Attempts)
+	}
+}
+
+func TestRetryFiresForFailedTopLevelLoop(t *testing.T) {
+	executor := NewExecutor(DefaultExecutorConfig("retry-loop-parent"))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "retry-loop-parent-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:         "watch",
+			OnError:    ErrorActionRetry,
+			RetryCount: 2,
+			RetryDelay: Duration{Duration: time.Nanosecond},
+			Loop: &LoopConfig{
+				Times:         1,
+				MaxIterations: IntOrExpr{Value: 1},
+				Steps: []Step{{
+					ID:      "tick",
+					Command: "exit 7",
+				}},
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want exhausted retry failure")
+	}
+	watch := state.Steps["watch"]
+	if watch.Status != StatusFailed {
+		t.Fatalf("watch status = %s, want failed after retries", watch.Status)
+	}
+	if watch.Attempts != 3 {
+		t.Fatalf("watch attempts = %d, want 3", watch.Attempts)
+	}
+}
+
+func TestRunFailsAfterRetryExhaustion(t *testing.T) {
+	executor := NewExecutor(DefaultExecutorConfig("retry-exhaustion"))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "retry-exhaustion-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID:         "retry_exit",
+			Command:    "exit 7",
+			OnError:    ErrorActionRetry,
+			RetryCount: 1,
+			RetryDelay: Duration{Duration: time.Nanosecond},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want exhausted retry failure")
+	}
+	if state.Status != StatusFailed {
+		t.Fatalf("workflow status = %s, want failed", state.Status)
+	}
+	step := state.Steps["retry_exit"]
+	if step.Status != StatusFailed {
+		t.Fatalf("retry_exit status = %s, want failed", step.Status)
+	}
+	if step.Attempts != 2 {
+		t.Fatalf("retry_exit attempts = %d, want 2", step.Attempts)
+	}
+	if !strings.Contains(err.Error(), "retry_exit") {
+		t.Fatalf("Run() error = %v, want step id", err)
+	}
+}
+
+func TestFailedTopLevelParallelPreservesStructuredResultData(t *testing.T) {
+	cfg := DefaultExecutorConfig("failed-parallel-data")
+	cfg.DryRun = true
+	executor := NewExecutor(cfg)
+	executor.SetTmuxClient(NewMockTmuxClient(tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentCodex}))
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "failed-parallel-data-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{{
+			ID: "fan",
+			Parallel: ParallelSpec{
+				Steps: []Step{
+					{ID: "ok", Pane: PaneSpec{Index: 1}, Prompt: "ok"},
+					{ID: "boom", Pane: PaneSpec{Index: 1}, PromptFile: "/this/path/does/not/exist.txt"},
+				},
+			},
+		}},
+	}
+
+	state, err := executor.Run(context.Background(), workflow, nil, nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want failed parallel group")
+	}
+
+	fan := state.Steps["fan"]
+	if fan.Status != StatusFailed {
+		t.Fatalf("fan status = %s, want failed", fan.Status)
+	}
+
+	groupOutputs, ok := fan.ParsedData.(map[string]interface{})
+	if !ok {
+		t.Fatalf("fan ParsedData type = %T, want grouped parallel outputs", fan.ParsedData)
+	}
+
+	okEntry, ok := groupOutputs["fan_ok"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("fan_ok entry missing from ParsedData: %#v", groupOutputs)
+	}
+	if okEntry["status"] != string(StatusCompleted) {
+		t.Fatalf("fan_ok status = %v, want %s", okEntry["status"], StatusCompleted)
+	}
+
+	boomEntry, ok := groupOutputs["fan_boom"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("fan_boom entry missing from ParsedData: %#v", groupOutputs)
+	}
+	if boomEntry["status"] != string(StatusFailed) {
+		t.Fatalf("fan_boom status = %v, want %s", boomEntry["status"], StatusFailed)
+	}
+}
+
 // TestOnSuccessFiresForBranchBodyChild covers bd-2g48y: a branch body
 // step reaches its dispatcher via executeBranch -> executeStepOnce, which
-// bypasses the executeStep retry-loop OnSuccess hook at line 847. Without
-// the bd-2g48y seam, an on_success chain attached to a branch body step
+// bypasses executeStep's common success tail. Without the bd-2g48y seam,
+// an on_success chain attached to a branch body step
 // was schema-accepted and silently skipped. Mirrors the bd-0fkcn fix for
 // the foreach body case.
 func TestOnSuccessFiresForBranchBodyChild(t *testing.T) {
@@ -995,9 +1235,9 @@ func TestOnSuccessFiresForBranchBodyChild(t *testing.T) {
 // TestOnSuccessFiresForParallelSubstep covers bd-2g48y for the parallel
 // case: parallel substeps run through executeParallelStep (an inlined
 // retry+exec loop), not through the executeStep retry loop, so the
-// OnSuccess hook at line 847 was never fired for an on_success chain
-// attached to a parallel substep. DryRun lets the substep dispatch
-// short-circuit before pane selection, the same fixture used by
+// common success tail never fires for an on_success chain attached to a
+// parallel substep. DryRun lets the substep dispatch short-circuit before
+// pane selection, the same fixture used by
 // TestOnSuccessFiresForTopLevelParallel.
 func TestOnSuccessFiresForParallelSubstep(t *testing.T) {
 	cfg := DefaultExecutorConfig("parallel-substep-on-success")
@@ -1036,10 +1276,9 @@ func TestOnSuccessFiresForParallelSubstep(t *testing.T) {
 	}
 }
 
-// TestOnSuccessFiresForTopLevelLoop covers bd-h8lc4 for the Loop dispatch
-// — same shape as the Parallel case. executeLoop early-returns from
-// executeStep before the retry-loop OnSuccess hook, so the bd-h8lc4 seam
-// at the dispatch site is what makes `loop: ... on_success: ...` work.
+// TestOnSuccessFiresForTopLevelLoop covers the Loop dispatch path. Composite
+// steps must stay inside executeStep's common retry/success/failure tail so
+// `loop: ... on_success: ...` behaves like ordinary command steps.
 func TestOnSuccessFiresForTopLevelLoop(t *testing.T) {
 	executor := NewExecutor(DefaultExecutorConfig("on-success-loop"))
 

@@ -278,3 +278,64 @@ func TestForeachOutputVarMode_SkippedIterationsExcluded(t *testing.T) {
 		t.Fatalf("vars[result] = %#v, want %#v", slice, want)
 	}
 }
+
+func TestForeachOutputVarMode_ResumeCompletedIterationsContributePriorOutput(t *testing.T) {
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "foreach-resume-output-var",
+		Settings:      DefaultWorkflowSettings(),
+	}
+	step := &Step{
+		ID:        "fanout",
+		OutputVar: "result",
+		Foreach: &ForeachConfig{
+			Items: `["alpha","beta","gamma"]`,
+			Steps: []Step{{
+				ID:        "echo",
+				Command:   `printf '%s' '${item}'`,
+				OutputVar: "result",
+			}},
+		},
+	}
+	workflow.Steps = []Step{*step}
+	e := createForeachTestExecutor(t, workflow)
+	e.state.ForeachState = map[string]ForeachIterationState{
+		"fanout": {
+			StepID:                "fanout",
+			Total:                 3,
+			CompletedIterationIDs: []string{loopIterationID("fanout", 0)},
+			CurrentIteration:      1,
+		},
+	}
+	e.state.Steps["fanout_iter0_echo"] = StepResult{
+		StepID: "fanout_iter0_echo",
+		Status: StatusCompleted,
+		Output: "alpha",
+	}
+
+	got := e.executeForeach(context.Background(), step, workflow)
+	if got.Status != StatusCompleted {
+		t.Fatalf("foreach status = %s, error = %#v", got.Status, got.Error)
+	}
+
+	value, ok := e.state.Variables["result"]
+	if !ok {
+		t.Fatalf("vars[result] not set after foreach resume")
+	}
+	slice, ok := value.([]string)
+	if !ok {
+		t.Fatalf("vars[result] type = %T, want []string", value)
+	}
+	want := []string{"alpha", "beta", "gamma"}
+	if !reflect.DeepEqual(slice, want) {
+		t.Fatalf("vars[result] = %#v, want %#v", slice, want)
+	}
+
+	iterations, ok := got.ParsedData.([]foreachIterationResult)
+	if !ok || len(iterations) != 3 {
+		t.Fatalf("iterations = %#v, want 3 foreach iteration results", got.ParsedData)
+	}
+	if iterations[0].SkipKind != SkipKindResumeAlreadyCompleted {
+		t.Fatalf("iter0 SkipKind = %q, want %q", iterations[0].SkipKind, SkipKindResumeAlreadyCompleted)
+	}
+}

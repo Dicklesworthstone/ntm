@@ -227,7 +227,7 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 	}
 
 	daemon := &ManagedDaemon{
-		Spec:       spec,
+		Spec:       copyDaemonSpec(spec),
 		State:      StateStarting,
 		PID:        cmd.Process.Pid,
 		Port:       port,
@@ -331,41 +331,53 @@ func (s *Supervisor) Status() map[string]*ManagedDaemon {
 	result := make(map[string]*ManagedDaemon, len(s.daemons))
 	for name, d := range s.daemons {
 		d.mu.RLock()
-		// Deep copy slice fields to prevent data races
-		specCopy := d.Spec
-		if d.Spec.Args != nil {
-			specCopy.Args = make([]string, len(d.Spec.Args))
-			copy(specCopy.Args, d.Spec.Args)
-		}
-		if d.Spec.HealthCmd != nil {
-			specCopy.HealthCmd = make([]string, len(d.Spec.HealthCmd))
-			copy(specCopy.HealthCmd, d.Spec.HealthCmd)
-		}
-		if d.Spec.Env != nil {
-			specCopy.Env = make([]string, len(d.Spec.Env))
-			copy(specCopy.Env, d.Spec.Env)
-		}
-		result[name] = &ManagedDaemon{
-			Spec:       specCopy,
-			State:      d.State,
-			PID:        d.PID,
-			Port:       d.Port,
-			StartedAt:  d.StartedAt,
-			LastHealth: d.LastHealth,
-			Restarts:   d.Restarts,
-			OwnerID:    d.OwnerID,
-		}
+		result[name] = snapshotDaemonLocked(d)
 		d.mu.RUnlock()
 	}
 	return result
 }
 
-// GetDaemon returns a daemon by name.
+// GetDaemon returns a snapshot of a daemon by name.
 func (s *Supervisor) GetDaemon(name string) (*ManagedDaemon, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	d, ok := s.daemons[name]
-	return d, ok
+	s.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return snapshotDaemonLocked(d), true
+}
+
+func snapshotDaemonLocked(d *ManagedDaemon) *ManagedDaemon {
+	return &ManagedDaemon{
+		Spec:       copyDaemonSpec(d.Spec),
+		State:      d.State,
+		PID:        d.PID,
+		Port:       d.Port,
+		StartedAt:  d.StartedAt,
+		LastHealth: d.LastHealth,
+		Restarts:   d.Restarts,
+		OwnerID:    d.OwnerID,
+	}
+}
+
+func copyDaemonSpec(spec DaemonSpec) DaemonSpec {
+	spec.Args = copyStringSlice(spec.Args)
+	spec.HealthCmd = copyStringSlice(spec.HealthCmd)
+	spec.Env = copyStringSlice(spec.Env)
+	return spec
+}
+
+func copyStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	copied := make([]string, len(values))
+	copy(copied, values)
+	return copied
 }
 
 // stopDaemon stops a single daemon.
@@ -665,9 +677,36 @@ func DefaultSpecs() []DaemonSpec {
 			DefaultPort: 8200,
 		},
 		{
+			// `am` >= 0.2 split the original `serve` subcommand into
+			// `serve-http` (HTTP transport, what ntm needs) and
+			// `serve-stdio`. Older binaries supporting bare `serve` are
+			// pre-0.2.0 and not on any current install; ntm pins to the
+			// `am` from the Dicklesworthstone tap, which has been 0.2+
+			// for the duration of this code path's life. See ntm#137.
+			//
+			// `--no-tui` keeps the supervised process headless (no
+			// curses surface that would conflict with ntm's tmux panes).
+			//
+			// `--host 127.0.0.1` locks the bind to loopback so the
+			// supervised daemon is not exposed beyond the local box.
+			// Without this, `--no-auth` would expose the API to anyone
+			// on the network.
+			//
+			// `--no-auth` matches the canonical args the launchd /
+			// systemd installers `am service install` produce. This is
+			// safe for single-user workstations (the bind is loopback)
+			// but is a security trade-off on shared multi-user hosts:
+			// any other user on the same machine can hit the loopback
+			// API. Operators on shared hosts should set
+			// `[agent_mail].supervisor_enabled = false` in
+			// `~/.config/ntm/config.toml` and run `am serve-http`
+			// themselves with an auth-token configuration — ntm will
+			// then skip lifecycle management for the daemon. See
+			// `AgentMailConfig.SupervisorEnabled` for the opt-out
+			// docstring.
 			Name:        "am",
 			Command:     "am",
-			Args:        []string{"serve"},
+			Args:        []string{"serve-http", "--host", "127.0.0.1", "--no-tui", "--no-auth"},
 			HealthURL:   "http://127.0.0.1:8765/health/liveness",
 			PortFlag:    "--port",
 			DefaultPort: 8765,

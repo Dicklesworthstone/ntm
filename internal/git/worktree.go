@@ -8,17 +8,210 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// safeSessionPrefix returns the first 8 characters of a session ID, padding
-// with zeros if shorter to prevent slice-bounds panics.
-func safeSessionPrefix(sessionID string) string {
-	if len(sessionID) >= 8 {
-		return sessionID[:8]
+var (
+	worktreeGitCommandTimeout   = 5 * time.Second
+	worktreeGitCommandWaitDelay = 500 * time.Millisecond
+)
+
+func isAlreadySafeWorktreeKey(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
 	}
-	return sessionID + strings.Repeat("0", 8-len(sessionID))
+	// Git ref components cannot contain ".." or end in ".lock".
+	// If either appears, force canonicalization instead of preserving as-is.
+	if strings.Contains(value, "..") || strings.HasSuffix(value, ".lock") {
+		return false
+	}
+	// Even if characters are otherwise safe, leading/trailing dots are
+	// invalid in git ref components. Keep those on the canonicalization path.
+	if strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			// allowed as-is
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeRefComponentPatterns(value string) string {
+	for strings.Contains(value, "..") {
+		value = strings.ReplaceAll(value, "..", "-")
+	}
+	if strings.HasSuffix(value, ".lock") {
+		value = strings.TrimSuffix(value, ".lock") + "-lock"
+	}
+	return value
+}
+
+func canonicalWorktreeKey(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+
+	var b strings.Builder
+	b.Grow(len(value))
+	lastDash := false
+
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			if r == '-' {
+				if lastDash {
+					continue
+				}
+				lastDash = true
+			} else {
+				lastDash = false
+			}
+			b.WriteRune(r)
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+
+	key := strings.Trim(b.String(), "-.")
+	key = normalizeRefComponentPatterns(key)
+	key = strings.Trim(key, "-.")
+	if key == "" {
+		return fallback
+	}
+	return key
+}
+
+// canonicalSessionKey converts a session identity into a git-safe key
+// without truncating uniqueness-bearing suffixes like agent type/number.
+// The previous 8-char truncation caused alias collisions across distinct
+// sessions/panes (bd-l542u).
+func canonicalSessionKey(sessionID string) string {
+	// Session IDs are typically already restricted to [A-Za-z0-9_-].
+	// Preserve that safe form exactly so distinct safe IDs don't alias
+	// through dash-collapsing canonicalization (bd-iz9ss).
+	if isAlreadySafeWorktreeKey(sessionID) {
+		return sessionID
+	}
+	// Keep the no-aliasing behavior for otherwise-safe IDs that only violate
+	// git-ref component rules at the edges (for example ".foo."), by trimming
+	// edge dots without re-running dash-collapse logic.
+	trimmedDots := strings.Trim(sessionID, ".")
+	if trimmedDots != sessionID && isAlreadySafeWorktreeKey(trimmedDots) {
+		return trimmedDots
+	}
+	return canonicalWorktreeKey(sessionID, "session")
+}
+
+func canonicalAgentKey(agentName string) string {
+	// Mirror canonicalSessionKey behavior so already-safe identities keep
+	// their exact uniqueness-bearing form (for example repeated dashes).
+	// Collapsing those separators aliases distinct agents like
+	// "alpha--team" and "alpha-team" into one worktree key (bd-awrt5).
+	if isAlreadySafeWorktreeKey(agentName) {
+		return agentName
+	}
+	trimmedDots := strings.Trim(agentName, ".")
+	if trimmedDots != agentName && isAlreadySafeWorktreeKey(trimmedDots) {
+		return trimmedDots
+	}
+	return canonicalWorktreeKey(agentName, "agent")
+}
+
+func worktreeNameForKeys(agentKey, sessionKey string) string {
+	// Length-prefix both components so pairs like ("a-b", "c") and
+	// ("a", "b-c") cannot resolve to the same worktree basename.
+	return fmt.Sprintf("agent-%d-%s-session-%d-%s", len(agentKey), agentKey, len(sessionKey), sessionKey)
+}
+
+func parseWorktreeNameAgentKey(name string) string {
+	if agentKey, ok := parseLengthPrefixedWorktreeName(name); ok {
+		return agentKey
+	}
+	return parseLegacyAgentKeyFromWorktreeName(name)
+}
+
+func parseLengthPrefixedWorktreeName(name string) (string, bool) {
+	rest, ok := strings.CutPrefix(name, "agent-")
+	if !ok {
+		return "", false
+	}
+	lenText, rest, ok := strings.Cut(rest, "-")
+	if !ok {
+		return "", false
+	}
+	agentLen, err := strconv.Atoi(lenText)
+	if err != nil || agentLen <= 0 || len(rest) < agentLen {
+		return "", false
+	}
+	agentKey := rest[:agentLen]
+	rest = rest[agentLen:]
+	rest, ok = strings.CutPrefix(rest, "-session-")
+	if !ok {
+		return "", false
+	}
+	lenText, rest, ok = strings.Cut(rest, "-")
+	if !ok {
+		return "", false
+	}
+	sessionLen, err := strconv.Atoi(lenText)
+	if err != nil || sessionLen <= 0 || len(rest) != sessionLen {
+		return "", false
+	}
+	return agentKey, true
+}
+
+func parseBranchAgentKey(branch string) string {
+	if !strings.HasPrefix(branch, "agent/") {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(branch, "agent/"), "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+func parseLegacyAgentKeyFromWorktreeName(name string) string {
+	if !strings.HasPrefix(name, "agent-") {
+		return ""
+	}
+	parts := strings.Split(name, "-")
+	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		return ""
+	}
+	return parts[1]
+}
+
+func pathsReferToSameLocation(pathA, pathB string) bool {
+	if len(pathA) == 0 || len(pathB) == 0 {
+		return false
+	}
+	if filepath.Clean(pathA) == filepath.Clean(pathB) {
+		return true
+	}
+
+	statA, errA := os.Stat(pathA)
+	statB, errB := os.Stat(pathB)
+	if errA == nil && errB == nil {
+		return os.SameFile(statA, statB)
+	}
+	return false
 }
 
 // WorktreeManager handles git worktree creation and management for agent isolation
@@ -52,8 +245,11 @@ type WorktreeInfo struct {
 
 // ProvisionWorktree creates an isolated worktree for an agent
 func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, sessionID string) (*WorktreeInfo, error) {
+	agentKey := canonicalAgentKey(agentName)
+	sessionKey := canonicalSessionKey(sessionID)
+
 	// Generate a unique worktree name
-	worktreeName := fmt.Sprintf("agent-%s-%s", agentName, safeSessionPrefix(sessionID))
+	worktreeName := worktreeNameForKeys(agentKey, sessionKey)
 	workingDir := filepath.Join(wm.baseRepo, "..", worktreeName)
 
 	// Check if worktree already exists
@@ -65,7 +261,7 @@ func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, ses
 	}
 
 	// Create a new branch for this agent
-	branchName := fmt.Sprintf("agent/%s/%s", agentName, safeSessionPrefix(sessionID))
+	branchName := fmt.Sprintf("agent/%s/%s", agentKey, sessionKey)
 
 	// Get current branch and commit for base
 	currentBranch, err := wm.getCurrentBranch()
@@ -91,7 +287,7 @@ func (wm *WorktreeManager) ProvisionWorktree(ctx context.Context, agentName, ses
 		Path:      workingDir,
 		Branch:    branchName,
 		Commit:    commit,
-		Agent:     agentName,
+		Agent:     agentKey,
 		CreatedAt: time.Now(),
 		LastUsed:  time.Now(),
 	}
@@ -114,10 +310,16 @@ func (wm *WorktreeManager) ListWorktrees(ctx context.Context) ([]*WorktreeInfo, 
 
 // RemoveWorktree removes a worktree and its associated branch
 func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessionID string) error {
-	worktreeName := fmt.Sprintf("agent-%s-%s", agentName, safeSessionPrefix(sessionID))
+	agentKey := canonicalAgentKey(agentName)
+	sessionKey := canonicalSessionKey(sessionID)
+	worktreeName := worktreeNameForKeys(agentKey, sessionKey)
 	workingDir := filepath.Join(wm.baseRepo, "..", worktreeName)
-	branchName := fmt.Sprintf("agent/%s/%s", agentName, safeSessionPrefix(sessionID))
+	branchName := fmt.Sprintf("agent/%s/%s", agentKey, sessionKey)
 
+	return wm.removeWorktreePathAndBranch(ctx, workingDir, branchName)
+}
+
+func (wm *WorktreeManager) removeWorktreePathAndBranch(ctx context.Context, workingDir, branchName string) error {
 	// Remove the worktree
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", workingDir)
 	cmd.WaitDelay = 2 * time.Second
@@ -130,13 +332,15 @@ func (wm *WorktreeManager) RemoveWorktree(ctx context.Context, agentName, sessio
 	}
 
 	// Remove the branch
-	cmd = exec.CommandContext(ctx, "git", "branch", "-D", branchName)
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = wm.baseRepo
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// If branch doesn't exist, that's OK
-		if !strings.Contains(string(output), "not found") {
-			return fmt.Errorf("failed to remove branch: %w\nOutput: %s", err, string(output))
+	if branchName != "" {
+		cmd = exec.CommandContext(ctx, "git", "branch", "-D", branchName)
+		cmd.WaitDelay = 2 * time.Second
+		cmd.Dir = wm.baseRepo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			// If branch doesn't exist, that's OK
+			if !strings.Contains(string(output), "not found") {
+				return fmt.Errorf("failed to remove branch: %w\nOutput: %s", err, string(output))
+			}
 		}
 	}
 
@@ -157,9 +361,7 @@ func (wm *WorktreeManager) CleanupStaleWorktrees(ctx context.Context, maxAge tim
 			// Extract agent and session info from branch name
 			parts := strings.Split(wt.Branch, "/")
 			if len(parts) >= 3 {
-				agentName := parts[1]
-				sessionID := parts[2] // safeSessionPrefix handles short IDs
-				if err := wm.RemoveWorktree(ctx, agentName, sessionID); err != nil {
+				if err := wm.removeWorktreePathAndBranch(ctx, wt.Path, wt.Branch); err != nil {
 					// Log error but continue cleanup
 					fmt.Printf("Warning: failed to remove stale worktree for %s: %v\n", wt.Path, err)
 				}
@@ -223,9 +425,10 @@ func (wm *WorktreeManager) worktreeExists(name string) (bool, error) {
 
 // getCurrentBranch returns the current branch name
 func (wm *WorktreeManager) getCurrentBranch() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeGitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.WaitDelay = worktreeGitCommandWaitDelay
 	cmd.Dir = wm.baseRepo
 	output, err := cmd.Output()
 	if err != nil {
@@ -236,9 +439,10 @@ func (wm *WorktreeManager) getCurrentBranch() (string, error) {
 
 // getCommitHash returns the current commit hash for a worktree
 func (wm *WorktreeManager) getCommitHash(worktreePath string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeGitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd.WaitDelay = worktreeGitCommandWaitDelay
 	cmd.Dir = worktreePath
 	output, err := cmd.Output()
 	if err != nil {
@@ -252,7 +456,10 @@ func (wm *WorktreeManager) getWorktreeInfo(name string) (*WorktreeInfo, error) {
 	workingDir := filepath.Join(wm.baseRepo, "..", name)
 
 	// Get branch name
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeGitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.WaitDelay = worktreeGitCommandWaitDelay
 	cmd.Dir = workingDir
 	branchOutput, err := cmd.Output()
 	if err != nil {
@@ -266,13 +473,15 @@ func (wm *WorktreeManager) getWorktreeInfo(name string) (*WorktreeInfo, error) {
 		return nil, fmt.Errorf("failed to get commit: %w", err)
 	}
 
-	// Extract agent name from worktree name
-	agentName := "unknown"
-	if strings.HasPrefix(name, "agent-") {
-		parts := strings.Split(name, "-")
-		if len(parts) >= 2 {
-			agentName = parts[1]
-		}
+	// Parse agent key from the branch first. Detached or renamed
+	// worktrees fall back to the generated basename, with legacy basename
+	// parsing kept for older worktrees.
+	agentName := parseBranchAgentKey(branch)
+	if agentName == "" {
+		agentName = parseWorktreeNameAgentKey(name)
+	}
+	if agentName == "" {
+		agentName = "unknown"
 	}
 
 	// Get last modified time of worktree directory as proxy for last used
@@ -319,16 +528,26 @@ func (wm *WorktreeManager) parseWorktreeList(output string) ([]*WorktreeInfo, er
 			}
 		}
 
-		// Only include agent worktrees
-		if path != "" && strings.Contains(path, "agent-") {
-			// Extract agent name from path
-			agentName := "unknown"
+		// Only include agent worktrees. A parent directory may contain the
+		// string "agent-", so match the branch or the worktree basename
+		// instead of the full path.
+		if len(path) > 0 {
+			// git worktree list includes the primary checkout. Even if that
+			// checkout is currently on an agent/* branch, it is not an agent
+			// worktree entry and must be excluded from agent listings.
+			if pathsReferToSameLocation(path, wm.baseRepo) {
+				continue
+			}
 			basename := filepath.Base(path)
-			if strings.HasPrefix(basename, "agent-") {
-				parts := strings.Split(basename, "-")
-				if len(parts) >= 2 {
-					agentName = parts[1]
-				}
+			agentName := parseBranchAgentKey(branch)
+			if agentName == "" && !strings.HasPrefix(basename, "agent-") {
+				continue
+			}
+			if agentName == "" {
+				agentName = parseWorktreeNameAgentKey(basename)
+			}
+			if agentName == "" {
+				agentName = "unknown"
 			}
 
 			// Get last modified time

@@ -32,6 +32,20 @@ func setupGitRepo(t *testing.T) string {
 	return tmp
 }
 
+func assertStringEqual(t *testing.T, got, want string) {
+	t.Helper()
+	if strings.Compare(got, want) != 0 {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func assertStringNotEqual(t *testing.T, got, unwanted string) {
+	t.Helper()
+	if strings.Compare(got, unwanted) == 0 {
+		t.Fatalf("got %q, want a distinct value", got)
+	}
+}
+
 func TestIsGitRepository(t *testing.T) {
 	t.Parallel()
 
@@ -49,6 +63,186 @@ func TestIsGitRepository(t *testing.T) {
 	if !IsGitRepository(tmp) {
 		t.Fatal("expected directory to be detected as git repo after init")
 	}
+}
+
+func TestCanonicalSessionKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		in    string
+		want  string
+		want2 string
+	}{
+		{"empty falls back", "", "session", ""},
+		{"preserves identity-bearing suffix", "alpha-team-claude-12", "alpha-team-claude-12", ""},
+		{"preserves repeated safe separators", "alpha--team-claude-1", "alpha--team-claude-1", ""},
+		{"normalizes leading dot for git-ref safety", ".alpha--team-claude-1", "alpha--team-claude-1", ""},
+		{"normalizes trailing dot for git-ref safety", "alpha--team-claude-1.", "alpha--team-claude-1", ""},
+		{"normalizes disallowed characters", "alpha team/claude:12", "alpha-team-claude-12", ""},
+		{"collapses repeated separators", "alpha---team***claude", "alpha-team-claude", ""},
+		{"normalizes invalid git ref dot run", "alpha..team", "alpha-team", ""},
+		{"normalizes invalid git ref .lock suffix", "alpha-team.lock", "alpha-team-lock", ""},
+		{"distinct pane IDs remain distinct", "alpha-team-claude-1", "alpha-team-claude-1", "alpha-team-claude-2"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := canonicalSessionKey(tc.in)
+			assertStringEqual(t, got, tc.want)
+			if tc.want2 != "" {
+				got2 := canonicalSessionKey(tc.want2)
+				assertStringNotEqual(t, got, got2)
+			}
+		})
+	}
+}
+
+func TestCanonicalAgentKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		in    string
+		want  string
+		want2 string
+	}{
+		{"empty falls back", "", "agent", ""},
+		{"preserves normal agent type", "claude", "claude", ""},
+		{"preserves repeated safe separators", "alpha--team", "alpha--team", ""},
+		{"normalizes leading/trailing dot for git-ref safety", ".alpha--team.", "alpha--team", ""},
+		{"normalizes path separators", "../evil/type", "evil-type", ""},
+		{"collapses punctuation", "***codex///agent***", "codex-agent", ""},
+		{"normalizes invalid git ref dot run", "alpha..team", "alpha-team", ""},
+		{"normalizes invalid git ref .lock suffix", "alpha.lock", "alpha-lock", ""},
+		{"distinct safe IDs remain distinct", "alpha--team", "alpha--team", "alpha-team"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := canonicalAgentKey(tc.in)
+			assertStringEqual(t, got, tc.want)
+			if tc.want2 != "" {
+				got2 := canonicalAgentKey(tc.want2)
+				assertStringNotEqual(t, got, got2)
+			}
+		})
+	}
+}
+
+func TestWorktreeManager_ProvisionWorktreeSanitizesAgentName(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm, err := NewWorktreeManager(repo)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	info, err := wm.ProvisionWorktree(context.Background(), "../evil/type", "sess/one")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	assertStringEqual(t, filepath.Base(info.Path), "agent-9-evil-type-session-8-sess-one")
+	assertStringEqual(t, info.Branch, "agent/evil-type/sess-one")
+	assertStringEqual(t, info.Agent, "evil-type")
+}
+
+// bd-2gutl: even after character canonicalization, ref components like ".."
+// and ".lock" remain git-invalid and must be normalized before branch creation.
+func TestWorktreeManager_ProvisionWorktreeNormalizesInvalidRefComponentPatterns(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm, err := NewWorktreeManager(repo)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	info, err := wm.ProvisionWorktree(context.Background(), "alpha..team.lock", "sess..one.lock")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	assertStringEqual(t, filepath.Base(info.Path), "agent-15-alpha-team-lock-session-13-sess-one-lock")
+	assertStringEqual(t, info.Branch, "agent/alpha-team-lock/sess-one-lock")
+	assertStringEqual(t, info.Agent, "alpha-team-lock")
+}
+
+func TestWorktreeManager_ProvisionWorktreeDistinctSafeAgentKeysDoNotAlias(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm, err := NewWorktreeManager(repo)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	first, err := wm.ProvisionWorktree(context.Background(), "alpha--team", "sess/one")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree first: %v", err)
+	}
+	second, err := wm.ProvisionWorktree(context.Background(), "alpha-team", "sess/one")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree second: %v", err)
+	}
+
+	assertStringEqual(t, filepath.Base(first.Path), "agent-11-alpha--team-session-8-sess-one")
+	assertStringEqual(t, filepath.Base(second.Path), "agent-10-alpha-team-session-8-sess-one")
+	assertStringNotEqual(t, first.Path, second.Path)
+	assertStringNotEqual(t, first.Branch, second.Branch)
+	assertStringNotEqual(t, first.Agent, second.Agent)
+}
+
+func TestWorktreeManager_ProvisionWorktreeSeparatesAgentAndSessionBoundaries(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm, err := NewWorktreeManager(repo)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	first, err := wm.ProvisionWorktree(context.Background(), "a-b", "c")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree first: %v", err)
+	}
+	second, err := wm.ProvisionWorktree(context.Background(), "a", "b-c")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree second: %v", err)
+	}
+
+	assertStringEqual(t, filepath.Base(first.Path), "agent-3-a-b-session-1-c")
+	assertStringEqual(t, filepath.Base(second.Path), "agent-1-a-session-3-b-c")
+	assertStringNotEqual(t, first.Path, second.Path)
+	assertStringNotEqual(t, first.Branch, second.Branch)
+	assertStringNotEqual(t, first.Agent, second.Agent)
+
+	worktrees, err := wm.ListWorktrees(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 2 {
+		t.Fatalf("expected 2 distinct worktrees, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_ProvisionAndList_PreservesSanitizedHyphenatedAgent(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm, err := NewWorktreeManager(repo)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	info, err := wm.ProvisionWorktree(context.Background(), "../evil/type", "sess/one")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+	assertStringEqual(t, info.Agent, "evil-type")
+
+	worktrees, err := wm.ListWorktrees(context.Background())
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Fatalf("expected 1 worktree, got %d", len(worktrees))
+	}
+	assertStringEqual(t, worktrees[0].Agent, "evil-type")
 }
 
 func TestWorktreeManager_worktreeExists(t *testing.T) {
@@ -76,6 +270,43 @@ func TestWorktreeManager_worktreeExists(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("expected missing worktree to return false")
+	}
+}
+
+func TestWorktreeManager_getWorktreeInfo_UsesCommandContextForBranchLookup(t *testing.T) {
+	repo := setupGitRepo(t)
+	wm := &WorktreeManager{baseRepo: repo}
+
+	worktreeName := "agent-timeout-branch"
+	workingDir := filepath.Join(repo, "..", worktreeName)
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir working dir: %v", err)
+	}
+
+	fakeDir := t.TempDir()
+	fakeGit := filepath.Join(fakeDir, "git")
+	// Simulate a long-running git call; CommandContext should bound it via
+	// worktreeGitCommandTimeout without mutating shared timeout globals.
+	script := "#!/bin/sh\nsleep 30\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+oldPath)
+
+	start := time.Now()
+	_, err := wm.getWorktreeInfo(worktreeName)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error from getWorktreeInfo")
+	}
+	if !strings.Contains(err.Error(), "failed to get branch") {
+		t.Fatalf("error = %q, want branch lookup failure", err.Error())
+	}
+	maxExpected := worktreeGitCommandTimeout + 2*time.Second
+	if elapsed > maxExpected {
+		t.Fatalf("getWorktreeInfo elapsed %v, expected timeout-bounded return within %v", elapsed, maxExpected)
 	}
 }
 
@@ -207,6 +438,90 @@ func TestWorktreeManager_parseWorktreeList_NoAgentWorktrees(t *testing.T) {
 	}
 }
 
+func TestWorktreeManager_parseWorktreeList_IgnoresAgentTextInParentPath(t *testing.T) {
+	t.Parallel()
+
+	wm := &WorktreeManager{}
+	output := "worktree /tmp/my-agent-repo/normal\nHEAD abc123\nbranch refs/heads/main\n"
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Fatalf("expected parent path containing agent- to be ignored, got %d worktrees", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_ExcludesPrimaryCheckoutOnAgentBranch(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoPath := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	wm := &WorktreeManager{baseRepo: repoPath}
+	output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch refs/heads/agent/evil-type/sess-one\n", repoPath)
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Fatalf("expected primary checkout path to be excluded, got %d worktrees", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_ExcludesPrimaryCheckoutWithSymlinkBaseRepo(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	realRepoPath := filepath.Join(tmp, "repo-real")
+	if err := os.MkdirAll(realRepoPath, 0o755); err != nil {
+		t.Fatalf("mkdir real repo: %v", err)
+	}
+
+	symlinkRepoPath := filepath.Join(tmp, "repo-link")
+	if err := os.Symlink(realRepoPath, symlinkRepoPath); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	wm := &WorktreeManager{baseRepo: symlinkRepoPath}
+	output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch refs/heads/agent/evil-type/sess-one\n", realRepoPath)
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Fatalf("expected primary checkout path to be excluded for symlinked base repo, got %d worktrees", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_IncludesAgentBranchWithoutAgentBasename(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	worktreePath := filepath.Join(tmp, "normal-name")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	wm := &WorktreeManager{}
+	output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch refs/heads/agent/evil-type/sess-one\n", worktreePath)
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Fatalf("expected agent branch worktree, got %d worktrees", len(worktrees))
+	}
+	assertStringEqual(t, worktrees[0].Agent, "evil-type")
+}
+
 func TestWorktreeManager_parseWorktreeList_MultipleAgents(t *testing.T) {
 	t.Parallel()
 
@@ -278,12 +593,16 @@ func TestWorktreeManager_parseWorktreeList_AgentNameExtraction(t *testing.T) {
 	tests := []struct {
 		name      string
 		basename  string
+		branchRef string
 		wantAgent string
 	}{
-		{"simple", "agent-cc-12345678", "cc"},
-		{"codex", "agent-cod-abcdefgh", "cod"},
-		{"gemini", "agent-gmi-sessid12", "gmi"},
-		{"no dash after agent", "agent-onlyone", "onlyone"},
+		{"simple fallback", "agent-cc-12345678", "refs/heads/main", "cc"},
+		{"codex fallback", "agent-cod-abcdefgh", "refs/heads/main", "cod"},
+		{"gemini fallback", "agent-gmi-sessid12", "refs/heads/main", "gmi"},
+		{"no dash after agent fallback", "agent-onlyone", "refs/heads/main", "onlyone"},
+		{"length-prefixed fallback", "agent-9-evil-type-session-8-sess-one", "refs/heads/main", "evil-type"},
+		{"length-prefixed fallback with marker in agent", "agent-15-alpha-session-x-session-1-y", "refs/heads/main", "alpha-session-x"},
+		{"hyphenated canonical key from branch", "agent-evil-type-sess-one", "refs/heads/agent/evil-type/sess-one", "evil-type"},
 	}
 
 	for _, tt := range tests {
@@ -296,7 +615,7 @@ func TestWorktreeManager_parseWorktreeList_AgentNameExtraction(t *testing.T) {
 				t.Fatalf("mkdir: %v", err)
 			}
 
-			output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch refs/heads/agent/x/y\n", agentPath)
+			output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch %s\n", agentPath, tt.branchRef)
 
 			wm := &WorktreeManager{}
 			worktrees, err := wm.parseWorktreeList(output)
@@ -539,6 +858,39 @@ func TestWorktreeManager_CleanupStaleWorktrees(t *testing.T) {
 	}
 	if len(worktrees) != 0 {
 		t.Errorf("expected 0 worktrees after cleanup, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_CleanupStaleWorktrees_RemovesListedLegacyPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+	legacyPath := filepath.Join(tmp, "..", "agent-a-b-c")
+	cmd := exec.Command("git", "worktree", "add", "-b", "agent/a-b/c", legacyPath)
+	cmd.Dir = tmp
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("legacy git worktree add failed: %v\n%s", err, out)
+	}
+
+	if err := wm.CleanupStaleWorktrees(ctx, 0); err != nil {
+		t.Fatalf("CleanupStaleWorktrees: %v", err)
+	}
+
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Fatalf("expected legacy worktree to be removed by listed path, got %d", len(worktrees))
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy worktree path to be gone, stat err=%v", err)
 	}
 }
 

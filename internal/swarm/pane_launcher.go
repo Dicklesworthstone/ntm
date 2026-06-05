@@ -385,7 +385,17 @@ func (pl *PaneLauncher) LaunchSwarm(ctx context.Context, plan *SwarmPlan, stagge
 		"total_sessions", len(plan.Sessions),
 		"total_agents", plan.TotalAgents)
 
+	isFirstSession := true
 	for _, sessionSpec := range plan.Sessions {
+		if !isFirstSession && staggerDelay > 0 {
+			select {
+			case <-ctx.Done():
+				result.Duration = time.Since(start)
+				return result, ctx.Err()
+			case <-time.After(staggerDelay):
+			}
+		}
+
 		sessionResult, err := pl.LaunchSession(ctx, sessionSpec, staggerDelay)
 		if sessionResult != nil {
 			result.Successful += sessionResult.Successful
@@ -401,6 +411,7 @@ func (pl *PaneLauncher) LaunchSwarm(ctx context.Context, plan *SwarmPlan, stagge
 				return result, ctx.Err()
 			}
 		}
+		isFirstSession = false
 	}
 
 	result.Duration = time.Since(start)

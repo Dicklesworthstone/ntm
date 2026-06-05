@@ -408,6 +408,34 @@ func TestBuildExplanationFromMerge(t *testing.T) {
 	t.Logf("TEST: %s - assertion: merge explanations tracked", t.Name())
 }
 
+func TestBuildExplanationFromMerge_EmptyFindingSourceModes(t *testing.T) {
+	tracker := NewExplanationTracker(nil)
+	merged := &MergedOutput{
+		Findings: []MergedFinding{
+			{
+				Finding: Finding{Finding: "Finding without source metadata", Impact: ImpactMedium, Confidence: 0.8},
+			},
+		},
+	}
+
+	BuildExplanationFromMerge(tracker, merged, nil)
+
+	if len(tracker.conclusions) != 1 {
+		t.Fatalf("conclusions = %d, want 1", len(tracker.conclusions))
+	}
+
+	var got *ConclusionExplanation
+	for _, conclusion := range tracker.conclusions {
+		got = conclusion
+	}
+	if got == nil {
+		t.Fatal("expected a recorded conclusion")
+	}
+	if got.ConfidenceBasis != "No source mode metadata provided" {
+		t.Fatalf("ConfidenceBasis = %q, want missing-source explanation", got.ConfidenceBasis)
+	}
+}
+
 func TestBuildExplanationFromConflicts(t *testing.T) {
 	t.Logf("TEST: %s - starting", t.Name())
 

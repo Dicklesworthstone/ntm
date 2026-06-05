@@ -110,7 +110,12 @@ func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationRes
 
 	client := o.tmuxClient()
 
+	isFirstSession := true
 	for _, spec := range plan.Sessions {
+		if !isFirstSession && o.StaggerDelay > 0 {
+			time.Sleep(o.StaggerDelay)
+		}
+
 		sessionResult := o.createSession(client, spec)
 		result.Sessions = append(result.Sessions, sessionResult)
 
@@ -121,6 +126,7 @@ func (o *SessionOrchestrator) CreateSessions(plan *SwarmPlan) (*OrchestrationRes
 		result.TotalPanes += spec.PaneCount
 		result.SuccessfulPanes += len(sessionResult.PaneIDs)
 		result.FailedPanes += spec.PaneCount - len(sessionResult.PaneIDs)
+		isFirstSession = false
 	}
 
 	return result, nil
