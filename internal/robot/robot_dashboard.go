@@ -87,7 +87,7 @@ func GetDashboard() (*DashboardOutput, error) {
 							continue
 						}
 						snapSession.Agents = append(snapSession.Agents, SnapshotAgent{
-							Pane:           fmt.Sprintf("%d.%d", 0, pane.Index),
+							Pane:           fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index),
 							Type:           agentType,
 							Variant:        pane.Variant,
 							TypeConfidence: 0.5,
