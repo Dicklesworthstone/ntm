@@ -214,6 +214,31 @@ func TestOpenAPISpecRequiredComponents(t *testing.T) {
 	if _, ok := spec.Components.SecuritySchemes["bearerAuth"]; !ok {
 		t.Error("missing bearerAuth security scheme")
 	}
+	apiKey, ok := spec.Components.SecuritySchemes["apiKey"]
+	if !ok {
+		t.Fatal("missing apiKey security scheme")
+	}
+	if apiKey.Type != "apiKey" || apiKey.Name == "" || apiKey.In == "" {
+		t.Fatalf("apiKey security scheme is incomplete: type=%q name=%q in=%q", apiKey.Type, apiKey.Name, apiKey.In)
+	}
+}
+
+func TestOpenAPIEnvelopeSchemasMatchRuntimeContract(t *testing.T) {
+	spec := GenerateOpenAPISpec("1.0.0", "http://localhost:8080")
+	if spec.Components == nil {
+		t.Fatal("expected Components to be defined")
+	}
+
+	success := requireOpenAPISchema(t, spec, "SuccessResponse")
+	requireSchemaProperties(t, "SuccessResponse", success, []string{"success", "timestamp"})
+	requireSchemaRequiredFields(t, "SuccessResponse", success, []string{"success", "timestamp"})
+
+	failure := requireOpenAPISchema(t, spec, "ErrorResponse")
+	requireSchemaProperties(t, "ErrorResponse", failure, []string{"success", "error", "error_code", "timestamp"})
+	requireSchemaRequiredFields(t, "ErrorResponse", failure, []string{"success", "error", "error_code", "timestamp"})
+	if _, ok := failure.Properties["code"]; ok {
+		t.Fatal("ErrorResponse schema exposes legacy code field; runtime REST errors use error_code")
+	}
 }
 
 // TestOpenAPISpecVersionFormat verifies the OpenAPI version is 3.1.x.
@@ -343,5 +368,42 @@ func TestOpenAPISpecSchemaReferences(t *testing.T) {
 		checkOperation("PUT", item.Put)
 		checkOperation("PATCH", item.Patch)
 		checkOperation("DELETE", item.Delete)
+	}
+}
+
+func requireOpenAPISchema(t *testing.T, spec *OpenAPISpec, name string) *Schema {
+	t.Helper()
+
+	schema, ok := spec.Components.Schemas[name]
+	if !ok {
+		t.Fatalf("missing required schema: %s", name)
+	}
+	if schema == nil {
+		t.Fatalf("schema %s is nil", name)
+	}
+	return schema
+}
+
+func requireSchemaProperties(t *testing.T, schemaName string, schema *Schema, fields []string) {
+	t.Helper()
+
+	for _, field := range fields {
+		if _, ok := schema.Properties[field]; !ok {
+			t.Errorf("%s schema missing property %q", schemaName, field)
+		}
+	}
+}
+
+func requireSchemaRequiredFields(t *testing.T, schemaName string, schema *Schema, fields []string) {
+	t.Helper()
+
+	required := make(map[string]bool, len(schema.Required))
+	for _, field := range schema.Required {
+		required[field] = true
+	}
+	for _, field := range fields {
+		if !required[field] {
+			t.Errorf("%s schema does not require %q", schemaName, field)
+		}
 	}
 }

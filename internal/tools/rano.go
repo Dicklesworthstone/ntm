@@ -198,12 +198,18 @@ func (a *RanoAdapter) GetAvailability(ctx context.Context) (*RanoAvailability, e
 	}
 	ranoAvailabilityMutex.RUnlock()
 
+	ranoAvailabilityMutex.Lock()
+	defer ranoAvailabilityMutex.Unlock()
+
+	if time.Now().Before(ranoAvailabilityExpiry) {
+		availability := ranoAvailabilityCache
+		return &availability, nil
+	}
+
 	availability := a.fetchAvailability(ctx)
 
-	ranoAvailabilityMutex.Lock()
 	ranoAvailabilityCache = *availability
 	ranoAvailabilityExpiry = time.Now().Add(ranoAvailabilityTTL)
-	ranoAvailabilityMutex.Unlock()
 
 	return availability, nil
 }

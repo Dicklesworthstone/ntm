@@ -3850,6 +3850,78 @@ func TestSessionsV1Endpoint(t *testing.T) {
 	}
 }
 
+func TestSessionsV1EndpointLargeSyntheticSetStableOrdering(t *testing.T) {
+	srv, store := setupTestServer(t)
+
+	const sessionCount = 500
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < sessionCount; i++ {
+		id := fmt.Sprintf("load-session-%03d", i)
+		if err := store.CreateSession(&state.Session{
+			ID:          id,
+			Name:        id,
+			ProjectPath: "/tmp/ntm-load-lab",
+			CreatedAt:   baseTime.Add(time.Duration(i) * time.Second),
+			Status:      state.SessionActive,
+		}); err != nil {
+			t.Fatalf("CreateSession(%s): %v", id, err)
+		}
+	}
+
+	doRequest := func() []state.Session {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		rec := httptest.NewRecorder()
+
+		start := time.Now()
+		srv.Router().ServeHTTP(rec, req)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("large sessions response took %s, want <= 2s", elapsed)
+		}
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if rec.Body.Len() > 512*1024 {
+			t.Fatalf("large sessions response size = %d bytes, want <= 512KiB", rec.Body.Len())
+		}
+
+		var resp struct {
+			Success  bool            `json:"success"`
+			Sessions []state.Session `json:"sessions"`
+			Count    int             `json:"count"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !resp.Success {
+			t.Fatal("success = false, want true")
+		}
+		if resp.Count != sessionCount {
+			t.Fatalf("count = %d, want %d", resp.Count, sessionCount)
+		}
+		if len(resp.Sessions) != sessionCount {
+			t.Fatalf("sessions len = %d, want %d", len(resp.Sessions), sessionCount)
+		}
+		return resp.Sessions
+	}
+
+	sessions := doRequest()
+	if sessions[0].ID != "load-session-499" {
+		t.Fatalf("first session = %q, want newest load-session-499", sessions[0].ID)
+	}
+	if sessions[len(sessions)-1].ID != "load-session-000" {
+		t.Fatalf("last session = %q, want oldest load-session-000", sessions[len(sessions)-1].ID)
+	}
+
+	sessionsAgain := doRequest()
+	for i := range sessions {
+		if sessions[i].ID != sessionsAgain[i].ID {
+			t.Fatalf("sessions order drifted at index %d: %q != %q", i, sessions[i].ID, sessionsAgain[i].ID)
+		}
+	}
+}
+
 // =============================================================================
 // Jobs API Tests
 // =============================================================================

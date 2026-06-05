@@ -487,9 +487,10 @@ func (m *WebhookManager) Stop() error {
 	// Signal retry processor to wake up and exit.
 	m.retryCond.Broadcast()
 
+	// Give workers a small grace period to acknowledge cancellation and exit
 	waitTimeout := time.Until(deadline)
-	if waitTimeout < 0 {
-		waitTimeout = 0
+	if waitTimeout < 500*time.Millisecond {
+		waitTimeout = 500 * time.Millisecond
 	}
 
 	select {

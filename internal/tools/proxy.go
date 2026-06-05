@@ -212,12 +212,18 @@ func (a *ProxyAdapter) GetAvailability(ctx context.Context) (*ProxyAvailability,
 	}
 	proxyAvailabilityMutex.RUnlock()
 
+	proxyAvailabilityMutex.Lock()
+	defer proxyAvailabilityMutex.Unlock()
+
+	if time.Now().Before(proxyAvailabilityExpiry) {
+		availability := proxyAvailabilityCache
+		return &availability, nil
+	}
+
 	availability := a.fetchAvailability(ctx)
 
-	proxyAvailabilityMutex.Lock()
 	proxyAvailabilityCache = *availability
 	proxyAvailabilityExpiry = time.Now().Add(proxyAvailabilityTTL)
-	proxyAvailabilityMutex.Unlock()
 
 	return availability, nil
 }

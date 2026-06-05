@@ -1,6 +1,9 @@
 package serve
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSafetyEscapeYAMLSingleQuote(t *testing.T) {
 
@@ -50,5 +53,21 @@ func TestSafetyEscapeYAMLDoubleQuote(t *testing.T) {
 				t.Errorf("safetyEscapeYAMLDoubleQuote(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestClaudeHookScriptReadsCurrentStdinPayload(t *testing.T) {
+	for _, want := range []string{
+		"HOOK_INPUT=\"$(cat)\"",
+		"'.tool_name // empty'",
+		"'.tool_input.command // empty'",
+		"exit 2",
+	} {
+		if !strings.Contains(claudeHookScript, want) {
+			t.Fatalf("claude hook script missing %q", want)
+		}
+	}
+	if strings.Contains(claudeHookScript, "exit 1\nfi\n\nexit 0") {
+		t.Fatal("claude hook script still uses non-blocking exit 1 for denied commands")
 	}
 }

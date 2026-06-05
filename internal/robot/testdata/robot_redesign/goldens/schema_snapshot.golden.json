@@ -629,6 +629,85 @@
         ],
         "type": "object"
       },
+      "RobotPressure": {
+        "properties": {
+          "enforcing": {
+            "description": "Enforcing",
+            "type": "boolean"
+          },
+          "limiting": {
+            "description": "Limiting",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "description": "Mode",
+            "type": "string"
+          },
+          "overall": {
+            "description": "Overall",
+            "type": "string"
+          },
+          "recommended_action": {
+            "description": "Recommended action",
+            "type": "string"
+          },
+          "sources": {
+            "description": "Sources",
+            "items": {
+              "$ref": "#/definitions/RobotSource"
+            },
+            "type": "array"
+          },
+          "success": {
+            "description": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "description": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "timestamp",
+          "mode",
+          "overall",
+          "limiting",
+          "recommended_action",
+          "enforcing",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "RobotSource": {
+        "properties": {
+          "level": {
+            "description": "Level",
+            "type": "string"
+          },
+          "source": {
+            "description": "Source",
+            "type": "string"
+          },
+          "unit": {
+            "description": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "description": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "source",
+          "value",
+          "level"
+        ],
+        "type": "object"
+      },
       "SnapshotAgent": {
         "properties": {
           "current_bead": {
@@ -1875,6 +1954,10 @@
       "replay_window": {
         "$ref": "#/definitions/SnapshotReplayWindowInfo",
         "description": "Replay window"
+      },
+      "resource_pressure": {
+        "$ref": "#/definitions/RobotPressure",
+        "description": "Resource pressure"
       },
       "safety_profile": {
         "description": "Safety profile",

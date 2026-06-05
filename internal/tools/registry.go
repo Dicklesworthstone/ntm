@@ -63,9 +63,14 @@ func (r *Registry) All() []Adapter {
 // Detected returns all adapters for installed tools
 func (r *Registry) Detected() []Adapter {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	detected := make([]Adapter, 0, len(r.adapters))
+	adapters := make([]Adapter, 0, len(r.adapters))
 	for _, a := range r.adapters {
+		adapters = append(adapters, a)
+	}
+	r.mu.RUnlock()
+
+	detected := make([]Adapter, 0, len(adapters))
+	for _, a := range adapters {
 		if _, installed := a.Detect(); installed {
 			detected = append(detected, a)
 		}

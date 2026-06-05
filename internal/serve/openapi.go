@@ -119,6 +119,8 @@ type SecurityScheme struct {
 	Type         string `json:"type"`
 	Scheme       string `json:"scheme,omitempty"`
 	BearerFormat string `json:"bearerFormat,omitempty"`
+	Name         string `json:"name,omitempty"`
+	In           string `json:"in,omitempty"`
 	Description  string `json:"description,omitempty"`
 }
 
@@ -146,17 +148,17 @@ func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 						"message":   {Type: "string"},
 						"timestamp": {Type: "string", Format: "date-time"},
 					},
-					Required: []string{"success"},
+					Required: []string{"success", "timestamp"},
 				},
 				"ErrorResponse": {
 					Type: "object",
 					Properties: map[string]*Schema{
-						"success":   {Type: "boolean"},
-						"error":     {Type: "string"},
-						"code":      {Type: "string"},
-						"timestamp": {Type: "string", Format: "date-time"},
+						"success":    {Type: "boolean"},
+						"error":      {Type: "string"},
+						"error_code": {Type: "string"},
+						"timestamp":  {Type: "string", Format: "date-time"},
 					},
-					Required: []string{"success", "error"},
+					Required: []string{"success", "error", "error_code", "timestamp"},
 				},
 			},
 			SecuritySchemes: map[string]*SecurityScheme{
@@ -168,6 +170,8 @@ func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 				},
 				"apiKey": {
 					Type:        "apiKey",
+					Name:        "X-API-Key",
+					In:          "header",
 					Description: "API key authentication via X-API-Key header",
 				},
 			},
@@ -388,11 +392,15 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 
 	spec := GenerateOpenAPISpec("dev", serverURL)
 
+	specBytes, err := json.Marshal(spec)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if err := json.NewEncoder(w).Encode(spec); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	w.Write(specBytes)
 }
 
 // handleSwaggerUI serves the Swagger UI HTML page.

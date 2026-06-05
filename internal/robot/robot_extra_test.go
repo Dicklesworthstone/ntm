@@ -1,11 +1,13 @@
 package robot
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -155,6 +157,49 @@ func stripNewline(s string) string {
 		return s[:len(s)-1]
 	}
 	return s
+}
+
+func TestAttachSnapshotResourcePressureEmitsRobotPressure(t *testing.T) {
+	oldCollect := collectSnapshotResourcePressure
+	t.Cleanup(func() {
+		collectSnapshotResourcePressure = oldCollect
+	})
+	collectSnapshotResourcePressure = func() *pressure.RobotPressure {
+		return &pressure.RobotPressure{
+			Success:           true,
+			Timestamp:         "2026-05-09T18:30:00Z",
+			Mode:              "observe",
+			Overall:           "high",
+			Limiting:          []string{"proc_count"},
+			RecommendedAction: "defer_non_urgent_work",
+			Sources: []pressure.RobotSource{{
+				Source: "proc_count",
+				Value:  0.86,
+				Unit:   "ratio",
+				Level:  "high",
+			}},
+		}
+	}
+
+	snapshot := newSnapshotOutput(config.Default())
+	attachSnapshotResourcePressure(snapshot)
+
+	if snapshot.ResourcePressure == nil {
+		t.Fatal("ResourcePressure is nil")
+	}
+	if snapshot.ResourcePressure.Overall != "high" {
+		t.Fatalf("Overall=%q, want high", snapshot.ResourcePressure.Overall)
+	}
+	if len(snapshot.ResourcePressure.Sources) != 1 || snapshot.ResourcePressure.Sources[0].Source != "proc_count" {
+		t.Fatalf("sources=%+v, want proc_count source", snapshot.ResourcePressure.Sources)
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("Marshal snapshot: %v", err)
+	}
+	if !strings.Contains(string(raw), `"resource_pressure"`) || !strings.Contains(string(raw), `"proc_count"`) {
+		t.Fatalf("snapshot JSON missing resource pressure projection: %s", raw)
+	}
 }
 
 func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {

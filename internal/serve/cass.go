@@ -290,8 +290,12 @@ func (s *Server) handleCASSStatus(w http.ResponseWriter, r *http.Request) {
 			status.Version = statusResp.Version
 			status.IndexSize = statusResp.Index.SizeBytes
 			status.DocCount = statusResp.Index.DocCount
-			if !statusResp.Index.LastUpdated.IsZero() {
-				status.LastIndexed = statusResp.Index.LastUpdated.Format(time.RFC3339)
+			if status.DocCount == 0 {
+				status.DocCount = statusResp.Index.Documents
+			}
+			lastIndexedAt := statusResp.Index.EffectiveLastIndexedAt(statusResp.LastIndexedAt)
+			if !lastIndexedAt.IsZero() {
+				status.LastIndexed = lastIndexedAt.Format(time.RFC3339)
 			}
 		}
 

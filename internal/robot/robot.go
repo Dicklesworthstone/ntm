@@ -29,6 +29,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/models"
+	"github.com/Dicklesworthstone/ntm/internal/pressure"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
@@ -51,11 +52,12 @@ type CASSStatusOutput struct {
 
 // CASSIndexStats holds index statistics
 type CASSIndexStats struct {
-	Exists        bool  `json:"exists"`
-	Fresh         bool  `json:"fresh"`
-	LastIndexedAt int64 `json:"last_indexed_at"`
-	Conversations int64 `json:"conversations"`
-	Messages      int64 `json:"messages"`
+	Exists        bool   `json:"exists"`
+	Fresh         bool   `json:"fresh"`
+	LastIndexedAt int64  `json:"last_indexed_at"`
+	Conversations *int64 `json:"conversations,omitempty"`
+	Messages      *int64 `json:"messages,omitempty"`
+	CountsSkipped bool   `json:"counts_skipped,omitempty"`
 }
 
 // GetCASSStatus collects CASS health and stats.
@@ -86,8 +88,11 @@ func GetCASSStatus() (*CASSStatusOutput, error) {
 		output.Index.Exists = true
 		output.Index.Fresh = status.Index.Healthy
 		output.Index.LastIndexedAt = status.LastIndexedAt.UnixMilli()
-		output.Index.Conversations = status.Conversations
-		output.Index.Messages = status.Messages
+		output.Index.CountsSkipped = status.Database.CountsSkipped
+		if !status.Database.CountsSkipped {
+			output.Index.Conversations = &status.Conversations
+			output.Index.Messages = &status.Messages
+		}
 	} else {
 		output.RobotResponse = NewErrorResponse(
 			err,
@@ -2243,6 +2248,27 @@ func newSnapshotOutput(cfg *config.Config) *SnapshotOutput {
 	}
 }
 
+var collectSnapshotResourcePressure = collectLiveSnapshotResourcePressure
+
+func attachSnapshotResourcePressure(output *SnapshotOutput) {
+	if output == nil {
+		return
+	}
+	output.ResourcePressure = collectSnapshotResourcePressure()
+}
+
+func collectLiveSnapshotResourcePressure() *pressure.RobotPressure {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	g := pressure.New(pressure.Config{
+		Mode:      pressure.ModeObserve,
+		Providers: []pressure.Provider{pressure.NewSystemProvider()},
+	})
+	g.Refresh(ctx)
+	snapshot := g.RobotSnapshot()
+	return &snapshot
+}
+
 func cloneSnapshotOutput(base *SnapshotOutput) *SnapshotOutput {
 	if base == nil {
 		return newSnapshotOutput(config.Default())
@@ -2281,6 +2307,13 @@ func cloneSnapshotOutput(base *SnapshotOutput) *SnapshotOutput {
 	}
 	for key, value := range base.Summary.AgentsByType {
 		cloned.Summary.AgentsByType[key] = value
+	}
+
+	if base.ResourcePressure != nil {
+		resourcePressure := *base.ResourcePressure
+		resourcePressure.Limiting = append([]string(nil), base.ResourcePressure.Limiting...)
+		resourcePressure.Sources = append([]pressure.RobotSource(nil), base.ResourcePressure.Sources...)
+		cloned.ResourcePressure = &resourcePressure
 	}
 
 	if base.AgentMail != nil {
@@ -4320,10 +4353,11 @@ type SnapshotOutput struct {
 	Quota                    *adapters.QuotaSection        `json:"quota,omitempty"`
 	AgentMail                *SnapshotAgentMail            `json:"agent_mail,omitempty"`
 	MailUnread               int                           `json:"mail_unread,omitempty"`
-	Tools                    []ToolInfoOutput              `json:"tools,omitempty"`           // Flywheel tool inventory and health
-	Swarm                    *SwarmSnapshot                `json:"swarm,omitempty"`           // Active swarm orchestration state (optional)
-	Alerts                   []string                      `json:"alerts"`                    // Legacy: simple string alerts
-	AlertsDetailed           []AlertInfo                   `json:"alerts_detailed,omitempty"` // Rich alert objects
+	Tools                    []ToolInfoOutput              `json:"tools,omitempty"`             // Flywheel tool inventory and health
+	ResourcePressure         *pressure.RobotPressure       `json:"resource_pressure,omitempty"` // Host pressure projection for large-swarm operators
+	Swarm                    *SwarmSnapshot                `json:"swarm,omitempty"`             // Active swarm orchestration state (optional)
+	Alerts                   []string                      `json:"alerts"`                      // Legacy: simple string alerts
+	AlertsDetailed           []AlertInfo                   `json:"alerts_detailed,omitempty"`   // Rich alert objects
 	AlertSummary             *AlertSummaryInfo             `json:"alert_summary,omitempty"`
 	AttentionSummary         *SnapshotAttentionSummary     `json:"attention_summary,omitempty"` // Compact feed summary for bootstrap orientation
 }
@@ -4508,6 +4542,7 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		cfg = config.Default()
 	}
 	output := newSnapshotOutput(cfg)
+	attachSnapshotResourcePressure(output)
 
 	feed := GetAttentionFeed()
 	populateSnapshotFeedMetadata(output, feed)

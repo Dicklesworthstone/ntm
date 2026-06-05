@@ -533,6 +533,7 @@ type WSHub struct {
 	register     chan *WSClient
 	unregister   chan *WSClient
 	broadcast    chan *WSEvent
+	dropped      atomic.Int64
 	seq          int64
 	seqMu        sync.Mutex
 	done         chan struct{}
@@ -627,8 +628,8 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 			select {
 			case client.send <- data:
 			default:
-				// Client buffer full, skip
-				log.Printf("ws client buffer full id=%s", client.id)
+				dropped := h.dropped.Add(1)
+				log.Printf("ws client buffer full id=%s surface=websocket session= pane= queue_depth=%d dropped_count=%d latency_ms=0 decision=coalesce reason_codes=queue_depth,dropped_output", client.id, len(client.send), dropped)
 			}
 		}
 	}
@@ -675,7 +676,8 @@ func (h *WSHub) Publish(topic, eventType string, data interface{}) {
 		return
 	case h.broadcast <- event:
 	default:
-		log.Printf("ws broadcast buffer full, dropping event topic=%s", topic)
+		dropped := h.dropped.Add(1)
+		log.Printf("ws broadcast buffer full, dropping event topic=%s surface=websocket session= pane= queue_depth=%d dropped_count=%d latency_ms=0 decision=coalesce reason_codes=queue_depth,dropped_output", topic, len(h.broadcast), dropped)
 	}
 }
 
@@ -3291,8 +3293,16 @@ func (s *Server) handlePaneInputV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build pane target
-	paneTarget := fmt.Sprintf("%s:%d", sessionID, paneIdx)
+	// Build pane target. Resolve via the pane's tmux ID (the `%N` form) so
+	// the target is base-index-independent — `<session>:<paneIdx>` looks
+	// like a pane index but tmux interprets it as a window index, which
+	// breaks on hosts with `base-index = 1` (see #141).
+	paneTarget, lookupErr := resolvePaneTargetByIndex(r.Context(), sessionID, paneIdx)
+	if lookupErr != nil {
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeNotFound,
+			fmt.Sprintf("pane not found: %v", lookupErr), nil, reqID)
+		return
+	}
 
 	if err := tmux.SendKeys(paneTarget, req.Text, req.Enter); err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -5887,6 +5897,28 @@ func matchesAttentionFilters(event robot.AttentionEvent, categoryFilter []string
 	}
 
 	return true
+}
+
+// resolvePaneTargetByIndex looks up the tmux pane in the given session whose
+// `pane_index` matches `paneIdx` and returns its tmux pane ID (the `%N`
+// form), which is base-index-independent. The naive `<session>:<paneIdx>`
+// target form looks like a pane index but tmux interprets the second
+// component as a *window* index, so hosts with `base-index = 1` see
+// `can't find window: N` (#141). Using the pane ID avoids the entire
+// window/pane ambiguity. The context is honored so the HTTP layer can
+// cancel a slow tmux ListPanes call, matching the rest of the handlers
+// (`handleGetPaneV1` etc.).
+func resolvePaneTargetByIndex(ctx context.Context, session string, paneIdx int) (string, error) {
+	panes, err := tmux.GetPanesContext(ctx, session)
+	if err != nil {
+		return "", fmt.Errorf("list panes: %w", err)
+	}
+	for _, p := range panes {
+		if p.Index == paneIdx {
+			return p.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no pane with index %d in session %q", paneIdx, session)
 }
 
 // parseCSVParam parses a comma-separated query parameter into a slice.

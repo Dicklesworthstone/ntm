@@ -198,12 +198,19 @@ func (a *CautAdapter) GetAvailability(ctx context.Context) (*CautAvailability, e
 	}
 	cautAvailabilityMutex.RUnlock()
 
+	cautAvailabilityMutex.Lock()
+	defer cautAvailabilityMutex.Unlock()
+
+	// Double-check after acquiring write lock
+	if time.Now().Before(cautAvailabilityExpiry) {
+		availability := cautAvailabilityCache
+		return &availability, nil
+	}
+
 	availability := a.fetchAvailability(ctx)
 
-	cautAvailabilityMutex.Lock()
 	cautAvailabilityCache = *availability
 	cautAvailabilityExpiry = time.Now().Add(cautAvailabilityTTL)
-	cautAvailabilityMutex.Unlock()
 
 	return availability, nil
 }

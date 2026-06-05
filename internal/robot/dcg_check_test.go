@@ -363,7 +363,11 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 
-if [ "${1:-}" = "check" ]; then
+if [ "${1:-}" = "--robot" ]; then
+  shift
+fi
+
+if [ "${1:-}" = "test" ]; then
   shift
   # Parse flags and find the command (last argument)
   cmd=""
@@ -371,6 +375,9 @@ if [ "${1:-}" = "check" ]; then
     case "$1" in
       --json)
         shift
+        ;;
+      --format)
+        shift 2
         ;;
       --context)
         shift 2
@@ -411,7 +418,7 @@ func writeFakeDCG(t *testing.T, dir string) {
 	t.Helper()
 
 	dcgPath := filepath.Join(dir, "dcg")
-	// Fake DCG script that handles --version, check (with --json, --context, --cwd), and status
+	// Fake DCG script that handles --version, robot test, and status.
 	script := `#!/bin/sh
 set -eu
 
@@ -420,7 +427,11 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 
-if [ "${1:-}" = "check" ]; then
+if [ "${1:-}" = "--robot" ]; then
+  shift
+fi
+
+if [ "${1:-}" = "test" ]; then
   shift
   # Parse flags and find the command (last argument)
   cmd=""
@@ -428,6 +439,9 @@ if [ "${1:-}" = "check" ]; then
     case "$1" in
       --json)
         shift
+        ;;
+      --format)
+        shift 2
         ;;
       --context)
         shift 2

@@ -2,6 +2,7 @@ package robot
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -1545,6 +1546,51 @@ func TestExtractFilePaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzExtractFilePaths(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"Please fix internal/robot/routing.go",
+		`Update "internal/config.yaml" and ./README.md`,
+		"Upgrade to version 1.2.3",
+		"paths: src/main.go src/util.go src/Button.tsx",
+		"https://example.com/file.txt should not be treated as repo code",
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, prompt string) {
+		if len(prompt) > 4096 {
+			return
+		}
+
+		paths := ExtractFilePaths(prompt)
+		again := ExtractFilePaths(prompt)
+		if len(paths) != len(again) {
+			t.Fatalf("ExtractFilePaths is non-deterministic: %v then %v", paths, again)
+		}
+
+		seen := make(map[string]struct{}, len(paths))
+		for i, path := range paths {
+			if path == "" {
+				t.Fatalf("ExtractFilePaths returned empty path from %q", prompt)
+			}
+			if strings.ContainsAny(path, " \t\r\n") {
+				t.Fatalf("ExtractFilePaths returned path with whitespace: %q from %q", path, prompt)
+			}
+			if !isLikelyCodePath(path) {
+				t.Fatalf("ExtractFilePaths returned unlikely code path %q from %q", path, prompt)
+			}
+			if _, ok := seen[path]; ok {
+				t.Fatalf("ExtractFilePaths returned duplicate path %q from %q", path, prompt)
+			}
+			seen[path] = struct{}{}
+			if path != again[i] {
+				t.Fatalf("ExtractFilePaths changed order at %d: %v then %v", i, paths, again)
+			}
+		}
+	})
 }
 
 func TestIsLikelyCodePath(t *testing.T) {

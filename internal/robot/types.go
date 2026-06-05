@@ -68,6 +68,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -509,17 +510,25 @@ func TerseKeyFor(field string) (key string, ok bool) {
 	return key, ok
 }
 
+var (
+	terseKeyReverseMap     map[string]string
+	terseKeyReverseMapOnce sync.Once
+)
+
 // TerseKeyReverseMap returns the reverse mapping for short keys.
 // It panics if the mapping is not reversible (duplicate short keys).
 func TerseKeyReverseMap() map[string]string {
-	reverse := make(map[string]string, len(TerseKeyMap))
-	for longKey, shortKey := range TerseKeyMap {
-		if existing, ok := reverse[shortKey]; ok {
-			panic(fmt.Sprintf("terse key map collision: %q and %q both map to %q", existing, longKey, shortKey))
+	terseKeyReverseMapOnce.Do(func() {
+		reverse := make(map[string]string, len(TerseKeyMap))
+		for longKey, shortKey := range TerseKeyMap {
+			if existing, ok := reverse[shortKey]; ok {
+				panic(fmt.Sprintf("terse key map collision: %q and %q both map to %q", existing, longKey, shortKey))
+			}
+			reverse[shortKey] = longKey
 		}
-		reverse[shortKey] = longKey
-	}
-	return reverse
+		terseKeyReverseMap = reverse
+	})
+	return terseKeyReverseMap
 }
 
 // ExpandTerseKey converts a short key back to its long form.

@@ -250,6 +250,7 @@ func printDashboardMarkdown(output DashboardOutput) error {
 	fmt.Fprintf(&sb, "| Cursor | %d |\n", typeCounts["cursor"])
 	fmt.Fprintf(&sb, "| Windsurf | %d |\n", typeCounts["windsurf"])
 	fmt.Fprintf(&sb, "| Aider | %d |\n", typeCounts["aider"])
+	fmt.Fprintf(&sb, "| Opencode | %d |\n", typeCounts["oc"])
 	fmt.Fprintf(&sb, "| Ollama | %d |\n", typeCounts["ollama"])
 	if otherPanes > 0 {
 		fmt.Fprintf(&sb, "| Other Agents | %d |\n", otherPanes)
@@ -419,17 +420,21 @@ func writeAttentionSection(sb *strings.Builder, attention *SnapshotAttentionSumm
 	}
 }
 
-func dashboardCounts(sessions []SnapshotSession) (totalPanes, userPanes int, typeCounts map[string]int) {
-	typeCounts = map[string]int{
+func dashboardCounts(sessions []SnapshotSession) (int, int, map[string]int) {
+	totalPanes := 0
+	userPanes := 0
+	typeCounts := map[string]int{
 		"claude":   0,
 		"codex":    0,
 		"gemini":   0,
 		"cursor":   0,
 		"windsurf": 0,
 		"aider":    0,
+		"oc":       0,
 		"ollama":   0,
 		"user":     0,
 	}
+
 	for _, sess := range sessions {
 		for _, agent := range sess.Agents {
 			totalPanes++
@@ -450,7 +455,7 @@ func dashboardCounts(sessions []SnapshotSession) (totalPanes, userPanes int, typ
 
 func dashboardOtherAgentCount(totalPanes, userPanes int, typeCounts map[string]int) int {
 	otherPanes := totalPanes - userPanes
-	for _, agentType := range []string{"claude", "codex", "gemini", "cursor", "windsurf", "aider", "ollama"} {
+	for _, agentType := range []string{"claude", "codex", "gemini", "cursor", "windsurf", "aider", "oc", "ollama"} {
 		otherPanes -= typeCounts[agentType]
 	}
 	if otherPanes < 0 {

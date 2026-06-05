@@ -288,6 +288,7 @@ func TestMatchesPattern(t *testing.T) {
 		{"internal/robot/file.go", "internal/**", true},
 		{"internal/file.go", "internal/**", true},
 		{"external/file.go", "internal/**", false},
+		{"/tmp/ntm/file.go", "", false},
 	}
 
 	for _, tt := range tests {
@@ -297,6 +298,40 @@ func TestMatchesPattern(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzMatchesPattern(f *testing.F) {
+	seeds := [][2]string{
+		{"", ""},
+		{"/tmp/ntm/file.go", ""},
+		{"internal/robot/routing.go", "internal/robot/routing.go"},
+		{"internal/robot/routing.go", "internal/robot/*.go"},
+		{"internal/robot/routing.go", "internal/**"},
+		{"internal/robot/routing_test.go", "internal/**/*_test.go"},
+		{"dir/sub/file.go", "*.go"},
+		{"dir/sub/file.go", "dir/*.go"},
+		{"dir/sub/file.go", "[bad"},
+	}
+	for _, seed := range seeds {
+		f.Add(seed[0], seed[1])
+	}
+
+	f.Fuzz(func(t *testing.T, filePath, pattern string) {
+		if len(filePath) > 1024 || len(pattern) > 1024 {
+			return
+		}
+
+		matched := matchesPattern(filePath, pattern)
+		if filePath == pattern && !matched {
+			t.Fatalf("matchesPattern(%q, %q) = false, want exact matches to match", filePath, pattern)
+		}
+		if pattern == "" && filePath != "" && matched {
+			t.Fatalf("matchesPattern(%q, empty pattern) = true, want false", filePath)
+		}
+		if strings.HasSuffix(pattern, "/") && !strings.Contains(pattern, "*") && strings.HasPrefix(filePath, pattern) && !matched {
+			t.Fatalf("matchesPattern(%q, %q) = false, want directory prefix match", filePath, pattern)
+		}
+	})
 }
 
 func TestContainsAny(t *testing.T) {

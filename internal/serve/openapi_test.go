@@ -334,6 +334,20 @@ func TestSecuritySchemes(t *testing.T) {
 			t.Errorf("bearerAuth.Scheme = %q, want %q", bearer.Scheme, "bearer")
 		}
 	}
+
+	apiKey, ok := spec.Components.SecuritySchemes["apiKey"]
+	if !ok {
+		t.Fatal("expected apiKey security scheme")
+	}
+	if apiKey.Type != "apiKey" {
+		t.Errorf("apiKey.Type = %q, want %q", apiKey.Type, "apiKey")
+	}
+	if apiKey.Name != "X-API-Key" {
+		t.Errorf("apiKey.Name = %q, want %q", apiKey.Name, "X-API-Key")
+	}
+	if apiKey.In != "header" {
+		t.Errorf("apiKey.In = %q, want %q", apiKey.In, "header")
+	}
 }
 
 func TestPathItemMethodsAreExclusive(t *testing.T) {

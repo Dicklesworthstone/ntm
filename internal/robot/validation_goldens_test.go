@@ -667,6 +667,7 @@ func validateScenarioStructure(t *testing.T, name string, scenario map[string]in
 				t.Errorf("scenario %s: source_health missing field %s", name, field)
 			}
 		}
+		validateDegradedSourceHealth(t, name, sourceHealth)
 	}
 
 	// Validate expected_outputs
@@ -678,6 +679,45 @@ func validateScenarioStructure(t *testing.T, name string, scenario map[string]in
 			t.Errorf("scenario %s: expected_outputs missing snapshot_success", name)
 		}
 	}
+}
+
+func validateDegradedSourceHealth(t *testing.T, name string, sourceHealth map[string]interface{}) {
+	t.Helper()
+
+	degradedSources := scenarioStringSlice(sourceHealth["degraded_sources"])
+	for _, source := range []string{"tmux", "beads", "mail", "pt"} {
+		status, _ := sourceHealth[source+"_status"].(string)
+		if status != "unavailable" && status != "stale" && status != "degraded" {
+			continue
+		}
+		if !containsScenarioString(degradedSources, source) {
+			t.Errorf("scenario %s: %s_status=%q but degraded_sources=%v omits %q",
+				name, source, status, degradedSources, source)
+		}
+	}
+}
+
+func scenarioStringSlice(raw interface{}) []string {
+	values, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if s, ok := value.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func containsScenarioString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // =============================================================================

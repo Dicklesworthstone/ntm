@@ -492,11 +492,6 @@ func (w *Watcher) runPoll() {
 func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 	eventType := eventTypeFromFsnotify(fsEvent.Op)
 
-	// Filter events
-	if eventType&w.eventFilter == 0 {
-		return
-	}
-
 	// Check if it's a directory
 	isDir := false
 	if info, err := os.Stat(fsEvent.Name); err == nil {
@@ -509,34 +504,30 @@ func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 		IsDir: isDir,
 	}
 
-	// If recursive and a new directory was created, watch it
+	// Keep recursive watch topology current independent of delivery filtering.
+	// A watcher interested only in Write events still needs Create events for
+	// new subdirectories, otherwise later writes inside them are invisible.
 	if w.recursive && isDir && eventType&Create != 0 {
 		// Check ignores
 		if w.isIgnored(fsEvent.Name) {
 			return
 		}
 
-		w.mu.Lock()
-		if !w.closed && !w.watchedPaths[fsEvent.Name] {
-			if err := w.fsWatcher.Add(fsEvent.Name); err != nil {
-				// Report error via error handler if available
-				if w.errorHandler != nil {
-					w.errorHandler(err)
-				}
-			} else {
-				w.watchedPaths[fsEvent.Name] = true
-			}
+		if err := w.addRecursive(fsEvent.Name); err != nil && w.errorHandler != nil {
+			w.errorHandler(fmt.Errorf("watching new directory %s: %w", fsEvent.Name, err))
 		}
-		w.mu.Unlock()
 	}
 
 	// If a watched directory was removed, clean up
 	if eventType&Remove != 0 || eventType&Rename != 0 {
 		w.mu.Lock()
-		if w.watchedPaths[fsEvent.Name] {
-			delete(w.watchedPaths, fsEvent.Name)
-		}
+		w.removeWatchedPathLocked(fsEvent.Name)
 		w.mu.Unlock()
+	}
+
+	// Filter only user-visible delivery after internal watch maintenance.
+	if eventType&w.eventFilter == 0 {
+		return
 	}
 
 	w.mu.Lock()
@@ -544,6 +535,22 @@ func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 	w.mu.Unlock()
 
 	w.triggerPendingEvents()
+}
+
+// removeWatchedPathLocked removes path and, in recursive mode, any watched
+// descendants. It must be called with w.mu held.
+func (w *Watcher) removeWatchedPathLocked(path string) {
+	if !w.recursive {
+		delete(w.watchedPaths, path)
+		return
+	}
+
+	sep := string(os.PathSeparator)
+	for watched := range w.watchedPaths {
+		if watched == path || strings.HasPrefix(watched, path+sep) {
+			delete(w.watchedPaths, watched)
+		}
+	}
 }
 
 // pollOnce scans watched paths and emits events for changes since the last scan.

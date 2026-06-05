@@ -74,7 +74,11 @@ func NewLimitedBuffer(limit int) *LimitedBuffer {
 
 func (b *LimitedBuffer) Write(p []byte) (n int, err error) {
 	if b.Len()+len(p) > b.Limit {
-		return 0, ErrOutputLimitExceeded
+		allowed := b.Limit - b.Len()
+		if allowed > 0 {
+			n, _ = b.Buffer.Write(p[:allowed])
+		}
+		return n, ErrOutputLimitExceeded
 	}
 	return b.Buffer.Write(p)
 }

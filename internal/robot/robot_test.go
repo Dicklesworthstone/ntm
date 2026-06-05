@@ -3191,6 +3191,206 @@ func TestBuildProjectionBackedSnapshotSessionsUsesRuntimeProjection(t *testing.T
 	}
 }
 
+func TestBuildProjectionBackedSnapshotSessionsLargeSwarmStableOrdering(t *testing.T) {
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("Migrate store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	const (
+		sessionCount     = 20
+		agentsPerSession = 25
+		wantAgents       = sessionCount * agentsPerSession
+	)
+	seedRuntimeProjectionLoadLab(t, store, sessionCount, agentsPerSession)
+
+	start := time.Now()
+	sessions, err := buildProjectionBackedSnapshotSessions(store, nil)
+	if err != nil {
+		t.Fatalf("buildProjectionBackedSnapshotSessions: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("large projection snapshot took %s, want <= 2s", elapsed)
+	}
+
+	if len(sessions) != sessionCount {
+		t.Fatalf("Sessions count = %d, want %d", len(sessions), sessionCount)
+	}
+	totalAgents := 0
+	previousSession := ""
+	for _, session := range sessions {
+		if previousSession != "" && previousSession > session.Name {
+			t.Fatalf("sessions out of order: %q before %q", previousSession, session.Name)
+		}
+		previousSession = session.Name
+		if len(session.Agents) != agentsPerSession {
+			t.Fatalf("%s agent count = %d, want %d", session.Name, len(session.Agents), agentsPerSession)
+		}
+		if session.Agents[0].Pane != "000" || session.Agents[len(session.Agents)-1].Pane != "024" {
+			t.Fatalf("%s agent pane bounds = %q/%q, want 000/024", session.Name, session.Agents[0].Pane, session.Agents[len(session.Agents)-1].Pane)
+		}
+		totalAgents += len(session.Agents)
+	}
+	if totalAgents != wantAgents {
+		t.Fatalf("Total agents = %d, want %d", totalAgents, wantAgents)
+	}
+
+	sessionsAgain, err := buildProjectionBackedSnapshotSessions(store, nil)
+	if err != nil {
+		t.Fatalf("second buildProjectionBackedSnapshotSessions: %v", err)
+	}
+	firstJSON, err := json.Marshal(sessions)
+	if err != nil {
+		t.Fatalf("marshal first sessions: %v", err)
+	}
+	secondJSON, err := json.Marshal(sessionsAgain)
+	if err != nil {
+		t.Fatalf("marshal second sessions: %v", err)
+	}
+	if !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatal("large projection snapshot ordering drifted between builds")
+	}
+	if len(firstJSON) > 512*1024 {
+		t.Fatalf("large projection snapshot JSON size = %d bytes, want <= 512KiB", len(firstJSON))
+	}
+}
+
+// Opt-in artifact run:
+// NTM_RUN_LARGE_SWARM_PERF=1 go test ./internal/robot -run TestBuildProjectionBackedSnapshotSessionsLargeSwarmPerfArtifact -count=1
+func TestBuildProjectionBackedSnapshotSessionsLargeSwarmPerfArtifact(t *testing.T) {
+	if os.Getenv("NTM_RUN_LARGE_SWARM_PERF") != "1" {
+		t.Skip("set NTM_RUN_LARGE_SWARM_PERF=1 to write the 2k-pane load-lab artifact")
+	}
+
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("Migrate store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	const (
+		sessionCount     = 80
+		agentsPerSession = 25
+		wantAgents       = sessionCount * agentsPerSession
+	)
+	seedRuntimeProjectionLoadLab(t, store, sessionCount, agentsPerSession)
+
+	start := time.Now()
+	sessions, err := buildProjectionBackedSnapshotSessions(store, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("buildProjectionBackedSnapshotSessions: %v", err)
+	}
+	totalAgents := 0
+	for _, session := range sessions {
+		totalAgents += len(session.Agents)
+	}
+	if totalAgents != wantAgents {
+		t.Fatalf("Total agents = %d, want %d", totalAgents, wantAgents)
+	}
+	snapshotJSON, err := json.Marshal(sessions)
+	if err != nil {
+		t.Fatalf("marshal sessions: %v", err)
+	}
+
+	report := struct {
+		SchemaVersion    string `json:"schema_version"`
+		Scenario         string `json:"scenario"`
+		SessionCount     int    `json:"session_count"`
+		AgentsPerSession int    `json:"agents_per_session"`
+		TotalAgents      int    `json:"total_agents"`
+		ElapsedMS        int64  `json:"elapsed_ms"`
+		SnapshotBytes    int    `json:"snapshot_bytes"`
+		FirstSession     string `json:"first_session,omitempty"`
+		LastSession      string `json:"last_session,omitempty"`
+	}{
+		SchemaVersion:    "ntm.large_swarm_load_lab.v1",
+		Scenario:         "projection_backed_snapshot_2k_panes",
+		SessionCount:     sessionCount,
+		AgentsPerSession: agentsPerSession,
+		TotalAgents:      totalAgents,
+		ElapsedMS:        elapsed.Milliseconds(),
+		SnapshotBytes:    len(snapshotJSON),
+	}
+	if len(sessions) > 0 {
+		report.FirstSession = sessions[0].Name
+		report.LastSession = sessions[len(sessions)-1].Name
+	}
+
+	reportJSON, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	artifactPath := filepath.Join(filepath.Clean(filepath.Join(wd, "..", "..")), "tests", "artifacts", "perf", "large-swarm-load-lab.json")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatalf("create artifact directory: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, append(reportJSON, '\n'), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	t.Logf("wrote large-swarm load lab artifact: %s", artifactPath)
+}
+
+func seedRuntimeProjectionLoadLab(t *testing.T, store *state.Store, sessionCount, agentsPerSession int) {
+	t.Helper()
+
+	agentTypes := []string{"claude", "codex", "gemini"}
+	agentStates := []state.AgentState{state.AgentStateActive, state.AgentStateIdle, state.AgentStateUnknown}
+	now := time.Now().UTC()
+	staleAfter := now.Add(time.Hour)
+
+	for sessionIdx := 0; sessionIdx < sessionCount; sessionIdx++ {
+		sessionName := fmt.Sprintf("load-session-%02d", sessionIdx)
+		if err := store.UpsertRuntimeSession(&state.RuntimeSession{
+			Name:         sessionName,
+			Attached:     sessionIdx%2 == 0,
+			PaneCount:    agentsPerSession,
+			AgentCount:   agentsPerSession,
+			ActiveAgents: agentsPerSession / 2,
+			IdleAgents:   agentsPerSession - agentsPerSession/2,
+			CollectedAt:  now,
+			StaleAfter:   staleAfter,
+		}); err != nil {
+			t.Fatalf("UpsertRuntimeSession(%s): %v", sessionName, err)
+		}
+
+		for paneIdx := 0; paneIdx < agentsPerSession; paneIdx++ {
+			pane := fmt.Sprintf("%03d", paneIdx)
+			if err := store.UpsertRuntimeAgent(&state.RuntimeAgent{
+				ID:               fmt.Sprintf("%s:%s", sessionName, pane),
+				SessionName:      sessionName,
+				Pane:             pane,
+				AgentType:        agentTypes[(sessionIdx+paneIdx)%len(agentTypes)],
+				TypeConfidence:   0.95,
+				TypeMethod:       "fixture",
+				State:            agentStates[paneIdx%len(agentStates)],
+				LastOutputAgeSec: paneIdx,
+				OutputTailLines:  25 + paneIdx,
+				PendingMail:      paneIdx % 4,
+				CollectedAt:      now,
+				StaleAfter:       staleAfter,
+			}); err != nil {
+				t.Fatalf("UpsertRuntimeAgent(%s:%s): %v", sessionName, pane, err)
+			}
+		}
+	}
+}
+
 func TestBuildProjectionAgentMailPaneMapUsesRuntimeProjection(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))

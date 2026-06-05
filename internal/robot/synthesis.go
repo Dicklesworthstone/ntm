@@ -347,6 +347,9 @@ func matchesPattern(filePath, pattern string) bool {
 	if filePath == pattern {
 		return true
 	}
+	if pattern == "" {
+		return false
+	}
 
 	// Handle ** patterns (match any number of path segments)
 	if strings.Contains(pattern, "**") {

@@ -109,6 +109,7 @@ const (
 	ReasonQuiescenceUrgentMail      ReasonCode = "quiescence.urgent_mail"
 	ReasonQuiescencePendingAckMail  ReasonCode = "quiescence.pending_ack_mail"
 	ReasonQuiescenceTrackerDirty    ReasonCode = "quiescence.tracker_dirty"
+	ReasonQuiescenceTrackerUnknown  ReasonCode = "quiescence.tracker_unknown"
 	ReasonQuiescenceDirtyWorktree   ReasonCode = "quiescence.dirty_worktree"
 	ReasonQuiescenceReviewSaturated ReasonCode = "quiescence.review_saturated"
 
@@ -121,6 +122,7 @@ const (
 	ReasonReservationOverdue       ReasonCode = "reservation.overdue"
 	ReasonReservationPathConflict  ReasonCode = "reservation.path_conflict"
 	ReasonReservationOrphanedAgent ReasonCode = "reservation.orphaned_agent"
+	ReasonReservationUnknown       ReasonCode = "reservation.unknown"
 
 	// closeout_integrity
 	ReasonCloseoutMissingTests    ReasonCode = "closeout.missing_tests"
@@ -260,6 +262,7 @@ var allReasonCodes = []ReasonCode{
 	ReasonQuiescenceUrgentMail,
 	ReasonQuiescencePendingAckMail,
 	ReasonQuiescenceTrackerDirty,
+	ReasonQuiescenceTrackerUnknown,
 	ReasonQuiescenceDirtyWorktree,
 	ReasonQuiescenceReviewSaturated,
 
@@ -270,6 +273,7 @@ var allReasonCodes = []ReasonCode{
 	ReasonReservationOverdue,
 	ReasonReservationPathConflict,
 	ReasonReservationOrphanedAgent,
+	ReasonReservationUnknown,
 
 	ReasonCloseoutMissingTests,
 	ReasonCloseoutDirtyWorktree,

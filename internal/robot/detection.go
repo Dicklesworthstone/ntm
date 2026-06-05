@@ -53,8 +53,8 @@ var processPatterns = map[string]string{
 	// must key on the unambiguous binary name `opencode`. Pane titles still
 	// use the short `oc` suffix because they are NTM-formatted (`__oc_N`)
 	// and parsed by the title regex, not by substring match.
-	"opencode":     "oc",
-	"ollama":       "ollama",
+	"opencode": "oc",
+	"ollama":   "ollama",
 }
 
 // contentPatterns provides regex patterns for detecting agents from output

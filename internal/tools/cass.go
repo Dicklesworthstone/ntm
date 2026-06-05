@@ -99,14 +99,16 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	// --full"), so check the JSON before treating the exit code as
 	// fatal.
 	type cassHealth struct {
-		Status      string `json:"status"`
-		Healthy     bool   `json:"healthy"`
-		Initialized bool   `json:"initialized"`
+		Status            string   `json:"status"`
+		Healthy           *bool    `json:"healthy"`
+		Initialized       *bool    `json:"initialized"`
+		Errors            []string `json:"errors"`
+		RecommendedAction string   `json:"recommended_action"`
 	}
 	if body := stdout.Bytes(); len(body) > 0 {
 		var parsed cassHealth
 		if jerr := json.Unmarshal(body, &parsed); jerr == nil {
-			if !parsed.Initialized {
+			if parsed.Initialized != nil && !*parsed.Initialized {
 				return &HealthStatus{
 					Healthy:     false,
 					Message:     "cass installed but not initialized (run: cass index --full)",
@@ -114,10 +116,20 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 					Latency:     latency,
 				}, nil
 			}
-			if !parsed.Healthy && err == nil {
+			if !cassHealthIsHealthy(parsed.Status, parsed.Healthy) {
+				message := strings.TrimSpace(parsed.Status)
+				if message == "" {
+					message = "unhealthy"
+				}
+				if len(parsed.Errors) > 0 {
+					message = fmt.Sprintf("%s (%s)", message, strings.Join(parsed.Errors, "; "))
+				}
+				if parsed.RecommendedAction != "" {
+					message = fmt.Sprintf("%s; %s", message, parsed.RecommendedAction)
+				}
 				return &HealthStatus{
 					Healthy:     false,
-					Message:     fmt.Sprintf("cass reports unhealthy: %s", parsed.Status),
+					Message:     fmt.Sprintf("cass reports unhealthy: %s", message),
 					LastChecked: time.Now(),
 					Latency:     latency,
 				}, nil
@@ -152,6 +164,30 @@ func (a *CASSAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 		LastChecked: time.Now(),
 		Latency:     latency,
 	}, nil
+}
+
+func cassHealthIsHealthy(status string, healthy *bool) bool {
+	if healthy != nil {
+		return *healthy
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "healthy", "ok", "ready":
+		return true
+	case "unhealthy", "degraded", "error", "not_initialized", "not-initialized":
+		return false
+	}
+
+	// When `healthy` is absent, fail closed for unknown non-empty status
+	// values so future schema/status additions do not get treated as healthy.
+	if normalized != "" {
+		return false
+	}
+
+	// Empty status + missing healthy should fail closed. A schema-less
+	// success body does not prove cass is healthy.
+	return false
 }
 
 // HasCapability checks if cass has a specific capability

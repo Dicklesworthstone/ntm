@@ -434,6 +434,9 @@ func (c *Client) CreateSession(name, directory string) error {
 // history-limit (scrollback buffer size) for the session. A value of 0 skips
 // setting history-limit, leaving tmux's default (2000 lines).
 func (c *Client) CreateSessionWithHistoryLimit(name, directory string, historyLimit int) error {
+	if err := ValidateSessionName(name); err != nil {
+		return fmt.Errorf("invalid session name: %w", err)
+	}
 	if err := c.RunSilent("new-session", "-d", "-s", name, "-c", directory); err != nil {
 		return err
 	}

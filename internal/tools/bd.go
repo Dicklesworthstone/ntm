@@ -255,20 +255,61 @@ func (a *BDAdapter) runCommand(ctx context.Context, dir string, args ...string) 
 		cmd.Dir = dir
 	}
 
-	// Limit output to 10MB
-	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	const maxAttempts = 6
+	var runErr error
 	var stderr bytes.Buffer
-	cmd.Stdout = stdout
-	cmd.Stderr = &stderr
+	var stdout *LimitedBuffer
 
-	if err := cmd.Run(); err != nil {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		stdout = NewLimitedBuffer(10 * 1024 * 1024)
+		stderr.Reset()
+
+		// Need to create a new command for each retry
+		cmd = exec.CommandContext(ctx, binary, args...)
+		cmd.WaitDelay = time.Second
+		if dir != "" {
+			cmd.Dir = dir
+		}
+		cmd.Stdout = stdout
+		cmd.Stderr = &stderr
+
+		runErr = cmd.Run()
+		if runErr == nil {
+			break
+		}
+
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
-		if strings.Contains(err.Error(), ErrOutputLimitExceeded.Error()) {
+		if strings.Contains(runErr.Error(), ErrOutputLimitExceeded.Error()) {
 			return nil, fmt.Errorf("beads_rust output exceeded 10MB limit")
 		}
-		return nil, fmt.Errorf("beads_rust %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
+
+		// Check for SQLite locked errors
+		outStr := stdout.String()
+		errStr := stderr.String()
+		s := strings.ToLower(errStr + "\n" + outStr)
+		if attempt < maxAttempts && (strings.Contains(s, "database is busy") || strings.Contains(s, "database is locked")) {
+			backoff := 50 * time.Millisecond
+			for i := 1; i < attempt; i++ {
+				backoff *= 2
+			}
+			if backoff > 800*time.Millisecond {
+				backoff = 800 * time.Millisecond
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ErrTimeout
+			case <-time.After(backoff):
+			}
+			continue
+		}
+
+		break
+	}
+
+	if runErr != nil {
+		return nil, fmt.Errorf("beads_rust %s failed: %w: %s", strings.Join(args, " "), runErr, stderr.String())
 	}
 
 	// Validate JSON

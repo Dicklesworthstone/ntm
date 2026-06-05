@@ -198,12 +198,18 @@ func (a *RCHAdapter) GetAvailability(ctx context.Context) (*RCHAvailability, err
 	}
 	rchAvailabilityMutex.RUnlock()
 
+	rchAvailabilityMutex.Lock()
+	defer rchAvailabilityMutex.Unlock()
+
+	if time.Now().Before(rchAvailabilityExpiry) {
+		availability := rchAvailabilityCache
+		return &availability, nil
+	}
+
 	availability := a.fetchAvailability(ctx)
 
-	rchAvailabilityMutex.Lock()
 	rchAvailabilityCache = *availability
 	rchAvailabilityExpiry = time.Now().Add(rchAvailabilityTTL)
-	rchAvailabilityMutex.Unlock()
 
 	return availability, nil
 }

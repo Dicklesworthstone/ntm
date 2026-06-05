@@ -111,31 +111,31 @@ func TestExtractRCHInnerCommand(t *testing.T) {
 		ok       bool
 	}{
 		{
-			name:     "rch build with tool and separator",
-			command:  "rch build cargo -- build",
+			name:     "rch exec with separator",
+			command:  "rch exec -- cargo build",
 			expected: "cargo build",
 			ok:       true,
 		},
 		{
-			name:     "rch build with tool repeated after separator",
-			command:  "rch build cargo -- cargo build",
-			expected: "cargo build",
+			name:     "rch exec without separator",
+			command:  "rch exec go test ./...",
+			expected: "go test ./...",
 			ok:       true,
 		},
 		{
-			name:     "rch build with separator only",
+			name:     "legacy rch build with separator only",
 			command:  "rch build -- cargo build",
 			expected: "cargo build",
 			ok:       true,
 		},
 		{
-			name:     "rch intercept passthrough",
+			name:     "legacy rch intercept passthrough",
 			command:  "rch intercept go test ./...",
 			expected: "go test ./...",
 			ok:       true,
 		},
 		{
-			name:     "rch offload passthrough",
+			name:     "legacy rch offload passthrough",
 			command:  "rch offload go build ./cmd/ntm",
 			expected: "go build ./cmd/ntm",
 			ok:       true,
@@ -173,17 +173,22 @@ func TestExtractRCHInnerCommand(t *testing.T) {
 			ok:      false,
 		},
 		{
-			name:    "rch build alone",
+			name:    "rch exec alone",
+			command: "rch exec",
+			ok:      false,
+		},
+		{
+			name:    "legacy rch build alone",
 			command: "rch build",
 			ok:      false,
 		},
 		{
-			name:    "rch intercept alone",
+			name:    "legacy rch intercept alone",
 			command: "rch intercept",
 			ok:      false,
 		},
 		{
-			name:    "rch offload alone",
+			name:    "legacy rch offload alone",
 			command: "rch offload",
 			ok:      false,
 		},
@@ -193,7 +198,7 @@ func TestExtractRCHInnerCommand(t *testing.T) {
 			ok:      false,
 		},
 		{
-			name:    "rch build with separator at end",
+			name:    "legacy rch build with separator at end",
 			command: "rch build --",
 			ok:      false,
 		},
@@ -203,8 +208,8 @@ func TestExtractRCHInnerCommand(t *testing.T) {
 			ok:      false,
 		},
 		{
-			name:     "rch build cargo with multiple args",
-			command:  "rch build cargo build --release --target x86_64-unknown-linux-gnu",
+			name:     "rch exec with multiple args",
+			command:  "rch exec cargo build --release --target x86_64-unknown-linux-gnu",
 			expected: "cargo build --release --target x86_64-unknown-linux-gnu",
 			ok:       true,
 		},

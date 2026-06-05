@@ -67,6 +67,18 @@ func TestValidateSessionName(t *testing.T) {
 	}
 }
 
+func TestCreateSessionRejectsInvalidNameBeforeInvokingTmux(t *testing.T) {
+	client := NewClient("")
+
+	err := client.CreateSessionWithHistoryLimit("bad/session", t.TempDir(), 0)
+	if err == nil {
+		t.Fatal("CreateSessionWithHistoryLimit() error = nil, want invalid session name error")
+	}
+	if !strings.Contains(err.Error(), "invalid session name") {
+		t.Fatalf("CreateSessionWithHistoryLimit() error = %v, want invalid session name", err)
+	}
+}
+
 func TestAgentTypeFromTitle(t *testing.T) {
 	tests := []struct {
 		title    string

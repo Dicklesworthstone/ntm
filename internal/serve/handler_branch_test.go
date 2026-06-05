@@ -1663,9 +1663,14 @@ func TestHandlePaneInputV1_TmuxError(t *testing.T) {
 
 	srv.handlePaneInputV1(rec, req)
 
-	// Should error since tmux session doesn't exist
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	// Should error since tmux session doesn't exist. After #141 the pane
+	// is resolved via `tmux.GetPanes(session)` BEFORE send-keys, which
+	// fails as `not found` rather than reaching the send-keys layer
+	// (where it would have surfaced as an internal error). Both 404 and
+	// 500 are valid "the request couldn't be served" shapes here; the
+	// important assertion is that no successful 2xx is returned.
+	if rec.Code < 400 {
+		t.Fatalf("status = %d, want >=400; body: %s", rec.Code, rec.Body.String())
 	}
 }
 

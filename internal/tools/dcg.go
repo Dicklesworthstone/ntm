@@ -52,32 +52,20 @@ func (a *DCGAdapter) Version(ctx context.Context) (Version, error) {
 	return ParseStandardVersion(stdout.String())
 }
 
-// Capabilities returns the list of dcg capabilities
-func (a *DCGAdapter) Capabilities(ctx context.Context) ([]Capability, error) {
+// Capabilities returns the list of dcg capabilities.
+//
+// dcg has supported the global `--robot` flag and `dcg test --format json`
+// since v0.1.0 (the adapter's `dcgMinVersion`). Probing `dcg --help` for the
+// flag strings is unreliable because dcg renders a custom-formatted help
+// screen that lists subcommands without their flags. The version gate in
+// `fetchAvailability` already enforces the minimum version, so if dcg is
+// installed at all the robot-mode capability is available.
+func (a *DCGAdapter) Capabilities(_ context.Context) ([]Capability, error) {
 	caps := []Capability{}
-
-	// Check if dcg has specific capabilities by examining help output
-	path, installed := a.Detect()
-	if !installed {
+	if _, installed := a.Detect(); !installed {
 		return caps, nil
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, path, "help")
-	cmd.WaitDelay = time.Second
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	_ = cmd.Run() // Ignore error, just check output
-
-	output := stdout.String()
-
-	// Check for known capabilities
-	if strings.Contains(output, "--json") || strings.Contains(output, "robot") {
-		caps = append(caps, CapRobotMode)
-	}
-
+	caps = append(caps, CapRobotMode)
 	return caps, nil
 }
 
@@ -182,12 +170,17 @@ type DCGStatus struct {
 	AllowedOverrides []string `json:"allowed_overrides,omitempty"`
 }
 
-// GetStatus returns the current DCG status
+// GetStatus returns the current DCG status. dcg's native health surface is
+// `dcg doctor`, which emits a structured installation/hook diagnostic when
+// invoked with `--format json`. We treat any successful doctor run as
+// `Enabled=true` since the legacy `BlockedPatterns` / `AllowedOverrides`
+// fields are not surfaced by dcg's JSON shape; the caller side has always
+// tolerated a default-on result here.
 func (a *DCGAdapter) GetStatus(ctx context.Context) (*DCGStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
+	cmd := exec.CommandContext(ctx, a.BinaryName(), "doctor", "--format", "json")
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -198,22 +191,30 @@ func (a *DCGAdapter) GetStatus(ctx context.Context) (*DCGStatus, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
-		// DCG might not have a status command - return default
+		// dcg doctor returns non-zero when issues are detected, but the
+		// adapter has historically reported "enabled" in that case to avoid
+		// flapping callers into disabling DCG on transient install issues.
 		return &DCGStatus{Enabled: true}, nil
 	}
 
 	output := stdout.Bytes()
-	if !json.Valid(output) {
-		// Return default status if output is not valid JSON
-		return &DCGStatus{Enabled: true}, nil
+	// dcg doctor's JSON shape doesn't include BlockedPatterns/AllowedOverrides
+	// today, but valid JSON output is a strong signal that DCG is healthy and
+	// reachable. Try a best-effort decode for forward compatibility, then
+	// fall back to enabled=true.
+	if json.Valid(output) {
+		var status DCGStatus
+		if err := json.Unmarshal(output, &status); err == nil {
+			// dcg doctor emits "ok"/"issues" envelopes; if our enabled flag
+			// wasn't populated we still consider DCG enabled (the binary
+			// answered).
+			if !status.Enabled {
+				status.Enabled = true
+			}
+			return &status, nil
+		}
 	}
-
-	var status DCGStatus
-	if err := json.Unmarshal(output, &status); err != nil {
-		return nil, fmt.Errorf("failed to parse dcg status: %w", err)
-	}
-
-	return &status, nil
+	return &DCGStatus{Enabled: true}, nil
 }
 
 // GetAvailability returns whether dcg is available and compatible, with caching.
@@ -227,12 +228,19 @@ func (a *DCGAdapter) GetAvailability(ctx context.Context) (*DCGAvailability, err
 	}
 	dcgAvailabilityMutex.RUnlock()
 
+	dcgAvailabilityMutex.Lock()
+	defer dcgAvailabilityMutex.Unlock()
+
+	// Double-check after acquiring write lock
+	if time.Now().Before(dcgAvailabilityExpiry) {
+		availability := dcgAvailabilityCache
+		return &availability, nil
+	}
+
 	availability := a.fetchAvailability(ctx)
 
-	dcgAvailabilityMutex.Lock()
 	dcgAvailabilityCache = *availability
 	dcgAvailabilityExpiry = time.Now().Add(dcgAvailabilityTTL)
-	dcgAvailabilityMutex.Unlock()
 
 	return availability, nil
 }
@@ -328,7 +336,7 @@ func extractRCHInnerCommand(command string) (string, bool) {
 		return "", false
 	}
 	switch fields[1] {
-	case "build":
+	case "build", "exec":
 		inner := fields[2:]
 		if len(inner) == 0 {
 			return "", false
@@ -355,7 +363,9 @@ func (a *DCGAdapter) CheckCommand(ctx context.Context, command string) (*Blocked
 		commandToCheck = inner
 	}
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "check", "--json", commandToCheck)
+	// dcg uses `dcg test` (not `check`) and `--format json` (not `--json`).
+	// Pair with `--robot` so stdout is pure JSON without rich/ANSI output.
+	cmd := exec.CommandContext(ctx, a.BinaryName(), "--robot", "test", "--format", "json", commandToCheck)
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -383,7 +393,7 @@ func (a *DCGAdapter) CheckCommand(ctx context.Context, command string) (*Blocked
 				Reason:  "blocked by dcg",
 			}, nil
 		}
-		return nil, fmt.Errorf("dcg check failed: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("dcg test failed: %w: %s", err, stderr.String())
 	}
 
 	// Exit code 0 means command is allowed
@@ -401,17 +411,22 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 		commandToCheck = inner
 	}
 
-	// Build command arguments
-	args := []string{"check", "--json"}
-	if context_ != "" {
-		args = append(args, "--context", context_)
-	}
-	if cwd != "" {
-		args = append(args, "--cwd", cwd)
-	}
-	args = append(args, commandToCheck)
+	// dcg uses `dcg test` (not `check`) and `--format json` (not `--json`),
+	// and the global `--robot` flag yields pure-JSON stdout without ANSI.
+	// dcg does not currently accept `--context` or `--cwd` flags on `test`,
+	// so the upstream contract here is the same as the plain CheckCommand
+	// path: we run with `--robot test --format json <command>` and propagate
+	// `cwd` via `cmd.Dir` (so any pack rules that key off the working
+	// directory still see the right environment). `context_` has no
+	// equivalent surface today and is intentionally dropped rather than
+	// passed as an unrecognized flag.
+	_ = context_
+	args := []string{"--robot", "test", "--format", "json", commandToCheck}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -464,7 +479,7 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 			return result, nil
 		}
 
-		return nil, fmt.Errorf("dcg check failed: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("dcg test failed: %w: %s", err, stderr.String())
 	}
 
 	// Exit code 0 means command is allowed

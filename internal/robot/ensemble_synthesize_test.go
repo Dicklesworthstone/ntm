@@ -43,6 +43,15 @@ func TestGetEnsembleSynthesize_NonexistentSession(t *testing.T) {
 	ensemble.CloseDefaultStateStore()
 	t.Cleanup(ensemble.CloseDefaultStateStore)
 
+	// bd-uizon: GetEnsembleSynthesize lazily opens the ensemble state
+	// store, which uses state.DefaultPath; clear ambient NTM_CONFIG so
+	// the lookup doesn't try to mkdir an unwritable parent directory.
+	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
 	output, err := GetEnsembleSynthesize(EnsembleSynthesizeOptions{
 		Session: "nonexistent-session-xyz",
 	})
@@ -82,6 +91,10 @@ func TestGetEnsembleSynthesize_InvalidFormat(t *testing.T) {
 }
 
 func TestGetEnsembleSynthesize_UsesSavedOutputsWhenSessionOffline(t *testing.T) {
+	// bd-uizon: clear ambient NTM_CONFIG so DefaultPath uses the hermetic
+	// XDG_CONFIG_HOME below instead of inheriting a developer's local
+	// /nonexistent/config.toml fixture (parity with bd-ev740/bd-xkls4).
+	t.Setenv("NTM_CONFIG", "")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("NTM_CONFIG", "")

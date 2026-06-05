@@ -450,7 +450,7 @@ func loadAgentMailCausalityEvents(opts CausalityOptions, since, until *time.Time
 	} else {
 		kept := 0
 		for _, res := range reservations {
-			ts := res.CreatedTS.Time.UTC()
+			ts := res.CreatedTS.UTC()
 			if !withinCausalityWindow(ts, since, until) {
 				continue
 			}
@@ -505,7 +505,7 @@ func loadAgentMailCausalityEvents(opts CausalityOptions, since, until *time.Time
 
 	kept := 0
 	for _, msg := range inbox {
-		ts := msg.CreatedTS.Time.UTC()
+		ts := msg.CreatedTS.UTC()
 		if !withinCausalityWindow(ts, since, until) {
 			continue
 		}

@@ -67,10 +67,16 @@ type mockContractReporter struct {
 	messages    []string
 }
 
-func (m *mockContractReporter) Helper()                                      { m.helperCalls++ }
-func (m *mockContractReporter) Errorf(format string, args ...interface{})    { m.errored = true; m.messages = append(m.messages, fmt.Sprintf(format, args...)) }
-func (m *mockContractReporter) Fatalf(format string, args ...interface{}) { m.fataled = true; m.messages = append(m.messages, fmt.Sprintf(format, args...)) }
-func (m *mockContractReporter) failed() bool                                 { return m.errored || m.fataled }
+func (m *mockContractReporter) Helper() { m.helperCalls++ }
+func (m *mockContractReporter) Errorf(format string, args ...interface{}) {
+	m.errored = true
+	m.messages = append(m.messages, fmt.Sprintf(format, args...))
+}
+func (m *mockContractReporter) Fatalf(format string, args ...interface{}) {
+	m.fataled = true
+	m.messages = append(m.messages, fmt.Sprintf(format, args...))
+}
+func (m *mockContractReporter) failed() bool { return m.errored || m.fataled }
 
 // robotContractCase describes one command-under-test for the
 // conformance suite. It captures both the input invocation (via the
@@ -341,6 +347,77 @@ func TestRobotEnvelopeContract_Conformance(t *testing.T) {
 	}
 }
 
+func TestRobotEnvelopeContract_EmptyStatusAndSnapshotCollections(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload interface{}
+		arrays  []string
+		objects []string
+	}{
+		{
+			name:    "status",
+			payload: newStatusOutput(nil),
+			arrays:  []string{"sessions"},
+			objects: []string{"summary", "summary.agents_by_state", "summary.agents_by_type", "sources", "sources.sources"},
+		},
+		{
+			name:    "snapshot",
+			payload: newSnapshotOutput(nil),
+			arrays:  []string{"sessions", "active_incidents", "alerts"},
+			objects: []string{"summary", "summary.agents_by_state", "summary.agents_by_type"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatalf("marshal %s payload: %v", tc.name, err)
+			}
+			decoded := decodeRobotEnvelope(t, string(data))
+			assertRobotSuccessEnvelope(t, tc.name, string(data), decoded)
+
+			for _, path := range tc.arrays {
+				assertJSONPathArray(t, decoded, path)
+			}
+			for _, path := range tc.objects {
+				assertJSONPathObject(t, decoded, path)
+			}
+		})
+	}
+}
+
+func TestRobotEnvelopeContract_DegradedAgentMailExample(t *testing.T) {
+	payload := newSnapshotOutput(nil)
+	payload.AgentMail = &SnapshotAgentMail{
+		Available: false,
+		Reason:    "Agent Mail server is not available",
+		Project:   "/tmp/ntm-contract",
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal snapshot payload: %v", err)
+	}
+	decoded := decodeRobotEnvelope(t, string(data))
+	assertRobotSuccessEnvelope(t, "snapshot_agent_mail_unavailable", string(data), decoded)
+
+	agentMail := assertJSONPathObject(t, decoded, "agent_mail")
+	available, ok := agentMail["available"].(bool)
+	if !ok {
+		t.Fatalf("agent_mail.available is %T, want bool", agentMail["available"])
+	}
+	if available {
+		t.Fatal("agent_mail.available = true, want false for unavailable example")
+	}
+	if reason, ok := agentMail["reason"].(string); !ok || reason == "" {
+		t.Fatalf("agent_mail.reason = %v, want non-empty string", agentMail["reason"])
+	}
+	assertJSONPathArray(t, decoded, "sessions")
+	assertJSONPathArray(t, decoded, "active_incidents")
+}
+
 // TestRobotEnvelopeContract_HelpersRejectMalformedEnvelopes locks the
 // behavior of the contract helpers themselves so a regression in the
 // helpers can't silently swallow a real contract violation. Synthetic
@@ -388,4 +465,53 @@ func TestRobotEnvelopeContract_HelpersRejectMalformedEnvelopes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertJSONPathArray(t *testing.T, decoded map[string]interface{}, path string) []interface{} {
+	t.Helper()
+
+	value, ok := lookupJSONPath(decoded, path)
+	if !ok {
+		t.Fatalf("JSON path %q missing", path)
+	}
+	array, ok := value.([]interface{})
+	if !ok {
+		t.Fatalf("JSON path %q is %T, want array", path, value)
+	}
+	if array == nil {
+		t.Fatalf("JSON path %q is nil, want empty array", path)
+	}
+	return array
+}
+
+func assertJSONPathObject(t *testing.T, decoded map[string]interface{}, path string) map[string]interface{} {
+	t.Helper()
+
+	value, ok := lookupJSONPath(decoded, path)
+	if !ok {
+		t.Fatalf("JSON path %q missing", path)
+	}
+	object, ok := value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("JSON path %q is %T, want object", path, value)
+	}
+	if object == nil {
+		t.Fatalf("JSON path %q is nil, want empty object", path)
+	}
+	return object
+}
+
+func lookupJSONPath(decoded map[string]interface{}, path string) (interface{}, bool) {
+	var current interface{} = decoded
+	for _, part := range strings.Split(path, ".") {
+		object, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
 }
