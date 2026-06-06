@@ -398,9 +398,21 @@ func selectIsWorkingPanes(session string, allPanes []tmux.Pane, requested []int)
 	}
 
 	if len(requested) > 0 {
+		// Topology-aware bare-index resolution (#172), consistent with the
+		// send/interrupt/restart-pane surfaces: on a multi-window session a bare
+		// --panes index selects a whole WINDOW (so --panes=2 hits the agent in
+		// window 2 of a window-per-agent layout instead of matching nothing),
+		// while a single-window session keeps the window-local pane index.
+		multiWindow := sessionSpansMultipleWindows(allPanes)
+		key := func(p tmux.Pane) int {
+			if multiWindow {
+				return p.WindowIndex
+			}
+			return p.Index
+		}
 		byIndex := make(map[int][]tmux.Pane)
 		for _, p := range allPanes {
-			byIndex[p.Index] = append(byIndex[p.Index], p)
+			byIndex[key(p)] = append(byIndex[key(p)], p)
 		}
 		var out []selectedPane
 		for _, idx := range requested {

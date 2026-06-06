@@ -7,11 +7,14 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-// TestSelectInterruptTargetsEmptyOnUnmatchedFilter documents the targeting case
-// at the heart of #172: a --panes filter that matches nothing resolves to an
-// empty target set. On a window-per-agent layout every pane shares window-local
-// index 0, so a filter like --panes=2 matches no pane.
-func TestSelectInterruptTargetsEmptyOnUnmatchedFilter(t *testing.T) {
+// TestSelectInterruptTargetsWindowAware documents the targeting fix at the heart
+// of #172: on a multi-window / window-per-agent layout a bare --panes index
+// selects the matching WINDOW rather than the window-local pane index. Every
+// pane shares window-local index 0 here, so the pre-fix behavior either matched
+// nothing (--panes=2) or broadcast to every window (--panes=0). The fix makes
+// --panes=2 hit exactly the agent in window 2, and a genuinely-absent window
+// (--panes=9) still resolves to an empty set so the fail-loud path triggers.
+func TestSelectInterruptTargetsWindowAware(t *testing.T) {
 	// Window-per-agent layout: three windows, each a single pane at index 0.
 	panes := []tmux.Pane{
 		{ID: "%1", Index: 0, WindowIndex: 0, Type: tmux.AgentType("claude"), Title: "s__cc_1"},
@@ -19,11 +22,25 @@ func TestSelectInterruptTargetsEmptyOnUnmatchedFilter(t *testing.T) {
 		{ID: "%3", Index: 0, WindowIndex: 2, Type: tmux.AgentType("gemini"), Title: "s__gmi_1"},
 	}
 
-	// --panes=2 matches nothing (no pane has window-local index 2).
-	filter := map[string]bool{"2": true}
-	got := selectInterruptTargets(panes, filter, false)
-	if len(got) != 0 {
-		t.Fatalf("expected empty target set for --panes=2 on window-per-agent layout, got %d", len(got))
+	// --panes=2 now selects the single pane in window 2 (was: matched nothing).
+	got := selectInterruptTargets(panes, map[string]bool{"2": true}, false)
+	if len(got) != 1 || got[0].ID != "%3" {
+		t.Fatalf("expected --panes=2 to resolve to the window-2 pane %%3, got %v", got)
+	}
+
+	// A window that does not exist still resolves to an empty set (fail-loud).
+	if got := selectInterruptTargets(panes, map[string]bool{"9": true}, false); len(got) != 0 {
+		t.Fatalf("expected empty target set for absent window --panes=9, got %d", len(got))
+	}
+
+	// An explicit window.pane address resolves to exactly that pane.
+	if got := selectInterruptTargets(panes, map[string]bool{"1.0": true}, false); len(got) != 1 || got[0].ID != "%2" {
+		t.Fatalf("expected --panes=1.0 to resolve to %%2, got %v", got)
+	}
+
+	// A %N pane id resolves regardless of topology.
+	if got := selectInterruptTargets(panes, map[string]bool{"%1": true}, false); len(got) != 1 || got[0].ID != "%1" {
+		t.Fatalf("expected --panes=%%1 to resolve to %%1, got %v", got)
 	}
 }
 

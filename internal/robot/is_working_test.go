@@ -437,19 +437,28 @@ func TestSelectIsWorkingPanes_WindowPerAgentDoesNotCollapse(t *testing.T) {
 	}
 }
 
-func TestSelectIsWorkingPanes_RequestedBareIndexMatchesAllWindows(t *testing.T) {
-	// An explicit `--panes=0` request against a window-per-agent layout must
-	// include every window's pane rather than silently narrowing to one.
-	sel := selectIsWorkingPanes("sess", windowPerAgentSession(), []int{0})
-	if len(sel) != 3 {
-		t.Fatalf("expected requested index 0 to match all 3 windows, got %d", len(sel))
+func TestSelectIsWorkingPanes_RequestedBareIndexIsWindowAware(t *testing.T) {
+	// Topology-aware bare-index resolution (#172): on a window-per-agent layout
+	// a bare `--panes=N` request selects the agent in WINDOW N (consistent with
+	// the send/interrupt/restart-pane surfaces), not every window's index-N
+	// pane. This makes single-agent dispatch possible on multi-window sessions
+	// where every pane shares window-local index 0.
+	sess := windowPerAgentSession()
+
+	sel := selectIsWorkingPanes("sess", sess, []int{0})
+	if len(sel) != 1 {
+		t.Fatalf("expected requested index 0 to match only window 0, got %d", len(sel))
 	}
-	gotTargets := selectedTargets(sel)
-	wantTargets := []string{"sess:0.0", "sess:1.0", "sess:2.0"}
-	for i, w := range wantTargets {
-		if gotTargets[i] != w {
-			t.Fatalf("target[%d] = %q, want %q", i, gotTargets[i], w)
-		}
+	if got := selectedTargets(sel); got[0] != "sess:0.0" {
+		t.Fatalf("target = %q, want %q", got[0], "sess:0.0")
+	}
+
+	sel = selectIsWorkingPanes("sess", sess, []int{2})
+	if len(sel) != 1 {
+		t.Fatalf("expected requested index 2 to match only window 2, got %d", len(sel))
+	}
+	if got := selectedTargets(sel); got[0] != "sess:2.0" {
+		t.Fatalf("target = %q, want %q", got[0], "sess:2.0")
 	}
 }
 

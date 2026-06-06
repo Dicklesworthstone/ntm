@@ -115,6 +115,8 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 	for _, p := range opts.Panes {
 		paneFilterMap[p] = true
 	}
+	// Topology-aware keys (#172): canonical "window.pane" on multi-window sessions.
+	multiWindow := paneSessionIsMultiWindow(panes)
 	targetPanes := selectRestartPaneTargets(panes, paneFilterMap, opts.Type, opts.All)
 
 	if len(targetPanes) == 0 {
@@ -125,7 +127,7 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 	if opts.DryRun {
 		output.DryRun = true
 		for _, pane := range targetPanes {
-			paneKey := fmt.Sprintf("%d", pane.Index)
+			paneKey := paneTargetKey(pane, multiWindow)
 			output.WouldAffect = append(output.WouldAffect, paneKey)
 		}
 		if opts.Bead != "" {
@@ -137,7 +139,7 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 	// Restart targets — track pane IDs for post-restart liveness check
 	restartedPaneInfo := make(map[string]restartPromptTarget) // paneKey -> prompt target info
 	for _, pane := range targetPanes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		paneKey := paneTargetKey(pane, multiWindow)
 
 		// Always use kill=true for restart to ensure process is cycled
 		err := tmux.RespawnPane(pane.ID, true)
@@ -209,11 +211,17 @@ func selectRestartPaneTargets(panes []tmux.Pane, paneFilterMap map[string]bool, 
 	hasPaneFilter := len(paneFilterMap) > 0
 	targetType := translateAgentTypeForStatus(filterType)
 
+	// Topology-aware --panes matching (#172): a bare index selects a whole window
+	// on multi-window layouts instead of broadcasting or no-op'ing.
+	multiWindow := paneSessionIsMultiWindow(panes)
+	filterTokens := make([]string, 0, len(paneFilterMap))
+	for k := range paneFilterMap {
+		filterTokens = append(filterTokens, k)
+	}
+
 	var targetPanes []tmux.Pane
 	for _, pane := range panes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
-
-		if hasPaneFilter && !paneFilterMap[paneKey] && !paneFilterMap[pane.ID] {
+		if hasPaneFilter && !paneMatchesAnyToken(pane, filterTokens, multiWindow) {
 			continue
 		}
 

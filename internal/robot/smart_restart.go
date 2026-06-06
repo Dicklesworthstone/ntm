@@ -188,7 +188,12 @@ func GetSmartRestart(opts SmartRestartOptions) (*SmartRestartOutput, error) {
 
 	// Step 2: Process each pane
 	for paneStr, workStatus := range isWorkingResult.Panes {
-		paneNum, _ := strconv.Atoi(paneStr)
+		// The is-working map key is "window.pane" on multi-window sessions and a
+		// bare pane index on single-window sessions (#172). Parse both so the
+		// restart targets the real window instead of defaulting to window 0/1
+		// (the old `strconv.Atoi("1.2")` -> 0 mis-fire that ctrl-c'd a
+		// nonexistent pane while the envelope claimed success).
+		restartWin, paneNum := parseRestartPaneKey(paneStr)
 
 		action := RestartAction{
 			PreCheck: &PreCheckInfo{
@@ -234,7 +239,7 @@ func GetSmartRestart(opts SmartRestartOptions) (*SmartRestartOutput, error) {
 			if warning != "" {
 				action.Warning = warning
 			}
-			restartResult, restartErr := executeRestart(opts.Session, paneNum, workStatus.AgentType, opts)
+			restartResult, restartErr := executeRestart(opts.Session, restartWin, paneNum, workStatus.AgentType, opts)
 			if restartErr != nil {
 				action.Action = ActionFailed
 				action.Reason = reason
@@ -249,7 +254,7 @@ func GetSmartRestart(opts SmartRestartOptions) (*SmartRestartOutput, error) {
 				action.Action = ActionRestarted
 				action.Reason = reason
 				action.RestartSequence = restartResult
-				action.PostState = verifyRestart(opts.Session, paneNum, opts)
+				action.PostState = verifyRestart(opts.Session, restartWin, paneNum, opts)
 				output.Summary.Restarted++
 				appendPaneToAction(output.Summary.PanesByAction, "RESTARTED", paneNum)
 			}
@@ -404,6 +409,25 @@ func buildWaitInfo(status *PaneWorkStatus) *WaitInfo {
 	return info
 }
 
+// parseRestartPaneKey decodes the is-working response-map key into a
+// (window, pane) pair. On multi-window sessions the key is "window.pane"
+// (#172); on single-window sessions it is a bare pane index. For the bare-index
+// case the window is reported as -1 ("unknown") so executeRestart/verifyRestart
+// fall back to the session's first window — preserving single-window behavior
+// while fixing the multi-window mis-fire where strconv.Atoi("1.2") yielded 0
+// and ctrl-c'd a nonexistent pane.
+func parseRestartPaneKey(key string) (win, pane int) {
+	if w, p, ok := strings.Cut(key, "."); ok {
+		wi, errW := strconv.Atoi(strings.TrimSpace(w))
+		pi, errP := strconv.Atoi(strings.TrimSpace(p))
+		if errW == nil && errP == nil {
+			return wi, pi
+		}
+	}
+	p, _ := strconv.Atoi(strings.TrimSpace(key))
+	return -1, p
+}
+
 // appendPaneToAction adds a pane number to the action's pane list.
 func appendPaneToAction(panesByAction map[string][]int, action string, pane int) {
 	if panesByAction[action] == nil {
@@ -429,23 +453,30 @@ func newRestartError(code, message, phase string, pane int, agentType string, at
 }
 
 // executeRestart performs the actual restart sequence for a pane.
-func executeRestart(session string, pane int, agentType string, opts SmartRestartOptions) (*RestartSequence, error) {
+func executeRestart(session string, win, pane int, agentType string, opts SmartRestartOptions) (*RestartSequence, error) {
 	seq := &RestartSequence{
 		AgentType: agentType,
 	}
 	var attemptedActions []string
 	var softExitFailed bool
 
-	firstWin, err := tmux.GetFirstWindow(session)
-	if err != nil {
-		firstWin = 1 // fallback
+	// win < 0 means "single-window session, window unknown" — fall back to the
+	// session's first window. On multi-window sessions win is the pane's real
+	// window index (#172), so the target addresses the correct window instead
+	// of always window 1.
+	if win < 0 {
+		fw, err := tmux.GetFirstWindow(session)
+		if err != nil {
+			fw = 1 // fallback
+		}
+		win = fw
 	}
-	target := fmt.Sprintf("%s:%d.%d", session, firstWin, pane)
+	target := fmt.Sprintf("%s:%d.%d", session, win, pane)
 
 	// Step 1: Exit the current agent using agent-specific method (unless HardKillOnly)
 	if !opts.HardKillOnly {
 		attemptedActions = append(attemptedActions, "exit-agent-"+agentType)
-		exitErr := exitAgent(session, pane, agentType, seq)
+		exitErr := exitAgent(session, win, pane, agentType, seq)
 		if exitErr != nil {
 			if opts.HardKill {
 				// Soft exit failed, but we're allowed to try hard kill
@@ -510,7 +541,7 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 	// Step 3b: Hard kill fallback if soft exit failed or HardKillOnly (bd-bh74z)
 	if opts.HardKillOnly || (opts.HardKill && softExitFailed) {
 		attemptedActions = append(attemptedActions, "hard-kill")
-		hardKillResult, err := hardKillAgent(session, pane, seq)
+		hardKillResult, err := hardKillAgent(session, win, pane, seq)
 		seq.HardKillUsed = true
 		seq.HardKillResult = hardKillResult
 
@@ -570,7 +601,7 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 	alias := restartLaunchAlias(agentType)
 
 	attemptedActions = append(attemptedActions, "launch-"+alias)
-	launchErr := sendKeys(session, pane, alias+"\n")
+	launchErr := sendKeys(session, win, pane, alias+"\n")
 	if launchErr != nil {
 		structErr := newRestartError(
 			ErrCodeCCLaunchFailed,
@@ -596,7 +627,7 @@ func executeRestart(session string, pane int, agentType string, opts SmartRestar
 	if opts.Prompt != "" {
 		attemptedActions = append(attemptedActions, "send-prompt")
 		time.Sleep(500 * time.Millisecond)
-		promptErr := sendKeys(session, pane, opts.Prompt+"\n")
+		promptErr := sendKeys(session, win, pane, opts.Prompt+"\n")
 		if promptErr != nil {
 			// Non-fatal - agent launched but prompt failed
 			seq.AgentLaunched = true
@@ -637,14 +668,19 @@ func restartLaunchAlias(agentType string) string {
 	}
 }
 
-// verifyRestart checks the post-restart state of a pane.
-func verifyRestart(session string, pane int, opts SmartRestartOptions) *PostStateInfo {
-	firstWin, err := tmux.GetFirstWindow(session)
-	if err != nil {
-		firstWin = 1 // fallback
+// verifyRestart checks the post-restart state of a pane. win is the pane's real
+// window index (#172); win < 0 falls back to the session's first window for the
+// single-window case.
+func verifyRestart(session string, win, pane int, opts SmartRestartOptions) *PostStateInfo {
+	if win < 0 {
+		fw, err := tmux.GetFirstWindow(session)
+		if err != nil {
+			fw = 1 // fallback
+		}
+		win = fw
 	}
 	// Capture current state
-	target := fmt.Sprintf("%s:%d.%d", session, firstWin, pane)
+	target := fmt.Sprintf("%s:%d.%d", session, win, pane)
 	content, err := tmux.CapturePaneOutput(target, 50)
 	if err != nil {
 		return &PostStateInfo{

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3962,18 +3963,18 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 		},
 	}
 
-	// Build pane filter map
-	filterMap := make(map[string]bool)
-	for _, p := range opts.PaneFilter {
-		filterMap[p] = true
-	}
-	hasFilter := len(filterMap) > 0
+	// Build pane filter (topology-aware, #172).
+	multiWindow := paneSessionIsMultiWindow(panes)
+	paneFilter := opts.PaneFilter
+	hasFilter := len(paneFilter) > 0
 
 	for _, pane := range panes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		// Use the topology-aware key so window-per-agent layouts don't collapse
+		// every window's pane onto a single output-map entry (#172).
+		paneKey := paneTargetKey(pane, multiWindow)
 
 		// Skip if filter is set and this pane is not in it
-		if hasFilter && !filterMap[paneKey] && !filterMap[pane.ID] {
+		if hasFilter && !paneMatchesAnyToken(pane, paneFilter, multiWindow) {
 			continue
 		}
 
@@ -6654,7 +6655,9 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 
 	// Send to all targets
 	for i, pane := range targetPanes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		// targetKeys is index-aligned with targetPanes and already encodes the
+		// topology-aware key (window.pane on multi-window sessions, #172).
+		paneKey := targetKeys[i]
 
 		// Apply delay between sends (except for first)
 		if i > 0 && opts.DelayMs > 0 {
@@ -6697,12 +6700,103 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	return &output, nil
 }
 
-func selectSendTargets(panes []tmux.Pane, opts SendOptions, excludeMap map[string]bool) ([]tmux.Pane, []string) {
-	paneFilterMap := make(map[string]bool)
-	for _, p := range opts.Panes {
-		paneFilterMap[p] = true
+// paneSessionIsMultiWindow reports whether the session's panes span more than
+// one tmux window. On a multi-window session a bare window-local pane index is
+// no longer a unique address, so targeting and the response-map key switch to
+// the canonical "window.pane" form (#172).
+func paneSessionIsMultiWindow(panes []tmux.Pane) bool {
+	if len(panes) == 0 {
+		return false
 	}
-	hasPaneFilter := len(paneFilterMap) > 0
+	first := panes[0].WindowIndex
+	for _, p := range panes[1:] {
+		if p.WindowIndex != first {
+			return true
+		}
+	}
+	return false
+}
+
+// paneTargetKey returns the canonical response-map / target key for a pane.
+// Single-window sessions use the bare window-local index (byte-identical to the
+// historical behavior every robot consumer expects). Multi-window sessions use
+// the "window.pane" address so a window-per-agent layout (N windows × 1 pane,
+// every pane sharing window-local index, e.g. 1) does not collapse onto one
+// key (#172).
+func paneTargetKey(pane tmux.Pane, multiWindow bool) string {
+	if multiWindow {
+		return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
+	}
+	return fmt.Sprintf("%d", pane.Index)
+}
+
+// paneMatchesToken reports whether a --panes token addresses the given pane.
+// The grammar (first non-empty match wins) is topology-aware (#172):
+//
+//   - "%N"  -> tmux pane ID (pane.ID); base-index-independent, always unambiguous.
+//   - "W.P" -> WindowIndex.Index; explicit window.pane address.
+//   - bare integer N:
+//   - on a multi-window session, N selects a whole WINDOW (WindowIndex==N),
+//     so --panes=1 hits exactly the panes in window 1 instead of broadcasting
+//     to every window's index-1 pane.
+//   - on a single-window session, N is the window-local pane index
+//     (Index==N) — byte-identical to the historical behavior.
+//
+// Returning here is purely a membership test; callers build the response keys
+// via paneTargetKey so single-window output stays unchanged.
+func paneMatchesToken(pane tmux.Pane, token string, multiWindow bool) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	// %N tmux pane ID.
+	if strings.HasPrefix(token, "%") {
+		return token == pane.ID
+	}
+	// W.P explicit window.pane address.
+	if win, p, ok := strings.Cut(token, "."); ok {
+		wi, errW := strconv.Atoi(strings.TrimSpace(win))
+		pi, errP := strconv.Atoi(strings.TrimSpace(p))
+		if errW != nil || errP != nil {
+			return false
+		}
+		return pane.WindowIndex == wi && pane.Index == pi
+	}
+	// Bare integer.
+	n, err := strconv.Atoi(token)
+	if err != nil {
+		return false
+	}
+	if multiWindow {
+		return pane.WindowIndex == n
+	}
+	return pane.Index == n
+}
+
+// paneMatchesAnyToken reports whether any token in the filter set addresses the
+// pane (topology-aware, #172).
+func paneMatchesAnyToken(pane tmux.Pane, tokens []string, multiWindow bool) bool {
+	for _, t := range tokens {
+		if paneMatchesToken(pane, t, multiWindow) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectSendTargets(panes []tmux.Pane, opts SendOptions, excludeMap map[string]bool) ([]tmux.Pane, []string) {
+	multiWindow := paneSessionIsMultiWindow(panes)
+
+	paneFilter := make([]string, 0, len(opts.Panes))
+	for _, p := range opts.Panes {
+		paneFilter = append(paneFilter, p)
+	}
+	hasPaneFilter := len(paneFilter) > 0
+
+	excludeTokens := make([]string, 0, len(excludeMap))
+	for k := range excludeMap {
+		excludeTokens = append(excludeTokens, k)
+	}
 
 	typeFilterMap := make(map[string]bool)
 	for _, t := range opts.AgentTypes {
@@ -6713,12 +6807,12 @@ func selectSendTargets(panes []tmux.Pane, opts SendOptions, excludeMap map[strin
 	var targetPanes []tmux.Pane
 	var targetKeys []string
 	for _, pane := range panes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		paneKey := paneTargetKey(pane, multiWindow)
 
-		if excludeMap[paneKey] || excludeMap[pane.ID] {
+		if paneMatchesAnyToken(pane, excludeTokens, multiWindow) {
 			continue
 		}
-		if hasPaneFilter && !paneFilterMap[paneKey] && !paneFilterMap[pane.ID] {
+		if hasPaneFilter && !paneMatchesAnyToken(pane, paneFilter, multiWindow) {
 			continue
 		}
 
@@ -9626,6 +9720,10 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 	var lowUsage, highUsage []string
 	var totalUsage float64
 
+	// Topology-aware key (#172): emit a round-trippable "window.pane" address on
+	// multi-window sessions instead of a window-blind bare index.
+	multiWindow := paneSessionIsMultiWindow(panes)
+
 	for _, pane := range panes {
 		agentType := paneAgentType(pane)
 		if agentType == "unknown" || agentType == "user" {
@@ -9646,7 +9744,7 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 		contextLimit := getContextLimit(model)
 		usagePct := float64(withOverhead) / float64(contextLimit) * 100
 
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		paneKey := paneTargetKey(pane, multiWindow)
 		usageLevel := getUsageLevel(usagePct)
 
 		// Align thresholds with getUsageLevel: <40% is Low, >=70% is High/Critical
@@ -9900,12 +9998,10 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 
 	output.Agents = make([]AgentActivityInfo, 0, len(panes))
 
-	// Build filter maps
-	paneFilterMap := make(map[string]bool)
-	for _, p := range opts.Panes {
-		paneFilterMap[p] = true
-	}
-	hasPaneFilter := len(paneFilterMap) > 0
+	// Build filter maps (topology-aware, #172).
+	multiWindow := paneSessionIsMultiWindow(panes)
+	paneFilter := opts.Panes
+	hasPaneFilter := len(paneFilter) > 0
 
 	typeFilterMap := make(map[string]bool)
 	for _, t := range opts.AgentTypes {
@@ -9917,10 +10013,10 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 	var availableAgents, busyAgents, problemAgents []string
 
 	for _, pane := range panes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		paneKey := paneTargetKey(pane, multiWindow)
 
 		// Apply pane filter
-		if hasPaneFilter && !paneFilterMap[paneKey] && !paneFilterMap[pane.ID] {
+		if hasPaneFilter && !paneMatchesAnyToken(pane, paneFilter, multiWindow) {
 			continue
 		}
 

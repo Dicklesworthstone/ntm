@@ -21,27 +21,29 @@ import (
 // - Gemini (gmi): Escape (exit shell mode if active) then /exit
 // - Unknown: Try Ctrl+C as fallback
 
-// exitAgent exits the current agent using the appropriate method.
-func exitAgent(session string, pane int, agentType string, seq *RestartSequence) error {
+// exitAgent exits the current agent using the appropriate method. win is the
+// pane's tmux window index (#172) so the exit keys target the correct window on
+// multi-window / window-per-agent layouts rather than always window 1.
+func exitAgent(session string, win, pane int, agentType string, seq *RestartSequence) error {
 	switch restartCanonicalAgentType(agentType) {
 	case "cc":
-		return exitClaudeCode(session, pane, seq)
+		return exitClaudeCode(session, win, pane, seq)
 	case "cod":
-		return exitCodex(session, pane, seq)
+		return exitCodex(session, win, pane, seq)
 	case "gmi":
-		return exitGemini(session, pane, seq)
+		return exitGemini(session, win, pane, seq)
 	default:
-		return exitUnknown(session, pane, seq)
+		return exitUnknown(session, win, pane, seq)
 	}
 }
 
 // exitClaudeCode exits Claude Code with double Ctrl+C.
 // CRITICAL: The 0.1s timing between Ctrl+Cs is essential!
-func exitClaudeCode(session string, pane int, seq *RestartSequence) error {
+func exitClaudeCode(session string, win, pane int, seq *RestartSequence) error {
 	seq.ExitMethod = "double_ctrl_c"
 
 	// First Ctrl+C
-	if err := sendCtrlC(session, pane); err != nil {
+	if err := sendCtrlC(session, win, pane); err != nil {
 		return wrapError("first ctrl-c failed", err)
 	}
 
@@ -49,7 +51,7 @@ func exitClaudeCode(session string, pane int, seq *RestartSequence) error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Second Ctrl+C
-	if err := sendCtrlC(session, pane); err != nil {
+	if err := sendCtrlC(session, win, pane); err != nil {
 		return wrapError("second ctrl-c failed", err)
 	}
 
@@ -57,10 +59,10 @@ func exitClaudeCode(session string, pane int, seq *RestartSequence) error {
 }
 
 // exitCodex exits Codex CLI with /exit command.
-func exitCodex(session string, pane int, seq *RestartSequence) error {
+func exitCodex(session string, win, pane int, seq *RestartSequence) error {
 	seq.ExitMethod = "exit_command"
 
-	if err := sendKeys(session, pane, "/exit\n"); err != nil {
+	if err := sendKeys(session, win, pane, "/exit\n"); err != nil {
 		return wrapError("exit command failed", err)
 	}
 
@@ -68,11 +70,11 @@ func exitCodex(session string, pane int, seq *RestartSequence) error {
 }
 
 // exitGemini exits Gemini CLI with Escape (to exit shell mode) then /exit.
-func exitGemini(session string, pane int, seq *RestartSequence) error {
+func exitGemini(session string, win, pane int, seq *RestartSequence) error {
 	seq.ExitMethod = "escape_then_exit"
 
 	// Send Escape to exit shell mode if active
-	if err := sendEscape(session, pane); err != nil {
+	if err := sendEscape(session, win, pane); err != nil {
 		return wrapError("escape failed", err)
 	}
 
@@ -80,7 +82,7 @@ func exitGemini(session string, pane int, seq *RestartSequence) error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Send /exit command
-	if err := sendKeys(session, pane, "/exit\n"); err != nil {
+	if err := sendKeys(session, win, pane, "/exit\n"); err != nil {
 		return wrapError("exit failed", err)
 	}
 
@@ -88,10 +90,10 @@ func exitGemini(session string, pane int, seq *RestartSequence) error {
 }
 
 // exitUnknown tries Ctrl+C as a fallback for unknown agent types.
-func exitUnknown(session string, pane int, seq *RestartSequence) error {
+func exitUnknown(session string, win, pane int, seq *RestartSequence) error {
 	seq.ExitMethod = "ctrl_c_fallback"
 
-	if err := sendCtrlC(session, pane); err != nil {
+	if err := sendCtrlC(session, win, pane); err != nil {
 		return wrapError("ctrl-c failed", err)
 	}
 
@@ -99,23 +101,34 @@ func exitUnknown(session string, pane int, seq *RestartSequence) error {
 }
 
 // sendCtrlC sends Ctrl+C to a tmux pane.
-func sendCtrlC(session string, pane int) error {
-	return runTmuxCommand("send-keys", "-t", formatTarget(session, pane), "C-c")
+func sendCtrlC(session string, win, pane int) error {
+	return runTmuxCommand("send-keys", "-t", formatTargetWin(session, win, pane), "C-c")
 }
 
 // sendEscape sends Escape key to a tmux pane.
-func sendEscape(session string, pane int) error {
-	return runTmuxCommand("send-keys", "-t", formatTarget(session, pane), "Escape")
+func sendEscape(session string, win, pane int) error {
+	return runTmuxCommand("send-keys", "-t", formatTargetWin(session, win, pane), "Escape")
 }
 
 // sendKeys sends literal keys to a tmux pane.
-func sendKeys(session string, pane int, keys string) error {
-	return runTmuxCommand("send-keys", "-t", formatTarget(session, pane), "-l", keys)
+func sendKeys(session string, win, pane int, keys string) error {
+	return runTmuxCommand("send-keys", "-t", formatTargetWin(session, win, pane), "-l", keys)
 }
 
-// formatTarget creates a tmux target string for a session and pane.
+// formatTarget creates a tmux target string for a session and pane, assuming
+// window 1 (the historical single-window NTM layout). Retained for callers and
+// tests that do not carry a window index.
 func formatTarget(session string, pane int) string {
-	return session + ":1." + strconv.Itoa(pane)
+	return formatTargetWin(session, 1, pane)
+}
+
+// formatTargetWin creates a tmux target string for a session, window, and pane
+// (#172). A win < 1 is treated as window 1 to preserve the legacy behavior.
+func formatTargetWin(session string, win, pane int) string {
+	if win < 1 {
+		win = 1
+	}
+	return session + ":" + strconv.Itoa(win) + "." + strconv.Itoa(pane)
 }
 
 // runTmuxCommand executes a tmux command.
@@ -147,13 +160,13 @@ type HardKillResult struct {
 
 // hardKillAgent performs a forceful kill -9 on the agent process.
 // It should be called when soft exit methods fail.
-func hardKillAgent(session string, pane int, seq *RestartSequence) (*HardKillResult, error) {
+func hardKillAgent(session string, win, pane int, seq *RestartSequence) (*HardKillResult, error) {
 	result := &HardKillResult{
 		KillMethod: "kill_9",
 	}
 
 	// Step 1: Get shell PID from tmux
-	shellPID, err := getShellPID(session, pane)
+	shellPID, err := getShellPID(session, win, pane)
 	if err != nil {
 		return result, wrapError("failed to get shell PID", err)
 	}
@@ -182,9 +195,12 @@ func hardKillAgent(session string, pane int, seq *RestartSequence) (*HardKillRes
 
 // getShellPID retrieves the PID of the shell process in a tmux pane.
 // Uses: tmux list-panes -t session:window -F '#{pane_index} #{pane_pid}'
-func getShellPID(session string, pane int) (int, error) {
-	// Use window 1 format (NTM uses window 1 for agents)
-	target := session + ":1"
+// win is the pane's tmux window index (#172); win < 1 falls back to window 1.
+func getShellPID(session string, win, pane int) (int, error) {
+	if win < 1 {
+		win = 1
+	}
+	target := session + ":" + strconv.Itoa(win)
 	cmd := exec.Command(tmux.BinaryPath(), "list-panes", "-t", target, "-F", "#{pane_index} #{pane_pid}")
 	output, err := cmd.Output()
 	if err != nil {

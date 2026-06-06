@@ -455,6 +455,63 @@ func TestSelectSendTargetsUsesParsedPaneTypeAndAliases(t *testing.T) {
 	}
 }
 
+// TestSelectSendTargetsWindowAware covers the #172 fix: on a multi-window /
+// window-per-agent layout a bare --panes index selects the agent in that WINDOW
+// (no broadcast, no no-op), and keys are the round-trippable "window.pane"
+// address. Single-window behavior keeps the bare-index key.
+func TestSelectSendTargetsWindowAware(t *testing.T) {
+	// Window-per-agent layout: three windows, each a single pane at index 0.
+	panes := []tmux.Pane{
+		{ID: "%1", Index: 0, WindowIndex: 0, Type: tmux.AgentUser, Title: "operator"},
+		{ID: "%2", Index: 0, WindowIndex: 1, Type: tmux.AgentClaude, Title: "s__cc_1"},
+		{ID: "%3", Index: 0, WindowIndex: 2, Type: tmux.AgentCodex, Title: "s__cod_1"},
+	}
+
+	// --panes=2 targets exactly the agent in window 2 (was: no-op).
+	targets, keys := selectSendTargets(panes, SendOptions{Panes: []string{"2"}}, map[string]bool{})
+	if len(targets) != 1 || targets[0].ID != "%3" {
+		t.Fatalf("--panes=2 targets = %v, want single %%3", targets)
+	}
+	if !reflect.DeepEqual(keys, []string{"2.0"}) {
+		t.Fatalf("--panes=2 keys = %v, want [2.0]", keys)
+	}
+
+	// --panes=1 targets exactly window 1 (was: broadcast to every window).
+	targets, _ = selectSendTargets(panes, SendOptions{Panes: []string{"1"}}, map[string]bool{})
+	if len(targets) != 1 || targets[0].ID != "%2" {
+		t.Fatalf("--panes=1 targets = %v, want single %%2 (no broadcast)", targets)
+	}
+
+	// Explicit window.pane and %N addresses resolve precisely.
+	targets, _ = selectSendTargets(panes, SendOptions{Panes: []string{"2.0"}}, map[string]bool{})
+	if len(targets) != 1 || targets[0].ID != "%3" {
+		t.Fatalf("--panes=2.0 targets = %v, want %%3", targets)
+	}
+	targets, _ = selectSendTargets(panes, SendOptions{Panes: []string{"%2"}}, map[string]bool{})
+	if len(targets) != 1 || targets[0].ID != "%2" {
+		t.Fatalf("--panes=%%2 targets = %v, want %%2", targets)
+	}
+}
+
+func TestParseRestartPaneKey(t *testing.T) {
+	tests := []struct {
+		key      string
+		wantWin  int
+		wantPane int
+	}{
+		{"2", -1, 2},   // single-window bare index -> window unknown
+		{"1.0", 1, 0},  // multi-window window.pane
+		{"3.2", 3, 2},  // multi-window window.pane
+		{"bad", -1, 0}, // unparseable -> window unknown, pane 0
+	}
+	for _, tt := range tests {
+		gotWin, gotPane := parseRestartPaneKey(tt.key)
+		if gotWin != tt.wantWin || gotPane != tt.wantPane {
+			t.Errorf("parseRestartPaneKey(%q) = (%d,%d), want (%d,%d)", tt.key, gotWin, gotPane, tt.wantWin, tt.wantPane)
+		}
+	}
+}
+
 // TestSendOptionsTargetFiltering tests target filtering logic
 func TestSendOptionsTargetFiltering(t *testing.T) {
 	tests := []struct {

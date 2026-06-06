@@ -125,10 +125,13 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 		paneFilterMap[p] = true
 	}
 
+	// Topology-aware keys (#172): on a multi-window session every key is the
+	// canonical "window.pane" address so panes never collapse onto one entry.
+	multiWindow := paneSessionIsMultiWindow(panes)
 	targetPanes := selectInterruptTargets(panes, paneFilterMap, opts.All)
 	targetKeys := make([]string, 0, len(targetPanes))
 	for _, pane := range targetPanes {
-		targetKeys = append(targetKeys, fmt.Sprintf("%d", pane.Index))
+		targetKeys = append(targetKeys, paneTargetKey(pane, multiWindow))
 	}
 
 	if len(targetPanes) == 0 {
@@ -148,7 +151,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 	// Capture previous state for each pane before interrupting
 	for _, pane := range targetPanes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		paneKey := paneTargetKey(pane, multiWindow)
 
 		captured, err := tmux.CapturePaneOutput(pane.ID, 20)
 		if err != nil {
@@ -180,7 +183,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	if opts.DryRun {
 		output.DryRun = true
 		for _, pane := range targetPanes {
-			paneKey := fmt.Sprintf("%d", pane.Index)
+			paneKey := paneTargetKey(pane, multiWindow)
 			output.WouldAffect = append(output.WouldAffect, paneKey)
 		}
 		output.CompletedAt = time.Now().UTC()
@@ -191,7 +194,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 
 	// Send Ctrl+C to all targets
 	for _, pane := range targetPanes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
+		paneKey := paneTargetKey(pane, multiWindow)
 		prevState := output.PreviousStates[paneKey]
 
 		// Skip if not forced and already idle
@@ -239,7 +242,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 				// Find the pane
 				var targetPane *tmux.Pane
 				for i := range targetPanes {
-					if fmt.Sprintf("%d", targetPanes[i].Index) == paneKey {
+					if paneTargetKey(targetPanes[i], multiWindow) == paneKey {
 						targetPane = &targetPanes[i]
 						break
 					}
@@ -298,7 +301,7 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			// Find the pane
 			var targetPane *tmux.Pane
 			for i := range targetPanes {
-				if fmt.Sprintf("%d", targetPanes[i].Index) == paneKey {
+				if paneTargetKey(targetPanes[i], multiWindow) == paneKey {
 					targetPane = &targetPanes[i]
 					break
 				}
@@ -347,9 +350,10 @@ func markInterruptFailures(opts InterruptOptions, output *InterruptOutput) {
 // caller can re-target, and warns that on multi-window layouts a window-local
 // --panes index may need a window.pane address.
 func interruptEmptyTargetHint(opts InterruptOptions, panes []tmux.Pane) string {
+	multiWindow := paneSessionIsMultiWindow(panes)
 	existing := make([]string, 0, len(panes))
 	for _, p := range panes {
-		existing = append(existing, fmt.Sprintf("%d", p.Index))
+		existing = append(existing, paneTargetKey(p, multiWindow))
 	}
 	var b strings.Builder
 	if len(opts.Panes) > 0 {
@@ -377,11 +381,18 @@ func PrintInterrupt(opts InterruptOptions) error {
 
 func selectInterruptTargets(panes []tmux.Pane, paneFilterMap map[string]bool, all bool) []tmux.Pane {
 	hasPaneFilter := len(paneFilterMap) > 0
+	// Match the filter topology-aware (#172): on a multi-window / window-per-agent
+	// layout a bare --panes index selects a whole window rather than broadcasting
+	// to every window's same-indexed pane (or no-op'ing when the index is the
+	// window number).
+	multiWindow := paneSessionIsMultiWindow(panes)
+	filterTokens := make([]string, 0, len(paneFilterMap))
+	for k := range paneFilterMap {
+		filterTokens = append(filterTokens, k)
+	}
 	var targetPanes []tmux.Pane
 	for _, pane := range panes {
-		paneKey := fmt.Sprintf("%d", pane.Index)
-
-		if hasPaneFilter && !paneFilterMap[paneKey] && !paneFilterMap[pane.ID] {
+		if hasPaneFilter && !paneMatchesAnyToken(pane, filterTokens, multiWindow) {
 			continue
 		}
 
