@@ -294,7 +294,7 @@ This is also called by the installed hook script.`,
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	cmd.Flags().BoolVar(&failOnWarning, "fail-on-warning", true, "Fail on warnings")
-	cmd.Flags().IntVar(&timeout, "timeout", 60, "Timeout in seconds")
+	cmd.Flags().IntVar(&timeout, "timeout", 120, "Timeout in seconds")
 
 	return cmd
 }

@@ -33,7 +33,7 @@ func DefaultPreCommitConfig() PreCommitConfig {
 		MaxCritical:   0,
 		MaxWarning:    0,
 		FailOnWarning: true,
-		Timeout:       60 * time.Second,
+		Timeout:       120 * time.Second,
 		Verbose:       false,
 		SkipEmpty:     true,
 	}

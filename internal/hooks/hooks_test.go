@@ -151,8 +151,8 @@ func TestDefaultPreCommitConfig(t *testing.T) {
 	if !cfg.FailOnWarning {
 		t.Error("FailOnWarning should be true")
 	}
-	if cfg.Timeout != 60*time.Second {
-		t.Errorf("Timeout = %v, want 60s", cfg.Timeout)
+	if cfg.Timeout != 120*time.Second {
+		t.Errorf("Timeout = %v, want 120s", cfg.Timeout)
 	}
 	if cfg.Verbose {
 		t.Error("Verbose should be false")

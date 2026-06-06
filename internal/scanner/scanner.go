@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -27,6 +26,38 @@ const MaxScanOutputBytes = 10 * 1024 * 1024
 // Scanner wraps the UBS command-line tool.
 type Scanner struct {
 	binaryPath string
+}
+
+// limitedOutputBuffer keeps scanner output bounded without returning a write
+// error to os/exec's copy goroutine. Returning an error here would turn an
+// oversized scan output into a process/run error; instead Scan reports the
+// existing ErrOutputTooLarge sentinel after cmd.Run returns.
+type limitedOutputBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *limitedOutputBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		b.exceeded = true
+		return len(p), nil
+	}
+
+	remaining := b.limit - b.Len()
+	if remaining <= 0 {
+		b.exceeded = true
+		return len(p), nil
+	}
+
+	if len(p) > remaining {
+		b.exceeded = true
+		_, _ = b.Buffer.Write(p[:remaining])
+		return len(p), nil
+	}
+
+	_, _ = b.Buffer.Write(p)
+	return len(p), nil
 }
 
 // New creates a new Scanner instance.
@@ -71,46 +102,25 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 	cmd := exec.CommandContext(ctx, s.binaryPath, args...)
 	cmd.WaitDelay = 2 * time.Second
 
-	// Capture stderr separately
+	// Capture stdout/stderr without StdoutPipe. cmd.Run starts the process,
+	// drains stdout while it is running, and waits only after the copy completes.
+	// This avoids read-after-Wait / closed-pipe races while preserving the
+	// MaxScanOutputBytes memory cap.
+	var stdout limitedOutputBuffer
+	stdout.limit = MaxScanOutputBytes + 1
 	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("creating stdout pipe: %w", err)
-	}
-
 	startTime := time.Now()
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting ubs: %w", err)
-	}
-
-	// Ensure process is cleaned up if we return early (e.g. read error)
-	// We need to ensure we don't double-wait or double-kill in the success path.
-	// We will handle cleanup explicitly in error paths or rely on Wait() at the end.
-	// But defer is safer.
-	var waitDone bool
-	defer func() {
-		if !waitDone && cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait() // Reap the zombie
-		}
-	}()
-
-	// Read output with limit
-	output, err := io.ReadAll(io.LimitReader(stdoutPipe, MaxScanOutputBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("reading output: %w", err)
-	}
+	waitErr := cmd.Run()
+	duration := time.Since(startTime)
+	output := stdout.Bytes()
 
 	// Check if output exceeded limit
-	if len(output) > MaxScanOutputBytes {
+	if stdout.exceeded || len(output) > MaxScanOutputBytes {
 		return nil, ErrOutputTooLarge
 	}
-
-	waitErr := cmd.Wait()
-	waitDone = true
-	duration := time.Since(startTime)
 
 	// Check for timeout
 	if ctx.Err() == context.DeadlineExceeded {
