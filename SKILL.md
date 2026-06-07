@@ -146,6 +146,27 @@ ntm changes conflicts myproject
 ntm resume myproject
 ```
 
+Checkpoint as an operator cadence, not only as a last-resort recovery tool:
+
+```bash
+ntm checkpoint save myproject -m "after spawn and prompt receipt"
+ntm checkpoint save myproject -m "after restore and prompt receipt"
+ntm checkpoint save myproject -m "after investigation: root cause isolated"
+ntm checkpoint save myproject -m "before risky edits: auth refactor"
+ntm checkpoint save myproject -m "after uncommitted edits before verification"
+ntm checkpoint save myproject -m "after green verification"
+ntm checkpoint save myproject -m "before merge, cleanup, or handoff"
+```
+
+Take these after spawn or restore once prompts are received, after useful investigation
+findings, before risky edits, after significant uncommitted edits before verification,
+after green verification, and before merge, cleanup, or handoff.
+
+Agent Mail may be an external MCP or service-manager process outside the `tmux` session.
+If Agent Mail and `tmux` fail together, do not assume `tmux` killed Agent Mail. Check the
+service manager, cgroup/process ancestry, memory or OOM signals, restart policy, and
+Agent Mail health before relaunching workers.
+
 Isolation options:
 
 ```bash

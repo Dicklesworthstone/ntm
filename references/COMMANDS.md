@@ -149,6 +149,43 @@ ntm changes conflicts myproject
 ntm resume myproject
 ```
 
+Use checkpoints as a normal operating cadence:
+
+```bash
+ntm checkpoint save myproject -m "after spawn and prompt receipt"
+ntm checkpoint save myproject -m "after restore and prompt receipt"
+ntm checkpoint save myproject -m "after investigation: database timeout isolated"
+ntm checkpoint save myproject -m "before risky edits: session restore path"
+ntm checkpoint save myproject -m "after uncommitted edits before verification"
+ntm checkpoint save myproject -m "after green verification"
+ntm checkpoint save myproject -m "before merge, cleanup, or handoff"
+```
+
+Good checkpoint moments are after spawn or restore once prompts are received, after
+useful investigation findings, before risky edits, after significant uncommitted edits
+before verification, after green verification, and before merge, cleanup, or handoff.
+
+When recovering coordination, remember that Agent Mail may run outside `tmux` as an
+external MCP server or service-managed process. If `tmux` and Agent Mail are both down
+or degraded, do not infer a single failure boundary. Check process ownership and health
+before relaunching workers:
+
+```bash
+# If Agent Mail is managed by systemd user services on this host
+systemctl --user status mcp-agent-mail.service
+journalctl --user -u mcp-agent-mail.service -n 100 --no-pager
+
+# Confirm parentage, cgroup, and memory kill pressure for a known PID
+ps -o pid,ppid,stat,cmd -p <pid>
+cat /proc/<pid>/cgroup
+cat /proc/<pid>/oom_score /proc/<pid>/oom_score_adj
+dmesg -T | tail -n 100
+```
+
+Look for service restart state, parent process, cgroup, OOM or memory-pressure signals,
+and MCP health before deciding whether to restart Agent Mail, restore NTM sessions, or
+send more work to agents.
+
 Worktree-specific commands when repo policy allows them:
 
 ```bash
