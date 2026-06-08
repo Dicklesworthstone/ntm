@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -592,16 +593,11 @@ func runSessionsRestore(savedName string, opts session.RestoreOptions, attach, l
 	agentCount := 0
 	if launchAgents {
 		if cfg != nil {
-			cmds := session.AgentCommands{
-				Claude:   cfg.Agents.Claude,
-				Codex:    cfg.Agents.Codex,
-				Gemini:   cfg.Agents.Gemini,
-				Cursor:   cfg.Agents.Cursor,
-				Windsurf: cfg.Agents.Windsurf,
-				Aider:    cfg.Agents.Aider,
-				Opencode: cfg.Agents.Opencode,
-				Ollama:   cfg.Agents.Ollama,
-			}
+			// Render the agent command templates before launching: the raw
+			// cfg.Agents.* values are Go templates and must not be sent into a
+			// pane verbatim (a literal `{{memLimitPrefix}} claude ...` would fail
+			// to exec and the agent would never launch).
+			cmds := buildAgentCommands(state)
 			launchErr = session.RestoreAgents(restoredName, state, cmds)
 		}
 		agentCount = state.Agents.Total()
@@ -714,6 +710,58 @@ func (r *SessionsResumeResult) Text(w io.Writer) error {
 
 func (r *SessionsResumeResult) JSON() interface{} { return r }
 
+// buildAgentCommands renders each configured agent command template into a
+// concrete, shell-ready command for the given saved session. The config values
+// (cfg.Agents.*) are Go text/template strings (e.g. `{{memLimitPrefix}} claude
+// --dangerously-skip-permissions{{if .Model}} --model {{shellQuote .Model}}{{end}}`).
+// They MUST be rendered before being sent into a pane via send-keys — otherwise
+// the shell tries to exec a literal command named `{{memLimitPrefix}}` and the
+// agent never launches. This mirrors the spawn paths (controller.go, add.go,
+// init.go, auth/restart.go) which all render via config.GenerateAgentCommand.
+//
+// Rendering uses session-level template vars (session name + project dir); the
+// fresh-launch fallback does not request a specific model, so the no-model
+// branch of each template is taken. A render failure for any single agent is
+// non-fatal: that agent's command is left empty so the restore/resume path
+// simply skips launching it rather than sending a broken template into a pane.
+func buildAgentCommands(state *session.SessionState) session.AgentCommands {
+	if cfg == nil || state == nil {
+		return session.AgentCommands{}
+	}
+
+	vars := config.AgentTemplateVars{
+		SessionName: state.Name,
+		ProjectDir:  state.WorkDir,
+		PaneIndex:   1,
+	}
+
+	render := func(tmpl, agentType string) string {
+		if tmpl == "" {
+			return ""
+		}
+		v := vars
+		v.AgentType = agentType
+		rendered, err := config.GenerateAgentCommand(tmpl, v)
+		if err != nil {
+			// Leave empty so the launch path skips this agent rather than
+			// sending an unrendered template into the pane.
+			return ""
+		}
+		return rendered
+	}
+
+	return session.AgentCommands{
+		Claude:   render(cfg.Agents.Claude, "cc"),
+		Codex:    render(cfg.Agents.Codex, "cod"),
+		Gemini:   render(cfg.Agents.Gemini, "gmi"),
+		Cursor:   render(cfg.Agents.Cursor, "cursor"),
+		Windsurf: render(cfg.Agents.Windsurf, "windsurf"),
+		Aider:    render(cfg.Agents.Aider, "aider"),
+		Opencode: render(cfg.Agents.Opencode, "opencode"),
+		Ollama:   render(cfg.Agents.Ollama, "ollama"),
+	}
+}
+
 func runSessionsResume(savedName, name string, force, attach, preferCASR bool) error {
 	emitFailure := func(result *SessionsResumeResult) error {
 		if encErr := output.New(output.WithJSON(jsonOutput)).Output(result); encErr != nil {
@@ -734,19 +782,9 @@ func runSessionsResume(savedName, name string, force, attach, preferCASR bool) e
 		return emitFailure(&SessionsResumeResult{Success: false, SavedName: savedName, Error: err.Error()})
 	}
 
-	cmds := session.AgentCommands{}
-	if cfg != nil {
-		cmds = session.AgentCommands{
-			Claude:   cfg.Agents.Claude,
-			Codex:    cfg.Agents.Codex,
-			Gemini:   cfg.Agents.Gemini,
-			Cursor:   cfg.Agents.Cursor,
-			Windsurf: cfg.Agents.Windsurf,
-			Aider:    cfg.Agents.Aider,
-			Opencode: cfg.Agents.Opencode,
-			Ollama:   cfg.Agents.Ollama,
-		}
-	}
+	// Render the agent command templates before launching: the raw cfg.Agents.*
+	// values are Go templates and must not be sent into a pane verbatim.
+	cmds := buildAgentCommands(state)
 
 	res, err := session.Resume(state, cmds, session.ResumeOptions{
 		Name:       name,

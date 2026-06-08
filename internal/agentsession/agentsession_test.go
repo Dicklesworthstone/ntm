@@ -3,6 +3,7 @@ package agentsession
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,15 +32,27 @@ func TestResumeProvider(t *testing.T) {
 
 func TestEncodeClaudeProjectDir(t *testing.T) {
 	cases := map[string]string{
-		"/data/projects/ntm":  "-data-projects-ntm",
-		"/home/u/my.app":      "-home-u-my-app",
-		"/a/b_c":              "-a-b-c",
-		"/data/projects/ntm/": "-data-projects-ntm", // trailing slash cleaned
+		"/data/projects/ntm": "-data-projects-ntm",
+		"/home/u/my.app":     "-home-u-my-app",
+		// Underscores must be PRESERVED — Claude Code does not transform them.
+		// Verified against live ~/.claude/projects: /data/projects/mcp_agent_mail
+		// encodes to -data-projects-mcp_agent_mail (underscore intact).
+		"/a/b_c":                            "-a-b_c",
+		"/data/projects/mcp_agent_mail":     "-data-projects-mcp_agent_mail",
+		"/data/projects/jeffreys-skills.md": "-data-projects-jeffreys-skills-md",
+		"/data/projects/ntm/":               "-data-projects-ntm", // trailing slash cleaned
 	}
 	for in, want := range cases {
 		if got := encodeClaudeProjectDir(in); got != want {
 			t.Errorf("encodeClaudeProjectDir(%q) = %q, want %q", in, got, want)
 		}
+	}
+
+	// Explicit regression guard for the underscore-collapse bug (#175): an
+	// earlier version mapped '_' -> '-', which could resolve to a *different*
+	// real project's directory and resume the wrong Claude session.
+	if got := encodeClaudeProjectDir("/data/projects/coding_agent_session_search"); strings.Contains(got, "_") == false {
+		t.Errorf("encodeClaudeProjectDir collapsed underscore: got %q, want underscores preserved", got)
 	}
 }
 

@@ -77,11 +77,19 @@ func Discover(agentType, workDir string) *Info {
 }
 
 // encodeClaudeProjectDir reproduces Claude Code's project-directory encoding:
-// the absolute cwd with path separators (and dots) replaced by '-'. e.g.
-// /data/projects/ntm -> -data-projects-ntm
+// the absolute cwd with path separators and dots replaced by '-'. Underscores
+// are PRESERVED (Claude Code does not transform them), e.g.
+//
+//	/data/projects/ntm              -> -data-projects-ntm
+//	/data/projects/mcp_agent_mail   -> -data-projects-mcp_agent_mail
+//	/data/projects/jeffreys-skills.md -> -data-projects-jeffreys-skills-md
+//
+// Collapsing '_' to '-' (as an earlier version did) made discoverClaude look in
+// the wrong directory and, when a hyphen-variant of another project existed,
+// could resolve to a DIFFERENT real project's dir — resuming the wrong session.
 func encodeClaudeProjectDir(workDir string) string {
 	cleaned := filepath.Clean(workDir)
-	replacer := strings.NewReplacer("/", "-", ".", "-", "_", "-")
+	replacer := strings.NewReplacer("/", "-", ".", "-")
 	return replacer.Replace(cleaned)
 }
 
