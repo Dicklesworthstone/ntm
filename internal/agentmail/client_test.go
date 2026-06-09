@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -29,6 +31,67 @@ func TestNewClient(t *testing.T) {
 	}
 	if c.bearerToken != "test-token" {
 		t.Errorf("expected token 'test-token', got %s", c.bearerToken)
+	}
+}
+
+func TestNewClient_LocalBaseURLUsesHTTPBearerToken(t *testing.T) {
+	t.Setenv("AGENT_MAIL_TOKEN", "remote-token")
+	t.Setenv("HTTP_BEARER_TOKEN", "local-token")
+
+	c := NewClient(WithBaseURL(DefaultBaseURL))
+
+	if c.bearerToken != "local-token" {
+		t.Errorf("bearerToken = %q, want local-token", c.bearerToken)
+	}
+}
+
+func TestNewClient_ExplicitTokenWinsForLoopbackURL(t *testing.T) {
+	t.Setenv("HTTP_BEARER_TOKEN", "local-token")
+
+	c := NewClient(WithBaseURL(DefaultBaseURL), WithToken("explicit-token"))
+
+	if c.bearerToken != "explicit-token" {
+		t.Errorf("bearerToken = %q, want explicit-token", c.bearerToken)
+	}
+}
+
+func TestNewClient_LocalFallbackReadsConfigEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_MAIL_URL", "https://agentmail.example.test/mcp/")
+	t.Setenv("AGENT_MAIL_TOKEN", "remote-token")
+	t.Setenv("HTTP_BEARER_TOKEN", "")
+
+	configDir := filepath.Join(home, ".config", "mcp-agent-mail")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.env"), []byte("HTTP_BEARER_TOKEN='local-config-token'\n"), 0o600); err != nil {
+		t.Fatalf("write config.env: %v", err)
+	}
+
+	c := NewClient(WithBaseURL(DefaultBaseURL))
+
+	if c.baseURL != DefaultBaseURL {
+		t.Errorf("baseURL = %q, want %q", c.baseURL, DefaultBaseURL)
+	}
+	if c.bearerToken != "local-config-token" {
+		t.Errorf("bearerToken = %q, want local-config-token", c.bearerToken)
+	}
+}
+
+func TestNewClient_RemoteBaseURLKeepsAgentMailToken(t *testing.T) {
+	t.Setenv("AGENT_MAIL_URL", "https://agentmail.example.test/mcp/")
+	t.Setenv("AGENT_MAIL_TOKEN", "remote-token")
+	t.Setenv("HTTP_BEARER_TOKEN", "local-token")
+
+	c := NewClient()
+
+	if c.baseURL != "https://agentmail.example.test/mcp/" {
+		t.Errorf("baseURL = %q, want remote URL", c.baseURL)
+	}
+	if c.bearerToken != "remote-token" {
+		t.Errorf("bearerToken = %q, want remote-token", c.bearerToken)
 	}
 }
 
