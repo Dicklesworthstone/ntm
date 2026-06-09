@@ -51,14 +51,18 @@ Examples:
 
 // LockResult represents the result of a lock operation.
 type LockResult struct {
-	Success   bool                            `json:"success"`
-	Session   string                          `json:"session"`
-	Agent     string                          `json:"agent"`
-	Granted   []agentmail.FileReservation     `json:"granted,omitempty"`
-	Conflicts []agentmail.ReservationConflict `json:"conflicts,omitempty"`
-	TTL       string                          `json:"ttl"`
-	ExpiresAt *time.Time                      `json:"expires_at,omitempty"`
-	Error     string                          `json:"error,omitempty"`
+	Success    bool                            `json:"success"`
+	Session    string                          `json:"session"`
+	Agent      string                          `json:"agent"`
+	ProjectKey string                          `json:"project_key,omitempty"`
+	Granted    []agentmail.FileReservation     `json:"granted,omitempty"`
+	Conflicts  []agentmail.ReservationConflict `json:"conflicts,omitempty"`
+	TTL        string                          `json:"ttl"`
+	ExpiresAt  *time.Time                      `json:"expires_at,omitempty"`
+	Error      string                          `json:"error,omitempty"`
+	ErrorCode  string                          `json:"error_code,omitempty"`
+	ReasonCode string                          `json:"reason_code,omitempty"`
+	NextAction string                          `json:"next_action,omitempty"`
 }
 
 func runLock(session string, patterns []string, reason, ttlStr string, shared bool) error {
@@ -82,7 +86,20 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 	}
 	if sessionAgent == nil {
 		if IsJSONOutput() {
-			result := LockResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			failure := locksSessionNotConfiguredFailure(
+				session,
+				projectKey,
+				fmt.Sprintf("ntm lock %s <patterns...> --json", locksShellQuote(session)),
+			)
+			result := LockResult{
+				Success:    false,
+				Session:    session,
+				ProjectKey: projectKey,
+				Error:      failure.Message,
+				ErrorCode:  failure.ErrorCode,
+				ReasonCode: failure.ReasonCode,
+				NextAction: failure.NextAction,
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -125,7 +142,7 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 		}
 	}
 
-	result := LockResult{Session: session, Agent: sessionAgent.AgentName, TTL: ttlStr}
+	result := LockResult{Session: session, Agent: sessionAgent.AgentName, ProjectKey: projectKey, TTL: ttlStr}
 
 	if err != nil {
 		if reservation != nil && len(reservation.Conflicts) > 0 {

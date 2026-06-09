@@ -53,9 +53,13 @@ type UnlockResult struct {
 	Success    bool       `json:"success"`
 	Session    string     `json:"session"`
 	Agent      string     `json:"agent"`
+	ProjectKey string     `json:"project_key,omitempty"`
 	Released   int        `json:"released"`
 	ReleasedAt *time.Time `json:"released_at,omitempty"`
 	Error      string     `json:"error,omitempty"`
+	ErrorCode  string     `json:"error_code,omitempty"`
+	ReasonCode string     `json:"reason_code,omitempty"`
+	NextAction string     `json:"next_action,omitempty"`
 	// Receipt is the wrapper-grade release receipt — populated only
 	// when the caller supplies `--pane` AND `--task-id`. Idempotent on
 	// already-released paths (AlreadyReleased=true, Released=false).
@@ -102,7 +106,20 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 	}
 	if sessionAgent == nil {
 		if IsJSONOutput() {
-			result := UnlockResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			failure := locksSessionNotConfiguredFailure(
+				session,
+				projectKey,
+				fmt.Sprintf("ntm unlock %s <patterns...> --json", locksShellQuote(session)),
+			)
+			result := UnlockResult{
+				Success:    false,
+				Session:    session,
+				ProjectKey: projectKey,
+				Error:      failure.Message,
+				ErrorCode:  failure.ErrorCode,
+				ReasonCode: failure.ReasonCode,
+				NextAction: failure.NextAction,
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -145,7 +162,7 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 		}
 	}
 
-	result := UnlockResult{Session: session, Agent: sessionAgent.AgentName}
+	result := UnlockResult{Session: session, Agent: sessionAgent.AgentName, ProjectKey: projectKey}
 	if releaseResult != nil && releaseResult.ReleasedAt != nil {
 		t := releaseResult.ReleasedAt.Time
 		result.ReleasedAt = &t

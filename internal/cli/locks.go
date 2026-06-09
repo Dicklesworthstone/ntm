@@ -834,14 +834,22 @@ type locksListFailure struct {
 }
 
 func locksListSessionNotConfiguredFailure(session, projectKey string) locksListFailure {
+	return locksSessionNotConfiguredFailure(
+		session,
+		projectKey,
+		fmt.Sprintf("ntm locks list %s --json", locksShellQuote(session)),
+	)
+}
+
+func locksSessionNotConfiguredFailure(session, projectKey, rerunCommand string) locksListFailure {
 	return locksListFailure{
 		Message:    "Session is not configured with an Agent Mail identity",
 		ErrorCode:  "session_not_configured",
 		ReasonCode: "session_not_configured",
 		NextAction: fmt.Sprintf(
-			"Run `%s`, then rerun `ntm locks list %s --json`.",
+			"Run `%s`, then rerun `%s`.",
 			locksListBootstrapCommand(projectKey),
-			locksShellQuote(session),
+			rerunCommand,
 		),
 	}
 }

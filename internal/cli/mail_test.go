@@ -1652,6 +1652,49 @@ func TestRunLockRefreshesStaleSessionAgentAndRetries(t *testing.T) {
 	}
 }
 
+func TestRunLockJSONClassifiesSessionNotConfigured(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+	isolateSessionAgentStorage(t)
+	jsonOutput = true
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Chdir(canonicalTempDir(t))
+
+	out, err := captureStdout(t, func() error {
+		return runLock("mysession", []string{"internal/**/*.go"}, "missing identity", "1h", false)
+	})
+	if err == nil {
+		t.Fatal("expected runLock to return json failure")
+	}
+
+	var result LockResult
+	if unmarshalErr := json.Unmarshal([]byte(out), &result); unmarshalErr != nil {
+		t.Fatalf("unmarshal LockResult: %v\noutput=%s", unmarshalErr, out)
+	}
+	if result.ProjectKey != projectKey {
+		t.Fatalf("project_key = %q, want %q", result.ProjectKey, projectKey)
+	}
+	if result.ErrorCode != "session_not_configured" || result.ReasonCode != "session_not_configured" {
+		t.Fatalf("error_code=%q reason_code=%q, want session_not_configured", result.ErrorCode, result.ReasonCode)
+	}
+	if !strings.Contains(result.NextAction, "ntm init '"+projectKey+"' --non-interactive --json") {
+		t.Fatalf("next_action missing bootstrap command: %q", result.NextAction)
+	}
+	if !strings.Contains(result.NextAction, "ntm lock 'mysession' <patterns...> --json") {
+		t.Fatalf("next_action missing lock rerun command: %q", result.NextAction)
+	}
+}
+
 func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
@@ -1839,6 +1882,49 @@ func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	}
 	if got := stub.releaseCalls[0].Project; got != projectKey {
 		t.Fatalf("expected release project %q, got %q", projectKey, got)
+	}
+}
+
+func TestRunUnlockJSONClassifiesSessionNotConfigured(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+	isolateSessionAgentStorage(t)
+	jsonOutput = true
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Chdir(canonicalTempDir(t))
+
+	out, err := captureStdout(t, func() error {
+		return runUnlock("mysession", []string{"internal/cli/*.go"}, false, -1, "")
+	})
+	if err == nil {
+		t.Fatal("expected runUnlock to return json failure")
+	}
+
+	var result UnlockResult
+	if unmarshalErr := json.Unmarshal([]byte(out), &result); unmarshalErr != nil {
+		t.Fatalf("unmarshal UnlockResult: %v\noutput=%s", unmarshalErr, out)
+	}
+	if result.ProjectKey != projectKey {
+		t.Fatalf("project_key = %q, want %q", result.ProjectKey, projectKey)
+	}
+	if result.ErrorCode != "session_not_configured" || result.ReasonCode != "session_not_configured" {
+		t.Fatalf("error_code=%q reason_code=%q, want session_not_configured", result.ErrorCode, result.ReasonCode)
+	}
+	if !strings.Contains(result.NextAction, "ntm init '"+projectKey+"' --non-interactive --json") {
+		t.Fatalf("next_action missing bootstrap command: %q", result.NextAction)
+	}
+	if !strings.Contains(result.NextAction, "ntm unlock 'mysession' <patterns...> --json") {
+		t.Fatalf("next_action missing unlock rerun command: %q", result.NextAction)
 	}
 }
 
