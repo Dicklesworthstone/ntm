@@ -4746,6 +4746,124 @@ func TestSetProjectsBase_RelativePath(t *testing.T) {
 	}
 }
 
+func TestSetAgentMailURL_ValidPreservesExistingConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ntm.toml")
+	existing := `projects_base = "/keep/projects"
+
+[alerts]
+enabled = true
+`
+	if err := os.WriteFile(configPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	wantURL := "https://agentmail.zeststream.ai/mcp/"
+	if err := SetAgentMailURL(configPath, wantURL); err != nil {
+		t.Fatalf("SetAgentMailURL: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AgentMail.URL != wantURL {
+		t.Fatalf("AgentMail.URL = %q, want %q", cfg.AgentMail.URL, wantURL)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	contents := string(data)
+	for _, want := range []string{
+		`projects_base = "/keep/projects"`,
+		"[alerts]",
+		"enabled = true",
+		"[agent_mail]",
+		`url = "https://agentmail.zeststream.ai/mcp/"`,
+	} {
+		if !strings.Contains(contents, want) {
+			t.Fatalf("config missing %q:\n%s", want, contents)
+		}
+	}
+}
+
+func TestSetAgentMailURL_UpdatesExistingSection(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ntm.toml")
+	existing := `[agent_mail]
+url = "http://old.example/mcp/"
+auto_register = false
+
+[alerts]
+enabled = true
+`
+	if err := os.WriteFile(configPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	wantURL := "http://127.0.0.1:8765/mcp/"
+	if err := SetAgentMailURL(configPath, wantURL); err != nil {
+		t.Fatalf("SetAgentMailURL: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	contents := string(data)
+	if strings.Count(contents, `url = "`) != 1 {
+		t.Fatalf("expected one agent_mail url line, got:\n%s", contents)
+	}
+	if !strings.Contains(contents, `url = "http://127.0.0.1:8765/mcp/"`) {
+		t.Fatalf("updated URL missing:\n%s", contents)
+	}
+	if !strings.Contains(contents, "auto_register = false") {
+		t.Fatalf("agent_mail sibling key was not preserved:\n%s", contents)
+	}
+}
+
+func TestSetAgentMailURL_RejectsMalformedAndCredentialURLs(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "ntm.toml")
+
+	if err := SetAgentMailURL(configPath, "not-a-url"); err == nil {
+		t.Fatal("expected malformed URL error")
+	}
+
+	secretURL := "https://user:secret@example.test/mcp/"
+	err := SetAgentMailURL(configPath, secretURL)
+	if err == nil {
+		t.Fatal("expected credential URL error")
+	}
+	errText := err.Error()
+	for _, forbidden := range []string{"user", "secret", secretURL} {
+		if strings.Contains(errText, forbidden) {
+			t.Fatalf("credential URL error leaked %q: %s", forbidden, errText)
+		}
+	}
+
+	if _, statErr := os.Stat(configPath); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected URL should not create config, stat err = %v", statErr)
+	}
+}
+
+func TestValidateRejectsInvalidAgentMailURL(t *testing.T) {
+	cfg := Default()
+	cfg.AgentMail.URL = "ftp://agentmail.example/mcp/"
+
+	errs := Validate(cfg)
+	if len(errs) == 0 {
+		t.Fatal("expected Validate() to reject invalid agent_mail.url")
+	}
+
+	joined := fmt.Sprint(errs)
+	if !strings.Contains(joined, "agent_mail.url") {
+		t.Fatalf("Validate() errors = %v, want agent_mail.url", errs)
+	}
+}
+
 // =============================================================================
 // Config Reset tests
 // =============================================================================

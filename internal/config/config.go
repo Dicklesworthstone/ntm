@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -4063,6 +4064,68 @@ func SetProjectsBase(configPath, path string) error {
 	return nil
 }
 
+// SetValue sets a supported configuration key in the config file at configPath.
+func SetValue(configPath, key, value string) error {
+	switch strings.TrimSpace(key) {
+	case "projects_base":
+		return SetProjectsBase(configPath, value)
+	case "agent_mail.url":
+		return SetAgentMailURL(configPath, value)
+	default:
+		return fmt.Errorf("unsupported config key %q (supported: projects_base, agent_mail.url)", key)
+	}
+}
+
+// SetAgentMailURL sets [agent_mail].url in the config file at configPath.
+func SetAgentMailURL(configPath, rawURL string) error {
+	validatedURL, err := ValidateAgentMailURL(rawURL)
+	if err != nil {
+		return err
+	}
+
+	if configPath == "" {
+		configPath = DefaultPath()
+	}
+
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	var fileContents string
+	if data, err := os.ReadFile(configPath); err == nil {
+		fileContents = string(data)
+	}
+
+	fileContents = upsertTOMLSectionKey(fileContents, "agent_mail", "url", validatedURL)
+
+	if err := util.AtomicWriteFile(configPath, []byte(fileContents), 0644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+
+	return nil
+}
+
+// ValidateAgentMailURL validates a configured Agent Mail endpoint.
+func ValidateAgentMailURL(rawURL string) (string, error) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "", fmt.Errorf("agent_mail.url cannot be empty")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("agent_mail.url must be an absolute http(s) URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("agent_mail.url must use http or https")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("agent_mail.url must not include credentials; configure tokens separately")
+	}
+	return trimmed, nil
+}
+
 // upsertTOMLKey updates or inserts a top-level TOML key.
 func upsertTOMLKey(contents, key, value string) string {
 	lines := strings.Split(contents, "\n")
@@ -4101,6 +4164,57 @@ func upsertTOMLKey(contents, key, value string) string {
 		}
 	}
 
+	result := strings.Join(lines, "\n")
+	if !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+	return result
+}
+
+func upsertTOMLSectionKey(contents, section, key, value string) string {
+	lines := strings.Split(contents, "\n")
+	sectionHeader := "[" + section + "]"
+	sectionStart := -1
+	sectionEnd := len(lines)
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == sectionHeader {
+			sectionStart = i
+			continue
+		}
+		if sectionStart >= 0 && i > sectionStart && strings.HasPrefix(trimmed, "[") {
+			sectionEnd = i
+			break
+		}
+	}
+
+	newLine := fmt.Sprintf("%s = %q", key, value)
+	if sectionStart < 0 {
+		if strings.TrimSpace(contents) != "" && !strings.HasSuffix(contents, "\n") {
+			contents += "\n"
+		}
+		if strings.TrimSpace(contents) != "" {
+			contents += "\n"
+		}
+		return contents + sectionHeader + "\n" + newLine + "\n"
+	}
+
+	keyPrefix := key + " "
+	keyEquals := key + "="
+	for i := sectionStart + 1; i < sectionEnd; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, keyPrefix) || strings.HasPrefix(trimmed, keyEquals) {
+			lines[i] = newLine
+			result := strings.Join(lines, "\n")
+			if !strings.HasSuffix(result, "\n") {
+				result += "\n"
+			}
+			return result
+		}
+	}
+
+	lines = append(lines[:sectionEnd], append([]string{newLine}, lines[sectionEnd:]...)...)
 	result := strings.Join(lines, "\n")
 	if !strings.HasSuffix(result, "\n") {
 		result += "\n"
@@ -5802,6 +5916,12 @@ func Validate(cfg *Config) []error {
 		expanded := ExpandHome(cfg.ProjectsBase)
 		if !filepath.IsAbs(expanded) {
 			errs = append(errs, fmt.Errorf("projects_base: must be an absolute path, got %q", cfg.ProjectsBase))
+		}
+	}
+
+	if cfg.AgentMail.URL != "" {
+		if _, err := ValidateAgentMailURL(cfg.AgentMail.URL); err != nil {
+			errs = append(errs, fmt.Errorf("agent_mail.url: %w", err))
 		}
 	}
 

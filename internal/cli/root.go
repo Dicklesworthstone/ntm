@@ -4561,8 +4561,59 @@ func newConfigCmd() *cobra.Command {
 
 	// Add 'set' subcommand for easy configuration
 	setCmd := &cobra.Command{
-		Use:   "set",
+		Use:   "set <key> <value>",
 		Short: "Set configuration values",
+		Long: `Set configuration values by scoped key.
+
+Supported keys:
+  projects_base
+  agent_mail.url
+
+Examples:
+  ntm config set agent_mail.url https://agentmail.zeststream.ai/mcp/
+  ntm config set projects_base ~/Developer`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key := args[0]
+			value := args[1]
+			auditStart := time.Now()
+			_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.set", map[string]interface{}{
+				"phase":          "start",
+				"key":            key,
+				"correlation_id": auditCorrelationID,
+			}, nil)
+			if err := config.SetValue(selectedConfigPath(), key, value); err != nil {
+				_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.set", map[string]interface{}{
+					"phase":          "finish",
+					"key":            key,
+					"success":        false,
+					"error":          err.Error(),
+					"duration_ms":    time.Since(auditStart).Milliseconds(),
+					"correlation_id": auditCorrelationID,
+				}, nil)
+				return err
+			}
+			_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.set", map[string]interface{}{
+				"phase":          "finish",
+				"key":            key,
+				"success":        true,
+				"duration_ms":    time.Since(auditStart).Milliseconds(),
+				"correlation_id": auditCorrelationID,
+			}, nil)
+
+			if IsJSONOutput() {
+				return output.PrintJSON(map[string]interface{}{
+					"success":     true,
+					"key":         key,
+					"value":       value,
+					"config_path": selectedConfigPath(),
+				})
+			}
+
+			fmt.Printf("%s set to: %s\n", key, value)
+			fmt.Printf("Config saved to: %s\n", selectedConfigPath())
+			return nil
+		},
 	}
 
 	setCmd.AddCommand(&cobra.Command{
