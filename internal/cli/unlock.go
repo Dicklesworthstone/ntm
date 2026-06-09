@@ -113,19 +113,7 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
 	}
 
-	client := newAgentMailClient(projectKey)
-	if !client.IsAvailable() {
-		if IsJSONOutput() {
-			result := UnlockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: "Agent Mail server unavailable"}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if encErr := enc.Encode(result); encErr != nil {
-				return encErr
-			}
-			return jsonFailureExit()
-		}
-		return fmt.Errorf("agent mail server unavailable")
-	}
+	client := newAgentMailReservationClient(projectKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -146,11 +134,14 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 			}
 		}
 	}
+	zeroReleaseResidueClear := false
 	if err == nil && releaseResult != nil && !all && releaseResult.Released == 0 {
 		if fallbackResult, fallbackErr := releaseMatchingReservationIDs(ctx, client, projectKey, sessionAgent.AgentName, patterns); fallbackErr != nil {
 			err = fallbackErr
 		} else if fallbackResult != nil && fallbackResult.Released > 0 {
 			releaseResult = fallbackResult
+		} else if fallbackResult == nil {
+			zeroReleaseResidueClear = true
 		}
 	}
 
@@ -169,7 +160,7 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 			result.Error = "release returned no result"
 		} else {
 			result.Released = releaseResult.Released
-			if !all && result.Released == 0 {
+			if !all && result.Released == 0 && !zeroReleaseResidueClear {
 				result.Success = false
 				result.Error = fmt.Sprintf("released 0 reservations for %d requested pattern(s)", len(patterns))
 			} else {

@@ -204,7 +204,7 @@ func runLocksCheck(session, path string, pane int, taskID string) error {
 		agentName = sessionAgent.AgentName
 	}
 
-	client := newAgentMailClient(projectKey)
+	client := newAgentMailReservationClient(projectKey)
 	if !client.IsAvailable() {
 		result.Error = "Agent Mail server unavailable"
 		if IsJSONOutput() {
@@ -548,7 +548,7 @@ func runLocksAdvise(session string, allAgents bool) error {
 	var reservations []agentmail.FileReservation
 	agentMailUnavailable := false
 	agentMailErr := ""
-	client := newAgentMailClient(projectKey)
+	client := newAgentMailReservationClient(projectKey)
 	if !client.IsAvailable() {
 		agentMailUnavailable = true
 		agentMailErr = "Agent Mail server unavailable"
@@ -718,13 +718,15 @@ func printLocksAdviceResult(result LocksAdviceResult) error {
 
 // LocksResult contains the list of active file reservations.
 type LocksResult struct {
-	Success      bool                        `json:"success"`
-	Session      string                      `json:"session"`
-	Agent        string                      `json:"agent,omitempty"`
-	ProjectKey   string                      `json:"project_key"`
-	Reservations []agentmail.FileReservation `json:"reservations"`
-	Count        int                         `json:"count"`
-	Error        string                      `json:"error,omitempty"`
+	Success            bool                        `json:"success"`
+	Session            string                      `json:"session"`
+	Agent              string                      `json:"agent,omitempty"`
+	ProjectKey         string                      `json:"project_key"`
+	Reservations       []agentmail.FileReservation `json:"reservations"`
+	Count              int                         `json:"count"`
+	AgentMailAvailable bool                        `json:"agent_mail_available"`
+	Warning            string                      `json:"warning,omitempty"`
+	Error              string                      `json:"error,omitempty"`
 }
 
 func runLocks(session string, allAgents bool) error {
@@ -755,19 +757,8 @@ func runLocks(session string, allAgents bool) error {
 		agentName = sessionAgent.AgentName
 	}
 
-	client := newAgentMailClient(projectKey)
-	if !client.IsAvailable() {
-		if IsJSONOutput() {
-			result := LocksResult{Success: false, Session: session, Agent: agentName, ProjectKey: projectKey, Error: "Agent Mail server unavailable"}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if encErr := enc.Encode(result); encErr != nil {
-				return encErr
-			}
-			return jsonFailureExit()
-		}
-		return fmt.Errorf("agent mail server unavailable")
-	}
+	client := newAgentMailReservationClient(projectKey)
+	agentMailAvailable := client.IsAvailable()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -775,11 +766,15 @@ func runLocks(session string, allAgents bool) error {
 	reservations, err := fetchActiveReservations(ctx, client, projectKey, agentName, allAgents)
 
 	result := LocksResult{
-		Session:      session,
-		Agent:        agentName,
-		ProjectKey:   projectKey,
-		Reservations: reservations,
-		Count:        len(reservations),
+		Session:            session,
+		Agent:              agentName,
+		ProjectKey:         projectKey,
+		Reservations:       reservations,
+		Count:              len(reservations),
+		AgentMailAvailable: agentMailAvailable,
+	}
+	if !agentMailAvailable {
+		result.Warning = "Agent Mail health_check unavailable; attempted reservation list directly"
 	}
 
 	if err != nil {
@@ -966,7 +961,7 @@ func runForceRelease(session string, reservationID int, note string, notify, ski
 		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
 	}
 
-	client := newAgentMailClient(projectKey)
+	client := newAgentMailReservationClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
 			result := ForceReleaseResult{Success: false, Session: session, Agent: agentName, ReservationID: reservationID, Error: "Agent Mail server unavailable"}
@@ -1133,7 +1128,7 @@ func runRenewLocks(session string, extendMinutes int) error {
 		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
 	}
 
-	client := newAgentMailClient(projectKey)
+	client := newAgentMailReservationClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
 			result := RenewResult{Success: false, Session: session, Agent: agentName, Error: "Agent Mail server unavailable"}

@@ -46,7 +46,14 @@ func releaseMatchingReservationIDs(ctx context.Context, client *agentmail.Client
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return client.ReleaseReservations(ctx, projectKey, agentName, nil, ids)
+	result, err := client.ReleaseReservations(ctx, projectKey, agentName, nil, ids)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.Released == 0 {
+		return result, fmt.Errorf("release by visible reservation id returned 0: ids=%v", ids)
+	}
+	return result, nil
 }
 
 func matchingReservationIDs(reservations []agentmail.FileReservation, agentName string, patterns []string) []int {

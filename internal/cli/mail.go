@@ -249,6 +249,29 @@ func newAgentMailClient(projectKey string) *agentmail.Client {
 	return client
 }
 
+func newAgentMailReservationClient(projectKey string) *agentmail.Client {
+	client := newAgentMailClient(projectKey)
+	baseURL := client.BaseURL()
+	if baseURL == agentmail.DefaultBaseURL || strings.Contains(baseURL, "127.0.0.1") || strings.Contains(baseURL, "localhost") || strings.Contains(baseURL, "[::1]") {
+		return client
+	}
+	if client.IsAvailable() {
+		return client
+	}
+
+	local := agentmail.NewClient(
+		agentmail.WithProjectKey(projectKey),
+		agentmail.WithBaseURL(agentmail.DefaultBaseURL),
+	)
+	if projectKey != "" {
+		agentmail.HydrateClientTokensForProject(local, projectKey)
+	}
+	if agentmail.HasArchiveForProject(projectKey) || local.IsAvailable() {
+		return local
+	}
+	return client
+}
+
 func resolveAgentMailProjectKey(session string) (string, error) {
 	return resolveAgentMailProjectKeyWithPreference(session, true)
 }

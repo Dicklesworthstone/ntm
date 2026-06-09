@@ -339,14 +339,25 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 			}
 			granted := make([]map[string]interface{}, 0, len(call.Paths))
 			for i, path := range call.Paths {
+				reservation := agentmail.FileReservation{
+					ID:          i + 1,
+					PathPattern: path,
+					AgentName:   call.Agent,
+					ProjectID:   1,
+					Exclusive:   call.Exclusive,
+					Reason:      call.Reason,
+					ExpiresTS:   agentmail.FlexTime{Time: time.Date(2099, 2, 1, 1, 0, 0, 0, time.UTC)},
+					CreatedTS:   agentmail.FlexTime{Time: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)},
+				}
+				stub.reservations = append(stub.reservations, reservation)
 				granted = append(granted, map[string]interface{}{
-					"id":           i + 1,
-					"path_pattern": path,
-					"agent_name":   call.Agent,
-					"project_id":   1,
-					"exclusive":    call.Exclusive,
-					"reason":       call.Reason,
-					"expires_ts":   "2026-02-01T01:00:00Z",
+					"id":           reservation.ID,
+					"path_pattern": reservation.PathPattern,
+					"agent_name":   reservation.AgentName,
+					"project_id":   reservation.ProjectID,
+					"exclusive":    reservation.Exclusive,
+					"reason":       reservation.Reason,
+					"expires_ts":   "2099-02-01T01:00:00Z",
 					"created_ts":   "2026-02-01T00:00:00Z",
 				})
 			}
@@ -900,7 +911,20 @@ func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 	saveSessionAgentForTest(t, session, projectKey, agentName)
 
 	stub := newMailStub(t, nil)
-	stub.releaseResult = agentmail.ReleaseReservationsResult{Released: 0}
+	stub.reservations = []agentmail.FileReservation{
+		{
+			ID:          42,
+			AgentName:   agentName,
+			PathPattern: "internal/cli/*.go",
+			Exclusive:   true,
+			CreatedTS:   agentmail.FlexTime{Time: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)},
+			ExpiresTS:   agentmail.FlexTime{Time: time.Date(2099, 2, 1, 1, 0, 0, 0, time.UTC)},
+		},
+	}
+	stub.releaseResults = []agentmail.ReleaseReservationsResult{
+		{Released: 0},
+		{Released: 0},
+	}
 	defer stub.Close()
 
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
@@ -909,14 +933,17 @@ func TestRunUnlockErrorsOnZeroSpecificRelease(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unlock to fail when no requested reservations were released")
 	}
-	if !strings.Contains(err.Error(), "released 0 reservations") {
+	if !strings.Contains(err.Error(), "release by visible reservation id returned 0: ids=[42]") {
 		t.Fatalf("expected zero-release error, got %v", err)
 	}
-	if len(stub.releaseCalls) != 1 {
-		t.Fatalf("expected one release call, got %d", len(stub.releaseCalls))
+	if len(stub.releaseCalls) != 2 {
+		t.Fatalf("expected path release plus id fallback, got %d", len(stub.releaseCalls))
 	}
 	if got := stub.releaseCalls[0].Paths; len(got) != 1 || got[0] != "internal/cli/*.go" {
 		t.Fatalf("expected release call for requested pattern, got %v", got)
+	}
+	if got := stub.releaseCalls[1].IDs; len(got) != 1 || got[0] != 42 {
+		t.Fatalf("expected fallback release by id 42, got %v", got)
 	}
 }
 
@@ -1744,6 +1771,8 @@ func TestRunUnlockFallsBackToMatchingReservationIDsOnZeroPathRelease(t *testing.
 			AgentName:   agentName,
 			PathPattern: path,
 			Exclusive:   true,
+			CreatedTS:   agentmail.FlexTime{Time: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)},
+			ExpiresTS:   agentmail.FlexTime{Time: time.Date(2099, 2, 1, 1, 0, 0, 0, time.UTC)},
 		},
 	}
 	stub.releaseResults = []agentmail.ReleaseReservationsResult{
