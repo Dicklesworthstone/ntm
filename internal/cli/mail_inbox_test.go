@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -214,6 +215,107 @@ func TestRunMailInbox(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunMailInboxJSONUnavailableWritesFailureEnvelope(t *testing.T) {
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	err := runMailInbox(cmd, &MockMailClient{Available: false}, "", false, "", false, 10, true)
+	if !errors.Is(err, errJSONFailure) {
+		t.Fatalf("runMailInbox() error = %v, want JSON failure exit", err)
+	}
+
+	var got mailInboxFailure
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("parse failure JSON: %v\n%s", err, buf.String())
+	}
+	if got.Success {
+		t.Fatalf("Success = true, want false: %+v", got)
+	}
+	if got.ErrorCode != "AGENT_MAIL_SERVER_UNAVAILABLE" {
+		t.Fatalf("ErrorCode = %q", got.ErrorCode)
+	}
+	if got.Operation != "health_check" || got.Endpoint != "tools/call:health_check" {
+		t.Fatalf("operation/endpoint = %q/%q", got.Operation, got.Endpoint)
+	}
+	if got.MailAPIStatus != "unavailable" {
+		t.Fatalf("MailAPIStatus = %q", got.MailAPIStatus)
+	}
+	if got.ReservationAPIStatus != "not_checked_by_mail_inbox" {
+		t.Fatalf("ReservationAPIStatus = %q", got.ReservationAPIStatus)
+	}
+	if got.BoundedTimeoutSeconds != int(mailInboxTimeout/time.Second) {
+		t.Fatalf("BoundedTimeoutSeconds = %d", got.BoundedTimeoutSeconds)
+	}
+}
+
+func TestRunMailInboxJSONFetchTimeoutWritesMailOnlyDiagnostic(t *testing.T) {
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	client := &MockMailClient{
+		Available: true,
+		ProjKey:   "/test/project",
+		Agents: []agentmail.Agent{
+			{Name: "BlueLake"},
+		},
+		FetchInboxErr: agentmail.NewAPIError("fetch_inbox", 0, agentmail.ErrTimeout),
+	}
+
+	err := runMailInbox(cmd, client, "", false, "", false, 10, true)
+	if !errors.Is(err, errJSONFailure) {
+		t.Fatalf("runMailInbox() error = %v, want JSON failure exit", err)
+	}
+
+	var got mailInboxFailure
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("parse failure JSON: %v\n%s", err, buf.String())
+	}
+	if got.ErrorCode != "AGENT_MAIL_FETCH_INBOX_TIMEOUT" {
+		t.Fatalf("ErrorCode = %q", got.ErrorCode)
+	}
+	if got.Operation != "fetch_inbox" || got.Endpoint != "tools/call:fetch_inbox" {
+		t.Fatalf("operation/endpoint = %q/%q", got.Operation, got.Endpoint)
+	}
+	if got.Agent != "BlueLake" {
+		t.Fatalf("Agent = %q", got.Agent)
+	}
+	if got.MailAPIStatus != "degraded" {
+		t.Fatalf("MailAPIStatus = %q", got.MailAPIStatus)
+	}
+	if got.ReservationAPIStatus != "not_checked_by_mail_inbox" {
+		t.Fatalf("ReservationAPIStatus = %q", got.ReservationAPIStatus)
+	}
+}
+
+func TestRunMailInboxJSONEmptyInboxWritesArray(t *testing.T) {
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	client := &MockMailClient{
+		Available: true,
+		ProjKey:   "/test/project",
+		Agents: []agentmail.Agent{
+			{Name: "BlueLake"},
+		},
+		Inboxes: map[string][]agentmail.InboxMessage{},
+	}
+
+	if err := runMailInbox(cmd, client, "", false, "", false, 10, true); err != nil {
+		t.Fatalf("runMailInbox() error = %v", err)
+	}
+
+	var got []aggregatedMessage
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("parse empty inbox JSON: %v\n%s", err, buf.String())
+	}
+	if len(got) != 0 {
+		t.Fatalf("len(empty inbox) = %d", len(got))
 	}
 }
 

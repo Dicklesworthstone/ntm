@@ -53,9 +53,13 @@ type UnlockResult struct {
 	Success    bool       `json:"success"`
 	Session    string     `json:"session"`
 	Agent      string     `json:"agent"`
+	ProjectKey string     `json:"project_key,omitempty"`
 	Released   int        `json:"released"`
 	ReleasedAt *time.Time `json:"released_at,omitempty"`
 	Error      string     `json:"error,omitempty"`
+	ErrorCode  string     `json:"error_code,omitempty"`
+	ReasonCode string     `json:"reason_code,omitempty"`
+	NextAction string     `json:"next_action,omitempty"`
 	// Receipt is the wrapper-grade release receipt — populated only
 	// when the caller supplies `--pane` AND `--task-id`. Idempotent on
 	// already-released paths (AlreadyReleased=true, Released=false).
@@ -102,7 +106,20 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 	}
 	if sessionAgent == nil {
 		if IsJSONOutput() {
-			result := UnlockResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			failure := locksSessionNotConfiguredFailure(
+				session,
+				projectKey,
+				fmt.Sprintf("ntm unlock %s <patterns...> --json", locksShellQuote(session)),
+			)
+			result := UnlockResult{
+				Success:    false,
+				Session:    session,
+				ProjectKey: projectKey,
+				Error:      failure.Message,
+				ErrorCode:  failure.ErrorCode,
+				ReasonCode: failure.ReasonCode,
+				NextAction: failure.NextAction,
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -113,19 +130,7 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
 	}
 
-	client := newAgentMailClient(projectKey)
-	if !client.IsAvailable() {
-		if IsJSONOutput() {
-			result := UnlockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: "Agent Mail server unavailable"}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if encErr := enc.Encode(result); encErr != nil {
-				return encErr
-			}
-			return jsonFailureExit()
-		}
-		return fmt.Errorf("agent mail server unavailable")
-	}
+	client := newAgentMailReservationClient(projectKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -136,7 +141,28 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 	}
 
 	releaseResult, err := client.ReleaseReservations(ctx, projectKey, sessionAgent.AgentName, pathsToRelease, nil)
-	result := UnlockResult{Session: session, Agent: sessionAgent.AgentName}
+	if err != nil {
+		if refreshed, recovered, recoverErr := refreshReservationSessionAgent(ctx, client, session, projectKey, err); recovered {
+			if recoverErr != nil {
+				err = fmt.Errorf("%w; recovery failed: %v", err, recoverErr)
+			} else {
+				sessionAgent = refreshed
+				releaseResult, err = client.ReleaseReservations(ctx, projectKey, sessionAgent.AgentName, pathsToRelease, nil)
+			}
+		}
+	}
+	zeroReleaseResidueClear := false
+	if err == nil && releaseResult != nil && !all && releaseResult.Released == 0 {
+		if fallbackResult, fallbackErr := releaseMatchingReservationIDs(ctx, client, projectKey, sessionAgent.AgentName, patterns); fallbackErr != nil {
+			err = fallbackErr
+		} else if fallbackResult != nil && fallbackResult.Released > 0 {
+			releaseResult = fallbackResult
+		} else if fallbackResult == nil {
+			zeroReleaseResidueClear = true
+		}
+	}
+
+	result := UnlockResult{Session: session, Agent: sessionAgent.AgentName, ProjectKey: projectKey}
 	if releaseResult != nil && releaseResult.ReleasedAt != nil {
 		t := releaseResult.ReleasedAt.Time
 		result.ReleasedAt = &t
@@ -151,7 +177,7 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 			result.Error = "release returned no result"
 		} else {
 			result.Released = releaseResult.Released
-			if !all && result.Released == 0 {
+			if !all && result.Released == 0 && !zeroReleaseResidueClear {
 				result.Success = false
 				result.Error = fmt.Sprintf("released 0 reservations for %d requested pattern(s)", len(patterns))
 			} else {

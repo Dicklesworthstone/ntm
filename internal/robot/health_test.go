@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -627,6 +628,207 @@ func TestProcessCheckResult(t *testing.T) {
 			}
 			if tt.result.Crashed != tt.crashed {
 				t.Errorf("Crashed = %v, want %v", tt.result.Crashed, tt.crashed)
+			}
+		})
+	}
+}
+
+func TestPaneCommandImpliesLiveProcess(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{"empty", "", false},
+		{"zsh shell", "zsh", false},
+		{"bash path", "/bin/bash", false},
+		{"tmux", "tmux", false},
+		{"node wrapper", "node", true},
+		{"absolute node", "/opt/homebrew/bin/node", true},
+		{"claude direct", "claude", true},
+		{"codex direct", "codex", true},
+		{"numeric claude wrapper", "2.1.168", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := paneCommandImpliesLiveProcess(tt.command); got != tt.want {
+				t.Fatalf("paneCommandImpliesLiveProcess(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReconcilePIDNoChildWithLivePaneCommand(t *testing.T) {
+	tests := []struct {
+		name          string
+		result        *ProcessCheckResult
+		command       string
+		wantChanged   bool
+		wantRunning   bool
+		wantCrashed   bool
+		wantReasonHas string
+	}{
+		{
+			name: "alive-as-alive when raw pane command is live",
+			result: &ProcessCheckResult{
+				Running: false,
+				Crashed: true,
+				Reason:  pidNoChildReason,
+			},
+			command:       "node",
+			wantChanged:   true,
+			wantRunning:   true,
+			wantCrashed:   false,
+			wantReasonHas: pidProjectionStaleLiveCommandReason,
+		},
+		{
+			name: "dead-as-dead when raw pane command is shell",
+			result: &ProcessCheckResult{
+				Running: false,
+				Crashed: true,
+				Reason:  pidNoChildReason,
+			},
+			command:       "zsh",
+			wantChanged:   false,
+			wantRunning:   false,
+			wantCrashed:   true,
+			wantReasonHas: pidNoChildReason,
+		},
+		{
+			name: "dead-as-dead when explicit crash evidence already won",
+			result: &ProcessCheckResult{
+				Running:    false,
+				Crashed:    true,
+				ExitStatus: "shell prompt",
+				Reason:     "detected shell prompt - agent may have crashed",
+			},
+			command:       "node",
+			wantChanged:   false,
+			wantRunning:   false,
+			wantCrashed:   true,
+			wantReasonHas: "detected shell prompt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changed := reconcilePIDNoChildWithLivePaneCommand(tt.result, tt.command)
+			if changed != tt.wantChanged {
+				t.Fatalf("changed = %v, want %v", changed, tt.wantChanged)
+			}
+			if tt.result.Running != tt.wantRunning {
+				t.Fatalf("Running = %v, want %v", tt.result.Running, tt.wantRunning)
+			}
+			if tt.result.Crashed != tt.wantCrashed {
+				t.Fatalf("Crashed = %v, want %v", tt.result.Crashed, tt.wantCrashed)
+			}
+			if tt.wantReasonHas != "" && !containsSubstr(tt.result.Reason, tt.wantReasonHas) {
+				t.Fatalf("Reason = %q, want to contain %q", tt.result.Reason, tt.wantReasonHas)
+			}
+		})
+	}
+}
+
+func TestHealthProjectionFreshnessFromProcess(t *testing.T) {
+	check := &ProcessCheckResult{
+		Running: true,
+		Crashed: false,
+		Reason:  pidProjectionStaleLiveCommandReason + ": node",
+	}
+
+	projection := healthProjectionFreshnessFromProcess(check, "skillos", 6, "%191")
+	if projection == nil {
+		t.Fatal("expected projection freshness metadata")
+	}
+	if projection.Status != "reconciled_stale_projection" {
+		t.Fatalf("Status = %q", projection.Status)
+	}
+	if projection.ReasonCode != pidProjectionStaleLiveCommandReason {
+		t.Fatalf("ReasonCode = %q", projection.ReasonCode)
+	}
+	if projection.Source != "tmux.pane_current_command" {
+		t.Fatalf("Source = %q", projection.Source)
+	}
+	if projection.StaleAfterSec != healthProjectionStaleAfterSec {
+		t.Fatalf("StaleAfterSec = %d", projection.StaleAfterSec)
+	}
+	if !containsSubstr(projection.RawSurfaceCommand, "%191") {
+		t.Fatalf("RawSurfaceCommand = %q, want pane id", projection.RawSurfaceCommand)
+	}
+	if projection.RecommendedNextCommand != "ntm --robot-inspect-pane=skillos --inspect-index=6" {
+		t.Fatalf("RecommendedNextCommand = %q", projection.RecommendedNextCommand)
+	}
+
+	if got := healthProjectionFreshnessFromProcess(&ProcessCheckResult{Reason: pidNoChildReason}, "skillos", 6, "%191"); got != nil {
+		t.Fatalf("expected nil projection for unreconciled PID failure, got %+v", got)
+	}
+}
+
+func TestClassifyPaneDeliverability(t *testing.T) {
+	tests := []struct {
+		name           string
+		status         *paneInputProbeStatus
+		statusErr      error
+		probeErr       error
+		wantStatus     string
+		wantReasonCode string
+		wantRecovery   string
+	}{
+		{
+			name:           "deliverable",
+			status:         &paneInputProbeStatus{},
+			wantStatus:     "deliverable",
+			wantReasonCode: "",
+		},
+		{
+			name:           "dead pane",
+			status:         &paneInputProbeStatus{Dead: true},
+			wantStatus:     "non_deliverable",
+			wantReasonCode: "pane_dead",
+			wantRecovery:   "Restart",
+		},
+		{
+			name:           "input off",
+			status:         &paneInputProbeStatus{InputOff: true},
+			wantStatus:     "non_deliverable",
+			wantReasonCode: "pane_input_off",
+			wantRecovery:   "Re-enable",
+		},
+		{
+			name:           "probe not in mode failure",
+			status:         &paneInputProbeStatus{},
+			probeErr:       errors.New("tmux send-keys failed: not in a mode"),
+			wantStatus:     "non_deliverable",
+			wantReasonCode: SendFailureClassPaneInputMode,
+			wantRecovery:   "Exit tmux mode",
+		},
+		{
+			name:           "status probe failed",
+			statusErr:      errors.New("display-message failed"),
+			wantStatus:     "unknown",
+			wantReasonCode: "pane_input_status_probe_failed",
+			wantRecovery:   "Check tmux pane metadata",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyPaneDeliverability("flywheel", 1, "%1", tt.status, tt.statusErr, tt.probeErr)
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", got.Status, tt.wantStatus)
+			}
+			if got.ReasonCode != tt.wantReasonCode {
+				t.Fatalf("ReasonCode = %q, want %q", got.ReasonCode, tt.wantReasonCode)
+			}
+			if tt.wantRecovery != "" && !containsSubstr(got.RecoveryHint, tt.wantRecovery) {
+				t.Fatalf("RecoveryHint = %q, want to contain %q", got.RecoveryHint, tt.wantRecovery)
+			}
+			if !containsSubstr(got.RawSurfaceCommand, "%1") {
+				t.Fatalf("RawSurfaceCommand = %q, want pane id", got.RawSurfaceCommand)
+			}
+			if !containsSubstr(got.RecommendedNextCommand, "ntm send flywheel --pane=1 --json --dry-run") {
+				t.Fatalf("RecommendedNextCommand = %q, want dry-run send command", got.RecommendedNextCommand)
 			}
 		})
 	}

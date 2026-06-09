@@ -23,8 +23,9 @@ import (
 )
 
 var (
-	doctorVerbose bool
-	doctorJSON    bool
+	doctorVerbose                    bool
+	doctorJSON                       bool
+	checkAgentMailServerHealthDoctor = tools.CheckAgentMailServerHealthWithToken
 )
 
 func newDoctorCmd() *cobra.Command {
@@ -107,12 +108,27 @@ type DepCheck struct {
 
 // DaemonCheck represents a daemon health check result
 type DaemonCheck struct {
-	Name    string `json:"name"`
-	Running bool   `json:"running"`
-	Port    int    `json:"port,omitempty"`
-	PID     int    `json:"pid,omitempty"`
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
+	Name              string                       `json:"name"`
+	Running           bool                         `json:"running"`
+	Port              int                          `json:"port,omitempty"`
+	PID               int                          `json:"pid,omitempty"`
+	Status            string                       `json:"status"`
+	Message           string                       `json:"message,omitempty"`
+	AgentMailEndpoint *AgentMailEndpointDiagnostic `json:"agent_mail_endpoint,omitempty"`
+}
+
+// AgentMailEndpointDiagnostic explains the endpoint ntm doctor probed.
+type AgentMailEndpointDiagnostic struct {
+	ConfiguredURL          string `json:"configured_url,omitempty"`
+	Status                 string `json:"status,omitempty"`
+	Message                string `json:"message,omitempty"`
+	HealthStatus           string `json:"health_status,omitempty"`
+	HealthLevel            string `json:"health_level,omitempty"`
+	RecoveryMode           string `json:"recovery_mode,omitempty"`
+	LocalFallbackURL       string `json:"local_fallback_url"`
+	LocalFallbackAvailable bool   `json:"local_fallback_available"`
+	LocalFallbackStatus    string `json:"local_fallback_status,omitempty"`
+	RemediationCommand     string `json:"remediation_command,omitempty"`
 }
 
 // ConfigCheck represents a configuration check result
@@ -261,13 +277,23 @@ func checkTools(ctx context.Context) []ToolCheck {
 				}
 			}
 
-			// Health check
-			if health, err := adapter.Health(ctx); err == nil && health.Healthy {
-				check.Status = "ok"
-				check.Message = check.Version
+			if health, err := adapter.Health(ctx); err == nil {
+				if health.Healthy {
+					check.Status = "ok"
+					check.Message = check.Version
+				} else {
+					check.Status = "warning"
+					check.Message = strings.TrimSpace(health.Message)
+					if check.Message == "" {
+						check.Message = "health check failed"
+					}
+				}
 			} else {
 				check.Status = "warning"
 				check.Message = "health check failed"
+				if err != nil {
+					check.Message = "health check failed: " + strings.TrimSpace(err.Error())
+				}
 			}
 		} else {
 			if check.Required {
@@ -386,6 +412,7 @@ func checkDaemons(ctx context.Context) []DaemonCheck {
 			check.Running = true
 			check.Status = "ok"
 			check.Message = fmt.Sprintf("listening on port %d", dp.port)
+			enrichAgentMailDaemonCheck(ctx, &check)
 		} else {
 			check.Running = false
 			check.Status = "ok"
@@ -396,6 +423,82 @@ func checkDaemons(ctx context.Context) []DaemonCheck {
 	}
 
 	return checks
+}
+
+func enrichAgentMailDaemonCheck(ctx context.Context, check *DaemonCheck) {
+	if check == nil || check.Name != "agent-mail" || !check.Running {
+		return
+	}
+	serverURL, token := configuredAgentMailHealthScope()
+	health := checkAgentMailServerHealthDoctor(ctx, serverURL, token)
+	check.Status = health.DoctorStatus
+	check.Message = health.Message
+	check.AgentMailEndpoint = buildAgentMailEndpointDiagnostic(ctx, serverURL, health)
+	if check.AgentMailEndpoint.RemediationCommand != "" {
+		check.Message = strings.TrimSpace(check.Message)
+		if check.Message != "" {
+			check.Message += "; "
+		}
+		check.Message += "remediation: " + check.AgentMailEndpoint.RemediationCommand
+	}
+}
+
+const agentMailLocalEndpointURL = "http://127.0.0.1:8765/mcp/"
+
+func buildAgentMailEndpointDiagnostic(ctx context.Context, configuredURL string, health tools.AgentMailServerHealth) *AgentMailEndpointDiagnostic {
+	diag := &AgentMailEndpointDiagnostic{
+		ConfiguredURL:          strings.TrimSpace(configuredURL),
+		Status:                 health.DoctorStatus,
+		Message:                health.Message,
+		HealthStatus:           health.HealthStatus,
+		HealthLevel:            health.HealthLevel,
+		RecoveryMode:           health.RecoveryMode,
+		LocalFallbackURL:       agentMailLocalEndpointURL,
+		LocalFallbackAvailable: false,
+	}
+	if diag.ConfiguredURL == "" {
+		diag.ConfiguredURL = "http://127.0.0.1:8765"
+	}
+
+	if sameAgentMailEndpoint(diag.ConfiguredURL, agentMailLocalEndpointURL) {
+		diag.LocalFallbackAvailable = health.Healthy
+		diag.LocalFallbackStatus = health.DoctorStatus
+		return diag
+	}
+
+	localHealth := checkAgentMailServerHealthDoctor(ctx, agentMailLocalEndpointURL, "")
+	diag.LocalFallbackAvailable = localHealth.Healthy
+	diag.LocalFallbackStatus = localHealth.DoctorStatus
+	if !health.Healthy && localHealth.Healthy {
+		diag.RemediationCommand = "ntm config set agent_mail.url http://127.0.0.1:8765/mcp/ --json"
+	}
+
+	return diag
+}
+
+func sameAgentMailEndpoint(a, b string) bool {
+	return normalizeAgentMailEndpoint(a) == normalizeAgentMailEndpoint(b)
+}
+
+func normalizeAgentMailEndpoint(raw string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(raw), "/")
+	normalized = strings.TrimSuffix(normalized, "/mcp")
+	return normalized
+}
+
+func configuredAgentMailHealthScope() (string, string) {
+	serverURL := "http://127.0.0.1:8765"
+	token := ""
+	if cfg == nil {
+		return serverURL, token
+	}
+	if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
+		serverURL = cfg.AgentMail.URL
+	}
+	if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
+		token = cfg.AgentMail.Token
+	}
+	return serverURL, token
 }
 
 func checkConfiguration() []ConfigCheck {

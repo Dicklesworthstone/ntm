@@ -125,6 +125,41 @@ func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "activity only",
+			args: []string{"ntm", "--robot-activity=flywheel"},
+			want: false,
+		},
+		{
+			name: "activity with separate value spelling",
+			args: []string{"ntm", "--robot-activity", "flywheel"},
+			want: false,
+		},
+		{
+			name: "slb pending only",
+			args: []string{"ntm", "--robot-slb-pending"},
+			want: false,
+		},
+		{
+			name: "robot send dry run",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe", "--dry-run"},
+			want: false,
+		},
+		{
+			name: "robot send dry run true value",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe", "--dry-run=true"},
+			want: false,
+		},
+		{
+			name: "robot send dry run false is stateful",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe", "--dry-run=false"},
+			want: true,
+		},
+		{
+			name: "robot send without dry run is stateful",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe"},
+			want: true,
+		},
+		{
 			name: "stateful robot flag",
 			args: []string{"ntm", "--robot-status"},
 			want: true,
@@ -132,6 +167,11 @@ func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
 		{
 			name: "stateful flag still wins when mixed",
 			args: []string{"ntm", "--robot-overlay", "--robot-status"},
+			want: true,
+		},
+		{
+			name: "activity skip loses to stateful flag when mixed",
+			args: []string{"ntm", "--robot-activity=flywheel", "--robot-status"},
 			want: true,
 		},
 	}
@@ -4881,6 +4921,136 @@ func TestConfigSetProjectsBaseUsesGlobalConfigFlag(t *testing.T) {
 	}
 	if _, err := os.Stat(expectedDefaultPath); !os.IsNotExist(err) {
 		t.Fatalf("default config path should remain untouched, stat err = %v", err)
+	}
+}
+
+func TestConfigSetAgentMailURLUsesGlobalConfigFlag(t *testing.T) {
+	resetFlags()
+	oldCfg, oldCfgFile := cfg, cfgFile
+	cfg = nil
+	cfgFile = ""
+	startup.ResetConfig()
+	cfgHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	expectedDefaultPath := filepath.Join(cfgHome, "ntm", "config.toml")
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		startup.ResetConfig()
+	})
+
+	run := func(args ...string) (string, error) {
+		resetFlags()
+		cfg = nil
+		cfgFile = ""
+		startup.ResetConfig()
+		return captureStdout(t, func() error {
+			rootCmd.SetArgs(args)
+			return rootCmd.Execute()
+		})
+	}
+
+	customPath := filepath.Join(t.TempDir(), "custom", "ntm.toml")
+	wantURL := "https://agentmail.zeststream.ai/mcp/"
+	setOut, err := run("--config", customPath, "--json", "config", "set", "agent_mail.url", wantURL)
+	if err != nil {
+		t.Fatalf("config set agent_mail.url failed: %v\noutput=%s", err, setOut)
+	}
+	var setResp struct {
+		Success    bool   `json:"success"`
+		Key        string `json:"key"`
+		Value      string `json:"value"`
+		ConfigPath string `json:"config_path"`
+	}
+	if err := json.Unmarshal([]byte(setOut), &setResp); err != nil {
+		t.Fatalf("unmarshal set output: %v\noutput=%s", err, setOut)
+	}
+	if !setResp.Success || setResp.Key != "agent_mail.url" || setResp.Value != wantURL || setResp.ConfigPath != customPath {
+		t.Fatalf("unexpected set response: %+v", setResp)
+	}
+
+	getOut, err := run("--config", customPath, "--json", "config", "get", "agent_mail.url")
+	if err != nil {
+		t.Fatalf("config get agent_mail.url failed: %v\noutput=%s", err, getOut)
+	}
+	var getResp struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(getOut), &getResp); err != nil {
+		t.Fatalf("unmarshal get output: %v\noutput=%s", err, getOut)
+	}
+	if getResp.Key != "agent_mail.url" || getResp.Value != wantURL {
+		t.Fatalf("unexpected get response: %+v", getResp)
+	}
+
+	diffOut, err := run("--config", customPath, "--json", "config", "diff")
+	if err != nil {
+		t.Fatalf("config diff failed: %v\noutput=%s", err, diffOut)
+	}
+	var diffResp struct {
+		Count int                 `json:"count"`
+		Diffs []config.ConfigDiff `json:"diffs"`
+	}
+	if err := json.Unmarshal([]byte(diffOut), &diffResp); err != nil {
+		t.Fatalf("unmarshal diff output: %v\noutput=%s", err, diffOut)
+	}
+	foundAgentMailURL := false
+	for _, diff := range diffResp.Diffs {
+		if diff.Path == "agent_mail.url" && diff.Current == wantURL {
+			foundAgentMailURL = true
+			break
+		}
+	}
+	if !foundAgentMailURL {
+		t.Fatalf("config diff missing agent_mail.url=%q: %+v", wantURL, diffResp)
+	}
+
+	validateOut, err := run("--config", customPath, "--json", "config", "validate")
+	if err != nil {
+		t.Fatalf("config validate failed: %v\noutput=%s", err, validateOut)
+	}
+	var validation ValidationReport
+	if err := json.Unmarshal([]byte(validateOut), &validation); err != nil {
+		t.Fatalf("unmarshal validation output: %v\noutput=%s", err, validateOut)
+	}
+	if !validation.Valid || validation.Summary.ErrorCount != 0 {
+		t.Fatalf("validation should be valid, got %+v", validation)
+	}
+
+	if _, err := os.Stat(expectedDefaultPath); !os.IsNotExist(err) {
+		t.Fatalf("default config path should remain untouched, stat err = %v", err)
+	}
+}
+
+func TestConfigSetAgentMailURLRejectsCredentialURLWithoutLeakingSecret(t *testing.T) {
+	resetFlags()
+	oldCfg, oldCfgFile := cfg, cfgFile
+	cfg = nil
+	cfgFile = ""
+	startup.ResetConfig()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		cfgFile = oldCfgFile
+		startup.ResetConfig()
+	})
+
+	customPath := filepath.Join(t.TempDir(), "custom", "ntm.toml")
+	secretURL := "https://user:secret@example.test/mcp/"
+	out, err := captureStdout(t, func() error {
+		rootCmd.SetArgs([]string{"--config", customPath, "--json", "config", "set", "agent_mail.url", secretURL})
+		return rootCmd.Execute()
+	})
+	if err == nil {
+		t.Fatal("expected credential URL error")
+	}
+	for _, forbidden := range []string{"user", "secret", secretURL} {
+		if strings.Contains(err.Error(), forbidden) || strings.Contains(out, forbidden) {
+			t.Fatalf("credential URL leaked %q: err=%q output=%q", forbidden, err.Error(), out)
+		}
+	}
+	if _, statErr := os.Stat(customPath); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected URL should not create config, stat err = %v", statErr)
 	}
 }
 

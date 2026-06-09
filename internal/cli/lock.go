@@ -51,14 +51,18 @@ Examples:
 
 // LockResult represents the result of a lock operation.
 type LockResult struct {
-	Success   bool                            `json:"success"`
-	Session   string                          `json:"session"`
-	Agent     string                          `json:"agent"`
-	Granted   []agentmail.FileReservation     `json:"granted,omitempty"`
-	Conflicts []agentmail.ReservationConflict `json:"conflicts,omitempty"`
-	TTL       string                          `json:"ttl"`
-	ExpiresAt *time.Time                      `json:"expires_at,omitempty"`
-	Error     string                          `json:"error,omitempty"`
+	Success    bool                            `json:"success"`
+	Session    string                          `json:"session"`
+	Agent      string                          `json:"agent"`
+	ProjectKey string                          `json:"project_key,omitempty"`
+	Granted    []agentmail.FileReservation     `json:"granted,omitempty"`
+	Conflicts  []agentmail.ReservationConflict `json:"conflicts,omitempty"`
+	TTL        string                          `json:"ttl"`
+	ExpiresAt  *time.Time                      `json:"expires_at,omitempty"`
+	Error      string                          `json:"error,omitempty"`
+	ErrorCode  string                          `json:"error_code,omitempty"`
+	ReasonCode string                          `json:"reason_code,omitempty"`
+	NextAction string                          `json:"next_action,omitempty"`
 }
 
 func runLock(session string, patterns []string, reason, ttlStr string, shared bool) error {
@@ -82,7 +86,20 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 	}
 	if sessionAgent == nil {
 		if IsJSONOutput() {
-			result := LockResult{Success: false, Session: session, Error: "Session has no Agent Mail identity"}
+			failure := locksSessionNotConfiguredFailure(
+				session,
+				projectKey,
+				fmt.Sprintf("ntm lock %s <patterns...> --json", locksShellQuote(session)),
+			)
+			result := LockResult{
+				Success:    false,
+				Session:    session,
+				ProjectKey: projectKey,
+				Error:      failure.Message,
+				ErrorCode:  failure.ErrorCode,
+				ReasonCode: failure.ReasonCode,
+				NextAction: failure.NextAction,
+			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -93,19 +110,7 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 		return fmt.Errorf("session '%s' has no Agent Mail identity", session)
 	}
 
-	client := newAgentMailClient(projectKey)
-	if !client.IsAvailable() {
-		if IsJSONOutput() {
-			result := LockResult{Success: false, Session: session, Agent: sessionAgent.AgentName, Error: "Agent Mail server unavailable"}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if encErr := enc.Encode(result); encErr != nil {
-				return encErr
-			}
-			return jsonFailureExit()
-		}
-		return fmt.Errorf("agent mail server unavailable")
-	}
+	client := newAgentMailReservationClient(projectKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -120,8 +125,24 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 	}
 
 	reservation, err := client.ReservePaths(ctx, opts)
+	if err != nil {
+		if refreshed, recovered, recoverErr := refreshReservationSessionAgent(ctx, client, session, projectKey, err); recovered {
+			if recoverErr != nil {
+				err = fmt.Errorf("%w; recovery failed: %v", err, recoverErr)
+			} else {
+				sessionAgent = refreshed
+				opts.AgentName = refreshed.AgentName
+				reservation, err = client.ReservePaths(ctx, opts)
+			}
+		}
+	}
+	if err == nil {
+		if verifyErr := verifyGrantedReservationsVisible(ctx, client, projectKey, opts.AgentName, reservation); verifyErr != nil {
+			err = verifyErr
+		}
+	}
 
-	result := LockResult{Session: session, Agent: sessionAgent.AgentName, TTL: ttlStr}
+	result := LockResult{Session: session, Agent: sessionAgent.AgentName, ProjectKey: projectKey, TTL: ttlStr}
 
 	if err != nil {
 		if reservation != nil && len(reservation.Conflicts) > 0 {
@@ -154,6 +175,52 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 	}
 
 	return printLockResult(result, shared)
+}
+
+const reservationReadbackSettleDelay = 250 * time.Millisecond
+
+func verifyGrantedReservationsVisible(ctx context.Context, client *agentmail.Client, projectKey, agentName string, result *agentmail.ReservationResult) error {
+	if client == nil || result == nil || len(result.Granted) == 0 {
+		return nil
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(reservationReadbackSettleDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("reservation grant readback failed: %w", ctx.Err())
+			case <-timer.C:
+			}
+		}
+
+		reservations, err := client.ListReservations(ctx, projectKey, "", true)
+		if err != nil {
+			return fmt.Errorf("reservation grant readback failed: %w", err)
+		}
+		for _, granted := range result.Granted {
+			if !grantedReservationVisible(granted, reservations, agentName) {
+				return fmt.Errorf("reservation grant not stably visible after create: id=%d path=%q", granted.ID, granted.PathPattern)
+			}
+		}
+	}
+	return nil
+}
+
+func grantedReservationVisible(granted agentmail.FileReservation, reservations []agentmail.FileReservation, agentName string) bool {
+	for _, reservation := range reservations {
+		if granted.PathPattern != "" && reservation.PathPattern == granted.PathPattern {
+			if granted.ID > 0 && reservation.ID > 0 && reservation.ID != granted.ID {
+				continue
+			}
+			return agentName == "" || reservation.AgentName == "" || reservation.AgentName == agentName
+		}
+		if granted.PathPattern == "" && granted.ID > 0 && reservation.ID == granted.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func printLockResult(result LockResult, shared bool) error {

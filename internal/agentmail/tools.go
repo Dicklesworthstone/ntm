@@ -8,11 +8,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	pathpkg "path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+var listReservationsResourceTimeout = 2 * time.Second
 
 // attachTokenFromField adds a cached token to an MCP tool arg map.
 // Different Agent Mail tools use different token parameter names:
@@ -253,6 +257,9 @@ func (c *Client) FetchInbox(ctx context.Context, opts FetchInboxOptions) ([]Inbo
 	c.attachRegistrationToken(args)
 	result, err := c.callTool(ctx, "fetch_inbox", args)
 	if err != nil {
+		if archiveMessages, archiveErr := fetchInboxFromArchive(opts); archiveErr == nil {
+			return archiveMessages, nil
+		}
 		return nil, err
 	}
 
@@ -282,6 +289,194 @@ func (c *Client) FetchInbox(ctx context.Context, opts FetchInboxOptions) ([]Inbo
 		return nil, NewAPIError("fetch_inbox", 0, fmt.Errorf("unexpected response shape: %w", err))
 	}
 	return messages, nil
+}
+
+func fetchInboxFromArchive(opts FetchInboxOptions) ([]InboxMessage, error) {
+	if strings.TrimSpace(opts.ProjectKey) == "" || strings.TrimSpace(opts.AgentName) == "" {
+		return nil, fmt.Errorf("project_key and agent_name are required for inbox archive fallback")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, slug := range []string{ProjectSlugFromPath(opts.ProjectKey), legacyProjectSlugFromPath(opts.ProjectKey)} {
+		if slug == "" {
+			continue
+		}
+		projectDir := filepath.Join(homeDir, DefaultArchivePath, "projects", slug)
+		messages, err := readInboxArchiveProject(projectDir, opts)
+		if err == nil {
+			return messages, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("agent mail archive not found for project %q", opts.ProjectKey)
+}
+
+func readInboxArchiveProject(projectDir string, opts FetchInboxOptions) ([]InboxMessage, error) {
+	agentDir := filepath.Join(projectDir, "agents", opts.AgentName)
+	agentInfo, err := os.Stat(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	if !agentInfo.IsDir() {
+		return nil, fmt.Errorf("agent archive path is not a directory: %s", agentDir)
+	}
+
+	inboxDir := filepath.Join(agentDir, "inbox")
+	inboxInfo, err := os.Stat(inboxDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []InboxMessage{}, nil
+		}
+		return nil, err
+	}
+	if !inboxInfo.IsDir() {
+		return nil, fmt.Errorf("inbox archive path is not a directory: %s", inboxDir)
+	}
+
+	messages := []InboxMessage{}
+	err = filepath.WalkDir(inboxDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		message, err := parseInboxArchiveMessage(data, opts.AgentName, opts.IncludeBodies)
+		if err != nil {
+			return fmt.Errorf("parse inbox archive %s: %w", path, err)
+		}
+		if !inboxArchiveMessageMatches(message, opts) {
+			return nil
+		}
+		messages = append(messages, message)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(messages, func(i, j int) bool {
+		if !messages[i].CreatedTS.Equal(messages[j].CreatedTS.Time) {
+			return messages[i].CreatedTS.After(messages[j].CreatedTS.Time)
+		}
+		return messages[i].ID > messages[j].ID
+	})
+	if opts.Limit > 0 && len(messages) > opts.Limit {
+		messages = messages[:opts.Limit]
+	}
+	return messages, nil
+}
+
+func parseInboxArchiveMessage(data []byte, agentName string, includeBody bool) (InboxMessage, error) {
+	header, body, err := splitJSONArchiveMarkdown(data)
+	if err != nil {
+		return InboxMessage{}, err
+	}
+
+	var raw struct {
+		ID          int       `json:"id"`
+		From        string    `json:"from"`
+		To          []string  `json:"to"`
+		CC          []string  `json:"cc"`
+		BCC         []string  `json:"bcc"`
+		Subject     string    `json:"subject"`
+		Created     FlexTime  `json:"created"`
+		CreatedTS   FlexTime  `json:"created_ts"`
+		ThreadID    *string   `json:"thread_id"`
+		Importance  string    `json:"importance"`
+		AckRequired bool      `json:"ack_required"`
+		Kind        string    `json:"kind"`
+		ReadAt      *FlexTime `json:"read_at"`
+	}
+	if err := json.Unmarshal(header, &raw); err != nil {
+		return InboxMessage{}, err
+	}
+
+	created := raw.CreatedTS
+	if created.IsZero() {
+		created = raw.Created
+	}
+	kind := strings.TrimSpace(raw.Kind)
+	if kind == "" {
+		kind = archivedInboxKindForAgent(agentName, raw.To, raw.CC, raw.BCC)
+	}
+
+	message := InboxMessage{
+		ID:          raw.ID,
+		Subject:     raw.Subject,
+		From:        raw.From,
+		CreatedTS:   created,
+		ThreadID:    raw.ThreadID,
+		Importance:  raw.Importance,
+		AckRequired: raw.AckRequired,
+		Kind:        kind,
+		ReadAt:      raw.ReadAt,
+	}
+	if includeBody {
+		message.BodyMD = body
+	}
+	return message, nil
+}
+
+func splitJSONArchiveMarkdown(data []byte) ([]byte, string, error) {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---json\n") {
+		return nil, "", fmt.Errorf("missing ---json archive header")
+	}
+	rest := strings.TrimPrefix(text, "---json\n")
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return nil, "", fmt.Errorf("missing archive header terminator")
+	}
+	header := strings.TrimSpace(rest[:end])
+	body := strings.TrimLeft(rest[end+len("\n---"):], "\n")
+	return []byte(header), body, nil
+}
+
+func inboxArchiveMessageMatches(message InboxMessage, opts FetchInboxOptions) bool {
+	if opts.SinceTS != nil && !message.CreatedTS.IsZero() && message.CreatedTS.Before(*opts.SinceTS) {
+		return false
+	}
+	if opts.UrgentOnly {
+		importance := strings.ToLower(strings.TrimSpace(message.Importance))
+		return importance == "urgent" || importance == "high"
+	}
+	return true
+}
+
+func archivedInboxKindForAgent(agentName string, to, cc, bcc []string) string {
+	switch {
+	case stringSliceContains(to, agentName):
+		return "to"
+	case stringSliceContains(cc, agentName):
+		return "cc"
+	case stringSliceContains(bcc, agentName):
+		return "bcc"
+	default:
+		return "to"
+	}
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // MarkMessageRead marks a message as read for an agent.
@@ -612,7 +807,9 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 	// (usually an absolute path) URL-escaped for compatibility.
 	uri := fmt.Sprintf("resource://file_reservations/%s?active_only=true&format=json", url.PathEscape(projectKey))
 
-	result, err := c.ReadResource(ctx, uri)
+	resourceCtx, resourceCancel := context.WithTimeout(ctx, listReservationsResourceTimeout)
+	result, err := c.ReadResource(resourceCtx, uri)
+	resourceCancel()
 	if err != nil {
 		// Fallback for older Agent Mail deployments: try legacy tools.
 		args := map[string]interface{}{
@@ -626,11 +823,16 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 		}
 
 		c.attachRegistrationToken(args)
-		toolResult, toolErr := c.callTool(ctx, "list_file_reservations", args)
+		legacyCtx, legacyCancel := context.WithTimeout(ctx, listReservationsResourceTimeout)
+		defer legacyCancel()
+		toolResult, toolErr := c.callTool(legacyCtx, "list_file_reservations", args)
 		if toolErr != nil {
-			fallbackResult, fallbackErr := c.callTool(ctx, "list_reservations", args)
+			fallbackResult, fallbackErr := c.callTool(legacyCtx, "list_reservations", args)
 			if fallbackErr != nil {
-				return nil, err // return original resource error to make diagnosis clear
+				if archiveReservations, archiveErr := listReservationsFromArchive(projectKey, agentName, allAgents, time.Now()); archiveErr == nil {
+					return archiveReservations, nil
+				}
+				return nil, fmt.Errorf("listing reservations failed: resource=%v; list_file_reservations=%v; list_reservations=%v", err, toolErr, fallbackErr)
 			}
 			toolResult = fallbackResult
 		}
@@ -640,18 +842,7 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 			return nil, NewAPIError("list_file_reservations", 0, unmarshalErr)
 		}
 
-		// Some legacy tool implementations may ignore agent_name filtering. Mirror the
-		// resource path behavior and defensively filter client-side when requested.
-		if agentName != "" && !allAgents {
-			filtered := make([]FileReservation, 0, len(reservations))
-			for _, r := range reservations {
-				if r.AgentName == agentName {
-					filtered = append(filtered, r)
-				}
-			}
-			reservations = filtered
-		}
-		return reservations, nil
+		return filterActiveReservations(reservations, agentName, allAgents, time.Now()), nil
 	}
 
 	var resourceResp struct {
@@ -675,6 +866,7 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 		ID          int       `json:"id"`
 		Agent       string    `json:"agent"`
 		AgentName   string    `json:"agent_name"`
+		ProjectID   int       `json:"project_id"`
 		PathPattern string    `json:"path_pattern"`
 		Exclusive   bool      `json:"exclusive"`
 		Reason      string    `json:"reason"`
@@ -697,6 +889,7 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 			ID:          r.ID,
 			PathPattern: r.PathPattern,
 			AgentName:   name,
+			ProjectID:   r.ProjectID,
 			Exclusive:   r.Exclusive,
 			Reason:      r.Reason,
 			CreatedTS:   r.CreatedTS,
@@ -705,16 +898,109 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 		})
 	}
 
-	if agentName != "" && !allAgents {
-		filtered := make([]FileReservation, 0, len(reservations))
-		for _, r := range reservations {
-			if r.AgentName == agentName {
-				filtered = append(filtered, r)
-			}
+	reservations = filterActiveReservations(reservations, agentName, allAgents, time.Now())
+	return reservations, nil
+}
+
+func filterActiveReservations(reservations []FileReservation, agentName string, allAgents bool, now time.Time) []FileReservation {
+	filtered := make([]FileReservation, 0, len(reservations))
+	for _, r := range reservations {
+		if r.ReleasedTS != nil && !r.ReleasedTS.IsZero() {
+			continue
 		}
-		reservations = filtered
+		if r.ExpiresTS.IsZero() || !r.ExpiresTS.After(now) {
+			continue
+		}
+		if agentName != "" && !allAgents && r.AgentName != agentName {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	return filtered
+}
+
+func listReservationsFromArchive(projectKey, agentName string, allAgents bool, now time.Time) ([]FileReservation, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
 	}
 
+	var lastErr error
+	for _, slug := range []string{ProjectSlugFromPath(projectKey), legacyProjectSlugFromPath(projectKey)} {
+		if slug == "" {
+			continue
+		}
+		dir := filepath.Join(homeDir, DefaultArchivePath, "projects", slug, "file_reservations")
+		reservations, err := readReservationsArchiveDir(dir, agentName, allAgents, now)
+		if err == nil {
+			return reservations, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("agent mail archive not found for project %q", projectKey)
+}
+
+func readReservationsArchiveDir(dir, agentName string, allAgents bool, now time.Time) ([]FileReservation, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	reservations := make([]FileReservation, 0, len(entries))
+	seenIDs := make(map[int]bool)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var raw struct {
+			ID          int       `json:"id"`
+			Agent       string    `json:"agent"`
+			AgentName   string    `json:"agent_name"`
+			ProjectID   int       `json:"project_id"`
+			PathPattern string    `json:"path_pattern"`
+			Exclusive   bool      `json:"exclusive"`
+			Reason      string    `json:"reason"`
+			CreatedTS   FlexTime  `json:"created_ts"`
+			ExpiresTS   FlexTime  `json:"expires_ts"`
+			ReleasedTS  *FlexTime `json:"released_ts,omitempty"`
+		}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return nil, err
+		}
+		if raw.ID > 0 {
+			if seenIDs[raw.ID] {
+				continue
+			}
+			seenIDs[raw.ID] = true
+		}
+		name := raw.Agent
+		if name == "" {
+			name = raw.AgentName
+		}
+		reservations = append(reservations, FileReservation{
+			ID:          raw.ID,
+			PathPattern: raw.PathPattern,
+			AgentName:   name,
+			ProjectID:   raw.ProjectID,
+			Exclusive:   raw.Exclusive,
+			Reason:      raw.Reason,
+			CreatedTS:   raw.CreatedTS,
+			ExpiresTS:   raw.ExpiresTS,
+			ReleasedTS:  raw.ReleasedTS,
+		})
+	}
+
+	reservations = filterActiveReservations(reservations, agentName, allAgents, now)
+	sort.Slice(reservations, func(i, j int) bool {
+		return reservations[i].ID < reservations[j].ID
+	})
 	return reservations, nil
 }
 

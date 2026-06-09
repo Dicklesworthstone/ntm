@@ -472,7 +472,7 @@ func checkProcess(paneID string, shellPID int) *ProcessCheckResult {
 		// for better diagnostics (exit code, etc.)
 		result.Running = false
 		result.Crashed = true
-		result.Reason = "PID-based check: no living child process"
+		result.Reason = pidNoChildReason
 	}
 
 	// Capture pane output to check for exit indicators
@@ -538,7 +538,76 @@ func checkProcess(paneID string, shellPID int) *ProcessCheckResult {
 		}
 	}
 
+	if result.Crashed && result.Reason == pidNoChildReason {
+		command, err := paneCurrentCommand(paneID)
+		if err == nil && reconcilePIDNoChildWithLivePaneCommand(result, command) {
+			return result
+		}
+	}
+
 	return result
+}
+
+const (
+	pidNoChildReason                    = "PID-based check: no living child process"
+	pidProjectionStaleLiveCommandReason = "pid_projection_stale_live_pane_command"
+	healthProjectionStaleAfterSec       = 5
+)
+
+func paneCurrentCommand(paneID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", paneID, "#{pane_current_command}")
+}
+
+func reconcilePIDNoChildWithLivePaneCommand(result *ProcessCheckResult, command string) bool {
+	if result == nil || !result.Crashed || result.Reason != pidNoChildReason {
+		return false
+	}
+	if !paneCommandImpliesLiveProcess(command) {
+		return false
+	}
+	result.Running = true
+	result.Crashed = false
+	result.ExitStatus = ""
+	result.Reason = pidProjectionStaleLiveCommandReason + ": " + strings.TrimSpace(command)
+	return true
+}
+
+func healthProjectionFreshnessFromProcess(check *ProcessCheckResult, session string, paneIndex int, paneID string) *HealthProjectionFreshness {
+	if check == nil {
+		return nil
+	}
+	if !strings.HasPrefix(check.Reason, pidProjectionStaleLiveCommandReason) {
+		return nil
+	}
+	return &HealthProjectionFreshness{
+		Status:                 "reconciled_stale_projection",
+		ReasonCode:             pidProjectionStaleLiveCommandReason,
+		Source:                 "tmux.pane_current_command",
+		StaleAfterSec:          healthProjectionStaleAfterSec,
+		RawSurfaceCommand:      fmt.Sprintf("tmux display-message -p -t %s '#{pane_current_command}'", paneID),
+		RecommendedNextCommand: fmt.Sprintf("ntm --robot-inspect-pane=%s --inspect-index=%d", session, paneIndex),
+	}
+}
+
+func paneCommandImpliesLiveProcess(command string) bool {
+	name := strings.ToLower(strings.TrimSpace(command))
+	if name == "" {
+		return false
+	}
+	if fields := strings.Fields(name); len(fields) > 0 {
+		name = fields[0]
+	}
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	switch name {
+	case "", "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "login", "tmux":
+		return false
+	default:
+		return true
+	}
 }
 
 // checkStallWithActivity uses the StateClassifier for stall detection
@@ -752,15 +821,17 @@ type SessionHealthOutput struct {
 
 // SessionAgentHealth contains health metrics for a single agent pane
 type SessionAgentHealth struct {
-	Pane             int     `json:"pane"`
-	AgentType        string  `json:"agent_type"`
-	Health           string  `json:"health"`             // healthy, degraded, unhealthy, rate_limited
-	IdleSinceSeconds int     `json:"idle_since_seconds"` // seconds since last pane activity
-	Restarts         int     `json:"restarts"`
-	LastError        string  `json:"last_error,omitempty"`
-	RateLimitCount   int     `json:"rate_limit_count"`
-	BackoffRemaining int     `json:"backoff_remaining"` // seconds until ready
-	Confidence       float64 `json:"confidence"`
+	Pane             int                        `json:"pane"`
+	AgentType        string                     `json:"agent_type"`
+	Health           string                     `json:"health"`             // healthy, degraded, unhealthy, rate_limited
+	IdleSinceSeconds int                        `json:"idle_since_seconds"` // seconds since last pane activity
+	Restarts         int                        `json:"restarts"`
+	LastError        string                     `json:"last_error,omitempty"`
+	RateLimitCount   int                        `json:"rate_limit_count"`
+	BackoffRemaining int                        `json:"backoff_remaining"` // seconds until ready
+	Confidence       float64                    `json:"confidence"`
+	Projection       *HealthProjectionFreshness `json:"projection,omitempty"`
+	Deliverability   *PaneDeliverability        `json:"deliverability,omitempty"`
 }
 
 // SessionHealthSummary contains aggregate health counts
@@ -770,6 +841,33 @@ type SessionHealthSummary struct {
 	Degraded    int `json:"degraded"`
 	Unhealthy   int `json:"unhealthy"`
 	RateLimited int `json:"rate_limited"`
+}
+
+// HealthProjectionFreshness records projection/live-source reconciliation for a pane.
+type HealthProjectionFreshness struct {
+	Status                 string `json:"status"`
+	ReasonCode             string `json:"reason_code"`
+	Source                 string `json:"source"`
+	StaleAfterSec          int    `json:"stale_after_sec"`
+	RawSurfaceCommand      string `json:"raw_surface_command,omitempty"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
+}
+
+// PaneDeliverability records whether health could verify pane input delivery.
+type PaneDeliverability struct {
+	Status                 string `json:"status"`
+	ReasonCode             string `json:"reason_code,omitempty"`
+	Source                 string `json:"source"`
+	RawSurfaceCommand      string `json:"raw_surface_command,omitempty"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
+	Error                  string `json:"error,omitempty"`
+	RecoveryHint           string `json:"recovery_hint,omitempty"`
+}
+
+type paneInputProbeStatus struct {
+	Dead     bool
+	InputOff bool
+	InMode   bool
 }
 
 // GetSessionHealth collects per-agent health for a specific session.
@@ -850,6 +948,20 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 				agentHealth.Restarts++ // Track as a restart indicator
 				agentHealth.LastError = check.ProcessCheck.Reason
 			}
+			agentHealth.Projection = healthProjectionFreshnessFromProcess(
+				check.ProcessCheck,
+				session,
+				pane.Index,
+				pane.ID,
+			)
+		}
+
+		agentHealth.Deliverability = checkPaneDeliverability(session, pane)
+		if agentHealth.Deliverability != nil && agentHealth.Deliverability.Status == "non_deliverable" && agentHealth.Health == "healthy" {
+			agentHealth.Health = "degraded"
+			if agentHealth.LastError == "" {
+				agentHealth.LastError = agentHealth.Deliverability.ReasonCode
+			}
 		}
 
 		output.Agents = append(output.Agents, agentHealth)
@@ -869,6 +981,82 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 	}
 
 	return output, nil
+}
+
+func checkPaneDeliverability(session string, pane tmux.Pane) *PaneDeliverability {
+	status, statusErr := readPaneInputProbeStatus(pane.ID)
+	if statusErr != nil {
+		return classifyPaneDeliverability(session, pane.Index, pane.ID, nil, statusErr, nil)
+	}
+	if status.Dead || status.InputOff {
+		return classifyPaneDeliverability(session, pane.Index, pane.ID, &status, nil, nil)
+	}
+	probeErr := probePaneNoopInput(pane.ID)
+	return classifyPaneDeliverability(session, pane.Index, pane.ID, &status, nil, probeErr)
+}
+
+func classifyPaneDeliverability(session string, paneIndex int, paneID string, status *paneInputProbeStatus, statusErr error, probeErr error) *PaneDeliverability {
+	result := &PaneDeliverability{
+		Status:                 "deliverable",
+		Source:                 "tmux.pane_input_probe",
+		RawSurfaceCommand:      fmt.Sprintf("tmux display-message -p -t %s '#{pane_dead}|#{pane_input_off}|#{pane_in_mode}' && tmux send-keys -t %s -l -- ''", paneID, paneID),
+		RecommendedNextCommand: fmt.Sprintf("ntm send %s --pane=%d --json --dry-run '<message>'", session, paneIndex),
+	}
+
+	if statusErr != nil {
+		result.Status = "unknown"
+		result.ReasonCode = "pane_input_status_probe_failed"
+		result.Error = statusErr.Error()
+		result.RecoveryHint = "Check tmux pane metadata before relying on send health."
+		return result
+	}
+	if status != nil {
+		switch {
+		case status.Dead:
+			result.Status = "non_deliverable"
+			result.ReasonCode = "pane_dead"
+			result.RecoveryHint = "Restart or remove the dead pane before sending prompts."
+			return result
+		case status.InputOff:
+			result.Status = "non_deliverable"
+			result.ReasonCode = "pane_input_off"
+			result.RecoveryHint = "Re-enable pane input or target a different pane before sending prompts."
+			return result
+		}
+	}
+	if probeErr != nil {
+		failureClass, recoveryHint := ClassifySendFailure(probeErr.Error())
+		result.Status = "non_deliverable"
+		result.ReasonCode = failureClass
+		result.Error = probeErr.Error()
+		result.RecoveryHint = recoveryHint
+		return result
+	}
+	return result
+}
+
+func readPaneInputProbeStatus(paneID string) (paneInputProbeStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	output, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-p", "-t", paneID, "#{pane_dead}|#{pane_input_off}|#{pane_in_mode}")
+	if err != nil {
+		return paneInputProbeStatus{}, err
+	}
+	parts := strings.Split(strings.TrimSpace(output), "|")
+	if len(parts) != 3 {
+		return paneInputProbeStatus{}, fmt.Errorf("unexpected pane input probe format: %q", output)
+	}
+	return paneInputProbeStatus{
+		Dead:     parts[0] == "1",
+		InputOff: parts[1] == "1",
+		InMode:   parts[2] == "1",
+	}, nil
+}
+
+func probePaneNoopInput(paneID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return tmux.DefaultClient.RunSilentContext(ctx, "send-keys", "-t", paneID, "-l", "--", "")
 }
 
 // PrintSessionHealth outputs per-agent health for a specific session.

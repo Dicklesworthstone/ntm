@@ -27,6 +27,7 @@ func TestFlexTimeUnmarshalJSON(t *testing.T) {
 		{"bare with millis", `"2026-01-15T10:30:00.123"`, false, true},
 		{"bare with micros", `"2026-01-15T10:30:00.123456"`, false, true},
 		{"bare with nanos", `"2026-01-15T10:30:00.123456789"`, false, true},
+		{"legacy archive space with micros", `"2026-05-05 14:17:45.722556"`, false, true},
 		{"empty string", `""`, false, true},
 		{"invalid format", `"not-a-date"`, true, false},
 		{"invalid JSON", `42`, true, false},

@@ -38,11 +38,12 @@ const (
 
 // Client provides methods to interact with the Agent Mail API.
 type Client struct {
-	baseURL     string
-	bearerToken string
-	httpClient  *http.Client
-	projectKey  string // Cached project path
-	requestID   atomic.Int64
+	baseURL       string
+	bearerToken   string
+	tokenExplicit bool
+	httpClient    *http.Client
+	projectKey    string // Cached project path
+	requestID     atomic.Int64
 
 	// Per-agent registration tokens. Server-side mcp-agent-mail >=2.13
 	// requires identity-scoped tool calls (fetch_inbox, send_message,
@@ -127,6 +128,7 @@ func WithBaseURL(url string) Option {
 func WithToken(token string) Option {
 	return func(c *Client) {
 		c.bearerToken = token
+		c.tokenExplicit = true
 	}
 }
 
@@ -186,7 +188,48 @@ func NewClient(opts ...Option) *Client {
 		opt(c)
 	}
 
+	if isLoopbackBaseURL(c.baseURL) && !c.tokenExplicit {
+		if token := localHTTPBearerToken(); token != "" {
+			c.bearerToken = token
+		}
+	}
+
 	return c
+}
+
+func isLoopbackBaseURL(baseURL string) bool {
+	return strings.Contains(baseURL, "127.0.0.1") ||
+		strings.Contains(baseURL, "localhost") ||
+		strings.Contains(baseURL, "[::1]")
+}
+
+func localHTTPBearerToken() string {
+	if token := strings.TrimSpace(os.Getenv("HTTP_BEARER_TOKEN")); token != "" {
+		return token
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return readEnvFileValue(filepath.Join(homeDir, ".config", "mcp-agent-mail", "config.env"), "HTTP_BEARER_TOKEN")
+}
+
+func readEnvFileValue(path, key string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		value = strings.Trim(value, `"'`)
+		return value
+	}
+	return ""
 }
 
 // IsAvailable checks if the Agent Mail server is reachable.

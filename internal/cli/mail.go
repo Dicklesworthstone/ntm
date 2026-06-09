@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -191,6 +192,23 @@ type mailInboxClient interface {
 	FetchInbox(ctx context.Context, opts agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error)
 }
 
+const mailInboxTimeout = 30 * time.Second
+
+type mailInboxFailure struct {
+	Success               bool   `json:"success"`
+	ErrorCode             string `json:"error_code"`
+	Error                 string `json:"error"`
+	Operation             string `json:"operation"`
+	Endpoint              string `json:"endpoint"`
+	ProjectKey            string `json:"project_key"`
+	Session               string `json:"session,omitempty"`
+	Agent                 string `json:"agent,omitempty"`
+	MailAPIStatus         string `json:"mail_api_status"`
+	ReservationAPIStatus  string `json:"reservation_api_status"`
+	BoundedTimeoutSeconds int    `json:"bounded_timeout_seconds"`
+	NextAction            string `json:"next_action"`
+}
+
 // newMailInboxCmd shows aggregate inbox for project agents.
 func newMailInboxCmdReal() *cobra.Command {
 	var (
@@ -245,6 +263,29 @@ func newAgentMailClient(projectKey string) *agentmail.Client {
 	// the cache the regular way.
 	if projectKey != "" {
 		agentmail.HydrateClientTokensForProject(client, projectKey)
+	}
+	return client
+}
+
+func newAgentMailReservationClient(projectKey string) *agentmail.Client {
+	client := newAgentMailClient(projectKey)
+	baseURL := client.BaseURL()
+	if baseURL == agentmail.DefaultBaseURL || strings.Contains(baseURL, "127.0.0.1") || strings.Contains(baseURL, "localhost") || strings.Contains(baseURL, "[::1]") {
+		return client
+	}
+	if client.IsAvailable() {
+		return client
+	}
+
+	local := agentmail.NewClient(
+		agentmail.WithProjectKey(projectKey),
+		agentmail.WithBaseURL(agentmail.DefaultBaseURL),
+	)
+	if projectKey != "" {
+		agentmail.HydrateClientTokensForProject(local, projectKey)
+	}
+	if agentmail.HasArchiveForProject(projectKey) || local.IsAvailable() {
+		return local
 	}
 	return client
 }
@@ -360,15 +401,22 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 	if client == nil {
 		client = newAgentMailClient(projectKey)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mailInboxTimeout)
 	defer cancel()
 
 	if !client.IsAvailable() {
-		return fmt.Errorf("agent mail server not available")
+		err := fmt.Errorf("agent mail server not available")
+		if jsonFmt {
+			return emitMailInboxFailure(cmd, mailInboxFailureForError(session, projectKey, "", "health_check", "tools/call:health_check", err))
+		}
+		return err
 	}
 
 	agents, err := client.ListProjectAgents(ctx, projectKey)
 	if err != nil {
+		if jsonFmt {
+			return emitMailInboxFailure(cmd, mailInboxFailureForError(session, projectKey, agentFilter, "list_project_agents", "resources/read:resource://agents", err))
+		}
 		return fmt.Errorf("listing agents: %w", err)
 	}
 
@@ -419,6 +467,9 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 			Limit:      limit,
 		})
 		if err != nil {
+			if jsonFmt {
+				return emitMailInboxFailure(cmd, mailInboxFailureForError(session, projectKey, name, "fetch_inbox", "tools/call:fetch_inbox", err))
+			}
 			return err
 		}
 		for _, msg := range msgs {
@@ -441,6 +492,11 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 	}
 
 	if len(agg) == 0 {
+		if jsonFmt {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode([]aggregatedMessage{})
+		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Inbox empty")
 		return nil
 	}
@@ -478,6 +534,61 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 		}
 	}
 	return nil
+}
+
+func emitMailInboxFailure(cmd *cobra.Command, failure mailInboxFailure) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(failure); err != nil {
+		return err
+	}
+	return jsonFailureExit()
+}
+
+func mailInboxFailureForError(session, projectKey, agent, operation, endpoint string, err error) mailInboxFailure {
+	errorCode := "AGENT_MAIL_MAIL_API_FAILED"
+	nextAction := "Run `am doctor check --json` for Agent Mail mail health; verify reservation health separately with `ntm locks list --json`."
+	mailStatus := "degraded"
+
+	switch {
+	case operation == "health_check":
+		errorCode = "AGENT_MAIL_SERVER_UNAVAILABLE"
+		mailStatus = "unavailable"
+		nextAction = "Start or repair Agent Mail, then rerun `ntm mail inbox --json`; reservation health is not checked by this command."
+	case agentmail.IsTimeout(err) || errors.Is(err, context.DeadlineExceeded):
+		errorCode = "AGENT_MAIL_FETCH_INBOX_TIMEOUT"
+		if operation != "fetch_inbox" {
+			errorCode = "AGENT_MAIL_MAIL_API_TIMEOUT"
+		}
+		nextAction = "Run `am doctor check --json` and inspect Agent Mail filer/server logs; verify reservations separately with `ntm locks list --json`."
+	case agentmail.IsServerUnavailable(err):
+		errorCode = "AGENT_MAIL_SERVER_UNAVAILABLE"
+		mailStatus = "unavailable"
+		nextAction = "Start or repair Agent Mail, then rerun `ntm mail inbox --json`; reservation health is not checked by this command."
+	case agentmail.IsUnauthorized(err):
+		errorCode = "AGENT_MAIL_UNAUTHORIZED"
+		nextAction = "Check the Agent Mail token/config for the mail API, then rerun `ntm mail inbox --json`."
+	case agentmail.IsNotImplemented(err):
+		errorCode = "AGENT_MAIL_MAIL_API_UNSUPPORTED"
+		nextAction = "Upgrade or repair the Agent Mail server so it exposes the mail API operation."
+	case operation == "list_project_agents":
+		errorCode = "AGENT_MAIL_LIST_PROJECT_AGENTS_FAILED"
+	}
+
+	return mailInboxFailure{
+		Success:               false,
+		ErrorCode:             errorCode,
+		Error:                 err.Error(),
+		Operation:             operation,
+		Endpoint:              endpoint,
+		ProjectKey:            projectKey,
+		Session:               session,
+		Agent:                 agent,
+		MailAPIStatus:         mailStatus,
+		ReservationAPIStatus:  "not_checked_by_mail_inbox",
+		BoundedTimeoutSeconds: int(mailInboxTimeout / time.Second),
+		NextAction:            nextAction,
+	}
 }
 
 func sanitizeMailDisplayField(value string) string {

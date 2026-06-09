@@ -5941,6 +5941,15 @@ type actuationTrace struct {
 	IdempotencyKey string
 }
 
+const (
+	SendFailureClassPaneInputMode = tmux.SendFailureClassPaneInputMode
+	SendFailureClassTmuxSend      = tmux.SendFailureClassTmuxSend
+)
+
+func ClassifySendFailure(errText string) (string, string) {
+	return tmux.ClassifySendFailure(errText)
+}
+
 func normalizeActuationTrace(requestID, correlationID, idempotencyKey string) actuationTrace {
 	requestID = strings.TrimSpace(requestID)
 	correlationID = strings.TrimSpace(correlationID)
