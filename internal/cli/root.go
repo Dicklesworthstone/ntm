@@ -2483,12 +2483,16 @@ func shouldInitializeRobotPersistence(cmd *cobra.Command) bool {
 	if cmd != nil && cmd.Name() == "serve" {
 		return false
 	}
+	return robotArgsNeedPersistence(os.Args[1:])
+}
 
-	for _, arg := range os.Args[1:] {
+func robotArgsNeedPersistence(args []string) bool {
+	robotSendDryRun := robotArgsBoolFlagEnabled(args, "--dry-run")
+	for _, arg := range args {
 		if arg == "--schema" {
 			return true
 		}
-		if strings.HasPrefix(arg, "--robot-") && !robotFlagSkipsPersistence(arg) {
+		if strings.HasPrefix(arg, "--robot-") && !robotFlagSkipsPersistence(arg, robotSendDryRun) {
 			return true
 		}
 	}
@@ -2496,7 +2500,28 @@ func shouldInitializeRobotPersistence(cmd *cobra.Command) bool {
 	return false
 }
 
-func robotFlagSkipsPersistence(arg string) bool {
+func robotArgsBoolFlagEnabled(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+		prefix := flag + "="
+		if strings.HasPrefix(arg, prefix) {
+			value := strings.TrimSpace(strings.TrimPrefix(arg, prefix))
+			if value == "" {
+				return true
+			}
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return true
+			}
+			return enabled
+		}
+	}
+	return false
+}
+
+func robotFlagSkipsPersistence(arg string, robotSendDryRun bool) bool {
 	if i := strings.IndexByte(arg, '='); i >= 0 {
 		arg = arg[:i]
 	}
@@ -2505,6 +2530,10 @@ func robotFlagSkipsPersistence(arg string) bool {
 		return true
 	case "--robot-activity":
 		return true
+	case "--robot-slb-pending":
+		return true
+	case "--robot-send":
+		return robotSendDryRun
 	default:
 		return false
 	}

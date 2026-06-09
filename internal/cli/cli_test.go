@@ -135,6 +135,31 @@ func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "slb pending only",
+			args: []string{"ntm", "--robot-slb-pending"},
+			want: false,
+		},
+		{
+			name: "robot send dry run",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe", "--dry-run"},
+			want: false,
+		},
+		{
+			name: "robot send dry run true value",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe", "--dry-run=true"},
+			want: false,
+		},
+		{
+			name: "robot send dry run false is stateful",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe", "--dry-run=false"},
+			want: true,
+		},
+		{
+			name: "robot send without dry run is stateful",
+			args: []string{"ntm", "--robot-send=flywheel", "--msg=probe"},
+			want: true,
+		},
+		{
 			name: "stateful robot flag",
 			args: []string{"ntm", "--robot-status"},
 			want: true,
