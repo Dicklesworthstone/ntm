@@ -28,9 +28,12 @@ func TestFlexTimeUnmarshalJSON(t *testing.T) {
 		{"bare with micros", `"2026-01-15T10:30:00.123456"`, false, true},
 		{"bare with nanos", `"2026-01-15T10:30:00.123456789"`, false, true},
 		{"legacy archive space with micros", `"2026-05-05 14:17:45.722556"`, false, true},
+		{"numeric microseconds", `1767225600000000`, false, true},
+		{"string numeric microseconds", `"1767225600000000"`, false, true},
+		{"null", `null`, false, true},
 		{"empty string", `""`, false, true},
 		{"invalid format", `"not-a-date"`, true, false},
-		{"invalid JSON", `42`, true, false},
+		{"invalid JSON object", `{}`, true, false},
 	}
 
 	for _, tc := range tests {
@@ -47,9 +50,9 @@ func TestFlexTimeUnmarshalJSON(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if tc.input == `""` {
+			if tc.input == `""` || tc.input == `null` {
 				if !ft.Time.IsZero() {
-					t.Error("empty string should produce zero time")
+					t.Error("zero-like timestamp should produce zero time")
 				}
 				return
 			}
@@ -57,6 +60,40 @@ func TestFlexTimeUnmarshalJSON(t *testing.T) {
 				t.Error("parsed time should not be zero")
 			}
 		})
+	}
+}
+
+func TestReservationResultTimestampFixtureAcceptsNonStringTimestamps(t *testing.T) {
+	t.Parallel()
+
+	const fixture = `{
+		"granted": [
+			{
+				"id": 42776,
+				"path_pattern": "scripts/skillos_single_bead_audit_safe.py",
+				"agent_name": "SilentReef",
+				"project_id": 1,
+				"exclusive": true,
+				"reason": "skillos-4c3wj fixture",
+				"expires_ts": 1767225600000000,
+				"created_ts": null
+			}
+		],
+		"conflicts": []
+	}`
+
+	var result ReservationResult
+	if err := json.Unmarshal([]byte(fixture), &result); err != nil {
+		t.Fatalf("unmarshal sanitized reservation fixture: %v", err)
+	}
+	if len(result.Granted) != 1 {
+		t.Fatalf("granted count = %d, want 1", len(result.Granted))
+	}
+	if result.Granted[0].ExpiresTS.IsZero() {
+		t.Fatal("numeric expires_ts should parse to a concrete time")
+	}
+	if !result.Granted[0].CreatedTS.IsZero() {
+		t.Fatal("null created_ts should parse as zero time")
 	}
 }
 

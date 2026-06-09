@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -36,14 +37,38 @@ var flexTimeFormats = []string{
 // UnmarshalJSON implements json.Unmarshaler for FlexTime.
 // It tries RFC3339, RFC3339Nano, and bare ISO8601 formats (assuming UTC for bare timestamps).
 func (ft *FlexTime) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err != nil {
-		return err
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		ft.Time = time.Time{}
+		return nil
 	}
+
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		return ft.unmarshalString(s)
+	}
+
+	var n json.Number
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	if err := dec.Decode(&n); err == nil {
+		micros, err := n.Int64()
+		if err != nil {
+			return fmt.Errorf("agentmail timestamp number must be an integer microsecond value: %w", err)
+		}
+		ft.Time = time.UnixMicro(micros).UTC()
+		return nil
+	}
+
+	return fmt.Errorf("agentmail timestamp must be string, number, or null, got %s", string(trimmed))
+}
+
+func (ft *FlexTime) unmarshalString(s string) error {
 	if s == "" {
 		ft.Time = time.Time{}
 		return nil
 	}
+
 	for _, layout := range flexTimeFormats {
 		if t, err := time.Parse(layout, s); err == nil {
 			ft.Time = t
@@ -56,6 +81,10 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 			ft.Time = t
 			return nil
 		}
+	}
+	if micros, err := strconv.ParseInt(s, 10, 64); err == nil {
+		ft.Time = time.UnixMicro(micros).UTC()
+		return nil
 	}
 	return &time.ParseError{
 		Value:   s,

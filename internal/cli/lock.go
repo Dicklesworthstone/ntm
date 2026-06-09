@@ -63,6 +63,7 @@ type LockResult struct {
 	ErrorCode  string                          `json:"error_code,omitempty"`
 	ReasonCode string                          `json:"reason_code,omitempty"`
 	NextAction string                          `json:"next_action,omitempty"`
+	Detail     string                          `json:"detail,omitempty"`
 }
 
 func runLock(session string, patterns []string, reason, ttlStr string, shared bool) error {
@@ -149,9 +150,18 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 			result.Success = false
 			result.Granted = reservation.Granted
 			result.Conflicts = reservation.Conflicts
+			result.Error = "Agent Mail file reservation conflict"
+			result.ErrorCode = "reservation_conflict"
+			result.ReasonCode = "reservation_conflict"
+			result.NextAction = "Coordinate with the reservation holder, wait for expiry, or rerun with --shared for read-only access."
 		} else {
+			failure := classifyLockFailure(session, projectKey, err)
 			result.Success = false
-			result.Error = err.Error()
+			result.Error = failure.Message
+			result.ErrorCode = failure.ErrorCode
+			result.ReasonCode = failure.ReasonCode
+			result.NextAction = failure.NextAction
+			result.Detail = failure.Detail
 		}
 	} else {
 		result.Success = true
@@ -175,6 +185,75 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 	}
 
 	return printLockResult(result, shared)
+}
+
+func classifyLockFailure(session, projectKey string, err error) locksListFailure {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	lower := strings.ToLower(detail)
+	failure := locksListFailure{
+		Message:    "Agent Mail file reservation failed",
+		ErrorCode:  "agent_mail_reservation_failed",
+		ReasonCode: "agent_mail_reservation_failed",
+		NextAction: fmt.Sprintf(
+			"Run `am doctor check --json`, verify Agent Mail reservations, then rerun `ntm lock %s <patterns...> --json`.",
+			locksShellQuote(session),
+		),
+		Detail: detail,
+	}
+
+	switch {
+	case strings.Contains(lower, "fromisoformat") || strings.Contains(lower, "timestamp"):
+		failure.Message = "Agent Mail reservation timestamp payload is malformed"
+		failure.ErrorCode = "agent_mail_reservation_timestamp_malformed"
+		failure.ReasonCode = "agent_mail_reservation_timestamp_malformed"
+		failure.NextAction = "Capture the sanitized reservation payload, repair Agent Mail timestamp parsing or archive rows, then rerun the lock command."
+	case strings.Contains(lower, "recovery failed") && (strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout")):
+		failure.Message = "Agent Mail identity registration timed out"
+		failure.ErrorCode = "agent_identity_registration_timeout"
+		failure.ReasonCode = "agent_identity_registration_timeout"
+		failure.NextAction = fmt.Sprintf(
+			"Run `am doctor check --json`, verify Agent Mail register_agent latency, then rerun `ntm lock %s <patterns...> --json`.",
+			locksShellQuote(session),
+		)
+	case strings.Contains(lower, "registration_token"):
+		failure.Message = "Agent Mail reservation requires a registration token"
+		failure.ErrorCode = "agent_mail_registration_token_required"
+		failure.ReasonCode = "agent_mail_registration_token_required"
+		failure.NextAction = fmt.Sprintf(
+			"Run `%s`, then rerun `ntm lock %s <patterns...> --json`.",
+			locksListBootstrapCommand(projectKey),
+			locksShellQuote(session),
+		)
+	case strings.Contains(lower, "agent") && strings.Contains(lower, "not found"):
+		failure.Message = "Agent Mail session identity is stale or unregistered"
+		failure.ErrorCode = "agent_identity_not_registered"
+		failure.ReasonCode = "agent_identity_not_registered"
+		failure.NextAction = fmt.Sprintf(
+			"Run `%s`, then rerun `ntm lock %s <patterns...> --json`.",
+			locksListBootstrapCommand(projectKey),
+			locksShellQuote(session),
+		)
+	case strings.Contains(lower, "unauthorized") || strings.Contains(lower, "http 401"):
+		failure.Message = "Agent Mail file reservation is unauthorized"
+		failure.ErrorCode = "agent_mail_unauthorized"
+		failure.ReasonCode = "agent_mail_unauthorized"
+		failure.NextAction = "Check Agent Mail token configuration, then rerun the lock command."
+	case strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout"):
+		failure.Message = "Agent Mail file reservation timed out"
+		failure.ErrorCode = "agent_mail_reservation_timeout"
+		failure.ReasonCode = "agent_mail_reservation_timeout"
+		failure.NextAction = "Check Agent Mail server load and reservation resource health, then rerun the lock command."
+	case strings.Contains(lower, "agent mail server unavailable") || strings.Contains(lower, "connection refused"):
+		failure.Message = "Agent Mail reservation service is unavailable"
+		failure.ErrorCode = "agent_mail_unavailable"
+		failure.ReasonCode = "agent_mail_unavailable"
+		failure.NextAction = "Start or repair Agent Mail, then rerun the lock command."
+	}
+
+	return failure
 }
 
 const reservationReadbackSettleDelay = 250 * time.Millisecond

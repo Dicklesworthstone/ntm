@@ -552,8 +552,24 @@ func TestFlexTime_UnmarshalJSON(t *testing.T) {
 			want:  time.Time{},
 		},
 		{
+			name:        "numeric_microseconds",
+			input:       `1767225600000000`,
+			want:        time.UnixMicro(1767225600000000).UTC(),
+			wantUTCOnly: true,
+		},
+		{
+			name:  "null_sets_zero",
+			input: `null`,
+			want:  time.Time{},
+		},
+		{
 			name:    "invalid_format",
 			input:   `"not-a-timestamp"`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid_object",
+			input:   `{}`,
 			wantErr: true,
 		},
 	}

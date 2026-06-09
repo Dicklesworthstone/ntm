@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,26 @@ import (
 
 func jsonEncodeIndent(v interface{}) ([]byte, error) {
 	return json.MarshalIndent(v, "", "  ")
+}
+
+func TestClassifyLockFailureTimestampMalformed(t *testing.T) {
+	t.Parallel()
+
+	failure := classifyLockFailure(
+		"skillos",
+		"/Users/josh/Developer/skillos",
+		errors.New("agentmail: file_reservation_paths failed: fromisoformat: argument must be str"),
+	)
+
+	if failure.ErrorCode != "agent_mail_reservation_timestamp_malformed" || failure.ReasonCode != "agent_mail_reservation_timestamp_malformed" {
+		t.Fatalf("error_code=%q reason_code=%q, want timestamp malformed", failure.ErrorCode, failure.ReasonCode)
+	}
+	if strings.Contains(failure.Message, "fromisoformat") {
+		t.Fatalf("message should be typed, got raw backend detail: %q", failure.Message)
+	}
+	if !strings.Contains(failure.Detail, "fromisoformat: argument must be str") {
+		t.Fatalf("detail should preserve backend evidence, got %q", failure.Detail)
+	}
 }
 
 func TestBuildLocksAdviceResult_AgentMailUnavailableKeepsProofMode(t *testing.T) {
