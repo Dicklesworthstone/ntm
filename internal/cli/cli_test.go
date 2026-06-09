@@ -125,6 +125,16 @@ func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "activity only",
+			args: []string{"ntm", "--robot-activity=flywheel"},
+			want: false,
+		},
+		{
+			name: "activity with separate value spelling",
+			args: []string{"ntm", "--robot-activity", "flywheel"},
+			want: false,
+		},
+		{
 			name: "stateful robot flag",
 			args: []string{"ntm", "--robot-status"},
 			want: true,
@@ -132,6 +142,11 @@ func TestShouldInitializeRobotPersistenceSkipsStatelessOverlay(t *testing.T) {
 		{
 			name: "stateful flag still wins when mixed",
 			args: []string{"ntm", "--robot-overlay", "--robot-status"},
+			want: true,
+		},
+		{
+			name: "activity skip loses to stateful flag when mixed",
+			args: []string{"ntm", "--robot-activity=flywheel", "--robot-status"},
 			want: true,
 		},
 	}

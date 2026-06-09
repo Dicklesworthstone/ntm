@@ -20,6 +20,14 @@ type Store struct {
 	path string
 }
 
+// WALCheckpointResult captures SQLite WAL checkpoint counters.
+type WALCheckpointResult struct {
+	Mode               string `json:"mode"`
+	Busy               int    `json:"busy"`
+	LogFrames          int    `json:"log_frames"`
+	CheckpointedFrames int    `json:"checkpointed_frames"`
+}
+
 func expandSelectedConfigPath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" || path[0] != '~' {
@@ -126,6 +134,38 @@ func (s *Store) Migrate() error {
 // Path returns the database file path.
 func (s *Store) Path() string {
 	return s.path
+}
+
+// NormalizeWALCheckpointMode returns a supported SQLite wal_checkpoint mode.
+func NormalizeWALCheckpointMode(mode string) (string, error) {
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "TRUNCATE"
+	}
+	switch mode {
+	case "PASSIVE", "FULL", "RESTART", "TRUNCATE":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported WAL checkpoint mode %q", mode)
+	}
+}
+
+// CheckpointWAL runs PRAGMA wal_checkpoint with a validated mode.
+func (s *Store) CheckpointWAL(mode string) (WALCheckpointResult, error) {
+	mode, err := NormalizeWALCheckpointMode(mode)
+	if err != nil {
+		return WALCheckpointResult{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := WALCheckpointResult{Mode: mode}
+	row := s.db.QueryRow(fmt.Sprintf("PRAGMA wal_checkpoint(%s)", mode))
+	if err := row.Scan(&result.Busy, &result.LogFrames, &result.CheckpointedFrames); err != nil {
+		return result, fmt.Errorf("wal checkpoint %s: %w", mode, err)
+	}
+	return result, nil
 }
 
 // DB returns the underlying database connection for direct access.

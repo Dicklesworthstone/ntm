@@ -2503,6 +2503,8 @@ func robotFlagSkipsPersistence(arg string) bool {
 	switch arg {
 	case "--robot-overlay":
 		return true
+	case "--robot-activity":
+		return true
 	default:
 		return false
 	}
@@ -4092,6 +4094,7 @@ func init() {
 		newHealthCmd(),
 		newDoctorCmd(),
 		newCleanupCmd(),
+		newStateCmd(),
 		newSupportBundleCmd(),
 		newSafetyCmd(),
 		newPolicyCmd(),
