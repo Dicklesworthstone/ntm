@@ -134,6 +134,17 @@ func TestSendOutputDeterministicOrdering(t *testing.T) {
 	}
 }
 
+func TestClassifySendFailureDetectsPaneInputMode(t *testing.T) {
+	failureClass, recoveryHint := ClassifySendFailure("tmux send-keys failed: not in a mode")
+
+	if failureClass != SendFailureClassPaneInputMode {
+		t.Fatalf("failureClass = %q, want %q", failureClass, SendFailureClassPaneInputMode)
+	}
+	if !strings.Contains(recoveryHint, "Exit tmux mode") {
+		t.Fatalf("recoveryHint = %q, want tmux mode guidance", recoveryHint)
+	}
+}
+
 func TestApplySendMessageRedaction_WarnMode(t *testing.T) {
 	input := "prefix password=hunter2hunter2 suffix\n"
 	msgToSend, preview, summary, warnings, blocked := applySendMessageRedaction(input, redaction.Config{Mode: redaction.ModeWarn})

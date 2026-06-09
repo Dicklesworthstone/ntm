@@ -1141,6 +1141,19 @@ func SendKeysForAgentDoubleEnter(target, keys string, agentType AgentType) error
 	return nil
 }
 
+const (
+	SendFailureClassPaneInputMode = "pane_input_mode_delivery_failure"
+	SendFailureClassTmuxSend      = "tmux_send_failure"
+)
+
+func ClassifySendFailure(errText string) (string, string) {
+	normalized := strings.ToLower(strings.TrimSpace(errText))
+	if strings.Contains(normalized, "not in a mode") {
+		return SendFailureClassPaneInputMode, "Exit tmux mode if active, verify the pane is deliverable, then retry the failed pane."
+	}
+	return SendFailureClassTmuxSend, "Check pane existence and tmux state, then retry the failed pane."
+}
+
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-c")
