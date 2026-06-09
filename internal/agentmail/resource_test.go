@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadResource(t *testing.T) {
@@ -314,4 +315,120 @@ func TestListReservations_FallbackToArchiveWhenResourceAndToolsFail(t *testing.T
 	if filtered[0].ID != 42 || filtered[0].AgentName != "BlueLake" || filtered[0].Reason != "skillos-fr9is" {
 		t.Fatalf("unexpected reservation: %+v", filtered[0])
 	}
+}
+
+func TestFetchInbox_FallbackToArchiveEmptyWhenAgentHasNoInbox(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectKey := "/Users/josh/Developer/ntm"
+	agentDir := filepath.Join(home, DefaultArchivePath, "projects", ProjectSlugFromPath(projectKey), "agents", "BlueLake")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("create agent archive dir: %v", err)
+	}
+
+	server := httptest.NewServer(failingAgentMailHandler(t))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	messages, err := c.FetchInbox(context.Background(), FetchInboxOptions{
+		ProjectKey: projectKey,
+		AgentName:  "BlueLake",
+		UrgentOnly: true,
+		Limit:      50,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected empty archive inbox, got %+v", messages)
+	}
+}
+
+func TestFetchInbox_FallbackToArchiveParsesInboxMarkdown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectKey := "/Users/josh/Developer/ntm"
+	inboxDir := filepath.Join(home, DefaultArchivePath, "projects", ProjectSlugFromPath(projectKey), "agents", "BlueLake", "inbox", "2026", "06")
+	if err := os.MkdirAll(inboxDir, 0o755); err != nil {
+		t.Fatalf("create inbox archive dir: %v", err)
+	}
+
+	messages := map[string]string{
+		"urgent.md": `---json
+{
+  "id": 7,
+  "from": "RedStone",
+  "to": ["BlueLake"],
+  "subject": "Urgent coordination",
+  "created": "2026-06-09 05:00:00.123456",
+  "thread_id": "T-7",
+  "importance": "urgent",
+  "ack_required": true
+}
+---
+
+urgent body
+`,
+		"normal.md": `---json
+{
+  "id": 6,
+  "from": "RedStone",
+  "to": ["BlueLake"],
+  "subject": "Normal coordination",
+  "created": "2026-06-09T04:00:00Z",
+  "importance": "normal",
+  "ack_required": false
+}
+---
+
+normal body
+`,
+	}
+	for name, body := range messages {
+		if err := os.WriteFile(filepath.Join(inboxDir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write message %s: %v", name, err)
+		}
+	}
+
+	server := httptest.NewServer(failingAgentMailHandler(t))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	since := time.Date(2026, 6, 9, 4, 30, 0, 0, time.UTC)
+	got, err := c.FetchInbox(context.Background(), FetchInboxOptions{
+		ProjectKey:    projectKey,
+		AgentName:     "BlueLake",
+		UrgentOnly:    true,
+		SinceTS:       &since,
+		Limit:         10,
+		IncludeBodies: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected one urgent archive message, got %+v", got)
+	}
+	if got[0].ID != 7 || got[0].Kind != "to" || got[0].BodyMD != "urgent body\n" {
+		t.Fatalf("unexpected message: %+v", got[0])
+	}
+}
+
+func failingAgentMailHandler(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		resp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &JSONRPCError{Code: -32000, Message: "database error"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
 }

@@ -257,6 +257,9 @@ func (c *Client) FetchInbox(ctx context.Context, opts FetchInboxOptions) ([]Inbo
 	c.attachRegistrationToken(args)
 	result, err := c.callTool(ctx, "fetch_inbox", args)
 	if err != nil {
+		if archiveMessages, archiveErr := fetchInboxFromArchive(opts); archiveErr == nil {
+			return archiveMessages, nil
+		}
 		return nil, err
 	}
 
@@ -286,6 +289,194 @@ func (c *Client) FetchInbox(ctx context.Context, opts FetchInboxOptions) ([]Inbo
 		return nil, NewAPIError("fetch_inbox", 0, fmt.Errorf("unexpected response shape: %w", err))
 	}
 	return messages, nil
+}
+
+func fetchInboxFromArchive(opts FetchInboxOptions) ([]InboxMessage, error) {
+	if strings.TrimSpace(opts.ProjectKey) == "" || strings.TrimSpace(opts.AgentName) == "" {
+		return nil, fmt.Errorf("project_key and agent_name are required for inbox archive fallback")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, slug := range []string{ProjectSlugFromPath(opts.ProjectKey), legacyProjectSlugFromPath(opts.ProjectKey)} {
+		if slug == "" {
+			continue
+		}
+		projectDir := filepath.Join(homeDir, DefaultArchivePath, "projects", slug)
+		messages, err := readInboxArchiveProject(projectDir, opts)
+		if err == nil {
+			return messages, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("agent mail archive not found for project %q", opts.ProjectKey)
+}
+
+func readInboxArchiveProject(projectDir string, opts FetchInboxOptions) ([]InboxMessage, error) {
+	agentDir := filepath.Join(projectDir, "agents", opts.AgentName)
+	agentInfo, err := os.Stat(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	if !agentInfo.IsDir() {
+		return nil, fmt.Errorf("agent archive path is not a directory: %s", agentDir)
+	}
+
+	inboxDir := filepath.Join(agentDir, "inbox")
+	inboxInfo, err := os.Stat(inboxDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []InboxMessage{}, nil
+		}
+		return nil, err
+	}
+	if !inboxInfo.IsDir() {
+		return nil, fmt.Errorf("inbox archive path is not a directory: %s", inboxDir)
+	}
+
+	messages := []InboxMessage{}
+	err = filepath.WalkDir(inboxDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		message, err := parseInboxArchiveMessage(data, opts.AgentName, opts.IncludeBodies)
+		if err != nil {
+			return fmt.Errorf("parse inbox archive %s: %w", path, err)
+		}
+		if !inboxArchiveMessageMatches(message, opts) {
+			return nil
+		}
+		messages = append(messages, message)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(messages, func(i, j int) bool {
+		if !messages[i].CreatedTS.Equal(messages[j].CreatedTS.Time) {
+			return messages[i].CreatedTS.After(messages[j].CreatedTS.Time)
+		}
+		return messages[i].ID > messages[j].ID
+	})
+	if opts.Limit > 0 && len(messages) > opts.Limit {
+		messages = messages[:opts.Limit]
+	}
+	return messages, nil
+}
+
+func parseInboxArchiveMessage(data []byte, agentName string, includeBody bool) (InboxMessage, error) {
+	header, body, err := splitJSONArchiveMarkdown(data)
+	if err != nil {
+		return InboxMessage{}, err
+	}
+
+	var raw struct {
+		ID          int       `json:"id"`
+		From        string    `json:"from"`
+		To          []string  `json:"to"`
+		CC          []string  `json:"cc"`
+		BCC         []string  `json:"bcc"`
+		Subject     string    `json:"subject"`
+		Created     FlexTime  `json:"created"`
+		CreatedTS   FlexTime  `json:"created_ts"`
+		ThreadID    *string   `json:"thread_id"`
+		Importance  string    `json:"importance"`
+		AckRequired bool      `json:"ack_required"`
+		Kind        string    `json:"kind"`
+		ReadAt      *FlexTime `json:"read_at"`
+	}
+	if err := json.Unmarshal(header, &raw); err != nil {
+		return InboxMessage{}, err
+	}
+
+	created := raw.CreatedTS
+	if created.IsZero() {
+		created = raw.Created
+	}
+	kind := strings.TrimSpace(raw.Kind)
+	if kind == "" {
+		kind = archivedInboxKindForAgent(agentName, raw.To, raw.CC, raw.BCC)
+	}
+
+	message := InboxMessage{
+		ID:          raw.ID,
+		Subject:     raw.Subject,
+		From:        raw.From,
+		CreatedTS:   created,
+		ThreadID:    raw.ThreadID,
+		Importance:  raw.Importance,
+		AckRequired: raw.AckRequired,
+		Kind:        kind,
+		ReadAt:      raw.ReadAt,
+	}
+	if includeBody {
+		message.BodyMD = body
+	}
+	return message, nil
+}
+
+func splitJSONArchiveMarkdown(data []byte) ([]byte, string, error) {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---json\n") {
+		return nil, "", fmt.Errorf("missing ---json archive header")
+	}
+	rest := strings.TrimPrefix(text, "---json\n")
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return nil, "", fmt.Errorf("missing archive header terminator")
+	}
+	header := strings.TrimSpace(rest[:end])
+	body := strings.TrimLeft(rest[end+len("\n---"):], "\n")
+	return []byte(header), body, nil
+}
+
+func inboxArchiveMessageMatches(message InboxMessage, opts FetchInboxOptions) bool {
+	if opts.SinceTS != nil && !message.CreatedTS.IsZero() && message.CreatedTS.Before(*opts.SinceTS) {
+		return false
+	}
+	if opts.UrgentOnly {
+		importance := strings.ToLower(strings.TrimSpace(message.Importance))
+		return importance == "urgent" || importance == "high"
+	}
+	return true
+}
+
+func archivedInboxKindForAgent(agentName string, to, cc, bcc []string) string {
+	switch {
+	case stringSliceContains(to, agentName):
+		return "to"
+	case stringSliceContains(cc, agentName):
+		return "cc"
+	case stringSliceContains(bcc, agentName):
+		return "bcc"
+	default:
+		return "to"
+	}
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // MarkMessageRead marks a message as read for an agent.
