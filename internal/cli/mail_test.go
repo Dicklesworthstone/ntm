@@ -38,11 +38,14 @@ type mailStub struct {
 	ensureProjectKeys  []string
 	overseerCalls      []overseerCall
 	releaseCalls       []releaseCall
+	registerCalls      []registerCall
 	renewCalls         []renewCall
 	forceReleaseCalls  []forceReleaseCall
 	releaseResult      agentmail.ReleaseReservationsResult
+	releaseResults     []agentmail.ReleaseReservationsResult
 	renewResult        agentmail.RenewReservationsResult
 	forceReleaseResult agentmail.ForceReleaseResult
+	reserveErrors      []string
 	failIDs            map[int]string // messageID -> error message
 }
 
@@ -55,10 +58,11 @@ type fetchCall struct {
 }
 
 type releaseCall struct {
-	Agent   string
-	Project string
-	Paths   []string
-	IDs     []int
+	Agent             string
+	Project           string
+	Paths             []string
+	IDs               []int
+	RegistrationToken string
 }
 
 type listCall struct {
@@ -67,12 +71,20 @@ type listCall struct {
 }
 
 type reserveCall struct {
-	Agent     string
-	Project   string
-	Paths     []string
-	TTL       int
-	Exclusive bool
-	Reason    string
+	Agent             string
+	Project           string
+	Paths             []string
+	TTL               int
+	Exclusive         bool
+	Reason            string
+	RegistrationToken string
+}
+
+type registerCall struct {
+	Name    string
+	Project string
+	Program string
+	Model   string
 }
 
 type renewCall struct {
@@ -236,6 +248,25 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 				"human_key": args["human_key"],
 			}
 			writeResponse(project)
+		case "register_agent":
+			call := registerCall{
+				Name:    toString(args["name"]),
+				Project: toString(args["project_key"]),
+				Program: toString(args["program"]),
+				Model:   toString(args["model"]),
+			}
+			if call.Name == "" {
+				call.Name = "BlueLake"
+			}
+			stub.registerCalls = append(stub.registerCalls, call)
+			writeResponse(agentmail.Agent{
+				ID:                len(stub.registerCalls),
+				Name:              call.Name,
+				Program:           call.Program,
+				Model:             call.Model,
+				ProjectID:         1,
+				RegistrationToken: "token-" + call.Name,
+			})
 		case "list_agents":
 			writeResponse(stub.listAgents)
 		case "fetch_inbox":
@@ -277,22 +308,35 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 			writeResponse(map[string]interface{}{})
 		case "release_file_reservations":
 			stub.releaseCalls = append(stub.releaseCalls, releaseCall{
-				Agent:   toString(args["agent_name"]),
-				Project: toString(args["project_key"]),
-				Paths:   toStringSlice(args["paths"]),
-				IDs:     toIntSlice(args["file_reservation_ids"]),
+				Agent:             toString(args["agent_name"]),
+				Project:           toString(args["project_key"]),
+				Paths:             toStringSlice(args["paths"]),
+				IDs:               toIntSlice(args["file_reservation_ids"]),
+				RegistrationToken: toString(args["registration_token"]),
 			})
-			writeResponse(stub.releaseResult)
+			result := stub.releaseResult
+			if len(stub.releaseResults) > 0 {
+				result = stub.releaseResults[0]
+				stub.releaseResults = stub.releaseResults[1:]
+			}
+			writeResponse(result)
 		case "file_reservation_paths":
 			call := reserveCall{
-				Agent:     toString(args["agent_name"]),
-				Project:   toString(args["project_key"]),
-				Paths:     toStringSlice(args["paths"]),
-				TTL:       toInt(args["ttl_seconds"]),
-				Exclusive: toBool(args["exclusive"]),
-				Reason:    toString(args["reason"]),
+				Agent:             toString(args["agent_name"]),
+				Project:           toString(args["project_key"]),
+				Paths:             toStringSlice(args["paths"]),
+				TTL:               toInt(args["ttl_seconds"]),
+				Exclusive:         toBool(args["exclusive"]),
+				Reason:            toString(args["reason"]),
+				RegistrationToken: toString(args["registration_token"]),
 			}
 			stub.reserveCalls = append(stub.reserveCalls, call)
+			if len(stub.reserveErrors) > 0 {
+				msg := stub.reserveErrors[0]
+				stub.reserveErrors = stub.reserveErrors[1:]
+				writeError(w, rpc.ID, -32000, msg)
+				return
+			}
 			granted := make([]map[string]interface{}, 0, len(call.Paths))
 			for i, path := range call.Paths {
 				granted = append(granted, map[string]interface{}{
@@ -1534,6 +1578,48 @@ func TestRunLockUsesSessionProjectDir(t *testing.T) {
 	}
 }
 
+func TestRunLockRefreshesStaleSessionAgentAndRetries(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	session := "mysession"
+	agentName := "BlueLake"
+	saveSessionAgentForTest(t, session, projectKey, agentName)
+
+	stub := newMailStub(t, nil)
+	stub.reserveErrors = []string{"Agent 'BlueLake' not found in project '" + projectKey + "'. Use register_agent to create a new agent identity."}
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(canonicalTempDir(t))
+
+	if err := runLock(session, []string{"internal/**/*.go"}, "stale identity", "1h", false); err != nil {
+		t.Fatalf("runLock: %v", err)
+	}
+	if len(stub.registerCalls) != 1 {
+		t.Fatalf("expected one register_agent recovery call, got %d", len(stub.registerCalls))
+	}
+	if got := stub.registerCalls[0].Name; got != agentName {
+		t.Fatalf("expected register_agent for %q, got %q", agentName, got)
+	}
+	if len(stub.reserveCalls) != 2 {
+		t.Fatalf("expected reserve retry after stale identity, got %d call(s)", len(stub.reserveCalls))
+	}
+	if got := stub.reserveCalls[1].RegistrationToken; got != "token-"+agentName {
+		t.Fatalf("expected retry to include refreshed registration token, got %q", got)
+	}
+}
+
 func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 	resetFlags()
 	isolateSessionAgentStorage(t)
@@ -1633,6 +1719,57 @@ func TestRunUnlockUsesSessionProjectDir(t *testing.T) {
 	}
 	if got := stub.releaseCalls[0].Project; got != projectKey {
 		t.Fatalf("expected release project %q, got %q", projectKey, got)
+	}
+}
+
+func TestRunUnlockFallsBackToMatchingReservationIDsOnZeroPathRelease(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	session := "mysession"
+	agentName := "BlueLake"
+	path := "state/compliance/skillos-fr9is/probe.txt"
+	saveSessionAgentForTest(t, session, projectKey, agentName)
+
+	stub := newMailStub(t, nil)
+	stub.reservations = []agentmail.FileReservation{
+		{
+			ID:          42,
+			AgentName:   agentName,
+			PathPattern: path,
+			Exclusive:   true,
+		},
+	}
+	stub.releaseResults = []agentmail.ReleaseReservationsResult{
+		{Released: 0},
+		{Released: 1},
+	}
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(canonicalTempDir(t))
+
+	if err := runUnlock(session, []string{path}, false, -1, ""); err != nil {
+		t.Fatalf("runUnlock: %v", err)
+	}
+	if len(stub.releaseCalls) != 2 {
+		t.Fatalf("expected path release plus id fallback, got %d release call(s)", len(stub.releaseCalls))
+	}
+	if got := stub.releaseCalls[0].Paths; len(got) != 1 || got[0] != path {
+		t.Fatalf("expected first release by path %q, got %v", path, got)
+	}
+	if got := stub.releaseCalls[1].IDs; len(got) != 1 || got[0] != 42 {
+		t.Fatalf("expected fallback release by id 42, got %v", got)
 	}
 }
 

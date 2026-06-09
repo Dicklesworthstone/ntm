@@ -136,6 +136,24 @@ func runUnlock(session string, patterns []string, all bool, paneIdx int, taskID 
 	}
 
 	releaseResult, err := client.ReleaseReservations(ctx, projectKey, sessionAgent.AgentName, pathsToRelease, nil)
+	if err != nil {
+		if refreshed, recovered, recoverErr := refreshReservationSessionAgent(ctx, client, session, projectKey, err); recovered {
+			if recoverErr != nil {
+				err = fmt.Errorf("%w; recovery failed: %v", err, recoverErr)
+			} else {
+				sessionAgent = refreshed
+				releaseResult, err = client.ReleaseReservations(ctx, projectKey, sessionAgent.AgentName, pathsToRelease, nil)
+			}
+		}
+	}
+	if err == nil && releaseResult != nil && !all && releaseResult.Released == 0 {
+		if fallbackResult, fallbackErr := releaseMatchingReservationIDs(ctx, client, projectKey, sessionAgent.AgentName, patterns); fallbackErr != nil {
+			err = fallbackErr
+		} else if fallbackResult != nil && fallbackResult.Released > 0 {
+			releaseResult = fallbackResult
+		}
+	}
+
 	result := UnlockResult{Session: session, Agent: sessionAgent.AgentName}
 	if releaseResult != nil && releaseResult.ReleasedAt != nil {
 		t := releaseResult.ReleasedAt.Time

@@ -120,6 +120,17 @@ func runLock(session string, patterns []string, reason, ttlStr string, shared bo
 	}
 
 	reservation, err := client.ReservePaths(ctx, opts)
+	if err != nil {
+		if refreshed, recovered, recoverErr := refreshReservationSessionAgent(ctx, client, session, projectKey, err); recovered {
+			if recoverErr != nil {
+				err = fmt.Errorf("%w; recovery failed: %v", err, recoverErr)
+			} else {
+				sessionAgent = refreshed
+				opts.AgentName = refreshed.AgentName
+				reservation, err = client.ReservePaths(ctx, opts)
+			}
+		}
+	}
 
 	result := LockResult{Session: session, Agent: sessionAgent.AgentName, TTL: ttlStr}
 
