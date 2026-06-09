@@ -239,3 +239,34 @@ func TestListReservations_FallbackToToolsWhenResourceFails(t *testing.T) {
 		t.Fatalf("unexpected path pattern: %q", filtered[0].PathPattern)
 	}
 }
+
+func TestReadResourceJSONRPCTimeoutMapsToTimeout(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		resp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &JSONRPCError{
+				Code:    -32000,
+				Message: "request timed out",
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	c := NewClient(WithBaseURL(server.URL + "/"))
+	_, err := c.ReadResource(context.Background(), "resource://file_reservations/test")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !IsTimeout(err) {
+		t.Fatalf("IsTimeout=false for %v", err)
+	}
+}

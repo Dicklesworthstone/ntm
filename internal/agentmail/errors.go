@@ -152,6 +152,8 @@ func mapJSONRPCError(rpcErr *JSONRPCError) error {
 		return fmt.Errorf("%w: %s", ErrContactBlocked, rpcErr.Message)
 	case strings.Contains(msg, "conflict") && strings.Contains(msg, "reservation"):
 		return fmt.Errorf("%w: %s", ErrReservationConflict, rpcErr.Message)
+	case strings.Contains(msg, "request timed out") || strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout"):
+		return fmt.Errorf("%w: %s", ErrTimeout, rpcErr.Message)
 	case strings.Contains(msg, "not found") && !strings.Contains(msg, "method not found"):
 		return fmt.Errorf("%w: %s", ErrNotFound, rpcErr.Message)
 	case strings.Contains(msg, "busy") || strings.Contains(msg, "temporarily unavailable"):

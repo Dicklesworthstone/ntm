@@ -43,6 +43,7 @@ type mailStub struct {
 	releaseResult      agentmail.ReleaseReservationsResult
 	renewResult        agentmail.RenewReservationsResult
 	forceReleaseResult agentmail.ForceReleaseResult
+	resourceReadError  string
 	failIDs            map[int]string // messageID -> error message
 }
 
@@ -165,6 +166,10 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 		}
 
 		if rpc.Method == "resources/read" {
+			if stub.resourceReadError != "" {
+				writeError(w, rpc.ID, -32000, stub.resourceReadError)
+				return
+			}
 			params, _ := rpc.Params.(map[string]interface{})
 			uri := toString(params["uri"])
 			projectKey := ""
@@ -1566,6 +1571,65 @@ func TestRunLocksUsesSessionProjectDir(t *testing.T) {
 	}
 	if got := stub.listCalls[0].Project; got != projectKey {
 		t.Fatalf("expected list project %q, got %q", projectKey, got)
+	}
+}
+
+func TestRunLocksJSONClassifiesResourcesReadTimeout(t *testing.T) {
+	resetFlags()
+	isolateSessionAgentStorage(t)
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	stub.resourceReadError = "request timed out"
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(canonicalTempDir(t))
+
+	out, err := captureStdout(t, func() error {
+		return runLocks("mysession", true)
+	})
+	if err == nil {
+		t.Fatal("expected JSON failure exit")
+	}
+
+	var got LocksResult
+	if decodeErr := json.Unmarshal([]byte(out), &got); decodeErr != nil {
+		t.Fatalf("decode locks result: %v\n%s", decodeErr, out)
+	}
+	if got.Success {
+		t.Fatalf("Success=true, want false: %+v", got)
+	}
+	if got.ReasonCode != "agentmail_resources_read_timeout" {
+		t.Fatalf("ReasonCode=%q, want agentmail_resources_read_timeout; output=%s", got.ReasonCode, out)
+	}
+	if got.ErrorCode != "AGENT_MAIL_RESERVATION_LIST_FAILED" {
+		t.Fatalf("ErrorCode=%q, want AGENT_MAIL_RESERVATION_LIST_FAILED", got.ErrorCode)
+	}
+	if got.AgentMailDiagnostics == nil {
+		t.Fatal("AgentMailDiagnostics=nil")
+	}
+	diag := got.AgentMailDiagnostics
+	if diag.Operation != "resources/read" || diag.MCPTransport != "timeout" || diag.DaemonHealth != "reachable" {
+		t.Fatalf("diagnostics=%+v, want resources/read timeout with reachable daemon", diag)
+	}
+	if diag.Database != "no_signal" || diag.ResourceSerialization != "timeout_possible" {
+		t.Fatalf("diagnostics=%+v, want database no_signal and serialization timeout_possible", diag)
+	}
+	if diag.HealthStatus != "ok" {
+		t.Fatalf("health status=%q, want ok", diag.HealthStatus)
 	}
 }
 

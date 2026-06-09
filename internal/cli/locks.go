@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	pathpkg "path"
@@ -718,13 +719,32 @@ func printLocksAdviceResult(result LocksAdviceResult) error {
 
 // LocksResult contains the list of active file reservations.
 type LocksResult struct {
-	Success      bool                        `json:"success"`
-	Session      string                      `json:"session"`
-	Agent        string                      `json:"agent,omitempty"`
-	ProjectKey   string                      `json:"project_key"`
-	Reservations []agentmail.FileReservation `json:"reservations"`
-	Count        int                         `json:"count"`
-	Error        string                      `json:"error,omitempty"`
+	Success              bool                        `json:"success"`
+	Session              string                      `json:"session"`
+	Agent                string                      `json:"agent,omitempty"`
+	ProjectKey           string                      `json:"project_key"`
+	Reservations         []agentmail.FileReservation `json:"reservations"`
+	Count                int                         `json:"count"`
+	Error                string                      `json:"error,omitempty"`
+	ErrorCode            string                      `json:"error_code,omitempty"`
+	ReasonCode           string                      `json:"reason_code,omitempty"`
+	AgentMailDiagnostics *LocksAgentMailDiagnostics  `json:"agent_mail_diagnostics,omitempty"`
+}
+
+// LocksAgentMailDiagnostics is the doctor-style breakdown attached to
+// `ntm locks list --json` when Agent Mail reservation discovery fails.
+type LocksAgentMailDiagnostics struct {
+	Surface               string `json:"surface"`
+	Operation             string `json:"operation"`
+	FailureClass          string `json:"failure_class"`
+	MCPTransport          string `json:"mcp_transport"`
+	DaemonHealth          string `json:"daemon_health"`
+	HealthStatus          string `json:"health_status,omitempty"`
+	HealthLevel           string `json:"health_level,omitempty"`
+	Database              string `json:"database"`
+	ResourceSerialization string `json:"resource_serialization"`
+	RecoveryMode          string `json:"recovery_mode,omitempty"`
+	RecoveryNextAction    string `json:"recovery_next_action,omitempty"`
 }
 
 func runLocks(session string, allAgents bool) error {
@@ -785,6 +805,8 @@ func runLocks(session string, allAgents bool) error {
 	if err != nil {
 		result.Success = false
 		result.Error = err.Error()
+		result.ErrorCode = "AGENT_MAIL_RESERVATION_LIST_FAILED"
+		result.ReasonCode, result.AgentMailDiagnostics = classifyLocksAgentMailFailure(client, err)
 	} else {
 		result.Success = true
 	}
@@ -810,6 +832,81 @@ func fetchActiveReservations(ctx context.Context, client *agentmail.Client, proj
 		return nil, fmt.Errorf("listing reservations: %w", err)
 	}
 	return reservations, nil
+}
+
+func classifyLocksAgentMailFailure(client *agentmail.Client, err error) (string, *LocksAgentMailDiagnostics) {
+	diag := &LocksAgentMailDiagnostics{
+		Surface:               "file_reservations",
+		Operation:             "resources/read",
+		FailureClass:          "agent_mail_reservation_list_failed",
+		MCPTransport:          "unknown",
+		DaemonHealth:          "not_checked",
+		Database:              "no_signal",
+		ResourceSerialization: "no_signal",
+	}
+	reasonCode := "agentmail_reservations_list_failed"
+
+	var apiErr *agentmail.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Operation != "" {
+			diag.Operation = apiErr.Operation
+		}
+	}
+
+	errText := strings.ToLower(err.Error())
+	switch {
+	case agentmail.IsTimeout(err) && strings.Contains(errText, "resources/read"):
+		reasonCode = "agentmail_resources_read_timeout"
+		diag.FailureClass = "mcp_resources_read_timeout"
+		diag.MCPTransport = "timeout"
+		diag.ResourceSerialization = "timeout_possible"
+	case agentmail.IsTimeout(err):
+		reasonCode = "agentmail_request_timeout"
+		diag.FailureClass = "mcp_request_timeout"
+		diag.MCPTransport = "timeout"
+	case agentmail.IsServerUnavailable(err):
+		reasonCode = "agentmail_server_unavailable"
+		diag.FailureClass = "mcp_transport_unavailable"
+		diag.MCPTransport = "unavailable"
+	case agentmail.IsUnauthorized(err):
+		reasonCode = "agentmail_unauthorized"
+		diag.FailureClass = "mcp_transport_unauthorized"
+		diag.MCPTransport = "unauthorized"
+	case strings.Contains(errText, "database is locked") || strings.Contains(errText, "database locked") || strings.Contains(errText, "sqlite busy"):
+		reasonCode = "agentmail_resources_read_database_lock"
+		diag.FailureClass = "database_lock"
+		diag.Database = "lock_suspected"
+	case strings.Contains(errText, "resource://file_reservations") ||
+		strings.Contains(errText, "cannot unmarshal") ||
+		strings.Contains(errText, "invalid character"):
+		reasonCode = "agentmail_resources_read_serialization_failed"
+		diag.FailureClass = "resource_serialization_failed"
+		diag.ResourceSerialization = "failed"
+	}
+
+	if client != nil {
+		healthCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if health, healthErr := client.HealthCheck(healthCtx); healthErr == nil {
+			diag.DaemonHealth = "reachable"
+			diag.HealthStatus = health.Status
+			diag.HealthLevel = health.HealthLevel
+			if health.Recovery != nil {
+				diag.RecoveryMode = health.Recovery.Mode
+				diag.RecoveryNextAction = health.Recovery.NextAction
+				if diag.Database == "no_signal" && strings.Contains(strings.ToLower(health.Recovery.Mode+" "+health.Recovery.NextAction), "lock") {
+					diag.Database = "lock_suspected"
+				}
+			}
+		} else {
+			diag.DaemonHealth = "unreachable"
+			if diag.MCPTransport == "unknown" {
+				diag.MCPTransport = "health_check_failed"
+			}
+		}
+	}
+
+	return reasonCode, diag
 }
 
 func printLocksResult(result LocksResult, allAgents bool) error {
