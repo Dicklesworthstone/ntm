@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 )
 
 // AMAdapter provides integration with Agent Mail MCP server
@@ -83,30 +85,148 @@ func (a *AMAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 		}, nil
 	}
 
-	// Check server health
-	if a.isServerHealthy(ctx) {
-		return &HealthStatus{
-			Healthy:     true,
-			Message:     "Agent Mail server is healthy",
-			LastChecked: time.Now(),
-			Latency:     time.Since(start),
-		}, nil
-	}
-
-	return &HealthStatus{
-		Healthy:     false,
-		Message:     "Agent Mail CLI installed but server not responding",
+	assessment := CheckAgentMailServerHealth(ctx, a.serverURL)
+	status := &HealthStatus{
+		Healthy:     assessment.Healthy,
+		Message:     assessment.Message,
 		LastChecked: time.Now(),
 		Latency:     time.Since(start),
-	}, nil
+		Error:       assessment.Error,
+	}
+	return status, nil
 }
 
 // isServerHealthy checks if the Agent Mail server is responding
 func (a *AMAdapter) isServerHealthy(ctx context.Context) bool {
+	return agentMailLivenessOK(ctx, a.serverURL)
+}
+
+// AgentMailServerHealth is the richer health verdict used by NTM doctor rows.
+type AgentMailServerHealth struct {
+	Healthy            bool
+	DoctorStatus       string
+	Message            string
+	Error              string
+	HealthStatus       string
+	HealthLevel        string
+	RecoveryMode       string
+	RecoveryNextAction string
+}
+
+// CheckAgentMailServerHealth checks the MCP health_check tool, not just liveness.
+func CheckAgentMailServerHealth(ctx context.Context, serverURL string) AgentMailServerHealth {
+	return CheckAgentMailServerHealthWithToken(ctx, serverURL, "")
+}
+
+// CheckAgentMailServerHealthWithToken checks Agent Mail health using an explicit bearer token.
+func CheckAgentMailServerHealthWithToken(ctx context.Context, serverURL, token string) AgentMailServerHealth {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health/liveness", nil)
+	opts := []agentmail.Option{
+		agentmail.WithBaseURL(agentMailMCPBaseURL(serverURL)),
+		agentmail.WithTimeout(5 * time.Second),
+	}
+	if strings.TrimSpace(token) != "" {
+		opts = append(opts, agentmail.WithToken(strings.TrimSpace(token)))
+	}
+	client := agentmail.NewClient(opts...)
+	health, err := client.HealthCheck(ctx)
+	if err != nil {
+		errText := strings.TrimSpace(err.Error())
+		if agentMailLivenessOK(ctx, serverURL) {
+			return AgentMailServerHealth{
+				Healthy:      false,
+				DoctorStatus: "warning",
+				Message:      "Agent Mail server listening but MCP health_check failed: " + errText,
+				Error:        errText,
+			}
+		}
+		return AgentMailServerHealth{
+			Healthy:      false,
+			DoctorStatus: "error",
+			Message:      "Agent Mail server not responding",
+			Error:        errText,
+		}
+	}
+
+	return AssessAgentMailHealthStatus(health)
+}
+
+// AssessAgentMailHealthStatus converts the Agent Mail health payload into NTM status.
+func AssessAgentMailHealthStatus(health *agentmail.HealthStatus) AgentMailServerHealth {
+	if health == nil {
+		return AgentMailServerHealth{
+			Healthy:      false,
+			DoctorStatus: "error",
+			Message:      "Agent Mail health_check returned an empty payload",
+		}
+	}
+
+	result := AgentMailServerHealth{
+		Healthy:      true,
+		DoctorStatus: "ok",
+		HealthStatus: strings.TrimSpace(health.Status),
+		HealthLevel:  strings.TrimSpace(health.HealthLevel),
+	}
+	if health.Recovery != nil {
+		result.RecoveryMode = strings.TrimSpace(health.Recovery.Mode)
+		result.RecoveryNextAction = strings.TrimSpace(health.Recovery.NextAction)
+	}
+	result.Message = agentMailHealthMessage(result)
+
+	switch strings.ToLower(result.RecoveryMode) {
+	case "corrupt":
+		result.Healthy = false
+		result.DoctorStatus = "error"
+		return result
+	}
+
+	switch strings.ToLower(result.HealthStatus) {
+	case "", "ok", "ready", "alive", "healthy":
+	default:
+		result.Healthy = false
+		result.DoctorStatus = "warning"
+		return result
+	}
+
+	switch strings.ToLower(result.HealthLevel) {
+	case "", "green", "ok", "healthy":
+	case "red", "error", "critical":
+		result.Healthy = false
+		result.DoctorStatus = "error"
+	default:
+		result.Healthy = false
+		result.DoctorStatus = "warning"
+	}
+
+	return result
+}
+
+func agentMailMCPBaseURL(serverURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(serverURL), "/")
+	if trimmed == "" {
+		return agentmail.DefaultBaseURL
+	}
+	if strings.HasSuffix(trimmed, "/mcp") {
+		return trimmed + "/"
+	}
+	return trimmed + "/mcp/"
+}
+
+func agentMailLivenessOK(ctx context.Context, serverURL string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rootURL := strings.TrimRight(strings.TrimSpace(serverURL), "/")
+	if strings.HasSuffix(rootURL, "/mcp") {
+		rootURL = strings.TrimSuffix(rootURL, "/mcp")
+	}
+	if rootURL == "" {
+		rootURL = "http://127.0.0.1:8765"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", rootURL+"/health/liveness", nil)
 	if err != nil {
 		return false
 	}
@@ -119,6 +239,23 @@ func (a *AMAdapter) isServerHealthy(ctx context.Context) bool {
 	defer resp.Body.Close()
 
 	return resp.StatusCode == http.StatusOK
+}
+
+func agentMailHealthMessage(health AgentMailServerHealth) string {
+	parts := []string{"Agent Mail health_check"}
+	if health.HealthStatus != "" {
+		parts = append(parts, "status="+health.HealthStatus)
+	}
+	if health.HealthLevel != "" {
+		parts = append(parts, "health_level="+health.HealthLevel)
+	}
+	if health.RecoveryMode != "" {
+		parts = append(parts, "recovery_mode="+health.RecoveryMode)
+	}
+	if health.RecoveryNextAction != "" {
+		parts = append(parts, "next_action="+health.RecoveryNextAction)
+	}
+	return strings.Join(parts, " ")
 }
 
 // HasCapability checks if Agent Mail has a specific capability
