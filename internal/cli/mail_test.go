@@ -46,6 +46,7 @@ type mailStub struct {
 	renewResult        agentmail.RenewReservationsResult
 	forceReleaseResult agentmail.ForceReleaseResult
 	reserveErrors      []string
+	resourceReadError  string
 	failIDs            map[int]string // messageID -> error message
 }
 
@@ -177,6 +178,10 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 		}
 
 		if rpc.Method == "resources/read" {
+			if stub.resourceReadError != "" {
+				writeError(w, rpc.ID, -32000, stub.resourceReadError)
+				return
+			}
 			params, _ := rpc.Params.(map[string]interface{})
 			uri := toString(params["uri"])
 			projectKey := ""
@@ -1711,6 +1716,94 @@ func TestRunLocksRequiresSessionAgentUnlessAllAgents(t *testing.T) {
 	}
 	if len(stub.listCalls) != 0 {
 		t.Fatalf("expected no list call when identity is missing, got %d", len(stub.listCalls))
+	}
+}
+
+func TestRunLocksJSONClassifiesSessionNotConfigured(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+	isolateSessionAgentStorage(t)
+	jsonOutput = true
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "mysession")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Chdir(canonicalTempDir(t))
+
+	out, err := captureStdout(t, func() error {
+		return runLocks("mysession", false)
+	})
+	if err == nil {
+		t.Fatal("expected runLocks to return json failure")
+	}
+
+	var result LocksResult
+	if unmarshalErr := json.Unmarshal([]byte(out), &result); unmarshalErr != nil {
+		t.Fatalf("unmarshal LocksResult: %v\noutput=%s", unmarshalErr, out)
+	}
+	if result.ErrorCode != "session_not_configured" || result.ReasonCode != "session_not_configured" {
+		t.Fatalf("error_code=%q reason_code=%q, want session_not_configured", result.ErrorCode, result.ReasonCode)
+	}
+	if !strings.Contains(result.NextAction, "ntm init '"+projectKey+"' --non-interactive --json") {
+		t.Fatalf("next_action missing bootstrap command: %q", result.NextAction)
+	}
+}
+
+func TestRunLocksJSONClassifiesUnregisteredProject(t *testing.T) {
+	resetFlags()
+	t.Cleanup(resetFlags)
+	isolateSessionAgentStorage(t)
+	jsonOutput = true
+
+	projectsBase := canonicalTempDir(t)
+	projectKey := filepath.Join(projectsBase, "beads_rust")
+	if err := os.MkdirAll(projectKey, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	stub := newMailStub(t, nil)
+	stub.resourceReadError = "project not found"
+	defer stub.Close()
+
+	oldCfg := cfg
+	cfg = &config.Config{ProjectsBase: projectsBase}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+	t.Chdir(canonicalTempDir(t))
+
+	out, err := captureStdout(t, func() error {
+		return runLocks("beads_rust", true)
+	})
+	if err == nil {
+		t.Fatal("expected runLocks to return json failure")
+	}
+
+	var result LocksResult
+	if unmarshalErr := json.Unmarshal([]byte(out), &result); unmarshalErr != nil {
+		t.Fatalf("unmarshal LocksResult: %v\noutput=%s", unmarshalErr, out)
+	}
+	if result.ProjectKey != projectKey {
+		t.Fatalf("project_key = %q, want %q", result.ProjectKey, projectKey)
+	}
+	if result.ErrorCode != "project_not_registered" || result.ReasonCode != "project_not_registered" {
+		t.Fatalf("error_code=%q reason_code=%q, want project_not_registered", result.ErrorCode, result.ReasonCode)
+	}
+	if strings.Contains(result.Error, "resources/read") || strings.Contains(result.Error, "HTTP 404") {
+		t.Fatalf("primary error leaked raw transport chain: %q", result.Error)
+	}
+	if !strings.Contains(result.Detail, "resources/read") {
+		t.Fatalf("detail should preserve raw diagnostic chain, got %q", result.Detail)
+	}
+	if !strings.Contains(result.NextAction, "ntm init '"+projectKey+"' --non-interactive --json") {
+		t.Fatalf("next_action missing bootstrap command: %q", result.NextAction)
 	}
 }
 
