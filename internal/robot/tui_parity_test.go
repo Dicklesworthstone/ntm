@@ -1096,6 +1096,46 @@ func TestAlertInfoFromRealAlert(t *testing.T) {
 	}
 }
 
+func TestTUIAlertInfoFromAlertIncludesRoutingMetadata(t *testing.T) {
+	now := time.Now()
+	info := tuiAlertInfoFromAlert(alerts.Alert{
+		ID:       "agent-alert-1",
+		Source:   "agents:vrtx",
+		Type:     alerts.AlertAgentError,
+		Severity: alerts.SeverityError,
+		Session:  "vrtx",
+		Pane:     "%36",
+		Message:  "Error detected in agent output",
+		Context:  map[string]interface{}{"matched_line": "error: failed"},
+		Count:    2,
+	}, "/Users/josh/Developer/skillos", now)
+
+	if info.Source != "agents:vrtx" {
+		t.Fatalf("Source = %q, want agents:vrtx", info.Source)
+	}
+	if info.Project != "vrtx" {
+		t.Fatalf("Project = %q, want vrtx", info.Project)
+	}
+	if info.Owner != "vrtx" || info.OwnerType != "session" {
+		t.Fatalf("owner routing = %q/%q, want vrtx/session", info.Owner, info.OwnerType)
+	}
+	if info.DedupeKey != "ntm-alert:agent-alert-1" {
+		t.Fatalf("DedupeKey = %q", info.DedupeKey)
+	}
+	if info.NextAction != "create_or_link_agent_alert_bead" {
+		t.Fatalf("NextAction = %q", info.NextAction)
+	}
+	if !info.BeadCandidate {
+		t.Fatal("BeadCandidate = false, want true for unlinked agent alert")
+	}
+	if info.ReasonCode != "" {
+		t.Fatalf("ReasonCode = %q, want empty when owner is inferred", info.ReasonCode)
+	}
+	if !info.Dismissible {
+		t.Fatal("Dismissible = false, want true")
+	}
+}
+
 // =============================================================================
 // PrintInspectPane Tests
 // =============================================================================

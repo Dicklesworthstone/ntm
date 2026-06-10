@@ -4388,18 +4388,137 @@ type SnapshotReplayWindowInfo struct {
 
 // AlertInfo provides detailed alert information for robot output
 type AlertInfo struct {
-	ID         string                 `json:"id"`
-	Source     string                 `json:"source,omitempty"`
-	Type       string                 `json:"type"`
-	Severity   string                 `json:"severity"`
-	Message    string                 `json:"message"`
-	Session    string                 `json:"session,omitempty"`
-	Pane       string                 `json:"pane,omitempty"`
-	BeadID     string                 `json:"bead_id,omitempty"`
-	Context    map[string]interface{} `json:"context,omitempty"`
-	CreatedAt  string                 `json:"created_at"`
-	DurationMs int64                  `json:"duration_ms"`
-	Count      int                    `json:"count"`
+	ID            string                 `json:"id"`
+	Source        string                 `json:"source,omitempty"`
+	Type          string                 `json:"type"`
+	Severity      string                 `json:"severity"`
+	Message       string                 `json:"message"`
+	Session       string                 `json:"session,omitempty"`
+	Pane          string                 `json:"pane,omitempty"`
+	BeadID        string                 `json:"bead_id,omitempty"`
+	Project       string                 `json:"project,omitempty"`
+	Owner         string                 `json:"owner,omitempty"`
+	OwnerType     string                 `json:"owner_type,omitempty"`
+	ReasonCode    string                 `json:"reason_code,omitempty"`
+	DedupeKey     string                 `json:"dedupe_key,omitempty"`
+	BeadCandidate bool                   `json:"bead_candidate,omitempty"`
+	NextAction    string                 `json:"next_action,omitempty"`
+	Context       map[string]interface{} `json:"context,omitempty"`
+	CreatedAt     string                 `json:"created_at"`
+	DurationMs    int64                  `json:"duration_ms"`
+	Count         int                    `json:"count"`
+}
+
+func alertInfoFromAlert(a alerts.Alert, defaultProject string) AlertInfo {
+	info := AlertInfo{
+		ID:            a.ID,
+		Source:        a.Source,
+		Type:          string(a.Type),
+		Severity:      string(a.Severity),
+		Message:       a.Message,
+		Session:       a.Session,
+		Pane:          a.Pane,
+		BeadID:        a.BeadID,
+		Context:       a.Context,
+		CreatedAt:     a.CreatedAt.Format(time.RFC3339),
+		DurationMs:    a.Duration().Milliseconds(),
+		Count:         a.Count,
+		DedupeKey:     alertDedupeKey(a),
+		BeadCandidate: alertBeadCandidate(a),
+		NextAction:    alertNextAction(a),
+	}
+	info.Project, info.Owner, info.OwnerType, info.ReasonCode = alertRouting(a, defaultProject)
+	return info
+}
+
+func alertDedupeKey(a alerts.Alert) string {
+	if strings.TrimSpace(a.ID) != "" {
+		return "ntm-alert:" + strings.TrimSpace(a.ID)
+	}
+	parts := []string{string(a.Type), strings.TrimSpace(a.Session), strings.TrimSpace(a.Pane), strings.TrimSpace(a.BeadID)}
+	for i, part := range parts {
+		if part == "" {
+			parts[i] = "_"
+		}
+	}
+	return "ntm-alert:" + strings.Join(parts, ":")
+}
+
+func alertRouting(a alerts.Alert, defaultProject string) (project, owner, ownerType, reasonCode string) {
+	project = firstContextString(a.Context, "project_key", "project_dir", "project", "workspace")
+	if project == "" && strings.TrimSpace(a.Session) != "" {
+		project = strings.TrimSpace(a.Session)
+	}
+	if project == "" {
+		project = strings.TrimSpace(defaultProject)
+	}
+
+	switch {
+	case strings.TrimSpace(a.BeadID) != "":
+		owner = strings.TrimSpace(firstContextString(a.Context, "assignee", "owner"))
+		if owner != "" {
+			ownerType = "bead_assignee"
+		} else {
+			owner = strings.TrimSpace(a.BeadID)
+			ownerType = "bead"
+		}
+	case strings.TrimSpace(a.Session) != "":
+		owner = strings.TrimSpace(a.Session)
+		ownerType = "session"
+	case strings.TrimSpace(a.Source) != "":
+		owner = strings.TrimSpace(a.Source)
+		ownerType = "alert_source"
+	}
+
+	if owner == "" {
+		reasonCode = "owner_not_inferred"
+	}
+	return project, owner, ownerType, reasonCode
+}
+
+func firstContextString(ctx map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if raw, ok := ctx[key]; ok {
+			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func alertNextAction(a alerts.Alert) string {
+	if strings.TrimSpace(a.BeadID) != "" {
+		if a.Type == alerts.AlertBeadStale {
+			return "reassign_or_close_stale_in_progress_bead"
+		}
+		return "inspect_linked_bead"
+	}
+
+	switch a.Type {
+	case alerts.AlertAgentError, alerts.AlertAgentCrashed, alerts.AlertRateLimit:
+		return "create_or_link_agent_alert_bead"
+	case alerts.AlertDependencyCycle:
+		return "run_bv_dep_cycles"
+	case alerts.AlertDiskLow:
+		return "free_disk_space"
+	case alerts.AlertFileConflict:
+		return "resolve_file_reservation_conflict"
+	default:
+		return "inspect_alert_source"
+	}
+}
+
+func alertBeadCandidate(a alerts.Alert) bool {
+	if strings.TrimSpace(a.BeadID) != "" {
+		return false
+	}
+	switch a.Type {
+	case alerts.AlertAgentError, alerts.AlertAgentCrashed, alerts.AlertRateLimit:
+		return true
+	default:
+		return false
+	}
 }
 
 // AlertSummaryInfo provides aggregate alert statistics
@@ -8933,38 +9052,13 @@ func GetAlertsDetailed(includeResolved bool) (*AlertsOutput, error) {
 	}
 
 	for i, a := range active {
-		output.Active[i] = AlertInfo{
-			ID:         a.ID,
-			Type:       string(a.Type),
-			Severity:   string(a.Severity),
-			Message:    a.Message,
-			Session:    a.Session,
-			Pane:       a.Pane,
-			BeadID:     a.BeadID,
-			Context:    a.Context,
-			CreatedAt:  a.CreatedAt.Format(time.RFC3339),
-			DurationMs: a.Duration().Milliseconds(),
-			Count:      a.Count,
-		}
+		output.Active[i] = alertInfoFromAlert(a, wd)
 	}
 
 	if includeResolved {
 		output.Resolved = make([]AlertInfo, len(resolved))
 		for i, a := range resolved {
-			output.Resolved[i] = AlertInfo{
-				ID:         a.ID,
-				Source:     a.Source,
-				Type:       string(a.Type),
-				Severity:   string(a.Severity),
-				Message:    a.Message,
-				Session:    a.Session,
-				Pane:       a.Pane,
-				BeadID:     a.BeadID,
-				Context:    a.Context,
-				CreatedAt:  a.CreatedAt.Format(time.RFC3339),
-				DurationMs: a.Duration().Milliseconds(),
-				Count:      a.Count,
-			}
+			output.Resolved[i] = alertInfoFromAlert(a, wd)
 		}
 	}
 

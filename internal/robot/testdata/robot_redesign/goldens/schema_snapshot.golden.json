@@ -116,6 +116,10 @@
       },
       "AlertInfo": {
         "properties": {
+          "bead_candidate": {
+            "description": "Bead candidate",
+            "type": "boolean"
+          },
           "bead_id": {
             "description": "Bead i d",
             "type": "string"
@@ -133,6 +137,10 @@
             "description": "Created at",
             "type": "string"
           },
+          "dedupe_key": {
+            "description": "Dedupe key",
+            "type": "string"
+          },
           "duration_ms": {
             "description": "Duration ms",
             "type": "integer"
@@ -145,8 +153,28 @@
             "description": "Message",
             "type": "string"
           },
+          "next_action": {
+            "description": "Next action",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Owner",
+            "type": "string"
+          },
+          "owner_type": {
+            "description": "Owner type",
+            "type": "string"
+          },
           "pane": {
             "description": "Pane",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project",
+            "type": "string"
+          },
+          "reason_code": {
+            "description": "Reason code",
             "type": "string"
           },
           "session": {

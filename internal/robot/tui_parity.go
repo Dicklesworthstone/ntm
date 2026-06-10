@@ -3048,15 +3048,25 @@ type TUIAlertsOutput struct {
 
 // TUIAlertInfo represents a single alert with TUI-parity fields
 type TUIAlertInfo struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`     // "agent_stuck", "disk_low", "mail_backlog", etc.
-	Severity    string `json:"severity"` // "info", "warning", "error", "critical"
-	Session     string `json:"session,omitempty"`
-	Pane        string `json:"pane,omitempty"`
-	Message     string `json:"message"`
-	CreatedAt   string `json:"created_at"` // RFC3339
-	AgeSeconds  int    `json:"age_seconds"`
-	Dismissible bool   `json:"dismissible"`
+	ID            string                 `json:"id"`
+	Source        string                 `json:"source,omitempty"`
+	Type          string                 `json:"type"`     // "agent_stuck", "disk_low", "mail_backlog", etc.
+	Severity      string                 `json:"severity"` // "info", "warning", "error", "critical"
+	Session       string                 `json:"session,omitempty"`
+	Pane          string                 `json:"pane,omitempty"`
+	BeadID        string                 `json:"bead_id,omitempty"`
+	Project       string                 `json:"project,omitempty"`
+	Owner         string                 `json:"owner,omitempty"`
+	OwnerType     string                 `json:"owner_type,omitempty"`
+	ReasonCode    string                 `json:"reason_code,omitempty"`
+	DedupeKey     string                 `json:"dedupe_key,omitempty"`
+	BeadCandidate bool                   `json:"bead_candidate,omitempty"`
+	NextAction    string                 `json:"next_action,omitempty"`
+	Context       map[string]interface{} `json:"context,omitempty"`
+	Message       string                 `json:"message"`
+	CreatedAt     string                 `json:"created_at"` // RFC3339
+	AgeSeconds    int                    `json:"age_seconds"`
+	Dismissible   bool                   `json:"dismissible"`
 }
 
 // TUIAlertsOptions configures alerts query for TUI parity
@@ -3079,6 +3089,7 @@ func GetAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) (*TUIAlertsOutput, 
 	// disabled/custom alert settings remain authoritative here too.
 	alertCfg := alertConfigForProject(cfg, "")
 	alertList := alerts.GetActiveAlerts(alertCfg)
+	defaultProject := strings.TrimSpace(alertCfg.ProjectsDir)
 
 	now := time.Now()
 	for _, a := range alertList {
@@ -3093,17 +3104,7 @@ func GetAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) (*TUIAlertsOutput, 
 			continue
 		}
 
-		info := TUIAlertInfo{
-			ID:          a.ID,
-			Type:        string(a.Type),
-			Severity:    string(a.Severity),
-			Session:     a.Session,
-			Pane:        a.Pane,
-			Message:     a.Message,
-			CreatedAt:   FormatTimestamp(a.CreatedAt),
-			AgeSeconds:  int(now.Sub(a.CreatedAt).Seconds()),
-			Dismissible: true,
-		}
+		info := tuiAlertInfoFromAlert(a, defaultProject, now)
 
 		output.Alerts = append(output.Alerts, info)
 	}
@@ -3133,6 +3134,31 @@ func GetAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) (*TUIAlertsOutput, 
 	}
 
 	return output, nil
+}
+
+func tuiAlertInfoFromAlert(a alerts.Alert, defaultProject string, now time.Time) TUIAlertInfo {
+	routed := alertInfoFromAlert(a, defaultProject)
+	return TUIAlertInfo{
+		ID:            routed.ID,
+		Source:        routed.Source,
+		Type:          routed.Type,
+		Severity:      routed.Severity,
+		Session:       routed.Session,
+		Pane:          routed.Pane,
+		BeadID:        routed.BeadID,
+		Project:       routed.Project,
+		Owner:         routed.Owner,
+		OwnerType:     routed.OwnerType,
+		ReasonCode:    routed.ReasonCode,
+		DedupeKey:     routed.DedupeKey,
+		BeadCandidate: routed.BeadCandidate,
+		NextAction:    routed.NextAction,
+		Context:       routed.Context,
+		Message:       routed.Message,
+		CreatedAt:     FormatTimestamp(a.CreatedAt),
+		AgeSeconds:    int(now.Sub(a.CreatedAt).Seconds()),
+		Dismissible:   true,
+	}
 }
 
 // PrintAlertsTUI outputs current alerts with TUI-parity formatting.

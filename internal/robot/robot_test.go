@@ -3108,6 +3108,97 @@ func TestGetAlertsDetailedRespectsDisabledAlertsConfig(t *testing.T) {
 	}
 }
 
+func TestAlertInfoFromAlertRoutesAgentErrors(t *testing.T) {
+	info := alertInfoFromAlert(alerts.Alert{
+		ID:       "agent-alert-1",
+		Source:   "agents:alpsinsurance",
+		Type:     alerts.AlertAgentError,
+		Severity: alerts.SeverityError,
+		Message:  "Error detected in agent output",
+		Session:  "alpsinsurance",
+		Pane:     "%32",
+		Context:  map[string]interface{}{"matched_line": "error: failed"},
+		Count:    1,
+	}, "/Users/josh/Developer/skillos")
+
+	if info.Source != "agents:alpsinsurance" {
+		t.Fatalf("Source = %q, want agents:alpsinsurance", info.Source)
+	}
+	if info.Project != "alpsinsurance" {
+		t.Fatalf("Project = %q, want alpsinsurance", info.Project)
+	}
+	if info.Owner != "alpsinsurance" || info.OwnerType != "session" {
+		t.Fatalf("owner routing = %q/%q, want alpsinsurance/session", info.Owner, info.OwnerType)
+	}
+	if info.DedupeKey != "ntm-alert:agent-alert-1" {
+		t.Fatalf("DedupeKey = %q", info.DedupeKey)
+	}
+	if info.NextAction != "create_or_link_agent_alert_bead" {
+		t.Fatalf("NextAction = %q", info.NextAction)
+	}
+	if !info.BeadCandidate {
+		t.Fatal("BeadCandidate = false, want true for unlinked agent alert")
+	}
+	if info.ReasonCode != "" {
+		t.Fatalf("ReasonCode = %q, want empty when owner is inferred", info.ReasonCode)
+	}
+}
+
+func TestAlertInfoFromAlertRoutesStaleBeads(t *testing.T) {
+	info := alertInfoFromAlert(alerts.Alert{
+		ID:       "bead-stale-1",
+		Source:   "beads",
+		Type:     alerts.AlertBeadStale,
+		Severity: alerts.SeverityWarning,
+		Message:  "Bead skillos-byftm has been in_progress",
+		BeadID:   "skillos-byftm",
+		Context: map[string]interface{}{
+			"assignee":     "MagentaOwl",
+			"title":        "Land stale HOME-substrate WIP branch",
+			"last_updated": "2026-06-09T19:57:45Z",
+		},
+		Count: 1,
+	}, "/Users/josh/Developer/skillos")
+
+	if info.Project != "/Users/josh/Developer/skillos" {
+		t.Fatalf("Project = %q, want SkillOS project path", info.Project)
+	}
+	if info.Owner != "MagentaOwl" || info.OwnerType != "bead_assignee" {
+		t.Fatalf("owner routing = %q/%q, want MagentaOwl/bead_assignee", info.Owner, info.OwnerType)
+	}
+	if info.BeadID != "skillos-byftm" {
+		t.Fatalf("BeadID = %q", info.BeadID)
+	}
+	if info.NextAction != "reassign_or_close_stale_in_progress_bead" {
+		t.Fatalf("NextAction = %q", info.NextAction)
+	}
+	if info.DedupeKey != "ntm-alert:bead-stale-1" {
+		t.Fatalf("DedupeKey = %q", info.DedupeKey)
+	}
+	if info.BeadCandidate {
+		t.Fatal("BeadCandidate = true, want false for linked stale bead alert")
+	}
+}
+
+func TestAlertInfoFromAlertExplainsMissingOwner(t *testing.T) {
+	info := alertInfoFromAlert(alerts.Alert{
+		ID:       "source-less",
+		Type:     alerts.AlertQuotaWarning,
+		Severity: alerts.SeverityWarning,
+		Message:  "quota warning",
+	}, "")
+
+	if info.Owner != "" || info.OwnerType != "" {
+		t.Fatalf("owner routing = %q/%q, want empty", info.Owner, info.OwnerType)
+	}
+	if info.ReasonCode != "owner_not_inferred" {
+		t.Fatalf("ReasonCode = %q, want owner_not_inferred", info.ReasonCode)
+	}
+	if info.DedupeKey != "ntm-alert:source-less" {
+		t.Fatalf("DedupeKey = %q", info.DedupeKey)
+	}
+}
+
 func TestBuildProjectionBackedSnapshotSessionsUsesRuntimeProjection(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := state.Open(filepath.Join(tmpDir, "state.db"))
