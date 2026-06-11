@@ -110,6 +110,16 @@ func IsInteractive(w io.Writer) bool {
 	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 }
 
+// IsInteractiveStdin reports whether standard input is a terminal. Interactive
+// selectors (the session/pane choosers) read keystrokes from stdin, so a prompt
+// is only safe when stdin is a TTY — checking the output writer alone is not
+// enough: if stdin is redirected from a pipe/heredoc while stdout is still a
+// terminal, the selector would start and then immediately read EOF and cancel.
+// This mirrors the prompt gate used by confirm_huh.go.
+func IsInteractiveStdin() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
+}
+
 // HasAnyTag checks if any of the pane's tags match any of the filter tags.
 // Comparison is case-insensitive.
 func HasAnyTag(paneTags, filterTags []string) bool {
@@ -209,15 +219,21 @@ func ResolveSessionWithOptions(session string, w io.Writer, opts SessionResolveO
 		}, nil
 	}
 
-	// If we cannot prompt, provide a helpful error.
-	allowPrompt := !opts.TreatAsJSON && !IsJSONOutput() && IsInteractive(w)
+	// A session selector reads keystrokes from stdin and renders to the output
+	// writer, so prompting is only safe when BOTH are an interactive terminal.
+	// (The historical gate checked only the output writer, which would attempt
+	// the selector even when stdin is a pipe/heredoc — there it reads EOF and
+	// cancels immediately.) When we cannot prompt, return an actionable error.
+	allowPrompt := !opts.TreatAsJSON && !IsJSONOutput() && IsInteractive(w) && IsInteractiveStdin()
 	if !allowPrompt {
 		var names []string
 		for _, s := range sessionList {
 			names = append(names, s.Name)
 		}
 		sort.Strings(names)
-		return SessionResolution{}, fmt.Errorf("session name required (multiple sessions: %s)", strings.Join(names, ", "))
+		return SessionResolution{}, fmt.Errorf(
+			"session name required: %d sessions are running and there's no interactive terminal to show a selector — specify one explicitly (e.g. `%s`). Available: %s",
+			len(names), names[0], strings.Join(names, ", "))
 	}
 
 	// Order sessions so the "best" default is at the top of the selector.
