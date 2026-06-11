@@ -156,6 +156,8 @@ func mapJSONRPCError(rpcErr *JSONRPCError) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, rpcErr.Message)
 	case strings.Contains(msg, "busy") || strings.Contains(msg, "temporarily unavailable"):
 		return fmt.Errorf("%w: %s", ErrTransientBusy, rpcErr.Message)
+	case strings.Contains(msg, "timed out") || strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded"):
+		return fmt.Errorf("%w: %s", ErrTimeout, rpcErr.Message)
 	}
 
 	// Map common JSON-RPC error codes

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	pathpkg "path"
@@ -725,6 +726,36 @@ type LocksResult struct {
 	Reservations []agentmail.FileReservation `json:"reservations"`
 	Count        int                         `json:"count"`
 	Error        string                      `json:"error,omitempty"`
+	// ReasonCode is a stable, machine-readable classification of a failure so
+	// robot/automation callers can branch on the cause — most importantly to
+	// tell an Agent Mail lock-list *timeout* apart from an auth failure or a
+	// down server — without scraping the human-readable Error string.
+	ReasonCode string `json:"reason_code,omitempty"`
+}
+
+// classifyLocksFailure maps a lock-list failure to a stable reason_code.
+// The list path bounds the call with a 10s context deadline, so a hung daemon
+// surfaces as context.DeadlineExceeded rather than an Agent Mail timeout error;
+// both are classified as agentmail_lock_list_timeout.
+func classifyLocksFailure(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case agentmail.IsTimeout(err) || errors.Is(err, context.DeadlineExceeded):
+		return "agentmail_lock_list_timeout"
+	case agentmail.IsServerUnavailable(err):
+		return "agentmail_unavailable"
+	case agentmail.IsUnauthorized(err):
+		return "agentmail_unauthorized"
+	case errors.Is(err, agentmail.ErrAgentNotRegistered):
+		return "agent_not_registered"
+	case agentmail.IsNotImplemented(err):
+		return "agentmail_unsupported"
+	case agentmail.IsTransientBusy(err):
+		return "agentmail_transient_busy"
+	default:
+		return "agentmail_lock_list_failed"
+	}
 }
 
 func runLocks(session string, allAgents bool) error {
@@ -739,7 +770,7 @@ func runLocks(session string, allAgents bool) error {
 	}
 	if sessionAgent == nil && !allAgents {
 		if IsJSONOutput() {
-			result := LocksResult{Success: false, Session: session, ProjectKey: projectKey, Error: "Session has no Agent Mail identity"}
+			result := LocksResult{Success: false, Session: session, ProjectKey: projectKey, Error: "Session has no Agent Mail identity", ReasonCode: "no_agent_identity"}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -758,7 +789,7 @@ func runLocks(session string, allAgents bool) error {
 	client := newAgentMailClient(projectKey)
 	if !client.IsAvailable() {
 		if IsJSONOutput() {
-			result := LocksResult{Success: false, Session: session, Agent: agentName, ProjectKey: projectKey, Error: "Agent Mail server unavailable"}
+			result := LocksResult{Success: false, Session: session, Agent: agentName, ProjectKey: projectKey, Error: "Agent Mail server unavailable", ReasonCode: "agentmail_unavailable"}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if encErr := enc.Encode(result); encErr != nil {
@@ -785,6 +816,7 @@ func runLocks(session string, allAgents bool) error {
 	if err != nil {
 		result.Success = false
 		result.Error = err.Error()
+		result.ReasonCode = classifyLocksFailure(err)
 	} else {
 		result.Success = true
 	}
