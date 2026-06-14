@@ -90,6 +90,31 @@ var (
 		regexp.MustCompile(`Running…`),          // Explicit running spinner
 	}
 
+	// ccMenuPatterns detect Claude Code's interactive selection-menu footer
+	// (the /effort picker, /model picker, permission selectors, etc.). When one
+	// of these is the live state, the pane is parked waiting for an Enter/arrow
+	// selection — it is NOT a dispatchable text prompt and NOT actively working.
+	// An agent stranded here (e.g. a `/effort` send that opened the picker but
+	// never confirmed) otherwise classifies as UNKNOWN and is invisible to
+	// autonomous dispatch + recovery. We key on the highly distinctive nav hint
+	// rather than the menu body so normal prose can't false-match; the hint can
+	// wrap across two lines, so we tolerate the line break between phrases.
+	// The invariant across Claude Code's selection menus is a confirm/navigate
+	// hint paired with "Esc to cancel" in the (often line-wrapped) footer. The
+	// concrete footer text varies by picker, e.g.:
+	//   "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"   (/effort, lists)
+	//   "Enter to set as default · s to use this session only · Esc to cancel"  (/model)
+	//   "◐ Medium effort ←/→ to adjust … Esc to cancel"                  (effort adjuster)
+	// We require BOTH halves within a bounded, newline-tolerant window so prose
+	// that merely mentions one phrase can't false-match. The bound keeps a stray
+	// "Esc to cancel" far from a hint (e.g. across unrelated output) from matching.
+	ccMenuPatterns = []*regexp.Regexp{
+		// "Enter to <verb> …  Esc to cancel"  (select / set as default / confirm / …)
+		regexp.MustCompile(`(?is)\benter\s+to\s+\S+.{0,160}?\besc\s+to\s+cancel\b`),
+		// Arrow-key navigation hint …  Esc to cancel
+		regexp.MustCompile(`(?is)(?:tab/arrow|arrow\s+keys|←/→|↑/↓|→/←).{0,160}?\besc\s+to\s+cancel\b`),
+	}
+
 	// ccErrorPatterns indicates an error condition.
 	ccErrorPatterns = []string{
 		"error:",

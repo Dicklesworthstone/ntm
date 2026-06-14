@@ -956,6 +956,9 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 		// Capture state
 		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, agentType)
+		// Self-heal a menu strand (e.g. a /effort picker left open) so the pane
+		// becomes dispatchable instead of being skipped as a dead UNKNOWN.
+		state = recoverIfMenuBlocked(pane.ID, agentType, state)
 		if state == "idle" {
 			idleAgentPanes = append(idleAgentPanes, fmt.Sprintf("%d", pane.Index))
 		}
@@ -1166,6 +1169,15 @@ func determineAgentState(scrollback, agentTypeStr string) string {
 		return "unknown"
 	}
 
+	// Menu-blocked is reported before the live-window working check: a pane
+	// parked at an interactive selection menu (e.g. the /effort picker) is not
+	// doing useful work and must be Esc-recovered before it can take a dispatch.
+	// A distinct state lets callers recover it instead of treating it as a dead
+	// "unknown" — the pre-fix behaviour that stranded /effort sends as UNKNOWN.
+	if state.IsMenuBlocked {
+		return "menu_blocked"
+	}
+
 	// Live-window THINKING check overrides any verdict — the legacy parser
 	// can miss in-flight work when the assignment store has no record.
 	if robot.IsLiveBusy(scrollback, agentTypeStr) {
@@ -1180,6 +1192,30 @@ func determineAgentState(scrollback, agentTypeStr string) string {
 	}
 
 	return "unknown"
+}
+
+// recoverIfMenuBlocked Esc-recovers a pane parked at an interactive selection
+// menu (the /effort or /model picker, a permission selector) and returns the
+// re-evaluated state. When the pane is not menu-blocked it returns the input
+// state unchanged and sends no keystroke, so it is safe to call on every pane
+// during an idle scan or a direct dispatch. This is what lets autonomous
+// dispatch self-heal a menu strand into a dispatchable idle pane instead of
+// skipping it as UNKNOWN — the failure that previously stalled the swarm when
+// an interactive `/effort` send opened a picker that nothing confirmed.
+func recoverIfMenuBlocked(paneTarget, agentType, state string) string {
+	if state != "menu_blocked" {
+		return state
+	}
+	if err := tmux.SendEscape(paneTarget); err != nil {
+		return state
+	}
+	// Brief settle so the TUI redraws the clean prompt before we re-read.
+	time.Sleep(200 * time.Millisecond)
+	scrollback, err := tmux.CaptureForStatusDetection(paneTarget)
+	if err != nil {
+		return state
+	}
+	return determineAgentState(scrollback, agentType)
 }
 
 func normalizedAssignAgentHint(agentTypeStr string) agent.AgentType {
@@ -1546,6 +1582,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		model := detectModelFromTitle(at, pane.Title)
 		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, at)
+		state = recoverIfMenuBlocked(pane.ID, at, state)
 
 		if state == "idle" {
 			idleAgents = append(idleAgents, assignAgentInfo{
@@ -3430,6 +3467,9 @@ func runReassignment(cmd *cobra.Command, session string) error {
 	// Check if target pane is busy (unless --force)
 	scrollback, _ := tmux.CapturePaneOutput(targetPane.ID, 10)
 	state := determineAgentState(scrollback, targetAgentType)
+	// If the pane is parked at an interactive menu, Esc-recover it to a clean
+	// prompt so a direct dispatch lands instead of being refused as busy.
+	state = recoverIfMenuBlocked(targetPane.ID, targetAgentType, state)
 
 	if state != "idle" && !assignForce {
 		// Check if pane has an existing assignment
@@ -4153,6 +4193,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 
 	scrollback, _ := tmux.CapturePaneOutput(targetPane.ID, 10)
 	state := determineAgentState(scrollback, agentType)
+	state = recoverIfMenuBlocked(targetPane.ID, agentType, state)
 
 	// Build assignment item
 	assignItem := &DirectAssignItem{
@@ -4580,6 +4621,7 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 		model := detectModelFromTitle(agentType, pane.Title)
 		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, agentType)
+		state = recoverIfMenuBlocked(pane.ID, agentType, state)
 
 		if state == "idle" {
 			idleAgents = append(idleAgents, assignAgentInfo{

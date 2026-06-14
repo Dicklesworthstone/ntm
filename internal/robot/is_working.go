@@ -57,6 +57,7 @@ type PaneWorkStatus struct {
 	AgentType            string         `json:"agent_type"`
 	IsWorking            bool           `json:"is_working"`
 	IsIdle               bool           `json:"is_idle"`
+	IsMenuBlocked        bool           `json:"is_menu_blocked"`
 	IsRateLimited        bool           `json:"is_rate_limited"`
 	IsContextLow         bool           `json:"is_context_low"`
 	ContextRemaining     *float64       `json:"context_remaining,omitempty"`
@@ -260,6 +261,7 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 			AgentType:        string(state.Type),
 			IsWorking:        state.IsWorking,
 			IsIdle:           state.IsIdle,
+			IsMenuBlocked:    state.IsMenuBlocked,
 			IsRateLimited:    state.IsRateLimited,
 			IsContextLow:     state.IsContextLow,
 			ContextRemaining: state.ContextRemaining,

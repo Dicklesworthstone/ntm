@@ -214,6 +214,21 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 		return
 	}
 
+	// Interactive-menu detection (checked before idle/working). When a Claude
+	// Code selection menu is the LIVE state — the /effort or /model picker, a
+	// permission selector — the pane is parked awaiting an Enter/arrow choice.
+	// It is neither a dispatchable text prompt (a sent prompt would be typed
+	// into the menu) nor active work, so we surface it as a distinct, recoverable
+	// state instead of letting it fall through to UNKNOWN. Autonomous dispatch
+	// can then Esc-recover the pane to a clean prompt before assigning.
+	if p.detectInteractiveMenu(output, state.Type) {
+		state.IsMenuBlocked = true
+		state.IsIdle = false
+		state.IsWorking = false
+		state.IsInError = p.detectError(output, state.Type)
+		return
+	}
+
 	// Idle detection
 	// We check this BEFORE trusting IsWorking, because IsWorking patterns
 	// (like "testing", "running") might still be present in the scrollback
@@ -270,6 +285,24 @@ func (p *parserImpl) detectRateLimit(output string, agentType AgentType) bool {
 			matchAny(recentOutput, aiderRateLimitPatterns) ||
 			matchAny(recentOutput, ollamaRateLimitPatterns)
 	}
+}
+
+// detectInteractiveMenu reports whether the live tail of the pane is showing a
+// Claude Code interactive selection menu (the /effort or /model picker, a
+// permission selector, etc.). It scans only the recent tail so a menu that was
+// dismissed earlier in the scrollback does not strand the pane: the
+// distinctive nav-hint footer ("Enter to select · Tab/Arrow keys to navigate ·
+// Esc to cancel") is only rendered while the menu is actually open. Menus are
+// currently a Claude-Code-only affordance; other concrete agent types return
+// false (Unknown is allowed through so content-detected CC panes still match).
+func (p *parserImpl) detectInteractiveMenu(output string, agentType AgentType) bool {
+	if agentType != AgentTypeClaudeCode && agentType != AgentTypeUnknown {
+		return false
+	}
+	// 8 lines is enough to catch the footer even when the hint wraps across
+	// two lines, while staying well clear of stale menus higher in scrollback.
+	lastLines := util.GetLastNLines(output, 8)
+	return matchAnyRegex(lastLines, ccMenuPatterns)
 }
 
 // detectWorking checks if the agent is actively producing output.

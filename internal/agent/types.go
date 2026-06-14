@@ -171,6 +171,7 @@ type AgentState struct {
 	IsContextLow  bool `json:"context_low"`  // Below configured threshold
 	IsIdle        bool `json:"is_idle"`      // Waiting for user input (safe to restart)
 	IsInError     bool `json:"is_in_error"`  // Error state detected
+	IsMenuBlocked bool `json:"is_menu_blocked"` // Stuck at an interactive selection menu (e.g. /effort, /model picker); needs Esc to recover before it can take work
 
 	// Evidence for debugging and confidence calculation
 	WorkIndicators  []string `json:"work_indicators,omitempty"`  // Patterns that indicate working
@@ -204,6 +205,13 @@ const (
 	// RecommendErrorState means the agent is in an error state and may need intervention.
 	RecommendErrorState Recommendation = "ERROR_STATE"
 
+	// RecommendRecoverMenu means the agent is stuck at an interactive selection menu
+	// (e.g. the /effort or /model picker) and is not dispatchable as-is: sending a text
+	// prompt would be typed into the menu. An orchestrator should send Esc to return the
+	// pane to a clean prompt, after which it becomes idle and dispatchable. This is a
+	// recoverable, machine-actionable state — distinct from UNKNOWN, which is a dead end.
+	RecommendRecoverMenu Recommendation = "RECOVER_MENU"
+
 	// RecommendUnknown means we couldn't determine the agent state with confidence.
 	RecommendUnknown Recommendation = "UNKNOWN"
 )
@@ -233,6 +241,15 @@ func (s *AgentState) GetRecommendation() Recommendation {
 			return RecommendContextLowContinue
 		}
 		return RecommendDoNotInterrupt
+	}
+
+	// Priority 3.5: Menu-blocked - the agent is parked at an interactive selection
+	// menu (not generating, not a clean prompt). Surfaced over Idle because a text
+	// dispatch would be typed INTO the menu; the orchestrator must Esc-recover first.
+	// Placed after Working so a genuine in-flight turn is never interrupted on a
+	// false menu match (the parser also clears IsWorking when a live menu is seen).
+	if s.IsMenuBlocked {
+		return RecommendRecoverMenu
 	}
 
 	// Priority 4: Idle - safe to take action

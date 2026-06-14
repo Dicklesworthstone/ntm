@@ -909,6 +909,16 @@ func (c *Client) SendKeysWithDelay(target, keys string, enter bool, enterDelay t
 	return nil
 }
 
+// SendEscape sends a single Escape key press to a pane. Unlike SendKeys (which
+// uses `send-keys -l`, literal mode, and would type the word "Escape"), this
+// passes "Escape" as a tmux key NAME so it registers as the Esc key. It is used
+// to dismiss an interactive selection menu (the /effort or /model picker, a
+// permission selector) and return the pane to a clean prompt — no Enter is
+// sent, so nothing in the menu is selected.
+func SendEscape(target string) error {
+	return DefaultClient.RunSilent("send-keys", "-t", target, "Escape")
+}
+
 // FormatPaneName formats a pane title according to NTM convention
 func FormatPaneName(session string, agentType string, index int, variant string) string {
 	normalizedType := strings.TrimSpace(agentType)
