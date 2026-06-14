@@ -776,6 +776,26 @@ func loadActiveAssignmentBeadIDs(session string) map[string]struct{} {
 	return active
 }
 
+// loadActiveAssignmentPanes returns the set of pane indices that currently hold
+// an active (assigned/working, not completed/failed) assignment. A pane in this
+// set is responsible for an in-flight bead and must NOT receive a second one,
+// even when its screen momentarily shows an idle prompt between turns — the
+// between-turns race that otherwise lets the watch loop pile a new bead onto a
+// pane already working one. The watch's completion detector marks assignments
+// completed when their bead closes, so a pane is released from this set the
+// moment its work is genuinely done; excluding it here cannot strand it.
+func loadActiveAssignmentPanes(session string) map[int]struct{} {
+	active := make(map[int]struct{})
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		return active
+	}
+	for _, item := range store.ListActive() {
+		active[item.Pane] = struct{}{}
+	}
+	return active
+}
+
 // countSkippedByReason counts SkippedItems matching a specific reason. Used to
 // keep BlockedCount in the assignment summary semantically narrow ("blocked by
 // a dependency") even after the broader skipped-reason taxonomy was added.
@@ -943,6 +963,7 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 	}
 
 	// Build agent info similar to robot.PrintAssign
+	activePanes := loadActiveAssignmentPanes(opts.Session)
 	var idleAgentPanes []string
 	totalAgents := 0
 
@@ -959,7 +980,8 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 		// Self-heal a menu strand (e.g. a /effort picker left open) so the pane
 		// becomes dispatchable instead of being skipped as a dead UNKNOWN.
 		state = recoverIfMenuBlocked(pane.ID, agentType, state)
-		if state == "idle" {
+		// Skip panes that already hold an in-flight assignment (between-turns race).
+		if _, busy := activePanes[pane.Index]; state == "idle" && !busy {
 			idleAgentPanes = append(idleAgentPanes, fmt.Sprintf("%d", pane.Index))
 		}
 	}
@@ -1566,6 +1588,11 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	}
 
 	// Build agent info and filter by type if needed
+	// Panes already holding an in-flight assignment are not available for new
+	// work, even when their screen momentarily shows an idle prompt between
+	// turns — guarding against the between-turns race that otherwise piled a
+	// second bead onto a pane already working one.
+	activePanes := loadActiveAssignmentPanes(opts.Session)
 	var idleAgents []assignAgentInfo
 
 	for _, pane := range panes {
@@ -1584,7 +1611,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		state := determineAgentState(scrollback, at)
 		state = recoverIfMenuBlocked(pane.ID, at, state)
 
-		if state == "idle" {
+		if _, busy := activePanes[pane.Index]; state == "idle" && !busy {
 			idleAgents = append(idleAgents, assignAgentInfo{
 				pane:       pane,
 				agentType:  at,
@@ -4605,6 +4632,8 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 		return nil, fmt.Errorf("failed to get panes: %w", err)
 	}
 
+	// Exclude panes already holding an in-flight assignment (between-turns race).
+	activePanes := loadActiveAssignmentPanes(session)
 	var idleAgents []assignAgentInfo
 
 	for _, pane := range panes {
@@ -4623,7 +4652,7 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 		state := determineAgentState(scrollback, agentType)
 		state = recoverIfMenuBlocked(pane.ID, agentType, state)
 
-		if state == "idle" {
+		if _, busy := activePanes[pane.Index]; state == "idle" && !busy {
 			idleAgents = append(idleAgents, assignAgentInfo{
 				pane:       pane,
 				agentType:  agentType,
