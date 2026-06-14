@@ -376,6 +376,16 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		if claudeFinishedTurnIdle(output) {
 			return true
 		}
+		// Active work was ruled out above (ClaudeActivelyWorking == false), so the
+		// presence of Claude's compose-box footer means the TUI is alive at its
+		// input box and idle. This catches the states the patterns above miss: a
+		// freshly-spawned agent whose box holds a prefilled init prompt, or a box
+		// showing only the "…" placeholder, with no completion line / "new task?"
+		// hint yet — without it the dispatcher sees 0 idle agents at startup and
+		// the swarm never begins. Safe because it is gated on !ClaudeActivelyWorking.
+		if claudeComposeBoxRe.MatchString(output) {
+			return true
+		}
 		return false
 	case AgentTypeCodex:
 		return matchAnyRegex(lastLines, codIdlePatterns)

@@ -151,6 +151,21 @@ var (
 	// is a turn-ended marker, not active work.
 	claudeNewTaskFooterRe = regexp.MustCompile(`(?i)new\s+task\?`)
 
+	// claudeComposeBoxRe matches Claude Code's compose-box permission-mode footer
+	// (the "⏵⏵ bypass permissions on …" line under the input box). The ⏵⏵
+	// double-play glyph is unique to that footer, so its presence means the Claude
+	// TUI is alive at its input box. On its own it does NOT imply idle — the box
+	// is drawn during active work too, which is why an ungated "bypass permissions"
+	// string match was removed from the idle patterns. But it is a sound idle
+	// signal once active work has ALREADY been ruled out (the caller checks
+	// ClaudeActivelyWorking first). Gated that way it covers the states the
+	// empty-❯ / completion-line / "new task?" patterns miss: a freshly-spawned
+	// agent whose box holds a prefilled init prompt, or a box showing only the "…"
+	// placeholder, with no completion line or "new task?" hint yet on screen —
+	// e.g. right after `ntm spawn`, where without this the dispatcher sees
+	// "0 idle agents" and the swarm never starts.
+	claudeComposeBoxRe = regexp.MustCompile(`⏵⏵`)
+
 	// ccErrorPatterns indicates an error condition.
 	ccErrorPatterns = []string{
 		"error:",
