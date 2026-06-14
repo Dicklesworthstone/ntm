@@ -36,6 +36,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	procpkg "github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/prompt"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -2220,10 +2221,30 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 		_ = output
 	}
 
+	// Capture each pane's agent process subtree BEFORE the shells die. tmux
+	// kill-session terminates the pane shells but detached agent children
+	// (node-based claude/codex/gemini launched with --dangerously-skip-permissions)
+	// survive SIGHUP and reparent to init — leaking processes that hold agent-mail
+	// registrations and file locks. The tree must be walked now, because after the
+	// shells exit the children reparent and can no longer be found from the shell PID.
+	var agentPIDs []int
+	for _, p := range panesForStop {
+		if p.PID > 0 {
+			agentPIDs = append(agentPIDs, collectProcessSubtree(p.PID, 0)...)
+		}
+	}
+
 	if err := tmux.KillSession(session); err != nil {
 		return err
 	}
 	auditKilled = true
+
+	// Reap any agent processes orphaned by kill-session. Shells are already gone
+	// (SIGTERM on them is a harmless no-op); the surviving agents get a graceful
+	// SIGTERM then a SIGKILL backstop. self/parent are excluded defensively.
+	if reaped := reapOrphanedAgents(agentPIDs); reaped > 0 {
+		fmt.Printf("Reaped %d orphaned agent process(es)\n", reaped)
+	}
 
 	fmt.Printf("Killed session '%s'\n", session)
 
@@ -2248,6 +2269,55 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 	}
 
 	return nil
+}
+
+// collectProcessSubtree returns pid plus all of its transitive descendants,
+// recursing through process.GetChildPIDs (which reads /proc on Linux and falls
+// back to pgrep elsewhere). The depth bound guards against cycles / runaway
+// recursion; the per-level child cap keeps a fork-bombed pane from exploding the
+// walk. Used to capture a pane's full agent process tree before the shell dies.
+func collectProcessSubtree(pid, depth int) []int {
+	if pid <= 1 || depth > 6 {
+		return nil
+	}
+	out := []int{pid}
+	for _, child := range procpkg.GetChildPIDs(pid, 64) {
+		out = append(out, collectProcessSubtree(child, depth+1)...)
+	}
+	return out
+}
+
+// reapOrphanedAgents terminates the given PIDs (a session's captured agent
+// process trees) after the tmux session has been killed. It sends SIGTERM, waits
+// a short grace period, then SIGKILLs any survivor. The current process and its
+// parent are excluded defensively, as are pid<=1; duplicates are de-duped.
+// Returns the number of distinct live processes that were signalled.
+func reapOrphanedAgents(pids []int) int {
+	self := os.Getpid()
+	parent := os.Getppid()
+	seen := make(map[int]bool, len(pids))
+	var signalled []int
+	for _, pid := range pids {
+		if pid <= 1 || pid == self || pid == parent || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		// SIGTERM; ESRCH (already-dead shells) is a harmless no-op.
+		if err := syscall.Kill(pid, syscall.SIGTERM); err == nil {
+			signalled = append(signalled, pid)
+		}
+	}
+	if len(signalled) == 0 {
+		return 0
+	}
+	// Grace period for clean shutdown, then a SIGKILL backstop for survivors.
+	time.Sleep(750 * time.Millisecond)
+	for _, pid := range signalled {
+		if procpkg.IsAlive(pid) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+	return len(signalled)
 }
 
 // runKillProject kills all sessions matching a base project name (bd-3cu02.14).
