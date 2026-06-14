@@ -1408,7 +1408,12 @@ func TestClaudeActivelyWorking_RealCaptures(t *testing.T) {
 		t.Run(c.file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(base, c.file))
 			if err != nil {
-				t.Fatalf("read %s: %v", c.file, err)
+				// internal/cli/outputs/ is gitignored, so these real-capture
+				// fixtures are local-only and absent in a fresh checkout/CI. Skip
+				// rather than hard-fail when the fixture is missing; the logic is
+				// also covered by self-contained literals in TestClaudeActivelyWorking
+				// and the accented-verb / never-false-idle invariant tests.
+				t.Skipf("fixture not present (gitignored outputs dir): %v", err)
 			}
 			body := stripCaptureHeader(string(raw))
 

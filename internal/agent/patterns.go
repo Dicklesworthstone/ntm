@@ -144,7 +144,7 @@ var (
 	// "Idle Agents: 1" with 8 idle agents). Found in a Haiku stress run. The
 	// capitalized-first-letter requirement (\p{Lu}) is kept so the line still can't
 	// match lowercase prose like "...waited for 5m...".
-	claudeCompletionLineRe = regexp.MustCompile(`(?m)^\s*[✻✶✳✢✽✦*]\s+\p{Lu}\p{L}*\s+for\s+(?:\d+\s*[hms]\s*)+$`)
+	claudeCompletionLineRe = regexp.MustCompile(`(?m)^\s*[✻✶✳✢✽✦*]\s+\p{Lu}\p{Ll}+\s+for\s+(?:\d+\s*[hms]\s*)+$`)
 
 	// claudeNewTaskFooterRe matches the post-turn "new task?" hint Claude parks at
 	// after a turn ends (often paired with a "/clear to save … tokens" line). It

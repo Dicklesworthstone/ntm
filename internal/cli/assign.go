@@ -776,6 +776,37 @@ func loadActiveAssignmentBeadIDs(session string) map[string]struct{} {
 	return active
 }
 
+// loadHandledBeadIDs returns beads that must NOT be (re)dispatched because they
+// are already being handled: an active assignment (assigned/working) OR an
+// assignment completed within `window`. The recently-completed half is the
+// robust guard against double-dispatching a FAST (sub-interval) bead: it can
+// close between the planner reading the ready set and the actual send, and the
+// bv-based open re-check can race or error under br SQLite lock contention (many
+// agents hammering one DB). The assignment store is local and contention-free,
+// so a just-completed bead is reliably suppressed here. `window` bounds it so a
+// legitimately reopened bead can eventually be re-dispatched. Found via Haiku
+// stress testing: an 8-pane swarm on a fan-out graph of fast no-op beads
+// repeatedly dispatched the same bead to a second pane at the instant its
+// completion fired; loadActiveAssignmentBeadIDs alone missed it because the
+// bead's completed assignment is no longer "active".
+func loadHandledBeadIDs(session string, window time.Duration, now time.Time) map[string]struct{} {
+	handled := make(map[string]struct{})
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		return handled
+	}
+	for _, item := range store.ListActive() {
+		handled[item.BeadID] = struct{}{}
+	}
+	for _, a := range store.GetAll() {
+		if a.Status == assignment.StatusCompleted && a.CompletedAt != nil &&
+			now.Sub(*a.CompletedAt) <= window {
+			handled[a.BeadID] = struct{}{}
+		}
+	}
+	return handled
+}
+
 // loadActiveAssignmentPanes returns the set of pane indices that currently hold
 // an active assignment (StatusAssigned or StatusWorking) for this session.
 //
@@ -2458,7 +2489,15 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 		paneIDByIndex[p.Index] = p.ID
 	}
 
-	for _, item := range out.Assignments {
+	// Project dir for the pre-send bead-open re-check (double-dispatch guard).
+	// Resolved once; empty is tolerated (the check then no-ops).
+	dispatchProjectDir, _ := resolveAssignProjectDir(session)
+
+	// Iterate by index (item is a pointer into out.Assignments) so item.PromptSent
+	// is recorded on the slice itself — callers log/count only beads that were
+	// ACTUALLY dispatched, not ones the guards below skip.
+	for i := range out.Assignments {
+		item := &out.Assignments[i]
 		// Try to reserve file paths if manager is available
 		if reservationMgr != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
@@ -2511,9 +2550,45 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 			failCount++
 			continue
 		}
+
+		// Final TOCTOU guard against double-dispatch. Planning and this send are
+		// not atomic: between them the bead can be claimed by a concurrent path
+		// (the initial pass racing the first scan tick, two scan ticks, or auto-
+		// reassignment), or a fast bead can close and be re-planned. Skip if it is
+		// already being handled (active OR recently completed).
+		if _, handled := loadHandledBeadIDs(session, 90*time.Second, time.Now())[item.BeadID]; handled {
+			continue
+		}
+		// Also skip a bead that is no longer open. A fast bead can close between
+		// the planner reading the ready set and this send, yet still be offered as
+		// actionable for one more tick (bv's ready view lags the close). The
+		// handled-guard above misses this when the completed assignment is already
+		// gone; re-check open status here.
+		if dispatchProjectDir != "" {
+			if st, err := bv.GetBeadStatus(dispatchProjectDir, item.BeadID); err == nil {
+				switch strings.ToLower(strings.TrimSpace(st)) {
+				case "closed", "resolved", "done":
+					continue
+				}
+			}
+		}
+
+		// Record the assignment BEFORE sending so a concurrent scan that loads the
+		// store sees it immediately and excludes the bead. The previous order
+		// (send, then record) left a window where the bead was dispatched but not
+		// yet in the store, so a concurrent scan re-dispatched it.
+		if store != nil {
+			_, _ = store.Assign(item.BeadID, item.BeadTitle, item.Pane, item.AgentType, item.AgentName, prompt)
+		}
+
 		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 			if !opts.Quiet {
 				fmt.Printf("  ✗ Failed to assign %s to pane %d: %v\n", item.BeadID, item.Pane, err)
+			}
+			// Release the record we just made so the bead can be retried and the
+			// pane is not left falsely marked busy.
+			if store != nil {
+				_ = store.MarkFailed(item.BeadID, "dispatch send failed")
 			}
 			failCount++
 			continue
@@ -2521,11 +2596,6 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 
 		item.PromptSent = true
 		successCount++
-
-		// Track in assignment store
-		if store != nil {
-			_, _ = store.Assign(item.BeadID, item.BeadTitle, item.Pane, item.AgentType, item.AgentName, prompt)
-		}
 
 		if !opts.Quiet {
 			fmt.Printf("  ✓ Assigned %s to pane %d (%s)\n", item.BeadID, item.Pane, item.AgentType)
@@ -4978,6 +5048,14 @@ func (w *WatchLoop) scanReadyWork() error {
 
 	w.mu.Lock()
 	for _, assigned := range out.Assignments {
+		// Count/log only beads ACTUALLY dispatched. executeAssignmentsEnhanced sets
+		// PromptSent on the items it sent; its double-dispatch guards skip already-
+		// handled or closed beads, leaving PromptSent false. Logging every planned
+		// item (the prior behavior) made guard-skipped beads look like real
+		// double-dispatches.
+		if !assigned.PromptSent {
+			continue
+		}
 		w.totalAssigned++
 		w.lastAssignmentAt = time.Now()
 		w.logf("Ready-work scan assigned: %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
