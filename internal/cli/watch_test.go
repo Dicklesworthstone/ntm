@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -181,5 +183,76 @@ func TestWatchEventMatchesPattern_RejectsOutsideWatchRoot(t *testing.T) {
 	eventPath := filepath.Join(string(filepath.Separator), "tmp", "other-project", "internal", "cli", "watch.go")
 	if watchEventMatchesPattern("internal/cli/*.go", watchRoot, eventPath) {
 		t.Fatalf("watchEventMatchesPattern should reject paths outside the watch root")
+	}
+}
+
+// ============================================================================
+// FIX B: Periodic ready-work scan in the watch loop
+// ============================================================================
+
+// TestWatchLoop_PeriodicScanFiresWithoutCompletionEvents proves the regression
+// fix: a freshly-started watch loop that dispatched nothing at startup (no idle
+// agents OR no ready work) must NOT sit inert forever. The periodic ready-work
+// scan ticker re-runs the plan/dispatch pass so work that becomes ready later
+// (a gate unblocking, new beads, a startup-busy agent going idle) gets picked
+// up even though no completion event ever fires.
+//
+// We inject scanFn to observe the ticker-driven scan without standing up tmux
+// or bv: the empty assignment store guarantees the completion detector emits
+// nothing, so the scan firing is solely the new ticker path.
+func TestWatchLoop_PeriodicScanFiresWithoutCompletionEvents(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	const session = "fixb"
+	store := assignment.NewStore(session) // empty store ⇒ no completion events
+
+	opts := &AutoReassignOptions{Session: session, Quiet: true}
+	w := NewWatchLoop(session, store, opts)
+
+	// Tight scan cadence so the test is fast; default completion poll interval
+	// is whatever assignWatchInterval is, but the empty store means it never
+	// produces an event regardless.
+	w.scanInterval = 20 * time.Millisecond
+
+	scanned := make(chan struct{}, 1)
+	w.scanFn = func() error {
+		select {
+		case scanned <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- w.Run(ctx) }()
+
+	select {
+	case <-scanned:
+		// Ticker-driven scan fired with zero completion events — the fix works.
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("periodic ready-work scan never fired; watch loop is inert without completion events")
+	}
+
+	cancel()
+	select {
+	case <-runErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch loop did not shut down after context cancel")
+	}
+}
+
+// TestWatchLoop_ScanReadyWorkNilOptsIsNoop guards that scanReadyWork degrades
+// safely when no scan options are configured (it must not panic or dispatch).
+func TestWatchLoop_ScanReadyWorkNilOptsIsNoop(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	store := assignment.NewStore("fixb-nil")
+	w := NewWatchLoop("fixb-nil", store, &AutoReassignOptions{Session: "fixb-nil", Quiet: true})
+	w.scanOpts = nil
+	if err := w.scanReadyWork(); err != nil {
+		t.Fatalf("scanReadyWork with nil scanOpts should be a no-op, got error: %v", err)
 	}
 }

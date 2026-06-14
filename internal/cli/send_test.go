@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
@@ -1626,5 +1629,90 @@ func TestSendResultJSONEmitsForceFieldWhenSet(t *testing.T) {
 				t.Errorf("%s JSON missing non_interactive_forced=true: %s", tc.name, b)
 			}
 		})
+	}
+}
+
+// ============================================================================
+// FIX D: ntm kill orphan reap
+// ============================================================================
+
+// TestOrphanReapExcluded verifies the exclusion predicate never lets the reap
+// target init, the running process, or its parent.
+func TestOrphanReapExcluded(t *testing.T) {
+	cases := []struct {
+		pid  int
+		want bool
+		desc string
+	}{
+		{0, true, "pid 0"},
+		{1, true, "init"},
+		{-5, true, "negative pid"},
+		{os.Getpid(), true, "self"},
+		{os.Getppid(), true, "parent"},
+		{1 << 30, false, "arbitrary high pid not excluded"},
+	}
+	for _, c := range cases {
+		if got := orphanReapExcluded(c.pid); got != c.want {
+			t.Errorf("orphanReapExcluded(%d) = %v, want %v (%s)", c.pid, got, c.want, c.desc)
+		}
+	}
+}
+
+// TestCollectPaneDescendants_RecursiveAndExclusion spawns a real two-level
+// process subtree (sh -> sleep) under the test process and verifies
+// collectPaneDescendants walks it recursively, while never returning self, the
+// parent, init, or the supplied pane-shell PID itself.
+func TestCollectPaneDescendants_RecursiveAndExclusion(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	// sh (level 1) execs a subshell that backgrounds a sleep and waits, giving
+	// us a deterministic shell-with-descendant tree rooted at cmd.Process.Pid.
+	cmd := exec.Command("sh", "-c", "sleep 30 & wait")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start subtree: %v", err)
+	}
+	root := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(root, syscall.SIGKILL)
+		// Reap the immediate child to avoid a lingering zombie.
+		_, _ = cmd.Process.Wait()
+	})
+
+	// Give the backgrounded sleep a moment to appear as a child of the shell.
+	deadline := time.Now().Add(2 * time.Second)
+	var got []int
+	for time.Now().Before(deadline) {
+		got = collectPaneDescendants([]int{root})
+		if len(got) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if len(got) == 0 {
+		t.Fatal("expected to collect at least one descendant of the spawned shell")
+	}
+
+	for _, pid := range got {
+		if pid == root {
+			t.Errorf("pane-shell PID %d must NOT be in the descendant set (the shell is reaped by kill-session)", root)
+		}
+		if orphanReapExcluded(pid) {
+			t.Errorf("collected PID %d is excluded (self/parent/init) and must never appear", pid)
+		}
+		if !process.IsAlive(pid) {
+			t.Errorf("collected PID %d should be alive while the subtree runs", pid)
+		}
+	}
+
+	// Excluding the inputs: passing self / parent / init as pane PIDs must
+	// collect nothing dangerous (their real children are not ntm agents, but
+	// the predicate guarantees self/parent/init are never returned either way).
+	for _, pid := range collectPaneDescendants([]int{os.Getpid(), os.Getppid(), 1, 0}) {
+		if orphanReapExcluded(pid) {
+			t.Errorf("collectPaneDescendants returned excluded PID %d", pid)
+		}
 	}
 }

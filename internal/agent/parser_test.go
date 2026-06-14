@@ -265,17 +265,19 @@ Human: `
 	}
 }
 
-// Regression: a stale spinner from a long "thinking" run that remains in the
-// scrollback above a fresh ❯ prompt must not block the idle verdict. Before
-// the fix, ccSpinnerActivePatterns unconditionally overrode any idle match,
-// so operators polling --robot-is-working never saw newly-idle agents and
-// could never dispatch fresh work to them.
-func TestParser_Parse_Idle_Claude_StaleSpinnerAbovePrompt(t *testing.T) {
+// Finished-turn idle: after a turn ends, Claude replaces the live spinner with
+// a glyph-led completion line ("✻ Cooked for …") and keeps the "❯ " input box
+// pinned to the BOTTOM of the screen (real layout from internal/cli/outputs/).
+// The completion line is the most-recent dynamic marker, so the pane is idle
+// and dispatchable. (Previously this fixture encoded the WRONG layout — an
+// ACTIVE spinner above the box, expecting idle — which is exactly the dangerous
+// false-idle the fix removes: an active spinner above the bottom box means the
+// agent is WORKING.)
+func TestParser_Parse_Idle_Claude_FinishedTurnAboveBottomBox(t *testing.T) {
 	p := NewParser()
-	output := "✻ Crystallizing… (17m 2s · thinking)\n" +
-		"  ⏿  Tip: Use /btw to ask a quick side\n" +
-		"     question without interrupting\n" +
-		"     Claude's current work\n" +
+	output := "● Tests pass; changes look good.\n" +
+		"\n" +
+		"✻ Cooked for 1m 42s\n" +
 		"\n" +
 		"────────────────────────────────────────\n" +
 		"❯ \n" +
@@ -286,7 +288,7 @@ func TestParser_Parse_Idle_Claude_StaleSpinnerAbovePrompt(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 	if !state.IsIdle {
-		t.Error("Expected IsIdle=true when fresh ❯ prompt sits below stale spinner")
+		t.Error("Expected IsIdle=true when a completion line sits above the bottom-pinned box")
 	}
 	if state.IsWorking {
 		t.Error("Expected IsWorking=false when idle")
@@ -296,21 +298,57 @@ func TestParser_Parse_Idle_Claude_StaleSpinnerAbovePrompt(t *testing.T) {
 	}
 }
 
-// Confirm the inverse still holds: spinner BELOW the prompt means working,
-// not idle (the agent printed a prompt and then resumed thinking).
-func TestParser_Parse_Working_Claude_SpinnerBelowStalePrompt(t *testing.T) {
+// REAL working layout: the active spinner renders just ABOVE the bottom-pinned
+// "❯ " input box while a turn is in flight. The agent is WORKING, never idle —
+// regardless of the box being below the spinner. (Previously this case was
+// encoded as "spinner BELOW prompt ⇒ working", which inverted the actual TUI
+// geometry.)
+func TestParser_Parse_Working_Claude_SpinnerAboveBottomBox(t *testing.T) {
 	p := NewParser()
-	output := "❯ tell me a joke\n" +
-		"────────────────────────────────────────\n" +
-		"  ⏵⏵ bypass permissions on          ·\n" +
+	output := "● Running the integration suite now.\n" +
 		"\n" +
-		"✻ Crystallizing… (3s · thinking)\n"
+		"✻ Monitoring 17 agents… (ctrl+c to interrupt · 15m 52s · ↓ 14.4k tokens · thought for 1s)\n" +
+		"  ⎿  Tip: Ask Claude to create a todo list\n" +
+		"\n" +
+		"────────────────────────────────────────\n" +
+		"❯ \n" +
+		"────────────────────────────────────────\n" +
+		"  ⏵⏵ bypass permissions on          ·\n"
 	state, err := p.Parse(output)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true when an active spinner sits above the bottom box")
+	}
 	if state.IsIdle {
-		t.Error("Expected IsIdle=false when spinner runs after the prompt")
+		t.Error("INVARIANT: a working pane must never be classified idle")
+	}
+}
+
+// Guard: queued/prefilled text after the chevron is still an idle, dispatchable
+// finished-turn state — provided no active spinner is the most-recent marker.
+func TestParser_Parse_Idle_Claude_QueuedTextAfterChevron(t *testing.T) {
+	p := NewParser()
+	output := "● Done with the previous task.\n" +
+		"\n" +
+		"✻ Cooked for 12m 31s\n" +
+		"\n" +
+		"────────────────────────────────────────\n" +
+		"❯ Continue working on your assigned bead. Use bv --robot-next if you need a new task.\n" +
+		"────────────────────────────────────────\n" +
+		"  ⏵⏵ bypass permissions on          ·\n"
+	// Real dispatch paths always pass the tmux-tracked agent type as a hint;
+	// the queued-text box carries no Claude header glyph of its own.
+	state, err := p.ParseWithHint(output, AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for finished turn with queued text after the chevron")
+	}
+	if state.IsWorking {
+		t.Error("Expected IsWorking=false when idle")
 	}
 }
 
@@ -1316,5 +1354,192 @@ Here is a plan:
 				t.Errorf("IsRateLimited = %v, want %v", state.IsRateLimited, tt.wantLimited)
 			}
 		})
+	}
+}
+
+// stripCaptureHeader removes the fixed preamble that internal/cli/outputs/*.txt
+// capture files carry (session/pane metadata between two "═══" rules) so the
+// body fed to detection matches a raw tmux capture.
+func stripCaptureHeader(s string) string {
+	const rule = "═══════════════════════════════════════════════════════════════\n"
+	idx := strings.Index(s, rule+"\n")
+	if idx >= 0 {
+		rest := s[idx+1:]
+		if j := strings.Index(rest, rule); j >= 0 {
+			return rest[j:]
+		}
+	}
+	return s
+}
+
+// TestClaudeActivelyWorking_RealCaptures pins the working/idle classifier to the
+// REAL Claude Code layout taken from internal/cli/outputs/ captures: the "❯ "
+// input box is pinned to the BOTTOM of the screen, the live spinner renders just
+// ABOVE it while a turn is in flight, and a finished turn replaces the spinner
+// with a glyph-led completion line. These captures are the ground truth the
+// heuristics in patterns.go were derived from.
+func TestClaudeActivelyWorking_RealCaptures(t *testing.T) {
+	cases := []struct {
+		file     string
+		wantWork bool
+		wantIdle bool
+		desc     string
+	}{
+		{
+			file:     "ntm_⠐_Account_Switch_20260119_212756.txt",
+			wantWork: true, wantIdle: false,
+			desc: "active spinner '✻ Monitoring 17 agents… (ctrl+c to interrupt …)' above the bottom box ⇒ working",
+		},
+		{
+			file:     "ntm_ntm_cc_3_20260119_205748.txt",
+			wantWork: true, wantIdle: false,
+			desc: "active spinner '✻ Compacting conversation… (ctrl+c to interrupt …)' above the bottom box ⇒ working",
+		},
+		{
+			file:     "ntm_ntm_cc_1_20260119_042712.txt",
+			wantWork: false, wantIdle: true,
+			desc: "completion line '✻ Cooked for 1m 42s' is the most-recent dynamic marker ⇒ idle",
+		},
+	}
+
+	base := "../cli/outputs"
+	p := NewParser()
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(base, c.file))
+			if err != nil {
+				t.Fatalf("read %s: %v", c.file, err)
+			}
+			body := stripCaptureHeader(string(raw))
+
+			if got := ClaudeActivelyWorking(body); got != c.wantWork {
+				t.Errorf("ClaudeActivelyWorking = %v, want %v (%s)", got, c.wantWork, c.desc)
+			}
+
+			st, err := p.ParseWithHint(body, AgentTypeClaudeCode)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if st.IsWorking != c.wantWork {
+				t.Errorf("IsWorking = %v, want %v (%s)", st.IsWorking, c.wantWork, c.desc)
+			}
+			if st.IsIdle != c.wantIdle {
+				t.Errorf("IsIdle = %v, want %v (%s)", st.IsIdle, c.wantIdle, c.desc)
+			}
+			if c.wantWork && st.IsIdle {
+				t.Errorf("INVARIANT VIOLATION: working pane classified idle (%s)", c.desc)
+			}
+		})
+	}
+}
+
+// TestClaudeActivelyWorking exercises the shared working/idle classifier
+// directly against the real Claude Code TUI layout: spinner ABOVE the
+// bottom-pinned input box while a turn is in flight; a glyph-led completion line
+// or "new task?" footer once the turn ends.
+func TestClaudeActivelyWorking(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "empty output is not working",
+			output: "",
+			want:   false,
+		},
+		{
+			name: "active spinner above bottom box is working",
+			output: "✻ Monitoring 17 agents… (ctrl+c to interrupt · 15m 52s · thought for 1s)\n" +
+				"────────────\n❯ \n────────────\n  ⏵⏵ bypass permissions on\n",
+			want: true,
+		},
+		{
+			name: "compacting spinner is working",
+			output: "✻ Compacting conversation… (ctrl+c to interrupt · 17m 50s · thought for 3s)\n" +
+				"────────────\n❯ \n────────────\n",
+			want: true,
+		},
+		{
+			name:   "completion line above box is not working (finished turn)",
+			output: "✻ Cooked for 1m 42s\n────────────\n❯ \n────────────\n",
+			want:   false,
+		},
+		{
+			name:   "baked completion line is not working",
+			output: "✻ Baked for 44m 28s\n────────────\n❯ \n────────────\n",
+			want:   false,
+		},
+		{
+			name: "completion line AFTER a spinner wins (turn ended) ⇒ not working",
+			output: "✻ Whirlpooling… (ctrl+c to interrupt · 2m 44s · thinking)\n" +
+				"● final summary\n" +
+				"✻ Cooked for 3m 1s\n────────────\n❯ \n",
+			want: false,
+		},
+		{
+			name: "spinner AFTER a completion line (new turn started) ⇒ working",
+			output: "✻ Cooked for 3m 1s\n" +
+				"● starting next step\n" +
+				"✻ Churning… (ctrl+c to interrupt · 4s)\n────────────\n❯ \n",
+			want: true,
+		},
+		{
+			name:   "new task footer is a turn-ended marker ⇒ not working",
+			output: "✻ Brewing… (ctrl+c to interrupt · 9s)\nnew task? /clear to save 12.3k tokens\n❯ \n",
+			want:   false,
+		},
+		{
+			name:   "thought for prose annotation alone is not a completion verb match",
+			output: "● I thought for 14s about the design.\n❯ \n────────────\n",
+			want:   false,
+		},
+		{
+			name:   "bare idle box with no spinner is not working",
+			output: "● All done.\n────────────\n❯ \n────────────\n  ⏵⏵ bypass permissions on\n",
+			want:   false,
+		},
+		{
+			name: "esc to interrupt footer alone signals in-flight work",
+			output: "● calling a tool\n" +
+				"  esc to interrupt\n────────────\n❯ \n",
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClaudeActivelyWorking(tt.output); got != tt.want {
+				t.Errorf("ClaudeActivelyWorking() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClaudeActivelyWorking_NeverFalseIdleInvariant is an explicit guard that a
+// genuinely-working pane (active spinner is the most-recent dynamic marker) is
+// NEVER classified idle by the parser. False-idle is the dangerous failure: it
+// would let a dispatcher inject a second bead into a busy agent.
+func TestClaudeActivelyWorking_NeverFalseIdleInvariant(t *testing.T) {
+	workingSamples := []string{
+		"✻ Monitoring 17 agents… (ctrl+c to interrupt · 15m 52s · thought for 1s)\n────────────\n❯ \n────────────\n",
+		"✻ Implementing real token counting for S2P… (ctrl+c to interrupt · 15m 25s · thinking)\n────────────\n❯ \n",
+		"● calling a tool\n  esc to interrupt\n────────────\n❯ queued follow up text\n",
+	}
+	p := NewParser()
+	for i, s := range workingSamples {
+		st, err := p.ParseWithHint(s, AgentTypeClaudeCode)
+		if err != nil {
+			t.Fatalf("sample %d: parse: %v", i, err)
+		}
+		if !ClaudeActivelyWorking(s) {
+			t.Errorf("sample %d: expected ClaudeActivelyWorking=true", i)
+		}
+		if st.IsIdle {
+			t.Errorf("sample %d: INVARIANT VIOLATION — working pane classified idle", i)
+		}
+		if !st.IsWorking {
+			t.Errorf("sample %d: expected IsWorking=true", i)
+		}
 	}
 }

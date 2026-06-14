@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Claude Code (cc) patterns for state detection.
@@ -89,6 +91,54 @@ var (
 		regexp.MustCompile(`·\s*thought\s+for`), // Past thinking indicator (still active context)
 		regexp.MustCompile(`Running…`),          // Explicit running spinner
 	}
+
+	// claudeActiveSpinnerLineRe matches a Claude Code *live* spinner line — the
+	// status line Claude renders just above its bottom-pinned input box while a
+	// turn is in flight. Derived from real captures in internal/cli/outputs/:
+	//
+	//   ✻ Monitoring 17 agents… (ctrl+c to interrupt · … · 15m 52s · …)
+	//   ✻ Compacting conversation… (ctrl+c to interrupt · … · 17m 50s · …)
+	//   ✻ Whirlpooling… (ctrl+c to interrupt · … · 2m 44s · thinking)
+	//   ✢ Implementing Remaining BV Robot Modes… (ctrl+c to interrupt · …)
+	//
+	// The defining shape is a verb/phrase ending in the ellipsis glyph "…"
+	// immediately followed by the timer/interrupt parenthetical "(". This is
+	// deliberately distinct from the completion line (which has no "…(" and no
+	// open paren) so the two never collide.
+	claudeActiveSpinnerLineRe = regexp.MustCompile(`\S+…\s*\(`)
+
+	// claudeInFlightHintRe matches the in-flight footer hint Claude shows only
+	// while a turn is running ("ctrl+c to interrupt" / "esc to interrupt"). It is
+	// a second, independent signal of active work for spinner frames that render
+	// without the "…(" shape.
+	claudeInFlightHintRe = regexp.MustCompile(`(?i)(ctrl\+c|esc)\s+to\s+interrupt`)
+
+	// claudeThinkingSpinnerRe matches the extended-thinking spinner ("· thinking")
+	// but NOT the past-tense annotation ("thought for 14s") which can appear as a
+	// prose tail inside a finished completion summary.
+	claudeThinkingSpinnerRe = regexp.MustCompile(`·\s*thinking\b`)
+
+	// claudeCompletionLineRe matches Claude Code's turn-ended completion line.
+	// Derived from real captures: glyph-led, whole-line, "<Verb> for <duration>"
+	// with NO ellipsis and NO open paren. Observed verbs include Cooked, Baked,
+	// Cogitated, Churned, Brewed, Worked, Crunched — Claude randomizes the verb,
+	// so the regex keys on the structural "<Capitalized word> for <Nm Ns>" shape
+	// behind one of the asterisk-family spinner glyphs rather than an enumerated
+	// verb list.
+	//
+	//   ✻ Cooked for 1m 42s
+	//   ✻ Baked for 44m 28s
+	//
+	// It must NOT match an active spinner ("Whirlpooling… (… · 2m 44s …)") nor a
+	// "thought for 14s" prose annotation, hence: the leading glyph + verb, the
+	// literal " for ", a duration, and a deliberately strict end-of-line anchor
+	// that rejects any trailing "(" / "…" progress decoration.
+	claudeCompletionLineRe = regexp.MustCompile(`(?m)^\s*[✻✶✳✢✽✦*]\s+[A-Z][a-z]+\s+for\s+(?:\d+\s*[hms]\s*)+$`)
+
+	// claudeNewTaskFooterRe matches the post-turn "new task?" hint Claude parks at
+	// after a turn ends (often paired with a "/clear to save … tokens" line). It
+	// is a turn-ended marker, not active work.
+	claudeNewTaskFooterRe = regexp.MustCompile(`(?i)new\s+task\?`)
 
 	// ccErrorPatterns indicates an error condition.
 	ccErrorPatterns = []string{
@@ -348,6 +398,178 @@ var (
 
 	ollamaHeaderPattern = regexp.MustCompile(`(?im)(^ollama>\s*$|\bollama\s+(run|chat|serve|pull)\b|^\s*ollama\s+cli\b)`)
 )
+
+// claudeLiveTailLines bounds the live-tail window scanned for Claude
+// working/idle classification. Claude Code pins its input box to the BOTTOM of
+// the screen and renders the live spinner just above it, so the most-recent
+// dynamic state always lives in the last handful of lines. 16 is wide enough to
+// span the spinner line, the box border rules, and the status footer while
+// staying short of historical scrollback that could carry a stale spinner.
+const claudeLiveTailLines = 16
+
+// claudeIdleScanLines bounds how many trailing lines are scanned for an idle
+// PROMPT pattern (as opposed to the spinner/footer live tail). It is narrower
+// than claudeLiveTailLines so a stale prompt deep in scrollback is not matched,
+// and matches the CC window detectIdle and status.maxIdleScanLines already use.
+const claudeIdleScanLines = 12
+
+// ClaudeActivelyWorking reports whether a Claude Code pane is mid-turn (actively
+// working) based on its captured terminal output.
+//
+// Claude Code keeps a persistent "❯ " input box pinned to the BOTTOM of the
+// screen at all times, even while busy. The live activity spinner (e.g.
+// "✻ Monitoring 17 agents… (ctrl+c to interrupt · 15m 52s · …)") renders just
+// ABOVE that box while a turn is in flight; when the turn ends Claude replaces
+// the spinner with a completion line ("✻ Cooked for 1m 42s") and/or a
+// "new task?" footer. Position relative to the input box therefore tells you
+// nothing — only the relative ORDER of the spinner vs. the turn-ended markers
+// does.
+//
+// Semantics: a pane is WORKING iff an active spinner is the MOST-RECENT dynamic
+// marker — i.e. no turn-ended marker (completion line or "new task?" hint)
+// appears AFTER the last spinner line within the live tail.
+//
+// The classifier is deliberately biased to the SAFE failure: when a spinner is
+// present but ordering is ambiguous it returns true (false-WORKING). A
+// dispatcher must NEVER inject a second task into a working agent, so the only
+// acceptable error is to treat a maybe-idle pane as busy.
+func ClaudeActivelyWorking(output string) bool {
+	if output == "" {
+		return false
+	}
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, claudeLiveTailLines)
+	if strings.TrimSpace(tail) == "" {
+		return false
+	}
+
+	lines := strings.Split(tail, "\n")
+
+	lastSpinner := -1
+	lastTurnEnded := -1
+	for i, line := range lines {
+		if claudeIsActiveSpinnerLine(line) {
+			lastSpinner = i
+		}
+		if claudeIsTurnEndedLine(line) {
+			lastTurnEnded = i
+		}
+	}
+
+	// No spinner anywhere in the live tail → not actively working.
+	if lastSpinner < 0 {
+		return false
+	}
+
+	// A spinner exists. It only counts as "current" work if no turn-ended
+	// marker appears AFTER it. When a completion/new-task marker is strictly
+	// more recent than the spinner, the turn has ended (idle). Otherwise —
+	// including the ambiguous tie where they share a line — bias to WORKING.
+	return lastTurnEnded < lastSpinner
+}
+
+// claudeIsActiveSpinnerLine reports whether a single line is a live Claude
+// spinner frame. A completion line ("✻ Cooked for 1m 42s") is explicitly
+// excluded so it can never masquerade as active work.
+func claudeIsActiveSpinnerLine(line string) bool {
+	if claudeIsCompletionLine(line) {
+		return false
+	}
+	if claudeActiveSpinnerLineRe.MatchString(line) {
+		return true
+	}
+	if claudeInFlightHintRe.MatchString(line) {
+		return true
+	}
+	if claudeThinkingSpinnerRe.MatchString(line) {
+		return true
+	}
+	return false
+}
+
+// claudeIsTurnEndedLine reports whether a single line is a turn-ended marker
+// (completion summary or the post-turn "new task?" hint).
+func claudeIsTurnEndedLine(line string) bool {
+	return claudeIsCompletionLine(line) || claudeNewTaskFooterRe.MatchString(line)
+}
+
+// claudeChevronBoxRe matches Claude Code's bottom-pinned input box prompt on
+// its own line, whether empty ("❯ ") or holding queued/prefilled text
+// ("❯ Continue working on your assigned bead…"). The chevron at line-start
+// (after optional indentation) is the load-bearing signal; the existing
+// ccIdlePatterns only match an EMPTY chevron, so this broadens idle recognition
+// to the finished-turn-with-queued-text case.
+var claudeChevronBoxRe = regexp.MustCompile(`(?m)^\s*❯(?:[\s\x{00a0}].*|[\s\x{00a0}]*)$`)
+
+// ClaudeIdlePromptShowing reports whether a Claude Code pane is displaying an
+// idle / finished-turn prompt: the bottom-pinned input box (empty, holding
+// queued text, or an "…" placeholder), a glyph-led completion summary, or the
+// post-turn "new task?" footer. It is the idle counterpart to
+// ClaudeActivelyWorking and is the single shared recognizer used by every
+// Claude state-detection path (parser, status, robot) so they agree.
+//
+// IMPORTANT: callers must gate on `!ClaudeActivelyWorking(output)` first — this
+// recognizer intentionally matches the input box even while a turn is in flight
+// (the box is always drawn). Used alone it would false-idle a working pane.
+func ClaudeIdlePromptShowing(output string) bool {
+	// Bound the prompt scan to the same trailing window detectIdle uses for
+	// Claude (claudeIdleScanLines) so a stale prompt deep in scrollback is not
+	// matched, then check the finished-turn footer over the slightly wider live
+	// tail. Empty/whitespace output is NOT a positive idle signal here: callers
+	// that want "empty ⇒ idle" (parser.detectIdle) handle that explicitly.
+	tail := util.GetLastNLines(stripANSICodes(output), claudeIdleScanLines)
+	if strings.TrimSpace(tail) == "" {
+		return false
+	}
+	// Scan each trailing line for an idle prompt pattern. Joining the tail and
+	// matching `>\s*$` against the whole block would miss a prompt that is not
+	// the very last line (e.g. "claude>\nfollowup"), so we match per line — the
+	// same line-oriented semantics the legacy prompt scan used.
+	for _, line := range strings.Split(tail, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if matchAnyRegex(line, ccIdlePatterns) {
+			return true
+		}
+	}
+	return claudeFinishedTurnIdle(output)
+}
+
+// claudeFinishedTurnIdle reports whether the live tail shows a finished-turn
+// idle state: the bottom input box (empty, or holding queued text / an "…"
+// placeholder) and/or the post-turn "new task?" footer. Callers must already
+// have ruled out ClaudeActivelyWorking; this only broadens idle recognition
+// beyond the empty-chevron-only ccIdlePatterns and never overrides a working
+// verdict.
+func claudeFinishedTurnIdle(output string) bool {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, claudeLiveTailLines)
+	if strings.TrimSpace(tail) == "" {
+		return false
+	}
+	if claudeNewTaskFooterRe.MatchString(tail) {
+		return true
+	}
+	if claudeCompletionLineRe.MatchString(tail) {
+		return true
+	}
+	if claudeChevronBoxRe.MatchString(tail) {
+		return true
+	}
+	return false
+}
+
+// claudeIsCompletionLine reports whether a single line is Claude's glyph-led
+// turn-ended completion summary ("✻ Cooked for 16m 20s"). It rejects active
+// spinner lines (which carry a "…(" progress decoration) and "thought for"
+// prose annotations.
+func claudeIsCompletionLine(line string) bool {
+	if strings.Contains(line, "…") || strings.Contains(line, "(") {
+		return false
+	}
+	return claudeCompletionLineRe.MatchString(line)
+}
 
 // matchAny returns true if text contains any of the patterns (case-insensitive).
 func matchAny(text string, patterns []string) bool {

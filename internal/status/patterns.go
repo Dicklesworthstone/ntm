@@ -198,6 +198,30 @@ const maxIdleScanLines = 12
 func DetectIdleFromOutput(output string, agentType string) bool {
 	agentType = string(agent.AgentType(agentType).Canonical())
 
+	// Claude Code: the shared classifier (internal/agent.ClaudeActivelyWorking)
+	// owns the working verdict and is authoritative. Claude pins its "❯ " input
+	// box to the BOTTOM of the screen at all times, so an idle-prompt match
+	// alone is NOT idleness — the live spinner renders just above the box. The
+	// helper inspects spinner-vs-turn-ended ordering in the live tail and is
+	// biased to false-WORKING, so gating on it here can never report a busy
+	// Claude pane as idle.
+	if agentType == string(agent.AgentTypeClaudeCode) {
+		if agent.ClaudeActivelyWorking(output) {
+			return false
+		}
+		// Not actively working → idle iff a finished-turn prompt is showing.
+		// ClaudeIdlePromptShowing recognizes the empty chevron, queued text /
+		// "…" placeholder boxes, the glyph-led completion line, and the
+		// "new task?" footer — broader than the empty-chevron-only patterns.
+		if agent.ClaudeIdlePromptShowing(output) {
+			return true
+		}
+		// Fall through to the generic line-scan below so well-formed Claude
+		// prompts the shared recognizer doesn't enumerate (e.g. "claude>") are
+		// still caught, but without the activeWorkBelow guard — Claude work is
+		// already ruled out by ClaudeActivelyWorking above.
+	}
+
 	// Strip ANSI first for cleaner processing
 	clean := StripANSI(output)
 
@@ -217,7 +241,9 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 			// Guard against false idle: if the agent is actively working its
 			// input box is still drawn, but a spinner sits below the prompt.
 			// Only treat the prompt as authoritative when nothing below it
-			// indicates ongoing work.
+			// indicates ongoing work. (Claude already short-circuits above via
+			// ClaudeActivelyWorking, which uses spinner-vs-completion ordering
+			// rather than this below-the-prompt heuristic.)
 			if activeWorkBelow(lines, i) {
 				return false
 			}

@@ -36,6 +36,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/prompt"
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -2214,6 +2215,19 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 		}
 	}
 
+	// Collect the agent process subtree of every pane BEFORE killing the
+	// session. Agents (often node/bun launched with --dangerously-skip-
+	// permissions) run as descendants of the pane shell PID; on a tmux
+	// kill-session SIGHUP they can survive, reparent to init, and leak —
+	// holding agent-mail registrations and file locks. We snapshot the subtree
+	// now while the shells are still alive, then reap any survivors after the
+	// session is gone.
+	var panePIDs []int
+	for _, p := range panesForStop {
+		panePIDs = append(panePIDs, p.PID)
+	}
+	orphanCandidates := collectPaneDescendants(panePIDs)
+
 	// Kill the monitor process before destroying the session
 	if output, err := exec.Command("pkill", "-f", monitorProcessPattern(session)).CombinedOutput(); err != nil {
 		// Monitor may not be running — that's fine
@@ -2224,6 +2238,9 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 		return err
 	}
 	auditKilled = true
+
+	// Reap any agent process subtrees that survived kill-session.
+	reapOrphanProcesses(orphanCandidates)
 
 	fmt.Printf("Killed session '%s'\n", session)
 
@@ -2248,6 +2265,107 @@ func runKill(w io.Writer, session string, force bool, tags []string, noHooks boo
 	}
 
 	return nil
+}
+
+// orphanReapGrace is how long we wait between SIGTERM and SIGKILL when reaping
+// agent process subtrees that survived a tmux kill-session.
+const orphanReapGrace = 750 * time.Millisecond
+
+// orphanReapMaxDepth bounds the recursive descendant walk so a pathological or
+// fork-bombing subtree cannot stall the kill path.
+const orphanReapMaxDepth = 4
+
+// orphanReapFanout caps the number of children expanded per node during the
+// recursive walk, a defensive bound against runaway process trees.
+const orphanReapFanout = 64
+
+// orphanReapExcluded reports whether a PID must never be targeted by the orphan
+// reap: init (pid <= 1), the running ntm process itself, and the ntm parent.
+// Targeting any of these would be catastrophic, so the reap walk and the signal
+// loop both gate on this predicate.
+func orphanReapExcluded(pid int) bool {
+	return pid <= 1 || pid == os.Getpid() || pid == os.Getppid()
+}
+
+// collectPaneDescendants gathers the descendant PID subtree of each pane shell
+// PID in `panePIDs`. process.GetChildPIDs returns only ONE level of children,
+// so we walk recursively (depth-bounded by orphanReapMaxDepth, fanout-capped by
+// orphanReapFanout) to capture the whole subtree.
+//
+// The pane shell PIDs themselves are intentionally EXCLUDED from the result:
+// tmux kill-session reaps the pane shells directly; we only need to mop up the
+// agent processes spawned beneath them that can reparent to init and leak.
+//
+// Self (os.Getpid()), the ntm parent (os.Getppid()), and any pid <= 1 are
+// excluded so the reap can never target the running process, its launcher, or
+// init. The returned slice is deduplicated.
+func collectPaneDescendants(panePIDs []int) []int {
+	excluded := orphanReapExcluded
+
+	seen := make(map[int]struct{})
+	var ordered []int
+
+	var walk func(pid, depth int)
+	walk = func(pid, depth int) {
+		if depth > orphanReapMaxDepth {
+			return
+		}
+		children := process.GetChildPIDs(pid, orphanReapFanout)
+		for _, child := range children {
+			if excluded(child) {
+				continue
+			}
+			if _, ok := seen[child]; ok {
+				continue
+			}
+			seen[child] = struct{}{}
+			ordered = append(ordered, child)
+			walk(child, depth+1)
+		}
+	}
+
+	for _, paneShell := range panePIDs {
+		if paneShell <= 1 {
+			continue
+		}
+		// Start the walk at the pane shell so its descendants (the agents) are
+		// collected, but the shell PID itself is never added to `ordered`.
+		walk(paneShell, 1)
+	}
+
+	return ordered
+}
+
+// reapOrphanProcesses sends SIGTERM to each still-alive PID in `pids`, waits a
+// short grace period, then SIGKILLs any that remain. PIDs that have already
+// exited (the common case — most agents die with their pane shell's SIGHUP) are
+// skipped. Errors from kill are ignored: a process may exit between the
+// liveness check and the signal, which is exactly the outcome we want.
+func reapOrphanProcesses(pids []int) {
+	if len(pids) == 0 {
+		return
+	}
+
+	var termed []int
+	for _, pid := range pids {
+		if pid <= 1 || !process.IsAlive(pid) {
+			continue
+		}
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		termed = append(termed, pid)
+	}
+
+	if len(termed) == 0 {
+		return
+	}
+
+	time.Sleep(orphanReapGrace)
+
+	for _, pid := range termed {
+		if process.IsAlive(pid) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 // runKillProject kills all sessions matching a base project name (bd-3cu02.14).

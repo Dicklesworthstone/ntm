@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -1074,11 +1075,11 @@ func TestClassifyTriageRecForAssignment(t *testing.T) {
 			wantReason: "already_in_progress",
 		},
 		{
-			name:       "blockedBy beats already_assigned",
-			rec:        bv.TriageRecommendation{ID: "bd-11", Status: "open", BlockedBy: []string{"bd-x"}},
+			name:              "blockedBy beats already_assigned",
+			rec:               bv.TriageRecommendation{ID: "bd-11", Status: "open", BlockedBy: []string{"bd-x"}},
 			activeAssignments: map[string]struct{}{"bd-11": {}},
-			wantSkip:   true,
-			wantReason: "blocked_by_dependency",
+			wantSkip:          true,
+			wantReason:        "blocked_by_dependency",
 		},
 	}
 
@@ -1125,12 +1126,12 @@ func TestCountSkippedByReason(t *testing.T) {
 
 func TestNormalizeBeadStatus(t *testing.T) {
 	tests := map[string]string{
-		"open":          "open",
-		"In Progress":   "in_progress",
-		"in-progress":   "in_progress",
-		" CLOSED ":      "closed",
-		"":              "",
-		"ready-for-qa":  "ready_for_qa",
+		"open":         "open",
+		"In Progress":  "in_progress",
+		"in-progress":  "in_progress",
+		" CLOSED ":     "closed",
+		"":             "",
+		"ready-for-qa": "ready_for_qa",
 	}
 	for in, want := range tests {
 		if got := normalizeBeadStatus(in); got != want {
@@ -1238,5 +1239,70 @@ func TestDetermineAgentStateIgnoresStaleThinking(t *testing.T) {
 	got := determineAgentState(scrollback, "codex")
 	if got == "working" {
 		t.Errorf("determineAgentState(stale thinking pattern) = %q, must not be forced to working", got)
+	}
+}
+
+// ============================================================================
+// FIX C: Active-assignment idle-pool guard
+// ============================================================================
+
+// TestLoadActiveAssignmentPanes_ExcludesBetweenTurnsPane verifies that a pane
+// holding an active assignment (StatusAssigned or StatusWorking) is reported by
+// loadActiveAssignmentPanes even when it would momentarily look idle between
+// turns. The idle-collection paths exclude these panes so a pane mid-flight on
+// bead A is never handed bead B (double-dispatch) just because it briefly shows
+// an idle prompt.
+func TestLoadActiveAssignmentPanes_ExcludesBetweenTurnsPane(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	const session = "fixc"
+	store := assignment.NewStore(session)
+
+	// Pane 1: mid-flight on bead A, status Working — the "between turns" pane.
+	if _, err := store.Assign("bd-A", "Task A", 1, "claude", "fixc_claude_1", "do A"); err != nil {
+		t.Fatalf("assign bd-A: %v", err)
+	}
+	if err := store.MarkWorking("bd-A"); err != nil {
+		t.Fatalf("mark working bd-A: %v", err)
+	}
+	// Pane 2: freshly assigned, status Assigned.
+	if _, err := store.Assign("bd-B", "Task B", 2, "codex", "fixc_codex_2", "do B"); err != nil {
+		t.Fatalf("assign bd-B: %v", err)
+	}
+	// Pane 3: a completed assignment — NOT active, must NOT be excluded.
+	if _, err := store.Assign("bd-C", "Task C", 3, "claude", "fixc_claude_3", "do C"); err != nil {
+		t.Fatalf("assign bd-C: %v", err)
+	}
+	if err := store.MarkCompleted("bd-C"); err != nil {
+		t.Fatalf("mark completed bd-C: %v", err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("save store: %v", err)
+	}
+
+	active := loadActiveAssignmentPanes(session)
+
+	if _, ok := active[1]; !ok {
+		t.Errorf("pane 1 (StatusWorking) must be in the active set — it is mid-flight and not dispatchable")
+	}
+	if _, ok := active[2]; !ok {
+		t.Errorf("pane 2 (StatusAssigned) must be in the active set — it holds an active assignment")
+	}
+	if _, ok := active[3]; ok {
+		t.Errorf("pane 3 (StatusCompleted) must NOT be in the active set — completed work frees the pane")
+	}
+	if len(active) != 2 {
+		t.Errorf("active pane count = %d, want 2", len(active))
+	}
+}
+
+// TestLoadActiveAssignmentPanes_EmptyStore returns an empty set (and never
+// errors) when no store exists for the session — idle collection then proceeds
+// with no exclusions.
+func TestLoadActiveAssignmentPanes_EmptyStore(t *testing.T) {
+	isolateSessionAgentStorage(t)
+	active := loadActiveAssignmentPanes("no-such-session")
+	if len(active) != 0 {
+		t.Errorf("expected empty active set for missing store, got %d entries", len(active))
 	}
 }

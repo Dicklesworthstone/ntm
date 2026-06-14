@@ -327,45 +327,46 @@ func TestDetectIdleFromOutput_MultipleLines(t *testing.T) {
 			expected:  true,
 		},
 		{
-			// Narrow tiled CC pane: the persistent footer (separator, hint,
-			// budget indicator, "new task?" placeholder) pushes the real ❯
-			// prompt ~8 lines up. This is the exact regression the wider window
-			// fixes — a fresh-session pane that is unambiguously idle but whose
-			// bottom 3 lines are decorative footer. (Concept from community
-			// PR #156; implemented independently.)
-			name: "narrow tiled cc pane idle below footer noise",
-			output: "❯ \n" +
-				"───────────\n" +
-				"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n" +
-				"  ? for shortcu…\n" +
-				"  ● high · /eff…\n" +
+			// REAL Claude layout (from internal/cli/outputs/): the "❯ " input
+			// box is pinned to the BOTTOM, with the status footer below it and
+			// the (now finished) turn's content above. No active spinner is the
+			// most-recent dynamic marker, so the pane is idle and dispatchable.
+			name: "cc finished turn with bottom-pinned box is idle",
+			output: "● All changes applied; tests pass.\n" +
 				"\n" +
-				"new task?\n" +
-				"  /cl…\n",
+				"✻ Cooked for 2m 10s\n" +
+				"───────────\n" +
+				"❯ \n" +
+				"───────────\n" +
+				"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n",
 			agentType: "cc",
 			expected:  true,
 		},
 		{
-			// CRITICAL false-positive guard: the same footer geometry, but the
-			// agent is actively working — a spinner is rendered below the (still
-			// drawn) input box. The wider window MUST NOT report this as idle.
-			name: "narrow tiled cc pane working with spinner below prompt",
-			output: "❯ \n" +
+			// CRITICAL false-idle guard, REAL layout: the active spinner renders
+			// just ABOVE the bottom-pinned input box while a turn is in flight.
+			// The box is always drawn, so its presence is NOT idleness — the
+			// most-recent dynamic marker is the spinner. MUST NOT report idle.
+			name: "cc working with spinner above bottom box",
+			output: "● Running the suite.\n" +
+				"✻ Scurrying… (ctrl+c to interrupt · 12s · thinking)\n" +
 				"───────────\n" +
-				"  Scurrying… (12s · esc to interrupt)\n" +
-				"  ? for shortcu…\n",
+				"❯ \n" +
+				"───────────\n" +
+				"  ⏵⏵ bypass permissions on\n",
 			agentType: "cc",
 			expected:  false,
 		},
 		{
-			// A stale spinner ABOVE a fresh prompt is not active work — the most
-			// recent on-screen marker is the prompt, so the pane is idle.
-			name: "stale spinner above fresh prompt is idle",
-			output: "  Scurrying… (12s · esc to interrupt)\n" +
-				"  thought for 47s\n" +
-				"Done.\n" +
+			// "new task?" footer parked below the box after a turn ends, with no
+			// active spinner — idle and dispatchable.
+			name: "cc new task footer is idle",
+			output: "● Done.\n" +
+				"✻ Baked for 5m 0s\n" +
+				"───────────\n" +
 				"❯ \n" +
-				"───────────\n",
+				"───────────\n" +
+				"new task? /clear to save 12.3k tokens\n",
 			agentType: "cc",
 			expected:  true,
 		},

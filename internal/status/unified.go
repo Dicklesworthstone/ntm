@@ -84,6 +84,22 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
 	isLowVelocity := time.Since(lastActivity) >= threshold
 
+	// Claude Code: the live-tail spinner classifier is authoritative and must
+	// outrank the velocity heuristic. A long "thinking" turn produces no new
+	// scrollback lines (low velocity) yet is unambiguously working; conversely a
+	// finished turn keeps the input box drawn (looks prompt-like) yet is idle.
+	// ClaudeActivelyWorking is biased to false-WORKING, so trusting it here can
+	// only ever err on the safe side.
+	if agentType == string(agent.AgentTypeClaudeCode) {
+		if agent.ClaudeActivelyWorking(output) {
+			return StateWorking, ErrorNone
+		}
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
+		// Fall through to error/heuristic handling below.
+	}
+
 	// Check if at prompt (idle) - prioritize this when velocity is low
 	isAtPrompt := DetectIdleFromOutput(output, agentType)
 	if isAtPrompt && isLowVelocity {

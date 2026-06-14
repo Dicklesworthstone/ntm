@@ -776,6 +776,31 @@ func loadActiveAssignmentBeadIDs(session string) map[string]struct{} {
 	return active
 }
 
+// loadActiveAssignmentPanes returns the set of pane indices that currently hold
+// an active assignment (StatusAssigned or StatusWorking) for this session.
+//
+// loadActiveAssignmentBeadIDs dedups by BEAD, which does not prevent a pane that
+// is mid-flight on bead A — but momentarily showing an idle prompt between turns
+// — from being handed a second bead B. Excluding any pane with an active
+// assignment from the idle pool closes that double-dispatch window: a pane is
+// dispatchable iff state=="idle" AND it is not busy AND it holds no active
+// assignment.
+//
+// Errors are intentionally swallowed (an unreadable store is treated as empty,
+// matching loadActiveAssignmentBeadIDs): briefly double-dispatching is less bad
+// than blocking all assignment on a transient store-read failure.
+func loadActiveAssignmentPanes(session string) map[int]struct{} {
+	active := make(map[int]struct{})
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		return active
+	}
+	for _, item := range store.ListActive() {
+		active[item.Pane] = struct{}{}
+	}
+	return active
+}
+
 // countSkippedByReason counts SkippedItems matching a specific reason. Used to
 // keep BlockedCount in the assignment summary semantically narrow ("blocked by
 // a dependency") even after the broader skipped-reason taxonomy was added.
@@ -946,12 +971,22 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 	var idleAgentPanes []string
 	totalAgents := 0
 
+	// Panes holding an active assignment must be excluded from the idle pool
+	// even if they momentarily show an idle prompt between turns (FIX C).
+	activePanes := loadActiveAssignmentPanes(opts.Session)
+
 	for _, pane := range panes {
 		agentType := agentTypeForPane(pane)
 		if agentType == "user" || agentType == "unknown" {
 			continue
 		}
 		totalAgents++
+
+		// Skip panes that already hold an active assignment (FIX C) — they are
+		// not dispatchable even if they momentarily show an idle prompt.
+		if _, busy := activePanes[pane.Index]; busy {
+			continue
+		}
 
 		// Capture state
 		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
@@ -1532,6 +1567,12 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	// Build agent info and filter by type if needed
 	var idleAgents []assignAgentInfo
 
+	// Panes holding an active assignment must be excluded from the idle pool
+	// even if they momentarily show an idle prompt between turns (FIX C). This
+	// is the watch-dispatch path, so the guard is what keeps the periodic
+	// ready-work re-scan (FIX B) from double-dispatching in-flight work.
+	activePanes := loadActiveAssignmentPanes(opts.Session)
+
 	for _, pane := range panes {
 		at := agentTypeForPane(pane)
 		if at == "user" || at == "unknown" {
@@ -1540,6 +1581,11 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 
 		// Apply agent type filter
 		if opts.AgentTypeFilter != "" && at != opts.AgentTypeFilter {
+			continue
+		}
+
+		// Skip panes that already hold an active assignment.
+		if _, busy := activePanes[pane.Index]; busy {
 			continue
 		}
 
@@ -1700,7 +1746,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		Assignments: make([]AssignmentItem, 0),
 		Skipped:     allSkipped, // Blocked + cyclic beads
 		Summary: AssignSummaryEnhanced{
-			TotalBeadCount: len(readyBeads) + len(blockedBeads) + cycleWarnings,
+			TotalBeadCount:  len(readyBeads) + len(blockedBeads) + cycleWarnings,
 			ActionableCount: len(readyBeads),
 			// BlockedCount stays semantically narrow — only counts beads blocked
 			// by an upstream dependency. Other non-actionable reasons
@@ -4566,6 +4612,10 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 
 	var idleAgents []assignAgentInfo
 
+	// Panes holding an active assignment must be excluded from the idle pool
+	// even if they momentarily show an idle prompt between turns (FIX C).
+	activePanes := loadActiveAssignmentPanes(session)
+
 	for _, pane := range panes {
 		agentType := agentTypeForPane(pane)
 		if agentType == "user" || agentType == "unknown" {
@@ -4574,6 +4624,14 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 
 		// Apply agent type filter
 		if normalizedFilter != "" && agentType != normalizedFilter {
+			continue
+		}
+
+		// Skip panes that already hold an active assignment.
+		if _, busy := activePanes[pane.Index]; busy {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[AUTO] Skipping pane %d (%s): holds an active assignment\n", pane.Index, agentType)
+			}
 			continue
 		}
 
@@ -4700,6 +4758,22 @@ type WatchLoop struct {
 	quiet        bool
 	verbose      bool
 
+	// Periodic ready-work scan (FIX B). The watch loop is otherwise purely
+	// completion-driven: dispatch happens only inside handleCompletion, which
+	// fires only on a completion event for a bead THIS loop dispatched. If the
+	// initial pass dispatched nothing (no idle agents OR no ready work at
+	// startup), no completion event ever fires and the loop sits inert forever
+	// even as ready work later appears (a gate unblocks, beads are created,
+	// startup-busy agents go idle). scanInterval drives a ticker that re-runs
+	// the SAME plan/dispatch pass the initial assignment uses. It is idempotent
+	// — the idle pool excludes busy panes and panes holding an active
+	// assignment (FIX C), so a re-scan never double-dispatches in-flight work.
+	scanInterval time.Duration
+	scanOpts     *AssignCommandOptions
+	// scanFn performs one ready-work scan pass. Defaults to scanReadyWork;
+	// overridable in tests to observe ticker-driven scans without tmux/bv.
+	scanFn func() error
+
 	// Concurrency control
 	completionCh chan completion.CompletionEvent
 	stopCh       chan struct{}
@@ -4716,6 +4790,15 @@ type WatchLoop struct {
 
 // NewWatchLoop creates a new watch loop for a session
 func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoReassignOptions) *WatchLoop {
+	// The periodic ready-work scan re-runs the same plan/dispatch pass the
+	// initial assignment uses. Default its cadence to the configured watch
+	// interval (the same cadence the completion detector polls at) with a
+	// sane fallback so a zero value can't spin a hot loop.
+	scanInterval := assignWatchInterval
+	if scanInterval <= 0 {
+		scanInterval = 30 * time.Second
+	}
+
 	return &WatchLoop{
 		session:      session,
 		strategy:     opts.Strategy,
@@ -4726,8 +4809,21 @@ func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoR
 		limit:        assignLimit,
 		quiet:        opts.Quiet,
 		verbose:      opts.Verbose,
-		stopCh:       make(chan struct{}),
-		startTime:    time.Now(),
+		scanInterval: scanInterval,
+		scanOpts: &AssignCommandOptions{
+			Session:         session,
+			Strategy:        opts.Strategy,
+			Limit:           assignLimit,
+			AgentTypeFilter: opts.AgentTypeFilter,
+			Template:        opts.Template,
+			TemplateFile:    opts.TemplateFile,
+			Verbose:         opts.Verbose,
+			Quiet:           opts.Quiet,
+			Timeout:         opts.Timeout,
+			ReserveFiles:    opts.ReserveFiles,
+		},
+		stopCh:    make(chan struct{}),
+		startTime: time.Now(),
 	}
 }
 
@@ -4779,6 +4875,19 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 
 	w.logf("Starting watch mode with strategy=%s", w.strategy)
 
+	// Periodic ready-work scan (FIX B). Without this the loop only ever
+	// dispatches in reaction to a completion event for a bead it previously
+	// dispatched — so a startup with nothing to dispatch (no idle agents OR no
+	// ready work) leaves it inert forever even as work later becomes ready. The
+	// ticker re-runs the same idempotent plan/dispatch pass as the initial
+	// assignment; FIX C's idle-pool guards keep it from double-dispatching.
+	scanInterval := w.scanInterval
+	if scanInterval <= 0 {
+		scanInterval = 30 * time.Second
+	}
+	ticker := time.NewTicker(scanInterval)
+	defer ticker.Stop()
+
 	// Main watch loop
 	for {
 		select {
@@ -4800,6 +4909,24 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 				}
 			}
 
+		case <-ticker.C:
+			scan := w.scanFn
+			if scan == nil {
+				scan = w.scanReadyWork
+			}
+			if err := scan(); err != nil {
+				w.logf("Error during ready-work scan: %v", err)
+			}
+
+			// A scan can be the thing that drains the queue, so honor
+			// stop-when-done here too.
+			if w.stopWhenDone {
+				if w.shouldStop() {
+					w.logf("All beads complete. Exiting watch mode.")
+					return nil
+				}
+			}
+
 		case <-ctx.Done():
 			w.logf("Watch mode interrupted. Shutting down...")
 			return ctx.Err()
@@ -4809,6 +4936,55 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// scanReadyWork re-runs the same plan/dispatch pass the initial assignment uses
+// (getAssignOutputEnhanced + executeAssignmentsEnhanced) so the watch loop can
+// pick up work that became ready after startup — a gate unblocking, new beads,
+// or a startup-busy agent going idle — without waiting for a completion event
+// that may never come.
+//
+// It is idempotent: getAssignOutputEnhanced builds its idle pool from panes
+// that are idle, not busy, AND hold no active assignment (FIX C), and the bead
+// side filters out beads with an active assignment, so a re-scan never
+// double-dispatches in-flight work. In dry-run mode it plans and logs but never
+// dispatches, matching the completion path.
+func (w *WatchLoop) scanReadyWork() error {
+	if w.scanOpts == nil {
+		return nil
+	}
+
+	dryRun := w.opts != nil && w.opts.DryRun
+
+	out, err := getAssignOutputEnhanced(w.scanOpts)
+	if err != nil {
+		return err
+	}
+	if out == nil || len(out.Assignments) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		w.logf("Ready-work scan (dry-run): %d beads would be assigned (no dispatch)", len(out.Assignments))
+		for _, assigned := range out.Assignments {
+			w.logf("  Would assign %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
+		}
+		return nil
+	}
+
+	if err := executeAssignmentsEnhanced(w.session, out, w.scanOpts); err != nil {
+		return err
+	}
+
+	w.mu.Lock()
+	for _, assigned := range out.Assignments {
+		w.totalAssigned++
+		w.lastAssignmentAt = time.Now()
+		w.logf("Ready-work scan assigned: %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
+	}
+	w.mu.Unlock()
+
+	return nil
 }
 
 // handleCompletion processes a single completion event
