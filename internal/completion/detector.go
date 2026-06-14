@@ -329,16 +329,26 @@ func (d *CompletionDetector) checkAssignment(ctx context.Context, a *assignment.
 		}
 	}
 
-	// 5. Check for completion patterns
-	if d.matchCompletionPatterns(output) {
-		return &CompletionEvent{
-			Pane:      a.Pane,
-			AgentType: a.AgentType,
-			BeadID:    a.BeadID,
-			Method:    MethodPatternMatch,
-			Timestamp: time.Now(),
-			Duration:  time.Since(startTime),
-			Output:    truncateOutput(output, 500),
+	// 5. Completion patterns are only a HINT that the agent thinks it is done.
+	// They must NOT be treated as success on their own: the patterns (e.g.
+	// `br close`, `closing bead`) also match the DISPATCH PROMPT'S OWN ECHO — the
+	// prompt literally instructs the agent to run `br close <id>` — so a crashed
+	// or slow agent whose pane still shows the prompt would be falsely marked
+	// "completed", silently dropping its work. The authoritative completion signal
+	// is the bead actually being closed (step 2). So when a completion pattern
+	// matches, re-check the bead; emit success only if it is genuinely closed.
+	// Otherwise fall through to idle/stall handling.
+	if d.matchCompletionPatterns(output) && d.isBrAvailable() {
+		if closed, err := d.checkBeadClosed(ctx, a.BeadID); err == nil && closed {
+			return &CompletionEvent{
+				Pane:      a.Pane,
+				AgentType: a.AgentType,
+				BeadID:    a.BeadID,
+				Method:    MethodPatternMatch,
+				Timestamp: time.Now(),
+				Duration:  time.Since(startTime),
+				Output:    truncateOutput(output, 500),
+			}
 		}
 	}
 
@@ -523,14 +533,23 @@ func (d *CompletionDetector) checkIdle(a *assignment.Assignment, output string, 
 		// Reset state
 		state.burstActive = false
 
+		// An assignment that has produced no output for IdleThreshold and whose
+		// bead is NOT closed (a genuine bead-close would have been caught by the
+		// authoritative checkBeadClosed step before we ever reach idle detection)
+		// is a STALLED or CRASHED agent, not a success. Marking it completed would
+		// silently drop the work AND — because a completed bead is suppressed from
+		// re-dispatch — strand it forever. Report it as FAILED so the pane is
+		// released and the bead becomes eligible for reassignment to a live agent.
 		return &CompletionEvent{
-			Pane:      a.Pane,
-			AgentType: a.AgentType,
-			BeadID:    a.BeadID,
-			Method:    MethodIdle,
-			Timestamp: time.Now(),
-			Duration:  time.Since(startTime),
-			Output:    truncateOutput(output, 500),
+			Pane:       a.Pane,
+			AgentType:  a.AgentType,
+			BeadID:     a.BeadID,
+			Method:     MethodIdle,
+			Timestamp:  time.Now(),
+			Duration:   time.Since(startTime),
+			Output:     truncateOutput(output, 500),
+			IsFailed:   true,
+			FailReason: "agent idle past threshold without closing the bead (stalled or crashed)",
 		}
 	}
 
