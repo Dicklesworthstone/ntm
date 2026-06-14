@@ -88,6 +88,19 @@ var (
 		// patterns above miss. The "/clear" companion keeps prose that merely says
 		// "…a new task?" from false-matching.
 		regexp.MustCompile(`(?i)new task\?\s*/clear`),
+		// Claude Code's compose-box permission-mode footer ("⏵⏵ bypass permissions
+		// on …"). The ⏵⏵ double-play glyph is unique to that footer, so its
+		// presence means the Claude TUI is alive at its input box. On its own it
+		// does NOT imply idle (the box is drawn during active work too) — but
+		// detectIdle gates every idle verdict through ClaudeActivelyWorking, so a
+		// working pane (active spinner, no turn-ended marker) is still excluded.
+		// Gated this way it is the general "TUI alive ⇒ idle when not working"
+		// signal that catches what the empty-❯ and new-task patterns miss: a box
+		// holding queued text or an … ellipsis with no visible hint (small-context
+		// turns in narrow panes). The dispatch path is also backstopped by the
+		// active-assignment guard, so a transient misread cannot double-dispatch a
+		// pane already holding in-flight work.
+		regexp.MustCompile(`⏵⏵`),
 	}
 
 	// ccSpinnerActivePatterns detect Claude Code's randomized spinner verbs

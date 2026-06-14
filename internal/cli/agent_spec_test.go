@@ -414,7 +414,7 @@ func TestResolveModel_EmptySpecUnknownType(t *testing.T) {
 // =============================================================================
 
 func TestExpandPromptTemplate_Impl(t *testing.T) {
-	result := expandPromptTemplate("bd-123", "Fix login bug", "impl", "")
+	result := expandPromptTemplate("bd-123", "Fix login bug", "", "impl", "")
 	if !strings.Contains(result, "bd-123") {
 		t.Errorf("impl template should contain bead ID: %s", result)
 	}
@@ -427,7 +427,7 @@ func TestExpandPromptTemplate_Impl(t *testing.T) {
 }
 
 func TestExpandPromptTemplate_Review(t *testing.T) {
-	result := expandPromptTemplate("bd-456", "Audit auth", "review", "")
+	result := expandPromptTemplate("bd-456", "Audit auth", "", "review", "")
 	if !strings.Contains(result, "bd-456") {
 		t.Errorf("review template should contain bead ID: %s", result)
 	}
@@ -437,7 +437,7 @@ func TestExpandPromptTemplate_Review(t *testing.T) {
 }
 
 func TestExpandPromptTemplate_Default(t *testing.T) {
-	result := expandPromptTemplate("bd-789", "Some task", "unknown-template", "")
+	result := expandPromptTemplate("bd-789", "Some task", "", "unknown-template", "")
 	if !strings.Contains(result, "bd-789") {
 		t.Errorf("default template should contain bead ID: %s", result)
 	}
@@ -451,14 +451,14 @@ func TestExpandPromptTemplate_CustomWithFile(t *testing.T) {
 	tmplFile := filepath.Join(dir, "custom.txt")
 	os.WriteFile(tmplFile, []byte("Custom: {BEAD_ID} - {TITLE}"), 0644)
 
-	result := expandPromptTemplate("bd-abc", "My feature", "custom", tmplFile)
+	result := expandPromptTemplate("bd-abc", "My feature", "", "custom", tmplFile)
 	if result != "Custom: bd-abc - My feature" {
 		t.Errorf("custom file template = %q, want 'Custom: bd-abc - My feature'", result)
 	}
 }
 
 func TestExpandPromptTemplate_CustomWithMissingFile(t *testing.T) {
-	result := expandPromptTemplate("bd-def", "Fallback task", "custom", "/nonexistent/path.txt")
+	result := expandPromptTemplate("bd-def", "Fallback task", "", "custom", "/nonexistent/path.txt")
 	// Should fall back to impl-like template
 	if !strings.Contains(result, "bd-def") {
 		t.Errorf("fallback template should contain bead ID: %s", result)
@@ -469,7 +469,7 @@ func TestExpandPromptTemplate_CustomWithMissingFile(t *testing.T) {
 }
 
 func TestExpandPromptTemplate_CustomNoFile(t *testing.T) {
-	result := expandPromptTemplate("bd-ghi", "Plain custom", "custom", "")
+	result := expandPromptTemplate("bd-ghi", "Plain custom", "", "custom", "")
 	if !strings.Contains(result, "bd-ghi") {
 		t.Errorf("custom no-file template should contain bead ID: %s", result)
 	}
@@ -479,12 +479,12 @@ func TestExpandPromptTemplate_CustomNoFile(t *testing.T) {
 }
 
 func TestExpandPromptTemplate_CaseInsensitive(t *testing.T) {
-	result := expandPromptTemplate("bd-x", "Title", "IMPL", "")
+	result := expandPromptTemplate("bd-x", "Title", "", "IMPL", "")
 	if !strings.Contains(result, "br dep tree") {
 		t.Errorf("IMPL (uppercase) should resolve to impl template: %s", result)
 	}
 
-	result = expandPromptTemplate("bd-y", "Title", "Review", "")
+	result = expandPromptTemplate("bd-y", "Title", "", "Review", "")
 	if !strings.Contains(result, "Review and verify") {
 		t.Errorf("Review (mixed case) should resolve to review template: %s", result)
 	}

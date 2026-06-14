@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -83,13 +84,34 @@ func TestExpandPromptTemplate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := expandPromptTemplate(tc.beadID, tc.title, tc.templateName, "")
+			got := expandPromptTemplate(tc.beadID, tc.title, "", tc.templateName, "")
 			for _, want := range tc.wantContains {
 				if !strings.Contains(got, want) {
-					t.Errorf("expandPromptTemplate(%q, %q, %q, \"\") = %q, want to contain %q", tc.beadID, tc.title, tc.templateName, got, want)
+					t.Errorf("expandPromptTemplate(%q, %q, \"\", %q, \"\") = %q, want to contain %q", tc.beadID, tc.title, tc.templateName, got, want)
 				}
 			}
 		})
+	}
+}
+
+// A custom template with an {AGENT_NAME} placeholder gets the agent's agent-mail
+// identity substituted — needed so an autonomous dispatch can satisfy a
+// pre-commit hook that requires AGENT_NAME (the pane shell does not export it).
+func TestExpandPromptTemplate_AgentName(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tmpl-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`Bead {BEAD_ID}: {TITLE}. Commit as AGENT_NAME="{AGENT_NAME}".`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	got := expandPromptTemplate("bd-1", "Do thing", "WildSwan", "custom", f.Name())
+	if !strings.Contains(got, `AGENT_NAME="WildSwan"`) {
+		t.Errorf("expected {AGENT_NAME} substituted to WildSwan, got: %q", got)
+	}
+	if strings.Contains(got, "{AGENT_NAME}") {
+		t.Errorf("placeholder left unexpanded: %q", got)
 	}
 }
 

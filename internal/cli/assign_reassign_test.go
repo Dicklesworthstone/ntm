@@ -303,7 +303,7 @@ func TestRunRetryAssignments_PreservesPreviousFailReasonAndMetadata(t *testing.T
 		t.Fatalf("expected prompt to be sent")
 	}
 
-	expectedPrompt := expandPromptTemplate("bd-131", "Test bead 131", assignTemplate, assignTemplateFile)
+	expectedPrompt := expandPromptTemplate("bd-131", "Test bead 131", "", assignTemplate, assignTemplateFile)
 	storeAfter, _ := assignment.LoadStore(sessionName)
 	assignmentAfter := storeAfter.Get("bd-131")
 	if assignmentAfter == nil {

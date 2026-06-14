@@ -51,6 +51,12 @@ var promptPatterns = []PromptPattern{
 	// that merely says "…a new task?" from false-matching. activeWorkBelow still
 	// guards against a spinner rendered below this line.
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)new task\?\s*/clear`), Description: "Claude Code post-turn 'new task? /clear to save …' idle hint"},
+	// Claude's compose-box permission-mode footer ("⏵⏵ bypass permissions …"). The
+	// ⏵⏵ glyph is unique to that footer ⇒ the TUI is alive at its input box.
+	// DetectIdleFromOutput routes cc through ClaudeActivelyWorking, so a working
+	// pane (active spinner) is still excluded; this catches idle boxes holding
+	// queued text or an … ellipsis with no visible hint.
+	{AgentType: "cc", Regex: regexp.MustCompile(`⏵⏵`), Description: "Claude Code compose-box footer (TUI alive at input box)"},
 
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},

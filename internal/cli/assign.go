@@ -2528,7 +2528,7 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 		}
 
 		// Build the prompt using template
-		prompt := expandPromptTemplate(item.BeadID, item.BeadTitle, opts.Template, opts.TemplateFile)
+		prompt := expandPromptTemplate(item.BeadID, item.BeadTitle, item.AgentName, opts.Template, opts.TemplateFile)
 
 		// Send to the pane
 		paneID, ok := paneIDByIndex[item.Pane]
@@ -2577,7 +2577,7 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 }
 
 // expandPromptTemplate expands a prompt template with bead variables
-func expandPromptTemplate(beadID, title, templateName, templateFile string) string {
+func expandPromptTemplate(beadID, title, agentName, templateName, templateFile string) string {
 	var template string
 
 	switch strings.ToLower(templateName) {
@@ -2601,10 +2601,14 @@ func expandPromptTemplate(beadID, title, templateName, templateFile string) stri
 		template = "Work on bead {BEAD_ID}: {TITLE}. Check dependencies first with `br dep tree {BEAD_ID}`."
 	}
 
-	// Expand variables
+	// Expand variables. {AGENT_NAME} lets a dispatch template inject the target
+	// pane's agent-mail identity — needed because the project's pre-commit hook
+	// requires AGENT_NAME, and the pane shell does not export it, so an autonomous
+	// dispatch that asks the agent to commit must carry the name in the prompt.
 	result := template
 	result = strings.ReplaceAll(result, "{BEAD_ID}", beadID)
 	result = strings.ReplaceAll(result, "{TITLE}", title)
+	result = strings.ReplaceAll(result, "{AGENT_NAME}", agentName)
 
 	return result
 }
@@ -2963,7 +2967,7 @@ func runRetryAssignments(cmd *cobra.Command, session string) error {
 
 		// Create new assignment (remove old one first)
 		store.Remove(failed.BeadID)
-		prompt := expandPromptTemplate(failed.BeadID, beadTitle, assignTemplate, assignTemplateFile)
+		prompt := expandPromptTemplate(failed.BeadID, beadTitle, newAgentName, assignTemplate, assignTemplateFile)
 		_, assignErr := store.Assign(failed.BeadID, beadTitle, targetPane.Index, targetAgentType, newAgentName, "")
 		if assignErr != nil {
 			skippedItems = append(skippedItems, RetrySkippedItem{
@@ -3560,7 +3564,7 @@ func runReassignment(cmd *cobra.Command, session string) error {
 	if assignPrompt != "" {
 		prompt = assignPrompt
 	} else {
-		prompt = expandPromptTemplate(beadID, beadTitle, assignTemplate, assignTemplateFile)
+		prompt = expandPromptTemplate(beadID, beadTitle, newAgentName, assignTemplate, assignTemplateFile)
 	}
 
 	// Send prompt to new agent
@@ -4308,7 +4312,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	if opts.Prompt != "" {
 		prompt = opts.Prompt
 	} else {
-		prompt = expandPromptTemplate(beadID, beadTitle, opts.Template, opts.TemplateFile)
+		prompt = expandPromptTemplate(beadID, beadTitle, assignmentAgentName(opts.Session, agentType, targetPane.Index), opts.Template, opts.TemplateFile)
 	}
 	assignItem.Prompt = prompt
 	assignItem.PromptSent = true

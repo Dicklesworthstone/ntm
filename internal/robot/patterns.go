@@ -96,6 +96,13 @@ func defaultPatterns() []Pattern {
 		// bare-chevron prompt patterns miss. The "/clear" companion keeps prose
 		// that merely says "…a new task?" from false-matching.
 		{Name: "claude_new_task_hint", RegexStr: `(?i)new task\?\s*/clear`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code post-turn 'new task? /clear to save …' idle hint"},
+		// Claude's compose-box permission-mode footer ("⏵⏵ bypass permissions …").
+		// The ⏵⏵ glyph is unique to that footer ⇒ the TUI is alive at its input
+		// box. Lower priority than the spinner patterns so an active spinner still
+		// wins; consumers that need the working/idle split additionally gate on
+		// IsLiveBusy (which uses agent.ClaudeActivelyWorking). Catches idle boxes
+		// holding queued text / an … ellipsis with no visible hint.
+		{Name: "claude_compose_box", RegexStr: `⏵⏵`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 60, Description: "Claude Code compose-box footer (TUI alive at input box)"},
 
 		// Claude Code spinner detection (active work indicators)
 		{Name: "claude_spinner_timing", RegexStr: `\S+…\s+\(`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code timing spinner (e.g. Bunning… (3s))"},
