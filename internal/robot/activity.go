@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -845,6 +846,20 @@ func IsLiveBusy(scrollback string, agentType string) bool {
 	live := lastNLines(scrollback, liveThinkingWindowLines)
 	if live == "" {
 		return false
+	}
+	// For Claude, a raw thinking-pattern match is not sufficient: Claude leaves a
+	// STALE spinner ("· Thundering… (4s)") in the live window above its
+	// turn-ended completion line ("✻ Churned for 6s"). A naive
+	// CategoryThinking match fires on that stale spinner and pins a finished,
+	// idle agent to "busy" — so determineAgentState overrides the correct idle
+	// verdict to "working" and the dispatcher sees 0 idle agents after every
+	// burst (the swarm stalls). agent.ClaudeActivelyWorking applies the
+	// spinner-vs-turn-ended ORDER (a spinner only counts when it is the
+	// most-recent dynamic marker) and is biased to false-WORKING, so it is the
+	// correct "is this Claude pane actually busy?" signal here. Found via Haiku
+	// stress testing of the reconciled binary.
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeClaudeCode {
+		return agent.ClaudeActivelyWorking(live)
 	}
 	matches := DefaultLibrary.MatchByCategory(live, agentType, CategoryThinking)
 	return len(matches) > 0
