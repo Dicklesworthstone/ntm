@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 // A freshly-spawned Claude agent (init prompt prefilled in the box, no completion
-// line / "new task?" hint yet) or a box showing only the "…" placeholder must read
+// line / "new task?" hint yet) or a box showing only the "…" ellipsis must read
 // IDLE so the dispatcher can start the swarm. Upstream's empty-❯ / completion /
 // new-task patterns miss these; the compose-box footer (gated on
 // !ClaudeActivelyWorking) covers them. Found live: a fresh `ntm spawn` showed

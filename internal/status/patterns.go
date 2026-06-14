@@ -211,7 +211,7 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		}
 		// Not actively working → idle iff a finished-turn prompt is showing.
 		// ClaudeIdlePromptShowing recognizes the empty chevron, queued text /
-		// "…" placeholder boxes, the glyph-led completion line, and the
+		// "…" ellipsis boxes, the glyph-led completion line, and the
 		// "new task?" footer — broader than the empty-chevron-only patterns.
 		if agent.ClaudeIdlePromptShowing(output) {
 			return true

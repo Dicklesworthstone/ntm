@@ -366,7 +366,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		}
 		// Idle when a finished-turn prompt is showing. This covers both the
 		// empty chevron and the broader finished-turn footer: an input box that
-		// holds queued text or an "…" placeholder, plus the post-turn
+		// holds queued text or an "…" ellipsis, plus the post-turn
 		// "new task? /clear to save … tokens" hint. We pass the full `output`
 		// (not just `lastLines`) to the footer recognizer because the box and
 		// its decorative rules can exceed the bounded idle-line window.
@@ -380,7 +380,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// presence of Claude's compose-box footer means the TUI is alive at its
 		// input box and idle. This catches the states the patterns above miss: a
 		// freshly-spawned agent whose box holds a prefilled init prompt, or a box
-		// showing only the "…" placeholder, with no completion line / "new task?"
+		// showing only the "…" ellipsis, with no completion line / "new task?"
 		// hint yet — without it the dispatcher sees 0 idle agents at startup and
 		// the swarm never begins. Safe because it is gated on !ClaudeActivelyWorking.
 		if claudeComposeBoxRe.MatchString(output) {
