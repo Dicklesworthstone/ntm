@@ -218,10 +218,20 @@ func isOnlyWhitespaceOrControl(s string) bool {
 func detectPaneState(output, agentType string) string {
 	// Use robot pattern library
 	match := robot.MatchFirstPattern(output, agentType)
-	if match != nil {
-		return string(match.State)
+	if match == nil {
+		return "UNKNOWN"
 	}
-	return "UNKNOWN"
+	// MatchFirstPattern returns the highest-PRIORITY pattern anywhere in the
+	// output, so a stale, completed spinner left in scrollback (thinking priority
+	// ~110) outranks the current idle prompt (~100) even after the turn finished.
+	// IsLiveBusy applies the spinner-vs-prompt ordering guard (a thinking marker
+	// only counts when it sits below the most-recent idle prompt in the live
+	// tail). So when MatchFirstPattern says THINKING but the pane is not actually
+	// live-busy, the spinner is stale and the pane is waiting for input.
+	if match.Category == robot.CategoryThinking && !robot.IsLiveBusy(output, agentType) {
+		return string(robot.StateWaiting)
+	}
+	return string(match.State)
 }
 
 // Rate limit patterns

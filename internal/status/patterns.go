@@ -44,6 +44,13 @@ var promptPatterns = []PromptPattern{
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)welcome\s+back`), Description: "Claude Code welcome message"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`╰─>\s*$`), Description: "Claude Code arrow prompt"},
 	{AgentType: "cc", Regex: regexp.MustCompile(`(?m)❯[\s\x{00a0}]*$`), Description: "Claude Code unicode angle prompt (multiline, NBSP-aware)"},
+	// Claude Code's post-turn "ready for input" footer hint, e.g. "new task?
+	// /clear to save 113.1k tokens". Reliable idle marker when the ❯ box above
+	// holds queued/unsent text or a bare … ellipsis rather than an empty chevron.
+	// Rendered only when the turn is finished; the "/clear" companion keeps prose
+	// that merely says "…a new task?" from false-matching. activeWorkBelow still
+	// guards against a spinner rendered below this line.
+	{AgentType: "cc", Regex: regexp.MustCompile(`(?i)new task\?\s*/clear`), Description: "Claude Code post-turn 'new task? /clear to save …' idle hint"},
 
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},
@@ -214,10 +221,15 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 		}
 		linesChecked++
 		if IsPromptLine(line, agentType) {
-			// Guard against false idle: if the agent is actively working its
-			// input box is still drawn, but a spinner sits below the prompt.
-			// Only treat the prompt as authoritative when nothing below it
-			// indicates ongoing work.
+			// Guard against false idle. Claude Code pins its input box to the
+			// BOTTOM of the screen, so during active work the spinner renders
+			// ABOVE the prompt — activeWorkBelow (which only scans below the
+			// prompt) would miss it and report a busy pane as idle. Use the
+			// turn-ended-aware whole-capture check for Claude; keep the
+			// below-the-prompt scan for agents whose spinner trails the prompt.
+			if agentType == "cc" {
+				return !agent.ClaudeActivelyWorking(clean)
+			}
 			if activeWorkBelow(lines, i) {
 				return false
 			}

@@ -1513,7 +1513,7 @@ func executeAssignments(session string, recommendations []robot.AssignRecommend)
 			continue
 		}
 
-		if err := sendPromptWithDoubleEnter(p.ID, prompt); err != nil {
+		if err := sendDispatchPrompt(p.ID, prompt); err != nil {
 			fmt.Printf("  Failed to assign to pane %d: %v\n", paneIdx, err)
 			continue
 		}
@@ -2529,7 +2529,7 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 			failCount++
 			continue
 		}
-		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
+		if err := sendDispatchPrompt(paneID, prompt); err != nil {
 			if !opts.Quiet {
 				fmt.Printf("  ✗ Failed to assign %s to pane %d: %v\n", item.BeadID, item.Pane, err)
 			}
@@ -2965,7 +2965,7 @@ func runRetryAssignments(cmd *cobra.Command, session string) error {
 
 		// Send prompt to pane
 		promptSent := true
-		if err := sendPromptWithDoubleEnter(targetPane.ID, prompt); err != nil {
+		if err := sendDispatchPrompt(targetPane.ID, prompt); err != nil {
 			promptSent = false
 			warnings = append(warnings, fmt.Sprintf("failed to send prompt to pane %d for %s: %v",
 				targetPane.Index, failed.BeadID, err))
@@ -3555,7 +3555,7 @@ func runReassignment(cmd *cobra.Command, session string) error {
 
 	// Send prompt to new agent
 	promptSent := true
-	if err := sendPromptWithDoubleEnter(targetPane.ID, prompt); err != nil {
+	if err := sendDispatchPrompt(targetPane.ID, prompt); err != nil {
 		promptSent = false
 		warnings = append(warnings, fmt.Sprintf("failed to send prompt: %v", err))
 	}
@@ -4307,7 +4307,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	// (ntm#128) can record duration for downstream automation that
 	// previously kept its own dispatch ledger.
 	transportStart := time.Now()
-	transportErr := sendPromptWithDoubleEnter(targetPane.ID, prompt)
+	transportErr := sendDispatchPrompt(targetPane.ID, prompt)
 	transportDurationMs := time.Since(transportStart).Milliseconds()
 	receipt := buildDispatchReceipt(opts.Session, beadID, *targetPane, prompt, opts.Template, fileReservations, transportErr, transportDurationMs, false)
 

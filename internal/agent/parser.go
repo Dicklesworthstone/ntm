@@ -356,15 +356,15 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 			return true
 		}
 		idleMatch := matchAnyRegex(lastLines, ccIdlePatterns)
-		// Active spinner overrides idle ONLY when the spinner appears AFTER
-		// the most recent prompt marker. A stale spinner above a fresh ❯
-		// prompt (e.g. agent just finished a 17-minute "thinking" run, then
-		// printed its idle prompt) must NOT block the idle verdict, otherwise
-		// operators polling for dispatchable panes never see them as idle.
+		// A prompt/idle marker is present, but Claude Code keeps its input box
+		// rendered at the bottom of the screen even while it is actively working
+		// (the spinner renders ABOVE the box). So the presence of a prompt is not
+		// sufficient: the pane is idle only when it is NOT actively working —
+		// i.e. no active spinner is the most-recent dynamic marker. ClaudeActively
+		// Working encodes that (spinner present with no turn-ended marker after
+		// it); a stale spinner left above a finished-turn marker does not count.
 		if idleMatch {
-			lastIdle := lastLineIdxMatching(lastLines, ccIdlePatterns)
-			lastSpin := lastLineIdxMatching(lastLines, ccSpinnerActivePatterns)
-			return lastSpin <= lastIdle
+			return !ClaudeActivelyWorking(lastLines)
 		}
 		return false
 	case AgentTypeCodex:

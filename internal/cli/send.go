@@ -3063,6 +3063,21 @@ func sendPromptWithDoubleEnterForAgent(paneID, prompt string, agentType tmux.Age
 	return tmux.SendKeysForAgentDoubleEnter(paneID, prompt, agentType)
 }
 
+// sendDispatchPrompt sends a bead/task prompt as part of autonomous (or
+// operator-triggered) ASSIGNMENT dispatch. Unlike a plain follow-up `ntm send`,
+// a dispatch must own the whole input line: if the target pane's input box still
+// holds leftover, never-submitted text (a queued prompt an operator left behind,
+// or an agent's half-typed line), a raw send would concatenate the bead prompt
+// onto that junk and submit a corrupted instruction. So we clear the input box
+// first (best-effort; a failed clear must not abort the dispatch), then send
+// with the normal double-Enter submission protocol. Idle boxes are the common
+// case and the clear is a harmless no-op there.
+func sendDispatchPrompt(paneID, prompt string) error {
+	_ = tmux.ClearPaneInput(paneID)
+	time.Sleep(120 * time.Millisecond) // let the TUI redraw the emptied box
+	return sendPromptWithDoubleEnter(paneID, prompt)
+}
+
 func addTimelinePromptMarker(session string, p tmux.Pane, prompt string) {
 	if strings.Compare(session, "") == 0 {
 		return

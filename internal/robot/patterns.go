@@ -88,6 +88,14 @@ func defaultPatterns() []Pattern {
 		{Name: "claude_welcome", RegexStr: `(?i)welcome\s+back`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code welcome message"},
 		{Name: "claude_try_prompt", RegexStr: `❯\s*Try\s+"`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 102, Description: "Claude Code try prompt"},
 		{Name: "claude_unicode_prompt", RegexStr: `(?m)❯[\s\x{00a0}]*$`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code unicode angle prompt (multiline, NBSP-aware)"},
+		// Claude Code's post-turn "ready for input" footer hint, e.g. "new task?
+		// /clear to save 113.1k tokens". Rendered only once the turn is finished
+		// and the agent is waiting; during active work the same footer slot shows
+		// the spinner instead. This is the reliable idle marker when the ❯ box
+		// above carries queued/unsent text or a bare … ellipsis, which the
+		// bare-chevron prompt patterns miss. The "/clear" companion keeps prose
+		// that merely says "…a new task?" from false-matching.
+		{Name: "claude_new_task_hint", RegexStr: `(?i)new task\?\s*/clear`, Agent: "claude", State: StateWaiting, Category: CategoryIdle, Priority: 101, Description: "Claude Code post-turn 'new task? /clear to save …' idle hint"},
 
 		// Claude Code spinner detection (active work indicators)
 		{Name: "claude_spinner_timing", RegexStr: `\S+…\s+\(`, Agent: "claude", State: StateThinking, Category: CategoryThinking, Priority: 110, Description: "Claude Code timing spinner (e.g. Bunning… (3s))"},

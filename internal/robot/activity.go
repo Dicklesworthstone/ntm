@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -766,6 +767,7 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
 	effectiveMatches = filterErrorToLiveWhenIdle(effectiveMatches, liveMatches)
+	effectiveMatches = filterStaleThinkingBelowIdle(liveContent, effectiveMatches, sc.agentType)
 
 	// Calculate proposed state and confidence
 	proposedState, confidence, trigger := sc.classifyState(velocity, effectiveMatches)
@@ -846,8 +848,44 @@ func IsLiveBusy(scrollback string, agentType string) bool {
 	if live == "" {
 		return false
 	}
-	matches := DefaultLibrary.MatchByCategory(live, agentType, CategoryThinking)
-	return len(matches) > 0
+	// Claude Code pins its input box to the bottom of the screen, so a prompt is
+	// always below the spinner even during active work — position-based ordering
+	// misclassifies a busy pane as idle. agent.ClaudeActivelyWorking handles this
+	// correctly (an active spinner counts only when no turn-ended marker — the
+	// completion line or "new task? /clear" hint — follows it).
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeClaudeCode {
+		return agent.ClaudeActivelyWorking(live)
+	}
+	if len(DefaultLibrary.MatchByCategory(live, agentType, CategoryThinking)) == 0 {
+		return false
+	}
+	// For non-Claude agents a thinking pattern may still be a STALE completed
+	// spinner left in scrollback above a now-current idle prompt. The pane is
+	// only genuinely busy when its most-recent thinking marker sits BELOW its
+	// most-recent idle prompt (no idle prompt has appeared since the spinner).
+	lines := strings.Split(live, "\n")
+	lastThink := lastLineIdxByCategory(lines, agentType, CategoryThinking)
+	if lastThink < 0 {
+		return false
+	}
+	lastIdle := lastLineIdxByCategory(lines, agentType, CategoryIdle)
+	return lastThink > lastIdle
+}
+
+// lastLineIdxByCategory returns the index of the last line in `lines` that
+// matches any pattern of the given category for `agentType`, or -1 if none do.
+// It is used to compare the vertical ordering of competing live-window markers
+// (e.g. a stale spinner above a fresh idle prompt) so the most-recent state
+// wins instead of a category match anywhere in the window winning
+// unconditionally.
+func lastLineIdxByCategory(lines []string, agentType string, cat PatternCategory) int {
+	last := -1
+	for i, ln := range lines {
+		if len(DefaultLibrary.MatchByCategory(ln, agentType, cat)) > 0 {
+			last = i
+		}
+	}
+	return last
 }
 
 // lastNLines returns the last n non-empty-slice lines of s, preserving
@@ -863,6 +901,61 @@ func lastNLines(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+// filterStaleThinkingBelowIdle drops CategoryThinking matches when, within the
+// live window, a CategoryIdle prompt sits on a line BELOW the last thinking
+// marker. That ordering is the signature of a completed spinner the TUI left on
+// screen above a now-current idle prompt — e.g. "✶ Pontificating… (16m 20s)" /
+// "✻ Baked for 16m 20s" rendered above "new task? /clear to save …". Without
+// this, classifyState's rule that thinking outranks an idle prompt would pin a
+// finished, waiting pane to THINKING (and `ntm activity` would report it busy
+// while it is actually idle and dispatchable). When the spinner is the lower
+// line — the agent is genuinely working — nothing is dropped. This mirrors the
+// ordering guard in agent.detectIdle and IsLiveBusy.
+func filterStaleThinkingBelowIdle(liveContent string, matches []PatternMatch, agentType string) []PatternMatch {
+	hasThinking := false
+	for _, m := range matches {
+		if m.Category == CategoryThinking {
+			hasThinking = true
+			break
+		}
+	}
+	if !hasThinking {
+		return matches
+	}
+	lines := strings.Split(liveContent, "\n")
+	lastThink := lastLineIdxByCategory(lines, agentType, CategoryThinking)
+	if lastThink < 0 {
+		return matches
+	}
+	// A thinking match is STALE only when a turn-ended marker appears AFTER it.
+	// For Claude the turn-ended markers are the "new task?" hint and the
+	// completion line (NOT the always-present empty input box); for other agents
+	// fall back to the idle-prompt category. A thinking indicator with nothing
+	// after it (e.g. a live "Thinking…") is NOT stale and must be kept.
+	lastEnded := -1
+	if agent.AgentType(agentType).Canonical() == agent.AgentTypeClaudeCode {
+		for i, ln := range lines {
+			if agent.IsClaudeTurnEnded(ln) {
+				lastEnded = i
+			}
+		}
+	} else {
+		lastEnded = lastLineIdxByCategory(lines, agentType, CategoryIdle)
+	}
+	if lastEnded <= lastThink {
+		// Most-recent thinking marker is live (no turn-ended marker after it).
+		return matches
+	}
+	out := make([]PatternMatch, 0, len(matches))
+	for _, m := range matches {
+		if m.Category == CategoryThinking {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // filterThinkingToLive returns a match slice equivalent to `full` but with

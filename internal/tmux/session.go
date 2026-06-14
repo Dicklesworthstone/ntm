@@ -1151,6 +1151,23 @@ func SendKeysForAgentDoubleEnter(target, keys string, agentType AgentType) error
 	return nil
 }
 
+// ClearPaneInput clears any unsent text sitting in an agent's input box before
+// a fresh prompt is typed, so a dispatch is not corrupted by leftover content
+// (e.g. a queued, never-submitted prompt an operator left in the box, or an
+// agent's own half-typed line). It sends Ctrl-U (readline kill-line-backward),
+// which Claude Code's input box and shell readline both honor. Safe to call on
+// an empty box — it is a no-op there. This is a best-effort cleanup: callers in
+// the dispatch path ignore the error and proceed, because the worst case is the
+// pre-existing (already-broken) behavior of appending to leftover text.
+func (c *Client) ClearPaneInput(target string) error {
+	return c.RunSilent("send-keys", "-t", target, "C-u")
+}
+
+// ClearPaneInput clears an agent's input box (default client).
+func ClearPaneInput(target string) error {
+	return DefaultClient.ClearPaneInput(target)
+}
+
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-c")

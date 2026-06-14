@@ -272,21 +272,32 @@ Human: `
 // could never dispatch fresh work to them.
 func TestParser_Parse_Idle_Claude_StaleSpinnerAbovePrompt(t *testing.T) {
 	p := NewParser()
+	// A spinner above the input box is only KNOWABLE as stale when a turn-ended
+	// marker follows it — the completion line ("✻ Crystallized for 17m 2s") and/or
+	// the "new task? /clear" idle hint. Claude Code pins its input box to the
+	// bottom of the screen, so a still-ACTIVE spinner ALSO renders above the box
+	// (see TestClaudeActivelyWorking/active-spinner-above-empty-box, a real
+	// working capture from a live swarm). Without a turn-ended marker the two
+	// snapshots are indistinguishable and the safe verdict is "working" (never
+	// interrupt a busy agent). With the markers below, the spinner is genuinely
+	// stale and the pane is idle.
 	output := "✻ Crystallizing… (17m 2s · thinking)\n" +
 		"  ⏿  Tip: Use /btw to ask a quick side\n" +
 		"     question without interrupting\n" +
 		"     Claude's current work\n" +
+		"✻ Crystallized for 17m 2s\n" +
 		"\n" +
 		"────────────────────────────────────────\n" +
 		"❯ \n" +
 		"────────────────────────────────────────\n" +
-		"  ⏵⏵ bypass permissions on          ·\n"
+		"  ⏵⏵ bypass permissions on          ·\n" +
+		"  new task? /clear to save 50.0k tokens\n"
 	state, err := p.Parse(output)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
 	if !state.IsIdle {
-		t.Error("Expected IsIdle=true when fresh ❯ prompt sits below stale spinner")
+		t.Error("Expected IsIdle=true when a stale spinner sits above a turn-ended (completion + new-task) prompt")
 	}
 	if state.IsWorking {
 		t.Error("Expected IsWorking=false when idle")

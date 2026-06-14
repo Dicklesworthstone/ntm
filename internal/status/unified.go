@@ -103,10 +103,19 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 		}
 	}
 
-	// Recent activity means the agent is producing output — trust that
-	// signal over prompt-like patterns, since agents often print >, ❯,
-	// etc. as part of active work (code examples, progress lines).
+	// Recent tmux pane-activity usually means the agent is producing output.
+	// But it is NOT reliable for agents whose TUI repaints while idle: Claude
+	// Code keeps redrawing its input box (cursor, the "new task? /clear to save"
+	// footer) with no real work happening, which keeps pane_activity fresh and
+	// would pin every live agent to WORKING forever. So when the scrollback shows
+	// a genuine idle prompt — DetectIdleFromOutput already requires a prompt with
+	// NO active-work spinner below it — trust that structural signal over the
+	// repaint and report idle. Only fall through to WORKING when there is recent
+	// activity AND no idle prompt (the agent really is mid-output).
 	if !isLowVelocity {
+		if isAtPrompt {
+			return StateIdle, ErrorNone
+		}
 		return StateWorking, ErrorNone
 	}
 

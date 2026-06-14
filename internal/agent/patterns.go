@@ -78,6 +78,16 @@ var (
 		regexp.MustCompile(`(?i)welcome\s+back`),          // Welcome message
 		regexp.MustCompile(`╰─>\s*$`),                     // Arrow prompt
 		regexp.MustCompile(`(?m)❯[\s\x{00a0}]*$`),         // Unicode heavy right-pointing angle prompt (multiline, NBSP-aware)
+		// Claude Code's post-turn "ready for input" footer hint, e.g.
+		// "new task? /clear to save 113.1k tokens". It is rendered ONLY once the
+		// agent has finished its turn and is waiting; during active work the same
+		// footer slot shows the spinner ("✻ Noodling… (4m …)", see
+		// ccSpinnerActivePatterns), so this is a work-exclusive idle signal. It is
+		// the reliable idle marker when the input box above carries queued/unsent
+		// text or a bare … ellipsis rather than an empty ❯ — cases the bare-prompt
+		// patterns above miss. The "/clear" companion keeps prose that merely says
+		// "…a new task?" from false-matching.
+		regexp.MustCompile(`(?i)new task\?\s*/clear`),
 	}
 
 	// ccSpinnerActivePatterns detect Claude Code's randomized spinner verbs
