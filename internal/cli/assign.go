@@ -563,6 +563,16 @@ func runWatchMode(cmd *cobra.Command, session string) error {
 		return nil
 	}
 
+	// Enable the periodic ready-work scan so the loop keeps idle agents fed even
+	// when no completion event fires (ready work that appears externally, or the
+	// initial pass dispatched nothing). Reuse the initial-pass options; Quiet
+	// suppresses executeAssignmentsEnhanced's own output since the loop logs each
+	// scan dispatch via logf.
+	scanOpts := *assignOpts
+	scanOpts.Quiet = true
+	watchLoop.scanOpts = &scanOpts
+	watchLoop.scanInterval = assignWatchInterval
+
 	// Run the watch loop
 	if err := watchLoop.Run(ctx); err != nil && err != context.Canceled {
 		return err
@@ -4771,6 +4781,16 @@ type WatchLoop struct {
 	quiet        bool
 	verbose      bool
 
+	// scanOpts drives the periodic ready-work re-scan (same plan/dispatch path as
+	// the initial assignment pass). Without a periodic scan the loop is purely
+	// completion-driven: if the initial pass dispatched nothing (no idle agents OR
+	// no ready work at startup), no completion event ever fires and the loop sits
+	// inert forever even as ready work appears (a founder unblocks a gate, new
+	// beads are created, or agents that were busy at startup go idle). The
+	// periodic scan keeps idle agents fed. Nil disables it (back-compat).
+	scanOpts     *AssignCommandOptions
+	scanInterval time.Duration
+
 	// Concurrency control
 	completionCh chan completion.CompletionEvent
 	stopCh       chan struct{}
@@ -4850,6 +4870,24 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 
 	w.logf("Starting watch mode with strategy=%s", w.strategy)
 
+	// Periodic ready-work scan. The completion channel only fires for beads this
+	// loop dispatched; a purely completion-driven loop therefore cannot pick up
+	// ready work that appears by any other means (founder unblocks a gate, beads
+	// created externally, or agents busy at startup going idle). The ticker
+	// re-runs the same plan/dispatch pass as the initial assignment so idle
+	// agents are continuously fed. Dispatch is idempotent: getAssignOutputEnhanced
+	// excludes panes that are busy or already hold an active assignment.
+	var scanC <-chan time.Time
+	if w.scanOpts != nil {
+		interval := w.scanInterval
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		scanC = ticker.C
+	}
+
 	// Main watch loop
 	for {
 		select {
@@ -4871,6 +4909,15 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 				}
 			}
 
+		case <-scanC:
+			if err := w.performReadyWorkScan(); err != nil {
+				w.logf("Error during ready-work scan: %v", err)
+			}
+			if w.stopWhenDone && w.shouldStop() {
+				w.logf("All beads complete. Exiting watch mode.")
+				return nil
+			}
+
 		case <-ctx.Done():
 			w.logf("Watch mode interrupted. Shutting down...")
 			return ctx.Err()
@@ -4880,6 +4927,42 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// performReadyWorkScan re-runs the assignment plan/dispatch pass to feed idle
+// agents any currently-ready work. It is the same path as the initial assignment
+// pass and is safe to call repeatedly: getAssignOutputEnhanced builds the idle
+// pool excluding busy panes and panes that already hold an active assignment, so
+// a re-scan never double-dispatches in-flight work.
+func (w *WatchLoop) performReadyWorkScan() error {
+	if w.scanOpts == nil {
+		return nil
+	}
+	out, err := getAssignOutputEnhanced(w.scanOpts)
+	if err != nil {
+		return err
+	}
+	if out == nil || len(out.Assignments) == 0 {
+		return nil
+	}
+	dryRun := w.opts != nil && w.opts.DryRun
+	if dryRun {
+		for _, a := range out.Assignments {
+			w.logf("Would assign (dry-run, scan): %s -> pane %d (%s)", a.BeadID, a.Pane, a.AgentType)
+		}
+		return nil
+	}
+	if err := executeAssignmentsEnhanced(w.session, out, w.scanOpts); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	for _, a := range out.Assignments {
+		w.totalAssigned++
+		w.lastAssignmentAt = time.Now()
+		w.logf("Assigned (scan): %s -> pane %d (%s)", a.BeadID, a.Pane, a.AgentType)
+	}
+	w.mu.Unlock()
+	return nil
 }
 
 // handleCompletion processes a single completion event
