@@ -201,6 +201,21 @@ func (d *CompletionDetector) checkAll(ctx context.Context, events chan<- Complet
 		return
 	}
 
+	// Reload the store from disk before inspecting it. The detector is handed a
+	// store instance at construction, but assignments are recorded by a SEPARATE
+	// store instance inside executeAssignmentsEnhanced (the dispatch path loads
+	// its own assignment.LoadStore). Without reloading, the detector only ever
+	// sees the assignments that existed when the watch loop started — it never
+	// observes anything dispatched afterward, so it never marks those beads
+	// completed and never releases their panes. The on-disk store then
+	// accumulates stale "assigned" records that permanently mark every pane busy,
+	// and the autonomous loop dies after at most (pane count) dispatches. Reload
+	// is mutex-guarded and atomically replaces the in-memory map (see Load), so
+	// it is safe to call every poll.
+	if err := d.Store.Load(); err != nil {
+		slog.Debug("completion detector failed to reload assignment store", "session", d.Session, "error", err)
+	}
+
 	assignments := d.Store.ListActive()
 	for _, a := range assignments {
 		select {
