@@ -133,7 +133,18 @@ var (
 	// "thought for 14s" prose annotation, hence: the leading glyph + verb, the
 	// literal " for ", a duration, and a deliberately strict end-of-line anchor
 	// that rejects any trailing "(" / "…" progress decoration.
-	claudeCompletionLineRe = regexp.MustCompile(`(?m)^\s*[✻✶✳✢✽✦*]\s+[A-Z][a-z]+\s+for\s+(?:\d+\s*[hms]\s*)+$`)
+	//
+	// The verb is \p{Lu}\p{L}* (a capitalized Unicode word), NOT [A-Z][a-z]+:
+	// Claude's whimsical verbs include accented forms like "Sautéed" / "Flambéed".
+	// With [A-Z][a-z]+ the accented byte broke the verb match, so "✻ Sautéed for
+	// 36s" was NOT recognized as turn-ended — a stale active spinner higher in the
+	// captured buffer then went unsuppressed and ClaudeActivelyWorking returned
+	// true, leaving the finished pane falsely reading as "working" (a false-working
+	// that withholds an idle agent from dispatch; the dispatcher reported
+	// "Idle Agents: 1" with 8 idle agents). Found in a Haiku stress run. The
+	// capitalized-first-letter requirement (\p{Lu}) is kept so the line still can't
+	// match lowercase prose like "...waited for 5m...".
+	claudeCompletionLineRe = regexp.MustCompile(`(?m)^\s*[✻✶✳✢✽✦*]\s+\p{Lu}\p{L}*\s+for\s+(?:\d+\s*[hms]\s*)+$`)
 
 	// claudeNewTaskFooterRe matches the post-turn "new task?" hint Claude parks at
 	// after a turn ends (often paired with a "/clear to save … tokens" line). It
