@@ -330,7 +330,7 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 |------|---------------|---------------|-------------|
 | `--msg` | `--robot-send` | `--robot-ack` | Message content |
 | `--panes` | - | `--robot-tail`, `--robot-send`, `--robot-ack`, `--robot-interrupt` | Filter to pane indices |
-| `--type` | - | `--robot-send`, `--robot-ack`, `--robot-interrupt` | Agent type: claude\|cc, codex\|cod, gemini\|gmi |
+| `--type` | - | `--robot-send`, `--robot-ack`, `--robot-interrupt` | Agent type: claude\|cc, codex\|cod, antigravity\|agy, gemini\|gmi (legacy) |
 | `--all` | - | `--robot-send`, `--robot-interrupt` | Include user pane |
 | `--track` | - | `--robot-send` | Combined send+ack mode |
 | `--lines` | - | `--robot-tail` | Lines per pane (default 20) |
