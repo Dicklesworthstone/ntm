@@ -1917,9 +1917,9 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		case AgentTypeAider:
 			agentCmdTemplate = cfg.Agents.Aider
 		case AgentTypeOpencode:
-			// Falls back to the model/variant-aware default when [agents] oc
-			// is unset, so `--oc=N:provider/model` works and Agent Mail
-			// registration receives a non-empty model. Users can override via
+			// Falls back to the model-aware default when [agents] oc is unset,
+			// so `--oc=N:provider/model` works and Agent Mail registration
+			// receives a non-empty model. Users can override via
 			// `[agents] oc = "..."` to point at a wrapper script or pin a
 			// specific provider/model. See ntm#193.
 			agentCmdTemplate = opencodeCommandOrDefault(cfg.Agents.Opencode)

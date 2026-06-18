@@ -242,10 +242,14 @@ func DefaultAgentTemplates() AgentConfig {
 		Windsurf:    `windsurf{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		Aider:       `aider{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		// Opencode (oc): the upstream `opencode` binary takes `-m/--model
-		// provider/model` and `--variant <effort>` for reasoning budget.
-		// Without the {{.Model}} placeholder a `--oc=N:provider/model` spawn
-		// is rejected ("agent command has no template syntax") and Agent Mail
-		// registration fails ("model cannot be empty"). See ntm#116, ntm#193.
+		// provider/model`. Without the {{.Model}} placeholder a
+		// `--oc=N:provider/model` spawn is rejected ("agent command has no
+		// template syntax") and Agent Mail registration fails ("model cannot
+		// be empty"). NOTE: `--variant` (reasoning effort) is NOT a flag on the
+		// root `opencode` TUI command an interactive pane launches — it exists
+		// only on the `opencode run` subcommand (anomalyco/opencode#7354, PR
+		// #7358 still open/unmerged), so injecting it here would make the pane
+		// fail to launch whenever an effort is supplied. See ntm#116, ntm#193.
 		Opencode: DefaultOpencodeCommand,
 	}
 }
@@ -253,5 +257,8 @@ func DefaultAgentTemplates() AgentConfig {
 // DefaultOpencodeCommand is the launch command used when [agents] oc is not
 // configured. It mirrors DefaultAgentTemplates().Opencode so that the spawn,
 // add, and restart dispatch paths inject the model the same way a freshly
-// generated config does. See ntm#193.
-const DefaultOpencodeCommand = `opencode{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --variant {{shellQuote .ReasoningEffort}}{{end}}`
+// generated config does. Only `--model` is injected: it is the lone
+// model/reasoning flag the root `opencode` TUI command accepts (the
+// `--variant` effort flag lives on the `opencode run` subcommand only — see
+// the note in DefaultAgentTemplates). See ntm#193.
+const DefaultOpencodeCommand = `opencode{{if .Model}} --model {{shellQuote .Model}}{{end}}`
