@@ -316,7 +316,13 @@ func restartAgentLaunchCommand(cfg *config.Config, agentType string) string {
 		case "aider":
 			tmpl = cfg.Agents.Aider
 		case "oc":
+			// Fall back to the model/variant-aware default when [agents] oc is
+			// unset so a respawn launches the real `opencode` binary rather
+			// than the bare `oc` alias. See ntm#193.
 			tmpl = cfg.Agents.Opencode
+			if strings.TrimSpace(tmpl) == "" {
+				tmpl = config.DefaultOpencodeCommand
+			}
 		case "ollama":
 			tmpl = cfg.Agents.Ollama
 		}

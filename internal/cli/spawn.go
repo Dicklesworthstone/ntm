@@ -1917,14 +1917,12 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 		case AgentTypeAider:
 			agentCmdTemplate = cfg.Agents.Aider
 		case AgentTypeOpencode:
-			agentCmdTemplate = cfg.Agents.Opencode
-			if agentCmdTemplate == "" {
-				// Sensible default if [agents] oc isn't configured: invoke
-				// the upstream opencode binary on PATH. Users can override
-				// via `[agents] oc = "..."` to point at a wrapper script
-				// or pin a specific provider/model.
-				agentCmdTemplate = "opencode"
-			}
+			// Falls back to the model/variant-aware default when [agents] oc
+			// is unset, so `--oc=N:provider/model` works and Agent Mail
+			// registration receives a non-empty model. Users can override via
+			// `[agents] oc = "..."` to point at a wrapper script or pin a
+			// specific provider/model. See ntm#193.
+			agentCmdTemplate = opencodeCommandOrDefault(cfg.Agents.Opencode)
 		default:
 			// Check plugins
 			if p, ok := opts.PluginMap[string(agent.Type)]; ok {

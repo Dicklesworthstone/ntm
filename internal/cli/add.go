@@ -39,6 +39,18 @@ type AddOptions struct {
 	Prompt           string
 }
 
+// opencodeCommandOrDefault returns the configured [agents] oc launch command,
+// falling back to config.DefaultOpencodeCommand (a model/variant-aware template)
+// when it is unset. Centralizing this keeps the spawn, add, restart, and
+// session-resume dispatch paths in lockstep so a model override is honored and
+// Agent Mail registration receives a non-empty model everywhere. See ntm#193.
+func opencodeCommandOrDefault(configured string) string {
+	if configured == "" {
+		return config.DefaultOpencodeCommand
+	}
+	return configured
+}
+
 func resolveAddAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins.AgentPlugin, ollamaHost string) (string, map[string]string, error) {
 	switch agentType {
 	case AgentTypeClaude:
@@ -59,15 +71,10 @@ func resolveAddAgentCommandTemplate(agentType AgentType, pluginMap map[string]pl
 	case AgentTypeAider:
 		return cfg.Agents.Aider, nil, nil
 	case AgentTypeOpencode:
-		template := cfg.Agents.Opencode
-		if template == "" {
-			// Sensible default if [agents] oc isn't configured: invoke
-			// the upstream opencode binary on PATH. Mirrors the spawn
-			// dispatch path in spawn.go so `ntm spawn --oc=N` and
-			// `ntm add --oc=N` behave identically.
-			template = "opencode"
-		}
-		return template, nil, nil
+		// Falls back to the model/variant-aware default when [agents] oc is
+		// unset, so `ntm spawn --oc=N` and `ntm add --oc=N` behave identically
+		// and a model override is honored. See ntm#193.
+		return opencodeCommandOrDefault(cfg.Agents.Opencode), nil, nil
 	default:
 		if p, ok := pluginMap[string(agentType)]; ok {
 			return p.Command, p.Env, nil

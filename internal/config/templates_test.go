@@ -298,6 +298,35 @@ func TestDefaultAgentTemplates(t *testing.T) {
 	if err != nil {
 		t.Errorf("Gemini template failed: %v", err)
 	}
+
+	// Opencode template (ntm#193): must carry a {{.Model}} placeholder so
+	// `--oc=N:provider/model` is honored instead of rejected, and so Agent
+	// Mail registration receives a non-empty model.
+	if templates.Opencode == "" {
+		t.Fatal("Opencode default template must not be empty")
+	}
+	if templates.Opencode != DefaultOpencodeCommand {
+		t.Errorf("templates.Opencode = %q, want DefaultOpencodeCommand %q", templates.Opencode, DefaultOpencodeCommand)
+	}
+	if !IsTemplateCommand(templates.Opencode) {
+		t.Error("Opencode template should be recognized as a template command (no {{...}} placeholder)")
+	}
+	// With a model + reasoning effort, both --model and --variant render.
+	ocFull, err := GenerateAgentCommand(templates.Opencode, AgentTemplateVars{Model: "zai-coding-plan/glm-5.2", ReasoningEffort: "high"})
+	if err != nil {
+		t.Fatalf("Opencode template failed: %v", err)
+	}
+	if ocFull != "opencode --model 'zai-coding-plan/glm-5.2' --variant 'high'" {
+		t.Errorf("Opencode model+effort render = %q", ocFull)
+	}
+	// With no model, the command degrades to the bare binary (no dangling flags).
+	ocBare, err := GenerateAgentCommand(templates.Opencode, AgentTemplateVars{})
+	if err != nil {
+		t.Fatalf("Opencode bare template failed: %v", err)
+	}
+	if ocBare != "opencode" {
+		t.Errorf("Opencode no-model render = %q, want %q", ocBare, "opencode")
+	}
 }
 
 func TestDefaultAgentTemplates_ShellQuoting(t *testing.T) {

@@ -757,7 +757,7 @@ func buildAgentCommands(state *session.SessionState) session.AgentCommands {
 		Cursor:   render(cfg.Agents.Cursor, "cursor"),
 		Windsurf: render(cfg.Agents.Windsurf, "windsurf"),
 		Aider:    render(cfg.Agents.Aider, "aider"),
-		Opencode: render(cfg.Agents.Opencode, "opencode"),
+		Opencode: render(opencodeCommandOrDefault(cfg.Agents.Opencode), "opencode"),
 		Ollama:   render(cfg.Agents.Ollama, "ollama"),
 	}
 }

@@ -269,10 +269,9 @@ func buildControllerResponse(opts ControllerInput) (*ControllerResponse, error) 
 		agentCmdTemplate = cfg.Agents.Aider
 	case "oc":
 		agentTypeFull = "opencode"
-		agentCmdTemplate = cfg.Agents.Opencode
-		if agentCmdTemplate == "" {
-			agentCmdTemplate = "opencode"
-		}
+		// Mirror the spawn/add dispatch fallback so model/variant injection
+		// works on restart too. See ntm#193.
+		agentCmdTemplate = opencodeCommandOrDefault(cfg.Agents.Opencode)
 	case "ollama":
 		agentTypeFull = "ollama"
 		agentCmdTemplate = cfg.Agents.Ollama
