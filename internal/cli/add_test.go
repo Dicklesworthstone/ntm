@@ -39,6 +39,46 @@ func TestNewAddCmd_RegistersOllamaFlag(t *testing.T) {
 	}
 }
 
+// TestAddThreadsReasoningEffort guards against the `add` path dropping the
+// `:effort` segment of `--cc=N:model:effort`. add.go parses ReasoningEffort
+// into the AgentSpec but, unlike spawn.go, historically omitted it from the
+// AgentTemplateVars handed to GenerateAgentCommand — so the Claude template's
+// `{{if .ReasoningEffort}} --effort ...{{end}}` clause rendered nothing and the
+// pane launched at the CLI default. This asserts the rendered command carries
+// the effort the AgentSpec parsed (and emits nothing when unset).
+func TestAddThreadsReasoningEffort(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+	cfg = config.Default()
+
+	// An AgentSpec parsed from `--cc=1:claude-opus-4-8:xhigh`.
+	spec := AgentSpec{Type: AgentTypeClaude, Count: 1, Model: "claude-opus-4-8", ReasoningEffort: "xhigh"}
+
+	// Reproduce add.go's render: thread the spec's ReasoningEffort into the vars.
+	withEffort, err := config.GenerateAgentCommand(cfg.Agents.Claude, config.AgentTemplateVars{
+		Model:           ResolveModel(spec.Type, spec.Model),
+		ReasoningEffort: spec.ReasoningEffort,
+	})
+	if err != nil {
+		t.Fatalf("GenerateAgentCommand (with effort) error = %v", err)
+	}
+	// The template shell-quotes values, so the rendered string is `--effort 'xhigh'`.
+	if !strings.Contains(withEffort, "--effort 'xhigh'") {
+		t.Errorf("add render dropped reasoning effort: got %q, want it to contain %q", withEffort, "--effort 'xhigh'")
+	}
+
+	// Negative control: no effort set → no dangling --effort flag.
+	noEffort, err := config.GenerateAgentCommand(cfg.Agents.Claude, config.AgentTemplateVars{
+		Model: ResolveModel(spec.Type, spec.Model),
+	})
+	if err != nil {
+		t.Fatalf("GenerateAgentCommand (no effort) error = %v", err)
+	}
+	if strings.Contains(noEffort, "--effort") {
+		t.Errorf("unset effort left a dangling flag: %q", noEffort)
+	}
+}
+
 func TestAddResponseJSONIncludesOllama(t *testing.T) {
 
 	data, err := json.Marshal(output.AddResponse{

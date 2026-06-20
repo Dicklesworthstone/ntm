@@ -553,6 +553,7 @@ func runAdd(opts AddOptions) error {
 
 		// Resolve model alias to full model name
 		resolvedModel := ResolveModel(agent.Type, agent.Model)
+		resolvedReasoningEffort := agent.ReasoningEffort
 		modelRequested := strings.TrimSpace(agent.Model) != ""
 
 		// Check if this is a persona agent and prepare system prompt
@@ -573,11 +574,15 @@ func runAdd(opts AddOptions) error {
 				}
 				// For persona agents, resolve the model from the persona config
 				resolvedModel = ResolveModel(agent.Type, p.Model)
+				if strings.TrimSpace(p.ReasoningEffort) != "" {
+					resolvedReasoningEffort = p.ReasoningEffort
+				}
 			}
 		}
 
 		finalCmd, err := config.GenerateAgentCommand(agentCmd, config.AgentTemplateVars{
 			Model:            resolvedModel,
+			ReasoningEffort:  resolvedReasoningEffort,
 			ModelAlias:       agent.Model,
 			ModelRequested:   modelRequested,
 			SessionName:      session,
