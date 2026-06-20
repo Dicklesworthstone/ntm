@@ -215,7 +215,7 @@ func newRotateStatusCmd() *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show account pins that gate automatic rotation",
+		Short: "Show account pins and caam safe-restore capability that gate automatic rotation",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := rotatePinDataDir(dataDir)
@@ -227,18 +227,53 @@ func newRotateStatusCmd() *cobra.Command {
 				return err
 			}
 			pins := rotator.PinnedAccounts()
+
+			// Probe caam for the safe-restore capability (caam #19) so operators can
+			// see whether a global Codex rotation would be permitted.
+			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+			defer cancel()
+			safeRestore := false
+			capErr := ""
+			if rotator.IsAvailable() {
+				ok, probeErr := rotator.CaamSupportsSafeRestore(ctx)
+				if probeErr != nil {
+					capErr = probeErr.Error()
+				} else {
+					safeRestore = ok
+				}
+			} else {
+				capErr = "caam not available"
+			}
+
 			if jsonOut {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]interface{}{"pins": pins})
+				out := map[string]interface{}{
+					"pins":                  pins,
+					"caam_safe_restore":     safeRestore,
+					"global_rotation_safe":  safeRestore,
+					"safe_restore_required": true,
+				}
+				if capErr != "" {
+					out["caam_capability_error"] = capErr
+				}
+				return enc.Encode(out)
 			}
 			if len(pins) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No account pins set; automatic rotation is unrestricted by pins.")
-				return nil
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Pinned providers (auto-rotation refused for these):")
+				for provider, account := range pins {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s -> %s\n", provider, account)
+				}
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Pinned providers (auto-rotation refused for these):")
-			for provider, account := range pins {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s -> %s\n", provider, account)
+			switch {
+			case capErr != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "caam safe-restore: UNKNOWN (%s) — global Codex rotation refused without --force-global-auth-clobber.\n", capErr)
+			case safeRestore:
+				fmt.Fprintln(cmd.OutOrStdout(), "caam safe-restore: AVAILABLE — global Codex rotation permitted (caam #19 satisfied).")
+			default:
+				fmt.Fprintln(cmd.OutOrStdout(), "caam safe-restore: MISSING — global Codex rotation refused; upgrade caam (#19) or use --force-global-auth-clobber.")
 			}
 			return nil
 		},

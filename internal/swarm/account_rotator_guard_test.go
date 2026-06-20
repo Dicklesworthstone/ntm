@@ -22,8 +22,15 @@ func writeFakeCaam(t *testing.T) (caamPath, markerPath string) {
 	dir := t.TempDir()
 	markerPath = filepath.Join(dir, "caam_invocations.log")
 	caamPath = filepath.Join(dir, "caam")
+	// `robot status` advertises the safe-restore capability so the default
+	// capability gate (caam #19) treats this fake caam as safe; the switch path
+	// returns a successful rotation result.
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %q
+if [ "$1" = "robot" ] && [ "$2" = "status" ]; then
+  printf '{"data":{"capabilities":["safe-restore","robot"]}}'
+  exit 0
+fi
 printf '{"success":true,"previous_account":"acctA","new_account":"acctB","accounts_remaining":1}'
 `, markerPath)
 	if err := os.WriteFile(caamPath, []byte(script), 0o755); err != nil {

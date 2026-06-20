@@ -38,6 +38,12 @@ type SwarmConfig struct {
 	// Account rotation
 	AutoRotateAccounts bool `toml:"auto_rotate_accounts"`
 
+	// ForceGlobalAuthClobber permits automatic *global* ~/.codex/auth.json
+	// rotation even when live Codex panes share global auth or caam lacks the
+	// safe-restore capability, and bypasses account pins. DANGEROUS escape hatch
+	// for #194; off by default. Maps to the --force-global-auth-clobber flag.
+	ForceGlobalAuthClobber bool `toml:"force_global_auth_clobber"`
+
 	// Limit detection patterns per agent type
 	LimitPatterns map[string][]string `toml:"limit_patterns"`
 

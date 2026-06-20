@@ -152,6 +152,7 @@ func newSwarmCmd() *cobra.Command {
 		panesPerSession int
 		outputPath      string
 		autoRotate      bool
+		forceGlobalAuth bool
 		initialPrompt   string
 		promptFile      string
 		waitReady       bool
@@ -185,6 +186,7 @@ Examples:
 				PanesPerSession: panesPerSession,
 				OutputPath:      outputPath,
 				AutoRotate:      autoRotate,
+				ForceGlobalAuth: forceGlobalAuth,
 				InitialPrompt:   initialPrompt,
 				PromptFile:      promptFile,
 				WaitReady:       waitReady,
@@ -220,6 +222,7 @@ Examples:
 	cmd.Flags().BoolVar(&waitReady, "wait-ready", false, "Wait for all agents to reach idle/ready state before returning")
 	cmd.Flags().IntVar(&readyTimeout, "ready-timeout", 30, "Timeout in seconds for --wait-ready (default: 30)")
 	cmd.PersistentFlags().BoolVar(&autoRotate, "auto-rotate-accounts", defaultAutoRotate, "Automatically rotate accounts on usage limit hit (requires caam)")
+	cmd.PersistentFlags().BoolVar(&forceGlobalAuth, "force-global-auth-clobber", false, "DANGEROUS: permit automatic global ~/.codex/auth.json rotation even when live Codex panes share global auth or caam lacks the safe-restore capability; bypasses account pins (#194)")
 
 	// Add subcommands
 	cmd.AddCommand(newSwarmPlanCmd())
@@ -239,6 +242,7 @@ type swarmOptions struct {
 	PanesPerSession int
 	OutputPath      string
 	AutoRotate      bool
+	ForceGlobalAuth bool
 	InitialPrompt   string
 	PromptFile      string
 	WaitReady       bool
@@ -313,7 +317,10 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		return fmt.Errorf("swarm orchestration is disabled in config; set swarm.enabled=true or use --dry-run")
 	}
 	swarmCfg.AutoRotateAccounts = opts.AutoRotate
-	logger.Info("account rotation configuration", "auto_rotate_accounts", swarmCfg.AutoRotateAccounts)
+	swarmCfg.ForceGlobalAuthClobber = opts.ForceGlobalAuth
+	logger.Info("account rotation configuration",
+		"auto_rotate_accounts", swarmCfg.AutoRotateAccounts,
+		"force_global_auth_clobber", swarmCfg.ForceGlobalAuthClobber)
 
 	if opts.SessionsPerType < 1 {
 		return fmt.Errorf("--sessions-per-type must be at least 1, got %d", opts.SessionsPerType)

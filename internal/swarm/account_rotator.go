@@ -40,6 +40,13 @@ type RotationRecord struct {
 	TriggeredBy    string        `json:"triggered_by"` // "limit_hit", "manual"
 	TriggerPattern string        `json:"trigger_pattern,omitempty"`
 	TimeSinceLast  time.Duration `json:"time_since_last,omitempty"`
+	// PaneLocal is true when the rotation repopulated only this pane's isolated
+	// CODEX_HOME (never the global ~/.codex/auth.json). The caller should restart
+	// only this pane.
+	PaneLocal bool `json:"pane_local,omitempty"`
+	// CodexHome is the isolated CODEX_HOME directory that was repopulated for a
+	// pane-local Codex rotation.
+	CodexHome string `json:"codex_home,omitempty"`
 }
 
 // caamStatus represents the JSON output from caam status command.
@@ -326,6 +333,21 @@ type AccountRotator struct {
 	// or the isolation state is unknown, and bypasses pin enforcement. It maps to
 	// the --force-global-auth-clobber operator intent. Off by default.
 	ForceGlobalAuthClobber bool
+
+	// codexHomes, when set, makes Codex rotation pane-local: instead of clobbering
+	// the global ~/.codex/auth.json via `caam switch`, OnLimitHit repopulates the
+	// affected pane's isolated CODEX_HOME from the next caam profile and lets the
+	// caller restart only that pane. This is the safe path for Codex swarms (#194).
+	codexHomes *CodexHomeProvisioner
+
+	// caamCapProber probes caam for advertised capabilities (e.g. safe-restore).
+	// Injected for testability; nil uses the default `caam robot status --json`.
+	caamCapProber caamCapabilityProber
+
+	// requireSafeRestore, when true, refuses a *global* caam switch unless caam
+	// advertises the safe-restore capability (caam #19). Defaults to true so the
+	// dangerous global clobber path is gated by default.
+	requireSafeRestore bool
 }
 
 // CodexPaneInfo describes one live Codex pane for the auto-rotation safety guard.
@@ -360,7 +382,36 @@ func NewAccountRotator() *AccountRotator {
 		rotationStates:       make(map[string]*RotationState),
 		rotationHistoryStore: NewAccountRotationHistory("", slog.Default()),
 		pinnedAccounts:       make(map[string]string),
+		requireSafeRestore:   true,
 	}
+}
+
+// WithCodexHomeProvisioner installs a per-pane CODEX_HOME provisioner. When set,
+// Codex limit-hits are rotated pane-locally (repopulate the pane's isolated
+// CODEX_HOME from the next caam profile + restart only that pane) instead of
+// clobbering the global ~/.codex/auth.json.
+func (r *AccountRotator) WithCodexHomeProvisioner(p *CodexHomeProvisioner) *AccountRotator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.codexHomes = p
+	return r
+}
+
+// WithCaamCapabilityProber installs a custom caam capability prober (testing).
+func (r *AccountRotator) WithCaamCapabilityProber(p caamCapabilityProber) *AccountRotator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.caamCapProber = p
+	return r
+}
+
+// WithRequireSafeRestore sets whether a global caam switch is gated on caam
+// advertising the safe-restore capability (caam #19). Default true.
+func (r *AccountRotator) WithRequireSafeRestore(require bool) *AccountRotator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requireSafeRestore = require
+	return r
 }
 
 // WithCodexHomeInspector installs a callback used by the auto-rotation safety
@@ -923,6 +974,15 @@ func (r *AccountRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error
 
 	provider := normalizeProvider(event.AgentType)
 
+	// Pane-local rotation path (preferred for Codex swarms, #194): if a CODEX_HOME
+	// provisioner is configured and this is a Codex pane, rotate by repopulating
+	// ONLY this pane's isolated CODEX_HOME from the next caam profile and asking
+	// the caller to restart only that pane — never the global ~/.codex/auth.json.
+	// Pins are still honored (a pin means "stay on this account"); force bypasses.
+	if r.codexHomes != nil && isCodexProvider(provider) {
+		return r.rotatePaneLocal(event, provider, currentAccount)
+	}
+
 	// Safety guard: honor pins and refuse unsafe global Codex clobbering before
 	// we ever shell out to caam. A deliberate refusal is wrapped in
 	// ErrRotationBlocked so the caller can degrade gracefully.
@@ -1006,6 +1066,149 @@ func (r *AccountRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error
 // automatic rotation. Callers can use errors.Is to detect a deliberate refusal
 // (as opposed to an operational failure) and degrade gracefully.
 var ErrRotationBlocked = fmt.Errorf("rotation blocked by safety guard")
+
+// rotatePaneLocal performs a Codex pane-local rotation: it repopulates only the
+// affected pane's isolated CODEX_HOME from the next caam profile and returns a
+// rotation record marked PaneLocal so the caller restarts just that pane. The
+// global ~/.codex/auth.json is never touched. Pins are honored (a pin means the
+// pane stays on its account); ForceGlobalAuthClobber bypasses the pin.
+func (r *AccountRotator) rotatePaneLocal(event LimitHitEvent, provider, currentAccount string) (*RotationRecord, error) {
+	r.mu.Lock()
+	pinned, isPinned := r.pinnedAccounts[provider]
+	force := r.ForceGlobalAuthClobber
+	prov := r.codexHomes
+	r.mu.Unlock()
+
+	caamCommand := fmt.Sprintf("caam profile (pane-local, session=%s pane=%s)", event.SessionPane, event.SessionPane)
+
+	// Honor an explicit pin: never rotate a pinned pane away from its account.
+	if isPinned && !force {
+		r.logger().Warn("[AccountRotator] rotation_blocked",
+			"provider", provider, "reason", "account_pinned:"+pinned,
+			"live_panes", 1, "caam_command", caamCommand, "from", currentAccount, "to", "")
+		return nil, fmt.Errorf("%w: %s is pinned to %q; unpin (ntm rotate unlock) or pass --force-global-auth-clobber to override",
+			ErrRotationBlocked, provider, pinned)
+	}
+
+	session, pane := splitSessionPane(event.SessionPane)
+
+	ctx, cancel := context.WithTimeout(context.Background(), prov.CommandTimeout+r.CommandTimeout)
+	defer cancel()
+
+	// Choose the next profile to rotate this pane onto via caam's isolated
+	// primitives (no global clobber).
+	nextProfile, err := r.nextCodexProfile(ctx, provider, currentAccount)
+	if err != nil {
+		r.logger().Error("[AccountRotator] pane_local_next_profile_failed",
+			"session_pane", event.SessionPane, "error", err)
+		return nil, fmt.Errorf("pane-local rotation: choose next profile: %w", err)
+	}
+
+	home, err := prov.RepopulatePaneHome(ctx, session, pane, nextProfile)
+	if err != nil {
+		r.logger().Error("[AccountRotator] pane_local_repopulate_failed",
+			"session_pane", event.SessionPane, "profile", nextProfile, "error", err)
+		return nil, fmt.Errorf("pane-local rotation: repopulate %s: %w", event.SessionPane, err)
+	}
+
+	record := &RotationRecord{
+		Provider:       provider,
+		AgentType:      event.AgentType,
+		Project:        event.Project,
+		FromAccount:    currentAccount,
+		ToAccount:      nextProfile,
+		RotatedAt:      time.Now(),
+		SessionPane:    event.SessionPane,
+		TriggeredBy:    "limit_hit",
+		TriggerPattern: event.Pattern,
+		PaneLocal:      true,
+		CodexHome:      home,
+	}
+
+	r.mu.Lock()
+	state := r.getOrCreateState(event.SessionPane)
+	if state.CurrentAccount != "" {
+		state.PreviousAccounts = append(state.PreviousAccounts, state.CurrentAccount)
+	}
+	state.CurrentAccount = nextProfile
+	state.RotationCount++
+	state.LastRotation = record.RotatedAt
+	r.rotationHistory = append(r.rotationHistory, *record)
+	store := r.rotationHistoryStore
+	r.mu.Unlock()
+
+	if store != nil {
+		_ = store.RecordRotation(*record)
+	}
+
+	r.logger().Info("[AccountRotator] rotation_allowed",
+		"provider", provider, "reason", "pane_local_codex_home",
+		"live_panes", 1, "caam_command", caamCommand,
+		"from", currentAccount, "to", nextProfile)
+	r.logger().Info("[AccountRotator] pane_local_rotation_complete",
+		"session_pane", event.SessionPane, "from", currentAccount,
+		"to", nextProfile, "codex_home", home)
+
+	return record, nil
+}
+
+// nextCodexProfile picks the next non-current caam profile for the provider. It
+// reads the account list via caam (isolated read, no clobber) and round-robins
+// past the current account. Returns an error if no alternative exists.
+func (r *AccountRotator) nextCodexProfile(ctx context.Context, provider, current string) (string, error) {
+	stdout, stderr, err := r.runCaamCommand(ctx, "list", "--json")
+	if err != nil {
+		return "", fmt.Errorf("caam list: %w (%s)", err, strings.TrimSpace(stderr))
+	}
+	accounts, err := parseCAAMAccounts(stdout)
+	if err != nil {
+		return "", fmt.Errorf("parse caam list: %w", err)
+	}
+	var names []string
+	for _, a := range accounts {
+		if a.Provider != provider {
+			continue
+		}
+		if a.RateLimited {
+			continue
+		}
+		names = append(names, a.ID)
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("no available %s accounts to rotate to", provider)
+	}
+	// Round-robin past the current account.
+	for i, n := range names {
+		if n == current {
+			return names[(i+1)%len(names)], nil
+		}
+	}
+	// Current not found in list (or empty) — just take the first available.
+	return names[0], nil
+}
+
+// splitSessionPane splits "session:window.pane" (or "session:pane") into a
+// session segment and a pane segment for use as isolated CODEX_HOME path parts.
+func splitSessionPane(sessionPane string) (session, pane string) {
+	sessionPane = strings.TrimSpace(sessionPane)
+	if sessionPane == "" {
+		return "default", "0"
+	}
+	if idx := strings.IndexByte(sessionPane, ':'); idx >= 0 {
+		session = sessionPane[:idx]
+		pane = sessionPane[idx+1:]
+	} else {
+		session = sessionPane
+		pane = "0"
+	}
+	if session == "" {
+		session = "default"
+	}
+	if pane == "" {
+		pane = "0"
+	}
+	return session, pane
+}
 
 // guardAutoRotation enforces the automatic-rotation safety guardrails for the
 // caam-switch path:
@@ -1095,7 +1298,28 @@ func (r *AccountRotator) guardAutoRotation(provider, from, caamCommand string) e
 			ErrRotationBlocked, sharedGlobal)
 	}
 
-	logAllowed("codex_panes_isolated", len(panes))
+	// Even when all live panes are isolated, a *global* caam switch still rewrites
+	// ~/.codex/auth.json. Gate it on caam advertising the safe-restore capability
+	// (caam #19) so we never reintroduce a consumed refresh_token. force bypasses.
+	if r.requireSafeRestore {
+		ctx, cancel := context.WithTimeout(context.Background(), r.CommandTimeout)
+		defer cancel()
+		ok, capErr := r.CaamSupportsSafeRestore(ctx)
+		if capErr != nil {
+			logBlocked("caam_capability_probe_failed:"+capErr.Error(), len(panes))
+			return fmt.Errorf("%w: refusing global Codex rotation: could not verify caam safe-restore capability: %v. "+
+				"Upgrade caam (#19) or pass --force-global-auth-clobber",
+				ErrRotationBlocked, capErr)
+		}
+		if !ok {
+			logBlocked("caam_lacks_safe_restore", len(panes))
+			return fmt.Errorf("%w: refusing global Codex rotation: caam does not advertise the %q capability (caam #19). "+
+				"Upgrade caam or pass --force-global-auth-clobber",
+				ErrRotationBlocked, CapabilitySafeRestore)
+		}
+	}
+
+	logAllowed("codex_panes_isolated_safe_restore", len(panes))
 	return nil
 }
 
