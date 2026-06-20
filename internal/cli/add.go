@@ -554,6 +554,13 @@ func runAdd(opts AddOptions) error {
 		// Resolve model alias to full model name
 		resolvedModel := ResolveModel(agent.Type, agent.Model)
 		modelRequested := strings.TrimSpace(agent.Model) != ""
+		// Reasoning effort comes from the direct spec (`--cc=N:model:effort`)
+		// parsed onto the FlatAgent, and is overridden by the persona below when
+		// one is attached — mirroring spawn.go's threading. Without this the
+		// Claude template's `{{if .ReasoningEffort}} --effort ...{{end}}` clause
+		// rendered nothing and an added pane silently launched at the CLI
+		// default (ntm#195; same class as the spawn fix from ntm#188).
+		resolvedReasoningEffort := agent.ReasoningEffort
 
 		// Check if this is a persona agent and prepare system prompt
 		var systemPromptFile string
@@ -562,6 +569,9 @@ func runAdd(opts AddOptions) error {
 			if p, ok := opts.PersonaMap[agent.Model]; ok {
 				personaName = p.Name
 				modelRequested = strings.TrimSpace(p.Model) != ""
+				if strings.TrimSpace(p.ReasoningEffort) != "" {
+					resolvedReasoningEffort = p.ReasoningEffort
+				}
 				// Prepare system prompt file
 				promptFile, err := persona.PrepareSystemPrompt(p, dir)
 				if err != nil {
@@ -586,6 +596,7 @@ func runAdd(opts AddOptions) error {
 			ProjectDir:       dir,
 			SystemPromptFile: systemPromptFile,
 			PersonaName:      personaName,
+			ReasoningEffort:  resolvedReasoningEffort,
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
