@@ -200,6 +200,73 @@ func GetTriageTopPicks(dir string, n int) ([]TriageTopPick, error) {
 	return picks, nil
 }
 
+// GetActionableRecommendations returns recommendations sourced from the FULL
+// dependency-aware actionable set (bv --robot-plan), ranked by triage scoring.
+//
+// bv --robot-triage is hardcoded to ≤10 recommendations (see beads_viewer
+// triage.TopN), so GetTriageRecommendations can never surface more than 10
+// candidates no matter what n is requested. On large or heavily-gated backlogs
+// whose top-ranked rows are epics/gated/blocked, that ceiling silently starves
+// the assigner: it reports the queue drained while dozens of beads below the
+// top-10 cut are actually actionable (issue #197).
+//
+// This helper removes the ceiling without losing triage ranking:
+//   - triage recommendations come first, in triage's scored order (they carry
+//     the rich BlockedBy/Labels/Status/Score fields downstream filters need);
+//   - every actionable plan item that triage did NOT surface is then appended
+//     as a synthesized recommendation, so beads beyond the top-10 are still
+//     dispatchable. Plan items are the dependency-aware actionable set, so they
+//     carry no BlockedBy — synthesized recs pass the blocked-by filter and are
+//     classified by status/labels/active-assignment like any other.
+//
+// n caps the merged result (≤0 means no cap). If the plan surface is
+// unavailable, it degrades to the (capped) triage set so callers never regress
+// below today's behavior; if triage itself fails, the error is returned.
+func GetActionableRecommendations(dir string, n int) ([]TriageRecommendation, error) {
+	triage, err := GetTriage(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	recs := make([]TriageRecommendation, 0, len(triage.Triage.Recommendations))
+	seen := make(map[string]struct{}, len(triage.Triage.Recommendations))
+	for _, rec := range triage.Triage.Recommendations {
+		if _, dup := seen[rec.ID]; dup {
+			continue
+		}
+		seen[rec.ID] = struct{}{}
+		recs = append(recs, rec)
+	}
+
+	// Best-effort: pull the uncapped actionable plan and append anything triage
+	// didn't already rank. A plan failure is non-fatal — fall back to triage.
+	if plan, planErr := GetPlan(dir); planErr == nil && plan != nil {
+		for _, track := range plan.Plan.Tracks {
+			for _, item := range track.Items {
+				if item.ID == "" {
+					continue
+				}
+				if _, dup := seen[item.ID]; dup {
+					continue
+				}
+				seen[item.ID] = struct{}{}
+				recs = append(recs, TriageRecommendation{
+					ID:          item.ID,
+					Title:       item.Title,
+					Status:      item.Status,
+					Priority:    item.Priority,
+					UnblocksIDs: item.Unblocks,
+				})
+			}
+		}
+	}
+
+	if n > 0 && len(recs) > n {
+		recs = recs[:n]
+	}
+	return recs, nil
+}
+
 // GetTriageRecommendations returns the top N recommendations
 func GetTriageRecommendations(dir string, n int) ([]TriageRecommendation, error) {
 	triage, err := GetTriage(dir)

@@ -1622,9 +1622,14 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		}
 	}
 
-	// Get beads from bv using triage recommendations for dependency awareness
+	// Get beads from bv. Source candidates from the FULL dependency-aware
+	// actionable set (bv --robot-plan), ranked by triage scoring — bv's
+	// --robot-triage is capped at ≤10 recommendations, which silently starves
+	// large/heavily-gated backlogs whose top-ranked rows are epics/gated/blocked
+	// (issue #197). Triage still provides ordering and the rich BlockedBy/Labels
+	// fields the filters below rely on.
 	wd, _ := os.Getwd()
-	allRecs, err := bv.GetTriageRecommendations(wd, 100)
+	allRecs, err := bv.GetActionableRecommendations(wd, 100)
 
 	// Enhanced error handling for BV unavailability and stale graphs
 	var readyBeads []bv.BeadPreview
@@ -3886,7 +3891,9 @@ func GetNewlyUnblockedBeads(completedBeadID string, verbose bool) (*DependencyAw
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		recommendations, lastErr = bv.GetTriageRecommendations(wd, 100)
+		// Uncapped actionable set (issue #197): a bead unblocked by the
+		// completed work can sit below triage's top-10 cut.
+		recommendations, lastErr = bv.GetActionableRecommendations(wd, 100)
 		if lastErr == nil {
 			break
 		}
@@ -4467,7 +4474,9 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 // getBeadBlockers returns the list of beads blocking the given bead
 func getBeadBlockers(beadID string) ([]string, error) {
 	wd, _ := os.Getwd()
-	recommendations, err := bv.GetTriageRecommendations(wd, 100)
+	// Uncapped set (issue #197): the target bead can sit below triage's
+	// top-10 cut.
+	recommendations, err := bv.GetActionableRecommendations(wd, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -4484,7 +4493,9 @@ func getBeadBlockers(beadID string) ([]string, error) {
 // getBeadTitle retrieves the title for a bead
 func getBeadTitle(beadID string) string {
 	wd, _ := os.Getwd()
-	recommendations, err := bv.GetTriageRecommendations(wd, 100)
+	// Uncapped set (issue #197): the target bead can sit below triage's
+	// top-10 cut.
+	recommendations, err := bv.GetActionableRecommendations(wd, 100)
 	if err != nil {
 		return ""
 	}
