@@ -1189,6 +1189,15 @@ Shell Integration:
 				Panes:         panes,
 				LinesCaptured: robotIsWorkingLines(cmd),
 				Verbose:       robotIsWorkingVerbose,
+				Semantic:      robotSemantic,
+			}
+			if robotSemantic {
+				win, werr := resolveSemanticWindow(robotSemanticWindow)
+				if werr != nil {
+					fmt.Fprintf(os.Stderr, "Error: invalid --semantic-window: %v\n", werr)
+					os.Exit(3)
+				}
+				opts.SemanticWindow = win
 			}
 			if err := robot.PrintIsWorking(opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -3121,6 +3130,11 @@ var (
 	robotIsWorking        string // session name to check
 	robotIsWorkingVerbose bool   // include raw sample output
 
+	// Semantic-progress signal flags (#199). Opt-in ground-truth signal layered
+	// on --robot-is-working; default off so the poll path is unchanged.
+	robotSemantic       bool   // enable the semantic_progress field
+	robotSemanticWindow string // look-back window (duration, e.g. "30m"); empty = config/default
+
 	// Robot-agent-health flags for comprehensive health check (bd-2pwzf)
 	robotAgentHealth        string // session name to check
 	robotAgentHealthNoCaut  bool   // skip caut provider query
@@ -3280,6 +3294,8 @@ func init() {
 	rootCmd.Flags().StringVar(&robotPanes, "panes", "", "Filter to specific pane indices. Optional with --robot-tail, --robot-watch-bead, --robot-errors, --robot-send, --robot-ack, --robot-interrupt, --robot-wait, --robot-is-working, --robot-agent-health, --robot-smart-restart, --robot-restart-pane, and --robot-monitor. Example: --panes=1,2")
 	rootCmd.Flags().StringVar(&robotIsWorking, "robot-is-working", "", "Check if agents are working. Returns work state with recommendations. Required: SESSION. Example: ntm --robot-is-working=myproject --panes=2,3")
 	rootCmd.Flags().BoolVar(&robotIsWorkingVerbose, "is-working-verbose", false, "Include raw sample output in --robot-is-working response. Example: --is-working-verbose")
+	rootCmd.Flags().BoolVar(&robotSemantic, "semantic", false, "Add an optional ground-truth semantic_progress field to --robot-is-working (token-attributed git commits / bead claims). Advisory only; never flips is_working. Off by default (no git/br calls). Example: ntm --robot-is-working=myproject --semantic")
+	rootCmd.Flags().StringVar(&robotSemanticWindow, "semantic-window", "", "Look-back window for --semantic (Go duration, e.g. 30m, 2h). Defaults to [robot.semantic].window_minutes or 30m. Example: --semantic --semantic-window=1h")
 	rootCmd.Flags().StringVar(&robotAgentHealth, "robot-agent-health", "", "Comprehensive agent health check combining local state and provider usage. Required: SESSION. Example: ntm --robot-agent-health=myproject --panes=2,3")
 	rootCmd.Flags().BoolVar(&robotAgentHealthNoCaut, "no-caut", false, "Skip caut provider query for faster local-only health check. Optional with --robot-agent-health")
 	rootCmd.Flags().BoolVar(&robotAgentHealthVerbose, "agent-health-verbose", false, "Include raw sample output in --robot-agent-health response. Example: --agent-health-verbose")
@@ -5040,6 +5056,27 @@ func robotLinesOrDefault(cmd *cobra.Command, fallback int) int {
 
 func robotIsWorkingLines(cmd *cobra.Command) int {
 	return robotLinesOrDefault(cmd, robot.DefaultIsWorkingOptions().LinesCaptured)
+}
+
+// resolveSemanticWindow resolves the --semantic look-back window (#199).
+// Priority: --semantic-window flag (Go duration) > [robot.semantic].window_minutes
+// config > conservative 30m default. A non-positive resolved window falls back
+// to the default so the reader never receives a zero/negative window.
+func resolveSemanticWindow(flagVal string) (time.Duration, error) {
+	if strings.TrimSpace(flagVal) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(flagVal))
+		if err != nil {
+			return 0, err
+		}
+		if d <= 0 {
+			return 0, fmt.Errorf("must be positive, got %s", flagVal)
+		}
+		return d, nil
+	}
+	if cfg != nil && cfg.Robot.Semantic.WindowMinutes > 0 {
+		return time.Duration(cfg.Robot.Semantic.WindowMinutes) * time.Minute, nil
+	}
+	return 30 * time.Minute, nil
 }
 
 func robotAgentHealthLines(cmd *cobra.Command) int {

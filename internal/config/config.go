@@ -357,6 +357,37 @@ func DefaultRoutingConfig() RoutingConfig {
 type RobotConfig struct {
 	Verbosity string            `toml:"verbosity"` // terse, default, or debug
 	Output    RobotOutputConfig `toml:"output"`    // Output format configuration
+	Semantic  SemanticConfig    `toml:"semantic"`  // Opt-in semantic-progress signal (#199)
+}
+
+// SemanticConfig configures the optional dispatch-time pane work-token
+// semantic-progress signal (#199). Every field defaults OFF/conservative so the
+// default --robot-is-working / --robot-activity poll path and the default
+// send/assign dispatch prompts are entirely unchanged when the feature is off.
+//
+// Safety: the semantic signal is advisory only. It never flips is_working from
+// true to false and never produces a kill/reassign recommendation on its own.
+type SemanticConfig struct {
+	// Stamp, when true, makes `ntm send` / `ntm assign` inject a per-pane
+	// `NTM-Pane: <session>/<window>.<pane>` commit-trailer instruction into the
+	// dispatched marching orders (and, when a bead id is cleanly known, a
+	// best-effort bead label carrying the same pane identity). Default false, so
+	// prompts are never polluted unless explicitly opted in. No git hooks or git
+	// config are ever installed; the trailer is a marching-orders instruction.
+	Stamp bool `toml:"stamp"`
+	// WindowMinutes is the default look-back window (in minutes) used by
+	// `--robot-is-working --semantic` when `--semantic-window` is not supplied.
+	// Conservative by default so a legitimately-slow pane that simply hasn't
+	// committed recently is not flagged as a suspected wedge.
+	WindowMinutes int `toml:"window_minutes"`
+}
+
+// DefaultSemanticConfig returns the conservative, fully-off semantic defaults.
+func DefaultSemanticConfig() SemanticConfig {
+	return SemanticConfig{
+		Stamp:         false, // opt-in: never pollute dispatch prompts by default
+		WindowMinutes: 30,    // conservative look-back for the stale-commit tell
+	}
 }
 
 // RobotOutputConfig holds configuration for robot mode output format.
@@ -395,6 +426,7 @@ func DefaultRobotConfig() RobotConfig {
 	return RobotConfig{
 		Verbosity: "default",
 		Output:    DefaultRobotOutputConfig(),
+		Semantic:  DefaultSemanticConfig(),
 	}
 }
 

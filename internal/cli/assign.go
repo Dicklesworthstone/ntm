@@ -1508,10 +1508,16 @@ func executeAssignments(session string, recommendations []robot.AssignRecommend)
 			continue
 		}
 
-		if err := sendPromptWithDoubleEnter(p.ID, prompt); err != nil {
+		// Stamp the per-pane NTM-Pane work-token instruction (#199). No-op when
+		// the semantic feature is off, so the dispatched prompt is unchanged.
+		promptForPane := stampMarchingOrders(prompt, session, p.WindowIndex, p.Index)
+		if err := sendPromptWithDoubleEnter(p.ID, promptForPane); err != nil {
 			fmt.Printf("  Failed to assign to pane %d: %v\n", paneIdx, err)
 			continue
 		}
+		// Best-effort secondary attribution: tag the bead with this pane's label
+		// (gated + non-fatal; runs after delivery so it never blocks dispatch).
+		bestEffortStampBeadLabel(rec.AssignBead, session, p.WindowIndex, p.Index)
 
 		fmt.Printf("  Assigned %s to pane %d (%s)\n", rec.AssignBead, paneIdx, rec.AgentType)
 	}
@@ -2521,8 +2527,10 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 		return fmt.Errorf("failed to get panes: %w", err)
 	}
 	paneIDByIndex := make(map[int]string, len(panes))
+	paneByIndex := make(map[int]tmux.Pane, len(panes))
 	for _, p := range panes {
 		paneIDByIndex[p.Index] = p.ID
+		paneByIndex[p.Index] = p
 	}
 
 	// FIX (b): build the set of bead IDs that are already active OR recently
@@ -2622,6 +2630,13 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 			continue
 		}
 
+		// Stamp the per-pane NTM-Pane work-token instruction (#199). No-op when
+		// the semantic feature is off, so the dispatched prompt is unchanged. Use
+		// the same window.pane addressing --robot-is-working reports so the token
+		// the agent commits matches what the reader greps for.
+		pn := paneByIndex[item.Pane]
+		promptForPane := stampMarchingOrders(prompt, session, pn.WindowIndex, pn.Index)
+
 		// FIX (a): RECORD before SEND. Recording the assignment first claims the
 		// bead in the store so any concurrent dispatcher's loadHandledBeadIDs
 		// guard (FIX b) sees it as active before the keystrokes land — closing
@@ -2629,13 +2644,13 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 		// second pane. The record is mirrored into the local `handled` set so
 		// the rest of THIS loop also treats it as claimed.
 		if store != nil {
-			if _, assignErr := store.Assign(item.BeadID, item.BeadTitle, item.Pane, item.AgentType, item.AgentName, prompt); assignErr != nil {
+			if _, assignErr := store.Assign(item.BeadID, item.BeadTitle, item.Pane, item.AgentType, item.AgentName, promptForPane); assignErr != nil {
 				slog.Warn("failed to record assignment before send", "bead", item.BeadID, "error", assignErr)
 			}
 		}
 		handled[item.BeadID] = struct{}{}
 
-		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
+		if err := sendPromptWithDoubleEnter(paneID, promptForPane); err != nil {
 			if !opts.Quiet {
 				fmt.Printf("  ✗ Failed to assign %s to pane %d: %v\n", item.BeadID, item.Pane, err)
 			}
@@ -2656,6 +2671,10 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 		// the caller's slice so dispatch logs/counts reflect SENT, not PLANNED.
 		item.PromptSent = true
 		successCount++
+
+		// Best-effort secondary attribution: tag the bead with this pane's label
+		// (gated + non-fatal; after delivery so it never blocks dispatch) (#199).
+		bestEffortStampBeadLabel(item.BeadID, session, pn.WindowIndex, pn.Index)
 
 		if !opts.Quiet {
 			fmt.Printf("  ✓ Assigned %s to pane %d (%s)\n", item.BeadID, item.Pane, item.AgentType)

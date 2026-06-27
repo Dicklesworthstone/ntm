@@ -1599,7 +1599,10 @@ func runSendInternal(opts SendOptions) (err error) {
 	// If specific pane requested
 	if paneIndex >= 0 {
 		p := selectedPanes[0]
-		if err := sendPromptToPane(session, p, prompt); err != nil {
+		// Stamp the per-pane NTM-Pane work-token instruction (#199). No-op when
+		// the semantic feature is off, so the dispatched prompt is unchanged.
+		promptForPane := stampMarchingOrders(prompt, session, p.WindowIndex, p.Index)
+		if err := sendPromptToPane(session, p, promptForPane); err != nil {
 			failed++
 			histErr = err
 			if jsonOutput {
@@ -1656,7 +1659,10 @@ func runSendInternal(opts SendOptions) (err error) {
 	}
 
 	for _, p := range selectedPanes {
-		if err := sendPromptToPane(session, p, prompt); err != nil {
+		// Stamp the per-pane NTM-Pane work-token instruction (#199). No-op when
+		// the semantic feature is off, so the dispatched prompt is unchanged.
+		promptForPane := stampMarchingOrders(prompt, session, p.WindowIndex, p.Index)
+		if err := sendPromptToPane(session, p, promptForPane); err != nil {
 			failed++
 			histErr = err
 			if !jsonOutput {
@@ -4022,7 +4028,10 @@ func runSendBatch(opts SendOptions) error {
 				sendErr = fmt.Errorf("pane %d not found", paneIdx)
 				continue
 			}
-			if err := sendPromptToPane(opts.Session, p, promptText); err != nil {
+			// Stamp the per-pane NTM-Pane work-token instruction (#199). No-op
+			// when the semantic feature is off (prompt unchanged).
+			promptForPane := stampMarchingOrders(promptText, opts.Session, p.WindowIndex, p.Index)
+			if err := sendPromptToPane(opts.Session, p, promptForPane); err != nil {
 				paneFailed++
 				sendErr = err
 			} else {

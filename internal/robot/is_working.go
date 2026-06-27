@@ -30,6 +30,17 @@ type IsWorkingOptions struct {
 	Panes         []int  // Pane indices to check (empty = all non-control panes)
 	LinesCaptured int    // Number of lines to capture (default: 100)
 	Verbose       bool   // Include raw sample in output
+
+	// Semantic, when true, enables the OPTIONAL ground-truth semantic-progress
+	// signal (#199): per pane, attach SemanticProgress derived from
+	// token-attributed git commits (and best-effort bead claims). It is OFF by
+	// default; when off, GetIsWorking makes ZERO new git/br/tmux subprocess
+	// calls and the output is byte-identical to the pre-feature behavior.
+	Semantic bool
+	// SemanticWindow is the look-back window for the semantic signal. Zero falls
+	// back to the conservative default (defaultSemanticWindow). Only consulted
+	// when Semantic is true.
+	SemanticWindow time.Duration
 }
 
 // DefaultIsWorkingOptions returns sensible defaults.
@@ -65,6 +76,11 @@ type PaneWorkStatus struct {
 	Recommendation       string         `json:"recommendation"`
 	RecommendationReason string         `json:"recommendation_reason"`
 	RawSample            string         `json:"raw_sample,omitempty"` // Only with --verbose
+
+	// SemanticProgress is the OPTIONAL, additive ground-truth signal (#199),
+	// present only under --semantic and omitted entirely otherwise. It is
+	// advisory: it never changes IsWorking/IsIdle/Recommendation above.
+	SemanticProgress *SemanticProgress `json:"semantic_progress,omitempty"`
 }
 
 // IsWorkingSummary provides aggregate statistics across all panes.
@@ -330,6 +346,20 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 			status.RawSample = state.RawSample
 		}
 
+		// OPTIONAL semantic-progress signal (#199). Computed ONLY under
+		// --semantic, so the default poll path makes no extra git/br/tmux calls.
+		// It is strictly additive and advisory: PaneSemanticProgress receives
+		// status.IsWorking (the velocity verdict, post-override) purely as an
+		// input to gate the advisory wedge string, and returns a value that has
+		// no is_working field — so it is structurally impossible for this signal
+		// to flip IsWorking/IsIdle or the recommendation. We attach it AFTER the
+		// summary-affecting fields are finalized for exactly that reason.
+		if opts.Semantic {
+			repoDir := paneCurrentPathForTarget(sel.target)
+			addr := PaneAddr{Session: opts.Session, Window: sel.WindowIndex, Pane: sel.Index}
+			status.SemanticProgress = PaneSemanticProgress(addr, repoDir, opts.SemanticWindow, status.IsWorking, time.Now())
+		}
+
 		output.Panes[paneKey] = status
 
 		// Update summary using overridden values so the live-window override
@@ -489,6 +519,17 @@ func isWorkingPaneKey(sel selectedPane, multiWindow bool) string {
 		return strconv.Itoa(sel.Index)
 	}
 	return fmt.Sprintf("%d.%d", sel.WindowIndex, sel.Index)
+}
+
+// paneCurrentPathForTarget resolves a pane's working directory via tmux's
+// pane_current_path. Used only by the --semantic path to locate the repo for
+// token-attributed reads; returns "" on any failure (degrades to source none).
+func paneCurrentPathForTarget(target string) string {
+	output, err := tmux.DefaultClient.Run("display-message", "-t", target, "-p", "#{pane_current_path}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(output)
 }
 
 // Ensure consistent timestamp formatting for all robot output
