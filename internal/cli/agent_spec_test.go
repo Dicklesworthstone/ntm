@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
 
 func TestParseAgentSpec_ModelValidation(t *testing.T) {
@@ -191,6 +192,34 @@ func TestResolveModel_EmptySpecReturnsDefault(t *testing.T) {
 	got := ResolveModel(AgentTypeClaude, "")
 	// Just verify it doesn't panic; the result depends on whether cfg is set
 	_ = got
+}
+
+func TestResolveModelWithPlugins_DefaultModel(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+	cfg = config.Default()
+
+	pluginMap := map[string]plugins.AgentPlugin{
+		"hermes": {
+			Name: "hermes",
+			Defaults: struct {
+				Model string   `toml:"model"`
+				Tags  []string `toml:"tags"`
+			}{
+				Model: "google/gemini-2.5-flash",
+			},
+		},
+	}
+
+	if got := ResolveModelWithPlugins(AgentType("hermes"), "", pluginMap); got != "google/gemini-2.5-flash" {
+		t.Fatalf("plugin default model = %q, want google/gemini-2.5-flash", got)
+	}
+	if got := ResolveModelWithPlugins(AgentType("hermes"), "anthropic/claude-opus-4", pluginMap); got != "anthropic/claude-opus-4" {
+		t.Fatalf("explicit plugin model = %q, want explicit value", got)
+	}
+	if got := ResolveModelWithPlugins(AgentType("other-plugin"), "", pluginMap); got != "" {
+		t.Fatalf("missing plugin default model = %q, want empty", got)
+	}
 }
 
 func TestValidateModelAlias_EmptyAlias(t *testing.T) {

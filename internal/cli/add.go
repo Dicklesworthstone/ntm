@@ -552,7 +552,7 @@ func runAdd(opts AddOptions) error {
 		}
 
 		// Resolve model alias to full model name
-		resolvedModel := ResolveModel(agent.Type, agent.Model)
+		resolvedModel := ResolveModelWithPlugins(agent.Type, agent.Model, opts.PluginMap)
 		modelRequested := strings.TrimSpace(agent.Model) != ""
 		// Reasoning effort comes from the direct spec (`--cc=N:model:effort`)
 		// parsed onto the FlatAgent, and is overridden by the persona below when
@@ -582,7 +582,7 @@ func runAdd(opts AddOptions) error {
 					systemPromptFile = promptFile
 				}
 				// For persona agents, resolve the model from the persona config
-				resolvedModel = ResolveModel(agent.Type, p.Model)
+				resolvedModel = ResolveModelWithPlugins(agent.Type, p.Model, opts.PluginMap)
 			}
 		}
 

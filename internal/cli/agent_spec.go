@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/plugins"
 )
 
 var (
@@ -194,6 +195,22 @@ func ResolveModel(agentType AgentType, modelSpec string) string {
 		return modelSpec
 	}
 	return cfg.Models.GetModelName(string(agentType), modelSpec)
+}
+
+// ResolveModelWithPlugins resolves a model alias and, for plugin agent types
+// with no per-spawn model, falls back to the plugin's default model.
+func ResolveModelWithPlugins(agentType AgentType, modelSpec string, pluginMap map[string]plugins.AgentPlugin) string {
+	resolved := ResolveModel(agentType, modelSpec)
+	if strings.TrimSpace(modelSpec) != "" || strings.TrimSpace(resolved) != "" {
+		return resolved
+	}
+	if pluginMap == nil {
+		return resolved
+	}
+	if p, ok := pluginMap[string(agentType)]; ok {
+		return strings.TrimSpace(p.Defaults.Model)
+	}
+	return resolved
 }
 
 // ValidateModelAlias checks if a model alias exists in config

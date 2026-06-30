@@ -21,7 +21,8 @@ type AgentPlugin struct {
 	Description string            `toml:"description"`
 	Env         map[string]string `toml:"env"`
 	Defaults    struct {
-		Tags []string `toml:"tags"`
+		Model string   `toml:"model"`
+		Tags  []string `toml:"tags"`
 	} `toml:"defaults"`
 }
 
