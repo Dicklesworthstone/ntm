@@ -319,9 +319,10 @@ command = "my-agent-binary"
 description = "My custom agent"
 
 [agent.env]
-API_KEY = "secret"
+CUSTOM_ENV = "present"
 
 [agent.defaults]
+model = "google/gemini-2.5-flash"
 tags = ["custom", "test"]
 `
 	path := filepath.Join(dir, "my-agent.toml")
@@ -350,8 +351,11 @@ tags = ["custom", "test"]
 	if p.Description != "My custom agent" {
 		t.Errorf("expected description 'My custom agent', got: %s", p.Description)
 	}
-	if p.Env["API_KEY"] != "secret" {
-		t.Errorf("expected env API_KEY='secret', got: %v", p.Env)
+	if p.Env["CUSTOM_ENV"] != "present" {
+		t.Errorf("expected env CUSTOM_ENV='present', got: %v", p.Env)
+	}
+	if p.Defaults.Model != "google/gemini-2.5-flash" {
+		t.Errorf("expected default model 'google/gemini-2.5-flash', got: %q", p.Defaults.Model)
 	}
 	if len(p.Defaults.Tags) != 2 || p.Defaults.Tags[0] != "custom" {
 		t.Errorf("expected tags [custom, test], got: %v", p.Defaults.Tags)
