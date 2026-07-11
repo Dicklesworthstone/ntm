@@ -128,6 +128,10 @@ func CreateTestSessionSimple(t *testing.T, logger *TestLogger, agents map[string
 
 // killSession forcefully kills an ntm session.
 func killSession(logger *TestLogger, name string) {
+	if !isolatedTmuxReady() {
+		logger.Log("Refusing tmux session cleanup without the process-owned isolated server")
+		return
+	}
 	// Try ntm kill first
 	out, err := exec.Command("ntm", "kill", "-f", name).CombinedOutput()
 	if err != nil {

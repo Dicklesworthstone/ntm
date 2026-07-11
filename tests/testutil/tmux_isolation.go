@@ -7,11 +7,17 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 const isolatedTmuxMarker = "NTM_TEST_TMUX_ISOLATED"
+
+var isolationState struct {
+	sync.RWMutex
+	root string
+}
 
 // SetupIsolatedTmuxTestProcess moves the current test process and all of its
 // children onto a fresh private tmux server. The returned cleanup proves that
@@ -39,9 +45,11 @@ func SetupIsolatedTmuxTestProcess() (func() error, error) {
 		_ = os.RemoveAll(root)
 		return nil, fmt.Errorf("mark isolated tmux test process: %w", err)
 	}
+	setIsolationRoot(root)
 
 	cleanup := func() error {
 		after := defaultTmuxInventory(hostEnv)
+		setIsolationRoot("")
 		_ = os.RemoveAll(root)
 		if !bytes.Equal(before, after) {
 			return fmt.Errorf("host default tmux inventory changed\nbefore:\n%s\nafter:\n%s", before, after)
@@ -52,12 +60,29 @@ func SetupIsolatedTmuxTestProcess() (func() error, error) {
 }
 
 func isolatedTmuxReady() bool {
+	root := getIsolationRoot()
+	if root == "" {
+		return false
+	}
 	return os.Getenv(isolatedTmuxMarker) == "1" &&
-		os.Getenv("TMUX") == "" && os.Getenv("TMUX_TMPDIR") != ""
+		os.Getenv("TMUX") == "" && os.Getenv("TMUX_TMPDIR") == root
+}
+
+func setIsolationRoot(root string) {
+	isolationState.Lock()
+	defer isolationState.Unlock()
+	isolationState.root = root
+}
+
+func getIsolationRoot() string {
+	isolationState.RLock()
+	defer isolationState.RUnlock()
+	return isolationState.root
 }
 
 func defaultTmuxInventory(env []string) []byte {
-	cmd := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}")
+	cmd := exec.Command(tmux.BinaryPath(), "list-sessions", "-F",
+		"#{session_name}\\t#{session_id}\\t#{session_created}\\t#{session_windows}\\t#{session_attached}")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	lines := strings.Fields(string(out))
