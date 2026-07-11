@@ -79,6 +79,12 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 	if project.Integrations.AgentMail != nil {
 		global.AgentMail.Enabled = *project.Integrations.AgentMail
 	}
+	if project.Integrations.AgentMailProjectKey != "" {
+		if global.AgentMail.ProjectKeys == nil {
+			global.AgentMail.ProjectKeys = make(map[string]string)
+		}
+		global.AgentMail.ProjectKeys[projectDir] = project.Integrations.AgentMailProjectKey
+	}
 	if project.Integrations.CASS != nil {
 		global.CASS.Enabled = *project.Integrations.CASS
 	}

@@ -2839,6 +2839,7 @@ func appendConflicts(output *StatusOutput) {
 type MailOptions struct {
 	Session    string
 	ProjectKey string
+	Config     *config.Config
 }
 
 // MailOutput represents the output for --robot-mail.
@@ -2865,7 +2866,6 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 	if cwdProject := util.ResolveProjectDir(""); cwdProject != "" {
 		projectKey = util.BestProjectDir(projectKey, cwdProject)
 	}
-
 	sessionAgent, err := func() (*agentmail.SessionAgentInfo, error) {
 		if opts.Session == "" {
 			return nil, nil
@@ -2885,11 +2885,22 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 		}
 		projectKey = resolvedProjectKey
 	}
+	if opts.Config != nil {
+		mapped, mapErr := config.ResolveAgentMailProjectKey(projectKey, opts.Config.AgentMail.ProjectKeys)
+		if mapErr != nil {
+			return &MailOutput{RobotResponse: NewRobotResponse(true), GeneratedAt: time.Now().UTC(), Session: opts.Session, ProjectKey: projectKey, Available: false, Warnings: []string{mapErr.Error()}}, nil
+		}
+		projectKey = mapped
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	clientOptions := []agentmail.Option{agentmail.WithProjectKey(projectKey)}
+	if opts.Config != nil {
+		clientOptions = append(clientOptions, agentmail.WithAvailabilityPolicy(opts.Config.AgentMail.AvailabilityTimeout, opts.Config.AgentMail.AvailabilityRetries))
+	}
+	client := agentmail.NewClient(clientOptions...)
 	serverURL := client.BaseURL()
 
 	output := &MailOutput{
@@ -2902,7 +2913,8 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 		SessionAgent:  sessionAgent,
 	}
 
-	if !client.IsAvailable() {
+	if err := client.CheckAvailability(); err != nil {
+		output.Warnings = append(output.Warnings, fmt.Sprintf("health_check failed: %v", err))
 		return output, nil
 	}
 	output.Available = true
@@ -3021,10 +3033,11 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 
 // PrintMail outputs detailed Agent Mail state for AI orchestrators.
 // This is a thin wrapper around GetMail() for CLI output.
-func PrintMail(sessionName, projectKey string) error {
+func PrintMail(sessionName, projectKey string, cfg *config.Config) error {
 	output, err := GetMail(MailOptions{
 		Session:    sessionName,
 		ProjectKey: projectKey,
+		Config:     cfg,
 	})
 	if err != nil {
 		return err
@@ -4235,10 +4248,17 @@ func splitLines(s string) []string {
 // fetchAgentMailData retrieves Agent Mail state for the project.
 // Returns the summary, raw agent list, and per-agent stats map.
 func fetchAgentMailData(projectKey string) (*SnapshotAgentMail, []agentmail.Agent, map[string]SnapshotAgentMailStats) {
-	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	return fetchAgentMailDataWithPolicy(projectKey, 2*time.Second, 0)
+}
 
-	if !client.IsAvailable() {
-		return nil, nil, nil
+func fetchAgentMailDataWithPolicy(projectKey string, availabilityTimeout time.Duration, availabilityRetries int) (*SnapshotAgentMail, []agentmail.Agent, map[string]SnapshotAgentMailStats) {
+	client := agentmail.NewClient(
+		agentmail.WithProjectKey(projectKey),
+		agentmail.WithAvailabilityPolicy(availabilityTimeout, availabilityRetries),
+	)
+
+	if err := client.CheckAvailability(); err != nil {
+		return &SnapshotAgentMail{Available: false, Reason: fmt.Sprintf("health_check failed: %v", err), Project: projectKey}, nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -4615,12 +4635,18 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		} else {
 			projectKey = cwd
 		}
-		// Build initial mail summary without pane mapping
-		if summary, agents, stats := fetchAgentMailData(projectKey); summary != nil {
-			output.AgentMail = summary
-			output.MailUnread = summary.TotalUnread
-			mailAgents = agents
-			mailStats = stats
+		mappedProjectKey, mapErr := config.ResolveAgentMailProjectKey(projectKey, cfg.AgentMail.ProjectKeys)
+		if mapErr != nil {
+			output.AgentMail = &SnapshotAgentMail{Available: false, Reason: mapErr.Error(), Project: projectKey}
+		} else {
+			projectKey = mappedProjectKey
+			// Build initial mail summary without pane mapping.
+			if summary, agents, stats := fetchAgentMailDataWithPolicy(projectKey, cfg.AgentMail.AvailabilityTimeout, cfg.AgentMail.AvailabilityRetries); summary != nil {
+				output.AgentMail = summary
+				output.MailUnread = summary.TotalUnread
+				mailAgents = agents
+				mailStats = stats
+			}
 		}
 	}
 
@@ -4790,6 +4816,7 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		}
 		if coordinationRows, err := store.ListFreshRuntimeCoordination(""); err == nil {
 			output.Coordination = snapshotCoordinationFromRuntime(coordinationRows, handoffRow)
+			promoteLiveAgentMailCoordination(output)
 		}
 		if quotaRows, err := store.ListFreshRuntimeQuota(""); err == nil {
 			output.Quota = snapshotQuotaFromRuntime(quotaRows)
@@ -4829,6 +4856,7 @@ func buildProjectionBackedSnapshot(
 	}
 	if coordinationRows, err := store.ListFreshRuntimeCoordination(""); err == nil {
 		output.Coordination = snapshotCoordinationFromRuntime(coordinationRows, handoffRow)
+		promoteLiveAgentMailCoordination(output)
 	}
 	if quotaRows, err := store.ListFreshRuntimeQuota(""); err == nil {
 		output.Quota = snapshotQuotaFromRuntime(quotaRows)
@@ -5084,6 +5112,23 @@ func snapshotCoordinationFromRuntime(rows []state.RuntimeCoordination, handoff *
 		summary.HandoffStatus = strings.TrimSpace(handoff.Status)
 	}
 	return summary
+}
+
+// promoteLiveAgentMailCoordination prevents an empty cached projection from
+// hiding a successful live Agent Mail read. Runtime rows still provide richer
+// per-agent counts when present.
+func promoteLiveAgentMailCoordination(output *SnapshotOutput) {
+	if output == nil || output.AgentMail == nil || !output.AgentMail.Available {
+		return
+	}
+	if output.Coordination == nil {
+		output.Coordination = &SnapshotCoordinationSummary{}
+	}
+	if output.Coordination.Available {
+		return
+	}
+	output.Coordination.Available = true
+	output.Coordination.MailUnread = output.AgentMail.TotalUnread
 }
 
 func snapshotWorkFromRuntime(rows []state.RuntimeWork, limit int) *adapters.WorkSection {

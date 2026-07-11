@@ -678,7 +678,7 @@ Shell Integration:
 				projectKey = resolvedProjectKey
 			}
 
-			if err := robot.PrintMail(sessionName, projectKey); err != nil {
+			if err := robot.PrintMail(sessionName, projectKey, loadSelectedConfigOrDefault()); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}

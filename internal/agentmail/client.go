@@ -33,7 +33,8 @@ const (
 	HealthCheckPath = "health"
 
 	// AvailabilityCacheTTL is how long to cache IsAvailable() results.
-	AvailabilityCacheTTL = 30 * time.Second
+	AvailabilityCacheTTL       = 30 * time.Second
+	defaultAvailabilityRetries = 0
 )
 
 // Client provides methods to interact with the Agent Mail API.
@@ -56,9 +57,11 @@ type Client struct {
 	registrationTokens   map[string]string
 
 	// Availability cache (30s TTL)
-	healthCheckMu      sync.Mutex
-	availableCache     atomic.Bool
-	availableCacheTime atomic.Int64 // Unix timestamp in seconds
+	healthCheckMu       sync.Mutex
+	availableCache      atomic.Bool
+	availableCacheTime  atomic.Int64 // Unix timestamp in seconds
+	availabilityTimeout time.Duration
+	availabilityRetries int
 }
 
 // tokenKey builds the cache key for the registration-token map. Using
@@ -153,6 +156,19 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithAvailabilityPolicy configures the bounded health probe used by
+// CheckAvailability. Defaults remain one 2-second attempt for local servers.
+func WithAvailabilityPolicy(timeout time.Duration, retries int) Option {
+	return func(c *Client) {
+		if timeout > 0 {
+			c.availabilityTimeout = timeout
+		}
+		if retries >= 0 {
+			c.availabilityRetries = retries
+		}
+	}
+}
+
 // NewClient creates a new Agent Mail client with the given options.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
@@ -166,6 +182,8 @@ func NewClient(opts ...Option) *Client {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
+		availabilityTimeout: 2 * time.Second,
+		availabilityRetries: defaultAvailabilityRetries,
 	}
 
 	// Check environment variables
@@ -192,10 +210,19 @@ func NewClient(opts ...Option) *Client {
 // IsAvailable checks if the Agent Mail server is reachable.
 // Results are cached for 30 seconds to avoid repeated health checks.
 func (c *Client) IsAvailable() bool {
+	return c.CheckAvailability() == nil
+}
+
+// CheckAvailability checks server health and returns the terminal error. Only
+// timeouts and server-unavailable errors are retried.
+func (c *Client) CheckAvailability() error {
 	// Optimistic check (lock-free)
 	cacheTime := c.availableCacheTime.Load()
 	if cacheTime > 0 && time.Now().Unix()-cacheTime < int64(AvailabilityCacheTTL.Seconds()) {
-		return c.availableCache.Load()
+		if c.availableCache.Load() {
+			return nil
+		}
+		return ErrServerUnavailable
 	}
 
 	// Acquire lock to prevent thundering herd
@@ -205,14 +232,27 @@ func (c *Client) IsAvailable() bool {
 	// Double-check after acquiring lock
 	cacheTime = c.availableCacheTime.Load()
 	if cacheTime > 0 && time.Now().Unix()-cacheTime < int64(AvailabilityCacheTTL.Seconds()) {
-		return c.availableCache.Load()
+		if c.availableCache.Load() {
+			return nil
+		}
+		return ErrServerUnavailable
 	}
 
-	// Perform health check
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	_, err := c.HealthCheck(ctx)
+	var err error
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt <= c.availabilityRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), c.availabilityTimeout)
+		_, err = c.HealthCheck(ctx)
+		cancel()
+		if err == nil {
+			break
+		}
+		if attempt == c.availabilityRetries || (!IsTimeout(err) && !IsServerUnavailable(err)) {
+			break
+		}
+		time.Sleep(backoff)
+		backoff *= 2
+	}
 	available := err == nil
 
 	// Cache the result
@@ -224,7 +264,7 @@ func (c *Client) IsAvailable() bool {
 		c.availableCacheTime.Store(time.Now().Unix() - int64(AvailabilityCacheTTL.Seconds()) + 2)
 	}
 
-	return available
+	return err
 }
 
 // InvalidateCache clears the availability cache, forcing the next IsAvailable() call

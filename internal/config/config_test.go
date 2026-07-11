@@ -529,6 +529,19 @@ func TestAgentMailDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateAgentMailConfigBounds(t *testing.T) {
+	cfg := Default().AgentMail
+	cfg.AvailabilityTimeout = 31 * time.Second
+	if err := ValidateAgentMailConfig(&cfg); err == nil {
+		t.Fatal("expected timeout validation error")
+	}
+	cfg = Default().AgentMail
+	cfg.AvailabilityRetries = 6
+	if err := ValidateAgentMailConfig(&cfg); err == nil {
+		t.Fatal("expected retry validation error")
+	}
+}
+
 func TestAgentMailEnvOverrides(t *testing.T) {
 	origURL := os.Getenv("AGENT_MAIL_URL")
 	origToken := os.Getenv("AGENT_MAIL_TOKEN")

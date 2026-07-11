@@ -114,6 +114,52 @@ func TestIsAvailable(t *testing.T) {
 	}
 }
 
+func TestCheckAvailabilityRetriesDelayedSuccess(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			time.Sleep(40 * time.Millisecond)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		WithBaseURL(server.URL),
+		WithAvailabilityPolicy(20*time.Millisecond, 1),
+	)
+	if err := client.CheckAvailability(); err != nil {
+		t.Fatalf("CheckAvailability() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("health calls = %d, want 2", calls)
+	}
+}
+
+func TestCheckAvailabilityDoesNotRetryTerminalFailure(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		WithBaseURL(server.URL),
+		WithAvailabilityPolicy(100*time.Millisecond, 3),
+	)
+	err := client.CheckAvailability()
+	if !IsUnauthorized(err) {
+		t.Fatalf("CheckAvailability() error = %v, want unauthorized", err)
+	}
+	if calls != 1 {
+		t.Fatalf("health calls = %d, want 1", calls)
+	}
+}
+
 func TestCallTool(t *testing.T) {
 	// Mock JSON-RPC server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

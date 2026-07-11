@@ -145,6 +145,51 @@ func TestGetMail_PrefersUsableWorkspaceProjectKey(t *testing.T) {
 	}
 }
 
+func TestGetMailAppliesCanonicalProjectMappingAcrossSymlink(t *testing.T) {
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	realProject := tempDirCanonical(t)
+	if err := os.MkdirAll(filepath.Join(realProject, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stablePath := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(realProject, stablePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(realProject); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.AgentMail.ProjectKeys = map[string]string{stablePath: "/mereka-lms-72359cad09"}
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1/mcp/")
+	output, err := GetMail(MailOptions{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.ProjectKey != "/mereka-lms-72359cad09" {
+		t.Fatalf("ProjectKey = %q", output.ProjectKey)
+	}
+	if output.Available {
+		t.Fatal("expected unavailable test server")
+	}
+	if len(output.Warnings) == 0 || !strings.Contains(output.Warnings[0], "health_check failed") {
+		t.Fatalf("Warnings = %v, want terminal health warning", output.Warnings)
+	}
+}
+
+func TestPromoteLiveAgentMailCoordination(t *testing.T) {
+	output := &SnapshotOutput{
+		AgentMail:    &SnapshotAgentMail{Available: true, TotalUnread: 7},
+		Coordination: &SnapshotCoordinationSummary{Available: false},
+	}
+	promoteLiveAgentMailCoordination(output)
+	if !output.Coordination.Available || output.Coordination.MailUnread != 7 {
+		t.Fatalf("Coordination = %+v", output.Coordination)
+	}
+}
+
 func TestGetMail_DropsStaleSessionAgentFromDifferentProject(t *testing.T) {
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() {

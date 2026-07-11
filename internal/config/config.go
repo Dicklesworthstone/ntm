@@ -1318,6 +1318,14 @@ type AgentMailConfig struct {
 	Token        string `toml:"token"`         // Bearer token
 	AutoRegister bool   `toml:"auto_register"` // Auto-register sessions as agents
 	ProgramName  string `toml:"program_name"`  // Program identifier for registration
+	// ProjectKeys maps local project roots (including stable symlink paths) to
+	// host-independent Agent Mail project keys. Sources are canonicalized before
+	// matching so a configured symlink survives os.Getwd/git realpath resolution.
+	ProjectKeys map[string]string `toml:"project_keys"`
+	// AvailabilityTimeout and AvailabilityRetries tune only the lightweight
+	// health gate. Local defaults preserve the historical single 2s probe.
+	AvailabilityTimeout time.Duration `toml:"availability_timeout"`
+	AvailabilityRetries int           `toml:"availability_retries"`
 	// SupervisorEnabled controls whether ntm spawns and manages the
 	// `am serve-http` daemon under its supervisor. Default false keeps
 	// Agent Mail ownership external: ntm may use the configured MCP URL,
@@ -1334,6 +1342,21 @@ func (a AgentMailConfig) SupervisorEnabledOrDefault() bool {
 		return false
 	}
 	return *a.SupervisorEnabled
+}
+
+func ValidateAgentMailConfig(cfg *AgentMailConfig) error {
+	if cfg.AvailabilityTimeout <= 0 || cfg.AvailabilityTimeout > 30*time.Second {
+		return fmt.Errorf("availability_timeout must be greater than 0 and at most 30s, got %s", cfg.AvailabilityTimeout)
+	}
+	if cfg.AvailabilityRetries < 0 || cfg.AvailabilityRetries > 5 {
+		return fmt.Errorf("availability_retries must be between 0 and 5, got %d", cfg.AvailabilityRetries)
+	}
+	for source, target := range cfg.ProjectKeys {
+		if _, err := ResolveAgentMailProjectKey(source, map[string]string{source: target}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IntegrationsConfig holds external tool integration settings.
@@ -2528,11 +2551,13 @@ func Default() *Config {
 		},
 		Robot: DefaultRobotConfig(),
 		AgentMail: AgentMailConfig{
-			Enabled:      true,
-			URL:          DefaultAgentMailURL,
-			Token:        "",
-			AutoRegister: true,
-			ProgramName:  "ntm",
+			Enabled:             true,
+			URL:                 DefaultAgentMailURL,
+			Token:               "",
+			AutoRegister:        true,
+			ProgramName:         "ntm",
+			AvailabilityTimeout: 2 * time.Second,
+			AvailabilityRetries: 0,
 		},
 		Integrations:    DefaultIntegrationsConfig(),
 		Models:          DefaultModels(),
@@ -3176,6 +3201,8 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "auto_register = %t\n", cfg.AgentMail.AutoRegister)
 	fmt.Fprintf(w, "program_name = %q\n", cfg.AgentMail.ProgramName)
+	fmt.Fprintf(w, "availability_timeout = %q\n", cfg.AgentMail.AvailabilityTimeout.String())
+	fmt.Fprintf(w, "availability_retries = %d\n", cfg.AgentMail.AvailabilityRetries)
 	fmt.Fprintln(w, "# If true, ntm starts/stops `am serve-http` for session monitors.")
 	fmt.Fprintln(w, "# Default false prevents ntm from hijacking a user-owned Agent Mail server.")
 	fmt.Fprintf(w, "supervisor_enabled = %t\n", cfg.AgentMail.SupervisorEnabledOrDefault())
@@ -5748,6 +5775,9 @@ func Validate(cfg *Config) []error {
 	}
 
 	var errs []error
+	if err := ValidateAgentMailConfig(&cfg.AgentMail); err != nil {
+		errs = append(errs, fmt.Errorf("agent_mail: %w", err))
+	}
 
 	// Validate context rotation
 	if err := ValidateContextRotationConfig(&cfg.ContextRotation); err != nil {

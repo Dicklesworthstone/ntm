@@ -120,6 +120,50 @@ func LoadProjectConfig(path string) (*ProjectConfig, error) {
 	return &cfg, nil
 }
 
+// ResolveAgentMailProjectKey applies an explicit local-root mapping to a
+// discovered project directory. Invalid mappings fail closed: callers must not
+// silently fall back to a path-derived mailbox when an operator attempted to
+// configure a canonical key.
+func ResolveAgentMailProjectKey(projectDir string, mappings map[string]string) (string, error) {
+	projectDir = strings.TrimSpace(projectDir)
+	if projectDir == "" || len(mappings) == 0 {
+		return projectDir, nil
+	}
+
+	canonicalizeSource := func(path string) (string, error) {
+		path = strings.TrimSpace(path)
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("Agent Mail project mapping source must be absolute: %q", path)
+		}
+		path = filepath.Clean(path)
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			path = filepath.Clean(resolved)
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve Agent Mail project mapping source %q: %w", path, err)
+		}
+		return path, nil
+	}
+
+	discovered, err := canonicalizeSource(projectDir)
+	if err != nil {
+		return "", err
+	}
+	for source, target := range mappings {
+		canonicalSource, err := canonicalizeSource(source)
+		if err != nil {
+			return "", err
+		}
+		target = strings.TrimSpace(target)
+		if !filepath.IsAbs(target) || filepath.Clean(target) != target {
+			return "", fmt.Errorf("Agent Mail project mapping target must be a clean absolute key: %q", target)
+		}
+		if canonicalSource == discovered {
+			return target, nil
+		}
+	}
+	return projectDir, nil
+}
+
 func undecodedProjectConfigFields(md toml.MetaData) []string {
 	keys := md.Undecoded()
 	if len(keys) == 0 {

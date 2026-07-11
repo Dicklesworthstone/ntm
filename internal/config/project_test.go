@@ -623,6 +623,34 @@ func TestProjectIntegrations(t *testing.T) {
 	}
 }
 
+func TestResolveAgentMailProjectKeyMatchesSymlinkRealpath(t *testing.T) {
+	realProject := t.TempDir()
+	stableParent := t.TempDir()
+	stablePath := filepath.Join(stableParent, "current")
+	if err := os.Symlink(realProject, stablePath); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveAgentMailProjectKey(realProject, map[string]string{
+		stablePath: "/mereka-lms-72359cad09",
+	})
+	if err != nil {
+		t.Fatalf("ResolveAgentMailProjectKey() error = %v", err)
+	}
+	if got != "/mereka-lms-72359cad09" {
+		t.Fatalf("ResolveAgentMailProjectKey() = %q", got)
+	}
+}
+
+func TestResolveAgentMailProjectKeyRejectsInvalidMapping(t *testing.T) {
+	_, err := ResolveAgentMailProjectKey(t.TempDir(), map[string]string{
+		"relative/source": "relative-target",
+	})
+	if err == nil {
+		t.Fatal("expected invalid mapping error")
+	}
+}
+
 // TestProjectInitResult verifies ProjectInitResult structure
 func TestProjectInitResult(t *testing.T) {
 	t.Parallel()
