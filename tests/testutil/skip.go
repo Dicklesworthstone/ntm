@@ -96,12 +96,20 @@ func RequireTmuxServer(t *testing.T) {
 	if !ok {
 		t.Fatal("tmux-backed test refused: call SetupIsolatedTmuxTestProcess from TestMain")
 	}
-	cmd := exec.Command(tmux.BinaryPath(), "list-sessions")
-	cmd.Env = env
-	if err := cmd.Run(); err != nil {
+	if _, err := tmuxSessionInventory(env); err != nil {
 		// Start a temporary server
 		t.Log("No tmux server running, will create one for test")
 	}
+}
+
+// tmuxSessionInventory makes RequireTmuxServer's route observable and lets
+// hostile tests inject an explicit environment. Keeping command construction
+// here ensures the production probe and its regression oracle exercise the
+// same environment binding.
+func tmuxSessionInventory(env []string) ([]byte, error) {
+	cmd := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}")
+	cmd.Env = env
+	return cmd.CombinedOutput()
 }
 
 // RequireNotCI skips the test when running in CI environments.

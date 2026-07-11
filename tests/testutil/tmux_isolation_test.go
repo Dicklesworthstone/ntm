@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,28 @@ func TestSharedHelpersIgnoreRouteSwap(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_TMPDIR", alternateRoot)
 	RequireTmuxServer(t)
+	probeInventory, err := tmuxSessionInventory(ownedEnv)
+	if err != nil {
+		t.Fatalf("owned-root server inventory: %v: %s", err, probeInventory)
+	}
+	if !inventoryHasSession(probeInventory, ownedSession) {
+		t.Fatalf("RequireTmuxServer route oracle missed owned sentinel: %q", probeInventory)
+	}
+	if inventoryHasSession(probeInventory, alternateSession) {
+		t.Fatalf("RequireTmuxServer route oracle reached alternate sentinel: %q", probeInventory)
+	}
+
+	// Seed the exact binding-removal mutant: a probe inheriting the swapped
+	// process environment must be distinguishable from the owned-root probe.
+	// Removing cmd.Env = env in tmuxSessionInventory makes the owned probe take
+	// this route and causes the assertions above to fail deterministically.
+	mutantInventory, err := tmuxSessionInventory(os.Environ())
+	if err != nil {
+		t.Fatalf("binding-removal mutant inventory: %v: %s", err, mutantInventory)
+	}
+	if !inventoryHasSession(mutantInventory, alternateSession) || inventoryHasSession(mutantInventory, ownedSession) {
+		t.Fatalf("binding-removal mutant was not routed to alternate root: %q", mutantInventory)
+	}
 	logger := NewTestLoggerStdout(t)
 	createdByLogger := "ntm_test_shared_logger_create"
 	if _, err := logger.Exec(tmux.BinaryPath(), "new-session", "-d", "-s", createdByLogger); err != nil {
@@ -166,6 +189,15 @@ func TestSharedHelpersIgnoreRouteSwap(t *testing.T) {
 	if err := alternateHas.Run(); err != nil {
 		t.Fatal("alternate-root sentinel did not survive shared helper probes")
 	}
+}
+
+func inventoryHasSession(inventory []byte, session string) bool {
+	for _, line := range bytes.Split(inventory, []byte{'\n'}) {
+		if bytes.Equal(line, []byte(session)) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestIsolationRejectsRoutingChangeAfterSetup(t *testing.T) {
