@@ -1362,6 +1362,13 @@ Shell Integration:
 			if robotPanes != "" {
 				paneFilter = strings.Split(robotPanes, ",")
 			}
+			if robotSendPane != "" {
+				if robotPanes != "" {
+					fmt.Fprintf(os.Stderr, "Error: --pane and --panes are mutually exclusive\n")
+					os.Exit(1)
+				}
+				paneFilter = []string{robotSendPane}
+			}
 			// Parse exclude list
 			var excludeList []string
 			if robotSendExclude != "" {
@@ -2808,6 +2815,7 @@ var (
 	robotSendType    string // filter by agent type (e.g., "claude")
 	robotSendExclude string // comma-separated panes to exclude
 	robotSendDelay   int    // delay between sends in ms
+	robotSendPane    string // single pane index for atomic single-pane send
 
 	// Robot-assign flags for work distribution
 	robotAssign         string // session name for work assignment
@@ -3386,6 +3394,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSendAll, "all", false, "Include user pane (default: agents only). Optional with --robot-send, --robot-interrupt, --robot-restart-pane, and --robot-support-bundle")
 	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude|cc, codex|cod, antigravity|agy, gemini|gmi (legacy), cursor, windsurf, aider. Works with --robot-history, --robot-wait, --robot-route, --robot-send, --robot-ack, --robot-interrupt, --robot-errors, and --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotSendExclude, "exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-send and --robot-route. Example: --exclude=0,3")
+	rootCmd.Flags().StringVar(&robotSendPane, "robot-send-pane", "", "Send to a single pane index. Convenience alias for --panes=<n> for robots. Optional with --robot-send. Example: --robot-send-pane=2")
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")
 
 	// Robot-assign flags for work distribution
