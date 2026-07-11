@@ -17,7 +17,10 @@ const isolatedTmuxMarker = "NTM_TEST_TMUX_ISOLATED"
 // children onto a fresh private tmux server. The returned cleanup proves that
 // the host's default-server inventory did not change.
 func SetupIsolatedTmuxTestProcess() (func() error, error) {
-	hostEnv := append([]string(nil), os.Environ()...)
+	// Host inventory must always mean the actual default server, even when the
+	// test runner was launched from inside tmux or inherited another socket.
+	hostEnv := filterEnv(os.Environ(), "TMUX")
+	hostEnv = filterEnv(hostEnv, "TMUX_TMPDIR")
 	before := defaultTmuxInventory(hostEnv)
 
 	root, err := os.MkdirTemp("", "ntm-test-tmux-")
