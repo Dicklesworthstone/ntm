@@ -132,6 +132,7 @@ func TestSharedHelpersIgnoreRouteSwap(t *testing.T) {
 
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_TMPDIR", alternateRoot)
+	RequireTmuxServer(t)
 	logger := NewTestLoggerStdout(t)
 	createdByLogger := "ntm_test_shared_logger_create"
 	if _, err := logger.Exec(tmux.BinaryPath(), "new-session", "-d", "-s", createdByLogger); err != nil {

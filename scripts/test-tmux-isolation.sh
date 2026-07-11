@@ -57,8 +57,15 @@ export TMUX=$(env -u TMUX TMUX_TMPDIR="$poison_root" \
 
 # Preserve the poisoned inherited routing here. Each guarded TestMain must
 # replace it with its own process-owned private root before any tmux mutation.
-go test ./internal/cli ./internal/robot ./internal/status \
-  ./tests/testutil -run 'TestPrintSnapshotWithSession|TestIsolation' -count=1
+test_output=$(go test -v ./internal/cli ./internal/robot ./internal/status \
+  ./tests/testutil \
+  -run 'TestPrintSnapshotWithSession|TestIsolation|TestSharedHelpersIgnoreRouteSwap' \
+  -count=1)
+printf '%s\n' "$test_output"
+if ! grep -q -- '--- PASS: TestSharedHelpersIgnoreRouteSwap' <<<"$test_output"; then
+  printf 'canonical harness did not run TestSharedHelpersIgnoreRouteSwap\n' >&2
+  exit 1
+fi
 
 env -u TMUX TMUX_TMPDIR="$sentinel_root" \
   tmux -L "$sentinel_socket" has-session -t "$sentinel_session"

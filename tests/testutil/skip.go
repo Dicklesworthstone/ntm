@@ -92,7 +92,13 @@ func RequireNTMBinary(t *testing.T) {
 func RequireTmuxServer(t *testing.T) {
 	t.Helper()
 	RequireTmux(t)
-	if err := exec.Command(tmux.BinaryPath(), "list-sessions").Run(); err != nil {
+	env, ok := isolatedTmuxCommandEnv()
+	if !ok {
+		t.Fatal("tmux-backed test refused: call SetupIsolatedTmuxTestProcess from TestMain")
+	}
+	cmd := exec.Command(tmux.BinaryPath(), "list-sessions")
+	cmd.Env = env
+	if err := cmd.Run(); err != nil {
 		// Start a temporary server
 		t.Log("No tmux server running, will create one for test")
 	}
