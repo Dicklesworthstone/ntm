@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -80,6 +81,89 @@ func TestIsolationCommandsIgnoreRouteSwap(t *testing.T) {
 	alternateOwned.Env = alternateEnv
 	if err := alternateOwned.Run(); err == nil {
 		t.Fatal("owned session creation was redirected to alternate root")
+	}
+}
+
+func TestSharedHelpersIgnoreRouteSwap(t *testing.T) {
+	cleanup, err := SetupIsolatedTmuxTestProcess()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	ownedEnv, ok := isolatedTmuxCommandEnv()
+	if !ok {
+		t.Fatal("missing process-owned command environment")
+	}
+	ownedSession := "ntm_test_shared_owned"
+	ownedCreate := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", ownedSession)
+	ownedCreate.Env = ownedEnv
+	if out, err := ownedCreate.CombinedOutput(); err != nil {
+		t.Fatalf("create owned sentinel: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(tmux.BinaryPath(), "kill-session", "-t", ownedSession)
+		cmd.Env = ownedEnv
+		_ = cmd.Run()
+	})
+
+	alternateRoot := filepath.Join(t.TempDir(), "alternate-shared")
+	if err := os.MkdirAll(alternateRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alternateEnv := filterEnv(os.Environ(), "TMUX")
+	alternateEnv = filterEnv(alternateEnv, "TMUX_TMPDIR")
+	alternateEnv = append(alternateEnv, "TMUX_TMPDIR="+alternateRoot)
+	alternateSession := "ntm_test_shared_alternate"
+	alternateCreate := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", alternateSession)
+	alternateCreate.Env = alternateEnv
+	if out, err := alternateCreate.CombinedOutput(); err != nil {
+		t.Fatalf("create alternate sentinel: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(tmux.BinaryPath(), "kill-session", "-t", alternateSession)
+		cmd.Env = alternateEnv
+		_ = cmd.Run()
+	})
+
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", alternateRoot)
+	logger := NewTestLoggerStdout(t)
+	createdByLogger := "ntm_test_shared_logger_create"
+	if _, err := logger.Exec(tmux.BinaryPath(), "new-session", "-d", "-s", createdByLogger); err != nil {
+		t.Fatalf("logger create did not use owned root: %v", err)
+	}
+	if _, err := logger.Exec(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}"); err != nil {
+		t.Fatalf("logger list did not use owned root: %v", err)
+	}
+	if _, err := logger.Exec(tmux.BinaryPath(), "capture-pane", "-p", "-t", createdByLogger); err != nil {
+		t.Fatalf("logger capture did not use owned root: %v", err)
+	}
+	if _, err := logger.Exec(tmux.BinaryPath(), "has-session", "-t", ownedSession); err != nil {
+		t.Fatalf("logger did not use owned root: %v", err)
+	}
+	if _, err := logger.ExecContext(time.Second, tmux.BinaryPath(), "has-session", "-t", alternateSession); err == nil {
+		t.Fatal("logger ExecContext reached alternate-root sentinel")
+	}
+	AssertSessionExists(t, logger, ownedSession)
+	AssertSessionNotExists(t, logger, alternateSession)
+	if _, err := logger.Exec(tmux.BinaryPath(), "kill-session", "-t", createdByLogger); err != nil {
+		t.Fatalf("logger exact kill did not use owned root: %v", err)
+	}
+	AssertSessionNotExists(t, logger, createdByLogger)
+	// This name exists only on the alternate root. Both the ntm attempt and its
+	// tmux fallback must stay on the process-owned root.
+	killSession(logger, alternateSession)
+	KillAllTestSessions(logger)
+
+	alternateHas := exec.Command(tmux.BinaryPath(), "has-session", "-t", alternateSession)
+	alternateHas.Env = alternateEnv
+	if err := alternateHas.Run(); err != nil {
+		t.Fatal("alternate-root sentinel did not survive shared helper probes")
 	}
 }
 

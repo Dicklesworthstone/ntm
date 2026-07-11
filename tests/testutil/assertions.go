@@ -15,7 +15,11 @@ func AssertSessionExists(t *testing.T, logger *TestLogger, name string) {
 	t.Helper()
 	logger.Log("VERIFY: Session %s exists", name)
 
-	err := exec.Command(tmux.BinaryPath(), "has-session", "-t", name).Run()
+	cmd := exec.Command(tmux.BinaryPath(), "has-session", "-t", name)
+	if err := bindIsolatedTmuxCommand(tmux.BinaryPath(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Run()
 	if err != nil {
 		logger.Log("FAIL: Session %s does not exist", name)
 		t.Errorf("session %s should exist, but it does not", name)
@@ -29,7 +33,11 @@ func AssertSessionNotExists(t *testing.T, logger *TestLogger, name string) {
 	t.Helper()
 	logger.Log("VERIFY: Session %s does not exist", name)
 
-	err := exec.Command(tmux.BinaryPath(), "has-session", "-t", name).Run()
+	cmd := exec.Command(tmux.BinaryPath(), "has-session", "-t", name)
+	if err := bindIsolatedTmuxCommand(tmux.BinaryPath(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Run()
 	if err == nil {
 		logger.Log("FAIL: Session %s exists but should not", name)
 		t.Errorf("session %s should not exist, but it does", name)

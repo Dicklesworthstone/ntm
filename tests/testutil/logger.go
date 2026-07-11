@@ -94,6 +94,10 @@ func (l *TestLogger) Exec(cmd string, args ...string) ([]byte, error) {
 	l.Log("EXEC: %s %s", cmd, strings.Join(args, " "))
 
 	c := exec.Command(cmd, args...)
+	if err := bindIsolatedTmuxCommand(cmd, c); err != nil {
+		l.Log("EXIT: refused: %v", err)
+		return nil, err
+	}
 	out, err := c.CombinedOutput()
 
 	// Log output (truncate if very long)
@@ -119,6 +123,10 @@ func (l *TestLogger) ExecContext(timeout time.Duration, cmd string, args ...stri
 	l.Log("EXEC (timeout=%s): %s %s", timeout, cmd, strings.Join(args, " "))
 
 	c := exec.Command(cmd, args...)
+	if err := bindIsolatedTmuxCommand(cmd, c); err != nil {
+		l.Log("EXIT: refused: %v", err)
+		return nil, err
+	}
 
 	// Create a channel for the result
 	type result struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -81,6 +82,22 @@ func isolatedTmuxCommandEnv() ([]string, bool) {
 	env = filterEnv(env, isolatedTmuxMarker)
 	env = append(env, "TMUX_TMPDIR="+root, isolatedTmuxMarker+"=1")
 	return env, true
+}
+
+// bindIsolatedTmuxCommand binds shared test helpers to the process-owned tmux
+// root whenever they launch ntm or tmux. Other subprocesses keep their normal
+// environment.
+func bindIsolatedTmuxCommand(name string, cmd *exec.Cmd) error {
+	base := filepath.Base(name)
+	if base != "ntm" && base != filepath.Base(tmux.BinaryPath()) {
+		return nil
+	}
+	env, ok := isolatedTmuxCommandEnv()
+	if !ok {
+		return fmt.Errorf("tmux-backed command %q refused: isolated test process is not configured", name)
+	}
+	cmd.Env = env
+	return nil
 }
 
 func setIsolationRoot(root string) {
