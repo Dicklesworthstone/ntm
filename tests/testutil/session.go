@@ -36,6 +36,9 @@ type SessionConfig struct {
 // directory within it, named after the session.
 func CreateTestSession(t *testing.T, logger *TestLogger, config SessionConfig) string {
 	t.Helper()
+	if !isolatedTmuxReady() {
+		t.Fatal("tmux-backed test refused: call SetupIsolatedTmuxTestProcess from TestMain")
+	}
 
 	// Generate unique session/project name
 	name := fmt.Sprintf("ntm_test_%d", time.Now().UnixNano())
@@ -140,6 +143,10 @@ func killSession(logger *TestLogger, name string) {
 // Matches both naming conventions: "ntm_test_*" (underscore) and "ntm-test-*" (hyphen).
 // Useful for cleanup in TestMain or after failed tests.
 func KillAllTestSessions(logger *TestLogger) {
+	if !isolatedTmuxReady() {
+		logger.Log("Refusing tmux cleanup without an isolated test server")
+		return
+	}
 	logger.LogSection("Killing All Test Sessions")
 
 	withGlobalTmuxTestLock(func() {
@@ -170,6 +177,9 @@ func KillAllTestSessions(logger *TestLogger) {
 // best-effort and intentionally avoids blocking on the global tmux test lock so
 // concurrent package startup can continue under multi-agent test runs.
 func KillAllTestSessionsSilent() int {
+	if !isolatedTmuxReady() {
+		return 0
+	}
 	killed := 0
 	if !tryWithGlobalTmuxTestLock(func() {
 		out, err := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}").Output()
