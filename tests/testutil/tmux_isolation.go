@@ -68,6 +68,21 @@ func isolatedTmuxReady() bool {
 		os.Getenv("TMUX") == "" && os.Getenv("TMUX_TMPDIR") == root
 }
 
+// isolatedTmuxCommandEnv returns an execution environment bound to the
+// process-owned private root. Callers must attach it directly to every tmux or
+// ntm command instead of relying on mutable process-global routing variables.
+func isolatedTmuxCommandEnv() ([]string, bool) {
+	root := getIsolationRoot()
+	if root == "" {
+		return nil, false
+	}
+	env := filterEnv(os.Environ(), "TMUX")
+	env = filterEnv(env, "TMUX_TMPDIR")
+	env = filterEnv(env, isolatedTmuxMarker)
+	env = append(env, "TMUX_TMPDIR="+root, isolatedTmuxMarker+"=1")
+	return env, true
+}
+
 func setIsolationRoot(root string) {
 	isolationState.Lock()
 	defer isolationState.Unlock()

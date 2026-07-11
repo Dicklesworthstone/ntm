@@ -36,7 +36,8 @@ type SessionConfig struct {
 // directory within it, named after the session.
 func CreateTestSession(t *testing.T, logger *TestLogger, config SessionConfig) string {
 	t.Helper()
-	if !isolatedTmuxReady() {
+	commandEnv, ok := isolatedTmuxCommandEnv()
+	if !ok {
 		t.Fatal("tmux-backed test refused: call SetupIsolatedTmuxTestProcess from TestMain")
 	}
 
@@ -78,7 +79,7 @@ func CreateTestSession(t *testing.T, logger *TestLogger, config SessionConfig) s
 	// Create command with NTM_PROJECTS_BASE properly set
 	// We need to filter out any existing NTM_PROJECTS_BASE and add our own
 	cmd := exec.Command("ntm", args...)
-	env := filterEnv(os.Environ(), "NTM_PROJECTS_BASE")
+	env := filterEnv(commandEnv, "NTM_PROJECTS_BASE")
 	env = append(env, "NTM_PROJECTS_BASE="+projectsBase)
 	cmd.Env = env
 
@@ -128,16 +129,21 @@ func CreateTestSessionSimple(t *testing.T, logger *TestLogger, agents map[string
 
 // killSession forcefully kills an ntm session.
 func killSession(logger *TestLogger, name string) {
-	if !isolatedTmuxReady() {
+	commandEnv, ok := isolatedTmuxCommandEnv()
+	if !ok {
 		logger.Log("Refusing tmux session cleanup without the process-owned isolated server")
 		return
 	}
 	// Try ntm kill first
-	out, err := exec.Command("ntm", "kill", "-f", name).CombinedOutput()
+	cmd := exec.Command("ntm", "kill", "-f", name)
+	cmd.Env = commandEnv
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Log("ntm kill failed: %v, output: %s", err, string(out))
 		// Fallback to tmux kill-session
-		exec.Command(tmux.BinaryPath(), "kill-session", "-t", name).Run()
+		fallback := exec.Command(tmux.BinaryPath(), "kill-session", "-t", name)
+		fallback.Env = commandEnv
+		_ = fallback.Run()
 	} else {
 		logger.Log("Session %s killed successfully", name)
 	}
@@ -147,15 +153,18 @@ func killSession(logger *TestLogger, name string) {
 // Matches both naming conventions: "ntm_test_*" (underscore) and "ntm-test-*" (hyphen).
 // Useful for cleanup in TestMain or after failed tests.
 func KillAllTestSessions(logger *TestLogger) {
-	if !isolatedTmuxReady() {
-		logger.Log("Refusing tmux cleanup without an isolated test server")
-		return
-	}
 	logger.LogSection("Killing All Test Sessions")
 
 	withGlobalTmuxTestLock(func() {
+		commandEnv, ok := isolatedTmuxCommandEnv()
+		if !ok {
+			logger.Log("Refusing tmux cleanup without an isolated test server")
+			return
+		}
 		// List all tmux sessions
-		out, err := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}").Output()
+		listCmd := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}")
+		listCmd.Env = commandEnv
+		out, err := listCmd.Output()
 		if err != nil {
 			logger.Log("Failed to list tmux sessions: %v", err)
 			return
@@ -167,7 +176,9 @@ func KillAllTestSessions(logger *TestLogger) {
 			// Match both naming conventions used in tests
 			if strings.HasPrefix(session, "ntm_test_") || strings.HasPrefix(session, "ntm-test-") {
 				logger.Log("Killing orphan test session: %s", session)
-				exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
+				killCmd := exec.Command(tmux.BinaryPath(), "kill-session", "-t", session)
+				killCmd.Env = commandEnv
+				_ = killCmd.Run()
 				killed++
 			}
 		}
@@ -181,12 +192,15 @@ func KillAllTestSessions(logger *TestLogger) {
 // best-effort and intentionally avoids blocking on the global tmux test lock so
 // concurrent package startup can continue under multi-agent test runs.
 func KillAllTestSessionsSilent() int {
-	if !isolatedTmuxReady() {
-		return 0
-	}
 	killed := 0
 	if !tryWithGlobalTmuxTestLock(func() {
-		out, err := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}").Output()
+		commandEnv, ok := isolatedTmuxCommandEnv()
+		if !ok {
+			return
+		}
+		listCmd := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}")
+		listCmd.Env = commandEnv
+		out, err := listCmd.Output()
 		if err != nil {
 			return
 		}
@@ -194,7 +208,9 @@ func KillAllTestSessionsSilent() int {
 		sessions := strings.Split(strings.TrimSpace(string(out)), "\n")
 		for _, session := range sessions {
 			if strings.HasPrefix(session, "ntm_test_") || strings.HasPrefix(session, "ntm-test-") {
-				exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
+				killCmd := exec.Command(tmux.BinaryPath(), "kill-session", "-t", session)
+				killCmd.Env = commandEnv
+				_ = killCmd.Run()
 				killed++
 			}
 		}
@@ -206,13 +222,25 @@ func KillAllTestSessionsSilent() int {
 
 // SessionExists checks if a tmux session exists.
 func SessionExists(name string) bool {
-	err := exec.Command(tmux.BinaryPath(), "has-session", "-t", name).Run()
+	commandEnv, ok := isolatedTmuxCommandEnv()
+	if !ok {
+		return false
+	}
+	cmd := exec.Command(tmux.BinaryPath(), "has-session", "-t", name)
+	cmd.Env = commandEnv
+	err := cmd.Run()
 	return err == nil
 }
 
 // GetSessionPaneCount returns the number of panes in a session.
 func GetSessionPaneCount(name string) (int, error) {
-	out, err := exec.Command(tmux.BinaryPath(), "list-panes", "-t", name, "-F", "#{pane_id}").Output()
+	commandEnv, ok := isolatedTmuxCommandEnv()
+	if !ok {
+		return 0, fmt.Errorf("tmux test isolation is not configured")
+	}
+	cmd := exec.Command(tmux.BinaryPath(), "list-panes", "-t", name, "-F", "#{pane_id}")
+	cmd.Env = commandEnv
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}
@@ -237,10 +265,16 @@ func WaitForSession(name string, timeout time.Duration) error {
 
 // CapturePane captures the visible content of a pane.
 func CapturePane(name string, paneIndex int) (string, error) {
+	commandEnv, ok := isolatedTmuxCommandEnv()
+	if !ok {
+		return "", fmt.Errorf("tmux test isolation is not configured")
+	}
 	target := fmt.Sprintf("%s:%d", name, paneIndex)
 	ctx, cancel := context.WithTimeout(context.Background(), tmux.DefaultCommandTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, tmux.BinaryPath(), "capture-pane", "-t", target, "-p").Output()
+	cmd := exec.CommandContext(ctx, tmux.BinaryPath(), "capture-pane", "-t", target, "-p")
+	cmd.Env = commandEnv
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to capture pane %s: %w", target, err)
 	}
