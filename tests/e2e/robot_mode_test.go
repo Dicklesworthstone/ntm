@@ -2199,6 +2199,11 @@ func TestMain(m *testing.M) {
 		// ntm binary not on PATH; skip suite gracefully
 		return
 	}
+	cleanup, err := testutil.SetupIsolatedTmuxTestProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tmux test isolation failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Clean up any orphan test sessions from previous runs
 	testutil.KillAllTestSessionsSilent()
@@ -2207,6 +2212,10 @@ func TestMain(m *testing.M) {
 
 	// Clean up after all tests complete
 	testutil.KillAllTestSessionsSilent()
+	if err := cleanup(); err != nil {
+		fmt.Fprintf(os.Stderr, "tmux test isolation failed: %v\n", err)
+		code = 1
+	}
 
 	os.Exit(code)
 }
