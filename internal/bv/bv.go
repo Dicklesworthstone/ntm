@@ -896,7 +896,12 @@ var ErrBeadTerminal = errors.New("bead is terminal")
 // observed a work item that was not open and free of automation gates.
 var ErrBeadAssignmentIneligible = errors.New("bead is not eligible for automated assignment")
 
-var operatorGatedLabels = map[string]struct{}{
+// defaultOperatorGatedLabels is the built-in vocabulary of labels that mark a
+// bead as requiring a human/operator decision before automated assignment.
+// Projects with their own gating vocabulary extend (never replace) this set via
+// `[assign] operator_gated_labels` in config.toml — see
+// ConfigureOperatorGatedLabels (#223).
+var defaultOperatorGatedLabels = map[string]struct{}{
 	"operator-gated":      {},
 	"operator-action":     {},
 	"needs-operator":      {},
@@ -904,23 +909,61 @@ var operatorGatedLabels = map[string]struct{}{
 	"human-input":         {},
 	"business-input":      {},
 	"blocked-on-operator": {},
-	"blocked-on-ivan":     {},
 }
 
-// OperatorGatedLabels returns the canonical normalized labels that require a
-// human or operator decision before automated assignment.
+var (
+	operatorGatedMu          sync.RWMutex
+	extraOperatorGatedLabels = map[string]struct{}{}
+)
+
+// ConfigureOperatorGatedLabels registers additional operator-gated labels from
+// configuration. The labels are normalized (lowercased, trimmed) and merged
+// with the built-in defaults — configuration can only widen the gate, never
+// narrow it, so a bad config value can never un-gate a default label. Calling
+// with an empty slice clears previously registered extras (#223).
+func ConfigureOperatorGatedLabels(labels []string) {
+	extras := make(map[string]struct{}, len(labels))
+	for _, label := range labels {
+		normalized := strings.ToLower(strings.TrimSpace(label))
+		if normalized == "" {
+			continue
+		}
+		if _, builtin := defaultOperatorGatedLabels[normalized]; builtin {
+			continue
+		}
+		extras[normalized] = struct{}{}
+	}
+	operatorGatedMu.Lock()
+	extraOperatorGatedLabels = extras
+	operatorGatedMu.Unlock()
+}
+
+// OperatorGatedLabels returns the effective normalized labels (built-in
+// defaults plus configured extras) that require a human or operator decision
+// before automated assignment.
 func OperatorGatedLabels() []string {
-	labels := make([]string, 0, len(operatorGatedLabels))
-	for label := range operatorGatedLabels {
+	operatorGatedMu.RLock()
+	labels := make([]string, 0, len(defaultOperatorGatedLabels)+len(extraOperatorGatedLabels))
+	for label := range defaultOperatorGatedLabels {
 		labels = append(labels, label)
 	}
+	for label := range extraOperatorGatedLabels {
+		labels = append(labels, label)
+	}
+	operatorGatedMu.RUnlock()
 	sort.Strings(labels)
 	return labels
 }
 
 // IsOperatorGatedLabel reports whether label blocks automated assignment.
 func IsOperatorGatedLabel(label string) bool {
-	_, gated := operatorGatedLabels[strings.ToLower(strings.TrimSpace(label))]
+	normalized := strings.ToLower(strings.TrimSpace(label))
+	if _, gated := defaultOperatorGatedLabels[normalized]; gated {
+		return true
+	}
+	operatorGatedMu.RLock()
+	_, gated := extraOperatorGatedLabels[normalized]
+	operatorGatedMu.RUnlock()
 	return gated
 }
 

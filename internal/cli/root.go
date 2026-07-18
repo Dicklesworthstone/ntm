@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/encryption"
@@ -480,6 +481,12 @@ Shell Integration:
 				// silently reverting to built-in defaults (issue #162).
 				fmt.Fprintf(os.Stderr, "ntm: warning: config load failed (%v); using built-in defaults\n", err)
 				cfg = config.Default()
+			}
+			// Widen the operator-gate vocabulary with configured labels so
+			// every assignment path (assign, coordinator, robot bulk-assign,
+			// claim transactions inside bv) honors project gating (#223).
+			if cfg != nil {
+				bv.ConfigureOperatorGatedLabels(cfg.Assign.OperatorGatedLabels)
 			}
 			activeTheme := theme.Current()
 			if strings.TrimSpace(os.Getenv("NTM_THEME")) == "" && cfg != nil {

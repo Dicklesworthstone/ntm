@@ -275,7 +275,6 @@ func TestOperatorGatedLabelsCanonicalVocabulary(t *testing.T) {
 	t.Parallel()
 
 	want := []string{
-		"blocked-on-ivan",
 		"blocked-on-operator",
 		"business-input",
 		"human-gated",
@@ -301,6 +300,46 @@ func TestOperatorGatedLabelsCanonicalVocabulary(t *testing.T) {
 	got[0] = "mutated"
 	if fresh := OperatorGatedLabels(); !reflect.DeepEqual(fresh, want) {
 		t.Fatalf("caller mutated canonical operator labels: %v", fresh)
+	}
+}
+
+// Regression for #223: projects with their own gating vocabulary (e.g. "gate")
+// must be able to extend the operator-gated set via config, and configuration
+// can only widen the gate — never narrow it below the built-in defaults.
+// Intentionally not parallel: it mutates the process-global extra-label set.
+func TestConfigureOperatorGatedLabelsExtendsDefaults(t *testing.T) {
+	t.Cleanup(func() { ConfigureOperatorGatedLabels(nil) })
+
+	ConfigureOperatorGatedLabels([]string{"  Gate ", "blocked-on-ivan", "", "human-gated"})
+
+	for _, label := range []string{"gate", "GATE", "blocked-on-ivan"} {
+		if !IsOperatorGatedLabel(label) {
+			t.Fatalf("configured operator label %q was not recognized", label)
+		}
+	}
+	if !IsOperatorGatedLabel("operator-gated") {
+		t.Fatal("built-in default label lost after configuration")
+	}
+	got := OperatorGatedLabels()
+	wantExtras := map[string]bool{"gate": false, "blocked-on-ivan": false}
+	for _, label := range got {
+		if _, ok := wantExtras[label]; ok {
+			wantExtras[label] = true
+		}
+	}
+	for label, seen := range wantExtras {
+		if !seen {
+			t.Fatalf("configured label %q missing from OperatorGatedLabels(): %v", label, got)
+		}
+	}
+
+	// Reconfiguring with an empty set clears extras but keeps defaults.
+	ConfigureOperatorGatedLabels(nil)
+	if IsOperatorGatedLabel("gate") {
+		t.Fatal("cleared extra label still recognized")
+	}
+	if !IsOperatorGatedLabel("human-gated") {
+		t.Fatal("built-in default label lost after clearing extras")
 	}
 }
 

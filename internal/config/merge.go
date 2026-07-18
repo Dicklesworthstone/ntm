@@ -86,6 +86,27 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 		global.Memory.Enabled = *project.Integrations.CM
 	}
 
+	// Merge operator-gated labels (union). Restrictive-only: project labels can
+	// widen the automation gate but never remove global or built-in ones, so a
+	// repository-provided config cannot un-gate work (#223).
+	if len(project.Assign.OperatorGatedLabels) > 0 {
+		seen := make(map[string]struct{}, len(global.Assign.OperatorGatedLabels))
+		for _, label := range global.Assign.OperatorGatedLabels {
+			seen[strings.ToLower(strings.TrimSpace(label))] = struct{}{}
+		}
+		for _, label := range project.Assign.OperatorGatedLabels {
+			normalized := strings.ToLower(strings.TrimSpace(label))
+			if normalized == "" {
+				continue
+			}
+			if _, dup := seen[normalized]; dup {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			global.Assign.OperatorGatedLabels = append(global.Assign.OperatorGatedLabels, normalized)
+		}
+	}
+
 	// Merge Alerts
 	if project.Alerts != nil {
 		if project.Alerts.Enabled != nil {

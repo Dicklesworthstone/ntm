@@ -1513,6 +1513,30 @@ func TestMergeConfig_ProjectDefaults(t *testing.T) {
 	}
 }
 
+// Regression for #223: project-level operator-gated labels union into the
+// global set (normalized, deduplicated) so a repo can widen but never narrow
+// the automation gate.
+func TestMergeConfig_OperatorGatedLabelsUnion(t *testing.T) {
+	t.Parallel()
+	global := Default()
+	global.Assign.OperatorGatedLabels = []string{"gate"}
+	project := &ProjectConfig{
+		Assign: ProjectAssign{
+			OperatorGatedLabels: []string{"  Gate ", "blocked-on-alice", ""},
+		},
+	}
+	result := MergeConfig(global, project, t.TempDir())
+	want := []string{"gate", "blocked-on-alice"}
+	if len(result.Assign.OperatorGatedLabels) != len(want) {
+		t.Fatalf("OperatorGatedLabels = %v, want %v", result.Assign.OperatorGatedLabels, want)
+	}
+	for i, label := range want {
+		if result.Assign.OperatorGatedLabels[i] != label {
+			t.Fatalf("OperatorGatedLabels = %v, want %v", result.Assign.OperatorGatedLabels, want)
+		}
+	}
+}
+
 func TestMergeConfig_ProjectIntegrationToggles(t *testing.T) {
 	t.Parallel()
 

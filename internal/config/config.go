@@ -1372,6 +1372,11 @@ type AssignConfig struct {
 	// prompt. It takes precedence over PromptTemplate when both are set, and is
 	// itself overridden by a per-invocation --bulk-assign-template path.
 	PromptTemplateFile string `toml:"prompt_template_file"`
+	// OperatorGatedLabels lists additional bead labels that require a human or
+	// operator decision before automated assignment. They are merged with the
+	// built-in defaults (operator-gated, human-gated, needs-operator, ...) —
+	// configuration can only widen the gate, never narrow it (#223).
+	OperatorGatedLabels []string `toml:"operator_gated_labels"`
 }
 
 // ValidAssignStrategies are the recognized assignment strategies
@@ -3878,6 +3883,17 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "prompt_template = %q\n", cfg.Assign.PromptTemplate)
 	fmt.Fprintln(w, "# File holding the default bulk-assign dispatch prompt (takes precedence over prompt_template).")
 	fmt.Fprintf(w, "prompt_template_file = %q\n", cfg.Assign.PromptTemplateFile)
+	fmt.Fprintln(w, "# Additional labels that block automated assignment until an operator acts.")
+	fmt.Fprintln(w, "# Merged with the built-in defaults (operator-gated, human-gated, needs-operator, ...).")
+	if len(cfg.Assign.OperatorGatedLabels) > 0 {
+		labelItems := make([]string, 0, len(cfg.Assign.OperatorGatedLabels))
+		for _, label := range cfg.Assign.OperatorGatedLabels {
+			labelItems = append(labelItems, fmt.Sprintf("%q", label))
+		}
+		fmt.Fprintf(w, "operator_gated_labels = [%s]\n", strings.Join(labelItems, ", "))
+	} else {
+		fmt.Fprintln(w, "# operator_gated_labels = [\"gate\", \"blocked-on-alice\"]")
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[spawn_pacing]")
@@ -4739,6 +4755,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Assign.PromptTemplate, nil
 		case "prompt_template_file":
 			return cfg.Assign.PromptTemplateFile, nil
+		case "operator_gated_labels":
+			return cfg.Assign.OperatorGatedLabels, nil
 		}
 	case "file_reservation":
 		if len(parts) < 2 {
@@ -5569,6 +5587,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("assign.strategy", defaults.Assign.Strategy, cfg.Assign.Strategy)
 	addDiff("assign.prompt_template", defaults.Assign.PromptTemplate, cfg.Assign.PromptTemplate)
 	addDiff("assign.prompt_template_file", defaults.Assign.PromptTemplateFile, cfg.Assign.PromptTemplateFile)
+	addDiff("assign.operator_gated_labels", strings.Join(defaults.Assign.OperatorGatedLabels, ","), strings.Join(cfg.Assign.OperatorGatedLabels, ","))
 
 	// File reservation
 	addDiff("file_reservation.enabled", defaults.FileReservation.Enabled, cfg.FileReservation.Enabled)

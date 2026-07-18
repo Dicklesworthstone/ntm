@@ -24,6 +24,18 @@ type ProjectConfig struct {
 	Templates    ProjectTemplates    `toml:"templates"`
 	Agents       AgentConfig         `toml:"agents"`
 	Integrations ProjectIntegrations `toml:"integrations"`
+	Assign       ProjectAssign       `toml:"assign"`
+}
+
+// ProjectAssign holds the project-scoped assignment overrides that are safe to
+// accept from a repository-provided config. Only restrictive settings live
+// here: operator-gated labels can widen the automation gate but never narrow
+// it, so a malicious repo config cannot un-gate work (#223).
+type ProjectAssign struct {
+	// OperatorGatedLabels lists additional bead labels (merged with the global
+	// config and built-in defaults) that block automated assignment for this
+	// project until an operator acts.
+	OperatorGatedLabels []string `toml:"operator_gated_labels"`
 }
 
 // ProjectMeta holds basic project metadata.
