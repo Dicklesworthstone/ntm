@@ -380,7 +380,7 @@ func TestRestartAgentLaunchCommandNilConfigFallsBackToAlias(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := restartAgentLaunchCommand(nil, tt.agentType); got != tt.want {
+		if got := restartAgentLaunchCommand(nil, tt.agentType, ""); got != tt.want {
 			t.Errorf("restartAgentLaunchCommand(nil, %q) = %q, want %q", tt.agentType, got, tt.want)
 		}
 	}
@@ -391,14 +391,14 @@ func TestRestartAgentLaunchCommandUsesConfiguredCommand(t *testing.T) {
 	cfg.Agents.Claude = "claude --dangerously-skip-permissions"
 	cfg.Agents.Codex = "codex --yolo"
 
-	if got := restartAgentLaunchCommand(cfg, "claude"); got != "claude --dangerously-skip-permissions" {
+	if got := restartAgentLaunchCommand(cfg, "claude", ""); got != "claude --dangerously-skip-permissions" {
 		t.Errorf("restartAgentLaunchCommand(cfg, claude) = %q, want configured command", got)
 	}
-	if got := restartAgentLaunchCommand(cfg, "codex"); got != "codex --yolo" {
+	if got := restartAgentLaunchCommand(cfg, "codex", ""); got != "codex --yolo" {
 		t.Errorf("restartAgentLaunchCommand(cfg, codex) = %q, want configured command", got)
 	}
 	// Unconfigured type falls back to the alias.
-	if got := restartAgentLaunchCommand(cfg, "gemini"); got != "gmi" {
+	if got := restartAgentLaunchCommand(cfg, "gemini", ""); got != "gmi" {
 		t.Errorf("restartAgentLaunchCommand(cfg, gemini) = %q, want %q", got, "gmi")
 	}
 }
@@ -409,7 +409,7 @@ func TestRestartAgentLaunchCommandRendersTemplate(t *testing.T) {
 	// robot-spawn pattern (spawn.go getAgentCommands).
 	cfg.Agents.Claude = "claude {{.Model}}"
 
-	if got := restartAgentLaunchCommand(cfg, "claude"); got != "claude" {
+	if got := restartAgentLaunchCommand(cfg, "claude", ""); got != "claude" {
 		t.Errorf("restartAgentLaunchCommand template render = %q, want %q", got, "claude")
 	}
 }
@@ -418,8 +418,29 @@ func TestRestartAgentLaunchCommandInvalidTemplateFallsBack(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Agents.Claude = "claude {{.Broken"
 
-	if got := restartAgentLaunchCommand(cfg, "claude"); got != "cc" {
+	if got := restartAgentLaunchCommand(cfg, "claude", ""); got != "cc" {
 		t.Errorf("restartAgentLaunchCommand invalid template = %q, want fallback %q", got, "cc")
+	}
+}
+
+// Regression for #223: a restart of a pane pinned to a specific model must
+// come back pinned to that model, not silently downgraded to the default.
+func TestRestartAgentLaunchCommandPreservesModelPin(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Agents.Claude = "claude{{if .Model}} --model {{.Model}}{{end}}"
+	cfg.Models.Claude = map[string]string{"opus": "claude-opus-4-6"}
+
+	// Alias resolves through [models] to the full model name.
+	if got := restartAgentLaunchCommand(cfg, "claude", "opus"); got != "claude --model claude-opus-4-6" {
+		t.Errorf("restartAgentLaunchCommand model pin = %q, want resolved --model command", got)
+	}
+	// Unknown alias passes through as-is (assumed full model name).
+	if got := restartAgentLaunchCommand(cfg, "claude", "claude-x-9"); got != "claude --model claude-x-9" {
+		t.Errorf("restartAgentLaunchCommand full-name pin = %q, want pass-through --model command", got)
+	}
+	// No variant keeps the unpinned command.
+	if got := restartAgentLaunchCommand(cfg, "claude", ""); got != "claude" {
+		t.Errorf("restartAgentLaunchCommand unpinned = %q, want %q", got, "claude")
 	}
 }
 
@@ -427,7 +448,7 @@ func TestRestartAgentLaunchCommandRejectsControlCharacters(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Agents.Claude = "claude\nrm -x"
 
-	if got := restartAgentLaunchCommand(cfg, "claude"); got != "cc" {
+	if got := restartAgentLaunchCommand(cfg, "claude", ""); got != "cc" {
 		t.Errorf("restartAgentLaunchCommand control chars = %q, want fallback %q", got, "cc")
 	}
 }

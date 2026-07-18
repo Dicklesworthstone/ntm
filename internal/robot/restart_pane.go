@@ -69,6 +69,7 @@ type restartPromptTarget struct {
 	Target       string
 	AgentType    tmux.AgentType
 	ResolvedType string // restartPaneAgentType result: "claude", "codex", ..., "user", "unknown"
+	ModelVariant string // pane-title variant (model alias or persona name); preserves the model pin across restarts (#223)
 }
 
 // GetRestartPane restarts panes (respawn-pane -k) and returns the result.
@@ -175,6 +176,7 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 				Target:       pane.ID,
 				AgentType:    pane.Type,
 				ResolvedType: restartPaneAgentType(pane),
+				ModelVariant: pane.Variant,
 			}
 		}
 	}
@@ -211,7 +213,7 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 				continue
 			}
 
-			launchCmd := restartAgentLaunchCommand(cfg, info.ResolvedType)
+			launchCmd := restartAgentLaunchCommand(cfg, info.ResolvedType, info.ModelVariant)
 			if err := tmux.SendKeysForAgent(info.Target, launchCmd, true, info.AgentType); err != nil {
 				output.AgentRelaunched[paneKey] = false
 				output.ProcessAlive[paneKey] = false
@@ -300,7 +302,12 @@ func restartTargetIsAgent(resolvedType string) bool {
 // command — the same command robot-spawn delivers by keystroke — and falls
 // back to the canonical launch alias (cc/cod/gmi/...) when no usable command
 // is configured (#187).
-func restartAgentLaunchCommand(cfg *config.Config, agentType string) string {
+//
+// modelVariant is the pane-title variant. When it names a model alias (not a
+// persona), the template is rendered with the resolved model so a restart of a
+// pane pinned to a specific model comes back pinned to that model instead of
+// silently downgrading to the default (#223).
+func restartAgentLaunchCommand(cfg *config.Config, agentType, modelVariant string) string {
 	alias := restartLaunchAlias(agentType)
 
 	var tmpl string
@@ -336,7 +343,23 @@ func restartAgentLaunchCommand(cfg *config.Config, agentType string) string {
 		return alias
 	}
 
-	rendered, err := config.GenerateAgentCommand(tmpl, config.AgentTemplateVars{})
+	// Preserve the model pin (#223): the pane title's variant carries the
+	// model alias the pane was spawned with. Persona-named panes reuse the
+	// same title slot, so only treat the variant as a model when it is not a
+	// known persona name.
+	vars := config.AgentTemplateVars{}
+	if variant := strings.TrimSpace(modelVariant); variant != "" && (cfg == nil || !cfg.IsPersonaName(variant)) {
+		vars.ModelAlias = variant
+		vars.ModelRequested = true
+		vars.Model = variant
+		if cfg != nil {
+			if resolved := cfg.Models.GetModelName(ResolveAgentType(agentType), variant); resolved != "" {
+				vars.Model = resolved
+			}
+		}
+	}
+
+	rendered, err := config.GenerateAgentCommand(tmpl, vars)
 	if err != nil || strings.TrimSpace(rendered) == "" {
 		return alias
 	}
