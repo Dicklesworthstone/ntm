@@ -3353,6 +3353,12 @@ func extractLikelyCommands(prompt string) []string {
 
 func normalizeCommandLine(line string) string {
 	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "- ") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+	}
+	if strings.HasPrefix(trimmed, "* ") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "* "))
+	}
 	if strings.HasPrefix(trimmed, "$ ") {
 		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "$ "))
 	}

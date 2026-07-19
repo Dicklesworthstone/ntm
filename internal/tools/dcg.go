@@ -368,7 +368,9 @@ func (a *DCGAdapter) CheckCommand(ctx context.Context, command string) (*Blocked
 
 	// dcg uses `dcg test` (not `check`) and `--format json` (not `--json`).
 	// Pair with `--robot` so stdout is pure JSON without rich/ANSI output.
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "--robot", "test", "--format", "json", commandToCheck)
+	// The `--` terminator is required: without it a command starting with `-`
+	// (e.g. an extracted markdown bullet) is parsed as a flag and dcg exits 2.
+	cmd := exec.CommandContext(ctx, a.BinaryName(), "--robot", "test", "--format", "json", "--", commandToCheck)
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -424,7 +426,7 @@ func (a *DCGAdapter) CheckCommandExtended(ctx context.Context, command, context_
 	// equivalent surface today and is intentionally dropped rather than
 	// passed as an unrecognized flag.
 	_ = context_
-	args := []string{"--robot", "test", "--format", "json", commandToCheck}
+	args := []string{"--robot", "test", "--format", "json", "--", commandToCheck}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
 	if cwd != "" {

@@ -1072,6 +1072,21 @@ func TestExtractLikelyCommands(t *testing.T) {
 			input: "git status\nrm -rf /tmp\njust some text",
 			want:  []string{"git status", "rm -rf /tmp"},
 		},
+		{
+			name:  "markdown bullet with command chain",
+			input: "  - run br list && git status",
+			want:  []string{"run br list && git status"},
+		},
+		{
+			name:  "asterisk bullet with force flag",
+			input: "* deploy --force",
+			want:  []string{"deploy --force"},
+		},
+		{
+			name:  "bulleted git command",
+			input: "   - git push --force",
+			want:  []string{"git push --force"},
+		},
 	}
 
 	for _, tt := range tests {

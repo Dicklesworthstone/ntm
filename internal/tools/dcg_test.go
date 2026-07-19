@@ -1,6 +1,53 @@
 package tools
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+// TestCheckCommandLeadingDashCommand is the regression guard for prompts whose
+// extracted command begins with "-" (e.g. a markdown bullet line): dcg must
+// receive the command after the "--" terminator, otherwise clap parses it as a
+// flag and exits 2, which failed the whole send instead of returning a verdict.
+func TestCheckCommandLeadingDashCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake dcg uses a shell script")
+	}
+	dir := t.TempDir()
+	// Emulates clap's argv handling: any pre-terminator operand that starts
+	// with "-" and is not a known flag is a parse error (exit 2).
+	script := "#!/bin/sh\n" +
+		"seen_sep=0\n" +
+		"skip_next=0\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$skip_next\" = \"1\" ]; then skip_next=0; continue; fi\n" +
+		"  if [ \"$seen_sep\" = \"1\" ]; then continue; fi\n" +
+		"  case \"$a\" in\n" +
+		"    --) seen_sep=1 ;;\n" +
+		"    --robot|test) ;;\n" +
+		"    --format) skip_next=1 ;;\n" +
+		"    -*) echo \"error: unexpected argument '$a' found\" 1>&2; exit 2 ;;\n" +
+		"    *) ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "dcg"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake dcg: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter := NewDCGAdapter()
+	blocked, err := adapter.CheckCommand(context.Background(), "- run br list && git status")
+	if err != nil {
+		t.Fatalf("CheckCommand returned error for leading-dash command: %v", err)
+	}
+	if blocked != nil {
+		t.Fatalf("CheckCommand unexpectedly blocked leading-dash command: %+v", blocked)
+	}
+}
 
 func TestInferSeverity(t *testing.T) {
 	t.Parallel()
