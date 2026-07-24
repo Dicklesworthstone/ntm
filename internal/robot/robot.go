@@ -2278,10 +2278,14 @@ func cloneSnapshotOutput(base *SnapshotOutput) *SnapshotOutput {
 	}
 
 	cloned := *base
-	cloned.Sessions = append([]SnapshotSession(nil), base.Sessions...)
-	cloned.ActiveIncidents = append([]SnapshotIncident(nil), base.ActiveIncidents...)
+	// sessions, active_incidents, and alerts are required arrays with no
+	// omitempty, so they must clone to an empty slice rather than nil: appending
+	// zero elements to a nil slice yields nil, which marshals as JSON null and
+	// breaks consumers that treat these as always-present arrays.
+	cloned.Sessions = append(make([]SnapshotSession, 0, len(base.Sessions)), base.Sessions...)
+	cloned.ActiveIncidents = append(make([]SnapshotIncident, 0, len(base.ActiveIncidents)), base.ActiveIncidents...)
+	cloned.Alerts = append(make([]string, 0, len(base.Alerts)), base.Alerts...)
 	cloned.Tools = append([]ToolInfoOutput(nil), base.Tools...)
-	cloned.Alerts = append([]string(nil), base.Alerts...)
 	cloned.AlertsDetailed = append([]AlertInfo(nil), base.AlertsDetailed...)
 	cloned.Summary = StatusSummary{
 		TotalSessions:    base.Summary.TotalSessions,
@@ -2848,18 +2852,20 @@ type MailOptions struct {
 // MailOutput represents the output for --robot-mail.
 type MailOutput struct {
 	RobotResponse
-	GeneratedAt      time.Time                   `json:"generated_at"`
-	Session          string                      `json:"session,omitempty"`
-	ProjectKey       string                      `json:"project_key"`
-	Available        bool                        `json:"available"`
-	ServerURL        string                      `json:"server_url,omitempty"`
-	SessionAgent     *agentmail.SessionAgentInfo `json:"session_agent,omitempty"`
-	Agents           []AgentMailAgent            `json:"agents,omitempty"`
-	UnmappedAgents   []AgentMailAgent            `json:"unmapped_agents,omitempty"`
-	Messages         AgentMailMessageCounts      `json:"messages,omitempty"`
-	FileReservations []AgentMailReservation      `json:"file_reservations,omitempty"`
-	Conflicts        []AgentMailConflict         `json:"conflicts,omitempty"`
-	Warnings         []string                    `json:"warnings,omitempty"`
+	GeneratedAt  time.Time                   `json:"generated_at"`
+	Session      string                      `json:"session,omitempty"`
+	ProjectKey   string                      `json:"project_key"`
+	Available    bool                        `json:"available"`
+	ServerURL    string                      `json:"server_url,omitempty"`
+	SessionAgent *agentmail.SessionAgentInfo `json:"session_agent,omitempty"`
+	// agents is a required array: it is always present, and empty means
+	// "checked, found none" rather than "did not check". Never omitempty.
+	Agents           []AgentMailAgent       `json:"agents"`
+	UnmappedAgents   []AgentMailAgent       `json:"unmapped_agents,omitempty"`
+	Messages         AgentMailMessageCounts `json:"messages,omitempty"`
+	FileReservations []AgentMailReservation `json:"file_reservations,omitempty"`
+	Conflicts        []AgentMailConflict    `json:"conflicts,omitempty"`
+	Warnings         []string               `json:"warnings,omitempty"`
 }
 
 // GetMail returns detailed Agent Mail state for AI orchestrators.
@@ -2904,6 +2910,9 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 		Available:     false,
 		ServerURL:     serverURL,
 		SessionAgent:  sessionAgent,
+		// Initialized here so the unavailable-server return below still carries
+		// the required agents array as [].
+		Agents: []AgentMailAgent{},
 	}
 
 	if !client.IsAvailable() {

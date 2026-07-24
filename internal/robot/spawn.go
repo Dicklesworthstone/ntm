@@ -1261,10 +1261,14 @@ func getAgentCommands(cfg *config.Config) map[string]string {
 	}
 
 	for agentType, cmdTemplate := range defaults {
-		vars := config.AgentTemplateVars{}
-		if cfg != nil && agentType == "grok" {
-			// Grok owns its default when this remains empty, but an explicit
-			// configured default must be honored by robot spawns.
+		vars := config.AgentTemplateVars{AgentType: agentType}
+		if cfg != nil {
+			// Resolve the default model for every agent type, exactly as the
+			// interactive spawn path does via ResolveModel. Limiting this to grok
+			// left the others rendering with an empty Model: harmless for the
+			// templates that guard with {{if .Model}}, but agy's template injects
+			// --model unconditionally because its model is hard-pinned, so a
+			// robot-spawned agy pane launched as `--model ''` and never started.
 			vars.Model = cfg.Models.GetModelName(agentType, "")
 		}
 		if rendered, err := config.GenerateAgentCommand(cmdTemplate, vars); err == nil {

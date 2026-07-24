@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -193,14 +194,22 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 		opts.Context = 2
 	}
 
-	// Build pane filter set
+	// Build pane filter set. parseErrorsIndex reports success through its bool,
+	// never through the error, so checking the error accepted every malformed
+	// selector and silently filtered to pane 0 instead.
 	paneFilter := make(map[int]bool)
 	for _, p := range opts.Panes {
-		// Parse pane index
 		var idx int
-		if _, err := parseErrorsIndex(p, &idx); err == nil {
-			paneFilter[idx] = true
+		ok, err := parseErrorsIndex(p, &idx)
+		if err != nil || !ok {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("invalid --panes value %q: expected a pane index", p),
+				ErrCodeInvalidFlag,
+				"Pass pane indices such as --panes=1,2",
+			)
+			return output, nil
 		}
+		paneFilter[idx] = true
 	}
 
 	// Process each pane
@@ -235,9 +244,12 @@ func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
 				continue
 			}
 
-			// Build context
+			// Build context. The start index must be clamped, not filtered by the
+			// loop condition: for an error near the top of the buffer the initial
+			// j was negative, `j >= 0` failed immediately, and every preceding
+			// line was dropped even though some existed.
 			var context []string
-			for j := i - opts.Context; j < i && j >= 0; j++ {
+			for j := max(0, i-opts.Context); j < i; j++ {
 				context = append(context, lines[j])
 			}
 			for j := i + 1; j <= i+opts.Context && j < len(lines); j++ {

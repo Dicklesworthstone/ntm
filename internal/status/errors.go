@@ -83,7 +83,9 @@ var errorPatterns = []ErrorPattern{
 	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)go: cannot find module`), Description: "Go module error"},
 
 	// Generic errors (lowest priority - catch-all)
-	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)^error:`), Description: "Error prefix"},
+	// (?m) is required: DetectErrorInOutput matches against a multi-line block,
+	// so without it this only matched an error on the very first line.
+	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?im)^error:`), Description: "Error prefix"},
 	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?im)^\s*⎿[\s\x{00a0}]*error:`), Description: "Claude tool-result error prefix"},
 	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)\berror\b.*\bfailed\b`), Description: "Error failed"},
 }

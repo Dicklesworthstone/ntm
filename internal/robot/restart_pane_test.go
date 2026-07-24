@@ -1572,3 +1572,50 @@ func TestRestartPaneMultiplePanesPromptErrors(t *testing.T) {
 		t.Errorf("expected 1 semicolon separator, got %d", strings.Count(joined, "; "))
 	}
 }
+
+// A hard-pinned agent type must never be relaunched with an empty --model. agy's
+// template injects --model unconditionally, so an empty value renders
+// `--model ”` and the pane dies at the ready gate instead of restarting.
+func TestRestartModelVarsKeepsPinnedAndAliasedModels(t *testing.T) {
+	cfg := config.Default()
+
+	for _, agentType := range []string{"antigravity", "agy"} {
+		vars := restartModelVars(cfg, agentType, "")
+		if vars.Model != config.AntigravityRequiredModel {
+			t.Fatalf("restartModelVars(%q, \"\").Model = %q, want the pinned %q",
+				agentType, vars.Model, config.AntigravityRequiredModel)
+		}
+	}
+
+	// An unrecognized variant (a persona name shares this title slot) must still
+	// keep the pin rather than falling back to an empty model.
+	if got := restartModelVars(cfg, "agy", "reviewer-persona").Model; got != config.AntigravityRequiredModel {
+		t.Fatalf("unknown variant dropped the pin: Model = %q", got)
+	}
+
+	// Alias tables must resolve through short agent-type forms too.
+	cfg.Models.Opencode = map[string]string{"fast": "anthropic/claude-haiku"}
+	vars := restartModelVars(cfg, "oc", "fast")
+	if vars.Model != "anthropic/claude-haiku" {
+		t.Fatalf("restartModelVars(\"oc\", \"fast\").Model = %q, want the aliased model", vars.Model)
+	}
+	if !vars.ModelRequested || vars.ModelAlias != "fast" {
+		t.Fatalf("alias metadata lost: requested=%t alias=%q", vars.ModelRequested, vars.ModelAlias)
+	}
+}
+
+// Robot spawn must render every agent type's default model, not only grok's.
+func TestGetAgentCommandsRendersPinnedAgyModel(t *testing.T) {
+	commands := getAgentCommands(config.Default())
+
+	agy, ok := commands["antigravity"]
+	if !ok {
+		t.Fatalf("no antigravity command rendered: %v", commands)
+	}
+	if strings.Contains(agy, "--model ''") {
+		t.Fatalf("agy rendered with an empty model and would not start: %s", agy)
+	}
+	if !strings.Contains(agy, config.AntigravityRequiredModel) {
+		t.Fatalf("agy command %q lacks the pinned model %q", agy, config.AntigravityRequiredModel)
+	}
+}

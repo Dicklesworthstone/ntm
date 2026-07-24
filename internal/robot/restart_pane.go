@@ -1330,11 +1330,22 @@ func appendRestartCancellationFailures(output *RestartPaneOutput, panes []string
 // default model (#223), so when the variant is a known model alias (or an
 // exact full model name from the alias table) the returned template vars carry
 // the resolved pin. Unknown variants — persona names share the same title slot
-// — return empty vars rather than guessing a bogus --model value.
+// — fall back to the agent type's resolved default rather than guessing a bogus
+// --model value.
 func restartModelVars(cfg *config.Config, agentType, variant string) config.AgentTemplateVars {
 	vars := config.AgentTemplateVars{AgentType: agentType}
+	if cfg == nil {
+		return vars
+	}
+	// Start from the agent type's resolved model. This is what keeps a
+	// hard-pinned type usable: agy's template injects --model unconditionally, so
+	// leaving Model empty relaunches it as `--model ''` and the pane dies at the
+	// ready gate. For types whose templates guard with {{if .Model}}, an empty
+	// result is still empty.
+	vars.Model = cfg.Models.GetModelName(agentType, "")
+
 	alias := strings.TrimSpace(variant)
-	if cfg == nil || alias == "" {
+	if alias == "" {
 		return vars
 	}
 	aliases := cfg.Models.AliasesFor(agentType)

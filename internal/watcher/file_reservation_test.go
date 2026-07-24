@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -300,7 +302,7 @@ func TestExtractEditedFiles(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := extractEditedFiles(tc.output, tc.agentType)
+			result := extractEditedFiles(tc.output, tc.agentType, "")
 			t.Logf("RESERVATION_TEST: extractEditedFiles | name=%s | agentType=%s | files=%v",
 				tc.name, tc.agentType, result)
 
@@ -1369,5 +1371,87 @@ func TestPaneReservationStruct(t *testing.T) {
 	}
 	if !pr.LastActivity.Equal(now) {
 		t.Error("LastActivity not set correctly")
+	}
+}
+
+// The line-anchored detection patterns run against a whole multi-line pane
+// capture, so they need (?m). Without it they only ever matched a capture whose
+// very first line was the edit line, which made them dead in practice.
+func TestExtractEditedFilesMatchesAnchoredPatternsMidCapture(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		output    string
+		want      string
+	}{
+		{
+			name:      "gemini Writing not on first line",
+			agentType: "gemini",
+			output:    "some banner\nWriting: /app/models/user.py\ntrailing\n",
+			want:      "/app/models/user.py",
+		},
+		{
+			name:      "gemini Editing not on first line",
+			agentType: "gemini",
+			output:    "some banner\nEditing: /app/views/home.py\ntrailing\n",
+			want:      "/app/views/home.py",
+		},
+		{
+			name:      "generic checkmark edited not on first line",
+			agentType: "*",
+			output:    "preamble\n✓ edited: /src/app.rs\ntail\n",
+			want:      "/src/app.rs",
+		},
+		{
+			name:      "generic wrote not on first line",
+			agentType: "*",
+			output:    "preamble\nwrote: /src/lib.rs\ntail\n",
+			want:      "/src/lib.rs",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractEditedFiles(tc.output, tc.agentType, "")
+			t.Logf("RESERVATION_TEST: anchored mid-capture | agentType=%s | files=%v", tc.agentType, got)
+			for _, f := range got {
+				if f == tc.want {
+					return
+				}
+			}
+			t.Fatalf("expected %q in %v", tc.want, got)
+		})
+	}
+}
+
+// Ordinary prose must not become an exclusive file reservation. The generic
+// catch-all pattern matches any "word.word" token, so a bare candidate has to
+// resolve to a real file in the project before it is reserved.
+func TestExtractEditedFilesIgnoresProseTokens(t *testing.T) {
+	prose := "I refactored the handler, e.g. moving Object.assign into node.js utils."
+
+	if got := extractEditedFiles(prose, "claude", ""); len(got) != 0 {
+		t.Fatalf("prose produced reservations with no project dir: %v", got)
+	}
+
+	projectDir := t.TempDir()
+	if got := extractEditedFiles(prose, "claude", projectDir); len(got) != 0 {
+		t.Fatalf("prose produced reservations for nonexistent files: %v", got)
+	}
+
+	// A bare name that really exists in the project is still detected.
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got := extractEditedFiles("Edited main.go to add the flag", "claude", projectDir)
+	t.Logf("RESERVATION_TEST: existing bare name | files=%v", got)
+	found := false
+	for _, f := range got {
+		if f == "main.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected main.go to be detected, got %v", got)
 	}
 }

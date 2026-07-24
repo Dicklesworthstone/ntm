@@ -296,8 +296,11 @@ func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 			// unavailable observation must not authorize the follow-up message.
 		}
 	} else if opts.NoWait {
-		// If no wait, all interrupted panes are considered ready
-		output.ReadyForInput = output.Interrupted
+		// If no wait, all interrupted panes are considered ready. Append rather
+		// than assign: panes that were already idle were recorded as ready above
+		// without being interrupted, and overwriting dropped them from the
+		// follow-up message. Assigning also aliased the two JSON arrays.
+		output.ReadyForInput = append(output.ReadyForInput, output.Interrupted...)
 	}
 
 	// Send follow-up message if provided

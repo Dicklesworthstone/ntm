@@ -31,10 +31,12 @@ type WaitOptions struct {
 // WaitResponse is the JSON output for --robot-wait.
 type WaitResponse struct {
 	RobotResponse
-	Session       string          `json:"session"`
-	Condition     string          `json:"condition"`
-	WaitedSeconds float64         `json:"waited_seconds"`
-	Agents        []WaitAgentInfo `json:"agents,omitempty"`
+	Session       string  `json:"session"`
+	Condition     string  `json:"condition"`
+	WaitedSeconds float64 `json:"waited_seconds"`
+	// agents is a required array and must survive the timeout path too, where
+	// only AgentsPending used to be set.
+	Agents        []WaitAgentInfo `json:"agents"`
 	AgentsPending []string        `json:"agents_pending,omitempty"`
 
 	// WakePayload contains details about what triggered the wakeup (for attention conditions).
@@ -185,6 +187,7 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 				Session:       opts.Session,
 				Condition:     opts.Condition,
 				WaitedSeconds: elapsed.Seconds(),
+				Agents:        []WaitAgentInfo{},
 				AgentsPending: append([]string(nil), lastPending...),
 			}
 			if hasAttention {

@@ -1862,8 +1862,12 @@ const AntigravityRequiredModel = "Gemini 3.1 Pro (High)"
 // type ("claude", "codex", ...), or nil when the type has no alias table.
 // The argument is not re-normalized; pass canonicalModelLookupAgentType output
 // (GetModelName does) or an already-canonical provider name.
+// AliasesFor returns the model alias table for an agent type. The agent type is
+// normalized first, so short forms and aliases ("cc", "oc", "agy") resolve to
+// the same table as their canonical names. antigravity has no table because its
+// model is hard-pinned; use GetModelName for that.
 func (m *ModelsConfig) AliasesFor(agentType string) map[string]string {
-	switch agentType {
+	switch canonicalModelLookupAgentType(agentType) {
 	case "claude":
 		return m.Claude
 	case "codex":

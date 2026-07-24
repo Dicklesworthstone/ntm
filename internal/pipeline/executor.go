@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -3494,7 +3495,14 @@ func (e *Executor) snapshotState() *ExecutionState {
 	if e.state.ForeachState != nil {
 		snapshot.ForeachState = make(map[string]ForeachIterationState, len(e.state.ForeachState))
 		for key, value := range e.state.ForeachState {
+			// Every reference field must be copied. The snapshot is marshaled by
+			// SaveState after both mutexes are released, so any field still
+			// aliasing live state can be written concurrently — and a shared map
+			// makes that an unrecoverable "concurrent map iteration and map
+			// write" fatal error rather than a recoverable race.
 			value.CompletedIterationIDs = append([]string(nil), value.CompletedIterationIDs...)
+			value.CollectedOutputs = append([]interface{}(nil), value.CollectedOutputs...)
+			value.CompletedRounds = maps.Clone(value.CompletedRounds)
 			snapshot.ForeachState[key] = value
 		}
 	}

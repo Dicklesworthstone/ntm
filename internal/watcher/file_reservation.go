@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -318,7 +320,7 @@ func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sess
 
 	// Detect file edits using local extraction (avoiding import cycle with robot package)
 	agentType := mapAgentTypeToPatternAgent(pane.Type)
-	files := extractEditedFiles(output, agentType)
+	files := extractEditedFiles(output, agentType, w.projectDir)
 
 	if len(files) > 0 {
 		w.onFileEdit(ctx, sessionName, pane, output, files, now)
@@ -863,17 +865,20 @@ var filePathPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)writing\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
 		regexp.MustCompile(`(?i)wrote\s+(?:to\s+)?(?:file:?\s+)?([^\s,]+\.\w+)`),
 	},
+	// The line-anchored patterns below need (?m): extractEditedFiles is called
+	// with a whole multi-line pane capture, so without it `^` only ever matched
+	// the very first line of the capture and these rules were dead.
 	"gemini": {
-		regexp.MustCompile(`(?i)^Writing:\s*(.+)$`),
-		regexp.MustCompile(`(?i)^Editing:\s*(.+)$`),
-		regexp.MustCompile(`(?i)^Created:\s*(.+)$`),
+		regexp.MustCompile(`(?im)^Writing:\s*(.+)$`),
+		regexp.MustCompile(`(?im)^Editing:\s*(.+)$`),
+		regexp.MustCompile(`(?im)^Created:\s*(.+)$`),
 		regexp.MustCompile(`(?i)(?:edited|modified)\s+(?:file:?\s+)?([^\s,]+\.\w+)`),
 	},
 	"*": {
 		// Generic patterns as fallback
-		regexp.MustCompile(`(?i)^(?:✓\s*)?(?:edited|modified):?\s+([^\s,]+\.\w+)`),
-		regexp.MustCompile(`(?i)^(?:✓\s*)?created:?\s+([^\s,]+\.\w+)`),
-		regexp.MustCompile(`(?i)^(?:✓\s*)?wrote:?\s+([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?im)^(?:✓\s*)?(?:edited|modified):?\s+([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?im)^(?:✓\s*)?created:?\s+([^\s,]+\.\w+)`),
+		regexp.MustCompile(`(?im)^(?:✓\s*)?wrote:?\s+([^\s,]+\.\w+)`),
 		// Path-like patterns (match absolute or relative paths ending in file extension)
 		regexp.MustCompile(`(?:^|[\s:"'])((?:/[^/\s]+)+\.\w+)`),
 		regexp.MustCompile(`(?:^|[\s:"'])(\./[^\s]+\.\w+)`),
@@ -883,45 +888,63 @@ var filePathPatterns = map[string][]*regexp.Regexp{
 
 // extractEditedFiles extracts file paths from agent output.
 // It returns a list of files that appear to have been edited/written by the agent.
-func extractEditedFiles(output string, agentType string) []string {
+func extractEditedFiles(output string, agentType string, projectDir string) []string {
 	seen := make(map[string]bool)
 	var files []string
 
-	// Get patterns for specific agent type
-	patterns, ok := filePathPatterns[agentType]
-	if ok {
+	collect := func(patterns []*regexp.Regexp) {
 		for _, re := range patterns {
 			matches := re.FindAllStringSubmatch(output, -1)
 			for _, match := range matches {
-				if len(match) > 1 {
-					path := cleanFilePathForReservation(match[1])
-					if isValidFilePathForReservation(path) && !seen[path] {
-						seen[path] = true
-						files = append(files, path)
-					}
+				if len(match) <= 1 {
+					continue
 				}
+				path := cleanFilePathForReservation(match[1])
+				if !isValidFilePathForReservation(path) || seen[path] {
+					continue
+				}
+				if !namesProjectFile(path, projectDir) {
+					continue
+				}
+				seen[path] = true
+				files = append(files, path)
 			}
 		}
+	}
+
+	// Get patterns for specific agent type
+	if patterns, ok := filePathPatterns[agentType]; ok {
+		collect(patterns)
 	}
 
 	// Also try generic patterns
 	if agentType != "*" {
-		genericPatterns := filePathPatterns["*"]
-		for _, re := range genericPatterns {
-			matches := re.FindAllStringSubmatch(output, -1)
-			for _, match := range matches {
-				if len(match) > 1 {
-					path := cleanFilePathForReservation(match[1])
-					if isValidFilePathForReservation(path) && !seen[path] {
-						seen[path] = true
-						files = append(files, path)
-					}
-				}
-			}
-		}
+		collect(filePathPatterns["*"])
 	}
 
 	return files
+}
+
+// namesProjectFile reports whether a candidate extracted from pane output is
+// plausibly a file rather than prose.
+//
+// The generic catch-all pattern matches any "word.word" token, so a sentence
+// like "moving Object.assign into node.js utils" yields "e.g", "Object.assign",
+// and "node.js" — each of which would otherwise become an exclusive 15-minute
+// Agent Mail reservation against a path that does not exist. Candidates that
+// already carry a path separator are taken at face value; a bare name has to
+// resolve to a real file inside the project.
+func namesProjectFile(path, projectDir string) bool {
+	if strings.ContainsRune(path, '/') {
+		return true
+	}
+	if projectDir == "" {
+		// Without a project root there is nothing to verify against, and an
+		// over-broad exclusive reservation is worse than a missed one.
+		return false
+	}
+	info, err := os.Stat(filepath.Join(projectDir, path))
+	return err == nil && !info.IsDir()
 }
 
 // cleanFilePathForReservation normalizes a file path extracted from output.
