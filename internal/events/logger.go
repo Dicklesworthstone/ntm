@@ -24,6 +24,11 @@ const (
 
 	// RotationCheckInterval is how often to check for rotation (in events).
 	RotationCheckInterval = 100
+
+	// maxEventLineBytes caps a single scanned log line. Encryption base64-encodes
+	// each line, inflating it by roughly a third, so the cap has to leave room for
+	// the encrypted form of the largest event we are willing to write.
+	maxEventLineBytes = 10 * 1024 * 1024
 )
 
 // Logger writes events to a JSONL file with automatic rotation.
@@ -425,6 +430,52 @@ func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 	}()
 
 	return ch, nil
+}
+
+// ReadSince reads events from an explicit log path and returns those newer than
+// since. Encrypted lines are decrypted with the configured keyring, so read-only
+// surfaces see the same events regardless of whether encryption is enabled.
+//
+// Unlike Replay this never opens the log for writing, so callers that only
+// display events do not create the log file or its directory as a side effect.
+func ReadSince(path string, since time.Time) ([]Event, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), maxEventLineBytes)
+
+	var result []Event
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		plain, err := decryptJSONLine(line)
+		if err != nil {
+			slog.Warn("event read: skipping unreadable line", "path", path, "error", err)
+			continue
+		}
+
+		var event Event
+		if err := json.Unmarshal(plain, &event); err != nil {
+			slog.Warn("event read: skipping malformed line", "path", path, "error", err)
+			continue
+		}
+
+		if event.Timestamp.After(since) {
+			result = append(result, event)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // Since returns all events after a specific timestamp.

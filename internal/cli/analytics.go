@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -138,39 +137,11 @@ func runAnalytics(days int, since, format string, showSessions bool) error {
 }
 
 // readEvents reads and filters events from the JSONL file using streaming.
+// It delegates to the events package so encrypted logs are decrypted for
+// display; reading the raw lines here would silently report zero events
+// whenever encryption at rest is enabled.
 func readEvents(path string, cutoff time.Time) ([]events.Event, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var result []events.Event
-	scanner := bufio.NewScanner(f)
-	// Set a reasonable buffer limit for lines (e.g., 1MB per event line)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var event events.Event
-		if err := json.Unmarshal(line, &event); err != nil {
-			continue // Skip malformed lines
-		}
-
-		if event.Timestamp.After(cutoff) {
-			result = append(result, event)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return events.ReadSince(path, cutoff)
 }
 
 // aggregateStats computes statistics from event list.
