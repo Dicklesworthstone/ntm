@@ -133,8 +133,11 @@ func NewTimelinePersister(config *TimelinePersistConfig) (*TimelinePersister, er
 	}, nil
 }
 
-// SaveTimeline persists timeline events for a session to disk.
-// The events are stored in JSONL format (one JSON object per line).
+// SaveTimeline writes exactly the given events for a session, replacing any
+// existing file. This is the export contract: what the caller passes is what
+// lands on disk.
+//
+// Session checkpointing must NOT use this — see CheckpointTimeline.
 func (p *TimelinePersister) SaveTimeline(sessionID string, events []AgentEvent) error {
 	normalizedSessionID, err := validateTimelineSessionID(sessionID)
 	if err != nil {
@@ -144,6 +147,40 @@ func (p *TimelinePersister) SaveTimeline(sessionID string, events []AgentEvent) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	return p.saveTimelineLocked(normalizedSessionID, events)
+}
+
+// CheckpointTimeline merges events into a session's durable timeline instead of
+// replacing it.
+//
+// Checkpoint callers read from the in-memory tracker, which retains only a
+// window (48h for the global tracker) and prunes older events outright. For a
+// session alive past that horizon the file is the only remaining copy of earlier
+// history, so a replacing write destroyed it on every tick — defeating the very
+// post-session analysis the file exists for. Merging keeps the durable record
+// effectively append-only.
+func (p *TimelinePersister) CheckpointTimeline(sessionID string, events []AgentEvent) error {
+	normalizedSessionID, err := validateTimelineSessionID(sessionID)
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	existing, loadErr := p.loadTimelineLocked(normalizedSessionID)
+	if loadErr != nil {
+		// An unreadable existing timeline must not be silently replaced with a
+		// narrower view; surface it so the operator can recover the file.
+		return fmt.Errorf("failed to read existing timeline before checkpoint: %w", loadErr)
+	}
+
+	return p.saveTimelineLocked(normalizedSessionID, mergeTimelineEvents(existing, events))
+}
+
+// saveTimelineLocked writes events for a session. Callers must hold p.mu for
+// writing.
+func (p *TimelinePersister) saveTimelineLocked(normalizedSessionID string, events []AgentEvent) error {
 	path := p.getTimelinePath(normalizedSessionID, false)
 
 	// Ensure parent directory exists
@@ -174,6 +211,13 @@ func (p *TimelinePersister) LoadTimeline(sessionID string) ([]AgentEvent, error)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	return p.loadTimelineLocked(normalizedSessionID)
+}
+
+// loadTimelineLocked reads a session's persisted events. Callers must already
+// hold p.mu (read or write); SaveTimeline needs it under the write lock to merge
+// with what is already on disk.
+func (p *TimelinePersister) loadTimelineLocked(normalizedSessionID string) ([]AgentEvent, error) {
 	// Try uncompressed first, then compressed
 	path := p.getTimelinePath(normalizedSessionID, false)
 	compressed := false
@@ -236,6 +280,55 @@ func (p *TimelinePersister) LoadTimeline(sessionID string) ([]AgentEvent, error)
 	}
 
 	return events, nil
+}
+
+// mergeTimelineEvents unions already-persisted events with a fresh batch,
+// dropping duplicates and returning the result in timestamp order.
+//
+// AgentEvent carries no unique ID, so identity is the tuple that makes a state
+// transition unique: which agent, when, and what it moved from and to. Repeated
+// checkpoints of the same in-memory window therefore converge instead of
+// appending the same transitions again.
+func mergeTimelineEvents(existing, fresh []AgentEvent) []AgentEvent {
+	if len(existing) == 0 {
+		return fresh
+	}
+	if len(fresh) == 0 {
+		return existing
+	}
+
+	type eventKey struct {
+		agentID       string
+		timestamp     int64
+		state         TimelineState
+		previousState TimelineState
+	}
+	keyOf := func(e AgentEvent) eventKey {
+		return eventKey{
+			agentID:       e.AgentID,
+			timestamp:     e.Timestamp.UTC().UnixNano(),
+			state:         e.State,
+			previousState: e.PreviousState,
+		}
+	}
+
+	merged := make([]AgentEvent, 0, len(existing)+len(fresh))
+	seen := make(map[eventKey]struct{}, len(existing)+len(fresh))
+	for _, batch := range [][]AgentEvent{existing, fresh} {
+		for _, event := range batch {
+			key := keyOf(event)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, event)
+		}
+	}
+
+	sort.SliceStable(merged, func(i, j int) bool {
+		return merged[i].Timestamp.Before(merged[j].Timestamp)
+	})
+	return merged
 }
 
 // ListTimelines returns information about all persisted timelines.
@@ -352,17 +445,23 @@ func (p *TimelinePersister) Cleanup() (int, error) {
 		return timelines[i].ModifiedAt.Before(timelines[j].ModifiedAt)
 	})
 
-	// Delete excess timelines
+	// Delete excess timelines. Failures must be reported, not counted as
+	// nothing-to-do: on a directory that is readable but not unlinkable this
+	// previously printed "Deleted: 0" and exited 0 while MaxTimelines retention
+	// was silently never enforced.
 	toDelete := len(timelines) - p.config.MaxTimelines
 	deleted := 0
+	var deleteErrs []error
 
 	for i := 0; i < toDelete; i++ {
-		if err := p.DeleteTimeline(timelines[i].SessionID); err == nil {
-			deleted++
+		if err := p.DeleteTimeline(timelines[i].SessionID); err != nil {
+			deleteErrs = append(deleteErrs, fmt.Errorf("delete timeline %s: %w", timelines[i].SessionID, err))
+			continue
 		}
+		deleted++
 	}
 
-	return deleted, nil
+	return deleted, errors.Join(deleteErrs...)
 }
 
 // CompressOldTimelines compresses timelines older than the configured threshold.
@@ -378,18 +477,21 @@ func (p *TimelinePersister) CompressOldTimelines() (int, error) {
 
 	cutoff := time.Now().Add(-p.config.CompressOlderThan)
 	compressed := 0
+	var compressErrs []error
 
 	for _, ti := range timelines {
 		if ti.Compressed || ti.ModifiedAt.After(cutoff) {
 			continue
 		}
 
-		if err := p.compressTimeline(ti.SessionID); err == nil {
-			compressed++
+		if err := p.compressTimeline(ti.SessionID); err != nil {
+			compressErrs = append(compressErrs, fmt.Errorf("compress timeline %s: %w", ti.SessionID, err))
+			continue
 		}
+		compressed++
 	}
 
-	return compressed, nil
+	return compressed, errors.Join(compressErrs...)
 }
 
 // StartCheckpoint starts periodic checkpointing for a session.
@@ -424,9 +526,9 @@ func (p *TimelinePersister) StartCheckpoint(sessionID string, tracker *TimelineT
 		for {
 			select {
 			case <-runner.ticker.C:
-				events := tracker.GetEventsForSession(normalizedSessionID, time.Time{})
+				events := tracker.GetAllEventsForSession(normalizedSessionID)
 				if len(events) > 0 {
-					if err := p.SaveTimeline(normalizedSessionID, events); err != nil {
+					if err := p.CheckpointTimeline(normalizedSessionID, events); err != nil {
 						slog.Warn("timeline checkpoint: save failed", "session", normalizedSessionID, "error", err)
 					}
 				}
@@ -459,12 +561,12 @@ func (p *TimelinePersister) FinalizeSession(sessionID string, tracker *TimelineT
 		return nil
 	}
 
-	events := tracker.GetEventsForSession(normalizedSessionID, time.Time{})
+	events := tracker.GetAllEventsForSession(normalizedSessionID)
 	if len(events) == 0 {
 		return nil
 	}
 
-	return p.SaveTimeline(normalizedSessionID, events)
+	return p.CheckpointTimeline(normalizedSessionID, events)
 }
 
 // GetTimelineInfo returns information about a specific timeline.

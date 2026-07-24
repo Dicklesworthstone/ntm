@@ -755,7 +755,12 @@ type SessionHealthOutput struct {
 
 // SessionAgentHealth contains health metrics for a single agent pane
 type SessionAgentHealth struct {
-	Pane             int     `json:"pane"`
+	Pane int `json:"pane"`
+	// PaneTarget is the unambiguous selector for this pane (%ID, or W.P on a
+	// multi-window session). Pane is only unique within a window, so a bare
+	// index must never be used to address a pane for mutation: the selector
+	// grammar reads a bare N as *window* N when the session spans windows.
+	PaneTarget       string  `json:"pane_target"`
 	AgentType        string  `json:"agent_type"`
 	Health           string  `json:"health"`             // healthy, degraded, unhealthy, rate_limited
 	IdleSinceSeconds int     `json:"idle_since_seconds"` // seconds since last pane activity
@@ -807,6 +812,10 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 		return output, nil
 	}
 
+	// Pane.Index is only unique within a window, so record the topology-aware
+	// address too and let mutating callers address panes with that.
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+
 	// Check health for each pane
 	for _, pane := range panes {
 		agentType := detectAgentTypeFromPane(pane)
@@ -815,9 +824,10 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 		}
 
 		agentHealth := SessionAgentHealth{
-			Pane:      pane.Index,
-			AgentType: agentType,
-			Health:    "healthy",
+			Pane:       pane.Index,
+			PaneTarget: tmux.PaneTargetKey(pane, multiWindow),
+			AgentType:  agentType,
+			Health:     "healthy",
 		}
 
 		// Get activity time - how long since last pane activity
@@ -2339,7 +2349,7 @@ func restartAutoRestartStuckPanes(ctx context.Context, opts AutoRestartStuckOpti
 	}
 	var restarted, failed []int
 	for _, paneIdx := range stuckPanes {
-		restartOut, restartErr := restart(ctx, autoRestartStuckPaneOptions(opts, paneIdx))
+		restartOut, restartErr := restart(ctx, autoRestartStuckPaneOptions(opts, paneIdx, autoRestartStuckPaneTarget(agents, paneIdx)))
 		if errors.Is(restartErr, context.Canceled) || errors.Is(restartErr, context.DeadlineExceeded) {
 			failed = append(failed, paneIdx)
 			return restarted, failed, restartErr
@@ -2356,10 +2366,32 @@ func restartAutoRestartStuckPanes(ctx context.Context, opts AutoRestartStuckOpti
 	return restarted, failed, nil
 }
 
-func autoRestartStuckPaneOptions(opts AutoRestartStuckOptions, paneIdx int) RestartPaneOptions {
+// autoRestartStuckPaneTarget returns the unambiguous selector recorded for a
+// stuck pane. It falls back to the bare index only when no target was recorded,
+// which is a single-window session where the two are equivalent.
+func autoRestartStuckPaneTarget(agents []SessionAgentHealth, paneIdx int) string {
+	for _, agent := range agents {
+		if agent.Pane == paneIdx && strings.TrimSpace(agent.PaneTarget) != "" {
+			return agent.PaneTarget
+		}
+	}
+	return fmt.Sprintf("%d", paneIdx)
+}
+
+// autoRestartStuckPaneOptions builds the restart request for one stuck pane.
+//
+// target must be the pane's unambiguous selector, not its bare index: the
+// selector grammar resolves a bare N as *window* N on a multi-window session
+// (tmux.PaneSelector.Matches), so passing an index there made respawn-pane -k
+// kill every pane in an unrelated window while the response still reported the
+// single index as restarted.
+func autoRestartStuckPaneOptions(opts AutoRestartStuckOptions, paneIdx int, target string) RestartPaneOptions {
+	if strings.TrimSpace(target) == "" {
+		target = fmt.Sprintf("%d", paneIdx)
+	}
 	return RestartPaneOptions{
 		Session: opts.Session,
-		Panes:   []string{fmt.Sprintf("%d", paneIdx)},
+		Panes:   []string{target},
 		Config:  opts.Config,
 	}
 }

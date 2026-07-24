@@ -500,13 +500,69 @@ func TestAutoRestartStuckPaneOptionsForwardsEffectiveConfig(t *testing.T) {
 	opts := autoRestartStuckPaneOptions(AutoRestartStuckOptions{
 		Session: "project",
 		Config:  effectiveConfig,
-	}, 7)
+	}, 7, "")
 
 	if opts.Session != "project" || len(opts.Panes) != 1 || opts.Panes[0] != "7" {
 		t.Fatalf("restart options target = session %q panes %v", opts.Session, opts.Panes)
 	}
 	if opts.Config != effectiveConfig {
 		t.Fatal("auto-restart discarded the caller's effective config")
+	}
+}
+
+// A bare pane index resolves to *window* N on a multi-window session, so
+// auto-restart must address the pane by its recorded unambiguous target.
+// Restarting by index there killed every pane in an unrelated window.
+func TestAutoRestartStuckUsesUnambiguousPaneTarget(t *testing.T) {
+	agents := []SessionAgentHealth{
+		{Pane: 1, PaneTarget: "0.1", AgentType: "claude"},
+		{Pane: 1, PaneTarget: "1.1", AgentType: "codex"},
+		{Pane: 2, PaneTarget: "", AgentType: "claude"},
+	}
+
+	// The first recorded target for a given index wins, and it is never the
+	// bare index when a target exists.
+	if got := autoRestartStuckPaneTarget(agents, 1); got != "0.1" {
+		t.Fatalf("autoRestartStuckPaneTarget(1) = %q, want %q", got, "0.1")
+	}
+	// No recorded target (single-window session) falls back to the index.
+	if got := autoRestartStuckPaneTarget(agents, 2); got != "2" {
+		t.Fatalf("autoRestartStuckPaneTarget(2) = %q, want %q", got, "2")
+	}
+
+	opts := autoRestartStuckPaneOptions(AutoRestartStuckOptions{Session: "project"}, 1, "0.1")
+	if len(opts.Panes) != 1 || opts.Panes[0] != "0.1" {
+		t.Fatalf("restart selector = %v, want [0.1]; a bare index would target window 1", opts.Panes)
+	}
+}
+
+// The restart loop must consume the recorded target, not the index it iterates.
+func TestRestartAutoRestartStuckPanesAddressesRecordedTarget(t *testing.T) {
+	agents := []SessionAgentHealth{
+		{Pane: 1, PaneTarget: "1.1", AgentType: "claude", Health: "degraded"},
+	}
+
+	var seen []string
+	restart := func(_ context.Context, opts RestartPaneOptions) (*RestartPaneOutput, error) {
+		seen = append(seen, opts.Panes...)
+		return &RestartPaneOutput{RobotResponse: NewRobotResponse(true)}, nil
+	}
+
+	restarted, failed, err := restartAutoRestartStuckPanes(
+		context.Background(),
+		AutoRestartStuckOptions{Session: "project"},
+		agents,
+		[]int{1},
+		restart,
+	)
+	if err != nil {
+		t.Fatalf("restartAutoRestartStuckPanes: %v", err)
+	}
+	if len(failed) != 0 || len(restarted) != 1 || restarted[0] != 1 {
+		t.Fatalf("restarted=%v failed=%v, want restarted=[1]", restarted, failed)
+	}
+	if len(seen) != 1 || seen[0] != "1.1" {
+		t.Fatalf("restart addressed %v, want [1.1]", seen)
 	}
 }
 

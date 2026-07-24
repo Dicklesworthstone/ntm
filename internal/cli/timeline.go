@@ -408,13 +408,26 @@ type TimelineCleanupResult struct {
 	Deleted    int `json:"deleted"`
 	Remaining  int `json:"remaining"`
 	Compressed int `json:"compressed"`
+	// Warnings reports partial failures. Compression is opportunistic, so a
+	// failure there does not fail the command — but it must not be invisible
+	// either, or retention silently stops being enforced.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func (r *TimelineCleanupResult) Text(w io.Writer) error {
 	t := theme.Current()
 
+	// Warnings print even when nothing was cleaned up: a compression failure is
+	// exactly the case that would otherwise read as "nothing to do".
+	printWarnings := func() {
+		for _, warning := range r.Warnings {
+			fmt.Fprintf(w, "%s!%s %s\n", colorize(t.Warning), colorize(t.Text), warning)
+		}
+	}
+
 	if r.Deleted == 0 && r.Compressed == 0 {
 		fmt.Fprintf(w, "%sNo cleanup needed%s\n", colorize(t.Warning), colorize(t.Text))
+		printWarnings()
 		return nil
 	}
 
@@ -425,6 +438,7 @@ func (r *TimelineCleanupResult) Text(w io.Writer) error {
 		fmt.Fprintf(w, "%s✓%s Compressed %d timelines\n", colorize(t.Success), colorize(t.Text), r.Compressed)
 	}
 	fmt.Fprintf(w, "  %d timelines remaining\n", r.Remaining)
+	printWarnings()
 
 	return nil
 }
@@ -459,14 +473,22 @@ func runTimelineCleanup(force bool) error {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 
-	compressed, _ := persister.CompressOldTimelines()
+	var warnings []string
+	compressed, compressErr := persister.CompressOldTimelines()
+	if compressErr != nil {
+		warnings = append(warnings, fmt.Sprintf("compression incomplete: %v", compressErr))
+	}
 
-	remaining, _ := persister.ListTimelines()
+	remaining, listErr := persister.ListTimelines()
+	if listErr != nil {
+		warnings = append(warnings, fmt.Sprintf("could not recount timelines: %v", listErr))
+	}
 
 	result := &TimelineCleanupResult{
 		Deleted:    deleted,
 		Remaining:  len(remaining),
 		Compressed: compressed,
+		Warnings:   warnings,
 	}
 
 	formatter := output.New(output.WithJSON(jsonOutput))

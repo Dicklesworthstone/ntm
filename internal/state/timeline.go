@@ -327,7 +327,29 @@ func (t *TimelineTracker) GetEventsForAgent(agentID string, since time.Time) []A
 	return result
 }
 
+// GetAllEventsForSession returns every retained event for a session, ignoring
+// the retention window.
+//
+// GetEventsForSession treats a zero `since` as "the retention window", not "all
+// events", which is the right default for display but wrong for persistence:
+// checkpointing a windowed view over the durable file discards earlier history.
+// Persistence paths should use this instead.
+func (t *TimelineTracker) GetAllEventsForSession(sessionID string) []AgentEvent {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	result := make([]AgentEvent, 0)
+	for _, event := range t.allEvents {
+		if event.SessionID == sessionID {
+			result = append(result, event)
+		}
+	}
+	return result
+}
+
 // GetEventsForSession returns events for all agents in a session since the given time.
+// A zero `since` means the tracker's retention window, not all retained events;
+// use GetAllEventsForSession when the caller needs everything.
 func (t *TimelineTracker) GetEventsForSession(sessionID string, since time.Time) []AgentEvent {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

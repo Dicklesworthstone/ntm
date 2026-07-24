@@ -1644,3 +1644,129 @@ func TestGetTimelinePath(t *testing.T) {
 		t.Errorf("gz path = %q", gz)
 	}
 }
+
+// A checkpoint must never narrow the durable record. Checkpoint callers read a
+// retention window from memory (48h globally) and the tracker prunes older
+// events outright, so for a long-lived session the file is the only copy of
+// earlier history — a replacing write destroyed it on every tick.
+func TestCheckpointTimelinePreservesHistoryOutsideRetentionWindow(t *testing.T) {
+	tmpDir := t.TempDir()
+	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir})
+	if err != nil {
+		t.Fatalf("NewTimelinePersister failed: %v", err)
+	}
+
+	sessionID := "long-lived-session"
+	now := time.Now().UTC().Truncate(time.Second)
+	old := now.Add(-72 * time.Hour) // outside a 48h retention window
+
+	// Hour-1 history, durably written while it was still in memory.
+	historical := []AgentEvent{
+		{AgentID: "cc_1", SessionID: sessionID, State: TimelineWorking, Timestamp: old},
+		{AgentID: "cc_1", SessionID: sessionID, State: TimelineIdle, PreviousState: TimelineWorking, Timestamp: old.Add(time.Minute)},
+	}
+	if err := persister.CheckpointTimeline(sessionID, historical); err != nil {
+		t.Fatalf("first checkpoint failed: %v", err)
+	}
+
+	// A later tick can only see the retention window; the old events have been
+	// pruned from memory by now.
+	recent := []AgentEvent{
+		{AgentID: "cc_1", SessionID: sessionID, State: TimelineWorking, PreviousState: TimelineIdle, Timestamp: now},
+	}
+	if err := persister.CheckpointTimeline(sessionID, recent); err != nil {
+		t.Fatalf("second checkpoint failed: %v", err)
+	}
+
+	loaded, err := persister.LoadTimeline(sessionID)
+	if err != nil {
+		t.Fatalf("LoadTimeline failed: %v", err)
+	}
+	t.Logf("TIMELINE_TEST: loaded %d events after windowed checkpoint", len(loaded))
+	if len(loaded) != 3 {
+		t.Fatalf("got %d events, want 3 (2 historical + 1 recent); a replacing write would leave 1", len(loaded))
+	}
+	if !loaded[0].Timestamp.Equal(old) {
+		t.Fatalf("events are not in timestamp order: first=%s want=%s", loaded[0].Timestamp, old)
+	}
+
+	// Re-checkpointing the same window must converge, not duplicate.
+	if err := persister.CheckpointTimeline(sessionID, recent); err != nil {
+		t.Fatalf("third checkpoint failed: %v", err)
+	}
+	reloaded, err := persister.LoadTimeline(sessionID)
+	if err != nil {
+		t.Fatalf("LoadTimeline failed: %v", err)
+	}
+	if len(reloaded) != 3 {
+		t.Fatalf("got %d events after repeat checkpoint, want 3 (merge must dedupe)", len(reloaded))
+	}
+}
+
+// GetAllEventsForSession must ignore the retention window that
+// GetEventsForSession applies to a zero `since`.
+func TestGetAllEventsForSessionIgnoresRetentionWindow(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{
+		MaxEventsPerAgent: 100,
+		RetentionDuration: time.Hour,
+		PruneInterval:     time.Hour,
+	})
+
+	sessionID := "retention-session"
+	stale := AgentEvent{AgentID: "cc_1", SessionID: sessionID, State: TimelineWorking, Timestamp: time.Now().Add(-6 * time.Hour)}
+	tracker.mu.Lock()
+	tracker.allEvents = append(tracker.allEvents, stale)
+	tracker.mu.Unlock()
+
+	if windowed := tracker.GetEventsForSession(sessionID, time.Time{}); len(windowed) != 0 {
+		t.Fatalf("GetEventsForSession returned %d events, want 0 (outside retention)", len(windowed))
+	}
+	all := tracker.GetAllEventsForSession(sessionID)
+	t.Logf("TIMELINE_TEST: windowed=0 all=%d", len(all))
+	if len(all) != 1 {
+		t.Fatalf("GetAllEventsForSession returned %d events, want 1", len(all))
+	}
+}
+
+// Retention enforcement must not fail silently. On a directory that is readable
+// but not unlinkable, Cleanup previously reported (0, nil) — indistinguishable
+// from "nothing to do" — so MaxTimelines was never enforced and nobody knew.
+func TestCleanupReportsDeleteFailures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory write permissions")
+	}
+
+	tmpDir := t.TempDir()
+	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir, MaxTimelines: 1})
+	if err != nil {
+		t.Fatalf("NewTimelinePersister failed: %v", err)
+	}
+
+	for i, id := range []string{"sess-old", "sess-new"} {
+		events := []AgentEvent{{
+			AgentID:   "cc_1",
+			SessionID: id,
+			State:     TimelineWorking,
+			Timestamp: time.Now().Add(time.Duration(i) * time.Minute),
+		}}
+		if err := persister.SaveTimeline(id, events); err != nil {
+			t.Fatalf("SaveTimeline(%s) failed: %v", id, err)
+		}
+	}
+
+	// Make the directory non-unlinkable so DeleteTimeline fails while the files
+	// themselves remain readable and listable.
+	if err := os.Chmod(tmpDir, 0o555); err != nil {
+		t.Fatalf("chmod failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
+
+	deleted, err := persister.Cleanup()
+	t.Logf("TIMELINE_TEST: Cleanup returned deleted=%d err=%v", deleted, err)
+	if err == nil {
+		t.Fatal("Cleanup reported success while every delete failed")
+	}
+	if deleted != 0 {
+		t.Fatalf("Cleanup counted %d deletions that did not happen", deleted)
+	}
+}
