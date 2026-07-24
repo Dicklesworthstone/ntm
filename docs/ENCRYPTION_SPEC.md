@@ -67,9 +67,15 @@ active_key_id = "k1"
 - For `key_source=command`, stdout is trimmed; stderr is ignored.
 
 ### Keyring Semantics
-- If `keyring` is provided, it **must** include `active_key_id`.
+- If `keyring` is provided, `active_key_id` is **required** and **must** name an
+  entry in it. Config validation rejects anything else: without an active entry,
+  writes would use the `key_source` key while reads only tried keyring entries,
+  leaving every new artifact undecryptable.
 - New encryptions use `active_key_id` only.
-- Decryption attempts keys in the keyring in order of declaration.
+- Decryption attempts the active key first (it wrote the newest artifacts), then
+  the remaining entries by ascending key ID. TOML decodes the keyring into a map,
+  so declaration order is not recoverable; sorting keeps the order deterministic
+  across runs.
 - If no keyring is provided, a single key from `key_source` is used for both
   encryption and decryption.
 
@@ -85,6 +91,13 @@ active_key_id = "k1"
 - **Invalid format/length**: error describing expected length and encoding.
 - **Decryption failure**: error indicating key mismatch or corrupted data.
 - **Keyring missing active key**: error, refuse to start encryption.
+
+Every one of these is fatal at startup. When `[encryption] enabled = true` and the
+key cannot be resolved, NTM exits non-zero rather than continuing with encryption
+disabled — falling back to plaintext would silently defeat the setting the
+operator turned on. Machine invocations receive a single `INTERNAL_ERROR` JSON
+document; humans receive the error plus a remediation hint on stderr. To persist
+artifacts unencrypted, set `enabled = false` explicitly.
 
 No automatic or ephemeral keys are generated for persistent data.
 

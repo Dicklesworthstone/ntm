@@ -376,6 +376,17 @@ func machineJSONInvocation(cmd *cobra.Command) (bool, string) {
 	return true, command
 }
 
+// encryptionStartupError reports a fatal encryption-at-rest startup failure.
+// Machine invocations get a single JSON error document; humans get the error
+// itself. Either way NTM refuses to run, because falling back to plaintext
+// persistence would silently defeat the setting the operator enabled.
+func encryptionStartupError(cmd *cobra.Command, err error, hint string) error {
+	if machineInvocation, machineCommand := machineJSONInvocation(cmd); machineInvocation {
+		return robot.EncodeErrorJSON(err, robot.ErrCodeInternalError, hint, machineCommand)
+	}
+	return fmt.Errorf("%w (%s)", err, hint)
+}
+
 func isRobotGlobalModifier(command string) bool {
 	switch command {
 	case "robot-format", "robot-output-format", "robot-verbosity", "robot-limit", "robot-offset":
@@ -557,7 +568,11 @@ Shell Integration:
 				checkpoint.SetRedactionConfig(&redactCfg)
 			}
 
-			// Wire encryption into history + event log persistence (bd-3ld77)
+			// Wire encryption into history + event log persistence (bd-3ld77).
+			// Key resolution failures are fatal for every invocation: continuing
+			// would persist prompt history and event logs in plaintext even though
+			// the operator asked for encryption at rest
+			// (docs/ENCRYPTION_SPEC.md, "Failure Modes").
 			if cfg != nil && cfg.Encryption.Enabled {
 				keyCfg := encryption.KeyConfig{
 					KeySource:   cfg.Encryption.KeySource,
@@ -570,40 +585,30 @@ Shell Integration:
 				}
 				encKey, err := encryption.ResolveKey(keyCfg)
 				if err != nil {
-					if machineInvocation, machineCommand := machineJSONInvocation(cmd); machineInvocation {
-						return robot.EncodeErrorJSON(
-							fmt.Errorf("encryption key resolution failed: %w", err),
-							robot.ErrCodeInternalError,
-							"Configure a valid encryption key source before running this robot command",
-							machineCommand,
-						)
-					}
-					output.PrintWarningf("encryption key resolution failed, encryption disabled: %v", err)
-				} else {
-					allKeys, err := encryption.ResolveKeyring(keyCfg)
-					if err != nil {
-						if machineInvocation, machineCommand := machineJSONInvocation(cmd); machineInvocation {
-							return robot.EncodeErrorJSON(
-								fmt.Errorf("encryption keyring resolution failed: %w", err),
-								robot.ErrCodeInternalError,
-								"Configure a valid encryption keyring before running this robot command",
-								machineCommand,
-							)
-						}
-						output.PrintWarningf("encryption keyring resolution failed, encryption disabled: %v", err)
-					} else {
-						history.SetEncryptionConfig(&history.EncryptionConfig{
-							Enabled:     true,
-							EncryptKey:  encKey,
-							DecryptKeys: allKeys,
-						})
-						events.SetEncryptionConfig(&events.EncryptionConfig{
-							Enabled:     true,
-							EncryptKey:  encKey,
-							DecryptKeys: allKeys,
-						})
-					}
+					return encryptionStartupError(
+						cmd,
+						fmt.Errorf("encryption key resolution failed: %w", err),
+						"Configure a valid encryption key source, or set [encryption] enabled = false to persist artifacts unencrypted",
+					)
 				}
+				allKeys, err := encryption.ResolveKeyring(keyCfg)
+				if err != nil {
+					return encryptionStartupError(
+						cmd,
+						fmt.Errorf("encryption keyring resolution failed: %w", err),
+						"Configure a valid encryption keyring, or set [encryption] enabled = false to persist artifacts unencrypted",
+					)
+				}
+				history.SetEncryptionConfig(&history.EncryptionConfig{
+					Enabled:     true,
+					EncryptKey:  encKey,
+					DecryptKeys: allKeys,
+				})
+				events.SetEncryptionConfig(&events.EncryptionConfig{
+					Enabled:     true,
+					EncryptKey:  encKey,
+					DecryptKeys: allKeys,
+				})
 			}
 
 			// Run automatic temp file cleanup if enabled

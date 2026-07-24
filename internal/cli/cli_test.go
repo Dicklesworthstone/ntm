@@ -6286,6 +6286,48 @@ func TestGlobalJSONStartupEncryptionFailuresAreSingleDocuments(t *testing.T) {
 	}
 }
 
+// A bad encryption key must abort the command instead of degrading to plaintext
+// persistence. Human invocations get the error on stderr and a non-zero exit
+// (docs/ENCRYPTION_SPEC.md, "Failure Modes").
+func TestStartupEncryptionFailureFailsClosedForHumans(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping process-level startup contract integration in short mode")
+	}
+	tmpDir := t.TempDir()
+	missingKeyConfig := filepath.Join(tmpDir, "missing-key.toml")
+	if err := os.WriteFile(missingKeyConfig, []byte("[encryption]\nenabled = true\nkey_source = \"env\"\nkey_env = \"NTM_HUMAN_ENCRYPTION_KEY\"\nkey_format = \"hex\"\n"), 0o600); err != nil {
+		t.Fatalf("write missing-key config: %v", err)
+	}
+
+	args, err := json.Marshal([]string{"--config", missingKeyConfig, "config", "show"})
+	if err != nil {
+		t.Fatalf("encode helper args: %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRobotProcessContractHelper$")
+	cmd.Dir = tmpDir
+	cmd.Env = envWithOverrides(os.Environ(),
+		"HOME="+filepath.Join(tmpDir, "home"),
+		"XDG_CONFIG_HOME="+filepath.Join(tmpDir, "config-home"),
+		"NTM_HUMAN_ENCRYPTION_KEY=",
+		"NTM_NO_COLOR=1",
+		"NTM_ROBOT_CONTRACT_ARGS="+string(args),
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit, error=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "encryption key resolution failed") {
+		t.Fatalf("stderr=%q, want it to report the key resolution failure", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "encryption disabled") {
+		t.Fatalf("stderr=%q, must not fall back to unencrypted persistence", stderr.String())
+	}
+}
+
 func TestConfigPathFromArgs(t *testing.T) {
 	tests := []struct {
 		name string

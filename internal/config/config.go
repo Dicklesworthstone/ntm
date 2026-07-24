@@ -2394,7 +2394,13 @@ func ValidateEncryptionConfig(cfg *EncryptionConfig) error {
 	default:
 		return fmt.Errorf("invalid encryption.key_format %q: must be hex or base64", cfg.KeyFormat)
 	}
-	if cfg.ActiveKeyID != "" && len(cfg.Keyring) > 0 {
+	// A keyring without an active key would write with the key_source key while
+	// reading only with keyring entries, so every new artifact would be
+	// undecryptable. Refuse that configuration instead of losing data.
+	if len(cfg.Keyring) > 0 {
+		if cfg.ActiveKeyID == "" {
+			return fmt.Errorf("encryption.active_key_id is required when encryption.keyring is set: name the keyring entry used for new writes")
+		}
 		if _, ok := cfg.Keyring[cfg.ActiveKeyID]; !ok {
 			return fmt.Errorf("encryption.active_key_id %q not found in keyring", cfg.ActiveKeyID)
 		}

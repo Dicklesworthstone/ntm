@@ -5000,6 +5000,18 @@ func TestValidateEncryptionConfig(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			// Writes would use the key_source key while reads would only try
+			// keyring entries, making every new artifact undecryptable.
+			name: "keyring without active_key_id is rejected",
+			cfg: EncryptionConfig{
+				Enabled:   true,
+				KeySource: "env",
+				Keyring:   map[string]string{"primary": "deadbeef"},
+			},
+			wantErr: true,
+			errMsg:  "encryption.active_key_id is required",
+		},
 	}
 
 	for _, tt := range tests {

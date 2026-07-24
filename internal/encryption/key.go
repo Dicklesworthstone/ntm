@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -53,8 +54,13 @@ func ResolveKey(cfg KeyConfig) ([]byte, error) {
 	return decodeKey(encoded, cfg.KeyFormat)
 }
 
-// ResolveKeyring builds a list of all keys in the keyring for decryption attempts.
-// Returns keys in declaration order. If no keyring, returns a single key from the source.
+// ResolveKeyring builds the list of keys to try when decrypting, in a
+// deterministic order: the active key first (it wrote the newest artifacts, so
+// it is the most likely match), then the remaining keyring entries by ascending
+// key ID. TOML decodes the keyring into a map, so declaration order is not
+// recoverable; sorting keeps the attempt order stable across runs.
+//
+// If no keyring is configured, the single key from the key source is returned.
 func ResolveKeyring(cfg KeyConfig) ([][]byte, error) {
 	if len(cfg.Keyring) == 0 {
 		key, err := ResolveKey(cfg)
@@ -64,9 +70,24 @@ func ResolveKeyring(cfg KeyConfig) ([][]byte, error) {
 		return [][]byte{key}, nil
 	}
 
-	var keys [][]byte
-	for id, encoded := range cfg.Keyring {
-		key, err := decodeKey(encoded, cfg.KeyFormat)
+	ids := make([]string, 0, len(cfg.Keyring))
+	for id := range cfg.Keyring {
+		if id == cfg.ActiveKeyID {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if cfg.ActiveKeyID != "" {
+		if _, ok := cfg.Keyring[cfg.ActiveKeyID]; !ok {
+			return nil, fmt.Errorf("active_key_id %q not found in keyring", cfg.ActiveKeyID)
+		}
+		ids = append([]string{cfg.ActiveKeyID}, ids...)
+	}
+
+	keys := make([][]byte, 0, len(ids))
+	for _, id := range ids {
+		key, err := decodeKey(cfg.Keyring[id], cfg.KeyFormat)
 		if err != nil {
 			return nil, fmt.Errorf("keyring entry %q: %w", id, err)
 		}

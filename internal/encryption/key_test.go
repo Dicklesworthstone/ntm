@@ -1,6 +1,7 @@
 package encryption
 
 import (
+	"bytes"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -176,6 +177,51 @@ func TestResolveKeyring(t *testing.T) {
 	}
 	if len(keys) != 2 {
 		t.Errorf("expected 2 keys, got %d", len(keys))
+	}
+}
+
+func TestResolveKeyring_ActiveKeyFirstThenSorted(t *testing.T) {
+	// Distinct key material per ID so ordering is observable.
+	material := map[string][]byte{}
+	keyring := map[string]string{}
+	for i, id := range []string{"k1", "k2", "k3"} {
+		key := make([]byte, KeySize)
+		for j := range key {
+			key[j] = byte(i*10 + j)
+		}
+		material[id] = key
+		keyring[id] = hex.EncodeToString(key)
+	}
+
+	cfg := KeyConfig{Keyring: keyring, KeyFormat: "hex", ActiveKeyID: "k3"}
+
+	// Repeat: Go randomizes map iteration, so a single pass can pass by luck.
+	for attempt := 0; attempt < 32; attempt++ {
+		keys, err := ResolveKeyring(cfg)
+		if err != nil {
+			t.Fatalf("ResolveKeyring: %v", err)
+		}
+		want := [][]byte{material["k3"], material["k1"], material["k2"]}
+		if len(keys) != len(want) {
+			t.Fatalf("got %d keys, want %d", len(keys), len(want))
+		}
+		for i := range want {
+			if !bytes.Equal(keys[i], want[i]) {
+				t.Fatalf("attempt %d: key[%d] mismatch: got %x want %x", attempt, i, keys[i], want[i])
+			}
+		}
+	}
+}
+
+func TestResolveKeyring_ActiveKeyNotInKeyring(t *testing.T) {
+	key := make([]byte, KeySize)
+	cfg := KeyConfig{
+		Keyring:     map[string]string{"k1": hex.EncodeToString(key)},
+		KeyFormat:   "hex",
+		ActiveKeyID: "missing",
+	}
+	if _, err := ResolveKeyring(cfg); err == nil {
+		t.Fatal("expected error when active_key_id is absent from the keyring")
 	}
 }
 
