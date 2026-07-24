@@ -737,6 +737,19 @@ case "$cmd1" in
         exit 2
       fi
     done
+    # Atomic claim: br update <id> --claim --actor <name> --json. Mirror the real
+    # contract so the REST claim handler is exercised through the same path,
+    # including the already-assigned failure the handler maps to 409.
+    for arg in "$@"; do
+      if [ "$arg" = "--claim" ]; then
+        if [ -n "${NTM_STUB_BR_CLAIM_TAKEN:-}" ]; then
+          echo "issue ` + beadID + ` already assigned to $NTM_STUB_BR_CLAIM_TAKEN" >&2
+          exit 1
+        fi
+        echo "[{\"id\":\"` + beadID + `\",\"title\":\"Claimed\",\"status\":\"in_progress\"}]"
+        exit 0
+      fi
+    done
     echo "[{\"id\":\"` + beadID + `\",\"title\":\"Updated\",\"labels\":[\"api\",\"triaged\"]}]"
     exit 0
     ;;

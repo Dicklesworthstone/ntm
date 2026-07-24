@@ -4,8 +4,10 @@ package serve
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -22,12 +24,48 @@ func normalizeSingularBeadPayload(payload interface{}) interface{} {
 	return beads[0]
 }
 
+// beadIDPattern matches a beads issue ID such as "bd-2euwg" or "ntm-y9cd".
+var beadIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[A-Za-z0-9]+$`)
+
+// validateBeadIDParam checks that a bead ID from a URL parameter is a real ID
+// before it becomes an argv element for br. br is executed without a shell, but
+// argv is still parsed for flags: an ID like "--db=/etc/shadow" or "--file=..."
+// would be consumed as an option rather than a positional, turning a read
+// endpoint into an arbitrary-path probe. It writes an error response and returns
+// false when validation fails, so callers can return early.
+func validateBeadIDParam(w http.ResponseWriter, beadID, reqID string) bool {
+	if strings.TrimSpace(beadID) == "" {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "bead ID required", nil, reqID)
+		return false
+	}
+	if !beadIDPattern.MatchString(beadID) {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			"invalid bead ID: expected a prefixed identifier such as bd-2euwg", nil, reqID)
+		return false
+	}
+	return true
+}
+
+// validateBeadArgument rejects a caller-supplied value that br would parse as an
+// option instead of data. Applies to free-form positionals and flag values alike,
+// since a value beginning with "-" can terminate the intended flag and introduce
+// another one.
+func validateBeadArgument(w http.ResponseWriter, value, field, reqID string) bool {
+	if strings.HasPrefix(strings.TrimSpace(value), "-") {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			field+" must not begin with '-'", nil, reqID)
+		return false
+	}
+	return true
+}
+
 // Beads-specific error codes
 const (
-	ErrCodeBeadsUnavailable = "BEADS_UNAVAILABLE"
-	ErrCodeBeadNotFound     = "BEAD_NOT_FOUND"
-	ErrCodeBVUnavailable    = "BV_UNAVAILABLE"
-	beadsUnavailableMessage = "br (beads_rust) is not installed"
+	ErrCodeBeadsUnavailable   = "BEADS_UNAVAILABLE"
+	ErrCodeBeadNotFound       = "BEAD_NOT_FOUND"
+	ErrCodeBeadAlreadyClaimed = "BEAD_ALREADY_CLAIMED"
+	ErrCodeBVUnavailable      = "BV_UNAVAILABLE"
+	beadsUnavailableMessage   = "br (beads_rust) is not installed"
 )
 
 // Beads request/response types
@@ -115,6 +153,14 @@ func (s *Server) handleListBeads(w http.ResponseWriter, r *http.Request) {
 	label := r.URL.Query().Get("label")
 	assignee := r.URL.Query().Get("assignee")
 
+	// A filter value beginning with "-" would terminate its own flag and become
+	// a new option to br, e.g. ?status=--db=/etc/shadow.
+	if !validateBeadArgument(w, status, "status", reqID) ||
+		!validateBeadArgument(w, label, "label", reqID) ||
+		!validateBeadArgument(w, assignee, "assignee", reqID) {
+		return
+	}
+
 	// Build br command args
 	args := []string{"list", "--json"}
 	if status != "" {
@@ -161,6 +207,12 @@ func (s *Server) handleCreateBead(w http.ResponseWriter, r *http.Request) {
 
 	if req.Title == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "title is required", nil, reqID)
+		return
+	}
+	// The title is a positional argument to br, so a leading dash would be read
+	// as an option — notably `br create --file <FILE>`, which would ingest an
+	// arbitrary file as beads readable back through GET /api/v1/beads.
+	if !validateBeadArgument(w, req.Title, "title", reqID) {
 		return
 	}
 
@@ -225,6 +277,10 @@ func (s *Server) handleGetBead(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("get bead", "request_id", reqID, "bead_id", beadID)
 
+	if !validateBeadIDParam(w, beadID, reqID) {
+		return
+	}
+
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
@@ -255,10 +311,17 @@ func (s *Server) handleUpdateBead(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("update bead", "request_id", reqID, "bead_id", beadID)
 
+	if !validateBeadIDParam(w, beadID, reqID) {
+		return
+	}
+
 	// Validate request body before checking external tool availability.
 	var req UpdateBeadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil, reqID)
+		return
+	}
+	if req.Title != nil && !validateBeadArgument(w, *req.Title, "title", reqID) {
 		return
 	}
 
@@ -318,6 +381,10 @@ func (s *Server) handleCloseBead(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("close bead", "request_id", reqID, "bead_id", beadID)
 
+	if !validateBeadIDParam(w, beadID, reqID) {
+		return
+	}
+
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
@@ -360,6 +427,10 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("claim bead", "request_id", reqID, "bead_id", beadID)
 
+	if !validateBeadIDParam(w, beadID, reqID) {
+		return
+	}
+
 	// Validate request body before checking external tool availability.
 	var req ClaimBeadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -371,29 +442,32 @@ func (s *Server) handleClaimBead(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "assignee is required", nil, reqID)
 		return
 	}
+	if !validateBeadArgument(w, req.Assignee, "assignee", reqID) {
+		return
+	}
 
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
 	}
 
-	// Use br update to set assignee and status to in_progress
-	output, err := bv.RunBd(s.projectDir, "update", beadID, "--assignee", req.Assignee, "--status", "in_progress", "--json")
+	// Claiming must be a compare-and-set inside one SQLite transaction. Writing
+	// --assignee plus --status is a blind overwrite that silently steals a bead
+	// another agent already holds, and it also permits br's --no-db fallback,
+	// which cannot provide the transaction at all.
+	claim, err := bv.ClaimBead(r.Context(), s.projectDir, beadID, req.Assignee)
 	if err != nil {
+		if errors.Is(err, bv.ErrBeadAlreadyClaimed) {
+			writeErrorResponse(w, http.StatusConflict, ErrCodeBeadAlreadyClaimed, err.Error(), nil, reqID)
+			return
+		}
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
 
-	var bead interface{}
-	if err := json.Unmarshal([]byte(output), &bead); err != nil {
-		writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-			"claimed":  true,
-			"assignee": req.Assignee,
-			"output":   output,
-		}, reqID)
-		return
-	}
-	bead = normalizeSingularBeadPayload(bead)
+	// ClaimBead returns the claimed bead's authoritative post-claim state, so it
+	// is the response payload directly rather than re-parsed br output.
+	bead := claim
 
 	// Publish WebSocket event
 	if s.wsHub != nil {
@@ -529,6 +603,10 @@ func (s *Server) handleListBeadDeps(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("list bead dependencies", "request_id", reqID, "bead_id", beadID)
 
+	if !validateBeadIDParam(w, beadID, reqID) {
+		return
+	}
+
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
 		return
@@ -562,6 +640,10 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("add bead dependency", "request_id", reqID, "bead_id", beadID)
 
+	if !validateBeadIDParam(w, beadID, reqID) {
+		return
+	}
+
 	// Validate request body before checking external tool availability.
 	var req AddDependencyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -571,6 +653,9 @@ func (s *Server) handleAddBeadDep(w http.ResponseWriter, r *http.Request) {
 
 	if req.BlockedBy == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "blocked_by is required", nil, reqID)
+		return
+	}
+	if !validateBeadIDParam(w, req.BlockedBy, reqID) {
 		return
 	}
 
@@ -608,6 +693,10 @@ func (s *Server) handleRemoveBeadDep(w http.ResponseWriter, r *http.Request) {
 	depID := chi.URLParam(r, "depId")
 
 	slog.Info("remove bead dependency", "request_id", reqID, "bead_id", beadID, "dep_id", depID)
+
+	if !validateBeadIDParam(w, beadID, reqID) || !validateBeadIDParam(w, depID, reqID) {
+		return
+	}
 
 	if !bv.IsBdInstalled() {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeBeadsUnavailable, beadsUnavailableMessage, nil, reqID)
@@ -767,7 +856,11 @@ func (s *Server) handleBeadsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := bv.RunBd(s.projectDir, "sync", "--json")
+	// The direction must be pinned. A bare `br sync` lets br choose, and choosing
+	// import can overwrite .beads/issues.jsonl from a stale SQLite database,
+	// regressing issue status and destroying close reasons. Every other sync call
+	// site in the tree pins the same flags (internal/bv/bv.go, internal/hooks).
+	output, err := bv.RunBd(s.projectDir, "sync", "--flush-only", "--json", "--no-auto-import")
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
