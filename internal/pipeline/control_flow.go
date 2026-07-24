@@ -189,18 +189,30 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		return result
 	}
 
-	// Snapshot variables before branch body for scoping. The deferred
-	// restore reapplies the snapshot, but bd-afwly's on_failure runtime
-	// action contract requires ${runtime.<id>_failure_action} keys set
-	// inside the body to survive — they are global signaling, not branch-
-	// local data. Stash and re-merge them after the restore.
+	// Snapshot variables before the branch body for scoping.
+	//
+	// The restore is a targeted diff, never a whole-map replacement. A branch is
+	// reachable from a foreach body, and `parallel: true` runs those iterations
+	// concurrently — so replacing state.Variables with a pre-branch snapshot
+	// discarded every output_var and steps.<id>.* key a sibling iteration wrote
+	// while this body was running. Ownership is tracked explicitly instead:
+	// bodyStepIDs is appended to as the loop below assigns each concrete ID, and
+	// ownedOutputVars holds the body's declared output_var names.
+	//
+	// bd-afwly's on_failure runtime action contract still requires
+	// ${runtime.<id>_failure_action} keys set inside the body to survive — they
+	// are global signaling, not branch-local data. Those keys are never
+	// branch-owned by the rules above, so they survive; the explicit stash below
+	// additionally covers a runtime key the body *modified* rather than added.
+	var bodyStepIDs []string
+	ownedOutputVars := branchBodyOutputVars(branchSteps)
 	e.varMu.RLock()
 	varSnapshot := captureAllVariables(e.state.Variables)
 	e.varMu.RUnlock()
 	defer func() {
 		e.varMu.Lock()
 		runtimePersist := extractRuntimeKeys(e.state.Variables)
-		restoreAllVariables(e.state, varSnapshot)
+		restoreBranchVariables(e.state, varSnapshot, bodyStepIDs, ownedOutputVars)
 		mergeRuntimeKeys(e.state, runtimePersist)
 		e.varMu.Unlock()
 	}()
@@ -226,6 +238,10 @@ func (e *Executor) executeBranch(ctx context.Context, step *Step, workflow *Work
 		)
 
 		bs.ID = scopedChildStepID(step.ID, bs.ID, i+1)
+		// Record the concrete ID so the deferred restore knows which steps.*
+		// keys this branch owns. Nested constructs namespace their own children
+		// under this ID, so a prefix match covers them too.
+		bodyStepIDs = append(bodyStepIDs, bs.ID)
 		sr := e.executeStepOnce(ctx, &bs, workflow)
 
 		// bd-afwly: branch body steps now honor the on_failure runtime

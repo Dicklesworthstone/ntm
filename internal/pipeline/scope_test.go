@@ -118,3 +118,86 @@ func assertSubstituted(t *testing.T, state *ExecutionState, input, want string) 
 		t.Fatalf("Substitute(%q) = %q, want %q", input, got, want)
 	}
 }
+
+// A branch's restore must undo only its own writes. A branch is reachable from a
+// `parallel: true` foreach body, so a whole-map restore discarded every
+// output_var and steps.<id>.* key a sibling iteration wrote while the branch ran.
+func TestRestoreBranchVariablesLeavesConcurrentSiblingWrites(t *testing.T) {
+	state := &ExecutionState{Variables: map[string]interface{}{
+		"global": "before",
+		"keep":   "same",
+	}}
+	snapshot := captureAllVariables(state.Variables)
+
+	// The branch body writes its own keys and mutates a pre-existing one.
+	bodyStepIDs := []string{"route_child_1", "route_child_2"}
+	ownedOutputVars := branchBodyOutputVars([]Step{{ID: "emit", OutputVar: "branch_local"}})
+	state.Variables["global"] = "branch-local"
+	state.Variables["branch_local"] = "body output"
+	state.Variables["steps.route_child_1.output"] = "body step output"
+	state.Variables["steps.route_child_1_on_success_1.output"] = "nested output"
+
+	// Meanwhile, concurrent sibling foreach iterations write their own keys.
+	state.Variables["produced_c"] = "sibling output"
+	state.Variables["steps.produce_iter_3.output"] = "sibling step output"
+	state.Variables["runtime.route_failure_action"] = "fallback_to_ntm_inbox"
+
+	restoreBranchVariables(state, snapshot, bodyStepIDs, ownedOutputVars)
+
+	// Branch-owned keys are gone and mutations reverted.
+	if state.Variables["global"] != "before" {
+		t.Fatalf("global = %v, want before", state.Variables["global"])
+	}
+	if state.Variables["keep"] != "same" {
+		t.Fatalf("keep = %v, want same", state.Variables["keep"])
+	}
+	for _, key := range []string{
+		"branch_local",
+		"steps.route_child_1.output",
+		"steps.route_child_1_on_success_1.output",
+	} {
+		if _, ok := state.Variables[key]; ok {
+			t.Fatalf("branch-owned key %q leaked after restore", key)
+		}
+	}
+
+	// Sibling and global-signaling keys survive.
+	for key, want := range map[string]interface{}{
+		"produced_c":                   "sibling output",
+		"steps.produce_iter_3.output":  "sibling step output",
+		"runtime.route_failure_action": "fallback_to_ntm_inbox",
+	} {
+		got, ok := state.Variables[key]
+		if !ok {
+			t.Fatalf("concurrent sibling key %q was destroyed by the branch restore", key)
+		}
+		if got != want {
+			t.Fatalf("%q = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// Ownership must be decided by the executed body step IDs, not by a loose prefix
+// on the branch step ID, or an unrelated sibling step whose name merely starts
+// with the same text would be swept away.
+func TestBranchOwnsVariableRequiresRecordedBodyStepID(t *testing.T) {
+	bodyStepIDs := []string{"route_child_1"}
+	owned := map[string]struct{}{"declared": {}}
+
+	cases := map[string]bool{
+		"declared":                                true,
+		"steps.route_child_1.output":              true,
+		"steps.route_child_1.data":                true,
+		"steps.route_child_1_on_success_1.output": true,
+		"steps.route_child_2.output":              false, // never executed
+		"steps.route_sibling.output":              false, // unrelated step
+		"steps.produce_iter_3.output":             false, // concurrent sibling
+		"runtime.route_failure_action":            false, // global signaling
+		"unrelated":                               false,
+	}
+	for key, want := range cases {
+		if got := branchOwnsVariable(key, bodyStepIDs, owned); got != want {
+			t.Fatalf("branchOwnsVariable(%q) = %t, want %t", key, got, want)
+		}
+	}
+}

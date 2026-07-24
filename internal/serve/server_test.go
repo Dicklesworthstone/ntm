@@ -5706,21 +5706,45 @@ func TestRequestIDFromContext(t *testing.T) {
 // checkWSOrigin tests
 // =============================================================================
 
-func TestCheckWSOrigin_LocalMode(t *testing.T) {
+// Local mode is the default, and WebSocket upgrades are exempt from CORS, so a
+// local-mode bypass meant any page the operator visited could open a socket to
+// 127.0.0.1 and subscribe to the attention journal, pane output, and mail. The
+// allowlist applies in every mode now.
+func TestCheckWSOrigin_LocalModeRejectsForeignOrigin(t *testing.T) {
 	srv := &Server{auth: AuthConfig{Mode: AuthModeLocal}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Origin", "https://evil.com")
-	if !srv.checkWSOrigin(req) {
-		t.Error("local mode should accept any origin")
+	if srv.checkWSOrigin(req) {
+		t.Error("local mode must not accept a foreign origin (CSWSH)")
 	}
 }
 
-func TestCheckWSOrigin_EmptyMode(t *testing.T) {
+func TestCheckWSOrigin_EmptyModeRejectsForeignOrigin(t *testing.T) {
 	srv := &Server{auth: AuthConfig{Mode: ""}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Origin", "https://evil.com")
-	if !srv.checkWSOrigin(req) {
-		t.Error("empty auth mode should accept any origin")
+	if srv.checkWSOrigin(req) {
+		t.Error("empty auth mode must not accept a foreign origin (CSWSH)")
+	}
+}
+
+// The local operator surfaces must keep working: the default allowlist carries no
+// ports, so origin matching has to be port-insensitive on the hostname, exactly
+// as the CORS middleware already was.
+func TestCheckWSOrigin_LocalModeAllowsLocalhostWithPort(t *testing.T) {
+	for _, mode := range []AuthMode{AuthModeLocal, ""} {
+		srv := &Server{auth: AuthConfig{Mode: mode}}
+		for _, origin := range []string{
+			"http://localhost:7337",
+			"http://127.0.0.1:7337",
+			"http://[::1]:7337",
+		} {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Origin", origin)
+			if !srv.checkWSOrigin(req) {
+				t.Errorf("mode %q rejected local operator origin %q", mode, origin)
+			}
+		}
 	}
 }
 

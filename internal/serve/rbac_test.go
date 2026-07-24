@@ -405,3 +405,81 @@ func TestDefaultRBACConfig(t *testing.T) {
 		t.Error("Default should not allow anonymous")
 	}
 }
+
+// api_key and mtls callers carry no role in the credential itself, so
+// authenticateRequest must supply one. Returning nil claims left RBAC with an
+// empty claim set that fell through to RoleViewer, which holds no write
+// permission — so enabling authentication turned every mutating endpoint into a
+// 403 and no test covered it.
+func TestAuthenticateRequestGrantsRoleForSharedCredentials(t *testing.T) {
+	t.Run("api key defaults to admin", func(t *testing.T) {
+		s := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret"}}
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", nil)
+		r.Header.Set("Authorization", "Bearer secret")
+
+		claims, err := s.authenticateRequest(r)
+		if err != nil {
+			t.Fatalf("authenticateRequest: %v", err)
+		}
+		if claims == nil {
+			t.Fatal("claims are nil; RBAC would fall through to viewer")
+		}
+		if got := s.extractRoleFromClaims(claims); got != RoleAdmin {
+			t.Fatalf("role = %q, want %q", got, RoleAdmin)
+		}
+		if !RoleAdmin.HasPermission(PermWriteSessions) {
+			t.Fatal("admin must hold sessions:write")
+		}
+	})
+
+	t.Run("api key honors a configured lower role", func(t *testing.T) {
+		s := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret", Role: RoleViewer}}
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		r.Header.Set("Authorization", "Bearer secret")
+
+		claims, err := s.authenticateRequest(r)
+		if err != nil {
+			t.Fatalf("authenticateRequest: %v", err)
+		}
+		if got := s.extractRoleFromClaims(claims); got != RoleViewer {
+			t.Fatalf("role = %q, want %q", got, RoleViewer)
+		}
+	})
+
+	t.Run("bad api key still fails closed", func(t *testing.T) {
+		s := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret"}}
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", nil)
+		r.Header.Set("Authorization", "Bearer wrong")
+
+		if _, err := s.authenticateRequest(r); err == nil {
+			t.Fatal("an invalid api key must be rejected")
+		}
+	})
+}
+
+// The write API must actually work once authentication is enabled: a valid key
+// reaches a permission-gated handler instead of being refused by RBAC.
+func TestAuthenticatedAPIKeyReachesWriteGatedRoute(t *testing.T) {
+	s := &Server{auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "secret"}}
+
+	reached := false
+	handler := s.authMiddlewareFunc(
+		s.rbacMiddleware(
+			s.RequirePermission(PermWriteSessions)(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusOK)
+				}),
+			),
+		),
+	)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", nil)
+	r.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK || !reached {
+		t.Fatalf("authenticated write got status=%d reached=%t body=%s", rec.Code, reached, rec.Body.String())
+	}
+}

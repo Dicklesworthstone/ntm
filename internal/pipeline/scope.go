@@ -92,6 +92,80 @@ func restoreAllVariables(state *ExecutionState, snapshot map[string]interface{})
 	state.Variables = captureAllVariables(snapshot)
 }
 
+// restoreBranchVariables undoes a branch body's variable writes without
+// disturbing writes made concurrently by sibling steps.
+//
+// A whole-map restore is wrong for a branch: it is reachable from a `parallel:
+// true` foreach body, so replacing the map with a pre-branch snapshot discarded
+// every output_var and steps.<id>.* key a sibling iteration wrote while the
+// branch body ran. This instead:
+//
+//   - reverts keys that existed in the snapshot to their snapshot value, and
+//   - removes keys added since the snapshot only when the branch owns them,
+//     meaning a steps.* key namespaced under one of the executed body step IDs,
+//     or an output_var declared by the body.
+//
+// Anything else added during the body belongs to a concurrent sibling, or is
+// deliberate global signaling such as runtime.*, and is left alone. Leaking a
+// variable is recoverable; destroying a sibling's output is not.
+func restoreBranchVariables(state *ExecutionState, snapshot map[string]interface{}, bodyStepIDs []string, ownedOutputVars map[string]struct{}) {
+	if state == nil {
+		return
+	}
+	if state.Variables == nil {
+		if snapshot != nil {
+			state.Variables = captureAllVariables(snapshot)
+		}
+		return
+	}
+
+	for key, prev := range snapshot {
+		state.Variables[key] = prev
+	}
+
+	for key := range state.Variables {
+		if _, existed := snapshot[key]; existed {
+			continue
+		}
+		if branchOwnsVariable(key, bodyStepIDs, ownedOutputVars) {
+			delete(state.Variables, key)
+		}
+	}
+}
+
+// branchOwnsVariable reports whether a variable key was created by the branch
+// body rather than by a concurrently running sibling.
+func branchOwnsVariable(key string, bodyStepIDs []string, ownedOutputVars map[string]struct{}) bool {
+	if _, ok := ownedOutputVars[key]; ok {
+		return true
+	}
+	if !strings.HasPrefix(key, "steps.") {
+		return false
+	}
+	for _, id := range bodyStepIDs {
+		if id == "" {
+			continue
+		}
+		prefix := "steps." + id
+		if key == prefix || strings.HasPrefix(key, prefix+".") || strings.HasPrefix(key, prefix+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+// branchBodyOutputVars collects the output_var names a branch body declares, so
+// the deferred restore can remove them without guessing.
+func branchBodyOutputVars(steps []Step) map[string]struct{} {
+	owned := make(map[string]struct{}, len(steps))
+	for _, step := range steps {
+		if name := strings.TrimSpace(step.OutputVar); name != "" {
+			owned[name] = struct{}{}
+		}
+	}
+	return owned
+}
+
 // extractRuntimeKeys returns a copy of every "runtime.*" entry plus the
 // nested "runtime" map (if any) in vars. Used so branch / scoped blocks
 // can persist on_failure runtime-action signals across a snapshot

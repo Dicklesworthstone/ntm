@@ -136,6 +136,20 @@ type AuthConfig struct {
 	APIKey string
 	OIDC   OIDCConfig
 	MTLS   MTLSConfig
+	// Role is granted to callers authenticated by a shared credential that
+	// carries no role of its own — the api_key and mtls modes. Both mean "the
+	// operator's own credential", so it defaults to RoleAdmin; set it lower to
+	// restrict what a shared key or client certificate may do. It does not apply
+	// to oidc, where the token's own claims decide.
+	Role Role
+}
+
+// sharedCredentialRole resolves the role granted to api_key and mtls callers.
+func (a AuthConfig) sharedCredentialRole() Role {
+	if a.Role == "" {
+		return RoleAdmin
+	}
+	return a.Role
 }
 
 // OIDCConfig configures OIDC/JWT verification for API access.
@@ -1587,18 +1601,46 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) authenticateRequest(r *http.Request) (map[string]interface{}, error) {
+	// Every successful path must return claims carrying a role. Returning nil
+	// claims left RBAC with an empty claim set, and extractRoleFromClaims only
+	// short-circuits to admin for local mode — so api_key and mtls callers fell
+	// through to RoleViewer and every mutating endpoint answered 403. Enabling
+	// authentication must not disable the write API.
 	switch s.auth.Mode {
 	case AuthModeAPIKey:
-		return nil, s.authenticateAPIKey(r)
+		if err := s.authenticateAPIKey(r); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"role": string(s.auth.sharedCredentialRole()),
+			"sub":  "api-key",
+		}, nil
 	case AuthModeOIDC:
 		return s.authenticateOIDC(r)
 	case AuthModeMTLS:
-		return nil, s.authenticateMTLS(r)
+		if err := s.authenticateMTLS(r); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"role": string(s.auth.sharedCredentialRole()),
+			"sub":  mtlsClientSubject(r),
+		}, nil
 	case AuthModeLocal, "":
 		return map[string]interface{}{"role": string(RoleAdmin)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported auth mode %q", s.auth.Mode)
 	}
+}
+
+// mtlsClientSubject names the authenticated client for audit and RBAC context.
+func mtlsClientSubject(r *http.Request) string {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return "mtls-client"
+	}
+	if cn := strings.TrimSpace(r.TLS.PeerCertificates[0].Subject.CommonName); cn != "" {
+		return cn
+	}
+	return "mtls-client"
 }
 
 func (s *Server) authenticateAPIKey(r *http.Request) error {
@@ -4095,21 +4137,25 @@ func (s *Server) Router() chi.Router {
 // ============================================================================
 
 // checkWSOrigin validates the Origin header for WebSocket connections.
-// In local auth mode, it allows any origin. Otherwise, it validates against
-// the configured allowed origins to prevent WebSocket CSRF attacks.
+//
+// The allowlist applies in every auth mode, including local. WebSocket
+// handshakes are exempt from CORS, and the REST CSRF defence is the CORS
+// middleware's 403-on-bad-Origin, which never runs for an upgrade — so accepting
+// any origin in local mode let any page the operator happened to visit open a
+// socket to 127.0.0.1 and subscribe to the attention journal, pane output, and
+// mail. Local mode is the default, so that was the default posture.
+//
+// An absent Origin header is still allowed: only browsers send Origin, and only
+// browsers are the CSWSH vector, so requiring it would break agents and curl
+// without adding protection.
 func (s *Server) checkWSOrigin(r *http.Request) bool {
-	// In local mode, accept any origin for development convenience
-	if s.auth.Mode == AuthModeLocal || s.auth.Mode == "" {
-		return true
-	}
-
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// No origin header - allow for non-browser clients
 		return true
 	}
 
-	// Parse the origin URL to extract scheme and host
+	// Parse the origin URL to reject malformed values before matching.
 	originURL, err := url.Parse(origin)
 	if err != nil {
 		log.Printf("ws: invalid origin URL %q: %v", origin, err)
@@ -4122,24 +4168,23 @@ func (s *Server) checkWSOrigin(r *http.Request) bool {
 		return false
 	}
 
-	// Check against configured allowed origins using full URL comparison
-	// (not prefix matching, which would allow https://evil.com to match https://e)
+	// Match with the same predicate the CORS middleware uses. The two must not
+	// diverge: this used to compare Host (port-sensitive) while CORS compares
+	// Hostname, so the default localhost allowlist — which carries no ports —
+	// would have rejected a browser at http://localhost:7337 here while allowing
+	// it there.
 	s.mu.RLock()
 	origins := s.corsAllowedOrigins
 	s.mu.RUnlock()
-	for _, allowed := range origins {
-		allowedURL, err := url.Parse(allowed)
-		if err != nil {
-			continue
-		}
-		// Skip malformed allowed origins
-		if allowedURL.Scheme == "" || allowedURL.Host == "" {
-			continue
-		}
-		// Compare scheme and host (host includes port if specified)
-		if originURL.Scheme == allowedURL.Scheme && originURL.Host == allowedURL.Host {
-			return true
-		}
+	if len(origins) == 0 {
+		// Config documents an empty allowlist as "default localhost only".
+		// applyDefaults normally materializes that, but honoring it here too
+		// means a Server built without defaults enforces the documented policy
+		// rather than rejecting every browser origin.
+		origins = defaultLocalOrigins()
+	}
+	if originAllowed(origin, origins) {
+		return true
 	}
 
 	log.Printf("ws: rejected origin %q (allowed: %v)", origin, origins)
