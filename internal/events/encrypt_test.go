@@ -94,6 +94,61 @@ func TestEncryptedEventLogRoundTrip(t *testing.T) {
 	}
 }
 
+// ReadSince backs read-only surfaces such as `ntm analytics`. Reading the raw
+// lines there silently reported zero events whenever encryption was enabled, so
+// pin the decrypting behavior.
+func TestReadSince_DecryptsEncryptedLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "events.jsonl")
+
+	key := evtTestKey(t)
+	SetEncryptionConfig(&EncryptionConfig{
+		Enabled:     true,
+		EncryptKey:  key,
+		DecryptKeys: [][]byte{key},
+	})
+	defer SetEncryptionConfig(nil)
+
+	logger, err := NewLogger(LoggerOptions{Path: logPath, RetentionDays: 30, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	if err := logger.Log(NewEvent(EventSessionCreate, "read-since", map[string]interface{}{"agents": 2})); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got, err := ReadSince(logPath, time.Time{})
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1 (encrypted lines must be decrypted, not skipped)", len(got))
+	}
+	if got[0].Type != EventSessionCreate || got[0].Session != "read-since" {
+		t.Fatalf("got event %+v, want session create for %q", got[0], "read-since")
+	}
+
+	// Without keys the same log must not silently masquerade as empty-but-fine:
+	// the lines are skipped, but the caller sees zero events rather than plaintext.
+	SetEncryptionConfig(nil)
+	blind, err := ReadSince(logPath, time.Time{})
+	if err != nil {
+		t.Fatalf("ReadSince without keys: %v", err)
+	}
+	if len(blind) != 0 {
+		t.Fatalf("got %d events without keys, want 0", len(blind))
+	}
+}
+
+func TestReadSince_MissingFile(t *testing.T) {
+	if _, err := ReadSince(filepath.Join(t.TempDir(), "absent.jsonl"), time.Time{}); err == nil {
+		t.Fatal("expected an error for a missing log file")
+	}
+}
+
 func TestMixedPlaintextAndEncryptedEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "events.jsonl")
