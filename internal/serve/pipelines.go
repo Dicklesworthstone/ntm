@@ -33,6 +33,65 @@ const (
 	ErrCodeNoResumableState = "NO_RESUMABLE_STATE"
 )
 
+// resolveWorkflowPath confines a caller-supplied workflow path to the server's
+// project directory.
+//
+// Pipeline files are project assets, and the handlers pass the path straight to
+// pipeline.ParseFile, which os.ReadFile's it BEFORE checking the extension. An
+// unconfined path therefore turned a pipelines endpoint into an arbitrary-file
+// reader: the returned load error distinguishes "permission denied" from "no such
+// file" (an existence oracle), and for .yaml/.toml targets the parse error leaks
+// the file's key names. /validate needs only pipelines:read, which RoleViewer
+// holds, so this was reachable by the least-privileged role.
+func (s *Server) resolveWorkflowPath(path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", errors.New("workflow_file is required")
+	}
+
+	projectDir := strings.TrimSpace(s.projectDir)
+	if projectDir == "" {
+		return "", errors.New("server has no project directory configured")
+	}
+	root, err := filepath.Abs(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+
+	candidate := trimmed
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, candidate)
+	}
+	candidate = filepath.Clean(candidate)
+
+	// Resolve symlinks when the target exists so a link inside the project cannot
+	// point outside it. A path that does not exist yet is checked lexically; the
+	// load will fail on its own afterwards.
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+		candidate = resolved
+	}
+
+	if !pathWithinRoot(root, candidate) {
+		return "", errors.New("workflow_file must be inside the project directory")
+	}
+	return candidate, nil
+}
+
+// pathWithinRoot reports whether candidate is root or lies beneath it.
+func pathWithinRoot(root, candidate string) bool {
+	if candidate == root {
+		return true
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // PipelineRunRequest is the request body for POST /api/v1/pipelines/run
 type PipelineRunRequest struct {
 	WorkflowFile string                 `json:"workflow_file"`
@@ -418,8 +477,13 @@ func (s *Server) handleValidatePipeline(w http.ResponseWriter, r *http.Request) 
 		workflow = wf
 		validation = pipeline.Validate(workflow)
 	} else if req.WorkflowFile != "" {
-		// Load and validate from file
-		wf, val, err := pipeline.LoadAndValidate(req.WorkflowFile)
+		// Load and validate from file, confined to the project directory.
+		workflowPath, pathErr := s.resolveWorkflowPath(req.WorkflowFile)
+		if pathErr != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, pathErr.Error(), nil, reqID)
+			return
+		}
+		wf, val, err := pipeline.LoadAndValidate(workflowPath)
 		if err != nil {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeInvalidWorkflow, "failed to load workflow", map[string]interface{}{
 				"load_error": err.Error(),
@@ -546,9 +610,12 @@ func pipelineEventTypeFromProgressType(progressType string) (string, bool) {
 func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{}
 
-	workflowPath := opts.WorkflowFile
-	if abs, err := filepath.Abs(opts.WorkflowFile); err == nil {
-		workflowPath = abs
+	// Confine the workflow path to the project directory for the same reason
+	// /validate does: the path reaches os.ReadFile before any extension check.
+	workflowPath, pathErr := s.resolveWorkflowPath(opts.WorkflowFile)
+	if pathErr != nil {
+		output.RobotResponse = pipeline.NewErrorResponse(pathErr, ErrCodeBadRequest, "pass a workflow file inside the project directory")
+		return output
 	}
 
 	// Load and validate workflow

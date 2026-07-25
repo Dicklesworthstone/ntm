@@ -92,8 +92,12 @@ type Server struct {
 
 	// Agent Mail client (lazy-init)
 	mailClient *agentmail.Client
-	projectDir string
-	mu         sync.RWMutex
+	// mailUnavailableUntil caches a negative availability verdict so an
+	// unreachable Agent Mail server does not make every mail request pay the
+	// probe budget again. Guarded by mu.
+	mailUnavailableUntil time.Time
+	projectDir           string
+	mu                   sync.RWMutex
 
 	// Redaction configuration for REST API
 	redactionCfg *RedactionConfig
@@ -2575,6 +2579,8 @@ func (s *Server) handlePatchConfigV1(w http.ResponseWriter, r *http.Request) {
 		s.projectDir = req.ProjectDir
 		// Reset mail client so it picks up new project dir
 		s.mailClient = nil
+		// A new project directory invalidates the cached unavailability verdict too.
+		s.mailUnavailableUntil = time.Time{}
 	}
 	currentOrigins := s.corsAllowedOrigins
 	currentProjectDir := s.projectDir

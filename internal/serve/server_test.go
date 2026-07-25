@@ -4473,7 +4473,11 @@ func TestPipelineEventTypeFromProgressType(t *testing.T) {
 func TestRunPipelineWithResult_InvalidWorkflowDoesNotPanic(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
+	// The workflow must live inside the server's project directory: workflow paths
+	// are confined there, so an out-of-project fixture would be rejected on the
+	// path instead of exercising the schema-failure path this test is about.
 	tmpDir := t.TempDir()
+	srv.projectDir = tmpDir
 	workflowPath := filepath.Join(tmpDir, "invalid.yaml")
 	content := `
 name: invalid-workflow

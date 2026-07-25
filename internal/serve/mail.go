@@ -371,25 +371,58 @@ func (s *Server) registerMailRoutes(r chi.Router) {
 	})
 }
 
+// mailUnavailableCacheTTL is how long an "Agent Mail is unreachable" verdict is
+// trusted before probing again. It matches the client's own availability cache,
+// which never took effect while only successful probes were cached.
+const mailUnavailableCacheTTL = 30 * time.Second
+
 // getMailClient returns the Agent Mail client, creating it if necessary.
+//
+// The availability probe runs OUTSIDE s.mu. IsAvailable makes up to three probes
+// bounded by agentmail's 1250ms budget, and redactionMiddleware takes s.mu for
+// reading on every single request (as does the CORS middleware for any request
+// carrying an Origin). Go's RWMutex is writer-preferring, so holding the write
+// lock across that probe stalled every other request behind it — continuously,
+// once Agent Mail was down, because the previous code only cached the client on
+// the success path and so re-probed on every mail request.
 func (s *Server) getMailClient() (*agentmail.Client, error) {
+	s.mu.RLock()
+	cached := s.mailClient
+	projectDir := s.projectDir
+	unavailableUntil := s.mailUnavailableUntil
+	s.mu.RUnlock()
+
+	if cached != nil {
+		return cached, nil
+	}
+	if !unavailableUntil.IsZero() && time.Now().Before(unavailableUntil) {
+		return nil, nil // Known unavailable; do not re-probe yet.
+	}
+
+	// Create client with project key derived from working directory, and probe
+	// without holding the server lock.
+	client := agentmail.NewClient(
+		agentmail.WithProjectKey(projectDir),
+	)
+	available := client.IsAvailable()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// A concurrent request may have won the race, or the project directory may
+	// have been repointed while we were probing.
 	if s.mailClient != nil {
 		return s.mailClient, nil
 	}
-
-	// Create client with project key derived from working directory
-	client := agentmail.NewClient(
-		agentmail.WithProjectKey(s.projectDir),
-	)
-
-	// Check if server is available
-	if !client.IsAvailable() {
+	if s.projectDir != projectDir {
+		return nil, nil // Probe result is for a stale project; retry next call.
+	}
+	if !available {
+		s.mailUnavailableUntil = time.Now().Add(mailUnavailableCacheTTL)
 		return nil, nil // Return nil, nil to indicate unavailable (not an error)
 	}
 
+	s.mailUnavailableUntil = time.Time{}
 	s.mailClient = client
 	return client, nil
 }
