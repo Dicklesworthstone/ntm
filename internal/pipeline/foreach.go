@@ -1145,7 +1145,10 @@ func (e *Executor) storeForeachNestedResult(step *Step, result StepResult) {
 	if e.state.Variables == nil {
 		e.state.Variables = make(map[string]interface{})
 	}
-	if step.OutputVar != "" {
+	// A nested foreach container owns its OutputVar: storeForeachOutputVars has
+	// already written the declared aggregate shape there, so overwriting it with
+	// result.Output (the human summary line) would discard the collected data.
+	if step.OutputVar != "" && !stepOwnsForeachOutputVar(step) {
 		e.state.Variables[step.OutputVar] = result.Output
 		if result.ParsedData != nil {
 			e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
@@ -1153,6 +1156,13 @@ func (e *Executor) storeForeachNestedResult(step *Step, result StepResult) {
 	}
 	StoreStepOutput(e.state, result.StepID, result.Output, result.ParsedData)
 	e.varMu.Unlock()
+}
+
+// stepOwnsForeachOutputVar reports whether a step is a foreach container, whose
+// OutputVar is written by storeForeachOutputVars with the shape declared by
+// output_var_mode rather than by the generic step-result path.
+func stepOwnsForeachOutputVar(step *Step) bool {
+	return step != nil && (step.Foreach != nil || step.ForeachPane != nil)
 }
 
 func (e *Executor) substituteForeachStepFields(step *Step) {

@@ -1210,3 +1210,51 @@ func TestExecuteForeach_ResumeSkipsCompletedIterations(t *testing.T) {
 		t.Fatalf("CompletedIterationIDs = %v, want 3 entries after the resumed run", st.CompletedIterationIDs)
 	}
 }
+
+// A foreach container's output_var is written by storeForeachOutputVars with the
+// shape output_var_mode declares. The generic step-result path then overwrote it
+// with result.Output — "Foreach completed: 2/2 dispatched, 0 skipped, 0 failed" —
+// so output_var_mode was dead and downstream `${vars.x}` consumers read a status
+// string instead of the collected data.
+func TestStepOwnsForeachOutputVar(t *testing.T) {
+	cases := map[string]struct {
+		step *Step
+		want bool
+	}{
+		"nil step":      {step: nil, want: false},
+		"plain command": {step: &Step{ID: "run", OutputVar: "out"}, want: false},
+		"foreach":       {step: &Step{ID: "each", Foreach: &ForeachConfig{}}, want: true},
+		"foreach_pane":  {step: &Step{ID: "each", ForeachPane: &ForeachConfig{}}, want: true},
+	}
+	for name, tc := range cases {
+		if got := stepOwnsForeachOutputVar(tc.step); got != tc.want {
+			t.Errorf("%s: stepOwnsForeachOutputVar = %t, want %t", name, got, tc.want)
+		}
+	}
+}
+
+// storeForeachOutputVars writes the declared aggregate shape; the value must
+// survive as that shape rather than being replaced by a summary string.
+func TestForeachAggregateOutputVarKeepsDeclaredShape(t *testing.T) {
+	state := &ExecutionState{Variables: map[string]interface{}{}}
+	e := &Executor{state: state}
+
+	parent := &Step{ID: "each", OutputVar: "collected", Foreach: &ForeachConfig{}}
+	state.Variables[parent.OutputVar] = []string{"a", "b"}
+
+	// Simulate the generic step-result path running afterwards.
+	summary := "Foreach completed: 2/2 dispatched, 0 skipped, 0 failed"
+	e.storeForeachNestedResult(parent, StepResult{StepID: parent.ID, Status: StatusCompleted, Output: summary})
+
+	got, ok := state.Variables[parent.OutputVar].([]string)
+	if !ok {
+		t.Fatalf("output_var type = %T (%v), want []string", state.Variables[parent.OutputVar], state.Variables[parent.OutputVar])
+	}
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("output_var = %v, want [a b]", got)
+	}
+	// The steps.<id>.output key still carries the summary for observability.
+	if state.Variables["steps."+parent.ID+".output"] != summary {
+		t.Fatalf("steps.%s.output = %v, want the summary line", parent.ID, state.Variables["steps."+parent.ID+".output"])
+	}
+}

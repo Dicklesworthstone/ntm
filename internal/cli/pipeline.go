@@ -631,6 +631,14 @@ Examples:
 				StepID:         stepID,
 				Iteration:      iteration,
 			}
+			// normalizeResumeOptions derives KeepState from Reset (bd-uyjdn), so a
+			// KeepState:false set here alone was silently flipped back to true and
+			// --keep-state=false never reset anything. Reset is how the caller
+			// expresses that intent, and only an explicitly passed flag counts —
+			// otherwise the documented keep-state default would invert.
+			if cmd.Flags().Changed("keep-state") && !keepState {
+				resumeOpts.Reset = true
+			}
 			if maxResumeAge != "" {
 				age, err := parseDuration(maxResumeAge)
 				if err != nil {

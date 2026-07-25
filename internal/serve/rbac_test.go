@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -481,5 +482,106 @@ func TestAuthenticatedAPIKeyReachesWriteGatedRoute(t *testing.T) {
 
 	if rec.Code != http.StatusOK || !reached {
 		t.Fatalf("authenticated write got status=%d reached=%t body=%s", rec.Code, reached, rec.Body.String())
+	}
+}
+
+// Chi applies a sub-router's Use middlewares before routing, hence before an
+// inline With chain, and an idempotency replay returns without calling next — so
+// with idempotencyMiddleware on the sub-router, a replayed request never reached
+// RequirePermission. The key also carried no principal, so one caller's cached
+// response was served to another who reused the key.
+func TestIdempotencyReplayStillEnforcesPermission(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	calls := 0
+	target := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"job":"created"}`))
+	})
+	// Production order: RequirePermission runs BEFORE idempotencyMiddleware, which
+	// is what `With(RequirePermission(...), s.idempotencyMiddleware)` produces.
+	// Nesting idempotency outside the permission check is the vulnerable shape.
+	//
+	// rbacMiddleware is deliberately not in this chain: it derives the role from
+	// auth claims and would replace the injected RoleContext with admin in local
+	// mode, so the per-caller distinction under test would vanish.
+	handler := srv.RequirePermission(PermWriteJobs)(srv.idempotencyMiddleware(target))
+
+	authorized := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", nil)
+		r.Header.Set("Idempotency-Key", "shared-key")
+		r = r.WithContext(withRoleContext(r.Context(), &RoleContext{Role: RoleAdmin, UserID: "alice"}))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, r)
+		return rec
+	}
+
+	// First call runs the handler and caches the response.
+	if rec := authorized(); rec.Code != http.StatusOK {
+		t.Fatalf("first authorized call status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
+
+	// Same principal replaying the same key is served from cache.
+	rec := authorized()
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Idempotent-Replay") != "true" {
+		t.Fatalf("replay status=%d replay-header=%q", rec.Code, rec.Header().Get("X-Idempotent-Replay"))
+	}
+	if calls != 1 {
+		t.Fatalf("replay re-ran the handler: calls = %d", calls)
+	}
+
+	// A viewer reusing the same key must be refused, not handed the cached
+	// response of an authorized caller.
+	viewerReq := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", nil)
+	viewerReq.Header.Set("Idempotency-Key", "shared-key")
+	viewerReq = viewerReq.WithContext(withRoleContext(viewerReq.Context(), &RoleContext{Role: RoleViewer, UserID: "bob"}))
+	viewerRec := httptest.NewRecorder()
+	handler.ServeHTTP(viewerRec, viewerReq)
+
+	if viewerRec.Code != http.StatusForbidden {
+		t.Fatalf("viewer replay status=%d body=%s, want 403", viewerRec.Code, viewerRec.Body.String())
+	}
+	if strings.Contains(viewerRec.Body.String(), "created") {
+		t.Fatalf("viewer received the authorized caller's cached response: %s", viewerRec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("viewer reached the handler: calls = %d", calls)
+	}
+}
+
+// The principal is part of the key, so the same key from different callers does
+// not collide.
+func TestScopedIdempotencyKeyIncludesPrincipal(t *testing.T) {
+	newReq := func(rc *RoleContext) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", nil)
+		r.Header.Set("Idempotency-Key", "same-key")
+		if rc != nil {
+			r = r.WithContext(withRoleContext(r.Context(), rc))
+		}
+		return r
+	}
+
+	alice := scopedIdempotencyKey(newReq(&RoleContext{Role: RoleAdmin, UserID: "alice"}))
+	bob := scopedIdempotencyKey(newReq(&RoleContext{Role: RoleAdmin, UserID: "bob"}))
+	anon := scopedIdempotencyKey(newReq(nil))
+
+	if alice == bob {
+		t.Fatal("different principals produced the same idempotency key")
+	}
+	for name, key := range map[string]string{"alice": alice, "bob": bob, "anonymous": anon} {
+		if key == "" {
+			t.Fatalf("%s produced an empty key", name)
+		}
+		if !strings.Contains(key, "same-key") {
+			t.Fatalf("%s key lost the client key: %q", name, key)
+		}
+	}
+	// No Idempotency-Key means no caching at all.
+	if got := scopedIdempotencyKey(httptest.NewRequest(http.MethodPost, "/api/v1/jobs", nil)); got != "" {
+		t.Fatalf("missing Idempotency-Key produced %q, want empty", got)
 	}
 }

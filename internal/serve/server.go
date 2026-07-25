@@ -1061,13 +1061,18 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(s.RequirePermission(PermWriteAgents)).Post("/wait", s.handleAgentWaitV1)
 		})
 
-		// Jobs API - read requires PermReadJobs, write requires PermWriteJobs
+		// Jobs API - read requires PermReadJobs, write requires PermWriteJobs.
+		//
+		// idempotencyMiddleware must sit AFTER RequirePermission in each chain, not
+		// on the sub-router. Chi applies a sub-router's Use middlewares before
+		// routing, hence before an inline With chain, and a cached replay returns
+		// from the middleware without calling next — so the permission check never
+		// ran for a replayed request.
 		r.Route("/jobs", func(r chi.Router) {
-			r.Use(s.idempotencyMiddleware)
 			r.With(s.RequirePermission(PermReadJobs)).Get("/", s.handleListJobs)
-			r.With(s.RequirePermission(PermWriteJobs)).Post("/", s.handleCreateJob)
+			r.With(s.RequirePermission(PermWriteJobs), s.idempotencyMiddleware).Post("/", s.handleCreateJob)
 			r.With(s.RequirePermission(PermReadJobs)).Get("/{id}", s.handleGetJob)
-			r.With(s.RequirePermission(PermWriteJobs)).Delete("/{id}", s.handleCancelJob)
+			r.With(s.RequirePermission(PermWriteJobs), s.idempotencyMiddleware).Delete("/{id}", s.handleCancelJob)
 		})
 
 		// Pipeline API
@@ -1462,8 +1467,14 @@ func scopedIdempotencyKey(r *http.Request) string {
 	if path == "" {
 		path = r.URL.Path
 	}
+	// The authenticated principal is part of the key. Without it, one caller's
+	// cached response was served to any other caller that reused the same
+	// Idempotency-Key on the same method+path — including a caller who lacked the
+	// permission the original request needed.
+	principal := idempotencyPrincipal(r)
+
 	var b strings.Builder
-	b.Grow(len(r.Method) + len(path) + len(r.URL.RawQuery) + len(rawKey) + 3)
+	b.Grow(len(r.Method) + len(path) + len(r.URL.RawQuery) + len(rawKey) + len(principal) + 4)
 	b.WriteString(r.Method)
 	b.WriteByte('\x00')
 	b.WriteString(path)
@@ -1472,8 +1483,23 @@ func scopedIdempotencyKey(r *http.Request) string {
 		b.WriteString(r.URL.RawQuery)
 	}
 	b.WriteByte('\x00')
+	b.WriteString(principal)
+	b.WriteByte('\x00')
 	b.WriteString(rawKey)
 	return b.String()
+}
+
+// idempotencyPrincipal identifies the caller for idempotency scoping. It falls
+// back to a fixed label rather than an empty string so keys stay well-formed
+// when no RBAC context is attached (local mode with auth disabled).
+func idempotencyPrincipal(r *http.Request) string {
+	if rc := RoleFromContext(r.Context()); rc != nil {
+		if rc.UserID != "" {
+			return string(rc.Role) + ":" + rc.UserID
+		}
+		return string(rc.Role)
+	}
+	return "anonymous"
 }
 
 func cloneReplayHeaders(src http.Header) http.Header {

@@ -707,13 +707,25 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 			e.state.Steps[stepID] = result
 			e.stateMu.Unlock()
 
-			// Store output in variables if configured
-			if step.OutputVar != "" && result.Status == StatusCompleted {
+			// Store output in variables if configured.
+			//
+			// A foreach container owns its own OutputVar: storeForeachOutputVars
+			// already wrote the declared aggregate shape ([]string for aggregate
+			// mode, map[string]string for collect). Overwriting it here replaced
+			// that with result.Output — the human summary line "Foreach completed:
+			// 2/2 dispatched, ..." — so output_var_mode was dead for every foreach
+			// and downstream consumers read a status string instead of the data.
+			if step.OutputVar != "" && result.Status == StatusCompleted && !stepOwnsForeachOutputVar(step) {
 				e.varMu.Lock()
 				e.state.Variables[step.OutputVar] = result.Output
 				if result.ParsedData != nil {
 					e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
 				}
+				StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
+				e.varMu.Unlock()
+			} else if result.Status == StatusCompleted && stepOwnsForeachOutputVar(step) {
+				// The steps.<id>.* keys are still expected for a foreach container.
+				e.varMu.Lock()
 				StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
 				e.varMu.Unlock()
 			}
@@ -723,7 +735,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 				return fmt.Errorf("failed to mark step %s as executed: %w", stepID, err)
 			}
 
+			e.stateMu.Lock()
 			e.state.UpdatedAt = time.Now()
+			e.stateMu.Unlock()
 			e.persistState()
 
 			// Mark skipped steps as failed ONLY if skipped due to failed dependencies.
