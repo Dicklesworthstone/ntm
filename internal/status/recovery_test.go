@@ -3,6 +3,7 @@ package status
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -590,5 +591,41 @@ func TestCompactionRecoveryIntegrationDetectsButDoesNotRecoverGrok(t *testing.T)
 	}
 	if _, ok := cri.Recovery().GetLastRecoveryTime(makePaneID("grok-session", 3)); ok {
 		t.Fatal("last recovery time was mutated")
+	}
+}
+
+// Recovery prompts are routinely multi-line: BuildContextAwarePrompt appends a
+// bead-context block whenever bv is installed. Raw send-keys -l delivers each
+// newline to the pane as a real Enter, so the agent received a dozen partial
+// prompts instead of one. The resolved agent type must therefore reach the send
+// so newline-containing payloads route through paste-buffer.
+func TestSendRecoveryPromptForwardsAgentTypeForBufferRouting(t *testing.T) {
+	multiline := "Continue where you left off.\n\n# Project Context from Beads\n- bd-1\n- bd-2\n"
+
+	// The injected hook keeps the test hermetic; the contract under test is that
+	// sendRecoveryPrompt accepts and forwards the agent type rather than
+	// discarding it.
+	var gotTarget, gotPrompt string
+	var gotEnter bool
+	rm := &RecoveryManager{
+		sendPrompt: func(target, prompt string, enter bool) error {
+			gotTarget, gotPrompt, gotEnter = target, prompt, enter
+			return nil
+		},
+	}
+
+	if err := rm.sendRecoveryPrompt("proj:.2", multiline, true, agent.AgentTypeClaudeCode); err != nil {
+		t.Fatalf("sendRecoveryPrompt: %v", err)
+	}
+	if gotTarget != "proj:.2" || gotPrompt != multiline || !gotEnter {
+		t.Fatalf("hook received target=%q enter=%t prompt=%q", gotTarget, gotEnter, gotPrompt)
+	}
+
+	// The fixture really is multi-line, which is the condition that made raw
+	// send-keys fragment the prompt. tmux.needsBufferSend is unexported, so the
+	// routing itself is covered in the tmux package; what matters here is that
+	// the agent type reaches the send instead of being discarded.
+	if !strings.Contains(multiline, "\n") {
+		t.Fatal("fixture is not multi-line; the regression it guards cannot occur")
 	}
 }

@@ -848,3 +848,33 @@ func TestCheckSession_AgentsAreSortedByPaneIndex(t *testing.T) {
 		}
 	}
 }
+
+// A user or plain-shell pane sitting at a prompt legitimately has zero children,
+// so "no live child" is not evidence of a crash there. Treating it as
+// ProcessExited reported every session's user pane as an error and turned the
+// whole session's health red, because calculateStatus checks ProcessExited before
+// activity.
+func TestDetectProcessStatusForAgentIgnoresPIDForNonAgentPanes(t *testing.T) {
+	// A PID that cannot have children: use our own process's parent-less child
+	// space by picking an implausible PID. HasChildAlive returns false for it.
+	const childlessPID = 999999
+
+	for _, agentType := range []string{"user", "unknown"} {
+		got := detectProcessStatusForAgent("~/proj \n$ ", "zsh", childlessPID, agentType)
+		if got == ProcessExited {
+			t.Fatalf("agentType %q at a prompt reported %q; a shell with no children is normal there",
+				agentType, got)
+		}
+	}
+
+	// An agent pane with no live child is still an exited process.
+	if got := detectProcessStatusForAgent("", "zsh", childlessPID, "claude"); got != ProcessExited {
+		t.Fatalf("claude pane with no live child = %q, want %q", got, ProcessExited)
+	}
+
+	// An unspecified agent type keeps the historical PID-based behavior so
+	// detectProcessStatus is unchanged.
+	if got := detectProcessStatus("", "zsh", childlessPID); got != ProcessExited {
+		t.Fatalf("detectProcessStatus with no agent type = %q, want %q", got, ProcessExited)
+	}
+}

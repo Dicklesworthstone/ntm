@@ -1528,6 +1528,35 @@ func (c *Client) SendKeysWithDelay(target, keys string, enter bool, enterDelay t
 	return c.SendKeysWithDelayContext(context.Background(), target, keys, enter, enterDelay)
 }
 
+// escapeTrailingSemicolon protects a payload whose last byte is an unescaped
+// semicolon from tmux's command parser.
+//
+// tmux's cmd_parse_from_arguments treats any argument ending in an unescaped ";"
+// as a command terminator, and "--" does not protect it. Verified on tmux 3.5a:
+// `send-keys -l -- 'A=x;'` delivers "A=x", `'C=y;;'` delivers "C=y;", and a
+// payload of exactly ";" sends nothing at all — while `'D=z\;'` correctly
+// delivers "D=z;". Any prompt or command ending in a semicolon was therefore
+// silently truncated, and because long payloads are chunked, a chunk boundary
+// landing right after a semicolon dropped that byte from the middle of a prompt.
+//
+// Only a trailing semicolon needs escaping; interior semicolons are delivered
+// verbatim. An already-escaped trailing semicolon is left alone.
+func escapeTrailingSemicolon(payload string) string {
+	if !strings.HasSuffix(payload, ";") {
+		return payload
+	}
+	// Count the backslashes immediately before the final ";". An odd number means
+	// it is already escaped.
+	backslashes := 0
+	for i := len(payload) - 2; i >= 0 && payload[i] == '\\'; i-- {
+		backslashes++
+	}
+	if backslashes%2 == 1 {
+		return payload
+	}
+	return payload[:len(payload)-1] + `\;`
+}
+
 // SendKeysWithDelayContext sends keys with caller cancellation covering every
 // tmux subprocess and the delay before Enter.
 func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys string, enter bool, enterDelay time.Duration) error {
@@ -1541,7 +1570,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 	const chunkSize = 4096
 
 	if len(keys) <= chunkSize {
-		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", keys); err != nil {
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", escapeTrailingSemicolon(keys)); err != nil {
 			return err
 		}
 	} else {
@@ -1562,7 +1591,7 @@ func (c *Client) SendKeysWithDelayContext(ctx context.Context, target, keys stri
 			}
 
 			chunk := keys[start:end]
-			if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", chunk); err != nil {
+			if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "-l", "--", escapeTrailingSemicolon(chunk)); err != nil {
 				return err
 			}
 			start = end

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -656,9 +657,30 @@ func detectProcessStatus(output string, command string, shellPID int) ProcessSta
 	return detectProcessStatusForAgent(output, command, shellPID, "")
 }
 
+// paneRunsAgent reports whether a pane is expected to have an agent process
+// running under its shell. A user or unrecognized pane is not, so its shell
+// having no children is normal rather than evidence of a crash. An empty
+// agentType means "caller did not say", which the PID-based path historically
+// treated as an agent pane; keep that so detectProcessStatus is unchanged.
+func paneRunsAgent(agentType string) bool {
+	switch agent.AgentType(strings.TrimSpace(agentType)).Canonical() {
+	case agent.AgentTypeUser, agent.AgentTypeUnknown:
+		return strings.TrimSpace(agentType) == ""
+	default:
+		return true
+	}
+}
+
 func detectProcessStatusForAgent(output string, command string, shellPID int, agentType string) ProcessStatus {
 	// Primary: PID-based liveness check (reliable, no false positives).
-	if shellPID > 0 {
+	//
+	// This only holds for a pane that is supposed to be running an agent. A user
+	// or plain-shell pane sitting at a prompt legitimately has zero children, so
+	// treating "no live child" as an exited process reported every session's user
+	// pane as a crashed process and turned the whole session's health red.
+	// calculateStatus checks ProcessExited before activity, so there was no later
+	// chance to recover.
+	if shellPID > 0 && paneRunsAgent(agentType) {
 		if process.HasChildAlive(shellPID) {
 			return ProcessRunning
 		}

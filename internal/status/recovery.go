@@ -176,7 +176,7 @@ func (rm *RecoveryManager) sendRecoveryPromptByIDForAgent(session string, paneIn
 		promptToSend := BuildContextAwarePrompt(prompt, includeBeadContext)
 
 		// Send the recovery prompt
-		if err := rm.sendRecoveryPrompt(target, promptToSend, true); err != nil {
+		if err := rm.sendRecoveryPrompt(target, promptToSend, true, agentType); err != nil {
 			// Log error if possible, or just fail silently
 			// Revert the state update so it can retry without losing a count
 			rm.mu.Lock()
@@ -227,11 +227,20 @@ func (rm *RecoveryManager) recoveryPaneType(session string, paneIndex int, paneI
 	return agent.AgentTypeUnknown, fmt.Errorf("resolve recovery pane type: pane %d not found in session %q", paneIndex, session)
 }
 
-func (rm *RecoveryManager) sendRecoveryPrompt(target, prompt string, enter bool) error {
+// sendRecoveryPrompt delivers a recovery prompt to a pane.
+//
+// agentType must be threaded through: recovery prompts are routinely multi-line
+// (BuildContextAwarePrompt appends a "# Project Context from Beads" block plus a
+// newline per bullet whenever bv is installed, and IncludeBeadContext defaults to
+// true). Raw send-keys -l delivers each newline to the pane as a real Enter, so
+// the agent received roughly a dozen partial prompts instead of one.
+// SendKeysForAgent routes newline-containing payloads through
+// load-buffer/paste-buffer via needsBufferSend.
+func (rm *RecoveryManager) sendRecoveryPrompt(target, prompt string, enter bool, agentType agent.AgentType) error {
 	if rm.sendPrompt != nil {
 		return rm.sendPrompt(target, prompt, enter)
 	}
-	return tmux.SendKeys(target, prompt, enter)
+	return tmux.SendKeysForAgent(target, prompt, enter, tmux.AgentType(agentType))
 }
 
 // HandleCompactionEvent processes a compaction event and sends recovery if appropriate.

@@ -2593,3 +2593,26 @@ func TestResolvePaneSelectorsRealTmuxTopologyMatrix(t *testing.T) {
 		t.Fatalf("exact selection with reordered user = %+v, err=%v", selected, err)
 	}
 }
+
+// tmux's command parser treats an argument ending in an unescaped ";" as a
+// command terminator, and "--" does not protect it. Verified on tmux 3.5a:
+// send-keys -l -- 'A=x;' delivers "A=x" and 'C=y;;' delivers "C=y;", while
+// 'D=z\;' correctly delivers "D=z;".
+func TestEscapeTrailingSemicolon(t *testing.T) {
+	cases := map[string]string{
+		"":            "",
+		"plain":       "plain",
+		"A=x;":        `A=x\;`,
+		";":           `\;`,
+		"C=y;;":       `C=y;\;`,
+		"a;b":         "a;b",     // interior semicolons are delivered verbatim
+		`D=z\;`:       `D=z\;`,   // already escaped: leave alone
+		`E=w\\;`:      `E=w\\\;`, // an escaped backslash then a bare ";" still needs escaping
+		"trailing ; ": "trailing ; ",
+	}
+	for input, want := range cases {
+		if got := escapeTrailingSemicolon(input); got != want {
+			t.Errorf("escapeTrailingSemicolon(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
