@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -97,7 +98,10 @@ type Server struct {
 	// probe budget again. Guarded by mu.
 	mailUnavailableUntil time.Time
 	projectDir           string
-	mu                   sync.RWMutex
+	// auditStore persists REST/WS audit records. Nil when the store could not be
+	// opened, in which case the audit middleware is not installed.
+	auditStore *AuditStore
+	mu         sync.RWMutex
 
 	// Redaction configuration for REST API
 	redactionCfg *RedactionConfig
@@ -185,6 +189,13 @@ type Config struct {
 	AllowedOrigins []string
 	// Version is the build version string (set via ldflags). Used by /api/v1/version.
 	Version string
+	// AuditStore records mutating REST/WS actions. Nil disables auditing.
+	//
+	// It is injected rather than opened here, like EventBus and StateStore, because
+	// New must stay side-effect-free: opening the store creates files and starts a
+	// retention goroutine, and callers construct many servers in tests. Ownership
+	// stays with the caller, which is responsible for closing it.
+	AuditStore *AuditStore
 }
 
 const (
@@ -931,6 +942,7 @@ func New(cfg Config) *Server {
 		eventBus:           cfg.EventBus,
 		stateStore:         cfg.StateStore,
 		auth:               cfg.Auth,
+		auditStore:         cfg.AuditStore,
 		sseClients:         make(map[chan events.BusEvent]struct{}),
 		corsAllowedOrigins: cfg.AllowedOrigins,
 		jwksCache:          newJWKSCache(cfg.Auth.OIDC.CacheTTL),
@@ -959,6 +971,16 @@ func New(cfg Config) *Server {
 	return s
 }
 
+// DefaultAuditDir is where REST/WS audit records live when a caller does not
+// choose a location.
+func DefaultAuditDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for audit store: %w", err)
+	}
+	return filepath.Join(home, ".ntm", "audit"), nil
+}
+
 // buildRouter creates the chi router with all middleware and routes.
 func (s *Server) buildRouter() chi.Router {
 	r := chi.NewRouter()
@@ -971,7 +993,14 @@ func (s *Server) buildRouter() chi.Router {
 	r.Use(s.loggingMiddlewareFunc)
 	r.Use(s.corsMiddlewareFunc)
 	r.Use(s.authMiddlewareFunc)
-	r.Use(s.rbacMiddleware)      // Extract role from auth claims
+	r.Use(s.rbacMiddleware) // Extract role from auth claims
+	// Record every mutating request. This must run after rbacMiddleware so the
+	// record carries the authenticated principal. Without it, AuditMiddleware had
+	// no callers outside tests, so no audit record was ever written even though
+	// handlers dutifully call SetAuditResource/SetAuditSession/SetAuditAction.
+	if s.auditStore != nil {
+		r.Use(s.AuditMiddleware(s.auditStore))
+	}
 	r.Use(s.redactionMiddleware) // Redact sensitive content in requests/responses
 
 	// Health check (no versioning)

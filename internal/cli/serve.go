@@ -134,6 +134,25 @@ func runServe(opts serveOptions) error {
 	if err != nil {
 		return err
 	}
+	// Open the audit store so mutating REST/WS actions are recorded. The store is
+	// owned here, not by the server, because opening it creates files and starts a
+	// retention goroutine — work that must not happen in serve.New. Auditing is
+	// best-effort: if the store cannot be opened the server still starts, but that
+	// is logged loudly because every mutating action then goes unrecorded.
+	var auditStore *serve.AuditStore
+	if auditDir, err := serve.DefaultAuditDir(); err != nil {
+		slog.Error("serve: audit store unavailable, mutating actions will not be recorded", "error", err)
+	} else if store, err := serve.NewAuditStore(serve.DefaultAuditStoreConfig(auditDir)); err != nil {
+		slog.Error("serve: audit store unavailable, mutating actions will not be recorded", "dir", auditDir, "error", err)
+	} else {
+		auditStore = store
+		defer func() {
+			if err := store.Close(); err != nil {
+				slog.Warn("serve: closing audit store", "error", err)
+			}
+		}()
+	}
+
 	serverCfg := serve.Config{
 		Host:           opts.Host,
 		Port:           opts.Port,
@@ -142,6 +161,7 @@ func runServe(opts serveOptions) error {
 		EventBus:       events.DefaultBus,
 		StateStore:     stateStore,
 		AllowedOrigins: opts.CORSAllowOrigins,
+		AuditStore:     auditStore,
 		Auth: serve.AuthConfig{
 			Mode:   mode,
 			APIKey: opts.APIKey,

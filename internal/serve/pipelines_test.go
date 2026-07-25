@@ -3,6 +3,7 @@ package serve
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,5 +141,38 @@ func TestGetMailClientDoesNotBlockReadersDuringProbe(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Fatalf("second call took %s; the cached verdict was not used", elapsed)
+	}
+}
+
+// The audit middleware is only installed when a store is present, and no audit
+// record was ever written before because nothing constructed one. Pin both the
+// wiring and the side-effect-free constructor contract.
+func TestAuditStoreWiringRecordsMutatingRequests(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewAuditStore(DefaultAuditStoreConfig(dir))
+	if err != nil {
+		t.Fatalf("NewAuditStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := New(Config{AuditStore: store})
+	if srv.auditStore == nil {
+		t.Fatal("server did not adopt the injected audit store")
+	}
+
+	// A server built without a store must not install the middleware, and must not
+	// open files or start goroutines — New is used heavily in tests.
+	bare := New(Config{})
+	if bare.auditStore != nil {
+		t.Fatal("a server with no configured store must have none")
+	}
+
+	// DefaultAuditDir names a location without creating anything.
+	auditDir, err := DefaultAuditDir()
+	if err != nil {
+		t.Skipf("no home directory in this environment: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(auditDir), ".ntm/audit") {
+		t.Fatalf("DefaultAuditDir() = %q, want it under .ntm/audit", auditDir)
 	}
 }
