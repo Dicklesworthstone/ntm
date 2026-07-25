@@ -1132,9 +1132,15 @@ func (tx *Tx) UpsertRuntimeHandoff(handoff *RuntimeHandoff) error {
 }
 
 // DeleteRuntimeHandoff removes ALL runtime handoff projections inside an
-// existing transaction. Pre-ntm#135 callers used a singleton-scoped
-// delete; this preserves their semantics. For scoped deletion use
-// DeleteRuntimeHandoffByScope. See ntm#135.
+// existing transaction.
+//
+// Since ntm#135 this table is keyed on (session_name, working_dir) and can hold a
+// row per scope, so this is a global truncation, not the singleton delete the
+// pre-#135 callers wrote. Only use it when the caller can state authoritatively
+// that no handoff exists for any scope — a full projection refresh whose source
+// reported successfully. A caller that merely failed to observe a handoff must
+// not call this; it would delete every other scope's row on a transient outage.
+// For a single scope use DeleteRuntimeHandoffByScope.
 func (tx *Tx) DeleteRuntimeHandoff() error {
 	_, err := tx.tx.Exec(`DELETE FROM runtime_handoff`)
 	if err != nil {

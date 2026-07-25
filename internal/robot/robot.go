@@ -7747,12 +7747,23 @@ func persistNormalizedProjection(store *state.Store, signals *adapters.Aggregate
 				return err
 			}
 		}
-		if handoffRow == nil {
+		switch {
+		case handoffRow != nil:
+			if err := tx.UpsertRuntimeHandoff(handoffRow); err != nil {
+				return err
+			}
+		case coordinationSectionIsAuthoritative(signals.Coordination):
+			// Coordination reported successfully and carries no handoff, so the
+			// projection is authoritatively empty for every scope and the stale
+			// rows should go.
 			if err := tx.DeleteRuntimeHandoff(); err != nil {
 				return err
 			}
-		} else if err := tx.UpsertRuntimeHandoff(handoffRow); err != nil {
-			return err
+		default:
+			// The coordination source was unavailable this tick, so a nil handoff
+			// row means "unknown", not "none". Leave the existing projection in
+			// place and let stale_after expire it, rather than blanking every
+			// session's handoff surface on a transient Agent Mail outage.
 		}
 		return nil
 	})
@@ -8089,6 +8100,18 @@ func buildRuntimeCoordinationRows(section *adapters.CoordinationSection, collect
 	}
 
 	return rows
+}
+
+// coordinationSectionIsAuthoritative reports whether the coordination signals
+// for this tick are trustworthy enough to treat an absent handoff as "there is
+// no handoff" rather than "we could not tell".
+//
+// The section carries its own Available flag precisely because the underlying
+// sources (Agent Mail, threads, reservations) can be unreachable. Reconciling
+// durable projections against an unavailable section deletes rows on a transient
+// outage.
+func coordinationSectionIsAuthoritative(section *adapters.CoordinationSection) bool {
+	return section != nil && section.Available
 }
 
 func buildRuntimeHandoffRow(section *adapters.CoordinationSection, collectedAt, staleAfter time.Time) *state.RuntimeHandoff {

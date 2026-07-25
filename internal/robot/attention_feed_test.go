@@ -2345,7 +2345,10 @@ func TestPersistNormalizedProjection_ReplacesRows(t *testing.T) {
 				{ID: "bd-4", Title: "Fresh replacement bead", Priority: 1, Type: "task"},
 			},
 		},
-		Coordination: &adapters.CoordinationSection{},
+		// Available marks this as an authoritative report that carries no
+		// coordination data, which is what lets the reconcile clear stale rows.
+		// An unavailable section means "could not tell" and must not delete.
+		Coordination: &adapters.CoordinationSection{Available: true},
 		Health: &adapters.SourceHealthSection{
 			Sources: map[string]adapters.SourceInfo{
 				"mail": {
@@ -4877,5 +4880,78 @@ func TestOperatorLoop_SnapshotSummaryConsistency(t *testing.T) {
 	// Next steps should reference action_required events
 	if len(summary.NextSteps) == 0 {
 		t.Error("expected next-step hints")
+	}
+}
+
+// A tick whose coordination source was unreachable reports no handoff, but that
+// means "unknown", not "none". Truncating the projection on such a tick blanked
+// every session's handoff surface on a transient Agent Mail outage; the row must
+// survive and expire via stale_after instead.
+func TestPersistNormalizedProjectionKeepsHandoffWhenCoordinationUnavailable(t *testing.T) {
+	store := newTestAttentionStore(t)
+
+	collectedAt := time.Now().UTC()
+	staleWindow := 10 * time.Minute
+
+	seeded := &adapters.AggregatedSignals{
+		CollectedAt: collectedAt,
+		Coordination: &adapters.CoordinationSection{
+			Available: true,
+			Handoff: &adapters.HandoffSummary{
+				Session: "ntm--proj",
+				Status:  "blocked",
+				Goal:    "Ship the release",
+				Now:     "Waiting on review",
+			},
+		},
+	}
+	if err := persistNormalizedProjection(store, seeded, nil, staleWindow); err != nil {
+		t.Fatalf("persistNormalizedProjection(seed) error: %v", err)
+	}
+	if row, err := store.GetRuntimeHandoff(); err != nil || row == nil {
+		t.Fatalf("seed did not persist a handoff row: row=%+v err=%v", row, err)
+	}
+
+	degradedCases := map[string]*adapters.CoordinationSection{
+		"section absent":      nil,
+		"section unavailable": {Available: false, Reason: "agent mail unreachable"},
+	}
+	for name, section := range degradedCases {
+		t.Run(name, func(t *testing.T) {
+			degraded := &adapters.AggregatedSignals{
+				CollectedAt:  time.Now().UTC(),
+				Coordination: section,
+			}
+			if err := persistNormalizedProjection(store, degraded, nil, staleWindow); err != nil {
+				t.Fatalf("persistNormalizedProjection(degraded) error: %v", err)
+			}
+			row, err := store.GetRuntimeHandoff()
+			if err != nil {
+				t.Fatalf("GetRuntimeHandoff() error: %v", err)
+			}
+			if row == nil {
+				t.Fatal("handoff row was deleted on a tick whose coordination source was unavailable")
+			}
+			if row.Goal != "Ship the release" {
+				t.Fatalf("handoff row was altered: %+v", row)
+			}
+		})
+	}
+
+	// An available section that genuinely carries no handoff is authoritative and
+	// must still clear the projection.
+	authoritative := &adapters.AggregatedSignals{
+		CollectedAt:  time.Now().UTC(),
+		Coordination: &adapters.CoordinationSection{Available: true},
+	}
+	if err := persistNormalizedProjection(store, authoritative, nil, staleWindow); err != nil {
+		t.Fatalf("persistNormalizedProjection(authoritative) error: %v", err)
+	}
+	row, err := store.GetRuntimeHandoff()
+	if err != nil {
+		t.Fatalf("GetRuntimeHandoff() error: %v", err)
+	}
+	if row != nil {
+		t.Fatalf("an available, handoff-free report must clear the projection, got %+v", row)
 	}
 }
