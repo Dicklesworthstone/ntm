@@ -2984,3 +2984,64 @@ func TestLoadLatestHandoff_NoHandoff(t *testing.T) {
 
 	t.Log("loadLatestHandoff correctly returns nil when no handoff found")
 }
+
+// Readiness decided from captured text alone reports a bare shell prompt as
+// ready, so `--robot-spawn --spawn-wait` answered ready:true with nothing
+// running when the agent CLI was missing from PATH. The verdict is now
+// corroborated with process liveness, matching the restart path.
+func TestWaitForAgentsReadyRequiresLiveProcess(t *testing.T) {
+	originalLiveness := spawnPaneLiveness
+	t.Cleanup(func() { spawnPaneLiveness = originalLiveness })
+
+	// A bare prompt with no child process under the shell is not ready.
+	spawnPaneLiveness = func(context.Context, string) (int, bool) { return 4242, false }
+	output := &SpawnOutput{
+		Session: "proj",
+		Agents:  []SpawnedAgent{{Pane: "0.1", Type: "claude"}},
+	}
+	capture := func(context.Context, string, int) (string, error) { return "~/proj \n❯ \n", nil }
+
+	err := waitForAgentsReadyWithCapture(context.Background(), output, 120*time.Millisecond, capture)
+	if err == nil {
+		t.Fatal("a bare prompt with no live process must not satisfy --spawn-wait")
+	}
+	if output.Agents[0].Ready {
+		t.Fatal("agent was marked ready with nothing running under the shell")
+	}
+
+	// Same captured content, but a live child process: genuinely ready.
+	spawnPaneLiveness = func(context.Context, string) (int, bool) { return 4242, true }
+	output = &SpawnOutput{
+		Session: "proj",
+		Agents:  []SpawnedAgent{{Pane: "0.1", Type: "claude"}},
+	}
+	if err := waitForAgentsReadyWithCapture(context.Background(), output, time.Second, capture); err != nil {
+		t.Fatalf("waitForAgentsReadyWithCapture with a live process: %v", err)
+	}
+	if !output.Agents[0].Ready {
+		t.Fatal("agent with a live process should be ready")
+	}
+
+	// PID unavailable falls back to the text verdict rather than blocking.
+	spawnPaneLiveness = func(context.Context, string) (int, bool) { return 0, false }
+	output = &SpawnOutput{
+		Session: "proj",
+		Agents:  []SpawnedAgent{{Pane: "0.1", Type: "claude"}},
+	}
+	if err := waitForAgentsReadyWithCapture(context.Background(), output, time.Second, capture); err != nil {
+		t.Fatalf("waitForAgentsReadyWithCapture with no PID: %v", err)
+	}
+	if !output.Agents[0].Ready {
+		t.Fatal("an unavailable PID must not block readiness")
+	}
+}
+
+// "ready" must match as a word: as a bare substring it also hit "already".
+func TestIsAgentReadyDoesNotMatchAlready(t *testing.T) {
+	if isAgentReady("Already up to date.\n", "claude") {
+		t.Fatal(`"Already up to date." must not count as an agent being ready`)
+	}
+	if !isAgentReady("agent ready for input\n", "claude") {
+		t.Fatal(`a genuine "ready" line should still match`)
+	}
+}

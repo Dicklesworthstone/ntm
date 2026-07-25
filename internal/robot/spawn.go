@@ -18,6 +18,7 @@ import (
 	dispatchsvc "github.com/Dicklesworthstone/ntm/internal/dispatch"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 	"github.com/Dicklesworthstone/ntm/internal/pressure"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/recovery"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -27,6 +28,10 @@ var (
 	errGrokSpawnWaitUnavailable   = errors.New("--spawn-wait is not yet supported for Grok Build because its authenticated TUI readiness protocol has not been verified")
 	errGrokSpawnAssignUnavailable = errors.New("--spawn-assign-work is not yet supported for Grok Build because prompt delivery has not been verified")
 )
+
+// readyWordRe matches "ready" as a whole word. A bare substring check also hit
+// "already", so lines like "Already up to date." read as an agent coming up.
+var readyWordRe = regexp.MustCompile(`\bready\b`)
 
 // Pre-compiled prompt patterns for isAgentReady (anchored to end of lines or output).
 var promptPatterns = []*regexp.Regexp{
@@ -1077,6 +1082,20 @@ func waitForAgentsReady(ctx context.Context, output *SpawnOutput, timeout time.D
 	return waitForAgentsReadyWithCapture(ctx, output, timeout, tmux.CapturePaneOutputContext)
 }
 
+// spawnPaneLiveness reports whether a process is running under the pane's shell.
+// Readiness decided from captured text alone cannot distinguish a started agent
+// from a bare shell prompt, so it is corroborated with process liveness — the
+// same gate the restart path applies.
+var spawnPaneLiveness = func(ctx context.Context, target string) (shellPID int, childAlive bool) {
+	pid, err := paneShellPIDContext(ctx, target)
+	if err != nil || pid <= 0 {
+		// PID unavailable: fall back to the text verdict rather than blocking a
+		// spawn that may genuinely be ready.
+		return 0, false
+	}
+	return pid, process.HasChildAlive(pid)
+}
+
 func waitForAgentsReadyWithCapture(
 	ctx context.Context,
 	output *SpawnOutput,
@@ -1138,8 +1157,17 @@ func waitForAgentsReadyWithCapture(
 				continue
 			}
 
-			// Check for ready indicators
-			if isAgentReady(captured, output.Agents[i].Type) {
+			// Check for ready indicators, then corroborate with process liveness.
+			// Text alone reports a bare shell prompt as ready, so a spawn whose
+			// agent CLI is missing from PATH used to return ready:true with
+			// nothing running at all.
+			ready := isAgentReady(captured, output.Agents[i].Type)
+			if ready {
+				if shellPID, childAlive := spawnPaneLiveness(readyCtx, target); shellPID > 0 && !childAlive {
+					ready = false
+				}
+			}
+			if ready {
 				output.Agents[i].Ready = true
 			} else {
 				allReady = false
@@ -1182,7 +1210,6 @@ func isAgentReady(output, _ string) bool {
 		"gemini>",
 		">>>", // Python REPL
 		"waiting for input",
-		"ready",
 		"how can i help",
 		// Claude Code TUI indicators
 		"claude code v",      // Version banner
@@ -1195,6 +1222,13 @@ func isAgentReady(output, _ string) bool {
 		if strings.Contains(lower, pattern) {
 			return true
 		}
+	}
+
+	// "ready" needs a word boundary: as a bare substring it also matched
+	// "already", so ordinary output such as "Already up to date." counted as an
+	// agent coming up.
+	if readyWordRe.MatchString(lower) {
+		return true
 	}
 
 	for _, p := range promptPatterns {

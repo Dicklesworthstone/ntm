@@ -27,6 +27,25 @@ type AckOutput struct {
 	TimedOut      bool              `json:"timed_out"`
 }
 
+// removeAckPanes returns keys with every entry in drop removed, preserving order.
+func removeAckPanes(keys []string, drop []string) []string {
+	if len(drop) == 0 {
+		return keys
+	}
+	dropped := make(map[string]struct{}, len(drop))
+	for _, key := range drop {
+		dropped[key] = struct{}{}
+	}
+	kept := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := dropped[key]; ok {
+			continue
+		}
+		kept = append(kept, key)
+	}
+	return kept
+}
+
 // AckConfirmation represents a successful acknowledgment from an agent
 type AckConfirmation struct {
 	Pane      string `json:"pane"`
@@ -140,8 +159,16 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 		return output, nil
 	}
 
-	// Capture initial state of each pane
+	// Capture initial state of each pane.
+	//
+	// A missing baseline must be reported, never treated as empty output.
+	// Acknowledgment is detected by diffing against the baseline, and
+	// getNewContent("", current) returns the entire scrollback — which almost
+	// always contains one of the ack phrases — so a single transient capture-pane
+	// failure produced a confirmed acknowledgment on the first poll for a message
+	// the agent had never seen.
 	initialStates := make(map[string]string)
+	var baselineFailures []string
 	for _, pane := range targetPanes {
 		paneKey := tmux.PaneTargetKey(pane, multiWindow)
 		captured, err := func() (string, error) {
@@ -149,9 +176,18 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 			defer cancel()
 			return tmux.CapturePaneOutputContext(ctx, pane.ID, ackCaptureLines)
 		}()
-		if err == nil {
-			initialStates[paneKey] = status.StripANSI(captured)
+		if err != nil {
+			baselineFailures = append(baselineFailures, paneKey)
+			output.Failed = append(output.Failed, AckFailure{
+				Pane:   paneKey,
+				Reason: fmt.Sprintf("baseline capture failed, acknowledgment cannot be detected: %v", err),
+			})
+			continue
 		}
+		initialStates[paneKey] = status.StripANSI(captured)
+	}
+	if len(baselineFailures) > 0 {
+		output.Pending = removeAckPanes(output.Pending, baselineFailures)
 	}
 
 	// Wait a short initial delay to let agents start processing
@@ -184,7 +220,11 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 			}
 
 			currentOutput := status.StripANSI(captured)
-			initialOutput := initialStates[paneKey]
+			initialOutput, hasBaseline := initialStates[paneKey]
+			if !hasBaseline {
+				// No baseline means no diff is possible; never claim an ack.
+				continue
+			}
 
 			// Check for acknowledgment
 			ackType, detected := detectAcknowledgmentForAgent(initialOutput, currentOutput, opts.Message, ackPaneAgentType(targetPane))
@@ -652,6 +692,9 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			},
 		}), nil
 	}
+	// A pane with no baseline is excluded from acknowledgment tracking below
+	// rather than diffed against an empty string, which would return the whole
+	// scrollback and confirm an ack the agent never gave.
 	initialStates := make(map[string]string)
 
 	for i, pane := range targetPanes {
@@ -801,7 +844,16 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			}
 
 			currentOutput := status.StripANSI(captured)
-			initialOutput := initialStates[paneKey]
+			initialOutput, hasBaseline := initialStates[paneKey]
+			if !hasBaseline {
+				// Baseline capture failed before the send, so no diff is possible
+				// and an acknowledgment cannot be honestly confirmed.
+				ackOutput.Failed = append(ackOutput.Failed, AckFailure{
+					Pane:   paneKey,
+					Reason: "baseline capture failed before send, acknowledgment cannot be detected",
+				})
+				continue
+			}
 
 			ackType, detected := detectAcknowledgmentForAgent(initialOutput, currentOutput, opts.Message, ackPaneAgentType(*targetPane))
 

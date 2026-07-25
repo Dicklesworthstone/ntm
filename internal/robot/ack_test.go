@@ -1134,3 +1134,33 @@ func TestTimeoutBehavior_Semantics(t *testing.T) {
 		t.Log("ACK_TEST: LatencyMs = time(AckAt) - time(SentAt)")
 	})
 }
+
+// A missing baseline must never be diffed against as empty output.
+// getNewContent("", current) returns the whole scrollback, which almost always
+// contains an ack phrase, so one transient capture failure confirmed an
+// acknowledgment for a message the agent had never seen.
+func TestRemoveAckPanesDropsBaselineFailures(t *testing.T) {
+	pending := []string{"0.1", "0.2", "0.3"}
+	got := removeAckPanes(pending, []string{"0.2"})
+	if len(got) != 2 || got[0] != "0.1" || got[1] != "0.3" {
+		t.Fatalf("removeAckPanes = %v, want [0.1 0.3]", got)
+	}
+	if same := removeAckPanes(pending, nil); len(same) != 3 {
+		t.Fatalf("removeAckPanes with no drops = %v, want the input unchanged", same)
+	}
+}
+
+// Guards the underlying trap directly: an empty baseline makes the entire
+// current buffer read as new content, which is what produced the false ack.
+func TestEmptyBaselineWouldYieldWholeBufferAsNewContent(t *testing.T) {
+	scrollback := "Checking the repo now\nI'll start on that\n"
+
+	// This is the behavior the fix routes around, documented so a future change
+	// to getNewContent does not silently reintroduce the false-ack path.
+	if got := getNewContent("", scrollback); got != scrollback {
+		t.Fatalf("getNewContent(\"\", buf) = %q, want the whole buffer %q", got, scrollback)
+	}
+	if _, detected := detectAcknowledgment("", scrollback, "do the thing", ""); !detected {
+		t.Fatal("expected an empty baseline to spuriously detect an ack; the guard in GetAck is what prevents it")
+	}
+}
