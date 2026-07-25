@@ -454,7 +454,7 @@ func (s *Server) handleRunScan(w http.ResponseWriter, r *http.Request) {
 	// Default path to project directory
 	path := opts.Path
 	if path == "" {
-		path = s.projectDir
+		path = s.projectDirSnapshot()
 	}
 
 	// Generate scan ID
@@ -803,7 +803,7 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 		args = append(args, "--labels", strings.Join(labels, ","))
 	}
 
-	output, err := bv.RunBd(s.projectDir, append([]string{"create"}, args...)...)
+	output, err := bv.RunBd(s.projectDirSnapshot(), append([]string{"create"}, args...)...)
 	if err != nil {
 		slog.Error("failed to create bead from finding", "request_id", reqID,
 			"finding_id", findingID, "error", err)
@@ -821,7 +821,7 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Update bead description
-	_, _ = bv.RunBd(s.projectDir, "update", beadID, "--description", description)
+	_, _ = bv.RunBd(s.projectDirSnapshot(), "update", beadID, "--description", description)
 
 	// Update finding with bead ID
 	scannerStore.UpdateFinding(findingID, func(fr *FindingRecord) {

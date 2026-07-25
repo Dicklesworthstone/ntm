@@ -717,7 +717,7 @@ func (s *Server) checkMemoryDaemonMatching(port int, sessionID string) *MemoryDa
 	info := &MemoryDaemonInfo{State: DaemonStateStopped}
 
 	// Look for PID files in .ntm/pids
-	pidsDir := filepath.Join(s.projectDir, ".ntm", "pids")
+	pidsDir := filepath.Join(s.projectDirSnapshot(), ".ntm", "pids")
 	entries, err := os.ReadDir(pidsDir)
 	if err != nil {
 		return info
@@ -859,7 +859,7 @@ func (s *Server) handleMemoryDaemonStart(w http.ResponseWriter, r *http.Request)
 // startMemoryDaemonAsync starts the memory daemon in the background
 func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 	// The daemon must outlive this startup helper, so use a plain exec.Cmd.
-	cmd := memoryDaemonCommand(s.projectDir, port)
+	cmd := memoryDaemonCommand(s.projectDirSnapshot(), port)
 	if cmd == nil {
 		slog.Error("failed to build memory daemon command")
 		memoryStore.SetDaemonInfo(&MemoryDaemonInfo{State: DaemonStateStopped})
@@ -869,7 +869,7 @@ func (s *Server) startMemoryDaemonAsync(port int, sessionID string) {
 		return
 	}
 	if cmd.Dir == "" {
-		cmd.Dir = s.projectDir
+		cmd.Dir = s.projectDirSnapshot()
 	}
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = 2 * time.Second
@@ -994,7 +994,7 @@ func (s *Server) removeMemoryDaemonPIDFileIfMatches(sessionID string, pid int) b
 		return false
 	}
 
-	pidPath := filepath.Join(s.projectDir, ".ntm", "pids", fmt.Sprintf("cm-%s.pid", sessionID))
+	pidPath := filepath.Join(s.projectDirSnapshot(), ".ntm", "pids", fmt.Sprintf("cm-%s.pid", sessionID))
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		return false
@@ -1078,7 +1078,7 @@ func (s *Server) handleMemoryContext(w http.ResponseWriter, r *http.Request) {
 	// Try HTTP client first (if daemon is running)
 	daemonInfo := s.checkMemoryDaemon()
 	if daemonInfo.State == DaemonStateRunning && daemonInfo.SessionID != "" {
-		client, err := cm.NewClient(s.projectDir, daemonInfo.SessionID)
+		client, err := cm.NewClient(s.projectDirSnapshot(), daemonInfo.SessionID)
 		if err == nil {
 			result, err := client.GetContext(ctx, req.Task, req.Workspace)
 			if err == nil {
@@ -1240,7 +1240,7 @@ func (s *Server) handleMemoryOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := cm.NewClient(s.projectDir, daemonInfo.SessionID)
+	client, err := cm.NewClient(s.projectDirSnapshot(), daemonInfo.SessionID)
 	if err != nil {
 		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeMemoryUnavailable,
 			"Failed to connect to memory daemon", map[string]interface{}{"error": err.Error()}, reqID)
@@ -1282,7 +1282,7 @@ func (s *Server) handleMemoryPrivacyGet(w http.ResponseWriter, r *http.Request) 
 	// Run cm privacy status --json
 	cmd := exec.CommandContext(ctx, "cm", "privacy", "status", "--json")
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = s.projectDir
+	cmd.Dir = s.projectDirSnapshot()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1331,7 +1331,7 @@ func (s *Server) handleMemoryPrivacyUpdate(w http.ResponseWriter, r *http.Reques
 		cmd.WaitDelay = 2 * time.Second
 	}
 
-	cmd.Dir = s.projectDir
+	cmd.Dir = s.projectDirSnapshot()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

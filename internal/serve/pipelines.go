@@ -49,7 +49,7 @@ func (s *Server) resolveWorkflowPath(path string) (string, error) {
 		return "", errors.New("workflow_file is required")
 	}
 
-	projectDir := strings.TrimSpace(s.projectDir)
+	projectDir := strings.TrimSpace(s.projectDirSnapshot())
 	if projectDir == "" {
 		return "", errors.New("server has no project directory configured")
 	}
@@ -229,7 +229,7 @@ func (s *Server) handleRunPipeline(w http.ResponseWriter, r *http.Request) {
 	opts := pipeline.PipelineRunOptions{
 		WorkflowFile: req.WorkflowFile,
 		Session:      req.Session,
-		ProjectDir:   s.projectDir,
+		ProjectDir:   s.projectDirSnapshot(),
 		Variables:    req.Variables,
 		DryRun:       req.DryRun,
 		Background:   req.Background,
@@ -1013,8 +1013,9 @@ func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session st
 }
 
 func (s *Server) pipelineProjectDir() string {
-	if strings.TrimSpace(s.projectDir) != "" {
-		return s.projectDir
+	projectDir := s.projectDirSnapshot()
+	if strings.TrimSpace(projectDir) != "" {
+		return projectDir
 	}
 	projectDir, err := os.Getwd()
 	if err != nil {

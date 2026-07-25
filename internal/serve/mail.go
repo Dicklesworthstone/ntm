@@ -505,7 +505,7 @@ func (s *Server) handleListMailProjects(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	project, err := client.EnsureProject(ctx, s.projectDir)
+	project, err := client.EnsureProject(ctx, s.projectDirSnapshot())
 	if err != nil {
 		writeAgentMailHandlerError(w, reqID, err, ErrCodeNotFound, agentmail.IsNotFound, "project inspection is not supported by the configured Agent Mail server", "")
 		return
@@ -535,7 +535,7 @@ func (s *Server) handleListMailAgents(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	agents, err := client.ListAgents(ctx, s.projectDir)
+	agents, err := client.ListAgents(ctx, s.projectDirSnapshot())
 	if err != nil {
 		writeAgentMailHandlerError(w, reqID, err, ErrCodeNotFound, agentmail.IsNotFound, "agent listing is not supported by the configured Agent Mail server", "")
 		return
@@ -577,7 +577,7 @@ func (s *Server) handleCreateMailAgent(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	agent, err := client.RegisterAgent(ctx, agentmail.RegisterAgentOptions{
-		ProjectKey:      s.projectDir,
+		ProjectKey:      s.projectDirSnapshot(),
 		Program:         req.Program,
 		Model:           req.Model,
 		Name:            req.Name,
@@ -618,7 +618,7 @@ func (s *Server) handleGetMailAgent(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	agent, err := client.Whois(ctx, s.projectDir, agentName, true)
+	agent, err := client.Whois(ctx, s.projectDirSnapshot(), agentName, true)
 	if err != nil {
 		writeAgentMailAgentActionError(w, reqID, err, "agent lookup is not supported by the configured Agent Mail server")
 		return
@@ -655,7 +655,7 @@ func (s *Server) handleMailInbox(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	opts := agentmail.FetchInboxOptions{
-		ProjectKey: s.projectDir,
+		ProjectKey: s.projectDirSnapshot(),
 		AgentName:  agentName,
 	}
 
@@ -737,7 +737,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := client.SendMessage(ctx, agentmail.SendMessageOptions{
-		ProjectKey:  s.projectDir,
+		ProjectKey:  s.projectDirSnapshot(),
 		SenderName:  req.SenderName,
 		To:          req.To,
 		Subject:     req.Subject,
@@ -785,7 +785,7 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	message, err := client.GetMessage(ctx, s.projectDir, messageID)
+	message, err := client.GetMessage(ctx, s.projectDirSnapshot(), messageID)
 	if err != nil {
 		writeAgentMailHandlerError(w, reqID, err, ErrCodeMessageNotFound, func(err error) bool {
 			return errors.Is(err, agentmail.ErrMessageNotFound) || agentmail.IsNotFound(err)
@@ -836,7 +836,7 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	message, err := client.ReplyMessage(ctx, agentmail.ReplyMessageOptions{
-		ProjectKey:    s.projectDir,
+		ProjectKey:    s.projectDirSnapshot(),
 		MessageID:     messageID,
 		SenderName:    req.SenderName,
 		BodyMD:        req.BodyMD,
@@ -887,7 +887,7 @@ func (s *Server) handleMarkMessageRead(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	readResult, err := client.MarkMessageRead(ctx, s.projectDir, agentName, messageID)
+	readResult, err := client.MarkMessageRead(ctx, s.projectDirSnapshot(), agentName, messageID)
 	if err != nil {
 		writeAgentMailMessageActionError(w, reqID, err, "marking messages as read is not supported by the configured Agent Mail server")
 		return
@@ -947,7 +947,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	ackResult, err := client.AcknowledgeMessage(ctx, s.projectDir, agentName, messageID)
+	ackResult, err := client.AcknowledgeMessage(ctx, s.projectDirSnapshot(), agentName, messageID)
 	if err != nil {
 		writeAgentMailMessageActionError(w, reqID, err, "message acknowledgements are not supported by the configured Agent Mail server")
 		return
@@ -1015,7 +1015,7 @@ func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results, err := client.SearchMessages(ctx, agentmail.SearchOptions{
-		ProjectKey: s.projectDir,
+		ProjectKey: s.projectDirSnapshot(),
 		Query:      query,
 		Limit:      limit,
 	})
@@ -1077,7 +1077,7 @@ func (s *Server) handleThreadSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := client.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
-		ProjectKey:      s.projectDir,
+		ProjectKey:      s.projectDirSnapshot(),
 		ThreadID:        threadID,
 		IncludeExamples: includeExamples,
 		LLMMode:         llmMode,
@@ -1126,7 +1126,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	contacts, err := client.ListContacts(ctx, s.projectDir, agentName)
+	contacts, err := client.ListContacts(ctx, s.projectDirSnapshot(), agentName)
 	if err != nil {
 		writeAgentMailAgentActionError(w, reqID, err, "listing contacts is not supported by the configured Agent Mail server")
 		return
@@ -1168,7 +1168,7 @@ func (s *Server) handleRequestContact(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := client.RequestContact(ctx, agentmail.RequestContactOptions{
-		ProjectKey: s.projectDir,
+		ProjectKey: s.projectDirSnapshot(),
 		FromAgent:  req.FromAgent,
 		ToAgent:    req.ToAgent,
 		ToProject:  req.ToProject,
@@ -1225,7 +1225,7 @@ func (s *Server) handleRespondContact(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := client.RespondContact(ctx, agentmail.RespondContactOptions{
-		ProjectKey: s.projectDir,
+		ProjectKey: s.projectDirSnapshot(),
 		ToAgent:    req.ToAgent,
 		FromAgent:  req.FromAgent,
 		Accept:     req.Accept,
@@ -1293,7 +1293,7 @@ func (s *Server) handleSetContactPolicy(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	result, err := client.SetContactPolicy(ctx, s.projectDir, req.AgentName, req.Policy)
+	result, err := client.SetContactPolicy(ctx, s.projectDirSnapshot(), req.AgentName, req.Policy)
 	if err != nil {
 		writeAgentMailAgentActionError(w, reqID, err, "setting contact policy is not supported by the configured Agent Mail server")
 		return
@@ -1339,7 +1339,7 @@ func (s *Server) handleListReservations(w http.ResponseWriter, r *http.Request) 
 
 	// If no agent specified, list all reservations
 	allAgents := agentName == ""
-	reservations, err := client.ListReservations(ctx, s.projectDir, agentName, allAgents)
+	reservations, err := client.ListReservations(ctx, s.projectDirSnapshot(), agentName, allAgents)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "listing reservations is not supported by the configured Agent Mail server")
 		return
@@ -1386,7 +1386,7 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := client.ReservePaths(ctx, agentmail.FileReservationOptions{
-		ProjectKey: s.projectDir,
+		ProjectKey: s.projectDirSnapshot(),
 		AgentName:  req.AgentName,
 		Paths:      req.Paths,
 		TTLSeconds: ttl,
@@ -1460,7 +1460,7 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	releaseResult, err := client.ReleaseReservations(ctx, s.projectDir, req.AgentName, req.Paths, req.IDs)
+	releaseResult, err := client.ReleaseReservations(ctx, s.projectDirSnapshot(), req.AgentName, req.Paths, req.IDs)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
 		return
@@ -1517,7 +1517,7 @@ func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	conflicts, err := client.CheckConflicts(ctx, s.projectDir, paths)
+	conflicts, err := client.CheckConflicts(ctx, s.projectDirSnapshot(), paths)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "reservation conflict inspection is not supported by the configured Agent Mail server")
 		return
@@ -1563,7 +1563,7 @@ func (s *Server) handleGetReservation(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	reservation, err := client.GetReservation(ctx, s.projectDir, reservationID)
+	reservation, err := client.GetReservation(ctx, s.projectDirSnapshot(), reservationID)
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "reservation lookup is not supported by the configured Agent Mail server")
 		return
@@ -1606,7 +1606,7 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	releaseResult, err := client.ReleaseReservations(ctx, s.projectDir, agentName, nil, []int{reservationID})
+	releaseResult, err := client.ReleaseReservations(ctx, s.projectDirSnapshot(), agentName, nil, []int{reservationID})
 	if err != nil {
 		writeAgentMailReservationError(w, reqID, err, "releasing reservations is not supported by the configured Agent Mail server")
 		return
@@ -1679,7 +1679,7 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	result, err := client.RenewReservationsWithOptions(ctx, agentmail.RenewReservationsOptions{
-		ProjectKey:     s.projectDir,
+		ProjectKey:     s.projectDirSnapshot(),
 		AgentName:      req.AgentName,
 		ExtendSeconds:  extendSeconds,
 		ReservationIDs: []int{reservationID},
@@ -1747,7 +1747,7 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 	defer cancel()
 
 	result, err := client.ForceReleaseReservation(ctx, agentmail.ForceReleaseOptions{
-		ProjectKey:     s.projectDir,
+		ProjectKey:     s.projectDirSnapshot(),
 		AgentName:      req.AgentName,
 		ReservationID:  reservationID,
 		Note:           req.Note,

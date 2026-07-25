@@ -4164,6 +4164,22 @@ func (s *Server) Router() chi.Router {
 	return s.router
 }
 
+// projectDirSnapshot returns the current project directory under a read lock.
+//
+// PATCH /api/v1/config writes s.projectDir under the write lock, and in default
+// local mode every caller is RoleAdmin and therefore holds PermSystemConfig — so
+// a concurrent PATCH plus any handler that shells out to br/ubs/cm raced on the
+// field. A string is a two-word value (pointer plus length), so a torn read means
+// running an external tool with a garbage working directory.
+//
+// Handlers must use this instead of reading s.projectDir directly. Callers that
+// already hold s.mu must NOT use it — RWMutex is not reentrant.
+func (s *Server) projectDirSnapshot() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.projectDir
+}
+
 // ============================================================================
 // WebSocket Handler
 // ============================================================================
