@@ -418,3 +418,43 @@ func TestGetRedactionConfig_DeepCopiesSliceMapFields(t *testing.T) {
 		t.Errorf("getter leaked DisabledCategories mutation: %q", got2.DisabledCategories[0])
 	}
 }
+
+// Audit filenames carry the LOCAL date while entry timestamps are UTC, so
+// parsing the filename as UTC shifted the file's day by the UTC offset and
+// skipped files that did contain matching entries. On a UTC-4 host, entries
+// written at local 21:00 on the 22nd carry UTC timestamps on the 23rd.
+func TestQueryDateFilterHonorsLocalFilenameDates(t *testing.T) {
+	tmpDir := t.TempDir()
+	searcher := &Searcher{auditDir: tmpDir}
+
+	// A file named for the local day that holds entries spilling into the next
+	// UTC day must be selected by a --since inside that next UTC day.
+	localDay := time.Date(2026, 7, 22, 0, 0, 0, 0, time.Local)
+	name := "global-" + localDay.Format("2006-01-02") + ".jsonl"
+	if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// An entry written near the end of that local day.
+	entryTime := localDay.Add(21 * time.Hour)
+	since := entryTime.Add(-time.Hour)
+
+	files, err := searcher.getLogFiles(Query{Since: &since})
+	if err != nil {
+		t.Fatalf("getLogFiles: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("getLogFiles selected %v, want the %s file (an entry at %s is inside the window)",
+			files, name, entryTime.Format(time.RFC3339))
+	}
+
+	// A window that starts after the whole local day still excludes it.
+	afterDay := localDay.Add(48 * time.Hour)
+	files, err = searcher.getLogFiles(Query{Since: &afterDay})
+	if err != nil {
+		t.Fatalf("getLogFiles: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("getLogFiles selected %v for a window two days later, want none", files)
+	}
+}

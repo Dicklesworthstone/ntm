@@ -400,17 +400,28 @@ func (s *Searcher) getLogFiles(query Query) ([]string, error) {
 			}
 		}
 
-		// Filter by date if time range specified
+		// Filter by date if time range specified.
+		//
+		// Filenames are stamped with the LOCAL date (logger.go), while entry
+		// timestamps are UTC. Parsing the filename as UTC therefore shifted the
+		// file's day by the UTC offset and skipped files that did contain matching
+		// entries: on a UTC-4 host, entries written at local 21:00 on the 22nd
+		// carry UTC timestamps on the 23rd, so a --since of the 23rd computed a
+		// file date of the 22nd, saw it as Before, and dropped the file.
+		//
+		// The bound is also a whole day wide now. A file named for day D holds
+		// entries anywhere within that local day, so it can only be excluded when
+		// the entire day precedes Since or the day starts after Until.
 		if query.Since != nil || query.Until != nil {
 			// Extract date from filename: session-YYYY-MM-DD.jsonl
 			datePart := extractDateFromFilename(name)
 			if datePart != "" {
-				fileDate, err := time.Parse("2006-01-02", datePart)
+				fileDate, err := time.ParseInLocation("2006-01-02", datePart, time.Local)
 				if err == nil {
-					if query.Since != nil && fileDate.Before(query.Since.Truncate(24*time.Hour)) {
+					if query.Since != nil && fileDate.Add(24*time.Hour).Before(*query.Since) {
 						continue
 					}
-					if query.Until != nil && fileDate.After(query.Until.Truncate(24*time.Hour)) {
+					if query.Until != nil && fileDate.After(*query.Until) {
 						continue
 					}
 				}
