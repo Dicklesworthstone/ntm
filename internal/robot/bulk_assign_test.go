@@ -3063,3 +3063,51 @@ func osReadFile(path string) ([]byte, error) {
 var osReadFileImpl = func(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
+
+// A pane whose agent type cannot receive an automated prompt must be excluded at
+// planning time. Planning it and rejecting it later failed the whole batch:
+// validateBulkAssignPromptDelivery returns a batch-level error on the first such
+// target, every other assignment is marked NOT_IMPLEMENTED, and
+// ExitCodeForResponse maps that to exit 2 — documented as "skip gracefully". One
+// Grok pane thus made every healthy pane in the session unassignable.
+func TestFilterBulkAssignPanesExcludesUndeliverableAgents(t *testing.T) {
+	panes := []tmux.Pane{
+		{ID: "%1", Index: 1, Title: "claude", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 2, Title: "codex", Type: tmux.AgentCodex},
+		{ID: "%3", Index: 3, Title: "grok", Type: tmux.AgentGrok},
+		{ID: "%4", Index: 4, Title: "shell", Type: tmux.AgentUser},
+	}
+
+	filtered, err := filterBulkAssignPanes(panes, nil)
+	if err != nil {
+		t.Fatalf("filterBulkAssignPanes: %v", err)
+	}
+
+	got := make([]string, 0, len(filtered))
+	for _, p := range filtered {
+		got = append(got, p.AgentType)
+	}
+	t.Logf("BULK_ASSIGN_TEST: planned agent types = %v", got)
+
+	if len(filtered) != 2 {
+		t.Fatalf("planned %d panes (%v), want 2 (claude and codex only)", len(filtered), got)
+	}
+	for _, p := range filtered {
+		if normalizeAgentType(p.AgentType) == "grok" {
+			t.Fatal("a grok pane was planned; it cannot receive an automated prompt and would fail the batch")
+		}
+		if err := bulkAssignTMUXAgentType(p.AgentType).ValidateAutomatedPromptDelivery(); err != nil {
+			t.Fatalf("planned pane %s cannot receive a prompt: %v", p.Ref.StableKey(), err)
+		}
+	}
+
+	// The surviving plan must pass the batch-level delivery check that used to
+	// reject everything.
+	planned := make([]BulkAssignAssignment, 0, len(filtered))
+	for _, p := range filtered {
+		planned = append(planned, BulkAssignAssignment{Pane: p.Ref.StableKey(), AgentType: p.AgentType})
+	}
+	if err := validateBulkAssignPromptDelivery(planned); err != nil {
+		t.Fatalf("the surviving plan was rejected by the batch delivery check: %v", err)
+	}
+}

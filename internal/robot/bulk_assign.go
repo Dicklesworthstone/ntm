@@ -800,6 +800,17 @@ func filterBulkAssignPanes(panes []tmux.Pane, skipSelectors []string) ([]bulkPan
 		if agentType == "unknown" || agentType == "user" {
 			continue
 		}
+		// A pane whose agent type cannot receive an automated prompt (Grok in
+		// phase one) must be excluded here rather than planned and then rejected.
+		// validateBulkAssignPromptDelivery fails the whole BATCH on the first such
+		// target, marking every other assignment NOT_IMPLEMENTED — which
+		// ExitCodeForResponse maps to exit 2, documented as "skip gracefully". One
+		// Grok pane therefore made five healthy claude panes unassignable, and the
+		// --dry-run preview still showed a clean plan because it returns before the
+		// check. Excluded panes surface in unassigned_panes instead.
+		if err := bulkAssignTMUXAgentType(agentType).ValidateAutomatedPromptDelivery(); err != nil {
+			continue
+		}
 		filtered = append(filtered, bulkPane{
 			Ref:       pane.Ref(),
 			AgentType: agentType,
