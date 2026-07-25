@@ -116,3 +116,27 @@ func TestGetTokenBudget(t *testing.T) {
 		}
 	}
 }
+
+// A non-positive context limit becomes a division by zero in every usage
+// computation, and the resulting NaN/+Inf cannot be JSON-encoded — which
+// replaced whole robot responses with an empty stdout and a nonzero exit.
+func TestApplyOverridesRejectsNonPositiveLimits(t *testing.T) {
+	original := GetContextLimit("claude-opus-4")
+	if original <= 0 {
+		t.Fatalf("built-in limit for claude-opus-4 = %d, want > 0", original)
+	}
+	t.Cleanup(func() { ApplyOverrides(map[string]int{"claude-opus-4": original}) })
+
+	for _, bad := range []int{0, -1} {
+		ApplyOverrides(map[string]int{"claude-opus-4": bad})
+		if got := GetContextLimit("claude-opus-4"); got != original {
+			t.Fatalf("override %d was applied: limit = %d, want the built-in %d", bad, got, original)
+		}
+	}
+
+	// A valid override still takes effect.
+	ApplyOverrides(map[string]int{"claude-opus-4": 12345})
+	if got := GetContextLimit("claude-opus-4"); got != 12345 {
+		t.Fatalf("valid override not applied: limit = %d, want 12345", got)
+	}
+}

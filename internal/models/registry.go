@@ -5,6 +5,7 @@
 package models
 
 import (
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -129,6 +130,15 @@ func ApplyOverrides(overrides map[string]int) {
 	defer registryMu.Unlock()
 
 	for model, limit := range overrides {
+		if limit <= 0 {
+			// A non-positive limit is a division-by-zero waiting to happen in
+			// every usage-percentage computation, and the resulting NaN/+Inf
+			// cannot be JSON-encoded — which took down whole robot responses.
+			// Ignore the override and keep the built-in value.
+			slog.Warn("ignoring non-positive context limit override",
+				"model", model, "limit", limit)
+			continue
+		}
 		ContextLimits[strings.ToLower(model)] = limit
 	}
 

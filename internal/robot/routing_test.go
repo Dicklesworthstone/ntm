@@ -2,6 +2,8 @@ package robot
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -1908,5 +1910,36 @@ func TestRoutingResultWithReservationWarning(t *testing.T) {
 	}
 	if result.ReservationWarning.Message == "" {
 		t.Error("Warning message should not be empty")
+	}
+}
+
+// NaN and Inf must never reach the JSON encoder: it rejects both, and the robot
+// contract requires a decodable envelope on every path. Neither clamp catches
+// NaN, because every comparison against it is false.
+func TestCalculateFinalScoreRejectsNonFiniteValues(t *testing.T) {
+	scorer := NewAgentScorer(DefaultRoutingConfig())
+
+	cases := map[string]struct {
+		contrib float64
+		want    float64
+	}{
+		"NaN sorts last":       {contrib: math.NaN(), want: 0},
+		"negative Inf is zero": {contrib: math.Inf(-1), want: 0},
+		"positive Inf clamps":  {contrib: math.Inf(1), want: 100},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			agent := &ScoredAgent{ScoreDetail: ScoreBreakdown{ContextContrib: tc.contrib}}
+			got := scorer.calculateFinalScore(agent)
+			if math.IsNaN(got) || math.IsInf(got, 0) {
+				t.Fatalf("calculateFinalScore returned a non-finite value: %v", got)
+			}
+			if got != tc.want {
+				t.Fatalf("calculateFinalScore = %v, want %v", got, tc.want)
+			}
+			if _, err := json.Marshal(map[string]float64{"score": got}); err != nil {
+				t.Fatalf("score is not JSON-encodable: %v", err)
+			}
+		})
 	}
 }

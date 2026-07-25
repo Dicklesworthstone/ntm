@@ -10186,7 +10186,14 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 		// Add overhead for system prompts and other context (2.5x multiplier)
 		withOverhead := int(float64(estTokens) * 2.5)
 		contextLimit := getContextLimit(model)
-		usagePct := float64(withOverhead) / float64(contextLimit) * 100
+		// A non-positive limit would yield NaN or +Inf, which json.Encode rejects
+		// outright — the whole response would be replaced by an empty stdout and a
+		// nonzero exit. Treat an unusable limit as fully consumed instead, which
+		// is the safe direction for routing and rotation decisions.
+		usagePct := 100.0
+		if contextLimit > 0 {
+			usagePct = float64(withOverhead) / float64(contextLimit) * 100
+		}
 
 		paneKey := paneTargetKey(pane, multiWindow)
 		usageLevel := getUsageLevel(usagePct)

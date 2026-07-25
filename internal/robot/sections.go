@@ -738,7 +738,24 @@ func GetDashboardAttentionSection(limits SectionLimits) ProjectedSection {
 		replayLimit = maxEvents
 	}
 
-	events, _, err := feed.Replay(0, replayLimit)
+	// Replay walks the journal from the head and stops at the limit, so it
+	// returns the OLDEST events after the cursor. A dashboard panel needs the
+	// newest: with Replay(0, 60) the panel showed events 1..60 forever once the
+	// journal held more than 60, and no amount of newer action-required activity
+	// could ever appear. Start the window near the tail instead, clamped to what
+	// is still retained so the request cannot be rejected as expired.
+	since := int64(0)
+	if stats.Count > replayLimit {
+		since = stats.NewestCursor - int64(replayLimit)
+		if oldest := stats.OldestCursor; oldest > 0 && since < oldest-1 {
+			since = oldest - 1
+		}
+		if since < 0 {
+			since = 0
+		}
+	}
+
+	events, _, err := feed.Replay(since, replayLimit)
 	if err != nil {
 		section := NewProjectedSection(SectionAttention, DashboardAttentionData{
 			FeedAvailable: true,

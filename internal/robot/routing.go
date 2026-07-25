@@ -774,6 +774,17 @@ func (s *AgentScorer) calculateFinalScore(agent *ScoredAgent) float64 {
 	// Add affinity bonus
 	score += d.AffinityBonus
 
+	// A NaN or Inf must never escape: json.Encode rejects both, which would
+	// replace the entire robot response with an empty stdout and a nonzero exit.
+	// Neither clamp below catches NaN, since every comparison against it is
+	// false, so test explicitly. An unscoreable agent sorts last.
+	if math.IsNaN(score) || math.IsInf(score, -1) {
+		return 0
+	}
+	if math.IsInf(score, 1) {
+		return 100
+	}
+
 	// Clamp to 0-100 range
 	if score > 100 {
 		score = 100

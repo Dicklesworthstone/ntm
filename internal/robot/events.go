@@ -289,17 +289,28 @@ func BuildEventsOutput(opts EventsOptions) (EventsOutput, int) {
 	// Apply filters
 	filtered := filterEventsForRobot(events, opts)
 
-	// Determine if there are more events
-	hasMore := len(filtered) > limit
-	if hasMore {
+	// Determine if there are more events. This must be judged on the replayed
+	// page, not the filtered subset: a page whose every event was filtered out
+	// still means more of the feed remains.
+	hasMore := len(events) > limit
+	if len(filtered) > limit {
 		filtered = filtered[:limit]
 	}
 
-	// Compute next cursor
+	// Compute next cursor.
+	//
+	// When the page filtered empty, the caller must resume from the end of the
+	// page it just consumed — not from the whole feed's newest cursor. Jumping to
+	// the newest skipped every event in between, so a filter matching one event
+	// at cursor 300 in a 500-event feed reported an empty page with
+	// next_cursor 500 and the match was never returned.
 	nextCursor := int64(0)
-	if len(filtered) > 0 {
+	switch {
+	case len(filtered) > 0:
 		nextCursor = filtered[len(filtered)-1].Cursor
-	} else if newestCursor > 0 {
+	case len(events) > 0:
+		nextCursor = events[len(events)-1].Cursor
+	case newestCursor > 0:
 		nextCursor = newestCursor
 	}
 
