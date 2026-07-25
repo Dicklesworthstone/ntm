@@ -207,7 +207,7 @@ func TestBuildRateLimitRecommendation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := buildRateLimitRecommendation(tt.paneIndex, tt.session, tt.check)
+			rec := buildRateLimitRecommendation(tt.paneIndex, fmt.Sprintf("%d", tt.paneIndex), tt.session, tt.check)
 
 			if rec.Status != tt.wantStatus {
 				t.Errorf("buildRateLimitRecommendation() status = %q, want %q", rec.Status, tt.wantStatus)
@@ -240,7 +240,7 @@ func TestBuildRateLimitRecommendation_FixCommandFormat(t *testing.T) {
 		},
 	}
 
-	rec := buildRateLimitRecommendation(3, "my-test-session", check)
+	rec := buildRateLimitRecommendation(3, "3", "my-test-session", check)
 
 	if rec.FixCommand == "" {
 		t.Fatal("FixCommand should not be empty")
@@ -902,4 +902,46 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// Pane.Index is only unique within a window, so index-keyed lookups let one
+// window's pane overwrite another's: --fix respawned a pane in the wrong window
+// and validated the wrong pane's agent type.
+func TestValidateDiagnoseFixTargetsDistinguishesPanesAcrossWindows(t *testing.T) {
+	// Two windows each holding a pane 1. Only window 1's is Grok.
+	panes := []tmux.Pane{
+		{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude},
+		{ID: "%2", Index: 1, WindowIndex: 1, Type: tmux.AgentGrok},
+	}
+
+	// Targeting window 0's claude pane must be allowed.
+	claude := DiagnoseOutput{Recommendations: []DiagnoseRecommendation{
+		{Pane: 1, PaneTarget: "0.1", Action: "restart", AutoFixable: true},
+	}}
+	if err := validateDiagnoseFixTargets(claude, panes); err != nil {
+		t.Fatalf("restarting window 0's claude pane was rejected: %v", err)
+	}
+
+	// Targeting window 1's grok pane must be refused.
+	grok := DiagnoseOutput{Recommendations: []DiagnoseRecommendation{
+		{Pane: 1, PaneTarget: "1.1", Action: "restart", AutoFixable: true},
+	}}
+	err := validateDiagnoseFixTargets(grok, panes)
+	if !errors.Is(err, agent.ErrAutomatedRelaunchNotImplemented) {
+		t.Fatalf("restarting window 1's grok pane error = %v, want the Grok relaunch sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "1.1") {
+		t.Fatalf("error should name the unambiguous target, got %q", err.Error())
+	}
+}
+
+// A recommendation without a PaneTarget still resolves on a single-window
+// session, where the bare index is unambiguous.
+func TestDiagnoseRecommendationKeyFallsBackToIndex(t *testing.T) {
+	if got := diagnoseRecommendationKey(DiagnoseRecommendation{Pane: 3}); got != "3" {
+		t.Fatalf("diagnoseRecommendationKey with no target = %q, want %q", got, "3")
+	}
+	if got := diagnoseRecommendationKey(DiagnoseRecommendation{Pane: 3, PaneTarget: "1.3"}); got != "1.3" {
+		t.Fatalf("diagnoseRecommendationKey = %q, want the target %q", got, "1.3")
+	}
 }

@@ -276,8 +276,15 @@ func populateAgentHealth(output *HealthOutput) {
 			continue
 		}
 
+		// Pane.Index is only unique within a window, so a bare index collides on a
+		// multi-window session: window 1's pane 0 overwrote window 0's pane 0, so
+		// sessions[].agents reported fewer agents than existed and the survivor's
+		// health was attributed to the wrong pane. The alert below named an
+		// ambiguous pane for the same reason.
+		multiWindow := tmux.PanesSpanMultipleWindows(panes)
+
 		for _, pane := range panes {
-			paneKey := fmt.Sprintf("%d", pane.Index)
+			paneKey := tmux.PaneTargetKey(pane, multiWindow)
 			agentHealth := getAgentHealth(sess.Name, pane)
 
 			sessHealth.Agents[paneKey] = agentHealth

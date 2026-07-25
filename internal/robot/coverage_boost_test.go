@@ -176,7 +176,7 @@ func TestBuildRateLimitRecommendation_WaitSecondsVariations(t *testing.T) {
 				WaitSeconds: 3600,
 			},
 		}
-		rec := buildRateLimitRecommendation(5, "prod-session", check)
+		rec := buildRateLimitRecommendation(5, "5", "prod-session", check)
 		if rec.Action != "wait" {
 			t.Errorf("expected action 'wait', got %q", rec.Action)
 		}
@@ -192,7 +192,7 @@ func TestBuildRateLimitRecommendation_WaitSecondsVariations(t *testing.T) {
 				WaitSeconds: -1,
 			},
 		}
-		rec := buildRateLimitRecommendation(0, "session", check)
+		rec := buildRateLimitRecommendation(0, "0", "session", check)
 		if rec.Action != "wait_or_switch" {
 			t.Errorf("expected action 'wait_or_switch' for negative wait, got %q", rec.Action)
 		}
