@@ -1081,6 +1081,134 @@ func TestDetermineState(t *testing.T) {
 	}
 }
 
+// codexIdleAtComposerCapture is a Codex CLI pane parked at its composer after a
+// finished turn: history above, the "▌ Ask Codex" hint, the empty "›" chevron,
+// and the permanent shortcut footer below it. No spinner bullet and no
+// "Esc to interrupt" hint, i.e. exactly what CodexActivelyWorking rules out.
+const codexIdleAtComposerCapture = "• Ran command\n" +
+	"  └ go build ./...\n" +
+	"• Edited internal/status/unified.go\n" +
+	"• Turn complete\n" +
+	"\n" +
+	"▌ Ask Codex to do something\n" +
+	"›\n" +
+	"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n"
+
+// codexWorkingCapture is the same pane mid-turn: the live spinner bullet and the
+// interrupt hint are present.
+const codexWorkingCapture = "• Ran command\n" +
+	"  └ go build ./...\n" +
+	"• Working (12s • Esc to interrupt)\n" +
+	"\n" +
+	"▌ Ask Codex to do something\n" +
+	"›\n" +
+	"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n"
+
+// TestDetermineStateCodexIdleBeatsWindowVelocity is the #234 regression guard.
+// Claude got both short-circuits (working AND idle) but Codex only the positive
+// one, so a Codex pane parked at its composer had to survive the velocity gate
+// to be called idle — and velocity comes from the window-scoped
+// #{window_activity}, which any busy sibling pane keeps fresh. The pane was
+// therefore reported "working" forever and --robot-is-working never let an
+// orchestrator feed it.
+func TestDetermineStateCodexIdleBeatsWindowVelocity(t *testing.T) {
+	d := NewDetector()
+	observedAt := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
+	// A noisy neighbor pane in the same window: activity is "now", so the
+	// velocity heuristic sees maximum freshness for this quiet pane.
+	freshActivity := observedAt
+
+	state, errType := d.determineStateAt(codexIdleAtComposerCapture, "cod", freshActivity, observedAt)
+	if state != StateIdle || errType != ErrorNone {
+		t.Fatalf("codex at composer with fresh window activity = %v/%v, want idle", state, errType)
+	}
+
+	// Negative case: a genuinely working Codex pane must stay working under the
+	// exact same (fresh) velocity input — the idle arm must not swallow a live
+	// turn.
+	state, errType = d.determineStateAt(codexWorkingCapture, "cod", freshActivity, observedAt)
+	if state != StateWorking || errType != ErrorNone {
+		t.Fatalf("codex mid-turn = %v/%v, want working", state, errType)
+	}
+
+	// Negative case: a working Codex pane stays working even when velocity is
+	// low (a long quiet tool call produces no new scrollback).
+	state, _ = d.determineStateAt(codexWorkingCapture, "cod", observedAt.Add(-time.Hour), observedAt)
+	if state != StateWorking {
+		t.Fatalf("quiet codex mid-turn = %v, want working", state)
+	}
+}
+
+// TestSessionObserverAppliesPaneLocalActivityBound covers the second half of
+// #234: the pane-content fingerprint bound from ntm#213 lived only in
+// UnifiedDetector.Detect, not in SessionObserver.buildPaneObservation — and the
+// observer is what --robot-is-working, wait:completion and the dashboard
+// actually run. A pane whose captured content never changes must fall to low
+// velocity on the next observation even while the window-scoped activity
+// timestamp stays fresh because of a busy sibling.
+func TestSessionObserverAppliesPaneLocalActivityBound(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+	nowValues := []time.Time{first, second}
+	nowIndex := 0
+	// A Gemini pane at its prompt: no agent-specific short-circuit, so its
+	// verdict is decided purely by the velocity gate.
+	const capture = "Analysis complete.\ngemini>"
+
+	observer := NewSessionObserverWithDependencies(NewDetector(), DefaultSessionObserverConfig(DefaultConfig()), SessionObserverDependencies{
+		ListPanes: func(context.Context, string) ([]tmux.PaneActivity, error) {
+			// The window-scoped timestamp is always "now": the sibling pane in
+			// this window is chatty.
+			return []tmux.PaneActivity{{
+				Pane:         tmux.Pane{ID: "%7", WindowIndex: 0, Index: 1, Title: "s__gmi_1", Type: tmux.AgentGemini},
+				LastActivity: nowValues[min(nowIndex, len(nowValues)-1)],
+			}}, nil
+		},
+		CapturePane: func(context.Context, string, int) (string, error) {
+			return capture, nil
+		},
+		Now: func() time.Time {
+			value := nowValues[min(nowIndex, len(nowValues)-1)]
+			nowIndex++
+			return value
+		},
+	})
+
+	firstObservation, err := observer.Observe(context.Background(), "s")
+	if err != nil {
+		t.Fatalf("first Observe() error = %v", err)
+	}
+	firstPane, ok := firstObservation.PaneByID("%7")
+	if !ok {
+		t.Fatal("first observation missing pane")
+	}
+	// First capture carries no change information, so the window-scoped
+	// timestamp still rules: the pane reads as working.
+	if firstPane.Current.Status.State != StateWorking {
+		t.Fatalf("first observation state = %q, want working (no pane history yet)", firstPane.Current.Status.State)
+	}
+
+	secondObservation, err := observer.Observe(context.Background(), "s")
+	if err != nil {
+		t.Fatalf("second Observe() error = %v", err)
+	}
+	secondPane, ok := secondObservation.PaneByID("%7")
+	if !ok {
+		t.Fatal("second observation missing pane")
+	}
+	if secondPane.Current.Status.State != StateIdle {
+		t.Fatalf("second observation state = %q, want idle (pane content never changed)", secondPane.Current.Status.State)
+	}
+	if !secondPane.Current.Status.LastActive.Equal(first) {
+		t.Fatalf("second observation LastActive = %v, want the first observation time %v", secondPane.Current.Status.LastActive, first)
+	}
+	if !secondPane.SafeToDispatch() {
+		t.Fatalf("quiet pane at its prompt is not dispatchable: confidence=%.2f", secondPane.Current.Confidence)
+	}
+}
+
 // TestIsKnownAgentType tests the agent type classification
 func TestIsKnownAgentType(t *testing.T) {
 	tests := []struct {

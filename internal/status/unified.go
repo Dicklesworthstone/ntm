@@ -141,8 +141,22 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// therefore stronger evidence than a co-present chevron or a stale activity
 	// timestamp. CodexActivelyWorking deliberately ignores markers that have
 	// scrolled out of the live window.
-	if agentType == string(agent.AgentTypeCodex) && agent.CodexActivelyWorking(output) {
-		return StateWorking, ErrorNone
+	if agentType == string(agent.AgentTypeCodex) {
+		if agent.CodexActivelyWorking(output) {
+			return StateWorking, ErrorNone
+		}
+		// #234: mirror the Claude arm above. Codex only had the positive
+		// short-circuit, so its idle verdict still had to survive the velocity
+		// gate below — and velocity comes from the WINDOW-scoped
+		// #{window_activity}, which any busy sibling pane keeps fresh. A Codex
+		// pane parked at its composer in a busy window therefore never reached
+		// the idle branch and fell through to "recent activity ⇒ working".
+		// CodexActivelyWorking is biased to false-WORKING and has already
+		// returned false here, so trusting the idle chrome cannot mask a live
+		// turn.
+		if DetectIdleFromOutput(output, agentType) {
+			return StateIdle, ErrorNone
+		}
 	}
 
 	// Check if at prompt (idle) - prioritize this when velocity is low
@@ -723,7 +737,21 @@ func (o *SessionObserver) buildPaneObservation(cache *sessionObservationCache, p
 		return observation
 	}
 
-	status := o.detector.AnalyzeAt(pane.Pane.ID, pane.Pane.Title, normalizedAgentType, output, pane.LastActivity, observedAt)
+	// Pane-local activity refinement (ntm#213, extended for #234). The same
+	// content-fingerprint bound UnifiedDetector.Detect applies has to be applied
+	// here too: this observer is what --robot-is-working, wait:completion and
+	// the dashboard actually run, and #{window_activity} is window-scoped, so a
+	// chatty neighbor pane kept every quiet pane in the window looking fresh.
+	// Only tighten the bound (the fingerprint's change time is never newer than
+	// the window timestamp when it disagrees), and agent-specific classifiers
+	// still outrank velocity in determineState, so a quiet-but-working pane is
+	// unaffected.
+	lastActivity := pane.LastActivity
+	if contentChangedAt, hasHistory := o.detector.observePaneContent(pane.Pane.ID, output, observedAt); hasHistory && contentChangedAt.Before(lastActivity) {
+		lastActivity = contentChangedAt
+	}
+
+	status := o.detector.AnalyzeAt(pane.Pane.ID, pane.Pane.Title, normalizedAgentType, output, lastActivity, observedAt)
 	confidence := observationConfidence(status, output)
 	observation.Current = StateObservation{
 		Status:     status,

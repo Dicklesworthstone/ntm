@@ -425,7 +425,8 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		// window supersedes stale prompt/error matches, while rate-limit and
 		// context-low signals retain their normal precedence. ParseWithHint
 		// returns a fresh *AgentState, so this mutation is local to this pane.
-		if applyLiveBusyOverride(content, state) {
+		liveBusy := applyLiveBusyOverride(content, state)
+		if liveBusy {
 			status.IsWorking = true
 			status.IsIdle = false
 			status.Recommendation = string(state.GetRecommendation())
@@ -438,7 +439,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			copy(work, status.Indicators.Work)
 			status.Indicators.Work = append(work, "live_window_thinking")
 		}
-		applyCanonicalWorkSafety(&status, paneObservation)
+		applyCanonicalWorkSafety(&status, paneObservation, liveBusy)
 
 		// Ensure indicators are never nil
 		if status.Indicators.Work == nil {
@@ -540,7 +541,11 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 	return result
 }
 
-func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.PaneObservation) {
+// applyCanonicalWorkSafety reconciles the parser verdict with the canonical
+// observation. liveBusy reports whether the live-window THINKING override
+// (#133) fired for this pane; it pins the working verdict so the idle arm can
+// never talk a mid-tool-call pane back down to idle.
+func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.PaneObservation, liveBusy bool) {
 	if workStatus == nil {
 		return
 	}
@@ -550,6 +555,31 @@ func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.
 		workStatus.IsIdle = false
 		workStatus.Recommendation = string(agent.RecommendDoNotInterrupt)
 		workStatus.RecommendationReason = "Canonical live observation reports active work"
+	case statuspkg.StateIdle:
+		// #234: the canonical idle verdict has to be able to correct a stale
+		// parser "working" reading the same way the working arm corrects a
+		// stale idle one — otherwise a Codex pane sitting at its composer is
+		// reported working forever and orchestrators never feed it.
+		//
+		// Fail closed everywhere it matters: only an actionable observation
+		// counts (SafeToDispatch encodes fresh + high-confidence + idle, so the
+		// detector's weak "looks idle" heuristics cannot flip a pane), the live
+		// -window override wins, and rate-limit / error verdicts keep their
+		// higher precedence so a walled or broken pane is never advertised as
+		// free.
+		if liveBusy || !observation.SafeToDispatch() {
+			return
+		}
+		if workStatus.IsRateLimited || workStatus.Recommendation == string(agent.RecommendErrorState) {
+			return
+		}
+		if workStatus.IsIdle && !workStatus.IsWorking {
+			return
+		}
+		workStatus.IsWorking = false
+		workStatus.IsIdle = true
+		workStatus.Recommendation = string(agent.RecommendSafeToRestart)
+		workStatus.RecommendationReason = "Canonical live observation reports the pane idle at its prompt"
 	case statuspkg.StateUnknown:
 		workStatus.IsWorking = false
 		workStatus.IsIdle = false

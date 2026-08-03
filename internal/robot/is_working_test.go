@@ -255,7 +255,7 @@ func TestApplyCanonicalWorkSafetyFailsClosed(t *testing.T) {
 	applyCanonicalWorkSafety(&working, statuspkg.PaneObservation{Current: statuspkg.StateObservation{
 		Status:    statuspkg.AgentStatus{State: statuspkg.StateWorking},
 		Freshness: statuspkg.FreshnessFresh,
-	}})
+	}}, false)
 	if !working.IsWorking || working.IsIdle || working.Recommendation != string(agent.RecommendDoNotInterrupt) {
 		t.Fatalf("working safety override = %+v", working)
 	}
@@ -264,9 +264,57 @@ func TestApplyCanonicalWorkSafetyFailsClosed(t *testing.T) {
 	applyCanonicalWorkSafety(&unknown, statuspkg.PaneObservation{Current: statuspkg.StateObservation{
 		Status:    statuspkg.AgentStatus{State: statuspkg.StateUnknown},
 		Freshness: statuspkg.FreshnessFresh,
-	}})
+	}}, false)
 	if unknown.IsWorking || unknown.IsIdle || unknown.Recommendation != string(agent.RecommendUnknown) {
 		t.Fatalf("unknown safety override = %+v", unknown)
+	}
+}
+
+// TestApplyCanonicalWorkSafetyIdleCorrectsStaleWorking is the #234 guard for the
+// idle arm: a canonical idle observation must be able to correct a stale parser
+// "working" verdict, but only from an actionable observation and never over a
+// live-window override, a rate-limit wall, or an error verdict.
+func TestApplyCanonicalWorkSafetyIdleCorrectsStaleWorking(t *testing.T) {
+	idleObservation := func() statuspkg.PaneObservation {
+		return statuspkg.PaneObservation{Current: statuspkg.StateObservation{
+			Status:     statuspkg.AgentStatus{State: statuspkg.StateIdle},
+			Freshness:  statuspkg.FreshnessFresh,
+			Confidence: 0.95,
+		}}
+	}
+
+	corrected := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendDoNotInterrupt)}
+	applyCanonicalWorkSafety(&corrected, idleObservation(), false)
+	if corrected.IsWorking || !corrected.IsIdle || corrected.Recommendation != string(agent.RecommendSafeToRestart) {
+		t.Fatalf("idle safety override = %+v", corrected)
+	}
+
+	// Negative case 1: the live-window THINKING override (#133) pins working.
+	liveBusy := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendDoNotInterrupt)}
+	applyCanonicalWorkSafety(&liveBusy, idleObservation(), true)
+	if !liveBusy.IsWorking || liveBusy.IsIdle || liveBusy.Recommendation != string(agent.RecommendDoNotInterrupt) {
+		t.Fatalf("live-busy pane was talked down to idle = %+v", liveBusy)
+	}
+
+	// Negative case 2: a weak idle observation is not actionable evidence.
+	weak := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendDoNotInterrupt)}
+	weakObservation := idleObservation()
+	weakObservation.Current.Confidence = 0.5
+	applyCanonicalWorkSafety(&weak, weakObservation, false)
+	if !weak.IsWorking || weak.IsIdle {
+		t.Fatalf("weak idle evidence flipped the verdict = %+v", weak)
+	}
+
+	// Negative case 3: rate-limit and error verdicts keep precedence.
+	walled := PaneWorkStatus{IsWorking: true, IsRateLimited: true, Recommendation: string(agent.RecommendRateLimitedWait)}
+	applyCanonicalWorkSafety(&walled, idleObservation(), false)
+	if walled.Recommendation != string(agent.RecommendRateLimitedWait) || walled.IsIdle {
+		t.Fatalf("rate-limited pane was advertised as free = %+v", walled)
+	}
+	broken := PaneWorkStatus{IsWorking: true, Recommendation: string(agent.RecommendErrorState)}
+	applyCanonicalWorkSafety(&broken, idleObservation(), false)
+	if broken.Recommendation != string(agent.RecommendErrorState) || broken.IsIdle {
+		t.Fatalf("errored pane was advertised as free = %+v", broken)
 	}
 }
 
