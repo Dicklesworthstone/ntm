@@ -1052,6 +1052,20 @@ type SessionRecoveryConfig struct {
 	StaleThresholdHours int  `toml:"stale_threshold_hours"` // Ignore context older than this
 	MaxCMRules          int  `toml:"max_cm_rules"`          // Max CM rules to include (default: 10)
 	MaxCMSnippets       int  `toml:"max_cm_snippets"`       // Max CM history snippets (default: 3)
+	TimeoutSeconds      int  `toml:"timeout_seconds"`       // Window for gathering recovery sources before degrading to partial recovery
+}
+
+// DefaultRecoveryTimeout bounds how long spawn waits for recovery sources
+// (beads, Agent Mail, CM memories) before continuing without them.
+const DefaultRecoveryTimeout = 5 * time.Second
+
+// GetTimeout returns the recovery-gathering window as a duration, falling back
+// to DefaultRecoveryTimeout when timeout_seconds is unset or non-positive.
+func (c SessionRecoveryConfig) GetTimeout() time.Duration {
+	if c.TimeoutSeconds <= 0 {
+		return DefaultRecoveryTimeout
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second
 }
 
 // DefaultSessionRecoveryConfig returns sensible defaults for session recovery.
@@ -1066,6 +1080,7 @@ func DefaultSessionRecoveryConfig() SessionRecoveryConfig {
 		StaleThresholdHours: 24,   // Consider context up to 24 hours old
 		MaxCMRules:          10,   // Max CM rules to include
 		MaxCMSnippets:       3,    // Max CM history snippets
+		TimeoutSeconds:      5,    // Gather recovery sources for at most 5s, then degrade
 	}
 }
 
@@ -4455,6 +4470,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "stale_threshold_hours = %d\n", cfg.SessionRecovery.StaleThresholdHours)
 	fmt.Fprintf(w, "max_cm_rules = %d\n", cfg.SessionRecovery.MaxCMRules)
 	fmt.Fprintf(w, "max_cm_snippets = %d\n", cfg.SessionRecovery.MaxCMSnippets)
+	fmt.Fprintf(w, "timeout_seconds = %d        # Seconds to gather recovery sources before degrading to partial recovery\n", cfg.SessionRecovery.TimeoutSeconds)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[cleanup]")
@@ -5311,6 +5327,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.SessionRecovery.MaxCMRules, nil
 		case "max_cm_snippets":
 			return cfg.SessionRecovery.MaxCMSnippets, nil
+		case "timeout_seconds":
+			return cfg.SessionRecovery.TimeoutSeconds, nil
 		}
 	case "cleanup":
 		if len(parts) < 2 {
@@ -6137,6 +6155,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("recovery.stale_threshold_hours", defaults.SessionRecovery.StaleThresholdHours, cfg.SessionRecovery.StaleThresholdHours)
 	addDiff("recovery.max_cm_rules", defaults.SessionRecovery.MaxCMRules, cfg.SessionRecovery.MaxCMRules)
 	addDiff("recovery.max_cm_snippets", defaults.SessionRecovery.MaxCMSnippets, cfg.SessionRecovery.MaxCMSnippets)
+	addDiff("recovery.timeout_seconds", defaults.SessionRecovery.TimeoutSeconds, cfg.SessionRecovery.TimeoutSeconds)
 
 	// Cleanup defaults
 	addDiff("cleanup.auto_clean_on_startup", defaults.Cleanup.AutoCleanOnStartup, cfg.Cleanup.AutoCleanOnStartup)
@@ -6469,6 +6488,9 @@ func Validate(cfg *Config) []error {
 	}
 	if cfg.SessionRecovery.MaxCMSnippets < 0 {
 		errs = append(errs, fmt.Errorf("recovery.max_cm_snippets: must be non-negative, got %d", cfg.SessionRecovery.MaxCMSnippets))
+	}
+	if cfg.SessionRecovery.TimeoutSeconds < 0 {
+		errs = append(errs, fmt.Errorf("recovery.timeout_seconds: must be non-negative, got %d", cfg.SessionRecovery.TimeoutSeconds))
 	}
 	if cfg.Cleanup.MaxAgeHours < 0 {
 		errs = append(errs, fmt.Errorf("cleanup.max_age_hours: must be non-negative, got %d", cfg.Cleanup.MaxAgeHours))

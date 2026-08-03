@@ -768,7 +768,12 @@ func TestLoadRecoveryBeads_BlockingBRHonorsDeadline(t *testing.T) {
 	}
 }
 
-func TestBuildRecoveryContext_BlockingBRHonorsDeadline(t *testing.T) {
+// TestBuildRecoveryContext_BlockingBRDegradesToPartial covers #232: a recovery
+// source that outruns the recovery window must degrade to PARTIAL_RECOVERY
+// (naming the source that timed out) instead of returning a terminal error,
+// which aborted the spawn after the panes had already been created. The
+// deadline is still honored in the sense that the call returns promptly.
+func TestBuildRecoveryContext_BlockingBRDegradesToPartial(t *testing.T) {
 	dir := writeRecoveryFakeBR(t, "#!/bin/sh\nexec /bin/sleep 30\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
@@ -776,18 +781,71 @@ func TestBuildRecoveryContext_BlockingBRHonorsDeadline(t *testing.T) {
 		Enabled:             true,
 		IncludeBeadsContext: true,
 		MaxRecoveryTokens:   3000,
+		TimeoutSeconds:      1,
 	}
 
 	started := time.Now()
 	rc, err := buildRecoveryContext(ctx, "blocking-recovery", dir, recoveryCfg)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("buildRecoveryContext rc=%+v error=%v, want deadline exceeded", rc, err)
+	if err != nil {
+		t.Fatalf("buildRecoveryContext returned terminal error for a timed-out source: %v", err)
 	}
-	if rc != nil {
-		t.Fatalf("buildRecoveryContext rc=%+v, want nil on terminal deadline", rc)
+	if rc == nil || rc.Error == nil {
+		t.Fatalf("buildRecoveryContext rc=%+v, want partial recovery diagnostics", rc)
+	}
+	if rc.Error.Code != "PARTIAL_RECOVERY" || !rc.Error.Recoverable {
+		t.Fatalf("recovery error=%+v, want recoverable PARTIAL_RECOVERY", rc.Error)
+	}
+	details := strings.Join(rc.Error.Details, "\n")
+	if !strings.Contains(details, "beads") || !strings.Contains(details, "timed out") {
+		t.Fatalf("recovery error details=%q, want the timed-out source named", details)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("buildRecoveryContext took %s after deadline", elapsed)
+	}
+
+	// The spawn-facing status must stay non-terminal so the caller keeps the
+	// agents it already launched.
+	status := newRecoverySpawnStatus(true, rc)
+	if status == nil || !status.Enabled || !status.Partial || status.ErrorCode != "PARTIAL_RECOVERY" {
+		t.Fatalf("recovery spawn status=%+v, want partial", status)
+	}
+	if joined := strings.Join(status.Warnings, "\n"); !strings.Contains(joined, "beads") {
+		t.Fatalf("recovery spawn warnings=%q, want the timed-out source named", joined)
+	}
+}
+
+// TestBuildRecoveryContext_CancellationStaysTerminal is the negative case for
+// #232: only cancellation (operator interrupt / parent command teardown) may
+// abort recovery, so the degradation above cannot swallow a real abort.
+func TestBuildRecoveryContext_CancellationStaysTerminal(t *testing.T) {
+	dir := writeRecoveryFakeBR(t, "#!/bin/sh\nexec /bin/sleep 30\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		cancel()
+	}()
+	defer cancel()
+	recoveryCfg := config.SessionRecoveryConfig{
+		Enabled:             true,
+		IncludeBeadsContext: true,
+		MaxRecoveryTokens:   3000,
+	}
+
+	rc, err := buildRecoveryContext(ctx, "canceled-recovery", dir, recoveryCfg)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("buildRecoveryContext rc=%+v error=%v, want cancellation", rc, err)
+	}
+	if rc != nil {
+		t.Fatalf("buildRecoveryContext rc=%+v, want nil on cancellation", rc)
+	}
+}
+
+func TestSessionRecoveryConfig_GetTimeout(t *testing.T) {
+	if got := (config.SessionRecoveryConfig{}).GetTimeout(); got != 5*time.Second {
+		t.Fatalf("unset recovery timeout=%s, want 5s default", got)
+	}
+	if got := (config.SessionRecoveryConfig{TimeoutSeconds: 12}).GetTimeout(); got != 12*time.Second {
+		t.Fatalf("configured recovery timeout=%s, want 12s", got)
 	}
 }
 

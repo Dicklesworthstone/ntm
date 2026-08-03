@@ -2488,7 +2488,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	var rc *RecoveryContext
 	recoveryEnabled := !opts.NoRecovery && cfg.SessionRecovery.Enabled && cfg.SessionRecovery.AutoInjectOnSpawn && spawnHasAutomatedPromptDeliveryTarget(opts.Agents)
 	if recoveryEnabled {
-		recoveryCtx, cancelCtx := context.WithTimeout(ctx, 5*time.Second)
+		recoveryCtx, cancelCtx := context.WithTimeout(ctx, cfg.SessionRecovery.GetTimeout())
 		var recoveryErr error
 		rc, recoveryErr = buildRecoveryContext(recoveryCtx, opts.Session, dir, cfg.SessionRecovery)
 		cancelCtx()
@@ -4305,6 +4305,8 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 	var mu sync.Mutex
 	var errs []string
 	var terminalErr error
+	timedOut := false
+	recoveryWindow := recoveryCfg.GetTimeout()
 	recordSourceError := func(source string, err error) bool {
 		if err == nil {
 			return false
@@ -4313,11 +4315,16 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 		defer mu.Unlock()
 		switch contextErr := recoveryContextTermination(err); contextErr {
 		case context.Canceled:
+			// Cancellation comes from the operator or the parent command, so
+			// nothing downstream is going to succeed either: stay terminal.
 			terminalErr = contextErr
 		case context.DeadlineExceeded:
-			if terminalErr == nil {
-				terminalErr = contextErr
-			}
+			// #232: a source that outruns the recovery window is a slow
+			// optional source, not a reason to abort the spawn and leave
+			// empty panes behind. Degrade to PARTIAL_RECOVERY and name the
+			// source that blew the window so the warning is actionable.
+			timedOut = true
+			errs = append(errs, fmt.Sprintf("%s: timed out after %s (raise recovery.timeout_seconds)", source, recoveryWindow))
 		default:
 			errs = append(errs, fmt.Sprintf("%s: %v", source, err))
 		}
@@ -4394,7 +4401,16 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		// The recovery window itself expired (#232). Sources that noticed
+		// already recorded a named warning; record a generic one when none
+		// did, so the partial result still explains why it is thin.
+		if !timedOut {
+			timedOut = true
+			errs = append(errs, fmt.Sprintf("recovery window: timed out after %s (raise recovery.timeout_seconds)", recoveryWindow))
+		}
 	}
 	if terminalErr != nil {
 		return nil, terminalErr

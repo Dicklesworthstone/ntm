@@ -5530,7 +5530,11 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 		t.Fatalf("prompt was not delivered after readiness gate opened: pane=%q", readPane())
 	})
 
-	t.Run("spawn_recovery_deadline_is_bounded_and_prevents_late_prompt", func(t *testing.T) {
+	// #232: a recovery source that outruns the recovery window degrades the
+	// spawn to PARTIAL_RECOVERY instead of aborting it after the panes were
+	// already created. The window stays bounded and the agents still get their
+	// prompt.
+	t.Run("spawn_recovery_deadline_is_bounded_and_degrades_to_partial", func(t *testing.T) {
 		writeSpawnFakeClaude(t, filepath.Join(fakeBin, "claude"))
 		writeConfig(t, strings.Join([]string{
 			"[recovery]",
@@ -5539,6 +5543,7 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 			"include_cm_memories = false",
 			"include_beads_context = true",
 			"auto_inject_on_spawn = true",
+			"timeout_seconds = 2",
 		}, "\n"))
 		brStarted := filepath.Join(root, fmt.Sprintf("recovery-br-started-%d", time.Now().UnixNano()))
 		quotedStarted := strings.ReplaceAll(brStarted, "'", "'\"'\"'")
@@ -5560,18 +5565,41 @@ printf '[]\n'
 		if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o700); err != nil {
 			t.Fatalf("create recovery beads directory: %v", err)
 		}
-		marker := fmt.Sprintf("RECOVERY_TIMEOUT_MUST_NOT_DELIVER_%d", time.Now().UnixNano())
+		marker := fmt.Sprintf("RECOVERY_TIMEOUT_STILL_DELIVERS_%d", time.Now().UnixNano())
 		startedAt := time.Now()
 		result := runCLI(t, dir, nil,
 			"--json", "spawn", session, "--cc=1", "--no-user", "--no-hooks", "--no-cass-context", "--prompt="+marker,
 		)
 		elapsed := time.Since(startedAt)
-		assertJSONFailure(t, result, session, "TIMEOUT", "spawn recovery canceled")
-		if elapsed > 12*time.Second {
-			t.Fatalf("recovery timeout took %s, want bounded near 5s", elapsed)
+		if result.exitCode != 0 || len(bytes.TrimSpace(result.stderr)) != 0 {
+			t.Fatalf("timed-out recovery spawn exit=%d stdout=%s stderr=%s", result.exitCode, result.stdout, result.stderr)
+		}
+		if elapsed > 20*time.Second {
+			t.Fatalf("recovery timeout took %s, want bounded near the 2s window", elapsed)
 		}
 		if _, err := os.Stat(brStarted); err != nil {
 			t.Fatalf("blocking br was not reached: %v", err)
+		}
+		var response struct {
+			Created  bool `json:"created"`
+			Recovery *struct {
+				Enabled   bool     `json:"enabled"`
+				Partial   bool     `json:"partial"`
+				ErrorCode string   `json:"error_code"`
+				Warnings  []string `json:"warnings"`
+			} `json:"recovery"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(result.stdout))
+		if err := decoder.Decode(&response); err != nil {
+			t.Fatalf("decode timed-out recovery spawn: %v raw=%s", err, result.stdout)
+		}
+		if !response.Created || response.Recovery == nil || !response.Recovery.Enabled ||
+			!response.Recovery.Partial || response.Recovery.ErrorCode != "PARTIAL_RECOVERY" {
+			t.Fatalf("timed-out recovery status=%+v raw=%s", response, result.stdout)
+		}
+		warnings := strings.Join(response.Recovery.Warnings, "\n")
+		if !strings.Contains(warnings, "beads") || !strings.Contains(warnings, "timed out") {
+			t.Fatalf("timed-out recovery warnings=%q, want the timed-out source named", warnings)
 		}
 		assertSessionExists(t, session)
 		capture := func() string {
@@ -5583,12 +5611,17 @@ printf '[]\n'
 			output, _ := captureCmd.Output()
 			return string(output)
 		}
-		if output := capture(); strings.Contains(output, marker) {
-			t.Fatalf("recovery timeout delivered prompt before exit: %s", output)
+		deliveryDeadline := time.Now().Add(defaultTmuxSetupTimeout)
+		delivered := false
+		for time.Now().Before(deliveryDeadline) {
+			if strings.Contains(capture(), "RECEIVED:"+marker) {
+				delivered = true
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
 		}
-		time.Sleep(750 * time.Millisecond)
-		if output := capture(); strings.Contains(output, marker) {
-			t.Fatalf("recovery timeout produced late prompt actuation: %s", output)
+		if !delivered {
+			t.Fatalf("partial recovery spawn never delivered the prompt: pane=%q", capture())
 		}
 	})
 
