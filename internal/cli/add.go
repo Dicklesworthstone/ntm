@@ -538,6 +538,11 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 
 	// Track newly added panes for JSON output
 	var newPanes []output.PaneResponse
+	// Track newly added agents so they can be registered with Agent Mail after
+	// the launch loop, exactly like spawn does (#240). Without this, panes
+	// added to a live session never got an Agent Mail identity, so they could
+	// not send or receive mail and `ntm lock` had no identity to attribute.
+	var addedAgents []spawnedAgentInfo
 
 	// Get existing panes to determine next indices
 	panes, err := tmux.GetPanesContext(ctx, session)
@@ -945,6 +950,26 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			Variant: agent.Model,
 			Command: cmd,
 		})
+
+		// Track for Agent Mail registration (#240)
+		addedAgents = append(addedAgents, spawnedAgentInfo{
+			paneIndex:     num,
+			paneID:        paneID,
+			paneTitle:     title,
+			agentType:     agentTypeStr,
+			model:         agent.Model,
+			resolvedModel: resolvedModel,
+		})
+	}
+
+	// Register the newly added agents with Agent Mail so panes added to a live
+	// session get identities and inboxes just like spawned ones (#240). The
+	// helper self-guards on a disabled config or an unreachable server, and it
+	// merges into the session's existing registry rather than replacing it, so
+	// identities created by the original spawn are preserved.
+	var agentMailStatus *output.AgentMailSpawnStatus
+	if len(addedAgents) > 0 {
+		agentMailStatus = registerSpawnedAgents(ctx, dir, session, addedAgents)
 	}
 
 	// Run post-add hooks
@@ -995,6 +1020,7 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			AddedOpencode:       opencodeCount,
 			TotalAdded:          totalAgents,
 			NewPanes:            newPanes,
+			AgentMail:           agentMailStatus,
 		})
 	}
 

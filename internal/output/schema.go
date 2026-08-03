@@ -182,6 +182,10 @@ type AddResponse struct {
 	AddedOpencode    int            `json:"added_opencode"`
 	TotalAdded       int            `json:"total_added"`
 	NewPanes         []PaneResponse `json:"new_panes,omitempty"`
+	// AgentMail mirrors SpawnResponse.AgentMail: added panes are registered
+	// with Agent Mail too, so automation can read back the pane_id -> agent
+	// name mapping for panes that joined an existing session (#240).
+	AgentMail *AgentMailSpawnStatus `json:"agent_mail,omitempty"`
 }
 
 // SendResponse is the output format for send command

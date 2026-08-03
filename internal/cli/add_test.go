@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -301,6 +305,118 @@ func TestAddThreadsCodexReasoningEffort(t *testing.T) {
 	}
 	if !strings.Contains(noEffort, "model_reasoning_effort="+config.ShellQuote(config.DefaultCodexReasoningEffort)) {
 		t.Errorf("unset effort should render default effort: %q", noEffort)
+	}
+}
+
+// TestAddRegistersAgentsWithAgentMail is the ntm#240 regression guard. `ntm add`
+// launched agents into a live session but never called registerSpawnedAgents,
+// so — unlike spawn — the added panes got no Agent Mail identity and could
+// neither send nor receive mail. The launch loop lives inside executeAdd and
+// needs a real tmux session to drive, so this asserts structurally (the same
+// technique as TestRootDispatcherDoesNotExitProcess) that executeAdd collects
+// the registration inputs for every pane it launches and hands them to the
+// shared helper. Pre-fix, add.go contained zero references to either symbol.
+func TestAddRegistersAgentsWithAgentMail(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate cli test source")
+	}
+	addFile := filepath.Join(filepath.Dir(testFile), "add.go")
+	file, err := parser.ParseFile(token.NewFileSet(), addFile, nil, 0)
+	if err != nil {
+		t.Fatalf("parse add command: %v", err)
+	}
+
+	var executeAddDecl *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Recv == nil && fn.Name.Name == "executeAdd" {
+			executeAddDecl = fn
+			break
+		}
+	}
+	if executeAddDecl == nil {
+		t.Fatal("executeAdd not found in add.go")
+	}
+
+	registerCalls := 0
+	// The six fields registerSpawnedAgents needs to create (or reuse) an
+	// identity: anything missing here silently degrades the registration.
+	wantFields := map[string]bool{
+		"paneIndex": false, "paneID": false, "paneTitle": false,
+		"agentType": false, "model": false, "resolvedModel": false,
+	}
+	ast.Inspect(executeAddDecl, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.CallExpr:
+			if ident, ok := n.Fun.(*ast.Ident); ok && ident.Name == "registerSpawnedAgents" {
+				registerCalls++
+			}
+		case *ast.CompositeLit:
+			ident, ok := n.Type.(*ast.Ident)
+			if !ok || ident.Name != "spawnedAgentInfo" {
+				return true
+			}
+			for _, elt := range n.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := kv.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if _, tracked := wantFields[key.Name]; tracked {
+					wantFields[key.Name] = true
+				}
+			}
+		}
+		return true
+	})
+
+	if registerCalls != 1 {
+		t.Fatalf("executeAdd calls registerSpawnedAgents %d time(s), want exactly 1 (added agents must be registered with Agent Mail)", registerCalls)
+	}
+	for field, seen := range wantFields {
+		if !seen {
+			t.Errorf("executeAdd does not populate spawnedAgentInfo.%s for added panes", field)
+		}
+	}
+}
+
+// TestAddResponseCarriesAgentMailStatus locks the ntm#240 response contract:
+// AddResponse gained the agent_mail block SpawnResponse already had, so
+// automation can read back the pane_id -> agent name mapping for added panes.
+func TestAddResponseCarriesAgentMailStatus(t *testing.T) {
+	data, err := json.Marshal(output.AddResponse{
+		TotalAdded: 1,
+		NewPanes:   []output.PaneResponse{{PaneID: "%42", Title: "proj__cc_2", Type: "cc"}},
+		AgentMail: &output.AgentMailSpawnStatus{
+			Available:         true,
+			ProjectRegistered: true,
+			AgentsRegistered:  1,
+			AgentMap:          map[string]string{"%42": "Aurelia"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(AddResponse) error = %v", err)
+	}
+	encoded := string(data)
+	if !strings.Contains(encoded, `"agent_mail"`) || !strings.Contains(encoded, `"agents_registered":1`) {
+		t.Fatalf("AddResponse JSON = %s, want agent_mail registration status", encoded)
+	}
+	if !strings.Contains(encoded, `"%42":"Aurelia"`) {
+		t.Fatalf("AddResponse JSON = %s, want the pane_id -> agent name mapping", encoded)
+	}
+
+	// Negative control: sessions where Agent Mail is disabled must not grow an
+	// empty agent_mail object in the response.
+	bare, err := json.Marshal(output.AddResponse{TotalAdded: 1})
+	if err != nil {
+		t.Fatalf("json.Marshal(bare AddResponse) error = %v", err)
+	}
+	if strings.Contains(string(bare), "agent_mail") {
+		t.Fatalf("AddResponse JSON = %s, want agent_mail omitted when unset", bare)
 	}
 }
 

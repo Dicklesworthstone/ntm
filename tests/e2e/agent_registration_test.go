@@ -131,6 +131,57 @@ func TestE2EAgentMailAutoRegistration(t *testing.T) {
 	if registry.ProjectKey != projectDir {
 		t.Errorf("project key mismatch: got %q, want %q", registry.ProjectKey, projectDir)
 	}
+
+	// #240: panes added to a live session must be registered with Agent Mail
+	// too. Before the fix, `ntm add` launched the agent but never called the
+	// registration helper, so the registry stayed at its spawn-time size and
+	// the added pane had no identity to send or receive mail with.
+	addOut := runCmd(t, projectDir, "ntm", "--config", configPath, "--json", "add", session, "--cc=1")
+	t.Logf("Add output: %s", string(addOut))
+	addJSON := string(addOut)
+	if start := strings.Index(addJSON, "{"); start > 0 {
+		addJSON = addJSON[start:]
+	}
+	var addResp struct {
+		TotalAdded int `json:"total_added"`
+		NewPanes   []struct {
+			PaneID string `json:"pane_id"`
+			Title  string `json:"title"`
+		} `json:"new_panes"`
+		AgentMail *struct {
+			Available        bool              `json:"available"`
+			AgentsRegistered int               `json:"agents_registered"`
+			AgentsFailed     int               `json:"agents_failed"`
+			AgentMap         map[string]string `json:"agent_map"`
+		} `json:"agent_mail"`
+	}
+	if err := json.Unmarshal([]byte(addJSON), &addResp); err != nil {
+		t.Fatalf("decode add response: %v raw=%s", err, addOut)
+	}
+	if addResp.TotalAdded != 1 || len(addResp.NewPanes) != 1 {
+		t.Fatalf("add response=%+v, want exactly one added pane", addResp)
+	}
+	addedPane := addResp.NewPanes[0]
+	if addResp.AgentMail == nil {
+		t.Fatalf("add response omitted agent_mail status: %s", addOut)
+	}
+	if !addResp.AgentMail.Available || addResp.AgentMail.AgentsRegistered != 1 || addResp.AgentMail.AgentsFailed != 0 {
+		t.Fatalf("add agent_mail status=%+v, want the added pane registered", addResp.AgentMail)
+	}
+	if name := addResp.AgentMail.AgentMap[addedPane.PaneID]; name == "" {
+		t.Fatalf("add agent_mail map=%v, want an identity for pane %s", addResp.AgentMail.AgentMap, addedPane.PaneID)
+	}
+
+	addedRegistry, err := agentmail.LoadSessionAgentRegistry(session, projectDir)
+	if err != nil {
+		t.Fatalf("load registry after add: %v", err)
+	}
+	if addedRegistry == nil || addedRegistry.Count() != 4 {
+		t.Fatalf("registry after add=%+v, want the 3 spawned agents plus the added one", addedRegistry)
+	}
+	if name, ok := addedRegistry.GetAgentByTitle(addedPane.Title); !ok || name == "" {
+		t.Errorf("added pane title %q not registered (name=%q)", addedPane.Title, name)
+	}
 }
 
 // TestE2EAgentMailRegistryRecovery tests that persisted agent mappings
