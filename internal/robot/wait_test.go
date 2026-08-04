@@ -64,6 +64,7 @@ func TestIsValidWaitCondition(t *testing.T) {
 		{"healthy valid", "healthy", true},
 		{"stalled valid", "stalled", true},
 		{"rate_limited valid", "rate_limited", true},
+		{"rate_limit_lifted valid", "rate_limit_lifted", true},
 
 		// Attention-based conditions
 		{"attention valid", "attention", true},
@@ -928,5 +929,49 @@ func TestResolveWaitPanesCanonicalSelectors(t *testing.T) {
 	}
 	if _, err := resolveWaitPanes(panes, WaitOptions{PaneSelectors: []string{"1.x"}}); err == nil || paneSelectorRobotErrorCode(err) != ErrCodeInvalidFlag {
 		t.Fatalf("malformed selector error = %v, code = %q", err, paneSelectorRobotErrorCode(err))
+	}
+}
+
+// rate_limited vs rate_limit_lifted semantics (ntm-xh9t): rate_limited fires
+// when a pane BECOMES limited; rate_limit_lifted is met only while the pane is
+// clear, so the wait blocks until every target pane's wall drops. Several doc
+// sites historically taught rate_limited with inverted semantics; these tests
+// pin the real contract for both directions.
+func TestRateLimitWaitConditionDirections(t *testing.T) {
+	limited := &AgentActivity{State: StateError, RateLimited: true}
+	clear := &AgentActivity{State: StateWaiting, RateLimited: false}
+
+	if !meetsSingleWaitCondition(limited, WaitConditionRateLimited) {
+		t.Error("rate_limited must be met by a limited pane")
+	}
+	if meetsSingleWaitCondition(clear, WaitConditionRateLimited) {
+		t.Error("rate_limited must not be met by a clear pane")
+	}
+	if meetsSingleWaitCondition(limited, WaitConditionRateLimitLifted) {
+		t.Error("rate_limit_lifted must not be met while the pane is limited")
+	}
+	if !meetsSingleWaitCondition(clear, WaitConditionRateLimitLifted) {
+		t.Error("rate_limit_lifted must be met by a clear pane")
+	}
+
+	// Composed check: a mixed swarm keeps the lifted-wait pending until the
+	// last limited pane clears.
+	opts := WaitOptions{Condition: WaitConditionRateLimitLifted}
+	activities := []*AgentActivity{
+		{PaneID: "1", State: StateWaiting, RateLimited: false},
+		{PaneID: "2", State: StateError, RateLimited: true},
+	}
+	met, _, pending := checkWaitConditionMet(activities, opts)
+	if met {
+		t.Fatal("lifted-wait reported met while a pane is still limited")
+	}
+	if len(pending) != 1 || pending[0] != "2" {
+		t.Fatalf("pending = %v, want the limited pane", pending)
+	}
+	activities[1].RateLimited = false
+	activities[1].State = StateWaiting
+	met, matching, _ := checkWaitConditionMet(activities, opts)
+	if !met || len(matching) != 2 {
+		t.Fatalf("lifted-wait met=%v matching=%d after all panes cleared, want met with 2", met, len(matching))
 	}
 }

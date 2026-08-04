@@ -83,12 +83,21 @@ type WaitAgentInfo struct {
 
 // Wait condition constants - pane-based conditions
 const (
-	WaitConditionIdle        = "idle"
-	WaitConditionComplete    = "complete"
-	WaitConditionGenerating  = "generating"
-	WaitConditionHealthy     = "healthy"
-	WaitConditionStalled     = "stalled"
+	WaitConditionIdle       = "idle"
+	WaitConditionComplete   = "complete"
+	WaitConditionGenerating = "generating"
+	WaitConditionHealthy    = "healthy"
+	WaitConditionStalled    = "stalled"
+	// WaitConditionRateLimited fires when a pane BECOMES rate-limited (the
+	// classifier detects rate-limit patterns in its output). To sleep until
+	// a rate-limit wall lifts, use WaitConditionRateLimitLifted — several
+	// operator docs historically taught rate_limited with inverted
+	// semantics, producing automations that resumed a swarm at the exact
+	// moment it hit the wall (ntm-xh9t).
 	WaitConditionRateLimited = "rate_limited"
+	// WaitConditionRateLimitLifted is met for a pane when it is NOT
+	// rate-limited; the wait returns once every target pane is clear.
+	WaitConditionRateLimitLifted = "rate_limit_lifted"
 )
 
 // Wait condition constants - attention-based conditions (require --attention-cursor)
@@ -382,7 +391,7 @@ func isSingleValidWaitCondition(condition string) bool {
 	switch condition {
 	// Pane-based conditions
 	case WaitConditionIdle, WaitConditionComplete, WaitConditionGenerating, WaitConditionHealthy,
-		WaitConditionStalled, WaitConditionRateLimited:
+		WaitConditionStalled, WaitConditionRateLimited, WaitConditionRateLimitLifted:
 		return true
 	// Attention-based conditions
 	case WaitConditionAttention, WaitConditionActionRequired, WaitConditionMailPending,
@@ -631,6 +640,15 @@ func meetsSingleWaitCondition(activity *AgentActivity, condition string) bool {
 		// these as StateError, but we check the flag directly so the wait
 		// condition fires regardless of the state enum.
 		return activity.RateLimited
+
+	case WaitConditionRateLimitLifted:
+		// Met when the pane is NOT rate-limited. Because the wait requires
+		// every target pane to match, `--wait-until=rate_limit_lifted`
+		// blocks while any pane shows the wall and returns once the whole
+		// target set is clear — the "sleep until the wall drops" semantics
+		// operators actually want (ntm-xh9t). Invoked when nothing is
+		// limited, it returns immediately (condition already true).
+		return !activity.RateLimited
 
 	default:
 		// Attention-based conditions don't apply to individual pane activity
