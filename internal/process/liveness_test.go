@@ -177,3 +177,24 @@ func TestProcessStateNames(t *testing.T) {
 		}
 	}
 }
+
+// StartTime is the pane-age source (ntm-qvpm): it must return a sane, past
+// timestamp for a live PID and error for invalid ones.
+func TestStartTime(t *testing.T) {
+	started, err := StartTime(os.Getpid())
+	if err != nil {
+		t.Fatalf("StartTime(self): %v", err)
+	}
+	if started.IsZero() || started.After(time.Now().Add(time.Minute)) {
+		t.Fatalf("StartTime(self) = %v, want past timestamp", started)
+	}
+	if time.Since(started) > 24*time.Hour {
+		t.Fatalf("StartTime(self) = %v, implausibly old for a test process", started)
+	}
+	if _, err := StartTime(0); err == nil {
+		t.Fatal("StartTime(0) should error")
+	}
+	if _, err := StartTime(-5); err == nil {
+		t.Fatal("StartTime(-5) should error")
+	}
+}

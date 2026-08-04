@@ -2586,9 +2586,9 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			continue
 		}
 
-		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9)
+		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), pane_start_time(10, optional)
 		// parts[:7] = id..active
-		// parts[8:] = pid, window_index
+		// parts[8:] = pid, window_index[, pane_start_time]
 		p, err := parsePaneFromParts(parts[:7], parts[8:])
 		if err != nil {
 			continue

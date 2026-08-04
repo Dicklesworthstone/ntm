@@ -21,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/palette"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -29,7 +30,7 @@ import (
 
 func paneResponseFromTMUX(pane tmux.Pane) output.PaneResponse {
 	ref := pane.Ref()
-	return output.PaneResponse{
+	response := output.PaneResponse{
 		PaneID:      ref.ID,
 		PaneTarget:  ref.Physical(),
 		WindowIndex: ref.WindowIndex,
@@ -42,6 +43,15 @@ func paneResponseFromTMUX(pane tmux.Pane) output.PaneResponse {
 		Height:      pane.Height,
 		Command:     pane.Command,
 	}
+	// Pane age from the shell PID's process start time (tmux has no per-pane
+	// creation-time variable; the PID resets on respawn, matching the
+	// "current incarnation" semantics operators need). Best-effort.
+	if pane.PID > 0 {
+		if startedAt, err := process.StartTime(pane.PID); err == nil {
+			response.PaneStartedAt = startedAt.Format(time.RFC3339)
+		}
+	}
+	return response
 }
 
 // parseEditorCommand splits the editor string into command and arguments.
