@@ -598,7 +598,7 @@ func (c *SessionCoordinator) releaseTerminalAssignmentReservations(ctx context.C
 		return fmt.Errorf("reconcile reservation for %s: %w", current.BeadID, err)
 	}
 	lease.Requested = requested
-	port := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: c.projectKey}
+	port := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
 	reconciled, err := port.ReconcileReservation(ctx, assignmentstore.ReservationRequest{
 		BeadID: current.BeadID, BeadTitle: current.BeadTitle, AgentName: lease.AgentName,
 		Target: lease.Target, RequestedPaths: requested, TTL: time.Hour,
@@ -992,7 +992,11 @@ func validatedCoordinatorAgentMailProjectID(project *agentmail.Project, projectK
 	if expectedKey == "" {
 		return 0, errors.New("agent-mail project binding requires a non-empty project key")
 	}
-	if humanKey := strings.TrimSpace(project.HumanKey); humanKey != expectedKey {
+	// Symlink-equivalent compare: Agent Mail canonicalizes project paths, so
+	// the returned human key may be the resolved form of a symlinked key
+	// (GH#239). Fail-closed semantics are preserved for genuinely different
+	// directories.
+	if humanKey := strings.TrimSpace(project.HumanKey); !agentmail.ProjectKeysEquivalent(humanKey, expectedKey) {
 		return 0, fmt.Errorf("agent-mail project binding mismatch: got %q, want %q", humanKey, projectKey)
 	}
 	return project.ID, nil
@@ -1039,7 +1043,7 @@ func (c *SessionCoordinator) newAtomicAssignmentCoordinator(store *assignmentsto
 			BeadID: claim.ID, Actor: claim.Actor, Status: claim.Status, ClaimedAt: claim.ClaimedAt,
 		}, nil
 	})
-	reservationPort := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: c.projectKey}
+	reservationPort := &coordinatorAgentMailReservationPort{client: c.reservationClient, projectKey: agentmail.CanonicalProjectKey(c.projectKey)}
 	dispatchPort := assignmentstore.DispatchFunc(func(ctx context.Context, req assignmentstore.DispatchRequest) (assignmentstore.DispatchReceipt, error) {
 		started := time.Now()
 		project, err := c.mailClient.EnsureProject(ctx, c.projectKey)

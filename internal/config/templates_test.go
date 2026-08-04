@@ -362,6 +362,26 @@ func TestDefaultAgentTemplates(t *testing.T) {
 	if ocBare != "opencode" {
 		t.Errorf("Opencode no-model render = %q, want %q", ocBare, "opencode")
 	}
+
+	// Cursor template (GH#233): must launch the Cursor Agent CLI
+	// (`cursor-agent`), never the `cursor` IDE binary, and must carry the
+	// autonomous approval flag so unattended panes don't stall on tool
+	// prompts. It must NOT inject `--trust` (interactive REPL rejects it) and
+	// must NOT use the bare `agent` binary name (collides with Grok Build).
+	cursorBare, err := GenerateAgentCommand(templates.Cursor, AgentTemplateVars{})
+	if err != nil {
+		t.Fatalf("Cursor bare template failed: %v", err)
+	}
+	if cursorBare != "cursor-agent --yolo" {
+		t.Errorf("Cursor bare render = %q, want %q", cursorBare, "cursor-agent --yolo")
+	}
+	cursorModel, err := GenerateAgentCommand(templates.Cursor, AgentTemplateVars{Model: "cursor-grok-4.5-high"})
+	if err != nil {
+		t.Fatalf("Cursor model template failed: %v", err)
+	}
+	if cursorModel != "cursor-agent --yolo --model 'cursor-grok-4.5-high'" {
+		t.Errorf("Cursor model render = %q", cursorModel)
+	}
 }
 
 func TestDefaultAgentTemplates_ShellQuoting(t *testing.T) {

@@ -751,7 +751,7 @@ func applyRebalanceTransfers(ctx context.Context, session, projectDir string, st
 	}
 
 	coordinator := newCLIAtomicAssignmentCoordinator(store, projectDir, reservationMgr)
-	return applyTransfers(ctx, session, store, panes, transfers, coordinator, newAssignSessionObserver())
+	return applyTransfers(ctx, projectDir, session, store, panes, transfers, coordinator, newAssignSessionObserver())
 }
 
 func rebalanceRequiresReservationManager(store *assignment.AssignmentStore, transfers []RebalanceTransfer) bool {
@@ -774,7 +774,7 @@ func rebalanceRequiresReservationManager(store *assignment.AssignmentStore, tran
 
 func applyTransfers(
 	ctx context.Context,
-	session string,
+	projectDir, session string,
 	store *assignment.AssignmentStore,
 	panes []tmux.Pane,
 	transfers []RebalanceTransfer,
@@ -798,7 +798,7 @@ func applyTransfers(
 	prepared := make([]preparedTransfer, 0, len(transfers))
 	requests := make([]assignment.AtomicRequest, 0, len(transfers))
 	for index := range transfers {
-		request, err := prepareRebalanceTransfer(session, store, panes, &transfers[index])
+		request, err := prepareRebalanceTransfer(projectDir, session, store, panes, &transfers[index])
 		if err != nil {
 			return fmt.Errorf("prepare transfer %s: %w", transfers[index].BeadID, err)
 		}
@@ -831,7 +831,7 @@ func applyTransfers(
 	return nil
 }
 
-func prepareRebalanceTransfer(session string, store *assignment.AssignmentStore, panes []tmux.Pane, transfer *RebalanceTransfer) (assignment.AtomicRequest, error) {
+func prepareRebalanceTransfer(projectDir, session string, store *assignment.AssignmentStore, panes []tmux.Pane, transfer *RebalanceTransfer) (assignment.AtomicRequest, error) {
 	var request assignment.AtomicRequest
 	if transfer == nil || strings.TrimSpace(transfer.BeadID) == "" {
 		return request, fmt.Errorf("transfer bead ID is required")
@@ -908,7 +908,7 @@ func prepareRebalanceTransfer(session string, store *assignment.AssignmentStore,
 		discovery = false
 	}
 	multiWindow := tmux.PanesSpanMultipleWindows(panes)
-	agentName := assignmentAgentNameForPane(session, targetAgentType, targetPane, multiWindow)
+	agentName := assignmentAgentIdentityForPane(projectDir, session, targetAgentType, targetPane, multiWindow)
 	if recovering && strings.TrimSpace(current.AgentName) != "" {
 		agentName = current.AgentName
 		targetAgentType = current.AgentType

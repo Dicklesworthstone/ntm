@@ -44,10 +44,15 @@ type FileReservationResult struct {
 }
 
 // NewFileReservationManager creates a new file reservation manager.
+//
+// projectKey is canonicalized through symlinks: Agent Mail resolves project
+// paths to their real directory (e.g. /data/projects/X -> /home/user/X), so
+// every downstream reservation read/release keyed by the raw symlinked path
+// would miss the project Agent Mail actually registered (GH#239).
 func NewFileReservationManager(client FileReservationClient, projectKey string) *FileReservationManager {
 	return &FileReservationManager{
 		client:     client,
-		projectKey: projectKey,
+		projectKey: agentmail.CanonicalProjectKey(projectKey),
 		ttlSeconds: 3600, // Default 1 hour
 	}
 }
@@ -379,7 +384,11 @@ func (m *FileReservationManager) ensureProject(ctx context.Context) (int, error)
 	if expectedKey == "" {
 		return 0, errors.New("agent-mail project binding requires a non-empty project key")
 	}
-	if humanKey := strings.TrimSpace(project.HumanKey); humanKey != expectedKey {
+	// Symlink-equivalent compare: Agent Mail canonicalizes project paths, so
+	// the returned human key may be the resolved form of a symlinked key
+	// (GH#239). Fail-closed semantics are preserved for genuinely different
+	// directories.
+	if humanKey := strings.TrimSpace(project.HumanKey); !agentmail.ProjectKeysEquivalent(humanKey, expectedKey) {
 		return 0, fmt.Errorf("agent-mail project binding mismatch: got %q, want %q", humanKey, m.projectKey)
 	}
 	return project.ID, nil

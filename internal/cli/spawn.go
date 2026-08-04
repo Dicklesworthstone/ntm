@@ -3393,7 +3393,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			var initResult *SpawnInitResult
 			if opts.InitPrompt != "" {
 				initReceipts, initErr := sendInitPromptToReadyAgentsWith(
-					ctx, opts.Session, opts.InitPrompt, opts.InitPromptWithAgentName,
+					ctx, dir, opts.Session, opts.InitPrompt, opts.InitPromptWithAgentName,
 					spawnObserver, spawnDispatcher,
 				)
 				initResult = &SpawnInitResult{
@@ -3553,7 +3553,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 
 type spawnAssignmentOps struct {
 	waitForReady func(context.Context, string, time.Duration, time.Duration, spawnSessionObserver) (int, error)
-	sendInit     func(context.Context, string, string, bool, spawnSessionObserver, spawnPromptDispatcher) ([]dispatchsvc.Receipt, error)
+	sendInit     func(context.Context, string, string, string, bool, spawnSessionObserver, spawnPromptDispatcher) ([]dispatchsvc.Receipt, error)
 	assign       func(context.Context, string, SpawnOptions) (*AssignOutputEnhanced, error)
 }
 
@@ -3600,8 +3600,14 @@ func runSpawnAssignmentTextContext(
 
 	if opts.InitPrompt != "" {
 		steps.Start("Sending init prompt to ready agents")
+		// Best-effort project dir: the registered-identity lookup inside
+		// sendInit degrades to the synthetic name when the dir is unknown.
+		initProjectDir, initDirErr := resolveSpawnProjectDir(opts)
+		if initDirErr != nil {
+			initProjectDir = ""
+		}
 		initReceipts, initErr := ops.sendInit(
-			ctx, session, opts.InitPrompt, opts.InitPromptWithAgentName, observer, dispatcher,
+			ctx, initProjectDir, session, opts.InitPrompt, opts.InitPromptWithAgentName, observer, dispatcher,
 		)
 		if initErr != nil {
 			steps.Fail()
@@ -5558,7 +5564,7 @@ func waitForAgentsReadyWithObserver(
 // See ntm#138.
 func sendInitPromptToReadyAgentsWith(
 	ctx context.Context,
-	session, prompt string,
+	projectDir, session, prompt string,
 	withAgentName bool,
 	observer spawnSessionObserver,
 	dispatcher spawnPromptDispatcher,
@@ -5597,7 +5603,7 @@ func sendInitPromptToReadyAgentsWith(
 		paneAgentType := detectAgentTypeFromPane(pane)
 		perPanePrompt := prompt
 		if withAgentName {
-			name := assignmentAgentNameForPane(session, paneAgentType, pane, multiWindow)
+			name := assignmentAgentIdentityForPane(projectDir, session, paneAgentType, pane, multiWindow)
 			if name != "" {
 				perPanePrompt = fmt.Sprintf(
 					"You are agent `%s`. Use this name when registering with Agent Mail or referring to yourself.\n\n%s",

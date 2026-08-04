@@ -123,6 +123,12 @@ const (
 	errorLookbackLines         = 20
 	criticalErrorLookbackLines = 50
 	processExitLookbackLines   = 12
+	// blockingPromptLookbackLines bounds the live-tail window scanned for
+	// modal first-run dialogs (e.g. Antigravity's workspace-trust prompt).
+	// The window is deliberately small: a dialog that has scrolled up into
+	// history was answered, only a dialog still sitting at the bottom of the
+	// pane is actually blocking it.
+	blockingPromptLookbackLines = 25
 )
 
 // CheckSession performs health checks on all agents in a session
@@ -291,6 +297,14 @@ func analyzeAgentHealth(agent AgentHealth, pa tmux.PaneActivity, output string) 
 		}
 	}
 
+	// Check for modal blocking prompts (e.g. the Antigravity workspace-trust
+	// dialog). A pane parked on one of these is alive and looks "OK" by every
+	// other signal, but it is waiting on a keystroke and will never accept
+	// work — the worst failure mode for an unattended swarm (GH#230).
+	if issue, ok := detectBlockingPrompt(output, string(pa.Pane.Type)); ok {
+		agent.Issues = append(agent.Issues, issue)
+	}
+
 	// Determine activity level
 	agent.Activity = detectActivity(output, pa.LastActivity, string(pa.Pane.Type))
 
@@ -369,6 +383,59 @@ func detectErrorsForAgent(output string, agentType string) []Issue {
 	}
 
 	return issues
+}
+
+// blockingPromptSignature describes a modal, keystroke-gated dialog that
+// parks an otherwise-healthy pane forever. Each marker must appear in the
+// pane's live tail (last blockingPromptLookbackLines lines) for the signature
+// to match, which keeps stale scrollback from re-flagging an answered dialog.
+type blockingPromptSignature struct {
+	agentType agent.AgentType // canonical agent type the dialog belongs to
+	issueType string          // Issue.Type identifier
+	message   string          // human-readable Issue.Message
+	markers   []string        // all must be present in the live tail
+}
+
+// blockingPromptSignatures lists known first-run modal dialogs, keyed by the
+// agent CLI that renders them. The Antigravity workspace-trust dialog is the
+// canonical case (GH#230): `--dangerously-skip-permissions` auto-approves
+// tool calls but does NOT suppress this dialog, which gates the whole session
+// before any tool call happens.
+var blockingPromptSignatures = []blockingPromptSignature{
+	{
+		agentType: agent.AgentTypeAntigravity,
+		issueType: "trust_prompt",
+		message:   "Blocked on workspace-trust prompt (needs a keystroke; pane will never accept work)",
+		markers: []string{
+			"Do you trust the contents of this project?",
+			"Yes, I trust this folder",
+		},
+	},
+}
+
+// detectBlockingPrompt reports whether the pane's live tail shows a known
+// modal blocking dialog for this agent type. Matching is agent-type-gated so
+// a Claude pane that merely *prints* the Antigravity dialog text (e.g. while
+// editing this file) is not flagged.
+func detectBlockingPrompt(output, agentType string) (Issue, bool) {
+	canonical := agent.AgentType(agentType).Canonical()
+	tail := status.StripANSI(util.GetLastNLines(output, blockingPromptLookbackLines))
+	for _, sig := range blockingPromptSignatures {
+		if sig.agentType != canonical {
+			continue
+		}
+		matched := true
+		for _, marker := range sig.markers {
+			if !strings.Contains(tail, marker) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return Issue{Type: sig.issueType, Message: sig.message}, true
+		}
+	}
+	return Issue{}, false
 }
 
 // promptScanLineBudget caps how many tail lines outputAfterMostRecentPrompt
@@ -718,9 +785,11 @@ func detectProcessStatusForAgent(output string, command string, shellPID int, ag
 
 // calculateStatus determines overall status from all factors
 func calculateStatus(agent AgentHealth) Status {
-	// Error status if any critical issues
+	// Error status if any critical issues. trust_prompt is critical: the pane
+	// is parked on a modal dialog and will never do work until a human (or an
+	// explicit policy) answers it (GH#230).
 	for _, issue := range agent.Issues {
-		if issue.Type == "crash" || issue.Type == "auth_error" {
+		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "trust_prompt" {
 			return StatusError
 		}
 	}

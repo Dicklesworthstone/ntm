@@ -2698,19 +2698,19 @@ func TestPendingCLIRecoveryIdentityErrorRejectsReusedPaneIdentity(t *testing.T) 
 	t.Parallel()
 	pane := tmux.Pane{ID: "%40", WindowIndex: 0, Index: 1, Type: tmux.AgentCodex}
 	pending := assignment.Assignment{AgentType: "codex", AgentName: "demo_codex_1"}
-	if err := pendingCLIRecoveryIdentityError("demo", pane, pending, false); err != nil {
+	if err := pendingCLIRecoveryIdentityError("", "demo", pane, pending, false); err != nil {
 		t.Fatalf("matching identity: %v", err)
 	}
 
 	typeChanged := pending
 	typeChanged.AgentType = "claude"
-	if err := pendingCLIRecoveryIdentityError("demo", pane, typeChanged, false); err == nil || !strings.Contains(err.Error(), "changed agent type") {
+	if err := pendingCLIRecoveryIdentityError("", "demo", pane, typeChanged, false); err == nil || !strings.Contains(err.Error(), "changed agent type") {
 		t.Fatalf("type drift error=%v", err)
 	}
 
 	nameChanged := pending
 	nameChanged.AgentName = "FormerCodex"
-	if err := pendingCLIRecoveryIdentityError("demo", pane, nameChanged, false); err == nil || !strings.Contains(err.Error(), "changed Agent Mail identity") {
+	if err := pendingCLIRecoveryIdentityError("", "demo", pane, nameChanged, false); err == nil || !strings.Contains(err.Error(), "changed Agent Mail identity") {
 		t.Fatalf("name drift error=%v", err)
 	}
 }

@@ -854,7 +854,7 @@ func TestApplyTransfersAtomicSuccessReplayAndExactReservationTransfer(t *testing
 	observer := rebalanceSafeObserver(store.SessionName, panes[1])
 	transfers := []RebalanceTransfer{rebalanceTestTransfer(source)}
 
-	if err := applyTransfers(t.Context(), store.SessionName, store, panes, transfers, coordinator, observer); err != nil {
+	if err := applyTransfers(t.Context(), "", store.SessionName, store, panes, transfers, coordinator, observer); err != nil {
 		t.Fatalf("applyTransfers: %v", err)
 	}
 	after := store.Get(source.BeadID)
@@ -876,7 +876,7 @@ func TestApplyTransfersAtomicSuccessReplayAndExactReservationTransfer(t *testing
 
 	// Replaying the exact transfer uses the durable receipt and performs no
 	// second claim, release, reservation, or dispatch.
-	if err := applyTransfers(t.Context(), store.SessionName, store, panes, transfers, coordinator, observer); err != nil {
+	if err := applyTransfers(t.Context(), "", store.SessionName, store, panes, transfers, coordinator, observer); err != nil {
 		t.Fatalf("replay applyTransfers: %v", err)
 	}
 	if claim.eligibilityCalls != 1 || claim.claimCalls != 1 || release.calls != 1 || reservation.calls != 1 || dispatch.calls != 1 {
@@ -898,7 +898,7 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 		transfer.sourceKey = "superseded-generation"
 		coordinator := rebalanceTestCoordinator(store, claim, nil, dispatch, release)
 		panes := rebalanceTestPanes()
-		err := applyTransfers(t.Context(), store.SessionName, store, panes, []RebalanceTransfer{transfer}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
+		err := applyTransfers(t.Context(), "", store.SessionName, store, panes, []RebalanceTransfer{transfer}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
 		if err == nil || !strings.Contains(err.Error(), "generation changed") {
 			t.Fatalf("stale generation error = %v", err)
 		}
@@ -918,7 +918,7 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 		dispatch := &rebalanceTestDispatchPort{}
 		coordinator := rebalanceTestCoordinator(store, claim, nil, dispatch, release)
 		panes := rebalanceTestPanes()
-		err := applyTransfers(t.Context(), store.SessionName, store, panes, []RebalanceTransfer{rebalanceTestTransfer(source)}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
+		err := applyTransfers(t.Context(), "", store.SessionName, store, panes, []RebalanceTransfer{rebalanceTestTransfer(source)}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
 		if !errors.Is(err, assignment.ErrWorkingReplacementNotAllowed) || !strings.Contains(err.Error(), "does not match durable claim actor") {
 			t.Fatalf("changed owner error = %v", err)
 		}
@@ -944,7 +944,7 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 			dispatch := &rebalanceTestDispatchPort{}
 			coordinator := rebalanceTestCoordinator(store, claim, reservation, dispatch, release)
 			panes := rebalanceTestPanes()
-			err := applyTransfers(t.Context(), store.SessionName, store, panes, []RebalanceTransfer{rebalanceTestTransfer(source)}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
+			err := applyTransfers(t.Context(), "", store.SessionName, store, panes, []RebalanceTransfer{rebalanceTestTransfer(source)}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
 			if !errors.Is(err, assignment.ErrClaimIneligible) || !strings.Contains(err.Error(), policyChange) {
 				t.Fatalf("policy change error = %v", err)
 			}
@@ -970,7 +970,7 @@ func TestApplyTransfersRejectsStaleOrUnauthorizedSourceWithoutMutation(t *testin
 		panes := rebalanceTestPanes()
 		observer := rebalanceSafeObserver(store.SessionName, panes[1])
 		observer.observation.Panes[0].Current.Status.State = statuspkg.StateWorking
-		err := applyTransfers(t.Context(), store.SessionName, store, panes, []RebalanceTransfer{rebalanceTestTransfer(source)}, coordinator, observer)
+		err := applyTransfers(t.Context(), "", store.SessionName, store, panes, []RebalanceTransfer{rebalanceTestTransfer(source)}, coordinator, observer)
 		if err == nil || !strings.Contains(err.Error(), "not freshly and confidently idle") {
 			t.Fatalf("busy target error = %v", err)
 		}
@@ -994,7 +994,7 @@ func TestApplyTransfersReservationFailureKeepsOneRecoverableGeneration(t *testin
 	panes := rebalanceTestPanes()
 	transfer := rebalanceTestTransfer(source)
 
-	err := applyTransfers(t.Context(), store.SessionName, store, panes, []RebalanceTransfer{transfer}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
+	err := applyTransfers(t.Context(), "", store.SessionName, store, panes, []RebalanceTransfer{transfer}, coordinator, rebalanceSafeObserver(store.SessionName, panes[1]))
 	if err == nil || !strings.Contains(err.Error(), "reservation unavailable") {
 		t.Fatalf("reservation failure error = %v", err)
 	}
@@ -1022,7 +1022,7 @@ func TestApplyTransfersDispatchFailureIsRetryableWithoutDuplicateMutation(t *tes
 	observer := rebalanceSafeObserver(store.SessionName, panes[1])
 	transfers := []RebalanceTransfer{rebalanceTestTransfer(source)}
 
-	err := applyTransfers(t.Context(), store.SessionName, store, panes, transfers, coordinator, observer)
+	err := applyTransfers(t.Context(), "", store.SessionName, store, panes, transfers, coordinator, observer)
 	if err == nil || !strings.Contains(err.Error(), "known pre-send failure") {
 		t.Fatalf("dispatch failure error = %v", err)
 	}
@@ -1062,7 +1062,7 @@ func TestApplyTransfersDispatchFailureIsRetryableWithoutDuplicateMutation(t *tes
 
 	dispatch.fail = nil
 	freshCoordinator := rebalanceTestCoordinator(freshStore, claim, nil, dispatch, release)
-	if err := applyTransfers(t.Context(), freshStore.SessionName, freshStore, panes, recoveries, freshCoordinator, rebalanceSafeObserver(freshStore.SessionName, panes[1])); err != nil {
+	if err := applyTransfers(t.Context(), "", freshStore.SessionName, freshStore, panes, recoveries, freshCoordinator, rebalanceSafeObserver(freshStore.SessionName, panes[1])); err != nil {
 		t.Fatalf("dispatch recovery: %v", err)
 	}
 	recovered := freshStore.Get(source.BeadID)

@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -72,6 +73,7 @@ var (
 	assignWatchInterval time.Duration // How often to check for completions (default 30s)
 	assignStopWhenDone  bool          // Exit watch mode when no more ready beads
 	assignDelay         time.Duration // Optional pacing/backoff; never used as an ownership lock
+	assignIdleThreshold time.Duration // Inactivity window before a watched assignment is stamped failed (0 = config/default)
 
 	// Reassignment flags for moving beads between agents
 	assignReassign string // Bead ID to reassign
@@ -335,6 +337,7 @@ Examples:
 	cmd.Flags().DurationVar(&assignWatchInterval, "watch-interval", 30*time.Second, "How often to check for completions in watch mode")
 	cmd.Flags().BoolVar(&assignStopWhenDone, "stop-when-done", false, "Exit watch mode when no more beads are ready")
 	cmd.Flags().DurationVar(&assignDelay, "delay", 0, "Pacing backoff between assignments in watch mode")
+	cmd.Flags().DurationVar(&assignIdleThreshold, "idle-threshold", 0, "How long an agent may go silent before its watched assignment is stamped failed (default: [assign] idle_threshold config, else 15m)")
 
 	// Reassignment flags for moving beads between agents
 	cmd.Flags().StringVar(&assignReassign, "reassign", "", "Bead ID to reassign to a different agent")
@@ -616,6 +619,14 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 	// Resolve agent type filter from flags
 	agentTypeFilter := resolveAgentTypeFilter()
 
+	// Resolve the completion-detector idle threshold: explicit flag wins,
+	// then [assign] idle_threshold from config, then the package default
+	// (GH#238 — 120s falsely failed quietly-working agents).
+	idleThreshold := assignIdleThreshold
+	if idleThreshold <= 0 {
+		idleThreshold = loadSelectedConfigOrDefault().Assign.IdleThresholdDuration()
+	}
+
 	// Build auto-reassign options
 	opts := &AutoReassignOptions{
 		Session:         session,
@@ -629,6 +640,7 @@ func runWatchMode(cmd *cobra.Command, session, projectDir, policyProject string)
 		Timeout:         assignTimeout,
 		AgentTypeFilter: agentTypeFilter,
 		DryRun:          assignDryRun,
+		IdleThreshold:   idleThreshold,
 		policyProject:   policyProject,
 	}
 
@@ -1523,6 +1535,23 @@ func assignmentAgentNameForPane(session, agentType string, pane tmux.Pane, multi
 	return fmt.Sprintf("%s_%s_%d_%d", session, agentType, pane.WindowIndex, pane.Index)
 }
 
+// assignmentAgentIdentityForPane returns the Agent Mail identity to address a
+// pane by. It prefers the pane's REGISTERED spawn-time identity (written to
+// the canonical per-pane identity file by registerSpawnedAgents), and only
+// falls back to the synthetic Session_type_index name when no identity file
+// exists. The synthetic fallback is NOT a registered agent, so Agent Mail
+// rejects file reservations and message deliveries made under it ("Agent not
+// found in project") whenever the pane was registered under its real
+// adjective+noun name (GH#239).
+func assignmentAgentIdentityForPane(projectDir, session, agentType string, pane tmux.Pane, multiWindow bool) string {
+	if strings.TrimSpace(projectDir) != "" && strings.TrimSpace(pane.ID) != "" {
+		if name, _ := agentmail.ResolveIdentity(projectDir, pane.ID); strings.TrimSpace(name) != "" {
+			return name
+		}
+	}
+	return assignmentAgentNameForPane(session, agentType, pane, multiWindow)
+}
+
 func assignmentPaneTarget(pane tmux.Pane) string {
 	return pane.Ref().Physical()
 }
@@ -2191,7 +2220,7 @@ func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview,
 				PaneTarget: assignmentPaneTarget(agent.pane),
 				PaneID:     agent.pane.ID,
 				AgentType:  agent.agentType,
-				AgentName:  assignmentAgentNameForPane(opts.Session, agent.agentType, agent.pane, multiWindow),
+				AgentName:  assignmentAgentIdentityForPane(opts.ProjectDir, opts.Session, agent.agentType, agent.pane, multiWindow),
 				Status:     defaultStatus,
 				PromptSent: false,
 				AssignedAt: assignedAt,
@@ -2226,7 +2255,7 @@ func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview,
 					PaneTarget: assignmentPaneTarget(bestAgent.pane),
 					PaneID:     bestAgent.pane.ID,
 					AgentType:  bestAgent.agentType,
-					AgentName:  assignmentAgentNameForPane(opts.Session, bestAgent.agentType, bestAgent.pane, multiWindow),
+					AgentName:  assignmentAgentIdentityForPane(opts.ProjectDir, opts.Session, bestAgent.agentType, bestAgent.pane, multiWindow),
 					Status:     defaultStatus,
 					PromptSent: false,
 					AssignedAt: assignedAt,
@@ -2253,7 +2282,7 @@ func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview,
 					PaneTarget: assignmentPaneTarget(agents[i].pane),
 					PaneID:     agents[i].pane.ID,
 					AgentType:  agents[i].agentType,
-					AgentName:  assignmentAgentNameForPane(opts.Session, agents[i].agentType, agents[i].pane, multiWindow),
+					AgentName:  assignmentAgentIdentityForPane(opts.ProjectDir, opts.Session, agents[i].agentType, agents[i].pane, multiWindow),
 					Status:     defaultStatus,
 					PromptSent: false,
 					AssignedAt: assignedAt,
@@ -2296,7 +2325,7 @@ func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview,
 					PaneTarget: assignmentPaneTarget(bestAgent.pane),
 					PaneID:     bestAgent.pane.ID,
 					AgentType:  bestAgent.agentType,
-					AgentName:  assignmentAgentNameForPane(opts.Session, bestAgent.agentType, bestAgent.pane, multiWindow),
+					AgentName:  assignmentAgentIdentityForPane(opts.ProjectDir, opts.Session, bestAgent.agentType, bestAgent.pane, multiWindow),
 					Status:     defaultStatus,
 					PromptSent: false,
 					AssignedAt: assignedAt,
@@ -2385,7 +2414,7 @@ func generateAssignmentsLegacy(agents []assignAgentInfo, beads []bv.BeadPreview,
 					PaneTarget: assignmentPaneTarget(bestAgent.pane),
 					PaneID:     bestAgent.pane.ID,
 					AgentType:  bestAgent.agentType,
-					AgentName:  assignmentAgentNameForPane(opts.Session, bestAgent.agentType, bestAgent.pane, multiWindow),
+					AgentName:  assignmentAgentIdentityForPane(opts.ProjectDir, opts.Session, bestAgent.agentType, bestAgent.pane, multiWindow),
 					Status:     defaultStatus,
 					PromptSent: false,
 					AssignedAt: assignedAt,
@@ -2835,7 +2864,7 @@ func resolvePendingAssignmentPane(panes []tmux.Pane, pending assignment.Assignme
 	return tmux.Pane{}, fmt.Errorf("original physical pane %s is unavailable; refusing to transfer an atomic claim", physicalID)
 }
 
-func pendingCLIRecoveryIdentityError(session string, pane tmux.Pane, pending assignment.Assignment, multiWindow bool) error {
+func pendingCLIRecoveryIdentityError(projectDir, session string, pane tmux.Pane, pending assignment.Assignment, multiWindow bool) error {
 	currentType := agentTypeForPane(pane)
 	if currentType == "user" || currentType == "unknown" {
 		return fmt.Errorf("pending atomic recovery target %s is not an agent pane (type: %s)", assignmentPaneTarget(pane), currentType)
@@ -2843,7 +2872,7 @@ func pendingCLIRecoveryIdentityError(session string, pane tmux.Pane, pending ass
 	if agent.AgentType(currentType).Canonical() != agent.AgentType(pending.AgentType).Canonical() {
 		return fmt.Errorf("pending atomic recovery target %s changed agent type from %s to %s", assignmentPaneTarget(pane), pending.AgentType, currentType)
 	}
-	currentAgentName := assignmentAgentNameForPane(session, currentType, pane, multiWindow)
+	currentAgentName := assignmentAgentIdentityForPane(projectDir, session, currentType, pane, multiWindow)
 	if strings.TrimSpace(pending.AgentName) != "" && currentAgentName != pending.AgentName {
 		return fmt.Errorf("pending atomic recovery target %s changed Agent Mail identity from %s to %s", assignmentPaneTarget(pane), pending.AgentName, currentAgentName)
 	}
@@ -3799,7 +3828,7 @@ func runRetryAssignments(ctx context.Context, session string) error {
 				})
 				continue
 			}
-			if identityErr := pendingCLIRecoveryIdentityError(session, resolvedPane, failed, multiWindow); identityErr != nil {
+			if identityErr := pendingCLIRecoveryIdentityError(projectDir, session, resolvedPane, failed, multiWindow); identityErr != nil {
 				skippedItems = append(skippedItems, RetrySkippedItem{
 					BeadID: failed.BeadID,
 					Reason: identityErr.Error(),
@@ -3907,7 +3936,7 @@ func runRetryAssignments(ctx context.Context, session string) error {
 
 		// Recover known-unsent work with the original actor, key, and target.
 		// A new attempt receives a fresh intent and must win the atomic claim.
-		newAgentName := assignmentAgentNameForPane(session, targetAgentType, *targetPane, multiWindow)
+		newAgentName := assignmentAgentIdentityForPane(projectDir, session, targetAgentType, *targetPane, multiWindow)
 		prompt := expandPromptTemplate(failed.BeadID, beadTitle, assignTemplate, assignTemplateFile)
 		actor := newAgentName
 		idempotencyKey := ""
@@ -4760,7 +4789,7 @@ func runReassignment(ctx context.Context, session string) error {
 	if prompt == "" {
 		prompt = expandPromptTemplate(beadID, beadTitle, assignTemplate, assignTemplateFile)
 	}
-	newAgentName := assignmentAgentNameForPane(session, targetAgentType, *targetPane, multiWindow)
+	newAgentName := assignmentAgentIdentityForPane(projectDir, session, targetAgentType, *targetPane, multiWindow)
 	idempotencyKey, err := assignment.NewAssignmentIdempotencyKey()
 	if err != nil {
 		return emitReassignFailure(session, "STORE_ERROR", fmt.Sprintf("generate reassignment identity: %v", err), nil)
@@ -5828,7 +5857,7 @@ func runDirectPaneAssignment(ctx context.Context, opts *AssignCommandOptions) er
 
 	multiWindow := tmux.PanesSpanMultipleWindows(panes)
 	agentType := agentTypeForPane(targetPane)
-	agentName := assignmentAgentNameForPane(opts.Session, agentType, targetPane, multiWindow)
+	agentName := assignmentAgentIdentityForPane(opts.ProjectDir, opts.Session, agentType, targetPane, multiWindow)
 	beadTitle := ""
 	if executeBeforePreflight {
 		beadTitle = prior.BeadTitle
@@ -6173,6 +6202,12 @@ type AutoReassignOptions struct {
 	// DryRun, when true, computes assignments and reports them but never
 	// dispatches to live panes. Honored by `--watch --dry-run` (issue #122).
 	DryRun bool
+	// IdleThreshold is the watch-loop inactivity window before an in-flight
+	// assignment is stamped failed and its pane freed for new work (GH#238).
+	// Zero means config.DefaultAssignIdleThreshold. A too-small value falsely
+	// fails quietly-working agents (silent while an external subprocess runs)
+	// and then injects the next bead's prompt into them mid-task.
+	IdleThreshold time.Duration
 
 	// policyProject records the exact authoritative project whose assignment
 	// policy was already installed during this command path.
@@ -6767,6 +6802,10 @@ type WatchLoop struct {
 	limit        int
 	quiet        bool
 	verbose      bool
+	// idleThreshold is the completion-detector inactivity window before an
+	// in-flight assignment is stamped failed (GH#238). Zero falls back to
+	// config.DefaultAssignIdleThreshold in Run.
+	idleThreshold time.Duration
 
 	// Periodic ready-work scan (FIX B). The watch loop is otherwise purely
 	// completion-driven: dispatch happens only inside handleCompletion, which
@@ -6818,16 +6857,17 @@ func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoR
 	}
 
 	return &WatchLoop{
-		session:      session,
-		strategy:     opts.Strategy,
-		store:        store,
-		opts:         opts,
-		stopWhenDone: assignStopWhenDone,
-		delay:        assignDelay,
-		limit:        assignLimit,
-		quiet:        opts.Quiet,
-		verbose:      opts.Verbose,
-		scanInterval: scanInterval,
+		session:       session,
+		strategy:      opts.Strategy,
+		store:         store,
+		opts:          opts,
+		stopWhenDone:  assignStopWhenDone,
+		delay:         assignDelay,
+		limit:         assignLimit,
+		quiet:         opts.Quiet,
+		verbose:       opts.Verbose,
+		idleThreshold: opts.IdleThreshold,
+		scanInterval:  scanInterval,
 		scanOpts: &AssignCommandOptions{
 			Session:         session,
 			ProjectDir:      opts.ProjectDir,
@@ -6877,10 +6917,21 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 	w.lifecycleMu.Unlock()
 	defer close(runDone)
 
-	// Create completion detector
+	// Create completion detector. The idle threshold deliberately defaults to
+	// config.DefaultAssignIdleThreshold (15m), NOT the detector package's
+	// historical 120s: a healthy agent waiting on an external subprocess
+	// (multi-model review CLIs, long builds, SSH remote verification) emits no
+	// pane output for many minutes, and a false "failed" here frees the pane
+	// and lets the next ready-work scan inject a NEW prompt into the
+	// still-working agent mid-task (GH#238). Tune via [assign] idle_threshold
+	// or --idle-threshold.
+	idleThreshold := w.idleThreshold
+	if idleThreshold <= 0 {
+		idleThreshold = config.DefaultAssignIdleThreshold
+	}
 	detectorCfg := completion.DetectionConfig{
 		PollInterval:      assignWatchInterval,
-		IdleThreshold:     120 * time.Second,
+		IdleThreshold:     idleThreshold,
 		RetryOnError:      true,
 		RetryInterval:     10 * time.Second,
 		MaxRetries:        3,

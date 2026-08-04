@@ -4556,7 +4556,7 @@ func executeDistributeDispatch(ctx context.Context, projectDir, session string, 
 	}
 	stableTarget := assignmentPaneStableKey(target)
 	agentType := string(target.Type.Canonical())
-	agentName := assignmentAgentNameForPane(session, agentType, target, tmux.PanesSpanMultipleWindows(panes))
+	agentName := assignmentAgentIdentityForPane(projectDir, session, agentType, target, tmux.PanesSpanMultipleWindows(panes))
 	stampedPrompt := stampMarchingOrders(prompt, session, target.WindowIndex, target.Index)
 	idempotencyKey := distributeAssignmentIdempotencyKey(
 		session,

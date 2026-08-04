@@ -1763,7 +1763,10 @@ func newRobotAgentMailReservationRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("ensure Agent Mail project %s: %w", projectKey, err)
 	}
-	if project == nil || project.ID <= 0 || filepath.Clean(project.HumanKey) != projectKey {
+	// Symlink-equivalent compare: Agent Mail canonicalizes project paths, so
+	// the returned human key may be the resolved form of a symlinked key
+	// (GH#239).
+	if project == nil || project.ID <= 0 || !agentmail.ProjectKeysEquivalent(filepath.Clean(project.HumanKey), projectKey) {
 		return nil, fmt.Errorf("Agent Mail returned an invalid project receipt for %s", projectKey)
 	}
 	registry, err := agentmail.LoadSessionAgentRegistry(session, projectKey)
@@ -1771,7 +1774,7 @@ func newRobotAgentMailReservationRuntime(
 		return nil, fmt.Errorf("load Agent Mail pane registry for %s: %w", session, err)
 	}
 	if registry != nil {
-		if filepath.Clean(registry.ProjectKey) != projectKey {
+		if !agentmail.ProjectKeysEquivalent(filepath.Clean(registry.ProjectKey), projectKey) {
 			return nil, fmt.Errorf("Agent Mail pane registry project mismatch: got %s, want %s", registry.ProjectKey, projectKey)
 		}
 		if concrete != nil {

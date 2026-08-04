@@ -263,9 +263,22 @@ func DefaultAgentTemplates() AgentConfig {
 		// for an explicit/configured override, avoiding stale built-in model IDs.
 		// --always-approve is the official autonomous approval flag exposed by
 		// the current Grok Build CLI.
-		Grok:     `grok --always-approve{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --effort {{shellQuote .ReasoningEffort}}{{end}}`,
-		Ollama:   `ollama run {{shellQuote (.Model | default "codellama:latest")}}`,
-		Cursor:   `cursor{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
+		Grok:   `grok --always-approve{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .ReasoningEffort}} --effort {{shellQuote .ReasoningEffort}}{{end}}`,
+		Ollama: `ollama run {{shellQuote (.Model | default "codellama:latest")}}`,
+		// Cursor: launch the Cursor Agent CLI (`cursor-agent`), NOT the `cursor`
+		// IDE binary — on Linux `cursor` is the GUI editor launcher (useless in a
+		// tmux pane) and often absent on headless hosts entirely (GH#233).
+		// `--yolo` is the CLI's autonomous auto-approval flag (alias of --force).
+		// Deliberately NOT injected:
+		//   --trust        rejected by the interactive REPL ("--trust can only be
+		//                  used with --print/headless mode") — it would fail the
+		//                  pane at launch;
+		//   --approve-mcps only meaningful with --plugin-dir.
+		// Deliberately NOT used: the bare `agent` binary name some Cursor installs
+		// ship — it collides with Grok Build's `agent` binary on multi-CLI boxes.
+		// Override [agents].cursor to opt into different flags or a different
+		// binary name.
+		Cursor:   `cursor-agent --yolo{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		Windsurf: `windsurf{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		Aider:    `aider{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		// Opencode (oc): the upstream `opencode` binary takes `-m/--model

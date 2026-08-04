@@ -584,7 +584,7 @@ func TestSendInitPromptCancellationStopsBlockingObservationWithoutDelivery(t *te
 	go func() {
 		defer close(done)
 		receipts, initErr = sendInitPromptToReadyAgentsWith(
-			ctx, "demo", "must-not-send", false, observer, dispatcher,
+			ctx, "", "demo", "must-not-send", false, observer, dispatcher,
 		)
 	}()
 	select {

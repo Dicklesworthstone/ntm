@@ -835,7 +835,7 @@ func TestSendInitPromptUsesTopologyUniqueIdentityAndReceipts(t *testing.T) {
 	dispatcher := &recordingSpawnDispatcher{}
 
 	receipts, err := sendInitPromptToReadyAgentsWith(
-		t.Context(), "demo", "Read AGENTS.md", true, observer, dispatcher,
+		t.Context(), "", "demo", "Read AGENTS.md", true, observer, dispatcher,
 	)
 	if err != nil {
 		t.Fatalf("sendInitPromptToReadyAgentsWith() error = %v", err)
@@ -864,7 +864,7 @@ func TestSendInitPromptReturnsCaptureErrorsWithoutDispatch(t *testing.T) {
 	observer := &scriptedSpawnObserver{observations: []statuspkg.SessionObservation{observation}}
 	dispatcher := &recordingSpawnDispatcher{}
 
-	receipts, err := sendInitPromptToReadyAgentsWith(t.Context(), "demo", "init", false, observer, dispatcher)
+	receipts, err := sendInitPromptToReadyAgentsWith(t.Context(), "", "demo", "init", false, observer, dispatcher)
 	if err == nil || !strings.Contains(err.Error(), "capture deadline exceeded") {
 		t.Fatalf("error = %v, want explicit capture failure", err)
 	}

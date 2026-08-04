@@ -1349,6 +1349,40 @@ type AssignConfig struct {
 	// never dispatches beads carrying any of these labels. Matching is
 	// case-insensitive; extras extend the defaults and cannot remove them (#223).
 	OperatorGatedLabels []string `toml:"operator_gated_labels"`
+	// IdleThreshold sets how long an assigned agent may go without pane output
+	// before `assign --watch` declares the assignment stalled/failed and frees
+	// the pane for new work (GH#238). Duration string, e.g. "15m", "300s".
+	// Empty means DefaultAssignIdleThreshold. Keep this comfortably above the
+	// longest silent stretch your agents hit while waiting on external
+	// subprocesses (review CLIs, long builds, remote verification) — a
+	// too-small value falsely fails in-progress work and then injects the
+	// NEXT bead's prompt into the still-working agent mid-task.
+	IdleThreshold string `toml:"idle_threshold"`
+}
+
+// DefaultAssignIdleThreshold is the default watch-loop inactivity window
+// before an in-flight assignment is stamped failed and its pane freed.
+// 15 minutes, not the completion detector's historical 120s: agents routinely
+// go 5–10+ minutes with zero pane output while an external subprocess runs
+// (multi-model review CLIs, long builds, SSH remote verification), and a
+// false failure is far worse than a late one — it corrupts the pane by
+// injecting a second bead's prompt mid-task (GH#238).
+const DefaultAssignIdleThreshold = 15 * time.Minute
+
+// IdleThresholdDuration returns the configured idle threshold, falling back
+// to DefaultAssignIdleThreshold when unset or invalid (a warning-worthy but
+// never fatal condition: watch mode should not fail to start over a typo'd
+// duration; validation reports it separately).
+func (c AssignConfig) IdleThresholdDuration() time.Duration {
+	raw := strings.TrimSpace(c.IdleThreshold)
+	if raw == "" {
+		return DefaultAssignIdleThreshold
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return DefaultAssignIdleThreshold
+	}
+	return d
 }
 
 // ValidAssignStrategies are the recognized assignment strategies
@@ -1362,6 +1396,23 @@ func IsValidStrategy(strategy string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateAssignConfig validates the [assign] section.
+func ValidateAssignConfig(cfg *AssignConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if raw := strings.TrimSpace(cfg.IdleThreshold); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("idle_threshold: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("idle_threshold: must be > 0, got %q", cfg.IdleThreshold)
+		}
+	}
+	return nil
 }
 
 // DefaultAssignConfig returns the default assign configuration
@@ -6373,6 +6424,11 @@ func Validate(cfg *Config) []error {
 	// Validate context rotation
 	if err := ValidateContextRotationConfig(&cfg.ContextRotation); err != nil {
 		errs = append(errs, fmt.Errorf("context_rotation: %w", err))
+	}
+
+	// Validate assign config
+	if err := ValidateAssignConfig(&cfg.Assign); err != nil {
+		errs = append(errs, fmt.Errorf("assign: %w", err))
 	}
 
 	// Validate ensemble defaults
