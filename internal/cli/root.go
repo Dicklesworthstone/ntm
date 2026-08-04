@@ -3868,6 +3868,13 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotSendEnter, "enter", true, "Send Enter after pasting message (default: true). Use --enter=false to paste without submitting")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "submit", true, "Alias for --enter")
 	rootCmd.Flags().BoolVar(&robotSendAll, "all", false, "Include user pane (default: agents only). Optional with --robot-send, --robot-interrupt, --robot-restart-pane, and --robot-support-bundle")
+	// Accepted-and-ignored for parity with `ntm send` (ntm-dv50 / AP-51):
+	// operators habitually carry --no-cass-check on every dispatch, and the
+	// robot parser rejecting a flag the shell parser requires forced a
+	// per-surface flag lookup table. Robot sends never run the interactive
+	// CASS confirm, so the flag is a documented no-op here.
+	var robotNoCassCheckCompat bool
+	rootCmd.Flags().BoolVar(&robotNoCassCheckCompat, "no-cass-check", false, "Accepted for parity with 'ntm send'; robot commands never run the interactive CASS duplicate check (no-op)")
 	rootCmd.Flags().StringVar(&robotSendType, "type", "", "Filter by agent type: claude|cc, codex|cod, antigravity|agy, gemini|gmi (legacy), cursor, windsurf, aider. Works with --robot-history, --robot-wait, --robot-route, --robot-send, --robot-ack, --robot-interrupt, --robot-errors, and --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotSendExclude, "exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-send and --robot-route. Example: --exclude=0,3")
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")

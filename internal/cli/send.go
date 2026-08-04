@@ -4174,6 +4174,19 @@ func checkCassDuplicates(ctx context.Context, session string, inferred bool, pro
 			return fmt.Errorf("duplicates found in CASS: %d similar sessions", len(res.SimilarSessions))
 		}
 
+		// Never block a non-interactive caller on the [y/N] confirm: an
+		// orchestrator loop with a quiet stdin pipe hung here forever, and
+		// EOF aborted the send with a misleading "aborted by user" (AP-2 /
+		// ntm-dv50). Non-TTY behaves like --force-non-interactive:
+		// proceed with a stderr warning.
+		if !isTTY() || os.Getenv("NTM_NONINTERACTIVE") != "" {
+			fmt.Fprintf(os.Stderr,
+				"warning: CASS duplicate check found %d similar session(s); "+
+					"continuing because stdin/stdout is not a TTY.\n",
+				len(res.SimilarSessions))
+			return nil
+		}
+
 		// Interactive mode
 		fmt.Printf("\n%s⚠ Similar work found in past sessions:%s\n", "\033[33m", "\033[0m")
 		for i, hit := range res.SimilarSessions {
@@ -5155,7 +5168,13 @@ func runSendBatch(opts SendOptions) error {
 			Priority:      bp.Priority,
 		}
 
-		// Handle --confirm-each
+		// Handle --confirm-each. A non-TTY caller can never answer the
+		// prompt, so --confirm-each there would block on stdin forever
+		// (ntm-dv50); requesting per-prompt confirmation without a terminal
+		// is a contradiction, surfaced as a hard error before any send.
+		if opts.BatchConfirm && !jsonOutput && !isTTY() {
+			return fmt.Errorf("--confirm-each requires an interactive terminal; drop the flag or run from a TTY")
+		}
 		if opts.BatchConfirm && !jsonOutput {
 			fmt.Printf("Prompt %d/%d: %s\n", i+1, total, preview)
 			if !confirm("Send this prompt?") {

@@ -123,3 +123,11 @@ func itoaTest(n int) string {
 	}
 	return string(digits)
 }
+
+// ntm-dv50 / AP-51: the robot parser must accept --no-cass-check so operator
+// loops can carry one flag set across ntm send and --robot-send.
+func TestRobotParserAcceptsNoCassCheck(t *testing.T) {
+	if rootCmd.Flags().Lookup("no-cass-check") == nil {
+		t.Fatal("--no-cass-check missing from the robot (root) flag registry")
+	}
+}
