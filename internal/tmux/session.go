@@ -2169,6 +2169,22 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 		return true, false, nil
 	}
 
+	// Confirm the stranded state on a second capture before rescuing: unlike
+	// codex's benign extra Enter, Escape against a Claude pane that started
+	// working in the gap since the first capture would interrupt the running
+	// turn. Two consecutive stranded observations shrink that race window to
+	// effectively zero.
+	if err := waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
+		return false, false, err
+	}
+	capture, err = c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("re-capture claude pane before rescue: %w", err)
+	}
+	if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+
 	// Dismiss a possible picker, then finish the submission. A single Escape
 	// is deliberate: double-Escape opens Claude Code's message-history jump.
 	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Escape"); err != nil {
