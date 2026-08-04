@@ -65,6 +65,7 @@ var SchemaCommand = map[string]interface{}{
 	"send":             SendOutput{},
 	"interrupt":        InterruptOutput{},
 	"tail":             TailOutput{},
+	"pane_address":     PaneAddressOutput{},
 	"watch_bead":       WatchBeadOutput{},
 	"ack":              AckOutput{},
 	"activity":         ActivityOutput{},

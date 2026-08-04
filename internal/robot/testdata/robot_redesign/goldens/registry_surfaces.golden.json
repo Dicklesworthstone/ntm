@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 126,
+  "schema_type_count": 127,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -99,6 +99,7 @@
     "ms_show",
     "overlay",
     "palette",
+    "pane_address",
     "plan",
     "probe",
     "proxy_status",
@@ -142,7 +143,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 137,
+  "surface_count": 138,
   "surfaces": [
     {
       "category": "state",
@@ -507,6 +508,21 @@
       "name": "monitor",
       "schema_id": "ntm:robot:monitor:v1",
       "schema_type": "monitor"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-pane-address",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "pane-address",
+      "schema_id": "ntm:robot:pane-address:v1",
+      "schema_type": "pane_address"
     },
     {
       "category": "state",
