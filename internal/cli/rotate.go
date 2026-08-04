@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/auth"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -24,6 +26,7 @@ func newRotateCmd() *cobra.Command {
 	var dryRun bool
 	var timeout int
 	var allLimited bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "rotate [session]",
@@ -37,7 +40,8 @@ Examples:
   ntm rotate myproject --pane=0
   ntm rotate myproject --all-limited       # Rotate all rate-limited panes
   ntm rotate myproject --pane=0 --preserve-context
-  ntm rotate myproject --pane=0 --account=backup1@gmail.com`,
+  ntm rotate myproject --pane=0 --account=backup1@gmail.com
+  ntm rotate myproject --pane=0 --force    # Wedged CLI: bounded kill-and-relaunch`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := tmux.EnsureInstalled(); err != nil {
@@ -112,6 +116,12 @@ Examples:
 				return nil
 			}
 
+			if force {
+				if preserveContext {
+					return fmt.Errorf("--force kills and relaunches the CLI, which discards session context; it cannot be combined with --preserve-context")
+				}
+				return executeForcedRotation(cmd.Context(), session, paneIndex, paneID, targetAccount)
+			}
 			if preserveContext {
 				return executeReauthRotation(session, paneIndex, paneID, provider, time.Duration(timeout)*time.Second)
 			}
@@ -125,6 +135,7 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print action without executing")
 	cmd.Flags().IntVar(&timeout, "timeout", 300, "Timeout in seconds for auth completion")
 	cmd.Flags().BoolVar(&allLimited, "all-limited", false, "Rotate all rate-limited panes in the session")
+	cmd.Flags().BoolVar(&force, "force", false, "Wedged-CLI rotation: bounded graceful exit, hard kill fallback, relaunch under the currently active account (no CLI cooperation needed)")
 	cmd.ValidArgsFunction = completeSessionArgs
 	_ = cmd.RegisterFlagCompletionFunc("pane", completePaneIndexes)
 
@@ -451,6 +462,67 @@ func executeRestartRotation(ctx context.Context, session string, paneIdx int, pa
 	fmt.Println("\n✓ Rotation complete! New session started.")
 	fmt.Println("  The new session will use your currently active browser account.")
 
+	return nil
+}
+
+// executeForcedRotation rotates a wedged pane in bounded time (ntm-qdtd /
+// AP-14): the interactive strategies need the CLI to cooperate, which is
+// exactly what a wedged CLI cannot do, so they used to burn the full 5-minute
+// auth timeout and push operators to raw tmux. This path tries the graceful
+// exit choreography first, escalates to a process-tree kill, and relaunches —
+// each step bounded in seconds and verified via the lifecycle verbs.
+func executeForcedRotation(ctx context.Context, session string, paneIdx int, paneID, targetAccount string) error {
+	fmt.Printf("Forced rotation: session=%s pane=%d (%s)\n", session, paneIdx, paneID)
+
+	opts := robot.LifecycleOptions{
+		Session:  session,
+		Panes:    []string{paneID},
+		Relaunch: true,
+	}
+	fmt.Println("Step 1/2: Graceful exit (double Ctrl+C), hard kill if the CLI is wedged...")
+	result, err := robot.GetExitCLI(ctx, opts)
+	if err != nil {
+		return err
+	}
+	outcome := lifecycleOutcomeForPane(result.Results, paneID)
+	if outcome == nil {
+		return fmt.Errorf("pane %s produced no lifecycle result: %s", paneID, result.Error)
+	}
+	if !outcome.Exited {
+		fmt.Println("  CLI did not exit gracefully; escalating to process-tree kill...")
+		killResult, err := robot.GetKillAgent(ctx, opts)
+		if err != nil {
+			return err
+		}
+		outcome = lifecycleOutcomeForPane(killResult.Results, paneID)
+		if outcome == nil {
+			return fmt.Errorf("pane %s produced no lifecycle result: %s", paneID, killResult.Error)
+		}
+		if !outcome.Exited {
+			return fmt.Errorf("agent process survived SIGKILL (%s); the pane may need --robot-restart-pane", outcome.Detail)
+		}
+		fmt.Printf("  ✓ Killed agent process tree %v (shell preserved: %v)\n", outcome.Killed, outcome.ShellPreserved)
+	} else {
+		fmt.Println("  ✓ Agent CLI exited; pane and shell preserved")
+	}
+	if !outcome.Relaunched {
+		return fmt.Errorf("agent CLI was stopped but did not relaunch: %s", outcome.Detail)
+	}
+	fmt.Println("Step 2/2: Relaunched agent CLI under the currently active account")
+	if targetAccount != "" && !strings.HasPrefix(targetAccount, "<") {
+		fmt.Printf("\nTarget account: %s\n", targetAccount)
+		fmt.Println("If the relaunched CLI is still on the old account, switch the active browser account and rerun, or use 'ntm rotate' without --force once the CLI is responsive.")
+	}
+	fmt.Println("\n✓ Forced rotation complete (bounded, no CLI cooperation required).")
+	return nil
+}
+
+func lifecycleOutcomeForPane(results []robot.LifecyclePaneResult, paneID string) *robot.LifecyclePaneResult {
+	for i := range results {
+		if results[i].Target == paneID {
+			return &results[i]
+		}
+	}
 	return nil
 }
 
