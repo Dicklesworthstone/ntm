@@ -322,39 +322,51 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 		if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType); err != nil {
 			return err
 		}
-		return VerifyCodexSubmission(ctx, target, delivery.Message, delivery.Target.AgentType)
+		return VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.AgentType)
 	default:
 		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
 	}
 }
 
-// VerifyCodexSubmission closes the gap between "keys were sent" and "the
-// prompt actually submitted" for codex panes (ntm-8ubn): codex's TUI can
-// consume the double-Enter protocol's Enters as part of the bracketed paste,
-// leaving the prompt sitting unsubmitted in the composer while the send
-// reports success. It captures the visible screen, sends one rescue Enter
-// when the composer still holds the payload, and fails the delivery loudly
-// when submission remains unconfirmed so "delivered" keeps meaning
-// "submitted". Verification infrastructure errors (a capture hiccup) are
-// logged but do not fail an already-delivered send. Non-codex agent types
-// return nil immediately.
-func VerifyCodexSubmission(ctx context.Context, target, message string, agentType tmux.AgentType) error {
-	if agentType.Canonical() != tmux.AgentCodex {
+// VerifyAgentSubmission closes the gap between "keys were sent" and "the
+// prompt actually submitted" for agent TUIs that can strand a delivered
+// prompt in their composer: codex consumes the double-Enter protocol's Enters
+// as part of the bracketed paste (ntm-8ubn), and Claude Code's autocomplete
+// picker swallows the submit Enter as a menu selection (GH#241 / ntm-utq6).
+// The per-agent verifiers capture the visible screen, rescue a stranded
+// composer (codex: one Enter; claude: Escape then Enter), and this wrapper
+// fails the delivery loudly when submission remains unconfirmed so
+// "delivered" keeps meaning "submitted". Verification infrastructure errors
+// (a capture hiccup) are logged but do not fail an already-delivered send.
+// Agent types without a verifier return nil immediately.
+func VerifyAgentSubmission(ctx context.Context, target, message string, agentType tmux.AgentType) error {
+	var (
+		confirmed, rescued bool
+		err                error
+		kind               string
+	)
+	switch agentType.Canonical() {
+	case tmux.AgentCodex:
+		kind = "codex"
+		confirmed, rescued, err = tmux.VerifyCodexSubmissionContext(ctx, target, message)
+	case tmux.AgentClaude:
+		kind = "claude"
+		confirmed, rescued, err = tmux.VerifyClaudeSubmissionContext(ctx, target, message)
+	default:
 		return nil
 	}
-	confirmed, rescued, err := tmux.VerifyCodexSubmissionContext(ctx, target, message)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		slog.Warn("codex submission verification inconclusive", "target", target, "error", err)
+		slog.Warn("agent submission verification inconclusive", "agent", kind, "target", target, "error", err)
 		return nil
 	}
 	if !confirmed {
-		return fmt.Errorf("codex submission unconfirmed: prompt still in composer after rescue Enter (pane %s); submit manually or retry", target)
+		return fmt.Errorf("%s submission unconfirmed: prompt still in composer after rescue (pane %s); submit manually or retry", kind, target)
 	}
 	if rescued {
-		slog.Info("codex composer needed a rescue Enter to submit", "target", target)
+		slog.Info("agent composer needed a rescue to submit", "agent", kind, "target", target)
 	}
 	return nil
 }

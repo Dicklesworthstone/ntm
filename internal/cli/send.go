@@ -3535,7 +3535,7 @@ func newShellDispatchServiceWithGate(
 				if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target.ID, delivery.Message, target.Type); err != nil {
 					return err
 				}
-				return dispatchsvc.VerifyCodexSubmission(ctx, target.ID, delivery.Message, target.Type)
+				return dispatchsvc.VerifyAgentSubmission(ctx, target.ID, delivery.Message, target.Type)
 			default:
 				return fmt.Errorf("unsupported shell send protocol %q", delivery.Protocol)
 			}

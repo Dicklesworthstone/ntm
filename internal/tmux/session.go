@@ -2111,6 +2111,95 @@ func VerifyCodexSubmissionContext(ctx context.Context, target, message string) (
 	return DefaultClient.VerifyCodexSubmissionContext(ctx, target, message)
 }
 
+// claudeComposerHoldsPayload reports whether a Claude Code pane capture shows
+// the delivered message still sitting unsubmitted in the input box. Claude
+// Code pins its live composer — the "❯" prompt — to the bottom of the screen;
+// past user turns render with a plain ">" prefix, so only the bottom-most "❯"
+// line is composer evidence. As with codex, composer text alone is not
+// payload: the line must carry the message snippet or a "[Pasted" stand-in.
+func claudeComposerHoldsPayload(capture, message string) bool {
+	snippet := ""
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			if len(line) > 32 {
+				line = line[:32]
+			}
+			snippet = line
+			break
+		}
+	}
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		marker := strings.Index(line, "❯")
+		if marker < 0 {
+			continue
+		}
+		composerText := strings.TrimSpace(line[marker+len("❯"):])
+		if composerText == "" {
+			return false
+		}
+		if strings.Contains(composerText, "[Pasted") {
+			return true
+		}
+		return snippet != "" && strings.Contains(line, snippet)
+	}
+	return false
+}
+
+// VerifyClaudeSubmissionContext confirms that a prompt delivered to a Claude
+// Code pane actually submitted (GH#241 / ntm-utq6). Claude's autocomplete /
+// @-mention picker can swallow the protocol's Enter as a menu selection,
+// stranding the prompt in the composer while the send reports success. When
+// the composer still holds the payload, the rescue is the documented human
+// recipe: one Escape (dismisses an open picker; inert against plain composer
+// text) followed by Enter, then bounded polling. Returns (confirmed, rescued);
+// confirmed=false means the payload is still visibly unsubmitted and callers
+// must not report the send as delivered.
+func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
+	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+		return false, false, err
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("capture claude pane for submission verification: %w", err)
+	}
+	if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+
+	// Dismiss a possible picker, then finish the submission. A single Escape
+	// is deliberate: double-Escape opens Claude Code's message-history jump.
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Escape"); err != nil {
+		return false, true, fmt.Errorf("send rescue Escape to claude pane: %w", err)
+	}
+	if err := waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
+		return false, true, err
+	}
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+		return false, true, fmt.Errorf("send rescue Enter to claude pane: %w", err)
+	}
+	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
+		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+			return false, true, err
+		}
+		capture, err = c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return false, true, fmt.Errorf("capture claude pane after rescue: %w", err)
+		}
+		if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
+}
+
+// VerifyClaudeSubmissionContext verifies Claude prompt submission (default client).
+func VerifyClaudeSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
+	return DefaultClient.VerifyClaudeSubmissionContext(ctx, target, message)
+}
+
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-c")

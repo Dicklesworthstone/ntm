@@ -2687,3 +2687,52 @@ func TestCodexLooksWorking(t *testing.T) {
 		t.Error("idle composer should not classify as working")
 	}
 }
+
+// Tests for the Claude submission-verification heuristic (GH#241 / ntm-utq6).
+func TestClaudeComposerHoldsPayload(t *testing.T) {
+	message := "Refactor the dispatcher and run the tests.\nReport blockers."
+
+	cases := []struct {
+		name    string
+		capture string
+		want    bool
+	}{
+		{
+			name:    "unsubmitted prompt in composer",
+			capture: "some output\n╭────╮\n│ ❯ Refactor the dispatcher and run the tests. │\n╰────╯\n",
+			want:    true,
+		},
+		{
+			name:    "pasted stand-in in composer",
+			capture: "banner\n│ ❯ [Pasted text #1 +8 lines] │\n",
+			want:    true,
+		},
+		{
+			name:    "empty composer",
+			capture: "response done\n│ ❯  │\n⏵⏵ bypass permissions on\n",
+			want:    false,
+		},
+		{
+			name:    "history user turn with plain > above empty composer",
+			capture: "> Refactor the dispatcher and run the tests.\nWorked on it.\n│ ❯  │\n",
+			want:    false,
+		},
+		{
+			name:    "no composer marker",
+			capture: "plain shell\n$\n",
+			want:    false,
+		},
+		{
+			name:    "history echo above but payload still in composer below",
+			capture: "❯ Refactor the dispatcher and run the tests.\nsome text\n│ ❯ Refactor the dispatcher and run the tests. │\n",
+			want:    true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeComposerHoldsPayload(tc.capture, message); got != tc.want {
+				t.Errorf("claudeComposerHoldsPayload() = %v, want %v\ncapture:\n%s", got, tc.want, tc.capture)
+			}
+		})
+	}
+}
