@@ -102,6 +102,7 @@ func resolveLifecycleTargets(ctx context.Context, opts LifecycleOptions, verb st
 				"Use --panes with N, W.P, or %N selectors; --robot-pane-address=SESSION lists them")
 			return nil, false, &resp
 		}
+		targets = dedupePanesByID(targets)
 	} else {
 		for _, pane := range panes {
 			if restartTargetIsAgent(restartPaneAgentType(pane)) {
@@ -127,6 +128,22 @@ func resolveLifecycleTargets(ctx context.Context, opts LifecycleOptions, verb st
 		}
 	}
 	return tmux.SortPanesByTopology(targets), multiWindow, nil
+}
+
+// dedupePanesByID drops repeated panes when overlapping selectors (e.g.
+// --panes=1,%37 naming the same pane) resolve to the same target, so a
+// destructive verb never processes — or double-kills — a pane twice.
+func dedupePanesByID(panes []tmux.Pane) []tmux.Pane {
+	seen := make(map[string]struct{}, len(panes))
+	deduped := panes[:0]
+	for _, pane := range panes {
+		if _, ok := seen[pane.ID]; ok {
+			continue
+		}
+		seen[pane.ID] = struct{}{}
+		deduped = append(deduped, pane)
+	}
+	return deduped
 }
 
 // refreshLifecyclePane re-reads a pane by stable ID; ok=false means the pane
@@ -480,6 +497,7 @@ func GetKillPane(ctx context.Context, opts KillPaneOptions) (*KillPaneOutput, er
 			"Use --panes with N, W.P, or %N selectors; --robot-pane-address=SESSION lists them")
 		return output, nil
 	}
+	targets = dedupePanesByID(targets)
 	if len(targets) >= len(panes) {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("selection removes every pane (%d of %d)", len(targets), len(panes)),
