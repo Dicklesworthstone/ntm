@@ -411,10 +411,6 @@ func classifyActionableLabelsError(ctx context.Context, err error) error {
 //
 // A br error or parse failure on either source is fatal: an incomplete label
 // map would silently bypass the operator gate.
-func readyBeadLabels(dir string) map[string][]string {
-	labels, _, _ := readyBeadLabelsContext(context.Background(), dir)
-	return labels
-}
 
 // readyBeadLabelsContext also returns each bead's issue type (map ID ->
 // issue_type) from the same br rows, so plan-sourced recommendations recover
