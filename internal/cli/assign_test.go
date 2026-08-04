@@ -4290,3 +4290,29 @@ func TestClassifyRetryOutcomeTreatsEverySkipAsFailure(t *testing.T) {
 		})
 	}
 }
+
+// Epic beads are containers, never dispatchable implementation work (GH#242).
+func TestClassifyTriageRecExcludesContainerTypes(t *testing.T) {
+	skip := classifyTriageRecForAssignment(bv.TriageRecommendation{
+		ID: "br-epic", Title: "Some epic", Type: "epic", Status: "open",
+	}, nil)
+	if skip == nil {
+		t.Fatal("open unlabeled epic classified as assignable; must be skipped")
+	}
+	if skip.Reason != "container_issue_type" {
+		t.Fatalf("skip reason = %q, want container_issue_type", skip.Reason)
+	}
+
+	if skip := classifyTriageRecForAssignment(bv.TriageRecommendation{
+		ID: "br-task", Title: "Leaf work", Type: "task", Status: "open",
+	}, nil); skip != nil {
+		t.Fatalf("open task wrongly skipped: %+v", skip)
+	}
+
+	// Case-insensitive: br emits lowercase but defend against variants.
+	if skip := classifyTriageRecForAssignment(bv.TriageRecommendation{
+		ID: "br-epic2", Title: "Epic", Type: "Epic", Status: "open",
+	}, nil); skip == nil || skip.Reason != "container_issue_type" {
+		t.Fatalf("mixed-case epic not excluded: %+v", skip)
+	}
+}

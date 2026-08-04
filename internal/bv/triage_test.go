@@ -862,8 +862,8 @@ func TestGetActionableRecommendationsUsesPlanMembershipAndLiveBeadState(t *testi
 		`{"triage":{"recommendations":[{"id":"br-overlap","title":"Ranked overlap","status":"blocked","priority":4,"labels":["stale-gate"],"score":99,"blocked_by":["stale-blocker"],"unblocks_ids":["stale-unblock"]},{"id":"br-triage-only","title":"Triage only","status":"open","priority":0,"labels":["triage-only"],"score":100}]}}`,
 		`{"plan":{"tracks":[{"track_id":"one","items":[{"id":"br-overlap","title":"Plan overlap","status":"open","priority":1,"unblocks":["br-downstream"]},{"id":"br-plan-only","title":"Plan only","status":"open","priority":2,"unblocks":["br-later"]}]}]}}`,
 		0,
-		`[{"id":"br-overlap","labels":["live-gate"]}]`,
-		`[{"id":"br-overlap","labels":["stale-list-value"]},{"id":"br-plan-only","labels":["plan-only-live"]},{"id":"br-triage-only","labels":["irrelevant"]}]`,
+		`[{"id":"br-overlap","issue_type":"task","labels":["live-gate"]}]`,
+		`[{"id":"br-overlap","issue_type":"task","labels":["stale-list-value"]},{"id":"br-plan-only","issue_type":"feature","labels":["plan-only-live"]},{"id":"br-triage-only","issue_type":"task","labels":["irrelevant"]}]`,
 	)
 
 	recs, err := GetActionableRecommendationsContext(context.Background(), t.TempDir(), 0)
@@ -891,9 +891,16 @@ func TestGetActionableRecommendationsUsesPlanMembershipAndLiveBeadState(t *testi
 		t.Fatalf("overlap blocked_by = %#v, want plan-authoritative empty blockers", overlap.BlockedBy)
 	}
 
+	if overlap.Type != "task" {
+		t.Fatalf("overlap issue type = %q, want live-restored %q (GH#242)", overlap.Type, "task")
+	}
+
 	planOnly := recs[1]
 	if planOnly.ID != "br-plan-only" || planOnly.Title != "Plan only" || planOnly.Status != "open" || planOnly.Priority != 2 {
 		t.Fatalf("plan-only recommendation = %+v, want plan item retained", planOnly)
+	}
+	if planOnly.Type != "feature" {
+		t.Fatalf("plan-only issue type = %q, want live-restored %q (GH#242)", planOnly.Type, "feature")
 	}
 	if got, want := planOnly.Labels, []string{"plan-only-live"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("plan-only labels = %#v, want live labels %#v", got, want)
@@ -911,8 +918,8 @@ func TestGetActionableRecommendationsExcludesNonOpenPlanRowsBeforeLabelVerificat
 		`{"triage":{"recommendations":[{"id":"br-open","title":"Open work","status":"open","priority":1,"score":10},{"id":"br-progress","title":"Stale recovery candidate","status":"in_progress","priority":1,"score":20}]}}`,
 		`{"plan":{"tracks":[{"track_id":"mixed-state","items":[{"id":"br-progress","title":"Stale recovery candidate","status":"in_progress","priority":1},{"id":"br-open","title":"Open work","status":"open","priority":1}]}]}}`,
 		0,
-		`[{"id":"br-open","labels":["verified-live-label"]}]`,
-		`[{"id":"br-open","labels":["verified-list-label"]}]`,
+		`[{"id":"br-open","issue_type":"task","labels":["verified-live-label"]}]`,
+		`[{"id":"br-open","issue_type":"task","labels":["verified-list-label"]}]`,
 	)
 
 	recs, err := GetActionableRecommendationsContext(t.Context(), t.TempDir(), 0)
@@ -943,5 +950,25 @@ func TestGetActionableRecommendationsAcceptsEmptyPlanTracks(t *testing.T) {
 	}
 	if recs == nil || len(recs) != 0 {
 		t.Fatalf("recommendations = %#v, want present empty result", recs)
+	}
+}
+
+// TestGetActionableRecommendationsFailsClosedWithoutIssueType enforces the
+// GH#242 coverage invariant: without a verified issue type the classifier
+// cannot prove a plan item is not a container (epic), so assignment stops.
+func TestGetActionableRecommendationsFailsClosedWithoutIssueType(t *testing.T) {
+	installActionableRecommendationTestTools(
+		t,
+		`{"triage":{"recommendations":[{"id":"br-open","title":"Open work","status":"open","priority":1,"score":10}]}}`,
+		`{"plan":{"tracks":[{"track_id":"one","items":[{"id":"br-open","title":"Open work","status":"open","priority":1}]}]}}`,
+		0,
+		`[{"id":"br-open","labels":["a-label"]}]`,
+		`[{"id":"br-open","labels":["a-label"]}]`,
+	)
+
+	if _, err := GetActionableRecommendationsContext(t.Context(), t.TempDir(), 0); err == nil {
+		t.Fatal("expected fail-closed error when issue type is absent from br ready and br list")
+	} else if !strings.Contains(err.Error(), "issue type") {
+		t.Fatalf("error %q should name the missing issue type", err.Error())
 	}
 }
