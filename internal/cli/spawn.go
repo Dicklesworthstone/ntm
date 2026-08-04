@@ -1110,6 +1110,12 @@ type SpawnOptions struct {
 	// verified before spawn, including the valid no-work case of an empty set.
 	assignAdmission *spawnAssignmentAdmission
 
+	// CreateDir opts into creating a missing project directory without an
+	// interactive confirm. In non-TTY contexts a missing directory is a
+	// structured error instead of a prompt (ntm-5ni5): an orchestrator loop
+	// that misspells a session name must fail fast, not hang on [y/N].
+	CreateDir bool
+
 	// Git worktree isolation configuration
 	UseWorktrees bool // Enable git worktree isolation for agents
 	// WorktreeName, when set, overrides the auto-derived worktree directory
@@ -1457,6 +1463,7 @@ func newSpawnCmd() *cobra.Command {
 
 	// Git worktree isolation flag
 	var useWorktrees bool
+	var createDir bool
 	var worktreeName string
 
 	// Privacy mode flag (bd-2u3tv)
@@ -1844,6 +1851,7 @@ Examples:
 				AssignAgentType:         assignAgentFilter,
 				UseWorktrees:            useWorktrees,
 				WorktreeName:            worktreeName,
+				CreateDir:               createDir,
 				PrivacyMode:             privacyMode,
 				AllowPersist:            allowPersist,
 				MarchingOrders:          marchingOrders,
@@ -1929,6 +1937,7 @@ Examples:
 
 	// Git worktree isolation flag
 	cmd.Flags().BoolVar(&useWorktrees, "worktrees", false, "Enable git worktree isolation for agents (each agent gets isolated working directory)")
+	cmd.Flags().BoolVar(&createDir, "create-dir", false, "Create the project directory if it does not exist (non-TTY spawns error instead of prompting)")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Override the auto-derived worktree directory name (single-agent spawns only). Use this when external orchestrators spawn the same agent slot across multiple --label values — without it, the `cc_1` / `cod_1` paths collide. See ntm#145.")
 
 	// Privacy mode flags (bd-2u3tv)
@@ -2147,11 +2156,19 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 					"      mkdir -p %s && cd %s && git init && git add . && git commit -m 'Initial commit'\n\n"+
 					"Or rerun without --worktrees", dir, dir, dir))
 		}
-		if IsJSONOutput() {
+		switch {
+		case IsJSONOutput() || opts.CreateDir:
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				return outputError(fmt.Errorf("creating directory: %w", err))
 			}
-		} else {
+		case !isTTY() || os.Getenv("NTM_NONINTERACTIVE") != "":
+			// Never block a non-interactive caller on a [y/N] prompt: a
+			// scripted spawn with a mistyped session name must fail fast
+			// with a decidable error (ntm-5ni5).
+			return outputError(fmt.Errorf(
+				"project directory %s does not exist; pass --create-dir to create it, or scaffold with 'ntm quick %s'",
+				dir, opts.Session))
+		default:
 			fmt.Printf("Directory not found: %s\n", dir)
 			if !confirm("Create it?") {
 				fmt.Println("Aborted.")

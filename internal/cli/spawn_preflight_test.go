@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // Tests for validateSpawnAgentCommands (ntm-akaq): an explicit N:model spec
@@ -79,5 +84,41 @@ func TestSpawnAgentCommandTemplateUnknownType(t *testing.T) {
 
 	if _, _, err := spawnAgentCommandTemplate(AgentType("nope"), nil, ""); err == nil {
 		t.Fatal("expected error for unknown agent type")
+	}
+}
+
+// TestSpawnMissingDirNonTTYFailsFast (ntm-5ni5): a non-TTY spawn against a
+// missing project directory must return a structured error naming
+// --create-dir instead of blocking on the interactive [y/N] prompt. Test
+// processes have non-TTY stdin, so reaching the error (rather than hanging
+// or auto-aborting with exit 0) is exactly the contract under test.
+func TestSpawnMissingDirNonTTYFailsFast(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	tmpDir, err := os.MkdirTemp("", "ntm-test-nodir")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldCfg := cfg
+	oldJSON := jsonOutput
+	t.Cleanup(func() { cfg = oldCfg; jsonOutput = oldJSON })
+	cfg = newTmuxIntegrationTestConfig(tmpDir)
+	jsonOutput = false
+	cfg.Agents.Claude = testAgentCatCommandTemplate
+
+	opts := SpawnOptions{
+		Session: fmt.Sprintf("ntm-test-nodir-%d", time.Now().UnixNano()),
+		Agents:  []FlatAgent{{Type: AgentTypeClaude, Index: 1}},
+		CCCount: 1,
+	}
+	spawnErr := spawnSessionLogicContext(t.Context(), opts)
+	if spawnErr == nil {
+		_ = tmux.KillSession(opts.Session)
+		t.Fatal("spawn against missing directory succeeded; want fail-fast error")
+	}
+	if !strings.Contains(spawnErr.Error(), "--create-dir") {
+		t.Fatalf("error %q should name --create-dir", spawnErr.Error())
 	}
 }
