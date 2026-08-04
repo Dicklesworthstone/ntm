@@ -1034,6 +1034,32 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "dialogs",
+			Flag:        "--robot-dialogs",
+			Category:    "state",
+			Description: "Classify in-pane interactive dialogs per pane (trust_prompt, rate_limit_options, usage_overlay, paste_limbo, destructive_confirm, unknown_dialog) with the extracted option list.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-dialogs", Type: "string", Required: true, Description: "Session name"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors (default: all agent panes)"},
+			},
+			Examples: []string{"ntm --robot-dialogs=proj"},
+		},
+		{
+			Name:        "answer-dialog",
+			Flag:        "--robot-answer-dialog",
+			Category:    "control",
+			Description: "Answer a classified dialog by label, verified after the keystrokes. Hard policy: accept-side choices on destructive confirms are refused (POLICY_REFUSED).",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-answer-dialog", Type: "string", Required: true, Description: "Session name"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: true, Description: "Exactly one pane selector"},
+				{Name: "choice", Flag: "--choice", Type: "string", Required: true, Description: "decline | extra-usage | dismiss | option-K"},
+			},
+			Examples: []string{
+				"ntm --robot-answer-dialog=proj --panes=1 --choice=decline",
+				"ntm --robot-answer-dialog=proj --panes=2 --choice=extra-usage",
+			},
+		},
+		{
 			Name:        "smart-restart",
 			Flag:        "--robot-smart-restart",
 			Category:    "control",

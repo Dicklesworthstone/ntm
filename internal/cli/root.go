@@ -2178,11 +2178,41 @@ Shell Integration:
 			{"robot-exit-cli", robotExitCLI},
 			{"robot-kill-agent", robotKillAgent},
 			{"robot-kill-pane", robotKillPane},
+			{"robot-dialogs", robotDialogs},
+			{"robot-answer-dialog", robotAnswerDialog},
 		} {
 			if lifecycleFlag.value == "" && cmd.Flags().Changed(lifecycleFlag.name) {
 				failRobotCommand(fmt.Errorf("--%s requires a session name", lifecycleFlag.name), robot.ErrCodeInvalidFlag, fmt.Sprintf("Use --%s=SESSION; 'ntm list' shows available sessions", lifecycleFlag.name), lifecycleFlag.name)
 				return
 			}
+		}
+		if robotDialogs != "" || robotAnswerDialog != "" {
+			verb, flagValue, flagName := "dialogs", robotDialogs, "robot-dialogs"
+			if robotAnswerDialog != "" {
+				verb, flagValue, flagName = "answer-dialog", robotAnswerDialog, "robot-answer-dialog"
+			}
+			session, err := resolveRobotLiveSession(cmd.Context(), flagValue)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", flagName)
+				return
+			}
+			var paneFilter []string
+			if robotPanes != "" {
+				paneFilter = strings.Split(robotPanes, ",")
+			}
+			if verb == "dialogs" {
+				err = robot.PrintDialogs(cmd.Context(), session, paneFilter)
+			} else {
+				err = robot.PrintAnswerDialog(cmd.Context(), robot.AnswerDialogOptions{
+					Session: session,
+					Panes:   paneFilter,
+					Choice:  robotDialogChoice,
+				})
+			}
+			if err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
 		}
 		if robotKillPane != "" {
 			session, err := resolveRobotLiveSession(cmd.Context(), robotKillPane)
@@ -3618,6 +3648,9 @@ var (
 	robotKillAgent         string // session for hard agent-process kill preserving the pane shell
 	robotLifecycleRelaunch bool   // relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent
 	robotKillPane          string // session for per-pane removal (session and siblings survive)
+	robotDialogs           string // session for per-pane dialog classification
+	robotAnswerDialog      string // session for policy-gated dialog answering
+	robotDialogChoice      string // choice for --robot-answer-dialog
 	robotIncidentNote      string // optional resolution note recorded with --robot-incident-resolve
 	robotInspectSession    string // session name for projection-backed session inspection
 	robotInspectAgent      string // runtime agent id for projection-backed agent inspection
@@ -4262,6 +4295,9 @@ func init() {
 	rootCmd.Flags().StringVar(&robotKillAgent, "robot-kill-agent", "", "SIGTERM/SIGKILL agent process trees while preserving panes and shells. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-kill-agent=myproject --panes=2")
 	rootCmd.Flags().BoolVar(&robotLifecycleRelaunch, "relaunch", false, "Relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent and verify boot")
 	rootCmd.Flags().StringVar(&robotKillPane, "robot-kill-pane", "", "Remove specific panes; session and sibling panes survive. Required: SESSION and --panes. Example: ntm --robot-kill-pane=myproject --panes=2")
+	rootCmd.Flags().StringVar(&robotDialogs, "robot-dialogs", "", "Classify in-pane interactive dialogs (trust prompt, rate-limit options, usage overlay, paste limbo, destructive confirm) with extracted options. Required: SESSION. Optional: --panes. Example: ntm --robot-dialogs=myproject")
+	rootCmd.Flags().StringVar(&robotAnswerDialog, "robot-answer-dialog", "", "Answer a classified dialog by label with policy gating (accept-side refused on destructive confirms). Required: SESSION, --panes (one pane), --choice. Example: ntm --robot-answer-dialog=myproject --panes=1 --choice=decline")
+	rootCmd.Flags().StringVar(&robotDialogChoice, "choice", "", "Dialog answer for --robot-answer-dialog: decline, extra-usage, dismiss, or option-K")
 	rootCmd.Flags().StringVar(&robotIncidentNote, "incident-note", "", "Optional resolution note for --robot-incident-resolve")
 
 	rootCmd.Flags().StringVar(&robotMetrics, "robot-metrics", "", "Session metrics export. Optional SESSION. Example: ntm --robot-metrics=myproject --metrics-period=24h")
@@ -5962,7 +5998,7 @@ func needsConfigLoading(cmdName string) bool {
 		// Most other robot flags need full config
 		if robotStatus || robotPlan || robotSnapshot || robotTail != "" || robotWatchBead != "" ||
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
-			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotKillPane != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
+			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotKillPane != "" || robotDialogs != "" || robotAnswerDialog != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||

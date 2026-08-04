@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 131,
+  "schema_type_count": 133,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -22,6 +22,7 @@
     "agent_health",
     "agent_names",
     "alerts",
+    "answer_dialog",
     "assign",
     "attention",
     "auto_restart_stuck",
@@ -42,6 +43,7 @@
     "dcg_check",
     "dcg_status",
     "diagnose",
+    "dialogs",
     "diff",
     "digest",
     "dismiss_alert",
@@ -147,7 +149,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 142,
+  "surface_count": 144,
   "surfaces": [
     {
       "category": "state",
@@ -239,6 +241,21 @@
       "name": "diagnose",
       "schema_id": "ntm:robot:diagnose:v1",
       "schema_type": "diagnose"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-dialogs",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "dialogs",
+      "schema_id": "ntm:robot:dialogs:v1",
+      "schema_type": "dialogs"
     },
     {
       "category": "state",
@@ -805,6 +822,21 @@
       "name": "ack",
       "schema_id": "ntm:robot:ack:v1",
       "schema_type": "ack"
+    },
+    {
+      "category": "control",
+      "flag": "--robot-answer-dialog",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "answer-dialog",
+      "schema_id": "ntm:robot:answer-dialog:v1",
+      "schema_type": "answer_dialog"
     },
     {
       "category": "control",

@@ -120,6 +120,8 @@ var SchemaCommand = map[string]interface{}{
 	"exit_cli":             ExitCLIOutput{},
 	"kill_agent":           KillAgentOutput{},
 	"kill_pane":            KillPaneOutput{},
+	"dialogs":              DialogsOutput{},
+	"answer_dialog":        AnswerDialogOutput{},
 
 	// Ensemble
 	"ensemble":         EnsembleOutput{},

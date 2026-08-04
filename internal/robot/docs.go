@@ -204,6 +204,8 @@ func getCommandsContent() *DocsContent {
 --robot-exit-cli=SESSION: Graceful agent-CLI exit (double Ctrl+C choreography) preserving the pane and shell; optional --relaunch
 --robot-kill-agent=SESSION: SIGTERM/SIGKILL the agent process tree, pane and shell preserved; optional --relaunch
 --robot-kill-pane=SESSION: Remove specific panes (--panes required); session and sibling panes survive
+--robot-dialogs=SESSION: Classify in-pane dialogs (trust/rate-limit/usage/paste-limbo/destructive) with extracted options
+--robot-answer-dialog=SESSION: Answer a dialog by label (--panes + --choice); destructive confirms refuse accept-side answers
 --robot-smart-restart=SESSION: Safety-checked restart with optional --hard-kill / --hard-kill-only fallback
 --robot-wait=SESSION: Wait for pane state or attention-feed condition
 --robot-overlay: Open dashboard overlay for human handoff (--overlay-session optional inside tmux)
