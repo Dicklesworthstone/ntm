@@ -88,6 +88,11 @@ type Request struct {
 	Delay                 time.Duration
 	StopOnFailure         bool
 	DryRun                bool
+	// ClearInput performs the per-agent composer clear (Escape ritual + C-u)
+	// and verifies emptiness before typing the prompt (ntm-5p0b / AP-16):
+	// codex TUIs concatenate a fresh send onto leftover buffer text after an
+	// interrupt, corrupting both.
+	ClearInput bool
 }
 
 // Target is a resolved pane with a topology-safe response address.
@@ -143,6 +148,7 @@ type Delivery struct {
 	Protocol         DeliveryProtocol
 	EnterDelay       time.Duration
 	SecondEnterDelay time.Duration
+	ClearInput       bool
 }
 
 // Pace describes one wait between two adjacent delivery attempts.
@@ -328,6 +334,9 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if target == "" {
 		target = fmt.Sprintf("%s:%s", delivery.Session, delivery.Target.Ref.Physical())
 	}
+	if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
+		return err
+	}
 	switch delivery.Protocol {
 	case ProtocolStageOnly:
 		return tmux.SendKeysForAgentWithDelayContext(ctx, target, delivery.Message, false, 0, delivery.Target.AgentType)
@@ -344,6 +353,30 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	default:
 		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
 	}
+}
+
+// ClearComposerForDelivery runs the pre-send composer clear when the
+// delivery requests it (ntm-5p0b). A composer that POSITIVELY still holds
+// text after the clear is a distinct hard failure — typing into it would
+// concatenate and corrupt both payloads — while an unverifiable clear
+// (no marker visible) proceeds best-effort. User/unknown panes are skipped:
+// C-u in an operator shell would kill whatever the human was typing.
+func ClearComposerForDelivery(ctx context.Context, target string, delivery Delivery) error {
+	if !delivery.ClearInput {
+		return nil
+	}
+	canonical := delivery.Target.AgentType.Canonical()
+	if canonical == tmux.AgentUser || canonical == tmux.AgentUnknown || !canonical.IsValid() {
+		return nil
+	}
+	cleared, verified, err := tmux.ClearComposerContext(ctx, target, delivery.Target.AgentType)
+	if err != nil {
+		return fmt.Errorf("COMPOSER_CLEAR_FAILED: pane %s: %w", delivery.Target.Ref.Physical(), err)
+	}
+	if !cleared && verified {
+		return fmt.Errorf("COMPOSER_NOT_CLEARED: pane %s composer still holds text after the clear sequence; inspect with --robot-tail before resending", delivery.Target.Ref.Physical())
+	}
+	return nil
 }
 
 // VerifyAgentSubmission closes the gap between "keys were sent" and "the
@@ -667,6 +700,7 @@ func (s *Service) Prepare(ctx context.Context, req Request) (prepared *Prepared,
 			Protocol:         plan.Protocol,
 			EnterDelay:       plan.EnterDelay,
 			SecondEnterDelay: plan.SecondEnterDelay,
+			ClearInput:       req.ClearInput,
 		}
 		prepared.entries[i].receipt.Protocol = plan.Protocol
 		prepared.entries[i].receipt.EnterDelay = plan.EnterDelay

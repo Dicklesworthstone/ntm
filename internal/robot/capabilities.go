@@ -901,6 +901,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Filter to a set of N, W.P, or %N pane selectors"},
 				{Name: "exclude", Flag: "--exclude", Type: "string", Required: false, Description: "Exclude N, W.P, or %N pane selectors"},
 				{Name: "delay-ms", Flag: "--delay-ms", Type: "int", Required: false, Description: "Delay between sends (ms)"},
+				{Name: "clear-input", Flag: "--clear-input", Type: "bool", Required: false, Description: "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing; recommended after interrupts on codex panes"},
 				{Name: "track", Flag: "--track", Type: "bool", Required: false, Description: "Combined send+ack: wait for response"},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Max wait time when --track is enabled"},
 				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "500ms", Description: "Poll interval when --track is enabled"},

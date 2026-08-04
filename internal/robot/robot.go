@@ -6194,6 +6194,7 @@ type SendOptions struct {
 	Exclude        []string // Panes to exclude
 	DelayMs        int      // Delay between sends in milliseconds
 	DryRun         bool     // If true, show what would be sent without actually sending
+	ClearInput     bool     // Clear residual composer text (verified) before typing (ntm-5p0b)
 	Enter          *bool    // If set, override Enter behavior after paste
 	RequestID      string   // External request identifier for REST parity
 	CorrelationID  string   // Correlation identifier for tracing request/outcome/verification
@@ -6892,6 +6893,7 @@ func robotPreparedDispatchRequest(allPanes, targetPanes []tmux.Pane, opts SendOp
 		Submit:            submit,
 		Delay:             time.Duration(opts.DelayMs) * time.Millisecond,
 		DryRun:            opts.DryRun,
+		ClearInput:        opts.ClearInput,
 	}
 }
 

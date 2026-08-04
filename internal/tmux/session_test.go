@@ -2762,3 +2762,77 @@ func TestAgentCLIDead(t *testing.T) {
 		})
 	}
 }
+
+// ntm-5p0b: the pre-send composer clear sequence is per-agent because the
+// same keys mean different things per TUI (double-Escape is history jump-back
+// in Claude Code; the triple-Escape ritual is codex doctrine from AP-16).
+func TestComposerClearKeys_PerAgentSequences(t *testing.T) {
+	cases := []struct {
+		agent AgentType
+		want  []string
+	}{
+		{AgentCodex, []string{"Escape", "Escape", "Escape", "C-u"}},
+		{AgentClaude, []string{"Escape", "C-u"}},
+		{AgentGemini, []string{"C-u"}},
+		{AgentUser, []string{"C-u"}},
+	}
+	for _, tc := range cases {
+		got := ComposerClearKeys(tc.agent)
+		if len(got) != len(tc.want) {
+			t.Fatalf("ComposerClearKeys(%s) = %v, want %v", tc.agent, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("ComposerClearKeys(%s)[%d] = %q, want %q", tc.agent, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+func TestComposerLineEmpty_BottomMostMarkerOnly(t *testing.T) {
+	cases := []struct {
+		name      string
+		capture   string
+		marker    string
+		wantFound bool
+		wantEmpty bool
+	}{
+		{"empty composer", "transcript\n› \n", "›", true, true},
+		{"leftover text", "transcript\n› stale half-typed prompt\n", "›", true, false},
+		{"history echo above live empty composer", "› old submitted msg\nworking...\n› \n", "›", true, true},
+		{"no marker visible", "plain shell output\n$ \n", "›", false, false},
+		{"claude leftover", "chat\n❯ residue\n", "❯", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			found, empty := composerLineEmpty(tc.capture, tc.marker, nil)
+			if found != tc.wantFound || empty != tc.wantEmpty {
+				t.Fatalf("composerLineEmpty = (found=%v, empty=%v), want (found=%v, empty=%v)", found, empty, tc.wantFound, tc.wantEmpty)
+			}
+		})
+	}
+}
+
+// Empty composers render dim placeholder hints after the marker (claude:
+// `❯ Try "refactor <filepath>"`, codex: `› Ask Codex to...`); a plain capture
+// cannot see dimness, so placeholder text must count as empty or every
+// verified clear on an idle pane would false-fail.
+func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
+	capture := "chat\n❯ Try \"refactor <filepath>\"\n────\n"
+	found, empty := composerLineEmpty(capture, "❯", composerPlaceholderPrefixes(AgentClaude))
+	if !found || !empty {
+		t.Fatalf("claude placeholder: got (found=%v, empty=%v), want (true, true)", found, empty)
+	}
+	found, empty = composerLineEmpty("› Ask Codex to do anything\n", "›", composerPlaceholderPrefixes(AgentCodex))
+	if !found || !empty {
+		t.Fatalf("codex placeholder: got (found=%v, empty=%v), want (true, true)", found, empty)
+	}
+	// Real residue must still read as non-empty.
+	found, empty = composerLineEmpty("❯ Try harder next time, agent\n", "❯", composerPlaceholderPrefixes(AgentClaude))
+	if !found {
+		t.Fatalf("residue: marker not found")
+	}
+	if empty {
+		t.Fatalf("residue starting with placeholder-adjacent text must not be empty unless it matches the exact placeholder prefix")
+	}
+}

@@ -319,7 +319,10 @@ type SendOptions struct {
 	// (ntm-hykz). --all alone no longer touches the user pane: prompt text
 	// typed into the operator's shell was one of the most-documented swarm
 	// footguns (every broadcast recipe carried --skip-first to dodge it).
-	IncludeUser    bool
+	IncludeUser bool
+	// ClearInput performs the per-agent composer clear (Escape ritual + C-u)
+	// with emptiness verification before typing each prompt (ntm-5p0b).
+	ClearInput     bool
 	SkipFirst      bool
 	PaneSelector   string   // Explicit N, W.P, or %N selector from --pane
 	PaneSelectors  []string // Explicit N, W.P, or %N selectors from --panes
@@ -606,7 +609,7 @@ func permuteBatchPrompts(prompts []BatchPrompt, perm []int) []BatchPrompt {
 
 func newSendCmd() *cobra.Command {
 	var targets SendTargets
-	var targetAll, includeUser, skipFirst bool
+	var targetAll, includeUser, skipFirst, clearInput bool
 	var paneSelector string
 	var panesArg string
 	var promptFile, prefix, suffix string
@@ -817,6 +820,7 @@ func newSendCmd() *cobra.Command {
 					Targets:             targets,
 					TargetAll:           targetAll,
 					IncludeUser:         includeUser,
+					ClearInput:          clearInput,
 					SkipFirst:           skipFirst,
 					Tags:                tags,
 					SmartRoute:          smartRoute,
@@ -848,6 +852,7 @@ func newSendCmd() *cobra.Command {
 				Targets:             targets,
 				TargetAll:           targetAll,
 				IncludeUser:         includeUser,
+				ClearInput:          clearInput,
 				SkipFirst:           skipFirst,
 				PaneSelector:        paneSelector,
 				PaneSelectors:       paneSelectors,
@@ -913,6 +918,7 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Lookup("agy").NoOptDefVal = "true"
 	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all agent panes, overriding type/tag filters (the user pane is excluded unless --include-user)")
 	cmd.Flags().BoolVar(&includeUser, "include-user", false, "opt the user/control pane into a --all broadcast (deliberate shell input only)")
+	cmd.Flags().BoolVar(&clearInput, "clear-input", false, "clear residual composer text (per-agent Escape ritual + C-u, verified) before typing each prompt; recommended after interrupts on codex panes")
 	cmd.Flags().BoolVarP(&skipFirst, "skip-first", "s", false, "skip the first pane in deterministic topology order")
 	cmd.Flags().StringVarP(&paneSelector, "pane", "p", "", "send to one pane (N, W.P, or %N)")
 	cmd.Flags().StringVarP(&panesArg, "panes", "", "", "send to panes (comma-separated N, W.P, or %N selectors)")
@@ -2068,6 +2074,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	}
 	dispatchRequest := shellDispatchRequest(session, panes, selectedPanes, prompt, (!jsonOutput && !silent) || explicitSingle)
 	dispatchRequest.DryRun = dryRun
+	dispatchRequest.ClearInput = opts.ClearInput
 	preparedDispatch, err := dispatchService.Prepare(
 		ctx,
 		dispatchRequest,
@@ -3634,6 +3641,9 @@ func newShellDispatchServiceWithGate(
 			}
 			if target.ID == "" {
 				target.ID = fmt.Sprintf("%s:%s", session, target.Ref().Physical())
+			}
+			if err := dispatchsvc.ClearComposerForDelivery(ctx, target.ID, delivery); err != nil {
+				return err
 			}
 			switch delivery.Protocol {
 			case dispatchsvc.ProtocolSingleEnter:

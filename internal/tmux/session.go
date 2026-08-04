@@ -2053,6 +2053,122 @@ const (
 // "[Pasted ..." stand-in there. Idle suggestion hints also render after "›",
 // so composer text alone is not evidence — the line must carry the payload
 // snippet or a paste marker.
+// Composer-clear choreography (ntm-5p0b). AP-16 doctrine — "always Escape
+// Escape Escape C-u before sending fresh prompts into any codex pane that had
+// a prior interrupt" — was operator muscle memory driven with raw tmux
+// send-keys. The sequence is per-agent because the same keys mean different
+// things per TUI: codex tolerates the triple-Escape ritual; Claude Code maps
+// double-Escape to history jump-back, so it gets a single Escape; unknown
+// TUIs get only the line-kill.
+const (
+	composerClearKeyGap     = 120 * time.Millisecond
+	composerClearVerifyWait = 300 * time.Millisecond
+)
+
+// ComposerClearKeys returns the pre-send composer clear sequence for an agent
+// type. Exported for sequence-composition tests.
+func ComposerClearKeys(agentType AgentType) []string {
+	switch agentType.Canonical() {
+	case AgentCodex:
+		return []string{"Escape", "Escape", "Escape", "C-u"}
+	case AgentClaude:
+		return []string{"Escape", "C-u"}
+	default:
+		return []string{"C-u"}
+	}
+}
+
+// composerMarkerForAgent returns the live-composer marker glyph used to
+// verify emptiness, or "" when the TUI has no known marker.
+func composerMarkerForAgent(agentType AgentType) string {
+	switch agentType.Canonical() {
+	case AgentCodex:
+		return "›"
+	case AgentClaude:
+		return "❯"
+	default:
+		return ""
+	}
+}
+
+// composerPlaceholderPrefixes lists per-agent hint text the TUI renders in
+// an EMPTY composer (dim, but indistinguishable from real text in a plain
+// capture). Text matching a prefix counts as empty.
+func composerPlaceholderPrefixes(agentType AgentType) []string {
+	switch agentType.Canonical() {
+	case AgentClaude:
+		return []string{`Try "`}
+	case AgentCodex:
+		return []string{"Ask Codex"}
+	default:
+		return nil
+	}
+}
+
+// composerLineEmpty reports whether the bottom-most marker line in the
+// capture carries no composer text. found=false means no marker line was
+// visible at all (verification impossible). Hint text the TUI renders in an
+// empty composer counts as empty.
+func composerLineEmpty(capture, marker string, placeholderPrefixes []string) (found, empty bool) {
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		idx := strings.Index(lines[i], marker)
+		if idx < 0 {
+			continue
+		}
+		text := strings.TrimSpace(lines[i][idx+len(marker):])
+		if text == "" {
+			return true, true
+		}
+		for _, prefix := range placeholderPrefixes {
+			if strings.HasPrefix(text, prefix) {
+				return true, true
+			}
+		}
+		return true, false
+	}
+	return false, false
+}
+
+// ClearComposerContext performs the per-agent pre-send composer clear and
+// verifies the composer is empty where the TUI exposes a marker. Returns
+// cleared=false only when verification POSITIVELY shows leftover text;
+// verified=false means the sequence was sent but emptiness could not be
+// confirmed (no marker visible / unknown TUI).
+func (c *Client) ClearComposerContext(ctx context.Context, target string, agentType AgentType) (cleared, verified bool, err error) {
+	for i, key := range ComposerClearKeys(agentType) {
+		if i > 0 {
+			if err := waitForSendDelay(ctx, composerClearKeyGap); err != nil {
+				return false, false, err
+			}
+		}
+		if err := c.RunSilentContext(ctx, "send-keys", "-t", target, key); err != nil {
+			return false, false, fmt.Errorf("send composer clear key %q: %w", key, err)
+		}
+	}
+	marker := composerMarkerForAgent(agentType)
+	if marker == "" {
+		return true, false, nil
+	}
+	if err := waitForSendDelay(ctx, composerClearVerifyWait); err != nil {
+		return false, false, err
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("capture pane for composer clear verification: %w", err)
+	}
+	found, empty := composerLineEmpty(capture, marker, composerPlaceholderPrefixes(agentType))
+	if !found {
+		return true, false, nil
+	}
+	return empty, true, nil
+}
+
+// ClearComposerContext clears the composer using the default client.
+func ClearComposerContext(ctx context.Context, target string, agentType AgentType) (bool, bool, error) {
+	return DefaultClient.ClearComposerContext(ctx, target, agentType)
+}
+
 func codexComposerHoldsPayload(capture, message string) bool {
 	snippet := ""
 	for _, line := range strings.Split(message, "\n") {
