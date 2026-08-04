@@ -2169,6 +2169,19 @@ Shell Integration:
 			}
 			return
 		}
+		for _, lifecycleFlag := range []struct {
+			name  string
+			value string
+		}{
+			{"robot-exit-cli", robotExitCLI},
+			{"robot-kill-agent", robotKillAgent},
+			{"robot-kill-pane", robotKillPane},
+		} {
+			if lifecycleFlag.value == "" && cmd.Flags().Changed(lifecycleFlag.name) {
+				failRobotCommand(fmt.Errorf("--%s requires a session name", lifecycleFlag.name), robot.ErrCodeInvalidFlag, fmt.Sprintf("Use --%s=SESSION; 'ntm list' shows available sessions", lifecycleFlag.name), lifecycleFlag.name)
+				return
+			}
+		}
 		if robotKillPane != "" {
 			session, err := resolveRobotLiveSession(cmd.Context(), robotKillPane)
 			if err != nil {
