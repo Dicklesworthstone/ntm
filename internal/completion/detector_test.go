@@ -1734,3 +1734,57 @@ func TestIdleTimeoutWithOpenBeadReportsFailed(t *testing.T) {
 		t.Errorf("failed idle event should carry a fail reason")
 	}
 }
+
+// GH#238 / ntm-a2t8: a quietly-working agent (silent while an external
+// subprocess runs) must never be stamped failed. Any observation that cannot
+// CONFIRM confident fresh idleness — stale capture, unknown state, weak
+// confidence — clears the inactivity timer, so only continuously-confirmed
+// idle intervals can fail an assignment.
+func TestIdleDetectionUnconfirmedObservationsClearTimer(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.IdleThreshold = 10 * time.Millisecond
+
+	base := statuspkg.PaneObservation{Current: statuspkg.StateObservation{
+		Status:     statuspkg.AgentStatus{State: statuspkg.StateIdle},
+		Freshness:  statuspkg.FreshnessFresh,
+		Confidence: 0.95,
+	}}
+	stale := base
+	stale.Current.Freshness = statuspkg.FreshnessStale
+	unknown := base
+	unknown.Current.Status.State = statuspkg.StateUnknown
+	weak := base
+	weak.Current.Confidence = 0.1
+
+	cases := []struct {
+		name        string
+		unconfirmed statuspkg.PaneObservation
+	}{
+		{"stale capture", stale},
+		{"unknown state", unknown},
+		{"weak confidence", weak},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewWithConfig("test-session", assignment.NewStore("test-session"), cfg)
+			now := time.Now()
+			a := &assignment.Assignment{BeadID: "bd-quiet", Pane: 0, OccupancyKey: "%1", AssignedAt: now}
+
+			if event := d.checkIdleWhenSafe(a, "unchanged", now, base); event != nil {
+				t.Fatalf("init observation produced event: %+v", event)
+			}
+			time.Sleep(15 * time.Millisecond)
+			if event := d.checkIdleWhenSafe(a, "unchanged", now, tc.unconfirmed); event != nil {
+				t.Fatalf("unconfirmed observation stamped failure: %+v", event)
+			}
+			if len(d.activityTracker) != 0 {
+				t.Fatalf("unconfirmed observation retained the idle timer: %+v", d.activityTracker)
+			}
+			// A fresh confirmed-idle interval must start from zero.
+			time.Sleep(15 * time.Millisecond)
+			if event := d.checkIdleWhenSafe(a, "unchanged", now, base); event != nil {
+				t.Fatalf("restarted interval inherited stale timeout: %+v", event)
+			}
+		})
+	}
+}
