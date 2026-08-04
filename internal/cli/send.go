@@ -308,13 +308,18 @@ type sendExecutionResult struct {
 type SendOptions struct {
 	// Context is populated by command entry points. runSendWithTargets supplies
 	// Background only for legacy in-process callers with no context surface.
-	Context        context.Context
-	Session        string
-	Prompt         string
-	PromptSource   string
-	BasePrompt     string // Prepended to all prompts (bd-3ejl)
-	Targets        SendTargets
-	TargetAll      bool
+	Context      context.Context
+	Session      string
+	Prompt       string
+	PromptSource string
+	BasePrompt   string // Prepended to all prompts (bd-3ejl)
+	Targets      SendTargets
+	TargetAll    bool
+	// IncludeUser opts the user/control pane into a --all broadcast
+	// (ntm-hykz). --all alone no longer touches the user pane: prompt text
+	// typed into the operator's shell was one of the most-documented swarm
+	// footguns (every broadcast recipe carried --skip-first to dodge it).
+	IncludeUser    bool
 	SkipFirst      bool
 	PaneSelector   string   // Explicit N, W.P, or %N selector from --pane
 	PaneSelectors  []string // Explicit N, W.P, or %N selectors from --panes
@@ -601,7 +606,7 @@ func permuteBatchPrompts(prompts []BatchPrompt, perm []int) []BatchPrompt {
 
 func newSendCmd() *cobra.Command {
 	var targets SendTargets
-	var targetAll, skipFirst bool
+	var targetAll, includeUser, skipFirst bool
 	var paneSelector string
 	var panesArg string
 	var promptFile, prefix, suffix string
@@ -746,7 +751,7 @@ func newSendCmd() *cobra.Command {
 						return earlyError(fmt.Errorf("cannot use --project with a specific session name; use just --project or just a session name"))
 					}
 				}
-				return earlyError(runSendProject(cmd, projectFilter, args, targets, targetAll, skipFirst, paneSelector, paneSelectors, panesSpecified, tags, noHooks, dryRun, forceNonInteractive))
+				return earlyError(runSendProject(cmd, projectFilter, args, targets, targetAll, includeUser, skipFirst, paneSelector, paneSelectors, panesSpecified, tags, noHooks, dryRun, forceNonInteractive))
 			}
 
 			if len(args) == 0 {
@@ -811,6 +816,7 @@ func newSendCmd() *cobra.Command {
 					BasePrompt:          resolvedBasePrompt,
 					Targets:             targets,
 					TargetAll:           targetAll,
+					IncludeUser:         includeUser,
 					SkipFirst:           skipFirst,
 					Tags:                tags,
 					SmartRoute:          smartRoute,
@@ -841,6 +847,7 @@ func newSendCmd() *cobra.Command {
 				BasePrompt:          resolvedBasePrompt,
 				Targets:             targets,
 				TargetAll:           targetAll,
+				IncludeUser:         includeUser,
 				SkipFirst:           skipFirst,
 				PaneSelector:        paneSelector,
 				PaneSelectors:       paneSelectors,
@@ -904,7 +911,8 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Lookup("gmi").NoOptDefVal = "true"
 	cmd.Flags().Var(newSendTargetValue(AgentTypeAntigravity, &targets), "agy", "send to Antigravity (agy) agents (optional :variant filter)")
 	cmd.Flags().Lookup("agy").NoOptDefVal = "true"
-	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all panes (including user pane)")
+	cmd.Flags().BoolVar(&targetAll, "all", false, "send to all agent panes, overriding type/tag filters (the user pane is excluded unless --include-user)")
+	cmd.Flags().BoolVar(&includeUser, "include-user", false, "opt the user/control pane into a --all broadcast (deliberate shell input only)")
 	cmd.Flags().BoolVarP(&skipFirst, "skip-first", "s", false, "skip the first pane in deterministic topology order")
 	cmd.Flags().StringVarP(&paneSelector, "pane", "p", "", "send to one pane (N, W.P, or %N)")
 	cmd.Flags().StringVarP(&panesArg, "panes", "", "", "send to panes (comma-separated N, W.P, or %N selectors)")
@@ -975,7 +983,7 @@ func newSendCmd() *cobra.Command {
 }
 
 // runSendProject broadcasts a prompt to all sessions matching a base project (bd-3cu02.14).
-func runSendProject(cmd *cobra.Command, project string, args []string, targets SendTargets, targetAll, skipFirst bool, paneSelector string, paneSelectors []string, panesSpecified bool, tags []string, noHooks, dryRun, forceNonInteractive bool) error {
+func runSendProject(cmd *cobra.Command, project string, args []string, targets SendTargets, targetAll, includeUser, skipFirst bool, paneSelector string, paneSelectors []string, panesSpecified bool, tags []string, noHooks, dryRun, forceNonInteractive bool) error {
 	outputError := func(err error) error {
 		if !jsonOutput {
 			return err
@@ -1018,7 +1026,7 @@ func runSendProject(cmd *cobra.Command, project string, args []string, targets S
 	}
 
 	if jsonOutput {
-		return runSendProjectJSON(cmd.Context(), project, promptText, matching, targets, targetAll, skipFirst, paneSelector, paneSelectors, panesSpecified, tags, noHooks, dryRun, forceNonInteractive)
+		return runSendProjectJSON(cmd.Context(), project, promptText, matching, targets, targetAll, includeUser, skipFirst, paneSelector, paneSelectors, panesSpecified, tags, noHooks, dryRun, forceNonInteractive)
 	}
 
 	var names []string
@@ -1039,6 +1047,7 @@ func runSendProject(cmd *cobra.Command, project string, args []string, targets S
 			Prompt:              promptText,
 			Targets:             targets,
 			TargetAll:           targetAll,
+			IncludeUser:         includeUser,
 			SkipFirst:           skipFirst,
 			PaneSelector:        paneSelector,
 			PaneSelectors:       paneSelectors,
@@ -1063,7 +1072,7 @@ func runSendProject(cmd *cobra.Command, project string, args []string, targets S
 	return nil
 }
 
-func runSendProjectJSON(ctx context.Context, project, prompt string, sessions []tmux.Session, targets SendTargets, targetAll, skipFirst bool, paneSelector string, paneSelectors []string, panesSpecified bool, tags []string, noHooks, dryRun, forceNonInteractive bool) error {
+func runSendProjectJSON(ctx context.Context, project, prompt string, sessions []tmux.Session, targets SendTargets, targetAll, includeUser, skipFirst bool, paneSelector string, paneSelectors []string, panesSpecified bool, tags []string, noHooks, dryRun, forceNonInteractive bool) error {
 	results := make([]sendProjectSessionResult, 0, len(sessions))
 	var firstErr error
 
@@ -1096,6 +1105,7 @@ func runSendProjectJSON(ctx context.Context, project, prompt string, sessions []
 			Prompt:              prompt,
 			Targets:             targets,
 			TargetAll:           targetAll,
+			IncludeUser:         includeUser,
 			SkipFirst:           skipFirst,
 			PaneSelector:        paneSelector,
 			PaneSelectors:       paneSelectors,
@@ -1926,6 +1936,14 @@ func runSendInternal(opts SendOptions) (err error) {
 		for i, p := range panes {
 			// Skip first pane if requested
 			if skipFirst && i == 0 {
+				continue
+			}
+
+			// --all is an agent broadcast: the user/control pane joins only
+			// with an explicit --include-user (ntm-hykz). Broadcast prompt
+			// text typed into the operator's zsh was the trap every skill
+			// recipe carried --skip-first to dodge.
+			if targetAll && !opts.IncludeUser && sendValueEqual(p.Type, tmux.AgentUser) {
 				continue
 			}
 
@@ -4919,8 +4937,12 @@ func filterPanesForBatch(panes []tmux.Pane, opts SendOptions) []tmux.Pane {
 		if opts.SkipFirst && i == 0 {
 			continue
 		}
-		// If --all, include everything
+		// If --all, include every agent pane; the user pane joins only with
+		// an explicit --include-user (ntm-hykz).
 		if opts.TargetAll {
+			if !opts.IncludeUser && sendValueEqual(p.Type, tmux.AgentUser) {
+				continue
+			}
 			filtered = append(filtered, p)
 			continue
 		}

@@ -2189,8 +2189,16 @@ func TestFilterPanesForBatch(t *testing.T) {
 			wantIdxs: []int{1, 2, 3, 4},
 		},
 		{
-			name:     "TargetAll includes everything",
+			// ntm-hykz: --all is an agent broadcast; the user pane joins
+			// only with an explicit --include-user.
+			name:     "TargetAll excludes user pane by default",
 			opts:     SendOptions{TargetAll: true},
+			wantLen:  4,
+			wantIdxs: []int{1, 2, 3, 4},
+		},
+		{
+			name:     "TargetAll with IncludeUser includes everything",
+			opts:     SendOptions{TargetAll: true, IncludeUser: true},
 			wantLen:  5,
 			wantIdxs: []int{0, 1, 2, 3, 4},
 		},
@@ -2320,10 +2328,16 @@ func TestFilterPanesForBatchAllUser(t *testing.T) {
 		t.Errorf("filterPanesForBatch(user panes) returned %d panes, want 0", len(got))
 	}
 
-	// With TargetAll, should return all
+	// TargetAll alone no longer reaches user panes (ntm-hykz)...
 	got = filterPanesForBatch(userPanes, SendOptions{TargetAll: true})
+	if len(got) != 0 {
+		t.Errorf("filterPanesForBatch(user panes, TargetAll) returned %d panes, want 0", len(got))
+	}
+
+	// ...but --include-user opts them in deliberately.
+	got = filterPanesForBatch(userPanes, SendOptions{TargetAll: true, IncludeUser: true})
 	if len(got) != 2 {
-		t.Errorf("filterPanesForBatch(user panes, TargetAll) returned %d panes, want 2", len(got))
+		t.Errorf("filterPanesForBatch(user panes, TargetAll+IncludeUser) returned %d panes, want 2", len(got))
 	}
 }
 
@@ -2776,5 +2790,29 @@ func TestCollectPaneDescendants_RecursiveAndExclusion(t *testing.T) {
 		if orphanReapExcluded(pid) {
 			t.Errorf("collectPaneDescendants returned excluded PID %d", pid)
 		}
+	}
+}
+
+// --all excludes the user pane unless --include-user (ntm-hykz).
+func TestFilterPanesForBatchAllExcludesUserPane(t *testing.T) {
+	panes := []tmux.Pane{
+		{Index: 0, Type: tmux.AgentUser, Title: "proj"},
+		{Index: 1, Type: tmux.AgentClaude, Title: "proj__cc_1"},
+		{Index: 2, Type: tmux.AgentCodex, Title: "proj__cod_1"},
+	}
+
+	all := filterPanesForBatch(panes, SendOptions{TargetAll: true})
+	for _, p := range all {
+		if p.Type == tmux.AgentUser {
+			t.Fatalf("--all included the user pane without --include-user: %+v", all)
+		}
+	}
+	if len(all) != 2 {
+		t.Fatalf("--all selected %d panes, want 2 agent panes", len(all))
+	}
+
+	withUser := filterPanesForBatch(panes, SendOptions{TargetAll: true, IncludeUser: true})
+	if len(withUser) != 3 {
+		t.Fatalf("--all --include-user selected %d panes, want all 3", len(withUser))
 	}
 }
