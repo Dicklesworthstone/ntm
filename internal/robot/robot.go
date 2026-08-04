@@ -4056,6 +4056,31 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			if captureErr == "" {
 				captureErr = fmt.Sprintf("current pane observation is %s", paneObservation.Current.Freshness)
 			}
+			// Tail's contract is content-first: a stale or failed observation
+			// must not silently displace the requested lines with advisory
+			// metadata (ntm-ajeb). Fall back to a direct live capture; only
+			// when that also fails does the pane report empty lines with an
+			// explicit capture error.
+			if fallbackRaw, fallbackErr := tmux.CapturePaneOutput(pane.ID, opts.Lines); fallbackErr == nil {
+				fallbackLines := splitLines(status.StripANSI(fallbackRaw))
+				output.Panes[paneKey] = PaneOutput{
+					Type:                  paneAgentType(pane),
+					State:                 "unknown",
+					Lines:                 fallbackLines,
+					Truncated:             len(fallbackLines) >= opts.Lines,
+					PanePID:               pane.PID,
+					CaptureCollectedAt:    FormatTimestamp(time.Now().UTC()),
+					CaptureProvenance:     "live-fallback",
+					CaptureError:          captureErr,
+					ObservationState:      string(paneObservation.Current.Status.State),
+					ObservationFreshness:  string(paneObservation.Current.Freshness),
+					ObservationConfidence: paneObservation.Current.Confidence,
+					LastKnownState:        lastKnownObservationState(paneObservation),
+					LastKnownObservedAt:   lastKnownObservationTime(paneObservation),
+					SafeToDispatch:        false,
+				}
+				continue
+			}
 			output.Panes[paneKey] = PaneOutput{
 				Type:                  paneAgentType(pane),
 				State:                 "unknown",

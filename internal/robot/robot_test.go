@@ -6399,3 +6399,60 @@ func TestBuildSnapshotAttentionSummary_TopItemsCapped(t *testing.T) {
 		t.Errorf("first top item should be 'alert 2', got %q", summary.TopItems[0].Summary)
 	}
 }
+
+// TestGetTailContentContract is the regression test for ntm-ajeb: tail must
+// return actual pane content when the session exists, advisory hints must
+// never displace the lines, and a selector matching zero panes must be a loud
+// error naming valid selectors.
+func TestGetTailContentContract(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := "ntm_test_tailcontract_" + time.Now().Format("150405")
+	if err := tmux.CreateSession(sessionName, ""); err != nil {
+		t.Fatalf("Failed to create test session: %v", err)
+	}
+	defer tmux.KillSession(sessionName)
+
+	marker := "TAIL_CONTRACT_MARKER_ajeb"
+	if err := tmux.SendKeys(sessionName+":0.0", "echo "+marker, true); err != nil {
+		t.Fatalf("send marker: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+
+	result, err := GetTail(TailOptions{Session: sessionName, Lines: 20})
+	if err != nil {
+		t.Fatalf("GetTail: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("GetTail success=false: %s", result.Error)
+	}
+	if len(result.Panes) == 0 {
+		t.Fatal("GetTail returned no panes for a live session")
+	}
+	found := false
+	for key, pane := range result.Panes {
+		if pane.Lines == nil {
+			t.Errorf("pane %s has nil lines; content must always be present alongside hints", key)
+		}
+		for _, line := range pane.Lines {
+			if strings.Contains(line, marker) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("marker %q not found in any pane lines: %+v", marker, result.Panes)
+	}
+
+	// Selector matching zero panes: loud error naming valid selectors.
+	missing, err := GetTail(TailOptions{Session: sessionName, Lines: 5, PaneFilter: []string{"99"}})
+	if err != nil {
+		t.Fatalf("GetTail with bogus selector returned transport error: %v", err)
+	}
+	if missing.Success {
+		t.Fatal("GetTail with nonexistent pane selector should fail")
+	}
+	if !strings.Contains(missing.Error, "available") {
+		t.Errorf("selector error should name available panes, got: %s", missing.Error)
+	}
+}
