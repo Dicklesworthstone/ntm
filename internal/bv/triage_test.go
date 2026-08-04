@@ -331,7 +331,7 @@ echo '[]'
 	}
 	t.Setenv("PATH", binDir)
 
-	labels, err := readyBeadLabelsContext(context.Background(), dir)
+	labels, _, err := readyBeadLabelsContext(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("readyBeadLabelsContext: %v", err)
 	}
@@ -377,7 +377,7 @@ echo '[]'
 	}
 	t.Setenv("PATH", binDir)
 
-	labels, err := readyBeadLabelsContext(context.Background(), dir)
+	labels, _, err := readyBeadLabelsContext(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("readyBeadLabelsContext: %v", err)
 	}
@@ -421,7 +421,7 @@ echo '[]'
 			}
 			t.Setenv("PATH", binDir)
 
-			labels, err := readyBeadLabelsContext(t.Context(), dir)
+			labels, _, err := readyBeadLabelsContext(t.Context(), dir)
 			if labels != nil || err == nil {
 				t.Fatalf("labels=%v error=%v, want fail-closed malformed-label error", labels, err)
 			}
@@ -457,7 +457,7 @@ echo '[]'
 	}
 	t.Setenv("PATH", binDir)
 
-	if _, err := readyBeadLabelsContext(context.Background(), dir); err == nil {
+	if _, _, err := readyBeadLabelsContext(context.Background(), dir); err == nil {
 		t.Fatal("readyBeadLabelsContext succeeded despite br list failure; want fail-closed error")
 	}
 }
