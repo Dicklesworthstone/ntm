@@ -723,3 +723,26 @@ func TestParseAgentSpecEffortAtSuffix(t *testing.T) {
 		})
 	}
 }
+
+// The @effort shorthand must stay inert for agent types without an effort
+// knob so '@' remains a literal model character (e.g. opencode provider
+// model tags).
+func TestEffortAtSuffixOnlyForEffortCapableTypes(t *testing.T) {
+	var ocSpecs AgentSpecs
+	oc := NewAgentSpecsValue(AgentTypeOpencode, &ocSpecs)
+	if err := oc.Set("1:openrouter/some-model@beta"); err != nil {
+		t.Fatalf("oc spec with literal @ rejected: %v", err)
+	}
+	if got := ocSpecs[len(ocSpecs)-1]; got.Model != "openrouter/some-model@beta" || got.ReasoningEffort != "" {
+		t.Fatalf("oc spec split @ as effort: %+v", got)
+	}
+
+	var codSpecs AgentSpecs
+	cod := NewAgentSpecsValue(AgentTypeCodex, &codSpecs)
+	if err := cod.Set("1:gpt-5.6-terra@high"); err != nil {
+		t.Fatalf("cod spec with @effort rejected: %v", err)
+	}
+	if got := codSpecs[len(codSpecs)-1]; got.Model != "gpt-5.6-terra" || got.ReasoningEffort != "high" {
+		t.Fatalf("cod spec did not split @ as effort: %+v", got)
+	}
+}

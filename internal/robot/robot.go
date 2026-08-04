@@ -4060,8 +4060,10 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			// must not silently displace the requested lines with advisory
 			// metadata (ntm-ajeb). Fall back to a direct live capture; only
 			// when that also fails does the pane report empty lines with an
-			// explicit capture error.
-			if fallbackRaw, fallbackErr := tmux.CapturePaneOutput(pane.ID, opts.Lines); fallbackErr == nil {
+			// explicit capture error. An empty pane ID must never reach
+			// capture-pane: `-t ""` silently targets the ACTIVE pane and
+			// would misattribute another pane's content.
+			if fallbackRaw, fallbackErr := capturePaneFallback(pane, opts.Lines); fallbackErr == nil {
 				fallbackLines := splitLines(status.StripANSI(fallbackRaw))
 				output.Panes[paneKey] = PaneOutput{
 					Type:                  paneAgentType(pane),
@@ -4124,6 +4126,16 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 	output.AgentHints = generateTailHints(output.Panes)
 
 	return output, nil
+}
+
+// capturePaneFallback performs the direct live capture behind GetTail's
+// stale-observation fallback, refusing empty pane identities so the capture
+// can never silently retarget the active pane.
+func capturePaneFallback(pane tmux.Pane, lines int) (string, error) {
+	if strings.TrimSpace(pane.ID) == "" {
+		return "", errors.New("pane has no tmux ID; direct capture would target the active pane")
+	}
+	return tmux.CapturePaneOutput(pane.ID, lines)
 }
 
 // PrintTail outputs recent pane output for AI consumption.

@@ -1235,3 +1235,23 @@ func realBRDatabasePath(t *testing.T, dir string) string {
 	}
 	return info.DatabasePath
 }
+
+// TestComputeBeadsContentHashGolden pins the Go reimplementation to a hash
+// produced by real br 0.2.19 (export_hashes row for a bead with title
+// "repro", status open, priority 2, type task, created_by jemanuel, all
+// other fields empty/false). If this breaks, the field order, length-prefix
+// encoding, or reserved-slot layout has drifted from
+// beads_rust/src/util/hash.rs and local finalization would write wrong
+// hashes into the Beads DB.
+func TestComputeBeadsContentHashGolden(t *testing.T) {
+	got := computeBeadsContentHash(
+		"repro", "", "", "", "",
+		"open", "2", "task",
+		"", "", "jemanuel", "", "",
+		false, false,
+	)
+	const want = "0f415f66b3f6f02a4c920709887383d7cbc8978a278494611a24c3e9a588a8c2"
+	if got != want {
+		t.Fatalf("computeBeadsContentHash = %s, want br-produced %s", got, want)
+	}
+}

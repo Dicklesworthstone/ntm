@@ -2652,6 +2652,19 @@ func TestCodexComposerHoldsPayload(t *testing.T) {
 			want:    false,
 		},
 		{
+			// The critical false-failure case: codex echoes submitted user
+			// messages into the transcript with a "›" prefix. Only the
+			// bottom-most "›" line (the live composer) may count as payload.
+			name:    "submitted prompt echoed with marker in transcript, empty composer below",
+			capture: "› Fix the auth layer and report blockers.\n\nWorked for 2m 10s\nAll done, tests pass.\n› \n",
+			want:    false,
+		},
+		{
+			name:    "transcript echo above but payload still in composer below",
+			capture: "› Fix the auth layer and report blockers.\nsome response\n› Fix the auth layer and report blockers.\n",
+			want:    true,
+		},
+		{
 			name:    "no composer marker at all",
 			capture: "plain shell output\n$\n",
 			want:    false,

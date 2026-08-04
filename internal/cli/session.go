@@ -1021,6 +1021,11 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 		panes = append(panes, paneObservation.Metadata)
 		statusByPaneID[paneObservation.Pane.ID] = paneObservation.Current.Status
 	}
+	// Selector topology must reflect the FULL session, not the filtered view:
+	// send resolves bare-N selectors against all panes, so a tag filter that
+	// hides the other windows must not collapse displayed selectors from W.P
+	// to bare indices (which send would then read as window indices).
+	statusSelectorsMultiWindow := tmux.PanesSpanMultipleWindows(panes)
 
 	// Filter panes by tag
 	if len(opts.tags) > 0 {
@@ -1184,7 +1189,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 	// exact value `ntm send --pane=` accepts. Never render an enumeration
 	// ordinal here: a 1-based row number silently misroutes dispatches
 	// against the 0-based tmux pane index (ntm-bb87).
-	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+	multiWindow := statusSelectorsMultiWindow
 	selectorWidth := 0
 	for _, p := range panes {
 		if l := len(p.Ref().Canonical(multiWindow)); l > selectorWidth {

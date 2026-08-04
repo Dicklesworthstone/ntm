@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +139,14 @@ func (o restartLaunchOverride) empty() bool {
 	return o.Model == "" && o.Effort == "" && o.Args == ""
 }
 
+// restartOverrideModelPattern / restartOverrideEffortPattern mirror the spawn
+// spec grammar's charsets (internal/cli modelPattern / effortPattern) so
+// --restart-model rejects the same junk --cod=N:model@effort would.
+var (
+	restartOverrideModelPattern  = regexp.MustCompile(`^[A-Za-z0-9._/@:+-]+$`)
+	restartOverrideEffortPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
+)
+
 // parseRestartLaunchOverride validates --restart-model / --restart-agent-args
 // into a launch override. The model field uses the spawn variant grammar's
 // model[@effort] form.
@@ -153,9 +162,15 @@ func parseRestartLaunchOverride(model, args string) (restartLaunchOverride, erro
 		if override.Effort == "" {
 			return override, fmt.Errorf("empty reasoning effort after '@' in restart model %q (use model or model@effort)", model)
 		}
+		if !restartOverrideEffortPattern.MatchString(override.Effort) {
+			return override, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ + -", override.Effort)
+		}
 	}
 	if value == "" {
 		return override, fmt.Errorf("empty model in restart model %q (use model or model@effort)", model)
+	}
+	if !restartOverrideModelPattern.MatchString(value) {
+		return override, fmt.Errorf("invalid characters in restart model %q; allowed: letters, numbers, . _ / @ : + -", value)
 	}
 	override.Model = value
 	return override, nil

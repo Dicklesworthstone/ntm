@@ -106,20 +106,36 @@ func (s *AgentSpecs) Type() string {
 	return "N[:model[:effort]]"
 }
 
+// agentTypeSupportsEffortSuffix reports whether an agent type has a
+// reasoning-effort knob, making the `model@effort` suffix meaningful. For
+// every other type '@' stays a literal model character (e.g. opencode
+// `provider/model@tag` specs) instead of being reinterpreted as an effort
+// separator (ntm-mjf7).
+func agentTypeSupportsEffortSuffix(agentType AgentType) bool {
+	switch agentType {
+	case AgentTypeClaude, AgentTypeCodex, AgentTypeGrok:
+		return true
+	default:
+		return false
+	}
+}
+
 // ParseAgentSpec parses a single agent specification string.
-// Format: "N", "N:model", or "N:model:effort" where N is count, model is
-// optional alias, and effort is a reasoning-effort hint passed through to
-// the agent template (currently consumed by Codex's
-// `model_reasoning_effort` knob — see ntm#140).
+// Format: "N", "N:model", "N:model:effort", or "N:model@effort" where N is
+// count, model is an optional alias, and effort is a reasoning-effort hint
+// passed through to the agent template (currently consumed by Codex's
+// `model_reasoning_effort` knob — see ntm#140, ntm-mjf7).
 func ParseAgentSpec(value string) (AgentSpec, error) {
-	return parseAgentSpec(value, false)
+	return parseAgentSpec(value, false, true)
 }
 
 // parseAgentSpec parses a spec string, optionally relaxing the model charset for
 // the Antigravity (agy) provider whose display model names contain spaces and
 // parentheses (e.g. "Gemini 3.1 Pro (High)"). See agyModelPattern for why the
-// widened charset is injection-safe.
-func parseAgentSpec(value string, relaxedModel bool) (AgentSpec, error) {
+// widened charset is injection-safe. effortAtSuffix enables the `model@effort`
+// shorthand; callers that know the agent type pass it per
+// agentTypeSupportsEffortSuffix.
+func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (AgentSpec, error) {
 	var spec AgentSpec
 
 	modelRe := modelPattern
@@ -151,7 +167,7 @@ func parseAgentSpec(value string, relaxedModel bool) (AgentSpec, error) {
 		// `model@effort` is shorthand for `model:effort` (ntm-mjf7): the
 		// suffix after the last '@' is the reasoning-effort hint. Combining
 		// both forms (`N:model@effort:effort`) is ambiguous and rejected.
-		if at := strings.LastIndex(model, "@"); at >= 0 {
+		if at := strings.LastIndex(model, "@"); effortAtSuffix && at >= 0 {
 			effort := strings.TrimSpace(model[at+1:])
 			model = strings.TrimSpace(model[:at])
 			if model == "" {
@@ -354,8 +370,10 @@ func (v *agentSpecsValue) String() string {
 
 func (v *agentSpecsValue) Set(value string) error {
 	// agy carries a display model name with spaces/parentheses (e.g.
-	// "Gemini 3.1 Pro (High)"), so it uses the relaxed model charset.
-	spec, err := parseAgentSpec(value, v.agentType == AgentTypeAntigravity)
+	// "Gemini 3.1 Pro (High)"), so it uses the relaxed model charset. The
+	// model@effort shorthand only applies to types with an effort knob so
+	// '@' stays literal in other providers' model names.
+	spec, err := parseAgentSpec(value, v.agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(v.agentType))
 	if err != nil {
 		return err
 	}

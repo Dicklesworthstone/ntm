@@ -2035,21 +2035,26 @@ func codexComposerHoldsPayload(capture, message string) bool {
 			break
 		}
 	}
-	for _, line := range strings.Split(capture, "\n") {
+	// Only the BOTTOM-MOST "›" line is the live composer. Codex also echoes
+	// submitted user messages into the transcript with a "›" prefix, so any
+	// earlier match is history — treating it as composer content would make a
+	// successfully submitted prompt look permanently stuck and fail the
+	// delivery falsely.
+	lines := strings.Split(capture, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
 		marker := strings.Index(line, "›")
 		if marker < 0 {
 			continue
 		}
 		composerText := strings.TrimSpace(line[marker+len("›"):])
 		if composerText == "" {
-			continue
+			return false
 		}
 		if strings.Contains(composerText, "[Pasted") {
 			return true
 		}
-		if snippet != "" && strings.Contains(line, snippet) {
-			return true
-		}
+		return snippet != "" && strings.Contains(line, snippet)
 	}
 	return false
 }
