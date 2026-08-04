@@ -3974,7 +3974,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotRestartPaneModel, "restart-model", "", "Relaunch with a model override using the spawn variant grammar (model or model@effort). Use with --robot-restart-pane. Example: --restart-model=gpt-5.6-terra@high")
 	rootCmd.Flags().StringVar(&robotRestartPaneArgs, "restart-agent-args", "", "Raw arguments appended to the relaunch command (last-flag-wins). Use with --robot-restart-pane")
 	rootCmd.Flags().StringVar(&robotProbe, "robot-probe", "", "Probe pane responsiveness. Required: SESSION. Example: ntm --robot-probe=proj --panes=1,2")
-	rootCmd.Flags().StringVar(&robotProbeMethod, "probe-method", "", "Probe method: keystroke_echo, interrupt_test (used with --robot-probe)")
+	rootCmd.Flags().StringVar(&robotProbeMethod, "probe-method", "", "Probe method: keystroke_echo, interrupt_test, wake_ping (rate-limit liveness: responsiveness + still_rate_limited + tail sample; agent panes only). Used with --robot-probe")
 	rootCmd.Flags().IntVar(&robotProbeTimeout, "probe-timeout", 0, "Probe timeout in ms (100-60000, used with --robot-probe)")
 	rootCmd.Flags().BoolVar(&robotProbeAggressive, "probe-aggressive", false, "Fallback to interrupt_test if keystroke_echo fails (used with --robot-probe)")
 

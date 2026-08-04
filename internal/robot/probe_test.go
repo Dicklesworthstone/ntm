@@ -1768,3 +1768,67 @@ func (m *MockTmuxClientSequence) CaptureForStatusDetection(target string) (strin
 	}
 	return "", nil
 }
+
+// Wake-ping probe (ntm-7rgt): one structured call answers TUI liveness AND
+// whether the rate-limit wall is still up, with a tail sample — replacing the
+// raw `tmux send-keys "ping" Enter; sleep 5; --robot-tail` folklore.
+func TestProbeWakePing(t *testing.T) {
+	t.Run("rate-limited pane reports still limited", func(t *testing.T) {
+		mock := setupMock(t)
+		mock.Panes = []tmux.Pane{{ID: "%5", Index: 2, Type: tmux.AgentClaude, Title: "proj__cc_1"}}
+		mock.CaptureOutput = "some output\nrate limit reached, resets at 4pm\n"
+
+		out, err := GetProbe(ProbeOptions{
+			Session: "proj", Pane: 2,
+			Flags: ProbeFlags{Method: ProbeMethodWakePing, TimeoutMs: 50},
+		})
+		if err != nil {
+			t.Fatalf("GetProbe: %v", err)
+		}
+		if !out.Success {
+			t.Fatalf("wake_ping failed: %s", out.Error)
+		}
+		if out.ProbeDetails.StillRateLimited == nil || !*out.ProbeDetails.StillRateLimited {
+			t.Fatalf("still_rate_limited = %v, want true", out.ProbeDetails.StillRateLimited)
+		}
+		if len(out.ProbeDetails.TailSample) == 0 {
+			t.Error("tail_sample missing")
+		}
+	})
+
+	t.Run("clear pane reports wall down", func(t *testing.T) {
+		mock := setupMock(t)
+		mock.Panes = []tmux.Pane{{ID: "%5", Index: 2, Type: tmux.AgentCodex, Title: "proj__cod_1"}}
+		mock.CaptureOutput = "› \n100% context left\n"
+
+		out, err := GetProbe(ProbeOptions{
+			Session: "proj", Pane: 2,
+			Flags: ProbeFlags{Method: ProbeMethodWakePing, TimeoutMs: 50},
+		})
+		if err != nil {
+			t.Fatalf("GetProbe: %v", err)
+		}
+		if out.ProbeDetails.StillRateLimited == nil || *out.ProbeDetails.StillRateLimited {
+			t.Fatalf("still_rate_limited = %v, want false", out.ProbeDetails.StillRateLimited)
+		}
+	})
+
+	t.Run("user pane refused", func(t *testing.T) {
+		mock := setupMock(t)
+		mock.Panes = []tmux.Pane{{ID: "%1", Index: 0, Type: tmux.AgentUser, Title: "proj"}}
+
+		out, err := GetProbe(ProbeOptions{
+			Session: "proj", Pane: 0,
+			Flags: ProbeFlags{Method: ProbeMethodWakePing, TimeoutMs: 50},
+		})
+		if err != nil {
+			t.Fatalf("GetProbe: %v", err)
+		}
+		if out.Success {
+			t.Fatal("wake_ping against a user pane must be refused")
+		}
+		if out.ErrorCode != ErrCodeInvalidFlag {
+			t.Fatalf("error code = %s, want %s", out.ErrorCode, ErrCodeInvalidFlag)
+		}
+	})
+}

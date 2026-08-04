@@ -5,9 +5,11 @@ package robot
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -77,11 +79,19 @@ const (
 
 	// ProbeMethodInterruptTest sends Ctrl-C and checks response (definitive but may interrupt work)
 	ProbeMethodInterruptTest ProbeMethod = "interrupt_test"
+
+	// ProbeMethodWakePing is the structured replacement for the raw-tmux
+	// rate-limit probe folklore (`tmux send-keys "ping" Enter; sleep 5;
+	// --robot-tail` — ntm-7rgt): keystroke-echo responsiveness mechanics
+	// (space+backspace, no junk prompt submitted) plus rate-limit
+	// classification of the post-probe screen and a short tail sample, so
+	// one call answers both "is the TUI alive" and "is the wall still up".
+	ProbeMethodWakePing ProbeMethod = "wake_ping"
 )
 
 // ValidProbeMethods returns the list of valid probe methods
 func ValidProbeMethods() []ProbeMethod {
-	return []ProbeMethod{ProbeMethodKeystrokeEcho, ProbeMethodInterruptTest}
+	return []ProbeMethod{ProbeMethodKeystrokeEcho, ProbeMethodInterruptTest, ProbeMethodWakePing}
 }
 
 // IsValidProbeMethod checks if a method string is valid
@@ -141,6 +151,12 @@ type ProbeDetails struct {
 	OutputChanged    bool   `json:"output_changed"`     // Whether output changed
 	LatencyMs        int64  `json:"latency_ms"`         // Time between probe and response
 	OutputDeltaLines int    `json:"output_delta_lines"` // How many lines changed
+
+	// Wake-ping extras (ProbeMethodWakePing only): whether the post-probe
+	// screen still shows rate-limit patterns, and the last few visible
+	// lines so orchestrators skip the follow-up --robot-tail round.
+	StillRateLimited *bool    `json:"still_rate_limited,omitempty"`
+	TailSample       []string `json:"tail_sample,omitempty"`
 }
 
 // ProbeOutput is the response for --robot-probe
@@ -339,6 +355,38 @@ const probePollInterval = 50 * time.Millisecond
 // probeKeystrokeEcho sends a non-disruptive keystroke and checks for response.
 // It sends a space followed by backspace which should echo in most shells
 // without changing state. Returns whether the pane responded within timeout.
+// probeWakePing runs the keystroke-echo responsiveness mechanics, then
+// classifies the post-probe screen for rate-limit patterns and attaches a
+// short tail sample (ntm-7rgt). Responsive means the TUI is alive;
+// still_rate_limited answers whether the wall is up — the two are
+// independent facts and are reported separately.
+func probeWakePing(target string, agentType string, timeout time.Duration) ProbeResult {
+	result := probeKeystrokeEcho(target, timeout)
+	result.Details.InputSent = "Space+Backspace (wake-ping)"
+
+	capture, err := CurrentTmuxClient.CapturePaneOutput(target, 15)
+	if err != nil {
+		result.Reasoning = strings.TrimSpace(result.Reasoning + "; post-probe capture failed: " + err.Error())
+		return result
+	}
+	clean := status.StripANSI(capture)
+	limited := isRateLimitPatternMatch(DefaultLibrary.Match(clean, agentType))
+	result.Details.StillRateLimited = &limited
+
+	lines := splitLines(clean)
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	result.Details.TailSample = lines
+
+	if limited {
+		result.Reasoning = strings.TrimSpace(result.Reasoning + "; rate-limit patterns still present on screen")
+	} else if result.Responsive {
+		result.Reasoning = strings.TrimSpace(result.Reasoning + "; no rate-limit patterns on screen")
+	}
+	return result
+}
+
 func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 	result := ProbeResult{
 		Responsive: false,
@@ -594,11 +642,23 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 		probeResult = probeKeystrokeEcho(target, timeout)
 	case ProbeMethodInterruptTest:
 		probeResult = probeInterruptTest(target, timeout)
+	case ProbeMethodWakePing:
+		// Wake-ping is an agent-pane surface: probing the operator's shell
+		// answers nothing about rate limits and risks stray input there.
+		if canonical := targetPane.Type.Canonical(); canonical == tmux.AgentUser || !canonical.IsValid() {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("wake_ping targets agent panes; pane %d is %q", opts.Pane, targetPane.Type),
+				ErrCodeInvalidFlag,
+				"Select an agent pane with --panes, or use keystroke_echo for shell panes",
+			)
+			return output, nil
+		}
+		probeResult = probeWakePing(target, string(targetPane.Type), timeout)
 	default:
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("unknown probe method: %s", opts.Flags.Method),
 			ErrCodeInvalidFlag,
-			"Valid methods: keystroke_echo, interrupt_test",
+			"Valid methods: keystroke_echo, interrupt_test, wake_ping",
 		)
 		return output, nil
 	}
