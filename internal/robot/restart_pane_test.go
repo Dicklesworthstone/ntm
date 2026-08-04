@@ -1619,3 +1619,105 @@ func TestGetAgentCommandsRendersPinnedAgyModel(t *testing.T) {
 		t.Fatalf("agy command %q lacks the pinned model %q", agy, config.AntigravityRequiredModel)
 	}
 }
+
+// Tests for the restart relaunch override (ntm-yusj).
+func TestRestartAgentLaunchCommandWithOverride(t *testing.T) {
+	legacyCodex := `codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-sol -c model_reasoning_effort=ultra`
+	templateCodex := `codex -m {{.Model}} -c model_reasoning_effort={{.ReasoningEffort}}`
+
+	cases := []struct {
+		name      string
+		agentType string
+		codexCmd  string
+		claudeCmd string
+		override  restartLaunchOverride
+		want      []string // substrings expected in the composed command
+		wantErr   string
+	}{
+		{
+			name:      "legacy codex config gets appended last-flag-wins override",
+			agentType: "codex",
+			codexCmd:  legacyCodex,
+			override:  restartLaunchOverride{Model: "gpt-5.6-terra", Effort: "high"},
+			want:      []string{"-m gpt-5.6-sol", "-m 'gpt-5.6-terra'", "model_reasoning_effort='high'"},
+		},
+		{
+			name:      "template codex config renders override directly",
+			agentType: "codex",
+			codexCmd:  templateCodex,
+			override:  restartLaunchOverride{Model: "gpt-5.6-terra", Effort: "high"},
+			want:      []string{"-m gpt-5.6-terra", "model_reasoning_effort=high"},
+		},
+		{
+			name:      "claude legacy config appends --model/--effort",
+			agentType: "claude",
+			claudeCmd: "claude --dangerously-skip-permissions",
+			override:  restartLaunchOverride{Model: "opus-x", Effort: "max"},
+			want:      []string{"claude --dangerously-skip-permissions", "--model 'opus-x'", "--effort 'max'"},
+		},
+		{
+			name:      "raw args appended last",
+			agentType: "codex",
+			codexCmd:  legacyCodex,
+			override:  restartLaunchOverride{Args: "--search"},
+			want:      []string{legacyCodex + " --search"},
+		},
+		{
+			name:      "unsupported type rejects model override",
+			agentType: "aider",
+			override:  restartLaunchOverride{Model: "whatever"},
+			wantErr:   "does not support a restart model override",
+		},
+		{
+			name:      "gemini rejects effort override",
+			agentType: "gemini",
+			override:  restartLaunchOverride{Model: "gemini-pro", Effort: "high"},
+			wantErr:   "no reasoning-effort flag",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Agents.Codex = tc.codexCmd
+			cfg.Agents.Claude = tc.claudeCmd
+			got, err := restartAgentLaunchCommandWithOverride(cfg, tc.agentType, "", tc.override)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("command %q missing %q", got, want)
+				}
+			}
+			// last-flag-wins: the override model must come after the configured one.
+			if tc.override.Model != "" && strings.Contains(got, "-m gpt-5.6-sol") {
+				if strings.LastIndex(got, tc.override.Model) < strings.Index(got, "gpt-5.6-sol") {
+					t.Errorf("override model does not come after configured model: %q", got)
+				}
+			}
+		})
+	}
+}
+
+func TestParseRestartLaunchOverride(t *testing.T) {
+	if o, err := parseRestartLaunchOverride("gpt-5.6-terra@high", "--search"); err != nil ||
+		o.Model != "gpt-5.6-terra" || o.Effort != "high" || o.Args != "--search" {
+		t.Fatalf("parse = %+v err=%v", o, err)
+	}
+	if _, err := parseRestartLaunchOverride("model@", ""); err == nil {
+		t.Fatal("expected error for empty effort")
+	}
+	if _, err := parseRestartLaunchOverride("@high", ""); err == nil {
+		t.Fatal("expected error for empty model")
+	}
+	if o, err := parseRestartLaunchOverride("", ""); err != nil || !o.empty() {
+		t.Fatalf("empty override parse = %+v err=%v", o, err)
+	}
+}
