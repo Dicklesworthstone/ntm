@@ -98,6 +98,16 @@ type PaneWorkStatus struct {
 	PaneStartedAt      string `json:"pane_started_at,omitempty"`
 	AgentUptimeSeconds int64  `json:"agent_uptime_seconds,omitempty"`
 
+	// Pane process liveness (ntm-0g0b): silent CLI exits back to zsh are
+	// invisible to buffered tails, so orchestrators previously audited
+	// `tmux list-panes -F '#{pane_current_command} #{pane_pid}'` before
+	// every state-changing action. AgentCLIDead is true when an agent-typed
+	// pane's foreground process is a bare shell — anything sent to it lands
+	// in zsh, not an agent.
+	PanePID            int    `json:"pane_pid,omitempty"`
+	PaneCurrentCommand string `json:"pane_current_command,omitempty"`
+	AgentCLIDead       bool   `json:"agent_cli_dead,omitempty"`
+
 	// SemanticProgress is the OPTIONAL, additive ground-truth signal (#199),
 	// present only under --semantic and omitted entirely otherwise. It is
 	// advisory: it never changes IsWorking/IsIdle/Recommendation above.
@@ -555,6 +565,9 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 			}
 		}
 	}
+	result.PanePID = observation.Metadata.PID
+	result.PaneCurrentCommand = observation.Metadata.Command
+	result.AgentCLIDead = observation.Metadata.AgentCLIDead()
 	if observation.LastKnown != nil &&
 		(observation.Current.Freshness != statuspkg.FreshnessFresh || observation.Current.Status.State == statuspkg.StateUnknown) {
 		result.LastKnownState = string(observation.LastKnown.Status.State)

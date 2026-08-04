@@ -3525,6 +3525,9 @@ func newShellDispatchServiceWithGate(
 		Protocols: shellDispatchProtocolPlanner{},
 		Deliverer: dispatchsvc.DelivererFunc(func(ctx context.Context, delivery dispatchsvc.Delivery) error {
 			target := delivery.Target.Pane
+			if err := dispatchsvc.RefuseDeadAgentPane(target); err != nil {
+				return err
+			}
 			if target.ID == "" {
 				target.ID = fmt.Sprintf("%s:%s", session, target.Ref().Physical())
 			}

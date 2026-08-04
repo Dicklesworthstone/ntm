@@ -561,6 +561,36 @@ var agentWrapperCommands = map[string]struct{}{
 	"zsh":     {},
 }
 
+// bareShellCommands are foreground commands that prove no agent CLI is
+// running in the pane: the shell itself is the active process. Deliberately
+// conservative — wrappers (bun/node), unknown binaries, and agent-named
+// commands are all treated as "possibly the agent" so a live pane can never
+// be false-refused (ntm-0g0b).
+var bareShellCommands = map[string]struct{}{
+	"zsh": {}, "bash": {}, "sh": {}, "fish": {}, "dash": {}, "ksh": {}, "tcsh": {},
+}
+
+// AgentCLIDead reports whether an agent-typed pane's CLI has exited back to a
+// bare shell — the pane looks like an agent (title) but its foreground
+// process is the login shell, so anything typed into it lands in zsh, not an
+// agent ("zsh: command not found" is one of the most-documented swarm failure
+// modes). User/unknown panes are never "dead": a shell is their normal state.
+func (p Pane) AgentCLIDead() bool {
+	agentType := p.Type.Canonical()
+	if !agentType.IsValid() || agentType == AgentUser || agentType == AgentUnknown {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(p.Command))
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.IndexAny(base, " \t"); i >= 0 {
+		base = base[:i]
+	}
+	_, isShell := bareShellCommands[base]
+	return isShell
+}
+
 func isAgentWrapperCommand(command string) bool {
 	base := strings.ToLower(strings.TrimSpace(command))
 	if base == "" {

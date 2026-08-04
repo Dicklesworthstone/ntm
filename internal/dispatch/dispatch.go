@@ -302,8 +302,26 @@ func (f DelivererFunc) Deliver(ctx context.Context, delivery Delivery) error {
 // TMUXDeliverer maps the neutral delivery protocol to NTM's tmux primitives.
 type TMUXDeliverer struct{}
 
+// RefuseDeadAgentPane rejects delivery to an agent-typed pane whose CLI has
+// exited back to a bare shell (ntm-0g0b): the keystrokes would land in zsh —
+// possibly EXECUTING message text as shell commands — while the send reported
+// success. User panes are exempt (a shell is their normal state), and the
+// check is conservative (only definite shells refuse), so a live agent can
+// never be false-refused.
+func RefuseDeadAgentPane(pane tmux.Pane) error {
+	if !pane.AgentCLIDead() {
+		return nil
+	}
+	return fmt.Errorf(
+		"PANE_AGENT_DEAD: pane %s is titled %s but its foreground process is %q (agent CLI exited to a bare shell); restart it with --robot-restart-pane, or target the user pane for deliberate shell input",
+		pane.Ref().Physical(), pane.Title, pane.Command)
+}
+
 func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if err := RefuseDeadAgentPane(delivery.Target.Pane); err != nil {
 		return err
 	}
 	target := delivery.Target.Ref.ID
