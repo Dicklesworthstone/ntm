@@ -578,6 +578,114 @@ func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.Ag
 	return nil
 }
 
+// spawnAgentCommandTemplate resolves the launch command template and any env
+// vars for one agent type. Shared by the launch loop and the preflight
+// validation pass so both see identical template selection.
+func spawnAgentCommandTemplate(agentType AgentType, pluginMap map[string]plugins.AgentPlugin, ollamaHost string) (string, map[string]string, error) {
+	switch agentType {
+	case AgentTypeClaude:
+		return cfg.Agents.Claude, nil, nil
+	case AgentTypeCodex:
+		return cfg.Agents.Codex, nil, nil
+	case AgentTypeGemini:
+		return cfg.Agents.Gemini, nil, nil
+	case AgentTypeAntigravity:
+		tmpl := cfg.Agents.Antigravity
+		if tmpl == "" {
+			// Default when [agents] antigravity isn't configured (e.g. a
+			// config.toml that predates this provider). The model is pinned by
+			// ResolveModel; --dangerously-skip-permissions is agy's autonomous
+			// flag, which the dcg agy guard (F5) backstops. {{agyBinary}} resolves
+			// agy-locked (when on PATH) over the frequently-aliased `agy`.
+			tmpl = config.DefaultAgentTemplates().Antigravity
+		}
+		return tmpl, nil, nil
+	case AgentTypeGrok:
+		tmpl := cfg.Agents.Grok
+		if tmpl == "" {
+			tmpl = config.DefaultAgentTemplates().Grok
+		}
+		return tmpl, nil, nil
+	case AgentTypeOllama:
+		var envVars map[string]string
+		if ollamaHost != "" {
+			envVars = map[string]string{"OLLAMA_HOST": ollamaHost}
+		}
+		return cfg.Agents.Ollama, envVars, nil
+	case AgentTypeCursor:
+		return cfg.Agents.Cursor, nil, nil
+	case AgentTypeWindsurf:
+		return cfg.Agents.Windsurf, nil, nil
+	case AgentTypeAider:
+		return cfg.Agents.Aider, nil, nil
+	case AgentTypeOpencode:
+		// Falls back to the model-aware default when [agents] oc is unset,
+		// so `--oc=N:provider/model` works and Agent Mail registration
+		// receives a non-empty model. Users can override via
+		// `[agents] oc = "..."` to point at a wrapper script or pin a
+		// specific provider/model. See ntm#193.
+		return opencodeCommandOrDefault(cfg.Agents.Opencode), nil, nil
+	default:
+		if p, ok := pluginMap[string(agentType)]; ok {
+			return p.Command, p.Env, nil
+		}
+		return "", nil, fmt.Errorf("unknown agent type %q", agentType)
+	}
+}
+
+// validateSpawnAgentCommands is the preflight counterpart to the launch loop's
+// per-agent config.GenerateAgentCommand call. It renders every agent's command
+// before any mutation (worktrees, session, panes) so a config/spec conflict —
+// e.g. an explicit `--cod=N:model` variant against an [agents] command that
+// hardcodes -m with no {{.Model}} reference — aborts the spawn while there is
+// still nothing to clean up, instead of stranding a half-launched session
+// (ntm-akaq). Persona system-prompt files are not prepared yet at this stage,
+// so SystemPromptFile is left empty; templates only reference it inside
+// {{if}} guards, which renders identically for validation purposes.
+func validateSpawnAgentCommands(opts SpawnOptions, ollamaHost string) error {
+	for _, agent := range opts.Agents {
+		tmpl, _, err := spawnAgentCommandTemplate(agent.Type, opts.PluginMap, ollamaHost)
+		if err != nil {
+			return err
+		}
+
+		resolvedModel := resolveAgentModel(agent.Type, agent.Model, opts.PluginMap)
+		modelRequested := strings.TrimSpace(agent.Model) != ""
+		reasoningEffort := agent.ReasoningEffort
+		if agent.Persona == nil && opts.PersonaMap != nil {
+			if p, ok := opts.PersonaMap[agent.Model]; ok {
+				modelRequested = strings.TrimSpace(p.Model) != ""
+				resolvedModel = resolveAgentModel(agent.Type, p.Model, opts.PluginMap)
+				if strings.TrimSpace(p.ReasoningEffort) != "" {
+					reasoningEffort = p.ReasoningEffort
+				}
+			}
+		}
+		if agent.Persona != nil {
+			if strings.TrimSpace(agent.Persona.Model) != "" {
+				modelRequested = true
+				resolvedModel = resolveAgentModel(agent.Type, agent.Persona.Model, opts.PluginMap)
+			}
+			if strings.TrimSpace(agent.Persona.ReasoningEffort) != "" {
+				reasoningEffort = agent.Persona.ReasoningEffort
+			}
+		}
+
+		if _, err := config.GenerateAgentCommand(tmpl, config.AgentTemplateVars{
+			Model:           resolvedModel,
+			ModelAlias:      agent.Model,
+			ModelRequested:  modelRequested,
+			SessionName:     opts.Session,
+			PaneIndex:       agent.Index,
+			AgentType:       string(agent.Type),
+			ReasoningEffort: reasoningEffort,
+		}); err != nil {
+			return fmt.Errorf("agent command preflight for %s agent %d: %w", agent.Type, agent.Index, err)
+		}
+	}
+	return nil
+}
+
 // validateGrokPhaseOneSpawn keeps the first-class Grok Build integration on
 // the behavior that has deterministic, fake-binary-testable semantics. Launch,
 // model selection, counting, and exact process discovery are supported in
@@ -1993,6 +2101,14 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		}
 	}
 
+	// Preflight every agent's launch command before creating worktrees,
+	// sessions, or panes. A model/effort spec that the configured [agents]
+	// command would silently drop must abort here, with nothing to clean up
+	// (ntm-akaq).
+	if err := validateSpawnAgentCommands(opts, ollamaHost); err != nil {
+		return outputError(err)
+	}
+
 	// Safety check: fail if session already exists (when --safety is enabled)
 	if opts.Safety {
 		exists, err := tmux.SessionExistsContext(ctx, opts.Session)
@@ -2543,57 +2659,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		lifecycleAffectedPaneIDs = append(lifecycleAffectedPaneIDs, pane.ID)
 
 		// Get agent command template based on type
-		var agentCmdTemplate string
-		var envVars map[string]string
-
-		switch agent.Type {
-		case AgentTypeClaude:
-			agentCmdTemplate = cfg.Agents.Claude
-		case AgentTypeCodex:
-			agentCmdTemplate = cfg.Agents.Codex
-		case AgentTypeGemini:
-			agentCmdTemplate = cfg.Agents.Gemini
-		case AgentTypeAntigravity:
-			agentCmdTemplate = cfg.Agents.Antigravity
-			if agentCmdTemplate == "" {
-				// Default when [agents] antigravity isn't configured (e.g. a
-				// config.toml that predates this provider). The model is pinned by
-				// ResolveModel; --dangerously-skip-permissions is agy's autonomous
-				// flag, which the dcg agy guard (F5) backstops. {{agyBinary}} resolves
-				// agy-locked (when on PATH) over the frequently-aliased `agy`.
-				agentCmdTemplate = config.DefaultAgentTemplates().Antigravity
-			}
-		case AgentTypeGrok:
-			agentCmdTemplate = cfg.Agents.Grok
-			if agentCmdTemplate == "" {
-				agentCmdTemplate = config.DefaultAgentTemplates().Grok
-			}
-		case AgentTypeOllama:
-			agentCmdTemplate = cfg.Agents.Ollama
-			if ollamaHost != "" {
-				envVars = map[string]string{"OLLAMA_HOST": ollamaHost}
-			}
-		case AgentTypeCursor:
-			agentCmdTemplate = cfg.Agents.Cursor
-		case AgentTypeWindsurf:
-			agentCmdTemplate = cfg.Agents.Windsurf
-		case AgentTypeAider:
-			agentCmdTemplate = cfg.Agents.Aider
-		case AgentTypeOpencode:
-			// Falls back to the model-aware default when [agents] oc is unset,
-			// so `--oc=N:provider/model` works and Agent Mail registration
-			// receives a non-empty model. Users can override via
-			// `[agents] oc = "..."` to point at a wrapper script or pin a
-			// specific provider/model. See ntm#193.
-			agentCmdTemplate = opencodeCommandOrDefault(cfg.Agents.Opencode)
-		default:
-			// Check plugins
-			if p, ok := opts.PluginMap[string(agent.Type)]; ok {
-				agentCmdTemplate = p.Command
-				envVars = p.Env
-			} else {
-				return outputError(fmt.Errorf("unknown agent type %q", agent.Type))
-			}
+		agentCmdTemplate, envVars, err := spawnAgentCommandTemplate(agent.Type, opts.PluginMap, ollamaHost)
+		if err != nil {
+			return outputError(err)
 		}
 
 		// Configure Claude hooks for DCG and RCH integrations
