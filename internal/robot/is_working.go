@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -88,6 +89,14 @@ type PaneWorkStatus struct {
 	LastKnownState        string         `json:"last_known_state,omitempty"`
 	LastKnownObservedAt   string         `json:"last_known_observed_at,omitempty"`
 	SafeToDispatch        bool           `json:"safe_to_dispatch"`
+
+	// PaneStartedAt / AgentUptimeSeconds expose the pane's creation time
+	// (tmux #{pane_start_time}) so age-based replacement policies (context
+	// saturation, OC-011's "older than N days") work from robot output
+	// instead of raw tmux format strings (ntm-qvpm). Absent when tmux did
+	// not report a start time.
+	PaneStartedAt      string `json:"pane_started_at,omitempty"`
+	AgentUptimeSeconds int64  `json:"agent_uptime_seconds,omitempty"`
 
 	// SemanticProgress is the OPTIONAL, additive ground-truth signal (#199),
 	// present only under --semantic and omitted entirely otherwise. It is
@@ -532,6 +541,19 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 		ObservationObservedAt: FormatTimestamp(observation.Current.ObservedAt),
 		ObservationError:      observation.Current.Error,
 		SafeToDispatch:        observation.SafeToDispatch(),
+	}
+	// Pane age comes from the shell PID's process start time: tmux has no
+	// per-pane creation-time format variable, and the shell PID is replaced
+	// on respawn — exactly the "current incarnation" semantics age-based
+	// replacement policies need (ntm-qvpm). Best-effort: a vanished PID
+	// simply omits the fields.
+	if pid := observation.Metadata.PID; pid > 0 {
+		if startedAt, err := process.StartTime(pid); err == nil {
+			result.PaneStartedAt = FormatTimestamp(startedAt)
+			if uptime := int64(time.Since(startedAt).Seconds()); uptime > 0 {
+				result.AgentUptimeSeconds = uptime
+			}
+		}
 	}
 	if observation.LastKnown != nil &&
 		(observation.Current.Freshness != statuspkg.FreshnessFresh || observation.Current.Status.State == statuspkg.StateUnknown) {

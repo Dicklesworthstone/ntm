@@ -2169,6 +2169,22 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 		return true, false, nil
 	}
 
+	// Confirm the stranded state on a second capture before rescuing: unlike
+	// codex's benign extra Enter, Escape against a Claude pane that started
+	// working in the gap since the first capture would interrupt the running
+	// turn. Two consecutive stranded observations shrink that race window to
+	// effectively zero.
+	if err := waitForSendDelay(ctx, 300*time.Millisecond); err != nil {
+		return false, false, err
+	}
+	capture, err = c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("re-capture claude pane before rescue: %w", err)
+	}
+	if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+
 	// Dismiss a possible picker, then finish the submission. A single Escape
 	// is deliberate: double-Escape opens Claude Code's message-history jump.
 	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Escape"); err != nil {
@@ -2586,9 +2602,9 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			continue
 		}
 
-		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9)
+		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), pane_start_time(10, optional)
 		// parts[:7] = id..active
-		// parts[8:] = pid, window_index
+		// parts[8:] = pid, window_index[, pane_start_time]
 		p, err := parsePaneFromParts(parts[:7], parts[8:])
 		if err != nil {
 			continue

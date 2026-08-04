@@ -78,17 +78,22 @@ type PaneResponse struct {
 	// persona's role prompt. Lets orchestrators verify *which* prompt source landed
 	// on each pane after a --profile-set launch, not just the persona's display
 	// name. Empty when no persona is attached. (ntm#159)
-	PersonaPromptSource string  `json:"persona_prompt_source,omitempty"`
-	Active              bool    `json:"active,omitempty"`
-	Width               int     `json:"width,omitempty"`
-	Height              int     `json:"height,omitempty"`
-	Command             string  `json:"command,omitempty"`
-	Status              string  `json:"status,omitempty"`          // idle, working, error
-	PromptDelayMs       int64   `json:"prompt_delay_ms,omitempty"` // Stagger delay in milliseconds
-	ContextTokens       int     `json:"context_tokens,omitempty"`
-	ContextLimit        int     `json:"context_limit,omitempty"`
-	ContextPercent      float64 `json:"context_percent,omitempty"`
-	ContextModel        string  `json:"context_model,omitempty"`
+	PersonaPromptSource string `json:"persona_prompt_source,omitempty"`
+	Active              bool   `json:"active,omitempty"`
+	Width               int    `json:"width,omitempty"`
+	Height              int    `json:"height,omitempty"`
+	Command             string `json:"command,omitempty"`
+	// PaneStartedAt is the pane's creation time (RFC3339), sourced from the
+	// pane shell PID's process start time, so age-based replacement policies
+	// work from robot output instead of raw tmux plumbing (ntm-qvpm). Empty
+	// when unknown.
+	PaneStartedAt  string  `json:"pane_started_at,omitempty"`
+	Status         string  `json:"status,omitempty"`          // idle, working, error
+	PromptDelayMs  int64   `json:"prompt_delay_ms,omitempty"` // Stagger delay in milliseconds
+	ContextTokens  int     `json:"context_tokens,omitempty"`
+	ContextLimit   int     `json:"context_limit,omitempty"`
+	ContextPercent float64 `json:"context_percent,omitempty"`
+	ContextModel   string  `json:"context_model,omitempty"`
 }
 
 // AgentCountsResponse is the standard format for agent counts.

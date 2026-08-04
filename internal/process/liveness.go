@@ -8,7 +8,33 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	gopsutil "github.com/shirou/gopsutil/v4/process"
 )
+
+// StartTime returns the process's start time. Used as the pane-age source
+// (tmux has no per-pane creation-time format variable): a pane's shell PID is
+// created at pane creation and replaced on respawn, so its process start time
+// is exactly the "how old is this pane's current incarnation" answer
+// age-based replacement policies need (ntm-qvpm).
+func StartTime(pid int) (time.Time, error) {
+	if pid <= 0 {
+		return time.Time{}, fmt.Errorf("invalid pid %d", pid)
+	}
+	proc, err := gopsutil.NewProcess(int32(pid))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("process %d: %w", pid, err)
+	}
+	createMs, err := proc.CreateTime()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("process %d create time: %w", pid, err)
+	}
+	if createMs <= 0 {
+		return time.Time{}, fmt.Errorf("process %d reported non-positive create time", pid)
+	}
+	return time.UnixMilli(createMs).UTC(), nil
+}
 
 // IsAlive checks whether a process with the given PID is still running.
 // It uses /proc on Linux for an efficient, non-racy check and falls back
