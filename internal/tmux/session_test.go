@@ -2736,3 +2736,29 @@ func TestClaudeComposerHoldsPayload(t *testing.T) {
 		})
 	}
 }
+
+// AgentCLIDead (ntm-0g0b): only a definite bare shell in an agent-typed pane
+// counts as dead — wrappers and unknown binaries must never false-refuse.
+func TestAgentCLIDead(t *testing.T) {
+	cases := []struct {
+		name string
+		pane Pane
+		want bool
+	}{
+		{"claude pane at zsh is dead", Pane{Type: AgentClaude, Command: "zsh"}, true},
+		{"codex pane at bash is dead", Pane{Type: AgentCodex, Command: "/bin/bash"}, true},
+		{"claude pane running claude alive", Pane{Type: AgentClaude, Command: "claude"}, false},
+		{"codex pane under bun wrapper alive", Pane{Type: AgentCodex, Command: "bun"}, false},
+		{"agy pane under unknown binary alive", Pane{Type: AgentAntigravity, Command: "agy-locked"}, false},
+		{"user pane at zsh is not dead", Pane{Type: AgentUser, Command: "zsh"}, false},
+		{"unknown-typed pane at zsh not dead", Pane{Type: AgentType("mystery"), Command: "zsh"}, false},
+		{"empty command not dead", Pane{Type: AgentClaude, Command: ""}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.pane.AgentCLIDead(); got != tc.want {
+				t.Errorf("AgentCLIDead(%+v) = %v, want %v", tc.pane, got, tc.want)
+			}
+		})
+	}
+}

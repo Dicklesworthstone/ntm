@@ -1145,3 +1145,20 @@ func TestTMUXDelivererRejectsInvalidOrUnrepresentableDoubleEnterPlans(t *testing
 		t.Fatalf("custom double-enter timing error = %v", err)
 	}
 }
+
+// Delivery to a dead agent pane must refuse loudly (ntm-0g0b): keystrokes
+// into a bare shell can EXECUTE message text.
+func TestRefuseDeadAgentPane(t *testing.T) {
+	dead := tmux.Pane{Type: tmux.AgentClaude, Title: "proj__cc_1", Command: "zsh"}
+	if err := RefuseDeadAgentPane(dead); err == nil {
+		t.Fatal("dead agent pane accepted for delivery")
+	} else if !strings.Contains(err.Error(), "PANE_AGENT_DEAD") {
+		t.Fatalf("refusal error %q should carry PANE_AGENT_DEAD", err.Error())
+	}
+	if err := RefuseDeadAgentPane(tmux.Pane{Type: tmux.AgentClaude, Command: "claude"}); err != nil {
+		t.Fatalf("live agent pane refused: %v", err)
+	}
+	if err := RefuseDeadAgentPane(tmux.Pane{Type: tmux.AgentUser, Command: "zsh"}); err != nil {
+		t.Fatalf("user pane refused: %v", err)
+	}
+}
