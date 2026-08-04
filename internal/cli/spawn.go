@@ -106,6 +106,9 @@ type spawnTestPacing struct {
 const (
 	spawnPromptReadyTimeout = 30 * time.Second
 	spawnReadyPollInterval  = 200 * time.Millisecond
+	// spawnVerifyBootTimeout bounds the --verify-boot post-launch readiness
+	// gate (ntm-mr4k): OC-038's manual validator used a 30s budget.
+	spawnVerifyBootTimeout = 30 * time.Second
 )
 
 type spawnSessionObserver interface {
@@ -1116,6 +1119,13 @@ type SpawnOptions struct {
 	// that misspells a session name must fail fast, not hang on [y/N].
 	CreateDir bool
 
+	// VerifyBoot blocks after agent launch until every agent reaches a
+	// ready state (bounded by spawnVerifyBootTimeout), failing the spawn
+	// loudly otherwise (ntm-mr4k). Opt-in: default-on would block every
+	// spawn ~30s for non-interactive fake/plugin agents and duplicate the
+	// robot surface's --spawn-wait contract.
+	VerifyBoot bool
+
 	// Git worktree isolation configuration
 	UseWorktrees bool // Enable git worktree isolation for agents
 	// WorktreeName, when set, overrides the auto-derived worktree directory
@@ -1464,6 +1474,7 @@ func newSpawnCmd() *cobra.Command {
 	// Git worktree isolation flag
 	var useWorktrees bool
 	var createDir bool
+	var verifyBoot bool
 	var worktreeName string
 
 	// Privacy mode flag (bd-2u3tv)
@@ -1852,6 +1863,7 @@ Examples:
 				UseWorktrees:            useWorktrees,
 				WorktreeName:            worktreeName,
 				CreateDir:               createDir,
+				VerifyBoot:              verifyBoot,
 				PrivacyMode:             privacyMode,
 				AllowPersist:            allowPersist,
 				MarchingOrders:          marchingOrders,
@@ -1938,6 +1950,7 @@ Examples:
 	// Git worktree isolation flag
 	cmd.Flags().BoolVar(&useWorktrees, "worktrees", false, "Enable git worktree isolation for agents (each agent gets isolated working directory)")
 	cmd.Flags().BoolVar(&createDir, "create-dir", false, "Create the project directory if it does not exist (non-TTY spawns error instead of prompting)")
+	cmd.Flags().BoolVar(&verifyBoot, "verify-boot", false, "After launching, wait up to 30s for every agent to reach a working prompt; exit non-zero naming what failed to boot")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Override the auto-derived worktree directory name (single-agent spawns only). Use this when external orchestrators spawn the same agent slot across multiple --label values — without it, the `cc_1` / `cod_1` paths collide. See ntm#145.")
 
 	// Privacy mode flags (bd-2u3tv)
@@ -3297,6 +3310,30 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			Variant:   agent.model,
 			PaneIndex: agent.paneIndex,
 		})
+	}
+
+	// --verify-boot: block until every launched agent reaches a ready state
+	// or fail loudly naming what did not boot (ntm-mr4k / OC-038). A wrong
+	// model default can brick every pane while spawn exits 0; verification
+	// turns that 10-minute diagnosis into an immediate structured error.
+	if opts.VerifyBoot && len(opts.Agents) > 0 {
+		if !IsJSONOutput() {
+			steps.Start(fmt.Sprintf("Verifying %d agent(s) reached a working prompt", len(opts.Agents)))
+		}
+		readyCount, bootErr := waitForAgentsReadyWithObserver(
+			ctx, opts.Session, spawnVerifyBootTimeout, spawnReadyPollInterval, spawnObserver,
+		)
+		if bootErr != nil {
+			if !IsJSONOutput() {
+				steps.Fail()
+			}
+			return outputError(fmt.Errorf(
+				"spawn --verify-boot: %d/%d agent(s) ready within %s: %w; the session and panes still exist — inspect with --robot-tail",
+				readyCount, len(opts.Agents), spawnVerifyBootTimeout, bootErr))
+		}
+		if !IsJSONOutput() {
+			steps.Done()
+		}
 	}
 
 	// JSON output mode
