@@ -6414,7 +6414,13 @@ func TestGetTailContentContract(t *testing.T) {
 	defer tmux.KillSession(sessionName)
 
 	marker := "TAIL_CONTRACT_MARKER_ajeb"
-	if err := tmux.SendKeys(sessionName+":0.0", "echo "+marker, true); err != nil {
+	// Address the pane by its tmux ID: hardcoding ":0.0" breaks on hosts
+	// with base-index 1.
+	sessionPanes, err := tmux.GetPanes(sessionName)
+	if err != nil || len(sessionPanes) == 0 {
+		t.Fatalf("get panes: %v (count %d)", err, len(sessionPanes))
+	}
+	if err := tmux.SendKeys(sessionPanes[0].ID, "echo "+marker, true); err != nil {
 		t.Fatalf("send marker: %v", err)
 	}
 	time.Sleep(700 * time.Millisecond)
