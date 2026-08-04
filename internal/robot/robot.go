@@ -4160,6 +4160,87 @@ func capturePaneFallback(pane tmux.Pane, lines int) (string, error) {
 
 // PrintTail outputs recent pane output for AI consumption.
 // This is a thin wrapper around GetTail() for CLI output.
+// PaneAddressEntry is one pane's complete addressing card (ntm-cac6): the
+// canonical selector send/tail accept, the stable tmux %pane_id (immune to
+// base-index settings and renumbering), the physical topology address, and a
+// ready-to-paste tmux target for the rare raw-tmux fallback — replacing the
+// documented `WIN=$(tmux list-windows ...)` discovery folklore.
+type PaneAddressEntry struct {
+	Selector    string `json:"selector"`
+	PaneID      string `json:"pane_id"`
+	WindowIndex int    `json:"window_index"`
+	PaneIndex   int    `json:"pane_index"`
+	NTMIndex    int    `json:"ntm_index,omitempty"`
+	Title       string `json:"title"`
+	Type        string `json:"type"`
+	TmuxTarget  string `json:"tmux_target"`
+}
+
+// PaneAddressOutput is the --robot-pane-address response.
+type PaneAddressOutput struct {
+	RobotResponse
+	Session     string             `json:"session"`
+	MultiWindow bool               `json:"multi_window"`
+	Panes       []PaneAddressEntry `json:"panes"`
+}
+
+// GetPaneAddresses returns every pane's addressing card for a session.
+func GetPaneAddresses(session string) (*PaneAddressOutput, error) {
+	session = resolveSessionName(session)
+	output := &PaneAddressOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       session,
+		Panes:         []PaneAddressEntry{},
+	}
+	if !tmux.SessionExists(session) {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
+		return output, nil
+	}
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get panes: %w", err),
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
+		return output, nil
+	}
+	ordered := tmux.SortPanesByTopology(panes)
+	multiWindow := tmux.PanesSpanMultipleWindows(ordered)
+	output.MultiWindow = multiWindow
+	for _, pane := range ordered {
+		ref := pane.Ref()
+		target := ref.ID
+		if target == "" {
+			target = fmt.Sprintf("%s:%s", session, ref.Physical())
+		}
+		output.Panes = append(output.Panes, PaneAddressEntry{
+			Selector:    ref.Canonical(multiWindow),
+			PaneID:      ref.ID,
+			WindowIndex: ref.WindowIndex,
+			PaneIndex:   ref.PaneIndex,
+			NTMIndex:    ref.NTMIndex,
+			Title:       pane.Title,
+			Type:        paneAgentType(pane),
+			TmuxTarget:  target,
+		})
+	}
+	return output, nil
+}
+
+// PrintPaneAddresses outputs the pane addressing cards for CLI consumption.
+func PrintPaneAddresses(session string) error {
+	output, err := GetPaneAddresses(session)
+	if err != nil {
+		return err
+	}
+	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot pane-address failed")
+}
+
 func PrintTail(opts TailOptions) error {
 	output, err := GetTail(opts)
 	if err != nil {

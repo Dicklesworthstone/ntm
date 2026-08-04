@@ -751,6 +751,18 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "pane-address",
+			Flag:        "--robot-pane-address",
+			Category:    "state",
+			Description: "Per-pane addressing cards: the canonical selector send/tail accept, the stable tmux %pane_id (immune to base-index and renumbering), physical topology, and a ready-to-paste tmux target.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-pane-address", Type: "string", Required: true, Description: "Session name"},
+			},
+			Examples: []string{
+				"ntm --robot-pane-address=myproject",
+			},
+		},
+		{
 			Name:        "probe",
 			Flag:        "--robot-probe",
 			Category:    "state",

@@ -6483,3 +6483,49 @@ func TestGetTailContentContract(t *testing.T) {
 		t.Errorf("selector error should name available panes, got: %s", missing.Error)
 	}
 }
+
+// --robot-pane-address (ntm-cac6): every entry must carry a stable %pane_id
+// and a canonical selector the shared send resolver accepts, killing the
+// window-index discovery folklore.
+func TestGetPaneAddresses(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := "ntm_test_paneaddr_" + time.Now().Format("150405")
+	if err := tmux.CreateSession(sessionName, ""); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer tmux.KillSession(sessionName)
+
+	out, err := GetPaneAddresses(sessionName)
+	if err != nil || !out.Success {
+		t.Fatalf("GetPaneAddresses err=%v success=%v", err, out != nil && out.Success)
+	}
+	if len(out.Panes) == 0 {
+		t.Fatal("no pane addressing cards returned")
+	}
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("GetPanes: %v", err)
+	}
+	for _, entry := range out.Panes {
+		if !strings.HasPrefix(entry.PaneID, "%") {
+			t.Errorf("pane_id %q is not a stable %%N identity", entry.PaneID)
+		}
+		if entry.TmuxTarget != entry.PaneID {
+			t.Errorf("tmux_target %q should be the stable pane id when available", entry.TmuxTarget)
+		}
+		resolved, err := tmux.ResolvePaneSelectors(panes, []string{entry.Selector}, true)
+		if err != nil || len(resolved) != 1 {
+			t.Errorf("selector %q rejected by the send resolver: %v", entry.Selector, err)
+			continue
+		}
+		if resolved[0].ID != entry.PaneID {
+			t.Errorf("selector %q resolved to %s, want %s", entry.Selector, resolved[0].ID, entry.PaneID)
+		}
+	}
+
+	missing, err := GetPaneAddresses("nonexistent-session-cac6")
+	if err != nil || missing.Success {
+		t.Fatalf("nonexistent session: err=%v success=%v, want loud error response", err, missing != nil && missing.Success)
+	}
+}
