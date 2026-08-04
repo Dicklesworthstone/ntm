@@ -524,30 +524,16 @@ func TestGetValue_CASS(t *testing.T) {
 	}
 }
 
-func TestGetValue_Health(t *testing.T) {
+// The dead [health] config block was removed in favor of [resilience] (#223);
+// its paths must now be rejected so users are not misled into setting them.
+func TestGetValue_HealthRemoved(t *testing.T) {
 	t.Parallel()
 	cfg := Default()
 
-	tests := []struct {
-		path string
-	}{
-		{"health"},
-		{"health.enabled"},
-		{"health.check_interval"},
-		{"health.stall_threshold"},
-		{"health.auto_restart"},
-		{"health.max_restarts"},
-		{"health.restart_backoff_base"},
-		{"health.restart_backoff_max"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			t.Parallel()
-			_, err := GetValue(cfg, tt.path)
-			if err != nil {
-				t.Errorf("GetValue(%q) error = %v", tt.path, err)
-			}
-		})
+	for _, path := range []string{"health", "health.enabled", "health.auto_restart"} {
+		if _, err := GetValue(cfg, path); err == nil {
+			t.Errorf("GetValue(%q) = nil error, want unknown-path error after [health] removal", path)
+		}
 	}
 }
 
@@ -1526,7 +1512,9 @@ func TestMergeConfig_OperatorGatedLabelsUnion(t *testing.T) {
 		},
 	}
 	result := MergeConfig(global, project, t.TempDir())
-	want := []string{"gate", "blocked-on-alice"}
+	// Project labels come first, original casing preserved, case-insensitive
+	// dedup ("Gate" vs global "gate"), empties dropped.
+	want := []string{"Gate", "blocked-on-alice"}
 	if len(result.Assign.OperatorGatedLabels) != len(want) {
 		t.Fatalf("OperatorGatedLabels = %v, want %v", result.Assign.OperatorGatedLabels, want)
 	}

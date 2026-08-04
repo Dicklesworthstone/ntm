@@ -1,17 +1,141 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func TestCoordinatorFeatureKeys(t *testing.T) {
+	tests := []struct {
+		name     string
+		feature  string
+		enable   bool
+		interval string
+		want     [][2]string
+		wantErr  string
+	}{
+		{name: "enable auto assign", feature: "auto-assign", enable: true, want: [][2]string{{"auto_assign", "true"}}},
+		{name: "disable auto assign", feature: "auto-assign", want: [][2]string{{"auto_assign", "false"}}},
+		{name: "enable digest", feature: "digest", enable: true, want: [][2]string{{"send_digests", "true"}}},
+		{name: "enable digest interval", feature: "digest", enable: true, interval: "30m", want: [][2]string{{"send_digests", "true"}, {"digest_interval", `"30m"`}}},
+		{name: "disable digest ignores no interval", feature: "digest", want: [][2]string{{"send_digests", "false"}}},
+		{name: "enable conflict notify", feature: "conflict-notify", enable: true, want: [][2]string{{"conflict_notify", "true"}}},
+		{name: "disable conflict negotiate", feature: "conflict-negotiate", want: [][2]string{{"conflict_negotiate", "false"}}},
+		{name: "invalid duration", feature: "digest", enable: true, interval: "later", wantErr: "invalid --interval"},
+		{name: "zero duration", feature: "digest", enable: true, interval: "0s", wantErr: "must be at least"},
+		{name: "negative duration", feature: "digest", enable: true, interval: "-1s", wantErr: "must be at least"},
+		{name: "below runtime minimum", feature: "digest", enable: true, interval: (coordinator.MinDigestInterval - time.Second).String(), wantErr: "must be at least"},
+		{name: "interval on wrong feature", feature: "auto-assign", enable: true, interval: "30m", wantErr: "only valid with the digest"},
+		{name: "unknown feature", feature: "missing", enable: true, wantErr: "unknown feature"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := coordinatorFeatureKeys(tt.feature, tt.enable, tt.interval)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("coordinatorFeatureKeys() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("coordinatorFeatureKeys() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("coordinatorFeatureKeys() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunCoordinatorToggleValidationClassifiesInvalidFlag(t *testing.T) {
+	tests := []struct {
+		name     string
+		feature  string
+		interval string
+	}{
+		{name: "unknown feature", feature: "missing"},
+		{name: "invalid digest interval", feature: "digest", interval: "later"},
+		{name: "interval below runtime minimum", feature: "digest", interval: "1s"},
+		{name: "interval on wrong feature", feature: "auto-assign", interval: "30m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runCoordinatorToggle(nil, []string{tt.feature}, true, tt.interval)
+			if err == nil {
+				t.Fatal("runCoordinatorToggle() unexpectedly succeeded")
+			}
+			if !errors.Is(err, errCLIInvalidInput) {
+				t.Fatalf("runCoordinatorToggle() error = %v, want errCLIInvalidInput", err)
+			}
+			code, _ := classifyRobotExecuteError(err)
+			if code != robot.ErrCodeInvalidFlag {
+				t.Fatalf("classifyRobotExecuteError() code = %q, want %q", code, robot.ErrCodeInvalidFlag)
+			}
+		})
+	}
+}
+
+func TestRunCoordinatorTogglePersistsSelectedConfig(t *testing.T) {
+	previousConfigFile := cfgFile
+	previousJSON := jsonOutput
+	t.Cleanup(func() {
+		cfgFile = previousConfigFile
+		jsonOutput = previousJSON
+	})
+
+	path := filepath.Join(t.TempDir(), "selected.toml")
+	original := "# retained\n[coordinator]\nsend_digests = false # retained comment\nauto_assign = false\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("write selected config: %v", err)
+	}
+	cfgFile = path
+	jsonOutput = true
+	output, err := captureStdout(t, func() error {
+		return runCoordinatorToggle(nil, []string{"digest"}, true, "30m")
+	})
+	if err != nil {
+		t.Fatalf("runCoordinatorToggle: %v", err)
+	}
+	var envelope struct {
+		Feature    string            `json:"feature"`
+		Enabled    bool              `json:"enabled"`
+		Persisted  bool              `json:"persisted"`
+		ConfigPath string            `json:"config_path"`
+		Written    map[string]string `json:"written"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, output)
+	}
+	wantWritten := map[string]string{"send_digests": "true", "digest_interval": `"30m"`}
+	if envelope.Feature != "digest" || !envelope.Enabled || !envelope.Persisted || envelope.ConfigPath != path || !reflect.DeepEqual(envelope.Written, wantWritten) {
+		t.Fatalf("toggle envelope = %+v, want path=%s written=%v", envelope, path, wantWritten)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read selected config: %v", err)
+	}
+	if !strings.Contains(string(data), "# retained") || !strings.Contains(string(data), "send_digests = true # retained comment") {
+		t.Fatalf("selected config was not surgically updated:\n%s", data)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.Coordinator.SendDigests || loaded.Coordinator.DigestInterval != 30*time.Minute || loaded.Coordinator.AutoAssign {
+		t.Fatalf("persisted coordinator config = %+v", loaded.Coordinator)
+	}
+}
 
 func TestCoordinatorRunCommandExposesDeterministicOnceMode(t *testing.T) {
 	cmd := newCoordinatorRunCmd()

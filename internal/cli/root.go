@@ -373,9 +373,35 @@ func isRobotGlobalModifier(command string) bool {
 	}
 }
 
+// errCLIInvalidInput is a sentinel that marks command failures caused by
+// invalid user input (bad flag values, unknown feature names) so robot-mode
+// error envelopes classify them as invalid-flag rather than internal errors.
+var errCLIInvalidInput = errors.New("invalid CLI input")
+
+type cliInvalidInputError struct {
+	err error
+}
+
+func (e *cliInvalidInputError) Error() string { return e.err.Error() }
+func (e *cliInvalidInputError) Unwrap() error { return e.err }
+func (e *cliInvalidInputError) Is(target error) bool {
+	return target == errCLIInvalidInput || errors.Is(e.err, target)
+}
+
+// markCLIInvalidInput wraps err so errors.Is(err, errCLIInvalidInput) holds.
+func markCLIInvalidInput(err error) error {
+	if err == nil || errors.Is(err, errCLIInvalidInput) {
+		return err
+	}
+	return &cliInvalidInputError{err: err}
+}
+
 func classifyRobotExecuteError(err error) (string, string) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return robot.ErrCodeTimeout, "Retry the command after cancellation"
+	}
+	if errors.Is(err, errCLIInvalidInput) {
+		return robot.ErrCodeInvalidFlag, "Fix the invalid command input or selected configuration"
 	}
 	message := strings.ToLower(err.Error())
 	for _, fragment := range []string{
@@ -5216,10 +5242,10 @@ Examples:
 							"enabled": effectiveCfg.Integrations.XF.Enabled,
 						},
 					},
-					"health": map[string]interface{}{
-						"enabled":        effectiveCfg.Health.Enabled,
-						"check_interval": effectiveCfg.Health.CheckInterval,
-						"auto_restart":   effectiveCfg.Health.AutoRestart,
+					"resilience": map[string]interface{}{
+						"auto_restart":         effectiveCfg.Resilience.AutoRestart,
+						"max_restarts":         effectiveCfg.Resilience.MaxRestarts,
+						"health_check_seconds": effectiveCfg.Resilience.HealthCheckSeconds,
 					},
 					"scanner": map[string]interface{}{
 						"ubs_path": effectiveCfg.Scanner.UBSPath,

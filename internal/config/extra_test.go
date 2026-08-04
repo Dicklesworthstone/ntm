@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -598,6 +599,9 @@ func TestLoadMerged(t *testing.T) {
 [agents]
 claude = "claude --global"
 codex = "codex --global"
+
+[assign]
+operator_gated_labels = ["global-approval", "shared-review"]
 `
 	if err := os.WriteFile(globalConfigPath, []byte(globalContent), 0644); err != nil {
 		t.Fatalf("writing global config: %v", err)
@@ -614,6 +618,9 @@ agents = { cc = 4, cod = 1 }
 
 [agents]
 claude = "claude --project-override"
+
+[assign]
+operator_gated_labels = ["project-approval", "SHARED-REVIEW"]
 `
 	projectConfigPath := filepath.Join(ntmDir, "config.toml")
 	if err := os.WriteFile(projectConfigPath, []byte(projectContent), 0644); err != nil {
@@ -646,6 +653,27 @@ claude = "claude --project-override"
 		// Project defaults (agent counts) SHOULD still be set - this is safe
 		if cfg.ProjectDefaults["cc"] != 4 {
 			t.Errorf("expected cc=4, got=%d", cfg.ProjectDefaults["cc"])
+		}
+
+		wantLabels := []string{"project-approval", "SHARED-REVIEW", "global-approval"}
+		if len(cfg.Assign.OperatorGatedLabels) != len(wantLabels) {
+			t.Fatalf("operator-gated labels = %#v, want %#v", cfg.Assign.OperatorGatedLabels, wantLabels)
+		}
+		for i := range wantLabels {
+			if cfg.Assign.OperatorGatedLabels[i] != wantLabels[i] {
+				t.Fatalf("operator-gated labels[%d] = %q, want %q", i, cfg.Assign.OperatorGatedLabels[i], wantLabels[i])
+			}
+		}
+	})
+
+	t.Run("strict merge accepts valid project policy", func(t *testing.T) {
+		cfg, err := LoadMergedStrict(projectDir, globalConfigPath)
+		if err != nil {
+			t.Fatalf("LoadMergedStrict failed: %v", err)
+		}
+		wantLabels := []string{"project-approval", "SHARED-REVIEW", "global-approval"}
+		if !reflect.DeepEqual(cfg.Assign.OperatorGatedLabels, wantLabels) {
+			t.Fatalf("strict operator-gated labels = %#v, want %#v", cfg.Assign.OperatorGatedLabels, wantLabels)
 		}
 	})
 
@@ -699,6 +727,26 @@ claude = "claude --project-override"
 		}
 	})
 
+	t.Run("strict merge rejects invalid project overlay", func(t *testing.T) {
+		badProjectDir := t.TempDir()
+		badNtmDir := filepath.Join(badProjectDir, ".ntm")
+		if err := os.MkdirAll(badNtmDir, 0755); err != nil {
+			t.Fatalf("creating strict .ntm directory: %v", err)
+		}
+		badPath := filepath.Join(badNtmDir, "config.toml")
+		if err := os.WriteFile(badPath, []byte("invalid { toml"), 0644); err != nil {
+			t.Fatalf("writing strict invalid project config: %v", err)
+		}
+
+		cfg, err := LoadMergedStrict(badProjectDir, globalConfigPath)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadMergedStrict invalid overlay = cfg:%+v err:%v, want fatal error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), badPath) || !strings.Contains(err.Error(), "project config") {
+			t.Fatalf("strict invalid-overlay error = %q, want path %q and project context", err, badPath)
+		}
+	})
+
 	t.Run("unknown-field project overlay is skipped and global config preserved", func(t *testing.T) {
 		// Mirrors the exact reproduction in issue #162: an unknown top-level
 		// section in the project overlay must not nuke the global config.
@@ -723,6 +771,26 @@ claude = "claude --project-override"
 		}
 		if !strings.Contains(stderr, filepath.Join(badNtmDir, "config.toml")) {
 			t.Errorf("expected warning to name the offending file path, got=%q", stderr)
+		}
+	})
+
+	t.Run("strict merge rejects unknown project field", func(t *testing.T) {
+		badProjectDir := t.TempDir()
+		badNtmDir := filepath.Join(badProjectDir, ".ntm")
+		if err := os.MkdirAll(badNtmDir, 0755); err != nil {
+			t.Fatalf("creating strict unknown-field .ntm directory: %v", err)
+		}
+		badPath := filepath.Join(badNtmDir, "config.toml")
+		if err := os.WriteFile(badPath, []byte("[unknown_section]\nsome_field = 1\n"), 0644); err != nil {
+			t.Fatalf("writing strict unknown-field project config: %v", err)
+		}
+
+		cfg, err := LoadMergedStrict(badProjectDir, globalConfigPath)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadMergedStrict unknown field = cfg:%+v err:%v, want fatal error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), badPath) || !strings.Contains(err.Error(), "unknown_section") {
+			t.Fatalf("strict unknown-field error = %q, want path %q and field name", err, badPath)
 		}
 	})
 
@@ -794,6 +862,107 @@ Prompt
 	})
 }
 
+func TestLoadAssignmentPolicyStrict(t *testing.T) {
+	projectDir := t.TempDir()
+	configDir := t.TempDir()
+	selectedPath := filepath.Join(configDir, "selected.toml")
+	selectedContent := `[assign]
+operator_gated_labels = ["global-approval"]
+`
+	if err := os.WriteFile(selectedPath, []byte(selectedContent), 0o644); err != nil {
+		t.Fatalf("write selected config: %v", err)
+	}
+
+	t.Run("rejects blank authoritative project directory", func(t *testing.T) {
+		cfg, err := LoadAssignmentPolicyStrict(" \t\n", selectedPath, true)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict blank project = cfg:%+v err:%v, want error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), "authoritative project directory") {
+			t.Fatalf("blank-project error = %q, want authoritative project context", err)
+		}
+	})
+
+	t.Run("rejects blank global config path", func(t *testing.T) {
+		cfg, err := LoadAssignmentPolicyStrict(projectDir, " \t\n", false)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict blank path = cfg:%+v err:%v, want error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), "global config path") {
+			t.Fatalf("blank-path error = %q, want global config context", err)
+		}
+	})
+
+	t.Run("rejects missing explicitly selected config", func(t *testing.T) {
+		missingPath := filepath.Join(configDir, "missing.toml")
+		cfg, err := LoadAssignmentPolicyStrict(projectDir, missingPath, true)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict missing selected path = cfg:%+v err:%v, want error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), "explicitly selected config") || !strings.Contains(err.Error(), missingPath) {
+			t.Fatalf("missing-selected error = %q, want explicit path %q", err, missingPath)
+		}
+	})
+
+	t.Run("rejects nonregular explicitly selected config", func(t *testing.T) {
+		nonregularPath := filepath.Join(configDir, "config-directory")
+		if err := os.Mkdir(nonregularPath, 0o755); err != nil {
+			t.Fatalf("mkdir nonregular selected path: %v", err)
+		}
+		cfg, err := LoadAssignmentPolicyStrict(projectDir, nonregularPath, true)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict nonregular selected path = cfg:%+v err:%v, want error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), "not a regular file") || !strings.Contains(err.Error(), nonregularPath) {
+			t.Fatalf("nonregular-selected error = %q, want regular-file failure for %q", err, nonregularPath)
+		}
+	})
+
+	t.Run("accepts symlink resolving to regular selected config", func(t *testing.T) {
+		symlinkPath := filepath.Join(configDir, "selected-link.toml")
+		if err := os.Symlink(selectedPath, symlinkPath); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		cfg, err := LoadAssignmentPolicyStrict(projectDir, symlinkPath, true)
+		if err != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict symlink selected path: %v", err)
+		}
+		if got, want := cfg.Assign.OperatorGatedLabels, []string{"global-approval"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("symlink-selected labels = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("loads valid explicitly selected config", func(t *testing.T) {
+		cfg, err := LoadAssignmentPolicyStrict(projectDir, selectedPath, true)
+		if err != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict valid selected path: %v", err)
+		}
+		if got, want := cfg.Assign.OperatorGatedLabels, []string{"global-approval"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("selected labels = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("rejects invalid authoritative project overlay", func(t *testing.T) {
+		invalidProjectDir := t.TempDir()
+		ntmDir := filepath.Join(invalidProjectDir, ".ntm")
+		if err := os.Mkdir(ntmDir, 0o755); err != nil {
+			t.Fatalf("mkdir invalid project .ntm: %v", err)
+		}
+		projectConfigPath := filepath.Join(ntmDir, "config.toml")
+		if err := os.WriteFile(projectConfigPath, []byte("invalid { toml"), 0o644); err != nil {
+			t.Fatalf("write invalid project config: %v", err)
+		}
+
+		cfg, err := LoadAssignmentPolicyStrict(invalidProjectDir, selectedPath, true)
+		if err == nil || cfg != nil {
+			t.Fatalf("LoadAssignmentPolicyStrict invalid overlay = cfg:%+v err:%v, want error", cfg, err)
+		}
+		if !strings.Contains(err.Error(), projectConfigPath) || !strings.Contains(err.Error(), "project config") {
+			t.Fatalf("invalid-overlay error = %q, want project config path %q", err, projectConfigPath)
+		}
+	})
+}
+
 func TestMergeConfig(t *testing.T) {
 	t.Run("project does NOT override global agents for security", func(t *testing.T) {
 		// SECURITY: Agent command overrides from project configs are disabled
@@ -838,6 +1007,50 @@ func TestMergeConfig(t *testing.T) {
 		result := MergeConfig(global, project, "/project")
 		if result.ProjectDefaults["cc"] != 5 {
 			t.Errorf("expected cc=5, got=%d", result.ProjectDefaults["cc"])
+		}
+	})
+
+	t.Run("project operator gates extend global gates", func(t *testing.T) {
+		global := &Config{
+			Assign: AssignConfig{
+				OperatorGatedLabels: []string{"global-approval", "shared-review"},
+			},
+		}
+		project := &ProjectConfig{
+			Assign: ProjectAssign{
+				OperatorGatedLabels: []string{" project-approval ", "shared-review", "project-approval", ""},
+			},
+		}
+
+		result := MergeConfig(global, project, "/project")
+		want := []string{"project-approval", "shared-review", "global-approval"}
+		if len(result.Assign.OperatorGatedLabels) != len(want) {
+			t.Fatalf("operator-gated labels = %#v, want %#v", result.Assign.OperatorGatedLabels, want)
+		}
+		for i := range want {
+			if result.Assign.OperatorGatedLabels[i] != want[i] {
+				t.Fatalf("operator-gated labels[%d] = %q, want %q", i, result.Assign.OperatorGatedLabels[i], want[i])
+			}
+		}
+	})
+
+	t.Run("empty project operator gates preserve global gates", func(t *testing.T) {
+		globalLabels := []string{"global-approval", "shared-review"}
+		global := &Config{
+			Assign: AssignConfig{OperatorGatedLabels: globalLabels},
+		}
+		project := &ProjectConfig{
+			Assign: ProjectAssign{OperatorGatedLabels: []string{}},
+		}
+
+		result := MergeConfig(global, project, "/project")
+		if len(result.Assign.OperatorGatedLabels) != len(globalLabels) {
+			t.Fatalf("operator-gated labels = %#v, want %#v", result.Assign.OperatorGatedLabels, globalLabels)
+		}
+		for i := range globalLabels {
+			if result.Assign.OperatorGatedLabels[i] != globalLabels[i] {
+				t.Fatalf("operator-gated labels[%d] = %q, want %q", i, result.Assign.OperatorGatedLabels[i], globalLabels[i])
+			}
 		}
 	})
 

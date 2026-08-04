@@ -2,12 +2,17 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestDefault(t *testing.T) {
@@ -27,6 +32,10 @@ func TestDefault(t *testing.T) {
 
 	if cfg.Agents.Gemini == "" {
 		t.Error("Gemini agent command should not be empty")
+	}
+
+	if cfg.Agents.Grok == "" {
+		t.Error("Grok Build agent command should not be empty")
 	}
 
 	if len(cfg.Palette) == 0 {
@@ -682,6 +691,35 @@ func TestPrint(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Errorf("Expected printed config to contain %q", want)
 		}
+	}
+}
+
+func TestPrintGrokConfigRoundTrip(t *testing.T) {
+	cfg := Default()
+	cfg.Agents.Grok = "grok --always-approve --profile custom"
+	cfg.Models.DefaultGrok = "account/default"
+	cfg.Models.Grok = map[string]string{
+		"fast":  "account/fast",
+		"smart": "account/smart",
+	}
+
+	var buf bytes.Buffer
+	if err := Print(cfg, &buf); err != nil {
+		t.Fatalf("Print failed: %v", err)
+	}
+
+	var decoded Config
+	if _, err := toml.Decode(buf.String(), &decoded); err != nil {
+		t.Fatalf("decode printed config: %v", err)
+	}
+	if decoded.Agents.Grok != cfg.Agents.Grok {
+		t.Fatalf("agents.grok = %q, want %q", decoded.Agents.Grok, cfg.Agents.Grok)
+	}
+	if decoded.Models.DefaultGrok != cfg.Models.DefaultGrok {
+		t.Fatalf("models.default_grok = %q, want %q", decoded.Models.DefaultGrok, cfg.Models.DefaultGrok)
+	}
+	if !reflect.DeepEqual(decoded.Models.Grok, cfg.Models.Grok) {
+		t.Fatalf("models.grok = %#v, want %#v", decoded.Models.Grok, cfg.Models.Grok)
 	}
 }
 
@@ -1478,177 +1516,47 @@ func TestContextRotationPrintOutput(t *testing.T) {
 	}
 }
 
-func TestValidateHealthConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		cfg     HealthConfig
-		wantErr bool
-	}{
-		{
-			name: "valid config",
-			cfg: HealthConfig{
-				Enabled:            true,
-				CheckInterval:      10,
-				StallThreshold:     300,
-				AutoRestart:        false,
-				MaxRestarts:        3,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: false,
-		},
-		{
-			name: "check_interval zero",
-			cfg: HealthConfig{
-				CheckInterval:      0,
-				StallThreshold:     300,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: true,
-		},
-		{
-			name: "check_interval negative",
-			cfg: HealthConfig{
-				CheckInterval:      -1,
-				StallThreshold:     300,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: true,
-		},
-		{
-			name: "stall_threshold less than check_interval",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     5,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: true,
-		},
-		{
-			name: "stall_threshold equals check_interval",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     10,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: false,
-		},
-		{
-			name: "max_restarts negative",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     300,
-				MaxRestarts:        -1,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: true,
-		},
-		{
-			name: "max_restarts zero is valid",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     300,
-				MaxRestarts:        0,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  300,
-			},
-			wantErr: false,
-		},
-		{
-			name: "restart_backoff_base zero",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     300,
-				RestartBackoffBase: 0,
-				RestartBackoffMax:  300,
-			},
-			wantErr: true,
-		},
-		{
-			name: "restart_backoff_max less than base",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     300,
-				RestartBackoffBase: 60,
-				RestartBackoffMax:  30,
-			},
-			wantErr: true,
-		},
-		{
-			name: "restart_backoff_max equals base",
-			cfg: HealthConfig{
-				CheckInterval:      10,
-				StallThreshold:     300,
-				RestartBackoffBase: 30,
-				RestartBackoffMax:  30,
-			},
-			wantErr: false,
-		},
-		{
-			name: "minimal valid config",
-			cfg: HealthConfig{
-				CheckInterval:      1,
-				StallThreshold:     1,
-				RestartBackoffBase: 1,
-				RestartBackoffMax:  1,
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateHealthConfig(&tt.cfg)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateHealthConfig() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestHealthConfigPrintOutput(t *testing.T) {
+func TestHealthSectionRemoved(t *testing.T) {
+	// The dead [health] block was removed (#223): it was parsed and displayed
+	// but never read by any runtime engine (restarts are driven by
+	// [resilience] plus the spawn-time --auto-restart flag). The printed
+	// config must no longer advertise it, and a config file that still
+	// carries a [health] section must fail loudly instead of silently doing
+	// nothing.
 	cfg := Default()
 	var buf bytes.Buffer
-	err := Print(cfg, &buf)
-	if err != nil {
+	if err := Print(cfg, &buf); err != nil {
 		t.Fatalf("Print failed: %v", err)
 	}
-	output := buf.String()
+	if strings.Contains(buf.String(), "[health]") {
+		t.Error("Print output still contains the removed [health] section")
+	}
 
-	// Check for health section
-	if !strings.Contains(output, "[health]") {
-		t.Error("Expected output to contain [health]")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := "[health]\nenabled = true\nauto_restart = true\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
-	if !strings.Contains(output, "check_interval") {
-		t.Error("Expected output to contain check_interval")
-	}
-	if !strings.Contains(output, "stall_threshold") {
-		t.Error("Expected output to contain stall_threshold")
-	}
-	if !strings.Contains(output, "restart_backoff_base") {
-		t.Error("Expected output to contain restart_backoff_base")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted a config with the removed [health] section; want unknown-field error")
+	} else if !strings.Contains(err.Error(), "health") {
+		t.Fatalf("Load error %q does not name the removed [health] field", err)
 	}
 }
 
-func TestHealthConfigGetValue(t *testing.T) {
+func TestResilienceGetValue(t *testing.T) {
 	cfg := Default()
 
 	tests := []struct {
 		path string
 		want interface{}
 	}{
-		{"health.enabled", true},
-		{"health.check_interval", 10},
-		{"health.stall_threshold", 300},
-		{"health.auto_restart", false},
-		{"health.max_restarts", 3},
-		{"health.restart_backoff_base", 30},
-		{"health.restart_backoff_max", 300},
+		{"resilience.auto_restart", false},
+		{"resilience.max_restarts", 3},
+		{"resilience.restart_delay_seconds", 30},
+		{"resilience.health_check_seconds", 10},
+		{"resilience.crash_threshold", 3},
 	}
 
 	for _, tt := range tests {
@@ -1661,6 +1569,498 @@ func TestHealthConfigGetValue(t *testing.T) {
 				t.Errorf("GetValue(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+
+	if _, err := GetValue(cfg, "health.enabled"); err == nil {
+		t.Error("GetValue(health.enabled) succeeded; the [health] section was removed")
+	}
+}
+
+func TestAssignOperatorGatedLabelsConfigSurface(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := "[assign]\noperator_gated_labels = [\"security-review\", \"legal-approval\"]\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"security-review", "legal-approval"}
+	if !reflect.DeepEqual(cfg.Assign.OperatorGatedLabels, want) {
+		t.Fatalf("loaded operator_gated_labels = %#v, want %#v", cfg.Assign.OperatorGatedLabels, want)
+	}
+	got, err := GetValue(cfg, "assign.operator_gated_labels")
+	if err != nil {
+		t.Fatalf("GetValue(assign.operator_gated_labels): %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetValue(assign.operator_gated_labels) = %#v, want %#v", got, want)
+	}
+
+	var printed bytes.Buffer
+	if err := Print(cfg, &printed); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+	if !strings.Contains(printed.String(), `operator_gated_labels = [ "security-review", "legal-approval" ]`) {
+		t.Fatalf("printed config omitted operator_gated_labels:\n%s", printed.String())
+	}
+}
+
+func TestPersistTOMLKeysPreservesStructuredConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	original := strings.Join([]string{
+		"# retained preface",
+		"[assign]",
+		`prompt_template = """`,
+		"[coordinator]",
+		"auto_assign = false",
+		`"""`,
+		`prompt_template_file = '''`,
+		"[coordinator]",
+		"send_digests = false",
+		`'''`,
+		"",
+		`["coordinator"] # retained header comment`,
+		`    "auto_assign" = false    # retained assignment comment`,
+		`poll_interval = "15s" # retained unrelated key`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := PersistTOMLKeys(path, "coordinator", [][2]string{
+		{"auto_assign", "true"},
+		{"send_digests", "true"},
+		{"digest_interval", `"30m"`},
+	})
+	if err != nil {
+		t.Fatalf("PersistTOMLKeys: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	updated := string(data)
+	for _, retained := range []string{
+		"# retained preface",
+		"[coordinator]\nauto_assign = false\n\"\"\"",
+		"[coordinator]\nsend_digests = false\n'''",
+		`["coordinator"] # retained header comment`,
+		`    "auto_assign" = true    # retained assignment comment`,
+		`poll_interval = "15s" # retained unrelated key`,
+	} {
+		if !strings.Contains(updated, retained) {
+			t.Errorf("updated config did not retain %q:\n%s", retained, updated)
+		}
+	}
+	if strings.Count(updated, "send_digests = true") != 1 || strings.Count(updated, `digest_interval = "30m"`) != 1 {
+		t.Fatalf("inserted coordinator keys are not unique:\n%s", updated)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(updated): %v\n%s", err, updated)
+	}
+	if !cfg.Coordinator.AutoAssign || !cfg.Coordinator.SendDigests || cfg.Coordinator.DigestInterval != 30*time.Minute {
+		t.Fatalf("updated coordinator config = %+v", cfg.Coordinator)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat updated config: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("updated config mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestPersistTOMLKeysUpdatesRootDottedSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	original := strings.Join([]string{
+		"# retained preface",
+		`theme = "nord"`,
+		`"coordinator"."auto_assign" = false # retained assignment comment`,
+		`coordinator.poll_interval = "15s"`,
+		"",
+		"[assign]",
+		`strategy = "quality"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := PersistTOMLKeys(path, "coordinator", [][2]string{
+		{"auto_assign", "true"},
+		{"send_digests", "true"},
+		{"digest_interval", `"30m"`},
+	})
+	if err != nil {
+		t.Fatalf("PersistTOMLKeys: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	updated := string(data)
+	for _, want := range []string{
+		`"coordinator"."auto_assign" = true # retained assignment comment`,
+		`coordinator.poll_interval = "15s"`,
+		`coordinator.send_digests = true`,
+		`coordinator.digest_interval = "30m"`,
+		"\n[assign]\n",
+	} {
+		if !strings.Contains(updated, want) {
+			t.Errorf("updated dotted config omitted %q:\n%s", want, updated)
+		}
+	}
+	if strings.Contains(updated, "[coordinator]") {
+		t.Fatalf("dotted config was redeclared as a table:\n%s", updated)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(updated): %v\n%s", err, updated)
+	}
+	if !cfg.Coordinator.AutoAssign || !cfg.Coordinator.SendDigests || cfg.Coordinator.DigestInterval != 30*time.Minute {
+		t.Fatalf("updated coordinator config = %+v", cfg.Coordinator)
+	}
+	if cfg.Coordinator.PollInterval != 15*time.Second || cfg.Assign.Strategy != "quality" {
+		t.Fatalf("unrelated dotted/global settings changed: coordinator=%+v assign=%+v", cfg.Coordinator, cfg.Assign)
+	}
+}
+
+func TestPersistTOMLKeysRejectsWholeSectionRootAssignmentWithoutMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("# retained\ncoordinator = { auto_assign = false, conflict_notify = true }\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := PersistTOMLKeys(path, "coordinator", [][2]string{{"auto_assign", "true"}})
+	if err == nil || !strings.Contains(err.Error(), "root assignment") || !strings.Contains(err.Error(), "cannot surgically update") {
+		t.Fatalf("PersistTOMLKeys error = %v, want clear whole-section root-assignment error", err)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read rejected config: %v", readErr)
+	}
+	if !bytes.Equal(data, original) {
+		t.Fatalf("rejected whole-section update mutated config:\nbefore=%s\nafter=%s", original, data)
+	}
+}
+
+func TestPersistTOMLKeysPreservesCRLF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("# retained\r\n[coordinator]\r\nauto_assign = false\r\nconflict_notify = false # retained comment\r\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := PersistTOMLKeys(path, "coordinator", [][2]string{
+		{"auto_assign", "true"},
+		{"send_digests", "true"},
+	})
+	if err != nil {
+		t.Fatalf("PersistTOMLKeys: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	updated := string(data)
+	if strings.Contains(strings.ReplaceAll(updated, "\r\n", ""), "\n") || strings.Contains(strings.ReplaceAll(updated, "\r\n", ""), "\r") {
+		t.Fatalf("updated config contains a non-CRLF line ending: %q", updated)
+	}
+	for _, want := range []string{
+		"auto_assign = true\r\n",
+		"send_digests = true\r\n",
+		"conflict_notify = false # retained comment\r\n",
+	} {
+		if !strings.Contains(updated, want) {
+			t.Errorf("updated CRLF config omitted %q: %q", want, updated)
+		}
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load(updated CRLF config): %v", err)
+	}
+}
+
+func TestPersistTOMLKeysPreservesUnrelatedMixedLineEndings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("# retained CRLF\r\n[assign]\nstrategy = \"quality\"\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write mixed-ending config: %v", err)
+	}
+
+	if err := PersistTOMLKeys(path, "coordinator", [][2]string{{"auto_assign", "true"}}); err != nil {
+		t.Fatalf("PersistTOMLKeys: %v", err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read mixed-ending config: %v", err)
+	}
+	if !bytes.HasPrefix(updated, original) {
+		t.Fatalf("persistence rewrote unrelated mixed-ending lines:\nbefore=%q\nafter=%q", original, updated)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load(updated mixed-ending config): %v", err)
+	}
+}
+
+func TestPersistTOMLKeysRejectsRenderedValueInjectionBeforeFilesystemMutation(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "newline assignment", value: "true\nconflict_notify = true"},
+		{name: "CRLF assignment", value: "true\r\nsend_digests = true"},
+		{name: "comment suffix", value: "true # not a literal"},
+		{name: "multiple tokens", value: "true false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			nested := filepath.Join(root, "not-created")
+			path := filepath.Join(nested, "config.toml")
+			err := PersistTOMLKeys(path, "coordinator", [][2]string{{"auto_assign", tt.value}})
+			if err == nil {
+				t.Fatal("PersistTOMLKeys succeeded, want rendered-value error")
+			}
+			if _, statErr := os.Stat(nested); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid rendered value caused filesystem mutation: stat error = %v", statErr)
+			}
+		})
+	}
+
+	for _, value := range []string{`"literal # text"`, `"escaped\nnewline"`, `[true, false]`} {
+		if err := validateRenderedTOMLValue("probe", value); err != nil {
+			t.Errorf("validateRenderedTOMLValue(%q) error = %v", value, err)
+		}
+	}
+}
+
+func TestPersistTOMLKeysCreatesMissingFileAndSection(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "nested", "config.toml")
+		if err := PersistTOMLKeys(path, "coordinator", [][2]string{{"auto_assign", "true"}}); err != nil {
+			t.Fatalf("PersistTOMLKeys: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.Coordinator.AutoAssign {
+			t.Fatal("created config did not enable coordinator.auto_assign")
+		}
+	})
+
+	t.Run("missing section", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		original := "# keep me\n[assign]\nstrategy = \"quality\"\n\n"
+		if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if err := PersistTOMLKeys(path, "coordinator", [][2]string{
+			{"auto_assign", "true"},
+			{"conflict_notify", "true"},
+		}); err != nil {
+			t.Fatalf("PersistTOMLKeys: %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		wantSuffix := "[coordinator]\nauto_assign = true\nconflict_notify = true\n"
+		if !strings.HasPrefix(string(data), "# keep me\n[assign]") || !strings.HasSuffix(string(data), wantSuffix) {
+			t.Fatalf("missing-section update =\n%s", data)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat config: %v", err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
+			t.Fatalf("updated config mode = %o, want 640", info.Mode().Perm())
+		}
+	})
+}
+
+func TestPersistTOMLKeysRejectsInvalidInputsWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	original := []byte("[coordinator]\nauto_assign = false\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	tests := []struct {
+		name    string
+		path    string
+		section string
+		keys    [][2]string
+	}{
+		{name: "empty path", path: "", section: "coordinator", keys: [][2]string{{"auto_assign", "true"}}},
+		{name: "empty section", path: path, section: " ", keys: [][2]string{{"auto_assign", "true"}}},
+		{name: "section injection", path: path, section: "coordinator]\n[assign", keys: [][2]string{{"auto_assign", "true"}}},
+		{name: "dotted key", path: path, section: "coordinator", keys: [][2]string{{"nested.auto_assign", "true"}}},
+		{name: "key injection", path: path, section: "coordinator", keys: [][2]string{{"auto_assign = false", "true"}}},
+		{name: "empty value", path: path, section: "coordinator", keys: [][2]string{{"auto_assign", " "}}},
+		{name: "duplicate key", path: path, section: "coordinator", keys: [][2]string{{"auto_assign", "true"}, {"auto_assign", "false"}}},
+		{name: "wrong schema type", path: path, section: "coordinator", keys: [][2]string{{"auto_assign", `"yes"`}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := PersistTOMLKeys(tt.path, tt.section, tt.keys); err == nil {
+				t.Fatal("PersistTOMLKeys succeeded, want error")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read config: %v", err)
+			}
+			if !bytes.Equal(data, original) {
+				t.Fatalf("invalid update mutated config:\nbefore=%s\nafter=%s", original, data)
+			}
+		})
+	}
+}
+
+func TestPersistTOMLKeysRejectsInvalidExistingConfigWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "malformed TOML", content: "[coordinator\nauto_assign = false\n", wantErr: "parsing TOML"},
+		{name: "removed health schema", content: "[health]\nenabled = true\n", wantErr: "unknown field(s): health"},
+		{name: "unknown coordinator field", content: "[coordinator]\nlegacy = true\n", wantErr: "unknown field(s): coordinator.legacy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			original := []byte(tt.content)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			err := PersistTOMLKeys(path, "coordinator", [][2]string{{"auto_assign", "true"}})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("PersistTOMLKeys error = %v, want %q", err, tt.wantErr)
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatalf("read config: %v", readErr)
+			}
+			if !bytes.Equal(data, original) {
+				t.Fatalf("rejected update mutated config:\nbefore=%s\nafter=%s", original, data)
+			}
+		})
+	}
+}
+
+func TestPersistTOMLKeysPreservesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "managed-config.toml")
+	link := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(target, []byte("[coordinator]\nauto_assign = false\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := PersistTOMLKeys(link, "coordinator", [][2]string{{"auto_assign", "true"}}); err != nil {
+		t.Fatalf("PersistTOMLKeys: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("config symlink was replaced")
+	}
+	cfg, err := Load(target)
+	if err != nil {
+		t.Fatalf("Load(target): %v", err)
+	}
+	if !cfg.Coordinator.AutoAssign {
+		t.Fatal("symlink target was not updated")
+	}
+}
+
+func TestPersistTOMLKeysSerializesConcurrentUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[coordinator]\nauto_assign = false\nconflict_notify = false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, update := range [][2]string{{"auto_assign", "true"}, {"conflict_notify", "true"}} {
+		update := update
+		go func() {
+			<-start
+			errs <- PersistTOMLKeys(path, "coordinator", [][2]string{update})
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent PersistTOMLKeys: %v", err)
+		}
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Coordinator.AutoAssign || !cfg.Coordinator.ConflictNotify {
+		t.Fatalf("concurrent updates lost a value: %+v", cfg.Coordinator)
+	}
+}
+
+func TestConfigPersistenceLockSerializesIndependentHandles(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "config.toml.lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	unlockFirst, err := acquireConfigPersistenceLock(ctx, lockPath)
+	if err != nil {
+		t.Fatalf("acquire first config lock: %v", err)
+	}
+	firstReleased := false
+	t.Cleanup(func() {
+		if !firstReleased {
+			unlockFirst()
+		}
+	})
+
+	type result struct {
+		unlock func()
+		err    error
+	}
+	second := make(chan result, 1)
+	go func() {
+		unlock, lockErr := acquireConfigPersistenceLock(ctx, lockPath)
+		second <- result{unlock: unlock, err: lockErr}
+	}()
+	select {
+	case got := <-second:
+		if got.unlock != nil {
+			got.unlock()
+		}
+		t.Fatalf("second config lock completed before first release: %v", got.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unlockFirst()
+	firstReleased = true
+	select {
+	case got := <-second:
+		if got.err != nil {
+			t.Fatalf("acquire second config lock: %v", got.err)
+		}
+		if got.unlock == nil {
+			t.Fatal("second config lock returned nil unlock")
+		}
+		got.unlock()
+	case <-ctx.Done():
+		t.Fatalf("second config lock did not acquire after release: %v", ctx.Err())
 	}
 }
 
@@ -1868,7 +2268,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: false,
 		},
@@ -1884,7 +2283,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.min_relevance",
@@ -1901,7 +2299,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.min_relevance",
@@ -1918,7 +2315,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.skip_if_context_above",
@@ -1935,7 +2331,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.skip_if_context_above",
@@ -1953,7 +2348,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.max_sessions",
@@ -1971,7 +2365,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.max_tokens",
@@ -1989,7 +2382,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: true,
 			errPath: "cass.context.lookback_days",
@@ -2006,7 +2398,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: false,
 		},
@@ -2022,7 +2413,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: false,
 		},
@@ -2038,7 +2428,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: false,
 		},
@@ -2054,7 +2443,6 @@ func TestCASSContextValidation(t *testing.T) {
 				},
 				Tmux:            TmuxConfig{DefaultPanes: 1},
 				ContextRotation: DefaultContextRotationConfig(),
-				Health:          DefaultHealthConfig(),
 			},
 			wantErr: false,
 		},
@@ -2095,7 +2483,6 @@ func TestDCGConfigValidation(t *testing.T) {
 		},
 		Tmux:            TmuxConfig{DefaultPanes: 1},
 		ContextRotation: DefaultContextRotationConfig(),
-		Health:          DefaultHealthConfig(),
 	}
 
 	errs := Validate(&cfg)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -87,7 +89,6 @@ type Config struct {
 	Checkpoints        CheckpointsConfig     `toml:"checkpoints"`
 	Notifications      notify.Config         `toml:"notifications"`
 	Resilience         ResilienceConfig      `toml:"resilience"`
-	Health             HealthConfig          `toml:"health"`           // Health monitoring configuration
 	Scanner            ScannerConfig         `toml:"scanner"`          // UBS scanner configuration
 	CASS               CASSConfig            `toml:"cass"`             // CASS integration configuration
 	Accounts           AccountsConfig        `toml:"accounts"`         // Multi-account management
@@ -538,54 +539,6 @@ func DefaultResilienceConfig() ResilienceConfig {
 			Patterns: nil,  // Use default patterns (rate limit, 429, too many requests, quota exceeded)
 		},
 	}
-}
-
-// HealthConfig holds configuration for agent health monitoring.
-// This is separate from ResilienceConfig which handles crash recovery;
-// HealthConfig focuses on proactive monitoring and stall detection.
-type HealthConfig struct {
-	Enabled            bool `toml:"enabled"`              // Top-level toggle for health monitoring
-	CheckInterval      int  `toml:"check_interval"`       // Seconds between health checks
-	StallThreshold     int  `toml:"stall_threshold"`      // Seconds without output before agent is stalled
-	AutoRestart        bool `toml:"auto_restart"`         // Auto-restart on unhealthy state
-	MaxRestarts        int  `toml:"max_restarts"`         // Max restart attempts before giving up
-	RestartBackoffBase int  `toml:"restart_backoff_base"` // Initial restart delay (seconds)
-	RestartBackoffMax  int  `toml:"restart_backoff_max"`  // Maximum restart delay (seconds)
-}
-
-// DefaultHealthConfig returns sensible health monitoring defaults
-func DefaultHealthConfig() HealthConfig {
-	return HealthConfig{
-		Enabled:            true,  // Health monitoring enabled by default
-		CheckInterval:      10,    // Check every 10 seconds
-		StallThreshold:     300,   // 5 minutes without output = stalled
-		AutoRestart:        false, // Disabled by default, opt-in
-		MaxRestarts:        3,     // Stop after 3 restart attempts
-		RestartBackoffBase: 30,    // Initial 30 second delay
-		RestartBackoffMax:  300,   // Max 5 minute delay (exponential backoff)
-	}
-}
-
-// ValidateHealthConfig validates the health monitoring configuration
-func ValidateHealthConfig(cfg *HealthConfig) error {
-	if cfg.CheckInterval < 1 {
-		return fmt.Errorf("check_interval must be at least 1 second, got %d", cfg.CheckInterval)
-	}
-	if cfg.StallThreshold < cfg.CheckInterval {
-		return fmt.Errorf("stall_threshold (%d) must be >= check_interval (%d)",
-			cfg.StallThreshold, cfg.CheckInterval)
-	}
-	if cfg.MaxRestarts < 0 {
-		return fmt.Errorf("max_restarts must be non-negative, got %d", cfg.MaxRestarts)
-	}
-	if cfg.RestartBackoffBase < 1 {
-		return fmt.Errorf("restart_backoff_base must be at least 1 second, got %d", cfg.RestartBackoffBase)
-	}
-	if cfg.RestartBackoffMax < cfg.RestartBackoffBase {
-		return fmt.Errorf("restart_backoff_max (%d) must be >= restart_backoff_base (%d)",
-			cfg.RestartBackoffMax, cfg.RestartBackoffBase)
-	}
-	return nil
 }
 
 // AccountEntry represents a single account for a provider
@@ -1375,7 +1328,8 @@ type AssignConfig struct {
 	// OperatorGatedLabels lists additional bead labels that require a human or
 	// operator decision before automated assignment. They are merged with the
 	// built-in defaults (operator-gated, human-gated, needs-operator, ...) —
-	// configuration can only widen the gate, never narrow it (#223).
+	// matching is case-insensitive and configuration can only widen the gate,
+	// never narrow it (#223).
 	OperatorGatedLabels []string `toml:"operator_gated_labels"`
 }
 
@@ -1901,6 +1855,34 @@ const AntigravityRequiredModel = "Gemini 3.1 Pro (High)"
 
 // GetModelName resolves a model alias to its full model name.
 // Returns the alias itself if no mapping is found.
+// AliasesFor returns the alias -> full-model-name map for a canonical agent
+// type ("claude", "codex", ...), or nil when the type has no alias table.
+// The argument is not re-normalized; pass canonicalModelLookupAgentType output
+// (GetModelName does) or an already-canonical provider name.
+func (m *ModelsConfig) AliasesFor(agentType string) map[string]string {
+	switch agentType {
+	case "claude":
+		return m.Claude
+	case "codex":
+		return m.Codex
+	case "gemini":
+		return m.Gemini
+	case "grok":
+		return m.Grok
+	case "ollama":
+		return m.Ollama
+	case "cursor":
+		return m.Cursor
+	case "windsurf":
+		return m.Windsurf
+	case "aider":
+		return m.Aider
+	case "opencode":
+		return m.Opencode
+	}
+	return nil
+}
+
 func (m *ModelsConfig) GetModelName(agentType, alias string) string {
 	normalizedAgentType := canonicalModelLookupAgentType(agentType)
 
@@ -1928,27 +1910,7 @@ func (m *ModelsConfig) GetModelName(agentType, alias string) string {
 	}
 
 	// Check agent-specific aliases.
-	var aliases map[string]string
-	switch normalizedAgentType {
-	case "claude":
-		aliases = m.Claude
-	case "codex":
-		aliases = m.Codex
-	case "gemini":
-		aliases = m.Gemini
-	case "grok":
-		aliases = m.Grok
-	case "ollama":
-		aliases = m.Ollama
-	case "cursor":
-		aliases = m.Cursor
-	case "windsurf":
-		aliases = m.Windsurf
-	case "aider":
-		aliases = m.Aider
-	case "opencode":
-		aliases = m.Opencode
-	}
+	aliases := m.AliasesFor(normalizedAgentType)
 
 	if aliases != nil {
 		if fullName, ok := aliases[strings.ToLower(alias)]; ok {
@@ -2556,7 +2518,6 @@ func Default() *Config {
 		Checkpoints:     DefaultCheckpointsConfig(),
 		Notifications:   notify.DefaultConfig(),
 		Resilience:      DefaultResilienceConfig(),
-		Health:          DefaultHealthConfig(),
 		Scanner:         DefaultScannerConfig(),
 		CASS:            DefaultCASSConfig(),
 		Accounts:        DefaultAccountsConfig(),
@@ -3014,6 +2975,634 @@ func upsertTOMLTable(contents, tableName, tableBody string) string {
 		out += "\n"
 	}
 	return out
+}
+
+var configPersistenceMu sync.Mutex
+
+// PersistTOMLKeys surgically writes `key = value` assignments inside [section]
+// of the TOML file at path, preserving every other line — including comments
+// and unrelated keys in the same section — verbatim (unlike upsertTOMLTable,
+// which replaces a whole table body). A missing file is created (parent
+// directory included); a missing section is appended at the end; an existing
+// assignment is replaced in place; a new key is inserted directly after the
+// section header. Values must already be rendered as TOML literals (e.g.
+// `true`, `"30m"`). The rewritten content is parsed before the file is
+// replaced, so a malformed result never reaches disk.
+func PersistTOMLKeys(path, section string, keys [][2]string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	sectionParts, err := validateTOMLBarePath(section, "config section")
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	seenKeys := make(map[string]struct{}, len(keys))
+	for _, kv := range keys {
+		if _, err := validateTOMLBarePath(kv[0], "config key"); err != nil || strings.Contains(kv[0], ".") {
+			if err == nil {
+				err = fmt.Errorf("config key %q must not be dotted", kv[0])
+			}
+			return err
+		}
+		if err := validateRenderedTOMLValue(kv[0], kv[1]); err != nil {
+			return err
+		}
+		if _, duplicate := seenKeys[kv[0]]; duplicate {
+			return fmt.Errorf("duplicate config key %q", kv[0])
+		}
+		seenKeys[kv[0]] = struct{}{}
+	}
+
+	resolvedPath, err := resolveConfigPersistencePath(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(resolvedPath), 0755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	// Serialize both goroutines and independent ntm processes across the full
+	// read-modify-write transaction. Atomic rename alone prevents torn bytes but
+	// does not prevent two toggles from losing one another's updates.
+	configPersistenceMu.Lock()
+	defer configPersistenceMu.Unlock()
+	lockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	unlock, err := acquireConfigPersistenceLock(lockCtx, resolvedPath+".lock")
+	if err != nil {
+		return fmt.Errorf("locking config %s: %w", path, err)
+	}
+	defer unlock()
+
+	contents := ""
+	mode := os.FileMode(0644)
+	data, err := os.ReadFile(resolvedPath)
+	switch {
+	case err == nil:
+		contents = string(data)
+		info, statErr := os.Stat(resolvedPath)
+		if statErr != nil {
+			return fmt.Errorf("stat config %s: %w", path, statErr)
+		}
+		mode = info.Mode().Perm()
+	case os.IsNotExist(err):
+	default:
+		return fmt.Errorf("reading config %s: %w", path, err)
+	}
+
+	if contents != "" {
+		if err := validateNTMConfigTOML(contents); err != nil {
+			return fmt.Errorf("refusing to update %s: existing config is invalid: %w", path, err)
+		}
+	}
+
+	updated, err := upsertTOMLKeys(contents, sectionParts, keys)
+	if err != nil {
+		return fmt.Errorf("updating config %s: %w", path, err)
+	}
+	if err := validateNTMConfigTOML(updated); err != nil {
+		return fmt.Errorf("refusing to write %s: updated config is invalid: %w", path, err)
+	}
+
+	return util.AtomicWriteFile(resolvedPath, []byte(updated), mode)
+}
+
+// upsertTOMLKeys applies per-key replacement/insertion inside [section],
+// keeping all other lines (comments included) untouched.
+func upsertTOMLKeys(contents string, sectionParts []string, keys [][2]string) (string, error) {
+	lines := []string{}
+	if contents != "" {
+		lines = strings.Split(contents, "\n")
+	}
+	lineInfo := scanTOMLLines(lines)
+	insertedLineSuffix := ""
+	if strings.Contains(contents, "\r\n") {
+		insertedLineSuffix = "\r"
+	}
+
+	header := "[" + strings.Join(sectionParts, ".") + "]"
+	start := -1
+	end := len(lines)
+	for i, line := range lines {
+		info := lineInfo[i]
+		if info.startsInMultiline {
+			continue
+		}
+		if start == -1 {
+			if tomlHeaderMatches(line, info.commentAt, sectionParts) {
+				start = i
+			}
+			continue
+		}
+		if isTOMLTableHeader(line, info.commentAt) {
+			end = i
+			break
+		}
+	}
+
+	if start == -1 {
+		updatedLines, handled, err := upsertRootDottedTOMLKeys(
+			lines, lineInfo, sectionParts, keys, insertedLineSuffix,
+		)
+		if err != nil {
+			return "", err
+		}
+		if handled {
+			out := strings.Join(updatedLines, "\n")
+			if !strings.HasSuffix(out, "\n") {
+				out += "\n"
+			}
+			return out, nil
+		}
+
+		// Section absent: append it (preceded by a blank separator line).
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		if len(lines) > 0 {
+			lines = append(lines, insertedLineSuffix)
+		}
+		lines = append(lines, header+insertedLineSuffix)
+		for _, kv := range keys {
+			lines = append(lines, kv[0]+" = "+kv[1]+insertedLineSuffix)
+		}
+		return strings.Join(lines, "\n") + "\n", nil
+	}
+
+	type assignmentLocation struct {
+		line      int
+		equalsAt  int
+		commentAt int
+	}
+	wanted := make(map[string]struct{}, len(keys))
+	for _, kv := range keys {
+		wanted[kv[0]] = struct{}{}
+	}
+	locations := make(map[string]assignmentLocation, len(keys))
+	for i := start + 1; i < end; i++ {
+		info := lineInfo[i]
+		if info.startsInMultiline {
+			continue
+		}
+		key, equalsAt, ok := tomlAssignmentKey(lines[i], info.mask)
+		if !ok {
+			continue
+		}
+		if _, tracked := wanted[key]; !tracked {
+			continue
+		}
+		locations[key] = assignmentLocation{line: i, equalsAt: equalsAt, commentAt: info.commentAt}
+	}
+
+	missing := make([]string, 0, len(keys))
+	for _, kv := range keys {
+		location, found := locations[kv[0]]
+		if !found {
+			missing = append(missing, kv[0]+" = "+kv[1]+insertedLineSuffix)
+			continue
+		}
+		lines[location.line] = replaceTOMLAssignmentValue(
+			lines[location.line], location.equalsAt, location.commentAt, kv[1],
+		)
+	}
+	if len(missing) > 0 {
+		insertAt := start + 1
+		lines = append(lines, make([]string, len(missing))...)
+		copy(lines[insertAt+len(missing):], lines[insertAt:len(lines)-len(missing)])
+		copy(lines[insertAt:], missing)
+	}
+
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out, nil
+}
+
+// upsertRootDottedTOMLKeys updates a section represented with root dotted
+// assignments, for example `coordinator.auto_assign = false`. Once a section
+// uses dotted assignments, missing requested keys are added in the same style
+// before the first table header. A whole-section root assignment (normally an
+// inline table) cannot be edited surgically without re-encoding its value, so
+// it is rejected explicitly.
+func upsertRootDottedTOMLKeys(
+	lines []string,
+	lineInfo []tomlLineInfo,
+	sectionParts []string,
+	keys [][2]string,
+	insertedLineSuffix string,
+) ([]string, bool, error) {
+	type assignmentLocation struct {
+		line      int
+		equalsAt  int
+		commentAt int
+	}
+
+	wanted := make(map[string]struct{}, len(keys))
+	for _, kv := range keys {
+		wanted[kv[0]] = struct{}{}
+	}
+
+	rootEnd := len(lines)
+	dottedStyle := false
+	locations := make(map[string]assignmentLocation, len(keys))
+	for i, line := range lines {
+		info := lineInfo[i]
+		if info.startsInMultiline {
+			continue
+		}
+		if isTOMLTableHeader(line, info.commentAt) {
+			rootEnd = i
+			break
+		}
+
+		path, equalsAt, ok := tomlAssignmentPath(line, info.mask)
+		if !ok {
+			continue
+		}
+		if len(path) <= len(sectionParts) && tomlPathHasPrefix(sectionParts, path) {
+			return nil, false, fmt.Errorf(
+				"section [%s] is encoded as root assignment %q; cannot surgically update a whole-section or parent inline value",
+				strings.Join(sectionParts, "."), strings.Join(path, "."),
+			)
+		}
+		if !tomlPathHasPrefix(path, sectionParts) || len(path) <= len(sectionParts) {
+			continue
+		}
+
+		dottedStyle = true
+		if len(path) != len(sectionParts)+1 {
+			continue
+		}
+		key := path[len(sectionParts)]
+		if _, tracked := wanted[key]; tracked {
+			locations[key] = assignmentLocation{line: i, equalsAt: equalsAt, commentAt: info.commentAt}
+		}
+	}
+
+	if !dottedStyle {
+		return lines, false, nil
+	}
+
+	missing := make([]string, 0, len(keys))
+	dottedSection := strings.Join(sectionParts, ".")
+	for _, kv := range keys {
+		location, found := locations[kv[0]]
+		if !found {
+			missing = append(missing, dottedSection+"."+kv[0]+" = "+kv[1]+insertedLineSuffix)
+			continue
+		}
+		lines[location.line] = replaceTOMLAssignmentValue(
+			lines[location.line], location.equalsAt, location.commentAt, kv[1],
+		)
+	}
+
+	if len(missing) > 0 {
+		insertAt := rootEnd
+		for insertAt > 0 && strings.TrimSpace(lines[insertAt-1]) == "" {
+			insertAt--
+		}
+		lines = append(lines, make([]string, len(missing))...)
+		copy(lines[insertAt+len(missing):], lines[insertAt:len(lines)-len(missing)])
+		copy(lines[insertAt:], missing)
+	}
+
+	return lines, true, nil
+}
+
+func tomlPathHasPrefix(path, prefix []string) bool {
+	if len(prefix) > len(path) {
+		return false
+	}
+	for i := range prefix {
+		if path[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateTOMLBarePath(value, kind string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, fmt.Errorf("%s is empty", kind)
+	}
+	parts := strings.Split(value, ".")
+	for _, part := range parts {
+		if part == "" {
+			return nil, fmt.Errorf("%s %q contains an empty component", kind, value)
+		}
+		for _, r := range part {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') || r == '_' || r == '-' {
+				continue
+			}
+			return nil, fmt.Errorf("%s %q is not a bare TOML key", kind, value)
+		}
+	}
+	return parts, nil
+}
+
+func validateRenderedTOMLValue(key, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("config value for %q is empty", key)
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("config value for %q must be one single-line TOML literal", key)
+	}
+	info := scanTOMLLines([]string{value})[0]
+	if info.commentAt >= 0 {
+		return fmt.Errorf("config value for %q must not contain a TOML comment", key)
+	}
+
+	const probe = "__ntm_persist_value__"
+	var parsed map[string]interface{}
+	if _, err := toml.Decode(probe+" = "+value+"\n", &parsed); err != nil {
+		return fmt.Errorf("config value for %q is not a TOML literal: %w", key, err)
+	}
+	if len(parsed) != 1 {
+		return fmt.Errorf("config value for %q must contain exactly one TOML literal", key)
+	}
+	if _, ok := parsed[probe]; !ok {
+		return fmt.Errorf("config value for %q must contain exactly one TOML literal", key)
+	}
+	return nil
+}
+
+func resolveConfigPersistencePath(path string) (string, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		resolved, evalErr := filepath.EvalSymlinks(path)
+		if evalErr != nil {
+			return "", fmt.Errorf("resolving config symlink %s: %w", path, evalErr)
+		}
+		return resolved, nil
+	case err == nil:
+		return path, nil
+	case os.IsNotExist(err):
+		return path, nil
+	default:
+		return "", fmt.Errorf("inspecting config %s: %w", path, err)
+	}
+}
+
+func validateNTMConfigTOML(contents string) error {
+	var cfg Config
+	md, err := toml.Decode(contents, &cfg)
+	if err != nil {
+		return fmt.Errorf("parsing TOML: %w", err)
+	}
+	if fields := undecodedConfigFields(md); len(fields) > 0 {
+		return fmt.Errorf("unknown field(s): %s", strings.Join(fields, ", "))
+	}
+	return nil
+}
+
+type tomlLexMode uint8
+
+const (
+	tomlLexNormal tomlLexMode = iota
+	tomlLexBasic
+	tomlLexLiteral
+	tomlLexMultilineBasic
+	tomlLexMultilineLiteral
+)
+
+type tomlLineInfo struct {
+	mask              string
+	commentAt         int
+	startsInMultiline bool
+}
+
+// scanTOMLLines masks strings and comments without changing byte offsets. The
+// source has already passed the TOML parser, so this scanner only needs to
+// identify which bytes are structural; it does not attempt to validate TOML.
+func scanTOMLLines(lines []string) []tomlLineInfo {
+	infos := make([]tomlLineInfo, len(lines))
+	mode := tomlLexNormal
+	for lineIndex, line := range lines {
+		masked := []byte(line)
+		info := tomlLineInfo{commentAt: -1}
+		info.startsInMultiline = mode == tomlLexMultilineBasic || mode == tomlLexMultilineLiteral
+		for i := 0; i < len(line); {
+			switch mode {
+			case tomlLexNormal:
+				switch line[i] {
+				case '#':
+					info.commentAt = i
+					for j := i; j < len(masked); j++ {
+						masked[j] = ' '
+					}
+					i = len(line)
+				case '"':
+					if strings.HasPrefix(line[i:], `"""`) {
+						for j := 0; j < 3; j++ {
+							masked[i+j] = ' '
+						}
+						i += 3
+						mode = tomlLexMultilineBasic
+					} else {
+						masked[i] = ' '
+						i++
+						mode = tomlLexBasic
+					}
+				case '\'':
+					if strings.HasPrefix(line[i:], `'''`) {
+						for j := 0; j < 3; j++ {
+							masked[i+j] = ' '
+						}
+						i += 3
+						mode = tomlLexMultilineLiteral
+					} else {
+						masked[i] = ' '
+						i++
+						mode = tomlLexLiteral
+					}
+				default:
+					i++
+				}
+			case tomlLexBasic:
+				masked[i] = ' '
+				if line[i] == '\\' && i+1 < len(line) {
+					masked[i+1] = ' '
+					i += 2
+				} else {
+					if line[i] == '"' {
+						mode = tomlLexNormal
+					}
+					i++
+				}
+			case tomlLexLiteral:
+				masked[i] = ' '
+				if line[i] == '\'' {
+					mode = tomlLexNormal
+				}
+				i++
+			case tomlLexMultilineBasic:
+				if line[i] == '\\' && i+1 < len(line) {
+					masked[i], masked[i+1] = ' ', ' '
+					i += 2
+					continue
+				}
+				if line[i] == '"' {
+					run := 1
+					for i+run < len(line) && line[i+run] == '"' {
+						run++
+					}
+					for j := 0; j < run; j++ {
+						masked[i+j] = ' '
+					}
+					i += run
+					if run >= 3 {
+						mode = tomlLexNormal
+					}
+					continue
+				}
+				masked[i] = ' '
+				i++
+			case tomlLexMultilineLiteral:
+				if line[i] == '\'' {
+					run := 1
+					for i+run < len(line) && line[i+run] == '\'' {
+						run++
+					}
+					for j := 0; j < run; j++ {
+						masked[i+j] = ' '
+					}
+					i += run
+					if run >= 3 {
+						mode = tomlLexNormal
+					}
+					continue
+				}
+				masked[i] = ' '
+				i++
+			}
+		}
+		if mode == tomlLexBasic || mode == tomlLexLiteral {
+			mode = tomlLexNormal
+		}
+		info.mask = string(masked)
+		infos[lineIndex] = info
+	}
+	return infos
+}
+
+func isTOMLTableHeader(line string, commentAt int) bool {
+	if commentAt >= 0 {
+		line = line[:commentAt]
+	}
+	trimmed := strings.TrimSpace(line)
+	return len(trimmed) >= 3 && trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']'
+}
+
+func tomlHeaderMatches(line string, commentAt int, sectionParts []string) bool {
+	if !isTOMLTableHeader(line, commentAt) {
+		return false
+	}
+	if commentAt >= 0 {
+		line = line[:commentAt]
+	}
+	header := strings.TrimSpace(line)
+	if strings.HasPrefix(header, "[[") {
+		return false
+	}
+	const probe = "__ntm_persist_probe__"
+	var parsed map[string]interface{}
+	if _, err := toml.Decode(header+"\n"+probe+" = true\n", &parsed); err != nil {
+		return false
+	}
+	current := parsed
+	for _, part := range sectionParts {
+		next, ok := current[part].(map[string]interface{})
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	value, ok := current[probe].(bool)
+	return ok && value
+}
+
+func tomlAssignmentKey(line, mask string) (string, int, bool) {
+	path, equalsAt, ok := tomlAssignmentPath(line, mask)
+	if !ok || len(path) != 1 {
+		return "", 0, false
+	}
+	return path[0], equalsAt, true
+}
+
+func tomlAssignmentPath(line, mask string) ([]string, int, bool) {
+	equalsAt := strings.IndexByte(mask, '=')
+	if equalsAt < 0 {
+		return nil, 0, false
+	}
+	keyExpr := strings.TrimSpace(line[:equalsAt])
+	if keyExpr == "" {
+		return nil, 0, false
+	}
+	var parsed map[string]interface{}
+	if _, err := toml.Decode(keyExpr+" = true\n", &parsed); err != nil {
+		return nil, 0, false
+	}
+	path, ok := tomlBooleanProbePath(parsed)
+	if !ok {
+		return nil, 0, false
+	}
+	return path, equalsAt, true
+}
+
+func tomlBooleanProbePath(values map[string]interface{}) ([]string, bool) {
+	if len(values) != 1 {
+		return nil, false
+	}
+	for key, value := range values {
+		if flag, ok := value.(bool); ok {
+			if !flag {
+				return nil, false
+			}
+			return []string{key}, true
+		}
+		nested, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		rest, ok := tomlBooleanProbePath(nested)
+		if !ok {
+			return nil, false
+		}
+		return append([]string{key}, rest...), true
+	}
+	return nil, false
+}
+
+func replaceTOMLAssignmentValue(line string, equalsAt, commentAt int, value string) string {
+	lineSuffix := ""
+	if strings.HasSuffix(line, "\r") {
+		line = strings.TrimSuffix(line, "\r")
+		lineSuffix = "\r"
+	}
+	valueStart := equalsAt + 1
+	for valueStart < len(line) && (line[valueStart] == ' ' || line[valueStart] == '\t') {
+		valueStart++
+	}
+	spacing := line[equalsAt+1 : valueStart]
+	if spacing == "" {
+		spacing = " "
+	}
+	suffix := ""
+	if commentAt >= 0 {
+		suffixStart := commentAt
+		for suffixStart > valueStart && (line[suffixStart-1] == ' ' || line[suffixStart-1] == '\t') {
+			suffixStart--
+		}
+		suffix = line[suffixStart:]
+	}
+	return line[:equalsAt+1] + spacing + value + suffix + lineSuffix
 }
 
 func renderPaletteStateTOML(state PaletteState) string {
@@ -3717,19 +4306,6 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "show_reset_timers = %t     # Show reset countdown\n", cfg.Rotation.Dashboard.ShowResetTimers)
 	fmt.Fprintln(w)
 
-	// Write health monitoring configuration
-	fmt.Fprintln(w, "[health]")
-	fmt.Fprintln(w, "# Agent health monitoring configuration")
-	fmt.Fprintln(w, "# Proactive monitoring to detect stalled, unresponsive, or unhealthy agents")
-	fmt.Fprintf(w, "enabled = %t                # Top-level toggle for health monitoring\n", cfg.Health.Enabled)
-	fmt.Fprintf(w, "check_interval = %d          # Seconds between health checks\n", cfg.Health.CheckInterval)
-	fmt.Fprintf(w, "stall_threshold = %d        # Seconds without output before agent is stalled\n", cfg.Health.StallThreshold)
-	fmt.Fprintf(w, "auto_restart = %t           # Auto-restart on unhealthy state\n", cfg.Health.AutoRestart)
-	fmt.Fprintf(w, "max_restarts = %d            # Max restart attempts before giving up\n", cfg.Health.MaxRestarts)
-	fmt.Fprintf(w, "restart_backoff_base = %d   # Initial restart delay (seconds)\n", cfg.Health.RestartBackoffBase)
-	fmt.Fprintf(w, "restart_backoff_max = %d    # Maximum restart delay (seconds)\n", cfg.Health.RestartBackoffMax)
-	fmt.Fprintln(w)
-
 	fmt.Fprintln(w, "[scanner]")
 	fmt.Fprintln(w, "# UBS scanner configuration")
 	if cfg.Scanner.UBSPath != "" {
@@ -3883,17 +4459,10 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "prompt_template = %q\n", cfg.Assign.PromptTemplate)
 	fmt.Fprintln(w, "# File holding the default bulk-assign dispatch prompt (takes precedence over prompt_template).")
 	fmt.Fprintf(w, "prompt_template_file = %q\n", cfg.Assign.PromptTemplateFile)
-	fmt.Fprintln(w, "# Additional labels that block automated assignment until an operator acts.")
-	fmt.Fprintln(w, "# Merged with the built-in defaults (operator-gated, human-gated, needs-operator, ...).")
-	if len(cfg.Assign.OperatorGatedLabels) > 0 {
-		labelItems := make([]string, 0, len(cfg.Assign.OperatorGatedLabels))
-		for _, label := range cfg.Assign.OperatorGatedLabels {
-			labelItems = append(labelItems, fmt.Sprintf("%q", label))
-		}
-		fmt.Fprintf(w, "operator_gated_labels = [%s]\n", strings.Join(labelItems, ", "))
-	} else {
-		fmt.Fprintln(w, "# operator_gated_labels = [\"gate\", \"blocked-on-alice\"]")
-	}
+	fmt.Fprintln(w, "# Additional labels that block automated assignment until an operator acts,")
+	fmt.Fprintln(w, "# e.g. [\"gate\", \"blocked-on-alice\"]. Merged with the built-in defaults")
+	fmt.Fprintln(w, "# (operator-gated, human-gated, needs-operator, ...).")
+	fmt.Fprintf(w, "operator_gated_labels = %s\n", renderTOMLStringArray(cfg.Assign.OperatorGatedLabels))
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[spawn_pacing]")
@@ -4756,7 +5325,7 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		case "prompt_template_file":
 			return cfg.Assign.PromptTemplateFile, nil
 		case "operator_gated_labels":
-			return cfg.Assign.OperatorGatedLabels, nil
+			return append([]string(nil), cfg.Assign.OperatorGatedLabels...), nil
 		}
 	case "file_reservation":
 		if len(parts) < 2 {
@@ -5338,26 +5907,6 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		case "verbose":
 			return cfg.GeminiSetup.Verbose, nil
 		}
-	case "health":
-		if len(parts) < 2 {
-			return cfg.Health, nil
-		}
-		switch parts[1] {
-		case "enabled":
-			return cfg.Health.Enabled, nil
-		case "check_interval":
-			return cfg.Health.CheckInterval, nil
-		case "stall_threshold":
-			return cfg.Health.StallThreshold, nil
-		case "auto_restart":
-			return cfg.Health.AutoRestart, nil
-		case "max_restarts":
-			return cfg.Health.MaxRestarts, nil
-		case "restart_backoff_base":
-			return cfg.Health.RestartBackoffBase, nil
-		case "restart_backoff_max":
-			return cfg.Health.RestartBackoffMax, nil
-		}
 	}
 
 	return nil, fmt.Errorf("unknown config path: %s", path)
@@ -5587,7 +6136,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("assign.strategy", defaults.Assign.Strategy, cfg.Assign.Strategy)
 	addDiff("assign.prompt_template", defaults.Assign.PromptTemplate, cfg.Assign.PromptTemplate)
 	addDiff("assign.prompt_template_file", defaults.Assign.PromptTemplateFile, cfg.Assign.PromptTemplateFile)
-	addDiff("assign.operator_gated_labels", strings.Join(defaults.Assign.OperatorGatedLabels, ","), strings.Join(cfg.Assign.OperatorGatedLabels, ","))
+	addDiff("assign.operator_gated_labels", defaults.Assign.OperatorGatedLabels, cfg.Assign.OperatorGatedLabels)
 
 	// File reservation
 	addDiff("file_reservation.enabled", defaults.FileReservation.Enabled, cfg.FileReservation.Enabled)
@@ -5753,15 +6302,6 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("gemini_setup.model_select_timeout_seconds", defaults.GeminiSetup.ModelSelectTimeoutSeconds, cfg.GeminiSetup.ModelSelectTimeoutSeconds)
 	addDiff("gemini_setup.verbose", defaults.GeminiSetup.Verbose, cfg.GeminiSetup.Verbose)
 
-	// Health monitoring
-	addDiff("health.enabled", defaults.Health.Enabled, cfg.Health.Enabled)
-	addDiff("health.check_interval", defaults.Health.CheckInterval, cfg.Health.CheckInterval)
-	addDiff("health.stall_threshold", defaults.Health.StallThreshold, cfg.Health.StallThreshold)
-	addDiff("health.auto_restart", defaults.Health.AutoRestart, cfg.Health.AutoRestart)
-	addDiff("health.max_restarts", defaults.Health.MaxRestarts, cfg.Health.MaxRestarts)
-	addDiff("health.restart_backoff_base", defaults.Health.RestartBackoffBase, cfg.Health.RestartBackoffBase)
-	addDiff("health.restart_backoff_max", defaults.Health.RestartBackoffMax, cfg.Health.RestartBackoffMax)
-
 	// Swarm
 	addDiff("swarm.enabled", defaults.Swarm.Enabled, cfg.Swarm.Enabled)
 	addDiff("swarm.default_scan_dir", defaults.Swarm.DefaultScanDir, cfg.Swarm.DefaultScanDir)
@@ -5808,11 +6348,6 @@ func Validate(cfg *Config) []error {
 	// Validate ensemble defaults
 	if err := ValidateEnsembleConfig(&cfg.Ensemble); err != nil {
 		errs = append(errs, fmt.Errorf("ensemble: %w", err))
-	}
-
-	// Validate health monitoring
-	if err := ValidateHealthConfig(&cfg.Health); err != nil {
-		errs = append(errs, fmt.Errorf("health: %w", err))
 	}
 
 	// Validate tmux activity indicators

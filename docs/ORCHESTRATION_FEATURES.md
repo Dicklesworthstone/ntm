@@ -337,21 +337,20 @@ ON rate_limit_detected:
 
 ### Configuration
 
+Health monitoring and auto-restart are configured through the `[resilience]`
+block (the former `[health]` block was parsed but never wired to the restart
+engine, and has been removed — #223):
+
 ```toml
-[health]
-enabled = true
-check_interval = "30s"      # How often to check health (watch mode)
-stall_threshold = "60s"     # No output for this long = stalled
+[resilience]
+auto_restart = true          # Restart crashed/stalled agents automatically
+max_restarts = 3             # Per agent before giving up
+restart_delay_seconds = 5    # Delay before restarting
+health_check_seconds = 30    # How often to check agent health
 
-# Auto-restart settings
-auto_restart = true
-max_restarts = 3            # Per hour
-restart_backoff_base = "30s"
-restart_backoff_max = "5m"
-
-# Rate limit handling
-rate_limit_backoff_base = "30s"
-rate_limit_backoff_max = "5m"
+[resilience.rate_limit]
+detect = true                # Detect provider rate limits
+notify = true                # Notify on rate limit
 
 [alerts]
 enabled = true

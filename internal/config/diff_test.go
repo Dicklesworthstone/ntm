@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -345,25 +346,45 @@ func TestDiff_CASSSettings(t *testing.T) {
 	}
 }
 
-func TestDiff_HealthSettings(t *testing.T) {
+func TestDiff_ResilienceRestartSettings(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
-	cfg.Health.Enabled = !cfg.Health.Enabled
-	cfg.Health.MaxRestarts = 999
+	cfg.Resilience.AutoRestart = !cfg.Resilience.AutoRestart
+	cfg.Resilience.MaxRestarts = 999
 
 	diffs := Diff(cfg)
 
-	paths := make(map[string]bool)
+	paths := make(map[string]int)
 	for _, d := range diffs {
-		paths[d.Path] = true
+		paths[d.Path]++
 	}
 
-	if !paths["health.enabled"] {
-		t.Error("expected diff for health.enabled")
+	if paths["resilience.auto_restart"] != 1 {
+		t.Errorf("resilience.auto_restart diff count = %d, want exactly 1", paths["resilience.auto_restart"])
 	}
-	if !paths["health.max_restarts"] {
-		t.Error("expected diff for health.max_restarts")
+	if paths["resilience.max_restarts"] != 1 {
+		t.Errorf("resilience.max_restarts diff count = %d, want exactly 1", paths["resilience.max_restarts"])
+	}
+}
+
+func TestDiff_AssignOperatorGatedLabels(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Assign.OperatorGatedLabels = []string{"security-review", "legal-approval"}
+
+	var matches []ConfigDiff
+	for _, diff := range Diff(cfg) {
+		if diff.Path == "assign.operator_gated_labels" {
+			matches = append(matches, diff)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("assign.operator_gated_labels diff count = %d, want exactly 1", len(matches))
+	}
+	if !reflect.DeepEqual(matches[0].Current, cfg.Assign.OperatorGatedLabels) {
+		t.Fatalf("assign.operator_gated_labels current = %#v, want %#v", matches[0].Current, cfg.Assign.OperatorGatedLabels)
 	}
 }
 
@@ -396,7 +417,7 @@ func TestDiff_MultipleChanges(t *testing.T) {
 	cfg.Theme = "solarized"
 	cfg.Tmux.DefaultPanes = 99
 	cfg.Alerts.Enabled = false
-	cfg.Health.MaxRestarts = 42
+	cfg.Resilience.MaxRestarts = 42
 
 	diffs := Diff(cfg)
 
