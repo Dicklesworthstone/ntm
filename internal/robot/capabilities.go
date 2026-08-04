@@ -450,10 +450,12 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "session", Flag: "--robot-tail", Type: "string", Required: true, Description: "Session name"},
 				{Name: "lines", Flag: "--lines", Type: "int", Required: false, Default: "20", Description: "Lines per pane"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors"},
+				{Name: "fresh", Flag: "--fresh", Type: "bool", Required: false, Description: "Force a direct live capture per pane instead of buffered observer content; per-pane capture_provenance reports 'fresh' when honored"},
 			},
 			Examples: []string{
 				"ntm --robot-tail=myproject",
 				"ntm --robot-tail=myproject --lines=50 --panes=0.1,%7",
+				"ntm --robot-tail=myproject --panes=2 --fresh",
 			},
 		},
 		{

@@ -1205,7 +1205,7 @@ func TestPrintTailNonexistentSession(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 
 	output, err := captureStdout(t, func() error {
-		return PrintTail("nonexistent_session_12345", 20, nil)
+		return PrintTail(TailOptions{Session: "nonexistent_session_12345", Lines: 20})
 	})
 	var exitErr *ProcessExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !exitErr.JSONWritten() {
@@ -1486,7 +1486,7 @@ func TestPrintTailWithSession(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	output, err := captureStdout(t, func() error {
-		return PrintTail(sessionName, 20, nil)
+		return PrintTail(TailOptions{Session: sessionName, Lines: 20})
 	})
 
 	if err != nil {
@@ -1525,7 +1525,7 @@ func TestPrintTailWithPaneFilter(t *testing.T) {
 	targetPane := fmt.Sprintf("%d", panes[0].Index)
 
 	output, err := captureStdout(t, func() error {
-		return PrintTail(sessionName, 10, []string{targetPane})
+		return PrintTail(TailOptions{Session: sessionName, Lines: 10, PaneFilter: []string{targetPane}})
 	})
 
 	if err != nil {
@@ -6448,6 +6448,27 @@ func TestGetTailContentContract(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("marker %q not found in any pane lines: %+v", marker, result.Panes)
+	}
+
+	// --fresh: direct live capture, marked with 'fresh' provenance, content
+	// still present (ntm-mxcp).
+	fresh, err := GetTail(TailOptions{Session: sessionName, Lines: 20, Fresh: true})
+	if err != nil || !fresh.Success {
+		t.Fatalf("GetTail fresh: err=%v success=%v", err, fresh != nil && fresh.Success)
+	}
+	freshFound := false
+	for key, pane := range fresh.Panes {
+		if pane.CaptureProvenance != "fresh" && pane.CaptureProvenance != "live-fallback" {
+			t.Errorf("fresh tail pane %s provenance = %q, want fresh (or live-fallback)", key, pane.CaptureProvenance)
+		}
+		for _, line := range pane.Lines {
+			if strings.Contains(line, marker) {
+				freshFound = true
+			}
+		}
+	}
+	if !freshFound {
+		t.Errorf("marker %q not found in fresh tail output", marker)
 	}
 
 	// Selector matching zero panes: loud error naming valid selectors.

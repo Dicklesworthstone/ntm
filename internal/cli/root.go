@@ -1489,7 +1489,12 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors", "robot-tail")
 				return
 			}
-			if err := robot.PrintTail(session, robotLines, paneFilter); err != nil {
+			if err := robot.PrintTail(robot.TailOptions{
+				Session:    session,
+				Lines:      robotLines,
+				PaneFilter: paneFilter,
+				Fresh:      robotTailFresh,
+			}); err != nil {
 				recordRobotProcessExit(err)
 			}
 			return
@@ -3223,6 +3228,7 @@ var (
 	robotAttentionPoll         string // poll interval for --robot-attention
 	robotAttentionCondition    string // attention condition to wait for
 	robotTail                  string // session name for tail
+	robotTailFresh             bool   // force direct live capture per pane (ntm-mxcp)
 	robotWatchBead             string // session name for bead mention watch
 	robotWatchBeadID           string // bead ID for watch command
 	robotErrors                string // session name for errors
@@ -3758,7 +3764,8 @@ func init() {
 	rootCmd.Flags().StringVar(&robotAttentionTimeout, "attention-timeout", "5m", "Maximum wait time. Optional with --robot-attention. Example: --attention-timeout=10m")
 	rootCmd.Flags().StringVar(&robotAttentionPoll, "attention-poll", "1s", "Polling interval. Optional with --robot-attention. Example: --attention-poll=500ms")
 	rootCmd.Flags().StringVar(&robotAttentionCondition, "attention-condition", "attention", "Which condition to wait for. Optional with --robot-attention. Values: attention, action_required, mail_pending")
-	rootCmd.Flags().StringVar(&robotTail, "robot-tail", "", "Capture recent pane output. Required: SESSION. Example: ntm --robot-tail=myproject --lines=50")
+	rootCmd.Flags().StringVar(&robotTail, "robot-tail", "", "Capture recent pane output. Required: SESSION. Optional: --lines, --panes, --fresh. Example: ntm --robot-tail=myproject --lines=50")
+	rootCmd.Flags().BoolVar(&robotTailFresh, "fresh", false, "Force a direct live capture per pane instead of buffered observer content (ground truth immediately after an action). Use with --robot-tail")
 	rootCmd.Flags().StringVar(&robotWatchBead, "robot-watch-bead", "", "Capture bead mentions across panes plus current bead status (JSON snapshot). Required: SESSION")
 	rootCmd.Flags().StringVar(&robotWatchBeadID, "bead", "", "Bead ID for --robot-watch-bead. Example: --bead=bd-abc123")
 	rootCmd.Flags().StringVar(&robotErrors, "robot-errors", "", "Filter pane output to show only errors. Required: SESSION. Example: ntm --robot-errors=myproject --lines=100")

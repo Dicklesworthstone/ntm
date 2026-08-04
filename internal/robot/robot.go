@@ -3929,6 +3929,11 @@ type TailOptions struct {
 	Session    string
 	Lines      int
 	PaneFilter []string
+	// Fresh forces a direct live capture for every selected pane instead of
+	// the shared observer's buffered content. Post-action verification needs
+	// ground truth immediately after a keypress; buffered observations can
+	// lag transient states for several ticks (ntm-mxcp / AP-41).
+	Fresh bool
 }
 
 // GetTail returns recent pane output for AI consumption.
@@ -4101,7 +4106,22 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			continue
 		}
 
-		cleanOutput := status.StripANSI(paneObservation.RawOutput)
+		rawOutput := paneObservation.RawOutput
+		captureProvenance := "live"
+		if opts.Fresh {
+			// --fresh: bypass the observer's buffered content entirely and
+			// capture the pane directly right now. Buffered observations can
+			// lag transient states for several ticks, which is exactly when
+			// post-action verification consults tail (ntm-mxcp / AP-41). A
+			// failed direct capture keeps the buffered content rather than
+			// degrading a working surface.
+			if freshRaw, freshErr := capturePaneFallback(pane, opts.Lines); freshErr == nil {
+				rawOutput = freshRaw
+				captureProvenance = "fresh"
+				paneCapturedAt = FormatTimestamp(time.Now().UTC())
+			}
+		}
+		cleanOutput := status.StripANSI(rawOutput)
 		outputLines := splitLines(cleanOutput)
 		truncated := len(outputLines) >= opts.Lines
 
@@ -4112,7 +4132,7 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			Truncated:             truncated,
 			PanePID:               pane.PID,
 			CaptureCollectedAt:    paneCapturedAt,
-			CaptureProvenance:     "live",
+			CaptureProvenance:     captureProvenance,
 			ObservationState:      string(paneObservation.Current.Status.State),
 			ObservationFreshness:  string(paneObservation.Current.Freshness),
 			ObservationConfidence: paneObservation.Current.Confidence,
@@ -4140,12 +4160,8 @@ func capturePaneFallback(pane tmux.Pane, lines int) (string, error) {
 
 // PrintTail outputs recent pane output for AI consumption.
 // This is a thin wrapper around GetTail() for CLI output.
-func PrintTail(session string, lines int, paneFilter []string) error {
-	output, err := GetTail(TailOptions{
-		Session:    session,
-		Lines:      lines,
-		PaneFilter: paneFilter,
-	})
+func PrintTail(opts TailOptions) error {
+	output, err := GetTail(opts)
 	if err != nil {
 		return err
 	}
