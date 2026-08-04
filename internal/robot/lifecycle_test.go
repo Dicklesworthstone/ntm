@@ -9,6 +9,17 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/process"
 )
 
+// The double-Ctrl+C exit contract (ntm-3lbb): Claude Code treats the pair as
+// "exit" only when the second tap lands roughly 0.1-0.3s after the first —
+// slower reads as two separate interrupts, faster risks coalescing. Operator
+// docs used to ship three conflicting timings; this pin makes the code the
+// single source of truth.
+func TestLifecycleDoubleTapGap_WithinExitWindow(t *testing.T) {
+	if lifecycleDoubleTapGap < 100*time.Millisecond || lifecycleDoubleTapGap > 300*time.Millisecond {
+		t.Fatalf("lifecycleDoubleTapGap %v outside the empirical 100-300ms double-Ctrl+C exit window", lifecycleDoubleTapGap)
+	}
+}
+
 func TestJoinLifecycleDetail(t *testing.T) {
 	if got := joinLifecycleDetail("", "a"); got != "a" {
 		t.Fatalf("empty existing: got %q", got)
