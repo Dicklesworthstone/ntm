@@ -117,14 +117,15 @@ func TestPrintProbeSessionUnresponsiveForcesCanonicalFailureJSON(t *testing.T) {
 
 func TestValidProbeMethods(t *testing.T) {
 	methods := ValidProbeMethods()
-	if len(methods) != 2 {
-		t.Errorf("expected 2 probe methods, got %d", len(methods))
+	if len(methods) != 3 {
+		t.Errorf("expected 3 probe methods, got %d", len(methods))
 	}
 
 	// Check expected methods exist
 	expected := map[ProbeMethod]bool{
 		ProbeMethodKeystrokeEcho: false,
 		ProbeMethodInterruptTest: false,
+		ProbeMethodWakePing:      false,
 	}
 	for _, m := range methods {
 		expected[m] = true
