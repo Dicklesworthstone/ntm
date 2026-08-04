@@ -319,13 +319,19 @@ func GetActionableRecommendationsContext(ctx context.Context, dir string, n int)
 		return []TriageRecommendation{}, nil
 	}
 
-	labelsByID, labelsErr := readyBeadLabelsContext(ctx, dir)
+	labelsByID, typesByID, labelsErr := readyBeadLabelsContext(ctx, dir)
 	if labelsErr != nil {
 		return nil, classifyActionableLabelsError(ctx, labelsErr)
 	}
 	for _, item := range planItems {
 		if _, verified := labelsByID[item.ID]; !verified {
 			return nil, fmt.Errorf("%w: open actionable plan item %q was absent from both br ready and br list --status open", ErrActionableLabelsUnverified, item.ID)
+		}
+		// Type evidence follows the same coverage invariant as labels: without
+		// a verified issue type the classifier cannot prove a plan item is not
+		// a container (epic), so assignment must stop rather than dispatch it.
+		if strings.TrimSpace(typesByID[item.ID]) == "" {
+			return nil, fmt.Errorf("%w: open actionable plan item %q has no issue type in br ready or br list --status open", ErrActionableLabelsUnverified, item.ID)
 		}
 	}
 
@@ -348,6 +354,7 @@ func GetActionableRecommendationsContext(ctx context.Context, dir string, n int)
 		}
 		rec.Status = item.Status
 		rec.Priority = item.Priority
+		rec.Type = typesByID[id]
 		rec.Labels = append([]string(nil), labelsByID[id]...)
 		rec.BlockedBy = nil
 		rec.UnblocksIDs = append([]string(nil), item.Unblocks...)
@@ -362,6 +369,7 @@ func GetActionableRecommendationsContext(ctx context.Context, dir string, n int)
 		recs = append(recs, TriageRecommendation{
 			ID:          item.ID,
 			Title:       item.Title,
+			Type:        typesByID[item.ID],
 			Status:      item.Status,
 			Priority:    item.Priority,
 			Labels:      append([]string(nil), labelsByID[item.ID]...),
@@ -404,12 +412,18 @@ func classifyActionableLabelsError(ctx context.Context, err error) error {
 // A br error or parse failure on either source is fatal: an incomplete label
 // map would silently bypass the operator gate.
 func readyBeadLabels(dir string) map[string][]string {
-	labels, _ := readyBeadLabelsContext(context.Background(), dir)
+	labels, _, _ := readyBeadLabelsContext(context.Background(), dir)
 	return labels
 }
 
-func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]string, error) {
+// readyBeadLabelsContext also returns each bead's issue type (map ID ->
+// issue_type) from the same br rows, so plan-sourced recommendations recover
+// type evidence exactly like label evidence: bv --robot-plan omits both, yet
+// the assignment classifier must exclude container types (epic) from
+// auto-dispatch (GH#242 / ntm-e165).
+func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]string, map[string]string, error) {
 	labels := make(map[string][]string)
+	issueTypes := make(map[string]string)
 	// Order matters: `br ready` first so its non-empty labels win, then the full
 	// open list (which includes epics) fills every absent or empty label gap. A
 	// large explicit --limit keeps each map complete on br builds whose default
@@ -421,14 +435,15 @@ func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]strin
 	} {
 		output, err := RunBdContext(ctx, dir, args...)
 		if err != nil {
-			return nil, fmt.Errorf("read bead labels (br %s): %w", strings.Join(args, " "), err)
+			return nil, nil, fmt.Errorf("read bead labels (br %s): %w", strings.Join(args, " "), err)
 		}
 		items, err := UnmarshalBdList[struct {
-			ID     string          `json:"id"`
-			Labels json.RawMessage `json:"labels"`
+			ID        string          `json:"id"`
+			IssueType string          `json:"issue_type"`
+			Labels    json.RawMessage `json:"labels"`
 		}](output)
 		if err != nil {
-			return nil, fmt.Errorf("parse bead labels (br %s): %w", strings.Join(args, " "), err)
+			return nil, nil, fmt.Errorf("parse bead labels (br %s): %w", strings.Join(args, " "), err)
 		}
 		for _, it := range items {
 			it.ID = strings.TrimSpace(it.ID)
@@ -438,16 +453,21 @@ func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]strin
 			var itemLabels []string
 			if len(it.Labels) > 0 {
 				if strings.TrimSpace(string(it.Labels)) == "null" {
-					return nil, fmt.Errorf("parse bead labels (br %s): bead %q has a null or blank labels container", strings.Join(args, " "), it.ID)
+					return nil, nil, fmt.Errorf("parse bead labels (br %s): bead %q has a null or blank labels container", strings.Join(args, " "), it.ID)
 				}
 				if err := json.Unmarshal(it.Labels, &itemLabels); err != nil {
-					return nil, fmt.Errorf("parse bead labels (br %s): bead %q labels: %w", strings.Join(args, " "), it.ID, err)
+					return nil, nil, fmt.Errorf("parse bead labels (br %s): bead %q labels: %w", strings.Join(args, " "), it.ID, err)
 				}
 			}
 			for labelIndex := range itemLabels {
 				itemLabels[labelIndex] = strings.TrimSpace(itemLabels[labelIndex])
 				if itemLabels[labelIndex] == "" {
-					return nil, fmt.Errorf("parse bead labels (br %s): bead %q has a null or blank label at index %d", strings.Join(args, " "), it.ID, labelIndex)
+					return nil, nil, fmt.Errorf("parse bead labels (br %s): bead %q has a null or blank label at index %d", strings.Join(args, " "), it.ID, labelIndex)
+				}
+			}
+			if issueType := strings.TrimSpace(it.IssueType); issueType != "" {
+				if _, seen := issueTypes[it.ID]; !seen {
+					issueTypes[it.ID] = issueType
 				}
 			}
 			existing, seen := labels[it.ID]
@@ -460,7 +480,7 @@ func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]strin
 			labels[it.ID] = append([]string(nil), itemLabels...)
 		}
 	}
-	return labels, nil
+	return labels, issueTypes, nil
 }
 
 // GetTriageRecommendations returns the top N recommendations
