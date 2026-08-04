@@ -83,9 +83,10 @@ type PaneResponse struct {
 	Width               int    `json:"width,omitempty"`
 	Height              int    `json:"height,omitempty"`
 	Command             string `json:"command,omitempty"`
-	// PaneStartedAt is the pane's creation time (tmux #{pane_start_time},
-	// RFC3339) so age-based replacement policies work from robot output
-	// instead of raw tmux format strings (ntm-qvpm). Empty when unknown.
+	// PaneStartedAt is the pane's creation time (RFC3339), sourced from the
+	// pane shell PID's process start time, so age-based replacement policies
+	// work from robot output instead of raw tmux plumbing (ntm-qvpm). Empty
+	// when unknown.
 	PaneStartedAt  string  `json:"pane_started_at,omitempty"`
 	Status         string  `json:"status,omitempty"`          // idle, working, error
 	PromptDelayMs  int64   `json:"prompt_delay_ms,omitempty"` // Stagger delay in milliseconds
