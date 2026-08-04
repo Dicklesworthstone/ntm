@@ -3169,20 +3169,36 @@ func loadRobotSendMessage(msg, msgFile string) (string, error) {
 		return msg, nil
 	}
 
-	f, err := os.Open(msgFile)
-	if err != nil {
-		return "", fmt.Errorf("open msg file: %w", err)
+	// "--msg-file=-" reads the message from stdin (ntm-kd2s): command-safety
+	// filters (dcg PreToolUse) match the full command string and cannot tell
+	// executable text from message content, so a prompt that merely MENTIONS
+	// a destructive command (e.g. instructions about `git reset --hard`)
+	// blocked the whole dispatch. Passing the payload via stdin or a file
+	// keeps it out of the scanned command line entirely.
+	var f *os.File
+	if msgFile == "-" {
+		f = os.Stdin
+	} else {
+		var err error
+		f, err = os.Open(msgFile)
+		if err != nil {
+			return "", fmt.Errorf("open msg file: %w", err)
+		}
 	}
 
 	// Read up to 10MB + 1 byte to detect truncation
 	limit := int64(10 * 1024 * 1024)
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
-		_ = f.Close()
+		if f != os.Stdin {
+			_ = f.Close()
+		}
 		return "", fmt.Errorf("read msg file: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("close msg file: %w", err)
+	if f != os.Stdin {
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("close msg file: %w", err)
+		}
 	}
 
 	if int64(len(data)) > limit {
@@ -3864,7 +3880,7 @@ func init() {
 	// Robot-send flags for batch messaging
 	rootCmd.Flags().StringVar(&robotSend, "robot-send", "", "Send message to panes atomically. Required: SESSION, --msg or --msg-file. Example: ntm --robot-send=proj --msg='Fix auth'")
 	rootCmd.Flags().StringVar(&robotSendMsg, "msg", "", "Shared message payload. Required with --robot-send unless --msg-file is set. Optional with --robot-ack (echo detection) and --robot-interrupt (post-interrupt retask)")
-	rootCmd.Flags().StringVar(&robotSendMsgFile, "msg-file", "", "Read message content from file (use with --robot-send)")
+	rootCmd.Flags().StringVar(&robotSendMsgFile, "msg-file", "", "Read message content from file, or stdin with '-'. Keeps prompt text out of the scanned command line so command-safety filters cannot mistake message content for executable commands. Use with --robot-send")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "enter", true, "Send Enter after pasting message (default: true). Use --enter=false to paste without submitting")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "submit", true, "Alias for --enter")
 	rootCmd.Flags().BoolVar(&robotSendAll, "all", false, "Include user pane (default: agents only). Optional with --robot-send, --robot-interrupt, --robot-restart-pane, and --robot-support-bundle")

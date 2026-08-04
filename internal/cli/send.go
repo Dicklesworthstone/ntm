@@ -1231,12 +1231,25 @@ func emitSendProjectResult(result sendProjectResult, cause error) error {
 // 2. If stdin has data (piped/redirected), read from stdin
 // 3. Otherwise, use positional arguments
 // The prefix and suffix are applied when reading from file or stdin.
+// readPromptFileOrStdin reads a prompt payload from a path, with "-" meaning
+// stdin (ntm-kd2s / AP-52: file- and stdin-delivered payloads stay out of the
+// command line that dcg-style safety filters scan).
+func readPromptFileOrStdin(path string) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(io.LimitReader(os.Stdin, 10*1024*1024))
+	}
+	return os.ReadFile(path)
+}
+
 func getPromptContent(args []string, promptFile, prefix, suffix string) (string, string, error) {
 	var content string
 
-	// Priority 1: Read from file if specified
+	// Priority 1: Read from file if specified. "-" reads stdin (ntm-kd2s):
+	// keeps destructive-looking prompt TEXT out of the scanned command line
+	// so dcg-style command filters cannot mistake message content for an
+	// executable command.
 	if promptFile != "" {
-		data, err := os.ReadFile(promptFile)
+		data, err := readPromptFileOrStdin(promptFile)
 		if err != nil {
 			return "", "", fmt.Errorf("reading prompt file: %w", err)
 		}
@@ -1369,9 +1382,10 @@ func runSendWithTemplate(templateVars []string, promptFile string, contextFiles 
 		Session:   opts.Session,
 	}
 
-	// Read file content if --file specified (used as {{file}} variable)
+	// Read file content if --file specified (used as {{file}} variable).
+	// "-" reads stdin (ntm-kd2s).
 	if promptFile != "" {
-		content, err := os.ReadFile(promptFile)
+		content, err := readPromptFileOrStdin(promptFile)
 		if err != nil {
 			return fmt.Errorf("reading file '%s': %w", promptFile, err)
 		}
