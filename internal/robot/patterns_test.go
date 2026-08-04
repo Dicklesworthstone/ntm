@@ -1063,3 +1063,38 @@ func TestGetPatternsByAgent_NormalizesAlias(t *testing.T) {
 
 	t.Fatal("GetPatternsByAgent(\"cc\") did not include claude-specific patterns")
 }
+
+// Antigravity workspace-trust dialog detection (GH#230 / ntm-jhd6): a pane
+// parked on the first-run trust menu must classify as ERROR, not idle/OK.
+func TestAgyTrustPromptClassifiesAsError(t *testing.T) {
+	dialog := "Welcome to Antigravity\n" +
+		"Do you trust the contents of this project?\n" +
+		"  > Yes, I trust this folder\n" +
+		"    No, browse in restricted mode\n"
+
+	for _, agentType := range []string{"agy", "antigravity"} {
+		matches := DefaultLibrary.Match(dialog, agentType)
+		foundError := false
+		for _, m := range matches {
+			if m.Category == CategoryError && m.State == StateError {
+				foundError = true
+			}
+		}
+		if !foundError {
+			t.Errorf("trust dialog did not classify as error for agent type %q (matches: %+v)", agentType, matches)
+		}
+	}
+
+	// The dialog patterns must not fire for other agent types...
+	for _, m := range DefaultLibrary.Match(dialog, "claude") {
+		if m.Pattern == "agy_trust_prompt" || m.Pattern == "agy_trust_option" {
+			t.Errorf("agy trust pattern leaked to claude panes: %+v", m)
+		}
+	}
+	// ...and a normal agy working screen must not match them.
+	for _, m := range DefaultLibrary.Match("Analyzing repository structure...\n", "antigravity") {
+		if m.Pattern == "agy_trust_prompt" || m.Pattern == "agy_trust_option" {
+			t.Errorf("trust pattern matched normal agy output: %+v", m)
+		}
+	}
+}

@@ -124,6 +124,16 @@ func defaultPatterns() []Pattern {
 		{Name: "gemini_prompt", RegexStr: `(?i)gemini\s*>?\s*$`, Agent: "gemini", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Gemini prompt"},
 		{Name: "gemini_triple_arrow", RegexStr: `>>>\s*$`, Agent: "gemini", State: StateWaiting, Category: CategoryIdle, Priority: 90, Description: "Gemini triple arrow prompt"},
 
+		// Antigravity (agy) first-run workspace-trust dialog: the pane is
+		// alive but permanently stalled on a menu waiting for a keystroke.
+		// Without these, health reported such panes as OK — the worst
+		// unattended failure mode: green but doing nothing (GH#230 /
+		// ntm-jhd6). Classified as ERROR so health/is-working/wait surface
+		// the pane as needing attention; the CategoryError live-window
+		// filter keeps stale scrollback quotes from re-triggering it.
+		{Name: "agy_trust_prompt", RegexStr: `(?i)do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+project`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 210, Description: "Antigravity workspace-trust dialog question (pane blocked on keystroke)"},
+		{Name: "agy_trust_option", RegexStr: `(?i)yes,\s+i\s+trust\s+this\s+folder`, Agent: "antigravity", State: StateError, Category: CategoryError, Priority: 209, Description: "Antigravity workspace-trust dialog option line (pane blocked on keystroke)"},
+
 		// Generic shell prompts (user/fallback)
 		{Name: "shell_dollar", RegexStr: `\$\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell dollar prompt"},
 		{Name: "shell_percent", RegexStr: `%\s*$`, Agent: "*", State: StateWaiting, Category: CategoryIdle, Priority: 20, Description: "Shell percent prompt"},
@@ -433,7 +443,7 @@ func isGenericShellIdlePattern(name string) bool {
 
 func isKnownAgentPatternType(agentType string) bool {
 	switch normalizeAgentType(agentType) {
-	case "claude", "codex", "gemini", "cursor", "windsurf", "aider", "oc", "ollama":
+	case "claude", "codex", "gemini", "antigravity", "cursor", "windsurf", "aider", "oc", "ollama":
 		return true
 	default:
 		return false
