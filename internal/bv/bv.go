@@ -2029,7 +2029,7 @@ func nullableEnvironment(name string) any {
 
 // computeBeadsContentHash replicates beads_rust's util::content_hash: SHA-256
 // over stable-ordered fields, each encoded as an 8-byte little-endian length
-// prefix followed by raw UTF-8 bytes, including the reserved placeholder
+// prefix followed by raw UTF-8 bytes, including the reserved empty
 // slots. It must stay byte-compatible with beads_rust/src/util/hash.rs so
 // NTM-side finalization produces the same hash br would have recorded.
 func computeBeadsContentHash(title, description, design, acceptanceCriteria, notes,
@@ -2064,7 +2064,7 @@ func computeBeadsContentHash(title, description, design, acceptanceCriteria, not
 	writeField(sourceSystem)
 	writeFlag(pinned, "pinned")
 	writeFlag(isTemplate, "template")
-	// Reserved placeholder slots (quality_score, crystallizes, await_type,
+	// Reserved empty slots (quality_score, crystallizes, await_type,
 	// await_id, timeout, holder, hook_bead, role_bead, agent_state, role_type,
 	// rig, mol_type, work_type, event_kind, actor, target, payload).
 	writeField("")

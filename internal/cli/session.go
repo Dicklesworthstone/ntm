@@ -1180,17 +1180,24 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 	// Get error color for status display
 	errorColor := color(t.Error)
 
-	for i, p := range panes {
+	// The number shown for each pane is its canonical tmux selector — the
+	// exact value `ntm send --pane=` accepts. Never render an enumeration
+	// ordinal here: a 1-based row number silently misroutes dispatches
+	// against the 0-based tmux pane index (ntm-bb87).
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+	selectorWidth := 0
+	for _, p := range panes {
+		if l := len(p.Ref().Canonical(multiWindow)); l > selectorWidth {
+			selectorWidth = l
+		}
+	}
+
+	for _, p := range panes {
 		typeColorKey, typeIcon := sessionPanePresentation(p, t, ic)
 		typeColor := color(typeColorKey)
 
-		// Number for quick selection (1-9)
-		num := ""
-		if i < 9 {
-			num = fmt.Sprintf("%s%d%s ", overlay, i+1, reset)
-		} else {
-			num = "  "
-		}
+		selector := p.Ref().Canonical(multiWindow)
+		num := fmt.Sprintf("%s%-*s%s ", overlay, selectorWidth, selector, reset)
 
 		// The bounded session observation is shared by display and suggestions.
 		agentStatus, ok := statusByPaneID[p.ID]
@@ -1276,6 +1283,7 @@ func runStatusOnce(ctx context.Context, w io.Writer, session string, opts status
 	}
 
 	fmt.Fprintf(w, "  %s%s%s\n", surface, "─────────────────────────────────────────────────────────", reset)
+	fmt.Fprintf(w, "  %sPane numbers are tmux selectors: ntm send %s --pane=<N>%s\n", subtext, session, reset)
 	fmt.Fprintln(w)
 
 	var contextRows []contextRow
