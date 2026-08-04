@@ -117,7 +117,85 @@ type RestartPaneOptions struct {
 	ProjectDir    string         // Authoritative project directory resolved from the explicit session
 	ConfigPath    string         // Selected global config used for assignment policy
 	RequireConfig bool           // ConfigPath was explicitly selected and must exist
-	Deps          *RestartPaneDependencies
+	// Model optionally overrides the relaunched agent's model using the spawn
+	// variant grammar (`model` or `model@effort`). Validated against every
+	// target pane's agent type before any respawn (ntm-yusj).
+	Model string
+	// AgentArgs are raw arguments appended after the relaunch command
+	// (last-flag-wins), for overrides the model grammar cannot express.
+	AgentArgs string
+	Deps      *RestartPaneDependencies
+}
+
+// restartLaunchOverride is the parsed relaunch override (ntm-yusj).
+type restartLaunchOverride struct {
+	Model  string
+	Effort string
+	Args   string
+}
+
+func (o restartLaunchOverride) empty() bool {
+	return o.Model == "" && o.Effort == "" && o.Args == ""
+}
+
+// parseRestartLaunchOverride validates --restart-model / --restart-agent-args
+// into a launch override. The model field uses the spawn variant grammar's
+// model[@effort] form.
+func parseRestartLaunchOverride(model, args string) (restartLaunchOverride, error) {
+	override := restartLaunchOverride{Args: strings.TrimSpace(args)}
+	value := strings.TrimSpace(model)
+	if value == "" {
+		return override, nil
+	}
+	if at := strings.LastIndex(value, "@"); at >= 0 {
+		override.Effort = strings.TrimSpace(value[at+1:])
+		value = strings.TrimSpace(value[:at])
+		if override.Effort == "" {
+			return override, fmt.Errorf("empty reasoning effort after '@' in restart model %q (use model or model@effort)", model)
+		}
+	}
+	if value == "" {
+		return override, fmt.Errorf("empty model in restart model %q (use model or model@effort)", model)
+	}
+	override.Model = value
+	return override, nil
+}
+
+// restartOverrideAppendFlags composes the per-agent-type flags that carry a
+// model/effort override when the configured relaunch command does not render
+// them itself. Appending after the configured args relies on last-flag-wins
+// parsing, which claude, codex, and gemini all honor. Agent types without a
+// known model flag reject the override loudly instead of dropping it.
+func restartOverrideAppendFlags(resolvedType string, override restartLaunchOverride, needModel, needEffort bool) (string, error) {
+	var flags strings.Builder
+	switch resolvedType {
+	case "claude":
+		if needModel && override.Model != "" {
+			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
+		}
+		if needEffort && override.Effort != "" {
+			flags.WriteString(" --effort " + tmux.ShellQuote(override.Effort))
+		}
+	case "codex":
+		if needModel && override.Model != "" {
+			flags.WriteString(" -m " + tmux.ShellQuote(override.Model))
+		}
+		if needEffort && override.Effort != "" {
+			flags.WriteString(" -c model_reasoning_effort=" + tmux.ShellQuote(override.Effort))
+		}
+	case "gemini":
+		if override.Effort != "" {
+			return "", fmt.Errorf("agent type %q has no reasoning-effort flag; use a model-only override", resolvedType)
+		}
+		if needModel && override.Model != "" {
+			flags.WriteString(" --model " + tmux.ShellQuote(override.Model))
+		}
+	default:
+		if override.Model != "" || override.Effort != "" {
+			return "", fmt.Errorf("agent type %q does not support a restart model override; supported: claude, codex, gemini", resolvedType)
+		}
+	}
+	return flags.String(), nil
 }
 
 // RestartPaneDependencies exposes assignment ports for focused safety tests.
@@ -266,6 +344,32 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		return output, nil
 	}
 
+	// Validate any relaunch override against every target before the first
+	// respawn, so an unsupported override aborts with nothing mutated
+	// (ntm-yusj).
+	launchOverride, err := parseRestartLaunchOverride(opts.Model, opts.AgentArgs)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use --restart-model=model or model@effort, e.g. --restart-model=gpt-5.6-terra@high")
+		return output, nil
+	}
+	if !launchOverride.empty() {
+		for _, pane := range targetPanes {
+			resolvedType := restartPaneAgentType(pane)
+			if !restartTargetIsAgent(resolvedType) {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("relaunch override cannot target non-agent pane %s (type %s)", paneTargetKey(pane, multiWindow), resolvedType),
+					ErrCodeInvalidFlag,
+					"Restrict --panes/--type to agent panes when using --restart-model/--restart-agent-args",
+				)
+				return output, nil
+			}
+			if _, err := restartOverrideAppendFlags(resolvedType, launchOverride, true, true); err != nil {
+				output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use --restart-model only with claude, codex, or gemini panes")
+				return output, nil
+			}
+		}
+	}
+
 	var beadPreflight *restartBeadPreflight
 	promptToSend := strings.TrimSpace(opts.Prompt)
 	if beadID := strings.TrimSpace(opts.Bead); beadID != "" {
@@ -376,7 +480,13 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 				continue
 			}
 
-			launchCmd := restartAgentLaunchCommand(cfg, info.ResolvedType, info.Variant)
+			launchCmd, launchCmdErr := restartAgentLaunchCommandWithOverride(cfg, info.ResolvedType, info.Variant, launchOverride)
+			if launchCmdErr != nil {
+				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("compose relaunch command: %v", launchCmdErr))
+				output.AgentRelaunched[paneKey] = false
+				output.AgentRelaunchStatus[paneKey] = RestartAgentRelaunchFailed
+				continue
+			}
 			outcome, phase, lifecycleErr := relaunchRestartPaneAgentContext(
 				ctx,
 				info,
@@ -1373,12 +1483,27 @@ func restartModelVars(cfg *config.Config, agentType, variant string) config.Agen
 // command — the same command robot-spawn delivers by keystroke — rendered with
 // the pane's recovered model pin (#223), and falls back to the canonical
 // launch alias (cc/cod/gmi/...) when no usable command is configured (#187).
+// restartAgentLaunchCommand resolves the relaunch command without an
+// override; kept as the zero-override entry point for existing callers.
 func restartAgentLaunchCommand(cfg *config.Config, agentType, variant string) string {
+	cmd, err := restartAgentLaunchCommandWithOverride(cfg, agentType, variant, restartLaunchOverride{})
+	if err != nil {
+		return restartLaunchAlias(agentType)
+	}
+	return cmd
+}
+
+// restartAgentLaunchCommandWithOverride composes the relaunch command,
+// honoring an explicit model/effort/args override (ntm-yusj). Without an
+// override it preserves the historical silent-fallback-to-alias behavior;
+// with one, every failure that would drop the override is a loud error.
+func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, variant string, override restartLaunchOverride) (string, error) {
 	alias := restartLaunchAlias(agentType)
+	resolved := ResolveAgentType(agentType)
 
 	var tmpl string
 	if cfg != nil {
-		switch ResolveAgentType(agentType) {
+		switch resolved {
 		case "claude":
 			tmpl = cfg.Agents.Claude
 		case "codex":
@@ -1405,18 +1530,74 @@ func restartAgentLaunchCommand(cfg *config.Config, agentType, variant string) st
 			tmpl = cfg.Agents.Ollama
 		}
 	}
-	if strings.TrimSpace(tmpl) == "" {
-		return alias
+	appendArgs := func(cmd string) string {
+		if override.Args != "" {
+			return cmd + " " + override.Args
+		}
+		return cmd
 	}
 
-	rendered, err := config.GenerateAgentCommand(tmpl, restartModelVars(cfg, ResolveAgentType(agentType), variant))
+	if strings.TrimSpace(tmpl) == "" {
+		if override.Model == "" && override.Effort == "" {
+			return appendArgs(alias), nil
+		}
+		flags, err := restartOverrideAppendFlags(resolved, override, true, true)
+		if err != nil {
+			return "", err
+		}
+		return appendArgs(alias + flags), nil
+	}
+
+	vars := restartModelVars(cfg, resolved, variant)
+	referencesModel := strings.Contains(tmpl, ".Model")
+	referencesEffort := strings.Contains(tmpl, ".ReasoningEffort")
+	if override.Model != "" {
+		resolvedModel := override.Model
+		if cfg != nil {
+			if fullName := cfg.Models.GetModelName(resolved, override.Model); strings.TrimSpace(fullName) != "" {
+				resolvedModel = fullName
+			}
+		}
+		vars.Model = resolvedModel
+		vars.ModelAlias = override.Model
+		// ModelRequested triggers GenerateAgentCommand's silent-drop guard;
+		// only assert it when the template can actually render the model.
+		// Otherwise the override is carried by appended flags below.
+		vars.ModelRequested = referencesModel
+	}
+	if override.Effort != "" {
+		vars.ReasoningEffort = override.Effort
+	}
+
+	rendered, err := config.GenerateAgentCommand(tmpl, vars)
 	if err != nil || strings.TrimSpace(rendered) == "" {
-		return alias
+		if override.empty() {
+			return alias, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("configured %s agent command rendered empty", resolved)
+		}
+		return "", fmt.Errorf("render relaunch command with override: %w", err)
 	}
+
+	needModel := override.Model != "" && !referencesModel
+	needEffort := override.Effort != "" && !referencesEffort
+	if needModel || needEffort || override.Model != "" || override.Effort != "" {
+		flags, err := restartOverrideAppendFlags(resolved, override, needModel, needEffort)
+		if err != nil {
+			return "", err
+		}
+		rendered += flags
+	}
+	rendered = appendArgs(rendered)
+
 	if _, err := tmux.SanitizePaneCommand(rendered); err != nil {
-		return alias
+		if override.empty() {
+			return alias, nil
+		}
+		return "", fmt.Errorf("relaunch command with override failed sanitization: %w", err)
 	}
-	return rendered
+	return rendered, nil
 }
 
 // paneShellPIDContext queries the pane's current shell PID from tmux. After
