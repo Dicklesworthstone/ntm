@@ -682,3 +682,44 @@ func TestAgentSpecsValue_AgyRelaxedModelCharset(t *testing.T) {
 		}
 	}
 }
+
+// Tests for the model@effort variant suffix (ntm-mjf7).
+func TestParseAgentSpecEffortAtSuffix(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		wantCount  int
+		wantModel  string
+		wantEffort string
+		wantErr    string
+	}{
+		{name: "model with effort suffix", input: "2:gpt-5.6-terra@high", wantCount: 2, wantModel: "gpt-5.6-terra", wantEffort: "high"},
+		{name: "colon effort still works", input: "2:gpt-5.6-terra:high", wantCount: 2, wantModel: "gpt-5.6-terra", wantEffort: "high"},
+		{name: "bare model unchanged", input: "3:opus", wantCount: 3, wantModel: "opus"},
+		{name: "empty effort after at", input: "1:gpt-5.6-terra@", wantErr: "empty reasoning effort"},
+		{name: "empty model before at", input: "1:@high", wantErr: "empty model"},
+		{name: "both at and colon effort", input: "1:model@high:ultra", wantErr: "twice"},
+		{name: "effort with slash rejected", input: "1:model@hi/gh", wantErr: "invalid characters in reasoning effort"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := ParseAgentSpec(tc.input)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ParseAgentSpec(%q) expected error containing %q, got %+v", tc.input, tc.wantErr, spec)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseAgentSpec(%q): %v", tc.input, err)
+			}
+			if spec.Count != tc.wantCount || spec.Model != tc.wantModel || spec.ReasoningEffort != tc.wantEffort {
+				t.Errorf("ParseAgentSpec(%q) = {Count:%d Model:%q Effort:%q}, want {%d %q %q}",
+					tc.input, spec.Count, spec.Model, spec.ReasoningEffort, tc.wantCount, tc.wantModel, tc.wantEffort)
+			}
+		})
+	}
+}

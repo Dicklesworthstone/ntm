@@ -26,6 +26,12 @@ var (
 	// shell metacharacters (;, |, &, $, backtick, quotes, backslash, redirects,
 	// newlines) remain rejected, preventing injection.
 	agyModelPattern = regexp.MustCompile(`^[A-Za-z0-9._/@:+ ()-]+$`)
+
+	// effortPattern restricts the '@effort' suffix (ntm-mjf7) to a tighter
+	// charset than models: effort hints are plain words like "high" or
+	// "ultra", so '@', '/', and ':' are excluded to keep the grammar
+	// unambiguous.
+	effortPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 )
 
 // AgentType represents the type of AI agent
@@ -141,6 +147,26 @@ func parseAgentSpec(value string, relaxedModel bool) (AgentSpec, error) {
 		model := strings.TrimSpace(parts[1])
 		if model == "" {
 			return spec, fmt.Errorf("empty model in agent spec: %q", value)
+		}
+		// `model@effort` is shorthand for `model:effort` (ntm-mjf7): the
+		// suffix after the last '@' is the reasoning-effort hint. Combining
+		// both forms (`N:model@effort:effort`) is ambiguous and rejected.
+		if at := strings.LastIndex(model, "@"); at >= 0 {
+			effort := strings.TrimSpace(model[at+1:])
+			model = strings.TrimSpace(model[:at])
+			if model == "" {
+				return spec, fmt.Errorf("empty model before '@' in agent spec: %q", value)
+			}
+			if effort == "" {
+				return spec, fmt.Errorf("empty reasoning effort after '@' in agent spec: %q (use N:model or N:model@effort)", value)
+			}
+			if len(parts) > 2 {
+				return spec, fmt.Errorf("agent spec %q sets reasoning effort twice (both '@%s' and ':%s'); use one form", value, effort, strings.TrimSpace(parts[2]))
+			}
+			if !effortPattern.MatchString(effort) {
+				return spec, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ + -", effort)
+			}
+			spec.ReasoningEffort = effort
 		}
 		if !modelRe.MatchString(model) {
 			return spec, fmt.Errorf("invalid characters in model %q; allowed: %s", model, allowedDesc)
