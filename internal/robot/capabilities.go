@@ -988,7 +988,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
-			Name:        "exit_cli",
+			Name:        "exit-cli",
 			Flag:        "--robot-exit-cli",
 			Category:    "control",
 			Description: "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
@@ -1003,7 +1003,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
-			Name:        "kill_agent",
+			Name:        "kill-agent",
 			Flag:        "--robot-kill-agent",
 			Category:    "control",
 			Description: "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
@@ -1018,7 +1018,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
-			Name:        "kill_pane",
+			Name:        "kill-pane",
 			Flag:        "--robot-kill-pane",
 			Category:    "control",
 			Description: "Remove specific panes from a session; the session and sibling panes survive (recovery-ladder Rung 6). Refuses to remove every pane or the user pane without --force.",
