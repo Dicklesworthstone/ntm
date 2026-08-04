@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 128,
+  "schema_type_count": 130,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -55,6 +55,7 @@
     "env",
     "errors",
     "events",
+    "exit_cli",
     "file_beads",
     "file_hotspots",
     "file_relations",
@@ -88,6 +89,7 @@
     "jfp_suggest",
     "jfp_tags",
     "jfp_update",
+    "kill_agent",
     "label_attention",
     "label_flow",
     "label_health",
@@ -144,7 +146,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 139,
+  "surface_count": 141,
   "surfaces": [
     {
       "category": "state",
@@ -852,6 +854,21 @@
     },
     {
       "category": "control",
+      "flag": "--robot-exit-cli",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "exit_cli",
+      "schema_id": "ntm:robot:exit-cli:v1",
+      "schema_type": "exit_cli"
+    },
+    {
+      "category": "control",
       "flag": "--robot-interrupt",
       "has_action_handoff": false,
       "has_attention_ops": false,
@@ -864,6 +881,21 @@
       "name": "interrupt",
       "schema_id": "ntm:robot:interrupt:v1",
       "schema_type": "interrupt"
+    },
+    {
+      "category": "control",
+      "flag": "--robot-kill-agent",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "kill_agent",
+      "schema_id": "ntm:robot:kill-agent:v1",
+      "schema_type": "kill_agent"
     },
     {
       "category": "control",

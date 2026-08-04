@@ -988,6 +988,36 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "exit_cli",
+			Flag:        "--robot-exit-cli",
+			Category:    "control",
+			Description: "Gracefully exit agent CLIs (encapsulated double Ctrl+C choreography) without destroying panes; verifies via the pane's foreground command.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-exit-cli", Type: "string", Required: true, Description: "Session name"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors (default: all agent panes)"},
+				{Name: "relaunch", Flag: "--relaunch", Type: "bool", Required: false, Description: "Relaunch the agent CLI in the preserved shell and verify boot"},
+			},
+			Examples: []string{
+				"ntm --robot-exit-cli=proj --panes=1",
+				"ntm --robot-exit-cli=proj --panes=2 --relaunch",
+			},
+		},
+		{
+			Name:        "kill_agent",
+			Flag:        "--robot-kill-agent",
+			Category:    "control",
+			Description: "SIGTERM-then-SIGKILL the agent process tree under a pane's shell while preserving the pane and shell; structured per-pane evidence.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-kill-agent", Type: "string", Required: true, Description: "Session name"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors (default: all agent panes)"},
+				{Name: "relaunch", Flag: "--relaunch", Type: "bool", Required: false, Description: "Relaunch the agent CLI in the preserved shell and verify boot"},
+			},
+			Examples: []string{
+				"ntm --robot-kill-agent=proj --panes=2",
+				"ntm --robot-kill-agent=proj --panes=2 --relaunch",
+			},
+		},
+		{
 			Name:        "smart-restart",
 			Flag:        "--robot-smart-restart",
 			Category:    "control",

@@ -117,6 +117,8 @@ var SchemaCommand = map[string]interface{}{
 	"inspect_quota":        InspectQuotaOutput{},
 	"inspect_incident":     InspectIncidentOutput{},
 	"incident_resolve":     IncidentResolveOutput{},
+	"exit_cli":             ExitCLIOutput{},
+	"kill_agent":           KillAgentOutput{},
 
 	// Ensemble
 	"ensemble":         EnsembleOutput{},

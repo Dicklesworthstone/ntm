@@ -2169,6 +2169,35 @@ Shell Integration:
 			}
 			return
 		}
+		if robotExitCLI != "" || robotKillAgent != "" {
+			verb, flagValue, flagName := "exit-cli", robotExitCLI, "robot-exit-cli"
+			if robotKillAgent != "" {
+				verb, flagValue, flagName = "kill-agent", robotKillAgent, "robot-kill-agent"
+			}
+			session, err := resolveRobotLiveSession(cmd.Context(), flagValue)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", flagName)
+				return
+			}
+			var paneFilter []string
+			if robotPanes != "" {
+				paneFilter = strings.Split(robotPanes, ",")
+			}
+			opts := robot.LifecycleOptions{
+				Session:  session,
+				Panes:    paneFilter,
+				Relaunch: robotLifecycleRelaunch,
+			}
+			if verb == "exit-cli" {
+				err = robot.PrintExitCLI(cmd.Context(), opts)
+			} else {
+				err = robot.PrintKillAgent(cmd.Context(), opts)
+			}
+			if err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
 		if robotRestartPane != "" {
 			session, err := resolveRobotLiveSession(cmd.Context(), robotRestartPane)
 			if err != nil {
@@ -3542,33 +3571,36 @@ var (
 	robotSharedSession     string // shared --session flag: canonical form for the deprecated *-session prefixed flags (ntm#214)
 
 	// TUI Parity robot flags - expose TUI dashboard functionality to AI agents
-	robotFiles           string // session name for file changes query
-	robotFilesWindow     string // time window: 5m, 15m, 1h, all (default: 15m)
-	robotFilesLimit      int    // max changes to return
-	robotInspectWork     string // bead id for projection-backed work inspection
-	robotInspectCoord    string // agent mail identity for projection-backed coordination inspection
-	robotInspectQuota    string // provider/account for projection-backed quota inspection
-	robotInspectIncident string // incident id for store-backed incident inspection
-	robotIncidentResolve string // incident id to mark resolved (write verb for the incident lifecycle)
-	robotIncidentNote    string // optional resolution note recorded with --robot-incident-resolve
-	robotInspectSession  string // session name for projection-backed session inspection
-	robotInspectAgent    string // runtime agent id for projection-backed agent inspection
-	robotInspectPane     string // session name for pane inspection
-	robotInspectIndex    int    // pane index to inspect
-	robotInspectLines    int    // lines to capture for inspection
-	robotInspectCode     bool   // parse code blocks in output
-	robotMetrics         string // session name for metrics
-	robotMetricsPeriod   string // period: 1h, 24h, 7d, all
-	robotReplay          string // session name for replay
-	robotReplayID        string // history entry ID to replay
-	robotReplayDryRun    bool   // just show what would be replayed
-	robotPaletteInfo     bool   // query palette information
-	robotPaletteSession  string // filter to session
-	robotPaletteCategory string // filter by category
-	robotPaletteSearch   string // search query
-	robotDismissAlert    string // alert ID to dismiss
-	robotDismissSession  string // session scope for alert dismissal
-	robotDismissAll      bool   // dismiss all matching alerts
+	robotFiles             string // session name for file changes query
+	robotFilesWindow       string // time window: 5m, 15m, 1h, all (default: 15m)
+	robotFilesLimit        int    // max changes to return
+	robotInspectWork       string // bead id for projection-backed work inspection
+	robotInspectCoord      string // agent mail identity for projection-backed coordination inspection
+	robotInspectQuota      string // provider/account for projection-backed quota inspection
+	robotInspectIncident   string // incident id for store-backed incident inspection
+	robotIncidentResolve   string // incident id to mark resolved (write verb for the incident lifecycle)
+	robotExitCLI           string // session for graceful agent-CLI exit without destroying the pane
+	robotKillAgent         string // session for hard agent-process kill preserving the pane shell
+	robotLifecycleRelaunch bool   // relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent
+	robotIncidentNote      string // optional resolution note recorded with --robot-incident-resolve
+	robotInspectSession    string // session name for projection-backed session inspection
+	robotInspectAgent      string // runtime agent id for projection-backed agent inspection
+	robotInspectPane       string // session name for pane inspection
+	robotInspectIndex      int    // pane index to inspect
+	robotInspectLines      int    // lines to capture for inspection
+	robotInspectCode       bool   // parse code blocks in output
+	robotMetrics           string // session name for metrics
+	robotMetricsPeriod     string // period: 1h, 24h, 7d, all
+	robotReplay            string // session name for replay
+	robotReplayID          string // history entry ID to replay
+	robotReplayDryRun      bool   // just show what would be replayed
+	robotPaletteInfo       bool   // query palette information
+	robotPaletteSession    string // filter to session
+	robotPaletteCategory   string // filter by category
+	robotPaletteSearch     string // search query
+	robotDismissAlert      string // alert ID to dismiss
+	robotDismissSession    string // session scope for alert dismissal
+	robotDismissAll        bool   // dismiss all matching alerts
 
 	// Robot-diff flags for comparing agent activity
 	robotDiff      string // session name for diff
@@ -4189,6 +4221,9 @@ func init() {
 	rootCmd.Flags().StringVar(&robotInspectQuota, "robot-inspect-quota", "", "Projection-backed quota drill-down. Required: PROVIDER/ACCOUNT. Canonical aliases like claude/default are accepted. Example: ntm --robot-inspect-quota=claude/default")
 	rootCmd.Flags().StringVar(&robotInspectIncident, "robot-inspect-incident", "", "Store-backed incident drill-down. Required: INCIDENT_ID. Example: ntm --robot-inspect-incident=inc_20260323_abc123")
 	rootCmd.Flags().StringVar(&robotIncidentResolve, "robot-incident-resolve", "", "Mark a store-backed incident resolved. Required: INCIDENT_ID. Example: ntm --robot-incident-resolve=inc_20260323_abc123")
+	rootCmd.Flags().StringVar(&robotExitCLI, "robot-exit-cli", "", "Gracefully exit agent CLIs (double Ctrl+C choreography) without destroying panes. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-exit-cli=myproject --panes=1")
+	rootCmd.Flags().StringVar(&robotKillAgent, "robot-kill-agent", "", "SIGTERM/SIGKILL agent process trees while preserving panes and shells. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-kill-agent=myproject --panes=2")
+	rootCmd.Flags().BoolVar(&robotLifecycleRelaunch, "relaunch", false, "Relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent and verify boot")
 	rootCmd.Flags().StringVar(&robotIncidentNote, "incident-note", "", "Optional resolution note for --robot-incident-resolve")
 
 	rootCmd.Flags().StringVar(&robotMetrics, "robot-metrics", "", "Session metrics export. Optional SESSION. Example: ntm --robot-metrics=myproject --metrics-period=24h")
@@ -5889,7 +5924,7 @@ func needsConfigLoading(cmdName string) bool {
 		// Most other robot flags need full config
 		if robotStatus || robotPlan || robotSnapshot || robotTail != "" || robotWatchBead != "" ||
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
-			robotInterrupt != "" || robotRestartPane != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
+			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
