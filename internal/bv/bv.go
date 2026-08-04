@@ -5,7 +5,10 @@ package bv
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -985,10 +989,11 @@ func isBeadsDBCorruptionError(err error) bool {
 }
 
 // recoverCorruptBeadsDatabase runs br's supported JSONL-authoritative repair
-// (`br sync --rebuild`), which recreates the SQLite index from JSONL and
-// removes orphaned DB entries.
+// (`br sync --import-only --rebuild`), which recreates the SQLite index from
+// JSONL and removes orphaned DB entries. br >= 0.2.19 requires an explicit
+// sync mode flag; --rebuild alone fails validation.
 func recoverCorruptBeadsDatabase(ctx context.Context, normalizedDir string) error {
-	_, err := runBdContext(ctx, normalizedDir, false, "sync", "--rebuild", "--json")
+	_, err := runBdContext(ctx, normalizedDir, false, "sync", "--import-only", "--rebuild", "--json")
 	return err
 }
 
@@ -2022,6 +2027,110 @@ func nullableEnvironment(name string) any {
 	return value
 }
 
+// computeBeadsContentHash replicates beads_rust's util::content_hash: SHA-256
+// over stable-ordered fields, each encoded as an 8-byte little-endian length
+// prefix followed by raw UTF-8 bytes, including the reserved placeholder
+// slots. It must stay byte-compatible with beads_rust/src/util/hash.rs so
+// NTM-side finalization produces the same hash br would have recorded.
+func computeBeadsContentHash(title, description, design, acceptanceCriteria, notes,
+	status, priority, issueType, assignee, owner, createdBy, externalRef, sourceSystem string,
+	pinned, isTemplate bool) string {
+	hasher := sha256.New()
+	writeField := func(value string) {
+		var prefix [8]byte
+		binary.LittleEndian.PutUint64(prefix[:], uint64(len(value)))
+		hasher.Write(prefix[:])
+		hasher.Write([]byte(value))
+	}
+	writeFlag := func(value bool, label string) {
+		if value {
+			writeField(label)
+		} else {
+			writeField("")
+		}
+	}
+	writeField(title)
+	writeField(description)
+	writeField(design)
+	writeField(acceptanceCriteria)
+	writeField(notes)
+	writeField(status)
+	writeField(priority)
+	writeField(issueType)
+	writeField(assignee)
+	writeField(owner)
+	writeField(createdBy)
+	writeField(externalRef)
+	writeField(sourceSystem)
+	writeFlag(pinned, "pinned")
+	writeFlag(isTemplate, "template")
+	// Reserved placeholder slots (quality_score, crystallizes, await_type,
+	// await_id, timeout, holder, hook_bead, role_bead, agent_state, role_type,
+	// rig, mol_type, work_type, event_kind, actor, target, payload).
+	writeField("")
+	writeFlag(false, "crystallizes")
+	writeField("")
+	writeField("")
+	writeField("0")
+	for i := 0; i < 12; i++ {
+		writeField("")
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// finalizeClaimContentHashLocally computes the issue's content hash from its
+// current row and finalizes it (setting issues.content_hash and clearing the
+// dirty marker) when the row still matches the expected finalization state.
+// This is the fallback for br >= 0.2.19, whose fsqlite engine can silently
+// lose its DB-side export bookkeeping (export_hashes insert, dirty_issues
+// clear) when another process holds the database open, even though the JSONL
+// export itself succeeded and `sync --flush-only` exited 0. The caller must
+// only invoke this immediately after a successful flush so the row state is
+// the exported state. Returns true when finalization was applied.
+func finalizeClaimContentHashLocally(ctx context.Context, database *sql.DB, beadID, stateWhere string, stateArgs ...any) (bool, error) {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin local claim hash finalization: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var title, description, design, acceptanceCriteria, notes, status, issueType string
+	var priority int
+	var assignee, owner, createdBy, externalRef, sourceSystem sql.NullString
+	var pinned, isTemplate bool
+	query := `SELECT title, description, design, acceptance_criteria, notes, status, priority, issue_type,
+			assignee, owner, created_by, external_ref, source_system, pinned, is_template
+		FROM issues WHERE id = ? AND content_hash IS NULL AND ` + stateWhere
+	args := append([]any{beadID}, stateArgs...)
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&title, &description, &design, &acceptanceCriteria, &notes, &status, &priority, &issueType,
+		&assignee, &owner, &createdBy, &externalRef, &sourceSystem, &pinned, &isTemplate); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("load issue for local claim hash finalization: %w", err)
+	}
+	contentHash := computeBeadsContentHash(title, description, design, acceptanceCriteria, notes,
+		status, strconv.Itoa(priority), issueType,
+		assignee.String, owner.String, createdBy.String, externalRef.String, sourceSystem.String,
+		pinned, isTemplate)
+	if _, err := tx.ExecContext(ctx, "UPDATE issues SET content_hash = ? WHERE id = ? AND content_hash IS NULL", contentHash, beadID); err != nil {
+		return false, fmt.Errorf("apply local claim content hash: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM dirty_issues WHERE issue_id = ?", beadID); err != nil {
+		return false, fmt.Errorf("clear dirty marker after local claim hash finalization: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit local claim hash finalization: %w", err)
+	}
+	committed = true
+	return true, nil
+}
+
 func repairGuardedClaimContentHash(ctx context.Context, databasePath, beadID, actor string) error {
 	database, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(databasePath, "busy_timeout(5000)", "foreign_keys(ON)"))
 	if err != nil {
@@ -2049,7 +2158,14 @@ func repairGuardedClaimContentHash(ctx context.Context, databasePath, beadID, ac
 			return fmt.Errorf("verify guarded claim content hash finalization: %w", err)
 		}
 		if status == "in_progress" && strings.TrimSpace(assignee.String) == actor && !contentHash.Valid {
-			return errors.New("beads export did not produce a content hash for guarded claim")
+			finalized, finalizeErr := finalizeClaimContentHashLocally(ctx, database, beadID,
+				"status = 'in_progress' AND assignee = ?", actor)
+			if finalizeErr != nil {
+				return finalizeErr
+			}
+			if !finalized {
+				return errors.New("beads export did not produce a content hash for guarded claim")
+			}
 		}
 	}
 	return nil
@@ -2082,7 +2198,14 @@ func repairReleasedClaimContentHash(ctx context.Context, databasePath, beadID, e
 			return fmt.Errorf("verify released claim content hash finalization: %w", err)
 		}
 		if strings.EqualFold(strings.TrimSpace(actualStatus), strings.TrimSpace(expectedStatus)) && strings.TrimSpace(assignee.String) == "" && !contentHash.Valid {
-			return errors.New("beads export did not produce a content hash for released claim")
+			finalized, finalizeErr := finalizeClaimContentHashLocally(ctx, database, beadID,
+				"status = ? AND (assignee IS NULL OR TRIM(assignee) = '')", expectedStatus)
+			if finalizeErr != nil {
+				return finalizeErr
+			}
+			if !finalized {
+				return errors.New("beads export did not produce a content hash for released claim")
+			}
 		}
 	}
 	return nil

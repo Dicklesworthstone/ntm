@@ -1,5 +1,42 @@
 # Dependency Upgrade Log
 
+**Date:** 2026-08-03  |  **Project:** ntm  |  **Language:** Go
+
+## Summary
+
+- **Toolchain:** Homebrew Go 1.25.6 → 1.26.5 (latest stable); `go.mod` directive 1.26.3 → 1.26.5
+- **Updated:** 9 direct dependencies (all minor/patch; no breaking changes hit)
+- **Skipped:** `charmbracelet/bubbletea` (local `third_party/` replace — never touch), all other directs already latest
+- **Failed:** 0
+
+## Updates (direct dependencies)
+
+| Dependency | From | To | Tests |
+|---|---|---|---|
+| golang.org/x/sys | v0.44.0 | v0.47.0 | ✓ |
+| golang.org/x/term | v0.43.0 | v0.45.0 | ✓ |
+| github.com/chromedp/chromedp | v0.15.1 | v0.16.0 | ✓ |
+| github.com/chromedp/cdproto | 20260427 | 20260719 | ✓ |
+| github.com/go-chi/chi/v5 | v5.2.5 | v5.3.1 | ✓ |
+| github.com/mattn/go-isatty | v0.0.22 | v0.0.24 | ✓ |
+| github.com/mattn/go-runewidth | v0.0.23 | v0.0.27 | ✓ |
+| github.com/shirou/gopsutil/v4 | v4.26.4 | v4.26.7 | ✓ |
+| modernc.org/sqlite | v1.50.1 | v1.56.0 | ✓ |
+
+Indirects (x/net, x/text, x/tools, modernc.org/libc, purego, pprof, …) rolled forward via `go get`/`go mod tidy`.
+
+## Pre-existing failures found during validation (NOT caused by the updates — verified by re-running against baseline go.mod)
+
+1. **`internal/bv` corruption recovery** used `br sync --rebuild`, which br 0.2.19 rejects (`--rebuild` now requires `--import-only`). Fixed in `internal/bv/bv.go`.
+2. **`internal/bv` claim/release content-hash finalization**: br 0.2.19's fsqlite engine silently loses its DB-side export bookkeeping (`export_hashes` insert, `dirty_issues` clear) when another process holds the DB open, while still exiting 0 and reporting `cleared_dirty`. Added a Go-side fallback that computes br's content hash (byte-compatible with `beads_rust/src/util/hash.rs`) and finalizes locally. Upstream br bug worth filing separately.
+3. **`internal/robot` `QueryCASS`** shelled out to `cass` with no timeout; a wedged cass index hung tests (and would hang dispatch) indefinitely. Added `CASSConfig.Timeout` (default 15s) with `exec.CommandContext`.
+4. **`internal/swarm` `TestGetPaneTarget`** depends on live tmux state: it fails when a real session named `test` exists (one did, with base-index 0). Test-isolation issue; bead filed.
+5. `internal/cli` / `internal/completion` tests flaked once under full-suite parallel load; both pass in isolation and on re-run.
+
+---
+
+# Previous run
+
 **Date:** 2026-05-16  |  **Project:** ntm  |  **Languages:** Go + bundled web/vscode manifests
 
 ## Summary

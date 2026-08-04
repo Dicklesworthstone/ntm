@@ -4,6 +4,7 @@
 package robot
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"regexp"
@@ -11,6 +12,11 @@ import (
 	"time"
 	"unicode"
 )
+
+// DefaultCASSTimeout bounds cass subprocess invocations. Keyword search is a
+// best-effort context enrichment; a locked or wedged cass index must never
+// block dispatch for longer than this.
+const DefaultCASSTimeout = 15 * time.Second
 
 // CASSConfig holds configuration for CASS queries.
 type CASSConfig struct {
@@ -26,6 +32,10 @@ type CASSConfig struct {
 	// MinRelevance is the minimum relevance score (0.0-1.0) to include results.
 	// Note: CASS doesn't currently return relevance scores, so this is for future use.
 	MinRelevance float64 `json:"min_relevance"`
+
+	// Timeout bounds the cass subprocess; a hung or index-locked cass must
+	// never stall prompt dispatch. Zero means DefaultCASSTimeout.
+	Timeout time.Duration `json:"timeout"`
 
 	// PreferSameProject gives preference to results from the current workspace.
 	PreferSameProject bool `json:"prefer_same_project"`
@@ -45,6 +55,7 @@ func DefaultCASSConfig() CASSConfig {
 		MaxResults:        5,
 		MaxAgeDays:        30,
 		MinRelevance:      0.0,
+		Timeout:           DefaultCASSTimeout,
 		PreferSameProject: true,
 		AgentFilter:       nil,
 		BinaryPath:        "",
@@ -167,12 +178,25 @@ func QueryCASS(prompt string, config CASSConfig) CASSQueryResult {
 	// Add separator and query
 	args = append(args, "--", query)
 
-	// Execute CASS search
-	cmd := exec.Command(binPath, args...)
+	// Execute CASS search with a hard deadline: a hung cass (locked index,
+	// TUI fallback, slow disk) must degrade to "no context" instead of
+	// stalling the caller indefinitely.
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = DefaultCASSTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
 	result.QueryTime = time.Since(start)
 
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			result.Error = "cass search timed out after " + timeout.String()
+			return result
+		}
 		// Check if it's just no results vs actual error
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			// Exit code 1 often means no results, which is fine
