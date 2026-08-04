@@ -1236,7 +1236,18 @@ func emitSendProjectResult(result sendProjectResult, cause error) error {
 // command line that dcg-style safety filters scan).
 func readPromptFileOrStdin(path string) ([]byte, error) {
 	if path == "-" {
-		return io.ReadAll(io.LimitReader(os.Stdin, 10*1024*1024))
+		// Read one byte past the limit so oversize input is a loud error
+		// instead of a silent mid-prompt truncation (mirrors
+		// loadRobotSendMessage's overflow detection).
+		const limit = 10 * 1024 * 1024
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, limit+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > limit {
+			return nil, fmt.Errorf("stdin prompt too large (max 10MB)")
+		}
+		return data, nil
 	}
 	return os.ReadFile(path)
 }
