@@ -216,3 +216,26 @@ func TestZoomPanePresentationCanonicalizesAliases(t *testing.T) {
 		})
 	}
 }
+
+// paneIsController must classify by agent type, never pane index (ntm-qgjx):
+// tmux indices are base-index dependent and the user shell sits at index 0 on
+// default configs.
+func TestPaneIsControllerByTypeNotIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		pane tmux.Pane
+		want bool
+	}{
+		{"user pane at base-0 index", tmux.Pane{Index: 0, Type: tmux.AgentUser}, true},
+		{"user pane at base-1 index", tmux.Pane{Index: 1, Type: tmux.AgentUser}, true},
+		{"agent pane at index 1 is not controller", tmux.Pane{Index: 1, Type: tmux.AgentClaude}, false},
+		{"agent pane at index 0 is not controller", tmux.Pane{Index: 0, Type: tmux.AgentCodex}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := paneIsController(tc.pane); got != tc.want {
+				t.Errorf("paneIsController(%+v) = %v, want %v", tc.pane, got, tc.want)
+			}
+		})
+	}
+}

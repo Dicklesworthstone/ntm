@@ -26,8 +26,8 @@ func newGetAllSessionTextCmd() *cobra.Command {
 
 Each row represents a session, with columns for:
 - Session name
-- Controller pane (pane 1) last message and status
-- Worker panes (pane 2+) last messages and status
+- Controller pane (the user/shell pane) last message and status
+- Worker panes (agent panes) last messages and status
 - Detected errors (rate limits, crashes, etc.)
 
 This is useful for AI agents orchestrating multiple agent swarms to monitor progress.
@@ -119,8 +119,7 @@ func collectSessionStatus(sessionName string, lines int) sessionStatus {
 
 		ps := analyzePaneOutput(pane, captured)
 
-		// Pane index 1 is controller (based on user's swarm setup)
-		if pane.Index == 1 {
+		if status.Controller == nil && paneIsController(pane) {
 			status.Controller = ps
 		} else {
 			status.Workers = append(status.Workers, ps)
@@ -135,6 +134,15 @@ func collectSessionStatus(sessionName string, lines int) sessionStatus {
 	}
 
 	return status
+}
+
+// paneIsController reports whether pane is the session's user/control pane.
+// Classification is by agent type — never by raw pane index, which is tmux
+// base-index dependent (ntm-qgjx: on base-0 sessions the user shell sits at
+// index 0, so the old Index==1 check crowned an agent pane controller and
+// demoted the real one to a worker).
+func paneIsController(pane tmux.Pane) bool {
+	return pane.Type.Canonical() == tmux.AgentUser
 }
 
 func analyzePaneOutput(pane tmux.Pane, captured string) *paneStatus {
