@@ -898,6 +898,13 @@ func classifyTriageRecForAssignmentForProject(projectDir string, rec bv.TriageRe
 	})
 }
 
+// isContainerBeadType reports whether an issue type is a container/grouping
+// node rather than a unit of implementation work. Containers are never
+// auto-dispatched into worker panes (GH#242 / ntm-e165).
+func isContainerBeadType(issueType string) bool {
+	return strings.EqualFold(strings.TrimSpace(issueType), "epic")
+}
+
 func classifyTriageRecForAssignmentWithGate(rec bv.TriageRecommendation, activeAssignments map[string]struct{}, operatorGated func(string) bool) *SkippedItem {
 	if len(rec.BlockedBy) > 0 {
 		return &SkippedItem{
@@ -906,6 +913,14 @@ func classifyTriageRecForAssignmentWithGate(rec bv.TriageRecommendation, activeA
 			Reason:       "blocked_by_dependency",
 			BlockedByIDs: rec.BlockedBy,
 		}
+	}
+
+	// Container types (epic) are grouping nodes, not implementation work: an
+	// open unlabeled epic must never be dispatched to a worker pane. Checked
+	// before the operator gate because the exclusion is intrinsic to the
+	// issue type, not a policy that labels could lift.
+	if isContainerBeadType(rec.Type) {
+		return &SkippedItem{BeadID: rec.ID, BeadTitle: rec.Title, Reason: "container_issue_type"}
 	}
 
 	for _, label := range rec.Labels {
@@ -978,6 +993,7 @@ func classifyLiveAssignmentDetailsWithGate(details *bv.BeadAssignmentDetails, ac
 	if skip := classifyTriageRecForAssignmentWithGate(bv.TriageRecommendation{
 		ID:        details.ID,
 		Title:     details.Title,
+		Type:      details.IssueType,
 		Status:    details.Status,
 		Labels:    append([]string(nil), details.Labels...),
 		BlockedBy: append([]string(nil), details.BlockedBy...),

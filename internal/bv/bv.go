@@ -2352,6 +2352,7 @@ func GetBeadStatusContext(ctx context.Context, dir, beadID string) (string, erro
 type BeadAssignmentDetails struct {
 	ID                   string
 	Title                string
+	IssueType            string
 	Status               string
 	Priority             int
 	Assignee             string
@@ -2492,6 +2493,7 @@ type beadShowDependency struct {
 type beadShowAssignmentRow struct {
 	ID           string               `json:"id"`
 	Title        string               `json:"title"`
+	IssueType    string               `json:"issue_type"`
 	Status       string               `json:"status"`
 	Priority     int                  `json:"priority"`
 	Assignee     string               `json:"assignee"`
@@ -2639,10 +2641,10 @@ func parseBeadAssignmentDetailsOutput(output string) (*BeadAssignmentDetails, er
 	sort.Strings(labels)
 
 	return &BeadAssignmentDetails{
-		ID: row.ID, Title: row.Title, Status: row.Status, Priority: row.Priority, Assignee: row.Assignee,
-		DeferUntil: row.DeferUntil, Pinned: row.Pinned, Ephemeral: row.Ephemeral, Template: row.Template,
-		Wisp: strings.Contains(strings.ToLower(row.ID), "-wisp-"), Labels: labels, BlockedBy: blockedBy,
-		BlockingDependencies: dependencyStates,
+		ID: row.ID, Title: row.Title, IssueType: row.IssueType, Status: row.Status, Priority: row.Priority,
+		Assignee: row.Assignee, DeferUntil: row.DeferUntil, Pinned: row.Pinned, Ephemeral: row.Ephemeral,
+		Template: row.Template, Wisp: strings.Contains(strings.ToLower(row.ID), "-wisp-"), Labels: labels,
+		BlockedBy: blockedBy, BlockingDependencies: dependencyStates,
 	}, nil
 }
 
@@ -2665,6 +2667,7 @@ func parseBeadShowAssignmentRow(output string) (beadShowAssignmentRow, error) {
 
 	row.ID = strings.TrimSpace(row.ID)
 	row.Title = strings.TrimSpace(row.Title)
+	row.IssueType = strings.TrimSpace(row.IssueType)
 	row.Status = strings.TrimSpace(row.Status)
 	row.Assignee = strings.TrimSpace(row.Assignee)
 	if row.ID == "" {
