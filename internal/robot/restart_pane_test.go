@@ -1721,3 +1721,58 @@ func TestParseRestartLaunchOverride(t *testing.T) {
 		t.Fatalf("empty override parse = %+v err=%v", o, err)
 	}
 }
+
+// Respawn PID evidence + soft-restart detection (ntm-tgkb): a "successful"
+// respawn whose shell PID did not change was NOT a restart; it must be
+// reported as a failure with the PID evidence instead of counted restarted.
+func TestRespawnRecordsPIDEvidenceAndDetectsSoftRestart(t *testing.T) {
+	output := &RestartPaneOutput{Restarted: []string{}, Failed: []RestartError{}}
+	targets := []tmux.Pane{
+		{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude},
+		{ID: "%2", Index: 2, WindowIndex: 0, Type: tmux.AgentCodex},
+	}
+	pids := map[string][]int{
+		"%1": {100, 100}, // soft restart: PID unchanged
+		"%2": {200, 201}, // real restart: PID replaced
+	}
+	calls := map[string]int{}
+	info, err := respawnRestartPaneTargetsContext(
+		t.Context(),
+		targets,
+		false,
+		output,
+		func(_ context.Context, target string, kill bool) error {
+			if !kill {
+				t.Fatalf("respawn without kill for %s", target)
+			}
+			return nil
+		},
+		func(_ context.Context, target string) (int, error) {
+			seq := pids[target]
+			idx := calls[target]
+			calls[target]++
+			if idx >= len(seq) {
+				idx = len(seq) - 1
+			}
+			return seq[idx], nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("respawnRestartPaneTargetsContext: %v", err)
+	}
+	if len(output.Restarted) != 1 || output.Restarted[0] != "2" {
+		t.Fatalf("Restarted = %v, want only the truly-respawned pane 2", output.Restarted)
+	}
+	if _, tracked := info["1"]; tracked {
+		t.Fatal("soft-restarted pane must not enter the relaunch pipeline")
+	}
+	if len(output.Failed) != 1 || !strings.Contains(output.Failed[0].Reason, "soft restart") {
+		t.Fatalf("Failed = %+v, want one soft-restart failure", output.Failed)
+	}
+	if got := output.PaneShellPIDs["1"]; got.Before != 100 || got.After != 100 {
+		t.Fatalf("pane 1 PID evidence = %+v, want before=100 after=100", got)
+	}
+	if got := output.PaneShellPIDs["2"]; got.Before != 200 || got.After != 201 {
+		t.Fatalf("pane 2 PID evidence = %+v, want before=200 after=201", got)
+	}
+}

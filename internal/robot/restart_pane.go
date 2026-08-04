@@ -66,6 +66,20 @@ type RestartPaneOutput struct {
 	// explicitly (#187). User/unknown panes are not included.
 	AgentRelaunched     map[string]bool                       `json:"agent_relaunched,omitempty"`
 	AgentRelaunchStatus map[string]RestartAgentRelaunchStatus `json:"agent_relaunch_status,omitempty"`
+
+	// PaneShellPIDs is the per-pane respawn evidence (ntm-tgkb): a real
+	// respawn replaces the pane's shell, so after MUST differ from before.
+	// Operators previously diffed `tmux list-panes -F '#{pane_pid}'` by hand
+	// to catch soft restarts; a success with an unchanged PID is now
+	// reported as a failure instead of counted as restarted.
+	PaneShellPIDs map[string]RestartPanePIDs `json:"pane_shell_pids,omitempty"`
+}
+
+// RestartPanePIDs carries the shell PID before and after a pane respawn.
+// After is 0 when the post-respawn probe could not observe the new PID.
+type RestartPanePIDs struct {
+	Before int `json:"before"`
+	After  int `json:"after,omitempty"`
 }
 
 // RestartAgentRelaunchStatus distinguishes confirmed readiness from a live
@@ -1288,6 +1302,28 @@ func respawnRestartPaneTargetsContext(
 				return restartedPaneInfo, cancelErr
 			}
 			appendRestartFailureOnce(output, paneKey, fmt.Sprintf("failed to respawn: %v", err))
+			continue
+		}
+
+		// Verify the respawn actually replaced the shell before counting the
+		// pane as restarted: respawn-pane can report success while the pane
+		// keeps its old process (a "soft restart"), which previously forced
+		// operators to diff pane PIDs by hand (ntm-tgkb / AP-39). The check
+		// runs only on a healthy context — cancellation falls through to the
+		// existing mutated-but-incomplete bookkeeping below, and a failed
+		// probe records Before-only evidence without blocking the restart.
+		afterPID, afterErr := panePID(ctx, pane.ID)
+		if output.PaneShellPIDs == nil {
+			output.PaneShellPIDs = make(map[string]RestartPanePIDs)
+		}
+		pids := RestartPanePIDs{Before: beforePID}
+		if afterErr == nil && afterPID > 0 {
+			pids.After = afterPID
+		}
+		output.PaneShellPIDs[paneKey] = pids
+		if ctx.Err() == nil && afterErr == nil && afterPID > 0 && afterPID == beforePID {
+			appendRestartFailureOnce(output, paneKey, fmt.Sprintf(
+				"respawn reported success but pane shell PID remained %d (soft restart); the pane was NOT replaced — escalate to a hard kill or inspect the pane", beforePID))
 			continue
 		}
 
