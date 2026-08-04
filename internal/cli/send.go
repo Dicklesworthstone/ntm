@@ -2519,6 +2519,7 @@ func newKillCmd() *cobra.Command {
 	var noHooks bool
 	var summarize bool
 	var project string
+	var pane string
 
 	cmd := &cobra.Command{
 		Use:   "kill <session>",
@@ -2532,11 +2533,21 @@ Examples:
   ntm kill myproject --force      # No confirmation
   ntm kill myproject --tag=ui     # Kill only panes with 'ui' tag
   ntm kill myproject --summarize  # Generate summary before killing
+  ntm kill myproject --pane=2     # Remove only pane 2, session survives
   ntm kill --project myproject    # Kill all sessions for the project`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project != "" && len(args) > 0 {
 				return fmt.Errorf("cannot use --project with a specific session name")
+			}
+			if pane != "" {
+				if project != "" || len(tags) > 0 || summarize {
+					return fmt.Errorf("--pane cannot be combined with --project, --tag, or --summarize")
+				}
+				if len(args) == 0 {
+					return fmt.Errorf("session name required with --pane")
+				}
+				return runKillPane(cmd.Context(), cmd.OutOrStdout(), args[0], pane, force)
 			}
 			if project != "" {
 				return runKillProject(cmd.Context(), cmd.OutOrStdout(), project, force, tags, noHooks, summarize)
@@ -2553,8 +2564,58 @@ Examples:
 	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "Disable command hooks")
 	cmd.Flags().BoolVar(&summarize, "summarize", false, "Generate session summary before killing")
 	cmd.Flags().StringVarP(&project, "project", "p", "", "kill all sessions for a base project name")
+	cmd.Flags().StringVar(&pane, "pane", "", "remove only the selected pane(s) (N, W.P, or %N; comma-separated); the session and sibling panes survive")
 
 	return cmd
+}
+
+// runKillPane removes specific panes from a session, leaving the session and
+// its sibling panes untouched (ntm-34jt: recovery-ladder Rung 6 prescribed
+// `ntm kill <session> --pane=N` before this flag existed, forcing operators
+// back to raw `tmux kill-pane`).
+func runKillPane(ctx context.Context, w io.Writer, session, selector string, force bool) error {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return err
+	}
+	res, err := ResolveSession(session, w)
+	if err != nil {
+		return err
+	}
+	session = res.Session
+	if !tmux.SessionExists(session) {
+		return fmt.Errorf("session '%s' not found", session)
+	}
+	opts := robot.KillPaneOptions{
+		Session: session,
+		Panes:   strings.Split(selector, ","),
+		Force:   force,
+	}
+	if IsJSONOutput() {
+		return robot.PrintKillPane(ctx, opts)
+	}
+	if !force {
+		title := fmt.Sprintf("Remove pane(s) %s from session '%s'?", selector, session)
+		desc := "The selected pane(s) and their processes will be terminated; the session survives."
+		if !confirmHuhDestructive(title, desc) {
+			fmt.Fprintln(w, "Aborted.")
+			return nil
+		}
+	}
+	result, err := robot.GetKillPane(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if !result.Success {
+		if result.Error != "" {
+			return fmt.Errorf("%s", result.Error)
+		}
+		return fmt.Errorf("pane removal failed")
+	}
+	for _, removed := range result.Removed {
+		fmt.Fprintf(w, "Removed pane %s (%s, %s)\n", removed.Pane, removed.Target, removed.AgentType)
+	}
+	fmt.Fprintf(w, "%d pane(s) remain in session '%s'\n", result.RemainingPanes, session)
+	return nil
 }
 
 func runKill(ctx context.Context, w io.Writer, session string, force bool, tags []string, noHooks bool, summarize bool) (err error) {

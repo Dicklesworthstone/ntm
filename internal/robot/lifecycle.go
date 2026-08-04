@@ -413,6 +413,130 @@ func waitForProcessExit(ctx context.Context, pids []int, timeout time.Duration) 
 	}
 }
 
+// KillPaneOptions configures --robot-kill-pane (ntm-34jt): remove specific
+// panes from a session, completing the lifecycle trio (exit-cli exits the
+// CLI, kill-agent kills the process, kill-pane removes the pane itself).
+type KillPaneOptions struct {
+	Session string
+	Panes   []string // required: explicit selectors; no default-all for a destructive verb
+	Force   bool     // allow removing the user pane
+}
+
+// RemovedPane records the identity of a pane that was removed.
+type RemovedPane struct {
+	Pane      string `json:"pane"`
+	Target    string `json:"target"`
+	Title     string `json:"title,omitempty"`
+	AgentType string `json:"agent_type"`
+}
+
+// KillPaneOutput is the structured output for --robot-kill-pane.
+type KillPaneOutput struct {
+	RobotResponse
+	Session        string        `json:"session"`
+	Removed        []RemovedPane `json:"removed"`
+	Failed         []RemovedPane `json:"failed,omitempty"`
+	RemainingPanes int           `json:"remaining_panes"`
+}
+
+// GetKillPane removes explicitly selected panes, leaving the session and
+// sibling panes untouched (recovery-ladder Rung 6).
+func GetKillPane(ctx context.Context, opts KillPaneOptions) (*KillPaneOutput, error) {
+	output := &KillPaneOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       strings.TrimSpace(opts.Session),
+		Removed:       []RemovedPane{},
+	}
+	session := strings.TrimSpace(opts.Session)
+	if session == "" {
+		output.RobotResponse = NewErrorResponse(fmt.Errorf("session name required"), ErrCodeInvalidFlag,
+			"Use --robot-kill-pane=SESSION --panes=SELECTOR")
+		return output, nil
+	}
+	if len(opts.Panes) == 0 {
+		output.RobotResponse = NewErrorResponse(fmt.Errorf("--panes is required"), ErrCodeInvalidFlag,
+			"Pane removal is destructive; select targets explicitly with --panes=N, W.P, or %N")
+		return output, nil
+	}
+	exists, err := tmux.SessionExistsContext(ctx, session)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux session state")
+		return output, nil
+	}
+	if !exists {
+		output.RobotResponse = NewErrorResponse(fmt.Errorf("session '%s' not found", session), ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions")
+		return output, nil
+	}
+	panes, err := tmux.GetPanesContext(ctx, session)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux session state")
+		return output, nil
+	}
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
+	targets, err := tmux.ResolvePaneSelectors(panes, opts.Panes, false)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag,
+			"Use --panes with N, W.P, or %N selectors; --robot-pane-address=SESSION lists them")
+		return output, nil
+	}
+	if len(targets) >= len(panes) {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("selection removes every pane (%d of %d)", len(targets), len(panes)),
+			ErrCodeInvalidFlag,
+			"Use 'ntm kill SESSION' to remove the whole session",
+		)
+		return output, nil
+	}
+	for _, pane := range targets {
+		if restartPaneAgentType(pane) == "user" && !opts.Force {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("pane %s is the user pane; refusing without --force", paneTargetKey(pane, multiWindow)),
+				ErrCodeInvalidFlag,
+				"Add --force to remove the user pane deliberately",
+			)
+			return output, nil
+		}
+	}
+	for _, pane := range tmux.SortPanesByTopology(targets) {
+		identity := RemovedPane{
+			Pane:      paneTargetKey(pane, multiWindow),
+			Target:    pane.ID,
+			Title:     pane.Title,
+			AgentType: restartPaneAgentType(pane),
+		}
+		if err := tmux.KillPaneContext(ctx, pane.ID); err != nil {
+			output.Failed = append(output.Failed, identity)
+			output.Success = false
+			continue
+		}
+		if _, stillThere := refreshLifecyclePane(ctx, session, pane.ID); stillThere {
+			output.Failed = append(output.Failed, identity)
+			output.Success = false
+			continue
+		}
+		output.Removed = append(output.Removed, identity)
+	}
+	if remaining, err := tmux.GetPanesContext(ctx, session); err == nil {
+		output.RemainingPanes = len(remaining)
+	}
+	if !output.Success && output.Error == "" {
+		output.Error = "one or more panes could not be removed"
+		output.ErrorCode = ErrCodeInternalError
+		output.Hint = "Inspect failed entries; --robot-pane-address=SESSION shows the surviving topology"
+	}
+	return output, nil
+}
+
+// PrintKillPane removes selected panes and prints structured output.
+func PrintKillPane(ctx context.Context, opts KillPaneOptions) error {
+	output, err := GetKillPane(ctx, opts)
+	if err != nil {
+		return err
+	}
+	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot kill-pane failed")
+}
+
 // PrintExitCLI runs the graceful exit verb and prints structured output.
 func PrintExitCLI(ctx context.Context, opts LifecycleOptions) error {
 	output, err := GetExitCLI(ctx, opts)

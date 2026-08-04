@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 130,
+  "schema_type_count": 131,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -90,6 +90,7 @@
     "jfp_tags",
     "jfp_update",
     "kill_agent",
+    "kill_pane",
     "label_attention",
     "label_flow",
     "label_health",
@@ -146,7 +147,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 141,
+  "surface_count": 142,
   "surfaces": [
     {
       "category": "state",
@@ -896,6 +897,21 @@
       "name": "kill_agent",
       "schema_id": "ntm:robot:kill-agent:v1",
       "schema_type": "kill_agent"
+    },
+    {
+      "category": "control",
+      "flag": "--robot-kill-pane",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "kill_pane",
+      "schema_id": "ntm:robot:kill-pane:v1",
+      "schema_type": "kill_pane"
     },
     {
       "category": "control",

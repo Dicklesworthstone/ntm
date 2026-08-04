@@ -119,6 +119,7 @@ var SchemaCommand = map[string]interface{}{
 	"incident_resolve":     IncidentResolveOutput{},
 	"exit_cli":             ExitCLIOutput{},
 	"kill_agent":           KillAgentOutput{},
+	"kill_pane":            KillPaneOutput{},
 
 	// Ensemble
 	"ensemble":         EnsembleOutput{},

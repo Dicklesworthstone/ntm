@@ -2169,6 +2169,25 @@ Shell Integration:
 			}
 			return
 		}
+		if robotKillPane != "" {
+			session, err := resolveRobotLiveSession(cmd.Context(), robotKillPane)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-kill-pane")
+				return
+			}
+			var paneFilter []string
+			if robotPanes != "" {
+				paneFilter = strings.Split(robotPanes, ",")
+			}
+			if err := robot.PrintKillPane(cmd.Context(), robot.KillPaneOptions{
+				Session: session,
+				Panes:   paneFilter,
+				Force:   robotSmartRestartForce,
+			}); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
 		if robotExitCLI != "" || robotKillAgent != "" {
 			verb, flagValue, flagName := "exit-cli", robotExitCLI, "robot-exit-cli"
 			if robotKillAgent != "" {
@@ -3582,6 +3601,7 @@ var (
 	robotExitCLI           string // session for graceful agent-CLI exit without destroying the pane
 	robotKillAgent         string // session for hard agent-process kill preserving the pane shell
 	robotLifecycleRelaunch bool   // relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent
+	robotKillPane          string // session for per-pane removal (session and siblings survive)
 	robotIncidentNote      string // optional resolution note recorded with --robot-incident-resolve
 	robotInspectSession    string // session name for projection-backed session inspection
 	robotInspectAgent      string // runtime agent id for projection-backed agent inspection
@@ -4224,6 +4244,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotExitCLI, "robot-exit-cli", "", "Gracefully exit agent CLIs (double Ctrl+C choreography) without destroying panes. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-exit-cli=myproject --panes=1")
 	rootCmd.Flags().StringVar(&robotKillAgent, "robot-kill-agent", "", "SIGTERM/SIGKILL agent process trees while preserving panes and shells. Required: SESSION. Optional: --panes, --relaunch. Example: ntm --robot-kill-agent=myproject --panes=2")
 	rootCmd.Flags().BoolVar(&robotLifecycleRelaunch, "relaunch", false, "Relaunch the agent CLI after --robot-exit-cli/--robot-kill-agent and verify boot")
+	rootCmd.Flags().StringVar(&robotKillPane, "robot-kill-pane", "", "Remove specific panes; session and sibling panes survive. Required: SESSION and --panes. Example: ntm --robot-kill-pane=myproject --panes=2")
 	rootCmd.Flags().StringVar(&robotIncidentNote, "incident-note", "", "Optional resolution note for --robot-incident-resolve")
 
 	rootCmd.Flags().StringVar(&robotMetrics, "robot-metrics", "", "Session metrics export. Optional SESSION. Example: ntm --robot-metrics=myproject --metrics-period=24h")
@@ -5924,7 +5945,7 @@ func needsConfigLoading(cmdName string) bool {
 		// Most other robot flags need full config
 		if robotStatus || robotPlan || robotSnapshot || robotTail != "" || robotWatchBead != "" ||
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
-			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
+			robotInterrupt != "" || robotRestartPane != "" || robotExitCLI != "" || robotKillAgent != "" || robotKillPane != "" || robotIncidentResolve != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||

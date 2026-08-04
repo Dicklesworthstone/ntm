@@ -1018,6 +1018,21 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "kill_pane",
+			Flag:        "--robot-kill-pane",
+			Category:    "control",
+			Description: "Remove specific panes from a session; the session and sibling panes survive (recovery-ladder Rung 6). Refuses to remove every pane or the user pane without --force.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-kill-pane", Type: "string", Required: true, Description: "Session name"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: true, Description: "Comma-separated N, W.P, or %N pane selectors (explicit selection required)"},
+				{Name: "force", Flag: "--force", Type: "bool", Required: false, Description: "Allow removing the user pane"},
+			},
+			Examples: []string{
+				"ntm --robot-kill-pane=proj --panes=2",
+				"ntm --robot-kill-pane=proj --panes=0 --force",
+			},
+		},
+		{
 			Name:        "smart-restart",
 			Flag:        "--robot-smart-restart",
 			Category:    "control",
