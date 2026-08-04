@@ -552,3 +552,20 @@ func TestDetectReservationConflictsAt_IgnoresSameAgentDuplicates(t *testing.T) {
 		t.Fatalf("expected no conflicts for same-agent duplicates, got %+v", conflicts)
 	}
 }
+
+// ntm-f7xz / OC-019: the digest's work summary must state its provenance —
+// zero-valued counts previously masqueraded as facts when the source failed
+// or (worse) was never consulted at all.
+func TestDigestWorkSummaryStatesProvenance(t *testing.T) {
+	c := New("f7xz-test", t.TempDir(), nil, "NTM-Coordinator")
+	digest := c.GenerateDigest()
+	if digest.WorkSummary.Status == "" {
+		t.Fatal("work_summary.status is empty; the digest must state computed vs unavailable")
+	}
+	// A temp dir has no beads/bv data: the status must admit unavailability
+	// rather than presenting zero counts as computed truth.
+	if !strings.Contains(digest.WorkSummary.Status, "unavailable") &&
+		!strings.Contains(digest.WorkSummary.Status, "computed") {
+		t.Fatalf("work_summary.status = %q, want computed or unavailable provenance", digest.WorkSummary.Status)
+	}
+}

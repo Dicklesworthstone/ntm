@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -43,10 +44,26 @@ type WorkDigestSummary struct {
 	CompletedToday  int      `json:"completed_today"`
 	BlockedTasks    int      `json:"blocked_tasks"`
 	TopReady        []string `json:"top_ready,omitempty"`
+	// Status is the provenance of these numbers: "computed" when they came
+	// from a live bv triage, or "unavailable: <reason>" when the source
+	// failed. The digest historically emitted zero-valued counts as if they
+	// were facts — a coordination-truth surface must say when a source is
+	// down instead of returning empty-but-confident results (ntm-f7xz /
+	// OC-019).
+	Status string `json:"status"`
 }
 
 // GenerateDigest creates a summary of the current session state.
 func (c *SessionCoordinator) GenerateDigest() DigestSummary {
+	digest := c.generateAgentDigest()
+	// Outside the coordinator mutex: triage may shell out.
+	c.populateWorkSummary(&digest)
+	return digest
+}
+
+// generateAgentDigest builds the agent-state half of the digest under the
+// coordinator read lock.
+func (c *SessionCoordinator) generateAgentDigest() DigestSummary {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -147,6 +164,32 @@ func (c *SessionCoordinator) GenerateDigest() DigestSummary {
 	sort.Strings(digest.Alerts)
 
 	return digest
+}
+
+// populateWorkSummary fills the digest's work counts from a live bv triage.
+// Runs OUTSIDE the coordinator mutex: triage may shell out and must never
+// stall state updates. Failures are reported in WorkSummary.Status instead of
+// leaving zero-valued counts masquerading as facts (ntm-f7xz).
+func (c *SessionCoordinator) populateWorkSummary(digest *DigestSummary) {
+	if digest == nil {
+		return
+	}
+	triage, err := bv.GetTriage(c.projectKey)
+	if err != nil {
+		digest.WorkSummary.Status = fmt.Sprintf("unavailable: %v", err)
+		return
+	}
+	quickRef := triage.Triage.QuickRef
+	digest.WorkSummary.PendingTasks = quickRef.ActionableCount
+	digest.WorkSummary.InProgressTasks = quickRef.InProgressCount
+	digest.WorkSummary.BlockedTasks = quickRef.BlockedCount
+	for _, pick := range quickRef.TopPicks {
+		if len(digest.WorkSummary.TopReady) >= 3 {
+			break
+		}
+		digest.WorkSummary.TopReady = append(digest.WorkSummary.TopReady, fmt.Sprintf("%s: %s", pick.ID, pick.Title))
+	}
+	digest.WorkSummary.Status = "computed (completed_today not tracked by triage)"
 }
 
 // SendDigest sends a digest summary to the configured human agent.
