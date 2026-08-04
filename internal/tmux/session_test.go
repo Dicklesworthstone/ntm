@@ -2616,3 +2616,61 @@ func TestEscapeTrailingSemicolon(t *testing.T) {
 		}
 	}
 }
+
+// Tests for the codex submission-verification heuristics (ntm-8ubn).
+func TestCodexComposerHoldsPayload(t *testing.T) {
+	message := "Fix the auth layer and report blockers.\nThen run the tests."
+
+	cases := []struct {
+		name    string
+		capture string
+		want    bool
+	}{
+		{
+			name:    "unsubmitted prompt visible in composer",
+			capture: "some earlier output\n› Fix the auth layer and report blockers.\n  Then run the tests.\n",
+			want:    true,
+		},
+		{
+			name:    "pasted placeholder in composer",
+			capture: "banner\n› [Pasted text +12 lines]\n",
+			want:    true,
+		},
+		{
+			name:    "empty composer",
+			capture: "response text\n› \n",
+			want:    false,
+		},
+		{
+			name:    "idle placeholder suggestion does not count as payload",
+			capture: "response text\n› Try \"summarize this repo\"\n",
+			want:    false,
+		},
+		{
+			name:    "submitted prompt echoed in history without composer marker",
+			capture: "user: Fix the auth layer and report blockers.\ncodex is thinking...\n",
+			want:    false,
+		},
+		{
+			name:    "no composer marker at all",
+			capture: "plain shell output\n$\n",
+			want:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexComposerHoldsPayload(tc.capture, message); got != tc.want {
+				t.Errorf("codexComposerHoldsPayload() = %v, want %v\ncapture:\n%s", got, tc.want, tc.capture)
+			}
+		})
+	}
+}
+
+func TestCodexLooksWorking(t *testing.T) {
+	if !codexLooksWorking("Working (3s • Esc to interrupt)") {
+		t.Error("working footer should classify as working")
+	}
+	if codexLooksWorking("› waiting for input\n") {
+		t.Error("idle composer should not classify as working")
+	}
+}

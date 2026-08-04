@@ -2005,6 +2005,107 @@ func (c *Client) SendKeysForAgentDoubleEnterContext(ctx context.Context, target,
 	return nil
 }
 
+const (
+	// codexVerifyInitialDelay is the pause after the double-Enter protocol
+	// before the first submission check, giving codex time to either enter
+	// its working state or re-render the composer with the unsubmitted text.
+	codexVerifyInitialDelay = 700 * time.Millisecond
+	// codexVerifyPollInterval spaces the post-rescue submission checks.
+	codexVerifyPollInterval = 500 * time.Millisecond
+	// codexVerifyMaxPolls bounds the post-rescue verification loop.
+	codexVerifyMaxPolls = 6
+)
+
+// codexComposerHoldsPayload reports whether a codex pane capture shows the
+// delivered message still sitting unsubmitted in the TUI composer. The
+// composer renders as a line starting with the "›" prompt marker; an
+// unsubmitted delivery shows either the message text itself or codex's
+// "[Pasted ..." stand-in there. Idle suggestion hints also render after "›",
+// so composer text alone is not evidence — the line must carry the payload
+// snippet or a paste marker.
+func codexComposerHoldsPayload(capture, message string) bool {
+	snippet := ""
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			if len(line) > 32 {
+				line = line[:32]
+			}
+			snippet = line
+			break
+		}
+	}
+	for _, line := range strings.Split(capture, "\n") {
+		marker := strings.Index(line, "›")
+		if marker < 0 {
+			continue
+		}
+		composerText := strings.TrimSpace(line[marker+len("›"):])
+		if composerText == "" {
+			continue
+		}
+		if strings.Contains(composerText, "[Pasted") {
+			return true
+		}
+		if snippet != "" && strings.Contains(line, snippet) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexLooksWorking reports whether the capture shows codex's working footer.
+func codexLooksWorking(capture string) bool {
+	return strings.Contains(strings.ToLower(capture), "esc to interrupt")
+}
+
+// VerifyCodexSubmissionContext confirms that a prompt delivered to a codex
+// pane actually submitted, rescuing it with one extra Enter when the TUI
+// consumed the protocol's Enter as part of the bracketed paste (ntm-8ubn).
+// Returns (confirmed, rescued): confirmed=false means the payload is still
+// visibly sitting in the composer after the rescue attempt, so callers must
+// not report the send as delivered. A capture failure returns an error and
+// makes no claim either way.
+func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
+	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
+		return false, false, err
+	}
+	// Visible-screen capture only: a scrollback capture can resurrect a stale
+	// "esc to interrupt" footer and misclassify an unsubmitted composer as
+	// working (see CapturePaneVisible).
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil {
+		return false, false, fmt.Errorf("capture codex pane for submission verification: %w", err)
+	}
+	if codexLooksWorking(capture) || !codexComposerHoldsPayload(capture, message) {
+		return true, false, nil
+	}
+
+	// The composer still holds the payload: finish the job with one bare
+	// Enter, then poll for the submission to take effect.
+	if err := c.RunSilentContext(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+		return false, true, fmt.Errorf("send rescue Enter to codex pane: %w", err)
+	}
+	for poll := 0; poll < codexVerifyMaxPolls; poll++ {
+		if err := waitForSendDelay(ctx, codexVerifyPollInterval); err != nil {
+			return false, true, err
+		}
+		capture, err = c.CapturePaneVisibleContext(ctx, target)
+		if err != nil {
+			return false, true, fmt.Errorf("capture codex pane after rescue Enter: %w", err)
+		}
+		if codexLooksWorking(capture) || !codexComposerHoldsPayload(capture, message) {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
+}
+
+// VerifyCodexSubmissionContext verifies codex prompt submission (default client).
+func VerifyCodexSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
+	return DefaultClient.VerifyCodexSubmissionContext(ctx, target, message)
+}
+
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-c")

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -318,10 +319,44 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 		if delivery.EnterDelay != tmux.DoubleEnterFirstDelay || delivery.SecondEnterDelay != tmux.DoubleEnterSecondDelay {
 			return fmt.Errorf("tmux double-enter protocol requires delays %s and %s", tmux.DoubleEnterFirstDelay, tmux.DoubleEnterSecondDelay)
 		}
-		return tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType)
+		if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType); err != nil {
+			return err
+		}
+		return VerifyCodexSubmission(ctx, target, delivery.Message, delivery.Target.AgentType)
 	default:
 		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
 	}
+}
+
+// VerifyCodexSubmission closes the gap between "keys were sent" and "the
+// prompt actually submitted" for codex panes (ntm-8ubn): codex's TUI can
+// consume the double-Enter protocol's Enters as part of the bracketed paste,
+// leaving the prompt sitting unsubmitted in the composer while the send
+// reports success. It captures the visible screen, sends one rescue Enter
+// when the composer still holds the payload, and fails the delivery loudly
+// when submission remains unconfirmed so "delivered" keeps meaning
+// "submitted". Verification infrastructure errors (a capture hiccup) are
+// logged but do not fail an already-delivered send. Non-codex agent types
+// return nil immediately.
+func VerifyCodexSubmission(ctx context.Context, target, message string, agentType tmux.AgentType) error {
+	if agentType.Canonical() != tmux.AgentCodex {
+		return nil
+	}
+	confirmed, rescued, err := tmux.VerifyCodexSubmissionContext(ctx, target, message)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		slog.Warn("codex submission verification inconclusive", "target", target, "error", err)
+		return nil
+	}
+	if !confirmed {
+		return fmt.Errorf("codex submission unconfirmed: prompt still in composer after rescue Enter (pane %s); submit manually or retry", target)
+	}
+	if rescued {
+		slog.Info("codex composer needed a rescue Enter to submit", "target", target)
+	}
+	return nil
 }
 
 // Pacer waits between adjacent delivery attempts.
