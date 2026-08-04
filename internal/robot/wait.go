@@ -98,6 +98,15 @@ const (
 	// WaitConditionRateLimitLifted is met for a pane when it is NOT
 	// rate-limited; the wait returns once every target pane is clear.
 	WaitConditionRateLimitLifted = "rate_limit_lifted"
+	// WaitConditionAgentReady is met when the pane's agent CLI is booted and
+	// responsive — at its own prompt or actively working. It replaces the
+	// documented "sleep 8-10 after relaunch" folklore (ntm-3a9i): after a
+	// manual relaunch or respawn, `--robot-wait --wait-until=agent_ready
+	// --panes=N` blocks until the CLI reaches a classified agent state.
+	// Bare shells stay pending: generic shell prompts are excluded from
+	// agent-typed panes by the pattern library, so a dead CLI classifies as
+	// UNKNOWN, not ready.
+	WaitConditionAgentReady = "agent_ready"
 )
 
 // Wait condition constants - attention-based conditions (require --attention-cursor)
@@ -391,7 +400,8 @@ func isSingleValidWaitCondition(condition string) bool {
 	switch condition {
 	// Pane-based conditions
 	case WaitConditionIdle, WaitConditionComplete, WaitConditionGenerating, WaitConditionHealthy,
-		WaitConditionStalled, WaitConditionRateLimited, WaitConditionRateLimitLifted:
+		WaitConditionStalled, WaitConditionRateLimited, WaitConditionRateLimitLifted,
+		WaitConditionAgentReady:
 		return true
 	// Attention-based conditions
 	case WaitConditionAttention, WaitConditionActionRequired, WaitConditionMailPending,
@@ -649,6 +659,22 @@ func meetsSingleWaitCondition(activity *AgentActivity, condition string) bool {
 		// operators actually want (ntm-xh9t). Invoked when nothing is
 		// limited, it returns immediately (condition already true).
 		return !activity.RateLimited
+
+	case WaitConditionAgentReady:
+		// Ready means the CLI reached a classified agent state: at its
+		// prompt (WAITING) or already doing work (THINKING/GENERATING).
+		// UNKNOWN (bare shell / still booting), ERROR, and STALLED stay
+		// pending. Rate-limited panes are not ready: the CLI is up but
+		// cannot accept work.
+		if activity.RateLimited {
+			return false
+		}
+		switch activity.State {
+		case StateWaiting, StateThinking, StateGenerating:
+			return true
+		default:
+			return false
+		}
 
 	default:
 		// Attention-based conditions don't apply to individual pane activity

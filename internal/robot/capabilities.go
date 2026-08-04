@@ -988,7 +988,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Wait for pane-state or attention-feed conditions and return a machine-usable wake result.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-wait", Type: "string", Required: true, Description: "Session name"},
-				{Name: "wait-until", Flag: "--wait-until", Type: "string", Required: false, Default: "idle", Description: "Wait condition: idle, complete, generating, healthy, stalled, rate_limited (fires when a pane BECOMES limited), rate_limit_lifted (returns once every target pane is clear of the wall), attention, action_required, mail_pending, mail_ack_required, context_hot, reservation_conflict, file_conflict, session_changed, pane_changed. bead_orphaned remains deliberately unsupported."},
+				{Name: "wait-until", Flag: "--wait-until", Type: "string", Required: false, Default: "idle", Description: "Wait condition: idle, complete, generating, healthy, stalled, rate_limited (fires when a pane BECOMES limited), rate_limit_lifted (returns once every target pane is clear of the wall), agent_ready (CLI booted and responsive after relaunch/respawn — replaces fixed post-boot sleeps), attention, action_required, mail_pending, mail_ack_required, context_hot, reservation_conflict, file_conflict, session_changed, pane_changed. bead_orphaned remains deliberately unsupported."},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "5m", Description: "Maximum wait time"},
 				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "2s", Description: "Polling interval"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Filter by N, W.P, or %N pane selectors"},

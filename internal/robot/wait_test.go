@@ -975,3 +975,32 @@ func TestRateLimitWaitConditionDirections(t *testing.T) {
 		t.Fatalf("lifted-wait met=%v matching=%d after all panes cleared, want met with 2", met, len(matching))
 	}
 }
+
+// agent_ready semantics (ntm-3a9i): ready = classified agent state (prompt or
+// working), pending on unknown/error/stalled/rate-limited. Replaces the
+// documented "sleep 8-10 after relaunch" folklore.
+func TestAgentReadyWaitCondition(t *testing.T) {
+	cases := []struct {
+		name     string
+		activity *AgentActivity
+		want     bool
+	}{
+		{"waiting at prompt is ready", &AgentActivity{State: StateWaiting}, true},
+		{"thinking is ready", &AgentActivity{State: StateThinking}, true},
+		{"generating is ready", &AgentActivity{State: StateGenerating}, true},
+		{"unknown (bare shell / booting) pending", &AgentActivity{State: StateUnknown}, false},
+		{"error pending", &AgentActivity{State: StateError}, false},
+		{"stalled pending", &AgentActivity{State: StateStalled}, false},
+		{"rate-limited prompt not ready", &AgentActivity{State: StateWaiting, RateLimited: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := meetsSingleWaitCondition(tc.activity, WaitConditionAgentReady); got != tc.want {
+				t.Errorf("agent_ready(%+v) = %v, want %v", tc.activity, got, tc.want)
+			}
+		})
+	}
+	if !isSingleValidWaitCondition(WaitConditionAgentReady) {
+		t.Error("agent_ready must be a valid wait condition")
+	}
+}
