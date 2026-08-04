@@ -1852,6 +1852,13 @@ Shell Integration:
 			}
 			return
 		}
+		// `--robot-health=` with an empty value previously fell through and
+		// exited with NO output at all — a silent nothing where the operator
+		// asked a question (ntm-rerm). Empty-but-set errors loudly.
+		if robotHealth == "" && cmd.Flags().Changed("robot-health") {
+			failRobotCommand(errors.New("--robot-health requires a session name"), robot.ErrCodeInvalidFlag, "Use --robot-health=SESSION; 'ntm list' shows available sessions", "robot-health")
+			return
+		}
 		if robotHealth != "" {
 			session, err := resolveRobotLiveSession(cmd.Context(), robotHealth)
 			if err != nil {
@@ -2397,6 +2404,16 @@ Shell Integration:
 				IncidentID: robotInspectIncident,
 			}
 			if err := robot.PrintInspectIncident(opts); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+		if robotIncidentResolve == "" && cmd.Flags().Changed("robot-incident-resolve") {
+			failRobotCommand(errors.New("--robot-incident-resolve requires an incident id"), robot.ErrCodeInvalidFlag, "Use --robot-incident-resolve=INCIDENT_ID; list ids via --robot-snapshot or --robot-attention", "robot-incident-resolve")
+			return
+		}
+		if robotIncidentResolve != "" {
+			if err := robot.PrintIncidentResolve(robotIncidentResolve, robotIncidentNote); err != nil {
 				recordRobotProcessExit(err)
 			}
 			return
@@ -3532,6 +3549,8 @@ var (
 	robotInspectCoord    string // agent mail identity for projection-backed coordination inspection
 	robotInspectQuota    string // provider/account for projection-backed quota inspection
 	robotInspectIncident string // incident id for store-backed incident inspection
+	robotIncidentResolve string // incident id to mark resolved (write verb for the incident lifecycle)
+	robotIncidentNote    string // optional resolution note recorded with --robot-incident-resolve
 	robotInspectSession  string // session name for projection-backed session inspection
 	robotInspectAgent    string // runtime agent id for projection-backed agent inspection
 	robotInspectPane     string // session name for pane inspection
@@ -4169,6 +4188,8 @@ func init() {
 	rootCmd.Flags().StringVar(&robotInspectCoord, "robot-inspect-coordination", "", "Projection-backed coordination drill-down. Required: AGENT_NAME. Example: ntm --robot-inspect-coordination=BlueLake")
 	rootCmd.Flags().StringVar(&robotInspectQuota, "robot-inspect-quota", "", "Projection-backed quota drill-down. Required: PROVIDER/ACCOUNT. Canonical aliases like claude/default are accepted. Example: ntm --robot-inspect-quota=claude/default")
 	rootCmd.Flags().StringVar(&robotInspectIncident, "robot-inspect-incident", "", "Store-backed incident drill-down. Required: INCIDENT_ID. Example: ntm --robot-inspect-incident=inc_20260323_abc123")
+	rootCmd.Flags().StringVar(&robotIncidentResolve, "robot-incident-resolve", "", "Mark a store-backed incident resolved. Required: INCIDENT_ID. Example: ntm --robot-incident-resolve=inc_20260323_abc123")
+	rootCmd.Flags().StringVar(&robotIncidentNote, "incident-note", "", "Optional resolution note for --robot-incident-resolve")
 
 	rootCmd.Flags().StringVar(&robotMetrics, "robot-metrics", "", "Session metrics export. Optional SESSION. Example: ntm --robot-metrics=myproject --metrics-period=24h")
 	rootCmd.Flags().StringVar(&robotMetricsPeriod, "metrics-period", "24h", "Period: 1h, 24h, 7d, all. Optional with --robot-metrics. Example: --metrics-period=7d")

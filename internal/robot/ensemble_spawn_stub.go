@@ -17,6 +17,13 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 )
 
+// Availability markers consumed by the capabilities catalog so operators
+// learn up front (not at call time) that this build cannot spawn ensembles.
+const (
+	ensembleSpawnAvailable         = false
+	ensembleSpawnUnavailableReason = "not available in this build: rebuild with -tags ensemble_experimental to enable --robot-ensemble-spawn"
+)
+
 // EnsembleSpawnOptions configures --robot-ensemble-spawn.
 type EnsembleSpawnOptions struct {
 	Session       string

@@ -2464,6 +2464,83 @@ func GetInspectIncident(opts InspectIncidentOptions) (*InspectIncidentOutput, er
 }
 
 // PrintInspectIncident outputs store-backed incident inspection.
+// IncidentResolveOutput is the --robot-incident-resolve response (ntm-rerm):
+// robot mode could open and inspect incidents but never close one, so
+// operators were told to "resolve via coordinator status once the trigger
+// clears" — a read surface standing in for a missing write verb.
+type IncidentResolveOutput struct {
+	RobotResponse
+	IncidentID     string `json:"incident_id"`
+	PreviousStatus string `json:"previous_status,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Note           string `json:"note,omitempty"`
+}
+
+// ResolveIncident marks a store-backed incident resolved with an audit note.
+func ResolveIncident(incidentID, note string) (*IncidentResolveOutput, error) {
+	incidentID = strings.TrimSpace(incidentID)
+	output := &IncidentResolveOutput{
+		RobotResponse: NewRobotResponse(true),
+		IncidentID:    incidentID,
+	}
+	if incidentID == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("incident id required"),
+			ErrCodeInvalidFlag,
+			"Specify incident id with --robot-incident-resolve=INCIDENT_ID",
+		)
+		return output, nil
+	}
+	store := currentProjectionStore()
+	if store == nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("runtime projection store unavailable"),
+			ErrCodeNotImplemented,
+			"Incident resolution requires the shared store; refresh snapshot/status after projection initialization",
+		)
+		return output, nil
+	}
+	incident, err := store.GetIncident(incidentID)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to load incident")
+		return output, nil
+	}
+	if incident == nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("incident '%s' not found", incidentID),
+			ErrCodeInvalidFlag,
+			"Use ntm --robot-snapshot or ntm --robot-attention to list active incident ids",
+		)
+		return output, nil
+	}
+	output.PreviousStatus = string(incident.Status)
+	if incident.Status == state.IncidentStatusResolved {
+		output.Status = string(incident.Status)
+		output.Note = "already resolved (idempotent no-op)"
+		return output, nil
+	}
+	resolutionNote := strings.TrimSpace(note)
+	if resolutionNote == "" {
+		resolutionNote = "resolved via --robot-incident-resolve"
+	}
+	if err := store.UpdateIncidentStatus(incident.ID, state.IncidentStatusResolved, "operator", resolutionNote); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to update incident status")
+		return output, nil
+	}
+	output.Status = string(state.IncidentStatusResolved)
+	output.Note = resolutionNote
+	return output, nil
+}
+
+// PrintIncidentResolve resolves an incident and prints the structured result.
+func PrintIncidentResolve(incidentID, note string) error {
+	output, err := ResolveIncident(incidentID, note)
+	if err != nil {
+		return err
+	}
+	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot incident-resolve failed")
+}
+
 func PrintInspectIncident(opts InspectIncidentOptions) error {
 	output, err := GetInspectIncident(opts)
 	if err != nil {

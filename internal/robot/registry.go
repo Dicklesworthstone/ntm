@@ -32,6 +32,8 @@ type RobotSurfaceDescriptor struct {
 	Summary                 string               `json:"summary"`
 	Description             string               `json:"description"`
 	Note                    string               `json:"note,omitempty"`
+	Unavailable             bool                 `json:"unavailable,omitempty"`
+	UnavailableReason       string               `json:"unavailable_reason,omitempty"`
 	OutputFormats           []string             `json:"output_formats"`
 	DefaultOutputFormat     string               `json:"default_output_format"`
 	SchemaID                string               `json:"schema_id,omitempty"`
@@ -318,6 +320,8 @@ func buildRobotRegistry() *RobotRegistry {
 			Summary:                 summarizeDescription(command.Description),
 			Description:             command.Description,
 			Note:                    command.Note,
+			Unavailable:             command.Unavailable,
+			UnavailableReason:       command.UnavailableReason,
 			OutputFormats:           outputFormats,
 			DefaultOutputFormat:     defaultOutputFormat,
 			SchemaID:                schemaID,

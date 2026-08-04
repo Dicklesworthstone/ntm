@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 127,
+  "schema_type_count": 128,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -66,6 +66,7 @@
     "health_oauth",
     "history",
     "impact",
+    "incident_resolve",
     "inspect",
     "inspect_agent",
     "inspect_coordination",
@@ -143,7 +144,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 138,
+  "surface_count": 139,
   "surfaces": [
     {
       "category": "state",
@@ -325,6 +326,21 @@
       "name": "health-restart-stuck",
       "schema_id": "ntm:robot:health-restart-stuck:v1",
       "schema_type": "auto_restart_stuck"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-incident-resolve",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "incident-resolve",
+      "schema_id": "ntm:robot:incident-resolve:v1",
+      "schema_type": "incident_resolve"
     },
     {
       "category": "state",

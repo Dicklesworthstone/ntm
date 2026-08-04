@@ -47,6 +47,8 @@ type RobotCommandInfo struct {
 	Summary                 string               `json:"summary,omitempty"`
 	Description             string               `json:"description,omitempty"`
 	Note                    string               `json:"note,omitempty"`
+	Unavailable             bool                 `json:"unavailable,omitempty"`
+	UnavailableReason       string               `json:"unavailable_reason,omitempty"`
 	OutputFormats           []string             `json:"output_formats"`
 	DefaultOutputFormat     string               `json:"default_output_format"`
 	SchemaID                string               `json:"schema_id,omitempty"`
@@ -312,6 +314,8 @@ func buildCapabilitiesCommandCatalog(surfaces []RobotSurfaceDescriptor) []RobotC
 			Summary:                 surface.Summary,
 			Description:             surface.Description,
 			Note:                    surface.Note,
+			Unavailable:             surface.Unavailable,
+			UnavailableReason:       surface.UnavailableReason,
 			OutputFormats:           cloneStrings(surface.OutputFormats),
 			DefaultOutputFormat:     surface.DefaultOutputFormat,
 			SchemaID:                surface.SchemaID,
@@ -644,6 +648,17 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "incident_id", Flag: "--robot-inspect-incident", Type: "string", Required: true, Description: "Incident id from snapshot/attention surfaces"},
 			},
 			Examples: []string{"ntm --robot-inspect-incident=inc_20260323_abc123"},
+		},
+		{
+			Name:        "incident-resolve",
+			Flag:        "--robot-incident-resolve",
+			Category:    "state",
+			Description: "Mark a store-backed incident resolved with an audit note (idempotent).",
+			Parameters: []RobotParameter{
+				{Name: "incident_id", Flag: "--robot-incident-resolve", Type: "string", Required: true, Description: "Incident id from snapshot/attention surfaces"},
+				{Name: "incident-note", Flag: "--incident-note", Type: "string", Required: false, Description: "Resolution note recorded in the incident audit trail"},
+			},
+			Examples: []string{"ntm --robot-incident-resolve=inc_20260323_abc123 --incident-note='root cause fixed in abc123'"},
 		},
 		{
 			Name:        "files",
@@ -1141,11 +1156,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
-			Name:        "ensemble_spawn",
-			Flag:        "--robot-ensemble-spawn",
-			Category:    "ensemble",
-			Description: "Spawn a reasoning ensemble session with mode assignments.",
-			Note:        "Requires build tag: ensemble_experimental. Default build returns NOT_IMPLEMENTED.",
+			Name:              "ensemble_spawn",
+			Flag:              "--robot-ensemble-spawn",
+			Category:          "ensemble",
+			Description:       "Spawn a reasoning ensemble session with mode assignments.",
+			Note:              "Requires build tag: ensemble_experimental. Default build returns NOT_IMPLEMENTED.",
+			Unavailable:       !ensembleSpawnAvailable,
+			UnavailableReason: ensembleSpawnUnavailableReason,
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-ensemble-spawn", Type: "string", Required: true, Description: "Session name to create"},
 				{Name: "preset", Flag: "--preset", Type: "string", Required: false, Description: "Ensemble preset name (required unless --modes is set)"},

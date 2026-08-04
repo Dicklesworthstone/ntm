@@ -21,6 +21,13 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+// Availability markers consumed by the capabilities catalog so operators
+// learn up front (not at call time) whether this build can spawn ensembles.
+const (
+	ensembleSpawnAvailable         = true
+	ensembleSpawnUnavailableReason = ""
+)
+
 // EnsembleSpawnOptions configures --robot-ensemble-spawn.
 type EnsembleSpawnOptions struct {
 	Session       string
