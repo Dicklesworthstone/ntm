@@ -137,6 +137,10 @@ func shortenKeys(value any) any {
 			}
 			shortKey := key
 			if mapped, ok := TerseKeyFor(key); ok {
+				if _, occupied := typed[mapped]; occupied && mapped != key {
+					out[key] = shortenKeys(val)
+					continue
+				}
 				shortKey = mapped
 			}
 			out[shortKey] = shortenKeys(val)

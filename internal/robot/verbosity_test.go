@@ -64,6 +64,26 @@ func TestApplyVerbosity_TerseShortensKeysAndDropsHints(t *testing.T) {
 	}
 }
 
+func TestApplyVerbosity_TersePreservesTimestampWhenTSAlreadyExists(t *testing.T) {
+	payload := map[string]any{
+		"timestamp": "envelope-timestamp",
+		"ts":        "snapshot-timestamp",
+	}
+
+	for range 200 {
+		typed, ok := applyVerbosity(payload, VerbosityTerse).(map[string]any)
+		if !ok {
+			t.Fatalf("applyVerbosity() returned %T, want map[string]any", typed)
+		}
+		if got := typed["timestamp"]; got != "envelope-timestamp" {
+			t.Fatalf("timestamp = %v, want envelope timestamp; output=%v", got, typed)
+		}
+		if got := typed["ts"]; got != "snapshot-timestamp" {
+			t.Fatalf("ts = %v, want snapshot timestamp; output=%v", got, typed)
+		}
+	}
+}
+
 func TestApplyVerbosity_DebugAddsMetadata(t *testing.T) {
 	payload := map[string]any{
 		"success": true,
