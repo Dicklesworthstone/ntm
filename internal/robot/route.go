@@ -159,19 +159,8 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 			continue
 		}
 
-		// Build scored agent
-		agent := ScoredAgent{
-			PaneID:       pane.ID,
-			AgentType:    agentType,
-			PaneIndex:    pane.Index,
-			State:        activity.State,
-			Confidence:   activity.Confidence,
-			Velocity:     activity.Velocity,
-			ContextUsage: contextUsageForPane(contextUsage, pane.Index),
-			LastActivity: activity.LastOutput,
-			HealthState:  deriveHealthState(activity.State),
-			RateLimited:  false,
-		}
+		// Build scored agent from the activity classifier's authoritative state.
+		agent := scoredAgentForRouting(pane, agentType, activity, contextUsage)
 
 		// Calculate score components
 		agent.ScoreDetail = scorer.calculateScoreComponents(&agent, opts.Prompt)
@@ -390,19 +379,8 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 			continue // Skip agents that can't be classified
 		}
 
-		// Build scored agent
-		agent := ScoredAgent{
-			PaneID:       pane.ID,
-			AgentType:    agentType,
-			PaneIndex:    pane.Index,
-			State:        activity.State,
-			Confidence:   activity.Confidence,
-			Velocity:     activity.Velocity,
-			ContextUsage: contextUsageForPane(contextUsage, pane.Index),
-			LastActivity: activity.LastOutput,
-			HealthState:  deriveHealthState(activity.State),
-			RateLimited:  false,
-		}
+		// Build scored agent from the activity classifier's authoritative state.
+		agent := scoredAgentForRouting(pane, agentType, activity, contextUsage)
 
 		// Calculate score components
 		agent.ScoreDetail = scorer.calculateScoreComponents(&agent, opts.Prompt)

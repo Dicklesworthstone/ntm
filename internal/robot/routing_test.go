@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestDefaultRoutingConfig(t *testing.T) {
@@ -154,15 +155,26 @@ func TestCheckExclusion(t *testing.T) {
 	}
 }
 
-func TestDetectRoutingRateLimit_UsesAgentContext(t *testing.T) {
-
-	const output = "billing limit reached"
-
-	if !detectRoutingRateLimit(output, "openai-codex") {
-		t.Fatalf("expected routing rate-limit detection to recognize Codex alias for %q", output)
+func TestScoredAgentForRoutingPropagatesRateLimit(t *testing.T) {
+	pane := tmux.Pane{ID: "%12", Index: 2}
+	activity := &AgentActivity{
+		State:       StateWaiting,
+		Confidence:  0.9,
+		Velocity:    2.5,
+		RateLimited: true,
 	}
-	if detectRoutingRateLimit(output, "cc") {
-		t.Fatalf("did not expect non-Codex routing detection to match Codex-specific pattern for %q", output)
+	agent := scoredAgentForRouting(pane, "codex", activity, map[int]float64{2: 31.5})
+	if !agent.RateLimited {
+		t.Fatal("RateLimited = false, want the activity classifier's true rate-limit result")
+	}
+	if agent.ContextUsage != 31.5 {
+		t.Fatalf("ContextUsage = %v, want 31.5", agent.ContextUsage)
+	}
+
+	scorer := NewAgentScorer(DefaultRoutingConfig())
+	excluded, reason := scorer.checkExclusion(&agent)
+	if !excluded || reason != "agent is rate limited" {
+		t.Fatalf("rate-limited agent exclusion = (%t, %q), want (true, %q)", excluded, reason, "agent is rate limited")
 	}
 }
 

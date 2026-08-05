@@ -14,7 +14,6 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/config"
-	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -100,6 +99,23 @@ func contextUsageForPane(usage map[int]float64, paneIndex int) float64 {
 		return value
 	}
 	return 0
+}
+
+// scoredAgentForRouting keeps every route surface aligned with the activity
+// classifier's authoritative pane state, including live rate-limit evidence.
+func scoredAgentForRouting(pane tmux.Pane, agentType string, activity *AgentActivity, contextUsage map[int]float64) ScoredAgent {
+	return ScoredAgent{
+		PaneID:       pane.ID,
+		AgentType:    agentType,
+		PaneIndex:    pane.Index,
+		State:        activity.State,
+		Confidence:   activity.Confidence,
+		Velocity:     activity.Velocity,
+		ContextUsage: contextUsageForPane(contextUsage, pane.Index),
+		LastActivity: activity.LastOutput,
+		HealthState:  deriveHealthState(activity.State),
+		RateLimited:  activity.RateLimited,
+	}
 }
 
 // ScoredAgent represents an agent with its computed routing score.
@@ -564,25 +580,8 @@ func (s *AgentScorer) ScoreAgents(session string, prompt string) ([]ScoredAgent,
 			continue
 		}
 
-		// Detect rate limiting by checking recent pane output
-		rateLimited := false
-		if output, err := tmux.CapturePaneOutput(pane.ID, 20); err == nil && output != "" {
-			rateLimited = detectRoutingRateLimit(output, agentType)
-		}
-
-		// Build scored agent
-		agent := ScoredAgent{
-			PaneID:       pane.ID,
-			AgentType:    agentType,
-			PaneIndex:    pane.Index,
-			State:        activity.State,
-			Confidence:   activity.Confidence,
-			Velocity:     activity.Velocity,
-			ContextUsage: contextUsageForPane(contextUsage, pane.Index),
-			LastActivity: activity.LastOutput,
-			HealthState:  deriveHealthState(activity.State),
-			RateLimited:  rateLimited,
-		}
+		// Build scored agent from the same classification used by route APIs.
+		agent := scoredAgentForRouting(pane, agentType, activity, contextUsage)
 
 		// Calculate score components
 		agent.ScoreDetail = s.calculateScoreComponents(&agent, prompt)
@@ -602,10 +601,6 @@ func (s *AgentScorer) ScoreAgents(session string, prompt string) ([]ScoredAgent,
 	}
 
 	return scored, nil
-}
-
-func detectRoutingRateLimit(output string, agentType string) bool {
-	return ratelimit.DetectRateLimitForAgent(output, agentType).RateLimited
 }
 
 // calculateScoreComponents computes individual score components.
