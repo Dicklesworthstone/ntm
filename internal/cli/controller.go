@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -298,6 +299,19 @@ func buildControllerResponse(ctx context.Context, opts ControllerInput) (*Contro
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rendering agent command template: %w", err)
+	}
+
+	// Per-pane Claude credential isolation (GH#237, bd-4tz2d). Every path that
+	// renders a Claude launch command must apply it, or the relaunched pane
+	// rejoins the shared rotating credential and its next refresh invalidates
+	// every other pane's token. Returns the zero value when the feature is
+	// disabled, so this is safe to call unconditionally.
+	if agentTypeFull == "claude" {
+		claudeEnv, isoErr := swarm.ProvisionClaudeIsolation(cfg, dir, session, 1)
+		if isoErr != nil {
+			return nil, fmt.Errorf("isolating credentials for claude controller pane: %w", isoErr)
+		}
+		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 	}
 
 	// Find or create pane 1
