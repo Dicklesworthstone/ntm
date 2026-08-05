@@ -5,6 +5,7 @@ NTM workflows define multi-step automation pipelines for orchestrating AI agents
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Custom Orchestration Templates](#custom-orchestration-templates)
 - [Root Structure](#root-structure)
 - [Variables](#variables)
 - [Settings](#settings)
@@ -31,6 +32,118 @@ steps:
     agent: claude
     prompt: Review the code in this repository for bugs and suggest improvements.
 ```
+
+## Custom Orchestration Templates
+
+NTM also loads TOML workflow templates for its multi-agent coordination
+commands. These templates are distinct from the YAML pipeline files described
+below: they assign agent roles, choose a coordination model, and define the
+transitions between stages.
+
+Put a template in one of these directories (one or more `.toml` files per
+directory):
+
+1. `~/.config/ntm/workflows/` for templates available to every project.
+2. `.ntm/workflows/` in the repository for project-specific templates.
+
+Project templates override user templates with the same name, and both override
+built-in templates. Confirm that a template was loaded with
+`ntm workflows list`, and inspect its parsed configuration with
+`ntm workflows show <name>`.
+
+### Create a Template
+
+1. Start from a built-in template (`ntm workflows list`) and choose a lowercase
+   name containing only letters, numbers, hyphens, and underscores.
+2. Add one `[[workflows.agents]]` entry for each role. Every entry requires a
+   `profile` and `role`; `count` defaults to one.
+3. Choose `parallel`, `pipeline`, `ping-pong`, or `review-gate` coordination.
+   Pipeline templates require `flow.stages`; the other non-parallel forms
+   require `flow.initial`.
+4. Define at least one `[[workflows.flow.transitions]]` entry whenever a flow
+   is present. Each transition needs `from`, `to`, and a valid trigger.
+5. Add `[[workflows.prompts]]` entries for information that must be gathered
+   before coordination starts, then run `ntm workflows show <name>` to parse
+   and validate the file.
+
+### Example: Project Review Flow
+
+Save the following as `.ntm/workflows/my-review-flow.toml`:
+
+```toml
+[[workflows]]
+name = "my-review-flow"
+description = "Custom implementation and security review pipeline"
+coordination = "pipeline"
+
+[[workflows.agents]]
+profile = "implementer"
+role = "implement"
+
+[[workflows.agents]]
+profile = "reviewer"
+role = "security-review"
+
+[[workflows.agents]]
+profile = "reviewer"
+role = "perf-review"
+
+[workflows.flow]
+stages = ["implement", "security-review", "perf-review", "merge"]
+
+[[workflows.flow.transitions]]
+from = "implement"
+to = "security-review"
+[workflows.flow.transitions.trigger]
+type = "all_agents_idle"
+role = "implement"
+idle_minutes = 1
+
+[[workflows.flow.transitions]]
+from = "security-review"
+to = "perf-review"
+[workflows.flow.transitions.trigger]
+type = "manual"
+label = "Security review complete"
+
+[[workflows.flow.transitions]]
+from = "perf-review"
+to = "merge"
+[workflows.flow.transitions.trigger]
+type = "manual"
+label = "Performance review complete"
+
+[[workflows.prompts]]
+key = "ticket"
+question = "Ticket or issue number?"
+required = true
+```
+
+### Best Practices
+
+- Start with a built-in template and change one coordination concern at a time.
+- Keep the first flow short and use explicit roles that match its stages.
+- Use setup prompts for project-specific inputs instead of embedding them in
+  a role or transition.
+- Prefer manual transitions while establishing a new flow; add automatic
+  triggers only after their pane output is reliable.
+- Validate the template with `ntm workflows show <name>` before depending on
+  it in a session.
+
+### Troubleshooting
+
+- **Workflow not found:** ensure the file ends in `.toml` and is in
+  `.ntm/workflows/` or `~/.config/ntm/workflows/`; use `ntm workflows list`
+  to see the effective source.
+- **Template fails to load:** use `ntm workflows show <name>` to surface TOML,
+  unknown-field, or validation errors. Pipeline flows need stages and every
+  flow needs at least one valid transition.
+- **Unexpected template version:** a project template with the same name
+  overrides a user or built-in template; `ntm workflows list` reports its
+  source.
+- **Flow does not advance:** check that the trigger type has all required
+  fields (for example `idle_minutes` for `all_agents_idle`) and that the
+  trigger's role matches the stage role.
 
 ## Root Structure
 
