@@ -70,7 +70,17 @@ type AnswerDialogOutput struct {
 	Choice   string      `json:"choice"`
 	KeysSent []string    `json:"keys_sent,omitempty"`
 	After    DialogState `json:"after"`
-	Resolved bool        `json:"resolved"`
+	// Resolved means the pane is CLEAR: no dialog is blocking it. It is not
+	// "the dialog changed" — a destructive confirm that, on declining, presents
+	// a follow-up usage overlay has changed class while the pane is still
+	// blocked, and a caller told resolved:true proceeds to send work the new
+	// dialog swallows.
+	Resolved bool `json:"resolved"`
+	// FollowUpDialog names the dialog class that REPLACED the one that was
+	// answered, when answering surfaced a different dialog rather than
+	// clearing the pane. It is the actionable signal a class change carries:
+	// the caller can answer the next one.
+	FollowUpDialog string `json:"follow_up_dialog,omitempty"`
 }
 
 // dialogSignature declares the substring patterns (case-insensitive, ALL
@@ -418,14 +428,37 @@ func AnswerDialog(ctx context.Context, opts AnswerDialogOptions) (*AnswerDialogO
 	} else {
 		output.After = DialogState{Class: DialogUnknown, Evidence: fmt.Sprintf("post-answer capture failed: %v", err)}
 	}
-	output.Resolved = output.After.Class == DialogNone || output.After.Class != output.Before.Class
-	if !output.Resolved {
-		output.Success = false
-		output.Error = "dialog still present after the answer"
-		output.ErrorCode = ErrCodeInternalError
-		output.Hint = "Re-run --robot-dialogs; the dialog may need a different choice"
-	}
+	applyDialogResolution(output)
 	return output, nil
+}
+
+// applyDialogResolution decides whether answering actually cleared the pane.
+//
+// Resolved means the pane is CLEAR. Accepting "the class merely changed"
+// reported success while a modal was still blocking the pane: declining a
+// destructive confirm can surface a follow-up dialog, and the caller — told
+// resolved:true, success:true — then sent work that the new dialog swallowed.
+// That is exactly the success-without-verified-effect failure the post-action
+// verification contract (ntm-epu6) exists to eliminate.
+//
+// A class change is still useful information; it just is not resolution, so it
+// is reported separately as the follow-up to answer next.
+func applyDialogResolution(output *AnswerDialogOutput) {
+	output.Resolved = output.After.Class == DialogNone
+	if output.Resolved {
+		return
+	}
+
+	output.Success = false
+	output.ErrorCode = ErrCodeInternalError
+	if output.After.Class != output.Before.Class {
+		output.FollowUpDialog = output.After.Class
+		output.Error = fmt.Sprintf("answering surfaced a follow-up dialog (%s); the pane is still blocked", output.After.Class)
+		output.Hint = "Answer the follow-up dialog with --robot-answer-dialog --choice, then re-check with --robot-dialogs"
+		return
+	}
+	output.Error = "dialog still present after the answer"
+	output.Hint = "Re-run --robot-dialogs; the dialog may need a different choice"
 }
 
 // PrintDialogs prints the per-pane dialog classification.

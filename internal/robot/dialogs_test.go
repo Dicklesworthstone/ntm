@@ -141,3 +141,66 @@ func TestResolveDialogAnswer_DismissAndNone(t *testing.T) {
 		t.Fatal("answering a pane with no dialog must error")
 	}
 }
+
+// bd-70c00: Resolved used to be `After == None || After != Before`, so a
+// dialog REPLACED by a different dialog reported resolved:true with a modal
+// still blocking the pane. The caller then sent work the new dialog swallowed
+// — success without verified effect, the exact failure ntm-epu6 exists to
+// eliminate.
+func TestApplyDialogResolution(t *testing.T) {
+	tests := []struct {
+		name           string
+		before, after  string
+		wantResolved   bool
+		wantSuccess    bool
+		wantFollowUp   string
+		wantErrContain string
+	}{
+		{
+			name: "dialog cleared", before: DialogDestructiveConfirm, after: DialogNone,
+			wantResolved: true, wantSuccess: true,
+		},
+		{
+			name: "same dialog still present", before: DialogTrustPrompt, after: DialogTrustPrompt,
+			wantResolved: false, wantSuccess: false,
+			wantErrContain: "still present",
+		},
+		{
+			name: "answering surfaced a DIFFERENT dialog", before: DialogDestructiveConfirm, after: DialogRateLimitOptions,
+			wantResolved: false, wantSuccess: false,
+			wantFollowUp:   DialogRateLimitOptions,
+			wantErrContain: "follow-up dialog",
+		},
+		{
+			name: "post-answer capture failed", before: DialogTrustPrompt, after: DialogUnknown,
+			wantResolved: false, wantSuccess: false,
+			wantFollowUp:   DialogUnknown,
+			wantErrContain: "follow-up dialog",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			out := &AnswerDialogOutput{
+				RobotResponse: NewRobotResponse(true),
+				Before:        DialogState{Class: tt.before},
+				After:         DialogState{Class: tt.after},
+			}
+			applyDialogResolution(out)
+
+			if out.Resolved != tt.wantResolved {
+				t.Fatalf("Resolved = %v, want %v (before=%s after=%s)", out.Resolved, tt.wantResolved, tt.before, tt.after)
+			}
+			if out.Success != tt.wantSuccess {
+				t.Fatalf("Success = %v, want %v", out.Success, tt.wantSuccess)
+			}
+			if out.FollowUpDialog != tt.wantFollowUp {
+				t.Fatalf("FollowUpDialog = %q, want %q", out.FollowUpDialog, tt.wantFollowUp)
+			}
+			if tt.wantErrContain != "" && !strings.Contains(out.Error, tt.wantErrContain) {
+				t.Fatalf("Error = %q, want it to mention %q", out.Error, tt.wantErrContain)
+			}
+		})
+	}
+}

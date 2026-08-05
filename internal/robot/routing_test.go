@@ -625,22 +625,30 @@ func TestRoundRobinStrategy(t *testing.T) {
 			{PaneID: "cc_3", Excluded: false},
 		}
 
-		// First selection - starts at index 1 (lastIndex=0, so next is 1)
+		// With no routing history and no recorded activity, the rotation
+		// starts at the first agent. It used to skip to index 1 because the
+		// zero cursor was indistinguishable from "index 0 was last used".
 		selected := strat.Select(agents, RoutingContext{})
-		if selected == nil || selected.PaneID != "cc_2" {
-			t.Errorf("First Select() = %v, want cc_2", selected)
+		if selected == nil || selected.PaneID != "cc_1" {
+			t.Errorf("First Select() = %v, want cc_1", selected)
 		}
 
-		// Second selection - should be cc_3
+		// Second selection - should be cc_2
+		selected = strat.Select(agents, RoutingContext{})
+		if selected == nil || selected.PaneID != "cc_2" {
+			t.Errorf("Second Select() = %v, want cc_2", selected)
+		}
+
+		// Third selection - should be cc_3
 		selected = strat.Select(agents, RoutingContext{})
 		if selected == nil || selected.PaneID != "cc_3" {
-			t.Errorf("Second Select() = %v, want cc_3", selected)
+			t.Errorf("Third Select() = %v, want cc_3", selected)
 		}
 
-		// Third selection - should wrap to cc_1
+		// Fourth selection - wraps back to cc_1, completing the rotation.
 		selected = strat.Select(agents, RoutingContext{})
 		if selected == nil || selected.PaneID != "cc_1" {
-			t.Errorf("Third Select() = %v, want cc_1", selected)
+			t.Errorf("Fourth Select() = %v, want cc_1", selected)
 		}
 	})
 
@@ -656,9 +664,10 @@ func TestRoundRobinStrategy(t *testing.T) {
 		if selected == nil {
 			t.Fatal("Select() returned nil")
 		}
-		// Starting from lastIndex=0, next is index 1
-		if selected.PaneID != "cc_2" {
-			t.Errorf("Select() = %s, want cc_2", selected.PaneID)
+		// No routing history, so the rotation starts at the first agent —
+		// excluded or not, since round-robin ignores exclusion.
+		if selected.PaneID != "cc_1" {
+			t.Errorf("Select() = %s, want cc_1", selected.PaneID)
 		}
 	})
 
@@ -1393,7 +1402,10 @@ func TestStateToScoreDefaultCase(t *testing.T) {
 
 func TestRoundRobinAvailableEdgeCase(t *testing.T) {
 	t.Run("wraps around with mixed excluded", func(t *testing.T) {
-		strat := &RoundRobinAvailableStrategy{lastIndex: 2}
+		// routed:true expresses "this Router has already routed, and index 2
+		// was the last selection". A bare cursor no longer implies that — a
+		// zero cursor on a fresh Router is not routing history.
+		strat := &RoundRobinAvailableStrategy{lastIndex: 2, routed: true}
 		agents := []ScoredAgent{
 			{PaneID: "cc_1", Excluded: false},
 			{PaneID: "cc_2", Excluded: true},
@@ -2011,5 +2023,97 @@ func TestRoundRobinAvailable_AnchorSkipsExcluded(t *testing.T) {
 	// Newest is %2 (index 1); next is %3 but it is excluded, so wrap to %1.
 	if got := strat.Select(agents, RoutingContext{}); got == nil || got.PaneID != "%1" {
 		t.Fatalf("Select() = %v, want %%1", got)
+	}
+}
+
+// bd-sgs87: the anchor used "most recently ACTIVE" as a stand-in for "most
+// recently ROUTED". With a chatty agent whose pane keeps refreshing, that agent
+// anchored every stateless invocation, so every call returned its neighbour and
+// the remaining agents were never selected.
+func TestRoundRobinDoesNotStarveOnANoisyAgent(t *testing.T) {
+	now := time.Now()
+
+	// A is noisy (a long build spewing output); B and C are quiet. None of
+	// them is being ROUTED to — activity is not routing history.
+	newAgents := func() []ScoredAgent {
+		return []ScoredAgent{
+			{PaneID: "cc_A", LastActivity: now},
+			{PaneID: "cc_B", LastActivity: now.Add(-10 * time.Minute)},
+			{PaneID: "cc_C", LastActivity: now.Add(-20 * time.Minute)},
+		}
+	}
+
+	t.Run("stateless invocations reach every agent", func(t *testing.T) {
+		// Each CLI invocation builds a fresh Router, so nothing carries over.
+		seen := map[string]int{}
+		for i := 0; i < 3; i++ {
+			strat := &RoundRobinStrategy{}
+			selected := strat.Select(newAgents(), RoutingContext{})
+			if selected == nil {
+				t.Fatal("Select() returned nil")
+			}
+			seen[selected.PaneID]++
+		}
+		// Without history the idlest agent is chosen, and routing to it makes
+		// it active — so a real fleet spreads. The invariant that matters here
+		// is that the noisiest agent's neighbour is not the only answer.
+		if seen["cc_C"] == 0 {
+			t.Fatalf("the quietest agent was never selected: %v", seen)
+		}
+	})
+
+	t.Run("an explicit last-agent still gives true round-robin", func(t *testing.T) {
+		strat := &RoundRobinStrategy{}
+		selected := strat.Select(newAgents(), RoutingContext{LastAgent: "cc_A"})
+		if selected == nil || selected.PaneID != "cc_B" {
+			t.Fatalf("Select(last=cc_A) = %v, want cc_B", selected)
+		}
+
+		strat = &RoundRobinStrategy{}
+		selected = strat.Select(newAgents(), RoutingContext{LastAgent: "cc_C"})
+		if selected == nil || selected.PaneID != "cc_A" {
+			t.Fatalf("Select(last=cc_C) = %v, want cc_A (wrap)", selected)
+		}
+	})
+
+	t.Run("in-process rotation visits every agent exactly once", func(t *testing.T) {
+		agents := newAgents()
+		strat := &RoundRobinStrategy{}
+		seen := map[string]int{}
+		for i := 0; i < len(agents); i++ {
+			selected := strat.Select(agents, RoutingContext{})
+			if selected == nil {
+				t.Fatal("Select() returned nil")
+			}
+			seen[selected.PaneID]++
+		}
+		for _, a := range agents {
+			if seen[a.PaneID] != 1 {
+				t.Fatalf("agent %s selected %d times in one full rotation, want exactly 1: %v", a.PaneID, seen[a.PaneID], seen)
+			}
+		}
+	})
+}
+
+// The idlest-agent fallback must be deterministic and must prefer an agent
+// with no recorded activity at all.
+func TestLeastRecentlyActiveIndex(t *testing.T) {
+	now := time.Now()
+
+	agents := []ScoredAgent{
+		{PaneID: "busy", LastActivity: now},
+		{PaneID: "idle", LastActivity: now.Add(-time.Hour)},
+	}
+	if got := leastRecentlyActiveIndex(agents); got != 1 {
+		t.Fatalf("leastRecentlyActiveIndex = %d, want the idle agent (1)", got)
+	}
+
+	withUnknown := []ScoredAgent{
+		{PaneID: "busy", LastActivity: now},
+		{PaneID: "never-seen"},
+		{PaneID: "idle", LastActivity: now.Add(-time.Hour)},
+	}
+	if got := leastRecentlyActiveIndex(withUnknown); got != 1 {
+		t.Fatalf("leastRecentlyActiveIndex = %d, want the agent with no recorded activity (1)", got)
 	}
 }

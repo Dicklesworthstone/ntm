@@ -1013,41 +1013,67 @@ func (s *FirstAvailableStrategy) Select(agents []ScoredAgent, ctx RoutingContext
 	return nil
 }
 
-// rotationAnchorIndex resolves the index the next rotation step starts from.
-// An explicit LastAgent (pane ID) wins because it survives process
-// boundaries; otherwise the most recently active agent anchors the rotation,
-// which keeps stateless CLI invocations advancing instead of returning the
-// same pane forever. Falls back to the in-process cursor when neither signal
-// is available.
-func rotationAnchorIndex(agents []ScoredAgent, ctx RoutingContext, cursor int) int {
+// rotationAnchorIndex resolves the index the next rotation step starts from,
+// and reports whether that anchor came from genuine ROUTING history.
+//
+// Precedence matters. An explicit LastAgent (pane ID) wins because it survives
+// process boundaries. The in-process cursor comes next: once this Router has
+// actually routed, the cursor IS routing history. Only with neither does the
+// rotation fall back to observed pane activity — and that fallback is not
+// routing history at all, which is why it returns false.
+//
+// The old order preferred activity over the cursor, and used "most recently
+// ACTIVE" as a stand-in for "most recently ROUTED". Those are different facts:
+// with agents A, B, C where A runs a chatty build that keeps refreshing its
+// pane, A anchored every call, so every invocation returned B and C was never
+// selected — the opposite of what RoundRobinStrategy documents (bd-sgs87).
+func rotationAnchorIndex(agents []ScoredAgent, ctx RoutingContext, cursor int, routed bool) (int, bool) {
 	if ctx.LastAgent != "" {
 		for i := range agents {
 			if agents[i].PaneID == ctx.LastAgent {
-				return i
+				return i, true
 			}
 		}
 	}
-	newest := -1
+	if routed && cursor >= 0 && cursor < len(agents) {
+		return cursor, true
+	}
+	return leastRecentlyActiveIndex(agents), false
+}
+
+// leastRecentlyActiveIndex picks the agent that has been quiet longest.
+//
+// It is the stateless fallback when nothing tells us who was routed to last.
+// Selecting the idlest agent cannot starve anyone: routing work to an agent
+// makes it active, which moves it to the back of the queue, so successive
+// invocations spread across the fleet. Anchoring on the BUSIEST agent instead
+// pinned the rotation to whichever pane was noisiest.
+//
+// An agent with no recorded activity has been quiet the longest of all, so it
+// is selected first.
+func leastRecentlyActiveIndex(agents []ScoredAgent) int {
+	idlest := 0
 	for i := range agents {
 		if agents[i].LastActivity.IsZero() {
+			return i
+		}
+		if agents[idlest].LastActivity.IsZero() {
 			continue
 		}
-		if newest < 0 || agents[i].LastActivity.After(agents[newest].LastActivity) {
-			newest = i
+		if agents[i].LastActivity.Before(agents[idlest].LastActivity) {
+			idlest = i
 		}
 	}
-	if newest >= 0 {
-		return newest
-	}
-	if cursor < 0 || cursor >= len(agents) {
-		return 0
-	}
-	return cursor
+	return idlest
 }
 
 // RoundRobinStrategy rotates through agents in order.
 type RoundRobinStrategy struct {
 	lastIndex int
+	// routed distinguishes "lastIndex is 0 because we have never routed" from
+	// "lastIndex is 0 because index 0 was the last selection". Without it the
+	// cursor cannot be trusted as routing history on the first call.
+	routed bool
 }
 
 func (s *RoundRobinStrategy) Name() StrategyName {
@@ -1059,22 +1085,28 @@ func (s *RoundRobinStrategy) Select(agents []ScoredAgent, ctx RoutingContext) *S
 		return nil
 	}
 
-	// Start from next agent after last used. In-process callers advance
-	// s.lastIndex; the CLI builds a fresh Router per invocation, so lastIndex
-	// is always 0 there and rotation would be frozen on index 1 forever
-	// (bd-fresh-eyes-audit .8). Anchor on the observable last-used agent
-	// instead when the caller supplies one.
-	startIdx := (rotationAnchorIndex(agents, ctx, s.lastIndex) + 1) % len(agents)
+	// With real routing history (an explicit --last-agent, or this Router's own
+	// cursor) advance one step from it. Without any, the CLI builds a fresh
+	// Router per invocation and there is nothing to advance FROM, so select the
+	// idlest agent directly rather than stepping off an anchor derived from
+	// pane chatter (bd-sgs87, bd-fresh-eyes-audit .8).
+	anchor, anchored := rotationAnchorIndex(agents, ctx, s.lastIndex, s.routed)
+	startIdx := anchor
+	if anchored {
+		startIdx = (anchor + 1) % len(agents)
+	}
 
 	// Round-robin ignores exclusion - use all agents
 	selected := &agents[startIdx]
 	s.lastIndex = startIdx
+	s.routed = true
 	return selected
 }
 
 // RoundRobinAvailableStrategy rotates but skips busy/unhealthy agents.
 type RoundRobinAvailableStrategy struct {
 	lastIndex int
+	routed    bool
 }
 
 func (s *RoundRobinAvailableStrategy) Name() StrategyName {
@@ -1086,12 +1118,19 @@ func (s *RoundRobinAvailableStrategy) Select(agents []ScoredAgent, ctx RoutingCo
 		return nil
 	}
 
-	// Try to find next available agent starting from last index
-	anchor := rotationAnchorIndex(agents, ctx, s.lastIndex)
+	// Try to find next available agent starting from the anchor. With real
+	// routing history we step past it; without any we start AT the idlest
+	// agent, so a chatty pane cannot pin the rotation (bd-sgs87).
+	anchor, anchored := rotationAnchorIndex(agents, ctx, s.lastIndex, s.routed)
+	offset := 0
+	if anchored {
+		offset = 1
+	}
 	for i := 0; i < len(agents); i++ {
-		idx := (anchor + 1 + i) % len(agents)
+		idx := (anchor + offset + i) % len(agents)
 		if !agents[idx].Excluded {
 			s.lastIndex = idx
+			s.routed = true
 			return &agents[idx]
 		}
 	}
