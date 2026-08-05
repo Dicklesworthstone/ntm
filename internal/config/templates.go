@@ -194,6 +194,33 @@ func templateReferencesModel(tmpl string) bool {
 	return strings.Contains(tmpl, ".Model") || strings.Contains(tmpl, ".ModelAlias")
 }
 
+// templateReferencesReasoningEffort reports whether a command template can
+// actually render a reasoning-effort override.
+func templateReferencesReasoningEffort(tmpl string) bool {
+	return strings.Contains(tmpl, ".ReasoningEffort")
+}
+
+// agentTypeConsumesReasoningEffort reports whether a reasoning-effort override
+// is meaningful for an agent type.
+//
+// It gates the silent-drop guard below, because for some providers the effort
+// is inert BY DESIGN rather than by omission: opencode's root TUI command
+// rejects the flag that would carry it, so its template deliberately does not
+// reference .ReasoningEffort and an effort passed there must be dropped
+// quietly. Only types whose launch command actually takes an effort knob should
+// make a dropped effort an error.
+//
+// Kept in sync with agentTypeSupportsEffortSuffix in internal/cli, which gates
+// the `N:model@effort` spec shorthand for the same set.
+func agentTypeConsumesReasoningEffort(agentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(agentType)) {
+	case "cc", "claude", "cod", "codex", "grok":
+		return true
+	default:
+		return false
+	}
+}
+
 // GenerateAgentCommand renders an agent command template with the given variables.
 // Legacy commands without template syntax are returned as-is unless they would
 // silently drop an explicitly requested model selection.
@@ -217,6 +244,26 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 			"model override %q was specified but agent command template does not reference .Model or .ModelAlias; "+
 				"the model would be silently ignored. Update the template or remove the model override. "+
 				"Command: %s", requestedModel, tmpl)
+	}
+
+	// The same guard for reasoning effort. Without it the model half of
+	// `--cod=N:model:effort` failed loudly while the effort half vanished in
+	// silence, so an operator who fixed their template for the model still got
+	// the default reasoning budget — and a swarm's cost and quality changed
+	// with nothing to notice (bd-ywwam).
+	if strings.TrimSpace(vars.ReasoningEffort) != "" &&
+		agentTypeConsumesReasoningEffort(vars.AgentType) &&
+		!templateReferencesReasoningEffort(tmpl) {
+		if !strings.Contains(tmpl, "{{") {
+			return "", fmt.Errorf(
+				"reasoning effort %q was specified but agent command has no template syntax (no {{.ReasoningEffort}} placeholder); "+
+					"the effort would be silently ignored. Convert the command to template format or remove the effort override. "+
+					"Command: %s", vars.ReasoningEffort, tmpl)
+		}
+		return "", fmt.Errorf(
+			"reasoning effort %q was specified but agent command template does not reference .ReasoningEffort; "+
+				"the effort would be silently ignored. Update the template or remove the effort override. "+
+				"Command: %s", vars.ReasoningEffort, tmpl)
 	}
 
 	// Fast path: if no template syntax, return as-is (legacy mode)

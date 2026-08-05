@@ -519,3 +519,68 @@ func TestTemplateFunctions(t *testing.T) {
 		})
 	}
 }
+
+// bd-ywwam: the silent-drop guard covered the model but not the reasoning
+// effort, so `--cod=N:model:effort` against a hardcoded command failed loudly
+// on the model and lost the effort in silence. An operator who fixed their
+// template for the model still got the default reasoning budget — the swarm's
+// cost and quality changed with nothing to notice.
+func TestGenerateAgentCommandGuardsDroppedReasoningEffort(t *testing.T) {
+	t.Run("hardcoded command rejects an effort override", func(t *testing.T) {
+		_, err := GenerateAgentCommand(
+			`codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-sol -c model_reasoning_effort="ultra"`,
+			AgentTemplateVars{AgentType: "cod", ReasoningEffort: "high"},
+		)
+		if err == nil {
+			t.Fatal("effort override against a hardcoded command was accepted; it would be silently ignored")
+		}
+		if !strings.Contains(err.Error(), "ReasoningEffort") {
+			t.Fatalf("error = %v, want it to name the missing placeholder", err)
+		}
+	})
+
+	t.Run("templated command without the placeholder is rejected", func(t *testing.T) {
+		_, err := GenerateAgentCommand(
+			`codex -m {{shellQuote .Model}}`,
+			AgentTemplateVars{AgentType: "cod", Model: "gpt-5.6-terra", ReasoningEffort: "high"},
+		)
+		if err == nil {
+			t.Fatal("effort override against a template lacking .ReasoningEffort was accepted")
+		}
+	})
+
+	t.Run("a template that renders the effort is accepted", func(t *testing.T) {
+		got, err := GenerateAgentCommand(
+			`codex -m {{shellQuote .Model}} -c model_reasoning_effort={{shellQuote .ReasoningEffort}}`,
+			AgentTemplateVars{AgentType: "cod", Model: "gpt-5.6-terra", ReasoningEffort: "high"},
+		)
+		if err != nil {
+			t.Fatalf("GenerateAgentCommand: %v", err)
+		}
+		if !strings.Contains(got, "model_reasoning_effort='high'") || !strings.Contains(got, "'gpt-5.6-terra'") {
+			t.Fatalf("rendered = %q, want both the model and the effort", got)
+		}
+	})
+
+	t.Run("effort is inert for agent types that cannot consume it", func(t *testing.T) {
+		// opencode's root TUI command rejects the flag that would carry the
+		// effort, so its template deliberately omits .ReasoningEffort and an
+		// effort passed there must be dropped QUIETLY, not error.
+		got, err := GenerateAgentCommand(
+			DefaultOpencodeCommand,
+			AgentTemplateVars{AgentType: "oc", Model: "zai-coding-plan/glm-5.2", ReasoningEffort: "high"},
+		)
+		if err != nil {
+			t.Fatalf("opencode effort must be inert, not an error: %v", err)
+		}
+		if strings.Contains(got, "high") {
+			t.Fatalf("rendered = %q, want no dangling effort flag", got)
+		}
+	})
+
+	t.Run("no effort requested is always fine", func(t *testing.T) {
+		if _, err := GenerateAgentCommand(`codex -m gpt-5.6-sol`, AgentTemplateVars{AgentType: "cod"}); err != nil {
+			t.Fatalf("unexpected error with no effort override: %v", err)
+		}
+	})
+}
