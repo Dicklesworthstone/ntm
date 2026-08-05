@@ -2354,9 +2354,17 @@ func restartAutoRestartStuckPanes(ctx context.Context, opts AutoRestartStuckOpti
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	// Resolve every target up front, consuming each agent at most once.
+	// stuckPanes carries bare pane indices, which are WINDOW-LOCAL: on a
+	// window-per-agent layout every agent sits at index 0, so resolving each
+	// entry independently by first match returned window 0's target for all
+	// of them. That killed and relaunched one agent N times while reporting
+	// the others as restarted, leaving them stuck.
+	targets := resolveAutoRestartStuckTargets(agents, stuckPanes)
+
 	var restarted, failed []int
-	for _, paneIdx := range stuckPanes {
-		restartOut, restartErr := restart(ctx, autoRestartStuckPaneOptions(opts, paneIdx, autoRestartStuckPaneTarget(agents, paneIdx)))
+	for i, paneIdx := range stuckPanes {
+		restartOut, restartErr := restart(ctx, autoRestartStuckPaneOptions(opts, paneIdx, targets[i]))
 		if errors.Is(restartErr, context.Canceled) || errors.Is(restartErr, context.DeadlineExceeded) {
 			failed = append(failed, paneIdx)
 			return restarted, failed, restartErr
@@ -2383,6 +2391,42 @@ func autoRestartStuckPaneTarget(agents []SessionAgentHealth, paneIdx int) string
 		}
 	}
 	return fmt.Sprintf("%d", paneIdx)
+}
+
+// resolveAutoRestartStuckTargets pairs each stuck pane entry with a DISTINCT
+// agent's unambiguous selector, in order. Repeated bare indices are the normal
+// case on a window-per-agent layout, where pane_index is 0 for every agent, so
+// each occurrence must consume a different agent record rather than all
+// resolving to the first match.
+func resolveAutoRestartStuckTargets(agents []SessionAgentHealth, stuckPanes []int) []string {
+	used := make(map[string]struct{}, len(stuckPanes))
+	targets := make([]string, 0, len(stuckPanes))
+	for _, paneIdx := range stuckPanes {
+		target := ""
+		for _, agent := range agents {
+			if agent.Pane != paneIdx {
+				continue
+			}
+			candidate := strings.TrimSpace(agent.PaneTarget)
+			if candidate == "" {
+				continue
+			}
+			if _, taken := used[candidate]; taken {
+				continue
+			}
+			used[candidate] = struct{}{}
+			target = candidate
+			break
+		}
+		if target == "" {
+			// No unconsumed record: fall back to the historical behavior so a
+			// single-window session (where index and target are equivalent)
+			// keeps working.
+			target = autoRestartStuckPaneTarget(agents, paneIdx)
+		}
+		targets = append(targets, target)
+	}
+	return targets
 }
 
 // autoRestartStuckPaneOptions builds the restart request for one stuck pane.

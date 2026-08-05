@@ -610,11 +610,27 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 		return output, nil
 	}
 
+	// pane_index is WINDOW-LOCAL, so a bare int is not a unique key on a
+	// multi-window session: in a window-per-agent layout every window has a
+	// pane at index 0, and matching the first one made every probe land in
+	// window 0 while reporting results for panes it never touched. Prefer the
+	// session-unique NTM agent index there, and only fall back to the
+	// window-local index on single-window sessions where it is unambiguous.
 	var targetPane *tmux.Pane
-	for i := range panes {
-		if panes[i].Index == opts.Pane {
-			targetPane = &panes[i]
-			break
+	if sessionSpansMultipleWindows(panes) {
+		for i := range panes {
+			if panes[i].NTMIndex == opts.Pane {
+				targetPane = &panes[i]
+				break
+			}
+		}
+	}
+	if targetPane == nil && !sessionSpansMultipleWindows(panes) {
+		for i := range panes {
+			if panes[i].Index == opts.Pane {
+				targetPane = &panes[i]
+				break
+			}
 		}
 	}
 
@@ -774,12 +790,26 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 
 	var targetPanes []int
 	if len(opts.Panes) == 0 {
+		// Enumerate by the same key GetProbe resolves with, or the batch
+		// collapses onto one pane: on a window-per-agent layout every pane
+		// has window-local index 0, so collecting pane.Index produced
+		// [0,0,0] and probed window 0 three times.
+		multiWindow := sessionSpansMultipleWindows(panes)
+		seen := make(map[int]struct{}, len(panes))
 		for _, pane := range panes {
 			agentType := detectAgentTypeFromPane(pane)
 			if agentType == "user" {
 				continue
 			}
-			targetPanes = append(targetPanes, pane.Index)
+			key := pane.Index
+			if multiWindow {
+				key = pane.NTMIndex
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			targetPanes = append(targetPanes, key)
 		}
 	} else {
 		seen := make(map[int]struct{}, len(opts.Panes))

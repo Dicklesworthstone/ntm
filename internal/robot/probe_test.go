@@ -1833,3 +1833,38 @@ func TestProbeWakePing(t *testing.T) {
 		}
 	})
 }
+
+// pane_index is window-local, so a window-per-agent layout gives every agent
+// pane index 0. Enumerating and resolving by that bare index made the whole
+// batch collapse onto window 0's pane: three probes all hit the same agent
+// while the response reported results for panes that were never touched.
+func TestGetProbeSession_WindowPerAgentDoesNotCollapse(t *testing.T) {
+	mock := setupMock(t)
+	mock.Panes = []tmux.Pane{
+		{ID: "%1", Index: 0, WindowIndex: 0, NTMIndex: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 0, WindowIndex: 1, NTMIndex: 2, Title: "proj__cc_2", Type: tmux.AgentClaude},
+		{ID: "%3", Index: 0, WindowIndex: 2, NTMIndex: 3, Title: "proj__cc_3", Type: tmux.AgentClaude},
+	}
+
+	output, exit := GetProbeSession(ProbeSessionOptions{
+		Session: "proj",
+		Flags:   ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
+	})
+	_ = exit
+
+	if len(output.Probes) != 3 {
+		t.Fatalf("probed %d panes, want 3 (one per window)", len(output.Probes))
+	}
+	seen := map[int]int{}
+	for _, probe := range output.Probes {
+		seen[probe.Pane]++
+	}
+	if len(seen) != 3 {
+		t.Fatalf("probe keys collapsed onto %d distinct pane(s): %v — each window's agent must be addressed separately", len(seen), seen)
+	}
+	for pane, count := range seen {
+		if count != 1 {
+			t.Fatalf("pane %d probed %d times, want exactly 1", pane, count)
+		}
+	}
+}

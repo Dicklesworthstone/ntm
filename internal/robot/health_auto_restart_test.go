@@ -715,3 +715,45 @@ func intSlicesEqual(a, b []int) bool {
 	}
 	return true
 }
+
+// stuckPanes carries WINDOW-LOCAL pane indices, so on a window-per-agent
+// layout every stuck agent reports index 0. Resolving each entry independently
+// by first match returned window 0's target for all of them: one agent was
+// killed and relaunched three times while the other two stayed stuck and were
+// reported as restarted.
+func TestRestartAutoRestartStuckPanes_WindowPerAgentTargetsDistinctPanes(t *testing.T) {
+	agents := []SessionAgentHealth{
+		{Pane: 0, PaneTarget: "proj:0.0"},
+		{Pane: 0, PaneTarget: "proj:1.0"},
+		{Pane: 0, PaneTarget: "proj:2.0"},
+	}
+	stuck := []int{0, 0, 0}
+
+	var got []string
+	restart := func(_ context.Context, opts RestartPaneOptions) (*RestartPaneOutput, error) {
+		got = append(got, strings.Join(opts.Panes, ","))
+		return &RestartPaneOutput{RobotResponse: NewRobotResponse(true)}, nil
+	}
+
+	restarted, failed, err := restartAutoRestartStuckPanes(context.Background(),
+		AutoRestartStuckOptions{Session: "proj"}, agents, stuck, restart)
+	if err != nil {
+		t.Fatalf("restartAutoRestartStuckPanes: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("unexpected failures: %v", failed)
+	}
+	if len(restarted) != 3 {
+		t.Fatalf("restarted %d panes, want 3", len(restarted))
+	}
+	if len(got) != 3 {
+		t.Fatalf("issued %d restarts, want 3", len(got))
+	}
+	seen := map[string]int{}
+	for _, target := range got {
+		seen[target]++
+	}
+	if len(seen) != 3 {
+		t.Fatalf("restarts hit %d distinct target(s): %v — each window's stuck agent must be restarted once", len(seen), seen)
+	}
+}
