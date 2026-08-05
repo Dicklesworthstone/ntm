@@ -140,6 +140,7 @@ type CoordinatorConfig struct {
 	// Agent Mail
 	SendDigests bool   `toml:"send_digests"` // Send periodic digests to human
 	HumanAgent  string `toml:"human_agent"`  // Agent name to send digests to (default: "Human")
+	MailNudge   bool   `toml:"mail_nudge"`   // Prompt idle panes that have unread Agent Mail
 }
 
 // DefaultCoordinatorConfig mirrors coordinator.DefaultCoordinatorConfig and
@@ -156,6 +157,7 @@ func DefaultCoordinatorConfig() CoordinatorConfig {
 		ConflictNegotiate: false,
 		SendDigests:       false,
 		HumanAgent:        "Human",
+		MailNudge:         false,
 	}
 }
 

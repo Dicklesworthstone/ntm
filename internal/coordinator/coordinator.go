@@ -26,6 +26,8 @@ var (
 	captureForHealthCheckWithCtx = tmux.CaptureForHealthCheckContext
 )
 
+const mailNudgeCooldown = 5 * time.Minute
+
 // SessionCoordinator manages agent coordination for a tmux session.
 type SessionCoordinator struct {
 	mu          sync.RWMutex
@@ -47,11 +49,14 @@ type SessionCoordinator struct {
 	workItemDetailsFn           func(context.Context, string) (*bv.BeadAssignmentDetails, error)
 	claimBeadForAssignmentFn    func(context.Context, string, string, string, []string) (bv.BeadClaimResult, error)
 	releaseWorkItemClaimFn      func(context.Context, string, string, string) (bool, error)
+	fetchInboxFn                func(context.Context, agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error)
+	sendNudgeFn                 func(context.Context, string) error
 	operatorGatedLabels         []string
 
 	// Agent tracking
-	agents     map[string]*AgentState
-	lastUpdate time.Time
+	agents        map[string]*AgentState
+	lastMailNudge map[string]time.Time
+	lastUpdate    time.Time
 
 	// Monitors
 	monitor *AgentMonitor
@@ -115,6 +120,7 @@ type CoordinatorConfig struct {
 	// Agent Mail
 	SendDigests bool   `toml:"send_digests"` // Send periodic digests to human
 	HumanAgent  string `toml:"human_agent"`  // Agent name to send digests to (default: "Human")
+	MailNudge   bool   `toml:"mail_nudge"`   // Prompt idle panes that have unread Agent Mail
 }
 
 // MinPollInterval is the minimum allowed poll interval to prevent ticker panics.
@@ -136,6 +142,7 @@ func DefaultCoordinatorConfig() CoordinatorConfig {
 		ConflictNegotiate: false, // Manual resolution by default
 		SendDigests:       false, // Disabled by default
 		HumanAgent:        "Human",
+		MailNudge:         false, // Disabled by default - prompts a pane
 	}
 }
 
@@ -172,7 +179,7 @@ type busCoordinatorEvent struct {
 
 // New creates a new SessionCoordinator.
 func New(session, projectKey string, mailClient *agentmail.Client, agentName string) *SessionCoordinator {
-	return &SessionCoordinator{
+	c := &SessionCoordinator{
 		session:             session,
 		agentName:           agentName,
 		projectKey:          projectKey,
@@ -180,10 +187,18 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 		reservationClient:   mailClient,
 		operatorGatedLabels: append([]string(nil), bv.OperatorGatedLabelsForProject(projectKey)...),
 		agents:              make(map[string]*AgentState),
+		lastMailNudge:       make(map[string]time.Time),
 		config:              DefaultCoordinatorConfig(),
 		events:              make(chan CoordinatorEvent, 100),
 		stopCh:              make(chan struct{}),
 	}
+	if mailClient != nil {
+		c.fetchInboxFn = mailClient.FetchInbox
+	}
+	c.sendNudgeFn = func(ctx context.Context, paneID string) error {
+		return tmux.SendKeysContext(ctx, paneID, "You have unread Agent Mail. Please check your inbox when ready.", true)
+	}
+	return c
 }
 
 // WithConfig sets the coordinator configuration.
@@ -381,6 +396,7 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	if err := c.updateAgentStatesContext(ctx); err != nil {
 		return nil, err
 	}
+	c.nudgeUnreadMail(ctx)
 	if !c.config.AutoAssign {
 		return nil, nil
 	}
@@ -389,6 +405,53 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 		assignWork = c.assignWorkFn
 	}
 	return assignWork(ctx)
+}
+
+// nudgeUnreadMail prompts only healthy, freshly observed waiting panes. It
+// reads mail headers only and never interrupts a pane that is working.
+func (c *SessionCoordinator) nudgeUnreadMail(ctx context.Context) {
+	c.mu.RLock()
+	if !c.config.MailNudge || c.fetchInboxFn == nil || c.sendNudgeFn == nil {
+		c.mu.RUnlock()
+		return
+	}
+	now := time.Now()
+	agents := make([]AgentState, 0, len(c.agents))
+	for _, agent := range c.agents {
+		if agent.Status != robot.StateWaiting || agent.ObservationFreshness != status.FreshnessFresh || !agent.Healthy || agent.AgentMailName == "" || now.Sub(c.lastMailNudge[agent.PaneID]) < mailNudgeCooldown {
+			continue
+		}
+		agents = append(agents, *agent)
+	}
+	fetchInbox := c.fetchInboxFn
+	sendNudge := c.sendNudgeFn
+	projectKey := c.projectKey
+	c.mu.RUnlock()
+
+	for _, agent := range agents {
+		inbox, err := fetchInbox(ctx, agentmail.FetchInboxOptions{ProjectKey: projectKey, AgentName: agent.AgentMailName, Limit: 1})
+		if err != nil {
+			slog.Warn("coordinator could not inspect Agent Mail inbox", "session", c.session, "pane", agent.PaneID, "agent", agent.AgentMailName, "error", err)
+			continue
+		}
+		hasUnread := false
+		for _, message := range inbox {
+			if message.ReadAt == nil {
+				hasUnread = true
+				break
+			}
+		}
+		if !hasUnread {
+			continue
+		}
+		if err := sendNudge(ctx, agent.PaneID); err != nil {
+			slog.Warn("coordinator could not nudge pane for unread Agent Mail", "session", c.session, "pane", agent.PaneID, "error", err)
+			continue
+		}
+		c.mu.Lock()
+		c.lastMailNudge[agent.PaneID] = now
+		c.mu.Unlock()
+	}
 }
 
 func (c *SessionCoordinator) reportAssignmentCycle(results []AssignmentResult, err error) {

@@ -32,6 +32,7 @@ func TestCoordinatorFeatureKeys(t *testing.T) {
 		{name: "disable digest ignores no interval", feature: "digest", want: [][2]string{{"send_digests", "false"}}},
 		{name: "enable conflict notify", feature: "conflict-notify", enable: true, want: [][2]string{{"conflict_notify", "true"}}},
 		{name: "disable conflict negotiate", feature: "conflict-negotiate", want: [][2]string{{"conflict_negotiate", "false"}}},
+		{name: "enable mail nudge", feature: "mail-nudge", enable: true, want: [][2]string{{"mail_nudge", "true"}}},
 		{name: "invalid duration", feature: "digest", enable: true, interval: "later", wantErr: "invalid --interval"},
 		{name: "zero duration", feature: "digest", enable: true, interval: "0s", wantErr: "must be at least"},
 		{name: "negative duration", feature: "digest", enable: true, interval: "-1s", wantErr: "must be at least"},
@@ -278,6 +279,7 @@ func TestCoordinatorConfigFromTOMLPropagatesValues(t *testing.T) {
 		ConflictNegotiate: true,
 		SendDigests:       true,
 		HumanAgent:        "Operator",
+		MailNudge:         true,
 	}
 	got := coordinatorConfigFromTOML(toml, coordinator.DefaultCoordinatorConfig())
 	if got.PollInterval != 30*time.Second {
@@ -306,6 +308,9 @@ func TestCoordinatorConfigFromTOMLPropagatesValues(t *testing.T) {
 	}
 	if got.HumanAgent != "Operator" {
 		t.Errorf("HumanAgent = %q, want %q", got.HumanAgent, "Operator")
+	}
+	if !got.MailNudge {
+		t.Error("MailNudge = false, want true")
 	}
 }
 

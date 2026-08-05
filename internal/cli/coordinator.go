@@ -825,6 +825,7 @@ Available features:
   digest              - Send periodic digest summaries
   conflict-notify     - Notify when conflicts are detected
   conflict-negotiate  - Attempt automatic conflict resolution
+  mail-nudge          - Prompt idle panes when they have unread Agent Mail
 
 The flag is written to the [coordinator] section of the selected config file
 (--config, or the global ~/.config/ntm/config.toml). A running
@@ -833,7 +834,8 @@ The flag is written to the [coordinator] section of the selected config file
 Examples:
   ntm coordinator enable auto-assign
   ntm coordinator enable digest --interval=30m
-  ntm coordinator enable conflict-notify`,
+  ntm coordinator enable conflict-notify
+  ntm coordinator enable mail-nudge`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCoordinatorToggle(cmd, args, true, interval)
@@ -857,6 +859,7 @@ Available features:
   digest              - Periodic digest summaries
   conflict-notify     - Conflict notifications
   conflict-negotiate  - Automatic conflict resolution
+  mail-nudge          - Unread Agent Mail prompts for idle panes
 
 The flag is written to the [coordinator] section of the selected config file
 (--config, or the global ~/.config/ntm/config.toml). A running
@@ -908,8 +911,13 @@ func coordinatorFeatureKeys(feature string, enable bool, interval string) ([][2]
 			return nil, fmt.Errorf("--interval is only valid with the digest feature")
 		}
 		return [][2]string{{"conflict_negotiate", enableTOML}}, nil
+	case "mail-nudge":
+		if interval != "" {
+			return nil, fmt.Errorf("--interval is only valid with the digest feature")
+		}
+		return [][2]string{{"mail_nudge", enableTOML}}, nil
 	default:
-		return nil, fmt.Errorf("unknown feature '%s'. Valid features: auto-assign, digest, conflict-notify, conflict-negotiate", feature)
+		return nil, fmt.Errorf("unknown feature '%s'. Valid features: auto-assign, digest, conflict-notify, conflict-negotiate, mail-nudge", feature)
 	}
 }
 
@@ -992,6 +1000,7 @@ func coordinatorConfigFromTOML(toml config.CoordinatorConfig, fallback coordinat
 		ConflictNegotiate: toml.ConflictNegotiate,
 		SendDigests:       toml.SendDigests,
 		HumanAgent:        toml.HumanAgent,
+		MailNudge:         toml.MailNudge,
 	}
 	if out.PollInterval < coordinator.MinPollInterval {
 		out.PollInterval = coordinator.MinPollInterval

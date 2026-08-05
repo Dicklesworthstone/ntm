@@ -202,6 +202,32 @@ func TestGetIdleAgents(t *testing.T) {
 	}
 }
 
+func TestNudgeUnreadMailOnlyForIdlePanesWithCooldown(t *testing.T) {
+	c := New("mail-nudge", t.TempDir(), nil, "Coordinator")
+	c.config.MailNudge = true
+	c.agents = map[string]*AgentState{
+		"%1": {PaneID: "%1", AgentMailName: "IdleFox", Status: robot.StateWaiting, ObservationFreshness: status.FreshnessFresh, Healthy: true},
+		"%2": {PaneID: "%2", AgentMailName: "BusyFox", Status: robot.StateGenerating, ObservationFreshness: status.FreshnessFresh, Healthy: true},
+	}
+	c.fetchInboxFn = func(_ context.Context, opts agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error) {
+		if opts.AgentName == "BusyFox" {
+			t.Fatalf("working pane inbox was inspected")
+		}
+		return []agentmail.InboxMessage{{ID: 1}}, nil
+	}
+	var nudged []string
+	c.sendNudgeFn = func(_ context.Context, paneID string) error {
+		nudged = append(nudged, paneID)
+		return nil
+	}
+
+	c.nudgeUnreadMail(t.Context())
+	c.nudgeUnreadMail(t.Context())
+	if len(nudged) != 1 || nudged[0] != "%1" {
+		t.Fatalf("nudged panes = %v, want only idle pane %%1 once", nudged)
+	}
+}
+
 func TestUpdateAgentStates_CaptureFailureMarksCurrentUnavailableAndRetainsLastKnown(t *testing.T) {
 	origGetPanesWithActivity := getPanesWithActivity
 	origCaptureForHealthCheckWithCtx := captureForHealthCheckWithCtx
