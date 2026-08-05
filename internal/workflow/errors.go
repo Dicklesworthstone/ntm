@@ -29,8 +29,12 @@ func (e *WorkflowError) Error() string {
 }
 
 type ErrorHandlingConfig struct {
-	OnAgentCrash, OnAgentError, OnTriggerFailed, OnTimeout ErrorAction
-	StageTimeoutMin, MaxRetriesPerStage                    int
+	OnAgentCrash       ErrorAction `toml:"on_agent_crash"`
+	OnAgentError       ErrorAction `toml:"on_agent_error"`
+	OnTriggerFailed    ErrorAction `toml:"on_trigger_failed"`
+	StageTimeoutMin    int         `toml:"stage_timeout_minutes"`
+	OnTimeout          ErrorAction `toml:"on_timeout"`
+	MaxRetriesPerStage int         `toml:"max_retries_per_stage"`
 }
 
 // WorkflowErrorActions is supplied by a coordinator or CLI adapter.
