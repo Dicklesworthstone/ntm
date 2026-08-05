@@ -2264,6 +2264,134 @@ func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
 	}
 }
 
+func TestCloseBeadAsyncEndpointIsQueryableAndIdempotent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-async")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{JournalSize: 8, HeartbeatInterval: 0})
+	previousFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(previousFeed)
+		feed.Stop()
+	})
+
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-async/close?async=true", nil)
+		req.Header.Set("Idempotency-Key", "async-close-bd-async")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+
+	first := request()
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first async close status=%d, want %d: %s", first.Code, http.StatusAccepted, first.Body.String())
+	}
+	var firstResponse map[string]interface{}
+	if err := json.NewDecoder(first.Body).Decode(&firstResponse); err != nil {
+		t.Fatalf("decode first async close response: %v", err)
+	}
+	jobPayload, ok := firstResponse["job"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("job payload=%T, want object", firstResponse["job"])
+	}
+	jobID, _ := jobPayload["id"].(string)
+	if jobID == "" {
+		t.Fatal("async close response omitted job ID")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		job := srv.jobStore.Get(jobID)
+		if job != nil && (job.Status == JobStatusCompleted || job.Status == JobStatusFailed) {
+			if job.Status != JobStatusCompleted {
+				t.Fatalf("async close job status=%q, error=%q", job.Status, job.Error)
+			}
+			if job.Result["bead_id"] != "bd-async" || job.Result["closed"] != true {
+				t.Fatalf("async close job result=%#v", job.Result)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("async close job did not reach a terminal state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	replay := request()
+	if replay.Code != http.StatusAccepted {
+		t.Fatalf("idempotent replay status=%d, want %d: %s", replay.Code, http.StatusAccepted, replay.Body.String())
+	}
+	if replay.Header().Get("X-Idempotent-Replay") != "true" {
+		t.Fatalf("idempotent replay header=%q, want true", replay.Header().Get("X-Idempotent-Replay"))
+	}
+	var replayResponse map[string]interface{}
+	if err := json.NewDecoder(replay.Body).Decode(&replayResponse); err != nil {
+		t.Fatalf("decode replay response: %v", err)
+	}
+	replayJob, ok := replayResponse["job"].(map[string]interface{})
+	if !ok || replayJob["id"] != jobID {
+		t.Fatalf("replay job=%#v, want original ID %q", replayResponse["job"], jobID)
+	}
+	if jobs := srv.jobStore.List(); len(jobs) != 1 {
+		t.Fatalf("jobs=%d, want one queued close", len(jobs))
+	}
+	attentionEvents, _, err := feed.Replay(0, 8)
+	if err != nil {
+		t.Fatalf("replay attention events: %v", err)
+	}
+	if len(attentionEvents) != 1 || attentionEvents[0].Type != robot.EventTypeBeadClosed ||
+		attentionEvents[0].Details["job_id"] != jobID {
+		t.Fatalf("async close attention events=%#v", attentionEvents)
+	}
+}
+
+func TestCloseBeadAsyncJobReportsFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-failure")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = filepath.Join(t.TempDir(), "missing-project")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-failure/close?async=true", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("async close status=%d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode async close response: %v", err)
+	}
+	job, ok := response["job"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("job payload=%T, want object", response["job"])
+	}
+	jobID, _ := job["id"].(string)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stored := srv.jobStore.Get(jobID)
+		if stored != nil && (stored.Status == JobStatusCompleted || stored.Status == JobStatusFailed) {
+			if stored.Status != JobStatusFailed || stored.Error == "" {
+				t.Fatalf("async failure job=%+v, want failed with error", stored)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failed async close job did not reach a terminal state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestHandleListAddRemoveBeadDepsWithStubBr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stub br uses sh")
