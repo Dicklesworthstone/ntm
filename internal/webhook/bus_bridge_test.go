@@ -150,12 +150,12 @@ func TestStableWebhookID_AllBranches(t *testing.T) {
 	}{
 		{"empty", "", ""},
 		{"whitespace only", "   ", ""},
-		{"simple lowercase", "slack", "wh_slack"},
-		{"uppercase", "SLACK", "wh_slack"},
-		{"with spaces", "  My Hook  ", "wh_my_hook"},
-		{"with digits", "hook123", "wh_hook123"},
-		{"special chars replaced", "hook!@#$%", "wh_hook_____"},
-		{"mixed", "My-Hook.v2", "wh_my_hook_v2"},
+		{"simple lowercase", "slack", "wh_slack_877c3aec"},
+		{"uppercase", "SLACK", "wh_slack_877c3aec"},
+		{"with spaces", "  My Hook  ", "wh_my_hook_8f0c38e7"},
+		{"with digits", "hook123", "wh_hook123_875405bc"},
+		{"special chars replaced", "hook!@#$%", "wh_hook______8b243563"},
+		{"mixed", "My-Hook.v2", "wh_my_hook_v2_44034e62"},
 	}
 
 	for _, tc := range tests {
@@ -166,6 +166,12 @@ func TestStableWebhookID_AllBranches(t *testing.T) {
 				t.Errorf("stableWebhookID(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStableWebhookID_DistinguishesNormalizedCollisions(t *testing.T) {
+	if stableWebhookID("Ops Hook") == stableWebhookID("Ops-Hook") {
+		t.Fatal("distinct webhook names must not collide after normalization")
 	}
 }
 

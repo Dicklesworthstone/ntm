@@ -182,6 +182,7 @@ func runServe(opts serveOptions) error {
 	}
 	// Create server with default event bus
 	srv := serve.New(serverCfg)
+	defer srv.Stop()
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

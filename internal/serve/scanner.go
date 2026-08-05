@@ -501,14 +501,6 @@ func (s *Server) handleScannerStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRunScan(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	// Check if scanner is available
-	if !scanner.IsAvailable() {
-		slog.Warn("scanner not available", "request_id", reqID)
-		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeScannerUnavailable,
-			"UBS scanner is not installed", nil, reqID)
-		return
-	}
-
 	// Parse request
 	var opts ScanOptionsRequest
 	if err := decodeOptionalJSONBody(r, &opts); err != nil {
@@ -521,6 +513,23 @@ func (s *Server) handleRunScan(w http.ResponseWriter, r *http.Request) {
 	path := opts.Path
 	if path == "" {
 		path = s.projectDirSnapshot()
+	} else {
+		var err error
+		path, err = s.resolveWorkflowPath(path)
+		if err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				"path must be inside the project directory", nil, reqID)
+			return
+		}
+	}
+
+	// Check availability only after validating untrusted scan options. An
+	// unavailable scanner must not conceal a rejected out-of-project path.
+	if !scanner.IsAvailable() {
+		slog.Warn("scanner not available", "request_id", reqID)
+		writeErrorResponse(w, http.StatusServiceUnavailable, ErrCodeScannerUnavailable,
+			"UBS scanner is not installed", nil, reqID)
+		return
 	}
 
 	// Generate scan ID

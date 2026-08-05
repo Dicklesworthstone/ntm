@@ -532,6 +532,20 @@ func TestHandleRunScanUnavailable(t *testing.T) {
 	}
 }
 
+func TestHandleRunScanRejectsPathOutsideProject(t *testing.T) {
+	resetScannerStoreForTest()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scanner/run",
+		strings.NewReader(`{"path":"`+t.TempDir()+`"}`))
+	rec := httptest.NewRecorder()
+	srv.handleRunScan(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestHandleRunScanAlreadyRunning(t *testing.T) {
 	skipServeRealToolsInShort(t, "ubs")
 	if !scanner.IsAvailable() {

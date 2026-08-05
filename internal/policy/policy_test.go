@@ -853,7 +853,10 @@ func TestResolveEffectivePath_PrefersProjectPolicyWhenNoHomePolicy(t *testing.T)
 	chdir(t, workdir)
 
 	// No policy anywhere: the creation target is the home path, not enforced yet.
-	path, exists := ResolveEffectivePath()
+	path, exists, err := ResolveEffectivePath()
+	if err != nil {
+		t.Fatalf("ResolveEffectivePath: %v", err)
+	}
 	if exists {
 		t.Fatalf("ResolveEffectivePath reported an existing policy at %q with none on disk", path)
 	}
@@ -870,7 +873,10 @@ func TestResolveEffectivePath_PrefersProjectPolicyWhenNoHomePolicy(t *testing.T)
 		t.Fatalf("write project policy: %v", err)
 	}
 
-	path, exists = ResolveEffectivePath()
+	path, exists, err = ResolveEffectivePath()
+	if err != nil {
+		t.Fatalf("ResolveEffectivePath: %v", err)
+	}
 	if !exists {
 		t.Fatal("ResolveEffectivePath did not see the project-local policy")
 	}
@@ -886,7 +892,10 @@ func TestResolveEffectivePath_PrefersProjectPolicyWhenNoHomePolicy(t *testing.T)
 	if err := os.WriteFile(homePolicy, []byte("version: 1\n"), 0o644); err != nil {
 		t.Fatalf("write home policy: %v", err)
 	}
-	path, exists = ResolveEffectivePath()
+	path, exists, err = ResolveEffectivePath()
+	if err != nil {
+		t.Fatalf("ResolveEffectivePath: %v", err)
+	}
 	if !exists || path != homePolicy {
 		t.Fatalf("resolved path = %q (exists=%v), want the home policy %q", path, exists, homePolicy)
 	}
@@ -920,8 +929,17 @@ func TestResolveEffectivePath_AgreesWithLoadOrDefault(t *testing.T) {
 	if !found {
 		t.Fatalf("LoadOrDefault did not read the project policy: %+v", loaded.Blocked)
 	}
-	if _, exists := ResolveEffectivePath(); !exists {
+	if _, exists, err := ResolveEffectivePath(); err != nil || !exists {
 		t.Fatal("ResolveEffectivePath says no policy exists while LoadOrDefault read one")
+	}
+}
+
+func TestResolveEffectivePathReportsUnavailableHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	chdir(t, t.TempDir())
+
+	if _, _, err := ResolveEffectivePath(); err == nil {
+		t.Fatal("ResolveEffectivePath succeeded without a home directory")
 	}
 }
 

@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -282,6 +283,9 @@ func stableWebhookID(name string) string {
 			b.WriteByte('_')
 		}
 	}
+	sum := sha256.Sum256([]byte(s))
+	b.WriteByte('_')
+	b.WriteString(fmt.Sprintf("%x", sum[:4]))
 	return b.String()
 }
 

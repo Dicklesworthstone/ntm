@@ -12982,14 +12982,14 @@ func TestHandlePolicyValidateV1_FileBasedUnreadable(t *testing.T) {
 
 	s.handlePolicyValidateV1(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if resp["valid"] != false {
-		t.Errorf("expected valid=false for unreadable file, got %v", resp["valid"])
+	if resp["success"] != false || resp["error_code"] != ErrCodeInternalError {
+		t.Errorf("expected internal error response for unreadable file, got %v", resp)
 	}
 
 	// Restore permissions for cleanup

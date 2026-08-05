@@ -106,25 +106,31 @@ func Load(path string) (*Policy, error) {
 //
 // When no policy file exists, the returned path is where a new one should be
 // created and exists is false.
-func ResolveEffectivePath() (path string, exists bool) {
-	if home, err := os.UserHomeDir(); err == nil {
-		homePath := filepath.Join(home, DefaultPolicyPath)
-		if _, err := os.Stat(homePath); err == nil {
-			return homePath, true
-		}
+func ResolveEffectivePath() (path string, exists bool, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, fmt.Errorf("resolve policy home directory: %w", err)
+	}
+	homePath := filepath.Join(home, DefaultPolicyPath)
+	if _, err := os.Stat(homePath); err == nil {
+		return homePath, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, fmt.Errorf("inspect home policy: %w", err)
 	}
 	if _, err := os.Stat(DefaultPolicyPath); err == nil {
-		return DefaultPolicyPath, true
+		return DefaultPolicyPath, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, fmt.Errorf("inspect project policy: %w", err)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, DefaultPolicyPath), false
-	}
-	return DefaultPolicyPath, false
+	return homePath, false, nil
 }
 
 // LoadOrDefault loads the policy from the default path, or returns an empty policy if not found.
 func LoadOrDefault() (*Policy, error) {
-	path, exists := ResolveEffectivePath()
+	path, exists, err := ResolveEffectivePath()
+	if err != nil {
+		return nil, err
+	}
 	if !exists {
 		// Return default policy with common dangerous patterns
 		return DefaultPolicy(), nil
