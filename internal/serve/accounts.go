@@ -259,17 +259,16 @@ func (s *Server) handlePatchAutoRotateConfigV1(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid JSON body", nil, reqID)
 		return
 	}
+	if patch.AutoRotateCooldownSeconds != nil && *patch.AutoRotateCooldownSeconds < 60 {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "auto_rotate_cooldown_seconds must be at least 60", nil, reqID)
+		return
+	}
 
 	accountState.mu.Lock()
 	if patch.AutoRotateEnabled != nil {
 		accountState.config.AutoRotateEnabled = *patch.AutoRotateEnabled
 	}
 	if patch.AutoRotateCooldownSeconds != nil {
-		if *patch.AutoRotateCooldownSeconds < 60 {
-			accountState.mu.Unlock()
-			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "auto_rotate_cooldown_seconds must be at least 60", nil, reqID)
-			return
-		}
 		accountState.config.AutoRotateCooldownSeconds = *patch.AutoRotateCooldownSeconds
 	}
 	if patch.AutoRotateOnRateLimit != nil {

@@ -622,21 +622,27 @@ func TestHandleReservePaths_ConflictReturnsStructured409(t *testing.T) {
 	}
 
 	var resp struct {
-		Success   bool                            `json:"success"`
-		Granted   []agentmail.FileReservation     `json:"granted"`
-		Conflicts []agentmail.ReservationConflict `json:"conflicts"`
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+		Details   struct {
+			Granted   []agentmail.FileReservation     `json:"granted"`
+			Conflicts []agentmail.ReservationConflict `json:"conflicts"`
+		} `json:"details"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !resp.Success {
-		t.Fatal("expected success=true for structured conflict response")
+	if resp.Success {
+		t.Fatal("expected success=false for conflict response")
 	}
-	if len(resp.Granted) != 1 {
-		t.Fatalf("len(granted) = %d, want 1", len(resp.Granted))
+	if resp.ErrorCode != ErrCodeConflict {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeConflict)
 	}
-	if len(resp.Conflicts) != 1 {
-		t.Fatalf("len(conflicts) = %d, want 1", len(resp.Conflicts))
+	if len(resp.Details.Granted) != 1 {
+		t.Fatalf("len(details.granted) = %d, want 1", len(resp.Details.Granted))
+	}
+	if len(resp.Details.Conflicts) != 1 {
+		t.Fatalf("len(details.conflicts) = %d, want 1", len(resp.Details.Conflicts))
 	}
 }
 

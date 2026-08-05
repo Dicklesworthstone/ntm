@@ -1483,12 +1483,16 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	status := http.StatusCreated
 	if len(result.Conflicts) > 0 {
-		status = http.StatusConflict
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
+			"one or more requested paths are already reserved", map[string]interface{}{
+				"granted":   result.Granted,
+				"conflicts": result.Conflicts,
+			}, reqID)
+		return
 	}
 
-	writeSuccessResponse(w, status, map[string]interface{}{
+	writeSuccessResponse(w, http.StatusCreated, map[string]interface{}{
 		"granted":   result.Granted,
 		"conflicts": result.Conflicts,
 	}, reqID)

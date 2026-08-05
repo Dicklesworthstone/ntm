@@ -160,6 +160,20 @@ func TestAutoRotateConfigPatch(t *testing.T) {
 
 // TestAutoRotateConfigPatchValidation tests validation of auto-rotate config.
 func TestAutoRotateConfigPatchValidation(t *testing.T) {
+	accountState.mu.Lock()
+	original := accountState.config
+	accountState.config = AccountsConfig{
+		AutoRotateEnabled:         false,
+		AutoRotateCooldownSeconds: 300,
+		AutoRotateOnRateLimit:     true,
+	}
+	accountState.mu.Unlock()
+	t.Cleanup(func() {
+		accountState.mu.Lock()
+		accountState.config = original
+		accountState.mu.Unlock()
+	})
+
 	s := &Server{
 		auth: AuthConfig{Mode: AuthModeLocal},
 	}
@@ -172,8 +186,8 @@ func TestAutoRotateConfigPatchValidation(t *testing.T) {
 		s.registerAccountsRoutes(r)
 	})
 
-	// Try to set cooldown below minimum (60)
-	body := []byte(`{"auto_rotate_cooldown_seconds": 30}`)
+	// A rejected patch must not partially apply its preceding fields.
+	body := []byte(`{"auto_rotate_enabled": true, "auto_rotate_cooldown_seconds": 30}`)
 	req := httptest.NewRequest("PATCH", "/api/v1/accounts/auto-rotate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -181,6 +195,13 @@ func TestAutoRotateConfigPatchValidation(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid cooldown, got %d", w.Code)
+	}
+
+	accountState.mu.RLock()
+	config := accountState.config
+	accountState.mu.RUnlock()
+	if config.AutoRotateEnabled || config.AutoRotateCooldownSeconds != 300 || !config.AutoRotateOnRateLimit {
+		t.Fatalf("invalid patch mutated config: %+v", config)
 	}
 }
 
