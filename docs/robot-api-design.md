@@ -212,7 +212,27 @@ All robot commands MUST include these fields:
 }
 ```
 
-### 3.3 Standard Error Codes
+### 3.3 Is-Working Classification Evidence
+
+Each pane returned by `--robot-is-working=SESSION` includes
+`indicator_basis`, the authoritative signal that drove its current verdict.
+`indicators.work` remains the complete diagnostic list of matching patterns;
+it is not itself a precedence explanation.
+
+| `indicator_basis` | Meaning |
+|---|---|
+| `claude_live_spinner` | Claude's most-recent live spinner wins over its bottom-pinned prompt. |
+| `claude_finished_turn_prompt` | A completed Claude turn and prompt outrank stale elapsed-time labels. |
+| `codex_live_working_indicator` | A current Codex working/interrupt marker is present in the live window. |
+| `codex_composer_placeholder` | Codex's `Ask Codex` composer is waiting for input, not working. |
+| `canonical_working_observation` / `canonical_idle_observation` | The fresh canonical pane observation safely corrected the parser verdict. |
+| `rate_limit_indicator`, `error_indicator`, `parser_work_indicator`, `idle_prompt`, `insufficient_evidence` | The corresponding fallback or terminal signal determined the result. |
+
+Treat a pane waiting on a background terminal as working only when a current
+live indicator is present; elapsed labels and old scrollback alone are not
+authoritative.
+
+### 3.4 Standard Error Codes
 
 | Code | Meaning |
 |------|---------|

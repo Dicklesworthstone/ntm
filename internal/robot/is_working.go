@@ -71,22 +71,26 @@ type WorkIndicators struct {
 
 // PaneWorkStatus contains the work state for a single pane.
 type PaneWorkStatus struct {
-	AgentType             string         `json:"agent_type"`
-	IsWorking             bool           `json:"is_working"`
-	IsIdle                bool           `json:"is_idle"`
-	IsRateLimited         bool           `json:"is_rate_limited"`
-	IsContextLow          bool           `json:"is_context_low"`
-	ContextRemaining      *float64       `json:"context_remaining,omitempty"`
-	Confidence            float64        `json:"confidence"`
-	Indicators            WorkIndicators `json:"indicators"`
-	Recommendation        string         `json:"recommendation"`
-	RecommendationReason  string         `json:"recommendation_reason"`
-	RawSample             string         `json:"raw_sample,omitempty"` // Only with --verbose
-	ObservationState      string         `json:"observation_state"`
-	ObservationFreshness  string         `json:"observation_freshness"`
-	ObservationObservedAt string         `json:"observation_observed_at"`
-	ObservationError      string         `json:"observation_error,omitempty"`
-	SafeToDispatch        bool           `json:"safe_to_dispatch"`
+	AgentType        string         `json:"agent_type"`
+	IsWorking        bool           `json:"is_working"`
+	IsIdle           bool           `json:"is_idle"`
+	IsRateLimited    bool           `json:"is_rate_limited"`
+	IsContextLow     bool           `json:"is_context_low"`
+	ContextRemaining *float64       `json:"context_remaining,omitempty"`
+	Confidence       float64        `json:"confidence"`
+	Indicators       WorkIndicators `json:"indicators"`
+	// IndicatorBasis identifies the authoritative signal that determined the
+	// current working/idle verdict. It is intentionally separate from
+	// Indicators, which is a diagnostic list of every matching parser pattern.
+	IndicatorBasis        string `json:"indicator_basis"`
+	Recommendation        string `json:"recommendation"`
+	RecommendationReason  string `json:"recommendation_reason"`
+	RawSample             string `json:"raw_sample,omitempty"` // Only with --verbose
+	ObservationState      string `json:"observation_state"`
+	ObservationFreshness  string `json:"observation_freshness"`
+	ObservationObservedAt string `json:"observation_observed_at"`
+	ObservationError      string `json:"observation_error,omitempty"`
+	SafeToDispatch        bool   `json:"safe_to_dispatch"`
 
 	// PaneStartedAt / AgentUptimeSeconds expose the pane's creation time
 	// (tmux #{pane_start_time}) so age-based replacement policies (context
@@ -182,6 +186,55 @@ func applyLiveBusyOverride(content string, state *agent.AgentState) bool {
 		state.IsInError = false
 	}
 	return true
+}
+
+// workIndicatorBasis names the signal that determined the final verdict after
+// the parser, live-window reconciliation, and canonical observation safety gate
+// have all run. The value is deliberately a stable token so callers can audit
+// a classification without reverse-engineering the individual pattern lists.
+func workIndicatorBasis(
+	state *agent.AgentState,
+	liveBusy bool,
+	parsed PaneWorkStatus,
+	final PaneWorkStatus,
+	observation statuspkg.PaneObservation,
+) string {
+	if final.IsRateLimited {
+		return "rate_limit_indicator"
+	}
+	if final.Recommendation == string(agent.RecommendErrorState) {
+		return "error_indicator"
+	}
+	if liveBusy {
+		switch state.Type.Canonical() {
+		case agent.AgentTypeClaudeCode:
+			return "claude_live_spinner"
+		case agent.AgentTypeCodex:
+			return "codex_live_working_indicator"
+		default:
+			return "live_window_thinking"
+		}
+	}
+	if final.IsWorking && !parsed.IsWorking && observation.Current.Status.State == statuspkg.StateWorking {
+		return "canonical_working_observation"
+	}
+	if final.IsIdle && !parsed.IsIdle && observation.Current.Status.State == statuspkg.StateIdle {
+		return "canonical_idle_observation"
+	}
+	if final.IsIdle {
+		switch state.Type.Canonical() {
+		case agent.AgentTypeClaudeCode:
+			return "claude_finished_turn_prompt"
+		case agent.AgentTypeCodex:
+			return "codex_composer_placeholder"
+		default:
+			return "idle_prompt"
+		}
+	}
+	if final.IsWorking {
+		return "parser_work_indicator"
+	}
+	return "insufficient_evidence"
 }
 
 // ParsePanesArg parses the --panes argument.
@@ -349,6 +402,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		if !sel.found {
 			output.Panes[paneKey] = PaneWorkStatus{
 				AgentType:            string(agent.AgentTypeUnknown),
+				IndicatorBasis:       "pane_not_found",
 				Recommendation:       string(agent.RecommendErrorState),
 				RecommendationReason: fmt.Sprintf("Pane %s not found in session", paneKey),
 				Confidence:           0.0,
@@ -371,6 +425,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			workStatus.RecommendationReason = "Current pane output is unavailable; inspect the pane before acting"
 			workStatus.Confidence = 0
 			workStatus.Indicators = WorkIndicators{Work: []string{}, Limit: []string{}}
+			workStatus.IndicatorBasis = "observation_unavailable"
 			if workStatus.AgentType == "" {
 				workStatus.AgentType = string(agent.AgentTypeUnknown)
 			}
@@ -397,6 +452,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			workStatus.ObservationError = err.Error()
 			workStatus.Confidence = 0
 			workStatus.Indicators = WorkIndicators{Work: []string{}, Limit: []string{}}
+			workStatus.IndicatorBasis = "parse_error"
 			output.Panes[paneKey] = workStatus
 			output.Summary.ErrorCount++
 			continue
@@ -456,7 +512,9 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 			copy(work, status.Indicators.Work)
 			status.Indicators.Work = append(work, "live_window_thinking")
 		}
+		parsedStatus := status
 		applyCanonicalWorkSafety(&status, paneObservation, liveBusy)
+		status.IndicatorBasis = workIndicatorBasis(state, liveBusy, parsedStatus, status, paneObservation)
 
 		// Ensure indicators are never nil
 		if status.Indicators.Work == nil {
@@ -544,6 +602,7 @@ func observationPaneMap(observation statuspkg.SessionObservation) map[string]sta
 func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWorkStatus {
 	result := PaneWorkStatus{
 		AgentType:             observation.AgentType,
+		IndicatorBasis:        "insufficient_evidence",
 		ObservationState:      string(observation.Current.Status.State),
 		ObservationFreshness:  string(observation.Current.Freshness),
 		ObservationObservedAt: FormatTimestamp(observation.Current.ObservedAt),

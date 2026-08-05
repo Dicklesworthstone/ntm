@@ -610,6 +610,85 @@ func TestApplyLiveBusyOverrideRecommendationPrecedence(t *testing.T) {
 	}
 }
 
+func TestWorkIndicatorBasisDocumentsAuthoritativeSignals(t *testing.T) {
+	parser := agent.NewParser()
+	tests := []struct {
+		name        string
+		output      string
+		agentType   agent.AgentType
+		liveBusy    bool
+		wantWorking bool
+		wantIdle    bool
+		wantBasis   string
+	}{
+		{
+			name: "stale claude timer yields to finished turn prompt",
+			output: "✻ Cogitated for 35m\n" +
+				"● completed requested work\n" +
+				"✻ Churned for 6s\n" +
+				"────────────\n❯ \n────────────\n" +
+				"  ⏵⏵ bypass permissions on          ·\n",
+			agentType: agent.AgentTypeClaudeCode,
+			wantIdle:  true,
+			wantBasis: "claude_finished_turn_prompt",
+		},
+		{
+			name: "claude waiting for background terminal remains active",
+			output: "Waiting for background terminal\n" +
+				"✻ Churning… (ctrl+c to interrupt · 4s)\n" +
+				"────────────\n❯ \n────────────\n",
+			agentType:   agent.AgentTypeClaudeCode,
+			liveBusy:    true,
+			wantWorking: true,
+			wantBasis:   "claude_live_spinner",
+		},
+		{
+			name: "codex composer placeholder is idle",
+			output: "• Ran command\n" +
+				"  └ go test ./...\n" +
+				"• Turn complete\n\n" +
+				"▌ Ask Codex to do something\n" +
+				"›\n" +
+				"  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit\n",
+			agentType: agent.AgentTypeCodex,
+			wantIdle:  true,
+			wantBasis: "codex_composer_placeholder",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, err := parser.ParseWithHint(tt.output, tt.agentType)
+			if err != nil {
+				t.Fatalf("ParseWithHint: %v", err)
+			}
+			if state.IsWorking != tt.wantWorking || state.IsIdle != tt.wantIdle {
+				t.Fatalf("parsed state = working:%t idle:%t, want working:%t idle:%t", state.IsWorking, state.IsIdle, tt.wantWorking, tt.wantIdle)
+			}
+
+			parsed := PaneWorkStatus{IsWorking: state.IsWorking, IsIdle: state.IsIdle}
+			final := parsed
+			if tt.liveBusy {
+				final.IsWorking = true
+				final.IsIdle = false
+			}
+			if got := workIndicatorBasis(state, tt.liveBusy, parsed, final, statuspkg.PaneObservation{}); got != tt.wantBasis {
+				t.Fatalf("indicator basis = %q, want %q", got, tt.wantBasis)
+			}
+		})
+	}
+}
+
+func TestPaneWorkStatusIndicatorBasisMarshals(t *testing.T) {
+	encoded, err := json.Marshal(PaneWorkStatus{IndicatorBasis: "codex_composer_placeholder"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"indicator_basis":"codex_composer_placeholder"`) {
+		t.Fatalf("encoded status = %s", encoded)
+	}
+}
+
 // TestIsLiveBusy_WildcardPatternsDocumentTheUserPaneSkipReason locks in the
 // reason GetIsWorking gates the live-window override on `state.Type` being a
 // known AI agent: the pattern library carries agent-agnostic CategoryThinking
