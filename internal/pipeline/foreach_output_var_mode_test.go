@@ -52,6 +52,53 @@ func TestForeachOutputVarMode_AggregateDefault(t *testing.T) {
 	}
 }
 
+// TestForeachOutputVarMode_AggregateUsesFinalRoundResult verifies that the
+// aggregate follows the matching resolved step ID, rather than the body's
+// positional index. A skipped control-only step produces no StepResult, while
+// max_rounds appends one result per round; the final round must win.
+func TestForeachOutputVarMode_AggregateUsesFinalRoundResult(t *testing.T) {
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "foreach-aggregate-final-round",
+		Settings:      DefaultWorkflowSettings(),
+	}
+	step := &Step{
+		ID:        "fanout",
+		OutputVar: "result",
+		Foreach: &ForeachConfig{
+			Items:     `["only"]`,
+			MaxRounds: IntOrExpr{Value: 3},
+			Steps: []Step{
+				{
+					ID:          "continue_never",
+					When:        `${round} == "never"`,
+					LoopControl: LoopControlContinue,
+				},
+				{
+					ID:        "emit",
+					Command:   `printf 'round-%s' '${round}'`,
+					OutputVar: "result",
+				},
+			},
+		},
+	}
+	workflow.Steps = []Step{*step}
+	e := createForeachTestExecutor(t, workflow)
+
+	got := e.executeForeach(context.Background(), step, workflow)
+	if got.Status != StatusCompleted {
+		t.Fatalf("foreach status = %s, error = %#v", got.Status, got.Error)
+	}
+
+	value, ok := e.state.Variables["result"].([]string)
+	if !ok {
+		t.Fatalf("vars[result] type = %T, want []string", e.state.Variables["result"])
+	}
+	if want := []string{"round-3"}; !reflect.DeepEqual(value, want) {
+		t.Fatalf("vars[result] = %#v, want %#v (final round output)", value, want)
+	}
+}
+
 // TestForeachOutputVarMode_AggregateParallelKeepsAllIterations is the
 // concrete bd-dg38m bug: parallel foreach over N items previously raced
 // through e.state.Variables[step.OutputVar] and only one winner remained.

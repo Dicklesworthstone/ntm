@@ -1012,11 +1012,10 @@ func (e *Executor) storeForeachOutputVars(parent *Step, config *ForeachConfig, p
 		if iter.Error != "" || (iter.Skipped && iter.SkipKind != SkipKindResumeAlreadyCompleted) {
 			continue
 		}
-		idx := matchingForeachBodyResultIndex(plans, i, parent.OutputVar)
-		if idx < 0 || idx >= len(iter.Results) {
+		res, ok := matchingForeachBodyResult(plans, i, iter.Results, parent.OutputVar)
+		if !ok {
 			continue
 		}
-		res := iter.Results[idx]
 		if res.Status != StatusCompleted {
 			continue
 		}
@@ -1080,24 +1079,32 @@ func effectiveForeachOutputVarMode(parent *Step, config *ForeachConfig) OutputVa
 	return OutputVarModeAggregate
 }
 
-// matchingForeachBodyResultIndex finds the first body step in plans[planIdx]
-// whose declared OutputVar matches the foreach parent's OutputVar. Returns
-// -1 when no body step writes to that variable (the parent's OutputVar is
-// either set without a corresponding body step write, or unset).
+// matchingForeachBodyResult finds the most recent result for the first body
+// step in plans[planIdx] whose declared OutputVar matches the foreach
+// parent's OutputVar. It returns false when no body step writes to that
+// variable or that step did not produce a result.
 //
-// The materialized body step IDs end with "_<originalID>", so we match
-// against the raw body step's OutputVar via the iteration plan, which still
-// holds the substituted body steps.
-func matchingForeachBodyResultIndex(plans []foreachIterationPlan, planIdx int, outputVar string) int {
+// Results cannot be addressed by their position in iter.Results: a body can
+// omit a result when a control-only step's when condition is false, and an
+// iteration with max_rounds appends every round's result. Match the resolved
+// materialized step ID instead, walking backwards so the final completed round
+// supplies the aggregate value.
+func matchingForeachBodyResult(plans []foreachIterationPlan, planIdx int, results []StepResult, outputVar string) (StepResult, bool) {
 	if planIdx < 0 || planIdx >= len(plans) {
-		return -1
+		return StepResult{}, false
 	}
-	for i, step := range plans[planIdx].Steps {
+	for _, step := range plans[planIdx].Steps {
 		if step.OutputVar == outputVar {
-			return i
+			for resultIdx := len(results) - 1; resultIdx >= 0; resultIdx-- {
+				result := results[resultIdx]
+				if result.StepID == step.ID || strings.HasPrefix(result.StepID, step.ID+"_round") {
+					return result, true
+				}
+			}
+			return StepResult{}, false
 		}
 	}
-	return -1
+	return StepResult{}, false
 }
 
 // foreachIterationKey derives a stable identity for an iteration suitable
