@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -391,13 +390,13 @@ func collectProcessTree(rootPID, perNodeLimit, maxDepth int) []int {
 // SIGKILL for survivors. Returns the PIDs that actually died.
 func killProcessesGracefully(ctx context.Context, pids []int) []int {
 	for _, pid := range pids {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		signalTerm(pid)
 	}
 	waitForProcessExit(ctx, pids, lifecycleTermGrace)
 	escalated := false
 	for _, pid := range pids {
 		if process.IsAlive(pid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			signalKill(pid)
 			escalated = true
 		}
 	}
