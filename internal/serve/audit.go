@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
@@ -442,6 +443,14 @@ func (s *AuditStore) cleanupLoop(interval time.Duration) {
 
 // cleanup removes audit records older than retention period.
 func (s *AuditStore) cleanup() {
+	// The JSONL sink has its own retention and must run even when no SQLite
+	// database is configured. Returning early on s.db == nil meant audit.jsonl
+	// was never rotated or truncated at all, so it grew without bound while
+	// audit.db stayed correctly pruned — and because Record's write failure was
+	// only logged, the eventual ENOSPC would have stopped the audit log
+	// silently.
+	s.cleanupJSONL()
+
 	if s.db == nil {
 		return
 	}
@@ -649,6 +658,10 @@ func (s *Server) AuditMiddleware(store *AuditStore) func(http.Handler) http.Hand
 				role = rc.Role
 			}
 
+			// Fill anything the handler did not set from the routed URL
+			// params. Handler-set values always win.
+			enrichAuditFromRoute(ac, r)
+
 			// Use context values if set by handler
 			resource := ac.Resource
 			action := ac.Action
@@ -678,6 +691,57 @@ func (s *Server) AuditMiddleware(store *AuditStore) func(http.Handler) http.Hand
 				log.Printf("audit record error: %v request_id=%s", err, reqID)
 			}
 		})
+	}
+}
+
+// enrichAuditFromRoute fills empty audit fields from the chi route params that
+// the request actually matched. Values a handler set explicitly always win.
+//
+// The middleware's contract used to be that handlers "dutifully call
+// SetAuditResource/SetAuditSession/SetAuditAction" — but exactly one handler in
+// the tree ever did. Every other audit record (rollback, checkpoint restore,
+// agent spawn, pane input, approval approve/deny) was written with empty
+// resource_id, session_id, pane_id and agent_id, so an operator investigating a
+// destructive action and filtering by session got ZERO rows and had to
+// string-match the unindexed path instead.
+//
+// Deriving from the route is strictly better than adding ~30 handler calls: it
+// covers routes that do not exist yet and cannot rot when a handler is added.
+// It runs AFTER next.ServeHTTP because chi populates the RouteContext during
+// routing, and the same *chi.Context is carried in the request context.
+func enrichAuditFromRoute(ac *AuditContext, r *http.Request) {
+	if ac == nil {
+		return
+	}
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil {
+		return
+	}
+
+	param := func(names ...string) string {
+		for _, name := range names {
+			if v := strings.TrimSpace(rctx.URLParam(name)); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	if ac.SessionID == "" {
+		// Checkpoint routes name it sessionName; session routes use sessionId.
+		ac.SessionID = param("sessionName", "sessionId")
+	}
+	if ac.PaneID == "" {
+		ac.PaneID = param("paneIdx")
+	}
+	if ac.ResourceID == "" {
+		// The subject of the request. Prefer the most specific id the route
+		// carries, then fall back to the generic {id} that most collections use.
+		ac.ResourceID = param("checkpointId", "depId", "provider", "id")
+		// A session-scoped route with no more specific id is about the session.
+		if ac.ResourceID == "" {
+			ac.ResourceID = ac.SessionID
+		}
 	}
 }
 
