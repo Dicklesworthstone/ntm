@@ -560,14 +560,10 @@ func (s *Server) handlePolicyUpdateV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to get home directory", nil, reqID)
-		return
-	}
-
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+	// Write the policy file that is actually enforced, not an unconditional
+	// home path that would shadow a project-local policy (bd-fresh-eyes-audit
+	// .30, same class as handlePolicyAutomationUpdateV1).
+	policyPath, _ := policy.ResolveEffectivePath()
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
@@ -746,14 +742,11 @@ type PolicyResetResponse struct {
 func (s *Server) handlePolicyResetV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to get home directory", nil, reqID)
-		return
-	}
-
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+	// Reset the policy file that is actually enforced. Writing defaults to an
+	// unconditional home path would leave a project-local policy in place on
+	// disk while silently shadowing it, so a "reset" would neither reset the
+	// enforced rules nor leave them intact (bd-fresh-eyes-audit .30).
+	policyPath, _ := policy.ResolveEffectivePath()
 
 	// Create directory if needed
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
@@ -1357,6 +1350,23 @@ func safetyFileExists(path string) bool {
 	return err == nil
 }
 
+// installWrapperFile writes an executable safety wrapper.
+//
+// Taint scanners flag the os.WriteFile below as "request-derived path reaches
+// a file write sink" via an id -> approval -> approvalCopy trace. That trace
+// is a false positive, verified 2026-08-04 (bd-7hcy1): approvalCopy is a
+// value copy of an in-memory approval record that flows only into toJSONMap
+// and out through the HTTP response — it never reaches a path. Every caller
+// of this function passes a path built entirely from server-side constants
+// rooted at os.UserHomeDir (~/.ntm/bin/git, ~/.ntm/bin/rm, and
+// ~/.claude/hooks/PreToolUse/ntm-safety.sh); the only request-derived input
+// on that path is the `force` boolean, and `content` is a package-level
+// script constant. The 0755 mode is required because these are wrappers the
+// shell must execute.
+//
+// If a caller is ever added that derives any part of `path` from a request,
+// this function must first confine it (filepath.Rel containment against the
+// intended install root) — an attacker-chosen path here writes an executable.
 func installWrapperFile(path, content string, force bool) error {
 	if safetyFileExists(path) && !force {
 		return fmt.Errorf("%s already exists (use force=true to overwrite)", path)
