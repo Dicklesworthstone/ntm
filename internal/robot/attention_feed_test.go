@@ -111,6 +111,20 @@ func TestCursorAllocator_Current(t *testing.T) {
 	}
 }
 
+func TestCursorAllocator_AdvanceToNeverRegresses(t *testing.T) {
+	alloc := NewCursorAllocator()
+	alloc.AdvanceTo(105)
+	alloc.AdvanceTo(110)
+	alloc.AdvanceTo(105)
+
+	if got := alloc.Current(); got != 110 {
+		t.Fatalf("Current() = %d, want 110", got)
+	}
+	if got := alloc.Next(); got != 111 {
+		t.Fatalf("Next() = %d, want 111", got)
+	}
+}
+
 func TestCursorAllocator_Concurrent(t *testing.T) {
 	alloc := NewCursorAllocator()
 	const goroutines = 100

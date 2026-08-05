@@ -35,56 +35,74 @@ func SkipIfNoNTM(t *testing.T) {
 
 // SkipIfNoAgent skips the test if the specified agent CLI is not available.
 func SkipIfNoAgent(t *testing.T, agentType string) {
-	var alias string
-	switch agentType {
-	case "cc", "claude":
-		alias = "cc"
-	case "cod", "codex":
-		alias = "cod"
-	case "gmi", "gemini":
-		alias = "gmi"
-	default:
+	executable, ok := agentExecutable(agentType)
+	if !ok {
 		t.Fatalf("Unknown agent type: %s", agentType)
 	}
 
-	if _, err := exec.LookPath(alias); err != nil {
-		t.Skipf("%s not found, skipping E2E test", alias)
+	if _, err := exec.LookPath(executable); err != nil {
+		t.Skipf("%s not found, skipping E2E test", executable)
+	}
+}
+
+// agentExecutable maps NTM's agent-type aliases to the actual CLI command
+// launched by the default configuration. In particular, "cc" is a common C
+// compiler command and must not be mistaken for Claude Code in real-agent E2E
+// tests.
+func agentExecutable(agentType string) (string, bool) {
+	switch agentType {
+	case "cc", "claude":
+		return "claude", true
+	case "cod", "codex":
+		return "codex", true
+	case "gmi", "gemini":
+		return "gemini", true
+	default:
+		return "", false
 	}
 }
 
 // SkipIfNoAgents skips if none of the common agents are available.
 func SkipIfNoAgents(t *testing.T) {
-	ccFound := false
-	codFound := false
-	gmiFound := false
-
-	if _, err := exec.LookPath("cc"); err == nil {
-		ccFound = true
-	}
-	if _, err := exec.LookPath("cod"); err == nil {
-		codFound = true
-	}
-	if _, err := exec.LookPath("gmi"); err == nil {
-		gmiFound = true
-	}
-
-	if !ccFound && !codFound && !gmiFound {
-		t.Skip("No agent CLIs (cc, cod, gmi) found, skipping E2E test")
+	if GetAvailableAgent() == "" {
+		t.Skip("No agent CLIs (claude, codex, gemini) found, skipping E2E test")
 	}
 }
 
 // GetAvailableAgent returns the first available agent type.
 func GetAvailableAgent() string {
-	if _, err := exec.LookPath("cc"); err == nil {
-		return "cc"
-	}
-	if _, err := exec.LookPath("cod"); err == nil {
-		return "cod"
-	}
-	if _, err := exec.LookPath("gmi"); err == nil {
-		return "gmi"
+	for _, agentType := range []string{"cod", "cc", "gmi"} {
+		executable, _ := agentExecutable(agentType)
+		if _, err := exec.LookPath(executable); err == nil {
+			return agentType
+		}
 	}
 	return ""
+}
+
+func TestAgentExecutable(t *testing.T) {
+	tests := []struct {
+		agentType string
+		want      string
+		ok        bool
+	}{
+		{agentType: "cc", want: "claude", ok: true},
+		{agentType: "claude", want: "claude", ok: true},
+		{agentType: "cod", want: "codex", ok: true},
+		{agentType: "codex", want: "codex", ok: true},
+		{agentType: "gmi", want: "gemini", ok: true},
+		{agentType: "gemini", want: "gemini", ok: true},
+		{agentType: "unknown", want: "", ok: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.agentType, func(t *testing.T) {
+			got, ok := agentExecutable(test.agentType)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("agentExecutable(%q) = (%q, %t), want (%q, %t)", test.agentType, got, ok, test.want, test.ok)
+			}
+		})
+	}
 }
 
 // IsMockMode returns true if running in mock mode (for CI).

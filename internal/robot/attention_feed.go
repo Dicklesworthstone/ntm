@@ -131,6 +131,14 @@ func (c *CursorAllocator) Current() int64 {
 	return c.counter.Load()
 }
 
+// AdvanceTo raises the cursor to at least next without ever moving it backwards.
+func (c *CursorAllocator) AdvanceTo(next int64) {
+	current := c.counter.Load()
+	for current < next && !c.counter.CompareAndSwap(current, next) {
+		current = c.counter.Load()
+	}
+}
+
 // =============================================================================
 // Journal Entry
 // =============================================================================
@@ -3894,7 +3902,7 @@ func (f *AttentionFeed) syncCursorFromStore() {
 
 	latestCursor, err := f.store.GetLatestEventCursor()
 	if err == nil && latestCursor > 0 {
-		f.cursor.counter.Store(latestCursor)
+		f.cursor.AdvanceTo(latestCursor)
 	}
 }
 
@@ -4064,7 +4072,7 @@ func (f *AttentionFeed) storeBackedStats() (JournalStats, error) {
 
 	latestCursor := window.NewestCursor
 	if latestCursor > f.cursor.Current() {
-		f.cursor.counter.Store(latestCursor)
+		f.cursor.AdvanceTo(latestCursor)
 	}
 
 	stats := f.journal.Stats()
