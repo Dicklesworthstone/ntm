@@ -68,6 +68,12 @@ type FindingRecord struct {
 	DismissedBy string          `json:"dismissed_by,omitempty"`
 	BeadID      string          `json:"bead_id,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
+
+	// beadPending marks a finding whose bead is being created right now.
+	// Unexported so it never reaches the API surface; it exists only to make
+	// "does this finding already have a bead?" a compare-AND-SET rather than a
+	// check-then-act across a shell-out to `br create`.
+	beadPending bool
 }
 
 // ScannerStore provides in-memory storage for scan history and findings
@@ -251,6 +257,62 @@ func (s *ScannerStore) UpdateFinding(id string, fn func(*FindingRecord)) {
 	defer s.mu.Unlock()
 	if finding, ok := s.findings[id]; ok {
 		fn(finding)
+	}
+}
+
+// beadClaimResult reports the outcome of ClaimFindingForBead.
+type beadClaimResult int
+
+const (
+	beadClaimGranted beadClaimResult = iota
+	beadClaimFindingMissing
+	beadClaimAlreadyLinked
+	beadClaimInProgress
+)
+
+// ClaimFindingForBead atomically reserves a finding for bead creation.
+//
+// GetFinding returns a CLONE, so testing clone.BeadID == "" and then shelling
+// out to `br create` was a check-then-act across a slow operation: two
+// concurrent POSTs to .../create-bead both saw an empty BeadID, both created a
+// bead, both returned 201, and only the last UpdateFinding won — silently
+// orphaning the other bead in the tracker. The claim closes that window under
+// the same lock that guards the map.
+func (s *ScannerStore) ClaimFindingForBead(id string) (*FindingRecord, string, beadClaimResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	finding, ok := s.findings[id]
+	if !ok {
+		return nil, "", beadClaimFindingMissing
+	}
+	if finding.BeadID != "" {
+		return nil, finding.BeadID, beadClaimAlreadyLinked
+	}
+	if finding.beadPending {
+		return nil, "", beadClaimInProgress
+	}
+	finding.beadPending = true
+	return cloneFinding(finding), "", beadClaimGranted
+}
+
+// ReleaseFindingBeadClaim drops a claim taken by ClaimFindingForBead without
+// linking a bead, so a later attempt can retry.
+func (s *ScannerStore) ReleaseFindingBeadClaim(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if finding, ok := s.findings[id]; ok {
+		finding.beadPending = false
+	}
+}
+
+// LinkFindingBead records the created bead and releases the claim.
+func (s *ScannerStore) LinkFindingBead(id, beadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if finding, ok := s.findings[id]; ok {
+		finding.BeadID = beadID
+		finding.beadPending = false
 	}
 }
 
@@ -744,28 +806,43 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 	reqID := requestIDFromContext(r.Context())
 	findingID := chi.URLParam(r, "id")
 
-	finding, ok := scannerStore.GetFinding(findingID)
-	if !ok {
-		slog.Warn("finding not found for bead creation", "request_id", reqID, "finding_id", findingID)
-		writeErrorResponse(w, http.StatusNotFound, ErrCodeFindingNotFound,
-			"Finding not found", nil, reqID)
-		return
-	}
-
-	// Check if bead already exists
-	if finding.BeadID != "" {
-		writeErrorResponse(w, http.StatusConflict, ErrCodeBadRequest,
-			"Bead already created for this finding", map[string]interface{}{"bead_id": finding.BeadID}, reqID)
-		return
-	}
-
-	// Parse request
+	// Parse request before claiming, so a malformed body cannot leave a claim
+	// behind.
 	var req CreateBeadFromFindingRequest
 	if err := decodeOptionalJSONBody(r, &req); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
 			"Invalid request body", nil, reqID)
 		return
 	}
+
+	// Reserve the finding atomically. Checking a CLONE's BeadID and then
+	// shelling out to `br create` let two concurrent requests each create a
+	// bead and each return 201, with only the last write winning — orphaning
+	// the other bead in the tracker with nothing pointing at it.
+	finding, existingBeadID, claim := scannerStore.ClaimFindingForBead(findingID)
+	switch claim {
+	case beadClaimFindingMissing:
+		slog.Warn("finding not found for bead creation", "request_id", reqID, "finding_id", findingID)
+		writeErrorResponse(w, http.StatusNotFound, ErrCodeFindingNotFound,
+			"Finding not found", nil, reqID)
+		return
+	case beadClaimAlreadyLinked:
+		writeErrorResponse(w, http.StatusConflict, ErrCodeBadRequest,
+			"Bead already created for this finding", map[string]interface{}{"bead_id": existingBeadID}, reqID)
+		return
+	case beadClaimInProgress:
+		writeErrorResponse(w, http.StatusConflict, ErrCodeBadRequest,
+			"Bead creation already in progress for this finding", nil, reqID)
+		return
+	}
+
+	// From here every exit must either link a bead or release the claim.
+	beadLinked := false
+	defer func() {
+		if !beadLinked {
+			scannerStore.ReleaseFindingBeadClaim(findingID)
+		}
+	}()
 
 	// Generate bead title
 	title := req.Title
@@ -826,6 +903,12 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 	// Parse bead ID from output (assuming format "Created <id>: ...")
 	beadID := extractBeadID(output)
 	if beadID == "" {
+		// `br create` SUCCEEDED — a bead exists in the tracker but we cannot
+		// name it, so the finding stays unlinked and every retry makes another
+		// one. Log the raw output at error level so the operator can find and
+		// link the orphan by hand; there is nothing safe to do automatically.
+		slog.Error("bead created but its ID could not be parsed from br output; the bead is orphaned",
+			"request_id", reqID, "finding_id", findingID, "output", strings.TrimSpace(output))
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeBeadsUnavailable,
 			"Failed to determine bead ID from br output", map[string]interface{}{"output": strings.TrimSpace(output)}, reqID)
 		return
@@ -834,10 +917,9 @@ func (s *Server) handleCreateBeadFromFinding(w http.ResponseWriter, r *http.Requ
 	// Update bead description
 	_, _ = bv.RunBd(s.projectDirSnapshot(), "update", beadID, "--description", description)
 
-	// Update finding with bead ID
-	scannerStore.UpdateFinding(findingID, func(fr *FindingRecord) {
-		fr.BeadID = beadID
-	})
+	// Link the bead and release the claim in one atomic step.
+	scannerStore.LinkFindingBead(findingID, beadID)
+	beadLinked = true
 	finding.BeadID = beadID
 
 	slog.Info("bead created from finding", "request_id", reqID,

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -760,4 +762,79 @@ echo "OK"
 		t.Fatalf("write stub br: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// bd-84a61 #3: GetFinding returns a CLONE, so checking clone.BeadID == "" and
+// then shelling out to `br create` was a check-then-act across a slow
+// operation. Two concurrent requests both saw an empty BeadID, both created a
+// bead, both returned 201, and only the last write won — silently orphaning
+// the other bead in the tracker.
+func TestClaimFindingForBead_OnlyOneClaimWins(t *testing.T) {
+	store := NewScannerStore()
+	store.AddFinding(&FindingRecord{ID: "f1", ScanID: "s1", CreatedAt: time.Now()})
+
+	const racers = 8
+	var granted atomic.Int64
+	var inProgress atomic.Int64
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+
+	for i := 0; i < racers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			switch _, _, claim := store.ClaimFindingForBead("f1"); claim {
+			case beadClaimGranted:
+				granted.Add(1)
+			case beadClaimInProgress:
+				inProgress.Add(1)
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	if got := granted.Load(); got != 1 {
+		t.Fatalf("%d concurrent claims were granted, want exactly 1 (each one shells out to `br create`)", got)
+	}
+	if got := inProgress.Load(); got != racers-1 {
+		t.Fatalf("in-progress rejections = %d, want %d", got, racers-1)
+	}
+}
+
+// A released claim must be retryable, or a single failed `br create` would
+// wedge the finding forever.
+func TestReleaseFindingBeadClaim_AllowsRetry(t *testing.T) {
+	store := NewScannerStore()
+	store.AddFinding(&FindingRecord{ID: "f1", ScanID: "s1", CreatedAt: time.Now()})
+
+	if _, _, claim := store.ClaimFindingForBead("f1"); claim != beadClaimGranted {
+		t.Fatalf("first claim = %v, want granted", claim)
+	}
+	store.ReleaseFindingBeadClaim("f1")
+	if _, _, claim := store.ClaimFindingForBead("f1"); claim != beadClaimGranted {
+		t.Fatalf("claim after release = %v, want granted so a failed create can be retried", claim)
+	}
+}
+
+// Once linked, further attempts must report the existing bead rather than
+// creating a second one.
+func TestLinkFindingBead_BlocksFurtherClaims(t *testing.T) {
+	store := NewScannerStore()
+	store.AddFinding(&FindingRecord{ID: "f1", ScanID: "s1", CreatedAt: time.Now()})
+
+	if _, _, claim := store.ClaimFindingForBead("f1"); claim != beadClaimGranted {
+		t.Fatal("first claim should be granted")
+	}
+	store.LinkFindingBead("f1", "ntm-123")
+
+	_, existing, claim := store.ClaimFindingForBead("f1")
+	if claim != beadClaimAlreadyLinked {
+		t.Fatalf("claim after link = %v, want already-linked", claim)
+	}
+	if existing != "ntm-123" {
+		t.Fatalf("existing bead id = %q, want ntm-123", existing)
+	}
 }

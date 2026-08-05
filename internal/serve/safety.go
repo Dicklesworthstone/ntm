@@ -1346,25 +1346,33 @@ func (s *Server) handleApprovalRequestV1(w http.ResponseWriter, r *http.Request)
 		ExpiresAt:   time.Now().Add(time.Duration(ttl) * time.Second),
 	}
 	approvals[id] = approval
+	// Snapshot under the lock. Approval IDs are sequential ("apr-<N>"), so a
+	// client holding apr-7 can POST /approvals/apr-8/approve in a loop while
+	// this request is creating apr-8 — the approver writes Status/ApprovedBy
+	// on the very record this handler is about to read. Reading the shared
+	// pointer after unlocking was both a data race and a correctness bug: the
+	// approval.requested event and the 201 body could carry status "approved"
+	// for a request that had only just been created.
+	snapshot := *approval
 	approvalsLock.Unlock()
 
 	log.Printf("Approval request %s created by %s for action '%s'", id, requestor, req.Action)
 	s.publishApprovalEvent("approval.requested", map[string]interface{}{
 		"approval_id":  id,
-		"action":       approval.Action,
-		"resource":     approval.Resource,
-		"requestor":    approval.Requestor,
-		"reason":       approval.Reason,
-		"slb_required": approval.SLBRequired,
-		"status":       approval.Status,
-		"expires_at":   approval.ExpiresAt.Format(time.RFC3339Nano),
-		"requested_at": approval.CreatedAt.Format(time.RFC3339Nano),
+		"action":       snapshot.Action,
+		"resource":     snapshot.Resource,
+		"requestor":    snapshot.Requestor,
+		"reason":       snapshot.Reason,
+		"slb_required": snapshot.SLBRequired,
+		"status":       snapshot.Status,
+		"expires_at":   snapshot.ExpiresAt.Format(time.RFC3339Nano),
+		"requested_at": snapshot.CreatedAt.Format(time.RFC3339Nano),
 	})
 
 	resp := ApprovalRequestResponse{
 		ID:          id,
-		Status:      approval.Status,
-		ExpiresAt:   approval.ExpiresAt,
+		Status:      snapshot.Status,
+		ExpiresAt:   snapshot.ExpiresAt,
 		SLBRequired: slbRequired,
 	}
 

@@ -59,10 +59,21 @@ type AuditRecord struct {
 
 // AuditStore persists audit records to durable storage.
 type AuditStore struct {
-	mu          sync.Mutex
-	db          *sql.DB
-	jsonlPath   string
-	jsonlFile   *os.File
+	mu        sync.Mutex
+	db        *sql.DB
+	jsonlPath string
+	jsonlFile *os.File
+
+	// appendMu serializes JSONL appends only. It is separate from mu so that
+	// Record does not hold the store lock across its I/O: the SQLite handle is
+	// opened with SetMaxOpenConns(1) and busy_timeout=5000, so holding mu
+	// across the INSERT serialized EVERY mutating request behind the database
+	// — a concurrent POST could stall up to 5s after its handler had already
+	// run, and Close() (same mutex) stalled shutdown behind it. An O_APPEND
+	// write is not atomic for records larger than the pipe buffer, so the
+	// appends still need a lock of their own; it is just a much shorter one.
+	appendMu sync.Mutex
+
 	retention   time.Duration
 	stopCleanup chan struct{}
 	stopOnce    sync.Once
@@ -241,28 +252,42 @@ func (s *AuditStore) initSchema() error {
 
 // Record stores an audit record.
 func (s *AuditStore) Record(rec *AuditRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if rec.Timestamp.IsZero() {
 		rec.Timestamp = time.Now().UTC()
 	}
 
+	// Snapshot the handles under the store lock, then release it before any
+	// I/O. Holding mu across the JSONL append AND the SQLite INSERT made every
+	// mutating request serialize behind a single-connection database, and made
+	// Close() wait behind them. cleanupWG.Wait() already joins the cleanup
+	// goroutine, so the wide lock was not load-bearing.
+	s.mu.Lock()
+	jsonlFile := s.jsonlFile
+	db := s.db
+	s.mu.Unlock()
+
 	// Write to JSONL
-	if s.jsonlFile != nil {
+	if jsonlFile != nil {
 		data, err := json.Marshal(rec)
 		if err != nil {
 			log.Printf("audit: json marshal error: %v", err)
 		} else {
-			if _, err := s.jsonlFile.Write(append(data, '\n')); err != nil {
-				log.Printf("audit: jsonl write error: %v", err)
+			// Serialized separately: an O_APPEND write is only atomic for
+			// small records, and audit records carrying details are not
+			// reliably small.
+			s.appendMu.Lock()
+			_, writeErr := jsonlFile.Write(append(data, '\n'))
+			s.appendMu.Unlock()
+			if writeErr != nil {
+				log.Printf("audit: jsonl write error: %v", writeErr)
 			}
 		}
 	}
 
-	// Write to SQLite
-	if s.db != nil {
-		_, err := s.db.Exec(`
+	// Write to SQLite. database/sql is safe for concurrent use and already
+	// serializes on its single connection.
+	if db != nil {
+		_, err := db.Exec(`
 			INSERT INTO audit_records (
 				timestamp, request_id, user_id, role, action, resource, resource_id,
 				method, path, status_code, duration_ms, session_id, pane_id, agent_id,
