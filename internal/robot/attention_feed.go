@@ -1238,7 +1238,12 @@ func (f *AttentionFeed) Digest(sinceCursor int64, opts AttentionDigestOptions) (
 		return nil, err
 	}
 
-	return BuildAttentionDigest(events, sinceCursor, newest, opts), nil
+	cursorEnd := newest
+	if len(events) == limit {
+		cursorEnd = events[len(events)-1].Cursor
+	}
+
+	return BuildAttentionDigest(events, sinceCursor, cursorEnd, opts), nil
 }
 
 // BuildAttentionDigest reduces a set of replayed events into a compact summary

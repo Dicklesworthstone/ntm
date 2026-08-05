@@ -2607,13 +2607,15 @@ func TestPublishMailAckRequired_UsesRobotMailCheckAction(t *testing.T) {
 }
 
 type stubAttentionStore struct {
-	mu                 sync.Mutex
-	events             []state.StoredAttentionEvent
-	appendAttempts     atomic.Int32
-	failAppend         atomic.Bool
-	blockFirst         atomic.Bool
-	firstAppendStarted chan struct{}
-	releaseFirstAppend chan struct{}
+	mu                       sync.Mutex
+	events                   []state.StoredAttentionEvent
+	appendAttempts           atomic.Int32
+	failAppend               atomic.Bool
+	blockFirst               atomic.Bool
+	firstAppendStarted       chan struct{}
+	releaseFirstAppend       chan struct{}
+	replayWindowCalls        int
+	appendOnReplayWindowCall int
 }
 
 func newStubAttentionStore() *stubAttentionStore {
@@ -2718,6 +2720,22 @@ func (s *stubAttentionStore) GetAttentionItemStatesForCursors(cursors []int64) (
 func (s *stubAttentionStore) GetAttentionReplayWindow() (state.AttentionReplayWindow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.replayWindowCalls++
+	if s.replayWindowCalls == s.appendOnReplayWindowCall {
+		cursor := int64(len(s.events) + 1)
+		s.events = append(s.events, state.StoredAttentionEvent{
+			Cursor:        cursor,
+			Ts:            time.Now().UTC(),
+			SessionName:   "proj",
+			Category:      string(EventCategorySystem),
+			EventType:     string(EventTypeSystemHealthChange),
+			Source:        "race_test",
+			Actionability: state.ActionabilityBackground,
+			Severity:      state.SeverityInfo,
+			Summary:       "appended between digest stats and replay",
+			DedupCount:    1,
+		})
+	}
 
 	window := state.AttentionReplayWindow{
 		EventCount: len(s.events),
@@ -3274,6 +3292,33 @@ func TestAttentionFeed_DigestPreservesCursorBoundariesAndImportantSignals(t *tes
 	}
 	if digest.Suppressed.Total < 2 {
 		t.Fatalf("suppressed total = %d, want at least 2", digest.Suppressed.Total)
+	}
+}
+
+func TestAttentionFeed_DigestCursorEndDoesNotSkipConcurrentAppend(t *testing.T) {
+	store := newStubAttentionStore()
+	store.seed("existing event")
+	store.appendOnReplayWindowCall = 2
+	feed := NewAttentionFeed(AttentionFeedConfig{JournalSize: 100, RetentionPeriod: time.Hour}, WithAttentionStore(store))
+	t.Cleanup(feed.Stop)
+
+	digest, err := feed.Digest(0, DefaultAttentionDigestOptions())
+	if err != nil {
+		t.Fatalf("Digest error: %v", err)
+	}
+	if digest.EventCount != 1 {
+		t.Fatalf("EventCount = %d, want 1", digest.EventCount)
+	}
+	if digest.CursorEnd != 1 {
+		t.Fatalf("CursorEnd = %d, want 1 so the concurrent event remains replayable", digest.CursorEnd)
+	}
+
+	next, err := feed.Digest(digest.CursorEnd, DefaultAttentionDigestOptions())
+	if err != nil {
+		t.Fatalf("next Digest error: %v", err)
+	}
+	if next.EventCount != 1 || next.CursorEnd != 2 {
+		t.Fatalf("next digest = %#v, want one event ending at cursor 2", next)
 	}
 }
 
