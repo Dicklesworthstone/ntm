@@ -842,17 +842,20 @@ func (s *Server) handlePolicyAutomationUpdateV1(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to get home directory", nil, reqID)
-		return
-	}
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+	// Update the policy file that is actually being ENFORCED. This used to
+	// hardcode $HOME/.ntm/policy.yaml and fall back to DefaultPolicy() when
+	// absent, while every reader resolves through LoadOrDefault, which
+	// prefers the home file but otherwise reads the project-local
+	// .ntm/policy.yaml that `ntm setup` creates. Toggling one automation flag
+	// therefore wrote a fresh home policy containing nothing but defaults,
+	// which then took precedence — silently dropping the project's
+	// blocked/approval_required rules from the git/rm wrappers and the
+	// PreToolUse hook (bd-fresh-eyes-audit .30).
+	policyPath, policyExists := policy.ResolveEffectivePath()
 
-	// Load existing or create default
 	var p *policy.Policy
-	if safetyFileExists(policyPath) {
+	var err error
+	if policyExists {
 		p, err = policy.Load(policyPath)
 		if err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,

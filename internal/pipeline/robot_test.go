@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1943,5 +1944,53 @@ func TestGetPipelineSnapshot_NoPersistedState(t *testing.T) {
 	// Hostile run IDs must not reach the filesystem.
 	if snapshot := GetPipelineSnapshot("../../etc/passwd"); snapshot != nil {
 		t.Errorf("GetPipelineSnapshot(traversal) = %+v, want nil", snapshot)
+	}
+}
+
+// bd-fresh-eyes-audit .26: `ntm serve` drove pipeline.NewExecutor inline and
+// never registered the run, so its own returned run_id was unlistable,
+// ungettable, and uncancellable, and the detached run had no cancel handle
+// stored anywhere. NewTrackedExecution gives an externally-driven run the
+// registry entry and cancel handle that list/get/cancel need.
+func TestNewTrackedExecution_IsVisibleAndCancellable(t *testing.T) {
+	ClearPipelineRegistry()
+	t.Cleanup(ClearPipelineRegistry)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cancelled := false
+	exec := NewTrackedExecution("run-tracked-1", "wf", "sess", 3, nil, func() {
+		cancelled = true
+		cancel()
+	})
+	RegisterPipeline(exec)
+
+	if got := GetPipelineSnapshot("run-tracked-1"); got == nil {
+		t.Fatal("GetPipelineSnapshot returned nil for a registered run")
+	} else if got.Status != "running" || got.Progress.Total != 3 || got.Progress.Pending != 3 {
+		t.Fatalf("unexpected snapshot: %+v", got)
+	}
+
+	found := false
+	for _, snap := range GetAllPipelineSnapshots() {
+		if snap.RunID == "run-tracked-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("registered run is missing from GetAllPipelineSnapshots")
+	}
+
+	CancelPipeline("run-tracked-1")
+	if !cancelled {
+		t.Fatal("CancelPipeline did not invoke the stored cancel handle")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("run context was not cancelled")
+	}
+	after := GetPipelineSnapshot("run-tracked-1")
+	if after == nil || after.Status != "cancelled" {
+		t.Fatalf("status after cancel = %+v, want cancelled", after)
 	}
 }

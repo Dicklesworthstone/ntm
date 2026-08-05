@@ -97,20 +97,35 @@ func Load(path string) (*Policy, error) {
 	return p, nil
 }
 
-// LoadOrDefault loads the policy from the default path, or returns an empty policy if not found.
-func LoadOrDefault() (*Policy, error) {
-	path := DefaultPolicyPath
-
-	// Try home directory first, then current directory
+// ResolveEffectivePath reports which policy file LoadOrDefault would actually
+// read, and whether such a file exists. Writers MUST use it so an update
+// lands on the file that is being enforced: targeting the home path
+// unconditionally would shadow an existing project-local policy with a
+// freshly written one, silently dropping its blocked/approval_required rules
+// (bd-fresh-eyes-audit .30).
+//
+// When no policy file exists, the returned path is where a new one should be
+// created and exists is false.
+func ResolveEffectivePath() (path string, exists bool) {
 	if home, err := os.UserHomeDir(); err == nil {
 		homePath := filepath.Join(home, DefaultPolicyPath)
 		if _, err := os.Stat(homePath); err == nil {
-			path = homePath
+			return homePath, true
 		}
 	}
+	if _, err := os.Stat(DefaultPolicyPath); err == nil {
+		return DefaultPolicyPath, true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, DefaultPolicyPath), false
+	}
+	return DefaultPolicyPath, false
+}
 
-	// Check current directory
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+// LoadOrDefault loads the policy from the default path, or returns an empty policy if not found.
+func LoadOrDefault() (*Policy, error) {
+	path, exists := ResolveEffectivePath()
+	if !exists {
 		// Return default policy with common dangerous patterns
 		return DefaultPolicy(), nil
 	}
