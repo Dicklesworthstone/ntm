@@ -123,7 +123,7 @@ func TestAutomatedRelaunchDefensesRejectGrokBeforeTmuxMutation(t *testing.T) {
 		}},
 	}
 
-	if err := RestoreAgents(state.Name, state, AgentCommands{Claude: "claude"}); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
+	if err := RestoreAgents(state.Name, state, AgentCommands{Claude: "claude"}, nil); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) {
 		t.Fatalf("RestoreAgents() error = %v, want Grok relaunch sentinel before pane lookup", err)
 	}
 	if result, err := Resume(state, AgentCommands{Claude: "claude"}, ResumeOptions{Force: true}); !errors.Is(err, ErrAutomatedRelaunchNotImplemented) || result != nil {
@@ -481,7 +481,7 @@ func TestRestore_NilState(t *testing.T) {
 func TestRestoreAgents_NilState(t *testing.T) {
 	t.Parallel()
 
-	if err := RestoreAgents("nil-state", nil, AgentCommands{}); err == nil {
+	if err := RestoreAgents("nil-state", nil, AgentCommands{}, nil); err == nil {
 		t.Fatal("RestoreAgents with nil state should fail")
 	}
 }
