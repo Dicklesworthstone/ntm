@@ -20,6 +20,10 @@ type TmuxClient interface {
 	CaptureForStatusDetection(target string) (string, error)
 	CapturePaneOutput(target string, lines int) (string, error)
 	SendKeys(target, keys string, enter bool) error
+	// SendKeyName presses a tmux KEY NAME (BSpace, Escape, ...). It is
+	// distinct from SendKeys, which sends literally (-l) and would type the
+	// key's name into the pane as characters.
+	SendKeyName(target, keyName string) error
 	SendInterrupt(target string) error
 	SessionExists(name string) bool
 	GetPanes(session string) ([]tmux.Pane, error)
@@ -38,6 +42,10 @@ func (c *defaultTmuxClient) CapturePaneOutput(target string, lines int) (string,
 
 func (c *defaultTmuxClient) SendKeys(target, keys string, enter bool) error {
 	return tmux.SendKeys(target, keys, enter)
+}
+
+func (c *defaultTmuxClient) SendKeyName(target, keyName string) error {
+	return tmux.SendKeyName(target, keyName)
 }
 
 func (c *defaultTmuxClient) SendInterrupt(target string) error {
@@ -407,17 +415,34 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 		return result
 	}
 
-	// 2. Send non-disruptive probe: space followed by backspace
-	// This is safer than null byte as it works in most shells and is visible feedback
+	// 2. Send an OBSERVABLE stimulus: a single space, cleaned up only after we
+	// have looked for it.
+	//
+	// This used to send space and backspace back to back, before the first
+	// capture. That pair is a net-zero edit: by the time the poll loop ran,
+	// the rendered screen was byte-identical to the baseline, so the probe
+	// could never observe its own stimulus. A healthy idle agent sitting at a
+	// static composer was therefore reported not responsive / likely_stuck,
+	// and any "responsive" verdict came from unrelated TUI repaint (a spinner
+	// or token counter) rather than from the probe — uncorrelated with what
+	// the surface claims to measure (bd-5bexl).
 	probeStart := time.Now()
 	if err := CurrentTmuxClient.SendKeys(target, " ", false); err != nil {
 		result.Reasoning = fmt.Sprintf("failed to send probe space: %v", err)
 		return result
 	}
-	if err := CurrentTmuxClient.SendKeys(target, "BSpace", false); err != nil {
-		result.Reasoning = fmt.Sprintf("failed to send probe backspace: %v", err)
-		return result
-	}
+	// Erase the probe character on every exit path, including timeout and
+	// capture failure, so the probe never leaves a stray space in a live
+	// composer. Registered only after the space actually went out, so a
+	// failed send cannot delete a real character the operator typed.
+	defer func() {
+		// BSpace is a tmux KEY NAME, so it must not go through SendKeys,
+		// which sends literally (-l) and would type the six characters
+		// "BSpace" into the pane — leaving text the operator's next Enter
+		// submits. This was the pre-existing behavior and is why the probe
+		// polluted live composers.
+		_ = CurrentTmuxClient.SendKeyName(target, "BSpace")
+	}()
 
 	// 3. Poll for response until timeout
 	deadline := time.Now().Add(timeout)

@@ -2373,6 +2373,33 @@ func VerifyClaudeSubmissionContext(ctx context.Context, target, message string) 
 	return DefaultClient.VerifyClaudeSubmissionContext(ctx, target, message)
 }
 
+// SendKeyName sends a tmux KEY NAME (BSpace, Escape, Enter, C-u, Up, ...)
+// rather than literal text.
+//
+// SendKeys sends with `-l`, so passing a key name to it types the name as
+// characters: SendKeys(target, "BSpace") put the six letters "BSpace" into the
+// pane instead of erasing anything. That is not a cosmetic difference — in an
+// agent composer it leaves text that the operator's next Enter submits.
+// Callers that mean a keystroke must use this.
+func (c *Client) SendKeyName(target, keyName string) error {
+	return c.SendKeyNameContext(context.Background(), target, keyName)
+}
+
+// SendKeyNameContext sends a tmux key name with caller cancellation.
+func (c *Client) SendKeyNameContext(ctx context.Context, target, keyName string) error {
+	return c.RunSilentContext(ctx, "send-keys", "-t", target, keyName)
+}
+
+// SendKeyName sends a tmux key name using the default client.
+func SendKeyName(target, keyName string) error {
+	return DefaultClient.SendKeyName(target, keyName)
+}
+
+// SendKeyNameContext sends a tmux key name with cancellation (default client).
+func SendKeyNameContext(ctx context.Context, target, keyName string) error {
+	return DefaultClient.SendKeyNameContext(ctx, target, keyName)
+}
+
 // SendInterrupt sends Ctrl+C to a pane
 func (c *Client) SendInterrupt(target string) error {
 	return c.RunSilent("send-keys", "-t", target, "C-c")

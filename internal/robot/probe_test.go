@@ -1570,6 +1570,16 @@ type MockTmuxClient struct {
 	CaptureCount   int
 	SendKeysCount  int
 	InterruptCount int
+
+	// SentLiterals records every payload sent through SendKeys, which uses
+	// tmux's literal (-l) mode. A tmux KEY NAME appearing here means it was
+	// typed as characters instead of pressed.
+	SentLiterals []string
+
+	// SentKeyNames records key presses (BSpace, Escape, ...), which go
+	// through a different tmux invocation than literal text.
+	SentKeyNames  []string
+	SendKeyNameFn func(target, keyName string) error
 }
 
 func (m *MockTmuxClient) CaptureForStatusDetection(target string) (string, error) {
@@ -1584,7 +1594,16 @@ func (m *MockTmuxClient) CapturePaneOutput(target string, lines int) (string, er
 
 func (m *MockTmuxClient) SendKeys(target, keys string, enter bool) error {
 	m.SendKeysCount++
+	m.SentLiterals = append(m.SentLiterals, keys)
 	return m.SendKeysError
+}
+
+func (m *MockTmuxClient) SendKeyName(target, keyName string) error {
+	m.SentKeyNames = append(m.SentKeyNames, keyName)
+	if m.SendKeyNameFn != nil {
+		return m.SendKeyNameFn(target, keyName)
+	}
+	return nil
 }
 
 func (m *MockTmuxClient) SendInterrupt(target string) error {
@@ -1692,8 +1711,15 @@ func TestProbeKeystrokeEcho_Responsive(t *testing.T) {
 	if result.Confidence != ProbeConfidenceHigh {
 		t.Errorf("confidence = %s, want High", result.Confidence)
 	}
-	if mockSeq.SendKeysCount != 2 { // Space + Backspace
-		t.Errorf("SendKeysCount = %d, want 2", mockSeq.SendKeysCount)
+	// The probe types ONE literal character (the space) and PRESSES the
+	// backspace key. Both used to go through SendKeys, which sends literally,
+	// so "BSpace" was typed into the pane as six characters instead of
+	// erasing the probe character.
+	if mockSeq.SendKeysCount != 1 {
+		t.Errorf("SendKeysCount = %d, want 1 (the literal space only)", mockSeq.SendKeysCount)
+	}
+	if got := mockSeq.SentKeyNames; len(got) != 1 || got[0] != "BSpace" {
+		t.Errorf("SentKeyNames = %v, want exactly [BSpace] pressed as a key", got)
 	}
 }
 
@@ -1865,6 +1891,32 @@ func TestGetProbeSession_WindowPerAgentDoesNotCollapse(t *testing.T) {
 	for pane, count := range seen {
 		if count != 1 {
 			t.Fatalf("pane %d probed %d times, want exactly 1", pane, count)
+		}
+	}
+}
+
+// SendKeys sends with tmux's literal (-l) flag, so a KEY NAME passed to it is
+// typed as characters. The probe's cleanup used SendKeys("BSpace"), which put
+// the six letters "BSpace" into the pane rather than erasing the probe
+// character — verified live before the fix, where an agent composer was left
+// reading "❯  BSpace", text the operator's next Enter would submit.
+func TestProbeKeystrokeEchoNeverTypesKeyNamesLiterally(t *testing.T) {
+	mock := setupMock(t)
+	mock.Panes = []tmux.Pane{{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude}}
+	mock.CaptureOutput = "static screen"
+
+	_, err := GetProbe(ProbeOptions{
+		Session: "proj",
+		Pane:    1,
+		Flags:   ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
+	})
+	if err != nil {
+		t.Fatalf("GetProbe() error = %v", err)
+	}
+
+	for _, sent := range mock.SentLiterals {
+		if sent == "BSpace" || sent == "Escape" || sent == "Enter" || sent == "C-u" {
+			t.Fatalf("probe sent the tmux key name %q as literal text; it would be typed into the pane, not pressed", sent)
 		}
 	}
 }
