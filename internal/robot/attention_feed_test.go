@@ -3295,6 +3295,26 @@ func TestAttentionFeed_DigestPreservesCursorBoundariesAndImportantSignals(t *tes
 	}
 }
 
+func TestBuildAttentionDigest_HonorsExplicitZeroBackgroundLimit(t *testing.T) {
+	background := digestTestEvent(1, EventCategorySystem, EventTypeSystemHealthChange, ActionabilityBackground, SeverityInfo, "background work")
+	interesting := digestTestEvent(2, EventCategoryAgent, EventTypeAgentStateChange, ActionabilityInteresting, SeverityInfo, "agent is waiting")
+
+	digest := BuildAttentionDigest([]AttentionEvent{background, interesting}, 0, 2, AttentionDigestOptions{
+		MinSeverity:         SeverityInfo,
+		MinActionability:    ActionabilityBackground,
+		ActionRequiredLimit: 1,
+		InterestingLimit:    1,
+		BackgroundLimit:     0,
+		BackgroundLimitSet:  true,
+	})
+	if len(digest.Buckets.Background) != 0 {
+		t.Fatalf("background bucket = %#v, want no items", digest.Buckets.Background)
+	}
+	if len(digest.Buckets.Interesting) != 1 {
+		t.Fatalf("interesting bucket = %#v, want one item", digest.Buckets.Interesting)
+	}
+}
+
 func TestAttentionFeed_DigestCursorEndDoesNotSkipConcurrentAppend(t *testing.T) {
 	store := newStubAttentionStore()
 	store.seed("existing event")
@@ -4784,6 +4804,53 @@ func TestOperatorLoop_ProfileFilteredEvents(t *testing.T) {
 	// None of our 3 events have severity >= error (warning < error), so 0 pass minimal.
 	if len(minFiltered) != 0 {
 		t.Errorf("minimal profile should show 0 events (none have severity>=error), got %d", len(minFiltered))
+	}
+}
+
+func TestPrintAttentionSuppressesBackgroundByDefault(t *testing.T) {
+	feed := newTestAttentionFeed(t)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	t.Cleanup(func() { SetAttentionFeed(oldFeed) })
+
+	feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategorySystem,
+		Type:          EventTypeSystemHealthChange,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "background work",
+	})
+	feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAgent,
+		Type:          EventTypeAgentStateChange,
+		Actionability: ActionabilityInteresting,
+		Severity:      SeverityInfo,
+		Summary:       "agent is waiting",
+	})
+
+	output, err := captureStdout(t, func() error {
+		if exitCode := PrintAttention(AttentionOptions{
+			Session:      "proj",
+			Timeout:      20 * time.Millisecond,
+			PollInterval: time.Millisecond,
+			Condition:    WaitConditionAttention,
+			Profile:      "debug",
+		}); exitCode != 0 {
+			t.Fatalf("PrintAttention exit code = %d, want 0", exitCode)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("PrintAttention returned error: %v", err)
+	}
+	var resp AttentionResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("failed to decode attention response: %v\noutput=%s", err, output)
+	}
+	if resp.Digest == nil || len(resp.Digest.Buckets.Background) != 0 {
+		t.Fatalf("background bucket = %#v, want no items", resp.Digest)
 	}
 }
 

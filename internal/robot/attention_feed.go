@@ -1133,7 +1133,9 @@ type AttentionDigestOptions struct {
 	ActionRequiredLimit int
 	InterestingLimit    int
 	BackgroundLimit     int
-	IncludeTrace        bool
+	// BackgroundLimitSet distinguishes an explicit zero from an omitted limit.
+	BackgroundLimitSet bool
+	IncludeTrace       bool
 }
 
 // AttentionDigest is the token-efficient delta view built from the raw feed.
@@ -1221,6 +1223,7 @@ func DefaultAttentionDigestOptions() AttentionDigestOptions {
 		ActionRequiredLimit: 5,
 		InterestingLimit:    4,
 		BackgroundLimit:     3,
+		BackgroundLimitSet:  true,
 	}
 }
 
@@ -1325,7 +1328,7 @@ func normalizeAttentionDigestOptions(opts AttentionDigestOptions) AttentionDiges
 	if opts.InterestingLimit <= 0 {
 		opts.InterestingLimit = 4
 	}
-	if opts.BackgroundLimit <= 0 {
+	if opts.BackgroundLimit < 0 || (!opts.BackgroundLimitSet && opts.BackgroundLimit == 0) {
 		opts.BackgroundLimit = 3
 	}
 	return opts

@@ -1200,6 +1200,7 @@ func PrintAttention(opts AttentionOptions) int {
 		ActionRequiredLimit: opts.ActionRequiredLimit,
 		InterestingLimit:    opts.InterestingLimit,
 		BackgroundLimit:     opts.BackgroundLimit,
+		BackgroundLimitSet:  true,
 		IncludeTrace:        opts.IncludeTrace,
 	}
 	digestOpts = applyProfileToDigestOptions(opts.Profile, digestOpts)

@@ -2857,6 +2857,50 @@ func TestAttentionDigestAcceptsBoundaryCursor(t *testing.T) {
 	}
 }
 
+func TestAttentionDigestHonorsZeroBackgroundLimit(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{JournalSize: 100, RetentionPeriod: time.Hour})
+	oldFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+		feed.Stop()
+	})
+	feed.Append(robot.AttentionEvent{
+		Category:      robot.EventCategorySystem,
+		Type:          robot.EventTypeSystemHealthChange,
+		Actionability: robot.ActionabilityBackground,
+		Severity:      robot.SeverityInfo,
+		Summary:       "background work",
+	})
+	feed.Append(robot.AttentionEvent{
+		Category:      robot.EventCategoryAgent,
+		Type:          robot.EventTypeAgentStateChange,
+		Actionability: robot.ActionabilityInteresting,
+		Severity:      robot.SeverityInfo,
+		Summary:       "agent waiting",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/attention/digest?background_limit=0", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAttentionDigestV1(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp struct {
+		Buckets struct {
+			Background  []robot.AttentionDigestItem `json:"background"`
+			Interesting []robot.AttentionDigestItem `json:"interesting"`
+		} `json:"buckets"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Buckets.Background) != 0 || len(resp.Buckets.Interesting) != 1 {
+		t.Fatalf("buckets = %#v, want no background and one interesting item", resp.Buckets)
+	}
+}
+
 func TestAttentionStreamAcceptsBoundaryCursor(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	_, stats := installServeTestAttentionFeed(t)
