@@ -345,9 +345,9 @@ func buildCapabilitiesCommandCatalog(surfaces []RobotSurfaceDescriptor) []RobotC
 	return commands
 }
 
-// buildCommandRegistry returns all robot commands with their metadata
+// buildCommandRegistry returns all robot commands with their metadata.
 func buildCommandRegistry() []RobotCommandInfo {
-	return []RobotCommandInfo{
+	return annotateDeprecatedRobotParameters([]RobotCommandInfo{
 		// === STATE INSPECTION ===
 		{
 			Name:        "status",
@@ -2203,5 +2203,32 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters:  []RobotParameter{},
 			Examples:    []string{"ntm --robot-mail"},
 		},
+	})
+}
+
+func annotateDeprecatedRobotParameters(commands []RobotCommandInfo) []RobotCommandInfo {
+	for commandIndex := range commands {
+		for parameterIndex := range commands[commandIndex].Parameters {
+			parameter := &commands[commandIndex].Parameters[parameterIndex]
+			if replacement, ok := deprecatedRobotParameterReplacements[parameter.Flag]; ok {
+				parameter.Deprecated = true
+				parameter.ReplacedBy = replacement
+			}
+		}
+	}
+
+	return commands
+}
+
+func isSupportedSurfaceOutputFormat(format string) bool {
+	if RobotFormat(format).IsValid() {
+		return true
+	}
+
+	switch format {
+	case "markdown", "text":
+		return true
+	default:
+		return false
 	}
 }

@@ -149,7 +149,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 144,
+  "surface_count": 145,
   "surfaces": [
     {
       "category": "state",
@@ -1034,6 +1034,21 @@
       "name": "wait",
       "schema_id": "ntm:robot:wait:v1",
       "schema_type": "wait"
+    },
+    {
+      "category": "control",
+      "flag": "--robot-wait-cancel",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "wait-cancel",
+      "schema_id": "",
+      "schema_type": ""
     },
     {
       "category": "spawn",

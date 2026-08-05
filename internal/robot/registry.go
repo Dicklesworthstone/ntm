@@ -341,13 +341,6 @@ func buildRobotRegistry() *RobotRegistry {
 			Explainability:          cloneExplainabilityInfo(meta.Explainability),
 			Lifecycle:               cloneLifecycleInfo(meta.Lifecycle),
 		}
-		for i := range surface.Parameters {
-			parameter := &surface.Parameters[i]
-			if replacement, ok := deprecatedRobotParameterReplacements[parameter.Flag]; ok {
-				parameter.Deprecated = true
-				parameter.ReplacedBy = replacement
-			}
-		}
 		if len(surface.Transports) == 0 {
 			surface.Transports = []RobotTransportInfo{
 				{
@@ -523,8 +516,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			},
 		},
 		"dashboard": {
-			OutputFormats:       []string{"json", "toon", "auto"},
-			DefaultOutputFormat: "json",
+			OutputFormats:       []string{"markdown", "json"},
+			DefaultOutputFormat: "markdown",
 			Sections:            []string{"summary", "sessions", "attention", "work", "alerts"},
 			ConsumerGuidance: &ConsumerGuidance{
 				IntendedUse:           "Human-facing summary for dashboards and reports",
@@ -533,8 +526,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			},
 		},
 		"terse": {
-			OutputFormats:           []string{"json", "toon", "auto"},
-			DefaultOutputFormat:     "json",
+			OutputFormats:           []string{"text"},
+			DefaultOutputFormat:     "text",
 			SchemaSource:            "none",
 			SchemaUnavailableReason: "Terse output is intentionally a compact single-line text protocol",
 			Sections:                []string{"summary", "attention"},
@@ -550,8 +543,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			},
 		},
 		"markdown": {
-			OutputFormats:           []string{"json", "toon", "auto"},
-			DefaultOutputFormat:     "json",
+			OutputFormats:           []string{"markdown"},
+			DefaultOutputFormat:     "markdown",
 			SchemaSource:            "none",
 			SchemaUnavailableReason: "Markdown projection is intentionally human-readable text",
 			Sections:                []string{"summary", "sessions", "work", "alerts", "attention"},
@@ -607,6 +600,10 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 				IntendedUse: "Block until state changes or timeout",
 				SummaryHint: "Use cursor for continuation after wait returns",
 			},
+		},
+		"wait-cancel": {
+			SchemaSource: "external",
+			Sections:     []string{"next_actions"},
 		},
 		"beads-list": {
 			SchemaType: "beads_list",
@@ -813,8 +810,8 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			Sections:     []string{"work", "next_actions"},
 		},
 		"help": {
-			OutputFormats:           []string{"json", "toon", "auto"},
-			DefaultOutputFormat:     "json",
+			OutputFormats:           []string{"text"},
+			DefaultOutputFormat:     "text",
 			SchemaSource:            "none",
 			SchemaUnavailableReason: "Robot help is intentionally human-readable text",
 			Sections:                []string{"command_catalog"},
