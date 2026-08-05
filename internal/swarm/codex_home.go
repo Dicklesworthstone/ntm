@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -281,10 +280,9 @@ func newTmuxCodexHomeInspector(session string, probe codexHomeProbe) CodexHomeIn
 			if !isCodexAgentType(pane.Type) {
 				continue
 			}
-			target := pane.ID
-			if target == "" {
-				target = formatPaneTarget(session, pane.Index)
-			}
+			// The reported identity must round-trip to the same pane key the
+			// provisioner used; see codexPaneSessionTarget.
+			target := codexPaneSessionTarget(session, pane)
 			home, set, perr := probe.PaneCodexHome(session, pane)
 			if perr != nil {
 				// Treat a probe failure for one pane as "unknown" => not isolated,
@@ -371,9 +369,30 @@ func (p provisionedCodexProbe) PaneCodexHome(session string, pane tmux.Pane) (st
 	return home, true, nil
 }
 
-// codexPaneKey is the pane component ProvisionPaneHome is keyed by. It must
-// match what the launcher passed at provision time, or the inspector looks in
-// the wrong directory and silently reports every pane as unisolated.
+// codexPaneKey is the pane component ProvisionPaneHome is keyed by.
+//
+// It must equal what the ROTATION path passes, or the inspector stats the wrong
+// directory and silently reports every pane as unisolated — the very failure
+// this probe replaced. That path is fixed: the limit detector builds
+// SessionPane with formatPaneTarget ("session:<window>.<pane>"), and
+// pane-local rotation derives the provisioner's pane argument from it via
+// splitSessionPane, which keeps everything after the first ':'. The key is
+// therefore "<window>.<pane>", not the bare pane index.
+//
+// codexPaneSessionTarget below is the other half of the same contract; the two
+// are pinned together by test rather than by comment.
 func codexPaneKey(pane tmux.Pane) string {
-	return strconv.Itoa(pane.Index)
+	return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
+}
+
+// codexPaneSessionTarget is the SessionPane identity the inspector reports.
+//
+// It must round-trip: splitSessionPane(codexPaneSessionTarget(s, p)) has to
+// yield the same pane key codexPaneKey produces, because the guard reads these
+// infos while rotation keys the on-disk home from a SessionPane of the same
+// shape. Reporting the tmux pane ID ("%1") here instead made splitSessionPane
+// parse it as session="%1", pane="0" — an identity that matches no provisioned
+// home at all.
+func codexPaneSessionTarget(session string, pane tmux.Pane) string {
+	return formatPaneTargetWithWindow(session, pane.WindowIndex, pane.Index)
 }

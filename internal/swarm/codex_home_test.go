@@ -476,16 +476,31 @@ func TestProvisionedCodexProbe_ReportsProvisionedPaneAsIsolated(t *testing.T) {
 	baseDir := t.TempDir()
 	const session = "swarm"
 
+	// The pane whose home we provision. Provision it through the SAME key the
+	// rotation path would use, derived the same way: the limit detector reports
+	// SessionPane as "session:<window>.<pane>", and pane-local rotation feeds
+	// splitSessionPane's second half to the provisioner. Hardcoding a key here
+	// would let the probe and the provisioner drift apart while the test still
+	// passed — which is exactly how the original defect survived.
+	livePane := tmux.Pane{ID: "%1", Index: 2, WindowIndex: 1, Type: tmux.AgentType("cod")}
+	_, rotationPaneKey := splitSessionPane(codexPaneSessionTarget(session, livePane))
+
 	provisioner := NewCodexHomeProvisioner(baseDir)
-	home, err := provisioner.ProvisionPaneHome(context.Background(), session, "1", "")
+	home, err := provisioner.ProvisionPaneHome(context.Background(), session, rotationPaneKey, "")
 	if err != nil {
 		t.Fatalf("ProvisionPaneHome: %v", err)
 	}
 
 	probe := provisionedCodexProbe{baseDir: baseDir}
 
+	t.Run("the inspector key matches the rotation key", func(t *testing.T) {
+		if got := codexPaneKey(livePane); got != rotationPaneKey {
+			t.Fatalf("codexPaneKey = %q but rotation provisions under %q; the inspector would stat the wrong directory and report every pane unisolated", got, rotationPaneKey)
+		}
+	})
+
 	t.Run("a provisioned pane is isolated", func(t *testing.T) {
-		got, set, err := probe.PaneCodexHome(session, tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentType("cod")})
+		got, set, err := probe.PaneCodexHome(session, livePane)
 		if err != nil {
 			t.Fatalf("PaneCodexHome: %v", err)
 		}
@@ -510,13 +525,22 @@ func TestProvisionedCodexProbe_ReportsProvisionedPaneAsIsolated(t *testing.T) {
 		}
 	})
 
+	t.Run("the reported identity round-trips to the provisioned key", func(t *testing.T) {
+		// The guard reads these infos while rotation keys the on-disk home
+		// from a SessionPane of the same shape, so the identity the inspector
+		// reports must parse back to the key the home lives under.
+		target := codexPaneSessionTarget(session, livePane)
+		gotSession, gotPane := splitSessionPane(target)
+		if gotSession != session || gotPane != rotationPaneKey {
+			t.Fatalf("splitSessionPane(%q) = (%q, %q), want (%q, %q)", target, gotSession, gotPane, session, rotationPaneKey)
+		}
+	})
+
 	t.Run("the inspector reports the isolated pane end to end", func(t *testing.T) {
+		unprovisioned := tmux.Pane{ID: "%2", Index: 3, WindowIndex: 1, Type: tmux.AgentType("cod")}
 		inspector := newTmuxCodexHomeInspector(session, stubPaneProbe{
 			probe: probe,
-			panes: []tmux.Pane{
-				{ID: "%1", Index: 1, Type: tmux.AgentType("cod")}, // provisioned
-				{ID: "%2", Index: 2, Type: tmux.AgentType("cod")}, // not provisioned
-			},
+			panes: []tmux.Pane{livePane, unprovisioned},
 		})
 		infos, err := inspector()
 		if err != nil {
@@ -527,6 +551,9 @@ func TestProvisionedCodexProbe_ReportsProvisionedPaneAsIsolated(t *testing.T) {
 		}
 		if !infos[0].IsIsolated() {
 			t.Fatal("the provisioned pane was not reported isolated")
+		}
+		if want := codexPaneSessionTarget(session, livePane); infos[0].SessionPane != want {
+			t.Fatalf("SessionPane = %q, want %q (must round-trip to the provisioned key)", infos[0].SessionPane, want)
 		}
 		if infos[1].IsIsolated() {
 			t.Fatal("the unprovisioned pane was reported isolated")
