@@ -1359,6 +1359,11 @@ Shell Integration:
 			}
 			return
 		}
+		if robotWaitCancel != "" {
+			exitCode := robot.PrintWaitCancel(robotWaitCancel)
+			recordLegacyRobotExit(exitCode)
+			return
+		}
 		if robotWait != "" {
 			session, err := resolveRobotLiveSession(cmd.Context(), robotWait)
 			if err != nil {
@@ -1404,6 +1409,7 @@ Shell Integration:
 				SinceCursor:       sinceCursor,
 				SinceCursorSet:    sinceCursorSet,
 				Profile:           robotProfile,
+				WaitID:            robotWaitID,
 			}
 			exitCode := robot.PrintWait(opts)
 			recordLegacyRobotExit(exitCode)
@@ -3631,6 +3637,8 @@ var (
 	robotWaitAny        bool   // wait for ANY agent (vs ALL)
 	robotWaitOnError    bool   // exit immediately on error state
 	robotWaitTransition bool   // require state transition before returning
+	robotWaitID         string // optional durable cancellation handle
+	robotWaitCancel     string // handle to cancel
 
 	// Robot-route flags for routing recommendations
 	robotRoute          string // session name for route
@@ -4273,6 +4281,8 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotWaitOnError, "exit-on-error", false, "Alias for --wait-exit-on-error. Exit immediately if ERROR state detected")
 	rootCmd.Flags().BoolVar(&robotWaitTransition, "wait-transition", false, "Require state transition: agents must leave then return to target state. Use after sending prompts to wait for complete processing cycle. Optional with --robot-wait")
 	rootCmd.Flags().BoolVar(&robotWaitTransition, "transition", false, "Alias for --wait-transition")
+	rootCmd.Flags().StringVar(&robotWaitID, "wait-id", "", "Durable handle for this wait. Cancel it with --robot-wait-cancel=WAIT_ID. Optional with --robot-wait")
+	rootCmd.Flags().StringVar(&robotWaitCancel, "robot-wait-cancel", "", "Cancel one active --robot-wait by its --wait-id")
 
 	// Robot-route flags for routing recommendations
 	rootCmd.Flags().StringVar(&robotRoute, "robot-route", "", "Get routing recommendation. Required: SESSION. Example: ntm --robot-route=myproject --strategy=least-loaded")

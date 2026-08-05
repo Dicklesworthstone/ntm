@@ -1103,11 +1103,24 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "any", Flag: "--any", Type: "bool", Required: false, Description: "Wait for ANY agent instead of ALL"},
 				{Name: "wait-exit-on-error", Flag: "--wait-exit-on-error", Type: "bool", Required: false, Description: "Exit immediately if ERROR state detected"},
 				{Name: "wait-transition", Flag: "--wait-transition", Type: "bool", Required: false, Description: "Require pane-state conditions to leave and re-enter the target state before returning"},
+				{Name: "wait-id", Flag: "--wait-id", Type: "string", Required: false, Description: "Durable handle that can be canceled by --robot-wait-cancel"},
 			},
 			Examples: []string{
 				"ntm --robot-wait=proj --wait-until=idle",
 				"ntm --robot-wait=proj --wait-until=action_required --attention-cursor=42 --profile=operator",
 				"ntm --robot-wait=proj --wait-until=idle --wait-transition --timeout=2m --panes=0.1,%7",
+			},
+		},
+		{
+			Name:        "wait-cancel",
+			Flag:        "--robot-wait-cancel",
+			Category:    "control",
+			Description: "Cancel one active robot wait by its durable wait handle.",
+			Parameters: []RobotParameter{
+				{Name: "wait-id", Flag: "--robot-wait-cancel", Type: "string", Required: true, Description: "Wait handle supplied to --robot-wait"},
+			},
+			Examples: []string{
+				"ntm --robot-wait-cancel=deployment-idle",
 			},
 		},
 		{

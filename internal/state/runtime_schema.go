@@ -172,6 +172,15 @@ type RuntimeAgent struct {
 	StaleAfter  time.Time `json:"stale_after"`
 }
 
+// RobotWaitHandle records a cancelable robot wait across CLI processes.
+type RobotWaitHandle struct {
+	ID          string     `json:"id"`
+	SessionName string     `json:"session_name"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CanceledAt  *time.Time `json:"canceled_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
 // IsFresh returns true if the projection is within its staleness threshold.
 func (r *RuntimeAgent) IsFresh() bool {
 	return time.Now().Before(r.StaleAfter)

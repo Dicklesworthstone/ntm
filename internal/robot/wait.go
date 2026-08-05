@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -27,6 +28,7 @@ type WaitOptions struct {
 	SinceCursor       int64    // Attention-based conditions only fire for events after this cursor
 	SinceCursorSet    bool     // True when the caller explicitly supplied SinceCursor, including zero
 	Profile           string   // Filter profile for attention-based conditions (operator, debug, minimal, alerts)
+	WaitID            string   // Optional durable handle that another CLI process can cancel
 }
 
 // WaitResponse is the JSON output for --robot-wait.
@@ -35,6 +37,7 @@ type WaitResponse struct {
 	Session       string  `json:"session"`
 	Condition     string  `json:"condition"`
 	WaitedSeconds float64 `json:"waited_seconds"`
+	WaitID        string  `json:"wait_id,omitempty"`
 	// agents is a required array and must survive the timeout path too, where
 	// only AgentsPending used to be set.
 	Agents        []WaitAgentInfo `json:"agents"`
@@ -45,6 +48,13 @@ type WaitResponse struct {
 
 	// CursorInfo provides cursor handoff for attention-based conditions.
 	CursorInfo *WaitCursorInfo `json:"cursor_info,omitempty"`
+}
+
+// WaitCancelResponse is the structured result of canceling a durable wait handle.
+type WaitCancelResponse struct {
+	RobotResponse
+	WaitID   string `json:"wait_id"`
+	Canceled bool   `json:"canceled"`
 }
 
 // WaitWakePayload describes what triggered the wait to complete (for attention conditions).
@@ -166,6 +176,27 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 			Condition: opts.Condition,
 		}, 1
 	}
+	var waitStore *state.Store
+	waitID := strings.TrimSpace(opts.WaitID)
+	if waitID != "" {
+		store, err := state.Open("")
+		if err != nil {
+			return waitStoreErrorResponse(opts, waitID, err), 1
+		}
+		if err := store.Migrate(); err != nil {
+			_ = store.Close()
+			return waitStoreErrorResponse(opts, waitID, err), 1
+		}
+		if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: waitID, SessionName: opts.Session}); err != nil {
+			_ = store.Close()
+			return waitStoreErrorResponse(opts, waitID, err), 1
+		}
+		waitStore = store
+		defer func() {
+			_ = waitStore.CompleteRobotWaitHandle(waitID, time.Now().UTC())
+			_ = waitStore.Close()
+		}()
+	}
 
 	// Parse conditions once and split pane-vs-attention semantics. Mixed waits
 	// are ANDed across both surfaces.
@@ -195,6 +226,22 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	var lastAttentionResult *AttentionConditionResult
 
 	for {
+		if waitStore != nil {
+			canceled, err := waitStore.IsRobotWaitHandleCanceled(waitID)
+			if err != nil {
+				return waitStoreErrorResponse(opts, waitID, err), 1
+			}
+			if canceled {
+				return &WaitResponse{
+					RobotResponse: NewErrorResponse(fmt.Errorf("wait %q was canceled", waitID), "CANCELED", "Start a new --robot-wait when ready"),
+					Session:       opts.Session,
+					Condition:     opts.Condition,
+					WaitedSeconds: time.Since(startTime).Seconds(),
+					WaitID:        waitID,
+					Agents:        []WaitAgentInfo{},
+				}, 1
+			}
+		}
 		// Check timeout
 		if time.Now().After(deadline) {
 			elapsed := time.Since(startTime)
@@ -366,6 +413,40 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	}
 }
 
+func waitStoreErrorResponse(opts WaitOptions, waitID string, err error) *WaitResponse {
+	return &WaitResponse{
+		RobotResponse: NewErrorResponse(fmt.Errorf("manage wait handle: %w", err), ErrCodeInternalError, "Retry after checking NTM state storage"),
+		Session:       opts.Session,
+		Condition:     opts.Condition,
+		WaitID:        waitID,
+		Agents:        []WaitAgentInfo{},
+	}
+}
+
+// GetWaitCancel cancels one active wait by its durable handle.
+func GetWaitCancel(waitID string) (*WaitCancelResponse, int) {
+	waitID = strings.TrimSpace(waitID)
+	if waitID == "" {
+		return &WaitCancelResponse{RobotResponse: NewErrorResponse(fmt.Errorf("wait id is required"), ErrCodeInvalidFlag, "Pass --robot-wait-cancel=WAIT_ID"), WaitID: waitID}, 1
+	}
+	store, err := state.Open("")
+	if err != nil {
+		return &WaitCancelResponse{RobotResponse: NewErrorResponse(fmt.Errorf("open wait storage: %w", err), ErrCodeInternalError, "Retry after checking NTM state storage"), WaitID: waitID}, 1
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.Migrate(); err != nil {
+		return &WaitCancelResponse{RobotResponse: NewErrorResponse(fmt.Errorf("migrate wait storage: %w", err), ErrCodeInternalError, "Retry after checking NTM state storage"), WaitID: waitID}, 1
+	}
+	canceled, err := store.CancelRobotWaitHandle(waitID, time.Now().UTC())
+	if err != nil {
+		return &WaitCancelResponse{RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Retry after checking NTM state storage"), WaitID: waitID}, 1
+	}
+	if !canceled {
+		return &WaitCancelResponse{RobotResponse: NewErrorResponse(fmt.Errorf("active wait %q was not found", waitID), "WAIT_NOT_FOUND", "Use the wait id returned by --robot-wait"), WaitID: waitID}, 1
+	}
+	return &WaitCancelResponse{RobotResponse: NewRobotResponse(true), WaitID: waitID, Canceled: true}, 0
+}
+
 func initialAttentionWaitCursor(opts WaitOptions, hasAttention bool) int64 {
 	if !hasAttention || opts.SinceCursorSet {
 		return opts.SinceCursor
@@ -381,6 +462,12 @@ func initialAttentionWaitCursor(opts WaitOptions, hasAttention bool) int64 {
 func PrintWait(opts WaitOptions) int {
 	resp, exitCode := GetWait(opts)
 	return printLegacyRobotOutput(resp, resp.RobotResponse, exitCode, "robot wait failed")
+}
+
+// PrintWaitCancel executes --robot-wait-cancel and outputs its JSON response.
+func PrintWaitCancel(waitID string) int {
+	resp, exitCode := GetWaitCancel(waitID)
+	return printLegacyRobotOutput(resp, resp.RobotResponse, exitCode, "robot wait cancel failed")
 }
 
 // isUnsupportedWaitCondition checks if the condition is a known unsupported

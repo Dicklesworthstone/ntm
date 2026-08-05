@@ -2218,3 +2218,35 @@ func TestCreateOrUpdateIncidentCreatesNewRowAfterResolvedWindow(t *testing.T) {
 		t.Fatalf("expected a new incident after reopen window, got reused ID %q", fresh.ID)
 	}
 }
+
+func TestRobotWaitHandleCancellationLifecycle(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC()
+	handle := &RobotWaitHandle{ID: "wait-1", SessionName: "project", CreatedAt: now}
+	if err := store.CreateRobotWaitHandle(handle); err != nil {
+		t.Fatalf("CreateRobotWaitHandle: %v", err)
+	}
+	if err := store.CreateRobotWaitHandle(handle); err == nil {
+		t.Fatal("duplicate handle creation succeeded")
+	}
+
+	canceled, err := store.IsRobotWaitHandleCanceled(handle.ID)
+	if err != nil || canceled {
+		t.Fatalf("IsRobotWaitHandleCanceled before cancellation = %v, %v; want false, nil", canceled, err)
+	}
+	if canceled, err = store.CancelRobotWaitHandle(handle.ID, now.Add(time.Second)); err != nil || !canceled {
+		t.Fatalf("CancelRobotWaitHandle = %v, %v; want true, nil", canceled, err)
+	}
+	if canceled, err = store.IsRobotWaitHandleCanceled(handle.ID); err != nil || !canceled {
+		t.Fatalf("IsRobotWaitHandleCanceled after cancellation = %v, %v; want true, nil", canceled, err)
+	}
+	if err := store.CompleteRobotWaitHandle(handle.ID, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("CompleteRobotWaitHandle: %v", err)
+	}
+	if canceled, err = store.CancelRobotWaitHandle(handle.ID, now.Add(3*time.Second)); err != nil || canceled {
+		t.Fatalf("CancelRobotWaitHandle completed handle = %v, %v; want false, nil", canceled, err)
+	}
+	if canceled, err = store.CancelRobotWaitHandle("missing", now); err != nil || canceled {
+		t.Fatalf("CancelRobotWaitHandle missing handle = %v, %v; want false, nil", canceled, err)
+	}
+}

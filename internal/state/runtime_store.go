@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -558,6 +559,61 @@ func (s *Store) DeleteRuntimeAgent(id string) error {
 	_, err := s.db.Exec("DELETE FROM runtime_agents WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete runtime agent: %w", err)
+	}
+	return nil
+}
+
+// CreateRobotWaitHandle records an active robot wait so another CLI process
+// can cancel that exact operation.
+func (s *Store) CreateRobotWaitHandle(handle *RobotWaitHandle) error {
+	if handle == nil || handle.ID == "" || handle.SessionName == "" {
+		return fmt.Errorf("robot wait handle id and session are required")
+	}
+	if handle.CreatedAt.IsZero() {
+		handle.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.Exec(`INSERT INTO robot_wait_handles (id, session_name, created_at) VALUES (?, ?, ?)`, handle.ID, handle.SessionName, handle.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("create robot wait handle: %w", err)
+	}
+	return nil
+}
+
+// CancelRobotWaitHandle marks one active wait as canceled. It returns false
+// when the handle is unknown or has already completed.
+func (s *Store) CancelRobotWaitHandle(id string, canceledAt time.Time) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("robot wait handle id is required")
+	}
+	result, err := s.db.Exec(`UPDATE robot_wait_handles SET canceled_at = ? WHERE id = ? AND completed_at IS NULL AND canceled_at IS NULL`, canceledAt.UTC(), id)
+	if err != nil {
+		return false, fmt.Errorf("cancel robot wait handle: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count canceled robot wait handle: %w", err)
+	}
+	return affected == 1, nil
+}
+
+// IsRobotWaitHandleCanceled reports whether an active wait has been canceled.
+func (s *Store) IsRobotWaitHandleCanceled(id string) (bool, error) {
+	var canceledAt sql.NullTime
+	err := s.db.QueryRow(`SELECT canceled_at FROM robot_wait_handles WHERE id = ? AND completed_at IS NULL`, id).Scan(&canceledAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get robot wait handle: %w", err)
+	}
+	return canceledAt.Valid, nil
+}
+
+// CompleteRobotWaitHandle prevents later cancellation of a finished wait.
+func (s *Store) CompleteRobotWaitHandle(id string, completedAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE robot_wait_handles SET completed_at = ? WHERE id = ? AND completed_at IS NULL`, completedAt.UTC(), id)
+	if err != nil {
+		return fmt.Errorf("complete robot wait handle: %w", err)
 	}
 	return nil
 }

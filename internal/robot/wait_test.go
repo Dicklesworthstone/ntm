@@ -2,6 +2,7 @@ package robot
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,6 +20,31 @@ func TestGetWaitFailureUsesGeneralErrorExit(t *testing.T) {
 	}
 	if response.Success || response.ErrorCode != ErrCodeSessionNotFound {
 		t.Fatalf("GetWait() response = %+v, want SESSION_NOT_FOUND failure", response.RobotResponse)
+	}
+}
+
+func TestGetWaitCancelTargetsOnlyActiveHandle(t *testing.T) {
+	t.Setenv("NTM_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	store, err := state.Open("")
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	if err := store.Migrate(); err != nil {
+		_ = store.Close()
+		t.Fatalf("migrate state store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateRobotWaitHandle(&state.RobotWaitHandle{ID: "active-wait", SessionName: "project"}); err != nil {
+		t.Fatalf("create active wait: %v", err)
+	}
+
+	response, exitCode := GetWaitCancel("active-wait")
+	if exitCode != 0 || !response.Success || !response.Canceled || response.WaitID != "active-wait" {
+		t.Fatalf("GetWaitCancel active = %+v, exit %d", response, exitCode)
+	}
+	response, exitCode = GetWaitCancel("active-wait")
+	if exitCode != 1 || response.Success || response.ErrorCode != "WAIT_NOT_FOUND" {
+		t.Fatalf("GetWaitCancel completed = %+v, exit %d", response, exitCode)
 	}
 }
 
