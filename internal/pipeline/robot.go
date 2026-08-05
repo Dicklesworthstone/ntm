@@ -679,10 +679,52 @@ func countLines(s string) int {
 	return count
 }
 
+// finishedPipelineRetention is how long a finished run keeps its live registry
+// entry after completing.
+//
+// The entry exists to hold the things only this process has: the executor, the
+// cancel handle, and live step state. Once a run is finished none of those are
+// actionable, but each entry pins an *Executor holding every StepResult —
+// including captured pane output — so the registry grew monotonically for the
+// life of the server. POST /api/v1/pipelines/cleanup only unlinks state FILES,
+// so the endpoint that looks like the reclaim path reclaimed nothing; worse,
+// because registry entries win over disk on ID conflict, calling it made
+// listing slower rather than smaller.
+//
+// Evicting is safe: Executor.persistState has already written the run to
+// .ntm/pipelines/<run-id>.json, and both GetPipelineSnapshot and
+// GetAllPipelineSnapshots fall back to those files, so a retired run stays
+// fully listable and inspectable. The window keeps a just-finished run's live
+// state available for the status poll that usually follows it.
+const finishedPipelineRetention = 30 * time.Minute
+
 func registerPipeline(exec *PipelineExecution) {
 	pipelineMu.Lock()
+	reapFinishedPipelinesLocked(time.Now())
 	pipelineRegistry[exec.RunID] = exec
 	pipelineMu.Unlock()
+}
+
+// reapFinishedPipelinesLocked drops registry entries for runs that finished
+// more than finishedPipelineRetention ago. Callers must hold pipelineMu for
+// writing.
+//
+// Sweeping on registration bounds the registry in proportion to how many runs
+// a process actually starts, without a background goroutine whose lifetime
+// would have to be tied to the server's.
+func reapFinishedPipelinesLocked(now time.Time) {
+	for runID, exec := range pipelineRegistry {
+		if exec == nil {
+			delete(pipelineRegistry, runID)
+			continue
+		}
+		if exec.FinishedAt == nil {
+			continue
+		}
+		if now.Sub(*exec.FinishedAt) > finishedPipelineRetention {
+			delete(pipelineRegistry, runID)
+		}
+	}
 }
 
 // RegisterPipeline registers a pipeline execution (exported for CLI)

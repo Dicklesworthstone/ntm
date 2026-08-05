@@ -1994,3 +1994,50 @@ func TestNewTrackedExecution_IsVisibleAndCancellable(t *testing.T) {
 		t.Fatalf("status after cancel = %+v, want cancelled", after)
 	}
 }
+
+// bd-kpccr: each registry entry pins an *Executor holding every StepResult,
+// including captured pane output, and nothing ever removed one — so a
+// long-lived `ntm serve` grew monotonically until restart. Evicting is safe
+// because the run is already persisted and both snapshot surfaces fall back to
+// the state file.
+func TestRegisterPipeline_RetiresLongFinishedRuns(t *testing.T) {
+	ClearPipelineRegistry()
+	t.Cleanup(ClearPipelineRegistry)
+
+	longAgo := time.Now().Add(-2 * finishedPipelineRetention)
+	justNow := time.Now()
+
+	RegisterPipeline(&PipelineExecution{RunID: "old-finished", Status: "completed", FinishedAt: &longAgo})
+	RegisterPipeline(&PipelineExecution{RunID: "recent-finished", Status: "completed", FinishedAt: &justNow})
+	RegisterPipeline(&PipelineExecution{RunID: "still-running", Status: "running"})
+
+	// Registration sweeps, so a further register triggers the reap.
+	RegisterPipeline(&PipelineExecution{RunID: "newest", Status: "running"})
+
+	if got := GetPipelineExecution("old-finished"); got != nil {
+		t.Fatal("a run finished well past the retention window kept its live registry entry")
+	}
+	if got := GetPipelineExecution("recent-finished"); got == nil {
+		t.Fatal("a just-finished run lost its live entry; the status poll that follows a run needs it")
+	}
+	if got := GetPipelineExecution("still-running"); got == nil {
+		t.Fatal("a RUNNING pipeline was evicted; its cancel handle would be unreachable")
+	}
+}
+
+// A nil entry must never survive a sweep: getPipeline would hand callers a nil
+// they are not expecting to have to guard.
+func TestReapFinishedPipelines_DropsNilEntries(t *testing.T) {
+	ClearPipelineRegistry()
+	t.Cleanup(ClearPipelineRegistry)
+
+	pipelineMu.Lock()
+	pipelineRegistry["nil-entry"] = nil
+	reapFinishedPipelinesLocked(time.Now())
+	_, present := pipelineRegistry["nil-entry"]
+	pipelineMu.Unlock()
+
+	if present {
+		t.Fatal("nil registry entry survived the sweep")
+	}
+}

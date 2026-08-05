@@ -931,6 +931,43 @@ var (
 	approvalIDSeq int64
 )
 
+// approvalRetention is how long a terminal (approved/denied/expired) approval
+// stays queryable after it stopped being actionable.
+//
+// The TTL cap on an approval request bounds its ExpiresAt, not its residency:
+// nothing ever deleted from the approvals map, so every POST /approvals added a
+// permanent entry for the life of the server. Both list handlers iterate the
+// whole map on every call — and the primary one does so under a WRITE lock, so
+// latency and lock hold time degraded linearly and forever under a swarm that
+// requests approvals in a loop.
+const approvalRetention = 24 * time.Hour
+
+// reapApprovalsLocked drops terminal approvals past the retention window and
+// marks newly expired ones. Callers must hold approvalsLock for writing.
+//
+// Sweeping on mutation and on list keeps the store bounded in proportion to
+// activity — which is exactly when it needs bounding — without a background
+// goroutine whose lifetime would have to be tied to the server's.
+func reapApprovalsLocked(now time.Time) {
+	for id, a := range approvals {
+		if a.Status == "pending" && now.After(a.ExpiresAt) {
+			a.Status = "expired"
+		}
+		if a.Status == "pending" {
+			continue
+		}
+		// Terminal. Retire it once it has been terminal long enough to have
+		// been observed by anything that cared.
+		terminalSince := a.ExpiresAt
+		if !a.ApprovedAt.IsZero() && a.ApprovedAt.After(terminalSince) {
+			terminalSince = a.ApprovedAt
+		}
+		if now.Sub(terminalSince) > approvalRetention {
+			delete(approvals, id)
+		}
+	}
+}
+
 // ApprovalsListResponse is the REST response for approvals list.
 type ApprovalsListResponse struct {
 	Approvals []Approval `json:"approvals"`
@@ -949,12 +986,11 @@ func (s *Server) handleApprovalsListV1(w http.ResponseWriter, r *http.Request) {
 	var result []Approval
 	now := time.Now()
 
-	for _, a := range approvals {
-		// Check if expired (now safe to modify since we hold the write lock)
-		if a.Status == "pending" && now.After(a.ExpiresAt) {
-			a.Status = "expired"
-		}
+	// Marks newly expired approvals and retires long-terminal ones, so the map
+	// this loop walks stays bounded.
+	reapApprovalsLocked(now)
 
+	for _, a := range approvals {
 		// Filter by status
 		if status != "" && a.Status != status {
 			continue
@@ -1292,6 +1328,9 @@ func (s *Server) handleApprovalRequestV1(w http.ResponseWriter, r *http.Request)
 	}
 
 	approvalsLock.Lock()
+	// Bound the store on the write path too: a client that only ever creates
+	// approvals and never lists them would otherwise grow it without limit.
+	reapApprovalsLocked(time.Now())
 	approvalIDSeq++
 	id := fmt.Sprintf("apr-%d", approvalIDSeq)
 

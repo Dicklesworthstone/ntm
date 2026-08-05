@@ -138,3 +138,62 @@ func TestApprovalResolvedRecordSurvivesLateRetry(t *testing.T) {
 		t.Fatalf("status = %q after a late retry, want it to stay \"approved\" (approved_by=%q)", status, approvedBy)
 	}
 }
+
+// bd-kpccr: the TTL cap bounds an approval's ExpiresAt, not its residency.
+// Nothing ever deleted from the approvals map, so every request added a
+// permanent entry — and both list handlers walk the whole map on every call,
+// the primary one under a WRITE lock.
+func TestReapApprovals_RetiresTerminalApprovalsButKeepsPending(t *testing.T) {
+	approvalsLock.Lock()
+	original := approvals
+	approvals = make(map[string]*Approval)
+	approvalsLock.Unlock()
+	t.Cleanup(func() {
+		approvalsLock.Lock()
+		approvals = original
+		approvalsLock.Unlock()
+	})
+
+	now := time.Now()
+	stale := now.Add(-2 * approvalRetention)
+
+	approvalsLock.Lock()
+	approvals["old-approved"] = &Approval{
+		ID: "old-approved", Status: "approved",
+		ExpiresAt: stale, ApprovedAt: stale,
+	}
+	approvals["old-denied"] = &Approval{
+		ID: "old-denied", Status: "denied", ExpiresAt: stale,
+	}
+	approvals["recently-denied"] = &Approval{
+		ID: "recently-denied", Status: "denied", ExpiresAt: now,
+	}
+	approvals["still-pending"] = &Approval{
+		ID: "still-pending", Status: "pending", ExpiresAt: now.Add(time.Hour),
+	}
+	approvals["newly-expired"] = &Approval{
+		ID: "newly-expired", Status: "pending", ExpiresAt: now.Add(-time.Minute),
+	}
+
+	reapApprovalsLocked(now)
+
+	_, oldApproved := approvals["old-approved"]
+	_, oldDenied := approvals["old-denied"]
+	_, recent := approvals["recently-denied"]
+	pending := approvals["still-pending"]
+	newlyExpired := approvals["newly-expired"]
+	approvalsLock.Unlock()
+
+	if oldApproved || oldDenied {
+		t.Fatal("terminal approvals past the retention window were not retired")
+	}
+	if !recent {
+		t.Fatal("a just-denied approval was retired before anything could observe it")
+	}
+	if pending == nil || pending.Status != "pending" {
+		t.Fatalf("a live pending approval was retired or mutated: %+v", pending)
+	}
+	if newlyExpired == nil || newlyExpired.Status != "expired" {
+		t.Fatalf("an approval past its TTL was not marked expired: %+v", newlyExpired)
+	}
+}
