@@ -131,6 +131,30 @@ func TestAggregateTokenStats(t *testing.T) {
 		}
 	})
 
+	t.Run("broadcast prompt retains token remainder and one model prompt", func(t *testing.T) {
+		eventList := []events.Event{{
+			Type:      events.EventPromptSend,
+			Timestamp: time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
+			Data: map[string]interface{}{
+				"estimated_tokens": float64(10),
+				"prompt_length":    float64(10),
+				"target_types":     "cc,cod,gmi",
+				"model":            "shared-model",
+			},
+		}}
+
+		output := aggregateTokenStats(eventList, 7, "", "model")
+		if output.TotalTokens != 10 || output.TotalCharacters != 10 || output.TotalPrompts != 1 {
+			t.Fatalf("totals = %+v", output)
+		}
+		if got := output.AgentStats["claude"].Tokens + output.AgentStats["codex"].Tokens + output.AgentStats["gemini"].Tokens; got != output.TotalTokens {
+			t.Fatalf("agent token total = %d, want %d", got, output.TotalTokens)
+		}
+		if got := output.ModelStats["shared-model"]; got.Tokens != 10 || got.Prompts != 1 || got.Characters != 10 {
+			t.Fatalf("model stats = %+v", got)
+		}
+	})
+
 	t.Run("session create tracks spawns with token usage", func(t *testing.T) {
 		// AgentStats are only populated for agents with token usage,
 		// so we need both session create and prompt events.

@@ -345,26 +345,41 @@ func aggregateTokenStats(eventList []events.Event, days int, since, groupBy stri
 				targetTypes = []string{"unknown"}
 			}
 
-			// Divide among targets to avoid double-counting
+			// Divide among targets without losing integer remainders so the
+			// per-target totals reconcile with the event total.
 			tokensPerTarget := tokens / len(targetTypes)
+			tokenRemainder := tokens % len(targetTypes)
 			charsPerTarget := chars / len(targetTypes)
+			charRemainder := chars % len(targetTypes)
 
-			for _, agent := range targetTypes {
-				agentTokens[agent] += tokensPerTarget
+			model, hasModel := event.Data["model"].(string)
+			for index, agent := range targetTypes {
+				agentTokensForTarget := tokensPerTarget
+				if index < tokenRemainder {
+					agentTokensForTarget++
+				}
+				agentCharsForTarget := charsPerTarget
+				if index < charRemainder {
+					agentCharsForTarget++
+				}
+
+				agentTokens[agent] += agentTokensForTarget
 				agentPrompts[agent]++
-				agentChars[agent] += charsPerTarget
+				agentChars[agent] += agentCharsForTarget
 
 				// Get model if available
-				if model, ok := event.Data["model"].(string); ok && model != "" {
-					modelTokens[model] += tokensPerTarget
-					modelPrompts[model]++
-					modelChars[model] += charsPerTarget
+				if hasModel && model != "" {
+					modelTokens[model] += agentTokensForTarget
+					modelChars[model] += agentCharsForTarget
 					if agentModels[agent] == nil {
 						agentModels[agent] = make(map[string]int)
 					}
-					agentModels[agent][model] += tokensPerTarget
+					agentModels[agent][model] += agentTokensForTarget
 					modelAgentType[model] = agent
 				}
+			}
+			if hasModel && model != "" {
+				modelPrompts[model]++
 			}
 
 			// Time-based aggregation
