@@ -307,12 +307,10 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 		setAssignError(output, fmt.Errorf("read blocked Beads work: %w", err), "Ensure br can read the target project's Beads database")
 		return output, nil
 	}
-	for _, b := range blockedBeads {
-		output.BlockedBeads = append(output.BlockedBeads, BlockedBead{
-			ID:        b.ID,
-			Title:     b.Title,
-			BlockedBy: []string{},
-		})
+	output.BlockedBeads, err = resolveAssignBlockedBeads(ctx, projectDir, blockedBeads, bv.GetBeadAssignmentDetailsContext)
+	if err != nil {
+		setAssignError(output, err, "Ensure br can read blocked-bead dependencies")
+		return output, nil
 	}
 
 	// Build summary
@@ -329,6 +327,35 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	output.AgentHints = generateAssignHints(recommendations, idleAgentPanes, readyBeads, inProgress)
 
 	return output, nil
+}
+
+func resolveAssignBlockedBeads(
+	ctx context.Context,
+	projectDir string,
+	previews []bv.BeadPreview,
+	getDetails func(context.Context, string, string) (*bv.BeadAssignmentDetails, error),
+) ([]BlockedBead, error) {
+	blocked := make([]BlockedBead, 0, len(previews))
+	for _, preview := range previews {
+		details, err := getDetails(ctx, projectDir, preview.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read blocked bead %s details: %w", preview.ID, err)
+		}
+		if details == nil {
+			return nil, fmt.Errorf("read blocked bead %s details: empty response", preview.ID)
+		}
+
+		title := preview.Title
+		if strings.TrimSpace(details.Title) != "" {
+			title = details.Title
+		}
+		blocked = append(blocked, BlockedBead{
+			ID:        preview.ID,
+			Title:     title,
+			BlockedBy: append([]string{}, details.BlockedBy...),
+		})
+	}
+	return blocked, nil
 }
 
 func setAssignError(output *AssignOutput, err error, hint string) {

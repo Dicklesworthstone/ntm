@@ -663,6 +663,38 @@ func TestGenerateAssignments_RecommendationFields(t *testing.T) {
 	}
 }
 
+func TestResolveAssignBlockedBeadsPreservesDependencies(t *testing.T) {
+	blocked, err := resolveAssignBlockedBeads(t.Context(), "/project", []bv.BeadPreview{
+		{ID: "bd-child", Title: "Child task"},
+	}, func(_ context.Context, projectDir, beadID string) (*bv.BeadAssignmentDetails, error) {
+		if projectDir != "/project" || beadID != "bd-child" {
+			t.Fatalf("detail lookup = (%q, %q), want (/project, bd-child)", projectDir, beadID)
+		}
+		return &bv.BeadAssignmentDetails{
+			ID:        beadID,
+			Title:     "Canonical child task",
+			BlockedBy: []string{"bd-parent", "bd-prerequisite"},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("resolveAssignBlockedBeads: %v", err)
+	}
+	if want := []BlockedBead{{
+		ID: "bd-child", Title: "Canonical child task", BlockedBy: []string{"bd-parent", "bd-prerequisite"},
+	}}; !reflect.DeepEqual(blocked, want) {
+		t.Fatalf("blocked beads = %+v, want %+v", blocked, want)
+	}
+}
+
+func TestResolveAssignBlockedBeadsReturnsDetailErrors(t *testing.T) {
+	_, err := resolveAssignBlockedBeads(t.Context(), "/project", []bv.BeadPreview{{ID: "bd-child"}}, func(context.Context, string, string) (*bv.BeadAssignmentDetails, error) {
+		return nil, errors.New("database unavailable")
+	})
+	if err == nil || !strings.Contains(err.Error(), "bd-child") || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("detail error = %v, want contextual lookup error", err)
+	}
+}
+
 // =============================================================================
 // AgentStrength Tests
 // =============================================================================
