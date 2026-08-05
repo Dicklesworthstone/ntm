@@ -2073,7 +2073,7 @@ func (s *Store) GetAttentionReplayWindow() (AttentionReplayWindow, error) {
 			(SELECT MIN(cursor) FROM attention_events WHERE expires_at IS NULL OR expires_at >= datetime('now')),
 			(SELECT MAX(cursor) FROM attention_events),
 			(SELECT COUNT(*) FROM attention_events WHERE expires_at IS NULL OR expires_at >= datetime('now')),
-			(SELECT MAX(ts) FROM attention_events)`,
+			(SELECT ts FROM attention_events ORDER BY ts DESC LIMIT 1)`,
 	).Scan(&oldest, &newest, &window.EventCount, &lastEventAt)
 	if err != nil {
 		return AttentionReplayWindow{}, fmt.Errorf("get attention replay window: %w", err)

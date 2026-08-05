@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1315,6 +1316,47 @@ func TestApplyMigrationsIdempotent(t *testing.T) {
 	}
 }
 
+func TestApplyMigrationsConcurrent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	openDB := func() *sql.DB {
+		db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(dbPath, "busy_timeout(5000)"))
+		if err != nil {
+			t.Fatalf("open migration database: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		return db
+	}
+
+	dbOne := openDB()
+	dbTwo := openDB()
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, db := range []*sql.DB{dbOne, dbTwo} {
+		go func(db *sql.DB) {
+			<-start
+			errs <- ApplyMigrations(db)
+		}(db)
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent ApplyMigrations: %v", err)
+		}
+	}
+
+	files, err := GetMigrationFiles()
+	if err != nil {
+		t.Fatalf("GetMigrationFiles: %v", err)
+	}
+	var count int
+	if err := dbOne.QueryRow("SELECT COUNT(*) FROM _migrations").Scan(&count); err != nil {
+		t.Fatalf("count applied migrations: %v", err)
+	}
+	if count != len(files) {
+		t.Fatalf("applied migration count = %d, want %d", count, len(files))
+	}
+}
+
 // ======================
 // Bead Status Constants Tests
 // ======================
@@ -1996,6 +2038,91 @@ func TestAttentionReplayQueriesByIncidentAndTimeRange(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Fatalf("expected reversed time range to return no events, got %+v", empty)
+	}
+}
+
+func TestGetAttentionReplayWindowWithEvents(t *testing.T) {
+	store := testStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, ts := range []time.Time{now.Add(-time.Minute), now} {
+		if _, err := store.AppendAttentionEvent(&StoredAttentionEvent{
+			Ts:            ts,
+			Category:      "system",
+			EventType:     "test",
+			Source:        "state-test",
+			Actionability: ActionabilityInteresting,
+			Severity:      SeverityInfo,
+			Summary:       "attention replay window",
+		}); err != nil {
+			t.Fatalf("AppendAttentionEvent: %v", err)
+		}
+	}
+
+	window, err := store.GetAttentionReplayWindow()
+	if err != nil {
+		t.Fatalf("GetAttentionReplayWindow: %v", err)
+	}
+	if window.EventCount != 2 || window.OldestCursor != 1 || window.NewestCursor != 2 {
+		t.Fatalf("replay window = %+v, want two cursor-bounded events", window)
+	}
+	if window.LastEventAt == nil || !window.LastEventAt.Equal(now) {
+		t.Fatalf("LastEventAt = %v, want %v", window.LastEventAt, now)
+	}
+}
+
+func TestCreateOrUpdateIncidentConcurrentFileStores(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	stores := make([]*Store, 2)
+	for i := range stores {
+		store, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		stores[i] = store
+	}
+
+	start := make(chan struct{})
+	results := make(chan *Incident, len(stores))
+	errs := make(chan error, len(stores))
+	var wg sync.WaitGroup
+	for _, store := range stores {
+		wg.Add(1)
+		go func(store *Store) {
+			defer wg.Done()
+			<-start
+			incident, err := store.CreateOrUpdateIncident(&Incident{
+				Title:       "shared outage",
+				Fingerprint: "concurrent.file.store",
+				Family:      "test",
+				Category:    "test",
+				Status:      IncidentStatusOpen,
+				Severity:    SeverityWarning,
+				AlertCount:  1,
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- incident
+		}(store)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("CreateOrUpdateIncident: %v", err)
+	}
+	var incidents []*Incident
+	for incident := range results {
+		incidents = append(incidents, incident)
+	}
+	if len(incidents) != 2 || incidents[0].ID != incidents[1].ID {
+		t.Fatalf("concurrent incidents = %+v, want one shared incident", incidents)
 	}
 }
 

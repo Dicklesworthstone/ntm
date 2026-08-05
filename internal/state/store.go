@@ -79,7 +79,7 @@ func Open(path string) (*Store, error) {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("create state dir: %w", err)
 		}
-		dsn = sqliteutil.FileDSN(path, append(pragmas, "journal_mode(WAL)")...)
+		dsn = sqliteutil.ImmediateTransactionFileDSN(path, append(pragmas, "journal_mode(WAL)")...)
 	}
 
 	db, err := sql.Open(sqliteutil.DriverName, dsn)

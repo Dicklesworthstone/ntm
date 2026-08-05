@@ -3,6 +3,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -233,26 +234,41 @@ func ReadMigration(filename string) (string, error) {
 
 // ApplyMigrations applies all pending migrations to the database.
 func ApplyMigrations(db *sql.DB) error {
-	// Create migrations table if not exists
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS _migrations (
-			version INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("create migrations table: %w", err)
-	}
-
 	// Get list of migration files
 	files, err := GetMigrationFiles()
 	if err != nil {
 		return err
 	}
 
-	// Get applied migrations
-	rows, err := db.Query("SELECT version FROM _migrations ORDER BY version")
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin immediate migration transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS _migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`); err != nil {
+		return fmt.Errorf("create migrations table: %w", err)
+	}
+
+	// Read applied migrations after acquiring the write reservation. This closes
+	// the read-check-write window between concurrent ntm starts.
+	rows, err := conn.QueryContext(ctx, "SELECT version FROM _migrations ORDER BY version")
 	if err != nil {
 		return fmt.Errorf("query applied migrations: %w", err)
 	}
@@ -269,7 +285,9 @@ func ApplyMigrations(db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate migrations: %w", err)
 	}
-	_ = rows.Close() // Explicitly close to release read lock before executing write transactions
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close applied migrations: %w", err)
+	}
 
 	// Apply pending migrations
 	for _, filename := range files {
@@ -290,41 +308,22 @@ func ApplyMigrations(db *sql.DB) error {
 			return err
 		}
 
-		err = func() error {
-			tx, err := db.Begin()
-			if err != nil {
-				return fmt.Errorf("begin transaction for migration %s: %w", filename, err)
-			}
-			committed := false
-			defer func() {
-				if !committed {
-					_ = tx.Rollback()
-				}
-			}()
+		if _, err := conn.ExecContext(ctx, content); err != nil {
+			return fmt.Errorf("execute migration %s: %w", filename, err)
+		}
 
-			if _, err := tx.Exec(content); err != nil {
-				return fmt.Errorf("execute migration %s: %w", filename, err)
-			}
-
-			// Record migration
-			if _, err := tx.Exec(
-				"INSERT INTO _migrations (version, name) VALUES (?, ?)",
-				version, filename,
-			); err != nil {
-				return fmt.Errorf("record migration %s: %w", filename, err)
-			}
-
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit migration %s: %w", filename, err)
-			}
-			committed = true
-			return nil
-		}()
-
-		if err != nil {
-			return err
+		// Record migration in the same transaction as its schema changes.
+		if _, err := conn.ExecContext(ctx,
+			"INSERT INTO _migrations (version, name) VALUES (?, ?)",
+			version, filename,
+		); err != nil {
+			return fmt.Errorf("record migration %s: %w", filename, err)
 		}
 	}
 
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
+	}
+	committed = true
 	return nil
 }
