@@ -1943,3 +1943,73 @@ func TestCalculateFinalScoreRejectsNonFiniteValues(t *testing.T) {
 		})
 	}
 }
+
+// bd-fresh-eyes-audit .8: routing must never recommend a pane it also reports
+// as excluded. Plain round-robin deliberately ignores exclusion internally,
+// so the guarantee has to live in Router.Route — callers act on the
+// recommendation and would send work into a dead pane.
+func TestRoute_NeverRecommendsExcludedAgent(t *testing.T) {
+	router := NewRouter()
+	agents := []ScoredAgent{
+		{PaneID: "%1", PaneIndex: 0, State: StateWaiting, Excluded: false},
+		{PaneID: "%2", PaneIndex: 1, State: StateError, Excluded: true, ExcludeReason: "pane in error state"},
+		{PaneID: "%3", PaneIndex: 2, State: StateError, Excluded: true, ExcludeReason: "pane in error state"},
+	}
+	result := router.Route(agents, StrategyRoundRobin, RoutingContext{ExplicitPane: -1})
+	if result.Selected == nil {
+		t.Fatal("Route returned no selection despite one healthy agent")
+	}
+	if result.Selected.Excluded {
+		t.Fatalf("Route recommended excluded pane %s (reason %q)", result.Selected.PaneID, result.Reason)
+	}
+	if result.Selected.PaneID != "%1" {
+		t.Fatalf("Route selected %s, want the only non-excluded pane %%1", result.Selected.PaneID)
+	}
+}
+
+func TestRoute_AllExcludedYieldsNoSelection(t *testing.T) {
+	router := NewRouter()
+	agents := []ScoredAgent{
+		{PaneID: "%1", State: StateError, Excluded: true},
+		{PaneID: "%2", State: StateError, Excluded: true},
+	}
+	result := router.Route(agents, StrategyRoundRobin, RoutingContext{ExplicitPane: -1})
+	if result.Selected != nil {
+		t.Fatalf("Route recommended %s though every agent is excluded", result.Selected.PaneID)
+	}
+}
+
+// Stateless CLI invocations build a fresh Router each time, so an in-process
+// cursor cannot rotate. Rotation anchors on the observable last-used agent.
+func TestRoundRobin_RotatesStatelesslyByAnchor(t *testing.T) {
+	now := time.Now()
+	agents := []ScoredAgent{
+		{PaneID: "%1", LastActivity: now.Add(-3 * time.Minute)},
+		{PaneID: "%2", LastActivity: now.Add(-2 * time.Minute)},
+		{PaneID: "%3", LastActivity: now.Add(-1 * time.Minute)},
+	}
+	// Newest activity is %3, so a fresh strategy must pick the one after it.
+	fresh := &RoundRobinStrategy{}
+	if got := fresh.Select(agents, RoutingContext{}); got == nil || got.PaneID != "%1" {
+		t.Fatalf("fresh Select() = %v, want %%1 (wrap after newest %%3)", got)
+	}
+	// An explicit LastAgent wins over activity, since it survives processes.
+	fresh2 := &RoundRobinStrategy{}
+	if got := fresh2.Select(agents, RoutingContext{LastAgent: "%1"}); got == nil || got.PaneID != "%2" {
+		t.Fatalf("Select(LastAgent=%%1) = %v, want %%2", got)
+	}
+}
+
+func TestRoundRobinAvailable_AnchorSkipsExcluded(t *testing.T) {
+	now := time.Now()
+	agents := []ScoredAgent{
+		{PaneID: "%1", LastActivity: now.Add(-3 * time.Minute)},
+		{PaneID: "%2", LastActivity: now.Add(-1 * time.Minute)},
+		{PaneID: "%3", LastActivity: now.Add(-2 * time.Minute), Excluded: true},
+	}
+	strat := &RoundRobinAvailableStrategy{}
+	// Newest is %2 (index 1); next is %3 but it is excluded, so wrap to %1.
+	if got := strat.Select(agents, RoutingContext{}); got == nil || got.PaneID != "%1" {
+		t.Fatalf("Select() = %v, want %%1", got)
+	}
+}

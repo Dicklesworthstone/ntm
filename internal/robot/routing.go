@@ -1013,6 +1013,38 @@ func (s *FirstAvailableStrategy) Select(agents []ScoredAgent, ctx RoutingContext
 	return nil
 }
 
+// rotationAnchorIndex resolves the index the next rotation step starts from.
+// An explicit LastAgent (pane ID) wins because it survives process
+// boundaries; otherwise the most recently active agent anchors the rotation,
+// which keeps stateless CLI invocations advancing instead of returning the
+// same pane forever. Falls back to the in-process cursor when neither signal
+// is available.
+func rotationAnchorIndex(agents []ScoredAgent, ctx RoutingContext, cursor int) int {
+	if ctx.LastAgent != "" {
+		for i := range agents {
+			if agents[i].PaneID == ctx.LastAgent {
+				return i
+			}
+		}
+	}
+	newest := -1
+	for i := range agents {
+		if agents[i].LastActivity.IsZero() {
+			continue
+		}
+		if newest < 0 || agents[i].LastActivity.After(agents[newest].LastActivity) {
+			newest = i
+		}
+	}
+	if newest >= 0 {
+		return newest
+	}
+	if cursor < 0 || cursor >= len(agents) {
+		return 0
+	}
+	return cursor
+}
+
 // RoundRobinStrategy rotates through agents in order.
 type RoundRobinStrategy struct {
 	lastIndex int
@@ -1027,8 +1059,12 @@ func (s *RoundRobinStrategy) Select(agents []ScoredAgent, ctx RoutingContext) *S
 		return nil
 	}
 
-	// Start from next agent after last used
-	startIdx := (s.lastIndex + 1) % len(agents)
+	// Start from next agent after last used. In-process callers advance
+	// s.lastIndex; the CLI builds a fresh Router per invocation, so lastIndex
+	// is always 0 there and rotation would be frozen on index 1 forever
+	// (bd-fresh-eyes-audit .8). Anchor on the observable last-used agent
+	// instead when the caller supplies one.
+	startIdx := (rotationAnchorIndex(agents, ctx, s.lastIndex) + 1) % len(agents)
 
 	// Round-robin ignores exclusion - use all agents
 	selected := &agents[startIdx]
@@ -1051,8 +1087,9 @@ func (s *RoundRobinAvailableStrategy) Select(agents []ScoredAgent, ctx RoutingCo
 	}
 
 	// Try to find next available agent starting from last index
+	anchor := rotationAnchorIndex(agents, ctx, s.lastIndex)
 	for i := 0; i < len(agents); i++ {
-		idx := (s.lastIndex + 1 + i) % len(agents)
+		idx := (anchor + 1 + i) % len(agents)
 		if !agents[idx].Excluded {
 			s.lastIndex = idx
 			return &agents[idx]
@@ -1211,8 +1248,16 @@ func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingC
 	// Get the strategy
 	strat := r.GetStrategy(strategy)
 
-	// Try primary strategy
+	// Try primary strategy. A strategy may return an excluded agent — plain
+	// round-robin documents that it "ignores exclusion" — but routing must
+	// never RECOMMEND a pane it simultaneously reports as excluded: callers
+	// act on the recommendation and would send work into a dead or
+	// rate-limited pane (bd-fresh-eyes-audit .8). Treat that as no selection
+	// and fall through to the fallback chain.
 	selected := strat.Select(agents, ctx)
+	if selected != nil && selected.Excluded {
+		selected = nil
+	}
 	if selected != nil {
 		result.Selected = selected
 		result.Reason = "primary strategy succeeded"
@@ -1225,6 +1270,9 @@ func (r *Router) Route(agents []ScoredAgent, strategy StrategyName, ctx RoutingC
 			continue // Skip if same as primary
 		}
 		selected = fb.Select(agents, ctx)
+		if selected != nil && selected.Excluded {
+			continue
+		}
 		if selected != nil {
 			result.Selected = selected
 			result.FallbackUsed = true
