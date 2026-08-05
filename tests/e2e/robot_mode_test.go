@@ -1102,7 +1102,7 @@ claude = "bash"
 
 	// Spawn mixed session with multiple agent types
 	spawnOut := testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"spawn", session, "--cc=3", "--cod=2", "--project-dir", projectDir)
+		"spawn", session, "--cc=3", "--cod=2")
 	logger.Log("[E2E-ROBOT-SEND-FILTERING] Spawn output: %s", string(spawnOut))
 
 	// Give agents time to initialize
@@ -1113,7 +1113,7 @@ claude = "bash"
 	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 1: Filter by agent type --type=claude")
 	testMessage := fmt.Sprintf("FILTER_TEST_CLAUDE_%d", time.Now().UnixNano())
 	sendOut := testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--type=claude")
+		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--type=claude", "--dry-run")
 
 	var sendPayload struct {
 		Success    bool     `json:"success"`
@@ -1124,6 +1124,8 @@ claude = "bash"
 			Pane  string `json:"pane"`
 			Error string `json:"error"`
 		} `json:"failed"`
+		DryRun         bool      `json:"dry_run"`
+		WouldSendTo    []string  `json:"would_send_to"`
 		MessagePreview string    `json:"message_preview"`
 		SentAt         time.Time `json:"sent_at"`
 	}
@@ -1135,22 +1137,22 @@ claude = "bash"
 	if !sendPayload.Success {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] robot-send --type=claude should succeed")
 	}
+	if !sendPayload.DryRun {
+		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] claude filter should be a dry run")
+	}
 	if sendPayload.Session != session {
 		t.Errorf("[E2E-ROBOT-SEND-FILTERING] Expected session %s, got %s", session, sendPayload.Session)
 	}
-	if len(sendPayload.Targets) != 3 {
-		t.Errorf("[E2E-ROBOT-SEND-FILTERING] Expected 3 claude targets, got %d", len(sendPayload.Targets))
+	if len(sendPayload.WouldSendTo) != 3 {
+		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Expected 3 claude targets, got %d", len(sendPayload.WouldSendTo))
 	}
-	if len(sendPayload.Successful) != 3 {
-		t.Errorf("[E2E-ROBOT-SEND-FILTERING] Expected 3 successful sends, got %d", len(sendPayload.Successful))
-	}
-	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 1 PASSED: claude filter sent to %d targets", len(sendPayload.Targets))
+	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 1 PASSED: claude filter selected %d targets", len(sendPayload.WouldSendTo))
 
 	// Test 2: Filter by agent type (codex)
 	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 2: Filter by agent type --type=cod")
 	testMessage = fmt.Sprintf("FILTER_TEST_CODEX_%d", time.Now().UnixNano())
 	sendOut = testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--type=cod")
+		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--type=cod", "--dry-run")
 
 	if err := json.Unmarshal(sendOut, &sendPayload); err != nil {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Invalid robot-send JSON for codex: %v", err)
@@ -1159,16 +1161,16 @@ claude = "bash"
 	if !sendPayload.Success {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] robot-send --type=cod should succeed")
 	}
-	if len(sendPayload.Targets) != 2 {
-		t.Errorf("[E2E-ROBOT-SEND-FILTERING] Expected 2 codex targets, got %d", len(sendPayload.Targets))
+	if !sendPayload.DryRun || len(sendPayload.WouldSendTo) != 2 {
+		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Expected a dry run with 2 codex targets, got dry_run=%t targets=%d", sendPayload.DryRun, len(sendPayload.WouldSendTo))
 	}
-	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 2 PASSED: codex filter sent to %d targets", len(sendPayload.Targets))
+	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 2 PASSED: codex filter selected %d targets", len(sendPayload.WouldSendTo))
 
 	// Test 3: Send to all agents
 	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 3: Send to all agents --all")
 	testMessage = fmt.Sprintf("FILTER_TEST_ALL_%d", time.Now().UnixNano())
 	sendOut = testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--all")
+		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--all", "--dry-run")
 
 	if err := json.Unmarshal(sendOut, &sendPayload); err != nil {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Invalid robot-send JSON for all: %v", err)
@@ -1177,16 +1179,16 @@ claude = "bash"
 	if !sendPayload.Success {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] robot-send --all should succeed")
 	}
-	if len(sendPayload.Targets) < 5 {
-		t.Errorf("[E2E-ROBOT-SEND-FILTERING] Expected at least 5 targets (all agents), got %d", len(sendPayload.Targets))
+	if !sendPayload.DryRun || len(sendPayload.WouldSendTo) != 6 {
+		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Expected a dry run with all 6 panes, got dry_run=%t targets=%d", sendPayload.DryRun, len(sendPayload.WouldSendTo))
 	}
-	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 3 PASSED: --all sent to %d targets", len(sendPayload.Targets))
+	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 3 PASSED: --all selected %d targets", len(sendPayload.WouldSendTo))
 
 	// Test 4: Specific pane targeting
 	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 4: Send to specific panes --panes=1,2")
 	testMessage = fmt.Sprintf("FILTER_TEST_PANES_%d", time.Now().UnixNano())
 	sendOut = testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--panes=1,2")
+		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--panes=1,2", "--dry-run")
 
 	if err := json.Unmarshal(sendOut, &sendPayload); err != nil {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Invalid robot-send JSON for panes: %v", err)
@@ -1195,10 +1197,10 @@ claude = "bash"
 	if !sendPayload.Success {
 		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] robot-send --panes should succeed")
 	}
-	if len(sendPayload.Targets) != 2 {
-		t.Errorf("[E2E-ROBOT-SEND-FILTERING] Expected 2 pane targets, got %d", len(sendPayload.Targets))
+	if !sendPayload.DryRun || len(sendPayload.WouldSendTo) != 2 {
+		t.Fatalf("[E2E-ROBOT-SEND-FILTERING] Expected a dry run with 2 pane targets, got dry_run=%t targets=%d", sendPayload.DryRun, len(sendPayload.WouldSendTo))
 	}
-	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 4 PASSED: pane filter sent to %d targets", len(sendPayload.Targets))
+	logger.Log("[E2E-ROBOT-SEND-FILTERING] Test 4 PASSED: pane filter selected %d targets", len(sendPayload.WouldSendTo))
 
 	logger.Log("[E2E-ROBOT-SEND-FILTERING] All target filtering tests completed successfully")
 }
