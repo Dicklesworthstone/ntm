@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,21 +249,24 @@ func (p *CodexHomeProvisioner) EnvForPane(session, pane string) map[string]strin
 // Live tmux probe wiring the CodexHomeInspector from 4765d665 to real panes.
 // ----------------------------------------------------------------------------
 
-// codexHomeProbe is the minimal tmux surface the inspector needs. It is an
+// codexHomeProbe is the minimal surface the inspector needs. It is an
 // interface so the probe stays unit-testable without a live tmux server.
 type codexHomeProbe interface {
 	GetPanes(session string) ([]tmux.Pane, error)
-	// ShowEnvironment returns the value of CODEX_HOME for a pane target, and
-	// whether it is set. It maps onto `tmux show-environment -t <target> CODEX_HOME`.
-	PaneCodexHome(target string) (value string, set bool, err error)
+	// PaneCodexHome returns the isolated CODEX_HOME provisioned for a pane of
+	// this session, and whether one exists.
+	PaneCodexHome(session string, pane tmux.Pane) (value string, set bool, err error)
 }
 
 // NewTmuxCodexHomeInspector builds a CodexHomeInspector that reports the live
-// Codex panes of a session and each pane's effective CODEX_HOME by probing tmux.
-// A pane whose CODEX_HOME is unset (or points at the default global ~/.codex) is
-// reported as NOT isolated, so the guard can refuse an unsafe global rotation.
-func NewTmuxCodexHomeInspector(session string) CodexHomeInspector {
-	return newTmuxCodexHomeInspector(session, defaultCodexProbe{})
+// Codex panes of a session and each pane's effective CODEX_HOME. A pane with no
+// isolated home (or one pointing at the default global ~/.codex) is reported as
+// NOT isolated, so the guard can refuse an unsafe global rotation.
+//
+// baseDir is the project directory the homes were provisioned under; it must
+// match the CodexHomeProvisioner's BaseDir or no pane will be seen as isolated.
+func NewTmuxCodexHomeInspector(session, baseDir string) CodexHomeInspector {
+	return newTmuxCodexHomeInspector(session, provisionedCodexProbe{baseDir: baseDir})
 }
 
 // newTmuxCodexHomeInspector is the injectable form used by tests.
@@ -281,7 +285,7 @@ func newTmuxCodexHomeInspector(session string, probe codexHomeProbe) CodexHomeIn
 			if target == "" {
 				target = formatPaneTarget(session, pane.Index)
 			}
-			home, set, perr := probe.PaneCodexHome(target)
+			home, set, perr := probe.PaneCodexHome(session, pane)
 			if perr != nil {
 				// Treat a probe failure for one pane as "unknown" => not isolated,
 				// so the guard fails closed for that pane.
@@ -325,40 +329,51 @@ func isGlobalCodexHome(home string) bool {
 	return false
 }
 
-// defaultCodexProbe implements codexHomeProbe against the real tmux client.
-type defaultCodexProbe struct{}
+// provisionedCodexProbe implements codexHomeProbe by reading the durable
+// pane->home mapping that CodexHomeProvisioner creates on disk.
+//
+// It replaces a `tmux show-environment -t <target> CODEX_HOME` probe that was
+// structurally incapable of ever reporting isolation. show-environment's -t is
+// a target-SESSION, not a target-pane: tmux resolves "session:1.2" down to the
+// session and returns session-wide environment. CODEX_HOME reaches a pane as a
+// command-line assignment on the codex process, so it lives in that process's
+// environment and is invisible to tmux entirely. The inspector could therefore
+// only ever answer "not isolated", which made guardAutoRotation refuse every
+// automatic Codex rotation with reason "shared_global_codex_home" (bd-91hy2).
+//
+// The provisioner's layout is the mapping: HomePath is a pure function of
+// (BaseDir, session, pane), so an existing directory at that path IS the record
+// that this pane was provisioned an isolated home. No process probing needed,
+// and it cannot drift from what ProvisionPaneHome actually created.
+type provisionedCodexProbe struct {
+	baseDir string
+}
 
-func (defaultCodexProbe) GetPanes(session string) ([]tmux.Pane, error) {
+func (provisionedCodexProbe) GetPanes(session string) ([]tmux.Pane, error) {
 	return tmux.GetPanes(session)
 }
 
-func (defaultCodexProbe) PaneCodexHome(target string) (string, bool, error) {
-	out, err := tmux.DefaultClient.Run("show-environment", "-t", target, CodexHomeEnvVar)
+func (p provisionedCodexProbe) PaneCodexHome(session string, pane tmux.Pane) (string, bool, error) {
+	if strings.TrimSpace(p.baseDir) == "" {
+		return "", false, nil
+	}
+	home := NewCodexHomeProvisioner(p.baseDir).HomePath(session, codexPaneKey(pane))
+	info, err := os.Stat(home)
 	if err != nil {
-		// tmux exits non-zero with "unknown variable" when CODEX_HOME is unset for
-		// the pane's session environment; treat that as "not set", not an error.
-		if strings.Contains(strings.ToLower(err.Error()), "unknown variable") {
+		if os.IsNotExist(err) {
 			return "", false, nil
 		}
-		return "", false, err
+		return "", false, fmt.Errorf("inspect codex home %s: %w", home, err)
 	}
-	return parseShowEnvironment(out, CodexHomeEnvVar)
+	if !info.IsDir() {
+		return "", false, nil
+	}
+	return home, true, nil
 }
 
-// parseShowEnvironment parses `tmux show-environment` output for a single var.
-// Output lines look like "CODEX_HOME=/path" (set) or "-CODEX_HOME" (unset/removed).
-func parseShowEnvironment(out, name string) (value string, set bool, err error) {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "-"+name) {
-			return "", false, nil
-		}
-		if strings.HasPrefix(line, name+"=") {
-			return strings.TrimPrefix(line, name+"="), true, nil
-		}
-	}
-	return "", false, nil
+// codexPaneKey is the pane component ProvisionPaneHome is keyed by. It must
+// match what the launcher passed at provision time, or the inspector looks in
+// the wrong directory and silently reports every pane as unisolated.
+func codexPaneKey(pane tmux.Pane) string {
+	return strconv.Itoa(pane.Index)
 }

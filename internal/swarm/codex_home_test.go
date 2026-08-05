@@ -152,9 +152,9 @@ func (f fakeProbe) GetPanes(session string) ([]tmux.Pane, error) {
 	return f.panes, nil
 }
 
-func (f fakeProbe) PaneCodexHome(target string) (string, bool, error) {
-	set := f.setMap[target]
-	return f.homes[target], set, nil
+func (f fakeProbe) PaneCodexHome(_ string, pane tmux.Pane) (string, bool, error) {
+	set := f.setMap[pane.ID]
+	return f.homes[pane.ID], set, nil
 }
 
 func TestInspector_DetectsGlobalVsIsolated(t *testing.T) {
@@ -209,21 +209,6 @@ func TestInspector_PropagatesPaneListError(t *testing.T) {
 	inspector := newTmuxCodexHomeInspector("swarm", fakeProbe{err: errors.New("tmux down")})
 	if _, err := inspector(); err == nil {
 		t.Fatal("expected error to propagate from GetPanes failure")
-	}
-}
-
-func TestParseShowEnvironment(t *testing.T) {
-	v, set, _ := parseShowEnvironment("CODEX_HOME=/x/y\n", "CODEX_HOME")
-	if !set || v != "/x/y" {
-		t.Errorf("expected set /x/y, got set=%v v=%q", set, v)
-	}
-	_, set2, _ := parseShowEnvironment("-CODEX_HOME\n", "CODEX_HOME")
-	if set2 {
-		t.Error("expected unset for -CODEX_HOME line")
-	}
-	_, set3, _ := parseShowEnvironment("OTHER=1\n", "CODEX_HOME")
-	if set3 {
-		t.Error("expected unset when var absent")
 	}
 }
 
@@ -475,4 +460,90 @@ func TestCodexPaneInfo_Marshalable(t *testing.T) {
 	if err != nil || len(b) == 0 {
 		t.Fatalf("marshal CodexPaneInfo: %v", err)
 	}
+}
+
+// bd-91hy2: the inspector used `tmux show-environment -t <target> CODEX_HOME`,
+// whose -t is a target-SESSION, not a target-pane. CODEX_HOME reaches a pane as
+// a command-line assignment on the codex process, so it lives in that process's
+// environment and is invisible to tmux. The inspector was therefore
+// structurally incapable of ever returning an isolated pane, which would have
+// made guardAutoRotation refuse EVERY automatic Codex rotation with
+// "shared_global_codex_home".
+//
+// The acceptance criterion is exactly this: a provisioned pane must be
+// reported isolated.
+func TestProvisionedCodexProbe_ReportsProvisionedPaneAsIsolated(t *testing.T) {
+	baseDir := t.TempDir()
+	const session = "swarm"
+
+	provisioner := NewCodexHomeProvisioner(baseDir)
+	home, err := provisioner.ProvisionPaneHome(context.Background(), session, "1", "")
+	if err != nil {
+		t.Fatalf("ProvisionPaneHome: %v", err)
+	}
+
+	probe := provisionedCodexProbe{baseDir: baseDir}
+
+	t.Run("a provisioned pane is isolated", func(t *testing.T) {
+		got, set, err := probe.PaneCodexHome(session, tmux.Pane{ID: "%1", Index: 1, Type: tmux.AgentType("cod")})
+		if err != nil {
+			t.Fatalf("PaneCodexHome: %v", err)
+		}
+		if !set {
+			t.Fatal("a pane with a provisioned CODEX_HOME was reported as having none; the inspector can never approve a rotation")
+		}
+		if got != home {
+			t.Fatalf("CodexHome = %q, want the provisioned %q", got, home)
+		}
+		if isGlobalCodexHome(got) {
+			t.Fatalf("provisioned home %q was classified as the shared global ~/.codex", got)
+		}
+	})
+
+	t.Run("an unprovisioned pane is not isolated", func(t *testing.T) {
+		_, set, err := probe.PaneCodexHome(session, tmux.Pane{ID: "%9", Index: 9, Type: tmux.AgentType("cod")})
+		if err != nil {
+			t.Fatalf("PaneCodexHome: %v", err)
+		}
+		if set {
+			t.Fatal("a pane that was never provisioned was reported isolated; the guard must fail closed")
+		}
+	})
+
+	t.Run("the inspector reports the isolated pane end to end", func(t *testing.T) {
+		inspector := newTmuxCodexHomeInspector(session, stubPaneProbe{
+			probe: probe,
+			panes: []tmux.Pane{
+				{ID: "%1", Index: 1, Type: tmux.AgentType("cod")}, // provisioned
+				{ID: "%2", Index: 2, Type: tmux.AgentType("cod")}, // not provisioned
+			},
+		})
+		infos, err := inspector()
+		if err != nil {
+			t.Fatalf("inspector: %v", err)
+		}
+		if len(infos) != 2 {
+			t.Fatalf("got %d codex panes, want 2", len(infos))
+		}
+		if !infos[0].IsIsolated() {
+			t.Fatal("the provisioned pane was not reported isolated")
+		}
+		if infos[1].IsIsolated() {
+			t.Fatal("the unprovisioned pane was reported isolated")
+		}
+	})
+}
+
+// stubPaneProbe supplies a fixed pane list while delegating the home lookup to
+// the real provisioned-directory probe, so the end-to-end assertion exercises
+// the actual isolation logic without a live tmux server.
+type stubPaneProbe struct {
+	probe provisionedCodexProbe
+	panes []tmux.Pane
+}
+
+func (s stubPaneProbe) GetPanes(string) ([]tmux.Pane, error) { return s.panes, nil }
+
+func (s stubPaneProbe) PaneCodexHome(session string, pane tmux.Pane) (string, bool, error) {
+	return s.probe.PaneCodexHome(session, pane)
 }
