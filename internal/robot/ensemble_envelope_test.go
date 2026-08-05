@@ -2,6 +2,7 @@ package robot
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -222,6 +223,58 @@ func TestGetEnsembleStop_MarksOfflineActiveStateStopped(t *testing.T) {
 	}
 	if saved.Status != ensemble.EnsembleStopped {
 		t.Fatalf("saved status = %q, want %q", saved.Status, ensemble.EnsembleStopped)
+	}
+}
+
+func TestGetEnsembleStopCaptureFailureLeavesSessionRunning(t *testing.T) {
+	t.Setenv("NTM_CONFIG", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ensemble.CloseDefaultStateStore()
+	t.Cleanup(ensemble.CloseDefaultStateStore)
+
+	state := &ensemble.EnsembleSession{
+		SessionName:       "capture-failure-ensemble-stop",
+		Question:          "Keep outputs safe",
+		Status:            ensemble.EnsembleActive,
+		SynthesisStrategy: ensemble.StrategyConsensus,
+		CreatedAt:         time.Now().UTC(),
+	}
+	if err := ensemble.SaveSession("", state); err != nil {
+		t.Fatalf("SaveSession error: %v", err)
+	}
+
+	deps := defaultEnsembleStopDependencies()
+	deps.SessionExists = func(string) bool { return true }
+	deps.CaptureAll = func(*ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error) {
+		return nil, errors.New("capture-pane failed")
+	}
+	killed := false
+	deps.KillSession = func(string) error {
+		killed = true
+		return nil
+	}
+
+	output, err := getEnsembleStop(state.SessionName, EnsembleStopOptions{}, deps)
+	if err != nil {
+		t.Fatalf("getEnsembleStop error: %v", err)
+	}
+	if output.Success || output.ErrorCode != ErrCodeInternalError {
+		t.Fatalf("capture failure output = %+v, want typed failure", output.RobotResponse)
+	}
+	if killed {
+		t.Fatal("KillSession called after output capture failed")
+	}
+	if output.Result.FinalStatus != ensemble.EnsembleActive.String() {
+		t.Fatalf("final status = %q, want active", output.Result.FinalStatus)
+	}
+
+	saved, err := ensemble.LoadSession(state.SessionName)
+	if err != nil {
+		t.Fatalf("LoadSession after capture failure: %v", err)
+	}
+	if saved.Status != ensemble.EnsembleActive {
+		t.Fatalf("saved status = %q, want active", saved.Status)
 	}
 }
 

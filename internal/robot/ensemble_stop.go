@@ -37,9 +37,35 @@ type EnsembleStopResult struct {
 	Message     string `json:"message,omitempty"`
 }
 
+type ensembleStopDependencies struct {
+	SessionExists func(string) bool
+	CaptureAll    func(*ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error)
+	GetPanes      func(string) ([]tmux.Pane, error)
+	SendKeys      func(string, string, bool) error
+	KillSession   func(string) error
+	Sleep         func(time.Duration)
+}
+
+func defaultEnsembleStopDependencies() ensembleStopDependencies {
+	return ensembleStopDependencies{
+		SessionExists: tmux.SessionExists,
+		CaptureAll: func(state *ensemble.EnsembleSession) ([]ensemble.CapturedOutput, error) {
+			return ensemble.NewOutputCapture(tmux.DefaultClient).CaptureAll(state)
+		},
+		GetPanes:    tmux.GetPanes,
+		SendKeys:    tmux.SendKeys,
+		KillSession: tmux.KillSession,
+		Sleep:       time.Sleep,
+	}
+}
+
 // GetEnsembleStop stops an ensemble and returns the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOutput, error) {
+	return getEnsembleStop(session, opts, defaultEnsembleStopDependencies())
+}
+
+func getEnsembleStop(session string, opts EnsembleStopOptions, deps ensembleStopDependencies) (*EnsembleStopOutput, error) {
 	correlationID := audit.NewCorrelationID()
 	auditStart := time.Now()
 	output := &EnsembleStopOutput{
@@ -88,7 +114,7 @@ func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOut
 	state, err := ensemble.LoadSession(session)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if !tmux.SessionExists(session) {
+			if !deps.SessionExists(session) {
 				output.RobotResponse = NewErrorResponse(
 					fmt.Errorf("session '%s' not found", session),
 					ErrCodeSessionNotFound,
@@ -112,7 +138,7 @@ func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOut
 	}
 
 	output.Result.PrevStatus = state.Status.String()
-	sessionLive := tmux.SessionExists(session)
+	sessionLive := deps.SessionExists(session)
 
 	// Check if already stopped
 	if state.Status.IsTerminal() {
@@ -146,28 +172,35 @@ func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOut
 	// Collect partial outputs if requested
 	captured := 0
 	if !opts.NoCollect {
-		capture := ensemble.NewOutputCapture(tmux.DefaultClient)
-		capturedOutputs, err := capture.CaptureAll(state)
-		if err == nil {
-			captured = len(capturedOutputs)
+		capturedOutputs, err := deps.CaptureAll(state)
+		if err != nil {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("failed to capture partial ensemble output: %w", err),
+				ErrCodeInternalError,
+				"Partial outputs could not be collected; the ensemble is still running so you can retry or inspect panes",
+			)
+			output.Result.FinalStatus = state.Status.String()
+			output.Result.Message = "Partial output capture failed; ensemble was left running"
+			return output, nil
 		}
+		captured = len(capturedOutputs)
 	}
 	output.Result.Captured = captured
 
 	// Get panes for counting
-	panes, _ := tmux.GetPanes(session)
+	panes, _ := deps.GetPanes(session)
 	stoppedCount := len(panes)
 
 	// Graceful shutdown: send Ctrl+C to each pane
 	if !opts.Force && len(panes) > 0 {
 		for _, pane := range panes {
-			_ = tmux.SendKeys(pane.ID, "C-c", false)
+			_ = deps.SendKeys(pane.ID, "C-c", false)
 		}
-		time.Sleep(5 * time.Second)
+		deps.Sleep(5 * time.Second)
 	}
 
 	// Kill the session
-	if err := tmux.KillSession(session); err != nil {
+	if err := deps.KillSession(session); err != nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to kill session: %w", err),
 			ErrCodeInternalError,
