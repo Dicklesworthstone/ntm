@@ -1384,9 +1384,11 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated N, W.P, or %N pane selectors", "robot-wait")
 				return
 			}
+			sinceCursorSet := cmd.Flags().Changed("attention-cursor")
 			sinceCursor := robotAttentionSinceCursor
-			if sinceCursor == 0 {
+			if !sinceCursorSet && sinceCursor == 0 {
 				sinceCursor = robotEventsSinceCursor
+				sinceCursorSet = cmd.Flags().Changed("since-cursor")
 			}
 			opts := robot.WaitOptions{
 				Session:           session,
@@ -1399,6 +1401,7 @@ Shell Integration:
 				ExitOnError:       robotWaitOnError,
 				RequireTransition: robotWaitTransition,
 				SinceCursor:       sinceCursor,
+				SinceCursorSet:    sinceCursorSet,
 				Profile:           robotProfile,
 			}
 			exitCode := robot.PrintWait(opts)
