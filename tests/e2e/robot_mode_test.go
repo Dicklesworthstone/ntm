@@ -508,15 +508,13 @@ claude = "bash"
 	marker := fmt.Sprintf("ROBOT_SEND_MARKER_%d", time.Now().UnixNano())
 	logger.LogSection("robot-send")
 	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", marker), "--all")
+		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", marker), "--all", "--panes=0")
 	logger.Log("robot-send output: %s", string(out))
 
 	var sendPayload struct {
-		Success bool `json:"success"`
-		Targets []struct {
-			PaneIdx int `json:"pane_idx"`
-		} `json:"targets"`
-		TargetCount int `json:"target_count"`
+		Success    bool     `json:"success"`
+		Targets    []string `json:"targets"`
+		Successful []string `json:"successful"`
 	}
 
 	if err := json.Unmarshal(out, &sendPayload); err != nil {
@@ -526,8 +524,11 @@ claude = "bash"
 	if !sendPayload.Success {
 		t.Fatalf("robot-send should succeed")
 	}
-	if sendPayload.TargetCount < 1 {
-		t.Errorf("target_count = %d, want at least 1", sendPayload.TargetCount)
+	if len(sendPayload.Targets) != 1 || sendPayload.Targets[0] != "0" {
+		t.Fatalf("robot-send targets = %v, want only user pane 0", sendPayload.Targets)
+	}
+	if len(sendPayload.Successful) != 1 || sendPayload.Successful[0] != "0" {
+		t.Fatalf("robot-send successful = %v, want only user pane 0", sendPayload.Successful)
 	}
 
 	// Wait for command to execute
@@ -542,9 +543,8 @@ claude = "bash"
 	var tailPayload struct {
 		Success bool   `json:"success"`
 		Session string `json:"session"`
-		Panes   []struct {
-			Index   int    `json:"index"`
-			Content string `json:"content"`
+		Panes   map[string]struct {
+			Lines []string `json:"lines"`
 		} `json:"panes"`
 	}
 
@@ -561,15 +561,15 @@ claude = "bash"
 
 	// Check if marker appears in any pane content
 	markerFound := false
-	for _, pane := range tailPayload.Panes {
-		if strings.Contains(pane.Content, marker) {
+	for paneIndex, pane := range tailPayload.Panes {
+		if strings.Contains(strings.Join(pane.Lines, "\n"), marker) {
 			markerFound = true
-			logger.Log("Found marker in pane %d", pane.Index)
+			logger.Log("Found marker in pane %s", paneIndex)
 			break
 		}
 	}
 	if !markerFound {
-		logger.Log("WARNING: marker not found in tail output - timing issue possible")
+		t.Fatalf("robot-send did not deliver marker %q to any pane; tail payload: %+v", marker, tailPayload.Panes)
 	}
 }
 
