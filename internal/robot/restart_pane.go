@@ -1517,7 +1517,24 @@ func restartModelVars(cfg *config.Config, agentType, variant string) config.Agen
 	// result is still empty.
 	vars.Model = cfg.Models.GetModelName(agentType, "")
 
-	alias := strings.TrimSpace(variant)
+	// The variant encodes `model@effort` when the pane was spawned with a
+	// reasoning effort. Recovering the effort here is what stops a respawn from
+	// silently relaunching the pane on the config DEFAULT budget (bd-qs6rj).
+	alias, effort := tmux.ParsePaneVariant(variant)
+	if effort != "" {
+		// `model@effort` is written ONLY by the spawn path and only for an
+		// explicit model spec, so the effort suffix is proof that the variant
+		// names a model rather than a persona. A bare variant stays ambiguous
+		// and keeps the historical persona-friendly handling below.
+		vars.ReasoningEffort = effort
+		vars.Model = cfg.Models.GetModelName(agentType, alias)
+		if strings.TrimSpace(vars.Model) == "" {
+			vars.Model = alias
+		}
+		vars.ModelAlias = alias
+		vars.ModelRequested = true
+		return vars
+	}
 	if alias == "" {
 		return vars
 	}
@@ -1538,6 +1555,11 @@ func restartModelVars(cfg *config.Config, agentType, variant string) config.Agen
 			return vars
 		}
 	}
+	// A bare variant that matches neither an alias nor a configured full name
+	// is a PERSONA name, not a model — spawn writes the persona there. Keeping
+	// the configured default is deliberate: rendering `--model 'architect'`
+	// would kill the pane at its ready gate. An explicit model spec is
+	// distinguishable because spawn encodes it as `model@effort`, handled above.
 	return vars
 }
 

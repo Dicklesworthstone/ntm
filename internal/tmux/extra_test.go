@@ -649,3 +649,79 @@ func TestCircuitBreaker_ExpiryCannotClobberANewerDeadline(t *testing.T) {
 		t.Fatalf("deadline = %d, want the fresher %d", got, fresh)
 	}
 }
+
+// bd-qs6rj: the pane title is the only record of a pane's launch spec that
+// survives into a respawn. Encoding only the model meant a session spawned with
+// `--cod=8:gpt-5.6-terra:high` came back on the config DEFAULT reasoning effort
+// after any recovery — silently, with no operator signal that the swarm's
+// reasoning budget had changed.
+func TestPaneVariantRoundTripsModelAndEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		model       string
+		effort      string
+		wantVariant string
+	}{
+		{"model and effort", "gpt-5.6-terra", "high", "gpt-5.6-terra@high"},
+		{"model only", "gpt-5.6-terra", "", "gpt-5.6-terra"},
+		{"effort with no model is dropped", "", "high", ""},
+		{"neither", "", "", ""},
+		{"whitespace is trimmed", "  gpt-5.6-terra  ", "  high  ", "gpt-5.6-terra@high"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := FormatPaneVariant(tc.model, tc.effort)
+			if got != tc.wantVariant {
+				t.Fatalf("FormatPaneVariant(%q, %q) = %q, want %q", tc.model, tc.effort, got, tc.wantVariant)
+			}
+			model, effort := ParsePaneVariant(got)
+			if want := strings.TrimSpace(tc.model); model != want {
+				t.Fatalf("round-tripped model = %q, want %q", model, want)
+			}
+			if want := strings.TrimSpace(tc.effort); tc.model != "" && effort != want {
+				t.Fatalf("round-tripped effort = %q, want %q", effort, want)
+			}
+		})
+	}
+}
+
+// The encoded variant must survive the pane-title regex, or the whole scheme
+// silently degrades to "no variant at all".
+func TestPaneTitleCarriesModelAndEffortThroughParsing(t *testing.T) {
+	t.Parallel()
+
+	variant := FormatPaneVariant("gpt-5.6-terra", "high")
+	title := FormatPaneName("ntm", "cod", 3, variant)
+	if title != "ntm__cod_3_gpt-5.6-terra@high" {
+		t.Fatalf("title = %q", title)
+	}
+
+	agentType, idx, parsedVariant, _ := parseAgentFromTitle(title)
+	if agentType != AgentType("cod") || idx != 3 {
+		t.Fatalf("parsed type=%v index=%d, want cod/3", agentType, idx)
+	}
+	if parsedVariant != variant {
+		t.Fatalf("parsed variant = %q, want %q — '@' must be inside the title regex charset", parsedVariant, variant)
+	}
+
+	model, effort := ParsePaneVariant(parsedVariant)
+	if model != "gpt-5.6-terra" || effort != "high" {
+		t.Fatalf("recovered (%q, %q), want (gpt-5.6-terra, high)", model, effort)
+	}
+}
+
+// A pane titled before this encoding existed carries a bare model. It must keep
+// working, not be read as a model named after an effort.
+func TestPaneVariantBackCompatBareModel(t *testing.T) {
+	t.Parallel()
+
+	model, effort := ParsePaneVariant("opus")
+	if model != "opus" || effort != "" {
+		t.Fatalf("bare variant parsed as (%q, %q), want (opus, \"\")", model, effort)
+	}
+}

@@ -2682,6 +2682,8 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 
 		// Format pane title with optional model variant
 		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
+		// The reasoning effort is folded into the variant once it is resolved,
+		// further down — see the bd-qs6rj comment there.
 		title := tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, agent.Model)
 		if err := tmux.SetPaneTitleContext(ctx, pane.ID, title); err != nil {
 			return outputError(fmt.Errorf("setting pane title: %w", err))
@@ -2832,12 +2834,22 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 		}
 
-		// Update pane title with profile name if assigned
+		// Settle the pane title now that model, persona, and reasoning effort
+		// are all resolved. The variant carries model AND effort, because the
+		// title is the only record of the launch spec that survives into a
+		// respawn: encoding just the model let a recovery silently relaunch the
+		// pane on the config DEFAULT effort, with no operator signal that the
+		// swarm's reasoning budget had changed underneath them (bd-qs6rj).
+		// A persona name replaces the model in the variant, as before.
+		titleVariant := tmux.FormatPaneVariant(agent.Model, resolvedReasoningEffort)
 		if personaName != "" {
-			title = tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, personaName)
+			titleVariant = personaName
+		}
+		if finalTitle := tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, titleVariant); finalTitle != title {
+			title = finalTitle
 			if err := tmux.SetPaneTitleContext(ctx, pane.ID, title); err != nil {
 				if !IsJSONOutput() {
-					fmt.Printf("⚠ Warning: could not update pane title with profile name: %v\n", err)
+					fmt.Printf("⚠ Warning: could not update pane title: %v\n", err)
 				}
 			}
 		}

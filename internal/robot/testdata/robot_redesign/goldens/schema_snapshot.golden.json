@@ -710,6 +710,10 @@
       },
       "SnapshotAgent": {
         "properties": {
+          "context_percent": {
+            "description": "Context percent",
+            "type": "number"
+          },
           "current_bead": {
             "description": "Current bead",
             "type": "string"

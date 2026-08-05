@@ -1670,6 +1670,50 @@ func waitForSendDelay(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+// FormatPaneVariant encodes a pane's model and reasoning effort into the single
+// variant field of an NTM pane title.
+//
+// The pane title is the only durable record of what a pane was launched with
+// that survives into a respawn — tmux keeps it, and GetPanes parses it back
+// into Pane.Variant. Encoding only the model meant a respawn could recover the
+// model but never the reasoning effort, so a session spawned with
+// `--cod=8:gpt-5.6-terra:high` came back on the config DEFAULT effort after any
+// recovery, silently and with no operator signal (bd-qs6rj).
+//
+// The `model@effort` shape is not new syntax: it is exactly the shorthand
+// ParseAgentSpec already accepts for `--cod=N:model@effort`, and '@' is already
+// inside the variant charset of paneNameRegex, so no title format or regex
+// change is required.
+func FormatPaneVariant(model, reasoningEffort string) string {
+	model = strings.TrimSpace(model)
+	reasoningEffort = strings.TrimSpace(reasoningEffort)
+	if model == "" || reasoningEffort == "" {
+		// An effort with no model has nothing to hang off in `model@effort`
+		// form, and would parse back as a model named after the effort.
+		return model
+	}
+	return model + "@" + reasoningEffort
+}
+
+// ParsePaneVariant splits a variant produced by FormatPaneVariant back into its
+// model and reasoning effort. A variant with no '@' is a bare model, which is
+// what every pane titled before this encoding existed looks like.
+func ParsePaneVariant(variant string) (model, reasoningEffort string) {
+	variant = strings.TrimSpace(variant)
+	at := strings.LastIndex(variant, "@")
+	if at < 0 {
+		return variant, ""
+	}
+	model = strings.TrimSpace(variant[:at])
+	reasoningEffort = strings.TrimSpace(variant[at+1:])
+	if model == "" || reasoningEffort == "" {
+		// Not a model@effort pair — treat the whole thing as a model so a
+		// persona or model name that legitimately contains '@' is preserved.
+		return variant, ""
+	}
+	return model, reasoningEffort
+}
+
 // FormatPaneName formats a pane title according to NTM convention
 func FormatPaneName(session string, agentType string, index int, variant string) string {
 	normalizedType := strings.TrimSpace(agentType)

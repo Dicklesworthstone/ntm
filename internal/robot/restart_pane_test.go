@@ -1805,3 +1805,57 @@ func TestRespawnRecordsPIDEvidenceAndDetectsSoftRestart(t *testing.T) {
 		t.Fatalf("pane 2 PID evidence = %+v, want before=200 after=201", got)
 	}
 }
+
+// bd-qs6rj: a respawn must relaunch the pane on the model and reasoning effort
+// it was SPAWNED with. Recovering only known aliases meant an exact model ID
+// (`--cod=8:gpt-5.6-terra:high`) fell through to the config default, and the
+// effort was never recovered at all — so a whole swarm silently changed model
+// and reasoning budget on any recovery, with no operator signal.
+func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
+	cfg := config.Default()
+
+	t.Run("exact model id and effort survive", func(t *testing.T) {
+		vars := restartModelVars(cfg, "codex", "gpt-5.6-terra@high")
+		if vars.Model != "gpt-5.6-terra" {
+			t.Fatalf("Model = %q, want gpt-5.6-terra (an exact model ID must not fall back to the default)", vars.Model)
+		}
+		if vars.ReasoningEffort != "high" {
+			t.Fatalf("ReasoningEffort = %q, want high", vars.ReasoningEffort)
+		}
+		if !vars.ModelRequested {
+			t.Fatal("ModelRequested = false; the render guard would let the model be silently dropped")
+		}
+	})
+
+	t.Run("a bare unknown variant is still treated as a persona, not a model", func(t *testing.T) {
+		// Deliberate: spawn writes a persona name into the same field, and
+		// rendering `--model 'architect'` would kill the pane at its ready
+		// gate. Only the `model@effort` form proves the variant is a model.
+		vars := restartModelVars(cfg, "codex", "reviewer-persona")
+		if vars.Model != cfg.Models.DefaultCodex {
+			t.Fatalf("Model = %q, want the default %q — a persona name must not become a model", vars.Model, cfg.Models.DefaultCodex)
+		}
+	})
+
+	t.Run("configured alias still resolves to its full name", func(t *testing.T) {
+		aliased := config.Default()
+		aliased.Models.Codex = map[string]string{"max": "gpt-5.1-codex-max"}
+		vars := restartModelVars(aliased, "codex", "max@high")
+		if vars.Model != "gpt-5.1-codex-max" {
+			t.Fatalf("Model = %q, want the alias target gpt-5.1-codex-max", vars.Model)
+		}
+		if vars.ModelAlias != "max" {
+			t.Fatalf("ModelAlias = %q, want max", vars.ModelAlias)
+		}
+		if vars.ReasoningEffort != "high" {
+			t.Fatalf("ReasoningEffort = %q, want high — an alias must not cost the effort", vars.ReasoningEffort)
+		}
+	})
+
+	t.Run("no variant keeps the configured default", func(t *testing.T) {
+		vars := restartModelVars(cfg, "codex", "")
+		if vars.Model != cfg.Models.DefaultCodex {
+			t.Fatalf("Model = %q, want the default %q", vars.Model, cfg.Models.DefaultCodex)
+		}
+	})
+}
