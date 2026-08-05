@@ -26,16 +26,29 @@ For each Claude pane at spawn:
 
 1. Builds a pane-private config dir at
    `<project>/.ntm/claude-homes/<session>/<pane>/`. The path is keyed to the
-   pane so `claude --resume` keeps finding the same conversation history across
-   restarts.
-2. Symlinks **every entry** of `~/.claude` into it **except `.credentials.json`**.
-   Settings, MCP servers, and skills all survive; the rotating credential is
-   structurally unreachable.
+   pane so its credential-isolation home is stable across restarts.
+2. Symlinks the operator's `~/.claude` entries into it **except
+   `.credentials.json`**. Settings, MCP servers, and skills remain available;
+   the rotating credential is structurally unreachable.
 3. Exports `CLAUDE_CONFIG_DIR=<that dir>` and, when a token file is configured,
    `CLAUDE_CODE_OAUTH_TOKEN=<setup token>` on the pane's launch command.
 
 With no credentials file reachable and no refresh cycle to race, the panes
 become stateless readers of one static token.
+
+### Shared writable state
+
+This is **credential isolation only**, not a private Claude workspace. At
+present, entries such as `projects/`, `sessions/`, `todos/`, `history.jsonl`,
+and caches are linked to the operator's `~/.claude`, so panes and the
+interactive Claude session still share their conversation and working state.
+`claude --resume` therefore sees shared history, not pane-private history.
+
+This sharing is deliberate for the current opt-in credential fix. Do not rely
+on it to protect concurrent writes to those entries. If a tool atomically
+replaces a linked entry, the pane receives a local divergent copy instead of a
+live link; ntm preserves that pane-written file and logs a warning on the next
+provision rather than discarding data silently.
 
 ## Setup-token bootstrap (required for credentialed isolation)
 
@@ -82,12 +95,17 @@ reachable from the pane's config dir". After spawning:
 
 ```bash
 ls -la <project>/.ntm/claude-homes/<session>/<pane>/
-# every config entry appears as a symlink; .credentials.json is absent
+# linked config entries appear as symlinks; .credentials.json is absent
 ```
 
 A `.credentials.json` that later appears inside an isolated dir defeats the
 mechanism (Claude Code would prefer it over the static token). Re-provisioning
 — which happens on every spawn — removes it.
+
+If a normally linked file appears as a regular file, it has diverged after an
+atomic replacement. ntm reports that condition during re-provisioning and
+leaves the pane's file intact; compare it with the operator copy before
+choosing whether to merge or remove it.
 
 ## Scope
 
