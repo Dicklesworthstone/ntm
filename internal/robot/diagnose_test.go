@@ -471,6 +471,15 @@ func TestExecuteDiagnoseFixStopsOnInterruptCancellation(t *testing.T) {
 }
 
 func TestDiagnoseDiscoveryErrorClassification(t *testing.T) {
+	t.Run("missing session has no overall health", func(t *testing.T) {
+		output, err := getDiagnoseWithDependencies(t.Context(), DiagnoseOptions{Session: "missing"}, diagnoseDependencies{
+			sessionExists: func(context.Context, string) (bool, error) { return false, nil },
+		})
+		if err != nil || output.Success || output.ErrorCode != ErrCodeSessionNotFound || output.OverallHealth != "" {
+			t.Fatalf("missing session output=%+v err=%v", output, err)
+		}
+	})
+
 	t.Run("full session cancellation", func(t *testing.T) {
 		output, err := getDiagnoseWithDependencies(t.Context(), DiagnoseOptions{Session: "project"}, diagnoseDependencies{
 			sessionExists: func(context.Context, string) (bool, error) {

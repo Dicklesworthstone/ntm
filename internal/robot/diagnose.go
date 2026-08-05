@@ -147,7 +147,6 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 	output := &DiagnoseOutput{
 		RobotResponse:   NewRobotResponse(true),
 		Session:         opts.Session,
-		OverallHealth:   "healthy",
 		Panes:           DiagnosePanes{},
 		Recommendations: []DiagnoseRecommendation{},
 	}
