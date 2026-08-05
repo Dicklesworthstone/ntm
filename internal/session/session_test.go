@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -1243,4 +1245,71 @@ func TestSessionState_WindowsRoundTrip(t *testing.T) {
 	if !strings.Contains(string(data), `"grok":2`) {
 		t.Errorf("serialized session missing Grok count: %s", data)
 	}
+}
+
+// bd-4tz2d: restore recreates a whole saved swarm at once, so relaunching its
+// Claude panes onto the shared rotating credential puts every one of them back
+// into the GH#237 refresh-token race. The saved pane command was captured
+// before the pane had an isolated config dir, so it never carries one.
+func TestApplyClaudeIsolation(t *testing.T) {
+	t.Setenv(swarm.ClaudeCredentialStoreEnvVar, "file")
+
+	cfg := config.Default()
+	cfg.Agents.ClaudeIsolateCredentials = true
+	workDir := t.TempDir()
+
+	t.Run("claude pane gets an isolated config dir", func(t *testing.T) {
+		pane := PaneState{Index: 2, AgentType: "cc"}
+		got, err := applyClaudeIsolation(cfg, workDir, "proj", pane, "claude --resume")
+		if err != nil {
+			t.Fatalf("applyClaudeIsolation: %v", err)
+		}
+		if !strings.Contains(got, "CLAUDE_CONFIG_DIR=") || !strings.Contains(got, "claude-homes") {
+			t.Fatalf("restored claude command has no isolated config dir: %q", got)
+		}
+		if !strings.HasSuffix(got, "claude --resume") {
+			t.Fatalf("original command was not preserved: %q", got)
+		}
+	})
+
+	t.Run("canonicalizes the saved agent type", func(t *testing.T) {
+		// Saved state may spell the type either way.
+		pane := PaneState{Index: 1, AgentType: "claude"}
+		got, err := applyClaudeIsolation(cfg, workDir, "proj", pane, "claude")
+		if err != nil {
+			t.Fatalf("applyClaudeIsolation: %v", err)
+		}
+		if !strings.Contains(got, "CLAUDE_CONFIG_DIR=") {
+			t.Fatalf("a pane saved as %q was not recognized as Claude: %q", pane.AgentType, got)
+		}
+	})
+
+	t.Run("non-claude panes are untouched", func(t *testing.T) {
+		pane := PaneState{Index: 3, AgentType: "cod"}
+		got, err := applyClaudeIsolation(cfg, workDir, "proj", pane, "codex")
+		if err != nil {
+			t.Fatalf("applyClaudeIsolation: %v", err)
+		}
+		if got != "codex" {
+			t.Fatalf("codex command was modified: %q", got)
+		}
+	})
+
+	t.Run("disabled feature is a no-op", func(t *testing.T) {
+		off := config.Default()
+		off.Agents.ClaudeIsolateCredentials = false
+		pane := PaneState{Index: 1, AgentType: "cc"}
+		got, err := applyClaudeIsolation(off, workDir, "proj", pane, "claude")
+		if err != nil || got != "claude" {
+			t.Fatalf("applyClaudeIsolation with the feature off = (%q, %v), want the command unchanged", got, err)
+		}
+	})
+
+	t.Run("nil config is a no-op", func(t *testing.T) {
+		pane := PaneState{Index: 1, AgentType: "cc"}
+		got, err := applyClaudeIsolation(nil, workDir, "proj", pane, "claude")
+		if err != nil || got != "claude" {
+			t.Fatalf("applyClaudeIsolation with nil cfg = (%q, %v), want the command unchanged", got, err)
+		}
+	})
 }

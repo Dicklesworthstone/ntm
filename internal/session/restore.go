@@ -185,6 +185,27 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 	return nil
 }
 
+// applyClaudeIsolation prefixes a Claude pane's launch command with its
+// per-pane credential isolation environment (GH#237, bd-4tz2d), and returns
+// non-Claude commands unchanged.
+//
+// It is applied to the RENDERED command whether that came from the saved pane
+// command or the type default: a saved command was captured before this pane
+// had an isolated config dir, so neither source carries one. Restore is the
+// most important path to cover because it recreates a whole saved swarm at
+// once — relaunching all of its Claude panes onto the shared rotating
+// credential puts every one of them back into the refresh-token race.
+func applyClaudeIsolation(cfg *config.Config, workDir, sessionName string, paneState PaneState, agentCmd string) (string, error) {
+	if agent.AgentType(paneState.AgentType).Canonical() != agent.AgentTypeClaudeCode {
+		return agentCmd, nil
+	}
+	claudeEnv, err := swarm.ProvisionClaudeIsolation(cfg, workDir, sessionName, paneState.Index)
+	if err != nil {
+		return "", err
+	}
+	return claudeEnv.ApplyToCommand(agentCmd), nil
+}
+
 // RestoreAgents launches the agents in the restored session.
 // This is separated from Restore to allow for customization.
 //
@@ -266,24 +287,19 @@ func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands, 
 			continue
 		}
 
-		// Per-pane Claude credential isolation (GH#237, bd-4tz2d). Applied to
-		// the RENDERED command, whether it came from the saved pane command or
-		// the type default: a saved command was captured before this pane had
-		// an isolated config dir, so neither source carries one.
-		if agent.AgentType(paneState.AgentType).Canonical() == agent.AgentTypeClaudeCode {
-			claudeEnv, isoErr := swarm.ProvisionClaudeIsolation(cfg, state.WorkDir, sessionName, paneState.Index)
-			if isoErr != nil {
-				_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "agent.restore", map[string]interface{}{
-					"agent_type":     paneState.AgentType,
-					"pane_index":     paneState.Index,
-					"pane_title":     paneState.Title,
-					"error":          fmt.Sprintf("claude credential isolation: %v", isoErr),
-					"correlation_id": correlationID,
-				}, nil)
-				return fmt.Errorf("isolating credentials for claude pane %d: %w", paneState.Index, isoErr)
-			}
-			agentCmd = claudeEnv.ApplyToCommand(agentCmd)
+		// Per-pane Claude credential isolation (GH#237, bd-4tz2d).
+		isolatedCmd, isoErr := applyClaudeIsolation(cfg, state.WorkDir, sessionName, paneState, agentCmd)
+		if isoErr != nil {
+			_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "agent.restore", map[string]interface{}{
+				"agent_type":     paneState.AgentType,
+				"pane_index":     paneState.Index,
+				"pane_title":     paneState.Title,
+				"error":          fmt.Sprintf("claude credential isolation: %v", isoErr),
+				"correlation_id": correlationID,
+			}, nil)
+			return fmt.Errorf("isolating credentials for claude pane %d: %w", paneState.Index, isoErr)
 		}
+		agentCmd = isolatedCmd
 
 		attempted++
 
