@@ -36,6 +36,14 @@ type SwarmPlan struct {
 	TotalAgy    int `json:"total_agy"`
 	TotalAgents int `json:"total_agents"`
 
+	// PlannedAgents is how many panes the generated sessions actually hold.
+	// It normally equals TotalAgents, but a manual --panes-per-session that
+	// cannot hold the allocation makes the session grid smaller than the
+	// allocation, and the leftover agents are dropped. Reporting only
+	// TotalAgents let the plan claim 20 agents while launching 6, with no
+	// surface anywhere saying 14 were discarded.
+	PlannedAgents int `json:"planned_agents"`
+
 	// AutoRotateAccounts enables automatic account rotation on limit hit (requires caam).
 	AutoRotateAccounts bool `json:"auto_rotate_accounts"`
 

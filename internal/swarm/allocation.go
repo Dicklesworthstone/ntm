@@ -145,6 +145,11 @@ func (ac *AllocationCalculator) GenerateSwarmPlan(scanDir string, projects []Pro
 	// Generate session specifications
 	sessions := ac.generateSessions(result.Allocations, sessionsPerType, panesPerSession)
 
+	plannedAgents := 0
+	for _, session := range sessions {
+		plannedAgents += len(session.Panes)
+	}
+
 	return &SwarmPlan{
 		CreatedAt:          time.Now().UTC(),
 		ScanDir:            scanDir,
@@ -154,6 +159,7 @@ func (ac *AllocationCalculator) GenerateSwarmPlan(scanDir string, projects []Pro
 		TotalGmi:           result.Totals.TotalGmi,
 		TotalAgy:           result.Totals.TotalAgy,
 		TotalAgents:        result.Totals.TotalAgents,
+		PlannedAgents:      plannedAgents,
 		AutoRotateAccounts: ac.Config.AutoRotateAccounts,
 		SessionsPerType:    sessionsPerType,
 		PanesPerSession:    panesPerSession,

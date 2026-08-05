@@ -376,9 +376,18 @@ func (pl *PaneLauncher) LaunchSwarm(ctx context.Context, plan *SwarmPlan, stagge
 	}
 
 	start := time.Now()
+	// Count the panes this launch will actually attempt, not the plan's agent
+	// allocation. Successful/Failed are accumulated over plan.Sessions, so
+	// sourcing TotalPanes from TotalAgents made the result inconsistent with
+	// itself whenever the session grid held fewer panes than the allocation:
+	// TotalPanes=20, Successful=6, Failed=0, and no error anywhere.
+	totalPanes := 0
+	for _, sessionSpec := range plan.Sessions {
+		totalPanes += len(sessionSpec.Panes)
+	}
 	result := &BatchLaunchResult{
-		TotalPanes: plan.TotalAgents,
-		Results:    make([]PaneLaunchResult, 0, plan.TotalAgents),
+		TotalPanes: totalPanes,
+		Results:    make([]PaneLaunchResult, 0, totalPanes),
 	}
 
 	pl.logger().Info("[PaneLauncher] swarm_launch_start",

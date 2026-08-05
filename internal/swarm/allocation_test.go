@@ -473,3 +473,54 @@ func TestAllocationCalculator_PanesPerSessionAutoCalculate(t *testing.T) {
 		t.Errorf("PanesPerSession = %d, want 2 (auto-calculated: ceil(4/2))", plan.PanesPerSession)
 	}
 }
+
+// A manual --panes-per-session smaller than the allocation used to silently
+// drop the leftover agents while the plan still reported the full count, so
+// the operator saw "Total Agents: N", launched, and got fewer with no
+// indication that any were discarded. The plan must now report what it will
+// actually launch so callers can detect the shortfall.
+func TestGenerateSwarmPlan_PlannedAgentsReflectsActualPanes(t *testing.T) {
+	cfg := config.DefaultSwarmConfig()
+	cfg.SessionsPerType = 3
+	cfg.PanesPerSession = 2 // far too small for the allocation below
+
+	calc := NewAllocationCalculator(&cfg)
+	projects := []ProjectBeadCount{
+		{Path: "/tmp/p1", Name: "p1", OpenBeads: 400},
+		{Path: "/tmp/p2", Name: "p2", OpenBeads: 400},
+		{Path: "/tmp/p3", Name: "p3", OpenBeads: 400},
+		{Path: "/tmp/p4", Name: "p4", OpenBeads: 400},
+	}
+	plan := calc.GenerateSwarmPlan("/tmp", projects)
+
+	actual := 0
+	for _, session := range plan.Sessions {
+		actual += len(session.Panes)
+	}
+	if plan.PlannedAgents != actual {
+		t.Fatalf("PlannedAgents=%d but sessions hold %d panes", plan.PlannedAgents, actual)
+	}
+	t.Logf("total=%d planned=%d sessions=%d", plan.TotalAgents, plan.PlannedAgents, len(plan.Sessions))
+	if plan.TotalAgents <= plan.PlannedAgents {
+		t.Fatalf("expected the tiny grid to force a shortfall; total=%d planned=%d", plan.TotalAgents, plan.PlannedAgents)
+	}
+	t.Logf("allocation=%d planned=%d — the shortfall is now visible to callers",
+		plan.TotalAgents, plan.PlannedAgents)
+}
+
+// The auto-sized path must never drop anything.
+func TestGenerateSwarmPlan_AutoSizedPlanLosesNoAgents(t *testing.T) {
+	cfg := config.DefaultSwarmConfig()
+	cfg.SessionsPerType = 3
+	cfg.PanesPerSession = 0 // auto
+
+	calc := NewAllocationCalculator(&cfg)
+	projects := []ProjectBeadCount{
+		{Path: "/tmp/p1", Name: "p1", OpenBeads: 400},
+		{Path: "/tmp/p2", Name: "p2", OpenBeads: 120},
+	}
+	plan := calc.GenerateSwarmPlan("/tmp", projects)
+	if plan.PlannedAgents != plan.TotalAgents {
+		t.Fatalf("auto-sized plan dropped agents: planned=%d total=%d", plan.PlannedAgents, plan.TotalAgents)
+	}
+}
