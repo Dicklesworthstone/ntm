@@ -435,7 +435,7 @@ func TestGenerateReasoning_DefaultFallback(t *testing.T) {
 // =============================================================================
 
 func TestGenerateAssignHints_NoWork(t *testing.T) {
-	hints := generateAssignHints(nil, nil, nil, nil)
+	hints := generateAssignHints("test", nil, nil, nil, nil)
 
 	if hints.Summary != "No work available to assign" {
 		t.Errorf("Summary = %q, want %q", hints.Summary, "No work available to assign")
@@ -444,7 +444,7 @@ func TestGenerateAssignHints_NoWork(t *testing.T) {
 
 func TestGenerateAssignHints_NoIdleAgents(t *testing.T) {
 	beads := []bv.BeadPreview{{ID: "bd-1", Title: "Task 1", Priority: "P1"}}
-	hints := generateAssignHints(nil, nil, beads, nil)
+	hints := generateAssignHints("test", nil, nil, beads, nil)
 
 	if !strings.Contains(hints.Summary, "no idle agents") {
 		t.Errorf("Summary %q should mention no idle agents", hints.Summary)
@@ -462,7 +462,7 @@ func TestGenerateAssignHints_WithRecommendations(t *testing.T) {
 		{ID: "bd-def", Title: "Task B"},
 	}
 
-	hints := generateAssignHints(recs, idleAgents, beads, nil)
+	hints := generateAssignHints("test", recs, idleAgents, beads, nil)
 
 	if !strings.Contains(hints.Summary, "2 assignments") {
 		t.Errorf("Summary %q should mention 2 assignments", hints.Summary)
@@ -481,7 +481,7 @@ func TestGenerateAssignHints_MoreBeadsThanAgents(t *testing.T) {
 		{ID: "bd-ghi", Title: "C"},
 	}
 
-	hints := generateAssignHints(recs, idleAgents, beads, nil)
+	hints := generateAssignHints("test", recs, idleAgents, beads, nil)
 
 	if len(hints.Warnings) == 0 {
 		t.Error("should warn about unassigned beads")
@@ -504,7 +504,7 @@ func TestGenerateAssignHints_StaleInProgress(t *testing.T) {
 		{ID: "bd-new", Title: "Fresh task", UpdatedAt: time.Now().Add(-1 * time.Hour)},
 	}
 
-	hints := generateAssignHints(nil, nil, nil, inProgress)
+	hints := generateAssignHints("test", nil, nil, nil, inProgress)
 
 	found := false
 	for _, w := range hints.Warnings {
@@ -692,6 +692,40 @@ func TestResolveAssignBlockedBeadsReturnsDetailErrors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "bd-child") || !strings.Contains(err.Error(), "database unavailable") {
 		t.Fatalf("detail error = %v, want contextual lookup error", err)
+	}
+}
+
+func TestClassifyAssignableActionableRecommendationsExplainsExclusions(t *testing.T) {
+	assignable, unassignable := classifyAssignableActionableRecommendationsWithGate([]bv.TriageRecommendation{
+		{ID: "bd-ready", Title: "Ready", Status: "open"},
+		{ID: "bd-blocked", Title: "Blocked", Status: "open", BlockedBy: []string{"bd-parent"}},
+		{ID: "bd-gated", Title: "Gated", Status: "open", Labels: []string{"operator-gated"}},
+	}, 0, func(label string) bool { return label == "operator-gated" })
+	if got := []string{assignable[0].ID}; !reflect.DeepEqual(got, []string{"bd-ready"}) {
+		t.Fatalf("assignable IDs = %v, want [bd-ready]", got)
+	}
+	if want := []UnassignableBead{
+		{ID: "bd-blocked", Title: "Blocked", Reason: "blocked by bd-parent"},
+		{ID: "bd-gated", Title: "Gated", Reason: "operator-gated label: operator-gated"},
+	}; !reflect.DeepEqual(unassignable, want) {
+		t.Fatalf("unassignable beads = %+v, want %+v", unassignable, want)
+	}
+}
+
+func TestUnassignedBeadsForAgentCapacity(t *testing.T) {
+	ready := []bv.BeadPreview{
+		{ID: "bd-1", Title: "First"},
+		{ID: "bd-2", Title: "Second"},
+		{ID: "bd-3", Title: "Third"},
+	}
+	if got, want := unassignedBeadsForAgentCapacity(ready, 1), []UnassignableBead{
+		{ID: "bd-2", Title: "Second", Reason: "no idle agent available"},
+		{ID: "bd-3", Title: "Third", Reason: "no idle agent available"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unassignable capacity beads = %+v, want %+v", got, want)
+	}
+	if got := unassignedBeadsForAgentCapacity(ready, len(ready)); got != nil {
+		t.Fatalf("unassignable capacity beads = %+v, want nil when every bead is recommended", got)
 	}
 }
 

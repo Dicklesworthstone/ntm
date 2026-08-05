@@ -268,7 +268,7 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Provide a readable project directory for Beads")
 		return output, nil
 	}
-	readyBeads, err := getAssignableBeadPreviews(ctx, projectDir, 50)
+	actionable, err := bv.GetActionableRecommendationsContext(ctx, projectDir, 0)
 	if err != nil {
 		setAssignError(output, fmt.Errorf("read actionable Beads work: %w", err), "Ensure bv and br can verify the target project's actionable work and labels")
 		return output, nil
@@ -285,14 +285,16 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 		for _, b := range opts.Beads {
 			beadSet[b] = true
 		}
-		var filtered []bv.BeadPreview
-		for _, b := range readyBeads {
-			if beadSet[b.ID] {
-				filtered = append(filtered, b)
+		var filtered []bv.TriageRecommendation
+		for _, recommendation := range actionable {
+			if beadSet[recommendation.ID] {
+				filtered = append(filtered, recommendation)
 			}
 		}
-		readyBeads = filtered
+		actionable = filtered
 	}
+	assignable, unassignable := classifyAssignableRecommendationsForProject(projectDir, actionable, 50)
+	readyBeads := filterAssignableBeadPreviewsForProject(projectDir, assignable, 0)
 
 	// Build working agents set from in-progress beads
 	workingAgents := len(agents) - len(idleAgentPanes)
@@ -300,6 +302,8 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	// Generate recommendations based on strategy
 	recommendations := generateAssignments(agents, readyBeads, strategy, idleAgentPanes)
 	output.Recommendations = recommendations
+	unassignable = append(unassignable, unassignedBeadsForAgentCapacity(readyBeads, len(recommendations))...)
+	output.UnassignableBeads = unassignable
 
 	// Add blocked beads (beads with unmet dependencies)
 	blockedBeads, err := bv.GetBlockedListContext(ctx, projectDir, 20)
@@ -315,16 +319,17 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 
 	// Build summary
 	output.Summary = AssignSummary{
-		TotalAgents:     len(agents),
-		IdleAgents:      len(idleAgentPanes),
-		WorkingAgents:   workingAgents,
-		ReadyBeads:      len(readyBeads),
-		BlockedBeads:    len(output.BlockedBeads),
-		Recommendations: len(recommendations),
+		TotalAgents:       len(agents),
+		IdleAgents:        len(idleAgentPanes),
+		WorkingAgents:     workingAgents,
+		ReadyBeads:        len(readyBeads),
+		BlockedBeads:      len(output.BlockedBeads),
+		Recommendations:   len(recommendations),
+		UnassignableBeads: len(output.UnassignableBeads),
 	}
 
 	// Generate agent hints
-	output.AgentHints = generateAssignHints(recommendations, idleAgentPanes, readyBeads, inProgress)
+	output.AgentHints = generateAssignHints(opts.Session, recommendations, idleAgentPanes, readyBeads, inProgress)
 
 	return output, nil
 }
@@ -499,30 +504,69 @@ func filterAssignableActionableRecommendationsForProject(projectDir string, reco
 }
 
 func filterAssignableActionableRecommendationsWithGate(recommendations []bv.TriageRecommendation, limit int, operatorGated func(string) bool) []bv.TriageRecommendation {
+	filtered, _ := classifyAssignableActionableRecommendationsWithGate(recommendations, limit, operatorGated)
+	return filtered
+}
+
+func classifyAssignableRecommendationsForProject(projectDir string, recommendations []bv.TriageRecommendation, limit int) ([]bv.TriageRecommendation, []UnassignableBead) {
+	return classifyAssignableActionableRecommendationsWithGate(recommendations, limit, func(label string) bool {
+		return bv.IsOperatorGatedLabelForProject(projectDir, label)
+	})
+}
+
+func unassignedBeadsForAgentCapacity(readyBeads []bv.BeadPreview, recommendationCount int) []UnassignableBead {
+	if recommendationCount >= len(readyBeads) {
+		return nil
+	}
+	if recommendationCount < 0 {
+		recommendationCount = 0
+	}
+
+	unassignable := make([]UnassignableBead, 0, len(readyBeads)-recommendationCount)
+	for _, bead := range readyBeads[recommendationCount:] {
+		unassignable = append(unassignable, UnassignableBead{ID: bead.ID, Title: bead.Title, Reason: "no idle agent available"})
+	}
+	return unassignable
+}
+
+func classifyAssignableActionableRecommendationsWithGate(recommendations []bv.TriageRecommendation, limit int, operatorGated func(string) bool) ([]bv.TriageRecommendation, []UnassignableBead) {
 	filtered := make([]bv.TriageRecommendation, 0, len(recommendations))
+	unassignable := make([]UnassignableBead, 0)
 	seen := make(map[string]struct{}, len(recommendations))
 	for _, recommendation := range recommendations {
 		beadID := strings.TrimSpace(recommendation.ID)
-		if beadID == "" || len(recommendation.BlockedBy) > 0 {
+		if beadID == "" {
+			unassignable = append(unassignable, UnassignableBead{Title: strings.TrimSpace(recommendation.Title), Reason: "missing bead ID"})
+			continue
+		}
+		if len(recommendation.BlockedBy) > 0 {
+			unassignable = append(unassignable, UnassignableBead{ID: beadID, Title: strings.TrimSpace(recommendation.Title), Reason: "blocked by " + strings.Join(recommendation.BlockedBy, ", ")})
 			continue
 		}
 
-		gated := false
+		gatedLabel := ""
 		for _, label := range recommendation.Labels {
 			if operatorGated(label) {
-				gated = true
+				gatedLabel = strings.TrimSpace(label)
 				break
 			}
 		}
-		if gated {
+		if gatedLabel != "" {
+			unassignable = append(unassignable, UnassignableBead{ID: beadID, Title: strings.TrimSpace(recommendation.Title), Reason: "operator-gated label: " + gatedLabel})
 			continue
 		}
 
 		status := strings.ToLower(strings.TrimSpace(recommendation.Status))
 		if status != "open" && status != "ready" {
+			unassignable = append(unassignable, UnassignableBead{ID: beadID, Title: strings.TrimSpace(recommendation.Title), Reason: "status is " + status})
 			continue
 		}
 		if _, duplicate := seen[beadID]; duplicate {
+			unassignable = append(unassignable, UnassignableBead{ID: beadID, Title: strings.TrimSpace(recommendation.Title), Reason: "duplicate recommendation"})
+			continue
+		}
+		if limit > 0 && len(filtered) >= limit {
+			unassignable = append(unassignable, UnassignableBead{ID: beadID, Title: strings.TrimSpace(recommendation.Title), Reason: "recommendation limit reached"})
 			continue
 		}
 		seen[beadID] = struct{}{}
@@ -531,11 +575,8 @@ func filterAssignableActionableRecommendationsWithGate(recommendations []bv.Tria
 		recommendation.Title = strings.TrimSpace(recommendation.Title)
 		recommendation.Type = strings.TrimSpace(recommendation.Type)
 		filtered = append(filtered, recommendation)
-		if limit > 0 && len(filtered) >= limit {
-			break
-		}
 	}
-	return filtered
+	return filtered, unassignable
 }
 
 // loadAuthoritativeAssignmentPolicy strictly loads assignment policy for the
@@ -744,7 +785,7 @@ func generateReasoning(agentType string, bead bv.BeadPreview, strategy string) s
 }
 
 // generateAssignHints creates actionable hints for AI agents
-func generateAssignHints(recs []AssignRecommend, idleAgents []string, readyBeads []bv.BeadPreview, inProgress []bv.BeadInProgress) *AssignAgentHints {
+func generateAssignHints(session string, recs []AssignRecommend, idleAgents []string, readyBeads []bv.BeadPreview, inProgress []bv.BeadInProgress) *AssignAgentHints {
 	hints := &AssignAgentHints{}
 
 	// Build summary
@@ -758,7 +799,7 @@ func generateAssignHints(recs []AssignRecommend, idleAgents []string, readyBeads
 
 	// Generate suggested commands
 	for _, rec := range recs {
-		cmd := fmt.Sprintf("br update %s --assignee=%s", rec.AssignBead, rec.PaneID)
+		cmd := fmt.Sprintf("ntm --robot-bulk-assign=%s --allocation='{\"%s\":\"%s\"}'", session, rec.PaneTarget, rec.AssignBead)
 		hints.SuggestedCommands = append(hints.SuggestedCommands, cmd)
 	}
 

@@ -4615,7 +4615,7 @@ func TestGenerateReasoning(t *testing.T) {
 
 func TestGenerateAssignHints(t *testing.T) {
 	t.Run("no work available", func(t *testing.T) {
-		hints := generateAssignHints(nil, nil, nil, nil)
+		hints := generateAssignHints("test", nil, nil, nil, nil)
 		if hints.Summary != "No work available to assign" {
 			t.Errorf("Expected 'No work available to assign', got %q", hints.Summary)
 		}
@@ -4623,7 +4623,7 @@ func TestGenerateAssignHints(t *testing.T) {
 
 	t.Run("beads but no idle agents", func(t *testing.T) {
 		beads := []bv.BeadPreview{{ID: "1", Title: "Task"}, {ID: "2", Title: "Task2"}}
-		hints := generateAssignHints(nil, nil, beads, nil)
+		hints := generateAssignHints("test", nil, nil, beads, nil)
 		if !strings.Contains(hints.Summary, "2 beads ready but no idle agents") {
 			t.Errorf("Expected summary about beads but no agents, got %q", hints.Summary)
 		}
@@ -4635,12 +4635,15 @@ func TestGenerateAssignHints(t *testing.T) {
 			{PaneID: "%22", PaneTarget: "1.2", AssignBead: "ntm-456"},
 		}
 		idleAgents := []string{"%11", "%22"}
-		hints := generateAssignHints(recs, idleAgents, nil, nil)
+		hints := generateAssignHints("test", recs, idleAgents, nil, nil)
 		if !strings.Contains(hints.Summary, "2 assignments recommended") {
 			t.Errorf("Expected summary about 2 assignments, got %q", hints.Summary)
 		}
 		if len(hints.SuggestedCommands) != 2 {
 			t.Errorf("Expected 2 suggested commands, got %d", len(hints.SuggestedCommands))
+		}
+		if got := hints.SuggestedCommands[0]; !strings.Contains(got, "--robot-bulk-assign=test") || strings.Contains(got, "--assignee=") {
+			t.Errorf("suggested command = %q, want robot bulk assignment without direct assignee", got)
 		}
 	})
 
@@ -4648,7 +4651,7 @@ func TestGenerateAssignHints(t *testing.T) {
 		inProgress := []bv.BeadInProgress{
 			{ID: "1", Title: "Stale", UpdatedAt: time.Now().Add(-48 * time.Hour)},
 		}
-		hints := generateAssignHints(nil, nil, nil, inProgress)
+		hints := generateAssignHints("test", nil, nil, nil, inProgress)
 		found := false
 		for _, w := range hints.Warnings {
 			if strings.Contains(w, "stale") {
