@@ -755,7 +755,7 @@ func getDiagnoseBriefWithDependencies(ctx context.Context, session string, deps 
 			if check.ErrorCheck != nil && check.ErrorCheck.RateLimited {
 				summary.RateLimited++
 			} else {
-				summary.Healthy++
+				summary.Degraded++
 			}
 		case HealthRateLimited:
 			summary.RateLimited++
@@ -775,7 +775,7 @@ func getDiagnoseBriefWithDependencies(ctx context.Context, session string, deps 
 	}
 
 	output.OverallHealth = determineOverallHealth(summary)
-	output.HasIssues = summary.RateLimited > 0 || summary.Unresponsive > 0 || summary.Crashed > 0 || summary.Unknown > 0
+	output.HasIssues = summary.Degraded > 0 || summary.RateLimited > 0 || summary.Unresponsive > 0 || summary.Crashed > 0 || summary.Unknown > 0
 	output.FixAvailable = hasAutoFix
 
 	// Build summary string
