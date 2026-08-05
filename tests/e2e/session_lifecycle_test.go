@@ -34,25 +34,17 @@ func TestFullSessionLifecycle(t *testing.T) {
 		t.Fatalf("failed to create project directory: %v", err)
 	}
 
-	// Setup state database in temp dir
-	stateDir := t.TempDir()
-	stateDBPath := filepath.Join(stateDir, "state.db")
-
-	// Create config with state path
+	// Create an isolated config for the spawned session.
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "config.toml")
 	configContent := fmt.Sprintf(`
 projects_base = %q
-state_path = %q
 
 [agents]
 claude = "bash"
 codex = "bash"
 gemini = "bash"
-
-[tmux]
-scrollback = 500
-`, projectsBase, stateDBPath)
+`, projectsBase)
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
@@ -67,6 +59,9 @@ scrollback = 500
 	logger.LogSection("Step 1: Spawn session with agents")
 	out, err := logger.Exec("ntm", "--config", configPath, "spawn", sessionName, "--cc=2", "--safety")
 	logger.Log("Spawn output: %s, err: %v", string(out), err)
+	if err != nil {
+		t.Fatalf("spawn session: %v", err)
+	}
 
 	// Give tmux time to create panes
 	time.Sleep(1 * time.Second)
@@ -82,10 +77,10 @@ scrollback = 500
 	logger.Log("Status JSON: %s", string(out))
 
 	var statusResponse struct {
-		Timestamp string `json:"timestamp"`
-		Session   string `json:"session"`
-		Exists    bool   `json:"exists"`
-		Panes     []struct {
+		GeneratedAt string `json:"generated_at"`
+		Session     string `json:"session"`
+		Exists      bool   `json:"exists"`
+		Panes       []struct {
 			Index   int    `json:"index"`
 			Title   string `json:"title"`
 			Type    string `json:"type"`
@@ -104,11 +99,20 @@ scrollback = 500
 		t.Fatalf("failed to parse status JSON: %v\nOutput: %s", err, string(out))
 	}
 
+	if statusResponse.GeneratedAt == "" {
+		t.Fatal("status.generated_at should be populated")
+	}
+	if statusResponse.Session != sessionName {
+		t.Fatalf("status.session = %q, want %q", statusResponse.Session, sessionName)
+	}
 	if !statusResponse.Exists {
-		t.Error("status.exists should be true")
+		t.Fatal("status.exists should be true")
 	}
 	if statusResponse.AgentCounts.Claude < 2 {
-		t.Errorf("status.agent_counts.claude = %d, expected at least 2", statusResponse.AgentCounts.Claude)
+		t.Fatalf("status.agent_counts.claude = %d, expected at least 2", statusResponse.AgentCounts.Claude)
+	}
+	if len(statusResponse.Panes) < 3 {
+		t.Fatalf("status.panes has %d entries, expected at least 3", len(statusResponse.Panes))
 	}
 
 	logger.Log("PASS: Status JSON validated - found %d Claude agents", statusResponse.AgentCounts.Claude)
