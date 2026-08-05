@@ -14,9 +14,9 @@
 package e2e
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -24,6 +24,16 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func newRespawnIdentifier(t *testing.T, prefix string) string {
+	t.Helper()
+
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("[E2E-RESPAWN] generate identifier: %v", err)
+	}
+	return fmt.Sprintf("%s_%x", prefix, suffix)
+}
 
 // =============================================================================
 // Test Scenario 1: Graceful Kill with Ctrl+C
@@ -36,7 +46,7 @@ func TestE2E_GracefulKillCtrlC(t *testing.T) {
 	logger := NewTestLogger(t, "graceful_kill")
 	defer logger.Close()
 
-	session := fmt.Sprintf("e2e_respawn_graceful_%d", time.Now().Unix())
+	session := newRespawnIdentifier(t, "e2e_respawn_graceful")
 	logger.Log("[E2E-RESPAWN] Creating test session: %s", session)
 
 	// Create tmux session
@@ -111,7 +121,7 @@ func TestE2E_ForceKillFallback(t *testing.T) {
 	logger := NewTestLogger(t, "force_kill")
 	defer logger.Close()
 
-	session := fmt.Sprintf("e2e_respawn_force_%d", time.Now().Unix())
+	session := newRespawnIdentifier(t, "e2e_respawn_force")
 	logger.Log("[E2E-RESPAWN] Creating test session: %s", session)
 
 	// Create tmux session
@@ -219,7 +229,7 @@ func TestE2E_ClearPaneAndRespawn(t *testing.T) {
 	logger := NewTestLogger(t, "clear_respawn")
 	defer logger.Close()
 
-	session := fmt.Sprintf("e2e_respawn_clear_%d", time.Now().Unix())
+	session := newRespawnIdentifier(t, "e2e_respawn_clear")
 	logger.Log("[E2E-RESPAWN] Creating test session: %s", session)
 
 	// Create tmux session
@@ -250,7 +260,7 @@ func TestE2E_ClearPaneAndRespawn(t *testing.T) {
 
 	// Respawn with a new command
 	logger.Log("[E2E-RESPAWN] Spawning new command")
-	respawnMarker := fmt.Sprintf("RESPAWNED_%d", time.Now().UnixNano())
+	respawnMarker := newRespawnIdentifier(t, "RESPAWNED")
 	if err := exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, fmt.Sprintf("echo %s", respawnMarker), "Enter").Run(); err != nil {
 		t.Fatalf("[E2E-RESPAWN] Failed to spawn new command: %v", err)
 	}
@@ -289,7 +299,7 @@ func TestE2E_PromptInjectionAfterRespawn(t *testing.T) {
 	logger := NewTestLogger(t, "prompt_injection")
 	defer logger.Close()
 
-	session := fmt.Sprintf("e2e_respawn_prompt_%d", time.Now().Unix())
+	session := newRespawnIdentifier(t, "e2e_respawn_prompt")
 	logger.Log("[E2E-RESPAWN] Creating test session: %s", session)
 
 	// Create tmux session
@@ -370,7 +380,7 @@ func TestE2E_FullRespawnCycleSimulation(t *testing.T) {
 	logger := NewTestLogger(t, "full_cycle")
 	defer logger.Close()
 
-	session := fmt.Sprintf("e2e_respawn_full_%d", time.Now().Unix())
+	session := newRespawnIdentifier(t, "e2e_respawn_full")
 	logger.Log("[E2E-RESPAWN] Creating test session: %s", session)
 
 	// Create tmux session
@@ -490,8 +500,12 @@ func TestE2E_RealAgentRespawn(t *testing.T) {
 
 	target := suite.Session() // Use just session name for tmux send-keys
 
-	// Get agent command
-	agentCmd := agentType // cc, cod, or gmi
+	// Resolve NTM's short agent type to the executable that is actually launched.
+	// In particular, `cc` may be a C compiler on PATH and is not Claude Code.
+	agentCmd, ok := agentExecutable(agentType)
+	if !ok {
+		t.Fatalf("[E2E-RESPAWN] unsupported agent type: %s", agentType)
+	}
 
 	// Spawn the agent
 	if err := exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, agentCmd, "Enter").Run(); err != nil {
@@ -502,31 +516,22 @@ func TestE2E_RealAgentRespawn(t *testing.T) {
 	suite.Logger().Log("[E2E-RESPAWN] Waiting for agent to start...")
 	time.Sleep(8 * time.Second)
 
-	// Capture initial state
-	output1, _ := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", target, "-p", "-S", "-20").Output()
-	suite.Logger().Log("[E2E-RESPAWN] Initial agent output:\n%s", string(output1))
-
-	// Kill the agent using appropriate method
-	suite.Logger().Log("[E2E-RESPAWN] Killing agent using agent-specific method")
-	switch agentType {
-	case "cc":
-		// Claude: Double Ctrl+C
-		exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, "C-c").Run()
-		time.Sleep(100 * time.Millisecond)
-		exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, "C-c").Run()
-	case "cod":
-		// Codex: /exit
-		exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, "/exit", "Enter").Run()
-	case "gmi":
-		// Gemini: Escape then Ctrl+C
-		exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, "Escape").Run()
-		time.Sleep(50 * time.Millisecond)
-		exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, "C-c").Run()
+	pid, ok := waitForPaneAgentPID(target, agentCmd, 20*time.Second)
+	if !ok {
+		output, _ := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", target, "-p", "-S", "-40").Output()
+		t.Fatalf("[E2E-RESPAWN] %s did not start in pane; output:\n%s", agentCmd, output)
 	}
+	suite.Logger().Log("[E2E-RESPAWN] Confirmed %s process pid=%s", agentCmd, pid)
 
-	// Wait for agent to exit
-	suite.Logger().Log("[E2E-RESPAWN] Waiting for agent to exit...")
-	time.Sleep(3 * time.Second)
+	// Simulate an unexpected agent crash. The PID is resolved from this test's
+	// private tmux pane immediately before the signal is sent.
+	suite.Logger().Log("[E2E-RESPAWN] Simulating crash of pid=%s", pid)
+	if err := exec.Command("kill", "-9", pid).Run(); err != nil {
+		t.Fatalf("[E2E-RESPAWN] kill agent pid %s: %v", pid, err)
+	}
+	if waitForPaneAgentExit(target, agentCmd, 10*time.Second) {
+		t.Fatalf("[E2E-RESPAWN] %s still running after simulated crash", agentCmd)
+	}
 
 	// Clear and respawn
 	suite.Logger().Log("[E2E-RESPAWN] Clearing pane")
@@ -536,36 +541,13 @@ func TestE2E_RealAgentRespawn(t *testing.T) {
 	suite.Logger().Log("[E2E-RESPAWN] Respawning agent")
 	exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, agentCmd, "Enter").Run()
 
-	// Wait for new agent
-	time.Sleep(8 * time.Second)
-
-	// Capture new state
-	output2, _ := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", target, "-p", "-S", "-20").Output()
-	suite.Logger().Log("[E2E-RESPAWN] Respawned agent output:\n%s", string(output2))
-
-	// Verify agent is running by checking for characteristic output
-	hasAgentOutput := false
-	agentPatterns := map[string][]string{
-		"cc":  {"Claude", "Opus", "Sonnet", "Haiku"},
-		"cod": {"Codex", "codex>"},
-		"gmi": {"Gemini"},
+	if newPID, ok := waitForPaneAgentPID(target, agentCmd, 20*time.Second); !ok {
+		output, _ := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", target, "-p", "-S", "-40").Output()
+		t.Fatalf("[E2E-RESPAWN] %s did not recover after crash; output:\n%s", agentCmd, output)
+	} else if newPID == pid {
+		t.Fatalf("[E2E-RESPAWN] %s recovery reused terminated pid %s", agentCmd, pid)
 	}
-
-	patterns := agentPatterns[agentType]
-	for _, pattern := range patterns {
-		if strings.Contains(string(output2), pattern) {
-			hasAgentOutput = true
-			suite.Logger().Log("[E2E-RESPAWN] Found agent pattern: %s", pattern)
-			break
-		}
-	}
-
-	if hasAgentOutput {
-		suite.Logger().Log("[E2E-RESPAWN] SUCCESS: Real agent respawned successfully")
-	} else {
-		suite.Logger().Log("[E2E-RESPAWN] WARNING: Could not confirm agent respawn - may still be starting")
-		// Don't fail - agent startup can be slow
-	}
+	suite.Logger().Log("[E2E-RESPAWN] SUCCESS: Real agent recovered after crash")
 
 	// Clean up - kill the agent
 	suite.Logger().Log("[E2E-RESPAWN] Cleaning up - killing agent")
@@ -654,7 +636,7 @@ func TestE2E_RobotSmartRestartIntegration(t *testing.T) {
 func getChildPIDs(parentPID string) []string {
 	output, err := exec.Command("pgrep", "-P", parentPID).Output()
 	if err != nil {
-		return nil
+		return []string{}
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
@@ -667,14 +649,48 @@ func getChildPIDs(parentPID string) []string {
 	return pids
 }
 
+func waitForPaneAgentPID(target, executable string, timeout time.Duration) (string, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if pid, ok := paneAgentPID(target, executable); ok {
+			return pid, true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return "", false
+}
+
+func waitForPaneAgentExit(target, executable string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, ok := paneAgentPID(target, executable); !ok {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return true
+}
+
+func paneAgentPID(target, executable string) (string, bool) {
+	panePID, err := exec.Command(tmux.BinaryPath(), "display-message", "-p", "-t", target, "#{pane_pid}").Output()
+	if err != nil {
+		return "", false
+	}
+	for _, pid := range getChildPIDs(strings.TrimSpace(string(panePID))) {
+		if strings.Contains(getProcessCmdline(pid), executable) {
+			return pid, true
+		}
+	}
+	return "", false
+}
+
 // getProcessCmdline returns the command line of a process.
 func getProcessCmdline(pid string) string {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%s/cmdline", pid))
+	data, err := exec.Command("ps", "-p", pid, "-o", "command=").Output()
 	if err != nil {
 		return ""
 	}
-	// cmdline is null-separated
-	return strings.ReplaceAll(string(data), "\x00", " ")
+	return strings.TrimSpace(string(data))
 }
 
 // AutoRespawnerTestResult represents parsed output from respawn operations.
