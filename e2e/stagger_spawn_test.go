@@ -13,6 +13,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -95,6 +96,16 @@ type paneInfo struct {
 	IsWorking bool   `json:"is_working,omitempty"`
 }
 
+func newStaggerSession(t *testing.T, prefix string) string {
+	t.Helper()
+
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("[E2E-STAGGER] generate session suffix: %v", err)
+	}
+	return fmt.Sprintf("%s_%x", prefix, suffix)
+}
+
 func TestE2E_StaggeredSpawnPromptDelivery(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	SkipIfNoAgents(t)
@@ -113,7 +124,7 @@ func TestE2E_StaggeredSpawnPromptDelivery(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_stagger_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_stagger")
 	projectDir := filepath.Join(baseDir, session)
 	expectedDir := projectDir
 
@@ -171,15 +182,21 @@ func TestE2E_StaggeredSpawnPromptDelivery(t *testing.T) {
 		t.Fatalf("[E2E-STAGGER] interval mismatch: got %d want %d", resp.Stagger.IntervalMs, staggerDelay.Milliseconds())
 	}
 
-	hasDelayedPrompt := false
-	for _, p := range resp.Panes {
-		if p.PromptDelayMs > 0 {
-			hasDelayedPrompt = true
-			break
-		}
+	agentPanes := filterAgentPanes(resp.Panes)
+	if len(agentPanes) != 1 {
+		t.Fatalf("[E2E-STAGGER] expected one agent pane, got %d", len(agentPanes))
 	}
-	if !hasDelayedPrompt {
-		t.Fatalf("[E2E-STAGGER] expected at least one pane with prompt_delay_ms > 0")
+	executable, ok := agentExecutable(agentType)
+	if !ok {
+		t.Fatalf("[E2E-STAGGER] unsupported agent type: %s", agentType)
+	}
+	if agentPanes[0].Type != executable {
+		t.Fatalf("[E2E-STAGGER] agent pane type mismatch: got %q want %q", agentPanes[0].Type, executable)
+	}
+	// A stagger interval applies between agents. With one real agent there is no
+	// preceding pane, so its prompt must be delivered immediately.
+	if agentPanes[0].PromptDelayMs != 0 {
+		t.Fatalf("[E2E-STAGGER] single agent prompt delay: got %dms want 0ms", agentPanes[0].PromptDelayMs)
 	}
 
 	killArgs := []string{"--json", "kill", session, "--force"}
@@ -207,7 +224,7 @@ func TestE2E_StaggeredSpawn_MultiAgent(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_stagger_multi_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_stagger_multi")
 
 	// Use a short stagger for testing (500ms between each)
 	staggerDelay := 500 * time.Millisecond
@@ -311,7 +328,7 @@ func TestE2E_StaggeredPromptDelivery(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_stagger_prompt_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_stagger_prompt")
 
 	flag, ok := agentFlag(agentType)
 	if !ok {
@@ -414,7 +431,7 @@ func TestE2E_SmartStaggerMode(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_smart_stagger_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_smart_stagger")
 
 	flag, ok := agentFlag(agentType)
 	if !ok {
@@ -492,7 +509,7 @@ func TestE2E_StaggerDisabled(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_stagger_disabled_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_stagger_disabled")
 
 	flag, ok := agentFlag(agentType)
 	if !ok {
@@ -569,7 +586,7 @@ func TestE2E_StaggerTimingVerification(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_stagger_timing_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_stagger_timing")
 
 	flag, ok := agentFlag(agentType)
 	if !ok {
@@ -678,7 +695,7 @@ func TestE2E_StaggerDeliveryOrder(t *testing.T) {
 	}
 	defer os.RemoveAll(baseDir)
 
-	session := fmt.Sprintf("e2e_stagger_order_%d", time.Now().UnixNano())
+	session := newStaggerSession(t, "e2e_stagger_order")
 
 	flag, ok := agentFlag(agentType)
 	if !ok {
