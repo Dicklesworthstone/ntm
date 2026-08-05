@@ -6092,6 +6092,7 @@ func TestRobotProcessErrorContract(t *testing.T) {
 		{name: "unknown schema type forces json from toon", args: []string{"--robot-schema=not-a-schema", "--robot-format=toon"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "missing environment session forces json from toon", args: []string{"--robot-env=ntm-robot-contract-missing-session", "--robot-format=toon"}, errorCode: robot.ErrCodeSessionNotFound, expectedExit: 1},
 		{name: "missing error scan session forces json from toon", args: []string{"--robot-errors=ntm-robot-contract-missing-session", "--robot-format=toon"}, errorCode: robot.ErrCodeSessionNotFound, expectedExit: 1},
+		{name: "unsupported error timestamp filter", args: []string{"--robot-errors=ntm-robot-contract-missing-session", "--errors-since=5m"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "invalid overlay cursor forces json from toon", args: []string{"--robot-overlay", "--overlay-cursor=-1", "--robot-format=toon"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "unknown capability command", args: []string{"--robot-capabilities", "--capability-command=not-a-command"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "unknown capability category", args: []string{"--robot-capabilities", "--capability-category=not-a-category"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},

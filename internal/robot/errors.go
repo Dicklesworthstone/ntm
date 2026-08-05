@@ -21,7 +21,6 @@ import (
 // ErrorsOptions configures the errors command.
 type ErrorsOptions struct {
 	Session   string   // Session name (required)
-	Since     string   // Filter to errors since duration (e.g., "5m", "1h")
 	Panes     []string // Pane indices to check (empty = all agent panes)
 	Lines     int      // Lines to capture per pane (default: 1000)
 	AgentType string   // Filter by agent type (claude, codex, gemini)

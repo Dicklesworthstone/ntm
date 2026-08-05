@@ -1565,7 +1565,6 @@ Shell Integration:
 			}
 			opts := robot.ErrorsOptions{
 				Session:   session,
-				Since:     robotErrorsSince,
 				Panes:     paneFilter,
 				Lines:     lines,
 				AgentType: agentType,
@@ -3386,7 +3385,6 @@ var (
 	robotWatchBead             string // session name for bead mention watch
 	robotWatchBeadID           string // bead ID for watch command
 	robotErrors                string // session name for errors
-	robotErrorsSince           string // duration for errors filter (e.g., 5m, 1h)
 	robotLines                 int    // number of lines to capture
 	robotPanes                 string // comma-separated pane filter
 	robotGraph                 bool   // bv insights passthrough
@@ -3935,7 +3933,6 @@ func init() {
 	rootCmd.Flags().StringVar(&robotWatchBead, "robot-watch-bead", "", "Capture bead mentions across panes plus current bead status (JSON snapshot). Required: SESSION")
 	rootCmd.Flags().StringVar(&robotWatchBeadID, "bead", "", "Bead ID for --robot-watch-bead. Example: --bead=bd-abc123")
 	rootCmd.Flags().StringVar(&robotErrors, "robot-errors", "", "Filter pane output to show only errors. Required: SESSION. Example: ntm --robot-errors=myproject --lines=100")
-	rootCmd.Flags().StringVar(&robotErrorsSince, "errors-since", "", "Filter to errors from last duration. Optional with --robot-errors. Example: --errors-since=5m")
 	rootCmd.Flags().IntVar(&robotLines, "lines", 20, "Lines to capture per pane. Optional with --robot-tail, --robot-errors, --robot-watch-bead, --robot-is-working, --robot-agent-health, --robot-smart-restart, and --robot-monitor. Example: --lines=100")
 	rootCmd.Flags().StringVar(&robotPanes, "panes", "", "Filter with comma-separated N, W.P, or %N pane selectors. Optional with --robot-tail, --robot-watch-bead, --robot-errors, --robot-send, --robot-ack, --robot-interrupt, --robot-wait, --robot-is-working, --robot-agent-health, --robot-smart-restart, --robot-restart-pane, and --robot-monitor. Example: --panes=1,2.0,%7")
 	rootCmd.Flags().StringVar(&robotIsWorking, "robot-is-working", "", "Check if agents are working. Returns work state with recommendations. Required: SESSION. Example: ntm --robot-is-working=myproject --panes=2,3")

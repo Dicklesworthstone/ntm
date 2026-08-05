@@ -485,14 +485,13 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Filter pane output to show only errors and recent failure context.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-errors", Type: "string", Required: true, Description: "Session name"},
-				{Name: "errors-since", Flag: "--errors-since", Type: "string", Required: false, Description: "Filter to errors from the last duration"},
 				{Name: "lines", Flag: "--lines", Type: "int", Required: false, Default: "1000", Description: "Max lines captured per pane when no explicit value is provided"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated N, W.P, or %N pane selectors"},
 				{Name: "type", Flag: "--type", Type: "string", Required: false, Description: "Filter by agent type"},
 			},
 			Examples: []string{
 				"ntm --robot-errors=myproject --lines=100",
-				"ntm --robot-errors=myproject --errors-since=5m --type=claude",
+				"ntm --robot-errors=myproject --lines=100 --type=claude",
 			},
 		},
 		{

@@ -383,9 +383,6 @@ func TestDefaultErrorsOptions(t *testing.T) {
 	if opts.AgentType != "" {
 		t.Errorf("AgentType = %q, want empty", opts.AgentType)
 	}
-	if opts.Since != "" {
-		t.Errorf("Since = %q, want empty", opts.Since)
-	}
 }
 
 func TestRobotErrorPatterns_NotEmpty(t *testing.T) {
