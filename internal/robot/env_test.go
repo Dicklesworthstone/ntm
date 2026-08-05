@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 )
 
 // =============================================================================
@@ -31,6 +33,19 @@ func TestDetectTmuxEnv(t *testing.T) {
 	}
 	if !info.ShellAliasDetected && info.Warning != "" {
 		t.Error("ShellAliasDetected=false but Warning is set")
+	}
+}
+
+func TestPaneEnvironmentFromManifest(t *testing.T) {
+	entries := paneEnvironmentFromManifest(&resilience.SpawnManifest{Agents: []resilience.AgentConfig{
+		{PaneID: "%1", PaneIndex: 1, Type: "cod", Environment: map[string]string{"CARGO_TARGET_DIR": "/tmp/build_demo_cod_1"}},
+		{PaneID: "%2", PaneIndex: 2, Type: "cc"},
+	}})
+	if len(entries) != 1 {
+		t.Fatalf("paneEnvironmentFromManifest() entries = %d, want 1", len(entries))
+	}
+	if got, want := entries[0].Environment["CARGO_TARGET_DIR"], "/tmp/build_demo_cod_1"; got != want {
+		t.Errorf("environment = %q, want %q", got, want)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/resilience"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -45,6 +46,15 @@ type EnvOutput struct {
 	Shell            *ShellEnvInfo         `json:"shell,omitempty"`
 	Timing           *TimingInfo           `json:"timing,omitempty"`
 	Targeting        *TargetingInfo        `json:"targeting,omitempty"`
+	PaneEnvironment  []PaneEnvironmentInfo `json:"pane_environment,omitempty"`
+}
+
+// PaneEnvironmentInfo is the NTM-owned launch environment persisted for one pane.
+type PaneEnvironmentInfo struct {
+	PaneID      string            `json:"pane_id"`
+	PaneIndex   int               `json:"pane_index"`
+	AgentType   string            `json:"agent_type"`
+	Environment map[string]string `json:"environment"`
 }
 
 // SessionStructureInfo describes session window/pane structure
@@ -313,12 +323,31 @@ func GetEnv(session string) (*EnvOutput, error) {
 			ExampleAgentPane:   fmt.Sprintf("%s:%d.%d", session, windowIndex, agentPane),
 			ExampleControlPane: fmt.Sprintf("%s:%d.%d", session, windowIndex, controlPane),
 		}
+		if manifest, err := resilience.LoadManifest(session); err == nil {
+			output.PaneEnvironment = paneEnvironmentFromManifest(manifest)
+		}
 	}
 
 	// Detect shell environment
 	output.Shell = detectShellEnv()
 
 	return output, nil
+}
+
+func paneEnvironmentFromManifest(manifest *resilience.SpawnManifest) []PaneEnvironmentInfo {
+	if manifest == nil {
+		return nil
+	}
+	output := make([]PaneEnvironmentInfo, 0, len(manifest.Agents))
+	for _, agent := range manifest.Agents {
+		if len(agent.Environment) == 0 {
+			continue
+		}
+		output = append(output, PaneEnvironmentInfo{
+			PaneID: agent.PaneID, PaneIndex: agent.PaneIndex, AgentType: agent.Type, Environment: agent.Environment,
+		})
+	}
+	return output
 }
 
 // PrintEnv outputs environment info for a session (or global if no session).

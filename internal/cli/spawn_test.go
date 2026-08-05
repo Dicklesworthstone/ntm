@@ -86,6 +86,29 @@ func TestResolveSpawnProjectDirRejectsRelativeOverride(t *testing.T) {
 	}
 }
 
+func TestSpawnPaneEnvExpansionAndValidation(t *testing.T) {
+	env := map[string]string{
+		"CARGO_TARGET_DIR": "/tmp/build_{project}_{role}_{pane}",
+		"GOPATH":           "/tmp/go-{pane}",
+	}
+	if err := validateSpawnPaneEnv(env); err != nil {
+		t.Fatalf("validateSpawnPaneEnv() error = %v", err)
+	}
+	expanded := expandSpawnPaneEnv(env, "demo", 2, AgentTypeCodex)
+	if got, want := expanded["CARGO_TARGET_DIR"], "/tmp/build_demo_cod_2"; got != want {
+		t.Errorf("CARGO_TARGET_DIR = %q, want %q", got, want)
+	}
+	if got, want := prependSpawnPaneEnv("codex", expanded), "CARGO_TARGET_DIR='/tmp/build_demo_cod_2' GOPATH='/tmp/go-2' codex"; got != want {
+		t.Errorf("prependSpawnPaneEnv() = %q, want %q", got, want)
+	}
+	if err := validateSpawnPaneEnv(map[string]string{"BAD-NAME": "value"}); err == nil {
+		t.Fatal("validateSpawnPaneEnv accepted invalid environment name")
+	}
+	if err := validateSpawnPaneEnv(map[string]string{"GOOD": "bad\x00value"}); err == nil {
+		t.Fatal("validateSpawnPaneEnv accepted NUL value")
+	}
+}
+
 func TestPreflightWorktreeProject(t *testing.T) {
 	t.Run("nil context", func(t *testing.T) {
 		err := preflightWorktreeProject(nil, t.TempDir())

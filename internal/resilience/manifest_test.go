@@ -55,7 +55,7 @@ func TestSaveLoadDeleteManifest_RoundTrip(t *testing.T) {
 		ProjectDir:  "/home/user/project",
 		AutoRestart: true,
 		Agents: []AgentConfig{
-			{PaneID: "%0", PaneIndex: 0, Type: "cc", Model: "opus-4", Command: "claude"},
+			{PaneID: "%0", PaneIndex: 0, Type: "cc", Model: "opus-4", Command: "claude", Environment: map[string]string{"CARGO_TARGET_DIR": "/tmp/build_demo_cc_1"}},
 			{PaneID: "%1", PaneIndex: 1, Type: "cod", Model: "gpt-5", Command: "codex"},
 		},
 	}
@@ -91,6 +91,9 @@ func TestSaveLoadDeleteManifest_RoundTrip(t *testing.T) {
 	}
 	if loaded.Agents[0].Type != "cc" {
 		t.Errorf("Agents[0].Type = %q, want cc", loaded.Agents[0].Type)
+	}
+	if got := loaded.Agents[0].Environment["CARGO_TARGET_DIR"]; got != "/tmp/build_demo_cc_1" {
+		t.Errorf("Agents[0].Environment[CARGO_TARGET_DIR] = %q", got)
 	}
 	if loaded.Agents[1].Model != "gpt-5" {
 		t.Errorf("Agents[1].Model = %q, want gpt-5", loaded.Agents[1].Model)

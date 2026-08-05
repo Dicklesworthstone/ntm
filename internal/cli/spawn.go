@@ -567,6 +567,58 @@ func normalizeSpawnOptions(opts *SpawnOptions) {
 	}
 }
 
+func validateSpawnPaneEnv(env map[string]string) error {
+	for key, value := range env {
+		if !isSpawnEnvironmentName(key) {
+			return fmt.Errorf("invalid --pane-env name %q", key)
+		}
+		if strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("invalid --pane-env value for %q: contains NUL", key)
+		}
+	}
+	return nil
+}
+
+func isSpawnEnvironmentName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && r != '_' && (i == 0 || r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func expandSpawnPaneEnv(env map[string]string, project string, pane int, role AgentType) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	replacer := strings.NewReplacer("{project}", project, "{pane}", strconv.Itoa(pane), "{role}", string(role))
+	expanded := make(map[string]string, len(env))
+	for key, value := range env {
+		expanded[key] = replacer.Replace(value)
+	}
+	return expanded
+}
+
+func prependSpawnPaneEnv(command string, env map[string]string) string {
+	if len(env) == 0 {
+		return command
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var prefix strings.Builder
+	for _, key := range keys {
+		fmt.Fprintf(&prefix, "%s=%s ", key, tmux.ShellQuote(env[key]))
+	}
+	return prefix.String() + command
+}
+
 func validateSpawnAgentTypes(agents []FlatAgent, pluginMap map[string]plugins.AgentPlugin) error {
 	for _, agent := range agents {
 		switch agent.Type {
@@ -1036,6 +1088,7 @@ func shouldStartInternalMonitor() bool {
 type SpawnOptions struct {
 	Session            string
 	ProjectDirOverride string
+	PaneEnv            map[string]string
 	Agents             []FlatAgent
 	CCCount            int
 	CodCount           int
@@ -1453,6 +1506,7 @@ func newSpawnCmd() *cobra.Command {
 	var localHost string
 	var localFallback bool
 	var localFallbackProvider string
+	var paneEnv map[string]string
 
 	// New stagger flags for bd-2wih
 	var staggerMode string         // smart, fixed, or none
@@ -1827,6 +1881,7 @@ Examples:
 
 			opts := SpawnOptions{
 				Session:                 sessionName,
+				PaneEnv:                 paneEnv,
 				Agents:                  agentsFlat,
 				CCCount:                 ccCount,
 				CodCount:                codCount,
@@ -1953,6 +2008,7 @@ Examples:
 	cmd.Flags().BoolVar(&createDir, "create-dir", false, "Create the project directory if it does not exist (non-TTY spawns error instead of prompting)")
 	cmd.Flags().BoolVar(&verifyBoot, "verify-boot", false, "After launching, wait up to 30s for every agent to reach a working prompt; exit non-zero naming what failed to boot")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Override the auto-derived worktree directory name (single-agent spawns only). Use this when external orchestrators spawn the same agent slot across multiple --label values — without it, the `cc_1` / `cod_1` paths collide. See ntm#145.")
+	cmd.Flags().StringToStringVar(&paneEnv, "pane-env", nil, "NTM-owned pane environment (KEY=TEMPLATE; templates: {project}, {pane}, {role})")
 
 	// Privacy mode flags (bd-2u3tv)
 	cmd.Flags().BoolVar(&privacyMode, "privacy", false, "Enable privacy mode (disables persistence of session data)")
@@ -2066,6 +2122,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 
 	normalizeSpawnOptions(&opts)
+	if err := validateSpawnPaneEnv(opts.PaneEnv); err != nil {
+		return outputError(err)
+	}
 	if err := validateSpawnAgentTypes(opts.Agents, opts.PluginMap); err != nil {
 		return outputError(err)
 	}
@@ -2544,6 +2603,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// persona→pane→prompt mapping after a --profile-set launch (ntm#159).
 		personaPromptSource string
 		command             string
+		environment         map[string]string
 		promptDelay         time.Duration // Stagger delay before prompt delivery
 	}
 	var launchedAgents []launchedAgent
@@ -2899,6 +2959,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			agentCmd = envPrefix + agentCmd
 		}
 
+		paneEnv := expandSpawnPaneEnv(opts.PaneEnv, dir, agent.Index, agent.Type)
+		agentCmd = prependSpawnPaneEnv(agentCmd, paneEnv)
+
 		// Calculate stagger delay for this agent (used for spawn context)
 		var promptDelay time.Duration
 		if isStaggered {
@@ -3118,6 +3181,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			persona:             personaName,
 			personaPromptSource: systemPromptFile,
 			command:             safeAgentCmd,
+			environment:         paneEnv,
 			promptDelay:         promptDelay,
 		})
 		auditAgentsLaunched = len(launchedAgents)
@@ -3156,11 +3220,12 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 				continue
 			}
 			manifest.Agents = append(manifest.Agents, resilience.AgentConfig{
-				PaneID:    agent.paneID,
-				PaneIndex: agent.paneIndex,
-				Type:      agent.agentType,
-				Model:     agent.model,
-				Command:   agent.command,
+				PaneID:      agent.paneID,
+				PaneIndex:   agent.paneIndex,
+				Type:        agent.agentType,
+				Model:       agent.model,
+				Command:     agent.command,
+				Environment: agent.environment,
 			})
 		}
 		if err := resilience.SaveManifest(manifest); err != nil {
