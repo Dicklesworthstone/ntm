@@ -984,7 +984,7 @@ func planBulkAssignFromAllocation(ctx context.Context, opts BulkAssignOptions, d
 	}
 	multiWindow := tmux.PanesSpanMultipleWindows(tmuxPanes)
 
-	plan := bulkAssignPlan{}
+	plan := bulkAssignPlan{totalPanes: len(panes)}
 	selectors := make([]string, 0, len(allocation))
 	for selector := range allocation {
 		selectors = append(selectors, selector)
@@ -1111,6 +1111,7 @@ type bulkAssignPlan struct {
 	Assignments     []BulkAssignAssignment
 	UnassignedBeads []string
 	UnassignedPanes []string
+	totalPanes      int
 	assigned        int
 	failed          int
 	skipped         int
@@ -1683,8 +1684,12 @@ func finishBulkAssignOutput(output *BulkAssignOutput, plan bulkAssignPlan) {
 		}
 	}
 
+	totalPanes := len(output.Assignments) + len(output.UnassignedPanes)
+	if plan.totalPanes > 0 {
+		totalPanes = plan.totalPanes
+	}
 	output.Summary = BulkAssignSummary{
-		TotalPanes: len(output.Assignments) + len(output.UnassignedPanes),
+		TotalPanes: totalPanes,
 		Assigned:   assigned,
 		Skipped:    0,
 		Failed:     failed,

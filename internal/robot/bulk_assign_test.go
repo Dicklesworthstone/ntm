@@ -608,6 +608,31 @@ func TestPlanBulkAssignFromAllocationRejectsConflictingPhysicalAliases(t *testin
 	}
 }
 
+func TestBulkAssignAllocationSummaryUsesFilteredPaneCount(t *testing.T) {
+	panes := []bulkPane{
+		{Ref: tmux.PaneRef{ID: "%10", WindowIndex: 0, PaneIndex: 0}, AgentType: "codex", Title: "proj__cod_1"},
+		{Ref: tmux.PaneRef{ID: "%11", WindowIndex: 0, PaneIndex: 1}, AgentType: "claude", Title: "proj__cc_2"},
+	}
+	for name, allocation := range map[string]map[string]string{
+		"unresolvable selector": {"9": "bd-missing-pane"},
+		"conflicting aliases": {
+			"0.1": "bd-one",
+			"%11": "bd-two",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan := planBulkAssignFromAllocation(t.Context(), BulkAssignOptions{}, bulkAssignDeps(&BulkAssignDependencies{}), panes, allocation)
+			output := &BulkAssignOutput{}
+
+			finishBulkAssignOutput(output, plan)
+
+			if output.Summary.TotalPanes != len(panes) {
+				t.Fatalf("summary total panes = %d, want %d: assignments=%+v unassigned=%v", output.Summary.TotalPanes, len(panes), output.Assignments, output.UnassignedPanes)
+			}
+		})
+	}
+}
+
 func TestPlanBulkAssignFromAllocationRejectsDuplicateBeadAcrossPanes(t *testing.T) {
 	panes := []bulkPane{
 		{Ref: tmux.PaneRef{ID: "%10", WindowIndex: 0, PaneIndex: 0}, AgentType: "codex", Title: "proj__cod_1"},
