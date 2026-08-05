@@ -3726,8 +3726,25 @@ func writeFakeVersionTool(t *testing.T, dir, name, version string) {
 	writeFakeVersionToolWithExit(t, dir, name, version, 0)
 }
 
+// scaleDepVersionTimeout widens the production `--version` budget for tests
+// that shell out to a fake tool, restoring it afterwards.
+//
+// The production 2s is right for `ntm deps`, which must not hang. But these
+// tests spend that budget on SHELL STARTUP for a throwaway script, and on a
+// machine also running an agent swarm that alone can exceed 2s — the command
+// is killed, the version comes back empty, and the test fails while
+// checkDepWithPath is behaving correctly (bd-hzmk0). Safe to mutate directly:
+// no test in this file calls t.Parallel().
+func scaleDepVersionTimeout(t *testing.T) {
+	t.Helper()
+	original := depVersionTimeout
+	depVersionTimeout = testutil.ScaleTimeout(4 * time.Second)
+	t.Cleanup(func() { depVersionTimeout = original })
+}
+
 func writeFakeVersionToolWithExit(t *testing.T, dir, name, version string, exitCode int) {
 	t.Helper()
+	scaleDepVersionTimeout(t)
 
 	path := filepath.Join(dir, name)
 	script := "#!/bin/sh\n"

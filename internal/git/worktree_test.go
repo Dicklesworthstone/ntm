@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 const worktreeIntegrationTestTimeout = 2 * time.Minute
@@ -702,16 +704,26 @@ exit 93
 	}
 }
 
+// waitForWorktreeTestPath blocks until another goroutine creates the sentinel
+// file, or the budget expires.
+//
+// The budget scales: it is waiting on a goroutine that shells out to git, and
+// a fixed 3s assumed an idle machine. On a box also running an agent swarm the
+// wait expired while the code under test was behaving correctly, which is what
+// made these four tests the most frequent false failures in the suite
+// (bd-hzmk0). Raise it with NTM_TEST_TIMEOUT_SCALE.
 func waitForWorktreeTestPath(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	budget := testutil.ScaleTimeout(3 * time.Second)
+	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s", path)
+	t.Fatalf("timed out waiting for %s after %v (set %s to scale test budgets on a loaded machine)",
+		path, budget, testutil.TimeoutScaleEnv)
 }
 
 func TestWorktreeManager_parseWorktreeList(t *testing.T) {

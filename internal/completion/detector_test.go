@@ -1620,7 +1620,7 @@ func TestCompletionPatternRequiresBeadClosedConfirmation(t *testing.T) {
 	if err := tmux.CreateSession(session, t.TempDir()); err != nil {
 		t.Skipf("CreateSession failed (host-sensitive): %v", err)
 	}
-	t.Cleanup(func() { _ = tmux.KillSession(session) })
+	t.Cleanup(func() { killSessionAndWaitForTest(t, session) })
 
 	panes, err := tmux.GetPanes(session)
 	if err != nil || len(panes) == 0 {
@@ -1685,7 +1685,7 @@ func TestIdleTimeoutWithOpenBeadReportsFailed(t *testing.T) {
 	if err := tmux.CreateSession(session, t.TempDir()); err != nil {
 		t.Skipf("CreateSession failed (host-sensitive): %v", err)
 	}
-	t.Cleanup(func() { _ = tmux.KillSession(session) })
+	t.Cleanup(func() { killSessionAndWaitForTest(t, session) })
 
 	panes, err := tmux.GetPanes(session)
 	if err != nil || len(panes) == 0 {
@@ -1787,4 +1787,39 @@ func TestIdleDetectionUnconfirmedObservationsClearTimer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// killSessionAndWaitForTest kills a test tmux session and blocks until tmux
+// reports it gone.
+//
+// KillSession is asynchronous: it returns once tmux has accepted the request,
+// before the pane's shell has actually exited. These tests point both HOME and
+// the session's working directory at t.TempDir()s, so a shell still shutting
+// down writes its history file into those directories WHILE t.TempDir's
+// cleanup is removing them — and TempDir's RemoveAll failure ("directory not
+// empty") marks the test failed even though the assertions all passed. That is
+// the real cause of these two suites' intermittent failures; the t.Skip that
+// accompanies it is benign (bd-hzmk0).
+//
+// Registering this with t.Cleanup AFTER the TempDirs are created is what makes
+// it correct: cleanups run LIFO, so the wait completes before any removal.
+func killSessionAndWaitForTest(t *testing.T, session string) {
+	t.Helper()
+	if err := tmux.KillSession(session); err != nil {
+		// Already gone is the outcome we want; anything else is still not
+		// worth failing a passing test over, but say so.
+		if tmux.SessionExists(session) {
+			t.Logf("kill session %s: %v", session, err)
+		}
+	}
+	deadline := time.Now().Add(testutil.ScaleTimeout(5 * time.Second))
+	for time.Now().Before(deadline) {
+		if !tmux.SessionExists(session) {
+			// tmux drops the session once its last pane process exits, so this
+			// is the observable signal that the shell is done writing.
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Logf("session %s still present after kill; TempDir cleanup may race a live shell", session)
 }

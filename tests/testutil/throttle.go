@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,20 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+// TimeoutScaleEnv multiplies every test time budget passed through
+// ScaleTimeout. Set it when running the suite on a loaded machine.
+//
+// Several tests assert on wall-clock budgets they cannot avoid: they spawn a
+// subprocess, or wait for another goroutine to create a sentinel file. Those
+// budgets were fixed constants chosen against an idle machine, so on a box
+// that is also running an agent swarm they fail while the code under test is
+// perfectly correct — training everyone to ignore a red suite. Scaling is the
+// honest knob: the assertions keep their meaning, the deadlines just stop
+// pretending the machine is idle.
+//
+//	NTM_TEST_TIMEOUT_SCALE=4 go test -short ./...
+const TimeoutScaleEnv = "NTM_TEST_TIMEOUT_SCALE"
 
 const (
 	tmuxTestTempBaseEnv = "NTM_TMUX_TEST_TMPDIR"
@@ -379,4 +394,47 @@ func E2ETestPrecheckThrottled(t *testing.T) {
 	RequireE2E(t)
 	RequireTmuxThrottled(t)
 	RequireNTMBinary(t)
+}
+
+// TimeoutScale returns the multiplier applied to test time budgets.
+//
+// It reads TimeoutScaleEnv and defaults to 1 (current behavior). Values below
+// 1 are clamped: a scale is for making budgets more forgiving on a loaded
+// machine, never for tightening them, which would only add flakiness. An
+// unparseable value is treated as unset rather than failing the suite — a
+// mistyped env var must not be able to turn a green run red.
+func TimeoutScale() float64 {
+	raw := strings.TrimSpace(os.Getenv(TimeoutScaleEnv))
+	if raw == "" {
+		return 1
+	}
+	scale, err := strconv.ParseFloat(raw, 64)
+	if err != nil || scale < 1 {
+		return 1
+	}
+	return scale
+}
+
+// ScaleTimeout scales a fixed test budget by TimeoutScale, rounding up so a
+// scaled budget is never shorter than the original.
+func ScaleTimeout(d time.Duration) time.Duration {
+	scale := TimeoutScale()
+	if scale <= 1 {
+		return d
+	}
+	scaled := time.Duration(math.Ceil(float64(d) * scale))
+	if scaled < d {
+		// Overflow guard: a preposterous scale must not wrap to a tiny budget.
+		return d
+	}
+	return scaled
+}
+
+// ScaleSeconds scales a budget expressed as a float number of seconds, for
+// tests that hand a duration to a shell (`sleep 1.7`). It returns the scaled
+// value formatted for that use, so the shell-side and Go-side budgets in one
+// test scale together and their inequality is preserved.
+func ScaleSeconds(seconds float64) string {
+	scaled := seconds * TimeoutScale()
+	return strconv.FormatFloat(scaled, 'f', -1, 64)
 }

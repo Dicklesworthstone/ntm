@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // setupSessionGitRepo creates a temp git repo with an initial commit and
@@ -104,8 +106,14 @@ func TestGetGitInfoWithTimeout_UsesIndependentCommandBudgets(t *testing.T) {
 	// sequential commands still exceed perCommandBudget — that
 	// inequality is what proves the three calls did not share one
 	// timeout.
-	const perCommandBudget = 5 * time.Second
-	const fakeGitSleep = "1.7" // seconds; 3 × 1.7s > 5s
+	//
+	// BOTH scale together, so the inequality (3 × sleep > budget) is preserved
+	// while the per-command slack for shell startup grows with the scale. On a
+	// loaded machine the slack is what runs out: the assertion is sound, the
+	// fixed 5s budget just assumed an idle box (bd-hzmk0). Raise it with
+	// NTM_TEST_TIMEOUT_SCALE.
+	perCommandBudget := testutil.ScaleTimeout(5 * time.Second)
+	fakeGitSleep := testutil.ScaleSeconds(1.7) // seconds; 3 × 1.7s > 5s
 
 	tmpBin := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(tmpBin); err == nil {
