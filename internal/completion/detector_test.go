@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	statuspkg "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
@@ -1789,37 +1790,55 @@ func TestIdleDetectionUnconfirmedObservationsClearTimer(t *testing.T) {
 	}
 }
 
-// killSessionAndWaitForTest kills a test tmux session and blocks until tmux
-// reports it gone.
+// killSessionAndWaitForTest kills a test tmux session and blocks until its
+// pane processes have actually exited.
 //
-// KillSession is asynchronous: it returns once tmux has accepted the request,
-// before the pane's shell has actually exited. These tests point both HOME and
-// the session's working directory at t.TempDir()s, so a shell still shutting
-// down writes its history file into those directories WHILE t.TempDir's
-// cleanup is removing them — and TempDir's RemoveAll failure ("directory not
-// empty") marks the test failed even though the assertions all passed. That is
-// the real cause of these two suites' intermittent failures; the t.Skip that
-// accompanies it is benign (bd-hzmk0).
+// These tests point both HOME and the session's working directory at
+// t.TempDir()s. A shell still shutting down writes its history file
+// (.zsh_history) into $HOME WHILE t.TempDir's cleanup is removing it, and
+// TempDir's RemoveAll failure ("directory not empty") marks the test failed
+// even though every assertion passed. That is the real cause of these two
+// suites' intermittent failures — the accompanying t.Skip is benign (bd-hzmk0).
+//
+// Waiting on the SESSION is not enough: tmux removes it from its own list
+// synchronously while the shells die asynchronously. The pane PIDs are the
+// thing that actually has to be gone, because the shell is the writer. They
+// must be captured BEFORE the kill, since afterwards there is nothing left to
+// ask.
 //
 // Registering this with t.Cleanup AFTER the TempDirs are created is what makes
 // it correct: cleanups run LIFO, so the wait completes before any removal.
 func killSessionAndWaitForTest(t *testing.T, session string) {
 	t.Helper()
-	if err := tmux.KillSession(session); err != nil {
-		// Already gone is the outcome we want; anything else is still not
-		// worth failing a passing test over, but say so.
-		if tmux.SessionExists(session) {
-			t.Logf("kill session %s: %v", session, err)
+
+	var pids []int
+	if panes, err := tmux.GetPanes(session); err == nil {
+		for _, pane := range panes {
+			if pane.PID > 0 {
+				pids = append(pids, pane.PID)
+			}
 		}
 	}
+
+	if err := tmux.KillSession(session); err != nil && tmux.SessionExists(session) {
+		t.Logf("kill session %s: %v", session, err)
+	}
+
 	deadline := time.Now().Add(testutil.ScaleTimeout(5 * time.Second))
 	for time.Now().Before(deadline) {
-		if !tmux.SessionExists(session) {
-			// tmux drops the session once its last pane process exits, so this
-			// is the observable signal that the shell is done writing.
+		if !anyProcessAliveForTest(pids) && !tmux.SessionExists(session) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Logf("session %s still present after kill; TempDir cleanup may race a live shell", session)
+	t.Logf("session %s pane processes %v still alive after kill; TempDir cleanup may race a live shell", session, pids)
+}
+
+func anyProcessAliveForTest(pids []int) bool {
+	for _, pid := range pids {
+		if process.IsAlive(pid) {
+			return true
+		}
+	}
+	return false
 }
