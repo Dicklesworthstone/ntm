@@ -839,3 +839,100 @@ func TestCompile_RecompileMalformedPatternClearsStaleRegex(t *testing.T) {
 		t.Fatalf("Check matched using stale regex: %+v", got)
 	}
 }
+
+// bd-fresh-eyes-audit .30: writers must target the policy file that is
+// actually enforced. Resolving to the home path unconditionally let a single
+// automation toggle create a defaults-only home policy that then shadowed the
+// project-local file `ntm setup` writes, silently dropping its blocked and
+// approval_required rules.
+func TestResolveEffectivePath_PrefersProjectPolicyWhenNoHomePolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	workdir := t.TempDir()
+	chdir(t, workdir)
+
+	// No policy anywhere: the creation target is the home path, not enforced yet.
+	path, exists := ResolveEffectivePath()
+	if exists {
+		t.Fatalf("ResolveEffectivePath reported an existing policy at %q with none on disk", path)
+	}
+	if want := filepath.Join(home, DefaultPolicyPath); path != want {
+		t.Fatalf("creation target = %q, want %q", path, want)
+	}
+
+	// Project-local policy only — the state `ntm setup` produces.
+	projectPolicy := filepath.Join(workdir, DefaultPolicyPath)
+	if err := os.MkdirAll(filepath.Dir(projectPolicy), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(projectPolicy, []byte("version: 1\nblocked:\n  - pattern: \"shred --remove\"\n"), 0o644); err != nil {
+		t.Fatalf("write project policy: %v", err)
+	}
+
+	path, exists = ResolveEffectivePath()
+	if !exists {
+		t.Fatal("ResolveEffectivePath did not see the project-local policy")
+	}
+	if path != DefaultPolicyPath && path != projectPolicy {
+		t.Fatalf("resolved path = %q, want the project-local policy", path)
+	}
+
+	// A home policy takes precedence once it exists, matching LoadOrDefault.
+	homePolicy := filepath.Join(home, DefaultPolicyPath)
+	if err := os.MkdirAll(filepath.Dir(homePolicy), 0o755); err != nil {
+		t.Fatalf("mkdir home policy: %v", err)
+	}
+	if err := os.WriteFile(homePolicy, []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatalf("write home policy: %v", err)
+	}
+	path, exists = ResolveEffectivePath()
+	if !exists || path != homePolicy {
+		t.Fatalf("resolved path = %q (exists=%v), want the home policy %q", path, exists, homePolicy)
+	}
+}
+
+// The resolver must agree with LoadOrDefault, since that is what enforcement reads.
+func TestResolveEffectivePath_AgreesWithLoadOrDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workdir := t.TempDir()
+	chdir(t, workdir)
+
+	projectPolicy := filepath.Join(workdir, DefaultPolicyPath)
+	if err := os.MkdirAll(filepath.Dir(projectPolicy), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(projectPolicy, []byte("version: 1\nblocked:\n  - pattern: \"git push --force\"\n"), 0o644); err != nil {
+		t.Fatalf("write project policy: %v", err)
+	}
+
+	loaded, err := LoadOrDefault()
+	if err != nil {
+		t.Fatalf("LoadOrDefault: %v", err)
+	}
+	found := false
+	for _, blocked := range loaded.Blocked {
+		if strings.Contains(blocked.Pattern, "git push --force") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("LoadOrDefault did not read the project policy: %+v", loaded.Blocked)
+	}
+	if _, exists := ResolveEffectivePath(); !exists {
+		t.Fatal("ResolveEffectivePath says no policy exists while LoadOrDefault read one")
+	}
+}
+
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+}

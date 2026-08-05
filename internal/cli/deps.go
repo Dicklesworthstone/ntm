@@ -38,6 +38,7 @@ Optional agents:
   - agy (Antigravity CLI, Google agent)
   - grok (Grok Build CLI, xAI)
   - gemini (Google Gemini CLI, legacy)
+  - cursor-agent (Cursor Agent CLI; not the 'cursor' IDE binary)
 
 Also checks for recommended tools like fzf.
 
@@ -160,6 +161,18 @@ func defaultDepChecks() []depCheck {
 			Required:    false,
 			Category:    "AI Agents",
 			InstallHint: "npm install -g @google/gemini-cli",
+		},
+		{
+			// Deliberately `cursor-agent`, not `cursor`: on Linux `cursor` is
+			// the GUI editor launcher (useless in a tmux pane) and is often
+			// absent entirely on headless hosts, so checking it would report
+			// the wrong binary as the Cursor dependency (GH#233).
+			Name:        "Cursor Agent CLI",
+			Command:     "cursor-agent",
+			VersionArgs: []string{"--version"},
+			Required:    false,
+			Category:    "AI Agents",
+			InstallHint: "curl https://cursor.com/install -fsS | bash (installs `cursor-agent`; the `cursor` IDE binary is NOT the agent CLI)",
 		},
 
 		// Recommended

@@ -690,6 +690,34 @@ func RegisterPipeline(exec *PipelineExecution) {
 	registerPipeline(exec)
 }
 
+// NewTrackedExecution builds a registry entry for a run whose goroutine and
+// progress channel the CALLER owns, wiring the handles CancelPipeline needs.
+//
+// StartBackgroundPipeline owns its own progress channel, which `ntm serve`
+// cannot use because it forwards progress events to WebSocket subscribers.
+// Serve therefore drove pipeline.NewExecutor inline and nothing ever reached
+// the registry: background runs came back 404 from GET and cancel, and their
+// context had no cancel handle stored anywhere, so they kept driving tmux to
+// completion with no way to stop them (bd-fresh-eyes-audit .26).
+//
+// The caller must call UpdatePipelineFromState when the run finishes.
+func NewTrackedExecution(runID, workflowID, session string, totalSteps int, executor *Executor, cancel context.CancelFunc) *PipelineExecution {
+	return &PipelineExecution{
+		RunID:      runID,
+		WorkflowID: workflowID,
+		Session:    session,
+		Status:     "running",
+		StartedAt:  time.Now(),
+		Steps:      make(map[string]PipelineStep),
+		Progress: PipelineProgress{
+			Total:   totalSteps,
+			Pending: totalSteps,
+		},
+		executor: executor,
+		cancelFn: cancel,
+	}
+}
+
 func getPipeline(runID string) *PipelineExecution {
 	pipelineMu.RLock()
 	defer pipelineMu.RUnlock()

@@ -378,6 +378,20 @@ func runSwarm(ctx context.Context, opts swarmOptions) error {
 		"panes_per_session", plan.PanesPerSession,
 	)
 
+	// A manual --panes-per-session can be too small to hold the allocation.
+	// The session grid is then smaller than the agent list and the leftover
+	// agents are silently dropped, while the plan still reports the full
+	// count — so the operator sees "Total Agents: 20", launches, gets 6, and
+	// nothing anywhere says 14 were discarded. Refuse instead, naming the
+	// arithmetic, so the mismatch is fixed before any session is created.
+	if plan.PlannedAgents < plan.TotalAgents {
+		return fmt.Errorf(
+			"--panes-per-session=%d x --sessions-per-type=%d holds %d agents per type, which cannot fit the allocation of %d agents (only %d would launch); raise --panes-per-session or --sessions-per-type, or omit --panes-per-session to size it automatically",
+			plan.PanesPerSession, plan.SessionsPerType, plan.PanesPerSession*plan.SessionsPerType,
+			plan.TotalAgents, plan.PlannedAgents,
+		)
+	}
+
 	if opts.OutputPath != "" {
 		if err := writePlanToFile(plan, opts.OutputPath); err != nil {
 			return fmt.Errorf("write plan: %w", err)

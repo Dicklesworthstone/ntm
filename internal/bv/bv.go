@@ -734,38 +734,50 @@ type DependencyContext struct {
 func GetDependencyContext(dir string, n int) (*DependencyContext, error) {
 	ctx := &DependencyContext{}
 
-	// Get stats
+	// Get stats. `br stats --json` nests its counters under "summary"; a flat
+	// struct unmarshalled without error and left every count at zero, so
+	// health and recovery surfaces reported "0 ready / 0 blocked" for a
+	// project with dozens of each — indistinguishable from a genuinely empty
+	// backlog because the parse "succeeded".
 	statsOutput, err := RunBd(dir, "stats", "--json")
 	if err == nil {
 		var stats struct {
-			BlockedIssues int `json:"blocked_issues"`
-			ReadyIssues   int `json:"ready_issues"`
+			Summary struct {
+				BlockedIssues int `json:"blocked_issues"`
+				ReadyIssues   int `json:"ready_issues"`
+			} `json:"summary"`
 		}
-		if json.Unmarshal([]byte(statsOutput), &stats) == nil {
-			ctx.BlockedCount = stats.BlockedIssues
-			ctx.ReadyCount = stats.ReadyIssues
+		if unmarshalErr := json.Unmarshal([]byte(statsOutput), &stats); unmarshalErr != nil {
+			return nil, fmt.Errorf("parse br stats output: %w", unmarshalErr)
 		}
+		ctx.BlockedCount = stats.Summary.BlockedIssues
+		ctx.ReadyCount = stats.Summary.ReadyIssues
 	}
 
-	// Get in-progress tasks
+	// Get in-progress tasks. `br list --json` returns the {"issues":[...]}
+	// envelope, so a raw-array unmarshal always failed — and the failure was
+	// swallowed, leaving the list permanently empty. UnmarshalBdList handles
+	// both the envelope and the bare-array shape.
 	inProgressOutput, err := RunBd(dir, "list", "--status=in_progress", "--json")
 	if err == nil {
-		var inProgress []struct {
+		type inProgressItem struct {
 			ID              string `json:"id"`
 			Title           string `json:"title"`
 			DependencyCount int    `json:"dependency_count"`
 		}
-		if json.Unmarshal([]byte(inProgressOutput), &inProgress) == nil {
-			for _, task := range inProgress {
-				if len(ctx.InProgressTasks) >= n {
-					break
-				}
-				ctx.InProgressTasks = append(ctx.InProgressTasks, InProgressInfo{
-					ID:              task.ID,
-					Title:           task.Title,
-					DependencyCount: task.DependencyCount,
-				})
+		inProgress, unmarshalErr := UnmarshalBdList[inProgressItem](inProgressOutput)
+		if unmarshalErr != nil {
+			return nil, fmt.Errorf("parse br in-progress list: %w", unmarshalErr)
+		}
+		for _, task := range inProgress {
+			if len(ctx.InProgressTasks) >= n {
+				break
 			}
+			ctx.InProgressTasks = append(ctx.InProgressTasks, InProgressInfo{
+				ID:              task.ID,
+				Title:           task.Title,
+				DependencyCount: task.DependencyCount,
+			})
 		}
 	}
 
@@ -1986,8 +1998,17 @@ func releaseBeadClaimTransaction(ctx context.Context, databasePath, beadID, acto
 
 func loadGuardedClaimIssue(ctx context.Context, tx *sql.Tx, beadID string) (guardedClaimIssue, error) {
 	var issue guardedClaimIssue
+	// updated_at is CAST to TEXT deliberately. The column's decltype is
+	// DATETIME, and the SQLite driver silently parses such columns into
+	// time.Time, which database/sql then re-renders as RFC3339Nano when
+	// scanning into a string: br stores "…+00:00" but the scan yields "…Z".
+	// The guarded-claim CAS below binds this value back into
+	// `AND updated_at = ?`, so the reformatted string matched ZERO rows and
+	// every stale-bead adoption failed with a bogus
+	// "guarded claim precondition changed". An expression has no decltype, so
+	// the CAST delivers the stored bytes unchanged.
 	err := tx.QueryRowContext(ctx, `
-		SELECT content_hash, title, status, assignee, updated_at,
+		SELECT content_hash, title, status, assignee, CAST(updated_at AS TEXT),
 		       CASE WHEN defer_until IS NOT NULL AND (datetime(defer_until) IS NULL OR datetime(defer_until) > datetime('now')) THEN 1 ELSE 0 END,
 		       CASE WHEN COALESCE(pinned, 0) != 0 THEN 1 ELSE 0 END,
 		       CASE WHEN COALESCE(ephemeral, 0) != 0 THEN 1 ELSE 0 END,
@@ -2268,6 +2289,19 @@ func UnmarshalBdList[T any](output string) ([]T, error) {
 		case len(wrapped.Items) > 0:
 			return wrapped.Items, nil
 		}
+		// An envelope whose list key is present but EMPTY means "no results",
+		// not "not an envelope". Falling through to the single-object branch
+		// below unmarshalled the envelope itself into T — unknown fields are
+		// ignored, so it always succeeded — and returned one phantom
+		// zero-valued item. `br list --status=X --json` answers
+		// {"issues":[],"total":0,...} for an empty result, so every caller
+		// with no matching beads got one blank bead: the alert generator
+		// emitted a stale-bead alert for ID "" (zero UpdatedAt is always
+		// older than any threshold) and the REST beads endpoint returned the
+		// envelope as a bead.
+		if isEmptyBrListEnvelope(trimmed) {
+			return []T{}, nil
+		}
 	}
 
 	var single T
@@ -2276,6 +2310,28 @@ func UnmarshalBdList[T any](output string) ([]T, error) {
 	}
 
 	return nil, fmt.Errorf("parse br list output: %s", trimmed)
+}
+
+// isEmptyBrListEnvelope reports whether the payload is a br list envelope
+// whose list key is present but empty (or null) — i.e. a genuine "no results"
+// answer rather than some other JSON object.
+func isEmptyBrListEnvelope(payload string) bool {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &probe); err != nil {
+		return false
+	}
+	for _, key := range []string{"issues", "beads", "items"} {
+		raw, ok := probe[key]
+		if !ok {
+			continue
+		}
+		var list []json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil {
+			continue
+		}
+		return len(list) == 0
+	}
+	return false
 }
 
 func isNoBeadsDBError(streams ...string) bool {

@@ -980,6 +980,31 @@ func isAssignmentLifecycleField(name string) bool {
 	}
 }
 
+// confirmPersistedStatusLocked verifies that a just-saved status transition
+// actually survived the on-disk merge, and returns the PERSISTED record to
+// clone events from.
+//
+// saveLocked merges this process's delta against the file another process may
+// have advanced, and mergeAssignmentDelta refuses a delta whose on-disk record
+// is already terminal. Callers used to mutate their in-memory pointer, call
+// saveLocked, and then report success while cloning that pointer — which
+// saveLocked had already orphaned by replacing s.Assignments with the merged
+// map. The caller believed the transition landed and a webhook announced a
+// status that exists nowhere on disk (bd-fresh-eyes-audit .15).
+//
+// Must be called with s.mutex held.
+func (s *AssignmentStore) confirmPersistedStatusLocked(beadID string, want AssignmentStatus) (*Assignment, error) {
+	persisted, ok := s.Assignments[beadID]
+	if !ok {
+		return nil, fmt.Errorf("%w: assignment %s disappeared during persist", ErrAssignmentStatusMismatch, beadID)
+	}
+	if persisted.Status != want {
+		return nil, fmt.Errorf("%w: assignment %s is %s on disk, not %s (another process advanced it)",
+			ErrAssignmentStatusMismatch, beadID, persisted.Status, want)
+	}
+	return persisted, nil
+}
+
 func shouldApplyAssignmentStatusDelta(baseline, latest, current AssignmentStatus) bool {
 	if latest == baseline {
 		return true
@@ -1049,7 +1074,12 @@ func (s *AssignmentStore) Assign(beadID, beadTitle string, pane int, agentType, 
 		return nil, err
 	}
 
-	cloned := cloneAssignment(assignment)
+	persisted, err := s.confirmPersistedStatusLocked(beadID, StatusAssigned)
+	if err != nil {
+		s.mutex.Unlock()
+		return nil, err
+	}
+	cloned := cloneAssignment(persisted)
 	s.mutex.Unlock()
 
 	events.DefaultEmitter().Emit(events.NewWebhookEvent(
@@ -1967,8 +1997,13 @@ func (s *AssignmentStore) UpdateStatus(beadID string, newStatus AssignmentStatus
 		return err
 	}
 
-	emitIdle := s.shouldEmitAgentIdleLocked(assignment, prevStatus, newStatus)
-	cloned := cloneAssignment(assignment)
+	persisted, err := s.confirmPersistedStatusLocked(beadID, newStatus)
+	if err != nil {
+		s.mutex.Unlock()
+		return err
+	}
+	emitIdle := s.shouldEmitAgentIdleLocked(persisted, prevStatus, newStatus)
+	cloned := cloneAssignment(persisted)
 	s.mutex.Unlock()
 
 	emitAssignmentStatusEvent(s.SessionName, cloned, newStatus, "")
@@ -2021,8 +2056,13 @@ func (s *AssignmentStore) MarkFailed(beadID, reason string) error {
 		return err
 	}
 
-	emitIdle := s.shouldEmitAgentIdleLocked(assignment, prevStatus, StatusFailed)
-	cloned := cloneAssignment(assignment)
+	persisted, err := s.confirmPersistedStatusLocked(beadID, StatusFailed)
+	if err != nil {
+		s.mutex.Unlock()
+		return err
+	}
+	emitIdle := s.shouldEmitAgentIdleLocked(persisted, prevStatus, StatusFailed)
+	cloned := cloneAssignment(persisted)
 	s.mutex.Unlock()
 
 	emitAssignmentStatusEvent(s.SessionName, cloned, StatusFailed, reason)
@@ -2107,8 +2147,18 @@ func (s *AssignmentStore) transitionIfCurrent(ctx context.Context, observed *Ass
 		s.mutex.Unlock()
 		return false, err
 	}
-	emitIdle := s.shouldEmitAgentIdleLocked(current, previousStatus, newStatus)
-	cloned := cloneAssignment(current)
+	persisted, err := s.confirmPersistedStatusLocked(observed.BeadID, newStatus)
+	if err != nil {
+		s.mutex.Unlock()
+		// A guarded transition that lost the race is a "did not apply"
+		// outcome, which this API already reports as (false, nil).
+		if errors.Is(err, ErrAssignmentStatusMismatch) {
+			return false, nil
+		}
+		return false, err
+	}
+	emitIdle := s.shouldEmitAgentIdleLocked(persisted, previousStatus, newStatus)
+	cloned := cloneAssignment(persisted)
 	s.mutex.Unlock()
 
 	emitAssignmentStatusEvent(s.SessionName, cloned, newStatus, reason)
@@ -2189,7 +2239,12 @@ func (s *AssignmentStore) Reassign(beadID string, target ReassignmentTarget) (*A
 		return nil, err
 	}
 
-	return cloneAssignment(newAssignment), nil
+	persisted, err := s.confirmPersistedStatusLocked(beadID, StatusAssigned)
+	if err != nil {
+		return nil, err
+	}
+
+	return cloneAssignment(persisted), nil
 }
 
 // Remove removes an assignment from the store.

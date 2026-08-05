@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -157,15 +158,24 @@ func TestBatchLaunchResult(t *testing.T) {
 	}
 }
 
-func TestGetPaneTarget(t *testing.T) {
+// GetPaneTarget asks the LIVE tmux server for the session's first window
+// index and only falls back to 1 when the session does not exist. Asserting
+// "test:1.1" therefore depended on no real session named "test" being present
+// on the developer's machine — and a swarm session with window index 0 makes
+// it fail with "test:0.1" (ntm-143s). The session names below carry a
+// per-run-unique suffix so the fallback path is exercised deterministically,
+// and the pure formatter is asserted separately.
+func TestGetPaneTargetFallsBackForUnknownSession(t *testing.T) {
+	unique := fmt.Sprintf("ntm-absent-%d-%d", os.Getpid(), time.Now().UnixNano())
+
 	tests := []struct {
 		session  string
 		pane     int
 		expected string
 	}{
-		{"test", 1, "test:1.1"},
-		{"my-session", 5, "my-session:1.5"},
-		{"cc_agents_1", 10, "cc_agents_1:1.10"},
+		{unique, 1, unique + ":1.1"},
+		{unique + "-b", 5, unique + "-b:1.5"},
+		{unique + "-c", 10, unique + "-c:1.10"},
 	}
 
 	for _, tt := range tests {

@@ -111,9 +111,18 @@ func TestClassifyCommandError(t *testing.T) {
 			want: CommandErrorClass{Kind: CommandErrorPaneNotFound},
 		},
 		{
+			// Retryable (a server may start later) but NOT Infrastructure.
+			// Infrastructure feeds circuit-breaker accounting only, and "no
+			// server running" is an instant definitive answer meaning "there
+			// are no sessions" — there is no sick server to shed load from.
+			// While the breaker had a bug that stopped it ever shedding load,
+			// this classification had no observable consequence; once the
+			// breaker worked, counting this tripped it during ordinary
+			// session queries on a machine with no tmux server, degrading a
+			// correct SESSION_NOT_FOUND into a circuit-open INTERNAL_ERROR.
 			name: "no tmux server",
 			err:  fmt.Errorf("tmux list-sessions: %w: no server running on /tmp/tmux-1000/default", exit1),
-			want: CommandErrorClass{Kind: CommandErrorNoServer, Infrastructure: true, Retryable: true},
+			want: CommandErrorClass{Kind: CommandErrorNoServer, Retryable: true},
 		},
 		{
 			name: "remote unavailable",

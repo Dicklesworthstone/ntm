@@ -840,6 +840,21 @@ type AgentConfig struct {
 	Opencode     string            `toml:"oc"`      // Opencode (https://opencode.ai) launch command — see ntm#116
 	Plugins      map[string]string `toml:"plugins"` // Custom agent commands keyed by type
 	DefaultCount int               `toml:"default_count"`
+
+	// ClaudeIsolateCredentials opts Claude panes into per-pane
+	// CLAUDE_CONFIG_DIR isolation at spawn (GH#237). Claude Code rewrites the
+	// shared ~/.claude/.credentials.json on every OAuth refresh, so N panes on
+	// one subscription invalidate each other's refresh token and 401 in
+	// cascade — taking the operator's own session down with them. Each pane
+	// instead gets a config dir that links everything except the rotating
+	// credential.
+	ClaudeIsolateCredentials bool `toml:"claude_isolate_credentials"`
+
+	// ClaudeTokenFile points at a file holding a non-rotating setup token
+	// minted with `claude setup-token`. Isolation alone leaves panes with no
+	// credential; this supplies the static one they all read. Kept OUTSIDE
+	// the config dir on purpose so it is never linked into a pane.
+	ClaudeTokenFile string `toml:"claude_token_file"`
 }
 
 // ContextConfig holds options for context-pack composition.

@@ -640,3 +640,52 @@ func TestGetDependencyContext_HandlesToolErrors(t *testing.T) {
 		t.Fatalf("len(TopBlockers) = %d, want 0", len(ctx.TopBlockers))
 	}
 }
+
+// An envelope whose list key is present but empty means "no results". It used
+// to fall through to the single-object branch, which unmarshalled the
+// envelope itself into T (unknown fields are ignored, so it always succeeded)
+// and returned one phantom zero-valued item. `br list --json` answers exactly
+// this shape for an empty result, so callers with no matching beads got one
+// blank bead — the alert generator then emitted a stale-bead alert for ID ""
+// because a zero UpdatedAt is older than any threshold.
+func TestUnmarshalBdListEmptyEnvelopeReturnsNoItems(t *testing.T) {
+	type bead struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"br list empty result", `{"issues":[],"total":0,"limit":0,"offset":0,"has_more":false}`},
+		{"empty beads key", `{"beads":[],"total":0}`},
+		{"empty items key", `{"items":[]}`},
+		{"null issues", `{"issues":null,"total":0}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := UnmarshalBdList[bead](tc.payload)
+			if err != nil {
+				t.Fatalf("UnmarshalBdList: %v", err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("got %d items (%+v), want 0 — an empty envelope must not yield a phantom bead", len(got), got)
+			}
+		})
+	}
+}
+
+// A genuine single object must still parse, so the empty-envelope guard cannot
+// simply disable the fallback.
+func TestUnmarshalBdListStillAcceptsSingleObject(t *testing.T) {
+	type bead struct {
+		ID string `json:"id"`
+	}
+	got, err := UnmarshalBdList[bead](`{"id":"ntm-abc12"}`)
+	if err != nil {
+		t.Fatalf("UnmarshalBdList: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "ntm-abc12" {
+		t.Fatalf("got %+v, want the single bead", got)
+	}
+}

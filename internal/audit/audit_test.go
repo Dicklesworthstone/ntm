@@ -458,3 +458,58 @@ func TestQueryDateFilterHonorsLocalFilenameDates(t *testing.T) {
 		t.Fatalf("getLogFiles selected %v for a window two days later, want none", files)
 	}
 }
+
+// bd-fresh-eyes-audit .21: every ntm process logs into its session's audit
+// file while keeping its own in-memory chain state, so a shared file forked
+// the hash chain and VerifyIntegrity hard-failed on "sequence number
+// mismatch" after any concurrent invocation. Each writer now owns its own
+// file, which is what a hash chain requires by construction.
+func TestAuditLogger_ConcurrentWritersDoNotForkTheHashChain(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+
+	// Two loggers for the SAME session, as two ntm processes would be.
+	newLogger := func(writerID string) *AuditLogger {
+		t.Helper()
+		logger, err := NewAuditLogger(&LoggerConfig{
+			SessionID:     "concurrent" + writerID,
+			BufferSize:    1,
+			FlushInterval: time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("NewAuditLogger(%s): %v", writerID, err)
+		}
+		return logger
+	}
+	first := newLogger("")
+	defer first.Close()
+
+	entry := AuditEntry{EventType: EventTypeCommand, Actor: ActorUser, Target: "concurrent.test"}
+	for i := 0; i < 3; i++ {
+		if err := first.Log(entry); err != nil {
+			t.Fatalf("first.Log(%d): %v", i, err)
+		}
+	}
+	if err := first.Flush(); err != nil {
+		t.Fatalf("first.Flush: %v", err)
+	}
+
+	// Each writer's file must verify as a sound chain on its own.
+	if err := VerifyIntegrity(first.file.Name()); err != nil {
+		t.Fatalf("VerifyIntegrity(%s): %v", first.file.Name(), err)
+	}
+
+	// The filename must carry the writer discriminator BEFORE the date, so
+	// the query layer's session prefix match and last-10-character date
+	// extraction both keep working.
+	name := filepath.Base(first.file.Name())
+	if !strings.HasPrefix(name, "concurrent-") {
+		t.Fatalf("audit filename %q lost its session prefix; query.go matches HasPrefix(session+\"-\")", name)
+	}
+	if got := extractDateFromFilename(name); got != time.Now().Format("2006-01-02") {
+		t.Fatalf("extractDateFromFilename(%q) = %q, want today's date; the date must stay in the last 10 characters", name, got)
+	}
+	if !strings.Contains(name, "-"+auditWriterID()+"-") {
+		t.Fatalf("audit filename %q lacks the writer discriminator %q", name, auditWriterID())
+	}
+}

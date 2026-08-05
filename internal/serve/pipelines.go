@@ -157,13 +157,26 @@ func (s *Server) registerPipelineRoutes(r chi.Router) {
 	})
 }
 
+// detachedRunContext returns a context for a background pipeline run plus its
+// cancel function. The run outlives the HTTP request, so the caller hands the
+// cancel to the run goroutine (which defers it) and to the pipeline registry,
+// where CancelPipeline can reach it.
+func detachedRunContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
+}
+
 // handleListPipelines handles GET /api/v1/pipelines
 func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 
 	slog.Info("pipelines list", "request_id", reqID)
 
-	pipelines := pipeline.GetAllPipelines()
+	// Snapshots merge this process's live registry with the runs persisted
+	// under .ntm/pipelines. Reading the bare registry made this endpoint
+	// permanently empty in `ntm serve`, which never registers a pipeline: it
+	// builds its own executor inline, so nothing ever reached the registry
+	// (bd-fresh-eyes-audit .26).
+	pipelines := pipeline.GetAllPipelineSnapshots()
 
 	// Convert to summary format
 	summaries := make([]pipeline.PipelineSummary, 0, len(pipelines))
@@ -322,7 +335,7 @@ func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("pipeline get", "request_id", reqID, "run_id", runID)
 
-	exec := pipeline.GetPipelineExecution(runID)
+	exec := pipeline.GetPipelineSnapshot(runID)
 	if exec == nil {
 		writeErrorResponse(w, http.StatusNotFound, ErrCodePipelineNotFound, "pipeline not found", map[string]interface{}{
 			"run_id": runID,
@@ -363,7 +376,7 @@ func (s *Server) handleCancelPipeline(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("pipeline cancel", "request_id", reqID, "run_id", runID)
 
-	exec := pipeline.GetPipelineExecution(runID)
+	exec := pipeline.GetPipelineSnapshot(runID)
 	if exec == nil {
 		writeErrorResponse(w, http.StatusNotFound, ErrCodePipelineNotFound, "pipeline not found", map[string]interface{}{
 			"run_id": runID,
@@ -668,9 +681,22 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
+	// Every path gets a cancel handle so vet's context-leak check is satisfied
+	// and, more importantly, so a background run can actually be stopped:
+	// without one it kept driving tmux to completion with nothing able to
+	// interrupt it (bd-fresh-eyes-audit .26). Background runs detach from the
+	// request lifecycle; synchronous runs cancel when this function returns.
+	var cancelRun context.CancelFunc
 	if opts.Background {
-		// Detach from request lifecycle.
-		runCtx = context.Background()
+		// Ownership of this cancel passes to the run goroutine below, which
+		// defers it; the handle is also stored in the registry so
+		// CancelPipeline can stop the run.
+		runCtx, cancelRun = detachedRunContext()
+	} else {
+		var cancelSync context.CancelFunc
+		runCtx, cancelSync = context.WithCancel(runCtx)
+		cancelRun = cancelSync
+		defer cancelSync()
 	}
 
 	// Start execution
@@ -750,14 +776,21 @@ func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.Pipeli
 
 	// For background mode, start async and return immediately
 	if opts.Background {
+		// Publish the run to the shared registry BEFORE returning, so the
+		// run_id this response hands the caller resolves on GET and cancel.
+		pipeline.RegisterPipeline(pipeline.NewTrackedExecution(
+			config.RunID, workflow.Name, opts.Session, len(workflow.Steps), executor, cancelRun,
+		))
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("pipelines: panic recovered", "panic", r)
 				}
 			}()
+			defer cancelRun()
 			defer close(done)
-			_, _ = executor.Run(runCtx, workflow, opts.Variables, progress)
+			state, _ := executor.Run(runCtx, workflow, opts.Variables, progress)
+			pipeline.UpdatePipelineFromState(config.RunID, state)
 		}()
 		output.Status = "running"
 	} else {
@@ -800,8 +833,16 @@ func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Work
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
+	// Detached from the request when background, but always cancellable —
+	// see runPipelineWithResult.
+	var cancelRun context.CancelFunc
 	if background {
-		runCtx = context.Background()
+		runCtx, cancelRun = detachedRunContext()
+	} else {
+		var cancelSync context.CancelFunc
+		runCtx, cancelSync = context.WithCancel(runCtx)
+		cancelRun = cancelSync
+		defer cancelSync()
 	}
 
 	progress := make(chan pipeline.ProgressEvent, 256)
@@ -868,14 +909,19 @@ func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Work
 	}()
 
 	if background {
+		pipeline.RegisterPipeline(pipeline.NewTrackedExecution(
+			config.RunID, workflow.Name, session, len(workflow.Steps), executor, cancelRun,
+		))
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("pipelines: panic recovered", "panic", r)
 				}
 			}()
+			defer cancelRun()
 			defer close(done)
-			_, _ = executor.Run(runCtx, workflow, variables, progress)
+			state, _ := executor.Run(runCtx, workflow, variables, progress)
+			pipeline.UpdatePipelineFromState(config.RunID, state)
 		}()
 		output.Status = "running"
 	} else {
