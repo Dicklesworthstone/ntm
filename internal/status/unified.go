@@ -372,17 +372,19 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 		status.LastActive = contentChangedAt
 	}
 
-	// Try to get pane details for agent type detection
-	// We'll parse the pane title from output if needed
-	// Use paneID as target - tmux list-panes -s -t paneID lists all panes in that pane's session
-	panes, _ := tmux.GetPanesWithActivity(paneID)
-	for _, p := range panes {
-		if p.Pane.ID == paneID {
-			status.PaneName = p.Pane.Title
-			status.AgentType = string(p.Pane.Type)
-			break
-		}
+	// Resolve the target to the physical pane that supplied the output. A tmux
+	// target such as "session:0.1" is not a pane ID, so comparing it directly
+	// with "%N" loses the pane's title and agent type.
+	panes, err := tmux.GetPanesWithActivity(paneID)
+	if err != nil {
+		return status, err
 	}
+	pane, err := resolveDetectedPane(panes, paneID)
+	if err != nil {
+		return status, err
+	}
+	status.PaneName = pane.Title
+	status.AgentType = string(pane.Type)
 
 	// Use shared logic
 	state, errType := d.determineState(output, status.AgentType, status.LastActive)
@@ -403,6 +405,23 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 	}
 
 	return status, nil
+}
+
+func resolveDetectedPane(panes []tmux.PaneActivity, target string) (tmux.Pane, error) {
+	selector := target
+	if _, paneSelector, hasSession := strings.Cut(target, ":"); hasSession {
+		selector = paneSelector
+	}
+
+	available := make([]tmux.Pane, 0, len(panes))
+	for _, pane := range panes {
+		available = append(available, pane.Pane)
+	}
+	resolved, err := tmux.ResolvePaneSelectors(available, []string{selector}, true)
+	if err != nil {
+		return tmux.Pane{}, err
+	}
+	return resolved[0], nil
 }
 
 // DetectAll returns status for all panes in a session.

@@ -595,6 +595,33 @@ func TestDetectNonexistentPane(t *testing.T) {
 	}
 }
 
+func TestResolveDetectedPane(t *testing.T) {
+	panes := []tmux.PaneActivity{
+		{Pane: tmux.Pane{ID: "%1", WindowIndex: 0, Index: 0, Title: "shell", Type: tmux.AgentUser}},
+		{Pane: tmux.Pane{ID: "%2", WindowIndex: 0, Index: 1, Title: "codex", Type: tmux.AgentCodex}},
+	}
+
+	resolved, err := resolveDetectedPane(panes, "project:0.1")
+	if err != nil {
+		t.Fatalf("resolveDetectedPane target spec: %v", err)
+	}
+	if resolved.ID != "%2" || resolved.Title != "codex" || resolved.Type != tmux.AgentCodex {
+		t.Fatalf("resolveDetectedPane target spec = %+v, want pane %%2 codex", resolved)
+	}
+
+	resolved, err = resolveDetectedPane(panes, "%1")
+	if err != nil {
+		t.Fatalf("resolveDetectedPane pane ID: %v", err)
+	}
+	if resolved.ID != "%1" {
+		t.Fatalf("resolveDetectedPane pane ID = %+v, want %%1", resolved)
+	}
+
+	if _, err := resolveDetectedPane(panes, "project:9.9"); err == nil {
+		t.Fatal("resolveDetectedPane missing target returned nil error")
+	}
+}
+
 // TestDetectAll tests the DetectAll method with a real tmux session
 func TestDetectAll(t *testing.T) {
 	if !tmuxAvailable() {
