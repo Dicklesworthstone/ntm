@@ -1324,11 +1324,11 @@ func TestCountLaunchableAgents(t *testing.T) {
 
 	t.Run("counts only panes that would actually launch", func(t *testing.T) {
 		states := []PaneState{
-			{Index: 0, AgentType: "user"},              // skipped: user pane
-			{Index: 1, AgentType: "cc"},                // type default
-			{Index: 2, AgentType: "cod"},               // type default
+			{Index: 0, AgentType: "user"},                           // skipped: user pane
+			{Index: 1, AgentType: "cc"},                             // type default
+			{Index: 2, AgentType: "cod"},                            // type default
 			{Index: 3, AgentType: "cc", Command: "claude --resume"}, // saved command
-			{Index: 4, AgentType: "unknown-agent"},     // no command, no default
+			{Index: 4, AgentType: "unknown-agent"},                  // no command, no default
 		}
 		if got := countLaunchableAgents(states, cmds); got != 3 {
 			t.Fatalf("countLaunchableAgents = %d, want 3", got)
