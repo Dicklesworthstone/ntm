@@ -71,9 +71,16 @@ func TestClassifyCommandError(t *testing.T) {
 			want: CommandErrorClass{Kind: CommandErrorTimeout, Infrastructure: true, Retryable: true},
 		},
 		{
+			// Deliberately NOT Infrastructure. Infrastructure feeds only
+			// circuit-breaker accounting, and cancellation is caller-initiated
+			// (operator Ctrl+C, a per-tick context in a poll loop, a
+			// shutting-down request) — it says nothing about tmux's health.
+			// Counting it let five cancelled calls open the breaker for every
+			// caller in the process. DeadlineExceeded above stays
+			// Infrastructure: a timeout IS evidence of a wedged server.
 			name: "canceled",
 			err:  context.Canceled,
-			want: CommandErrorClass{Kind: CommandErrorCanceled, Infrastructure: true},
+			want: CommandErrorClass{Kind: CommandErrorCanceled},
 		},
 		{
 			name: "circuit open",
@@ -478,6 +485,65 @@ func TestParseTags(t *testing.T) {
 				if got[i] != tt.want[i] {
 					t.Errorf("parseTags(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
 				}
+			}
+		})
+	}
+}
+
+// bd-byoam: `send-keys` carries the agent's PROMPT in its argv, and agent
+// prompts routinely discuss tooling failures. Classification must read the
+// command's stderr and nothing else, or caller payload steers retry policy and
+// circuit-breaker accounting.
+func TestClassifyCommandError_IgnoresCallerPayloadInArgv(t *testing.T) {
+	t.Parallel()
+
+	exit1 := commandExitError(t, 1)
+
+	tests := []struct {
+		name   string
+		prompt string
+		stderr string
+		want   CommandErrorClass
+	}{
+		{
+			name:   "prompt mentioning permission denied",
+			prompt: "explain why the deploy failed with permission denied",
+			stderr: "unknown option: -Z",
+			want:   CommandErrorClass{Kind: CommandErrorCommandFailed},
+		},
+		{
+			name:   "prompt mentioning no server running",
+			prompt: "the docs say no server running means tmux is not started",
+			stderr: "unknown option: -Z",
+			want:   CommandErrorClass{Kind: CommandErrorCommandFailed},
+		},
+		{
+			name:   "prompt mentioning cant find pane",
+			prompt: "handle the case where tmux says can't find pane",
+			stderr: "unknown option: -Z",
+			want:   CommandErrorClass{Kind: CommandErrorCommandFailed},
+		},
+		{
+			// The real signal still classifies correctly.
+			name:   "genuine no-server stderr",
+			prompt: "summarize the auth module",
+			stderr: "no server running on /tmp/tmux-1000/default",
+			want:   CommandErrorClass{Kind: CommandErrorNoServer, Retryable: true},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := &CommandError{
+				Command: "/usr/bin/tmux",
+				Args:    []string{"send-keys", "-t", "proj:0.1", "-l", tt.prompt},
+				Stderr:  tt.stderr,
+				Err:     exit1,
+			}
+			if got := ClassifyCommandError(err); got != tt.want {
+				t.Fatalf("ClassifyCommandError = %+v, want %+v (prompt must not steer classification)", got, tt.want)
 			}
 		})
 	}

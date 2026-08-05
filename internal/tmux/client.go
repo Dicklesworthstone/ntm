@@ -44,6 +44,38 @@ type CommandErrorClass struct {
 	Retryable      bool
 }
 
+// CommandError is a failed tmux/ssh invocation that keeps the command's STDERR
+// separate from its arguments.
+//
+// Classification used to substring-match the flattened error string, which
+// included the argv — and for `send-keys` the argv contains the agent PROMPT.
+// Agent prompts routinely discuss tooling failures, so a prompt containing
+// "permission denied" made an unrelated non-zero exit classify as
+// permission_denied/Infrastructure (charged to the circuit breaker, routed down
+// the wrong retry path), and a prompt containing "no server running" turned a
+// real infrastructure failure into a benign retryable no_server. Caller-supplied
+// payload text must never be able to change how an error is classified, so the
+// classifier reads Stderr and nothing else.
+type CommandError struct {
+	// Command is the binary that was executed (tmux or ssh).
+	Command string
+	// Args is the argv. It may contain caller payload and is for humans only.
+	Args []string
+	// Stderr is what the command actually reported. This is the only field
+	// classification is allowed to read.
+	Stderr string
+	// Err is the underlying exec error (*exec.ExitError, *exec.Error, ...).
+	Err error
+}
+
+func (e *CommandError) Error() string {
+	return fmt.Sprintf("%s %s: %v: %s", e.Command, strings.Join(e.Args, " "), e.Err, e.Stderr)
+}
+
+// Unwrap keeps errors.Is/As working against the underlying exec error, which
+// ClassifyCommandError relies on for exit codes and binary-missing detection.
+func (e *CommandError) Unwrap() error { return e.Err }
+
 // Circuit breaker configuration.
 const (
 	// cbMaxFailures is the number of consecutive failures before the circuit
@@ -253,14 +285,30 @@ func ClassifyCommandError(err error) CommandErrorClass {
 	if err == nil {
 		return CommandErrorClass{Kind: CommandErrorNone}
 	}
+
+	// Match on STDERR alone when we have it. The flattened error string also
+	// contains the argv, and for send-keys the argv is the agent's prompt —
+	// letting caller payload steer classification. See CommandError.
 	msg := strings.ToLower(err.Error())
+	var cmdErr *CommandError
+	if errors.As(err, &cmdErr) {
+		msg = strings.ToLower(cmdErr.Stderr)
+	}
 
 	if errors.Is(err, ErrCircuitOpen) {
 		return CommandErrorClass{Kind: CommandErrorCircuitOpen, Infrastructure: true, Retryable: true}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		if errors.Is(err, context.Canceled) {
-			return CommandErrorClass{Kind: CommandErrorCanceled, Infrastructure: true}
+			// Deliberately NOT Infrastructure, for the same reason as
+			// "no server running" below: Infrastructure feeds only
+			// circuit-breaker accounting, and a cancellation is CALLER-initiated
+			// — an operator Ctrl+C, a per-tick context in a TUI poll loop, a
+			// shutting-down request. It is not evidence that tmux is sick.
+			// Counting it meant five cancelled calls opened the breaker for
+			// every caller in the process. A timeout is different and stays
+			// Infrastructure: that IS evidence of a wedged server.
+			return CommandErrorClass{Kind: CommandErrorCanceled}
 		}
 		return CommandErrorClass{Kind: CommandErrorTimeout, Infrastructure: true, Retryable: true}
 	}
@@ -366,7 +414,12 @@ func runLocalContext(ctx context.Context, args ...string) (string, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
-		return "", fmt.Errorf("%s %s: %w: %s", binary, strings.Join(args, " "), err, stderr.String())
+		return "", &CommandError{
+			Command: binary,
+			Args:    append([]string(nil), args...),
+			Stderr:  stderr.String(),
+			Err:     err,
+		}
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
@@ -402,7 +455,12 @@ func runSSHContext(ctx context.Context, args ...string) (string, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
-		return "", fmt.Errorf("ssh %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+		return "", &CommandError{
+			Command: "ssh",
+			Args:    append([]string(nil), args...),
+			Stderr:  stderr.String(),
+			Err:     err,
+		}
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
