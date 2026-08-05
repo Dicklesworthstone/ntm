@@ -7121,10 +7121,12 @@ func TestHandleRemoveBeadDep_WithProjectDir(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	srv.projectDir = reserveSharedBeadsProjectDir(t)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/beads/bd-nonexistent/deps/bd-also-nonexistent", nil)
+	// Both IDs must match beadIDPattern (single hyphen) so validation passes
+	// and the handler reaches the RunBd error path this test exercises.
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/beads/bd-nonexistent/deps/bd-alsomissing", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "bd-nonexistent")
-	rctx.URLParams.Add("depId", "bd-also-nonexistent")
+	rctx.URLParams.Add("depId", "bd-alsomissing")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rec := httptest.NewRecorder()
 
