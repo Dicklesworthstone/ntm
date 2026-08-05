@@ -185,15 +185,25 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 	return nil
 }
 
-// countLaunchableAgents reports how many saved panes would actually launch an
-// agent, using the same predicates as the launch loop: user panes are skipped,
-// and so is any pane with neither a saved command nor a type default.
+// droppedLaunchableAgents reports how many saved panes WOULD launch an agent
+// but sit at a position the live pane grid cannot reach.
 //
-// Counting only these avoids a false capacity error for a saved session whose
-// extra panes were never going to launch anything.
-func countLaunchableAgents(paneStates []PaneState, cmds AgentCommands) int {
-	count := 0
-	for _, paneState := range paneStates {
+// The mapping is POSITIONAL: the launch loop pairs sortedPaneStates[i] with
+// panes[i] and stops at `i >= len(panes)`, so a non-launchable state (a user
+// pane, or one with no command from either source) still consumes a slot. A
+// count of launchable agents is therefore the wrong comparison — a saved
+// session of [user, cc, cc, cc] restored into 3 panes has 3 launchable agents
+// and 3 panes, yet the third cc sits at index 3 and is dropped. Only the
+// INDEX of each launchable pane answers the question.
+//
+// Non-launchable states past the cutoff are ignored: they were never going to
+// launch anything, so they must not trip a false capacity error.
+func droppedLaunchableAgents(paneStates []PaneState, cmds AgentCommands, paneCount int) int {
+	dropped := 0
+	for i, paneState := range paneStates {
+		if i < paneCount {
+			continue
+		}
 		if paneState.AgentType == string(tmux.AgentUser) || paneState.AgentType == "user" {
 			continue
 		}
@@ -204,9 +214,9 @@ func countLaunchableAgents(paneStates []PaneState, cmds AgentCommands) int {
 		if agentCmd == "" {
 			continue
 		}
-		count++
+		dropped++
 	}
-	return count
+	return dropped
 }
 
 // applyClaudeIsolation prefixes a Claude pane's launch command with its
@@ -296,17 +306,18 @@ func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands, 
 	// reported a clean restore while N agents never started — the same
 	// silently-dropped-work failure ba13c058 fixed on the swarm side. Name the
 	// arithmetic instead.
-	if launchable := countLaunchableAgents(sortedPaneStates, cmds); launchable > len(panes) {
+	if dropped := droppedLaunchableAgents(sortedPaneStates, cmds, len(panes)); dropped > 0 {
 		_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "session.restore.agents", map[string]interface{}{
 			"phase":             "capacity",
 			"session":           sessionName,
-			"agents_launchable": launchable,
+			"agents_dropped":    dropped,
+			"pane_states_saved": len(sortedPaneStates),
 			"panes_available":   len(panes),
 			"correlation_id":    correlationID,
 		}, nil)
 		return fmt.Errorf(
-			"restored session %q has %d pane(s) but %d agent(s) to launch; %d would be silently dropped (topology restore likely failed)",
-			sessionName, len(panes), launchable, launchable-len(panes))
+			"restored session %q has %d pane(s) but %d saved pane state(s); %d agent(s) would be silently dropped (topology restore likely failed)",
+			sessionName, len(panes), len(sortedPaneStates), dropped)
 	}
 
 	for i, paneState := range sortedPaneStates {

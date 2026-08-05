@@ -1319,36 +1319,67 @@ func TestApplyClaudeIsolation(t *testing.T) {
 // value — so a partially-failed topology restore (a rejected split, a collapsed
 // layout) reported a clean restore while N agents never started. Same
 // silently-dropped-work failure ba13c058 fixed on the swarm side.
-func TestCountLaunchableAgents(t *testing.T) {
+func TestDroppedLaunchableAgents(t *testing.T) {
 	cmds := AgentCommands{Claude: "claude", Codex: "codex"}
 
-	t.Run("counts only panes that would actually launch", func(t *testing.T) {
-		states := []PaneState{
-			{Index: 0, AgentType: "user"},                           // skipped: user pane
-			{Index: 1, AgentType: "cc"},                             // type default
-			{Index: 2, AgentType: "cod"},                            // type default
-			{Index: 3, AgentType: "cc", Command: "claude --resume"}, // saved command
-			{Index: 4, AgentType: "unknown-agent"},                  // no command, no default
-		}
-		if got := countLaunchableAgents(states, cmds); got != 3 {
-			t.Fatalf("countLaunchableAgents = %d, want 3", got)
-		}
-	})
-
-	t.Run("a saved command rescues an otherwise unlaunchable type", func(t *testing.T) {
-		states := []PaneState{{Index: 1, AgentType: "unknown-agent", Command: "some-cli"}}
-		if got := countLaunchableAgents(states, cmds); got != 1 {
-			t.Fatalf("countLaunchableAgents = %d, want 1", got)
-		}
-	})
-
-	t.Run("user panes never count", func(t *testing.T) {
+	// The mapping is POSITIONAL — the loop pairs sortedPaneStates[i] with
+	// panes[i] and stops at i >= len(panes) — so a non-launchable state still
+	// consumes a slot. Comparing a COUNT of launchable agents against the pane
+	// count misses exactly this case: 3 launchable agents and 3 panes, yet the
+	// last one sits at index 3 and is dropped.
+	t.Run("a user pane consumes a slot and pushes an agent off the end", func(t *testing.T) {
 		states := []PaneState{
 			{Index: 0, AgentType: "user"},
-			{Index: 1, AgentType: string(tmux.AgentUser)},
+			{Index: 1, AgentType: "cc"},
+			{Index: 2, AgentType: "cc"},
+			{Index: 3, AgentType: "cc"},
 		}
-		if got := countLaunchableAgents(states, cmds); got != 0 {
-			t.Fatalf("countLaunchableAgents = %d, want 0", got)
+		if got := droppedLaunchableAgents(states, cmds, 3); got != 1 {
+			t.Fatalf("droppedLaunchableAgents = %d, want 1 — the agent at index 3 cannot be reached by a 3-pane grid", got)
+		}
+	})
+
+	t.Run("everything fits", func(t *testing.T) {
+		states := []PaneState{
+			{Index: 0, AgentType: "user"},
+			{Index: 1, AgentType: "cc"},
+			{Index: 2, AgentType: "cod"},
+		}
+		if got := droppedLaunchableAgents(states, cmds, 3); got != 0 {
+			t.Fatalf("droppedLaunchableAgents = %d, want 0", got)
+		}
+	})
+
+	t.Run("non-launchable states past the cutoff do not trip the guard", func(t *testing.T) {
+		states := []PaneState{
+			{Index: 0, AgentType: "cc"},
+			{Index: 1, AgentType: "user"},          // past cutoff, launches nothing
+			{Index: 2, AgentType: "unknown-agent"}, // past cutoff, no command
+		}
+		if got := droppedLaunchableAgents(states, cmds, 1); got != 0 {
+			t.Fatalf("droppedLaunchableAgents = %d, want 0 — those states were never going to launch anything", got)
+		}
+	})
+
+	t.Run("a saved command makes an otherwise unlaunchable type count", func(t *testing.T) {
+		states := []PaneState{
+			{Index: 0, AgentType: "cc"},
+			{Index: 1, AgentType: "unknown-agent", Command: "some-cli"},
+		}
+		if got := droppedLaunchableAgents(states, cmds, 1); got != 1 {
+			t.Fatalf("droppedLaunchableAgents = %d, want 1", got)
+		}
+	})
+
+	t.Run("counts every dropped agent, not just the first", func(t *testing.T) {
+		states := []PaneState{
+			{Index: 0, AgentType: "cc"},
+			{Index: 1, AgentType: "cc"},
+			{Index: 2, AgentType: "cc"},
+			{Index: 3, AgentType: "cod"},
+		}
+		if got := droppedLaunchableAgents(states, cmds, 1); got != 3 {
+			t.Fatalf("droppedLaunchableAgents = %d, want 3", got)
 		}
 	})
 }
