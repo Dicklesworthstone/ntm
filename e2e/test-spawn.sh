@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../scripts/e2e/lib/logging.sh"
 
 e2e_test_setup test-spawn
-trap e2e_cleanup EXIT
+trap 'e2e_finish "$?"' EXIT
 
 session="e2e-spawn-$$"
 log_step_start spawn_single_agent
@@ -20,15 +20,18 @@ log_step_end spawn_single_agent
 
 multi_session="e2e-spawn-multi-$$"
 log_step_start spawn_mixed_agents
-e2e_spawn "$multi_session" --cc=2 --cod=1 --gmi=1
+e2e_spawn "$multi_session" --cc=2 --cod=1
 multi_count="$("$E2E_REAL_TMUX" list-panes -t "$multi_session" -F '#{pane_id}' | wc -l | tr -d ' ')"
-[[ "$multi_count" == "4" ]] || e2e_fail "mixed spawn created four agent panes"
-log_assertion_pass 'mixed spawn created four agent panes'
+[[ "$multi_count" == "3" ]] || e2e_fail "mixed spawn created three agent panes"
+log_assertion_pass 'mixed spawn created three agent panes'
 log_step_end spawn_mixed_agents
 
-log_step_start spawn_duplicate_rejected
-assert_command_fails 'spawning an existing session is rejected' "$E2E_NTM_BIN" spawn "$session" --no-user --cc=1 --create-dir --no-cass-context --no-recovery --no-hooks
-log_step_end spawn_duplicate_rejected
+log_step_start spawn_existing_session
+"$E2E_NTM_BIN" spawn "$session" --no-user --cc=1 --create-dir --no-cass-context --no-recovery --no-hooks
+reattached_count="$("$E2E_REAL_TMUX" list-panes -t "$session" -F '#{pane_id}' | wc -l | tr -d ' ')"
+[[ "$reattached_count" == "1" ]] || e2e_fail 'spawning an existing session reuses its original pane'
+log_assertion_pass 'spawning an existing session reuses its original pane'
+log_step_end spawn_existing_session
 
 log_step_start spawn_stress
 stress_session="e2e-spawn-stress-$$"

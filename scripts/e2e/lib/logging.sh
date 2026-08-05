@@ -145,13 +145,15 @@ e2e_test_setup() {
 		log_error preflight 'go is required to build the NTM test binary'
 		return 1
 	fi
+	E2E_GOMODCACHE="$(go env GOMODCACHE)"
+	E2E_GOCACHE="$(go env GOCACHE)"
 
 	E2E_TEST_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/ntm-e2e-${E2E_TEST_NAME}.XXXXXX")"
 	E2E_SESSIONS=()
 	mkdir -p "$E2E_TEST_TMPDIR/bin" "$E2E_TEST_TMPDIR/home" "$E2E_TEST_TMPDIR/projects"
 	E2E_TMUX_TMPDIR="$(mktemp -d /tmp/ntm-e2e-tmux.XXXXXX)"
 
-	printf '%s\n' 'package main' 'import ("bufio"; "fmt"; "os")' 'func main() { scanner := bufio.NewScanner(os.Stdin); for scanner.Scan() { fmt.Printf("FAKE_AGENT_RECEIVED:%s\\n", scanner.Text()) }; select {} }' >"$E2E_TEST_TMPDIR/fake_agent.go"
+	printf '%s\n' 'package main' 'import ("bufio"; "fmt"; "os")' 'func main() { scanner := bufio.NewScanner(os.Stdin); for scanner.Scan() { fmt.Printf("FAKE_AGENT_RECEIVED:%s\n", scanner.Text()) }; select {} }' >"$E2E_TEST_TMPDIR/fake_agent.go"
 	go build -o "$E2E_TEST_TMPDIR/bin/fake-agent" "$E2E_TEST_TMPDIR/fake_agent.go"
 	ln -s fake-agent "$E2E_TEST_TMPDIR/bin/claude"
 	ln -s fake-agent "$E2E_TEST_TMPDIR/bin/codex"
@@ -160,6 +162,8 @@ e2e_test_setup() {
 	export E2E_REAL_TMUX
 	export HOME="$E2E_TEST_TMPDIR/home"
 	export XDG_CONFIG_HOME="$E2E_TEST_TMPDIR/home/.config"
+	export GOMODCACHE="$E2E_GOMODCACHE"
+	export GOCACHE="$E2E_GOCACHE"
 	export PATH="$E2E_TEST_TMPDIR/bin:$PATH"
 	export NTM_PROJECTS_BASE="$E2E_TEST_TMPDIR/projects"
 	export NTM_TEST_MODE=1
@@ -189,13 +193,47 @@ e2e_spawn() {
 	log_info spawn "spawned fake-agent session" 0 session "$session"
 }
 
-e2e_cleanup() {
-	local session
+e2e_capture_diagnostics() {
+	local diagnostics_dir pane session pane_file
+	diagnostics_dir="$E2E_TEST_LOG_DIR/diagnostics"
+	mkdir -p "$diagnostics_dir"
+
+	"$E2E_REAL_TMUX" list-sessions >"$diagnostics_dir/tmux-sessions.log" 2>&1 || true
+	"$E2E_REAL_TMUX" list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}' >"$diagnostics_dir/tmux-panes.log" 2>&1 || true
+	while IFS= read -r pane; do
+		[[ -n "$pane" ]] || continue
+		pane_file="${pane//[^[:alnum:]._-]/_}"
+		"$E2E_REAL_TMUX" capture-pane -p -t "$pane" >"$diagnostics_dir/pane-${pane_file}.log" 2>&1 || true
+	done <"$diagnostics_dir/tmux-panes.log"
+	ps -axo pid=,ppid=,state=,etime=,command= >"$diagnostics_dir/processes.log" 2>&1 || true
 	for session in "${E2E_SESSIONS[@]:-}"; do
+		"$E2E_NTM_BIN" status "$session" --json >"$diagnostics_dir/status-${session}.json" 2>&1 || true
+		"$E2E_REAL_TMUX" show-messages -t "$session" >"$diagnostics_dir/tmux-messages-${session}.log" 2>&1 || true
+	done
+	log_error diagnostics "captured failure diagnostics" 0 diagnostics_dir "$diagnostics_dir"
+}
+
+e2e_cleanup() {
+	local session monitor_pid
+	for session in "${E2E_SESSIONS[@]:-}"; do
+		while IFS= read -r monitor_pid; do
+			[[ -n "$monitor_pid" ]] || continue
+			kill -TERM "$monitor_pid" 2>/dev/null || true
+			log_info teardown "stopped isolated session monitor" 0 session "$session" pid "$monitor_pid"
+		done < <(pgrep -f "internal-monitor ${session}$" 2>/dev/null || true)
 		if "$E2E_REAL_TMUX" has-session -t "$session" 2>/dev/null; then
 			"$E2E_REAL_TMUX" kill-session -t "$session"
 			log_info teardown "killed isolated tmux session" 0 session "$session"
 		fi
 	done
 	log_info teardown "artifacts retained for diagnosis" 0 artifact_root "$E2E_TEST_TMPDIR"
+}
+
+e2e_finish() {
+	local status="$1"
+	if (( status != 0 )); then
+		e2e_capture_diagnostics
+	fi
+	e2e_cleanup
+	exit "$status"
 }

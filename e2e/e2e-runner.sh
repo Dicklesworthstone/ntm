@@ -57,16 +57,21 @@ fi
 
 run_one() {
 	local test_script="$1"
-	local name started finished status watchdog
+	local name started finished status watchdog test_pid
 	name="$(basename "$test_script")"
 	started="$(date +%s)"
+	E2E_RUN_DIR="$E2E_RUN_DIR" E2E_NTM_BIN="${E2E_NTM_BIN:-}" bash "$test_script" >"$E2E_RUN_DIR/$name.stdout.log" 2>"$E2E_RUN_DIR/$name.stderr.log" &
+	test_pid=$!
 	(
 		sleep "$timeout_seconds"
-		kill -TERM "$$" 2>/dev/null || true
+		if kill -0 "$test_pid" 2>/dev/null; then
+			printf 'test exceeded timeout of %ss\n' "$timeout_seconds" >>"$E2E_RUN_DIR/$name.stderr.log"
+			kill -TERM "$test_pid" 2>/dev/null || true
+		fi
 	) &
 	watchdog=$!
 	set +e
-	E2E_RUN_DIR="$E2E_RUN_DIR" E2E_NTM_BIN="${E2E_NTM_BIN:-}" bash "$test_script" >"$E2E_RUN_DIR/$name.stdout.log" 2>"$E2E_RUN_DIR/$name.stderr.log"
+	wait "$test_pid"
 	status=$?
 	set -e
 	kill "$watchdog" 2>/dev/null || true

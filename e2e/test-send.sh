@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../scripts/e2e/lib/logging.sh"
 
 e2e_test_setup test-send
-trap e2e_cleanup EXIT
+trap 'e2e_finish "$?"' EXIT
 
 session="e2e-send-$$"
 e2e_spawn "$session" --cc=1 --cod=1
