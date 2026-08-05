@@ -398,21 +398,27 @@ func E2ETestPrecheckThrottled(t *testing.T) {
 
 // TimeoutScale returns the multiplier applied to test time budgets.
 //
-// It reads TimeoutScaleEnv and defaults to 1 (current behavior). Values below
-// 1 are clamped: a scale is for making budgets more forgiving on a loaded
-// machine, never for tightening them, which would only add flakiness. An
-// unparseable value is treated as unset rather than failing the suite — a
-// mistyped env var must not be able to turn a green run red.
+// An explicit TimeoutScaleEnv wins. Otherwise the scale is MEASURED from how
+// long this machine actually takes to spawn a subprocess, so the default adapts
+// to a loaded box instead of requiring every developer to know about an env
+// var — the whole point being that the suite should be trustworthy by default.
+//
+// Values below 1 are clamped: a scale makes budgets more forgiving on a slow
+// machine, never tighter, which would only add flakiness. An unparseable value
+// is treated as unset rather than failing the suite — a mistyped env var must
+// not be able to turn a green run red.
 func TimeoutScale() float64 {
-	raw := strings.TrimSpace(os.Getenv(TimeoutScaleEnv))
-	if raw == "" {
-		return 1
+	if raw := strings.TrimSpace(os.Getenv(TimeoutScaleEnv)); raw != "" {
+		scale, err := strconv.ParseFloat(raw, 64)
+		if err == nil && scale >= 1 {
+			return scale
+		}
+		if err == nil {
+			return 1
+		}
 	}
-	scale, err := strconv.ParseFloat(raw, 64)
-	if err != nil || scale < 1 {
-		return 1
-	}
-	return scale
+	measuredScaleOnce.Do(func() { measuredScaleVal = measureTimeoutScale() })
+	return measuredScaleVal
 }
 
 // ScaleTimeout scales a fixed test budget by TimeoutScale, rounding up so a
@@ -430,11 +436,53 @@ func ScaleTimeout(d time.Duration) time.Duration {
 	return scaled
 }
 
-// ScaleSeconds scales a budget expressed as a float number of seconds, for
-// tests that hand a duration to a shell (`sleep 1.7`). It returns the scaled
-// value formatted for that use, so the shell-side and Go-side budgets in one
-// test scale together and their inequality is preserved.
-func ScaleSeconds(seconds float64) string {
-	scaled := seconds * TimeoutScale()
-	return strconv.FormatFloat(scaled, 'f', -1, 64)
+// measuredScale caches the calibration so the probe runs at most once per test
+// binary.
+var (
+	measuredScaleOnce sync.Once
+	measuredScaleVal  float64
+)
+
+// nominalSubprocessStartup is what spawning a trivial shell costs on an idle
+// machine. Budgets in these tests were all chosen against roughly this.
+const nominalSubprocessStartup = 25 * time.Millisecond
+
+// maxMeasuredScale caps the calibration. A machine slow enough to exceed it is
+// in trouble for reasons a test budget cannot paper over, and an unbounded
+// scale would let one wedged run hang the suite instead of failing it.
+const maxMeasuredScale = 8
+
+// measureTimeoutScale derives a scale from how long this machine actually takes
+// to spawn a subprocess.
+//
+// Every budget these helpers guard is really a bet about latency the test does
+// not control: shell startup, or a goroutine that shells out. Hardcoding the
+// bet against an idle machine is what made the suite fail on a box running an
+// agent swarm — the code under test was correct and the deadline was fiction.
+// Measuring turns the bet into an observation, so the default adapts instead of
+// requiring every developer to know about an env var.
+func measureTimeoutScale() float64 {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		return 1
+	}
+	worst := time.Duration(0)
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		cmd := exec.Command(shell, "-c", ":")
+		if err := cmd.Run(); err != nil {
+			return 1
+		}
+		if elapsed := time.Since(start); elapsed > worst {
+			worst = elapsed
+		}
+	}
+	scale := math.Ceil(float64(worst) / float64(nominalSubprocessStartup))
+	if scale < 1 {
+		return 1
+	}
+	if scale > maxMeasuredScale {
+		return maxMeasuredScale
+	}
+	return scale
 }

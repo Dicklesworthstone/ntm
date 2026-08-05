@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,13 +108,24 @@ func TestGetGitInfoWithTimeout_UsesIndependentCommandBudgets(t *testing.T) {
 	// inequality is what proves the three calls did not share one
 	// timeout.
 	//
-	// BOTH scale together, so the inequality (3 × sleep > budget) is preserved
-	// while the per-command slack for shell startup grows with the scale. On a
-	// loaded machine the slack is what runs out: the assertion is sound, the
-	// fixed 5s budget just assumed an idle box (bd-hzmk0). Raise it with
-	// NTM_TEST_TIMEOUT_SCALE.
+	// The budget scales with measured machine speed, and the sleep is derived
+	// FROM it rather than scaled independently, which keeps both constraints
+	// true at every scale:
+	//
+	//	3 × sleep > budget      (0.4 × 3 = 1.2 > 1) — proves no shared timeout
+	//	sleep + startup < budget (needs startup < 0.6 × budget) — each command fits
+	//
+	// On a loaded machine it is the second one that used to break: shell
+	// startup ate the fixed 5s budget, the command was killed, and the test
+	// failed while getGitInfoWithTimeout was behaving correctly (bd-hzmk0).
+	// The cap bounds the worst case — this test's runtime is ~1.2 × budget
+	// because the sleeps are real — so a pathologically slow box costs ~24s
+	// here rather than minutes.
 	perCommandBudget := testutil.ScaleTimeout(5 * time.Second)
-	fakeGitSleep := testutil.ScaleSeconds(1.7) // seconds; 3 × 1.7s > 5s
+	if maxBudget := 20 * time.Second; perCommandBudget > maxBudget {
+		perCommandBudget = maxBudget
+	}
+	fakeGitSleep := fmt.Sprintf("%.2f", 0.4*perCommandBudget.Seconds())
 
 	tmpBin := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(tmpBin); err == nil {
