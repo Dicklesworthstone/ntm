@@ -5102,14 +5102,11 @@ func TestHandleAgentWaitV1_CustomTimeoutAndPoll(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 	s.handleAgentWaitV1(w, req)
-	// Robot will try to check tmux and either timeout or error, but we exercise
-	// the timeout_ms and poll_ms custom parsing branches
-	// Accept 200 (timeout result), 408 (timeout), or 500 (no tmux)
-	if w.Code == http.StatusBadRequest {
-		bodyStr := w.Body.String()
-		if !strings.Contains(bodyStr, "SESSION_NOT_FOUND") && !strings.Contains(bodyStr, "session 'test-sess' not found") {
-			t.Fatalf("should not get 400 for valid request payload, got body: %s", bodyStr)
-		}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "SESSION_NOT_FOUND") {
+		t.Fatalf("response omitted robot error code: %s", w.Body.String())
 	}
 }
 
