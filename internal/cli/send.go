@@ -1778,6 +1778,7 @@ func runSendInternal(opts SendOptions) (err error) {
 			Session:  session,
 			Strategy: strategy,
 			Prompt:   prompt,
+			Config:   loadSelectedConfigOrDefault(),
 		}
 
 		// Filter by agent type if specified (only when exactly one type is set)

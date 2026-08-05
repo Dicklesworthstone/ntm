@@ -7,17 +7,19 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // RouteOptions configures the routing recommendation request.
 type RouteOptions struct {
-	Session      string       // Required: session name
-	AgentType    string       // Optional: filter by agent type (claude/cc, codex/cod, gemini/gmi)
-	Strategy     StrategyName // Optional: routing strategy (default: least-loaded)
-	ExcludePanes []int        // Optional: pane indices to exclude
-	Prompt       string       // Optional: prompt for affinity matching
-	LastAgent    string       // Optional: last used agent pane ID for sticky routing
+	Session      string         // Required: session name
+	AgentType    string         // Optional: filter by agent type (claude/cc, codex/cod, gemini/gmi)
+	Strategy     StrategyName   // Optional: routing strategy (default: least-loaded)
+	ExcludePanes []int          // Optional: pane indices to exclude
+	Prompt       string         // Optional: prompt for affinity matching
+	LastAgent    string         // Optional: last used agent pane ID for sticky routing
+	Config       *config.Config // Optional: loaded routing configuration
 }
 
 // RouteOutput is the structured output for --robot-route.
@@ -130,7 +132,7 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 	contextUsage := getContextUsageByPane(opts.Session)
 
 	// Create scorer and score agents
-	scorer := NewAgentScorer(DefaultRoutingConfig())
+	scorer := NewAgentScorerFromConfig(opts.Config)
 	var agents []ScoredAgent
 
 	for _, pane := range panes {
@@ -357,7 +359,7 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 	contextUsage := getContextUsageByPane(opts.Session)
 
 	// Create scorer and score agents
-	scorer := NewAgentScorer(DefaultRoutingConfig())
+	scorer := NewAgentScorerFromConfig(opts.Config)
 	var agents []ScoredAgent
 
 	for _, pane := range panes {

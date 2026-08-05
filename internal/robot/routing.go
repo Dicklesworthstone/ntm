@@ -722,17 +722,16 @@ func (s *AgentScorer) calculateAffinity(agent *ScoredAgent, prompt string) float
 		return 0
 	}
 
-	// Scale bonus based on match ratio (more matches = higher bonus, capped at config max)
+	// Scale bonus based on match ratio (more matches = higher bonus, capped at config max).
 	matchRatio := float64(matches) / float64(len(filePaths))
-	bonus := s.config.AgentMail.ReservationBonus * matchRatio
+	bonus := s.config.AffinityBonus * matchRatio
 
 	return bonus
 }
 
 // checkExclusion checks if an agent should be excluded from routing.
 func (s *AgentScorer) checkExclusion(agent *ScoredAgent) (bool, string) {
-	// Error state always excluded
-	if agent.State == StateError {
+	if s.config.ExcludeIfErrorState && agent.State == StateError {
 		return true, "agent in ERROR state"
 	}
 
@@ -741,8 +740,7 @@ func (s *AgentScorer) checkExclusion(agent *ScoredAgent) (bool, string) {
 		return true, "agent is rate limited"
 	}
 
-	// Unhealthy
-	if agent.HealthState == HealthUnhealthy {
+	if s.config.ExcludeIfErrorState && agent.HealthState == HealthUnhealthy {
 		return true, "agent is unhealthy"
 	}
 

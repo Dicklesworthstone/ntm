@@ -434,6 +434,22 @@ func TestExcludeIfGeneratingConfig(t *testing.T) {
 	}
 }
 
+func TestExcludeIfErrorStateConfig(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.ExcludeIfErrorState = false
+	scorer := NewAgentScorer(cfg)
+
+	if excluded, reason := scorer.checkExclusion(&ScoredAgent{State: StateError, HealthState: HealthUnhealthy}); excluded || reason != "" {
+		t.Fatalf("error-state exclusion = (%t, %q), want disabled", excluded, reason)
+	}
+
+	cfg.ExcludeIfErrorState = true
+	scorer = NewAgentScorer(cfg)
+	if excluded, reason := scorer.checkExclusion(&ScoredAgent{State: StateError}); !excluded || reason != "agent in ERROR state" {
+		t.Fatalf("error-state exclusion = (%t, %q), want enabled ERROR exclusion", excluded, reason)
+	}
+}
+
 // =============================================================================
 // Routing Strategy Tests
 // =============================================================================
@@ -1842,6 +1858,7 @@ func TestCalculateAffinity_WithReservations(t *testing.T) {
 	cfg := DefaultRoutingConfig()
 	cfg.AgentMail.Enabled = true
 	cfg.AgentMail.ReservationBonus = 30.0
+	cfg.AffinityBonus = 12.0
 	scorer := NewAgentScorer(cfg)
 
 	// Set up cache with reservations
@@ -1860,8 +1877,8 @@ func TestCalculateAffinity_WithReservations(t *testing.T) {
 	if affinity <= 0 {
 		t.Errorf("Affinity should be > 0 when agent holds matching reservation, got %f", affinity)
 	}
-	if affinity > 30.0 {
-		t.Errorf("Affinity should not exceed ReservationBonus (30), got %f", affinity)
+	if affinity > 12.0 {
+		t.Errorf("Affinity should not exceed AffinityBonus (12), got %f", affinity)
 	}
 }
 

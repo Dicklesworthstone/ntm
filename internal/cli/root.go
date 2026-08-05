@@ -1427,6 +1427,7 @@ Shell Integration:
 				AgentType:    resolveRobotRouteType(cmd),
 				ExcludePanes: excludePanes,
 				LastAgent:    strings.TrimSpace(robotRouteLastAgent),
+				Config:       loadSelectedConfigOrDefault(),
 			}
 			exitCode := robot.PrintRoute(opts)
 			recordLegacyRobotExit(exitCode)
