@@ -84,6 +84,7 @@ e2e/*.lock
 
 # E2E test log files
 scripts/test-label-e2e-*.log
+/logs/e2e-*
 
 # Agent coordination config
 .agent-mail.yaml
