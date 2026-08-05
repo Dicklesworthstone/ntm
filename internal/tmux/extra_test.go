@@ -8,7 +8,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestShellQuote(t *testing.T) {
@@ -546,5 +549,103 @@ func TestClassifyCommandError_IgnoresCallerPayloadInArgv(t *testing.T) {
 				t.Fatalf("ClassifyCommandError = %+v, want %+v (prompt must not steer classification)", got, tt.want)
 			}
 		})
+	}
+}
+
+// bd-45pfa: on window expiry the breaker CLOSED instead of half-opening, so
+// "one probe per window" held only inside the window. Against a still-broken
+// tmux every caller waiting at expiry was admitted at once — a 40-pane sweep
+// failed fast for the backoff and then issued 40 execs in a burst.
+func TestCircuitBreaker_HalfOpensAtExpiryInsteadOfClosing(t *testing.T) {
+	c := NewClient("")
+
+	// Trip the breaker.
+	for i := 0; i < cbMaxFailures; i++ {
+		c.cbRecordFailure()
+	}
+	if err := c.cbCheck(); err != nil {
+		t.Fatalf("first caller in the window should be the probe, got %v", err)
+	}
+	if err := c.cbCheck(); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("second caller in the window = %v, want ErrCircuitOpen", err)
+	}
+
+	// The probe fails, which extends the window and keeps the gate armed.
+	c.cbRecordFailure()
+
+	// Retire the window without waiting for real time.
+	c.cbOpenUntil.Store(time.Now().Add(-time.Millisecond).UnixNano())
+
+	// Exactly ONE of many concurrent callers may be admitted.
+	const callers = 32
+	var admitted atomic.Int64
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < callers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			if err := c.cbCheck(); err == nil {
+				admitted.Add(1)
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	if got := admitted.Load(); got != 1 {
+		t.Fatalf("%d callers admitted at window expiry, want exactly 1 (half-open)", got)
+	}
+	if c.cbOpenUntil.Load() == 0 {
+		t.Fatal("the circuit closed at expiry; only a successful probe should close it")
+	}
+}
+
+// A successful probe is the only thing that closes the circuit.
+func TestCircuitBreaker_ClosesOnlyOnSuccess(t *testing.T) {
+	c := NewClient("")
+	for i := 0; i < cbMaxFailures; i++ {
+		c.cbRecordFailure()
+	}
+	if c.cbOpenUntil.Load() == 0 {
+		t.Fatal("breaker did not open after the failure threshold")
+	}
+
+	c.cbRecordSuccess()
+	if c.cbOpenUntil.Load() != 0 {
+		t.Fatal("a successful probe must close the circuit")
+	}
+	// Everyone is admitted once closed.
+	for i := 0; i < 5; i++ {
+		if err := c.cbCheck(); err != nil {
+			t.Fatalf("closed circuit rejected a caller: %v", err)
+		}
+	}
+}
+
+// A stale observation of the deadline must not disarm a freshly opened breaker.
+func TestCircuitBreaker_ExpiryCannotClobberANewerDeadline(t *testing.T) {
+	c := NewClient("")
+	for i := 0; i < cbMaxFailures; i++ {
+		c.cbRecordFailure()
+	}
+
+	stale := time.Now().Add(-time.Millisecond).UnixNano()
+	c.cbOpenUntil.Store(stale)
+
+	// Simulate cbRecordFailure installing a newer deadline between another
+	// caller's Load and its transition attempt.
+	fresh := time.Now().Add(cbBackoffDuration).UnixNano()
+	c.cbOpenUntil.Store(fresh)
+	c.cbProbing.Store(true)
+
+	// A caller acting on the stale value must not win the transition.
+	if c.cbOpenUntil.CompareAndSwap(stale, time.Now().UnixNano()) {
+		t.Fatal("a stale deadline observation won the CAS and disarmed the breaker")
+	}
+	if got := c.cbOpenUntil.Load(); got != fresh {
+		t.Fatalf("deadline = %d, want the fresher %d", got, fresh)
 	}
 }

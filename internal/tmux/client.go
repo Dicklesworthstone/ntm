@@ -121,11 +121,35 @@ func (c *Client) cbCheck() error {
 		}
 		return ErrCircuitOpen
 	}
-	// Backoff expired — close circuit, allow traffic.
-	c.cbOpenUntil.Store(0)
-	c.cbFailures.Store(0)
-	c.cbProbing.Store(false)
-	return nil
+
+	// The backoff window retired. Transition to HALF-OPEN — admit exactly one
+	// probe — rather than closing the circuit outright.
+	//
+	// Closing here meant the "one probe per window" property held only INSIDE
+	// the window: against a still-broken tmux, every caller waiting at expiry
+	// was admitted at once, so a 40-pane sweep failed fast for 10s and then
+	// issued 40 execs in a burst before 5 failures re-opened the gate. Load
+	// shedding was duty-cycled rather than effective.
+	//
+	// The CAS on the deadline is what picks the single winner. It also closes
+	// the race that let a goroutine taking this branch Store(0) immediately
+	// after another goroutine's cbRecordFailure had installed a fresh
+	// deadline, silently disarming a just-opened breaker: the compare fails
+	// there, so the stale observation cannot clobber the newer state.
+	//
+	// Only cbRecordSuccess closes the circuit now, which is what "the probe
+	// proved tmux is healthy again" should mean.
+	next := time.Now().Add(cbBackoffDuration).UnixNano()
+	if c.cbOpenUntil.CompareAndSwap(openUntil, next) {
+		c.cbProbing.Store(true)
+		return nil // this caller is the half-open probe for the new window
+	}
+
+	// Another caller won the transition; treat this one as in-window.
+	if c.cbProbing.CompareAndSwap(false, true) {
+		return nil
+	}
+	return ErrCircuitOpen
 }
 
 // cbRecordSuccess resets the circuit breaker to a healthy state.
@@ -149,9 +173,13 @@ func (c *Client) cbRecordFailure() {
 		// fresh probe — and so on, forever. Against a fast-failing tmux
 		// (missing binary, permission-denied socket) the breaker therefore
 		// shed no load at all: a 40-pane status sweep issued 40 exec attempts
-		// instead of failing fast after 5. The flag is cleared where the
-		// backoff window actually retires (cbCheck) and on success
-		// (cbRecordSuccess), which is what "one probe per window" requires.
+		// instead of failing fast after 5.
+		//
+		// The probe slot is re-granted only where a backoff window retires, by
+		// the single caller that wins the deadline CAS in cbCheck, and cleared
+		// outright on success (cbRecordSuccess). That is what "one probe per
+		// window" requires.
+		//
 		// Log only on the transition from closed to open, not on
 		// every subsequent failure or half-open probe failure.
 		if !wasAlreadyOpen {
