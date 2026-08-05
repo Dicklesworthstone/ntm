@@ -7380,6 +7380,9 @@ type SnapshotDeltaOutput struct {
 	Timestamp string   `json:"ts"`
 	Since     string   `json:"since"`
 	Changes   []Change `json:"changes"`
+	// Truncated reports that the delta hit its per-response cap, so the
+	// caller must narrow --since instead of assuming it saw every change.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Change represents a state change event.
@@ -7401,22 +7404,55 @@ func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
 		Changes:       []Change{},
 	}
 
-	// Query the state tracker for changes since the given timestamp
-	trackerChanges := stateTracker.Since(since)
+	// Deltas come from the durable attention feed. They used to come from
+	// `stateTracker`, a process-local in-memory ring buffer whose only writer
+	// (RecordStateChange) had zero production callers — so every CLI
+	// invocation, being a fresh process, reported "nothing changed" with
+	// success:true forever, indistinguishable from a genuinely empty delta
+	// (bd-fresh-eyes-audit .11).
+	store := currentProjectionStore()
+	if store == nil {
+		output.RobotResponse = NewErrorResponse(
+			errors.New("snapshot deltas require the runtime projection store"),
+			ErrCodeNotImplemented,
+			"Deltas are recorded by the durable attention feed; run 'ntm serve' (or refresh snapshot/status to initialize the projection) and retry",
+		)
+		return output, nil
+	}
 
-	// Convert tracker.StateChange to robot.Change
-	for _, tc := range trackerChanges {
+	events, err := store.GetAttentionEventsInTimeRange(since.UTC(), time.Now().UTC(), snapshotDeltaEventLimit)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read the durable attention feed")
+		return output, nil
+	}
+	for _, event := range events {
 		change := Change{
-			Type:    string(tc.Type),
-			Session: tc.Session,
-			Pane:    tc.Pane,
-			Data:    tc.Details,
+			Type:    event.EventType,
+			Session: event.SessionName,
+			Pane:    event.Pane,
+			Data: map[string]interface{}{
+				"cursor":        event.Cursor,
+				"ts":            event.Ts.UTC().Format(time.RFC3339Nano),
+				"category":      event.Category,
+				"source":        event.Source,
+				"severity":      string(event.Severity),
+				"actionability": string(event.Actionability),
+				"summary":       event.Summary,
+			},
+		}
+		if event.ReasonCode != "" {
+			change.Data["reason_code"] = event.ReasonCode
 		}
 		output.Changes = append(output.Changes, change)
 	}
+	output.Truncated = len(events) >= snapshotDeltaEventLimit
 
 	return output, nil
 }
+
+// snapshotDeltaEventLimit bounds one delta response; Truncated tells the
+// caller to narrow --since rather than silently believing it saw everything.
+const snapshotDeltaEventLimit = 500
 
 // PrintSnapshotDelta outputs changes since the given timestamp.
 func PrintSnapshotDelta(since time.Time) error {
@@ -7427,8 +7463,11 @@ func PrintSnapshotDelta(since time.Time) error {
 	return encodeTerminalRobotOutput(output, output.RobotResponse, "robot snapshot delta failed")
 }
 
-// RecordStateChange records a state change to the global tracker.
-// This should be called by other parts of the application when state changes occur.
+// RecordStateChange records a state change on the durable attention feed,
+// which is what --robot-snapshot --since and --robot-events read. It no
+// longer also writes a process-local ring buffer: that buffer was the delta
+// feature's only source, and because it lived in memory it was empty in every
+// fresh CLI process (bd-fresh-eyes-audit .11).
 func RecordStateChange(changeType tracker.ChangeType, session, pane string, details map[string]interface{}) {
 	change := tracker.StateChange{
 		Timestamp: time.Now(),
@@ -7438,7 +7477,6 @@ func RecordStateChange(changeType tracker.ChangeType, session, pane string, deta
 		Details:   details,
 	}
 
-	stateTracker.Record(change)
 	GetAttentionFeed().Append(NewTrackerEvent(change))
 }
 
