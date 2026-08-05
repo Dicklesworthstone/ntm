@@ -4631,7 +4631,6 @@ func init() {
 	// Diagnose prefixed flags → canonical forms
 	rootCmd.Flags().MarkDeprecated("diagnose-fix", "use --fix instead")
 	rootCmd.Flags().MarkDeprecated("diagnose-brief", "use --brief instead")
-	rootCmd.Flags().MarkDeprecated("diagnose-pane", "use --pane instead")
 
 	// Markdown prefixed flags → canonical forms
 	rootCmd.Flags().MarkDeprecated("md-compact", "use --compact instead")

@@ -199,6 +199,29 @@ func TestCapabilitiesProjectionsPreserveRegistryContracts(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesAnnotateDeprecatedParametersAndAdvertiseValidFormats(t *testing.T) {
+	output, err := GetCapabilities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]string)
+	for _, command := range output.Commands {
+		for _, format := range command.OutputFormats {
+			if !RobotFormat(format).IsValid() {
+				t.Fatalf("command %q advertises invalid output format %q", command.Name, format)
+			}
+		}
+		for _, parameter := range command.Parameters {
+			if parameter.Deprecated {
+				seen[parameter.Flag] = parameter.ReplacedBy
+			}
+		}
+	}
+	if !reflect.DeepEqual(seen, deprecatedRobotParameterReplacements) {
+		t.Fatalf("deprecated parameters = %#v, want %#v", seen, deprecatedRobotParameterReplacements)
+	}
+}
+
 func TestBuildCommandRegistry_CanonicalPaneContracts(t *testing.T) {
 	commands := make(map[string]RobotCommandInfo)
 	for _, command := range buildCommandRegistry() {

@@ -69,6 +69,12 @@ type RobotParameter struct {
 	Required    bool   `json:"required"`
 	Default     string `json:"default,omitempty"`
 	Description string `json:"description"`
+	Deprecated  bool   `json:"deprecated,omitempty"`
+	ReplacedBy  string `json:"replaced_by,omitempty"`
+}
+
+var deprecatedRobotParameterReplacements = map[string]string{
+	"--alerts-session": "--session", "--alerts-severity": "--severity", "--bead-limit": "--limit", "--beads-assignee": "--assignee", "--beads-limit": "--limit", "--beads-priority": "--priority", "--beads-status": "--status", "--bulk-strategy": "--strategy", "--diagnose-brief": "--brief", "--diagnose-fix": "--fix", "--dismiss-all": "--all", "--dismiss-session": "--session", "--files-limit": "--limit", "--files-window": "--window", "--inspect-code": "--code", "--inspect-index": "--index", "--inspect-lines": "--lines", "--md-compact": "--compact", "--md-max-alerts": "--max-alerts", "--md-max-beads": "--max-beads", "--md-session": "--session", "--metrics-period": "--period", "--palette-category": "--category", "--palette-search": "--search", "--palette-session": "--session", "--pipeline-background": "--background", "--pipeline-session": "--session", "--pipeline-vars": "--vars", "--replay-id": "--id", "--save-output": "--output", "--tokens-agent": "--agent", "--tokens-days": "--days", "--tokens-group-by": "--group-by", "--tokens-session": "--session", "--tokens-since": "--since", "--triage-limit": "--limit",
 }
 
 // categoryOrder defines the canonical order for categories
