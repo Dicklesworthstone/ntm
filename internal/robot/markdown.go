@@ -515,6 +515,21 @@ func writeSnapshotAlertsMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, 
 		return
 	}
 
+	if len(snapshot.AlertsDetailed) == 0 {
+		shown := snapshot.Alerts
+		if opts.MaxAlerts > 0 && len(shown) > opts.MaxAlerts {
+			shown = shown[:opts.MaxAlerts]
+		}
+		for _, alert := range shown {
+			fmt.Fprintf(sb, "- %s\n", alert)
+		}
+		if opts.MaxAlerts > 0 && len(snapshot.Alerts) > opts.MaxAlerts {
+			fmt.Fprintf(sb, "\n_Truncated: showing %d of %d alerts._\n", len(shown), len(snapshot.Alerts))
+		}
+		sb.WriteString("\n")
+		return
+	}
+
 	shown := snapshot.AlertsDetailed
 	if opts.MaxAlerts > 0 && len(shown) > opts.MaxAlerts {
 		shown = shown[:opts.MaxAlerts]
@@ -535,20 +550,20 @@ func alertSummaryCounts(snapshot *SnapshotOutput) (totalActive, critical, warnin
 		critical = snapshot.AlertSummary.BySeverity["critical"]
 		warning = snapshot.AlertSummary.BySeverity["warning"]
 		info = snapshot.AlertSummary.BySeverity["info"]
-		return totalActive, critical, warning, info
-	}
-
-	totalActive = len(snapshot.AlertsDetailed)
-	for _, alert := range snapshot.AlertsDetailed {
-		switch strings.ToLower(strings.TrimSpace(alert.Severity)) {
-		case "critical":
-			critical++
-		case "warning":
-			warning++
-		case "info":
-			info++
+	} else {
+		totalActive = len(snapshot.AlertsDetailed)
+		for _, alert := range snapshot.AlertsDetailed {
+			switch strings.ToLower(strings.TrimSpace(alert.Severity)) {
+			case "critical":
+				critical++
+			case "warning":
+				warning++
+			case "info":
+				info++
+			}
 		}
 	}
+	totalActive += len(snapshot.Alerts)
 	return totalActive, critical, warning, info
 }
 

@@ -719,3 +719,30 @@ func TestRenderMarkdownFromProjection_EmptySections(t *testing.T) {
 		t.Error("expected summary section even with empty data")
 	}
 }
+
+func TestRenderMarkdownFromSnapshotRendersLegacyAlerts(t *testing.T) {
+	snapshot := &SnapshotOutput{
+		Alerts:         []string{"failed to get panes for proj: tmux unavailable", "failed to list active incidents: unavailable"},
+		AlertsDetailed: []AlertInfo{},
+	}
+
+	rendered, err := renderMarkdownFromSnapshot(snapshot, MarkdownOptions{IncludeSections: []string{"alerts"}, MaxAlerts: 1})
+	if err != nil {
+		t.Fatalf("renderMarkdownFromSnapshot error: %v", err)
+	}
+	if !strings.Contains(rendered, "### Alerts (2)") {
+		t.Fatalf("markdown missing legacy alert count:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "No active alerts") {
+		t.Fatalf("markdown incorrectly reports all-clear:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "- failed to get panes for proj: tmux unavailable") {
+		t.Fatalf("markdown missing legacy alert message:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Truncated: showing 1 of 2 alerts") {
+		t.Fatalf("markdown missing legacy alert truncation:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "failed to list active incidents") {
+		t.Fatalf("markdown rendered legacy alert beyond MaxAlerts:\n%s", rendered)
+	}
+}
