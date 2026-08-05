@@ -4798,6 +4798,61 @@ func TestNewPTStateChangeAttentionEvent_RecoverySemantics(t *testing.T) {
 	}
 }
 
+func TestPTAttentionEventsUseStatusActionForPaneTitles(t *testing.T) {
+	timestamp := time.Date(2026, 3, 22, 20, 2, 0, 0, time.UTC)
+
+	stateEvent, ok := NewPTStateChangeAttentionEvent(pt.ClassificationStateChange{
+		Session: "proj",
+		Pane:    "proj__cc_1",
+		Current: pt.ClassStuck,
+		Event: pt.ClassificationEvent{
+			Classification: pt.ClassStuck,
+			Timestamp:      timestamp,
+		},
+	})
+	if !ok {
+		t.Fatal("expected stuck PT state change to normalize")
+	}
+
+	alertEvent, ok := NewPTAlertAttentionEvent(pt.Alert{
+		Session:   "proj",
+		Pane:      "proj__cc_1",
+		Type:      pt.AlertZombie,
+		Timestamp: timestamp,
+	})
+	if !ok {
+		t.Fatal("expected zombie PT alert to normalize")
+	}
+
+	for _, event := range []AttentionEvent{stateEvent, alertEvent} {
+		if len(event.NextActions) != 1 {
+			t.Fatalf("next action count = %d, want 1", len(event.NextActions))
+		}
+		action := event.NextActions[0]
+		if action.Action != "robot-status" || action.Args != "--robot-status" {
+			t.Fatalf("pane title action = %#v, want robot status", action)
+		}
+		if strings.Contains(action.Args, "--panes=") {
+			t.Fatalf("pane title action must not include a pane selector: %q", action.Args)
+		}
+	}
+}
+
+func TestAttentionTailOrStatusActionsAcceptsRobotPaneSelectors(t *testing.T) {
+	for _, paneRef := range []string{"2", "1.2", "%42"} {
+		actions := attentionTailOrStatusActions("proj", paneRef, "inspect output")
+		if len(actions) != 1 {
+			t.Fatalf("actions for %q = %d, want 1", paneRef, len(actions))
+		}
+		if actions[0].Action != "robot-tail" {
+			t.Fatalf("action for %q = %q, want robot-tail", paneRef, actions[0].Action)
+		}
+		if !strings.Contains(actions[0].Args, "--panes="+paneRef) {
+			t.Fatalf("args for %q = %q, want pane selector", paneRef, actions[0].Args)
+		}
+	}
+}
+
 func TestPublishPTAlert_DeduplicatesRepeatedThresholdAlerts(t *testing.T) {
 
 	feed := newTestAttentionFeed(t)

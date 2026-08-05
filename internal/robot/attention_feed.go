@@ -3836,7 +3836,10 @@ func attentionContextActions(session, reason string) []NextAction {
 }
 
 func attentionTailOrStatusActions(session, paneRef, reason string) []NextAction {
-	if session == "" || paneRef == "" {
+	if session == "" {
+		return []NextAction{attentionStatusNextAction(reason)}
+	}
+	if _, err := tmux.ParsePaneSelector(paneRef); err != nil {
 		return []NextAction{attentionStatusNextAction(reason)}
 	}
 	return []NextAction{{
