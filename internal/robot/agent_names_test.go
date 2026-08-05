@@ -77,6 +77,20 @@ func TestGenerateNameCustomNames(t *testing.T) {
 	}
 }
 
+func TestGenerateNameUserDoesNotConsumeCustomName(t *testing.T) {
+	m := NewAgentNameMapWithCustomNames("test-session", []string{"alice", "bob"})
+
+	if got := m.GenerateName("user"); got != "user-alpha" {
+		t.Errorf("user name = %q, want user-alpha", got)
+	}
+	if got := m.GenerateName("claude"); got != "alice" {
+		t.Errorf("first agent custom name = %q, want alice", got)
+	}
+	if got := m.GenerateName("codex"); got != "bob" {
+		t.Errorf("second agent custom name = %q, want bob", got)
+	}
+}
+
 func TestAssignAndLookup(t *testing.T) {
 	m := NewAgentNameMap("test-session")
 

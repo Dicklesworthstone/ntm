@@ -71,8 +71,8 @@ func (m *AgentNameMap) GenerateName(agentType string) string {
 // generateNameLocked is the lock-free version of GenerateName for internal use.
 // Caller must hold m.mu.
 func (m *AgentNameMap) generateNameLocked(agentType string) string {
-	// Check if there are custom names left to use
-	if m.customOffset < len(m.customNames) {
+	// Custom names identify launched agents, not the user pane.
+	if agentType != "user" && m.customOffset < len(m.customNames) {
 		name := m.customNames[m.customOffset]
 		m.customOffset++
 		return name

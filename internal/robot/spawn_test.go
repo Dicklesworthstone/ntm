@@ -903,6 +903,33 @@ func TestSpawnOptions_DryRunMode(t *testing.T) {
 		resp.Session, len(resp.WouldCreate), typeCounts)
 }
 
+func TestSpawnOptions_DryRunCustomNamesExcludeUserPane(t *testing.T) {
+	opts := SpawnOptions{
+		Session:     "test_dryrun_custom_names",
+		CCCount:     2,
+		CodCount:    1,
+		DryRun:      true,
+		CustomNames: []string{"alice", "bob", "charlie"},
+	}
+
+	resp, err := GetSpawn(t.Context(), opts, config.Default())
+	if err != nil {
+		t.Fatalf("GetSpawn returned error: %v", err)
+	}
+	if len(resp.WouldCreate) != 4 {
+		t.Fatalf("WouldCreate count = %d, want 4", len(resp.WouldCreate))
+	}
+	if got := resp.WouldCreate[0]; got.Type != "user" || got.Name != "user-alpha" {
+		t.Errorf("user preview = (%q, %q), want (user, user-alpha)", got.Type, got.Name)
+	}
+
+	for i, want := range []string{"alice", "bob", "charlie"} {
+		if got := resp.WouldCreate[i+1].Name; got != want {
+			t.Errorf("agent %d preview name = %q, want %q", i+1, got, want)
+		}
+	}
+}
+
 func TestSpawnOptions_DryRunIncludesAdmission(t *testing.T) {
 	opts := SpawnOptions{
 		Session:    "test_dryrun_admission",
