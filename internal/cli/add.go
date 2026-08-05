@@ -26,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
@@ -809,6 +810,18 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 				envPrefix += fmt.Sprintf("%s=%s ", k, tmux.ShellQuote(v))
 			}
 			finalCmd = envPrefix + finalCmd
+		}
+
+		// Per-pane Claude credential isolation (GH#237). A pane added to an
+		// existing swarm joins the same subscription as the panes already in
+		// it, so skipping isolation here would put the whole session back into
+		// the refresh-token race that spawn set it up to avoid.
+		if agent.Type == AgentTypeClaude {
+			claudeEnv, err := swarm.ProvisionClaudeIsolation(cfg, dir, session, num)
+			if err != nil {
+				return outputError(fmt.Errorf("isolating credentials for claude pane %d: %w", num, err))
+			}
+			finalCmd = claudeEnv.ApplyToCommand(finalCmd)
 		}
 
 		safeCmd, err := tmux.SanitizePaneCommand(finalCmd)

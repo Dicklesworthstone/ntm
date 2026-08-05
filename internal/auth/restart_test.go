@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -678,4 +679,87 @@ func TestOrchestrator_StartNewAgentSession(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 	})
+}
+
+// GH#237 / bd-uljcm: the auth restarter fires exactly when a pane has hit an
+// auth or limit error — the symptom of the shared-credential cascade. If it
+// relaunches without the isolated CLAUDE_CONFIG_DIR, the pane rejoins the
+// rotating credential and its next refresh invalidates every other pane's
+// token, so isolation would evaporate at the precise moment it was working.
+func TestStartNewAgentSession_ReappliesClaudeCredentialIsolation(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// Declare the file-based credential store so this exercises the isolation
+	// path on every platform, including macOS where the real machine's
+	// Keychain would otherwise make it fail closed and skip.
+	t.Setenv(swarm.ClaudeCredentialStoreEnvVar, "file")
+
+	cfg := config.Default()
+	cfg.Agents.ClaudeIsolateCredentials = true
+	cfg.Agents.ClaudeTokenFile = ""
+
+	orch := NewOrchestrator(cfg)
+	var sent string
+	orch.sanitizePaneCommand = func(cmd string) (string, error) { return cmd, nil }
+	orch.buildPaneCommand = func(dir, cmd string) (string, error) { return cmd, nil }
+	orch.sendKeysForAgent = func(_, cmd string, _ bool, _ tmux.AgentType) error {
+		sent = cmd
+		return nil
+	}
+
+	ctx := RestartContext{
+		PaneID:      "%3",
+		Provider:    "Claude",
+		AgentType:   "cc",
+		SessionName: "proj",
+		PaneIndex:   2,
+		ProjectDir:  projectDir,
+	}
+	err := orch.StartNewAgentSession(ctx)
+	if err != nil {
+		// On a platform where the credential is not in the config dir (macOS
+		// Keychain), isolation cannot be enforced and the restart must fail
+		// closed rather than silently relaunch unisolated.
+		if strings.Contains(err.Error(), "per-pane isolation cannot be enforced") {
+			t.Skipf("credential store is not isolable on this platform: %v", err)
+		}
+		t.Fatalf("StartNewAgentSession: %v", err)
+	}
+
+	if !strings.Contains(sent, "CLAUDE_CONFIG_DIR=") {
+		t.Fatalf("relaunch command has no isolated config dir: %q", sent)
+	}
+	if !strings.Contains(sent, "claude-homes") {
+		t.Fatalf("relaunch command does not point at the pane-private config dir: %q", sent)
+	}
+}
+
+// A non-Claude relaunch must be untouched by the isolation logic.
+func TestStartNewAgentSession_LeavesNonClaudeRelaunchAlone(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agents.ClaudeIsolateCredentials = true
+
+	orch := NewOrchestrator(cfg)
+	var sent string
+	orch.sanitizePaneCommand = func(cmd string) (string, error) { return cmd, nil }
+	orch.buildPaneCommand = func(dir, cmd string) (string, error) { return cmd, nil }
+	orch.sendKeysForAgent = func(_, cmd string, _ bool, _ tmux.AgentType) error {
+		sent = cmd
+		return nil
+	}
+
+	ctx := RestartContext{
+		PaneID:      "%4",
+		Provider:    "Codex",
+		AgentType:   "cod",
+		SessionName: "proj",
+		PaneIndex:   1,
+		ProjectDir:  t.TempDir(),
+	}
+	if err := orch.StartNewAgentSession(ctx); err != nil {
+		t.Fatalf("StartNewAgentSession: %v", err)
+	}
+	if strings.Contains(sent, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("codex relaunch picked up claude isolation env: %q", sent)
+	}
 }

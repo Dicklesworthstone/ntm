@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/rotation"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -240,6 +241,21 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 	})
 	if err != nil {
 		return fmt.Errorf("generating command: %w", err)
+	}
+
+	// Per-pane Claude credential isolation (GH#237). This path is the one that
+	// most needs it: it fires precisely when a pane has hit an auth or limit
+	// error, which is the symptom of the shared-credential cascade. Relaunching
+	// without the isolated CLAUDE_CONFIG_DIR put the pane straight back onto
+	// the rotating credential, where its next refresh invalidates every other
+	// pane's token — so isolation used to evaporate at the exact moment it was
+	// doing its job.
+	if agentType == "cc" {
+		claudeEnv, isoErr := swarm.ProvisionClaudeIsolation(o.cfg, ctx.ProjectDir, ctx.SessionName, ctx.PaneIndex)
+		if isoErr != nil {
+			return fmt.Errorf("isolating credentials for claude pane %d: %w", ctx.PaneIndex, isoErr)
+		}
+		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 	}
 
 	// Sanitize and build proper shell command with cd

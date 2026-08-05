@@ -2863,16 +2863,11 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// the shared ~/.claude/.credentials.json on every OAuth refresh, so N
 		// panes on one subscription invalidate each other's refresh token and
 		// 401 in cascade. Opt-in via [agents] claude_isolate_credentials.
-		if agent.Type == AgentTypeClaude && cfg != nil && cfg.Agents.ClaudeIsolateCredentials {
-			claudeEnv, err := provisionClaudeCredentialIsolation(cfg, dir, opts.Session, agent.Index)
+		var claudeEnv swarm.ClaudeLaunchEnv
+		if agent.Type == AgentTypeClaude {
+			claudeEnv, err = swarm.ProvisionClaudeIsolation(cfg, dir, opts.Session, agent.Index)
 			if err != nil {
 				return outputError(fmt.Errorf("isolating credentials for claude pane %d: %w", agent.Index, err))
-			}
-			if envVars == nil {
-				envVars = make(map[string]string, len(claudeEnv))
-			}
-			for k, v := range claudeEnv {
-				envVars[k] = v
 			}
 		}
 
@@ -2884,6 +2879,10 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 			agentCmd = envPrefix + agentCmd
 		}
+
+		// Credential isolation last, so its assignments sit closest to the
+		// command and cannot be shadowed by a plugin var of the same name.
+		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 
 		// Calculate stagger delay for this agent (used for spawn context)
 		var promptDelay time.Duration
@@ -5912,68 +5911,4 @@ func spawnAssignCommandOptions(session string, opts SpawnOptions, verbose, quiet
 		assignOpts.verifiedActionable = cloneSpawnActionableRecommendations(opts.assignAdmission.actionable)
 	}
 	return assignOpts
-}
-
-// provisionClaudeCredentialIsolation builds a pane-private CLAUDE_CONFIG_DIR
-// and returns the environment that launches the pane against it (GH#237).
-//
-// The isolated dir links everything from the operator's ~/.claude except the
-// rotating .credentials.json, so settings, MCP servers, and skills survive
-// while the credential Claude Code rewrites on every refresh is structurally
-// unreachable. A non-rotating setup token (minted once with
-// `claude setup-token`, stored outside the config dir) is what the panes then
-// read; without it they are isolated but uncredentialed, so a missing or
-// unreadable token file is a hard error rather than a silent downgrade back
-// into the shared-credential race.
-func provisionClaudeCredentialIsolation(cfg *config.Config, projectDir, session string, paneIndex int) (map[string]string, error) {
-	provisioner := swarm.NewClaudeConfigProvisioner(projectDir)
-	pane := fmt.Sprintf("%d", paneIndex)
-
-	configDir, err := provisioner.ProvisionPaneConfig(session, pane)
-	if err != nil {
-		return nil, err
-	}
-
-	// Verify the property that actually prevents the cascade instead of
-	// assuming the provision worked.
-	isolated, err := provisioner.CredentialIsolated(session, pane)
-	if err != nil {
-		return nil, err
-	}
-	if !isolated {
-		return nil, fmt.Errorf("config dir %s still exposes a rotating credential", configDir)
-	}
-
-	token, err := readClaudeSetupToken(cfg.Agents.ClaudeTokenFile)
-	if err != nil {
-		return nil, err
-	}
-	return provisioner.EnvForPane(session, pane, token), nil
-}
-
-// readClaudeSetupToken loads the non-rotating setup token. An unset token file
-// is allowed (the pane gets an isolated but uncredentialed config dir and will
-// prompt for login); a set-but-unusable one is an error, because silently
-// continuing would leave the operator believing isolation is credentialed.
-func readClaudeSetupToken(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", nil
-	}
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home for claude_token_file: %w", err)
-		}
-		path = filepath.Join(home, path[2:])
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read claude_token_file %s: %w", path, err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("claude_token_file %s is empty", path)
-	}
-	return token, nil
 }
