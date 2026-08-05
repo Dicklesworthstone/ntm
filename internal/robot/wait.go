@@ -25,6 +25,7 @@ type WaitOptions struct {
 	CountN            int      // With WaitForAny, wait for at least N agents (default 1)
 	RequireTransition bool     // If true, agents must leave and return to target state
 	SinceCursor       int64    // Attention-based conditions only fire for events after this cursor
+	SinceCursorSet    bool     // True when the caller explicitly supplied SinceCursor, including zero
 	Profile           string   // Filter profile for attention-based conditions (operator, debug, minimal, alerts)
 }
 
@@ -171,6 +172,7 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	conditions := strings.Split(opts.Condition, ",")
 	paneConditions, attentionConditions := splitWaitConditions(conditions)
 	hasAttention := len(attentionConditions) > 0
+	attentionCursor := initialAttentionWaitCursor(opts, hasAttention)
 
 	// Set default count for --any mode
 	if opts.WaitForAny && opts.CountN <= 0 {
@@ -210,7 +212,7 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 			}
 			if hasAttention {
 				if lastAttentionResult == nil {
-					lastAttentionResult = newAttentionConditionResult("", opts.SinceCursor, opts.SinceCursor, 0)
+					lastAttentionResult = newAttentionConditionResult("", attentionCursor, attentionCursor, 0)
 				}
 				resp.CursorInfo = buildWaitCursorInfo(lastAttentionResult)
 			}
@@ -318,7 +320,7 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 
 		attentionMet := !hasAttention
 		if hasAttention {
-			lastAttentionResult = checkAttentionConditions(attentionConditions, opts.SinceCursor, opts.Session, opts.Profile)
+			lastAttentionResult = checkAttentionConditions(attentionConditions, attentionCursor, opts.Session, opts.Profile)
 			if lastAttentionResult != nil && lastAttentionResult.CursorExpired != nil {
 				cursorErr := lastAttentionResult.CursorExpired
 				details := cursorErr.ToDetails()
@@ -331,13 +333,19 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 					Session:   opts.Session,
 					Condition: opts.Condition,
 					CursorInfo: &WaitCursorInfo{
-						ObservedCursor: opts.SinceCursor,
+						ObservedCursor: attentionCursor,
 						NextCursor:     details.EarliestCursor,
 						OldestCursor:   details.EarliestCursor,
 					},
 				}, 1
 			}
 			attentionMet = lastAttentionResult != nil && lastAttentionResult.Met
+			if lastAttentionResult != nil {
+				// Replay is bounded. Advance only through the events actually
+				// scanned, so later pages are observed without skipping a tail that
+				// arrived after the replay limit was reached.
+				attentionCursor = lastAttentionResult.NextCursor
+			}
 		}
 
 		if attentionMet && paneMet {
@@ -356,6 +364,16 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 		// Sleep and poll again
 		time.Sleep(opts.PollInterval)
 	}
+}
+
+func initialAttentionWaitCursor(opts WaitOptions, hasAttention bool) int64 {
+	if !hasAttention || opts.SinceCursorSet {
+		return opts.SinceCursor
+	}
+	// An omitted cursor means "wait for new attention", rather than replaying
+	// the retained history. An explicitly supplied zero remains the API's
+	// documented request to replay from the beginning.
+	return GetAttentionFeed().Stats().NewestCursor
 }
 
 // PrintWait executes the wait operation and outputs JSON.
@@ -736,6 +754,12 @@ func checkAttentionConditions(conditions []string, sinceCursor int64, session, p
 			result.NextCursor = cursorErr.EarliestCursor
 		}
 		return result
+	}
+	if len(events) > 0 {
+		// Replay returns the feed's live newest cursor even when its limit
+		// truncates the returned page. The continuation must instead use the
+		// final event we actually inspected.
+		result.NextCursor = events[len(events)-1].Cursor
 	}
 
 	result.Details["raw_event_count"] = len(events)

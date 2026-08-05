@@ -689,6 +689,86 @@ func TestCheckAttentionConditions_IgnoresHiddenOperatorState(t *testing.T) {
 	}
 }
 
+func TestCheckAttentionConditions_AdvancesOnlyThroughScannedReplayPage(t *testing.T) {
+	_ = GetAttentionFeed()
+	oldFeed := PeekAttentionFeed()
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       2048,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	SetAttentionFeed(feed)
+	t.Cleanup(func() { SetAttentionFeed(oldFeed) })
+
+	for i := 0; i < 1000; i++ {
+		feed.Append(AttentionEvent{
+			Session:       "proj",
+			Category:      EventCategoryAgent,
+			Type:          EventTypePaneOutput,
+			Actionability: ActionabilityBackground,
+			Severity:      SeverityInfo,
+			Summary:       "background output",
+		})
+	}
+	trigger := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "operator action required",
+	})
+
+	first := checkAttentionConditions([]string{WaitConditionActionRequired}, 0, "proj", "")
+	if first == nil || first.Met {
+		t.Fatalf("first replay page should not match the tail event, got %#v", first)
+	}
+	if first.NextCursor != 1000 {
+		t.Fatalf("first NextCursor = %d, want 1000", first.NextCursor)
+	}
+
+	second := checkAttentionConditions([]string{WaitConditionActionRequired}, first.NextCursor, "proj", "")
+	if second == nil || !second.Met {
+		t.Fatalf("second replay page should match the tail event, got %#v", second)
+	}
+	if second.TriggerEvent == nil || second.TriggerEvent.Cursor != trigger.Cursor {
+		t.Fatalf("second TriggerEvent = %#v, want cursor %d", second.TriggerEvent, trigger.Cursor)
+	}
+}
+
+func TestInitialAttentionWaitCursor_SkipsStaleHistoryUnlessExplicitlySupplied(t *testing.T) {
+	_ = GetAttentionFeed()
+	oldFeed := PeekAttentionFeed()
+	feed := newWaitTestFeed(time.Hour)
+	SetAttentionFeed(feed)
+	t.Cleanup(func() { SetAttentionFeed(oldFeed) })
+
+	stale := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAlert,
+		Type:          EventTypeAlertWarning,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "stale action required",
+	})
+
+	omitted := initialAttentionWaitCursor(WaitOptions{SinceCursor: 0}, true)
+	if omitted != stale.Cursor {
+		t.Fatalf("omitted cursor = %d, want current cursor %d", omitted, stale.Cursor)
+	}
+	if result := checkAttentionConditions([]string{WaitConditionActionRequired}, omitted, "proj", ""); result == nil || result.Met {
+		t.Fatalf("omitted cursor should not replay stale attention, got %#v", result)
+	}
+
+	explicit := initialAttentionWaitCursor(WaitOptions{SinceCursor: 0, SinceCursorSet: true}, true)
+	if explicit != 0 {
+		t.Fatalf("explicit zero cursor = %d, want 0", explicit)
+	}
+	if result := checkAttentionConditions([]string{WaitConditionActionRequired}, explicit, "proj", ""); result == nil || !result.Met {
+		t.Fatalf("explicit zero cursor should replay history, got %#v", result)
+	}
+}
+
 func newWaitTestFeed(retention time.Duration) *AttentionFeed {
 	return NewAttentionFeed(AttentionFeedConfig{
 		JournalSize:       64,

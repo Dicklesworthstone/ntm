@@ -38,6 +38,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	swarmlib "github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/util"
@@ -4703,6 +4704,7 @@ type SnapshotAgent struct {
 	State            string  `json:"state"`
 	LastOutputAgeSec int     `json:"last_output_age_sec"`
 	OutputTailLines  int     `json:"output_tail_lines"`
+	ContextPercent   float64 `json:"context_percent,omitempty"`
 	CurrentBead      *string `json:"current_bead,omitempty"`
 	PendingMail      int     `json:"pending_mail"`
 }
@@ -4912,6 +4914,11 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 				lines := splitLines(status.StripANSI(captured))
 				agent.OutputTailLines = len(lines)
 				agent.State = determineState(captured, agent.Type)
+				if !strings.EqualFold(agent.Type, "user") {
+					if usage := tokens.GetUsageInfo(captured, detectModel(agent.Type, pane.Title)); usage != nil {
+						agent.ContextPercent = usage.UsagePercent
+					}
+				}
 			}
 
 			snapSession.Agents = append(snapSession.Agents, agent)
@@ -9817,11 +9824,15 @@ func buildTerseOutputFromSnapshot(snapshot *SnapshotOutput) *TerseOutput {
 		}
 
 		state.TotalAgents = len(sess.Agents)
+		var totalContextPercent float64
+		var contextAgentCount int
 		for _, agent := range sess.Agents {
 			if strings.EqualFold(agent.Type, "user") {
 				continue
 			}
 			state.ActiveAgents++
+			totalContextPercent += agent.ContextPercent
+			contextAgentCount++
 			switch strings.ToLower(strings.TrimSpace(agent.State)) {
 			case "idle":
 				state.IdleAgents++
@@ -9830,6 +9841,9 @@ func buildTerseOutputFromSnapshot(snapshot *SnapshotOutput) *TerseOutput {
 			default:
 				state.WorkingAgents++
 			}
+		}
+		if contextAgentCount > 0 {
+			state.ContextPct = int(totalContextPercent / float64(contextAgentCount))
 		}
 
 		output.States = append(output.States, state)

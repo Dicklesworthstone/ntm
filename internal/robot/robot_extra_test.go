@@ -262,10 +262,10 @@ func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
 			{
 				Name: "proj",
 				Agents: []SnapshotAgent{
-					{Type: "claude", State: "active"},
-					{Type: "codex", State: "idle"},
-					{Type: "gemini", State: "error"},
-					{Type: "user", State: "active"},
+					{Type: "claude", State: "active", ContextPercent: 60},
+					{Type: "codex", State: "idle", ContextPercent: 80},
+					{Type: "gemini", State: "error", ContextPercent: 70},
+					{Type: "user", State: "active", ContextPercent: 100},
 				},
 			},
 		},
@@ -306,14 +306,39 @@ func TestBuildTerseOutputFromSnapshotUsesSharedProjection(t *testing.T) {
 	if state.WorkingAgents != 1 || state.IdleAgents != 1 || state.ErrorAgents != 1 {
 		t.Fatalf("state counts = %+v, want 1 working/idle/error", state)
 	}
+	if state.ContextPct != 70 {
+		t.Fatalf("context percentage = %d, want average of non-user agents 70", state.ContextPct)
+	}
 	if state.ReadyBeads != 3 || state.InProgressBead != 1 || state.BlockedBeads != 2 {
 		t.Fatalf("work counts = %+v, want ready=3 in_progress=1 blocked=2", state)
 	}
 	if state.UnreadMail != 2 || state.CriticalAlerts != 1 || state.WarningAlerts != 2 {
 		t.Fatalf("coordination counts = %+v", state)
 	}
-	if got := output.TerseLines[0]; !strings.Contains(got, "S:proj|A:3/4|W:1|I:1|E:1") {
+	if got := output.TerseLines[0]; !strings.Contains(got, "S:proj|A:3/4|W:1|I:1|E:1|C:70%") {
 		t.Fatalf("terse line = %q, want shared session counts", got)
+	}
+}
+
+func TestBuildTerseOutputFromSnapshotLeavesContextAtZeroWithoutAgents(t *testing.T) {
+	snapshot := &SnapshotOutput{
+		RobotResponse: NewRobotResponse(true),
+		Sessions: []SnapshotSession{
+			{
+				Name: "operator-only",
+				Agents: []SnapshotAgent{
+					{Type: "user", State: "active", ContextPercent: 100},
+				},
+			},
+		},
+	}
+
+	output := buildTerseOutputFromSnapshot(snapshot)
+	if len(output.States) != 1 {
+		t.Fatalf("states len = %d, want 1", len(output.States))
+	}
+	if state := output.States[0]; state.ActiveAgents != 0 || state.ContextPct != 0 {
+		t.Fatalf("operator-only state = %+v, want zero active agents and context", state)
 	}
 }
 
