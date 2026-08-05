@@ -128,6 +128,7 @@ const (
 	ErrorActionSkipStage    ErrorAction = "skip_stage"
 	ErrorActionAbort        ErrorAction = "abort"
 	ErrorActionNotify       ErrorAction = "notify"
+	ErrorActionRetry        ErrorAction = "retry"
 )
 
 // ErrorConfig defines error handling behavior for a workflow.
@@ -326,7 +327,7 @@ func (e *ErrorConfig) Validate() error {
 func isValidErrorAction(action ErrorAction) bool {
 	switch action {
 	case ErrorActionRestartAgent, ErrorActionPause, ErrorActionSkipStage,
-		ErrorActionAbort, ErrorActionNotify:
+		ErrorActionAbort, ErrorActionNotify, ErrorActionRetry:
 		return true
 	default:
 		return false
