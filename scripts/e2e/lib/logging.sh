@@ -91,7 +91,7 @@ assert_pane_contains() {
 	local pane_id="$1"
 	local expected="$2"
 	local content
-	content="$("$E2E_REAL_TMUX" capture-pane -p -t "$pane_id" 2>&1)" || {
+	content="$("$E2E_REAL_TMUX" capture-pane -pJ -t "$pane_id" 2>&1)" || {
 		e2e_fail "capture pane $pane_id"
 		return 1
 	}
