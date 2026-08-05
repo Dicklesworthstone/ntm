@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,6 +17,15 @@ import (
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
+func agentRegistrationSessionName(t *testing.T, prefix string) string {
+	t.Helper()
+	var suffix [8]byte
+	if _, err := cryptorand.Read(suffix[:]); err != nil {
+		t.Fatalf("generate session suffix: %v", err)
+	}
+	return fmt.Sprintf("%s_%x", prefix, suffix)
+}
+
 // TestE2EAgentMailAutoRegistration tests that agents spawned with ntm
 // are automatically registered with Agent Mail and that pane-to-agent
 // name mappings are persisted for session recovery.
@@ -25,7 +35,7 @@ func TestE2EAgentMailAutoRegistration(t *testing.T) {
 	testutil.RequireNTMBinary(t)
 	client := requireAgentMail(t)
 
-	session := fmt.Sprintf("am_autoreg_%d", time.Now().UnixNano())
+	session := agentRegistrationSessionName(t, "am_autoreg")
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, session)
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
@@ -184,6 +194,65 @@ func TestE2EAgentMailAutoRegistration(t *testing.T) {
 	}
 }
 
+// TestE2EAgentMailAdoptRegistration proves that adoption follows the same
+// identity contract as spawn and add. The session is created directly through
+// tmux so it has no pre-existing NTM or Agent Mail state.
+func TestE2EAgentMailAdoptRegistration(t *testing.T) {
+	testutil.RequireE2E(t)
+	testutil.RequireTmuxThrottled(t)
+	testutil.RequireNTMBinary(t)
+	client := requireAgentMail(t)
+
+	session := agentRegistrationSessionName(t, "am_adopt")
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, session)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("create project dir: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	configPath := writeAgentMailTestConfig(t, projectsBase)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, err := client.EnsureProject(ctx, projectDir)
+	cancel()
+	if err != nil {
+		t.Fatalf("ensure Agent Mail project: %v", err)
+	}
+	if err := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", session, "-c", projectDir, "sleep 30").Run(); err != nil {
+		t.Fatalf("create external tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
+	})
+
+	runCmd(t, projectDir, "ntm", "--config", configPath, "--json", "adopt", session, "--cc=0")
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("list adopted panes: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("adopted panes = %d, want 1", len(panes))
+	}
+	if !strings.Contains(panes[0].Title, "__cc_1") {
+		t.Fatalf("adopted pane title = %q, want canonical Claude title", panes[0].Title)
+	}
+
+	registry, err := agentmail.LoadSessionAgentRegistry(session, projectDir)
+	if err != nil {
+		t.Fatalf("load adopted session registry: %v", err)
+	}
+	if registry == nil || registry.Count() != 1 {
+		t.Fatalf("adopted registry = %+v, want one registered pane", registry)
+	}
+	if name, ok := registry.GetAgent(panes[0].Title, panes[0].ID); !ok || name == "" {
+		t.Fatalf("adopted pane %q (%s) has no registered identity: %q", panes[0].Title, panes[0].ID, name)
+	}
+	if name, path := agentmail.ResolveIdentity(projectDir, panes[0].ID); name == "" || path == "" {
+		t.Fatalf("resolve adopted pane identity = %q at %q; want persisted identity", name, path)
+	}
+}
+
 // TestE2EAgentMailRegistryRecovery tests that persisted agent mappings
 // can be loaded after session restart for routing recovery.
 func TestE2EAgentMailRegistryRecovery(t *testing.T) {
@@ -192,7 +261,7 @@ func TestE2EAgentMailRegistryRecovery(t *testing.T) {
 	testutil.RequireNTMBinary(t)
 	_ = requireAgentMail(t)
 
-	session := fmt.Sprintf("am_recovery_%d", time.Now().UnixNano())
+	session := agentRegistrationSessionName(t, "am_recovery")
 	projectsBase := t.TempDir()
 	projectDir := filepath.Join(projectsBase, session)
 	if err := os.MkdirAll(projectDir, 0755); err != nil {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -490,7 +491,44 @@ func runAdopt(opts AdoptOptions) error {
 		DryRun:       opts.DryRun,
 	}
 
+	// Keep adopted panes on the same Agent Mail identity path as panes created
+	// by spawn and add. Registration is deliberately best-effort: adopting a
+	// usable tmux session must not fail merely because Agent Mail is unavailable.
+	if !opts.DryRun && len(adoptedPanes) > 0 {
+		if projectDir, dirErr := resolveWorkspaceProjectDirForExplicitSession(context.Background(), opts.Session); dirErr != nil {
+			if !jsonOutput {
+				output.PrintWarningf("Agent Mail registration skipped for adopted panes: %v", dirErr)
+			}
+		} else {
+			registerSpawnedAgents(context.Background(), projectDir, opts.Session, adoptedAgentMailRegistrations(adoptedPanes, opts.AutoName))
+		}
+	}
+
 	return output.New(output.WithJSON(jsonOutput)).Output(result)
+}
+
+// adoptedAgentMailRegistrations translates an adopted pane into the exact
+// registration input used by spawn and add. Adopt does not launch an agent, so
+// its model is intentionally unknown; the canonical pane ID and effective
+// title are sufficient to create and persist a resolvable Agent Mail identity.
+func adoptedAgentMailRegistrations(adopted []AdoptedPaneInfo, autoName bool) []spawnedAgentInfo {
+	registrations := make([]spawnedAgentInfo, 0, len(adopted))
+	for _, pane := range adopted {
+		if pane.AgentType == agentpkg.AgentTypeUser.String() {
+			continue
+		}
+		title := pane.OldTitle
+		if autoName {
+			title = pane.NewTitle
+		}
+		registrations = append(registrations, spawnedAgentInfo{
+			paneIndex: pane.PaneIndex,
+			paneID:    pane.PaneID,
+			paneTitle: title,
+			agentType: pane.AgentType,
+		})
+	}
+	return registrations
 }
 
 // resolveAdoptPane maps a requested paneSpec to a concrete pane, failing loud

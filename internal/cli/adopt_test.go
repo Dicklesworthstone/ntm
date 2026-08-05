@@ -98,6 +98,34 @@ func TestAdoptedAgentCountsCanonicalGrokProjection(t *testing.T) {
 	}
 }
 
+func TestAdoptedAgentMailRegistrations(t *testing.T) {
+	adopted := []AdoptedPaneInfo{
+		{PaneID: "%10", PaneIndex: 1, AgentType: "cc", OldTitle: "external-claude", NewTitle: "demo__cc_1"},
+		{PaneID: "%11", PaneIndex: 2, AgentType: "cod", OldTitle: "external-codex", NewTitle: "demo__cod_1"},
+		{PaneID: "%12", PaneIndex: 0, AgentType: "user", OldTitle: "shell", NewTitle: "demo__user_1"},
+	}
+
+	t.Run("auto named panes use their persisted title", func(t *testing.T) {
+		got := adoptedAgentMailRegistrations(adopted, true)
+		if len(got) != 2 {
+			t.Fatalf("registrations = %d, want 2 non-user panes", len(got))
+		}
+		if got[0].paneID != "%10" || got[0].paneIndex != 1 || got[0].paneTitle != "demo__cc_1" || got[0].agentType != "cc" {
+			t.Fatalf("first registration = %+v, want canonical adopted Claude pane", got[0])
+		}
+		if got[1].paneID != "%11" || got[1].paneTitle != "demo__cod_1" || got[1].agentType != "cod" {
+			t.Fatalf("second registration = %+v, want canonical adopted Codex pane", got[1])
+		}
+	})
+
+	t.Run("without rename, registry uses the live pane title", func(t *testing.T) {
+		got := adoptedAgentMailRegistrations(adopted[:1], false)
+		if len(got) != 1 || got[0].paneTitle != "external-claude" {
+			t.Fatalf("registrations = %+v, want original live title", got)
+		}
+	})
+}
+
 func bare(indices ...int) []paneSpec {
 	out := make([]paneSpec, 0, len(indices))
 	for _, i := range indices {
