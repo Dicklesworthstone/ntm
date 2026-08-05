@@ -263,35 +263,48 @@ func (s *AuditStore) Record(rec *AuditRecord) error {
 		rec.Timestamp = time.Now().UTC()
 	}
 
-	// Snapshot the handles under the store lock, then release it before any
-	// I/O. Holding mu across the JSONL append AND the SQLite INSERT made every
-	// mutating request serialize behind a single-connection database, and made
-	// Close() wait behind them. cleanupWG.Wait() already joins the cleanup
+	// Snapshot the database handle under the store lock, then release it before
+	// any I/O. Holding mu across the JSONL append AND the SQLite INSERT made
+	// every mutating request serialize behind a single-connection database, and
+	// made Close() wait behind them. cleanupWG.Wait() already joins the cleanup
 	// goroutine, so the wide lock was not load-bearing.
 	s.mu.Lock()
-	jsonlFile := s.jsonlFile
 	db := s.db
 	s.mu.Unlock()
 
 	// Write to JSONL
-	if jsonlFile != nil {
-		data, err := json.Marshal(rec)
-		if err != nil {
-			log.Printf("audit: json marshal error: %v", err)
-		} else {
-			// Serialized separately: an O_APPEND write is only atomic for
-			// small records, and audit records carrying details are not
-			// reliably small.
-			s.appendMu.Lock()
-			_, writeErr := jsonlFile.Write(append(data, '\n'))
-			s.appendMu.Unlock()
-			if writeErr != nil {
-				// Counted as well as logged: a full disk would otherwise stop
-				// the audit log silently, and a silently truncated audit log
-				// is worse than one that errors.
-				s.writeFailures.Add(1)
-				log.Printf("audit: jsonl write error: %v", writeErr)
-			}
+	data, marshalErr := json.Marshal(rec)
+	if marshalErr != nil {
+		log.Printf("audit: json marshal error: %v", marshalErr)
+	} else {
+		// appendMu is taken BEFORE the file handle is read, and the handle is
+		// read inside that critical section. Snapshotting it earlier raced
+		// rotation: rotateJSONLIfLarge closes the old handle and opens a new
+		// one while holding appendMu, so a writer holding a pre-rotation
+		// snapshot would append to a CLOSED file and lose the record. Ordering
+		// it this way means rotation either completes first (we see the new
+		// handle) or waits for us.
+		//
+		// The lock is also what makes the append safe at all: an O_APPEND
+		// write is only atomic for small records, and audit records carrying
+		// details are not reliably small.
+		s.appendMu.Lock()
+		s.mu.Lock()
+		jsonlFile := s.jsonlFile
+		s.mu.Unlock()
+
+		var writeErr error
+		if jsonlFile != nil {
+			_, writeErr = jsonlFile.Write(append(data, '\n'))
+		}
+		s.appendMu.Unlock()
+
+		if writeErr != nil {
+			// Counted as well as logged: a full disk would otherwise stop
+			// the audit log silently, and a silently truncated audit log
+			// is worse than one that errors.
+			s.writeFailures.Add(1)
+			log.Printf("audit: jsonl write error: %v", writeErr)
 		}
 	}
 
@@ -445,6 +458,27 @@ const maxJSONLBytes = 64 << 20 // 64 MiB
 // the audit directory.
 const rotatedJSONLSuffix = ".jsonl"
 
+// rotatedSegmentPath names a rotated segment, guaranteeing it does not collide
+// with one that already exists.
+//
+// The timestamp has one-second resolution, so two rotations inside the same
+// second would otherwise produce the same name and os.Rename would silently
+// OVERWRITE the earlier segment — destroying audit records, which is the one
+// thing this subsystem must never do. The suffix loop is safe because rotation
+// happens under appendMu+mu, so only one rotation is in flight at a time.
+func rotatedSegmentPath(path string, now time.Time) string {
+	base := strings.TrimSuffix(path, rotatedJSONLSuffix)
+	stamp := now.Format("20060102T150405Z")
+
+	candidate := fmt.Sprintf("%s.%s%s", base, stamp, rotatedJSONLSuffix)
+	for seq := 1; ; seq++ {
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s.%s-%d%s", base, stamp, seq, rotatedJSONLSuffix)
+	}
+}
+
 // cleanupJSONL rotates the active audit log when it grows past maxJSONLBytes
 // and deletes previously rotated segments older than the retention window.
 func (s *AuditStore) cleanupJSONL() {
@@ -487,10 +521,7 @@ func (s *AuditStore) rotateJSONLIfLarge(path string) error {
 		return nil // closed underneath us
 	}
 
-	rotated := fmt.Sprintf("%s.%s%s",
-		strings.TrimSuffix(path, rotatedJSONLSuffix),
-		time.Now().UTC().Format("20060102T150405Z"),
-		rotatedJSONLSuffix)
+	rotated := rotatedSegmentPath(path, time.Now().UTC())
 
 	if err := s.jsonlFile.Close(); err != nil {
 		log.Printf("audit: close before rotate: %v", err)
