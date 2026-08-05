@@ -1422,6 +1422,7 @@ Shell Integration:
 				Strategy:     robot.StrategyName(resolveRobotRouteStrategy(cmd)),
 				AgentType:    resolveRobotRouteType(cmd),
 				ExcludePanes: excludePanes,
+				LastAgent:    strings.TrimSpace(robotRouteLastAgent),
 			}
 			exitCode := robot.PrintRoute(opts)
 			recordLegacyRobotExit(exitCode)
@@ -3617,10 +3618,11 @@ var (
 	robotWaitTransition bool   // require state transition before returning
 
 	// Robot-route flags for routing recommendations
-	robotRoute         string // session name for route
-	robotRouteStrategy string // routing strategy (least-loaded, first-available, round-robin, etc.)
-	robotRouteType     string // filter by agent type (claude, codex, gemini)
-	robotRouteExclude  string // comma-separated pane indices to exclude
+	robotRoute          string // session name for route
+	robotRouteStrategy  string // routing strategy (least-loaded, first-available, round-robin, etc.)
+	robotRouteLastAgent string // pane ID of the previously routed agent (sticky/round-robin anchor)
+	robotRouteType      string // filter by agent type (claude, codex, gemini)
+	robotRouteExclude   string // comma-separated pane indices to exclude
 
 	// Robot-pipeline flags for workflow execution
 	robotPipelineRun       string // workflow file to run
@@ -4260,6 +4262,7 @@ func init() {
 	// Robot-route flags for routing recommendations
 	rootCmd.Flags().StringVar(&robotRoute, "robot-route", "", "Get routing recommendation. Required: SESSION. Example: ntm --robot-route=myproject --strategy=least-loaded")
 	rootCmd.Flags().StringVar(&robotRouteStrategy, "route-strategy", "least-loaded", "Routing strategy: least-loaded, first-available, round-robin, round-robin-available, random, sticky, explicit. Optional with --robot-route")
+	rootCmd.Flags().StringVar(&robotRouteLastAgent, "last-agent", "", "Pane ID (%N) of the previously routed agent; anchors sticky and round-robin rotation across stateless CLI invocations. Optional with --robot-route")
 	rootCmd.Flags().StringVar(&robotRouteType, "route-type", "", "Deprecated alias for --type. Filter by agent type with --robot-route. Example: --type=claude")
 	rootCmd.Flags().StringVar(&robotRouteExclude, "route-exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-route. Example: --route-exclude=0,3")
 

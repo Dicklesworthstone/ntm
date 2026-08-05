@@ -1115,8 +1115,12 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "least-loaded", Description: "Strategy: least-loaded, first-available, round-robin, round-robin-available, random, sticky, explicit"},
 				{Name: "type", Flag: "--type", Type: "string", Required: false, Description: "Filter by agent type"},
 				{Name: "exclude", Flag: "--exclude", Type: "string", Required: false, Description: "Exclude pane indices"},
+				{Name: "last-agent", Flag: "--last-agent", Type: "string", Required: false, Description: "Pane ID (%N) of the previously routed agent; anchors sticky and round-robin rotation across stateless invocations"},
 			},
-			Examples: []string{"ntm --robot-route=proj --strategy=least-loaded --type=claude --exclude=0"},
+			Examples: []string{
+				"ntm --robot-route=proj --strategy=least-loaded --type=claude --exclude=0",
+				"ntm --robot-route=proj --strategy=round-robin --last-agent=%7",
+			},
 		},
 		{
 			Name:        "assign",
