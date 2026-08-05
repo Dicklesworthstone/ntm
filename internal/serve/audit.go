@@ -81,6 +81,11 @@ type AuditStore struct {
 	// a quiet one.
 	writeFailures atomic.Int64
 
+	// maxBytes is the size at which the active log rotates. It exists as a
+	// field rather than a bare constant so a test can drive rotation without
+	// writing 64 MiB; production always uses maxJSONLBytes.
+	maxBytes int64
+
 	retention   time.Duration
 	stopCleanup chan struct{}
 	stopOnce    sync.Once
@@ -508,7 +513,11 @@ func (s *AuditStore) rotateJSONLIfLarge(path string) error {
 		}
 		return fmt.Errorf("stat audit log: %w", err)
 	}
-	if info.Size() < maxJSONLBytes {
+	threshold := s.maxBytes
+	if threshold <= 0 {
+		threshold = maxJSONLBytes
+	}
+	if info.Size() < threshold {
 		return nil
 	}
 

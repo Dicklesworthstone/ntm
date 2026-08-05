@@ -2871,6 +2871,13 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 		}
 
+		// Credential isolation is applied FIRST so its assignments end up
+		// RIGHTMOST, closest to the command. In `A=1 A=2 cmd` the shell keeps
+		// the LAST assignment, so rightmost wins — applying isolation last
+		// would have put it leftmost and let a plugin env var named
+		// CLAUDE_CONFIG_DIR silently defeat it.
+		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
+
 		// Apply plugin env vars if any
 		if len(envVars) > 0 {
 			var envPrefix string
@@ -2879,10 +2886,6 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 			agentCmd = envPrefix + agentCmd
 		}
-
-		// Credential isolation last, so its assignments sit closest to the
-		// command and cannot be shadowed by a plugin var of the same name.
-		agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 
 		// Calculate stagger delay for this agent (used for spawn context)
 		var promptDelay time.Duration

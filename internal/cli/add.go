@@ -803,6 +803,22 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
 		}
 
+		// Per-pane Claude credential isolation (GH#237). A pane added to an
+		// existing swarm joins the same subscription as the panes already in
+		// it, so skipping isolation here would put the whole session back into
+		// the refresh-token race that spawn set it up to avoid.
+		//
+		// Applied BEFORE the plugin vars so its assignments end up rightmost,
+		// closest to the command: the shell keeps the LAST of two assignments
+		// to the same name, so leftmost loses.
+		if agent.Type == AgentTypeClaude {
+			claudeEnv, err := swarm.ProvisionClaudeIsolation(cfg, dir, session, num)
+			if err != nil {
+				return outputError(fmt.Errorf("isolating credentials for claude pane %d: %w", num, err))
+			}
+			finalCmd = claudeEnv.ApplyToCommand(finalCmd)
+		}
+
 		// Apply plugin env vars
 		if len(envVars) > 0 {
 			var envPrefix string
@@ -810,18 +826,6 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 				envPrefix += fmt.Sprintf("%s=%s ", k, tmux.ShellQuote(v))
 			}
 			finalCmd = envPrefix + finalCmd
-		}
-
-		// Per-pane Claude credential isolation (GH#237). A pane added to an
-		// existing swarm joins the same subscription as the panes already in
-		// it, so skipping isolation here would put the whole session back into
-		// the refresh-token race that spawn set it up to avoid.
-		if agent.Type == AgentTypeClaude {
-			claudeEnv, err := swarm.ProvisionClaudeIsolation(cfg, dir, session, num)
-			if err != nil {
-				return outputError(fmt.Errorf("isolating credentials for claude pane %d: %w", num, err))
-			}
-			finalCmd = claudeEnv.ApplyToCommand(finalCmd)
 		}
 
 		safeCmd, err := tmux.SanitizePaneCommand(finalCmd)

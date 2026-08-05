@@ -3,11 +3,13 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -983,5 +985,114 @@ func TestAuditStore_PruneLeavesUnrelatedFilesAlone(t *testing.T) {
 
 	if _, err := os.Stat(bystander); err != nil {
 		t.Fatalf("an unrelated .jsonl file was deleted by audit pruning: %v", err)
+	}
+}
+
+// Two rotations inside the same second must not collide: the timestamp has
+// one-second resolution, so a naive name would make os.Rename OVERWRITE the
+// earlier segment and destroy audit records.
+func TestRotatedSegmentPath_NeverCollides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+
+	first := rotatedSegmentPath(path, now)
+	if err := os.WriteFile(first, []byte("first\n"), 0644); err != nil {
+		t.Fatalf("write first segment: %v", err)
+	}
+
+	second := rotatedSegmentPath(path, now)
+	if second == first {
+		t.Fatalf("two rotations in the same second produced the same name %q; the first segment would be overwritten", first)
+	}
+	if err := os.WriteFile(second, []byte("second\n"), 0644); err != nil {
+		t.Fatalf("write second segment: %v", err)
+	}
+
+	// The original must still be intact.
+	data, err := os.ReadFile(first)
+	if err != nil || string(data) != "first\n" {
+		t.Fatalf("first segment = (%q, %v), want it untouched", data, err)
+	}
+}
+
+// Records written concurrently with a rotation must all land somewhere. The
+// writer used to snapshot the file handle BEFORE taking appendMu, so a
+// rotation could close that handle underneath it and the record was lost.
+func TestAuditStore_ConcurrentWritesSurviveRotation(t *testing.T) {
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "audit.jsonl")
+
+	store, err := NewAuditStore(AuditStoreConfig{JSONLPath: jsonlPath, Retention: time.Hour})
+	if err != nil {
+		t.Fatalf("NewAuditStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const writers = 8
+	const perWriter = 25
+	var wg sync.WaitGroup
+	var start sync.WaitGroup
+	start.Add(1)
+
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			start.Wait()
+			for i := 0; i < perWriter; i++ {
+				_ = store.Record(&AuditRecord{
+					Action:   AuditActionCreate,
+					Resource: "sessions",
+					UserID:   fmt.Sprintf("w%d-%d", w, i),
+				})
+			}
+		}(w)
+	}
+
+	// Rotate continuously while the writers run. A tiny threshold makes every
+	// call rotate, which is the point: maximize the window in which a writer
+	// could be holding a handle that rotation is about to close.
+	store.maxBytes = 1
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		start.Wait()
+		for i := 0; i < 40; i++ {
+			if err := store.rotateJSONLIfLarge(jsonlPath); err != nil {
+				t.Errorf("rotate: %v", err)
+			}
+		}
+	}()
+
+	start.Done()
+	wg.Wait()
+
+	if got := store.WriteFailures(); got != 0 {
+		t.Fatalf("write failures = %d, want 0 — records were lost across rotation", got)
+	}
+
+	// Every record must be findable across the active log plus all segments.
+	total := 0
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) != "" {
+				total++
+			}
+		}
+	}
+	if want := writers * perWriter; total != want {
+		t.Fatalf("found %d audit records across all segments, want %d — records were lost or duplicated by rotation", total, want)
 	}
 }
