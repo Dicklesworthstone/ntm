@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // =============================================================================
@@ -775,4 +777,146 @@ func truncateStr(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// bd-aljrb: the middleware's contract assumed handlers call
+// SetAuditResource/SetAuditSession, but exactly one handler in the tree ever
+// did. Every other audit record — rollback, checkpoint restore, agent spawn,
+// pane input, approval approve/deny — was written with empty session_id and
+// resource_id, so an operator investigating a destructive action and filtering
+// by session got ZERO rows. Deriving the fields from the routed chi params
+// covers every route, including ones that do not exist yet.
+func TestAuditMiddlewareDerivesAttributionFromRoute(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewAuditStore(AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	s := &Server{auth: AuthConfig{Mode: AuthModeLocal}}
+
+	// A handler that sets NOTHING, like almost every real handler.
+	silent := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	r := chi.NewRouter()
+	r.Use(s.rbacMiddleware)
+	r.Use(s.AuditMiddleware(store))
+	r.Post("/api/v1/sessions/{sessionName}/rollback", silent)
+	r.Post("/api/v1/sessions/{sessionId}/panes/{paneIdx}/input", silent)
+	r.Post("/api/v1/sessions/{sessionName}/checkpoints/{checkpointId}/restore", silent)
+
+	cases := []struct {
+		name           string
+		method         string
+		path           string
+		reqID          string
+		wantSession    string
+		wantPane       string
+		wantResourceID string
+	}{
+		{
+			name: "rollback", method: "POST", reqID: "req-rollback",
+			path:        "/api/v1/sessions/payments/rollback",
+			wantSession: "payments", wantResourceID: "payments",
+		},
+		{
+			name: "pane input", method: "POST", reqID: "req-input",
+			path:        "/api/v1/sessions/payments/panes/3/input",
+			wantSession: "payments", wantPane: "3", wantResourceID: "payments",
+		},
+		{
+			name: "checkpoint restore", method: "POST", reqID: "req-restore",
+			path:        "/api/v1/sessions/payments/checkpoints/cp-123/restore",
+			wantSession: "payments", wantResourceID: "cp-123",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req = req.WithContext(context.WithValue(req.Context(), requestIDKey, tc.reqID))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rr.Code)
+			}
+
+			recs, err := store.Query(AuditFilter{RequestID: tc.reqID})
+			if err != nil {
+				t.Fatalf("Query error: %v", err)
+			}
+			if len(recs) != 1 {
+				t.Fatalf("got %d audit records, want 1", len(recs))
+			}
+			rec := recs[0]
+			if rec.SessionID != tc.wantSession {
+				t.Errorf("SessionID = %q, want %q", rec.SessionID, tc.wantSession)
+			}
+			if rec.PaneID != tc.wantPane {
+				t.Errorf("PaneID = %q, want %q", rec.PaneID, tc.wantPane)
+			}
+			if rec.ResourceID != tc.wantResourceID {
+				t.Errorf("ResourceID = %q, want %q", rec.ResourceID, tc.wantResourceID)
+			}
+
+			// The point of the fix: a session-filtered query finds it.
+			bySession, err := store.Query(AuditFilter{SessionID: tc.wantSession})
+			if err != nil {
+				t.Fatalf("session-filtered Query error: %v", err)
+			}
+			if len(bySession) == 0 {
+				t.Fatal("a session-filtered audit query returned zero rows; the record is unfindable by the field operators actually filter on")
+			}
+		})
+	}
+}
+
+// A handler that DOES set the fields must still win over the routed values.
+func TestAuditMiddlewareHandlerValuesWinOverRoute(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewAuditStore(AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	s := &Server{auth: AuthConfig{Mode: AuthModeLocal}}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetAuditSession(r, "handler-session", "handler-pane", "handler-agent")
+		SetAuditResource(r, "session", "handler-resource")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	r := chi.NewRouter()
+	r.Use(s.rbacMiddleware)
+	r.Use(s.AuditMiddleware(store))
+	r.Post("/api/v1/sessions/{sessionName}/rollback", handler)
+
+	req := httptest.NewRequest("POST", "/api/v1/sessions/route-session/rollback", nil)
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req-precedence"))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	recs, err := store.Query(AuditFilter{RequestID: "req-precedence"})
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("Query = (%d records, %v), want exactly 1", len(recs), err)
+	}
+	if recs[0].SessionID != "handler-session" {
+		t.Errorf("SessionID = %q, want the handler-set value to win", recs[0].SessionID)
+	}
+	if recs[0].ResourceID != "handler-resource" {
+		t.Errorf("ResourceID = %q, want the handler-set value to win", recs[0].ResourceID)
+	}
 }

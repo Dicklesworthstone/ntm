@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -74,6 +75,11 @@ type AuditStore struct {
 	// write is not atomic for records larger than the pipe buffer, so the
 	// appends still need a lock of their own; it is just a much shorter one.
 	appendMu sync.Mutex
+
+	// writeFailures counts audit records that failed to reach the JSONL sink.
+	// Logging alone made a silently truncated audit log indistinguishable from
+	// a quiet one.
+	writeFailures atomic.Int64
 
 	retention   time.Duration
 	stopCleanup chan struct{}
@@ -280,6 +286,10 @@ func (s *AuditStore) Record(rec *AuditRecord) error {
 			_, writeErr := jsonlFile.Write(append(data, '\n'))
 			s.appendMu.Unlock()
 			if writeErr != nil {
+				// Counted as well as logged: a full disk would otherwise stop
+				// the audit log silently, and a silently truncated audit log
+				// is worse than one that errors.
+				s.writeFailures.Add(1)
 				log.Printf("audit: jsonl write error: %v", writeErr)
 			}
 		}
@@ -423,6 +433,130 @@ type AuditFilter struct {
 	Until      time.Time
 	Limit      int
 	Offset     int
+}
+
+// maxJSONLBytes is the size at which the active audit log is rotated. An
+// append-only log is rotated rather than rewritten so appends stay O(1) and no
+// concurrent writer can lose a record to a rewrite.
+const maxJSONLBytes = 64 << 20 // 64 MiB
+
+// rotatedJSONLSuffix marks files this store rotated, so pruning only ever
+// considers its own output and never an unrelated file that happens to sit in
+// the audit directory.
+const rotatedJSONLSuffix = ".jsonl"
+
+// cleanupJSONL rotates the active audit log when it grows past maxJSONLBytes
+// and deletes previously rotated segments older than the retention window.
+func (s *AuditStore) cleanupJSONL() {
+	s.mu.Lock()
+	path := s.jsonlPath
+	s.mu.Unlock()
+	if path == "" {
+		return
+	}
+
+	if err := s.rotateJSONLIfLarge(path); err != nil {
+		log.Printf("audit cleanup: rotate jsonl: %v", err)
+	}
+	s.pruneRotatedJSONL(path)
+}
+
+// rotateJSONLIfLarge renames the active log aside and reopens a fresh one.
+//
+// The rename and the reopen happen under appendMu so no Record can be holding
+// the old handle mid-write, and under mu so the handle swap is visible to the
+// next Record.
+func (s *AuditStore) rotateJSONLIfLarge(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat audit log: %w", err)
+	}
+	if info.Size() < maxJSONLBytes {
+		return nil
+	}
+
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.jsonlFile == nil {
+		return nil // closed underneath us
+	}
+
+	rotated := fmt.Sprintf("%s.%s%s",
+		strings.TrimSuffix(path, rotatedJSONLSuffix),
+		time.Now().UTC().Format("20060102T150405Z"),
+		rotatedJSONLSuffix)
+
+	if err := s.jsonlFile.Close(); err != nil {
+		log.Printf("audit: close before rotate: %v", err)
+	}
+	if err := os.Rename(path, rotated); err != nil {
+		// Reopen the original so auditing continues even if rotation failed.
+		if f, openErr := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); openErr == nil {
+			s.jsonlFile = f
+		} else {
+			s.jsonlFile = nil
+		}
+		return fmt.Errorf("rename audit log: %w", err)
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		s.jsonlFile = nil
+		return fmt.Errorf("reopen audit log after rotate: %w", err)
+	}
+	s.jsonlFile = f
+	return nil
+}
+
+// pruneRotatedJSONL deletes rotated segments older than the retention window.
+// It only removes files matching the segment naming this store produces.
+func (s *AuditStore) pruneRotatedJSONL(path string) {
+	dir := filepath.Dir(path)
+	prefix := filepath.Base(strings.TrimSuffix(path, rotatedJSONLSuffix)) + "."
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Printf("audit cleanup: read audit dir: %v", err)
+		return
+	}
+	cutoff := time.Now().Add(-s.retention)
+	active := filepath.Base(path)
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || name == active {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, rotatedJSONLSuffix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			log.Printf("audit cleanup: remove rotated segment %s: %v", name, err)
+		}
+	}
+}
+
+// WriteFailures reports how many audit records failed to reach the JSONL sink.
+//
+// A non-zero value means the audit log has holes. It is exposed because the
+// alternative — logging and moving on — makes a silently truncated audit log
+// indistinguishable from a quiet one, which is the worst failure mode this
+// subsystem has.
+func (s *AuditStore) WriteFailures() int64 {
+	return s.writeFailures.Load()
 }
 
 // cleanupLoop periodically removes old audit records.

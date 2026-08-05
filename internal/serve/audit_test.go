@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -875,5 +876,112 @@ func TestAuditContextFromRequest_WithContext(t *testing.T) {
 	}
 	if ac.Resource != "test" {
 		t.Errorf("Resource = %q, want %q", ac.Resource, "test")
+	}
+}
+
+// bd-w8uwo: cleanup() returned early when no SQLite DB was configured and only
+// ever issued a DELETE against the database, so the JSONL sink was never
+// rotated or truncated despite Retention being documented as "how long to keep
+// audit records".
+func TestAuditStore_RotatesAndPrunesJSONL(t *testing.T) {
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "audit.jsonl")
+
+	store, err := NewAuditStore(AuditStoreConfig{
+		JSONLPath: jsonlPath,
+		Retention: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Grow the active log past the rotation threshold.
+	big := make([]byte, maxJSONLBytes+1024)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(jsonlPath, big, 0644); err != nil {
+		t.Fatalf("seed oversized log: %v", err)
+	}
+
+	store.cleanupJSONL()
+
+	// The active path must exist again and be small, and a rotated segment
+	// must be alongside it.
+	info, err := os.Stat(jsonlPath)
+	if err != nil {
+		t.Fatalf("active audit log missing after rotation: %v", err)
+	}
+	if info.Size() >= maxJSONLBytes {
+		t.Fatalf("active log was not rotated (size=%d)", info.Size())
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	rotated := ""
+	for _, e := range entries {
+		if e.Name() != "audit.jsonl" && strings.HasSuffix(e.Name(), ".jsonl") {
+			rotated = e.Name()
+		}
+	}
+	if rotated == "" {
+		t.Fatalf("no rotated segment was produced; entries=%v", entries)
+	}
+
+	// Auditing must keep working through a rotation.
+	if err := store.Record(&AuditRecord{Action: AuditActionCreate, Resource: "sessions"}); err != nil {
+		t.Fatalf("Record after rotation: %v", err)
+	}
+	if store.WriteFailures() != 0 {
+		t.Fatalf("write failures after rotation = %d, want 0", store.WriteFailures())
+	}
+	after, err := os.ReadFile(jsonlPath)
+	if err != nil || len(after) == 0 {
+		t.Fatalf("record did not reach the reopened log (len=%d err=%v)", len(after), err)
+	}
+
+	// A rotated segment older than the retention window is pruned.
+	stale := filepath.Join(dir, rotated)
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	store.cleanupJSONL()
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("rotated segment past retention survived (err=%v)", err)
+	}
+	// The active log is never pruned, however old it looks.
+	if _, err := os.Stat(jsonlPath); err != nil {
+		t.Fatalf("active log was pruned: %v", err)
+	}
+}
+
+// Unrelated files in the audit directory must not be deleted by pruning.
+func TestAuditStore_PruneLeavesUnrelatedFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "audit.jsonl")
+
+	store, err := NewAuditStore(AuditStoreConfig{JSONLPath: jsonlPath, Retention: time.Hour})
+	if err != nil {
+		t.Fatalf("NewAuditStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	bystander := filepath.Join(dir, "notes.jsonl")
+	if err := os.WriteFile(bystander, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("write bystander: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(bystander, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	store.cleanupJSONL()
+
+	if _, err := os.Stat(bystander); err != nil {
+		t.Fatalf("an unrelated .jsonl file was deleted by audit pruning: %v", err)
 	}
 }
