@@ -18,6 +18,16 @@ status_json="$("$E2E_NTM_BIN" status "$session" --json)"
 assert_contains "$status_json" "$session" 'status JSON identifies spawned session'
 log_step_end spawn_single_agent
 
+codex_session="e2e-spawn-codex-$$"
+log_step_start spawn_single_codex
+e2e_spawn "$codex_session" --cod=1
+codex_count="$("$E2E_REAL_TMUX" list-panes -t "$codex_session" -F '#{pane_id}' | wc -l | tr -d ' ')"
+[[ "$codex_count" == "1" ]] || e2e_fail 'single-codex spawn created one pane'
+log_assertion_pass 'single-codex spawn created one pane'
+codex_title="$("$E2E_REAL_TMUX" display-message -p -t "$codex_session:0.0" '#{pane_title}')"
+assert_contains "$codex_title" '__cod_1' 'single-codex pane title identifies its agent type'
+log_step_end spawn_single_codex
+
 multi_session="e2e-spawn-multi-$$"
 log_step_start spawn_mixed_agents
 e2e_spawn "$multi_session" --cc=2 --cod=1
