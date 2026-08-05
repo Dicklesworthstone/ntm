@@ -563,9 +563,23 @@ func (f *AttentionFeed) Append(event AttentionEvent) AttentionEvent {
 	return event
 }
 
-// PublishEphemeral allocates a cursor and notifies subscribers without
-// persisting or journaling the event. This is used for live-only control
-// signals such as watch heartbeats that should not appear in replay.
+// PublishEphemeral notifies subscribers without persisting or journaling the
+// event. This is used for live-only control signals such as watch heartbeats
+// that should not appear in replay.
+//
+// Ephemeral events deliberately do NOT allocate a cursor. They used to call
+// cursor.Next(), which shares the counter with durable appends: 20 heartbeats
+// pushed the counter past the store's max rowid, Stats().NewestCursor
+// advertised that inflated value, and the next 20 real events were assigned
+// rowids at or below it — permanently unreachable via --since-cursor. The
+// first durable append then reset the counter downward, emitting
+// non-monotonic live cursors (bd-fresh-eyes-audit .10).
+//
+// Instead a heartbeat reports the CURRENT durable position. It carries no new
+// position of its own (there is nothing to replay), and a consumer that
+// blindly echoes the cursor back as --since-cursor lands exactly where it
+// already was: no skipped events, no re-replay, and the sequence a subscriber
+// observes stays monotonic.
 func (f *AttentionFeed) PublishEphemeral(event AttentionEvent) AttentionEvent {
 	event.NextActions = sanitizeNextActions(event.NextActions)
 
@@ -574,7 +588,7 @@ func (f *AttentionFeed) PublishEphemeral(event AttentionEvent) AttentionEvent {
 	}
 
 	f.appendMu.Lock()
-	event.Cursor = f.cursor.Next()
+	event.Cursor = f.cursor.Current()
 	startDrain := f.enqueuePendingEventLocked(event)
 	f.appendMu.Unlock()
 

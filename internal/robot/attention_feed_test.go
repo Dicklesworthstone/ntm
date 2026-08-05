@@ -474,8 +474,12 @@ func TestAttentionFeed_HeartbeatLoopPublishesEphemeralHeartbeats(t *testing.T) {
 		t.Fatal("timed out waiting for heartbeat")
 	}
 
-	if heartbeat.Cursor <= 0 {
-		t.Fatalf("heartbeat cursor = %d, want positive", heartbeat.Cursor)
+	// A heartbeat mirrors the current durable position instead of allocating
+	// a cursor of its own (bd-fresh-eyes-audit .10): it is a liveness signal
+	// with nothing to replay, and allocating would push the shared counter
+	// past real event rowids.
+	if heartbeat.Cursor != feed.cursor.Current() {
+		t.Fatalf("heartbeat cursor = %d, want the current durable cursor %d", heartbeat.Cursor, feed.cursor.Current())
 	}
 	switch got := heartbeat.Details["subscriber_count"].(type) {
 	case int:
@@ -4953,5 +4957,57 @@ func TestPersistNormalizedProjectionKeepsHandoffWhenCoordinationUnavailable(t *t
 	}
 	if row != nil {
 		t.Fatalf("an available, handoff-free report must clear the projection, got %+v", row)
+	}
+}
+
+// bd-fresh-eyes-audit .10: heartbeats shared the durable cursor counter, so a
+// quiet feed with an active subscriber advertised a NewestCursor beyond every
+// real event. Consumers polling --since-cursor=<that value> then never saw the
+// next real events, and the first durable append regressed the counter.
+func TestAttentionFeed_EphemeralDoesNotAdvanceDurableCursor(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:     100,
+		RetentionPeriod: time.Hour,
+	})
+	defer feed.Stop()
+
+	first := feed.Append(AttentionEvent{Category: EventCategorySystem, Summary: "real event"})
+	if first.Cursor <= 0 {
+		t.Fatalf("durable append cursor = %d, want positive", first.Cursor)
+	}
+
+	// Twenty heartbeats must not move the position.
+	for i := 0; i < 20; i++ {
+		hb := feed.PublishEphemeral(AttentionEvent{
+			Category: EventCategorySystem,
+			Type:     EventType(DefaultTransportLiveness.HeartbeatType),
+			Summary:  "Heartbeat",
+		})
+		if hb.Cursor != first.Cursor {
+			t.Fatalf("heartbeat %d cursor = %d, want the unchanged durable cursor %d", i, hb.Cursor, first.Cursor)
+		}
+	}
+	if got := feed.Stats().NewestCursor; got != first.Cursor {
+		t.Fatalf("NewestCursor after heartbeats = %d, want %d", got, first.Cursor)
+	}
+
+	// The next real event must be reachable from the advertised cursor —
+	// the exact property the shared counter destroyed.
+	second := feed.Append(AttentionEvent{Category: EventCategorySystem, Summary: "next real event"})
+	if second.Cursor <= first.Cursor {
+		t.Fatalf("second durable cursor = %d, want > %d (monotonic)", second.Cursor, first.Cursor)
+	}
+	events, _, err := feed.Replay(first.Cursor, 10)
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		if e.Cursor == second.Cursor {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("event at cursor %d unreachable from advertised cursor %d (replayed %d events)", second.Cursor, first.Cursor, len(events))
 	}
 }
