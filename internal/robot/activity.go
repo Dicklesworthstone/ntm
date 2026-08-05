@@ -52,6 +52,7 @@ type VelocityTracker struct {
 	MaxSamples    int              `json:"max_samples"` // size of circular buffer
 	LastCapture   string           `json:"-"`           // previous capture (not serialized)
 	LastCaptureAt time.Time        `json:"last_capture_at"`
+	lastOutputAt  time.Time        // most recent capture that added output; independent of sample retention
 
 	// Persistence (optional)
 	store             WatermarkStore `json:"-"` // optional store for restart-safe baselines
@@ -238,6 +239,9 @@ func (vt *VelocityTracker) Update() (*VelocitySample, error) {
 
 	// Add sample to circular buffer
 	vt.addSampleLocked(sample)
+	if charsAdded > 0 {
+		vt.lastOutputAt = now
+	}
 
 	// Update last capture state
 	vt.LastCapture = cleanOutput
@@ -312,6 +316,9 @@ func (vt *VelocityTracker) UpdateWithOutput(output string) (*VelocitySample, err
 
 	// Add sample to circular buffer
 	vt.addSampleLocked(sample)
+	if charsAdded > 0 {
+		vt.lastOutputAt = now
+	}
 
 	// Update last capture state
 	vt.LastCapture = cleanOutput
@@ -401,6 +408,9 @@ func (vt *VelocityTracker) lastOutputAgeLocked() time.Duration {
 	if vt.LastCaptureAt.IsZero() {
 		return 0
 	}
+	if !vt.lastOutputAt.IsZero() {
+		return time.Since(vt.lastOutputAt)
+	}
 
 	// Find the last sample that had output
 	for i := len(vt.Samples) - 1; i >= 0; i-- {
@@ -424,6 +434,9 @@ func (vt *VelocityTracker) lastOutputAgeLocked() time.Duration {
 func (vt *VelocityTracker) LastOutputTime() time.Time {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
+	if !vt.lastOutputAt.IsZero() {
+		return vt.lastOutputAt
+	}
 
 	// Find the last sample that had output
 	for i := len(vt.Samples) - 1; i >= 0; i-- {
@@ -460,6 +473,7 @@ func (vt *VelocityTracker) Reset() {
 	vt.Samples = vt.Samples[:0]
 	vt.LastCapture = ""
 	vt.LastCaptureAt = time.Time{}
+	vt.lastOutputAt = time.Time{}
 	vt.baselineHash = ""
 	vt.baselineRuneCount = 0
 	vt.persistToStore()

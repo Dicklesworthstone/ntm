@@ -232,6 +232,7 @@ func TestVelocityTracker_LastOutputAge(t *testing.T) {
 		CharsAdded: 10,
 		Velocity:   5.0,
 	})
+	tracker.lastOutputAt = recentTime
 	tracker.mu.Unlock()
 
 	// Should now return time since the sample with output (approx 1 second)
@@ -257,6 +258,7 @@ func TestVelocityTracker_LastOutputTime(t *testing.T) {
 		CharsAdded: 10,
 		Velocity:   5.0,
 	})
+	tracker.lastOutputAt = outputTime
 	tracker.mu.Unlock()
 
 	// Should return the timestamp of that sample
@@ -2008,12 +2010,47 @@ func TestLastOutputAgeLocked_MixedSamples(t *testing.T) {
 		{Timestamp: now.Add(-5 * time.Second), CharsAdded: 0, Velocity: 0},     // No output
 		{Timestamp: now.Add(-2 * time.Second), CharsAdded: 0, Velocity: 0},     // No output
 	}
+	tracker.lastOutputAt = now.Add(-10 * time.Second)
 	tracker.mu.Unlock()
 
 	// Should find the sample with output (10s ago)
 	age := tracker.LastOutputAge()
 	if age < 9*time.Second || age > 11*time.Second {
 		t.Errorf("expected ~10s age (sample with output), got %v", age)
+	}
+}
+
+func TestVelocityTracker_LastOutputAgeSurvivesSampleEviction(t *testing.T) {
+	tracker := NewVelocityTrackerWithSize("test", 2)
+
+	if _, err := tracker.UpdateWithOutput("baseline"); err != nil {
+		t.Fatalf("establish baseline: %v", err)
+	}
+	if _, err := tracker.UpdateWithOutput("baseline with output"); err != nil {
+		t.Fatalf("record output: %v", err)
+	}
+
+	tracker.mu.Lock()
+	lastOutputAt := time.Now().Add(-DefaultStallThreshold - time.Second)
+	tracker.lastOutputAt = lastOutputAt
+	tracker.mu.Unlock()
+
+	for i := 0; i < tracker.MaxSamples; i++ {
+		if _, err := tracker.UpdateWithOutput("baseline with output"); err != nil {
+			t.Fatalf("silent update %d: %v", i, err)
+		}
+	}
+
+	for _, sample := range tracker.GetSamples() {
+		if sample.CharsAdded != 0 {
+			t.Fatalf("expected retained samples to be silent, got %+v", sample)
+		}
+	}
+	if age := tracker.LastOutputAge(); age <= DefaultStallThreshold {
+		t.Fatalf("LastOutputAge() = %v, want greater than %v after output sample eviction", age, DefaultStallThreshold)
+	}
+	if got := tracker.LastOutputTime(); !got.Equal(lastOutputAt) {
+		t.Fatalf("LastOutputTime() = %v, want %v", got, lastOutputAt)
 	}
 }
 
