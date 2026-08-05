@@ -190,6 +190,20 @@ func reservationActiveAt(r agentmail.FileReservation, now time.Time) bool {
 	if r.ReleasedTS != nil {
 		return false
 	}
+	// A zero expiry means the server sent no expires_ts, or sent one this
+	// client could not parse (agentmail.FlexTime maps "" to the zero time).
+	// Comparing against it made every such reservation look EXPIRED, so
+	// DetectConflicts and CheckPathConflict skipped it entirely and reported
+	// "no conflict" for a path that is exclusively held — a fail-OPEN in the
+	// layer whose whole job is stopping two agents from editing the same file.
+	//
+	// Treat unknown as ACTIVE: an unexpired-looking lease we cannot date is a
+	// reason to coordinate, not to ignore. internal/assign/reservation.go
+	// already refuses a zero expiry outright ("has no future expiry"), so
+	// failing closed here is also the consistent choice.
+	if r.ExpiresTS.Time.IsZero() {
+		return true
+	}
 	return !now.After(r.ExpiresTS.Time)
 }
 

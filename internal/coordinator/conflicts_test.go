@@ -569,3 +569,62 @@ func TestDigestWorkSummaryStatesProvenance(t *testing.T) {
 		t.Fatalf("work_summary.status = %q, want computed or unavailable provenance", digest.WorkSummary.Status)
 	}
 }
+
+// bd-elewe: a reservation whose expires_ts is absent or unparseable decodes to
+// the zero time (agentmail.FlexTime maps "" to time.Time{}). Comparing against
+// that made every such lease look EXPIRED, so DetectConflicts and
+// CheckPathConflict skipped it entirely and reported "no conflict" for a path
+// that is exclusively held — a fail-OPEN in the layer whose whole job is
+// stopping two agents from editing the same file.
+func TestReservationActiveAt_UnknownExpiryFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("zero expiry is treated as active", func(t *testing.T) {
+		r := agentmail.FileReservation{
+			AgentName:   "BlueLake",
+			PathPattern: "internal/**",
+			Exclusive:   true,
+			// ExpiresTS deliberately left zero.
+		}
+		if !reservationActiveAt(r, now) {
+			t.Fatal("a reservation with no parseable expiry was treated as expired; an exclusive lease we cannot date is a reason to coordinate, not to ignore")
+		}
+	})
+
+	t.Run("a released reservation is still inactive", func(t *testing.T) {
+		released := agentmail.FlexTime{Time: now.Add(-time.Minute)}
+		r := agentmail.FileReservation{
+			AgentName:   "BlueLake",
+			PathPattern: "internal/**",
+			Exclusive:   true,
+			ReleasedTS:  &released,
+		}
+		if reservationActiveAt(r, now) {
+			t.Fatal("an explicitly released reservation must be inactive regardless of expiry")
+		}
+	})
+
+	t.Run("a genuinely expired reservation is still inactive", func(t *testing.T) {
+		r := agentmail.FileReservation{
+			AgentName:   "BlueLake",
+			PathPattern: "internal/**",
+			Exclusive:   true,
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(-time.Hour)},
+		}
+		if reservationActiveAt(r, now) {
+			t.Fatal("a reservation past a KNOWN expiry must be inactive")
+		}
+	})
+
+	t.Run("a live reservation is active", func(t *testing.T) {
+		r := agentmail.FileReservation{
+			AgentName:   "BlueLake",
+			PathPattern: "internal/**",
+			Exclusive:   true,
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(time.Hour)},
+		}
+		if !reservationActiveAt(r, now) {
+			t.Fatal("a reservation with a future expiry must be active")
+		}
+	})
+}

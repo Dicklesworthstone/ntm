@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -2320,7 +2321,18 @@ func UnmarshalBdList[T any](output string) ([]T, error) {
 
 	var single T
 	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
-		return []T{single}, nil
+		// Prove the payload actually populated T before treating it as one
+		// item. json.Unmarshal ignores unknown fields, so decoding ANY JSON
+		// object into T succeeds and yields a zero value — which is how an
+		// unrecognized envelope became a single phantom bead with ID "".
+		// isEmptyBrListEnvelope above closes that for the three known list
+		// keys; this closes the whole class, including a future or renamed
+		// envelope key and an error object emitted on stdout with exit 0.
+		var zero T
+		if !reflect.DeepEqual(single, zero) {
+			return []T{single}, nil
+		}
+		return []T{}, nil
 	}
 
 	return nil, fmt.Errorf("parse br list output: %s", trimmed)

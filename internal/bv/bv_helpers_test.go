@@ -689,3 +689,57 @@ func TestUnmarshalBdListStillAcceptsSingleObject(t *testing.T) {
 		t.Fatalf("got %+v, want the single bead", got)
 	}
 }
+
+// bd-u7v3p: isEmptyBrListEnvelope recognizes only issues/beads/items, so any
+// OTHER JSON object still fell through to the single-object branch — which,
+// because json.Unmarshal ignores unknown fields, always succeeded and returned
+// one zero-valued phantom item. That is the same failure the empty-envelope
+// guard was added for (a stale-bead alert for ID "", an envelope returned as a
+// bead), just reached through a different shape.
+func TestUnmarshalBdList_UnrecognizedObjectYieldsNoPhantom(t *testing.T) {
+	type bead struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"future envelope key", `{"records":[],"total":0}`},
+		{"renamed envelope key", `{"work_items":[{"id":"ntm-1"}],"total":1}`},
+		{"error object on stdout", `{"error":"no beads database found","code":"NO_DB"}`},
+		{"unrelated metadata object", `{"total":0,"limit":50,"offset":0,"has_more":false}`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := UnmarshalBdList[bead](tc.payload)
+			if err != nil {
+				t.Fatalf("UnmarshalBdList: %v", err)
+			}
+			for _, item := range got {
+				if item.ID == "" {
+					t.Fatalf("got a phantom zero-valued bead from %s; alert generators treat ID \"\" with a zero UpdatedAt as a stale bead", tc.payload)
+				}
+			}
+			if len(got) != 0 {
+				t.Fatalf("got %d items (%+v), want 0 for a payload that maps onto nothing in T", len(got), got)
+			}
+		})
+	}
+}
+
+// A partially-matching object is still a real item and must survive.
+func TestUnmarshalBdList_PartiallyPopulatedObjectIsKept(t *testing.T) {
+	type bead struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	got, err := UnmarshalBdList[bead](`{"title":"no id but real","extra":"ignored"}`)
+	if err != nil {
+		t.Fatalf("UnmarshalBdList: %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "no id but real" {
+		t.Fatalf("got %+v, want the single partially-populated bead kept", got)
+	}
+}
