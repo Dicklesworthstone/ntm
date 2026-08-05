@@ -14,6 +14,8 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentsession"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -185,7 +187,13 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 
 // RestoreAgents launches the agents in the restored session.
 // This is separated from Restore to allow for customization.
-func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands) (err error) {
+//
+// cfg carries the launch configuration and may be nil. It is required for
+// per-pane Claude credential isolation (GH#237): restore recreates a whole
+// saved swarm at once, so relaunching its Claude panes onto the shared
+// rotating credential puts every one of them back into the refresh-token race
+// the isolated config dir exists to prevent.
+func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands, cfg *config.Config) (err error) {
 	if state == nil {
 		return fmt.Errorf("session state is nil")
 	}
@@ -256,6 +264,25 @@ func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands) 
 		}
 		if agentCmd == "" {
 			continue
+		}
+
+		// Per-pane Claude credential isolation (GH#237, bd-4tz2d). Applied to
+		// the RENDERED command, whether it came from the saved pane command or
+		// the type default: a saved command was captured before this pane had
+		// an isolated config dir, so neither source carries one.
+		if agent.AgentType(paneState.AgentType).Canonical() == agent.AgentTypeClaudeCode {
+			claudeEnv, isoErr := swarm.ProvisionClaudeIsolation(cfg, state.WorkDir, sessionName, paneState.Index)
+			if isoErr != nil {
+				_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "agent.restore", map[string]interface{}{
+					"agent_type":     paneState.AgentType,
+					"pane_index":     paneState.Index,
+					"pane_title":     paneState.Title,
+					"error":          fmt.Sprintf("claude credential isolation: %v", isoErr),
+					"correlation_id": correlationID,
+				}, nil)
+				return fmt.Errorf("isolating credentials for claude pane %d: %w", paneState.Index, isoErr)
+			}
+			agentCmd = claudeEnv.ApplyToCommand(agentCmd)
 		}
 
 		attempted++

@@ -643,7 +643,7 @@ func runSessionsRestore(ctx context.Context, savedName string, opts session.Rest
 			// pane verbatim (a literal `{{memLimitPrefix}} claude ...` would fail
 			// to exec and the agent would never launch).
 			cmds := buildAgentCommands(state)
-			launchErr = session.RestoreAgents(restoredName, state, cmds)
+			launchErr = session.RestoreAgents(restoredName, state, cmds, cfg)
 			// Optionally inject an initial prompt into the launched panes.
 			if launchErr == nil && strings.TrimSpace(prompt) != "" {
 				promptSent, promptFailed, promptErr = sendResumePrompt(ctx, restoredName, prompt)
