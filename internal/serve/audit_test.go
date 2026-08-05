@@ -1096,3 +1096,40 @@ func TestAuditStore_ConcurrentWritesSurviveRotation(t *testing.T) {
 		t.Fatalf("found %d audit records across all segments, want %d — records were lost or duplicated by rotation", total, want)
 	}
 }
+
+// rotatedSegmentPath must terminate even when the directory cannot be read.
+// An unbounded search spins forever on a persistent non-NotExist Lstat error —
+// while holding both appendMu and mu, which would wedge every request that
+// records an audit entry, not just rotation.
+func TestRotatedSegmentPath_TerminatesWhenTheDirectoryIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Remove search permission so Lstat inside it fails with EACCES, not ENOENT.
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	done := make(chan string, 1)
+	go func() {
+		done <- rotatedSegmentPath(filepath.Join(locked, "audit.jsonl"), time.Now().UTC())
+	}()
+
+	select {
+	case got := <-done:
+		if got == "" {
+			t.Fatal("rotatedSegmentPath returned an empty name")
+		}
+		if !strings.HasSuffix(got, ".jsonl") {
+			t.Fatalf("rotatedSegmentPath = %q, want a .jsonl segment name", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("rotatedSegmentPath did not terminate on an unreadable directory; it holds appendMu and mu while spinning")
+	}
+}

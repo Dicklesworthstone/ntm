@@ -643,12 +643,9 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 		return output, nil
 	}
 
-	// pane_index is WINDOW-LOCAL, so a bare int is not a unique key on a
-	// multi-window session: in a window-per-agent layout every window has a
-	// pane at index 0, and matching the first one made every probe land in
-	// window 0 while reporting results for panes it never touched. Prefer the
-	// session-unique NTM agent index there, and only fall back to the
-	// window-local index on single-window sessions where it is unambiguous.
+	// Resolve the selector through the shared convention; see
+	// resolveProbePanes. A selector can match several panes on a multi-window
+	// session, which is why the batch surface exists.
 	matches := resolveProbePanes(panes, opts.Pane)
 	if len(matches) == 0 {
 		output.RobotResponse = NewErrorResponse(

@@ -475,14 +475,27 @@ func rotatedSegmentPath(path string, now time.Time) string {
 	base := strings.TrimSuffix(path, rotatedJSONLSuffix)
 	stamp := now.Format("20060102T150405Z")
 
+	// Bounded. An unbounded search spins forever if Lstat keeps returning a
+	// non-NotExist error (a permission problem on the directory, an I/O
+	// error) — and it runs while holding both appendMu and mu, so it would
+	// wedge every request that records an audit entry, not just rotation.
 	candidate := fmt.Sprintf("%s.%s%s", base, stamp, rotatedJSONLSuffix)
-	for seq := 1; ; seq++ {
+	for seq := 1; seq <= rotationNameAttempts; seq++ {
 		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
 			return candidate
 		}
 		candidate = fmt.Sprintf("%s.%s-%d%s", base, stamp, seq, rotatedJSONLSuffix)
 	}
+
+	// Either the directory is unreadable or a second's worth of names is
+	// genuinely taken. Nanosecond precision is collision-free in practice, and
+	// an unverifiable name still beats spinning: the worst case is one rename
+	// failing loudly rather than the audit log hanging.
+	return fmt.Sprintf("%s.%s%s", base, now.Format("20060102T150405.000000000Z"), rotatedJSONLSuffix)
 }
+
+// rotationNameAttempts bounds the search for a free rotated-segment name.
+const rotationNameAttempts = 100
 
 // cleanupJSONL rotates the active audit log when it grows past maxJSONLBytes
 // and deletes previously rotated segments older than the retention window.

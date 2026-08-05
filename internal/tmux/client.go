@@ -145,10 +145,11 @@ func (c *Client) cbCheck() error {
 		return nil // this caller is the half-open probe for the new window
 	}
 
-	// Another caller won the transition; treat this one as in-window.
-	if c.cbProbing.CompareAndSwap(false, true) {
-		return nil
-	}
+	// Another caller won the transition, so a new window is already open and
+	// its probe is already designated. Reject rather than racing for the probe
+	// slot: attempting the CAS here could land between the winner's successful
+	// swap and its cbProbing.Store, admitting a SECOND probe for the same
+	// window. The next call re-reads the state and takes the in-window path.
 	return ErrCircuitOpen
 }
 
