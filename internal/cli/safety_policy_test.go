@@ -242,6 +242,44 @@ func TestSafetySimulationCommandsPreserveMalformedStep(t *testing.T) {
 	}
 }
 
+func TestSafetyInstallationState(t *testing.T) {
+	home := t.TempDir()
+	wrapperDir := filepath.Join(home, ".ntm", "bin")
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		t.Fatalf("create wrapper dir: %v", err)
+	}
+
+	assertState := func(wantInstalled, wantEffective bool, wantState string) {
+		t.Helper()
+		installed, effective, state := safetyInstallationState(wrapperDir, false)
+		if installed != wantInstalled || effective != wantEffective || state != wantState {
+			t.Fatalf("safetyInstallationState() = (%t, %t, %q), want (%t, %t, %q)", installed, effective, state, wantInstalled, wantEffective, wantState)
+		}
+	}
+
+	assertState(false, false, safetyNotInstalled)
+
+	for _, name := range []string{"git", "rm"} {
+		path := filepath.Join(wrapperDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write %s wrapper: %v", name, err)
+		}
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	assertState(true, false, safetyInstalledNotEffective)
+
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	assertState(true, true, safetyEffective)
+}
+
+func TestSafetyInstallationState_HookOnlyIsNotEffective(t *testing.T) {
+	installed, effective, state := safetyInstallationState(t.TempDir(), true)
+	if !installed || effective || state != safetyInstalledNotEffective {
+		t.Fatalf("hook-only safetyInstallationState() = (%t, %t, %q), want (true, false, %q)", installed, effective, state, safetyInstalledNotEffective)
+	}
+}
+
 func TestEvaluateSafetySimulationReportsUnsafePlan(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -56,13 +57,54 @@ func newSafetyStatusCmd() *cobra.Command {
 // SafetyStatusResponse is the JSON output for safety status.
 type SafetyStatusResponse struct {
 	output.TimestampedResponse
-	Installed     bool   `json:"installed"`
-	PolicyPath    string `json:"policy_path,omitempty"`
-	BlockedCount  int    `json:"blocked_rules"`
-	ApprovalCount int    `json:"approval_rules"`
-	AllowedCount  int    `json:"allowed_rules"`
-	WrapperPath   string `json:"wrapper_path,omitempty"`
-	HookInstalled bool   `json:"hook_installed"`
+	Installed         bool   `json:"installed"`
+	InstallationState string `json:"installation_state"`
+	PolicyPath        string `json:"policy_path,omitempty"`
+	BlockedCount      int    `json:"blocked_rules"`
+	ApprovalCount     int    `json:"approval_rules"`
+	AllowedCount      int    `json:"allowed_rules"`
+	WrapperPath       string `json:"wrapper_path,omitempty"`
+	WrappersEffective bool   `json:"wrappers_effective"`
+	HookInstalled     bool   `json:"hook_installed"`
+}
+
+const (
+	safetyNotInstalled          = "not_installed"
+	safetyInstalledNotEffective = "installed_not_effective"
+	safetyEffective             = "effective"
+)
+
+// safetyInstallationState reports whether the installed shell wrappers are
+// the commands the current process will execute. Installing files alone is
+// insufficient: ~/.ntm/bin must appear before the system command directory in
+// PATH for git and rm to be protected.
+func safetyInstallationState(wrapperDir string, hookInstalled bool) (installed bool, wrappersEffective bool, state string) {
+	gitWrapper := filepath.Join(wrapperDir, "git")
+	rmWrapper := filepath.Join(wrapperDir, "rm")
+	wrapperInstalled := fileExists(gitWrapper) && fileExists(rmWrapper)
+	installed = wrapperInstalled || hookInstalled
+	if !installed {
+		return false, false, safetyNotInstalled
+	}
+
+	wrappersEffective = wrapperInstalled && safetyWrapperIsFirst(gitWrapper) && safetyWrapperIsFirst(rmWrapper)
+	if wrappersEffective {
+		return true, true, safetyEffective
+	}
+	return true, false, safetyInstalledNotEffective
+}
+
+func safetyWrapperIsFirst(wrapperPath string) bool {
+	resolved, err := exec.LookPath(filepath.Base(wrapperPath))
+	if err != nil {
+		return false
+	}
+	resolvedInfo, err := os.Stat(resolved)
+	if err != nil {
+		return false
+	}
+	wrapperInfo, err := os.Stat(wrapperPath)
+	return err == nil && os.SameFile(resolvedInfo, wrapperInfo)
 }
 
 func runSafetyStatus(cmd *cobra.Command, args []string) error {
@@ -73,13 +115,13 @@ func runSafetyStatus(cmd *cobra.Command, args []string) error {
 	ntmDir := filepath.Join(home, ".ntm")
 	wrapperDir := filepath.Join(ntmDir, "bin")
 
-	// Check if wrappers are installed
+	// Check whether installed wrappers actually shadow the system commands.
 	gitWrapper := filepath.Join(wrapperDir, "git")
-	wrapperInstalled := fileExists(gitWrapper)
 
 	// Check if Claude Code hook is installed
 	hookPath := filepath.Join(home, ".claude", "hooks", "PreToolUse", "ntm-safety.sh")
 	hookInstalled := fileExists(hookPath)
+	installed, wrappersEffective, installationState := safetyInstallationState(wrapperDir, hookInstalled)
 
 	// Load policy
 	p, err := policy.LoadOrDefault()
@@ -97,12 +139,14 @@ func runSafetyStatus(cmd *cobra.Command, args []string) error {
 	if IsJSONOutput() {
 		resp := SafetyStatusResponse{
 			TimestampedResponse: output.NewTimestamped(),
-			Installed:           wrapperInstalled || hookInstalled,
+			Installed:           installed,
+			InstallationState:   installationState,
 			PolicyPath:          policyPath,
 			BlockedCount:        blocked,
 			ApprovalCount:       approval,
 			AllowedCount:        allowed,
 			WrapperPath:         wrapperDir,
+			WrappersEffective:   wrappersEffective,
 			HookInstalled:       hookInstalled,
 		}
 		return output.PrintJSON(resp)
@@ -119,13 +163,19 @@ func runSafetyStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	statusStr := warnStyle.Render("Not Installed")
-	if wrapperInstalled || hookInstalled {
-		statusStr = okStyle.Render("Installed")
+	switch installationState {
+	case safetyInstalledNotEffective:
+		statusStr = warnStyle.Render("Installed, Not Effective")
+	case safetyEffective:
+		statusStr = okStyle.Render("Effective")
 	}
 	fmt.Printf("  %s %s\n", labelStyle.Render("Overall Status:"), statusStr)
 
-	if wrapperInstalled {
+	if wrappersEffective {
 		fmt.Printf("  %s %s (%s)\n", labelStyle.Render("Shell Wrappers:"), okStyle.Render("Active"), gitWrapper)
+	} else if installed {
+		fmt.Printf("  %s %s\n", labelStyle.Render("Shell Wrappers:"), warnStyle.Render("Installed but not on PATH"))
+		fmt.Printf("  %s export PATH=\"$HOME/.ntm/bin:$PATH\"\n", labelStyle.Render("Fix:           "))
 	} else {
 		fmt.Printf("  %s %s\n", labelStyle.Render("Shell Wrappers:"), warnStyle.Render("Inactive"))
 	}
