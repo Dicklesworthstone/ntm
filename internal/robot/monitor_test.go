@@ -440,6 +440,18 @@ func TestDefaultMonitorConfig(t *testing.T) {
 	}
 }
 
+func TestNewMonitorDefaultsNonPositiveCautInterval(t *testing.T) {
+	monitor, err := NewMonitor(MonitorConfig{})
+	if err != nil {
+		t.Fatalf("NewMonitor() error = %v", err)
+	}
+	defer monitor.Close()
+
+	if monitor.config.CautInterval != DefaultMonitorConfig().CautInterval {
+		t.Fatalf("CautInterval = %v, want %v", monitor.config.CautInterval, DefaultMonitorConfig().CautInterval)
+	}
+}
+
 func TestDefaultMonitorPaneIndices(t *testing.T) {
 	tests := []struct {
 		name  string

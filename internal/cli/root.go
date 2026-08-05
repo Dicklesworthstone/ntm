@@ -1706,6 +1706,7 @@ Shell Integration:
 				CritThreshold:  critThresh,
 				AlertThreshold: alertThresh,
 				IncludeCaut:    robotMonitorIncludeCaut,
+				CautInterval:   robot.DefaultMonitorConfig().CautInterval,
 				OutputFile:     robotMonitorOutput,
 				LinesCaptured:  robotMonitorLines(cmd),
 			}

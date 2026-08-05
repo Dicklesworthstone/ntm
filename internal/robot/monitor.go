@@ -42,6 +42,10 @@ type Monitor struct {
 
 // NewMonitor creates a monitor with the given config.
 func NewMonitor(config MonitorConfig) (*Monitor, error) {
+	if config.CautInterval <= 0 {
+		config.CautInterval = DefaultMonitorConfig().CautInterval
+	}
+
 	var output io.Writer = os.Stdout
 	var outputFile *os.File
 
