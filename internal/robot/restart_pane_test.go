@@ -1859,3 +1859,21 @@ func TestRestartModelVarsRecoversExactModelAndEffort(t *testing.T) {
 		}
 	})
 }
+
+// A pane whose title carries a reasoning effort must still relaunch when the
+// configured template cannot render one. The effort is recovered for the
+// templates that CAN place it; for the rest it has to stay a quiet no-op, or
+// the silent-drop guard turns every respawn of such a pane into a hard failure.
+func TestRestartLaunchCommandToleratesEffortTemplateCannotRender(t *testing.T) {
+	cfg := config.Default()
+	// A legacy hardcoded command: no placeholders at all.
+	cfg.Agents.Codex = `codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-sol`
+
+	cmd, err := restartAgentLaunchCommandWithOverride(cfg, "cod", "gpt-5.6-terra@high", restartLaunchOverride{})
+	if err != nil {
+		t.Fatalf("respawn of an effort-carrying pane failed against a template that cannot render effort: %v", err)
+	}
+	if cmd == "" {
+		t.Fatal("empty relaunch command")
+	}
+}

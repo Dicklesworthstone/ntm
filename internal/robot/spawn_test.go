@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -3071,4 +3074,57 @@ func TestIsAgentReadyDoesNotMatchAlready(t *testing.T) {
 	if !isAgentReady("agent ready for input\n", "claude") {
 		t.Fatal(`a genuine "ready" line should still match`)
 	}
+}
+
+// ntm-cx4e: reaching a project through a symlinked alias makes NTM see one
+// path while Agent Mail canonicalizes to another, so an orchestrator that
+// trusts working_dir queries a project key holding none of its own swarm's
+// reservations. AGENTS.md calls project-key mismatch the single most common
+// source of cross-tool breakage, and it was invisible in spawn output.
+func TestSpawnOutputExposesEffectiveProjectKeyOnlyWhenItDiffers(t *testing.T) {
+	realDir := t.TempDir()
+	// t.TempDir on macOS is itself under a symlink (/var -> /private/var), so
+	// resolve first to get a path that is genuinely its own canonical form.
+	resolvedReal, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Skipf("cannot resolve temp dir: %v", err)
+	}
+
+	t.Run("identical path reports nothing", func(t *testing.T) {
+		if got := agentmail.CanonicalProjectKey(resolvedReal); got != resolvedReal {
+			t.Fatalf("canonical of an already-canonical path = %q, want %q", got, resolvedReal)
+		}
+		// The spawn field is omitempty and only set when they differ, so an
+		// unsymlinked project must not carry it.
+		var out SpawnOutput
+		out.WorkingDir = resolvedReal
+		if canonical := agentmail.CanonicalProjectKey(out.WorkingDir); canonical != out.WorkingDir {
+			out.EffectiveProjectKey = canonical
+		}
+		if out.EffectiveProjectKey != "" {
+			t.Fatalf("EffectiveProjectKey = %q, want empty for a canonical path", out.EffectiveProjectKey)
+		}
+	})
+
+	t.Run("symlinked alias reports the resolved key", func(t *testing.T) {
+		link := filepath.Join(t.TempDir(), "alias")
+		if err := os.Symlink(resolvedReal, link); err != nil {
+			t.Skipf("cannot create symlink: %v", err)
+		}
+
+		var out SpawnOutput
+		out.WorkingDir = link
+		if canonical := agentmail.CanonicalProjectKey(out.WorkingDir); canonical != out.WorkingDir {
+			out.EffectiveProjectKey = canonical
+		}
+		if out.EffectiveProjectKey == "" {
+			t.Fatal("spawning through a symlinked alias reported no effective project key; the divergence stays silent")
+		}
+		if out.EffectiveProjectKey != resolvedReal {
+			t.Fatalf("EffectiveProjectKey = %q, want the resolved %q", out.EffectiveProjectKey, resolvedReal)
+		}
+		if out.EffectiveProjectKey == out.WorkingDir {
+			t.Fatal("effective key equals working_dir; nothing was actually resolved")
+		}
+	})
 }

@@ -346,6 +346,9 @@ type SendOptions struct {
 	CassCheck      bool
 	CassSimilarity float64
 	CassCheckDays  int
+	// LoopMode permits periodic orchestration nudges without using timestamp
+	// suffixes to evade the advisory CASS duplicate-work prompt.
+	LoopMode bool
 
 	// ForceNonInteractive bypasses safe confirmation gates (currently the CASS
 	// duplicate-work prompt) so a recovery/status wrapper can drive `ntm send`
@@ -620,6 +623,7 @@ func newSendCmd() *cobra.Command {
 	var dryRun bool
 	var cassCheck bool
 	var noCassCheck bool
+	var loopMode bool
 	var forceNonInteractive bool
 	var cassSimilarity float64
 	var cassCheckDays int
@@ -826,6 +830,7 @@ func newSendCmd() *cobra.Command {
 					SmartRoute:          smartRoute,
 					RouteStrategy:       routeStrategy,
 					CassCheck:           cassCheck && !noCassCheck,
+					LoopMode:            loopMode,
 					CassSimilarity:      cassSimilarity,
 					CassCheckDays:       cassCheckDays,
 					ForceNonInteractive: forceNonInteractive,
@@ -861,6 +866,7 @@ func newSendCmd() *cobra.Command {
 				SmartRoute:          smartRoute,
 				RouteStrategy:       routeStrategy,
 				CassCheck:           cassCheck && !noCassCheck,
+				LoopMode:            loopMode,
 				CassSimilarity:      cassSimilarity,
 				CassCheckDays:       cassCheckDays,
 				ForceNonInteractive: forceNonInteractive,
@@ -943,6 +949,7 @@ func newSendCmd() *cobra.Command {
 	// CASS check flags
 	cmd.Flags().BoolVar(&cassCheck, "cass-check", true, "Check for duplicate work in CASS")
 	cmd.Flags().BoolVar(&noCassCheck, "no-cass-check", false, "Skip CASS duplicate check")
+	cmd.Flags().BoolVar(&loopMode, "loop-mode", false, "Allow repeated orchestration nudges without a CASS duplicate prompt")
 	cmd.Flags().BoolVar(&forceNonInteractive, "force-non-interactive", false,
 		"Bypass safe confirmation gates (currently the CASS duplicate prompt) for "+
 			"recovery/status automation. Destructive or ambiguous classes are NOT "+
@@ -1846,7 +1853,7 @@ func runSendInternal(opts SendOptions) (err error) {
 	}
 
 	// CASS Duplicate Detection
-	if opts.CassCheck {
+	if opts.CassCheck && !opts.LoopMode {
 		if err := checkCassDuplicates(ctx, session, sessionInferred, prompt, opts.CassSimilarity, opts.CassCheckDays, opts.ForceNonInteractive, silent); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return outputError(fmt.Errorf("send canceled during duplicate check: %w", ctxErr))

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentpkg "github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
@@ -109,21 +110,34 @@ type SpawnAssignmentDependencies struct {
 // SpawnOutput is the structured output for --robot-spawn.
 type SpawnOutput struct {
 	RobotResponse
-	Session        string                   `json:"session"`
-	CreatedAt      string                   `json:"created_at"`
-	PresetUsed     string                   `json:"preset_used,omitempty"`
-	WorkingDir     string                   `json:"working_dir"`
-	Agents         []SpawnedAgent           `json:"agents"`
-	Layout         string                   `json:"layout"`
-	TotalStartupMs int64                    `json:"total_startup_ms"`
-	Error          string                   `json:"error,omitempty"`
-	DryRun         bool                     `json:"dry_run,omitempty"`
-	WouldCreate    []SpawnedAgent           `json:"would_create,omitempty"`
-	Mode           string                   `json:"mode,omitempty"`            // "orchestrator" when AssignWork is enabled
-	Assignments    []SpawnAssignment        `json:"assignments,omitempty"`     // Work assignments when AssignWork is enabled
-	AssignStrategy string                   `json:"assign_strategy,omitempty"` // Strategy used for assignments
-	Recovery       *SpawnRecovery           `json:"recovery,omitempty"`        // Session recovery context from handoff
-	Admission      *pressure.SpawnAdmission `json:"admission,omitempty"`       // Pre-spawn resource-pressure admission result
+	Session    string `json:"session"`
+	CreatedAt  string `json:"created_at"`
+	PresetUsed string `json:"preset_used,omitempty"`
+	WorkingDir string `json:"working_dir"`
+	// EffectiveProjectKey is the fully symlink-resolved working directory —
+	// the key Agent Mail actually registers reservations and identities under.
+	//
+	// It is reported separately because the two can differ: reaching a project
+	// through a symlinked alias (or macOS /Users vs /private/var/Users) makes
+	// NTM see one path while Agent Mail canonicalizes to another, so an
+	// orchestrator that trusts working_dir queries a project key that has none
+	// of its own swarm's reservations in it. That divergence is silent, and
+	// AGENTS.md calls project-key mismatch the single most common source of
+	// cross-tool breakage. Emitting the resolved key makes it checkable
+	// (ntm-cx4e). Omitted when it is identical to working_dir.
+	EffectiveProjectKey string            `json:"effective_project_key,omitempty"`
+	Agents              []SpawnedAgent    `json:"agents"`
+	Layout              string            `json:"layout"`
+	TotalStartupMs      int64             `json:"total_startup_ms"`
+	Error               string            `json:"error,omitempty"`
+	DryRun              bool              `json:"dry_run,omitempty"`
+	WouldCreate         []SpawnedAgent    `json:"would_create,omitempty"`
+	Mode                string            `json:"mode,omitempty"`
+	Assignments         []SpawnAssignment `json:"assignments,omitempty"`
+	AssignStrategy      string            `json:"assign_strategy,omitempty"`
+	Recovery            *SpawnRecovery    `json:"recovery,omitempty"`
+	// Admission is the pre-spawn resource-pressure admission result.
+	Admission *pressure.SpawnAdmission `json:"admission,omitempty"`
 }
 
 func setSpawnCancellation(output *SpawnOutput, err error) {
@@ -538,6 +552,12 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 	}
 	output.WorkingDir = dir
+	// Surface the key Agent Mail will actually register under whenever it
+	// differs from the path NTM was given, so the divergence is checkable
+	// instead of silent (ntm-cx4e).
+	if canonical := agentmail.CanonicalProjectKey(dir); canonical != dir {
+		output.EffectiveProjectKey = canonical
+	}
 	auditWorkingDir = dir
 
 	var verifiedAssignmentPlan *bv.TriageResponse

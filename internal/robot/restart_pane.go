@@ -1653,6 +1653,14 @@ func restartAgentLaunchCommandWithOverride(cfg *config.Config, agentType, varian
 	if override.Effort != "" {
 		vars.ReasoningEffort = override.Effort
 	}
+	// Mirror the ModelRequested treatment above, for BOTH sources of an effort:
+	// an explicit override AND one recovered from the pane title. Only hand the
+	// effort to the renderer when the template can actually place it —
+	// otherwise GenerateAgentCommand's silent-drop guard fires on an effort
+	// this function fully intends to carry itself, as appended flags below.
+	if !referencesEffort {
+		vars.ReasoningEffort = ""
+	}
 
 	rendered, err := config.GenerateAgentCommand(tmpl, vars)
 	if err != nil || strings.TrimSpace(rendered) == "" {

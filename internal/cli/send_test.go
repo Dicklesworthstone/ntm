@@ -2816,3 +2816,14 @@ func TestFilterPanesForBatchAllExcludesUserPane(t *testing.T) {
 		t.Fatalf("--all --include-user selected %d panes, want all 3", len(withUser))
 	}
 }
+
+func TestSendLoopModeFlag(t *testing.T) {
+	cmd := newSendCmd()
+	flag := cmd.Flags().Lookup("loop-mode")
+	if flag == nil {
+		t.Fatal("send command is missing --loop-mode")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--loop-mode default = %q, want false", flag.DefValue)
+	}
+}
