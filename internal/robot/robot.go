@@ -3894,8 +3894,6 @@ type PaneOutput struct {
 	ObservationState      string  `json:"observation_state"`
 	ObservationFreshness  string  `json:"observation_freshness"`
 	ObservationConfidence float64 `json:"observation_confidence"`
-	LastKnownState        string  `json:"last_known_state,omitempty"`
-	LastKnownObservedAt   string  `json:"last_known_observed_at,omitempty"`
 	SafeToDispatch        bool    `json:"safe_to_dispatch"`
 
 	// PanePID is the tmux shell PID of this pane (`#{pane_pid}`). Populated
@@ -4080,8 +4078,6 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 					ObservationState:      string(paneObservation.Current.Status.State),
 					ObservationFreshness:  string(paneObservation.Current.Freshness),
 					ObservationConfidence: paneObservation.Current.Confidence,
-					LastKnownState:        lastKnownObservationState(paneObservation),
-					LastKnownObservedAt:   lastKnownObservationTime(paneObservation),
 					SafeToDispatch:        false,
 				}
 				continue
@@ -4097,8 +4093,6 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 				ObservationState:      string(paneObservation.Current.Status.State),
 				ObservationFreshness:  string(paneObservation.Current.Freshness),
 				ObservationConfidence: paneObservation.Current.Confidence,
-				LastKnownState:        lastKnownObservationState(paneObservation),
-				LastKnownObservedAt:   lastKnownObservationTime(paneObservation),
 				SafeToDispatch:        false,
 			}
 			continue
@@ -4134,8 +4128,6 @@ func GetTail(opts TailOptions) (*TailOutput, error) {
 			ObservationState:      string(paneObservation.Current.Status.State),
 			ObservationFreshness:  string(paneObservation.Current.Freshness),
 			ObservationConfidence: paneObservation.Current.Confidence,
-			LastKnownState:        lastKnownObservationState(paneObservation),
-			LastKnownObservedAt:   lastKnownObservationTime(paneObservation),
 			SafeToDispatch:        paneObservation.SafeToDispatch(),
 		}
 	}
@@ -10507,8 +10499,6 @@ type AgentActivityInfo struct {
 	ObservationState      string  `json:"observation_state"`
 	ObservationFreshness  string  `json:"observation_freshness"`
 	ObservationConfidence float64 `json:"observation_confidence"`
-	LastKnownState        string  `json:"last_known_state,omitempty"`
-	LastKnownObservedAt   string  `json:"last_known_observed_at,omitempty"`
 	SafeToDispatch        bool    `json:"safe_to_dispatch"`
 }
 
@@ -10737,8 +10727,6 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 				ObservationState:      string(paneObservation.Current.Status.State),
 				ObservationFreshness:  string(paneObservation.Current.Freshness),
 				ObservationConfidence: paneObservation.Current.Confidence,
-				LastKnownState:        lastKnownObservationState(paneObservation),
-				LastKnownObservedAt:   lastKnownObservationTime(paneObservation),
 				SafeToDispatch:        false,
 			})
 			output.Summary.ByState[string(StateUnknown)]++
@@ -10760,8 +10748,6 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			ObservationState:      string(paneObservation.Current.Status.State),
 			ObservationFreshness:  string(paneObservation.Current.Freshness),
 			ObservationConfidence: paneObservation.Current.Confidence,
-			LastKnownState:        lastKnownObservationState(paneObservation),
-			LastKnownObservedAt:   lastKnownObservationTime(paneObservation),
 			SafeToDispatch:        paneObservation.SafeToDispatch(),
 		}
 

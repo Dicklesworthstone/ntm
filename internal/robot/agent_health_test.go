@@ -490,8 +490,8 @@ func TestPaneObservationUsableForHealthFailsClosed(t *testing.T) {
 			work: PaneWorkStatus{ObservationFreshness: "fresh", ObservationState: "unknown"},
 		},
 		{
-			name: "unavailable with last known",
-			work: PaneWorkStatus{ObservationFreshness: "unavailable", ObservationState: "unknown", LastKnownState: "idle"},
+			name: "unavailable current state",
+			work: PaneWorkStatus{ObservationFreshness: "unavailable", ObservationState: "unknown"},
 		},
 		{
 			name: "fresh source with classification error",

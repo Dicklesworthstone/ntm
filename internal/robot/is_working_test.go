@@ -219,14 +219,8 @@ func TestResolveIsWorkingPanesSelectorsDeduplicateAliases(t *testing.T) {
 	}
 }
 
-func TestPaneWorkStatusSeparatesUnavailableCurrentFromLastKnown(t *testing.T) {
+func TestPaneWorkStatusReportsUnavailableCurrentObservation(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	lastKnown := statuspkg.StateObservation{
-		Status:     statuspkg.AgentStatus{State: statuspkg.StateIdle},
-		ObservedAt: now.Add(-time.Minute),
-		Freshness:  statuspkg.FreshnessFresh,
-		Confidence: 0.95,
-	}
 	observation := statuspkg.PaneObservation{
 		AgentType: "cod",
 		Current: statuspkg.StateObservation{
@@ -235,15 +229,11 @@ func TestPaneWorkStatusSeparatesUnavailableCurrentFromLastKnown(t *testing.T) {
 			Freshness:  statuspkg.FreshnessUnavailable,
 			Error:      "capture failed",
 		},
-		LastKnown: &lastKnown,
 	}
 
 	got := paneWorkStatusFromObservation(observation)
 	if got.ObservationState != "unknown" || got.ObservationFreshness != "unavailable" {
 		t.Fatalf("current observation = %q/%q", got.ObservationState, got.ObservationFreshness)
-	}
-	if got.LastKnownState != "idle" || got.LastKnownObservedAt == "" {
-		t.Fatalf("last-known observation = %q at %q", got.LastKnownState, got.LastKnownObservedAt)
 	}
 	if got.SafeToDispatch {
 		t.Fatal("unavailable current observation must fail closed")

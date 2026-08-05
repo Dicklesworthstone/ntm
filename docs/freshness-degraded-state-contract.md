@@ -85,7 +85,7 @@ type SourceHealthEntry struct {
 | Status | Meaning | Operator Behavior |
 |--------|---------|-------------------|
 | `fresh` | Data collected within `stale_after_sec` | Trust the data |
-| `stale` | Older than threshold, but showing last known | Note uncertainty, may need resync |
+| `stale` | Older than threshold, but the returned data is explicitly marked stale | Note uncertainty, may need resync |
 | `unavailable` | Collection failed, no useful data | Check `last_error`, may need intervention |
 | `unknown` | Source never collected successfully | Check configuration |
 
@@ -165,7 +165,7 @@ const (
 ### 3.3 Consumer Behavior
 
 When a feature is degraded, consumers SHOULD:
-1. Continue using the data (show last known state)
+1. Use only the data returned by the source; do not infer a prior state when none is present
 2. Display a visual indicator that the data may be stale
 3. Consider the data "possibly incorrect" in decision-making
 4. Periodically attempt to refresh

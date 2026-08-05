@@ -45,8 +45,6 @@ type PaneState struct {
 	ObservationConfidence float64 `json:"observation_confidence"`
 	ObservedAt            string  `json:"observed_at"`
 	ObservationError      string  `json:"observation_error,omitempty"`
-	LastKnownState        string  `json:"last_known_state,omitempty"`
-	LastKnownObservedAt   string  `json:"last_known_observed_at,omitempty"`
 }
 
 // InterruptError represents a failed interrupt attempt
@@ -538,8 +536,6 @@ func interruptPaneStateFromObservation(observation status.PaneObservation, agent
 		ObservationConfidence: observation.Current.Confidence,
 		ObservedAt:            FormatTimestamp(observation.Current.ObservedAt),
 		ObservationError:      observation.Current.Error,
-		LastKnownState:        lastKnownObservationState(observation),
-		LastKnownObservedAt:   lastKnownObservationTime(observation),
 	}
 	if observation.Current.Freshness != status.FreshnessFresh || observation.Current.Error != "" {
 		return result

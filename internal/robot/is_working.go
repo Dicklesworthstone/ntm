@@ -86,8 +86,6 @@ type PaneWorkStatus struct {
 	ObservationFreshness  string         `json:"observation_freshness"`
 	ObservationObservedAt string         `json:"observation_observed_at"`
 	ObservationError      string         `json:"observation_error,omitempty"`
-	LastKnownState        string         `json:"last_known_state,omitempty"`
-	LastKnownObservedAt   string         `json:"last_known_observed_at,omitempty"`
 	SafeToDispatch        bool           `json:"safe_to_dispatch"`
 
 	// PaneStartedAt / AgentUptimeSeconds expose the pane's creation time
@@ -370,7 +368,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 				workStatus.ObservationError = "pane missing from canonical observation"
 			}
 			workStatus.Recommendation = string(agent.RecommendErrorState)
-			workStatus.RecommendationReason = "Current pane output is unavailable; last-known state is diagnostic only"
+			workStatus.RecommendationReason = "Current pane output is unavailable; inspect the pane before acting"
 			workStatus.Confidence = 0
 			workStatus.Indicators = WorkIndicators{Work: []string{}, Limit: []string{}}
 			if workStatus.AgentType == "" {
@@ -568,11 +566,6 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 	result.PanePID = observation.Metadata.PID
 	result.PaneCurrentCommand = observation.Metadata.Command
 	result.AgentCLIDead = observation.Metadata.AgentCLIDead()
-	if observation.LastKnown != nil &&
-		(observation.Current.Freshness != statuspkg.FreshnessFresh || observation.Current.Status.State == statuspkg.StateUnknown) {
-		result.LastKnownState = string(observation.LastKnown.Status.State)
-		result.LastKnownObservedAt = FormatTimestamp(observation.LastKnown.ObservedAt)
-	}
 	return result
 }
 
@@ -621,22 +614,6 @@ func applyCanonicalWorkSafety(workStatus *PaneWorkStatus, observation statuspkg.
 		workStatus.Recommendation = string(agent.RecommendUnknown)
 		workStatus.RecommendationReason = "Canonical live observation could not determine current state"
 	}
-}
-
-func lastKnownObservationState(observation statuspkg.PaneObservation) string {
-	if observation.LastKnown == nil ||
-		(observation.Current.Freshness == statuspkg.FreshnessFresh && observation.Current.Status.State != statuspkg.StateUnknown) {
-		return ""
-	}
-	return string(observation.LastKnown.Status.State)
-}
-
-func lastKnownObservationTime(observation statuspkg.PaneObservation) string {
-	if observation.LastKnown == nil ||
-		(observation.Current.Freshness == statuspkg.FreshnessFresh && observation.Current.Status.State != statuspkg.StateUnknown) {
-		return ""
-	}
-	return FormatTimestamp(observation.LastKnown.ObservedAt)
 }
 
 func paneSelectorRobotErrorCode(err error) string {

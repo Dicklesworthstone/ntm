@@ -1544,8 +1544,6 @@ func TestAgentActivityInfo_CaptureProvenance(t *testing.T) {
 			CaptureError:         "tmux capture-pane: pane not found",
 			ObservationState:     "unknown",
 			ObservationFreshness: "unavailable",
-			LastKnownState:       "working",
-			LastKnownObservedAt:  "2026-05-03T20:29:59Z",
 		}
 		blob, err := json.Marshal(info)
 		if err != nil {
@@ -1564,8 +1562,11 @@ func TestAgentActivityInfo_CaptureProvenance(t *testing.T) {
 		if !strings.Contains(s, "tmux capture-pane: pane not found") {
 			t.Errorf("expected capture_error preserved, got %s", s)
 		}
-		if !strings.Contains(s, `"last_known_state":"working"`) || strings.Contains(s, `"safe_to_dispatch":true`) {
-			t.Errorf("expected diagnostic last-known state and fail-closed dispatch, got %s", s)
+		if strings.Contains(s, `"last_known_state"`) || strings.Contains(s, `"last_known_observed_at"`) {
+			t.Errorf("one-shot activity output must not claim a persistent prior state, got %s", s)
+		}
+		if strings.Contains(s, `"safe_to_dispatch":true`) {
+			t.Errorf("failed capture must remain fail-closed, got %s", s)
 		}
 	})
 

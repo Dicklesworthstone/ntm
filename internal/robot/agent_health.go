@@ -63,8 +63,6 @@ type LocalStateInfo struct {
 	ObservationFreshness  string         `json:"observation_freshness"`
 	ObservationObservedAt string         `json:"observation_observed_at"`
 	ObservationError      string         `json:"observation_error,omitempty"`
-	LastKnownState        string         `json:"last_known_state,omitempty"`
-	LastKnownObservedAt   string         `json:"last_known_observed_at,omitempty"`
 	SafeToDispatch        bool           `json:"safe_to_dispatch"`
 }
 
@@ -293,8 +291,6 @@ func GetAgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 			ObservationFreshness:  workStatus.ObservationFreshness,
 			ObservationObservedAt: workStatus.ObservationObservedAt,
 			ObservationError:      workStatus.ObservationError,
-			LastKnownState:        workStatus.LastKnownState,
-			LastKnownObservedAt:   workStatus.LastKnownObservedAt,
 			SafeToDispatch:        workStatus.SafeToDispatch,
 		}
 
@@ -337,7 +333,7 @@ func GetAgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 			healthStatus.HealthGrade = HealthGrade(healthStatus.HealthScore)
 			healthStatus.Issues = append(healthStatus.Issues, "Current pane observation unavailable")
 			healthStatus.Recommendation = string(RecommendMonitor)
-			healthStatus.RecommendationReason = "Live state is unavailable; inspect the pane before acting on last-known state"
+			healthStatus.RecommendationReason = "Live state is unavailable; inspect the pane before acting"
 		} else {
 			healthStatus.HealthScore = CalculateHealthScore(&workStatus, providerUsage)
 			healthStatus.HealthGrade = HealthGrade(healthStatus.HealthScore)

@@ -72,12 +72,6 @@ func TestResolveInterruptTargetsSelectorsDeduplicateAndFailTyped(t *testing.T) {
 
 func TestInterruptPaneStateUsesOnlyFreshCurrentObservation(t *testing.T) {
 	now := time.Date(2026, 7, 11, 13, 0, 0, 0, time.UTC)
-	lastKnown := status.StateObservation{
-		Status:     status.AgentStatus{State: status.StateIdle},
-		ObservedAt: now.Add(-time.Minute),
-		Freshness:  status.FreshnessFresh,
-		Confidence: 0.95,
-	}
 	unavailable := status.PaneObservation{
 		Current: status.StateObservation{
 			Status:     status.AgentStatus{State: status.StateUnknown},
@@ -85,10 +79,9 @@ func TestInterruptPaneStateUsesOnlyFreshCurrentObservation(t *testing.T) {
 			Freshness:  status.FreshnessUnavailable,
 			Error:      "capture failed",
 		},
-		LastKnown: &lastKnown,
 	}
 	got := interruptPaneStateFromObservation(unavailable, "codex")
-	if got.State != "unknown" || got.LastKnownState != "idle" || got.ObservationFreshness != "unavailable" {
+	if got.State != "unknown" || got.ObservationFreshness != "unavailable" {
 		t.Fatalf("unavailable state = %+v", got)
 	}
 	if got.LastOutput != "" {
