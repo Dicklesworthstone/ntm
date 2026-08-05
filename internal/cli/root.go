@@ -425,6 +425,7 @@ func classifyRobotExecuteError(err error) (string, string) {
 	message := strings.ToLower(err.Error())
 	for _, fragment := range []string{
 		"unknown flag",
+		"flag needs an argument",
 		"invalid argument",
 		"required flag",
 		"requires at least",
@@ -1858,14 +1859,17 @@ Shell Integration:
 			}
 			return
 		}
-		// `--robot-health=` with an empty value previously fell through and
-		// exited with NO output at all — a silent nothing where the operator
-		// asked a question (ntm-rerm). Empty-but-set errors loudly.
-		if robotHealth == "" && cmd.Flags().Changed("robot-health") {
-			failRobotCommand(errors.New("--robot-health requires a session name"), robot.ErrCodeInvalidFlag, "Use --robot-health=SESSION; 'ntm list' shows available sessions", "robot-health")
-			return
-		}
-		if robotHealth != "" {
+		if cmd.Flags().Changed("robot-health") {
+			if robotHealth == "__present__" {
+				if err := robot.PrintHealth(); err != nil {
+					recordRobotProcessExit(err)
+				}
+				return
+			}
+			if robotHealth == "" {
+				failRobotCommand(errors.New("--robot-health requires a session name or no value for project health"), robot.ErrCodeInvalidFlag, "Use --robot-health for project health or --robot-health=SESSION for session health", "robot-health")
+				return
+			}
 			session, err := resolveRobotLiveSession(cmd.Context(), robotHealth)
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-health")
@@ -2413,8 +2417,12 @@ Shell Integration:
 		}
 
 		// TUI Parity robot handlers - expose TUI functionality to AI agents
-		if robotFiles != "" {
-			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), robotFiles)
+		if cmd.Flags().Changed("robot-files") {
+			sessionName := robotFiles
+			if sessionName == "__present__" {
+				sessionName = ""
+			}
+			session, err := resolveOptionalRobotSessionFilter(cmd.Context(), sessionName)
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-files")
 				return
@@ -2571,8 +2579,12 @@ Shell Integration:
 			}
 			return
 		}
-		if robotMetrics != "" {
-			session, err := resolveRobotLiveSession(cmd.Context(), robotMetrics)
+		if cmd.Flags().Changed("robot-metrics") {
+			sessionName := robotMetrics
+			if sessionName == "__present__" {
+				sessionName = ""
+			}
+			session, err := resolveOptionalRobotLiveSession(cmd.Context(), sessionName)
 			if err != nil {
 				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-metrics")
 				return
@@ -4052,6 +4064,7 @@ func init() {
 
 	// Robot-health flag for session/project health summary
 	rootCmd.Flags().StringVar(&robotHealth, "robot-health", "", "Get session or project health (JSON). SESSION for per-agent health, empty for project health. Example: ntm --robot-health=myproject")
+	rootCmd.Flags().Lookup("robot-health").NoOptDefVal = "__present__"
 	rootCmd.Flags().StringVar(&robotHealthOAuth, "robot-health-oauth", "", "Get per-agent OAuth and rate-limit status (JSON). Required: SESSION. Example: ntm --robot-health-oauth=myproject")
 
 	// Robot-health-restart-stuck flags for auto-restarting stuck agents
@@ -4283,6 +4296,7 @@ func init() {
 
 	// TUI Parity robot flags - expose TUI dashboard functionality to AI agents
 	rootCmd.Flags().StringVar(&robotFiles, "robot-files", "", "Get file changes with agent attribution. Optional SESSION filter. Example: ntm --robot-files=myproject --files-window=15m")
+	rootCmd.Flags().Lookup("robot-files").NoOptDefVal = "__present__"
 	rootCmd.Flags().StringVar(&robotFilesWindow, "files-window", "15m", "Time window: 5m, 15m, 1h, all. Optional with --robot-files. Example: --files-window=1h")
 	rootCmd.Flags().IntVar(&robotFilesLimit, "files-limit", 100, "Max changes to return. Optional with --robot-files. Example: --files-limit=50")
 
@@ -4307,6 +4321,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotIncidentNote, "incident-note", "", "Optional resolution note for --robot-incident-resolve")
 
 	rootCmd.Flags().StringVar(&robotMetrics, "robot-metrics", "", "Session metrics export. Optional SESSION. Example: ntm --robot-metrics=myproject --metrics-period=24h")
+	rootCmd.Flags().Lookup("robot-metrics").NoOptDefVal = "__present__"
 	rootCmd.Flags().StringVar(&robotMetricsPeriod, "metrics-period", "24h", "Period: 1h, 24h, 7d, all. Optional with --robot-metrics. Example: --metrics-period=7d")
 
 	rootCmd.Flags().StringVar(&robotReplay, "robot-replay", "", "Replay command from history. Required: SESSION. Use with --replay-id. Example: ntm --robot-replay=myproject --replay-id=1735830245123-a1b2c3d4")

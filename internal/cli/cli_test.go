@@ -5588,6 +5588,38 @@ func TestRobotDismissAlertFlagParsingWithDismissAll(t *testing.T) {
 	}
 }
 
+func TestProjectScopedRobotFlagsAcceptNoSessionValue(t *testing.T) {
+	tests := []struct {
+		flag  string
+		value *string
+	}{
+		{flag: "--robot-health", value: &robotHealth},
+		{flag: "--robot-files", value: &robotFiles},
+		{flag: "--robot-metrics", value: &robotMetrics},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.flag, func(t *testing.T) {
+			resetFlags()
+			t.Cleanup(resetFlags)
+
+			if err := rootCmd.ParseFlags([]string{tt.flag}); err != nil {
+				t.Fatalf("ParseFlags(%s) failed: %v", tt.flag, err)
+			}
+			if *tt.value != "__present__" {
+				t.Fatalf("%s = %q, want no-session sentinel", tt.flag, *tt.value)
+			}
+		})
+	}
+}
+
+func TestClassifyRobotExecuteErrorMapsMissingFlagArgumentToInvalidFlag(t *testing.T) {
+	code, _ := classifyRobotExecuteError(errors.New("flag needs an argument: --robot-files"))
+	if code != robot.ErrCodeInvalidFlag {
+		t.Fatalf("classifyRobotExecuteError() code = %q, want %q", code, robot.ErrCodeInvalidFlag)
+	}
+}
+
 // TestGlobalJSONFlag tests the global --json flag works
 func TestGlobalJSONFlag(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
