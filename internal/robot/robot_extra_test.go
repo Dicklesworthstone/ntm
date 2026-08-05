@@ -382,7 +382,7 @@ func TestRenderMarkdownFromSnapshotUsesRegistrySections(t *testing.T) {
 		Work: &adapters.WorkSection{
 			Available: true,
 			Summary: &adapters.WorkSummary{
-				Total:      4,
+				Total:      486, // Includes closed work; markdown heading must not use it.
 				Ready:      2,
 				InProgress: 1,
 				Blocked:    1,

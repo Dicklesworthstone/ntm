@@ -412,8 +412,9 @@ func writeSnapshotWorkMarkdown(sb *strings.Builder, snapshot *SnapshotOutput, op
 		}
 	}
 
+	total := summary.Ready + summary.InProgress + summary.Blocked
 	fmt.Fprintf(sb, "### Work (R:%d I:%d B:%d = %d)\n",
-		summary.Ready, summary.InProgress, summary.Blocked, summary.Total)
+		summary.Ready, summary.InProgress, summary.Blocked, total)
 
 	if opts.Compact {
 		if len(work.Ready) > 0 {
