@@ -93,9 +93,12 @@ func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 	var policyPath string
 	if err == nil {
 		blocked, approval, allowed = p.Stats()
-		customPath := filepath.Join(ntmDir, "policy.yaml")
-		if safetyFileExists(customPath) {
-			policyPath = customPath
+		// Report the path LoadOrDefault actually read. Looking only at
+		// ~/.ntm/policy.yaml reported "no policy file" for a project-local
+		// policy that was being enforced, while the stats beside it were
+		// computed from that very file.
+		if effective, exists := policy.ResolveEffectivePath(); exists {
+			policyPath = effective
 		}
 	}
 
@@ -433,13 +436,12 @@ func (s *Server) handlePolicyGetV1(w http.ResponseWriter, r *http.Request) {
 	includeRules := r.URL.Query().Get("rules") == "true"
 	includeContent := r.URL.Query().Get("content") == "true"
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
-			"failed to get home directory", nil, reqID)
-		return
-	}
-	policyPath := filepath.Join(home, ".ntm", "policy.yaml")
+	// Describe the policy LoadOrDefault actually reads, which prefers the home
+	// file but otherwise uses the project-local .ntm/policy.yaml that
+	// `ntm setup` creates. Hardcoding the home path made this endpoint report
+	// is_default:true for a project policy that was actively blocking
+	// commands — and report it alongside stats computed from that same file.
+	policyPath, policyExists := policy.ResolveEffectivePath()
 
 	p, err := policy.LoadOrDefault()
 	if err != nil {
@@ -448,7 +450,7 @@ func (s *Server) handlePolicyGetV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isDefault := !safetyFileExists(policyPath)
+	isDefault := !policyExists
 	blocked, approval, allowed := p.Stats()
 
 	// Count SLB rules
@@ -662,21 +664,11 @@ func (s *Server) handlePolicyValidateV1(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Validate file-based policy
-	home, err := os.UserHomeDir()
-	if err != nil {
-		errors = append(errors, fmt.Sprintf("failed to get home directory: %v", err))
-		data, _ := toJSONMap(PolicyValidateResponse{
-			Valid:  false,
-			Errors: errors,
-		})
-		writeSuccessResponse(w, http.StatusOK, data, reqID)
-		return
-	}
+	// Validate the policy that is actually enforced, not just the home one.
+	var policyExists bool
+	policyPath, policyExists = policy.ResolveEffectivePath()
 
-	policyPath = filepath.Join(home, ".ntm", "policy.yaml")
-
-	if !safetyFileExists(policyPath) {
+	if !policyExists {
 		errors = append(errors, "policy file does not exist")
 		data, _ := toJSONMap(PolicyValidateResponse{
 			Valid:      false,
@@ -1110,19 +1102,24 @@ func (s *Server) handleApprovalApproveV1(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check if expired
+	// Terminal state is checked BEFORE expiry. ExpiresAt is never cleared on
+	// resolution, so an approved or denied record stays past its TTL forever;
+	// checking expiry first meant a retry or double-click hours later rewrote
+	// Status to "expired" while leaving ApprovedBy set. The audit trail then
+	// claimed a dangerous action had never been approved, though it had been
+	// approved and performed.
+	if approval.Status != "pending" {
+		approvalsLock.Unlock()
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
+			fmt.Sprintf("approval is not pending (status: %s)", approval.Status), nil, reqID)
+		return
+	}
+
 	if time.Now().After(approval.ExpiresAt) {
 		approval.Status = "expired"
 		approvalsLock.Unlock()
 		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
 			"approval has expired", nil, reqID)
-		return
-	}
-
-	if approval.Status != "pending" {
-		approvalsLock.Unlock()
-		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
-			fmt.Sprintf("approval is not pending (status: %s)", approval.Status), nil, reqID)
 		return
 	}
 
@@ -1188,18 +1185,24 @@ func (s *Server) handleApprovalDenyV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Terminal state is checked BEFORE expiry. ExpiresAt is never cleared on
+	// resolution, so an approved or denied record stays past its TTL forever;
+	// checking expiry first meant a retry or double-click hours later rewrote
+	// Status to "expired" while leaving ApprovedBy set. The audit trail then
+	// claimed a dangerous action had never been approved, though it had been
+	// approved and performed.
+	if approval.Status != "pending" {
+		approvalsLock.Unlock()
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
+			fmt.Sprintf("approval is not pending (status: %s)", approval.Status), nil, reqID)
+		return
+	}
+
 	if time.Now().After(approval.ExpiresAt) {
 		approval.Status = "expired"
 		approvalsLock.Unlock()
 		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
 			"approval has expired", nil, reqID)
-		return
-	}
-
-	if approval.Status != "pending" {
-		approvalsLock.Unlock()
-		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
-			fmt.Sprintf("approval is not pending (status: %s)", approval.Status), nil, reqID)
 		return
 	}
 

@@ -3994,6 +3994,11 @@ type AgentWaitRequest struct {
 }
 
 // handleAgentWaitV1 handles POST /api/v1/sessions/{sessionId}/agents/wait.
+// maxAgentWaitTimeout caps the client-supplied wait so one request cannot pin
+// a server goroutine indefinitely. Long orchestration waits belong in the
+// caller's own polling loop, not in a single HTTP request.
+const maxAgentWaitTimeout = 30 * time.Minute
+
 func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
 	sessionID := chi.URLParam(r, "sessionId")
@@ -4013,13 +4018,24 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound the client-supplied wait. robot.GetWait takes no context, so a
+	// disconnecting client cannot reclaim the goroutine it started: an
+	// unbounded timeout_ms pinned one server-side goroutine (and its tmux
+	// polling) indefinitely. Every other client-supplied bound in this
+	// package is clamped; these two were oversights.
 	timeout := 30 * time.Second
 	if req.TimeoutMs > 0 {
 		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
 	}
+	if timeout > maxAgentWaitTimeout {
+		timeout = maxAgentWaitTimeout
+	}
 	pollInterval := 500 * time.Millisecond
 	if req.PollMs > 0 {
 		pollInterval = time.Duration(req.PollMs) * time.Millisecond
+	}
+	if pollInterval > timeout {
+		pollInterval = timeout
 	}
 
 	opts := robot.WaitOptions{
@@ -4047,15 +4063,21 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Map exit codes to HTTP status
-	status := http.StatusOK
-	if exitCode == 1 {
-		status = http.StatusRequestTimeout
-	} else if exitCode >= 2 {
-		status = http.StatusInternalServerError
+	// A wait that times out is a successful observation of "the condition did
+	// not become true in the window", and the payload already says so via
+	// timed_out. It used to be returned as HTTP 408 through
+	// writeSuccessResponse, which unconditionally injects "success": true —
+	// so the two halves of one response contradicted each other, and 408
+	// (which means the CLIENT was too slow, and which proxies and Go's
+	// transport treat as connection-close-and-retry) was wrong on its own
+	// terms. Only a genuine internal failure is an error status now.
+	if exitCode >= 2 {
+		writeErrorResponse(w, http.StatusInternalServerError, result.ErrorCode,
+			result.Error, data, reqID)
+		return
 	}
 
-	writeSuccessResponse(w, status, data, reqID)
+	writeSuccessResponse(w, http.StatusOK, data, reqID)
 }
 
 // =============================================================================

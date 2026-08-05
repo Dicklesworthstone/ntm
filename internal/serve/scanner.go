@@ -31,6 +31,10 @@ const (
 	ErrCodeScanFailed         = "SCAN_FAILED"
 )
 
+// maxScanTimeout caps the client-supplied scan timeout. Only one scan may run
+// at a time, so an unbounded value is a self-inflicted denial of service.
+const maxScanTimeout = 30 * time.Minute
+
 // ScanState represents the state of a scan
 type ScanState string
 
@@ -525,10 +529,17 @@ func (s *Server) runScanAsync(scan *ScanRecord, opts ScanOptionsRequest) {
 		StagedOnly:       opts.StagedOnly,
 		DiffOnly:         opts.DiffOnly,
 	}
+	// Clamp the client-supplied timeout. An unbounded value left the scan
+	// running effectively forever, and because a running scan makes every
+	// later POST /scanner/run return 409 SCAN_IN_PROGRESS — with no cancel
+	// route and no reaper for a stuck running state — a single request could
+	// disable scanning for the lifetime of the process.
+	scanOpts.Timeout = 5 * time.Minute
 	if opts.TimeoutSeconds > 0 {
 		scanOpts.Timeout = time.Duration(opts.TimeoutSeconds) * time.Second
-	} else {
-		scanOpts.Timeout = 5 * time.Minute
+	}
+	if scanOpts.Timeout > maxScanTimeout {
+		scanOpts.Timeout = maxScanTimeout
 	}
 
 	// Run scan
