@@ -7,6 +7,7 @@ package robot
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,12 +65,26 @@ type AgentOAuthHealth struct {
 // OAuthHealthOutput is the response format for --robot-health-oauth=SESSION.
 type OAuthHealthOutput struct {
 	RobotResponse
-	Session   string             `json:"session"`
-	CheckedAt time.Time          `json:"checked_at"`
-	Agents    []AgentOAuthHealth `json:"agents"`
-	Summary   OAuthHealthSummary `json:"summary"`
+	Session   string                       `json:"session"`
+	CheckedAt time.Time                    `json:"checked_at"`
+	Agents    []AgentOAuthHealth           `json:"agents"`
+	Pools     map[string]OAuthProviderPool `json:"pools"`
+	Summary   OAuthHealthSummary           `json:"summary"`
 	// Display is the human-readable status block for TUI or log output.
 	Display string `json:"display,omitempty"`
+}
+
+// OAuthProviderPool summarizes the rate-limit decision for all panes using a
+// provider. HealthyPanesRemaining is intentionally pane-scoped: this command
+// cannot prove which account a pane uses, so it must not mislabel pane health
+// as account availability.
+type OAuthProviderPool struct {
+	Provider              string `json:"provider"`
+	Panes                 []int  `json:"panes"`
+	RateLimitedCount      int    `json:"rate_limited_count"`
+	AllRateLimited        bool   `json:"all_rate_limited"`
+	HealthyPanesRemaining int    `json:"healthy_panes_remaining"`
+	Recommendation        string `json:"recommendation"`
 }
 
 // OAuthHealthSummary contains aggregate OAuth/rate limit status.
@@ -111,6 +126,7 @@ func GetHealthOAuthWithOptions(opts OAuthHealthOptions) (*OAuthHealthOutput, err
 		Session:       opts.Session,
 		CheckedAt:     time.Now().UTC(),
 		Agents:        []AgentOAuthHealth{},
+		Pools:         map[string]OAuthProviderPool{},
 		Summary:       OAuthHealthSummary{},
 	}
 
@@ -172,11 +188,47 @@ func GetHealthOAuthWithOptions(opts OAuthHealthOptions) (*OAuthHealthOutput, err
 			output.Summary.RateLimited++
 		}
 	}
+	output.Pools = summarizeOAuthProviderPools(output.Agents)
 
 	// Generate display string
 	output.Display = FormatOAuthHealthDisplay(output)
 
 	return output, nil
+}
+
+func summarizeOAuthProviderPools(agents []AgentOAuthHealth) map[string]OAuthProviderPool {
+	pools := make(map[string]OAuthProviderPool)
+	for _, agentHealth := range agents {
+		provider := canonicalRobotProvider(agentHealth.Provider)
+		pool := pools[provider]
+		if pool.Provider == "" {
+			pool.Provider = provider
+			pool.Panes = []int{}
+		}
+		pool.Panes = append(pool.Panes, agentHealth.Pane)
+		if agentHealth.RateLimitStatus == RateLimitLimited {
+			pool.RateLimitedCount++
+		}
+		if agentHealth.OAuthStatus == OAuthValid && agentHealth.RateLimitStatus != RateLimitLimited {
+			pool.HealthyPanesRemaining++
+		}
+		pools[provider] = pool
+	}
+
+	for provider, pool := range pools {
+		sort.Ints(pool.Panes)
+		pool.AllRateLimited = len(pool.Panes) > 0 && pool.RateLimitedCount == len(pool.Panes)
+		switch {
+		case pool.AllRateLimited:
+			pool.Recommendation = "rotate_provider"
+		case pool.RateLimitedCount > 0:
+			pool.Recommendation = "route_to_healthy_panes"
+		default:
+			pool.Recommendation = "continue"
+		}
+		pools[provider] = pool
+	}
+	return pools
 }
 
 // enrichWithThrottle merges CodexThrottle status into the agent health record.

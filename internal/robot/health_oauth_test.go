@@ -532,7 +532,7 @@ func TestOAuthHealthOutputJSONStructure(t *testing.T) {
 	}
 
 	// Check top-level fields
-	requiredFields := []string{"success", "timestamp", "session", "agents", "summary", "display"}
+	requiredFields := []string{"success", "timestamp", "session", "agents", "pools", "summary", "display"}
 	for _, f := range requiredFields {
 		if _, ok := m[f]; !ok {
 			t.Errorf("JSON missing required field %q", f)
@@ -571,6 +571,28 @@ func TestOAuthHealthOutputJSONStructure(t *testing.T) {
 		if _, ok := summary[f]; !ok {
 			t.Errorf("summary JSON missing field %q", f)
 		}
+	}
+}
+
+func TestSummarizeOAuthProviderPools(t *testing.T) {
+	pools := summarizeOAuthProviderPools([]AgentOAuthHealth{
+		{Pane: 3, Provider: "openai", OAuthStatus: OAuthValid, RateLimitStatus: RateLimitLimited},
+		{Pane: 1, Provider: "openai", OAuthStatus: OAuthValid, RateLimitStatus: RateLimitOK},
+		{Pane: 2, Provider: "claude", OAuthStatus: OAuthValid, RateLimitStatus: RateLimitLimited},
+		{Pane: 4, Provider: "claude", OAuthStatus: OAuthExpired, RateLimitStatus: RateLimitLimited},
+	})
+
+	openAIPool := pools["openai"]
+	if openAIPool.RateLimitedCount != 1 || openAIPool.AllRateLimited || openAIPool.HealthyPanesRemaining != 1 || openAIPool.Recommendation != "route_to_healthy_panes" {
+		t.Fatalf("openai pool = %+v", openAIPool)
+	}
+	if len(openAIPool.Panes) != 2 || openAIPool.Panes[0] != 1 || openAIPool.Panes[1] != 3 {
+		t.Fatalf("openai panes = %v, want sorted [1 3]", openAIPool.Panes)
+	}
+
+	claudePool := pools["claude"]
+	if !claudePool.AllRateLimited || claudePool.HealthyPanesRemaining != 0 || claudePool.Recommendation != "rotate_provider" {
+		t.Fatalf("claude pool = %+v", claudePool)
 	}
 }
 
