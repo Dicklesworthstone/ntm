@@ -14,17 +14,20 @@ import (
 // MailCheckOutput represents the response from --robot-mail-check
 type MailCheckOutput struct {
 	RobotResponse
-	Project       string               `json:"project"`
-	Agent         string               `json:"agent,omitempty"`
-	Filters       MailCheckFilters     `json:"filters"`
-	Unread        int                  `json:"unread"`
-	Urgent        int                  `json:"urgent"`
-	TotalMessages int                  `json:"total_messages"`
-	Offset        int                  `json:"offset"`
-	Count         int                  `json:"count"`
-	Messages      []MailCheckMessage   `json:"messages"`
-	HasMore       bool                 `json:"has_more"`
-	AgentHints    *MailCheckAgentHints `json:"_agent_hints,omitempty"`
+	Project       string           `json:"project"`
+	Agent         string           `json:"agent,omitempty"`
+	Filters       MailCheckFilters `json:"filters"`
+	Unread        int              `json:"unread"`
+	Urgent        int              `json:"urgent"`
+	TotalMessages int              `json:"total_messages"`
+	// CountsBoundedByWindow reports that Agent Mail filled its largest available
+	// inbox window, so the aggregate counts may be lower bounds.
+	CountsBoundedByWindow bool                 `json:"counts_bounded_by_window,omitempty"`
+	Offset                int                  `json:"offset"`
+	Count                 int                  `json:"count"`
+	Messages              []MailCheckMessage   `json:"messages"`
+	HasMore               bool                 `json:"has_more"`
+	AgentHints            *MailCheckAgentHints `json:"_agent_hints,omitempty"`
 }
 
 // MailCheckFilters shows active filters in the response
@@ -384,13 +387,38 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 		fetchLimit = nextFetchLimit
 	}
 
-	// Calculate counts before pagination
-	totalMessages := len(filtered)
+	countEntries := entries
+	if fetchLimit < mailCheckBackfillLimit && len(entries) == fetchLimit {
+		countEntries, err = fetchMailCheckEntries(ctx, client, opts, mailCheckBackfillLimit, sinceTS)
+		if err != nil {
+			return &MailCheckOutput{
+				RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to fetch inbox counts"),
+				Project:       opts.Project,
+				Agent:         opts.Agent,
+				Messages:      []MailCheckMessage{},
+				Filters:       buildMailCheckFilters(opts),
+			}, nil
+		}
+	}
+	countFiltered, err := filterMailCheckEntries(countEntries, opts)
+	if err != nil {
+		return &MailCheckOutput{
+			RobotResponse: NewErrorResponse(err, ErrCodeInvalidFlag, "Check --mail-until"),
+			Project:       opts.Project,
+			Agent:         opts.Agent,
+			Messages:      []MailCheckMessage{},
+			Filters:       buildMailCheckFilters(opts),
+		}, nil
+	}
+
+	// Calculate counts from the maximum available Agent Mail window before
+	// paginating the smaller response window.
+	totalMessages := len(countFiltered)
 	unreadCount := 0
 	urgentCount := 0
 	var oldestUnread *time.Time
 
-	for _, entry := range filtered {
+	for _, entry := range countFiltered {
 		msg := entry.Message
 		if !entry.AllRead {
 			unreadCount++
@@ -470,18 +498,19 @@ func GetMailCheck(opts MailCheckOptions) (*MailCheckOutput, error) {
 	}
 
 	return &MailCheckOutput{
-		RobotResponse: NewRobotResponse(true),
-		Project:       opts.Project,
-		Agent:         opts.Agent,
-		Filters:       filters,
-		Unread:        unreadCount,
-		Urgent:        urgentCount,
-		TotalMessages: totalMessages,
-		Offset:        opts.Offset,
-		Count:         len(outputMsgs),
-		Messages:      outputMsgs,
-		HasMore:       hasMore,
-		AgentHints:    hints,
+		RobotResponse:         NewRobotResponse(true),
+		Project:               opts.Project,
+		Agent:                 opts.Agent,
+		Filters:               filters,
+		Unread:                unreadCount,
+		Urgent:                urgentCount,
+		TotalMessages:         totalMessages,
+		CountsBoundedByWindow: len(countEntries) == mailCheckBackfillLimit,
+		Offset:                opts.Offset,
+		Count:                 len(outputMsgs),
+		Messages:              outputMsgs,
+		HasMore:               hasMore,
+		AgentHints:            hints,
 	}, nil
 }
 

@@ -2,8 +2,10 @@ package robot
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -430,6 +432,7 @@ func TestGetMailCheck_DefaultsZeroLimit(t *testing.T) {
 }
 
 func TestGetMailCheck_HasMoreUsesOverfetch(t *testing.T) {
+	fetchLimits := []int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req agentmail.JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -453,9 +456,7 @@ func TestGetMailCheck_HasMoreUsesOverfetch(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(resp)
 			case "fetch_inbox":
 				args, _ := params["arguments"].(map[string]interface{})
-				if got := int(args["limit"].(float64)); got != 2 {
-					t.Fatalf("fetch_inbox limit = %d, want 2 (1 + 1 overfetch)", got)
-				}
+				fetchLimits = append(fetchLimits, int(args["limit"].(float64)))
 				resp := agentmail.JSONRPCResponse{
 					JSONRPC: "2.0",
 					ID:      req.ID,
@@ -496,6 +497,64 @@ func TestGetMailCheck_HasMoreUsesOverfetch(t *testing.T) {
 	}
 	if output.AgentHints == nil || output.AgentHints.NextOffset == nil || *output.AgentHints.NextOffset != 1 {
 		t.Fatalf("NextOffset = %+v, want 1", output.AgentHints)
+	}
+	if len(fetchLimits) != 2 || fetchLimits[0] != 2 || fetchLimits[1] != mailCheckBackfillLimit {
+		t.Fatalf("fetch limits = %v, want [2 %d]", fetchLimits, mailCheckBackfillLimit)
+	}
+}
+
+func TestGetMailCheck_UsesFullInboxWindowForCounts(t *testing.T) {
+	var fetchLimits []int
+	allMessages := make([]string, 0, 25)
+	for id := 25; id >= 1; id-- {
+		importance := "normal"
+		if id == 25 {
+			importance = "urgent"
+		}
+		allMessages = append(allMessages, fmt.Sprintf(`{"id":%d,"subject":"Message %d","from":"BlueLake","created_ts":"2026-01-%02dT00:00:00Z","importance":"%s","ack_required":false,"kind":"to","body_md":"body"}`,
+			id, id, id, importance))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentmail.JSONRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		params := req.Params.(map[string]interface{})
+		switch params["name"] {
+		case "health_check":
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"status":"ok"}`)})
+		case "fetch_inbox":
+			args := params["arguments"].(map[string]interface{})
+			limit := int(args["limit"].(float64))
+			fetchLimits = append(fetchLimits, limit)
+			messages := allMessages
+			if limit < len(messages) {
+				messages = messages[:limit]
+			}
+			_ = json.NewEncoder(w).Encode(agentmail.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"result":[` + strings.Join(messages, ",") + `]}`)})
+		default:
+			t.Fatalf("unexpected tool name: %v", params["name"])
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	output, err := GetMailCheck(MailCheckOptions{Project: "/data/projects/test", Agent: "BlueLake", Limit: 1})
+	if err != nil {
+		t.Fatalf("GetMailCheck returned error: %v", err)
+	}
+	if output.TotalMessages != 25 || output.Unread != 25 || output.Urgent != 1 {
+		t.Fatalf("counts = total:%d unread:%d urgent:%d, want 25/25/1", output.TotalMessages, output.Unread, output.Urgent)
+	}
+	if output.AgentHints == nil || output.AgentHints.PagesRemaining == nil || *output.AgentHints.PagesRemaining != 24 {
+		t.Fatalf("PagesRemaining = %+v, want 24", output.AgentHints)
+	}
+	if output.CountsBoundedByWindow {
+		t.Fatal("CountsBoundedByWindow = true, want false for a partial 1,000-message count window")
+	}
+	if got, want := fetchLimits, []int{2, mailCheckBackfillLimit}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fetch limits = %v, want %v", got, want)
 	}
 }
 
