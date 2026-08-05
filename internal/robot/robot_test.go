@@ -6529,3 +6529,89 @@ func TestGetPaneAddresses(t *testing.T) {
 		t.Fatalf("nonexistent session: err=%v success=%v, want loud error response", err, missing != nil && missing.Success)
 	}
 }
+
+// bd-fresh-eyes-audit .11: --robot-snapshot --since read a process-local
+// in-memory ring buffer whose only writer had no production callers, so a
+// fresh CLI process always reported "nothing changed" with success:true —
+// indistinguishable from a genuinely empty delta. Deltas now come from the
+// durable attention feed.
+func TestGetSnapshotDelta_ReadsDurableAttentionFeed(t *testing.T) {
+	dir := t.TempDir()
+	store, err := state.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	prev := currentProjectionStore()
+	SetProjectionStore(store)
+	t.Cleanup(func() { SetProjectionStore(prev) })
+
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	event := state.StoredAttentionEvent{
+		Ts:            now.Add(-30 * time.Second),
+		SessionName:   "deltaproj",
+		Pane:          "0.1",
+		Category:      "agent",
+		EventType:     "state_change",
+		Source:        "activity_detector",
+		Actionability: state.Actionability("actionable"),
+		Severity:      state.Severity("warn"),
+		Summary:       "agent went idle",
+		ExpiresAt:     &expires,
+	}
+	if _, err := store.AppendAttentionEvent(&event); err != nil {
+		t.Fatalf("AppendAttentionEvent: %v", err)
+	}
+
+	output, err := GetSnapshotDelta(now.Add(-5 * time.Minute))
+	if err != nil {
+		t.Fatalf("GetSnapshotDelta: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("delta failed: %s (%s)", output.Error, output.ErrorCode)
+	}
+	if len(output.Changes) != 1 {
+		t.Fatalf("got %d changes, want 1 — the durable event must be visible", len(output.Changes))
+	}
+	change := output.Changes[0]
+	if change.Session != "deltaproj" || change.Type != "state_change" {
+		t.Fatalf("unexpected change %+v", change)
+	}
+	if got := change.Data["summary"]; got != "agent went idle" {
+		t.Fatalf("change summary = %v, want the durable event summary", got)
+	}
+
+	// A window that predates the event must be empty — proving the filter is
+	// real rather than the surface returning everything.
+	stale, err := GetSnapshotDelta(now.Add(5 * time.Minute))
+	if err != nil {
+		t.Fatalf("GetSnapshotDelta(future): %v", err)
+	}
+	if len(stale.Changes) != 0 {
+		t.Fatalf("future --since returned %d changes, want 0", len(stale.Changes))
+	}
+}
+
+// Without a durable source the surface must say so instead of reporting an
+// empty delta as success.
+func TestGetSnapshotDelta_NoStoreIsHonest(t *testing.T) {
+	prev := currentProjectionStore()
+	SetProjectionStore(nil)
+	t.Cleanup(func() { SetProjectionStore(prev) })
+
+	output, err := GetSnapshotDelta(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("GetSnapshotDelta: %v", err)
+	}
+	if output.Success {
+		t.Fatal("delta reported success with no durable source")
+	}
+	if output.ErrorCode != ErrCodeNotImplemented {
+		t.Fatalf("error_code = %q, want %q", output.ErrorCode, ErrCodeNotImplemented)
+	}
+}

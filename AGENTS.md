@@ -336,7 +336,7 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 | `--all` | - | `--robot-send`, `--robot-interrupt` | Include user pane |
 | `--track` | - | `--robot-send` | Combined send+ack mode |
 | `--lines` | - | `--robot-tail` | Lines per pane (default 20) |
-| `--since` | - | `--robot-snapshot` | RFC3339 timestamp for delta |
+| `--since` | - | `--robot-snapshot` | RFC3339 timestamp for delta; reads the durable attention feed, so it needs the runtime projection store (errors `NOT_IMPLEMENTED` without one) and only returns events still inside the retention window |
 
 **CASS Integration:**
 
