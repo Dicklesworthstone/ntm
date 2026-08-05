@@ -2222,12 +2222,26 @@ func (s *Server) validateOIDCToken(ctx context.Context, token string) (map[strin
 	if s.auth.OIDC.Audience != "" && !claimAudienceContains(claims, s.auth.OIDC.Audience) {
 		return nil, fmt.Errorf("invalid audience")
 	}
-	if exp, ok := claimInt64(claims, "exp"); ok {
-		if time.Now().After(time.Unix(exp, 0).Add(30 * time.Second)) {
-			return nil, fmt.Errorf("token expired")
-		}
+	// exp is mandatory and must be fail-CLOSED. Treating it as optional made a
+	// token with no exp claim — or one whose exp an IdP serialized as a JSON
+	// string rather than a number, which claimInt64 reports identically to
+	// "absent" — authenticate forever. Only JWKS keys are re-fetched, so
+	// revocation at the IdP never reaches such a token: it stays a permanent
+	// credential for every write route on this server.
+	exp, ok := claimInt64(claims, "exp")
+	if !ok {
+		return nil, fmt.Errorf("token has no usable exp claim")
 	}
-	if nbf, ok := claimInt64(claims, "nbf"); ok {
+	if time.Now().After(time.Unix(exp, 0).Add(30 * time.Second)) {
+		return nil, fmt.Errorf("token expired")
+	}
+	// nbf is optional, but a present-and-unparseable nbf is a malformed token,
+	// not an absent claim; do not silently skip the check for it.
+	if raw, present := claims["nbf"]; present {
+		nbf, ok := claimInt64(claims, "nbf")
+		if !ok {
+			return nil, fmt.Errorf("token has an unusable nbf claim of type %T", raw)
+		}
 		if time.Now().Before(time.Unix(nbf, 0).Add(-30 * time.Second)) {
 			return nil, fmt.Errorf("token not yet valid")
 		}
@@ -3527,11 +3541,15 @@ func (s *Server) handlePaneOutputV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.streamManager.StartStream(paneTarget); err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
-		return
-	}
-
+	// Deliberately does NOT start a background streamer. This is a one-shot
+	// read that captures the pane directly on the next line, so the streamer's
+	// output went nowhere — but StreamManager only retires a streamer on an
+	// explicit StopStream, and this handler never issued one. Every distinct
+	// pane ever read this way leaked a goroutine that kept forking
+	// `tmux capture-pane` forever, including long after its session was killed
+	// (runPollingLoop treats a capture failure as `continue`). Starting a
+	// server-side subscription was also a side effect on a GET. Callers that
+	// want live output use POST/DELETE .../stream, which is the paired API.
 	output, err := tmux.CapturePaneOutputContext(r.Context(), paneTarget, lines)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
@@ -4789,16 +4807,23 @@ func (c *WSClient) cancelAttentionSubscription() {
 // deliverAttentionEvent delivers a single attention event to the client.
 // Applies subscription filters and tracks cursor position.
 func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []string) {
+	// Snapshot the filter criteria AND the cursor under the lock. Copying only
+	// the pointer and then reading sub.Cursor/sub.Active raced the locked
+	// cursor writes below and in deliverAttentionReplay: AttentionFeed invokes
+	// subscriber handlers synchronously on the publishing goroutine, so any
+	// event published during the subscribe→replay window runs both at once,
+	// which either re-delivered an event or rolled the cursor backwards.
 	c.attentionSubMu.Lock()
 	sub := c.attentionSub
-	c.attentionSubMu.Unlock()
-
 	if sub == nil || !sub.Active {
+		c.attentionSubMu.Unlock()
 		return
 	}
+	criteria := *sub
+	c.attentionSubMu.Unlock()
 
 	// Skip events already sent during replay
-	if event.Cursor <= sub.Cursor {
+	if event.Cursor <= criteria.Cursor {
 		return
 	}
 
@@ -4808,12 +4833,12 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []st
 	}
 
 	// Apply session filter
-	if sub.Session != "" && event.Session != sub.Session {
+	if criteria.Session != "" && event.Session != criteria.Session {
 		return
 	}
 
 	// Apply category/actionability filters (session already checked above)
-	if !matchesAttentionFilters(event, sub.CategoryFilter, "", sub.ActionabilityFilter) {
+	if !matchesAttentionFilters(event, criteria.CategoryFilter, "", criteria.ActionabilityFilter) {
 		return
 	}
 
@@ -4857,7 +4882,12 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []st
 	if sent {
 		c.attentionSubMu.Lock()
 		if c.attentionSub != nil {
-			c.attentionSub.Cursor = event.Cursor
+			// Monotonic, like the replay path: a live event and a replayed one
+			// can commit in either order, and the cursor is what "resume from
+			// here" means to the client. Never move it backwards.
+			if event.Cursor > c.attentionSub.Cursor {
+				c.attentionSub.Cursor = event.Cursor
+			}
 			c.attentionSub.EventCount++
 		}
 		c.attentionSubMu.Unlock()

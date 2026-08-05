@@ -256,6 +256,7 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 				live.Status = details.Status
 				live.Labels = append([]string(nil), details.Labels...)
 				live.BlockedBy = append([]string(nil), details.BlockedBy...)
+				live.Type = liveIssueType(details.IssueType, recommendation.Type)
 			}
 		case c.workItemStatusFn != nil:
 			trackerStatus, err = c.workItemStatusFn(ctx, recommendation.ID)
@@ -269,6 +270,7 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 				live.Status = details.Status
 				live.Labels = append([]string(nil), details.Labels...)
 				live.BlockedBy = append([]string(nil), details.BlockedBy...)
+				live.Type = liveIssueType(details.IssueType, recommendation.Type)
 			}
 		}
 		if err != nil {
@@ -276,6 +278,16 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 		}
 		switch strings.ToLower(strings.TrimSpace(trackerStatus)) {
 		case "open":
+			// Type evidence is part of the authorization boundary, not a
+			// display field: without it the container (epic) gate below cannot
+			// prove this item is implementation work. bv's actionable-plan
+			// reader already refuses to emit a recommendation with no verified
+			// type, so an empty one here means the evidence chain broke —
+			// stop rather than dispatch, exactly as a label-coverage gap does.
+			if strings.TrimSpace(live.Type) == "" {
+				return nil, terminalRecommendation, fmt.Errorf(
+					"recommendation %s has no verified issue type; refusing to auto-assign unverified work", recommendation.ID)
+			}
 			if recommendationPassesSemanticGatesWithOperatorLabels(live, c.operatorGatedLabels) {
 				filtered = append(filtered, live)
 			}
@@ -284,6 +296,15 @@ func (c *SessionCoordinator) filterActionableRecommendations(ctx context.Context
 		}
 	}
 	return filtered, terminalRecommendation, nil
+}
+
+// liveIssueType prefers the freshly read tracker type over the planned one,
+// but never lets an absent live value erase evidence the plan already proved.
+func liveIssueType(live, planned string) string {
+	if strings.TrimSpace(live) != "" {
+		return live
+	}
+	return planned
 }
 
 func recommendationPassesSemanticGates(recommendation bv.TriageRecommendation) bool {
@@ -296,6 +317,16 @@ func recommendationPassesSemanticGatesWithOperatorLabels(recommendation bv.Triag
 		return false
 	}
 	if len(recommendation.BlockedBy) > 0 {
+		return false
+	}
+	// Container types (epic) are grouping nodes, not implementation work.
+	// bv.GetActionableRecommendations populates Type specifically so this can
+	// be proven, and this gate previously ignored it: `ntm coordinator run`
+	// claimed, reserved, and mailed open epics into worker panes that the
+	// `ntm assign` classifier refuses. Checked before the operator gate
+	// because the exclusion is intrinsic to the type, not a policy that
+	// labels could lift.
+	if bv.IsContainerBeadType(recommendation.Type) {
 		return false
 	}
 	for _, rawLabel := range recommendation.Labels {

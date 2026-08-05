@@ -393,8 +393,20 @@ func (s *Server) handleCancelPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancel the pipeline using the executor's Cancel method
-	pipeline.CancelPipeline(runID)
+	// Cancel the pipeline using the executor's Cancel method. Only this process
+	// holds the cancel handles, while the status check above is satisfied by
+	// the on-disk state file, so a run started by another process (the
+	// `ntm pipeline` CLI, or a server that has since restarted) reaches here
+	// looking cancellable and is not. Report that honestly instead of
+	// answering 200 "cancelled" for a pipeline that keeps running.
+	if !pipeline.CancelPipeline(runID) {
+		writeErrorResponse(w, http.StatusConflict, ErrCodeConflict,
+			"pipeline is not cancellable from this server: no live execution handle for this run", map[string]interface{}{
+				"run_id": runID,
+				"status": exec.Status,
+			}, reqID)
+		return
+	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"run_id":  runID,

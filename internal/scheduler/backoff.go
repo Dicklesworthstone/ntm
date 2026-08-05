@@ -306,7 +306,16 @@ func (bc *BackoffController) SetHooks(
 // Returns (shouldRetry, delay) where delay is 0 if no backoff needed.
 func (bc *BackoffController) HandleError(job *SpawnJob, resErr *ResourceError) (bool, time.Duration) {
 	if resErr == nil || !resErr.Retryable {
-		bc.recordSuccess()
+		// A job that failed for a non-resource reason is not evidence that the
+		// host recovered, so it must not clear backoff state. This is only
+		// ever reached from executeJob's ERROR branch: calling recordSuccess()
+		// here cancelled active global backoff, resumed a scheduler that had
+		// been paused for host exhaustion, and reset currentDelay to
+		// InitialDelay — so one "session not found" in the middle of a fork
+		// storm sent the scheduler straight back to hammering the box, with
+		// the next real resource failure restarting the ramp from scratch.
+		// Genuine success is recorded by executeJob's success branch, which
+		// calls RecordSuccess directly.
 		return false, 0
 	}
 

@@ -5,6 +5,7 @@ package robot
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -641,29 +642,13 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 	// window 0 while reporting results for panes it never touched. Prefer the
 	// session-unique NTM agent index there, and only fall back to the
 	// window-local index on single-window sessions where it is unambiguous.
-	var targetPane *tmux.Pane
-	if sessionSpansMultipleWindows(panes) {
-		for i := range panes {
-			if panes[i].NTMIndex == opts.Pane {
-				targetPane = &panes[i]
-				break
-			}
-		}
-	}
-	if targetPane == nil && !sessionSpansMultipleWindows(panes) {
-		for i := range panes {
-			if panes[i].Index == opts.Pane {
-				targetPane = &panes[i]
-				break
-			}
-		}
-	}
+	targetPane := resolveProbePane(panes, opts.Pane)
 
 	if targetPane == nil {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("pane %d not found in session '%s'", opts.Pane, opts.Session),
 			ErrCodePaneNotFound,
-			fmt.Sprintf("Session has %d pane(s), indices 0-%d", len(panes), len(panes)-1),
+			probeSelectorHint(panes),
 		)
 		return output, nil
 	}
@@ -672,8 +657,14 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 		return output, nil
 	}
 
-	// Build target string for tmux commands
-	target := fmt.Sprintf("%s:%d.%d", opts.Session, targetPane.WindowIndex, opts.Pane)
+	// Build target string for tmux commands. The pane component must be the
+	// pane's own window-local index, never the selector opts.Pane arrived as:
+	// on a multi-window session that selector is the session-unique NTM agent
+	// index, and interpolating it addressed a pane that either does not exist
+	// (capture-pane fails, every healthy agent reads back "likely_stuck") or,
+	// in a window that happens to be split, belongs to a different agent that
+	// then receives the probe keystrokes and the interrupt-test Ctrl-C.
+	target := fmt.Sprintf("%s:%d.%d", opts.Session, targetPane.WindowIndex, targetPane.Index)
 	timeout := time.Duration(opts.Flags.TimeoutMs) * time.Millisecond
 
 	// Execute probe based on method
@@ -758,17 +749,72 @@ func validateProbePane(pane tmux.Pane) error {
 	return nil
 }
 
-func validateProbeTargets(panes []tmux.Pane, targetPanes []int) error {
-	panesByIndex := make(map[int]tmux.Pane, len(panes))
-	for _, pane := range panes {
-		panesByIndex[pane.Index] = pane
+// resolveProbePane maps a --panes selector to the pane it addresses.
+//
+// pane_index is WINDOW-LOCAL, so a bare int is not a unique key on a
+// multi-window session: in a window-per-agent layout every window has a pane at
+// index 0, and matching the first one made every probe land in window 0 while
+// reporting results for panes it never touched. Prefer the session-unique NTM
+// agent index there, and only fall back to the window-local index on
+// single-window sessions where it is unambiguous.
+//
+// Every consumer of a selector must resolve through this one function.
+// validateProbeTargets previously keyed its own map by pane.Index while the
+// batch enumerated NTM indices, so on a window-per-agent session every lookup
+// missed and the capability gate silently passed panes it was there to reject.
+func resolveProbePane(panes []tmux.Pane, selector int) *tmux.Pane {
+	if sessionSpansMultipleWindows(panes) {
+		for i := range panes {
+			if panes[i].NTMIndex == selector {
+				return &panes[i]
+			}
+		}
+		return nil
 	}
-	for _, paneIndex := range targetPanes {
-		pane, ok := panesByIndex[paneIndex]
-		if !ok {
+	for i := range panes {
+		if panes[i].Index == selector {
+			return &panes[i]
+		}
+	}
+	return nil
+}
+
+// probeSelectorHint lists the selectors resolveProbePane will actually accept.
+// A fixed "indices 0-N" hint is wrong on a multi-window session, where the
+// selectors are 1-based NTM agent indices rather than a dense 0-based range.
+func probeSelectorHint(panes []tmux.Pane) string {
+	multiWindow := sessionSpansMultipleWindows(panes)
+	seen := make(map[int]struct{}, len(panes))
+	keys := make([]int, 0, len(panes))
+	for _, pane := range panes {
+		key := pane.Index
+		if multiWindow {
+			key = pane.NTMIndex
+		}
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		if err := validateProbePane(pane); err != nil {
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return "Session has no panes to probe"
+	}
+	sort.Ints(keys)
+	valid := make([]string, 0, len(keys))
+	for _, key := range keys {
+		valid = append(valid, strconv.Itoa(key))
+	}
+	return fmt.Sprintf("Valid --panes selectors for this session: %s", strings.Join(valid, ","))
+}
+
+func validateProbeTargets(panes []tmux.Pane, targetPanes []int) error {
+	for _, selector := range targetPanes {
+		pane := resolveProbePane(panes, selector)
+		if pane == nil {
+			continue
+		}
+		if err := validateProbePane(*pane); err != nil {
 			return err
 		}
 	}

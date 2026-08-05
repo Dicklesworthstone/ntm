@@ -871,7 +871,7 @@ func TestAssignWorkSkipsPersistedActiveRecommendation(t *testing.T) {
 	}
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
 		return []bv.TriageRecommendation{{
-			ID: "ntm-active", Title: "Already assigned", Status: "open", Priority: 1, Score: 1,
+			ID: "ntm-active", Title: "Already assigned", Type: "task", Status: "open", Priority: 1, Score: 1,
 		}}, nil
 	}
 	c.workItemStatusFn = func(context.Context, string) (string, error) {
@@ -938,7 +938,7 @@ func TestAssignWorkReconcilesClosedAssignmentAndReusesPane(t *testing.T) {
 	}
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
 		return []bv.TriageRecommendation{{
-			ID: "ntm-new", Title: "Fresh work", Status: "open", Priority: 1, Score: 1,
+			ID: "ntm-new", Title: "Fresh work", Type: "task", Status: "open", Priority: 1, Score: 1,
 		}}, nil
 	}
 	c.atomicCoordinatorFactory = func(store *assignmentstore.AssignmentStore) *assignmentstore.AtomicCoordinator {
@@ -1132,7 +1132,7 @@ func TestAssignWorkUsesPlanOnlyVerifiedRecommendationWithoutReintroducingStaleTr
 			t.Fatalf("actionable verification project=%q limit=%d", projectKey, limit)
 		}
 		return []bv.TriageRecommendation{{
-			ID: planOnlyID, Title: "Plan-only actionable work", Status: "open", Priority: 1, Score: 1,
+			ID: planOnlyID, Title: "Plan-only actionable work", Type: "task", Status: "open", Priority: 1, Score: 1,
 		}}, nil
 	}
 	var detailLookups []string
@@ -1141,7 +1141,7 @@ func TestAssignWorkUsesPlanOnlyVerifiedRecommendationWithoutReintroducingStaleTr
 		if beadID == staleTriageID {
 			t.Fatal("stale triage-only recommendation was reintroduced")
 		}
-		return &bv.BeadAssignmentDetails{ID: planOnlyID, Title: "Plan-only actionable work", Status: "open"}, nil
+		return &bv.BeadAssignmentDetails{ID: planOnlyID, Title: "Plan-only actionable work", IssueType: "task", Status: "open"}, nil
 	}
 	c.atomicCoordinatorFactory = successfulCoordinatorAtomicFactory("mail-plan-only")
 
@@ -1165,14 +1165,14 @@ func TestAssignWorkAppliesLiveConfiguredOperatorGateBeforeClaimAndDispatch(t *te
 	addEligibleCoordinatorAgent(c, "%84", "BlueLake")
 	c.actionableRecommendationsFn = func(context.Context, string, int) ([]bv.TriageRecommendation, error) {
 		return []bv.TriageRecommendation{{
-			ID: "ntm-live-operator-gate", Title: "Stale ungated work", Status: "open", Priority: 1, Score: 1,
+			ID: "ntm-live-operator-gate", Title: "Stale ungated work", Type: "task", Status: "open", Priority: 1, Score: 1,
 		}}, nil
 	}
 	detailCalls := 0
 	c.workItemDetailsFn = func(context.Context, string) (*bv.BeadAssignmentDetails, error) {
 		detailCalls++
 		return &bv.BeadAssignmentDetails{
-			ID: "ntm-live-operator-gate", Title: "Live gated work", Status: "open", Labels: []string{" Coordinator-Approval-Required "},
+			ID: "ntm-live-operator-gate", Title: "Live gated work", IssueType: "task", Status: "open", Labels: []string{" Coordinator-Approval-Required "},
 		}, nil
 	}
 	factoryCalls := 0
@@ -1684,12 +1684,12 @@ func TestFilterActionableRecommendationsUsesAuthoritativeStatusWithoutMutatingCa
 		return statuses[beadID], nil
 	}
 	source := []bv.TriageRecommendation{
-		{ID: "ntm-open", Title: "Open"},
-		{ID: "ntm-active", Title: "Already active"},
-		{ID: "ntm-closed", Title: "Closed"},
-		{ID: "ntm-tombstone", Title: "Tombstoned"},
-		{ID: "ntm-in-progress", Title: "Externally claimed"},
-		{ID: "ntm-blocked", Title: "Blocked"},
+		{ID: "ntm-open", Title: "Open", Type: "task"},
+		{ID: "ntm-active", Title: "Already active", Type: "task"},
+		{ID: "ntm-closed", Title: "Closed", Type: "task"},
+		{ID: "ntm-tombstone", Title: "Tombstoned", Type: "task"},
+		{ID: "ntm-in-progress", Title: "Externally claimed", Type: "task"},
+		{ID: "ntm-blocked", Title: "Blocked", Type: "task"},
 	}
 	original := append([]bv.TriageRecommendation(nil), source...)
 	filtered, terminal, err := c.filterActionableRecommendations(t.Context(), source, map[string]struct{}{"ntm-active": {}})
@@ -1734,10 +1734,10 @@ func TestFilterActionableRecommendationsSkipsDependencyAndOperatorGates(t *testi
 		return "open", nil
 	}
 	source := []bv.TriageRecommendation{
-		{ID: "ntm-ready", Status: "open"},
-		{ID: "ntm-dependency", Status: "open", BlockedBy: []string{"ntm-prerequisite"}},
-		{ID: "ntm-operator", Status: "open", Labels: []string{"Backend", "Operator-Gated"}},
-		{ID: "ntm-blocked", Status: "blocked"},
+		{ID: "ntm-ready", Type: "task", Status: "open"},
+		{ID: "ntm-dependency", Type: "task", Status: "open", BlockedBy: []string{"ntm-prerequisite"}},
+		{ID: "ntm-operator", Type: "task", Status: "open", Labels: []string{"Backend", "Operator-Gated"}},
+		{ID: "ntm-blocked", Type: "task", Status: "blocked"},
 	}
 	filtered, terminal, err := c.filterActionableRecommendations(t.Context(), source, nil)
 	if err != nil || terminal || len(filtered) != 1 || filtered[0].ID != "ntm-ready" {
@@ -1764,13 +1764,81 @@ func TestRecommendationPassesSemanticGatesUsesCanonicalOperatorLabels(t *testing
 	}
 }
 
+// Containers (epics) are grouping nodes, never implementation work. The CLI
+// classifier has always excluded them; the coordinator's gate did not, so
+// `ntm coordinator run` claimed, reserved, and mailed open epics into worker
+// panes that `ntm assign` refuses to dispatch.
+func TestRecommendationPassesSemanticGatesExcludesContainerTypes(t *testing.T) {
+	t.Parallel()
+
+	for _, issueType := range []string{"epic", "EPIC", "  Epic  "} {
+		issueType := issueType
+		t.Run(issueType, func(t *testing.T) {
+			t.Parallel()
+			if recommendationPassesSemanticGates(bv.TriageRecommendation{
+				ID: "ntm-container", Type: issueType, Status: "open",
+			}) {
+				t.Fatalf("container issue type %q passed coordinator semantic gates", issueType)
+			}
+		})
+	}
+
+	if !recommendationPassesSemanticGates(bv.TriageRecommendation{
+		ID: "ntm-work", Type: "task", Status: "open",
+	}) {
+		t.Fatal("ordinary task was rejected by coordinator semantic gates")
+	}
+}
+
+// Type evidence is part of the authorization boundary: without it the
+// container gate cannot prove an item is implementation work, so the
+// authoritative filter must stop rather than dispatch it.
+func TestFilterActionableRecommendationsRefusesUnverifiedIssueType(t *testing.T) {
+	t.Parallel()
+	c := New("recommendation-unverified-type", t.TempDir(), nil, "CoordinatorAgent")
+	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		return &bv.BeadAssignmentDetails{ID: beadID, Title: "No type anywhere", Status: "open"}, nil
+	}
+
+	filtered, terminal, err := c.filterActionableRecommendations(t.Context(),
+		[]bv.TriageRecommendation{{ID: "ntm-untyped", Status: "open"}}, nil)
+	if err == nil {
+		t.Fatalf("filtered=%+v terminal=%v, want an error for an unverifiable issue type", filtered, terminal)
+	}
+	if !strings.Contains(err.Error(), "no verified issue type") {
+		t.Fatalf("error = %v, want it to name the missing type evidence", err)
+	}
+}
+
+// A live read that omits the type must not erase evidence the plan proved.
+func TestFilterActionableRecommendationsKeepsPlannedTypeWhenLiveReadOmitsIt(t *testing.T) {
+	t.Parallel()
+	c := New("recommendation-planned-type", t.TempDir(), nil, "CoordinatorAgent")
+	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
+		return &bv.BeadAssignmentDetails{ID: beadID, Title: "Live row without a type", Status: "open"}, nil
+	}
+
+	filtered, _, err := c.filterActionableRecommendations(t.Context(),
+		[]bv.TriageRecommendation{{ID: "ntm-planned", Type: "task", Status: "open"}}, nil)
+	if err != nil || len(filtered) != 1 || filtered[0].Type != "task" {
+		t.Fatalf("filtered=%+v error=%v, want the planned type preserved", filtered, err)
+	}
+
+	// The same path must still reject a planned container.
+	filtered, _, err = c.filterActionableRecommendations(t.Context(),
+		[]bv.TriageRecommendation{{ID: "ntm-planned-epic", Type: "epic", Status: "open"}}, nil)
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("filtered=%+v error=%v, want the planned epic excluded", filtered, err)
+	}
+}
+
 func TestFilterActionableRecommendationsUsesLiveDependencyAndLabelTruth(t *testing.T) {
 	t.Parallel()
 	c := New("recommendation-live-gates", t.TempDir(), nil, "CoordinatorAgent")
 	details := map[string]*bv.BeadAssignmentDetails{
-		"ntm-ready":      {ID: "ntm-ready", Title: "Current ready", Status: "open"},
-		"ntm-dependency": {ID: "ntm-dependency", Title: "Now blocked", Status: "open", BlockedBy: []string{"ntm-prerequisite"}},
-		"ntm-operator":   {ID: "ntm-operator", Title: "Needs human", Status: "open", Labels: []string{"operator-gated"}},
+		"ntm-ready":      {ID: "ntm-ready", Title: "Current ready", IssueType: "task", Status: "open"},
+		"ntm-dependency": {ID: "ntm-dependency", Title: "Now blocked", IssueType: "task", Status: "open", BlockedBy: []string{"ntm-prerequisite"}},
+		"ntm-operator":   {ID: "ntm-operator", Title: "Needs human", IssueType: "task", Status: "open", Labels: []string{"operator-gated"}},
 	}
 	c.workItemDetailsFn = func(_ context.Context, beadID string) (*bv.BeadAssignmentDetails, error) {
 		copy := *details[beadID]
@@ -1779,9 +1847,9 @@ func TestFilterActionableRecommendationsUsesLiveDependencyAndLabelTruth(t *testi
 		return &copy, nil
 	}
 	staleReady := []bv.TriageRecommendation{
-		{ID: "ntm-ready", Title: "Stale title", Status: "open"},
-		{ID: "ntm-dependency", Title: "Stale ready", Status: "open"},
-		{ID: "ntm-operator", Title: "Stale ready", Status: "open"},
+		{ID: "ntm-ready", Title: "Stale title", Type: "task", Status: "open"},
+		{ID: "ntm-dependency", Title: "Stale ready", Type: "task", Status: "open"},
+		{ID: "ntm-operator", Title: "Stale ready", Type: "task", Status: "open"},
 	}
 	filtered, terminal, err := c.filterActionableRecommendations(t.Context(), staleReady, nil)
 	if err != nil || terminal || len(filtered) != 1 || filtered[0].ID != "ntm-ready" || filtered[0].Title != "Current ready" {
@@ -1792,7 +1860,7 @@ func TestFilterActionableRecommendationsUsesLiveDependencyAndLabelTruth(t *testi
 func TestAssignWorkDoesNotMutateSharedActionableRecommendations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	shared := []bv.TriageRecommendation{{
-		ID: "ntm-cached", Title: "Cached recommendation", Status: "open", Priority: 1, Score: 1,
+		ID: "ntm-cached", Title: "Cached recommendation", Type: "task", Status: "open", Priority: 1, Score: 1,
 	}}
 	original := append([]bv.TriageRecommendation(nil), shared...)
 
@@ -1816,7 +1884,7 @@ func TestAssignWorkDoesNotMutateSharedActionableRecommendations(t *testing.T) {
 func TestAssignWorkConcurrentCyclesDoNotRaceOnSharedActionableRecommendations(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	shared := []bv.TriageRecommendation{{
-		ID: "ntm-concurrent-cache", Title: "Shared concurrent recommendation", Status: "open", Priority: 1, Score: 1,
+		ID: "ntm-concurrent-cache", Title: "Shared concurrent recommendation", Type: "task", Status: "open", Priority: 1, Score: 1,
 	}}
 	original := append([]bv.TriageRecommendation(nil), shared...)
 
@@ -2294,11 +2362,15 @@ func TestScoreAndSelectAssignments(t *testing.T) {
 	triage := &bv.TriageResponse{
 		Triage: bv.TriageData{
 			Recommendations: []bv.TriageRecommendation{
-				{ID: "ntm-001", Title: "Epic task", Type: "epic", Status: "open", Priority: 2, Score: 0.8},
+				{ID: "ntm-001", Title: "Feature work", Type: "feature", Status: "open", Priority: 2, Score: 0.8},
 				{ID: "ntm-002", Title: "Quick fix", Type: "chore", Status: "open", Priority: 2, Score: 0.6},
 				{ID: "ntm-003", Title: "Blocked", Type: "task", Status: "blocked", Priority: 2, Score: 0.9},
 				{ID: "ntm-004", Title: "Dependency gated", Type: "task", Status: "open", Priority: 1, Score: 1, BlockedBy: []string{"ntm-prerequisite"}},
 				{ID: "ntm-005", Title: "Operator gated", Type: "task", Status: "open", Priority: 1, Score: 1, Labels: []string{"operator-action"}},
+				// A container node ranked above everything else. Containers are
+				// grouping nodes, never implementation work, so this must not
+				// be dispatched no matter how highly triage scores it.
+				{ID: "ntm-006", Title: "Epic container", Type: "epic", Status: "open", Priority: 0, Score: 1},
 			},
 		},
 	}
@@ -2319,9 +2391,10 @@ func TestScoreAndSelectAssignments(t *testing.T) {
 		agentTasks[r.Agent.PaneID] = r.Assignment.BeadID
 	}
 
-	// Verify blocked task not assigned
+	// Verify blocked, gated, and container items are not assigned
 	for _, r := range results {
-		if r.Assignment.BeadID == "ntm-003" || r.Assignment.BeadID == "ntm-004" || r.Assignment.BeadID == "ntm-005" {
+		switch r.Assignment.BeadID {
+		case "ntm-003", "ntm-004", "ntm-005", "ntm-006":
 			t.Errorf("gated task %s should not be assigned", r.Assignment.BeadID)
 		}
 	}

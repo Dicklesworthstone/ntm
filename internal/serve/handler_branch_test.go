@@ -8522,14 +8522,59 @@ func TestValidateOIDCToken_NotYetValid(t *testing.T) {
 	}
 
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
-	// nbf set to year 2099
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://example.com","nbf":4102444800}`))
+	// nbf set to year 2099, with a still-valid exp so nbf is what rejects it.
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://example.com","exp":4102444800,"nbf":4102444800}`))
 	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
 	token := header + "." + payload + "." + sig
 
 	_, err := s.validateOIDCToken(context.Background(), token)
 	if err == nil || !strings.Contains(err.Error(), "token not yet valid") {
 		t.Fatalf("expected token not yet valid error, got: %v", err)
+	}
+}
+
+// --- validateOIDCToken: expiry must fail CLOSED ---
+
+// exp was treated as optional, and claimInt64 reports "present but not a JSON
+// number" identically to "absent". Either shape therefore skipped the expiry
+// check entirely, making the token a permanent credential for every write
+// route: only JWKS keys are re-fetched, so IdP-side revocation never reaches it.
+func TestValidateOIDCToken_RejectsTokensWithoutUsableExpiry(t *testing.T) {
+	s, _ := setupTestServer(t)
+	s.auth = AuthConfig{
+		Mode: AuthModeOIDC,
+		OIDC: OIDCConfig{
+			JWKSURL: "https://example.com/.well-known/jwks.json",
+			Issuer:  "https://example.com",
+		},
+	}
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key1"}`))
+	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
+
+	cases := []struct {
+		name    string
+		claims  string
+		wantErr string
+	}{
+		{"missing exp", `{"iss":"https://example.com"}`, "no usable exp claim"},
+		{"string exp", `{"iss":"https://example.com","exp":"4102444800"}`, "no usable exp claim"},
+		{"null exp", `{"iss":"https://example.com","exp":null}`, "no usable exp claim"},
+		{"string nbf", `{"iss":"https://example.com","exp":4102444800,"nbf":"1"}`, "unusable nbf claim"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			token := header + "." + base64.RawURLEncoding.EncodeToString([]byte(tc.claims)) + "." + sig
+			_, err := s.validateOIDCToken(context.Background(), token)
+			if err == nil {
+				t.Fatal("token was accepted; expiry validation must fail closed")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

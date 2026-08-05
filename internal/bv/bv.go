@@ -1166,6 +1166,20 @@ func IsOperatorGatedLabelForProject(projectDir, label string) bool {
 	return gated
 }
 
+// IsContainerBeadType reports whether an issue type is a container/grouping
+// node rather than a unit of implementation work. Containers are never
+// auto-dispatched into worker panes (GH#242 / ntm-e165).
+//
+// This lives in bv, next to the operator-label gate, because it is the same
+// kind of rule — part of the assignment authorization boundary — and it has to
+// mean the same thing on every path that can dispatch work. It previously
+// existed only in the CLI classifier, so `ntm coordinator run` happily claimed
+// and mailed open epics that `ntm assign` refuses. Unlike the label gate, this
+// exclusion is intrinsic to the issue type and no label can lift it.
+func IsContainerBeadType(issueType string) bool {
+	return strings.EqualFold(strings.TrimSpace(issueType), "epic")
+}
+
 // IsOperatorGatedLabelInPolicy evaluates a label against the built-in gates
 // plus one immutable configured extras snapshot.
 func IsOperatorGatedLabelInPolicy(label string, extra []string) bool {

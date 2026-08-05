@@ -1580,25 +1580,39 @@ type MockTmuxClient struct {
 	// through a different tmux invocation than literal text.
 	SentKeyNames  []string
 	SendKeyNameFn func(target, keyName string) error
+
+	// Targets records every "session:window.pane" address the probe built, for
+	// every tmux operation. Discarding these is what let the probe address the
+	// wrong pane undetected: the batch resolved the right tmux.Pane and then
+	// interpolated the wrong index into the target string.
+	Targets []string
+}
+
+func (m *MockTmuxClient) recordTarget(target string) {
+	m.Targets = append(m.Targets, target)
 }
 
 func (m *MockTmuxClient) CaptureForStatusDetection(target string) (string, error) {
 	m.CaptureCount++
+	m.recordTarget(target)
 	return m.CaptureOutput, m.CaptureError
 }
 
 func (m *MockTmuxClient) CapturePaneOutput(target string, lines int) (string, error) {
 	m.CaptureCount++
+	m.recordTarget(target)
 	return m.CaptureOutput, m.CaptureError
 }
 
 func (m *MockTmuxClient) SendKeys(target, keys string, enter bool) error {
 	m.SendKeysCount++
+	m.recordTarget(target)
 	m.SentLiterals = append(m.SentLiterals, keys)
 	return m.SendKeysError
 }
 
 func (m *MockTmuxClient) SendKeyName(target, keyName string) error {
+	m.recordTarget(target)
 	m.SentKeyNames = append(m.SentKeyNames, keyName)
 	if m.SendKeyNameFn != nil {
 		return m.SendKeyNameFn(target, keyName)
@@ -1608,6 +1622,7 @@ func (m *MockTmuxClient) SendKeyName(target, keyName string) error {
 
 func (m *MockTmuxClient) SendInterrupt(target string) error {
 	m.InterruptCount++
+	m.recordTarget(target)
 	return m.InterruptError
 }
 
@@ -1891,6 +1906,22 @@ func TestGetProbeSession_WindowPerAgentDoesNotCollapse(t *testing.T) {
 	for pane, count := range seen {
 		if count != 1 {
 			t.Fatalf("pane %d probed %d times, want exactly 1", pane, count)
+		}
+	}
+
+	// Resolving the right tmux.Pane is only half the job: the target string
+	// must carry that pane's own window-local index. Interpolating the NTM
+	// index instead produced "proj:1.2" for a window that has only pane 0, so
+	// every capture failed and every healthy agent read back "likely_stuck" —
+	// and where a window did have that many panes, the probe keystrokes and
+	// the interrupt-test Ctrl-C landed on a different agent entirely.
+	wantTargets := map[string]bool{"proj:0.0": true, "proj:1.0": true, "proj:2.0": true}
+	if len(mock.Targets) == 0 {
+		t.Fatal("probe issued no tmux operations")
+	}
+	for _, target := range mock.Targets {
+		if !wantTargets[target] {
+			t.Fatalf("probe addressed %q; want one of %v (window-local pane index, not the NTM agent index)", target, wantTargets)
 		}
 	}
 }

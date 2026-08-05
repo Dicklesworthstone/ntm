@@ -97,7 +97,40 @@ func DefaultAgentCapsConfig() AgentCapsConfig {
 	}
 }
 
+// normalizeRampUp repairs an incoherent ramp-up config before it can reach the
+// scheduling math. RampUpInterval is a DIVISOR in updateRampUp, and the guard
+// there (elapsed >= RampUpInterval) is trivially true at zero, so a caller who
+// enabled ramp-up without setting an interval — every field of AgentCapConfig
+// is optional and zero-valued — panicked the process with an integer divide by
+// zero on the second TryAcquire. A zero step made the same config ramp forever
+// without gaining capacity, and a zero initial cap starved the agent type
+// permanently because currentCap could never exceed running.
+//
+// Repairing beats rejecting here: NewAgentCaps has no error path, and the
+// operator's intent ("ramp gradually") is unambiguous even when the schedule
+// is unspecified.
+func normalizeRampUp(cfg AgentCapConfig) AgentCapConfig {
+	if !cfg.RampUpEnabled {
+		return cfg
+	}
+	defaults := DefaultAgentCapConfig()
+	if cfg.RampUpInterval <= 0 {
+		cfg.RampUpInterval = defaults.RampUpInterval
+	}
+	if cfg.RampUpStep < 1 {
+		cfg.RampUpStep = 1
+	}
+	if cfg.RampUpInitial < 1 {
+		cfg.RampUpInitial = 1
+	}
+	if cfg.MaxConcurrent > 0 && cfg.RampUpInitial > cfg.MaxConcurrent {
+		cfg.RampUpInitial = cfg.MaxConcurrent
+	}
+	return cfg
+}
+
 func normalizeAgentCapsConfig(cfg AgentCapsConfig) AgentCapsConfig {
+	cfg.Default = normalizeRampUp(cfg.Default)
 	if len(cfg.PerAgent) == 0 {
 		return cfg
 	}
@@ -113,13 +146,13 @@ func normalizeAgentCapsConfig(cfg AgentCapsConfig) AgentCapsConfig {
 	for _, key := range keys {
 		canonical := canonicalSchedulerAgentTypeKey(key)
 		if canonical == key {
-			normalized[canonical] = cfg.PerAgent[key]
+			normalized[canonical] = normalizeRampUp(cfg.PerAgent[key])
 		}
 	}
 	for _, key := range keys {
 		canonical := canonicalSchedulerAgentTypeKey(key)
 		if _, exists := normalized[canonical]; !exists {
-			normalized[canonical] = cfg.PerAgent[key]
+			normalized[canonical] = normalizeRampUp(cfg.PerAgent[key])
 		}
 	}
 
@@ -631,6 +664,13 @@ func (ac *AgentCaps) RecordSuccess(agentType string) {
 // updateRampUp checks and applies ramp-up if needed.
 func (ac *AgentCaps) updateRampUp(agentType string, state *agentCapState) {
 	if !state.config.RampUpEnabled || state.startedAt.IsZero() {
+		return
+	}
+	// RampUpInterval is the divisor below. normalizeAgentCapsConfig repairs a
+	// non-positive one at construction, but this is the only place the value
+	// is actually unsafe, so keep the guard adjacent to the division rather
+	// than relying on a caller two layers away having sanitized it.
+	if state.config.RampUpInterval <= 0 {
 		return
 	}
 

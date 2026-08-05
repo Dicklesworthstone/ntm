@@ -301,6 +301,50 @@ func TestBackoffController_RecordSuccess(t *testing.T) {
 	}
 }
 
+// executeJob calls HandleError on EVERY job error, and ClassifyError returns
+// nil for ordinary (non-resource) failures. Treating that as a success cleared
+// active global backoff and resumed a scheduler that had been paused for host
+// exhaustion, then reset the delay ramp to InitialDelay.
+func TestBackoffController_NonResourceErrorDoesNotClearGlobalBackoff(t *testing.T) {
+	cfg := DefaultBackoffConfig()
+	cfg.ConsecutiveFailuresThreshold = 2
+	cfg.InitialDelay = 500 * time.Millisecond
+	cfg.PauseQueueOnBackoff = true
+	bc := NewBackoffController(cfg)
+	bc.SetScheduler(New(DefaultConfig()))
+
+	job := NewSpawnJob("test-job", JobTypePaneSplit, "test-session")
+	resErr := &ResourceError{Type: ResourceErrorEAGAIN, Retryable: true}
+
+	bc.HandleError(job, resErr)
+	bc.HandleError(job, resErr)
+	if !bc.IsInGlobalBackoff() {
+		t.Fatal("expected global backoff after crossing the consecutive-failure threshold")
+	}
+
+	// An ordinary failure (nil classification) arrives mid-backoff.
+	if shouldRetry, delay := bc.HandleError(job, nil); shouldRetry || delay != 0 {
+		t.Fatalf("HandleError(nil) = (%v, %v), want (false, 0)", shouldRetry, delay)
+	}
+	if !bc.IsInGlobalBackoff() {
+		t.Fatal("a non-resource job failure cancelled global backoff; it is not evidence the host recovered")
+	}
+
+	// A non-retryable resource error must behave the same way.
+	if shouldRetry, _ := bc.HandleError(job, &ResourceError{Type: ResourceErrorEAGAIN, Retryable: false}); shouldRetry {
+		t.Fatal("non-retryable resource error should not request a retry")
+	}
+	if !bc.IsInGlobalBackoff() {
+		t.Fatal("a non-retryable resource error cancelled global backoff")
+	}
+
+	// Genuine success still clears it — that is the only signal that should.
+	bc.RecordSuccess()
+	if bc.IsInGlobalBackoff() {
+		t.Fatal("RecordSuccess did not clear global backoff")
+	}
+}
+
 func TestBackoffController_GlobalBackoff(t *testing.T) {
 	cfg := DefaultBackoffConfig()
 	cfg.ConsecutiveFailuresThreshold = 2

@@ -631,17 +631,28 @@ func (s *Scheduler) EstimateETA(jobID string) (time.Duration, error) {
 		}
 	}
 
-	// Estimate based on rate limit and concurrency
+	// Estimate based on rate limit and concurrency. The denominator must be the
+	// bucket's REFILL RATE (tokens/second), which is what converts a token
+	// count into a duration. Dividing by the tokens currently in the bucket
+	// was dimensionless — tokens/tokens read out as seconds — so the estimate
+	// moved the wrong way with load: a nearly-full bucket under-reported by an
+	// order of magnitude, and draining the bucket inflated the ETA for an
+	// unchanged queue. progress.go's sibling estimator already divides by Rate.
 	tokensNeeded := float64(jobsAhead) / float64(s.workers)
-	currentTokens := s.globalLimiter.Stats().CurrentTokens
-	var etaSeconds float64
-	if currentTokens > 0 {
-		etaSeconds = tokensNeeded / currentTokens
-	} else {
-		etaSeconds = tokensNeeded * 2 // conservative estimate when bucket is empty
+
+	// Tokens already in the bucket are served without waiting for a refill.
+	remaining := tokensNeeded - s.globalLimiter.Stats().CurrentTokens
+	if remaining < 0 {
+		remaining = 0
 	}
-	if etaSeconds < 0 {
-		etaSeconds = 0
+
+	var etaSeconds float64
+	if rate := s.globalLimiter.rate; rate > 0 {
+		etaSeconds = remaining / rate
+	} else {
+		// A bucket that never refills cannot serve what it does not already
+		// hold; report a conservative estimate rather than a bogus zero.
+		etaSeconds = remaining * 2
 	}
 
 	// Add time until next token

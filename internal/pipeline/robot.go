@@ -933,11 +933,20 @@ func GetAllPipelineSnapshots() []*PipelineExecution {
 	return snapshots
 }
 
-// CancelPipeline cancels a running pipeline by run ID (exported for REST API)
-func CancelPipeline(runID string) {
+// CancelPipeline cancels a running pipeline by run ID (exported for REST API).
+//
+// It reports whether a live execution handle was actually found and cancelled.
+// Cancellation needs the in-process cancelFn/executor, which only exist in the
+// registry of the process that started the run — but GetPipelineSnapshot falls
+// back to the on-disk state file, so a caller can see a "running" pipeline that
+// this process cannot stop (started by the `ntm pipeline` CLI, or by a server
+// that has since restarted). Returning void made that case indistinguishable
+// from a real cancellation, and the REST handler answered 200 "cancelled" for a
+// run that kept going.
+func CancelPipeline(runID string) bool {
 	exec := getPipeline(runID)
 	if exec == nil {
-		return
+		return false
 	}
 
 	// Cancel the execution
@@ -954,6 +963,8 @@ func CancelPipeline(runID string) {
 	now := time.Now()
 	exec.FinishedAt = &now
 	pipelineMu.Unlock()
+
+	return true
 }
 
 func updatePipelineFromState(runID string, state *ExecutionState) {

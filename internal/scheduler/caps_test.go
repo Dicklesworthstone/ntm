@@ -702,3 +702,37 @@ func TestAgentCaps_GlobalCapExceeded_ViaAcquire(t *testing.T) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
+
+// Every field of AgentCapConfig is optional and zero-valued, so enabling
+// ramp-up without naming an interval is an easy config to write. It made
+// updateRampUp divide by zero — a hard panic that killed the process on the
+// second TryAcquire, and on any GetCurrentCap/GetAvailable/Stats call.
+func TestAgentCaps_RampUpWithZeroValuedScheduleDoesNotPanic(t *testing.T) {
+	caps := NewAgentCaps(AgentCapsConfig{
+		Default: AgentCapConfig{
+			MaxConcurrent: 4,
+			RampUpEnabled: true,
+			// RampUpInterval, RampUpStep and RampUpInitial deliberately unset.
+		},
+	})
+
+	if !caps.TryAcquire("cc") {
+		t.Fatal("first TryAcquire should succeed")
+	}
+	caps.Release("cc")
+
+	// The second acquire is where the division happened (startedAt is set).
+	if !caps.TryAcquire("cc") {
+		t.Fatal("second TryAcquire should succeed")
+	}
+	caps.Release("cc")
+
+	_ = caps.GetCurrentCap("cc")
+	_ = caps.GetAvailable("cc")
+	_ = caps.Stats()
+
+	// A zero initial cap would have starved the agent type permanently.
+	if got := caps.GetCurrentCap("cc"); got < 1 {
+		t.Fatalf("current cap = %d, want at least 1 so the agent type is not starved", got)
+	}
+}
