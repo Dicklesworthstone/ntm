@@ -2842,3 +2842,87 @@ func TestPersistenceErrorTypes(t *testing.T) {
 		t.Error("expected non-empty error string")
 	}
 }
+
+// bd-fresh-eyes-audit .15: saveLocked merges this process's delta against the
+// file, and mergeAssignmentDelta refuses a delta whose on-disk record is
+// already terminal. UpdateStatus/MarkFailed used to return nil anyway and emit
+// a webhook announcing a status that exists nowhere on disk, while cloning the
+// in-memory pointer saveLocked had just orphaned.
+func TestUpdateStatusFailsWhenMergeDiscardsTheTransition(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "assignment-discarded-status"
+	const beadID = "ntm-discarded-status"
+	now := time.Now().UTC()
+
+	seed := NewStore(session)
+	seed.Assignments[beadID] = &Assignment{
+		BeadID: beadID, BeadTitle: "Work", Pane: 1,
+		AgentType: "claude", AgentName: "ClaudeOne", Status: StatusAssigned, AssignedAt: now,
+	}
+	if err := seed.Save(); err != nil {
+		t.Fatalf("seed assignment: %v", err)
+	}
+
+	// Process 1 holds a view of the assignment...
+	stale, err := LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("load stale view: %v", err)
+	}
+	// ...while process 2 completes it.
+	winner, err := LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("load winner view: %v", err)
+	}
+	if err := winner.MarkCompleted(beadID); err != nil {
+		t.Fatalf("winner MarkCompleted: %v", err)
+	}
+
+	// Process 1 now tries to move it to working. The merge must refuse, and
+	// the caller must be TOLD, not handed a silent success.
+	err = stale.MarkWorking(beadID)
+	if !errors.Is(err, ErrAssignmentStatusMismatch) {
+		t.Fatalf("MarkWorking after concurrent completion: err=%v, want ErrAssignmentStatusMismatch", err)
+	}
+
+	stored := mustLoadAssignment(t, session, beadID)
+	if stored == nil || stored.Status != StatusCompleted {
+		t.Fatalf("on-disk status = %+v, want completed to be preserved", stored)
+	}
+}
+
+func TestMarkFailedFailsWhenMergeDiscardsTheTransition(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const session = "assignment-discarded-failure"
+	const beadID = "ntm-discarded-failure"
+	now := time.Now().UTC()
+
+	seed := NewStore(session)
+	seed.Assignments[beadID] = &Assignment{
+		BeadID: beadID, BeadTitle: "Work", Pane: 2,
+		AgentType: "codex", AgentName: "CodexOne", Status: StatusWorking, AssignedAt: now,
+	}
+	if err := seed.Save(); err != nil {
+		t.Fatalf("seed assignment: %v", err)
+	}
+
+	stale, err := LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("load stale view: %v", err)
+	}
+	winner, err := LoadStoreStrict(session)
+	if err != nil {
+		t.Fatalf("load winner view: %v", err)
+	}
+	if err := winner.MarkCompleted(beadID); err != nil {
+		t.Fatalf("winner MarkCompleted: %v", err)
+	}
+
+	err = stale.MarkFailed(beadID, "timed out")
+	if !errors.Is(err, ErrAssignmentStatusMismatch) {
+		t.Fatalf("MarkFailed after concurrent completion: err=%v, want ErrAssignmentStatusMismatch", err)
+	}
+	stored := mustLoadAssignment(t, session, beadID)
+	if stored == nil || stored.Status != StatusCompleted {
+		t.Fatalf("on-disk status = %+v, want completed to be preserved", stored)
+	}
+}
