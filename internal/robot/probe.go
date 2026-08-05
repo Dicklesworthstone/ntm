@@ -171,8 +171,13 @@ type ProbeDetails struct {
 // ProbeOutput is the response for --robot-probe
 type ProbeOutput struct {
 	RobotResponse
-	Session        string              `json:"session"`
-	Pane           int                 `json:"pane"`
+	Session string `json:"session"`
+	Pane    int    `json:"pane"`
+	// PaneRef is the unambiguous address of the pane that was actually probed:
+	// "window.pane" on a multi-window session, the bare pane index otherwise.
+	// Pane echoes the SELECTOR that was requested, which on a multi-window
+	// session names a whole window and can match more than one pane.
+	PaneRef        string              `json:"pane_ref,omitempty"`
 	Responsive     bool                `json:"responsive"`
 	ProbeMethod    ProbeMethod         `json:"probe_method"`
 	ProbeDetails   ProbeDetails        `json:"probe_details"`
@@ -183,7 +188,9 @@ type ProbeOutput struct {
 
 // ProbeEntry represents a single pane probe result inside a session response.
 type ProbeEntry struct {
-	Pane           int                 `json:"pane"`
+	Pane int `json:"pane"`
+	// PaneRef names exactly which pane this entry describes; see ProbeOutput.
+	PaneRef        string              `json:"pane_ref,omitempty"`
 	Responsive     bool                `json:"responsive"`
 	ProbeMethod    ProbeMethod         `json:"probe_method"`
 	ProbeDetails   ProbeDetails        `json:"probe_details"`
@@ -642,9 +649,8 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 	// window 0 while reporting results for panes it never touched. Prefer the
 	// session-unique NTM agent index there, and only fall back to the
 	// window-local index on single-window sessions where it is unambiguous.
-	targetPane := resolveProbePane(panes, opts.Pane)
-
-	if targetPane == nil {
+	matches := resolveProbePanes(panes, opts.Pane)
+	if len(matches) == 0 {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("pane %d not found in session '%s'", opts.Pane, opts.Session),
 			ErrCodePaneNotFound,
@@ -652,24 +658,48 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 		)
 		return output, nil
 	}
-	if err := validateProbePane(*targetPane); err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
-		return output, nil
+	// GetProbe reports a single pane. The batch surface expands a selector to
+	// every match; here the first in topology order is the deterministic
+	// choice, and PaneRef names exactly which one was probed.
+	return probeResolvedPane(opts.Session, matches[0], sessionSpansMultipleWindows(panes), opts.Pane, opts.Flags), nil
+}
+
+// probeResolvedPane probes one already-resolved pane. Both the single-pane and
+// the batch surface funnel through it, so they cannot drift in how a pane is
+// addressed or how a result is shaped.
+//
+// selector is echoed back as ProbeOutput.Pane: it is what the caller asked for,
+// which on a multi-window session names a whole window and may have matched
+// several panes. PaneRef is what was actually probed.
+func probeResolvedPane(session string, targetPane tmux.Pane, multiWindow bool, selector int, flags ProbeFlags) *ProbeOutput {
+	output := &ProbeOutput{
+		RobotResponse:  NewRobotResponse(true),
+		Session:        session,
+		Pane:           selector,
+		PaneRef:        probePaneRef(targetPane, multiWindow),
+		ProbeMethod:    flags.Method,
+		ProbeDetails:   ProbeDetails{},
+		Responsive:     false,
+		Confidence:     ProbeConfidenceLow,
+		Recommendation: ProbeRecommendationLikelyStuck,
 	}
 
-	// Build target string for tmux commands. The pane component must be the
-	// pane's own window-local index, never the selector opts.Pane arrived as:
-	// on a multi-window session that selector is the session-unique NTM agent
-	// index, and interpolating it addressed a pane that either does not exist
-	// (capture-pane fails, every healthy agent reads back "likely_stuck") or,
-	// in a window that happens to be split, belongs to a different agent that
-	// then receives the probe keystrokes and the interrupt-test Ctrl-C.
-	target := fmt.Sprintf("%s:%d.%d", opts.Session, targetPane.WindowIndex, targetPane.Index)
-	timeout := time.Duration(opts.Flags.TimeoutMs) * time.Millisecond
+	if err := validateProbePane(targetPane); err != nil {
+		output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
+		return output
+	}
+
+	// The pane component must be the pane's OWN window-local index. Building it
+	// from the selector addressed a pane that either does not exist (every
+	// capture fails, so every healthy agent reads back "likely_stuck") or, in a
+	// split window, belongs to a different agent that then receives the probe
+	// keystrokes and the interrupt-test Ctrl-C.
+	target := fmt.Sprintf("%s:%d.%d", session, targetPane.WindowIndex, targetPane.Index)
+	timeout := time.Duration(flags.TimeoutMs) * time.Millisecond
 
 	// Execute probe based on method
 	var probeResult ProbeResult
-	switch opts.Flags.Method {
+	switch flags.Method {
 	case ProbeMethodKeystrokeEcho:
 		probeResult = probeKeystrokeEcho(target, timeout)
 	case ProbeMethodInterruptTest:
@@ -679,24 +709,24 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 		// answers nothing about rate limits and risks stray input there.
 		if canonical := targetPane.Type.Canonical(); canonical == tmux.AgentUser || !canonical.IsValid() {
 			output.RobotResponse = NewErrorResponse(
-				fmt.Errorf("wake_ping targets agent panes; pane %d is %q", opts.Pane, targetPane.Type),
+				fmt.Errorf("wake_ping targets agent panes; pane %s is %q", output.PaneRef, targetPane.Type),
 				ErrCodeInvalidFlag,
 				"Select an agent pane with --panes, or use keystroke_echo for shell panes",
 			)
-			return output, nil
+			return output
 		}
 		probeResult = probeWakePing(target, string(targetPane.Type), timeout)
 	default:
 		output.RobotResponse = NewErrorResponse(
-			fmt.Errorf("unknown probe method: %s", opts.Flags.Method),
+			fmt.Errorf("unknown probe method: %s", flags.Method),
 			ErrCodeInvalidFlag,
 			"Valid methods: keystroke_echo, interrupt_test, wake_ping",
 		)
-		return output, nil
+		return output
 	}
 
 	// If keystroke_echo failed and aggressive mode is enabled, try interrupt_test
-	if !probeResult.Responsive && opts.Flags.Aggressive && opts.Flags.Method == ProbeMethodKeystrokeEcho {
+	if !probeResult.Responsive && flags.Aggressive && flags.Method == ProbeMethodKeystrokeEcho {
 		// Escalate to interrupt_test for definitive answer
 		probeResult = probeInterruptTest(target, timeout)
 		if probeResult.Responsive {
@@ -711,7 +741,7 @@ func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
 	output.Recommendation = probeResult.Recommendation
 	output.Reasoning = probeResult.Reasoning
 
-	return output, nil
+	return output
 }
 
 // PrintProbe outputs probe results for a pane.
@@ -727,6 +757,7 @@ func PrintProbe(opts ProbeOptions) error {
 func probeEntryFromOutput(output *ProbeOutput) ProbeEntry {
 	entry := ProbeEntry{
 		Pane:           output.Pane,
+		PaneRef:        output.PaneRef,
 		Responsive:     output.Responsive,
 		ProbeMethod:    output.ProbeMethod,
 		ProbeDetails:   output.ProbeDetails,
@@ -749,34 +780,43 @@ func validateProbePane(pane tmux.Pane) error {
 	return nil
 }
 
-// resolveProbePane maps a --panes selector to the pane it addresses.
+// resolveProbePanes maps a --panes selector to every pane it addresses.
 //
 // pane_index is WINDOW-LOCAL, so a bare int is not a unique key on a
-// multi-window session: in a window-per-agent layout every window has a pane at
-// index 0, and matching the first one made every probe land in window 0 while
-// reporting results for panes it never touched. Prefer the session-unique NTM
-// agent index there, and only fall back to the window-local index on
-// single-window sessions where it is unambiguous.
+// multi-window session. The project-wide convention — implemented canonically
+// by tmux.PaneSelector.Matches and shared by send, interrupt, restart-pane and
+// --robot-is-working — is that on a multi-window session a bare index selects a
+// whole WINDOW, and on a single-window session it is the window-local pane
+// index.
 //
-// Every consumer of a selector must resolve through this one function.
-// validateProbeTargets previously keyed its own map by pane.Index while the
-// batch enumerated NTM indices, so on a window-per-agent session every lookup
-// missed and the capability gate silently passed panes it was there to reject.
-func resolveProbePane(panes []tmux.Pane, selector int) *tmux.Pane {
-	if sessionSpansMultipleWindows(panes) {
-		for i := range panes {
-			if panes[i].NTMIndex == selector {
-				return &panes[i]
-			}
+// Probe used to resolve the same flag as an NTM agent index instead, so an
+// agent that read pane numbers off --robot-is-working and fed them to
+// --robot-probe addressed different panes on the two surfaces (bd-13squ). A
+// selector may legitimately match several panes (a split window); every match
+// is probed, exactly as send would deliver to every pane in the window.
+func resolveProbePanes(panes []tmux.Pane, selector int) []tmux.Pane {
+	multiWindow := sessionSpansMultipleWindows(panes)
+	var matches []tmux.Pane
+	for _, pane := range panes {
+		key := pane.Index
+		if multiWindow {
+			key = pane.WindowIndex
 		}
-		return nil
-	}
-	for i := range panes {
-		if panes[i].Index == selector {
-			return &panes[i]
+		if key == selector {
+			matches = append(matches, pane)
 		}
 	}
-	return nil
+	return matches
+}
+
+// probePaneRef is the unambiguous address of a probed pane: "window.pane" on a
+// multi-window session, the bare pane index otherwise. It mirrors
+// isWorkingPaneKey so the two surfaces describe a pane identically.
+func probePaneRef(pane tmux.Pane, multiWindow bool) string {
+	if !multiWindow {
+		return strconv.Itoa(pane.Index)
+	}
+	return fmt.Sprintf("%d.%d", pane.WindowIndex, pane.Index)
 }
 
 // probeSelectorHint lists the selectors resolveProbePane will actually accept.
@@ -789,7 +829,7 @@ func probeSelectorHint(panes []tmux.Pane) string {
 	for _, pane := range panes {
 		key := pane.Index
 		if multiWindow {
-			key = pane.NTMIndex
+			key = pane.WindowIndex
 		}
 		if _, ok := seen[key]; ok {
 			continue
@@ -806,19 +846,6 @@ func probeSelectorHint(panes []tmux.Pane) string {
 		valid = append(valid, strconv.Itoa(key))
 	}
 	return fmt.Sprintf("Valid --panes selectors for this session: %s", strings.Join(valid, ","))
-}
-
-func validateProbeTargets(panes []tmux.Pane, targetPanes []int) error {
-	for _, selector := range targetPanes {
-		pane := resolveProbePane(panes, selector)
-		if pane == nil {
-			continue
-		}
-		if err := validateProbePane(*pane); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // GetProbeSession probes panes in a session and returns aggregated output and exit code.
@@ -859,41 +886,48 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 		return output, 1
 	}
 
-	var targetPanes []int
+	multiWindow := sessionSpansMultipleWindows(panes)
+
+	// Resolve to CONCRETE panes, not to selectors. A selector on a multi-window
+	// session names a whole window, so it can match several panes; probing the
+	// selector once would silently cover only one of them. Deduping by pane ID
+	// keeps each physical pane probed exactly once even when the caller passes
+	// overlapping selectors.
+	type probeTarget struct {
+		selector int
+		pane     tmux.Pane
+	}
+	var targets []probeTarget
+	seenPane := make(map[string]struct{}, len(panes))
+
+	appendTarget := func(selector int, pane tmux.Pane) {
+		if _, ok := seenPane[pane.ID]; ok {
+			return
+		}
+		seenPane[pane.ID] = struct{}{}
+		targets = append(targets, probeTarget{selector: selector, pane: pane})
+	}
+
 	if len(opts.Panes) == 0 {
-		// Enumerate by the same key GetProbe resolves with, or the batch
-		// collapses onto one pane: on a window-per-agent layout every pane
-		// has window-local index 0, so collecting pane.Index produced
-		// [0,0,0] and probed window 0 three times.
-		multiWindow := sessionSpansMultipleWindows(panes)
-		seen := make(map[int]struct{}, len(panes))
 		for _, pane := range panes {
-			agentType := detectAgentTypeFromPane(pane)
-			if agentType == "user" {
+			if detectAgentTypeFromPane(pane) == "user" {
 				continue
 			}
-			key := pane.Index
+			selector := pane.Index
 			if multiWindow {
-				key = pane.NTMIndex
+				selector = pane.WindowIndex
 			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			targetPanes = append(targetPanes, key)
+			appendTarget(selector, pane)
 		}
 	} else {
-		seen := make(map[int]struct{}, len(opts.Panes))
-		for _, pane := range opts.Panes {
-			if _, ok := seen[pane]; ok {
-				continue
+		for _, selector := range opts.Panes {
+			for _, pane := range resolveProbePanes(panes, selector) {
+				appendTarget(selector, pane)
 			}
-			seen[pane] = struct{}{}
-			targetPanes = append(targetPanes, pane)
 		}
 	}
 
-	if len(targetPanes) == 0 {
+	if len(targets) == 0 {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("no panes to probe in session '%s'", opts.Session),
 			ErrCodePaneNotFound,
@@ -902,18 +936,24 @@ func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
 		return output, 1
 	}
 
-	sort.Ints(targetPanes)
-	if err := validateProbeTargets(panes, targetPanes); err != nil {
-		output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
-		return output, 2
+	sort.SliceStable(targets, func(i, j int) bool {
+		if targets[i].pane.WindowIndex != targets[j].pane.WindowIndex {
+			return targets[i].pane.WindowIndex < targets[j].pane.WindowIndex
+		}
+		return targets[i].pane.Index < targets[j].pane.Index
+	})
+
+	// Capability gate: refuse the whole batch up front rather than sending
+	// input at panes that cannot accept it.
+	for _, target := range targets {
+		if err := validateProbePane(target.pane); err != nil {
+			output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPromptDeliveryCapabilityHint)
+			return output, 2
+		}
 	}
 
-	for _, paneIndex := range targetPanes {
-		probeOutput, _ := GetProbe(ProbeOptions{
-			Session: opts.Session,
-			Pane:    paneIndex,
-			Flags:   opts.Flags,
-		})
+	for _, target := range targets {
+		probeOutput := probeResolvedPane(opts.Session, target.pane, multiWindow, target.selector, opts.Flags)
 		entry := probeEntryFromOutput(probeOutput)
 		output.Probes = append(output.Probes, entry)
 		output.Summary.TotalProbed++

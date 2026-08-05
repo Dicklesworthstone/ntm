@@ -193,7 +193,7 @@ func getCommandsContent() *DocsContent {
 --robot-is-working=SESSION: Check if agents are busy
 --robot-diagnose=SESSION: Comprehensive health check
 --robot-health-restart-stuck=SESSION: Detect and restart stuck agents
---robot-probe=SESSION: Active pane responsiveness probe
+--robot-probe=SESSION: Active pane responsiveness probe (--panes follows the shared selector convention: on a multi-window session a bare index selects a WINDOW and every pane in it is probed; each result carries pane_ref, the exact "window.pane" address probed)
 --robot-pane-address=SESSION: Per-pane addressing cards (canonical selector, stable %pane_id, tmux target)`,
 			},
 			{

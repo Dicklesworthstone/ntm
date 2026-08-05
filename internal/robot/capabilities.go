@@ -784,7 +784,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Active pane responsiveness probe using keystroke or interrupt methods.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-probe", Type: "string", Required: true, Description: "Session name"},
-				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to probe"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane selectors to probe. On a multi-window session a bare index selects a WINDOW (the shared convention used by send/interrupt/restart-pane/is-working) and every pane in it is probed; on a single-window session it is the window-local pane index. Each result carries pane_ref with the exact window.pane address probed."},
 				{Name: "probe-method", Flag: "--probe-method", Type: "string", Required: false, Default: "keystroke_echo", Description: "Probe method: keystroke_echo, interrupt_test, wake_ping (responsiveness + still_rate_limited + tail_sample in one call; agent panes only)"},
 				{Name: "probe-timeout", Flag: "--probe-timeout", Type: "int", Required: false, Default: "5000", Description: "Probe timeout in milliseconds"},
 				{Name: "probe-aggressive", Flag: "--probe-aggressive", Type: "bool", Required: false, Description: "Fallback to interrupt_test if keystroke_echo fails"},

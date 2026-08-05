@@ -3,6 +3,7 @@ package robot
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1950,4 +1951,101 @@ func TestProbeKeystrokeEchoNeverTypesKeyNamesLiterally(t *testing.T) {
 			t.Fatalf("probe sent the tmux key name %q as literal text; it would be typed into the pane, not pressed", sent)
 		}
 	}
+}
+
+// bd-13squ: --panes must mean the same thing on every robot surface. The
+// project-wide convention (tmux.PaneSelector.Matches, shared by send,
+// interrupt, restart-pane and --robot-is-working) is that on a multi-window
+// session a bare index selects a whole WINDOW. Probe resolved it as an NTM
+// agent index instead, so an agent that read pane numbers off
+// --robot-is-working and fed them to --robot-probe addressed different panes.
+func TestProbeSelectorMatchesCanonicalConvention(t *testing.T) {
+	windowPerAgent := []tmux.Pane{
+		{ID: "%1", Index: 0, WindowIndex: 0, NTMIndex: 1, Title: "proj__cc_1", Type: tmux.AgentClaude},
+		{ID: "%2", Index: 0, WindowIndex: 1, NTMIndex: 2, Title: "proj__cc_2", Type: tmux.AgentClaude},
+		{ID: "%3", Index: 0, WindowIndex: 2, NTMIndex: 3, Title: "proj__cc_3", Type: tmux.AgentClaude},
+	}
+
+	t.Run("multi-window selector picks the window, matching tmux.PaneSelector", func(t *testing.T) {
+		for _, selector := range []int{0, 1, 2} {
+			matches := resolveProbePanes(windowPerAgent, selector)
+			if len(matches) != 1 {
+				t.Fatalf("selector %d matched %d panes, want 1", selector, len(matches))
+			}
+			if matches[0].WindowIndex != selector {
+				t.Fatalf("selector %d resolved to window %d; the canonical convention selects the WINDOW", selector, matches[0].WindowIndex)
+			}
+
+			// The canonical resolver must agree.
+			canonical, err := tmux.ResolvePaneSelectors(windowPerAgent, []string{strconv.Itoa(selector)}, false)
+			if err != nil {
+				t.Fatalf("tmux.ResolvePaneSelectors(%d): %v", selector, err)
+			}
+			if len(canonical) != 1 || canonical[0].ID != matches[0].ID {
+				t.Fatalf("probe resolved selector %d to %v but the canonical resolver chose %v", selector, matches[0].ID, canonical)
+			}
+		}
+	})
+
+	t.Run("a selector matching several panes probes every one of them", func(t *testing.T) {
+		// A split window: one selector, two panes. Probing the selector once
+		// would silently cover only one of them.
+		split := []tmux.Pane{
+			{ID: "%1", Index: 0, WindowIndex: 0, NTMIndex: 1, Type: tmux.AgentClaude},
+			{ID: "%2", Index: 1, WindowIndex: 0, NTMIndex: 2, Type: tmux.AgentClaude},
+			{ID: "%3", Index: 0, WindowIndex: 1, NTMIndex: 3, Type: tmux.AgentClaude},
+		}
+		matches := resolveProbePanes(split, 0)
+		if len(matches) != 2 {
+			t.Fatalf("selector 0 matched %d panes, want both panes of window 0", len(matches))
+		}
+
+		mock := setupMock(t)
+		mock.Panes = split
+		out, _ := GetProbeSession(ProbeSessionOptions{
+			Session: "proj",
+			Panes:   []int{0},
+			Flags:   ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
+		})
+		if len(out.Probes) != 2 {
+			t.Fatalf("probed %d panes for a selector covering 2, want 2", len(out.Probes))
+		}
+		refs := map[string]bool{}
+		for _, p := range out.Probes {
+			refs[p.PaneRef] = true
+		}
+		if !refs["0.0"] || !refs["0.1"] {
+			t.Fatalf("pane_refs = %v, want both 0.0 and 0.1", refs)
+		}
+	})
+
+	t.Run("single-window sessions keep the window-local pane index", func(t *testing.T) {
+		single := []tmux.Pane{
+			{ID: "%1", Index: 0, WindowIndex: 0, NTMIndex: 1, Type: tmux.AgentClaude},
+			{ID: "%2", Index: 1, WindowIndex: 0, NTMIndex: 2, Type: tmux.AgentClaude},
+		}
+		matches := resolveProbePanes(single, 1)
+		if len(matches) != 1 || matches[0].ID != "%2" {
+			t.Fatalf("selector 1 resolved to %v, want the pane at window-local index 1", matches)
+		}
+		if got := probePaneRef(matches[0], false); got != "1" {
+			t.Fatalf("pane_ref = %q, want the bare index on a single-window session", got)
+		}
+	})
+
+	t.Run("overlapping selectors probe each pane exactly once", func(t *testing.T) {
+		mock := setupMock(t)
+		mock.Panes = windowPerAgent
+		out, _ := GetProbeSession(ProbeSessionOptions{
+			Session: "proj",
+			Panes:   []int{1, 1, 1},
+			Flags:   ProbeFlags{Method: ProbeMethodKeystrokeEcho, TimeoutMs: 1},
+		})
+		if len(out.Probes) != 1 {
+			t.Fatalf("probed %d times for a repeated selector, want 1", len(out.Probes))
+		}
+		if out.Probes[0].PaneRef != "1.0" {
+			t.Fatalf("pane_ref = %q, want 1.0", out.Probes[0].PaneRef)
+		}
+	})
 }
