@@ -2836,3 +2836,78 @@ func TestComposerLineEmpty_PlaceholderCountsAsEmpty(t *testing.T) {
 		t.Fatalf("residue starting with placeholder-adjacent text must not be empty unless it matches the exact placeholder prefix")
 	}
 }
+
+// An empty pane_current_command means the pane's process is gone — tmux
+// reports it for a pane whose command died instantly and is held open by
+// remain-on-exit, which is exactly what launch verification exists to catch.
+// This used to pass verification: the emptiness check ran on
+// filepath.Base(""), which is ".", not "", so the guard was dead and "."
+// counted as a stable non-shell process. Callers then reported the agent as
+// successfully launched.
+func TestWaitForPaneProcessStartRejectsEmptyCurrentCommand(t *testing.T) {
+	calls := 0
+	_, err := waitForPaneProcessStartContext(
+		t.Context(), "proj", "%7", 60*time.Millisecond, time.Millisecond, 2,
+		func(context.Context, string) ([]Pane, error) {
+			calls++
+			return []Pane{{ID: "%7", Command: ""}}, nil
+		},
+	)
+	if err == nil {
+		t.Fatal("empty current command was accepted as a running agent process")
+	}
+	if !strings.Contains(err.Error(), "empty current command") {
+		t.Fatalf("error = %q, want it to name the empty current command", err)
+	}
+	if calls < 2 {
+		t.Fatalf("only %d observations taken; the wait should have kept polling", calls)
+	}
+}
+
+// The breaker must shed load once open: exactly one probe per backoff window.
+// cbRecordFailure used to clear cbProbing on every failure, so a failed probe
+// re-armed the gate and the next caller was admitted as a fresh probe — the
+// breaker admitted every caller against a fast-failing tmux and never shed
+// anything.
+func TestCircuitBreakerShedsLoadAfterFailedProbe(t *testing.T) {
+	c := NewClient("")
+
+	// Drive it open.
+	for i := 0; i < cbMaxFailures; i++ {
+		if err := c.cbCheck(); err != nil {
+			t.Fatalf("cbCheck rejected call %d before the circuit opened: %v", i, err)
+		}
+		c.cbRecordFailure()
+	}
+
+	// First caller in the window is the probe and is admitted.
+	if err := c.cbCheck(); err != nil {
+		t.Fatalf("half-open probe was not admitted: %v", err)
+	}
+	c.cbRecordFailure() // the probe fails
+
+	// Every subsequent caller in the window must be shed.
+	for i := 0; i < 20; i++ {
+		if err := c.cbCheck(); !errors.Is(err, ErrCircuitOpen) {
+			t.Fatalf("caller %d after a failed probe got err=%v, want ErrCircuitOpen", i, err)
+		}
+	}
+}
+
+// A successful probe must fully close the circuit again.
+func TestCircuitBreakerClosesAfterSuccessfulProbe(t *testing.T) {
+	c := NewClient("")
+	for i := 0; i < cbMaxFailures; i++ {
+		_ = c.cbCheck()
+		c.cbRecordFailure()
+	}
+	if err := c.cbCheck(); err != nil {
+		t.Fatalf("probe not admitted: %v", err)
+	}
+	c.cbRecordSuccess()
+	for i := 0; i < 5; i++ {
+		if err := c.cbCheck(); err != nil {
+			t.Fatalf("call %d rejected after a successful probe: %v", i, err)
+		}
+	}
+}

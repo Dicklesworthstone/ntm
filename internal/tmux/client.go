@@ -111,7 +111,15 @@ func (c *Client) cbRecordFailure() {
 		wasAlreadyOpen := c.cbOpenUntil.Load() != 0
 		deadline := time.Now().Add(cbBackoffDuration).UnixNano()
 		c.cbOpenUntil.Store(deadline)
-		c.cbProbing.Store(false)
+		// Deliberately does NOT clear cbProbing. Clearing it here meant a
+		// FAILED half-open probe immediately re-armed the gate, so the very
+		// next caller won the CompareAndSwap in cbCheck and was admitted as a
+		// fresh probe — and so on, forever. Against a fast-failing tmux
+		// (missing binary, permission-denied socket) the breaker therefore
+		// shed no load at all: a 40-pane status sweep issued 40 exec attempts
+		// instead of failing fast after 5. The flag is cleared where the
+		// backoff window actually retires (cbCheck) and on success
+		// (cbRecordSuccess), which is what "one probe per window" requires.
 		// Log only on the transition from closed to open, not on
 		// every subsequent failure or half-open probe failure.
 		if !wasAlreadyOpen {
@@ -270,7 +278,18 @@ func ClassifyCommandError(err error) CommandErrorClass {
 	if strings.Contains(msg, "no server running") ||
 		strings.Contains(msg, "error connecting to") ||
 		strings.Contains(msg, "no sessions") {
-		return CommandErrorClass{Kind: CommandErrorNoServer, Infrastructure: true, Retryable: true}
+		// Deliberately NOT Infrastructure. Infrastructure is consumed by
+		// exactly one thing — circuit-breaker accounting — and "no server
+		// running" is an instant, definitive answer meaning "there are no
+		// tmux sessions", not evidence that tmux is sick. tmux returns it
+		// without connecting to anything, so retrying costs nothing and there
+		// is no load to shed. Counting it conflated "tmux is unhealthy" with
+		// "tmux has nothing running": on a machine with no server, the sixth
+		// consecutive session query stopped reporting SESSION_NOT_FOUND and
+		// started reporting an INTERNAL_ERROR circuit-open instead — a
+		// correct, actionable answer degraded into a confusing one.
+		// Retryable stays true: a server may be started later.
+		return CommandErrorClass{Kind: CommandErrorNoServer, Retryable: true}
 	}
 	if strings.Contains(msg, "unexpected session format") ||
 		strings.Contains(msg, "malformed tmux output") ||

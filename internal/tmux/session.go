@@ -1054,12 +1054,23 @@ func waitForPaneProcessStartContext(
 				}
 				foundPane = true
 				lastCommand = strings.TrimSpace(pane.Command)
-				observedCommand := strings.ToLower(filepath.Base(lastCommand))
-				if observedCommand == "" || PaneCommandIsShell(observedCommand) {
+				// Test the RAW command for emptiness before taking its
+				// basename: filepath.Base("") returns ".", not "", so the
+				// emptiness check had to happen here or it was dead code.
+				// tmux reports an empty pane_current_command for a pane whose
+				// process died instantly (missing binary, bad cd) and is held
+				// open by remain-on-exit — exactly the case this function
+				// exists to catch. Basenaming first turned that into the
+				// "stable non-shell process" ".", so two polls later this
+				// returned success and callers reported the agent as
+				// launched. The empty-command failure detail below was
+				// likewise unreachable.
+				if lastCommand == "" || PaneCommandIsShell(strings.ToLower(filepath.Base(lastCommand))) {
 					stableCommand = ""
 					stableObservations = 0
 					break
 				}
+				observedCommand := strings.ToLower(filepath.Base(lastCommand))
 				if observedCommand != stableCommand {
 					stableCommand = observedCommand
 					stableObservations = 1
