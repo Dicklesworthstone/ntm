@@ -169,6 +169,63 @@ func sanitizeMailText(subject, body string, includeBody bool) (string, *adapters
 	return safeSubject, subjectDisclosure, preview, previewDisclosure, bodyMD, bodyDisclosure
 }
 
+// sanitizeThreadSummary redacts the free-text fields of a thread summary.
+// They are derived from message bodies, so anything a body can leak the
+// summary can leak too.
+func sanitizeThreadSummary(summary agentmail.ThreadSummary) agentmail.ThreadSummary {
+	safe := agentmail.ThreadSummary{
+		ThreadID:     summary.ThreadID,
+		Participants: append([]string(nil), summary.Participants...),
+		KeyPoints:    sanitizeTextLines(summary.KeyPoints),
+		ActionItems:  sanitizeTextLines(summary.ActionItems),
+	}
+	return safe
+}
+
+func sanitizeTextLines(lines []string) []string {
+	if lines == nil {
+		return nil
+	}
+	safe := make([]string, 0, len(lines))
+	for _, line := range lines {
+		text, _ := adapters.NormalizeDisclosureText(line)
+		safe = append(safe, text)
+	}
+	return safe
+}
+
+// MailSearchResultResponse is a search hit with its subject redacted.
+type MailSearchResultResponse struct {
+	ID                int                          `json:"id"`
+	Subject           string                       `json:"subject"`
+	SubjectDisclosure *adapters.DisclosureMetadata `json:"subject_disclosure,omitempty"`
+	Importance        string                       `json:"importance"`
+	AckRequired       bool                         `json:"ack_required"`
+	CreatedTS         agentmail.FlexTime           `json:"created_ts"`
+	ThreadID          *string                      `json:"thread_id"`
+	From              string                       `json:"from"`
+}
+
+// sanitizeSearchResults redacts search-hit subjects, which are message
+// subjects and can carry the same secrets a body can.
+func sanitizeSearchResults(results []agentmail.SearchResult) []MailSearchResultResponse {
+	safe := make([]MailSearchResultResponse, 0, len(results))
+	for _, result := range results {
+		subject, subjectDisclosure := adapters.NormalizeDisclosureText(result.Subject)
+		safe = append(safe, MailSearchResultResponse{
+			ID:                result.ID,
+			Subject:           subject,
+			SubjectDisclosure: subjectDisclosure,
+			Importance:        result.Importance,
+			AckRequired:       result.AckRequired,
+			CreatedTS:         result.CreatedTS,
+			ThreadID:          result.ThreadID,
+			From:              result.From,
+		})
+	}
+	return safe
+}
+
 func sanitizeInboxMessages(messages []agentmail.InboxMessage, includeBodies bool) []MailInboxMessageResponse {
 	safeMessages := make([]MailInboxMessageResponse, 0, len(messages))
 	for _, msg := range messages {
@@ -850,8 +907,11 @@ func (s *Server) handleReplyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitized like GET /mail/messages/{id}, which returns the identical type.
+	// Returning the raw message here let a caller read back verbatim content
+	// that every other path redacts.
 	writeSuccessResponse(w, http.StatusCreated, map[string]interface{}{
-		"message": message,
+		"message": sanitizeMessage(message),
 	}, reqID)
 }
 
@@ -1025,7 +1085,7 @@ func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
-		"results": results,
+		"results": sanitizeSearchResults(results),
 		"count":   len(results),
 		"query":   query,
 	}, reqID)
@@ -1087,15 +1147,18 @@ func (s *Server) handleThreadSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The summary's key points and action items are generated FROM the message
+	// bodies, so they can carry the same secrets those bodies do.
 	response := map[string]interface{}{
-		"summary": result.Summary,
+		"summary": sanitizeThreadSummary(result.Summary),
 	}
 	if includeExamples != nil && *includeExamples {
-		examples := result.Examples
-		if examples == nil {
-			examples = []agentmail.InboxMessage{}
-		}
-		response["examples"] = examples
+		// Same sanitization the inbox applies to the identical type. Returning
+		// these raw meant a secret came back REDACTED from
+		// GET /mail/inbox?include_bodies=true and VERBATIM from
+		// GET /mail/threads/{id}/summary?include_examples=true — same message,
+		// same mail:read permission.
+		response["examples"] = sanitizeInboxMessages(result.Examples, true)
 	}
 
 	writeSuccessResponse(w, http.StatusOK, response, reqID)
