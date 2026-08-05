@@ -177,7 +177,7 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 		agent.ScoreDetail = scorer.calculateScoreComponents(&agent, opts.Prompt)
 
 		// Check exclusion rules
-		excluded, reason := scorer.checkExclusion(&agent)
+		excluded, reason := excludeRouteAgent(scorer, &agent, pane)
 		if excluded {
 			agent.Excluded = true
 			agent.ExcludeReason = reason
@@ -254,6 +254,21 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 func PrintRoute(opts RouteOptions) int {
 	output, exitCode := GetRoute(opts)
 	return printLegacyRobotOutput(output, output.RobotResponse, exitCode, "robot route failed")
+}
+
+// excludeRouteAgent applies the scorer's exclusion rules plus pane-level
+// facts the scorer cannot see. A pane whose agent CLI has exited back to a
+// bare shell is unroutable regardless of its classified activity state: the
+// delivery layer refuses it outright (PANE_AGENT_DEAD), so recommending it
+// would hand the caller a send that cannot succeed (bd-fresh-eyes-audit .8).
+func excludeRouteAgent(scorer *AgentScorer, agent *ScoredAgent, pane tmux.Pane) (bool, string) {
+	if excluded, reason := scorer.checkExclusion(agent); excluded {
+		return true, reason
+	}
+	if pane.AgentCLIDead() {
+		return true, "agent CLI exited to a bare shell"
+	}
+	return false, ""
 }
 
 func routePaneAgentType(pane tmux.Pane) string {
@@ -393,7 +408,7 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 		agent.ScoreDetail = scorer.calculateScoreComponents(&agent, opts.Prompt)
 
 		// Check exclusion rules
-		excluded, reason := scorer.checkExclusion(&agent)
+		excluded, reason := excludeRouteAgent(scorer, &agent, pane)
 		if excluded {
 			agent.Excluded = true
 			agent.ExcludeReason = reason
