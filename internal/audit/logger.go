@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -292,6 +293,15 @@ func DefaultConfig(sessionID string) *LoggerConfig {
 	}
 }
 
+// auditWriterID identifies the writer that owns an audit file. Each OS
+// process gets its own chain, so the PID is the natural discriminator: a
+// recycled PID can only reopen a file the original owner has already closed,
+// and the reopening process then continues that chain correctly because
+// loadLastHash re-reads the tail.
+func auditWriterID() string {
+	return strconv.Itoa(os.Getpid())
+}
+
 // NewAuditLogger creates a new audit logger for the specified session
 func NewAuditLogger(config *LoggerConfig) (*AuditLogger, error) {
 	if config == nil {
@@ -309,12 +319,31 @@ func NewAuditLogger(config *LoggerConfig) (*AuditLogger, error) {
 		return nil, fmt.Errorf("failed to create audit directory: %w", err)
 	}
 
-	// Create log file with session and date
+	// Create log file with session, writer discriminator, and date.
+	//
+	// Every ntm process logs into its session's file, and each one keeps its
+	// own in-memory hash-chain state (lastHash/sequenceNum read once at open).
+	// Sharing one file therefore forked the chain: two processes both read
+	// seq=N/hash=H and both appended seq=N+1 with prev=H, so VerifyIntegrity
+	// hard-failed on "sequence number mismatch" after any concurrent
+	// invocation — leaving tamper-evidence permanently red and making real
+	// tampering indistinguishable from normal use (bd-fresh-eyes-audit .21).
+	//
+	// A hash chain requires a single writer by construction, so each process
+	// now owns its own file and its own sound chain. O_APPEND never provided
+	// the "exclusive locking intent" the previous comment claimed, and a lock
+	// could not have fixed it anyway: entries are buffered, so the chain's
+	// read-modify-write spans until flush, and holding a lock that long would
+	// serialize whole segments (BufferSize is 1000 in the perf test).
+	//
+	// The discriminator goes BEFORE the date so readers keep working
+	// unchanged: query.go matches sessions with HasPrefix(session+"-") and
+	// extracts the date from the last 10 characters of the name.
 	now := time.Now()
-	filename := fmt.Sprintf("%s-%s.jsonl", config.SessionID, now.Format("2006-01-02"))
+	filename := fmt.Sprintf("%s-%s-%s.jsonl", config.SessionID, auditWriterID(), now.Format("2006-01-02"))
 	filepath := filepath.Join(auditDir, filename)
 
-	// Open file in append mode with exclusive locking intent
+	// Open in append mode. Only this process writes this file.
 	file, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audit log file: %w", err)
