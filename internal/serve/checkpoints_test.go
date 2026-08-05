@@ -1,6 +1,8 @@
 package serve
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -248,4 +250,77 @@ func TestCheckpointToResponse(t *testing.T) {
 			t.Error("Session should be nil when includeDetails is false")
 		}
 	})
+}
+
+// bd-456fv: a checkpoint's WorkingDir is caller-supplied — POST
+// /checkpoints/import accepts an arbitrary target_dir and otherwise trusts the
+// archive's own metadata.json — and rollback runs `git stash push`, a
+// detaching `git checkout`, and `git apply --3way` inside it. Confinement to
+// the project directory is what stops a caller holding only sessions:write
+// from rewriting an unrelated repository on the host.
+func TestResolveCheckpointWorkDirConfinesToProjectDir(t *testing.T) {
+	s, _ := setupTestServer(t)
+	root := s.projectDirSnapshot()
+
+	inside := filepath.Join(root, "nested", "repo")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatalf("mkdir inside: %v", err)
+	}
+	outside := t.TempDir()
+
+	t.Run("accepts a directory inside the project", func(t *testing.T) {
+		got, err := s.resolveCheckpointWorkDir(inside)
+		if err != nil {
+			t.Fatalf("resolveCheckpointWorkDir(inside) = %v, want it accepted", err)
+		}
+		if got == "" {
+			t.Fatal("resolved path is empty")
+		}
+	})
+
+	t.Run("refuses a directory outside the project", func(t *testing.T) {
+		if _, err := s.resolveCheckpointWorkDir(outside); err == nil {
+			t.Fatalf("resolveCheckpointWorkDir(%q) was accepted; git would run in an unrelated repository", outside)
+		}
+	})
+
+	t.Run("refuses traversal back out of the project", func(t *testing.T) {
+		if _, err := s.resolveCheckpointWorkDir(filepath.Join(root, "..")); err == nil {
+			t.Fatal("parent-directory traversal was accepted")
+		}
+	})
+
+	t.Run("refuses a symlink pointing outside the project", func(t *testing.T) {
+		link := filepath.Join(root, "escape")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		if _, err := s.resolveCheckpointWorkDir(link); err == nil {
+			t.Fatal("a symlink inside the project pointing outside it was accepted")
+		}
+	})
+
+	t.Run("refuses a missing directory", func(t *testing.T) {
+		if _, err := s.resolveCheckpointWorkDir(filepath.Join(root, "does-not-exist")); err == nil {
+			t.Fatal("a nonexistent working directory was accepted")
+		}
+	})
+}
+
+// The commit reaches `git checkout` as a bare argv element and is sliced for
+// display, so a non-object-id value is both an argument-injection vector and a
+// panic (the slice is on the dry-run path).
+func TestCheckpointCommitPatternRejectsNonObjectIDs(t *testing.T) {
+	valid := []string{"abc1234", "0123456789abcdef0123456789abcdef01234567"}
+	for _, commit := range valid {
+		if !checkpointCommitPattern.MatchString(commit) {
+			t.Errorf("commit %q rejected, want accepted", commit)
+		}
+	}
+	invalid := []string{"", "abc", "--force", "-B branch", "HEAD", "main", "abc123z", "abc1234 --force"}
+	for _, commit := range invalid {
+		if checkpointCommitPattern.MatchString(commit) {
+			t.Errorf("commit %q accepted, want rejected", commit)
+		}
+	}
 }

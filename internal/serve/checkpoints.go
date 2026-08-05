@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -691,6 +693,17 @@ func (s *Server) handleImportCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A caller-supplied target_dir becomes the checkpoint's WorkingDir, which
+	// rollback later runs git commands in. Reject an out-of-project directory
+	// here as well as at rollback, so the bad value never reaches storage.
+	if strings.TrimSpace(req.TargetDir) != "" {
+		if _, err := s.resolveCheckpointWorkDir(req.TargetDir); err != nil {
+			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+				fmt.Sprintf("target_dir is not usable: %v", err), nil, reqID)
+			return
+		}
+	}
+
 	storage := checkpoint.NewStorage()
 	opts := checkpoint.ImportOptions{
 		TargetSession:   sessionName,
@@ -762,12 +775,20 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			"checkpoint has no git state to rollback to", nil, reqID)
 		return
 	}
-
-	// Get working directory
-	workDir := cp.WorkingDir
-	if workDir == "" {
+	// The commit reaches `git checkout` as a bare argv element and is sliced
+	// for display; validate its shape before either happens.
+	if !checkpointCommitPattern.MatchString(cp.Git.Commit) {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
-			"checkpoint has no working directory", nil, reqID)
+			"checkpoint git commit is not a valid object id", nil, reqID)
+		return
+	}
+
+	// Confine the working directory BEFORE any git command runs in it, and
+	// before the dry-run path reports what it would do.
+	workDir, err := s.resolveCheckpointWorkDir(cp.WorkingDir)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			err.Error(), nil, reqID)
 		return
 	}
 
@@ -953,4 +974,69 @@ func runGit(workDir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return string(out), nil
+}
+
+// checkpointCommitPattern bounds a checkpoint's recorded git commit to a real
+// object id. The value reaches `git checkout` as a bare argv element, so an
+// imported checkpoint carrying "--force" or "-B branch" would be
+// argument-injected rather than treated as a revision; it is also sliced for
+// display, which panicked on anything shorter than 8 characters — reachable
+// through the DRY-RUN path operators choose precisely because they believe it
+// cannot touch the repository.
+var checkpointCommitPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+
+// resolveCheckpointWorkDir confines a checkpoint's working directory to the
+// server's project directory before any git command runs in it.
+//
+// Both the directory and the commit come from the checkpoint archive, which is
+// caller-supplied: POST /checkpoints/import accepts an arbitrary target_dir
+// (and otherwise trusts the archive's own metadata.json), and rollback then
+// runs `git stash push`, a detaching `git checkout`, and `git apply --3way` of
+// the archive's patch inside it. Without this check, a caller holding only
+// sessions:write could rewrite an unrelated repository on the host. The
+// restore path already refuses an unusable working directory; rollback is the
+// more destructive of the two and had no equivalent guard (bd-456fv).
+func (s *Server) resolveCheckpointWorkDir(workDir string) (string, error) {
+	trimmed := strings.TrimSpace(workDir)
+	if trimmed == "" {
+		return "", errors.New("checkpoint has no working directory")
+	}
+
+	projectDir := strings.TrimSpace(s.projectDirSnapshot())
+	if projectDir == "" {
+		return "", errors.New("server has no project directory configured")
+	}
+	root, err := filepath.Abs(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+
+	candidate := trimmed
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, candidate)
+	}
+	candidate = filepath.Clean(candidate)
+
+	// The directory must already exist: resolving symlinks is what stops a
+	// link inside the project from pointing at a repository outside it.
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("working directory is not usable: %w", err)
+	}
+	candidate = resolved
+
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", fmt.Errorf("working directory is not usable: %w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("working directory is not a directory")
+	}
+	if !pathWithinRoot(root, candidate) {
+		return "", errors.New("working directory must be inside the project directory")
+	}
+	return candidate, nil
 }
