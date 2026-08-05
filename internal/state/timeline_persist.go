@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // TimelineInfo contains metadata about a persisted timeline.
@@ -682,6 +684,9 @@ func (p *TimelinePersister) writeTimelineFileLocked(path, sessionID string, even
 		return fmt.Errorf("failed to replace timeline file: %w", err)
 	}
 	tempPath = ""
+	if err := util.SyncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("failed to sync timeline directory: %w", err)
+	}
 
 	return nil
 }
@@ -835,6 +840,9 @@ func (p *TimelinePersister) compressTimeline(sessionID string) error {
 		return fmt.Errorf("failed to replace compressed timeline: %w", err)
 	}
 	tempPath = ""
+	if err := util.SyncDirectory(filepath.Dir(dstPath)); err != nil {
+		return fmt.Errorf("failed to sync compressed timeline directory: %w", err)
+	}
 
 	if err := os.Remove(srcPath); err != nil {
 		return fmt.Errorf("failed to remove uncompressed timeline after compression: %w", err)

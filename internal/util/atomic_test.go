@@ -203,6 +203,15 @@ func TestAtomicWriteFileCleanupOnError(t *testing.T) {
 	}
 }
 
+func TestSyncDirectory(t *testing.T) {
+	if err := SyncDirectory(t.TempDir()); err != nil {
+		t.Fatalf("SyncDirectory existing directory: %v", err)
+	}
+	if err := SyncDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("SyncDirectory missing directory returned nil error")
+	}
+}
+
 func TestAtomicWriteFileConcurrent(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "concurrent.txt")

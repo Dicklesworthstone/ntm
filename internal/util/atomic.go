@@ -43,6 +43,23 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpFile.Name(), filename); err != nil {
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
+	if err := SyncDirectory(dir); err != nil {
+		return fmt.Errorf("syncing parent directory: %w", err)
+	}
 
+	return nil
+}
+
+// SyncDirectory flushes directory-entry changes such as atomic renames.
+func SyncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening directory: %w", err)
+	}
+	defer dir.Close()
+
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("syncing directory: %w", err)
+	}
 	return nil
 }
