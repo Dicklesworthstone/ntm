@@ -227,6 +227,9 @@ func TestPlanAllocationsLogsRequiredFields(t *testing.T) {
 	if allocationTestEqual(row.Decision, "") || len(row.ReasonCodes) == 0 {
 		t.Fatalf("log row missing decision or reasons: %+v", row)
 	}
+	if allocationTestNotEqual(row.Decision, AllocationDecisionRecommend) {
+		t.Fatalf("log row decision = %s, want %s", row.Decision, AllocationDecisionRecommend)
+	}
 }
 
 func TestPlanAllocationsPreservesCanonicalPaneIdentity(t *testing.T) {

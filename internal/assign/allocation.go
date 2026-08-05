@@ -340,6 +340,7 @@ func (p *AllocationPlanner) Plan(in AllocationInput) AllocationPlan {
 		}
 
 		candidate.Decision = AllocationDecisionRecommend
+		markRecommendedAllocationLog(plan.Logs, candidate)
 		recommendation := AllocationRecommendation{
 			BeadID:          candidate.BeadID,
 			BeadTitle:       candidate.BeadTitle,
@@ -374,6 +375,19 @@ func (p *AllocationPlanner) Plan(in AllocationInput) AllocationPlan {
 	}
 
 	return plan
+}
+
+func markRecommendedAllocationLog(logs []AllocationLogRow, candidate AllocationCandidate) {
+	for index := range logs {
+		log := &logs[index]
+		if log.Decision == AllocationDecisionAlternative &&
+			log.BeadID == candidate.BeadID &&
+			log.Session == candidate.Session &&
+			log.AgentID == candidate.AgentID {
+			log.Decision = AllocationDecisionRecommend
+			return
+		}
+	}
 }
 
 func (p *AllocationPlanner) scoreCandidate(
