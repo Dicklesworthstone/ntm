@@ -1,10 +1,15 @@
 package serve
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 )
@@ -321,6 +326,36 @@ func TestCheckpointCommitPatternRejectsNonObjectIDs(t *testing.T) {
 	for _, commit := range invalid {
 		if checkpointCommitPattern.MatchString(commit) {
 			t.Errorf("commit %q accepted, want rejected", commit)
+		}
+	}
+}
+
+// The export handler interpolates sessionName into the Content-Disposition
+// header and into a temp filename, but was the one checkpoint handler that
+// never validated it. ValidateSessionName's allowlist is what excludes CR/LF.
+func TestHandleExportCheckpointValidatesSessionName(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	for _, name := range []string{
+		"bad\r\nX-Injected: 1",
+		"has space",
+		"has/slash",
+		"",
+	} {
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("sessionName", name)
+		rctx.URLParams.Add("checkpointId", "cp-1")
+		req := httptest.NewRequest("GET", "/api/v1/sessions/x/checkpoints/cp-1/export", nil)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		rec := httptest.NewRecorder()
+
+		s.handleExportCheckpoint(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("session name %q: got %d, want 400", name, rec.Code)
+		}
+		if got := rec.Header().Get("X-Injected"); got != "" {
+			t.Errorf("session name %q injected a response header", name)
 		}
 	}
 }

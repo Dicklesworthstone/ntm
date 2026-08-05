@@ -483,6 +483,17 @@ func (s *Server) handleExportCheckpoint(w http.ResponseWriter, r *http.Request) 
 	checkpointID := chi.URLParam(r, "checkpointId")
 	reqID := requestIDFromContext(r.Context())
 
+	// Validate before the name reaches a filesystem path or the
+	// Content-Disposition header. Sibling handlers validate here; export did
+	// not, and it is the one that interpolates the name straight into a
+	// response header. ValidateSessionName's allowlist (a-z, A-Z, 0-9, _, -)
+	// is what excludes CR/LF, so the check is load-bearing, not cosmetic.
+	if err := tmux.ValidateSessionName(sessionName); err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest,
+			fmt.Sprintf("invalid session name: %v", err), nil, reqID)
+		return
+	}
+
 	// Parse options from query params or body
 	var req ExportCheckpointRequest
 	if r.Method == http.MethodPost {

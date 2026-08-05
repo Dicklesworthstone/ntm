@@ -9620,7 +9620,7 @@ func TestHandleRollback_DryRun(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-rb")
-	metadata := `{"version":1,"id":"test-rb","name":"rollback-test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def","branch":"main"}}`
+	metadata := fmt.Sprintf(`{"version":1,"id":"test-rb","name":"rollback-test","session_name":"test-session","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def","branch":"main"}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -9966,7 +9966,7 @@ func TestHandleRollback_DryRunDirtyStash(t *testing.T) {
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dirty", "cp-dirty")
 	// IsDirty=true to exercise the stash warning path
-	metadata := `{"version":1,"id":"cp-dirty","name":"dirty-test","session_name":"rb-dirty","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dirty","name":"dirty-test","session_name":"rb-dirty","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -10002,7 +10002,7 @@ func TestHandleRollback_DryRunNoGitFlag(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nogit", "cp-nogit")
-	metadata := `{"version":1,"id":"cp-nogit","name":"nogit-test","session_name":"rb-nogit","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-nogit","name":"nogit-test","session_name":"rb-nogit","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -10970,7 +10970,7 @@ func TestHandleRollback_FakeGitCheckpointNoGit(t *testing.T) {
 
 	// Create fake checkpoint with git state
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-git", "cp-git")
-	metadata := `{"version":1,"id":"cp-git","name":"git-test","session_name":"rb-git","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-git","name":"git-test","session_name":"rb-git","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -11000,7 +11000,7 @@ func TestHandleRollback_DryRunDirtyNoStash(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dns", "cp-dns")
-	metadata := `{"version":1,"id":"cp-dns","name":"dns-test","session_name":"rb-dns","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":true}}`
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-dns","name":"dns-test","session_name":"rb-dns","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":true}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -11046,6 +11046,8 @@ func TestHandleRollback_FullGitIntegration(t *testing.T) {
 
 	// Create a real git repo in a temp directory
 	gitDir := filepath.Join(tmpHome, "work")
+	// The server serves this repository, so rollback is confined to it.
+	s.projectDir = gitDir
 	os.MkdirAll(gitDir, 0755)
 
 	// Initialize git repo and create initial commit
@@ -11124,7 +11126,7 @@ func TestHandleRollback_NoGitSuccess(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nog", "cp-nog")
-	metadata := `{"version":1,"id":"cp-nog","name":"no-git","session_name":"rb-nog","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`
+	metadata := fmt.Sprintf(`{"version":1,"id":"cp-nog","name":"no-git","session_name":"rb-nog","working_dir":%q,"created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890abc12345def67890abc12345","branch":"main","is_dirty":false}}`, s.projectDirSnapshot())
 	writeCheckpointFixtureFromMetadataJSON(t, cpDir, metadata)
 
 	rctx := chi.NewRouteContext()
@@ -11298,6 +11300,8 @@ func TestHandleRollback_WithGitPatch(t *testing.T) {
 
 	// Create a real git repo
 	gitDir := filepath.Join(tmpHome, "work-patch")
+	// The server serves this repository, so rollback is confined to it.
+	s.projectDir = gitDir
 	os.MkdirAll(gitDir, 0755)
 	for _, args := range [][]string{
 		{"git", "init"},
@@ -11401,6 +11405,8 @@ func TestHandleRollback_WithInvalidGitPatchPathWarns(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	gitDir := filepath.Join(tmpHome, "work-patch-invalid")
+	// The server serves this repository, so rollback is confined to it.
+	s.projectDir = gitDir
 	os.MkdirAll(gitDir, 0755)
 	for _, args := range [][]string{
 		{"git", "init"},
@@ -11495,6 +11501,8 @@ func TestHandleRollback_CleanRepo(t *testing.T) {
 
 	// Create a real git repo with NO dirty state
 	gitDir := filepath.Join(tmpHome, "work-clean")
+	// The server serves this repository, so rollback is confined to it.
+	s.projectDir = gitDir
 	os.MkdirAll(gitDir, 0755)
 	for _, args := range [][]string{
 		{"git", "init"},
