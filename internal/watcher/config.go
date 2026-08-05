@@ -60,6 +60,8 @@ func NewFileReservationWatcherFromConfig(
 		WithAgentName(agentName),
 		WithAgentNameResolver(resolver),
 		WithSessionFilter(sessionName),
+		WithAutoReserve(cfg.AutoReserve),
+		WithExtendOnActivity(cfg.ExtendOnActivity),
 		WithDebug(cfg.Debug),
 	}
 

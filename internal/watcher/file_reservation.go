@@ -60,6 +60,8 @@ type FileReservationWatcher struct {
 	idleTimeout        time.Duration
 	reservationTTL     time.Duration
 	captureLines       int
+	autoReserve        bool
+	extendOnActivity   bool
 	listAllPanes       func(ctx context.Context) (map[string][]tmux.Pane, error)
 	capturePaneOutput  func(ctx context.Context, target string, lines int) (string, error)
 	agentNameResolver  AgentNameResolver           // paneID -> registered agent name, or "" to skip
@@ -149,6 +151,20 @@ func WithReservationTTL(d time.Duration) FileReservationWatcherOption {
 	}
 }
 
+// WithAutoReserve controls whether detected file edits create reservations.
+func WithAutoReserve(enabled bool) FileReservationWatcherOption {
+	return func(w *FileReservationWatcher) {
+		w.autoReserve = enabled
+	}
+}
+
+// WithExtendOnActivity controls whether changed pane output renews existing reservations.
+func WithExtendOnActivity(enabled bool) FileReservationWatcherOption {
+	return func(w *FileReservationWatcher) {
+		w.extendOnActivity = enabled
+	}
+}
+
 // WithDebug enables debug logging.
 func WithDebug(debug bool) FileReservationWatcherOption {
 	return func(w *FileReservationWatcher) {
@@ -179,6 +195,8 @@ func NewFileReservationWatcher(opts ...FileReservationWatcherOption) *FileReserv
 		idleTimeout:        DefaultIdleTimeout,
 		reservationTTL:     DefaultReservationTTL,
 		captureLines:       DefaultCaptureLinesReservation,
+		autoReserve:        true,
+		extendOnActivity:   true,
 		listAllPanes:       tmux.DefaultClient.GetAllPanesContext,
 		capturePaneOutput:  tmux.CapturePaneOutputContext,
 		paneOutputs:        make(map[string]string),
@@ -317,6 +335,9 @@ func (w *FileReservationWatcher) checkPaneForFileEdits(ctx context.Context, sess
 	if !w.recordPaneOutput(pane.ID, output, now) {
 		return
 	}
+	if w.extendOnActivity {
+		w.renewPaneReservation(ctx, pane.ID)
+	}
 
 	// Detect file edits using local extraction (avoiding import cycle with robot package)
 	agentType := mapAgentTypeToPatternAgent(pane.Type)
@@ -356,7 +377,7 @@ func (w *FileReservationWatcher) onFileEdit(
 	files []string,
 	now time.Time,
 ) {
-	if w.client == nil || w.projectDir == "" {
+	if !w.autoReserve || w.client == nil || w.projectDir == "" {
 		return
 	}
 
@@ -402,6 +423,38 @@ func (w *FileReservationWatcher) onFileEdit(
 		if w.conflictCallback != nil {
 			for _, conflict := range w.buildConflictNotifications(ctx, sessionName, pane.ID, agentName, result.Conflicts) {
 				w.conflictCallback(conflict)
+			}
+		}
+	}
+}
+
+// renewPaneReservation extends the lease for a pane that produced new output.
+func (w *FileReservationWatcher) renewPaneReservation(ctx context.Context, paneID string) {
+	if w.client == nil {
+		return
+	}
+
+	w.mu.Lock()
+	reservation, ok := w.activeReservations[paneID]
+	if !ok || len(reservation.ReservationID) == 0 {
+		w.mu.Unlock()
+		return
+	}
+	copy := clonePaneReservation(*reservation)
+	w.mu.Unlock()
+
+	result, err := w.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+		ProjectKey:     w.projectDir,
+		AgentName:      copy.AgentName,
+		ExtendSeconds:  int(w.reservationTTL.Seconds()),
+		ReservationIDs: copy.ReservationID,
+	})
+	if err != nil || result == nil || result.Renewed < len(copy.ReservationID) {
+		if w.debug {
+			if err != nil {
+				log.Printf("[FileReservationWatcher] Error renewing reservations for active pane %s: %v", paneID, err)
+			} else {
+				log.Printf("[FileReservationWatcher] Renewed %d of %d reservations for active pane %s", result.Renewed, len(copy.ReservationID), paneID)
 			}
 		}
 	}

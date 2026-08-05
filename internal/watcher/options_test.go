@@ -160,3 +160,22 @@ func TestNewFileReservationWatcherFromConfig_Disabled(t *testing.T) {
 		t.Error("expected nil when Enabled is false")
 	}
 }
+
+func TestNewFileReservationWatcherFromConfig_AppliesReservationBehavior(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultFileReservationConfigValues()
+	cfg.AutoReserve = false
+	cfg.ExtendOnActivity = false
+
+	watcher := NewFileReservationWatcherFromConfig(cfg, nil, "/tmp/project", "agent-1", "session-1", nil)
+	if watcher == nil {
+		t.Fatal("expected watcher when enabled")
+	}
+	if watcher.autoReserve {
+		t.Error("autoReserve = true, want false")
+	}
+	if watcher.extendOnActivity {
+		t.Error("extendOnActivity = true, want false")
+	}
+}

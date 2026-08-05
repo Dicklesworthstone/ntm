@@ -1023,6 +1023,65 @@ func TestRenewReservationsUsesReservationIDs(t *testing.T) {
 	}
 }
 
+func TestFileReservationWatcherAutoReserveDisabledSkipsReservation(t *testing.T) {
+	t.Parallel()
+
+	reserveCalls := 0
+	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
+		"file_reservation_paths": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			reserveCalls++
+			return agentmail.ReservationResult{}, nil
+		},
+	})
+	defer server.Close()
+
+	w := NewFileReservationWatcher(
+		WithWatcherClient(agentmail.NewClient(agentmail.WithBaseURL(server.URL+"/"))),
+		WithProjectDir("/test/project"),
+		WithAgentName("agent"),
+		WithAutoReserve(false),
+	)
+	w.OnFileEdit(t.Context(), "test-session", tmux.Pane{ID: "%1"}, []string{"/file.go"})
+
+	if reserveCalls != 0 {
+		t.Errorf("reservation calls = %d, want 0", reserveCalls)
+	}
+}
+
+func TestFileReservationWatcherExtendsActiveReservationOnOutput(t *testing.T) {
+	t.Parallel()
+
+	renewCalls := 0
+	server := newWatcherMCPServer(t, map[string]watcherToolHandler{
+		"renew_file_reservations": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+			renewCalls++
+			return agentmail.RenewReservationsResult{Renewed: 1}, nil
+		},
+	})
+	defer server.Close()
+
+	w := NewFileReservationWatcher(
+		WithWatcherClient(agentmail.NewClient(agentmail.WithBaseURL(server.URL+"/"))),
+		WithProjectDir("/test/project"),
+	)
+	w.mu.Lock()
+	w.activeReservations["%1"] = &PaneReservation{
+		PaneID:        "%1",
+		AgentName:     "agent",
+		ReservationID: []int{1},
+	}
+	w.mu.Unlock()
+	w.capturePaneOutput = func(context.Context, string, int) (string, error) {
+		return "agent made progress", nil
+	}
+
+	w.checkPaneForFileEdits(t.Context(), "test-session", tmux.Pane{ID: "%1", Type: tmux.AgentClaude})
+
+	if renewCalls != 1 {
+		t.Errorf("renewal calls = %d, want 1", renewCalls)
+	}
+}
+
 func TestRenewReservationsReturnsErrorOnIncompleteRenew(t *testing.T) {
 	t.Parallel()
 
