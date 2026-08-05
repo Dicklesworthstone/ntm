@@ -113,7 +113,7 @@ assert_command_fails() {
 	log_info expected_failure "$description" 0 exit_code "$status" output "$output"
 }
 
-run_logged_command() {
+log_command() {
 	local step="$1"
 	shift
 	local started finished duration status stdout_path stderr_path
@@ -206,6 +206,7 @@ e2e_capture_diagnostics() {
 		"$E2E_REAL_TMUX" capture-pane -p -t "$pane" >"$diagnostics_dir/pane-${pane_file}.log" 2>&1 || true
 	done <"$diagnostics_dir/tmux-panes.log"
 	ps -axo pid=,ppid=,state=,etime=,command= >"$diagnostics_dir/processes.log" 2>&1 || true
+	lsof -nP -p "$$" >"$diagnostics_dir/open-files.log" 2>&1 || true
 	for session in "${E2E_SESSIONS[@]:-}"; do
 		"$E2E_NTM_BIN" status "$session" --json >"$diagnostics_dir/status-${session}.json" 2>&1 || true
 		"$E2E_REAL_TMUX" show-messages -t "$session" >"$diagnostics_dir/tmux-messages-${session}.log" 2>&1 || true
