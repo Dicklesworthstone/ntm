@@ -96,6 +96,48 @@ func TestCaptureNormalizedTmuxPanesCancellationJoinsWorkers(t *testing.T) {
 	}
 }
 
+func TestCaptureNormalizedTmuxPanesPreservesPerPaneErrors(t *testing.T) {
+	captured, err := captureNormalizedTmuxPanes(
+		context.Background(),
+		[]normalizedTmuxCaptureJob{{paneID: "%1"}},
+		1,
+		func(context.Context, string) (string, error) {
+			return "", errors.New("pane unavailable")
+		},
+		func(context.Context, string) (string, error) {
+			return "", errors.New("unexpected full capture")
+		},
+	)
+	if err != nil {
+		t.Fatalf("captureNormalizedTmuxPanes() error = %v", err)
+	}
+	if got := captured["%1"].captureErr; got != "pane unavailable" {
+		t.Fatalf("capture error = %q, want pane unavailable", got)
+	}
+}
+
+func TestApplyStatusTmuxCaptureFailuresMarksTmuxDegraded(t *testing.T) {
+	output := newStatusOutput(config.Default())
+	applyStatusTmuxCaptureFailures(output, []state.RuntimeAgent{{Pane: "%1", CaptureError: "pane unavailable"}})
+
+	if output.Sources == nil || !output.Sources.Sources["tmux"].Degraded {
+		t.Fatal("tmux source was not marked degraded")
+	}
+	if got := output.Sources.Sources["tmux"].LastError; !strings.Contains(got, "%1: pane unavailable") {
+		t.Fatalf("tmux last error = %q", got)
+	}
+	found := false
+	for _, source := range output.DegradedSources {
+		if source == "tmux" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("degraded sources = %v, want tmux", output.DegradedSources)
+	}
+}
+
 // ====================
 // Test Helper Functions
 // ====================

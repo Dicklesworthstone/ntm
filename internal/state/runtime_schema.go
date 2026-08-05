@@ -165,6 +165,7 @@ type RuntimeAgent struct {
 	// Health
 	HealthStatus HealthStatus `json:"health_status"`
 	HealthReason string       `json:"health_reason,omitempty"`
+	CaptureError string       `json:"capture_error,omitempty"`
 
 	// Freshness
 	CollectedAt time.Time `json:"collected_at"`

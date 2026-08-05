@@ -203,6 +203,7 @@ func (a *TmuxAdapter) NormalizeAgent(sessionName string, agent *Agent, outputTai
 		CurrentBead:      "", // Would need external enrichment
 		PendingMail:      0,  // Would need Agent Mail integration
 		AgentMailName:    agent.Name,
+		CaptureError:     agent.CaptureError,
 		HealthStatus:     healthStatus,
 		HealthReason:     healthReason,
 		CollectedAt:      now,

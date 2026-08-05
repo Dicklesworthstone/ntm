@@ -1594,6 +1594,7 @@ type Agent struct {
 	ContextLimit         int       `json:"context_limit,omitempty"`           // Model context limit
 	ContextPercent       float64   `json:"context_percent,omitempty"`         // Usage percentage (0-100+)
 	ContextModel         string    `json:"context_model,omitempty"`           // Model name for context limit lookup
+	CaptureError         string    `json:"capture_error,omitempty"`
 }
 
 // SystemInfo contains system and runtime information
@@ -2533,6 +2534,7 @@ func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptio
 		output.DegradedSources = append(output.DegradedSources, "work")
 		output.DegradedSources = append(output.DegradedSources, "coordination")
 	}
+	applyStatusTmuxCaptureFailures(output, snapshot.Agents)
 
 	if output.Summary.MailUrgent == 0 && output.Summary.MailUnread > 0 {
 		output.Summary.MailUrgent = 0
@@ -2543,6 +2545,39 @@ func buildLiveStatus(projectDir string, cfg *config.Config, opts PaginationOptio
 
 	statusFinalize(output, opts)
 	return output, nil
+}
+
+func applyStatusTmuxCaptureFailures(output *StatusOutput, agents []state.RuntimeAgent) {
+	if output == nil {
+		return
+	}
+	var failures []string
+	for _, agent := range agents {
+		if err := strings.TrimSpace(agent.CaptureError); err != "" {
+			failures = append(failures, fmt.Sprintf("%s: %s", agent.Pane, err))
+		}
+	}
+	if len(failures) == 0 {
+		return
+	}
+	if output.Sources == nil {
+		output.Sources = &adapters.SourceHealthSection{Sources: make(map[string]adapters.SourceInfo)}
+	}
+	if output.Sources.Sources == nil {
+		output.Sources.Sources = make(map[string]adapters.SourceInfo)
+	}
+	info := output.Sources.Sources["tmux"]
+	info.Name = "tmux"
+	info.Available = true
+	info.Fresh = false
+	info.Degraded = true
+	info.DegradedReason = "pane capture failed"
+	info.LastError = strings.Join(failures, "; ")
+	info.DegradedSince = time.Now().UTC().Format(time.RFC3339Nano)
+	output.Sources.Sources["tmux"] = info
+	output.Sources.Degraded = uniqueSortedStrings(append(output.Sources.Degraded, "tmux"))
+	output.Sources.AllFresh = false
+	output.DegradedSources = append(output.DegradedSources, "tmux")
 }
 
 func statusSourceHealthFromRows(rows []state.SourceHealth) *adapters.SourceHealthSection {
@@ -7644,7 +7679,9 @@ func collectNormalizedTmuxProjectionContext(ctx context.Context, projectDir stri
 				agent.Name = mappedName
 			}
 
-			content := allCapturedContent[pane.ID]
+			captured := allCapturedContent[pane.ID]
+			content := captured.content
+			agent.CaptureError = captured.captureErr
 			enrichAgentStatus(&agent, sessions[i].Name, modelNameForPane(pane, cfg), content)
 			if content != "" {
 				outputTails[pane.ID] = content
@@ -7696,8 +7733,9 @@ type normalizedTmuxCaptureJob struct {
 }
 
 type normalizedTmuxCaptureResult struct {
-	paneID  string
-	content string
+	paneID     string
+	content    string
+	captureErr string
 }
 
 type normalizedTmuxCaptureFunc func(context.Context, string) (string, error)
@@ -7708,7 +7746,7 @@ func captureNormalizedTmuxPanes(
 	workerLimit int,
 	captureStatus normalizedTmuxCaptureFunc,
 	captureFull normalizedTmuxCaptureFunc,
-) (map[string]string, error) {
+) (map[string]normalizedTmuxCaptureResult, error) {
 	if ctx == nil {
 		return nil, errors.New("normalized tmux capture context is required")
 	}
@@ -7719,7 +7757,7 @@ func captureNormalizedTmuxPanes(
 		return nil, errors.New("normalized tmux capture functions are required")
 	}
 	if len(captureJobs) == 0 {
-		return map[string]string{}, nil
+		return map[string]normalizedTmuxCaptureResult{}, nil
 	}
 	if workerLimit <= 0 || workerLimit > len(captureJobs) {
 		workerLimit = len(captureJobs)
@@ -7751,11 +7789,13 @@ func captureNormalizedTmuxPanes(
 					capture = captureFull
 				}
 				content, err := capture(ctx, job.paneID)
+				captureErr := ""
 				if err != nil {
 					content = ""
+					captureErr = err.Error()
 				}
 				select {
-				case results <- normalizedTmuxCaptureResult{paneID: job.paneID, content: content}:
+				case results <- normalizedTmuxCaptureResult{paneID: job.paneID, content: content, captureErr: captureErr}:
 				case <-ctx.Done():
 					return
 				}
@@ -7768,11 +7808,9 @@ func captureNormalizedTmuxPanes(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	captured := make(map[string]string, len(results))
+	captured := make(map[string]normalizedTmuxCaptureResult, len(results))
 	for result := range results {
-		if result.content != "" {
-			captured[result.paneID] = result.content
-		}
+		captured[result.paneID] = result
 	}
 	return captured, nil
 }
