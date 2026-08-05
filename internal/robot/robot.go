@@ -1531,9 +1531,6 @@ func SetOutputFormat(f RobotFormat) {
 	outputFormat = f
 }
 
-// Global state tracker for delta snapshots
-var stateTracker = tracker.New()
-
 var (
 	projectionStoreMu sync.RWMutex
 	projectionStore   *state.Store
@@ -9006,11 +9003,6 @@ func robotFirstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// GetStateTracker returns the global state tracker for direct access.
-func GetStateTracker() *tracker.StateTracker {
-	return stateTracker
 }
 
 // GraphOutput provides project graph analysis from bv
