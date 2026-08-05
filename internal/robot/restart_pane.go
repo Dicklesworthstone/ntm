@@ -51,7 +51,7 @@ type RestartPaneOutput struct {
 	WouldAffect         []string                               `json:"would_affect,omitempty"`
 	BeadAssigned        string                                 `json:"bead_assigned,omitempty"` // Bead ID if --bead was used
 	PromptSent          bool                                   `json:"prompt_sent,omitempty"`   // True only when every attempted ordinary prompt or the atomic bead prompt has confirmed delivery
-	PromptError         string                                 `json:"prompt_error,omitempty"`  // Non-fatal prompt send error
+	PromptError         string                                 `json:"prompt_error,omitempty"`  // Prompt delivery error details
 	PromptDelivery      map[string]RestartPromptDeliveryStatus `json:"prompt_delivery,omitempty"`
 	ProcessAlive        map[string]bool                        `json:"process_alive,omitempty"` // Post-restart liveness per pane (agent panes require a live agent child, not just the shell)
 	ClaimActor          string                                 `json:"claim_actor,omitempty"`
@@ -609,8 +609,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 		}
 
 		if len(promptErrors) > 0 {
-			output.PromptSent = false
-			output.PromptError = strings.Join(promptErrors, "; ")
+			setRestartPanePromptFailure(output, promptErrors)
 		} else {
 			output.PromptSent = len(promptTargets) > 0
 		}
@@ -634,6 +633,19 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 	}
 
 	return output, nil
+}
+
+func setRestartPanePromptFailure(output *RestartPaneOutput, promptErrors []string) {
+	if output == nil || len(promptErrors) == 0 {
+		return
+	}
+
+	output.PromptSent = false
+	output.PromptError = strings.Join(promptErrors, "; ")
+	output.Success = false
+	output.ErrorCode = ErrCodePromptSendFailed
+	output.Error = fmt.Sprintf("%d restarted pane(s) did not receive the requested prompt", len(promptErrors))
+	output.Hint = "The restart completed, but prompt delivery was not confirmed. Inspect prompt_delivery and prompt_error before retrying."
 }
 
 func restartPaneDeps(custom *RestartPaneDependencies) RestartPaneDependencies {

@@ -646,6 +646,35 @@ func TestRestartPaneOutputPromptError(t *testing.T) {
 	}
 }
 
+func TestSetRestartPanePromptFailureMarksTopLevelResponseFailed(t *testing.T) {
+	output := &RestartPaneOutput{RobotResponse: NewRobotResponse(true), Restarted: []string{"1"}}
+
+	setRestartPanePromptFailure(output, []string{"pane 1: send-keys failed"})
+
+	if output.Success {
+		t.Fatal("prompt delivery failure must set success=false")
+	}
+	if output.ErrorCode != ErrCodePromptSendFailed {
+		t.Fatalf("ErrorCode = %q, want %q", output.ErrorCode, ErrCodePromptSendFailed)
+	}
+	if output.PromptSent || output.PromptError != "pane 1: send-keys failed" {
+		t.Fatalf("prompt outcome = sent:%t error:%q", output.PromptSent, output.PromptError)
+	}
+	if !strings.Contains(output.Error, "did not receive") || output.Hint == "" {
+		t.Fatalf("failure envelope lost error or hint: %+v", output.RobotResponse)
+	}
+}
+
+func TestSetRestartPanePromptFailureIgnoresEmptyErrors(t *testing.T) {
+	output := &RestartPaneOutput{RobotResponse: NewRobotResponse(true), PromptSent: true}
+
+	setRestartPanePromptFailure(output, nil)
+
+	if !output.Success || !output.PromptSent || output.ErrorCode != "" {
+		t.Fatalf("empty errors changed response: %+v", output)
+	}
+}
+
 func TestRestartPaneDryRunShowsBead(t *testing.T) {
 	// In dry-run mode, BeadAssigned should still be populated
 	output := RestartPaneOutput{
