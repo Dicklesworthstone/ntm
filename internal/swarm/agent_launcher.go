@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -577,14 +578,44 @@ type LaunchCommand struct {
 
 // ToShellCommand converts the launch command to a shell command string for tmux.
 func (lc LaunchCommand) ToShellCommand() string {
-	if len(lc.Args) == 0 {
-		return lc.Binary
-	}
-	result := lc.Binary
+	result := lc.envPrefix() + lc.Binary
 	for _, arg := range lc.Args {
 		result += " " + arg
 	}
 	return result
+}
+
+// envPrefix renders Env as shell assignments ahead of the binary.
+//
+// BuildLaunchCommand has always populated Env from EnvVars and LOGGED the env
+// keys as if they had been applied, but ToShellCommand rendered only
+// Binary+Args — so every agent launched through this path ran with the
+// operator's ambient environment instead. WithEnvVars was accepted, logged, and
+// silently dropped: an API trap that would no-op the first time anyone used it
+// (it is why a per-pane CODEX_HOME story cannot work through this launcher).
+//
+// Assignments are sorted because Env is built by ranging a map, which would
+// otherwise make the rendered command nondeterministic and untestable, and
+// values are shell-quoted because they reach a shell as text.
+func (lc LaunchCommand) envPrefix() string {
+	if len(lc.Env) == 0 {
+		return ""
+	}
+	assignments := make([]string, 0, len(lc.Env))
+	for _, entry := range lc.Env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" {
+			// Not a KEY=VALUE assignment; passing it through would corrupt the
+			// command line.
+			continue
+		}
+		assignments = append(assignments, name+"="+tmux.ShellQuote(value))
+	}
+	if len(assignments) == 0 {
+		return ""
+	}
+	sort.Strings(assignments)
+	return strings.Join(assignments, " ") + " "
 }
 
 // ToSimpleCommand returns just the binary name without arguments.

@@ -1420,3 +1420,73 @@ func TestLoggerBHelper(t *testing.T) {
 		t.Error("expected non-nil logger from loggerB()")
 	}
 }
+
+// bd-ucwjn: BuildLaunchCommand populated Env from EnvVars and LOGGED the env
+// keys as if they had been applied, but ToShellCommand rendered only
+// Binary+Args — so WithEnvVars was accepted, logged, and silently dropped, and
+// every agent launched through this path ran with the operator's ambient
+// environment. Assert the RENDERED command, not just that cmd.Env is set.
+func TestLaunchCommand_ToShellCommandCarriesEnv(t *testing.T) {
+	t.Run("renders assignments ahead of the binary", func(t *testing.T) {
+		lc := LaunchCommand{
+			Binary: "codex",
+			Args:   []string{"--yolo"},
+			Env:    []string{"CODEX_HOME=/tmp/pane-1", "NTM_PANE=1"},
+		}
+		got := lc.ToShellCommand()
+		want := "CODEX_HOME='/tmp/pane-1' NTM_PANE='1' codex --yolo"
+		if got != want {
+			t.Fatalf("ToShellCommand() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ordering is deterministic", func(t *testing.T) {
+		// Env originates from ranging a map, so unsorted output would make the
+		// rendered command nondeterministic.
+		lc := LaunchCommand{
+			Binary: "claude",
+			Env:    []string{"ZZZ=last", "AAA=first", "MMM=middle"},
+		}
+		first := lc.ToShellCommand()
+		for i := 0; i < 20; i++ {
+			if got := lc.ToShellCommand(); got != first {
+				t.Fatalf("ToShellCommand() is nondeterministic: %q vs %q", got, first)
+			}
+		}
+		if !strings.HasPrefix(first, "AAA='first' MMM='middle' ZZZ='last' claude") {
+			t.Fatalf("assignments are not sorted: %q", first)
+		}
+	})
+
+	t.Run("values are shell-quoted", func(t *testing.T) {
+		lc := LaunchCommand{
+			Binary: "claude",
+			Env:    []string{`EVIL=x'; touch /tmp/pwned; echo '`},
+		}
+		got := lc.ToShellCommand()
+		if strings.Contains(got, `EVIL=x'; touch`) {
+			t.Fatalf("env value was not shell-quoted: %q", got)
+		}
+	})
+
+	t.Run("no env renders exactly as before", func(t *testing.T) {
+		lc := LaunchCommand{Binary: "claude", Args: []string{"--resume"}}
+		if got := lc.ToShellCommand(); got != "claude --resume" {
+			t.Fatalf("ToShellCommand() = %q, want %q", got, "claude --resume")
+		}
+		bare := LaunchCommand{Binary: "claude"}
+		if got := bare.ToShellCommand(); got != "claude" {
+			t.Fatalf("ToShellCommand() = %q, want %q", got, "claude")
+		}
+	})
+
+	t.Run("malformed entries are dropped rather than corrupting the line", func(t *testing.T) {
+		lc := LaunchCommand{
+			Binary: "claude",
+			Env:    []string{"not-an-assignment", "=novalue", "GOOD=yes"},
+		}
+		if got := lc.ToShellCommand(); got != "GOOD='yes' claude" {
+			t.Fatalf("ToShellCommand() = %q, want malformed entries skipped", got)
+		}
+	})
+}

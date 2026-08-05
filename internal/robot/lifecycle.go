@@ -38,6 +38,13 @@ type LifecyclePaneResult struct {
 	ShellPreserved bool   `json:"shell_preserved"`
 	Relaunched     bool   `json:"relaunched,omitempty"`
 	Detail         string `json:"detail,omitempty"`
+
+	// VerificationFailed distinguishes "the pane is gone" from "tmux could not
+	// be queried, so nothing was verified". Without it, shell_preserved:false
+	// told the operator the verb had destroyed the pane — the one outcome both
+	// verbs promise to avoid — when in fact the post-action lookup had simply
+	// hit a transient error.
+	VerificationFailed bool `json:"verification_failed,omitempty"`
 }
 
 // ExitCLIOutput is the structured output for --robot-exit-cli.
@@ -145,19 +152,62 @@ func dedupePanesByID(panes []tmux.Pane) []tmux.Pane {
 	return deduped
 }
 
-// refreshLifecyclePane re-reads a pane by stable ID; ok=false means the pane
-// no longer exists (the one outcome both verbs promise to avoid).
-func refreshLifecyclePane(ctx context.Context, session, paneID string) (tmux.Pane, bool) {
-	panes, err := tmux.GetPanesContext(ctx, session)
-	if err != nil {
-		return tmux.Pane{}, false
-	}
-	for _, pane := range panes {
-		if pane.ID == paneID {
-			return pane, true
+// paneLookup is the outcome of re-reading a pane after a lifecycle action.
+type paneLookup int
+
+const (
+	// paneFound: the listing succeeded and the pane is still there.
+	paneFound paneLookup = iota
+	// paneAbsent: the listing SUCCEEDED and the pane was not in it. This is
+	// the only result that proves the pane is gone.
+	paneAbsent
+	// paneLookupFailed: tmux could not be queried, so nothing is proven.
+	paneLookupFailed
+)
+
+// lifecycleRefreshAttempts bounds the retry for a transient listing failure.
+const lifecycleRefreshAttempts = 3
+
+// refreshLifecyclePane re-reads a pane by stable ID.
+//
+// It distinguishes "absent from a successful listing" from "the listing
+// failed". Collapsing the two meant a single tmux hiccup (busy server, EINTR)
+// during the post-action refresh reported shell_preserved:false and
+// success:false — telling the operator the verb had destroyed the pane, which
+// is precisely what both verbs promise never to do. A failed listing is
+// retried briefly, since the motivating case is transient.
+func refreshLifecyclePane(ctx context.Context, session, paneID string) (tmux.Pane, paneLookup) {
+	var lastErr error
+	for attempt := 0; attempt < lifecycleRefreshAttempts; attempt++ {
+		if attempt > 0 {
+			if ctx.Err() != nil {
+				break
+			}
+			time.Sleep(lifecyclePollInterval)
 		}
+		panes, err := tmux.GetPanesContext(ctx, session)
+		if err != nil {
+			// A session that no longer exists is a DEFINITIVE answer, not a
+			// transient failure: killing a session's last pane destroys the
+			// session, so the listing legitimately errors and the pane really
+			// is gone. Treating that as a lookup failure would report a
+			// successful kill-pane as a failure.
+			switch tmux.ClassifyCommandError(err).Kind {
+			case tmux.CommandErrorSessionNotFound, tmux.CommandErrorNoServer:
+				return tmux.Pane{}, paneAbsent
+			}
+			lastErr = err
+			continue
+		}
+		for _, pane := range panes {
+			if pane.ID == paneID {
+				return pane, paneFound
+			}
+		}
+		return tmux.Pane{}, paneAbsent
 	}
-	return tmux.Pane{}, false
+	_ = lastErr
+	return tmux.Pane{}, paneLookupFailed
 }
 
 // waitForBareShell polls until the pane's foreground process is a bare shell.
@@ -165,9 +215,20 @@ func waitForBareShell(ctx context.Context, session, paneID string, timeout time.
 	deadline := time.Now().Add(timeout)
 	var last tmux.Pane
 	for {
-		pane, ok := refreshLifecyclePane(ctx, session, paneID)
-		if !ok {
+		pane, lookup := refreshLifecyclePane(ctx, session, paneID)
+		switch lookup {
+		case paneAbsent:
+			// A successful listing without the pane: it really is gone.
 			return last, false
+		case paneLookupFailed:
+			// Could not query tmux. Keep polling until the deadline rather
+			// than aborting and reporting the agent as still running, which
+			// escalated to a needless --robot-kill-agent.
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				return last, false
+			}
+			time.Sleep(lifecyclePollInterval)
+			continue
 		}
 		last = pane
 		if pane.AgentCLIDead() {
@@ -209,8 +270,8 @@ func relaunchAgentCLI(ctx context.Context, cfg *config.Config, session string, p
 	}
 	deadline := time.Now().Add(lifecycleRelaunchBoot)
 	for {
-		refreshed, ok := refreshLifecyclePane(ctx, session, pane.ID)
-		if ok && !refreshed.AgentCLIDead() {
+		refreshed, lookup := refreshLifecyclePane(ctx, session, pane.ID)
+		if lookup == paneFound && !refreshed.AgentCLIDead() {
 			result.Relaunched = true
 			return
 		}
@@ -268,11 +329,20 @@ func GetExitCLI(ctx context.Context, opts LifecycleOptions) (*ExitCLIOutput, err
 				_, exited = waitForBareShell(ctx, opts.Session, pane.ID, lifecycleExitTimeout)
 			}
 			result.Exited = exited
-			refreshed, ok := refreshLifecyclePane(ctx, opts.Session, pane.ID)
-			result.ShellPreserved = ok
-			if !exited && ok {
-				result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf(
-					"agent CLI still in foreground (%s) after two graceful exit attempts; escalate with --robot-kill-agent", refreshed.Command))
+			refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, pane.ID)
+			result.ShellPreserved = lookup == paneFound
+			switch lookup {
+			case paneLookupFailed:
+				// Nothing was proven either way; say so instead of implying
+				// the pane was destroyed.
+				result.VerificationFailed = true
+				result.Detail = joinLifecycleDetail(result.Detail,
+					"could not re-read the pane after exit; shell_preserved is unverified, not false")
+			case paneFound:
+				if !exited {
+					result.Detail = joinLifecycleDetail(result.Detail, fmt.Sprintf(
+						"agent CLI still in foreground (%s) after two graceful exit attempts; escalate with --robot-kill-agent", refreshed.Command))
+				}
 			}
 		}
 		if opts.Relaunch && result.Exited && result.ShellPreserved {
@@ -338,9 +408,14 @@ func GetKillAgent(ctx context.Context, opts LifecycleOptions) (*KillAgentOutput,
 				result.Detail = joinLifecycleDetail(result.Detail,
 					fmt.Sprintf("processes survived SIGKILL: %v", survivors))
 			}
-			refreshed, ok := refreshLifecyclePane(ctx, opts.Session, pane.ID)
-			result.ShellPreserved = ok && refreshed.PID == pane.PID
-			if ok && refreshed.PID != pane.PID {
+			refreshed, lookup := refreshLifecyclePane(ctx, opts.Session, pane.ID)
+			result.ShellPreserved = lookup == paneFound && refreshed.PID == pane.PID
+			switch {
+			case lookup == paneLookupFailed:
+				result.VerificationFailed = true
+				result.Detail = joinLifecycleDetail(result.Detail,
+					"could not re-read the pane after kill; shell_preserved is unverified, not false")
+			case lookup == paneFound && refreshed.PID != pane.PID:
 				result.Detail = joinLifecycleDetail(result.Detail,
 					fmt.Sprintf("pane shell PID changed from %d to %d", pane.PID, refreshed.PID))
 			}
@@ -527,7 +602,10 @@ func GetKillPane(ctx context.Context, opts KillPaneOptions) (*KillPaneOutput, er
 			output.Success = false
 			continue
 		}
-		if _, stillThere := refreshLifecyclePane(ctx, session, pane.ID); stillThere {
+		// Only a SUCCESSFUL listing that still contains the pane proves the
+		// kill failed. A failed listing proves nothing, and treating it as
+		// "still there" reported a successful kill-pane as a failure.
+		if _, lookup := refreshLifecyclePane(ctx, session, pane.ID); lookup != paneAbsent {
 			output.Failed = append(output.Failed, identity)
 			output.Success = false
 			continue

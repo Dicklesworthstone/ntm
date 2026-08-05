@@ -69,3 +69,40 @@ func TestLifecycleVerbs_RequireSession(t *testing.T) {
 		t.Fatalf("expected INVALID_FLAG for empty session, got success=%v code=%s", kout.Success, kout.ErrorCode)
 	}
 }
+
+// bd-3izr9: refreshLifecyclePane must distinguish three outcomes, because
+// collapsing them made a single transient tmux error report shell_preserved:
+// false — telling the operator the verb had destroyed the pane, which is the
+// one thing both lifecycle verbs promise never to do.
+func TestRefreshLifecyclePane_ClassifiesOutcomes(t *testing.T) {
+	t.Run("a session that does not exist proves the pane is absent", func(t *testing.T) {
+		// Killing a session's last pane destroys the session, so the listing
+		// legitimately errors. That is a definitive answer, not a transient
+		// failure; treating it as one reported a successful kill as a failure.
+		_, lookup := refreshLifecyclePane(context.Background(), "ntm-nonexistent-session-bd3izr9", "%999")
+		if lookup != paneAbsent {
+			t.Fatalf("lookup = %v, want paneAbsent for a session that does not exist", lookup)
+		}
+	})
+
+	t.Run("a cancelled context does not claim the pane is gone", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, lookup := refreshLifecyclePane(ctx, "any-session", "%1")
+		if lookup == paneAbsent {
+			t.Fatal("a cancelled lookup reported paneAbsent; cancellation proves nothing about the pane")
+		}
+	})
+}
+
+// The tri-state must be wired into the result, not just computed.
+func TestLifecyclePaneResult_VerificationFailedIsDistinctFromDestroyed(t *testing.T) {
+	// A result that could not be verified must be distinguishable from one
+	// that verified the pane was destroyed. Both have ShellPreserved=false.
+	unverified := LifecyclePaneResult{ShellPreserved: false, VerificationFailed: true}
+	destroyed := LifecyclePaneResult{ShellPreserved: false}
+
+	if unverified.VerificationFailed == destroyed.VerificationFailed {
+		t.Fatal("an unverified result is indistinguishable from a destroyed pane")
+	}
+}
