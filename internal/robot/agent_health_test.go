@@ -474,6 +474,46 @@ func TestDefaultAgentHealthOptions(t *testing.T) {
 	}
 }
 
+func TestPTAvailabilityRequiresRunningMonitor(t *testing.T) {
+	tests := []struct {
+		name            string
+		enabled         bool
+		binaryAvailable bool
+		monitorRunning  bool
+		wantStatus      PTAvailability
+		wantAvailable   bool
+	}{
+		{name: "disabled", wantStatus: PTAvailabilityDisabled},
+		{name: "binary unavailable", enabled: true, wantStatus: PTAvailabilityUnavailable},
+		{name: "monitor not running", enabled: true, binaryAvailable: true, wantStatus: PTAvailabilityMonitorNotRunning},
+		{name: "monitor running", enabled: true, binaryAvailable: true, monitorRunning: true, wantStatus: PTAvailabilityAvailable, wantAvailable: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotStatus, gotAvailable := ptAvailability(test.enabled, test.binaryAvailable, test.monitorRunning)
+			if gotStatus != test.wantStatus || gotAvailable != test.wantAvailable {
+				t.Fatalf("ptAvailability() = (%q, %t), want (%q, %t)", gotStatus, gotAvailable, test.wantStatus, test.wantAvailable)
+			}
+		})
+	}
+}
+
+func TestAgentHealthOutputEmitsPTMonitorStatus(t *testing.T) {
+	encoded, err := json.Marshal(AgentHealthOutput{PTStatus: PTAvailabilityMonitorNotRunning})
+	if err != nil {
+		t.Fatalf("marshal AgentHealthOutput: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal AgentHealthOutput: %v", err)
+	}
+	if got := decoded["pt_status"]; got != string(PTAvailabilityMonitorNotRunning) {
+		t.Fatalf("pt_status = %#v, want %q", got, PTAvailabilityMonitorNotRunning)
+	}
+}
+
 func TestPaneObservationUsableForHealthFailsClosed(t *testing.T) {
 	tests := []struct {
 		name string

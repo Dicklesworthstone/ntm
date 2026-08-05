@@ -157,13 +157,26 @@ type AgentHealthQuery struct {
 	PTEnabled          bool     `json:"pt_enabled"`
 }
 
+// PTAvailability describes whether process_triage can supply health data for
+// this response. A binary alone is not enough: the monitor must be running to
+// have observations for the current panes.
+type PTAvailability string
+
+const (
+	PTAvailabilityDisabled          PTAvailability = "disabled"
+	PTAvailabilityUnavailable       PTAvailability = "unavailable"
+	PTAvailabilityMonitorNotRunning PTAvailability = "monitor_not_running"
+	PTAvailabilityAvailable         PTAvailability = "available"
+)
+
 // AgentHealthOutput is the response for --robot-agent-health.
 type AgentHealthOutput struct {
 	RobotResponse
 	Session         string                      `json:"session"`
 	Query           AgentHealthQuery            `json:"query"`
 	CautAvailable   bool                        `json:"caut_available"`
-	PTAvailable     bool                        `json:"pt_available"`
+	PTAvailable     bool                        `json:"pt_available"` // True only when PT observations are available.
+	PTStatus        PTAvailability              `json:"pt_status"`
 	Panes           map[string]PaneHealthStatus `json:"panes"`
 	ProviderSummary map[string]ProviderStats    `json:"provider_summary"`
 	PTSummary       *PTHealthSummary            `json:"pt_summary,omitempty"`
@@ -208,6 +221,7 @@ func GetAgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 			CautEnabled:        opts.IncludeCaut,
 			PTEnabled:          opts.IncludePT,
 		},
+		PTStatus:        PTAvailabilityDisabled,
 		Panes:           make(map[string]PaneHealthStatus),
 		ProviderSummary: make(map[string]ProviderStats),
 		FleetHealth:     FleetHealthSummary{},
@@ -262,14 +276,16 @@ func GetAgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 	if opts.IncludePT {
 		ptAdapter := tools.NewPTAdapter()
 		ctx, cancel := context.WithTimeout(context.Background(), opts.PTTimeout)
-		if ptAdapter.IsAvailable(ctx) {
-			output.PTAvailable = true
-			// Get states from the global monitor if running, otherwise fetch on-demand
-			monitor := pt.GetGlobalMonitor()
-			if monitor.Running() {
-				ptStates = monitor.GetAllStates()
-			}
-			// Initialize summary
+		binaryAvailable := ptAdapter.IsAvailable(ctx)
+		monitorRunning := false
+		var monitor *pt.HealthMonitor
+		if binaryAvailable {
+			monitor = pt.GetGlobalMonitor()
+			monitorRunning = monitor.Running()
+		}
+		output.PTStatus, output.PTAvailable = ptAvailability(true, binaryAvailable, monitorRunning)
+		if output.PTAvailable {
+			ptStates = monitor.GetAllStates()
 			ptSummary = &PTHealthSummary{}
 		}
 		cancel()
@@ -376,6 +392,19 @@ func GetAgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 	}
 
 	return output, nil
+}
+
+func ptAvailability(enabled, binaryAvailable, monitorRunning bool) (PTAvailability, bool) {
+	if !enabled {
+		return PTAvailabilityDisabled, false
+	}
+	if !binaryAvailable {
+		return PTAvailabilityUnavailable, false
+	}
+	if !monitorRunning {
+		return PTAvailabilityMonitorNotRunning, false
+	}
+	return PTAvailabilityAvailable, true
 }
 
 func paneObservationUsableForHealth(workStatus PaneWorkStatus) bool {
