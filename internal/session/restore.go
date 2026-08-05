@@ -185,6 +185,30 @@ func Restore(state *SessionState, opts RestoreOptions) (err error) {
 	return nil
 }
 
+// countLaunchableAgents reports how many saved panes would actually launch an
+// agent, using the same predicates as the launch loop: user panes are skipped,
+// and so is any pane with neither a saved command nor a type default.
+//
+// Counting only these avoids a false capacity error for a saved session whose
+// extra panes were never going to launch anything.
+func countLaunchableAgents(paneStates []PaneState, cmds AgentCommands) int {
+	count := 0
+	for _, paneState := range paneStates {
+		if paneState.AgentType == string(tmux.AgentUser) || paneState.AgentType == "user" {
+			continue
+		}
+		agentCmd := paneState.Command
+		if agentCmd == "" {
+			agentCmd = getAgentCommand(paneState.AgentType, cmds)
+		}
+		if agentCmd == "" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // applyClaudeIsolation prefixes a Claude pane's launch command with its
 // per-pane credential isolation environment (GH#237, bd-4tz2d), and returns
 // non-Claude commands unchanged.
@@ -265,6 +289,25 @@ func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands, 
 		}
 		return sortedPaneStates[i].Index < sortedPaneStates[j].Index
 	})
+
+	// A pane grid smaller than the saved agent list means some agents cannot be
+	// launched at all. Silently breaking out of the loop discarded them with no
+	// error, no audit event, and no effect on the return value, so the caller
+	// reported a clean restore while N agents never started — the same
+	// silently-dropped-work failure ba13c058 fixed on the swarm side. Name the
+	// arithmetic instead.
+	if launchable := countLaunchableAgents(sortedPaneStates, cmds); launchable > len(panes) {
+		_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "session.restore.agents", map[string]interface{}{
+			"phase":             "capacity",
+			"session":           sessionName,
+			"agents_launchable": launchable,
+			"panes_available":   len(panes),
+			"correlation_id":    correlationID,
+		}, nil)
+		return fmt.Errorf(
+			"restored session %q has %d pane(s) but %d agent(s) to launch; %d would be silently dropped (topology restore likely failed)",
+			sessionName, len(panes), launchable, launchable-len(panes))
+	}
 
 	for i, paneState := range sortedPaneStates {
 		if i >= len(panes) {

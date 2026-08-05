@@ -655,7 +655,7 @@ Examples:
 
 			if sel == codex.ReplaceGoalCancel {
 				// Cancel == keep the current goal == Esc (sent as a key, not literal).
-				if err := tmux.SendNamedKey(target.ID, "Escape"); err != nil {
+				if err := tmux.SendKeyName(target.ID, "Escape"); err != nil {
 					res.RefusalReason = fmt.Sprintf("failed to send Escape: %v", err)
 					return emit(err, robot.ErrCodePromptSendFailed, "tmux send-keys Escape failed")
 				}

@@ -2386,8 +2386,11 @@ func (c *Client) SendKeyName(target, keyName string) error {
 }
 
 // SendKeyNameContext sends a tmux key name with caller cancellation.
+//
+// The "--" stops a key name that begins with a dash from being parsed by tmux
+// as a flag instead of a key.
 func (c *Client) SendKeyNameContext(ctx context.Context, target, keyName string) error {
-	return c.RunSilentContext(ctx, "send-keys", "-t", target, keyName)
+	return c.RunSilentContext(ctx, "send-keys", "-t", target, "--", keyName)
 }
 
 // SendKeyName sends a tmux key name using the default client.
@@ -2418,21 +2421,6 @@ func (c *Client) SendEOF(target string) error {
 // SendEOF sends Ctrl+D (EOF) to a pane (default client)
 func SendEOF(target string) error {
 	return DefaultClient.SendEOF(target)
-}
-
-// SendNamedKey sends a single named tmux key to a pane (NOT literal text). Use
-// this for special keys like "Escape", "Up", "Down", "Tab", or "BSpace" that
-// must be delivered as key presses rather than the literal characters. The key
-// name is passed through to tmux send-keys unquoted (without -l), so it is
-// interpreted as a key name. The "--" guard prevents a leading-dash key name
-// from being parsed as a flag.
-func (c *Client) SendNamedKey(target, key string) error {
-	return c.RunSilent("send-keys", "-t", target, "--", key)
-}
-
-// SendNamedKey sends a single named tmux key to a pane (default client).
-func SendNamedKey(target, key string) error {
-	return DefaultClient.SendNamedKey(target, key)
 }
 
 // DisplayMessage shows a message in the tmux status line.

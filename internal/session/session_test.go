@@ -1313,3 +1313,63 @@ func TestApplyClaudeIsolation(t *testing.T) {
 		}
 	})
 }
+
+// bd-yzvm0: `if i >= len(panes) { break }` discarded every saved agent past the
+// live pane count with no error, no audit event, and no effect on the return
+// value — so a partially-failed topology restore (a rejected split, a collapsed
+// layout) reported a clean restore while N agents never started. Same
+// silently-dropped-work failure ba13c058 fixed on the swarm side.
+func TestCountLaunchableAgents(t *testing.T) {
+	cmds := AgentCommands{Claude: "claude", Codex: "codex"}
+
+	t.Run("counts only panes that would actually launch", func(t *testing.T) {
+		states := []PaneState{
+			{Index: 0, AgentType: "user"},              // skipped: user pane
+			{Index: 1, AgentType: "cc"},                // type default
+			{Index: 2, AgentType: "cod"},               // type default
+			{Index: 3, AgentType: "cc", Command: "claude --resume"}, // saved command
+			{Index: 4, AgentType: "unknown-agent"},     // no command, no default
+		}
+		if got := countLaunchableAgents(states, cmds); got != 3 {
+			t.Fatalf("countLaunchableAgents = %d, want 3", got)
+		}
+	})
+
+	t.Run("a saved command rescues an otherwise unlaunchable type", func(t *testing.T) {
+		states := []PaneState{{Index: 1, AgentType: "unknown-agent", Command: "some-cli"}}
+		if got := countLaunchableAgents(states, cmds); got != 1 {
+			t.Fatalf("countLaunchableAgents = %d, want 1", got)
+		}
+	})
+
+	t.Run("user panes never count", func(t *testing.T) {
+		states := []PaneState{
+			{Index: 0, AgentType: "user"},
+			{Index: 1, AgentType: string(tmux.AgentUser)},
+		}
+		if got := countLaunchableAgents(states, cmds); got != 0 {
+			t.Fatalf("countLaunchableAgents = %d, want 0", got)
+		}
+	})
+}
+
+// The capacity guard must fire BEFORE any pane is launched, and must name the
+// arithmetic so the operator can see what was going to be dropped.
+func TestRestoreAgents_RefusesWhenPanesCannotHoldTheAgents(t *testing.T) {
+	state := &SessionState{
+		Name:    "ntm-nonexistent-session-bdyzvm0",
+		WorkDir: t.TempDir(),
+		Panes: []PaneState{
+			{Index: 1, AgentType: "cc"},
+			{Index: 2, AgentType: "cc"},
+		},
+	}
+
+	// The session does not exist, so GetPanes fails and we cannot reach the
+	// capacity check. That is fine: the point of this test is that the error
+	// is never a silent success.
+	err := RestoreAgents(state.Name, state, AgentCommands{Claude: "claude"}, nil)
+	if err == nil {
+		t.Fatal("RestoreAgents returned nil for a session whose panes could not be read; a restore that launches nothing must not report success")
+	}
+}
