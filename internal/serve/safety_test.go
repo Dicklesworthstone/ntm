@@ -139,6 +139,68 @@ func TestApprovalResolvedRecordSurvivesLateRetry(t *testing.T) {
 	}
 }
 
+func TestApprovalDecisionResponseSnapshotsResolvedStatus(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	approvalsLock.Lock()
+	original := approvals
+	approvals = map[string]*Approval{
+		"apr-snapshot": {
+			ID:        "apr-snapshot",
+			Status:    "pending",
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	}
+	approvalsLock.Unlock()
+	t.Cleanup(func() {
+		approvalsLock.Lock()
+		approvals = original
+		approvalsLock.Unlock()
+	})
+
+	for _, tc := range []struct {
+		name      string
+		handler   func(http.ResponseWriter, *http.Request)
+		endpoint  string
+		wantState string
+	}{
+		{
+			name: "approve", handler: s.handleApprovalApproveV1,
+			endpoint: "/api/v1/safety/approvals/apr-snapshot/approve", wantState: "approved",
+		},
+		{
+			name: "deny", handler: s.handleApprovalDenyV1,
+			endpoint: "/api/v1/safety/approvals/apr-snapshot/deny", wantState: "denied",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			approvalsLock.Lock()
+			approvals["apr-snapshot"].Status = "pending"
+			approvals["apr-snapshot"].ApprovedBy = ""
+			approvals["apr-snapshot"].ApprovedAt = time.Time{}
+			approvalsLock.Unlock()
+
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", "apr-snapshot")
+			req := httptest.NewRequest(http.MethodPost, tc.endpoint, nil)
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			var response ApprovalDecisionResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.ID != "apr-snapshot" || response.Status != tc.wantState || response.Decision != tc.wantState {
+				t.Fatalf("response = %+v, want resolved %q snapshot", response, tc.wantState)
+			}
+		})
+	}
+}
+
 // bd-kpccr: the TTL cap bounds an approval's ExpiresAt, not its residency.
 // Nothing ever deleted from the approvals map, so every request added a
 // permanent entry — and both list handlers walk the whole map on every call,

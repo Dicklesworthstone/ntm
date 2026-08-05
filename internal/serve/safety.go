@@ -1170,6 +1170,7 @@ func (s *Server) handleApprovalApproveV1(w http.ResponseWriter, r *http.Request)
 	approval.Status = "approved"
 	approval.ApprovedBy = approver
 	approval.ApprovedAt = time.Now()
+	approvalCopy := *approval
 	approvalsLock.Unlock()
 
 	log.Printf("Approval %s approved by %s", id, approver)
@@ -1180,8 +1181,8 @@ func (s *Server) handleApprovalApproveV1(w http.ResponseWriter, r *http.Request)
 	})
 
 	resp := ApprovalDecisionResponse{
-		ID:       id,
-		Status:   approval.Status,
+		ID:       approvalCopy.ID,
+		Status:   approvalCopy.Status,
 		Decision: "approved",
 	}
 
@@ -1245,6 +1246,7 @@ func (s *Server) handleApprovalDenyV1(w http.ResponseWriter, r *http.Request) {
 	approval.Status = "denied"
 	approval.ApprovedBy = denier
 	approval.ApprovedAt = time.Now()
+	approvalCopy := *approval
 	approvalsLock.Unlock()
 
 	log.Printf("Approval %s denied by %s", id, denier)
@@ -1255,8 +1257,8 @@ func (s *Server) handleApprovalDenyV1(w http.ResponseWriter, r *http.Request) {
 	})
 
 	resp := ApprovalDecisionResponse{
-		ID:       id,
-		Status:   approval.Status,
+		ID:       approvalCopy.ID,
+		Status:   approvalCopy.Status,
 		Decision: "denied",
 	}
 
