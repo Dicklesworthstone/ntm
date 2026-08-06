@@ -209,6 +209,33 @@ func TestParseRCHStatusRejectsErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseRCHStatusRejectsFailureEnvelopeWithDaemonData(t *testing.T) {
+	_, err := parseRCHStatusJSON([]byte(`{
+		"success": false,
+		"error": "daemon is shutting down",
+		"data": {"daemon": {"daemon": {"workers_total": 4}}}
+	}`))
+	if err == nil {
+		t.Fatal("parseRCHStatusJSON() error = nil, want reported daemon failure")
+	}
+	if !strings.Contains(err.Error(), "daemon is shutting down") {
+		t.Fatalf("parseRCHStatusJSON() error = %q, want daemon diagnostic", err)
+	}
+}
+
+func TestParseRCHStatusRejectsFailureEnvelopeWithDaemonDataAndNoDiagnostic(t *testing.T) {
+	_, err := parseRCHStatusJSON([]byte(`{
+		"success": false,
+		"data": {"daemon": {"daemon": {"workers_total": 4}}}
+	}`))
+	if err == nil {
+		t.Fatal("parseRCHStatusJSON() error = nil, want reported success=false failure")
+	}
+	if !strings.Contains(err.Error(), "success=false") {
+		t.Fatalf("parseRCHStatusJSON() error = %q, want success=false diagnostic", err)
+	}
+}
+
 func TestRCHAdapterGetStatusPropagatesDaemonFailure(t *testing.T) {
 	dir := t.TempDir()
 	fakeRCH := filepath.Join(dir, "rch")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -421,11 +422,17 @@ func parseRCHStatusJSON(output []byte) (*RCHStatus, error) {
 	if err := json.Unmarshal(output, &envelope); err != nil {
 		return nil, err
 	}
-	if envelope.Success || envelope.Data.Daemon.hasData() {
-		return envelope.Data.Daemon.toStatus(envelope.Success), nil
+	if envelope.Success {
+		return envelope.Data.Daemon.toStatus(true), nil
 	}
 	if len(bytes.TrimSpace(envelope.Error)) > 0 && !bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null")) {
 		return nil, fmt.Errorf("rch status reported failure: %s", strings.TrimSpace(string(envelope.Error)))
+	}
+	// A populated data envelope is still an explicit failure when success is
+	// false. Returning that data as a status would let callers treat a daemon
+	// failure as healthy enough to schedule work.
+	if envelope.Data.Daemon.hasData() {
+		return nil, errors.New("rch status reported success=false")
 	}
 
 	var status RCHStatus
