@@ -79,8 +79,16 @@ func (p *ClaudeConfigProvisioner) WithSourceDir(dir string) *ClaudeConfigProvisi
 }
 
 func (p *ClaudeConfigProvisioner) sourceDir() (string, error) {
-	if strings.TrimSpace(p.SourceDir) != "" {
-		return p.SourceDir, nil
+	if source := strings.TrimSpace(p.SourceDir); source != "" {
+		// Symlink targets are interpreted relative to the link's parent, not
+		// the caller's working directory. A relative source here would therefore
+		// point into each pane-private config dir and leave every inherited entry
+		// broken. Normalize it before using it as a symlink target.
+		absolute, err := filepath.Abs(source)
+		if err != nil {
+			return "", fmt.Errorf("resolve claude source config dir %s: %w", source, err)
+		}
+		return filepath.Clean(absolute), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

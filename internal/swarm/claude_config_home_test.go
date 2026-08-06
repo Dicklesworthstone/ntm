@@ -237,6 +237,43 @@ func TestProvisionPaneConfig_MissingSourceIsNotAnError(t *testing.T) {
 	}
 }
 
+// A relative source path is valid API input, but it must be made absolute
+// before it becomes a symlink target. Otherwise each link resolves relative to
+// the pane-private config directory rather than the caller's working directory.
+func TestProvisionPaneConfig_RelativeSourceDirLinksToOperatorConfig(t *testing.T) {
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	const source = "operator-claude"
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatalf("mkdir source config: %v", err)
+	}
+	writeFile(t, filepath.Join(source, "settings.json"), `{"theme":"dark"}`)
+
+	p := NewClaudeConfigProvisioner(t.TempDir()).WithSourceDir(source)
+	configDir, err := p.ProvisionPaneConfig("proj", "1")
+	if err != nil {
+		t.Fatalf("ProvisionPaneConfig: %v", err)
+	}
+
+	settings := filepath.Join(configDir, "settings.json")
+	data, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatalf("settings linked from relative source are unreadable: %v", err)
+	}
+	if string(data) != `{"theme":"dark"}` {
+		t.Fatalf("settings content = %q", data)
+	}
+	linkTarget, err := os.Readlink(settings)
+	if err != nil {
+		t.Fatalf("settings is not a symlink: %v", err)
+	}
+	wantTarget := filepath.Join(workDir, source, "settings.json")
+	if linkTarget != wantTarget {
+		t.Fatalf("link target = %q, want absolute %q", linkTarget, wantTarget)
+	}
+}
+
 // An entry removed from ~/.claude used to leave a broken symlink in every pane
 // dir forever: nothing revisited it, so Claude Code saw a name that resolved to
 // nothing rather than a name that was absent.
