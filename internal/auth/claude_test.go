@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,6 +68,27 @@ func TestClaudeAuthFlow_InitiateAuth(t *testing.T) {
 	}
 	if !gotEnter {
 		t.Error("expected enter=true")
+	}
+}
+
+func TestClaudeAuthFlow_MonitorAuthReturnsCaptureFailure(t *testing.T) {
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	flow.captureOutput = func(paneID string, lines int) (string, error) {
+		if paneID != "%42" || lines != 30 {
+			t.Fatalf("capture args = (%q, %d), want (%%42, 30)", paneID, lines)
+		}
+		return "", errors.New("pane unavailable")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := flow.MonitorAuth(ctx, "%42")
+	if result != nil {
+		t.Fatalf("MonitorAuth result = %+v, want nil", result)
+	}
+	if err == nil || !strings.Contains(err.Error(), "capture auth pane \"%42\"") || !strings.Contains(err.Error(), "pane unavailable") {
+		t.Fatalf("MonitorAuth error = %v, want contextual capture failure", err)
 	}
 }
 

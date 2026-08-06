@@ -30,19 +30,23 @@ type AuthResult struct {
 
 // ClaudeAuthFlow handles the authentication process for Claude Code
 type ClaudeAuthFlow struct {
-	isRemote  bool
-	sendKeys  func(string, string, bool) error
-	pasteKeys func(string, string, bool) error
-	sleep     func(time.Duration)
+	isRemote      bool
+	sendKeys      func(string, string, bool) error
+	pasteKeys     func(string, string, bool) error
+	captureOutput func(string, int) (string, error)
+	pollInterval  time.Duration
+	sleep         func(time.Duration)
 }
 
 // NewClaudeAuthFlow creates a new Claude auth flow handler
 func NewClaudeAuthFlow(isRemote bool) *ClaudeAuthFlow {
 	return &ClaudeAuthFlow{
-		isRemote:  isRemote,
-		sendKeys:  tmux.SendKeys,
-		pasteKeys: tmux.PasteKeys,
-		sleep:     time.Sleep,
+		isRemote:      isRemote,
+		sendKeys:      tmux.SendKeys,
+		pasteKeys:     tmux.PasteKeys,
+		captureOutput: tmux.CapturePaneOutput,
+		pollInterval:  time.Second,
+		sleep:         time.Sleep,
 	}
 }
 
@@ -53,7 +57,11 @@ func (f *ClaudeAuthFlow) InitiateAuth(paneID string) error {
 
 // MonitorAuth watches the pane output for auth prompts and handles them
 func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthResult, error) {
-	ticker := time.NewTicker(1 * time.Second)
+	pollInterval := f.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = time.Second
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -61,7 +69,10 @@ func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthR
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			output, _ := tmux.CapturePaneOutput(paneID, 30)
+			output, err := f.captureOutput(paneID, 30)
+			if err != nil {
+				return nil, fmt.Errorf("capture auth pane %q: %w", paneID, err)
+			}
 
 			// Check for success
 			if f.DetectAuthSuccess(output) {
