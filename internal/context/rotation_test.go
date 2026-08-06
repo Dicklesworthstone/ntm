@@ -200,6 +200,7 @@ func TestCheckAndRotateEmitsWarningAtConfiguredThreshold(t *testing.T) {
 	cfg := config.DefaultContextRotationConfig()
 	cfg.WarningThreshold = 0.30
 	cfg.RotateThreshold = 0.90
+	cfg.MinSessionAgeSec = 0
 	r := NewRotator(RotatorConfig{
 		Monitor: monitor,
 		Spawner: NewMockPaneSpawner(),
@@ -223,6 +224,65 @@ func TestCheckAndRotateEmitsWarningAtConfiguredThreshold(t *testing.T) {
 	}
 	if active[0].Session != "test-session" {
 		t.Errorf("alert session = %q, want test-session", active[0].Session)
+	}
+}
+
+func TestCheckAndRotateRespectsMinimumSessionAge(t *testing.T) {
+	oldStore := DefaultPendingRotationStore
+	DefaultPendingRotationStore = NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	t.Cleanup(func() {
+		DefaultPendingRotationStore = oldStore
+	})
+
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	const agentID = "test__cc_1"
+	monitor.RegisterAgent(agentID, "%0", "claude-opus-4")
+	for i := 0; i < 200; i++ {
+		monitor.RecordMessage(agentID, 1000, 1000)
+	}
+
+	spawner := NewMockPaneSpawner()
+	spawner.panes = []tmux.Pane{{ID: "%0", Title: agentID, Type: tmux.AgentClaude}}
+	cfg := config.DefaultContextRotationConfig()
+	cfg.WarningThreshold = 0.30
+	cfg.RotateThreshold = 0.50
+	cfg.MinSessionAgeSec = 60
+	cfg.RequireConfirm = true
+	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
+
+	results, err := r.CheckAndRotate("test-session", t.TempDir())
+	if err != nil {
+		t.Fatalf("CheckAndRotate() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("under-age CheckAndRotate() results = %+v, want none", results)
+	}
+	if len(spawner.getPanesFor) != 0 {
+		t.Fatalf("under-age CheckAndRotate() fetched panes %v, want none", spawner.getPanesFor)
+	}
+	if active := tracker.GetActive(); len(active) != 0 {
+		t.Fatalf("under-age CheckAndRotate() emitted alerts %#v, want none", active)
+	}
+
+	state := monitor.GetState(agentID)
+	if state == nil {
+		t.Fatal("registered agent is missing from monitor")
+	}
+	state.SessionStart = time.Now().Add(-61 * time.Second)
+
+	results, err = r.CheckAndRotate("test-session", t.TempDir())
+	if err != nil {
+		t.Fatalf("eligible CheckAndRotate() error = %v", err)
+	}
+	if len(results) != 1 || results[0].State != RotationStatePending {
+		t.Fatalf("eligible CheckAndRotate() results = %+v, want one pending rotation", results)
+	}
+	if active := tracker.GetActive(); len(active) != 1 || active[0].Type != alerts.AlertContextWarning {
+		t.Fatalf("eligible CheckAndRotate() alerts = %#v, want one context warning", active)
 	}
 }
 
@@ -313,6 +373,7 @@ func TestCheckAndRotate_LongSessionResetsReplacementMonitorState(t *testing.T) {
 	cfg := config.DefaultContextRotationConfig()
 	cfg.RotateThreshold = 0.50
 	cfg.TryCompactFirst = false
+	cfg.MinSessionAgeSec = 0
 	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
 
 	results, err := r.CheckAndRotate("long-session", t.TempDir())
@@ -361,6 +422,7 @@ func TestCheckAndRotate_MixedGrokBatchIsAtomic(t *testing.T) {
 	}
 	cfg := config.DefaultContextRotationConfig()
 	cfg.RotateThreshold = 0.50
+	cfg.MinSessionAgeSec = 0
 	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
 
 	results, err := r.CheckAndRotate("test", "/tmp")
@@ -1029,6 +1091,7 @@ func TestCheckAndRotate_RequireConfirmCreatesPendingRotation(t *testing.T) {
 	cfg := config.DefaultContextRotationConfig()
 	cfg.RotateThreshold = 0.50
 	cfg.RequireConfirm = true
+	cfg.MinSessionAgeSec = 0
 
 	r := NewRotator(RotatorConfig{
 		Monitor: monitor,

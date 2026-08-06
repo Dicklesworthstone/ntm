@@ -454,12 +454,13 @@ func (m *ContextMonitor) AgentsAboveThreshold(threshold float64) []AgentContextI
 
 		if estimate.UsagePercent >= threshold {
 			results = append(results, AgentContextInfo{
-				AgentID:     agentID,
-				PaneID:      state.PaneID,
-				Model:       state.Model,
-				Estimate:    estimate,
-				NeedsWarn:   estimate.UsagePercent >= m.warningThreshold,
-				NeedsRotate: estimate.UsagePercent >= m.rotateThreshold,
+				AgentID:      agentID,
+				PaneID:       state.PaneID,
+				Model:        state.Model,
+				SessionStart: state.SessionStart,
+				Estimate:     estimate,
+				NeedsWarn:    estimate.UsagePercent >= m.warningThreshold,
+				NeedsRotate:  estimate.UsagePercent >= m.rotateThreshold,
 			})
 		}
 	}
@@ -495,12 +496,13 @@ func (m *ContextMonitor) getEstimateLocked(state *ContextState) *ContextEstimate
 
 // AgentContextInfo provides context info for an agent.
 type AgentContextInfo struct {
-	AgentID     string           `json:"agent_id"`
-	PaneID      string           `json:"pane_id"`
-	Model       string           `json:"model"`
-	Estimate    *ContextEstimate `json:"estimate"`
-	NeedsWarn   bool             `json:"needs_warning"`
-	NeedsRotate bool             `json:"needs_rotation"`
+	AgentID      string           `json:"agent_id"`
+	PaneID       string           `json:"pane_id"`
+	Model        string           `json:"model"`
+	SessionStart time.Time        `json:"session_start"`
+	Estimate     *ContextEstimate `json:"estimate"`
+	NeedsWarn    bool             `json:"needs_warning"`
+	NeedsRotate  bool             `json:"needs_rotation"`
 }
 
 // GetAllEstimates returns estimates for all monitored agents.

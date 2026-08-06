@@ -502,7 +502,7 @@ func (r *Rotator) CheckAndRotate(sessionName, workDir string) ([]RotationResult,
 	// Surface agents approaching exhaustion even when they have not reached the
 	// rotation threshold yet. The warning is keyed by agent and session, so
 	// repeated checks refresh the same alert instead of creating duplicates.
-	for _, agentInfo := range r.monitor.AgentsAboveThreshold(r.config.WarningThreshold * 100) {
+	for _, agentInfo := range r.agentsEligibleForRotation(r.config.WarningThreshold * 100) {
 		usagePercent := 0.0
 		if agentInfo.Estimate != nil {
 			usagePercent = agentInfo.Estimate.UsagePercent
@@ -517,7 +517,7 @@ func (r *Rotator) CheckAndRotate(sessionName, workDir string) ([]RotationResult,
 
 	// Find agents above rotate threshold
 	// Note: r.config.RotateThreshold is 0.0-1.0, but AgentsAboveThreshold expects 0-100 percentage
-	agentsToRotate := r.monitor.AgentsAboveThreshold(r.config.RotateThreshold * 100)
+	agentsToRotate := r.agentsEligibleForRotation(r.config.RotateThreshold * 100)
 	if len(agentsToRotate) == 0 {
 		return nil, nil // No agents need rotation
 	}
@@ -561,6 +561,28 @@ func (r *Rotator) CheckAndRotate(sessionName, workDir string) ([]RotationResult,
 	}
 
 	return results, nil
+}
+
+// agentsEligibleForRotation returns threshold-matching agents that have been
+// monitored long enough to satisfy the configured minimum session age. A
+// missing start time is treated conservatively as ineligible: rotating an
+// agent whose age is unknown defeats the guard's purpose.
+func (r *Rotator) agentsEligibleForRotation(threshold float64) []AgentContextInfo {
+	agents := r.monitor.AgentsAboveThreshold(threshold)
+	minAge := time.Duration(r.config.MinSessionAgeSec) * time.Second
+	if minAge <= 0 {
+		return agents
+	}
+
+	now := time.Now()
+	eligible := make([]AgentContextInfo, 0, len(agents))
+	for _, agent := range agents {
+		if agent.SessionStart.IsZero() || now.Sub(agent.SessionStart) < minAge {
+			continue
+		}
+		eligible = append(eligible, agent)
+	}
+	return eligible
 }
 
 // createPendingRotation creates a pending rotation entry for an agent.
