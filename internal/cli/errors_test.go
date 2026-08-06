@@ -209,11 +209,12 @@ func TestIsErrorLine(t *testing.T) {
 			wantType:  "exit",
 		},
 
-		// Stack traces - note: isErrorLine trims whitespace first, so stacktrace patterns
-		// with leading whitespace requirement won't match after trim. These lines match
-		// as error patterns through other means or don't match at all.
-		// Test that the pattern works when whitespace is preserved at start
-		// (In actual code, lines are often trimmed so this pattern catches indented stack frames)
+		{
+			name:      "javascript_stack_frame",
+			line:      "    at doThing (/tmp/app.js:10:5)",
+			wantMatch: true,
+			wantType:  "stacktrace",
+		},
 
 		// Agent-specific errors
 		{
@@ -540,17 +541,15 @@ func TestPatternCoverage(t *testing.T) {
 	t.Logf("[TEST] Pattern types to cover: %v", testedTypes)
 
 	// Test lines that should match each pattern type
-	// Note: stacktrace pattern requires leading whitespace, but isErrorLine trims input
-	// so we can't test stacktrace pattern directly in this coverage test
 	testCases := map[string]string{
-		"traceback": "Traceback (most recent call last):",
-		"exception": "TypeError: cannot convert",
-		"panic":     "panic: runtime error",
-		"fatal":     "fatal error: all goroutines asleep",
-		"error":     "error: compilation failed",
-		"failed":    "build failed: syntax error",
-		"exit":      "exit status 1",
-		// stacktrace pattern not testable because isErrorLine trims whitespace
+		"traceback":     "Traceback (most recent call last):",
+		"exception":     "TypeError: cannot convert",
+		"panic":         "panic: runtime error",
+		"fatal":         "fatal error: all goroutines asleep",
+		"error":         "error: compilation failed",
+		"failed":        "build failed: syntax error",
+		"exit":          "exit status 1",
+		"stacktrace":    "at doThing (/tmp/app.js:10:5)",
 		"rate_limit":    "rate limit exceeded",
 		"context_limit": "context window exceeded",
 		"critical":      "CRITICAL: system failure",
@@ -570,9 +569,9 @@ func TestPatternCoverage(t *testing.T) {
 		testedTypes[expectedType] = true
 	}
 
-	// Report any untested pattern types (skip stacktrace - not testable due to whitespace trimming)
+	// Report any untested pattern types.
 	for pType, tested := range testedTypes {
-		if !tested && pType != "stacktrace" && pType != "agent_error" {
+		if !tested && pType != "agent_error" {
 			t.Errorf("Pattern type %q has no test coverage", pType)
 		}
 	}

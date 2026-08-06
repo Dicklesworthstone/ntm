@@ -140,7 +140,7 @@ var errorsCommandPatterns = []struct {
 	{regexp.MustCompile(`(?i)Process exited with code [1-9]\d*`), "exit"},
 
 	// Stack traces
-	{regexp.MustCompile(`^\s+at\s+.+\(.+:\d+:\d+\)`), "stacktrace"},
+	{regexp.MustCompile(`^at\s+.+\(.+:\d+:\d+\)`), "stacktrace"},
 
 	// Agent-specific errors
 	{regexp.MustCompile(`(?i)^claude.*error`), "agent_error"},
