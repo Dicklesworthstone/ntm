@@ -267,8 +267,8 @@ func (c *ParallelCoordinator) Agents() []CoordinatorAgent {
 	return append([]CoordinatorAgent(nil), c.agents...)
 }
 
-// ReviewGateCoordinator records approvals and transitions once the configured
-// any/all/quorum threshold is reached.
+// ReviewGateCoordinator records reviewer approvals and reports when the
+// configured any/all/quorum threshold is reached.
 type ReviewGateCoordinator struct {
 	*RuntimeCoordinator
 	approvals map[string]struct{}
@@ -284,22 +284,36 @@ func (c *ReviewGateCoordinator) Approve(agentID string) (bool, error) {
 	if !c.started {
 		return false, errors.New("workflow coordinator is not started")
 	}
+	if !c.template.Flow.RequireApproval {
+		return false, errors.New("workflow review gate does not require approval")
+	}
+
+	reviewers := make(map[string]struct{})
+	for _, agent := range c.agents {
+		if agent.Role == "reviewer" {
+			reviewers[agent.ID] = struct{}{}
+		}
+	}
+	if _, ok := reviewers[agentID]; !ok {
+		return false, fmt.Errorf("agent %q is not a reviewer for this workflow", agentID)
+	}
 	c.approvals[agentID] = struct{}{}
 	mode := c.template.Flow.ApprovalMode
 	if mode == "" {
 		mode = "any"
 	}
-	reviewerCount := 0
-	for _, agent := range c.agents {
-		if agent.Role == "reviewer" {
-			reviewerCount++
-		}
+	reviewerCount := len(reviewers)
+	if reviewerCount == 0 {
+		return false, errors.New("workflow review gate has no reviewer agents")
 	}
 	required := 1
 	if mode == "all" {
 		required = reviewerCount
 	} else if mode == "quorum" {
 		required = c.template.Flow.Quorum
+	}
+	if required > reviewerCount {
+		return false, fmt.Errorf("workflow review gate requires %d approvals but has only %d reviewer agents", required, reviewerCount)
 	}
 	return len(c.approvals) >= required, nil
 }

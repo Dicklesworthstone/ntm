@@ -320,7 +320,10 @@ func (s *StateStore) Save(state *WorkflowState) error {
 	if err != nil {
 		return fmt.Errorf("encode workflow state: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+	if err := util.AtomicWriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write workflow state: %w", err)
+	}
+	return nil
 }
 func (s *StateStore) Load(session string) (*WorkflowState, error) {
 	path, err := s.path(session)

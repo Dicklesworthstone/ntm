@@ -56,6 +56,11 @@ func TestReviewGateApprovalModes(t *testing.T) {
 		t.Fatalf("Start(): %v", err)
 	}
 	t.Cleanup(func() { _ = review.Stop() })
+	for _, agentID := range []string{"a", "not-a-reviewer"} {
+		if approved, err := review.Approve(agentID); err == nil || approved {
+			t.Fatalf("Approve(%q) = (%v, %v), want non-reviewer rejection", agentID, approved, err)
+		}
+	}
 	if approved, err := review.Approve("r1"); err != nil || approved {
 		t.Fatalf("first approval = (%v, %v)", approved, err)
 	}

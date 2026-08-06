@@ -26,8 +26,9 @@ func TestMatchesPattern(t *testing.T) {
 
 		// Multiple * patterns (was broken before fix)
 		{"src/app/test/main.go", "src/*/test/*.go", true},
-		{"src/foo/bar/test.go", "src/*/test.go", true},
+		{"src/foo/bar/test.go", "src/*/test.go", false},
 		{"src/app/other/main.go", "src/*/test/*.go", false},
+		{"internal/cli/subdir/file.go", "internal/cli/*.go", false},
 
 		// Double ** patterns
 		{"internal/cli/coordinator.go", "internal/**", true},

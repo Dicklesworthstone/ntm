@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	pathpkg "path"
 	"sort"
 	"strings"
 	"sync"
@@ -493,29 +494,20 @@ func matchesPattern(path, pattern string) bool {
 
 // matchesWildcardPattern checks if path matches a pattern with single * wildcards.
 func matchesWildcardPattern(path, pattern string) bool {
-	parts := strings.Split(pattern, "*")
-
-	// Must start with first part and end with last part
-	if !strings.HasPrefix(path, parts[0]) {
-		return false
-	}
-	if !strings.HasSuffix(path, parts[len(parts)-1]) {
-		return false
+	// A basename-only pattern is intentionally recursive: reserving "*.go"
+	// covers Go files anywhere in the project. Directory-qualified patterns use
+	// path.Match below, so their wildcards remain confined to one segment.
+	if !strings.Contains(pattern, "/") {
+		matched, err := pathpkg.Match(pattern, pathpkg.Base(path))
+		return err == nil && matched
 	}
 
-	// For multiple wildcards, check that all parts appear in order
-	remaining := path
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		idx := strings.Index(remaining, part)
-		if idx == -1 {
-			return false
-		}
-		remaining = remaining[idx+len(part):]
-	}
-	return true
+	// path.Match gives glob semantics for slash-delimited reservation paths:
+	// '*' matches one path segment, never a directory separator. The previous
+	// substring-based matcher let "src/*.go" match "src/nested/file.go",
+	// creating false conflict reports for unreserved nested files.
+	matched, err := pathpkg.Match(pattern, path)
+	return err == nil && matched
 }
 
 // matchesSuffixPattern checks if the trailing portion of path matches a suffix pattern.
