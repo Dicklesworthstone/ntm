@@ -427,28 +427,35 @@ func (t *SessionTemplate) Validate() error {
 func (t *SessionTemplate) GetAgentCount() int {
 	count := 0
 	if t.Spec.Agents.Claude != nil {
-		count += t.Spec.Agents.Claude.Count
+		count += t.Spec.Agents.Claude.TotalCount()
 	}
 	if t.Spec.Agents.Codex != nil {
-		count += t.Spec.Agents.Codex.Count
+		count += t.Spec.Agents.Codex.TotalCount()
 	}
 	if t.Spec.Agents.Gemini != nil {
-		count += t.Spec.Agents.Gemini.Count
+		count += t.Spec.Agents.Gemini.TotalCount()
 	}
 	if t.Spec.Agents.Antigravity != nil {
-		count += t.Spec.Agents.Antigravity.Count
+		count += t.Spec.Agents.Antigravity.TotalCount()
 	}
 	if t.Spec.Agents.Cursor != nil {
-		count += t.Spec.Agents.Cursor.Count
+		count += t.Spec.Agents.Cursor.TotalCount()
 	}
 	if t.Spec.Agents.Windsurf != nil {
-		count += t.Spec.Agents.Windsurf.Count
+		count += t.Spec.Agents.Windsurf.TotalCount()
 	}
 	if t.Spec.Agents.Aider != nil {
-		count += t.Spec.Agents.Aider.Count
+		count += t.Spec.Agents.Aider.TotalCount()
 	}
 	if t.Spec.Agents.Ollama != nil {
-		count += t.Spec.Agents.Ollama.Count
+		count += t.Spec.Agents.Ollama.TotalCount()
+	}
+	for _, persona := range t.Spec.Agents.Personas {
+		if persona.Count > 0 {
+			count += persona.Count
+		} else {
+			count++
+		}
 	}
 	return count
 }

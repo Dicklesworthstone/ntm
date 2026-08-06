@@ -55,6 +55,24 @@ func TestGetAgentCount(t *testing.T) {
 			},
 			want: 5,
 		},
+		{
+			name: "variants and default personas",
+			tmpl: SessionTemplate{
+				Spec: SessionTemplateSpec{
+					Agents: AgentsSpec{
+						Claude: &AgentTypeSpec{Variants: []AgentVariantSpec{
+							{Count: 1, Model: "opus"},
+							{Count: 2, Model: "sonnet"},
+						}},
+						Personas: []PersonaSpec{
+							{Name: "reviewer"},
+							{Name: "tester", Count: 2},
+						},
+					},
+				},
+			},
+			want: 6,
+		},
 	}
 
 	for _, tt := range tests {

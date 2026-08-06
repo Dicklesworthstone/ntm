@@ -48,6 +48,19 @@ func TestWorkTriageCmd(t *testing.T) {
 	}
 }
 
+func TestWorkTriageCmdRejectsConflictingGroupedFlags(t *testing.T) {
+	cmd := newWorkTriageCmd()
+	cmd.SetArgs([]string{"--by-label", "--by-track"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("triage accepted --by-label and --by-track together")
+	}
+	if !strings.Contains(err.Error(), "if any flags in the group") {
+		t.Fatalf("error = %q, want Cobra mutually-exclusive flag error", err)
+	}
+}
+
 func TestWorkAlertsCmd(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("Skipping in CI - requires bv")

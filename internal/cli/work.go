@@ -132,6 +132,7 @@ Examples:
 	cmd.Flags().BoolVar(&showHealth, "health", false, "Include project health metrics")
 	cmd.Flags().StringVar(&format, "format", "", "Output format: json, markdown, or auto (default: auto for agents)")
 	cmd.Flags().BoolVar(&compact, "compact", false, "Use compact output (with --format=markdown)")
+	cmd.MarkFlagsMutuallyExclusive("by-label", "by-track")
 
 	return cmd
 }

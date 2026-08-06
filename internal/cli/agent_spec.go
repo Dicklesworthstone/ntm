@@ -195,8 +195,8 @@ func parseAgentSpec(value string, relaxedModel bool, effortAtSuffix bool) (Agent
 		if effort == "" {
 			return spec, fmt.Errorf("empty reasoning effort in agent spec: %q", value)
 		}
-		if !modelPattern.MatchString(effort) {
-			return spec, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ / @ : + -", effort)
+		if !effortPattern.MatchString(effort) {
+			return spec, fmt.Errorf("invalid characters in reasoning effort %q; allowed: letters, numbers, . _ + -", effort)
 		}
 		spec.ReasoningEffort = effort
 	}

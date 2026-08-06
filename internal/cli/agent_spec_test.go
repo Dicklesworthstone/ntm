@@ -700,6 +700,7 @@ func TestParseAgentSpecEffortAtSuffix(t *testing.T) {
 		{name: "empty model before at", input: "1:@high", wantErr: "empty model"},
 		{name: "both at and colon effort", input: "1:model@high:ultra", wantErr: "twice"},
 		{name: "effort with slash rejected", input: "1:model@hi/gh", wantErr: "invalid characters in reasoning effort"},
+		{name: "colon effort with slash rejected", input: "1:model:hi/gh", wantErr: "invalid characters in reasoning effort"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
