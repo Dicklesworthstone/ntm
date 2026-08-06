@@ -102,7 +102,7 @@ func GetSwitchAccount(opts SwitchAccountOptions) (*SwitchAccountOutput, error) {
 
 	if opts.AccountID != "" {
 		// Switch to specific account
-		err = adapter.SwitchAccount(ctx, opts.AccountID)
+		err = adapter.SwitchAccount(ctx, canonicalProvider, opts.AccountID)
 		if err == nil {
 			result = &tools.SwitchResult{
 				Success:         true,

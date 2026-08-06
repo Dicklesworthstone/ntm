@@ -22,6 +22,7 @@ type AccountInfo struct {
 	Current      bool    `json:"current"`
 	UsagePercent int     `json:"usage_percent,omitempty"`
 	RateLimited  bool    `json:"rate_limited,omitempty"`
+	CostCents    int     `json:"cost_cents,omitempty"`
 	Cooldown     *string `json:"cooldown,omitempty"` // RFC3339 string when active
 }
 
@@ -78,6 +79,7 @@ func GetAccountsList(opts AccountsListOptions) (*AccountsListOutput, error) {
 			Name:        acc.Name,
 			Current:     acc.Active,
 			RateLimited: acc.RateLimited,
+			CostCents:   acc.CostCents,
 		}
 
 		// Set cooldown if present

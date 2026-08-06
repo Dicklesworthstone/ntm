@@ -229,6 +229,67 @@ func TestCAAMStatusApplyAccountsTracksActiveAccountIdentity(t *testing.T) {
 	}
 }
 
+func TestCAAMAdapterFetchesRobotProfilesAndCostSessions(t *testing.T) {
+	dir := t.TempDir()
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"version\" ]; then echo 'caam 1.2.3'; exit 0; fi\n" +
+		"if [ \"$1\" = \"robot\" ] && [ \"$2\" = \"status\" ]; then\n" +
+		"  echo '{\"success\":true,\"data\":{\"providers\":[{\"id\":\"codex\",\"profiles\":[{\"name\":\"work\",\"active\":true,\"health\":{\"status\":\"healthy\"}}]},{\"id\":\"claude\",\"profiles\":[{\"name\":\"personal\",\"active\":false,\"health\":{\"status\":\"cooldown\"}}]}]}}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"cost\" ] && [ \"$2\" = \"sessions\" ]; then\n" +
+		"  echo '{\"sessions\":[{\"id\":1,\"provider\":\"codex\",\"profile\":\"work\",\"estimated_cost_cents\":25},{\"id\":2,\"provider\":\"claude\",\"profile\":\"personal\",\"estimated_cost_cents\":9}]}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake caam: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	adapter := NewCAAMAdapter()
+	adapter.InvalidateCache()
+	defer adapter.InvalidateCache()
+	status, err := adapter.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus() error: %v", err)
+	}
+	if !status.Available || status.AccountsCount != 2 {
+		t.Fatalf("GetStatus() = %+v, want two available accounts", status)
+	}
+	if status.ActiveAccount == nil || status.ActiveAccount.Provider != "openai" || status.ActiveAccount.CostCents != 25 {
+		t.Fatalf("ActiveAccount = %+v, want active OpenAI profile with 25 cents", status.ActiveAccount)
+	}
+	if status.Accounts[1].Provider != "claude" || !status.Accounts[1].RateLimited || status.Accounts[1].CostCents != 9 {
+		t.Fatalf("second account = %+v, want rate-limited Claude profile with 9 cents", status.Accounts[1])
+	}
+}
+
+func TestSwitchToNextAccountUsesCurrentCAAMActivateCommand(t *testing.T) {
+	dir := t.TempDir()
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"activate\" ] && [ \"$2\" = \"codex\" ] && [ \"$3\" = \"--auto\" ] && [ \"$4\" = \"--json\" ]; then\n" +
+		"  echo '{\"success\":true,\"tool\":\"codex\",\"profile\":\"work\",\"previous_profile\":\"personal\"}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo 'unexpected arguments' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake caam: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	result, err := NewCAAMAdapter().SwitchToNextAccount(context.Background(), "openai")
+	if err != nil {
+		t.Fatalf("SwitchToNextAccount() error: %v", err)
+	}
+	if result.Provider != "openai" || result.PreviousAccount != "personal" || result.NewAccount != "work" {
+		t.Fatalf("SwitchToNextAccount() = %+v, want mapped current CAAM result", result)
+	}
+}
+
 func TestCAAMAdapterCacheInvalidation(t *testing.T) {
 	adapter := NewCAAMAdapter()
 
@@ -777,7 +838,7 @@ func TestSwitchToNextAccountReturnsSchemaErrorOnInvalidJSONSuccess(t *testing.T)
 		"  echo \"caam 1.2.3\"\n" +
 		"  exit 0\n" +
 		"fi\n" +
-		"if [ \"$1\" = \"switch\" ]; then\n" +
+		"if [ \"$1\" = \"activate\" ]; then\n" +
 		"  echo \"not-json\"\n" +
 		"  exit 0\n" +
 		"fi\n" +
@@ -809,7 +870,7 @@ func TestSwitchToNextAccountReturnsSchemaErrorOnSuccessFalseWithoutError(t *test
 		"  echo \"caam 1.2.3\"\n" +
 		"  exit 0\n" +
 		"fi\n" +
-		"if [ \"$1\" = \"switch\" ]; then\n" +
+		"if [ \"$1\" = \"activate\" ]; then\n" +
 		"  echo '{\"success\":false,\"provider\":\"claude\"}'\n" +
 		"  exit 0\n" +
 		"fi\n" +

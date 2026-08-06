@@ -217,6 +217,16 @@ type CAAMAccount struct {
 	Active        bool      `json:"active"`
 	RateLimited   bool      `json:"rate_limited,omitempty"`
 	CooldownUntil time.Time `json:"cooldown_until,omitempty"`
+	CostCents     int       `json:"cost_cents,omitempty"`
+}
+
+// CAAMCostSession is CAAM's per-profile cost record. Costs are estimates
+// supplied by CAAM, not API-provider invoices.
+type CAAMCostSession struct {
+	ID             int    `json:"id"`
+	Provider       string `json:"provider"`
+	Profile        string `json:"profile"`
+	EstimatedCents int    `json:"estimated_cost_cents"`
 }
 
 // CAAMStatus represents the current CAAM status
@@ -330,11 +340,13 @@ func (a *CAAMAdapter) fetchStatus(ctx context.Context) (*CAAMStatus, error) {
 		status.Version = version.String()
 	}
 
-	// Get accounts list
+	// CAAM's robot status endpoint is its stable machine-readable account
+	// inventory. It returns profiles nested under providers rather than a
+	// legacy flat `list --json` array.
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "list", "--json")
+	cmd := exec.CommandContext(ctx, path, "robot", "status", "--compact")
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -355,21 +367,99 @@ func (a *CAAMAdapter) fetchStatus(ctx context.Context) (*CAAMStatus, error) {
 		return status, nil
 	}
 
-	// Parse accounts list
-	var accounts []CAAMAccount
-	if err := json.Unmarshal(output, &accounts); err != nil {
-		// Try parsing as a status object instead
-		var statusResp struct {
-			Accounts []CAAMAccount `json:"accounts"`
-		}
-		if err := json.Unmarshal(output, &statusResp); err == nil {
-			accounts = statusResp.Accounts
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Providers []struct {
+				ID       string `json:"id"`
+				LoggedIn bool   `json:"logged_in"`
+				Profiles []struct {
+					Name   string `json:"name"`
+					Active bool   `json:"active"`
+					Health struct {
+						Status string `json:"status"`
+					} `json:"health"`
+				} `json:"profiles"`
+			} `json:"providers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil || !response.Success {
+		return status, nil
+	}
+
+	accounts := make([]CAAMAccount, 0)
+	for _, provider := range response.Data.Providers {
+		for _, profile := range provider.Profiles {
+			accounts = append(accounts, CAAMAccount{
+				ID:          profile.Name,
+				Provider:    caamProviderForNTM(provider.ID),
+				Name:        profile.Name,
+				Active:      profile.Active,
+				RateLimited: profile.Health.Status == "cooldown" || profile.Health.Status == "critical",
+			})
 		}
 	}
 
+	if sessions, err := a.GetCostSessions(ctx); err == nil {
+		costs := make(map[string]int, len(sessions))
+		for _, session := range sessions {
+			costs[caamProviderForNTM(session.Provider)+"\x00"+session.Profile] += session.EstimatedCents
+		}
+		for i := range accounts {
+			accounts[i].CostCents = costs[accounts[i].Provider+"\x00"+accounts[i].ID]
+		}
+	}
 	status.applyAccounts(accounts)
 
 	return status, nil
+}
+
+// GetCostSessions returns CAAM's cost records keyed by provider and profile.
+// The adapter keeps account-level cost reporting read-only and degrades
+// gracefully when a CAAM installation does not expose cost tracking.
+func (a *CAAMAdapter) GetCostSessions(ctx context.Context) ([]CAAMCostSession, error) {
+	path, installed := a.Detect()
+	if !installed {
+		return nil, ErrToolNotInstalled
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, path, "cost", "sessions", "--json")
+	cmd.WaitDelay = time.Second
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ErrTimeout
+		}
+		return nil, fmt.Errorf("read caam cost sessions: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	var response struct {
+		Sessions []CAAMCostSession `json:"sessions"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		return nil, fmt.Errorf("%w: parse caam cost sessions: %v", ErrSchemaValidation, err)
+	}
+	return response.Sessions, nil
+}
+
+func caamProviderForNTM(provider string) string {
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return "openai"
+	}
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func ntmProviderForCAAM(provider string) string {
+	if strings.EqualFold(strings.TrimSpace(provider), "openai") {
+		return "codex"
+	}
+	return strings.ToLower(strings.TrimSpace(provider))
 }
 
 // applyAccounts populates account-derived status fields.
@@ -490,26 +580,43 @@ func (a *CAAMAdapter) constructCredentials(ctx context.Context, provider string)
 	return creds, nil
 }
 
-// SwitchAccount switches to a different account
-func (a *CAAMAdapter) SwitchAccount(ctx context.Context, accountID string) error {
+// SwitchAccount activates a named profile for a provider.
+func (a *CAAMAdapter) SwitchAccount(ctx context.Context, provider, accountID string) error {
 	path, installed := a.Detect()
 	if !installed {
 		return ErrToolNotInstalled
+	}
+	if strings.TrimSpace(provider) == "" || strings.TrimSpace(accountID) == "" {
+		return fmt.Errorf("provider and account ID are required")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "switch", accountID)
+	cmd := exec.CommandContext(ctx, path, "activate", ntmProviderForCAAM(provider), accountID, "--json")
 	cmd.WaitDelay = time.Second
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return ErrTimeout
 		}
-		return fmt.Errorf("failed to switch account: %w: %s", err, stderr.String())
+		return fmt.Errorf("failed to switch account: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		return fmt.Errorf("%w: parse caam activate response: %v", ErrSchemaValidation, err)
+	}
+	if !response.Success {
+		if response.Error != "" {
+			return fmt.Errorf("caam activate failed: %s", response.Error)
+		}
+		return fmt.Errorf("%w: caam activate returned success=false", ErrSchemaValidation)
 	}
 
 	// Invalidate cache after switch
@@ -521,7 +628,7 @@ func (a *CAAMAdapter) SwitchAccount(ctx context.Context, accountID string) error
 }
 
 // SwitchToNextAccount switches to the next available account for a provider.
-// It calls `caam switch <provider> --next --json` and returns the structured result.
+// It calls CAAM's current `activate <provider> --auto --json` command.
 // This is the preferred method for automatic account switching on rate limit.
 func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) (*SwitchResult, error) {
 	path, installed := a.Detect()
@@ -532,7 +639,7 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "switch", provider, "--next", "--json")
+	cmd := exec.CommandContext(ctx, path, "activate", ntmProviderForCAAM(provider), "--auto", "--json")
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -541,13 +648,18 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 
 	err := cmd.Run()
 
-	// Parse JSON response even on error (caam may return valid JSON with error details).
+	// Parse JSON response even on error (CAAM emits structured error details).
 	output := bytes.TrimSpace(stdout.Bytes())
 	if len(output) == 0 {
 		output = bytes.TrimSpace(stderr.Bytes())
 	}
 
-	var result SwitchResult
+	var response struct {
+		Success         bool   `json:"success"`
+		Profile         string `json:"profile"`
+		PreviousProfile string `json:"previous_profile"`
+		Error           string `json:"error"`
+	}
 	if len(output) > 0 {
 		if !json.Valid(output) {
 			if err != nil {
@@ -559,7 +671,7 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 			return nil, fmt.Errorf("%w: invalid JSON from caam switch", ErrSchemaValidation)
 		}
 
-		if jsonErr := json.Unmarshal(output, &result); jsonErr != nil {
+		if jsonErr := json.Unmarshal(output, &response); jsonErr != nil {
 			// If JSON parsing fails, wrap the original error
 			if err != nil {
 				if ctx.Err() == context.DeadlineExceeded {
@@ -578,6 +690,13 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 	} else {
 		// Command succeeded but returned no output. Treat this as invalid schema.
 		return nil, fmt.Errorf("%w: empty response from caam switch", ErrSchemaValidation)
+	}
+	result := SwitchResult{
+		Success:         response.Success,
+		Provider:        caamProviderForNTM(provider),
+		PreviousAccount: response.PreviousProfile,
+		NewAccount:      response.Profile,
+		Error:           response.Error,
 	}
 
 	// Invalidate cache after switch attempt
