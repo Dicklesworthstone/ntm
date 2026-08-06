@@ -449,6 +449,7 @@ func (r *AutoRespawner) respawn(ctx context.Context, event LimitEvent) *RespawnR
 		AgentType:   agentType,
 		RespawnedAt: start,
 	}
+	var paneLocalCodexHome string
 	if err := validateAutoRespawnAgentType(agentType); err != nil {
 		result.Error = fmt.Sprintf("respawn is unavailable for %s: %v", agent.AgentType(agentType).Canonical(), err)
 		result.Duration = time.Since(start)
@@ -508,6 +509,15 @@ func (r *AutoRespawner) respawn(ctx context.Context, event LimitEvent) *RespawnR
 			result.AccountRotated = true
 			result.PreviousAccount = record.FromAccount
 			result.NewAccount = record.ToAccount
+			if record.PaneLocal {
+				paneLocalCodexHome = strings.TrimSpace(record.CodexHome)
+				if paneLocalCodexHome == "" {
+					result.Success = false
+					result.Error = "pane-local Codex rotation returned no CODEX_HOME; refusing to relaunch with global credentials"
+					result.Duration = time.Since(start)
+					return result
+				}
+			}
 
 			r.logger().Info("[AutoRespawner] account_rotated",
 				"session_pane", sessionPane,
@@ -554,7 +564,7 @@ func (r *AutoRespawner) respawn(ctx context.Context, event LimitEvent) *RespawnR
 	}
 
 	// Step 5: Respawn the agent
-	if err := r.spawnAgent(sessionPane, agentType); err != nil {
+	if err := r.spawnAgentWithCodexHome(sessionPane, agentType, paneLocalCodexHome); err != nil {
 		result.Success = false
 		result.Error = fmt.Sprintf("spawn agent failed: %v", err)
 		result.Duration = time.Since(start)
@@ -949,6 +959,14 @@ func (r *AutoRespawner) cdToProject(ctx context.Context, sessionPane string) err
 
 // spawnAgent launches the agent command in the pane.
 func (r *AutoRespawner) spawnAgent(sessionPane, agentType string) error {
+	return r.spawnAgentWithCodexHome(sessionPane, agentType, "")
+}
+
+// spawnAgentWithCodexHome launches an agent command in a pane, preserving an
+// isolated CODEX_HOME after a pane-local Codex account rotation. The home is
+// intentionally applied only to this launch: mutating CommandBuilder.EnvVars
+// would leak one pane's credentials into later Codex respawns.
+func (r *AutoRespawner) spawnAgentWithCodexHome(sessionPane, agentType, codexHome string) error {
 	if err := agent.AgentType(agentType).ValidateAutomatedRelaunch(); err != nil {
 		return err
 	}
@@ -974,6 +992,9 @@ func (r *AutoRespawner) spawnAgent(sessionPane, agentType string) error {
 	} else {
 		// Fallback to simple alias lookup
 		cmd = r.getAgentCommand(agentType)
+	}
+	if codexHome != "" {
+		cmd = CodexHomeEnvVar + "=" + tmux.ShellQuote(codexHome) + " " + cmd
 	}
 
 	if err := client.SendKeys(sessionPane, cmd, true); err != nil {

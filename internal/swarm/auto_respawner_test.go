@@ -1854,6 +1854,77 @@ func TestAutoRespawnerRespawnWithAccountRotation(t *testing.T) {
 	}
 }
 
+func TestAutoRespawnerRespawnPaneLocalCodexRotationPreservesCodexHome(t *testing.T) {
+	mock := &mockTmuxClient{
+		captureSeq: []string{
+			"user@host:~$ ", // shell prompt after kill
+			"Codex ready",   // agent ready after spawn
+		},
+		runOutput: "12345",
+	}
+
+	rotator := &paneLocalCodexRotator{home: "/tmp/ntm isolated codex home"}
+	respawner := NewAutoRespawner().
+		WithTmuxClient(mock).
+		WithAccountRotator(rotator).
+		WithConfig(AutoRespawnerConfig{
+			AutoRotateAccounts: true,
+			ExitWaitTimeout:    20 * time.Millisecond,
+			ExitPollInterval:   5 * time.Millisecond,
+			AgentReadyDelay:    30 * time.Millisecond,
+			ClearPaneDelay:     5 * time.Millisecond,
+		})
+	respawner.forceKillFn = func(string) error { return nil }
+
+	result := respawner.Respawn(LimitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cod",
+		Pattern:     "rate limit",
+		DetectedAt:  time.Now(),
+	})
+	if !result.Success {
+		t.Fatalf("Respawn() success = false: %s", result.Error)
+	}
+
+	wantLaunch := "CODEX_HOME=" + tmux.ShellQuote(rotator.home) + " cod"
+	foundLaunch := false
+	for _, call := range mock.sendKeysCalls {
+		if call.text == wantLaunch {
+			foundLaunch = true
+			break
+		}
+	}
+	if !foundLaunch {
+		t.Fatalf("pane-local CODEX_HOME was not preserved; want launch %q, calls=%+v", wantLaunch, mock.sendKeysCalls)
+	}
+}
+
+type paneLocalCodexRotator struct {
+	home string
+}
+
+func (r *paneLocalCodexRotator) RotateAccount(string) (string, error) {
+	return "profile-b", nil
+}
+
+func (r *paneLocalCodexRotator) CurrentAccount(string) string {
+	return "profile-a"
+}
+
+func (r *paneLocalCodexRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error) {
+	return &RotationRecord{
+		Provider:    "openai",
+		AgentType:   event.AgentType,
+		FromAccount: "profile-a",
+		ToAccount:   "profile-b",
+		RotatedAt:   time.Now(),
+		SessionPane: event.SessionPane,
+		TriggeredBy: "limit_hit",
+		PaneLocal:   true,
+		CodexHome:   r.home,
+	}, nil
+}
+
 // TestAutoRespawnerConcurrentRespawns tests that multiple concurrent respawns
 // are handled safely without race conditions.
 func TestAutoRespawnerConcurrentRespawns(t *testing.T) {
