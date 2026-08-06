@@ -298,3 +298,21 @@ func assertHealthFailureJSON(t *testing.T, stdout, wantError string) {
 		t.Fatalf("error = %q, want substring %q", errorText, wantError)
 	}
 }
+
+func TestFilterHealthResultWithPaneIDsDisambiguatesRepeatedPaneIndex(t *testing.T) {
+	result := &health.SessionHealth{
+		Session: "multi-window",
+		Agents: []health.AgentHealth{
+			{Pane: 0, PaneID: "%10", Status: health.StatusOK},
+			{Pane: 0, PaneID: "%20", Status: health.StatusWarning},
+		},
+	}
+
+	filtered := filterHealthResultWithPaneIDs(result, map[string]struct{}{"%20": {}}, "")
+	if len(filtered.Agents) != 1 || filtered.Agents[0].PaneID != "%20" {
+		t.Fatalf("filtered agents = %+v, want only %%20", filtered.Agents)
+	}
+	if filtered.Summary.Total != 1 || filtered.Summary.Warning != 1 {
+		t.Fatalf("filtered summary = %+v, want one warning", filtered.Summary)
+	}
+}
