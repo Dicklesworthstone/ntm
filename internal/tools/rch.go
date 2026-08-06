@@ -352,14 +352,12 @@ func (a *RCHAdapter) GetStatus(ctx context.Context) (*RCHStatus, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
-		// RCH might not have a status command or no workers configured
-		return &RCHStatus{Enabled: true, WorkerCount: 0, HealthyCount: 0}, nil
+		return nil, fmt.Errorf("rch status failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 
 	output := stdout.Bytes()
 	if !json.Valid(output) {
-		// Return default status if output is not valid JSON
-		return &RCHStatus{Enabled: true, WorkerCount: 0, HealthyCount: 0}, nil
+		return nil, fmt.Errorf("%w: invalid JSON from rch status", ErrSchemaValidation)
 	}
 
 	status, err := parseRCHStatusJSON(output)

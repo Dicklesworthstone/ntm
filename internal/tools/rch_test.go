@@ -2,6 +2,10 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -192,6 +196,35 @@ func TestParseRCHStatusFlatSchemaFillsDerivedCounts(t *testing.T) {
 	}
 	if status.HealthyCount != 1 {
 		t.Fatalf("expected HealthyCount 1, got %d", status.HealthyCount)
+	}
+}
+
+func TestRCHAdapterGetStatusPropagatesDaemonFailure(t *testing.T) {
+	dir := t.TempDir()
+	fakeRCH := filepath.Join(dir, "rch")
+	if err := os.WriteFile(fakeRCH, []byte(`#!/bin/sh
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo "daemon socket unavailable" >&2
+  exit 7
+fi
+exit 1
+`), 0755); err != nil {
+		t.Fatalf("write fake rch: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	status, err := NewRCHAdapter().GetStatus(context.Background())
+	if err == nil {
+		t.Fatal("GetStatus() error = nil, want daemon failure")
+	}
+	if status != nil {
+		t.Fatalf("GetStatus() status = %+v, want nil on daemon failure", status)
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Fatalf("GetStatus() error = %v, want daemon failure rather than timeout", err)
+	}
+	if !strings.Contains(err.Error(), "daemon socket unavailable") {
+		t.Fatalf("GetStatus() error = %q, want daemon diagnostic", err)
 	}
 }
 

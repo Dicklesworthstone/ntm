@@ -89,7 +89,7 @@ func GetRCHStatus() (*RCHStatusOutput, error) {
 	}
 
 	status := RCHStatusInfo{
-		Enabled:   true,
+		Enabled:   false,
 		Available: true,
 		Workers: RCHWorkersSummary{
 			Total:   availability.WorkerCount,
@@ -101,7 +101,14 @@ func GetRCHStatus() (*RCHStatusOutput, error) {
 	}
 
 	rchStatus, err := adapter.GetStatus(ctx)
-	if err == nil && rchStatus != nil {
+	if err != nil {
+		return &RCHStatusOutput{
+			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Check the RCH daemon and run rch status --json"),
+			RCH:           status,
+		}, nil
+	}
+	if rchStatus != nil {
+		status.Enabled = rchStatus.Enabled
 		workers := rchStatus.Workers
 		status.Workers.Total = len(workers)
 		status.Workers.Healthy = countRCHHealthyWorkers(workers)
