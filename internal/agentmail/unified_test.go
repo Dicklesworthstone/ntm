@@ -297,6 +297,33 @@ func TestUnifiedMessengerRead_AgentMailFetchesDeeperHistory(t *testing.T) {
 	}
 }
 
+func TestUnifiedMessengerRead_AgentMailPreservesDeeperHistoryFailure(t *testing.T) {
+	historyErr := errors.New("history unavailable")
+	am := &fakeAMClient{
+		available:     true,
+		getMessageErr: errors.New("not implemented"),
+		inboxResponses: [][]InboxMessage{
+			{{ID: 1, From: "skip", Subject: "skip", BodyMD: "skip"}},
+			nil,
+		},
+		inboxErrors: []error{nil, historyErr},
+	}
+
+	unified := &UnifiedMessenger{
+		amClient:   am,
+		projectKey: "proj",
+		agentName:  "agent",
+	}
+
+	_, err := unified.Read(context.Background(), "am-99")
+	if !errors.Is(err, historyErr) {
+		t.Fatalf("Read() error = %v, want wrapped %v", err, historyErr)
+	}
+	if am.fetchCalls != 2 {
+		t.Fatalf("expected 2 FetchInbox calls, got %d", am.fetchCalls)
+	}
+}
+
 func TestUnifiedMessengerAck_BD(t *testing.T) {
 	bdClient := &fakeBDClient{}
 	unified := &UnifiedMessenger{

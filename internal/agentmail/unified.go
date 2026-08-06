@@ -279,9 +279,10 @@ func (m *UnifiedMessenger) Read(ctx context.Context, id string) (*UnifiedMessage
 					if cancellationErr := unifiedCancellationError(ctx, err, "fetch agent mail history fallback"); cancellationErr != nil {
 						return nil, cancellationErr
 					}
-					if err == nil {
-						found = findMsg(inbox)
+					if err != nil {
+						return nil, fmt.Errorf("fetch inbox history fallback: %w", err)
 					}
+					found = findMsg(inbox)
 				}
 			}
 
