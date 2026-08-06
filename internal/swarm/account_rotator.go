@@ -591,7 +591,40 @@ func (r *AccountRotator) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// normalizeProvider converts agent type to caam provider name.
+// caamToolName converts NTM's internal provider name to the tool name caam
+// actually accepts on the command line. caam names its tools "codex", "claude"
+// and "gemini"; NTM has long used "openai" and "google" internally, and passing
+// those straight through makes caam fail with `unknown tool: openai`. Internal
+// names stay unchanged so rate-limit tracking and pinned-account map keys keep
+// working; only the caam boundary is translated. Mirrors ntmProviderForCAAM in
+// internal/tools/caam.go.
+func caamToolName(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return "codex"
+	case "google":
+		return "gemini"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+// ntmProviderName converts a caam tool name back to NTM's internal provider
+// name. Inverse of caamToolName; used when reading caam output so the result
+// can be compared against normalizeProvider values.
+func ntmProviderName(tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "codex":
+		return "openai"
+	case "gemini":
+		return "google"
+	default:
+		return strings.ToLower(strings.TrimSpace(tool))
+	}
+}
+
+// normalizeProvider converts agent type to NTM's internal provider name. Use
+// caamToolName on the result before passing it to the caam CLI.
 func normalizeProvider(agentType string) string {
 	trimmed := strings.TrimSpace(agentType)
 	switch agent.AgentType(trimmed).Canonical() {
@@ -780,6 +813,41 @@ func parseCAAMAccounts(output string) ([]tools.CAAMAccount, error) {
 		return accounts, nil
 	}
 
+	// Current caam emits {"profiles":[{tool,name,active,health:{status}}]}.
+	// This must be tried before the {"accounts":[...]} wrapper below, because
+	// that wrapper unmarshals cleanly from ANY JSON object and would silently
+	// yield zero accounts with no error -- which read as "no accounts to rotate
+	// to" rather than as a parse failure.
+	var profileWrapper struct {
+		Profiles []struct {
+			Tool   string `json:"tool"`
+			Name   string `json:"name"`
+			Active bool   `json:"active"`
+			System bool   `json:"system"`
+			Health struct {
+				Status string `json:"status"`
+			} `json:"health"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &profileWrapper); err == nil && len(profileWrapper.Profiles) > 0 {
+		converted := make([]tools.CAAMAccount, 0, len(profileWrapper.Profiles))
+		for _, profile := range profileWrapper.Profiles {
+			// caam's synthetic _backup_*/_original entries are not real
+			// accounts and must never be rotation targets.
+			if profile.System {
+				continue
+			}
+			converted = append(converted, tools.CAAMAccount{
+				ID:          profile.Name,
+				Name:        profile.Name,
+				Provider:    ntmProviderName(profile.Tool),
+				Active:      profile.Active,
+				RateLimited: profile.Health.Status == "cooldown" || profile.Health.Status == "critical",
+			})
+		}
+		return converted, nil
+	}
+
 	var wrapper struct {
 		Accounts []tools.CAAMAccount `json:"accounts"`
 	}
@@ -865,7 +933,9 @@ func (r *AccountRotator) SwitchToAccount(agentType, accountName string) (*Rotati
 	defer cancel()
 
 	start := time.Now()
-	_, stderr, err := r.runCaamCommand(ctx, "switch", accountName)
+	// caam's signature is `activate <tool> [profile-name]`. Passing only the
+	// account name made caam read it as the tool name and fail.
+	_, stderr, err := r.runCaamCommand(ctx, "activate", caamToolName(provider), accountName)
 	if err != nil {
 		r.logger().Error("[AccountRotator] switch_to_failed",
 			"provider", provider,
@@ -1324,17 +1394,36 @@ func (r *AccountRotator) guardAutoRotation(provider, from, caamCommand string) e
 }
 
 func (r *AccountRotator) switchNext(ctx context.Context, provider string) (tools.SwitchResult, string, string, error) {
-	stdout, stderr, runErr := r.runCaamCommand(ctx, "switch", provider, "--next", "--json")
+	// caam auto-selects with `activate <tool> --auto`; the old `--next` flag no
+	// longer exists, so this call used to fail on an unknown flag.
+	stdout, stderr, runErr := r.runCaamCommand(ctx, "activate", caamToolName(provider), "--auto", "--json")
 
 	payload := stdout
 	if payload == "" {
 		payload = stderr
 	}
 
+	// caam emits {"profile", "previous_profile"}; tools.SwitchResult is NTM's
+	// own DTO spelled {"new_account", "previous_account"}. Unmarshalling caam's
+	// JSON straight into it silently produced empty account names, so decode
+	// caam's actual shape and translate, matching CAAMAdapter.SwitchToNextAccount.
 	var result tools.SwitchResult
 	if payload != "" && json.Valid([]byte(payload)) {
-		if err := json.Unmarshal([]byte(payload), &result); err != nil {
-			return tools.SwitchResult{}, stdout, stderr, fmt.Errorf("parse caam switch output: %w", err)
+		var response struct {
+			Success         bool   `json:"success"`
+			Profile         string `json:"profile"`
+			PreviousProfile string `json:"previous_profile"`
+			Error           string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &response); err != nil {
+			return tools.SwitchResult{}, stdout, stderr, fmt.Errorf("parse caam activate output: %w", err)
+		}
+		result = tools.SwitchResult{
+			Success:         response.Success,
+			Provider:        provider,
+			PreviousAccount: response.PreviousProfile,
+			NewAccount:      response.Profile,
+			Error:           response.Error,
 		}
 	}
 

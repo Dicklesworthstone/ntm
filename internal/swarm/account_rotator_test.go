@@ -24,17 +24,26 @@ set -eu
 
 STATE_FILE=%q
 
+# Current caam emits {"profiles":[{tool,name,active,system,health}],"count":N}.
+# claude-b is held in cooldown so rate-limit filtering has something to exclude,
+# and a system profile is included because caam always reports those.
 if [ "${1:-}" = "list" ] && [ "${2:-}" = "--json" ]; then
   active="$(cat "$STATE_FILE" 2>/dev/null || true)"
   if [ "$active" = "claude-b" ]; then
-    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":false,"rate_limited":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":true,"rate_limited":true}]'
+    a_active=false
+    b_active=true
   else
-    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":true,"rate_limited":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":false,"rate_limited":true}]'
+    a_active=true
+    b_active=false
   fi
+  printf '{"profiles":[{"tool":"claude","name":"_original","active":false,"system":true,"health":{"status":"warning"}},{"tool":"claude","name":"claude-a","active":%%s,"system":false,"health":{"status":"ok"}},{"tool":"claude","name":"claude-b","active":%%s,"system":false,"health":{"status":"cooldown"}}],"count":3}\n' "$a_active" "$b_active"
   exit 0
 fi
 
-if [ "${1:-}" = "switch" ] && [ "${2:-}" = "claude" ] && [ "${3:-}" = "--next" ] && [ "${4:-}" = "--json" ]; then
+# Current caam CLI: activate <tool> [profile] [--auto] [--json]. The old
+# "switch <provider> --next --json" form no longer exists, and caam names the
+# tool "codex"/"gemini", never "openai"/"google" -- it rejects those outright.
+if [ "${1:-}" = "activate" ] && [ "${2:-}" = "claude" ] && [ "${3:-}" = "--auto" ] && [ "${4:-}" = "--json" ]; then
   prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
   if [ "$prev" = "claude-b" ]; then
     next="claude-a"
@@ -42,12 +51,17 @@ if [ "${1:-}" = "switch" ] && [ "${2:-}" = "claude" ] && [ "${3:-}" = "--next" ]
     next="claude-b"
   fi
   echo "$next" > "$STATE_FILE"
-  echo "{\"success\":true,\"provider\":\"claude\",\"previous_account\":\"$prev\",\"new_account\":\"$next\",\"accounts_remaining\":1}"
+  echo "{\"success\":true,\"profile\":\"$next\",\"previous_profile\":\"$prev\"}"
   exit 0
 fi
 
-if [ "${1:-}" = "switch" ]; then
-  acct="${2:-}"
+if [ "${1:-}" = "activate" ]; then
+  tool="${2:-}"
+  case "$tool" in
+    codex|claude|gemini) ;;
+    *) echo "unknown tool: $tool" >&2; exit 1 ;;
+  esac
+  acct="${3:-}"
   echo "$acct" > "$STATE_FILE"
   exit 0
 fi
