@@ -51,6 +51,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
 // compactionRecoveryConfigToRuntime converts the `[context_rotation.recovery]`
@@ -1372,6 +1373,18 @@ func (m *Model) fetchSessionDataWithOutputs() tea.Cmd {
 	return m.fetchSessionDataWithOutputsCtx(context.Background())
 }
 
+func (m Model) fetchWorkflowState() tea.Cmd {
+	session := m.session
+	return func() tea.Msg {
+		store, err := workflow.DefaultStateStore()
+		if err != nil {
+			return WorkflowStateMsg{Err: err}
+		}
+		state, err := store.Load(session)
+		return WorkflowStateMsg{State: state, Err: err}
+	}
+}
+
 func (m *Model) requestSessionFetch(cancelInFlight bool) tea.Cmd {
 	m.sessionFetchPending = true
 
@@ -2314,9 +2327,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.refreshPaused {
 			cmds = append(cmds, m.scheduleRefreshes(now)...)
 		}
+		if !m.fetchingWorkflow && now.Sub(m.lastWorkflowFetch) >= 2*time.Second {
+			m.fetchingWorkflow = true
+			cmds = append(cmds, m.fetchWorkflowState())
+		}
 
 		cmds = append(cmds, m.tick())
 		return m, tea.Batch(cmds...)
+
+	case WorkflowStateMsg:
+		m.fetchingWorkflow = false
+		m.lastWorkflowFetch = time.Now()
+		m.workflowState = msg.State
+		m.workflowError = msg.Err
+		if m.workflowPanel != nil {
+			m.workflowPanel.SetData(panels.WorkflowPanelData{State: msg.State}, msg.Err)
+		}
+		return m, nil
 
 	case RefreshMsg:
 		// Trigger a coordinated refresh across subsystems (coalesced to avoid pile-up).
@@ -3351,7 +3378,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// [tui-upgrade: bd-uz09d] Open spawn wizard with 'w' key
+		if key.Matches(msg, dashKeys.WorkflowToggle) {
+			m.showWorkflowPanel = !m.showWorkflowPanel
+			if m.showWorkflowPanel && !m.fetchingWorkflow {
+				m.fetchingWorkflow = true
+				return m, m.fetchWorkflowState()
+			}
+			return m, nil
+		}
+		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowState != nil && msg.String() == "enter" {
+			_, cmd := m.workflowPanel.Update(msg)
+			return m, cmd
+		}
+
+		// [tui-upgrade: bd-uz09d] Open spawn wizard with ctrl+w.
 		if key.Matches(msg, dashKeys.SpawnWizard) {
 			m.showSpawnWizard = true
 			m.spawnWizard = panels.NewSpawnWizard(m.session, m.width, m.height)
@@ -5189,6 +5229,18 @@ func (m Model) renderSidebar(width, height int) string {
 			}
 			m.rotationConfirmPanel.SetSize(width, panelHeight)
 			lines = append(lines, m.rotationConfirmPanel.View(), "")
+		}
+	}
+
+	if m.showWorkflowPanel && m.workflowPanel != nil && height > 0 {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		panelHeight := height - used - 1
+		if panelHeight >= m.workflowPanel.Config().MinHeight {
+			if panelHeight > 14 {
+				panelHeight = 14
+			}
+			m.workflowPanel.SetSize(width, panelHeight)
+			lines = append(lines, m.workflowPanel.View(), "")
 		}
 	}
 
