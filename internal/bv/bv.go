@@ -3094,7 +3094,7 @@ func GetInProgressListContext(ctx context.Context, dir string, limit int) ([]Bea
 }
 
 // GetRecentlyCompletedList returns recently completed beads.
-// These are beads with status=done, ordered by completion time descending.
+// These are beads with status=closed, ordered by completion time descending.
 //
 // Like [`GetInProgressList`] this will walk up to a parent .beads/ when the
 // directory has none of its own; callers that need a strict per-directory
@@ -3109,7 +3109,7 @@ func GetRecentlyCompletedList(dir string, limit int) []BeadPreview {
 func GetRecentlyCompletedListContext(ctx context.Context, dir string, limit int) ([]BeadPreview, error) {
 	items := make([]BeadPreview, 0)
 
-	output, err := RunBdContext(ctx, dir, "list", "--status=done", "--json")
+	output, err := RunBdContext(ctx, dir, "list", "--status=closed", "--json")
 	if err != nil {
 		return nil, fmt.Errorf("list recently completed beads: %w", err)
 	}

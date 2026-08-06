@@ -331,7 +331,7 @@ func TestGetRecentlyCompletedListContext(t *testing.T) {
 			}
 		}
 		binDir := t.TempDir()
-		script := "#!/bin/sh\nprintf '[{\"id\":\"ntm-done-1\",\"title\":\"first\"},{\"id\":\"ntm-done-2\",\"title\":\"second\"}]\\n'\n"
+		script := "#!/bin/sh\ncase \"$*\" in\n  *\"list --status=closed --json\"*) printf '[{\"id\":\"ntm-done-1\",\"title\":\"first\"},{\"id\":\"ntm-done-2\",\"title\":\"second\"}]\\n' ;;\n  *) printf 'unexpected br arguments: %s\\n' \"$*\" >&2; exit 64 ;;\nesac\n"
 		if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
 			t.Fatalf("write fake br: %v", err)
 		}
