@@ -1369,6 +1369,48 @@ func TestNewWithConfigCustomSettings(t *testing.T) {
 	}
 }
 
+func TestNewWithConfigAppliesDefaultsAndWatchIsUsable(t *testing.T) {
+	t.Parallel()
+
+	d := NewWithConfig("default-config", nil, DetectionConfig{})
+	want := DefaultConfig()
+
+	if d.Config.PollInterval != want.PollInterval {
+		t.Errorf("PollInterval = %v, want default %v", d.Config.PollInterval, want.PollInterval)
+	}
+	if d.Config.IdleThreshold != want.IdleThreshold {
+		t.Errorf("IdleThreshold = %v, want default %v", d.Config.IdleThreshold, want.IdleThreshold)
+	}
+	if d.Config.RetryInterval != want.RetryInterval {
+		t.Errorf("RetryInterval = %v, want default %v", d.Config.RetryInterval, want.RetryInterval)
+	}
+	if d.Config.MaxRetries != want.MaxRetries {
+		t.Errorf("MaxRetries = %d, want default %d", d.Config.MaxRetries, want.MaxRetries)
+	}
+	if d.Config.DedupWindow != want.DedupWindow {
+		t.Errorf("DedupWindow = %v, want default %v", d.Config.DedupWindow, want.DedupWindow)
+	}
+	if d.Config.CompletionLeaseDuration != want.CompletionLeaseDuration {
+		t.Errorf("CompletionLeaseDuration = %v, want default %v", d.Config.CompletionLeaseDuration, want.CompletionLeaseDuration)
+	}
+	if d.Config.CaptureLines != want.CaptureLines {
+		t.Errorf("CaptureLines = %d, want default %d", d.Config.CaptureLines, want.CaptureLines)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	events := d.Watch(ctx)
+	cancel()
+
+	select {
+	case _, open := <-events:
+		if open {
+			t.Error("Watch returned an event after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Watch did not stop after cancellation")
+	}
+}
+
 func TestCheckNowWithActiveAssignment(t *testing.T) {
 	testutil.AcquireGlobalTmuxTestLockForTest(t)
 	t.Setenv("HOME", t.TempDir())

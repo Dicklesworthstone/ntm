@@ -196,6 +196,33 @@ func TestStreamManager_StartStop(t *testing.T) {
 	sm.StopStream("fake:0")
 }
 
+func TestStreamManager_StartAfterStopAll(t *testing.T) {
+	acquireGlobalTmuxTestLock(t)
+
+	cfg := DefaultPaneStreamerConfig()
+	cfg.FIFODir = t.TempDir()
+	sm := NewStreamManager(DefaultClient, func(StreamEvent) {}, cfg)
+
+	sm.StopAll()
+	if err := sm.StartStream("fake:0"); err != nil {
+		t.Fatalf("StartStream after StopAll: %v", err)
+	}
+	t.Cleanup(sm.StopAll)
+
+	sm.mu.RLock()
+	streamer := sm.streamers["fake:0"]
+	sm.mu.RUnlock()
+	if streamer == nil {
+		t.Fatal("StartStream after StopAll did not retain the new streamer")
+	}
+
+	select {
+	case <-streamer.ctx.Done():
+		t.Fatal("StartStream after StopAll used the manager's cancelled context")
+	default:
+	}
+}
+
 func TestPaneStreamer_UsingFallback(t *testing.T) {
 	acquireGlobalTmuxTestLock(t)
 

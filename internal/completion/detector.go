@@ -145,8 +145,27 @@ func New(session string, store *assignment.AssignmentStore) *CompletionDetector 
 
 // NewWithConfig creates a new CompletionDetector with custom configuration
 func NewWithConfig(session string, store *assignment.AssignmentStore, cfg DetectionConfig) *CompletionDetector {
+	defaults := DefaultConfig()
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaults.PollInterval
+	}
+	if cfg.IdleThreshold <= 0 {
+		cfg.IdleThreshold = defaults.IdleThreshold
+	}
+	if cfg.RetryInterval <= 0 {
+		cfg.RetryInterval = defaults.RetryInterval
+	}
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = defaults.MaxRetries
+	}
+	if cfg.DedupWindow <= 0 {
+		cfg.DedupWindow = defaults.DedupWindow
+	}
 	if cfg.CompletionLeaseDuration <= 0 {
-		cfg.CompletionLeaseDuration = DefaultConfig().CompletionLeaseDuration
+		cfg.CompletionLeaseDuration = defaults.CompletionLeaseDuration
+	}
+	if cfg.CaptureLines <= 0 {
+		cfg.CaptureLines = defaults.CaptureLines
 	}
 	if raw := strings.TrimSpace(os.Getenv("NTM_TEST_COMPLETION_LEASE_DURATION")); raw != "" {
 		if duration, err := time.ParseDuration(raw); err == nil && duration > 0 {

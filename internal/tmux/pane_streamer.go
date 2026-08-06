@@ -500,17 +500,19 @@ func (sm *StreamManager) StopStream(target string) {
 	}
 }
 
-// StopAll stops all streamers.
+// StopAll stops all streamers. The manager remains usable for later streams.
 func (sm *StreamManager) StopAll() {
-	sm.cancel()
-
 	sm.mu.Lock()
+	cancel := sm.cancel
 	streamers := make([]*PaneStreamer, 0, len(sm.streamers))
 	for _, s := range sm.streamers {
 		streamers = append(streamers, s)
 	}
 	sm.streamers = make(map[string]*PaneStreamer)
+	sm.ctx, sm.cancel = context.WithCancel(context.Background())
 	sm.mu.Unlock()
+
+	cancel()
 
 	for _, s := range streamers {
 		s.Stop()
