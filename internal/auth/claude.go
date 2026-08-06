@@ -115,7 +115,7 @@ func (f *ClaudeAuthFlow) SendContinuation(paneID, prompt string) error {
 }
 
 // claudeLoginURLRegex matches the Claude login URL
-var claudeLoginURLRegex = regexp.MustCompile(`https://claude\.ai/login\S+`)
+var claudeLoginURLRegex = regexp.MustCompile(`https://claude\.ai/login\S*`)
 
 // DetectBrowserURL finds the auth URL in the output
 func (f *ClaudeAuthFlow) DetectBrowserURL(output string) (string, bool) {

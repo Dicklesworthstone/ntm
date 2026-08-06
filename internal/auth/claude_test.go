@@ -151,6 +151,12 @@ func TestClaudeAuthFlow_DetectBrowserURL(t *testing.T) {
 			found:  true,
 		},
 		{
+			name:   "bare login url",
+			output: "Please visit https://claude.ai/login to login",
+			want:   "https://claude.ai/login",
+			found:  true,
+		},
+		{
 			name:   "no url",
 			output: "Just some random text",
 			want:   "",
