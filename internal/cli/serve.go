@@ -47,6 +47,7 @@ Examples:
   ntm serve --port 8080                  # Start on custom port
   ntm serve --host 0.0.0.0 --auth-mode api_key --api-key $KEY
   ntm serve --auth-mode oidc --oidc-issuer https://issuer --oidc-jwks-url https://issuer/.well-known/jwks.json`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runServe(opts)
 		},
