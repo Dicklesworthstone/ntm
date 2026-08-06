@@ -1439,6 +1439,17 @@ Shell Integration:
 			recordLegacyRobotExit(exitCode)
 			return
 		}
+		if robotSequence != "" {
+			projectDir, err := os.Getwd()
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInternalError, "Run the command from the project whose .ntm state should own the sequence", "robot-sequence")
+				return
+			}
+			if err := printRobotSequence(projectDir, robotSequence, robotSequenceAction, robotSequencePane, robotSequenceSteps); err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use a JSON prompt array for create and provide --sequence-pane for next or advance", "robot-sequence")
+			}
+			return
+		}
 		// Robot-pipeline commands
 		if robotPipelineRun != "" {
 			vars, err := pipeline.ParsePipelineVars(robotPipelineVars)
@@ -3647,6 +3658,12 @@ var (
 	robotRouteType      string // filter by agent type (claude, codex, gemini)
 	robotRouteExclude   string // comma-separated pane indices to exclude
 
+	// Robot-sequence flags for durable per-pane prompt progress.
+	robotSequence       string // durable per-pane prompt sequence name
+	robotSequenceAction string // create, next, or advance
+	robotSequencePane   string // stable tmux pane id or canonical pane address
+	robotSequenceSteps  string // JSON prompt array for create
+
 	// Robot-pipeline flags for workflow execution
 	robotPipelineRun       string // workflow file to run
 	robotPipelineStatus    string // run ID to check status
@@ -4291,6 +4308,12 @@ func init() {
 	rootCmd.Flags().StringVar(&robotRouteType, "route-type", "", "Deprecated alias for --type. Filter by agent type with --robot-route. Example: --type=claude")
 	rootCmd.Flags().StringVar(&robotRouteExclude, "route-exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-route. Example: --route-exclude=0,3")
 
+	// Robot-sequence flags for durable per-pane prompt progress.
+	rootCmd.Flags().StringVar(&robotSequence, "robot-sequence", "", "Manage a durable per-pane prompt sequence. Required: NAME. Example: ntm --robot-sequence=review --sequence-action=create --sequence-steps='[\"inspect\",\"challenge\"]'")
+	rootCmd.Flags().StringVar(&robotSequenceAction, "sequence-action", "next", "Sequence action: create, next, or advance. Optional with --robot-sequence")
+	rootCmd.Flags().StringVar(&robotSequencePane, "sequence-pane", "", "Stable pane ID or canonical address whose prompt position to read or advance. Required for --sequence-action=next|advance")
+	rootCmd.Flags().StringVar(&robotSequenceSteps, "sequence-steps", "", "JSON array of ordered prompts. Required for --sequence-action=create")
+
 	// Robot-pipeline flags for workflow execution
 	rootCmd.Flags().StringVar(&robotPipelineRun, "robot-pipeline-run", "", "Run a workflow. Required: WORKFLOW_FILE, --session. Example: ntm --robot-pipeline-run=workflow.yaml --session=proj")
 	rootCmd.Flags().StringVar(&robotPipelineStatus, "robot-pipeline", "", "Get pipeline status. Required: RUN_ID. Example: ntm --robot-pipeline=run-20241230-123456-abcd")
@@ -4799,6 +4822,7 @@ func init() {
 		newHealthCmd(),
 		newDoctorCmd(),
 		newCleanupCmd(),
+		newClaimCmd(),
 		newSupportBundleCmd(),
 		newSafetyCmd(),
 		newPolicyCmd(),

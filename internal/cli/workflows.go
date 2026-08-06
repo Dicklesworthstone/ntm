@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
@@ -38,6 +39,58 @@ type WorkflowShowResult struct {
 	Flow          *workflow.FlowConfig     `json:"flow,omitempty"`
 	Prompts       []workflow.SetupPrompt   `json:"prompts,omitempty"`
 	ErrorHandling *workflow.ErrorConfig    `json:"error_handling,omitempty"`
+}
+
+// RobotSequenceOutput is the durable per-pane prompt-sequence response. A
+// create action returns Sequence; next and advance return Pane with the prompt
+// currently assigned to that pane.
+type RobotSequenceOutput struct {
+	robot.RobotResponse
+	Action   string                         `json:"action"`
+	Sequence *workflow.PaneSequence         `json:"sequence,omitempty"`
+	Pane     *workflow.PaneSequencePosition `json:"pane,omitempty"`
+}
+
+func printRobotSequence(projectDir, name, action, pane, rawSteps string) error {
+	store, err := workflow.NewPaneSequenceStore(projectDir)
+	if err != nil {
+		return err
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "" {
+		action = "next"
+	}
+	output := RobotSequenceOutput{
+		RobotResponse: robot.NewRobotResponse(true),
+		Action:        action,
+	}
+	switch action {
+	case "create":
+		var steps []string
+		if err := json.Unmarshal([]byte(rawSteps), &steps); err != nil {
+			return fmt.Errorf("decode --sequence-steps as a JSON string array: %w", err)
+		}
+		sequence, err := store.Create(name, steps)
+		if err != nil {
+			return err
+		}
+		output.Sequence = sequence
+	case "next":
+		position, err := store.Next(name, pane)
+		if err != nil {
+			return err
+		}
+		output.Pane = &position
+	case "advance":
+		position, err := store.Advance(name, pane)
+		if err != nil {
+			return err
+		}
+		output.Pane = &position
+	default:
+		return fmt.Errorf("invalid sequence action %q: use create, next, or advance", action)
+	}
+	return json.NewEncoder(os.Stdout).Encode(output)
 }
 
 func newWorkflowsCmd() *cobra.Command {
