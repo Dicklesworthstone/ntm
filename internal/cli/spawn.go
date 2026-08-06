@@ -2628,8 +2628,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 		// not just the persona's display name. Lets orchestrators verify the
 		// persona→pane→prompt mapping after a --profile-set launch (ntm#159).
 		personaPromptSource string
-		command             string
-		environment         map[string]string
+		command             string        // excludes --pane-env values; persisted for resilience restarts
 		promptDelay         time.Duration // Stagger delay before prompt delivery
 	}
 	var launchedAgents []launchedAgent
@@ -2985,6 +2984,15 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			agentCmd = envPrefix + agentCmd
 		}
 
+		// The resilience manifest is durable and must never carry arbitrary
+		// --pane-env values. Keep the restart command before the ephemeral pane
+		// environment prefix; a restarted pane therefore requires its caller to
+		// provide sensitive values again rather than recovering them from disk.
+		manifestAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
+		if err != nil {
+			return outputError(fmt.Errorf("invalid %s resilience command: %w", agent.Type, err))
+		}
+
 		paneEnv := expandSpawnPaneEnv(opts.PaneEnv, dir, agent.Index, agent.Type)
 		agentCmd = prependSpawnPaneEnv(agentCmd, paneEnv)
 
@@ -3206,8 +3214,7 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			resolvedModel:       resolvedModel,
 			persona:             personaName,
 			personaPromptSource: systemPromptFile,
-			command:             safeAgentCmd,
-			environment:         paneEnv,
+			command:             manifestAgentCmd,
 			promptDelay:         promptDelay,
 		})
 		auditAgentsLaunched = len(launchedAgents)
@@ -3246,12 +3253,11 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 				continue
 			}
 			manifest.Agents = append(manifest.Agents, resilience.AgentConfig{
-				PaneID:      agent.paneID,
-				PaneIndex:   agent.paneIndex,
-				Type:        agent.agentType,
-				Model:       agent.model,
-				Command:     agent.command,
-				Environment: agent.environment,
+				PaneID:    agent.paneID,
+				PaneIndex: agent.paneIndex,
+				Type:      agent.agentType,
+				Model:     agent.model,
+				Command:   agent.command,
 			})
 		}
 		if err := resilience.SaveManifest(manifest); err != nil {

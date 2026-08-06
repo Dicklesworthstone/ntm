@@ -49,7 +49,8 @@ type EnvOutput struct {
 	PaneEnvironment  []PaneEnvironmentInfo `json:"pane_environment,omitempty"`
 }
 
-// PaneEnvironmentInfo is the NTM-owned launch environment persisted for one pane.
+// PaneEnvironmentInfo is retained for response-schema compatibility. Launch
+// environment values are intentionally never persisted or exposed.
 type PaneEnvironmentInfo struct {
 	PaneID      string            `json:"pane_id"`
 	PaneIndex   int               `json:"pane_index"`
@@ -335,19 +336,9 @@ func GetEnv(session string) (*EnvOutput, error) {
 }
 
 func paneEnvironmentFromManifest(manifest *resilience.SpawnManifest) []PaneEnvironmentInfo {
-	if manifest == nil {
-		return nil
-	}
-	output := make([]PaneEnvironmentInfo, 0, len(manifest.Agents))
-	for _, agent := range manifest.Agents {
-		if len(agent.Environment) == 0 {
-			continue
-		}
-		output = append(output, PaneEnvironmentInfo{
-			PaneID: agent.PaneID, PaneIndex: agent.PaneIndex, AgentType: agent.Type, Environment: agent.Environment,
-		})
-	}
-	return output
+	// --pane-env accepts arbitrary values, including credentials. Manifests are
+	// a monitor/restart contract, not a robot-readable environment store.
+	return nil
 }
 
 // PrintEnv outputs environment info for a session (or global if no session).

@@ -37,12 +37,11 @@ type SpawnManifest struct {
 
 // AgentConfig represents the configuration for a single agent
 type AgentConfig struct {
-	PaneID      string            `json:"pane_id"`
-	PaneIndex   int               `json:"pane_index"`
-	Type        string            `json:"type"`
-	Model       string            `json:"model"`
-	Command     string            `json:"command"`
-	Environment map[string]string `json:"environment,omitempty"`
+	PaneID    string `json:"pane_id"`
+	PaneIndex int    `json:"pane_index"`
+	Type      string `json:"type"`
+	Model     string `json:"model"`
+	Command   string `json:"command"`
 }
 
 // ManifestDir returns the directory for storing session manifests
@@ -79,8 +78,11 @@ func SaveManifest(manifest *SpawnManifest) error {
 	}
 
 	dir := ManifestDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating manifest directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		return fmt.Errorf("restricting manifest directory permissions: %w", err)
 	}
 
 	path := filepath.Join(dir, safe+".json")
@@ -89,7 +91,7 @@ func SaveManifest(manifest *SpawnManifest) error {
 		return fmt.Errorf("marshaling manifest: %w", err)
 	}
 
-	return util.AtomicWriteFile(path, data, 0644)
+	return util.AtomicWriteFile(path, data, 0600)
 }
 
 // LoadManifest loads the spawn manifest for a session

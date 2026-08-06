@@ -1,11 +1,42 @@
 package resilience
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSaveManifestDropsLegacyEnvironmentValues(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	const secret = "sk-this-must-not-persist"
+	var manifest SpawnManifest
+	if err := json.Unmarshal([]byte(`{
+		"session":"legacy-env",
+		"project_dir":"/tmp/project",
+		"agents":[{
+			"pane_id":"%1",
+			"pane_index":1,
+			"type":"cod",
+			"command":"codex",
+			"environment":{"OPENAI_API_KEY":"sk-this-must-not-persist"}
+		}]
+	}`), &manifest); err != nil {
+		t.Fatalf("unmarshal legacy manifest: %v", err)
+	}
+	if err := SaveManifest(&manifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(ManifestDir(), "legacy-env.json"))
+	if err != nil {
+		t.Fatalf("read saved manifest: %v", err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), `"environment"`) {
+		t.Fatalf("saved manifest retained legacy environment data: %s", data)
+	}
+}
 
 func TestManifestDir_WithXDGDataHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "/custom/data")
@@ -55,7 +86,7 @@ func TestSaveLoadDeleteManifest_RoundTrip(t *testing.T) {
 		ProjectDir:  "/home/user/project",
 		AutoRestart: true,
 		Agents: []AgentConfig{
-			{PaneID: "%0", PaneIndex: 0, Type: "cc", Model: "opus-4", Command: "claude", Environment: map[string]string{"CARGO_TARGET_DIR": "/tmp/build_demo_cc_1"}},
+			{PaneID: "%0", PaneIndex: 0, Type: "cc", Model: "opus-4", Command: "claude"},
 			{PaneID: "%1", PaneIndex: 1, Type: "cod", Model: "gpt-5", Command: "codex"},
 		},
 	}
@@ -92,8 +123,19 @@ func TestSaveLoadDeleteManifest_RoundTrip(t *testing.T) {
 	if loaded.Agents[0].Type != "cc" {
 		t.Errorf("Agents[0].Type = %q, want cc", loaded.Agents[0].Type)
 	}
-	if got := loaded.Agents[0].Environment["CARGO_TARGET_DIR"]; got != "/tmp/build_demo_cc_1" {
-		t.Errorf("Agents[0].Environment[CARGO_TARGET_DIR] = %q", got)
+	info, err := os.Stat(expectedPath)
+	if err != nil {
+		t.Fatalf("stat manifest: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0600); got != want {
+		t.Errorf("manifest mode = %o, want %o", got, want)
+	}
+	dirInfo, err := os.Stat(filepath.Dir(expectedPath))
+	if err != nil {
+		t.Fatalf("stat manifest directory: %v", err)
+	}
+	if got, want := dirInfo.Mode().Perm(), os.FileMode(0700); got != want {
+		t.Errorf("manifest directory mode = %o, want %o", got, want)
 	}
 	if loaded.Agents[1].Model != "gpt-5" {
 		t.Errorf("Agents[1].Model = %q, want gpt-5", loaded.Agents[1].Model)
