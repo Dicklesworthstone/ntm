@@ -48,7 +48,7 @@ func TestClientCaptureBackpressureInputsUseLiveCaptureAttempts(t *testing.T) {
 	requireEqual(t, inputs[1].LatencyMS, int64(2500))
 
 	snapshot := backpressure.Evaluate(inputs, backpressure.SnapshotOptions{})
-	requireEqual(t, snapshot.Decision, backpressure.DecisionDegrade)
+	requireEqual(t, snapshot.Decision, backpressure.DecisionDefer)
 	requireEqual(t, snapshot.Surfaces[1].Surface, backpressure.SurfaceTmuxCapture)
 }
 

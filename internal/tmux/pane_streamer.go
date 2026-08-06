@@ -83,11 +83,12 @@ type PaneStreamer struct {
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 
-	fifoPath    string
-	fifoMu      sync.Mutex
-	fifo        *os.File
-	seq         int64
-	useFallback atomic.Bool
+	fifoPath     string
+	fifoMu       sync.Mutex
+	fifo         *os.File
+	seq          int64
+	useFallback  atomic.Bool
+	ownsPipePane bool
 
 	mu       sync.Mutex
 	running  bool
@@ -99,6 +100,16 @@ type PaneStreamer struct {
 // managers stream the same pane: the later streamer would unlink the earlier
 // streamer's live FIFO.
 var fifoPathSequence atomic.Uint64
+
+type paneStreamKey struct {
+	client *Client
+	target string
+}
+
+var paneStreamOwners = struct {
+	sync.Mutex
+	owners map[paneStreamKey]*PaneStreamer
+}{owners: make(map[paneStreamKey]*PaneStreamer)}
 
 // NewPaneStreamer creates a streamer for the given pane target.
 func NewPaneStreamer(client *Client, target string, callback StreamCallback, cfg PaneStreamerConfig) *PaneStreamer {
@@ -205,8 +216,14 @@ func (ps *PaneStreamer) Stop() {
 
 	// Stop pipe-pane before closing the FIFO. Closing the descriptor wakes an
 	// idle reader that would otherwise remain blocked in ReadString forever.
-	if ps.fifoPath != "" {
+	if ps.ownsPipePane {
 		_ = ps.client.RunSilent("pipe-pane", "-t", ps.target)
+		paneStreamOwners.Lock()
+		delete(paneStreamOwners.owners, paneStreamKey{client: ps.client, target: ps.target})
+		paneStreamOwners.Unlock()
+		ps.ownsPipePane = false
+	}
+	if ps.fifoPath != "" {
 		_ = os.Remove(ps.fifoPath)
 	}
 	ps.closeFIFO()
@@ -241,6 +258,13 @@ func pipePaneCatCommand(fifoPath string) string {
 
 // startPipePaneStreaming sets up pipe-pane streaming via a FIFO.
 func (ps *PaneStreamer) startPipePaneStreaming() error {
+	key := paneStreamKey{client: ps.client, target: ps.target}
+	paneStreamOwners.Lock()
+	defer paneStreamOwners.Unlock()
+	if _, exists := paneStreamOwners.owners[key]; exists {
+		return fmt.Errorf("pipe-pane already owned for %s", ps.target)
+	}
+
 	ps.fifoPath = paneStreamerFIFOPath(ps.config.FIFODir, ps.target)
 
 	// Create FIFO (named pipe)
@@ -260,6 +284,8 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 		ps.fifoPath = ""
 		return fmt.Errorf("pipe-pane: %w", err)
 	}
+	paneStreamOwners.owners[key] = ps
+	ps.ownsPipePane = true
 
 	log.Printf("pipe-pane: attached to %s via %s", ps.target, ps.fifoPath)
 

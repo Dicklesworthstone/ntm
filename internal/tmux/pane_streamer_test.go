@@ -345,6 +345,34 @@ func TestPaneStreamerFIFOPathIsUniqueForSameTarget(t *testing.T) {
 	}
 }
 
+func TestPaneStreamer_SecondStreamerDoesNotClaimExistingPipePane(t *testing.T) {
+	client := NewClient("")
+	first := NewPaneStreamer(client, "shared:0", func(StreamEvent) {}, PaneStreamerConfig{FIFODir: t.TempDir()})
+	second := NewPaneStreamer(client, "shared:0", func(StreamEvent) {}, PaneStreamerConfig{FIFODir: t.TempDir()})
+	key := paneStreamKey{client: client, target: "shared:0"}
+
+	paneStreamOwners.Lock()
+	paneStreamOwners.owners[key] = first
+	paneStreamOwners.Unlock()
+	t.Cleanup(func() {
+		paneStreamOwners.Lock()
+		if paneStreamOwners.owners[key] == first {
+			delete(paneStreamOwners.owners, key)
+		}
+		paneStreamOwners.Unlock()
+	})
+
+	if err := second.startPipePaneStreaming(); err == nil {
+		t.Fatal("second streamer claimed an existing pipe-pane")
+	}
+	if second.ownsPipePane {
+		t.Fatal("second streamer must not own the existing pipe-pane")
+	}
+	if second.fifoPath != "" {
+		t.Fatalf("second streamer created a FIFO despite existing owner: %q", second.fifoPath)
+	}
+}
+
 func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
 	tmp := t.TempDir()
 	fifoDirAsFile := filepath.Join(tmp, "not-a-dir")
