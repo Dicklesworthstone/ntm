@@ -795,6 +795,8 @@ func TestPrintHelp(t *testing.T) {
 		"--robot-version",
 		"Common Workflows",
 		"Rollout Guardrails",
+		"--verify-render",
+		"delivered_and_rendered",
 		"not a planner",
 		"Tips for AI Agents",
 	}
