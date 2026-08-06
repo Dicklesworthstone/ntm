@@ -392,12 +392,14 @@ if [ "${1:-}" = "robot" ] && [ "${2:-}" = "status" ] && [ "${3:-}" = "--compact"
     a_active=true
     b_active=false
   fi
-  echo "{\"success\":true,\"data\":{\"providers\":[{\"id\":\"claude\",\"logged_in\":true,\"profiles\":[{\"name\":\"claude-a\",\"active\":$a_active,\"health\":{\"status\":\"ok\"}},{\"name\":\"claude-b\",\"active\":$b_active,\"health\":{\"status\":\"ok\"}}]}]}}"
+  # Shape mirrors real caam: profiles carry name/active/system/health, and caam
+  # always reports synthetic system profiles, which must not become accounts.
+  echo "{\"success\":true,\"data\":{\"providers\":[{\"id\":\"claude\",\"display_name\":\"Claude\",\"logged_in\":true,\"profiles\":[{\"name\":\"_original\",\"active\":false,\"system\":true,\"health\":{\"status\":\"warning\"}},{\"name\":\"claude-a\",\"active\":$a_active,\"system\":false,\"health\":{\"status\":\"ok\"}},{\"name\":\"claude-b\",\"active\":$b_active,\"system\":false,\"health\":{\"status\":\"ok\"}}]}]}}"
   exit 0
 fi
 
 if [ "${1:-}" = "cost" ] && [ "${2:-}" = "sessions" ]; then
-  echo '[]'
+  echo '{"sessions":[],"count":0}'
   exit 0
 fi
 

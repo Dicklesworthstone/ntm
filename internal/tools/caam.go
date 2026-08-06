@@ -376,6 +376,7 @@ func (a *CAAMAdapter) fetchStatus(ctx context.Context) (*CAAMStatus, error) {
 				Profiles []struct {
 					Name   string `json:"name"`
 					Active bool   `json:"active"`
+					System bool   `json:"system"`
 					Health struct {
 						Status string `json:"status"`
 					} `json:"health"`
@@ -390,6 +391,14 @@ func (a *CAAMAdapter) fetchStatus(ctx context.Context) (*CAAMStatus, error) {
 	accounts := make([]CAAMAccount, 0)
 	for _, provider := range response.Data.Providers {
 		for _, profile := range provider.Profiles {
+			// caam reports synthetic bookkeeping profiles (_original,
+			// _backup_<timestamp>) alongside real ones. Surfacing them as
+			// accounts inflates the account count and makes them look like
+			// valid rotation targets; activating one would restore a stale
+			// auth snapshot rather than switch to another account.
+			if profile.System {
+				continue
+			}
 			accounts = append(accounts, CAAMAccount{
 				ID:          profile.Name,
 				Provider:    caamProviderForNTM(provider.ID),

@@ -235,7 +235,11 @@ func TestCAAMAdapterFetchesRobotProfilesAndCostSessions(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"version\" ]; then echo 'caam 1.2.3'; exit 0; fi\n" +
 		"if [ \"$1\" = \"robot\" ] && [ \"$2\" = \"status\" ]; then\n" +
-		"  echo '{\"success\":true,\"data\":{\"providers\":[{\"id\":\"codex\",\"profiles\":[{\"name\":\"work\",\"active\":true,\"health\":{\"status\":\"healthy\"}}]},{\"id\":\"claude\",\"profiles\":[{\"name\":\"personal\",\"active\":false,\"health\":{\"status\":\"cooldown\"}}]}]}}'\n" +
+		// The leading _original entry is one of caam's synthetic system profiles.
+		// Real caam always reports these; they must not become accounts, so the
+		// AccountsCount and Accounts[1] assertions below double as coverage for
+		// the system-profile skip.
+		"  echo '{\"success\":true,\"data\":{\"providers\":[{\"id\":\"codex\",\"profiles\":[{\"name\":\"_original\",\"active\":false,\"system\":true,\"health\":{\"status\":\"warning\"}},{\"name\":\"work\",\"active\":true,\"health\":{\"status\":\"healthy\"}}]},{\"id\":\"claude\",\"profiles\":[{\"name\":\"personal\",\"active\":false,\"health\":{\"status\":\"cooldown\"}}]}]}}'\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"if [ \"$1\" = \"cost\" ] && [ \"$2\" = \"sessions\" ]; then\n" +
