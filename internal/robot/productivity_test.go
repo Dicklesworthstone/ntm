@@ -118,6 +118,26 @@ func TestGetProductivityDoesNotConvergeWhenEvidenceFails(t *testing.T) {
 	}
 }
 
+func TestGetProductivityDoesNotConvergeWithoutRecognizedAgentPanes(t *testing.T) {
+	deps := productivityDependencies{
+		sessionExists: func(string) bool { return true },
+		getPanes: func(string) ([]tmux.Pane, error) {
+			return []tmux.Pane{{ID: "%0", Index: 0, Type: tmux.AgentUser}, {ID: "%1", Index: 1, Type: tmux.AgentUnknown}}, nil
+		},
+		panePath:   func(context.Context, string) string { return "" },
+		processes:  func(context.Context) ([]productivityProcess, error) { return nil, nil },
+		readyBeads: func(context.Context, string) (int, error) { return 0, nil },
+		now:        time.Now,
+	}
+	output, err := getProductivity(ProductivityOptions{Session: "swarm"}, deps)
+	if err != nil {
+		t.Fatalf("getProductivity() error = %v", err)
+	}
+	if output.Decision != ProductivityUnknown || output.EvidenceComplete {
+		t.Fatalf("output = %+v, want unknown with incomplete agent evidence", output)
+	}
+}
+
 func TestIsBuildOrTestCommand(t *testing.T) {
 	for _, tc := range []struct {
 		command string

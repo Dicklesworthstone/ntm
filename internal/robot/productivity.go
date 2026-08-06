@@ -158,10 +158,12 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 	}
 
 	associatedBuilds := make(map[int]productivityProcess)
+	agentPaneSeen := false
 	for _, pane := range panes {
 		if pane.Type == tmux.AgentUser || pane.Type == tmux.AgentUnknown {
 			continue
 		}
+		agentPaneSeen = true
 		path := deps.panePath(ctx, pane.ID)
 		progress := PaneSemanticProgress(PaneAddr{Session: opts.Session, Window: pane.WindowIndex, Pane: pane.Index}, path, window, false, now)
 		paneBuilds := matchingBuildProcesses(processes, path)
@@ -181,7 +183,7 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 	}
 	sort.Slice(output.BuildProcesses, func(i, j int) bool { return output.BuildProcesses[i].PID < output.BuildProcesses[j].PID })
 
-	output.EvidenceComplete = processErr == nil && beadsErr == nil
+	output.EvidenceComplete = agentPaneSeen && processErr == nil && beadsErr == nil
 	output.Decision, output.DecisionReason = evaluateProductivity(output)
 	return output, nil
 }
