@@ -123,7 +123,7 @@ func (f *ClaudeAuthFlow) DetectBrowserURL(output string) (string, bool) {
 	// We'll look for standard https links associated with claude/login
 	match := claudeLoginURLRegex.FindString(output)
 	if match != "" {
-		return match, true
+		return strings.TrimRight(match, ".,;:!?)]}\"'"), true
 	}
 	return "", false
 }

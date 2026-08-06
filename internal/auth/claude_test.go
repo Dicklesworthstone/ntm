@@ -175,6 +175,18 @@ func TestClaudeAuthFlow_DetectBrowserURL(t *testing.T) {
 			found:  true,
 		},
 		{
+			name:   "url followed by terminal punctuation",
+			output: "Open (https://claude.ai/login?code=123).",
+			want:   "https://claude.ai/login?code=123",
+			found:  true,
+		},
+		{
+			name:   "url followed by closing quote",
+			output: "Open \"https://claude.ai/login?code=123\".",
+			want:   "https://claude.ai/login?code=123",
+			found:  true,
+		},
+		{
 			name:   "empty output",
 			output: "",
 			want:   "",
