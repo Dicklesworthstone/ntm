@@ -1037,6 +1037,26 @@
   },
   "components": {
     "schemas": {
+      "ControllerInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "ControllerResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "CreateResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "DepsResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
       "ErrorResponse": {
         "type": "object",
         "properties": {
@@ -1061,6 +1081,81 @@
           "timestamp"
         ]
       },
+      "HealthOutput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "InterruptResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "KernelListResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "KillResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "PreflightInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "PreflightResult": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionAttachInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionCreateInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionInterruptInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionKillInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionListResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionViewInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "SessionZoomInput": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
+      "StatusResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
+      },
       "SuccessResponse": {
         "type": "object",
         "properties": {
@@ -1079,6 +1174,11 @@
           "success",
           "timestamp"
         ]
+      },
+      "VersionResponse": {
+        "type": "object",
+        "description": "Generic object schema declared by the kernel command registry.",
+        "additionalProperties": true
       }
     },
     "securitySchemes": {
