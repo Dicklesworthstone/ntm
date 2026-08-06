@@ -12552,28 +12552,12 @@ func TestHandleCancelPipeline_MissingRunID(t *testing.T) {
 // BATCH 34 — Policy reset error branches, approval SLB/expired, blocked truncation
 // =============================================================================
 
-// TestHandlePolicyResetV1_MkdirAllError exercises the MkdirAll error branch in
-// handlePolicyResetV1. The handler now resolves the effective policy path first,
-// so the directory must be blocked in a way that still lets resolution succeed:
-// a regular file at .ntm makes os.Stat(~/.ntm/policy.yaml) fail with ENOTDIR
-// rather than ErrNotExist, which trips the earlier resolve branch instead.
-// Making HOME itself unwritable keeps the stat a clean ErrNotExist (so
-// ResolveEffectivePath returns ~/.ntm/policy.yaml, exists=false) while
-// MkdirAll(~/.ntm) fails with EACCES.
+// TestHandlePolicyResetV1_MkdirAllError uses the handler's filesystem seam so
+// the MkdirAll error boundary remains covered when tests run as root.
 func TestHandlePolicyResetV1_MkdirAllError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses directory permission checks")
-	}
 	s, _ := setupTestServer(t)
-
-	tmpHome := t.TempDir()
-	// Read+execute but not write: lookups still resolve, creation is denied.
-	if err := os.Chmod(tmpHome, 0o500); err != nil {
-		t.Fatalf("chmod temp home: %v", err)
-	}
-	// Restore write permission so t.TempDir cleanup can remove the directory.
-	t.Cleanup(func() { _ = os.Chmod(tmpHome, 0o700) })
-	t.Setenv("HOME", tmpHome)
+	t.Setenv("HOME", t.TempDir())
+	s.policyMkdirAll = func(string, os.FileMode) error { return errors.New("mkdir failure") }
 
 	req := httptest.NewRequest("POST", "/api/v1/safety/policy/reset", nil)
 	rec := httptest.NewRecorder()

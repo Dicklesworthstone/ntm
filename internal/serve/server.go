@@ -94,6 +94,9 @@ type Server struct {
 	// policyWriteFile is optional test-only fault injection for policy updates.
 	// Production servers leave it nil and use os.WriteFile directly.
 	policyWriteFile func(string, []byte, os.FileMode) error
+	// policyMkdirAll is optional test-only fault injection for policy directory creation.
+	// Production servers leave it nil and use os.MkdirAll directly.
+	policyMkdirAll func(string, os.FileMode) error
 
 	// Agent Mail client (lazy-init)
 	mailClient *agentmail.Client

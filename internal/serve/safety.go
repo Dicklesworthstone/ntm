@@ -762,7 +762,7 @@ func (s *Server) handlePolicyResetV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
+	if err := s.mkdirPolicyDir(filepath.Dir(policyPath)); err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to create directory", nil, reqID)
 		return
@@ -1467,6 +1467,13 @@ func (s *Server) writePolicyFile(path string, content []byte, mode os.FileMode) 
 		return s.policyWriteFile(path, content, mode)
 	}
 	return os.WriteFile(path, content, mode)
+}
+
+func (s *Server) mkdirPolicyDir(path string) error {
+	if s.policyMkdirAll != nil {
+		return s.policyMkdirAll(path, 0755)
+	}
+	return os.MkdirAll(path, 0755)
 }
 
 func writeDefaultPolicyFile(path string) error {
