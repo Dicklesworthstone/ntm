@@ -13106,9 +13106,9 @@ func TestHandleSafetyBlockedV1_ReadLogError(t *testing.T) {
 	}
 }
 
-// TestHandleSafetyStatusV1_LoadPolicyError exercises the LoadOrDefault error
-// path in handleSafetyStatusV1 (lines 88-97). When LoadOrDefault fails, stats
-// are skipped but the response still returns 200 with zero counts.
+// TestHandleSafetyStatusV1_LoadPolicyError proves safety status fails visibly
+// when it cannot load the policy it claims to describe. Returning success with
+// zero rule counts would misrepresent a corrupt policy as an unprotected one.
 func TestHandleSafetyStatusV1_LoadPolicyError(t *testing.T) {
 	s, _ := setupTestServer(t)
 
@@ -13125,14 +13125,13 @@ func TestHandleSafetyStatusV1_LoadPolicyError(t *testing.T) {
 
 	s.handleSafetyStatusV1(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]interface{}
 	json.Unmarshal(rec.Body.Bytes(), &resp)
-	// With LoadOrDefault error, rule counts should be 0
-	if blocked, _ := resp["blocked_rules"].(float64); blocked != 0 {
-		t.Errorf("expected blocked_rules=0, got %v", blocked)
+	if resp["success"] != false || resp["error_code"] != ErrCodeInternalError {
+		t.Errorf("expected internal error response for corrupt policy, got %v", resp)
 	}
 }
 

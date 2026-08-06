@@ -89,17 +89,23 @@ func (s *Server) handleSafetyStatusV1(w http.ResponseWriter, r *http.Request) {
 
 	// Load policy
 	p, err := policy.LoadOrDefault()
+	if err != nil {
+		// Safety status must not present a parse or read failure as an empty
+		// policy. Zero rule counts would tell an operator that no commands are
+		// protected when the enforced policy is actually unavailable.
+		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
+			"failed to load safety policy", nil, reqID)
+		return
+	}
 	var blocked, approval, allowed int
 	var policyPath string
-	if err == nil {
-		blocked, approval, allowed = p.Stats()
-		// Report the path LoadOrDefault actually read. Looking only at
-		// ~/.ntm/policy.yaml reported "no policy file" for a project-local
-		// policy that was being enforced, while the stats beside it were
-		// computed from that very file.
-		if effective, exists, resolveErr := policy.ResolveEffectivePath(); resolveErr == nil && exists {
-			policyPath = effective
-		}
+	blocked, approval, allowed = p.Stats()
+	// Report the path LoadOrDefault actually read. Looking only at
+	// ~/.ntm/policy.yaml reported "no policy file" for a project-local
+	// policy that was being enforced, while the stats beside it were
+	// computed from that very file.
+	if effective, exists, resolveErr := policy.ResolveEffectivePath(); resolveErr == nil && exists {
+		policyPath = effective
 	}
 
 	resp := SafetyStatusResponse{
