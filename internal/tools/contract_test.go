@@ -876,7 +876,7 @@ func TestBVAdapterRobotModes(t *testing.T) {
 		},
 		{
 			name: "impact",
-			key:  "impact_score",
+			key:  "risk_score",
 			call: func() (json.RawMessage, error) {
 				return adapter.GetImpact(ctx, projectRoot, "internal/foo.go")
 			},
@@ -897,7 +897,7 @@ func TestBVAdapterRobotModes(t *testing.T) {
 		},
 		{
 			name: "label_flow",
-			key:  "flow_matrix",
+			key:  "flow",
 			call: func() (json.RawMessage, error) {
 				return adapter.GetLabelFlow(ctx, projectRoot)
 			},

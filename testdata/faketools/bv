@@ -74,7 +74,7 @@ case "$ARG" in
         exit 0
         ;;
     robot-forecast)
-        echo '{"forecasts":[{"id":"bd-1","title":"Test issue","estimated_eta":"2026-02-01T00:00:00Z","confidence_level":0.8,"dependency_count":2,"critical_path":true,"blocking_factors":["blocked"]}]}'
+        echo '{"generated_at":"2026-02-01T00:00:00Z","data_hash":"fake","output_format":"json","version":"v0.16.0","agents":1,"forecast_count":1,"forecasts":[{"issue_id":"bd-1","estimated_minutes":60,"estimated_days":0.1,"eta_date":"2026-02-01T00:00:00Z","eta_date_low":"2026-02-01T00:00:00Z","eta_date_high":"2026-02-02T00:00:00Z","confidence":0.8,"velocity_minutes_per_day":600,"agents":1,"factors":["fake estimate"]}],"summary":{"total_minutes":60,"total_days":0.1,"avg_confidence":0.8,"earliest_eta":"2026-02-01T00:00:00Z","latest_eta":"2026-02-01T00:00:00Z"}}'
         exit 0
         ;;
     robot-suggest)
@@ -82,15 +82,15 @@ case "$ARG" in
         exit 0
         ;;
     robot-impact)
-        echo '{"impact_score":0.75,"affected_beads":["bd-1","bd-2"]}'
+        echo '{"generated_at":"2026-02-01T00:00:00Z","data_hash":"fake","output_format":"json","version":"v0.16.0","files":["internal/foo.go"],"risk_level":"low","risk_score":0.05,"summary":"fake impact","warnings":[],"affected_beads":[{"bead_id":"bd-1","title":"Test issue","status":"open","overlap_files":["internal/foo.go"],"overlap_count":1,"last_activity":"2026-02-01T00:00:00Z","relevance":0.9,"total_changes":1}]}'
         exit 0
         ;;
     robot-search)
-        echo '{"results":[{"id":"bd-1","title":"Test issue","score":0.9}]}'
+        echo '{"generated_at":"2026-02-01T00:00:00Z","data_hash":"fake","query":"test query","results":[{"issue_id":"bd-1","title":"Test issue","score":0.9}]}'
         exit 0
         ;;
     robot-label-attention)
-        echo '{"labels":[{"name":"backend","score":0.7}]}'
+        echo '{"generated_at":"2026-02-01T00:00:00Z","data_hash":"fake","limit":5,"total_labels":1,"labels":[{"rank":1,"label":"backend","attention_score":0.7,"normalized_score":1,"reason":"fake","open_count":1,"blocked_count":0,"stale_count":0,"pagerank_sum":0.7,"velocity_factor":1}]}'
         exit 0
         ;;
     robot-label-flow)
@@ -98,7 +98,7 @@ case "$ARG" in
         exit 0
         ;;
     robot-label-health)
-        echo '{"results":{"labels":[{"label":"backend","health_level":"warning","velocity_score":0.5,"staleness":1.2,"blocked_count":3}]}}'
+        echo '{"generated_at":"2026-02-01T00:00:00Z","data_hash":"fake","results":{"labels":[{"label":"backend","issue_count":4,"open_count":2,"closed_count":2,"blocked_count":3,"health":50,"health_level":"warning","velocity":{"closed_last_7_days":1,"closed_last_30_days":2,"avg_days_to_close":1.2,"trend_direction":"stable","trend_percent":0,"velocity_score":0.5},"freshness":{"most_recent_update":"2026-02-01T00:00:00Z","oldest_open_issue":"2026-01-01T00:00:00Z","avg_days_since_update":2,"stale_count":1,"stale_threshold_days":14,"freshness_score":0.8}}]}}'
         exit 0
         ;;
     robot-file-beads)

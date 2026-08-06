@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // testCache caches expensive bv command results to avoid repeated calls.
@@ -107,6 +108,116 @@ func TestIsInstalled(t *testing.T) {
 	// This test verifies the function works - actual result depends on environment
 	result := IsInstalled()
 	t.Logf("bv installed: %v", result)
+}
+
+func TestGetForecastParsesBVForecastEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	binDir := t.TempDir()
+	forecast := `{"generated_at":"2026-08-06T04:01:33Z","data_hash":"abc123","output_format":"json","version":"v0.16.0","agents":2,"forecast_count":1,"forecasts":[{"issue_id":"bd-forecast","estimated_minutes":90,"estimated_days":0.125,"eta_date":"2026-08-06T12:00:00Z","eta_date_low":"2026-08-06T10:00:00Z","eta_date_high":"2026-08-06T15:00:00Z","confidence":0.75,"velocity_minutes_per_day":720,"agents":2,"factors":["estimate: median"]}],"summary":{"total_minutes":90,"total_days":0.125,"avg_confidence":0.75,"earliest_eta":"2026-08-06T12:00:00Z","latest_eta":"2026-08-06T12:00:00Z"}}`
+	script := "#!/bin/sh\nprintf '%s\\n' '" + forecast + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bv"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake bv: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	resp, err := GetForecast(dir, "all")
+	if err != nil {
+		t.Fatalf("GetForecast: %v", err)
+	}
+	if resp.ForecastCount != 1 || len(resp.Forecasts) != 1 {
+		t.Fatalf("forecast envelope = %+v, want one forecast", resp)
+	}
+	got := resp.Forecasts[0]
+	if got.IssueID != "bd-forecast" || got.EstimatedMinutes != 90 || got.Confidence != 0.75 {
+		t.Fatalf("forecast item = %+v, want populated BV fields", got)
+	}
+	if want := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC); !got.ETADate.Equal(want) {
+		t.Fatalf("ETA = %s, want %s", got.ETADate, want)
+	}
+	if len(got.Factors) != 1 || got.Factors[0] != "estimate: median" {
+		t.Fatalf("factors = %#v, want BV forecast factors", got.Factors)
+	}
+}
+
+func TestGetLabelAttentionParsesBVLabelAttentionEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	binDir := t.TempDir()
+	labels := `{"limit":1,"total_labels":1,"labels":[{"rank":1,"label":"testing","attention_score":479.09,"normalized_score":1,"reason":"High PageRank","open_count":3,"blocked_count":2,"stale_count":1,"pagerank_sum":0.55,"velocity_factor":4}]}`
+	script := "#!/bin/sh\nprintf '%s\\n' '" + labels + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bv"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake bv: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	resp, err := GetLabelAttention(dir, 1)
+	if err != nil {
+		t.Fatalf("GetLabelAttention: %v", err)
+	}
+	if len(resp.Labels) != 1 {
+		t.Fatalf("labels = %#v, want one item", resp.Labels)
+	}
+	got := resp.Labels[0]
+	if got.Rank != 1 || got.Label != "testing" || got.AttentionScore != 479.09 || got.BlockedCount != 2 {
+		t.Fatalf("label attention = %+v, want populated BV fields", got)
+	}
+}
+
+func TestGetBVAnalysisParsesProductionEnvelopes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+--robot-impact) printf '%s\n' '{"generated_at":"2026-08-06T04:07:41Z","data_hash":"abc","output_format":"json","version":"v0.16.0","files":["internal/bv/bv.go"],"risk_level":"low","risk_score":0.05,"summary":"one bead","warnings":[],"affected_beads":[{"bead_id":"ntm-bb87","title":"pane numbering","status":"closed","overlap_files":["internal/bv/bv.go"],"overlap_count":1,"last_activity":"2026-08-03T20:51:40-04:00","relevance":0.77,"total_changes":4}]}' ;;
+--robot-search) printf '%s\n' '{"generated_at":"2026-08-06T04:07:41Z","data_hash":"abc","query":"forecast","results":[{"issue_id":"ntm-v69l","score":0.4,"title":"Fix a parser"}]}' ;;
+--robot-label-health) printf '%s\n' '{"results":{"labels":[{"label":"testing","issue_count":3,"open_count":1,"closed_count":2,"blocked_count":1,"health":23,"health_level":"critical","velocity":{"velocity_score":4.5},"freshness":{"stale_count":2}}]}}' ;;
+--robot-label-flow) printf '%s\n' '{"generated_at":"2026-08-06T04:07:41Z","data_hash":"abc","flow":{"labels":["testing","bug"],"flow_matrix":[[0,1],[0,0]],"dependencies":[{"from_label":"testing","to_label":"bug","issue_count":1,"issue_ids":["ntm-1"]}],"bottleneck_labels":["testing"]}}' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bv"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake bv: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	impact, err := GetImpact(dir, "internal/bv/bv.go")
+	if err != nil {
+		t.Fatalf("GetImpact: %v", err)
+	}
+	if len(impact.Files) != 1 || len(impact.AffectedBeads) != 1 || impact.AffectedBeads[0].BeadID != "ntm-bb87" {
+		t.Fatalf("impact = %+v, want BV files and affected bead", impact)
+	}
+
+	search, err := GetSearch(dir, "forecast")
+	if err != nil {
+		t.Fatalf("GetSearch: %v", err)
+	}
+	if len(search.Results) != 1 || search.Results[0].IssueID != "ntm-v69l" {
+		t.Fatalf("search = %+v, want BV issue_id", search)
+	}
+
+	health, err := GetLabelHealth(dir)
+	if err != nil {
+		t.Fatalf("GetLabelHealth: %v", err)
+	}
+	if len(health.Results.Labels) != 1 || health.Results.Labels[0].Velocity.VelocityScore != 4.5 || health.Results.Labels[0].Freshness.StaleCount != 2 {
+		t.Fatalf("health = %+v, want nested BV velocity and freshness metrics", health)
+	}
+
+	flow, err := GetLabelFlow(dir)
+	if err != nil {
+		t.Fatalf("GetLabelFlow: %v", err)
+	}
+	if len(flow.Flow.Dependencies) != 1 || flow.Flow.Dependencies[0].FromLabel != "testing" || flow.Flow.Dependencies[0].IssueCount != 1 {
+		t.Fatalf("flow = %+v, want nested BV flow dependency", flow)
+	}
 }
 
 func TestDriftStatusString(t *testing.T) {

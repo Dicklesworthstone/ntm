@@ -585,22 +585,6 @@ func renderAlerts(alerts []Alert) error {
 	return nil
 }
 
-// SearchResult represents a search result from bv
-type SearchResult struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Score    float64 `json:"score"`
-	Status   string  `json:"status"`
-	Priority int     `json:"priority"`
-	Snippet  string  `json:"snippet,omitempty"`
-}
-
-// SearchResponse contains bv search results
-type SearchResponse struct {
-	Query   string         `json:"query"`
-	Results []SearchResult `json:"results"`
-}
-
 // runWorkSearch executes the search command
 func runWorkSearch(query string, limit int, mode string) error {
 	dir, err := os.Getwd()
@@ -624,7 +608,7 @@ func runWorkSearch(query string, limit int, mode string) error {
 	}
 
 	// Parse and render
-	var resp SearchResponse
+	var resp bv.SearchResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
 		fmt.Println(string(output))
@@ -635,11 +619,10 @@ func runWorkSearch(query string, limit int, mode string) error {
 }
 
 // renderSearchResults renders search results
-func renderSearchResults(query string, results []SearchResult) error {
+func renderSearchResults(query string, results []bv.SearchResult) error {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
 	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	scoreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	fmt.Println()
 	fmt.Printf("%s %s\n", titleStyle.Render("Search:"), query)
@@ -651,42 +634,15 @@ func renderSearchResults(query string, results []SearchResult) error {
 	}
 
 	for i, r := range results {
-		status := mutedStyle.Render(fmt.Sprintf("[%s]", r.Status))
-		priority := ""
-		if r.Priority >= 0 {
-			priority = fmt.Sprintf("P%d", r.Priority)
-		}
-
-		fmt.Printf("  %d. %s %s %s %s %s\n",
+		fmt.Printf("  %d. %s %s %s\n",
 			i+1,
-			idStyle.Render(r.ID),
+			idStyle.Render(r.IssueID),
 			r.Title,
-			status,
-			priority,
 			scoreStyle.Render(fmt.Sprintf("(%.2f)", r.Score)))
-
-		if r.Snippet != "" {
-			fmt.Printf("     %s\n", mutedStyle.Render(r.Snippet))
-		}
 	}
 
 	fmt.Println()
 	return nil
-}
-
-// ImpactResult represents an impact analysis result
-type ImpactResult struct {
-	File         string   `json:"file"`
-	ImpactedIDs  []string `json:"impacted_ids"`
-	TotalImpact  int      `json:"total_impact"`
-	DirectImpact int      `json:"direct_impact"`
-}
-
-// ImpactResponse contains bv impact analysis
-type ImpactResponse struct {
-	Files       []ImpactResult `json:"files"`
-	TotalBeads  int            `json:"total_beads"`
-	UniqueBeads int            `json:"unique_beads"`
 }
 
 // runWorkImpact executes the impact command
@@ -710,23 +666,17 @@ func runWorkImpact(paths []string) error {
 	}
 
 	// Parse and render
-	var resp ImpactResponse
+	var resp bv.ImpactResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
-		// Try parsing as array of results
-		var results []ImpactResult
-		if err2 := json.Unmarshal(output, &results); err2 != nil {
-			// If parsing fails, just print raw output
-			fmt.Println(string(output))
-			return nil
-		}
-		resp.Files = results
+		fmt.Println(string(output))
+		return nil
 	}
 
 	return renderImpactResults(paths, resp)
 }
 
 // renderImpactResults renders impact analysis
-func renderImpactResults(paths []string, resp ImpactResponse) error {
+func renderImpactResults(paths []string, resp bv.ImpactResponse) error {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
 	fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
 	countStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
@@ -742,37 +692,37 @@ func renderImpactResults(paths []string, resp ImpactResponse) error {
 		return nil
 	}
 
-	// Sort by impact
-	sort.Slice(resp.Files, func(i, j int) bool {
-		return resp.Files[i].TotalImpact > resp.Files[j].TotalImpact
-	})
+	affectedIDs := make([]string, len(resp.AffectedBeads))
+	for i, bead := range resp.AffectedBeads {
+		affectedIDs[i] = bead.BeadID
+	}
 
-	for _, f := range resp.Files {
+	for _, file := range resp.Files {
 		fmt.Printf("  %s %s\n",
-			fileStyle.Render(f.File),
-			countStyle.Render(fmt.Sprintf("(%d beads impacted)", f.TotalImpact)))
+			fileStyle.Render(file),
+			countStyle.Render(fmt.Sprintf("(%d beads impacted)", len(affectedIDs))))
 
-		if len(f.ImpactedIDs) > 0 {
+		if len(affectedIDs) > 0 {
 			// Show first few impacted beads
-			shown := f.ImpactedIDs
+			shown := affectedIDs
 			if len(shown) > 5 {
 				shown = shown[:5]
 			}
-			ids := make([]string, len(shown))
+			renderedIDs := make([]string, len(shown))
 			for i, id := range shown {
-				ids[i] = idStyle.Render(id)
+				renderedIDs[i] = idStyle.Render(id)
 			}
-			fmt.Printf("     %s", strings.Join(ids, ", "))
-			if len(f.ImpactedIDs) > 5 {
-				fmt.Printf(" %s", mutedStyle.Render(fmt.Sprintf("+%d more", len(f.ImpactedIDs)-5)))
+			fmt.Printf("     %s", strings.Join(renderedIDs, ", "))
+			if len(affectedIDs) > 5 {
+				fmt.Printf(" %s", mutedStyle.Render(fmt.Sprintf("+%d more", len(affectedIDs)-5)))
 			}
 			fmt.Println()
 		}
 	}
 
-	if resp.UniqueBeads > 0 {
+	if len(resp.AffectedBeads) > 0 {
 		fmt.Printf("\n  Total: %d unique beads potentially impacted\n",
-			resp.UniqueBeads)
+			len(resp.AffectedBeads))
 	}
 
 	fmt.Println()
@@ -2698,60 +2648,10 @@ type CommitInfo struct {
 	Beads     []string  `json:"beads,omitempty"`
 }
 
-// ForecastResponse contains ETA predictions
-type ForecastResponse struct {
-	Forecasts []ForecastItem `json:"forecasts"`
-}
-
-// ForecastItem represents a forecast for a single issue
-type ForecastItem struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	EstimatedETA    time.Time `json:"estimated_eta"`
-	ConfidenceLevel float64   `json:"confidence_level"`
-	DependencyCount int       `json:"dependency_count"`
-	CriticalPath    bool      `json:"critical_path"`
-	BlockingFactors []string  `json:"blocking_factors,omitempty"`
-}
-
 // GraphResponse contains dependency graph data
 type GraphResponse struct {
 	Format string      `json:"format"`
 	Data   interface{} `json:"data"`
-}
-
-// LabelHealthResponse contains health metrics per label
-type LabelHealthResponse struct {
-	Results LabelHealthResults `json:"results"`
-}
-
-// LabelHealthResults contains the actual health data
-type LabelHealthResults struct {
-	Labels []LabelHealth `json:"labels"`
-}
-
-// LabelHealth contains health metrics for a single label
-type LabelHealth struct {
-	Label         string  `json:"label"`
-	HealthLevel   string  `json:"health_level"` // healthy, warning, critical
-	VelocityScore float64 `json:"velocity_score"`
-	Staleness     float64 `json:"staleness"`
-	BlockedCount  int     `json:"blocked_count"`
-}
-
-// LabelFlowResponse contains cross-label dependency analysis
-type LabelFlowResponse struct {
-	FlowMatrix       map[string]map[string]int `json:"flow_matrix"`
-	Dependencies     []LabelDependency         `json:"dependencies"`
-	BottleneckLabels []string                  `json:"bottleneck_labels"`
-}
-
-// LabelDependency represents a dependency between labels
-type LabelDependency struct {
-	From   string  `json:"from"`
-	To     string  `json:"to"`
-	Count  int     `json:"count"`
-	Weight float64 `json:"weight"`
 }
 
 // BurndownResponse contains sprint burndown data
@@ -2880,7 +2780,7 @@ func runWorkForecast(issueID string) error {
 	}
 
 	// Parse and render
-	var resp ForecastResponse
+	var resp bv.ForecastResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
 		fmt.Println(string(output))
@@ -2891,7 +2791,7 @@ func runWorkForecast(issueID string) error {
 }
 
 // renderForecast renders forecast data
-func renderForecast(resp ForecastResponse) error {
+func renderForecast(resp bv.ForecastResponse) error {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
 	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	dateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
@@ -2912,21 +2812,17 @@ func renderForecast(resp ForecastResponse) error {
 			break
 		}
 
-		fmt.Printf("  %s %s\n", idStyle.Render(forecast.ID), forecast.Title)
+		fmt.Printf("  %s\n", idStyle.Render(forecast.IssueID))
 
-		eta := forecast.EstimatedETA.Format("2006-01-02")
-		confidence := fmt.Sprintf("%.0f%%", forecast.ConfidenceLevel*100)
+		eta := forecast.ETADate.Format("2006-01-02")
+		confidence := fmt.Sprintf("%.0f%%", forecast.Confidence*100)
 		fmt.Printf("    %s %s %s %s\n",
 			mutedStyle.Render("ETA:"), dateStyle.Render(eta),
 			mutedStyle.Render("Confidence:"), confidence)
 
-		if forecast.CriticalPath {
-			fmt.Printf("    %s Critical path item\n", riskStyle.Render("⚠"))
-		}
-
-		if len(forecast.BlockingFactors) > 0 {
+		if len(forecast.Factors) > 0 {
 			fmt.Printf("    %s %s\n",
-				mutedStyle.Render("Blocking:"), strings.Join(forecast.BlockingFactors, ", "))
+				riskStyle.Render("Factors:"), strings.Join(forecast.Factors, ", "))
 		}
 		fmt.Println()
 	}
@@ -2982,7 +2878,7 @@ func runWorkLabelHealth() error {
 	}
 
 	// Parse and render
-	var resp LabelHealthResponse
+	var resp bv.LabelHealthResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
 		fmt.Println(string(output))
@@ -2993,7 +2889,7 @@ func runWorkLabelHealth() error {
 }
 
 // renderLabelHealth renders label health data
-func renderLabelHealth(resp LabelHealthResponse) error {
+func renderLabelHealth(resp bv.LabelHealthResponse) error {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
 	healthyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
@@ -3035,9 +2931,9 @@ func renderLabelHealth(resp LabelHealthResponse) error {
 		fmt.Printf("  %s %s %s\n",
 			icon, label.Label, healthStyle.Render(label.HealthLevel))
 
-		fmt.Printf("    %s %.2f  %s %.2f  %s %d\n",
-			mutedStyle.Render("Velocity:"), label.VelocityScore,
-			mutedStyle.Render("Staleness:"), label.Staleness,
+		fmt.Printf("    %s %.2f  %s %d  %s %d\n",
+			mutedStyle.Render("Velocity:"), label.Velocity.VelocityScore,
+			mutedStyle.Render("Stale:"), label.Freshness.StaleCount,
 			mutedStyle.Render("Blocked:"), label.BlockedCount)
 		fmt.Println()
 	}
@@ -3064,7 +2960,7 @@ func runWorkLabelFlow() error {
 	}
 
 	// Parse and render
-	var resp LabelFlowResponse
+	var resp bv.LabelFlowResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
 		fmt.Println(string(output))
@@ -3075,7 +2971,7 @@ func runWorkLabelFlow() error {
 }
 
 // renderLabelFlow renders label flow data
-func renderLabelFlow(resp LabelFlowResponse) error {
+func renderLabelFlow(resp bv.LabelFlowResponse) error {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
@@ -3086,9 +2982,9 @@ func renderLabelFlow(resp LabelFlowResponse) error {
 	fmt.Println()
 
 	// Show bottleneck labels first
-	if len(resp.BottleneckLabels) > 0 {
+	if len(resp.Flow.BottleneckLabels) > 0 {
 		fmt.Printf("  %s\n", bottleneckStyle.Render("Bottleneck Labels:"))
-		for _, label := range resp.BottleneckLabels {
+		for _, label := range resp.Flow.BottleneckLabels {
 			fmt.Printf("    ⚠ %s\n", label)
 		}
 		fmt.Println()
@@ -3098,9 +2994,9 @@ func renderLabelFlow(resp LabelFlowResponse) error {
 	fmt.Printf("  %s\n", mutedStyle.Render("Top Dependencies:"))
 
 	// Sort dependencies by count (descending)
-	deps := resp.Dependencies
+	deps := resp.Flow.Dependencies
 	sort.Slice(deps, func(i, j int) bool {
-		return deps[i].Count > deps[j].Count
+		return deps[i].IssueCount > deps[j].IssueCount
 	})
 
 	count := 0
@@ -3109,9 +3005,9 @@ func renderLabelFlow(resp LabelFlowResponse) error {
 			break
 		}
 		fmt.Printf("    %s → %s %s\n",
-			labelStyle.Render(dep.From),
-			labelStyle.Render(dep.To),
-			mutedStyle.Render(fmt.Sprintf("(%d)", dep.Count)))
+			labelStyle.Render(dep.FromLabel),
+			labelStyle.Render(dep.ToLabel),
+			mutedStyle.Render(fmt.Sprintf("(%d)", dep.IssueCount)))
 		count++
 	}
 

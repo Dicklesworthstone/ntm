@@ -251,20 +251,42 @@ type GraphMetrics struct {
 	CycleCount int     `json:"cycle_count"`
 }
 
-// ForecastResponse contains ETA predictions
+// ForecastResponse is the envelope emitted by bv --robot-forecast.
 type ForecastResponse struct {
-	Forecasts []ForecastItem `json:"forecasts"`
+	GeneratedAt   time.Time       `json:"generated_at"`
+	DataHash      string          `json:"data_hash"`
+	OutputFormat  string          `json:"output_format"`
+	Version       string          `json:"version"`
+	Agents        int             `json:"agents"`
+	ForecastCount int             `json:"forecast_count"`
+	Forecasts     []ForecastItem  `json:"forecasts"`
+	Summary       ForecastSummary `json:"summary"`
 }
 
-// ForecastItem represents a forecast for a single issue
+// ForecastItem represents one issue forecast emitted by bv. bv does not
+// include issue titles in this surface, so callers must not present an empty
+// title as though it were authoritative data.
 type ForecastItem struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	EstimatedETA    time.Time `json:"estimated_eta"`
-	ConfidenceLevel float64   `json:"confidence_level"`
-	DependencyCount int       `json:"dependency_count"`
-	CriticalPath    bool      `json:"critical_path"`
-	BlockingFactors []string  `json:"blocking_factors,omitempty"`
+	IssueID               string    `json:"issue_id"`
+	EstimatedMinutes      int       `json:"estimated_minutes"`
+	EstimatedDays         float64   `json:"estimated_days"`
+	ETADate               time.Time `json:"eta_date"`
+	ETADateLow            time.Time `json:"eta_date_low"`
+	ETADateHigh           time.Time `json:"eta_date_high"`
+	Confidence            float64   `json:"confidence"`
+	VelocityMinutesPerDay float64   `json:"velocity_minutes_per_day"`
+	Agents                int       `json:"agents"`
+	Factors               []string  `json:"factors,omitempty"`
+}
+
+// ForecastSummary is the aggregate capacity projection emitted with a bv
+// forecast response.
+type ForecastSummary struct {
+	TotalMinutes  int       `json:"total_minutes"`
+	TotalDays     float64   `json:"total_days"`
+	AvgConfidence float64   `json:"avg_confidence"`
+	EarliestETA   time.Time `json:"earliest_eta"`
+	LatestETA     time.Time `json:"latest_eta"`
 }
 
 // SuggestionsResponse contains hygiene suggestions
@@ -279,22 +301,45 @@ type Suggestion struct {
 	Items       []string `json:"items"`
 }
 
-// ImpactResponse contains impact analysis
+// ImpactResponse is the envelope emitted by bv --robot-impact.
 type ImpactResponse struct {
-	ImpactScore float64  `json:"impact_score"`
-	Affected    []string `json:"affected_beads"`
+	GeneratedAt   time.Time            `json:"generated_at"`
+	DataHash      string               `json:"data_hash"`
+	OutputFormat  string               `json:"output_format"`
+	Version       string               `json:"version"`
+	Files         []string             `json:"files"`
+	RiskLevel     string               `json:"risk_level"`
+	RiskScore     float64              `json:"risk_score"`
+	Summary       string               `json:"summary"`
+	Warnings      []string             `json:"warnings"`
+	AffectedBeads []ImpactAffectedBead `json:"affected_beads"`
 }
 
-// SearchResponse contains semantic search results
+// ImpactAffectedBead is a bead whose recorded file changes overlap an impact query.
+type ImpactAffectedBead struct {
+	BeadID       string    `json:"bead_id"`
+	Title        string    `json:"title"`
+	Status       string    `json:"status"`
+	OverlapFiles []string  `json:"overlap_files"`
+	OverlapCount int       `json:"overlap_count"`
+	LastActivity time.Time `json:"last_activity"`
+	Relevance    float64   `json:"relevance"`
+	TotalChanges int       `json:"total_changes"`
+}
+
+// SearchResponse is the envelope emitted by bv --robot-search.
 type SearchResponse struct {
-	Results []SearchResult `json:"results"`
+	GeneratedAt time.Time      `json:"generated_at"`
+	DataHash    string         `json:"data_hash"`
+	Query       string         `json:"query"`
+	Results     []SearchResult `json:"results"`
 }
 
 // SearchResult represents a single search result
 type SearchResult struct {
-	ID    string  `json:"id"`
-	Title string  `json:"title"`
-	Score float64 `json:"score"`
+	IssueID string  `json:"issue_id"`
+	Title   string  `json:"title"`
+	Score   float64 `json:"score"`
 }
 
 // LabelAttentionResponse contains attention-ranked labels
@@ -304,8 +349,16 @@ type LabelAttentionResponse struct {
 
 // LabelAttention represents a label with attention score
 type LabelAttention struct {
-	Name  string  `json:"name"`
-	Score float64 `json:"score"`
+	Rank            int     `json:"rank"`
+	Label           string  `json:"label"`
+	AttentionScore  float64 `json:"attention_score"`
+	NormalizedScore float64 `json:"normalized_score"`
+	Reason          string  `json:"reason"`
+	OpenCount       int     `json:"open_count"`
+	BlockedCount    int     `json:"blocked_count"`
+	StaleCount      int     `json:"stale_count"`
+	PageRankSum     float64 `json:"pagerank_sum"`
+	VelocityFactor  float64 `json:"velocity_factor"`
 }
 
 // LabelHealthResponse contains health metrics per label
@@ -320,26 +373,58 @@ type LabelHealthResults struct {
 
 // LabelHealth contains health metrics for a single label
 type LabelHealth struct {
-	Label         string  `json:"label"`
-	HealthLevel   string  `json:"health_level"` // healthy, warning, critical
-	VelocityScore float64 `json:"velocity_score"`
-	Staleness     float64 `json:"staleness"`
-	BlockedCount  int     `json:"blocked_count"`
+	Label        string               `json:"label"`
+	IssueCount   int                  `json:"issue_count"`
+	OpenCount    int                  `json:"open_count"`
+	ClosedCount  int                  `json:"closed_count"`
+	BlockedCount int                  `json:"blocked_count"`
+	Health       float64              `json:"health"`
+	HealthLevel  string               `json:"health_level"` // healthy, warning, critical
+	Velocity     LabelHealthVelocity  `json:"velocity"`
+	Freshness    LabelHealthFreshness `json:"freshness"`
+}
+
+// LabelHealthVelocity contains the recent close-rate metrics for a label.
+type LabelHealthVelocity struct {
+	ClosedLast7Days  int     `json:"closed_last_7_days"`
+	ClosedLast30Days int     `json:"closed_last_30_days"`
+	AvgDaysToClose   float64 `json:"avg_days_to_close"`
+	TrendDirection   string  `json:"trend_direction"`
+	TrendPercent     float64 `json:"trend_percent"`
+	VelocityScore    float64 `json:"velocity_score"`
+}
+
+// LabelHealthFreshness contains the staleness metrics for a label.
+type LabelHealthFreshness struct {
+	MostRecentUpdate   time.Time `json:"most_recent_update"`
+	OldestOpenIssue    time.Time `json:"oldest_open_issue"`
+	AvgDaysSinceUpdate float64   `json:"avg_days_since_update"`
+	StaleCount         int       `json:"stale_count"`
+	StaleThresholdDays int       `json:"stale_threshold_days"`
+	FreshnessScore     float64   `json:"freshness_score"`
 }
 
 // LabelFlowResponse contains cross-label dependency analysis
 type LabelFlowResponse struct {
-	FlowMatrix       map[string]map[string]int `json:"flow_matrix"`
-	Dependencies     []LabelDependency         `json:"dependencies"`
-	BottleneckLabels []string                  `json:"bottleneck_labels"`
+	GeneratedAt time.Time     `json:"generated_at"`
+	DataHash    string        `json:"data_hash"`
+	Flow        LabelFlowData `json:"flow"`
+}
+
+// LabelFlowData contains the label ordering, adjacency matrix, and dependency edges.
+type LabelFlowData struct {
+	Labels           []string          `json:"labels"`
+	FlowMatrix       [][]int           `json:"flow_matrix"`
+	Dependencies     []LabelDependency `json:"dependencies"`
+	BottleneckLabels []string          `json:"bottleneck_labels"`
 }
 
 // LabelDependency represents a dependency between labels
 type LabelDependency struct {
-	From   string  `json:"from"`
-	To     string  `json:"to"`
-	Count  int     `json:"count"`
-	Weight float64 `json:"weight"`
+	FromLabel  string   `json:"from_label"`
+	ToLabel    string   `json:"to_label"`
+	IssueCount int      `json:"issue_count"`
+	IssueIDs   []string `json:"issue_ids"`
 }
 
 // FileBeadsResponse contains file-to-bead mapping
