@@ -29,8 +29,16 @@ func terminateProcess(p *os.Process) {
 		return
 	}
 	if err := generateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(p.Pid)); err != nil {
-		_ = killProcess(p)
+		forceKillProcess(p)
 	}
+}
+
+// forceKillProcess is used after the graceful CTRL_BREAK_EVENT timeout.
+func forceKillProcess(p *os.Process) {
+	if p == nil {
+		return
+	}
+	_ = killProcess(p)
 }
 
 var (

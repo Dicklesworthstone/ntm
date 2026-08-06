@@ -57,6 +57,7 @@ type ManagedDaemon struct {
 	cmd        *exec.Cmd
 	logFile    *os.File
 	cancelFunc context.CancelFunc
+	done       chan struct{}
 	mu         sync.RWMutex
 }
 
@@ -241,6 +242,7 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 		cmd:        cmd,
 		logFile:    logFile,
 		cancelFunc: cancel,
+		done:       make(chan struct{}),
 	}
 
 	// Update health URL with actual port, preserving the original path
@@ -387,35 +389,51 @@ func copyStringSlice(values []string) []string {
 // stopDaemon stops a single daemon.
 func (s *Supervisor) stopDaemon(d *ManagedDaemon) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	// Check ownership
 	if d.OwnerID != s.sessionID {
+		d.mu.Unlock()
 		return fmt.Errorf("daemon %s owned by different session: %s", d.Spec.Name, d.OwnerID)
 	}
 
 	if d.State == StateStopped || d.State == StateStopping {
+		d.mu.Unlock()
 		return nil
 	}
 
 	d.State = StateStopping
+	cmd := d.cmd
+	done := d.done
+	d.mu.Unlock()
 
-	// Cancel context to signal shutdown
-	if d.cancelFunc != nil {
-		d.cancelFunc()
-	}
-
-	// Gracefully terminate process (platform-specific)
-	if d.cmd != nil && d.cmd.Process != nil {
-		terminateProcess(d.cmd.Process)
+	// Do not cancel the CommandContext here: its default cancellation handler
+	// calls Process.Kill, which races (and usually wins) against the graceful
+	// platform-specific termination signal below. waitForExit cancels the
+	// context after Wait has reaped the process.
+	if cmd != nil && cmd.Process != nil {
+		terminateProcess(cmd.Process)
+		if done != nil {
+			const gracefulShutdownTimeout = 2 * time.Second
+			select {
+			case <-done:
+			case <-time.After(gracefulShutdownTimeout):
+				forceKillProcess(cmd.Process)
+				<-done
+			}
+		}
 	}
 
 	// Clean up PID file
 	s.removePIDFile(d.Spec.Name)
 
-	// Close log file
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// The process is reaped before its log is closed, so its final graceful
+	// shutdown output is retained and no live child writes to a closed file.
 	if d.logFile != nil {
-		d.logFile.Close()
+		_ = d.logFile.Close()
+		d.logFile = nil
 	}
 
 	d.State = StateStopped
@@ -483,6 +501,12 @@ func (s *Supervisor) waitForExit(d *ManagedDaemon) {
 	}
 
 	err := d.cmd.Wait()
+	if d.cancelFunc != nil {
+		d.cancelFunc()
+	}
+	if d.done != nil {
+		close(d.done)
+	}
 
 	d.mu.Lock()
 	state := d.State
@@ -495,6 +519,16 @@ func (s *Supervisor) waitForExit(d *ManagedDaemon) {
 			fmt.Fprintf(logFile, "[supervisor] daemon exited with error: %v\n", err)
 		}
 		s.handleDaemonFailure(d)
+
+		// A restart creates a replacement ManagedDaemon with its own log
+		// descriptor. The exited daemon must release its descriptor after the
+		// failure record and restart decision have been written.
+		d.mu.Lock()
+		if d.logFile == logFile && d.logFile != nil {
+			_ = d.logFile.Close()
+			d.logFile = nil
+		}
+		d.mu.Unlock()
 	}
 }
 

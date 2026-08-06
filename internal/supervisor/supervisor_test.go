@@ -183,6 +183,100 @@ func TestStartStopDaemon(t *testing.T) {
 	}
 }
 
+func TestStopDaemonDeliversGracefulTermination(t *testing.T) {
+	tmpDir := t.TempDir()
+	markerPath := filepath.Join(tmpDir, "terminated")
+	readyPath := filepath.Join(tmpDir, "ready")
+
+	s, err := New(Config{
+		SessionID:  "graceful-stop",
+		ProjectDir: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer s.Shutdown()
+
+	// A CommandContext cancellation kills the shell before its TERM trap can
+	// run. Stop must instead deliver the platform graceful signal first.
+	if err := s.Start(DaemonSpec{
+		Name:    "graceful-daemon",
+		Command: "sh",
+		Args: []string{
+			"-c",
+			`trap 'echo terminated > "$1"; exit 0' TERM; echo ready > "$2"; while :; do :; done`,
+			"sh",
+			markerPath,
+			readyPath,
+		},
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(readyPath); err != nil {
+		t.Fatalf("daemon did not install TERM trap: %v", err)
+	}
+
+	if err := s.Stop("graceful-daemon"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("TERM trap marker missing: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "terminated" {
+		t.Fatalf("TERM trap marker = %q, want %q", got, "terminated")
+	}
+}
+
+func TestExitedDaemonClosesSupersededLogFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := New(Config{
+		SessionID:   "crash-log-close",
+		ProjectDir:  tmpDir,
+		MaxRestarts: 1,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer s.Shutdown()
+
+	if err := s.Start(DaemonSpec{
+		Name:    "crashing-daemon",
+		Command: "sh",
+		Args:    []string{"-c", "exit 1"},
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	s.mu.RLock()
+	first := s.daemons["crashing-daemon"]
+	s.mu.RUnlock()
+	if first == nil {
+		t.Fatal("initial daemon was not registered")
+	}
+
+	// The first crash waits one second before installing its replacement. The
+	// first ManagedDaemon must then release the log descriptor it no longer owns.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		first.mu.RLock()
+		closed := first.logFile == nil
+		first.mu.RUnlock()
+		if closed {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("exited daemon retained its superseded log file")
+}
+
 func TestStartDuplicateDaemon(t *testing.T) {
 	tmpDir := t.TempDir()
 
