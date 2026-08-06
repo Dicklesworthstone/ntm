@@ -204,7 +204,7 @@ func TestWaitForPaneProcessStartRejectsImmediatelyExitingProcess(t *testing.T) {
 	}
 	calls := 0
 	_, err := waitForPaneProcessStartContext(
-		t.Context(), "proj", "%7", 10*time.Millisecond, time.Millisecond, 2,
+		t.Context(), "proj", "%7", 100*time.Millisecond, time.Millisecond, 2,
 		func(context.Context, string) ([]Pane, error) {
 			index := calls
 			calls++
@@ -907,6 +907,36 @@ func TestGetPanes(t *testing.T) {
 	}
 	if pane.Width == 0 || pane.Height == 0 {
 		t.Errorf("pane dimensions should be positive: %dx%d", pane.Width, pane.Height)
+	}
+}
+
+func TestGetPanesRejectsTitleContainingFieldSeparator(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSession(t)
+	panes, err := GetPanes(session)
+	if err != nil {
+		t.Fatalf("GetPanes before setting title: %v", err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("GetPanes returned no panes")
+	}
+
+	if err := SetPaneTitle(panes[0].ID, "title"+FieldSeparator+"collision"); err != nil {
+		t.Fatalf("SetPaneTitle: %v", err)
+	}
+	if _, err := GetPanes(session); err == nil {
+		t.Fatal("GetPanes accepted a title that corrupts its delimited tmux output")
+	}
+}
+
+func TestParsePaneFromPartsRejectsMalformedNumbers(t *testing.T) {
+	_, err := parsePaneFromParts(
+		[]string{"%1", "not-an-index", "title", "zsh", "80", "24", "1"},
+		[]string{"123", "0"},
+	)
+	if err == nil {
+		t.Fatal("parsePaneFromParts accepted a malformed numeric field")
 	}
 }
 

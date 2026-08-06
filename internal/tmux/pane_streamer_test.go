@@ -596,11 +596,37 @@ func TestCreateFIFO_AlreadyExists(t *testing.T) {
 		t.Fatalf("first createFIFO failed: %v", err)
 	}
 
-	// Create again - should succeed (idempotent) or fail gracefully
-	err := createFIFO(fifoPath)
-	// The behavior depends on implementation - it may return an error
-	// or handle the existing file. We just verify it doesn't panic.
-	_ = err
+	// Recreating a stale FIFO is safe and remains supported.
+	if err := createFIFO(fifoPath); err != nil {
+		t.Fatalf("recreate stale FIFO: %v", err)
+	}
+	info, err := os.Stat(fifoPath)
+	if err != nil {
+		t.Fatalf("stat recreated FIFO: %v", err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("recreated path mode = %v, want named pipe", info.Mode())
+	}
+}
+
+func TestCreateFIFORefusesToReplaceRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/not-a-fifo"
+	const contents = "must not be deleted"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write regular file: %v", err)
+	}
+
+	if err := createFIFO(path); err == nil {
+		t.Fatal("createFIFO succeeded for a pre-existing regular file")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read original regular file: %v", err)
+	}
+	if string(got) != contents {
+		t.Fatalf("regular file contents = %q, want %q", got, contents)
+	}
 }
 
 func TestStreamManager_MultipleStartsSameTarget(t *testing.T) {

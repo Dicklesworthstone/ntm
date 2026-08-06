@@ -867,6 +867,30 @@ func (d *CompletionDetector) isBrAvailable() bool {
 
 // checkBeadClosed uses br CLI to check if a bead is closed
 func (d *CompletionDetector) checkBeadClosed(ctx context.Context, beadID string) (bool, error) {
+	maxRetries := 0
+	if d.Config.RetryOnError {
+		maxRetries = d.Config.MaxRetries
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		closed, err := checkBeadClosedOnce(ctx, beadID)
+		if err == nil {
+			return closed, nil
+		}
+		lastErr = err
+		if attempt == maxRetries {
+			break
+		}
+		if err := waitForRetry(ctx, d.Config.RetryInterval); err != nil {
+			return false, err
+		}
+	}
+
+	return false, lastErr
+}
+
+func checkBeadClosedOnce(ctx context.Context, beadID string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "br", "show", beadID, "--json")
 	cmd.WaitDelay = 2 * time.Second
 	output, err := cmd.Output()
@@ -878,6 +902,23 @@ func (d *CompletionDetector) checkBeadClosed(ctx context.Context, beadID string)
 	outputStr := string(output)
 	return strings.Contains(outputStr, `"status":"closed"`) ||
 		strings.Contains(outputStr, `"status": "closed"`), nil
+}
+
+func waitForRetry(ctx context.Context, interval time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if interval <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // matchCompletionPatterns checks output against completion patterns

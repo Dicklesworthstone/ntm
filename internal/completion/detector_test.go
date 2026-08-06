@@ -1589,6 +1589,78 @@ func installFakeBr(t *testing.T, status string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func installFakeBrScript(t *testing.T, script string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := dir + "/br"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+func TestCheckBeadClosedRetriesTransientCommandFailures(t *testing.T) {
+	dir := installFakeBrScript(t, "#!/bin/sh\n"+
+		"attempt_file=\"$FAKE_BR_ATTEMPT_FILE\"\n"+
+		"attempt=$(cat \"$attempt_file\" 2>/dev/null || printf '0')\n"+
+		"attempt=$((attempt + 1))\n"+
+		"printf '%s' \"$attempt\" > \"$attempt_file\"\n"+
+		"if [ \"$attempt\" -lt 3 ]; then\n"+
+		"  printf '%s\\n' 'temporary br failure' >&2\n"+
+		"  exit 1\n"+
+		"fi\n"+
+		"printf '%s' '{\"status\":\"closed\"}'\n")
+	attemptFile := dir + "/attempts"
+	t.Setenv("FAKE_BR_ATTEMPT_FILE", attemptFile)
+
+	cfg := DefaultConfig()
+	cfg.RetryInterval = time.Millisecond
+	cfg.MaxRetries = 2
+	d := NewWithConfig("retry-test", nil, cfg)
+
+	closed, err := d.checkBeadClosed(t.Context(), "bd-retry")
+	if err != nil {
+		t.Fatalf("checkBeadClosed: %v", err)
+	}
+	if !closed {
+		t.Fatal("checkBeadClosed reported open after the fake br returned closed")
+	}
+	attempts, err := os.ReadFile(attemptFile)
+	if err != nil {
+		t.Fatalf("read fake br attempts: %v", err)
+	}
+	if got := strings.TrimSpace(string(attempts)); got != "3" {
+		t.Fatalf("br invocations = %s, want 3 (initial attempt plus two retries)", got)
+	}
+}
+
+func TestCheckBeadClosedCanDisableRetries(t *testing.T) {
+	dir := installFakeBrScript(t, "#!/bin/sh\n"+
+		"printf '%s' x >> \"$FAKE_BR_ATTEMPT_FILE\"\n"+
+		"printf '%s\\n' 'persistent br failure' >&2\n"+
+		"exit 1\n")
+	attemptFile := dir + "/attempts"
+	t.Setenv("FAKE_BR_ATTEMPT_FILE", attemptFile)
+
+	cfg := DefaultConfig()
+	cfg.RetryOnError = false
+	cfg.RetryInterval = time.Millisecond
+	cfg.MaxRetries = 3
+	d := NewWithConfig("no-retry-test", nil, cfg)
+
+	if _, err := d.checkBeadClosed(t.Context(), "bd-no-retry"); err == nil {
+		t.Fatal("checkBeadClosed succeeded despite fake br failure")
+	}
+	attempts, err := os.ReadFile(attemptFile)
+	if err != nil {
+		t.Fatalf("read fake br attempts: %v", err)
+	}
+	if got := string(attempts); got != "x" {
+		t.Fatalf("br invocations = %q, want one when RetryOnError is false", got)
+	}
+}
+
 // TestDetectorReloadsStoreObservesPostStartupDispatch is the Fix-1 guard. The
 // completion detector is handed the watch loop's store instance at
 // construction, but post-startup dispatches are recorded by a SEPARATE store

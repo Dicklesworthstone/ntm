@@ -922,14 +922,14 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 	}
 
 	var panes []Pane
-	for _, line := range strings.Split(output, "\n") {
+	for lineNumber, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue
 		}
 
 		p, err := parsePaneLine(line, sep)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse pane %d from session %q: %w", lineNumber+1, session, err)
 		}
 		panes = append(panes, *p)
 	}
@@ -1152,14 +1152,14 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 
 	panesBySession := make(map[string][]Pane)
 
-	for _, line := range strings.Split(output, "\n") {
+	for lineNumber, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 10 {
-			continue
+		if len(parts) != 10 {
+			return nil, fmt.Errorf("parse pane %d: expected 10 fields, got %d", lineNumber+1, len(parts))
 		}
 
 		sessionName := parts[0]
@@ -1168,7 +1168,7 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		// parts[8:] = pid(0), window_index(1)
 		p, err := parsePaneFromParts(parts[1:8], parts[8:])
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse pane %d: %w", lineNumber+1, err)
 		}
 
 		panesBySession[sessionName] = append(panesBySession[sessionName], *p)
@@ -2808,22 +2808,22 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 	}
 
 	var panes []PaneActivity
-	for _, line := range strings.Split(output, "\n") {
+	for lineNumber, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 10 {
-			continue
+		if len(parts) != 10 {
+			return nil, fmt.Errorf("parse pane activity %d from session %q: expected 10 fields, got %d", lineNumber+1, session, len(parts))
 		}
 
-		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9), pane_start_time(10, optional)
+		// Format: id(0), index(1), title(2), command(3), width(4), height(5), active(6), last_activity(7), pid(8), window_index(9)
 		// parts[:7] = id..active
-		// parts[8:] = pid, window_index[, pane_start_time]
+		// parts[8:] = pid, window_index
 		p, err := parsePaneFromParts(parts[:7], parts[8:])
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse pane activity %d from session %q: %w", lineNumber+1, session, err)
 		}
 
 		rawTimestamp := strings.TrimSpace(parts[7])
@@ -2846,8 +2846,8 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 // parsePaneLine parses a single line from list-panes format into a Pane.
 func parsePaneLine(line, sep string) (*Pane, error) {
 	parts := strings.Split(line, sep)
-	if len(parts) < 9 {
-		return nil, fmt.Errorf("insufficient parts: %d", len(parts))
+	if len(parts) != 9 {
+		return nil, fmt.Errorf("expected 9 fields, got %d", len(parts))
 	}
 	// For standard GetPanes: id, index, title, command, width, height, active, pid, window_index
 	return parsePaneFromParts(parts[:7], parts[7:])
@@ -2857,16 +2857,31 @@ func parsePaneLine(line, sep string) (*Pane, error) {
 // parts1: id, index, title, command, width, height, active
 // parts2: pid, window_index
 func parsePaneFromParts(parts1, parts2 []string) (*Pane, error) {
-	if len(parts1) < 7 || len(parts2) < 2 {
-		return nil, fmt.Errorf("insufficient parts")
+	if len(parts1) != 7 || len(parts2) != 2 {
+		return nil, fmt.Errorf("expected 7 primary fields and 2 secondary fields, got %d and %d", len(parts1), len(parts2))
 	}
 
-	index, _ := strconv.Atoi(parts1[1])
-	width, _ := strconv.Atoi(parts1[4])
-	height, _ := strconv.Atoi(parts1[5])
+	index, err := strconv.Atoi(parts1[1])
+	if err != nil {
+		return nil, fmt.Errorf("parse pane index %q: %w", parts1[1], err)
+	}
+	width, err := strconv.Atoi(parts1[4])
+	if err != nil {
+		return nil, fmt.Errorf("parse pane width %q: %w", parts1[4], err)
+	}
+	height, err := strconv.Atoi(parts1[5])
+	if err != nil {
+		return nil, fmt.Errorf("parse pane height %q: %w", parts1[5], err)
+	}
 	active := parts1[6] == "1"
-	pid, _ := strconv.Atoi(parts2[0])
-	windowIndex, _ := strconv.Atoi(parts2[1])
+	pid, err := strconv.Atoi(parts2[0])
+	if err != nil {
+		return nil, fmt.Errorf("parse pane PID %q: %w", parts2[0], err)
+	}
+	windowIndex, err := strconv.Atoi(parts2[1])
+	if err != nil {
+		return nil, fmt.Errorf("parse window index %q: %w", parts2[1], err)
+	}
 
 	pane := &Pane{
 		ID:          parts1[0],
