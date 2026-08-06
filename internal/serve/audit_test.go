@@ -72,6 +72,73 @@ func TestAuditStore_Record(t *testing.T) {
 	}
 }
 
+func TestAuditStore_JSONLOnlySchedulesRetentionCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	jsonlPath := filepath.Join(tmpDir, "audit.jsonl")
+	store, err := NewAuditStore(AuditStoreConfig{
+		JSONLPath:       jsonlPath,
+		Retention:       24 * time.Hour,
+		CleanupInterval: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	// Keep the test small while exercising the periodic cleanup path rather
+	// than calling cleanup() directly.
+	store.maxBytes = 1
+	if err := store.Record(&AuditRecord{Action: AuditActionCreate, Resource: "sessions"}); err != nil {
+		t.Fatalf("Record error: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		entries, readErr := os.ReadDir(tmpDir)
+		if readErr != nil {
+			t.Fatalf("ReadDir: %v", readErr)
+		}
+		for _, entry := range entries {
+			if entry.Name() != "audit.jsonl" && strings.HasPrefix(entry.Name(), "audit.") && strings.HasSuffix(entry.Name(), ".jsonl") {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("JSONL-only audit store never rotated its configured audit log")
+}
+
+func TestAuditStore_RecordCountsUnavailableConfiguredJSONLSink(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewAuditStore(AuditStoreConfig{
+		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	store.appendMu.Lock()
+	store.mu.Lock()
+	if err := store.jsonlFile.Close(); err != nil {
+		store.mu.Unlock()
+		store.appendMu.Unlock()
+		t.Fatalf("close JSONL sink: %v", err)
+	}
+	store.jsonlFile = nil
+	store.mu.Unlock()
+	store.appendMu.Unlock()
+
+	if err := store.Record(&AuditRecord{Action: AuditActionCreate, Resource: "sessions"}); err != nil {
+		t.Fatalf("Record error: %v", err)
+	}
+	if got := store.WriteFailures(); got != 1 {
+		t.Fatalf("WriteFailures() = %d, want 1 for an unavailable configured JSONL sink", got)
+	}
+}
+
 func TestAuditStore_QueryParsesSQLiteFormattedTimestamps(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := AuditStoreConfig{

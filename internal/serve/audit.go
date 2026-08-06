@@ -216,8 +216,11 @@ func NewAuditStore(cfg AuditStoreConfig) (*AuditStore, error) {
 		store.jsonlFile = f
 	}
 
-	// Start retention cleanup goroutine only when there is a DB backend to prune.
-	if store.db != nil {
+	// Either durable sink can require maintenance: SQLite needs row retention,
+	// while a JSONL-only store still needs rotation and segment pruning. Starting
+	// this only for SQLite left the supported JSONL-only configuration growing
+	// without bound because cleanup() was never called.
+	if store.db != nil || store.jsonlFile != nil {
 		store.cleanupWG.Add(1)
 		go store.cleanupLoop(cfg.CleanupInterval)
 	}
@@ -296,11 +299,18 @@ func (s *AuditStore) Record(rec *AuditRecord) error {
 		s.appendMu.Lock()
 		s.mu.Lock()
 		jsonlFile := s.jsonlFile
+		jsonlPath := s.jsonlPath
 		s.mu.Unlock()
 
 		var writeErr error
 		if jsonlFile != nil {
 			_, writeErr = jsonlFile.Write(append(data, '\n'))
+		} else if jsonlPath != "" {
+			// A configured sink can become unavailable after a failed rotation
+			// reopen. Treat that as a write failure rather than silently accepting
+			// every later record while the audit log has holes. An empty path still
+			// means the caller intentionally configured a DB-only store.
+			writeErr = fmt.Errorf("audit JSONL sink unavailable")
 		}
 		s.appendMu.Unlock()
 
