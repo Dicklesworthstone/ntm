@@ -120,6 +120,47 @@ func TestEnsembleLoader_MissingFilesOk(t *testing.T) {
 	}
 }
 
+func TestEnsembleLoader_SortsNonEmbeddedPresets(t *testing.T) {
+	userDir := t.TempDir()
+	content := `[[ensembles]]
+name = "zeta"
+
+  [[ensembles.modes]]
+  id = "deductive"
+
+[[ensembles]]
+name = "alpha"
+
+  [[ensembles.modes]]
+  id = "deductive"
+
+[[ensembles]]
+name = "middle"
+
+  [[ensembles.modes]]
+  id = "deductive"
+`
+	if err := os.WriteFile(filepath.Join(userDir, "ensembles.toml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write user ensembles: %v", err)
+	}
+
+	presets, err := (&EnsembleLoader{UserConfigDir: userDir, ModeCatalog: nil}).Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	var customNames []string
+	for _, preset := range presets {
+		if preset.Source == "user" {
+			customNames = append(customNames, preset.Name)
+		}
+	}
+	want := []string{"alpha", "middle", "zeta"}
+	if strings.Join(customNames, ",") != strings.Join(want, ",") {
+		t.Fatalf("non-embedded presets = %v, want %v", customNames, want)
+	}
+}
+
 func TestNewEnsembleLoader_Defaults(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	loader := NewEnsembleLoader(nil)

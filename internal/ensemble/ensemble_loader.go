@@ -101,9 +101,16 @@ func (l *EnsembleLoader) Load() ([]EnsemblePreset, error) {
 		}
 	}
 
-	// Add remaining (user/project defined) ensembles
-	for _, e := range merged {
-		result = append(result, e)
+	// Add remaining (user/project defined) ensembles in a stable order. Map
+	// iteration would otherwise make the robot/CLI preset list vary between
+	// equivalent runs.
+	remainingNames := make([]string, 0, len(merged))
+	for name := range merged {
+		remainingNames = append(remainingNames, name)
+	}
+	sort.Strings(remainingNames)
+	for _, name := range remainingNames {
+		result = append(result, merged[name])
 	}
 
 	if l.ModeCatalog != nil {
