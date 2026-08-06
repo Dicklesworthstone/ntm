@@ -7723,3 +7723,20 @@ func TestOpenAPIGenerateStdoutEmitsSingleOpenAPIDocument(t *testing.T) {
 		t.Fatalf("OpenAPI version = %#v, want 3.1.0", got)
 	}
 }
+
+func TestOpenAPIGenerateRejectsPositionalArgumentBeforeWritingOutput(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "openapi.json")
+	cmd := newOpenAPIGenerateCmd()
+	cmd.SetArgs([]string{"unexpected", "--output", output})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("openapi generate accepted an unexpected positional argument")
+	}
+	if !strings.Contains(err.Error(), "unknown command") && !strings.Contains(err.Error(), "unknown arg") {
+		t.Fatalf("openapi generate error = %v, want Cobra positional-argument validation", err)
+	}
+	if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output file stat error = %v, want not exist", statErr)
+	}
+}

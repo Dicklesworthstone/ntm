@@ -149,6 +149,7 @@ func newOpenAPIGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate OpenAPI 3.1 specification",
+		Args:  cobra.NoArgs,
 		Long: `Generate an OpenAPI 3.1 specification from the kernel command registry.
 
 The specification is generated dynamically from registered kernel commands,
