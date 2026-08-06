@@ -234,6 +234,81 @@ func TestCaamCapability_TopLevelFallback(t *testing.T) {
 	}
 }
 
+func TestParseCaamCapabilitiesRejectsUnusableOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+	}{
+		{name: "empty", out: ""},
+		{name: "whitespace", out: " \n\t "},
+		{name: "not JSON", out: "safe-restore"},
+		{name: "wrong capability type", out: `{"data":{"capabilities":"safe-restore"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parseCaamCapabilities(tt.out); err == nil {
+				t.Fatalf("parseCaamCapabilities(%q) succeeded, want error", tt.out)
+			}
+		})
+	}
+}
+
+func TestCaamSupportsSafeRestoreNormalizesCapabilityNames(t *testing.T) {
+	rotator := NewAccountRotator().WithCaamCapabilityProber(func(context.Context) ([]string, error) {
+		return []string{" robot ", " SAFE-RESTORE "}, nil
+	})
+
+	ok, err := rotator.CaamSupportsSafeRestore(context.Background())
+	if err != nil {
+		t.Fatalf("CaamSupportsSafeRestore() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("CaamSupportsSafeRestore() = false, want true")
+	}
+}
+
+func TestCaamSupportsSafeRestoreFailsClosed(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe func(context.Context) ([]string, error)
+		want  error
+	}{
+		{
+			name: "capability absent",
+			probe: func(context.Context) ([]string, error) {
+				return []string{"robot"}, nil
+			},
+		},
+		{
+			name: "probe error",
+			probe: func(context.Context) ([]string, error) {
+				return nil, errors.New("caam unavailable")
+			},
+			want: errors.New("caam unavailable"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rotator := NewAccountRotator().WithCaamCapabilityProber(tt.probe)
+			ok, err := rotator.CaamSupportsSafeRestore(context.Background())
+			if ok {
+				t.Fatal("CaamSupportsSafeRestore() = true, want false")
+			}
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("CaamSupportsSafeRestore() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.want.Error() {
+				t.Fatalf("CaamSupportsSafeRestore() error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultCaamCapabilityProberUsesRobotStatusJSONContract(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake caam shell script requires a POSIX shell")
