@@ -33,6 +33,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
@@ -51,7 +52,6 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/util"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
-	"github.com/Dicklesworthstone/ntm/internal/workflow"
 
 // compactionRecoveryConfigToRuntime converts the `[context_rotation.recovery]`
 // TOML surface into the runtime `status.RecoveryConfig` that the recovery
@@ -1373,18 +1373,6 @@ func (m *Model) fetchSessionDataWithOutputs() tea.Cmd {
 }
 
 func (m *Model) requestSessionFetch(cancelInFlight bool) tea.Cmd {
-func (m Model) fetchWorkflowState() tea.Cmd {
-	session := m.session
-	return func() tea.Msg {
-		store, err := workflow.DefaultStateStore()
-		if err != nil {
-			return WorkflowStateMsg{Err: err}
-		}
-		state, err := store.Load(session)
-		return WorkflowStateMsg{State: state, Err: err}
-	}
-}
-
 	m.sessionFetchPending = true
 
 	if m.fetchingSession {
@@ -2327,24 +2315,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.scheduleRefreshes(now)...)
 		}
 
-		if !m.fetchingWorkflow && now.Sub(m.lastWorkflowFetch) >= 2*time.Second {
-			m.fetchingWorkflow = true
-			cmds = append(cmds, m.fetchWorkflowState())
-		}
 		cmds = append(cmds, m.tick())
 		return m, tea.Batch(cmds...)
 
 	case RefreshMsg:
-	case WorkflowStateMsg:
-		m.fetchingWorkflow = false
-		m.lastWorkflowFetch = time.Now()
-		m.workflowState = msg.State
-		m.workflowError = msg.Err
-		if m.workflowPanel != nil {
-			m.workflowPanel.SetData(panels.WorkflowPanelData{State: msg.State}, msg.Err)
-		}
-		return m, nil
-
 		// Trigger a coordinated refresh across subsystems (coalesced to avoid pile-up).
 		return m, tea.Batch(m.fullRefresh(false)...)
 
@@ -3377,20 +3351,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if key.Matches(msg, dashKeys.WorkflowToggle) {
-			m.showWorkflowPanel = !m.showWorkflowPanel
-			if m.showWorkflowPanel && !m.fetchingWorkflow {
-				m.fetchingWorkflow = true
-				return m, m.fetchWorkflowState()
-			}
-			return m, nil
-		}
-		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowState != nil && msg.String() == "enter" {
-			_, cmd := m.workflowPanel.Update(msg)
-			return m, cmd
-		}
-
-		// [tui-upgrade: bd-uz09d] Open spawn wizard with ctrl+w.
+		// [tui-upgrade: bd-uz09d] Open spawn wizard with 'w' key
 		if key.Matches(msg, dashKeys.SpawnWizard) {
 			m.showSpawnWizard = true
 			m.spawnWizard = panels.NewSpawnWizard(m.session, m.width, m.height)
@@ -4062,8 +4023,10 @@ func (m Model) renderPaneGrid() string {
 		statusStyled := cachedStyledText(statusIcon, statusColor, true, false)
 
 		iconStyled := cachedStyledText(agentIcon, iconColor, true, false)
-		// Show profile name as primary identifier
-		profileName := p.Type.ProfileName()
+		// A pane title carries the persona name for profile-driven spawns. Resolve
+		// it for the dashboard while preserving the agent type as the fallback for
+		// ordinary model variants and panes without a persona.
+		profileName, _ := dashboardPaneIdentityForProject(p, m.projectDir)
 		profileStyled := cachedStyledText(profileName, t.Text, true, false)
 		cardContent.WriteString(statusStyled + " " + iconStyled + " " + profileStyled + "\n")
 
@@ -5232,18 +5195,6 @@ func (m Model) renderSidebar(width, height int) string {
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(t.Text).
-	if m.showWorkflowPanel && m.workflowPanel != nil && height > 0 {
-		used := lipgloss.Height(strings.Join(lines, "\n"))
-		panelHeight := height - used - 1
-		if panelHeight >= m.workflowPanel.Config().MinHeight {
-			if panelHeight > 14 {
-				panelHeight = 14
-			}
-			m.workflowPanel.SetSize(width, panelHeight)
-			lines = append(lines, m.workflowPanel.View(), "")
-		}
-	}
-
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
 		BorderForeground(t.Surface1).
@@ -5702,6 +5653,31 @@ func spinnerDot(tick int) string {
 	return frames[tick%len(frames)]
 }
 
+// dashboardPaneIdentity returns the display identity for a pane and, when its
+// title variant names a known persona, that persona's configuration. Variants
+// can also be model aliases, so only a registry match changes the type-based
+// fallback label.
+func dashboardPaneIdentity(p tmux.Pane, registry *persona.Registry) (string, *persona.Persona) {
+	if registry != nil && strings.TrimSpace(p.Variant) != "" {
+		if profile, ok := registry.Get(p.Variant); ok {
+			return profile.Name, profile
+		}
+	}
+	return p.Type.ProfileName(), nil
+}
+
+// dashboardPaneIdentityForProject resolves a pane's variant through the
+// project's merged persona registry. A broken or unavailable persona file
+// must not make the dashboard unusable, so it deliberately falls back to the
+// agent type identifier.
+func dashboardPaneIdentityForProject(p tmux.Pane, projectDir string) (string, *persona.Persona) {
+	registry, err := persona.LoadRegistry(projectDir)
+	if err != nil {
+		return p.Type.ProfileName(), nil
+	}
+	return dashboardPaneIdentity(p, registry)
+}
+
 // renderPaneDetail renders detailed info for the selected pane
 func (m Model) renderPaneDetail(width int) string {
 	t := m.theme
@@ -5716,6 +5692,8 @@ func (m Model) renderPaneDetail(width int) string {
 	ps := m.paneStatus[paneStatusKey(p)]
 	var lines []string
 
+	profileName, panePersona := dashboardPaneIdentityForProject(p, m.projectDir)
+
 	// Header with profile name as primary identifier
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -5725,7 +5703,7 @@ func (m Model) renderPaneDetail(width int) string {
 		BorderForeground(t.Surface1).
 		Width(width-2).
 		Padding(0, 1)
-	lines = append(lines, headerStyle.Render(p.Type.ProfileName()))
+	lines = append(lines, headerStyle.Render(profileName))
 	lines = append(lines, "")
 
 	// Info grid
@@ -5761,7 +5739,19 @@ func (m Model) renderPaneDetail(width int) string {
 		Bold(true).
 		Padding(0, 1).
 		Render(typeIcon + " " + p.Type.ProfileName())
-	lines = append(lines, labelStyle.Render("Profile:")+typeBadge)
+	lines = append(lines, labelStyle.Render("Agent Type:")+typeBadge)
+	if panePersona != nil {
+		personaBadge := lipgloss.NewStyle().
+			Background(t.Surface1).
+			Foreground(t.Text).
+			Bold(true).
+			Padding(0, 1).
+			Render(panePersona.Name)
+		lines = append(lines, labelStyle.Render("Persona:")+personaBadge)
+		if len(panePersona.FocusPatterns) > 0 {
+			lines = append(lines, labelStyle.Render("Focus:")+valueStyle.Render(strings.Join(panePersona.FocusPatterns, ", ")))
+		}
+	}
 
 	// Index
 	lines = append(lines, labelStyle.Render("Index:")+valueStyle.Render(fmt.Sprintf("%d", p.Index)))

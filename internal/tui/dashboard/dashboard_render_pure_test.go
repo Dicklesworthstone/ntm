@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
@@ -16,6 +18,72 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
+
+func TestDashboardPaneIdentity(t *testing.T) {
+	registry := persona.NewRegistry()
+	registry.Add(&persona.Persona{
+		Name:          "reviewer",
+		FocusPatterns: []string{"internal/**", "docs/**"},
+	})
+
+	tests := []struct {
+		name        string
+		pane        tmux.Pane
+		registry    *persona.Registry
+		wantName    string
+		wantPersona bool
+	}{
+		{
+			name:        "persona variant",
+			pane:        tmux.Pane{Type: tmux.AgentCodex, Variant: "reviewer"},
+			registry:    registry,
+			wantName:    "reviewer",
+			wantPersona: true,
+		},
+		{
+			name:     "ordinary model variant",
+			pane:     tmux.Pane{Type: tmux.AgentCodex, Variant: "gpt-5.3-codex"},
+			registry: registry,
+			wantName: "Codex",
+		},
+		{
+			name:     "missing registry",
+			pane:     tmux.Pane{Type: tmux.AgentClaude, Variant: "reviewer"},
+			wantName: "Claude",
+		},
+		{
+			name:     "no variant",
+			pane:     tmux.Pane{Type: tmux.AgentGemini},
+			registry: registry,
+			wantName: "Gemini",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotName, gotPersona := dashboardPaneIdentity(tc.pane, tc.registry)
+			if gotName != tc.wantName {
+				t.Fatalf("dashboardPaneIdentity() name = %q, want %q", gotName, tc.wantName)
+			}
+			if (gotPersona != nil) != tc.wantPersona {
+				t.Fatalf("dashboardPaneIdentity() persona = %#v, want presence %t", gotPersona, tc.wantPersona)
+			}
+		})
+	}
+}
+
+func TestDashboardPaneDetailShowsPersonaFocusPatterns(t *testing.T) {
+	m := newTestModel(120)
+	m.panes[0].Type = tmux.AgentClaude
+	m.panes[0].Variant = "architect"
+
+	rendered := status.StripANSI(m.renderPaneDetail(80))
+	for _, want := range []string{"architect", "Persona:", "Focus:", "docs/**"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered persona detail missing %q:\n%s", want, rendered)
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // rchStatusActive — pure function
