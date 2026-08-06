@@ -2,15 +2,51 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/auth"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+type rotateTestQuotaFetcher struct {
+	info *quota.QuotaInfo
+	err  error
+}
+
+func (f rotateTestQuotaFetcher) FetchQuota(context.Context, string, quota.Provider) (*quota.QuotaInfo, error) {
+	return f.info, f.err
+}
+
+type rotateTestOrchestrator struct {
+	terminateErr error
+	waitErr      error
+	terminated   int
+	waited       int
+	started      int
+}
+
+func (o *rotateTestOrchestrator) TerminateSession(string, string) error {
+	o.terminated++
+	return o.terminateErr
+}
+
+func (o *rotateTestOrchestrator) WaitForShellPrompt(string, time.Duration) error {
+	o.waited++
+	return o.waitErr
+}
+
+func (o *rotateTestOrchestrator) StartNewAgentSession(auth.RestartContext) error {
+	o.started++
+	return nil
+}
 
 func TestRotateCmdValidation(t *testing.T) {
 	tests := []struct {
@@ -237,5 +273,61 @@ func TestResolveRotationProjectDirAllowsWorkspaceFallbackForInferredSession(t *t
 	}
 	if got != cwdRepo {
 		t.Fatalf("resolveRotationProjectDir() = %q, want %q", got, cwdRepo)
+	}
+}
+
+func TestRotateAllLimitedStopsBeforePromptWhenTerminationFails(t *testing.T) {
+	previousGetPanes := rotateGetPanes
+	previousQuotaFetcher := newRotateQuotaFetcher
+	previousOrchestrator := newRotateOrchestrator
+	t.Cleanup(func() {
+		rotateGetPanes = previousGetPanes
+		newRotateQuotaFetcher = previousQuotaFetcher
+		newRotateOrchestrator = previousOrchestrator
+	})
+
+	rotateGetPanes = func(string) ([]tmux.Pane, error) {
+		return []tmux.Pane{{ID: "%11", Index: 1, Title: "limited", Type: tmux.AgentClaude}}, nil
+	}
+	newRotateQuotaFetcher = func() quota.Fetcher {
+		return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}}
+	}
+	orch := &rotateTestOrchestrator{terminateErr: errors.New("interrupt failed")}
+	newRotateOrchestrator = func(*config.Config) rotationOrchestrator { return orch }
+
+	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, false)
+	if err == nil || !strings.Contains(err.Error(), "terminate limited pane 1 (%11)") {
+		t.Fatalf("rotateAllLimited() error = %v, want termination context", err)
+	}
+	if orch.terminated != 1 || orch.waited != 0 || orch.started != 0 {
+		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 1:0:0", orch.terminated, orch.waited, orch.started)
+	}
+}
+
+func TestRotateAllLimitedStopsBeforePromptWhenShellIsNotReady(t *testing.T) {
+	previousGetPanes := rotateGetPanes
+	previousQuotaFetcher := newRotateQuotaFetcher
+	previousOrchestrator := newRotateOrchestrator
+	t.Cleanup(func() {
+		rotateGetPanes = previousGetPanes
+		newRotateQuotaFetcher = previousQuotaFetcher
+		newRotateOrchestrator = previousOrchestrator
+	})
+
+	rotateGetPanes = func(string) ([]tmux.Pane, error) {
+		return []tmux.Pane{{ID: "%12", Index: 2, Title: "limited", Type: tmux.AgentCodex}}, nil
+	}
+	newRotateQuotaFetcher = func() quota.Fetcher {
+		return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}}
+	}
+	orch := &rotateTestOrchestrator{waitErr: errors.New("shell still running")}
+	newRotateOrchestrator = func(*config.Config) rotationOrchestrator { return orch }
+
+	err := rotateAllLimited(t.Context(), "proj", "backup@example.com", false, false)
+	if err == nil || !strings.Contains(err.Error(), "wait for shell prompt in limited pane 2 (%12)") {
+		t.Fatalf("rotateAllLimited() error = %v, want shell-readiness context", err)
+	}
+	if orch.terminated != 1 || orch.waited != 1 || orch.started != 0 {
+		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 1:1:0", orch.terminated, orch.waited, orch.started)
 	}
 }

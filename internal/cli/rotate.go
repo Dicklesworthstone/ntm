@@ -12,11 +12,28 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/auth"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/quota"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/rotation"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+)
+
+type rotationOrchestrator interface {
+	TerminateSession(paneID string, provider string) error
+	WaitForShellPrompt(paneID string, timeout time.Duration) error
+	StartNewAgentSession(ctx auth.RestartContext) error
+}
+
+var (
+	rotateGetPanes        = tmux.GetPanes
+	newRotateQuotaFetcher = func() quota.Fetcher {
+		return &quota.PTYFetcher{CommandTimeout: 5 * time.Second}
+	}
+	newRotateOrchestrator = func(cfg *config.Config) rotationOrchestrator {
+		return auth.NewOrchestrator(cfg)
+	}
 )
 
 func newRotateCmd() *cobra.Command {
@@ -297,13 +314,13 @@ func newRotateStatusCmd() *cobra.Command {
 func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun bool, inferred bool) error {
 	// 1. Identify limited panes
 	fmt.Printf("Scanning session '%s' for rate-limited panes...\n", session)
-	panes, err := tmux.GetPanes(session)
+	panes, err := rotateGetPanes(session)
 	if err != nil {
 		return err
 	}
 
 	var limitedPanes []tmux.Pane
-	fetcher := &quota.PTYFetcher{CommandTimeout: 5 * time.Second}
+	fetcher := newRotateQuotaFetcher()
 	for _, p := range panes {
 		// Skip user panes
 		if tmux.AgentType(p.Type).Canonical() == tmux.AgentUser {
@@ -359,25 +376,28 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 	}
 
 	// Batch Rotation Flow
-	orchestrator := auth.NewOrchestrator(cfg)
-	projectDir, err := resolveRotationProjectDir(ctx, session, inferred)
-	if err != nil {
-		return err
-	}
+	orchestrator := newRotateOrchestrator(cfg)
 
 	// 1. Terminate all
 	fmt.Println("\nStep 1/3: Terminating sessions...")
 	for _, p := range limitedPanes {
 		fmt.Printf("  Terminating %s (pane %d)...\n", p.Title, p.Index)
 		if err := orchestrator.TerminateSession(p.ID, normalizedProviderName(p.Type)); err != nil {
-			fmt.Printf("    Error terminating: %v\n", err)
+			return fmt.Errorf("terminate limited pane %d (%s): %w", p.Index, p.ID, err)
 		}
 	}
 
 	// 2. Wait for shells
 	fmt.Println("Step 2/3: Waiting for shell prompts...")
 	for _, p := range limitedPanes {
-		_ = orchestrator.WaitForShellPrompt(p.ID, 5*time.Second)
+		if err := orchestrator.WaitForShellPrompt(p.ID, 5*time.Second); err != nil {
+			return fmt.Errorf("wait for shell prompt in limited pane %d (%s): %w", p.Index, p.ID, err)
+		}
+	}
+
+	projectDir, err := resolveRotationProjectDir(ctx, session, inferred)
+	if err != nil {
+		return err
 	}
 
 	// 3. Prompt user ONCE
