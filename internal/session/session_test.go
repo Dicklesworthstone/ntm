@@ -775,6 +775,11 @@ func TestShouldCreateDir(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "lexical home prefix but sibling directory",
+			path: filepath.Join(filepath.Dir(home), filepath.Base(home)+"-restore", "project"),
+			want: false,
+		},
+		{
 			name: "etc dir",
 			path: "/etc/something",
 			want: false,

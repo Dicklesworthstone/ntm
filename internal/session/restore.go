@@ -738,17 +738,19 @@ func shouldCreateDir(path string) bool {
 		return false
 	}
 
-	// Must be under home directory
-	if !strings.HasPrefix(path, home) {
+	// Must be below the home directory. A lexical prefix is not sufficient:
+	// /Users/alice-restore shares the prefix /Users/alice but is a sibling,
+	// not a child, of the home directory.
+	rel, err := filepath.Rel(home, path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
 
 	// Should be at least 2 levels deep from home
 	// e.g., ~/Developer/project is ok, ~/project is not
-	rel, err := filepath.Rel(home, path)
-	if err != nil {
-		return false
-	}
 
 	parts := strings.Split(rel, string(filepath.Separator))
 	return len(parts) >= 2
