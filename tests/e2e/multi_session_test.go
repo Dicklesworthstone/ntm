@@ -685,23 +685,17 @@ func TestCrossSessionRobotSendAck(t *testing.T) {
 	logger.Log("[LMTO] Starting cross-session robot send+ack test")
 
 	projectsBase := t.TempDir()
-	stateDir := t.TempDir()
-	stateDBPath := filepath.Join(stateDir, "lmto_state.db")
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "config.toml")
 	configContent := fmt.Sprintf(`
 projects_base = %q
-state_path = %q
 
 [agents]
-claude = "bash"
-codex = "bash"
-gemini = "bash"
-
-[tmux]
-scrollback = 500
-`, projectsBase, stateDBPath)
+claude = "cat"
+codex = "cat"
+gemini = "cat"
+`, projectsBase)
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("[LMTO] Failed to write test config: %v", err)
 	}
