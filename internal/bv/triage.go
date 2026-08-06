@@ -229,6 +229,9 @@ func GetTriageQuickRef(dir string) (*TriageQuickRef, error) {
 
 // GetTriageTopPicks returns the top N picks from triage
 func GetTriageTopPicks(dir string, n int) ([]TriageTopPick, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("triage top-picks limit must not be negative: %d", n)
+	}
 	triage, err := GetTriage(dir)
 	if err != nil {
 		return nil, err
@@ -481,6 +484,9 @@ func readyBeadLabelsContext(ctx context.Context, dir string) (map[string][]strin
 
 // GetTriageRecommendations returns the top N recommendations
 func GetTriageRecommendations(dir string, n int) ([]TriageRecommendation, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("triage recommendations limit must not be negative: %d", n)
+	}
 	triage, err := GetTriage(dir)
 	if err != nil {
 		return nil, err
@@ -495,6 +501,9 @@ func GetTriageRecommendations(dir string, n int) ([]TriageRecommendation, error)
 
 // GetQuickWins returns quick win recommendations (low effort, high impact)
 func GetQuickWins(dir string, n int) ([]TriageRecommendation, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("quick-wins limit must not be negative: %d", n)
+	}
 	triage, err := GetTriage(dir)
 	if err != nil {
 		return nil, err
@@ -509,6 +518,9 @@ func GetQuickWins(dir string, n int) ([]TriageRecommendation, error) {
 
 // GetBlockersToClear returns blockers that should be cleared first
 func GetBlockersToClear(dir string, n int) ([]BlockerToClear, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("blockers-to-clear limit must not be negative: %d", n)
+	}
 	triage, err := GetTriage(dir)
 	if err != nil {
 		return nil, err

@@ -249,12 +249,10 @@ func TestGetTopBottlenecks(t *testing.T) {
 		t.Skip("bv not installed")
 	}
 
-	insights, _ := getCachedInsights(t)
-
-	// Use cached insights to verify GetTopBottlenecks logic
-	bottlenecks := insights.Bottlenecks
-	if len(bottlenecks) > 3 {
-		bottlenecks = bottlenecks[:3]
+	_, root := getCachedInsights(t)
+	bottlenecks, err := GetTopBottlenecks(root, 3)
+	if err != nil {
+		t.Fatalf("GetTopBottlenecks: %v", err)
 	}
 
 	if len(bottlenecks) > 3 {
@@ -269,12 +267,10 @@ func TestGetNextActions(t *testing.T) {
 		t.Skip("bv not installed")
 	}
 
-	priority, _ := getCachedPriority(t)
-
-	// Use cached priority to verify GetNextActions logic
-	actions := priority.Recommendations
-	if len(actions) > 5 {
-		actions = actions[:5]
+	_, root := getCachedPriority(t)
+	actions, err := GetNextActions(root, 5)
+	if err != nil {
+		t.Fatalf("GetNextActions: %v", err)
 	}
 
 	if len(actions) > 5 {
@@ -282,6 +278,15 @@ func TestGetNextActions(t *testing.T) {
 	}
 
 	t.Logf("Next actions: %d items", len(actions))
+}
+
+func TestBVAccessorRejectsNegativeLimit(t *testing.T) {
+	if _, err := GetTopBottlenecks("", -1); err == nil {
+		t.Fatal("GetTopBottlenecks(-1) returned no error")
+	}
+	if _, err := GetNextActions("", -1); err == nil {
+		t.Fatal("GetNextActions(-1) returned no error")
+	}
 }
 
 func TestGetParallelTracks(t *testing.T) {

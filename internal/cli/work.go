@@ -1731,7 +1731,12 @@ func collectQueueDryReport(dir string, now time.Time, staleThreshold time.Durati
 		report.Evidence.InProgressCount = summary.InProgress
 		report.Evidence.ReadyCount = summary.Ready
 		report.Evidence.CountsVerified = true
-		report.Evidence.StaleInProgress = findStaleInProgress(summary.InProgressList, now, staleThreshold, staleLimit)
+		inProgress, listErr := bv.GetInProgressListContext(context.Background(), dir, 0)
+		if listErr != nil {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("in-progress bead list unavailable: %v", listErr))
+		} else {
+			report.Evidence.StaleInProgress = findStaleInProgress(inProgress, now, staleThreshold, staleLimit)
+		}
 	}
 
 	triage, triageErr := queueDryGetTriage(dir)

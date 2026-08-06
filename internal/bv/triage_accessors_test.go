@@ -326,6 +326,30 @@ func TestTriageAccessors_CachePrimed(t *testing.T) {
 	})
 }
 
+func TestTriageAccessorsRejectNegativeLimit(t *testing.T) {
+	dir := t.TempDir()
+	cleanup := primeTriageCache(t, dir)
+	defer cleanup()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"top picks", func() error { _, err := GetTriageTopPicks(dir, -1); return err }},
+		{"recommendations", func() error { _, err := GetTriageRecommendations(dir, -1); return err }},
+		{"quick wins", func() error { _, err := GetQuickWins(dir, -1); return err }},
+		{"blockers", func() error { _, err := GetBlockersToClear(dir, -1); return err }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err == nil {
+				t.Fatal("negative limit returned no error")
+			}
+		})
+	}
+}
+
 func TestGetNextRecommendation_EmptyRecs(t *testing.T) {
 	dir := t.TempDir()
 	cleanup := primeTriageCache(t, dir)

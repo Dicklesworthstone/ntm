@@ -425,6 +425,9 @@ func CheckDrift(dir string) DriftResult {
 
 // GetTopBottlenecks returns the top N bottleneck issues
 func GetTopBottlenecks(dir string, n int) ([]NodeScore, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("bottleneck limit must not be negative: %d", n)
+	}
 	insights, err := GetInsights(dir)
 	if err != nil {
 		return nil, err
@@ -440,6 +443,9 @@ func GetTopBottlenecks(dir string, n int) ([]NodeScore, error) {
 
 // GetNextActions returns recommended next actions based on priority analysis
 func GetNextActions(dir string, n int) ([]PriorityRecommendation, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("next-action limit must not be negative: %d", n)
+	}
 	priority, err := GetPriority(dir)
 	if err != nil {
 		return nil, err
@@ -3043,10 +3049,13 @@ func GetInProgressList(dir string, limit int) []BeadInProgress {
 }
 
 // GetInProgressListContext returns in-progress beads without erasing command,
-// parse, or cancellation failures.
+// parse, or cancellation failures. A limit of zero requests the full list.
 func GetInProgressListContext(ctx context.Context, dir string, limit int) ([]BeadInProgress, error) {
+	if limit < 0 {
+		return nil, fmt.Errorf("in-progress limit must not be negative: %d", limit)
+	}
 	items := make([]BeadInProgress, 0)
-	output, err := RunBdContext(ctx, dir, "list", "--status=in_progress", "--json")
+	output, err := RunBdContext(ctx, dir, "list", "--status=in_progress", "--json", "--limit", strconv.Itoa(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list in-progress beads: %w", err)
 	}
@@ -3066,9 +3075,11 @@ func GetInProgressListContext(ctx context.Context, dir string, limit int) ([]Bea
 		return nil, fmt.Errorf("parse in-progress beads: %w", err)
 	}
 
-	// Take up to limit items
+	// A zero limit is br's documented unlimited mode. Positive limits are also
+	// forwarded to br so the subprocess does not serialize rows the caller will
+	// immediately discard.
 	for i, issue := range issues {
-		if i >= limit {
+		if limit > 0 && i >= limit {
 			break
 		}
 		items = append(items, BeadInProgress{

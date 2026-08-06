@@ -386,6 +386,29 @@ func TestGetRecentlyCompletedListContext(t *testing.T) {
 	})
 }
 
+func TestGetInProgressListContextZeroLimitReturnsFullList(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".git", ".beads"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+	}
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nprintf '[{\"id\":\"ntm-active-1\",\"title\":\"first\"},{\"id\":\"ntm-active-2\",\"title\":\"second\"}]\\n'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	items, err := GetInProgressListContext(context.Background(), dir, 0)
+	if err != nil {
+		t.Fatalf("GetInProgressListContext error: %v", err)
+	}
+	if len(items) != 2 || items[0].ID != "ntm-active-1" || items[1].ID != "ntm-active-2" {
+		t.Fatalf("in-progress items=%+v, want both rows", items)
+	}
+}
+
 func TestUnmarshalBdList(t *testing.T) {
 	t.Parallel()
 
