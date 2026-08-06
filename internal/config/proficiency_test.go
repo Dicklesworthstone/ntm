@@ -92,6 +92,53 @@ func TestProficiencyEnvOverrideInvalid(t *testing.T) {
 	}
 }
 
+func TestSetTierRejectsInvalidTierWithoutMutation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg, err := LoadProficiency()
+	if err != nil {
+		t.Fatalf("LoadProficiency: %v", err)
+	}
+	beforeHistory := cfg.GetPromotionHistory()
+
+	err = cfg.SetTier(tiers.Tier(99), "invalid test tier")
+	if err == nil {
+		t.Fatal("SetTier accepted an out-of-range tier")
+	}
+	if got := cfg.GetTier(); got != tiers.TierApprentice {
+		t.Errorf("GetTier after rejected update = %s, want Apprentice", got)
+	}
+	if got := cfg.GetPromotionHistory(); len(got) != len(beforeHistory) {
+		t.Errorf("promotion history changed after rejected update: got %d entries, want %d", len(got), len(beforeHistory))
+	}
+
+	reloaded, err := LoadProficiency()
+	if err != nil {
+		t.Fatalf("reload proficiency: %v", err)
+	}
+	if got := reloaded.GetTier(); got != tiers.TierApprentice {
+		t.Errorf("persisted tier after rejected update = %s, want Apprentice", got)
+	}
+}
+
+func TestInvalidStoredTierUsesApprenticePromotionRules(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := DefaultProficiencyConfig()
+	cfg.Tier = 99 // Simulate a hand-edited or old invalid state file.
+	cfg.UsageStats.CommandsRun = 100
+
+	suggest, next, _ := cfg.ShouldSuggestPromotion()
+	if !suggest || next != tiers.TierJourneyman {
+		t.Fatalf("ShouldSuggestPromotion() = (%t, %s), want (true, Journeyman)", suggest, next)
+	}
+
+	suggest, message := cfg.CheckPromotion("invalid-tier-session")
+	if !suggest || message == "" {
+		t.Fatalf("CheckPromotion() = (%t, %q), want a Journeyman suggestion", suggest, message)
+	}
+}
+
 func TestProficiencyUsageStats(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.Setenv("XDG_CONFIG_HOME", tmpDir)

@@ -136,16 +136,15 @@ func (c *ProficiencyConfig) GetTier() tiers.Tier {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Validate tier value
-	if c.Tier < 1 || c.Tier > 3 {
-		return tiers.TierApprentice
-	}
-
-	return tiers.Tier(c.Tier)
+	return effectiveProficiencyTier(c.Tier)
 }
 
 // SetTier changes the proficiency tier and records the change.
 func (c *ProficiencyConfig) SetTier(newTier tiers.Tier, reason string) error {
+	if !isValidProficiencyTier(newTier) {
+		return fmt.Errorf("invalid proficiency tier %d", newTier)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -278,7 +277,7 @@ func (c *ProficiencyConfig) ShouldSuggestPromotion() (bool, tiers.Tier, string) 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	currentTier := tiers.Tier(c.Tier)
+	currentTier := effectiveProficiencyTier(c.Tier)
 	if currentTier >= tiers.TierMaster {
 		return false, currentTier, ""
 	}
@@ -373,7 +372,7 @@ func (c *ProficiencyConfig) CheckPromotion(sessionID string) (bool, string) {
 		return false, ""
 	}
 
-	currentTier := tiers.Tier(c.Tier)
+	currentTier := effectiveProficiencyTier(c.Tier)
 	if currentTier >= tiers.TierMaster {
 		return false, ""
 	}
@@ -419,6 +418,21 @@ func (c *ProficiencyConfig) GetUniqueCommandCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.UsageStats.UniqueCommands)
+}
+
+func isValidProficiencyTier(tier tiers.Tier) bool {
+	return tier >= tiers.TierApprentice && tier <= tiers.TierMaster
+}
+
+// effectiveProficiencyTier keeps every read path consistent when a hand-edited
+// or legacy state file contains an out-of-range tier. The public API must not
+// display Apprentice while promotion logic treats that same state as Master.
+func effectiveProficiencyTier(tier int) tiers.Tier {
+	candidate := tiers.Tier(tier)
+	if !isValidProficiencyTier(candidate) {
+		return tiers.TierApprentice
+	}
+	return candidate
 }
 
 // ProficiencyConfigPath returns the path for external use (testing, etc.)
