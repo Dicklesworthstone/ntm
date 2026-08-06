@@ -1,8 +1,11 @@
 package robot
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // =============================================================================
@@ -195,6 +198,25 @@ func TestPaneIndicator_GetAllStatuses_Empty(t *testing.T) {
 	statuses := pi.GetAllStatuses()
 	if len(statuses) != 0 {
 		t.Errorf("expected empty map for fresh indicator, got %d entries", len(statuses))
+	}
+}
+
+func TestPaneIndicator_RunOnceCanceledDoesNotEnumeratePanes(t *testing.T) {
+	originalGetPanes := indicatorGetPanes
+	t.Cleanup(func() { indicatorGetPanes = originalGetPanes })
+
+	calls := 0
+	indicatorGetPanes = func(string) ([]tmux.Pane, error) {
+		calls++
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	NewPaneIndicator(IndicatorConfig{Session: "project"}).RunOnce(ctx)
+	if calls != 0 {
+		t.Fatalf("canceled RunOnce enumerated panes %d time(s)", calls)
 	}
 }
 

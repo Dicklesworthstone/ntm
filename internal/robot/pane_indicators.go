@@ -104,6 +104,10 @@ type PaneIndicator struct {
 	mu     sync.Mutex
 }
 
+// indicatorGetPanes is kept at the tmux boundary so cancellation behavior can
+// be tested without launching a real tmux subprocess.
+var indicatorGetPanes = tmux.GetPanes
+
 // NewPaneIndicator creates a PaneIndicator with the given configuration.
 // Missing fields in config are filled from DefaultIndicatorConfig.
 func NewPaneIndicator(config IndicatorConfig) *PaneIndicator {
@@ -218,6 +222,13 @@ func (pi *PaneIndicator) ColorForStatus(status ActivityStatus) string {
 
 // updateAll enumerates panes and updates their indicators.
 func (pi *PaneIndicator) updateAll(ctx context.Context) {
+	// getPanes ultimately uses the default tmux command timeout, not this
+	// caller's context. Do not start that uncancelable enumeration after the
+	// caller has already abandoned the update pass.
+	if ctx == nil || ctx.Err() != nil {
+		return
+	}
+
 	panes, err := pi.getPanes()
 	if err != nil {
 		return // best-effort; skip this cycle
@@ -233,7 +244,7 @@ func (pi *PaneIndicator) updateAll(ctx context.Context) {
 
 // getPanes returns the pane list to monitor.
 func (pi *PaneIndicator) getPanes() ([]tmux.Pane, error) {
-	allPanes, err := tmux.GetPanes(pi.config.Session)
+	allPanes, err := indicatorGetPanes(pi.config.Session)
 	if err != nil {
 		return nil, err
 	}
