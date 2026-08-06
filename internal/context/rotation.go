@@ -901,6 +901,17 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 	result.NewPaneID = newPaneID
 	result.NewAgentID = tmux.FormatPaneName(session, agentTypeShort(agentType), newIndex, oldPane.Variant)
 
+	// The replacement begins with an empty context window. Keep the monitor
+	// aligned with that replacement so a long-running agent is not immediately
+	// selected for a second rotation using the exhausted predecessor's usage.
+	// Custom pane titles can produce a different canonical replacement ID, so
+	// remove the old monitor entry before registering the replacement.
+	if result.NewAgentID != agentID {
+		r.monitor.UnregisterAgent(agentID)
+	}
+	r.monitor.RegisterAgent(result.NewAgentID, newPaneID, state.Model)
+	r.monitor.ResetAgent(result.NewAgentID)
+
 	// Wait for new agent to be ready
 	time.Sleep(3 * time.Second)
 

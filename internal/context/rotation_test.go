@@ -296,6 +296,53 @@ func TestRotateAgentSuccessEmitsCompletionAlert(t *testing.T) {
 	}
 }
 
+func TestCheckAndRotate_LongSessionResetsReplacementMonitorState(t *testing.T) {
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	const agentID = "long-session__cc_1"
+	monitor.RegisterAgent(agentID, "%0", "claude-opus-4")
+	for i := 0; i < 200; i++ {
+		monitor.RecordMessage(agentID, 1000, 1000)
+	}
+
+	spawner := NewMockPaneSpawner()
+	spawner.panes = []tmux.Pane{{
+		ID:    "%0",
+		Title: agentID,
+		Type:  tmux.AgentClaude,
+	}}
+	cfg := config.DefaultContextRotationConfig()
+	cfg.RotateThreshold = 0.50
+	cfg.TryCompactFirst = false
+	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
+
+	results, err := r.CheckAndRotate("long-session", t.TempDir())
+	if err != nil {
+		t.Fatalf("CheckAndRotate() error = %v", err)
+	}
+	if len(results) != 1 || !results[0].Success || results[0].State != RotationStateCompleted {
+		t.Fatalf("CheckAndRotate() results = %+v, want one completed rotation", results)
+	}
+
+	replacement := monitor.GetState(results[0].NewAgentID)
+	if replacement == nil {
+		t.Fatal("replacement agent was not registered with the monitor")
+	}
+	if replacement.PaneID != results[0].NewPaneID {
+		t.Errorf("replacement pane = %q, want %q", replacement.PaneID, results[0].NewPaneID)
+	}
+	if replacement.MessageCount != 0 || replacement.Estimate != nil {
+		t.Errorf("replacement monitor state = %+v, want fresh context state", replacement)
+	}
+
+	results, err = r.CheckAndRotate("long-session", t.TempDir())
+	if err != nil {
+		t.Fatalf("second CheckAndRotate() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("second CheckAndRotate() results = %+v, want no immediate re-rotation", results)
+	}
+}
+
 func TestCheckAndRotate_MixedGrokBatchIsAtomic(t *testing.T) {
 	t.Parallel()
 
