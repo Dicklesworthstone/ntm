@@ -91,6 +91,19 @@ func TestGenerateAgentCommand_TemplateModelOverrideGuard(t *testing.T) {
 	}
 }
 
+func TestGenerateAgentCommand_TemplateModelOverrideGuardHandlesAbsentElseList(t *testing.T) {
+	got, err := GenerateAgentCommand(`agent{{if .Model}} --model {{.Model}}{{end}}`, AgentTemplateVars{
+		Model:          "claude-opus-4",
+		ModelRequested: true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateAgentCommand returned an error: %v", err)
+	}
+	if got != "agent --model claude-opus-4" {
+		t.Fatalf("GenerateAgentCommand = %q, want %q", got, "agent --model claude-opus-4")
+	}
+}
+
 func TestGenerateAgentCommand_TemplateGuardsIgnoreNonRenderingFieldMentions(t *testing.T) {
 	t.Run("model name in a template comment does not satisfy the model guard", func(t *testing.T) {
 		_, err := GenerateAgentCommand(`agent {{/* .Model */}} --safe`, AgentTemplateVars{
