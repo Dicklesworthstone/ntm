@@ -392,8 +392,11 @@ func (m *WorktreeManager) ListWorktrees(ctx context.Context) ([]*WorktreeInfo, e
 
 		// Check if the worktree is still valid
 		valid, validationErr := m.isValidWorktree(ctx, worktreePath)
-		if validationErr != nil && ctx.Err() != nil {
-			return nil, ctx.Err()
+		if validationErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, fmt.Errorf("inspect worktree registration at %s: %w", worktreePath, validationErr)
 		}
 		if !valid {
 			info.Error = "invalid or stale worktree"

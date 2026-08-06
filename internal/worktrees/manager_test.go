@@ -483,6 +483,32 @@ func TestListWorktrees_EmptyDirReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestListWorktreesSurfacesGitValidationFailure(t *testing.T) {
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\necho 'git unavailable' >&2\nexit 127\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager := NewManager(t.TempDir(), "test-session")
+	worktreePath := manager.worktreePath("agent-1")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("create worktree directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: fake\n"), 0o600); err != nil {
+		t.Fatalf("write worktree git file: %v", err)
+	}
+
+	worktrees, err := manager.ListWorktrees(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "inspect worktree registration") {
+		t.Fatalf("ListWorktrees() error = %v, want git validation failure", err)
+	}
+	if worktrees != nil {
+		t.Fatalf("ListWorktrees() worktrees = %+v, want nil on validation failure", worktrees)
+	}
+}
+
 func TestCleanup_RemovesEmptyWorktreesDir(t *testing.T) {
 	t.Parallel()
 	projectDir := t.TempDir()
