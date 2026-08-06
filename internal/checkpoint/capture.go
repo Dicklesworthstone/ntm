@@ -324,6 +324,12 @@ func gitCommand(dir string, args ...string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", allArgs...)
+	return runGitCommand(cmd, ctx, args...)
+}
+
+// runGitCommand captures a started git command's output while ensuring that
+// every started process is reaped, including when output exceeds the limit.
+func runGitCommand(cmd *exec.Cmd, ctx context.Context, args ...string) (string, error) {
 	cmd.WaitDelay = 2 * time.Second
 
 	// Capture stderr separately for error reporting
@@ -342,12 +348,15 @@ func gitCommand(dir string, args ...string) (string, error) {
 	// Read up to limit + 1 byte to detect truncation
 	data, err := io.ReadAll(io.LimitReader(stdoutPipe, MaxGitOutputBytes+1))
 	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return "", fmt.Errorf("reading git output: %w", err)
 	}
 
 	// Check for truncation
 	if len(data) > MaxGitOutputBytes {
 		_ = cmd.Process.Kill() // Kill process if it's spewing too much data
+		_ = cmd.Wait()
 		return "", fmt.Errorf("git output exceeded limit of %d bytes", MaxGitOutputBytes)
 	}
 

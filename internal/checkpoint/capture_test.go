@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -879,5 +880,27 @@ func TestCapturer_CaptureGitState_DirtySavesPatch(t *testing.T) {
 	}
 	if !strings.Contains(patch, "updated") {
 		t.Fatalf("expected patch to contain updated content, got: %s", patch)
+	}
+}
+
+func TestRunGitCommand_ReapsProcessOnOutputLimit(t *testing.T) {
+	if os.Getenv("NTM_TEST_GIT_SPAM") == "1" {
+		chunk := make([]byte, 64*1024)
+		for {
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				return
+			}
+		}
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunGitCommand_ReapsProcessOnOutputLimit$")
+	cmd.Env = append(os.Environ(), "NTM_TEST_GIT_SPAM=1")
+
+	_, err := runGitCommand(cmd, context.Background(), "status")
+	if err == nil || !strings.Contains(err.Error(), "output exceeded limit") {
+		t.Fatalf("runGitCommand error = %v, want output-limit error", err)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("runGitCommand returned before reaping the oversized-output process")
 	}
 }
