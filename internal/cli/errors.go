@@ -165,21 +165,17 @@ func isErrorLine(line string) (bool, string) {
 
 // ErrorsOptions contains options for the errors operation
 type ErrorsOptions struct {
-	Since        time.Duration
 	Panes        []int
 	ContextLines int
 	MaxLines     int
-	Follow       bool
 	Filter       AgentFilter
 }
 
 func newErrorsCmd() *cobra.Command {
 	var (
-		since        string
 		panes        string
 		contextLines int
 		maxLines     int
-		follow       bool
 		ccFlag       bool
 		codFlag      bool
 		gmiFlag      bool
@@ -200,26 +196,14 @@ Searches pane output for error patterns including:
 
 Examples:
   ntm errors myproject                   # Show all errors
-  ntm errors myproject --since 5m        # Errors in last 5 minutes
   ntm errors myproject --cc              # Only Claude pane errors
   ntm errors myproject --panes 1,2,3     # Specific panes only
-  ntm errors myproject -C 5              # 5 lines context
-  ntm errors myproject --follow          # Stream new errors`,
+  ntm errors myproject -C 5              # 5 lines context`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var session string
 			if len(args) > 0 {
 				session = args[0]
-			}
-
-			// Parse since duration
-			var sinceDuration time.Duration
-			if since != "" {
-				var err error
-				sinceDuration, err = time.ParseDuration(since)
-				if err != nil {
-					return fmt.Errorf("invalid --since duration: %w", err)
-				}
 			}
 
 			// Parse pane indices
@@ -246,11 +230,9 @@ Examples:
 			}
 
 			opts := ErrorsOptions{
-				Since:        sinceDuration,
 				Panes:        paneIndices,
 				ContextLines: contextLines,
 				MaxLines:     maxLines,
-				Follow:       follow,
 				Filter:       filter,
 			}
 
@@ -258,11 +240,9 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&since, "since", "", "Only errors from last duration (e.g., 5m, 1h)")
 	cmd.Flags().StringVar(&panes, "panes", "", "Comma-separated pane indices to filter")
 	cmd.Flags().IntVarP(&contextLines, "context", "C", 2, "Lines of context before and after each error")
 	cmd.Flags().IntVarP(&maxLines, "max-lines", "n", 1000, "Search last N lines per pane")
-	cmd.Flags().BoolVar(&follow, "follow", false, "Stream new errors in real-time")
 	cmd.Flags().BoolVar(&ccFlag, "cc", false, "Show Claude pane errors only")
 	cmd.Flags().BoolVar(&codFlag, "cod", false, "Show Codex pane errors only")
 	cmd.Flags().BoolVar(&gmiFlag, "gmi", false, "Show Gemini pane errors only")
@@ -386,20 +366,4 @@ func runErrors(session string, opts ErrorsOptions) error {
 	// Output result
 	formatter := output.New(output.WithJSON(jsonOutput))
 	return formatter.Output(result)
-}
-
-// filterBySince filters errors to only those after the since duration
-func filterBySince(errors []ErrorEntry, since time.Duration) []ErrorEntry {
-	if since <= 0 {
-		return errors
-	}
-
-	cutoff := time.Now().Add(-since)
-	var filtered []ErrorEntry
-	for _, e := range errors {
-		if e.Timestamp.After(cutoff) {
-			filtered = append(filtered, e)
-		}
-	}
-	return filtered
 }

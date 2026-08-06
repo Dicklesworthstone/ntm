@@ -326,73 +326,14 @@ func TestIsErrorLine(t *testing.T) {
 	}
 }
 
-// TestFilterBySince tests time-based filtering of errors
-func TestFilterBySince(t *testing.T) {
-	now := time.Now()
+func TestErrorsCmdRejectsUnsupportedTemporalFlags(t *testing.T) {
+	for _, args := range [][]string{{"--since", "5m"}, {"--follow"}} {
+		cmd := newErrorsCmd()
+		cmd.SetArgs(args)
 
-	errors := []ErrorEntry{
-		{Timestamp: now.Add(-30 * time.Second), Content: "Error 30s ago"},
-		{Timestamp: now.Add(-1 * time.Minute), Content: "Error 1m ago"},
-		{Timestamp: now.Add(-5 * time.Minute), Content: "Error 5m ago"},
-		{Timestamp: now.Add(-15 * time.Minute), Content: "Error 15m ago"},
-		{Timestamp: now.Add(-30 * time.Minute), Content: "Error 30m ago"},
-		{Timestamp: now.Add(-1 * time.Hour), Content: "Error 1h ago"},
-	}
-
-	tests := []struct {
-		name     string
-		since    time.Duration
-		expected int
-	}{
-		{
-			name:     "last_1_minute",
-			since:    1 * time.Minute,
-			expected: 1, // 30s ago only
-		},
-		{
-			name:     "last_2_minutes",
-			since:    2 * time.Minute,
-			expected: 2, // 30s and 1m ago
-		},
-		{
-			name:     "last_10_minutes",
-			since:    10 * time.Minute,
-			expected: 3, // 30s, 1m, 5m ago
-		},
-		{
-			name:     "last_20_minutes",
-			since:    20 * time.Minute,
-			expected: 4, // 30s, 1m, 5m, 15m ago
-		},
-		{
-			name:     "last_45_minutes",
-			since:    45 * time.Minute,
-			expected: 5, // all except 1h ago
-		},
-		{
-			name:     "last_2_hours",
-			since:    2 * time.Hour,
-			expected: 6, // all errors
-		},
-		{
-			name:     "zero_duration_returns_all",
-			since:    0,
-			expected: 6,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Logf("[TEST] since=%v, expected=%d", tt.since, tt.expected)
-
-			filtered := filterBySince(errors, tt.since)
-
-			t.Logf("[TEST] got=%d errors", len(filtered))
-
-			if len(filtered) != tt.expected {
-				t.Errorf("filterBySince() returned %d errors, want %d", len(filtered), tt.expected)
-			}
-		})
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("errors %v succeeded, want unsupported flag error", args)
+		}
 	}
 }
 
