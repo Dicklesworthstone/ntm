@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,6 +100,27 @@ func TestPaneLauncherLoggerHelper(t *testing.T) {
 
 	if logger == nil {
 		t.Error("expected non-nil logger from logger()")
+	}
+}
+
+func TestChangeDirectoryCommandQuotesShellSyntaxLiterally(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "spaces", path: "/tmp/project with spaces", want: "cd '/tmp/project with spaces'"},
+		{name: "expansion syntax", path: "/tmp/$HOME/$(touch pwned)`uname`", want: "cd '/tmp/$HOME/$(touch pwned)`uname`'"},
+		{name: "single quote", path: "/tmp/O'Reilly", want: "cd '/tmp/O'\\''Reilly'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := changeDirectoryCommand(tc.path); got != tc.want {
+				t.Errorf("changeDirectoryCommand(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -317,6 +339,30 @@ func TestLaunchAgentInPaneInvalidPath(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("expected non-empty Error")
+	}
+}
+
+func TestLaunchAgentInPaneRejectsProjectFile(t *testing.T) {
+	projectFile := filepath.Join(t.TempDir(), "not-a-project")
+	if err := os.WriteFile(projectFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create project file: %v", err)
+	}
+
+	launcher := NewPaneLauncher().WithValidatePaths(true)
+	result, err := launcher.LaunchAgentInPane(context.Background(), "test", PaneSpec{
+		Index:     1,
+		AgentType: "cc",
+		Project:   projectFile,
+	})
+
+	if err == nil {
+		t.Fatal("LaunchAgentInPane accepted a regular file as a project directory")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("LaunchAgentInPane result = %+v, want an unsuccessful result", result)
+	}
+	if !strings.Contains(result.Error, "not a directory") {
+		t.Errorf("LaunchAgentInPane error = %q, want directory-validation context", result.Error)
 	}
 }
 

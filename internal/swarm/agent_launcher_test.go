@@ -893,6 +893,7 @@ func TestDefaultAgentCommands(t *testing.T) {
 		{"cod", "codex"},
 		{"gmi", "gemini"},
 		{"grok", "grok"},
+		{"cursor", "cursor-agent"},
 	}
 
 	for _, tt := range tests {
@@ -918,6 +919,7 @@ func TestDefaultAgentArgs(t *testing.T) {
 		{"cod", []string{}},
 		{"gmi", []string{}},
 		{"grok", []string{"--always-approve"}},
+		{"cursor", []string{"--yolo"}},
 	}
 
 	for _, tt := range tests {
@@ -937,6 +939,12 @@ func TestDefaultAgentArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInteractiveSwarmLaunchCommandUsesCursorAgent(t *testing.T) {
+	if got, want := interactiveSwarmLaunchCommand("cursor"), "cursor-agent --yolo"; got != want {
+		t.Errorf("interactiveSwarmLaunchCommand(cursor) = %q, want %q", got, want)
 	}
 }
 
@@ -1184,6 +1192,22 @@ func TestBuildLaunchCommand(t *testing.T) {
 			expectedBinary: "grok",
 			expectedType:   "grok",
 			expectedArgs:   []string{"--always-approve"},
+		},
+		{
+			name:           "Cursor uses headless agent CLI",
+			agentType:      "cursor",
+			useFullPaths:   false,
+			expectedBinary: "cursor-agent",
+			expectedType:   "cursor",
+			expectedArgs:   []string{"--yolo"},
+		},
+		{
+			name:           "Cursor full path uses headless agent CLI",
+			agentType:      "cursor",
+			useFullPaths:   true,
+			expectedBinary: "cursor-agent",
+			expectedType:   "cursor",
+			expectedArgs:   []string{"--yolo"},
 		},
 		{
 			name:           "claude alias normalizes to cc",

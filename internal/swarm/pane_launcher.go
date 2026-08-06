@@ -123,6 +123,13 @@ func (pl *PaneLauncher) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// changeDirectoryCommand renders a project directory for the pane's POSIX
+// shell. Go's %q emits double quotes, which still allow command and variable
+// expansion; project paths are data and must remain literal shell arguments.
+func changeDirectoryCommand(projectPath string) string {
+	return "cd " + tmux.ShellQuote(projectPath)
+}
+
 func (pl *PaneLauncher) sessionOrchestrator() *SessionOrchestrator {
 	if pl.SessionOrchestrator != nil {
 		return pl.SessionOrchestrator
@@ -188,9 +195,11 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 	default:
 	}
 
-	// Validate project path exists
+	// Validate the project path before telling the pane to cd there. A plain
+	// os.Stat check accepts regular files, after which the shell reports a failed
+	// cd but the agent still launches from its previous directory.
 	if pl.ValidatePaths && paneSpec.Project != "" {
-		if _, err := os.Stat(paneSpec.Project); err != nil {
+		if err := ValidateProjectPath(paneSpec.Project); err != nil {
 			pl.logger().Error("[PaneLauncher] project_path_invalid",
 				"project", paneSpec.Project,
 				"error", err)
@@ -224,8 +233,7 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 
 	// Step 1: Change to project directory (if specified)
 	if paneSpec.Project != "" {
-		// Quote path to handle spaces
-		cdCmd := fmt.Sprintf("cd %q", paneSpec.Project)
+		cdCmd := changeDirectoryCommand(paneSpec.Project)
 		if err := client.SendKeys(paneTarget, cdCmd, true); err != nil {
 			pl.logger().Error("[PaneLauncher] cd_failed",
 				"pane_target", paneTarget,

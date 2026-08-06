@@ -540,14 +540,14 @@ func ValidateAgentType(agentType string) error {
 
 // DefaultAgentCommands maps agent types to their default binary names.
 var DefaultAgentCommands = map[string]string{
-	"cc":       "claude",   // Claude Code CLI
-	"cod":      "codex",    // OpenAI Codex CLI
-	"gmi":      "gemini",   // Google Gemini CLI
-	"grok":     "grok",     // xAI Grok Build CLI
-	"cursor":   "cursor",   // Cursor CLI
-	"windsurf": "windsurf", // Windsurf CLI
-	"aider":    "aider",    // Aider CLI
-	"ollama":   "ollama",   // Ollama CLI
+	"cc":       "claude",       // Claude Code CLI
+	"cod":      "codex",        // OpenAI Codex CLI
+	"gmi":      "gemini",       // Google Gemini CLI
+	"grok":     "grok",         // xAI Grok Build CLI
+	"cursor":   "cursor-agent", // Cursor Agent CLI (not the GUI `cursor` launcher)
+	"windsurf": "windsurf",     // Windsurf CLI
+	"aider":    "aider",        // Aider CLI
+	"ollama":   "ollama",       // Ollama CLI
 }
 
 // DefaultAgentArgs provides default arguments per agent type.
@@ -561,7 +561,7 @@ var DefaultAgentArgs = map[string][]string{
 	"cod":      {},
 	"gmi":      {},
 	"grok":     {"--always-approve"},
-	"cursor":   {},
+	"cursor":   {"--yolo"},
 	"windsurf": {},
 	"aider":    {},
 	"ollama":   {},
@@ -723,8 +723,9 @@ func (b *LaunchCommandBuilder) BuildLaunchCommand(spec PaneSpec, workDir string)
 			binary = agentType // Fallback to normalized or raw command name
 		}
 	} else {
-		// Use shell alias or canonical agent command token.
-		binary = agentType
+		// Use shell aliases for cc/cod/gmi, but launch Cursor through its
+		// headless agent binary rather than the GUI `cursor` launcher.
+		binary = swarmLaunchBinary(agentType)
 	}
 
 	// Determine arguments
@@ -832,10 +833,24 @@ func normalizedSwarmLaunchableAgentType(agentType string) string {
 }
 
 func interactiveSwarmLaunchCommand(agentType string) string {
-	if agent.AgentType(agentType).Canonical() == agent.AgentTypeGrok {
+	switch agent.AgentType(agentType).Canonical() {
+	case agent.AgentTypeGrok:
 		return "grok --always-approve"
+	case agent.AgentTypeCursor:
+		return "cursor-agent --yolo"
 	}
 	return defaultSwarmLaunchCommand(agentType)
+}
+
+// swarmLaunchBinary chooses the executable for a canonical swarm agent type.
+// Most built-in types intentionally use their established shell aliases. Cursor
+// is the exception: its `cursor` command is the GUI launcher, while
+// `cursor-agent` is the headless CLI that can run inside a tmux pane.
+func swarmLaunchBinary(agentType string) string {
+	if agentType == "cursor" {
+		return DefaultAgentCommands[agentType]
+	}
+	return agentType
 }
 
 func defaultSwarmLaunchCommand(agentType string) string {

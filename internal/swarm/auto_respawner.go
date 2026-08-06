@@ -929,11 +929,10 @@ func (r *AutoRespawner) cdToProject(ctx context.Context, sessionPane string) err
 
 	client := r.tmuxClient()
 
-	// Use shell escaping for paths with spaces
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cdCmd := fmt.Sprintf("cd %q", projectPath)
+	cdCmd := changeDirectoryCommand(projectPath)
 	if err := client.SendKeys(sessionPane, cdCmd, true); err != nil {
 		return fmt.Errorf("cd to project: %w", err)
 	}
@@ -996,7 +995,7 @@ func (r *AutoRespawner) getAgentCommand(agentType string) string {
 	case "grok":
 		return ""
 	case "cursor":
-		return "cursor"
+		return "cursor-agent --yolo"
 	case "windsurf":
 		return "windsurf"
 	case "aider":

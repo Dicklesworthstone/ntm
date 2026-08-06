@@ -664,7 +664,7 @@ func TestAutoRespawnerRespawnSuccessEmitsEvent(t *testing.T) {
 	want := []sendKeysCall{
 		{paneID: "test:1.1", text: "/exit", enter: true},
 		{paneID: "test:1.1", text: "clear", enter: true},
-		{paneID: "test:1.1", text: `cd "/tmp/test project"`, enter: true},
+		{paneID: "test:1.1", text: "cd '/tmp/test project'", enter: true},
 		{paneID: "test:1.1", text: "cod", enter: true},
 	}
 	if len(mock.sendKeysCalls) != len(want) {
@@ -1041,6 +1041,7 @@ func TestGetAgentCommand(t *testing.T) {
 		{"google-gemini", "gmi"},
 		{"grok", ""},
 		{"grok-build", ""},
+		{"cursor", "cursor-agent --yolo"},
 		{"ws", "windsurf"},
 		{"unknown", "unknown"},
 	}
@@ -2282,7 +2283,7 @@ func TestAutoRespawnerCdToProject(t *testing.T) {
 	}
 
 	call := mock.sendKeysCalls[0]
-	expected := `cd "/home/user/myproject"`
+	expected := "cd '/home/user/myproject'"
 	if call.text != expected {
 		t.Errorf("expected command %q, got %q", expected, call.text)
 	}
