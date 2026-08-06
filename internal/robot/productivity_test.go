@@ -138,6 +138,33 @@ func TestGetProductivityDoesNotConvergeWithoutRecognizedAgentPanes(t *testing.T)
 	}
 }
 
+func TestAdvanceConvergenceStateRequiresStableReadyCountAndStreak(t *testing.T) {
+	state := ConvergenceState{}
+	first := &ProductivityOutput{Decision: ProductivityConverged, ReadyBeadCount: 0}
+	state, met := AdvanceConvergenceState(state, first, 2)
+	if met || state.ConvergedStreak != 1 || first.ReadyBeadDelta != 0 {
+		t.Fatalf("first observation = state %+v met=%v delta=%d, want streak 1 and not met", state, met, first.ReadyBeadDelta)
+	}
+
+	second := &ProductivityOutput{Decision: ProductivityConverged, ReadyBeadCount: 0}
+	state, met = AdvanceConvergenceState(state, second, 2)
+	if !met || state.ConvergedStreak != 2 || second.ReadyBeadDelta != 0 {
+		t.Fatalf("second observation = state %+v met=%v delta=%d, want streak 2 and met", state, met, second.ReadyBeadDelta)
+	}
+
+	newWork := &ProductivityOutput{Decision: ProductivityConverged, ReadyBeadCount: 1}
+	state, met = AdvanceConvergenceState(state, newWork, 2)
+	if met || state.ConvergedStreak != 0 || newWork.ReadyBeadDelta != 1 {
+		t.Fatalf("ready-work change = state %+v met=%v delta=%d, want reset", state, met, newWork.ReadyBeadDelta)
+	}
+
+	unknown := &ProductivityOutput{Decision: ProductivityUnknown, ReadyBeadCount: 1}
+	state, met = AdvanceConvergenceState(state, unknown, 2)
+	if met || state.ConvergedStreak != 0 {
+		t.Fatalf("unknown observation = state %+v met=%v, want reset", state, met)
+	}
+}
+
 func TestIsBuildOrTestCommand(t *testing.T) {
 	for _, tc := range []struct {
 		command string

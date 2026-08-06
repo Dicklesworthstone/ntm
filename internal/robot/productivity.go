@@ -70,6 +70,16 @@ type BuildProcess struct {
 	Command string `json:"command"`
 }
 
+// ConvergenceState is the durable-in-memory state a wait loop needs between
+// productivity observations. It deliberately contains no filesystem path or
+// process-global state: callers own its lifecycle instead of recreating the
+// former /tmp streak files.
+type ConvergenceState struct {
+	PreviousReadyBeadCount int
+	HasPreviousReadyCount  bool
+	ConvergedStreak        int
+}
+
 type productivityDependencies struct {
 	sessionExists func(string) bool
 	getPanes      func(string) ([]tmux.Pane, error)
@@ -216,6 +226,33 @@ func evaluateProductivity(output *ProductivityOutput) (ProductivityDecision, str
 		return ProductivityUnknown, "ready work remains but no attributable activity was observed"
 	}
 	return ProductivityConverged, "no ready work, live builds, or token-attributed progress observed"
+}
+
+// AdvanceConvergenceState records one productivity observation and returns
+// whether the configured number of consecutive converged observations has been
+// reached. A ready-bead count change always resets the streak, even if the
+// current point-in-time report otherwise looks converged.
+func AdvanceConvergenceState(state ConvergenceState, output *ProductivityOutput, requiredStreak int) (ConvergenceState, bool) {
+	if requiredStreak <= 0 {
+		requiredStreak = 1
+	}
+	if output == nil {
+		state.ConvergedStreak = 0
+		return state, false
+	}
+	if state.HasPreviousReadyCount {
+		output.ReadyBeadDelta = output.ReadyBeadCount - state.PreviousReadyBeadCount
+	}
+	readyChanged := state.HasPreviousReadyCount && output.ReadyBeadDelta != 0
+	state.PreviousReadyBeadCount = output.ReadyBeadCount
+	state.HasPreviousReadyCount = true
+
+	if output.Decision != ProductivityConverged || readyChanged {
+		state.ConvergedStreak = 0
+		return state, false
+	}
+	state.ConvergedStreak++
+	return state, state.ConvergedStreak >= requiredStreak
 }
 
 func matchingBuildProcesses(processes []productivityProcess, paneDir string) []productivityProcess {
