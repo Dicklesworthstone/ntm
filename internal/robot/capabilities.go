@@ -1513,6 +1513,23 @@ func buildCommandRegistry() []RobotCommandInfo {
 
 		// === PIPELINE ===
 		{
+			Name:        "sequence",
+			Flag:        "--robot-sequence",
+			Category:    "pipeline",
+			Description: "Manage durable per-pane prompt sequences.",
+			Parameters: []RobotParameter{
+				{Name: "name", Flag: "--robot-sequence", Type: "string", Required: true, Description: "Sequence name"},
+				{Name: "action", Flag: "--sequence-action", Type: "string", Required: false, Default: "next", Description: "Sequence action: create, next, or advance"},
+				{Name: "pane", Flag: "--sequence-pane", Type: "string", Required: false, Description: "Stable pane ID or canonical pane address; required for next and advance"},
+				{Name: "steps", Flag: "--sequence-steps", Type: "string", Required: false, Description: "JSON array of ordered prompts; required for create"},
+			},
+			Examples: []string{
+				"ntm --robot-sequence=review --sequence-action=create --sequence-steps='[\"inspect\",\"challenge\"]'",
+				"ntm --robot-sequence=review --sequence-pane=%7",
+				"ntm --robot-sequence=review --sequence-action=advance --sequence-pane=%7",
+			},
+		},
+		{
 			Name:        "pipeline-run",
 			Flag:        "--robot-pipeline-run",
 			Category:    "pipeline",

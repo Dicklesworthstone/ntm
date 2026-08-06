@@ -149,7 +149,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 145,
+  "surface_count": 146,
   "surfaces": [
     {
       "category": "state",
@@ -1483,6 +1483,21 @@
       "has_lifecycle": false,
       "has_request_semantics": false,
       "name": "pipeline-status",
+      "schema_id": "",
+      "schema_type": ""
+    },
+    {
+      "category": "pipeline",
+      "flag": "--robot-sequence",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "sequence",
       "schema_id": "",
       "schema_type": ""
     },

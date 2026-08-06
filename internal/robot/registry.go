@@ -793,6 +793,10 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			SchemaSource: "external",
 			Sections:     []string{"command_catalog"},
 		},
+		"sequence": {
+			SchemaSource: "external",
+			Sections:     []string{"work", "next_actions"},
+		},
 		"pipeline-run": {
 			SchemaSource: "external",
 			Sections:     []string{"work", "next_actions"},

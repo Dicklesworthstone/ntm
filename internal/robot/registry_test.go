@@ -560,6 +560,7 @@ func TestGetRobotRegistry_OutputContractsAreExplicit(t *testing.T) {
 		"pipeline-status":  true,
 		"profile-list":     true,
 		"profile-show":     true,
+		"sequence":         true,
 		"wait-cancel":      true,
 	}
 	nonJSON := map[string]string{"help": "text", "markdown": "markdown", "terse": "text"}
