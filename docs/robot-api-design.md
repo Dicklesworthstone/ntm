@@ -243,6 +243,7 @@ as complete.
 | Operation | Evidence to inspect | Meaning and limitations |
 |---|---|---|
 | `--robot-send` | `targets`, `successful`, and `failed` | A successful target received the tmux delivery attempt. This is dispatch evidence only; it does not prove the agent processed the prompt. |
+| `--robot-send` with `--verify-render` | One `render_evidence` entry per target; require `delivered_and_rendered: true` for every target | NTM captures bounded pane output before and after dispatch. `delivered_and_rendered` requires dispatch success, both captures, and a changed rendered output. Missing, unchanged, or unavailable evidence makes the overall response `success: false`; it proves rendered delivery, not prompt comprehension. |
 | `--robot-send` with `--track` | `send` plus `ack.confirmations`, `ack.pending`, `ack.failed`, and `ack.timed_out` | The strongest prompt-consumption evidence. A confirmation reports its `ack_type`, time, and latency. Pending or timed-out panes require follow-up; do not retry blindly. |
 | `--robot-tail=SESSION --fresh` | Per-pane `capture_collected_at`, `capture_provenance`, and optional `capture_error` | A direct post-action observation. `capture_provenance: "live"` is fresh capture evidence; `"unavailable"` means the pane was not observed and is not evidence of no effect. |
 | `--robot-spawn` with `--spawn-wait` | The command waits up to `--spawn-timeout` for ready observations | Readiness-gated spawn evidence. A timeout is an error rather than a claim that all agents booted; inspect the resulting session with a fresh tail. |
@@ -260,6 +261,7 @@ assuming that an accepted keypress was consumed.
 
 ```bash
 ntm --robot-send=payments --msg='Run focused tests and report the result.' --track --ack-timeout=30s
+ntm --robot-send=payments --msg='Run focused tests and report the result.' --verify-render
 ntm --robot-tail=payments --fresh --panes=1,2
 ```
 
