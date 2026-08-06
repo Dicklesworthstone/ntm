@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -902,5 +903,46 @@ func TestRunGitCommand_ReapsProcessOnOutputLimit(t *testing.T) {
 	}
 	if cmd.ProcessState == nil {
 		t.Fatal("runGitCommand returned before reaping the oversized-output process")
+	}
+}
+
+func TestIsGitRepoWithCommand_RespectsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git helper uses /bin/sh")
+	}
+
+	dir := t.TempDir()
+	gitPath := filepath.Join(dir, "git")
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if isGitRepoWithCommand(ctx, gitPath, dir, filepath.Join(dir, ".git")) {
+		t.Fatal("isGitRepoWithCommand() = true for a cancelled git probe")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("isGitRepoWithCommand() returned after %s, want prompt cancellation", elapsed)
+	}
+}
+
+func TestRunGitCommandReportsTimeoutWhileReadingOutput(t *testing.T) {
+	if os.Getenv("NTM_TEST_GIT_HANG") == "1" {
+		select {}
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunGitCommandReportsTimeoutWhileReadingOutput$")
+	cmd.Env = append(os.Environ(), "NTM_TEST_GIT_HANG=1")
+
+	_, err := runGitCommand(cmd, ctx, "status")
+	if err == nil || !strings.Contains(err.Error(), "git command timed out") {
+		t.Fatalf("runGitCommand error = %v, want git command timeout", err)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("runGitCommand returned before reaping the timed-out process")
 	}
 }
