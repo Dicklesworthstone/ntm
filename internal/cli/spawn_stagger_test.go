@@ -157,6 +157,15 @@ func TestValidateSpawnStaggerOptions(t *testing.T) {
 			opts: SpawnOptions{StaggerMode: "fixed", StaggerDelay: maxStaggerInterval},
 		},
 		{
+			name: "smart mode is accepted",
+			opts: SpawnOptions{StaggerMode: "smart"},
+		},
+		{
+			name:    "unsupported mode is rejected",
+			opts:    SpawnOptions{StaggerMode: "adaptive"},
+			wantErr: "--stagger-mode must be one of none, fixed, or smart; got \"adaptive\"",
+		},
+		{
 			name:    "fixed interval above maximum is rejected",
 			opts:    SpawnOptions{StaggerMode: "fixed", StaggerDelay: maxStaggerInterval + time.Second},
 			wantErr: "--stagger-delay must be between 0 and 5m0s",
@@ -186,6 +195,16 @@ func TestSpawnRejectsInvalidStaggerBeforeLifecycleValidation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "--stagger must be between 0 and 5m0s") {
 		t.Fatalf("spawnSessionLogicComposable() error = %v, want stagger validation error", err)
+	}
+}
+
+func TestSpawnRejectsUnsupportedStaggerModeBeforeLifecycleValidation(t *testing.T) {
+	err := spawnSessionLogicComposable(context.Background(), SpawnOptions{
+		Session:     "invalid session name",
+		StaggerMode: "adaptive",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--stagger-mode must be one of none, fixed, or smart") {
+		t.Fatalf("spawnSessionLogicComposable() error = %v, want stagger mode validation error", err)
 	}
 }
 

@@ -573,6 +573,11 @@ func normalizeSpawnOptions(opts *SpawnOptions) {
 }
 
 func validateSpawnStaggerOptions(opts SpawnOptions) error {
+	switch opts.StaggerMode {
+	case "", "none", "fixed", "smart":
+	default:
+		return fmt.Errorf("--stagger-mode must be one of none, fixed, or smart; got %q", opts.StaggerMode)
+	}
 	if opts.Stagger < 0 || opts.Stagger > maxStaggerInterval {
 		return fmt.Errorf("--stagger must be between 0 and %s", maxStaggerInterval)
 	}
