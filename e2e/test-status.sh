@@ -82,10 +82,24 @@ export NTM_TEST_SPAWN_PANE_DELAY_MS=250
 "$E2E_NTM_BIN" spawn "$spawning_session" --no-user --create-dir --no-cass-context --no-recovery --no-hooks --cc=2 >/dev/null 2>&1 &
 spawn_pid=$!
 E2E_SESSIONS+=("$spawning_session")
-sleep 0.1
-spawning_json="$("$E2E_NTM_BIN" status "$spawning_session" --json)"
+spawning_json=''
+observed_during_spawn=false
+for ((attempt = 0; attempt < 100; attempt++)); do
+	spawning_json="$("$E2E_NTM_BIN" status "$spawning_session" --json)"
+	if jq -e '.exists == true' >/dev/null 2>&1 <<<"$spawning_json" && kill -0 "$spawn_pid" 2>/dev/null; then
+		observed_during_spawn=true
+		break
+	fi
+	if ! kill -0 "$spawn_pid" 2>/dev/null; then
+		break
+	fi
+	sleep 0.05
+done
+[[ "$observed_during_spawn" == true ]] || e2e_fail 'status observed an active session while spawn was still in progress'
+log_assertion_pass 'status observed an active session while spawn was still in progress'
 assert_valid_json "$spawning_json" 'status stays valid JSON while agents spawn'
 assert_json_value "$spawning_json" '.session' "$spawning_session" 'spawn-in-progress status identifies requested session'
+assert_json_value "$spawning_json" '.exists' 'true' 'spawn-in-progress status reports an active session'
 if ! wait "$spawn_pid"; then
 	e2e_fail 'spawn-in-progress fixture completed successfully'
 fi
