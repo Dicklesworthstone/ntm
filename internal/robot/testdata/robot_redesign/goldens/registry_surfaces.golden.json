@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 134,
+  "schema_type_count": 135,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -108,6 +108,7 @@
     "pane_address",
     "plan",
     "probe",
+    "productivity",
     "proxy_status",
     "quota_check",
     "quota_status",
@@ -150,7 +151,7 @@
     "xf_status"
   ],
   "section_count": 13,
-  "surface_count": 146,
+  "surface_count": 147,
   "surfaces": [
     {
       "category": "state",
@@ -576,6 +577,21 @@
       "name": "probe",
       "schema_id": "ntm:robot:probe:v1",
       "schema_type": "probe"
+    },
+    {
+      "category": "state",
+      "flag": "--robot-productivity",
+      "has_action_handoff": false,
+      "has_attention_ops": false,
+      "has_boundedness": false,
+      "has_consumer_guidance": false,
+      "has_explainability": false,
+      "has_follow_up": false,
+      "has_lifecycle": false,
+      "has_request_semantics": false,
+      "name": "productivity",
+      "schema_id": "ntm:robot:productivity:v1",
+      "schema_type": "productivity"
     },
     {
       "category": "state",
