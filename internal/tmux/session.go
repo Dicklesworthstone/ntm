@@ -2657,7 +2657,10 @@ func (c *Client) CapturePaneOutputContext(ctx context.Context, target string, li
 	if lines < 0 {
 		lines = -lines
 	}
-	return c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", lines))
+	started := time.Now()
+	output, err := c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", lines))
+	c.recordCaptureBackpressure(target, lines, time.Since(started), err)
+	return output, err
 }
 
 // CapturePaneOutput captures the output of a pane (default client)
@@ -2680,7 +2683,10 @@ func (c *Client) CapturePaneVisible(target string) (string, error) {
 // CapturePaneVisibleContext captures only the visible screen while honoring
 // caller cancellation.
 func (c *Client) CapturePaneVisibleContext(ctx context.Context, target string) (string, error) {
-	return c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", "0")
+	started := time.Now()
+	output, err := c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", "0")
+	c.recordCaptureBackpressure(target, 0, time.Since(started), err)
+	return output, err
 }
 
 // CapturePaneVisible captures only the visible screen of a pane (default client).

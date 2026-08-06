@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/backpressure"
 )
 
 // =============================================================================
@@ -57,6 +59,32 @@ func TestRealCaptureBasic(t *testing.T) {
 		t.Logf("output: %q", output)
 		t.Errorf("expected output to contain marker %s", marker)
 	}
+}
+
+func TestRealCaptureFeedsBackpressureSnapshot(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSessionForCapture(t)
+	panes, err := GetPanes(session)
+	if err != nil {
+		t.Fatalf("GetPanes failed: %v", err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("test session has no panes")
+	}
+
+	if _, err := CapturePaneOutput(panes[0].ID, 20); err != nil {
+		t.Fatalf("CapturePaneOutput failed: %v", err)
+	}
+
+	inputs := DefaultCaptureBackpressureInputs()
+	snapshot := backpressure.Evaluate(inputs, backpressure.SnapshotOptions{})
+	for _, surface := range snapshot.Surfaces {
+		if surface.Surface == backpressure.SurfaceTmuxCapture && surface.Pane == panes[0].ID {
+			return
+		}
+	}
+	t.Fatalf("backpressure snapshot missing live capture for pane %q: %#v", panes[0].ID, snapshot.Surfaces)
 }
 
 func TestRealCaptureDifferentLineCounts(t *testing.T) {

@@ -2,6 +2,7 @@ package serve
 
 import (
 	"github.com/Dicklesworthstone/ntm/internal/backpressure"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // BackpressureInputs returns the server-side overload counters that are cheap
@@ -10,13 +11,15 @@ func (s *Server) BackpressureInputs() []backpressure.SurfaceInput {
 	if s == nil {
 		return []backpressure.SurfaceInput{missingServeInput(backpressure.SurfaceREST, "server is nil")}
 	}
-	inputs := make([]backpressure.SurfaceInput, 0, 2)
+	tmuxInputs := tmux.DefaultCaptureBackpressureInputs()
+	inputs := make([]backpressure.SurfaceInput, 0, 2+len(tmuxInputs))
 	if s.wsHub != nil {
 		inputs = append(inputs, s.wsHub.BackpressureInput())
 	} else {
 		inputs = append(inputs, missingServeInput(backpressure.SurfaceWebSocket, "WebSocket hub is unavailable."))
 	}
 	inputs = append(inputs, missingServeInput(backpressure.SurfaceREST, "REST handler queue metrics are not wired yet."))
+	inputs = append(inputs, tmuxInputs...)
 	return inputs
 }
 

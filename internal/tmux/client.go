@@ -92,6 +92,10 @@ const (
 type Client struct {
 	Remote string // "user@host" or empty for local
 
+	// captureBackpressure keeps the most recent capture attempt for each pane
+	// so runtime overload snapshots are based on live tmux activity.
+	captureBackpressure *captureBackpressureTracker
+
 	// Circuit breaker state
 	cbFailures  atomic.Int64 // consecutive failure count
 	cbOpenUntil atomic.Int64 // unix-nano timestamp when circuit closes (0 = closed)
@@ -100,7 +104,10 @@ type Client struct {
 
 // NewClient creates a new tmux client
 func NewClient(remote string) *Client {
-	return &Client{Remote: remote}
+	return &Client{
+		Remote:              remote,
+		captureBackpressure: newCaptureBackpressureTracker(),
+	}
 }
 
 // DefaultClient is the default local client
