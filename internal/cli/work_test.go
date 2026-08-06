@@ -202,7 +202,9 @@ func TestWorkLabelCommandsSmoke(t *testing.T) {
 		{
 			name: "label-health text output",
 			args: []string{"work", "label-health"},
-			want: []string{"Label Health", "backend", "warning", "Velocity:", "Staleness:", "Blocked: 3"},
+			// 9dc4ebaf realigned this with bv's live contract: the flat
+			// Staleness float became Freshness.StaleCount, rendered as "Stale:".
+			want: []string{"Label Health", "backend", "warning", "Velocity:", "Stale:", "Blocked: 3"},
 		},
 		{
 			name: "label-flow text output",

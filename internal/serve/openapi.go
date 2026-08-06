@@ -394,7 +394,7 @@ func buildInputSchema(cmd kernel.Command) *Schema {
 // definition, so the OpenAPI generator cannot faithfully expand its fields.
 // A generic object is still an honest, valid contract: clients know the body
 // or response is an object and the document never points at a schema that does
-// not exist. Concrete schema registration can replace this placeholder later.
+// not exist. Concrete schema registration can replace this generic form later.
 func ensureReferencedSchema(components *OpenAPIComponents, schema *Schema, source *kernel.SchemaRef) {
 	if components == nil || schema == nil || schema.Ref == "" {
 		return

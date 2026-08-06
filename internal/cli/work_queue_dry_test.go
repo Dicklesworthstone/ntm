@@ -556,8 +556,11 @@ func TestQueueDryIdeationNonDrySkipsWithoutForce(t *testing.T) {
 	if got.Roadmap != nil {
 		t.Fatalf("Roadmap=%+v, want nil when ready work exists", got.Roadmap)
 	}
-	if !containsQueueDryRecommendation(got.NextActions, "claim_top_ready") {
-		t.Fatalf("next actions=%+v, want claim_top_ready", got.NextActions)
+	// c86b3a3c deliberately downgraded this from claim_top_ready: a triage
+	// ranking orders candidates, it does not authorize an assignment, so the
+	// guidance now sends the caller to verify the live ready queue first.
+	if !containsQueueDryRecommendation(got.NextActions, "inspect_ready_queue") {
+		t.Fatalf("next actions=%+v, want inspect_ready_queue", got.NextActions)
 	}
 }
 

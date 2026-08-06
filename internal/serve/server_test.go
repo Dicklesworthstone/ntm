@@ -61,7 +61,18 @@ func setupTestServer(t *testing.T) (*Server, *state.Store) {
 	// that need real tmux own their lifecycle in the E2E suite instead.
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
-	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	// Deliberately NOT t.TempDir(): that path embeds the full test name, and
+	// tmux appends "/default" to build a unix socket path, which is capped near
+	// 104 bytes. A long test name pushed it over the limit, so tmux failed to
+	// connect at all and handlers reported INTERNAL_ERROR instead of the
+	// SESSION_NOT_FOUND their tests assert. A short fixed prefix keeps the
+	// socket path bounded while staying per-test isolated.
+	socketRoot, err := os.MkdirTemp("", "ntmt")
+	if err != nil {
+		t.Fatalf("create tmux socket root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+	t.Setenv("TMUX_TMPDIR", socketRoot)
 
 	// Most serve tests only exercise handler logic and do not need a file-backed
 	// database. Use an isolated in-memory store to avoid repeated disk-backed

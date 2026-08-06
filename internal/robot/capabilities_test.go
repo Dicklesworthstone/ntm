@@ -1327,8 +1327,12 @@ func TestBuildCommandRegistryWaitCommandReflectsExtendedConditions(t *testing.T)
 		t.Fatal("expected wait command in registry")
 	}
 
-	if !strings.Contains(waitCmd.Description, "attention-feed conditions") {
-		t.Fatalf("wait description %q should mention attention-feed conditions", waitCmd.Description)
+	// Assert on the tokens rather than one contiguous phrase: the description
+	// legitimately grew a third condition family ("evidence-backed convergence"),
+	// which split the old "attention-feed conditions" substring without changing
+	// what this test is actually checking for.
+	if !strings.Contains(waitCmd.Description, "attention-feed") || !strings.Contains(waitCmd.Description, "condition") {
+		t.Fatalf("wait description %q should mention attention-feed wait conditions", waitCmd.Description)
 	}
 
 	var untilParam *RobotParameter
@@ -1420,7 +1424,11 @@ func TestDocsContentMentionsAttentionWait(t *testing.T) {
 			continue
 		}
 		foundAgentControl = true
-		if !strings.Contains(section.Body, "pane state or attention-feed condition") {
+		// Token-based for the same reason as the registry description above:
+		// the docs line now lists a third condition family, so the old
+		// contiguous "pane state or attention-feed condition" phrase no longer
+		// appears even though the docs still say exactly what this asserts.
+		if !strings.Contains(section.Body, "attention-feed") || !strings.Contains(section.Body, "condition") {
 			t.Fatalf("Agent Control docs should mention attention-feed wait conditions, got %q", section.Body)
 		}
 	}

@@ -1235,9 +1235,17 @@ func (r *AccountRotator) nextCodexProfile(ctx context.Context, provider, current
 		return "", fmt.Errorf("parse caam list: %w", err)
 	}
 	var names []string
+	active := ""
 	for _, a := range accounts {
 		if a.Provider != provider {
 			continue
+		}
+		// Record the active account BEFORE the rate-limit filter. After a limit
+		// hit caam usually flags the account we are rotating away from as
+		// rate-limited, and skipping it first would lose the very anchor the
+		// round-robin below needs.
+		if a.Active && active == "" {
+			active = a.ID
 		}
 		if a.RateLimited {
 			continue
@@ -1247,13 +1255,23 @@ func (r *AccountRotator) nextCodexProfile(ctx context.Context, provider, current
 	if len(names) == 0 {
 		return "", fmt.Errorf("no available %s accounts to rotate to", provider)
 	}
+	// current comes from NTM's per-pane rotation state, which is empty until this
+	// pane has rotated at least once. Falling straight through to names[0] then
+	// selected whichever account caam listed first -- typically the active, just
+	// rate-limited one -- so the first rotation after a limit hit was a no-op
+	// that moved the pane onto the account it was already stuck on. Anchor on
+	// caam's reported active account instead.
+	if current == "" {
+		current = active
+	}
 	// Round-robin past the current account.
 	for i, n := range names {
 		if n == current {
 			return names[(i+1)%len(names)], nil
 		}
 	}
-	// Current not found in list (or empty) — just take the first available.
+	// Current not found among available accounts (it may itself be rate-limited,
+	// which is the common case here) — take the first available alternative.
 	return names[0], nil
 }
 
