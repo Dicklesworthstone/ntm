@@ -7,13 +7,12 @@ import (
 	"time"
 )
 
-// Health performs a quick health check
+// Health performs CASS's dedicated health check.
 func (c *Client) Health(ctx context.Context) (*StatusResponse, error) {
 	if !c.IsInstalled() {
 		return nil, ErrNotInstalled
 	}
-	// Use "status" as health check for now, unless "health" is distinct in CASS
-	return c.runStatusCmd(ctx, "status")
+	return c.runStatusCmd(ctx, "health")
 }
 
 // Status returns full index status

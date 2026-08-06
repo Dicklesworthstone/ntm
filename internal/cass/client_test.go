@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +17,11 @@ import (
 type mockExecutor struct {
 	output []byte
 	err    error
+	args   [][]string
 }
 
 func (m *mockExecutor) Run(ctx context.Context, args ...string) ([]byte, error) {
+	m.args = append(m.args, append([]string(nil), args...))
 	return m.output, m.err
 }
 
@@ -60,6 +63,21 @@ func TestClient_Status(t *testing.T) {
 	}
 	if status.Conversations != 42 {
 		t.Errorf("expected 42 conversations, got %d", status.Conversations)
+	}
+}
+
+func TestClient_HealthUsesHealthCommand(t *testing.T) {
+	executor := &mockExecutor{output: []byte(`{"healthy": true}`)}
+	client := NewClient(WithExecutor(executor))
+
+	if _, err := client.Health(context.Background()); err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	if len(executor.args) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(executor.args))
+	}
+	if got, want := executor.args[0], []string{"health", "--json"}; !slices.Equal(got, want) {
+		t.Errorf("Health() command = %v, want %v", got, want)
 	}
 }
 
