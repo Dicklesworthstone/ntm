@@ -94,7 +94,7 @@ case "$ARG" in
         exit 0
         ;;
     robot-label-flow)
-        echo '{"flow_matrix":{"backend":{"frontend":2}},"dependencies":[{"from":"backend","to":"frontend","count":2,"weight":0.5}],"bottleneck_labels":["backend"]}'
+        echo '{"flow":{"labels":["backend","frontend"],"flow_matrix":[[0,2],[0,0]],"dependencies":[{"from_label":"backend","to_label":"frontend","issue_count":2,"issue_ids":["bd-1","bd-2"]}],"bottleneck_labels":["backend"]}}'
         exit 0
         ;;
     robot-label-health)
