@@ -4484,6 +4484,59 @@ func TestPrintAttentionTimeoutForcesCanonicalFailureJSON(t *testing.T) {
 	}
 }
 
+func TestPrintAttentionAdvancesAcrossBoundedReplay(t *testing.T) {
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       2000,
+		RetentionPeriod:   time.Hour,
+		HeartbeatInterval: 0,
+	})
+	t.Cleanup(feed.Stop)
+	oldFeed := GetAttentionFeed()
+	SetAttentionFeed(feed)
+	t.Cleanup(func() { SetAttentionFeed(oldFeed) })
+
+	for i := 0; i < 1000; i++ {
+		feed.Append(AttentionEvent{
+			Session:       "proj",
+			Category:      EventCategorySystem,
+			Actionability: ActionabilityBackground,
+			Severity:      SeverityInfo,
+			Summary:       "background event",
+		})
+	}
+	target := feed.Append(AttentionEvent{
+		Session:       "proj",
+		Category:      EventCategoryAgent,
+		Actionability: ActionabilityActionRequired,
+		Severity:      SeverityWarning,
+		Summary:       "operator action required",
+	})
+
+	stdout, err := captureStdout(t, func() error {
+		if exitCode := PrintAttention(AttentionOptions{
+			SinceCursor:  0,
+			Session:      "proj",
+			Timeout:      250 * time.Millisecond,
+			PollInterval: time.Millisecond,
+			Condition:    WaitConditionActionRequired,
+		}); exitCode != 0 {
+			t.Fatalf("PrintAttention exit code = %d, want 0", exitCode)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("capture PrintAttention: %v", err)
+	}
+
+	var output AttentionResponse
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("attention response is not JSON: %v\\noutput=%q", err, stdout)
+	}
+	if output.TriggerEvent == nil || output.TriggerEvent.Cursor != target.Cursor {
+		t.Fatalf("TriggerEvent = %#v, want cursor %d beyond the first replay page", output.TriggerEvent, target.Cursor)
+	}
+}
+
 func TestAttentionResponse_CursorExpired(t *testing.T) {
 	// Verify cursor expired response has correct structure
 	resp := AttentionResponse{

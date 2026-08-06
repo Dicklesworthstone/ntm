@@ -1145,6 +1145,7 @@ func PrintAttention(opts AttentionOptions) int {
 	var matchedCondition string
 	var triggerEvent *AttentionEvent
 	var finalCursor = opts.SinceCursor
+	attentionCursor := opts.SinceCursor
 
 	// Polling loop for attention conditions
 	for {
@@ -1156,7 +1157,7 @@ func PrintAttention(opts AttentionOptions) int {
 		// Check for attention events since our cursor
 		result := checkAttentionConditions(
 			[]string{opts.Condition},
-			opts.SinceCursor,
+			attentionCursor,
 			opts.Session,
 			opts.Profile,
 		)
@@ -1187,6 +1188,13 @@ func PrintAttention(opts AttentionOptions) int {
 			}
 			finalCursor = result.NextCursor
 			break
+		}
+		if result != nil && result.NextCursor > attentionCursor {
+			// Attention replay is page-bounded. Continue from the last inspected
+			// event so a matching event beyond the first page is not retried
+			// forever until this command times out.
+			attentionCursor = result.NextCursor
+			finalCursor = attentionCursor
 		}
 
 		time.Sleep(opts.PollInterval)
