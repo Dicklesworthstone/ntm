@@ -31,6 +31,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	synthtui "github.com/Dicklesworthstone/ntm/internal/tui/synthesizer"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
 // RoutingScore holds routing info for a single agent.
@@ -322,6 +323,12 @@ type Model struct {
 	spawnPanel           *panels.SpawnPanel
 	conflictsPanel       *panels.ConflictsPanel
 	rotationConfirmPanel *panels.RotationConfirmPanel
+	workflowPanel        *panels.WorkflowPanel
+	workflowState        *workflow.WorkflowState
+	workflowError        error
+	lastWorkflowFetch    time.Time
+	fetchingWorkflow     bool
+	showWorkflowPanel    bool
 
 	// Data for new panels
 	beadsSummary             bv.BeadsSummary
@@ -603,6 +610,7 @@ func New(session, projectDir string) Model {
 		spawnPanel:           panels.NewSpawnPanel(),
 		conflictsPanel:       panels.NewConflictsPanel(),
 		rotationConfirmPanel: panels.NewRotationConfirmPanel(),
+		workflowPanel:        panels.NewWorkflowPanel(),
 		velocityByType:       make(map[string][]float64),
 
 		// Init() only kicks off the critical first-paint session fetch. Everything

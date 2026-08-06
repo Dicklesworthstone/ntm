@@ -148,6 +148,15 @@ func TestKeyMapBindingsHaveHelp(t *testing.T) {
 	}
 }
 
+func TestWorkflowAndSpawnWizardBindingsDoNotCollide(t *testing.T) {
+	if got := dashKeys.WorkflowToggle.Keys(); len(got) != 1 || got[0] != "w" {
+		t.Fatalf("workflow toggle keys = %v, want [w]", got)
+	}
+	if got := dashKeys.SpawnWizard.Keys(); len(got) != 1 || got[0] != "ctrl+w" {
+		t.Fatalf("spawn wizard keys = %v, want [ctrl+w]", got)
+	}
+}
+
 // BenchmarkKeyMapShortHelp benchmarks ShortHelp allocation.
 func BenchmarkKeyMapShortHelp(b *testing.B) {
 	for i := 0; i < b.N; i++ {

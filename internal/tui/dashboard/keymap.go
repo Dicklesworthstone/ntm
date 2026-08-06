@@ -29,7 +29,8 @@ type KeyMap struct {
 	Checkpoint     key.Binding // 'ctrl+k' to create checkpoint
 	ToastDismiss   key.Binding // 'ctrl+x' to dismiss newest toast
 	ToastHistory   key.Binding // 'n' to toggle toast history
-	SpawnWizard    key.Binding // 'w' to open spawn wizard [tui-upgrade: bd-uz09d]
+	SpawnWizard    key.Binding // ctrl+w opens spawn wizard [tui-upgrade: bd-uz09d]
+	WorkflowToggle key.Binding // 'w' toggles the workflow status panel
 	ViewToggle     key.Binding // 'v' to toggle table/list view [tui-upgrade: bd-ijnu3]
 	Tab            key.Binding
 	ShiftTab       key.Binding
@@ -54,10 +55,10 @@ func (k KeyMap) ShortHelp() []key.Binding {
 // Implements help.KeyMap interface.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Zoom},                                                                  // Navigation
-		{k.NextPanel, k.PrevPanel, k.ViewToggle},                                                // Panels & Actions
-		{k.Refresh, k.ContextRefresh, k.MailRefresh, k.CassSearch},                              // Data
-		{k.Help, k.Quit, k.Pause, k.Diagnostics, k.ToastDismiss, k.ToastHistory, k.SpawnWizard}, // Control
+		{k.Up, k.Down, k.Zoom},                                     // Navigation
+		{k.NextPanel, k.PrevPanel, k.ViewToggle},                   // Panels & Actions
+		{k.Refresh, k.ContextRefresh, k.MailRefresh, k.CassSearch}, // Data
+		{k.Help, k.Quit, k.Pause, k.Diagnostics, k.ToastDismiss, k.ToastHistory, k.SpawnWizard, k.WorkflowToggle}, // Control
 	}
 }
 
@@ -96,7 +97,8 @@ var dashKeys = KeyMap{
 	Checkpoint:     key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "create checkpoint")),
 	ToastDismiss:   key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "dismiss toast")),
 	ToastHistory:   key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "toast history")),
-	SpawnWizard:    key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "spawn wizard")),
+	SpawnWizard:    key.NewBinding(key.WithKeys("ctrl+w"), key.WithHelp("ctrl+w", "spawn wizard")),
+	WorkflowToggle: key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "toggle workflow")),
 	ViewToggle:     key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "toggle table view")),
 	Tab:            key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
 	ShiftTab:       key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev panel")),

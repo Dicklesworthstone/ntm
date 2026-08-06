@@ -32,6 +32,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
 func newTestModel(width int) Model {
@@ -1228,7 +1229,7 @@ func TestToastControls(t *testing.T) {
 func TestDashboardSpawnWizardOpensOverlay(t *testing.T) {
 	m := newTestModel(140)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
 	next, ok := updated.(Model)
 	if !ok {
 		t.Fatalf("Update() returned %T, want dashboard.Model", updated)
@@ -1244,6 +1245,41 @@ func TestDashboardSpawnWizardOpensOverlay(t *testing.T) {
 	}
 	if !strings.Contains(status.StripANSI(next.View()), "Spawn Wizard") {
 		t.Fatalf("expected spawn wizard overlay in view, got:\n%s", next.View())
+	}
+}
+
+func TestDashboardWorkflowToggleShowsPanelAndStageDetails(t *testing.T) {
+	m := newTestModel(140)
+	state := &workflow.WorkflowState{
+		WorkflowName:   "red-green",
+		CurrentStage:   "green",
+		StageStartedAt: time.Now().Add(-time.Minute),
+		Agents: map[string]string{
+			"implementer": "codex-1",
+			"tester":      "claude-1",
+		},
+		StageHistory: []workflow.StageRecord{{Stage: "red", Result: "passed"}},
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	next := updated.(Model)
+	if !next.showWorkflowPanel {
+		t.Fatal("expected workflow panel to be shown")
+	}
+	if cmd == nil {
+		t.Fatal("expected workflow state fetch command")
+	}
+
+	updated, _ = next.Update(WorkflowStateMsg{State: state})
+	next = updated.(Model)
+	if got := status.StripANSI(next.renderSidebar(90, 30)); !strings.Contains(got, "Workflow: red-green") || !strings.Contains(got, "● green") {
+		t.Fatalf("workflow panel missing active workflow data:\n%s", got)
+	}
+
+	updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next = updated.(Model)
+	if got := status.StripANSI(next.renderSidebar(90, 30)); !strings.Contains(got, "Stage details: green") {
+		t.Fatalf("enter did not show workflow stage details:\n%s", got)
 	}
 }
 

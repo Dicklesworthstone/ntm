@@ -24,10 +24,16 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
+	"github.com/Dicklesworthstone/ntm/internal/workflow"
 )
 
 // DashboardTickMsg is sent for animation updates.
 type DashboardTickMsg time.Time
+
+type WorkflowStateMsg struct {
+	State *workflow.WorkflowState
+	Err   error
+}
 
 // ActivityState tracks dashboard activity for adaptive tick rate.
 type ActivityState int
