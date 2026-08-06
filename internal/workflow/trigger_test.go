@@ -113,6 +113,17 @@ func TestCommandTriggers(t *testing.T) {
 	}
 }
 
+func TestCommandFailureTriggerRejectsCommandLaunchErrors(t *testing.T) {
+	trigger, err := NewTriggerRegistry().Create(Trigger{Type: TriggerCommandFailure, Command: "ntm-command-that-does-not-exist"})
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	fired, err := trigger.Check(&TriggerContext{Context: context.Background(), ProjectRoot: t.TempDir()})
+	if err == nil || fired {
+		t.Fatalf("Check() for unavailable executable = (%v, %v), want (false, error)", fired, err)
+	}
+}
+
 func TestAgentSaysTriggerHonorsRole(t *testing.T) {
 	trigger, err := NewTriggerRegistry().Create(Trigger{Type: TriggerAgentSays, Pattern: "(?i)approved", Role: "reviewer"})
 	if err != nil {

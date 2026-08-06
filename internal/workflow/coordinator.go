@@ -159,12 +159,28 @@ func (c *RuntimeCoordinator) Transition(trigger string) error {
 }
 
 func (c *RuntimeCoordinator) transitionLocked(ctx *TriggerContext, transition Transition) error {
+	previousStage := c.stage
+	previousCtx := cloneTriggerContext(c.triggerCtx)
 	if err := c.stopTriggersLocked(); err != nil {
 		return err
 	}
 	c.stage = transition.To
 	c.triggerCtx = cloneTriggerContext(ctx)
-	return c.startStageLocked(ctx)
+	if err := c.startStageLocked(ctx); err != nil {
+		// A failed destination trigger must not leave a coordinator marked as
+		// started but without any active transitions. Restore the source stage
+		// so an operator can correct the transient failure and retry the same
+		// transition.
+		c.stage = previousStage
+		c.triggerCtx = previousCtx
+		if restoreErr := c.startStageLocked(previousCtx); restoreErr != nil {
+			c.started = false
+			c.triggerCtx = nil
+			return fmt.Errorf("activate stage %q: %w", transition.To, errors.Join(err, fmt.Errorf("restore source stage %q: %w", previousStage, restoreErr)))
+		}
+		return fmt.Errorf("activate stage %q: %w", transition.To, err)
+	}
+	return nil
 }
 
 func (c *RuntimeCoordinator) startStageLocked(ctx *TriggerContext) error {
@@ -259,6 +275,25 @@ type PipelineCoordinator struct{ *RuntimeCoordinator }
 
 // ParallelCoordinator exposes all participants for a parallel workflow.
 type ParallelCoordinator struct{ *RuntimeCoordinator }
+
+// Start initializes a flowless parallel workflow. Parallel templates are
+// intentionally valid without a FlowConfig: all declared participants start
+// together, so there is no stage or trigger state machine to activate.
+func (c *ParallelCoordinator) Start(ctx *TriggerContext) error {
+	if c.template.Flow != nil {
+		return c.RuntimeCoordinator.Start(ctx)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.started {
+		return nil
+	}
+	c.stage = ""
+	c.triggerCtx = cloneTriggerContext(ctx)
+	c.started = true
+	return nil
+}
 
 // Agents returns a copy so callers cannot mutate coordinator state.
 func (c *ParallelCoordinator) Agents() []CoordinatorAgent {

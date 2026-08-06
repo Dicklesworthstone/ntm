@@ -283,6 +283,15 @@ func (t *commandTrigger) Check(ctx *TriggerContext) (bool, error) {
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return false, fmt.Errorf("command trigger timed out after %s", timeout)
 	}
+	if runCtx.Err() != nil {
+		return false, fmt.Errorf("run command trigger: %w", runCtx.Err())
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return false, fmt.Errorf("run command trigger %q: %w", t.command, err)
+		}
+	}
 	succeeded := err == nil
 	return succeeded == t.wantSuccess, nil
 }

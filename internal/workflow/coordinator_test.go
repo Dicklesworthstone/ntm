@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -132,5 +133,79 @@ func TestCoordinatorRejectsInvalidLifecycle(t *testing.T) {
 	}
 	if _, err := coordinator.GetAgentForTask(Task{}); err == nil {
 		t.Fatal("GetAgentForTask without agents succeeded")
+	}
+}
+
+func TestCoordinatorRestoresSourceStageWhenDestinationTriggerFailsToStart(t *testing.T) {
+	const transitionLabel = "advance"
+	destinationErr := errors.New("destination trigger unavailable")
+	template := &WorkflowTemplate{
+		Name:         "rollback-transition",
+		Coordination: CoordPingPong,
+		Agents:       []WorkflowAgent{{Profile: "cod", Role: "source"}},
+		Flow: &FlowConfig{
+			Initial: "source",
+			Transitions: []Transition{
+				{From: "source", To: "destination", Trigger: Trigger{Type: TriggerManual, Label: transitionLabel}},
+				{From: "destination", To: "done", Trigger: Trigger{Type: TriggerTimeElapsed, Minutes: 1}},
+			},
+		},
+	}
+	registry := NewTriggerRegistry()
+	registry.Register(TriggerTimeElapsed, func(Trigger) (RuntimeTrigger, error) {
+		return nil, destinationErr
+	})
+	coordinator, err := NewCoordinator(template, nil, registry)
+	if err != nil {
+		t.Fatalf("NewCoordinator(): %v", err)
+	}
+	if err := coordinator.Start(&TriggerContext{Context: context.Background()}); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	t.Cleanup(func() { _ = coordinator.Stop() })
+
+	err = coordinator.Transition(transitionLabel)
+	if !errors.Is(err, destinationErr) {
+		t.Fatalf("Transition() error = %v, want destination error", err)
+	}
+	if got := coordinator.CurrentStage(); got != "source" {
+		t.Fatalf("CurrentStage() after failed transition = %q, want source", got)
+	}
+
+	// A second attempt must find the source transition again instead of the
+	// pre-fix state where the coordinator stayed started with no triggers.
+	err = coordinator.Transition(transitionLabel)
+	if !errors.Is(err, destinationErr) {
+		t.Fatalf("second Transition() error = %v, want destination error after source-stage restore", err)
+	}
+}
+
+func TestParallelCoordinatorStartsWithoutFlow(t *testing.T) {
+	template := &WorkflowTemplate{
+		Name:         "parallel-without-flow",
+		Coordination: CoordParallel,
+		Agents: []WorkflowAgent{
+			{Profile: "cod", Role: "research"},
+			{Profile: "cc", Role: "review"},
+		},
+	}
+	coordinator, err := NewCoordinator(template, []CoordinatorAgent{{ID: "a", Role: "research"}, {ID: "b", Role: "review"}}, nil)
+	if err != nil {
+		t.Fatalf("NewCoordinator(): %v", err)
+	}
+	parallel, ok := coordinator.(*ParallelCoordinator)
+	if !ok {
+		t.Fatalf("coordinator type = %T, want *ParallelCoordinator", coordinator)
+	}
+	if err := parallel.Start(&TriggerContext{Context: context.Background()}); err != nil {
+		t.Fatalf("Start() flowless parallel coordinator: %v", err)
+	}
+	t.Cleanup(func() { _ = parallel.Stop() })
+
+	if got := parallel.Agents(); len(got) != 2 {
+		t.Fatalf("Agents() returned %d agents, want 2", len(got))
+	}
+	if transitioned, err := parallel.Evaluate(&TriggerContext{}); err != nil || transitioned {
+		t.Fatalf("Evaluate() = (%v, %v), want (false, nil) for flowless parallel workflow", transitioned, err)
 	}
 }
