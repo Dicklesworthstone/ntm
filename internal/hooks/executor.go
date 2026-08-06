@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -139,14 +138,7 @@ func (e *Executor) runSingleHook(ctx context.Context, hook *CommandHook, execCtx
 
 	// Prepare command
 	cmd := exec.CommandContext(hookCtx, "sh", "-c", hook.Command)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if err == syscall.ESRCH {
-			return os.ErrProcessDone
-		}
-		return err
-	}
+	configureHookProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 
 	// Set working directory
