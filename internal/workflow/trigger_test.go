@@ -90,6 +90,60 @@ func TestFileModifiedTrigger(t *testing.T) {
 	waitForTrigger(t, trigger, ctx)
 }
 
+func TestFileCreatedTriggerWatchesExistingNestedDirectories(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "internal", "workflow")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+	trigger, err := NewTriggerRegistry().Create(Trigger{Type: TriggerFileCreated, Pattern: "internal/**/*.go"})
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	t.Cleanup(func() {
+		if err := trigger.Stop(); err != nil {
+			t.Errorf("Stop(): %v", err)
+		}
+	})
+	ctx := &TriggerContext{ProjectRoot: dir}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "trigger.go"), []byte("package workflow\n"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	waitForTrigger(t, trigger, ctx)
+}
+
+func TestFileModifiedTriggerWatchesNewNestedDirectories(t *testing.T) {
+	dir := t.TempDir()
+	trigger, err := NewTriggerRegistry().Create(Trigger{Type: TriggerFileModified, Pattern: "internal/**/*.go"})
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	t.Cleanup(func() {
+		if err := trigger.Stop(); err != nil {
+			t.Errorf("Stop(): %v", err)
+		}
+	})
+	ctx := &TriggerContext{ProjectRoot: dir}
+	if err := trigger.Start(ctx); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	nested := filepath.Join(dir, "internal", "workflow")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+	path := filepath.Join(nested, "trigger.go")
+	if err := os.WriteFile(path, []byte("package workflow\n"), 0o644); err != nil {
+		t.Fatalf("create nested file: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("package workflow\n// modified\n"), 0o644); err != nil {
+		t.Fatalf("modify nested file: %v", err)
+	}
+	waitForTrigger(t, trigger, ctx)
+}
+
 func TestCommandTriggers(t *testing.T) {
 	registry := NewTriggerRegistry()
 	ctx := &TriggerContext{Context: context.Background(), ProjectRoot: t.TempDir()}

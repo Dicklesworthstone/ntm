@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -144,9 +145,9 @@ func (t *fileTrigger) Start(ctx *TriggerContext) error {
 	if err != nil {
 		return fmt.Errorf("create filesystem watcher: %w", err)
 	}
-	if err := watcher.Add(root); err != nil {
+	if err := addDirectoryTree(watcher, root); err != nil {
 		_ = watcher.Close()
-		return fmt.Errorf("watch project root: %w", err)
+		return fmt.Errorf("watch project tree: %w", err)
 	}
 
 	if err := t.Stop(); err != nil {
@@ -177,6 +178,15 @@ func (t *fileTrigger) run(watcher *fsnotify.Watcher, done <-chan struct{}) {
 			if !ok {
 				return
 			}
+			if event.Op&fsnotify.Create != 0 {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					if err := addDirectoryTree(watcher, event.Name); err != nil {
+						t.mu.Lock()
+						t.err = fmt.Errorf("watch created directory %q: %w", event.Name, err)
+						t.mu.Unlock()
+					}
+				}
+			}
 			if event.Op&t.op == 0 || !t.matches(event.Name) {
 				continue
 			}
@@ -203,11 +213,54 @@ func (t *fileTrigger) matches(name string) bool {
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return false
 	}
-	if matched, _ := filepath.Match(pattern, rel); matched {
+	if matchPathPattern(pattern, rel) {
 		return true
 	}
 	matched, _ := filepath.Match(pattern, filepath.Base(rel))
 	return matched
+}
+
+// addDirectoryTree registers every existing directory beneath root. fsnotify
+// watches directories individually, so watching only the project root misses
+// events produced in nested source trees.
+func addDirectoryTree(watcher *fsnotify.Watcher, root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if err := watcher.Add(path); err != nil {
+			return fmt.Errorf("watch %q: %w", path, err)
+		}
+		return nil
+	})
+}
+
+// matchPathPattern matches slash-separated relative paths and gives ** its
+// conventional recursive meaning. filepath.Match deliberately does not let
+// * cross a path separator, so it cannot express workflow patterns such as
+// internal/**/*.go by itself.
+func matchPathPattern(pattern, rel string) bool {
+	patternParts := strings.Split(filepath.ToSlash(pattern), "/")
+	pathParts := strings.Split(filepath.ToSlash(rel), "/")
+	var match func(int, int) bool
+	match = func(patternIndex, pathIndex int) bool {
+		if patternIndex == len(patternParts) {
+			return pathIndex == len(pathParts)
+		}
+		if patternParts[patternIndex] == "**" {
+			return match(patternIndex+1, pathIndex) ||
+				(pathIndex < len(pathParts) && match(patternIndex, pathIndex+1))
+		}
+		if pathIndex >= len(pathParts) {
+			return false
+		}
+		matched, err := filepath.Match(patternParts[patternIndex], pathParts[pathIndex])
+		return err == nil && matched && match(patternIndex+1, pathIndex+1)
+	}
+	return match(0, 0)
 }
 
 func (t *fileTrigger) Check(_ *TriggerContext) (bool, error) {
