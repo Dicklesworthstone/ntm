@@ -69,6 +69,7 @@ func newWorkCommitReadyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "commit-ready",
 		Aliases: []string{"commit-readiness"},
+		Args:    cobra.NoArgs,
 		Short:   "Check whether coordination state is safe for commit or handoff",
 		Long: `Check whether local git, Beads, Agent Mail, and reservation state are safe for commit or handoff.
 
@@ -155,6 +156,7 @@ func newWorkAlertsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "alerts",
+		Args:  cobra.NoArgs,
 		Short: "Show alerts (drift + proactive)",
 		Long: `Display alerts from bv analysis.
 
@@ -232,6 +234,7 @@ Examples:
 func newWorkNextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "next",
+		Args:  cobra.NoArgs,
 		Short: "Get the single top recommendation",
 		Long: `Display the single highest-priority recommendation.
 
@@ -265,6 +268,7 @@ func newWorkQueueDryCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "queue-dry",
+		Args:  cobra.NoArgs,
 		Short: "Diagnose why no ready work is available and suggest safe next steps",
 		Long: `Diagnose queue-dry situations with evidence from br, bv, sync state, and locks.
 
@@ -2487,6 +2491,7 @@ func queueDryIdeationMarkdown(report QueueDryIdeationReport) string {
 func newWorkHistoryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "history",
+		Args:  cobra.NoArgs,
 		Short: "Show bead-to-commit correlations and milestones",
 		Long: `Display history analysis showing how beads correlate with commits.
 
@@ -2535,6 +2540,7 @@ func newWorkGraphCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "graph",
+		Args:  cobra.NoArgs,
 		Short: "Export dependency graph visualization",
 		Long: `Export the dependency graph in various formats.
 
@@ -2559,6 +2565,7 @@ Examples:
 func newWorkLabelHealthCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "label-health",
+		Args:  cobra.NoArgs,
 		Short: "Health metrics per label",
 		Long: `Show health metrics for each label including velocity, staleness, and blocked count.
 
@@ -2579,6 +2586,7 @@ Examples:
 func newWorkLabelFlowCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "label-flow",
+		Args:  cobra.NoArgs,
 		Short: "Cross-label dependency flows and bottlenecks",
 		Long: `Analyze dependencies between labels to identify bottlenecks.
 

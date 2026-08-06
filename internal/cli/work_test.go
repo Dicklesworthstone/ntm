@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/status"
+	"github.com/spf13/cobra"
 )
 
 func TestWorkCmd(t *testing.T) {
@@ -135,6 +136,33 @@ func TestWorkQueueDryCmd(t *testing.T) {
 	cmd := newWorkQueueDryCmd()
 	if cmd.Use != "queue-dry" {
 		t.Errorf("expected Use to be 'queue-dry', got %q", cmd.Use)
+	}
+}
+
+func TestWorkCommandsRejectUnexpectedArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		new  func() *cobra.Command
+		args []string
+	}{
+		{name: "commit-ready", new: newWorkCommitReadyCmd, args: []string{"unexpected"}},
+		{name: "alerts", new: newWorkAlertsCmd, args: []string{"unexpected"}},
+		{name: "next", new: newWorkNextCmd, args: []string{"unexpected"}},
+		{name: "queue-dry mutation flags", new: newWorkQueueDryCmd, args: []string{"--ideate", "--create-beads", "--yes", "unexpected"}},
+		{name: "history", new: newWorkHistoryCmd, args: []string{"unexpected"}},
+		{name: "graph", new: newWorkGraphCmd, args: []string{"unexpected"}},
+		{name: "label-health", new: newWorkLabelHealthCmd, args: []string{"unexpected"}},
+		{name: "label-flow", new: newWorkLabelFlowCmd, args: []string{"unexpected"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := tt.new()
+			cmd.SetArgs(tt.args)
+			if err := cmd.Execute(); err == nil {
+				t.Fatalf("%s accepted unexpected positional arguments", tt.name)
+			}
+		})
 	}
 }
 
