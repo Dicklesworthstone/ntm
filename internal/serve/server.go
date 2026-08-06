@@ -4678,6 +4678,13 @@ func isAttentionTopic(topic string) bool {
 //   - exclude_muted: bool - Skip muted items
 //   - exclude_snoozed: bool - Skip snoozed items
 func (c *WSClient) handleAttentionSubscribe(msg WSMessage, topics []string) map[string]interface{} {
+	return c.handleAttentionSubscribeWithFeed(robot.GetAttentionFeed(), msg, topics)
+}
+
+// handleAttentionSubscribeWithFeed establishes a durable attention subscription.
+// The feed parameter keeps the cursor-validation and replay path testable at the
+// point where subscription state is committed.
+func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, msg WSMessage, topics []string) map[string]interface{} {
 	// Extract subscription options
 	sinceCursor := int64(0)
 	if sc, ok := msg.Data["since_cursor"]; ok {
@@ -4714,8 +4721,6 @@ func (c *WSClient) handleAttentionSubscribe(msg WSMessage, topics []string) map[
 		excludeSnoozed = es
 	}
 
-	// Get the attention feed
-	feed := robot.GetAttentionFeed()
 	if feed == nil {
 		return map[string]interface{}{
 			"error":      "attention_feed_unavailable",
@@ -4768,15 +4773,32 @@ func (c *WSClient) handleAttentionSubscribe(msg WSMessage, topics []string) map[
 
 	// Perform replay if cursor is not "start from now"
 	var replayCount int
-	var replayError string
 	if sinceCursor >= 0 {
 		events, _, err := feed.Replay(sinceCursor, stats.Count)
 		if err != nil {
+			// The cursor can fall out of the bounded replay window after the
+			// preflight above and before Replay acquires the feed's journal lock.
+			// Do not acknowledge a subscription which missed its requested
+			// history: remove the live callback and its hub topics before
+			// reporting the failure to the caller.
+			c.cancelAttentionSubscription()
+			c.Unsubscribe(topics)
+
 			var cursorErr *robot.CursorExpiredError
 			if errors.As(err, &cursorErr) {
-				replayError = "cursor_expired_during_replay"
-			} else {
-				replayError = err.Error()
+				currentStats := feed.Stats()
+				return map[string]interface{}{
+					"error":          "cursor_expired",
+					"error_code":     robot.ErrCodeCursorExpired,
+					"oldest_cursor":  cursorErr.EarliestCursor,
+					"newest_cursor":  currentStats.NewestCursor,
+					"resync_hint":    "Resync via --robot-snapshot, then resubscribe with since_cursor=-1",
+					"resync_command": "ntm --robot-snapshot",
+				}
+			}
+			return map[string]interface{}{
+				"error":      fmt.Sprintf("replay attention events: %v", err),
+				"error_code": "ATTENTION_REPLAY_FAILED",
 			}
 		} else {
 			// Deliver replayed events
@@ -4798,9 +4820,6 @@ func (c *WSClient) handleAttentionSubscribe(msg WSMessage, topics []string) map[
 	}
 	if profile != "" {
 		result["profile"] = profile
-	}
-	if replayError != "" {
-		result["replay_error"] = replayError
 	}
 	return result
 }

@@ -2362,9 +2362,10 @@ func TestCloseBeadAsyncJobReportsFailure(t *testing.T) {
 		t.Skip("stub br uses sh")
 	}
 	writeStubBr(t, "bd-failure")
+	t.Setenv("NTM_STUB_BR_CLOSE_FAIL", "1")
 
 	srv, _ := setupTestServer(t)
-	srv.projectDir = filepath.Join(t.TempDir(), "missing-project")
+	srv.projectDir = t.TempDir()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-failure/close?async=true", nil)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
@@ -6931,6 +6932,56 @@ func TestWSSubscribeRejectsExpiredAttentionCursor(t *testing.T) {
 	client.attentionSubMu.Unlock()
 	if subscription != nil {
 		t.Fatal("failed subscription left an attention subscription active")
+	}
+}
+
+func TestWSAttentionSubscribeRollsBackCursorExpiredDuringReplay(t *testing.T) {
+	feed := &fakeAttentionStreamFeed{
+		stats: robot.JournalStats{
+			Count:           1,
+			OldestCursor:    5,
+			NewestCursor:    5,
+			RetentionPeriod: time.Hour,
+		},
+		replayErr: &robot.CursorExpiredError{
+			RequestedCursor: 4,
+			EarliestCursor:  6,
+			RetentionPeriod: time.Hour,
+		},
+	}
+	client := &WSClient{
+		id:     "replay-expired-client",
+		hub:    NewWSHub(),
+		send:   make(chan []byte, 1),
+		topics: make(map[string]struct{}),
+	}
+
+	result := client.handleAttentionSubscribeWithFeed(feed, WSMessage{
+		Type:      WSMsgSubscribe,
+		RequestID: "replay-expired",
+		Data: map[string]interface{}{
+			"topics":       []interface{}{"attention"},
+			"since_cursor": float64(4),
+		},
+	}, []string{"attention"})
+
+	if got := result["error_code"]; got != robot.ErrCodeCursorExpired {
+		t.Fatalf("error_code = %v, want %q", got, robot.ErrCodeCursorExpired)
+	}
+	if result["subscribed"] != nil {
+		t.Fatalf("failed replay reported subscribed result: %v", result)
+	}
+	if feed.subscriber != nil {
+		t.Fatal("failed replay left a live attention callback registered")
+	}
+	if topics := client.Topics(); len(topics) != 0 {
+		t.Fatalf("failed replay committed attention topics: %v", topics)
+	}
+	client.attentionSubMu.Lock()
+	subscription := client.attentionSub
+	client.attentionSubMu.Unlock()
+	if subscription != nil {
+		t.Fatal("failed replay left an attention subscription active")
 	}
 }
 

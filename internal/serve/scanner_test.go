@@ -739,6 +739,10 @@ case "$cmd1" in
     exit 0
     ;;
   close)
+    if [ -n "${NTM_STUB_BR_CLOSE_FAIL:-}" ]; then
+      echo "stub close failure for ` + beadID + `" >&2
+      exit 1
+    fi
     echo "{\"id\":\"` + beadID + `\"}"
     exit 0
     ;;
