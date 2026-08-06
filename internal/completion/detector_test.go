@@ -83,6 +83,33 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestNewWithConfigFailsClosedWhenConsumerTokenGenerationFails(t *testing.T) {
+	wantErr := errors.New("secure entropy unavailable")
+	cfg := DefaultConfig()
+	cfg.consumerTokenFactory = func() (string, error) {
+		return "", wantErr
+	}
+	d := NewWithConfig("entropy-failure", assignment.NewStore("entropy-failure"), cfg)
+
+	if !errors.Is(d.InitializationError(), wantErr) {
+		t.Fatalf("InitializationError() = %v, want %v", d.InitializationError(), wantErr)
+	}
+	if d.consumerToken != "" {
+		t.Fatalf("consumerToken = %q, want blank when secure identity generation fails", d.consumerToken)
+	}
+	select {
+	case _, ok := <-d.Watch(t.Context()):
+		if ok {
+			t.Fatal("Watch returned an event despite failed initialization")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Watch did not close after failed initialization")
+	}
+	if _, err := d.CheckNow("%1"); !errors.Is(err, wantErr) {
+		t.Fatalf("CheckNow() error = %v, want initialization error %v", err, wantErr)
+	}
+}
+
 func TestAddPattern(t *testing.T) {
 	d := New("test-session", nil)
 	initialCount := len(d.Patterns)

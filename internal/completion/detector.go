@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
@@ -70,6 +69,7 @@ type DetectionConfig struct {
 	CompletionLeaseDuration time.Duration // Durable single-consumer lease (default 30s)
 	GracefulDegrading       bool          // Fall back to lesser methods (default true)
 	CaptureLines            int           // Lines to capture for pattern matching (default 50)
+	consumerTokenFactory    func() (string, error)
 }
 
 // DefaultConfig returns sensible default configuration
@@ -102,6 +102,7 @@ type CompletionDetector struct {
 	observer           *statuspkg.SessionObserver
 	terminalReconciler TerminalReconciler
 	consumerToken      string
+	initializationErr  error
 }
 
 // activityState tracks output activity per pane
@@ -175,14 +176,20 @@ func NewWithConfig(session string, store *assignment.AssignmentStore, cfg Detect
 			slog.Warn("ignoring invalid completion lease E2E override", "value", raw)
 		}
 	}
+	consumerTokenFactory := cfg.consumerTokenFactory
+	if consumerTokenFactory == nil {
+		consumerTokenFactory = newCompletionConsumerToken
+	}
+	consumerToken, initializationErr := consumerTokenFactory()
 	d := &CompletionDetector{
-		Session:         session,
-		Config:          cfg,
-		Store:           store,
-		activityTracker: make(map[string]*activityState),
-		recentEvents:    make(map[string]time.Time),
-		observer:        statuspkg.NewSessionObserver(statuspkg.NewDetector()),
-		consumerToken:   newCompletionConsumerToken(),
+		Session:           session,
+		Config:            cfg,
+		Store:             store,
+		activityTracker:   make(map[string]*activityState),
+		recentEvents:      make(map[string]time.Time),
+		observer:          statuspkg.NewSessionObserver(statuspkg.NewDetector()),
+		consumerToken:     consumerToken,
+		initializationErr: initializationErr,
 	}
 
 	// Compile default patterns
@@ -200,12 +207,21 @@ func NewWithConfig(session string, store *assignment.AssignmentStore, cfg Detect
 	return d
 }
 
-func newCompletionConsumerToken() string {
+func newCompletionConsumerToken() (string, error) {
 	token, err := assignment.NewAssignmentIdempotencyKey()
-	if err == nil {
-		return "completion/" + token
+	if err != nil {
+		return "", fmt.Errorf("generate completion consumer token: %w", err)
 	}
-	return fmt.Sprintf("completion/%d/%d/%d", os.Getpid(), time.Now().UTC().UnixNano(), atomic.AddUint64(&completionConsumerFallbackCounter, 1))
+	return "completion/" + token, nil
+}
+
+// InitializationError reports an error that prevents this detector from
+// safely acquiring durable completion-event leases.
+func (d *CompletionDetector) InitializationError() error {
+	if d == nil {
+		return errors.New("completion detector is nil")
+	}
+	return d.initializationErr
 }
 
 // SetTerminalReconciler configures the external release boundary used after a
@@ -247,6 +263,11 @@ func (d *CompletionDetector) AddFailurePattern(pattern string) error {
 // The channel is closed when the context is cancelled.
 func (d *CompletionDetector) Watch(ctx context.Context) <-chan CompletionEvent {
 	events := make(chan CompletionEvent, 10)
+	if err := d.InitializationError(); err != nil {
+		slog.Error("completion detector disabled because its consumer identity is unavailable", "session", d.Session, "error", err)
+		close(events)
+		return events
+	}
 
 	go func() {
 		defer close(events)
@@ -269,7 +290,7 @@ func (d *CompletionDetector) Watch(ctx context.Context) <-chan CompletionEvent {
 
 // checkAll checks all active assignments for completion
 func (d *CompletionDetector) checkAll(ctx context.Context, events chan<- CompletionEvent) {
-	if d.Store == nil {
+	if d.InitializationError() != nil || d.Store == nil {
 		return
 	}
 
@@ -801,6 +822,9 @@ func (d *CompletionDetector) eventRecordedRecentlyLocked(a *assignment.Assignmen
 
 // CheckNow performs an immediate check for one canonical pane identity.
 func (d *CompletionDetector) CheckNow(target string) (*CompletionEvent, error) {
+	if err := d.InitializationError(); err != nil {
+		return nil, fmt.Errorf("completion detector is unavailable: %w", err)
+	}
 	if d.Store == nil {
 		return nil, fmt.Errorf("no assignment store configured")
 	}

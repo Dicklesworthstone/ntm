@@ -6933,6 +6933,9 @@ func (w *WatchLoop) Run(ctx context.Context) error {
 		CaptureLines:      50,
 	}
 	w.detector = completion.NewWithConfig(w.session, w.store, detectorCfg)
+	if err := w.detector.InitializationError(); err != nil {
+		return fmt.Errorf("initialize completion detector: %w", err)
+	}
 	w.detector.SetTerminalReconciler(func(ctx context.Context, current *assignment.Assignment) (bool, error) {
 		return reconcilePendingTerminalAssignment(ctx, w.store, w.session, current)
 	})
