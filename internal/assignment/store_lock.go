@@ -71,25 +71,32 @@ func lockAssignmentPathLocally(ctx context.Context, path string) (func(), error)
 	}
 	entry.refs++
 	assignmentPathLocks.Unlock()
+	releaseRef := func() {
+		assignmentPathLocks.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(assignmentPathLocks.entries, path)
+		}
+		assignmentPathLocks.Unlock()
+	}
 
 	select {
 	case <-ctx.Done():
-		assignmentPathLocks.Lock()
-		entry.refs--
-		if entry.refs == 0 {
-			delete(assignmentPathLocks.entries, path)
-		}
-		assignmentPathLocks.Unlock()
+		releaseRef()
 		return nil, ctx.Err()
 	case <-entry.token:
 	}
+	// When a lock release races with cancellation, both select cases may be
+	// ready and Go may choose the token. Do not let an already-canceled caller
+	// cross the durable/external assignment boundary merely because it won that
+	// race; return the token and fail closed instead.
+	if err := ctx.Err(); err != nil {
+		entry.token <- struct{}{}
+		releaseRef()
+		return nil, err
+	}
 	return func() {
 		entry.token <- struct{}{}
-		assignmentPathLocks.Lock()
-		entry.refs--
-		if entry.refs == 0 {
-			delete(assignmentPathLocks.entries, path)
-		}
-		assignmentPathLocks.Unlock()
+		releaseRef()
 	}, nil
 }

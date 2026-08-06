@@ -2829,3 +2829,54 @@ func TestAtomicOperationLockWaitHonorsContext(t *testing.T) {
 		t.Fatalf("context cancellation took %s", elapsed)
 	}
 }
+
+func TestAtomicOperationLockReleaseCancelRaceFailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	storePath := NewStore("atomic-cancel-release-race").path
+	lockPath := storePath + ".cancel-release-race.lock"
+
+	// Release the held lock only after the waiter has registered locally. This
+	// makes both the token and cancellation ready together, the boundary where
+	// select is otherwise allowed to choose a now-invalid acquisition.
+	for attempt := 0; attempt < 8; attempt++ {
+		firstUnlock, err := acquireAssignmentFileLock(context.Background(), lockPath)
+		if err != nil {
+			t.Fatalf("attempt %d acquire first operation lock: %v", attempt, err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			unlock, lockErr := acquireAssignmentFileLock(ctx, lockPath)
+			if unlock != nil {
+				unlock()
+			}
+			result <- lockErr
+		}()
+
+		deadline := time.Now().Add(time.Second)
+		for {
+			assignmentPathLocks.Lock()
+			entry := assignmentPathLocks.entries[lockPath]
+			refs := 0
+			if entry != nil {
+				refs = entry.refs
+			}
+			assignmentPathLocks.Unlock()
+			if refs == 2 {
+				break
+			}
+			if time.Now().After(deadline) {
+				firstUnlock()
+				t.Fatalf("attempt %d waiter did not register for the local lock", attempt)
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		cancel()
+		firstUnlock()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("attempt %d waiter error=%v, want context canceled", attempt, err)
+		}
+	}
+}
