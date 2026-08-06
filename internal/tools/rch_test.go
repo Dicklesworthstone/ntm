@@ -199,6 +199,16 @@ func TestParseRCHStatusFlatSchemaFillsDerivedCounts(t *testing.T) {
 	}
 }
 
+func TestParseRCHStatusRejectsErrorEnvelope(t *testing.T) {
+	_, err := parseRCHStatusJSON([]byte(`{"success":false,"error":"daemon socket unavailable"}`))
+	if err == nil {
+		t.Fatal("parseRCHStatusJSON() error = nil, want reported daemon failure")
+	}
+	if !strings.Contains(err.Error(), "daemon socket unavailable") {
+		t.Fatalf("parseRCHStatusJSON() error = %q, want daemon diagnostic", err)
+	}
+}
+
 func TestRCHAdapterGetStatusPropagatesDaemonFailure(t *testing.T) {
 	dir := t.TempDir()
 	fakeRCH := filepath.Join(dir, "rch")
@@ -222,6 +232,32 @@ exit 1
 	}
 	if errors.Is(err, ErrTimeout) {
 		t.Fatalf("GetStatus() error = %v, want daemon failure rather than timeout", err)
+	}
+	if !strings.Contains(err.Error(), "daemon socket unavailable") {
+		t.Fatalf("GetStatus() error = %q, want daemon diagnostic", err)
+	}
+}
+
+func TestRCHAdapterGetStatusRejectsSuccessfulProcessErrorEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	fakeRCH := filepath.Join(dir, "rch")
+	if err := os.WriteFile(fakeRCH, []byte(`#!/bin/sh
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"success":false,"error":"daemon socket unavailable"}'
+  exit 0
+fi
+exit 1
+`), 0755); err != nil {
+		t.Fatalf("write fake rch: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	status, err := NewRCHAdapter().GetStatus(context.Background())
+	if err == nil {
+		t.Fatal("GetStatus() error = nil, want error envelope failure")
+	}
+	if status != nil {
+		t.Fatalf("GetStatus() status = %+v, want nil on error envelope", status)
 	}
 	if !strings.Contains(err.Error(), "daemon socket unavailable") {
 		t.Fatalf("GetStatus() error = %q, want daemon diagnostic", err)

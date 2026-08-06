@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -277,16 +275,6 @@ func GetCredentialEnvVar(provider string) string {
 	return strings.ToUpper(provider) + "_API_KEY"
 }
 
-// GetCredentialPath returns the expected path where caam stores credentials for a provider.
-// Returns the path in ~/.config/caam/current/<provider>.json format.
-func GetCredentialPath(provider string) string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(homeDir, ".config", "caam", "current", provider+".json")
-}
-
 // Cached status to avoid repeated lookups
 var (
 	caamStatusOnce   sync.Once
@@ -540,18 +528,24 @@ func (a *CAAMAdapter) GetActiveAccount(ctx context.Context) (*CAAMAccount, error
 }
 
 // GetCurrentCredentials returns credential information for the active account of a provider.
-// This calls `caam creds <provider> --json` to get the current active credentials.
-// The returned credentials include the environment variable name and optionally the token path.
+// CAAM does not expose credentials through the removed `creds` command. Its
+// supported machine-readable source is `caam robot paths`, whose provider IDs
+// use CAAM's names (notably "codex", not NTM's "openai").
 func (a *CAAMAdapter) GetCurrentCredentials(ctx context.Context, provider string) (*CAAMCredentials, error) {
 	path, installed := a.Detect()
 	if !installed {
 		return nil, ErrToolNotInstalled
 	}
+	ntmProvider := caamProviderForNTM(provider)
+	caamProvider := ntmProviderForCAAM(ntmProvider)
+	if caamProvider == "" {
+		return nil, fmt.Errorf("provider is required")
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path, "creds", provider, "--json")
+	cmd := exec.CommandContext(ctx, path, "robot", "paths")
 	cmd.WaitDelay = time.Second
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
@@ -562,54 +556,69 @@ func (a *CAAMAdapter) GetCurrentCredentials(ctx context.Context, provider string
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
-		// caam creds might not exist in older versions - fallback to constructed credentials
-		return a.constructCredentials(ctx, provider)
+		return nil, fmt.Errorf("read caam credential paths: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 
-	output := stdout.Bytes()
-	if len(output) == 0 || !json.Valid(output) {
-		// Fallback to constructed credentials
-		return a.constructCredentials(ctx, provider)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Providers []struct {
+				ID    string `json:"id"`
+				Files []struct {
+					Path     string `json:"path"`
+					Exists   bool   `json:"exists"`
+					Required bool   `json:"required"`
+				} `json:"files"`
+			} `json:"providers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		return nil, fmt.Errorf("%w: parse caam credential paths: %v", ErrSchemaValidation, err)
+	}
+	if !response.Success {
+		return nil, fmt.Errorf("%w: caam robot paths returned success=false", ErrSchemaValidation)
 	}
 
-	var creds CAAMCredentials
-	if err := json.Unmarshal(output, &creds); err != nil {
-		return a.constructCredentials(ctx, provider)
+	var tokenPath string
+	for _, candidate := range response.Data.Providers {
+		if !strings.EqualFold(candidate.ID, caamProvider) {
+			continue
+		}
+		for _, file := range candidate.Files {
+			if file.Required && file.Exists && strings.TrimSpace(file.Path) != "" {
+				tokenPath = file.Path
+				break
+			}
+		}
+		if tokenPath == "" {
+			for _, file := range candidate.Files {
+				if file.Exists && strings.TrimSpace(file.Path) != "" {
+					tokenPath = file.Path
+					break
+				}
+			}
+		}
+		break
+	}
+	if tokenPath == "" {
+		return nil, fmt.Errorf("%w: caam returned no credential path for provider %q", ErrSchemaValidation, caamProvider)
 	}
 
-	// Ensure env var name is set
-	if creds.EnvVarName == "" {
-		creds.EnvVarName = GetCredentialEnvVar(provider)
+	creds := &CAAMCredentials{
+		Provider:   ntmProvider,
+		EnvVarName: GetCredentialEnvVar(ntmProvider),
+		TokenPath:  tokenPath,
 	}
-
-	return &creds, nil
-}
-
-// constructCredentials builds credentials from available information when caam creds isn't available
-func (a *CAAMAdapter) constructCredentials(ctx context.Context, provider string) (*CAAMCredentials, error) {
-	// Get active account for the provider
 	accounts, err := a.GetAccounts(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	var activeAccount *CAAMAccount
-	for i := range accounts {
-		if accounts[i].Provider == provider && accounts[i].Active {
-			activeAccount = &accounts[i]
+	for _, account := range accounts {
+		if account.Provider == ntmProvider && account.Active {
+			creds.AccountID = account.ID
+			creds.RateLimited = account.RateLimited
 			break
 		}
-	}
-
-	creds := &CAAMCredentials{
-		Provider:   provider,
-		EnvVarName: GetCredentialEnvVar(provider),
-		TokenPath:  GetCredentialPath(provider),
-	}
-
-	if activeAccount != nil {
-		creds.AccountID = activeAccount.ID
-		creds.RateLimited = activeAccount.RateLimited
 	}
 
 	return creds, nil

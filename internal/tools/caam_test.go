@@ -242,6 +242,10 @@ func TestCAAMAdapterFetchesRobotProfilesAndCostSessions(t *testing.T) {
 		"  echo '{\"success\":true,\"data\":{\"providers\":[{\"id\":\"codex\",\"profiles\":[{\"name\":\"_original\",\"active\":false,\"system\":true,\"health\":{\"status\":\"warning\"}},{\"name\":\"work\",\"active\":true,\"health\":{\"status\":\"healthy\"}}]},{\"id\":\"claude\",\"profiles\":[{\"name\":\"personal\",\"active\":false,\"health\":{\"status\":\"cooldown\"}}]}]}}'\n" +
 		"  exit 0\n" +
 		"fi\n" +
+		"if [ \"$1\" = \"robot\" ] && [ \"$2\" = \"paths\" ]; then\n" +
+		"  echo '{\"success\":true,\"data\":{\"providers\":[{\"id\":\"codex\",\"files\":[{\"path\":\"/tmp/codex-auth.json\",\"exists\":true,\"required\":true}]}]}}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
 		"if [ \"$1\" = \"cost\" ] && [ \"$2\" = \"sessions\" ]; then\n" +
 		"  echo '{\"sessions\":[{\"id\":1,\"provider\":\"codex\",\"profile\":\"work\",\"estimated_cost_cents\":25},{\"id\":2,\"provider\":\"claude\",\"profile\":\"personal\",\"estimated_cost_cents\":9}]}'\n" +
 		"  exit 0\n" +
@@ -267,6 +271,13 @@ func TestCAAMAdapterFetchesRobotProfilesAndCostSessions(t *testing.T) {
 	}
 	if status.Accounts[1].Provider != "claude" || !status.Accounts[1].RateLimited || status.Accounts[1].CostCents != 9 {
 		t.Fatalf("second account = %+v, want rate-limited Claude profile with 9 cents", status.Accounts[1])
+	}
+	creds, err := adapter.GetCurrentCredentials(context.Background(), "openai")
+	if err != nil {
+		t.Fatalf("GetCurrentCredentials() error: %v", err)
+	}
+	if creds.Provider != "openai" || creds.AccountID != "work" || creds.TokenPath != "/tmp/codex-auth.json" {
+		t.Fatalf("GetCurrentCredentials() = %+v, want mapped Codex credential path and active profile", creds)
 	}
 
 	// GetStatus returns a snapshot. Mutating it must not change the cached
@@ -1010,29 +1021,6 @@ func TestGetCredentialEnvVar(t *testing.T) {
 	}
 }
 
-func TestGetCredentialPath(t *testing.T) {
-	tests := []struct {
-		provider   string
-		wantSuffix string
-	}{
-		{"claude", ".config/caam/current/claude.json"},
-		{"openai", ".config/caam/current/openai.json"},
-		{"gemini", ".config/caam/current/gemini.json"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
-			got := GetCredentialPath(tt.provider)
-			if got == "" {
-				t.Skip("Could not determine home directory")
-			}
-			if !strings.HasSuffix(got, tt.wantSuffix) {
-				t.Errorf("GetCredentialPath(%q) = %q, want suffix %q", tt.provider, got, tt.wantSuffix)
-			}
-		})
-	}
-}
-
 func TestProviderEnvVarsMap(t *testing.T) {
 	// Ensure all expected providers are mapped
 	expectedProviders := []string{"claude", "openai", "gemini"}
@@ -1072,41 +1060,5 @@ func TestGetCurrentCredentialsNotInstalled(t *testing.T) {
 
 	if err != ErrToolNotInstalled {
 		t.Errorf("Expected ErrToolNotInstalled, got %v", err)
-	}
-}
-
-func TestConstructCredentialsHelper(t *testing.T) {
-	adapter := NewCAAMAdapter()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// constructCredentials is a fallback that should work even without caam
-	// It builds credentials from available status info
-	creds, err := adapter.constructCredentials(ctx, "claude")
-
-	// May error if caam not installed (GetAccounts fails)
-	_, installed := adapter.Detect()
-	if !installed {
-		if err == nil {
-			// Even if GetAccounts fails, it should return partial credentials
-			if creds == nil {
-				t.Error("Expected partial credentials even on error")
-			}
-		}
-		return
-	}
-
-	// If caam is installed, should return credentials
-	if err != nil {
-		t.Logf("constructCredentials error (may be expected): %v", err)
-	}
-	if creds != nil {
-		if creds.Provider != "claude" {
-			t.Errorf("Expected Provider 'claude', got %s", creds.Provider)
-		}
-		if creds.EnvVarName != "ANTHROPIC_API_KEY" {
-			t.Errorf("Expected EnvVarName 'ANTHROPIC_API_KEY', got %s", creds.EnvVarName)
-		}
 	}
 }

@@ -167,8 +167,9 @@ type RCHSessionStats struct {
 }
 
 type rchStatusEnvelope struct {
-	Success bool          `json:"success"`
-	Data    rchStatusData `json:"data"`
+	Success bool            `json:"success"`
+	Data    rchStatusData   `json:"data"`
+	Error   json.RawMessage `json:"error"`
 }
 
 type rchStatusData struct {
@@ -422,6 +423,9 @@ func parseRCHStatusJSON(output []byte) (*RCHStatus, error) {
 	}
 	if envelope.Success || envelope.Data.Daemon.hasData() {
 		return envelope.Data.Daemon.toStatus(envelope.Success), nil
+	}
+	if len(bytes.TrimSpace(envelope.Error)) > 0 && !bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null")) {
+		return nil, fmt.Errorf("rch status reported failure: %s", strings.TrimSpace(string(envelope.Error)))
 	}
 
 	var status RCHStatus
