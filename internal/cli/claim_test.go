@@ -107,6 +107,26 @@ func TestListSoftClaimsExcludesExpiredAndKeepsEmptySlice(t *testing.T) {
 	if len(claims) != 0 {
 		t.Fatalf("claims = %#v, want no active claims", claims)
 	}
+	if _, err := createSoftClaim(projectDir, "ntm-fresh", "JadePond", time.Minute); err != nil {
+		t.Fatalf("create fresh soft claim: %v", err)
+	}
+	claims, err = listSoftClaims(projectDir)
+	if err != nil {
+		t.Fatalf("list fresh claims: %v", err)
+	}
+	if len(claims) != 1 || claims[0].BeadID != "ntm-fresh" {
+		t.Fatalf("claims = %#v, want ntm-fresh", claims)
+	}
+}
+
+func TestClaimCommandIncludesHelperCommands(t *testing.T) {
+	cmd := newClaimCmd()
+	for _, name := range []string{"check", "list"} {
+		found, _, err := cmd.Find([]string{name})
+		if err != nil || found == cmd {
+			t.Fatalf("claim helper %q not registered: command=%v err=%v", name, found, err)
+		}
+	}
 }
 
 func TestSoftClaimRejectsUnsafeBeadIDAndTTL(t *testing.T) {

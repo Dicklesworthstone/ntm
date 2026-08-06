@@ -117,15 +117,17 @@ func outputSoftClaim(w io.Writer, result SoftClaimCheckResult) error {
 	return output.OutputOrText(IsJSONOutput(), result, func() error {
 		switch result.State {
 		case "claimed":
-			fmt.Fprintf(w, "claimed: %s by %s until %s\n", result.BeadID, result.Claim.Agent, result.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+			_, err := fmt.Fprintf(w, "claimed: %s by %s until %s\n", result.BeadID, result.Claim.Agent, result.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+			return err
 		case "unclaimed":
-			fmt.Fprintf(w, "unclaimed: %s\n", result.BeadID)
+			_, err := fmt.Fprintf(w, "unclaimed: %s\n", result.BeadID)
+			return err
 		case "expired":
-			fmt.Fprintf(w, "expired: %s was claimed by %s until %s\n", result.BeadID, result.Claim.Agent, result.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+			_, err := fmt.Fprintf(w, "expired: %s was claimed by %s until %s\n", result.BeadID, result.Claim.Agent, result.Claim.ExpiresAt.UTC().Format(time.RFC3339))
+			return err
 		default:
 			return fmt.Errorf("unknown soft-claim state %q", result.State)
 		}
-		return nil
 	})
 }
 
@@ -174,7 +176,7 @@ func createSoftClaim(projectDir, beadID, agent string, ttl time.Duration) (SoftC
 	now := softClaimNow().UTC()
 	claim := SoftClaim{Agent: agent, BeadID: beadID, ClaimedAt: now, ExpiresAt: now.Add(ttl)}
 	if err := writeNewSoftClaim(claimPath, claim); err != nil {
-		if errors.Is(err, fsErrAlreadyExists) {
+		if errors.Is(err, os.ErrExist) {
 			status, statusErr := checkSoftClaim(projectDir, beadID)
 			if statusErr != nil {
 				return SoftClaim{}, statusErr
@@ -187,8 +189,6 @@ func createSoftClaim(projectDir, beadID, agent string, ttl time.Duration) (SoftC
 	}
 	return claim, nil
 }
-
-var fsErrAlreadyExists = os.ErrExist
 
 func writeNewSoftClaim(path string, claim SoftClaim) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
@@ -286,8 +286,15 @@ func readSoftClaim(path string) (SoftClaim, error) {
 		return SoftClaim{}, err
 	}
 	defer f.Close()
+	decoder := json.NewDecoder(f)
 	var claim SoftClaim
-	if err := json.NewDecoder(f).Decode(&claim); err != nil {
+	if err := decoder.Decode(&claim); err != nil {
+		return SoftClaim{}, fmt.Errorf("decode soft claim %s: %w", path, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return SoftClaim{}, fmt.Errorf("decode soft claim %s: multiple JSON values", path)
+		}
 		return SoftClaim{}, fmt.Errorf("decode soft claim %s: %w", path, err)
 	}
 	if _, err := validateSoftClaimBeadID(claim.BeadID); err != nil {
