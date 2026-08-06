@@ -97,6 +97,28 @@ func TestLoadStateAcceptsLegacyUnversionedState(t *testing.T) {
 	}
 }
 
+func TestLoadStateRejectsMismatchedStoredRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	dir := pipelineStateDir(tmpDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	runID := "requested-run"
+	payload := `{"run_id":"different-run","workflow_id":"wf","status":"running"}`
+	if err := os.WriteFile(pipelineStatePath(tmpDir, runID), []byte(payload), 0o644); err != nil {
+		t.Fatalf("write mismatched state: %v", err)
+	}
+
+	_, err := LoadState(tmpDir, runID)
+	if err == nil {
+		t.Fatal("LoadState returned nil error for a mismatched stored run id")
+	}
+	if !strings.Contains(err.Error(), "does not match requested run id") {
+		t.Fatalf("LoadState error = %q, want mismatched-run-id message", err.Error())
+	}
+}
+
 func TestSaveStateMarshalFailurePreservesPreviousFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	runID := "atomic-preserve"

@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -24,7 +23,7 @@ type Task struct {
 
 // Coordinator drives a workflow template through its configured transitions.
 type Coordinator interface {
-	Start(context.Context) error
+	Start(*TriggerContext) error
 	Stop() error
 	CurrentStage() string
 	Transition(string) error
@@ -44,6 +43,7 @@ type RuntimeCoordinator struct {
 	stage      string
 	active     []activeTransition
 	nextByRole map[string]int
+	triggerCtx *TriggerContext
 }
 
 type activeTransition struct {
@@ -78,7 +78,7 @@ func NewCoordinator(template *WorkflowTemplate, agents []CoordinatorAgent, regis
 }
 
 // Start activates the triggers that leave the initial stage.
-func (c *RuntimeCoordinator) Start(ctx context.Context) error {
+func (c *RuntimeCoordinator) Start(ctx *TriggerContext) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.started {
@@ -95,7 +95,9 @@ func (c *RuntimeCoordinator) Start(ctx context.Context) error {
 		return errors.New("workflow has no initial stage")
 	}
 	c.stage = stage
+	c.triggerCtx = cloneTriggerContext(ctx)
 	if err := c.startStageLocked(ctx); err != nil {
+		c.triggerCtx = nil
 		return err
 	}
 	c.started = true
@@ -108,6 +110,7 @@ func (c *RuntimeCoordinator) Stop() error {
 	defer c.mu.Unlock()
 	err := c.stopTriggersLocked()
 	c.started = false
+	c.triggerCtx = nil
 	return err
 }
 
@@ -131,20 +134,13 @@ func (c *RuntimeCoordinator) Evaluate(ctx *TriggerContext) (bool, error) {
 			return false, fmt.Errorf("check %s trigger: %w", active.transition.Trigger.Type, err)
 		}
 		if fired {
-			if err := c.transitionLocked(contextFromTrigger(ctx), active.transition); err != nil {
+			if err := c.transitionLocked(ctx, active.transition); err != nil {
 				return false, err
 			}
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-func contextFromTrigger(ctx *TriggerContext) context.Context {
-	if ctx != nil && ctx.Context != nil {
-		return ctx.Context
-	}
-	return context.Background()
 }
 
 // Transition advances using a configured trigger type or manual trigger label.
@@ -156,21 +152,22 @@ func (c *RuntimeCoordinator) Transition(trigger string) error {
 	}
 	for _, active := range c.active {
 		if trigger == string(active.transition.Trigger.Type) || (active.transition.Trigger.Type == TriggerManual && trigger == active.transition.Trigger.Label) {
-			return c.transitionLocked(context.Background(), active.transition)
+			return c.transitionLocked(c.triggerCtx, active.transition)
 		}
 	}
 	return fmt.Errorf("no transition from %q is triggered by %q", c.stage, trigger)
 }
 
-func (c *RuntimeCoordinator) transitionLocked(ctx context.Context, transition Transition) error {
+func (c *RuntimeCoordinator) transitionLocked(ctx *TriggerContext, transition Transition) error {
 	if err := c.stopTriggersLocked(); err != nil {
 		return err
 	}
 	c.stage = transition.To
+	c.triggerCtx = cloneTriggerContext(ctx)
 	return c.startStageLocked(ctx)
 }
 
-func (c *RuntimeCoordinator) startStageLocked(ctx context.Context) error {
+func (c *RuntimeCoordinator) startStageLocked(ctx *TriggerContext) error {
 	for _, transition := range c.template.Flow.Transitions {
 		if transition.From != c.stage {
 			continue
@@ -180,7 +177,7 @@ func (c *RuntimeCoordinator) startStageLocked(ctx context.Context) error {
 			_ = c.stopTriggersLocked()
 			return fmt.Errorf("create %s trigger: %w", transition.Trigger.Type, err)
 		}
-		if err := trigger.Start(&TriggerContext{Context: ctx}); err != nil {
+		if err := trigger.Start(ctx); err != nil {
 			_ = trigger.Stop()
 			_ = c.stopTriggersLocked()
 			return fmt.Errorf("start %s trigger: %w", transition.Trigger.Type, err)
@@ -188,6 +185,16 @@ func (c *RuntimeCoordinator) startStageLocked(ctx context.Context) error {
 		c.active = append(c.active, activeTransition{transition: transition, trigger: trigger})
 	}
 	return nil
+}
+
+func cloneTriggerContext(ctx *TriggerContext) *TriggerContext {
+	if ctx == nil {
+		return nil
+	}
+	clone := *ctx
+	clone.Outputs = append([]AgentOutput(nil), ctx.Outputs...)
+	clone.Activities = append([]AgentActivity(nil), ctx.Activities...)
+	return &clone
 }
 
 func (c *RuntimeCoordinator) stopTriggersLocked() error {

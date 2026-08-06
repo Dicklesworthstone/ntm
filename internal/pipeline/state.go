@@ -106,6 +106,8 @@ func LoadState(projectDir, runID string) (*ExecutionState, error) {
 
 	if state.RunID == "" {
 		state.RunID = runID
+	} else if state.RunID != runID {
+		return nil, fmt.Errorf("pipeline state run id %q does not match requested run id %q", state.RunID, runID)
 	}
 
 	return &state, nil
