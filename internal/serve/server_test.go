@@ -6839,9 +6839,6 @@ func TestWSAttentionSubscription(t *testing.T) {
 	if sub == nil || !sub.Active {
 		t.Fatal("expected attention subscription to be active")
 	}
-	if client.isSubscribed("attention") {
-		t.Fatal("durable attention subscriptions must not also use hub topic delivery")
-	}
 
 	// Publish an event and verify it's delivered
 	feed.Append(robot.AttentionEvent{

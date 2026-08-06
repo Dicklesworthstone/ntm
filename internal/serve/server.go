@@ -1209,16 +1209,6 @@ func (s *Server) Start(ctx context.Context) error {
 		defer unsubscribe()
 	}
 
-	// Subscribe to attention feed for WebSocket broadcasting
-	attentionUnsubscribe := robot.GetAttentionFeed().Subscribe(func(e robot.AttentionEvent) {
-		// Publish to both global attention topic and session-specific topic
-		s.wsHub.Publish("attention", string(e.Type), e)
-		if e.Session != "" {
-			s.wsHub.Publish("attention:"+e.Session, string(e.Type), e)
-		}
-	})
-	defer attentionUnsubscribe()
-
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", s.host, s.port),
 		Handler:      s.router,
@@ -4777,6 +4767,11 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 	c.attentionSubMu.Lock()
 	c.attentionSub = sub
 	c.attentionSubMu.Unlock()
+
+	// Retain the requested topics for replacement and explicit unsubscribe.
+	// Live attention events use the durable feed callback above, so Start does
+	// not bridge attention events back through wsHub.
+	c.Subscribe(topics)
 
 	// Perform replay if cursor is not "start from now"
 	var replayCount int
