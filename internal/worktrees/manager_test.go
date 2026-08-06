@@ -937,6 +937,29 @@ func TestRemoveWorktree_RejectsUnsafeAgentNameWithoutDeletingSiblingPath(t *test
 	}
 }
 
+func TestRemoveWorktreeRefusesFallbackForUnregisteredDirectory(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir() // Intentionally not a Git repository.
+	manager := NewManager(projectDir, "test-session")
+	worktreePath := manager.worktreePath("agent-1")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("create unregistered worktree path: %v", err)
+	}
+	marker := filepath.Join(worktreePath, "must-remain")
+	if err := os.WriteFile(marker, []byte("not a worktree\n"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	err := manager.RemoveWorktree(t.Context(), "agent-1")
+	if err == nil || !strings.Contains(err.Error(), "refusing filesystem cleanup for unregistered worktree") {
+		t.Fatalf("RemoveWorktree() error = %v, want unregistered-worktree rejection", err)
+	}
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("unregistered directory marker was deleted: %v", statErr)
+	}
+}
+
 func TestIsValidWorktree_NoGitFile(t *testing.T) {
 	t.Parallel()
 

@@ -462,15 +462,40 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) 
 		if ctx.Err() != nil {
 			return fmt.Errorf("remove worktree %s canceled: %w", agentName, ctx.Err())
 		}
-		// If removal failed, try to prune and remove manually
-		_ = gitRun(ctx, m.projectPath, "worktree", "prune") // Ignore non-cancellation errors for prune
-		if ctx.Err() != nil {
-			return fmt.Errorf("remove worktree %s canceled before filesystem cleanup: %w", agentName, ctx.Err())
-		}
+		if _, statErr := os.Lstat(worktreePath); statErr == nil {
+			// Do not treat every failed git invocation as proof that this path is a
+			// stale worktree. For example, an invalid repository or a missing git
+			// binary also lands here. Removing an unregistered directory in those
+			// cases would recursively delete data that merely happened to use the
+			// expected agent path.
+			valid, validErr := m.isValidWorktree(ctx, worktreePath)
+			if validErr != nil {
+				return fmt.Errorf("inspect worktree %s after git removal failed: %w", agentName, validErr)
+			}
+			if !valid {
+				return fmt.Errorf("refusing filesystem cleanup for unregistered worktree %s after git removal failed: %w", agentName, err)
+			}
 
-		// Try to remove directory manually
-		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
-			return fmt.Errorf("failed to remove worktree %s: %v: %s", agentName, err, string(output))
+			// If removal failed, try to prune and remove manually.
+			_ = gitRun(ctx, m.projectPath, "worktree", "prune") // Ignore non-cancellation errors for prune
+			if ctx.Err() != nil {
+				return fmt.Errorf("remove worktree %s canceled before filesystem cleanup: %w", agentName, ctx.Err())
+			}
+
+			if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
+				return fmt.Errorf("failed to remove worktree %s: %v: %s", agentName, err, string(output))
+			}
+			// The first prune runs before the manual removal, so it cannot remove
+			// this worktree's registration. Prune again after successful fallback
+			// cleanup to avoid leaving a stale worktree entry behind.
+			if pruneErr := gitRun(ctx, m.projectPath, "worktree", "prune"); pruneErr != nil {
+				if ctx.Err() != nil {
+					return fmt.Errorf("remove worktree %s canceled after filesystem cleanup: %w", agentName, ctx.Err())
+				}
+				return fmt.Errorf("prune worktree registration after removing %s: %w", agentName, pruneErr)
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect worktree path %s after git removal failed: %w", worktreePath, statErr)
 		}
 	}
 
