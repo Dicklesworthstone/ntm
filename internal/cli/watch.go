@@ -443,11 +443,12 @@ func filterPanes(panes []tmux.Pane, opts watchOptions) []tmux.Pane {
 		return panes
 	}
 
+	multiWindow := tmux.PanesSpanMultipleWindows(panes)
 	var filtered []tmux.Pane
 	for _, p := range panes {
 		// Filter by specific pane
 		if opts.filterPane != "" {
-			if p.Title == opts.filterPane || fmt.Sprintf("%d", p.Index) == opts.filterPane {
+			if p.Title == opts.filterPane || tmux.PaneMatchesSelector(p, opts.filterPane, multiWindow) {
 				filtered = append(filtered, p)
 			}
 			continue

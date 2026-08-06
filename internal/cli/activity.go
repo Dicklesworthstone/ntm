@@ -264,7 +264,7 @@ func collectActivityData(session string, opts activityOptions) (*activityResult,
 		}
 
 		// Apply filters
-		if !passesFilter(agentType, pane, opts) {
+		if !passesFilter(agentType, pane, opts, tmux.PanesSpanMultipleWindows(panes)) {
 			continue
 		}
 
@@ -344,10 +344,10 @@ func agentTypeForPane(pane tmux.Pane) string {
 	return detectAgentTypeFromTitle(pane.Title)
 }
 
-func passesFilter(agentType string, pane tmux.Pane, opts activityOptions) bool {
+func passesFilter(agentType string, pane tmux.Pane, opts activityOptions, multiWindow bool) bool {
 	// Check pane filter first
 	if opts.filterPane != "" {
-		if pane.Title == opts.filterPane || fmt.Sprintf("%d", pane.Index) == opts.filterPane {
+		if pane.Title == opts.filterPane || tmux.PaneMatchesSelector(pane, opts.filterPane, multiWindow) {
 			return true
 		}
 		return false

@@ -110,7 +110,7 @@ func completePaneIndexes(cmd *cobra.Command, args []string, toComplete string) (
 	if session == "" {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return completeCommaSeparated(listPaneIndexes(session), toComplete), cobra.ShellCompDirectiveNoFileComp
+	return completeCommaSeparated(listSendPaneSelectors(session), toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
 func completeSendPaneSelector(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

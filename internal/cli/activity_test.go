@@ -215,7 +215,7 @@ func TestPassesFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := passesFilter(tt.agentType, tt.pane, tt.opts)
+			got := passesFilter(tt.agentType, tt.pane, tt.opts, false)
 			if got != tt.want {
 				t.Errorf("passesFilter(%q, %v, %+v) = %v, want %v",
 					tt.agentType, tt.pane, tt.opts, got, tt.want)

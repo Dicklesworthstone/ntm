@@ -38,7 +38,7 @@ var (
 )
 
 func newRotateCmd() *cobra.Command {
-	var paneIndex int
+	var paneSelector string
 	var preserveContext bool
 	var targetAccount string
 	var dryRun bool
@@ -85,8 +85,8 @@ Examples:
 				return rotateAllLimited(cmd.Context(), session, targetAccount, dryRun, res.Inferred)
 			}
 
-			if paneIndex < 0 {
-				return fmt.Errorf("pane index required (use --pane=N) or --all-limited")
+			if paneSelector == "" {
+				return fmt.Errorf("pane selector required (use --pane=N, --pane=W.P, or --pane=%%ID) or --all-limited")
 			}
 
 			// Get pane info
@@ -94,22 +94,20 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("getting panes: %w", err)
 			}
+			selected, err := tmux.ResolvePaneSelectors(panes, []string{paneSelector}, true)
+			if err != nil {
+				return err
+			}
+			pane := selected[0]
+			paneIndex := pane.Index
 			var paneID string
 			var provider string
 			var agentTypeStr string
 			var modelAlias string
-			for _, p := range panes {
-				if p.Index == paneIndex {
-					paneID = p.ID
-					provider = normalizedProviderName(p.Type)
-					agentTypeStr = string(p.Type.Canonical())
-					modelAlias = p.Variant
-					break
-				}
-			}
-			if paneID == "" {
-				return fmt.Errorf("pane %d not found in session %s", paneIndex, session)
-			}
+			paneID = pane.ID
+			provider = normalizedProviderName(pane.Type)
+			agentTypeStr = string(pane.Type.Canonical())
+			modelAlias = pane.Variant
 
 			// Suggest account from config if not specified
 			if targetAccount == "" && cfg != nil {
@@ -147,7 +145,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().IntVar(&paneIndex, "pane", -1, "Pane index to rotate")
+	cmd.Flags().StringVar(&paneSelector, "pane", "", "Pane selector: N (single-window), W.P, or %pane-id")
 	cmd.Flags().BoolVar(&preserveContext, "preserve-context", false, "Re-authenticate existing session instead of restarting")
 	cmd.Flags().StringVar(&targetAccount, "account", "", "Target account email (optional)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print action without executing")
