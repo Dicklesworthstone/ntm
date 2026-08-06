@@ -3,6 +3,7 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -139,6 +140,21 @@ const CompleteIdleThreshold = 5 * time.Second
 // GetWait executes the wait operation and returns the response data.
 // Returns the response and normalized robot exit code (0=success, 1=error).
 func GetWait(opts WaitOptions) (*WaitResponse, int) {
+	return GetWaitContext(context.Background(), opts)
+}
+
+// GetWaitContext executes the wait operation while honoring caller cancellation.
+// The CLI and HTTP transports pass their request context so disconnects and
+// interrupt signals stop pending polling instead of waiting for the full timeout.
+func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startTime := time.Now()
+	if err := ctx.Err(); err != nil {
+		return waitContextCanceledResponse(opts, startTime, err), 1
+	}
+
 	// Validate session exists
 	if !tmux.SessionExists(opts.Session) {
 		return &WaitResponse{
@@ -211,7 +227,6 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	}
 
 	// Start waiting
-	startTime := time.Now()
 	deadline := startTime.Add(opts.Timeout)
 
 	// Create activity monitor
@@ -226,6 +241,9 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	var lastAttentionResult *AttentionConditionResult
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return waitContextCanceledResponse(opts, startTime, err), 1
+		}
 		if waitStore != nil {
 			canceled, err := waitStore.IsRobotWaitHandleCanceled(waitID)
 			if err != nil {
@@ -408,8 +426,44 @@ func GetWait(opts WaitOptions) (*WaitResponse, int) {
 			}, 0
 		}
 
-		// Sleep and poll again
-		time.Sleep(opts.PollInterval)
+		// Sleep and poll again, but let request cancellation interrupt the wait
+		// rather than stranding a CLI process or HTTP handler until timeout.
+		if !waitForPollOrCancellation(ctx, opts.PollInterval) {
+			return waitContextCanceledResponse(opts, startTime, ctx.Err()), 1
+		}
+	}
+}
+
+func waitContextCanceledResponse(opts WaitOptions, startTime time.Time, err error) *WaitResponse {
+	if err == nil {
+		err = context.Canceled
+	}
+	return &WaitResponse{
+		RobotResponse: NewErrorResponse(err, "CANCELED", "Start a new --robot-wait when ready"),
+		Session:       opts.Session,
+		Condition:     opts.Condition,
+		WaitedSeconds: time.Since(startTime).Seconds(),
+		WaitID:        strings.TrimSpace(opts.WaitID),
+		Agents:        []WaitAgentInfo{},
+	}
+}
+
+func waitForPollOrCancellation(ctx context.Context, interval time.Duration) bool {
+	if interval <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -460,7 +514,12 @@ func initialAttentionWaitCursor(opts WaitOptions, hasAttention bool) int64 {
 // PrintWait executes the wait operation and outputs JSON.
 // Returns exit code 0 on success and 1 for every wait failure.
 func PrintWait(opts WaitOptions) int {
-	resp, exitCode := GetWait(opts)
+	return PrintWaitContext(context.Background(), opts)
+}
+
+// PrintWaitContext executes --robot-wait with cancellation-aware polling.
+func PrintWaitContext(ctx context.Context, opts WaitOptions) int {
+	resp, exitCode := GetWaitContext(ctx, opts)
 	return printLegacyRobotOutput(resp, resp.RobotResponse, exitCode, "robot wait failed")
 }
 

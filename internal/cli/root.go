@@ -1411,7 +1411,7 @@ Shell Integration:
 				Profile:           robotProfile,
 				WaitID:            robotWaitID,
 			}
-			exitCode := robot.PrintWait(opts)
+			exitCode := robot.PrintWaitContext(cmd.Context(), opts)
 			recordLegacyRobotExit(exitCode)
 			return
 		}

@@ -4069,7 +4069,7 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 		RequireTransition: false,
 	}
 
-	result, exitCode := robot.GetWait(opts)
+	result, exitCode := robot.GetWaitContext(r.Context(), opts)
 	if exitCode != 0 && !result.Success {
 		writeErrorResponse(w, robotErrorHTTPStatus(result.ErrorCode), result.ErrorCode, result.Error, nil, reqID)
 		return

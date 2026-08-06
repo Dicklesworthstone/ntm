@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -20,6 +21,46 @@ func TestGetWaitFailureUsesGeneralErrorExit(t *testing.T) {
 	}
 	if response.Success || response.ErrorCode != ErrCodeSessionNotFound {
 		t.Fatalf("GetWait() response = %+v, want SESSION_NOT_FOUND failure", response.RobotResponse)
+	}
+}
+
+func TestGetWaitContextReturnsCanceledBeforeTmuxLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	response, exitCode := GetWaitContext(ctx, WaitOptions{
+		Session:   "does-not-need-a-live-session",
+		Condition: WaitConditionIdle,
+		WaitID:    "cancelled-wait",
+	})
+	if exitCode != 1 {
+		t.Fatalf("GetWaitContext() exit code = %d, want 1", exitCode)
+	}
+	if response.Success || response.ErrorCode != "CANCELED" {
+		t.Fatalf("GetWaitContext() response = %+v, want CANCELED failure", response.RobotResponse)
+	}
+	if response.WaitID != "cancelled-wait" {
+		t.Fatalf("WaitID = %q, want cancelled-wait", response.WaitID)
+	}
+}
+
+func TestWaitForPollOrCancellationInterruptsPendingPoll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- waitForPollOrCancellation(ctx, time.Minute)
+	}()
+
+	cancel()
+	select {
+	case completed := <-done:
+		if completed {
+			t.Fatal("waitForPollOrCancellation() = true after cancellation, want false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waitForPollOrCancellation() did not return after cancellation")
 	}
 }
 
