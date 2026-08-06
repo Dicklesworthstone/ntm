@@ -3,7 +3,6 @@ package checkpoint
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -80,43 +79,32 @@ func TestComputeScrollbackDiff(t *testing.T) {
 	}
 }
 
-func TestGenerateGitPatch_RejectsOversizedOutput(t *testing.T) {
-	repoDir := t.TempDir()
-	runGit := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
-		}
-		return strings.TrimSpace(string(output))
+func TestIncrementalCreatorSaveDoesNotPersistUnrestorableGitPatch(t *testing.T) {
+	storage := NewStorageWithDir(t.TempDir())
+	creator := NewIncrementalCreatorWithStorage(storage)
+	const sessionName = "test-session"
+
+	if err := os.MkdirAll(filepath.Join(storage.BaseDir, sessionName), 0755); err != nil {
+		t.Fatalf("create session directory: %v", err)
+	}
+	inc := &IncrementalCheckpoint{
+		Version:     IncrementalVersion,
+		ID:          "inc-no-git-patch",
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Changes: IncrementalChanges{GitChange: &GitChange{
+			FromCommit: "base",
+			ToCommit:   "current",
+		}},
 	}
 
-	runGit("init")
-	runGit("config", "user.email", "test@example.com")
-	runGit("config", "user.name", "Test User")
-
-	path := filepath.Join(repoDir, "large.txt")
-	if err := os.WriteFile(path, []byte(strings.Repeat("a", MaxGitOutputBytes+1)), 0600); err != nil {
-		t.Fatalf("write initial large file: %v", err)
+	if err := creator.save(inc, ""); err != nil {
+		t.Fatalf("save() error = %v", err)
 	}
-	runGit("add", "large.txt")
-	runGit("commit", "-m", "initial")
-	fromCommit := runGit("rev-parse", "HEAD")
 
-	if err := os.WriteFile(path, []byte(strings.Repeat("b", MaxGitOutputBytes+1)), 0600); err != nil {
-		t.Fatalf("write updated large file: %v", err)
-	}
-	runGit("add", "large.txt")
-	runGit("commit", "-m", "updated")
-	toCommit := runGit("rev-parse", "HEAD")
-
-	patch, err := generateGitPatch(repoDir, fromCommit, toCommit)
-	if err == nil || !strings.Contains(err.Error(), "output exceeded limit") {
-		t.Fatalf("generateGitPatch() error = %v, want output-limit error", err)
-	}
-	if patch != "" {
-		t.Fatalf("generateGitPatch() patch length = %d, want 0 on output limit", len(patch))
+	patchPath := filepath.Join(storage.BaseDir, sessionName, "incremental", inc.ID, "incremental.patch")
+	if _, err := os.Stat(patchPath); !os.IsNotExist(err) {
+		t.Fatalf("incremental patch stat error = %v, want not exist", err)
 	}
 }
 

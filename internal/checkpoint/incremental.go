@@ -19,8 +19,6 @@ const (
 	IncrementalVersion = 1
 	// IncrementalMetadataFile is the filename for incremental checkpoint metadata
 	IncrementalMetadataFile = "incremental.json"
-	// IncrementalPatchFile is the filename for git diff from base
-	IncrementalPatchFile = "incremental.patch"
 	// DiffPanesDir is the subdirectory for pane scrollback diffs
 	DiffPanesDir = "pane_diffs"
 )
@@ -90,8 +88,6 @@ type GitChange struct {
 	ToCommit string `json:"to_commit"`
 	// Branch may have changed
 	Branch *string `json:"branch,omitempty"`
-	// PatchFile is the relative path to the incremental patch
-	PatchFile string `json:"patch_file,omitempty"`
 	// IsDirty indicates uncommitted changes
 	IsDirty bool `json:"is_dirty"`
 	// StagedCount changed
@@ -527,7 +523,7 @@ func (ic *IncrementalCreator) computeSessionChange(base, current SessionState) *
 }
 
 // save persists the incremental checkpoint to disk.
-func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint, repoDir string) error {
+func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint, _ string) error {
 	dir, err := ic.incrementalDir(inc.SessionName, inc.ID)
 	if err != nil {
 		return err
@@ -564,18 +560,6 @@ func (ic *IncrementalCreator) save(inc *IncrementalCheckpoint, repoDir string) e
 			change.DiffSummary = scrollbackDiffSummary(change.DiffContent, change.NewLines, true, int64(len(compressed)))
 			change.DiffContent = "" // Clear content after saving
 			inc.Changes.PaneChanges[paneID] = change
-		}
-	}
-
-	// Save git patch if commits differ
-	if inc.Changes.GitChange != nil && inc.Changes.GitChange.FromCommit != inc.Changes.GitChange.ToCommit {
-		patch, err := generateGitPatch(repoDir, inc.Changes.GitChange.FromCommit, inc.Changes.GitChange.ToCommit)
-		if err == nil && patch != "" {
-			patchPath := filepath.Join(dir, IncrementalPatchFile)
-			if err := util.AtomicWriteFile(patchPath, []byte(patch), 0600); err != nil {
-				return fmt.Errorf("saving git patch: %w", err)
-			}
-			inc.Changes.GitChange.PatchFile = IncrementalPatchFile
 		}
 	}
 
@@ -619,20 +603,6 @@ func (ic *IncrementalCreator) incrementalDir(sessionName, incrementalID string) 
 		return "", err
 	}
 	return incDir, nil
-}
-
-// generateGitPatch generates a git diff patch between two commits.
-func generateGitPatch(repoDir, fromCommit, toCommit string) (string, error) {
-	if fromCommit == "" || toCommit == "" {
-		return "", nil
-	}
-
-	output, err := gitCommand(repoDir, "diff", fromCommit+".."+toCommit)
-	if err != nil {
-		return "", fmt.Errorf("generating git diff: %w", err)
-	}
-
-	return output, nil
 }
 
 // IncrementalResolver resolves an incremental checkpoint to a full checkpoint.
