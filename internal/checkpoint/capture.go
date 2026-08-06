@@ -3,8 +3,8 @@ package checkpoint
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -343,39 +343,54 @@ func runGitCommand(cmd *exec.Cmd, ctx context.Context, args ...string) (string, 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", fmt.Errorf("creating stdout pipe: %w", err)
-	}
+	stdout := &limitedGitOutput{cmd: cmd, limit: MaxGitOutputBytes}
+	cmd.Stdout = stdout
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("starting git %s: %w", strings.Join(args, " "), err)
 	}
 
-	// Read up to limit + 1 byte to detect truncation
-	data, err := io.ReadAll(io.LimitReader(stdoutPipe, MaxGitOutputBytes+1))
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return "", fmt.Errorf("reading git output: %w", err)
-	}
-
-	// Check for truncation
-	if len(data) > MaxGitOutputBytes {
-		_ = cmd.Process.Kill() // Kill process if it's spewing too much data
-		_ = cmd.Wait()
-		return "", fmt.Errorf("git output exceeded limit of %d bytes", MaxGitOutputBytes)
-	}
-
 	if err := cmd.Wait(); err != nil {
+		if stdout.exceeded {
+			return "", fmt.Errorf("git output exceeded limit of %d bytes", MaxGitOutputBytes)
+		}
 		// Verify context error first
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("git command timed out")
 		}
+		if errors.Is(err, exec.ErrWaitDelay) {
+			return "", fmt.Errorf("git command output did not close: %w", err)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 
-	return string(data), nil
+	return stdout.String(), nil
+}
+
+// limitedGitOutput bounds git stdout while allowing Cmd.Wait to enforce
+// WaitDelay if a child keeps the inherited stdout descriptor open. Returning
+// an error from Write alone would leave a still-running git command blocked on
+// its pipe, so the process is killed as soon as the limit is exceeded.
+type limitedGitOutput struct {
+	output   bytes.Buffer
+	cmd      *exec.Cmd
+	limit    int
+	exceeded bool
+}
+
+func (w *limitedGitOutput) Write(data []byte) (int, error) {
+	if w.output.Len()+len(data) > w.limit {
+		w.exceeded = true
+		if w.cmd.Process != nil {
+			_ = w.cmd.Process.Kill()
+		}
+		return 0, fmt.Errorf("git output exceeded limit")
+	}
+	return w.output.Write(data)
+}
+
+func (w *limitedGitOutput) String() string {
+	return w.output.String()
 }
 
 // parseGitStatus parses git status --porcelain output.

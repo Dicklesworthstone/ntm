@@ -2,12 +2,14 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -945,4 +947,64 @@ func TestRunGitCommandReportsTimeoutWhileReadingOutput(t *testing.T) {
 	if cmd.ProcessState == nil {
 		t.Fatal("runGitCommand returned before reaping the timed-out process")
 	}
+}
+
+func TestRunGitCommandReturnsWhenDescendantHoldsStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper relies on inherited Unix process descriptors")
+	}
+	if os.Getenv("NTM_TEST_GIT_INHERIT_STDOUT_CHILD") == "1" {
+		time.Sleep(10 * time.Second)
+		return
+	}
+	if os.Getenv("NTM_TEST_GIT_INHERIT_STDOUT") == "1" {
+		child := exec.Command(os.Args[0], "-test.run=^TestRunGitCommandReturnsWhenDescendantHoldsStdout$")
+		child.Env = append(os.Environ(), "NTM_TEST_GIT_INHERIT_STDOUT_CHILD=1")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		if err := os.WriteFile(os.Getenv("NTM_TEST_GIT_DESCENDANT_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return
+	}
+
+	pidFile := filepath.Join(t.TempDir(), "descendant.pid")
+	t.Cleanup(func() {
+		pid, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		process, err := os.FindProcess(mustParsePID(t, string(pid)))
+		if err == nil {
+			_ = process.Kill()
+		}
+	})
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunGitCommandReturnsWhenDescendantHoldsStdout$")
+	cmd.Env = append(os.Environ(), "NTM_TEST_GIT_INHERIT_STDOUT=1", "NTM_TEST_GIT_DESCENDANT_PID="+pidFile)
+
+	started := time.Now()
+	_, err := runGitCommand(cmd, context.Background(), "status")
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("runGitCommand error = %v, want exec.ErrWaitDelay", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("runGitCommand returned after %s, want WaitDelay-bounded return", elapsed)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("runGitCommand returned before reaping its direct child")
+	}
+}
+
+func mustParsePID(t *testing.T, raw string) int {
+	t.Helper()
+	pid, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		t.Fatalf("parse descendant pid %q: %v", raw, err)
+	}
+	return pid
 }
