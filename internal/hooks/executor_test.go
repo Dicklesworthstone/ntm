@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -167,46 +168,36 @@ func TestExecutorRunHooksForEvent(t *testing.T) {
 }
 
 func TestExecutorTimeout(t *testing.T) {
-	// Skip on CI - process killing timing is unreliable across different environments
-	// The exec.CommandContext sends SIGKILL to the shell, but child processes may
-	// continue briefly until the kernel cleans up the process group
-	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Skip("Skipping timeout test on CI due to unreliable process killing timing")
+	marker := filepath.Join(t.TempDir(), "escaped-child")
+	cfg := &CommandHooksConfig{
+		Hooks: []CommandHook{{
+			Event:   EventPreSpawn,
+			Command: "sleep 1; touch \"$NTM_PROJECT_DIR/escaped-child\" & wait",
+			Timeout: Duration(100 * time.Millisecond),
+		}},
 	}
-	// Force skip in this environment if not already set, as it has proven flaky (10s delay)
-	t.Skip("Skipping timeout test due to unreliable process killing in this environment")
+	exec := NewExecutor(cfg)
+	start := time.Now()
+	results, err := exec.RunHooksForEvent(context.Background(), EventPreSpawn, ExecutionContext{ProjectDir: filepath.Dir(marker)})
+	elapsed := time.Since(start)
 
-	t.Run("hook timeout", func(t *testing.T) {
-		cfg := &CommandHooksConfig{
-			Hooks: []CommandHook{
-				{
-					Event:   EventPreSpawn,
-					Command: "sleep 10",
-					// Use a more generous timeout for CI environments
-					Timeout: Duration(500 * time.Millisecond),
-				},
-			},
-		}
-		exec := NewExecutor(cfg)
-		start := time.Now()
-		results, err := exec.RunHooksForEvent(context.Background(), EventPreSpawn, ExecutionContext{})
-		elapsed := time.Since(start)
+	if err == nil {
+		t.Error("expected timeout error")
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].TimedOut {
+		t.Error("result should indicate timeout")
+	}
+	if elapsed > time.Second {
+		t.Errorf("hook should have timed out quickly, took %v", elapsed)
+	}
 
-		if err == nil {
-			t.Error("expected timeout error")
-		}
-		if len(results) != 1 {
-			t.Fatalf("expected 1 result, got %d", len(results))
-		}
-		if !results[0].TimedOut {
-			t.Error("result should indicate timeout")
-		}
-		// Should complete in roughly the timeout duration, not 10 seconds
-		// Allow up to 3 seconds for CI environments which may be slow
-		if elapsed > 3*time.Second {
-			t.Errorf("hook should have timed out quickly, took %v", elapsed)
-		}
-	})
+	time.Sleep(1200 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("background child survived hook timeout; marker stat error = %v", err)
+	}
 }
 
 func TestExecutorEnvironment(t *testing.T) {
