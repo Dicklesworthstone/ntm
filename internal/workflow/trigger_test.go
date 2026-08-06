@@ -134,6 +134,7 @@ func TestFileModifiedTriggerWatchesNewNestedDirectories(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("create nested directory: %v", err)
 	}
+	waitForDirectoryWatch(t, trigger, nested)
 	path := filepath.Join(nested, "trigger.go")
 	if err := os.WriteFile(path, []byte("package workflow\n"), 0o644); err != nil {
 		t.Fatalf("create nested file: %v", err)
@@ -272,4 +273,27 @@ func waitForTrigger(t *testing.T, trigger RuntimeTrigger, ctx *TriggerContext) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("trigger did not fire before deadline")
+}
+
+func waitForDirectoryWatch(t *testing.T, trigger RuntimeTrigger, dir string) {
+	t.Helper()
+	file, ok := trigger.(*fileTrigger)
+	if !ok {
+		t.Fatalf("trigger type = %T, want *fileTrigger", trigger)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		file.mu.Lock()
+		watcher := file.watcher
+		file.mu.Unlock()
+		if watcher != nil {
+			for _, watched := range watcher.WatchList() {
+				if watched == dir {
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("directory %q was not watched before deadline", dir)
 }
