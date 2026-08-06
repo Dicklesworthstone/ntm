@@ -3005,8 +3005,16 @@ func PeekAttentionFeed() *AttentionFeed {
 // durable store-backed instance. Tests also use it to install controlled feeds.
 func SetAttentionFeed(feed *AttentionFeed) {
 	globalFeedMu.Lock()
-	defer globalFeedMu.Unlock()
+	previous := globalFeed
 	globalFeed = feed
+	globalFeedMu.Unlock()
+
+	// Replacing the global feed transfers it out of service. In particular, the
+	// lazy default owns a heartbeat goroutine, so leaving it running after
+	// startup installs the durable feed leaks that goroutine for the process.
+	if previous != nil && previous != feed {
+		previous.Stop()
+	}
 }
 
 // NOTE: --robot-events command implementation lives in events.go (br-kpvhy).

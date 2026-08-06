@@ -2015,6 +2015,35 @@ func TestSetAttentionFeed_ReplacesInitializedDefault(t *testing.T) {
 	}
 }
 
+func TestSetAttentionFeed_StopsReplacedFeed(t *testing.T) {
+	oldFeed := PeekAttentionFeed()
+	replaced := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       8,
+		RetentionPeriod:   time.Minute,
+		HeartbeatInterval: time.Hour,
+	})
+	replacement := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       8,
+		RetentionPeriod:   time.Minute,
+		HeartbeatInterval: 0,
+	})
+	t.Cleanup(func() {
+		SetAttentionFeed(oldFeed)
+		replacement.Stop()
+		replaced.Stop()
+	})
+
+	SetAttentionFeed(replaced)
+	SetAttentionFeed(replacement)
+
+	select {
+	case <-replaced.stopCh:
+		// The old global feed must not retain its heartbeat goroutine.
+	default:
+		t.Fatal("replaced global attention feed was not stopped")
+	}
+}
+
 // newTestAttentionStore creates a real in-memory SQLite store for testing.
 func newTestAttentionStore(t *testing.T) *state.Store {
 	t.Helper()
