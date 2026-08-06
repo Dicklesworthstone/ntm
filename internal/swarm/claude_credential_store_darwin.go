@@ -20,6 +20,11 @@ const claudeKeychainService = "Claude Code-credentials"
 // spawn path for every Claude pane.
 const keychainProbeTimeout = 5 * time.Second
 
+// security maps errSecItemNotFound (-25300) to this process exit status.
+// Other non-zero statuses include authentication and interaction failures and
+// must not be mistaken for proof that no shared credential exists.
+const keychainItemNotFoundExitCode = 44
+
 // credentialStoreIsolable reports whether excluding .credentials.json from the
 // pane's config dir can actually isolate the credential on this platform.
 //
@@ -64,8 +69,8 @@ func credentialStoreIsolable() error {
 		return fmt.Errorf("%w: macOS Keychain item %q is shared by every pane. Remove it (`security delete-generic-password -s %q`) and authenticate the panes with a setup token instead",
 			ErrCredentialStoreNotIsolable, claudeKeychainService, claudeKeychainService)
 	}
-	if _, ok := err.(*exec.ExitError); ok {
-		// Non-zero exit means "not found", which is the isolable case.
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == keychainItemNotFoundExitCode {
+		// Only errSecItemNotFound means the file-backed mechanism can apply.
 		return nil
 	}
 	// The `security` binary is missing or unrunnable, so the Keychain state is
