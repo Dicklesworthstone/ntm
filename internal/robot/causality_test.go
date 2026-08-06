@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,26 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 )
+
+type causalityAgentMailClientStub struct {
+	reservations    []agentmail.FileReservation
+	reservationsErr error
+	resource        json.RawMessage
+	resourceErr     error
+	resourceURI     string
+}
+
+func (s *causalityAgentMailClientStub) ListReservations(_ context.Context, _ string, _ string, _ bool) ([]agentmail.FileReservation, error) {
+	return s.reservations, s.reservationsErr
+}
+
+func (s *causalityAgentMailClientStub) ReadResource(_ context.Context, uri string) (json.RawMessage, error) {
+	s.resourceURI = uri
+	return s.resource, s.resourceErr
+}
 
 func TestBuildCausalityOutput_SortsDeterministically(t *testing.T) {
 	t0 := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
@@ -635,6 +655,39 @@ func TestLoadAgentMailCausalityEvents_NoProjectSetReturnsBothStatuses(t *testing
 	}
 	if len(warnings) == 0 {
 		t.Error("warnings empty when project missing")
+	}
+}
+
+func TestLoadAgentMailCausalityEvents_UsesReadOnlyInboxResource(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 8, 6, 5, 0, 0, 0, time.UTC)
+	client := &causalityAgentMailClientStub{
+		resource: json.RawMessage(`{
+			"contents": [{
+				"text": "[{\"id\":17,\"subject\":\"[bd-vxk7r] update\",\"from\":\"BlueLake\",\"created_ts\":\"2026-08-06T05:00:00Z\",\"thread_id\":\"bd-vxk7r\",\"importance\":\"high\",\"ack_required\":true,\"kind\":\"to\"}]"
+			}]
+		}`),
+	}
+
+	events, statuses, warnings := loadAgentMailCausalityEventsWithClient(CausalityOptions{
+		Project:   "/tmp/project with space",
+		AgentName: "Blue Lake",
+	}, &created, nil, client)
+	if client.resourceURI != "resource://inbox/Blue%20Lake?project=%2Ftmp%2Fproject+with+space&limit=200" {
+		t.Fatalf("inbox resource URI = %q", client.resourceURI)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(statuses) != 2 || !statuses[1].Available || statuses[1].Events != 1 {
+		t.Fatalf("inbox status = %+v, want available one-event status", statuses)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one message", events)
+	}
+	if got := events[0]; got.ID != "am-msg:17" || got.BeadID != "bd-vxk7r" || got.ChainID != "bd-vxk7r" {
+		t.Fatalf("message event = %+v", got)
 	}
 }
 

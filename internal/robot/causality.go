@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -96,6 +97,11 @@ type causalityLoaders struct {
 	mail     func(CausalityOptions, *time.Time, *time.Time) ([]CausalityEvent, []CausalitySourceStatus, []string)
 	session  func(CausalityOptions, *time.Time, *time.Time) ([]CausalityEvent, error)
 	pipeline func(CausalityOptions, *time.Time, *time.Time) ([]CausalityEvent, []string, error)
+}
+
+type causalityAgentMailClient interface {
+	ListReservations(ctx context.Context, projectKey, agentName string, allAgents bool) ([]agentmail.FileReservation, error)
+	ReadResource(ctx context.Context, uri string) (json.RawMessage, error)
 }
 
 func defaultCausalityLoaders() causalityLoaders {
@@ -425,6 +431,11 @@ func loadAuditCausalityEvents(opts CausalityOptions, since, until *time.Time) ([
 }
 
 func loadAgentMailCausalityEvents(opts CausalityOptions, since, until *time.Time) ([]CausalityEvent, []CausalitySourceStatus, []string) {
+	project := strings.TrimSpace(opts.Project)
+	return loadAgentMailCausalityEventsWithClient(opts, since, until, agentmail.NewClient(agentmail.WithProjectKey(project)))
+}
+
+func loadAgentMailCausalityEventsWithClient(opts CausalityOptions, since, until *time.Time, client causalityAgentMailClient) ([]CausalityEvent, []CausalitySourceStatus, []string) {
 	statuses := make([]CausalitySourceStatus, 0, 2)
 	warnings := make([]string, 0, 2)
 	events := make([]CausalityEvent, 0, 128)
@@ -442,7 +453,6 @@ func loadAgentMailCausalityEvents(opts CausalityOptions, since, until *time.Time
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	client := agentmail.NewClient(agentmail.WithProjectKey(project))
 	reservations, err := client.ListReservations(ctx, project, "", true)
 	if err != nil {
 		statuses = append(statuses, CausalitySourceStatus{Name: "agentmail_reservations", Available: false, Error: err.Error()})
@@ -491,12 +501,7 @@ func loadAgentMailCausalityEvents(opts CausalityOptions, since, until *time.Time
 	if inboxLimit > 2000 {
 		inboxLimit = 2000
 	}
-	inbox, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
-		ProjectKey:    project,
-		AgentName:     agentName,
-		Limit:         inboxLimit,
-		IncludeBodies: false,
-	})
+	inbox, err := loadCausalityInboxResource(ctx, client, project, agentName, inboxLimit)
 	if err != nil {
 		statuses = append(statuses, CausalitySourceStatus{Name: "agentmail_inbox", Available: false, Error: err.Error()})
 		warnings = append(warnings, "agentmail_inbox unavailable: "+err.Error())
@@ -535,6 +540,37 @@ func loadAgentMailCausalityEvents(opts CausalityOptions, since, until *time.Time
 	statuses = append(statuses, CausalitySourceStatus{Name: "agentmail_inbox", Available: true, Events: kept})
 
 	return events, statuses, warnings
+}
+
+func loadCausalityInboxResource(ctx context.Context, client causalityAgentMailClient, project, agentName string, limit int) ([]agentmail.InboxMessage, error) {
+	uri := fmt.Sprintf(
+		"resource://inbox/%s?project=%s&limit=%d",
+		url.PathEscape(agentName),
+		url.QueryEscape(project),
+		limit,
+	)
+	resource, err := client.ReadResource(ctx, uri)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Contents []struct {
+			Text string `json:"text"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(resource, &response); err != nil {
+		return nil, fmt.Errorf("decode inbox resource envelope: %w", err)
+	}
+	if len(response.Contents) == 0 || strings.TrimSpace(response.Contents[0].Text) == "" {
+		return nil, fmt.Errorf("inbox resource returned no content")
+	}
+
+	var inbox []agentmail.InboxMessage
+	if err := json.Unmarshal([]byte(response.Contents[0].Text), &inbox); err != nil {
+		return nil, fmt.Errorf("decode inbox resource messages: %w", err)
+	}
+	return inbox, nil
 }
 
 func loadSessionTimelineCausalityEvents(opts CausalityOptions, since, until *time.Time) ([]CausalityEvent, error) {
