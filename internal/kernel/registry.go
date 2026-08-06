@@ -71,6 +71,34 @@ func (r *Registry) Register(cmd Command) error {
 	return nil
 }
 
+// Unregister removes a command and its associated handler from the registry.
+// It returns false when the command was not registered.
+func (r *Registry) Unregister(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	cmd, exists := r.commands[name]
+	if !exists {
+		return false
+	}
+
+	delete(r.commands, name)
+	delete(r.handlers, name)
+	if cmd.REST != nil {
+		key := restKey(cmd.REST.Method, cmd.REST.Path)
+		if r.restIndex[key] == name {
+			delete(r.restIndex, key)
+		}
+	}
+
+	return true
+}
+
 // RegisterHandler associates a handler with a registered command.
 func (r *Registry) RegisterHandler(name string, handler HandlerFunc) error {
 	name = strings.TrimSpace(name)
@@ -201,6 +229,12 @@ var defaultRegistry = NewRegistry()
 // Register adds a command to the default registry.
 func Register(cmd Command) error {
 	return defaultRegistry.Register(cmd)
+}
+
+// Unregister removes a command from the default registry.
+// It returns false when the command was not registered.
+func Unregister(name string) bool {
+	return defaultRegistry.Unregister(name)
 }
 
 // MustRegister registers a command or panics on failure.

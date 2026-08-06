@@ -1,9 +1,11 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,6 +185,65 @@ func TestSaveMultiplePrompts(t *testing.T) {
 	for i, p := range prompts {
 		if history.Prompts[i].Content != p {
 			t.Errorf("prompt %d: expected '%s', got '%s'", i, p, history.Prompts[i].Content)
+		}
+	}
+}
+
+func TestSavePromptConcurrentPreservesEveryEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Not parallel: modifies package-level redactionConfig.
+	originalConfig := GetRedactionConfig()
+	SetRedactionConfig(nil)
+	t.Cleanup(func() { SetRedactionConfig(originalConfig) })
+
+	const promptCount = 64
+	sessionName := "test-session-concurrent"
+	start := make(chan struct{})
+	errs := make(chan error, promptCount)
+	var wg sync.WaitGroup
+
+	for i := 0; i < promptCount; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs <- SavePrompt(PromptEntry{
+				ID:      fmt.Sprintf("prompt-%d", i),
+				Session: sessionName,
+				Content: fmt.Sprintf("content-%d", i),
+				Targets: []string{"1"},
+				Source:  "cli",
+			})
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("SavePrompt failed: %v", err)
+		}
+	}
+
+	history, err := LoadPromptHistory(sessionName)
+	if err != nil {
+		t.Fatalf("LoadPromptHistory failed: %v", err)
+	}
+	if len(history.Prompts) != promptCount {
+		t.Fatalf("saved prompt count = %d, want %d", len(history.Prompts), promptCount)
+	}
+
+	seen := make(map[string]bool, promptCount)
+	for _, prompt := range history.Prompts {
+		seen[prompt.ID] = true
+	}
+	for i := 0; i < promptCount; i++ {
+		id := fmt.Sprintf("prompt-%d", i)
+		if !seen[id] {
+			t.Errorf("missing concurrently saved prompt %q", id)
 		}
 	}
 }

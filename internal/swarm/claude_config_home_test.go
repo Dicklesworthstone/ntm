@@ -222,6 +222,24 @@ func TestEnvForPane_QuotesAdversarialTokenPaths(t *testing.T) {
 	}
 }
 
+// The pane shell runs from the project directory, which may differ from the
+// directory that was current when ntm loaded its configuration. A relative
+// token-file setting must therefore be resolved before it becomes command text.
+func TestResolveClaudeSetupTokenFile_NormalizesRelativePath(t *testing.T) {
+	configDir := t.TempDir()
+	t.Chdir(configDir)
+	writeFile(t, "claude.token", "sk-ant-oat-test")
+
+	got, err := ResolveClaudeSetupTokenFile("claude.token")
+	if err != nil {
+		t.Fatalf("ResolveClaudeSetupTokenFile: %v", err)
+	}
+	want := filepath.Join(configDir, "claude.token")
+	if got != want {
+		t.Fatalf("token path = %q, want absolute %q", got, want)
+	}
+}
+
 // A source config dir that does not exist yet is normal on a fresh machine and
 // must still yield a valid, credential-free config dir.
 func TestProvisionPaneConfig_MissingSourceIsNotAnError(t *testing.T) {

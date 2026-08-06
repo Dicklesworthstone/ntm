@@ -336,11 +336,13 @@ func TestOpenAPISpecMatchesKernelCommands(t *testing.T) {
 
 // TestOpenAPISpecSchemaReferences verifies all schema $refs point to valid schemas.
 func TestOpenAPISpecSchemaReferences(t *testing.T) {
+	const commandName = "serve.openapi.schema_reference_contract"
+
 	// This command mirrors production kernel metadata: Ref identifies a Go
 	// type, while Name is the OpenAPI component name. The generator previously
 	// emitted the reference but never registered that component.
 	if err := kernel.Register(kernel.Command{
-		Name:        "serve.openapi.schema_reference_contract",
+		Name:        commandName,
 		Description: "Exercise OpenAPI schema reference registration",
 		Category:    "testing",
 		Input: &kernel.SchemaRef{
@@ -358,6 +360,11 @@ func TestOpenAPISpecSchemaReferences(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register schema reference contract command: %v", err)
 	}
+	t.Cleanup(func() {
+		if !kernel.Unregister(commandName) {
+			t.Errorf("schema reference contract command %q was not registered", commandName)
+		}
+	})
 
 	spec := GenerateOpenAPISpec("1.0.0", "http://localhost:8080")
 

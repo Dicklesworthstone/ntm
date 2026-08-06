@@ -123,6 +123,15 @@ func SavePrompt(entry PromptEntry) error {
 		entry.Timestamp = time.Now()
 	}
 
+	// Keep the read-modify-write sequence atomic across both goroutines and
+	// ntm processes. AtomicWriteFile prevents partial files, but cannot prevent
+	// simultaneous writers from each replacing the other's appended history.
+	unlock, err := acquireLock()
+	if err != nil {
+		return fmt.Errorf("lock prompt history: %w", err)
+	}
+	defer unlock()
+
 	// Load existing history
 	history, err := LoadPromptHistory(entry.Session)
 	if err != nil && !os.IsNotExist(err) {
@@ -251,6 +260,12 @@ func GetLatestPrompts(sessionName string, limit int) ([]PromptEntry, error) {
 
 // ClearPromptHistory removes all prompts for a session.
 func ClearPromptHistory(sessionName string) error {
+	unlock, err := acquireLock()
+	if err != nil {
+		return fmt.Errorf("lock prompt history: %w", err)
+	}
+	defer unlock()
+
 	path, err := promptsFilePath(sessionName)
 	if err != nil {
 		return err

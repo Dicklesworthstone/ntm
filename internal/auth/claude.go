@@ -74,13 +74,14 @@ func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthR
 				return nil, fmt.Errorf("capture auth pane %q: %w", paneID, err)
 			}
 
-			// Check for success
-			if f.DetectAuthSuccess(output) {
+			// Pane capture includes scrollback, so a completed earlier login can
+			// coexist with the current attempt's result. The most recent terminal
+			// result is authoritative; treating any old success as decisive masks a
+			// newer failure and lets rotation continue on an unauthenticated pane.
+			switch f.latestAuthResult(output) {
+			case AuthSuccess:
 				return &AuthResult{State: AuthSuccess}, nil
-			}
-
-			// Check for failure
-			if f.DetectAuthFailure(output) {
+			case AuthFailed:
 				return &AuthResult{State: AuthFailed, Error: fmt.Errorf("authentication failed")}, nil
 			}
 
@@ -150,4 +151,28 @@ func (f *ClaudeAuthFlow) DetectAuthFailure(output string) bool {
 	return strings.Contains(output, "Login failed") ||
 		strings.Contains(output, "Authentication failed") ||
 		strings.Contains(output, "Error logging in")
+}
+
+func (f *ClaudeAuthFlow) latestAuthResult(output string) AuthState {
+	successAt := latestAuthSignal(output, "Successfully logged in", "Login successful")
+	failureAt := latestAuthSignal(output, "Login failed", "Authentication failed", "Error logging in")
+
+	switch {
+	case successAt > failureAt:
+		return AuthSuccess
+	case failureAt >= 0:
+		return AuthFailed
+	default:
+		return AuthInProgress
+	}
+}
+
+func latestAuthSignal(output string, signals ...string) int {
+	latest := -1
+	for _, signal := range signals {
+		if index := strings.LastIndex(output, signal); index > latest {
+			latest = index
+		}
+	}
+	return latest
 }

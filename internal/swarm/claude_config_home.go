@@ -317,6 +317,15 @@ func ResolveClaudeSetupTokenFile(path string) (string, error) {
 		}
 		path = filepath.Join(home, path[2:])
 	}
+	// The token is read by the pane shell after its launch command changes to
+	// the project directory. Keep a relative configuration path anchored to
+	// the directory in which ntm validated it rather than silently making it
+	// relative to that later shell directory.
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve claude_token_file %s: %w", path, err)
+	}
+	path = filepath.Clean(absolute)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read claude_token_file %s: %w", path, err)

@@ -92,6 +92,24 @@ func TestClaudeAuthFlow_MonitorAuthReturnsCaptureFailure(t *testing.T) {
 	}
 }
 
+func TestClaudeAuthFlow_MonitorAuthUsesLatestTerminalResult(t *testing.T) {
+	flow := NewClaudeAuthFlow(false)
+	flow.pollInterval = time.Millisecond
+	flow.captureOutput = func(string, int) (string, error) {
+		return "Successfully logged in as the previous account\nAuthentication failed", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := flow.MonitorAuth(ctx, "%42")
+	if err != nil {
+		t.Fatalf("MonitorAuth() error = %v", err)
+	}
+	if result == nil || result.State != AuthFailed {
+		t.Fatalf("MonitorAuth() result = %+v, want current authentication failure", result)
+	}
+}
+
 // =============================================================================
 // SendContinuation
 // =============================================================================
