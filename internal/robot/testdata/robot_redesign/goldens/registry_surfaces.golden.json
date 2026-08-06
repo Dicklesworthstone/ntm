@@ -12,7 +12,7 @@
     "utility"
   ],
   "category_count": 10,
-  "schema_type_count": 133,
+  "schema_type_count": 134,
   "schema_types": [
     "account_status",
     "accounts_list",
@@ -144,6 +144,7 @@
     "triage",
     "version",
     "wait",
+    "wait_cancel",
     "watch_bead",
     "xf_search",
     "xf_status"
@@ -1047,8 +1048,8 @@
       "has_lifecycle": false,
       "has_request_semantics": false,
       "name": "wait-cancel",
-      "schema_id": "",
-      "schema_type": ""
+      "schema_id": "ntm:robot:wait-cancel:v1",
+      "schema_type": "wait_cancel"
     },
     {
       "category": "spawn",

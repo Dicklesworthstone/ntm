@@ -23,6 +23,7 @@ var SchemaCommand = map[string]interface{}{
 	"attention":      AttentionOutput{},
 	"overlay":        OverlayOutput{},
 	"wait":           WaitResponse{},
+	"wait_cancel":    WaitCancelResponse{},
 	"version":        VersionOutput{},
 	"mail":           MailOutput{},
 	"history":        HistoryOutput{},

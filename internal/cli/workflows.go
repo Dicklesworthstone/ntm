@@ -51,6 +51,10 @@ type RobotSequenceOutput struct {
 	Pane     *workflow.PaneSequencePosition `json:"pane,omitempty"`
 }
 
+func init() {
+	robot.MustRegisterSchemaCommand("sequence", RobotSequenceOutput{})
+}
+
 func printRobotSequence(projectDir, name, action, pane, rawSteps string) error {
 	store, err := workflow.NewPaneSequenceStore(projectDir)
 	if err != nil {

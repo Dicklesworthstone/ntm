@@ -383,13 +383,21 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 
-if [ "${1:-}" = "list" ] && [ "${2:-}" = "--json" ]; then
+if [ "${1:-}" = "robot" ] && [ "${2:-}" = "status" ] && [ "${3:-}" = "--compact" ]; then
   active="$(cat "$STATE_FILE" 2>/dev/null || true)"
   if [ "$active" = "claude-b" ]; then
-    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":true}]'
+    a_active=false
+    b_active=true
   else
-    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":true},{"id":"claude-b","provider":"claude","email":"b@example.com","active":false}]'
+    a_active=true
+    b_active=false
   fi
+  echo "{\"success\":true,\"data\":{\"providers\":[{\"id\":\"claude\",\"logged_in\":true,\"profiles\":[{\"name\":\"claude-a\",\"active\":$a_active,\"health\":{\"status\":\"ok\"}},{\"name\":\"claude-b\",\"active\":$b_active,\"health\":{\"status\":\"ok\"}}]}]}}"
+  exit 0
+fi
+
+if [ "${1:-}" = "cost" ] && [ "${2:-}" = "sessions" ]; then
+  echo '[]'
   exit 0
 fi
 
@@ -402,29 +410,27 @@ if [ "${1:-}" = "creds" ] && [ "${3:-}" = "--json" ]; then
   fi
 fi
 
-if [ "${1:-}" = "switch" ]; then
-  if [ "${3:-}" = "--next" ] && [ "${4:-}" = "--json" ]; then
-    provider="${2:-}"
-    if [ "$provider" != "claude" ]; then
-      echo "{\"success\":false,\"provider\":\"$provider\",\"error\":\"unknown provider\"}" >&2
-      exit 1
-    fi
+if [ "${1:-}" = "activate" ]; then
+  provider="${2:-}"
+  if [ "$provider" != "claude" ]; then
+    echo "{\"success\":false,\"error\":\"unknown provider\"}" >&2
+    exit 1
+  fi
 
-    prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "${3:-}" = "--auto" ]; then
     if [ "$prev" = "claude-b" ]; then
       next="claude-a"
     else
       next="claude-b"
     fi
-
-    echo "$next" > "$STATE_FILE"
-    echo "{\"success\":true,\"provider\":\"claude\",\"previous_account\":\"$prev\",\"new_account\":\"$next\",\"accounts_remaining\":1}"
-    exit 0
+  else
+    # Activate a specific profile by name.
+    next="${3:-}"
   fi
 
-  # Switch to a specific account ID.
-  acct="${2:-}"
-  echo "$acct" > "$STATE_FILE"
+  echo "$next" > "$STATE_FILE"
+  echo "{\"success\":true,\"profile\":\"$next\",\"previous_profile\":\"$prev\"}"
   exit 0
 fi
 

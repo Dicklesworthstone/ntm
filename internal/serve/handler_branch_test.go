@@ -12552,15 +12552,27 @@ func TestHandleCancelPipeline_MissingRunID(t *testing.T) {
 // BATCH 34 — Policy reset error branches, approval SLB/expired, blocked truncation
 // =============================================================================
 
-// TestHandlePolicyResetV1_MkdirAllError exercises the MkdirAll error branch
-// in handlePolicyResetV1 (line 736). Setting HOME so .ntm is a file blocks
-// directory creation.
+// TestHandlePolicyResetV1_MkdirAllError exercises the MkdirAll error branch in
+// handlePolicyResetV1. The handler now resolves the effective policy path first,
+// so the directory must be blocked in a way that still lets resolution succeed:
+// a regular file at .ntm makes os.Stat(~/.ntm/policy.yaml) fail with ENOTDIR
+// rather than ErrNotExist, which trips the earlier resolve branch instead.
+// Making HOME itself unwritable keeps the stat a clean ErrNotExist (so
+// ResolveEffectivePath returns ~/.ntm/policy.yaml, exists=false) while
+// MkdirAll(~/.ntm) fails with EACCES.
 func TestHandlePolicyResetV1_MkdirAllError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission checks")
+	}
 	s, _ := setupTestServer(t)
 
 	tmpHome := t.TempDir()
-	// Create a regular file at .ntm so MkdirAll can't create a directory there
-	os.WriteFile(filepath.Join(tmpHome, ".ntm"), []byte("blocker"), 0644)
+	// Read+execute but not write: lookups still resolve, creation is denied.
+	if err := os.Chmod(tmpHome, 0o500); err != nil {
+		t.Fatalf("chmod temp home: %v", err)
+	}
+	// Restore write permission so t.TempDir cleanup can remove the directory.
+	t.Cleanup(func() { _ = os.Chmod(tmpHome, 0o700) })
 	t.Setenv("HOME", tmpHome)
 
 	req := httptest.NewRequest("POST", "/api/v1/safety/policy/reset", nil)

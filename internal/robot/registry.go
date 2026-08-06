@@ -602,8 +602,7 @@ func buildRobotSurfaceMetadata() map[string]robotSurfaceMetadata {
 			},
 		},
 		"wait-cancel": {
-			SchemaSource: "external",
-			Sections:     []string{"next_actions"},
+			Sections: []string{"next_actions"},
 		},
 		"beads-list": {
 			SchemaType: "beads_list",

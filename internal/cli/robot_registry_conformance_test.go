@@ -80,6 +80,7 @@ func TestRobotExternalSchemaBindingsUseEmittedTypes(t *testing.T) {
 		"pipeline_status":  pipeline.PipelineStatusOutput{},
 		"profile_list":     SessionProfileListOutput{},
 		"profile_show":     SessionProfileShowOutput{},
+		"sequence":         RobotSequenceOutput{},
 	}
 	for schemaType, expected := range want {
 		got, ok := registry.SchemaBinding(schemaType)
