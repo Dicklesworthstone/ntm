@@ -309,7 +309,14 @@ func getSessionActivePaneID(sessionName string) (string, error) {
 // isGitRepo checks if a directory is a git repository.
 func isGitRepo(dir string) bool {
 	gitDir := filepath.Join(dir, ".git")
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return isGitRepoWithCommand(ctx, "git", dir, gitDir)
+}
+
+func isGitRepoWithCommand(ctx context.Context, gitPath, dir, gitDir string) bool {
+	cmd := exec.CommandContext(ctx, gitPath, "-C", dir, "rev-parse", "--git-dir")
+	cmd.WaitDelay = 2 * time.Second
 	return cmd.Run() == nil || fileExists(gitDir)
 }
 
