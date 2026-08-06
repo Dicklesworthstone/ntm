@@ -6700,7 +6700,10 @@ func TestMultipleSubcommands(t *testing.T) {
 	}
 }
 
-// TestVerifyUpgrade tests the post-upgrade binary verification logic
+// TestVerifyUpgrade exercises the post-upgrade verifier through its real
+// subprocess boundary. The fixture rejects any invocation other than
+// `version --short`, so this test covers both the command contract and exact
+// normalized version matching.
 func TestVerifyUpgrade(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -6742,21 +6745,29 @@ func TestVerifyUpgrade(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Test version comparison logic directly
-			normalizedExpected := normalizeVersion(tc.expectedVersion)
-			normalizedActual := normalizeVersion(tc.actualOutput)
-
-			// Simulate the verification logic
-			matches := normalizedActual == normalizedExpected ||
-				strings.Contains(tc.actualOutput, normalizedExpected)
-
-			if tc.shouldFail && matches {
-				t.Errorf("Expected version check to fail for expected=%s actual=%s",
-					tc.expectedVersion, tc.actualOutput)
+			if runtime.GOOS == "windows" {
+				t.Skip("upgrade verifier fixture requires a POSIX shell")
 			}
-			if !tc.shouldFail && !matches {
-				t.Errorf("Expected version check to pass for expected=%s actual=%s",
-					tc.expectedVersion, tc.actualOutput)
+			binaryPath := filepath.Join(t.TempDir(), "ntm")
+			script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" != "version" ] || [ "$2" != "--short" ]; then
+  exit 64
+fi
+printf '%%s\n' %q
+`, tc.actualOutput)
+			if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+				t.Fatalf("write fake upgraded binary: %v", err)
+			}
+
+			err := verifyUpgrade(binaryPath, tc.expectedVersion)
+			if tc.shouldFail {
+				if err == nil {
+					t.Fatalf("verifyUpgrade(%q, %q) succeeded, want mismatch error", tc.actualOutput, tc.expectedVersion)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("verifyUpgrade(%q, %q) error: %v", tc.actualOutput, tc.expectedVersion, err)
 			}
 		})
 	}
