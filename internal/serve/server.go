@@ -88,8 +88,12 @@ type Server struct {
 	spawnAgents     func(context.Context, robot.SpawnOptions) (*robot.SpawnOutput, error)
 	sendAgents      func(robot.SendOptions) (*robot.SendOutput, error)
 	interruptAgents func(robot.InterruptOptions) (*robot.InterruptOutput, error)
+	waitAgents      func(context.Context, robot.WaitOptions) (*robot.WaitResponse, int)
 	resolvePane     func(context.Context, string, int) (tmux.Pane, error)
 	sendPaneKeys    func(string, string, bool) error
+	// policyWriteFile is optional test-only fault injection for policy updates.
+	// Production servers leave it nil and use os.WriteFile directly.
+	policyWriteFile func(string, []byte, os.FileMode) error
 
 	// Agent Mail client (lazy-init)
 	mailClient *agentmail.Client
@@ -952,6 +956,7 @@ func New(cfg Config) *Server {
 		spawnAgents: func(ctx context.Context, opts robot.SpawnOptions) (*robot.SpawnOutput, error) {
 			return robot.GetSpawn(ctx, opts, nil)
 		},
+		waitAgents: robot.GetWaitContext,
 	}
 
 	// Initialize pane output streaming
@@ -4069,8 +4074,12 @@ func (s *Server) handleAgentWaitV1(w http.ResponseWriter, r *http.Request) {
 		RequireTransition: false,
 	}
 
-	result, exitCode := robot.GetWaitContext(r.Context(), opts)
-	if exitCode != 0 && !result.Success {
+	waitAgents := s.waitAgents
+	if waitAgents == nil {
+		waitAgents = robot.GetWaitContext
+	}
+	result, exitCode := waitAgents(r.Context(), opts)
+	if exitCode != 0 && !result.Success && result.ErrorCode != robot.ErrCodeTimeout {
 		writeErrorResponse(w, robotErrorHTTPStatus(result.ErrorCode), result.ErrorCode, result.Error, nil, reqID)
 		return
 	}

@@ -147,6 +147,47 @@ func TestSetupTestServerIsolatesTMUXAndAgentSpawn(t *testing.T) {
 	}
 }
 
+func TestHandleAgentWaitV1ReturnsTimeoutObservation(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	srv.waitAgents = func(_ context.Context, opts robot.WaitOptions) (*robot.WaitResponse, int) {
+		return &robot.WaitResponse{
+			RobotResponse: robot.NewErrorResponse(
+				errors.New("timeout after test window"),
+				robot.ErrCodeTimeout,
+				"retry when ready",
+			),
+			Session:       opts.Session,
+			Condition:     opts.Condition,
+			Agents:        []robot.WaitAgentInfo{},
+			AgentsPending: []string{"%1"},
+		}, 1
+	}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", "timeout-session")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/timeout-session/agents/wait",
+		strings.NewReader(`{"condition":"idle","timeout_ms":1}`))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	srv.handleAgentWaitV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+		Session   string `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode timeout response: %v", err)
+	}
+	if !response.Success || response.ErrorCode != robot.ErrCodeTimeout || response.Session != "timeout-session" {
+		t.Fatalf("timeout response = %+v, want successful timeout observation for timeout-session", response)
+	}
+}
+
 func TestRobotErrorHTTPStatus(t *testing.T) {
 	tests := []struct {
 		code string
