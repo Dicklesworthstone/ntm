@@ -828,24 +828,39 @@ func (m Model) renderContextBar(percent float64, width int) string {
 		barWidth = 5
 	}
 
-	colors := []string{string(t.Green), string(t.Blue), string(t.Yellow), string(t.Red)}
+	colors := contextUsagePalette(percent, t)
 	barContent := styles.ShimmerProgressBar(percent/100.0, barWidth, "█", "░", m.animTick, colors...)
 
 	percentStyle := lipgloss.NewStyle().Foreground(t.Overlay)
 
 	var warningIcon string
 	switch {
-	case percent >= 95:
+	case percent > 95:
 		warningIcon = " " + styles.Shimmer("!!!", m.animTick, string(t.Red), string(t.Maroon), string(t.Red))
-	case percent >= 90:
-		warningIcon = " " + styles.Shimmer("!!", m.animTick, string(t.Red), string(t.Maroon), string(t.Red))
 	case percent >= 80:
-		warningIcon = " " + styles.Shimmer("!", m.animTick, string(t.Yellow), string(t.Peach), string(t.Yellow))
+		warningIcon = " " + styles.Shimmer("!", m.animTick, string(t.Peach), string(t.Yellow), string(t.Peach))
 	default:
 		warningIcon = ""
 	}
 
 	return "[" + barContent + "]" + percentStyle.Render(fmt.Sprintf("%3.0f%%", percent)) + warningIcon
+}
+
+// contextUsagePalette returns the visual severity palette for a context bar.
+// The threshold bands deliberately match the operator-facing dashboard legend:
+// green below 60%, yellow from 60% through 79%, orange from 80% through 95%,
+// and red only after 95% (when rotation is imminent).
+func contextUsagePalette(percent float64, t theme.Theme) []string {
+	switch {
+	case percent > 95:
+		return []string{string(t.Red), string(t.Maroon)}
+	case percent >= 80:
+		return []string{string(t.Peach), string(t.Peach)}
+	case percent >= 60:
+		return []string{string(t.Yellow), string(t.Yellow)}
+	default:
+		return []string{string(t.Green), string(t.Green)}
+	}
 }
 
 func formatTokenDisplay(used, limit int) string {

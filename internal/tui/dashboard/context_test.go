@@ -1,11 +1,14 @@
 package dashboard
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 func TestFormatTokenDisplay(t *testing.T) {
@@ -179,6 +182,38 @@ func TestRenderContextBar(t *testing.T) {
 				t.Errorf("renderContextBar(%.1f, %d) returned empty string", tc.percent, tc.width)
 			}
 		})
+	}
+}
+
+func TestContextUsagePaletteThresholds(t *testing.T) {
+	currentTheme := theme.CatppuccinMocha
+	tests := []struct {
+		name    string
+		percent float64
+		want    []string
+	}{
+		{name: "green below sixty", percent: 59.9, want: []string{string(currentTheme.Green), string(currentTheme.Green)}},
+		{name: "yellow at sixty", percent: 60, want: []string{string(currentTheme.Yellow), string(currentTheme.Yellow)}},
+		{name: "orange at eighty", percent: 80, want: []string{string(currentTheme.Peach), string(currentTheme.Peach)}},
+		{name: "orange at ninety-five", percent: 95, want: []string{string(currentTheme.Peach), string(currentTheme.Peach)}},
+		{name: "red above ninety-five", percent: 95.1, want: []string{string(currentTheme.Red), string(currentTheme.Maroon)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := contextUsagePalette(tt.percent, currentTheme); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("contextUsagePalette(%v) = %v, want %v", tt.percent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderContextBarNarrowWidth(t *testing.T) {
+	m := New("session", "")
+
+	got := status.StripANSI(m.renderContextBar(71, 1))
+	if !strings.Contains(got, "71%") {
+		t.Fatalf("narrow context bar = %q, want percentage", got)
 	}
 }
 
