@@ -4,6 +4,7 @@ package state
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
@@ -253,19 +254,21 @@ func (p *TimelinePersister) loadTimelineLocked(normalizedSessionID string) ([]Ag
 	scanner.Buffer(buf, 10*1024*1024)
 
 	events := make([]AgentEvent, 0, 100)
-	lineNum := 0
+	headerRead := false
 
 	for scanner.Scan() {
-		lineNum++
 		line := scanner.Bytes()
 
-		// Skip empty lines
-		if len(line) == 0 {
+		// Skip blank lines. A persisted timeline may have acquired leading
+		// whitespace through manual repair or an interrupted external writer;
+		// the first non-blank record is still the header.
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 
-		// First line is header - skip it
-		if lineNum == 1 {
+		// The first non-blank record is the header, not an event.
+		if !headerRead {
+			headerRead = true
 			continue
 		}
 
@@ -764,19 +767,22 @@ func (p *TimelinePersister) readHeader(path string, compressed bool) (*TimelineH
 	}
 
 	scanner := bufio.NewScanner(reader)
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("reading timeline header: %w", err)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
 		}
-		return nil, errors.New("empty file")
-	}
 
-	var header TimelineHeader
-	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return nil, err
+		var header TimelineHeader
+		if err := json.Unmarshal(line, &header); err != nil {
+			return nil, err
+		}
+		return &header, nil
 	}
-
-	return &header, nil
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading timeline header: %w", err)
+	}
+	return nil, errors.New("empty file")
 }
 
 func (p *TimelinePersister) compressTimeline(sessionID string) error {

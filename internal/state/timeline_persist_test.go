@@ -1015,6 +1015,45 @@ not valid json
 	}
 }
 
+func TestLoadTimeline_LeadingBlankLinesDoNotBecomeEvents(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	persister, err := NewTimelinePersister(&TimelinePersistConfig{BaseDir: tmpDir})
+	if err != nil {
+		t.Fatalf("NewTimelinePersister: %v", err)
+	}
+
+	const sessionID = "leading-blank"
+	path := filepath.Join(tmpDir, sessionID+".jsonl")
+	content := `
+
+{"version":"1.0","session_id":"leading-blank","event_count":1}
+{"agent_id":"cc_1","session_id":"leading-blank","state":"working","timestamp":"2026-01-01T00:00:00Z"}
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write timeline: %v", err)
+	}
+
+	events, err := persister.LoadTimeline(sessionID)
+	if err != nil {
+		t.Fatalf("LoadTimeline: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("LoadTimeline returned %d events, want 1; events=%+v", len(events), events)
+	}
+	if events[0].AgentID != "cc_1" || events[0].SessionID != sessionID {
+		t.Fatalf("LoadTimeline event = %+v, want persisted event", events[0])
+	}
+
+	header, err := persister.readHeader(path, false)
+	if err != nil {
+		t.Fatalf("readHeader: %v", err)
+	}
+	if header.SessionID != sessionID || header.EventCount != 1 {
+		t.Fatalf("readHeader = %+v, want persisted header", header)
+	}
+}
+
 func TestCleanup_NothingToClean(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
