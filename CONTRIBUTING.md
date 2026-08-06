@@ -34,6 +34,17 @@ go test ./...
 golangci-lint run
 ```
 
+### Shared-Worktree Commit Provenance
+
+When multiple agents share one worktree, the generated pre-commit hook runs
+`br sync --flush-only` and stages every tracked `.beads` JSONL file. That can
+silently add another agent's Beads state after an explicit code pathspec was
+chosen. For a code-only commit, inspect the staged diff, then commit only
+owned paths with a message file and `--no-verify`; an agent that owns the
+Beads update must serialize its separate sync/commit. Do not rewrite history
+to correct an attribution mistake: add a forward changelog correction that
+names the actual implementation commit.
+
 ---
 
 ## Release Infrastructure

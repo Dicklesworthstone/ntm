@@ -13,7 +13,10 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [Unreleased]
 
-No unreleased changes.
+- **Corrected commit provenance.** Commit `d08893d9`'s message incorrectly
+  attributed the fail-closed serve safety-policy change to its completion and
+  tmux diff. The actual safety-policy implementation is `dda4aae8`; history
+  is preserved and this note is the forward correction.
 
 ---
 
