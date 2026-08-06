@@ -237,53 +237,7 @@ func (m *UnifiedMessenger) Read(ctx context.Context, id string) (*UnifiedMessage
 				return nil, cancellationErr
 			}
 			if err != nil {
-				// Fallback to inbox scan if GetMessage is not supported or fails
-				slog.Debug("get_message failed, falling back to inbox scan", "error", err)
-
-				opts := FetchInboxOptions{
-					ProjectKey:    m.projectKey,
-					AgentName:     m.agentName,
-					Limit:         100,
-					IncludeBodies: true,
-				}
-				inbox, err := m.amClient.FetchInbox(ctx, opts)
-				if cancellationErr := unifiedCancellationError(ctx, err, "fetch agent mail inbox fallback"); cancellationErr != nil {
-					return nil, cancellationErr
-				}
-				if err != nil {
-					return nil, fmt.Errorf("fetch inbox fallback: %w", err)
-				}
-
-				// Helper to find message in inbox
-				findMsg := func(list []InboxMessage) *Message {
-					for _, msg := range list {
-						if msg.ID == msgID {
-							return &Message{
-								ID:        msg.ID,
-								From:      msg.From,
-								Subject:   msg.Subject,
-								BodyMD:    msg.BodyMD,
-								CreatedTS: msg.CreatedTS,
-							}
-						}
-					}
-					return nil
-				}
-
-				found = findMsg(inbox)
-
-				// If not found, try fetching deeper history (up to 1000)
-				if found == nil {
-					opts.Limit = 1000
-					inbox, err = m.amClient.FetchInbox(ctx, opts)
-					if cancellationErr := unifiedCancellationError(ctx, err, "fetch agent mail history fallback"); cancellationErr != nil {
-						return nil, cancellationErr
-					}
-					if err != nil {
-						return nil, fmt.Errorf("fetch inbox history fallback: %w", err)
-					}
-					found = findMsg(inbox)
-				}
+				return nil, fmt.Errorf("get agent mail message: %w", err)
 			}
 
 			if found != nil {

@@ -267,46 +267,11 @@ func TestUnifiedMessengerRead_AgentMailMarksRead(t *testing.T) {
 	}
 }
 
-func TestUnifiedMessengerRead_AgentMailFetchesDeeperHistory(t *testing.T) {
-	now := time.Now()
-	am := &fakeAMClient{
-		available: true,
-		// Force GetMessage to fail to test the fallback inbox scanning logic
-		getMessageErr: errors.New("not implemented"),
-		inboxResponses: [][]InboxMessage{
-			{{ID: 1, From: "skip", Subject: "skip", BodyMD: "skip", CreatedTS: FlexTime{now}}},
-			{{ID: 99, From: "found", Subject: "ok", BodyMD: "ok", CreatedTS: FlexTime{now}}},
-		},
-	}
-
-	unified := &UnifiedMessenger{
-		amClient:   am,
-		projectKey: "proj",
-		agentName:  "agent",
-	}
-
-	msg, err := unified.Read(context.Background(), "am-99")
-	if err != nil {
-		t.Fatalf("Read() error: %v", err)
-	}
-	if msg.ID != "am-99" {
-		t.Fatalf("expected am-99, got %s", msg.ID)
-	}
-	if am.fetchCalls != 2 {
-		t.Fatalf("expected 2 FetchInbox calls, got %d", am.fetchCalls)
-	}
-}
-
-func TestUnifiedMessengerRead_AgentMailPreservesDeeperHistoryFailure(t *testing.T) {
-	historyErr := errors.New("history unavailable")
+func TestUnifiedMessengerRead_AgentMailGetFailureDoesNotReadInbox(t *testing.T) {
+	getErr := errors.New("not implemented")
 	am := &fakeAMClient{
 		available:     true,
-		getMessageErr: errors.New("not implemented"),
-		inboxResponses: [][]InboxMessage{
-			{{ID: 1, From: "skip", Subject: "skip", BodyMD: "skip"}},
-			nil,
-		},
-		inboxErrors: []error{nil, historyErr},
+		getMessageErr: getErr,
 	}
 
 	unified := &UnifiedMessenger{
@@ -316,11 +281,11 @@ func TestUnifiedMessengerRead_AgentMailPreservesDeeperHistoryFailure(t *testing.
 	}
 
 	_, err := unified.Read(context.Background(), "am-99")
-	if !errors.Is(err, historyErr) {
-		t.Fatalf("Read() error = %v, want wrapped %v", err, historyErr)
+	if !errors.Is(err, getErr) {
+		t.Fatalf("Read() error = %v, want wrapped %v", err, getErr)
 	}
-	if am.fetchCalls != 2 {
-		t.Fatalf("expected 2 FetchInbox calls, got %d", am.fetchCalls)
+	if am.fetchCalls != 0 {
+		t.Fatalf("FetchInbox calls = %d, want none because it marks unrelated messages read", am.fetchCalls)
 	}
 }
 
