@@ -64,7 +64,7 @@ func TestBVClientParseValidTriageJSON(t *testing.T) {
 
 	setupFakeBV(t, fakeBVConfig{stdout: triageJSON})
 
-	client := bv.NewBVClientWithOptions("", 30*time.Second, 5*time.Second)
+	client := bv.NewBVClientWithOptions(t.TempDir(), 30*time.Second, testutil.ScaleTimeout(5*time.Second))
 	logger.Log("Input: WorkspacePath=%q CacheTTL=%s Timeout=%s", client.WorkspacePath, client.CacheTTL, client.Timeout)
 	logger.Log("Expected: 2 recommendations with correct PageRank, UnblocksCount, BlockedBy IDs")
 
