@@ -1056,7 +1056,7 @@ func (r *AccountRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error
 	// Safety guard: honor pins and refuse unsafe global Codex clobbering before
 	// we ever shell out to caam. A deliberate refusal is wrapped in
 	// ErrRotationBlocked so the caller can degrade gracefully.
-	caamCommand := fmt.Sprintf("caam switch %s --next --json", provider)
+	caamCommand := fmt.Sprintf("caam activate %s --auto --json", caamToolName(provider))
 	if err := r.guardAutoRotation(provider, currentAccount, caamCommand); err != nil {
 		return nil, err
 	}
@@ -1407,32 +1407,48 @@ func (r *AccountRotator) switchNext(ctx context.Context, provider string) (tools
 	// own DTO spelled {"new_account", "previous_account"}. Unmarshalling caam's
 	// JSON straight into it silently produced empty account names, so decode
 	// caam's actual shape and translate, matching CAAMAdapter.SwitchToNextAccount.
-	var result tools.SwitchResult
-	if payload != "" && json.Valid([]byte(payload)) {
-		var response struct {
-			Success         bool   `json:"success"`
-			Profile         string `json:"profile"`
-			PreviousProfile string `json:"previous_profile"`
-			Error           string `json:"error"`
+	if payload == "" {
+		if runErr != nil {
+			return tools.SwitchResult{}, stdout, stderr, runErr
 		}
-		if err := json.Unmarshal([]byte(payload), &response); err != nil {
-			return tools.SwitchResult{}, stdout, stderr, fmt.Errorf("parse caam activate output: %w", err)
+		return tools.SwitchResult{}, stdout, stderr, fmt.Errorf("parse caam activate output: empty response")
+	}
+	if !json.Valid([]byte(payload)) {
+		if runErr != nil {
+			return tools.SwitchResult{}, stdout, stderr, runErr
 		}
-		result = tools.SwitchResult{
-			Success:         response.Success,
-			Provider:        provider,
-			PreviousAccount: response.PreviousProfile,
-			NewAccount:      response.Profile,
-			Error:           response.Error,
-		}
+		return tools.SwitchResult{}, stdout, stderr, fmt.Errorf("parse caam activate output: invalid JSON")
+	}
+
+	var response struct {
+		Success         bool   `json:"success"`
+		Profile         string `json:"profile"`
+		PreviousProfile string `json:"previous_profile"`
+		Error           string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &response); err != nil {
+		return tools.SwitchResult{}, stdout, stderr, fmt.Errorf("parse caam activate output: %w", err)
+	}
+	result := tools.SwitchResult{
+		Success:         response.Success,
+		Provider:        provider,
+		PreviousAccount: response.PreviousProfile,
+		NewAccount:      response.Profile,
+		Error:           response.Error,
 	}
 
 	if runErr != nil {
 		return result, stdout, stderr, runErr
 	}
 
-	if !result.Success && result.Error != "" {
-		return result, stdout, stderr, fmt.Errorf("%s", result.Error)
+	if !result.Success {
+		if result.Error != "" {
+			return result, stdout, stderr, fmt.Errorf("%s", result.Error)
+		}
+		return result, stdout, stderr, fmt.Errorf("caam activate returned success=false without error details")
+	}
+	if result.NewAccount == "" {
+		return result, stdout, stderr, fmt.Errorf("parse caam activate output: missing profile")
 	}
 
 	return result, stdout, stderr, nil
