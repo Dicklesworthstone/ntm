@@ -918,6 +918,30 @@ func TestRemoveWorktree_NonExistent(t *testing.T) {
 	}
 }
 
+func TestRemoveWorktreeReportsFailedBranchDeletion(t *testing.T) {
+	fakeBin := t.TempDir()
+	script := `#!/bin/sh
+case "$1 $2" in
+  "worktree remove") exit 0 ;;
+  "branch -D") echo "branch deletion refused" >&2; exit 1 ;;
+  "show-ref --verify") exit 0 ;;
+  *) echo "unexpected git invocation: $*" >&2; exit 99 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := NewManager(t.TempDir(), "test-sess").RemoveWorktree(t.Context(), "agent-1")
+	if err == nil {
+		t.Fatal("RemoveWorktree() succeeded after branch deletion failed")
+	}
+	if !strings.Contains(err.Error(), "delete worktree branch ntm/test-sess/agent-1") {
+		t.Fatalf("RemoveWorktree() error = %v, want branch deletion failure", err)
+	}
+}
+
 func TestRemoveWorktree_RejectsUnsafeAgentNameWithoutDeletingSiblingPath(t *testing.T) {
 	t.Parallel()
 

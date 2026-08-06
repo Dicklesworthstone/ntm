@@ -499,9 +499,25 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, agentName string) 
 		}
 	}
 
-	// Delete the branch
-	if branchErr := gitRun(ctx, m.projectPath, "branch", "-D", branchName); branchErr != nil && ctx.Err() != nil {
-		return fmt.Errorf("remove worktree %s canceled before branch cleanup: %w", agentName, ctx.Err())
+	// Delete the branch. A missing branch is harmless because removal is
+	// intentionally idempotent, but any other deletion failure leaves a branch
+	// that will block a future worktree creation for this agent.
+	if branchErr := gitRun(ctx, m.projectPath, "branch", "-D", branchName); branchErr != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("remove worktree %s canceled before branch cleanup: %w", agentName, ctx.Err())
+		}
+
+		refErr := gitRun(ctx, m.projectPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+		if refErr == nil {
+			return fmt.Errorf("delete worktree branch %s after removing %s: %w", branchName, agentName, branchErr)
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("remove worktree %s canceled while checking branch cleanup: %w", agentName, ctx.Err())
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(refErr, &exitErr) || exitErr.ExitCode() != 1 {
+			return fmt.Errorf("verify worktree branch %s after failed deletion: %w", branchName, refErr)
+		}
 	}
 
 	return nil
