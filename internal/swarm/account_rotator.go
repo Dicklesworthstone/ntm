@@ -1462,7 +1462,15 @@ func (r *AccountRotator) switchNext(ctx context.Context, provider string) (tools
 func (r *AccountRotator) GetPaneState(sessionPane string) *RotationState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.rotationStates[sessionPane]
+
+	state := r.rotationStates[sessionPane]
+	if state == nil {
+		return nil
+	}
+
+	snapshot := *state
+	snapshot.PreviousAccounts = append([]string(nil), state.PreviousAccounts...)
+	return &snapshot
 }
 
 // isCooldownActive checks whether the pane is within the cooldown window.

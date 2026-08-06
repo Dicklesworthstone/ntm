@@ -504,6 +504,30 @@ func TestAccountRotatorGetPaneStateNil(t *testing.T) {
 	}
 }
 
+func TestAccountRotatorGetPaneStateReturnsSnapshot(t *testing.T) {
+	rotator := NewAccountRotator()
+	rotator.rotationStates["test:1.1"] = &RotationState{
+		CurrentAccount:   "current",
+		PreviousAccounts: []string{"previous"},
+		RotationCount:    1,
+	}
+
+	snapshot := rotator.GetPaneState("test:1.1")
+	if snapshot == nil {
+		t.Fatal("expected pane state")
+	}
+	snapshot.CurrentAccount = "mutated"
+	snapshot.PreviousAccounts[0] = "mutated"
+
+	fresh := rotator.GetPaneState("test:1.1")
+	if fresh.CurrentAccount != "current" {
+		t.Errorf("CurrentAccount leaked mutation: got %q", fresh.CurrentAccount)
+	}
+	if fresh.PreviousAccounts[0] != "previous" {
+		t.Errorf("PreviousAccounts leaked mutation: got %q", fresh.PreviousAccounts[0])
+	}
+}
+
 func TestAccountRotatorGetOrCreateState(t *testing.T) {
 	rotator := NewAccountRotator()
 
