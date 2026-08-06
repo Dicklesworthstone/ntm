@@ -6,6 +6,7 @@ Practical workflow examples demonstrating NTM pipeline patterns. For schema deta
 
 - [Design-Implement-Test Workflow](#design-implement-test-workflow)
 - [Implement-Review-Revise Workflow](#implement-review-revise-workflow)
+- [Durable Per-Pane Review Sequences](#durable-per-pane-review-sequences)
 - [Error Handling with Retry](#error-handling-with-retry)
 - [Loop Workflows](#loop-workflows)
 - [Best Practices](#best-practices)
@@ -252,6 +253,41 @@ ntm pipeline run implement-review-revise.yaml \
 # Resume from a failed state
 ntm pipeline resume implement-review-revise.yaml
 ```
+
+---
+
+## Durable Per-Pane Review Sequences
+
+Use `--robot-sequence` when several reviewer panes should work through the
+same prompt rotation independently. The state is stored under the current
+project's `.ntm/workflows/sequences/` directory, so a restarted shell can read
+the next prompt without rebuilding state in `/tmp` or shell arrays.
+
+```bash
+# Create the ordered review rotation once from the project root.
+ntm --robot-sequence=review \
+  --sequence-action=create \
+  --sequence-steps='[
+    "Inspect the changed files and identify concrete risks.",
+    "Challenge the proposed fix; look for missed edge cases.",
+    "Summarize findings with file and line evidence."
+  ]'
+
+# Every pane starts at prompt zero independently.
+ntm --robot-sequence=review --sequence-pane=%12
+ntm --robot-sequence=review --sequence-pane=%13
+
+# Advance only the pane that completed its current review pass.
+ntm --robot-sequence=review --sequence-action=advance --sequence-pane=%12
+
+# Later invocations reload the durable position. A completed pane reports
+# complete=true, and further advance calls are idempotent (advanced=false).
+ntm --robot-sequence=review --sequence-pane=%12
+```
+
+The `create` action requires a JSON string array in `--sequence-steps`; `next`
+(the default) and `advance` require `--sequence-pane`, which may be a stable
+tmux pane ID such as `%12` or a canonical pane address.
 
 ---
 
