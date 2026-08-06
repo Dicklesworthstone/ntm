@@ -139,6 +139,47 @@ func TestApprovalResolvedRecordSurvivesLateRetry(t *testing.T) {
 	}
 }
 
+func TestApprovalsHistoryTransitionsExpiredPendingApproval(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	const approvalID = "apr-history-expired-regression"
+	approvalsLock.Lock()
+	approvals[approvalID] = &Approval{
+		ID:        approvalID,
+		Action:    "dangerous-operation",
+		Status:    "pending",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	approvalsLock.Unlock()
+	t.Cleanup(func() {
+		approvalsLock.Lock()
+		delete(approvals, approvalID)
+		approvalsLock.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/approvals/history", nil)
+	rec := httptest.NewRecorder()
+	s.handleApprovalsHistoryV1(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var response ApprovalsListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	for _, approval := range response.Approvals {
+		if approval.ID == approvalID {
+			if approval.Status != "expired" {
+				t.Fatalf("history status = %q, want expired", approval.Status)
+			}
+			return
+		}
+	}
+	t.Fatalf("expired approval %q missing from history: %+v", approvalID, response.Approvals)
+}
+
 func TestApprovalDecisionResponseSnapshotsResolvedStatus(t *testing.T) {
 	s, _ := setupTestServer(t)
 

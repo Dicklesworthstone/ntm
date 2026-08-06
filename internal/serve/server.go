@@ -4529,15 +4529,27 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 	// Check for attention topic subscriptions with durable semantics
 	attentionTopics, regularTopics := partitionAttentionTopics(topics)
 
-	// Handle regular topics
-	if len(regularTopics) > 0 {
-		c.Subscribe(regularTopics)
-	}
-
-	// Handle attention topics with durable semantics (cursor, replay, filters)
+	// Subscribe attention topics first. A cursor-expired or unavailable feed
+	// cannot satisfy the requested subscription, so do not acknowledge the
+	// complete request (or partially subscribe its regular topics) as though it
+	// had succeeded.
 	var attentionResult map[string]interface{}
 	if len(attentionTopics) > 0 {
 		attentionResult = c.handleAttentionSubscribe(msg, attentionTopics)
+		if errorCode, failed := attentionResult["error_code"].(string); failed {
+			message, _ := attentionResult["error"].(string)
+			if message == "" {
+				message = "attention subscription failed"
+			}
+			c.sendError(msg.RequestID, errorCode, message)
+			return
+		}
+	}
+
+	// Regular topics are only committed after any durable attention request has
+	// been accepted, keeping a single subscribe message all-or-nothing.
+	if len(regularTopics) > 0 {
+		c.Subscribe(regularTopics)
 	}
 
 	// Build response

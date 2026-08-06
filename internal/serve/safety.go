@@ -1053,8 +1053,13 @@ func (s *Server) handleApprovalsHistoryV1(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	approvalsLock.RLock()
-	defer approvalsLock.RUnlock()
+	// History is a terminal-state view, so it must perform the same expiry
+	// transition as the list and get endpoints before filtering. Otherwise a
+	// request that expires while callers only use /history remains pending in
+	// memory and is omitted from the only endpoint meant to show its outcome.
+	approvalsLock.Lock()
+	defer approvalsLock.Unlock()
+	reapApprovalsLocked(time.Now())
 
 	var result []Approval
 	for _, a := range approvals {

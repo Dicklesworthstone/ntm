@@ -624,3 +624,38 @@ func TestHandleSwaggerUI_Handler(t *testing.T) {
 		t.Error("expected swagger-ui reference in HTML")
 	}
 }
+
+func TestDocumentationHandlersUseConfiguredPublicBaseURL(t *testing.T) {
+	srv := New(Config{
+		Host:          "0.0.0.0",
+		Port:          7337,
+		PublicBaseURL: "https://ntm.example.test/control/",
+		Version:       "1.2.3",
+	})
+
+	specRecorder := httptest.NewRecorder()
+	srv.handleOpenAPISpec(specRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	if specRecorder.Code != http.StatusOK {
+		t.Fatalf("OpenAPI status = %d, want %d", specRecorder.Code, http.StatusOK)
+	}
+
+	var spec OpenAPISpec
+	if err := json.Unmarshal(specRecorder.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("decode OpenAPI response: %v", err)
+	}
+	if spec.Info.Version != "1.2.3" {
+		t.Errorf("OpenAPI version = %q, want configured version", spec.Info.Version)
+	}
+	if len(spec.Servers) != 1 || spec.Servers[0].URL != "https://ntm.example.test/control" {
+		t.Errorf("OpenAPI servers = %#v, want configured public base URL", spec.Servers)
+	}
+
+	docsRecorder := httptest.NewRecorder()
+	srv.handleSwaggerUI(docsRecorder, httptest.NewRequest(http.MethodGet, "/docs", nil))
+	if docsRecorder.Code != http.StatusOK {
+		t.Fatalf("docs status = %d, want %d", docsRecorder.Code, http.StatusOK)
+	}
+	if !strings.Contains(docsRecorder.Body.String(), "https://ntm.example.test/control/api/v1/openapi.json") {
+		t.Errorf("Swagger UI does not reference configured public OpenAPI URL: %s", docsRecorder.Body.String())
+	}
+}

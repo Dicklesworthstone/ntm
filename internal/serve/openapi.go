@@ -385,12 +385,7 @@ func buildInputSchema(cmd kernel.Command) *Schema {
 
 // handleOpenAPISpec serves the OpenAPI JSON specification.
 func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
-	serverURL := fmt.Sprintf("http://%s:%d", s.host, s.port)
-	if r.TLS != nil {
-		serverURL = fmt.Sprintf("https://%s:%d", s.host, s.port)
-	}
-
-	spec := GenerateOpenAPISpec("dev", serverURL)
+	spec := GenerateOpenAPISpec(s.version, s.documentationBaseURL(r))
 
 	specBytes, err := json.Marshal(spec)
 	if err != nil {
@@ -405,10 +400,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 
 // handleSwaggerUI serves the Swagger UI HTML page.
 func (s *Server) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
-	specURL := fmt.Sprintf("http://%s:%d/api/v1/openapi.json", s.host, s.port)
-	if r.TLS != nil {
-		specURL = fmt.Sprintf("https://%s:%d/api/v1/openapi.json", s.host, s.port)
-	}
+	specURL := s.documentationBaseURL(r) + "/api/v1/openapi.json"
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
@@ -456,4 +448,19 @@ func (s *Server) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
+}
+
+// documentationBaseURL returns the API base URL embedded in generated docs.
+// A configured public base URL takes precedence because the listener host and
+// port are often private when the server is deployed behind a reverse proxy.
+func (s *Server) documentationBaseURL(r *http.Request) string {
+	if s.publicBaseURL != "" {
+		return strings.TrimRight(s.publicBaseURL, "/")
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, s.host, s.port)
 }

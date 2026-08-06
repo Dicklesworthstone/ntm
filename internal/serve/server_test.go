@@ -6891,6 +6891,49 @@ func TestWSAttentionSubscriptionCursorExpired(t *testing.T) {
 	}
 }
 
+func TestWSSubscribeRejectsExpiredAttentionCursor(t *testing.T) {
+	feed, _ := installServeTestAttentionFeed(t)
+	_, sinceCursor := expiredServeTestAttentionCursor(t, feed)
+
+	client := &WSClient{
+		id:     "expired-subscribe-client",
+		hub:    NewWSHub(),
+		send:   make(chan []byte, 1),
+		topics: make(map[string]struct{}),
+	}
+	client.handleSubscribe(WSMessage{
+		Type:      WSMsgSubscribe,
+		RequestID: "expired-subscribe",
+		Data: map[string]interface{}{
+			"topics":       []interface{}{"attention", "sessions:proj"},
+			"since_cursor": float64(sinceCursor),
+		},
+	})
+
+	select {
+	case payload := <-client.send:
+		var response WSError
+		if err := json.Unmarshal(payload, &response); err != nil {
+			t.Fatalf("decode WebSocket response: %v", err)
+		}
+		if response.Type != WSMsgError || response.Code != robot.ErrCodeCursorExpired {
+			t.Fatalf("response = %+v, want cursor-expired error", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a cursor-expired WebSocket error")
+	}
+
+	if topics := client.Topics(); len(topics) != 0 {
+		t.Fatalf("failed subscription committed topics: %v", topics)
+	}
+	client.attentionSubMu.Lock()
+	subscription := client.attentionSub
+	client.attentionSubMu.Unlock()
+	if subscription != nil {
+		t.Fatal("failed subscription left an attention subscription active")
+	}
+}
+
 // TestPartitionAttentionTopics tests topic partitioning.
 func TestPartitionAttentionTopics(t *testing.T) {
 
