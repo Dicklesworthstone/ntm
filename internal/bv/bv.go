@@ -2929,28 +2929,39 @@ func GetBeadsSummaryContext(ctx context.Context, dir string, limit int) (*BeadsS
 		return result, nil
 	}
 
-	// Parse the JSON output
-	var stats struct {
-		TotalIssues      int `json:"total_issues"`
-		OpenIssues       int `json:"open_issues"`
-		InProgressIssues int `json:"in_progress_issues"`
-		BlockedIssues    int `json:"blocked_issues"`
-		ReadyIssues      int `json:"ready_issues"`
-		ClosedIssues     int `json:"closed_issues"`
+	// br stats --json nests counters under summary. Decoding this into a flat
+	// struct succeeds while leaving every counter at zero, which makes a real
+	// backlog indistinguishable from an empty one to snapshot and queue-dry
+	// consumers. Require the envelope explicitly so a future schema drift also
+	// degrades the source instead of publishing false zero counts.
+	var statsEnvelope struct {
+		Summary *struct {
+			TotalIssues      int `json:"total_issues"`
+			OpenIssues       int `json:"open_issues"`
+			InProgressIssues int `json:"in_progress_issues"`
+			BlockedIssues    int `json:"blocked_issues"`
+			ReadyIssues      int `json:"ready_issues"`
+			ClosedIssues     int `json:"closed_issues"`
+		} `json:"summary"`
 	}
-	if err := json.Unmarshal([]byte(statsOutput), &stats); err != nil {
+	if err := json.Unmarshal([]byte(statsOutput), &statsEnvelope); err != nil {
 		result.Available = false
 		result.Reason = fmt.Sprintf("parse stats failed: %v", err)
 		return result, nil
 	}
+	if statsEnvelope.Summary == nil {
+		result.Available = false
+		result.Reason = "parse stats failed: missing summary object"
+		return result, nil
+	}
 
 	result.Available = true
-	result.Total = stats.TotalIssues
-	result.Open = stats.OpenIssues
-	result.InProgress = stats.InProgressIssues
-	result.Blocked = stats.BlockedIssues
-	result.Ready = stats.ReadyIssues
-	result.Closed = stats.ClosedIssues
+	result.Total = statsEnvelope.Summary.TotalIssues
+	result.Open = statsEnvelope.Summary.OpenIssues
+	result.InProgress = statsEnvelope.Summary.InProgressIssues
+	result.Blocked = statsEnvelope.Summary.BlockedIssues
+	result.Ready = statsEnvelope.Summary.ReadyIssues
+	result.Closed = statsEnvelope.Summary.ClosedIssues
 
 	// Get ready preview (top N ready issues sorted by priority)
 	ready, err := GetReadyPreviewContext(ctx, dir, limit)

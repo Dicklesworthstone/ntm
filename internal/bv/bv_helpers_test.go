@@ -541,6 +541,44 @@ func TestGetBeadsSummary_EarlyValidation(t *testing.T) {
 	})
 }
 
+func TestGetBeadsSummaryParsesCurrentStatsSummaryEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".beads"), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    stats)
+      echo '{"summary":{"total_issues":12,"open_issues":7,"in_progress_issues":2,"blocked_issues":3,"ready_issues":4,"closed_issues":5}}'
+      exit 0
+      ;;
+    ready|list)
+      echo '[]'
+      exit 0
+      ;;
+  esac
+done
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(binDir, "br"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	summary, err := GetBeadsSummaryContext(context.Background(), dir, 5)
+	if err != nil {
+		t.Fatalf("GetBeadsSummaryContext: %v", err)
+	}
+	if !summary.Available {
+		t.Fatalf("summary unavailable: %s", summary.Reason)
+	}
+	if summary.Total != 12 || summary.Open != 7 || summary.InProgress != 2 || summary.Blocked != 3 || summary.Ready != 4 || summary.Closed != 5 {
+		t.Fatalf("summary counts = total=%d open=%d in_progress=%d blocked=%d ready=%d closed=%d, want 12/7/2/3/4/5", summary.Total, summary.Open, summary.InProgress, summary.Blocked, summary.Ready, summary.Closed)
+	}
+}
+
 func TestGetPlanContextRequiresPlanTracksEnvelope(t *testing.T) {
 	tests := []struct {
 		name       string
