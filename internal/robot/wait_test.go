@@ -3,13 +3,24 @@ package robot
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
+
+func useFailingTmuxBinary(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tmux")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'permission denied while connecting to tmux server' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatalf("write fake tmux binary: %v", err)
+	}
+	t.Setenv("NTM_TMUX_BINARY", path)
+}
 
 func TestGetWaitFailureUsesGeneralErrorExit(t *testing.T) {
 	response, exitCode := GetWait(WaitOptions{
@@ -41,6 +52,36 @@ func TestGetWaitContextReturnsCanceledBeforeTmuxLookup(t *testing.T) {
 	}
 	if response.WaitID != "cancelled-wait" {
 		t.Fatalf("WaitID = %q, want cancelled-wait", response.WaitID)
+	}
+}
+
+func TestGetWaitContextSurfacesTmuxLookupFailure(t *testing.T) {
+	useFailingTmuxBinary(t)
+
+	response, exitCode := GetWaitContext(context.Background(), WaitOptions{
+		Session:   "project",
+		Condition: WaitConditionIdle,
+	})
+	if exitCode != 1 {
+		t.Fatalf("GetWaitContext() exit code = %d, want 1", exitCode)
+	}
+	if response.Success || response.ErrorCode != ErrCodeInternalError {
+		t.Fatalf("GetWaitContext() response = %+v, want INTERNAL_ERROR failure", response.RobotResponse)
+	}
+}
+
+func TestGetSnapshotWithOptionsSurfacesTmuxEnumerationFailure(t *testing.T) {
+	useFailingTmuxBinary(t)
+	// A refused local endpoint makes Agent Mail availability fail immediately;
+	// this test isolates the tmux enumeration contract.
+	t.Setenv("AGENT_MAIL_URL", "http://127.0.0.1:1")
+
+	response, err := GetSnapshotWithOptions(config.Default(), PaginationOptions{})
+	if err != nil {
+		t.Fatalf("GetSnapshotWithOptions() error = %v", err)
+	}
+	if response.Success || response.ErrorCode != ErrCodeInternalError {
+		t.Fatalf("GetSnapshotWithOptions() response = %+v, want INTERNAL_ERROR failure", response.RobotResponse)
 	}
 }
 

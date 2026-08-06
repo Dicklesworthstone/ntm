@@ -4869,7 +4869,15 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	// Get all sessions
 	sessions, err := tmux.ListSessions()
 	if err != nil {
-		// No sessions is not an error for snapshot
+		// ListSessions returns an empty result without an error when no tmux
+		// server is running. A non-nil error means the control plane could not
+		// enumerate sessions, so a successful empty snapshot would be false.
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("list tmux sessions: %w", err),
+			ErrCodeInternalError,
+			"Check tmux is running and accessible, then retry the snapshot",
+		)
+		output.Alerts = append(output.Alerts, "failed to list tmux sessions: "+err.Error())
 		return output, nil
 	}
 

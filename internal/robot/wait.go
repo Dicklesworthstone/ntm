@@ -155,8 +155,23 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 		return waitContextCanceledResponse(opts, startTime, err), 1
 	}
 
-	// Validate session exists
-	if !tmux.SessionExists(opts.Session) {
+	// Validate session exists. SessionExists is intentionally a convenience
+	// boolean for callers that do not need diagnostics; wait is an API surface
+	// and must preserve a tmux control-plane failure instead of misreporting it
+	// as a missing session.
+	exists, err := tmux.SessionExistsContext(ctx, opts.Session)
+	if err != nil {
+		return &WaitResponse{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("check session %q: %w", opts.Session, err),
+				ErrCodeInternalError,
+				"Check tmux is running and the session is accessible, then retry",
+			),
+			Session:   opts.Session,
+			Condition: opts.Condition,
+		}, 1
+	}
+	if !exists {
 		return &WaitResponse{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("session '%s' not found", opts.Session),
