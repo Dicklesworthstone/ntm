@@ -72,6 +72,31 @@ func TestGuardRetrieval_RuleFormatting(t *testing.T) {
 	}
 }
 
+func TestGuardRetrieval_RuleConfidenceFormatting(t *testing.T) {
+	confidence := 0.875
+	result := &CLIContextResponse{
+		Success: true,
+		RelevantBullets: []CLIRule{{
+			ID:         "rule-1",
+			Content:    "Use the focused proof command",
+			Confidence: &confidence,
+		}},
+		AntiPatterns: []CLIRule{{
+			ID:         "anti-1",
+			Content:    "Do not overclaim proof",
+			Confidence: &confidence,
+		}},
+	}
+
+	formatted := NewCLIClient().FormatForRecovery(result)
+	if !strings.Contains(formatted, "[rule-1] (confidence: 88%)") {
+		t.Errorf("formatted recovery context does not expose rule confidence: %q", formatted)
+	}
+	if !strings.Contains(formatted, "[anti-1] (confidence: 88%)") {
+		t.Errorf("formatted recovery context does not expose anti-pattern confidence: %q", formatted)
+	}
+}
+
 // TestGuardRetrieval_AntiPatternFormatting verifies anti-patterns have warning indicator
 func TestGuardRetrieval_AntiPatternFormatting(t *testing.T) {
 	start := time.Now()

@@ -92,6 +92,35 @@ func TestRecordOutcome(t *testing.T) {
 	}
 }
 
+func TestGetContext_PreservesRuleConfidence(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/context" {
+			t.Errorf("path = %s, want /context", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"relevantBullets":[{"id":"rule-1","content":"Use the focused proof command","confidence":0.875}],"antiPatterns":[{"id":"anti-1","content":"Do not overclaim proof","confidence":0}]}`))
+	}))
+	defer ts.Close()
+
+	client := &Client{baseURL: ts.URL, client: ts.Client()}
+	result, err := client.GetContext(context.Background(), "prove the change", "")
+	if err != nil {
+		t.Fatalf("GetContext() error = %v", err)
+	}
+	if len(result.RelevantBullets) != 1 || result.RelevantBullets[0].Confidence == nil {
+		t.Fatalf("relevant rules = %+v, want one rule with confidence", result.RelevantBullets)
+	}
+	if got := *result.RelevantBullets[0].Confidence; got != 0.875 {
+		t.Errorf("relevant rule confidence = %v, want 0.875", got)
+	}
+	if len(result.AntiPatterns) != 1 || result.AntiPatterns[0].Confidence == nil {
+		t.Fatalf("anti-patterns = %+v, want one anti-pattern with zero confidence", result.AntiPatterns)
+	}
+	if got := *result.AntiPatterns[0].Confidence; got != 0 {
+		t.Errorf("anti-pattern confidence = %v, want 0", got)
+	}
+}
+
 func TestClientHealth(t *testing.T) {
 	t.Run("healthy", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1337,6 +1366,19 @@ func TestCLIContextResponse_Serialization(t *testing.T) {
 			t.Logf("[CM-ERROR] Operation=CLISerialization_%s | Bytes=%d | Duration=%v",
 				tc.name, len(data), time.Since(start))
 		})
+	}
+}
+
+func TestCLIContextResponse_PreservesRuleConfidence(t *testing.T) {
+	var response CLIContextResponse
+	if err := json.Unmarshal([]byte(`{"relevantBullets":[{"id":"rule-1","content":"Use the focused proof command","confidence":0.875}]}`), &response); err != nil {
+		t.Fatalf("unmarshal CLI context response: %v", err)
+	}
+	if len(response.RelevantBullets) != 1 || response.RelevantBullets[0].Confidence == nil {
+		t.Fatalf("relevant rules = %+v, want one rule with confidence", response.RelevantBullets)
+	}
+	if got := *response.RelevantBullets[0].Confidence; got != 0.875 {
+		t.Errorf("CLI rule confidence = %v, want 0.875", got)
 	}
 }
 

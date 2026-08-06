@@ -61,9 +61,10 @@ type ContextResult struct {
 }
 
 type Rule struct {
-	ID       string `json:"id"`
-	Content  string `json:"content"`
-	Category string `json:"category"`
+	ID         string   `json:"id"`
+	Content    string   `json:"content"`
+	Category   string   `json:"category"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 type Snippet struct {
@@ -204,9 +205,10 @@ type CLIContextResponse struct {
 
 // CLIRule represents a rule from CM playbook
 type CLIRule struct {
-	ID       string `json:"id"`
-	Content  string `json:"content"`
-	Category string `json:"category,omitempty"`
+	ID         string   `json:"id"`
+	Content    string   `json:"content"`
+	Category   string   `json:"category,omitempty"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 // CLIHistorySnip represents a historical snippet from CM
@@ -348,7 +350,7 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 	if len(result.RelevantBullets) > 0 {
 		buf.WriteString("## Procedural Memory (Key Rules)\n\n")
 		for _, rule := range result.RelevantBullets {
-			buf.WriteString(fmt.Sprintf("- **[%s]** %s\n", rule.ID, rule.Content))
+			buf.WriteString(fmt.Sprintf("- **[%s]%s** %s\n", rule.ID, formatRuleConfidence(rule.Confidence), rule.Content))
 		}
 		buf.WriteString("\n")
 	}
@@ -356,7 +358,7 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 	if len(result.AntiPatterns) > 0 {
 		buf.WriteString("## Anti-Patterns to Avoid\n\n")
 		for _, pattern := range result.AntiPatterns {
-			buf.WriteString(fmt.Sprintf("- ⚠️ **[%s]** %s\n", pattern.ID, pattern.Content))
+			buf.WriteString(fmt.Sprintf("- ⚠️ **[%s]%s** %s\n", pattern.ID, formatRuleConfidence(pattern.Confidence), pattern.Content))
 		}
 		buf.WriteString("\n")
 	}
@@ -370,6 +372,13 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 	}
 
 	return buf.String()
+}
+
+func formatRuleConfidence(confidence *float64) string {
+	if confidence == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (confidence: %.0f%%)", *confidence*100)
 }
 
 // truncate shortens a string to maxLen runes, adding ellipsis if needed
