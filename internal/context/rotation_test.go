@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -182,6 +183,76 @@ func TestCheckAndRotate_NoAgentsAboveThreshold(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestRotateAgentFailureEmitsRotationAlert(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")
+	spawner := NewMockPaneSpawner()
+	spawner.panesError = errors.New("tmux unavailable")
+	r := NewRotator(RotatorConfig{
+		Monitor: monitor,
+		Spawner: spawner,
+		Config:  config.DefaultContextRotationConfig(),
+	})
+
+	result := r.rotateAgent("test-session", "test__cc_1", "/tmp")
+	if result.State != RotationStateFailed {
+		t.Fatalf("rotation state = %s, want failed", result.State)
+	}
+
+	active := tracker.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("active alerts = %d, want 1", len(active))
+	}
+	if active[0].Type != alerts.AlertRotationFailed {
+		t.Errorf("alert type = %s, want %s", active[0].Type, alerts.AlertRotationFailed)
+	}
+	if active[0].Session != "test-session" {
+		t.Errorf("alert session = %q, want test-session", active[0].Session)
+	}
+}
+
+func TestRotateAgentSuccessEmitsCompletionAlert(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")
+	monitor.RecordMessage("test__cc_1", 1000, 1000)
+	spawner := NewMockPaneSpawner()
+	spawner.panes = []tmux.Pane{{
+		ID:    "%0",
+		Title: "test__cc_1",
+		Type:  tmux.AgentClaude,
+	}}
+	cfg := config.DefaultContextRotationConfig()
+	cfg.TryCompactFirst = false
+	r := NewRotator(RotatorConfig{Monitor: monitor, Spawner: spawner, Config: cfg})
+
+	result := r.rotateAgent("test-session", "test__cc_1", "/tmp")
+	if !result.Success || result.State != RotationStateCompleted {
+		t.Fatalf("rotation result = %+v, want completed success", result)
+	}
+
+	active := tracker.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("active alerts = %d, want 1", len(active))
+	}
+	if active[0].Type != alerts.AlertRotationComplete {
+		t.Errorf("alert type = %s, want %s", active[0].Type, alerts.AlertRotationComplete)
+	}
+	if active[0].Context["old_agent_id"] != "test__cc_1" {
+		t.Errorf("old agent = %v, want test__cc_1", active[0].Context["old_agent_id"])
+	}
+	if active[0].Context["new_agent_id"] != result.NewAgentID {
+		t.Errorf("new agent = %v, want %s", active[0].Context["new_agent_id"], result.NewAgentID)
 	}
 }
 

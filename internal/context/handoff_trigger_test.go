@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
 )
 
 func TestNewHandoffTrigger(t *testing.T) {
@@ -89,6 +91,35 @@ func TestHandoffTrigger_SetCallbacks(t *testing.T) {
 	// but we verified they were set
 	_ = warningCalled
 	_ = triggeredCalled
+}
+
+func TestHandoffTriggerWarningEmitsContextAlert(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+
+	trigger := NewHandoffTrigger(
+		DefaultHandoffTriggerConfig(),
+		NewContextMonitor(DefaultMonitorConfig()),
+		NewContextPredictor(DefaultPredictorConfig()),
+	)
+	trigger.handleWarning(HandoffTriggerEvent{
+		AgentID:      "test__cc_1",
+		SessionName:  "test-session",
+		PaneID:       "%0",
+		UsagePercent: 82.5,
+	})
+
+	active := tracker.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("active alerts = %d, want 1", len(active))
+	}
+	if active[0].Type != alerts.AlertContextWarning {
+		t.Errorf("alert type = %s, want %s", active[0].Type, alerts.AlertContextWarning)
+	}
+	if active[0].Context["context_usage"] != 82.5 {
+		t.Errorf("context usage = %v, want 82.5", active[0].Context["context_usage"])
+	}
 }
 
 func TestHandoffTrigger_CanTrigger(t *testing.T) {

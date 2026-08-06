@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
 )
 
@@ -321,6 +322,12 @@ func (t *HandoffTrigger) handleWarning(event HandoffTriggerEvent) {
 		"usage_percent", event.UsagePercent,
 		"reason", event.Reason,
 	)
+	alerts.EmitContextWarning(alerts.RotationAlertData{
+		AgentID:      event.AgentID,
+		Session:      event.SessionName,
+		Pane:         event.PaneID,
+		ContextUsage: event.UsagePercent,
+	})
 
 	if handler != nil {
 		handler(event)

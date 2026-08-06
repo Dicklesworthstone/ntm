@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -698,18 +699,39 @@ func (r *Rotator) processExpiredPending(_, _ string) {
 
 // rotateAgent performs the full rotation flow for a single agent.
 // method specifies why the rotation was triggered (threshold, manual, etc.).
-func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...RotationMethod) RotationResult {
+func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...RotationMethod) (result RotationResult) {
 	startTime := time.Now()
 	m := RotationThresholdExceeded
 	if len(method) > 0 {
 		m = method[0]
 	}
-	result := RotationResult{
+	result = RotationResult{
 		OldAgentID: agentID,
 		Method:     m,
 		State:      RotationStateInProgress,
 		Timestamp:  startTime,
 	}
+	contextUsage := 0.0
+	defer func() {
+		data := alerts.RotationAlertData{
+			AgentID:       result.OldAgentID,
+			OldAgentID:    result.OldAgentID,
+			NewAgentID:    result.NewAgentID,
+			Session:       session,
+			Pane:          result.OldPaneID,
+			ContextUsage:  contextUsage,
+			SummaryTokens: result.SummaryTokens,
+			DurationMs:    result.Duration.Milliseconds(),
+			Error:         result.Error,
+		}
+
+		switch result.State {
+		case RotationStateCompleted:
+			alerts.EmitRotationComplete(data)
+		case RotationStateFailed:
+			alerts.EmitRotationFailed(data)
+		}
+	}()
 
 	// Get agent state
 	state := r.monitor.GetState(agentID)
@@ -720,6 +742,9 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		result.Duration = time.Since(startTime)
 		recordRotationToHistory(result, session, deriveAgentTypeFromID(agentID), 0)
 		return result
+	}
+	if state.Estimate != nil {
+		contextUsage = state.Estimate.UsagePercent
 	}
 
 	// Find the pane for this agent
@@ -790,6 +815,13 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string, method ...Rotati
 		// Compaction didn't help enough, proceed with rotation
 		result.Method = RotationCompactionFailed
 	}
+
+	alerts.EmitRotationStarted(alerts.RotationAlertData{
+		AgentID:      agentID,
+		Session:      session,
+		Pane:         oldPane.ID,
+		ContextUsage: contextUsage,
+	})
 
 	// Request handoff summary from the old agent
 	summaryPrompt := r.summary.GeneratePrompt()
