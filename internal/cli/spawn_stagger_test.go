@@ -111,6 +111,16 @@ func TestOptionalDurationValue_NoOptDefVal(t *testing.T) {
 	}
 }
 
+func TestSpawnStaggerFlagUsesDocumentedDefault(t *testing.T) {
+	flag := newSpawnCmd().Flags().Lookup("stagger")
+	if flag == nil {
+		t.Fatal("--stagger flag is missing")
+	}
+	if got, want := flag.NoOptDefVal, "1m30s"; got != want {
+		t.Fatalf("--stagger NoOptDefVal = %q, want %q", got, want)
+	}
+}
+
 func TestOptionalDurationValue_Type(t *testing.T) {
 	var duration time.Duration
 	var enabled bool
@@ -225,9 +235,8 @@ func TestOptionalDurationValue_IsBoolFlag(t *testing.T) {
 
 	v := newOptionalDurationValue(90*time.Second, &duration, &enabled)
 
-	// IsBoolFlag should return false (we need a value or use default)
-	if v.IsBoolFlag() {
-		t.Error("IsBoolFlag() = true, want false")
+	if !v.IsBoolFlag() {
+		t.Error("IsBoolFlag() = false, want true so --stagger can use NoOptDefVal")
 	}
 }
 

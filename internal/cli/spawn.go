@@ -999,7 +999,7 @@ func (v *optionalDurationValue) Type() string {
 
 // IsBoolFlag allows --stagger without =value
 func (v *optionalDurationValue) IsBoolFlag() bool {
-	return false
+	return true
 }
 
 // NoOptDefVal is the default when --stagger is used without a value
@@ -1969,9 +1969,11 @@ Examples:
 	cmd.Flags().StringVarP(&label, "label", "l", "", "Goal label for multi-session support (e.g., --label frontend creates session PROJECT--frontend)")
 
 	// Stagger flag for thundering herd prevention
-	// Custom handling: --stagger enables with default 30s, --stagger=2m for custom duration
-	staggerValue := newOptionalDurationValue(30*time.Second, &staggerDuration, &staggerEnabled)
-	cmd.Flags().Var(staggerValue, "stagger", "Stagger prompt delivery between agents (default 30s when enabled)")
+	// Custom handling: --stagger enables with the documented 90s default;
+	// --stagger=2m supplies a custom duration.
+	staggerValue := newOptionalDurationValue(90*time.Second, &staggerDuration, &staggerEnabled)
+	cmd.Flags().Var(staggerValue, "stagger", "Stagger prompt delivery between agents (default 90s when enabled)")
+	cmd.Flags().Lookup("stagger").NoOptDefVal = staggerValue.NoOptDefVal()
 
 	// New stagger mode flags (bd-2wih)
 	cmd.Flags().StringVar(&staggerMode, "stagger-mode", "none", "Stagger mode: smart (adaptive), fixed, or none")
@@ -2540,8 +2542,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 				return outputError(fmt.Errorf("creating pane: %w", err))
 			}
 			if (testPacing.paneDelay > 0 || testPacing.agentDelay > 0) && !IsJSONOutput() {
+				eventTime := time.Now().UTC()
 				fmt.Printf("[E2E-SPAWN] event=pane_split session=%s seq=%d ts_ms=%d\n",
-					opts.Session, i+1, time.Now().UnixMilli())
+					opts.Session, i+1, eventTime.UnixMilli())
 			}
 		}
 		if !IsJSONOutput() {
