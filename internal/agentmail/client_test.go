@@ -1162,6 +1162,18 @@ func TestWithHTTPClient(t *testing.T) {
 	}
 }
 
+func TestWithHTTPClientNilKeepsDefaultClient(t *testing.T) {
+	t.Parallel()
+
+	c := NewClient(WithHTTPClient(nil))
+	if c.httpClient == nil {
+		t.Fatal("WithHTTPClient(nil) left client without an HTTP transport")
+	}
+	if c.httpClient.Timeout != DefaultTimeout {
+		t.Errorf("default HTTP timeout = %v, want %v", c.httpClient.Timeout, DefaultTimeout)
+	}
+}
+
 func TestWithTimeout(t *testing.T) {
 	t.Parallel()
 

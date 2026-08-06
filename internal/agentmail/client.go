@@ -152,7 +152,9 @@ func WithToken(token string) Option {
 // WithHTTPClient sets a custom HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) {
-		c.httpClient = client
+		if client != nil {
+			c.httpClient = client
+		}
 	}
 }
 
