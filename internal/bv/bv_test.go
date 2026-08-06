@@ -1,6 +1,7 @@
 package bv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -554,106 +555,32 @@ func TestIsAuthority(t *testing.T) {
 }
 
 func TestGetGraphPosition(t *testing.T) {
-	if !IsInstalled() {
-		t.Skip("bv not installed")
-	}
+	setGraphPositionInsights(t, &InsightsResponse{
+		Bottlenecks: []NodeScore{{ID: "issue-1", Value: 0.9}},
+		Keystones:   []NodeScore{{ID: "issue-1", Value: 0.8}},
+		Hubs:        []NodeScore{{ID: "issue-1", Value: 0.7}},
+		Authorities: []NodeScore{{ID: "issue-1", Value: 0.6}},
+	}, nil)
 
-	insights, _ := getCachedInsights(t)
-
-	// Test with a known issue ID (one that exists in the project)
-	// Use cached bottlenecks as test case
-	if len(insights.Bottlenecks) == 0 {
-		t.Skip("No bottlenecks found to test with")
+	pos, err := GetGraphPosition("ignored", "issue-1")
+	if err != nil {
+		t.Fatalf("GetGraphPosition() error = %v", err)
 	}
-
-	testID := insights.Bottlenecks[0].ID
-
-	// Build position manually using cached data (same logic as GetGraphPosition)
-	pos := &GraphPosition{IssueID: testID}
-
-	for _, b := range insights.Bottlenecks {
-		if b.ID == testID {
-			pos.IsBottleneck = true
-			pos.BottleneckScore = b.Value
-			break
-		}
+	if !pos.IsBottleneck || !pos.IsKeystone || !pos.IsHub || !pos.IsAuthority {
+		t.Fatalf("GetGraphPosition() roles = %+v, want all roles", pos)
 	}
-	for _, k := range insights.Keystones {
-		if k.ID == testID {
-			pos.IsKeystone = true
-			pos.KeystoneScore = k.Value
-			break
-		}
+	if pos.BottleneckScore != 0.9 || pos.KeystoneScore != 0.8 || pos.HubScore != 0.7 || pos.AuthorityScore != 0.6 {
+		t.Fatalf("GetGraphPosition() scores = %+v", pos)
 	}
-	for _, h := range insights.Hubs {
-		if h.ID == testID {
-			pos.IsHub = true
-			pos.HubScore = h.Value
-			break
-		}
-	}
-	for _, a := range insights.Authorities {
-		if a.ID == testID {
-			pos.IsAuthority = true
-			pos.AuthorityScore = a.Value
-			break
-		}
-	}
-	pos.Summary = generatePositionSummary(pos)
-
-	if pos.IssueID != testID {
-		t.Errorf("IssueID = %s, want %s", pos.IssueID, testID)
-	}
-
-	// Should be a bottleneck since we got it from bottleneck list
-	if !pos.IsBottleneck {
-		t.Errorf("Expected %s to be a bottleneck", testID)
-	}
-
-	if pos.Summary == "" {
-		t.Error("Expected non-empty summary")
-	}
-
-	t.Logf("Graph position for %s: %+v", testID, pos)
 }
 
 func TestGetGraphPositionNonExistent(t *testing.T) {
-	if !IsInstalled() {
-		t.Skip("bv not installed")
-	}
+	setGraphPositionInsights(t, &InsightsResponse{Bottlenecks: []NodeScore{{ID: "other", Value: 1}}}, nil)
 
-	insights, _ := getCachedInsights(t)
-
-	// Build position for nonexistent ID using cached data
-	testID := "nonexistent-issue-xyz"
-	pos := &GraphPosition{IssueID: testID}
-
-	for _, b := range insights.Bottlenecks {
-		if b.ID == testID {
-			pos.IsBottleneck = true
-			pos.BottleneckScore = b.Value
-			break
-		}
+	pos, err := GetGraphPosition("ignored", "nonexistent-issue-xyz")
+	if err != nil {
+		t.Fatalf("GetGraphPosition() error = %v", err)
 	}
-	for _, k := range insights.Keystones {
-		if k.ID == testID {
-			pos.IsKeystone = true
-			break
-		}
-	}
-	for _, h := range insights.Hubs {
-		if h.ID == testID {
-			pos.IsHub = true
-			break
-		}
-	}
-	for _, a := range insights.Authorities {
-		if a.ID == testID {
-			pos.IsAuthority = true
-			break
-		}
-	}
-	pos.Summary = generatePositionSummary(pos)
 
 	if pos.IsBottleneck || pos.IsKeystone || pos.IsHub || pos.IsAuthority {
 		t.Error("Expected nonexistent issue to have no graph roles")
@@ -665,87 +592,30 @@ func TestGetGraphPositionNonExistent(t *testing.T) {
 }
 
 func TestGetGraphPositionsBatch(t *testing.T) {
-	if !IsInstalled() {
-		t.Skip("bv not installed")
+	setGraphPositionInsights(t, &InsightsResponse{
+		Bottlenecks: []NodeScore{{ID: "bottleneck", Value: 0.9}},
+		Authorities: []NodeScore{{ID: "authority", Value: 0.4}},
+	}, nil)
+
+	positions, err := GetGraphPositionsBatch("ignored", []string{"bottleneck", "authority", "regular"})
+	if err != nil {
+		t.Fatalf("GetGraphPositionsBatch() error = %v", err)
+	}
+	if len(positions) != 3 || !positions["bottleneck"].IsBottleneck || positions["authority"].AuthorityScore != 0.4 || positions["regular"].Summary != "regular node" {
+		t.Fatalf("GetGraphPositionsBatch() = %+v", positions)
 	}
 
-	insights, _ := getCachedInsights(t)
+	setGraphPositionInsights(t, nil, errors.New("insights unavailable"))
+	if _, err := GetGraphPositionsBatch("ignored", []string{"bottleneck"}); err == nil || !strings.Contains(err.Error(), "insights unavailable") {
+		t.Fatalf("GetGraphPositionsBatch() error = %v, want propagated error", err)
+	}
+}
 
-	// Use cached bottlenecks as test IDs
-	bottlenecks := insights.Bottlenecks
-	if len(bottlenecks) > 2 {
-		bottlenecks = bottlenecks[:2]
-	}
-
-	var ids []string
-	for _, b := range bottlenecks {
-		ids = append(ids, b.ID)
-	}
-	// Add a fake ID too
-	ids = append(ids, "fake-id-xyz")
-
-	// Build positions using cached data (same logic as GetGraphPositionsBatch)
-	bottleneckMap := make(map[string]float64)
-	for _, b := range insights.Bottlenecks {
-		bottleneckMap[b.ID] = b.Value
-	}
-	keystoneMap := make(map[string]float64)
-	for _, k := range insights.Keystones {
-		keystoneMap[k.ID] = k.Value
-	}
-	hubMap := make(map[string]float64)
-	for _, h := range insights.Hubs {
-		hubMap[h.ID] = h.Value
-	}
-	authorityMap := make(map[string]float64)
-	for _, a := range insights.Authorities {
-		authorityMap[a.ID] = a.Value
-	}
-
-	positions := make(map[string]*GraphPosition)
-	for _, id := range ids {
-		pos := &GraphPosition{IssueID: id}
-		if score, ok := bottleneckMap[id]; ok {
-			pos.IsBottleneck = true
-			pos.BottleneckScore = score
-		}
-		if score, ok := keystoneMap[id]; ok {
-			pos.IsKeystone = true
-			pos.KeystoneScore = score
-		}
-		if score, ok := hubMap[id]; ok {
-			pos.IsHub = true
-			pos.HubScore = score
-		}
-		if score, ok := authorityMap[id]; ok {
-			pos.IsAuthority = true
-			pos.AuthorityScore = score
-		}
-		pos.Summary = generatePositionSummary(pos)
-		positions[id] = pos
-	}
-
-	if len(positions) != len(ids) {
-		t.Errorf("Expected %d positions, got %d", len(ids), len(positions))
-	}
-
-	// Verify bottlenecks are marked as such
-	for _, b := range bottlenecks {
-		pos, ok := positions[b.ID]
-		if !ok {
-			t.Errorf("Missing position for %s", b.ID)
-			continue
-		}
-		if !pos.IsBottleneck {
-			t.Errorf("Expected %s to be marked as bottleneck", b.ID)
-		}
-	}
-
-	// Verify fake ID is not a bottleneck
-	fakePos := positions["fake-id-xyz"]
-	if fakePos.IsBottleneck {
-		t.Error("Fake ID should not be a bottleneck")
-	}
+func setGraphPositionInsights(t *testing.T, insights *InsightsResponse, err error) {
+	t.Helper()
+	previous := graphPositionInsights
+	graphPositionInsights = func(string) (*InsightsResponse, error) { return insights, err }
+	t.Cleanup(func() { graphPositionInsights = previous })
 }
 
 func TestGeneratePositionSummary(t *testing.T) {

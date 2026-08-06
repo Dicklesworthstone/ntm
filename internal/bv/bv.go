@@ -547,9 +547,13 @@ type GraphPosition struct {
 	Summary         string  `json:"summary"` // Human-readable summary
 }
 
+// graphPositionInsights is replaceable in package tests so the graph-position
+// helpers are exercised against deterministic insights without launching bv.
+var graphPositionInsights = GetInsights
+
 // GetGraphPosition returns the full graph position context for an issue
 func GetGraphPosition(dir, issueID string) (*GraphPosition, error) {
-	insights, err := GetInsights(dir)
+	insights, err := graphPositionInsights(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -626,7 +630,7 @@ func generatePositionSummary(pos *GraphPosition) string {
 
 // GetGraphPositionsBatch returns graph positions for multiple issues efficiently
 func GetGraphPositionsBatch(dir string, issueIDs []string) (map[string]*GraphPosition, error) {
-	insights, err := GetInsights(dir)
+	insights, err := graphPositionInsights(dir)
 	if err != nil {
 		return nil, err
 	}
