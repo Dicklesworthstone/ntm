@@ -1449,13 +1449,7 @@ func verifyUpgrade(binaryPath, expectedVersion string) error {
 	// Parse the version from output
 	actualVersion := strings.TrimSpace(string(output))
 
-	// Normalize both versions for comparison
-	normalizedExpected := normalizeVersion(expectedVersion)
-	normalizedActual := normalizeVersion(actualVersion)
-
-	// Check if the actual version matches expected
-	// Use flexible matching: actual should contain expected or be equal when normalized
-	if normalizedActual != normalizedExpected && !strings.Contains(actualVersion, normalizedExpected) {
+	if !upgradeVersionMatches(actualVersion, expectedVersion) {
 		return fmt.Errorf("version mismatch: expected %s, got %s", expectedVersion, actualVersion)
 	}
 
@@ -1526,6 +1520,12 @@ func normalizeVersion(v string) string {
 		v = v[:idx]
 	}
 	return v
+}
+
+// upgradeVersionMatches compares the one-value output of `ntm version --short`
+// with the version requested from the release API.
+func upgradeVersionMatches(actualVersion, expectedVersion string) bool {
+	return normalizeVersion(actualVersion) == normalizeVersion(expectedVersion)
 }
 
 // parseVersionPart parses a version part as an integer

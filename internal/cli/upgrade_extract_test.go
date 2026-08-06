@@ -267,3 +267,24 @@ func TestExtractZip_StripsSetuidSetgidStickyBits(t *testing.T) {
 		t.Errorf("extracted file kept sticky bit (mode = %v), want stripped", mode)
 	}
 }
+
+func TestUpgradeVersionMatches(t *testing.T) {
+	tests := []struct {
+		name     string
+		actual   string
+		expected string
+		want     bool
+	}{
+		{name: "accepts v prefix", actual: "v1.4.1", expected: "1.4.1", want: true},
+		{name: "accepts normalized prerelease", actual: "1.4.1-rc1", expected: "1.4.1", want: true},
+		{name: "rejects prefix collision", actual: "1.4.10", expected: "1.4.1", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := upgradeVersionMatches(tt.actual, tt.expected); got != tt.want {
+				t.Errorf("upgradeVersionMatches(%q, %q) = %v, want %v", tt.actual, tt.expected, got, tt.want)
+			}
+		})
+	}
+}
