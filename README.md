@@ -167,6 +167,26 @@ ntm spawn payments --label frontend --cc=2
 ntm add payments --label frontend --cc=1
 ```
 
+#### Worktree isolation and reservations
+
+Use `--worktrees` when agents need independent Git checkouts as well as separate
+tmux panes. NTM creates one `ntm/<session>/<agent>` branch and worktree per
+agent, so filesystem changes and destructive Git operations stay isolated until
+you deliberately merge them:
+
+```bash
+ntm spawn payments --cc=3 --worktrees
+ntm worktrees list
+ntm worktrees merge cc_1
+ntm worktrees clean --session payments
+```
+
+Worktrees do not replace Agent Mail reservations. Continue to reserve the files
+or areas an agent owns: reservations communicate intent, reduce merge conflicts,
+and give operators an auditable ownership record; worktrees provide the separate
+checkout boundary. Merge reviewed agent branches into `main`, then clean the
+session's worktrees when that session is finished.
+
 ### 2. Dispatch, Monitoring, and Recovery
 
 Humans can broadcast prompts, interrupt panes, stream output, inspect health, compare
