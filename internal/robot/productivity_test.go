@@ -76,7 +76,10 @@ func TestGetProductivityAttributesBuildsAndProgressToMatchingPane(t *testing.T) 
 			}, nil
 		},
 		readyBeads: func(context.Context, string) (int, error) { return 0, nil },
-		now:        func() time.Time { return now },
+		progress: func(PaneAddr, string, time.Duration, bool, time.Time) (*SemanticProgress, bool) {
+			return &SemanticProgress{}, true
+		},
+		now: func() time.Time { return now },
 	}
 
 	output, err := getProductivity(ProductivityOptions{Session: "swarm", Window: time.Minute}, deps)
@@ -97,6 +100,30 @@ func TestGetProductivityAttributesBuildsAndProgressToMatchingPane(t *testing.T) 
 	}
 	if got := output.BuildProcesses; len(got) != 1 || got[0].PID != 11 {
 		t.Fatalf("build_processes = %+v, want pane-associated pid 11 only", got)
+	}
+}
+
+func TestGetProductivityDoesNotConvergeWhenAttributionIsUnavailable(t *testing.T) {
+	deps := productivityDependencies{
+		sessionExists: func(string) bool { return true },
+		getPanes: func(string) ([]tmux.Pane, error) {
+			return []tmux.Pane{{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude}}, nil
+		},
+		panePath:   func(context.Context, string) string { return "/workspace/a" },
+		processes:  func(context.Context) ([]productivityProcess, error) { return nil, nil },
+		readyBeads: func(context.Context, string) (int, error) { return 0, nil },
+		progress: func(PaneAddr, string, time.Duration, bool, time.Time) (*SemanticProgress, bool) {
+			return &SemanticProgress{}, false
+		},
+		now: time.Now,
+	}
+
+	output, err := getProductivity(ProductivityOptions{Session: "swarm"}, deps)
+	if err != nil {
+		t.Fatalf("getProductivity() error = %v", err)
+	}
+	if output.Decision != ProductivityUnknown || output.EvidenceComplete {
+		t.Fatalf("output = %+v, want unknown with incomplete attribution evidence", output)
 	}
 }
 

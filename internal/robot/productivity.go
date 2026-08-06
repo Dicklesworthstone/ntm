@@ -86,6 +86,7 @@ type productivityDependencies struct {
 	panePath      func(context.Context, string) string
 	processes     func(context.Context) ([]productivityProcess, error)
 	readyBeads    func(context.Context, string) (int, error)
+	progress      func(PaneAddr, string, time.Duration, bool, time.Time) (*SemanticProgress, bool)
 	now           func() time.Time
 }
 
@@ -125,6 +126,7 @@ func defaultProductivityDependencies() productivityDependencies {
 		panePath:      paneCurrentPathForTarget,
 		processes:     liveBuildProcesses,
 		readyBeads:    readyBeadCount,
+		progress:      paneSemanticProgressWithAvailability,
 		now:           time.Now,
 	}
 }
@@ -169,13 +171,15 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 
 	associatedBuilds := make(map[int]productivityProcess)
 	agentPaneSeen := false
+	attributionComplete := true
 	for _, pane := range panes {
 		if pane.Type == tmux.AgentUser || pane.Type == tmux.AgentUnknown {
 			continue
 		}
 		agentPaneSeen = true
 		path := deps.panePath(ctx, pane.ID)
-		progress := PaneSemanticProgress(PaneAddr{Session: opts.Session, Window: pane.WindowIndex, Pane: pane.Index}, path, window, false, now)
+		progress, progressAvailable := deps.progress(PaneAddr{Session: opts.Session, Window: pane.WindowIndex, Pane: pane.Index}, path, window, false, now)
+		attributionComplete = attributionComplete && progressAvailable
 		paneBuilds := matchingBuildProcesses(processes, path)
 		for _, build := range paneBuilds {
 			associatedBuilds[build.pid] = build
@@ -193,7 +197,7 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 	}
 	sort.Slice(output.BuildProcesses, func(i, j int) bool { return output.BuildProcesses[i].PID < output.BuildProcesses[j].PID })
 
-	output.EvidenceComplete = agentPaneSeen && processErr == nil && beadsErr == nil
+	output.EvidenceComplete = agentPaneSeen && attributionComplete && processErr == nil && beadsErr == nil
 	output.Decision, output.DecisionReason = evaluateProductivity(output)
 	return output, nil
 }

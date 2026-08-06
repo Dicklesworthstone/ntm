@@ -133,12 +133,14 @@ type gitTokenActivity struct {
 	commitsInWindow int
 	anyTokenCommit  bool
 	lastCommitAt    *time.Time
+	available       bool
 }
 
 // claimActivity is the raw bead-derived attribution for a pane.
 type claimActivity struct {
 	claimsInWindow int
 	anyLabeledBead bool
+	available      bool
 }
 
 // PaneSemanticProgress orchestrates the bounded git/br reads for one pane and
@@ -152,6 +154,15 @@ type claimActivity struct {
 // repoDir is the pane's pane_current_path; "" (tmux lookup failed) degrades to
 // source "none" with zero counts.
 func PaneSemanticProgress(addr PaneAddr, repoDir string, window time.Duration, velocityPositive bool, now time.Time) *SemanticProgress {
+	progress, _ := paneSemanticProgressWithAvailability(addr, repoDir, window, velocityPositive, now)
+	return progress
+}
+
+// paneSemanticProgressWithAvailability returns the regular semantic progress
+// plus whether both bounded attribution reads succeeded. The public helper
+// deliberately keeps its long-standing best-effort behavior, while callers
+// that make a stop decision can fail closed on unavailable attribution.
+func paneSemanticProgressWithAvailability(addr PaneAddr, repoDir string, window time.Duration, velocityPositive bool, now time.Time) (*SemanticProgress, bool) {
 	if window <= 0 {
 		window = defaultSemanticWindow
 	}
@@ -162,7 +173,7 @@ func PaneSemanticProgress(addr PaneAddr, repoDir string, window time.Duration, v
 	claims := gatherClaimActivity(repoDir, label, window, now)
 
 	sp := buildSemanticProgress(token, window, velocityPositive, git, claims, now)
-	return &sp
+	return &sp, git.available && claims.available
 }
 
 // buildSemanticProgress is the PURE core (no I/O). Keeping it pure makes the
@@ -242,6 +253,7 @@ func gatherGitTokenActivity(repoDir, token string, window time.Duration, now tim
 	if err != nil {
 		return out
 	}
+	out.available = true
 
 	cutoff := now.Add(-window)
 	// Records are NUL-separated (git -z) and newest-first.
@@ -318,7 +330,9 @@ func gatherClaimActivity(dir, label string, window time.Duration, now time.Time)
 	if err != nil {
 		return out
 	}
-	return countClaimsInWindow(raw, window, now)
+	out = countClaimsInWindow(raw, window, now)
+	out.available = true
+	return out
 }
 
 // brListResponse is the subset of `br list --json` we parse.

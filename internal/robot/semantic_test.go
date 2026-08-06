@@ -311,6 +311,22 @@ func TestCountClaimsInWindowEmptyAndMalformed(t *testing.T) {
 	}
 }
 
+func TestPaneSemanticProgressAvailabilityRequiresAttributionReads(t *testing.T) {
+	progress, available := paneSemanticProgressWithAvailability(
+		PaneAddr{Session: "swarm", Window: 0, Pane: 1},
+		"",
+		time.Minute,
+		false,
+		time.Now(),
+	)
+	if available {
+		t.Fatal("empty pane path must not report available attribution")
+	}
+	if progress == nil || progress.Source != "none" {
+		t.Fatalf("progress = %+v, want non-nil source none", progress)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Additive shape: semantic_progress is omitted when nil, present when set.
 // ---------------------------------------------------------------------------
