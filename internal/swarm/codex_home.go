@@ -50,12 +50,11 @@ func runCmdCapture(ctx context.Context, timeout time.Duration, name string, args
 // instead of the default global ~/.codex/auth.json.
 const CodexHomeEnvVar = "CODEX_HOME"
 
-// CodexHomeProvisioner provisions per-pane isolated CODEX_HOME directories so
-// that Codex panes in a swarm never share the global ~/.codex/auth.json. Each
-// pane gets its own directory under <baseDir>/.ntm/codex-homes/<session>/<pane>/
-// seeded from a caam profile's auth, and is launched with CODEX_HOME pointing
-// there. Pane-local rotation then repopulates only that pane's directory and
-// restarts only that pane — never the shared global file.
+// CodexHomeProvisioner resolves CAAM-owned, isolated CODEX_HOME directories so
+// that Codex panes in a swarm never share the global ~/.codex/auth.json. A
+// named CAAM profile supplies its own codex_home; an empty profile retains the
+// legacy empty per-pane directory for an interactive login. Pane-local rotation
+// changes only the affected pane's CODEX_HOME and never the shared global file.
 //
 // This closes the core risk in #194: many live panes, shared global auth, and
 // automatic rate-limit-triggered global switching.
@@ -134,24 +133,32 @@ func (p *CodexHomeProvisioner) HomePath(session, pane string) string {
 	return filepath.Join(p.BaseDir, ".ntm", "codex-homes", sanitizeSegment(session), sanitizeSegment(pane))
 }
 
-// ProvisionPaneHome creates an isolated CODEX_HOME for the pane and seeds it from
-// the given caam profile's auth (via caam's isolated-profile primitives, NOT the
-// global `caam switch`). It returns the absolute CODEX_HOME path that the pane
-// should be launched with. If profile is empty, the directory is created empty
-// (the pane will then need an interactive login or a later RepopulatePaneHome).
+// ProvisionPaneHome returns the isolated CODEX_HOME for the pane. For a named
+// CAAM profile, CAAM owns the profile directory and its auth material, so this
+// resolves the profile's existing CODEX_HOME rather than attempting to copy a
+// credential through an unsupported CAAM export command. If profile is empty,
+// the per-pane directory is created empty (the pane will then need an
+// interactive login or a later RepopulatePaneHome).
 func (p *CodexHomeProvisioner) ProvisionPaneHome(ctx context.Context, session, pane, profile string) (string, error) {
 	if p.BaseDir == "" {
 		return "", fmt.Errorf("CodexHomeProvisioner: BaseDir is required")
 	}
+	if profile != "" {
+		home, err := p.caamProfileCodexHome(ctx, profile)
+		if err != nil {
+			return "", err
+		}
+		p.logger().Info("[CodexHome] provisioned_caam_profile",
+			"session", session,
+			"pane", pane,
+			"codex_home", home,
+			"profile", profile)
+		return home, nil
+	}
+
 	home := p.HomePath(session, pane)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", fmt.Errorf("create codex home %s: %w", home, err)
-	}
-
-	if profile != "" {
-		if err := p.seedFromProfile(ctx, home, profile); err != nil {
-			return "", err
-		}
 	}
 
 	p.logger().Info("[CodexHome] provisioned",
@@ -159,59 +166,43 @@ func (p *CodexHomeProvisioner) ProvisionPaneHome(ctx context.Context, session, p
 		"pane", pane,
 		"codex_home", home,
 		"profile", profile,
-		"seeded", profile != "")
+		"seeded", false)
 	return home, nil
 }
 
-// seedFromProfile writes auth.json into home from the named caam profile using
-// caam's isolated-profile export. We prefer `caam profile export <profile>
-// --provider openai --json` (isolated read, no global clobber). The result is
-// written to <home>/auth.json with 0600 perms.
-func (p *CodexHomeProvisioner) seedFromProfile(ctx context.Context, home, profile string) error {
-	auth, err := p.exportProfileAuth(ctx, profile)
-	if err != nil {
-		return fmt.Errorf("seed codex home from profile %q: %w", profile, err)
-	}
-	if len(auth) == 0 {
-		return fmt.Errorf("seed codex home from profile %q: caam returned empty auth", profile)
-	}
-	authPath := filepath.Join(home, "auth.json")
-	if err := os.WriteFile(authPath, auth, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", authPath, err)
-	}
-	return nil
-}
-
-// exportProfileAuth asks caam for the raw auth payload of an isolated profile
-// without touching the global ~/.codex/auth.json. It tries the modern
-// isolated-profile primitives in order and returns the first non-empty payload.
-func (p *CodexHomeProvisioner) exportProfileAuth(ctx context.Context, profile string) ([]byte, error) {
+// caamProfileCodexHome resolves CAAM's owned profile directory through its
+// supported profile-status surface. CAAM does not expose an auth export command:
+// `caam exec codex <profile>` consumes these credentials directly, and this
+// launcher consumes the same CODEX_HOME without copying credential bytes into
+// NTM-owned storage.
+func (p *CodexHomeProvisioner) caamProfileCodexHome(ctx context.Context, profile string) (string, error) {
 	caam := p.CaamPath
 	if caam == "" {
 		caam = "caam"
 	}
-	// Preferred: a dedicated export of profile auth that does not clobber global.
-	attempts := [][]string{
-		{"profile", "export", profile, "--provider", "openai", "--json"},
-		{"profile", "auth", profile, "--provider", "openai", "--json"},
-		{"creds", "openai", "--profile", profile, "--json"},
+	out, stderr, err := runCmdCapture(ctx, p.CommandTimeout, caam, "profile", "status", "codex", profile)
+	if err != nil {
+		return "", fmt.Errorf("inspect caam Codex profile %q: %w (%s)", profile, err, strings.TrimSpace(stderr))
 	}
-	var lastErr error
-	for _, args := range attempts {
-		out, stderr, err := runCmdCapture(ctx, p.CommandTimeout, caam, args...)
-		if err != nil {
-			lastErr = fmt.Errorf("caam %v: %w (%s)", args, err, strings.TrimSpace(stderr))
-			continue
-		}
-		trimmed := strings.TrimSpace(out)
-		if trimmed != "" {
-			return []byte(trimmed), nil
+
+	var profilePath string
+	loggedIn := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "Path:"):
+			profilePath = strings.TrimSpace(strings.TrimPrefix(line, "Path:"))
+		case strings.HasPrefix(line, "Logged in:"):
+			loggedIn = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "Logged in:")), "true")
 		}
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no caam isolated-profile export produced auth for %q", profile)
+	if profilePath == "" || !filepath.IsAbs(profilePath) {
+		return "", fmt.Errorf("inspect caam Codex profile %q: missing absolute profile path", profile)
 	}
-	return nil, lastErr
+	if !loggedIn {
+		return "", fmt.Errorf("inspect caam Codex profile %q: profile is not logged in", profile)
+	}
+	return filepath.Join(profilePath, "codex_home"), nil
 }
 
 // RepopulatePaneHome refreshes an existing pane's isolated CODEX_HOME with the
@@ -222,19 +213,16 @@ func (p *CodexHomeProvisioner) RepopulatePaneHome(ctx context.Context, session, 
 	if profile == "" {
 		return "", fmt.Errorf("RepopulatePaneHome: profile is required for pane-local rotation")
 	}
-	home := p.HomePath(session, pane)
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return "", fmt.Errorf("ensure codex home %s: %w", home, err)
-	}
-	if err := p.seedFromProfile(ctx, home, profile); err != nil {
+	profileHome, err := p.caamProfileCodexHome(ctx, profile)
+	if err != nil {
 		return "", err
 	}
 	p.logger().Info("[CodexHome] repopulated_pane_local",
 		"session", session,
 		"pane", pane,
-		"codex_home", home,
+		"codex_home", profileHome,
 		"profile", profile)
-	return home, nil
+	return profileHome, nil
 }
 
 // EnvForPane returns the environment-variable assignment (CODEX_HOME=<path>) for

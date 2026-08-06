@@ -14,9 +14,9 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
-// writeFakeCaamProfile creates a fake caam that returns a fixed auth JSON for the
-// isolated-profile export primitives and a fixed account list. It records its
-// invocations to a marker file.
+// writeFakeCaamProfile creates a fake caam that exposes the supported isolated
+// profile-status surface and a fixed account list. It records its invocations to
+// a marker file.
 func writeFakeCaamProfile(t *testing.T, authPayload string) (caamPath, markerPath string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -25,22 +25,22 @@ func writeFakeCaamProfile(t *testing.T, authPayload string) (caamPath, markerPat
 	dir := t.TempDir()
 	markerPath = filepath.Join(dir, "caam_invocations.log")
 	caamPath = filepath.Join(dir, "caam")
-	// The script branches on the first arg: "profile"/"creds" => emit auth;
-	// "list" => emit two openai accounts; anything else => empty success.
+	// The script returns profile status for CAAM's supported isolated-profile
+	// inspection command, plus two accounts for pane-local rotation selection.
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %q
-case "$1" in
-  profile|creds)
-    printf '%s'
+case "$1 $2" in
+  "profile status")
+    printf 'Profile: codex/%%s\n  Path: %s/profiles/%%s\n  Auth mode: oauth\n  Logged in: true\n' "$4" "$4"
     ;;
-  list)
+  "list --json")
     printf '[{"id":"acctA","provider":"openai","active":true},{"id":"acctB","provider":"openai","active":false}]'
     ;;
   *)
     printf '{"success":true}'
     ;;
 esac
-`, markerPath, authPayload)
+`, markerPath, filepath.Dir(caamPath))
 	if err := os.WriteFile(caamPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake caam: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestCodexHome_HomePathIsolatedPerPane(t *testing.T) {
 	}
 }
 
-func TestCodexHome_ProvisionSeedsAuthFromProfile(t *testing.T) {
+func TestCodexHome_ProvisionUsesCaamProfileHome(t *testing.T) {
 	caamPath, _ := writeFakeCaamProfile(t, `{"OPENAI_API_KEY":"sk-test"}`)
 	base := t.TempDir()
 	p := NewCodexHomeProvisioner(base).WithCaamPath(caamPath)
@@ -68,23 +68,13 @@ func TestCodexHome_ProvisionSeedsAuthFromProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProvisionPaneHome: %v", err)
 	}
-	authPath := filepath.Join(home, "auth.json")
-	data, err := os.ReadFile(authPath)
-	if err != nil {
-		t.Fatalf("expected seeded auth.json: %v", err)
-	}
-	if string(data) != `{"OPENAI_API_KEY":"sk-test"}` {
-		t.Errorf("unexpected seeded auth: %q", string(data))
+	wantHome := filepath.Join(filepath.Dir(caamPath), "profiles", "acctA", "codex_home")
+	if home != wantHome {
+		t.Errorf("ProvisionPaneHome() = %q, want CAAM-owned %q", home, wantHome)
 	}
 	// Isolation: the home must NOT be the global ~/.codex.
 	if isGlobalCodexHome(home) {
 		t.Errorf("provisioned home %q should not be considered global", home)
-	}
-	// Perms: auth.json should be 0600.
-	if fi, err := os.Stat(authPath); err == nil {
-		if fi.Mode().Perm() != 0o600 {
-			t.Errorf("expected auth.json perm 0600, got %v", fi.Mode().Perm())
-		}
 	}
 }
 
@@ -97,17 +87,17 @@ func TestCodexHome_RepopulateRefreshesAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepopulatePaneHome: %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(home, "auth.json"))
-	if string(data) != `{"OPENAI_API_KEY":"sk-new"}` {
-		t.Errorf("expected repopulated auth, got %q", string(data))
+	wantHome := filepath.Join(filepath.Dir(caamPath), "profiles", "acctB", "codex_home")
+	if home != wantHome {
+		t.Errorf("RepopulatePaneHome() = %q, want CAAM-owned %q", home, wantHome)
 	}
-	// caam must have been asked for the isolated profile auth, not a global switch.
+	// CAAM must have been asked for the named isolated profile, not a global switch.
 	logData, _ := os.ReadFile(marker)
-	if !contains(string(logData), "profile") && !contains(string(logData), "creds") {
-		t.Errorf("expected caam isolated-profile invocation, got log: %q", string(logData))
+	if !contains(string(logData), "profile status codex acctB") {
+		t.Errorf("expected CAAM profile-status invocation, got log: %q", string(logData))
 	}
-	if contains(string(logData), "switch") {
-		t.Errorf("pane-local repopulate must NOT call caam switch; log: %q", string(logData))
+	if contains(string(logData), "creds") || contains(string(logData), "openai") || contains(string(logData), "switch") {
+		t.Errorf("pane-local repopulate used an obsolete or global CAAM path: %q", string(logData))
 	}
 }
 
@@ -439,15 +429,15 @@ func TestPaneLocalRotation_RepopulatesIsolatedHomeNotGlobal(t *testing.T) {
 	if record.CodexHome == "" {
 		t.Error("expected CodexHome to be set on pane-local record")
 	}
-	// The isolated home must have been (re)written with fresh auth.
-	data, err := os.ReadFile(filepath.Join(record.CodexHome, "auth.json"))
-	if err != nil || string(data) != `{"OPENAI_API_KEY":"sk-rotated"}` {
-		t.Errorf("expected isolated auth.json refreshed, got err=%v data=%q", err, string(data))
+	wantHome := filepath.Join(filepath.Dir(caamPath), "profiles", "acctB", "codex_home")
+	if record.CodexHome != wantHome {
+		t.Errorf("pane-local CODEX_HOME = %q, want CAAM-owned %q", record.CodexHome, wantHome)
 	}
-	// caam switch (global clobber) must NEVER be invoked on the pane-local path.
+	// CAAM's profile-status command, not a global switch or credential export,
+	// must be the only isolated-profile operation on this path.
 	log, _ := os.ReadFile(marker)
-	if contains(string(log), "switch") {
-		t.Errorf("pane-local rotation must NOT call caam switch; log: %q", string(log))
+	if !contains(string(log), "profile status codex acctB") || contains(string(log), "switch") || contains(string(log), "creds") {
+		t.Errorf("pane-local rotation used the wrong CAAM contract: %q", string(log))
 	}
 }
 
