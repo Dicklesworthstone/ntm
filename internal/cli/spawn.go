@@ -60,6 +60,8 @@ type optionalDurationValue struct {
 	enabled         *bool
 }
 
+const maxStaggerInterval = 5 * time.Minute
+
 func newOptionalDurationValue(defaultDur time.Duration, dur *time.Duration, enabled *bool) *optionalDurationValue {
 	*dur = defaultDur // Set default
 	return &optionalDurationValue{
@@ -94,6 +96,9 @@ func (v *optionalDurationValue) Set(s string) error {
 	}
 	if dur < 0 {
 		return fmt.Errorf("stagger duration cannot be negative")
+	}
+	if dur > maxStaggerInterval {
+		return fmt.Errorf("stagger duration cannot exceed %s", maxStaggerInterval)
 	}
 	*v.duration = dur
 	return nil
@@ -565,6 +570,16 @@ func normalizeSpawnOptions(opts *SpawnOptions) {
 	if len(opts.Agents) > 0 {
 		recomputeSpawnAgentCounts(opts)
 	}
+}
+
+func validateSpawnStaggerOptions(opts SpawnOptions) error {
+	if opts.Stagger < 0 || opts.Stagger > maxStaggerInterval {
+		return fmt.Errorf("--stagger must be between 0 and %s", maxStaggerInterval)
+	}
+	if opts.StaggerMode == "fixed" && (opts.StaggerDelay < 0 || opts.StaggerDelay > maxStaggerInterval) {
+		return fmt.Errorf("--stagger-delay must be between 0 and %s", maxStaggerInterval)
+	}
+	return nil
 }
 
 func validateSpawnPaneEnv(env map[string]string) error {
@@ -2124,6 +2139,9 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 
 	normalizeSpawnOptions(&opts)
+	if err := validateSpawnStaggerOptions(opts); err != nil {
+		return outputError(err)
+	}
 	if err := validateSpawnPaneEnv(opts.PaneEnv); err != nil {
 		return outputError(err)
 	}

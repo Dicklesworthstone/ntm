@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +46,11 @@ func TestOptionalDurationValue_Set(t *testing.T) {
 			input:        "5m",
 			wantDuration: 5 * time.Minute,
 			wantEnabled:  true,
+		},
+		{
+			name:    "over maximum duration rejected",
+			input:   "5m1s",
+			wantErr: true,
 		},
 		{
 			name:    "invalid duration",
@@ -118,6 +125,67 @@ func TestSpawnStaggerFlagUsesDocumentedDefault(t *testing.T) {
 	}
 	if got, want := flag.NoOptDefVal, "1m30s"; got != want {
 		t.Fatalf("--stagger NoOptDefVal = %q, want %q", got, want)
+	}
+}
+
+func TestValidateSpawnStaggerOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    SpawnOptions
+		wantErr string
+	}{
+		{
+			name: "legacy zero is disabled",
+			opts: SpawnOptions{Stagger: 0},
+		},
+		{
+			name: "legacy maximum is accepted",
+			opts: SpawnOptions{Stagger: maxStaggerInterval},
+		},
+		{
+			name:    "legacy interval above maximum is rejected",
+			opts:    SpawnOptions{Stagger: maxStaggerInterval + time.Second},
+			wantErr: "--stagger must be between 0 and 5m0s",
+		},
+		{
+			name:    "fixed interval below zero is rejected",
+			opts:    SpawnOptions{StaggerMode: "fixed", StaggerDelay: -time.Second},
+			wantErr: "--stagger-delay must be between 0 and 5m0s",
+		},
+		{
+			name: "fixed maximum is accepted",
+			opts: SpawnOptions{StaggerMode: "fixed", StaggerDelay: maxStaggerInterval},
+		},
+		{
+			name:    "fixed interval above maximum is rejected",
+			opts:    SpawnOptions{StaggerMode: "fixed", StaggerDelay: maxStaggerInterval + time.Second},
+			wantErr: "--stagger-delay must be between 0 and 5m0s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSpawnStaggerOptions(tt.opts)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateSpawnStaggerOptions() error = %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("validateSpawnStaggerOptions() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSpawnRejectsInvalidStaggerBeforeLifecycleValidation(t *testing.T) {
+	err := spawnSessionLogicComposable(context.Background(), SpawnOptions{
+		Session: "invalid session name",
+		Stagger: maxStaggerInterval + time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--stagger must be between 0 and 5m0s") {
+		t.Fatalf("spawnSessionLogicComposable() error = %v, want stagger validation error", err)
 	}
 }
 
