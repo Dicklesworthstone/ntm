@@ -138,6 +138,35 @@ func TestGetProductivityDoesNotConvergeWithoutRecognizedAgentPanes(t *testing.T)
 	}
 }
 
+func TestGetProductivityReportsInvalidAndMissingSessions(t *testing.T) {
+	deps := productivityDependencies{
+		sessionExists: func(session string) bool { return session != "missing" },
+		getPanes: func(string) ([]tmux.Pane, error) {
+			t.Fatal("getPanes must not run for invalid sessions")
+			return nil, nil
+		},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		session   string
+		errorCode string
+	}{
+		{name: "empty session", session: "", errorCode: ErrCodeInvalidFlag},
+		{name: "missing session", session: "missing", errorCode: ErrCodeSessionNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := getProductivity(ProductivityOptions{Session: tc.session}, deps)
+			if err != nil {
+				t.Fatalf("getProductivity() error = %v", err)
+			}
+			if output.Success || output.ErrorCode != tc.errorCode {
+				t.Fatalf("output success=%v error_code=%q, want false and %q", output.Success, output.ErrorCode, tc.errorCode)
+			}
+		})
+	}
+}
+
 func TestAdvanceConvergenceStateRequiresStableReadyCountAndStreak(t *testing.T) {
 	state := ConvergenceState{}
 	first := &ProductivityOutput{Decision: ProductivityConverged, ReadyBeadCount: 0}

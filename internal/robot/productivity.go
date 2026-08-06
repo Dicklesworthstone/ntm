@@ -134,7 +134,6 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 	if window <= 0 {
 		window = defaultProductivityWindow
 	}
-	now := deps.now().UTC()
 	output := &ProductivityOutput{
 		RobotResponse:  NewRobotResponse(true),
 		Session:        opts.Session,
@@ -152,6 +151,7 @@ func getProductivity(opts ProductivityOptions, deps productivityDependencies) (*
 		output.RobotResponse = NewErrorResponse(fmt.Errorf("session %q not found", opts.Session), ErrCodeSessionNotFound, "Use --robot-status to list sessions")
 		return output, nil
 	}
+	now := deps.now().UTC()
 
 	panes, err := deps.getPanes(opts.Session)
 	if err != nil {
