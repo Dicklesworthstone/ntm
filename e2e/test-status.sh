@@ -43,7 +43,9 @@ assert_json_value "$missing_json" '.exists' 'false' 'missing-session JSON report
 log_step_end status_missing_session
 
 session="e2e-status-$$"
-e2e_spawn "$session" --cc=1 --cod=1 --gmi=1
+e2e_spawn "$session" --cc=1 --cod=1
+"$E2E_REAL_TMUX" split-window -d -t "$session" "$E2E_TEST_TMPDIR/bin/gemini"
+"$E2E_REAL_TMUX" select-pane -t "$session:0.2" -T "${session}__gmi_1"
 
 log_step_start status_schema_and_agent_detection
 status_json="$("$E2E_NTM_BIN" status "$session" --json)"
