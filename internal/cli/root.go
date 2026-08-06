@@ -1359,6 +1359,24 @@ Shell Integration:
 			}
 			return
 		}
+		if robotProductivity != "" {
+			session, err := resolveRobotLiveSession(cmd.Context(), robotProductivity)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions", "robot-productivity")
+				return
+			}
+			window, err := time.ParseDuration(robotProductivityWindow)
+			if err != nil || window <= 0 {
+				if err == nil {
+					err = fmt.Errorf("must be greater than zero")
+				}
+				failRobotCommand(fmt.Errorf("invalid productivity window %q: %w", robotProductivityWindow, err), robot.ErrCodeInvalidFlag, "Use a positive Go duration such as 30m or 1h", "robot-productivity")
+				return
+			}
+			exitCode := robot.PrintProductivity(robot.ProductivityOptions{Session: session, Window: window})
+			recordLegacyRobotExit(exitCode)
+			return
+		}
 		if robotWaitCancel != "" {
 			exitCode := robot.PrintWaitCancel(robotWaitCancel)
 			recordLegacyRobotExit(exitCode)
@@ -1383,6 +1401,18 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use a Go duration such as 1s or 500ms", "robot-wait")
 				return
 			}
+			productivityWindow, err := time.ParseDuration(robotProductivityWindow)
+			if err != nil || productivityWindow <= 0 {
+				if err == nil {
+					err = fmt.Errorf("must be greater than zero")
+				}
+				failRobotCommand(fmt.Errorf("invalid productivity window %q: %w", robotProductivityWindow, err), robot.ErrCodeInvalidFlag, "Use a positive Go duration such as 30m or 1h", "robot-wait")
+				return
+			}
+			if robotConvergedStreak <= 0 {
+				failRobotCommand(fmt.Errorf("invalid converged streak %d", robotConvergedStreak), robot.ErrCodeInvalidFlag, "Use a positive --converged-streak such as 3", "robot-wait")
+				return
+			}
 			// Parse pane selectors; resolution happens against the live topology.
 			waitPanes := resolveRobotWaitPanes(cmd)
 			paneSelectors, err := robot.ParsePaneSelectorsArg(waitPanes)
@@ -1397,19 +1427,21 @@ Shell Integration:
 				sinceCursorSet = cmd.Flags().Changed("since-cursor")
 			}
 			opts := robot.WaitOptions{
-				Session:           session,
-				Condition:         robotWaitUntil,
-				Timeout:           timeout,
-				PollInterval:      poll,
-				PaneSelectors:     paneSelectors,
-				AgentType:         resolveRobotWaitType(cmd),
-				WaitForAny:        robotWaitAny,
-				ExitOnError:       robotWaitOnError,
-				RequireTransition: robotWaitTransition,
-				SinceCursor:       sinceCursor,
-				SinceCursorSet:    sinceCursorSet,
-				Profile:           robotProfile,
-				WaitID:            robotWaitID,
+				Session:            session,
+				Condition:          robotWaitUntil,
+				Timeout:            timeout,
+				PollInterval:       poll,
+				PaneSelectors:      paneSelectors,
+				AgentType:          resolveRobotWaitType(cmd),
+				WaitForAny:         robotWaitAny,
+				ExitOnError:        robotWaitOnError,
+				RequireTransition:  robotWaitTransition,
+				SinceCursor:        sinceCursor,
+				SinceCursorSet:     sinceCursorSet,
+				Profile:            robotProfile,
+				WaitID:             robotWaitID,
+				ProductivityWindow: productivityWindow,
+				ConvergedStreak:    robotConvergedStreak,
 			}
 			exitCode := robot.PrintWaitContext(cmd.Context(), opts)
 			recordLegacyRobotExit(exitCode)
@@ -3638,8 +3670,11 @@ var (
 	robotCausalityLimit   int    // max output events
 
 	// Robot-activity flags for agent activity detection
-	robotActivity     string // session name for activity query
-	robotActivityType string // filter by agent type (claude, codex, antigravity, grok, gemini)
+	robotActivity           string // session name for activity query
+	robotActivityType       string // filter by agent type (claude, codex, antigravity, grok, gemini)
+	robotProductivity       string // session name for productivity evidence query
+	robotProductivityWindow string // observation window for productivity and convergence
+	robotConvergedStreak    int    // consecutive converged observations required by robot wait
 
 	// Robot-wait flags for waiting on agent states
 	robotWait           string // session name for wait
@@ -4288,10 +4323,13 @@ func init() {
 	// Robot-activity flags for agent activity detection
 	rootCmd.Flags().StringVar(&robotActivity, "robot-activity", "", "Get agent activity state (idle/busy/error). Required: SESSION. Example: ntm --robot-activity=myproject")
 	rootCmd.Flags().StringVar(&robotActivityType, "activity-type", "", "Filter by agent type: claude, codex, antigravity, grok, gemini. Optional with --robot-activity. Example: --activity-type=grok")
+	rootCmd.Flags().StringVar(&robotProductivity, "robot-productivity", "", "Get evidence-backed swarm productivity. Required: SESSION. Example: ntm --robot-productivity=myproject")
+	rootCmd.Flags().StringVar(&robotProductivityWindow, "productivity-window", "30m", "Observation window for --robot-productivity and --wait-until=converged. Example: --productivity-window=1h")
+	rootCmd.Flags().IntVar(&robotConvergedStreak, "converged-streak", 3, "Consecutive converged observations required by --wait-until=converged")
 
 	// Robot-wait flags for waiting on agent states
 	rootCmd.Flags().StringVar(&robotWait, "robot-wait", "", "Wait for agents to reach state. Required: SESSION. Example: ntm --robot-wait=myproject --wait-until=idle")
-	rootCmd.Flags().StringVar(&robotWaitUntil, "wait-until", "idle", "Wait condition: idle, complete, generating, healthy, stalled, rate_limited (fires when a pane BECOMES limited), rate_limit_lifted (returns once all target panes are clear), agent_ready (CLI booted and responsive after relaunch/respawn), attention, action_required, mail_pending, mail_ack_required, context_hot, reservation_conflict, file_conflict, session_changed, pane_changed. Optional with --robot-wait. Use --attention-cursor and --profile for attention-feed waits.")
+	rootCmd.Flags().StringVar(&robotWaitUntil, "wait-until", "idle", "Wait condition: idle, complete, generating, healthy, stalled, rate_limited (fires when a pane BECOMES limited), rate_limit_lifted (returns once all target panes are clear), agent_ready (CLI booted and responsive after relaunch/respawn), converged (requires evidence-backed streak), attention, action_required, mail_pending, mail_ack_required, context_hot, reservation_conflict, file_conflict, session_changed, pane_changed. Optional with --robot-wait. Use --attention-cursor and --profile for attention-feed waits.")
 	rootCmd.Flags().StringVar(&robotWaitUntil, "condition", "idle", "Alias for --wait-until. Same condition set, including attention-feed waits.")
 	rootCmd.Flags().StringVar(&robotWaitTimeout, "wait-timeout", "5m", "Maximum wait time. Optional with --robot-wait. Example: --wait-timeout=2m")
 	rootCmd.Flags().StringVar(&robotWaitPoll, "wait-poll", "2s", "Polling interval. Optional with --robot-wait. Example: --wait-poll=500ms")
@@ -6059,7 +6097,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
-			robotActivity != "" {
+			robotActivity != "" || robotProductivity != "" {
 			return true
 		}
 	}

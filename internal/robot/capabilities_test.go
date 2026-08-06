@@ -1352,6 +1352,7 @@ func TestBuildCommandRegistryWaitCommandReflectsExtendedConditions(t *testing.T)
 	for _, cond := range []string{
 		"stalled",
 		"rate_limited",
+		"converged",
 		"attention",
 		"action_required",
 		"mail_pending",
@@ -1371,6 +1372,9 @@ func TestBuildCommandRegistryWaitCommandReflectsExtendedConditions(t *testing.T)
 	if !strings.Contains(transitionParam.Description, "pane-state conditions") {
 		t.Errorf("--wait-transition description should clarify pane-state scope, got %q", transitionParam.Description)
 	}
+	if !strings.Contains(waitCmd.Description, "convergence") {
+		t.Errorf("wait description should mention convergence, got %q", waitCmd.Description)
+	}
 
 	foundAttentionExample := false
 	for _, example := range waitCmd.Examples {
@@ -1382,6 +1386,25 @@ func TestBuildCommandRegistryWaitCommandReflectsExtendedConditions(t *testing.T)
 	if !foundAttentionExample {
 		t.Error("expected wait command examples to include an action_required attention wait")
 	}
+}
+
+func TestBuildCommandRegistryIncludesProductivity(t *testing.T) {
+	commands := buildCommandRegistry()
+	for _, command := range commands {
+		if command.Name != "productivity" {
+			continue
+		}
+		if command.Flag != "--robot-productivity" {
+			t.Fatalf("productivity flag = %q, want --robot-productivity", command.Flag)
+		}
+		for _, parameter := range command.Parameters {
+			if parameter.Flag == "--productivity-window" {
+				return
+			}
+		}
+		t.Fatal("productivity command is missing --productivity-window")
+	}
+	t.Fatal("productivity command is missing from the registry")
 }
 
 func TestDocsContentMentionsAttentionWait(t *testing.T) {

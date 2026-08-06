@@ -704,6 +704,19 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "productivity",
+			Flag:        "--robot-productivity",
+			Category:    "state",
+			Description: "Return attributable commit, Beads, and live build/test evidence for whether a swarm should continue or has converged.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-productivity", Type: "string", Required: true, Description: "Session name"},
+				{Name: "productivity-window", Flag: "--productivity-window", Type: "duration", Required: false, Default: "30m", Description: "Observation window for attributable commits and Beads updates"},
+			},
+			Examples: []string{
+				"ntm --robot-productivity=myproject --productivity-window=1h",
+			},
+		},
+		{
 			Name:        "dashboard",
 			Flag:        "--robot-dashboard",
 			Category:    "state",
@@ -1091,10 +1104,10 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Name:        "wait",
 			Flag:        "--robot-wait",
 			Category:    "control",
-			Description: "Wait for pane-state or attention-feed conditions and return a machine-usable wake result.",
+			Description: "Wait for pane-state, attention-feed, or evidence-backed convergence conditions and return a machine-usable wake result.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-wait", Type: "string", Required: true, Description: "Session name"},
-				{Name: "wait-until", Flag: "--wait-until", Type: "string", Required: false, Default: "idle", Description: "Wait condition: idle, complete, generating, healthy, stalled, rate_limited (fires when a pane BECOMES limited), rate_limit_lifted (returns once every target pane is clear of the wall), agent_ready (CLI booted and responsive after relaunch/respawn — replaces fixed post-boot sleeps), attention, action_required, mail_pending, mail_ack_required, context_hot, reservation_conflict, file_conflict, session_changed, pane_changed. bead_orphaned remains deliberately unsupported."},
+				{Name: "wait-until", Flag: "--wait-until", Type: "string", Required: false, Default: "idle", Description: "Wait condition: idle, complete, generating, healthy, stalled, rate_limited (fires when a pane BECOMES limited), rate_limit_lifted (returns once every target pane is clear of the wall), agent_ready (CLI booted and responsive after relaunch/respawn), converged (requires consecutive complete productivity observations), attention, action_required, mail_pending, mail_ack_required, context_hot, reservation_conflict, file_conflict, session_changed, pane_changed. bead_orphaned remains deliberately unsupported."},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "5m", Description: "Maximum wait time"},
 				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "2s", Description: "Polling interval"},
 				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Filter by N, W.P, or %N pane selectors"},
@@ -1105,11 +1118,14 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "wait-exit-on-error", Flag: "--wait-exit-on-error", Type: "bool", Required: false, Description: "Exit immediately if ERROR state detected"},
 				{Name: "wait-transition", Flag: "--wait-transition", Type: "bool", Required: false, Description: "Require pane-state conditions to leave and re-enter the target state before returning"},
 				{Name: "wait-id", Flag: "--wait-id", Type: "string", Required: false, Description: "Durable handle that can be canceled by --robot-wait-cancel"},
+				{Name: "productivity-window", Flag: "--productivity-window", Type: "duration", Required: false, Default: "30m", Description: "Observation window for convergence evidence"},
+				{Name: "converged-streak", Flag: "--converged-streak", Type: "int", Required: false, Default: "3", Description: "Consecutive converged observations required before waking"},
 			},
 			Examples: []string{
 				"ntm --robot-wait=proj --wait-until=idle",
 				"ntm --robot-wait=proj --wait-until=action_required --attention-cursor=42 --profile=operator",
 				"ntm --robot-wait=proj --wait-until=idle --wait-transition --timeout=2m --panes=0.1,%7",
+				"ntm --robot-wait=proj --wait-until=converged --productivity-window=1h --converged-streak=3",
 			},
 		},
 		{

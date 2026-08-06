@@ -248,9 +248,15 @@ type smartRestartProcessOutput struct {
 
 type waitProcessOutput struct {
 	processEnvelope
-	Session       string   `json:"session"`
-	Condition     string   `json:"condition"`
-	AgentsPending []string `json:"agents_pending"`
+	Session           string   `json:"session"`
+	Condition         string   `json:"condition"`
+	AgentsPending     []string `json:"agents_pending"`
+	ConvergenceStreak int      `json:"convergence_streak"`
+	Productivity      *struct {
+		Decision         string `json:"decision"`
+		EvidenceComplete bool   `json:"evidence_complete"`
+		ReadyBeadCount   int    `json:"ready_bead_count"`
+	} `json:"productivity,omitempty"`
 }
 
 type ackProcessOutput struct {
@@ -1169,6 +1175,36 @@ exec "$NTM_E2E_REAL_TMUX" "$@"
 				sort.Strings(test.wantIDs)
 				assertStringSlice(t, "wait pending pane IDs", output.AgentsPending, test.wantIDs)
 			})
+		}
+	})
+
+	t.Run("convergence_wait_returns_productivity_evidence", func(t *testing.T) {
+		result := fixture.runRobot(t, nil,
+			"--robot-wait="+fixture.session,
+			"--wait-until=converged",
+			"--productivity-window=1ns",
+			"--converged-streak=2",
+			"--timeout=300ms",
+			"--poll=25ms",
+		)
+		var output waitProcessOutput
+		if err := json.Unmarshal(result.stdout, &output); err != nil {
+			t.Fatalf("decode convergence wait response: %v\nstdout=%s\nstderr=%s", err, result.stdout, result.stderr)
+		}
+		if result.exitCode != 0 && result.exitCode != 1 {
+			t.Fatalf("convergence wait exit code = %d, want 0 or 1\nstdout=%s\nstderr=%s", result.exitCode, result.stdout, result.stderr)
+		}
+		if output.Productivity == nil {
+			t.Fatal("convergence wait omitted productivity evidence")
+		}
+		if output.Success {
+			if output.Productivity.Decision != "converged" || output.ConvergenceStreak < 2 {
+				t.Fatalf("successful convergence response = %+v, want converged evidence and a two-poll streak", output)
+			}
+			return
+		}
+		if output.ErrorCode != "TIMEOUT" || output.Productivity.Decision == "converged" || output.ConvergenceStreak != 0 {
+			t.Fatalf("non-converged response = %+v, want timeout with zero streak", output)
 		}
 	})
 

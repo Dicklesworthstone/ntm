@@ -190,6 +190,7 @@ func getCommandsContent() *DocsContent {
 --robot-watch-bead=SESSION: Capture bead mentions + current bead status
 --robot-context=SESSION: Get context window usage
 --robot-activity=SESSION: Classify pane work state (idle/busy/error) with optional pane/type filters
+--robot-productivity=SESSION: Evidence-backed stop/continue decision with attributable pane progress and live builds
 --robot-is-working=SESSION: Check if agents are busy
 --robot-diagnose=SESSION: Comprehensive health check
 --robot-health-restart-stuck=SESSION: Detect and restart stuck agents
@@ -207,7 +208,7 @@ func getCommandsContent() *DocsContent {
 --robot-dialogs=SESSION: Classify in-pane dialogs (trust/rate-limit/usage/paste-limbo/destructive) with extracted options
 --robot-answer-dialog=SESSION: Answer a dialog by label (--panes + --choice); destructive confirms refuse accept-side answers
 --robot-smart-restart=SESSION: Safety-checked restart with optional --hard-kill / --hard-kill-only fallback
---robot-wait=SESSION: Wait for pane state or attention-feed condition
+--robot-wait=SESSION: Wait for pane state, attention-feed, or evidence-backed convergence condition
 --robot-overlay: Open dashboard overlay for human handoff (--overlay-session optional inside tmux)
 --robot-route=SESSION: Get routing recommendation`,
 			},
@@ -336,6 +337,12 @@ func getExamplesContent() *DocsContent {
 				Description: "Wait for all agents to become idle",
 				Command:     "ntm --robot-wait=proj --wait-until=idle --timeout=5m",
 				Notes:       "Blocks until condition met or timeout",
+			},
+			{
+				Name:        "wait_for_convergence",
+				Description: "Wait for a stable, evidence-backed swarm convergence decision",
+				Command:     "ntm --robot-wait=proj --wait-until=converged --productivity-window=1h --converged-streak=3",
+				Notes:       "Returns the final productivity evidence; incomplete evidence never reports convergence",
 			},
 			{
 				Name:        "wait_for_attention",

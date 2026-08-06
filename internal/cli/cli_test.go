@@ -345,6 +345,9 @@ func resetFlags() {
 	robotWaitPanes = ""
 	robotWaitType = ""
 	robotWaitAny = false
+	robotProductivity = ""
+	robotProductivityWindow = "30m"
+	robotConvergedStreak = 3
 	robotRouteStrategy = "least-loaded"
 	robotRouteType = ""
 	robotRouteExclude = ""
@@ -3240,6 +3243,14 @@ func TestResolveRobotFormat_ConfigFallback(t *testing.T) {
 func TestRobotOutputFormatFlagAliasRegistered(t *testing.T) {
 	if rootCmd.Flags().Lookup("robot-output-format") == nil {
 		t.Fatal("expected --robot-output-format flag to be registered (alias for --robot-format)")
+	}
+}
+
+func TestRobotProductivityFlagsRegistered(t *testing.T) {
+	for _, name := range []string{"robot-productivity", "productivity-window", "converged-streak"} {
+		if rootCmd.Flags().Lookup(name) == nil {
+			t.Fatalf("--%s is not registered", name)
+		}
 	}
 }
 

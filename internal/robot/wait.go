@@ -15,21 +15,23 @@ import (
 
 // WaitOptions configures the robot wait operation.
 type WaitOptions struct {
-	Session           string
-	Condition         string // idle, complete, generating, healthy, attention, action_required, etc.
-	Timeout           time.Duration
-	PollInterval      time.Duration
-	PaneSelectors     []string // N, W.P, or %N selectors; empty = all agent panes
-	PaneIndices       []int    // Legacy bare pane indices for internal callers
-	AgentType         string   // Empty = all types
-	WaitForAny        bool     // If true, wait for ANY; otherwise wait for ALL
-	ExitOnError       bool     // If true, exit immediately on ERROR state
-	CountN            int      // With WaitForAny, wait for at least N agents (default 1)
-	RequireTransition bool     // If true, agents must leave and return to target state
-	SinceCursor       int64    // Attention-based conditions only fire for events after this cursor
-	SinceCursorSet    bool     // True when the caller explicitly supplied SinceCursor, including zero
-	Profile           string   // Filter profile for attention-based conditions (operator, debug, minimal, alerts)
-	WaitID            string   // Optional durable handle that another CLI process can cancel
+	Session            string
+	Condition          string // idle, complete, generating, healthy, attention, action_required, etc.
+	Timeout            time.Duration
+	PollInterval       time.Duration
+	PaneSelectors      []string // N, W.P, or %N selectors; empty = all agent panes
+	PaneIndices        []int    // Legacy bare pane indices for internal callers
+	AgentType          string   // Empty = all types
+	WaitForAny         bool     // If true, wait for ANY; otherwise wait for ALL
+	ExitOnError        bool     // If true, exit immediately on ERROR state
+	CountN             int      // With WaitForAny, wait for at least N agents (default 1)
+	RequireTransition  bool     // If true, agents must leave and return to target state
+	SinceCursor        int64    // Attention-based conditions only fire for events after this cursor
+	SinceCursorSet     bool     // True when the caller explicitly supplied SinceCursor, including zero
+	Profile            string   // Filter profile for attention-based conditions (operator, debug, minimal, alerts)
+	WaitID             string   // Optional durable handle that another CLI process can cancel
+	ProductivityWindow time.Duration
+	ConvergedStreak    int
 }
 
 // WaitResponse is the JSON output for --robot-wait.
@@ -49,6 +51,10 @@ type WaitResponse struct {
 
 	// CursorInfo provides cursor handoff for attention-based conditions.
 	CursorInfo *WaitCursorInfo `json:"cursor_info,omitempty"`
+
+	// Productivity contains the final evidence observation when waiting for convergence.
+	Productivity      *ProductivityOutput `json:"productivity,omitempty"`
+	ConvergenceStreak int                 `json:"convergence_streak,omitempty"`
 }
 
 // WaitCancelResponse is the structured result of canceling a durable wait handle.
@@ -119,6 +125,7 @@ const (
 	// agent-typed panes by the pattern library, so a dead CLI classifies as
 	// UNKNOWN, not ready.
 	WaitConditionAgentReady = "agent_ready"
+	WaitConditionConverged  = "converged"
 )
 
 // Wait condition constants - attention-based conditions (require --attention-cursor)
@@ -229,12 +236,15 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 		}()
 	}
 
-	// Parse conditions once and split pane-vs-attention semantics. Mixed waits
-	// are ANDed across both surfaces.
+	// Parse conditions once and split pane, attention, and convergence semantics.
+	// Mixed waits are ANDed across all requested surfaces.
 	conditions := strings.Split(opts.Condition, ",")
-	paneConditions, attentionConditions := splitWaitConditions(conditions)
+	paneConditions, attentionConditions, convergenceConditions := splitWaitConditions(conditions)
 	hasAttention := len(attentionConditions) > 0
+	hasConvergence := len(convergenceConditions) > 0
 	attentionCursor := initialAttentionWaitCursor(opts, hasAttention)
+	var convergenceState ConvergenceState
+	var lastProductivity *ProductivityOutput
 
 	// Set default count for --any mode
 	if opts.WaitForAny && opts.CountN <= 0 {
@@ -295,6 +305,10 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 					lastAttentionResult = newAttentionConditionResult("", attentionCursor, attentionCursor, 0)
 				}
 				resp.CursorInfo = buildWaitCursorInfo(lastAttentionResult)
+			}
+			if hasConvergence {
+				resp.Productivity = lastProductivity
+				resp.ConvergenceStreak = convergenceState.ConvergedStreak
 			}
 			return resp, 1
 		}
@@ -428,16 +442,40 @@ func GetWaitContext(ctx context.Context, opts WaitOptions) (*WaitResponse, int) 
 			}
 		}
 
-		if attentionMet && paneMet {
+		convergenceMet := !hasConvergence
+		if hasConvergence {
+			productivity, err := GetProductivity(ProductivityOptions{
+				Session: opts.Session,
+				Window:  opts.ProductivityWindow,
+			})
+			if err != nil {
+				productivity = &ProductivityOutput{
+					RobotResponse:  NewErrorResponse(err, ErrCodeInternalError, "Retry after checking tmux, git, and Beads availability"),
+					Session:        opts.Session,
+					Panes:          []ProductivityPane{},
+					BuildProcesses: []BuildProcess{},
+				}
+			}
+			lastProductivity = productivity
+			if productivity.Success {
+				convergenceState, convergenceMet = AdvanceConvergenceState(convergenceState, productivity, opts.ConvergedStreak)
+			} else {
+				convergenceState, convergenceMet = AdvanceConvergenceState(convergenceState, nil, opts.ConvergedStreak)
+			}
+		}
+
+		if attentionMet && paneMet && convergenceMet {
 			elapsed := time.Since(startTime)
 			return &WaitResponse{
-				RobotResponse: NewRobotResponse(true),
-				Session:       opts.Session,
-				Condition:     opts.Condition,
-				WaitedSeconds: elapsed.Seconds(),
-				Agents:        matching,
-				WakePayload:   buildWaitWakePayload(lastAttentionResult),
-				CursorInfo:    buildWaitCursorInfo(lastAttentionResult),
+				RobotResponse:     NewRobotResponse(true),
+				Session:           opts.Session,
+				Condition:         opts.Condition,
+				WaitedSeconds:     elapsed.Seconds(),
+				Agents:            matching,
+				WakePayload:       buildWaitWakePayload(lastAttentionResult),
+				CursorInfo:        buildWaitCursorInfo(lastAttentionResult),
+				Productivity:      lastProductivity,
+				ConvergenceStreak: convergenceState.ConvergedStreak,
 			}, 0
 		}
 
@@ -580,7 +618,7 @@ func isSingleValidWaitCondition(condition string) bool {
 	// Pane-based conditions
 	case WaitConditionIdle, WaitConditionComplete, WaitConditionGenerating, WaitConditionHealthy,
 		WaitConditionStalled, WaitConditionRateLimited, WaitConditionRateLimitLifted,
-		WaitConditionAgentReady:
+		WaitConditionAgentReady, WaitConditionConverged:
 		return true
 	// Attention-based conditions
 	case WaitConditionAttention, WaitConditionActionRequired, WaitConditionMailPending,
@@ -614,9 +652,10 @@ func hasAttentionBasedConditions(conditions []string) bool {
 	return false
 }
 
-func splitWaitConditions(conditions []string) ([]string, []string) {
+func splitWaitConditions(conditions []string) ([]string, []string, []string) {
 	paneConditions := make([]string, 0, len(conditions))
 	attentionConditions := make([]string, 0, len(conditions))
+	convergenceConditions := make([]string, 0, 1)
 	for _, condition := range conditions {
 		trimmed := strings.TrimSpace(condition)
 		if trimmed == "" {
@@ -626,9 +665,13 @@ func splitWaitConditions(conditions []string) ([]string, []string) {
 			attentionConditions = append(attentionConditions, trimmed)
 			continue
 		}
+		if trimmed == WaitConditionConverged {
+			convergenceConditions = append(convergenceConditions, trimmed)
+			continue
+		}
 		paneConditions = append(paneConditions, trimmed)
 	}
-	return paneConditions, attentionConditions
+	return paneConditions, attentionConditions, convergenceConditions
 }
 
 func waitPaneSelectors(opts WaitOptions) []string {

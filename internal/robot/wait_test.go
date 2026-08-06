@@ -173,6 +173,7 @@ func TestIsValidWaitCondition(t *testing.T) {
 		{"stalled valid", "stalled", true},
 		{"rate_limited valid", "rate_limited", true},
 		{"rate_limit_lifted valid", "rate_limit_lifted", true},
+		{"converged valid", "converged", true},
 
 		// Attention-based conditions
 		{"attention valid", "attention", true},
@@ -204,6 +205,23 @@ func TestIsValidWaitCondition(t *testing.T) {
 				t.Errorf("isValidWaitCondition(%q) = %v, want %v", tt.condition, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSplitWaitConditionsSeparatesConvergenceEvidence(t *testing.T) {
+	panes, attention, convergence := splitWaitConditions([]string{
+		WaitConditionIdle,
+		WaitConditionActionRequired,
+		WaitConditionConverged,
+	})
+	if len(panes) != 1 || panes[0] != WaitConditionIdle {
+		t.Fatalf("pane conditions = %v, want [idle]", panes)
+	}
+	if len(attention) != 1 || attention[0] != WaitConditionActionRequired {
+		t.Fatalf("attention conditions = %v, want [action_required]", attention)
+	}
+	if len(convergence) != 1 || convergence[0] != WaitConditionConverged {
+		t.Fatalf("convergence conditions = %v, want [converged]", convergence)
 	}
 }
 
@@ -478,7 +496,7 @@ func TestWaitOptionsDefaults(t *testing.T) {
 }
 
 func TestSplitWaitConditions(t *testing.T) {
-	paneConditions, attentionConditions := splitWaitConditions([]string{
+	paneConditions, attentionConditions, convergenceConditions := splitWaitConditions([]string{
 		" idle ",
 		"action_required",
 		" pane_changed ",
@@ -490,6 +508,9 @@ func TestSplitWaitConditions(t *testing.T) {
 	}
 	if len(attentionConditions) != 2 || attentionConditions[0] != "action_required" || attentionConditions[1] != "pane_changed" {
 		t.Fatalf("attentionConditions = %#v, want [action_required pane_changed]", attentionConditions)
+	}
+	if len(convergenceConditions) != 0 {
+		t.Fatalf("convergenceConditions = %#v, want none", convergenceConditions)
 	}
 }
 
