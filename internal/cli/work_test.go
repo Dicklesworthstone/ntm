@@ -61,6 +61,19 @@ func TestWorkTriageCmdRejectsConflictingGroupedFlags(t *testing.T) {
 	}
 }
 
+func TestWorkTriageCmdRejectsNegativeLimit(t *testing.T) {
+	cmd := newWorkTriageCmd()
+	cmd.SetArgs([]string{"--limit=-1"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("triage accepted a negative limit")
+	}
+	if !strings.Contains(err.Error(), "--limit must be zero or greater") {
+		t.Fatalf("error = %q, want negative-limit validation error", err)
+	}
+}
+
 func TestWorkAlertsCmd(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("Skipping in CI - requires bv")
@@ -102,6 +115,19 @@ func TestWorkNextCmd(t *testing.T) {
 	cmd := newWorkNextCmd()
 	if cmd.Use != "next" {
 		t.Errorf("expected Use to be 'next', got %q", cmd.Use)
+	}
+}
+
+func TestWorkForecastCmdRejectsExtraArguments(t *testing.T) {
+	cmd := newWorkForecastCmd()
+	cmd.SetArgs([]string{"ntm-123", "unexpected"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("forecast accepted an extra positional argument")
+	}
+	if !strings.Contains(err.Error(), "accepts at most 1 arg(s)") {
+		t.Fatalf("error = %q, want Cobra maximum-argument error", err)
 	}
 }
 

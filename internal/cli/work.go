@@ -120,6 +120,15 @@ Examples:
   ntm work triage --health     # Include project health metrics
   ntm work triage --json       # Output as JSON
   ntm work triage --format=markdown --compact  # Ultra-compact markdown`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(cmd, args); err != nil {
+				return err
+			}
+			if limit < 0 {
+				return fmt.Errorf("--limit must be zero or greater")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorkTriage(byLabel, byTrack, limit, showQuick, showHealth, format, compact)
 		},
@@ -2496,8 +2505,6 @@ Examples:
 
 // newWorkForecastCmd creates the forecast command
 func newWorkForecastCmd() *cobra.Command {
-	var issueID string
-
 	cmd := &cobra.Command{
 		Use:   "forecast [issue-id]",
 		Short: "ETA predictions with dependency-aware scheduling",
@@ -2509,7 +2516,9 @@ Examples:
   ntm work forecast                # Forecast all open issues
   ntm work forecast ntm-123        # Forecast specific issue
   ntm work forecast --json         # Output as JSON`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			issueID := ""
 			if len(args) > 0 {
 				issueID = args[0]
 			}
