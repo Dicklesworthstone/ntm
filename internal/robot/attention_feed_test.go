@@ -111,6 +111,43 @@ func TestCursorAllocator_Current(t *testing.T) {
 	}
 }
 
+func TestNewAttentionFeed_CustomJournalUsesDefaultRetentionForDurableEvents(t *testing.T) {
+	store := newStubAttentionStore()
+	feed := NewAttentionFeed(AttentionFeedConfig{
+		JournalSize:       37,
+		HeartbeatInterval: 0,
+	}, WithAttentionStore(store))
+	t.Cleanup(feed.Stop)
+
+	feed.Append(AttentionEvent{
+		Category:      EventCategorySystem,
+		Type:          EventTypeSystemHealthChange,
+		Actionability: ActionabilityBackground,
+		Severity:      SeverityInfo,
+		Summary:       "retention must be durable",
+	})
+
+	if feed.config.RetentionPeriod != time.Hour {
+		t.Fatalf("configured retention = %s, want %s", feed.config.RetentionPeriod, time.Hour)
+	}
+	if got := feed.journal.Stats().RetentionPeriod; got != time.Hour {
+		t.Fatalf("journal retention = %s, want %s", got, time.Hour)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.events) != 1 {
+		t.Fatalf("stored event count = %d, want 1", len(store.events))
+	}
+	stored := store.events[0]
+	if stored.ExpiresAt == nil {
+		t.Fatal("durable event expiry is nil when retention was omitted")
+	}
+	if got := stored.ExpiresAt.Sub(stored.Ts); got != time.Hour {
+		t.Fatalf("durable event retention = %s, want %s", got, time.Hour)
+	}
+}
+
 func TestCursorAllocator_AdvanceToNeverRegresses(t *testing.T) {
 	alloc := NewCursorAllocator()
 	alloc.AdvanceTo(105)

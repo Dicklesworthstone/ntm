@@ -490,6 +490,13 @@ func NewAttentionFeed(config AttentionFeedConfig, opts ...AttentionFeedOption) *
 	if config.JournalSize == 0 {
 		config = DefaultAttentionFeedConfig()
 	}
+	// NewAttentionJournal already normalizes an omitted retention period, but
+	// durable events derive their expiry from config directly. Keep the runtime
+	// and persisted contracts aligned when callers customize only the journal
+	// size (the common partial-config case).
+	if config.RetentionPeriod <= 0 {
+		config.RetentionPeriod = DefaultAttentionFeedConfig().RetentionPeriod
+	}
 
 	feed := &AttentionFeed{
 		config:      config,
