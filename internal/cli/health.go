@@ -25,7 +25,7 @@ var (
 	healthWatch            bool
 	healthInterval         int
 	healthVerbose          bool
-	healthPane             int
+	healthPane             string
 	healthStatus           string
 	healthAutoRestartStuck bool
 	healthThreshold        string
@@ -35,10 +35,11 @@ var (
 
 // SessionHealthInput is the kernel input for sessions.health.
 type SessionHealthInput struct {
-	Session string `json:"session"`
-	Pane    *int   `json:"pane,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Verbose bool   `json:"verbose,omitempty"`
+	Session      string `json:"session"`
+	Pane         *int   `json:"pane,omitempty"`
+	PaneSelector string `json:"pane_selector,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Verbose      bool   `json:"verbose,omitempty"`
 }
 
 // HealthOutput mirrors the JSON output for the health command.
@@ -125,7 +126,7 @@ Examples:
 	cmd.Flags().BoolVarP(&healthWatch, "watch", "w", false, "Auto-refresh health display")
 	cmd.Flags().IntVarP(&healthInterval, "interval", "i", 5, "Refresh interval in seconds (with --watch)")
 	cmd.Flags().BoolVarP(&healthVerbose, "verbose", "v", false, "Show full error details")
-	cmd.Flags().IntVar(&healthPane, "pane", -1, "Filter to specific pane index")
+	cmd.Flags().StringVar(&healthPane, "pane", "", "Filter to pane selector: N (single-window), W.P, or %pane-id")
 	cmd.Flags().StringVar(&healthStatus, "status", "", "Filter by status (ok, warning, error)")
 	cmd.Flags().BoolVar(&healthAutoRestartStuck, "auto-restart-stuck", false, "Detect and restart agents stuck with no output")
 	cmd.Flags().StringVar(&healthThreshold, "threshold", "", "Duration before considering stuck (default 5m, e.g. 10m, 300s)")
@@ -260,17 +261,13 @@ func autoRestartStuckOptions(session string, threshold time.Duration, dryRun boo
 // runHealthOnce performs a single health check and outputs the result
 func runHealthOnce(session string) error {
 	if jsonOutput {
-		var pane *int
-		if healthPane >= 0 {
-			pane = &healthPane
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		result, err := healthKernelRun(ctx, "sessions.health", SessionHealthInput{
-			Session: session,
-			Pane:    pane,
-			Status:  healthStatus,
-			Verbose: healthVerbose,
+			Session:      session,
+			PaneSelector: healthPane,
+			Status:       healthStatus,
+			Verbose:      healthVerbose,
 		})
 		if err != nil {
 			return emitHealthJSONFailure(HealthOutput{
@@ -309,8 +306,17 @@ func runHealthOnce(session string) error {
 		return err
 	}
 
-	// Apply filters
-	result = filterHealthResult(result)
+	// Apply filters. Resolve a selector against the full tmux topology before
+	// narrowing health rows by stable pane ID.
+	if healthPane != "" {
+		paneIDs, err := resolveHealthPaneIDs(session, healthPane)
+		if err != nil {
+			return err
+		}
+		result = filterHealthResultWithPaneIDs(result, paneIDs, healthStatus)
+	} else {
+		result = filterHealthResultWithOptions(result, -1, healthStatus)
+	}
 
 	// Enrich with tracker data (uptime, restarts)
 	enrichHealthResult(session, result)
@@ -356,7 +362,57 @@ func clearScreen() {
 
 // filterHealthResult applies pane and status filters to the result
 func filterHealthResult(result *health.SessionHealth) *health.SessionHealth {
-	return filterHealthResultWithOptions(result, healthPane, healthStatus)
+	if healthPane == "" {
+		return filterHealthResultWithOptions(result, -1, healthStatus)
+	}
+	paneIDs, err := resolveHealthPaneIDs(result.Session, healthPane)
+	if err != nil {
+		return filterHealthResultWithOptions(result, -1, healthStatus)
+	}
+	return filterHealthResultWithPaneIDs(result, paneIDs, healthStatus)
+}
+
+func resolveHealthPaneIDs(session, selector string) (map[string]struct{}, error) {
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return nil, fmt.Errorf("getting panes: %w", err)
+	}
+	selected, err := tmux.ResolvePaneSelectors(panes, []string{selector}, true)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]struct{}{selected[0].ID: {}}, nil
+}
+
+func filterHealthResultWithPaneIDs(result *health.SessionHealth, paneIDs map[string]struct{}, statusFilter string) *health.SessionHealth {
+	if len(paneIDs) == 0 {
+		return filterHealthResultWithOptions(result, -1, statusFilter)
+	}
+	filtered := &health.SessionHealth{Session: result.Session, CheckedAt: result.CheckedAt, Agents: make([]health.AgentHealth, 0), Summary: health.HealthSummary{}, OverallStatus: health.StatusOK}
+	for _, agent := range result.Agents {
+		if _, ok := paneIDs[agent.PaneID]; !ok {
+			continue
+		}
+		if statusFilter != "" && strings.ToLower(string(agent.Status)) != statusFilter {
+			continue
+		}
+		filtered.Agents = append(filtered.Agents, agent)
+		filtered.Summary.Total++
+		switch agent.Status {
+		case health.StatusOK:
+			filtered.Summary.Healthy++
+		case health.StatusWarning:
+			filtered.Summary.Warning++
+		case health.StatusError:
+			filtered.Summary.Error++
+		default:
+			filtered.Summary.Unknown++
+		}
+		if statusSeverity(agent.Status) > statusSeverity(filtered.OverallStatus) {
+			filtered.OverallStatus = agent.Status
+		}
+	}
+	return filtered
 }
 
 func filterHealthResultWithOptions(result *health.SessionHealth, paneFilter int, statusFilter string) *health.SessionHealth {
@@ -507,6 +563,13 @@ func buildHealthOutput(ctx context.Context, input SessionHealthInput) (HealthOut
 	}
 
 	result = filterHealthResultWithOptions(result, paneFilter, statusFilter)
+	if input.PaneSelector != "" {
+		paneIDs, err := resolveHealthPaneIDs(input.Session, input.PaneSelector)
+		if err != nil {
+			return HealthOutput{}, err
+		}
+		result = filterHealthResultWithPaneIDs(result, paneIDs, statusFilter)
+	}
 	enrichHealthResultWithOptions(input.Session, result, input.Verbose)
 
 	return HealthOutput{SessionHealth: result}, nil
