@@ -136,3 +136,63 @@ func TestRenderDoctorTUIIncludesSafetyDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyContentionProcess(t *testing.T) {
+	resources := classifyContentionProcess(contentionProcess{
+		command: "rsync registry",
+		status:  "D",
+		openFiles: []string{
+			"/work/ntm/.beads/beads.db-wal",
+		},
+	})
+	want := []string{"beads_db", "rsync", "uninterruptible_io"}
+	if len(resources) != len(want) {
+		t.Fatalf("resources=%v, want %v", resources, want)
+	}
+	for i := range want {
+		if resources[i] != want[i] {
+			t.Fatalf("resources=%v, want %v", resources, want)
+		}
+	}
+
+	if got := classifyContentionProcess(contentionProcess{command: "go test ./..."}); len(got) != 0 {
+		t.Fatalf("non-contention process classified as %v", got)
+	}
+	if got := classifyContentionProcess(contentionProcess{command: "/usr/bin/cargo test"}); len(got) != 1 || got[0] != "cargo_registry" {
+		t.Fatalf("cargo process classified as %v", got)
+	}
+}
+
+func TestSameOrChildPath(t *testing.T) {
+	if !sameOrChildPath("/work/ntm/subdir", "/work/ntm") {
+		t.Fatal("child path should be in swarm")
+	}
+	if sameOrChildPath("/work/other", "/work/ntm") {
+		t.Fatal("sibling path should not be in swarm")
+	}
+	if sameOrChildPath("", "/work/ntm") {
+		t.Fatal("empty path should not be in swarm")
+	}
+}
+
+func TestCommandHasExecutable(t *testing.T) {
+	if !commandHasExecutable("/usr/local/bin/br ready --json", "br") {
+		t.Fatal("br executable was not recognized")
+	}
+	if commandHasExecutable("echo br", "br") {
+		t.Fatal("argument must not be treated as the executable")
+	}
+}
+
+func TestTerminateContentionHolderGuards(t *testing.T) {
+	holders := []ContentionHolder{{PID: 123, InSwarm: true}}
+	if err := terminateContentionHolder(t.Context(), holders, contentionCommandOptions{terminatePID: 123}); err == nil || !strings.Contains(err.Error(), "--confirm") {
+		t.Fatalf("missing confirmation error = %v", err)
+	}
+	if err := terminateContentionHolder(t.Context(), holders, contentionCommandOptions{terminatePID: 123, confirm: true}); err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("in-swarm refusal error = %v", err)
+	}
+	if err := terminateContentionHolder(t.Context(), holders, contentionCommandOptions{terminatePID: 999, confirm: true}); err == nil || !strings.Contains(err.Error(), "not a detected") {
+		t.Fatalf("unknown PID error = %v", err)
+	}
+}

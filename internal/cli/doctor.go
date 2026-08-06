@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/invariants"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
+	processutil "github.com/shirou/gopsutil/v4/process"
 )
 
 var (
@@ -43,8 +45,206 @@ This command helps diagnose issues before spawning sessions.`,
 	}
 
 	cmd.Flags().BoolVarP(&doctorVerbose, "verbose", "v", false, "Show detailed output")
+	cmd.AddCommand(newDoctorContentionCmd())
 
 	return cmd
+}
+
+type contentionCommandOptions struct {
+	terminatePID int
+	confirm      bool
+	force        bool
+}
+
+// ContentionHolder identifies a process using a resource that commonly blocks
+// multi-agent work. Metadata is gathered through gopsutil so cwd and age have
+// the same meaning on macOS and Linux.
+type ContentionHolder struct {
+	PID      int    `json:"pid"`
+	CWD      string `json:"cwd,omitempty"`
+	Command  string `json:"command"`
+	Resource string `json:"resource"`
+	Age      string `json:"age"`
+	InSwarm  bool   `json:"in_swarm"`
+}
+
+func newDoctorContentionCmd() *cobra.Command {
+	opts := contentionCommandOptions{}
+	cmd := &cobra.Command{
+		Use:   "contention",
+		Short: "Find processes holding shared build and Beads resources",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+			defer cancel()
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get working directory: %w", err)
+			}
+			holders, err := findContentionHolders(ctx, cwd)
+			if err != nil {
+				return err
+			}
+			if opts.terminatePID > 0 {
+				if err := terminateContentionHolder(ctx, holders, opts); err != nil {
+					return err
+				}
+			}
+			if IsJSONOutput() {
+				return json.NewEncoder(os.Stdout).Encode(struct {
+					Holders []ContentionHolder `json:"holders"`
+				}{Holders: holders})
+			}
+			if len(holders) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No shared-resource contention detected.")
+				return nil
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "PID\tAGE\tRESOURCE\tIN_SWARM\tCWD\tCOMMAND")
+			for _, holder := range holders {
+				fmt.Fprintf(cmd.OutOrStdout(), "%d\t%s\t%s\t%t\t%s\t%s\n", holder.PID, holder.Age, holder.Resource, holder.InSwarm, holder.CWD, holder.Command)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&opts.terminatePID, "terminate-pid", 0, "Send SIGTERM to a listed PID (requires --confirm)")
+	cmd.Flags().BoolVar(&opts.confirm, "confirm", false, "Confirm termination of --terminate-pid")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "Allow termination of an in-swarm PID (requires --confirm)")
+	return cmd
+}
+
+type contentionProcess struct {
+	pid       int
+	cwd       string
+	command   string
+	age       time.Duration
+	status    string
+	openFiles []string
+}
+
+func findContentionHolders(ctx context.Context, swarmCWD string) ([]ContentionHolder, error) {
+	processes, err := processutil.ProcessesWithContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list processes: %w", err)
+	}
+	now := time.Now()
+	holders := make([]ContentionHolder, 0)
+	for _, proc := range processes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		command, err := proc.CmdlineWithContext(ctx)
+		if err != nil || strings.TrimSpace(command) == "" {
+			continue
+		}
+		cwd, _ := proc.CwdWithContext(ctx)
+		createdMS, _ := proc.CreateTimeWithContext(ctx)
+		age := time.Duration(0)
+		if createdMS > 0 {
+			age = now.Sub(time.UnixMilli(createdMS))
+			if age < 0 {
+				age = 0
+			}
+		}
+		statuses, _ := proc.StatusWithContext(ctx)
+		openFiles := contentionOpenFiles(ctx, proc)
+		for _, resource := range classifyContentionProcess(contentionProcess{
+			pid: int(proc.Pid), cwd: cwd, command: command, age: age, status: strings.Join(statuses, ","), openFiles: openFiles,
+		}) {
+			holders = append(holders, ContentionHolder{
+				PID: int(proc.Pid), CWD: cwd, Command: command, Resource: resource,
+				Age: age.Round(time.Second).String(), InSwarm: sameOrChildPath(cwd, swarmCWD),
+			})
+		}
+	}
+	sort.Slice(holders, func(i, j int) bool {
+		if holders[i].PID != holders[j].PID {
+			return holders[i].PID < holders[j].PID
+		}
+		return holders[i].Resource < holders[j].Resource
+	})
+	return holders, nil
+}
+
+func contentionOpenFiles(ctx context.Context, proc *processutil.Process) []string {
+	files, err := proc.OpenFilesWithContext(ctx)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	return paths
+}
+
+func classifyContentionProcess(proc contentionProcess) []string {
+	command := strings.ToLower(proc.command)
+	resources := make([]string, 0, 3)
+	hasBeadsDB := false
+	for _, path := range proc.openFiles {
+		path = filepath.ToSlash(strings.ToLower(path))
+		if strings.HasSuffix(path, "/.beads/beads.db") || strings.HasSuffix(path, "/.beads/beads.db-wal") || strings.HasSuffix(path, "/.beads/beads.db-shm") {
+			resources = append(resources, "beads_db")
+			hasBeadsDB = true
+			break
+		}
+	}
+	if !hasBeadsDB && (commandHasExecutable(command, "br") || commandHasExecutable(command, "bd")) {
+		resources = append(resources, "beads_db")
+	}
+	if commandHasExecutable(command, "cargo") {
+		resources = append(resources, "cargo_registry")
+	}
+	if strings.Contains(command, "rsync") {
+		resources = append(resources, "rsync")
+	}
+	if strings.EqualFold(strings.TrimSpace(proc.status), "d") {
+		resources = append(resources, "uninterruptible_io")
+	}
+	return resources
+}
+
+func commandHasExecutable(command, executable string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && filepath.Base(fields[0]) == executable
+}
+
+func sameOrChildPath(candidate, root string) bool {
+	if candidate == "" || root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func terminateContentionHolder(ctx context.Context, holders []ContentionHolder, opts contentionCommandOptions) error {
+	if opts.terminatePID <= 0 {
+		return nil
+	}
+	if !opts.confirm {
+		return errors.New("refusing termination without --confirm")
+	}
+	var target *ContentionHolder
+	for i := range holders {
+		if holders[i].PID == opts.terminatePID {
+			target = &holders[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("PID %d is not a detected contention holder", opts.terminatePID)
+	}
+	if target.InSwarm && !opts.force {
+		return fmt.Errorf("refusing to terminate in-swarm PID %d without --force", opts.terminatePID)
+	}
+	proc, err := processutil.NewProcess(int32(opts.terminatePID))
+	if err != nil {
+		return fmt.Errorf("open PID %d: %w", opts.terminatePID, err)
+	}
+	if err := proc.TerminateWithContext(ctx); err != nil {
+		return fmt.Errorf("terminate PID %d: %w", opts.terminatePID, err)
+	}
+	return nil
 }
 
 // DoctorReport contains the full health check report
