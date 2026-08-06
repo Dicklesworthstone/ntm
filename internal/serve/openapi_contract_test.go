@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 )
 
 // TestOpenAPISpecDeterminism verifies that spec generation produces identical output
@@ -334,6 +336,29 @@ func TestOpenAPISpecMatchesKernelCommands(t *testing.T) {
 
 // TestOpenAPISpecSchemaReferences verifies all schema $refs point to valid schemas.
 func TestOpenAPISpecSchemaReferences(t *testing.T) {
+	// This command mirrors production kernel metadata: Ref identifies a Go
+	// type, while Name is the OpenAPI component name. The generator previously
+	// emitted the reference but never registered that component.
+	if err := kernel.Register(kernel.Command{
+		Name:        "serve.openapi.schema_reference_contract",
+		Description: "Exercise OpenAPI schema reference registration",
+		Category:    "testing",
+		Input: &kernel.SchemaRef{
+			Name:        "SchemaReferenceContractInput",
+			Ref:         "serve.SchemaReferenceContractInput",
+			Description: "Input used to verify generated OpenAPI schema references",
+		},
+		Output: &kernel.SchemaRef{
+			Name:        "SchemaReferenceContractOutput",
+			Ref:         "serve.SchemaReferenceContractOutput",
+			Description: "Output used to verify generated OpenAPI schema references",
+		},
+		REST:     &kernel.RESTBinding{Method: "POST", Path: "/schema-reference-contract"},
+		Examples: []kernel.Example{{Name: "contract", Description: "Schema reference contract"}},
+	}); err != nil {
+		t.Fatalf("register schema reference contract command: %v", err)
+	}
+
 	spec := GenerateOpenAPISpec("1.0.0", "http://localhost:8080")
 
 	// Collect all valid schema names
@@ -342,7 +367,9 @@ func TestOpenAPISpecSchemaReferences(t *testing.T) {
 		validSchemas["#/components/schemas/"+name] = true
 	}
 
-	// Check all $ref in responses
+	// Check all $ref in responses and request bodies. An OpenAPI document with
+	// an unresolved component reference cannot be validated or used to generate
+	// a client, even if its paths and operation metadata look complete.
 	for path, item := range spec.Paths {
 		checkOperation := func(method string, op *Operation) {
 			if op == nil {
@@ -351,13 +378,18 @@ func TestOpenAPISpecSchemaReferences(t *testing.T) {
 			for code, resp := range op.Responses {
 				for _, media := range resp.Content {
 					if media.Schema != nil && media.Schema.Ref != "" {
-						// Note: We allow refs to schemas that don't exist yet
-						// (they may be generated dynamically or come from kernel types)
-						// Just log them for visibility
 						if !validSchemas[media.Schema.Ref] {
-							t.Logf("%s %s response %s references undefined schema: %s",
+							t.Errorf("%s %s response %s references undefined schema: %s",
 								method, path, code, media.Schema.Ref)
 						}
+					}
+				}
+			}
+			if op.RequestBody != nil {
+				for _, media := range op.RequestBody.Content {
+					if media.Schema != nil && media.Schema.Ref != "" && !validSchemas[media.Schema.Ref] {
+						t.Errorf("%s %s request body references undefined schema: %s",
+							method, path, media.Schema.Ref)
 					}
 				}
 			}

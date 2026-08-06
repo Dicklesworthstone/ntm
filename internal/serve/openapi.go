@@ -192,6 +192,9 @@ func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 		// Extract path parameters
 		params := extractPathParams(path)
 
+		responseSchema := buildResponseSchema(cmd)
+		ensureReferencedSchema(spec.Components, responseSchema, cmd.Output)
+
 		// Create operation
 		op := &Operation{
 			Summary:     cmd.Description,
@@ -203,7 +206,7 @@ func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 					Description: "Successful operation",
 					Content: map[string]MediaType{
 						"application/json": {
-							Schema: buildResponseSchema(cmd),
+							Schema: responseSchema,
 						},
 					},
 				},
@@ -242,11 +245,13 @@ func GenerateOpenAPISpec(version, serverURL string) *OpenAPISpec {
 
 		// Add request body for non-GET methods
 		if cmd.Input != nil && cmd.REST.Method != "GET" {
+			inputSchema := buildInputSchema(cmd)
+			ensureReferencedSchema(spec.Components, inputSchema, cmd.Input)
 			op.RequestBody = &RequestBody{
 				Required: true,
 				Content: map[string]MediaType{
 					"application/json": {
-						Schema: buildInputSchema(cmd),
+						Schema: inputSchema,
 					},
 				},
 			}
@@ -379,6 +384,44 @@ func buildInputSchema(cmd kernel.Command) *Schema {
 	}
 	return &Schema{
 		Type:                 "object",
+		AdditionalProperties: true,
+	}
+}
+
+// ensureReferencedSchema makes every schema reference emitted by the kernel
+// registry resolvable in the generated document. Kernel SchemaRef.Ref names a
+// Go or JSON-schema type but does not carry a reflection value or a JSON Schema
+// definition, so the OpenAPI generator cannot faithfully expand its fields.
+// A generic object is still an honest, valid contract: clients know the body
+// or response is an object and the document never points at a schema that does
+// not exist. Concrete schema registration can replace this placeholder later.
+func ensureReferencedSchema(components *OpenAPIComponents, schema *Schema, source *kernel.SchemaRef) {
+	if components == nil || schema == nil || schema.Ref == "" {
+		return
+	}
+
+	const prefix = "#/components/schemas/"
+	if !strings.HasPrefix(schema.Ref, prefix) {
+		return
+	}
+	name := strings.TrimPrefix(schema.Ref, prefix)
+	if name == "" {
+		return
+	}
+	if components.Schemas == nil {
+		components.Schemas = make(map[string]*Schema)
+	}
+	if _, exists := components.Schemas[name]; exists {
+		return
+	}
+
+	description := "Generic object schema declared by the kernel command registry."
+	if source != nil && strings.TrimSpace(source.Description) != "" {
+		description = source.Description
+	}
+	components.Schemas[name] = &Schema{
+		Type:                 "object",
+		Description:          description,
 		AdditionalProperties: true,
 	}
 }
