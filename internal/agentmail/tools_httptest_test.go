@@ -1145,6 +1145,20 @@ func TestCheckConflicts(t *testing.T) {
 	}
 }
 
+func TestReservationPatternsOverlapKeepsQualifiedWildcardsWithinOneDirectory(t *testing.T) {
+	t.Parallel()
+
+	if reservationPatternsOverlap("internal/cli/subdir/file.go", "internal/cli/*.go") {
+		t.Fatal("qualified wildcard matched a file in a nested directory")
+	}
+	if !reservationPatternsOverlap("internal/cli/file.go", "internal/cli/*.go") {
+		t.Fatal("qualified wildcard did not match a file in its directory")
+	}
+	if !reservationPatternsOverlap("internal/cli/subdir/file.go", "*.go") {
+		t.Fatal("basename wildcard did not match a nested Go file")
+	}
+}
+
 func TestForceReleaseReservation(t *testing.T) {
 	t.Parallel()
 

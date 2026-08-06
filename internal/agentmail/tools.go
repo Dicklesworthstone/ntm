@@ -1268,6 +1268,13 @@ func matchesReservationPattern(path, pattern string) bool {
 		if err == nil && matched {
 			return true
 		}
+		// path.Match keeps '*' within one path segment. The fallback is only
+		// for basename globs (for example, "*.go") that deliberately apply
+		// anywhere in the repository; applying it to a qualified pattern
+		// would allow '*' to cross a directory boundary.
+		if strings.Contains(pattern, "/") {
+			return false
+		}
 		return matchesReservationWildcardPattern(path, pattern)
 	}
 
