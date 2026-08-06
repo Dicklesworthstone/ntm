@@ -1450,6 +1450,9 @@ func (r *AccountRotator) switchNext(ctx context.Context, provider string) (tools
 	if result.NewAccount == "" {
 		return result, stdout, stderr, fmt.Errorf("parse caam activate output: missing profile")
 	}
+	if result.PreviousAccount == "" {
+		return result, stdout, stderr, fmt.Errorf("parse caam activate output: missing previous_profile")
+	}
 
 	return result, stdout, stderr, nil
 }

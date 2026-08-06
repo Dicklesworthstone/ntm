@@ -743,12 +743,12 @@ func TestAccountRotatorSwitchAccountRejectsIncompleteActivateResponse(t *testing
 	}
 
 	path := filepath.Join(t.TempDir(), "caam")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '{\"success\":true}'\n"), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '{\"success\":true,\"profile\":\"new-account\"}'\n"), 0o755); err != nil {
 		t.Fatalf("write fake caam: %v", err)
 	}
 
 	_, err := NewAccountRotator().WithCaamPath(path).SwitchAccount("cc")
-	if err == nil || !strings.Contains(err.Error(), "missing profile") {
+	if err == nil || !strings.Contains(err.Error(), "missing previous_profile") {
 		t.Fatalf("SwitchAccount() error = %v, want incomplete activate response rejection", err)
 	}
 }
