@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"text/template"
+	"text/template/parse"
 )
 
 // AgentTemplateVars contains variables available for agent command templates
@@ -190,14 +192,85 @@ var templateFuncs = template.FuncMap{
 	"memLimitPrefix": memLimitPrefix,
 }
 
-func templateReferencesModel(tmpl string) bool {
-	return strings.Contains(tmpl, ".Model") || strings.Contains(tmpl, ".ModelAlias")
+// templateReferencesAnyField reports whether a parsed template reads one of
+// the named AgentTemplateVars fields. It deliberately inspects the executable
+// template AST instead of searching the source text: a field name in a comment
+// or quoted literal does not carry a requested model or effort into the launch
+// command and must not satisfy the silent-drop guard.
+func templateReferencesAnyField(tmpl *template.Template, fields ...string) bool {
+	if tmpl == nil {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		wanted[field] = struct{}{}
+	}
+	for _, defined := range tmpl.Templates() {
+		if defined.Tree != nil && parseNodeReferencesAnyField(defined.Tree.Root, wanted) {
+			return true
+		}
+	}
+	return false
 }
 
-// templateReferencesReasoningEffort reports whether a command template can
-// actually render a reasoning-effort override.
-func templateReferencesReasoningEffort(tmpl string) bool {
-	return strings.Contains(tmpl, ".ReasoningEffort")
+func parseNodeReferencesAnyField(node parse.Node, wanted map[string]struct{}) bool {
+	if node == nil || (reflect.ValueOf(node).Kind() == reflect.Ptr && reflect.ValueOf(node).IsNil()) {
+		return false
+	}
+	switch n := node.(type) {
+	case *parse.ListNode:
+		for _, child := range n.Nodes {
+			if parseNodeReferencesAnyField(child, wanted) {
+				return true
+			}
+		}
+	case *parse.ActionNode:
+		return parsePipeReferencesAnyField(n.Pipe, wanted)
+	case *parse.IfNode:
+		return parsePipeReferencesAnyField(n.Pipe, wanted) ||
+			parseNodeReferencesAnyField(n.List, wanted) ||
+			parseNodeReferencesAnyField(n.ElseList, wanted)
+	case *parse.RangeNode:
+		return parsePipeReferencesAnyField(n.Pipe, wanted) ||
+			parseNodeReferencesAnyField(n.List, wanted) ||
+			parseNodeReferencesAnyField(n.ElseList, wanted)
+	case *parse.WithNode:
+		return parsePipeReferencesAnyField(n.Pipe, wanted) ||
+			parseNodeReferencesAnyField(n.List, wanted) ||
+			parseNodeReferencesAnyField(n.ElseList, wanted)
+	case *parse.TemplateNode:
+		return parsePipeReferencesAnyField(n.Pipe, wanted)
+	}
+	return false
+}
+
+func parsePipeReferencesAnyField(pipe *parse.PipeNode, wanted map[string]struct{}) bool {
+	if pipe == nil {
+		return false
+	}
+	for _, command := range pipe.Cmds {
+		for _, arg := range command.Args {
+			if parseArgumentReferencesAnyField(arg, wanted) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parseArgumentReferencesAnyField(node parse.Node, wanted map[string]struct{}) bool {
+	switch value := node.(type) {
+	case *parse.FieldNode:
+		if len(value.Ident) > 0 {
+			_, ok := wanted[value.Ident[0]]
+			return ok
+		}
+	case *parse.ChainNode:
+		return parseArgumentReferencesAnyField(value.Node, wanted)
+	case *parse.PipeNode:
+		return parsePipeReferencesAnyField(value, wanted)
+	}
+	return false
 }
 
 // agentTypeConsumesReasoningEffort reports whether a reasoning-effort override
@@ -226,19 +299,43 @@ func agentTypeConsumesReasoningEffort(agentType string) bool {
 // silently drop an explicitly requested model selection.
 // Returns an error if template parsing or execution fails.
 func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
-	if vars.ModelRequested && !templateReferencesModel(tmpl) {
+	// Fast path: if no template syntax, return as-is unless an explicit model or
+	// effort override would be silently dropped.
+	if !strings.Contains(tmpl, "{{") {
+		if !vars.ModelRequested && (strings.TrimSpace(vars.ReasoningEffort) == "" || !agentTypeConsumesReasoningEffort(vars.AgentType)) {
+			return tmpl, nil
+		}
+		if vars.ModelRequested {
+			requestedModel := vars.Model
+			if requestedModel == "" {
+				requestedModel = vars.ModelAlias
+			}
+			if requestedModel == "" {
+				requestedModel = "<requested>"
+			}
+			return "", fmt.Errorf(
+				"model override %q was specified but agent command has no template syntax (no {{.Model}} or {{.ModelAlias}} placeholder); "+
+					"the model would be silently ignored. Convert the command to template format or remove the model override. "+
+					"Command: %s", requestedModel, tmpl)
+		}
+		return "", fmt.Errorf(
+			"reasoning effort %q was specified but agent command has no template syntax (no {{.ReasoningEffort}} placeholder); "+
+				"the effort would be silently ignored. Convert the command to template format or remove the effort override. "+
+				"Command: %s", vars.ReasoningEffort, tmpl)
+	}
+
+	t, err := template.New("agent").Funcs(templateFuncs).Parse(tmpl)
+	if err != nil {
+		return "", err
+	}
+
+	if vars.ModelRequested && !templateReferencesAnyField(t, "Model", "ModelAlias") {
 		requestedModel := vars.Model
 		if requestedModel == "" {
 			requestedModel = vars.ModelAlias
 		}
 		if requestedModel == "" {
 			requestedModel = "<requested>"
-		}
-		if !strings.Contains(tmpl, "{{") {
-			return "", fmt.Errorf(
-				"model override %q was specified but agent command has no template syntax (no {{.Model}} or {{.ModelAlias}} placeholder); "+
-					"the model would be silently ignored. Convert the command to template format or remove the model override. "+
-					"Command: %s", requestedModel, tmpl)
 		}
 		return "", fmt.Errorf(
 			"model override %q was specified but agent command template does not reference .Model or .ModelAlias; "+
@@ -253,27 +350,11 @@ func GenerateAgentCommand(tmpl string, vars AgentTemplateVars) (string, error) {
 	// with nothing to notice (bd-ywwam).
 	if strings.TrimSpace(vars.ReasoningEffort) != "" &&
 		agentTypeConsumesReasoningEffort(vars.AgentType) &&
-		!templateReferencesReasoningEffort(tmpl) {
-		if !strings.Contains(tmpl, "{{") {
-			return "", fmt.Errorf(
-				"reasoning effort %q was specified but agent command has no template syntax (no {{.ReasoningEffort}} placeholder); "+
-					"the effort would be silently ignored. Convert the command to template format or remove the effort override. "+
-					"Command: %s", vars.ReasoningEffort, tmpl)
-		}
+		!templateReferencesAnyField(t, "ReasoningEffort") {
 		return "", fmt.Errorf(
 			"reasoning effort %q was specified but agent command template does not reference .ReasoningEffort; "+
 				"the effort would be silently ignored. Update the template or remove the effort override. "+
 				"Command: %s", vars.ReasoningEffort, tmpl)
-	}
-
-	// Fast path: if no template syntax, return as-is (legacy mode)
-	if !strings.Contains(tmpl, "{{") {
-		return tmpl, nil
-	}
-
-	t, err := template.New("agent").Funcs(templateFuncs).Parse(tmpl)
-	if err != nil {
-		return "", err
 	}
 
 	var buf bytes.Buffer

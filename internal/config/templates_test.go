@@ -91,6 +91,34 @@ func TestGenerateAgentCommand_TemplateModelOverrideGuard(t *testing.T) {
 	}
 }
 
+func TestGenerateAgentCommand_TemplateGuardsIgnoreNonRenderingFieldMentions(t *testing.T) {
+	t.Run("model name in a template comment does not satisfy the model guard", func(t *testing.T) {
+		_, err := GenerateAgentCommand(`agent {{/* .Model */}} --safe`, AgentTemplateVars{
+			Model:          "gpt-5.6",
+			ModelRequested: true,
+		})
+		if err == nil {
+			t.Fatal("comment-only .Model reference was accepted; the requested model would be silently dropped")
+		}
+		if !strings.Contains(err.Error(), "does not reference .Model") {
+			t.Fatalf("error = %v, want missing-model-placeholder error", err)
+		}
+	})
+
+	t.Run("effort name in a quoted literal does not satisfy the effort guard", func(t *testing.T) {
+		_, err := GenerateAgentCommand(`codex {{if true}}-c note='.ReasoningEffort'{{end}}`, AgentTemplateVars{
+			AgentType:       "cod",
+			ReasoningEffort: "high",
+		})
+		if err == nil {
+			t.Fatal("literal-only .ReasoningEffort reference was accepted; the requested effort would be silently dropped")
+		}
+		if !strings.Contains(err.Error(), "does not reference .ReasoningEffort") {
+			t.Fatalf("error = %v, want missing-effort-placeholder error", err)
+		}
+	})
+}
+
 func TestGenerateAgentCommand_DefaultModelDoesNotTriggerLegacyGuard(t *testing.T) {
 	got, err := GenerateAgentCommand("claude --dangerously-skip-permissions", AgentTemplateVars{
 		Model: "claude-opus-4-8",
