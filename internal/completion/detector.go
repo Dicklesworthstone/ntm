@@ -3,6 +3,7 @@ package completion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -898,10 +899,23 @@ func checkBeadClosedOnce(ctx context.Context, beadID string) (bool, error) {
 		return false, err
 	}
 
-	// Check for closed status in JSON output
-	outputStr := string(output)
-	return strings.Contains(outputStr, `"status":"closed"`) ||
-		strings.Contains(outputStr, `"status": "closed"`), nil
+	// `br show --json` includes related records such as dependents, each with
+	// its own status. Searching the whole JSON text made an open assignment look
+	// complete whenever any dependent was closed. Decode the returned records
+	// and inspect only the requested bead's top-level record.
+	var records []struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(output, &records); err != nil {
+		return false, fmt.Errorf("decode br show response for %q: %w", beadID, err)
+	}
+	for _, record := range records {
+		if record.ID == beadID {
+			return record.Status == "closed", nil
+		}
+	}
+	return false, fmt.Errorf("br show response did not contain requested bead %q", beadID)
 }
 
 func waitForRetry(ctx context.Context, interval time.Duration) error {

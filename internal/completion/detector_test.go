@@ -1610,7 +1610,7 @@ func TestCheckBeadClosedRetriesTransientCommandFailures(t *testing.T) {
 		"  printf '%s\\n' 'temporary br failure' >&2\n"+
 		"  exit 1\n"+
 		"fi\n"+
-		"printf '%s' '{\"status\":\"closed\"}'\n")
+		"printf '%s' '[{\"id\":\"bd-retry\",\"status\":\"closed\"}]'\n")
 	attemptFile := dir + "/attempts"
 	t.Setenv("FAKE_BR_ATTEMPT_FILE", attemptFile)
 
@@ -1632,6 +1632,19 @@ func TestCheckBeadClosedRetriesTransientCommandFailures(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(attempts)); got != "3" {
 		t.Fatalf("br invocations = %s, want 3 (initial attempt plus two retries)", got)
+	}
+}
+
+func TestCheckBeadClosedIgnoresClosedDependents(t *testing.T) {
+	installFakeBrScript(t, "#!/bin/sh\n"+
+		"printf '%s' '[{\"id\":\"bd-open\",\"status\":\"open\",\"dependents\":[{\"id\":\"bd-child\",\"status\":\"closed\"}]}]'\n")
+
+	closed, err := checkBeadClosedOnce(t.Context(), "bd-open")
+	if err != nil {
+		t.Fatalf("checkBeadClosedOnce: %v", err)
+	}
+	if closed {
+		t.Fatal("open bead with a closed dependent was incorrectly reported closed")
 	}
 }
 

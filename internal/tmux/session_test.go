@@ -910,7 +910,7 @@ func TestGetPanes(t *testing.T) {
 	}
 }
 
-func TestGetPanesRejectsTitleContainingFieldSeparator(t *testing.T) {
+func TestSetPaneTitleRejectsValuesThatCorruptPaneDiscovery(t *testing.T) {
 	skipIfNoTmux(t)
 
 	session := createTestSession(t)
@@ -922,11 +922,17 @@ func TestGetPanesRejectsTitleContainingFieldSeparator(t *testing.T) {
 		t.Fatal("GetPanes returned no panes")
 	}
 
-	if err := SetPaneTitle(panes[0].ID, "title"+FieldSeparator+"collision"); err != nil {
-		t.Fatalf("SetPaneTitle: %v", err)
-	}
-	if _, err := GetPanes(session); err == nil {
-		t.Fatal("GetPanes accepted a title that corrupts its delimited tmux output")
+	for _, title := range []string{
+		"title" + FieldSeparator + "collision",
+		"title\ncollision",
+		"title\rcollision",
+	} {
+		if err := SetPaneTitle(panes[0].ID, title); err == nil {
+			t.Fatalf("SetPaneTitle(%q) accepted a title that corrupts delimited tmux output", title)
+		}
+		if _, err := GetPanes(session); err != nil {
+			t.Fatalf("GetPanes failed after rejecting title %q: %v", title, err)
+		}
 	}
 }
 

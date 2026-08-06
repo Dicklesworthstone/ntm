@@ -1306,6 +1306,14 @@ func (c *Client) SetPaneTitleContext(ctx context.Context, paneID, title string) 
 	if ctx == nil {
 		return errors.New("tmux pane title context is required")
 	}
+	if strings.Contains(title, FieldSeparator) {
+		return fmt.Errorf("pane title contains reserved field separator %q", FieldSeparator)
+	}
+	for _, r := range title {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("pane title contains disallowed control character 0x%02x", r)
+		}
+	}
 	selectErr := c.RunSilentContext(ctx, "select-pane", "-t", paneID, "-T", title)
 	if selectErr != nil && ClassifyCommandError(selectErr).Kind == CommandErrorPaneNotFound {
 		// On busy tmux servers, newly-created panes can transiently fail to resolve by ID.
