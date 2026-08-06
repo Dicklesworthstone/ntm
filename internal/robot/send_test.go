@@ -77,6 +77,77 @@ func TestSendOutputSchemaStability(t *testing.T) {
 	}
 }
 
+func TestVerifySendRenderEvidenceDistinguishesRenderedUnchangedAndUnavailable(t *testing.T) {
+	panes := []tmux.Pane{{ID: "%1"}, {ID: "%2"}, {ID: "%3"}}
+	keys := []string{"0", "1", "2"}
+	baselines := map[string]sendRenderBaseline{
+		"0": {output: "before"},
+		"1": {output: "same"},
+		"2": {err: errors.New("pane no longer exists")},
+	}
+	postCapture := func(pane tmux.Pane) (string, error) {
+		switch pane.ID {
+		case "%1":
+			return "after", nil
+		case "%2":
+			return "same", nil
+		default:
+			return "", errors.New("capture failed")
+		}
+	}
+
+	evidence := verifySendRenderEvidenceWith(panes, keys, []string{"0", "1", "2"}, baselines, postCapture)
+	if len(evidence) != 3 {
+		t.Fatalf("evidence length = %d, want 3", len(evidence))
+	}
+	if !evidence[0].DeliveredAndRendered || !evidence[0].RenderChanged {
+		t.Fatalf("rendered evidence = %+v, want delivered and changed", evidence[0])
+	}
+	if evidence[1].DeliveredAndRendered || evidence[1].RenderChanged {
+		t.Fatalf("unchanged evidence = %+v, must not be treated as rendered", evidence[1])
+	}
+	if evidence[2].DeliveredAndRendered || evidence[2].CaptureError == "" || evidence[2].BaselineAvailable || evidence[2].RenderAvailable {
+		t.Fatalf("unavailable evidence = %+v, must expose failed capture", evidence[2])
+	}
+	if sendRenderEvidenceComplete(evidence) {
+		t.Fatal("mixed evidence must not count as complete")
+	}
+}
+
+func TestSendOutputRenderEvidenceJSON(t *testing.T) {
+	output := SendOutput{
+		RobotResponse: NewRobotResponse(false),
+		Session:       "test-session",
+		SentAt:        time.Now().UTC(),
+		Targets:       []string{"0"},
+		Successful:    []string{"0"},
+		Failed:        []SendError{},
+		Warnings:      []string{},
+		RenderEvidence: []SendRenderEvidence{{
+			Pane:                 "0",
+			Delivered:            true,
+			DeliveredAndRendered: false,
+			BaselineAvailable:    true,
+			RenderAvailable:      false,
+			CaptureError:         "post-send capture unavailable: pane exited",
+		}},
+	}
+
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal SendOutput: %v", err)
+	}
+	var decoded struct {
+		RenderEvidence []SendRenderEvidence `json:"render_evidence"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal SendOutput: %v", err)
+	}
+	if len(decoded.RenderEvidence) != 1 || decoded.RenderEvidence[0].DeliveredAndRendered || decoded.RenderEvidence[0].CaptureError == "" {
+		t.Fatalf("render evidence = %+v, want unavailable non-success evidence", decoded.RenderEvidence)
+	}
+}
+
 // TestSendOutputDeterministicOrdering ensures consistent field ordering
 func TestSendOutputDeterministicOrdering(t *testing.T) {
 	output := SendOutput{

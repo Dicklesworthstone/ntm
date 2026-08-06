@@ -6085,6 +6085,7 @@ func TestRobotProcessErrorContract(t *testing.T) {
 		{name: "invalid panes", args: []string{"--robot-rano-stats", "--panes=not-a-pane"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "robot send empty singular pane", args: []string{"--robot-send=proj", "--msg=work", "--pane="}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "robot send singular and plural panes", args: []string{"--robot-send=proj", "--msg=work", "--pane=1", "--panes=2"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
+		{name: "robot send malformed verify render", args: []string{"--robot-send=proj", "--msg=work", "--verify-render=not-a-bool"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "missing session", args: []string{"--robot-agent-names=ntm-robot-contract-missing-session"}, errorCode: robot.ErrCodeSessionNotFound, expectedExit: 1},
 		{name: "unknown docs topic", args: []string{"--robot-docs=not-a-topic"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},
 		{name: "unknown docs topic forces json from toon", args: []string{"--robot-docs=not-a-topic", "--robot-format=toon"}, errorCode: robot.ErrCodeInvalidFlag, expectedExit: 1},

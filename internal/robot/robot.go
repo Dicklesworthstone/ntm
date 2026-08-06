@@ -6118,20 +6118,34 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 
 // SendOutput is the structured output for --robot-send
 type SendOutput struct {
-	RobotResponse                     // Embed standard response fields (success, timestamp, error)
-	Session        string             `json:"session"`
-	SentAt         time.Time          `json:"sent_at"`
-	Blocked        bool               `json:"blocked"`
-	Redaction      RedactionSummary   `json:"redaction"`
-	Warnings       []string           `json:"warnings"`
-	Targets        []string           `json:"targets"`
-	Successful     []string           `json:"successful"`
-	Failed         []SendError        `json:"failed"`
-	MessagePreview string             `json:"message_preview"`
-	DryRun         bool               `json:"dry_run,omitempty"`
-	WouldSendTo    []string           `json:"would_send_to,omitempty"`
-	CASSInjection  *CASSInjectionInfo `json:"cass_injection,omitempty"`
-	AgentHints     *SendAgentHints    `json:"_agent_hints,omitempty"`
+	RobotResponse                       // Embed standard response fields (success, timestamp, error)
+	Session        string               `json:"session"`
+	SentAt         time.Time            `json:"sent_at"`
+	Blocked        bool                 `json:"blocked"`
+	Redaction      RedactionSummary     `json:"redaction"`
+	Warnings       []string             `json:"warnings"`
+	Targets        []string             `json:"targets"`
+	Successful     []string             `json:"successful"`
+	Failed         []SendError          `json:"failed"`
+	MessagePreview string               `json:"message_preview"`
+	DryRun         bool                 `json:"dry_run,omitempty"`
+	WouldSendTo    []string             `json:"would_send_to,omitempty"`
+	CASSInjection  *CASSInjectionInfo   `json:"cass_injection,omitempty"`
+	AgentHints     *SendAgentHints      `json:"_agent_hints,omitempty"`
+	RenderEvidence []SendRenderEvidence `json:"render_evidence,omitempty"`
+}
+
+// SendRenderEvidence records bounded before/after terminal observations for one
+// requested send. It deliberately excludes pane contents so verification does
+// not add a new prompt or scrollback disclosure surface.
+type SendRenderEvidence struct {
+	Pane                 string `json:"pane"`
+	Delivered            bool   `json:"delivered"`
+	DeliveredAndRendered bool   `json:"delivered_and_rendered"`
+	BaselineAvailable    bool   `json:"baseline_available"`
+	RenderAvailable      bool   `json:"render_available"`
+	RenderChanged        bool   `json:"render_changed"`
+	CaptureError         string `json:"capture_error,omitempty"`
 }
 
 // RedactionSummary is a safe-to-print summary of redaction findings.
@@ -6227,6 +6241,7 @@ type SendOptions struct {
 	DryRun         bool     // If true, show what would be sent without actually sending
 	ClearInput     bool     // Clear residual composer text (verified) before typing (ntm-5p0b)
 	Enter          *bool    // If set, override Enter behavior after paste
+	VerifyRender   bool     // Capture bounded before/after pane output and require rendered evidence
 	RequestID      string   // External request identifier for REST parity
 	CorrelationID  string   // Correlation identifier for tracing request/outcome/verification
 	IdempotencyKey string   // Idempotency key when provided by an upstream caller
@@ -7072,6 +7087,10 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		return finalizeTerminalSendActuation(trace, opts, &output), nil
 	}
 	output.Targets = append(output.Targets, targetKeys...)
+	var renderBaselines map[string]sendRenderBaseline
+	if opts.VerifyRender {
+		renderBaselines = captureSendRenderBaselines(targetPanes, targetKeys)
+	}
 
 	// Perform CASS injection if enabled
 	messageToSend := opts.Message
@@ -7193,15 +7212,101 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	publishSendActuationRequest(trace, opts, output.Targets, output.MessagePreview)
 	result, _ := service.Dispatch(context.Background(), prepared)
 	applyRobotDispatchResult(&output, result)
+	if opts.VerifyRender {
+		output.RenderEvidence = verifySendRenderEvidence(targetPanes, targetKeys, output.Successful, renderBaselines)
+	}
 
 	// Update success based on results without clobbering a typed preflight error.
 	finalizeRobotSendDispatchStatus(&output)
+	if opts.VerifyRender && !sendRenderEvidenceComplete(output.RenderEvidence) {
+		output.Success = false
+		if output.Error == "" {
+			output.Error = "send delivery was not confirmed by bounded rendered-output evidence"
+			output.ErrorCode = ErrCodeInternalError
+		}
+	}
 
 	// Generate agent hints
 	output.AgentHints = generateSendHints(output)
 	publishSendActuationOutcome(trace, opts, output)
 
 	return &output, nil
+}
+
+const sendRenderVerificationLines = 20
+
+type sendRenderBaseline struct {
+	output string
+	err    error
+}
+
+func captureSendRenderBaselines(panes []tmux.Pane, keys []string) map[string]sendRenderBaseline {
+	return captureSendRenderBaselinesWith(panes, keys, func(pane tmux.Pane) (string, error) {
+		return capturePaneFallback(pane, sendRenderVerificationLines)
+	})
+}
+
+func captureSendRenderBaselinesWith(panes []tmux.Pane, keys []string, capture func(tmux.Pane) (string, error)) map[string]sendRenderBaseline {
+	baselines := make(map[string]sendRenderBaseline, len(panes))
+	for i, pane := range panes {
+		if i >= len(keys) {
+			break
+		}
+		output, err := capture(pane)
+		baselines[keys[i]] = sendRenderBaseline{output: output, err: err}
+	}
+	return baselines
+}
+
+func verifySendRenderEvidence(panes []tmux.Pane, keys, successful []string, baselines map[string]sendRenderBaseline) []SendRenderEvidence {
+	return verifySendRenderEvidenceWith(panes, keys, successful, baselines, func(pane tmux.Pane) (string, error) {
+		return capturePaneFallback(pane, sendRenderVerificationLines)
+	})
+}
+
+func verifySendRenderEvidenceWith(panes []tmux.Pane, keys, successful []string, baselines map[string]sendRenderBaseline, capture func(tmux.Pane) (string, error)) []SendRenderEvidence {
+	successfulSet := make(map[string]struct{}, len(successful))
+	for _, key := range successful {
+		successfulSet[key] = struct{}{}
+	}
+	evidence := make([]SendRenderEvidence, 0, len(keys))
+	for i, pane := range panes {
+		if i >= len(keys) {
+			break
+		}
+		key := keys[i]
+		baseline := baselines[key]
+		entry := SendRenderEvidence{Pane: key, BaselineAvailable: baseline.err == nil}
+		_, entry.Delivered = successfulSet[key]
+		post, err := capture(pane)
+		if baseline.err != nil {
+			entry.CaptureError = "pre-send capture unavailable: " + baseline.err.Error()
+		}
+		if err != nil {
+			if entry.CaptureError != "" {
+				entry.CaptureError += "; "
+			}
+			entry.CaptureError += "post-send capture unavailable: " + err.Error()
+		} else {
+			entry.RenderAvailable = true
+			entry.RenderChanged = baseline.err == nil && baseline.output != post
+		}
+		entry.DeliveredAndRendered = entry.Delivered && entry.BaselineAvailable && entry.RenderAvailable && entry.RenderChanged
+		evidence = append(evidence, entry)
+	}
+	return evidence
+}
+
+func sendRenderEvidenceComplete(evidence []SendRenderEvidence) bool {
+	if len(evidence) == 0 {
+		return false
+	}
+	for _, entry := range evidence {
+		if !entry.DeliveredAndRendered {
+			return false
+		}
+	}
+	return true
 }
 
 // robotSendUsesDoubleEnter reports whether --robot-send should deliver via the
