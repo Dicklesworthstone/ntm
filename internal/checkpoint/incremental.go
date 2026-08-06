@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -628,18 +627,12 @@ func generateGitPatch(repoDir, fromCommit, toCommit string) (string, error) {
 		return "", nil
 	}
 
-	var cmd *exec.Cmd
-	if repoDir != "" {
-		cmd = exec.Command("git", "-C", repoDir, "diff", fromCommit+".."+toCommit)
-	} else {
-		cmd = exec.Command("git", "diff", fromCommit+".."+toCommit)
-	}
-	output, err := cmd.Output()
+	output, err := gitCommand(repoDir, "diff", fromCommit+".."+toCommit)
 	if err != nil {
 		return "", fmt.Errorf("generating git diff: %w", err)
 	}
 
-	return string(output), nil
+	return output, nil
 }
 
 // IncrementalResolver resolves an incremental checkpoint to a full checkpoint.
