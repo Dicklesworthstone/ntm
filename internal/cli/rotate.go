@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -419,6 +420,7 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 
 	// 4. Start all
 	fmt.Println("\nStep 3/3: Starting new sessions...")
+	var startErrs []error
 	for _, p := range limitedPanes {
 		fmt.Printf("  Starting %s...\n", p.Title)
 		ctx := auth.RestartContext{
@@ -433,7 +435,11 @@ func rotateAllLimited(ctx context.Context, session, targetAccount string, dryRun
 		}
 		if err := orchestrator.StartNewAgentSession(ctx); err != nil {
 			fmt.Printf("    Error starting: %v\n", err)
+			startErrs = append(startErrs, fmt.Errorf("start limited pane %d (%s): %w", p.Index, p.ID, err))
 		}
+	}
+	if len(startErrs) > 0 {
+		return fmt.Errorf("batch rotation failed to restart one or more panes: %w", errors.Join(startErrs...))
 	}
 
 	fmt.Println("\n✓ Batch rotation complete.")

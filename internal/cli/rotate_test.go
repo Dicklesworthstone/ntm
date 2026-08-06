@@ -28,6 +28,7 @@ func (f rotateTestQuotaFetcher) FetchQuota(context.Context, string, quota.Provid
 type rotateTestOrchestrator struct {
 	terminateErr error
 	waitErr      error
+	startErr     error
 	terminated   int
 	waited       int
 	started      int
@@ -45,7 +46,7 @@ func (o *rotateTestOrchestrator) WaitForShellPrompt(string, time.Duration) error
 
 func (o *rotateTestOrchestrator) StartNewAgentSession(auth.RestartContext) error {
 	o.started++
-	return nil
+	return o.startErr
 }
 
 func TestRotateCmdValidation(t *testing.T) {
@@ -329,5 +330,72 @@ func TestRotateAllLimitedStopsBeforePromptWhenShellIsNotReady(t *testing.T) {
 	}
 	if orch.terminated != 1 || orch.waited != 1 || orch.started != 0 {
 		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 1:1:0", orch.terminated, orch.waited, orch.started)
+	}
+}
+
+func TestRotateAllLimitedReportsRestartFailure(t *testing.T) {
+	isolateSessionAgentStorage(t)
+
+	previousGetPanes := rotateGetPanes
+	previousQuotaFetcher := newRotateQuotaFetcher
+	previousOrchestrator := newRotateOrchestrator
+	previousCfg := cfg
+	previousStdin := os.Stdin
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		rotateGetPanes = previousGetPanes
+		newRotateQuotaFetcher = previousQuotaFetcher
+		newRotateOrchestrator = previousOrchestrator
+		cfg = previousCfg
+		os.Stdin = previousStdin
+		if err := os.Chdir(previousDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	workspace := canonicalTempDir(t)
+	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatal(err)
+	}
+	cfg = &config.Config{ProjectsBase: canonicalTempDir(t)}
+
+	stdin, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = stdin
+	t.Cleanup(func() { _ = stdin.Close() })
+
+	restartErr := errors.New("relaunch failed")
+	rotateGetPanes = func(string) ([]tmux.Pane, error) {
+		return []tmux.Pane{
+			{ID: "%13", Index: 3, Title: "limited claude", Type: tmux.AgentClaude},
+			{ID: "%14", Index: 4, Title: "limited codex", Type: tmux.AgentCodex},
+		}, nil
+	}
+	newRotateQuotaFetcher = func() quota.Fetcher {
+		return rotateTestQuotaFetcher{info: &quota.QuotaInfo{IsLimited: true}}
+	}
+	orch := &rotateTestOrchestrator{startErr: restartErr}
+	newRotateOrchestrator = func(*config.Config) rotationOrchestrator { return orch }
+
+	err = rotateAllLimited(t.Context(), "proj", "backup@example.com", false, true)
+	if !errors.Is(err, restartErr) {
+		t.Fatalf("rotateAllLimited() error = %v, want wrapped %v", err, restartErr)
+	}
+	if orch.terminated != 2 || orch.waited != 2 || orch.started != 2 {
+		t.Fatalf("orchestrator calls = terminate:%d wait:%d start:%d, want 2:2:2", orch.terminated, orch.waited, orch.started)
 	}
 }
