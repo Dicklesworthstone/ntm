@@ -223,7 +223,11 @@ func TestAddThreadsReasoningEffort(t *testing.T) {
 		t.Errorf("add render dropped reasoning effort: got %q, want it to contain %q", withEffort, "--effort 'xhigh'")
 	}
 
-	// Negative control: no effort parsed → no dangling --effort flag.
+	// Negative control: no effort parsed → the template supplies the house
+	// default rather than emitting an empty/dangling flag. The Claude template
+	// used to omit --effort entirely when unset; it now mirrors the Codex
+	// template and defaults to config.DefaultClaudeReasoningEffort, so the
+	// property worth guarding is "never `--effort ''`", not "never --effort".
 	noEffortSpec, err := ParseAgentSpec("1:claude-opus-4-8")
 	if err != nil {
 		t.Fatalf("ParseAgentSpec (no effort) error = %v", err)
@@ -237,8 +241,12 @@ func TestAddThreadsReasoningEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateAgentCommand (no effort) error = %v", err)
 	}
-	if strings.Contains(noEffort, "--effort") {
+	if strings.Contains(noEffort, "--effort ''") || strings.HasSuffix(strings.TrimSpace(noEffort), "--effort") {
 		t.Errorf("unset effort left a dangling flag: %q", noEffort)
+	}
+	wantDefault := "--effort '" + config.DefaultClaudeReasoningEffort + "'"
+	if !strings.Contains(noEffort, wantDefault) {
+		t.Errorf("unset effort did not fall back to the default: got %q, want it to contain %q", noEffort, wantDefault)
 	}
 }
 

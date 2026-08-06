@@ -30,7 +30,11 @@ const (
 	DefaultCodexModel = "gpt-5.6-sol"
 	// DefaultCodexReasoningEffort is the Codex reasoning budget used when no
 	// persona or agent spec provides one.
-	DefaultCodexReasoningEffort = "ultra"
+	DefaultCodexReasoningEffort = "xhigh"
+	// DefaultClaudeReasoningEffort is the Claude reasoning budget used when no
+	// persona or agent spec provides one. Kept alongside the Codex default so
+	// both agent types share one obvious place to change the house default.
+	DefaultClaudeReasoningEffort = "xhigh"
 )
 
 // validSynthesisStrategies defines the canonical synthesis strategy names.
