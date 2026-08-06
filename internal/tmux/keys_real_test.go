@@ -119,6 +119,37 @@ func TestRealKeySendMultipleCommands(t *testing.T) {
 	}
 }
 
+// A trailing backslash is prompt data, not a tmux escape. This exercises the
+// real send-keys parser because a unit test of the transformed argument alone
+// cannot detect parser consumption of the caller's slash.
+func TestRealKeySendPreservesLiteralBackslashBeforeTrailingSemicolon(t *testing.T) {
+	skipIfNoTmux(t)
+
+	session := createTestSessionForKeys(t)
+	panes, err := GetPanes(session)
+	if err != nil || len(panes) == 0 {
+		t.Fatalf("GetPanes(%q) = %v, %v; want a pane", session, panes, err)
+	}
+	paneID := panes[0].ID
+
+	if err := SendKeys(paneID, "cat", true); err != nil {
+		t.Fatalf("start cat: %v", err)
+	}
+	const payload = `literal\;`
+	if err := SendKeys(paneID, payload, true); err != nil {
+		t.Fatalf("send literal trailing backslash payload: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	output, err := CapturePaneOutput(paneID, 20)
+	if err != nil {
+		t.Fatalf("capture echoed payload: %v", err)
+	}
+	if !strings.Contains(output, payload) {
+		t.Fatalf("captured output = %q; want literal payload %q preserved", output, payload)
+	}
+}
+
 // =============================================================================
 // Key Sending Tests - Special Keys
 // =============================================================================

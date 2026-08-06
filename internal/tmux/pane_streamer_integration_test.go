@@ -92,6 +92,42 @@ func TestIntegration_PaneStreamer_FallbackPolling(t *testing.T) {
 	}
 }
 
+func TestIntegration_PaneStreamer_StopReturnsWhenIdle(t *testing.T) {
+	skipIfNoTmux(t)
+
+	name := uniqueSessionName("stream_idle_stop")
+	t.Cleanup(func() { cleanupSession(t, name) })
+	if err := CreateSession(name, t.TempDir()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	panes, err := GetPanes(name)
+	if err != nil {
+		t.Fatalf("GetPanes failed: %v", err)
+	}
+	if len(panes) == 0 {
+		t.Fatal("expected at least one pane")
+	}
+
+	ps := NewPaneStreamer(DefaultClient, panes[0].ID, func(StreamEvent) {}, PaneStreamerConfig{
+		FIFODir: t.TempDir(),
+	})
+	if err := ps.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		ps.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked while the pipe-pane stream was idle")
+	}
+}
+
 func TestIntegration_StreamManager_MultiPane(t *testing.T) {
 	skipIfNoTmux(t)
 

@@ -84,6 +84,8 @@ type PaneStreamer struct {
 	wg          sync.WaitGroup
 
 	fifoPath    string
+	fifoMu      sync.Mutex
+	fifo        *os.File
 	seq         int64
 	useFallback atomic.Bool
 
@@ -201,11 +203,13 @@ func (ps *PaneStreamer) Stop() {
 		close(stopCh)
 	}
 
-	// Stop pipe-pane
+	// Stop pipe-pane before closing the FIFO. Closing the descriptor wakes an
+	// idle reader that would otherwise remain blocked in ReadString forever.
 	if ps.fifoPath != "" {
 		_ = ps.client.RunSilent("pipe-pane", "-t", ps.target)
 		_ = os.Remove(ps.fifoPath)
 	}
+	ps.closeFIFO()
 
 	ps.wg.Wait()
 
@@ -241,6 +245,10 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 
 	// Create FIFO (named pipe)
 	if err := createFIFO(ps.fifoPath); err != nil {
+		// No FIFO was created, so Stop must not treat this path as ours. In
+		// particular, createFIFO refuses an existing regular file and Stop must
+		// never remove that file while cleaning up a fallback stream.
+		ps.fifoPath = ""
 		return fmt.Errorf("create fifo: %w", err)
 	}
 
@@ -249,6 +257,7 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 	catCmd := pipePaneCatCommand(ps.fifoPath)
 	if err := ps.client.RunSilent("pipe-pane", "-t", ps.target, catCmd); err != nil {
 		os.Remove(ps.fifoPath)
+		ps.fifoPath = ""
 		return fmt.Errorf("pipe-pane: %w", err)
 	}
 
@@ -289,7 +298,27 @@ func (ps *PaneStreamer) runFIFOReader() {
 		go ps.runPollingLoop()
 		return
 	}
-	defer fifo.Close()
+	ps.fifoMu.Lock()
+	ps.fifo = fifo
+	ps.fifoMu.Unlock()
+	defer func() {
+		ps.fifoMu.Lock()
+		if ps.fifo == fifo {
+			ps.fifo = nil
+		}
+		ps.fifoMu.Unlock()
+		_ = fifo.Close()
+	}()
+
+	// Stop can race with opening the FIFO. If it already closed the stop
+	// channel, do not enter a blocking read after publishing the descriptor.
+	select {
+	case <-stopCh:
+		return
+	case <-ctx.Done():
+		return
+	default:
+	}
 
 	var lineBuf []string
 	flushTicker := time.NewTicker(ps.config.FlushInterval)
@@ -381,6 +410,17 @@ func (ps *PaneStreamer) runFIFOReader() {
 				flushLines()
 			}
 		}
+	}
+}
+
+// closeFIFO unblocks the reader during shutdown. The file is also closed by
+// runFIFOReader, so closing here intentionally tolerates os.ErrClosed.
+func (ps *PaneStreamer) closeFIFO() {
+	ps.fifoMu.Lock()
+	fifo := ps.fifo
+	ps.fifoMu.Unlock()
+	if fifo != nil {
+		_ = fifo.Close()
 	}
 }
 

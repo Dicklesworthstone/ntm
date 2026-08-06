@@ -1581,18 +1581,13 @@ func (c *Client) SendKeysWithDelay(target, keys string, enter bool, enterDelay t
 // landing right after a semicolon dropped that byte from the middle of a prompt.
 //
 // Only a trailing semicolon needs escaping; interior semicolons are delivered
-// verbatim. An already-escaped trailing semicolon is left alone.
+// verbatim. The backslash is tmux parser syntax, not caller data: even when a
+// payload already ends in one or more literal backslashes, another backslash
+// must be added so tmux consumes the added escape and preserves the original
+// bytes. Leaving an apparently "already escaped" payload alone drops one
+// caller backslash before delivery.
 func escapeTrailingSemicolon(payload string) string {
 	if !strings.HasSuffix(payload, ";") {
-		return payload
-	}
-	// Count the backslashes immediately before the final ";". An odd number means
-	// it is already escaped.
-	backslashes := 0
-	for i := len(payload) - 2; i >= 0 && payload[i] == '\\'; i-- {
-		backslashes++
-	}
-	if backslashes%2 == 1 {
 		return payload
 	}
 	return payload[:len(payload)-1] + `\;`

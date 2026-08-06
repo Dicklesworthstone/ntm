@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -368,6 +369,47 @@ func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
 	}
 	if ps.stopCh != nil {
 		t.Fatalf("Start() error left ps.stopCh non-nil")
+	}
+}
+
+func TestPaneStreamer_StartDoesNotRetainBlockedFIFOPath(t *testing.T) {
+	dir := t.TempDir()
+	target := "mysession:0"
+	sequence := fifoPathSequence.Load() + 1
+	blockedPath := filepath.Join(dir, fmt.Sprintf("pane_mysession_0_%d_%d.fifo", os.Getpid(), sequence))
+	if err := os.WriteFile(blockedPath, []byte("not a fifo"), 0600); err != nil {
+		t.Fatalf("write blocking path: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ps := NewPaneStreamer(nil, target, func(StreamEvent) {}, PaneStreamerConfig{FIFODir: dir})
+	if err := ps.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ps.mu.Lock()
+	fifoPath := ps.fifoPath
+	ps.mu.Unlock()
+	if fifoPath != "" {
+		t.Fatalf("failed FIFO setup retained cleanup path %q", fifoPath)
+	}
+
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		ps.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("fallback worker did not stop after context cancellation")
+	}
+
+	if _, err := os.Stat(blockedPath); err != nil {
+		t.Fatalf("blocked path was unexpectedly removed: %v", err)
 	}
 }
 

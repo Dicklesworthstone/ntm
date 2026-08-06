@@ -2630,14 +2630,17 @@ func TestResolvePaneSelectorsRealTmuxTopologyMatrix(t *testing.T) {
 // 'D=z\;' correctly delivers "D=z;".
 func TestEscapeTrailingSemicolon(t *testing.T) {
 	cases := map[string]string{
-		"":            "",
-		"plain":       "plain",
-		"A=x;":        `A=x\;`,
-		";":           `\;`,
-		"C=y;;":       `C=y;\;`,
-		"a;b":         "a;b",     // interior semicolons are delivered verbatim
-		`D=z\;`:       `D=z\;`,   // already escaped: leave alone
-		`E=w\\;`:      `E=w\\\;`, // an escaped backslash then a bare ";" still needs escaping
+		"":      "",
+		"plain": "plain",
+		"A=x;":  `A=x\;`,
+		";":     `\;`,
+		"C=y;;": `C=y;\;`,
+		"a;b":   "a;b", // interior semicolons are delivered verbatim
+		// A slash before the semicolon is caller data. Add a new tmux escape
+		// instead of treating the existing slash as parser syntax; otherwise
+		// tmux consumes it and silently changes the delivered prompt.
+		`D=z\;`:       `D=z\\;`,
+		`E=w\\;`:      `E=w\\\;`,
 		"trailing ; ": "trailing ; ",
 	}
 	for input, want := range cases {
