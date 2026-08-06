@@ -547,6 +547,7 @@ type WSAttentionSub struct {
 
 	// unsubscribe is the function to stop the feed subscription.
 	unsubscribe func()
+	topics      []string
 }
 
 // WSClient represents a connected WebSocket client.
@@ -4596,8 +4597,7 @@ func (c *WSClient) handleUnsubscribe(msg WSMessage) {
 	// Check if any attention topics are being unsubscribed
 	attentionTopics, _ := partitionAttentionTopics(topics)
 	if len(attentionTopics) > 0 {
-		// Cancel the attention subscription
-		c.cancelAttentionSubscription()
+		c.removeAttentionTopics(attentionTopics)
 	}
 
 	c.Unsubscribe(topics)
@@ -4750,7 +4750,7 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 		}
 	}
 
-	// Cancel any existing attention subscription
+	// Replace the previous durable subscription and its hub memberships.
 	c.cancelAttentionSubscription()
 
 	// Create new attention subscription
@@ -4765,20 +4765,18 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 		ExcludeMuted:        excludeMuted,
 		ExcludeSnoozed:      excludeSnoozed,
 		StartedAt:           time.Now(),
+		topics:              append([]string(nil), topics...),
 	}
 
 	// Subscribe to the feed with filtering
 	sub.unsubscribe = feed.Subscribe(func(event robot.AttentionEvent) {
-		c.deliverAttentionEvent(event, topics)
+		c.deliverAttentionEvent(event, sub)
 	})
 
 	// Store subscription
 	c.attentionSubMu.Lock()
 	c.attentionSub = sub
 	c.attentionSubMu.Unlock()
-
-	// Also subscribe to regular topics so hub broadcasts reach us
-	c.Subscribe(topics)
 
 	// Perform replay if cursor is not "start from now"
 	var replayCount int
@@ -4788,7 +4786,7 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 			// The cursor can fall out of the bounded replay window after the
 			// preflight above and before Replay acquires the feed's journal lock.
 			// Do not acknowledge a subscription which missed its requested
-			// history: remove the live callback and its hub topics before
+			// history: remove the live callback before
 			// reporting the failure to the caller.
 			c.cancelAttentionSubscription()
 			c.Unsubscribe(topics)
@@ -4836,17 +4834,53 @@ func (c *WSClient) handleAttentionSubscribeWithFeed(feed attentionStreamFeed, ms
 // cancelAttentionSubscription stops any existing attention subscription.
 func (c *WSClient) cancelAttentionSubscription() {
 	c.attentionSubMu.Lock()
-	defer c.attentionSubMu.Unlock()
+	sub := c.attentionSub
+	c.attentionSub = nil
+	c.attentionSubMu.Unlock()
 
-	if c.attentionSub != nil && c.attentionSub.unsubscribe != nil {
-		c.attentionSub.unsubscribe()
+	if sub != nil && sub.unsubscribe != nil {
+		sub.unsubscribe()
+	}
+	if sub != nil && len(sub.topics) > 0 {
+		c.Unsubscribe(sub.topics)
+	}
+}
+
+func (c *WSClient) removeAttentionTopics(topics []string) {
+	c.attentionSubMu.Lock()
+	sub := c.attentionSub
+	if sub == nil {
+		c.attentionSubMu.Unlock()
+		return
+	}
+	remaining := make([]string, 0, len(sub.topics))
+	for _, subscribed := range sub.topics {
+		remove := false
+		for _, requested := range topics {
+			if subscribed == requested {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			remaining = append(remaining, subscribed)
+		}
+	}
+	sub.topics = remaining
+	if len(remaining) != 0 {
+		c.attentionSubMu.Unlock()
+		return
 	}
 	c.attentionSub = nil
+	c.attentionSubMu.Unlock()
+	if sub.unsubscribe != nil {
+		sub.unsubscribe()
+	}
 }
 
 // deliverAttentionEvent delivers a single attention event to the client.
 // Applies subscription filters and tracks cursor position.
-func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []string) {
+func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, expected *WSAttentionSub) {
 	// Snapshot the filter criteria AND the cursor under the lock. Copying only
 	// the pointer and then reading sub.Cursor/sub.Active raced the locked
 	// cursor writes below and in deliverAttentionReplay: AttentionFeed invokes
@@ -4855,7 +4889,7 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []st
 	// which either re-delivered an event or rolled the cursor backwards.
 	c.attentionSubMu.Lock()
 	sub := c.attentionSub
-	if sub == nil || !sub.Active {
+	if sub == nil || sub != expected || !sub.Active {
 		c.attentionSubMu.Unlock()
 		return
 	}
@@ -4886,7 +4920,7 @@ func (c *WSClient) deliverAttentionEvent(event robot.AttentionEvent, topics []st
 	topic := "attention"
 	if event.Session != "" {
 		sessionTopic := "attention:" + event.Session
-		for _, t := range topics {
+		for _, t := range criteria.topics {
 			if t == sessionTopic {
 				topic = sessionTopic
 				break
