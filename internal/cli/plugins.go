@@ -30,11 +30,17 @@ func newPluginsListCmd() *cobra.Command {
 
 			// Load Agent Plugins
 			agentsDir := filepath.Join(configDir, "agents")
-			agentPlugins, _ := plugins.LoadAgentPlugins(agentsDir)
+			agentPlugins, err := plugins.LoadAgentPlugins(agentsDir)
+			if err != nil {
+				return fmt.Errorf("load agent plugins from %s: %w", agentsDir, err)
+			}
 
 			// Load Command Plugins
 			cmdDir := filepath.Join(configDir, "commands")
-			commandPlugins, _ := plugins.LoadCommandPlugins(cmdDir)
+			commandPlugins, err := plugins.LoadCommandPlugins(cmdDir)
+			if err != nil {
+				return fmt.Errorf("load command plugins from %s: %w", cmdDir, err)
+			}
 
 			if len(agentPlugins) == 0 && len(commandPlugins) == 0 {
 				fmt.Println("No plugins installed.")

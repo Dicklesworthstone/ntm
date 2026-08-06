@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -61,5 +64,47 @@ func TestRegisterPluginAgentFlagsRegistersNonColliding(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("ma") == nil {
 		t.Fatal("plugin alias --ma should be registered")
+	}
+}
+
+func TestPluginsListReportsPluginDirectoryReadErrors(t *testing.T) {
+	originalCfgFile := cfgFile
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	tests := []struct {
+		name        string
+		directory   string
+		errorPrefix string
+	}{
+		{
+			name:        "agent plugins",
+			directory:   "agents",
+			errorPrefix: "load agent plugins",
+		},
+		{
+			name:        "command plugins",
+			directory:   "commands",
+			errorPrefix: "load command plugins",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configDir := t.TempDir()
+			cfgFile = filepath.Join(configDir, "config.toml")
+			if err := os.WriteFile(filepath.Join(configDir, tt.directory), []byte("not a directory"), 0o600); err != nil {
+				t.Fatalf("write invalid plugin directory: %v", err)
+			}
+
+			err := newPluginsListCmd().RunE(nil, nil)
+			if err == nil {
+				t.Fatal("newPluginsListCmd() error = nil, want plugin directory read error")
+			}
+			if !strings.Contains(err.Error(), tt.errorPrefix) {
+				t.Fatalf("newPluginsListCmd() error = %q, want prefix %q", err, tt.errorPrefix)
+			}
+		})
 	}
 }
