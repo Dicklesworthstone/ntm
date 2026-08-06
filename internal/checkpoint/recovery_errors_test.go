@@ -45,9 +45,9 @@ func TestStorage_Load_MalformedJSON(t *testing.T) {
 		t.Error("Load() should fail for malformed JSON")
 	}
 
-	// Verify error message contains parsing info
-	if err != nil && !containsSubstr(err.Error(), "parsing") {
-		t.Logf("Error message: %v", err)
+	// Verify error message contains parsing info.
+	if !containsSubstr(err.Error(), "parsing checkpoint metadata") {
+		t.Fatalf("Load() error = %v, want checkpoint metadata parsing context", err)
 	}
 }
 

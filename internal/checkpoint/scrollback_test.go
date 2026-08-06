@@ -338,23 +338,24 @@ func TestStorage_LoadPaneScrollback_RejectsInvalidIdentifiers(t *testing.T) {
 	}
 }
 
-func TestScrollbackCapture_SizeLimit(t *testing.T) {
-	// Test that the size limit check works correctly
-	config := ScrollbackConfig{
-		Lines:     1000,
-		Compress:  true,
-		MaxSizeMB: 1, // 1 MB limit
+func TestExceedsRawScrollbackLimit(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawBytes  int
+		maxSizeMB int
+		want      bool
+	}{
+		{name: "no limit", rawBytes: 100 * 1024 * 1024, maxSizeMB: 0, want: false},
+		{name: "at limit", rawBytes: 10 * 1024 * 1024, maxSizeMB: 1, want: false},
+		{name: "one byte over limit", rawBytes: 10*1024*1024 + 1, maxSizeMB: 1, want: true},
 	}
 
-	// Create content that's larger than 10x the limit (should be skipped)
-	largeContent := strings.Repeat("x", 11*1024*1024) // 11 MB
-
-	// Simulate the size check logic
-	rawSizeMB := float64(len(largeContent)) / (1024 * 1024)
-	maxAllowed := float64(config.MaxSizeMB) * 10
-
-	if rawSizeMB <= maxAllowed {
-		t.Errorf("Expected rawSizeMB (%.2f) > maxAllowed (%.2f)", rawSizeMB, maxAllowed)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exceedsRawScrollbackLimit(tt.rawBytes, tt.maxSizeMB); got != tt.want {
+				t.Fatalf("exceedsRawScrollbackLimit(%d, %d) = %v, want %v", tt.rawBytes, tt.maxSizeMB, got, tt.want)
+			}
+		})
 	}
 }
 

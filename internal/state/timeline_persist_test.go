@@ -291,17 +291,25 @@ func TestCleanupOldTimelines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cleanup failed: %v", err)
 	}
-
-	t.Logf("Cleaned up %d timelines", deleted)
-
-	// Verify only MaxTimelines remain
-	timelines, _ = persister.ListTimelines()
-	if len(timelines) > config.MaxTimelines {
-		t.Errorf("Expected at most %d timelines after cleanup, got %d",
-			config.MaxTimelines, len(timelines))
+	if deleted != 2 {
+		t.Fatalf("Cleanup deleted %d timelines, want 2", deleted)
 	}
 
-	t.Log("PASS: Cleanup removed old timelines")
+	// Verify the retention limit removes exactly the two oldest timelines.
+	timelines, _ = persister.ListTimelines()
+	if len(timelines) != config.MaxTimelines {
+		t.Fatalf("Expected exactly %d timelines after cleanup, got %d",
+			config.MaxTimelines, len(timelines))
+	}
+	remaining := make(map[string]bool, len(timelines))
+	for _, timeline := range timelines {
+		remaining[timeline.SessionID] = true
+	}
+	for _, sessionID := range []string{"session-c", "session-d", "session-e"} {
+		if !remaining[sessionID] {
+			t.Errorf("Cleanup removed %s, want newest timelines retained", sessionID)
+		}
+	}
 }
 
 func TestEmptySessionIDError(t *testing.T) {

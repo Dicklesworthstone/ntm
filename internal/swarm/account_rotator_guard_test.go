@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,15 +24,16 @@ func writeFakeCaam(t *testing.T) (caamPath, markerPath string) {
 	markerPath = filepath.Join(dir, "caam_invocations.log")
 	caamPath = filepath.Join(dir, "caam")
 	// `robot status` advertises the safe-restore capability so the default
-	// capability gate (caam #19) treats this fake caam as safe; the switch path
-	// returns a successful rotation result.
+	// capability gate (caam #19) treats this fake caam as safe. The activate
+	// path returns CAAM's current profile field names, not NTM's internal DTO
+	// names, so this fixture catches a contract drift at the adapter boundary.
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %q
 if [ "$1" = "robot" ] && [ "$2" = "status" ]; then
   printf '{"data":{"capabilities":["safe-restore","robot"]}}'
   exit 0
 fi
-printf '{"success":true,"previous_account":"acctA","new_account":"acctB","accounts_remaining":1}'
+printf '{"success":true,"previous_profile":"acctA","profile":"acctB"}'
 `, markerPath)
 	if err := os.WriteFile(caamPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake caam: %v", err)
@@ -80,8 +82,18 @@ func TestGuard_IsolatedCodexPanesAllowsRotation(t *testing.T) {
 	if record == nil {
 		t.Fatal("expected a rotation record")
 	}
+	if record.FromAccount != "acctA" || record.ToAccount != "acctB" {
+		t.Fatalf("rotation accounts = (%q, %q), want (acctA, acctB)", record.FromAccount, record.ToAccount)
+	}
 	if !caamWasInvoked(t, marker) {
 		t.Error("expected caam to be invoked when all Codex panes are isolated")
+	}
+	args, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read caam invocation: %v", err)
+	}
+	if got := strings.TrimSpace(string(args)); got != "robot status\nactivate codex --auto --json" {
+		t.Fatalf("caam arguments = %q, want robot status then current activate contract", got)
 	}
 }
 

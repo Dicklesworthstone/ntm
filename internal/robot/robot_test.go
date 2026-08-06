@@ -915,7 +915,25 @@ func TestPrintHelp_IncludesActivitySurface(t *testing.T) {
 }
 
 func TestGenerateSupportBundle_UsesBundleFlagNamesInValidationErrors(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "should-not-be-created.zip")
 	output, err := GenerateSupportBundle(SupportBundleOptions{
+		Format:     "rar",
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSupportBundle returned unexpected error: %v", err)
+	}
+	if output.Success || output.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("invalid bundle format output = %+v, want INVALID_FLAG failure", output.RobotResponse)
+	}
+	if !strings.Contains(output.Hint, "--bundle-format") {
+		t.Fatalf("support bundle hint should mention --bundle-format, got %q", output.Hint)
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("invalid bundle format created %q: stat error = %v", outputPath, err)
+	}
+
+	output, err = GenerateSupportBundle(SupportBundleOptions{
 		Since: "not-a-duration",
 	})
 	if err != nil {

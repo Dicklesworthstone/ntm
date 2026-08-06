@@ -81,10 +81,21 @@ func GenerateSupportBundle(opts SupportBundleOptions) (*SupportBundleOutput, err
 		PrivacySessions: []string{},
 	}
 
-	// Determine format
-	format := bundle.FormatZip
-	if opts.Format == "tar.gz" || opts.Format == "tgz" {
+	// Determine format. Do not silently substitute ZIP for an unsupported
+	// explicit value: callers use the extension and archive type downstream.
+	var format bundle.Format
+	switch opts.Format {
+	case "", "zip":
+		format = bundle.FormatZip
+	case "tar.gz", "tgz":
 		format = bundle.FormatTarGz
+	default:
+		output.RobotResponse = NewErrorResponse(
+			nil,
+			ErrCodeInvalidFlag,
+			"Invalid --bundle-format: use zip, tar.gz, or tgz",
+		)
+		return output, nil
 	}
 	output.Format = string(format)
 

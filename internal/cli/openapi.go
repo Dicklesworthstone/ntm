@@ -180,10 +180,10 @@ Examples:
 				if len(response.Spec) == 0 {
 					return fmt.Errorf("openapi.generate returned no specification for --stdout")
 				}
-				if _, err := os.Stdout.Write(response.Spec); err != nil {
+				if _, err := cmd.OutOrStdout().Write(response.Spec); err != nil {
 					return fmt.Errorf("write OpenAPI spec to stdout: %w", err)
 				}
-				if _, err := os.Stdout.Write([]byte("\n")); err != nil {
+				if _, err := cmd.OutOrStdout().Write([]byte("\n")); err != nil {
 					return fmt.Errorf("terminate OpenAPI spec output: %w", err)
 				}
 				return nil

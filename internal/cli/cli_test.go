@@ -7708,14 +7708,16 @@ func TestOpenAPIGenerateStdoutEmitsSingleOpenAPIDocument(t *testing.T) {
 
 	cmd := newOpenAPIGenerateCmd()
 	cmd.SetArgs([]string{"--stdout"})
-	stdout, err := captureStdout(t, cmd.Execute)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("openapi generate --stdout: %v", err)
 	}
 
 	var spec map[string]any
-	if err := json.Unmarshal([]byte(stdout), &spec); err != nil {
-		t.Fatalf("--stdout must contain exactly one JSON document: %v\noutput:\n%s", err, stdout)
+	if err := json.Unmarshal(stdout.Bytes(), &spec); err != nil {
+		t.Fatalf("--stdout must contain exactly one JSON document: %v\noutput:\n%s", err, stdout.String())
 	}
 	if got := spec["openapi"]; got != "3.1.0" {
 		t.Fatalf("OpenAPI version = %#v, want 3.1.0", got)

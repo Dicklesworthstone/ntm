@@ -1520,20 +1520,22 @@ func TestRobotSendTrackingCapabilities(t *testing.T) {
 
 	session := fmt.Sprintf("robot_send_tracking_%d", time.Now().UnixNano())
 	projectsBase := t.TempDir()
-	projectDir := filepath.Join(projectsBase, session)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		t.Fatalf("Failed to create project directory: %v", err)
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex CLI not found; robot-send tracking requires a live agent process")
 	}
 
-	// Create test configuration
+	// Tracking must target a live agent process. Shell stand-ins are deliberately
+	// rejected by robot-send as PANE_AGENT_DEAD, which cannot exercise the
+	// send-and-ack contract.
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "config.toml")
 	configContent := fmt.Sprintf(`
 projects_base = %q
 
 [agents]
-claude = "bash"
-`, projectsBase)
+codex = %q
+`, projectsBase, codexPath)
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write test config: %v", err)
 	}
@@ -1547,68 +1549,66 @@ claude = "bash"
 
 	// Spawn session
 	spawnOut := testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"spawn", session, "--cc=2", "--project-dir", projectDir)
+		"spawn", session, "--cod=1")
 	logger.Log("[E2E-ROBOT-SEND-TRACKING] Spawn output: %s", string(spawnOut))
 
 	time.Sleep(2 * time.Second)
 	testutil.AssertSessionExists(t, logger, session)
 
-	// Test 1: Basic send with tracking enabled (with timeout to avoid hanging)
+	// Test 1: Basic send with tracking enabled. A live agent may acknowledge
+	// within the bounded wait or remain busy, in which case timeout is the
+	// expected structured result. In either case, robot-send itself must have
+	// delivered to the one requested live pane.
 	logger.Log("[E2E-ROBOT-SEND-TRACKING] Test 1: Send with --track and timeout")
 	testMessage := fmt.Sprintf("TRACKING_TEST_%d", time.Now().UnixNano())
 
-	// Use timeout to prevent test from hanging if agent doesn't respond
-	cmd := exec.Command("timeout", "5s", "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--type=claude", "--track")
+	cmd := exec.Command("ntm", "--config", configPath,
+		"--robot-send", session, "--msg", fmt.Sprintf("Reply exactly with %s", testMessage), "--type=codex", "--track", "--timeout=5s", "--poll=100ms")
 
 	out, err := cmd.CombinedOutput()
 	logger.Log("[E2E-ROBOT-SEND-TRACKING] Track command output: %s", string(out))
 
-	// Track mode may timeout, but that's acceptable for this test
-	if err != nil {
-		logger.Log("[E2E-ROBOT-SEND-TRACKING] Track command timed out or errored (expected): %v", err)
-
-		// Even if it timed out, it should still produce valid JSON for what was sent
-		var trackPayload struct {
-			Success        bool      `json:"success"`
-			Session        string    `json:"session"`
-			Targets        []string  `json:"targets"`
-			Successful     []string  `json:"successful"`
-			MessagePreview string    `json:"message_preview"`
-			SentAt         time.Time `json:"sent_at"`
+	var trackPayload struct {
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+		Send      struct {
+			Success    bool     `json:"success"`
+			Session    string   `json:"session"`
+			Targets    []string `json:"targets"`
+			Successful []string `json:"successful"`
+			Failed     []struct {
+				Pane  string `json:"pane"`
+				Error string `json:"error"`
+			} `json:"failed"`
+		} `json:"send"`
+		Ack struct {
+			Success       bool `json:"success"`
+			TimedOut      bool `json:"timed_out"`
+			Confirmations []struct {
+				Pane string `json:"pane"`
+			} `json:"confirmations"`
+			Pending []string `json:"pending"`
+		} `json:"ack"`
+	}
+	if jsonErr := json.Unmarshal(out, &trackPayload); jsonErr != nil {
+		t.Fatalf("[E2E-ROBOT-SEND-TRACKING] Invalid robot-send track JSON: %v; command error: %v; output: %s", jsonErr, err, string(out))
+	}
+	if !trackPayload.Send.Success || trackPayload.Send.Session != session {
+		t.Fatalf("[E2E-ROBOT-SEND-TRACKING] send must succeed for %q: %+v", session, trackPayload.Send)
+	}
+	if len(trackPayload.Send.Targets) != 1 || len(trackPayload.Send.Successful) != 1 {
+		t.Fatalf("[E2E-ROBOT-SEND-TRACKING] expected exactly one live Codex target and delivery: %+v", trackPayload.Send)
+	}
+	if err == nil {
+		if !trackPayload.Success || !trackPayload.Ack.Success || len(trackPayload.Ack.Confirmations) != 1 {
+			t.Fatalf("[E2E-ROBOT-SEND-TRACKING] successful track must contain one confirmation: %+v", trackPayload)
 		}
-
-		// Try to parse JSON even from timeout/error output
-		if jsonErr := json.Unmarshal(out, &trackPayload); jsonErr == nil {
-			logger.Log("[E2E-ROBOT-SEND-TRACKING] Valid JSON received even with timeout")
-			if trackPayload.Session == session && len(trackPayload.Targets) > 0 {
-				logger.Log("[E2E-ROBOT-SEND-TRACKING] Test 1 PASSED: Track mode initiated successfully before timeout")
-			}
-		} else {
-			logger.Log("[E2E-ROBOT-SEND-TRACKING] Test 1 PASSED: Track mode executed (timeout expected in test environment)")
-		}
+		logger.Log("[E2E-ROBOT-SEND-TRACKING] Test 1 PASSED: live agent confirmed delivery")
 	} else {
-		// If track completed successfully, validate the JSON
-		var trackPayload struct {
-			Success        bool      `json:"success"`
-			Session        string    `json:"session"`
-			Targets        []string  `json:"targets"`
-			Successful     []string  `json:"successful"`
-			MessagePreview string    `json:"message_preview"`
-			SentAt         time.Time `json:"sent_at"`
+		if trackPayload.ErrorCode != "TIMEOUT" || !trackPayload.Ack.TimedOut || len(trackPayload.Ack.Pending) != 1 {
+			t.Fatalf("[E2E-ROBOT-SEND-TRACKING] expected structured ack timeout after a successful send: command error=%v payload=%+v", err, trackPayload)
 		}
-
-		if err := json.Unmarshal(out, &trackPayload); err != nil {
-			t.Fatalf("[E2E-ROBOT-SEND-TRACKING] Invalid robot-send track JSON: %v", err)
-		}
-
-		if !trackPayload.Success {
-			t.Errorf("[E2E-ROBOT-SEND-TRACKING] robot-send --track should succeed")
-		}
-		if trackPayload.Session != session {
-			t.Errorf("[E2E-ROBOT-SEND-TRACKING] Expected session %s, got %s", session, trackPayload.Session)
-		}
-		logger.Log("[E2E-ROBOT-SEND-TRACKING] Test 1 PASSED: Track mode completed successfully")
+		logger.Log("[E2E-ROBOT-SEND-TRACKING] Test 1 PASSED: live delivery returned structured timeout")
 	}
 
 	// Test 2: Send with delay staggering (testing throughput control)
@@ -1617,7 +1617,7 @@ claude = "bash"
 	startTime := time.Now()
 
 	sendOut := testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", testMessage), "--type=claude", "--delay-ms=100")
+		"--robot-send", session, "--msg", fmt.Sprintf("Reply with %s", testMessage), "--type=codex", "--delay-ms=100")
 
 	elapsedTime := time.Since(startTime)
 	logger.Log("[E2E-ROBOT-SEND-TRACKING] Send with delay took: %v", elapsedTime)
@@ -1649,7 +1649,7 @@ claude = "bash"
 	uniqueMarker := fmt.Sprintf("DELIVERY_MARKER_%d", time.Now().UnixNano())
 
 	sendOut = testutil.AssertCommandSuccess(t, logger, "ntm", "--config", configPath,
-		"--robot-send", session, "--msg", fmt.Sprintf("echo %s", uniqueMarker), "--panes=1")
+		"--robot-send", session, "--msg", fmt.Sprintf("Reply with %s", uniqueMarker), "--panes=1")
 
 	var deliveryPayload struct {
 		Success    bool     `json:"success"`

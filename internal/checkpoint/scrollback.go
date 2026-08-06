@@ -92,7 +92,7 @@ func CaptureScrollbackContext(ctx context.Context, session, paneID string, confi
 
 	// Check raw size limit before compression
 	rawSizeMB := float64(len(content)) / (1024 * 1024)
-	if config.MaxSizeMB > 0 && rawSizeMB > float64(config.MaxSizeMB)*10 {
+	if exceedsRawScrollbackLimit(len(content), config.MaxSizeMB) {
 		// If raw content is 10x the max, skip entirely (won't compress well enough)
 		capture.Skipped = true
 		capture.SkipReason = fmt.Sprintf("raw content too large: %.2f MB (limit %d MB)", rawSizeMB, config.MaxSizeMB)
@@ -121,6 +121,11 @@ func CaptureScrollbackContext(ctx context.Context, session, paneID string, confi
 	}
 
 	return capture, nil
+}
+
+func exceedsRawScrollbackLimit(rawBytes, maxSizeMB int) bool {
+	const bytesPerMB = 1024 * 1024
+	return maxSizeMB > 0 && int64(rawBytes) > int64(maxSizeMB)*10*bytesPerMB
 }
 
 // gzipCompress compresses data using gzip.
