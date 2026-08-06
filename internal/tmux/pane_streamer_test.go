@@ -331,6 +331,19 @@ func TestPipePaneCatCommand_QuotesPath(t *testing.T) {
 	}
 }
 
+func TestPaneStreamerFIFOPathIsUniqueForSameTarget(t *testing.T) {
+	dir := t.TempDir()
+	first := paneStreamerFIFOPath(dir, "project:0.1")
+	second := paneStreamerFIFOPath(dir, "project:0.1")
+
+	if first == second {
+		t.Fatalf("FIFO paths collide for concurrent streamers: %q", first)
+	}
+	if filepath.Dir(first) != dir || filepath.Dir(second) != dir {
+		t.Fatalf("FIFO paths must remain in configured directory: %q, %q", first, second)
+	}
+}
+
 func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
 	tmp := t.TempDir()
 	fifoDirAsFile := filepath.Join(tmp, "not-a-dir")

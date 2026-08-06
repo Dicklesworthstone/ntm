@@ -92,6 +92,12 @@ type PaneStreamer struct {
 	lastHash string // Hash of last captured output for deduplication
 }
 
+// fifoPathSequence distinguishes concurrent streamers for the same pane in a
+// single process. A target plus PID alone is not unique when separate stream
+// managers stream the same pane: the later streamer would unlink the earlier
+// streamer's live FIFO.
+var fifoPathSequence atomic.Uint64
+
 // NewPaneStreamer creates a streamer for the given pane target.
 func NewPaneStreamer(client *Client, target string, callback StreamCallback, cfg PaneStreamerConfig) *PaneStreamer {
 	if client == nil {
@@ -231,10 +237,7 @@ func pipePaneCatCommand(fifoPath string) string {
 
 // startPipePaneStreaming sets up pipe-pane streaming via a FIFO.
 func (ps *PaneStreamer) startPipePaneStreaming() error {
-	// Create unique FIFO path
-	safeTarget := strings.ReplaceAll(ps.target, ":", "_")
-	safeTarget = strings.ReplaceAll(safeTarget, "/", "_")
-	ps.fifoPath = filepath.Join(ps.config.FIFODir, fmt.Sprintf("pane_%s_%d.fifo", safeTarget, os.Getpid()))
+	ps.fifoPath = paneStreamerFIFOPath(ps.config.FIFODir, ps.target)
 
 	// Create FIFO (named pipe)
 	if err := createFIFO(ps.fifoPath); err != nil {
@@ -256,6 +259,12 @@ func (ps *PaneStreamer) startPipePaneStreaming() error {
 	go ps.runFIFOReader()
 
 	return nil
+}
+
+func paneStreamerFIFOPath(dir, target string) string {
+	safeTarget := strings.ReplaceAll(target, ":", "_")
+	safeTarget = strings.ReplaceAll(safeTarget, "/", "_")
+	return filepath.Join(dir, fmt.Sprintf("pane_%s_%d_%d.fifo", safeTarget, os.Getpid(), fifoPathSequence.Add(1)))
 }
 
 // runFIFOReader reads from the FIFO and emits events.
