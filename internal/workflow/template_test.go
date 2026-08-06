@@ -270,7 +270,7 @@ func TestWorkflowTemplate_Validate(t *testing.T) {
 				Coordination: CoordPipeline,
 				Flow: &FlowConfig{
 					Stages:      []string{"design", "build", "test"},
-					Transitions: []Transition{validTransition},
+					Transitions: []Transition{{From: "design", To: "build", Trigger: Trigger{Type: TriggerManual}}},
 				},
 			},
 			wantErr: false,
@@ -333,6 +333,66 @@ func TestWorkflowTemplate_Validate(t *testing.T) {
 			err := tt.tmpl.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFlowConfigValidatePipelineStageGraph(t *testing.T) {
+	validTransition := Transition{From: "design", To: "build", Trigger: Trigger{Type: TriggerManual}}
+	tests := []struct {
+		name    string
+		flow    FlowConfig
+		wantErr bool
+	}{
+		{
+			name: "valid declared stage graph",
+			flow: FlowConfig{
+				Initial:     "design",
+				Stages:      []string{"design", "build", "test"},
+				Transitions: []Transition{validTransition},
+			},
+		},
+		{
+			name: "initial stage is undeclared",
+			flow: FlowConfig{
+				Initial:     "review",
+				Stages:      []string{"design", "build"},
+				Transitions: []Transition{validTransition},
+			},
+			wantErr: true,
+		},
+		{
+			name: "transition source is undeclared",
+			flow: FlowConfig{
+				Stages:      []string{"design", "build"},
+				Transitions: []Transition{{From: "review", To: "build", Trigger: Trigger{Type: TriggerManual}}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "transition destination is undeclared",
+			flow: FlowConfig{
+				Stages:      []string{"design", "build"},
+				Transitions: []Transition{{From: "design", To: "review", Trigger: Trigger{Type: TriggerManual}}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "duplicate stage is rejected",
+			flow: FlowConfig{
+				Stages:      []string{"design", "design"},
+				Transitions: []Transition{{From: "design", To: "design", Trigger: Trigger{Type: TriggerManual}}},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.flow.Validate(CoordPipeline)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %t", err, tt.wantErr)
 			}
 		})
 	}

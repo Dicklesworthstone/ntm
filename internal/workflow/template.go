@@ -213,6 +213,29 @@ func (f *FlowConfig) Validate(coordType CoordinationType) error {
 		if len(f.Stages) == 0 {
 			return fmt.Errorf("stages required for pipeline coordination")
 		}
+		stages := make(map[string]struct{}, len(f.Stages))
+		for i, stage := range f.Stages {
+			if strings.TrimSpace(stage) == "" {
+				return fmt.Errorf("stage[%d] is required for pipeline coordination", i)
+			}
+			if _, exists := stages[stage]; exists {
+				return fmt.Errorf("duplicate pipeline stage %q", stage)
+			}
+			stages[stage] = struct{}{}
+		}
+		if f.Initial != "" {
+			if _, exists := stages[f.Initial]; !exists {
+				return fmt.Errorf("pipeline initial stage %q is not declared in stages", f.Initial)
+			}
+		}
+		for i, transition := range f.Transitions {
+			if _, exists := stages[transition.From]; !exists {
+				return fmt.Errorf("pipeline transition[%d] source stage %q is not declared in stages", i, transition.From)
+			}
+			if _, exists := stages[transition.To]; !exists {
+				return fmt.Errorf("pipeline transition[%d] destination stage %q is not declared in stages", i, transition.To)
+			}
+		}
 	} else {
 		// Non-pipeline requires initial state
 		if f.Initial == "" {

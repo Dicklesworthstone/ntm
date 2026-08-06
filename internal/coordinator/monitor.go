@@ -258,14 +258,22 @@ func (m *AgentMonitor) GetReservationsForAgent(ctx context.Context, agentMailNam
 		return nil, err
 	}
 
+	return activeReservationPatterns(reservations, time.Now()), nil
+}
+
+// activeReservationPatterns returns every reservation that has not been
+// explicitly released and is either known-future or has an unknown expiry.
+// Unknown expiry must stay visible: the coordinator cannot safely claim an
+// agent is unreserved merely because an Agent Mail timestamp was absent or
+// could not be decoded.
+func activeReservationPatterns(reservations []agentmail.FileReservation, now time.Time) []string {
 	var patterns []string
 	for _, r := range reservations {
-		if r.ReleasedTS == nil && time.Now().Before(r.ExpiresTS.Time) {
+		if reservationActiveAt(r, now) {
 			patterns = append(patterns, r.PathPattern)
 		}
 	}
-
-	return patterns, nil
+	return patterns
 }
 
 // mapStatusToRobotState converts status.AgentState to robot.AgentState.
