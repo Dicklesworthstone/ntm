@@ -92,6 +92,22 @@ func GetProductivity(opts ProductivityOptions) (*ProductivityOutput, error) {
 	return getProductivity(opts, defaultProductivityDependencies())
 }
 
+// PrintProductivity executes the productivity observation and emits the
+// canonical robot envelope. It mirrors the other robot print helpers so CLI
+// dispatchers never have to reimplement JSON/exit-code behavior.
+func PrintProductivity(opts ProductivityOptions) int {
+	output, err := GetProductivity(opts)
+	if err != nil {
+		output = &ProductivityOutput{
+			RobotResponse:  NewErrorResponse(err, ErrCodeInternalError, "Retry after checking tmux, git, and Beads availability"),
+			Session:        opts.Session,
+			Panes:          []ProductivityPane{},
+			BuildProcesses: []BuildProcess{},
+		}
+	}
+	return printLegacyRobotOutput(output, output.RobotResponse, ExitCodeForResponse(output.RobotResponse), "robot productivity failed")
+}
+
 func defaultProductivityDependencies() productivityDependencies {
 	return productivityDependencies{
 		sessionExists: tmux.SessionExists,
