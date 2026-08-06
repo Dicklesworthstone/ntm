@@ -369,6 +369,24 @@ func TestUnifiedMessengerRead_InvalidID(t *testing.T) {
 	}
 }
 
+func TestUnifiedMessengerRead_RejectsMalformedChannelPrefixes(t *testing.T) {
+	am := &fakeAMClient{available: true}
+	bdClient := &fakeBDClient{readMessages: map[string]*bd.Message{"abc": {ID: "abc"}}}
+	unified := &UnifiedMessenger{amClient: am, bdClient: bdClient}
+
+	for _, id := range []string{"amx42", "bdxabc"} {
+		if _, err := unified.Read(context.Background(), id); err == nil {
+			t.Fatalf("Read(%q) error = nil, want malformed ID error", id)
+		}
+	}
+	if len(am.getMessageCalls) != 0 {
+		t.Fatalf("GetMessage called for malformed ID: %+v", am.getMessageCalls)
+	}
+	if len(bdClient.readCalls) != 0 {
+		t.Fatalf("BD Read called for malformed ID: %+v", bdClient.readCalls)
+	}
+}
+
 func TestUnifiedMessengerRead_BD(t *testing.T) {
 	bdClient := &fakeBDClient{
 		readMessages: map[string]*bd.Message{
@@ -413,6 +431,24 @@ func TestUnifiedMessengerAck_InvalidID(t *testing.T) {
 	}
 	if err := unified.Ack(context.Background(), "zz-123"); err == nil {
 		t.Fatal("expected error for unknown channel")
+	}
+}
+
+func TestUnifiedMessengerAck_RejectsMalformedChannelPrefixes(t *testing.T) {
+	am := &fakeAMClient{available: true}
+	bdClient := &fakeBDClient{}
+	unified := &UnifiedMessenger{amClient: am, bdClient: bdClient}
+
+	for _, id := range []string{"amx42", "bdxabc"} {
+		if err := unified.Ack(context.Background(), id); err == nil {
+			t.Fatalf("Ack(%q) error = nil, want malformed ID error", id)
+		}
+	}
+	if len(am.ackCalls) != 0 {
+		t.Fatalf("Agent Mail acknowledge called for malformed ID: %+v", am.ackCalls)
+	}
+	if len(bdClient.ackCalls) != 0 {
+		t.Fatalf("BD acknowledge called for malformed ID: %+v", bdClient.ackCalls)
 	}
 }
 

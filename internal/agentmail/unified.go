@@ -212,7 +212,7 @@ func (m *UnifiedMessenger) Read(ctx context.Context, id string) (*UnifiedMessage
 	if err := requireUnifiedContext(ctx, "read unified message"); err != nil {
 		return nil, err
 	}
-	if len(id) < 4 {
+	if len(id) < 4 || id[2] != '-' {
 		return nil, fmt.Errorf("invalid message ID format: %s", id)
 	}
 
@@ -335,7 +335,7 @@ func (m *UnifiedMessenger) Ack(ctx context.Context, id string) error {
 	if err := requireUnifiedContext(ctx, "acknowledge unified message"); err != nil {
 		return err
 	}
-	if len(id) < 4 {
+	if len(id) < 4 || id[2] != '-' {
 		return fmt.Errorf("invalid message ID format: %s", id)
 	}
 
