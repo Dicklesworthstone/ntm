@@ -300,3 +300,90 @@ system_prompt = "project override"
 		t.Fatalf("determineSourceFromProjectDir() = %q, want %q", got, "project (.ntm/personas.toml)")
 	}
 }
+
+func TestProfilesCommandContract(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	personasPath := filepath.Join(tmpDir, "personas.toml")
+	personas := `
+[[personas]]
+name = "profile-contract"
+agent_type = "codex"
+description = "CLI contract persona"
+system_prompt = "Use the profile CLI contract."
+tags = ["cli-contract"]
+focus_patterns = ["internal/cli/**"]
+`
+	if err := os.WriteFile(personasPath, []byte(personas), 0o644); err != nil {
+		t.Fatalf("WriteFile(personas) failed: %v", err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir(%q) failed: %v", tmpDir, err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	t.Setenv("NTM_CONFIG", configPath)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
+
+	oldJSONOutput := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = oldJSONOutput })
+
+	t.Run("list filters custom persona", func(t *testing.T) {
+		cmd := newProfilesCmd()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{"list", "--agent=codex", "--tag=cli-contract"})
+
+		output, err := captureStdout(t, cmd.Execute)
+		if err != nil {
+			t.Fatalf("profiles list failed: %v", err)
+		}
+		if !strings.Contains(output, "profile-contract") {
+			t.Fatalf("profiles list output = %q, want custom persona", output)
+		}
+	})
+
+	t.Run("show resolves custom persona", func(t *testing.T) {
+		cmd := newProfilesCmd()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{"show", "profile-contract"})
+
+		output, err := captureStdout(t, cmd.Execute)
+		if err != nil {
+			t.Fatalf("profiles show failed: %v", err)
+		}
+		for _, want := range []string{"Profile: profile-contract", "Focus Patterns", "internal/cli/**"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("profiles show output = %q, want %q", output, want)
+			}
+		}
+	})
+
+	t.Run("show reports missing persona", func(t *testing.T) {
+		cmd := newProfilesCmd()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{"show", "missing-profile"})
+
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), `persona "missing-profile" not found`) {
+			t.Fatalf("profiles show missing error = %v", err)
+		}
+	})
+
+	t.Run("registers profile switch", func(t *testing.T) {
+		cmd := newProfilesCmd()
+		for _, child := range cmd.Commands() {
+			if child.Name() == "switch" {
+				return
+			}
+		}
+		t.Fatal("profiles command did not register switch")
+	})
+}
