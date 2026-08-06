@@ -53,9 +53,10 @@ type OpenAPIGenerateInput struct {
 
 // OpenAPIGenerateResponse holds the result of OpenAPI generation.
 type OpenAPIGenerateResponse struct {
-	Success    bool   `json:"success"`
-	OutputPath string `json:"output_path,omitempty"`
-	Message    string `json:"message,omitempty"`
+	Success    bool            `json:"success"`
+	OutputPath string          `json:"output_path,omitempty"`
+	Message    string          `json:"message,omitempty"`
+	Spec       json.RawMessage `json:"spec,omitempty"`
 }
 
 func handleOpenAPIGenerate(ctx context.Context, input any) (any, error) {
@@ -103,10 +104,10 @@ func handleOpenAPIGenerate(ctx context.Context, input any) (any, error) {
 	}
 
 	if params.Stdout {
-		fmt.Println(string(data))
 		return OpenAPIGenerateResponse{
 			Success: true,
 			Message: "OpenAPI spec printed to stdout",
+			Spec:    data,
 		}, nil
 	}
 
@@ -170,19 +171,29 @@ Examples:
 			if err != nil {
 				return err
 			}
+			response, ok := result.(OpenAPIGenerateResponse)
+			if !ok {
+				return fmt.Errorf("unexpected openapi.generate result type %T", result)
+			}
+
+			if stdout {
+				if len(response.Spec) == 0 {
+					return fmt.Errorf("openapi.generate returned no specification for --stdout")
+				}
+				if _, err := os.Stdout.Write(response.Spec); err != nil {
+					return fmt.Errorf("write OpenAPI spec to stdout: %w", err)
+				}
+				if _, err := os.Stdout.Write([]byte("\n")); err != nil {
+					return fmt.Errorf("terminate OpenAPI spec output: %w", err)
+				}
+				return nil
+			}
 
 			if jsonOutput {
 				return json.NewEncoder(os.Stdout).Encode(result)
 			}
 
-			switch v := result.(type) {
-			case OpenAPIGenerateResponse:
-				fmt.Println(v.Message)
-			case *OpenAPIGenerateResponse:
-				if v != nil {
-					fmt.Println(v.Message)
-				}
-			}
+			fmt.Println(response.Message)
 
 			return nil
 		},

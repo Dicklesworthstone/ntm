@@ -7700,3 +7700,24 @@ func assertScanJSONResult(t *testing.T, stdout string, wantSuccess bool) {
 		t.Fatalf("error = %v, want non-empty failure cause", response["error"])
 	}
 }
+
+func TestOpenAPIGenerateStdoutEmitsSingleOpenAPIDocument(t *testing.T) {
+	originalJSONOutput := jsonOutput
+	jsonOutput = false
+	t.Cleanup(func() { jsonOutput = originalJSONOutput })
+
+	cmd := newOpenAPIGenerateCmd()
+	cmd.SetArgs([]string{"--stdout"})
+	stdout, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("openapi generate --stdout: %v", err)
+	}
+
+	var spec map[string]any
+	if err := json.Unmarshal([]byte(stdout), &spec); err != nil {
+		t.Fatalf("--stdout must contain exactly one JSON document: %v\noutput:\n%s", err, stdout)
+	}
+	if got := spec["openapi"]; got != "3.1.0" {
+		t.Fatalf("OpenAPI version = %#v, want 3.1.0", got)
+	}
+}
