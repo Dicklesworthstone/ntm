@@ -232,7 +232,43 @@ Treat a pane waiting on a background terminal as working only when a current
 live indicator is present; elapsed labels and old scrollback alone are not
 authoritative.
 
-### 3.4 Standard Error Codes
+### 3.4 Post-Action Verification Evidence
+
+`success: true` means the requested API operation completed. It is not, by
+itself, evidence that an agent consumed a prompt, a newly spawned CLI reached
+a usable prompt, or a restart replaced the intended process. Mutating robot
+callers MUST use the command-specific evidence below before treating an action
+as complete.
+
+| Operation | Evidence to inspect | Meaning and limitations |
+|---|---|---|
+| `--robot-send` | `targets`, `successful`, and `failed` | A successful target received the tmux delivery attempt. This is dispatch evidence only; it does not prove the agent processed the prompt. |
+| `--robot-send` with `--track` | `send` plus `ack.confirmations`, `ack.pending`, `ack.failed`, and `ack.timed_out` | The strongest prompt-consumption evidence. A confirmation reports its `ack_type`, time, and latency. Pending or timed-out panes require follow-up; do not retry blindly. |
+| `--robot-tail=SESSION --fresh` | Per-pane `capture_collected_at`, `capture_provenance`, and optional `capture_error` | A direct post-action observation. `capture_provenance: "live"` is fresh capture evidence; `"unavailable"` means the pane was not observed and is not evidence of no effect. |
+| `--robot-spawn` with `--spawn-wait` | The command waits up to `--spawn-timeout` for ready observations | Readiness-gated spawn evidence. A timeout is an error rather than a claim that all agents booted; inspect the resulting session with a fresh tail. |
+| `--robot-exit-cli`, `--robot-kill-agent`, and restart/relaunch paths | Per-pane `results`, including `shell_pid`, `agent_pids`, `shell_preserved`, and `verification_failed`; restart output also includes `pane_shell_pids`, `process_alive`, and relaunch status | Process/lifecycle evidence. `verification_failed` means observation failed, not that a pane was destroyed. A respawn must show a changed `pane_shell_pids.after`; unchanged or absent PID evidence is not a verified restart. |
+
+The durable attention feed mirrors actuation progress as `request`, `outcome`,
+and `verification` events. For tracked sends, the verification event records
+the target set, confirmations, pending targets, timeout state, and one of
+`confirmed`, `partial_timeout`, `timed_out`, or `pending`. It is suitable for
+asynchronous monitoring; command responses remain the primary evidence for the
+specific invocation.
+
+Example: dispatch a prompt and require bounded downstream evidence rather than
+assuming that an accepted keypress was consumed.
+
+```bash
+ntm --robot-send=payments --msg='Run focused tests and report the result.' --track --ack-timeout=30s
+ntm --robot-tail=payments --fresh --panes=1,2
+```
+
+An orchestrator should advance only for panes in `ack.confirmations` (or after
+an independently fresh, live observation establishes the intended effect).
+It should surface `pending`, `failed`, timed-out, or unavailable capture
+results for remediation instead of reporting a verified outcome.
+
+### 3.5 Standard Error Codes
 
 | Code | Meaning |
 |------|---------|
