@@ -590,7 +590,7 @@ func (s *Server) handlePolicyUpdateV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.WriteFile(policyPath, []byte(req.Content), 0644); err != nil {
+	if err := s.writePolicyFile(policyPath, []byte(req.Content), 0644); err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 			"failed to write policy file", nil, reqID)
 		return
@@ -911,7 +911,7 @@ func (s *Server) handlePolicyAutomationUpdateV1(w http.ResponseWriter, r *http.R
 
 		// Generate and write policy
 		content := generatePolicyYAMLFromPolicy(p)
-		if err := os.WriteFile(policyPath, []byte(content), 0644); err != nil {
+		if err := s.writePolicyFile(policyPath, []byte(content), 0644); err != nil {
 			writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError,
 				"failed to write policy", nil, reqID)
 			return
@@ -1460,6 +1460,13 @@ func installWrapperFile(path, content string, force bool) error {
 	}
 
 	return nil
+}
+
+func (s *Server) writePolicyFile(path string, content []byte, mode os.FileMode) error {
+	if s.policyWriteFile != nil {
+		return s.policyWriteFile(path, content, mode)
+	}
+	return os.WriteFile(path, content, mode)
 }
 
 func writeDefaultPolicyFile(path string) error {

@@ -12591,14 +12591,16 @@ func TestHandlePolicyResetV1_MkdirAllError(t *testing.T) {
 }
 
 // TestHandlePolicyResetV1_WriteFileError exercises the writeDefaultPolicyFile
-// error branch in handlePolicyResetV1 (line 743). Making .ntm dir read-only
-// prevents file creation.
+// error branch in handlePolicyResetV1. A directory at the policy path cannot
+// be overwritten as a regular file, including when tests run as root.
 func TestHandlePolicyResetV1_WriteFileError(t *testing.T) {
 	s, _ := setupTestServer(t)
 
 	tmpHome := t.TempDir()
 	ntmDir := filepath.Join(tmpHome, ".ntm")
-	os.MkdirAll(ntmDir, 0555) // read-only dir
+	if err := os.MkdirAll(filepath.Join(ntmDir, "policy.yaml"), 0755); err != nil {
+		t.Fatalf("create policy directory fixture: %v", err)
+	}
 	t.Setenv("HOME", tmpHome)
 
 	req := httptest.NewRequest("POST", "/api/v1/safety/policy/reset", nil)
@@ -12972,20 +12974,20 @@ func TestHandleSafetyBlockedV1_TruncationBranch(t *testing.T) {
 }
 
 // TestHandlePolicyValidateV1_FileBasedUnreadable exercises the file-read error
-// branch in handlePolicyValidateV1 (lines 672-680). Making the policy file
-// unreadable triggers the read error path.
+// branch in handlePolicyValidateV1. Reading a directory as the policy fails
+// consistently, including when tests run as root.
 func TestHandlePolicyValidateV1_FileBasedUnreadable(t *testing.T) {
 	s, _ := setupTestServer(t)
 
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	// Create policy file but make it unreadable
+	// A directory at the policy path is present but cannot be read as a file.
 	policyDir := filepath.Join(tmpHome, ".ntm")
-	os.MkdirAll(policyDir, 0755)
 	policyPath := filepath.Join(policyDir, "policy.yaml")
-	os.WriteFile(policyPath, []byte("version: 1"), 0644)
-	os.Chmod(policyPath, 0000) // make unreadable
+	if err := os.MkdirAll(policyPath, 0755); err != nil {
+		t.Fatalf("create policy directory fixture: %v", err)
+	}
 
 	// Empty body = file-based validation
 	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", nil)
@@ -13004,8 +13006,6 @@ func TestHandlePolicyValidateV1_FileBasedUnreadable(t *testing.T) {
 		t.Errorf("expected internal error response for unreadable file, got %v", resp)
 	}
 
-	// Restore permissions for cleanup
-	os.Chmod(policyPath, 0644)
 }
 
 // TestHandlePolicyUpdateV1_MkdirAllError exercises the MkdirAll error branch
@@ -13415,19 +13415,21 @@ func TestWSEventStore_RecordDroppedMinCount(t *testing.T) {
 }
 
 // TestHandleSafetyUninstallV1_WrapperRemoveError exercises the os.Remove error
-// for git wrapper (lines 353-356 of safety.go) when the bin dir is read-only.
+// for the git wrapper. A non-empty directory cannot be removed, including by root.
 func TestHandleSafetyUninstallV1_WrapperRemoveError(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	s, _ := setupTestServer(t)
 
-	// Create git wrapper in read-only directory
+	// A non-empty directory satisfies safetyFileExists but os.Remove rejects it.
 	binDir := filepath.Join(tmpHome, ".ntm", "bin")
-	os.MkdirAll(binDir, 0755)
-	os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\n"), 0755)
-	// Make binDir read-only so Remove fails
-	os.Chmod(binDir, 0555)
-	defer os.Chmod(binDir, 0755)
+	gitWrapperDir := filepath.Join(binDir, "git")
+	if err := os.MkdirAll(gitWrapperDir, 0755); err != nil {
+		t.Fatalf("create git wrapper directory fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitWrapperDir, "contents"), []byte("fixture"), 0644); err != nil {
+		t.Fatalf("populate git wrapper directory fixture: %v", err)
+	}
 
 	req := httptest.NewRequest("POST", "/api/v1/safety/uninstall", nil)
 	rec := httptest.NewRecorder()
@@ -13439,20 +13441,22 @@ func TestHandleSafetyUninstallV1_WrapperRemoveError(t *testing.T) {
 }
 
 // TestHandleSafetyUninstallV1_HookRemoveError exercises the os.Remove error
-// for the hook file (lines 365-367 of safety.go) when the hook dir is read-only.
+// for the hook path. A non-empty directory cannot be removed, including by root.
 func TestHandleSafetyUninstallV1_HookRemoveError(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	s, _ := setupTestServer(t)
 
-	// No wrappers installed (skip wrapper removal loop)
-	// Create hook in read-only directory
+	// No wrappers installed (skip wrapper removal loop). A non-empty directory
+	// satisfies safetyFileExists but cannot be removed.
 	hookDir := filepath.Join(tmpHome, ".claude", "hooks", "PreToolUse")
-	os.MkdirAll(hookDir, 0755)
-	os.WriteFile(filepath.Join(hookDir, "ntm-safety.sh"), []byte("#!/bin/sh\n"), 0755)
-	// Make hookDir read-only so Remove fails
-	os.Chmod(hookDir, 0555)
-	defer os.Chmod(hookDir, 0755)
+	hookPath := filepath.Join(hookDir, "ntm-safety.sh")
+	if err := os.MkdirAll(hookPath, 0755); err != nil {
+		t.Fatalf("create hook directory fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hookPath, "contents"), []byte("fixture"), 0644); err != nil {
+		t.Fatalf("populate hook directory fixture: %v", err)
+	}
 
 	req := httptest.NewRequest("POST", "/api/v1/safety/uninstall", nil)
 	rec := httptest.NewRecorder()
@@ -13506,21 +13510,17 @@ func TestHandlePolicyAutomationUpdateV1_InvalidForceReleaseBranch(t *testing.T) 
 	}
 }
 
-// TestHandlePolicyAutomationUpdateV1_WriteFileError exercises the WriteFile error
-// in handlePolicyAutomationUpdateV1 (lines 877-880 of safety.go).
+// TestHandlePolicyAutomationUpdateV1_WriteFileError exercises the policy writer
+// error branch in handlePolicyAutomationUpdateV1 without relying on permissions.
 func TestHandlePolicyAutomationUpdateV1_WriteFileError(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	s, _ := setupTestServer(t)
+	s.policyWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("injected policy write failure")
+	}
 
-	// Create .ntm dir (no policy.yaml → DefaultPolicy is used) then make read-only
-	// so the new file cannot be created when modified=true triggers write.
-	ntmDir := filepath.Join(tmpHome, ".ntm")
-	os.MkdirAll(ntmDir, 0755)
-	os.Chmod(ntmDir, 0555)
-	defer os.Chmod(ntmDir, 0755)
-
-	// Default has auto_commit=true; set to false → modified=true → WriteFile fails (dir read-only, no file)
+	// Default has auto_commit=true; set to false so modified=true reaches the writer.
 	body := `{"auto_commit":false}`
 	req := httptest.NewRequest("PUT", "/api/v1/policy/automation", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -13552,18 +13552,18 @@ func TestHandlePolicyUpdateV1_EmptyContentBranch(t *testing.T) {
 	}
 }
 
-// TestHandlePolicyUpdateV1_WriteFileError exercises the os.WriteFile error
-// in handlePolicyUpdateV1 (lines 554-558 of safety.go) when .ntm dir is read-only.
+// TestHandlePolicyUpdateV1_WriteFileError exercises the policy writer error
+// in handlePolicyUpdateV1. A directory at the target path cannot be overwritten.
 func TestHandlePolicyUpdateV1_WriteFileError(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	s, _ := setupTestServer(t)
 
-	// Create .ntm dir then make it read-only to block file write
+	// A directory at the policy path makes WriteFile fail regardless of UID.
 	ntmDir := filepath.Join(tmpHome, ".ntm")
-	os.MkdirAll(ntmDir, 0755)
-	os.Chmod(ntmDir, 0555)
-	defer os.Chmod(ntmDir, 0755)
+	if err := os.MkdirAll(filepath.Join(ntmDir, "policy.yaml"), 0755); err != nil {
+		t.Fatalf("create policy directory fixture: %v", err)
+	}
 
 	validPolicy := "version: 1\nblocked:\n  - pattern: \"rm -rf /\"\n    reason: dangerous\n"
 	body := fmt.Sprintf(`{"content":%q}`, validPolicy)
