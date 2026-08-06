@@ -499,6 +499,22 @@ func (r *Rotator) CheckAndRotate(sessionName, workDir string) ([]RotationResult,
 	// First, process any expired pending rotations
 	r.processExpiredPending(sessionName, workDir)
 
+	// Surface agents approaching exhaustion even when they have not reached the
+	// rotation threshold yet. The warning is keyed by agent and session, so
+	// repeated checks refresh the same alert instead of creating duplicates.
+	for _, agentInfo := range r.monitor.AgentsAboveThreshold(r.config.WarningThreshold * 100) {
+		usagePercent := 0.0
+		if agentInfo.Estimate != nil {
+			usagePercent = agentInfo.Estimate.UsagePercent
+		}
+		alerts.EmitContextWarning(alerts.RotationAlertData{
+			AgentID:      agentInfo.AgentID,
+			Session:      sessionName,
+			Pane:         agentInfo.PaneID,
+			ContextUsage: usagePercent,
+		})
+	}
+
 	// Find agents above rotate threshold
 	// Note: r.config.RotateThreshold is 0.0-1.0, but AgentsAboveThreshold expects 0-100 percentage
 	agentsToRotate := r.monitor.AgentsAboveThreshold(r.config.RotateThreshold * 100)

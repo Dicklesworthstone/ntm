@@ -186,6 +186,46 @@ func TestCheckAndRotate_NoAgentsAboveThreshold(t *testing.T) {
 	}
 }
 
+func TestCheckAndRotateEmitsWarningAtConfiguredThreshold(t *testing.T) {
+	tracker := alerts.GetGlobalTracker()
+	tracker.Clear()
+	t.Cleanup(tracker.Clear)
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	monitor.RegisterAgent("test__cc_1", "%0", "claude-opus-4")
+	for i := 0; i < 100; i++ {
+		monitor.RecordMessage("test__cc_1", 1000, 1000)
+	}
+
+	cfg := config.DefaultContextRotationConfig()
+	cfg.WarningThreshold = 0.30
+	cfg.RotateThreshold = 0.90
+	r := NewRotator(RotatorConfig{
+		Monitor: monitor,
+		Spawner: NewMockPaneSpawner(),
+		Config:  cfg,
+	})
+
+	results, err := r.CheckAndRotate("test-session", "/tmp")
+	if err != nil {
+		t.Fatalf("CheckAndRotate() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("rotation results = %d, want none below rotate threshold", len(results))
+	}
+
+	active := tracker.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("active alerts = %d, want 1", len(active))
+	}
+	if active[0].Type != alerts.AlertContextWarning {
+		t.Errorf("alert type = %s, want %s", active[0].Type, alerts.AlertContextWarning)
+	}
+	if active[0].Session != "test-session" {
+		t.Errorf("alert session = %q, want test-session", active[0].Session)
+	}
+}
+
 func TestRotateAgentFailureEmitsRotationAlert(t *testing.T) {
 	tracker := alerts.GetGlobalTracker()
 	tracker.Clear()
