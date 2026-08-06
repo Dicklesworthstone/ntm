@@ -2060,12 +2060,12 @@ func buildQueueDryRecommendations(report QueueDryResponse) []QueueDryRecommendat
 				Command: "br create --title=\"Queue-dry follow-up\" --type=task --priority=2",
 			},
 		)
-	} else if len(report.Evidence.TriageTopIDs) > 0 {
+	} else if report.Evidence.CountsVerified && (report.Evidence.ReadyCount > 0 || report.Evidence.ActionableCount > 0) {
 		recs = append(recs, QueueDryRecommendation{
-			Code:     "claim_top_ready",
-			Summary:  "queue is not dry; claim the top triage recommendation",
-			Command:  fmt.Sprintf("br update %s --status=in_progress", report.Evidence.TriageTopIDs[0]),
-			Evidence: strings.Join(report.Evidence.TriageTopIDs, ", "),
+			Code:     "inspect_ready_queue",
+			Summary:  "queue is not dry; inspect the live ready queue before claiming work",
+			Command:  "br ready --json",
+			Evidence: fmt.Sprintf("ready=%d actionable=%d; triage ranking does not authorize assignment", report.Evidence.ReadyCount, report.Evidence.ActionableCount),
 		})
 	}
 

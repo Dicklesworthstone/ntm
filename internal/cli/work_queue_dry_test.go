@@ -118,12 +118,13 @@ func TestBuildQueueDryRecommendationsQueueDry(t *testing.T) {
 	}
 }
 
-func TestBuildQueueDryRecommendationsActionable(t *testing.T) {
+func TestBuildQueueDryRecommendationsActionableRequiresLiveReadyQueueInspection(t *testing.T) {
 	report := QueueDryResponse{
 		QueueDry: false,
 		Evidence: QueueDryEvidence{
 			ActionableCount: 1,
 			ReadyCount:      1,
+			CountsVerified:  true,
 			TriageTopIDs:    []string{"bd-123", "bd-456"},
 		},
 	}
@@ -132,11 +133,14 @@ func TestBuildQueueDryRecommendationsActionable(t *testing.T) {
 	if len(recs) == 0 {
 		t.Fatalf("expected at least one recommendation")
 	}
-	if recs[len(recs)-1].Code != "claim_top_ready" {
-		t.Fatalf("last code=%q, want claim_top_ready", recs[len(recs)-1].Code)
+	if recs[len(recs)-1].Code != "inspect_ready_queue" {
+		t.Fatalf("last code=%q, want inspect_ready_queue", recs[len(recs)-1].Code)
 	}
-	if !strings.Contains(recs[len(recs)-1].Command, "bd-123") {
-		t.Fatalf("command=%q, expected top ID", recs[len(recs)-1].Command)
+	if recs[len(recs)-1].Command != "br ready --json" {
+		t.Fatalf("command=%q, want live ready queue inspection", recs[len(recs)-1].Command)
+	}
+	if strings.Contains(recs[len(recs)-1].Command, "br update") {
+		t.Fatalf("command=%q must not claim a raw triage row", recs[len(recs)-1].Command)
 	}
 }
 
