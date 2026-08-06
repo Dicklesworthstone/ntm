@@ -148,7 +148,10 @@ func (o *Orchestrator) WaitForShellPrompt(paneID string, timeout time.Duration) 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			output, _ := o.captureOutput(paneID, 5) // Capture last 5 lines
+			output, err := o.captureOutput(paneID, 5) // Capture last 5 lines
+			if err != nil {
+				return fmt.Errorf("capture pane output: %w", err)
+			}
 			for _, re := range shellPromptRegexps {
 				if re.MatchString(output) {
 					return nil

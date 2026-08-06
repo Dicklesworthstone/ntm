@@ -219,6 +219,19 @@ func TestWaitForShellPrompt(t *testing.T) {
 	}
 }
 
+func TestWaitForShellPromptReturnsCaptureError(t *testing.T) {
+	orch := NewOrchestrator(config.Default())
+	want := errors.New("tmux server unavailable")
+	orch.captureOutput = func(string, int) (string, error) {
+		return "", want
+	}
+
+	err := orch.WaitForShellPrompt("%42", time.Second)
+	if !errors.Is(err, want) {
+		t.Fatalf("WaitForShellPrompt() error = %v, want wrapped %v", err, want)
+	}
+}
+
 // =============================================================================
 // RestartContext fields
 // =============================================================================
