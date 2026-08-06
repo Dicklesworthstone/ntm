@@ -19,16 +19,11 @@ import (
 // unresponsive Wayland compositor, slow PowerShell on WSL).
 const clipTimeout = 5 * time.Second
 
-// clipCmd creates an exec.Command with a clipboard timeout context.
-func clipCmd(name string, args ...string) *exec.Cmd {
-	ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
-	cmd := exec.CommandContext(ctx, name, args...)
-	// Ensure cancel is called after the command completes to release the timer.
-	// We attach it via a wrapper since we can't defer here.
-	// The caller's cmd.Run()/cmd.Output() will respect the context deadline.
-	_ = cancel // cancel is captured by the context; GC handles cleanup after cmd finishes
-	return cmd
-}
+// clipWaitDelay bounds Cmd.Wait after a clipboard helper exits but leaves a
+// descendant holding its stdout pipe. CommandContext only terminates the
+// direct child; without this delay, Output can wait indefinitely for that
+// descendant to close the inherited descriptor.
+const clipWaitDelay = 250 * time.Millisecond
 
 // clipCmdRun creates and runs a command that reads from stdin, with timeout.
 func clipCmdRun(text string, name string, args ...string) error {
@@ -43,7 +38,9 @@ func clipCmdRun(text string, name string, args ...string) error {
 func clipCmdOutput(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = clipWaitDelay
+	out, err := cmd.Output()
 	return string(out), err
 }
 

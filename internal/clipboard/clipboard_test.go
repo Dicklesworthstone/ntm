@@ -1,9 +1,13 @@
 package clipboard
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"testing"
+	"time"
 )
 
 func newStubDetector(goos string, env map[string]string, bins map[string]bool, version string) detector {
@@ -103,6 +107,23 @@ func TestChooseBackendNoTools(t *testing.T) {
 	det := newStubDetector("linux", nil, nil, "")
 	if _, err := chooseBackend(det); err == nil {
 		t.Fatalf("expected error when no clipboard tools found")
+	}
+}
+
+func TestClipCmdOutputBoundsInheritedStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test requires a POSIX shell")
+	}
+
+	start := time.Now()
+	_, err := clipCmdOutput("sh", "-c", "sleep 1 & exit 0")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("clipCmdOutput error = %v, want exec.ErrWaitDelay", err)
+	}
+	if elapsed >= 750*time.Millisecond {
+		t.Fatalf("clipCmdOutput waited %v for a descendant holding stdout, want less than 750ms", elapsed)
 	}
 }
 
