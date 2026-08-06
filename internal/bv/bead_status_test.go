@@ -1201,9 +1201,11 @@ func runRealBR(t *testing.T, dir string, args ...string) []byte {
 	t.Helper()
 	cmd := exec.Command("br", args...)
 	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("br %s: %v\n%s", strings.Join(args, " "), err, output)
+		t.Fatalf("br %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, output, stderr.Bytes())
 	}
 	return output
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1147,7 +1148,9 @@ func runQueueDryGateCommand(t *testing.T, dir, failurePath, name string, args ..
 
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
 	if err == nil {
 		return output
 	}
@@ -1157,13 +1160,15 @@ func runQueueDryGateCommand(t *testing.T, dir, failurePath, name string, args ..
 		"command: " + command,
 		"exit_code: " + strconv.Itoa(exitCode),
 		"error: " + err.Error(),
-		"output:",
+		"stdout:",
 		string(output),
+		"stderr:",
+		stderr.String(),
 	}, "\n")
 	if writeErr := os.WriteFile(failurePath, []byte(contents), 0644); writeErr != nil {
 		t.Logf("write failure artifact %s: %v", failurePath, writeErr)
 	}
-	t.Fatalf("command failed: %s\nexit_code=%d\nartifact=%s\noutput:\n%s", command, exitCode, failurePath, string(output))
+	t.Fatalf("command failed: %s\nexit_code=%d\nartifact=%s\nstdout:\n%s\nstderr:\n%s", command, exitCode, failurePath, string(output), stderr.String())
 	return nil
 }
 
