@@ -1832,18 +1832,17 @@ Shell Integration:
 				}
 				opts := robot.SendAndAckOptions{
 					SendOptions: robot.SendOptions{
-						Session:      session,
-						Message:      robotSendMsg,
-						All:          robotSendAll,
-						Pane:         singularPane,
-						Panes:        paneSelectors,
-						AgentTypes:   agentTypes,
-						Exclude:      excludeList,
-						DelayMs:      robotSendDelay,
-						Enter:        enterOverride,
-						DryRun:       robotDryRunEffective,
-						ClearInput:   robotSendClearInput,
-						VerifyRender: robotSendVerifyRender,
+						Session:    session,
+						Message:    robotSendMsg,
+						All:        robotSendAll,
+						Pane:       singularPane,
+						Panes:      paneSelectors,
+						AgentTypes: agentTypes,
+						Exclude:    excludeList,
+						DelayMs:    robotSendDelay,
+						Enter:      enterOverride,
+						DryRun:     robotDryRunEffective,
+						ClearInput: robotSendClearInput,
 					},
 					AckTimeoutMs: int(ackTimeout.Milliseconds()),
 					AckPollMs:    ackPollMs,
@@ -1858,18 +1857,17 @@ Shell Integration:
 			}
 
 			opts := robot.SendOptions{
-				Session:      session,
-				Message:      robotSendMsg,
-				All:          robotSendAll,
-				Pane:         singularPane,
-				Panes:        paneSelectors,
-				AgentTypes:   agentTypes,
-				Exclude:      excludeList,
-				DelayMs:      robotSendDelay,
-				Enter:        enterOverride,
-				DryRun:       robotDryRunEffective,
-				ClearInput:   robotSendClearInput,
-				VerifyRender: robotSendVerifyRender,
+				Session:    session,
+				Message:    robotSendMsg,
+				All:        robotSendAll,
+				Pane:       singularPane,
+				Panes:      paneSelectors,
+				AgentTypes: agentTypes,
+				Exclude:    excludeList,
+				DelayMs:    robotSendDelay,
+				Enter:      enterOverride,
+				DryRun:     robotDryRunEffective,
+				ClearInput: robotSendClearInput,
 			}
 			if cfg != nil {
 				opts.Redaction = cfg.Redaction.ToRedactionLibConfig()
@@ -3441,16 +3439,15 @@ var (
 	robotOverlayNoWait  bool   // return immediately without blocking
 
 	// Robot-send flags
-	robotSend             string // session name for send
-	robotSendMsg          string // message to send
-	robotSendMsgFile      string // file containing message to send
-	robotSendEnter        bool   // send Enter after pasting message
-	robotSendClearInput   bool   // clear residual composer text before typing (ntm-5p0b)
-	robotSendVerifyRender bool   // capture bounded before/after evidence for --robot-send
-	robotSendAll          bool   // send to all panes
-	robotSendType         string // filter by agent type (e.g., "claude")
-	robotSendExclude      string // comma-separated panes to exclude
-	robotSendDelay        int    // delay between sends in ms
+	robotSend           string // session name for send
+	robotSendMsg        string // message to send
+	robotSendMsgFile    string // file containing message to send
+	robotSendEnter      bool   // send Enter after pasting message
+	robotSendClearInput bool   // clear residual composer text before typing (ntm-5p0b)
+	robotSendAll        bool   // send to all panes
+	robotSendType       string // filter by agent type (e.g., "claude")
+	robotSendExclude    string // comma-separated panes to exclude
+	robotSendDelay      int    // delay between sends in ms
 
 	// Robot-assign flags for work distribution
 	robotAssign         string // session name for work assignment
@@ -4071,7 +4068,6 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSendExclude, "exclude", "", "Exclude pane indices (comma-separated). Optional with --robot-send and --robot-route. Example: --exclude=0,3")
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")
 	rootCmd.Flags().BoolVar(&robotSendClearInput, "clear-input", false, "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing. Optional with --robot-send; recommended after interrupts on codex panes")
-	rootCmd.Flags().BoolVar(&robotSendVerifyRender, "verify-render", false, "Capture bounded before/after pane output and require rendered delivery evidence. Optional with --robot-send")
 
 	// Robot-assign flags for work distribution
 	rootCmd.Flags().StringVar(&robotAssign, "robot-assign", "", "Get work distribution recommendations. Required: SESSION. Example: ntm --robot-assign=proj --strategy=speed")
