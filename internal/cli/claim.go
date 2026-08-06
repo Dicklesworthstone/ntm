@@ -285,17 +285,24 @@ func readSoftClaim(path string) (SoftClaim, error) {
 	if err != nil {
 		return SoftClaim{}, err
 	}
-	defer f.Close()
 	decoder := json.NewDecoder(f)
 	var claim SoftClaim
-	if err := decoder.Decode(&claim); err != nil {
-		return SoftClaim{}, fmt.Errorf("decode soft claim %s: %w", path, err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return SoftClaim{}, fmt.Errorf("decode soft claim %s: multiple JSON values", path)
+	decodeErr := decoder.Decode(&claim)
+	if decodeErr == nil {
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			if err == nil {
+				decodeErr = errors.New("multiple JSON values")
+			} else {
+				decodeErr = err
+			}
 		}
-		return SoftClaim{}, fmt.Errorf("decode soft claim %s: %w", path, err)
+	}
+	closeErr := f.Close()
+	if decodeErr != nil {
+		return SoftClaim{}, fmt.Errorf("decode soft claim %s: %w", path, decodeErr)
+	}
+	if closeErr != nil {
+		return SoftClaim{}, fmt.Errorf("close soft claim %s: %w", path, closeErr)
 	}
 	if _, err := validateSoftClaimBeadID(claim.BeadID); err != nil {
 		return SoftClaim{}, fmt.Errorf("invalid soft claim %s: %w", path, err)

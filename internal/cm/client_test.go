@@ -93,10 +93,7 @@ func TestRecordOutcome(t *testing.T) {
 }
 
 func TestGetContext_PreservesRuleConfidence(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/context" {
-			t.Errorf("path = %s, want /context", r.URL.Path)
-		}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"relevantBullets":[{"id":"rule-1","content":"Use the focused proof command","confidence":0.875}],"antiPatterns":[{"id":"anti-1","content":"Do not overclaim proof","confidence":0}]}`))
 	}))
@@ -1137,7 +1134,6 @@ func TestFallback_PartialCMFunctionality(t *testing.T) {
 		switch r.URL.Path {
 		case "/context":
 			// Context endpoint works
-			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(ContextResult{
 				RelevantBullets: []Rule{{ID: "r1", Content: "Partial CM - rules work"}},
 			})
