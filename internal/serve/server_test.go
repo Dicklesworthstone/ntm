@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -6838,6 +6839,9 @@ func TestWSAttentionSubscription(t *testing.T) {
 	if sub == nil || !sub.Active {
 		t.Fatal("expected attention subscription to be active")
 	}
+	if client.isSubscribed("attention") {
+		t.Fatal("durable attention subscriptions must not also use hub topic delivery")
+	}
 
 	// Publish an event and verify it's delivered
 	feed.Append(robot.AttentionEvent{
@@ -6866,6 +6870,125 @@ func TestWSAttentionSubscription(t *testing.T) {
 
 	// Clean up
 	client.cancelAttentionSubscription()
+}
+
+func TestServerAttentionSubscriptionDeliversLiveEventOnce(t *testing.T) {
+	feed := robot.NewAttentionFeed(robot.AttentionFeedConfig{JournalSize: 8, HeartbeatInterval: 0})
+	oldFeed := robot.GetAttentionFeed()
+	robot.SetAttentionFeed(feed)
+	t.Cleanup(func() {
+		robot.SetAttentionFeed(oldFeed)
+		feed.Stop()
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve local port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release reserved local port: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := New(Config{Host: "127.0.0.1", Port: port})
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- srv.Start(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-startErr:
+			if err != nil {
+				t.Errorf("server shutdown: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("timed out waiting for server shutdown")
+		}
+	})
+
+	wsURL := fmt.Sprintf("ws://127.0.0.1:%d/api/v1/ws", port)
+	var conn *websocket.Conn
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial running server: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(WSMessage{
+		Type:      WSMsgSubscribe,
+		RequestID: "attention-live-once",
+		Data: map[string]interface{}{
+			"topics":       []string{"attention"},
+			"since_cursor": -1,
+		},
+	}); err != nil {
+		t.Fatalf("subscribe to attention: %v", err)
+	}
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read subscription acknowledgement: %v", err)
+	}
+
+	feed.Append(robot.AttentionEvent{
+		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
+		Session:       "live-session",
+		Category:      robot.EventCategoryAgent,
+		Type:          robot.EventTypeAgentStateChange,
+		Actionability: robot.ActionabilityInteresting,
+		Severity:      robot.SeverityInfo,
+		Summary:       "single live websocket delivery",
+	})
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read live attention event: %v", err)
+	}
+	var event WSEvent
+	if err := json.Unmarshal(message, &event); err != nil {
+		t.Fatalf("unmarshal live attention event: %v", err)
+	}
+	if event.Topic != "attention" {
+		t.Fatalf("event topic = %q, want attention", event.Topic)
+	}
+	if event.EventType != string(robot.EventTypeAgentStateChange) {
+		t.Fatalf("event type = %q, want %q", event.EventType, robot.EventTypeAgentStateChange)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("received duplicate live attention event")
+	} else if networkErr, ok := err.(net.Error); !ok || !networkErr.Timeout() {
+		t.Fatalf("read after live attention event = %v, want timeout", err)
+	}
+}
+
+func TestWSAttentionSubscriptionReplacementRemovesOldTopics(t *testing.T) {
+	installServeTestAttentionFeed(t)
+	client := &WSClient{
+		id:     "attention-replacement-client",
+		hub:    NewWSHub(),
+		send:   make(chan []byte, 4),
+		topics: make(map[string]struct{}),
+	}
+	defer client.cancelAttentionSubscription()
+
+	msg := WSMessage{Type: WSMsgSubscribe, Data: map[string]interface{}{"since_cursor": float64(-1)}}
+	client.handleAttentionSubscribe(msg, []string{"attention:alpha"})
+	client.handleAttentionSubscribe(msg, []string{"attention:beta"})
+
+	topics := client.Topics()
+	if len(topics) != 1 || topics[0] != "attention:beta" {
+		t.Fatalf("topics after replacement = %v, want [attention:beta]", topics)
+	}
 }
 
 // TestWSAttentionSubscriptionCursorExpired tests cursor expiration handling.
