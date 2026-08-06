@@ -268,6 +268,25 @@ func TestCAAMAdapterFetchesRobotProfilesAndCostSessions(t *testing.T) {
 	if status.Accounts[1].Provider != "claude" || !status.Accounts[1].RateLimited || status.Accounts[1].CostCents != 9 {
 		t.Fatalf("second account = %+v, want rate-limited Claude profile with 9 cents", status.Accounts[1])
 	}
+
+	// GetStatus returns a snapshot. Mutating it must not change the cached
+	// profile inventory observed by a later caller.
+	status.Accounts[0].Name = "mutated"
+	status.Providers[0] = "mutated"
+	status.ActiveAccount.Name = "mutated"
+	cached, err := adapter.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("cached GetStatus() error: %v", err)
+	}
+	if cached.Accounts[0].Name != "work" {
+		t.Fatalf("cached account name = %q, want work", cached.Accounts[0].Name)
+	}
+	if cached.Providers[0] != "claude" {
+		t.Fatalf("cached providers = %v, want sorted original providers", cached.Providers)
+	}
+	if cached.ActiveAccount == nil || cached.ActiveAccount.Name != "work" {
+		t.Fatalf("cached active account = %+v, want original work profile", cached.ActiveAccount)
+	}
 }
 
 func TestSwitchToNextAccountUsesCurrentCAAMActivateCommand(t *testing.T) {

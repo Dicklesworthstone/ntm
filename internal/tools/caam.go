@@ -301,7 +301,7 @@ func (a *CAAMAdapter) GetStatus(ctx context.Context) (*CAAMStatus, error) {
 	// Check cache first
 	caamStatusMutex.RLock()
 	if time.Now().Before(caamStatusExpiry) {
-		status := caamStatusCache
+		status := cloneCAAMStatus(caamStatusCache)
 		caamStatusMutex.RUnlock()
 		return &status, nil
 	}
@@ -315,11 +315,37 @@ func (a *CAAMAdapter) GetStatus(ctx context.Context) (*CAAMStatus, error) {
 
 	// Update cache
 	caamStatusMutex.Lock()
-	caamStatusCache = *status
+	caamStatusCache = cloneCAAMStatus(*status)
 	caamStatusExpiry = time.Now().Add(caamCacheTTL)
 	caamStatusMutex.Unlock()
 
 	return status, nil
+}
+
+// cloneCAAMStatus returns an independent status snapshot. GetStatus exposes
+// account slices and an active-account pointer to callers, so a shallow copy
+// would let callers mutate the shared cache and race with other readers.
+func cloneCAAMStatus(status CAAMStatus) CAAMStatus {
+	cloned := status
+	cloned.Providers = append([]string(nil), status.Providers...)
+	cloned.Accounts = append([]CAAMAccount(nil), status.Accounts...)
+	cloned.ActiveAccount = nil
+
+	if status.ActiveAccount == nil {
+		return cloned
+	}
+	for i := range status.Accounts {
+		if status.ActiveAccount == &status.Accounts[i] {
+			cloned.ActiveAccount = &cloned.Accounts[i]
+			return cloned
+		}
+	}
+
+	// Be defensive about detached active-account pointers from an unexpected
+	// CAAM response: preserve the value without aliasing caller-owned memory.
+	active := *status.ActiveAccount
+	cloned.ActiveAccount = &active
+	return cloned
 }
 
 // fetchStatus fetches fresh status from caam
