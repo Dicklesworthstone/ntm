@@ -376,6 +376,29 @@ func TestRCHAdapterGetAvailabilityCaching(t *testing.T) {
 	}
 }
 
+func TestRCHAdapterGetAvailabilityHonorsCancellationWhileCacheLockIsHeld(t *testing.T) {
+	rchAvailabilityMutex.Lock()
+	defer rchAvailabilityMutex.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := NewRCHAdapter().GetAvailability(ctx)
+		result <- err
+	}()
+
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GetAvailability() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetAvailability() remained blocked after context cancellation")
+	}
+}
+
 func TestToolRCHInAllTools(t *testing.T) {
 	tools := AllTools()
 	found := false

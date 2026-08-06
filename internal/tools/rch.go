@@ -243,7 +243,9 @@ func rchLogger() *slog.Logger {
 // GetAvailability returns whether rch is available and compatible, with caching.
 // It also checks worker availability since workers may come and go.
 func (a *RCHAdapter) GetAvailability(ctx context.Context) (*RCHAvailability, error) {
-	rchAvailabilityMutex.RLock()
+	if err := lockRCHAvailabilityRead(ctx); err != nil {
+		return nil, err
+	}
 	if time.Now().Before(rchAvailabilityExpiry) {
 		availability := rchAvailabilityCache
 		rchAvailabilityMutex.RUnlock()
@@ -251,7 +253,9 @@ func (a *RCHAdapter) GetAvailability(ctx context.Context) (*RCHAvailability, err
 	}
 	rchAvailabilityMutex.RUnlock()
 
-	rchAvailabilityMutex.Lock()
+	if err := lockRCHAvailabilityWrite(ctx); err != nil {
+		return nil, err
+	}
 	defer rchAvailabilityMutex.Unlock()
 
 	if time.Now().Before(rchAvailabilityExpiry) {
@@ -265,6 +269,49 @@ func (a *RCHAdapter) GetAvailability(ctx context.Context) (*RCHAvailability, err
 	rchAvailabilityExpiry = time.Now().Add(rchAvailabilityTTL)
 
 	return availability, nil
+}
+
+func lockRCHAvailabilityRead(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("RCH availability context is required")
+	}
+	for !rchAvailabilityMutex.TryRLock() {
+		if err := waitForRCHAvailabilityLock(ctx); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		rchAvailabilityMutex.RUnlock()
+		return err
+	}
+	return nil
+}
+
+func lockRCHAvailabilityWrite(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("RCH availability context is required")
+	}
+	for !rchAvailabilityMutex.TryLock() {
+		if err := waitForRCHAvailabilityLock(ctx); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		rchAvailabilityMutex.Unlock()
+		return err
+	}
+	return nil
+}
+
+func waitForRCHAvailabilityLock(ctx context.Context) error {
+	timer := time.NewTimer(5 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // InvalidateAvailabilityCache forces the next GetAvailability call to re-check.
