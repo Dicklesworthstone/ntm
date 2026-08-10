@@ -172,15 +172,26 @@ normalize_release_version() {
     printf 'v%s\n' "${version#v}"
 }
 
-# Download a file
+# Download a file. Pass "true" as the third argument to suppress the
+# underlying tool's own error output (used when a 404 is an expected,
+# silently-handled fallback rather than a real failure).
 download_file() {
     local url="$1"
     local dest="$2"
+    local quiet="${3:-false}"
 
     if has_cmd curl; then
-        curl -fsSL "$url" -o "$dest" || return 1
+        if [ "$quiet" = true ]; then
+            curl -fsSL "$url" -o "$dest" 2>/dev/null || return 1
+        else
+            curl -fsSL "$url" -o "$dest" || return 1
+        fi
     elif has_cmd wget; then
-        wget -q "$url" -O "$dest" || return 1
+        if [ "$quiet" = true ]; then
+            wget -q "$url" -O "$dest" 2>/dev/null || return 1
+        else
+            wget -q "$url" -O "$dest" || return 1
+        fi
     else
         print_error "Neither curl nor wget found. Please install one."
         return 1
@@ -316,7 +327,7 @@ download_release_checksums() {
     for candidate in "${candidates[@]}"; do
         checksum_url=$(build_download_url "$version" "$candidate")
         checksum_path="${dest_dir}/${candidate}"
-        if download_file "$checksum_url" "$checksum_path"; then
+        if download_file "$checksum_url" "$checksum_path" true; then
             printf '%s\n' "$checksum_path"
             return 0
         fi
