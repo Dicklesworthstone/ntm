@@ -20,8 +20,27 @@ import (
 var ErrNotInstalled = fmt.Errorf("cm is not installed")
 
 type Client struct {
-	baseURL string
-	client  *http.Client
+	baseURL   string
+	sessionID string
+	client    *http.Client
+}
+
+type mcpRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type mcpRPCResponse struct {
+	Result json.RawMessage `json:"result"`
+	Error  *mcpRPCError    `json:"error"`
+}
+
+type mcpToolResult struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	IsError bool `json:"isError"`
 }
 
 // PIDFileInfo matches supervisor.PIDFileInfo
@@ -48,16 +67,100 @@ func NewClient(projectDir, sessionID string) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL: fmt.Sprintf("http://127.0.0.1:%d", info.Port),
-		client:  &http.Client{Timeout: 10 * time.Second},
+		baseURL:   fmt.Sprintf("http://127.0.0.1:%d", info.Port),
+		sessionID: sessionID,
+		client:    &http.Client{Timeout: 10 * time.Second},
 	}, nil
 }
 
+func (c *Client) rpc(ctx context.Context, method string, params any, result any) error {
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+	}
+	if params != nil {
+		reqBody["params"] = params
+	}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshaling cm MCP request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("cm MCP %s failed: %s", method, resp.Status)
+	}
+
+	var rpcResponse mcpRPCResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&rpcResponse); err != nil {
+		return fmt.Errorf("decoding cm MCP %s response: %w", method, err)
+	}
+	if rpcResponse.Error != nil {
+		return fmt.Errorf("cm MCP %s failed (%d): %s", method, rpcResponse.Error.Code, rpcResponse.Error.Message)
+	}
+	if len(rpcResponse.Result) == 0 || string(rpcResponse.Result) == "null" {
+		return fmt.Errorf("cm MCP %s response contained no result", method)
+	}
+	if result == nil {
+		return nil
+	}
+	if err := json.Unmarshal(rpcResponse.Result, result); err != nil {
+		return fmt.Errorf("decoding cm MCP %s result: %w", method, err)
+	}
+	return nil
+}
+
+func (c *Client) callTool(ctx context.Context, name string, arguments any, result any) error {
+	var toolResult mcpToolResult
+	if err := c.rpc(ctx, "tools/call", map[string]any{
+		"name":      name,
+		"arguments": arguments,
+	}, &toolResult); err != nil {
+		return err
+	}
+
+	var textResult string
+	for _, content := range toolResult.Content {
+		if content.Type == "text" && strings.TrimSpace(content.Text) != "" {
+			textResult = content.Text
+			break
+		}
+	}
+	if toolResult.IsError {
+		if textResult != "" {
+			return fmt.Errorf("cm tool %s failed: %s", name, textResult)
+		}
+		return fmt.Errorf("cm tool %s failed", name)
+	}
+	if result == nil {
+		return nil
+	}
+	if textResult == "" {
+		return fmt.Errorf("cm tool %s response contained no text result", name)
+	}
+	if err := json.Unmarshal([]byte(textResult), result); err != nil {
+		return fmt.Errorf("decoding cm tool %s result: %w", name, err)
+	}
+	return nil
+}
+
 type ContextResult struct {
-	RelevantBullets  []Rule    `json:"relevantBullets"`
-	AntiPatterns     []Rule    `json:"antiPatterns"`
-	HistorySnippets  []Snippet `json:"historySnippets"`
-	SuggestedQueries []string  `json:"suggestedCassQueries"`
+	RelevantBullets  []Rule           `json:"relevantBullets"`
+	AntiPatterns     []Rule           `json:"antiPatterns"`
+	HistorySnippets  []CLIHistorySnip `json:"historySnippets"`
+	SuggestedQueries []string         `json:"suggestedCassQueries"`
 }
 
 type Rule struct {
@@ -67,66 +170,26 @@ type Rule struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 }
 
-type Snippet struct {
-	ID      string `json:"id"`
-	Content string `json:"content"`
-}
-
-// GetContext queries CM for task-relevant rules via HTTP.
+// GetContext queries CM for task-relevant rules through its MCP HTTP server.
 //
 // `workspace`, when non-empty, is sent as a `workspace` field on the request
 // body so the daemon can scope its retrieval to that workspace and avoid
 // same-basename cross-project context bleed (#132).
 func (c *Client) GetContext(ctx context.Context, task string, workspace string) (*ContextResult, error) {
-	reqBody := map[string]string{"task": task}
+	arguments := map[string]string{"task": task}
 	if strings.TrimSpace(workspace) != "" {
-		reqBody["workspace"] = workspace
+		arguments["workspace"] = workspace
 	}
-	data, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/context", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("cm context failed: %s", resp.Status)
-	}
-
 	var result ContextResult
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&result); err != nil {
+	if err := c.callTool(ctx, "cm_context", arguments, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-// Health checks whether the CM daemon is responding at /health.
+// Health checks whether the CM daemon responds to the MCP ping method.
 func (c *Client) Health(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
-	if err != nil {
-		return err
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("cm health failed: %s", resp.Status)
-	}
-	return nil
+	return c.rpc(ctx, "ping", map[string]any{}, nil)
 }
 
 // Port returns the daemon port extracted from the client's base URL.
@@ -164,26 +227,30 @@ type OutcomeReport struct {
 
 // RecordOutcome sends feedback about rule effectiveness.
 func (c *Client) RecordOutcome(ctx context.Context, report OutcomeReport) error {
-	data, err := json.Marshal(report)
-	if err != nil {
-		return fmt.Errorf("marshal outcome report: %w", err)
+	if strings.TrimSpace(c.sessionID) == "" {
+		return fmt.Errorf("cm outcome failed: session ID is empty")
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/outcome", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
+	notes := strings.TrimSpace(report.Notes)
+	if sentiment := strings.TrimSpace(report.Sentiment); sentiment != "" {
+		// CM's MCP outcome schema has no separate sentiment field. Preserve the
+		// legacy NTM value in notes instead of silently dropping it.
+		if notes != "" {
+			notes = fmt.Sprintf("sentiment=%s\n%s", sentiment, notes)
+		} else {
+			notes = "sentiment=" + sentiment
+		}
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("cm outcome failed: %s", resp.Status)
+	arguments := map[string]any{
+		"sessionId": c.sessionID,
+		"outcome":   string(report.Status),
+		"rulesUsed": report.RuleIDs,
 	}
-	return nil
+	if notes != "" {
+		arguments["notes"] = notes
+	}
+	return c.callTool(ctx, "cm_outcome", arguments, nil)
 }
 
 // CLIClient interacts with the CM CLI directly via exec.Command.
@@ -302,11 +369,34 @@ func (c *CLIClient) GetContext(ctx context.Context, task string, workspace strin
 		}
 	}
 
-	var result CLIContextResponse
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+	result, err := decodeCLIContextResponse(stdout.Bytes())
+	if err != nil {
 		return nil, fmt.Errorf("parsing cm output: %w (raw: %s)", err, stdout.String())
 	}
 
+	return result, nil
+}
+
+func decodeCLIContextResponse(data []byte) (*CLIContextResponse, error) {
+	var envelope struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+
+	var result CLIContextResponse
+	if len(envelope.Data) > 0 && string(envelope.Data) != "null" {
+		if err := json.Unmarshal(envelope.Data, &result); err != nil {
+			return nil, err
+		}
+		result.Success = envelope.Success
+		return &result, nil
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
 	return &result, nil
 }
 

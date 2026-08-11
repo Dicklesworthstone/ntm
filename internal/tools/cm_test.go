@@ -28,10 +28,29 @@ func TestCMAdapterConnectSetsDiscoveredServerPort(t *testing.T) {
 
 func TestCMAdapterIsDaemonRunningUsesConnectedClientEndpoint(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Errorf("path = %s, want /health", r.URL.Path)
+		if r.URL.Path != "/" {
+			t.Errorf("path = %s, want /", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		var request struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if request.Method != "ping" {
+			t.Errorf("MCP method = %q, want ping", request.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]any{},
+		}); err != nil {
+			t.Fatalf("encode MCP response: %v", err)
+		}
 	}))
 	defer ts.Close()
 

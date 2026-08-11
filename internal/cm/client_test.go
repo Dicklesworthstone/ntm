@@ -14,6 +14,38 @@ import (
 	"time"
 )
 
+func writeMCPResult(t *testing.T, w http.ResponseWriter, result any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result":  result,
+	}); err != nil {
+		t.Fatalf("encode MCP response: %v", err)
+	}
+}
+
+func writeMCPToolResponse(t *testing.T, w http.ResponseWriter, result any) {
+	t.Helper()
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal tool result: %v", err)
+	}
+	writeMCPResult(t, w, map[string]any{
+		"content": []map[string]string{{"type": "text", "text": string(data)}},
+	})
+}
+
+func writeMCPContextResponse(t *testing.T, w http.ResponseWriter, result ContextResult) {
+	t.Helper()
+	writeMCPToolResponse(t, w, result)
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
+}
+
 func TestNewClient(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
@@ -37,19 +69,21 @@ func TestNewClient(t *testing.T) {
 	if client.Port() != 12345 {
 		t.Errorf("NewClient() Port() = %d, want 12345", client.Port())
 	}
+	if client.sessionID != sessionID {
+		t.Errorf("NewClient() sessionID = %q, want %q", client.sessionID, sessionID)
+	}
 }
 
 func TestGetContext(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/context" {
-			t.Errorf("path = %s, want /context", r.URL.Path)
+		if r.URL.Path != "/" {
+			t.Errorf("path = %s, want /", r.URL.Path)
 		}
 		if r.Method != "POST" {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ContextResult{
+		writeMCPContextResponse(t, w, ContextResult{
 			RelevantBullets: []Rule{{ID: "r1", Content: "Use HTTP"}},
 		})
 	}))
@@ -70,18 +104,35 @@ func TestGetContext(t *testing.T) {
 	}
 }
 
+func TestGetContextReturnsMCPToolError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeMCPResult(t, w, map[string]any{
+			"content": []map[string]string{{"type": "text", "text": "CASS unavailable"}},
+			"isError": true,
+		})
+	}))
+	defer ts.Close()
+
+	client := &Client{baseURL: ts.URL, client: ts.Client()}
+	_, err := client.GetContext(context.Background(), "test task", "")
+	if err == nil || !strings.Contains(err.Error(), "CASS unavailable") {
+		t.Fatalf("GetContext() error = %v, want MCP tool error", err)
+	}
+}
+
 func TestRecordOutcome(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/outcome" {
-			t.Errorf("path = %s, want /outcome", r.URL.Path)
+		if r.URL.Path != "/" {
+			t.Errorf("path = %s, want /", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusOK)
+		writeMCPToolResponse(t, w, map[string]any{"success": true})
 	}))
 	defer ts.Close()
 
 	client := &Client{
-		baseURL: ts.URL,
-		client:  ts.Client(),
+		baseURL:   ts.URL,
+		sessionID: "test-session",
+		client:    ts.Client(),
 	}
 
 	err := client.RecordOutcome(context.Background(), OutcomeReport{
@@ -92,10 +143,24 @@ func TestRecordOutcome(t *testing.T) {
 	}
 }
 
+func TestRecordOutcomeRequiresSessionID(t *testing.T) {
+	client := &Client{
+		baseURL: "http://127.0.0.1:1",
+		client:  http.DefaultClient,
+	}
+
+	err := client.RecordOutcome(context.Background(), OutcomeReport{Status: OutcomeSuccess})
+	if err == nil || !strings.Contains(err.Error(), "session ID is empty") {
+		t.Fatalf("RecordOutcome() error = %v, want missing session ID error", err)
+	}
+}
+
 func TestGetContext_PreservesRuleConfidence(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"relevantBullets":[{"id":"rule-1","content":"Use the focused proof command","confidence":0.875}],"antiPatterns":[{"id":"anti-1","content":"Do not overclaim proof","confidence":0}]}`))
+		writeMCPContextResponse(t, w, ContextResult{
+			RelevantBullets: []Rule{{ID: "rule-1", Content: "Use the focused proof command", Confidence: float64Ptr(0.875)}},
+			AntiPatterns:    []Rule{{ID: "anti-1", Content: "Do not overclaim proof", Confidence: float64Ptr(0)}},
+		})
 	}))
 	defer ts.Close()
 
@@ -121,13 +186,22 @@ func TestGetContext_PreservesRuleConfidence(t *testing.T) {
 func TestClientHealth(t *testing.T) {
 	t.Run("healthy", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/health" {
-				t.Errorf("path = %s, want /health", r.URL.Path)
+			if r.URL.Path != "/" {
+				t.Errorf("path = %s, want /", r.URL.Path)
 			}
-			if r.Method != http.MethodGet {
-				t.Errorf("method = %s, want GET", r.Method)
+			if r.Method != http.MethodPost {
+				t.Errorf("method = %s, want POST", r.Method)
 			}
-			w.WriteHeader(http.StatusOK)
+			var request struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode ping request: %v", err)
+			}
+			if request.Method != "ping" {
+				t.Errorf("MCP method = %q, want ping", request.Method)
+			}
+			writeMCPResult(t, w, map[string]any{})
 		}))
 		defer ts.Close()
 
@@ -154,6 +228,29 @@ func TestClientHealth(t *testing.T) {
 
 		if err := client.Health(context.Background()); err == nil {
 			t.Fatal("Health() error = nil, want non-nil")
+		}
+	})
+
+	t.Run("MCP error", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]any{
+					"code":    -32601,
+					"message": "Method not found",
+				},
+			}); err != nil {
+				t.Fatalf("encode MCP error: %v", err)
+			}
+		}))
+		defer ts.Close()
+
+		client := &Client{baseURL: ts.URL, client: ts.Client()}
+		err := client.Health(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "-32601") {
+			t.Fatalf("Health() error = %v, want MCP method error", err)
 		}
 	})
 }
@@ -365,8 +462,9 @@ func TestGetContext_ServerError500(t *testing.T) {
 	defer ts.Close()
 
 	client := &Client{
-		baseURL: ts.URL,
-		client:  ts.Client(),
+		baseURL:   ts.URL,
+		sessionID: "test-session",
+		client:    ts.Client(),
 	}
 
 	_, err := client.GetContext(context.Background(), "test task", "")
@@ -502,8 +600,9 @@ func TestRecordOutcome_ServerErrors(t *testing.T) {
 			defer ts.Close()
 
 			client := &Client{
-				baseURL: ts.URL,
-				client:  ts.Client(),
+				baseURL:   ts.URL,
+				sessionID: "test-session",
+				client:    ts.Client(),
 			}
 
 			err := client.RecordOutcome(context.Background(), OutcomeReport{
@@ -675,13 +774,18 @@ func TestGetRecoveryContext_LimitsApplied(t *testing.T) {
 // TestGetContext_RequestBodyValidation verifies correct request body is sent
 func TestGetContext_RequestBodyValidation(t *testing.T) {
 	start := time.Now()
-	var receivedBody map[string]string
+	var receivedBody struct {
+		Method string `json:"method"`
+		Params struct {
+			Name      string            `json:"name"`
+			Arguments map[string]string `json:"arguments"`
+		} `json:"params"`
+	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		json.Unmarshal(body, &receivedBody)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ContextResult{})
+		writeMCPContextResponse(t, w, ContextResult{})
 	}))
 	defer ts.Close()
 
@@ -696,29 +800,44 @@ func TestGetContext_RequestBodyValidation(t *testing.T) {
 		t.Fatalf("[CM-ERROR] GetContext: unexpected error: %v", err)
 	}
 
-	if receivedBody["task"] != testTask {
-		t.Errorf("[CM-ERROR] GetContext: task mismatch, sent=%q, received=%q", testTask, receivedBody["task"])
+	if receivedBody.Method != "tools/call" || receivedBody.Params.Name != "cm_context" {
+		t.Errorf("[CM-ERROR] GetContext: unexpected MCP call: %+v", receivedBody)
+	}
+	if receivedBody.Params.Arguments["task"] != testTask {
+		t.Errorf("[CM-ERROR] GetContext: task mismatch, sent=%q, received=%q", testTask, receivedBody.Params.Arguments["task"])
 	}
 
 	t.Logf("[CM-ERROR] Operation=RequestValidation | Task=%q | Received=%q | Duration=%v",
-		testTask, receivedBody["task"], time.Since(start))
+		testTask, receivedBody.Params.Arguments["task"], time.Since(start))
 }
 
 // TestRecordOutcome_RequestBodyValidation verifies correct outcome is sent
 func TestRecordOutcome_RequestBodyValidation(t *testing.T) {
 	start := time.Now()
-	var receivedBody OutcomeReport
+	var receivedBody struct {
+		Method string `json:"method"`
+		Params struct {
+			Name      string `json:"name"`
+			Arguments struct {
+				SessionID string   `json:"sessionId"`
+				Outcome   string   `json:"outcome"`
+				RulesUsed []string `json:"rulesUsed"`
+				Notes     string   `json:"notes"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		json.Unmarshal(body, &receivedBody)
-		w.WriteHeader(http.StatusOK)
+		writeMCPToolResponse(t, w, map[string]any{"success": true})
 	}))
 	defer ts.Close()
 
 	client := &Client{
-		baseURL: ts.URL,
-		client:  ts.Client(),
+		baseURL:   ts.URL,
+		sessionID: "test-session",
+		client:    ts.Client(),
 	}
 
 	report := OutcomeReport{
@@ -733,11 +852,20 @@ func TestRecordOutcome_RequestBodyValidation(t *testing.T) {
 		t.Fatalf("[CM-ERROR] RecordOutcome: unexpected error: %v", err)
 	}
 
-	if receivedBody.Status != report.Status {
-		t.Errorf("[CM-ERROR] Status mismatch: sent=%v, received=%v", report.Status, receivedBody.Status)
+	if receivedBody.Method != "tools/call" || receivedBody.Params.Name != "cm_outcome" {
+		t.Errorf("[CM-ERROR] unexpected MCP call: %+v", receivedBody)
 	}
-	if len(receivedBody.RuleIDs) != len(report.RuleIDs) {
-		t.Errorf("[CM-ERROR] RuleIDs mismatch: sent=%v, received=%v", report.RuleIDs, receivedBody.RuleIDs)
+	if receivedBody.Params.Arguments.SessionID != "test-session" {
+		t.Errorf("[CM-ERROR] SessionID mismatch: received=%q", receivedBody.Params.Arguments.SessionID)
+	}
+	if receivedBody.Params.Arguments.Outcome != string(report.Status) {
+		t.Errorf("[CM-ERROR] Status mismatch: sent=%v, received=%v", report.Status, receivedBody.Params.Arguments.Outcome)
+	}
+	if len(receivedBody.Params.Arguments.RulesUsed) != len(report.RuleIDs) {
+		t.Errorf("[CM-ERROR] RuleIDs mismatch: sent=%v, received=%v", report.RuleIDs, receivedBody.Params.Arguments.RulesUsed)
+	}
+	if receivedBody.Params.Arguments.Notes != "sentiment=positive\nTest notes" {
+		t.Errorf("[CM-ERROR] Notes mismatch: received=%q", receivedBody.Params.Arguments.Notes)
 	}
 
 	t.Logf("[CM-ERROR] Operation=OutcomeValidation | Status=%s | RuleCount=%d | Duration=%v",
@@ -882,9 +1010,8 @@ func TestGetContext_CASSUnavailable(t *testing.T) {
 
 	// Server returns success but with empty/error history snippets (CASS unavailable)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		// CM returns rules but no history (simulating CASS being down)
-		json.NewEncoder(w).Encode(ContextResult{
+		writeMCPContextResponse(t, w, ContextResult{
 			RelevantBullets: []Rule{{ID: "r1", Content: "Test rule"}},
 			AntiPatterns:    []Rule{},
 			// HistorySnippets would be nil/empty when CASS is unavailable
@@ -893,8 +1020,9 @@ func TestGetContext_CASSUnavailable(t *testing.T) {
 	defer ts.Close()
 
 	client := &Client{
-		baseURL: ts.URL,
-		client:  ts.Client(),
+		baseURL:   ts.URL,
+		sessionID: "test-session",
+		client:    ts.Client(),
 	}
 
 	res, err := client.GetContext(context.Background(), "test task", "")
@@ -916,10 +1044,9 @@ func TestGetContext_PartialResponse(t *testing.T) {
 	start := time.Now()
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		// Partial response - only some fields populated
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"relevantBullets": []Rule{{ID: "partial-rule", Content: "Partial data"}},
+		writeMCPContextResponse(t, w, ContextResult{
+			RelevantBullets: []Rule{{ID: "partial-rule", Content: "Partial data"}},
 			// Missing antiPatterns, historySnippets, suggestedCassQueries
 		})
 	}))
@@ -1050,8 +1177,9 @@ func TestRecordOutcome_InvalidReport(t *testing.T) {
 	defer ts.Close()
 
 	client := &Client{
-		baseURL: ts.URL,
-		client:  ts.Client(),
+		baseURL:   ts.URL,
+		sessionID: "test-session",
+		client:    ts.Client(),
 	}
 
 	testCases := []struct {
@@ -1131,13 +1259,21 @@ func TestFallback_PartialCMFunctionality(t *testing.T) {
 	callCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
-		switch r.URL.Path {
-		case "/context":
+		var request struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		switch request.Params.Name {
+		case "cm_context":
 			// Context endpoint works
-			json.NewEncoder(w).Encode(ContextResult{
+			writeMCPContextResponse(t, w, ContextResult{
 				RelevantBullets: []Rule{{ID: "r1", Content: "Partial CM - rules work"}},
 			})
-		case "/outcome":
+		case "cm_outcome":
 			// Outcome endpoint fails
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte("Guard service unavailable"))
@@ -1148,8 +1284,9 @@ func TestFallback_PartialCMFunctionality(t *testing.T) {
 	defer ts.Close()
 
 	client := &Client{
-		baseURL: ts.URL,
-		client:  ts.Client(),
+		baseURL:   ts.URL,
+		sessionID: "test-session",
+		client:    ts.Client(),
 	}
 
 	// Context should work
@@ -1204,8 +1341,7 @@ func TestFallback_CachedContextOnError(t *testing.T) {
 		callCount++
 		if callCount == 1 {
 			// First call succeeds
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(ContextResult{
+			writeMCPContextResponse(t, w, ContextResult{
 				RelevantBullets: []Rule{{ID: "cached", Content: "Cached rule"}},
 			})
 		} else {
@@ -1378,10 +1514,31 @@ func TestCLIContextResponse_PreservesRuleConfidence(t *testing.T) {
 	}
 }
 
+func TestDecodeCLIContextResponse_CurrentEnvelope(t *testing.T) {
+	result, err := decodeCLIContextResponse([]byte(`{
+		"success": true,
+		"data": {
+			"task": "repair memory",
+			"relevantBullets": [{"id":"rule-1","content":"Use the native CM contract"}],
+			"antiPatterns": [],
+			"historySnippets": [{"source_path":"/tmp/session.jsonl","title":"Prior repair","snippet":"Fixed it","agent":"codex"}],
+			"suggestedCassQueries": ["cass search memory"]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("decode current CM envelope: %v", err)
+	}
+	if !result.Success || result.Task != "repair memory" {
+		t.Fatalf("decoded result = %+v", result)
+	}
+	if len(result.HistorySnippets) != 1 || result.HistorySnippets[0].Snippet != "Fixed it" {
+		t.Fatalf("history snippets = %+v", result.HistorySnippets)
+	}
+}
+
 // TestGetContextSendsWorkspace verifies the #132 fix: when callers pass a
-// non-empty workspace, the HTTP client puts it on the request body so the
-// daemon can scope retrieval. Empty workspace must be elided so older
-// daemons that don't understand the field aren't confused by a "" value.
+// non-empty workspace, the HTTP client puts it in the cm_context MCP arguments
+// so the daemon can scope retrieval. Empty workspace must be elided.
 func TestGetContextSendsWorkspace(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1398,19 +1555,22 @@ func TestGetContextSendsWorkspace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
-				var got map[string]string
+				var got struct {
+					Params struct {
+						Arguments map[string]string `json:"arguments"`
+					} `json:"params"`
+				}
 				if err := json.Unmarshal(body, &got); err != nil {
 					t.Fatalf("decode body: %v", err)
 				}
-				gotWs, present := got["workspace"]
+				gotWs, present := got.Params.Arguments["workspace"]
 				if present != tc.wantField {
 					t.Errorf("workspace field present=%v, want %v (body=%s)", present, tc.wantField, string(body))
 				}
 				if tc.wantField && gotWs != tc.wantValue {
 					t.Errorf("workspace=%q, want %q", gotWs, tc.wantValue)
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"relevant_bullets":[]}`))
+				writeMCPContextResponse(t, w, ContextResult{})
 			}))
 			defer ts.Close()
 
