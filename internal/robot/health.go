@@ -406,8 +406,8 @@ type StallCheckResult struct {
 
 // ErrorCheckResult contains the result of error pattern detection
 type ErrorCheckResult struct {
-	HasErrors   bool     `json:"has_errors"`
-	RateLimited bool     `json:"rate_limited"`
+	HasErrors   bool `json:"has_errors"`
+	RateLimited bool `json:"rate_limited"`
 	// Blocked: the pane is parked on an interactive gate screen (trust
 	// dialog, login gate). Deliberately NOT an error: auto-restart cannot
 	// answer a dialog — the gate reappears on relaunch with the session

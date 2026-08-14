@@ -67,7 +67,7 @@ type transcriptEntry struct {
 		Model        string `json:"model"`
 		Cwd          string `json:"cwd"`
 		ThreadSource string `json:"thread_source"`
-		Info  struct {
+		Info         struct {
 			LastTokenUsage struct {
 				InputTokens           int `json:"input_tokens"`
 				CachedInputTokens     int `json:"cached_input_tokens"`
