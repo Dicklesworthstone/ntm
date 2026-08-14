@@ -4915,6 +4915,10 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		// Resolve agent mapping for this session
 		agentMapping := resolveAgentsForSession(panes, mailAgents)
 
+		// Ground-truth transcript usage, unambiguous panes only (memoized
+		// per agent-type+cwd group).
+		paneTranscripts := resolvePaneTranscripts(panes)
+
 		for _, pane := range panes {
 			// Capture output for state detection and enhanced type detection
 			captured := ""
@@ -4965,8 +4969,9 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 						agent.ContextPercent = usage.UsagePercent
 					}
 					// Prefer ground truth from the agent CLI's own session
-					// transcript when one correlates to this pane.
-					if tu, ok := transcriptUsageForPane(strings.ToLower(agent.Type), pane.ID); ok {
+					// transcript when one is unambiguously correlated to this
+					// pane (see resolvePaneTranscripts).
+					if tu, ok := paneTranscripts[pane.ID]; ok {
 						limit := tu.ContextWindow
 						if limit <= 0 {
 							model := tu.Model
@@ -4976,7 +4981,14 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 							limit = getContextLimit(model)
 						}
 						if limit > 0 {
-							agent.ContextPercent = float64(tu.Tokens) / float64(limit) * 100
+							pct := float64(tu.Tokens) / float64(limit) * 100
+							if pct > 100 {
+								// Over-100% means the registry window for
+								// this model is wrong; cap at the safe
+								// rotation-triggering ceiling.
+								pct = 100
+							}
+							agent.ContextPercent = pct
 						}
 					}
 				}
@@ -10588,21 +10600,58 @@ func generateContextHints(lowUsage, highUsage []string, highCount, total int) *C
 	return hints
 }
 
-// transcriptUsageForPane correlates a pane with its agent CLI's own session
-// transcript via the pane's current working directory and returns the last
-// usage record. Heuristic: the newest matching transcript wins, so a pane
-// that shares a project directory with another same-CLI session can be
-// attributed the wrong transcript. Overridable for tests.
-var transcriptUsageForPane = func(agentType, paneID string) (*ntmctx.TranscriptUsage, bool) {
+// paneCurrentPath returns a pane's current working directory. Overridable
+// for tests.
+var paneCurrentPath = func(paneID string) (string, bool) {
 	cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_path}")
 	if err != nil {
-		return nil, false
+		return "", false
 	}
 	cwd = strings.TrimSpace(cwd)
-	if cwd == "" {
-		return nil, false
-	}
+	return cwd, cwd != ""
+}
+
+// transcriptUsageForCwd finds the newest transcript usage for an agent type
+// working in cwd. Overridable for tests.
+var transcriptUsageForCwd = func(agentType, cwd string) (*ntmctx.TranscriptUsage, bool) {
 	return ntmctx.LatestAgentTranscriptUsage(agentType, cwd, time.Time{})
+}
+
+// resolvePaneTranscripts correlates panes with their agent CLI's own session
+// transcripts via each pane's working directory, returning usage keyed by
+// pane ID. Correlation is by (agent type, cwd), so when SEVERAL panes of the
+// same agent type share one directory — the normal NTM swarm layout — the
+// newest transcript cannot be attributed to any specific pane; those panes
+// get NO transcript (scrollback estimation stands) rather than all being
+// assigned the same session's numbers. Transcript lookups are memoized per
+// (type, cwd) so a snapshot over many panes costs one filesystem probe per
+// group, not per pane.
+func resolvePaneTranscripts(panes []tmux.Pane) map[string]*ntmctx.TranscriptUsage {
+	type paneKey struct{ agentType, cwd string }
+	groups := make(map[paneKey][]string)
+	for _, pane := range panes {
+		agentType := paneAgentType(pane)
+		if agentType == "unknown" || agentType == "user" {
+			continue
+		}
+		cwd, ok := paneCurrentPath(pane.ID)
+		if !ok {
+			continue
+		}
+		key := paneKey{agentType: agentType, cwd: cwd}
+		groups[key] = append(groups[key], pane.ID)
+	}
+
+	result := make(map[string]*ntmctx.TranscriptUsage)
+	for key, paneIDs := range groups {
+		if len(paneIDs) != 1 {
+			continue // ambiguous attribution: no transcript beats a wrong one
+		}
+		if usage, ok := transcriptUsageForCwd(key.agentType, key.cwd); ok {
+			result[paneIDs[0]] = usage
+		}
+	}
+	return result
 }
 
 // GetContext retrieves context window usage information for all agents in a session.
@@ -10642,6 +10691,10 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 	// Topology-aware key (#172): emit a round-trippable "window.pane" address on
 	// multi-window sessions instead of a window-blind bare index.
 	multiWindow := paneSessionIsMultiWindow(panes)
+
+	// Ground-truth transcripts, resolved once for the whole pane set
+	// (memoized per agent-type+cwd group; ambiguous groups get none).
+	paneTranscripts := resolvePaneTranscripts(panes)
 
 	for _, pane := range panes {
 		agentType := paneAgentType(pane)
@@ -10687,9 +10740,9 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 		}
 
 		// Ground truth beats scrollback heuristics: read the agent CLI's own
-		// session transcript (Claude Code / Codex usage records) when one can
-		// be correlated to this pane via its working directory.
-		if usage, ok := transcriptUsageForPane(agentType, pane.ID); ok {
+		// session transcript (Claude Code / Codex usage records) when one is
+		// unambiguously correlated to this pane via its working directory.
+		if usage, ok := paneTranscripts[pane.ID]; ok {
 			agentInfo.Source = "transcript"
 			agentInfo.TranscriptTokens = usage.Tokens
 			agentInfo.TranscriptModel = usage.Model
@@ -10706,10 +10759,19 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 			}
 			agentInfo.ContextLimit = limit
 			agentInfo.UsagePercent = 100.0
+			agentInfo.Confidence = ntmctx.TranscriptConfidence(usage.UpdatedAt, time.Now())
 			if limit > 0 {
 				agentInfo.UsagePercent = float64(usage.Tokens) / float64(limit) * 100
+				if agentInfo.UsagePercent > 100 {
+					// Real usage cannot exceed the real window, so an
+					// over-100% reading means the registry's window for this
+					// (possibly unrecognized) model is wrong. Cap at 100 —
+					// the safe direction for rotation — and drop confidence
+					// so consumers know the limit, not the tokens, is suspect.
+					agentInfo.UsagePercent = 100
+					agentInfo.Confidence = "low"
+				}
 			}
-			agentInfo.Confidence = ntmctx.TranscriptConfidence(usage.UpdatedAt, time.Now())
 		}
 
 		agentInfo.UsageLevel = getUsageLevel(agentInfo.UsagePercent)
