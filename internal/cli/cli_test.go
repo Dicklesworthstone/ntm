@@ -7765,3 +7765,32 @@ func TestOpenAPIGenerateRejectsPositionalArgumentBeforeWritingOutput(t *testing.
 		t.Fatalf("output file stat error = %v, want not exist", statErr)
 	}
 }
+
+// Field-evidence regressions: unknown flags get a did-you-mean suggestion,
+// and cobra usage errors classify as INVALID_FLAG rather than
+// INTERNAL_ERROR with misleading "retry" advice.
+func TestClassifyRobotExecuteErrorSuggestsNearestFlag(t *testing.T) {
+	code, hint := classifyRobotExecuteError(errors.New("unknown flag: --robot-state"))
+	if code != robot.ErrCodeInvalidFlag {
+		t.Fatalf("code = %q, want INVALID_FLAG", code)
+	}
+	if !strings.Contains(hint, "--robot-status") {
+		t.Errorf("hint = %q, want a --robot-status suggestion", hint)
+	}
+
+	// A wildly-off guess gets no suggestion, just the discovery hint.
+	_, hint = classifyRobotExecuteError(errors.New("unknown flag: --zzzzqqqq"))
+	if strings.Contains(hint, "Did you mean") {
+		t.Errorf("hint = %q, want no suggestion for a hopeless guess", hint)
+	}
+}
+
+func TestClassifyRobotExecuteErrorUnknownCommandIsInvalidFlag(t *testing.T) {
+	code, hint := classifyRobotExecuteError(errors.New(`unknown command "myproject" for "ntm"`))
+	if code != robot.ErrCodeInvalidFlag {
+		t.Fatalf("code = %q, want INVALID_FLAG (deterministic usage error, not internal)", code)
+	}
+	if strings.Contains(strings.ToLower(hint), "retry") {
+		t.Errorf("hint = %q, must not advise retrying a deterministic usage error", hint)
+	}
+}

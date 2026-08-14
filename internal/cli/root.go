@@ -425,6 +425,12 @@ func classifyRobotExecuteError(err error) (string, string) {
 	message := strings.ToLower(err.Error())
 	for _, fragment := range []string{
 		"unknown flag",
+		"unknown shorthand flag",
+		// Cobra reports a stray positional argument (e.g. `--robot-send
+		// --session X proj` parsing "proj" as a subcommand) as "unknown
+		// command". That is deterministic caller input, not an internal
+		// fault — "retry" would be actively wrong advice.
+		"unknown command",
 		"flag needs an argument",
 		"invalid argument",
 		"required flag",
@@ -433,10 +439,90 @@ func classifyRobotExecuteError(err error) (string, string) {
 		"accepts ",
 	} {
 		if strings.Contains(message, fragment) {
-			return robot.ErrCodeInvalidFlag, "Use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags"
+			hint := "Use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags"
+			if suggestion := suggestNearestFlag(err.Error()); suggestion != "" {
+				hint = fmt.Sprintf("Did you mean --%s? Otherwise use 'ntm --robot-help' or 'ntm --robot-capabilities' to inspect valid flags", suggestion)
+			}
+			return robot.ErrCodeInvalidFlag, hint
 		}
 	}
 	return robot.ErrCodeInternalError, "Retry the command or inspect ntm diagnostics"
+}
+
+// suggestNearestFlag extracts the offending flag name from a cobra/pflag
+// "unknown flag: --foo" error and returns the closest registered root flag
+// within a small edit distance, or "" when no confident match exists. Field
+// evidence shows agents repeatedly guessing near-miss robot flags
+// (--robot-state for --robot-status, --robot-panes for --robot-status);
+// each miss without a suggestion costs a discovery round-trip.
+func suggestNearestFlag(errMsg string) string {
+	const marker = "unknown flag: --"
+	idx := strings.Index(errMsg, marker)
+	if idx < 0 {
+		return ""
+	}
+	unknown := strings.TrimSpace(errMsg[idx+len(marker):])
+	if cut := strings.IndexAny(unknown, " \t\n"); cut >= 0 {
+		unknown = unknown[:cut]
+	}
+	if unknown == "" {
+		return ""
+	}
+
+	best := ""
+	bestDist := len(unknown)/3 + 2 // confidence bound scales with length
+	bestPrefix := -1
+	rootCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		d := levenshteinDistance(unknown, f.Name)
+		if d > bestDist {
+			return
+		}
+		// Ties break toward the candidate sharing the longest prefix with
+		// the guess: --robot-state should suggest --robot-status, not the
+		// alphabetically earlier --robot-save at the same edit distance.
+		p := commonPrefixLen(unknown, f.Name)
+		if d < bestDist || p > bestPrefix {
+			bestDist = d
+			bestPrefix = p
+			best = f.Name
+		}
+	})
+	return best
+}
+
+func commonPrefixLen(a, b string) int {
+	n := min(len(a), len(b))
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+// levenshteinDistance is a plain O(len(a)*len(b)) edit distance over bytes;
+// flag names are short ASCII so this is cheap and allocation-light.
+func levenshteinDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(min(curr[j-1]+1, prev[j]+1), prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
 }
 
 // ExitCode maps an Execute error onto the public robot process contract.
@@ -457,8 +543,13 @@ type VersionInput struct {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "ntm",
-	Short: "Named Tmux Manager - orchestrate AI coding agents in tmux sessions",
+	Use: "ntm",
+	// Version enables cobra's built-in --version flag. Field evidence from
+	// fleet health probes shows agents reach for `ntm --version` first and
+	// treat "unknown flag" as a broken install; `ntm version` remains the
+	// detailed surface.
+	Version: Version,
+	Short:   "Named Tmux Manager - orchestrate AI coding agents in tmux sessions",
 	Long: `NTM (Named Tmux Manager) helps you create and manage tmux sessions
 with multiple AI coding agents (Claude, Codex, Antigravity, Grok Build, and legacy Gemini) in separate panes.
 
@@ -4119,6 +4210,15 @@ func init() {
 	rootCmd.Flags().StringVar(&robotSendMsgFile, "msg-file", "", "Read message content from file, or stdin with '-'. Keeps prompt text out of the scanned command line so command-safety filters cannot mistake message content for executable commands. Use with --robot-send")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "enter", true, "Send Enter after pasting message (default: true). Use --enter=false to paste without submitting")
 	rootCmd.Flags().BoolVar(&robotSendEnter, "submit", true, "Alias for --enter")
+	// Field evidence across multiple machines shows agents reliably guess
+	// --message before finding --msg; normalize the alias instead of burning
+	// an INVALID_FLAG round-trip per session.
+	rootCmd.Flags().SetNormalizeFunc(func(f *pflag.FlagSet, name string) pflag.NormalizedName {
+		if name == "message" {
+			name = "msg"
+		}
+		return pflag.NormalizedName(name)
+	})
 	rootCmd.Flags().BoolVar(&robotSendAll, "all", false, "Include user pane (default: agents only). Optional with --robot-send, --robot-interrupt, --robot-restart-pane, and --robot-support-bundle")
 	// Accepted-and-ignored for parity with `ntm send` (ntm-dv50 / AP-51):
 	// operators habitually carry --no-cass-check on every dispatch, and the
