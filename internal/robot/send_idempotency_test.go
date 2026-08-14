@@ -9,43 +9,67 @@ import (
 )
 
 func TestSendOperationBindingHashCanonicalizesSelectors(t *testing.T) {
-	sha, _ := sendPayloadDigest("hello")
-	base := SendOptions{Session: "proj", Panes: []string{"1", "2"}, AgentTypes: []string{"claude", "codex"}}
+	base := SendOptions{
+		Session:    "proj",
+		Message:    "hello",
+		Panes:      []string{"1", "2"},
+		AgentTypes: []string{"claude", "codex"},
+	}
 
-	a := sendOperationBindingHash(base, sha)
+	a := sendOperationBindingHash(base)
 	reordered := base
 	reordered.Panes = []string{"2", "1"}
 	reordered.AgentTypes = []string{"codex", "claude"}
-	if sendOperationBindingHash(reordered, sha) != a {
+	if sendOperationBindingHash(reordered) != a {
 		t.Error("selector list order changed the binding hash; want canonical ordering")
 	}
 
-	otherPayload, _ := sendPayloadDigest("different")
-	if sendOperationBindingHash(base, otherPayload) == a {
-		t.Error("different payload produced the same binding hash")
+	otherMessage := base
+	otherMessage.Message = "different"
+	if sendOperationBindingHash(otherMessage) == a {
+		t.Error("different input message produced the same binding hash")
 	}
 	otherSession := base
 	otherSession.Session = "other"
-	if sendOperationBindingHash(otherSession, sha) == a {
+	if sendOperationBindingHash(otherSession) == a {
 		t.Error("different session produced the same binding hash")
 	}
 	otherSelector := base
 	otherSelector.Panes = []string{"1"}
-	if sendOperationBindingHash(otherSelector, sha) == a {
+	if sendOperationBindingHash(otherSelector) == a {
 		t.Error("different selector produced the same binding hash")
 	}
 	allFlag := base
 	allFlag.All = true
-	if sendOperationBindingHash(allFlag, sha) == a {
+	if sendOperationBindingHash(allFlag) == a {
 		t.Error("--all did not change the binding hash")
 	}
+	noEnter := base
+	enterOff := false
+	noEnter.Enter = &enterOff
+	if sendOperationBindingHash(noEnter) == a {
+		t.Error("--enter=false did not change the binding hash")
+	}
+	clearInput := base
+	clearInput.ClearInput = true
+	if sendOperationBindingHash(clearInput) == a {
+		t.Error("--clear-input did not change the binding hash")
+	}
 
-	// The hash binds the SELECTOR, not the resolved pane list: two identical
-	// commands bind identically regardless of what panes exist at run time,
-	// so a byte-identical retry after topology change replays instead of
-	// conflicting.
-	if sendOperationBindingHash(base, sha) != a {
-		t.Error("identical selector produced a different binding hash")
+	// The hash binds the caller's COMMAND — selector, toggles, and input
+	// message — never the resolved pane list or the delivered
+	// (post-CASS-injection) payload: a byte-identical retry replays even
+	// when panes changed or CASS would inject different context this time.
+	if sendOperationBindingHash(base) != a {
+		t.Error("identical command produced a different binding hash")
+	}
+	withCASS := base
+	withCASS.WithCASS = true
+	if sendOperationBindingHash(withCASS) == a {
+		t.Error("--with-cass toggle did not change the binding hash")
+	}
+	if sendOperationBindingHash(withCASS) != sendOperationBindingHash(withCASS) {
+		t.Error("identical --with-cass command must bind identically regardless of injected content")
 	}
 }
 

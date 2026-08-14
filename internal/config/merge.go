@@ -200,8 +200,8 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 // ratchetIntegrationToggle applies a project integration toggle to the global
 // value with enable-suppression: false always wins, true only holds when the
 // user already enabled the integration globally. An ignored enable attempt is
-// logged to stderr so the operator can see why the project setting had no
-// effect (and can enable it globally if that is what they actually want).
+// recorded at debug level; enabling globally is the intended remedy when the
+// project setting appears to have no effect.
 func ratchetIntegrationToggle(name string, global bool, project *bool) bool {
 	if project == nil {
 		return global

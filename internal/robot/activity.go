@@ -701,6 +701,15 @@ func advanceOutputSequence(store WatermarkStore, scope, contentHash string, obse
 		info.ChangedAt = wm.LastTs.UTC().Format(time.RFC3339)
 	}
 	if wm.BaselineHash == contentHash {
+		// No change: leave the row alone except for a coarse liveness touch.
+		// UpdatedAt drives GC retention, so an alive-but-idle scope must
+		// refresh it occasionally or a month of pure idleness would prune
+		// the row and spuriously rotate the epoch. Once per day bounds the
+		// write amplification to one upsert per scope per day.
+		if now.Sub(wm.UpdatedAt) > 24*time.Hour {
+			wm.UpdatedAt = now
+			_ = store.SetWatermark(wm)
+		}
 		return info, nil
 	}
 

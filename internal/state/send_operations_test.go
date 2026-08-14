@@ -220,3 +220,37 @@ func TestGCCompletedSendOperations(t *testing.T) {
 		t.Error("in_progress row was GC'd")
 	}
 }
+
+func TestGCStaleOutputSeqWatermarks(t *testing.T) {
+	store := testStore(t)
+	old := time.Now().UTC().Add(-60 * 24 * time.Hour)
+	fresh := time.Now().UTC()
+
+	for _, wm := range []*OutputWatermark{
+		{WatermarkType: "output_seq", Scope: "dead|%1", Consumer: "e1", CreatedAt: old, UpdatedAt: old},
+		{WatermarkType: "output_seq", Scope: "live|%2", Consumer: "e2", CreatedAt: old, UpdatedAt: fresh},
+		// Velocity baselines keep their pre-existing lifecycle: never GC'd here.
+		{WatermarkType: "velocity", Scope: "dead|%1", CreatedAt: old, UpdatedAt: old},
+	} {
+		if err := store.SetWatermark(wm); err != nil {
+			t.Fatalf("seed watermark %s/%s: %v", wm.WatermarkType, wm.Scope, err)
+		}
+	}
+
+	pruned, err := store.GCStaleOutputSeqWatermarks(0)
+	if err != nil {
+		t.Fatalf("gc error = %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if wm, _ := store.GetWatermark("output_seq", "dead|%1"); wm != nil {
+		t.Error("stale output_seq row survived GC")
+	}
+	if wm, _ := store.GetWatermark("output_seq", "live|%2"); wm == nil {
+		t.Error("recently-observed output_seq row was pruned")
+	}
+	if wm, _ := store.GetWatermark("velocity", "dead|%1"); wm == nil {
+		t.Error("velocity watermark was pruned by output_seq GC")
+	}
+}

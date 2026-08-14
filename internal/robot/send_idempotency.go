@@ -4,15 +4,21 @@
 // A caller may supply an operation ID with --robot-send (or the REST
 // Idempotency-Key header). The operation is claimed atomically in the
 // runtime projection store BEFORE any keystroke is injected and is durably
-// bound to the canonical targets plus a digest of the exact payload NTM
-// attempts to deliver (after CASS injection and redaction transforms).
+// bound to the caller's command spec — session, target selector, delivery
+// toggles, and a digest of the caller's input message (see
+// sendOperationBindingHash for why the selector and input message are
+// bound rather than the resolved panes and delivered payload).
 //
 //   - An identical retry of a completed operation returns the original
 //     recorded outcome without sending again.
-//   - Reusing an operation ID with different targets or payload is rejected
-//     as a conflict.
-//   - A retry that races or follows a crash mid-send observes the operation
-//     in progress and is told to reconcile via --robot-send-receipt.
+//   - Reusing an operation ID with a different command spec is rejected as
+//     a conflict.
+//   - A retry that races a live concurrent sender observes the operation
+//     in progress and is told to reconcile via --robot-send-receipt; a
+//     claim abandoned by a crashed process is taken over after a staleness
+//     window.
+//   - Preflight failures (nothing typed) release the claim so the ID stays
+//     retryable; only real dispatch attempts record terminal outcomes.
 //
 // The receipt exposes only a payload digest and byte count — never the
 // payload bytes — so ordinary logs gain an audit trail without retaining
@@ -25,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +55,8 @@ const (
 )
 
 // ErrCodeIdempotencyConflict signals that an operation ID was reused with a
-// different target set or payload than the one it is durably bound to.
+// different command spec (selector, delivery toggles, or input message)
+// than the one it is durably bound to.
 const ErrCodeIdempotencyConflict = "IDEMPOTENCY_CONFLICT"
 
 // ErrCodeOperationInProgress signals that the operation is claimed but its
@@ -106,13 +114,25 @@ func sendPayloadDigest(payload string) (string, int64) {
 }
 
 // sendOperationBindingHash binds an operation to the caller's canonical
-// target SELECTOR spec plus the payload digest. Binding to the selector
-// rather than the resolved pane list keeps a byte-identical retry a replay
-// even when pane topology changed between attempts (a pane exited, a new
-// one spawned): under --all or --type the caller cannot re-specify "the
-// original targets", only the original selector. List-valued selectors are
-// sorted so logically identical retries bind identically.
-func sendOperationBindingHash(opts SendOptions, payloadSHA256 string) string {
+// COMMAND spec: session, target selector, delivery behavior, and a digest
+// of the caller's INPUT message.
+//
+// The selector (not the resolved pane list) keeps a byte-identical retry a
+// replay even when pane topology changed between attempts: under --all or
+// --type the caller cannot re-specify "the original targets", only the
+// original selector. List-valued selectors are sorted so logically
+// identical retries bind identically.
+//
+// The input message (opts.Message, before CASS injection) is used rather
+// than the delivered payload because CASS injection is time-varying: a
+// byte-identical `--with-cass` retry would otherwise digest differently and
+// be rejected as a conflict. The receipt's PayloadSHA256 still records the
+// exact post-transformation bytes NTM attempted to deliver.
+//
+// Delivery-behavior flags (--enter/--submit, --clear-input) are bound too:
+// reusing an operation ID with a different submit behavior is a different
+// operation, not a replay of the original.
+func sendOperationBindingHash(opts SendOptions) string {
 	h := sha256.New()
 	writeField := func(field string) {
 		h.Write([]byte(field))
@@ -141,7 +161,17 @@ func sendOperationBindingHash(opts SendOptions, payloadSHA256 string) string {
 	writeList(opts.Panes)
 	writeList(opts.AgentTypes)
 	writeList(opts.Exclude)
-	writeField(payloadSHA256)
+	enter := "default"
+	if opts.Enter != nil {
+		enter = strconv.FormatBool(*opts.Enter)
+	}
+	writeField(enter)
+	writeField(strconv.FormatBool(opts.ClearInput))
+	// The --with-cass TOGGLE is part of the command; the injected content is
+	// deliberately not (it varies between attempts).
+	writeField(strconv.FormatBool(opts.WithCASS))
+	inputSHA, _ := sendPayloadDigest(opts.Message)
+	writeField(inputSHA)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -162,16 +192,19 @@ func admissionsFromSendOutput(output *SendOutput) []SendAdmission {
 
 	admissions := make([]SendAdmission, 0, len(output.Targets))
 	for _, target := range output.Targets {
-		switch {
-		case successful[target]:
+		if successful[target] {
 			admissions = append(admissions, SendAdmission{Target: target, State: AdmissionSubmitted})
-		case failures[target] != "":
-			admissions = append(admissions, SendAdmission{
-				Target: target, State: AdmissionRejected, Error: failures[target],
-			})
-		default:
-			admissions = append(admissions, SendAdmission{Target: target, State: AdmissionNotAttempted})
+			continue
 		}
+		// Presence check, not message check: a failure recorded with an
+		// empty error string is still a rejection, not "never attempted".
+		if msg, failed := failures[target]; failed {
+			admissions = append(admissions, SendAdmission{
+				Target: target, State: AdmissionRejected, Error: msg,
+			})
+			continue
+		}
+		admissions = append(admissions, SendAdmission{Target: target, State: AdmissionNotAttempted})
 	}
 	return admissions
 }
@@ -228,6 +261,13 @@ func applyReplayedOutcome(output *SendOutput, op *state.SendOperation) error {
 	info := sendOperationInfoFromRecord(op, true)
 	info.Admissions = outcome.Admissions
 	output.Operation = info
+	// A replayed failure is terminal for THIS operation ID: keystrokes may
+	// already have landed, so the retry semantics the caller opted into
+	// forbid a second delivery attempt under the same ID. Say so instead of
+	// letting the caller retry the same command forever.
+	if !outcome.Success && output.Hint == "" {
+		output.Hint = "recorded outcome replayed without re-sending; use a new operation ID to attempt delivery again"
+	}
 	return nil
 }
 

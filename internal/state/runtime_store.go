@@ -27,6 +27,11 @@ const (
 	// DefaultSendOperationRetention bounds how long completed idempotent
 	// send receipts (#245) remain queryable before GC prunes them.
 	DefaultSendOperationRetention = 7 * 24 * time.Hour
+	// DefaultOutputSeqWatermarkRetention bounds how long an untouched
+	// output-sequence watermark row (#246) survives before GC prunes it.
+	// Pruning is contract-safe: the next observation of that scope mints a
+	// fresh epoch, which is exactly what consumers must handle anyway.
+	DefaultOutputSeqWatermarkRetention = 30 * 24 * time.Hour
 )
 
 // RuntimeGCConfig defines the bounded cleanup windows for the runtime layer.
@@ -50,6 +55,7 @@ type RuntimeGCResult struct {
 	ExpiredAuditEvents     int64 `json:"expired_audit_events"`
 	ExpiredAuditDecisions  int64 `json:"expired_audit_decisions"`
 	ExpiredSendOperations  int64 `json:"expired_send_operations"`
+	ExpiredOutputSeqRows   int64 `json:"expired_output_seq_rows"`
 }
 
 // DefaultRuntimeGCConfig returns conservative cleanup windows for routine maintenance.
@@ -1431,7 +1437,29 @@ func (s *Store) RunGC(cfg RuntimeGCConfig) (RuntimeGCResult, error) {
 	if result.ExpiredSendOperations, err = s.GCCompletedSendOperations(0); err != nil {
 		return result, err
 	}
+	if result.ExpiredOutputSeqRows, err = s.GCStaleOutputSeqWatermarks(0); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+// GCStaleOutputSeqWatermarks prunes output-sequence watermark rows (#246)
+// whose scope has not been observed within the retention window — dead
+// sessions and replaced panes would otherwise accumulate rows forever.
+// Only the output_seq watermark type is touched; velocity baselines keep
+// their pre-existing lifecycle.
+func (s *Store) GCStaleOutputSeqWatermarks(retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		retention = DefaultOutputSeqWatermarkRetention
+	}
+	cutoff := time.Now().UTC().Add(-retention)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return execRowsAffected(s.db,
+		`DELETE FROM output_watermarks WHERE watermark_type = 'output_seq' AND updated_at < ?`,
+		"gc stale output-seq watermarks", cutoff)
 }
 
 // =============================================================================

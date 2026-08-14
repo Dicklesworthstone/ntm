@@ -7202,11 +7202,14 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 			)
 			return finalizeTerminalSendActuation(trace, opts, &output), nil
 		}
+		// The binding covers the caller's input command (selector + input
+		// message); PayloadSHA256 records the exact post-transformation
+		// bytes about to be delivered. They differ under CASS injection.
 		payloadSHA, payloadBytes := sendPayloadDigest(messageToSend)
 		claim := &state.SendOperation{
 			OperationID:   trace.IdempotencyKey,
 			SessionName:   opts.Session,
-			BindingHash:   sendOperationBindingHash(opts, payloadSHA),
+			BindingHash:   sendOperationBindingHash(opts),
 			PayloadSHA256: payloadSHA,
 			PayloadBytes:  payloadBytes,
 		}
