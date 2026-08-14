@@ -262,6 +262,7 @@ type restartPromptTarget struct {
 	AgentType    tmux.AgentType
 	ResolvedType string // restartPaneAgentType result: "claude", "codex", ..., "user", "unknown"
 	Variant      string // Model alias (or persona name) parsed from the pane title
+	Width        int    // Real pane width for width-adaptive detectors (bd-eeifh); 0 when unknown
 }
 
 // RestartedAgentPane describes an agent pane that was successfully respawned
@@ -681,7 +682,7 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			if !restartTargetIsAgent(target.ResolvedType) {
 				return nil
 			}
-			return dispatchsvc.VerifyAgentSubmission(verifyCtx, target.Target, promptToSend, target.AgentType)
+			return dispatchsvc.VerifyAgentSubmission(verifyCtx, target.Target, promptToSend, target.AgentType, target.Width)
 		}
 		report, deliveryErr := sendRestartPromptsContext(
 			ctx,
@@ -1382,6 +1383,7 @@ func respawnRestartPaneTargetsContext(
 						AgentType:    pane.Type,
 						ResolvedType: restartPaneAgentType(pane),
 						Variant:      pane.Variant,
+						Width:        pane.Width,
 					}
 					appendRestartFailureOnce(output, paneKey, fmt.Sprintf(
 						"respawn changed pane PID from %d to %d, but the command returned after cancellation and the post-respawn lifecycle is incomplete: %v",
@@ -1441,6 +1443,7 @@ func respawnRestartPaneTargetsContext(
 			AgentType:    pane.Type,
 			ResolvedType: restartPaneAgentType(pane),
 			Variant:      pane.Variant,
+			Width:        pane.Width,
 		}
 		if err := ctx.Err(); err != nil {
 			appendRestartFailureOnce(output, paneKey, fmt.Sprintf("respawn completed but post-respawn lifecycle was canceled: %v", err))
@@ -2166,7 +2169,7 @@ func waitForRestartPromptDeliveryReadyContext(
 	timeout time.Duration,
 	pollInterval time.Duration,
 	currentCommand func(context.Context, string) (string, error),
-	composerReady func(context.Context, string, tmux.AgentType) (bool, string),
+	composerReady func(context.Context, string, tmux.AgentType, int) (bool, string),
 ) (bool, string, error) {
 	if ctx == nil {
 		return false, "", errors.New("prompt delivery readiness context is required")
@@ -2195,7 +2198,7 @@ func waitForRestartPromptDeliveryReadyContext(
 		case tmux.PaneCommandIsShell(cmd):
 			lastReason = fmt.Sprintf("pane foreground process is a shell (%q), not the relaunched agent; typing the prompt would hit the shell", strings.TrimSpace(cmd))
 		default:
-			ready, reason := composerReady(ctx, target.Target, target.AgentType)
+			ready, reason := composerReady(ctx, target.Target, target.AgentType, target.Width)
 			if err := ctx.Err(); err != nil {
 				return false, lastReason, err
 			}

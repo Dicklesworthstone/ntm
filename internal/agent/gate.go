@@ -31,7 +31,7 @@ const gateTailBaseLines = 20
 // first so the returned gate text is the most descriptive match.
 //
 // Keep entries specific enough that ordinary agent transcript chatter cannot
-// contain them as running prose; see DetectInteractiveGateWidth for the
+// contain them as running prose; see DetectInteractiveGate for the
 // residual-risk discussion.
 var interactiveGateMarkers = []string{
 	// Trust / workspace dialogs (Antigravity, VS Code-style CLIs).
@@ -66,17 +66,13 @@ var gateQuoteNormalizer = strings.NewReplacer("‘", "'", "’", "'")
 
 // DetectInteractiveGate reports whether the pane's live tail shows a known
 // interactive gate screen (trust dialog, auth/login gate, onboarding choice)
-// and, if so, which gate phrase matched. Use DetectInteractiveGateWidth when
-// the real pane width is known.
-func DetectInteractiveGate(content string) (gate string, found bool) {
-	return DetectInteractiveGateWidth(content, 0)
-}
-
-// DetectInteractiveGateWidth is DetectInteractiveGate with a width-adaptive
-// live window (see util.WidthAdaptiveTailLines): capture rows are hard-
-// wrapped at the pane width, so narrow panes need a proportionally larger
-// row budget to cover the same logical screen. paneWidth is the real tmux
-// pane width; pass 0 when unknown to keep the calibrated budget.
+// and, if so, which gate phrase matched.
+//
+// The live window is width-adaptive (see util.WidthAdaptiveTailLines):
+// capture rows are hard-wrapped at the pane width, so narrow panes need a
+// proportionally larger row budget to cover the same logical screen.
+// paneWidth is the real tmux pane width; pass 0 when unknown to keep the
+// calibrated budget.
 //
 // False-positive mitigation: an agent DISCUSSING one of these phrases (for
 // example while editing this very file, or summarizing an auth failure it
@@ -92,11 +88,11 @@ func DetectInteractiveGate(content string) (gate string, found bool) {
 // output scrolls the quote away. That trade is deliberate — a false "blocked"
 // on an idle pane costs an operator one glance, while a false "healthy" on a
 // gated pane silently stalls an unattended swarm.
-func DetectInteractiveGateWidth(content string, paneWidth int) (gate string, found bool) {
+func DetectInteractiveGate(content string, paneWidth int) (gate string, found bool) {
 	if strings.TrimSpace(content) == "" {
 		return "", false
 	}
-	if ClaudeActivelyWorkingWidth(content, paneWidth) || CodexActivelyWorkingWidth(content, paneWidth) {
+	if ClaudeActivelyWorking(content, paneWidth) || CodexActivelyWorking(content, paneWidth) {
 		return "", false
 	}
 	clean := stripANSICodes(content)

@@ -225,7 +225,7 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 		output.Summary.TotalPanes++
 
 		// Perform comprehensive health check (pass shell PID for authoritative liveness)
-		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID)
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID, pane.Width)
 		if err != nil {
 			// Error during health check - mark as unknown
 			output.Summary.Unknown++
@@ -742,7 +742,7 @@ func getDiagnoseBriefWithDependencies(ctx context.Context, session string, deps 
 
 		summary.TotalPanes++
 
-		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID)
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID, pane.Width)
 		if err != nil {
 			summary.Unknown++
 			continue

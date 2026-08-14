@@ -206,7 +206,7 @@ func DetectIdleFromOutput(output string, agentType string) bool {
 	// biased to false-WORKING, so gating on it here can never report a busy
 	// Claude pane as idle.
 	if agentType == string(agent.AgentTypeClaudeCode) {
-		if agent.ClaudeActivelyWorking(output) {
+		if agent.ClaudeActivelyWorking(output, 0) {
 			return false
 		}
 		// Not actively working → idle iff a finished-turn prompt is showing.

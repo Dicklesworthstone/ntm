@@ -1024,16 +1024,13 @@ func isRateLimitPatternMatch(matches []PatternMatch) bool {
 // (`ntm send`, an external orchestrator, manual operator) because the
 // internal assignment ledger has no record of it. The live-window check
 // closes that gap by reading the same surface that `--robot-activity` uses.
-func IsLiveBusy(scrollback string, agentType string) bool {
-	return IsLiveBusyWidth(scrollback, agentType, 0)
-}
-
-// IsLiveBusyWidth is IsLiveBusy with a width-adaptive live window
-// (bd-eeifh): the fixed liveThinkingWindowLines budget counts physical
-// capture rows, so on a ~26-column pane a wrapped spinner frame scrolls
-// out of the window and an actively-working pane reads idle. paneWidth is
-// the real tmux pane width; pass 0 when unknown.
-func IsLiveBusyWidth(scrollback string, agentType string, paneWidth int) bool {
+//
+// The live window is width-adaptive (bd-eeifh): the fixed
+// liveThinkingWindowLines budget counts physical capture rows, so on a
+// ~26-column pane a wrapped spinner frame scrolls out of the window and an
+// actively-working pane reads idle. paneWidth is the real tmux pane width;
+// pass 0 when unknown.
+func IsLiveBusy(scrollback string, agentType string, paneWidth int) bool {
 	if scrollback == "" {
 		return false
 	}
@@ -1052,7 +1049,7 @@ func IsLiveBusyWidth(scrollback string, agentType string, paneWidth int) bool {
 	// it keeps IsLiveBusy in agreement with the rest of the Claude detection
 	// layer (parser, status, ClaudeIdlePromptShowing).
 	if normalizeAgentType(agentType) == "claude" {
-		return agent.ClaudeActivelyWorkingWidth(scrollback, paneWidth)
+		return agent.ClaudeActivelyWorking(scrollback, paneWidth)
 	}
 
 	live := lastNLines(scrollback, util.WidthAdaptiveTailLines(paneWidth, liveThinkingWindowLines))
@@ -1066,18 +1063,13 @@ func IsLiveBusyWidth(scrollback string, agentType string, paneWidth int) bool {
 // isAIAgentLiveBusy applies the live-window classifier only to known AI panes.
 // IsLiveBusy intentionally exposes wildcard thinking patterns, so callers must
 // not apply it to user or unknown panes where ordinary shell output can match.
-func isAIAgentLiveBusy(scrollback, agentType string) bool {
-	return isAIAgentLiveBusyWidth(scrollback, agentType, 0)
-}
-
-// isAIAgentLiveBusyWidth is isAIAgentLiveBusy with the real pane width
-// (bd-eeifh); pass 0 when unknown.
-func isAIAgentLiveBusyWidth(scrollback, agentType string, paneWidth int) bool {
+// paneWidth is the real tmux pane width (bd-eeifh); pass 0 when unknown.
+func isAIAgentLiveBusy(scrollback, agentType string, paneWidth int) bool {
 	canonicalType := agent.AgentType(agentType).Canonical()
 	if !canonicalType.IsValid() || canonicalType == agent.AgentTypeUser || canonicalType == agent.AgentTypeUnknown {
 		return false
 	}
-	return IsLiveBusyWidth(scrollback, string(canonicalType), paneWidth)
+	return IsLiveBusy(scrollback, string(canonicalType), paneWidth)
 }
 
 // lastNLines returns the last n non-empty-slice lines of s, preserving

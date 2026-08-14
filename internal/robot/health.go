@@ -339,7 +339,7 @@ func getAgentHealth(session string, pane tmux.Pane) AgentHealthInfo {
 			// Interactive gate screens (bd-jf22c): trust dialogs, auth/login
 			// gates, and onboarding choices leave the pane alive but unable
 			// to accept work; without this it reads "responsive" forever.
-			if gate, ok := agent.DetectInteractiveGateWidth(captured, pane.Width); ok {
+			if gate, ok := agent.DetectInteractiveGate(captured, pane.Width); ok {
 				health.Responsive = false
 				health.Issue = fmt.Sprintf("interactive_gate: %s", gate)
 			}
@@ -451,7 +451,9 @@ var healthErrorPatterns = []struct {
 // CheckAgentHealthWithActivity performs a comprehensive health check using activity detection.
 // shellPID is the tmux pane's shell PID used for authoritative PID-based liveness checking.
 // Pass 0 if the PID is unknown (falls back to text-based detection).
-func CheckAgentHealthWithActivity(paneID string, agentType string, shellPID int) (*HealthCheck, error) {
+// paneWidth is the real tmux pane width for the width-adaptive gate scan
+// (bd-eeifh); pass 0 when unknown.
+func CheckAgentHealthWithActivity(paneID string, agentType string, shellPID int, paneWidth int) (*HealthCheck, error) {
 	check := &HealthCheck{
 		PaneID:      paneID,
 		AgentType:   agentType,
@@ -467,7 +469,7 @@ func CheckAgentHealthWithActivity(paneID string, agentType string, shellPID int)
 	check.StallCheck = checkStallWithActivity(paneID, agentType)
 
 	// 3. Error check - detect error patterns
-	check.ErrorCheck = checkErrors(paneID, agentType)
+	check.ErrorCheck = checkErrors(paneID, agentType, paneWidth)
 
 	// Calculate overall health state
 	check.HealthState, check.Reason = calculateHealthState(check)
@@ -616,8 +618,9 @@ func checkStallWithActivity(paneID string, agentType string) *StallCheckResult {
 // checkErrors detects error patterns in pane output. agentType gates the
 // interactive-gate scan: only real agent panes render gate screens, so
 // user/unknown/empty types skip it (a user shell tailing a log that prints
-// a gate phrase must not read as blocked).
-func checkErrors(paneID string, agentType string) *ErrorCheckResult {
+// a gate phrase must not read as blocked). paneWidth feeds the
+// width-adaptive gate scan; pass 0 when unknown.
+func checkErrors(paneID string, agentType string, paneWidth int) *ErrorCheckResult {
 	result := &ErrorCheckResult{
 		HasErrors:   false,
 		RateLimited: false,
@@ -667,7 +670,7 @@ func checkErrors(paneID string, agentType string) *ErrorCheckResult {
 	var gateFound bool
 	canonicalType := agent.AgentType(agentType).Canonical()
 	if canonicalType.IsValid() && canonicalType != agent.AgentTypeUser && canonicalType != agent.AgentTypeUnknown {
-		gate, gateFound = agent.DetectInteractiveGate(output)
+		gate, gateFound = agent.DetectInteractiveGate(output, paneWidth)
 		if gateFound {
 			result.Patterns = append(result.Patterns, "interactive_gate")
 			result.Blocked = true
@@ -885,7 +888,7 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 		}
 
 		// Perform comprehensive health check (pass shell PID for authoritative liveness)
-		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID)
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID, pane.Width)
 		if err == nil {
 			agentHealth.Confidence = check.Confidence
 
@@ -2187,8 +2190,10 @@ func AutoRestartUnhealthyAgent(ctx context.Context, session, paneID, agentType s
 		}
 	}
 
-	// Check current health (paneID can be just the pane or full session:pane target)
-	check, err := CheckAgentHealthWithActivity(paneID, agentType, shellPID)
+	// Check current health (paneID can be just the pane or full session:pane
+	// target). Only the pane target string is in scope here — no pane
+	// metadata — so the gate scan keeps the calibrated width-0 budget.
+	check, err := CheckAgentHealthWithActivity(paneID, agentType, shellPID, 0)
 	if err != nil {
 		return &RestartResult{
 			PaneID:    paneID,

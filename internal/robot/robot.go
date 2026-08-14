@@ -4359,7 +4359,9 @@ func determineState(output, agentType string) string {
 		// Claude's newest dynamic marker orders live spinners, completion, and
 		// glyph-led terminal errors. A completed turn may supersede an older
 		// generic tool failure, while rate limits remain sticky above.
-		switch agent.DetectClaudeTurnState(output) {
+		// determineState receives only captured text; no pane metadata (and
+		// so no width) is in scope here, so keep the calibrated 0 budget.
+		switch agent.DetectClaudeTurnState(output, 0) {
 		case agent.ClaudeTurnWorking:
 			return "active"
 		case agent.ClaudeTurnError:
@@ -4373,7 +4375,7 @@ func determineState(output, agentType string) string {
 	}
 	// Other agents use position-blind live patterns. They may supersede idle
 	// chrome, but never a current error.
-	if normalizedType != "claude" && isAIAgentLiveBusy(output, normalizedType) {
+	if normalizedType != "claude" && isAIAgentLiveBusy(output, normalizedType, 0) {
 		return "active"
 	}
 	// A bare shell prompt in a known agent pane usually means the agent exited

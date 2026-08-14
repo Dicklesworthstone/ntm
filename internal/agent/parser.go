@@ -240,7 +240,7 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 	// the spinner-vs-turn-ended ordering in the live tail and is biased to
 	// false-WORKING, so trusting it can never mislabel a busy agent as idle.
 	if state.Type == AgentTypeClaudeCode {
-		if ClaudeActivelyWorking(output) {
+		if ClaudeActivelyWorking(output, 0) {
 			// Definitively working: a live spinner is the most-recent dynamic
 			// marker. Idle is impossible here regardless of the box being drawn.
 			state.IsWorking = true
@@ -367,7 +367,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		// relative order of the spinner vs. turn-ended markers in the live tail
 		// (see patterns.go) and is biased to false-WORKING when ambiguous, so
 		// gating on it here can never produce a false-idle for a busy agent.
-		if ClaudeActivelyWorking(output) {
+		if ClaudeActivelyWorking(output, 0) {
 			return false
 		}
 		// Idle when a finished-turn prompt is showing. This covers both the
@@ -416,7 +416,7 @@ func (p *parserImpl) detectError(output string, agentType AgentType) bool {
 
 	switch agentType {
 	case AgentTypeClaudeCode:
-		switch DetectClaudeTurnState(output) {
+		switch DetectClaudeTurnState(output, 0) {
 		case ClaudeTurnWorking, ClaudeTurnEnded:
 			return false
 		case ClaudeTurnError:

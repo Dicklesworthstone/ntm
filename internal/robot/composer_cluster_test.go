@@ -13,7 +13,7 @@ import (
 // an actively-working pane classified idle. The width-adaptive window must
 // keep it busy, while the same capture with an unknown width (0) preserves
 // the historical conservative verdict.
-func TestIsLiveBusyWidthNarrowPaneSpinner(t *testing.T) {
+func TestIsLiveBusyNarrowPaneSpinner(t *testing.T) {
 	// Simulate a 26-column pane: the spinner line hard-wraps into three
 	// physical rows, followed by wrapped output rows pushing it up.
 	wrapped := []string{
@@ -26,13 +26,13 @@ func TestIsLiveBusyWidthNarrowPaneSpinner(t *testing.T) {
 	}
 	capture := strings.Join(append(wrapped, filler...), "\n")
 
-	if IsLiveBusyWidth(capture, "codex", 26) {
+	if IsLiveBusy(capture, "codex", 26) {
 		// The spinner is ~38 physical rows up; even the widened window
 		// (15*4=60 at width 26 -> ceil(80/26)=4) covers it.
 	} else {
-		t.Fatal("IsLiveBusyWidth(width=26) = false for a working narrow pane; want true")
+		t.Fatal("IsLiveBusy(width=26) = false for a working narrow pane; want true")
 	}
-	if IsLiveBusy(capture, "codex") {
+	if IsLiveBusy(capture, "codex", 0) {
 		t.Fatal("IsLiveBusy(width unknown) = true; the fixed window must stay conservative")
 	}
 }

@@ -181,7 +181,7 @@ func getRecommendationReason(state *agent.AgentState) string {
 // than the pane's current state. Rate-limit and context-low flags remain intact
 // and therefore retain their normal recommendation precedence.
 func applyLiveBusyOverride(content string, state *agent.AgentState, paneWidth int) bool {
-	if state == nil || !isAIAgentLiveBusyWidth(content, string(state.Type), paneWidth) {
+	if state == nil || !isAIAgentLiveBusy(content, string(state.Type), paneWidth) {
 		return false
 	}
 	canonicalType := state.Type.Canonical()
@@ -657,7 +657,7 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 // visible, so an agent merely QUOTING a gate phrase mid-turn is not flagged);
 // and a rate-limited pane keeps its higher-precedence WAIT verdict. Residual
 // risk — an idle agent whose final transcript lines quote a gate phrase —
-// is documented on agent.DetectInteractiveGateWidth.
+// is documented on agent.DetectInteractiveGate.
 //
 // Reports true when the override fired.
 func applyInteractiveGateOverride(workStatus *PaneWorkStatus, agentType agent.AgentType, content string, paneWidth int) bool {
@@ -668,7 +668,7 @@ func applyInteractiveGateOverride(workStatus *PaneWorkStatus, agentType agent.Ag
 	case agent.AgentTypeUser, agent.AgentTypeUnknown:
 		return false
 	}
-	gate, ok := agent.DetectInteractiveGateWidth(content, paneWidth)
+	gate, ok := agent.DetectInteractiveGate(content, paneWidth)
 	if !ok {
 		return false
 	}

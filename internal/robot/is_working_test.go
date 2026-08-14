@@ -498,7 +498,7 @@ func TestIsLiveBusyOverridesIdleVerdict_Codex(t *testing.T) {
   Reading src/main.rs
 
 `
-	if !IsLiveBusy(scrollback, agent.AgentTypeCodex.String()) {
+	if !IsLiveBusy(scrollback, agent.AgentTypeCodex.String(), 0) {
 		t.Fatalf("IsLiveBusy(<codex working scrollback>, %q) = false, expected true; the live-window override would not fire and SAFE_TO_RESTART would leak through", agent.AgentTypeCodex.String())
 	}
 
@@ -508,7 +508,7 @@ func TestIsLiveBusyOverridesIdleVerdict_Codex(t *testing.T) {
 
 codex>
 `
-	if IsLiveBusy(idleScrollback, agent.AgentTypeCodex.String()) {
+	if IsLiveBusy(idleScrollback, agent.AgentTypeCodex.String(), 0) {
 		t.Fatalf("IsLiveBusy(<idle codex prompt>, %q) = true, expected false; this would falsely keep idle panes out of the SAFE_TO_RESTART bucket", agent.AgentTypeCodex.String())
 	}
 }
@@ -527,7 +527,7 @@ func TestIsLiveBusy_Claude_DefersToOrderingAwareClassifier(t *testing.T) {
 		"● final summary of the work\n" +
 		"✻ Churned for 6s\n" +
 		"────────────\n❯ \n────────────\n"
-	if IsLiveBusy(staleSpinnerAboveCompletion, agent.AgentTypeClaudeCode.String()) {
+	if IsLiveBusy(staleSpinnerAboveCompletion, agent.AgentTypeClaudeCode.String(), 0) {
 		t.Fatalf("IsLiveBusy(<stale spinner above completion>, claude) = true, expected false; the position-blind CategoryThinking match would override the correct idle verdict and stall the swarm")
 	}
 
@@ -536,12 +536,12 @@ func TestIsLiveBusy_Claude_DefersToOrderingAwareClassifier(t *testing.T) {
 		"● starting next step\n" +
 		"✻ Churning… (ctrl+c to interrupt · 4s)\n" +
 		"────────────\n❯ \n"
-	if !IsLiveBusy(activeSpinner, agent.AgentTypeClaudeCode.String()) {
+	if !IsLiveBusy(activeSpinner, agent.AgentTypeClaudeCode.String(), 0) {
 		t.Fatalf("IsLiveBusy(<active claude spinner>, claude) = false, expected true; a mid-turn Claude pane must read busy")
 	}
 
 	// Alias "cc" must normalize to claude and take the same path.
-	if IsLiveBusy(staleSpinnerAboveCompletion, "cc") {
+	if IsLiveBusy(staleSpinnerAboveCompletion, "cc", 0) {
 		t.Fatalf("IsLiveBusy(<stale spinner above completion>, cc) = true, expected false; the cc alias must normalize to claude")
 	}
 }
@@ -708,10 +708,10 @@ func TestIsLiveBusy_WildcardPatternsDocumentTheUserPaneSkipReason(t *testing.T) 
 	shellScrollback := `$ tar -xzf data.tar.gz
 extracting archive ⠋
 `
-	if !IsLiveBusy(shellScrollback, agent.AgentTypeUser.String()) {
+	if !IsLiveBusy(shellScrollback, agent.AgentTypeUser.String(), 0) {
 		t.Fatalf("expected wildcard CategoryThinking match (braille_spinner) on shell scrollback with user hint; if this assertion changes, the GetIsWorking user-pane skip may no longer be needed")
 	}
-	if isAIAgentLiveBusy(shellScrollback, agent.AgentTypeUser.String()) {
+	if isAIAgentLiveBusy(shellScrollback, agent.AgentTypeUser.String(), 0) {
 		t.Fatal("shared live-busy guard must reject user panes even when wildcard thinking patterns match")
 	}
 }

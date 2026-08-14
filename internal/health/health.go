@@ -453,19 +453,19 @@ func detectBlockingPrompt(output, agentType string) (Issue, bool) {
 // detectInteractiveGateIssue is the generic sibling of detectBlockingPrompt
 // (bd-jf22c): it recognizes the family of modal gate screens — trust dialogs,
 // auth/login gates, onboarding choices — via the shared
-// agent.DetectInteractiveGateWidth detector. Only real agent panes are
+// agent.DetectInteractiveGate detector. Only real agent panes are
 // checked: a user shell that greps this repo (or an agent transcript pasted
 // into a plain pane) legitimately prints these phrases. The detector itself
 // scans only the live tail and vetoes matches while working chrome is
 // visible; the residual risk (an idle agent quoting a gate phrase in its
-// final lines) is documented on DetectInteractiveGateWidth.
+// final lines) is documented on DetectInteractiveGate.
 func detectInteractiveGateIssue(output, agentType string, paneWidth int) (Issue, bool) {
 	trimmed := strings.TrimSpace(agentType)
 	canonical := agent.AgentType(trimmed).Canonical()
 	if trimmed == "" || canonical == agent.AgentTypeUser || canonical == agent.AgentTypeUnknown {
 		return Issue{}, false
 	}
-	gate, ok := agent.DetectInteractiveGateWidth(output, paneWidth)
+	gate, ok := agent.DetectInteractiveGate(output, paneWidth)
 	if !ok {
 		return Issue{}, false
 	}

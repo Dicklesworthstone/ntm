@@ -2264,7 +2264,10 @@ func InspectComposer(capture string, agentType AgentType) ComposerState {
 // chrome for an agent type whose marker we know. Unknown agent types, empty
 // captures, and capture errors all return ready=true (fail open) so a
 // detection gap can never block deliveries that used to work.
-func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType) (ready bool, reason string) {
+//
+// paneWidth is the real tmux pane width used by the width-adaptive working
+// detectors (bd-eeifh); pass 0 when unknown.
+func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType, paneWidth int) (ready bool, reason string) {
 	canonical := agentType.Canonical()
 	marker := composerMarkerForAgent(canonical)
 	if marker == "" {
@@ -2279,7 +2282,7 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 	}
 	switch canonical {
 	case AgentClaude:
-		if agent.ClaudeActivelyWorking(capture) {
+		if agent.ClaudeActivelyWorking(capture, paneWidth) {
 			return true, ""
 		}
 	case AgentCodex:
@@ -2291,8 +2294,8 @@ func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, ag
 }
 
 // ComposerReadyForDelivery checks delivery readiness (default client).
-func ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType) (bool, string) {
-	return DefaultClient.ComposerReadyForDelivery(ctx, target, agentType)
+func ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType, paneWidth int) (bool, string) {
+	return DefaultClient.ComposerReadyForDelivery(ctx, target, agentType, paneWidth)
 }
 
 // ClearComposerContext performs the per-agent pre-send composer clear and
@@ -2382,7 +2385,11 @@ func codexLooksWorking(capture string) bool {
 // visibly sitting in the composer after the rescue attempt, so callers must
 // not report the send as delivered. A capture failure returns an error and
 // makes no claim either way.
-func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
+//
+// paneWidth is accepted for signature parity with the Claude verifier so
+// callers can thread one real pane width (bd-eeifh); codex's working check
+// is a full-capture substring match and does not depend on it.
+func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
 	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
@@ -2418,8 +2425,8 @@ func (c *Client) VerifyCodexSubmissionContext(ctx context.Context, target, messa
 }
 
 // VerifyCodexSubmissionContext verifies codex prompt submission (default client).
-func VerifyCodexSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
-	return DefaultClient.VerifyCodexSubmissionContext(ctx, target, message)
+func VerifyCodexSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
+	return DefaultClient.VerifyCodexSubmissionContext(ctx, target, message, paneWidth)
 }
 
 // claudeComposerHoldsPayload reports whether a Claude Code pane capture shows
@@ -2468,7 +2475,10 @@ func claudeComposerHoldsPayload(capture, message string) bool {
 // text) followed by Enter, then bounded polling. Returns (confirmed, rescued);
 // confirmed=false means the payload is still visibly unsubmitted and callers
 // must not report the send as delivered.
-func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
+//
+// paneWidth is the real tmux pane width used by the width-adaptive Claude
+// working detector (bd-eeifh); pass 0 when unknown.
+func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
 	if err := waitForSendDelay(ctx, codexVerifyInitialDelay); err != nil {
 		return false, false, err
 	}
@@ -2476,7 +2486,7 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 	if err != nil {
 		return false, false, fmt.Errorf("capture claude pane for submission verification: %w", err)
 	}
-	if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+	if agent.ClaudeActivelyWorking(capture, paneWidth) || !claudeComposerHoldsPayload(capture, message) {
 		return true, false, nil
 	}
 
@@ -2492,7 +2502,7 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 	if err != nil {
 		return false, false, fmt.Errorf("re-capture claude pane before rescue: %w", err)
 	}
-	if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+	if agent.ClaudeActivelyWorking(capture, paneWidth) || !claudeComposerHoldsPayload(capture, message) {
 		return true, false, nil
 	}
 
@@ -2515,7 +2525,7 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 		if err != nil {
 			return false, true, fmt.Errorf("capture claude pane after rescue: %w", err)
 		}
-		if agent.ClaudeActivelyWorking(capture) || !claudeComposerHoldsPayload(capture, message) {
+		if agent.ClaudeActivelyWorking(capture, paneWidth) || !claudeComposerHoldsPayload(capture, message) {
 			return true, true, nil
 		}
 	}
@@ -2523,8 +2533,8 @@ func (c *Client) VerifyClaudeSubmissionContext(ctx context.Context, target, mess
 }
 
 // VerifyClaudeSubmissionContext verifies Claude prompt submission (default client).
-func VerifyClaudeSubmissionContext(ctx context.Context, target, message string) (bool, bool, error) {
-	return DefaultClient.VerifyClaudeSubmissionContext(ctx, target, message)
+func VerifyClaudeSubmissionContext(ctx context.Context, target, message string, paneWidth int) (bool, bool, error) {
+	return DefaultClient.VerifyClaudeSubmissionContext(ctx, target, message, paneWidth)
 }
 
 // SendKeyName sends a tmux KEY NAME (BSpace, Escape, Enter, C-u, Up, ...)

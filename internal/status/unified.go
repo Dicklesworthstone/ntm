@@ -127,7 +127,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// ClaudeActivelyWorking is biased to false-WORKING, so trusting it here can
 	// only ever err on the safe side.
 	if agentType == string(agent.AgentTypeClaudeCode) {
-		if agent.ClaudeActivelyWorking(output) {
+		if agent.ClaudeActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
 		if DetectIdleFromOutput(output, agentType) {
@@ -142,7 +142,7 @@ func (d *UnifiedDetector) determineStateAt(output, agentType string, lastActivit
 	// timestamp. CodexActivelyWorking deliberately ignores markers that have
 	// scrolled out of the live window.
 	if agentType == string(agent.AgentTypeCodex) {
-		if agent.CodexActivelyWorking(output) {
+		if agent.CodexActivelyWorking(output, 0) {
 			return StateWorking, ErrorNone
 		}
 		// #234: mirror the Claude arm above. Codex only had the positive

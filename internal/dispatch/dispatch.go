@@ -340,7 +340,7 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	// the send reports success. The check fails open on capture problems and
 	// unknown agent types, so it can only refuse when the screen positively
 	// shows neither a composer nor working-state chrome.
-	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType); !ready {
+	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType, delivery.Target.Pane.Width); !ready {
 		return fmt.Errorf("pane %s not ready for delivery: %s", target, reason)
 	}
 	if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
@@ -358,7 +358,7 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 		if err := tmux.SendKeysForAgentDoubleEnterContext(ctx, target, delivery.Message, delivery.Target.AgentType); err != nil {
 			return err
 		}
-		return VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.AgentType)
+		return VerifyAgentSubmission(ctx, target, delivery.Message, delivery.Target.AgentType, delivery.Target.Pane.Width)
 	default:
 		return fmt.Errorf("unsupported delivery protocol %q", delivery.Protocol)
 	}
@@ -399,7 +399,10 @@ func ClearComposerForDelivery(ctx context.Context, target string, delivery Deliv
 // "delivered" keeps meaning "submitted". Verification infrastructure errors
 // (a capture hiccup) are logged but do not fail an already-delivered send.
 // Agent types without a verifier return nil immediately.
-func VerifyAgentSubmission(ctx context.Context, target, message string, agentType tmux.AgentType) error {
+//
+// paneWidth is the real tmux pane width threaded into the width-adaptive
+// working detectors (bd-eeifh); pass 0 when unknown.
+func VerifyAgentSubmission(ctx context.Context, target, message string, agentType tmux.AgentType, paneWidth int) error {
 	var (
 		confirmed, rescued bool
 		err                error
@@ -408,10 +411,10 @@ func VerifyAgentSubmission(ctx context.Context, target, message string, agentTyp
 	switch agentType.Canonical() {
 	case tmux.AgentCodex:
 		kind = "codex"
-		confirmed, rescued, err = tmux.VerifyCodexSubmissionContext(ctx, target, message)
+		confirmed, rescued, err = tmux.VerifyCodexSubmissionContext(ctx, target, message, paneWidth)
 	case tmux.AgentClaude:
 		kind = "claude"
-		confirmed, rescued, err = tmux.VerifyClaudeSubmissionContext(ctx, target, message)
+		confirmed, rescued, err = tmux.VerifyClaudeSubmissionContext(ctx, target, message, paneWidth)
 	default:
 		return nil
 	}

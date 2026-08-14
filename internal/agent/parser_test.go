@@ -1412,7 +1412,7 @@ func TestClaudeActivelyWorking_RealCaptures(t *testing.T) {
 			}
 			body := stripCaptureHeader(string(raw))
 
-			if got := ClaudeActivelyWorking(body); got != c.wantWork {
+			if got := ClaudeActivelyWorking(body, 0); got != c.wantWork {
 				t.Errorf("ClaudeActivelyWorking = %v, want %v (%s)", got, c.wantWork, c.desc)
 			}
 
@@ -1547,7 +1547,7 @@ func TestClaudeActivelyWorking(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ClaudeActivelyWorking(tt.output); got != tt.want {
+			if got := ClaudeActivelyWorking(tt.output, 0); got != tt.want {
 				t.Errorf("ClaudeActivelyWorking() = %v, want %v", got, tt.want)
 			}
 		})
@@ -1615,7 +1615,7 @@ func TestClaudeActivelyWorking_NeverFalseIdleInvariant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sample %d: parse: %v", i, err)
 		}
-		if !ClaudeActivelyWorking(s) {
+		if !ClaudeActivelyWorking(s, 0) {
 			t.Errorf("sample %d: expected ClaudeActivelyWorking=true", i)
 		}
 		if st.IsIdle {
@@ -1665,7 +1665,7 @@ func TestClaudeCompletionLine_AccentedVerb(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ClaudeActivelyWorking(tt.output); got != tt.wantWorking {
+			if got := ClaudeActivelyWorking(tt.output, 0); got != tt.wantWorking {
 				t.Errorf("ClaudeActivelyWorking() = %v, want %v", got, tt.wantWorking)
 			}
 			// The accented completion line must be recognized as a turn-ended
@@ -1692,7 +1692,7 @@ func TestClaudeComposeBoxFooter_FreshSpawnIdle(t *testing.T) {
 		"────────────────────────\n" +
 		"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
 
-	if ClaudeActivelyWorking(freshSpawn) {
+	if ClaudeActivelyWorking(freshSpawn, 0) {
 		t.Fatalf("fresh-spawn compose box (no spinner) must NOT be classified working")
 	}
 	if !ClaudeIdlePromptShowing(freshSpawn) {
@@ -1701,7 +1701,7 @@ func TestClaudeComposeBoxFooter_FreshSpawnIdle(t *testing.T) {
 
 	// Even an ellipsis-only box (no prefilled text) with the footer is idle.
 	ellipsisOnly := "────────────\n❯ …\n────────────\n  ⏵⏵ accept edits on\n"
-	if ClaudeActivelyWorking(ellipsisOnly) {
+	if ClaudeActivelyWorking(ellipsisOnly, 0) {
 		t.Fatalf("ellipsis-only compose box must NOT be working")
 	}
 	if !ClaudeIdlePromptShowing(ellipsisOnly) {
@@ -1715,7 +1715,7 @@ func TestClaudeComposeBoxFooter_FreshSpawnIdle(t *testing.T) {
 		"❯ \n" +
 		"────────────\n" +
 		"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
-	if !ClaudeActivelyWorking(working) {
+	if !ClaudeActivelyWorking(working, 0) {
 		t.Errorf("compose box with active spinner must be classified working")
 	}
 }
@@ -1759,7 +1759,7 @@ func TestCodexActivelyWorkingUsesOnlyStructuralLiveTailMarkers(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := CodexActivelyWorking(test.output); got != test.want {
+			if got := CodexActivelyWorking(test.output, 0); got != test.want {
 				t.Fatalf("CodexActivelyWorking() = %v, want %v", got, test.want)
 			}
 		})

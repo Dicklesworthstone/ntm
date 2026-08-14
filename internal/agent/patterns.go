@@ -494,19 +494,12 @@ const (
 // DetectClaudeTurnState returns the state represented by Claude's newest
 // dynamic marker in the live tail. Completion/error markers are evaluated
 // after spinner markers on each line so an unexpected overlap fails closed.
-func DetectClaudeTurnState(output string) ClaudeTurnState {
-	if output == "" {
-		return ClaudeTurnUnknown
-	}
-	return DetectClaudeTurnStateWidth(output, 0)
-}
-
-// DetectClaudeTurnStateWidth is DetectClaudeTurnState with a width-adaptive
-// live window (bd-eeifh): the fixed line budget counts physical capture
-// rows, so on narrow panes a wrapped spinner frame can fall outside it and
-// a working pane reads idle. paneWidth is the real tmux pane width; pass 0
-// when unknown to keep the calibrated budget.
-func DetectClaudeTurnStateWidth(output string, paneWidth int) ClaudeTurnState {
+//
+// The live window is width-adaptive (bd-eeifh): the fixed line budget counts
+// physical capture rows, so on narrow panes a wrapped spinner frame can fall
+// outside it and a working pane reads idle. paneWidth is the real tmux pane
+// width; pass 0 when unknown to keep the calibrated budget.
+func DetectClaudeTurnState(output string, paneWidth int) ClaudeTurnState {
 	if output == "" {
 		return ClaudeTurnUnknown
 	}
@@ -533,15 +526,11 @@ func DetectClaudeTurnStateWidth(output string, paneWidth int) ClaudeTurnState {
 }
 
 // ClaudeActivelyWorking reports whether the newest Claude turn marker is a
-// live spinner rather than completion or a terminal tool-result error.
-func ClaudeActivelyWorking(output string) bool {
-	return DetectClaudeTurnState(output) == ClaudeTurnWorking
-}
-
-// ClaudeActivelyWorkingWidth is ClaudeActivelyWorking with a width-adaptive
-// live window (bd-eeifh); pass the real tmux pane width, or 0 when unknown.
-func ClaudeActivelyWorkingWidth(output string, paneWidth int) bool {
-	return DetectClaudeTurnStateWidth(output, paneWidth) == ClaudeTurnWorking
+// live spinner rather than completion or a terminal tool-result error. The
+// live window is width-adaptive (bd-eeifh); pass the real tmux pane width,
+// or 0 when unknown.
+func ClaudeActivelyWorking(output string, paneWidth int) bool {
+	return DetectClaudeTurnState(output, paneWidth) == ClaudeTurnWorking
 }
 
 // CodexActivelyWorking reports whether Codex's trailing live window contains a
@@ -550,14 +539,10 @@ func ClaudeActivelyWorkingWidth(output string, paneWidth int) bool {
 // matching the full capture would make completed turns appear busy forever,
 // while treating the persistent chevron as idle would make active panes unsafe
 // for dispatch.
-func CodexActivelyWorking(output string) bool {
-	return CodexActivelyWorkingWidth(output, 0)
-}
-
-// CodexActivelyWorkingWidth is CodexActivelyWorking with a width-adaptive
-// live window (bd-eeifh). paneWidth is the real tmux pane width; pass 0
-// when unknown to keep the calibrated budget.
-func CodexActivelyWorkingWidth(output string, paneWidth int) bool {
+//
+// The live window is width-adaptive (bd-eeifh). paneWidth is the real tmux
+// pane width; pass 0 when unknown to keep the calibrated budget.
+func CodexActivelyWorking(output string, paneWidth int) bool {
 	clean := stripANSICodes(output)
 	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, codexLiveTailLines))
 	return codexActiveWorkLineRe.MatchString(tail) || codexInterruptHintRe.MatchString(tail)
