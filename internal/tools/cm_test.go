@@ -26,13 +26,30 @@ func TestCMAdapterConnectSetsDiscoveredServerPort(t *testing.T) {
 	}
 }
 
-func TestCMAdapterIsDaemonRunningUsesConnectedClientEndpoint(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Errorf("path = %s, want /health", r.URL.Path)
+// newMCPHealthServer fakes a `cm serve` daemon: MCP JSON-RPC at the root
+// path, answering tools/list (the health probe) with an empty tool set.
+func newMCPHealthServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			t.Errorf("path = %s, want /", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{"tools": []any{}},
+		})
 	}))
+}
+
+func TestCMAdapterIsDaemonRunningUsesConnectedClientEndpoint(t *testing.T) {
+	ts := newMCPHealthServer(t, 0)
 	defer ts.Close()
 
 	port := mustServerPort(t, ts.URL)
@@ -53,9 +70,7 @@ func TestCMAdapterIsDaemonRunningUsesConnectedClientEndpoint(t *testing.T) {
 }
 
 func TestCMAdapterIsDaemonRunningFallsBackToConfiguredPort(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	ts := newMCPHealthServer(t, 0)
 	defer ts.Close()
 
 	adapter := NewCMAdapter()
@@ -67,15 +82,10 @@ func TestCMAdapterIsDaemonRunningFallsBackToConfiguredPort(t *testing.T) {
 }
 
 func TestCMAdapterIsDaemonRunningFallbackAfterClientTimeout(t *testing.T) {
-	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(3 * time.Second)
-		w.WriteHeader(http.StatusOK)
-	}))
+	slowServer := newMCPHealthServer(t, 3*time.Second)
 	defer slowServer.Close()
 
-	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	fastServer := newMCPHealthServer(t, 0)
 	defer fastServer.Close()
 
 	tmpDir := t.TempDir()

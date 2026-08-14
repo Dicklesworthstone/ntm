@@ -125,7 +125,7 @@ func TestCollectOptionalCMParsesContext(t *testing.T) {
 	snapshot := NewIdeaEvidenceSnapshot(t.TempDir())
 	runner := fakeOptionalRunner{
 		outputs: map[string][]byte{
-			"cm context queue-dry ideation --json --limit 5": []byte(`{"success":true,"data":{"relevantBullets":[{"id":"b-1","category":"debugging","summary":"Check tests at /home/jeff/repo/x","tags":["go"]}],"antiPatterns":[{"id":"b-2","category":"refactor","summary":"Don't reset --hard"}],"suggestedCassQueries":["auth error","supabase 5xx"]}}`),
+			"cm context queue-dry ideation --json --top 5": []byte(`{"success":true,"data":{"relevantBullets":[{"id":"b-1","category":"debugging","summary":"Check tests at /home/jeff/repo/x","tags":["go"]}],"antiPatterns":[{"id":"b-2","category":"refactor","summary":"Don't reset --hard"}],"suggestedCassQueries":["auth error","supabase 5xx"]}}`),
 		},
 	}
 	collector := Collector{Runner: runner}
