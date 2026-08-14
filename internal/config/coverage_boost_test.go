@@ -1567,6 +1567,63 @@ func TestMergeConfig_ProjectIntegrationOmitPreservesGlobal(t *testing.T) {
 	}
 }
 
+// Regression for #243: a repository-controlled project overlay must never be
+// able to ENABLE an integration the user disabled globally. Registration
+// contacts a network endpoint with project metadata (and any configured
+// token), so enabling requires the user's own global opt-in.
+func TestMergeConfig_ProjectCannotEnableDisabledIntegration(t *testing.T) {
+	t.Parallel()
+
+	global := Default()
+	global.AgentMail.Enabled = false
+	global.CASS.Enabled = false
+	global.Memory.Enabled = false
+
+	enable := true
+	project := &ProjectConfig{
+		Integrations: ProjectIntegrations{
+			AgentMail: &enable,
+			CASS:      &enable,
+			CM:        &enable,
+		},
+	}
+
+	result := MergeConfig(global, project, t.TempDir())
+	if result.AgentMail.Enabled {
+		t.Error("project overlay must not enable AgentMail over a global disable")
+	}
+	if result.CASS.Enabled {
+		t.Error("project overlay must not enable CASS over a global disable")
+	}
+	if result.Memory.Enabled {
+		t.Error("project overlay must not enable Memory (CM) over a global disable")
+	}
+}
+
+// The ratchet must still be a no-op when project and global agree on enabled.
+func TestMergeConfig_ProjectEnableMatchingGlobalKeepsEnabled(t *testing.T) {
+	t.Parallel()
+
+	global := Default()
+	global.AgentMail.Enabled = true
+	global.CASS.Enabled = true
+	global.Memory.Enabled = true
+
+	enable := true
+	project := &ProjectConfig{
+		Integrations: ProjectIntegrations{
+			AgentMail: &enable,
+			CASS:      &enable,
+			CM:        &enable,
+		},
+	}
+
+	result := MergeConfig(global, project, t.TempDir())
+	if !result.AgentMail.Enabled || !result.CASS.Enabled || !result.Memory.Enabled {
+		t.Error("project enable matching a global enable must keep the integration on")
+	}
+}
+
 func TestMergeConfig_PaletteFileTraversal(t *testing.T) {
 	t.Parallel()
 	global := Default()
