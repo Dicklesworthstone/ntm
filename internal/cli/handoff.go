@@ -16,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func newHandoffCmd() *cobra.Command {
@@ -63,7 +64,8 @@ func newHandoffCreateCmd() *cobra.Command {
 		Long: `Create a handoff for preserving context across sessions.
 
 If --goal and --now are not provided, enters interactive mode.
-Use --auto to generate from recent agent output.
+Use --auto to generate from recent agent output; an explicit --goal or
+--now combines with --auto and takes precedence over inferred values.
 Use --from-file to load from an existing YAML file.
 
 Examples:
@@ -249,10 +251,25 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 			transferTTLSeconds = cfg.FileReservation.DefaultTTLMin * 60
 		}
 
+		// Auto mode infers goal/now from recent agent output, so capture it
+		// from the session's agent panes. Only needed for fields the operator
+		// did not supply explicitly; capture failures degrade to the explicit
+		// flags or validation, never abort generation.
+		var capturedOutput []byte
+		if goal == "" || now == "" {
+			capturedOutput = captureHandoffAutoOutput(ctx, sessionName)
+		}
+
 		opts := handoff.GenerateHandoffOptions{
-			SessionName:          sessionName,
-			ProjectKey:           projectDir,
-			AgentName:            agentName,
+			SessionName: sessionName,
+			ProjectKey:  projectDir,
+			AgentName:   agentName,
+			// Explicit --goal/--now take precedence over inferred values;
+			// the generator only falls back to output analysis for fields
+			// that were not supplied.
+			Goal:                 goal,
+			Now:                  now,
+			Output:               capturedOutput,
 			TransferTTLSeconds:   transferTTLSeconds,
 			TransferGraceSeconds: 2,
 		}
@@ -359,6 +376,39 @@ func runHandoffCreate(cmd *cobra.Command, sessionName, goal, now, fromFile strin
 	fmt.Fprintf(cmd.OutOrStdout(), "  Goal: %s\n", truncateForDisplay(h.Goal, 70))
 	fmt.Fprintf(cmd.OutOrStdout(), "  Now: %s\n", truncateForDisplay(h.Now, 70))
 	return nil
+}
+
+// captureHandoffAutoOutput gathers recent output from a session's agent panes
+// so auto-generation can infer goal/now and extract tasks, blockers, and
+// decisions. It is best-effort: a missing session or capture failure returns
+// nil and generation proceeds with whatever the operator supplied explicitly.
+func captureHandoffAutoOutput(ctx context.Context, sessionName string) []byte {
+	if sessionName == "" || sessionName == "general" {
+		return nil
+	}
+	panes, err := tmux.GetPanesContext(ctx, sessionName)
+	if err != nil {
+		slog.Debug("handoff auto: pane enumeration skipped",
+			"session", sessionName, "error", err)
+		return nil
+	}
+
+	const linesPerPane = 200
+	var buf strings.Builder
+	for _, p := range panes {
+		if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+			continue
+		}
+		content, capErr := tmux.CapturePaneOutputContext(ctx, p.ID, linesPerPane)
+		if capErr != nil || strings.TrimSpace(content) == "" {
+			continue
+		}
+		fmt.Fprintf(&buf, "=== pane %s (%s) ===\n%s\n", p.Title, p.Type, content)
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	return []byte(buf.String())
 }
 
 func runHandoffLedger(cmd *cobra.Command, sessionName string, jsonFormat bool) error {

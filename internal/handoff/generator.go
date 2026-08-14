@@ -924,13 +924,15 @@ func (g *Generator) getInProgressBeads(ctx context.Context, agentName string) ([
 		return nil, nil
 	}
 
-	// Parse JSON output
-	var beads []struct {
+	// Parse JSON output. br emits an envelope object ({"issues":[...],...}),
+	// not a bare array, and older/other list verbs differ — UnmarshalBdList
+	// tolerates every known shape and rejects phantom zero-valued beads.
+	type brBead struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
 	}
-
-	if err := json.Unmarshal(out, &beads); err != nil {
+	beads, err := bv.UnmarshalBdList[brBead](string(out))
+	if err != nil {
 		return nil, fmt.Errorf("parse br output: %w", err)
 	}
 

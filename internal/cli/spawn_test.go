@@ -1473,8 +1473,8 @@ func TestFormatMemoryContext_EmptyResult(t *testing.T) {
 	result := formatMemoryContext(&cm.CLIContextResponse{
 		Success:         true,
 		Task:            "test task",
-		RelevantBullets: []cm.CLIRule{},
-		AntiPatterns:    []cm.CLIRule{},
+		RelevantBullets: []cm.Rule{},
+		AntiPatterns:    []cm.Rule{},
 	})
 	if result != "" {
 		t.Errorf("formatMemoryContext(empty) = %q, want empty string", result)
@@ -1486,11 +1486,11 @@ func TestFormatMemoryContext_RulesOnly(t *testing.T) {
 	resp := &cm.CLIContextResponse{
 		Success: true,
 		Task:    "test task",
-		RelevantBullets: []cm.CLIRule{
+		RelevantBullets: []cm.Rule{
 			{ID: "b-8f3a2c", Content: "Always use structured logging with log/slog", Category: "best-practice"},
 			{ID: "b-4e1d7b", Content: "Database migrations must be idempotent", Category: "database"},
 		},
-		AntiPatterns: []cm.CLIRule{},
+		AntiPatterns: []cm.Rule{},
 	}
 
 	result := formatMemoryContext(resp)
@@ -1524,8 +1524,8 @@ func TestFormatMemoryContext_AntiPatternsOnly(t *testing.T) {
 	resp := &cm.CLIContextResponse{
 		Success:         true,
 		Task:            "test task",
-		RelevantBullets: []cm.CLIRule{},
-		AntiPatterns: []cm.CLIRule{
+		RelevantBullets: []cm.Rule{},
+		AntiPatterns: []cm.Rule{
 			{ID: "b-7d3e8c", Content: "Don't add backwards-compatibility shims", Category: "anti-pattern"},
 		},
 	}
@@ -1556,10 +1556,10 @@ func TestFormatMemoryContext_BothSections(t *testing.T) {
 	resp := &cm.CLIContextResponse{
 		Success: true,
 		Task:    "test task",
-		RelevantBullets: []cm.CLIRule{
+		RelevantBullets: []cm.Rule{
 			{ID: "b-rule1", Content: "Use Go 1.25 features", Category: "best-practice"},
 		},
-		AntiPatterns: []cm.CLIRule{
+		AntiPatterns: []cm.Rule{
 			{ID: "b-anti1", Content: "Avoid using deprecated APIs", Category: "anti-pattern"},
 		},
 	}

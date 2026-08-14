@@ -1478,3 +1478,61 @@ func BenchmarkGenerateFromOutput(b *testing.B) {
 		_, _ = g.GenerateFromOutput(context.Background(), "bench-session", output)
 	}
 }
+
+// Regression for #244: `br list --json` emits an envelope object
+// ({"issues":[...],"total":N,...}), not a bare array. The old decoder
+// unmarshalled straight into a slice and always failed, silently skipping
+// BV enrichment.
+func TestGetInProgressBeadsParsesBrEnvelopeShapes(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   []string
+	}{
+		{
+			name:   "envelope object",
+			output: `{"issues":[{"id":"ntm-1","title":"First bead"},{"id":"ntm-2","title":"Second bead"}],"total":2}`,
+			want:   []string{"ntm-1: First bead", "ntm-2: Second bead"},
+		},
+		{
+			name:   "bare array",
+			output: `[{"id":"ntm-3","title":"Bare"}]`,
+			want:   []string{"ntm-3: Bare"},
+		},
+		{
+			name:   "empty envelope",
+			output: `{"issues":[],"total":0}`,
+			want:   nil,
+		},
+		{
+			name:   "empty array",
+			output: `[]`,
+			want:   nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGenerator(t.TempDir())
+			g.commandOutput = func(_ context.Context, _ string, _ time.Duration, name string, _ ...string) ([]byte, error) {
+				if name != "br" {
+					t.Fatalf("command = %q, want br", name)
+				}
+				return []byte(tc.output), nil
+			}
+
+			got, err := g.getInProgressBeads(context.Background(), "")
+			if err != nil {
+				t.Fatalf("getInProgressBeads error = %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("beads = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("beads[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

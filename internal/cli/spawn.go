@@ -4170,9 +4170,22 @@ func preflightOllamaSpawnContext(ctx context.Context, opts SpawnOptions) (string
 	return normalizedHost, nil
 }
 
+// agentMailRegistrationEnabled reports whether spawn may contact Agent Mail
+// to register identities. It fails closed: a missing config never authorizes
+// a network-facing side effect, and both the top-level toggle and the
+// auto_register preference must be on. This is a user-preference and privacy
+// boundary (#243): registration sends the absolute project path, session
+// metadata, and any configured bearer token to the configured endpoint.
+func agentMailRegistrationEnabled() bool {
+	return cfg != nil && cfg.AgentMail.Enabled && cfg.AgentMail.AutoRegister
+}
+
 // registerSessionAgent registers the session with Agent Mail.
 // This is non-blocking and logs but does not fail if unavailable.
 func registerSessionAgent(parentCtx context.Context, sessionName, workingDir string) {
+	if !agentMailRegistrationEnabled() {
+		return
+	}
 	if parentCtx == nil {
 		if !IsJSONOutput() {
 			output.PrintWarning("Agent Mail registration skipped: missing command context")
@@ -4222,8 +4235,9 @@ func registerSpawnedAgents(parentCtx context.Context, workingDir, sessionName st
 	if parentCtx == nil {
 		return &output.AgentMailSpawnStatus{AgentsFailed: len(agents)}
 	}
-	// Check if Agent Mail integration is enabled
-	if cfg != nil && !cfg.AgentMail.Enabled {
+	// Fail closed: no config never authorizes contacting Agent Mail, and both
+	// enabled and auto_register must be on (#243).
+	if !agentMailRegistrationEnabled() {
 		return nil
 	}
 
