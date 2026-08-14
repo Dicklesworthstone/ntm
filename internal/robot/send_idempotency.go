@@ -55,6 +55,15 @@ const ErrCodeIdempotencyConflict = "IDEMPOTENCY_CONFLICT"
 // outcome is not yet recorded (concurrent sender, or a crash mid-send).
 const ErrCodeOperationInProgress = "OPERATION_IN_PROGRESS"
 
+// sendOperationStaleClaimWindow is how long an in_progress claim is trusted
+// before a retry may take it over. Sends complete in seconds; a claim this
+// old with no recorded outcome means the original claimant died before its
+// deferred completion ran. Taking over risks at most a duplicate delivery
+// when the dead process had already typed keystrokes — the caller opted
+// into retry semantics by reusing the operation ID, and the alternative is
+// an operation ID poisoned forever.
+const sendOperationStaleClaimWindow = 10 * time.Minute
+
 // SendAdmission is the typed per-target admission receipt.
 type SendAdmission struct {
 	Target string `json:"target"`
@@ -96,20 +105,43 @@ func sendPayloadDigest(payload string) (string, int64) {
 	return hex.EncodeToString(sum[:]), int64(len(payload))
 }
 
-// sendOperationBindingHash binds an operation to its canonical target set
-// and payload digest. Target order is canonicalized so logically identical
-// retries bind identically.
-func sendOperationBindingHash(session string, targets []string, payloadSHA256 string) string {
-	sorted := append([]string(nil), targets...)
-	sort.Strings(sorted)
+// sendOperationBindingHash binds an operation to the caller's canonical
+// target SELECTOR spec plus the payload digest. Binding to the selector
+// rather than the resolved pane list keeps a byte-identical retry a replay
+// even when pane topology changed between attempts (a pane exited, a new
+// one spawned): under --all or --type the caller cannot re-specify "the
+// original targets", only the original selector. List-valued selectors are
+// sorted so logically identical retries bind identically.
+func sendOperationBindingHash(opts SendOptions, payloadSHA256 string) string {
 	h := sha256.New()
-	h.Write([]byte(session))
-	h.Write([]byte{0})
-	for _, target := range sorted {
-		h.Write([]byte(target))
+	writeField := func(field string) {
+		h.Write([]byte(field))
 		h.Write([]byte{0})
 	}
-	h.Write([]byte(payloadSHA256))
+	writeList := func(values []string) {
+		sorted := make([]string, 0, len(values))
+		for _, v := range values {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				sorted = append(sorted, v)
+			}
+		}
+		sort.Strings(sorted)
+		for _, v := range sorted {
+			writeField(v)
+		}
+		h.Write([]byte{1})
+	}
+
+	writeField(opts.Session)
+	if opts.All {
+		writeField("all")
+	}
+	writeField(opts.Pane)
+	writeList(opts.Panes)
+	writeList(opts.AgentTypes)
+	writeList(opts.Exclude)
+	writeField(payloadSHA256)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -199,6 +231,17 @@ func applyReplayedOutcome(output *SendOutput, op *state.SendOperation) error {
 	return nil
 }
 
+// releaseSendOperationClaim frees a claim when the operation terminated
+// BEFORE any delivery was attempted (preflight failure). Nothing was typed
+// into any pane, so a retry with the same operation ID must get a fresh
+// attempt rather than a stored transient failure. Best-effort.
+func releaseSendOperationClaim(store *state.Store, op *state.SendOperation, output *SendOutput) {
+	if err := store.ReleaseSendOperation(op.OperationID, op.SessionName); err != nil {
+		output.Warnings = append(output.Warnings,
+			fmt.Sprintf("send operation %s claim not released: %v (retry may report in-progress until taken over)", op.OperationID, err))
+	}
+}
+
 // completeSendOperationRecord persists the terminal outcome for a claimed
 // operation and attaches the operation info to the output. Best-effort: a
 // persistence failure surfaces as a warning rather than failing the send
@@ -222,7 +265,7 @@ func completeSendOperationRecord(store *state.Store, op *state.SendOperation, ou
 		return
 	}
 	completedAt := time.Now().UTC()
-	if err := store.CompleteSendOperation(op.OperationID, string(data), completedAt); err != nil {
+	if err := store.CompleteSendOperation(op.OperationID, op.SessionName, string(data), completedAt); err != nil {
 		output.Warnings = append(output.Warnings, fmt.Sprintf("send operation %s outcome not recorded: %v", op.OperationID, err))
 		return
 	}
@@ -237,6 +280,7 @@ func completeSendOperationRecord(store *state.Store, op *state.SendOperation, ou
 type SendReceiptOutput struct {
 	RobotResponse
 	Session   string             `json:"session,omitempty"`
+	Warnings  []string           `json:"warnings,omitempty"`
 	Operation *SendOperationInfo `json:"operation,omitempty"`
 	// Outcome carries the recorded terminal result for completed operations.
 	Outcome *SendReceiptOutcome `json:"outcome,omitempty"`
@@ -277,18 +321,31 @@ func GetSendReceipt(operationID string) (*SendReceiptOutput, error) {
 		return output, nil
 	}
 
-	op, err := store.GetSendOperation(operationID)
+	ops, err := store.GetSendOperationsByID(operationID)
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to read send operation record")
 		return output, nil
 	}
-	if op == nil {
+	if len(ops) == 0 {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("send operation '%s' not found", operationID),
 			ErrCodeNotFound,
 			"Unknown operation ID; receipts exist only for sends that supplied --op-id",
 		)
 		return output, nil
+	}
+	// Operation IDs are scoped per session; the same ID may exist in several
+	// sessions. Report the newest and surface the others so the caller can
+	// disambiguate.
+	op := &ops[0]
+	if len(ops) > 1 {
+		sessions := make([]string, 0, len(ops))
+		for _, other := range ops {
+			sessions = append(sessions, other.SessionName)
+		}
+		output.Warnings = append(output.Warnings, fmt.Sprintf(
+			"operation ID %q exists in %d sessions (%s); showing the most recent (%s)",
+			operationID, len(ops), strings.Join(sessions, ", "), op.SessionName))
 	}
 
 	output.Session = op.SessionName

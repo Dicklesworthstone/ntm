@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -645,9 +646,9 @@ func outputSeqScope(sessionName, paneID string) string {
 func newOutputEpoch() string {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		// Fallback: time-derived epoch still satisfies "changes when the
-		// scope is recreated" with overwhelming probability.
-		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))[:16]
+		// Fallback: a nanosecond timestamp still satisfies "changes when
+		// the scope is recreated" with overwhelming probability.
+		return strconv.FormatInt(time.Now().UTC().UnixNano(), 16)
 	}
 	return hex.EncodeToString(buf[:])
 }
@@ -716,17 +717,32 @@ func advanceOutputSequence(store WatermarkStore, scope, contentHash string, obse
 	return info, nil
 }
 
-// observeOutputSequence strips and hashes raw pane content, then advances
-// the durable output sequence for the pane's scope. Errors and a missing
-// store both degrade to nil: the signal is additive and must never break
-// the surface that carries it.
+// outputSeqHashLines is how many trailing lines feed the output-sequence
+// hash. Multiple surfaces observe the same scope with different capture
+// depths (status uses a 20-line detection capture, activity uses the
+// observer's deeper RawOutput); hashing only the shared trailing window
+// keeps their baselines identical so the sequence never advances on an
+// idle pane merely because a different surface looked at it.
+const outputSeqHashLines = 20
+
+// outputSeqContentHash normalizes raw pane content into the durable
+// output-sequence fingerprint: ANSI stripped, trailing whitespace trimmed,
+// last outputSeqHashLines lines only.
+func outputSeqContentHash(rawContent string) string {
+	clean := strings.TrimRight(status.StripANSI(rawContent), " \t\r\n")
+	return computeContentHash(lastNLines(clean, outputSeqHashLines))
+}
+
+// observeOutputSequence hashes the normalized tail of raw pane content, then
+// advances the durable output sequence for the pane's scope. Errors and a
+// missing store both degrade to nil: the signal is additive and must never
+// break the surface that carries it.
 func observeOutputSequence(sessionName, paneID, rawContent string, observedAt time.Time) *OutputSequenceInfo {
 	store := currentProjectionStore()
 	if store == nil {
 		return nil
 	}
-	hash := computeContentHash(status.StripANSI(rawContent))
-	info, err := advanceOutputSequence(store, outputSeqScope(sessionName, paneID), hash, observedAt)
+	info, err := advanceOutputSequence(store, outputSeqScope(sessionName, paneID), outputSeqContentHash(rawContent), observedAt)
 	if err != nil {
 		return nil
 	}

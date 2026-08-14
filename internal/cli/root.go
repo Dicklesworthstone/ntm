@@ -1788,6 +1788,13 @@ Shell Integration:
 			return
 		}
 		if robotSendReceipt != "" {
+			if robotSend != "" {
+				// The receipt branch would otherwise return before the send
+				// block, silently skipping the send with a success-looking
+				// receipt response.
+				failRobotCommand(errors.New("--robot-send-receipt cannot be combined with --robot-send"), robot.ErrCodeInvalidFlag, "Run the send first, then query the receipt in a separate invocation", "robot-send-receipt")
+				return
+			}
 			if err := robot.PrintSendReceipt(robotSendReceipt); err != nil {
 				recordRobotProcessExit(err)
 			}
@@ -1848,6 +1855,14 @@ Shell Integration:
 
 			// Check if --track flag is set for combined send+ack mode
 			if robotAckTrack {
+				// The tracked path performs its own inline dispatch that does
+				// not (yet) participate in the durable claim/replay protocol.
+				// Failing loudly beats accepting --op-id and providing no
+				// idempotency.
+				if strings.TrimSpace(robotSendOpID) != "" {
+					failRobotCommand(errors.New("--op-id is not supported with --track"), robot.ErrCodeInvalidFlag, "Send with --op-id first, then poll with --robot-ack separately", "robot-send")
+					return
+				}
 				// Canonical modifiers for ack behavior are --timeout and --poll.
 				// --ack-timeout/--ack-poll remain as deprecated aliases for backward compatibility.
 				ackTimeoutStr := robotAckTimeout
@@ -1871,19 +1886,18 @@ Shell Integration:
 				}
 				opts := robot.SendAndAckOptions{
 					SendOptions: robot.SendOptions{
-						Session:        session,
-						Message:        robotSendMsg,
-						All:            robotSendAll,
-						Pane:           singularPane,
-						Panes:          paneSelectors,
-						AgentTypes:     agentTypes,
-						Exclude:        excludeList,
-						DelayMs:        robotSendDelay,
-						Enter:          enterOverride,
-						DryRun:         robotDryRunEffective,
-						ClearInput:     robotSendClearInput,
-						VerifyRender:   robotSendVerifyRender,
-						IdempotencyKey: strings.TrimSpace(robotSendOpID),
+						Session:      session,
+						Message:      robotSendMsg,
+						All:          robotSendAll,
+						Pane:         singularPane,
+						Panes:        paneSelectors,
+						AgentTypes:   agentTypes,
+						Exclude:      excludeList,
+						DelayMs:      robotSendDelay,
+						Enter:        enterOverride,
+						DryRun:       robotDryRunEffective,
+						ClearInput:   robotSendClearInput,
+						VerifyRender: robotSendVerifyRender,
 					},
 					AckTimeoutMs: int(ackTimeout.Milliseconds()),
 					AckPollMs:    ackPollMs,

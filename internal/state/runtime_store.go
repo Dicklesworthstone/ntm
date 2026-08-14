@@ -24,6 +24,9 @@ const (
 	DefaultSourceHealthRetention     = 24 * time.Hour
 	DefaultIncidentReopenWindow      = time.Hour
 	DefaultResolvedIncidentRetention = 7 * 24 * time.Hour
+	// DefaultSendOperationRetention bounds how long completed idempotent
+	// send receipts (#245) remain queryable before GC prunes them.
+	DefaultSendOperationRetention = 7 * 24 * time.Hour
 )
 
 // RuntimeGCConfig defines the bounded cleanup windows for the runtime layer.
@@ -46,6 +49,7 @@ type RuntimeGCResult struct {
 	ExpiredAttentionEvents int64 `json:"expired_attention_events"`
 	ExpiredAuditEvents     int64 `json:"expired_audit_events"`
 	ExpiredAuditDecisions  int64 `json:"expired_audit_decisions"`
+	ExpiredSendOperations  int64 `json:"expired_send_operations"`
 }
 
 // DefaultRuntimeGCConfig returns conservative cleanup windows for routine maintenance.
@@ -1422,6 +1426,9 @@ func (s *Store) RunGC(cfg RuntimeGCConfig) (RuntimeGCResult, error) {
 		return result, err
 	}
 	if result.ExpiredAuditDecisions, err = s.GCExpiredAuditDecisions(); err != nil {
+		return result, err
+	}
+	if result.ExpiredSendOperations, err = s.GCCompletedSendOperations(0); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -3127,14 +3134,17 @@ func DecodeJSON(data string, v interface{}) error {
 // Send Operations (idempotent robot send, #245)
 // =============================================================================
 
-// ClaimSendOperation atomically claims an operation ID for execution.
-// The INSERT OR IGNORE makes the claim race-safe across processes: exactly
-// one caller creates the row (claimed=true) and every other caller observes
-// the existing row, whose binding it must validate before deciding between
-// replay and conflict.
+// ClaimSendOperation atomically claims a (session, operation ID) pair for
+// execution. The INSERT OR IGNORE makes the claim race-safe across
+// processes: exactly one caller creates the row (claimed=true) and every
+// other caller observes the existing row, whose binding it must validate
+// before deciding between replay and conflict.
 func (s *Store) ClaimSendOperation(op *SendOperation) (existing *SendOperation, claimed bool, err error) {
 	if op == nil || op.OperationID == "" {
 		return nil, false, fmt.Errorf("claim send operation: operation ID is required")
+	}
+	if op.SessionName == "" {
+		return nil, false, fmt.Errorf("claim send operation: session name is required")
 	}
 
 	s.mu.Lock()
@@ -3160,7 +3170,7 @@ func (s *Store) ClaimSendOperation(op *SendOperation) (existing *SendOperation, 
 		return nil, false, fmt.Errorf("claim send operation: %w", err)
 	}
 
-	stored, err := s.getSendOperationLocked(op.OperationID)
+	stored, err := s.getSendOperationLocked(op.OperationID, op.SessionName)
 	if err != nil {
 		return nil, false, err
 	}
@@ -3170,12 +3180,67 @@ func (s *Store) ClaimSendOperation(op *SendOperation) (existing *SendOperation, 
 	return stored, rows > 0, nil
 }
 
+// TakeOverStaleSendOperation re-claims an in_progress operation whose
+// original claimant is presumed dead (crashed before recording an outcome).
+// The takeover only succeeds when the row is still in_progress, carries the
+// same binding, and was claimed before staleBefore — so a live concurrent
+// sender inside the staleness window is never usurped. Returns whether the
+// takeover won.
+func (s *Store) TakeOverStaleSendOperation(operationID, sessionName, bindingHash string, staleBefore time.Time) (bool, error) {
+	if operationID == "" || sessionName == "" {
+		return false, fmt.Errorf("take over send operation: operation ID and session are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(`
+		UPDATE send_operations
+		SET created_at = ?
+		WHERE operation_id = ? AND session_name = ? AND binding_hash = ?
+			AND status = ? AND created_at < ?`,
+		time.Now().UTC(), operationID, sessionName, bindingHash,
+		SendOperationInProgress, staleBefore.UTC(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("take over send operation: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("take over send operation: %w", err)
+	}
+	return rows > 0, nil
+}
+
+// ReleaseSendOperation deletes a still-in_progress claim. Used when the
+// operation failed BEFORE any delivery was attempted (preflight errors), so
+// a later retry with the same operation ID gets a fresh attempt instead of
+// replaying a transient failure forever. Completed rows are never released.
+func (s *Store) ReleaseSendOperation(operationID, sessionName string) error {
+	if operationID == "" || sessionName == "" {
+		return fmt.Errorf("release send operation: operation ID and session are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		DELETE FROM send_operations
+		WHERE operation_id = ? AND session_name = ? AND status = ?`,
+		operationID, sessionName, SendOperationInProgress,
+	)
+	if err != nil {
+		return fmt.Errorf("release send operation: %w", err)
+	}
+	return nil
+}
+
 // CompleteSendOperation records the outcome of a claimed operation. The
 // outcome JSON is the durable receipt returned verbatim on replays and by
 // receipt queries.
-func (s *Store) CompleteSendOperation(operationID, outcomeJSON string, completedAt time.Time) error {
-	if operationID == "" {
-		return fmt.Errorf("complete send operation: operation ID is required")
+func (s *Store) CompleteSendOperation(operationID, sessionName, outcomeJSON string, completedAt time.Time) error {
+	if operationID == "" || sessionName == "" {
+		return fmt.Errorf("complete send operation: operation ID and session are required")
 	}
 	if completedAt.IsZero() {
 		completedAt = time.Now().UTC()
@@ -3187,9 +3252,9 @@ func (s *Store) CompleteSendOperation(operationID, outcomeJSON string, completed
 	_, err := s.db.Exec(`
 		UPDATE send_operations
 		SET status = ?, outcome_json = ?, completed_at = ?
-		WHERE operation_id = ? AND status = ?`,
+		WHERE operation_id = ? AND session_name = ? AND status = ?`,
 		SendOperationCompleted, outcomeJSON, completedAt.UTC(),
-		operationID, SendOperationInProgress,
+		operationID, sessionName, SendOperationInProgress,
 	)
 	if err != nil {
 		return fmt.Errorf("complete send operation: %w", err)
@@ -3197,21 +3262,70 @@ func (s *Store) CompleteSendOperation(operationID, outcomeJSON string, completed
 	return nil
 }
 
-// GetSendOperation returns the durable record for an operation ID, or nil
-// when the ID is unknown.
-func (s *Store) GetSendOperation(operationID string) (*SendOperation, error) {
+// GetSendOperation returns the durable record for a (session, operation ID)
+// pair, or nil when unknown.
+func (s *Store) GetSendOperation(operationID, sessionName string) (*SendOperation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.getSendOperationLocked(operationID)
+	return s.getSendOperationLocked(operationID, sessionName)
 }
 
-func (s *Store) getSendOperationLocked(operationID string) (*SendOperation, error) {
+// GetSendOperationsByID returns every session's record for an operation ID,
+// newest first. Receipt queries use this because the caller may not know
+// (or care) which session a historic operation ran in.
+func (s *Store) GetSendOperationsByID(operationID string) ([]SendOperation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT operation_id, session_name, binding_hash, payload_sha256,
+			payload_bytes, status, COALESCE(outcome_json, ''), created_at, completed_at
+		FROM send_operations WHERE operation_id = ?
+		ORDER BY created_at DESC`,
+		operationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get send operations: %w", err)
+	}
+	defer rows.Close()
+
+	var ops []SendOperation
+	for rows.Next() {
+		var op SendOperation
+		if err := rows.Scan(
+			&op.OperationID, &op.SessionName, &op.BindingHash, &op.PayloadSHA256,
+			&op.PayloadBytes, &op.Status, &op.OutcomeJSON, &op.CreatedAt, &op.CompletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan send operation: %w", err)
+		}
+		ops = append(ops, op)
+	}
+	return ops, rows.Err()
+}
+
+// GCCompletedSendOperations prunes completed operation records older than
+// the retention window so the receipt table stays bounded.
+func (s *Store) GCCompletedSendOperations(retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		retention = DefaultSendOperationRetention
+	}
+	cutoff := time.Now().UTC().Add(-retention)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return execRowsAffected(s.db,
+		`DELETE FROM send_operations WHERE status = ? AND completed_at < ?`,
+		"gc completed send operations", SendOperationCompleted, cutoff)
+}
+
+func (s *Store) getSendOperationLocked(operationID, sessionName string) (*SendOperation, error) {
 	op := &SendOperation{}
 	err := s.db.QueryRow(`
 		SELECT operation_id, session_name, binding_hash, payload_sha256,
 			payload_bytes, status, COALESCE(outcome_json, ''), created_at, completed_at
-		FROM send_operations WHERE operation_id = ?`,
-		operationID,
+		FROM send_operations WHERE operation_id = ? AND session_name = ?`,
+		operationID, sessionName,
 	).Scan(
 		&op.OperationID, &op.SessionName, &op.BindingHash, &op.PayloadSHA256,
 		&op.PayloadBytes, &op.Status, &op.OutcomeJSON, &op.CreatedAt, &op.CompletedAt,

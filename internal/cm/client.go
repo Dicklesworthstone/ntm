@@ -149,11 +149,15 @@ func (c *Client) rpc(ctx context.Context, method string, params any, result any)
 	if rpcResp.Error != nil {
 		return fmt.Errorf("cm %s failed (%d): %s", method, rpcResp.Error.Code, rpcResp.Error.Message)
 	}
-	if result == nil {
-		return nil
-	}
+	// A JSON-RPC response with neither result nor error is not a valid
+	// answer to any method we call. Enforcing this even when the caller
+	// discards the result keeps Health() from blessing an arbitrary HTTP
+	// service that happens to answer 200 with unrelated JSON.
 	if len(rpcResp.Result) == 0 || string(rpcResp.Result) == "null" {
 		return fmt.Errorf("cm %s returned no result", method)
+	}
+	if result == nil {
+		return nil
 	}
 	return json.Unmarshal(rpcResp.Result, result)
 }
@@ -182,8 +186,21 @@ func (c *Client) callTool(ctx context.Context, name string, arguments any, resul
 		return err
 	}
 
+	// Shape detection keys off the PRESENCE of the standard envelope
+	// members, not their values: an envelope with empty content and
+	// isError=false must be treated as an (invalid) envelope, never
+	// silently decoded as a direct-object payload — decoding the envelope
+	// itself into the result yields an empty-but-successful context, the
+	// exact silent drop (#249) this client exists to prevent.
+	var probe map[string]json.RawMessage
+	isEnvelope := false
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		_, hasContent := probe["content"]
+		_, hasIsError := probe["isError"]
+		isEnvelope = hasContent || hasIsError
+	}
 	var envelope mcpToolEnvelope
-	if err := json.Unmarshal(raw, &envelope); err == nil && (envelope.IsError || len(envelope.Content) > 0) {
+	if isEnvelope && json.Unmarshal(raw, &envelope) == nil {
 		var text string
 		for _, content := range envelope.Content {
 			if content.Type == "text" && strings.TrimSpace(content.Text) != "" {

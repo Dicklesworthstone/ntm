@@ -8,23 +8,44 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
-func TestSendOperationBindingHashCanonicalizesTargets(t *testing.T) {
+func TestSendOperationBindingHashCanonicalizesSelectors(t *testing.T) {
 	sha, _ := sendPayloadDigest("hello")
-	a := sendOperationBindingHash("proj", []string{"cc_1", "cc_2"}, sha)
-	b := sendOperationBindingHash("proj", []string{"cc_2", "cc_1"}, sha)
-	if a != b {
-		t.Error("target order changed the binding hash; want canonical ordering")
+	base := SendOptions{Session: "proj", Panes: []string{"1", "2"}, AgentTypes: []string{"claude", "codex"}}
+
+	a := sendOperationBindingHash(base, sha)
+	reordered := base
+	reordered.Panes = []string{"2", "1"}
+	reordered.AgentTypes = []string{"codex", "claude"}
+	if sendOperationBindingHash(reordered, sha) != a {
+		t.Error("selector list order changed the binding hash; want canonical ordering")
 	}
 
 	otherPayload, _ := sendPayloadDigest("different")
-	if sendOperationBindingHash("proj", []string{"cc_1", "cc_2"}, otherPayload) == a {
+	if sendOperationBindingHash(base, otherPayload) == a {
 		t.Error("different payload produced the same binding hash")
 	}
-	if sendOperationBindingHash("other", []string{"cc_1", "cc_2"}, sha) == a {
+	otherSession := base
+	otherSession.Session = "other"
+	if sendOperationBindingHash(otherSession, sha) == a {
 		t.Error("different session produced the same binding hash")
 	}
-	if sendOperationBindingHash("proj", []string{"cc_1"}, sha) == a {
-		t.Error("different target set produced the same binding hash")
+	otherSelector := base
+	otherSelector.Panes = []string{"1"}
+	if sendOperationBindingHash(otherSelector, sha) == a {
+		t.Error("different selector produced the same binding hash")
+	}
+	allFlag := base
+	allFlag.All = true
+	if sendOperationBindingHash(allFlag, sha) == a {
+		t.Error("--all did not change the binding hash")
+	}
+
+	// The hash binds the SELECTOR, not the resolved pane list: two identical
+	// commands bind identically regardless of what panes exist at run time,
+	// so a byte-identical retry after topology change replays instead of
+	// conflicting.
+	if sendOperationBindingHash(base, sha) != a {
+		t.Error("identical selector produced a different binding hash")
 	}
 }
 

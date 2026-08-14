@@ -7183,13 +7183,15 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	}
 
 	// Durable idempotent operation claim (#245). The claim happens BEFORE
-	// any keystroke is injected and binds the operation ID to the canonical
-	// targets plus the digest of the exact payload about to be delivered
-	// (post CASS injection). Identical retries replay the recorded outcome;
-	// conflicting reuse is rejected; racing/crashed operations report
-	// in-progress and reconcile via --robot-send-receipt.
+	// any keystroke is injected and binds the operation ID to the caller's
+	// canonical selector spec plus the digest of the exact payload about to
+	// be delivered (post CASS injection). Identical retries replay the
+	// recorded outcome; conflicting reuse is rejected; a claim abandoned by
+	// a crashed process is taken over after a staleness window; preflight
+	// failures release the claim so the ID stays retryable.
 	var claimedOp *state.SendOperation
 	var claimedStore *state.Store
+	dispatchAttempted := false
 	if trace.IdempotencyKey != "" && !opts.DryRun {
 		store := currentProjectionStore()
 		if store == nil {
@@ -7204,7 +7206,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		claim := &state.SendOperation{
 			OperationID:   trace.IdempotencyKey,
 			SessionName:   opts.Session,
-			BindingHash:   sendOperationBindingHash(opts.Session, output.Targets, payloadSHA),
+			BindingHash:   sendOperationBindingHash(opts, payloadSHA),
 			PayloadSHA256: payloadSHA,
 			PayloadBytes:  payloadBytes,
 		}
@@ -7216,39 +7218,59 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		if !claimed {
 			if stored.BindingHash != claim.BindingHash {
 				output.RobotResponse = NewErrorResponse(
-					fmt.Errorf("operation ID '%s' is already bound to different targets or payload", trace.IdempotencyKey),
+					fmt.Errorf("operation ID '%s' is already bound to a different selector or payload in session '%s'", trace.IdempotencyKey, opts.Session),
 					ErrCodeIdempotencyConflict,
-					"Use a fresh operation ID for a different send, or repeat the original targets and message exactly",
+					"Use a fresh operation ID for a different send, or repeat the original command exactly",
 				)
 				output.Operation = sendOperationInfoFromRecord(stored, false)
-				return &output, nil
+				return finalizeTerminalSendActuation(trace, opts, &output), nil
 			}
 			if stored.Status == state.SendOperationCompleted {
 				if err := applyReplayedOutcome(&output, stored); err != nil {
 					output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Stored send outcome could not be decoded")
-					return &output, nil
+					return finalizeTerminalSendActuation(trace, opts, &output), nil
 				}
 				output.AgentHints = generateSendHints(output)
-				return &output, nil
+				return finalizeTerminalSendActuation(trace, opts, &output), nil
 			}
-			// Claimed elsewhere and not yet completed: outcome unknown.
-			output.RobotResponse = NewErrorResponse(
-				fmt.Errorf("operation '%s' is in progress", trace.IdempotencyKey),
-				ErrCodeOperationInProgress,
-				fmt.Sprintf("Query the durable receipt with --robot-send-receipt=%s before retrying", trace.IdempotencyKey),
+			// In progress. If the original claimant crashed before recording
+			// an outcome the row would otherwise stay in_progress forever, so
+			// a sufficiently stale matching claim is taken over and executed
+			// fresh. A recent claim is a live concurrent sender: report
+			// in-progress and let the caller reconcile via the receipt.
+			takenOver, takeoverErr := store.TakeOverStaleSendOperation(
+				claim.OperationID, claim.SessionName, claim.BindingHash,
+				time.Now().UTC().Add(-sendOperationStaleClaimWindow),
 			)
-			info := sendOperationInfoFromRecord(stored, true)
-			info.Admissions = unknownAdmissions(output.Targets)
-			output.Operation = info
-			return &output, nil
+			if takeoverErr == nil && takenOver {
+				stored, _ = store.GetSendOperation(claim.OperationID, claim.SessionName)
+				if stored == nil {
+					stored = claim
+				}
+			} else {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("operation '%s' is in progress", trace.IdempotencyKey),
+					ErrCodeOperationInProgress,
+					fmt.Sprintf("Query the durable receipt with --robot-send-receipt=%s before retrying", trace.IdempotencyKey),
+				)
+				info := sendOperationInfoFromRecord(stored, true)
+				info.Admissions = unknownAdmissions(output.Targets)
+				output.Operation = info
+				return finalizeTerminalSendActuation(trace, opts, &output), nil
+			}
 		}
 		claimedOp = stored
 		claimedStore = store
 		defer func() {
-			// Record the terminal outcome on every exit path after the
-			// claim so the receipt survives caller timeouts and crashes on
-			// later paths.
-			completeSendOperationRecord(claimedStore, claimedOp, &output)
+			// After a dispatch attempt the outcome is terminal: record it so
+			// the receipt survives caller timeouts. Before any dispatch
+			// attempt (preflight failure) nothing was typed, so the claim is
+			// released and the operation ID stays retryable.
+			if dispatchAttempted {
+				completeSendOperationRecord(claimedStore, claimedOp, &output)
+			} else {
+				releaseSendOperationClaim(claimedStore, claimedOp, &output)
+			}
 		}()
 	}
 
@@ -7297,6 +7319,7 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 	}
 
 	publishSendActuationRequest(trace, opts, output.Targets, output.MessagePreview)
+	dispatchAttempted = true
 	result, _ := service.Dispatch(context.Background(), prepared)
 	applyRobotDispatchResult(&output, result)
 	if opts.VerifyRender {

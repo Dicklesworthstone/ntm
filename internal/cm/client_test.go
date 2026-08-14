@@ -1434,3 +1434,31 @@ func TestCLIContextResponse_Serialization(t *testing.T) {
 		})
 	}
 }
+
+// A standard MCP envelope with EMPTY content and isError=false must error,
+// never silently decode as an empty-but-successful direct-object payload.
+func TestGetContextEmptyEnvelopeErrors(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeRPCResult(t, w, 1, map[string]any{"content": []any{}, "isError": false})
+	}))
+	defer ts.Close()
+
+	_, err := testClient(ts, "").GetContext(context.Background(), "test task", "")
+	if err == nil || !strings.Contains(err.Error(), "no text payload") {
+		t.Fatalf("GetContext() error = %v, want no-text-payload error for empty envelope", err)
+	}
+}
+
+// Health must not bless an arbitrary HTTP service that answers 200 with
+// non-JSON-RPC JSON (no result, no error member).
+func TestClientHealthRejectsNonJSONRPCResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer ts.Close()
+
+	if err := testClient(ts, "").Health(context.Background()); err == nil {
+		t.Fatal("Health() = nil for a non-JSON-RPC 200 response, want error")
+	}
+}
