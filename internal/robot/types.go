@@ -137,6 +137,12 @@ const (
 	// ErrCodePromptSendFailed indicates failed to send prompt.
 	ErrCodePromptSendFailed = "PROMPT_SEND_FAILED"
 
+	// ErrCodeRestartPromptNotDelivered indicates a post-restart prompt was
+	// deliberately withheld because the relaunched pane never became ready to
+	// accept typed input (foreground still a shell, or the agent composer
+	// never appeared). No keystrokes were sent to the pane.
+	ErrCodeRestartPromptNotDelivered = "RESTART_PROMPT_NOT_DELIVERED"
+
 	// ErrCodeDispatchUnknown means delivery may have occurred but no trustworthy
 	// final receipt was available, so blind retry could duplicate the prompt.
 	ErrCodeDispatchUnknown = "DISPATCH_UNKNOWN"

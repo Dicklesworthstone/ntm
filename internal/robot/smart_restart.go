@@ -238,6 +238,11 @@ type RestartAction struct {
 	WaitInfo        *WaitInfo         `json:"wait_info,omitempty"`
 	Error           string            `json:"error,omitempty"`
 	PromptError     *StructuredError  `json:"prompt_error,omitempty"`
+	// PromptOutcome is set on declined panes (SKIPPED/WAITING) when a prompt
+	// was requested: status not_attempted states explicitly that smart-restart
+	// did NOT deliver the caller's prompt to the incumbent agent (bd-moje8).
+	// Restarted panes carry their outcome in restart_sequence.prompt_outcome.
+	PromptOutcome *PromptDeliveryOutcome `json:"prompt_outcome,omitempty"`
 	// StructuredError provides detailed error context for failure diagnosis (bd-3vc3s).
 	StructuredError *StructuredError `json:"structured_error,omitempty"`
 }
@@ -351,12 +356,14 @@ func GetSmartRestart(ctx context.Context, opts SmartRestartOptions) (*SmartResta
 			action.Action = ActionWaiting
 			action.Reason = "Rate limited - wait for reset"
 			action.WaitInfo = buildWaitInfo(&workStatus)
+			markSmartRestartPromptNotAttempted(&action, opts)
 			output.Summary.Waiting++
 			appendPaneToAction(output.Summary.PanesByAction, "WAITING", paneStr)
 
 		case !shouldRestart:
 			action.Action = ActionSkipped
 			action.Reason = reason
+			markSmartRestartPromptNotAttempted(&action, opts)
 			output.Summary.Skipped++
 			appendPaneToAction(output.Summary.PanesByAction, "SKIPPED", paneStr)
 
@@ -451,6 +458,22 @@ func smartRestartPreCheck(workStatus PaneWorkStatus) *PreCheckInfo {
 	}
 }
 
+// markSmartRestartPromptNotAttempted makes declines contract-explicit
+// (bd-moje8): when the caller requested a post-restart prompt but the pane's
+// restart was declined, the response must state that the prompt was NOT
+// delivered — smart-restart never sends the prompt to an incumbent agent on
+// decline, and orchestrators have misread a bare SKIPPED as a rotation.
+func markSmartRestartPromptNotAttempted(action *RestartAction, opts SmartRestartOptions) {
+	if action == nil || opts.Prompt == "" {
+		return
+	}
+	action.PromptOutcome = &PromptDeliveryOutcome{
+		Requested: true,
+		Status:    PromptDeliveryNotAttempted,
+	}
+	action.Reason += "; requested prompt was NOT delivered (declined panes keep their incumbent agent and receive no message)"
+}
+
 func materializeSmartRestartCancellationActions(
 	output *SmartRestartOutput,
 	panes map[string]PaneWorkStatus,
@@ -523,7 +546,11 @@ func applyRestartExecutionOutcome(
 		}
 
 		action.Action = ActionFailed
-		action.Reason = reason
+		// Report what actually failed (bd-moje8): the pre-check verdict (e.g.
+		// "Agent is idle") explains why a restart was ATTEMPTED, not why it
+		// failed. Reusing it as the failure reason blamed the agent's idleness
+		// for a restart sequence that never reached a shell.
+		action.Reason = smartRestartFailureReason(restartResult, restartErr, structErr)
 		action.Error = restartErr.Error()
 		if isStructured {
 			action.StructuredError = structErr
@@ -550,6 +577,65 @@ func applyRestartExecutionOutcome(
 	return verifyErr
 }
 
+// smartRestartFailureReason derives a FAILED action's reason from the restart
+// failure itself rather than the pre-check classification (bd-moje8). The
+// shell-unconfirmed case gets an explicit exit-sequence reason so callers see
+// "the exit never reached a shell", not "Agent is idle".
+func smartRestartFailureReason(seq *RestartSequence, restartErr error, structErr *StructuredError) string {
+	if structErr != nil {
+		if structErr.Code == ErrCodeShellNotReturned {
+			exitMethod := "unknown"
+			if seq != nil && strings.TrimSpace(seq.ExitMethod) != "" {
+				exitMethod = seq.ExitMethod
+			}
+			return fmt.Sprintf(
+				"restart exit sequence unconfirmed: agent did not return to shell within %s (exit_method=%s)",
+				shellReturnTimeout,
+				exitMethod,
+			)
+		}
+		if strings.TrimSpace(structErr.Phase) != "" {
+			return fmt.Sprintf("restart failed during %s: %s", structErr.Phase, structErr.Message)
+		}
+		return "restart failed: " + structErr.Message
+	}
+	if restartErr != nil {
+		return "restart failed: " + restartErr.Error()
+	}
+	return "restart failed"
+}
+
+// smartRestartFailureCode derives the top-level error code for a failed run.
+// When every FAILED pane carries the same structured code, that code is
+// authoritative (e.g. SHELL_NOT_RETURNED); mixed or missing codes fall back to
+// INTERNAL_ERROR.
+func smartRestartFailureCode(output *SmartRestartOutput) string {
+	code := ""
+	for _, action := range output.Actions {
+		if action.Action != ActionFailed {
+			continue
+		}
+		actionCode := ""
+		if action.StructuredError != nil {
+			actionCode = strings.TrimSpace(action.StructuredError.Code)
+		}
+		if actionCode == "" {
+			return ErrCodeInternalError
+		}
+		if code == "" {
+			code = actionCode
+			continue
+		}
+		if code != actionCode {
+			return ErrCodeInternalError
+		}
+	}
+	if code == "" {
+		return ErrCodeInternalError
+	}
+	return code
+}
+
 func finalizeSmartRestartOutput(output *SmartRestartOutput, opts SmartRestartOptions) {
 	if output == nil || opts.DryRun {
 		return
@@ -564,7 +650,7 @@ func finalizeSmartRestartOutput(output *SmartRestartOutput, opts SmartRestartOpt
 	switch {
 	case output.Summary.Failed > 0:
 		output.Success = false
-		output.ErrorCode = ErrCodeInternalError
+		output.ErrorCode = smartRestartFailureCode(output)
 		output.Error = fmt.Sprintf("%d of %d targeted pane(s) failed to restart", output.Summary.Failed, len(output.Actions))
 		output.Hint = smartRestartTargetingHint(opts, output)
 	case output.Summary.PromptFailed > 0:
@@ -580,7 +666,25 @@ func finalizeSmartRestartOutput(output *SmartRestartOutput, opts SmartRestartOpt
 		output.ErrorCode = ErrCodePaneNotFound
 		output.Error = "no restartable panes matched the request"
 		output.Hint = smartRestartTargetingHint(opts, output)
+	default:
+		// Documented escalation for unknown-state skips (bd-moje8): the run
+		// succeeded but some panes could not be classified, so tell the caller
+		// how to escalate instead of leaving a bare SKIPPED.
+		if output.Hint == "" && smartRestartHasUnknownStateSkip(output) {
+			output.Hint = "One or more panes were skipped because their state probe was inconclusive. Re-run with --force to restart despite unknown state, or use --robot-restart-pane for an explicit restart of specific panes."
+		}
 	}
+}
+
+// smartRestartHasUnknownStateSkip reports whether any pane was skipped because
+// its work-state probe was inconclusive.
+func smartRestartHasUnknownStateSkip(output *SmartRestartOutput) bool {
+	for _, action := range output.Actions {
+		if action.Action == ActionSkipped && strings.HasPrefix(action.Reason, "Unknown state") {
+			return true
+		}
+	}
+	return false
 }
 
 // smartRestartTargetingHint builds an actionable remediation hint for the
@@ -663,7 +767,16 @@ func decideRestart(status *PaneWorkStatus, force bool) (bool, string, string) {
 		if force {
 			return true, "FORCED restart of unknown state", "Unknown state - results unpredictable"
 		}
-		return false, "Unknown state - manual inspection needed", ""
+		// Include WHICH probe was inconclusive (bd-moje8): a bare "Unknown
+		// state" skip gave orchestrators nothing to inspect and no escalation
+		// path.
+		return false, fmt.Sprintf(
+			"Unknown state - manual inspection needed (probe inconclusive: recommendation=%q, observation_state=%q, freshness=%q, confidence=%.2f); re-run with --force to restart despite unknown state, or use --robot-restart-pane for an explicit restart",
+			rec,
+			status.ObservationState,
+			status.ObservationFreshness,
+			status.Confidence,
+		), ""
 	}
 }
 

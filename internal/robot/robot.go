@@ -4964,6 +4964,21 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 					if usage := tokens.GetUsageInfo(captured, detectModel(agent.Type, pane.Title)); usage != nil {
 						agent.ContextPercent = usage.UsagePercent
 					}
+					// Prefer ground truth from the agent CLI's own session
+					// transcript when one correlates to this pane.
+					if tu, ok := transcriptUsageForPane(strings.ToLower(agent.Type), pane.ID); ok {
+						limit := tu.ContextWindow
+						if limit <= 0 {
+							model := tu.Model
+							if model == "" {
+								model = detectModel(agent.Type, pane.Title)
+							}
+							limit = getContextLimit(model)
+						}
+						if limit > 0 {
+							agent.ContextPercent = float64(tu.Tokens) / float64(limit) * 100
+						}
+					}
 				}
 			}
 
@@ -10494,6 +10509,15 @@ type AgentContextInfo struct {
 	UsageLevel      string  `json:"usage_level"`
 	Confidence      string  `json:"confidence"`
 	State           string  `json:"state"`
+	// Source discriminates where the primary numbers came from:
+	// "transcript" (ground truth read from the agent CLI's own session
+	// transcript) or "scrollback_estimate" (legacy char-count heuristic).
+	Source string `json:"source"`
+	// Transcript* fields are populated only when Source == "transcript".
+	TranscriptTokens    int    `json:"transcript_tokens,omitempty"`
+	TranscriptModel     string `json:"transcript_model,omitempty"`
+	TranscriptPath      string `json:"transcript_path,omitempty"`
+	TranscriptUpdatedAt string `json:"transcript_updated_at,omitempty"`
 }
 
 // ContextSummary aggregates context usage across all agents
@@ -10564,6 +10588,23 @@ func generateContextHints(lowUsage, highUsage []string, highCount, total int) *C
 	return hints
 }
 
+// transcriptUsageForPane correlates a pane with its agent CLI's own session
+// transcript via the pane's current working directory and returns the last
+// usage record. Heuristic: the newest matching transcript wins, so a pane
+// that shares a project directory with another same-CLI session can be
+// attributed the wrong transcript. Overridable for tests.
+var transcriptUsageForPane = func(agentType, paneID string) (*ntmctx.TranscriptUsage, bool) {
+	cwd, err := tmux.DefaultClient.Run("display-message", "-p", "-t", paneID, "#{pane_current_path}")
+	if err != nil {
+		return nil, false
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return nil, false
+	}
+	return ntmctx.LatestAgentTranscriptUsage(agentType, cwd, time.Time{})
+}
+
 // GetContext retrieves context window usage information for all agents in a session.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetContext(session string, lines int) (*ContextOutput, error) {
@@ -10630,15 +10671,6 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 		}
 
 		paneKey := paneTargetKey(pane, multiWindow)
-		usageLevel := getUsageLevel(usagePct)
-
-		// Align thresholds with getUsageLevel: <40% is Low, >=70% is High/Critical
-		if usagePct < 40 {
-			lowUsage = append(lowUsage, paneKey)
-		} else if usagePct >= 70 {
-			highUsage = append(highUsage, paneKey)
-		}
-		totalUsage += usagePct
 
 		agentInfo := AgentContextInfo{
 			Pane:            paneKey,
@@ -10649,10 +10681,47 @@ func GetContext(session string, lines int) (*ContextOutput, error) {
 			WithOverhead:    withOverhead,
 			ContextLimit:    contextLimit,
 			UsagePercent:    usagePct,
-			UsageLevel:      usageLevel,
 			Confidence:      "low", // Scrollback-based estimation is low confidence
 			State:           state,
+			Source:          "scrollback_estimate",
 		}
+
+		// Ground truth beats scrollback heuristics: read the agent CLI's own
+		// session transcript (Claude Code / Codex usage records) when one can
+		// be correlated to this pane via its working directory.
+		if usage, ok := transcriptUsageForPane(agentType, pane.ID); ok {
+			agentInfo.Source = "transcript"
+			agentInfo.TranscriptTokens = usage.Tokens
+			agentInfo.TranscriptModel = usage.Model
+			agentInfo.TranscriptPath = usage.Path
+			agentInfo.TranscriptUpdatedAt = usage.UpdatedAt.UTC().Format(time.RFC3339)
+			agentInfo.EstimatedTokens = usage.Tokens
+			agentInfo.WithOverhead = usage.Tokens // transcript totals need no overhead multiplier
+			if usage.Model != "" {
+				agentInfo.Model = usage.Model
+			}
+			limit := usage.ContextWindow
+			if limit <= 0 {
+				limit = getContextLimit(agentInfo.Model)
+			}
+			agentInfo.ContextLimit = limit
+			agentInfo.UsagePercent = 100.0
+			if limit > 0 {
+				agentInfo.UsagePercent = float64(usage.Tokens) / float64(limit) * 100
+			}
+			agentInfo.Confidence = ntmctx.TranscriptConfidence(usage.UpdatedAt, time.Now())
+		}
+
+		agentInfo.UsageLevel = getUsageLevel(agentInfo.UsagePercent)
+
+		// Align thresholds with getUsageLevel: <40% is Low, >=70% is High/Critical
+		if agentInfo.UsagePercent < 40 {
+			lowUsage = append(lowUsage, paneKey)
+		} else if agentInfo.UsagePercent >= 70 {
+			highUsage = append(highUsage, paneKey)
+		}
+		totalUsage += agentInfo.UsagePercent
+
 		output.Agents = append(output.Agents, agentInfo)
 	}
 

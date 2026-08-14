@@ -335,6 +335,14 @@ func getAgentHealth(session string, pane tmux.Pane) AgentHealthInfo {
 		if state == "error" {
 			health.Responsive = false
 			health.Issue = "error_state_detected"
+		} else if agentType != string(agent.AgentTypeUser) && agentType != string(agent.AgentTypeUnknown) {
+			// Interactive gate screens (bd-jf22c): trust dialogs, auth/login
+			// gates, and onboarding choices leave the pane alive but unable
+			// to accept work; without this it reads "responsive" forever.
+			if gate, ok := agent.DetectInteractiveGateWidth(captured, pane.Width); ok {
+				health.Responsive = false
+				health.Issue = fmt.Sprintf("interactive_gate: %s", gate)
+			}
 		}
 	}
 
@@ -640,9 +648,22 @@ func checkErrors(paneID string) *ErrorCheckResult {
 		}
 	}
 
+	// Interactive gate screens (bd-jf22c): a pane parked on a modal trust /
+	// login / onboarding screen is alive, produces no errors, and previously
+	// read "healthy" while it could never accept work. The shared detector
+	// scans only the live tail and vetoes matches while working chrome is
+	// visible; callers of checkErrors only target agent panes.
+	gate, gateFound := agent.DetectInteractiveGate(output)
+	if gateFound {
+		result.Patterns = append(result.Patterns, "interactive_gate")
+		result.HasErrors = true
+	}
+
 	if result.RateLimited {
 		result.HasErrors = true
 		result.Reason = "rate limit detected"
+	} else if gateFound {
+		result.Reason = fmt.Sprintf("blocked on interactive gate screen (%q); needs a keystroke", gate)
 	} else if len(result.Patterns) > 0 {
 		result.Reason = fmt.Sprintf("detected: %v", result.Patterns)
 	}

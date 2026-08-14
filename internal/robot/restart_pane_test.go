@@ -1039,10 +1039,11 @@ func TestSendRestartPromptsUsesAgentAwareSender(t *testing.T) {
 	}
 
 	var calls []string
-	errs, canceledPanes, deliveryStatus, err := sendRestartPromptsContext(t.Context(), targets, "resume work", func(_ context.Context, target, keys string, agentType tmux.AgentType) error {
+	report, err := sendRestartPromptsContext(t.Context(), targets, "resume work", func(_ context.Context, target, keys string, agentType tmux.AgentType) error {
 		calls = append(calls, fmt.Sprintf("%s|%s|%s", target, keys, agentType))
 		return nil
-	})
+	}, nil, nil)
+	errs, canceledPanes, deliveryStatus := report.Errors, report.CanceledPanes, report.Status
 	if err != nil || len(errs) != 0 || len(canceledPanes) != 0 {
 		t.Fatalf("sendRestartPromptsContext() errors=%v canceled=%v error=%v", errs, canceledPanes, err)
 	}
@@ -1068,14 +1069,15 @@ func TestSendRestartPromptsContextStopsAfterCancellation(t *testing.T) {
 		{Pane: "3", Target: "%3", AgentType: tmux.AgentGemini},
 	}
 	var calls int
-	errs, canceledPanes, deliveryStatus, err := sendRestartPromptsContext(ctx, targets, "resume work", func(gotCtx context.Context, target, keys string, agentType tmux.AgentType) error {
+	report, err := sendRestartPromptsContext(ctx, targets, "resume work", func(gotCtx context.Context, target, keys string, agentType tmux.AgentType) error {
 		calls++
 		if gotCtx != ctx || target != "%1" || keys != "resume work" || agentType != tmux.AgentCodex {
 			t.Fatalf("first prompt call context=%v target=%q keys=%q type=%s", gotCtx, target, keys, agentType)
 		}
 		cancel()
 		return context.Canceled
-	})
+	}, nil, nil)
+	errs, canceledPanes, deliveryStatus := report.Errors, report.CanceledPanes, report.Status
 	if !errors.Is(err, context.Canceled) || calls != 1 {
 		t.Fatalf("sendRestartPromptsContext() error=%v calls=%d, want canceled after one", err, calls)
 	}
@@ -1101,7 +1103,7 @@ func TestSendRestartPromptsContextPreservesConfirmedDeliveryWhenCancellationFoll
 				targets = append(targets, restartPromptTarget{Pane: "2", Target: "%2", AgentType: tmux.AgentClaude})
 			}
 			calls := 0
-			errs, canceledPanes, deliveryStatus, err := sendRestartPromptsContext(
+			report, err := sendRestartPromptsContext(
 				ctx,
 				targets,
 				"resume work",
@@ -1110,7 +1112,10 @@ func TestSendRestartPromptsContextPreservesConfirmedDeliveryWhenCancellationFoll
 					cancel()
 					return nil
 				},
+				nil,
+				nil,
 			)
+			errs, canceledPanes, deliveryStatus := report.Errors, report.CanceledPanes, report.Status
 			if !errors.Is(err, context.Canceled) || calls != 1 {
 				t.Fatalf("send result error=%v calls=%d, want cancellation after one confirmed delivery", err, calls)
 			}
@@ -1921,4 +1926,162 @@ func TestNotifyRestartPaneIdentityHookForwardsRestartedAgentPanes(t *testing.T) 
 	if got != nil {
 		t.Fatalf("hook fired with no restarted panes: %+v", got)
 	}
+}
+
+// =============================================================================
+// bd-rf0ka: delivery-readiness gate + submission verification
+// =============================================================================
+
+// A pane that never becomes ready must have its prompt WITHHELD: no keystrokes
+// are sent, and the response carries a typed per-pane failure so ready:true can
+// never coexist with a silently swallowed prompt.
+func TestSendRestartPromptsWithholdsPromptWhenPaneNeverReady(t *testing.T) {
+	targets := []restartPromptTarget{
+		{Pane: "1", Target: "%1", AgentType: tmux.AgentClaude, ResolvedType: "claude"},
+	}
+	sendCalls := 0
+	report, err := sendRestartPromptsContext(
+		t.Context(),
+		targets,
+		"resume work",
+		func(context.Context, string, string, tmux.AgentType) error {
+			sendCalls++
+			return nil
+		},
+		func(context.Context, restartPromptTarget) (bool, string, error) {
+			return false, `pane foreground process is a shell ("zsh"), not the relaunched agent`, nil
+		},
+		func(context.Context, restartPromptTarget) error {
+			t.Fatal("submission verification must not run for a withheld prompt")
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendRestartPromptsContext() error = %v", err)
+	}
+	if sendCalls != 0 {
+		t.Fatalf("prompt was typed into an unready pane: %d send calls, want 0", sendCalls)
+	}
+	if !report.Withheld {
+		t.Fatal("report.Withheld = false, want true")
+	}
+	if report.Status["1"] != RestartPromptSkipped {
+		t.Fatalf("delivery status = %v, want skipped", report.Status)
+	}
+	if len(report.PaneFailures) != 1 ||
+		report.PaneFailures[0].Pane != "1" ||
+		!strings.Contains(report.PaneFailures[0].Reason, ErrCodeRestartPromptNotDelivered) ||
+		!strings.Contains(report.PaneFailures[0].Reason, "shell") {
+		t.Fatalf("pane failures = %+v, want typed RESTART_PROMPT_NOT_DELIVERED failure with the shell reason", report.PaneFailures)
+	}
+	if len(report.Errors) != 1 || !strings.Contains(report.Errors[0], "prompt withheld") {
+		t.Fatalf("errors = %v, want a withheld-prompt error", report.Errors)
+	}
+}
+
+// After keys are sent, an unconfirmed submission is a per-pane failure with
+// status unknown, not a delivered success.
+func TestSendRestartPromptsSurfacesUnconfirmedSubmission(t *testing.T) {
+	targets := []restartPromptTarget{
+		{Pane: "1", Target: "%1", AgentType: tmux.AgentCodex, ResolvedType: "codex"},
+		{Pane: "2", Target: "%2", AgentType: tmux.AgentClaude, ResolvedType: "claude"},
+	}
+	report, err := sendRestartPromptsContext(
+		t.Context(),
+		targets,
+		"resume work",
+		func(context.Context, string, string, tmux.AgentType) error { return nil },
+		func(context.Context, restartPromptTarget) (bool, string, error) { return true, "", nil },
+		func(_ context.Context, target restartPromptTarget) error {
+			if target.Pane == "1" {
+				return errors.New("codex submission unconfirmed: prompt still in composer after rescue (pane %1)")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendRestartPromptsContext() error = %v", err)
+	}
+	if report.Status["1"] != RestartPromptUnknown {
+		t.Fatalf("unconfirmed pane status = %q, want unknown", report.Status["1"])
+	}
+	if report.Status["2"] != RestartPromptDelivered {
+		t.Fatalf("confirmed pane status = %q, want delivered", report.Status["2"])
+	}
+	if len(report.PaneFailures) != 1 ||
+		report.PaneFailures[0].Pane != "1" ||
+		!strings.Contains(report.PaneFailures[0].Reason, "prompt submission unconfirmed") {
+		t.Fatalf("pane failures = %+v, want one unconfirmed-submission failure for pane 1", report.PaneFailures)
+	}
+	if report.Withheld {
+		t.Fatal("report.Withheld = true, want false: keys reached the pane")
+	}
+}
+
+// The readiness gate must keep polling while the foreground is a shell, then
+// report ready only when a non-shell foreground AND a ready composer coincide.
+func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) {
+	target := restartPromptTarget{Pane: "1", Target: "%1", AgentType: tmux.AgentClaude, ResolvedType: "claude"}
+
+	t.Run("becomes ready once agent is foreground with composer", func(t *testing.T) {
+		commands := []string{"zsh", "zsh", "node"}
+		call := 0
+		ready, reason, err := waitForRestartPromptDeliveryReadyContext(
+			t.Context(),
+			target,
+			500*time.Millisecond,
+			time.Millisecond,
+			func(context.Context, string) (string, error) {
+				cmd := commands[min(call, len(commands)-1)]
+				call++
+				return cmd, nil
+			},
+			func(context.Context, string, tmux.AgentType) (bool, string) { return true, "" },
+		)
+		if err != nil || !ready || reason != "" {
+			t.Fatalf("gate = (%v, %q, %v), want ready", ready, reason, err)
+		}
+		if call < 3 {
+			t.Fatalf("gate stopped polling after %d observations while the shell was foreground", call)
+		}
+	})
+
+	t.Run("times out with shell reason when foreground never leaves the shell", func(t *testing.T) {
+		ready, reason, err := waitForRestartPromptDeliveryReadyContext(
+			t.Context(),
+			target,
+			20*time.Millisecond,
+			time.Millisecond,
+			func(context.Context, string) (string, error) { return "zsh", nil },
+			func(context.Context, string, tmux.AgentType) (bool, string) {
+				t.Fatal("composer check must not run while the foreground is a shell")
+				return true, ""
+			},
+		)
+		if err != nil || ready {
+			t.Fatalf("gate = (%v, %q, %v), want not ready without error", ready, reason, err)
+		}
+		if !strings.Contains(reason, "shell") || !strings.Contains(reason, "did not become ready") {
+			t.Fatalf("gate reason = %q, want a shell-foreground timeout reason", reason)
+		}
+	})
+
+	t.Run("times out with composer reason when composer never appears", func(t *testing.T) {
+		ready, reason, err := waitForRestartPromptDeliveryReadyContext(
+			t.Context(),
+			target,
+			20*time.Millisecond,
+			time.Millisecond,
+			func(context.Context, string) (string, error) { return "node", nil },
+			func(context.Context, string, tmux.AgentType) (bool, string) {
+				return false, "claude composer not visible: pane appears to be initializing"
+			},
+		)
+		if err != nil || ready {
+			t.Fatalf("gate = (%v, %q, %v), want not ready without error", ready, reason, err)
+		}
+		if !strings.Contains(reason, "composer not visible") {
+			t.Fatalf("gate reason = %q, want the composer reason", reason)
+		}
+	})
 }

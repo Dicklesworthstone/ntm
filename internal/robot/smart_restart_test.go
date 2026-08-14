@@ -1933,3 +1933,157 @@ func TestVerifyRestartPropagatesCancellationAfterCapture(t *testing.T) {
 		t.Fatalf("verifyRestart() state=%+v err=%v, want propagated context cancellation", postState, err)
 	}
 }
+
+// =============================================================================
+// bd-moje8: honest failure verdicts
+// =============================================================================
+
+// A restart-sequence failure must be blamed on what actually failed, not on
+// the pre-check's idle classification. Field bug: FAILED with reason "Agent is
+// idle" and top-level INTERNAL_ERROR while restart_sequence showed
+// shell_confirmed:false.
+func TestApplyRestartExecutionOutcomeShellUnconfirmedReasonNotIdle(t *testing.T) {
+	output := &SmartRestartOutput{
+		RobotResponse: NewRobotResponse(true),
+		Actions:       make(map[string]RestartAction),
+		Summary:       RestartSummary{PanesByAction: make(map[string][]string)},
+	}
+	seq := &RestartSequence{
+		AgentType:      "claude",
+		ExitMethod:     "ctrl_c",
+		ShellConfirmed: false,
+	}
+	structErr := newRestartError(
+		ErrCodeShellNotReturned,
+		"Shell did not return within 12s after exit - agent may still be running",
+		"post_exit",
+		1,
+		"claude",
+		[]string{"exit-agent-claude", "wait-shell-return"},
+		"",
+	)
+	action := RestartAction{PreCheck: &PreCheckInfo{Recommendation: "SAFE_TO_RESTART", IsIdle: true}}
+
+	if verifyErr := applyRestartExecutionOutcome(output, &action, "1", "Agent is idle", seq, structErr, nil); verifyErr != nil {
+		t.Fatalf("applyRestartExecutionOutcome() verify error = %v", verifyErr)
+	}
+	output.Actions["1"] = action
+
+	if action.Action != ActionFailed {
+		t.Fatalf("action = %q, want FAILED", action.Action)
+	}
+	if strings.Contains(action.Reason, "Agent is idle") {
+		t.Fatalf("failure reason %q still blames the agent's idleness", action.Reason)
+	}
+	if !strings.Contains(action.Reason, "restart exit sequence unconfirmed") ||
+		!strings.Contains(action.Reason, "did not return to shell") ||
+		!strings.Contains(action.Reason, "exit_method=ctrl_c") {
+		t.Fatalf("failure reason = %q, want the exit-sequence explanation with the exit method", action.Reason)
+	}
+	if action.StructuredError == nil || action.StructuredError.Code != ErrCodeShellNotReturned {
+		t.Fatalf("structured error = %+v, want SHELL_NOT_RETURNED", action.StructuredError)
+	}
+
+	finalizeSmartRestartOutput(output, SmartRestartOptions{Session: "demo"})
+	if output.Success {
+		t.Fatal("output.Success = true, want false after a failed restart")
+	}
+	if output.ErrorCode != ErrCodeShellNotReturned {
+		t.Fatalf("output.ErrorCode = %q, want %q (not INTERNAL_ERROR)", output.ErrorCode, ErrCodeShellNotReturned)
+	}
+}
+
+// Failures without a structured code keep the INTERNAL_ERROR fallback, and
+// mixed codes must not pretend one cause explains every pane.
+func TestSmartRestartFailureCodeFallsBackOnMixedOrMissingCodes(t *testing.T) {
+	build := func(codes ...string) *SmartRestartOutput {
+		output := &SmartRestartOutput{Actions: make(map[string]RestartAction)}
+		for i, code := range codes {
+			action := RestartAction{Action: ActionFailed}
+			if code != "" {
+				action.StructuredError = NewStructuredError(code, "boom")
+			}
+			output.Actions[fmt.Sprintf("%d", i)] = action
+		}
+		return output
+	}
+	if got := smartRestartFailureCode(build(ErrCodeShellNotReturned, ErrCodeShellNotReturned)); got != ErrCodeShellNotReturned {
+		t.Fatalf("uniform code = %q, want SHELL_NOT_RETURNED", got)
+	}
+	if got := smartRestartFailureCode(build(ErrCodeShellNotReturned, ErrCodeCCLaunchFailed)); got != ErrCodeInternalError {
+		t.Fatalf("mixed codes = %q, want INTERNAL_ERROR", got)
+	}
+	if got := smartRestartFailureCode(build("")); got != ErrCodeInternalError {
+		t.Fatalf("missing code = %q, want INTERNAL_ERROR", got)
+	}
+}
+
+// An unknown-state skip must say WHICH probe was inconclusive and how to
+// escalate, instead of a bare "Unknown state".
+func TestDecideRestartUnknownStateIncludesProbeDetailAndEscalation(t *testing.T) {
+	status := PaneWorkStatus{
+		Recommendation:       "SOMETHING_NEW",
+		ObservationState:     "degraded",
+		ObservationFreshness: "stale",
+		Confidence:           0.3,
+	}
+	shouldRestart, reason, warning := decideRestart(&status, false)
+	if shouldRestart || warning != "" {
+		t.Fatalf("decideRestart() = (%v, %q, %q), want a skip without warning", shouldRestart, reason, warning)
+	}
+	for _, want := range []string{
+		"Unknown state",
+		`recommendation="SOMETHING_NEW"`,
+		`observation_state="degraded"`,
+		`freshness="stale"`,
+		"confidence=0.30",
+		"--force",
+		"--robot-restart-pane",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("unknown-state reason = %q, want it to contain %q", reason, want)
+		}
+	}
+}
+
+// A declined pane with a requested prompt must state explicitly that the
+// prompt was NOT delivered, so orchestrators cannot misread the decline as a
+// completed rotation.
+func TestSmartRestartDeclineMarksPromptNotDelivered(t *testing.T) {
+	action := RestartAction{Action: ActionSkipped, Reason: "Agent is actively working"}
+	markSmartRestartPromptNotAttempted(&action, SmartRestartOptions{Prompt: "start fresh on bd-x"})
+	if action.PromptOutcome == nil ||
+		!action.PromptOutcome.Requested ||
+		action.PromptOutcome.Status != PromptDeliveryNotAttempted {
+		t.Fatalf("prompt outcome = %+v, want requested + not_attempted", action.PromptOutcome)
+	}
+	if !strings.Contains(action.Reason, "NOT delivered") {
+		t.Fatalf("decline reason = %q, want an explicit not-delivered statement", action.Reason)
+	}
+
+	// Without a requested prompt the decline stays untouched.
+	plain := RestartAction{Action: ActionSkipped, Reason: "Agent is actively working"}
+	markSmartRestartPromptNotAttempted(&plain, SmartRestartOptions{})
+	if plain.PromptOutcome != nil || plain.Reason != "Agent is actively working" {
+		t.Fatalf("prompt-less decline was mutated: %+v", plain)
+	}
+}
+
+// A successful run that skipped panes in an unknown state must carry the
+// documented escalation hint.
+func TestFinalizeSmartRestartAddsUnknownStateEscalationHint(t *testing.T) {
+	output := &SmartRestartOutput{
+		RobotResponse: NewRobotResponse(true),
+		Actions: map[string]RestartAction{
+			"1": {Action: ActionSkipped, Reason: "Unknown state - manual inspection needed (probe inconclusive: ...)"},
+		},
+		Summary: RestartSummary{Skipped: 1, PanesByAction: map[string][]string{"SKIPPED": {"1"}}},
+	}
+	finalizeSmartRestartOutput(output, SmartRestartOptions{Session: "demo"})
+	if !output.Success {
+		t.Fatalf("output = %+v, want success for a pure skip run", output.RobotResponse)
+	}
+	if !strings.Contains(output.Hint, "--force") || !strings.Contains(output.Hint, "--robot-restart-pane") {
+		t.Fatalf("hint = %q, want the unknown-state escalation hint", output.Hint)
+	}
+}

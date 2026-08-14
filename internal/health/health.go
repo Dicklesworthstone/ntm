@@ -5,6 +5,7 @@ import (
 	"context"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -305,6 +306,17 @@ func analyzeAgentHealth(agent AgentHealth, pa tmux.PaneActivity, output string) 
 		agent.Issues = append(agent.Issues, issue)
 	}
 
+	// Generic interactive-gate screens (bd-jf22c): trust dialogs, auth/login
+	// gates, and first-run onboarding choices that are not covered by the
+	// exact agent-type-gated signatures above. Skip when the specific
+	// signature already flagged the same dialog so the pane is not reported
+	// twice for one screen.
+	if !hasIssueType(agent.Issues, "trust_prompt") {
+		if issue, ok := detectInteractiveGateIssue(output, string(pa.Pane.Type), pa.Pane.Width); ok {
+			agent.Issues = append(agent.Issues, issue)
+		}
+	}
+
 	// Determine activity level
 	agent.Activity = detectActivity(output, pa.LastActivity, string(pa.Pane.Type))
 
@@ -436,6 +448,31 @@ func detectBlockingPrompt(output, agentType string) (Issue, bool) {
 		}
 	}
 	return Issue{}, false
+}
+
+// detectInteractiveGateIssue is the generic sibling of detectBlockingPrompt
+// (bd-jf22c): it recognizes the family of modal gate screens — trust dialogs,
+// auth/login gates, onboarding choices — via the shared
+// agent.DetectInteractiveGateWidth detector. Only real agent panes are
+// checked: a user shell that greps this repo (or an agent transcript pasted
+// into a plain pane) legitimately prints these phrases. The detector itself
+// scans only the live tail and vetoes matches while working chrome is
+// visible; the residual risk (an idle agent quoting a gate phrase in its
+// final lines) is documented on DetectInteractiveGateWidth.
+func detectInteractiveGateIssue(output, agentType string, paneWidth int) (Issue, bool) {
+	trimmed := strings.TrimSpace(agentType)
+	canonical := agent.AgentType(trimmed).Canonical()
+	if trimmed == "" || canonical == agent.AgentTypeUser || canonical == agent.AgentTypeUnknown {
+		return Issue{}, false
+	}
+	gate, ok := agent.DetectInteractiveGateWidth(output, paneWidth)
+	if !ok {
+		return Issue{}, false
+	}
+	return Issue{
+		Type:    "interactive_gate",
+		Message: "Blocked on interactive gate screen (" + strconv.Quote(gate) + "); needs a keystroke before the pane can accept work",
+	}, true
 }
 
 // promptScanLineBudget caps how many tail lines outputAfterMostRecentPrompt
@@ -640,7 +677,7 @@ func detectProgress(output string, activity ActivityLevel, issues []Issue) *Prog
 // hasErrorIssue checks if any issue indicates an error (crash, auth, network)
 func hasErrorIssue(issues []Issue) bool {
 	for _, issue := range issues {
-		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "network_error" {
+		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "network_error" || issue.Type == "interactive_gate" {
 			return true
 		}
 	}
@@ -785,11 +822,11 @@ func detectProcessStatusForAgent(output string, command string, shellPID int, ag
 
 // calculateStatus determines overall status from all factors
 func calculateStatus(agent AgentHealth) Status {
-	// Error status if any critical issues. trust_prompt is critical: the pane
-	// is parked on a modal dialog and will never do work until a human (or an
-	// explicit policy) answers it (GH#230).
+	// Error status if any critical issues. trust_prompt / interactive_gate are
+	// critical: the pane is parked on a modal dialog and will never do work
+	// until a human (or an explicit policy) answers it (GH#230, bd-jf22c).
 	for _, issue := range agent.Issues {
-		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "trust_prompt" {
+		if issue.Type == "crash" || issue.Type == "auth_error" || issue.Type == "trust_prompt" || issue.Type == "interactive_gate" {
 			return StatusError
 		}
 	}

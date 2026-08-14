@@ -529,6 +529,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		parsedStatus := status
 		applyCanonicalWorkSafety(&status, paneObservation, liveBusy)
 		status.IndicatorBasis = workIndicatorBasis(state, liveBusy, parsedStatus, status, paneObservation)
+		applyInteractiveGateOverride(&status, state.Type, content, paneObservation.Metadata.Width)
 
 		// Ensure indicators are never nil
 		if status.Indicators.Work == nil {
@@ -640,6 +641,44 @@ func paneWorkStatusFromObservation(observation statuspkg.PaneObservation) PaneWo
 	result.PaneCurrentCommand = observation.Metadata.Command
 	result.AgentCLIDead = observation.Metadata.AgentCLIDead()
 	return result
+}
+
+// applyInteractiveGateOverride flags a pane whose live tail shows a modal
+// interactive gate screen — a trust dialog, auth/login gate, or first-run
+// onboarding choice (bd-jf22c). Such a pane is alive and usually classifies
+// "idle", so --robot-is-working and the downstream --robot-agent-health
+// surface reported it healthy while it could never accept work (field cases:
+// Antigravity's folder-trust dialog; panes frozen on an authentication-error
+// frame after an OAuth token race).
+//
+// Guards against false positives: user/unknown panes are skipped (no agent
+// CLI renders gates there); a working pane keeps its verdict (the shared
+// detector additionally vetoes matches while Claude/Codex working chrome is
+// visible, so an agent merely QUOTING a gate phrase mid-turn is not flagged);
+// and a rate-limited pane keeps its higher-precedence WAIT verdict. Residual
+// risk — an idle agent whose final transcript lines quote a gate phrase —
+// is documented on agent.DetectInteractiveGateWidth.
+//
+// Reports true when the override fired.
+func applyInteractiveGateOverride(workStatus *PaneWorkStatus, agentType agent.AgentType, content string, paneWidth int) bool {
+	if workStatus == nil || workStatus.IsWorking || workStatus.IsRateLimited {
+		return false
+	}
+	switch agentType.Canonical() {
+	case agent.AgentTypeUser, agent.AgentTypeUnknown:
+		return false
+	}
+	gate, ok := agent.DetectInteractiveGateWidth(content, paneWidth)
+	if !ok {
+		return false
+	}
+	// Not idle-ready either: anything sent to this pane lands on the modal
+	// screen, so orchestrators must not feed it work.
+	workStatus.IsIdle = false
+	workStatus.Recommendation = string(agent.RecommendErrorState)
+	workStatus.RecommendationReason = fmt.Sprintf("Blocked on interactive gate screen (%q); needs a keystroke before the pane can accept work", gate)
+	workStatus.IndicatorBasis = "interactive_gate"
+	return true
 }
 
 // applyCanonicalWorkSafety reconciles the parser verdict with the canonical

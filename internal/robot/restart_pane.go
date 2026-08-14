@@ -661,24 +661,55 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			}
 			promptTargets = append(promptTargets, info)
 		}
-		deliveryErrors, canceledPanes, deliveryStatus, deliveryErr := sendRestartPromptsContext(
+		// Delivery-readiness gate + post-send submission verification
+		// (bd-rf0ka). Both apply only to agent panes: user/unknown panes have
+		// no composer and their shell IS the restored foreground.
+		gate := func(gateCtx context.Context, target restartPromptTarget) (bool, string, error) {
+			if !restartTargetIsAgent(target.ResolvedType) {
+				return true, "", nil
+			}
+			return waitForRestartPromptDeliveryReadyContext(
+				gateCtx,
+				target,
+				restartPaneReadyTimeout,
+				restartPaneReadyPollInterval,
+				paneCurrentCommandContext,
+				tmux.ComposerReadyForDelivery,
+			)
+		}
+		verify := func(verifyCtx context.Context, target restartPromptTarget) error {
+			if !restartTargetIsAgent(target.ResolvedType) {
+				return nil
+			}
+			return dispatchsvc.VerifyAgentSubmission(verifyCtx, target.Target, promptToSend, target.AgentType)
+		}
+		report, deliveryErr := sendRestartPromptsContext(
 			ctx,
 			promptTargets,
 			promptToSend,
 			tmux.SendKeysForAgentDoubleEnterContext,
+			gate,
+			verify,
 		)
-		promptErrors = append(promptErrors, deliveryErrors...)
-		for paneKey, status := range deliveryStatus {
+		promptErrors = append(promptErrors, report.Errors...)
+		for paneKey, status := range report.Status {
 			output.PromptDelivery[paneKey] = status
+		}
+		for _, failure := range report.PaneFailures {
+			appendRestartFailureOnce(output, failure.Pane, failure.Reason)
 		}
 
 		if len(promptErrors) > 0 {
 			setRestartPanePromptFailure(output, promptErrors)
+			if report.Withheld {
+				output.ErrorCode = ErrCodeRestartPromptNotDelivered
+				output.Hint = "The restart completed, but the prompt was withheld because the pane never became ready for typed input; no keystrokes were sent to withheld panes. Inspect prompt_delivery and re-send with --robot-send once the agent is up."
+			}
 		} else {
 			output.PromptSent = len(promptTargets) > 0
 		}
 		if cancelErr := restartPaneCancellationError(ctx, deliveryErr); cancelErr != nil {
-			for _, paneKey := range canceledPanes {
+			for _, paneKey := range report.CanceledPanes {
 				appendRestartFailureOnce(output, paneKey, fmt.Sprintf("prompt delivery canceled: %v", cancelErr))
 			}
 			setRestartPaneCancellation(output, cancelErr, "restart canceled during prompt delivery")
@@ -1985,62 +2016,208 @@ func restartPaneAgentType(pane tmux.Pane) string {
 	return detectAgentType(pane.Title)
 }
 
+// restartPromptDeliveryReport is the per-pane outcome of ordinary post-restart
+// prompt delivery. PaneFailures carries typed per-pane failures (withheld
+// prompts and unconfirmed submissions) that must reach output.Failed so
+// success:true can never coexist with a swallowed prompt.
+type restartPromptDeliveryReport struct {
+	Errors        []string
+	CanceledPanes []string
+	Status        map[string]RestartPromptDeliveryStatus
+	PaneFailures  []RestartError
+	// Withheld is true when at least one prompt was deliberately NOT typed
+	// because the pane never became ready for delivery (foreground shell or
+	// composer never visible). No keystrokes reached those panes.
+	Withheld bool
+}
+
 func sendRestartPromptsContext(
 	ctx context.Context,
 	targets []restartPromptTarget,
 	prompt string,
 	send func(context.Context, string, string, tmux.AgentType) error,
-) ([]string, []string, map[string]RestartPromptDeliveryStatus, error) {
+	gate func(context.Context, restartPromptTarget) (bool, string, error),
+	verify func(context.Context, restartPromptTarget) error,
+) (restartPromptDeliveryReport, error) {
+	report := restartPromptDeliveryReport{Status: make(map[string]RestartPromptDeliveryStatus, len(targets))}
 	if ctx == nil {
-		return nil, nil, nil, errors.New("restart prompt context is required")
+		return report, errors.New("restart prompt context is required")
 	}
 	if send == nil {
-		return nil, nil, nil, errors.New("restart prompt sender is required")
+		return report, errors.New("restart prompt sender is required")
 	}
-	var promptErrors []string
-	deliveryStatus := make(map[string]RestartPromptDeliveryStatus, len(targets))
+	skipPending := func(pending []restartPromptTarget, cause error) {
+		for _, target := range pending {
+			report.Errors = append(report.Errors, fmt.Sprintf("pane %s: prompt skipped: %v", target.Pane, cause))
+			report.CanceledPanes = append(report.CanceledPanes, target.Pane)
+			report.Status[target.Pane] = RestartPromptSkipped
+		}
+	}
 	for targetIndex, target := range targets {
 		if err := ctx.Err(); err != nil {
-			canceledPanes := make([]string, 0, len(targets)-targetIndex)
-			for _, pending := range targets[targetIndex:] {
-				promptErrors = append(promptErrors, fmt.Sprintf("pane %s: prompt skipped: %v", pending.Pane, err))
-				canceledPanes = append(canceledPanes, pending.Pane)
-				deliveryStatus[pending.Pane] = RestartPromptSkipped
-			}
-			return promptErrors, canceledPanes, deliveryStatus, err
+			skipPending(targets[targetIndex:], err)
+			return report, err
 		}
+
+		// Delivery-readiness gate (bd-rf0ka): never type a prompt into a pane
+		// whose foreground is still a shell, or whose agent TUI has not shown
+		// a composer that can accept typed input. A swallowed prompt cost 8
+		// minutes in the field, and a prompt typed into bare zsh produced
+		// parse errors — both are worse than a typed, retryable failure.
+		if gate != nil {
+			ready, reason, gateErr := gate(ctx, target)
+			if cancelErr := restartPaneCancellationError(ctx, gateErr); cancelErr != nil {
+				skipPending(targets[targetIndex:], cancelErr)
+				return report, cancelErr
+			}
+			if gateErr != nil {
+				ready = false
+				if strings.TrimSpace(reason) == "" {
+					reason = gateErr.Error()
+				}
+			}
+			if !ready {
+				if strings.TrimSpace(reason) == "" {
+					reason = "pane did not become ready for typed input"
+				}
+				failure := fmt.Sprintf("%s: prompt withheld, no keystrokes sent: %s", ErrCodeRestartPromptNotDelivered, reason)
+				report.Errors = append(report.Errors, fmt.Sprintf("pane %s: %s", target.Pane, failure))
+				report.Status[target.Pane] = RestartPromptSkipped
+				report.PaneFailures = append(report.PaneFailures, RestartError{Pane: target.Pane, Reason: failure})
+				report.Withheld = true
+				continue
+			}
+		}
+
 		if err := send(ctx, target.Target, prompt, target.AgentType); err != nil {
 			if cancelErr := restartPaneCancellationError(ctx, err); cancelErr != nil {
-				promptErrors = append(promptErrors, fmt.Sprintf(
+				report.Errors = append(report.Errors, fmt.Sprintf(
 					"pane %s: prompt delivery outcome is unknown after cancellation; inspect the pane before retrying: %v",
 					target.Pane,
 					cancelErr,
 				))
-				deliveryStatus[target.Pane] = RestartPromptUnknown
-				canceledPanes := []string{target.Pane}
-				for _, pending := range targets[targetIndex+1:] {
-					promptErrors = append(promptErrors, fmt.Sprintf("pane %s: prompt skipped: %v", pending.Pane, cancelErr))
-					canceledPanes = append(canceledPanes, pending.Pane)
-					deliveryStatus[pending.Pane] = RestartPromptSkipped
-				}
-				return promptErrors, canceledPanes, deliveryStatus, cancelErr
+				report.Status[target.Pane] = RestartPromptUnknown
+				report.CanceledPanes = append(report.CanceledPanes, target.Pane)
+				skipPending(targets[targetIndex+1:], cancelErr)
+				return report, cancelErr
 			}
-			promptErrors = append(promptErrors, fmt.Sprintf("pane %s: %v", target.Pane, err))
-			deliveryStatus[target.Pane] = RestartPromptFailed
+			report.Errors = append(report.Errors, fmt.Sprintf("pane %s: %v", target.Pane, err))
+			report.Status[target.Pane] = RestartPromptFailed
 			continue
 		}
-		deliveryStatus[target.Pane] = RestartPromptDelivered
-		if err := ctx.Err(); err != nil {
-			canceledPanes := make([]string, 0, len(targets)-targetIndex-1)
-			for _, pending := range targets[targetIndex+1:] {
-				promptErrors = append(promptErrors, fmt.Sprintf("pane %s: prompt skipped: %v", pending.Pane, err))
-				canceledPanes = append(canceledPanes, pending.Pane)
-				deliveryStatus[pending.Pane] = RestartPromptSkipped
+
+		// Post-send submission verification (bd-rf0ka): keys reached the pane,
+		// but codex/claude TUIs can strand the prompt in the composer. An
+		// unconfirmed submission is a per-pane failure, not success.
+		if verify != nil {
+			if verifyErr := verify(ctx, target); verifyErr != nil {
+				if cancelErr := restartPaneCancellationError(ctx, verifyErr); cancelErr != nil {
+					report.Errors = append(report.Errors, fmt.Sprintf(
+						"pane %s: prompt delivery outcome is unknown after cancellation during submission verification; inspect the pane before retrying: %v",
+						target.Pane,
+						cancelErr,
+					))
+					report.Status[target.Pane] = RestartPromptUnknown
+					report.CanceledPanes = append(report.CanceledPanes, target.Pane)
+					skipPending(targets[targetIndex+1:], cancelErr)
+					return report, cancelErr
+				}
+				failure := fmt.Sprintf("prompt submission unconfirmed: %v", verifyErr)
+				report.Errors = append(report.Errors, fmt.Sprintf("pane %s: %s", target.Pane, failure))
+				report.Status[target.Pane] = RestartPromptUnknown
+				report.PaneFailures = append(report.PaneFailures, RestartError{Pane: target.Pane, Reason: failure})
+				continue
 			}
-			return promptErrors, canceledPanes, deliveryStatus, err
+		}
+		report.Status[target.Pane] = RestartPromptDelivered
+		if err := ctx.Err(); err != nil {
+			skipPending(targets[targetIndex+1:], err)
+			return report, err
 		}
 	}
-	return promptErrors, nil, deliveryStatus, nil
+	return report, nil
+}
+
+// paneCurrentCommandContext queries the pane's current foreground command
+// (tmux #{pane_current_command}). Used by the delivery-readiness gate to
+// refuse typing a prompt while the pane foreground is still a shell.
+func paneCurrentCommandContext(ctx context.Context, target string) (string, error) {
+	if ctx == nil {
+		return "", errors.New("pane command context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	cmd, err := tmux.DefaultClient.RunContext(ctx, "display-message", "-t", target, "-p", "#{pane_current_command}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(cmd), nil
+}
+
+// waitForRestartPromptDeliveryReadyContext polls, bounded by timeout, until an
+// agent pane can actually accept a typed prompt: the foreground process must
+// NOT be a shell AND ComposerReadyForDelivery must report the composer (or
+// working chrome) visible. Returns ready=false with the last observed reason
+// when the deadline passes — the caller must then withhold the prompt.
+func waitForRestartPromptDeliveryReadyContext(
+	ctx context.Context,
+	target restartPromptTarget,
+	timeout time.Duration,
+	pollInterval time.Duration,
+	currentCommand func(context.Context, string) (string, error),
+	composerReady func(context.Context, string, tmux.AgentType) (bool, string),
+) (bool, string, error) {
+	if ctx == nil {
+		return false, "", errors.New("prompt delivery readiness context is required")
+	}
+	if currentCommand == nil || composerReady == nil {
+		return false, "", errors.New("prompt delivery readiness dependencies are required")
+	}
+	if pollInterval <= 0 {
+		pollInterval = restartPaneReadyPollInterval
+	}
+	deadline := time.Now().Add(timeout)
+	lastReason := "pane readiness could not be observed"
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, lastReason, err
+		}
+		cmd, cmdErr := currentCommand(ctx, target.Target)
+		if cancelErr := restartPaneCancellationError(ctx, cmdErr); cancelErr != nil {
+			return false, lastReason, cancelErr
+		}
+		switch {
+		case cmdErr != nil:
+			lastReason = fmt.Sprintf("pane foreground process could not be observed: %v", cmdErr)
+		case strings.TrimSpace(cmd) == "":
+			lastReason = "pane foreground process is unavailable (pane process may have exited)"
+		case tmux.PaneCommandIsShell(cmd):
+			lastReason = fmt.Sprintf("pane foreground process is a shell (%q), not the relaunched agent; typing the prompt would hit the shell", strings.TrimSpace(cmd))
+		default:
+			ready, reason := composerReady(ctx, target.Target, target.AgentType)
+			if err := ctx.Err(); err != nil {
+				return false, lastReason, err
+			}
+			if ready {
+				return true, "", nil
+			}
+			lastReason = strings.TrimSpace(reason)
+			if lastReason == "" {
+				lastReason = "agent composer is not ready for typed input"
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, fmt.Sprintf("pane did not become ready for prompt delivery within %s: %s", timeout, lastReason), nil
+		}
+		if remaining < pollInterval {
+			pollInterval = remaining
+		}
+		if err := waitForRestartPaneDelay(ctx, pollInterval); err != nil {
+			return false, lastReason, err
+		}
+	}
 }
 
 // restartPaneBeadPromptTemplate is the default prompt template for --bead assignment.

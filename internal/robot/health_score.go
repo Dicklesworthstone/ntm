@@ -132,7 +132,14 @@ func CollectIssues(localState *PaneWorkStatus, providerUsage *caut.ProviderPaylo
 	}
 
 	if localState.Recommendation == "ERROR_STATE" {
-		issues = append(issues, "Agent in error state - needs attention")
+		// Interactive gate screens (bd-jf22c) carry the specific gate text in
+		// RecommendationReason; surface it instead of the generic message so
+		// --robot-agent-health says WHAT is blocking the pane.
+		if localState.IndicatorBasis == "interactive_gate" && localState.RecommendationReason != "" {
+			issues = append(issues, localState.RecommendationReason)
+		} else {
+			issues = append(issues, "Agent in error state - needs attention")
+		}
 	}
 
 	if localState.IsContextLow {
@@ -184,6 +191,18 @@ func DeriveHealthRecommendation(localState *PaneWorkStatus, providerUsage *caut.
 			}
 		}
 		return RecommendWaitForReset, reason
+	}
+
+	// Interactive gate screen (bd-jf22c): the pane is parked on a modal
+	// trust / login / onboarding screen and will never accept work until a
+	// human answers it (or a restart re-authenticates it). Keep the specific
+	// gate text as the reason so operators know which screen to clear.
+	if localState.IndicatorBasis == "interactive_gate" {
+		reason := localState.RecommendationReason
+		if reason == "" {
+			reason = "Blocked on interactive gate screen; needs a keystroke before the pane can accept work"
+		}
+		return RecommendRestartUrgent, reason
 	}
 
 	// Check for error state
