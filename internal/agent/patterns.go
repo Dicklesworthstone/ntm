@@ -192,8 +192,11 @@ var (
 		"you.ve reached your usage limit",
 		// Codex's current banner phrasing (bd-wtm0w): "You've hit your
 		// usage limit ... try again at <date>", plus plan-limit variants.
-		"you've hit your usage limit",
-		"you have hit your usage limit",
+		// Matching is substring containment, so the bare "hit your usage
+		// limit" covers both the "you've"/"you have" prefixes. This list
+		// cannot delegate to internal/ratelimit (import cycle: ratelimit
+		// imports agent); keep it in sync with ratelimit's canonical
+		// usageLimitBannerPatterns when provider copy changes.
 		"hit your usage limit",
 		"usage limit reached",
 		"plan limit reached",

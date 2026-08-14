@@ -36,16 +36,11 @@ var rateLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)too many requests`),
 	regexp.MustCompile(`RESOURCE_EXHAUSTED`),
 	regexp.MustCompile(`resets \d+[ap]m`),
-	// Provider usage-limit banners (bd-wtm0w). Codex prints "You've hit
-	// your usage limit. ... try again at <date>" (variants: "You have hit
-	// your usage limit", "usage limit reached", "Plan limit reached") with
-	// no "rate limit" text, so the generic patterns above miss it. Kept
-	// limit-context-anchored to avoid matching benign uses of "limit".
-	regexp.MustCompile(`(?i)hit your usage limit`),
-	regexp.MustCompile(`(?i)reached your usage limit`),
-	regexp.MustCompile(`(?i)usage limits? (?:reached|exceeded)`),
-	regexp.MustCompile(`(?i)plan limits? (?:reached|exceeded)`),
-	regexp.MustCompile(`(?i)quota (?:exceeded|exhausted|reached)`),
+	// Provider usage-limit banners ("hit your usage limit", "plan limit
+	// reached", quota exhaustion) are NOT duplicated here: detectRateLimit
+	// falls through to ratelimit.DetectRateLimitForAgent, whose canonical
+	// usageLimitBannerPatterns vocabulary covers them for every agent type
+	// (bd-wtm0w). Add new banner phrasings there, once.
 }
 
 var codexRateLimitPatterns = []*regexp.Regexp{
