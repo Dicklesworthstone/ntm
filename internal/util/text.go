@@ -279,3 +279,25 @@ func CountNonEmptyLines(content string) int {
 
 	return count
 }
+
+// WidthAdaptiveTailLines scales a tail-window line budget for narrow panes
+// (bd-eeifh). Fixed budgets like "the last 15 capture rows" were calibrated
+// against ~80-column panes; capture rows are hard-wrapped at the pane
+// width, so on a ~26-column pane every logical line occupies ~3 rows and a
+// spinner frame that fits inside 15 rows at 80 columns scrolls out of the
+// window — an actively-working pane then classifies idle. paneWidth is the
+// REAL tmux pane width (tmux.Pane.Width); zero/unknown widths and panes at
+// or above the 80-column reference keep the calibrated budget unchanged.
+// Scaling is capped at 4x so the window can never reach deep scrollback.
+func WidthAdaptiveTailLines(paneWidth, baseLines int) int {
+	const referenceWidth = 80
+	const maxScale = 4
+	if baseLines <= 0 || paneWidth <= 0 || paneWidth >= referenceWidth {
+		return baseLines
+	}
+	scale := (referenceWidth + paneWidth - 1) / paneWidth
+	if scale > maxScale {
+		scale = maxScale
+	}
+	return baseLines * scale
+}

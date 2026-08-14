@@ -110,6 +110,14 @@ type PaneWorkStatus struct {
 	PaneCurrentCommand string `json:"pane_current_command,omitempty"`
 	AgentCLIDead       bool   `json:"agent_cli_dead,omitempty"`
 
+	// UnsubmittedInput / QueuedMessages surface the composer state
+	// (bd-v8dqd): a pane can be idle, blocking the swarm, and holding
+	// prompts unread all at once, and no working/idle verdict shows it.
+	// UnsubmittedInput: real text is sitting in the input box unsubmitted.
+	// QueuedMessages: the TUI reports queued not-yet-processed messages.
+	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
+	QueuedMessages   bool `json:"queued_messages,omitempty"`
+
 	// SemanticProgress is the OPTIONAL, additive ground-truth signal (#199),
 	// present only under --semantic and omitted entirely otherwise. It is
 	// advisory: it never changes IsWorking/IsIdle/Recommendation above.
@@ -172,8 +180,8 @@ func getRecommendationReason(state *agent.AgentState) string {
 // idle signal and an error match elsewhere in the capture is historical rather
 // than the pane's current state. Rate-limit and context-low flags remain intact
 // and therefore retain their normal recommendation precedence.
-func applyLiveBusyOverride(content string, state *agent.AgentState) bool {
-	if state == nil || !isAIAgentLiveBusy(content, string(state.Type)) {
+func applyLiveBusyOverride(content string, state *agent.AgentState, paneWidth int) bool {
+	if state == nil || !isAIAgentLiveBusyWidth(content, string(state.Type), paneWidth) {
 		return false
 	}
 	canonicalType := state.Type.Canonical()
@@ -473,6 +481,12 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		}
 		workStatus.Recommendation = string(state.GetRecommendation())
 		workStatus.RecommendationReason = getRecommendationReason(state)
+
+		// Composer visibility (bd-v8dqd): report unsubmitted input and
+		// queued messages so a pane that is idle-but-blocking is legible.
+		composer := tmux.InspectComposer(content, tmux.AgentType(state.Type))
+		workStatus.UnsubmittedInput = composer.HoldsText
+		workStatus.QueuedMessages = composer.QueuedMessages
 		status := workStatus
 
 		// Live-window THINKING override (#133). The legacy parser can mark a
@@ -498,7 +512,7 @@ func GetIsWorking(ctx context.Context, opts IsWorkingOptions) (*IsWorkingOutput,
 		// window supersedes stale prompt/error matches, while rate-limit and
 		// context-low signals retain their normal precedence. ParseWithHint
 		// returns a fresh *AgentState, so this mutation is local to this pane.
-		liveBusy := applyLiveBusyOverride(content, state)
+		liveBusy := applyLiveBusyOverride(content, state, paneObservation.Metadata.Width)
 		if liveBusy {
 			status.IsWorking = true
 			status.IsIdle = false

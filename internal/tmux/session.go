@@ -2188,6 +2188,99 @@ func composerLineEmpty(capture, marker string, placeholderPrefixes []string) (fo
 	return false, false
 }
 
+// ComposerState is the message-independent view of an agent pane's input
+// box, derived from a pane capture (bd-v8dqd). It lets observability
+// surfaces report "this pane holds an unsubmitted prompt" or "this pane has
+// queued messages" without knowing what was sent — the blind spot behind
+// panes that are simultaneously idle, blocking a swarm, and holding orders
+// unread.
+type ComposerState struct {
+	// MarkerVisible: the agent's composer marker (❯ for Claude, › for
+	// codex) appears in the capture. False for agent types without a known
+	// marker, or when the pane shows a splash/dialog instead of the input
+	// box.
+	MarkerVisible bool `json:"marker_visible"`
+	// HoldsText: the bottom-most marker line carries real text (TUI hint
+	// text counts as empty) — a prompt is sitting unsubmitted in the box.
+	HoldsText bool `json:"holds_text"`
+	// QueuedMessages: the TUI reports queued unsubmitted messages (Claude's
+	// "Press up to edit queued messages" footer).
+	QueuedMessages bool `json:"queued_messages"`
+}
+
+// queuedMessagesMarkers are TUI phrases (lowercase) indicating the agent is
+// holding queued, not-yet-processed messages.
+var queuedMessagesMarkers = []string{
+	"press up to edit queued messages",
+	"queued messages",
+}
+
+// InspectComposer derives the message-independent composer state from a
+// pane capture. The composer is bottom-pinned in both Claude Code and
+// codex, so the bottom-most marker line is the live input box even in a
+// capture that includes scrollback.
+func InspectComposer(capture string, agentType AgentType) ComposerState {
+	var state ComposerState
+	lower := strings.ToLower(capture)
+	for _, marker := range queuedMessagesMarkers {
+		if strings.Contains(lower, marker) {
+			state.QueuedMessages = true
+			break
+		}
+	}
+	marker := composerMarkerForAgent(agentType)
+	if marker == "" {
+		return state
+	}
+	found, empty := composerLineEmpty(capture, marker, composerPlaceholderPrefixes(agentType))
+	state.MarkerVisible = found
+	state.HoldsText = found && !empty
+	return state
+}
+
+// ComposerReadyForDelivery reports whether an agent pane is in a state that
+// can accept a typed prompt (bd-dp9oy). Sends fired while a Claude/codex
+// TUI is still initializing — or while it is showing a trust dialog or menu
+// instead of its input box — are silently swallowed: the keystrokes land
+// nowhere recoverable and the send still reports success. Refusing up front
+// turns that silent drop into a typed failure the caller can retry.
+//
+// The check is deliberately conservative: it only reports not-ready when a
+// capture POSITIVELY shows neither the composer marker nor working-state
+// chrome for an agent type whose marker we know. Unknown agent types, empty
+// captures, and capture errors all return ready=true (fail open) so a
+// detection gap can never block deliveries that used to work.
+func (c *Client) ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType) (ready bool, reason string) {
+	canonical := agentType.Canonical()
+	marker := composerMarkerForAgent(canonical)
+	if marker == "" {
+		return true, ""
+	}
+	capture, err := c.CapturePaneVisibleContext(ctx, target)
+	if err != nil || strings.TrimSpace(capture) == "" {
+		return true, ""
+	}
+	if strings.Contains(capture, marker) {
+		return true, ""
+	}
+	switch canonical {
+	case AgentClaude:
+		if agent.ClaudeActivelyWorking(capture) {
+			return true, ""
+		}
+	case AgentCodex:
+		if codexLooksWorking(capture) {
+			return true, ""
+		}
+	}
+	return false, fmt.Sprintf("%s composer not visible: pane appears to be initializing or showing a dialog; a typed prompt would be swallowed", canonical)
+}
+
+// ComposerReadyForDelivery checks delivery readiness (default client).
+func ComposerReadyForDelivery(ctx context.Context, target string, agentType AgentType) (bool, string) {
+	return DefaultClient.ComposerReadyForDelivery(ctx, target, agentType)
+}
+
 // ClearComposerContext performs the per-agent pre-send composer clear and
 // verifies the composer is empty where the TUI exposes a marker. Returns
 // cleared=false only when verification POSITIVELY shows leftover text;

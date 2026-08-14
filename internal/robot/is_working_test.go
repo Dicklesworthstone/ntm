@@ -577,7 +577,7 @@ func TestApplyLiveBusyOverrideRecommendationPrecedence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !applyLiveBusyOverride(activeSpinner, tt.state) {
+			if !applyLiveBusyOverride(activeSpinner, tt.state, 0) {
 				t.Fatal("expected live-busy override")
 			}
 			if !tt.state.IsWorking || tt.state.IsIdle || tt.state.IsInError {
@@ -593,7 +593,7 @@ func TestApplyLiveBusyOverrideRecommendationPrecedence(t *testing.T) {
 	currentErrorOutput := "· Germinating… (5m 56s)\n" +
 		"  ⎿ \u00a0Error: Exit code 1\n" +
 		"     current command failed\n❯\n"
-	if applyLiveBusyOverride(currentErrorOutput, currentError) {
+	if applyLiveBusyOverride(currentErrorOutput, currentError, 0) {
 		t.Fatal("current error after an older spinner must not be overridden")
 	}
 	if got := currentError.GetRecommendation(); got != agent.RecommendErrorState {
@@ -602,7 +602,7 @@ func TestApplyLiveBusyOverrideRecommendationPrecedence(t *testing.T) {
 
 	codexError := &agent.AgentState{Type: agent.AgentTypeCodex, IsInError: true, IsIdle: true}
 	codexOutput := "Error: current command failed\n• Working (4s · esc to interrupt)\ncodex>\n"
-	if applyLiveBusyOverride(codexOutput, codexError) {
+	if applyLiveBusyOverride(codexOutput, codexError, 0) {
 		t.Fatal("position-blind Codex working text must not override a current error")
 	}
 	if got := codexError.GetRecommendation(); got != agent.RecommendErrorState {

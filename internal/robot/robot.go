@@ -1599,6 +1599,12 @@ type Agent struct {
 	// OutputSequence is the durable, privacy-preserving output-change signal
 	// (#246). Absent when no runtime projection store is configured.
 	OutputSequence *OutputSequenceInfo `json:"output_sequence,omitempty"`
+
+	// UnsubmittedInput / QueuedMessages surface the composer state
+	// (bd-v8dqd): real text sitting unsubmitted in the agent's input box,
+	// and TUI-reported queued not-yet-processed messages, respectively.
+	UnsubmittedInput bool `json:"unsubmitted_input,omitempty"`
+	QueuedMessages   bool `json:"queued_messages,omitempty"`
 }
 
 // SystemInfo contains system and runtime information
@@ -10960,6 +10966,7 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 		// output from the canonical observation instead of capturing tmux again.
 		classifier := NewStateClassifier(pane.ID, &ClassifierConfig{
 			AgentType: agentType,
+			PaneWidth: pane.Width,
 		})
 
 		paneCapturedAt := FormatTimestamp(paneObservation.Current.ObservedAt)

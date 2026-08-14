@@ -495,8 +495,20 @@ func DetectClaudeTurnState(output string) ClaudeTurnState {
 	if output == "" {
 		return ClaudeTurnUnknown
 	}
+	return DetectClaudeTurnStateWidth(output, 0)
+}
+
+// DetectClaudeTurnStateWidth is DetectClaudeTurnState with a width-adaptive
+// live window (bd-eeifh): the fixed line budget counts physical capture
+// rows, so on narrow panes a wrapped spinner frame can fall outside it and
+// a working pane reads idle. paneWidth is the real tmux pane width; pass 0
+// when unknown to keep the calibrated budget.
+func DetectClaudeTurnStateWidth(output string, paneWidth int) ClaudeTurnState {
+	if output == "" {
+		return ClaudeTurnUnknown
+	}
 	clean := stripANSICodes(output)
-	tail := util.GetLastNLines(clean, claudeLiveTailLines)
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, claudeLiveTailLines))
 	if strings.TrimSpace(tail) == "" {
 		return ClaudeTurnUnknown
 	}
@@ -523,6 +535,12 @@ func ClaudeActivelyWorking(output string) bool {
 	return DetectClaudeTurnState(output) == ClaudeTurnWorking
 }
 
+// ClaudeActivelyWorkingWidth is ClaudeActivelyWorking with a width-adaptive
+// live window (bd-eeifh); pass the real tmux pane width, or 0 when unknown.
+func ClaudeActivelyWorkingWidth(output string, paneWidth int) bool {
+	return DetectClaudeTurnStateWidth(output, paneWidth) == ClaudeTurnWorking
+}
+
 // CodexActivelyWorking reports whether Codex's trailing live window contains a
 // structural in-flight marker. Codex leaves old spinner lines in scrollback and
 // keeps its input chrome visible during work, so the bounded tail is required:
@@ -530,7 +548,15 @@ func ClaudeActivelyWorking(output string) bool {
 // while treating the persistent chevron as idle would make active panes unsafe
 // for dispatch.
 func CodexActivelyWorking(output string) bool {
-	tail := util.GetLastNLines(stripANSICodes(output), codexLiveTailLines)
+	return CodexActivelyWorkingWidth(output, 0)
+}
+
+// CodexActivelyWorkingWidth is CodexActivelyWorking with a width-adaptive
+// live window (bd-eeifh). paneWidth is the real tmux pane width; pass 0
+// when unknown to keep the calibrated budget.
+func CodexActivelyWorkingWidth(output string, paneWidth int) bool {
+	clean := stripANSICodes(output)
+	tail := util.GetLastNLines(clean, util.WidthAdaptiveTailLines(paneWidth, codexLiveTailLines))
 	return codexActiveWorkLineRe.MatchString(tail) || codexInterruptHintRe.MatchString(tail)
 }
 

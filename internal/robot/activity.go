@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // liveThinkingWindowLines is the number of trailing lines from a pane
@@ -817,6 +818,7 @@ type StateClassifier struct {
 	velocityTracker    *VelocityTracker
 	patternLibrary     *PatternLibrary
 	agentType          string
+	paneWidth          int
 	stallThreshold     time.Duration
 	hysteresisDuration time.Duration
 
@@ -836,7 +838,10 @@ type StateClassifier struct {
 
 // ClassifierConfig holds configuration for state classification.
 type ClassifierConfig struct {
-	AgentType          string
+	AgentType string
+	// PaneWidth is the real tmux pane width; used to widen the live tail
+	// window on narrow panes (bd-eeifh). Zero keeps the calibrated budget.
+	PaneWidth          int
 	StallThreshold     time.Duration
 	HysteresisDuration time.Duration
 	PatternLibrary     *PatternLibrary
@@ -874,6 +879,7 @@ func NewStateClassifier(paneID string, cfg *ClassifierConfig) *StateClassifier {
 		velocityTracker:    NewVelocityTracker(paneID, vtOpts...),
 		patternLibrary:     patternLib,
 		agentType:          cfg.AgentType,
+		paneWidth:          cfg.PaneWidth,
 		stallThreshold:     stallThreshold,
 		hysteresisDuration: hysteresis,
 		currentState:       StateUnknown,
@@ -940,7 +946,7 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 	// would otherwise pin the pane to ERROR forever, even though the agent
 	// is sitting at a healthy prompt waiting for input. Fresh errors that
 	// land inside the live tail still classify as ERROR.
-	liveContent := lastNLines(content, liveThinkingWindowLines)
+	liveContent := lastNLines(content, util.WidthAdaptiveTailLines(sc.paneWidth, liveThinkingWindowLines))
 	liveMatches := sc.patternLibrary.Match(liveContent, sc.agentType)
 	effectiveMatches := filterThinkingToLive(matches, liveMatches)
 	effectiveMatches = filterErrorToLiveWhenIdle(effectiveMatches, liveMatches)
@@ -1019,6 +1025,15 @@ func isRateLimitPatternMatch(matches []PatternMatch) bool {
 // internal assignment ledger has no record of it. The live-window check
 // closes that gap by reading the same surface that `--robot-activity` uses.
 func IsLiveBusy(scrollback string, agentType string) bool {
+	return IsLiveBusyWidth(scrollback, agentType, 0)
+}
+
+// IsLiveBusyWidth is IsLiveBusy with a width-adaptive live window
+// (bd-eeifh): the fixed liveThinkingWindowLines budget counts physical
+// capture rows, so on a ~26-column pane a wrapped spinner frame scrolls
+// out of the window and an actively-working pane reads idle. paneWidth is
+// the real tmux pane width; pass 0 when unknown.
+func IsLiveBusyWidth(scrollback string, agentType string, paneWidth int) bool {
 	if scrollback == "" {
 		return false
 	}
@@ -1037,10 +1052,10 @@ func IsLiveBusy(scrollback string, agentType string) bool {
 	// it keeps IsLiveBusy in agreement with the rest of the Claude detection
 	// layer (parser, status, ClaudeIdlePromptShowing).
 	if normalizeAgentType(agentType) == "claude" {
-		return agent.ClaudeActivelyWorking(scrollback)
+		return agent.ClaudeActivelyWorkingWidth(scrollback, paneWidth)
 	}
 
-	live := lastNLines(scrollback, liveThinkingWindowLines)
+	live := lastNLines(scrollback, util.WidthAdaptiveTailLines(paneWidth, liveThinkingWindowLines))
 	if live == "" {
 		return false
 	}
@@ -1052,11 +1067,17 @@ func IsLiveBusy(scrollback string, agentType string) bool {
 // IsLiveBusy intentionally exposes wildcard thinking patterns, so callers must
 // not apply it to user or unknown panes where ordinary shell output can match.
 func isAIAgentLiveBusy(scrollback, agentType string) bool {
+	return isAIAgentLiveBusyWidth(scrollback, agentType, 0)
+}
+
+// isAIAgentLiveBusyWidth is isAIAgentLiveBusy with the real pane width
+// (bd-eeifh); pass 0 when unknown.
+func isAIAgentLiveBusyWidth(scrollback, agentType string, paneWidth int) bool {
 	canonicalType := agent.AgentType(agentType).Canonical()
 	if !canonicalType.IsValid() || canonicalType == agent.AgentTypeUser || canonicalType == agent.AgentTypeUnknown {
 		return false
 	}
-	return IsLiveBusy(scrollback, string(canonicalType))
+	return IsLiveBusyWidth(scrollback, string(canonicalType), paneWidth)
 }
 
 // lastNLines returns the last n non-empty-slice lines of s, preserving

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
@@ -108,6 +109,11 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string, content stri
 		// Durable output-change sequence (#246). agent.Pane carries the tmux
 		// pane ID on this path, matching the scope used by --robot-activity.
 		agent.OutputSequence = observeOutputSequence(sessionName, agent.Pane, content, time.Now().UTC())
+
+		// Composer visibility (bd-v8dqd).
+		composer := tmux.InspectComposer(content, tmux.AgentType(agent.Type))
+		agent.UnsubmittedInput = composer.HoldsText
+		agent.QueuedMessages = composer.QueuedMessages
 
 		if modelName != "" {
 			agent.ContextModel = modelName

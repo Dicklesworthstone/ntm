@@ -334,6 +334,15 @@ func (TMUXDeliverer) Deliver(ctx context.Context, delivery Delivery) error {
 	if target == "" {
 		target = fmt.Sprintf("%s:%s", delivery.Session, delivery.Target.Ref.Physical())
 	}
+	// Fail closed on panes that cannot accept typed input yet (bd-dp9oy):
+	// a Claude/codex TUI still initializing, or showing a trust dialog or
+	// menu instead of its input box, silently swallows pasted prompts while
+	// the send reports success. The check fails open on capture problems and
+	// unknown agent types, so it can only refuse when the screen positively
+	// shows neither a composer nor working-state chrome.
+	if ready, reason := tmux.ComposerReadyForDelivery(ctx, target, delivery.Target.AgentType); !ready {
+		return fmt.Errorf("pane %s not ready for delivery: %s", target, reason)
+	}
 	if err := ClearComposerForDelivery(ctx, target, delivery); err != nil {
 		return err
 	}

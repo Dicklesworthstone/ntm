@@ -16,8 +16,8 @@ var codexUsagePatterns = struct {
 	Limit   *regexp.Regexp
 	Limited *regexp.Regexp
 }{
-	Usage:   regexp.MustCompile(`(?i)usage[:\s]+(\d+(?:\.\d+)?)\s*%`),
-	Limit:   regexp.MustCompile(`(?i)limit[:\s]+(\d+(?:\.\d+)?)\s*%`),
+	Usage: regexp.MustCompile(`(?i)usage[:\s]+(\d+(?:\.\d+)?)\s*%`),
+	Limit: regexp.MustCompile(`(?i)limit[:\s]+(\d+(?:\.\d+)?)\s*%`),
 	// "hit your usage limit" is codex's current banner phrasing (bd-wtm0w);
 	// it contains neither "limit exceeded" nor "limit reached".
 	Limited: regexp.MustCompile(`(?i)\b(?:rate[\s-]*limit(?:ed)?|limit[\s-]*(?:exceeded|reached)|(?:hit|reached)\s+your\s+(?:usage|plan)\s+limit|quota[\s-]*(?:exceeded|exhausted|reached)|exceeded\s+quota)\b`),
