@@ -600,6 +600,20 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			return output, nil
 		}
 		cfg = effectiveConfig
+		// The authoritative assignment policy replaces cfg (the serve path
+		// passes cfg=nil), so launch commands must be re-rendered from the
+		// merged config — otherwise serve-spawned AssignWork panes fall back
+		// to hardcoded agent commands and ignore the user's [agents]/[models].
+		agentCommands, agentCommandsErr = getAgentCommandsWithOverrides(cfg, opts)
+		if agentCommandsErr != nil {
+			output.Error = agentCommandsErr.Error()
+			output.RobotResponse = NewErrorResponse(
+				agentCommandsErr,
+				ErrCodeInvalidFlag,
+				"Fix the [agents] launch command template or drop the model/effort override",
+			)
+			return output, nil
+		}
 		operatorGatedLabels := []string(nil)
 		if effectiveConfig != nil {
 			operatorGatedLabels = effectiveConfig.Assign.OperatorGatedLabels
