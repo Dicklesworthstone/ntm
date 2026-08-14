@@ -695,7 +695,7 @@ func newSendCmd() *cobra.Command {
 		Smart Routing:
 		Use --smart to automatically select the best agent based on routing strategies.
 		Use --route to specify the strategy (default: least-loaded).
-		Strategies: least-loaded, round-robin, affinity, sticky, random.
+		Strategies: least-loaded, first-available, round-robin, round-robin-available, random, sticky, explicit.
 
 		Examples:
 		  ntm send myproject "fix the linting errors"           # All agents
@@ -718,7 +718,7 @@ func newSendCmd() *cobra.Command {
 		  ntm send myproject -t code_review --file src/main.go  # Template with file
 		  ntm send myproject -t fix --var issue="null pointer" --file src/app.go  # Template with vars
 		  ntm send myproject --smart "fix auth bug"             # Auto-select best agent
-		  ntm send myproject --smart --route=affinity "auth"    # Use affinity strategy`,
+		  ntm send myproject --smart --route=sticky "auth"      # Prefer same agent for related tasks`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			failureSession := ""
@@ -938,7 +938,7 @@ func newSendCmd() *cobra.Command {
 
 	// Smart routing flags
 	cmd.Flags().BoolVar(&smartRoute, "smart", false, "Use smart routing to select best agent")
-	cmd.Flags().StringVar(&routeStrategy, "route", "", "Routing strategy: least-loaded, round-robin, affinity, sticky, random")
+	cmd.Flags().StringVar(&routeStrategy, "route", "", "Routing strategy: least-loaded, first-available, round-robin, round-robin-available, random, sticky, explicit")
 
 	// Distribute mode flags - auto-distribute work from bv triage to agents
 	cmd.Flags().BoolVar(&distribute, "distribute", false, "Auto-distribute prioritized work from bv triage to idle agents")
