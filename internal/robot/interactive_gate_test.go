@@ -50,8 +50,10 @@ func TestApplyInteractiveGateOverride_TrustDialog(t *testing.T) {
 	if status.IsIdle {
 		t.Error("IsIdle = true, a gate-blocked pane must not be advertised as feedable")
 	}
-	if status.Recommendation != string(agent.RecommendErrorState) {
-		t.Errorf("Recommendation = %q, want %q", status.Recommendation, agent.RecommendErrorState)
+	// MANUAL_INTERVENTION, not ERROR_STATE: a restart cannot answer a dialog,
+	// so the gate verdict must never feed restart machinery (bd-jf22c).
+	if status.Recommendation != string(RecommendManualIntervention) {
+		t.Errorf("Recommendation = %q, want %q", status.Recommendation, RecommendManualIntervention)
 	}
 	if status.IndicatorBasis != "interactive_gate" {
 		t.Errorf("IndicatorBasis = %q, want %q", status.IndicatorBasis, "interactive_gate")
@@ -67,7 +69,9 @@ func TestApplyInteractiveGateOverride_ClaudeAuthFrame(t *testing.T) {
 	if !applyInteractiveGateOverride(&status, agent.AgentTypeClaudeCode, robotClaudeAuthCapture, 0) {
 		t.Fatal("applyInteractiveGateOverride did not fire on the auth-error frame")
 	}
-	if !strings.Contains(status.RecommendationReason, "authentication error") {
+	// The tightened marker list excludes generic failure vocabulary like
+	// "authentication error"; the gate-screen instruction line is matched.
+	if !strings.Contains(status.RecommendationReason, "please run /login") {
 		t.Errorf("RecommendationReason = %q, want the gate text inside it", status.RecommendationReason)
 	}
 }
@@ -158,8 +162,11 @@ func TestDeriveHealthRecommendation_InteractiveGate(t *testing.T) {
 		t.Errorf("CalculateHealthScore = %d, a gate-blocked pane must not score healthy (>=70)", score)
 	}
 	rec, gotReason := DeriveHealthRecommendation(localState, nil, score)
-	if rec != RecommendRestartUrgent {
-		t.Errorf("recommendation = %q, want %q", rec, RecommendRestartUrgent)
+	// MANUAL_INTERVENTION, never RESTART_URGENT: restarting cannot answer a
+	// modal dialog — the gate reappears on relaunch with the session context
+	// destroyed (bd-jf22c).
+	if rec != RecommendManualIntervention {
+		t.Errorf("recommendation = %q, want %q", rec, RecommendManualIntervention)
 	}
 	if gotReason != reason {
 		t.Errorf("reason = %q, want the gate text %q", gotReason, reason)

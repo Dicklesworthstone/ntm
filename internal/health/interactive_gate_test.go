@@ -38,7 +38,9 @@ func TestDetectInteractiveGateIssue_ClaudeAuthError(t *testing.T) {
 	if issue.Type != "interactive_gate" {
 		t.Errorf("issue.Type = %q, want %q", issue.Type, "interactive_gate")
 	}
-	if !strings.Contains(issue.Message, "authentication error") {
+	// The tightened marker list excludes generic failure vocabulary like
+	// "authentication error"; the gate-screen instruction line is matched.
+	if !strings.Contains(issue.Message, "please run /login") {
 		t.Errorf("issue.Message = %q, want the matched gate phrase inside it", issue.Message)
 	}
 }
