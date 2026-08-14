@@ -2036,7 +2036,7 @@ func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) 
 				call++
 				return cmd, nil
 			},
-			func(context.Context, string, tmux.AgentType) (bool, string) { return true, "" },
+			func(context.Context, string, tmux.AgentType, int) (bool, string) { return true, "" },
 		)
 		if err != nil || !ready || reason != "" {
 			t.Fatalf("gate = (%v, %q, %v), want ready", ready, reason, err)
@@ -2053,7 +2053,7 @@ func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) 
 			20*time.Millisecond,
 			time.Millisecond,
 			func(context.Context, string) (string, error) { return "zsh", nil },
-			func(context.Context, string, tmux.AgentType) (bool, string) {
+			func(context.Context, string, tmux.AgentType, int) (bool, string) {
 				t.Fatal("composer check must not run while the foreground is a shell")
 				return true, ""
 			},
@@ -2073,7 +2073,7 @@ func TestWaitForRestartPromptDeliveryReadyGatesOnShellAndComposer(t *testing.T) 
 			20*time.Millisecond,
 			time.Millisecond,
 			func(context.Context, string) (string, error) { return "node", nil },
-			func(context.Context, string, tmux.AgentType) (bool, string) {
+			func(context.Context, string, tmux.AgentType, int) (bool, string) {
 				return false, "claude composer not visible: pane appears to be initializing"
 			},
 		)
