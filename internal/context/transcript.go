@@ -63,9 +63,10 @@ type transcriptEntry struct {
 		} `json:"usage"`
 	} `json:"message"`
 	Payload struct {
-		Type  string `json:"type"`
-		Model string `json:"model"`
-		Cwd   string `json:"cwd"`
+		Type         string `json:"type"`
+		Model        string `json:"model"`
+		Cwd          string `json:"cwd"`
+		ThreadSource string `json:"thread_source"`
 		Info  struct {
 			LastTokenUsage struct {
 				InputTokens           int `json:"input_tokens"`
@@ -298,22 +299,54 @@ func FindCodexTranscript(sessionsDir, cwd string, newerThan time.Time) (string, 
 		path string
 		mt   time.Time
 	}
+	// sessions/YYYY/MM/DD/*.jsonl. The tree is date-organized, so walk the
+	// date directories NEWEST-FIRST and stop once the probe budget is full —
+	// a full WalkDir over every historical rollout (thousands of stats) on a
+	// polled snapshot path would saturate the disk for identical answers.
 	var cands []cand
-	// sessions/YYYY/MM/DD/*.jsonl
-	_ = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
-			return nil
-		}
-		fi, err := d.Info()
+	descDirs := func(dir string) []string {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return nil
 		}
-		cands = append(cands, cand{path: path, mt: fi.ModTime()})
-		return nil
-	})
-	sort.Slice(cands, func(i, j int) bool { return cands[i].mt.After(cands[j].mt) })
-	if len(cands) > codexCwdProbeLimit {
-		cands = cands[:codexCwdProbeLimit]
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if e.IsDir() {
+				names = append(names, e.Name())
+			}
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(names)))
+		return names
+	}
+collect:
+	for _, year := range descDirs(sessionsDir) {
+		for _, month := range descDirs(filepath.Join(sessionsDir, year)) {
+			for _, day := range descDirs(filepath.Join(sessionsDir, year, month)) {
+				dayDir := filepath.Join(sessionsDir, year, month, day)
+				entries, err := os.ReadDir(dayDir)
+				if err != nil {
+					continue
+				}
+				dayStart := len(cands)
+				for _, e := range entries {
+					if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+						continue
+					}
+					fi, err := e.Info()
+					if err != nil {
+						continue
+					}
+					cands = append(cands, cand{path: filepath.Join(dayDir, e.Name()), mt: fi.ModTime()})
+				}
+				sort.Slice(cands[dayStart:], func(i, j int) bool {
+					return cands[dayStart+i].mt.After(cands[dayStart+j].mt)
+				})
+				if len(cands) >= codexCwdProbeLimit {
+					cands = cands[:codexCwdProbeLimit]
+					break collect
+				}
+			}
+		}
 	}
 
 	var fallback string
@@ -353,15 +386,29 @@ func codexSessionMatchesCwd(path, cwd string) bool {
 	var e transcriptEntry
 	if err := json.Unmarshal(head, &e); err != nil {
 		// The session_meta line can exceed the probe window (it embeds the
-		// full base instructions). Fall back to a substring check for the
-		// exact cwd JSON pair.
+		// full base instructions). Fall back to substring checks for the
+		// exact cwd JSON pair — still excluding subagent rollouts, which
+		// share the main session's cwd but describe a different (usually
+		// tiny) context.
+		if bytes.Contains(head, []byte(`"thread_source":"subagent"`)) {
+			return false
+		}
 		needle, merr := json.Marshal(cwd)
 		if merr != nil {
 			return false
 		}
 		return bytes.Contains(head, append([]byte(`"cwd":`), needle...))
 	}
-	return e.Type == "session_meta" && e.Payload.Cwd == cwd
+	if e.Type != "session_meta" {
+		return false
+	}
+	// Subagent rollouts live in the same date tree with a matching cwd and
+	// are often the newest files by mtime; attributing one to the main pane
+	// reports the subagent's token count instead of the pane's.
+	if e.Payload.ThreadSource == "subagent" {
+		return false
+	}
+	return filepath.Clean(e.Payload.Cwd) == filepath.Clean(cwd)
 }
 
 // LatestAgentTranscriptUsage finds the transcript for an agent pane by agent
