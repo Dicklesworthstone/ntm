@@ -187,6 +187,25 @@ download_file() {
     fi
 }
 
+# Probe-download a file that is allowed to be missing. Identical to
+# download_file except the transport tool's own stderr is suppressed, so an
+# expected 404 on one candidate does not print a scary error while a later
+# candidate goes on to succeed. Real failures are still reported via the
+# non-zero return code, which callers must handle.
+try_download_file() {
+    local url="$1"
+    local dest="$2"
+
+    if has_cmd curl; then
+        curl -fsSL "$url" -o "$dest" 2>/dev/null || return 1
+    elif has_cmd wget; then
+        wget -q "$url" -O "$dest" 2>/dev/null || return 1
+    else
+        print_error "Neither curl nor wget found. Please install one."
+        return 1
+    fi
+}
+
 # Get the latest release info from GitHub
 get_latest_release() {
     local url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
@@ -304,9 +323,11 @@ download_release_checksums() {
     local asset_name="$2"
     local dest_dir="$3"
     local candidate checksum_url checksum_path
+    # SHA256SUMS is what current releases actually publish, so probe it first;
+    # the other names are legacy/per-asset fallbacks that usually 404.
     local -a candidates=(
-        "checksums.txt"
         "SHA256SUMS"
+        "checksums.txt"
         "${asset_name}.sha256"
     )
 
@@ -316,7 +337,7 @@ download_release_checksums() {
     for candidate in "${candidates[@]}"; do
         checksum_url=$(build_download_url "$version" "$candidate")
         checksum_path="${dest_dir}/${candidate}"
-        if download_file "$checksum_url" "$checksum_path"; then
+        if try_download_file "$checksum_url" "$checksum_path"; then
             printf '%s\n' "$checksum_path"
             return 0
         fi
