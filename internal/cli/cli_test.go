@@ -7108,13 +7108,16 @@ printf '%s\n' "$dir"
 		checksumRequests []string
 		wantOutput       string
 	}{
-		{name: "GoReleaser aggregate", mode: "goreleaser", wantSuccess: true, checksumRequests: []string{"checksums.txt"}},
-		{name: "DSR aggregate", mode: "aggregate", wantSuccess: true, checksumRequests: []string{"checksums.txt", "SHA256SUMS"}},
-		{name: "DSR per-asset sidecar", mode: "sidecar", wantSuccess: true, checksumRequests: []string{"checksums.txt", "SHA256SUMS", assetName + ".sha256"}},
-		{name: "missing checksums", mode: "missing", checksumRequests: []string{"checksums.txt", "SHA256SUMS", assetName + ".sha256"}, wantOutput: "Could not download release checksums"},
-		{name: "mismatched preferred aggregate fails closed", mode: "mismatch", checksumRequests: []string{"checksums.txt"}, wantOutput: "Checksum mismatch"},
-		{name: "mismatched DSR aggregate fails closed", mode: "aggregate-mismatch", checksumRequests: []string{"checksums.txt", "SHA256SUMS"}, wantOutput: "Checksum mismatch"},
-		{name: "mismatched DSR sidecar fails closed", mode: "sidecar-mismatch", checksumRequests: []string{"checksums.txt", "SHA256SUMS", assetName + ".sha256"}, wantOutput: "Checksum mismatch"},
+		// Probe order is SHA256SUMS first (what current DSR releases actually
+		// publish), then the legacy checksums.txt, then the per-asset sidecar
+		// (#247). Probes for absent candidates fall through silently.
+		{name: "GoReleaser aggregate", mode: "goreleaser", wantSuccess: true, checksumRequests: []string{"SHA256SUMS", "checksums.txt"}},
+		{name: "DSR aggregate", mode: "aggregate", wantSuccess: true, checksumRequests: []string{"SHA256SUMS"}},
+		{name: "DSR per-asset sidecar", mode: "sidecar", wantSuccess: true, checksumRequests: []string{"SHA256SUMS", "checksums.txt", assetName + ".sha256"}},
+		{name: "missing checksums", mode: "missing", checksumRequests: []string{"SHA256SUMS", "checksums.txt", assetName + ".sha256"}, wantOutput: "Could not download release checksums"},
+		{name: "mismatched legacy aggregate fails closed", mode: "mismatch", checksumRequests: []string{"SHA256SUMS", "checksums.txt"}, wantOutput: "Checksum mismatch"},
+		{name: "mismatched DSR aggregate fails closed", mode: "aggregate-mismatch", checksumRequests: []string{"SHA256SUMS"}, wantOutput: "Checksum mismatch"},
+		{name: "mismatched DSR sidecar fails closed", mode: "sidecar-mismatch", checksumRequests: []string{"SHA256SUMS", "checksums.txt", assetName + ".sha256"}, wantOutput: "Checksum mismatch"},
 	}
 
 	for _, downloader := range []string{"curl", "wget"} {
