@@ -168,6 +168,10 @@ const (
 	HealthDegraded    HealthState = "degraded"
 	HealthUnhealthy   HealthState = "unhealthy"
 	HealthRateLimited HealthState = "rate_limited"
+	// HealthBlocked: parked on an interactive gate screen (trust dialog,
+	// login gate). Not dispatchable and not auto-restartable — a restart
+	// cannot answer a dialog; a human keystroke can (bd-jf22c).
+	HealthBlocked HealthState = "blocked"
 )
 
 // =============================================================================

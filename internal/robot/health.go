@@ -408,6 +408,11 @@ type StallCheckResult struct {
 type ErrorCheckResult struct {
 	HasErrors   bool     `json:"has_errors"`
 	RateLimited bool     `json:"rate_limited"`
+	// Blocked: the pane is parked on an interactive gate screen (trust
+	// dialog, login gate). Deliberately NOT an error: auto-restart cannot
+	// answer a dialog — the gate reappears on relaunch with the session
+	// context destroyed — so this state must never feed the restart path.
+	Blocked     bool     `json:"blocked,omitempty"`
 	Patterns    []string `json:"patterns,omitempty"`
 	WaitSeconds int      `json:"wait_seconds,omitempty"` // suggested wait time for rate limit
 	Reason      string   `json:"reason,omitempty"`
@@ -462,7 +467,7 @@ func CheckAgentHealthWithActivity(paneID string, agentType string, shellPID int)
 	check.StallCheck = checkStallWithActivity(paneID, agentType)
 
 	// 3. Error check - detect error patterns
-	check.ErrorCheck = checkErrors(paneID)
+	check.ErrorCheck = checkErrors(paneID, agentType)
 
 	// Calculate overall health state
 	check.HealthState, check.Reason = calculateHealthState(check)
@@ -608,8 +613,11 @@ func checkStallWithActivity(paneID string, agentType string) *StallCheckResult {
 	return result
 }
 
-// checkErrors detects error patterns in pane output
-func checkErrors(paneID string) *ErrorCheckResult {
+// checkErrors detects error patterns in pane output. agentType gates the
+// interactive-gate scan: only real agent panes render gate screens, so
+// user/unknown/empty types skip it (a user shell tailing a log that prints
+// a gate phrase must not read as blocked).
+func checkErrors(paneID string, agentType string) *ErrorCheckResult {
 	result := &ErrorCheckResult{
 		HasErrors:   false,
 		RateLimited: false,
@@ -652,11 +660,18 @@ func checkErrors(paneID string) *ErrorCheckResult {
 	// login / onboarding screen is alive, produces no errors, and previously
 	// read "healthy" while it could never accept work. The shared detector
 	// scans only the live tail and vetoes matches while working chrome is
-	// visible; callers of checkErrors only target agent panes.
-	gate, gateFound := agent.DetectInteractiveGate(output)
-	if gateFound {
-		result.Patterns = append(result.Patterns, "interactive_gate")
-		result.HasErrors = true
+	// visible. Only real agent panes are scanned: user/unknown panes never
+	// render gate screens, and a shell tailing a log that happens to print
+	// a gate phrase must not read as blocked.
+	var gate string
+	var gateFound bool
+	canonicalType := agent.AgentType(agentType).Canonical()
+	if canonicalType.IsValid() && canonicalType != agent.AgentTypeUser && canonicalType != agent.AgentTypeUnknown {
+		gate, gateFound = agent.DetectInteractiveGate(output)
+		if gateFound {
+			result.Patterns = append(result.Patterns, "interactive_gate")
+			result.Blocked = true
+		}
 	}
 
 	if result.RateLimited {
@@ -731,6 +746,11 @@ func calculateHealthState(check *HealthCheck) (HealthState, string) {
 	// Check for error state (unhealthy)
 	if check.ErrorCheck != nil && check.ErrorCheck.HasErrors && !check.ErrorCheck.RateLimited {
 		return HealthUnhealthy, "error detected: " + check.ErrorCheck.Reason
+	}
+
+	// Interactive gate (blocked): needs a human keystroke, never a restart.
+	if check.ErrorCheck != nil && check.ErrorCheck.Blocked {
+		return HealthBlocked, check.ErrorCheck.Reason
 	}
 
 	// Check for rate limit
@@ -877,6 +897,9 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 				agentHealth.Health = "degraded"
 			case HealthUnhealthy:
 				agentHealth.Health = "unhealthy"
+				agentHealth.LastError = check.Reason
+			case HealthBlocked:
+				agentHealth.Health = "blocked"
 				agentHealth.LastError = check.Reason
 			case HealthRateLimited:
 				agentHealth.Health = "rate_limited"
@@ -2195,6 +2218,8 @@ func shouldAutoRestartHealthState(state HealthState) (bool, string) {
 		return true, ""
 	case HealthRateLimited:
 		return false, "agent is rate_limited, waiting for cooldown"
+	case HealthBlocked:
+		return false, "agent is blocked on an interactive gate screen; a restart cannot answer it — needs a human keystroke"
 	default:
 		return false, fmt.Sprintf("agent is %s, no restart needed", state)
 	}

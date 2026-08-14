@@ -41,20 +41,23 @@ var interactiveGateMarkers = []string{
 	"trust this folder",
 
 	// Auth / login gates (Claude /login, Codex device flow, OAuth races).
+	// Only phrases that appear on the GATE SCREEN itself belong here.
+	// Generic failure vocabulary ("authentication error", "session
+	// expired", "enter to confirm") is deliberately excluded: those strings
+	// occur constantly in ordinary agent output (error logs the agent is
+	// reading, codex's normal approval modal "Press enter to confirm or esc
+	// to go back"), and a gate verdict drives restart-urgency downstream —
+	// a false positive here kills a healthy pane and its context.
 	"browser didn't open? use the url below",
 	"press enter to open browser",
 	"select login method",
-	"authentication error",
-	"authentication failed",
-	"login required",
-	"session expired",
-	"please sign in",
-	"oauth error",
+	"please run /login",
+	"run claude login",
+	"paste the code from the browser",
 
 	// Onboarding / first-run choice gates (Claude theme picker etc.).
-	"choose the text style",
-	"select your theme",
-	"enter to confirm",
+	"choose the text style that looks best",
+	"select your theme to get started",
 }
 
 // gateQuoteNormalizer maps typographic apostrophes to ASCII so markers like

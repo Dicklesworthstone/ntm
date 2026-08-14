@@ -763,6 +763,12 @@ func decideRestart(status *PaneWorkStatus, force bool) (bool, string, string) {
 	case "ERROR_STATE":
 		return true, "Agent in error state", ""
 
+	case "MANUAL_INTERVENTION":
+		if force {
+			return true, "FORCED restart of gated pane", "The interactive gate will reappear after relaunch"
+		}
+		return false, "Blocked on an interactive gate screen - a restart cannot answer it; a human keystroke can", ""
+
 	default:
 		if force {
 			return true, "FORCED restart of unknown state", "Unknown state - results unpredictable"

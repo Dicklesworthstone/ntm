@@ -29,6 +29,11 @@ const (
 
 	// RecommendSwitchAccount indicates the provider account is near capacity.
 	RecommendSwitchAccount HealthRecommendation = "SWITCH_ACCOUNT"
+
+	// RecommendManualIntervention indicates a human must answer something
+	// in the pane (trust dialog, login gate) — a restart would NOT help:
+	// the gate reappears on relaunch and the session context is lost.
+	RecommendManualIntervention HealthRecommendation = "MANUAL_INTERVENTION"
 )
 
 // CalculateHealthScore computes a health score (0-100) from local state and provider usage.
@@ -202,7 +207,9 @@ func DeriveHealthRecommendation(localState *PaneWorkStatus, providerUsage *caut.
 		if reason == "" {
 			reason = "Blocked on interactive gate screen; needs a keystroke before the pane can accept work"
 		}
-		return RecommendRestartUrgent, reason
+		// A restart cannot answer a dialog — the gate reappears on relaunch
+		// and the pane's context is destroyed for nothing. Route a human.
+		return RecommendManualIntervention, reason
 	}
 
 	// Check for error state

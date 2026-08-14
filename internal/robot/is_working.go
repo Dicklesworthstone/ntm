@@ -673,9 +673,12 @@ func applyInteractiveGateOverride(workStatus *PaneWorkStatus, agentType agent.Ag
 		return false
 	}
 	// Not idle-ready either: anything sent to this pane lands on the modal
-	// screen, so orchestrators must not feed it work.
+	// screen, so orchestrators must not feed it work. MANUAL_INTERVENTION
+	// (not ERROR_STATE): a restart cannot answer a dialog — the gate
+	// reappears on relaunch with the session context destroyed — so this
+	// verdict must not feed restart machinery.
 	workStatus.IsIdle = false
-	workStatus.Recommendation = string(agent.RecommendErrorState)
+	workStatus.Recommendation = "MANUAL_INTERVENTION"
 	workStatus.RecommendationReason = fmt.Sprintf("Blocked on interactive gate screen (%q); needs a keystroke before the pane can accept work", gate)
 	workStatus.IndicatorBasis = "interactive_gate"
 	return true
