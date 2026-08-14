@@ -190,6 +190,13 @@ var (
 	codRateLimitPatterns = []string{
 		"you've reached your usage limit",
 		"you.ve reached your usage limit",
+		// Codex's current banner phrasing (bd-wtm0w): "You've hit your
+		// usage limit ... try again at <date>", plus plan-limit variants.
+		"you've hit your usage limit",
+		"you have hit your usage limit",
+		"hit your usage limit",
+		"usage limit reached",
+		"plan limit reached",
 		"rate limit exceeded",
 		"rate limit",
 		"quota exceeded",

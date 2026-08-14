@@ -835,6 +835,87 @@ func TestGetAgentCommands(t *testing.T) {
 		t.Logf("[E2E-SPAWN] Operation=GetAgentCommands_Partial | Claude=%q | Codex=%q",
 			cmds["claude"], cmds["codex"])
 	})
+
+	t.Run("ModelAndEffortOverrides", func(t *testing.T) {
+		cfg := config.Default()
+		cmds, err := getAgentCommandsWithOverrides(cfg, SpawnOptions{
+			CodCount:           8,
+			CodModel:           "gpt-5.6-terra",
+			CodReasoningEffort: "high",
+			CCCount:            1,
+			CCModel:            "opus",
+			CCReasoningEffort:  "low",
+		})
+		if err != nil {
+			t.Fatalf("[E2E-SPAWN] getAgentCommandsWithOverrides: %v", err)
+		}
+		if !strings.Contains(cmds["codex"], "gpt-5.6-terra") {
+			t.Errorf("[E2E-SPAWN] codex command %q missing model override", cmds["codex"])
+		}
+		if !strings.Contains(cmds["codex"], "model_reasoning_effort='high'") {
+			t.Errorf("[E2E-SPAWN] codex command %q missing effort override", cmds["codex"])
+		}
+		if !strings.Contains(cmds["claude"], "--effort 'low'") {
+			t.Errorf("[E2E-SPAWN] claude command %q missing effort override", cmds["claude"])
+		}
+		// "opus" is an alias: it must resolve through cfg.Models, not pass raw.
+		wantClaudeModel := cfg.Models.GetModelName("claude", "opus")
+		if !strings.Contains(cmds["claude"], wantClaudeModel) {
+			t.Errorf("[E2E-SPAWN] claude command %q missing resolved model %q", cmds["claude"], wantClaudeModel)
+		}
+		t.Logf("[E2E-SPAWN] Operation=GetAgentCommands_Overrides | Claude=%q | Codex=%q",
+			cmds["claude"], cmds["codex"])
+	})
+
+	t.Run("OverrideWithoutPlaceholderErrors", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Agents.Codex = "custom-codex --flag" // no template syntax at all
+		_, err := getAgentCommandsWithOverrides(cfg, SpawnOptions{CodCount: 1, CodModel: "gpt-5.6-terra"})
+		if err == nil {
+			t.Fatal("[E2E-SPAWN] expected error when model override cannot be honored by a non-template command")
+		}
+		if !strings.Contains(err.Error(), "codex") {
+			t.Errorf("[E2E-SPAWN] error %q does not name the agent type", err.Error())
+		}
+	})
+}
+
+// TestGetSpawnRejectsUnhonorableModelOverrideBeforeMutation proves a spawn
+// with a model override that the launch template cannot carry fails with
+// INVALID_FLAG before any tmux session or pane is touched (bd-rr8gn).
+func TestGetSpawnRejectsUnhonorableModelOverrideBeforeMutation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agents.Codex = "custom-codex --flag" // no {{.Model}} placeholder
+	mutated := false
+	deps := &SpawnLifecycleDependencies{
+		IsTMUXInstalled: func() bool { return true },
+		GetAllPanes: func(context.Context) (map[string][]tmux.Pane, error) {
+			return map[string][]tmux.Pane{}, nil
+		},
+		SessionExists: func(context.Context, string) (bool, error) { return false, nil },
+		CreateSession: func(context.Context, string, string, int) error {
+			mutated = true
+			return nil
+		},
+	}
+	output, err := GetSpawn(context.Background(), SpawnOptions{
+		Session:       "override-guard",
+		CodCount:      1,
+		CodModel:      "gpt-5.6-terra",
+		LifecycleDeps: deps,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("GetSpawn: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure output")
+	}
+	if output.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("ErrorCode=%q, want %q", output.ErrorCode, ErrCodeInvalidFlag)
+	}
+	if mutated {
+		t.Fatal("session was created despite unhonorable model override")
+	}
 }
 
 // TestSpawnOptions_DryRunMode validates dry-run returns correct structure without creating session

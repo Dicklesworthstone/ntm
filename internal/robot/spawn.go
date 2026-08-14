@@ -47,29 +47,42 @@ var promptPatterns = []*regexp.Regexp{
 
 // SpawnOptions configures the robot-spawn operation.
 type SpawnOptions struct {
-	Session            string
-	Label              string        // Session label — constructs "{Session}--{Label}" if set
-	ConfigPath         string        // Selected global config used for authoritative assignment policy
-	RequireConfig      bool          // ConfigPath was explicitly selected and must exist
-	CCCount            int           // Claude agents
-	CodCount           int           // Codex agents
-	GmiCount           int           // Gemini agents
-	AgyCount           int           // Antigravity agents
-	GrokCount          int           // Grok Build agents
-	Preset             string        // Recipe/preset name
-	NoUserPane         bool          // Don't create user pane
-	WorkingDir         string        // Override working directory
-	WaitReady          bool          // Wait for agents to be ready
-	ReadyTimeout       time.Duration // Timeout for ready detection
-	DryRun             bool          // Preview mode: show what would happen without executing
-	Safety             bool          // Fail if session already exists
-	AssignWork         bool          // Enable orchestrator work assignment mode
-	AssignStrategy     string        // Assignment strategy: top-n, diverse, dependency-aware, skill-matched
-	CustomNames        []string      // Custom agent names (used in order, then NATO alphabet)
-	RequireReservation bool
-	ReservationPaths   []string
-	AssignmentDeps     *SpawnAssignmentDependencies
-	LifecycleDeps      *SpawnLifecycleDependencies
+	Session       string
+	Label         string // Session label — constructs "{Session}--{Label}" if set
+	ConfigPath    string // Selected global config used for authoritative assignment policy
+	RequireConfig bool   // ConfigPath was explicitly selected and must exist
+	CCCount       int    // Claude agents
+	CodCount      int    // Codex agents
+	GmiCount      int    // Gemini agents
+	AgyCount      int    // Antigravity agents
+	GrokCount     int    // Grok Build agents
+	// Per-type model/effort overrides parsed from the CLI's
+	// `count[:model[:effort]]` spawn flag grammar (bd-rr8gn). Empty means the
+	// configured default. Efforts exist only for the agent types whose launch
+	// command has a reasoning-effort knob (cc/cod/grok — see
+	// config.agentTypeConsumesReasoningEffort); agy's model is hard-pinned by
+	// config, so it carries no override fields at all.
+	CCModel             string        // Claude model alias/name override
+	CCReasoningEffort   string        // Claude reasoning-effort override
+	CodModel            string        // Codex model alias/name override
+	CodReasoningEffort  string        // Codex reasoning-effort override
+	GmiModel            string        // Gemini model alias/name override
+	GrokModel           string        // Grok Build model alias/name override
+	GrokReasoningEffort string        // Grok Build reasoning-effort override
+	Preset              string        // Recipe/preset name
+	NoUserPane          bool          // Don't create user pane
+	WorkingDir          string        // Override working directory
+	WaitReady           bool          // Wait for agents to be ready
+	ReadyTimeout        time.Duration // Timeout for ready detection
+	DryRun              bool          // Preview mode: show what would happen without executing
+	Safety              bool          // Fail if session already exists
+	AssignWork          bool          // Enable orchestrator work assignment mode
+	AssignStrategy      string        // Assignment strategy: top-n, diverse, dependency-aware, skill-matched
+	CustomNames         []string      // Custom agent names (used in order, then NATO alphabet)
+	RequireReservation  bool
+	ReservationPaths    []string
+	AssignmentDeps      *SpawnAssignmentDependencies
+	LifecycleDeps       *SpawnLifecycleDependencies
 }
 
 // SpawnLifecycleDependencies exposes tmux lifecycle ports for deterministic
@@ -456,6 +469,19 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 			hint = agentpkg.GrokPhaseOneCapabilityHint
 		}
 		output.RobotResponse = NewErrorResponse(validationErr, errorCode, hint)
+		return output, nil
+	}
+	// Render launch commands up front so a model/effort override that the
+	// configured launch template cannot honor fails before any tmux session or
+	// pane is created (bd-rr8gn).
+	agentCommands, agentCommandsErr := getAgentCommandsWithOverrides(cfg, opts)
+	if agentCommandsErr != nil {
+		output.Error = agentCommandsErr.Error()
+		output.RobotResponse = NewErrorResponse(
+			agentCommandsErr,
+			ErrCodeInvalidFlag,
+			"Fix the [agents] launch command template or drop the model/effort override",
+		)
 		return output, nil
 	}
 	deps := spawnLifecycleDeps(opts.LifecycleDeps)
@@ -903,7 +929,6 @@ func GetSpawn(ctx context.Context, opts SpawnOptions, cfg *config.Config) (*Spaw
 		}
 	}
 
-	agentCommands := getAgentCommands(cfg)
 	type launchRequest struct {
 		agentType string
 		number    int
@@ -1288,8 +1313,21 @@ func agentTypeShort(agentType string) string {
 	}
 }
 
-// getAgentCommands returns the commands to launch each agent type.
+// getAgentCommands returns the commands to launch each agent type with the
+// configured default models and no per-spawn overrides.
 func getAgentCommands(cfg *config.Config) map[string]string {
+	commands, _ := getAgentCommandsWithOverrides(cfg, SpawnOptions{})
+	return commands
+}
+
+// getAgentCommandsWithOverrides returns the commands to launch each agent
+// type, applying the spawn request's per-type model/effort overrides
+// (`--spawn-cod=8:gpt-5.3-codex:high` style specs, bd-rr8gn). It returns an
+// error only when an explicitly requested override cannot be honored — e.g.
+// the configured launch command never references {{.Model}} or
+// {{.ReasoningEffort}}, so the override would be silently dropped. Rendering
+// problems without an override keep the raw configured command, as before.
+func getAgentCommandsWithOverrides(cfg *config.Config, opts SpawnOptions) (map[string]string, error) {
 	defaults := map[string]string{
 		"claude":      "claude",
 		"codex":       "codex",
@@ -1314,24 +1352,48 @@ func getAgentCommands(cfg *config.Config) map[string]string {
 		defaults["grok"] = cfg.Agents.Grok
 	}
 
-	for agentType, cmdTemplate := range defaults {
-		vars := config.AgentTemplateVars{AgentType: agentType}
-		if cfg != nil {
-			// Resolve the default model for every agent type, exactly as the
-			// interactive spawn path does via ResolveModel. Limiting this to grok
-			// left the others rendering with an empty Model: harmless for the
-			// templates that guard with {{if .Model}}, but agy's template injects
-			// --model unconditionally because its model is hard-pinned, so a
-			// robot-spawned agy pane launched as `--model ''` and never started.
-			vars.Model = cfg.Models.GetModelName(agentType, "")
-		}
-		if rendered, err := config.GenerateAgentCommand(cmdTemplate, vars); err == nil {
-			defaults[agentType] = rendered
-		}
-		// On error, keep original command (non-template or invalid template)
+	overrides := map[string]struct{ model, effort string }{
+		"claude": {opts.CCModel, opts.CCReasoningEffort},
+		"codex":  {opts.CodModel, opts.CodReasoningEffort},
+		"gemini": {opts.GmiModel, ""},
+		"grok":   {opts.GrokModel, opts.GrokReasoningEffort},
 	}
 
-	return defaults
+	for agentType, cmdTemplate := range defaults {
+		override := overrides[agentType]
+		vars := config.AgentTemplateVars{
+			AgentType:       agentType,
+			ModelAlias:      override.model,
+			ModelRequested:  override.model != "",
+			ReasoningEffort: override.effort,
+		}
+		if cfg != nil {
+			// Resolve the requested (or default) model for every agent type,
+			// exactly as the interactive spawn path does via ResolveModel.
+			// Limiting this to grok left the others rendering with an empty
+			// Model: harmless for the templates that guard with {{if .Model}},
+			// but agy's template injects --model unconditionally because its
+			// model is hard-pinned, so a robot-spawned agy pane launched as
+			// `--model ''` and never started.
+			vars.Model = cfg.Models.GetModelName(agentType, override.model)
+		} else if override.model != "" {
+			vars.Model = override.model
+		}
+		rendered, err := config.GenerateAgentCommand(cmdTemplate, vars)
+		if err != nil {
+			if override.model != "" || override.effort != "" {
+				// An explicit override must not be silently dropped
+				// (GenerateAgentCommand's guard errors describe exactly that).
+				return nil, fmt.Errorf("rendering %s launch command: %w", agentType, err)
+			}
+			// On error without an override, keep the original command
+			// (non-template or invalid template).
+			continue
+		}
+		defaults[agentType] = rendered
+	}
+
+	return defaults, nil
 }
 
 // loadLatestHandoff loads the most recent handoff for a session and returns recovery context.

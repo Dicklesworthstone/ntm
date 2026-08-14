@@ -148,6 +148,8 @@ func defaultPatterns() []Pattern {
 		{Name: "http_429", RegexStr: `\b429\b`, Agent: "*", State: StateError, Category: CategoryError, Priority: 200, Description: "HTTP 429 status"},
 		{Name: "too_many_requests", RegexStr: `(?i)too\s+many\s+requests`, Agent: "*", State: StateError, Category: CategoryError, Priority: 200, Description: "Too many requests"},
 		{Name: "quota_exceeded", RegexStr: `(?i)quota\s+exceeded`, Agent: "*", State: StateError, Category: CategoryError, Priority: 200, Description: "Quota exceeded"},
+		{Name: "usage_limit_hit", RegexStr: `(?i)(?:hit|reached)\s+your\s+usage\s+limit`, Agent: "*", State: StateError, Category: CategoryError, Priority: 200, Description: "Provider usage-limit banner (hit/reached your usage limit)"},
+		{Name: "usage_limit_reached", RegexStr: `(?i)(?:usage|plan)\s+limits?\s+(?:reached|exceeded)`, Agent: "*", State: StateError, Category: CategoryError, Priority: 200, Description: "Usage/plan limit reached banner"},
 
 		// API errors
 		{Name: "api_error", RegexStr: `(?i)(?:api\s+)?error:\s*\S`, Agent: "*", State: StateError, Category: CategoryError, Priority: 180, Description: "API error"},

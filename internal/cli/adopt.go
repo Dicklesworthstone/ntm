@@ -500,6 +500,12 @@ func runAdopt(opts AdoptOptions) error {
 				output.PrintWarningf("Agent Mail registration skipped for adopted panes: %v", dirErr)
 			}
 		} else {
+			// Adopted sessions were created outside ntm, so unlike add they have
+			// never had a session-level coordinator identity: register it first,
+			// mirroring spawn, so LoadBestSessionAgent-based flows (mail, git,
+			// handoff) resolve for adopted sessions too (bd-vb7s3). Both helpers
+			// are gated and best-effort.
+			registerSessionAgent(context.Background(), opts.Session, projectDir)
 			registerSpawnedAgents(context.Background(), projectDir, opts.Session, adoptedAgentMailRegistrations(adoptedPanes, opts.AutoName))
 		}
 	}

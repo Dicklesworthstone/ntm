@@ -264,6 +264,63 @@ type restartPromptTarget struct {
 	Variant      string // Model alias (or persona name) parsed from the pane title
 }
 
+// RestartedAgentPane describes an agent pane that was successfully respawned
+// and relaunched, in the shape the Agent Mail registration flow needs to
+// recreate (or reuse) the pane's identity.
+type RestartedAgentPane struct {
+	PaneIndex int
+	PaneID    string
+	PaneTitle string
+	AgentType string // short type ("cc", "cod", ...) when known
+	Variant   string // model alias parsed from the pane title, may be empty
+}
+
+// restartPaneIdentityHook is invoked after panes are respawned so restarted
+// panes regain resolvable Agent Mail identities. The cli package installs the
+// gated registration flow here (robot cannot import cli without a cycle); the
+// hook must be best-effort and must never fail the restart.
+var restartPaneIdentityHook func(ctx context.Context, session string, panes []RestartedAgentPane)
+
+// SetRestartPaneIdentityHook registers the post-restart identity callback.
+// Passing nil disables it. The hook is shared by every restart caller
+// (ntm respawn, ntm robot restart-pane, health auto-restart, diagnose).
+func SetRestartPaneIdentityHook(hook func(ctx context.Context, session string, panes []RestartedAgentPane)) {
+	restartPaneIdentityHook = hook
+}
+
+// notifyRestartPaneIdentityHook translates successfully restarted agent panes
+// into RestartedAgentPane records and invokes the identity hook. User/unknown
+// panes are skipped: they never carry an Agent Mail identity.
+func notifyRestartPaneIdentityHook(ctx context.Context, session string, targets []tmux.Pane, restarted []string, multiWindow bool) {
+	if restartPaneIdentityHook == nil || len(restarted) == 0 {
+		return
+	}
+	restartedKeys := make(map[string]bool, len(restarted))
+	for _, key := range restarted {
+		restartedKeys[key] = true
+	}
+	panes := make([]RestartedAgentPane, 0, len(restarted))
+	for _, pane := range targets {
+		if !restartedKeys[paneTargetKey(pane, multiWindow)] {
+			continue
+		}
+		if !restartTargetIsAgent(restartPaneAgentType(pane)) {
+			continue
+		}
+		panes = append(panes, RestartedAgentPane{
+			PaneIndex: pane.Index,
+			PaneID:    pane.ID,
+			PaneTitle: pane.Title,
+			AgentType: string(pane.Type),
+			Variant:   pane.Variant,
+		})
+	}
+	if len(panes) == 0 {
+		return
+	}
+	restartPaneIdentityHook(ctx, session, panes)
+}
+
 func restartPaneCancellationError(ctx context.Context, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
@@ -548,6 +605,13 @@ func GetRestartPaneContext(ctx context.Context, opts RestartPaneOptions) (*Resta
 			}
 		}
 	}
+
+	// Restore Agent Mail identities for the relaunched panes (bd-vb7s3): the
+	// respawn replaced the pane's process, so re-run the same gated
+	// registration flow spawn uses (it reuses existing identities from the
+	// session registry, #69, and re-persists the registry). Best-effort: the
+	// hook must never fail the restart.
+	notifyRestartPaneIdentityHook(ctx, opts.Session, targetPanes, output.Restarted, multiWindow)
 
 	// Bead prompts cross the shared atomic claim-ledger-dispatch boundary.
 	// Ordinary restart prompts retain the direct best-effort behavior.

@@ -2279,7 +2279,11 @@ Shell Integration:
 				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use comma-separated non-empty project-relative path globs", "robot-spawn")
 				return
 			}
-			opts := robotSpawnOptionsFromFlags(cmd, spawnTimeout, reservationPaths, robotDryRunEffective)
+			opts, err := robotSpawnOptionsFromFlags(cmd, spawnTimeout, reservationPaths, robotDryRunEffective)
+			if err != nil {
+				failRobotCommand(err, robot.ErrCodeInvalidFlag, "Use count[:model[:effort]] (effort also as model@effort), e.g. --spawn-cod=2 or --spawn-cod=8:gpt-5.3-codex:high", "robot-spawn")
+				return
+			}
 			if err := robot.PrintSpawn(cmd.Context(), opts, cfg); err != nil {
 				recordRobotProcessExit(err)
 			}
@@ -3658,11 +3662,11 @@ var (
 
 	// Robot-spawn flags for structured session creation
 	robotSpawn           string // session name for spawn
-	robotSpawnCC         int    // number of Claude agents
-	robotSpawnCod        int    // number of Codex agents
-	robotSpawnGmi        int    // number of Gemini agents
-	robotSpawnAgy        int    // number of Antigravity agents
-	robotSpawnGrok       int    // number of Grok Build agents
+	robotSpawnCC         string // Claude agents: count[:model[:effort]]
+	robotSpawnCod        string // Codex agents: count[:model[:effort]]
+	robotSpawnGmi        string // Gemini agents: count[:model]
+	robotSpawnAgy        string // Antigravity agents: count (model pinned)
+	robotSpawnGrok       string // Grok Build agents: count[:model[:effort]]
 	robotSpawnPreset     string // recipe/preset name
 	robotSpawnNoUser     bool   // don't create user pane
 	robotSpawnWait       bool   // wait for agents to be ready
@@ -4297,11 +4301,11 @@ func init() {
 
 	// Robot-spawn flags for structured session creation
 	rootCmd.Flags().StringVar(&robotSpawn, "robot-spawn", "", "Create session with agents. Required: SESSION name. Example: ntm --robot-spawn=myproject --spawn-cc=2")
-	rootCmd.Flags().IntVar(&robotSpawnCC, "spawn-cc", 0, "Claude Code agents to spawn. Use with --robot-spawn. Example: --spawn-cc=2")
-	rootCmd.Flags().IntVar(&robotSpawnCod, "spawn-cod", 0, "Codex CLI agents to spawn. Use with --robot-spawn. Example: --spawn-cod=1")
-	rootCmd.Flags().IntVar(&robotSpawnGmi, "spawn-gmi", 0, "Gemini CLI agents to spawn. Use with --robot-spawn. Example: --spawn-gmi=1")
-	rootCmd.Flags().IntVar(&robotSpawnAgy, "spawn-agy", 0, "Antigravity CLI agents to spawn. Use with --robot-spawn. Example: --spawn-agy=1")
-	rootCmd.Flags().IntVar(&robotSpawnGrok, "spawn-grok", 0, "Grok Build agents to spawn. Use with --robot-spawn. Example: --spawn-grok=1")
+	rootCmd.Flags().StringVar(&robotSpawnCC, "spawn-cc", "", "Claude Code agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cc=2 or --spawn-cc=2:opus:high")
+	rootCmd.Flags().StringVar(&robotSpawnCod, "spawn-cod", "", "Codex CLI agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-cod=1 or --spawn-cod=8:gpt-5.3-codex:high")
+	rootCmd.Flags().StringVar(&robotSpawnGmi, "spawn-gmi", "", "Gemini CLI agents to spawn: count[:model]. Use with --robot-spawn. Example: --spawn-gmi=1")
+	rootCmd.Flags().StringVar(&robotSpawnAgy, "spawn-agy", "", "Antigravity CLI agents to spawn: count (model is pinned to Gemini 3.1 Pro (High)). Use with --robot-spawn. Example: --spawn-agy=1")
+	rootCmd.Flags().StringVar(&robotSpawnGrok, "spawn-grok", "", "Grok Build agents to spawn: count[:model[:effort]] (effort also as model@effort). Use with --robot-spawn. Example: --spawn-grok=1")
 	rootCmd.Flags().StringVar(&robotSpawnPreset, "spawn-preset", "", "Use recipe preset instead of counts. See --robot-recipes. Example: --spawn-preset=standard")
 	rootCmd.Flags().BoolVar(&robotSpawnNoUser, "spawn-no-user", false, "Skip user pane creation. Optional with --robot-spawn. For headless/automation")
 	rootCmd.Flags().BoolVar(&robotSpawnWait, "spawn-wait", false, "Wait for agents to show ready state before returning. Recommended for automation")
@@ -5198,30 +5202,95 @@ func resolveRobotSpawnStrategy(cmd *cobra.Command) string {
 	return resolveRobotSharedFlag(cmd, "spawn-assign-strategy", robotSpawnStrategy, "strategy", robotAssignStrategy)
 }
 
-func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, reservationPaths []string, dryRun bool) robot.SpawnOptions {
-	return robot.SpawnOptions{
-		Session:            robotSpawn,
-		Label:              robotSpawnLabel,
-		ConfigPath:         selectedConfigPath(),
-		RequireConfig:      selectedConfigIsExplicit(),
-		CCCount:            robotSpawnCC,
-		CodCount:           robotSpawnCod,
-		GmiCount:           robotSpawnGmi,
-		AgyCount:           robotSpawnAgy,
-		GrokCount:          robotSpawnGrok,
-		Preset:             robotSpawnPreset,
-		NoUserPane:         robotSpawnNoUser,
-		WorkingDir:         robotSpawnDir,
-		WaitReady:          robotSpawnWait,
-		ReadyTimeout:       readyTimeout,
-		DryRun:             dryRun,
-		Safety:             robotSpawnSafety,
-		AssignWork:         robotSpawnAssignWork,
-		AssignStrategy:     resolveRobotSpawnStrategy(cmd),
-		CustomNames:        robot.ParseCustomNames(robotSpawnNames),
-		RequireReservation: robotRequireReservation,
-		ReservationPaths:   append([]string(nil), reservationPaths...),
+// parseRobotSpawnAgentFlag parses one robot spawn agent flag value using the
+// same `count[:model[:effort]]` grammar as `ntm spawn --cc/--cod/...`
+// (bd-rr8gn), including the `count:model@effort` shorthand for the agent types
+// with a reasoning-effort knob. An empty value means "flag not set" (count 0).
+// Plain integers keep their historical IntVar semantics: "0" (and negative
+// values, rejected downstream by robot validation with the exact pre-existing
+// message) remain bare counts.
+func parseRobotSpawnAgentFlag(flagName, raw string, agentType AgentType) (AgentSpec, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return AgentSpec{Type: agentType}, nil
 	}
+	if count, err := strconv.Atoi(value); err == nil {
+		return AgentSpec{Type: agentType, Count: count}, nil
+	}
+	spec, err := parseAgentSpec(value, agentType == AgentTypeAntigravity, agentTypeSupportsEffortSuffix(agentType))
+	if err != nil {
+		return AgentSpec{}, fmt.Errorf("invalid %s value %q: %w", flagName, raw, err)
+	}
+	spec.Type = agentType
+	return spec, nil
+}
+
+// parseRobotSpawnAgentSpecs parses every per-type robot spawn flag, returning
+// the first grammar error it hits.
+func parseRobotSpawnAgentSpecs() (map[AgentType]AgentSpec, error) {
+	flags := []struct {
+		name      string
+		value     string
+		agentType AgentType
+	}{
+		{name: "--spawn-cc", value: robotSpawnCC, agentType: AgentTypeClaude},
+		{name: "--spawn-cod", value: robotSpawnCod, agentType: AgentTypeCodex},
+		{name: "--spawn-gmi", value: robotSpawnGmi, agentType: AgentTypeGemini},
+		{name: "--spawn-agy", value: robotSpawnAgy, agentType: AgentTypeAntigravity},
+		{name: "--spawn-grok", value: robotSpawnGrok, agentType: AgentTypeGrok},
+	}
+	specs := make(map[AgentType]AgentSpec, len(flags))
+	for _, flag := range flags {
+		spec, err := parseRobotSpawnAgentFlag(flag.name, flag.value, flag.agentType)
+		if err != nil {
+			return nil, err
+		}
+		specs[flag.agentType] = spec
+	}
+	return specs, nil
+}
+
+func robotSpawnOptionsFromFlags(cmd *cobra.Command, readyTimeout time.Duration, reservationPaths []string, dryRun bool) (robot.SpawnOptions, error) {
+	specs, err := parseRobotSpawnAgentSpecs()
+	if err != nil {
+		return robot.SpawnOptions{}, err
+	}
+	return robot.SpawnOptions{
+		Session:       robotSpawn,
+		Label:         robotSpawnLabel,
+		ConfigPath:    selectedConfigPath(),
+		RequireConfig: selectedConfigIsExplicit(),
+		CCCount:       specs[AgentTypeClaude].Count,
+		CodCount:      specs[AgentTypeCodex].Count,
+		GmiCount:      specs[AgentTypeGemini].Count,
+		AgyCount:      specs[AgentTypeAntigravity].Count,
+		GrokCount:     specs[AgentTypeGrok].Count,
+		// Model/effort overrides from the count[:model[:effort]] specs. agy is
+		// intentionally absent: its model is hard-pinned by config, so any
+		// model in a --spawn-agy spec is accepted and ignored, exactly like
+		// `ntm spawn --agy=N:model`. Efforts flow only for the types whose
+		// launch command consumes them (cc/cod/grok), mirroring the CLI spawn
+		// path where other types drop the hint at template-render time.
+		CCModel:             specs[AgentTypeClaude].Model,
+		CCReasoningEffort:   specs[AgentTypeClaude].ReasoningEffort,
+		CodModel:            specs[AgentTypeCodex].Model,
+		CodReasoningEffort:  specs[AgentTypeCodex].ReasoningEffort,
+		GmiModel:            specs[AgentTypeGemini].Model,
+		GrokModel:           specs[AgentTypeGrok].Model,
+		GrokReasoningEffort: specs[AgentTypeGrok].ReasoningEffort,
+		Preset:              robotSpawnPreset,
+		NoUserPane:          robotSpawnNoUser,
+		WorkingDir:          robotSpawnDir,
+		WaitReady:           robotSpawnWait,
+		ReadyTimeout:        readyTimeout,
+		DryRun:              dryRun,
+		Safety:              robotSpawnSafety,
+		AssignWork:          robotSpawnAssignWork,
+		AssignStrategy:      resolveRobotSpawnStrategy(cmd),
+		CustomNames:         robot.ParseCustomNames(robotSpawnNames),
+		RequireReservation:  robotRequireReservation,
+		ReservationPaths:    append([]string(nil), reservationPaths...),
+	}, nil
 }
 
 func parseRobotReservationPathsArg(raw string) ([]string, error) {

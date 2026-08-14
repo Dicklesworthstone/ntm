@@ -488,6 +488,7 @@ type RateLimitDetection struct {
 	ExitCode    int
 	Source      string // "output" or "exit_code"
 	AgentType   string // Agent type hint (e.g., "cod") when available
+	ResetHint   string // Human-readable reset phrase (e.g., "try again at 7:00 PM"), best-effort
 }
 
 const (
@@ -553,9 +554,79 @@ func ParseExitCode(output string) (int, bool) {
 	return 0, false
 }
 
+// usageLimitBannerPatterns match provider usage-limit banners that lack the
+// literal words "rate limit" and so slip past the generic detectors. They are
+// deliberately anchored on limit-ish context ("usage limit", "plan limit") so
+// a stray mention of "limit" in normal output (e.g. "increase the limit of
+// retries") never matches. Agent-agnostic: the Codex CLI banner ("You've hit
+// your usage limit. ... try again at <date>") has appeared on panes whose
+// agent type was mis-hinted, so these run for every agent in DetectRateLimit.
+var usageLimitBannerPatterns = []*regexp.Regexp{
+	// "You've hit your usage limit" / "You have hit your usage limit" /
+	// curly or straight apostrophe / OCR-ish "you.ve" variants.
+	regexp.MustCompile(`(?i)\bhit\s+your\s+usage\s+limit`),
+	regexp.MustCompile(`(?i)\breached\s+your\s+usage\s+limit`),
+	regexp.MustCompile(`(?i)\busage\s+limits?\s+(?:reached|exceeded|hit)\b`),
+	regexp.MustCompile(`(?i)\bplan\s+limits?\s+(?:reached|exceeded|hit)\b`),
+	// Gemini / Google quota phrasings.
+	regexp.MustCompile(`(?i)\bquota\s+(?:exceeded|exhausted|reached)\b`),
+	regexp.MustCompile(`RESOURCE_EXHAUSTED`),
+	// "upgrade to continue" only counts with limit/quota context nearby.
+	regexp.MustCompile(`(?i)(?:usage|plan|rate)\s+limit[^\n]{0,120}upgrade\s+to\s+continue`),
+}
+
+// matchUsageLimitBanner returns true when the (ANSI-stripped) output contains
+// a provider usage-limit banner.
+func matchUsageLimitBanner(cleaned string) bool {
+	for _, pat := range usageLimitBannerPatterns {
+		if pat.MatchString(cleaned) {
+			return true
+		}
+	}
+	return false
+}
+
+// resetHintPatterns capture the human-readable reset phrase providers print
+// alongside usage-limit banners, e.g. Codex's "try again at 7:00 PM" or
+// Claude's "resets at 3am (America/New_York)".
+var resetHintPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\btry\s+again\s+(?:at|after|on)\s+[^\n]+`),
+	regexp.MustCompile(`(?i)\b(?:limit\s+)?resets?\s+(?:at|on|in)\s+[^\n]+`),
+	regexp.MustCompile(`(?i)\bresets\s+\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?`),
+	regexp.MustCompile(`(?i)\bavailable\s+again\s+at\s+[^\n]+`),
+}
+
+// maxResetHintLen caps ExtractResetHint output so a matched line with trailing
+// UI chrome cannot balloon downstream JSON payloads.
+const maxResetHintLen = 120
+
+// ExtractResetHint returns the human-readable reset phrase found in output
+// (e.g. "try again at 7:00 PM"), or "" when none is present. Best-effort: the
+// value is meant for display/logging, not for machine parsing.
+func ExtractResetHint(content string) string {
+	if content == "" {
+		return ""
+	}
+	cleaned := status.StripANSI(content)
+	for _, pat := range resetHintPatterns {
+		if m := pat.FindString(cleaned); m != "" {
+			m = strings.TrimSpace(m)
+			m = strings.TrimRight(m, " .,;:!")
+			if len(m) > maxResetHintLen {
+				m = strings.TrimSpace(m[:maxResetHintLen])
+			}
+			return m
+		}
+	}
+	return ""
+}
+
 // DetectRateLimit inspects output for rate limit signals, including exit code 429.
 func DetectRateLimit(output string) RateLimitDetection {
-	detection := RateLimitDetection{WaitSeconds: ParseWaitSeconds(output)}
+	detection := RateLimitDetection{
+		WaitSeconds: ParseWaitSeconds(output),
+		ResetHint:   ExtractResetHint(output),
+	}
 
 	if code, ok := ParseExitCode(output); ok {
 		detection.ExitCode = code
@@ -574,6 +645,16 @@ func DetectRateLimit(output string) RateLimitDetection {
 			detection.Source = detectionSourceOutput
 			return detection
 		}
+	}
+
+	// Provider usage-limit banners (Codex "You've hit your usage limit",
+	// "Plan limit reached", Gemini quota exhaustion). Checked for every
+	// agent type: bd-wtm0w saw these slip through when only Claude's
+	// "hit your limit" phrasing was recognized.
+	if matchUsageLimitBanner(status.StripANSI(output)) {
+		detection.RateLimited = true
+		detection.Source = detectionSourceOutput
+		return detection
 	}
 
 	return detection
@@ -614,6 +695,12 @@ var codexRateLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)please\s+try\s+again`),
 	regexp.MustCompile(`(?i)usage.*(?:cap|limit).*reached`),
 	regexp.MustCompile(`(?i)RateLimitError`),
+	// Codex CLI usage-limit banner variants (bd-wtm0w): "You've hit your
+	// usage limit. ... try again at <date>", "You have hit your usage
+	// limit", "usage limit reached", "Plan limit reached".
+	regexp.MustCompile(`(?i)hit\s+your\s+usage\s+limit`),
+	regexp.MustCompile(`(?i)usage\s+limits?\s+reached`),
+	regexp.MustCompile(`(?i)plan\s+limits?\s+reached`),
 }
 
 // DetectCodexRateLimit checks output for Codex-specific rate limit patterns.

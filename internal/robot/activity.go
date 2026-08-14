@@ -984,10 +984,12 @@ func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActiv
 // indicate API rate-limiting. Keeping this as a set allows O(1) lookup when
 // scanning pattern matches from the classifier.
 var rateLimitPatternNames = map[string]bool{
-	"rate_limit_text":   true,
-	"http_429":          true,
-	"too_many_requests": true,
-	"quota_exceeded":    true,
+	"rate_limit_text":     true,
+	"http_429":            true,
+	"too_many_requests":   true,
+	"quota_exceeded":      true,
+	"usage_limit_hit":     true,
+	"usage_limit_reached": true,
 }
 
 // isRateLimitPatternMatch returns true if any PatternMatch corresponds to a

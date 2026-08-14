@@ -354,11 +354,11 @@ func resetFlags() {
 	robotSpawnTimeout = "30s"
 	robotSpawnStrategy = "top-n"
 	robotSpawn = ""
-	robotSpawnCC = 0
-	robotSpawnCod = 0
-	robotSpawnGmi = 0
-	robotSpawnAgy = 0
-	robotSpawnGrok = 0
+	robotSpawnCC = ""
+	robotSpawnCod = ""
+	robotSpawnGmi = ""
+	robotSpawnAgy = ""
+	robotSpawnGrok = ""
 	robotSpawnPreset = ""
 	robotSpawnNoUser = false
 	robotSpawnWait = false
@@ -398,11 +398,11 @@ func TestRobotSpawnOptionsFromFlagsPreservesDurationAndCopiesInputs(t *testing.T
 
 	robotSpawn = "duration-spawn"
 	robotSpawnLabel = "goal"
-	robotSpawnCC = 1
-	robotSpawnCod = 2
-	robotSpawnGmi = 3
-	robotSpawnAgy = 4
-	robotSpawnGrok = 5
+	robotSpawnCC = "1"
+	robotSpawnCod = "2:gpt-5.3-codex:high"
+	robotSpawnGmi = "3"
+	robotSpawnAgy = "4"
+	robotSpawnGrok = "5"
 	robotSpawnPreset = "custom"
 	robotSpawnNoUser = true
 	robotSpawnDir = t.TempDir()
@@ -414,9 +414,15 @@ func TestRobotSpawnOptionsFromFlagsPreservesDurationAndCopiesInputs(t *testing.T
 	robotRequireReservation = true
 	paths := []string{"internal/robot/**", "internal/cli/**"}
 
-	opts := robotSpawnOptionsFromFlags(nil, 500*time.Millisecond, paths, true)
+	opts, err := robotSpawnOptionsFromFlags(nil, 500*time.Millisecond, paths, true)
+	if err != nil {
+		t.Fatalf("robotSpawnOptionsFromFlags: %v", err)
+	}
 	if opts.ReadyTimeout != 500*time.Millisecond {
 		t.Fatalf("ReadyTimeout=%s, want 500ms", opts.ReadyTimeout)
+	}
+	if opts.CodModel != "gpt-5.3-codex" || opts.CodReasoningEffort != "high" {
+		t.Fatalf("Cod model/effort=%q/%q, want gpt-5.3-codex/high", opts.CodModel, opts.CodReasoningEffort)
 	}
 	if opts.Session != robotSpawn || opts.Label != robotSpawnLabel || opts.CCCount != 1 || opts.CodCount != 2 || opts.GmiCount != 3 || opts.AgyCount != 4 || opts.GrokCount != 5 {
 		t.Fatalf("spawn identity/count options=%+v", opts)

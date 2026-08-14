@@ -986,6 +986,10 @@ func executeAdd(ctx context.Context, opts AddOptions, emitResult bool) error {
 	// identities created by the original spawn are preserved.
 	var agentMailStatus *output.AgentMailSpawnStatus
 	if len(addedAgents) > 0 {
+		// Session-level identity first, mirroring spawn (bd-vb7s3): idempotent
+		// (reuses a previously registered coordinator identity) and best-effort,
+		// so it repairs sessions whose spawn ran before Agent Mail was enabled.
+		registerSessionAgent(ctx, session, dir)
 		agentMailStatus = registerSpawnedAgents(ctx, dir, session, addedAgents)
 	}
 

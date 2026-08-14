@@ -1877,3 +1877,48 @@ func TestRestartLaunchCommandToleratesEffortTemplateCannotRender(t *testing.T) {
 		t.Fatal("empty relaunch command")
 	}
 }
+
+// notifyRestartPaneIdentityHook is the seam through which restarted panes
+// regain Agent Mail identities (bd-vb7s3): it must forward only successfully
+// restarted AGENT panes to the installed hook, and it must be a no-op when no
+// hook is installed (robot used outside the ntm CLI binary).
+func TestNotifyRestartPaneIdentityHookForwardsRestartedAgentPanes(t *testing.T) {
+	targets := []tmux.Pane{
+		{ID: "%1", Index: 1, WindowIndex: 0, Type: tmux.AgentClaude, Title: "demo__cc_1", Variant: "sonnet"},
+		{ID: "%2", Index: 2, WindowIndex: 0, Type: tmux.AgentCodex, Title: "demo__cod_1"},
+		{ID: "%0", Index: 0, WindowIndex: 0, Type: tmux.AgentUser, Title: "demo__user_0"},
+	}
+	// Pane %2 failed to restart; pane %0 restarted but is a user pane.
+	restarted := []string{"1", "0"}
+
+	// No hook installed: must not panic.
+	SetRestartPaneIdentityHook(nil)
+	notifyRestartPaneIdentityHook(t.Context(), "demo", targets, restarted, false)
+
+	var gotSession string
+	var got []RestartedAgentPane
+	SetRestartPaneIdentityHook(func(_ context.Context, session string, panes []RestartedAgentPane) {
+		gotSession = session
+		got = panes
+	})
+	defer SetRestartPaneIdentityHook(nil)
+
+	notifyRestartPaneIdentityHook(t.Context(), "demo", targets, restarted, false)
+	if gotSession != "demo" {
+		t.Fatalf("hook session = %q, want %q", gotSession, "demo")
+	}
+	if len(got) != 1 {
+		t.Fatalf("hook received %d panes (%+v), want exactly the restarted Claude pane", len(got), got)
+	}
+	if got[0].PaneID != "%1" || got[0].PaneIndex != 1 || got[0].PaneTitle != "demo__cc_1" ||
+		got[0].AgentType != "cc" || got[0].Variant != "sonnet" {
+		t.Fatalf("hook pane = %+v, want the %%1 Claude pane with title/type/variant preserved", got[0])
+	}
+
+	// Nothing restarted: the hook must not fire at all.
+	got = nil
+	notifyRestartPaneIdentityHook(t.Context(), "demo", targets, nil, false)
+	if got != nil {
+		t.Fatalf("hook fired with no restarted panes: %+v", got)
+	}
+}
