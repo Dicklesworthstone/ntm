@@ -2208,12 +2208,22 @@ type ComposerState struct {
 	QueuedMessages bool `json:"queued_messages"`
 }
 
-// queuedMessagesMarkers are TUI phrases (lowercase) indicating the agent is
-// holding queued, not-yet-processed messages.
+// queuedMessagesMarkers are TUI phrases (lowercase) that appear on the
+// LIVE footer when the agent is holding queued, not-yet-processed messages.
+// Only screen-verbatim phrases belong here: matching a generic substring
+// like "queued messages" would latch the flag whenever the agent's recent
+// output merely mentions the phrase (editing this file, discussing the
+// feature), and orchestrators withhold work from panes that appear to hold
+// queued input.
 var queuedMessagesMarkers = []string{
 	"press up to edit queued messages",
-	"queued messages",
 }
+
+// queuedMarkerTailLines bounds the queued-footer scan to the rows where the
+// live footer actually renders. Callers pass scrollback-inclusive captures
+// (50-500 lines), so an unanchored scan would resurrect a footer that
+// scrolled away hours ago.
+const queuedMarkerTailLines = 10
 
 // InspectComposer derives the message-independent composer state from a
 // pane capture. The composer is bottom-pinned in both Claude Code and
@@ -2221,7 +2231,11 @@ var queuedMessagesMarkers = []string{
 // capture that includes scrollback.
 func InspectComposer(capture string, agentType AgentType) ComposerState {
 	var state ComposerState
-	lower := strings.ToLower(capture)
+	tailLines := strings.Split(capture, "\n")
+	if len(tailLines) > queuedMarkerTailLines {
+		tailLines = tailLines[len(tailLines)-queuedMarkerTailLines:]
+	}
+	lower := strings.ToLower(strings.Join(tailLines, "\n"))
 	for _, marker := range queuedMessagesMarkers {
 		if strings.Contains(lower, marker) {
 			state.QueuedMessages = true
