@@ -1104,8 +1104,13 @@ func (s *Server) handleMemoryContext(w http.ResponseWriter, r *http.Request) {
 				snippets := make([]map[string]interface{}, 0, len(result.HistorySnippets))
 				for _, sn := range result.HistorySnippets {
 					snippets = append(snippets, map[string]interface{}{
-						"id":      sn.ID,
-						"content": sn.Content,
+						"source_path": sn.SourcePath,
+						"line_number": sn.LineNumber,
+						"agent":       sn.Agent,
+						"workspace":   sn.Workspace,
+						"title":       sn.Title,
+						"snippet":     sn.Snippet,
+						"score":       sn.Score,
 					})
 				}
 

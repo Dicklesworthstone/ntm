@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -142,23 +141,11 @@ func (a *CMAdapter) isDaemonRunning(ctx context.Context) bool {
 		}
 	}
 
+	// The daemon speaks MCP JSON-RPC at its root; there is no /health route.
 	directCtx, directCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer directCancel()
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/health", a.serverPort)
-	req, err := http.NewRequestWithContext(directCtx, "GET", url, nil)
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == http.StatusOK
+	return cm.NewPortClient(a.serverPort, "").Health(directCtx) == nil
 }
 
 // HasCapability checks if cm has a specific capability

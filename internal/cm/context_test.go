@@ -21,14 +21,14 @@ func TestContextAssembly_MultipleSourceCombination(t *testing.T) {
 	result := &CLIContextResponse{
 		Success: true,
 		Task:    "test-task",
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "rule-1", Content: "Always test before commit", Category: "testing"},
 			{ID: "rule-2", Content: "Follow code review guidelines", Category: "review"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "anti-1", Content: "Never commit secrets", Category: "security"},
 		},
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{
 				Title:   "Previous auth work",
 				Agent:   "claude_code",
@@ -83,9 +83,9 @@ func TestContextAssembly_EmptySources(t *testing.T) {
 			name: "empty arrays",
 			result: &CLIContextResponse{
 				Success:         true,
-				RelevantBullets: []CLIRule{},
-				AntiPatterns:    []CLIRule{},
-				HistorySnippets: []CLIHistorySnip{},
+				RelevantBullets: []Rule{},
+				AntiPatterns:    []Rule{},
+				HistorySnippets: []HistorySnippet{},
 			},
 			want: "",
 		},
@@ -93,7 +93,7 @@ func TestContextAssembly_EmptySources(t *testing.T) {
 			name: "only rules",
 			result: &CLIContextResponse{
 				Success: true,
-				RelevantBullets: []CLIRule{
+				RelevantBullets: []Rule{
 					{ID: "r1", Content: "Test rule"},
 				},
 			},
@@ -103,7 +103,7 @@ func TestContextAssembly_EmptySources(t *testing.T) {
 			name: "only anti-patterns",
 			result: &CLIContextResponse{
 				Success: true,
-				AntiPatterns: []CLIRule{
+				AntiPatterns: []Rule{
 					{ID: "a1", Content: "Avoid this"},
 				},
 			},
@@ -113,7 +113,7 @@ func TestContextAssembly_EmptySources(t *testing.T) {
 			name: "only snippets",
 			result: &CLIContextResponse{
 				Success: true,
-				HistorySnippets: []CLIHistorySnip{
+				HistorySnippets: []HistorySnippet{
 					{Title: "Past work", Agent: "agent", Snippet: "Did something"},
 				},
 			},
@@ -146,13 +146,13 @@ func TestPriorityOrdering_RulesBeforeAntiPatterns(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "rule-1", Content: "First rule"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "anti-1", Content: "First anti-pattern"},
 		},
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{Title: "Past work", Agent: "agent", Snippet: "History"},
 		},
 	}
@@ -238,17 +238,17 @@ func TestTokenBudget_LimitsApplied(t *testing.T) {
 			// Create input with specified counts
 			result := &CLIContextResponse{
 				Success:         true,
-				RelevantBullets: make([]CLIRule, tc.numRules),
-				AntiPatterns:    make([]CLIRule, tc.numRules),
-				HistorySnippets: make([]CLIHistorySnip, tc.numSnippets),
+				RelevantBullets: make([]Rule, tc.numRules),
+				AntiPatterns:    make([]Rule, tc.numRules),
+				HistorySnippets: make([]HistorySnippet, tc.numSnippets),
 			}
 
 			for i := 0; i < tc.numRules; i++ {
-				result.RelevantBullets[i] = CLIRule{ID: "r" + string(rune('0'+i)), Content: "Rule"}
-				result.AntiPatterns[i] = CLIRule{ID: "a" + string(rune('0'+i)), Content: "Anti"}
+				result.RelevantBullets[i] = Rule{ID: "r" + string(rune('0'+i)), Content: "Rule"}
+				result.AntiPatterns[i] = Rule{ID: "a" + string(rune('0'+i)), Content: "Anti"}
 			}
 			for i := 0; i < tc.numSnippets; i++ {
-				result.HistorySnippets[i] = CLIHistorySnip{Title: "Snip", Agent: "a", Snippet: "s"}
+				result.HistorySnippets[i] = HistorySnippet{Title: "Snip", Agent: "a", Snippet: "s"}
 			}
 
 			// Apply limits (simulating GetRecoveryContext behavior)
@@ -283,7 +283,7 @@ func TestRelevanceScoring_SnippetOrdering(t *testing.T) {
 	// Create snippets with different scores
 	result := &CLIContextResponse{
 		Success: true,
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{Title: "High relevance", Agent: "claude", Snippet: "Important work", Score: 0.95},
 			{Title: "Medium relevance", Agent: "codex", Snippet: "Some work", Score: 0.75},
 			{Title: "Low relevance", Agent: "gemini", Snippet: "Minor work", Score: 0.50},
@@ -315,13 +315,13 @@ func TestContextResponse_JSONFields(t *testing.T) {
 	resp := CLIContextResponse{
 		Success: true,
 		Task:    "test-task",
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "b-123", Content: "Test rule", Category: "testing"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "a-456", Content: "Anti pattern", Category: "security"},
 		},
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{
 				SourcePath: "/path/to/source.go",
 				LineNumber: 42,
@@ -458,27 +458,27 @@ func TestLargeContextFormatting(t *testing.T) {
 	largeResult := &CLIContextResponse{
 		Success:         true,
 		Task:            "large-task",
-		RelevantBullets: make([]CLIRule, 50),
-		AntiPatterns:    make([]CLIRule, 30),
-		HistorySnippets: make([]CLIHistorySnip, 20),
+		RelevantBullets: make([]Rule, 50),
+		AntiPatterns:    make([]Rule, 30),
+		HistorySnippets: make([]HistorySnippet, 20),
 	}
 
 	// Fill with content
 	for i := 0; i < 50; i++ {
-		largeResult.RelevantBullets[i] = CLIRule{
+		largeResult.RelevantBullets[i] = Rule{
 			ID:       "rule-" + string(rune('A'+i%26)) + string(rune('0'+i)),
 			Content:  "This is a rule with some content for testing purposes " + string(rune('0'+i)),
 			Category: "category-" + string(rune('A'+i%5)),
 		}
 	}
 	for i := 0; i < 30; i++ {
-		largeResult.AntiPatterns[i] = CLIRule{
+		largeResult.AntiPatterns[i] = Rule{
 			ID:      "anti-" + string(rune('A'+i%26)),
 			Content: "This is an anti-pattern to avoid " + string(rune('0'+i)),
 		}
 	}
 	for i := 0; i < 20; i++ {
-		largeResult.HistorySnippets[i] = CLIHistorySnip{
+		largeResult.HistorySnippets[i] = HistorySnippet{
 			Title:   "Past work item " + string(rune('0'+i)),
 			Agent:   "agent-" + string(rune('A'+i%3)),
 			Snippet: "Some historical snippet content " + string(rune('0'+i)),
@@ -516,15 +516,15 @@ func TestUnicodeContent(t *testing.T) {
 	result := &CLIContextResponse{
 		Success: true,
 		Task:    "unicode-task-日本語",
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "rule-中文", Content: "规则内容 - Chinese content"},
 			{ID: "rule-日本", Content: "日本語の内容 - Japanese content"},
 			{ID: "rule-emoji", Content: "Rule with emoji: 🚀 🎉 ✅"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "anti-кириллица", Content: "Кириллический текст - Cyrillic content"},
 		},
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{
 				Title:   "العربية - Arabic",
 				Agent:   "agent",
@@ -562,13 +562,13 @@ func TestSpecialCharactersInContent(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "rule-1", Content: "Rule with <brackets> and & ampersand"},
 			{ID: "rule-2", Content: "Rule with \"quotes\" and 'apostrophes'"},
 			{ID: "rule-3", Content: "Rule with newline\nand\ttab"},
 			{ID: "rule-4", Content: "Rule with backslash \\ and forward /"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "anti-1", Content: "Pattern with $variable and ${braces}"},
 		},
 	}

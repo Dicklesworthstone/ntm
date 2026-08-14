@@ -118,7 +118,8 @@ func (collector Collector) CollectCMSignals(ctx context.Context, snapshot *IdeaE
 	if query == "" {
 		query = "queue-dry ideation"
 	}
-	output, err := collector.runOptionalCommand(ctx, opts, "cm", []string{"context", query, "--json", "--limit", "5"})
+	// cm has no --limit flag; --top caps the number of rules returned.
+	output, err := collector.runOptionalCommand(ctx, opts, "cm", []string{"context", query, "--json", "--top", "5"})
 	source := CandidateSource{
 		ID:        "cm:context",
 		Kind:      SourceCM,

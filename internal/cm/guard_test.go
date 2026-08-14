@@ -19,12 +19,12 @@ func TestGuardRetrieval_RuleFormatting(t *testing.T) {
 
 	testCases := []struct {
 		name     string
-		rule     CLIRule
+		rule     Rule
 		contains []string
 	}{
 		{
 			name: "basic rule",
-			rule: CLIRule{
+			rule: Rule{
 				ID:      "b-abc123",
 				Content: "Always run tests before committing",
 			},
@@ -32,7 +32,7 @@ func TestGuardRetrieval_RuleFormatting(t *testing.T) {
 		},
 		{
 			name: "rule with category",
-			rule: CLIRule{
+			rule: Rule{
 				ID:       "b-def456",
 				Content:  "Follow the coding standards",
 				Category: "best-practices",
@@ -41,7 +41,7 @@ func TestGuardRetrieval_RuleFormatting(t *testing.T) {
 		},
 		{
 			name: "rule with special ID format",
-			rule: CLIRule{
+			rule: Rule{
 				ID:      "rule-001-security",
 				Content: "Never expose credentials in logs",
 			},
@@ -55,7 +55,7 @@ func TestGuardRetrieval_RuleFormatting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			result := &CLIContextResponse{
 				Success:         true,
-				RelevantBullets: []CLIRule{tc.rule},
+				RelevantBullets: []Rule{tc.rule},
 			}
 
 			formatted := client.FormatForRecovery(result)
@@ -72,28 +72,30 @@ func TestGuardRetrieval_RuleFormatting(t *testing.T) {
 	}
 }
 
-func TestGuardRetrieval_RuleConfidenceFormatting(t *testing.T) {
-	confidence := 0.875
+// CM's real bullet schema has no confidence field (#249); rules format with
+// their ID and content only, and unknown extra fields must not leak markup.
+func TestGuardRetrieval_RuleFormattingHasNoConfidenceSuffix(t *testing.T) {
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{{
-			ID:         "rule-1",
-			Content:    "Use the focused proof command",
-			Confidence: &confidence,
+		RelevantBullets: []Rule{{
+			ID:      "rule-1",
+			Content: "Use the focused proof command",
 		}},
-		AntiPatterns: []CLIRule{{
-			ID:         "anti-1",
-			Content:    "Do not overclaim proof",
-			Confidence: &confidence,
+		AntiPatterns: []Rule{{
+			ID:      "anti-1",
+			Content: "Do not overclaim proof",
 		}},
 	}
 
 	formatted := NewCLIClient().FormatForRecovery(result)
-	if !strings.Contains(formatted, "[rule-1] (confidence: 88%)") {
-		t.Errorf("formatted recovery context does not expose rule confidence: %q", formatted)
+	if !strings.Contains(formatted, "**[rule-1]** Use the focused proof command") {
+		t.Errorf("rule not formatted as expected: %q", formatted)
 	}
-	if !strings.Contains(formatted, "[anti-1] (confidence: 88%)") {
-		t.Errorf("formatted recovery context does not expose anti-pattern confidence: %q", formatted)
+	if !strings.Contains(formatted, "**[anti-1]** Do not overclaim proof") {
+		t.Errorf("anti-pattern not formatted as expected: %q", formatted)
+	}
+	if strings.Contains(formatted, "confidence") {
+		t.Errorf("formatted output contains phantom confidence markup: %q", formatted)
 	}
 }
 
@@ -101,14 +103,14 @@ func TestGuardRetrieval_RuleConfidenceFormatting(t *testing.T) {
 func TestGuardRetrieval_AntiPatternFormatting(t *testing.T) {
 	start := time.Now()
 
-	antiPattern := CLIRule{
+	antiPattern := Rule{
 		ID:      "anti-001",
 		Content: "Do not commit secrets to version control",
 	}
 
 	result := &CLIContextResponse{
 		Success:      true,
-		AntiPatterns: []CLIRule{antiPattern},
+		AntiPatterns: []Rule{antiPattern},
 	}
 
 	client := NewCLIClient()
@@ -137,14 +139,14 @@ func TestGuardInjection_PromptStructure(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "r1", Content: "Rule one"},
 			{ID: "r2", Content: "Rule two"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "a1", Content: "Anti-pattern one"},
 		},
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{Title: "Past work", Agent: "agent", Snippet: "snippet"},
 		},
 	}
@@ -183,7 +185,7 @@ func TestGuardInjection_PromptStructure(t *testing.T) {
 func TestGuardInjection_SnippetWithMetadata(t *testing.T) {
 	start := time.Now()
 
-	snippet := CLIHistorySnip{
+	snippet := HistorySnippet{
 		Title:      "Authentication implementation",
 		Agent:      "claude_code",
 		Snippet:    "Implemented OAuth 2.0 flow with refresh tokens",
@@ -195,7 +197,7 @@ func TestGuardInjection_SnippetWithMetadata(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success:         true,
-		HistorySnippets: []CLIHistorySnip{snippet},
+		HistorySnippets: []HistorySnippet{snippet},
 	}
 
 	client := NewCLIClient()
@@ -224,7 +226,7 @@ func TestGuardConflict_RulePrioritization(t *testing.T) {
 	// Order should be preserved from the source
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "high-1", Content: "High priority rule"},
 			{ID: "high-2", Content: "Second high priority rule"},
 			{ID: "med-1", Content: "Medium priority rule"},
@@ -260,10 +262,10 @@ func TestGuardConflict_AntiPatternSeparation(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "rule-do", Content: "Do this"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "rule-dont", Content: "Don't do this"},
 		},
 	}
@@ -318,9 +320,9 @@ func TestGuardInjection_EmptyGuards(t *testing.T) {
 			name: "empty arrays",
 			result: &CLIContextResponse{
 				Success:         true,
-				RelevantBullets: []CLIRule{},
-				AntiPatterns:    []CLIRule{},
-				HistorySnippets: []CLIHistorySnip{},
+				RelevantBullets: []Rule{},
+				AntiPatterns:    []Rule{},
+				HistorySnippets: []HistorySnippet{},
 			},
 		},
 	}
@@ -347,7 +349,7 @@ func TestGuardInjection_TruncatedSnippets(t *testing.T) {
 
 	// Create a snippet with very long content
 	longContent := strings.Repeat("This is a very long snippet content that should be truncated. ", 20)
-	snippet := CLIHistorySnip{
+	snippet := HistorySnippet{
 		Title:   "Long snippet",
 		Agent:   "agent",
 		Snippet: longContent,
@@ -355,7 +357,7 @@ func TestGuardInjection_TruncatedSnippets(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success:         true,
-		HistorySnippets: []CLIHistorySnip{snippet},
+		HistorySnippets: []HistorySnippet{snippet},
 	}
 
 	client := NewCLIClient()
@@ -380,7 +382,7 @@ func TestGuardInjection_TruncatedSnippets(t *testing.T) {
 func TestGuardInjection_MultipleSnippets(t *testing.T) {
 	start := time.Now()
 
-	snippets := []CLIHistorySnip{
+	snippets := []HistorySnippet{
 		{Title: "First work", Agent: "claude", Snippet: "Did first thing"},
 		{Title: "Second work", Agent: "codex", Snippet: "Did second thing"},
 		{Title: "Third work", Agent: "gemini", Snippet: "Did third thing"},
@@ -412,7 +414,7 @@ func TestGuardInjection_MultipleSnippets(t *testing.T) {
 func TestGuardRetrieval_CategoryHandling(t *testing.T) {
 	start := time.Now()
 
-	rules := []CLIRule{
+	rules := []Rule{
 		{ID: "r1", Content: "Rule without category"},
 		{ID: "r2", Content: "Rule with category", Category: "testing"},
 		{ID: "r3", Content: "Another categorized", Category: "security"},
@@ -447,13 +449,13 @@ func TestGuardInjection_MarkdownSafety(t *testing.T) {
 	// Test with content that could break markdown
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "r1", Content: "Rule with *asterisks* and _underscores_"},
 			{ID: "r2", Content: "Rule with [brackets] and (parens)"},
 			{ID: "r3", Content: "Rule with `backticks` and ```code```"},
 			{ID: "r4", Content: "Rule with # hash and > quote"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "a1", Content: "Pattern with | pipe | chars"},
 		},
 	}
@@ -488,11 +490,11 @@ func TestGuardInjection_NewlineHandling(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "r1", Content: "Rule with\nnewline"},
 			{ID: "r2", Content: "Rule with\r\nCRLF"},
 		},
-		HistorySnippets: []CLIHistorySnip{
+		HistorySnippets: []HistorySnippet{
 			{Title: "Multi-line", Agent: "agent", Snippet: "Line 1\nLine 2\nLine 3"},
 		},
 	}
@@ -520,7 +522,7 @@ func TestGuardRetrieval_SuggestedQueriesNotInOutput(t *testing.T) {
 
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "r1", Content: "Test rule"},
 		},
 		SuggestedQueries: []string{
@@ -552,10 +554,10 @@ func TestGuardConflict_SameIDDifferentContent(t *testing.T) {
 	// (which shouldn't happen in practice but should be handled gracefully)
 	result := &CLIContextResponse{
 		Success: true,
-		RelevantBullets: []CLIRule{
+		RelevantBullets: []Rule{
 			{ID: "conflicting-id", Content: "This is the rule version"},
 		},
-		AntiPatterns: []CLIRule{
+		AntiPatterns: []Rule{
 			{ID: "conflicting-id", Content: "This is the anti-pattern version"},
 		},
 	}

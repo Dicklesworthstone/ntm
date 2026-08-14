@@ -19,9 +19,14 @@ import (
 // ErrNotInstalled is returned when the cm binary is not found
 var ErrNotInstalled = fmt.Errorf("cm is not installed")
 
+// Client talks to a `cm serve` daemon. The daemon speaks MCP JSON-RPC over
+// HTTP at its root path (there are no REST routes such as /context or
+// /health), so every operation is either a plain JSON-RPC method (tools/list)
+// or a tools/call invocation (cm_context, cm_outcome).
 type Client struct {
-	baseURL string
-	client  *http.Client
+	baseURL   string
+	sessionID string
+	client    *http.Client
 }
 
 // PIDFileInfo matches supervisor.PIDFileInfo
@@ -47,75 +52,85 @@ func NewClient(projectDir, sessionID string) (*Client, error) {
 		return nil, fmt.Errorf("parsing cm pid file: %w", err)
 	}
 
+	return NewPortClient(info.Port, sessionID), nil
+}
+
+// NewPortClient creates a CM client for a daemon on a known localhost port.
+// sessionID may be empty for callers that only query context or health;
+// RecordOutcome requires it.
+func NewPortClient(port int, sessionID string) *Client {
 	return &Client{
-		baseURL: fmt.Sprintf("http://127.0.0.1:%d", info.Port),
-		client:  &http.Client{Timeout: 10 * time.Second},
-	}, nil
+		baseURL:   fmt.Sprintf("http://127.0.0.1:%d", port),
+		sessionID: sessionID,
+		client:    &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
+// ContextResult is the payload of a CM context query. The same shape is
+// produced by the MCP cm_context tool and by `cm context --json` (under its
+// success/data envelope on current releases).
 type ContextResult struct {
-	RelevantBullets  []Rule    `json:"relevantBullets"`
-	AntiPatterns     []Rule    `json:"antiPatterns"`
-	HistorySnippets  []Snippet `json:"historySnippets"`
-	SuggestedQueries []string  `json:"suggestedCassQueries"`
+	Task             string           `json:"task,omitempty"`
+	RelevantBullets  []Rule           `json:"relevantBullets"`
+	AntiPatterns     []Rule           `json:"antiPatterns"`
+	HistorySnippets  []HistorySnippet `json:"historySnippets"`
+	SuggestedQueries []string         `json:"suggestedCassQueries"`
 }
 
+// Rule is a playbook bullet returned by CM. CM's bullet schema carries many
+// more fields (scope, maturity, scoring); NTM consumes the identity and text.
 type Rule struct {
-	ID         string   `json:"id"`
-	Content    string   `json:"content"`
-	Category   string   `json:"category"`
-	Confidence *float64 `json:"confidence,omitempty"`
+	ID       string `json:"id"`
+	Content  string `json:"content"`
+	Category string `json:"category,omitempty"`
 }
 
-type Snippet struct {
-	ID      string `json:"id"`
-	Content string `json:"content"`
+// HistorySnippet is a CASS search hit surfaced by CM context queries.
+// This matches CM's actual wire schema; there are no `id`/`content` fields.
+type HistorySnippet struct {
+	SourcePath string  `json:"source_path"`
+	LineNumber int     `json:"line_number"`
+	Agent      string  `json:"agent"`
+	Workspace  string  `json:"workspace,omitempty"`
+	Title      string  `json:"title,omitempty"`
+	Snippet    string  `json:"snippet"`
+	Score      float64 `json:"score,omitempty"`
+	CreatedAt  int64   `json:"created_at,omitempty"`
 }
 
-// GetContext queries CM for task-relevant rules via HTTP.
-//
-// `workspace`, when non-empty, is sent as a `workspace` field on the request
-// body so the daemon can scope its retrieval to that workspace and avoid
-// same-basename cross-project context bleed (#132).
-func (c *Client) GetContext(ctx context.Context, task string, workspace string) (*ContextResult, error) {
-	reqBody := map[string]string{"task": task}
-	if strings.TrimSpace(workspace) != "" {
-		reqBody["workspace"] = workspace
+type rpcErrorPayload struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type rpcResponsePayload struct {
+	Result json.RawMessage  `json:"result"`
+	Error  *rpcErrorPayload `json:"error"`
+}
+
+// rpc performs one MCP JSON-RPC call against the daemon root. A JSON-RPC
+// error object is surfaced as a Go error even though the HTTP status is 200 —
+// treating those responses as success is exactly the silent context drop
+// reported in #249.
+func (c *Client) rpc(ctx context.Context, method string, params any, result any) error {
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+	}
+	if params != nil {
+		reqBody["params"] = params
 	}
 	data, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
+		return fmt.Errorf("marshal cm %s request: %w", method, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/context", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("cm context failed: %s", resp.Status)
-	}
-
-	var result ContextResult
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// Health checks whether the CM daemon is responding at /health.
-func (c *Client) Health(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -124,9 +139,110 @@ func (c *Client) Health(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("cm health failed: %s", resp.Status)
+		return fmt.Errorf("cm %s failed: %s", method, resp.Status)
+	}
+
+	var rpcResp rpcResponsePayload
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&rpcResp); err != nil {
+		return fmt.Errorf("decode cm %s response: %w", method, err)
+	}
+	if rpcResp.Error != nil {
+		return fmt.Errorf("cm %s failed (%d): %s", method, rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+	if result == nil {
+		return nil
+	}
+	if len(rpcResp.Result) == 0 || string(rpcResp.Result) == "null" {
+		return fmt.Errorf("cm %s returned no result", method)
+	}
+	return json.Unmarshal(rpcResp.Result, result)
+}
+
+// mcpToolEnvelope is the standard MCP tools/call result wrapper. Newer CM
+// releases use it; older releases return the tool payload directly as the
+// JSON-RPC result object, so callTool accepts both shapes.
+type mcpToolEnvelope struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	IsError bool `json:"isError"`
+}
+
+// callTool invokes an MCP tool and decodes its JSON payload into result.
+// It handles both known CM result shapes:
+//   - standard MCP: {"content":[{"type":"text","text":"<json>"}],"isError":bool}
+//   - direct object: the payload itself as the JSON-RPC result (older cm)
+func (c *Client) callTool(ctx context.Context, name string, arguments any, result any) error {
+	var raw json.RawMessage
+	if err := c.rpc(ctx, "tools/call", map[string]any{
+		"name":      name,
+		"arguments": arguments,
+	}, &raw); err != nil {
+		return err
+	}
+
+	var envelope mcpToolEnvelope
+	if err := json.Unmarshal(raw, &envelope); err == nil && (envelope.IsError || len(envelope.Content) > 0) {
+		var text string
+		for _, content := range envelope.Content {
+			if content.Type == "text" && strings.TrimSpace(content.Text) != "" {
+				text = content.Text
+				break
+			}
+		}
+		if envelope.IsError {
+			if text != "" {
+				return fmt.Errorf("cm tool %s failed: %s", name, text)
+			}
+			return fmt.Errorf("cm tool %s failed", name)
+		}
+		if result == nil {
+			return nil
+		}
+		if text == "" {
+			return fmt.Errorf("cm tool %s returned no text payload", name)
+		}
+		if err := json.Unmarshal([]byte(text), result); err != nil {
+			return fmt.Errorf("decode cm tool %s payload: %w", name, err)
+		}
+		return nil
+	}
+
+	// Direct-object shape: the JSON-RPC result is the tool payload itself.
+	if result == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, result); err != nil {
+		return fmt.Errorf("decode cm tool %s result: %w", name, err)
 	}
 	return nil
+}
+
+// GetContext queries CM for task-relevant rules via the MCP cm_context tool.
+//
+// `workspace`, when non-empty, is sent as a `workspace` argument so the
+// daemon can scope its retrieval to that workspace and avoid same-basename
+// cross-project context bleed (#132).
+func (c *Client) GetContext(ctx context.Context, task string, workspace string) (*ContextResult, error) {
+	arguments := map[string]any{"task": task}
+	if strings.TrimSpace(workspace) != "" {
+		arguments["workspace"] = workspace
+	}
+
+	var result ContextResult
+	if err := c.callTool(ctx, "cm_context", arguments, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Health checks whether the CM daemon is responding. tools/list is used as
+// the probe because every MCP-speaking CM release supports it; the ping
+// method only exists on newer releases and legacy GET /health routes no
+// longer exist at all.
+func (c *Client) Health(ctx context.Context) error {
+	return c.rpc(ctx, "tools/list", nil, nil)
 }
 
 // Port returns the daemon port extracted from the client's base URL.
@@ -162,28 +278,41 @@ type OutcomeReport struct {
 	Notes     string        `json:"notes,omitempty"`
 }
 
-// RecordOutcome sends feedback about rule effectiveness.
+// RecordOutcome sends feedback about rule effectiveness via the MCP
+// cm_outcome tool. The tool requires a session ID and accepts outcomes
+// "success" | "failure" | "mixed"; NTM's "partial" maps to "mixed". CM's
+// outcome schema has no sentiment field, so a non-empty sentiment is
+// preserved in the notes instead of being silently dropped.
 func (c *Client) RecordOutcome(ctx context.Context, report OutcomeReport) error {
-	data, err := json.Marshal(report)
-	if err != nil {
-		return fmt.Errorf("marshal outcome report: %w", err)
+	if strings.TrimSpace(c.sessionID) == "" {
+		return fmt.Errorf("cm outcome requires a session ID")
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/outcome", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
+	outcome := string(report.Status)
+	if report.Status == OutcomePartial {
+		outcome = "mixed"
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("cm outcome failed: %s", resp.Status)
+	notes := strings.TrimSpace(report.Notes)
+	if sentiment := strings.TrimSpace(report.Sentiment); sentiment != "" {
+		if notes != "" {
+			notes = fmt.Sprintf("sentiment=%s\n%s", sentiment, notes)
+		} else {
+			notes = "sentiment=" + sentiment
+		}
 	}
-	return nil
+
+	arguments := map[string]any{
+		"sessionId": c.sessionID,
+		"outcome":   outcome,
+	}
+	if len(report.RuleIDs) > 0 {
+		arguments["rulesUsed"] = report.RuleIDs
+	}
+	if notes != "" {
+		arguments["notes"] = notes
+	}
+	return c.callTool(ctx, "cm_outcome", arguments, nil)
 }
 
 // CLIClient interacts with the CM CLI directly via exec.Command.
@@ -193,34 +322,17 @@ type CLIClient struct {
 	timeout    time.Duration
 }
 
-// CLIContextResponse matches the JSON output of `cm context --json`
+// CLIContextResponse matches the JSON output of `cm context --json`.
+// Current CM releases wrap the payload in a {success, data} envelope;
+// older releases emit the fields at the top level. decodeCLIContextResponse
+// accepts both.
 type CLIContextResponse struct {
 	Success          bool             `json:"success"`
-	Task             string           `json:"task"`
-	RelevantBullets  []CLIRule        `json:"relevantBullets"`
-	AntiPatterns     []CLIRule        `json:"antiPatterns"`
-	HistorySnippets  []CLIHistorySnip `json:"historySnippets"`
+	Task             string           `json:"task,omitempty"`
+	RelevantBullets  []Rule           `json:"relevantBullets"`
+	AntiPatterns     []Rule           `json:"antiPatterns"`
+	HistorySnippets  []HistorySnippet `json:"historySnippets"`
 	SuggestedQueries []string         `json:"suggestedCassQueries"`
-}
-
-// CLIRule represents a rule from CM playbook
-type CLIRule struct {
-	ID         string   `json:"id"`
-	Content    string   `json:"content"`
-	Category   string   `json:"category,omitempty"`
-	Confidence *float64 `json:"confidence,omitempty"`
-}
-
-// CLIHistorySnip represents a historical snippet from CM
-type CLIHistorySnip struct {
-	SourcePath string  `json:"source_path"`
-	LineNumber int     `json:"line_number"`
-	Agent      string  `json:"agent"`
-	Workspace  string  `json:"workspace"`
-	Title      string  `json:"title"`
-	Snippet    string  `json:"snippet"`
-	Score      float64 `json:"score"`
-	CreatedAt  int64   `json:"created_at"`
 }
 
 // CLIClientOption configures the CLI client
@@ -302,11 +414,40 @@ func (c *CLIClient) GetContext(ctx context.Context, task string, workspace strin
 		}
 	}
 
-	var result CLIContextResponse
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+	result, err := decodeCLIContextResponse(stdout.Bytes())
+	if err != nil {
 		return nil, fmt.Errorf("parsing cm output: %w (raw: %s)", err, stdout.String())
 	}
+	return result, nil
+}
 
+// decodeCLIContextResponse decodes `cm context --json` output. Current CM
+// releases wrap the payload as {"success":true,"data":{...}}; older releases
+// put the fields at the top level next to "success". Decoding the envelope
+// shape into the flat struct silently produced empty context (#249), so the
+// data envelope is unwrapped explicitly and preferred when present.
+func decodeCLIContextResponse(data []byte) (*CLIContextResponse, error) {
+	var envelope struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+
+	if len(envelope.Data) > 0 && string(envelope.Data) != "null" {
+		var result CLIContextResponse
+		if err := json.Unmarshal(envelope.Data, &result); err != nil {
+			return nil, err
+		}
+		result.Success = envelope.Success
+		return &result, nil
+	}
+
+	var result CLIContextResponse
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
 	return &result, nil
 }
 
@@ -350,7 +491,7 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 	if len(result.RelevantBullets) > 0 {
 		buf.WriteString("## Procedural Memory (Key Rules)\n\n")
 		for _, rule := range result.RelevantBullets {
-			buf.WriteString(fmt.Sprintf("- **[%s]%s** %s\n", rule.ID, formatRuleConfidence(rule.Confidence), rule.Content))
+			buf.WriteString(fmt.Sprintf("- **[%s]** %s\n", rule.ID, rule.Content))
 		}
 		buf.WriteString("\n")
 	}
@@ -358,7 +499,7 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 	if len(result.AntiPatterns) > 0 {
 		buf.WriteString("## Anti-Patterns to Avoid\n\n")
 		for _, pattern := range result.AntiPatterns {
-			buf.WriteString(fmt.Sprintf("- ⚠️ **[%s]%s** %s\n", pattern.ID, formatRuleConfidence(pattern.Confidence), pattern.Content))
+			buf.WriteString(fmt.Sprintf("- ⚠️ **[%s]** %s\n", pattern.ID, pattern.Content))
 		}
 		buf.WriteString("\n")
 	}
@@ -366,19 +507,16 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 	if len(result.HistorySnippets) > 0 {
 		buf.WriteString("## Relevant Past Work\n\n")
 		for _, snippet := range result.HistorySnippets {
-			buf.WriteString(fmt.Sprintf("- **%s** (%s)\n  %s\n", snippet.Title, snippet.Agent, truncate(snippet.Snippet, 200)))
+			title := snippet.Title
+			if title == "" {
+				title = snippet.SourcePath
+			}
+			buf.WriteString(fmt.Sprintf("- **%s** (%s)\n  %s\n", title, snippet.Agent, truncate(snippet.Snippet, 200)))
 		}
 		buf.WriteString("\n")
 	}
 
 	return buf.String()
-}
-
-func formatRuleConfidence(confidence *float64) string {
-	if confidence == nil {
-		return ""
-	}
-	return fmt.Sprintf(" (confidence: %.0f%%)", *confidence*100)
 }
 
 // truncate shortens a string to maxLen runes, adding ellipsis if needed
