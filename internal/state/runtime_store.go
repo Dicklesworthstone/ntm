@@ -3122,3 +3122,105 @@ func DecodeJSON(data string, v interface{}) error {
 	}
 	return json.Unmarshal([]byte(data), v)
 }
+
+// =============================================================================
+// Send Operations (idempotent robot send, #245)
+// =============================================================================
+
+// ClaimSendOperation atomically claims an operation ID for execution.
+// The INSERT OR IGNORE makes the claim race-safe across processes: exactly
+// one caller creates the row (claimed=true) and every other caller observes
+// the existing row, whose binding it must validate before deciding between
+// replay and conflict.
+func (s *Store) ClaimSendOperation(op *SendOperation) (existing *SendOperation, claimed bool, err error) {
+	if op == nil || op.OperationID == "" {
+		return nil, false, fmt.Errorf("claim send operation: operation ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	createdAt := op.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	result, err := s.db.Exec(`
+		INSERT OR IGNORE INTO send_operations (
+			operation_id, session_name, binding_hash, payload_sha256,
+			payload_bytes, status, outcome_json, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, '', ?)`,
+		op.OperationID, op.SessionName, op.BindingHash, op.PayloadSHA256,
+		op.PayloadBytes, SendOperationInProgress, createdAt,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("claim send operation: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("claim send operation: %w", err)
+	}
+
+	stored, err := s.getSendOperationLocked(op.OperationID)
+	if err != nil {
+		return nil, false, err
+	}
+	if stored == nil {
+		return nil, false, fmt.Errorf("claim send operation: row vanished after claim")
+	}
+	return stored, rows > 0, nil
+}
+
+// CompleteSendOperation records the outcome of a claimed operation. The
+// outcome JSON is the durable receipt returned verbatim on replays and by
+// receipt queries.
+func (s *Store) CompleteSendOperation(operationID, outcomeJSON string, completedAt time.Time) error {
+	if operationID == "" {
+		return fmt.Errorf("complete send operation: operation ID is required")
+	}
+	if completedAt.IsZero() {
+		completedAt = time.Now().UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		UPDATE send_operations
+		SET status = ?, outcome_json = ?, completed_at = ?
+		WHERE operation_id = ? AND status = ?`,
+		SendOperationCompleted, outcomeJSON, completedAt.UTC(),
+		operationID, SendOperationInProgress,
+	)
+	if err != nil {
+		return fmt.Errorf("complete send operation: %w", err)
+	}
+	return nil
+}
+
+// GetSendOperation returns the durable record for an operation ID, or nil
+// when the ID is unknown.
+func (s *Store) GetSendOperation(operationID string) (*SendOperation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getSendOperationLocked(operationID)
+}
+
+func (s *Store) getSendOperationLocked(operationID string) (*SendOperation, error) {
+	op := &SendOperation{}
+	err := s.db.QueryRow(`
+		SELECT operation_id, session_name, binding_hash, payload_sha256,
+			payload_bytes, status, COALESCE(outcome_json, ''), created_at, completed_at
+		FROM send_operations WHERE operation_id = ?`,
+		operationID,
+	).Scan(
+		&op.OperationID, &op.SessionName, &op.BindingHash, &op.PayloadSHA256,
+		&op.PayloadBytes, &op.Status, &op.OutcomeJSON, &op.CreatedAt, &op.CompletedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get send operation: %w", err)
+	}
+	return op, nil
+}

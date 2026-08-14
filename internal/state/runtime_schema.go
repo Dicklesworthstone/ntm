@@ -666,3 +666,36 @@ type AuditDecision struct {
 	// Reference
 	AuditEventID *int64 `json:"audit_event_id,omitempty"`
 }
+
+// =============================================================================
+// Send Operations (idempotent robot send, #245)
+// =============================================================================
+
+// Send operation lifecycle states.
+const (
+	SendOperationInProgress = "in_progress"
+	SendOperationCompleted  = "completed"
+)
+
+// SendOperation is the durable record of one idempotent send operation.
+// It binds a caller-supplied operation ID to the canonical targets and the
+// exact payload NTM attempted to deliver (digest + byte count only — the
+// payload bytes themselves are never persisted), and carries the recorded
+// outcome once the operation completes.
+type SendOperation struct {
+	// Identity
+	OperationID string `json:"operation_id"`
+	SessionName string `json:"session_name"`
+
+	// Binding — BindingHash covers canonical targets + payload digest so a
+	// conflicting reuse of the same operation ID is detectable.
+	BindingHash   string `json:"binding_hash"`
+	PayloadSHA256 string `json:"payload_sha256"`
+	PayloadBytes  int64  `json:"payload_bytes"`
+
+	// Lifecycle
+	Status      string     `json:"status"` // in_progress | completed
+	OutcomeJSON string     `json:"outcome_json,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}

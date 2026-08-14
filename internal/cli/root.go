@@ -1787,6 +1787,13 @@ Shell Integration:
 			}
 			return
 		}
+		if robotSendReceipt != "" {
+			if err := robot.PrintSendReceipt(robotSendReceipt); err != nil {
+				recordRobotProcessExit(err)
+			}
+			return
+		}
+
 		if robotSend != "" {
 			singularPane := ""
 			if cmd.Flags().Changed("pane") {
@@ -1864,18 +1871,19 @@ Shell Integration:
 				}
 				opts := robot.SendAndAckOptions{
 					SendOptions: robot.SendOptions{
-						Session:      session,
-						Message:      robotSendMsg,
-						All:          robotSendAll,
-						Pane:         singularPane,
-						Panes:        paneSelectors,
-						AgentTypes:   agentTypes,
-						Exclude:      excludeList,
-						DelayMs:      robotSendDelay,
-						Enter:        enterOverride,
-						DryRun:       robotDryRunEffective,
-						ClearInput:   robotSendClearInput,
-						VerifyRender: robotSendVerifyRender,
+						Session:        session,
+						Message:        robotSendMsg,
+						All:            robotSendAll,
+						Pane:           singularPane,
+						Panes:          paneSelectors,
+						AgentTypes:     agentTypes,
+						Exclude:        excludeList,
+						DelayMs:        robotSendDelay,
+						Enter:          enterOverride,
+						DryRun:         robotDryRunEffective,
+						ClearInput:     robotSendClearInput,
+						VerifyRender:   robotSendVerifyRender,
+						IdempotencyKey: strings.TrimSpace(robotSendOpID),
 					},
 					AckTimeoutMs: int(ackTimeout.Milliseconds()),
 					AckPollMs:    ackPollMs,
@@ -1890,18 +1898,19 @@ Shell Integration:
 			}
 
 			opts := robot.SendOptions{
-				Session:      session,
-				Message:      robotSendMsg,
-				All:          robotSendAll,
-				Pane:         singularPane,
-				Panes:        paneSelectors,
-				AgentTypes:   agentTypes,
-				Exclude:      excludeList,
-				DelayMs:      robotSendDelay,
-				Enter:        enterOverride,
-				DryRun:       robotDryRunEffective,
-				ClearInput:   robotSendClearInput,
-				VerifyRender: robotSendVerifyRender,
+				Session:        session,
+				Message:        robotSendMsg,
+				All:            robotSendAll,
+				Pane:           singularPane,
+				Panes:          paneSelectors,
+				AgentTypes:     agentTypes,
+				Exclude:        excludeList,
+				DelayMs:        robotSendDelay,
+				Enter:          enterOverride,
+				DryRun:         robotDryRunEffective,
+				ClearInput:     robotSendClearInput,
+				VerifyRender:   robotSendVerifyRender,
+				IdempotencyKey: strings.TrimSpace(robotSendOpID),
 			}
 			if cfg != nil {
 				opts.Redaction = cfg.Redaction.ToRedactionLibConfig()
@@ -3483,6 +3492,8 @@ var (
 	robotSendType         string // filter by agent type (e.g., "claude")
 	robotSendExclude      string // comma-separated panes to exclude
 	robotSendDelay        int    // delay between sends in ms
+	robotSendOpID         string // durable idempotent operation ID for --robot-send (#245)
+	robotSendReceipt      string // operation ID for --robot-send-receipt (#245)
 
 	// Robot-assign flags for work distribution
 	robotAssign         string // session name for work assignment
@@ -4107,6 +4118,8 @@ func init() {
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")
 	rootCmd.Flags().BoolVar(&robotSendClearInput, "clear-input", false, "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing. Optional with --robot-send; recommended after interrupts on codex panes")
 	rootCmd.Flags().BoolVar(&robotSendVerifyRender, "verify-render", false, "Capture bounded before/after pane output and require rendered delivery evidence. Optional with --robot-send")
+	rootCmd.Flags().StringVar(&robotSendOpID, "op-id", "", "Durable idempotent operation ID for --robot-send: identical retries replay the recorded outcome, conflicting reuse is rejected. Example: ntm --robot-send=proj --msg='...' --op-id=deploy-42")
+	rootCmd.Flags().StringVar(&robotSendReceipt, "robot-send-receipt", "", "Query the durable receipt of an idempotent send by operation ID. Example: ntm --robot-send-receipt=deploy-42")
 
 	// Robot-assign flags for work distribution
 	rootCmd.Flags().StringVar(&robotAssign, "robot-assign", "", "Get work distribution recommendations. Required: SESSION. Example: ntm --robot-assign=proj --strategy=speed")
@@ -6097,7 +6110,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" ||
-			robotActivity != "" || robotProductivity != "" {
+			robotActivity != "" || robotProductivity != "" || robotSendReceipt != "" {
 			return true
 		}
 	}

@@ -4,6 +4,7 @@ package robot
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
@@ -593,6 +594,143 @@ func (vm *VelocityManager) TrackerCount() int {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 	return len(vm.trackers)
+}
+
+// =============================================================================
+// Durable output-change sequence (#246)
+// =============================================================================
+
+// WatermarkTypeOutputSeq is the watermark type for the durable per-pane
+// output-change sequence. For rows of this type the generic watermark
+// columns are used as follows:
+//
+//	LastCursor   — the output sequence (advances by 1 per detected change)
+//	BaselineHash — truncated SHA-256 of the last cleaned capture (private;
+//	               never exposed to consumers)
+//	Consumer     — the opaque epoch for this scope, minted when the row is
+//	               first created; a new row (state DB reset/rebuild, pane
+//	               scope recreation) mints a new epoch
+//	LastTs       — when the sequence last advanced
+const WatermarkTypeOutputSeq = "output_seq"
+
+// OutputSequenceInfo is the privacy-preserving output-change signal exposed
+// on activity/status surfaces. It proves an agent produced new terminal
+// output since a prior observation without revealing pane content or a
+// content digest.
+//
+// Contract:
+//   - Sequence advances monotonically when NTM detects a real output change
+//     for the scope, and stays stable across repeated observations that see
+//     no change.
+//   - Sequences are only comparable within the same Epoch. A new epoch means
+//     the durable scope was recreated (state store reset, pane replacement);
+//     consumers must discard prior sequence state instead of comparing.
+//   - ChangedAt is when the sequence last advanced (RFC 3339); empty until
+//     the first detected change in this epoch.
+type OutputSequenceInfo struct {
+	Epoch     string `json:"epoch"`
+	Sequence  int64  `json:"sequence"`
+	ChangedAt string `json:"changed_at,omitempty"`
+}
+
+// outputSeqScope builds the durable watermark scope for a pane. The tmux
+// pane ID alone can alias across tmux server restarts, so the session name
+// is included; residual aliasing at worst reports one spurious change
+// (sequence advance), never a missed one.
+func outputSeqScope(sessionName, paneID string) string {
+	return sessionName + "|" + paneID
+}
+
+// newOutputEpoch mints an opaque epoch identifier.
+func newOutputEpoch() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Fallback: time-derived epoch still satisfies "changes when the
+		// scope is recreated" with overwhelming probability.
+		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))[:16]
+	}
+	return hex.EncodeToString(buf[:])
+}
+
+// advanceOutputSequence records one observation of a pane's cleaned content
+// hash and returns the scope's current output sequence, advancing it when
+// the content changed since the previous durable observation.
+//
+// The first observation for a scope establishes the baseline at sequence 0
+// with a fresh epoch: creating a scope is not a detected change. A nil store
+// returns (nil, nil) so callers degrade gracefully when no runtime
+// projection store is configured.
+//
+// Concurrency: the read-modify-write is not transactional across processes.
+// Two concurrent observers may collapse two rapid changes into one sequence
+// advance; the sequence still never moves backward and never advances
+// without a real change, which is the load-bearing half of the contract.
+func advanceOutputSequence(store WatermarkStore, scope, contentHash string, observedAt time.Time) (*OutputSequenceInfo, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+
+	wm, err := store.GetWatermark(WatermarkTypeOutputSeq, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	if wm == nil || wm.Consumer == "" {
+		created := &state.OutputWatermark{
+			WatermarkType: WatermarkTypeOutputSeq,
+			Scope:         scope,
+			LastCursor:    0,
+			BaselineHash:  contentHash,
+			Consumer:      newOutputEpoch(),
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		if err := store.SetWatermark(created); err != nil {
+			return nil, err
+		}
+		return &OutputSequenceInfo{Epoch: created.Consumer, Sequence: 0}, nil
+	}
+
+	info := &OutputSequenceInfo{Epoch: wm.Consumer, Sequence: wm.LastCursor}
+	if wm.LastTs != nil {
+		info.ChangedAt = wm.LastTs.UTC().Format(time.RFC3339)
+	}
+	if wm.BaselineHash == contentHash {
+		return info, nil
+	}
+
+	changedAt := observedAt.UTC()
+	wm.LastCursor++
+	wm.BaselineHash = contentHash
+	wm.LastTs = &changedAt
+	wm.UpdatedAt = now
+	if err := store.SetWatermark(wm); err != nil {
+		return nil, err
+	}
+	info.Sequence = wm.LastCursor
+	info.ChangedAt = changedAt.Format(time.RFC3339)
+	return info, nil
+}
+
+// observeOutputSequence strips and hashes raw pane content, then advances
+// the durable output sequence for the pane's scope. Errors and a missing
+// store both degrade to nil: the signal is additive and must never break
+// the surface that carries it.
+func observeOutputSequence(sessionName, paneID, rawContent string, observedAt time.Time) *OutputSequenceInfo {
+	store := currentProjectionStore()
+	if store == nil {
+		return nil
+	}
+	hash := computeContentHash(status.StripANSI(rawContent))
+	info, err := advanceOutputSequence(store, outputSeqScope(sessionName, paneID), hash, observedAt)
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
 // =============================================================================

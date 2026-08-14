@@ -65,6 +65,7 @@ var SchemaCommand = map[string]interface{}{
 	// Session operations
 	"spawn":            SpawnOutput{},
 	"send":             SendOutput{},
+	"send_receipt":     SendReceiptOutput{},
 	"interrupt":        InterruptOutput{},
 	"tail":             TailOutput{},
 	"pane_address":     PaneAddressOutput{},

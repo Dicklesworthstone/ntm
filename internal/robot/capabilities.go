@@ -924,6 +924,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "track", Flag: "--track", Type: "bool", Required: false, Description: "Combined send+ack: wait for response"},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Max wait time when --track is enabled"},
 				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "500ms", Description: "Poll interval when --track is enabled"},
+				{Name: "op-id", Flag: "--op-id", Type: "string", Required: false, Description: "Durable idempotent operation ID: identical retries replay the recorded outcome without re-sending; conflicting reuse is rejected (IDEMPOTENCY_CONFLICT); per-target admission receipts are returned and queryable via --robot-send-receipt"},
 				{Name: "dry-run", Flag: "--dry-run", Type: "bool", Required: false, Description: "Preview without executing"},
 			},
 			Examples: []string{
@@ -932,6 +933,19 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-send=proj --msg-file=/tmp/prompt.txt --type=codex",
 				"ntm --robot-send=proj --msg='draft' --enter=false",
 				"ntm --robot-send=proj --msg='hello' --track --timeout=30s",
+				"ntm --robot-send=proj --msg='deploy' --op-id=deploy-42",
+			},
+		},
+		{
+			Name:        "send-receipt",
+			Flag:        "--robot-send-receipt",
+			Category:    "control",
+			Description: "Query the durable receipt of an idempotent send by operation ID: binding digest, byte count, per-target admission states, and the recorded outcome. Receipts survive caller timeouts and crashes.",
+			Parameters: []RobotParameter{
+				{Name: "operation-id", Flag: "--robot-send-receipt", Type: "string", Required: true, Description: "Operation ID supplied to --robot-send --op-id"},
+			},
+			Examples: []string{
+				"ntm --robot-send-receipt=deploy-42",
 			},
 		},
 		{

@@ -2993,3 +2993,131 @@ func TestVelocityTracker_FirstSampleBaseline_ZeroCharsAdded(t *testing.T) {
 		t.Errorf("first sample (no prior baseline): expected Velocity=0, got %f", sample.Velocity)
 	}
 }
+
+// =============================================================================
+// Durable output-change sequence tests (#246)
+// =============================================================================
+
+func TestAdvanceOutputSequenceContract(t *testing.T) {
+	store := newMockWatermarkStore()
+	scope := outputSeqScope("proj", "%3")
+	now := time.Now().UTC()
+
+	// First observation establishes a baseline: sequence 0, fresh epoch,
+	// no change timestamp.
+	first, err := advanceOutputSequence(store, scope, computeContentHash("hello"), now)
+	if err != nil {
+		t.Fatalf("first observation error = %v", err)
+	}
+	if first == nil || first.Epoch == "" {
+		t.Fatalf("first observation = %+v, want fresh epoch", first)
+	}
+	if first.Sequence != 0 || first.ChangedAt != "" {
+		t.Errorf("first observation = %+v, want sequence 0 with no changed_at", first)
+	}
+
+	// Repeated observation of unchanged content stays stable.
+	same, err := advanceOutputSequence(store, scope, computeContentHash("hello"), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("stable observation error = %v", err)
+	}
+	if same.Sequence != 0 || same.Epoch != first.Epoch {
+		t.Errorf("stable observation = %+v, want unchanged sequence and epoch", same)
+	}
+
+	// A real content change advances the sequence within the same epoch.
+	changed, err := advanceOutputSequence(store, scope, computeContentHash("hello world"), now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("changed observation error = %v", err)
+	}
+	if changed.Sequence != 1 || changed.Epoch != first.Epoch {
+		t.Errorf("changed observation = %+v, want sequence 1 in epoch %s", changed, first.Epoch)
+	}
+	if changed.ChangedAt == "" {
+		t.Error("changed observation missing changed_at")
+	}
+
+	// Stability again after the change.
+	stable, err := advanceOutputSequence(store, scope, computeContentHash("hello world"), now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("post-change stable observation error = %v", err)
+	}
+	if stable.Sequence != 1 {
+		t.Errorf("post-change stable sequence = %d, want 1", stable.Sequence)
+	}
+
+	// A second change keeps advancing monotonically.
+	again, err := advanceOutputSequence(store, scope, computeContentHash("more"), now.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("second change error = %v", err)
+	}
+	if again.Sequence != 2 {
+		t.Errorf("second change sequence = %d, want 2", again.Sequence)
+	}
+}
+
+func TestAdvanceOutputSequenceSurvivesRestartAndRotatesEpochOnReset(t *testing.T) {
+	store := newMockWatermarkStore()
+	scope := outputSeqScope("proj", "%7")
+	now := time.Now().UTC()
+
+	first, err := advanceOutputSequence(store, scope, computeContentHash("a"), now)
+	if err != nil {
+		t.Fatalf("baseline error = %v", err)
+	}
+	if _, err := advanceOutputSequence(store, scope, computeContentHash("b"), now.Add(time.Second)); err != nil {
+		t.Fatalf("change error = %v", err)
+	}
+
+	// "Producer restart": a fresh observer over the same durable store must
+	// continue the same epoch and sequence rather than resetting.
+	restarted, err := advanceOutputSequence(store, scope, computeContentHash("b"), now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("restart observation error = %v", err)
+	}
+	if restarted.Epoch != first.Epoch || restarted.Sequence != 1 {
+		t.Errorf("restart observation = %+v, want epoch %s sequence 1", restarted, first.Epoch)
+	}
+
+	// State store reset (row lost): a NEW epoch is minted so consumers can
+	// detect the discontinuity instead of comparing incomparable sequences.
+	fresh := newMockWatermarkStore()
+	reset, err := advanceOutputSequence(fresh, scope, computeContentHash("b"), now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("reset observation error = %v", err)
+	}
+	if reset.Epoch == first.Epoch {
+		t.Error("epoch survived a state reset; want a fresh epoch")
+	}
+	if reset.Sequence != 0 {
+		t.Errorf("reset sequence = %d, want 0", reset.Sequence)
+	}
+}
+
+func TestAdvanceOutputSequenceNilStoreDegrades(t *testing.T) {
+	info, err := advanceOutputSequence(nil, "s|%1", computeContentHash("x"), time.Now())
+	if err != nil || info != nil {
+		t.Fatalf("nil store = (%+v, %v), want (nil, nil)", info, err)
+	}
+}
+
+func TestOutputSequenceScopesAreIndependent(t *testing.T) {
+	store := newMockWatermarkStore()
+	now := time.Now().UTC()
+
+	a1, _ := advanceOutputSequence(store, outputSeqScope("s", "%1"), computeContentHash("a"), now)
+	b1, _ := advanceOutputSequence(store, outputSeqScope("s", "%2"), computeContentHash("a"), now)
+	if a1.Epoch == b1.Epoch {
+		t.Error("distinct scopes share an epoch; want independent epochs")
+	}
+
+	// Advancing one scope must not move the other.
+	a2, _ := advanceOutputSequence(store, outputSeqScope("s", "%1"), computeContentHash("b"), now.Add(time.Second))
+	b2, _ := advanceOutputSequence(store, outputSeqScope("s", "%2"), computeContentHash("a"), now.Add(time.Second))
+	if a2.Sequence != 1 {
+		t.Errorf("scope A sequence = %d, want 1", a2.Sequence)
+	}
+	if b2.Sequence != 0 {
+		t.Errorf("scope B sequence = %d, want 0", b2.Sequence)
+	}
+}

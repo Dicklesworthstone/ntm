@@ -322,6 +322,7 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 | Flag | Description | Example |
 |------|-------------|---------|
 | `--robot-send=SESSION` | Send message to panes | `ntm --robot-send=proj --msg='Fix auth' --type=claude` |
+| `--robot-send-receipt=OP_ID` | Query durable receipt of an idempotent send | `ntm --robot-send-receipt=deploy-42` |
 | `--robot-ack=SESSION` | Watch for agent responses | `ntm --robot-ack=proj --ack-timeout=30s` |
 | `--robot-spawn=SESSION` | Create session with agents | `ntm --robot-spawn=proj --spawn-cc=2 --spawn-wait` |
 | `--robot-interrupt=SESSION` | Send Ctrl+C, optionally new task | `ntm --robot-interrupt=proj --interrupt-msg='Stop'` |
@@ -335,6 +336,7 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 | `--type` | - | `--robot-send`, `--robot-ack`, `--robot-interrupt` | Agent type: claude\|cc, codex\|cod, antigravity\|agy, gemini\|gmi (legacy) |
 | `--all` | - | `--robot-send`, `--robot-interrupt` | Include user pane |
 | `--track` | - | `--robot-send` | Combined send+ack mode |
+| `--op-id` | - | `--robot-send` | Durable idempotent operation ID: identical retries replay the recorded outcome; conflicting reuse errors `IDEMPOTENCY_CONFLICT`; receipts queryable via `--robot-send-receipt` |
 | `--lines` | - | `--robot-tail` | Lines per pane (default 20) |
 | `--since` | - | `--robot-snapshot` | RFC3339 timestamp for delta; reads the durable attention feed, so it needs the runtime projection store (errors `NOT_IMPLEMENTED` without one) and only returns events still inside the retention window |
 

@@ -95,6 +95,10 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string, content stri
 			agent.SecondsSinceOutput = int(time.Since(agent.LastOutputTS).Seconds())
 		}
 
+		// Durable output-change sequence (#246). agent.Pane carries the tmux
+		// pane ID on this path, matching the scope used by --robot-activity.
+		agent.OutputSequence = observeOutputSequence(sessionName, agent.Pane, content, time.Now().UTC())
+
 		if modelName != "" {
 			agent.ContextModel = modelName
 			usage := tokens.GetUsageInfo(content, modelName)

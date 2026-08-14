@@ -1595,6 +1595,10 @@ type Agent struct {
 	ContextPercent       float64   `json:"context_percent,omitempty"`         // Usage percentage (0-100+)
 	ContextModel         string    `json:"context_model,omitempty"`           // Model name for context limit lookup
 	CaptureError         string    `json:"capture_error,omitempty"`
+
+	// OutputSequence is the durable, privacy-preserving output-change signal
+	// (#246). Absent when no runtime projection store is configured.
+	OutputSequence *OutputSequenceInfo `json:"output_sequence,omitempty"`
 }
 
 // SystemInfo contains system and runtime information
@@ -6142,6 +6146,10 @@ type SendOutput struct {
 	CASSInjection  *CASSInjectionInfo   `json:"cass_injection,omitempty"`
 	AgentHints     *SendAgentHints      `json:"_agent_hints,omitempty"`
 	RenderEvidence []SendRenderEvidence `json:"render_evidence,omitempty"`
+
+	// Operation is the durable idempotent-operation receipt (#245), present
+	// when the caller supplied an operation ID (--op-id / Idempotency-Key).
+	Operation *SendOperationInfo `json:"operation,omitempty"`
 }
 
 // SendRenderEvidence records bounded before/after terminal observations for one
@@ -7172,6 +7180,76 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		)
 		output.AgentHints = generateSendHints(output)
 		return finalizeTerminalSendActuation(trace, opts, &output), nil
+	}
+
+	// Durable idempotent operation claim (#245). The claim happens BEFORE
+	// any keystroke is injected and binds the operation ID to the canonical
+	// targets plus the digest of the exact payload about to be delivered
+	// (post CASS injection). Identical retries replay the recorded outcome;
+	// conflicting reuse is rejected; racing/crashed operations report
+	// in-progress and reconcile via --robot-send-receipt.
+	var claimedOp *state.SendOperation
+	var claimedStore *state.Store
+	if trace.IdempotencyKey != "" && !opts.DryRun {
+		store := currentProjectionStore()
+		if store == nil {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("idempotent send requires the runtime projection store"),
+				ErrCodeNotImplemented,
+				"Re-run without an operation ID, or ensure the runtime state store is available",
+			)
+			return finalizeTerminalSendActuation(trace, opts, &output), nil
+		}
+		payloadSHA, payloadBytes := sendPayloadDigest(messageToSend)
+		claim := &state.SendOperation{
+			OperationID:   trace.IdempotencyKey,
+			SessionName:   opts.Session,
+			BindingHash:   sendOperationBindingHash(opts.Session, output.Targets, payloadSHA),
+			PayloadSHA256: payloadSHA,
+			PayloadBytes:  payloadBytes,
+		}
+		stored, claimed, claimErr := store.ClaimSendOperation(claim)
+		if claimErr != nil {
+			output.RobotResponse = NewErrorResponse(claimErr, ErrCodeInternalError, "Failed to claim send operation")
+			return finalizeTerminalSendActuation(trace, opts, &output), nil
+		}
+		if !claimed {
+			if stored.BindingHash != claim.BindingHash {
+				output.RobotResponse = NewErrorResponse(
+					fmt.Errorf("operation ID '%s' is already bound to different targets or payload", trace.IdempotencyKey),
+					ErrCodeIdempotencyConflict,
+					"Use a fresh operation ID for a different send, or repeat the original targets and message exactly",
+				)
+				output.Operation = sendOperationInfoFromRecord(stored, false)
+				return &output, nil
+			}
+			if stored.Status == state.SendOperationCompleted {
+				if err := applyReplayedOutcome(&output, stored); err != nil {
+					output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Stored send outcome could not be decoded")
+					return &output, nil
+				}
+				output.AgentHints = generateSendHints(output)
+				return &output, nil
+			}
+			// Claimed elsewhere and not yet completed: outcome unknown.
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("operation '%s' is in progress", trace.IdempotencyKey),
+				ErrCodeOperationInProgress,
+				fmt.Sprintf("Query the durable receipt with --robot-send-receipt=%s before retrying", trace.IdempotencyKey),
+			)
+			info := sendOperationInfoFromRecord(stored, true)
+			info.Admissions = unknownAdmissions(output.Targets)
+			output.Operation = info
+			return &output, nil
+		}
+		claimedOp = stored
+		claimedStore = store
+		defer func() {
+			// Record the terminal outcome on every exit path after the
+			// claim so the receipt survives caller timeouts and crashes on
+			// later paths.
+			completeSendOperationRecord(claimedStore, claimedOp, &output)
+		}()
 	}
 
 	service, finalRedactor, err := newRobotDispatchService(redactCfg, nil, nil)
@@ -10652,6 +10730,13 @@ type AgentActivityInfo struct {
 	ObservationFreshness  string  `json:"observation_freshness"`
 	ObservationConfidence float64 `json:"observation_confidence"`
 	SafeToDispatch        bool    `json:"safe_to_dispatch"`
+
+	// OutputSequence is the durable, privacy-preserving output-change signal
+	// (#246): an opaque epoch plus a monotonic sequence that advances only
+	// when NTM detects a real output change for this pane. Absent when no
+	// runtime projection store is configured. See OutputSequenceInfo for the
+	// comparison contract.
+	OutputSequence *OutputSequenceInfo `json:"output_sequence,omitempty"`
 }
 
 // SourceHealthEntry describes the freshness of a source feeding a robot
@@ -10901,6 +10986,10 @@ func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
 			ObservationFreshness:  string(paneObservation.Current.Freshness),
 			ObservationConfidence: paneObservation.Current.Confidence,
 			SafeToDispatch:        paneObservation.SafeToDispatch(),
+			OutputSequence: observeOutputSequence(
+				opts.Session, pane.ID, paneObservation.RawOutput,
+				paneObservation.Current.ObservedAt,
+			),
 		}
 
 		if !activity.StateSince.IsZero() {
