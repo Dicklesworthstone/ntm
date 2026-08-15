@@ -2,6 +2,7 @@ package robot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -88,7 +89,9 @@ func TestClassifyStuckPanes(t *testing.T) {
 				{Pane: 5, Health: "rate_limited", IdleSinceSeconds: 500},
 			},
 			threshold: 5 * time.Minute,
-			wantPanes: []int{2, 3, 5},
+			// Pane 5 (rate_limited over threshold) is a typed SKIP as of
+			// bd-qz5wk: a restart does not lift a rate limit.
+			wantPanes: []int{2, 3},
 		},
 		{
 			name: "custom short threshold catches more",
@@ -129,7 +132,7 @@ func TestClassifyStuckPanes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ClassifyStuckPanes(tt.agents, tt.threshold)
+			got, _ := ClassifyStuckPanes(tt.agents, tt.threshold)
 			if !intSlicesEqual(got, tt.wantPanes) {
 				t.Errorf("ClassifyStuckPanes() = %v, want %v", got, tt.wantPanes)
 			}
@@ -575,14 +578,32 @@ func TestClassifyStuckPanes_AllHealthStates(t *testing.T) {
 	threshold := 5 * time.Minute
 	thresholdSec := int(threshold.Seconds())
 
-	healthStates := []string{"healthy", "degraded", "unhealthy", "rate_limited"}
+	// rate_limited and blocked above threshold become typed SKIPS as of
+	// bd-qz5wk: restarting neither lifts a rate limit nor answers a gate.
+	healthStates := []string{"healthy", "degraded", "unhealthy"}
+	skipStates := []string{"rate_limited", "blocked"}
+
+	for _, health := range skipStates {
+		t.Run("above_threshold_"+health+"_is_skipped", func(t *testing.T) {
+			agents := []SessionAgentHealth{
+				{Pane: 1, Health: health, IdleSinceSeconds: thresholdSec + 1},
+			}
+			got, skipped := ClassifyStuckPanes(agents, threshold)
+			if len(got) != 0 {
+				t.Errorf("health=%q above threshold: got %v as stuck, want skip", health, got)
+			}
+			if len(skipped) != 1 || skipped[0].Pane != 1 || skipped[0].Reason == "" {
+				t.Errorf("health=%q above threshold: skipped=%+v, want one reasoned skip", health, skipped)
+			}
+		})
+	}
 
 	for _, health := range healthStates {
 		t.Run("above_threshold_"+health, func(t *testing.T) {
 			agents := []SessionAgentHealth{
 				{Pane: 1, Health: health, IdleSinceSeconds: thresholdSec + 1},
 			}
-			got := ClassifyStuckPanes(agents, threshold)
+			got, _ := ClassifyStuckPanes(agents, threshold)
 			if len(got) != 1 || got[0] != 1 {
 				t.Errorf("health=%q above threshold: got %v, want [1]", health, got)
 			}
@@ -592,7 +613,7 @@ func TestClassifyStuckPanes_AllHealthStates(t *testing.T) {
 			agents := []SessionAgentHealth{
 				{Pane: 1, Health: health, IdleSinceSeconds: thresholdSec - 1},
 			}
-			got := ClassifyStuckPanes(agents, threshold)
+			got, _ := ClassifyStuckPanes(agents, threshold)
 			if len(got) != 0 {
 				t.Errorf("health=%q below threshold: got %v, want []", health, got)
 			}
@@ -607,7 +628,7 @@ func TestClassifyStuckPanes_PreservesPaneOrder(t *testing.T) {
 		{Pane: 2, Health: "healthy", IdleSinceSeconds: 600},
 		{Pane: 8, Health: "healthy", IdleSinceSeconds: 600},
 	}
-	got := ClassifyStuckPanes(agents, 5*time.Minute)
+	got, _ := ClassifyStuckPanes(agents, 5*time.Minute)
 	want := []int{5, 2, 8}
 	if !intSlicesEqual(got, want) {
 		t.Errorf("pane order not preserved: got %v, want %v", got, want)
@@ -624,7 +645,7 @@ func TestClassifyStuckPanes_LargePaneCount(t *testing.T) {
 			IdleSinceSeconds: 600,
 		}
 	}
-	got := ClassifyStuckPanes(agents, 5*time.Minute)
+	got, _ := ClassifyStuckPanes(agents, 5*time.Minute)
 	if len(got) != 20 {
 		t.Errorf("expected 20 stuck panes, got %d", len(got))
 	}
@@ -756,4 +777,57 @@ func TestRestartAutoRestartStuckPanes_WindowPerAgentTargetsDistinctPanes(t *test
 	if len(seen) != 3 {
 		t.Fatalf("restarts hit %d distinct target(s): %v — each window's stuck agent must be restarted once", len(seen), seen)
 	}
+}
+
+// bd-qz5wk: threshold-exceeding panes whose health forbids a restart become
+// typed skips — a restart cannot answer a gate screen or lift a rate limit.
+func TestClassifyStuckPanesSkipsBlockedAndRateLimited(t *testing.T) {
+	agents := []SessionAgentHealth{
+		{Pane: 1, PaneTarget: "%1", Health: "blocked", IdleSinceSeconds: 900},
+		{Pane: 2, PaneTarget: "%2", Health: "rate_limited", IdleSinceSeconds: 900, BackoffRemaining: 120},
+		{Pane: 3, PaneTarget: "%3", Health: "unhealthy", IdleSinceSeconds: 900},
+		{Pane: 4, PaneTarget: "%4", Health: "blocked", IdleSinceSeconds: 10}, // under threshold: neither list
+	}
+	stuck, skipped := ClassifyStuckPanes(agents, 5*time.Minute)
+	t.Logf("stuck=%v skipped=%+v", stuck, skipped)
+
+	if len(stuck) != 1 || stuck[0] != 3 {
+		t.Errorf("stuck = %v, want only pane 3", stuck)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped = %+v, want 2 entries", skipped)
+	}
+	byPane := map[int]AutoRestartSkip{}
+	for _, sk := range skipped {
+		byPane[sk.Pane] = sk
+	}
+	if sk := byPane[1]; sk.Health != "blocked" ||
+		!strings.Contains(sk.Reason, "restart cannot answer it") ||
+		!strings.Contains(sk.Reason, "keystroke") {
+		t.Errorf("blocked skip = %+v, want gate-refusal reason", sk)
+	}
+	if sk := byPane[2]; sk.Health != "rate_limited" ||
+		!strings.Contains(sk.Reason, "backoff 120s") {
+		t.Errorf("rate-limited skip = %+v, want backoff reason", sk)
+	}
+}
+
+// The skips must survive into the robot envelope on every exit path.
+func TestBuildAutoRestartStuckOutputCarriesSkips(t *testing.T) {
+	agents := []SessionAgentHealth{
+		{Pane: 1, PaneTarget: "%1", Health: "blocked", IdleSinceSeconds: 900},
+	}
+	stuck, skipped := ClassifyStuckPanes(agents, 5*time.Minute)
+	output := BuildAutoRestartStuckOutput("sess", stuck, nil, nil, 5*time.Minute, true)
+	output.Skipped = skipped
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"skipped"`) ||
+		!strings.Contains(string(data), "restart cannot answer it") {
+		t.Errorf("envelope missing typed skip: %s", data)
+	}
+	t.Logf("envelope: %s", data)
 }

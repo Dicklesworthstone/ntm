@@ -829,6 +829,10 @@ type SessionHealthSummary struct {
 	Degraded    int `json:"degraded"`
 	Unhealthy   int `json:"unhealthy"`
 	RateLimited int `json:"rate_limited"`
+	// Blocked counts panes parked on an interactive gate screen — they
+	// need a human keystroke and are never auto-restart candidates
+	// (bd-jf22c / bd-qz5wk).
+	Blocked int `json:"blocked"`
 }
 
 // GetSessionHealth collects per-agent health for a specific session.
@@ -932,6 +936,8 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 			output.Summary.Unhealthy++
 		case "rate_limited":
 			output.Summary.RateLimited++
+		case "blocked":
+			output.Summary.Blocked++
 		}
 	}
 
@@ -2241,9 +2247,12 @@ type AutoRestartStuckOutput struct {
 	StuckPanes []int  `json:"stuck_panes"`
 	Restarted  []int  `json:"restarted"`
 	Failed     []int  `json:"failed,omitempty"`
-	Threshold  string `json:"threshold"`
-	DryRun     bool   `json:"dry_run,omitempty"`
-	CheckedAt  string `json:"checked_at"`
+	// Skipped lists threshold-exceeding panes deliberately not restarted,
+	// each with its typed health-state reason (bd-qz5wk).
+	Skipped   []AutoRestartSkip `json:"skipped,omitempty"`
+	Threshold string            `json:"threshold"`
+	DryRun    bool              `json:"dry_run,omitempty"`
+	CheckedAt string            `json:"checked_at"`
 }
 
 // AutoRestartStuckOptions configures the auto-restart-stuck operation.
@@ -2260,20 +2269,54 @@ const DefaultStuckThreshold = 5 * time.Minute
 // ClassifyStuckPanes identifies panes that are stuck based on health data.
 // A pane is stuck if it is an agent pane (not user/unknown) and has been idle
 // longer than the threshold duration. This is a pure function for testability.
-func ClassifyStuckPanes(agents []SessionAgentHealth, threshold time.Duration) []int {
+// AutoRestartSkip records a pane that met the stuck threshold but was
+// deliberately NOT restarted, with the typed reason (bd-qz5wk). Previously
+// these panes were invisible: a blocked pane was protected only by accident
+// (repaints keeping IdleSinceSeconds low) and the refusal reason from
+// shouldAutoRestartHealthState was unreachable from this surface.
+type AutoRestartSkip struct {
+	Pane       int    `json:"pane"`
+	PaneTarget string `json:"pane_target,omitempty"`
+	Health     string `json:"health"`
+	Reason     string `json:"reason"`
+}
+
+// ClassifyStuckPanes returns the panes idle past the threshold that are
+// eligible for auto-restart, plus typed skips for threshold-exceeding panes
+// whose health state forbids restarting (blocked: a restart cannot answer a
+// gate screen; rate_limited: restarting will not lift the limit).
+func ClassifyStuckPanes(agents []SessionAgentHealth, threshold time.Duration) ([]int, []AutoRestartSkip) {
 	var stuck []int
+	var skipped []AutoRestartSkip
 	thresholdSec := int(threshold.Seconds())
 	for _, agent := range agents {
-		if agent.Health == "unhealthy" || agent.Health == "degraded" {
-			if agent.IdleSinceSeconds >= thresholdSec {
-				stuck = append(stuck, agent.Pane)
+		if agent.IdleSinceSeconds < thresholdSec {
+			continue
+		}
+		switch agent.Health {
+		case "blocked":
+			skipped = append(skipped, AutoRestartSkip{
+				Pane:       agent.Pane,
+				PaneTarget: agent.PaneTarget,
+				Health:     agent.Health,
+				Reason:     "blocked on an interactive gate screen; a restart cannot answer it — needs a human keystroke",
+			})
+		case "rate_limited":
+			reason := "rate_limited; waiting for reset"
+			if agent.BackoffRemaining > 0 {
+				reason = fmt.Sprintf("rate_limited; waiting for reset (backoff %ds remaining)", agent.BackoffRemaining)
 			}
-		} else if agent.IdleSinceSeconds >= thresholdSec {
-			// Healthy but idle for too long - also stuck
+			skipped = append(skipped, AutoRestartSkip{
+				Pane:       agent.Pane,
+				PaneTarget: agent.PaneTarget,
+				Health:     agent.Health,
+				Reason:     reason,
+			})
+		default:
 			stuck = append(stuck, agent.Pane)
 		}
 	}
-	return stuck
+	return stuck, skipped
 }
 
 // BuildAutoRestartStuckOutput constructs the output struct from health data
@@ -2346,16 +2389,20 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 		return output, nil
 	}
 
-	// Classify stuck panes
-	stuckPanes := ClassifyStuckPanes(healthOutput.Agents, opts.Threshold)
+	// Classify stuck panes; blocked/rate-limited panes past the threshold
+	// become typed skips instead of restart candidates (bd-qz5wk).
+	stuckPanes, skipped := ClassifyStuckPanes(healthOutput.Agents, opts.Threshold)
 	// Preview is observational: report every candidate even when its lifecycle
 	// protocol is intentionally unavailable. Capability validation belongs at
 	// the actuation boundary below.
 	if opts.DryRun {
-		return BuildAutoRestartStuckOutput(opts.Session, stuckPanes, nil, nil, opts.Threshold, true), nil
+		output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, nil, nil, opts.Threshold, true)
+		output.Skipped = skipped
+		return output, nil
 	}
 	if err := validateAutoRestartStuckAgents(healthOutput.Agents, stuckPanes); err != nil {
 		output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, nil, nil, opts.Threshold, opts.DryRun)
+		output.Skipped = skipped
 		output.RobotResponse = NewErrorResponse(err, ErrCodeNotImplemented, agent.GrokPhaseOneCapabilityHint)
 		return output, nil
 	}
@@ -2364,6 +2411,7 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 	restarted, failed, restartErr := restartAutoRestartStuckPanes(ctx, opts, healthOutput.Agents, stuckPanes, GetRestartPaneContext)
 	if restartErr != nil {
 		output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, restarted, failed, opts.Threshold, false)
+		output.Skipped = skipped
 		code := ErrCodeNotImplemented
 		hint := agent.GrokPhaseOneCapabilityHint
 		if errors.Is(restartErr, context.Canceled) || errors.Is(restartErr, context.DeadlineExceeded) {
@@ -2374,7 +2422,9 @@ func GetAutoRestartStuck(ctx context.Context, opts AutoRestartStuckOptions) (*Au
 		return output, nil
 	}
 
-	return BuildAutoRestartStuckOutput(opts.Session, stuckPanes, restarted, failed, opts.Threshold, false), nil
+	output := BuildAutoRestartStuckOutput(opts.Session, stuckPanes, restarted, failed, opts.Threshold, false)
+	output.Skipped = skipped
+	return output, nil
 }
 
 func validateAutoRestartStuckAgents(agents []SessionAgentHealth, stuckPanes []int) error {
