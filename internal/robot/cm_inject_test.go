@@ -371,7 +371,7 @@ func TestDiscoverCMDaemonClient(t *testing.T) {
 	}
 
 	// Dead PID must not be discovered.
-	writePID(1<<30 + 12345, 8321)
+	writePID(1<<30+12345, 8321)
 	if _, ok := discoverCMDaemonClient(dir); ok {
 		t.Error("discovered a daemon from a dead pid file")
 	}
