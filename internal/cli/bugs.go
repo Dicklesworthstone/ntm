@@ -31,13 +31,15 @@ Examples:
   ntm bugs list                # Show recent findings
   ntm bugs list --severity=critical  # Show only critical issues
   ntm bugs notify              # Send findings to agents via Agent Mail
-  ntm bugs summary             # Show bug counts summary`,
+  ntm bugs summary             # Show bug counts summary
+  ntm bugs watch               # Route new findings to reservation holders`,
 	}
 
 	cmd.AddCommand(
 		newBugsListCmd(),
 		newBugsNotifyCmd(),
 		newBugsSummaryCmd(),
+		newBugsWatchCmd(),
 	)
 
 	return cmd
