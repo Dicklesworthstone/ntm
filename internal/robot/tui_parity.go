@@ -2562,7 +2562,14 @@ type MetricsOutput struct {
 	TokenUsage   MetricsTokenUsage       `json:"token_usage"`
 	AgentStats   map[string]AgentMetrics `json:"agent_stats"`
 	SessionStats MetricsSessionStats     `json:"session_stats"`
-	AgentHints   *AgentHints             `json:"_agent_hints,omitempty"`
+	// Disk is the disk usage trajectory for the working directory's
+	// filesystem (ntm-1k9g). Omitted only when the filesystem cannot be
+	// statted.
+	Disk *DiskSection `json:"disk,omitempty"`
+	// DiskAttribution lists per-pane build-dir sizes; populated only when
+	// --disk-attribution is set (bounded du cost is real).
+	DiskAttribution []DiskAttributionEntry `json:"disk_attribution,omitempty"`
+	AgentHints      *AgentHints            `json:"_agent_hints,omitempty"`
 }
 
 // MetricsTokenUsage contains token consumption data
@@ -2600,6 +2607,9 @@ type MetricsOptions struct {
 	Session string // Filter to specific session
 	Period  string // "1h", "24h", "7d", "all" (default: "24h")
 	Format  string // "json", "csv" (default: "json")
+	// DiskAttribution enables per-pane build-dir sizing (--disk-attribution).
+	// Off by default: it walks build dirs under each agent pane's cwd.
+	DiskAttribution bool
 }
 
 // GetMetrics returns session metrics data.
@@ -2672,6 +2682,18 @@ func GetMetrics(opts MetricsOptions) (*MetricsOutput, error) {
 			}
 		}
 		output.SessionStats.FilesChanged = len(uniqueFiles)
+	}
+
+	// Disk trajectory: one sample per invocation, delta vs the previous
+	// persisted sample (ntm-1k9g). Fires the disk_trajectory alert when the
+	// projection lands within the configured horizon.
+	output.Disk = collectDiskSection()
+	publishDiskTrajectoryFromMergedConfig(output.Disk, time.Now().UTC())
+
+	if opts.DiskAttribution {
+		attrCtx, attrCancel := context.WithTimeout(context.Background(), diskAttributionBudget)
+		output.DiskAttribution = collectPaneBuildDirs(attrCtx, opts.Session)
+		attrCancel()
 	}
 
 	sessionDesc := opts.Session

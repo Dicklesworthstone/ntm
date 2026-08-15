@@ -2335,6 +2335,15 @@ func cloneSnapshotOutput(base *SnapshotOutput) *SnapshotOutput {
 		cloned.ResourcePressure = &resourcePressure
 	}
 
+	if base.Disk != nil {
+		disk := *base.Disk
+		if base.Disk.DeltaBytesPerMin != nil {
+			delta := *base.Disk.DeltaBytesPerMin
+			disk.DeltaBytesPerMin = &delta
+		}
+		cloned.Disk = &disk
+	}
+
 	if base.AgentMail != nil {
 		agentMailCopy := *base.AgentMail
 		if base.AgentMail.Agents != nil {
@@ -4652,6 +4661,7 @@ type SnapshotOutput struct {
 	MailUnread               int                           `json:"mail_unread,omitempty"`
 	Tools                    []ToolInfoOutput              `json:"tools,omitempty"`             // Flywheel tool inventory and health
 	ResourcePressure         *pressure.RobotPressure       `json:"resource_pressure,omitempty"` // Host pressure projection for large-swarm operators
+	Disk                     *DiskSection                  `json:"disk,omitempty"`              // Disk usage trajectory for the working dir's filesystem (ntm-1k9g)
 	Swarm                    *SwarmSnapshot                `json:"swarm,omitempty"`             // Active swarm orchestration state (optional)
 	Alerts                   []string                      `json:"alerts"`                      // Legacy: simple string alerts
 	AlertsDetailed           []AlertInfo                   `json:"alerts_detailed,omitempty"`   // Rich alert objects
@@ -4842,6 +4852,10 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	}
 	output := newSnapshotOutput(cfg)
 	attachSnapshotResourcePressure(output)
+	// Disk trajectory must attach before either snapshot path (projection or
+	// fallback) drains alerts.GetActiveAlerts, so a within-horizon projection
+	// surfaces in this same snapshot's alert sections.
+	attachSnapshotDisk(output, cfg)
 
 	feed := GetAttentionFeed()
 	populateSnapshotFeedMetadata(output, feed)

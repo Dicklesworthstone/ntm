@@ -481,6 +481,7 @@ type AlertsConfig struct {
 	Enabled                 bool    `toml:"enabled"`                   // Top-level toggle for alerts
 	AgentStuckMinutes       int     `toml:"agent_stuck_minutes"`       // Minutes without output before alerting
 	DiskLowThresholdGB      float64 `toml:"disk_low_threshold_gb"`     // Minimum free disk space (GB)
+	DiskFullHorizonHours    float64 `toml:"disk_full_horizon_hours"`   // Alert when disk is projected full within this many hours (0 = disabled)
 	MailBacklogThreshold    int     `toml:"mail_backlog_threshold"`    // Unread messages before alerting
 	BeadStaleHours          int     `toml:"bead_stale_hours"`          // Hours before in-progress bead is stale
 	ContextWarningThreshold float64 `toml:"context_warning_threshold"` // Context usage percentage that triggers a warning
@@ -493,6 +494,7 @@ func DefaultAlertsConfig() AlertsConfig {
 		Enabled:                 true,
 		AgentStuckMinutes:       5,
 		DiskLowThresholdGB:      5.0,
+		DiskFullHorizonHours:    0,
 		MailBacklogThreshold:    10,
 		BeadStaleHours:          24,
 		ContextWarningThreshold: 75.0,
@@ -4228,6 +4230,7 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "enabled = %t\n", cfg.Alerts.Enabled)
 	fmt.Fprintf(w, "agent_stuck_minutes = %d    # Minutes without output before alerting\n", cfg.Alerts.AgentStuckMinutes)
 	fmt.Fprintf(w, "disk_low_threshold_gb = %.1f  # Minimum free disk space (GB)\n", cfg.Alerts.DiskLowThresholdGB)
+	fmt.Fprintf(w, "disk_full_horizon_hours = %.1f # Alert when disk is projected full within this many hours (0 = disabled)\n", cfg.Alerts.DiskFullHorizonHours)
 	fmt.Fprintf(w, "mail_backlog_threshold = %d  # Unread messages before alerting\n", cfg.Alerts.MailBacklogThreshold)
 	fmt.Fprintf(w, "bead_stale_hours = %d       # Hours before in-progress bead is stale\n", cfg.Alerts.BeadStaleHours)
 	fmt.Fprintf(w, "context_warning_threshold = %.1f # Context usage percentage that triggers a warning\n", cfg.Alerts.ContextWarningThreshold)
@@ -5224,6 +5227,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Alerts.AgentStuckMinutes, nil
 		case "disk_low_threshold_gb":
 			return cfg.Alerts.DiskLowThresholdGB, nil
+		case "disk_full_horizon_hours":
+			return cfg.Alerts.DiskFullHorizonHours, nil
 		case "mail_backlog_threshold":
 			return cfg.Alerts.MailBacklogThreshold, nil
 		case "bead_stale_hours":
@@ -6189,6 +6194,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
 	addDiff("alerts.agent_stuck_minutes", defaults.Alerts.AgentStuckMinutes, cfg.Alerts.AgentStuckMinutes)
 	addDiff("alerts.disk_low_threshold_gb", defaults.Alerts.DiskLowThresholdGB, cfg.Alerts.DiskLowThresholdGB)
+	addDiff("alerts.disk_full_horizon_hours", defaults.Alerts.DiskFullHorizonHours, cfg.Alerts.DiskFullHorizonHours)
 	addDiff("alerts.mail_backlog_threshold", defaults.Alerts.MailBacklogThreshold, cfg.Alerts.MailBacklogThreshold)
 	addDiff("alerts.bead_stale_hours", defaults.Alerts.BeadStaleHours, cfg.Alerts.BeadStaleHours)
 	addDiff("alerts.context_warning_threshold", defaults.Alerts.ContextWarningThreshold, cfg.Alerts.ContextWarningThreshold)
@@ -6631,6 +6637,9 @@ func Validate(cfg *Config) []error {
 	}
 	if cfg.Alerts.DiskLowThresholdGB < 0 {
 		errs = append(errs, fmt.Errorf("alerts.disk_low_threshold_gb: must be non-negative, got %.1f", cfg.Alerts.DiskLowThresholdGB))
+	}
+	if cfg.Alerts.DiskFullHorizonHours < 0 {
+		errs = append(errs, fmt.Errorf("alerts.disk_full_horizon_hours: must be non-negative, got %.1f", cfg.Alerts.DiskFullHorizonHours))
 	}
 	if cfg.Alerts.MailBacklogThreshold < 0 {
 		errs = append(errs, fmt.Errorf("alerts.mail_backlog_threshold: must be non-negative, got %d", cfg.Alerts.MailBacklogThreshold))

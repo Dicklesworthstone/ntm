@@ -336,6 +336,36 @@
         },
         "type": "object"
       },
+      "DiskSection": {
+        "properties": {
+          "available_bytes": {
+            "description": "Available bytes",
+            "type": "integer"
+          },
+          "delta_bytes_per_min": {
+            "description": "Delta bytes per min",
+            "type": "number"
+          },
+          "mount_path": {
+            "description": "Mount path",
+            "type": "string"
+          },
+          "mount_used_pct": {
+            "description": "Mount used pct",
+            "type": "number"
+          },
+          "projected_full_at": {
+            "description": "Projected full at",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mount_path",
+          "mount_used_pct",
+          "available_bytes"
+        ],
+        "type": "object"
+      },
       "ErrorDetails": {
         "properties": {
           "actual_output": {
@@ -1933,6 +1963,10 @@
           "type": "string"
         },
         "type": "array"
+      },
+      "disk": {
+        "$ref": "#/definitions/DiskSection",
+        "description": "Disk"
       },
       "error": {
         "description": "Error",

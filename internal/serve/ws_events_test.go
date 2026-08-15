@@ -2,69 +2,37 @@ package serve
 
 import (
 	"database/sql"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/sqliteutil"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
+// setupTestDB opens a temp state store and applies the REAL managed
+// migrations (the ws_events schema lands via 006_ws_events.sql), so these
+// tests exercise the exact schema production runs against.
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	dbPath := filepath.Join(t.TempDir(), "test.db")
 
-	db, err := sql.Open(sqliteutil.DriverName, sqliteutil.FileDSN(
-		dbPath,
-		"journal_mode(WAL)",
-		"synchronous(NORMAL)",
-		"busy_timeout(5000)",
-		"foreign_keys(1)",
-	))
+	store, err := state.Open(dbPath)
 	if err != nil {
-		t.Fatalf("open db: %v", err)
+		t.Fatalf("open state store: %v", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-
-	// Create schema
-	schema := `
-		CREATE TABLE ws_events (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			topic TEXT NOT NULL,
-			event_type TEXT NOT NULL,
-			data TEXT NOT NULL,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX idx_ws_events_seq ON ws_events(seq);
-		CREATE INDEX idx_ws_events_topic_seq ON ws_events(topic, seq);
-		CREATE INDEX idx_ws_events_created_at ON ws_events(created_at);
-
-		CREATE TABLE ws_dropped_events (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			topic TEXT NOT NULL,
-			client_id TEXT NOT NULL,
-			dropped_count INTEGER NOT NULL DEFAULT 1,
-			first_dropped_seq INTEGER,
-			last_dropped_seq INTEGER,
-			reason TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX idx_ws_dropped_client ON ws_dropped_events(client_id, created_at);
-	`
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		t.Fatalf("create schema: %v", err)
+	if err := store.Migrate(); err != nil {
+		store.Close()
+		t.Fatalf("apply migrations: %v", err)
 	}
 
 	cleanup := func() {
-		db.Close()
-		os.RemoveAll(dir)
+		if err := store.Close(); err != nil {
+			t.Errorf("close state store: %v", err)
+		}
 	}
 
-	return db, cleanup
+	return store.DB(), cleanup
 }
 
 func TestWSEventStore_StoreAndRetrieve(t *testing.T) {

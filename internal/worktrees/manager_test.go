@@ -1086,3 +1086,24 @@ func TestGetWorktreeForAgent_DoesNotTreatPrefixMatchedWorktreeAsValid(t *testing
 		t.Fatalf("expected prefix-matched fake worktree to be reported invalid, got %+v", info)
 	}
 }
+
+func TestSessionHasWorktrees(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+
+	if SessionHasWorktrees(projectDir, "sess") {
+		t.Fatal("no worktree root yet: want false")
+	}
+	if SessionHasWorktrees("", "sess") || SessionHasWorktrees(projectDir, "") {
+		t.Fatal("empty inputs must report false")
+	}
+
+	root := filepath.Join(projectDir, ".ntm", "worktrees", "sess")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !SessionHasWorktrees(projectDir, "sess") {
+		t.Fatal("session worktree root exists: want true")
+	}
+	t.Logf("decision: the surviving worktree root is the previous-isolation-mode record used for transition detection (persists across ntm kill)")
+}

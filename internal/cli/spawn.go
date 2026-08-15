@@ -2385,6 +2385,11 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 	}
 
 	steps := output.NewSteps()
+	// Snapshot the session's previous isolation mode BEFORE provisioning
+	// worktrees: creating them below would make a shared→worktree transition
+	// invisible to the build-slot lease reconciliation (ntm-83dz).
+	preSpawnHadWorktrees := worktrees.SessionHasWorktrees(dir, opts.Session)
+
 	provisionedWorktreePaths := make(map[string]string, len(opts.Agents))
 	if opts.UseWorktrees {
 		if !IsJSONOutput() {
@@ -2524,6 +2529,11 @@ func spawnSessionLogicContextWithOutput(ctx context.Context, opts SpawnOptions, 
 			}
 		}
 	}
+	// If this spawn flips the session's worktree isolation mode, release
+	// Agent Mail build-slot leases held by identities NTM registered whose
+	// panes no longer exist (ntm-83dz). Best-effort: never blocks the spawn.
+	reconcileBuildSlotLeasesOnSpawn(ctx, opts.Session, dir, preSpawnHadWorktrees, opts.UseWorktrees, panes)
+
 	existingPanes := len(panes)
 	paneInitDelay := time.Duration(cfg.Tmux.PaneInitDelayMs) * time.Millisecond
 	if flag.Lookup("test.v") != nil {

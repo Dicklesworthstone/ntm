@@ -685,8 +685,9 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-metrics", Type: "string", Required: false, Description: "Optional session filter"},
 				{Name: "metrics-period", Flag: "--metrics-period", Type: "string", Required: false, Default: "24h", Description: "Period: 1h, 24h, 7d, all"},
+				{Name: "disk-attribution", Flag: "--disk-attribution", Type: "bool", Required: false, Default: "false", Description: "Include per-pane build-dir disk sizes (bounded du of target/, node_modules/, .venv/, dist/ under each agent pane's cwd)"},
 			},
-			Examples: []string{"ntm --robot-metrics=myproject --metrics-period=7d"},
+			Examples: []string{"ntm --robot-metrics=myproject --metrics-period=7d", "ntm --robot-metrics --disk-attribution"},
 		},
 		{
 			Name:        "activity",

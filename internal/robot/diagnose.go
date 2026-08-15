@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -37,6 +39,9 @@ type DiagnoseOutput struct {
 	Recommendations []DiagnoseRecommendation `json:"recommendations"`
 	AutoFixAvail    bool                     `json:"auto_fix_available"`
 	AutoFixCommand  string                   `json:"auto_fix_command,omitempty"`
+	// BuildSlots reports the stale Agent Mail build-slot lease check
+	// (ntm-83dz). Nil only for error responses that never ran the check.
+	BuildSlots *BuildSlotDiagnosis `json:"build_slots,omitempty"`
 }
 
 // DiagnoseSummary contains counts by health state
@@ -74,6 +79,10 @@ type DiagnoseRecommendation struct {
 	Reason      string `json:"reason"`       // human-readable explanation
 	AutoFixable bool   `json:"auto_fixable"` // can --fix handle this?
 	FixCommand  string `json:"fix_command"`  // command to fix (manual or auto)
+	// BuildSlot carries the lease details for action "release_build_slot"
+	// so --fix can call the Agent Mail release tool without re-listing.
+	// Nil for pane-scoped recommendations.
+	BuildSlot *StaleBuildSlotLease `json:"build_slot,omitempty"`
 }
 
 // DiagnoseOptions configures the diagnose output
@@ -89,14 +98,24 @@ type diagnoseDependencies struct {
 	listPanes     func(context.Context, string) ([]tmux.Pane, error)
 	restartPane   diagnoseRestartPaneFunc
 	sendKeys      func(context.Context, string, string, bool) error
+	// Build-slot lease check dependencies (ntm-83dz). All are best-effort:
+	// failures degrade the check, never the diagnosis.
+	projectKey          func() (string, error)
+	loadAgentRegistry   func(session string, projectKeys ...string) (*agentmail.SessionAgentRegistry, error)
+	listBuildSlotLeases func(projectKey string, now time.Time) ([]agentmail.BuildSlotLease, error)
+	releaseBuildSlot    func(ctx context.Context, projectKey string, registry *agentmail.SessionAgentRegistry, lease agentmail.BuildSlotLease) error
 }
 
 func defaultDiagnoseDependencies() diagnoseDependencies {
 	return diagnoseDependencies{
-		sessionExists: tmux.SessionExistsContext,
-		listPanes:     tmux.GetPanesContext,
-		restartPane:   GetRestartPaneContext,
-		sendKeys:      tmux.SendKeysContext,
+		sessionExists:       tmux.SessionExistsContext,
+		listPanes:           tmux.GetPanesContext,
+		restartPane:         GetRestartPaneContext,
+		sendKeys:            tmux.SendKeysContext,
+		projectKey:          defaultDiagnoseProjectKey,
+		loadAgentRegistry:   defaultLoadAgentRegistry,
+		listBuildSlotLeases: defaultListBuildSlotLeases,
+		releaseBuildSlot:    defaultReleaseBuildSlot,
 	}
 }
 
@@ -113,6 +132,18 @@ func (deps diagnoseDependencies) withDefaults() diagnoseDependencies {
 	}
 	if deps.sendKeys == nil {
 		deps.sendKeys = defaults.sendKeys
+	}
+	if deps.projectKey == nil {
+		deps.projectKey = defaults.projectKey
+	}
+	if deps.loadAgentRegistry == nil {
+		deps.loadAgentRegistry = defaults.loadAgentRegistry
+	}
+	if deps.listBuildSlotLeases == nil {
+		deps.listBuildSlotLeases = defaults.listBuildSlotLeases
+	}
+	if deps.releaseBuildSlot == nil {
+		deps.releaseBuildSlot = defaults.releaseBuildSlot
 	}
 	return deps
 }
@@ -190,6 +221,10 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 		output.RobotResponse = NewErrorResponse(fmt.Errorf("failed to get panes: %w", cause), code, hint)
 		return output, nil
 	}
+
+	// Keep the full pane list for holder-liveness correlation in the
+	// build-slot check even when diagnosing a single pane.
+	allPanes := panes
 
 	// Filter to specific pane if requested
 	if opts.Pane >= 0 {
@@ -328,6 +363,12 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 		}
 	}
 
+	// Stale build-slot lease check (ntm-83dz): active Agent Mail leases
+	// whose holder identity has no live pane are attention items. The check
+	// never fails the diagnosis; unavailable sources degrade with a note.
+	output.BuildSlots = collectBuildSlotDiagnosis(opts.Session, allPanes, deps)
+	output.Recommendations = append(output.Recommendations, buildSlotRecommendations(opts.Session, output.BuildSlots)...)
+
 	// Sort all pane lists for consistent output
 	sort.Ints(output.Panes.Healthy)
 	sort.Ints(output.Panes.Degraded)
@@ -343,6 +384,13 @@ func getDiagnoseWithDependencies(ctx context.Context, opts DiagnoseOptions, deps
 
 	// Determine overall health
 	output.OverallHealth = determineOverallHealth(output.Summary)
+
+	// Stale leases are real coordination hazards (they block other agents'
+	// builds for up to an hour), so they degrade an otherwise healthy
+	// session. A degraded lease *source* does not: it only annotates.
+	if output.OverallHealth == "healthy" && output.BuildSlots != nil && len(output.BuildSlots.StaleLeases) > 0 {
+		output.OverallHealth = "degraded"
+	}
 
 	// Check if auto-fix is available
 	for _, rec := range output.Recommendations {
@@ -519,6 +567,19 @@ func executeDiagnoseFixWithDependencies(ctx context.Context, diag DiagnoseOutput
 		attempt := FixAttempt{
 			Pane:   rec.Pane,
 			Action: rec.Action,
+		}
+
+		// Build-slot releases are not pane-scoped: handle them before the
+		// pane lookup, which would otherwise reject the synthetic target.
+		if rec.Action == "release_build_slot" {
+			attempt.Success, attempt.Message = executeBuildSlotRelease(ctx, opts.Session, rec, deps)
+			if attempt.Success {
+				fixedCount++
+			} else {
+				failedCount++
+			}
+			fixReport.FixAttempts = append(fixReport.FixAttempts, attempt)
+			continue
 		}
 
 		paneTarget, paneFound := paneIDByTarget[diagnoseRecommendationKey(rec)]

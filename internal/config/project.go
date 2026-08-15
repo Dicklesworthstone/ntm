@@ -62,6 +62,7 @@ type ProjectAlerts struct {
 	Enabled                 *bool    `toml:"enabled"`
 	AgentStuckMinutes       *int     `toml:"agent_stuck_minutes"`
 	DiskLowThresholdGB      *float64 `toml:"disk_low_threshold_gb"`
+	DiskFullHorizonHours    *float64 `toml:"disk_full_horizon_hours"`
 	MailBacklogThreshold    *int     `toml:"mail_backlog_threshold"`
 	BeadStaleHours          *int     `toml:"bead_stale_hours"`
 	ContextWarningThreshold *float64 `toml:"context_warning_threshold"`

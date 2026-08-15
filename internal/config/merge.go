@@ -150,6 +150,9 @@ func MergeConfig(global *Config, project *ProjectConfig, projectDir string) *Con
 		if project.Alerts.DiskLowThresholdGB != nil {
 			global.Alerts.DiskLowThresholdGB = *project.Alerts.DiskLowThresholdGB
 		}
+		if project.Alerts.DiskFullHorizonHours != nil {
+			global.Alerts.DiskFullHorizonHours = *project.Alerts.DiskFullHorizonHours
+		}
 		if project.Alerts.MailBacklogThreshold != nil {
 			global.Alerts.MailBacklogThreshold = *project.Alerts.MailBacklogThreshold
 		}

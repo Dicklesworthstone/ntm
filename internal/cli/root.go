@@ -2760,8 +2760,9 @@ Shell Integration:
 				return
 			}
 			opts := robot.MetricsOptions{
-				Session: session,
-				Period:  robotMetricsPeriod,
+				Session:         session,
+				Period:          robotMetricsPeriod,
+				DiskAttribution: robotDiskAttribution,
 			}
 			if err := robot.PrintMetrics(opts); err != nil {
 				recordRobotProcessExit(err)
@@ -3860,6 +3861,7 @@ var (
 	robotInspectCode       bool   // parse code blocks in output
 	robotMetrics           string // session name for metrics
 	robotMetricsPeriod     string // period: 1h, 24h, 7d, all
+	robotDiskAttribution   bool   // include per-pane build-dir disk attribution in metrics
 	robotReplay            string // session name for replay
 	robotReplayID          string // history entry ID to replay
 	robotReplayDryRun      bool   // just show what would be replayed
@@ -4528,6 +4530,7 @@ func init() {
 	rootCmd.Flags().StringVar(&robotMetrics, "robot-metrics", "", "Session metrics export. Optional SESSION. Example: ntm --robot-metrics=myproject --metrics-period=24h")
 	rootCmd.Flags().Lookup("robot-metrics").NoOptDefVal = "__present__"
 	rootCmd.Flags().StringVar(&robotMetricsPeriod, "metrics-period", "24h", "Period: 1h, 24h, 7d, all. Optional with --robot-metrics. Example: --metrics-period=7d")
+	rootCmd.Flags().BoolVar(&robotDiskAttribution, "disk-attribution", false, "Include per-pane build-dir disk sizes (bounded du). Optional with --robot-metrics. Example: ntm --robot-metrics --disk-attribution")
 
 	rootCmd.Flags().StringVar(&robotReplay, "robot-replay", "", "Replay command from history. Required: SESSION. Use with --replay-id. Example: ntm --robot-replay=myproject --replay-id=1735830245123-a1b2c3d4")
 	rootCmd.Flags().StringVar(&robotReplayID, "replay-id", "", "History entry ID to replay. Required with --robot-replay. Get IDs from --robot-history")

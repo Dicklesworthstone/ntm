@@ -249,6 +249,11 @@ func (s *WSEventStore) getFromBuffer(since int64, topic string, limit int) ([]WS
 	s.bufferMu.RLock()
 	defer s.bufferMu.RUnlock()
 
+	// ring.Len() walks the whole ring (O(n)), so hoist it out of the loop
+	// conditions: with the default 10000-slot buffer, re-evaluating it per
+	// iteration made these scans O(n^2) and stalled the hub loop for seconds.
+	ringSize := s.buffer.Len()
+
 	// Find the oldest event in the buffer to check if since is still valid
 	var oldestSeq int64 = -1
 	if ev, ok := s.buffer.Value.(*WSStoredEvent); ok && ev != nil {
@@ -257,7 +262,7 @@ func (s *WSEventStore) getFromBuffer(since int64, topic string, limit int) ([]WS
 	} else {
 		// Buffer hasn't wrapped. The oldest element is the very first one inserted.
 		curr := s.buffer
-		for i := 0; i < s.buffer.Len(); i++ {
+		for i := 0; i < ringSize; i++ {
 			if ev, ok := curr.Value.(*WSStoredEvent); ok && ev != nil {
 				if oldestSeq == -1 || ev.Seq < oldestSeq {
 					oldestSeq = ev.Seq
@@ -275,7 +280,7 @@ func (s *WSEventStore) getFromBuffer(since int64, topic string, limit int) ([]WS
 	// Collect matching events
 	var events []WSStoredEvent
 	curr := s.buffer
-	for i := 0; i < s.buffer.Len(); i++ {
+	for i := 0; i < ringSize; i++ {
 		if ev, ok := curr.Value.(*WSStoredEvent); ok && ev != nil {
 			if ev.Seq > since && (topic == "" || matchTopic(topic, ev.Topic)) {
 				events = append(events, *ev)
@@ -442,6 +447,270 @@ func (s *WSEventStore) BufferStats() (size int, used int, oldestSeq int64, newes
 	})
 
 	return
+}
+
+// ============================================================================
+// Hub integration: persistence, replay, and dropped-event accounting
+// ============================================================================
+//
+// REPLAY CONTRACT (live server behavior, wired through WSHub):
+//
+//   - Every `event` frame carries `seq`, a server-assigned, strictly increasing
+//     cursor. When a WSEventStore is attached to the hub (Server wires it from
+//     the runtime state store's ws_events table, migration 006_ws_events.sql),
+//     the persisted store seq is authoritative and survives server restarts.
+//     Without a store the hub falls back to an ephemeral in-process counter.
+//   - A client resumes after a disconnect by sending a subscribe message with
+//     `data.since = <last seq it processed>` alongside `data.topics`. The
+//     server replays persisted events with seq > since that match the
+//     requested (non-attention) topics, in ascending seq order, each marked
+//     with an additive `"replay": true` field on the standard event frame.
+//   - Replay and the transition to live delivery are serialized through the
+//     hub's Run loop: the subscription is committed and the replay snapshot is
+//     taken in the same loop iteration, so the client sees the gap exactly
+//     once — no duplicates, no missing events — followed by live frames.
+//   - The subscribe ack is queued after all replay frames; its `data.replay`
+//     object ({since, replayed, reset, cursor}) reports the outcome, and its
+//     arrival marks the end of replay.
+//   - If the cursor is older than retention (or no history is available), the
+//     server sends a `stream.reset` frame carrying `current_seq` and
+//     `oldest_available` instead of replaying; the client should treat its
+//     state as fresh and re-sync out of band.
+//   - Events dropped to a slow client are recorded in ws_dropped_events
+//     (coalesced per topic into seq ranges, reason "slow_client"); once the
+//     client drains and delivery succeeds again, it receives a
+//     `pane.output.dropped` frame describing the missed range so it can
+//     re-request it via `since`.
+//   - Attention topics ("attention", "attention:*") keep their own durable
+//     cursor protocol (`since_cursor`) and are not part of this contract.
+//
+// The publication hot path is protected by the hub's bounded broadcast
+// channel: WSHub.Publish never blocks (it drops on overflow), and the
+// synchronous SQLite insert in Store() runs on the hub's Run goroutine.
+
+// wsReplayLimit bounds how many persisted events a single subscribe-with-since
+// request will replay. Matches the GetSince default page size.
+const wsReplayLimit = 1000
+
+// wsReplayRequest asks the hub loop to commit a subscription and replay
+// persisted events past a cursor before live delivery begins.
+type wsReplayRequest struct {
+	client *WSClient
+	topics []string
+	since  int64
+	resp   chan wsReplayResult
+}
+
+// wsReplayResult reports the outcome of a replay request.
+type wsReplayResult struct {
+	replayed int
+	reset    bool
+	cursor   int64
+}
+
+// wsDropRange coalesces consecutive dropped events for one client+topic.
+type wsDropRange struct {
+	first int64
+	last  int64
+	count int
+}
+
+// SetEventStore attaches the persistence/replay store to the hub. Safe to call
+// before or while the hub loop is running.
+func (h *WSHub) SetEventStore(store *WSEventStore) {
+	h.store.Store(store)
+}
+
+// eventStore returns the attached event store, or nil when persistence is not
+// wired (degraded mode: live streaming only).
+func (h *WSHub) eventStore() *WSEventStore {
+	return h.store.Load()
+}
+
+// currentSeq returns the hub's ephemeral sequence counter (store-less mode).
+func (h *WSHub) currentSeq() int64 {
+	h.seqMu.Lock()
+	defer h.seqMu.Unlock()
+	return h.seq
+}
+
+// SubscribeWithReplay commits a subscription for topics and replays persisted
+// events with seq > since before live delivery, per the replay contract above.
+// It blocks until the hub loop has finished queueing replay frames.
+func (h *WSHub) SubscribeWithReplay(client *WSClient, topics []string, since int64) wsReplayResult {
+	req := &wsReplayRequest{
+		client: client,
+		topics: topics,
+		since:  since,
+		resp:   make(chan wsReplayResult, 1),
+	}
+	select {
+	case h.replayCh <- req:
+	case <-h.done:
+		// Hub is shutting down; still record the subscription so a late
+		// broadcastEvent (if any) sees consistent state.
+		client.Subscribe(topics)
+		return wsReplayResult{}
+	}
+	select {
+	case res := <-req.resp:
+		return res
+	case <-h.done:
+		return wsReplayResult{}
+	}
+}
+
+// handleReplay runs on the hub's Run goroutine. Committing the subscription
+// and snapshotting history in the same loop iteration is what makes the
+// replay→live handoff gap-free and duplicate-free: every event processed by
+// the loop after this call is delivered live, and everything stored before it
+// is visible to GetSince here.
+func (h *WSHub) handleReplay(req *wsReplayRequest) {
+	req.client.Subscribe(req.topics)
+
+	res := wsReplayResult{}
+	store := h.eventStore()
+	if store == nil {
+		// No persistence wired: replay is unavailable. Tell the client to
+		// treat its state as fresh.
+		res.reset = true
+		res.cursor = h.currentSeq()
+		h.trySendReset(req.client, "", "replay_unavailable", res.cursor, 0)
+		req.resp <- res
+		return
+	}
+	res.cursor = store.CurrentSeq()
+
+	// GetSince accepts a single topic pattern; for multi-topic subscribes we
+	// fetch unfiltered and match in Go (bounded by wsReplayLimit).
+	topicFilter := ""
+	if len(req.topics) == 1 {
+		topicFilter = req.topics[0]
+	}
+	events, needsReset, err := store.GetSince(req.since, topicFilter, wsReplayLimit)
+	if err != nil {
+		log.Printf("ws_events: replay query failed client=%s since=%d: %v", req.client.id, req.since, err)
+		req.resp <- res
+		return
+	}
+	if needsReset {
+		_, _, oldestAvail, _ := store.BufferStats()
+		res.reset = true
+		h.trySendReset(req.client, topicFilter, "cursor_expired", res.cursor, oldestAvail)
+		req.resp <- res
+		return
+	}
+
+	for _, ev := range events {
+		if topicFilter == "" && !matchAnyTopic(req.topics, ev.Topic) {
+			continue
+		}
+		frame := &WSEvent{
+			Type:      WSMsgEvent,
+			Timestamp: ev.CreatedAt.UTC().Format(time.RFC3339Nano),
+			Seq:       ev.Seq,
+			Topic:     ev.Topic,
+			EventType: ev.EventType,
+			Data:      json.RawMessage(ev.Data),
+			Replay:    true,
+		}
+		data, err := json.Marshal(frame)
+		if err != nil {
+			log.Printf("ws_events: replay marshal error seq=%d: %v", ev.Seq, err)
+			continue
+		}
+		if !req.client.trySend(data, nil) {
+			// Client send buffer overflowed mid-replay: record the remainder
+			// and stop. The ack's replay.replayed count tells the client the
+			// batch was cut short so it can re-subscribe from its cursor.
+			lastSeq := events[len(events)-1].Seq
+			if recErr := store.RecordDropped(req.client.id, ev.Topic, "replay_overflow", ev.Seq, lastSeq); recErr != nil {
+				log.Printf("ws_events: record replay overflow client=%s: %v", req.client.id, recErr)
+			}
+			log.Printf("ws_events: replay overflow client=%s dropped=[%d,%d]", req.client.id, ev.Seq, lastSeq)
+			break
+		}
+		res.replayed++
+	}
+	req.resp <- res
+}
+
+// trySendReset queues a stream.reset frame; best-effort.
+func (h *WSHub) trySendReset(client *WSClient, topic, reason string, currentSeq, oldestAvail int64) {
+	data, err := json.Marshal(NewStreamReset(topic, reason, currentSeq, oldestAvail))
+	if err != nil {
+		return
+	}
+	client.trySend(data, nil)
+}
+
+// matchAnyTopic reports whether topic matches any of the subscription patterns.
+func matchAnyTopic(patterns []string, topic string) bool {
+	for _, p := range patterns {
+		if matchTopic(p, topic) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteClientDrop coalesces a dropped event into the client's pending drop
+// ranges. Owned by the hub Run goroutine; no locking.
+func (h *WSHub) noteClientDrop(client *WSClient, topic string, seq int64) {
+	byTopic := h.pendingDrops[client]
+	if byTopic == nil {
+		byTopic = make(map[string]*wsDropRange)
+		h.pendingDrops[client] = byTopic
+	}
+	r := byTopic[topic]
+	if r == nil {
+		byTopic[topic] = &wsDropRange{first: seq, last: seq, count: 1}
+		return
+	}
+	if seq < r.first {
+		r.first = seq
+	}
+	if seq > r.last {
+		r.last = seq
+	}
+	r.count++
+}
+
+// flushClientDrops persists any pending drop ranges for the client via
+// RecordDropped and, when notify is true (delivery to the client succeeded
+// again), queues a pane.output.dropped frame per range so the client learns
+// what it missed and can re-request via `since`. Owned by the hub Run
+// goroutine.
+func (h *WSHub) flushClientDrops(client *WSClient, notify bool) {
+	byTopic := h.pendingDrops[client]
+	if len(byTopic) == 0 {
+		return
+	}
+	delete(h.pendingDrops, client)
+
+	store := h.eventStore()
+	for topic, r := range byTopic {
+		if store != nil {
+			if err := store.RecordDropped(client.id, topic, "slow_client", r.first, r.last); err != nil {
+				log.Printf("ws_events: record dropped client=%s topic=%s: %v", client.id, topic, err)
+			}
+		}
+		if notify {
+			data, err := json.Marshal(NewPaneOutputDropped(topic, r.count, r.first, r.last, "slow_client"))
+			if err != nil {
+				continue
+			}
+			client.trySend(data, nil)
+		}
+	}
+}
+
+// flushAllDrops persists every pending drop range; called when the hub loop
+// exits. Owned by the hub Run goroutine.
+func (h *WSHub) flushAllDrops() {
+	for client := range h.pendingDrops {
+		h.flushClientDrops(client, false)
+	}
 }
 
 // WSStreamReset is sent to clients when their cursor has expired.

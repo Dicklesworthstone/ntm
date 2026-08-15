@@ -82,6 +82,10 @@ type Server struct {
 	// wsHubStartOnce ensures the hub loop starts exactly once, even when the
 	// router is used directly in tests without going through Start().
 	wsHubStartOnce sync.Once
+	// wsEventStoreOnce lazily wires WS event persistence/replay exactly once.
+	// Lazy (Start or first WS connection, not New) so that constructing a
+	// Server stays side-effect-free: the store starts a retention goroutine.
+	wsEventStoreOnce sync.Once
 
 	// Pane output streaming
 	streamManager   *tmux.StreamManager
@@ -483,12 +487,20 @@ type WSMessage struct {
 }
 
 // WSSubscribeRequest is sent by clients to subscribe to topics.
+// Since is the replay cursor: the seq of the last event frame the client
+// processed. When present, persisted events with seq > Since matching the
+// requested topics are replayed before live delivery. See the replay contract
+// in ws_events.go.
 type WSSubscribeRequest struct {
 	Topics []string `json:"topics"`
-	Since  int64    `json:"since,omitempty"` // Cursor for replay (Unix ms)
+	Since  int64    `json:"since,omitempty"` // Cursor for replay (event seq)
 }
 
 // WSEvent is an event pushed to clients.
+// Seq is the resume cursor: clients persist the highest seq they have
+// processed and pass it back as `since` on re-subscribe. Replay is set only on
+// frames re-delivered from the event store during cursor replay (additive
+// field; absent on live frames).
 type WSEvent struct {
 	Type      WSMessageType `json:"type"`
 	Timestamp string        `json:"ts"`
@@ -496,6 +508,7 @@ type WSEvent struct {
 	Topic     string        `json:"topic"`
 	EventType string        `json:"event_type"`
 	Data      interface{}   `json:"data"`
+	Replay    bool          `json:"replay,omitempty"`
 }
 
 // WSError represents a WebSocket error frame.
@@ -583,16 +596,28 @@ type WSHub struct {
 	stopOnce     sync.Once
 	redactionCfg *RedactionConfig
 	redactionMu  sync.RWMutex
+
+	// store is the optional persistence/replay backend (see the replay
+	// contract in ws_events.go). Nil pointer = live streaming only.
+	store atomic.Pointer[WSEventStore]
+	// replayCh carries subscribe-with-cursor requests into the Run loop so
+	// replay and live delivery are serialized (gap-free, duplicate-free).
+	replayCh chan *wsReplayRequest
+	// pendingDrops coalesces per-client dropped-event ranges. Owned
+	// exclusively by the Run goroutine; no locking.
+	pendingDrops map[*WSClient]map[string]*wsDropRange
 }
 
 // NewWSHub creates a new WebSocket hub.
 func NewWSHub() *WSHub {
 	return &WSHub{
-		clients:    make(map[*WSClient]struct{}),
-		register:   make(chan *WSClient),
-		unregister: make(chan *WSClient),
-		broadcast:  make(chan *WSEvent, 256),
-		done:       make(chan struct{}),
+		clients:      make(map[*WSClient]struct{}),
+		register:     make(chan *WSClient),
+		unregister:   make(chan *WSClient),
+		broadcast:    make(chan *WSEvent, 256),
+		done:         make(chan struct{}),
+		replayCh:     make(chan *wsReplayRequest),
+		pendingDrops: make(map[*WSClient]map[string]*wsDropRange),
 	}
 }
 
@@ -601,6 +626,9 @@ func (h *WSHub) Run() {
 	for {
 		select {
 		case <-h.done:
+			// Persist any drop ranges still pending so slow-client gaps are
+			// visible in ws_dropped_events across a restart. Best-effort.
+			h.flushAllDrops()
 			return
 		case client := <-h.register:
 			h.clientsMu.Lock()
@@ -609,6 +637,7 @@ func (h *WSHub) Run() {
 			h.clientsMu.Unlock()
 			log.Printf("ws client connected id=%s total=%d", client.id, total)
 		case client := <-h.unregister:
+			h.flushClientDrops(client, false)
 			h.clientsMu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
@@ -617,6 +646,8 @@ func (h *WSHub) Run() {
 			total := len(h.clients)
 			h.clientsMu.Unlock()
 			log.Printf("ws client disconnected id=%s total=%d", client.id, total)
+		case req := <-h.replayCh:
+			h.handleReplay(req)
 		case event := <-h.broadcast:
 			h.broadcastEvent(event)
 		}
@@ -645,16 +676,32 @@ func (h *WSHub) nextSeq() int64 {
 }
 
 // broadcastEvent sends an event to all subscribed clients.
+// Runs on the hub's Run goroutine: the bounded broadcast channel (Publish
+// drops on overflow instead of blocking) keeps the persistence insert below
+// off the publication hot path.
 func (h *WSHub) broadcastEvent(event *WSEvent) {
-	event.Seq = h.nextSeq()
-
-	// Apply redaction if configured
+	// Apply redaction first so the persisted copy matches the wire form and
+	// replay cannot leak content that live delivery would have redacted.
 	h.redactionMu.RLock()
 	cfg := h.redactionCfg
 	h.redactionMu.RUnlock()
 
 	if cfg != nil && cfg.Enabled && cfg.Config.Mode != redaction.ModeOff {
 		event.Data = redactWSEventData(event.Data, cfg.Config)
+	}
+
+	// Assign the frame cursor. When an event store is attached the persisted
+	// seq is authoritative: it survives restarts and is what clients pass back
+	// as `since` to resume (see the replay contract in ws_events.go).
+	if store := h.eventStore(); store != nil {
+		if stored, err := store.Store(event.Topic, event.EventType, event.Data); err == nil {
+			event.Seq = stored.Seq
+		} else {
+			event.Seq = h.nextSeq()
+			log.Printf("ws_events: store failed, using ephemeral seq topic=%s: %v", event.Topic, err)
+		}
+	} else {
+		event.Seq = h.nextSeq()
 	}
 
 	data, err := json.Marshal(event)
@@ -670,8 +717,12 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 		if client.isSubscribed(event.Topic) {
 			select {
 			case client.send <- data:
+				// Delivery succeeded again: report and persist any gap this
+				// client accumulated while it was slow.
+				h.flushClientDrops(client, true)
 			default:
 				dropped := h.dropped.Add(1)
+				h.noteClientDrop(client, event.Topic, event.Seq)
 				log.Printf("ws client buffer full id=%s surface=websocket session= pane= queue_depth=%d dropped_count=%d latency_ms=0 decision=coalesce reason_codes=queue_depth,dropped_output", client.id, len(client.send), dropped)
 			}
 		}
@@ -1191,6 +1242,16 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// Wire WS event persistence/replay before the hub starts broadcasting so
+	// every published event is Store()d and carries a durable seq. Stopped
+	// after the hub (LIFO defers) so late drop-range flushes still land.
+	s.ensureWSEventStore()
+	defer func() {
+		if st := s.wsHub.eventStore(); st != nil {
+			st.Stop()
+		}
+	}()
+
 	// Start WebSocket hub
 	s.ensureWSHubRunning()
 	defer s.wsHub.Stop()
@@ -1264,6 +1325,34 @@ func (s *Server) ensureWSHubRunning() {
 	}
 	s.wsHubStartOnce.Do(func() {
 		go s.wsHub.Run()
+	})
+}
+
+// ensureWSEventStore wires the WebSocket event persistence/replay store to the
+// hub, backed by the same runtime state store the server already opened
+// (ws_events tables from migration 006_ws_events.sql). Degrades gracefully:
+// without a state store (or without the migrated schema) WebSocket streaming
+// still works — replay falls back to the in-memory ring buffer or is reported
+// unavailable — and the condition is logged exactly once.
+func (s *Server) ensureWSEventStore() {
+	if s == nil || s.wsHub == nil {
+		return
+	}
+	s.wsEventStoreOnce.Do(func() {
+		if s.stateStore == nil {
+			log.Printf("ws_events: no state store configured; event persistence and cursor replay disabled")
+			return
+		}
+		db := s.stateStore.DB()
+		var n int
+		if err := db.QueryRow("SELECT COUNT(*) FROM ws_events").Scan(&n); err != nil {
+			log.Printf("ws_events: schema unavailable (%v); events buffered in memory only, no replay across restarts", err)
+			s.wsHub.SetEventStore(NewWSEventStore(nil, DefaultWSEventStoreConfig()))
+			return
+		}
+		store := NewWSEventStore(db, DefaultWSEventStoreConfig())
+		s.wsHub.SetEventStore(store)
+		log.Printf("ws_events: persistence enabled path=%s current_seq=%d", s.stateStore.Path(), store.CurrentSeq())
 	})
 }
 
@@ -4341,6 +4430,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		authClaims: extractAuthClaims(r),
 	}
 
+	// Wire persistence before the hub loop starts so seq assignment is
+	// durable from the very first broadcast (mirrors ensureWSHubRunning for
+	// routers exercised without Start()).
+	s.ensureWSEventStore()
 	s.ensureWSHubRunning()
 
 	// Register client with hub
@@ -4529,6 +4622,20 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 		}
 	}
 
+	// Optional replay cursor (see the replay contract in ws_events.go).
+	// Presence of "since" requests replay of persisted events with seq > since
+	// for the regular (non-attention) topics before live delivery. Attention
+	// topics use their own durable cursor field, since_cursor.
+	since := int64(-1)
+	if sinceRaw, hasSince := msg.Data["since"]; hasSince {
+		f, ok := sinceRaw.(float64)
+		if !ok || f < 0 {
+			c.sendError(msg.RequestID, "invalid_since", "since must be a non-negative integer event seq")
+			return
+		}
+		since = int64(f)
+	}
+
 	// Check for attention topic subscriptions with durable semantics
 	attentionTopics, regularTopics := partitionAttentionTopics(topics)
 
@@ -4551,8 +4658,22 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 
 	// Regular topics are only committed after any durable attention request has
 	// been accepted, keeping a single subscribe message all-or-nothing.
+	var replayInfo map[string]interface{}
 	if len(regularTopics) > 0 {
-		c.Subscribe(regularTopics)
+		if since >= 0 {
+			// Replay-then-live is serialized through the hub loop; the replay
+			// frames are queued to this client's send channel before the ack
+			// below, so the ack marks the end of replay.
+			res := c.hub.SubscribeWithReplay(c, regularTopics, since)
+			replayInfo = map[string]interface{}{
+				"since":    since,
+				"replayed": res.replayed,
+				"reset":    res.reset,
+				"cursor":   res.cursor,
+			}
+		} else {
+			c.Subscribe(regularTopics)
+		}
 	}
 
 	// Build response
@@ -4562,6 +4683,9 @@ func (c *WSClient) handleSubscribe(msg WSMessage) {
 	}
 	if attentionResult != nil {
 		response["attention"] = attentionResult
+	}
+	if replayInfo != nil {
+		response["replay"] = replayInfo
 	}
 	c.sendAck(msg.RequestID, response)
 }
@@ -6320,6 +6444,9 @@ func (s *Server) Stop() {
 	}
 	if s.wsHub != nil {
 		s.wsHub.Stop()
+		if st := s.wsHub.eventStore(); st != nil {
+			st.Stop()
+		}
 	}
 	if s.streamManager != nil {
 		s.streamManager.StopAll()

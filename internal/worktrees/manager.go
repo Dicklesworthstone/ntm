@@ -102,6 +102,18 @@ func (m *WorktreeManager) worktreePath(agentName string) string {
 	return filepath.Join(m.sessionRoot(), agentName)
 }
 
+// SessionHasWorktrees reports whether worktree isolation was previously
+// provisioned for the session: its worktree root directory exists on disk.
+// The root persists across `ntm kill`, so it doubles as the record of the
+// session's last isolation mode when a respawn flips --worktrees (ntm-83dz).
+func SessionHasWorktrees(projectPath, session string) bool {
+	if projectPath == "" || session == "" {
+		return false
+	}
+	info, err := os.Stat(NewManager(projectPath, session).sessionRoot())
+	return err == nil && info.IsDir()
+}
+
 func validateWorktreeComponent(kind, value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
