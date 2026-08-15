@@ -619,6 +619,20 @@ type RotationConfig struct {
 	Accounts           []RotationAccount  `toml:"accounts"`            // Configured accounts per provider
 	Thresholds         RotationThresholds `toml:"thresholds"`
 	Dashboard          RotationDashboard  `toml:"dashboard"`
+
+	// UsagePercentThreshold enables the coordinator's context-rotation trigger
+	// (bd-rpmg8). When > 0, the session coordinator tick compares each agent
+	// pane's TRANSCRIPT-SOURCED context usage percentage (ground truth from the
+	// agent CLI's own session transcript — never scrollback estimates; that
+	// minimum-confidence gate is fixed, not configurable) against this value
+	// and enqueues a pending context rotation through the existing
+	// pending/confirm machinery when exceeded. 0 (the default) disables the
+	// trigger entirely: no transcript probing, no behavior change.
+	UsagePercentThreshold float64 `toml:"usage_percent_threshold"`
+	// AutoConfirm executes a context rotation enqueued by the usage trigger
+	// immediately via the existing confirm path instead of leaving it pending
+	// for a manual `ntm rotate context confirm`.
+	AutoConfirm bool `toml:"auto_confirm"`
 }
 
 // GetAccountsForProvider returns all accounts for a given provider in priority order
@@ -660,6 +674,8 @@ func DefaultRotationConfig() RotationConfig {
 			ShowAccountStatus: true,
 			ShowResetTimers:   true,
 		},
+		UsagePercentThreshold: 0,     // Context-rotation trigger OFF by default (bd-rpmg8)
+		AutoConfirm:           false, // Enqueued rotations wait for manual confirm by default
 	}
 }
 
@@ -710,6 +726,9 @@ func ValidateAccountsConfig(cfg *AccountsConfig) error {
 
 // ValidateRotationConfig validates account rotation configuration.
 func ValidateRotationConfig(cfg *RotationConfig) error {
+	if cfg.UsagePercentThreshold < 0 || cfg.UsagePercentThreshold > 100 {
+		return fmt.Errorf("usage_percent_threshold: must be between 0 and 100, got %g", cfg.UsagePercentThreshold)
+	}
 	if cfg.Thresholds.WarningPercent < 0 || cfg.Thresholds.WarningPercent > 100 {
 		return fmt.Errorf("thresholds.warning_percent: must be between 0 and 100, got %d", cfg.Thresholds.WarningPercent)
 	}
@@ -4372,6 +4391,8 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "auto_open_browser = %t     # Auto-open browser for auth\n", cfg.Rotation.AutoOpenBrowser)
 	fmt.Fprintf(w, "auto_trigger = %t          # Show notification when rate limit detected\n", cfg.Rotation.AutoTrigger)
 	fmt.Fprintf(w, "auto_initiate = %t         # Automatically start rotation when possible\n", cfg.Rotation.AutoInitiate)
+	fmt.Fprintf(w, "usage_percent_threshold = %.1f  # >0 enables coordinator context-rotation trigger on transcript-sourced usage %% (0 = off)\n", cfg.Rotation.UsagePercentThreshold)
+	fmt.Fprintf(w, "auto_confirm = %t          # Auto-execute context rotations enqueued by the usage trigger\n", cfg.Rotation.AutoConfirm)
 	fmt.Fprintf(w, "continuation_prompt = %q\n", cfg.Rotation.ContinuationPrompt)
 	fmt.Fprintln(w)
 
@@ -5963,6 +5984,10 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Rotation.AutoTrigger, nil
 		case "auto_initiate":
 			return cfg.Rotation.AutoInitiate, nil
+		case "usage_percent_threshold":
+			return cfg.Rotation.UsagePercentThreshold, nil
+		case "auto_confirm":
+			return cfg.Rotation.AutoConfirm, nil
 		case "continuation_prompt":
 			return cfg.Rotation.ContinuationPrompt, nil
 		case "accounts":
@@ -6390,6 +6415,8 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("rotation.auto_initiate", defaults.Rotation.AutoInitiate, cfg.Rotation.AutoInitiate)
 	addDiff("rotation.continuation_prompt", defaults.Rotation.ContinuationPrompt, cfg.Rotation.ContinuationPrompt)
 	addDiff("rotation.accounts", defaults.Rotation.Accounts, cfg.Rotation.Accounts)
+	addDiff("rotation.usage_percent_threshold", defaults.Rotation.UsagePercentThreshold, cfg.Rotation.UsagePercentThreshold)
+	addDiff("rotation.auto_confirm", defaults.Rotation.AutoConfirm, cfg.Rotation.AutoConfirm)
 	addDiff("rotation.thresholds.warning_percent", defaults.Rotation.Thresholds.WarningPercent, cfg.Rotation.Thresholds.WarningPercent)
 	addDiff("rotation.thresholds.critical_percent", defaults.Rotation.Thresholds.CriticalPercent, cfg.Rotation.Thresholds.CriticalPercent)
 	addDiff("rotation.thresholds.restart_if_tokens_above", defaults.Rotation.Thresholds.RestartIfTokensAbove, cfg.Rotation.Thresholds.RestartIfTokensAbove)

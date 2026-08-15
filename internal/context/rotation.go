@@ -1239,6 +1239,27 @@ func (r *Rotator) HasPendingRotation(agentID string) bool {
 	return exists
 }
 
+// EnqueuePendingRotation registers a pending rotation for an agent through the
+// same machinery CheckAndRotate uses when RequireConfirm is set: the rotation
+// is tracked in-memory (so ConfirmRotation can execute it) and persisted to
+// the pending rotation store consumed by `ntm rotate context pending/confirm`.
+// It is used by external triggers — such as the coordinator's
+// transcript-usage threshold check (bd-rpmg8) — that decide eligibility
+// themselves. If a pending rotation already exists for the agent, it is
+// returned unchanged.
+func (r *Rotator) EnqueuePendingRotation(session, agentID, paneID string, contextPercent float64, workDir string) *PendingRotation {
+	r.mu.RLock()
+	existing := r.pending[agentID]
+	r.mu.RUnlock()
+	if existing != nil && !existing.IsExpired() {
+		return existing
+	}
+	// No pending rotation, or only an expired leftover: create a fresh one
+	// (createPendingRotation overwrites both the in-memory entry and the
+	// persisted store entry).
+	return r.createPendingRotation(session, agentID, paneID, contextPercent, workDir)
+}
+
 // ConfirmRotation handles user confirmation of a pending rotation.
 // Returns the result of the action taken.
 func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postponeMinutes int) RotationResult {

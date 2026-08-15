@@ -14,6 +14,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	assignmentstore "github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
@@ -61,8 +62,17 @@ type SessionCoordinator struct {
 	// Monitors
 	monitor *AgentMonitor
 
+	// Context rotation trigger (bd-rpmg8). Nil unless
+	// config.RotationUsageThreshold > 0; created lazily on the first cycle.
+	rotation *rotationChecker
+
 	// Configuration
 	config CoordinatorConfig
+
+	// Full NTM config, when the caller has one loaded. Only used by the
+	// context rotation trigger (replacement launch commands and
+	// [context_rotation] tunables); nil is fine.
+	ntmConfig *config.Config
 
 	// Event channel for coordination actions
 	events chan CoordinatorEvent
@@ -121,6 +131,14 @@ type CoordinatorConfig struct {
 	SendDigests bool   `toml:"send_digests"` // Send periodic digests to human
 	HumanAgent  string `toml:"human_agent"`  // Agent name to send digests to (default: "Human")
 	MailNudge   bool   `toml:"mail_nudge"`   // Prompt idle panes that have unread Agent Mail
+
+	// Context rotation trigger (bd-rpmg8). These mirror the [rotation]
+	// usage_percent_threshold / auto_confirm config keys (NOT [coordinator]);
+	// the CLI populates them from config.Rotation when starting a coordinator.
+	// Zero threshold (the default) keeps the trigger fully off: no transcript
+	// probing, no new subprocess calls, no behavior change.
+	RotationUsageThreshold float64 `toml:"-"`
+	RotationAutoConfirm    bool    `toml:"-"`
 }
 
 // MinPollInterval is the minimum allowed poll interval to prevent ticker panics.
@@ -204,6 +222,14 @@ func New(session, projectKey string, mailClient *agentmail.Client, agentName str
 // WithConfig sets the coordinator configuration.
 func (c *SessionCoordinator) WithConfig(cfg CoordinatorConfig) *SessionCoordinator {
 	c.config = cfg
+	return c
+}
+
+// WithNTMConfig provides the loaded NTM config for subsystems that need more
+// than CoordinatorConfig (currently only the context rotation trigger). Nil
+// is accepted and keeps built-in defaults.
+func (c *SessionCoordinator) WithNTMConfig(cfg *config.Config) *SessionCoordinator {
+	c.ntmConfig = cfg
 	return c
 }
 
@@ -397,6 +423,7 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 		return nil, err
 	}
 	c.nudgeUnreadMail(ctx)
+	c.maybeCheckContextRotation(ctx)
 	if !c.config.AutoAssign {
 		return nil, nil
 	}
@@ -405,6 +432,25 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 		assignWork = c.assignWorkFn
 	}
 	return assignWork(ctx)
+}
+
+// maybeCheckContextRotation runs the transcript-usage rotation trigger for
+// this cycle (bd-rpmg8). DEFAULT-OFF GUARANTEE: with no [rotation]
+// usage_percent_threshold configured (> 0), this returns before constructing
+// the checker — zero new subprocess calls and zero behavior change.
+func (c *SessionCoordinator) maybeCheckContextRotation(ctx context.Context) {
+	c.mu.Lock()
+	if c.config.RotationUsageThreshold <= 0 {
+		c.mu.Unlock()
+		return
+	}
+	if c.rotation == nil {
+		c.rotation = newRotationChecker(c.session, c.projectKey, c.config, c.ntmConfig)
+	}
+	checker := c.rotation
+	c.mu.Unlock()
+
+	checker.runOnce(ctx)
 }
 
 // nudgeUnreadMail prompts only healthy, freshly observed waiting panes. It

@@ -116,6 +116,9 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 	runtimeConfig := coordConfig
 	runtimeConfig.AutoAssign = false
 	runtimeConfig.SendDigests = false
+	// Status is a read-only surface: never let its brief coordinator run
+	// enqueue context rotations (bd-rpmg8).
+	runtimeConfig.RotationUsageThreshold = 0
 
 	// Create coordinator to get status without enabling configured side effects.
 	mailClient := newAgentMailClient(projectKey)
@@ -317,6 +320,9 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 	runtimeConfig := loadCoordinatorRuntimeConfig()
 	runtimeConfig.AutoAssign = false
 	runtimeConfig.SendDigests = false
+	// Digest is a read-only surface: never let its brief coordinator run
+	// enqueue context rotations (bd-rpmg8).
+	runtimeConfig.RotationUsageThreshold = 0
 	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator").WithConfig(runtimeConfig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -401,8 +407,10 @@ func runCoordinatorRun(cmd *cobra.Command, args []string, once bool) error {
 		return err
 	}
 
-	runtimeConfig := loadCoordinatorRuntimeConfig()
-	coord := coordinator.New(session, projectKey, newAgentMailClient(projectKey), "NTM-Coordinator").WithConfig(runtimeConfig)
+	runtimeConfig, ntmConfig := loadCoordinatorRuntimeConfigWithNTM()
+	coord := coordinator.New(session, projectKey, newAgentMailClient(projectKey), "NTM-Coordinator").
+		WithConfig(runtimeConfig).
+		WithNTMConfig(ntmConfig)
 	if once {
 		assignments, cycleErr := coord.RunCycle(cmd.Context())
 		runErr := coordinatorRunFailure(assignments, cycleErr)
@@ -510,11 +518,26 @@ func resolveCoordinatorProjectKey(ctx context.Context, session string, inferred 
 }
 
 func loadCoordinatorRuntimeConfig() coordinator.CoordinatorConfig {
-	coordConfig := coordinator.DefaultCoordinatorConfig()
-	if loaded, err := config.Load(selectedConfigPath()); err == nil && loaded != nil {
-		coordConfig = coordinatorConfigFromTOML(loaded.Coordinator, coordConfig)
-	}
+	coordConfig, _ := loadCoordinatorRuntimeConfigWithNTM()
 	return coordConfig
+}
+
+// loadCoordinatorRuntimeConfigWithNTM also returns the loaded NTM config so
+// callers that run the coordinator loop can hand it to subsystems needing more
+// than CoordinatorConfig (the context rotation trigger, bd-rpmg8). The
+// [rotation] usage_percent_threshold / auto_confirm keys are mapped onto the
+// runtime config here; with no [rotation] section both stay at their zero
+// values and the trigger remains fully off.
+func loadCoordinatorRuntimeConfigWithNTM() (coordinator.CoordinatorConfig, *config.Config) {
+	coordConfig := coordinator.DefaultCoordinatorConfig()
+	var ntmConfig *config.Config
+	if loaded, err := config.Load(selectedConfigPath()); err == nil && loaded != nil {
+		ntmConfig = loaded
+		coordConfig = coordinatorConfigFromTOML(loaded.Coordinator, coordConfig)
+		coordConfig.RotationUsageThreshold = loaded.Rotation.UsagePercentThreshold
+		coordConfig.RotationAutoConfirm = loaded.Rotation.AutoConfirm
+	}
+	return coordConfig, ntmConfig
 }
 
 func renderDigest(digest coordinator.DigestSummary) error {

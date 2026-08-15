@@ -5207,3 +5207,113 @@ func TestConfigReset_NoExistingFile(t *testing.T) {
 		t.Fatalf("config file should exist after reset: %v", err)
 	}
 }
+
+// --- [rotation] context-usage trigger (bd-rpmg8) ---------------------------
+
+func TestRotationUsageTriggerDefaultsOff(t *testing.T) {
+	cfg := DefaultRotationConfig()
+	if cfg.UsagePercentThreshold != 0 {
+		t.Errorf("UsagePercentThreshold default = %g, want 0 (feature off)", cfg.UsagePercentThreshold)
+	}
+	if cfg.AutoConfirm {
+		t.Error("AutoConfirm default = true, want false")
+	}
+
+	full := Default()
+	if full.Rotation.UsagePercentThreshold != 0 || full.Rotation.AutoConfirm {
+		t.Errorf("Default() rotation trigger = %g/%v, want 0/false",
+			full.Rotation.UsagePercentThreshold, full.Rotation.AutoConfirm)
+	}
+}
+
+func TestRotationUsageTriggerParse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := "[rotation]\nusage_percent_threshold = 85.5\nauto_confirm = true\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Rotation.UsagePercentThreshold != 85.5 {
+		t.Errorf("UsagePercentThreshold = %g, want 85.5", cfg.Rotation.UsagePercentThreshold)
+	}
+	if !cfg.Rotation.AutoConfirm {
+		t.Error("AutoConfirm = false, want true")
+	}
+	// Unrelated rotation defaults must survive a partial [rotation] section.
+	if !cfg.Rotation.PreferRestart {
+		t.Error("PreferRestart default lost when parsing partial [rotation] section")
+	}
+}
+
+func TestRotationUsageTriggerParseIntegerThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Operators will write "80" rather than "80.0"; the loader must accept it.
+	if err := os.WriteFile(path, []byte("[rotation]\nusage_percent_threshold = 80\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Rotation.UsagePercentThreshold != 80 {
+		t.Errorf("UsagePercentThreshold = %g, want 80", cfg.Rotation.UsagePercentThreshold)
+	}
+}
+
+func TestValidateRotationConfig_UsagePercentThresholdBounds(t *testing.T) {
+	cases := []struct {
+		value   float64
+		wantErr bool
+	}{
+		{0, false},
+		{0.5, false},
+		{55.5, false},
+		{100, false},
+		{-0.1, true},
+		{-5, true},
+		{100.1, true},
+		{200, true},
+	}
+	for _, tc := range cases {
+		cfg := DefaultRotationConfig()
+		cfg.UsagePercentThreshold = tc.value
+		err := ValidateRotationConfig(&cfg)
+		if tc.wantErr && err == nil {
+			t.Errorf("ValidateRotationConfig(threshold=%g) = nil, want error", tc.value)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("ValidateRotationConfig(threshold=%g) = %v, want nil", tc.value, err)
+		}
+		if tc.wantErr && err != nil && !strings.Contains(err.Error(), "usage_percent_threshold") {
+			t.Errorf("error %v does not name usage_percent_threshold", err)
+		}
+	}
+}
+
+func TestRotationUsageTriggerGetConfigValue(t *testing.T) {
+	cfg := Default()
+	cfg.Rotation.UsagePercentThreshold = 77.5
+	cfg.Rotation.AutoConfirm = true
+
+	got, err := GetValue(cfg, "rotation.usage_percent_threshold")
+	if err != nil {
+		t.Fatalf("GetValue(usage_percent_threshold): %v", err)
+	}
+	if v, ok := got.(float64); !ok || v != 77.5 {
+		t.Errorf("rotation.usage_percent_threshold = %v, want 77.5", got)
+	}
+
+	got, err = GetValue(cfg, "rotation.auto_confirm")
+	if err != nil {
+		t.Fatalf("GetValue(auto_confirm): %v", err)
+	}
+	if v, ok := got.(bool); !ok || !v {
+		t.Errorf("rotation.auto_confirm = %v, want true", got)
+	}
+}
