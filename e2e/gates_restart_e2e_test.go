@@ -295,12 +295,15 @@ func startGatesRespawnableFakeagentPane(t *testing.T, logger *TestLogger, person
 	paneID := panes[0].ID
 
 	// Swap the user's login shell for the pinned plain bash, then launch the
-	// fixture as that shell's foreground job.
+	// fixture. `exec` makes the fixture THE pane process: an interactive
+	// shell's job runs in its own process group, which respawn-pane -k does
+	// not reliably kill — a surviving fixture would keep repainting the
+	// reused pty and clobber the respawned pane's content.
 	if _, err := tmux.DefaultClient.Run("respawn-pane", "-k", "-t", paneID); err != nil {
 		t.Fatalf("respawn pane onto plain bash: %v", err)
 	}
 	time.Sleep(500 * time.Millisecond)
-	launch := fmt.Sprintf("%s --persona=%s --control=%s --log=%s",
+	launch := fmt.Sprintf("exec %s --persona=%s --control=%s --log=%s",
 		tmux.ShellQuote(bin), persona, tmux.ShellQuote(controlPath), tmux.ShellQuote(logPath))
 	if _, err := tmux.DefaultClient.Run("send-keys", "-t", paneID, launch, "Enter"); err != nil {
 		t.Fatalf("type fakeagent launch into pane shell: %v", err)
@@ -450,6 +453,56 @@ func gatesInjectTranscript(t *testing.T, pane *fakeagentPane, text string) {
 
 const gatesTrustPhrase = "do you trust the contents of this project"
 
+// gatesIsWorkingSolePane runs --robot-is-working and returns the envelope plus
+// the single pane's key and status. The canonical observer has an internal
+// capture deadline that a heavily loaded shared machine can blow, yielding a
+// transient indicator_basis=observation_unavailable verdict; those attempts
+// are retried (bounded) so assertions run against a real observation.
+func gatesIsWorkingSolePane(t *testing.T, logger *TestLogger, session string) (gatesIsWorkingEnvelope, string, gatesIsWorkingPane) {
+	t.Helper()
+	var envelope gatesIsWorkingEnvelope
+	for attempt := 1; attempt <= 3; attempt++ {
+		out, exit := gatesRunNTM(t, logger, nil, "--robot-is-working="+session)
+		if exit != 0 {
+			t.Fatalf("robot-is-working exit=%d output=%s", exit, out)
+		}
+		envelope = gatesIsWorkingEnvelope{}
+		gatesDecode(t, "is-working", out, &envelope)
+		key, work := gatesSolePane(t, envelope.Panes)
+		if work.IndicatorBasis == "observation_unavailable" && attempt < 3 {
+			logger.Log("[RETRY] is-working observation unavailable (attempt %d); retrying", attempt)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		return envelope, key, work
+	}
+	t.Fatal("unreachable: is-working retry loop exhausted")
+	return envelope, "", gatesIsWorkingPane{}
+}
+
+// gatesSessionHealthSoleAgent runs --robot-health=SESSION and returns its
+// single agent entry, retrying transient capture problems (the error check
+// captures the live pane and can blow its deadline under load).
+func gatesSessionHealthSoleAgent(t *testing.T, logger *TestLogger, session, wantHealth string) gatesSessionHealthAgent {
+	t.Helper()
+	var last gatesSessionHealthAgent
+	for attempt := 1; attempt <= 3; attempt++ {
+		out, _ := gatesRunNTM(t, logger, nil, "--robot-health="+session)
+		var envelope gatesSessionHealthEnvelope
+		gatesDecode(t, "session-health", out, &envelope)
+		if !envelope.Success || len(envelope.Agents) != 1 {
+			t.Fatalf("session health envelope unexpected: %s", out)
+		}
+		last = envelope.Agents[0]
+		if last.Health == wantHealth || attempt == 3 {
+			return last
+		}
+		logger.Log("[RETRY] session health = %q (want %q, attempt %d); retrying", last.Health, wantHealth, attempt)
+		time.Sleep(2 * time.Second)
+	}
+	return last
+}
+
 // gatesQuiesceFixture stops the fixture's cosmetic repaint loop with SIGSTOP
 // and waits until the pane's activity timestamp is stale. The fixture repaints
 // every 500ms even when idle/gated — a fixture artifact: a real agent's modal
@@ -522,14 +575,8 @@ func TestGatesE2EGateDetectionAcrossHealthSurfaces(t *testing.T) {
 	resumeFixture := gatesQuiesceFixture(t, logger, pane)
 
 	// --- (a) --robot-is-working -------------------------------------------
-	out, exit := gatesRunNTM(t, logger, nil, "--robot-is-working="+pane.Session)
-	if exit != 0 {
-		t.Fatalf("robot-is-working exit=%d output=%s", exit, out)
-	}
-	var isWorking gatesIsWorkingEnvelope
-	gatesDecode(t, "is-working", out, &isWorking)
+	isWorking, paneKey, work := gatesIsWorkingSolePane(t, logger, pane.Session)
 	logger.LogJSON("is_working_gated", isWorking)
-	paneKey, work := gatesSolePane(t, isWorking.Panes)
 	if work.Recommendation != "MANUAL_INTERVENTION" {
 		t.Fatalf("gated pane recommendation = %q, want MANUAL_INTERVENTION (reason %q)",
 			work.Recommendation, work.RecommendationReason)
@@ -560,7 +607,7 @@ func TestGatesE2EGateDetectionAcrossHealthSurfaces(t *testing.T) {
 	}
 
 	// --- (b) --robot-agent-health -----------------------------------------
-	out, _ = gatesRunNTM(t, logger, nil, "--robot-agent-health="+pane.Session, "--no-caut")
+	out, _ := gatesRunNTM(t, logger, nil, "--robot-agent-health="+pane.Session, "--no-caut")
 	var agentHealth gatesAgentHealthEnvelope
 	gatesDecode(t, "agent-health", out, &agentHealth)
 	logger.LogJSON("agent_health_gated", agentHealth)
@@ -574,14 +621,8 @@ func TestGatesE2EGateDetectionAcrossHealthSurfaces(t *testing.T) {
 	}
 
 	// --- (c) --robot-health=SESSION (session health surface) ---------------
-	out, _ = gatesRunNTM(t, logger, nil, "--robot-health="+pane.Session)
-	var sessionHealth gatesSessionHealthEnvelope
-	gatesDecode(t, "session-health", out, &sessionHealth)
-	logger.LogJSON("session_health_gated", sessionHealth)
-	if !sessionHealth.Success || len(sessionHealth.Agents) != 1 {
-		t.Fatalf("session health envelope unexpected: %s", out)
-	}
-	blockedAgent := sessionHealth.Agents[0]
+	blockedAgent := gatesSessionHealthSoleAgent(t, logger, pane.Session, "blocked")
+	logger.LogJSON("session_health_gated", blockedAgent)
 	if blockedAgent.Health != "blocked" {
 		t.Fatalf("session health agent health = %q, want blocked (last_error %q)",
 			blockedAgent.Health, blockedAgent.LastError)
@@ -624,14 +665,8 @@ func TestGatesE2EGateDetectionAcrossHealthSurfaces(t *testing.T) {
 		t.Fatalf("negative setup broken: working chrome not visible in pane tail:\n%s", capture)
 	}
 
-	out, exit = gatesRunNTM(t, logger, nil, "--robot-is-working="+pane.Session)
-	if exit != 0 {
-		t.Fatalf("robot-is-working (negative) exit=%d output=%s", exit, out)
-	}
-	var negative gatesIsWorkingEnvelope
-	gatesDecode(t, "is-working-negative", out, &negative)
+	negative, _, negWork := gatesIsWorkingSolePane(t, logger, pane.Session)
 	logger.LogJSON("is_working_quoted_phrase_under_work_chrome", negative)
-	_, negWork := gatesSolePane(t, negative.Panes)
 	if negWork.Recommendation == "MANUAL_INTERVENTION" {
 		t.Fatalf("quoted gate phrase under live work chrome was flagged: %+v", negWork)
 	}
@@ -670,14 +705,12 @@ func TestGatesE2EHealthRestartStuckLeavesGatedPaneUntouched(t *testing.T) {
 	// The health engine's refusal contract: the pane is blocked, and the reason
 	// carries the "needs a keystroke" explanation that shouldAutoRestartHealthState
 	// keys on. This is the same HealthBlocked state the restart engine consults.
-	out, _ := gatesRunNTM(t, logger, nil, "--robot-health="+pane.Session)
-	var sessionHealth gatesSessionHealthEnvelope
-	gatesDecode(t, "session-health", out, &sessionHealth)
-	if len(sessionHealth.Agents) != 1 || sessionHealth.Agents[0].Health != "blocked" {
-		t.Fatalf("expected blocked agent before restart-stuck: %s", out)
+	blockedAgent := gatesSessionHealthSoleAgent(t, logger, pane.Session, "blocked")
+	if blockedAgent.Health != "blocked" {
+		t.Fatalf("expected blocked agent before restart-stuck, got %+v", blockedAgent)
 	}
-	if !strings.Contains(sessionHealth.Agents[0].LastError, "needs a keystroke") {
-		t.Fatalf("blocked reason %q does not mention the keystroke", sessionHealth.Agents[0].LastError)
+	if !strings.Contains(blockedAgent.LastError, "needs a keystroke") {
+		t.Fatalf("blocked reason %q does not mention the keystroke", blockedAgent.LastError)
 	}
 
 	// Run the auto-restart surface (default 5m threshold). The gated pane
@@ -754,6 +787,13 @@ func TestGatesE2ESmartRestartSkipsGatedPaneWithPromptNotAttempted(t *testing.T) 
 
 	shellPIDBefore := gatesShellPID(t, pane.Session)
 	keysBefore := gatesKeyEventCount(pane)
+
+	// Pre-verify the gate verdict on the same surface smart-restart consults,
+	// so a transiently unavailable observation cannot turn this decline test
+	// into a live restart of the gated pane.
+	if _, _, preWork := gatesIsWorkingSolePane(t, logger, pane.Session); preWork.Recommendation != "MANUAL_INTERVENTION" {
+		t.Fatalf("pre-check recommendation = %q, want MANUAL_INTERVENTION before smart-restart", preWork.Recommendation)
+	}
 
 	out, exit := gatesRunNTM(t, logger, nil,
 		"--robot-smart-restart="+pane.Session, "--prompt=gates-e2e post-restart prompt")
@@ -1139,14 +1179,8 @@ func TestGatesE2ERateLimitPrecedenceOverGateFlagging(t *testing.T) {
 		t.Fatalf("gate phrase not visible in the tail (precedence not exercised):\n%s", capture)
 	}
 
-	out, exit := gatesRunNTM(t, logger, nil, "--robot-is-working="+pane.Session)
-	if exit != 0 {
-		t.Fatalf("robot-is-working exit=%d output=%s", exit, out)
-	}
-	var isWorking gatesIsWorkingEnvelope
-	gatesDecode(t, "is-working", out, &isWorking)
+	isWorking, _, work := gatesIsWorkingSolePane(t, logger, pane.Session)
 	logger.LogJSON("is_working_rate_limited", isWorking)
-	_, work := gatesSolePane(t, isWorking.Panes)
 	if !work.IsRateLimited {
 		t.Fatalf("is_rate_limited = false with the banner on screen: %+v", work)
 	}
