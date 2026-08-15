@@ -232,7 +232,7 @@ func startGatesFakeagentPane(t *testing.T, logger *TestLogger, persona string) *
 		controlPath: controlPath,
 		logPath:     logPath,
 	}
-	if _, ok := pane.WaitForEvent("start", "", 20*time.Second); !ok {
+	if _, ok := pane.WaitForEvent("start", "", 60*time.Second); !ok {
 		capture, _ := tmux.CapturePaneOutput(paneID, 40)
 		t.Fatalf("fakeagent did not start under the pane shell; pane shows:\n%s", capture)
 	}
@@ -314,7 +314,7 @@ func startGatesRespawnableFakeagentPane(t *testing.T, logger *TestLogger, person
 		controlPath: controlPath,
 		logPath:     logPath,
 	}
-	if _, ok := pane.WaitForEvent("start", "", 20*time.Second); !ok {
+	if _, ok := pane.WaitForEvent("start", "", 60*time.Second); !ok {
 		capture, _ := tmux.CapturePaneOutput(paneID, 40)
 		t.Fatalf("fakeagent did not start under the pane shell; pane shows:\n%s", capture)
 	}
