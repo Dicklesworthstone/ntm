@@ -66,6 +66,11 @@ type SessionCoordinator struct {
 	// config.RotationUsageThreshold > 0; created lazily on the first cycle.
 	rotation *rotationChecker
 
+	// CAAM auto-failover trigger (bd-um3uy). Nil unless
+	// [integrations.caam] auto_failover is true; created lazily on the
+	// first cycle.
+	caamFailover *failoverChecker
+
 	// Configuration
 	config CoordinatorConfig
 
@@ -424,6 +429,7 @@ func (c *SessionCoordinator) RunCycle(ctx context.Context) ([]AssignmentResult, 
 	}
 	c.nudgeUnreadMail(ctx)
 	c.maybeCheckContextRotation(ctx)
+	c.maybeCheckCaamFailover(ctx)
 	if !c.config.AutoAssign {
 		return nil, nil
 	}
@@ -448,6 +454,26 @@ func (c *SessionCoordinator) maybeCheckContextRotation(ctx context.Context) {
 		c.rotation = newRotationChecker(c.session, c.projectKey, c.config, c.ntmConfig)
 	}
 	checker := c.rotation
+	c.mu.Unlock()
+
+	checker.runOnce(ctx)
+}
+
+// maybeCheckCaamFailover runs the CAAM auto-failover trigger for this cycle
+// (bd-um3uy). DEFAULT-OFF GUARANTEE: with [integrations.caam] auto_failover
+// unset (false) — or no loaded NTM config at all — this returns before
+// constructing the checker: zero caam probing, zero new subprocess calls,
+// zero behavior change.
+func (c *SessionCoordinator) maybeCheckCaamFailover(ctx context.Context) {
+	c.mu.Lock()
+	if c.ntmConfig == nil || !c.ntmConfig.Integrations.CAAM.AutoFailover {
+		c.mu.Unlock()
+		return
+	}
+	if c.caamFailover == nil {
+		c.caamFailover = newFailoverChecker(c.session, c.ntmConfig.Integrations.CAAM)
+	}
+	checker := c.caamFailover
 	c.mu.Unlock()
 
 	checker.runOnce(ctx)
