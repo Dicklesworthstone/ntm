@@ -922,6 +922,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "delay-ms", Flag: "--delay-ms", Type: "int", Required: false, Description: "Delay between sends (ms)"},
 				{Name: "clear-input", Flag: "--clear-input", Type: "bool", Required: false, Description: "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing; recommended after interrupts on codex panes"},
 				{Name: "verify-render", Flag: "--verify-render", Type: "bool", Required: false, Description: "Capture bounded before/after output and require rendered delivery evidence"},
+				{Name: "with-memory", Flag: "--with-memory", Type: "bool", Required: false, Description: "Inject relevant CM (cass-memory) rules above the message before sending; degrades gracefully when cm is unavailable. Injection metadata is reported as memory_injection"},
 				{Name: "track", Flag: "--track", Type: "bool", Required: false, Description: "Combined send+ack: wait for response"},
 				{Name: "timeout", Flag: "--timeout", Type: "string", Required: false, Default: "30s", Description: "Max wait time when --track is enabled"},
 				{Name: "poll", Flag: "--poll", Type: "string", Required: false, Default: "500ms", Description: "Poll interval when --track is enabled"},
@@ -935,6 +936,7 @@ func buildCommandRegistry() []RobotCommandInfo {
 				"ntm --robot-send=proj --msg='draft' --enter=false",
 				"ntm --robot-send=proj --msg='hello' --track --timeout=30s",
 				"ntm --robot-send=proj --msg='deploy' --op-id=deploy-42",
+				"ntm --robot-send=proj --msg='Fix auth' --with-memory",
 			},
 		},
 		{

@@ -1975,6 +1975,7 @@ Shell Integration:
 					}
 					ackPollMs = int(pollDur.Milliseconds())
 				}
+				withMemory, memoryInject := robotSendMemoryOptions(robotSendWithMemory, cfg)
 				opts := robot.SendAndAckOptions{
 					SendOptions: robot.SendOptions{
 						Session:      session,
@@ -1989,6 +1990,8 @@ Shell Integration:
 						DryRun:       robotDryRunEffective,
 						ClearInput:   robotSendClearInput,
 						VerifyRender: robotSendVerifyRender,
+						WithMemory:   withMemory,
+						MemoryInject: memoryInject,
 					},
 					AckTimeoutMs: int(ackTimeout.Milliseconds()),
 					AckPollMs:    ackPollMs,
@@ -2002,6 +2005,7 @@ Shell Integration:
 				return
 			}
 
+			withMemory, memoryInject := robotSendMemoryOptions(robotSendWithMemory, cfg)
 			opts := robot.SendOptions{
 				Session:        session,
 				Message:        robotSendMsg,
@@ -2016,6 +2020,8 @@ Shell Integration:
 				ClearInput:     robotSendClearInput,
 				VerifyRender:   robotSendVerifyRender,
 				IdempotencyKey: strings.TrimSpace(robotSendOpID),
+				WithMemory:     withMemory,
+				MemoryInject:   memoryInject,
 			}
 			if cfg != nil {
 				opts.Redaction = cfg.Redaction.ToRedactionLibConfig()
@@ -3604,6 +3610,7 @@ var (
 	robotSendDelay        int    // delay between sends in ms
 	robotSendOpID         string // durable idempotent operation ID for --robot-send (#245)
 	robotSendReceipt      string // operation ID for --robot-send-receipt (#245)
+	robotSendWithMemory   bool   // inject CM memory rules into the outgoing message (bd-3j6hm)
 
 	// Robot-assign flags for work distribution
 	robotAssign         string // session name for work assignment
@@ -4238,6 +4245,7 @@ func init() {
 	rootCmd.Flags().IntVar(&robotSendDelay, "delay-ms", 0, "Delay between sends (ms). Optional with --robot-send. Example: --delay-ms=500 for 0.5s between panes")
 	rootCmd.Flags().BoolVar(&robotSendClearInput, "clear-input", false, "Clear residual composer text (per-agent Escape ritual + C-u, verified) before typing. Optional with --robot-send; recommended after interrupts on codex panes")
 	rootCmd.Flags().BoolVar(&robotSendVerifyRender, "verify-render", false, "Capture bounded before/after pane output and require rendered delivery evidence. Optional with --robot-send")
+	rootCmd.Flags().BoolVar(&robotSendWithMemory, "with-memory", false, "Inject relevant CM (cass-memory) rules above the message before sending. Optional with --robot-send; degrades gracefully when cm is unavailable. Config: [memory] send_injection/send_max_rules/send_budget_tokens")
 	rootCmd.Flags().StringVar(&robotSendOpID, "op-id", "", "Durable idempotent operation ID for --robot-send: identical retries replay the recorded outcome, conflicting reuse is rejected. Example: ntm --robot-send=proj --msg='...' --op-id=deploy-42")
 	rootCmd.Flags().StringVar(&robotSendReceipt, "robot-send-receipt", "", "Query the durable receipt of an idempotent send by operation ID. Example: ntm --robot-send-receipt=deploy-42")
 

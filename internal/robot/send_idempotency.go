@@ -167,9 +167,10 @@ func sendOperationBindingHash(opts SendOptions) string {
 	}
 	writeField(enter)
 	writeField(strconv.FormatBool(opts.ClearInput))
-	// The --with-cass TOGGLE is part of the command; the injected content is
-	// deliberately not (it varies between attempts).
+	// The --with-cass/--with-memory TOGGLES are part of the command; the
+	// injected content is deliberately not (it varies between attempts).
 	writeField(strconv.FormatBool(opts.WithCASS))
+	writeField(strconv.FormatBool(opts.WithMemory))
 	inputSHA, _ := sendPayloadDigest(opts.Message)
 	writeField(inputSHA)
 	return hex.EncodeToString(h.Sum(nil))

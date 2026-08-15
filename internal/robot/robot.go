@@ -6180,21 +6180,22 @@ func modelNameForPane(pane tmux.Pane, cfg *config.Config) string {
 
 // SendOutput is the structured output for --robot-send
 type SendOutput struct {
-	RobotResponse                       // Embed standard response fields (success, timestamp, error)
-	Session        string               `json:"session"`
-	SentAt         time.Time            `json:"sent_at"`
-	Blocked        bool                 `json:"blocked"`
-	Redaction      RedactionSummary     `json:"redaction"`
-	Warnings       []string             `json:"warnings"`
-	Targets        []string             `json:"targets"`
-	Successful     []string             `json:"successful"`
-	Failed         []SendError          `json:"failed"`
-	MessagePreview string               `json:"message_preview"`
-	DryRun         bool                 `json:"dry_run,omitempty"`
-	WouldSendTo    []string             `json:"would_send_to,omitempty"`
-	CASSInjection  *CASSInjectionInfo   `json:"cass_injection,omitempty"`
-	AgentHints     *SendAgentHints      `json:"_agent_hints,omitempty"`
-	RenderEvidence []SendRenderEvidence `json:"render_evidence,omitempty"`
+	RobotResponse                        // Embed standard response fields (success, timestamp, error)
+	Session         string               `json:"session"`
+	SentAt          time.Time            `json:"sent_at"`
+	Blocked         bool                 `json:"blocked"`
+	Redaction       RedactionSummary     `json:"redaction"`
+	Warnings        []string             `json:"warnings"`
+	Targets         []string             `json:"targets"`
+	Successful      []string             `json:"successful"`
+	Failed          []SendError          `json:"failed"`
+	MessagePreview  string               `json:"message_preview"`
+	DryRun          bool                 `json:"dry_run,omitempty"`
+	WouldSendTo     []string             `json:"would_send_to,omitempty"`
+	CASSInjection   *CASSInjectionInfo   `json:"cass_injection,omitempty"`
+	MemoryInjection *CMInjectionInfo     `json:"memory_injection,omitempty"`
+	AgentHints      *SendAgentHints      `json:"_agent_hints,omitempty"`
+	RenderEvidence  []SendRenderEvidence `json:"render_evidence,omitempty"`
 
 	// Operation is the durable idempotent-operation receipt (#245), present
 	// when the caller supplied an operation ID (--op-id / Idempotency-Key).
@@ -6317,6 +6318,12 @@ type SendOptions struct {
 	CASSConfig   *CASSConfig   // CASS query configuration (optional)
 	FilterConfig *FilterConfig // CASS filter configuration (optional)
 	InjectConfig *InjectConfig // CASS injection configuration (optional)
+
+	// CM memory injection options (--with-memory, bd-3j6hm). Mirrors the
+	// CASS toggle: WithMemory drives injection per call; MemoryInject
+	// carries config-derived defaults (nil means compiled-in defaults).
+	WithMemory   bool
+	MemoryInject *CMInjectConfig
 }
 
 type actuationTrace struct {
@@ -7197,6 +7204,22 @@ func GetSend(opts SendOptions) (*SendOutput, error) {
 		// Use modified message if injection succeeded
 		if injectResult.Success && injectResult.ModifiedPrompt != "" {
 			messageToSend = injectResult.ModifiedPrompt
+		}
+	}
+
+	// Perform CM memory rule injection if enabled (bd-3j6hm). The retrieval
+	// query is the caller's original message; the block is prepended to the
+	// (possibly CASS-augmented) payload. Degradation is graceful: cm being
+	// unavailable records a skip reason and the send proceeds unmodified.
+	if opts.WithMemory {
+		memCfg := DefaultCMInjectConfig()
+		if opts.MemoryInject != nil {
+			memCfg = *opts.MemoryInject
+		}
+		modified, memInfo := InjectCMRules(context.Background(), opts.Message, messageToSend, memCfg)
+		output.MemoryInjection = memInfo
+		if modified != "" {
+			messageToSend = modified
 		}
 	}
 

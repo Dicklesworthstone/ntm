@@ -94,6 +94,7 @@ type Config struct {
 	Notifications      notify.Config         `toml:"notifications"`
 	Resilience         ResilienceConfig      `toml:"resilience"`
 	Scanner            ScannerConfig         `toml:"scanner"`          // UBS scanner configuration
+	Bugs               BugsConfig            `toml:"bugs"`             // UBS bug push routing (ntm bugs watch)
 	CASS               CASSConfig            `toml:"cass"`             // CASS integration configuration
 	Accounts           AccountsConfig        `toml:"accounts"`         // Multi-account management
 	Rotation           RotationConfig        `toml:"rotation"`         // Account rotation configuration
@@ -1201,17 +1202,29 @@ type MemoryConfig struct {
 	IncludeAntiPatterns bool `toml:"include_anti_patterns"` // Include anti-patterns in context
 	IncludeHistory      bool `toml:"include_history"`       // Include historical snippets
 	QueryTimeoutSeconds int  `toml:"query_timeout_seconds"` // Timeout for cm command
+
+	// Per-task rule injection at send time (--with-memory, bd-3j6hm).
+	// send_injection makes robot sends inject rules by default (the
+	// --with-memory flag enables it per call regardless); send_max_rules and
+	// send_budget_tokens bound the injected block. They are send-scoped so
+	// max_rules keeps governing recovery/spawn context independently.
+	SendInjection    bool `toml:"send_injection"`     // Inject rules on robot sends by default
+	SendMaxRules     int  `toml:"send_max_rules"`     // Max rules injected per send
+	SendBudgetTokens int  `toml:"send_budget_tokens"` // Token budget for the injected block
 }
 
 // DefaultMemoryConfig returns sensible defaults for memory integration.
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
-		Enabled:             true, // Enabled by default (when cm is available)
-		IncludeInRecovery:   true, // Include in session recovery context
-		MaxRules:            10,   // Cap number of rules to inject
-		IncludeAntiPatterns: true, // Include anti-patterns by default
-		IncludeHistory:      true, // Include historical snippets
-		QueryTimeoutSeconds: 5,    // 5 second timeout for cm queries
+		Enabled:             true,  // Enabled by default (when cm is available)
+		IncludeInRecovery:   true,  // Include in session recovery context
+		MaxRules:            10,    // Cap number of rules to inject
+		IncludeAntiPatterns: true,  // Include anti-patterns by default
+		IncludeHistory:      true,  // Include historical snippets
+		QueryTimeoutSeconds: 5,     // 5 second timeout for cm queries
+		SendInjection:       false, // Opt-in: --with-memory drives per-call injection
+		SendMaxRules:        5,     // Top-N rules injected per send
+		SendBudgetTokens:    1500,  // Token budget for the injected rules block
 	}
 }
 
@@ -1222,6 +1235,12 @@ func ValidateMemoryConfig(cfg *MemoryConfig) error {
 	}
 	if cfg.QueryTimeoutSeconds < 1 {
 		return fmt.Errorf("query_timeout_seconds must be at least 1, got %d", cfg.QueryTimeoutSeconds)
+	}
+	if cfg.SendMaxRules < 0 {
+		return fmt.Errorf("send_max_rules must be non-negative, got %d", cfg.SendMaxRules)
+	}
+	if cfg.SendBudgetTokens < 0 {
+		return fmt.Errorf("send_budget_tokens must be non-negative, got %d", cfg.SendBudgetTokens)
 	}
 	return nil
 }
@@ -1577,6 +1596,31 @@ type CAAMConfig struct {
 	RateLimitPatterns []string `toml:"rate_limit_patterns"` // Custom rate limit detection patterns
 	AccountCooldown   int      `toml:"account_cooldown"`    // Cooldown before retrying same account (seconds)
 	AlertThreshold    int      `toml:"alert_threshold"`     // Alert threshold (percentage of limit)
+
+	// AutoFailover enables the coordinator's automatic account failover
+	// (bd-um3uy): when a coordinator tick observes a banner-verified rate
+	// limit on an agent pane whose reset lies beyond reset_horizon_minutes,
+	// and a verified alternate caam account with headroom exists, the
+	// coordinator switches accounts through the same machinery
+	// --robot-switch-account uses. Default false: no caam probing, no new
+	// subprocess calls, no behavior change.
+	AutoFailover bool `toml:"auto_failover"`
+
+	// ResetHorizonMinutes is the minimum detected-reset distance that
+	// justifies an automatic failover: limits that reset sooner than this
+	// are waited out instead of burning an account switch. A reset hint that
+	// cannot be parsed into a time is treated as BEYOND the horizon (a
+	// long-lived limit is the common case for unparseable phrasing, and the
+	// remaining gates — verified alternate, per-pane hourly cooldown — bound
+	// the blast radius). 0 fails over on any detected limit. Must be >= 0.
+	ResetHorizonMinutes int `toml:"reset_horizon_minutes"`
+
+	// FailoverProviders is the per-provider allow-list for auto-failover
+	// (canonical names: "claude", "openai", "gemini"). Empty means NO
+	// providers — the feature is doubly opt-in (auto_failover AND an
+	// explicit allow-list). Deliberately separate from Providers above,
+	// whose empty value means "all available".
+	FailoverProviders []string `toml:"failover_providers"`
 }
 
 // DefaultCAAMConfig returns sensible defaults for CAAM integration.
@@ -1589,7 +1633,22 @@ func DefaultCAAMConfig() CAAMConfig {
 		RateLimitPatterns: nil,                                    // Use built-in patterns
 		AccountCooldown:   300,                                    // 5 minute cooldown
 		AlertThreshold:    80,                                     // Alert at 80% of limit
+
+		AutoFailover:        false, // Coordinator auto-failover OFF by default (bd-um3uy)
+		ResetHorizonMinutes: 30,    // Only fail over when the reset is > 30 minutes away
+		FailoverProviders:   nil,   // Empty allow-list = no providers (doubly opt-in)
 	}
+}
+
+// ValidateCAAMConfig validates CAAM integration configuration.
+func ValidateCAAMConfig(cfg *CAAMConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.ResetHorizonMinutes < 0 {
+		return fmt.Errorf("reset_horizon_minutes must be >= 0, got %d", cfg.ResetHorizonMinutes)
+	}
+	return nil
 }
 
 // RCHConfig holds configuration for RCH (Remote Compilation Helper) integration.
@@ -2640,6 +2699,7 @@ func Default() *Config {
 		Notifications:   notify.DefaultConfig(),
 		Resilience:      DefaultResilienceConfig(),
 		Scanner:         DefaultScannerConfig(),
+		Bugs:            DefaultBugsConfig(),
 		CASS:            DefaultCASSConfig(),
 		Accounts:        DefaultAccountsConfig(),
 		Rotation:        DefaultRotationConfig(),
@@ -3952,6 +4012,11 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "rate_limit_patterns = %s\n", renderTOMLStringArray(cfg.Integrations.CAAM.RateLimitPatterns))
 	fmt.Fprintf(w, "account_cooldown = %d\n", cfg.Integrations.CAAM.AccountCooldown)
 	fmt.Fprintf(w, "alert_threshold = %d\n", cfg.Integrations.CAAM.AlertThreshold)
+	fmt.Fprintln(w, "# Coordinator auto-failover on detected rate limits (bd-um3uy).")
+	fmt.Fprintln(w, "# Doubly opt-in: auto_failover must be true AND failover_providers non-empty.")
+	fmt.Fprintf(w, "auto_failover = %t\n", cfg.Integrations.CAAM.AutoFailover)
+	fmt.Fprintf(w, "reset_horizon_minutes = %d  # Only fail over when the reset is further away than this\n", cfg.Integrations.CAAM.ResetHorizonMinutes)
+	fmt.Fprintf(w, "failover_providers = %s  # Allow-list (\"claude\", \"openai\", \"gemini\"); empty = none\n", renderTOMLStringArray(cfg.Integrations.CAAM.FailoverProviders))
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[integrations.rch]")
@@ -4651,6 +4716,9 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "include_anti_patterns = %t\n", cfg.Memory.IncludeAntiPatterns)
 	fmt.Fprintf(w, "include_history = %t\n", cfg.Memory.IncludeHistory)
 	fmt.Fprintf(w, "query_timeout_seconds = %d\n", cfg.Memory.QueryTimeoutSeconds)
+	fmt.Fprintf(w, "send_injection = %t             # Inject rules on robot sends by default (--with-memory)\n", cfg.Memory.SendInjection)
+	fmt.Fprintf(w, "send_max_rules = %d\n", cfg.Memory.SendMaxRules)
+	fmt.Fprintf(w, "send_budget_tokens = %d\n", cfg.Memory.SendBudgetTokens)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[swarm]")
@@ -5104,6 +5172,12 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Integrations.CAAM.AccountCooldown, nil
 			case "alert_threshold":
 				return cfg.Integrations.CAAM.AlertThreshold, nil
+			case "auto_failover":
+				return cfg.Integrations.CAAM.AutoFailover, nil
+			case "reset_horizon_minutes":
+				return cfg.Integrations.CAAM.ResetHorizonMinutes, nil
+			case "failover_providers":
+				return cfg.Integrations.CAAM.FailoverProviders, nil
 			}
 		case "rch":
 			if len(parts) < 3 {
@@ -5495,6 +5569,12 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Memory.IncludeHistory, nil
 		case "query_timeout_seconds":
 			return cfg.Memory.QueryTimeoutSeconds, nil
+		case "send_injection":
+			return cfg.Memory.SendInjection, nil
+		case "send_max_rules":
+			return cfg.Memory.SendMaxRules, nil
+		case "send_budget_tokens":
+			return cfg.Memory.SendBudgetTokens, nil
 		}
 	case "privacy":
 		if len(parts) < 2 {
@@ -6157,6 +6237,9 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("integrations.caam.rate_limit_patterns", defaults.Integrations.CAAM.RateLimitPatterns, cfg.Integrations.CAAM.RateLimitPatterns)
 	addDiff("integrations.caam.account_cooldown", defaults.Integrations.CAAM.AccountCooldown, cfg.Integrations.CAAM.AccountCooldown)
 	addDiff("integrations.caam.alert_threshold", defaults.Integrations.CAAM.AlertThreshold, cfg.Integrations.CAAM.AlertThreshold)
+	addDiff("integrations.caam.auto_failover", defaults.Integrations.CAAM.AutoFailover, cfg.Integrations.CAAM.AutoFailover)
+	addDiff("integrations.caam.reset_horizon_minutes", defaults.Integrations.CAAM.ResetHorizonMinutes, cfg.Integrations.CAAM.ResetHorizonMinutes)
+	addDiff("integrations.caam.failover_providers", defaults.Integrations.CAAM.FailoverProviders, cfg.Integrations.CAAM.FailoverProviders)
 	addDiff("integrations.rch.enabled", defaults.Integrations.RCH.Enabled, cfg.Integrations.RCH.Enabled)
 	addDiff("integrations.rch.binary_path", defaults.Integrations.RCH.BinaryPath, cfg.Integrations.RCH.BinaryPath)
 	addDiff("integrations.rch.min_build_time", defaults.Integrations.RCH.MinBuildTime, cfg.Integrations.RCH.MinBuildTime)
@@ -6289,6 +6372,9 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("memory.include_anti_patterns", defaults.Memory.IncludeAntiPatterns, cfg.Memory.IncludeAntiPatterns)
 	addDiff("memory.include_history", defaults.Memory.IncludeHistory, cfg.Memory.IncludeHistory)
 	addDiff("memory.query_timeout_seconds", defaults.Memory.QueryTimeoutSeconds, cfg.Memory.QueryTimeoutSeconds)
+	addDiff("memory.send_injection", defaults.Memory.SendInjection, cfg.Memory.SendInjection)
+	addDiff("memory.send_max_rules", defaults.Memory.SendMaxRules, cfg.Memory.SendMaxRules)
+	addDiff("memory.send_budget_tokens", defaults.Memory.SendBudgetTokens, cfg.Memory.SendBudgetTokens)
 
 	// Privacy
 	addDiff("privacy.enabled", defaults.Privacy.Enabled, cfg.Privacy.Enabled)
@@ -6503,6 +6589,11 @@ func Validate(cfg *Config) []error {
 	// Validate DCG integration config
 	if err := ValidateDCGConfig(&cfg.Integrations.DCG); err != nil {
 		errs = append(errs, fmt.Errorf("integrations.dcg: %w", err))
+	}
+
+	// Validate CAAM integration config
+	if err := ValidateCAAMConfig(&cfg.Integrations.CAAM); err != nil {
+		errs = append(errs, fmt.Errorf("integrations.caam: %w", err))
 	}
 
 	// Validate ProcessTriage integration config

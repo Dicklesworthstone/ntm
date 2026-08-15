@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -692,6 +693,23 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			},
 		}), nil
 	}
+	// Perform CM memory rule injection if enabled (bd-3j6hm), mirroring the
+	// GetSend path. The injected rule IDs feed the automatic outcome report
+	// after a confirmed acknowledgment. cm being unavailable records a skip
+	// reason and the send proceeds unmodified.
+	var memoryInfo *CMInjectionInfo
+	memCfg := DefaultCMInjectConfig()
+	if opts.MemoryInject != nil {
+		memCfg = *opts.MemoryInject
+	}
+	if opts.WithMemory && len(targetPanes) > 0 {
+		modified, memInfo := InjectCMRules(context.Background(), opts.Message, opts.Message, memCfg)
+		memoryInfo = memInfo
+		if modified != "" {
+			opts.Message = modified
+		}
+	}
+
 	// A pane with no baseline is excluded from acknowledgment tracking below
 	// rather than diffed against an empty string, which would return the whole
 	// scrollback and confirm an ack the agent never gave.
@@ -711,16 +729,17 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	}
 
 	sendOutput := SendOutput{
-		RobotResponse:  NewRobotResponse(true), // Will be updated based on results
-		Session:        opts.Session,
-		SentAt:         sentAt,
-		Blocked:        false,
-		Redaction:      redactionSummary,
-		Warnings:       redactionWarnings,
-		Targets:        targetKeys,
-		Successful:     []string{},
-		Failed:         []SendError{},
-		MessagePreview: preview,
+		RobotResponse:   NewRobotResponse(true), // Will be updated based on results
+		Session:         opts.Session,
+		SentAt:          sentAt,
+		Blocked:         false,
+		Redaction:       redactionSummary,
+		Warnings:        redactionWarnings,
+		Targets:         targetKeys,
+		Successful:      []string{},
+		Failed:          []SendError{},
+		MessagePreview:  preview,
+		MemoryInjection: memoryInfo,
 	}
 	if len(targetPanes) == 0 {
 		sendOutput.RobotResponse = NewErrorResponse(
@@ -888,6 +907,14 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 
 	ackOutput.CompletedAt = time.Now().UTC()
 	publishSendActuationVerification(trace, opts, sendOutput, ackOutput)
+
+	// Automatic outcome feedback (bd-3j6hm): only clear evidence is reported.
+	// A confirmed acknowledgment with no panes left pending is a success for
+	// the injected rules; an ack timeout is ambiguous and reports nothing.
+	// reportCMOutcome is bounded and never fails the send.
+	if shouldReportCMSendOutcome(opts.WithMemory, memoryInfo, len(ackOutput.Confirmations), ackOutput.TimedOut) {
+		reportCMOutcome(memCfg, cm.OutcomeSuccess, memoryInfo.RulesInjected)
+	}
 
 	combined := NewRobotResponse(true)
 	if !sendOutput.Success {
