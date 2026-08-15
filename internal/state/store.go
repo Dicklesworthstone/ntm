@@ -685,6 +685,60 @@ func (s *Store) GetApproval(id string) (*Approval, error) {
 	return appr, nil
 }
 
+// ListApprovalsByCorrelation returns all approvals whose correlation_id
+// matches, newest first. Gated commands store a stable operation key in
+// correlation_id (bd-2y2on) so a re-run of the same operation finds its own
+// prior request instead of enqueueing duplicates.
+func (s *Store) ListApprovalsByCorrelation(correlationID string) ([]Approval, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT id, action, resource, COALESCE(reason, ''), requested_by, COALESCE(correlation_id, ''), requires_slb, created_at, expires_at, status, COALESCE(approved_by, ''), approved_at, COALESCE(denied_reason, '')
+		FROM approvals WHERE correlation_id = ?
+		ORDER BY created_at DESC, id DESC`, correlationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list approvals by correlation: %w", err)
+	}
+	defer rows.Close()
+
+	var approvals []Approval
+	for rows.Next() {
+		var appr Approval
+		if err := rows.Scan(&appr.ID, &appr.Action, &appr.Resource, &appr.Reason, &appr.RequestedBy, &appr.CorrelationID, &appr.RequiresSLB, &appr.CreatedAt, &appr.ExpiresAt, &appr.Status, &appr.ApprovedBy, &appr.ApprovedAt, &appr.DeniedReason); err != nil {
+			return nil, fmt.Errorf("scan approval: %w", err)
+		}
+		approvals = append(approvals, appr)
+	}
+	return approvals, rows.Err()
+}
+
+// ConsumeApproval atomically transitions an approval from approved to
+// consumed, reporting whether this call performed the transition. The status
+// guard runs inside the UPDATE itself (bd-2y2on): two concurrent gate
+// invocations — separate processes, so the engine's in-process mutex cannot
+// serialize them — may both read status=approved, but exactly one UPDATE
+// matches `status = 'approved'`; the loser matches zero rows and must treat
+// the approval as already spent.
+func (s *Store) ConsumeApproval(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(
+		`UPDATE approvals SET status = ? WHERE id = ? AND status = ?`,
+		ApprovalConsumed, id, ApprovalApproved,
+	)
+	if err != nil {
+		return false, fmt.Errorf("consume approval: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateApproval updates an existing approval.
 func (s *Store) UpdateApproval(appr *Approval) error {
 	s.mu.Lock()

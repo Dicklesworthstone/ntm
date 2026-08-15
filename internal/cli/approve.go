@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/approval"
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 )
 
@@ -133,6 +134,18 @@ func runApprove(token string, jsonOutput bool) error {
 		return outputError(err, jsonOutput)
 	}
 
+	// Durable state.db record is the primary trail; mirror the decision into
+	// the audit log so approvals appear alongside other audited operations
+	// (bd-2y2on).
+	_ = audit.LogEvent("", audit.EventTypeStateChange, audit.ActorUser, "approval.approve", map[string]interface{}{
+		"approval_id":  token,
+		"action":       appr.Action,
+		"resource":     appr.Resource,
+		"requested_by": appr.RequestedBy,
+		"approved_by":  currentUser,
+		"requires_slb": appr.RequiresSLB,
+	}, nil)
+
 	result := ApprovalResult{
 		Success:  true,
 		ID:       token,
@@ -216,6 +229,16 @@ func runApproveDeny(token, reason string, jsonOutput bool) error {
 	if err != nil {
 		return outputError(err, jsonOutput)
 	}
+
+	_ = audit.LogEvent("", audit.EventTypeStateChange, audit.ActorUser, "approval.deny", map[string]interface{}{
+		"approval_id":  token,
+		"action":       appr.Action,
+		"resource":     appr.Resource,
+		"requested_by": appr.RequestedBy,
+		"denied_by":    currentUser,
+		"reason":       reason,
+		"requires_slb": appr.RequiresSLB,
+	}, nil)
 
 	result := ApprovalResult{
 		Success:  true,

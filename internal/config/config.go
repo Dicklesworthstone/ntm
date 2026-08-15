@@ -4545,6 +4545,13 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "summary_after_scan = %t\n", cfg.Scanner.Notifications.SummaryAfterScan)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[bugs]")
+	fmt.Fprintln(w, "# UBS bug push routing (ntm bugs watch)")
+	fmt.Fprintf(w, "push_routing = %t  # Route NEW findings to reservation holders (opt-in)\n", cfg.Bugs.PushRouting)
+	fmt.Fprintf(w, "interval = %q  # Scan interval for 'ntm bugs watch'\n", cfg.Bugs.EffectiveInterval().String())
+	fmt.Fprintf(w, "cooldown_minutes = %d  # Minimum minutes between bug nudges to the same pane\n", cfg.Bugs.CooldownMinutes)
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "[cass]")
 	fmt.Fprintln(w, "# CASS (Coding Agent Session Search) configuration")
 	fmt.Fprintf(w, "enabled = %t\n", cfg.CASS.Enabled)
@@ -5872,6 +5879,18 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 				return cfg.Ensemble.EarlyStop.WindowSize, nil
 			}
 		}
+	case "bugs":
+		if len(parts) < 2 {
+			return cfg.Bugs, nil
+		}
+		switch parts[1] {
+		case "push_routing":
+			return cfg.Bugs.PushRouting, nil
+		case "interval":
+			return cfg.Bugs.Interval, nil
+		case "cooldown_minutes":
+			return cfg.Bugs.CooldownMinutes, nil
+		}
 	case "cass":
 		if len(parts) < 2 {
 			return cfg.CASS, nil
@@ -6491,6 +6510,11 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("scanner.notifications.enabled", defaults.Scanner.Notifications.Enabled, cfg.Scanner.Notifications.Enabled)
 	addDiff("scanner.notifications.on_new_critical", defaults.Scanner.Notifications.OnNewCritical, cfg.Scanner.Notifications.OnNewCritical)
 	addDiff("scanner.notifications.summary_after_scan", defaults.Scanner.Notifications.SummaryAfterScan, cfg.Scanner.Notifications.SummaryAfterScan)
+
+	// Bugs (UBS push routing)
+	addDiff("bugs.push_routing", defaults.Bugs.PushRouting, cfg.Bugs.PushRouting)
+	addDiff("bugs.interval", defaults.Bugs.Interval, cfg.Bugs.Interval)
+	addDiff("bugs.cooldown_minutes", defaults.Bugs.CooldownMinutes, cfg.Bugs.CooldownMinutes)
 
 	// Accounts and rotation
 	addDiff("accounts.state_file", defaults.Accounts.StateFile, cfg.Accounts.StateFile)

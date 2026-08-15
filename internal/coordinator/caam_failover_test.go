@@ -76,6 +76,7 @@ func newFailoverTestEnv(t *testing.T, providers []string, horizonMinutes int, pa
 			return capture, nil
 		},
 		caamAvailable: func() bool { return true },
+		guardSwitch:   func(string) error { return nil },
 		listAccounts: func(provider string) ([]swarm.AccountInfo, error) {
 			env.queried = append(env.queried, provider)
 			return []swarm.AccountInfo{
@@ -135,6 +136,7 @@ func TestFailoverChecker_DecisionTable(t *testing.T) {
 		cooldownAgo   time.Duration // >0 seeds a prior switch this long ago
 		noAlternate   bool
 		listErr       error
+		guardErr      error
 		caamDown      bool
 		switchFails   bool
 		wantAction    string // "" = no decision at all
@@ -208,6 +210,12 @@ func TestFailoverChecker_DecisionTable(t *testing.T) {
 			wantAction: "declined", wantDecline: "caam_unavailable", wantPublished: 0,
 		},
 		{
+			name: "rotation safety guard refusal declines", providers: []string{"claude"},
+			horizonMin: 30, capture: limitedCapture, now: nightNow,
+			guardErr:   swarm.ErrRotationBlocked,
+			wantAction: "declined", wantDecline: "rotation_blocked", wantPublished: 1,
+		},
+		{
 			name: "caam query failure declines (fail closed)", providers: []string{"claude"},
 			horizonMin: 30, capture: limitedCapture, now: nightNow, listErr: errors.New("caam exploded"),
 			wantAction: "declined", wantDecline: "caam_query_failed", wantPublished: 1,
@@ -238,6 +246,9 @@ func TestFailoverChecker_DecisionTable(t *testing.T) {
 			}
 			if tc.listErr != nil {
 				env.fc.listAccounts = func(string) ([]swarm.AccountInfo, error) { return nil, tc.listErr }
+			}
+			if tc.guardErr != nil {
+				env.fc.guardSwitch = func(string) error { return tc.guardErr }
 			}
 			if tc.noAlternate {
 				env.fc.listAccounts = func(provider string) ([]swarm.AccountInfo, error) {
@@ -363,6 +374,59 @@ func TestFailoverChecker_NeverSwitchesWithoutVerifiedAlternate(t *testing.T) {
 	}
 	if len(decisions) != 1 || decisions[0].DeclineReason != "no_alternate_account" {
 		t.Fatalf("decisions = %+v, want one no_alternate_account decline", decisions)
+	}
+}
+
+// TestFailoverChecker_HonorsAccountPins exercises the PRODUCTION rotation
+// safety guard: an operator pin persisted by `ntm rotate lock` (via
+// swarm.SavePins) must make the auto-failover decline before ever querying
+// for alternates or switching.
+func TestFailoverChecker_HonorsAccountPins(t *testing.T) {
+	dir := t.TempDir()
+	pinner := swarm.NewAccountRotator()
+	pinner.PinAccount("claude", "acct-active")
+	if err := pinner.SavePins(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultCAAMConfig()
+	cfg.AutoFailover = true
+	cfg.FailoverProviders = []string{"claude"}
+	fc := newFailoverChecker("fosess", dir, cfg)
+	if fc == nil {
+		t.Fatal("checker not constructed")
+	}
+
+	pane := foPane("%7", "fosess__cc_1")
+	var published []robot.ActuationRecord
+	switched := 0
+	fc.getPanes = func(string) ([]tmux.Pane, error) { return []tmux.Pane{pane}, nil }
+	fc.capturePane = func(string, int) (string, error) { return limitedCapture, nil }
+	fc.caamAvailable = func() bool { return true }
+	fc.listAccounts = func(string) ([]swarm.AccountInfo, error) {
+		t.Error("alternate query ran despite a pinned provider")
+		return nil, nil
+	}
+	fc.switchAccount = func(string, string) (*robot.SwitchAccountOutput, error) {
+		switched++
+		return nil, nil
+	}
+	fc.lastSwitchAt = func(string) (time.Time, bool) { return time.Time{}, false }
+	fc.recordSwitch = func(string, string, time.Time) {}
+	fc.publish = func(r robot.ActuationRecord) { published = append(published, r) }
+
+	decisions := fc.runOnce(context.Background())
+	for _, d := range decisions {
+		t.Logf("decision: %+v", d)
+	}
+	if len(decisions) != 1 || decisions[0].DeclineReason != "rotation_blocked" {
+		t.Fatalf("decisions = %+v, want one rotation_blocked decline", decisions)
+	}
+	if switched != 0 {
+		t.Fatalf("switched %d times despite a pinned provider", switched)
+	}
+	if len(published) != 1 {
+		t.Fatalf("published %d records, want 1", len(published))
 	}
 }
 
@@ -541,7 +605,7 @@ func TestRunCycle_CaamFailoverGating(t *testing.T) {
 // honors the default-off gate and canonicalizes the provider allow-list.
 func TestNewFailoverChecker_ConstructionGate(t *testing.T) {
 	off := config.DefaultCAAMConfig()
-	if fc := newFailoverChecker("s", off); fc != nil {
+	if fc := newFailoverChecker("s", t.TempDir(), off); fc != nil {
 		t.Fatal("checker constructed with auto_failover=false")
 	}
 
@@ -549,9 +613,12 @@ func TestNewFailoverChecker_ConstructionGate(t *testing.T) {
 	on.AutoFailover = true
 	on.ResetHorizonMinutes = 45
 	on.FailoverProviders = []string{"Anthropic", "cod", "bogus"}
-	fc := newFailoverChecker("s", on)
+	fc := newFailoverChecker("s", t.TempDir(), on)
 	if fc == nil {
 		t.Fatal("checker not constructed with auto_failover=true")
+	}
+	if fc.guardSwitch == nil {
+		t.Error("production checker missing the rotation safety guard seam")
 	}
 	if fc.horizon != 45*time.Minute {
 		t.Errorf("horizon = %v, want 45m", fc.horizon)

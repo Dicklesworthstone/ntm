@@ -791,7 +791,8 @@ if [ $exit_code -ne 0 ]; then
         echo "NTM Safety: Command requires approval" >&2
         echo "  Reason: $reason" >&2
         echo "  Command: git $*" >&2
-        echo "  Run 'ntm approve list' to see pending requests." >&2
+        echo "  This wrapper is advisory: it refused the command but queued no approval request." >&2
+        echo "  Approval-gated ntm commands (e.g. 'ntm locks force-release') request approval when run; decide with 'ntm approve'." >&2
     else
         echo "NTM Safety: Command blocked" >&2
         echo "  Reason: $reason" >&2
@@ -840,7 +841,8 @@ if [ $exit_code -ne 0 ]; then
         echo "NTM Safety: Command requires approval" >&2
         echo "  Reason: $reason" >&2
         echo "  Command: rm $*" >&2
-        echo "  Run 'ntm approve list' to see pending requests." >&2
+        echo "  This wrapper is advisory: it refused the command but queued no approval request." >&2
+        echo "  Approval-gated ntm commands (e.g. 'ntm locks force-release') request approval when run; decide with 'ntm approve'." >&2
     else
         echo "NTM Safety: Command blocked" >&2
         echo "  Reason: $reason" >&2
@@ -927,7 +929,8 @@ if [ $exit_code -ne 0 ]; then
     # Return error to Claude Code
     if [ "$action" = "approve" ]; then
         echo "APPROVAL REQUIRED: $reason" >&2
-        echo "Run 'ntm approve list' to see pending requests." >&2
+        echo "This check is advisory: the command was refused but no approval request was queued." >&2
+        echo "Approval-gated ntm commands (e.g. 'ntm locks force-release') request approval when run; decide with 'ntm approve'." >&2
     else
         echo "BLOCKED: $reason" >&2
     fi

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -570,7 +571,56 @@ func TestFetchAttentionCmdRetainsRequestedCursorOutsideReplayWindow(t *testing.T
 	}
 }
 
+// writeDashboardForceReleasePolicy pins automation.force_release in a
+// hermetic HOME so dashboard conflict-action tests exercise a chosen policy
+// verdict (bd-2y2on) instead of inheriting ~/.ntm/policy.yaml.
+func writeDashboardForceReleasePolicy(t *testing.T, value string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".ntm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir hermetic .ntm: %v", err)
+	}
+	yaml := fmt.Sprintf("version: 1\nautomation:\n  force_release: %s\n", value)
+	if err := os.WriteFile(filepath.Join(dir, "policy.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+}
+
+// TestHandleConflictAction_ForceBlockedByPolicy: bd-2y2on — the dashboard's
+// force action must honor automation.force_release. Under the default
+// ("approval") policy it fails closed, pointing at the gated CLI workflow,
+// and never touches Agent Mail.
+func TestHandleConflictAction_ForceBlockedByPolicy(t *testing.T) {
+	// Hermetic empty HOME: LoadOrDefault falls back to the default policy,
+	// whose force_release is "approval".
+	t.Setenv("HOME", t.TempDir())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("policy gate bypassed: Agent Mail was contacted")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	t.Setenv("AGENT_MAIL_URL", server.URL+"/")
+
+	model := &Model{session: "sess", projectDir: "/tmp/ntm"}
+	err := model.handleConflictAction(watcher.FileConflict{
+		Path:                 "internal/robot/attention_feed.go",
+		RequestorAgent:       "worker-a",
+		HolderReservationIDs: []int{42},
+	}, watcher.ConflictActionForce)
+	if err == nil {
+		t.Fatal("force action should be blocked under the default approval policy")
+	}
+	if !strings.Contains(err.Error(), "automation.force_release=approval") {
+		t.Fatalf("error should name the policy setting, got %q", err.Error())
+	}
+}
+
 func TestHandleConflictAction_ForceRegistersDashboardAgent(t *testing.T) {
+	writeDashboardForceReleasePolicy(t, "auto")
+
 	var (
 		mu    sync.Mutex
 		calls []string

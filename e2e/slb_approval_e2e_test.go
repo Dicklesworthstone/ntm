@@ -5,49 +5,53 @@
 //
 // [E2E-SLB-APPROVAL] bd-cx733: SLB two-person approval workflow, end to end.
 //
-// This suite pins what the approval machinery ACTUALLY does today, verified
-// by a code audit (file:line refs below) and asserted here against the real
-// ntm binary with a hermetic HOME (policy at $HOME/.ntm/policy.yaml, see
-// internal/policy/policy.go:109 ResolveEffectivePath) and a hermetic state DB
-// (NTM_CONFIG dir/state.db, see internal/state/store.go:42 DefaultPath).
+// This suite proves the approval machinery against the real ntm binary with
+// a hermetic HOME (policy at $HOME/.ntm/policy.yaml, see
+// internal/policy/policy.go ResolveEffectivePath) and a hermetic state DB
+// (NTM_CONFIG dir/state.db, see internal/state/store.go DefaultPath).
 //
-// The audited chain:
+// The chain under test:
 //
-//   - Policy verdicts: internal/policy/policy.go:240 (Check) evaluated by
-//     `ntm safety check` (internal/cli/safety.go:477 evaluateSafetyCheck),
+//   - Policy verdicts: internal/policy/policy.go (Check) evaluated by
+//     `ntm safety check` (internal/cli/safety.go evaluateSafetyCheck),
 //     exit 1 for block/approve. SLB flag surfaces via policy.slb.
-//   - Durable approvals: internal/approval/engine.go (Request/Approve/Deny)
-//     over state.db approvals table (internal/state/store.go:652).
-//     The two-person rule lives at internal/approval/engine.go:245 and is
+//   - Durable approvals: internal/approval/engine.go (Request/Approve/Deny/
+//     Consume) over the state.db approvals table. The two-person rule is
 //     enforced ONLY when the approval record has RequiresSLB=true.
 //   - Decision CLI: `ntm approve ...` (internal/cli/approve.go). Approver
-//     identity = NTM_USER || USER env (internal/cli/approve.go:317) — i.e.
-//     caller-asserted, not authenticated.
+//     identity = NTM_USER || USER env (getCurrentApprover) — i.e.
+//     caller-asserted, not authenticated (known limitation, out of scope
+//     for bd-2y2on).
+//   - Enforcement: `ntm locks force-release` is gated
+//     (internal/cli/force_release_gate.go, wired into runForceRelease in
+//     internal/cli/locks.go). This was the P1 gap bd-2y2on: previously the
+//     command reached straight into Agent Mail plumbing and the policy's
+//     automation.force_release knob was decorative.
 //
-// GAPS pinned by this suite (current, real behavior — do not "fix" the test,
-// fix the product and then update these assertions):
+// GAPS formerly pinned here (bd-2y2on) and their resolution:
 //
-//	GAP-1 (P1, filed as bug bead bd-2y2on — see TestSLBApproval_ForceReleaseUngated):
-//	  `ntm locks force-release` (internal/cli/locks.go:998 runForceRelease)
-//	  never consults the policy engine or the approval engine. The default
-//	  policy's automation.force_release="approval" and the SLB-flagged
-//	  `force_release` approval_required rule (internal/policy/policy.go:150,
-//	  173) are decorative for this command: no approval record is created,
-//	  no second person is demanded, and --yes/--json skip the only (local,
-//	  cosmetic) confirmation prompt.
+//	GAP-1 (FIXED): force-release now loads the policy and honors
+//	  automation.force_release. "never" refuses outright, naming the policy
+//	  file. "approval" (the default) runs a durable two-person workflow: the
+//	  attempt creates an SLB approval record keyed by a stable operation key
+//	  (correlation_id), stays blocked until a SECOND identity approves, and
+//	  an approved record is consumed at gate-pass time so one approval
+//	  authorizes exactly one execution. --yes only skips the cosmetic local
+//	  prompt, never the gate. TestSLBApproval_ForceReleaseGated proves the
+//	  full loop end to end.
 //
-//	GAP-2 (same bead, bd-2y2on): nothing in production creates durable approval
-//	  records. approval.Engine.Request has zero non-test callers, so the
-//	  `ntm approve list` queue that safety wrappers point users at
-//	  ("Run 'ntm approve list' to see pending requests",
-//	  internal/cli/safety.go:794) is always empty, and an *approved* record
-//	  has no effect on enforcement — `ntm safety check` re-evaluates policy
-//	  statelessly and keeps exiting 1.
+//	GAP-2 (RESOLVED, split): force-release is now the production caller of
+//	  approval.Engine.Request, so the `ntm approve list` queue is real for
+//	  gated commands. `ntm safety check` itself remains a stateless advisory
+//	  evaluator BY DESIGN (its wrapper scripts only refuse and exit — there
+//	  is no execution flow to gate), and the wrapper hints in
+//	  internal/cli/safety.go were reworded to stop advertising a queue that
+//	  advisory checks do not feed.
 //
-// What DOES work end to end (proven here): once a durable SLB approval
-// record exists, `ntm approve` enforces the two-person rule (requester
-// cannot self-approve), a second identity can approve or deny, decisions
-// are terminal, and the durable record captures both identities.
+// Also proven here: once a durable SLB approval record exists, `ntm approve`
+// enforces the two-person rule (requester cannot self-approve), a second
+// identity can approve or deny, decisions are terminal, and the durable
+// record captures both identities.
 package e2e
 
 import (
@@ -68,8 +72,9 @@ import (
 
 // slbApprovalPolicyYAML requires approval for history rewrites and flags
 // force_release as SLB (two-person). automation.force_release is "never" —
-// the strictest setting — so that TestSLBApproval_ForceReleaseUngated pins
-// the fact that even "never" does not gate `ntm locks force-release`.
+// the strictest setting — which TestSLBApproval_ForceReleaseGated proves is
+// honored (a refusal naming the policy file, no approval record created)
+// before switching the policy to "approval" for the durable workflow legs.
 const slbApprovalPolicyYAML = `version: 1
 blocked:
   - pattern: 'git\s+reset\s+--hard'
@@ -85,6 +90,35 @@ automation:
   auto_commit: true
   force_release: never
 `
+
+// slbApprovalPolicyApprovalYAML is the same policy with the default
+// automation.force_release="approval": force-release must run the durable
+// two-person approval workflow.
+const slbApprovalPolicyApprovalYAML = `version: 1
+blocked:
+  - pattern: 'git\s+reset\s+--hard'
+    reason: "Hard reset loses uncommitted changes"
+approval_required:
+  - pattern: 'git\s+commit\s+--amend'
+    reason: "Amending rewrites history"
+  - pattern: 'force_release'
+    reason: "Force release another agent's reservation"
+    slb: true
+automation:
+  auto_push: false
+  auto_commit: true
+  force_release: approval
+`
+
+// writePolicy overwrites the hermetic env's policy file.
+func (e *slbApprovalEnv) writePolicy(t *testing.T, logger *TestLogger, yaml string) {
+	t.Helper()
+	policyPath := filepath.Join(e.home, ".ntm", "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("[E2E-SLB] rewrite policy: %v", err)
+	}
+	logger.Log("[E2E-SLB] Policy rewritten: %s", policyPath)
+}
 
 // slbApprovalEnv is one hermetic world: its own HOME (policy file), its own
 // NTM_CONFIG dir (own state.db), and a scratch project dir to run from.
@@ -136,12 +170,22 @@ func (e *slbApprovalEnv) runNTM(t *testing.T, logger *TestLogger, approver strin
 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = e.projectDir
-	cmd.Env = append(baseEnvWithout("HOME", "NTM_CONFIG", "NTM_USER", "PATH", "XDG_CONFIG_HOME"),
+	cmd.Env = append(baseEnvWithout("HOME", "NTM_CONFIG", "NTM_USER", "PATH", "XDG_CONFIG_HOME", "NTM_TMUX_BINARY"),
 		"HOME="+e.home,
 		"NTM_CONFIG="+filepath.Join(e.cfgDir, "config.toml"),
 		"NTM_USER="+approver,
 		"PATH=/usr/bin:/bin",
 	)
+	// The PATH above is restricted so optional ecosystem tools (dcg, slb)
+	// cannot alter verdicts, but the force-release legs need the subprocess
+	// to reach the same tmux server this test drives. NTM_TMUX_BINARY is
+	// NTM's own explicit override (internal/tmux/client.go BinaryPath) —
+	// it admits exactly one binary, keeping the hermetic PATH meaningful.
+	if tmux.DefaultClient.IsInstalled() {
+		if tmuxPath, err := exec.LookPath(tmux.BinaryPath()); err == nil {
+			cmd.Env = append(cmd.Env, "NTM_TMUX_BINARY="+tmuxPath)
+		}
+	}
 
 	started := time.Now()
 	out, err := cmd.CombinedOutput()
@@ -178,10 +222,10 @@ func baseEnvWithout(keys ...string) []string {
 // seedApproval creates a durable approval record through the real engine
 // against the SAME state.db the ntm subprocesses read (NTM_CONFIG dir).
 //
-// This in-process call is deliberate, not a shortcut: the audit found that
-// NO production code path creates approval records (GAP-2), so the only way
-// to exercise the decision surface end to end is to feed the queue exactly
-// the way a future production caller must — approval.Engine.Request.
+// This in-process call is deliberate, not a shortcut: it feeds the queue
+// exactly the way the production caller does (`ntm locks force-release`'s
+// gate calls approval.Engine.Request since bd-2y2on), letting the decision
+// scenarios exercise arbitrary record shapes without tmux plumbing.
 // EnableSLB is false here to keep the external `slb` CLI (if installed on
 // the host) out of a hermetic test; it only affects notification fan-out,
 // not the two-person enforcement under test (internal/approval/engine.go:245).
@@ -275,8 +319,11 @@ func (e *slbApprovalEnv) safetyCheck(t *testing.T, logger *TestLogger, command s
 
 // TestSLBApproval_PolicyGate: Scenario 1. The policy engine really gates
 // dangerous operations from its own vocabulary (approval_required patterns,
-// SLB flag), and the attempt is refused (exit 1). But — GAP-2 — the refusal
-// creates NO pending approval record: `ntm approve list` stays empty.
+// SLB flag), and the attempt is refused (exit 1). `ntm safety check` is a
+// stateless ADVISORY evaluator by design: its refusals enqueue nothing.
+// Durable approval records are created by gated commands themselves —
+// `ntm locks force-release` (see TestSLBApproval_ForceReleaseGated) — so
+// after pure safety checks the queue is still empty.
 func TestSLBApproval_PolicyGate(t *testing.T) {
 	SkipIfNoNTM(t)
 	logger := NewTestLogger(t, "slb-approval-policy-gate")
@@ -316,16 +363,18 @@ func TestSLBApproval_PolicyGate(t *testing.T) {
 		t.Fatalf("expected allow/exit0 for git status, got action=%q exit=%d", resp.Action, exit)
 	}
 
-	// GAP-2 PINNED: the refusals above created NO pending approval record.
-	// The safety wrapper text ("Run 'ntm approve list' to see pending
-	// requests", internal/cli/safety.go:794) promises a queue entry that
-	// nothing writes. When request-creation is wired up, this assertion
-	// MUST flip to Count==2 (or per-attempt records) — that flip is the fix.
+	// DESIGN PIN (bd-2y2on resolution): advisory safety-check refusals
+	// create NO approval records — that is now deliberate, not a gap. The
+	// wrapper hints in internal/cli/safety.go were reworded accordingly
+	// (they no longer point at `ntm approve list` for advisory refusals).
+	// Only gated commands enqueue records; a force-release attempt in this
+	// same env WOULD make this count non-zero (proven in
+	// TestSLBApproval_ForceReleaseGated).
 	list := env.approveList(t, logger, "agent-alice")
 	if !list.Success || list.Count != 0 || len(list.Pending) != 0 {
-		t.Fatalf("GAP-2 behavior changed: expected empty pending queue after policy refusals, got %+v", list)
+		t.Fatalf("advisory safety checks must not enqueue approval records, got %+v", list)
 	}
-	logger.Log("[E2E-SLB] GAP-2 pinned: policy refusals produced zero pending approval records")
+	logger.Log("[E2E-SLB] design pinned: advisory policy refusals produced zero pending approval records")
 }
 
 // TestSLBApproval_TwoPersonRule: Scenario 2. With a durable SLB approval
@@ -413,16 +462,16 @@ func TestSLBApproval_TwoPersonRule(t *testing.T) {
 		t.Fatalf("approved record still pending: %+v", list)
 	}
 
-	// GAP-2 PINNED (enforcement side): approval of the force_release record
-	// does NOT unblock the policy verdict — `ntm safety check` is stateless
-	// and never consults approval records, so a "re-attempt" of the gated
-	// operation still exits 1. There is no machinery that lets an approved
-	// record authorize anything.
+	// DESIGN PIN: `ntm safety check` stays a stateless advisory evaluator —
+	// it never consults approval records, so it still exits 1 for the
+	// pattern even though an approval exists. Approved records authorize
+	// only their own gated command's execution (force-release consumes its
+	// record at gate-pass; see TestSLBApproval_ForceReleaseGated).
 	resp, exit := env.safetyCheck(t, logger, "force_release res-42")
 	if exit != 1 || resp.Action != "approve" {
-		t.Fatalf("GAP-2 behavior changed: safety check now honors approvals? action=%q exit=%d", resp.Action, exit)
+		t.Fatalf("safety check should remain stateless/advisory: action=%q exit=%d", resp.Action, exit)
 	}
-	logger.Log("[E2E-SLB] GAP-2 pinned: approved record does not unblock enforcement (safety check still exit 1)")
+	logger.Log("[E2E-SLB] design pinned: approvals do not alter the stateless safety-check verdict")
 
 	// SCOPE PIN: two-person rule applies only to RequiresSLB records. A
 	// non-SLB record is self-approvable by its own requester (engine.go:245
@@ -513,92 +562,192 @@ func TestSLBApproval_DenyKeepsBlocked(t *testing.T) {
 	logger.Log("[E2E-SLB] Denial keeps the operation blocked and the record terminal")
 }
 
-// TestSLBApproval_ForceReleaseUngated: Scenario 4 — GAP-1, the P1 finding.
+// slbForceReleaseResponse mirrors ForceReleaseResult
+// (internal/cli/locks.go), including the approval-gate fields added for
+// bd-2y2on.
+type slbForceReleaseResponse struct {
+	Success        bool   `json:"success"`
+	Session        string `json:"session"`
+	ReservationID  int    `json:"reservation_id"`
+	ApprovalID     string `json:"approval_id"`
+	ApprovalStatus string `json:"approval_status"`
+	Error          string `json:"error"`
+}
+
+// TestSLBApproval_ForceReleaseGated: Scenario 4 — the bd-2y2on fix, proven
+// end to end. `ntm locks force-release` is now approval-gated
+// (internal/cli/force_release_gate.go wired into runForceRelease):
 //
-// The bead asked to prove force-release is approval-gated end to end. The
-// audit proves the opposite: internal/cli/locks.go:998 (runForceRelease)
-// reaches straight into Agent Mail plumbing without ever loading the policy
-// (policy.LoadOrDefault appears nowhere in locks.go) or touching the
-// approval engine — even though the active policy here says BOTH
-// automation.force_release: never AND force_release is an SLB-flagged
-// approval_required action. This test pins that ungated behavior:
+//  0. automation.force_release=never refuses outright, naming the policy
+//     file, creating no records;
+//  1. under the default "approval" policy an attempt (WITH --yes — which
+//     must not bypass the gate) is blocked and creates a durable SLB
+//     approval record visible in `ntm approve list`;
+//  2. the requester cannot self-approve (two-person rule);
+//  3. a second identity approves;
+//  4. the re-attempt passes the approval gate — in this hermetic env it
+//     then fails on Agent Mail PLUMBING, not on policy/approval — and the
+//     approved record is consumed at gate-pass (one approval, one
+//     execution);
+//  5. a third attempt is blocked again with a FRESH approval record.
 //
-//   - the command fails on PLUMBING (no project root / no Agent Mail
-//     identity for the session), never on policy refusal;
-//   - no approval record is requested or consulted.
-//
-// P1 bug bead bd-2y2on documents this (with the evidence below), filed per
-// bd-cx733 scope item 3. If force-release ever becomes approval-gated,
-// this test MUST be rewritten to prove the gate instead.
-//
-// Contrast (also from the audit, judged against the policy engine's scope):
-// the build-slot release in `ntm --robot-diagnose --fix`
-// (internal/robot/diagnose_build_slots.go:200 executeBuildSlotRelease)
-// likewise bypasses approvals, but legitimately: it releases leases whose
-// holder identity no longer has a live pane, authenticates AS that holder
-// via its persisted registration token, and audit-logs the release
-// (diagnose_build_slots.go:218). That is self-release orphan cleanup, not
-// the "force release another agent's reservation" action the policy's SLB
-// rule names, so it is out of the policy engine's declared scope.
-func TestSLBApproval_ForceReleaseUngated(t *testing.T) {
+// Contrast (from the bd-cx733 audit, still true): the build-slot release in
+// `ntm --robot-diagnose --fix` (internal/robot/diagnose_build_slots.go
+// executeBuildSlotRelease) bypasses approvals legitimately: it releases
+// leases whose holder identity no longer has a live pane, authenticates AS
+// that holder via its persisted registration token, and audit-logs the
+// release. That is self-release orphan cleanup, outside the policy engine's
+// "force release another agent's reservation" scope.
+func TestSLBApproval_ForceReleaseGated(t *testing.T) {
 	SkipIfNoNTM(t)
-	logger := NewTestLogger(t, "slb-approval-force-release-ungated")
+	if !tmux.DefaultClient.IsInstalled() {
+		t.Skip("tmux required: the gate sits between session-scope resolution and Agent Mail plumbing, so a resolvable live session is needed")
+	}
+	logger := NewTestLogger(t, "slb-approval-force-release-gated")
 	defer logger.Close()
 	env := newSLBApprovalEnv(t, logger)
 
-	assertUngatedFailure := func(label, out string, exit int) {
-		if exit == 0 {
-			t.Fatalf("[%s] force-release unexpectedly succeeded: %s", label, out)
-		}
-		var envelope map[string]interface{}
-		if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+	session := fmt.Sprintf("slb-e2e-frg-%d", os.Getpid())
+	if err := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", session, "-x", "120", "-y", "30").Run(); err != nil {
+		t.Fatalf("create tmux session %s: %v", session, err)
+	}
+	defer func() {
+		_ = exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
+		logger.Log("[E2E-SLB] killed tmux session %s (no leaked sessions)", session)
+	}()
+
+	attempt := func(label, approver string) (slbForceReleaseResponse, int) {
+		// --yes on every attempt: it skips only the cosmetic local prompt
+		// and must never bypass the approval gate.
+		out, exit := env.runNTM(t, logger, approver, "locks", "force-release", session, "42", "--yes", "--json", "--note", "holder crashed")
+		var resp slbForceReleaseResponse
+		if err := json.Unmarshal([]byte(out), &resp); err != nil {
 			t.Fatalf("[%s] parse force-release envelope: %v (output=%s)", label, err, out)
 		}
-		logger.LogJSON(label+"_envelope", envelope)
-		if ok, _ := envelope["success"].(bool); ok {
-			t.Fatalf("[%s] envelope claims success on failing force-release: %v", label, envelope)
-		}
-		msg, _ := envelope["error"].(string)
-		if msg == "" {
-			t.Fatalf("[%s] missing error in envelope: %v", label, envelope)
-		}
-		// THE PIN: the failure is plumbing, not policy. With
-		// automation.force_release: never and an SLB approval_required rule
-		// in force, a gated implementation would refuse with a policy or
-		// approval error BEFORE touching session/Agent Mail plumbing.
-		lower := strings.ToLower(msg)
-		if strings.Contains(lower, "approv") || strings.Contains(lower, "policy") || strings.Contains(lower, "slb") {
-			t.Fatalf("[%s] GAP-1 behavior changed: force-release now consults policy/approvals (error=%q). Rewrite this test to prove the gate end to end.", label, msg)
-		}
-		logger.Log("[E2E-SLB] [%s] ungated as audited: failed on plumbing (%q), not policy", label, msg)
+		logger.LogJSON(label+"_envelope", resp)
+		return resp, exit
 	}
 
-	// Leg 1: no such session anywhere. Fails resolving project scope —
-	// i.e. it is already past any (nonexistent) policy/approval gate.
-	out, exit := env.runNTM(t, logger, "agent-alice", "locks", "force-release", "slb-e2e-ghost", "42", "--yes", "--json")
-	assertUngatedFailure("ghost_session", out, exit)
-
-	// Leg 2 (when tmux is available): a real session on the isolated E2E
-	// tmux server. Gets deeper into the plumbing (session resolves, no
-	// Agent Mail identity) and still no policy/approval consult.
-	if tmux.DefaultClient.IsInstalled() {
-		session := fmt.Sprintf("slb-e2e-fr-%d", os.Getpid())
-		if err := exec.Command(tmux.BinaryPath(), "new-session", "-d", "-s", session, "-x", "120", "-y", "30").Run(); err != nil {
-			t.Fatalf("create tmux session %s: %v", session, err)
-		}
-		defer func() {
-			_ = exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
-			logger.Log("[E2E-SLB] killed tmux session %s (no leaked sessions)", session)
-		}()
-		out, exit = env.runNTM(t, logger, "agent-alice", "locks", "force-release", session, "42", "--yes", "--json")
-		assertUngatedFailure("live_session", out, exit)
-	} else {
-		logger.Log("[E2E-SLB] tmux unavailable; live-session leg skipped")
+	// Phase 0: automation.force_release=never (the env's initial policy)
+	// refuses with a clear policy error naming the policy file, before any
+	// plumbing, and creates no approval record.
+	resp, exit := attempt("never_policy", "agent-alice")
+	if exit == 0 || resp.Success {
+		t.Fatalf("never policy did not refuse force-release: exit=%d resp=%+v", exit, resp)
 	}
-
-	// No approval record was requested or consulted anywhere in the path.
+	if !strings.Contains(resp.Error, "automation.force_release=never") {
+		t.Fatalf("never refusal should name the policy setting, got %q", resp.Error)
+	}
+	if !strings.Contains(resp.Error, filepath.Join(env.home, ".ntm", "policy.yaml")) {
+		t.Fatalf("never refusal should name the policy file, got %q", resp.Error)
+	}
 	if list := env.approveList(t, logger, "agent-alice"); list.Count != 0 {
-		t.Fatalf("force-release created approval records? %+v", list)
+		t.Fatalf("never policy created approval records: %+v", list)
 	}
-	logger.Log("[E2E-SLB] GAP-1 pinned: force-release path never created nor consulted an approval record")
+	logger.Log("[E2E-SLB] Phase 0: never policy refused cleanly, zero records")
+
+	// Phase 1: switch to the default approval policy. The attempt is
+	// blocked (exit non-zero, clean envelope) and creates a durable SLB
+	// approval record that the real listing surface shows.
+	env.writePolicy(t, logger, slbApprovalPolicyApprovalYAML)
+	resp, exit = attempt("first_attempt", "agent-alice")
+	if exit == 0 || resp.Success {
+		t.Fatalf("approval policy did not block ungated attempt: exit=%d resp=%+v", exit, resp)
+	}
+	if resp.ApprovalID == "" || resp.ApprovalStatus != "pending" {
+		t.Fatalf("blocked attempt should carry approval_id + pending status, got %+v", resp)
+	}
+	if !strings.Contains(resp.Error, "approval required") || !strings.Contains(resp.Error, resp.ApprovalID) {
+		t.Fatalf("blocked attempt should explain the approval workflow, got %q", resp.Error)
+	}
+	approvalID := resp.ApprovalID
+
+	list := env.approveList(t, logger, "agent-alice")
+	if list.Count != 1 || len(list.Pending) != 1 {
+		t.Fatalf("expected exactly one pending approval after blocked attempt, got %+v", list)
+	}
+	pending := list.Pending[0]
+	if pending.ID != approvalID || pending.RequestedBy != "agent-alice" || !pending.RequiresSLB || pending.Status != state.ApprovalPending {
+		t.Fatalf("pending record mismatch: %+v", pending)
+	}
+	if pending.Action != "force_release" {
+		t.Fatalf("record action = %q, want force_release", pending.Action)
+	}
+
+	// Re-running the identical command finds ITS OWN record (stable
+	// operation key) instead of enqueueing a duplicate.
+	resp, exit = attempt("rerun_pending", "agent-alice")
+	if exit == 0 || resp.ApprovalID != approvalID || resp.ApprovalStatus != "pending" {
+		t.Fatalf("re-run should stay blocked on the SAME pending record %s, got exit=%d resp=%+v", approvalID, exit, resp)
+	}
+	if list = env.approveList(t, logger, "agent-alice"); list.Count != 1 {
+		t.Fatalf("re-run enqueued a duplicate approval: %+v", list)
+	}
+	logger.Log("[E2E-SLB] Phase 1: blocked + durable SLB record %s created (no duplicates on re-run)", approvalID)
+
+	// Phase 2: the requester cannot self-approve (SLB two-person rule).
+	out, selfExit := env.runNTM(t, logger, "agent-alice", "approve", approvalID, "--json")
+	if selfExit == 0 {
+		t.Fatalf("SLB VIOLATION: requester self-approved %s: %s", approvalID, out)
+	}
+	var failure map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &failure); err != nil {
+		t.Fatalf("parse self-approve failure: %v (output=%s)", err, out)
+	}
+	logger.LogJSON("self_approve_failure", failure)
+	if msg, _ := failure["error"].(string); !strings.Contains(msg, "SLB violation") {
+		t.Fatalf("expected 'SLB violation' error, got %q", msg)
+	}
+
+	// Phase 3: a second identity approves.
+	out, exitCode := env.runNTM(t, logger, "agent-bob", "approve", approvalID, "--json")
+	if exitCode != 0 {
+		t.Fatalf("second-person approval failed (exit %d): %s", exitCode, out)
+	}
+	var action slbApproveActionResponse
+	if err := json.Unmarshal([]byte(out), &action); err != nil {
+		t.Fatalf("parse approve response: %v (output=%s)", err, out)
+	}
+	if !action.Success || action.Status != string(state.ApprovalApproved) {
+		t.Fatalf("expected approved status, got %+v", action)
+	}
+	logger.Log("[E2E-SLB] Phase 2+3: self-approval rejected, agent-bob approved %s", approvalID)
+
+	// Phase 4: the re-attempt proceeds PAST the approval gate. In this
+	// hermetic env it must then fail on Agent Mail plumbing — the point is
+	// that the failure is no longer the approval gate.
+	resp, exit = attempt("approved_attempt", "agent-alice")
+	if exit == 0 || resp.Success {
+		t.Fatalf("approved attempt unexpectedly succeeded in hermetic env: %+v", resp)
+	}
+	lower := strings.ToLower(resp.Error)
+	if strings.Contains(lower, "approval required") || strings.Contains(lower, "denied") || strings.Contains(lower, "policy") {
+		t.Fatalf("approved attempt still blocked by the gate (error=%q); expected a plumbing failure", resp.Error)
+	}
+	if resp.ApprovalID != approvalID || resp.ApprovalStatus != "consumed" {
+		t.Fatalf("approved attempt should report its consumed approval (%s), got %+v", approvalID, resp)
+	}
+	logger.Log("[E2E-SLB] Phase 4: gate passed; failure is plumbing (%q), approval consumed", resp.Error)
+
+	// The durable record is consumed: one approval, one execution.
+	show := env.approveShow(t, logger, "agent-alice", approvalID)
+	if string(show.Approval.Status) != "consumed" {
+		t.Fatalf("approval %s not consumed after gate pass: %+v", approvalID, show.Approval)
+	}
+	if show.Approval.ApprovedBy != "agent-bob" || show.Approval.RequestedBy != "agent-alice" {
+		t.Fatalf("consumed record lost its two-person trail: %+v", show.Approval)
+	}
+
+	// Phase 5: a third attempt requires a FRESH approval.
+	resp, exit = attempt("third_attempt", "agent-alice")
+	if exit == 0 || resp.Success {
+		t.Fatalf("third attempt should be blocked pending fresh approval: %+v", resp)
+	}
+	if resp.ApprovalStatus != "pending" || resp.ApprovalID == "" || resp.ApprovalID == approvalID {
+		t.Fatalf("third attempt should create a NEW pending approval (old=%s), got %+v", approvalID, resp)
+	}
+	if list = env.approveList(t, logger, "agent-alice"); list.Count != 1 || list.Pending[0].ID != resp.ApprovalID {
+		t.Fatalf("queue should hold exactly the fresh record %s, got %+v", resp.ApprovalID, list)
+	}
+	logger.Log("[E2E-SLB] Phase 5: consumed approval not reusable; fresh record %s required", resp.ApprovalID)
 }

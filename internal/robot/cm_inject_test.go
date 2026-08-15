@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/cm"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
 // --- fake MCP daemon scaffolding (mirrors internal/cm/client_test.go) ---
@@ -180,6 +182,37 @@ func TestFormatCMRulesBlock_BudgetTooSmall(t *testing.T) {
 	block, ids := formatCMRulesBlock(rules, 5, 10)
 	if block != "" || ids != nil {
 		t.Fatalf("expected empty result for impossible budget, got block=%q ids=%v", block, ids)
+	}
+}
+
+func TestFormatCMRulesBlock_EmptyIDInjectedButNotReported(t *testing.T) {
+	rules := []cm.Rule{
+		{ID: "  ", Content: "anonymous guidance"},
+		{ID: "r2", Content: "named guidance"},
+	}
+	block, ids := formatCMRulesBlock(rules, 5, 1500)
+	if !strings.Contains(block, "- anonymous guidance\n") {
+		t.Errorf("ID-less rule missing from block: %q", block)
+	}
+	if !strings.Contains(block, "- [r2] named guidance\n") {
+		t.Errorf("named rule missing from block: %q", block)
+	}
+	// rules_injected feeds the automatic cm_outcome report; an empty-string
+	// rule ID must never appear there.
+	if len(ids) != 1 || ids[0] != "r2" {
+		t.Errorf("ids = %q, want exactly [r2] (no empty IDs)", ids)
+	}
+
+	// An ID-less rule still counts against the top-N cap.
+	block, ids = formatCMRulesBlock(rules, 1, 1500)
+	if strings.Contains(block, "[r2]") {
+		t.Errorf("maxRules=1 should stop after the first injected rule: %q", block)
+	}
+	if len(ids) != 0 {
+		t.Errorf("ids = %q, want none for a lone ID-less rule", ids)
+	}
+	if block == "" {
+		t.Error("block should still be injected when the only rule has no ID")
 	}
 }
 
@@ -536,5 +569,93 @@ func TestSendOptions_WithMemoryChangesBindingHash(t *testing.T) {
 
 	if sendOperationBindingHash(base) == sendOperationBindingHash(withMemory) {
 		t.Error("--with-memory toggle must be part of the idempotency binding hash")
+	}
+}
+
+// TestGetSendWithMemoryDeliversInjectedBlockRealTmux proves the injected rules
+// block reaches the actually delivered payload, not just the formatter: a real
+// tmux pane receives the typed keystrokes, so the pane capture must show the
+// "## Project rules" block ABOVE the caller's message, and the send envelope
+// must carry the matching memory_injection metadata.
+func TestGetSendWithMemoryDeliversInjectedBlockRealTmux(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	const ruleMarker = "NTM_CM_RULE_MARKER"
+	const baseMarker = "NTM_CM_BASE_MSG"
+
+	_, port := newFakeCMDaemon(t, map[string]func(t *testing.T, w http.ResponseWriter, id any, args json.RawMessage){
+		"cm_context": func(t *testing.T, w http.ResponseWriter, id any, args json.RawMessage) {
+			cmWriteToolText(t, w, id, cmContextPayload(
+				cm.Rule{ID: "rule-e2e", Content: ruleMarker + " always run go vet"},
+			))
+		},
+	})
+
+	session := "ntm-send-cm-inject"
+	if err := tmux.CreateSession(session, ""); err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := tmux.KillSession(session); err != nil {
+			t.Errorf("kill tmux session: %v", err)
+		}
+	})
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		t.Fatalf("get tmux panes: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("pane count = %d, want one newly-created pane", len(panes))
+	}
+
+	memCfg := unavailableCMConfig(t)
+	memCfg.Client = cm.NewPortClient(port, "sess-e2e")
+
+	output, err := GetSend(SendOptions{
+		Session:      session,
+		Pane:         panes[0].ID,
+		Message:      "printf '" + baseMarker + "\\n'",
+		WithMemory:   true,
+		MemoryInject: &memCfg,
+	})
+	if err != nil {
+		t.Fatalf("GetSend: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("with-memory send failed: %+v", output)
+	}
+	if output.MemoryInjection == nil {
+		t.Fatal("memory_injection missing from send envelope")
+	}
+	if output.MemoryInjection.SkippedReason != "" {
+		t.Fatalf("injection skipped: %q", output.MemoryInjection.SkippedReason)
+	}
+	if len(output.MemoryInjection.RulesInjected) != 1 || output.MemoryInjection.RulesInjected[0] != "rule-e2e" {
+		t.Fatalf("rules_injected = %v, want [rule-e2e]", output.MemoryInjection.RulesInjected)
+	}
+
+	// The typed keystrokes land in the pane's scrollback; poll briefly for the
+	// shell to finish echoing everything.
+	deadline := time.Now().Add(testutil.ScaleTimeout(5 * time.Second))
+	var captured string
+	for {
+		captured, err = tmux.CapturePaneVisible(panes[0].ID)
+		if err == nil &&
+			strings.Contains(captured, "## Project rules") &&
+			strings.Contains(captured, ruleMarker) &&
+			strings.Contains(captured, baseMarker) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delivered payload missing injected block or message (err=%v): %q", err, captured)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Ordering: the rules block was prepended, so it must appear before the
+	// caller's message in the delivered keystrokes.
+	if strings.Index(captured, "## Project rules") > strings.Index(captured, baseMarker) {
+		t.Errorf("rules block should precede the original message: %q", captured)
 	}
 }

@@ -290,6 +290,41 @@ func TestBugsWatchTickRoutesNewFindingToHolderAndDedupes(t *testing.T) {
 	}
 }
 
+// TestBugsWatchTickObservationDuringTickIsNotStale pins the freshness-gate
+// regression: observing a session takes real time, so the observation's
+// ObservedAt lands AFTER the timestamp captured at tick start. The engine
+// must take its staleness reference after observation completes (as every
+// assign/send call site does); comparing against the tick-start clock made
+// DispatchObservationIsCurrent reject every real observation as "stale" and
+// defer every nudge forever. Here the fake clock advances while observe
+// runs, exactly as the wall clock does in production.
+func TestBugsWatchTickObservationDuringTickIsNotStale(t *testing.T) {
+	store := newBugsWatchTestStore(t)
+	h := newBugsWatchHarness(t, store)
+	h.findings = []scanner.Finding{
+		bugsWatchTestFinding("internal/cli/a.go", 1, scanner.SeverityCritical, "bug a"),
+	}
+	h.reserved = []agentmail.FileReservation{activeReservation(1, "internal/**", "GreenLake", true, h.now)}
+	h.panes = []tmux.Pane{{ID: "%1", Title: "proj__cc_1", Type: tmux.AgentClaude}}
+	h.agentNames["%1"] = "GreenLake"
+
+	// Observing advances the clock (as capturing panes does in production)
+	// and stamps the observation with the post-capture time.
+	h.engine.deps.observe = func(context.Context, string) (statuspkg.SessionObservation, error) {
+		h.now = h.now.Add(750 * time.Millisecond)
+		return idleObservation(h.now, "%1"), nil
+	}
+
+	tick, err := h.engine.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	t.Logf("tick (clock advanced during observe): %+v", tick)
+	if tick.Nudged != 1 || tick.Deferred != 0 || len(h.nudges) != 1 {
+		t.Fatalf("observation taken during the tick was treated as stale: %+v", tick)
+	}
+}
+
 func TestBugsWatchTickCooldownDefersThenDelivers(t *testing.T) {
 	store := newBugsWatchTestStore(t)
 	h := newBugsWatchHarness(t, store)

@@ -26,7 +26,11 @@
 //     1-3 plus the verified-alternate check bound the blast radius)
 //  5. caam availability        — when caam is not installed/responsive the
 //     checker degrades SILENTLY to off (debug log only, no attention noise)
-//  6. verified alternate       — caam is queried (swarm's `caam list --json`
+//  6. rotation safety guard    — the same guardrails swarm's automatic
+//     OnLimitHit rotation passes: operator account pins (`ntm rotate lock`)
+//     and the global-Codex-auth clobber protections (proven pane isolation +
+//     caam safe-restore capability); refusals decline as rotation_blocked
+//  7. verified alternate       — caam is queried (swarm's `caam list --json`
 //     fail-closed parse path) and the switch fires only when a non-active,
 //     non-rate-limited account exists
 //
@@ -48,6 +52,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -107,6 +112,7 @@ type failoverChecker struct {
 	getPanes      func(session string) ([]tmux.Pane, error)
 	capturePane   func(paneID string, lines int) (string, error)
 	caamAvailable func() bool
+	guardSwitch   func(provider string) error
 	listAccounts  func(provider string) ([]swarm.AccountInfo, error)
 	switchAccount func(provider, accountID string) (*robot.SwitchAccountOutput, error)
 	lastSwitchAt  func(scope string) (time.Time, bool)
@@ -136,7 +142,7 @@ type declineMark struct {
 // a checker — rate-limited panes then get an explicit, published
 // "provider_not_allowlisted" decline, which is the operator's cue that the
 // second opt-in is missing.
-func newFailoverChecker(session string, caamCfg config.CAAMConfig) *failoverChecker {
+func newFailoverChecker(session, workDir string, caamCfg config.CAAMConfig) *failoverChecker {
 	if !caamCfg.AutoFailover {
 		return nil
 	}
@@ -153,11 +159,20 @@ func newFailoverChecker(session string, caamCfg config.CAAMConfig) *failoverChec
 		horizon = 0
 	}
 
-	// Reuse swarm's caam machinery: availability probing and the fail-closed
-	// `caam list --json` account query (ntm-9mt8.2 heritage).
+	// Reuse swarm's caam machinery: availability probing, the fail-closed
+	// `caam list --json` account query (ntm-9mt8.2 heritage), and the
+	// automatic-rotation safety guard (pins; Codex global-auth protections).
+	customPath := strings.TrimSpace(caamCfg.BinaryPath) != ""
 	rotator := swarm.NewAccountRotator()
-	if strings.TrimSpace(caamCfg.BinaryPath) != "" {
+	if customPath {
 		rotator = rotator.WithCaamPath(caamCfg.BinaryPath)
+	}
+	// Honor operator pins (`ntm rotate lock`), persisted per project under
+	// <workDir>/.ntm/account_pins.json. A load failure only weakens the pin
+	// gate, never the feature: log and continue.
+	if err := rotator.LoadPins(workDir); err != nil {
+		slog.Debug("caam failover: account pins unavailable",
+			"session", session, "work_dir", workDir, "error", err)
 	}
 
 	fc := &failoverChecker{
@@ -167,8 +182,28 @@ func newFailoverChecker(session string, caamCfg config.CAAMConfig) *failoverChec
 		getPanes:      tmux.GetPanes,
 		capturePane:   tmux.CapturePaneOutput,
 		caamAvailable: rotator.IsAvailable,
+		guardSwitch:   rotator.GuardAutoSwitch,
 		listAccounts:  rotator.ListAvailableAccounts,
 		switchAccount: func(provider, accountID string) (*robot.SwitchAccountOutput, error) {
+			if customPath {
+				// robot.GetSwitchAccount resolves `caam` from PATH only; with a
+				// configured binary_path the switch must go through the same
+				// rotator the probe/list path used, or a caam reachable only at
+				// the custom path would probe healthy yet fail every switch.
+				record, err := rotator.SwitchToAccount(provider, accountID)
+				if err != nil {
+					return &robot.SwitchAccountOutput{Switch: robot.SwitchAccountResult{
+						Provider: provider,
+						Error:    err.Error(),
+					}}, nil
+				}
+				return &robot.SwitchAccountOutput{Switch: robot.SwitchAccountResult{
+					Success:         true,
+					Provider:        provider,
+					PreviousAccount: record.FromAccount,
+					NewAccount:      record.ToAccount,
+				}}, nil
+			}
 			// The exact machinery --robot-switch-account uses.
 			return robot.GetSwitchAccount(robot.SwitchAccountOptions{
 				Provider:  provider,
@@ -291,7 +326,7 @@ func (fc *failoverChecker) runOnce(ctx context.Context) []failoverDecision {
 //
 // Gate order (documented invariant, mirrored by the tests): detection →
 // allow-list → working → cooldown → reset horizon → caam availability →
-// verified alternate → switch.
+// rotation safety guard → verified alternate → switch.
 func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 	now := fc.now()
 	canonical := pane.Type.Canonical()
@@ -358,6 +393,20 @@ func (fc *failoverChecker) checkPane(pane tmux.Pane) (failoverDecision, bool) {
 			"session", fc.session, "pane", pane.ID, "agent", agentID,
 			"provider", decision.Provider)
 		return fc.decline(decision, "caam_unavailable", false), true
+	}
+
+	// Gate: the automatic-rotation safety guard — the same guardrails
+	// swarm's OnLimitHit rotation passes (operator pins from `ntm rotate
+	// lock`; refusal of an unattended global Codex auth clobber without
+	// proven pane isolation and caam safe-restore). An unattended
+	// coordinator switch must never bypass it.
+	if fc.guardSwitch != nil {
+		if err := fc.guardSwitch(decision.Provider); err != nil {
+			slog.Info("caam failover blocked by rotation safety guard",
+				"session", fc.session, "pane", pane.ID, "agent", agentID,
+				"provider", decision.Provider, "error", err)
+			return fc.decline(decision, "rotation_blocked", true), true
+		}
 	}
 
 	// Gate: NEVER switch without verifying an alternate exists. Reuses
@@ -573,7 +622,13 @@ func matchedBannerLine(captured, agentType string) string {
 		}
 		if ratelimit.DetectRateLimitForAgent(trimmed, agentType).RateLimited {
 			if len(trimmed) > 120 {
-				trimmed = strings.TrimSpace(trimmed[:120])
+				cut := trimmed[:120]
+				// Never split a multi-byte rune: published evidence must stay
+				// valid UTF-8.
+				for len(cut) > 0 && !utf8.ValidString(cut) {
+					cut = cut[:len(cut)-1]
+				}
+				trimmed = strings.TrimSpace(cut)
 			}
 			return trimmed
 		}

@@ -47,6 +47,24 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+// setForceReleasePolicy points HOME at a hermetic dir whose policy pins
+// automation.force_release to the given value, so force-release handler tests
+// exercise a chosen gate verdict (bd-2y2on) instead of inheriting the
+// developer's real ~/.ntm/policy.yaml.
+func setForceReleasePolicy(t *testing.T, value string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".ntm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir hermetic .ntm: %v", err)
+	}
+	yaml := fmt.Sprintf("version: 1\nautomation:\n  force_release: %s\n", value)
+	if err := os.WriteFile(filepath.Join(dir, "policy.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+}
+
 func skipServeRealToolsInShort(t *testing.T, tools ...string) {
 	t.Helper()
 	if testing.Short() {
@@ -1797,6 +1815,7 @@ func TestHandleRespondContact_NotFound(t *testing.T) {
 }
 
 func TestHandleForceReleaseReservation_ReturnsMCPResultFields(t *testing.T) {
+	setForceReleasePolicy(t, "auto")
 
 	releasedAt := "2026-03-23T01:02:03Z"
 	releasedTime, err := time.Parse(time.RFC3339, releasedAt)
@@ -1854,6 +1873,7 @@ func TestHandleForceReleaseReservation_ReturnsMCPResultFields(t *testing.T) {
 }
 
 func TestHandleForceReleaseReservation_DeniedReturnsConflict(t *testing.T) {
+	setForceReleasePolicy(t, "auto")
 
 	mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
 		"force_release_file_reservation": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
@@ -1894,6 +1914,67 @@ func TestHandleForceReleaseReservation_DeniedReturnsConflict(t *testing.T) {
 	}
 	if resp.Details["path_pattern"] != "internal/serve/*" {
 		t.Fatalf("path_pattern = %#v, want internal/serve/*", resp.Details["path_pattern"])
+	}
+}
+
+// TestHandleForceReleaseReservation_PolicyGate: bd-2y2on — the HTTP surface
+// must honor automation.force_release exactly like the CLI gate. "never" and
+// "approval" (the default) refuse with 403 BEFORE any Agent Mail call; only
+// an explicit "auto" lets the handler proceed.
+func TestHandleForceReleaseReservation_PolicyGate(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		policy     string // "" = no policy file at all (default policy applies)
+		wantSubstr string
+	}{
+		{name: "never_refuses", policy: "never", wantSubstr: "automation.force_release=never"},
+		{name: "approval_fails_closed", policy: "approval", wantSubstr: "requires approval"},
+		{name: "default_policy_fails_closed", policy: "", wantSubstr: "requires approval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.policy == "" {
+				// Hermetic empty HOME: LoadOrDefault falls back to
+				// DefaultPolicy(), whose force_release is "approval".
+				t.Setenv("HOME", t.TempDir())
+			} else {
+				setForceReleasePolicy(t, tc.policy)
+			}
+
+			// A mail client whose transport fails the test if the handler
+			// ever consults Agent Mail past a refusing gate.
+			mailClient := newMockAgentMailMCPClient(t, map[string]func(map[string]interface{}) (interface{}, *agentmail.JSONRPCError){
+				"force_release_file_reservation": func(args map[string]interface{}) (interface{}, *agentmail.JSONRPCError) {
+					t.Error("gate bypassed: force_release_file_reservation was called")
+					return agentmail.ForceReleaseResult{Success: true}, nil
+				},
+			})
+
+			srv, _ := setupTestServer(t)
+			srv.projectDir = t.TempDir()
+			srv.mailClient = mailClient
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/reservations/17/force-release", strings.NewReader(`{"agent_name":"RedStone"}`))
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", "17")
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+			srv.handleForceReleaseReservation(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			var resp APIError
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.ErrorCode != ErrCodeForbidden {
+				t.Fatalf("error_code = %q, want %q", resp.ErrorCode, ErrCodeForbidden)
+			}
+			if !strings.Contains(resp.Error, tc.wantSubstr) {
+				t.Fatalf("error = %q, want substring %q", resp.Error, tc.wantSubstr)
+			}
+		})
 	}
 }
 

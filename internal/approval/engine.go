@@ -328,6 +328,74 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 	return nil
 }
 
+// Consume marks an approved record as spent (status=consumed). One approval
+// authorizes exactly one gated execution (bd-2y2on): callers that find an
+// approved record for their operation must Consume it before proceeding so a
+// later run of the same operation requires a fresh approval. Only approved
+// records can be consumed.
+func (e *Engine) Consume(ctx context.Context, id string, consumerID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	approval, err := e.store.GetApproval(id)
+	if err != nil {
+		return fmt.Errorf("get approval: %w", err)
+	}
+	if approval == nil {
+		return fmt.Errorf("approval not found: %s", id)
+	}
+	if approval.Status != state.ApprovalApproved {
+		return fmt.Errorf("approval is not approved (status: %s)", approval.Status)
+	}
+	if time.Now().After(approval.ExpiresAt) {
+		// An approval authorizes only within its record's validity window
+		// (mirroring how denials go inert after expires_at). Refuse to spend
+		// a stale grant; the gate files a fresh request instead.
+		return fmt.Errorf("approval %s expired at %s and can no longer be consumed", id, approval.ExpiresAt.Format(time.RFC3339))
+	}
+
+	// The approved->consumed transition MUST be guarded in SQL, not by the
+	// read above: e.mu only serializes consumers inside this process, while
+	// gated commands run as independent processes sharing state.db. The
+	// conditional UPDATE lets exactly one of two racing consumers win.
+	consumed, err := e.store.ConsumeApproval(id)
+	if err != nil {
+		return fmt.Errorf("consume approval: %w", err)
+	}
+	if !consumed {
+		return fmt.Errorf("approval %s was already spent by a concurrent consumer", id)
+	}
+
+	if e.eventBus != nil {
+		e.eventBus.Publish(events.BaseEvent{
+			Type:      "approval.consumed",
+			Timestamp: time.Now().UTC(),
+		})
+	}
+	return nil
+}
+
+// LatestForCorrelation returns the most recent approval record carrying the
+// given correlation ID (operation key), or nil if none exists. A pending
+// record past its expiry is lazily transitioned to expired first, matching
+// Check/ListPending semantics.
+func (e *Engine) LatestForCorrelation(ctx context.Context, correlationID string) (*state.Approval, error) {
+	records, err := e.store.ListApprovalsByCorrelation(correlationID)
+	if err != nil {
+		return nil, fmt.Errorf("list approvals by correlation: %w", err)
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	latest := records[0]
+	if latest.Status == state.ApprovalPending && time.Now().After(latest.ExpiresAt) {
+		if err := e.expireApproval(&latest, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+	}
+	return &latest, nil
+}
+
 // WaitForApproval blocks until the approval is approved, denied, or times out.
 func (e *Engine) WaitForApproval(ctx context.Context, id string, timeout time.Duration) (*state.Approval, error) {
 	if ctx == nil {

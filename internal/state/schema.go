@@ -75,6 +75,10 @@ const (
 	ApprovalApproved ApprovalStatus = "approved"
 	ApprovalDenied   ApprovalStatus = "denied"
 	ApprovalExpired  ApprovalStatus = "expired"
+	// ApprovalConsumed marks an approved record whose one authorized
+	// execution has been spent (bd-2y2on): one approval authorizes exactly
+	// one gated attempt, after which a fresh approval is required.
+	ApprovalConsumed ApprovalStatus = "consumed"
 )
 
 // Session represents an NTM orchestration session.

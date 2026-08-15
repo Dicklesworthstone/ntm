@@ -1897,6 +1897,20 @@ func TestRunForceReleaseUsesSessionProjectDir(t *testing.T) {
 	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
 	t.Chdir(canonicalTempDir(t))
 
+	// bd-2y2on: force-release is approval-gated (default policy blocks and
+	// enqueues an approval request). This test exercises the project-dir
+	// plumbing BEYOND the gate, so the hermetic HOME gets an auto policy;
+	// the gate itself is covered by force_release_gate_test.go and the
+	// TestSLBApproval_ForceReleaseGated e2e.
+	ntmDir := filepath.Join(os.Getenv("HOME"), ".ntm")
+	if err := os.MkdirAll(ntmDir, 0o755); err != nil {
+		t.Fatalf("mkdir hermetic .ntm: %v", err)
+	}
+	autoPolicy := "version: 1\nautomation:\n  force_release: auto\n"
+	if err := os.WriteFile(filepath.Join(ntmDir, "policy.yaml"), []byte(autoPolicy), 0o644); err != nil {
+		t.Fatalf("write auto policy: %v", err)
+	}
+
 	if err := runForceRelease(t.Context(), session, 42, "stale", true, true); err != nil {
 		t.Fatalf("runForceRelease: %v", err)
 	}

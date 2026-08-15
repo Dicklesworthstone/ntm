@@ -34,6 +34,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
@@ -6132,6 +6133,19 @@ func (m *Model) handleConflictAction(conflict watcher.FileConflict, action watch
 		return nil
 
 	case watcher.ConflictActionForce:
+		// bd-2y2on: honor automation.force_release here too — the dashboard
+		// must not be a bypass around the CLI approval gate
+		// (internal/cli/force_release_gate.go). Only an explicit "auto"
+		// policy permits unattended force-release; "never" and "approval"
+		// (the default) fail closed with a pointer at the gated workflow.
+		pol, perr := policy.LoadOrDefault()
+		if perr != nil {
+			return fmt.Errorf("cannot load policy for force-release gate: %w", perr)
+		}
+		if fr := pol.ForceReleasePolicy(); fr != "auto" {
+			return fmt.Errorf("force-release blocked by policy (automation.force_release=%s); use `ntm locks force-release` for the approval workflow", fr)
+		}
+
 		// Force action: force-release the reservation via Agent Mail
 		if len(conflict.HolderReservationIDs) == 0 {
 			return fmt.Errorf("no reservation IDs available for force-release")

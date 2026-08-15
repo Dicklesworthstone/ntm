@@ -4157,6 +4157,7 @@ func TestMailAndReservationHandlers_ClientUnavailable(t *testing.T) {
 	})
 
 	t.Run("ForceReleaseReservation", func(t *testing.T) {
+		setForceReleasePolicy(t, "auto")
 		srv := New(Config{})
 		rec := httptest.NewRecorder()
 		body := `{"agent_name":"a"}`
@@ -6737,6 +6738,7 @@ func TestHandleRotateProviderAccountV1_DependencyMissing(t *testing.T) {
 // --- handleForceReleaseReservation: valid body exercises getMailClient ---
 
 func TestHandleForceReleaseReservation_ValidBody_Branch(t *testing.T) {
+	setForceReleasePolicy(t, "auto")
 	s, _ := setupTestServer(t)
 	s.projectDir = t.TempDir()
 

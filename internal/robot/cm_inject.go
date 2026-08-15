@@ -239,7 +239,10 @@ func cmRuleLine(rule cm.Rule) string {
 
 // formatCMRulesBlock builds the compact "## Project rules" block from the
 // top-N rules that fit within the token budget. It returns the block and the
-// IDs of the rules included.
+// IDs of the rules included. A rule with an empty ID still counts against
+// maxRules and is injected, but contributes no entry to the returned IDs:
+// those IDs feed rules_injected and the automatic cm_outcome report, and an
+// empty-string rule ID would poison both.
 func formatCMRulesBlock(rules []cm.Rule, maxRules, budgetTokens int) (string, []string) {
 	if len(rules) == 0 {
 		return "", nil
@@ -249,8 +252,9 @@ func formatCMRulesBlock(rules []cm.Rule, maxRules, budgetTokens int) (string, []
 	b.WriteString("## Project rules\n\n")
 
 	var ids []string
+	injected := 0
 	for _, rule := range rules {
-		if len(ids) >= maxRules {
+		if injected >= maxRules {
 			break
 		}
 		if strings.TrimSpace(rule.Content) == "" {
@@ -261,10 +265,13 @@ func formatCMRulesBlock(rules []cm.Rule, maxRules, budgetTokens int) (string, []
 			break
 		}
 		b.WriteString(line)
-		ids = append(ids, strings.TrimSpace(rule.ID))
+		injected++
+		if id := strings.TrimSpace(rule.ID); id != "" {
+			ids = append(ids, id)
+		}
 	}
 
-	if len(ids) == 0 {
+	if injected == 0 {
 		return "", nil
 	}
 	return b.String(), ids

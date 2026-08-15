@@ -471,7 +471,7 @@ func (c *SessionCoordinator) maybeCheckCaamFailover(ctx context.Context) {
 		return
 	}
 	if c.caamFailover == nil {
-		c.caamFailover = newFailoverChecker(c.session, c.ntmConfig.Integrations.CAAM)
+		c.caamFailover = newFailoverChecker(c.session, c.projectKey, c.ntmConfig.Integrations.CAAM)
 	}
 	checker := c.caamFailover
 	c.mu.Unlock()

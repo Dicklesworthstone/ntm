@@ -1298,6 +1298,19 @@ func splitSessionPane(sessionPane string) (session, pane string) {
 	return session, pane
 }
 
+// GuardAutoSwitch enforces the automatic-rotation safety guardrails
+// (guardAutoRotation) for an UNATTENDED targeted switch initiated outside
+// OnLimitHit — e.g. the coordinator's CAAM auto-failover (bd-um3uy). It honors
+// operator account pins for every provider and the global-Codex-auth
+// protections (live-pane isolation proof plus the caam safe-restore
+// capability gate). provider accepts an agent type ("cod") or an NTM provider
+// name ("openai"). Returns nil to allow, or an error wrapping
+// ErrRotationBlocked to refuse.
+func (r *AccountRotator) GuardAutoSwitch(provider string) error {
+	p := normalizeProvider(provider)
+	return r.guardAutoRotation(p, "", fmt.Sprintf("caam activate %s <account>", caamToolName(p)))
+}
+
 // guardAutoRotation enforces the automatic-rotation safety guardrails for the
 // caam-switch path:
 //

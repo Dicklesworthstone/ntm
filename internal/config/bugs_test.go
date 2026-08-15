@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +60,52 @@ func TestBugsConfigTOMLDecode(t *testing.T) {
 		t.Fatalf("cooldown_minutes = %d, want 4", cfg.Bugs.CooldownMinutes)
 	}
 	t.Logf("decoded [bugs]: %+v", cfg.Bugs)
+}
+
+// TestBugsConfigSurfaceWiring pins the [bugs] section into the config
+// surface commands: `ntm config show` (Print), `ntm config get` (GetValue),
+// and `ntm config diff` (Diff). The watch command's gate error tells users
+// to set [bugs] push_routing, so the section must be discoverable there.
+func TestBugsConfigSurfaceWiring(t *testing.T) {
+	cfg := Default()
+	cfg.Bugs.PushRouting = true
+	cfg.Bugs.Interval = 90 * time.Second
+	cfg.Bugs.CooldownMinutes = 4
+
+	for path, want := range map[string]interface{}{
+		"bugs.push_routing":     true,
+		"bugs.interval":         90 * time.Second,
+		"bugs.cooldown_minutes": 4,
+	} {
+		got, err := GetValue(cfg, path)
+		if err != nil {
+			t.Fatalf("GetValue(%q): %v", path, err)
+		}
+		if got != want {
+			t.Fatalf("GetValue(%q) = %v, want %v", path, got, want)
+		}
+	}
+
+	var sb strings.Builder
+	if err := Print(cfg, &sb); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+	out := sb.String()
+	for _, want := range []string{"[bugs]", "push_routing = true", "cooldown_minutes = 4"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Print output missing %q", want)
+		}
+	}
+
+	found := map[string]bool{}
+	for _, d := range Diff(cfg) {
+		found[d.Path] = true
+	}
+	for _, path := range []string{"bugs.push_routing", "bugs.interval", "bugs.cooldown_minutes"} {
+		if !found[path] {
+			t.Fatalf("Diff missing changed path %q", path)
+		}
+	}
 }
 
 func TestBugsConfigAbsentSectionKeepsDefaults(t *testing.T) {

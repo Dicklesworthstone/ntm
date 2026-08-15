@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 	"github.com/Dicklesworthstone/ntm/internal/robot/adapters"
 )
 
@@ -1795,6 +1797,32 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 
 	if req.AgentName == "" {
 		writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "agent_name is required", nil, reqID)
+		return
+	}
+
+	// bd-2y2on: the policy's automation.force_release knob governs EVERY
+	// surface that reaches Agent Mail's force_release_file_reservation, not
+	// just the CLI gate — otherwise this endpoint is a trivial bypass around
+	// the two-person workflow. This HTTP surface has no durable approval
+	// integration (the in-memory approvals map in safety.go is disconnected
+	// from state.db, see the note there), so anything but an explicit
+	// "auto" fails closed.
+	pol, err := policy.LoadOrDefault()
+	if err != nil {
+		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+			fmt.Sprintf("cannot load policy for force-release gate: %v", err), nil, reqID)
+		return
+	}
+	switch pol.ForceReleasePolicy() {
+	case "auto":
+		// Policy explicitly allows unattended force-release.
+	case "never":
+		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+			"force-release is disabled by policy (automation.force_release=never)", nil, reqID)
+		return
+	default: // "approval" (and anything unknown) fails closed
+		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
+			"force-release requires approval (automation.force_release=approval); use the gated `ntm locks force-release` + `ntm approve` workflow — this endpoint has no approval integration", nil, reqID)
 		return
 	}
 

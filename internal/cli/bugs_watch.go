@@ -406,6 +406,13 @@ func (e *bugsWatchEngine) Tick(ctx context.Context) (bugsWatchTick, error) {
 			tick.Warnings = append(tick.Warnings, fmt.Sprintf("observing session: %v", observeErr))
 		}
 	}
+	// The freshness reference must be taken AFTER the observation completes
+	// (the pattern every assign/send call site uses): observing takes real
+	// time, so observation.ObservedAt lies after the tick-start `now`, and
+	// DispatchObservationIsCurrent rejects observations stamped later than
+	// its reference time. Reusing `now` here would classify every real
+	// observation as stale and defer every nudge forever.
+	obsCheckTime := e.nowTime()
 
 	paneIDs := make([]string, 0, len(perPane))
 	for id := range perPane {
@@ -437,7 +444,7 @@ func (e *bugsWatchEngine) Tick(ctx context.Context) (bugsWatchTick, error) {
 
 		// Never nudge a working pane: require a fresh, confidently idle
 		// observation (the same gate spawn readiness uses).
-		paneObs, obsErr := currentAssignPaneObservation(observation, paneID, now)
+		paneObs, obsErr := currentAssignPaneObservation(observation, paneID, obsCheckTime)
 		if obsErr != nil || !e.paneSafeToDispatch(paneObs) {
 			e.logf("pane %s not safe to dispatch; deferring %d finding(s)", paneID, len(findings))
 			tick.Deferred += len(findings)
@@ -641,6 +648,21 @@ func publishBugsDigest(ctx context.Context, projectKey string, findings []bugsWa
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+
+	// Ensure the sender identity exists before sending: `ntm bugs notify`
+	// registers "ntm_scanner" the same way, but on a project where notify has
+	// never run the identity is absent and every send would fail. Best-effort
+	// (mirrors scanner.ensureScannerRegistered): if registration fails the
+	// send below surfaces the real error.
+	if _, err := client.RegisterAgent(sendCtx, agentmail.RegisterAgentOptions{
+		ProjectKey:      projectKey,
+		Name:            "ntm_scanner",
+		Program:         "ntm",
+		Model:           "scanner",
+		TaskDescription: "Automated vulnerability scanner",
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "bugs watch: registering ntm_scanner identity: %v\n", err)
+	}
 
 	agents, err := client.ListProjectAgents(sendCtx, projectKey)
 	if err != nil {
