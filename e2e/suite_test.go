@@ -445,12 +445,14 @@ type RestartAction struct {
 
 // RestartSummary aggregates results across all panes.
 type RestartSummary struct {
-	Restarted     int              `json:"restarted"`
-	Skipped       int              `json:"skipped"`
-	Waiting       int              `json:"waiting"`
-	Failed        int              `json:"failed"`
-	WouldRestart  int              `json:"would_restart,omitempty"`
-	PanesByAction map[string][]int `json:"panes_by_action"`
+	Restarted    int `json:"restarted"`
+	Skipped      int `json:"skipped"`
+	Waiting      int `json:"waiting"`
+	Failed       int `json:"failed"`
+	WouldRestart int `json:"would_restart,omitempty"`
+	// PanesByAction maps action -> pane ADDRESSES (e.g. "0.1"), matching
+	// robot.RestartSummary; older builds emitted bare pane indexes.
+	PanesByAction map[string][]string `json:"panes_by_action"`
 }
 
 // CallSmartRestart invokes --robot-smart-restart and parses the result.

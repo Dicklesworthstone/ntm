@@ -44,14 +44,12 @@ import (
 
 // atomicAgentPaneCommand is the command every fixture agent pane runs. The
 // panes emulate agent TUIs with `cat` (echo disabled, one transport
-// submission -> exactly one observable marker), but dispatch now refuses to
-// type into a Claude/codex pane whose capture shows neither the live
-// composer marker nor working-state chrome (bd-dp9oy: such keystrokes would
-// be silently swallowed by a real TUI). Printing both composer glyphs
-// ("❯" for Claude, "›" for codex) before exec'ing cat keeps these
-// stand-in panes recognizable as delivery-ready without changing the
-// marker-count contract.
-const atomicAgentPaneCommand = `bash --noprofile --norc -c 'stty -echo; printf "\342\235\257 \n\342\200\272 \n"; exec cat'`
+// submission -> exactly one observable marker). Panes start with an EMPTY
+// screen on purpose: dispatch's composer gate (bd-dp9oy) fails open on
+// empty captures, and distribution eligibility stays with the panes a test
+// explicitly primes via primeEndpointForSafeDispatch, which renders the
+// pane's own composer glyph ("❯" for Claude, "›" for codex).
+const atomicAgentPaneCommand = `bash --noprofile --norc -c 'stty -echo; exec cat'`
 
 type atomicAssignmentCLIFixture struct {
 	ntmPath    string
@@ -1943,6 +1941,10 @@ func TestE2EAtomicAssignmentTerminalGenerationBuiltProcess(t *testing.T) {
 	fixture.mustBR(t, "reopen", beadID, "--reason=terminal-generation-e2e", "--json")
 	fixture.assertBead(t, beadID, "open", firstRecord.ClaimActor)
 
+	// The first delivery left prompt text on the pane; re-render the
+	// composer glyph so the bd-dp9oy delivery gate accepts a second typed
+	// send (a real agent shows its composer again once it finishes).
+	fixture.primePaneForSafeDispatch(t, 0)
 	secondResult := fixture.runNTM(t, nil, args...)
 	if secondResult.exitCode != 0 || len(bytes.TrimSpace(secondResult.stderr)) != 0 {
 		t.Fatalf("second generation exit=%d stdout=%s stderr=%s", secondResult.exitCode, secondResult.stdout, secondResult.stderr)
@@ -2094,6 +2096,9 @@ func TestE2EAtomicAssignmentCloseForceClearReopenGeneration(t *testing.T) {
 
 	fixture.mustBR(t, "reopen", beadID, "--reason=close-clear-reopen-e2e", "--json")
 	fixture.assertBead(t, beadID, "open", "")
+	// Earlier delivery left prompt text on the pane; re-render the composer
+	// glyph so the bd-dp9oy delivery gate accepts the reopened send.
+	fixture.primePaneForSafeDispatch(t, 0)
 	secondResult := fixture.runNTM(t, nil, args...)
 	if secondResult.exitCode != 0 || len(bytes.TrimSpace(secondResult.stderr)) != 0 {
 		t.Fatalf("reopened lifecycle assignment exit=%d stdout=%s stderr=%s", secondResult.exitCode, secondResult.stdout, secondResult.stderr)
@@ -2270,6 +2275,9 @@ func TestE2EAtomicAssignmentClearPaneLeaseFailureIsDurable(t *testing.T) {
 		t.Fatalf("recovered clear retained assignment %s: %+v", beadID, ledger.Assignments[beadID])
 	}
 
+	// Earlier delivery left prompt text on the pane; re-render the composer
+	// glyph so the bd-dp9oy delivery gate accepts the post-clear send.
+	fixture.primePaneForSafeDispatch(t, 0)
 	reassigned := fixture.runNTM(t, nil, atomicDirectArgs(fixture, beadID, prompt, false)...)
 	if reassigned.exitCode != 0 || len(bytes.TrimSpace(reassigned.stderr)) != 0 {
 		t.Fatalf("post-clear reassignment exit=%d stdout=%s stderr=%s", reassigned.exitCode, reassigned.stdout, reassigned.stderr)
@@ -2416,6 +2424,9 @@ func TestE2EAtomicCompletionOutboxRestartReplayAckRetryAndFinalAckBuiltProcess(t
 		t.Helper()
 		beadID := fixture.createBead(t, title)
 		prompt := fmt.Sprintf("NTM_ATOMIC_COMPLETION_OUTBOX_%d", time.Now().UnixNano())
+		// Prior seeds left prompt text on the pane; re-render the composer
+		// glyph so the bd-dp9oy delivery gate accepts each new typed send.
+		fixture.primePaneForSafeDispatch(t, 0)
 		seed := fixture.runNTM(t, nil, atomicDirectArgs(fixture, beadID, prompt, false)...)
 		if seed.exitCode != 0 || len(bytes.TrimSpace(seed.stderr)) != 0 {
 			t.Fatalf("seed completion outbox assignment exit=%d stdout=%s stderr=%s", seed.exitCode, seed.stdout, seed.stderr)
@@ -4372,9 +4383,13 @@ func TestE2EAtomicAssignmentEligibleBelowFormerPlanCapBuiltProcess(t *testing.T)
 			"status":   "open",
 			"priority": 1,
 		})
+		// issue_type is required since ntm-e165/GH#242: without verified
+		// type evidence the classifier must assume a plan item could be an
+		// epic and refuse automated dispatch.
 		labelRows = append(labelRows, map[string]any{
-			"id":     beadID,
-			"labels": []string{"operator-gated"},
+			"id":         beadID,
+			"issue_type": "task",
+			"labels":     []string{"operator-gated"},
 		})
 	}
 	planItems = append(planItems, map[string]any{
@@ -4384,8 +4399,9 @@ func TestE2EAtomicAssignmentEligibleBelowFormerPlanCapBuiltProcess(t *testing.T)
 		"priority": 2,
 	})
 	labelRows = append(labelRows, map[string]any{
-		"id":     eligibleID,
-		"labels": []string{},
+		"id":         eligibleID,
+		"issue_type": "task",
+		"labels":     []string{},
 	})
 
 	planPayload, err := json.Marshal(map[string]any{
@@ -8486,6 +8502,9 @@ func TestE2EAtomicBulkAssignmentCanonicalMultiWindow(t *testing.T) {
 		beadID := fixture.createBead(t, "Canonical direct assignment")
 		target := panes["1.0"]
 		prompt := fmt.Sprintf("NTM_ATOMIC_DIRECT_MULTI_%d", time.Now().UnixNano())
+		// Earlier bulk sends left prompt text on this pane; re-render the
+		// composer glyph so the bd-dp9oy delivery gate accepts the send.
+		fixture.primeEndpointForSafeDispatch(t, target)
 		firstResult := fixture.runNTM(t, nil, atomicDirectArgsForSelector(fixture, target.Target, beadID, prompt, false)...)
 		if firstResult.exitCode != 0 || len(bytes.TrimSpace(firstResult.stderr)) != 0 {
 			t.Fatalf("direct W.P assignment exit=%d stdout=%s stderr=%s", firstResult.exitCode, firstResult.stdout, firstResult.stderr)
@@ -9004,6 +9023,13 @@ func newAtomicAssignmentCLIFixture(t *testing.T) *atomicAssignmentCLIFixture {
 	}
 
 	root := t.TempDir()
+	// macOS t.TempDir() lives under /var, a symlink to /private/var. The
+	// production coordinator resolves the project path before calling Agent
+	// Mail ensure_project, so the fixture must hold the resolved form or the
+	// mail stubs' human_key/project_key comparisons reject with HTTP 400.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	tmuxRoot := testutil.ShortTmuxTempDir(t)
 	fixture := &atomicAssignmentCLIFixture{
 		ntmPath:    ntmPath,
@@ -10118,9 +10144,14 @@ func (f *atomicAssignmentCLIFixture) waitForTopology(t *testing.T, want int) map
 
 func (f *atomicAssignmentCLIFixture) primeEndpointForSafeDispatch(t *testing.T, pane atomicAssignmentPane) {
 	t.Helper()
-	prompt := "claude>"
+	// Render the pane's own live-composer glyph ("❯" Claude, "›" codex).
+	// Dispatch refuses to type into a Claude/codex pane whose non-empty
+	// capture shows neither the composer marker nor working-state chrome
+	// (bd-dp9oy), so the historical ASCII "claude>"/"codex>" idle prompts
+	// no longer count as delivery-ready.
+	prompt := "❯"
 	if strings.Contains(pane.Title, "__cod_") {
-		prompt = "codex>"
+		prompt = "›"
 	}
 	f.mustTMUX(t, "send-keys", "-t", pane.ID, "-l", prompt)
 	f.mustTMUX(t, "send-keys", "-t", pane.ID, "Enter")
@@ -10848,8 +10879,15 @@ func waitForAtomicAssignmentPath(t *testing.T, path string, pid int) {
 		} else if !os.IsNotExist(err) {
 			t.Fatalf("inspect cancellation sentinel %s: %v", path, err)
 		}
-		if _, err := os.Stat(filepath.Join("/proc", fmt.Sprintf("%d", pid))); os.IsNotExist(err) {
-			t.Fatalf("ntm process %d exited before reaching cancellation sentinel %s", pid, path)
+		// Liveness probe: signal 0 works on every Unix, unlike /proc which
+		// does not exist on macOS (stat("/proc/<pid>") there reported every
+		// process as exited and failed these subtests unconditionally). The
+		// probe is best-effort: an un-reaped child zombie still counts as
+		// alive, in which case the deadline below reports the failure.
+		if proc, findErr := os.FindProcess(pid); findErr == nil {
+			if sigErr := proc.Signal(syscall.Signal(0)); errors.Is(sigErr, os.ErrProcessDone) {
+				t.Fatalf("ntm process %d exited before reaching cancellation sentinel %s", pid, path)
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("ntm process %d did not reach cancellation sentinel %s", pid, path)

@@ -7204,6 +7204,13 @@ func newSpawnAssignmentPreflightFixture(t *testing.T) *spawnAssignmentPreflightF
 	}
 
 	root := t.TempDir()
+	// macOS t.TempDir() lives under /var, a symlink to /private/var. The
+	// product resolves and reports canonical paths (worktree retention
+	// messages, Agent Mail project keys), so hold the resolved form or
+	// substring/equality assertions against reported paths fail.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	fixture := &spawnAssignmentPreflightFixture{
 		ntmPath:      ntmPath,
 		tmuxPath:     tmuxPath,

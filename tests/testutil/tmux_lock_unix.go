@@ -228,6 +228,15 @@ func (g *ProcessGroupForTest) Close() error {
 		if errors.Is(signalErr, syscall.ESRCH) {
 			signalErr = nil
 		}
+		// macOS quirk: once every member of the group is a zombie awaiting
+		// reap (e.g. the caller already delivered SIGKILL via Signal and
+		// waited the child, leaving only the unreaped guardian), XNU reports
+		// EPERM for the pgid-addressed signal instead of ESRCH. The group
+		// members are our own children, so a genuine permission failure is
+		// not possible here; treat it as already-dead.
+		if errors.Is(signalErr, syscall.EPERM) {
+			signalErr = nil
+		}
 		lifetimeErr := g.lifetimeWrite.Close()
 		waitErr := g.guardian.Wait()
 		var exitErr *exec.ExitError
