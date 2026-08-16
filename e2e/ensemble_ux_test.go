@@ -68,11 +68,28 @@ func parseEnsembleUXJSON(t *testing.T, suite *TestSuite, label string, stdout []
 // Dry Run Tests
 // -------------------------------------------------------------------
 
+// supportsEnsembleSpawn reports whether the ntm binary was built with the
+// ensemble_experimental tag. The default build intentionally ships a stub
+// `ensemble spawn` (and gated --robot-ensemble-spawn) with no --preset /
+// --question / --dry-run flags, so spawn-based tests must skip rather than
+// fail against the stub.
+func supportsEnsembleSpawn() bool {
+	cmd := exec.Command("ntm", "ensemble", "spawn", "--help")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(output), "--preset")
+}
+
 func TestE2E_DryRun_BasicPreset(t *testing.T) {
 	CommonE2EPrerequisites(t)
 
 	if !supportsNTMSubcommand("ensemble") {
 		t.Skip("ntm binary does not support `ensemble` command")
+	}
+	if !supportsEnsembleSpawn() {
+		t.Skip("ensemble spawn is a stub in this build (requires -tags ensemble_experimental)")
 	}
 
 	suite := NewTestSuite(t, "ensemble_ux_dryrun_basic")
@@ -119,6 +136,9 @@ func TestE2E_DryRun_CustomModes(t *testing.T) {
 
 	if !supportsNTMSubcommand("ensemble") {
 		t.Skip("ntm binary does not support `ensemble` command")
+	}
+	if !supportsEnsembleSpawn() {
+		t.Skip("ensemble spawn is a stub in this build (requires -tags ensemble_experimental)")
 	}
 
 	suite := NewTestSuite(t, "ensemble_ux_dryrun_custom")
@@ -179,6 +199,9 @@ func TestE2E_DryRun_RobotOutput(t *testing.T) {
 
 	if !supportsNTMSubcommand("ensemble") {
 		t.Skip("ntm binary does not support `ensemble` command")
+	}
+	if !supportsEnsembleSpawn() {
+		t.Skip("ensemble spawn is a stub in this build (requires -tags ensemble_experimental)")
 	}
 
 	suite := NewTestSuite(t, "ensemble_ux_dryrun_robot")
@@ -354,15 +377,20 @@ func TestE2E_Suggest_RobotJSON(t *testing.T) {
 		t.Fatalf("[E2E-ENSEMBLE-UX] robot suggest output not valid JSON: %v", err)
 	}
 
-	// Must include generated_at timestamp.
+	// Must include the envelope timestamp. The robot envelope carries the
+	// generation time in "timestamp" (RobotResponse); a top-level
+	// "generated_at" is not part of the suggest schema.
 	var envelope map[string]interface{}
 	parseEnsembleUXJSON(t, suite, "suggest_robot", res.Stdout, &envelope)
 
-	if _, ok := envelope["generated_at"]; !ok {
-		t.Fatalf("[E2E-ENSEMBLE-UX] suggest robot JSON missing 'generated_at'")
+	if _, ok := envelope["timestamp"]; !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] suggest robot JSON missing 'timestamp'")
+	}
+	if _, ok := envelope["suggestions"]; !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] suggest robot JSON missing 'suggestions'")
 	}
 
-	t.Logf("E2E: %s - assertion: robot JSON has generated_at = true (want true)", t.Name())
+	t.Logf("E2E: %s - assertion: robot JSON has timestamp = true (want true)", t.Name())
 }
 
 func TestE2E_Suggest_PipeToSpawn(t *testing.T) {
@@ -622,9 +650,11 @@ func TestE2E_ModeExplain_RobotJSON(t *testing.T) {
 	var out map[string]interface{}
 	parseEnsembleUXJSON(t, suite, "robot_modes", res.Stdout, &out)
 
-	// Must include generated_at and modes.
-	if _, ok := out["generated_at"]; !ok {
-		t.Fatalf("[E2E-ENSEMBLE-UX] robot modes JSON missing 'generated_at'")
+	// Must include the envelope timestamp and modes. The robot envelope
+	// carries the generation time in "timestamp" (RobotResponse); a
+	// top-level "generated_at" is not part of the modes schema.
+	if _, ok := out["timestamp"]; !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] robot modes JSON missing 'timestamp'")
 	}
 	modesField, ok := out["modes"]
 	if !ok {
@@ -654,10 +684,11 @@ func TestE2E_Estimate_BasicPreset(t *testing.T) {
 
 	t.Logf("E2E: %s - testing estimate for basic preset", t.Name())
 
+	// `ensemble estimate` takes a preset (or --modes) only; it has no
+	// --question flag, and its JSON reports counts under "budget".
 	res := runEnsembleUXCmd(t, suite, "estimate_basic",
 		"ensemble", "estimate",
 		"--preset", "quick-scan",
-		"--question", "E2E estimate basic preset test",
 		"--format", "json",
 	)
 
@@ -671,16 +702,20 @@ func TestE2E_Estimate_BasicPreset(t *testing.T) {
 	var estimate map[string]interface{}
 	parseEnsembleUXJSON(t, suite, "estimate_basic", res.Stdout, &estimate)
 
-	// Estimate must include mode_count and estimated_total_tokens.
-	if _, ok := estimate["mode_count"]; !ok {
-		t.Fatalf("[E2E-ENSEMBLE-UX] estimate response missing 'mode_count'")
+	// Estimate must include budget.mode_count and budget.estimated_total_tokens.
+	budget, ok := estimate["budget"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] estimate response missing 'budget' object")
 	}
-	if _, ok := estimate["estimated_total_tokens"]; !ok {
-		t.Fatalf("[E2E-ENSEMBLE-UX] estimate response missing 'estimated_total_tokens'")
+	if _, ok := budget["mode_count"]; !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] estimate budget missing 'mode_count'")
+	}
+	if _, ok := budget["estimated_total_tokens"]; !ok {
+		t.Fatalf("[E2E-ENSEMBLE-UX] estimate budget missing 'estimated_total_tokens'")
 	}
 
-	modeCount, _ := estimate["mode_count"].(float64)
-	totalTokens, _ := estimate["estimated_total_tokens"].(float64)
+	modeCount, _ := budget["mode_count"].(float64)
+	totalTokens, _ := budget["estimated_total_tokens"].(float64)
 
 	t.Logf("E2E: %s - assertion: mode_count = %v (want >0)", t.Name(), modeCount)
 	t.Logf("E2E: %s - assertion: estimated_total_tokens = %v (want >0)", t.Name(), totalTokens)
@@ -1160,21 +1195,28 @@ func TestE2E_Dedupe_Auto(t *testing.T) {
 	engine := ensemble.NewDedupeEngine(cfg)
 
 	// Create overlapping findings from different modes as ModeOutput slices.
+	//
+	// The duplicate pairs share most of their tokens on purpose: the engine
+	// scores similarity as 0.7*Jaccard(token sets) + 0.3*evidence proximity,
+	// so at the default 0.7 threshold only genuinely near-identical phrasings
+	// cluster. Loosely paraphrased findings (e.g. "The authentication module
+	// has a SQL injection vulnerability" vs "SQL injection risk in the auth
+	// login handler", Jaccard ~0.23) score ~0.46 and correctly stay separate.
 	outputs := []ensemble.ModeOutput{
 		{
 			ModeID: "mode-security",
 			Thesis: "Security analysis",
 			TopFindings: []ensemble.Finding{
-				{Finding: "The authentication module has a SQL injection vulnerability", Impact: ensemble.ImpactCritical, Confidence: 0.95, EvidencePointer: "auth/login.go:42"},
-				{Finding: "Memory leak in the connection pool", Impact: ensemble.ImpactMedium, Confidence: 0.75, EvidencePointer: "pool/manager.go:105"},
+				{Finding: "SQL injection vulnerability in the authentication login handler", Impact: ensemble.ImpactCritical, Confidence: 0.95, EvidencePointer: "auth/login.go:42"},
+				{Finding: "Memory leak in the connection pool manager", Impact: ensemble.ImpactMedium, Confidence: 0.75, EvidencePointer: "pool/manager.go:105"},
 			},
 		},
 		{
 			ModeID: "mode-review",
 			Thesis: "Code review analysis",
 			TopFindings: []ensemble.Finding{
-				{Finding: "SQL injection risk in the auth login handler", Impact: ensemble.ImpactHigh, Confidence: 0.88, EvidencePointer: "auth/login.go:42"},
-				{Finding: "Connection pool leaks memory under load", Impact: ensemble.ImpactMedium, Confidence: 0.70, EvidencePointer: "pool/manager.go:110"},
+				{Finding: "SQL injection vulnerability in the auth login handler", Impact: ensemble.ImpactHigh, Confidence: 0.88, EvidencePointer: "auth/login.go:42"},
+				{Finding: "Memory leak in the connection pool under load", Impact: ensemble.ImpactMedium, Confidence: 0.70, EvidencePointer: "pool/manager.go:110"},
 				{Finding: "Unused error return in file handler", Impact: ensemble.ImpactLow, Confidence: 0.60, EvidencePointer: "fs/handler.go:23"},
 			},
 		},

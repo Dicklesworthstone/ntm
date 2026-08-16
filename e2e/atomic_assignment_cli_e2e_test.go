@@ -42,6 +42,17 @@ import (
 // run cat with terminal echo disabled so one transport submission produces
 // exactly one observable marker.
 
+// atomicAgentPaneCommand is the command every fixture agent pane runs. The
+// panes emulate agent TUIs with `cat` (echo disabled, one transport
+// submission -> exactly one observable marker), but dispatch now refuses to
+// type into a Claude/codex pane whose capture shows neither the live
+// composer marker nor working-state chrome (bd-dp9oy: such keystrokes would
+// be silently swallowed by a real TUI). Printing both composer glyphs
+// ("❯" for Claude, "›" for codex) before exec'ing cat keeps these
+// stand-in panes recognizable as delivery-ready without changing the
+// marker-count contract.
+const atomicAgentPaneCommand = `bash --noprofile --norc -c 'stty -echo; printf "\342\235\257 \n\342\200\272 \n"; exec cat'`
+
 type atomicAssignmentCLIFixture struct {
 	ntmPath    string
 	tmuxPath   string
@@ -5953,7 +5964,7 @@ func TestE2EAtomicExplicitSessionMixedLiveRootsFailsBeforeAssignmentBuiltProcess
 			t.Fatalf("create mixed-root fixture directory %s: %v", dir, err)
 		}
 	}
-	agentCommand := "bash --noprofile --norc -c 'stty -echo; exec cat'"
+	agentCommand := atomicAgentPaneCommand
 	fixture.mustTMUX(t, "new-window", "-d", "-t", fixture.session+":1", "-c", otherProject, agentCommand)
 	fixture.mustTMUX(t, "select-pane", "-t", fixture.session+":1.0", "-T", fixture.session+"__cod_mixed_root")
 
@@ -6223,7 +6234,7 @@ func TestE2EAtomicAssignmentPendingRetryRefusesChangedPhysicalPane(t *testing.T)
 	// consumes the former physical pane ID while leaving the production session
 	// with the same window-local pane indexes.
 	dummySession := fixture.session + "-pane-id-shift"
-	agentCommand := "bash --noprofile --norc -c 'stty -echo; exec cat'"
+	agentCommand := atomicAgentPaneCommand
 	fixture.mustTMUX(t, "-f", fixture.tmuxConfig, "new-session", "-d", "-s", dummySession, "-x", "80", "-y", "24", "-c", fixture.projectDir, agentCommand)
 	fixture.startAgentPanes(t)
 	if fixture.panes[0].ID == originalPaneID {
@@ -10009,7 +10020,7 @@ func assertAtomicAssignmentSingleFailureJSON(t *testing.T, result atomicAssignme
 
 func (f *atomicAssignmentCLIFixture) startAgentPanes(t *testing.T) {
 	t.Helper()
-	agentCommand := "bash --noprofile --norc -c 'stty -echo; exec cat'"
+	agentCommand := atomicAgentPaneCommand
 	f.mustTMUX(t, "-f", f.tmuxConfig, "new-session", "-d", "-s", f.session, "-x", "160", "-y", "48", "-c", f.projectDir, agentCommand)
 	f.mustTMUX(t, "split-window", "-d", "-t", f.session+":0", "-c", f.projectDir, agentCommand)
 	f.mustTMUX(t, "select-pane", "-t", f.session+":0.0", "-T", f.session+"__cod_1")
@@ -10058,7 +10069,7 @@ func (f *atomicAssignmentCLIFixture) waitForPanes(t *testing.T) {
 
 func (f *atomicAssignmentCLIFixture) addSecondAgentWindow(t *testing.T) map[string]atomicAssignmentPane {
 	t.Helper()
-	agentCommand := "bash --noprofile --norc -c 'stty -echo; exec cat'"
+	agentCommand := atomicAgentPaneCommand
 	f.mustTMUX(t, "new-window", "-d", "-t", f.session+":1", "-c", f.projectDir, agentCommand)
 	f.mustTMUX(t, "split-window", "-d", "-t", f.session+":1", "-c", f.projectDir, agentCommand)
 	f.mustTMUX(t, "select-pane", "-t", f.session+":1.0", "-T", f.session+"__cod_3")

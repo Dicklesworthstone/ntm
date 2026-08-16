@@ -616,8 +616,10 @@ func TestDoctorRequiredToolsMarked(t *testing.T) {
 		t.Fatalf("[E2E-DOCTOR] Failed to get JSON output: %v", err)
 	}
 
-	// bv and bd should be marked as required
-	requiredTools := map[string]bool{"bv": false, "bd": false}
+	// bv and br should be marked as required. The beads tool migrated from
+	// bd to br (beads_rust); doctor reports the adapter under the display
+	// name "br" even though the internal tool ID is still ToolBD.
+	requiredTools := map[string]bool{"bv": false, "br": false}
 
 	for _, tool := range report.Tools {
 		if _, isRequired := requiredTools[tool.Name]; isRequired {

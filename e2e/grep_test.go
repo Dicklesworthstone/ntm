@@ -58,6 +58,24 @@ func NewGrepTestSuite(t *testing.T) *GrepTestSuite {
 	}
 }
 
+// Setup creates the tmux session and then retitles pane 0 with the NTM
+// agent naming convention ({session}__cc_1). `ntm grep` intentionally
+// skips user (non-agent) panes unless an agent filter is given, and a bare
+// shell pane classifies as a user pane, so without this the suite's
+// injected content is never searched (panes_searched stays 0).
+func (s *GrepTestSuite) Setup() error {
+	if err := s.TestSuite.Setup(); err != nil {
+		return err
+	}
+	target := fmt.Sprintf("%s:0", s.Session())
+	title := fmt.Sprintf("%s__cc_1", s.Session())
+	cmd := exec.Command(tmux.BinaryPath(), "select-pane", "-t", target, "-T", title)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("retitle pane 0 as agent pane: %w (%s)", err, out)
+	}
+	return nil
+}
+
 // InjectContent sends content to a pane to create searchable output
 func (s *GrepTestSuite) InjectContent(pane int, content string) error {
 	s.Logger().Log("[E2E-GREP] Injecting content to pane %d: %s", pane, truncateString(content, 50))
