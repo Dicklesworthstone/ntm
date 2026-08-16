@@ -36,7 +36,13 @@ Examples:
   ntm approve abc123                  # Approve request abc123
   ntm approve list                    # List pending approvals
   ntm approve deny abc123 --reason "Too risky"
-  ntm approve show abc123             # Show approval details`,
+  ntm approve show abc123             # Show approval details
+
+Identity note: the approver identity recorded on decisions is taken from the
+NTM_USER (or USER) environment variable. It is asserted, not authenticated —
+any process or person with shell access to this machine can approve or deny
+under any name. Treat the approval trail as attribution among cooperating
+operators on a trusted host, not as an authentication boundary.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

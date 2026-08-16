@@ -2266,9 +2266,6 @@ type AutoRestartStuckOptions struct {
 // DefaultStuckThreshold is the default idle duration before a pane is considered stuck.
 const DefaultStuckThreshold = 5 * time.Minute
 
-// ClassifyStuckPanes identifies panes that are stuck based on health data.
-// A pane is stuck if it is an agent pane (not user/unknown) and has been idle
-// longer than the threshold duration. This is a pure function for testability.
 // AutoRestartSkip records a pane that met the stuck threshold but was
 // deliberately NOT restarted, with the typed reason (bd-qz5wk). Previously
 // these panes were invisible: a blocked pane was protected only by accident

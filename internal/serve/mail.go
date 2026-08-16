@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -1809,8 +1808,12 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 	// "auto" fails closed.
 	pol, err := policy.LoadOrDefault()
 	if err != nil {
+		// Log the detail server-side only: the load error can embed the policy
+		// file's filesystem path and YAML parse context (quoted file content),
+		// which must not leak to HTTP clients.
+		slog.Error("force-release policy load failed", "request_id", reqID, "error", err)
 		writeErrorResponse(w, http.StatusForbidden, ErrCodeForbidden,
-			fmt.Sprintf("cannot load policy for force-release gate: %v", err), nil, reqID)
+			"cannot load policy for force-release gate; see server logs", nil, reqID)
 		return
 	}
 	switch pol.ForceReleasePolicy() {
