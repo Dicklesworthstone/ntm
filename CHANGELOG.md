@@ -20,6 +20,22 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.24.1] -- 2026-08-15 [GitHub Release]
+
+**3 commits since v1.24.0** -- a same-day second fresh-eyes pass over the v1.24.0 wave.
+
+### Reliability
+
+- **Security: approval decisions can no longer race each other.** Pending approvals now transition to approved, denied, or expired through a status-guarded SQL update, so a concurrent `ntm approve` in another process can never overwrite a landed denial (or a lazy expiry clobber a landed decision) -- closing the last blind write in the machinery hardened for v1.24.0's force-release gate ([6db712e9](https://github.com/Dicklesworthstone/ntm/commit/6db712e9)).
+- **Cross-version idempotent replay restored.** The send-operation binding hash writes the new with-memory toggle only when set, so byte-identical retries of operations recorded by v1.23.0 replay their recorded outcome instead of failing with a spurious `IDEMPOTENCY_CONFLICT`; the pre-1.24 hash formula is pinned field-for-field by a regression test ([6db712e9](https://github.com/Dicklesworthstone/ntm/commit/6db712e9)).
+- **Refusals are visible.** The dashboard conflict force action's policy refusal raises an on-screen toast instead of vanishing into a log file; `ntm bugs watch --json` emits a `PERMISSION_DENIED` envelope with a remediation hint; and `ntm config show --json` gains the `memory`, `bugs`, and `rotation` sections plus the CAAM failover and disk-horizon keys ([6db712e9](https://github.com/Dicklesworthstone/ntm/commit/6db712e9)).
+
+### Verification And Release
+
+- Reverified all eight fakeagent E2E suites green at HEAD after the hardening wave (48 pre-existing failures elsewhere in the tagged suite were triaged as predating v1.24.0 and tracked separately); corrected three stale commit counts and one release label in the changelog backfill, and documented `--with-memory` in the AGENTS.md robot-send modifier table ([6db712e9](https://github.com/Dicklesworthstone/ntm/commit/6db712e9)).
+
+---
+
 ## [v1.24.0] -- 2026-08-15 [GitHub Release]
 
 **22 commits since v1.23.0** -- a controllable fakeagent E2E persona with six live real-tmux verification suites, coordinator-driven context rotation and CAAM auto-failover (both default-off), durable WebSocket replay, disk-usage trajectory metrics, CM memory injection, reservation-routed bug nudges, and a policy-gated force-release approval fix.
