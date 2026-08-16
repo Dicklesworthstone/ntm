@@ -312,6 +312,14 @@ ntm coordinator enable digest --interval=30m
 ntm coordinator disable conflict-negotiate
 ```
 
+`ntm locks force-release` is approval-gated by default (`automation.force_release:
+approval`): the first invocation files a durable approval request, a second operator
+grants it with `ntm approve <id>` (self-approval is rejected), and re-running the
+command consumes that approval and executes exactly once. Use
+`ntm policy automation --force-release auto` to allow unattended force-release, or
+`never` to disable it entirely; the serve HTTP endpoint and the dashboard conflict
+action honor the same policy setting.
+
 `coordinator enable` and `disable` persist the selected `--config` file, or the
 global config by default, without replacing unrelated settings or comments.
 Restart an already running `ntm coordinator run` daemon to apply a toggle.

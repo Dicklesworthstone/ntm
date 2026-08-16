@@ -96,7 +96,7 @@ func evaluateForceReleaseGate(ctx context.Context, pol *policy.Policy, eng *appr
 				Allowed:        false,
 				ApprovalID:     record.ID,
 				ApprovalStatus: string(record.Status),
-				Message:        fmt.Sprintf("approval required: %s is still pending — have a second operator run `ntm approve %s`", record.ID, record.ID),
+				Message:        fmt.Sprintf("approval required: %s is still pending — have a second operator run `ntm approve %s` (self-approval is rejected for SLB requests; a solo operator can permit unattended force-release with `ntm policy automation --force-release auto`)", record.ID, record.ID),
 			}, nil
 		case state.ApprovalDenied:
 			// A denial stands for the record's original validity window;
@@ -162,6 +162,6 @@ func evaluateForceReleaseGate(ctx context.Context, pol *policy.Policy, eng *appr
 		ApprovalID:     created.ID,
 		ApprovalStatus: string(created.Status),
 		Created:        true,
-		Message:        fmt.Sprintf("approval required: %s — have a second operator run `ntm approve %s`", created.ID, created.ID),
+		Message:        fmt.Sprintf("approval required: %s — have a second operator run `ntm approve %s` (self-approval is rejected for SLB requests; a solo operator can permit unattended force-release with `ntm policy automation --force-release auto`)", created.ID, created.ID),
 	}, nil
 }

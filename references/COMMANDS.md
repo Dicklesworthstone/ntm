@@ -133,7 +133,7 @@ ntm mail send myproject --all "Report blockers and current file focus."
 ntm mail inbox myproject
 ntm locks list myproject --all-agents
 ntm locks renew myproject
-ntm locks force-release myproject 42 --note "agent inactive"
+ntm locks force-release myproject 42 --note "agent inactive"  # approval-gated by default: files an approval, needs `ntm approve <id>` by a second operator
 ntm coordinator status myproject
 ntm coordinator digest myproject
 ntm coordinator conflicts myproject

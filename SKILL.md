@@ -146,6 +146,8 @@ ntm changes conflicts myproject
 ntm resume myproject
 ```
 
+`ntm locks force-release` is approval-gated by default (`automation.force_release: approval`): the first run files a durable approval request, a second operator grants it with `ntm approve <id>` (self-approval is rejected), and re-running the command consumes the approval and executes once. A solo operator can set `ntm policy automation --force-release auto` to allow unattended force-release.
+
 Treat `ntm checkpoint save` as a routine cadence, not just a pre-disaster snapshot. Good points to checkpoint: once prompts are confirmed received after a spawn or restore, after an investigation isolates a root cause, before risky edits, after significant uncommitted work but before verification, after a green verification, and before a merge/cleanup/handoff. Cheap checkpoints make any later `ntm checkpoint restore` land on a known-good state.
 
 Note that Agent Mail may run as an external MCP or service-manager process **outside** the tmux session. If Agent Mail and tmux appear to fail together, don't assume tmux took Agent Mail down — check the service manager, process/cgroup ancestry, and OOM/memory signals at the service boundary before relaunching workers.
