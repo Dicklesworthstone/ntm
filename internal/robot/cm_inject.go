@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/process"
@@ -226,11 +227,28 @@ func estimateCMTokens(s string) int {
 	return len(s) / 4
 }
 
+// cmSanitizeText replaces control and other non-printable runes with spaces.
+// strings.Fields collapses only whitespace (\r, \n, \t, ...): a raw ESC
+// (0x1B), C1 control, or DEL byte in rule content is NOT whitespace and would
+// survive into the composer send text as a live key/escape sequence — the
+// tmux delivery path sends message bytes literally (`send-keys -l`) and does
+// not strip control characters.
+func cmSanitizeText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) && !unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
 // cmRuleLine renders one rule as a single compact bullet, collapsing internal
-// whitespace so multi-line rule content cannot break the block format.
+// whitespace so multi-line rule content cannot break the block format, and
+// stripping non-printable runes so rule content cannot smuggle raw control
+// sequences into the send text.
 func cmRuleLine(rule cm.Rule) string {
-	content := strings.Join(strings.Fields(rule.Content), " ")
-	id := strings.TrimSpace(rule.ID)
+	content := strings.Join(strings.Fields(cmSanitizeText(rule.Content)), " ")
+	id := strings.TrimSpace(strings.Join(strings.Fields(cmSanitizeText(rule.ID)), " "))
 	if id == "" {
 		return "- " + content + "\n"
 	}
