@@ -1,0 +1,39 @@
+# ci/allowlists/placebo.txt — G5 placebo lint allowlist (bd-ws0-guards-klz98.6)
+# Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
+# Entry = repo-relative file path carrying one or more inline `placebo-waiver: <bead-id>`
+# lines for that bead. Consumed by scripts/guards/placebo_lint.sh (ratchet both directions:
+# an inline waiver pair absent here fails; a line here with no surviving inline waiver is stale).
+#
+# Register-known seeds (each burned by its own fix bead):
+internal/cli/guards.go	bd-ws1-truth-safety-l5ddi.1	A1: pre-commit hook template "For now, just log and pass" — real reservation check lands in WS1-A1
+internal/git/worktree.go	bd-ws1-truth-safety-l5ddi.5	B2: "For now, assume 'main'" — DefaultBranch() lands in WS1-B2, removes comment + waiver
+internal/serve/server.go	bd-ws3-contract-breadth-psvyu.5	D5: executeJob simulator comment — real dispatcher in WS3-D5; regex `in production,? this would` must stop matching
+#
+# Pre-existing hits outside the gap register, triaged under the G5 umbrella backlog bead:
+internal/metrics/collector.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/ensemble/pipeline.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/ensemble/synthesizer.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/pipeline/deps.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/pipeline/schema.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/pipeline/executor.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/bv/markdown.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/agentmail/unified.go	bd-d7z7i	pre-existing "for now" markers (2); triage per umbrella bead
+internal/auth/restart.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/config/watch.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/auth/claude.go	bd-d7z7i	pre-existing "for now" markers (2); triage per umbrella bead
+internal/tui/dashboard/panels/spawn.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/zoom.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/monitor.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/approve.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/worktree.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/summary.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/work.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/cli/rotate.go	bd-d7z7i	pre-existing "for now" markers (2); triage per umbrella bead
+internal/cli/metrics_cmd.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/robot/markdown.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/robot/spawn.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/robot/smart_restart.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/tmux/session.go	bd-d7z7i	pre-existing "for now" markers (2); triage per umbrella bead
+internal/quota/fetcher.go	bd-d7z7i	pre-existing "for now" marker; triage per umbrella bead
+internal/serve/server.go	bd-d7z7i	pre-existing "for now" marker at pubsub auth (distinct from the D5 line above); triage per umbrella bead
+internal/serve/safety.go	bd-d7z7i	pre-existing "in production, this would" marker; triage per umbrella bead

@@ -1,0 +1,22 @@
+# ci/placebo_patterns.txt — G5 placebo-lint patterns (bd-ws0-guards-klz98.6)
+# Case-insensitive POSIX ERE, one per line, matched by scripts/guards/placebo_lint.sh
+# over internal/ and cmd/ (*.go, excluding *_test.go).
+#
+# Seeded VERBATIM from the reality-check audit's finds. The two "in production"
+# patterns are comma-tolerant so they catch the real D5 comment
+# (internal/serve/server.go: "// Simulate job execution - in production, this
+# would dispatch to actual handlers").
+for now
+in production,? this would
+TODO.*wire
+# (word-bounded portably: GNU grep lacks [[:<:]], BSD grep lacks \b in ERE)
+//.*[^[:alpha:]]simulate[^[:alpha:]].*(execution|dispatch)
+#
+# --- prose-exception list -------------------------------------------------
+# Files allowed to carry `placebo-waiver: prose` on a hit line: legitimate
+# user-facing strings or comments describing EXTERNAL tools' behavior, NOT
+# real debt. Reviewed against the seed run's FULL hit list in the guard PR so
+# the exception set is enumerated once, not grown silently. Line format:
+#   prose-exception:<repo-relative-file>  <justification>
+# (The seed-run triage placed every current hit under a bead-first waiver;
+# this list is intentionally EMPTY at seeding.)

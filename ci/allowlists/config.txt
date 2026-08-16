@@ -1,0 +1,3 @@
+# ci/allowlists/config.txt — G2 config-key liveness allowlist (bd-ws0-guards-klz98.3)
+# Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
+# Seeded by the G2 bead from the gap register (WS6 G-list + [cass] injection keys + tmux.palette_key).

@@ -20,6 +20,28 @@ env:
 
 jobs:
   # ============================================================================
+  # REALITY GUARDS - WS0 systemic gates (bd-ws0-guards-klz98)
+  # Runs scripts/check_allowlists.sh plus every guard in scripts/guards/*.sh via
+  # run_all.sh. Later lanes add guards by dropping a script into scripts/guards/
+  # (see the plug-in contract in scripts/guards/run_all.sh) — this job never
+  # needs editing. No Go toolchain or br required: br-absent degradation is by
+  # design (check_allowlists.sh validates format + bead-ID shape in CI; the
+  # open-bead check runs locally where br exists).
+  # ============================================================================
+  reality-guards:
+    name: Reality Guards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Validate allowlists (format + waiver-bead shape)
+        run: bash scripts/check_allowlists.sh
+      - name: Run all reality guards (ratchets + canaries)
+        run: bash scripts/guards/run_all.sh
+
+  # ============================================================================
   # LINT - Static analysis and code quality
   # ============================================================================
   lint:
@@ -460,12 +482,13 @@ jobs:
     name: CI Success
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [lint, test, coverage, build, security, goreleaser-check, integration, upgrade-check]
+    needs: [reality-guards, lint, test, coverage, build, security, goreleaser-check, integration, upgrade-check]
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ] || \
+          if [ "${{ needs.reality-guards.result }}" != "success" ] || \
+             [ "${{ needs.lint.result }}" != "success" ] || \
              [ "${{ needs.test.result }}" != "success" ] || \
              [ "${{ needs.coverage.result }}" != "success" ] || \
              [ "${{ needs.build.result }}" != "success" ] || \

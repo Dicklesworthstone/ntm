@@ -1,0 +1,26 @@
+# ci/allowlists/contracts.txt — G6 single-definition contracts allowlist (bd-ws0-guards-klz98.7)
+# Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
+# Entry classes:
+#   label-split:<file>:<func>:<literal>   — raw "__"/"--" delimiter literal inside a label-handling
+#                                           function outside the canonical helper files
+#                                           (internal/config/label.go, internal/session/label.go).
+#   manifest-writer:<file>                — resilience.SpawnManifest composite-literal construction
+#                                           outside internal/resilience/ (one shared writer is the contract).
+#   rollout:<contract>:<surface>          — D1/D2 contract-breadth rollout exceptions. NOT computed by
+#                                           the grep lint (scripts/guards/contracts_lint.sh ignores this
+#                                           class); consumed by the WS3 registry-walk conformance tests,
+#                                           validated here only for format + open bead.
+#
+# B4/B5 current-literal seeds (burned by the W1 routing/spawn lane):
+label-split:internal/robot/tmux_adapter.go:extractSessionLabel:__	bd-ws1-truth-safety-l5ddi.7	B4: extractSessionLabel splits on __ instead of canonical -- helper (internal/config/label.go)
+label-split:internal/cli/session.go:paneLabel:__	bd-ws1-truth-safety-l5ddi.7	B4 lane: duplicated pane-title `session + "__"` maker (copy of formatPaneLabel); fold into the canonical delimiter helper when the W1 lane births it
+label-split:internal/tui/dashboard/dashboard_view.go:formatPaneLabel:__	bd-ws1-truth-safety-l5ddi.7	B4 lane: duplicated pane-title `session + "__"` maker (copy of paneLabel); fold into the canonical delimiter helper when the W1 lane births it
+manifest-writer:internal/cli/spawn.go	bd-ws1-truth-safety-l5ddi.8	B5: CLI-side SpawnManifest literal; W1 lane moves construction into ONE shared writer called by CLI and robot spawn
+#
+# D1/D2 rollout exceptions (schema/pagination lane, wave W2):
+rollout:pagination:sessions	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
+rollout:pagination:history	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
+rollout:pagination:audit	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
+rollout:pagination:checkpoints	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
+rollout:pagination:approvals	bd-ws3-contract-breadth-psvyu.1	D1: unbounded list surface not yet paginated via single-declaration registry flags
+rollout:arrays-never-null:registry-walk	bd-ws3-contract-breadth-psvyu.2	D2: arrays-never-null enforced only for status/snapshot envelopes until the registry-walk conformance test lands

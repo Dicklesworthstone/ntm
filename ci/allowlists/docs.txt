@@ -1,0 +1,3 @@
+# ci/allowlists/docs.txt — G3 docs-example conformance allowlist (bd-ws0-guards-klz98.4)
+# Format: <entry>\t<bead-id>\t<reason>  (see ci/allowlists/README.md)
+# Seeded by the G3 bead (H1 skip-count budget + go.mod-badge waiver line -> H7).
