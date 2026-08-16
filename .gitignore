@@ -134,3 +134,5 @@ storage.sqlite3-wal.corrupt-*
 **/zz_live_debug_test.go
 # br doctor per-run artifacts
 .doctor/
+.beads/.br-*.lock
+.beads/.br_recovery/
