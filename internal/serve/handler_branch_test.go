@@ -5733,7 +5733,11 @@ func TestStartMemoryDaemonAsync_KeepsDaemonAliveAfterStartup(t *testing.T) {
 	oldTimeout := memoryDaemonStartupTimeout
 	oldStore := memoryStore
 	memoryStore = NewMemoryStore()
-	memoryDaemonStartupTimeout = 2 * time.Second
+	// Generous startup ceiling: the helper re-execs this (race-instrumented)
+	// test binary, whose cold start can exceed 2s while the full suite runs.
+	// The passing path is still paced by the helper's 150ms pid-write delay,
+	// so the longer timeout only adds headroom on failure, not test latency.
+	memoryDaemonStartupTimeout = 15 * time.Second
 	pidPath := filepath.Join(pidsDir, "cm-test-session.pid")
 	memoryDaemonCommand = func(projectDir string, port int) *exec.Cmd {
 		cmd := exec.Command(os.Args[0], "-test.run=TestServeMemoryDaemonHelperProcess")

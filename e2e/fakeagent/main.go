@@ -354,7 +354,7 @@ func main() {
 	}
 
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGWINCH, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigCh, resizeSignal, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	inCh := make(chan []byte, 64)
 	go func() {
@@ -406,7 +406,7 @@ func main() {
 			s.render()
 		case sig := <-sigCh:
 			switch sig {
-			case syscall.SIGWINCH:
+			case resizeSignal:
 				if w, h, err := term.GetSize(fd); err == nil {
 					s.width, s.height = w, h
 				}
