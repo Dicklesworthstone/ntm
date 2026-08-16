@@ -909,10 +909,35 @@ func (r *AccountRotator) SwitchAccount(agentType string) (*RotationRecord, error
 	return record, nil
 }
 
+// validateCaamAccountOperand refuses account/profile names that could not be
+// passed safely as a caam positional argument. Names come from `caam list
+// --json` output (or operator input); a hostile or corrupted listing must not
+// be able to inject caam flags — a profile "named" `--auto` would otherwise
+// land in the activate argv as an option, not an operand. Control bytes are
+// refused outright (they can only be argv smuggling or log forgery).
+func validateCaamAccountOperand(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("account name is empty")
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return fmt.Errorf("account name %q begins with '-'; refusing flag-shaped operand", trimmed)
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("account name contains control character 0x%02x", r)
+		}
+	}
+	return nil
+}
+
 // SwitchToAccount switches to a specific account.
 func (r *AccountRotator) SwitchToAccount(agentType, accountName string) (*RotationRecord, error) {
 	if !r.IsAvailable() {
 		return nil, fmt.Errorf("caam CLI not available")
+	}
+	if err := validateCaamAccountOperand(accountName); err != nil {
+		return nil, fmt.Errorf("refusing account switch: %w", err)
 	}
 
 	provider := normalizeProvider(agentType)

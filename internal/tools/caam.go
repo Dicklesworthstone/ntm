@@ -633,6 +633,18 @@ func (a *CAAMAdapter) SwitchAccount(ctx context.Context, provider, accountID str
 	if strings.TrimSpace(provider) == "" || strings.TrimSpace(accountID) == "" {
 		return fmt.Errorf("provider and account ID are required")
 	}
+	// The account ID is passed as a caam positional operand. IDs come from
+	// `caam list --json` output or operator-provided flags; refuse flag-shaped
+	// names (leading '-') and control bytes so a hostile listing can never
+	// inject caam options into the activate argv.
+	if strings.HasPrefix(strings.TrimSpace(accountID), "-") {
+		return fmt.Errorf("account ID %q begins with '-'; refusing flag-shaped operand", accountID)
+	}
+	for _, r := range accountID {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("account ID contains control character 0x%02x", r)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
