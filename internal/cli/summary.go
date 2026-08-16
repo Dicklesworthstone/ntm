@@ -162,7 +162,7 @@ func runSummary(ctx context.Context, args []string, sinceStr, format string, rec
 	}
 
 	// We'll use the since duration to potentially filter logs (if we enhanced capture)
-	// For now, it's just validated.
+	// For now, it's just validated. // placebo-waiver: bd-d7z7i
 	_, err = util.ParseDurationWithDefault(sinceStr, 30*time.Minute, "since")
 	if err != nil {
 		return fmt.Errorf("invalid --since: %w", err)

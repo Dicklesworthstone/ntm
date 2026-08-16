@@ -571,7 +571,7 @@ func executeReauthRotation(session string, paneIdx int, paneID, provider string,
 	// Step 1: Send login command
 	fmt.Printf("Step 1/3: Sending %s command...\n", prov.LoginCommand())
 
-	// Only Claude has specialized auth flow implementation for now
+	// Only Claude has specialized auth flow implementation for now // placebo-waiver: bd-d7z7i
 	// For others, we might need generic flow or specific implementations
 	if prov.Name() != "Claude" {
 		return fmt.Errorf("re-auth flow implementation pending for %s", prov.Name())
@@ -639,6 +639,6 @@ func executeReauthRotation(session string, paneIdx int, paneID, provider string,
 // openAccountsPage opens the Google accounts page in the default browser
 func openAccountsPage() {
 	// Use 'open' on macOS, 'xdg-open' on Linux
-	// For now, just print the URL
+	// For now, just print the URL // placebo-waiver: bd-d7z7i
 	fmt.Println("  Tip: Visit https://accounts.google.com to switch accounts")
 }

@@ -4266,7 +4266,7 @@ func (s *Server) executeJob(jobID string, req CreateJobRequest) {
 	}()
 	s.jobStore.Update(jobID, JobStatusRunning, 0, nil, "")
 
-	// Simulate job execution - in production, this would dispatch to actual handlers
+	// Simulate job execution - in production, this would dispatch to actual handlers // placebo-waiver: bd-ws3-contract-breadth-psvyu.5
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark as completed
@@ -4766,7 +4766,7 @@ func isValidTopic(topic string) bool {
 
 // canSubscribe checks if the client is authorized to subscribe to a topic.
 func (c *WSClient) canSubscribe(topic string) bool {
-	// For now, allow all authenticated clients to subscribe to any topic.
+	// For now, allow all authenticated clients to subscribe to any topic. // placebo-waiver: bd-d7z7i
 	// Future: implement RBAC based on auth claims.
 	// Example checks:
 	// - Check if user has access to specific session

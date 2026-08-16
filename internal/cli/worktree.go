@@ -389,7 +389,7 @@ func getProjectDir(ctx context.Context) (string, error) {
 	}
 
 	// Could add more sophisticated project detection here
-	// For now, just require the command to be run from within a git repo
+	// For now, just require the command to be run from within a git repo // placebo-waiver: bd-d7z7i
 	return "", fmt.Errorf("not in a git repository (current dir: %s)", cwd)
 }
 

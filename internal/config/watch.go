@@ -30,7 +30,7 @@ func Watch(cwd string, onChange func(*Config)) (func(), error) {
 				shouldReload = true
 				break
 			}
-			// Check project config (re-resolve to handle potential changes/moves, though robust enough for now)
+			// Check project config (re-resolve to handle potential changes/moves, though robust enough for now) // placebo-waiver: bd-d7z7i
 			// For simplicity, we just reload if ANY watched file changes, because we only add config files to the watcher.
 			shouldReload = true
 		}

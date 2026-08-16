@@ -950,7 +950,7 @@ type Approval struct {
 	ApprovedAt  time.Time `json:"approved_at,omitempty"`
 }
 
-// In-memory approval store (in production, this would be persisted).
+// In-memory approval store (in production, this would be persisted). // placebo-waiver: bd-d7z7i
 //
 // bd-2y2on: this map is DISCONNECTED from the durable approval store
 // (internal/approval.Engine over state.db approvals) that `ntm approve` and

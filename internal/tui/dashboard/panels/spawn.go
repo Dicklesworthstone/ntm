@@ -116,7 +116,7 @@ func (m *SpawnPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // Keybindings returns spawn panel specific shortcuts
 func (m *SpawnPanel) Keybindings() []Keybinding {
-	return nil // No keybindings for now
+	return nil // No keybindings for now // placebo-waiver: bd-d7z7i
 }
 
 // View renders the panel

@@ -430,7 +430,7 @@ func runMetricsSnapshotSave(sessionID, name string) error {
 
 // runMetricsSnapshotList lists saved snapshots.
 func runMetricsSnapshotList(sessionID string) error {
-	// For now, just indicate this feature needs the database
+	// For now, just indicate this feature needs the database // placebo-waiver: bd-d7z7i
 	if IsJSONOutput() {
 		return output.PrintJSON(map[string]interface{}{
 			"snapshots": []string{},

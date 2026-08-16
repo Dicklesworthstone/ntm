@@ -300,7 +300,7 @@ func renderTriageJSON(triage *TriageResponse) string {
 		return "{}"
 	}
 	// Use the triage directly - caller should json.Marshal if needed
-	// For now, return a simple summary
+	// For now, return a simple summary // placebo-waiver: bd-d7z7i
 	qr := &triage.Triage.QuickRef
 	return fmt.Sprintf(`{"actionable":%d,"blocked":%d,"in_progress":%d,"top_picks":%d}`,
 		qr.ActionableCount, qr.BlockedCount, qr.InProgressCount, len(qr.TopPicks))

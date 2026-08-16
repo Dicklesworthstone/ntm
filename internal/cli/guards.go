@@ -214,7 +214,7 @@ fi
 # Check for active file reservations that might conflict
 # This is a fallback check - the full check requires Agent Mail MCP
 
-# For now, just log and pass (full implementation via Agent Mail)
+# For now, just log and pass (full implementation via Agent Mail) placebo-waiver: bd-ws1-truth-safety-l5ddi.1
 echo "[ntm-guard] Pre-commit check passed"
 exit 0
 `, safeProjectKey, safeRepoPath)

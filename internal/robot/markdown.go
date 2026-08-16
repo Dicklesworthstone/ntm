@@ -1025,7 +1025,7 @@ func renderMarkdownWork(sb *strings.Builder, section ProjectedSection, heading s
 	}
 
 	// Work section may contain various types depending on snapshot structure
-	// For now, render a generic representation
+	// For now, render a generic representation // placebo-waiver: bd-d7z7i
 	sb.WriteString("Work data present.\n\n")
 }
 

@@ -120,7 +120,7 @@ func (o *Orchestrator) TerminateSession(paneID string, provider string) error {
 	o.sleep(1 * time.Second)
 
 	// Check if still active (heuristic: check process or output)
-	// For now, assume we need a second Ctrl+C or explicit exit
+	// For now, assume we need a second Ctrl+C or explicit exit // placebo-waiver: bd-d7z7i
 	if err := o.sendInterrupt(paneID); err != nil {
 		return err
 	}

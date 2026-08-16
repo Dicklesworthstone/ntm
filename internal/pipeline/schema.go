@@ -891,7 +891,7 @@ func (a *AfterRef) UnmarshalTOML(data any) error {
 // (Branch/Branches are shell-driven switch statements; see Step.Branch +
 // Step.Branches above. Each map value is either a single step or a list of
 // steps; structurally `interface{}` so we accept both shapes without forcing
-// a custom unmarshaller. The executor treats this as a no-op for now and
+// a custom unmarshaller. The executor treats this as a no-op for now and // placebo-waiver: bd-d7z7i
 // orchestration-style pipelines use it as structural documentation.)
 
 // ParallelSpec is parallel: in either of two forms — a list of sub-steps to

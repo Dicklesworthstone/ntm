@@ -281,7 +281,7 @@ func captureSessionOutputs(session string, lastOutputs map[string]string) {
 	}
 	for _, p := range panes {
 		// Only capture known agent types or user panes if we want their input too
-		// For now, capture all valid panes
+		// For now, capture all valid panes // placebo-waiver: bd-d7z7i
 		if p.Type == "" || p.Type == "unknown" {
 			continue
 		}

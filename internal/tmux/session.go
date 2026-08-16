@@ -1752,7 +1752,7 @@ func SendKeysWithDelayContext(ctx context.Context, target, keys string, enter bo
 }
 
 // PasteKeys pastes content to a pane using tmux's paste mechanism.
-// This is an alias for SendKeys for now, but may be optimized for large content later.
+// This is an alias for SendKeys for now, but may be optimized for large content later. // placebo-waiver: bd-d7z7i
 func (c *Client) PasteKeys(target, content string, enter bool) error {
 	return c.PasteKeysContext(context.Background(), target, content, enter)
 }
@@ -2843,7 +2843,7 @@ func (c *Client) GetCurrentSessionContext(ctx context.Context) (string, error) {
 		}
 	} else {
 		// Remote check logic might differ or be unsupported
-		// For now, assume unsupported or return empty
+		// For now, assume unsupported or return empty // placebo-waiver: bd-d7z7i
 		return "", nil
 	}
 	output, err := c.RunContext(ctx, "display-message", "-p", "#{session_name}")

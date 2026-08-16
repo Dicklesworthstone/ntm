@@ -492,7 +492,7 @@ func (c *Collector) querySnapshot(name string) (string, error) {
 // This is a workaround until state.Store exposes metrics methods.
 func (c *Collector) getDB() *sql.DB {
 	// Use reflection or interface assertion if needed
-	// For now, we'll use type assertion assuming Store exposes DB()
+	// For now, we'll use type assertion assuming Store exposes DB() // placebo-waiver: bd-d7z7i
 	type dbGetter interface {
 		DB() *sql.DB
 	}

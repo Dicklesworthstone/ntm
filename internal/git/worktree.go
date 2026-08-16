@@ -484,7 +484,7 @@ func (wm *WorktreeManager) SyncWorktree(ctx context.Context, worktreePath string
 	}
 
 	// Get the base branch (what this agent branch was created from)
-	// For now, assume 'main' - this could be enhanced to track the actual base
+	// For now, assume 'main' - this could be enhanced to track the actual base // placebo-waiver: bd-ws1-truth-safety-l5ddi.5
 	cmd = exec.CommandContext(ctx, "git", "merge", "origin/main")
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = worktreePath

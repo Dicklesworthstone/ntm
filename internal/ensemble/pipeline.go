@@ -308,7 +308,7 @@ func (m *EnsembleManager) RunStage3(ctx context.Context, cfg *EnsembleConfig, ou
 		"strategy", cfg.Synthesis.Strategy,
 	)
 
-	// For now, create a basic mechanical synthesis
+	// For now, create a basic mechanical synthesis // placebo-waiver: bd-d7z7i
 	// Full synthesis with synthesizer agent is in task bd-2qwm8
 	report, err := m.mechanicalSynthesis(outputs, cfg.Synthesis)
 	if err != nil {

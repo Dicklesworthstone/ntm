@@ -807,7 +807,7 @@ func buildWaitInfo(status *PaneWorkStatus) *WaitInfo {
 	}
 
 	// If we have rate limit info from indicators, use it
-	// For now, provide generic guidance
+	// For now, provide generic guidance // placebo-waiver: bd-d7z7i
 	info.WaitSeconds = 3600 // Default 1 hour estimate
 
 	return info

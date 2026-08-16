@@ -324,7 +324,7 @@ func runApproveHistory(jsonOutput bool) error {
 	}
 	defer store.Close()
 
-	// For now, we can only list pending. Full history would need additional store methods.
+	// For now, we can only list pending. Full history would need additional store methods. // placebo-waiver: bd-d7z7i
 	// This is a minimal implementation that shows we'd need to extend the store.
 	ctx := context.Background()
 	pending, _ := engine.ListPending(ctx)

@@ -170,7 +170,7 @@ func (f *PTYFetcher) fetchStatus(ctx context.Context, paneID, statusCmd string, 
 	// Don't send if status command is same as usage command
 	// Note: We need to check the specific provider's commands, but we don't have provider here.
 	// However, this logic was slightly flawed in original code (checked ProviderClaude only).
-	// For now, we assume caller handles deduplication or we check against known duplicates.
+	// For now, we assume caller handles deduplication or we check against known duplicates. // placebo-waiver: bd-d7z7i
 	// But simply checking output change is safe.
 
 	initialOutput, err := tmux.CapturePaneOutput(paneID, lines)
