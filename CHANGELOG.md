@@ -20,6 +20,22 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.24.3] -- 2026-08-16 [GitHub Release]
+
+**6 commits since v1.24.2** -- a fourth fresh-eyes pass: the released contract smoke-verified live, the E2E backlog triaged to root cause, and two small shipped defects corrected.
+
+### Reliability
+
+- **Solo operators are no longer stranded by the force-release gate.** The approval-required refusal now explains that self-approval is rejected for SLB requests and names the escape hatch (`ntm policy automation --force-release auto`); the approval workflow is documented where force-release appears in the README and operator references ([5a8ddc6b](https://github.com/Dicklesworthstone/ntm/commit/5a8ddc6b)).
+- **CAAM operand validation scans the raw name.** The control-byte check ran over the trimmed string while the raw string reached the caam argv, so whitespace-wrapped control bytes passed; both call sites now agree and scan the raw operand ([3dfcfcda](https://github.com/Dicklesworthstone/ntm/commit/3dfcfcda)).
+
+### Verification And Release
+
+- Smoke-verified the released v1.24.2 binary live against its own source contract -- config surfaces, refusal envelopes, approval flow, capabilities/schema, idempotent preflight replay, disk metrics -- with zero deviations found ([d5e8a524](https://github.com/Dicklesworthstone/ntm/commit/d5e8a524)).
+- Triaged the full E2E backlog to root cause: the atomic-assignment cluster was the composer-visibility gate's intentional fail-closed hardening outpacing the test harness (panes now primed with real composer glyphs), and the grep/doctor/dedupe/ensemble clusters were pre-session test drift -- 62/66 of the affected tests now pass, with the remaining pre-session fixture work tracked in bd-h4t0j ([73e30fe6](https://github.com/Dicklesworthstone/ntm/commit/73e30fe6), [173ece8f](https://github.com/Dicklesworthstone/ntm/commit/173ece8f), [d5e8a524](https://github.com/Dicklesworthstone/ntm/commit/d5e8a524)).
+
+---
+
 ## [v1.24.2] -- 2026-08-16 [GitHub Release]
 
 **8 commits since v1.24.1** -- a third fresh-eyes pass: race-detector-clean, security-hardened, Windows-correct.
