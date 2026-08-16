@@ -280,11 +280,18 @@ func (s *TestSuite) Setup() error {
 func (s *TestSuite) SpawnAgent(pane int, agentType string) error {
 	s.logger.Log("[E2E-SPAWN] Spawning %s agent in pane %d", agentType, pane)
 
-	// Create new pane if needed
+	// Create new pane if needed. Splitting stays inside window 0, so the
+	// send-keys target must be the new PANE address (window 0, pane N) —
+	// "session:N" would address window N, which does not exist.
+	target := fmt.Sprintf("%s:0", s.session)
 	if pane > 0 {
-		cmd := exec.Command(tmux.BinaryPath(), "split-window", "-t", s.session, "-h")
-		if err := cmd.Run(); err != nil {
+		out, err := exec.Command(tmux.BinaryPath(), "split-window", "-t", s.session+":0", "-h", "-P", "-F", "#{pane_id}").Output()
+		if err != nil {
 			return fmt.Errorf("create pane: %w", err)
+		}
+		target = strings.TrimSpace(string(out))
+		if target == "" {
+			return fmt.Errorf("create pane: split-window returned no pane id")
 		}
 	}
 
@@ -302,7 +309,6 @@ func (s *TestSuite) SpawnAgent(pane int, agentType string) error {
 	}
 
 	// Launch agent
-	target := fmt.Sprintf("%s:%d", s.session, pane)
 	sendCmd := exec.Command(tmux.BinaryPath(), "send-keys", "-t", target, alias, "Enter")
 	if err := sendCmd.Run(); err != nil {
 		return fmt.Errorf("launch agent: %w", err)

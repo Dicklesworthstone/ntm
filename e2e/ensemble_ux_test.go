@@ -79,7 +79,10 @@ func supportsEnsembleSpawn() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(output), "--preset")
+	// The stub's help text names the build tag it needs; the real command's
+	// help does not. (Checking for "--preset" is not enough: the stub's
+	// example line mentions it too.)
+	return !strings.Contains(string(output), "ensemble_experimental")
 }
 
 func TestE2E_DryRun_BasicPreset(t *testing.T) {
@@ -103,7 +106,7 @@ func TestE2E_DryRun_BasicPreset(t *testing.T) {
 
 	res := runEnsembleUXCmd(t, suite, "dryrun_basic",
 		"ensemble", "spawn", suite.Session(),
-		"--preset", "quick-scan",
+		"--preset", "project-diagnosis",
 		"--question", "E2E dry-run basic preset test",
 		"--dry-run",
 		"--format", "json",
@@ -216,7 +219,7 @@ func TestE2E_DryRun_RobotOutput(t *testing.T) {
 	// Use the robot flag approach.
 	res := runEnsembleUXCmd(t, suite, "dryrun_robot",
 		fmt.Sprintf("--robot-ensemble-spawn=%s", suite.Session()),
-		"--preset", "quick-scan",
+		"--preset", "project-diagnosis",
 		"--question", "E2E dry-run robot output test",
 		"--dry-run",
 	)
@@ -267,7 +270,7 @@ func TestE2E_DryRun_NoSideEffects(t *testing.T) {
 	// Run dry-run.
 	runEnsembleUXCmd(t, suite, "dryrun_noop",
 		"ensemble", "spawn", session,
-		"--preset", "quick-scan",
+		"--preset", "project-diagnosis",
 		"--question", "E2E no-side-effects test",
 		"--dry-run",
 		"--format", "json",
@@ -688,7 +691,7 @@ func TestE2E_Estimate_BasicPreset(t *testing.T) {
 	// --question flag, and its JSON reports counts under "budget".
 	res := runEnsembleUXCmd(t, suite, "estimate_basic",
 		"ensemble", "estimate",
-		"--preset", "quick-scan",
+		"--preset", "project-diagnosis",
 		"--format", "json",
 	)
 
@@ -740,11 +743,11 @@ func TestE2E_Estimate_BudgetWarning(t *testing.T) {
 
 	t.Logf("E2E: %s - testing estimate with tight budget", t.Name())
 
-	// Use all modes with a very tight budget to trigger a warning.
+	// Use a preset with a very tight budget to trigger a warning.
+	// (`ensemble estimate` has no --question flag.)
 	res := runEnsembleUXCmd(t, suite, "estimate_budget",
 		"ensemble", "estimate",
-		"--preset", "quick-scan",
-		"--question", "E2E estimate budget warning test",
+		"--preset", "project-diagnosis",
 		"--budget-total", "100",
 		"--format", "json",
 	)
