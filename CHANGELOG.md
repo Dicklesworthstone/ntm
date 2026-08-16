@@ -20,6 +20,22 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
+## [v1.24.2] -- 2026-08-16 [GitHub Release]
+
+**8 commits since v1.24.1** -- a third fresh-eyes pass: race-detector-clean, security-hardened, Windows-correct.
+
+### Reliability
+
+- **Windows: process liveness detection actually works.** The POSIX signal-0 probe silently reports every process dead on Windows (Go's `os.Process` implements only `Kill` there), which made v1.24's CM daemon discovery skip live daemons and serve's memory-daemon health check judge running daemons stopped; liveness now uses a native check on Windows ([b45681bc](https://github.com/Dicklesworthstone/ntm/commit/b45681bc)).
+- **Security hardening across the new surfaces.** Scanner-derived finding text is sanitized (control bytes stripped, whitespace collapsed, per-field length caps) and explicitly attributed as data-not-instructions before any pane nudge; the bugs digest and attention-item paths now pass through the same redaction as dispatch; CM rule content is scrubbed of non-printable runes before send; caam account operands are validated against flag-shaped names; the serve force-release 403 no longer leaks policy file paths or content into HTTP bodies; and `ntm approve --help` now states plainly that approver identity is asserted, not authenticated ([bc8dceae](https://github.com/Dicklesworthstone/ntm/commit/bc8dceae), [2ce89523](https://github.com/Dicklesworthstone/ntm/commit/2ce89523), [8b4ccc79](https://github.com/Dicklesworthstone/ntm/commit/8b4ccc79), [eb05b264](https://github.com/Dicklesworthstone/ntm/commit/eb05b264)).
+- **Portable fakeagent fixture.** The E2E fixture's SIGWINCH handling moved behind build tags so `GOOS=windows go build ./...` is clean ([3e914cd3](https://github.com/Dicklesworthstone/ntm/commit/3e914cd3)).
+
+### Verification And Release
+
+- Ran the race detector across the approval, state, robot, coordinator, cli, and serve packages -- zero data races; a cold-read sweep of the full v1.23.0..HEAD production diff confirmed the remaining suspicious patterns benign, and stale doc comments orphaned by the wave's refactors were removed ([54fc1575](https://github.com/Dicklesworthstone/ntm/commit/54fc1575)).
+
+---
+
 ## [v1.24.1] -- 2026-08-15 [GitHub Release]
 
 **3 commits since v1.24.0** -- a same-day second fresh-eyes pass over the v1.24.0 wave.
