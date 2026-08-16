@@ -544,3 +544,36 @@ func TestAccountRotator_SwitchToAccount_CaamUnavailable(t *testing.T) {
 		t.Fatal("expected error when caam is unavailable")
 	}
 }
+
+func TestValidateCaamAccountOperand(t *testing.T) {
+	t.Parallel()
+	valid := []string{
+		"jeff141421@gmail.com", // real caam names are emails
+		"_backup_20260501_025439",
+		"_original",
+		"work account 2", // internal spaces are fine
+		"  padded  ",     // plain leading/trailing spaces are fine
+	}
+	for _, name := range valid {
+		if err := validateCaamAccountOperand(name); err != nil {
+			t.Errorf("validateCaamAccountOperand(%q) = %v, want nil", name, err)
+		}
+	}
+	invalid := []string{
+		"",
+		"   ",
+		"--auto",   // flag-shaped
+		"  --auto", // flag-shaped after trim
+		"-x",
+		"foo\x00bar", // interior control byte
+		"foo\x1b[31m",
+		"foo\x7f",
+		"foo\n", // control byte hiding in trailing whitespace still reaches exec raw
+		"\tfoo", // ... or leading whitespace
+	}
+	for _, name := range invalid {
+		if err := validateCaamAccountOperand(name); err == nil {
+			t.Errorf("validateCaamAccountOperand(%q) = nil, want error", name)
+		}
+	}
+}

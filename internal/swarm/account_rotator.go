@@ -923,7 +923,11 @@ func validateCaamAccountOperand(name string) error {
 	if strings.HasPrefix(trimmed, "-") {
 		return fmt.Errorf("account name %q begins with '-'; refusing flag-shaped operand", trimmed)
 	}
-	for _, r := range trimmed {
+	// Scan the RAW name, not the trimmed copy: callers pass the original
+	// string to exec, so a control byte hiding in leading/trailing
+	// whitespace ("foo\n", "\tfoo") must be refused too — matching
+	// CAAMAdapter.SwitchAccount, which scans the full operand.
+	for _, r := range name {
 		if r < 0x20 || r == 0x7f {
 			return fmt.Errorf("account name contains control character 0x%02x", r)
 		}
