@@ -1,0 +1,139 @@
+{
+  "schema_version": "br.doctor.schema_migration.prepared.v1",
+  "run_id": "20260814T184119.434675Z-80840-0",
+  "database_path": "/Users/jemanuel/projects/ntm/.beads/beads.db",
+  "plan_token": "005e5465178ef742e23946b2dc6942ca11c217b8ea3827c6d906a04e0be1e3af",
+  "marked_at": "2026-08-14T18:41:19.516392+00:00",
+  "forecast": {
+    "from_version": 16,
+    "to_version": 17,
+    "content_hash_rows_rebuilt": 0,
+    "gate_result_history_created": false,
+    "post_migration_maintenance": true
+  },
+  "raw_before": {
+    "components": [
+      {
+        "suffix": "",
+        "present": true,
+        "length": 25182208,
+        "sha256": "b69ab3588309173d1437c11fd168706ef4f1df48af81e2261536946e25354faa",
+        "unix_mode": 33152
+      },
+      {
+        "suffix": "-wal",
+        "present": true,
+        "length": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "unix_mode": 33152
+      },
+      {
+        "suffix": "-shm",
+        "present": true,
+        "length": 32768,
+        "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb",
+        "unix_mode": 33152
+      },
+      {
+        "suffix": "-journal",
+        "present": false,
+        "length": null,
+        "sha256": null,
+        "unix_mode": null
+      }
+    ]
+  },
+  "logical_before": {
+    "user_version": 16,
+    "integrity_check": "ok",
+    "schema_sha256": "eeadb6309c2eea288edcbd01ca5078efa6e7bb24556fc3ce0620624206de0e13",
+    "contents_sha256": "a4d5b42b5ce9244255c3041789cb39ca366647d2decece272f862a12bef31332",
+    "tables": [
+      {
+        "name": "blocked_issues_cache",
+        "row_count": 13,
+        "rows_sha256": "e95ca92b3ac4732addbc25c9951d198c5ec285af138dfe549e5856642f4f83e3"
+      },
+      {
+        "name": "capacity_exemption_history",
+        "row_count": 0,
+        "rows_sha256": "093b079b9c2a552c936ecb3e31471049f83bf52d3bd9fd2a3c21733d9cd125c1"
+      },
+      {
+        "name": "capacity_exemptions",
+        "row_count": 0,
+        "rows_sha256": "fbda7353fb3baafd599889c90557842a503be99c1dcb186eca832ad2794cb7b4"
+      },
+      {
+        "name": "child_counters",
+        "row_count": 74,
+        "rows_sha256": "1beb690a32d9df416d703845bb39d8dcb474f5e3279d00afaa8b4d6b67099da0"
+      },
+      {
+        "name": "close_metadata",
+        "row_count": 0,
+        "rows_sha256": "fd96e66f70122d836c45823be36b8d96be0a7423a9149ec2dd05f16c4263d31f"
+      },
+      {
+        "name": "comments",
+        "row_count": 418,
+        "rows_sha256": "48874500afb691ef3067bacc0905500995e6b3ce83c0bf2a31b6758065f85a65"
+      },
+      {
+        "name": "config",
+        "row_count": 1,
+        "rows_sha256": "7d7d586788e2aa3c9bad2d421571a4cb9834d6a6996437259b506731702ae1fc"
+      },
+      {
+        "name": "dependencies",
+        "row_count": 3921,
+        "rows_sha256": "9b2f87ff3c2c5936f12ceaa6d1dd257baaf837d1eb1b87e6ff5df3ee42f769c5"
+      },
+      {
+        "name": "dirty_issues",
+        "row_count": 0,
+        "rows_sha256": "cc278c69726f5a1f8dcdb479e985171f764ae8c4d8d41b8280826baf1b1be1ba"
+      },
+      {
+        "name": "events",
+        "row_count": 1142,
+        "rows_sha256": "5da33f47ccced6eae444ae41820c282d916a4712e68ac9b3fdbf10001818f8d4"
+      },
+      {
+        "name": "export_hashes",
+        "row_count": 2998,
+        "rows_sha256": "4453ba583e8edae51bdad772250d943b57d07bc9bff345076c202e1d0ea39a9a"
+      },
+      {
+        "name": "gate_result_history",
+        "row_count": 0,
+        "rows_sha256": "ade6edf42bcd9c1b088917fba2152530722844ee57e6447eafe84fd20f177162"
+      },
+      {
+        "name": "gate_results",
+        "row_count": 0,
+        "rows_sha256": "a360c72db907c2936d5c05af4e653445922cc0355d2a23543f62c22716ab7f3a"
+      },
+      {
+        "name": "issues",
+        "row_count": 2998,
+        "rows_sha256": "22f873c45a8425aa9ce22a26e1e336d01fda5d9a2e36455a86bb4b8b26c5fc8f"
+      },
+      {
+        "name": "labels",
+        "row_count": 2307,
+        "rows_sha256": "13f3e3b539346398ede96f326fc8f6e2c065c45c1db0715bde231865ce5bc0b4"
+      },
+      {
+        "name": "metadata",
+        "row_count": 8,
+        "rows_sha256": "935c34ce885c13351ac90b6e7cfad893bfbfc3804fcf2f0f0a01c1deba541c18"
+      },
+      {
+        "name": "sqlite_sequence",
+        "row_count": 2,
+        "rows_sha256": "8733411241402ea10fe7e6719f2814cb400901b5406669bbcc171849d9d410f1"
+      }
+    ]
+  }
+}
