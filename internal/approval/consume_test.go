@@ -110,9 +110,6 @@ func TestConsumeGuardedAcrossProcesses(t *testing.T) {
 	}
 }
 
-// TestConsumeRejectsExpiredApproved: an approved record past its expires_at
-// no longer authorizes anything — a grant is only good for the record's
-// validity window.
 // TestDecisionGuardedAcrossProcesses pins the pending->decided SQL guard
 // (UpdateApprovalFrom): two deciders run as separate `ntm approve` processes,
 // so both may read status=pending; the first decision to land must be
@@ -181,6 +178,9 @@ func TestDecisionGuardedAcrossProcesses(t *testing.T) {
 	}
 }
 
+// TestConsumeRejectsExpiredApproved: an approved record past its expires_at
+// no longer authorizes anything — a grant is only good for the record's
+// validity window.
 func TestConsumeRejectsExpiredApproved(t *testing.T) {
 	store := setupTestStore(t)
 	engine := New(store, nil, nil, hermeticConfig())
