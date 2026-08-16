@@ -739,6 +739,33 @@ func (s *Store) ConsumeApproval(id string) (bool, error) {
 	return rows > 0, nil
 }
 
+// UpdateApprovalFrom applies UpdateApproval's write only while the record's
+// status in the database still equals from, reporting whether this call
+// performed the transition. Status transitions (pending->approved,
+// pending->denied, pending->expired) MUST use this guard rather than the
+// blind UpdateApproval: like ConsumeApproval above, the deciding callers are
+// independent `ntm` processes sharing state.db, so an unguarded UPDATE would
+// let a racing approver silently overwrite a concurrent denial (or vice
+// versa) after both read status=pending.
+func (s *Store) UpdateApprovalFrom(appr *Approval, from ApprovalStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(`
+		UPDATE approvals SET status = ?, approved_by = ?, approved_at = ?, denied_reason = ?
+		WHERE id = ? AND status = ?`,
+		appr.Status, appr.ApprovedBy, appr.ApprovedAt, appr.DeniedReason, appr.ID, from,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update approval: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateApproval updates an existing approval.
 func (s *Store) UpdateApproval(appr *Approval) error {
 	s.mu.Lock()

@@ -170,7 +170,16 @@ func sendOperationBindingHash(opts SendOptions) string {
 	// The --with-cass/--with-memory TOGGLES are part of the command; the
 	// injected content is deliberately not (it varies between attempts).
 	writeField(strconv.FormatBool(opts.WithCASS))
-	writeField(strconv.FormatBool(opts.WithMemory))
+	// CROSS-VERSION STABILITY: WithMemory joined the binding in v1.24.0.
+	// It is written only when true so a command recorded by an earlier NTM
+	// (which had no WithMemory field) still hashes identically when retried
+	// without --with-memory — otherwise every pre-upgrade operation ID would
+	// replay as IDEMPOTENCY_CONFLICT instead of its recorded outcome. The
+	// conditional field is unambiguous: it is followed by a 64-hex-char
+	// digest field, so "true" can never be confused with a message digest.
+	if opts.WithMemory {
+		writeField(strconv.FormatBool(opts.WithMemory))
+	}
 	inputSHA, _ := sendPayloadDigest(opts.Message)
 	writeField(inputSHA)
 	return hex.EncodeToString(h.Sum(nil))

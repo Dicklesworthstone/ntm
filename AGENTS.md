@@ -337,6 +337,7 @@ Robot command outputs follow consistent semantics for absent, null, and empty fi
 | `--all` | - | `--robot-send`, `--robot-interrupt` | Include user pane |
 | `--track` | - | `--robot-send` | Combined send+ack mode |
 | `--op-id` | - | `--robot-send` | Durable idempotent operation ID: identical retries replay the recorded outcome; conflicting reuse errors `IDEMPOTENCY_CONFLICT`; receipts queryable via `--robot-send-receipt` |
+| `--with-memory` | - | `--robot-send` | Inject relevant CM (cass-memory) rules above the message before sending; enrichment only, never a gate -- an unavailable cm records a skip on the envelope and still sends. Config: `[memory]` send_injection/send_max_rules/send_budget_tokens |
 | `--lines` | - | `--robot-tail` | Lines per pane (default 20) |
 | `--since` | - | `--robot-snapshot` | RFC3339 timestamp for delta; reads the durable attention feed, so it needs the runtime projection store (errors `NOT_IMPLEMENTED` without one) and only returns events still inside the retention window |
 

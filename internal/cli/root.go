@@ -5748,12 +5748,13 @@ Examples:
 						"on_error":                 effectiveCfg.Checkpoints.OnError,
 					},
 					"alerts": map[string]interface{}{
-						"enabled":                effectiveCfg.Alerts.Enabled,
-						"agent_stuck_minutes":    effectiveCfg.Alerts.AgentStuckMinutes,
-						"disk_low_threshold_gb":  effectiveCfg.Alerts.DiskLowThresholdGB,
-						"mail_backlog_threshold": effectiveCfg.Alerts.MailBacklogThreshold,
-						"bead_stale_hours":       effectiveCfg.Alerts.BeadStaleHours,
-						"resolved_prune_minutes": effectiveCfg.Alerts.ResolvedPruneMinutes,
+						"enabled":                 effectiveCfg.Alerts.Enabled,
+						"agent_stuck_minutes":     effectiveCfg.Alerts.AgentStuckMinutes,
+						"disk_low_threshold_gb":   effectiveCfg.Alerts.DiskLowThresholdGB,
+						"disk_full_horizon_hours": effectiveCfg.Alerts.DiskFullHorizonHours,
+						"mail_backlog_threshold":  effectiveCfg.Alerts.MailBacklogThreshold,
+						"bead_stale_hours":        effectiveCfg.Alerts.BeadStaleHours,
+						"resolved_prune_minutes":  effectiveCfg.Alerts.ResolvedPruneMinutes,
 					},
 					"safety": map[string]interface{}{
 						"profile": effectiveCfg.Safety.Profile,
@@ -5775,8 +5776,11 @@ Examples:
 							"allow_override": effectiveCfg.Integrations.DCG.AllowOverride,
 						},
 						"caam": map[string]interface{}{
-							"enabled":     effectiveCfg.Integrations.CAAM.Enabled,
-							"auto_rotate": effectiveCfg.Integrations.CAAM.AutoRotate,
+							"enabled":               effectiveCfg.Integrations.CAAM.Enabled,
+							"auto_rotate":           effectiveCfg.Integrations.CAAM.AutoRotate,
+							"auto_failover":         effectiveCfg.Integrations.CAAM.AutoFailover,
+							"reset_horizon_minutes": effectiveCfg.Integrations.CAAM.ResetHorizonMinutes,
+							"failover_providers":    effectiveCfg.Integrations.CAAM.FailoverProviders,
 						},
 						"rch": map[string]interface{}{
 							"enabled":        effectiveCfg.Integrations.RCH.Enabled,
@@ -5815,6 +5819,29 @@ Examples:
 					"cass": map[string]interface{}{
 						"enabled": effectiveCfg.CASS.Enabled,
 						"timeout": effectiveCfg.CASS.Timeout,
+					},
+					"memory": map[string]interface{}{
+						"enabled":               effectiveCfg.Memory.Enabled,
+						"include_in_recovery":   effectiveCfg.Memory.IncludeInRecovery,
+						"max_rules":             effectiveCfg.Memory.MaxRules,
+						"include_anti_patterns": effectiveCfg.Memory.IncludeAntiPatterns,
+						"include_history":       effectiveCfg.Memory.IncludeHistory,
+						"query_timeout_seconds": effectiveCfg.Memory.QueryTimeoutSeconds,
+						"send_injection":        effectiveCfg.Memory.SendInjection,
+						"send_max_rules":        effectiveCfg.Memory.SendMaxRules,
+						"send_budget_tokens":    effectiveCfg.Memory.SendBudgetTokens,
+					},
+					"bugs": map[string]interface{}{
+						"push_routing":     effectiveCfg.Bugs.PushRouting,
+						"interval":         effectiveCfg.Bugs.EffectiveInterval().String(),
+						"cooldown_minutes": effectiveCfg.Bugs.CooldownMinutes,
+					},
+					"rotation": map[string]interface{}{
+						"enabled":                 effectiveCfg.Rotation.Enabled,
+						"auto_trigger":            effectiveCfg.Rotation.AutoTrigger,
+						"auto_initiate":           effectiveCfg.Rotation.AutoInitiate,
+						"usage_percent_threshold": effectiveCfg.Rotation.UsagePercentThreshold,
+						"auto_confirm":            effectiveCfg.Rotation.AutoConfirm,
 					},
 					"gemini_setup": map[string]interface{}{
 						"auto_select_pro_model": effectiveCfg.GeminiSetup.AutoSelectProModel,

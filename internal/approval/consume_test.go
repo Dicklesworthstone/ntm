@@ -113,6 +113,74 @@ func TestConsumeGuardedAcrossProcesses(t *testing.T) {
 // TestConsumeRejectsExpiredApproved: an approved record past its expires_at
 // no longer authorizes anything — a grant is only good for the record's
 // validity window.
+// TestDecisionGuardedAcrossProcesses pins the pending->decided SQL guard
+// (UpdateApprovalFrom): two deciders run as separate `ntm approve` processes,
+// so both may read status=pending; the first decision to land must be
+// terminal. A stale second write — simulated here at the store layer, exactly
+// the write a racing process would issue after its pre-write read — must
+// match zero rows instead of flipping a landed denial to approved.
+func TestDecisionGuardedAcrossProcesses(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "shared.db")
+	openStore := func() *state.Store {
+		store, err := state.Open(dbPath)
+		if err != nil {
+			t.Fatalf("open shared store: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
+		if err := store.Migrate(); err != nil {
+			t.Fatalf("migrate shared store: %v", err)
+		}
+		return store
+	}
+	storeA := openStore()
+	storeB := openStore()
+	engineA := New(storeA, nil, nil, hermeticConfig())
+	ctx := context.Background()
+
+	appr, err := engineA.Request(ctx, RequestParams{
+		Action:      "force_release",
+		Resource:    "reservation #9",
+		RequestedBy: "alice",
+		RequiresSLB: true,
+	})
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	// Process B reads the record while it is still pending (the racing
+	// approver's pre-write read).
+	stale, err := storeB.GetApproval(appr.ID)
+	if err != nil || stale == nil {
+		t.Fatalf("stale read failed: %v (record=%v)", err, stale)
+	}
+
+	// Process A's denial lands first.
+	if err := engineA.Deny(ctx, appr.ID, "bob", "too risky"); err != nil {
+		t.Fatalf("Deny failed: %v", err)
+	}
+
+	// Process B's stale approve write must lose: zero rows matched.
+	now := time.Now().UTC()
+	stale.Status = state.ApprovalApproved
+	stale.ApprovedBy = "mallory"
+	stale.ApprovedAt = &now
+	ok, err := storeB.UpdateApprovalFrom(stale, state.ApprovalPending)
+	if err != nil {
+		t.Fatalf("guarded update errored: %v", err)
+	}
+	if ok {
+		t.Fatal("stale approve overwrote a landed denial; pending->decided must be guarded in SQL")
+	}
+
+	got, err := engineA.Check(ctx, appr.ID)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if got.Status != state.ApprovalDenied || got.ApprovedBy != "bob" || got.DeniedReason != "too risky" {
+		t.Fatalf("denial not terminal: %+v", got)
+	}
+}
+
 func TestConsumeRejectsExpiredApproved(t *testing.T) {
 	store := setupTestStore(t)
 	engine := New(store, nil, nil, hermeticConfig())

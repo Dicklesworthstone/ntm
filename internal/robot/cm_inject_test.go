@@ -2,6 +2,8 @@ package robot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -569,6 +572,69 @@ func TestSendOptions_WithMemoryChangesBindingHash(t *testing.T) {
 
 	if sendOperationBindingHash(base) == sendOperationBindingHash(withMemory) {
 		t.Error("--with-memory toggle must be part of the idempotency binding hash")
+	}
+}
+
+// TestSendOptions_BindingHashStableAcrossVersionsWithoutMemory pins the
+// cross-version replay guarantee: a send WITHOUT --with-memory must produce
+// the exact binding hash pre-1.24 NTM computed (which had no WithMemory
+// field), so operation IDs recorded before the upgrade replay their stored
+// outcome instead of failing with IDEMPOTENCY_CONFLICT. The expected value
+// re-implements the pre-1.24 formula field-for-field.
+func TestSendOptions_BindingHashStableAcrossVersionsWithoutMemory(t *testing.T) {
+	opts := SendOptions{
+		Session:    "proj",
+		Message:    "hello",
+		AgentTypes: []string{"claude"},
+		Panes:      []string{"2", "1"},
+		Exclude:    []string{"3"},
+		ClearInput: true,
+		WithCASS:   true,
+	}
+
+	// Pre-1.24 formula (send_idempotency.go as of v1.23.0).
+	legacy := func(opts SendOptions) string {
+		h := sha256.New()
+		writeField := func(field string) {
+			h.Write([]byte(field))
+			h.Write([]byte{0})
+		}
+		writeList := func(values []string) {
+			sorted := make([]string, 0, len(values))
+			for _, v := range values {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					sorted = append(sorted, v)
+				}
+			}
+			sort.Strings(sorted)
+			for _, v := range sorted {
+				writeField(v)
+			}
+			h.Write([]byte{1})
+		}
+		writeField(opts.Session)
+		if opts.All {
+			writeField("all")
+		}
+		writeField(opts.Pane)
+		writeList(opts.Panes)
+		writeList(opts.AgentTypes)
+		writeList(opts.Exclude)
+		enter := "default"
+		if opts.Enter != nil {
+			enter = strconv.FormatBool(*opts.Enter)
+		}
+		writeField(enter)
+		writeField(strconv.FormatBool(opts.ClearInput))
+		writeField(strconv.FormatBool(opts.WithCASS))
+		inputSHA, _ := sendPayloadDigest(opts.Message)
+		writeField(inputSHA)
+		return hex.EncodeToString(h.Sum(nil))
+	}
+
+	if got, want := sendOperationBindingHash(opts), legacy(opts); got != want {
+		t.Errorf("binding hash without --with-memory changed across versions:\n got %s\nwant %s\npre-upgrade operation IDs would spuriously conflict", got, want)
 	}
 }
 

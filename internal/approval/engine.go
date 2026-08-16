@@ -246,13 +246,21 @@ func (e *Engine) Approve(ctx context.Context, id string, approverID string) erro
 		return fmt.Errorf("SLB violation: approver cannot be the same as requester")
 	}
 
-	// Update approval
+	// Update approval. The pending->approved transition is guarded in SQL
+	// (like Consume's approved->consumed): a concurrent `ntm approve deny`
+	// runs in a separate process, so both may read status=pending; the
+	// conditional UPDATE ensures the first decision is terminal instead of
+	// letting this write silently flip a landed denial to approved.
 	approval.Status = state.ApprovalApproved
 	approval.ApprovedBy = approverID
 	approval.ApprovedAt = &now
 
-	if err := e.store.UpdateApproval(approval); err != nil {
+	ok, err := e.store.UpdateApprovalFrom(approval, state.ApprovalPending)
+	if err != nil {
 		return fmt.Errorf("update approval: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("approval %s was concurrently decided or expired; re-check its status before approving", id)
 	}
 
 	// Emit event
@@ -299,14 +307,19 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 		return fmt.Errorf("approval has expired")
 	}
 
-	// Update approval
+	// Update approval. Guarded like Approve: the first decision to land is
+	// terminal; a racing process's approve must not be overwritten blindly.
 	approval.Status = state.ApprovalDenied
 	approval.ApprovedBy = approverID // Record who denied
 	approval.ApprovedAt = &now
 	approval.DeniedReason = reason
 
-	if err := e.store.UpdateApproval(approval); err != nil {
+	ok, err := e.store.UpdateApprovalFrom(approval, state.ApprovalPending)
+	if err != nil {
 		return fmt.Errorf("update approval: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("approval %s was concurrently decided or expired; re-check its status before denying", id)
 	}
 
 	// Emit event
@@ -584,10 +597,27 @@ func (e *Engine) expireIfNeeded(approval *state.Approval, now time.Time) (bool, 
 	return true, nil
 }
 
+// expireApproval lazily transitions a pending record to expired. The write is
+// guarded on the record still being pending in the database: a concurrent
+// process may have decided (or already expired) it since our read, and that
+// durable transition must win — a blind write here would erase a landed
+// decision's status/approver/reason. On a lost race the fresh record is
+// reloaded into approval and nil is returned.
 func (e *Engine) expireApproval(approval *state.Approval, now time.Time) error {
 	approval.Status = state.ApprovalExpired
-	if err := e.store.UpdateApproval(approval); err != nil {
+	ok, err := e.store.UpdateApprovalFrom(approval, state.ApprovalPending)
+	if err != nil {
 		return fmt.Errorf("update expired approval: %w", err)
+	}
+	if !ok {
+		fresh, gerr := e.store.GetApproval(approval.ID)
+		if gerr != nil {
+			return fmt.Errorf("reload concurrently updated approval: %w", gerr)
+		}
+		if fresh != nil {
+			*approval = *fresh
+		}
+		return nil
 	}
 	if e.eventBus != nil {
 		e.eventBus.Publish(events.BaseEvent{

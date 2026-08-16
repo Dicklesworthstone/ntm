@@ -174,9 +174,9 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ---
 
-## [v1.19.0] -- 2026-07-06 [GitHub Release]
+## [v1.19.0] -- 2026-07-06 [Tag Only]
 
-**34 commits since v1.18.3** -- first-class Antigravity agents, safer autonomous swarms, and dashboard/robot improvements.
+**35 commits since v1.18.3** -- first-class Antigravity agents, safer autonomous swarms, and dashboard/robot improvements.
 
 ### Features
 
@@ -310,7 +310,7 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [v1.15.0] -- 2026-05-14 [GitHub Release]
 
-**38 commits since v1.14.0** — Go 1.26 toolchain, cross-surface state/audit/tool contracts, and symlink-safety hardening.
+**951 commits since v1.14.0** — Go 1.26 toolchain, cross-surface state/audit/tool contracts, and symlink-safety hardening.
 
 ### Toolchain & Dependencies
 
@@ -372,7 +372,7 @@ NTM is a tmux session management tool for orchestrating multiple AI coding agent
 
 ## [v1.13.0] -- 2026-04-12 [GitHub Release]
 
-**56 commits since v1.12.1** — Lifecycle hardening, concurrency safety, and security improvements.
+**58 commits since v1.12.1** — Lifecycle hardening, concurrency safety, and security improvements.
 
 ### Lifecycle & Concurrency
 

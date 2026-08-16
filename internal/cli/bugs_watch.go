@@ -796,7 +796,20 @@ Examples:
 func runBugsWatch(cmd *cobra.Command, sessionFlag, path string, interval time.Duration, once, force, verbose bool) error {
 	// Opt-in gate: watch requires push_routing=true or an explicit --force.
 	if !cfg.Bugs.PushRouting && !force {
-		return fmt.Errorf("bug push routing is disabled; set [bugs] push_routing = true in your ntm config (or rerun with --force)")
+		cause := fmt.Errorf("bug push routing is disabled; set [bugs] push_routing = true in your ntm config (or rerun with --force)")
+		if jsonOutput {
+			// Envelope parity with the UBS-missing refusal below: a JSON
+			// caller gets a typed error_code + hint, not a bare stderr line.
+			response := robot.NewErrorResponse(
+				cause,
+				robot.ErrCodePermissionDenied,
+				"Set [bugs] push_routing = true in your ntm config, or rerun with --force",
+			)
+			response.OutputFormat = string(robot.FormatJSON)
+			response.Meta = robot.NewResponseMeta("bugs watch").WithExitCode(1)
+			return emitJSONFailureEnvelopeWithCause(response, cause)
+		}
+		return cause
 	}
 
 	// Graceful degradation: same friendly UBS-missing handling bugs.go uses.

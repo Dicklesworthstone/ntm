@@ -2140,8 +2140,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case panels.ConflictActionResultMsg:
 		// Handle conflict action result
 		if msg.Err != nil {
-			// Log error but don't block
+			// Log error but don't block. It must ALSO surface in the UI: with
+			// the default policy (automation.force_release=approval) the
+			// Force action is refused for everyone (bd-2y2on), and a refusal
+			// visible only in a log file makes the keybinding look broken.
 			log.Printf("[Dashboard] Conflict action error: %v", msg.Err)
+			if m.toasts != nil {
+				m.toasts.Push(components.Toast{
+					ID:      "conflict-action-" + msg.Conflict.Path,
+					Message: fmt.Sprintf("Conflict action %s failed: %v", msg.Action, msg.Err),
+					Level:   components.ToastError,
+				})
+			}
 		}
 		// Remove the conflict from the panel if action was successful or dismissed
 		if msg.Err == nil {
