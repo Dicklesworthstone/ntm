@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -2751,7 +2750,7 @@ func TestCollectPaneDescendants_RecursiveAndExclusion(t *testing.T) {
 	}
 	root := cmd.Process.Pid
 	t.Cleanup(func() {
-		_ = syscall.Kill(root, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
 		// Reap the immediate child to avoid a lingering zombie.
 		_, _ = cmd.Process.Wait()
 	})

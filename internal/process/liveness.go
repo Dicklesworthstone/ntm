@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,6 +50,22 @@ func StartTime(pid int) (time.Time, error) {
 func IsAlive(pid int) bool {
 	if pid <= 0 {
 		return false
+	}
+
+	// Windows: os.Process.Signal only implements os.Kill — any other signal
+	// (including the POSIX signal-0 probe below) returns EWINDOWS, so the
+	// fallback path would report every live process as dead. That silently
+	// broke every Windows consumer of IsAlive (e.g. cm daemon PID-file
+	// discovery, which would always skip a live daemon). gopsutil implements
+	// existence via the process snapshot API, and Windows has no zombie
+	// state to filter.
+	if runtime.GOOS == "windows" {
+		proc, err := gopsutil.NewProcess(int32(pid))
+		if err != nil {
+			return false
+		}
+		running, err := proc.IsRunning()
+		return err == nil && running
 	}
 
 	// Fast path: inspect /proc state directly on Linux. Zombie and dead

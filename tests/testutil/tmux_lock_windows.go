@@ -11,6 +11,11 @@ import (
 	"testing"
 )
 
+// processGroupGuardianEnv mirrors the Unix guardian toggle so tests that
+// disable the guardian (testutil_test.go) compile on Windows, where no
+// guardian subprocess exists and the value is simply inert.
+const processGroupGuardianEnv = "_NTM_TEST_PROCESS_GROUP_GUARD"
+
 func acquireGlobalTmuxTestLock(t *testing.T) {
 	t.Helper()
 }
