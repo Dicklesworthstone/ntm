@@ -610,9 +610,12 @@ func TestStartNoPortFallbackRefusesOccupiedPort(t *testing.T) {
 	}
 	defer s.Shutdown()
 
+	// A real binary: Start() now fails fast on missing binaries BEFORE the
+	// port check, and this test is about the occupied-port refusal.
 	err = s.Start(DaemonSpec{
 		Name:           "am",
-		Command:        "definitely-not-a-real-command",
+		Command:        "sleep",
+		Args:           []string{"10"},
 		DefaultPort:    port,
 		NoPortFallback: true,
 	})

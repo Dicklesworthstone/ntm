@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,13 @@ const (
 	StateStopped    DaemonState = "stopped"
 	StateFailed     DaemonState = "failed"
 	StateRestarting DaemonState = "restarting"
+	// StateUnhealthy marks a daemon whose process is alive but whose health
+	// probe has not passed within the startup health timeout (or has stopped
+	// passing after it was running). A daemon can recover from unhealthy back
+	// to running on the next successful probe. This state exists so a daemon
+	// with a misconfigured or unreachable health endpoint is VISIBLY broken
+	// instead of pinned in "starting" forever (bd-ws1-truth-safety-l5ddi.2).
+	StateUnhealthy DaemonState = "unhealthy"
 )
 
 // DaemonSpec defines how to start and manage a daemon.
@@ -36,6 +44,7 @@ type DaemonSpec struct {
 	Args           []string `json:"args"`             // Arguments: ["serve", "--port", "8765"]
 	HealthURL      string   `json:"health_url"`       // Health check URL: "http://127.0.0.1:8765/health/liveness" or "/health"
 	HealthCmd      []string `json:"health_cmd"`       // Health check command: ["bd", "daemon", "--health"]
+	HealthMCP      bool     `json:"health_mcp"`       // Health check is an MCP JSON-RPC round-trip at the daemon root (cm speaks MCP only; it has NO REST /health)
 	PortFlag       string   `json:"port_flag"`        // Flag to specify port: "--port"
 	DefaultPort    int      `json:"default_port"`     // Default port if none specified
 	NoPortFallback bool     `json:"no_port_fallback"` // Refuse random-port fallback when DefaultPort is occupied
@@ -81,9 +90,10 @@ type Supervisor struct {
 	lifecycleMu sync.Mutex
 	stopped     bool
 
-	healthInterval    time.Duration
-	maxRestarts       int
-	restartBackoffMax time.Duration
+	healthInterval       time.Duration
+	maxRestarts          int
+	restartBackoffMax    time.Duration
+	startupHealthTimeout time.Duration
 
 	shutdownCh chan struct{}
 	cancel     func()
@@ -96,7 +106,17 @@ type Config struct {
 	HealthInterval    time.Duration // Default: 5s
 	MaxRestarts       int           // Default: 5
 	RestartBackoffMax time.Duration // Default: 60s
+	// StartupHealthTimeout bounds how long a daemon may sit in StateStarting
+	// with failing health probes before it is marked StateUnhealthy.
+	// Default: 30s.
+	StartupHealthTimeout time.Duration
 }
+
+// DefaultMaxRestarts is the default restart budget applied when
+// Config.MaxRestarts is zero. Exported so foreground callers (ntm memory
+// serve) can tell "transiently failed, restart pending" apart from
+// "restart budget exhausted".
+const DefaultMaxRestarts = 5
 
 // New creates a new Supervisor for the given session.
 func New(cfg Config) (*Supervisor, error) {
@@ -118,10 +138,13 @@ func New(cfg Config) (*Supervisor, error) {
 		cfg.HealthInterval = 5 * time.Second
 	}
 	if cfg.MaxRestarts == 0 {
-		cfg.MaxRestarts = 5
+		cfg.MaxRestarts = DefaultMaxRestarts
 	}
 	if cfg.RestartBackoffMax == 0 {
 		cfg.RestartBackoffMax = 60 * time.Second
+	}
+	if cfg.StartupHealthTimeout <= 0 {
+		cfg.StartupHealthTimeout = 30 * time.Second
 	}
 
 	// Ensure directories exist
@@ -144,15 +167,16 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 
 	return &Supervisor{
-		sessionID:         cfg.SessionID,
-		projectDir:        cfg.ProjectDir,
-		ntmDir:            ntmDir,
-		daemons:           make(map[string]*ManagedDaemon),
-		healthInterval:    cfg.HealthInterval,
-		maxRestarts:       cfg.MaxRestarts,
-		restartBackoffMax: cfg.RestartBackoffMax,
-		shutdownCh:        shutdownCh,
-		cancel:            cancel,
+		sessionID:            cfg.SessionID,
+		projectDir:           cfg.ProjectDir,
+		ntmDir:               ntmDir,
+		daemons:              make(map[string]*ManagedDaemon),
+		healthInterval:       cfg.HealthInterval,
+		maxRestarts:          cfg.MaxRestarts,
+		restartBackoffMax:    cfg.RestartBackoffMax,
+		startupHealthTimeout: cfg.StartupHealthTimeout,
+		shutdownCh:           shutdownCh,
+		cancel:               cancel,
 	}, nil
 }
 
@@ -174,6 +198,17 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 		if d.State == StateRunning || d.State == StateStarting {
 			return fmt.Errorf("daemon %s already running (state: %s)", spec.Name, d.State)
 		}
+	}
+
+	// Fail fast and loud when the daemon binary does not exist. Without this
+	// check a missing binary would only surface as a launch-retry loop in the
+	// log file — silence is the sin (bd-ws1-truth-safety-l5ddi.2).
+	if !filepath.IsAbs(spec.Command) {
+		if _, err := exec.LookPath(spec.Command); err != nil {
+			return fmt.Errorf("daemon %s: binary %q not found in PATH: %w", spec.Name, spec.Command, err)
+		}
+	} else if _, err := os.Stat(spec.Command); err != nil {
+		return fmt.Errorf("daemon %s: binary %q not found: %w", spec.Name, spec.Command, err)
 	}
 
 	// Find available port
@@ -251,8 +286,18 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 			daemon.Spec.HealthURL = fmt.Sprintf("http://127.0.0.1:%d%s", port, u.Path)
 		}
 	}
+	// MCP daemons (cm) are probed with a JSON-RPC round-trip at the root;
+	// there is no REST health path to preserve.
+	if spec.HealthMCP {
+		daemon.Spec.HealthURL = fmt.Sprintf("http://127.0.0.1:%d/", port)
+	}
 
 	s.daemons[spec.Name] = daemon
+
+	// Log the launch so every attempt (first start and each restart) is
+	// diagnosable from the log alone.
+	fmt.Fprintf(logFile, "[supervisor] launched daemon %s (pid=%d port=%d cmd=%s state=%s)\n",
+		spec.Name, daemon.PID, port, spec.Command, daemon.State)
 
 	// Write PID file
 	if err := s.writePIDFile(daemon); err != nil {
@@ -457,9 +502,10 @@ func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
 			state := d.State
 			healthURL := d.Spec.HealthURL
 			healthCmd := d.Spec.HealthCmd
+			healthMCP := d.Spec.HealthMCP
 			d.mu.RUnlock()
 
-			if state != StateRunning && state != StateStarting {
+			if state != StateRunning && state != StateStarting && state != StateUnhealthy {
 				return
 			}
 
@@ -476,17 +522,45 @@ func (s *Supervisor) monitorDaemon(d *ManagedDaemon) {
 
 			// Perform health check
 			var healthy bool
-			if healthURL != "" {
+			switch {
+			case healthMCP:
+				healthy = s.checkHealthMCP(healthURL)
+			case healthURL != "":
 				healthy = s.checkHealthHTTP(healthURL)
-			} else if len(healthCmd) > 0 {
+			case len(healthCmd) > 0:
 				healthy = s.checkHealthCmd(healthCmd)
 			}
 
 			d.mu.Lock()
+			logFile := d.logFile
 			if healthy {
 				d.LastHealth = time.Now()
-				if d.State == StateStarting {
+				if d.State == StateStarting || d.State == StateUnhealthy {
+					prev := d.State
 					d.State = StateRunning
+					if logFile != nil {
+						fmt.Fprintf(logFile, "[supervisor] daemon %s health probe passed; state %s -> %s\n",
+							d.Spec.Name, prev, StateRunning)
+					}
+				}
+			} else {
+				// A daemon must never pin in "starting" (or silently rot in
+				// "running") while its probe keeps failing: after the startup
+				// health timeout it transitions to unhealthy, loudly.
+				var sinceOK time.Duration
+				switch d.State {
+				case StateStarting:
+					sinceOK = time.Since(d.StartedAt)
+				case StateRunning:
+					sinceOK = time.Since(d.LastHealth)
+				}
+				if (d.State == StateStarting || d.State == StateRunning) && sinceOK > s.startupHealthTimeout {
+					prev := d.State
+					d.State = StateUnhealthy
+					if logFile != nil {
+						fmt.Fprintf(logFile, "[supervisor] daemon %s health probe failing for %v (timeout %v); state %s -> %s\n",
+							d.Spec.Name, sinceOK.Round(time.Millisecond), s.startupHealthTimeout, prev, StateUnhealthy)
+					}
 				}
 			}
 			d.mu.Unlock()
@@ -627,6 +701,71 @@ func (s *Supervisor) checkHealthHTTP(url string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
+// checkHealthMCP performs an MCP-aware health check: a JSON-RPC `initialize`
+// round-trip POSTed to the daemon root. cm 0.2.x speaks MCP JSON-RPC at its
+// root and has NO REST /health endpoint, so a GET probe can never pass
+// (bd-ws1-truth-safety-l5ddi.2). Two traps this probe defends against:
+//   - 200-with-error: cm answers HTTP 200 with a JSON-RPC error object in the
+//     body; that is UNHEALTHY, not healthy.
+//   - arbitrary HTTP squatters: a service that answers 200 with non-JSON-RPC
+//     content (a REST server, a proxy error page) must not be blessed, so a
+//     response without a JSON-RPC result object is unhealthy.
+func (s *Supervisor) checkHealthMCP(baseURL string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]any{
+				"name":    "ntm-supervisor",
+				"version": "health-probe",
+			},
+		},
+	}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return false
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := healthCheckClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return false
+	}
+
+	var rpcResp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rpcResp); err != nil {
+		return false
+	}
+	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		return false // the 200-with-error trap
+	}
+	if len(rpcResp.Result) == 0 || string(rpcResp.Result) == "null" {
+		return false // not a JSON-RPC answer at all
+	}
+	return true
+}
+
 // checkHealthCmd performs a command-based health check.
 func (s *Supervisor) checkHealthCmd(cmdArgs []string) bool {
 	if len(cmdArgs) == 0 {
@@ -707,10 +846,15 @@ func findAvailablePort() (int, error) {
 func DefaultSpecs() []DaemonSpec {
 	return []DaemonSpec{
 		{
+			// cm 0.2.x speaks MCP JSON-RPC at its root and has NO REST
+			// /health endpoint, so its probe is the MCP round-trip
+			// (HealthMCP), never a GET HealthURL — a REST probe here can
+			// never pass and pins the daemon in "starting" forever
+			// (bd-ws1-truth-safety-l5ddi.2).
 			Name:        "cm",
 			Command:     "cm",
 			Args:        []string{"serve"},
-			HealthURL:   "http://127.0.0.1:8200/health",
+			HealthMCP:   true,
 			PortFlag:    "--port",
 			DefaultPort: 8200,
 		},
