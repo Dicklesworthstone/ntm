@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -435,6 +436,60 @@ func NewAgentScorerFromConfig(cfg *config.Config) *AgentScorer {
 // SetReservationCache sets the reservation cache for Agent Mail integration.
 func (s *AgentScorer) SetReservationCache(cache *ReservationCache) {
 	s.reservationCache = cache
+}
+
+// reservationAffinityRefreshTimeout bounds the best-effort Agent Mail
+// reservation fetch at scorer setup. Affinity is enrichment, never a gate: an
+// absent or wedged Agent Mail server must not stall routing or a send — the
+// bonus simply degrades to 0 (bd-ws2-wire-or-delete-ykmcz.3).
+const reservationAffinityRefreshTimeout = 3 * time.Second
+
+// wireReservationAffinity populates the reservation cache at route/send time
+// so the affinity bonus is real instead of permanently 0
+// (bd-ws2-wire-or-delete-ykmcz.3, WIRE-MINIMAL).
+//
+// When [routing] affinity_enabled=true AND [agent_mail] enabled=true, it
+// constructs an Agent Mail client from the same config/env precedence the CLI
+// uses (env AGENT_MAIL_URL/AGENT_MAIL_TOKEN override config), seeds the
+// tested ReservationCache with one best-effort TTL-bounded refresh, and loads
+// the persisted pane→agent-name mapping from the session agent registry.
+// Everything is best-effort: any failure leaves the scorer exactly as it was
+// before wiring (bonus contributes 0), and affinity stays a SCORING BONUS
+// under existing strategies — `--route=affinity` remains an invalid strategy.
+func (s *AgentScorer) wireReservationAffinity(cfg *config.Config, session string) {
+	if cfg == nil || !s.config.AffinityEnabled || !cfg.AgentMail.Enabled {
+		return
+	}
+	projectKey, err := os.Getwd()
+	if err != nil || projectKey == "" {
+		slog.Warn("[robot.route] affinity: cannot resolve project key; bonus degrades to 0", "error", err)
+		return
+	}
+
+	opts := []agentmail.Option{agentmail.WithProjectKey(projectKey)}
+	// Environment variables override config; agentmail.NewClient reads env
+	// before applying options (same precedence as internal/cli's client).
+	if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
+		opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
+	}
+	if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
+		opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
+	}
+	client := agentmail.NewClient(opts...)
+	agentmail.HydrateClientTokensForProject(client, projectKey)
+
+	s.config.AgentMail.Enabled = true
+	s.SetReservationCache(NewReservationCache(client, projectKey, s.config.AgentMail.CacheTTL))
+	if loaded := s.LoadAgentMappingFromRegistry(session, projectKey); loaded == 0 {
+		slog.Debug("[robot.route] affinity: no persisted pane→agent mapping for session", "session", session)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), reservationAffinityRefreshTimeout)
+	defer cancel()
+	if err := s.reservationCache.EnsureFresh(ctx); err != nil {
+		slog.Warn("[robot.route] affinity: reservation cache refresh failed; bonus degrades to 0",
+			"session", session, "error", err)
+	}
 }
 
 // SetAgentMapping sets the mapping from pane IDs to Agent Mail agent names.

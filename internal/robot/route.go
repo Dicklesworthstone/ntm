@@ -222,8 +222,10 @@ func GetRoute(opts RouteOptions) (*RouteOutput, int) {
 
 	contextUsage := getContextUsageByPane(opts.Session)
 
-	// Create scorer and score agents
+	// Create scorer and score agents. Reservation affinity is wired
+	// best-effort from Agent Mail when enabled (bd-ws2-wire-or-delete-ykmcz.3).
 	scorer := NewAgentScorerFromConfig(opts.Config)
+	scorer.wireReservationAffinity(opts.Config, opts.Session)
 	var agents []ScoredAgent
 
 	for _, pane := range panes {
@@ -449,8 +451,11 @@ func GetRouteRecommendation(opts RouteOptions) (*RouteRecommendation, error) {
 
 	contextUsage := getContextUsageByPane(opts.Session)
 
-	// Create scorer and score agents
+	// Create scorer and score agents. Reservation affinity is wired
+	// best-effort from Agent Mail when enabled (bd-ws2-wire-or-delete-ykmcz.3)
+	// — this is the send path, so the bonus influences real dispatch.
 	scorer := NewAgentScorerFromConfig(opts.Config)
+	scorer.wireReservationAffinity(opts.Config, opts.Session)
 	var agents []ScoredAgent
 
 	for _, pane := range panes {

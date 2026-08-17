@@ -323,7 +323,7 @@ func resetFlags() {
 	robotSendType = ""
 	robotSendExclude = ""
 	robotSendDelay = 0
-	robotAssignStrategy = "balanced"
+	robotAssignStrategy = "simple"
 	robotBulkAssign = ""
 	robotBulkAssignFromBV = false
 	robotBulkAssignAlloc = ""

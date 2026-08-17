@@ -303,68 +303,26 @@ func TestParsePriority_Assign(t *testing.T) {
 // Confidence Calculation Tests
 // =============================================================================
 
-func TestCalculateConfidence_BalancedStrategy(t *testing.T) {
+func TestCalculateConfidence_SimpleIsCapabilityScore(t *testing.T) {
 	bead := bv.BeadPreview{ID: "bd-test", Title: "Fix login bug", Priority: "P1"}
-	conf := calculateConfidence("claude", bead, "balanced")
+	conf := calculateConfidence("claude", bead)
 
 	if conf < 0 || conf > 1.0 {
 		t.Errorf("confidence %f should be between 0.0 and 1.0", conf)
 	}
+	// Simple strategy confidence is the raw capability score, no adjustments.
+	if want := AgentStrength("claude", "bug"); conf != want {
+		t.Errorf("confidence %f should equal capability score %f", conf, want)
+	}
 }
 
-func TestCalculateConfidence_SpeedStrategy(t *testing.T) {
-	bead := bv.BeadPreview{ID: "bd-test", Title: "Add feature", Priority: "P2"}
-
-	speedConf := calculateConfidence("claude", bead, "speed")
-	balancedConf := calculateConfidence("claude", bead, "balanced")
-
-	// Speed should average with 0.9, so typically higher than balanced
-	if speedConf < 0 || speedConf > 1.0 {
-		t.Errorf("speed confidence %f out of range", speedConf)
-	}
-	// Speed uses (base + 0.9) / 2, so should generally be >= 0.45
-	if speedConf < 0.45 {
-		t.Errorf("speed confidence %f suspiciously low (formula should average with 0.9)", speedConf)
-	}
-	_ = balancedConf
-}
-
-func TestCalculateConfidence_DependencyStrategy(t *testing.T) {
-	// High priority bead should get a boost in dependency strategy
+func TestCalculateConfidence_PriorityDoesNotAdjustSimple(t *testing.T) {
+	// Simple strategy applies no strategy scoring: priority never shifts confidence.
 	p0Bead := bv.BeadPreview{ID: "bd-test", Title: "Some task", Priority: "P0"}
-	p1Bead := bv.BeadPreview{ID: "bd-test", Title: "Some task", Priority: "P1"}
 	p3Bead := bv.BeadPreview{ID: "bd-test", Title: "Some task", Priority: "P3"}
 
-	p0Conf := calculateConfidence("claude", p0Bead, "dependency")
-	p1Conf := calculateConfidence("claude", p1Bead, "dependency")
-	p3Conf := calculateConfidence("claude", p3Bead, "dependency")
-
-	// P0 and P1 should get a boost over P3
-	if p0Conf <= p3Conf {
-		t.Errorf("P0 confidence (%f) should be higher than P3 (%f) in dependency strategy", p0Conf, p3Conf)
-	}
-	if p1Conf <= p3Conf {
-		t.Errorf("P1 confidence (%f) should be higher than P3 (%f) in dependency strategy", p1Conf, p3Conf)
-	}
-}
-
-func TestCalculateConfidence_QualityStrategy(t *testing.T) {
-	bead := bv.BeadPreview{ID: "bd-test", Title: "Write unit tests", Priority: "P2"}
-	conf := calculateConfidence("claude", bead, "quality")
-
-	// Quality strategy doesn't modify base confidence currently
-	if conf < 0 || conf > 1.0 {
-		t.Errorf("quality confidence %f out of range", conf)
-	}
-}
-
-func TestCalculateConfidence_CapAt095(t *testing.T) {
-	// Dependency strategy caps at 0.95
-	bead := bv.BeadPreview{ID: "bd-test", Title: "Fix critical bug", Priority: "P0"}
-	conf := calculateConfidence("claude", bead, "dependency")
-
-	if conf > 0.95 {
-		t.Errorf("confidence %f should not exceed 0.95", conf)
+	if p0 := calculateConfidence("claude", p0Bead); p0 != calculateConfidence("claude", p3Bead) {
+		t.Errorf("simple confidence should ignore priority, P0 gave %f", p0)
 	}
 }
 

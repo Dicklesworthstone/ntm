@@ -21,7 +21,38 @@ type AssignOptions struct {
 	Session    string   // tmux session name
 	ProjectDir string   // Explicit project directory for Beads reads
 	Beads      []string // Specific bead IDs to assign (empty = all ready)
-	Strategy   string   // balanced, speed, quality, dependency
+	Strategy   string   // simple, balanced, speed, quality, dependency
+}
+
+// assignStrategyDefault is the strategy used when none is requested.
+// "simple" is the honest name for the historical sequential pairing
+// (next ready bead -> next idle agent); every other strategy routes
+// through the real planner in internal/assign. Pinned by test: changing
+// this default silently changes assignment output for users who never
+// pass --strategy / --dist-strategy.
+const assignStrategyDefault = "simple"
+
+// assignStrategyNames lists the valid robot assignment strategies.
+var assignStrategyNames = []string{"simple", "balanced", "speed", "quality", "dependency"}
+
+// normalizeAssignStrategy lowercases the requested strategy and applies
+// the pinned default when empty.
+func normalizeAssignStrategy(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return assignStrategyDefault
+	}
+	return s
+}
+
+// isValidAssignStrategy reports whether s is a recognized strategy name.
+func isValidAssignStrategy(s string) bool {
+	for _, name := range assignStrategyNames {
+		if s == name {
+			return true
+		}
+	}
+	return false
 }
 
 // AssignOutput is the structured output for --robot-assign
@@ -92,12 +123,13 @@ func AgentStrength(agentType, taskType string) float64 {
 
 // DistributeRecommendation is a simplified recommendation for distribute mode
 type DistributeRecommendation struct {
-	BeadID     string `json:"bead_id"`
-	Title      string `json:"title"`
-	PaneID     string `json:"pane_id"`
-	PaneTarget string `json:"pane_target"`
-	AgentType  string `json:"agent_type"`
-	Reason     string `json:"reason"`
+	BeadID     string  `json:"bead_id"`
+	Title      string  `json:"title"`
+	PaneID     string  `json:"pane_id"`
+	PaneTarget string  `json:"pane_target"`
+	AgentType  string  `json:"agent_type"`
+	Reason     string  `json:"reason"`
+	Confidence float64 `json:"confidence"` // planner confidence in this pairing (0.0-1.0)
 }
 
 // GetAssignRecommendations returns assignment recommendations for the distribute mode.
@@ -122,9 +154,9 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 	}
 
 	// Normalize strategy
-	strategy := strings.ToLower(opts.Strategy)
-	if strategy == "" {
-		strategy = "balanced"
+	strategy := normalizeAssignStrategy(opts.Strategy)
+	if !isValidAssignStrategy(strategy) {
+		return nil, fmt.Errorf("invalid strategy '%s' (valid: %s)", opts.Strategy, strings.Join(assignStrategyNames, ", "))
 	}
 
 	agents, idleAgentPanes, err := observeAssignAgents(ctx, opts.Session)
@@ -144,10 +176,11 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 	if err != nil {
 		return nil, err
 	}
-	readyBeads, err := getAssignableBeadPreviews(ctx, projectDir, 50)
+	assignableRecommendations, err := getAssignableActionableRecommendations(ctx, projectDir, 50)
 	if err != nil {
 		return nil, fmt.Errorf("read actionable Beads work: %w", err)
 	}
+	readyBeads := filterAssignableBeadPreviewsForProject(projectDir, assignableRecommendations, 0)
 
 	if len(readyBeads) == 0 {
 		return nil, nil // No ready work
@@ -168,8 +201,9 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 		readyBeads = filtered
 	}
 
-	// Generate recommendations
-	recs := generateAssignments(agents, readyBeads, strategy, idleAgentPanes)
+	// Generate recommendations through the strategy planner, preserving the
+	// dependency graph (unblocks) signal for the graph-aware strategies.
+	recs := planAssignments(agents, readyBeads, unblocksIndex(assignableRecommendations), strategy, idleAgentPanes)
 
 	// Convert to DistributeRecommendation format
 	var result []DistributeRecommendation
@@ -181,10 +215,23 @@ func GetAssignRecommendations(ctx context.Context, opts AssignOptions) ([]Distri
 			PaneTarget: rec.PaneTarget,
 			AgentType:  rec.AgentType,
 			Reason:     rec.Reasoning,
+			Confidence: rec.Confidence,
 		})
 	}
 
 	return result, nil
+}
+
+// unblocksIndex extracts the dependency-graph "unblocks" signal from triage
+// recommendations, keyed by bead ID, for the graph-aware planner strategies.
+func unblocksIndex(recommendations []bv.TriageRecommendation) map[string][]string {
+	index := make(map[string][]string, len(recommendations))
+	for _, recommendation := range recommendations {
+		if len(recommendation.UnblocksIDs) > 0 {
+			index[recommendation.ID] = recommendation.UnblocksIDs
+		}
+	}
+	return index
 }
 
 // GetAssign generates work assignment recommendations and returns the result.
@@ -229,16 +276,12 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	}
 
 	// Normalize strategy
-	strategy := strings.ToLower(opts.Strategy)
-	if strategy == "" {
-		strategy = "balanced"
-	}
-	validStrategies := map[string]bool{"balanced": true, "speed": true, "quality": true, "dependency": true}
-	if !validStrategies[strategy] {
+	strategy := normalizeAssignStrategy(opts.Strategy)
+	if !isValidAssignStrategy(strategy) {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("invalid strategy '%s'", opts.Strategy),
 			ErrCodeInvalidFlag,
-			"Valid strategies: balanced, speed, quality, dependency",
+			"Valid strategies: "+strings.Join(assignStrategyNames, ", "),
 		)
 		return output, nil
 	}
@@ -299,10 +342,11 @@ func GetAssign(ctx context.Context, opts AssignOptions) (*AssignOutput, error) {
 	// Build working agents set from in-progress beads
 	workingAgents := len(agents) - len(idleAgentPanes)
 
-	// Generate recommendations based on strategy
-	recommendations := generateAssignments(agents, readyBeads, strategy, idleAgentPanes)
+	// Generate recommendations through the strategy planner, preserving the
+	// dependency graph (unblocks) signal for the graph-aware strategies.
+	recommendations := planAssignments(agents, readyBeads, unblocksIndex(assignable), strategy, idleAgentPanes)
 	output.Recommendations = recommendations
-	unassignable = append(unassignable, unassignedBeadsForAgentCapacity(readyBeads, len(recommendations))...)
+	unassignable = append(unassignable, unassignedBeadsBeyondRecommendations(readyBeads, recommendations)...)
 	output.UnassignableBeads = unassignable
 
 	// Add blocked beads (beads with unmet dependencies)
@@ -445,18 +489,9 @@ func assignOptionsProjectDir(opts AssignOptions) (string, error) {
 	return projectDir, nil
 }
 
-// getAssignableBeadPreviews translates the dependency-aware bv planning
-// surface into the compact representation used by robot assignment. Request
-// the uncapped set so filtered-out high-ranked rows cannot starve eligible work
-// below them, then apply the public recommendation limit after safety gates.
-func getAssignableBeadPreviews(ctx context.Context, projectDir string, limit int) ([]bv.BeadPreview, error) {
-	recommendations, err := getAssignableActionableRecommendations(ctx, projectDir, limit)
-	if err != nil {
-		return nil, err
-	}
-	return filterAssignableBeadPreviewsForProject(projectDir, recommendations, 0), nil
-}
-
+// getAssignableActionableRecommendations requests the uncapped actionable set
+// so filtered-out high-ranked rows cannot starve eligible work below them,
+// then applies the public recommendation limit after safety gates.
 func getAssignableActionableRecommendations(ctx context.Context, projectDir string, limit int) ([]bv.TriageRecommendation, error) {
 	recommendations, err := bv.GetActionableRecommendationsContext(ctx, projectDir, 0)
 	if err != nil {
@@ -514,16 +549,23 @@ func classifyAssignableRecommendationsForProject(projectDir string, recommendati
 	})
 }
 
-func unassignedBeadsForAgentCapacity(readyBeads []bv.BeadPreview, recommendationCount int) []UnassignableBead {
-	if recommendationCount >= len(readyBeads) {
+// unassignedBeadsBeyondRecommendations reports ready beads the planner left
+// unassigned. The planner may skip earlier beads in favor of better graph or
+// capability matches, so this is keyed by bead ID rather than by position.
+func unassignedBeadsBeyondRecommendations(readyBeads []bv.BeadPreview, recommendations []AssignRecommend) []UnassignableBead {
+	if len(recommendations) >= len(readyBeads) {
 		return nil
 	}
-	if recommendationCount < 0 {
-		recommendationCount = 0
+	assigned := make(map[string]struct{}, len(recommendations))
+	for _, recommendation := range recommendations {
+		assigned[recommendation.AssignBead] = struct{}{}
 	}
 
-	unassignable := make([]UnassignableBead, 0, len(readyBeads)-recommendationCount)
-	for _, bead := range readyBeads[recommendationCount:] {
+	unassignable := make([]UnassignableBead, 0, len(readyBeads)-len(recommendations))
+	for _, bead := range readyBeads {
+		if _, ok := assigned[bead.ID]; ok {
+			continue
+		}
 		unassignable = append(unassignable, UnassignableBead{ID: bead.ID, Title: bead.Title, Reason: "no idle agent available"})
 	}
 	return unassignable
@@ -628,10 +670,19 @@ func filterDurablyOccupiedAssignAgents(idleAgentPanes []string, activeAssignment
 	return available, nil
 }
 
-// generateAssignments creates assignment recommendations based on strategy
+// generateAssignments creates assignment recommendations based on strategy.
+// It is a thin wrapper over planAssignments for callers without dependency
+// graph (unblocks) data.
 func generateAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, strategy string, idleAgents []string) []AssignRecommend {
-	var recommendations []AssignRecommend
+	return planAssignments(agents, beads, nil, strategy, idleAgents)
+}
 
+// planAssignments routes assignment planning through the requested strategy.
+// The "simple" strategy is the honest name for sequential pairing (next ready
+// bead -> next idle agent, no scoring). Every other strategy runs the real
+// planner in internal/assign, which scores agent/bead pairs against the
+// capability matrix and, for "dependency", the bead graph's unblocks fan-out.
+func planAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, unblocks map[string][]string, strategy string, idleAgents []string) []AssignRecommend {
 	// Create a map of idle agents for quick lookup
 	idleSet := make(map[string]bool)
 	for _, a := range idleAgents {
@@ -646,7 +697,17 @@ func generateAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, strat
 		}
 	}
 
-	// Assign beads to idle agents based on strategy
+	if normalizeAssignStrategy(strategy) == "simple" {
+		return sequentialAssignments(idleAgentDetails, beads)
+	}
+	return plannerAssignments(idleAgentDetails, beads, unblocks, strategy)
+}
+
+// sequentialAssignments implements the "simple" strategy: pair beads with
+// idle agents in order, with no strategy scoring. Confidence is the raw
+// capability score for the pairing and the reasoning says exactly that.
+func sequentialAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPreview) []AssignRecommend {
+	var recommendations []AssignRecommend
 	beadIdx := 0
 	for _, agent := range idleAgentDetails {
 		if beadIdx >= len(beads) {
@@ -654,9 +715,8 @@ func generateAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, strat
 		}
 
 		bead := beads[beadIdx]
-		// Calculate confidence based on strategy
-		confidence := calculateConfidence(agent.agentType, bead, strategy)
-		reasoning := generateReasoning(agent.agentType, bead, strategy)
+		confidence := calculateConfidence(agent.agentType, bead)
+		reasoning := generateReasoning(agent.agentType, bead)
 
 		recommendations = append(recommendations, AssignRecommend{
 			PaneID:     agent.paneID,
@@ -676,31 +736,94 @@ func generateAssignments(agents []assignAgentInfo, beads []bv.BeadPreview, strat
 	return recommendations
 }
 
-// calculateConfidence determines assignment confidence based on agent-task match
-func calculateConfidence(agentType string, bead bv.BeadPreview, strategy string) float64 {
-	// Extract task type from bead title/priority
-	taskType := inferTaskType(bead)
-
-	// Get capability score from the assign package
-	baseConfidence := AgentStrength(agentType, taskType)
-
-	// Adjust based on strategy
-	switch strategy {
-	case "quality":
-		// Quality strategy favors better agent-task matches
-		// Using capability matrix scores
-	case "speed":
-		// Speed strategy slightly favors any available agent
-		baseConfidence = (baseConfidence + 0.9) / 2
-	case "dependency":
-		// Dependency strategy favors high-priority items
-		priority := parsePriority(bead.Priority)
-		if priority <= 1 { // P0 or P1
-			baseConfidence = min(baseConfidence+0.1, 0.95)
-		}
+// plannerAssignments routes the graph-aware strategies through the real
+// planner in internal/assign and adapts its output back to the robot
+// envelope, keeping at most one bead per pane (the bulk-assign contract).
+func plannerAssignments(idleAgentDetails []assignAgentInfo, beads []bv.BeadPreview, unblocks map[string][]string, strategy string) []AssignRecommend {
+	if len(idleAgentDetails) == 0 || len(beads) == 0 {
+		return nil
 	}
 
-	return baseConfidence
+	agentByID := make(map[string]assignAgentInfo, len(idleAgentDetails))
+	planAgents := make([]assign.Agent, 0, len(idleAgentDetails))
+	for _, a := range idleAgentDetails {
+		agentByID[a.paneID] = a
+		planAgents = append(planAgents, assign.Agent{
+			ID:        a.paneID,
+			AgentType: assign.ParseAgentType(a.agentType),
+			Model:     a.model,
+			Idle:      true,
+		})
+	}
+
+	previewByID := make(map[string]bv.BeadPreview, len(beads))
+	planBeads := make([]assign.Bead, 0, len(beads))
+	for _, b := range beads {
+		previewByID[b.ID] = b
+		planBeads = append(planBeads, assign.Bead{
+			ID:          b.ID,
+			Title:       b.Title,
+			Priority:    parsePriority(b.Priority),
+			TaskType:    planTaskType(b),
+			UnblocksIDs: unblocks[b.ID],
+		})
+	}
+
+	planned := assign.NewMatcher().AssignTasks(planBeads, planAgents, assign.ParseStrategy(strategy))
+
+	recommendations := make([]AssignRecommend, 0, len(planned))
+	usedAgents := make(map[string]struct{}, len(planAgents))
+	usedBeads := make(map[string]struct{}, len(planBeads))
+	for _, p := range planned {
+		agent, ok := agentByID[p.Agent.ID]
+		if !ok {
+			continue
+		}
+		if _, taken := usedAgents[p.Agent.ID]; taken {
+			continue // one recommendation per pane
+		}
+		if _, taken := usedBeads[p.Bead.ID]; taken {
+			continue
+		}
+		usedAgents[p.Agent.ID] = struct{}{}
+		usedBeads[p.Bead.ID] = struct{}{}
+
+		priority := fmt.Sprintf("P%d", p.Bead.Priority)
+		title := p.Bead.Title
+		if preview, ok := previewByID[p.Bead.ID]; ok {
+			priority = preview.Priority
+			title = preview.Title
+		}
+		recommendations = append(recommendations, AssignRecommend{
+			PaneID:     agent.paneID,
+			PaneTarget: agent.paneTarget,
+			AgentType:  agent.agentType,
+			Model:      agent.model,
+			AssignBead: p.Bead.ID,
+			BeadTitle:  title,
+			Priority:   priority,
+			Confidence: p.Confidence,
+			Reasoning:  p.Reason,
+		})
+	}
+
+	return recommendations
+}
+
+// planTaskType resolves the capability-matrix task type for a bead. An
+// explicit bead type wins unless it is the generic "task", in which case
+// the title heuristics may find something more specific.
+func planTaskType(bead bv.BeadPreview) assign.TaskType {
+	if t := strings.ToLower(strings.TrimSpace(bead.Type)); t != "" && t != "task" {
+		return assign.ParseTaskType(t)
+	}
+	return assign.ParseTaskType(inferTaskType(bead))
+}
+
+// calculateConfidence determines assignment confidence for the "simple"
+// strategy: the raw capability score for the agent/task pairing.
+func calculateConfidence(agentType string, bead bv.BeadPreview) float64 {
+	return AgentStrength(agentType, inferTaskType(bead))
 }
 
 // inferTaskType attempts to determine task type from bead metadata
@@ -744,8 +867,9 @@ func parsePriority(p string) int {
 	return 2 // Default to P2
 }
 
-// generateReasoning creates a human-readable explanation for the assignment
-func generateReasoning(agentType string, bead bv.BeadPreview, strategy string) string {
+// generateReasoning creates an honest explanation for a "simple" strategy
+// assignment: sequential pairing, annotated with match and priority context.
+func generateReasoning(agentType string, bead bv.BeadPreview) string {
 	taskType := inferTaskType(bead)
 	priority := parsePriority(bead.Priority)
 
@@ -765,21 +889,8 @@ func generateReasoning(agentType string, bead bv.BeadPreview, strategy string) s
 		reasons = append(reasons, "high priority")
 	}
 
-	// Add strategy-specific reasoning
-	switch strategy {
-	case "balanced":
-		reasons = append(reasons, "balanced workload distribution")
-	case "speed":
-		reasons = append(reasons, "optimizing for speed")
-	case "quality":
-		reasons = append(reasons, "optimizing for quality")
-	case "dependency":
-		reasons = append(reasons, "prioritizing dependency unblocking")
-	}
-
-	if len(reasons) == 0 {
-		return "available agent matched to available work"
-	}
+	// Simple strategy is sequential and does not score pairings.
+	reasons = append(reasons, "simple sequential pairing (next ready bead to next idle agent)")
 
 	return strings.Join(reasons, "; ")
 }

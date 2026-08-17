@@ -943,7 +943,7 @@ func newSendCmd() *cobra.Command {
 
 	// Distribute mode flags - auto-distribute work from bv triage to agents
 	cmd.Flags().BoolVar(&distribute, "distribute", false, "Auto-distribute prioritized work from bv triage to idle agents")
-	cmd.Flags().StringVar(&distributeStrategy, "dist-strategy", "balanced", "Distribution strategy: balanced, speed, quality, dependency")
+	cmd.Flags().StringVar(&distributeStrategy, "dist-strategy", "simple", "Distribution strategy: simple (sequential pairing), balanced, speed, quality, dependency (graph-aware planner)")
 	cmd.Flags().IntVar(&distributeLimit, "dist-limit", 0, "Max tasks to distribute (0 = one per idle agent)")
 	cmd.Flags().BoolVar(&distributeAuto, "dist-auto", false, "Execute distribution without confirmation")
 
