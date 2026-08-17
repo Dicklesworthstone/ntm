@@ -2149,15 +2149,6 @@ internal/tui/dashboard/layout.go:RenderSparkline	bd-g1-deadcode-backlog-2ijy8	ou
 internal/tui/dashboard/layout.go:ViewportPosition.EnsureVisible	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/layout.go:ViewportPosition.ScrollIndicator	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/model.go:NewWithInterval	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/tui/dashboard/panels/accounts.go:accountsConfig	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.HasError	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.Init	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.Keybindings	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.Refresh	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.SetData	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.Update	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:AccountsPanel.View	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/accounts.go:NewAccountsPanel	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
 internal/tui/dashboard/panels/compare.go:compareConfig	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
 internal/tui/dashboard/panels/compare.go:ComparePanel.HasError	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
 internal/tui/dashboard/panels/compare.go:ComparePanel.Init	bd-ws2-wire-or-delete-ykmcz.7	C6-delete redundant panel; DELETE (operator sign-off, RULE 1)
@@ -2228,29 +2219,6 @@ internal/tui/dashboard/panels/history.go:HistoryPanel.moveCursor	bd-g1-deadcode-
 internal/tui/dashboard/panels/panel.go:DefaultPanelConfig	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/panel.go:PadToHeight	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/panel.go:TruncateToHeight	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/tui/dashboard/panels/quota.go:NewQuotaPanel	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:quotaConfig	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.HasError	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.Init	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.Keybindings	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.Refresh	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.SetData	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.Update	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/quota.go:QuotaPanel.View	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:NewRateLimitPanel	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:rateLimitConfig	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.formatAgentRow	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.formatLastActivity	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.getOAuthIcon	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.getOAuthStyle	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.getRateLimitIcon	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.getRateLimitStyle	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.HasError	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.Init	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.SetData	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.shortAgentType	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.Update	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
-internal/tui/dashboard/panels/ratelimit.go:RateLimitPanel.View	bd-ws2-wire-or-delete-ykmcz.6	C6-wire panel; instantiated in the dashboard
 internal/tui/dashboard/panels/timeline.go:TimelinePanel.agentColor	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/timeline.go:TimelinePanel.getMarkersForAgentInWindow	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/tui/dashboard/panels/timeline.go:TimelinePanel.highestPriorityMarker	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete

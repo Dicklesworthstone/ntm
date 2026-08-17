@@ -330,6 +330,21 @@ type Model struct {
 	fetchingWorkflow     bool
 	showWorkflowPanel    bool
 
+	// C6-wire panels: quota, ratelimit, accounts toggled into the sidebar.
+	// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+	quotaPanel          *panels.QuotaPanel
+	rateLimitPanel      *panels.RateLimitPanel
+	accountsPanel       *panels.AccountsPanel
+	showQuotaPanel      bool
+	showRateLimitPanel  bool
+	showAccountsPanel   bool
+	fetchingQuota       bool
+	fetchingOAuthHealth bool
+	fetchingAccounts    bool
+	lastQuotaFetch      time.Time
+	lastOAuthFetch      time.Time
+	lastAccountsFetch   time.Time
+
 	// Data for new panels
 	beadsSummary             bv.BeadsSummary
 	beadsReady               []bv.BeadPreview
@@ -611,6 +626,9 @@ func New(session, projectDir string) Model {
 		conflictsPanel:       panels.NewConflictsPanel(),
 		rotationConfirmPanel: panels.NewRotationConfirmPanel(),
 		workflowPanel:        panels.NewWorkflowPanel(),
+		quotaPanel:           panels.NewQuotaPanel(),
+		rateLimitPanel:       panels.NewRateLimitPanel(),
+		accountsPanel:        panels.NewAccountsPanel(),
 		velocityByType:       make(map[string][]float64),
 
 		// Init() only kicks off the critical first-paint session fetch. Everything

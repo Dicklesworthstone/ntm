@@ -51,6 +51,12 @@ func (m *RateLimitPanel) HasError() bool {
 	return m.err != nil
 }
 
+// Keybindings returns rate-limit panel specific shortcuts. The panel is
+// read-only; refresh is driven by the dashboard's periodic fetch cycle.
+func (m *RateLimitPanel) Keybindings() []Keybinding {
+	return nil
+}
+
 // Init implements tea.Model
 func (m *RateLimitPanel) Init() tea.Cmd {
 	return nil

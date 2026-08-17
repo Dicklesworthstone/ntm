@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -33,6 +34,25 @@ type DashboardTickMsg time.Time
 type WorkflowStateMsg struct {
 	State *workflow.WorkflowState
 	Err   error
+}
+
+// OAuthHealthMsg carries per-agent OAuth/rate-limit health for the
+// ratelimit panel. [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+type OAuthHealthMsg struct {
+	Agents []robot.AgentOAuthHealth
+	Err    error
+}
+
+// AccountsStatusMsg carries CAAM account status for the accounts panel.
+// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+type AccountsStatusMsg struct {
+	Data panels.AccountsData
+}
+
+// QuotaStatusMsg carries caut usage/quota data for the quota panel.
+// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+type QuotaStatusMsg struct {
+	Data panels.QuotaData
 }
 
 // ActivityState tracks dashboard activity for adaptive tick rate.

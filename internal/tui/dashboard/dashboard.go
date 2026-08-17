@@ -32,6 +32,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/caut"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/policy"
@@ -1229,6 +1230,26 @@ func (m Model) sidebarInteractivePanels() []sidebarPanelRef {
 			panel: m.cassPanel,
 		})
 	}
+	// C6-wire panels join focus cycling only while toggled visible.
+	// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+	if m.showQuotaPanel && m.quotaPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.quotaPanel.Config().ID,
+			panel: m.quotaPanel,
+		})
+	}
+	if m.showRateLimitPanel && m.rateLimitPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.rateLimitPanel.Config().ID,
+			panel: m.rateLimitPanel,
+		})
+	}
+	if m.showAccountsPanel && m.accountsPanel != nil {
+		refs = append(refs, sidebarPanelRef{
+			id:    m.accountsPanel.Config().ID,
+			panel: m.accountsPanel,
+		})
+	}
 	if m.timelinePanel != nil {
 		refs = append(refs, sidebarPanelRef{
 			id:    m.timelinePanel.Config().ID,
@@ -1384,6 +1405,90 @@ func (m Model) fetchWorkflowState() tea.Cmd {
 		state, err := store.Load(session)
 		return WorkflowStateMsg{State: state, Err: err}
 	}
+}
+
+// C6-wire panel data fetchers. [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+// Package-level indirection follows the dashboardRunAddAgents pattern so tests
+// can substitute deterministic fixtures without touching tmux/caut/caam.
+
+var dashboardFetchQuotaData = func() panels.QuotaData {
+	cache := caut.GetGlobalPoller().GetCache()
+	if cache == nil {
+		return panels.QuotaData{Available: false}
+	}
+	quotaStatus := cache.GetStatus()
+	usages := cache.GetAllUsage()
+	_, err := cache.GetLastError()
+	return panels.QuotaData{
+		Status:    quotaStatus,
+		Usages:    usages,
+		Available: quotaStatus != nil || len(usages) > 0,
+		Error:     err,
+	}
+}
+
+var dashboardFetchOAuthHealth = func(session string) ([]robot.AgentOAuthHealth, error) {
+	out, err := robot.GetHealthOAuth(session)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return nil, nil
+	}
+	if !out.Success {
+		return nil, fmt.Errorf("oauth health unavailable: %s", out.Error)
+	}
+	return out.Agents, nil
+}
+
+var dashboardFetchAccountsStatus = func(ctx context.Context) (*tools.CAAMStatus, error) {
+	return tools.NewCAAMAdapter().GetStatus(ctx)
+}
+
+// fetchQuotaStatus reads caut usage data from the global poller cache.
+func (m Model) fetchQuotaStatus() tea.Cmd {
+	return func() tea.Msg {
+		return QuotaStatusMsg{Data: dashboardFetchQuotaData()}
+	}
+}
+
+// fetchOAuthHealth collects per-agent OAuth/rate-limit health for the session.
+func (m Model) fetchOAuthHealth() tea.Cmd {
+	session := m.session
+	return func() tea.Msg {
+		agents, err := dashboardFetchOAuthHealth(session)
+		return OAuthHealthMsg{Agents: agents, Err: err}
+	}
+}
+
+// fetchAccountsStatus queries CAAM for account/rotation status.
+func (m Model) fetchAccountsStatus() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		caamStatus, err := dashboardFetchAccountsStatus(ctx)
+		if err != nil {
+			return AccountsStatusMsg{Data: panels.AccountsData{Available: false, Error: err}}
+		}
+		return AccountsStatusMsg{Data: panels.AccountsData{
+			Status:    caamStatus,
+			Available: caamStatus != nil && caamStatus.Available,
+		}}
+	}
+}
+
+// accountsToggleShortcutAvailable reports whether the global 'a' accounts
+// toggle may fire; it yields to the history panel, which claims 'a' for its
+// agent filter when focused.
+func (m Model) accountsToggleShortcutAvailable() bool {
+	if m.focusedPanel == PanelHistory {
+		return false
+	}
+	if m.focusedPanel == PanelSidebar && m.historyPanel != nil &&
+		m.sidebarActivePanelID() == m.historyPanel.Config().ID {
+		return false
+	}
+	return true
 }
 
 func (m *Model) requestSessionFetch(cancelInFlight bool) tea.Cmd {
@@ -2342,6 +2447,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchingWorkflow = true
 			cmds = append(cmds, m.fetchWorkflowState())
 		}
+		// C6-wire panels refresh only while visible, at their configured
+		// cadence; an errored panel retries faster so recovery is visible.
+		// [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+		if m.showQuotaPanel && m.quotaPanel != nil && !m.fetchingQuota {
+			interval := m.quotaPanel.Config().RefreshInterval
+			if m.quotaPanel.HasError() {
+				interval = 5 * time.Second
+			}
+			if now.Sub(m.lastQuotaFetch) >= interval {
+				m.fetchingQuota = true
+				cmds = append(cmds, m.fetchQuotaStatus())
+			}
+		}
+		if m.showRateLimitPanel && m.rateLimitPanel != nil && !m.fetchingOAuthHealth {
+			interval := m.rateLimitPanel.Config().RefreshInterval
+			if m.rateLimitPanel.HasError() {
+				interval = 2 * interval
+			}
+			if now.Sub(m.lastOAuthFetch) >= interval {
+				m.fetchingOAuthHealth = true
+				cmds = append(cmds, m.fetchOAuthHealth())
+			}
+		}
+		if m.showAccountsPanel && m.accountsPanel != nil && !m.fetchingAccounts {
+			interval := m.accountsPanel.Config().RefreshInterval
+			if m.accountsPanel.HasError() {
+				interval = 5 * time.Second
+			}
+			if now.Sub(m.lastAccountsFetch) >= interval {
+				m.fetchingAccounts = true
+				cmds = append(cmds, m.fetchAccountsStatus())
+			}
+		}
 
 		cmds = append(cmds, m.tick())
 		return m, tea.Batch(cmds...)
@@ -2353,6 +2491,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workflowError = msg.Err
 		if m.workflowPanel != nil {
 			m.workflowPanel.SetData(panels.WorkflowPanelData{State: msg.State}, msg.Err)
+		}
+		return m, nil
+
+	// C6-wire panel data arrivals. [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+	case QuotaStatusMsg:
+		m.fetchingQuota = false
+		m.lastQuotaFetch = time.Now()
+		if m.quotaPanel != nil {
+			m.quotaPanel.SetData(msg.Data)
+		}
+		return m, nil
+
+	case OAuthHealthMsg:
+		m.fetchingOAuthHealth = false
+		m.lastOAuthFetch = time.Now()
+		if m.rateLimitPanel != nil {
+			m.rateLimitPanel.SetData(msg.Agents, msg.Err)
+		}
+		return m, nil
+
+	case AccountsStatusMsg:
+		m.fetchingAccounts = false
+		m.lastAccountsFetch = time.Now()
+		if m.accountsPanel != nil {
+			m.accountsPanel.SetData(msg.Data)
 		}
 		return m, nil
 
@@ -3400,6 +3563,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showWorkflowPanel && m.workflowPanel != nil && m.workflowState != nil && msg.String() == "enter" {
 			_, cmd := m.workflowPanel.Update(msg)
 			return m, cmd
+		}
+
+		// C6-wire panel toggles: quota ('$'), oauth/rate status ('o'),
+		// accounts ('a'). [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+		if key.Matches(msg, dashKeys.QuotaToggle) {
+			m.showQuotaPanel = !m.showQuotaPanel
+			if m.showQuotaPanel && !m.fetchingQuota {
+				m.fetchingQuota = true
+				return m, m.fetchQuotaStatus()
+			}
+			return m, nil
+		}
+		if key.Matches(msg, dashKeys.RateLimitToggle) {
+			m.showRateLimitPanel = !m.showRateLimitPanel
+			if m.showRateLimitPanel && !m.fetchingOAuthHealth {
+				m.fetchingOAuthHealth = true
+				return m, m.fetchOAuthHealth()
+			}
+			return m, nil
+		}
+		if key.Matches(msg, dashKeys.AccountsToggle) && m.accountsToggleShortcutAvailable() {
+			m.showAccountsPanel = !m.showAccountsPanel
+			if m.showAccountsPanel && !m.fetchingAccounts {
+				m.fetchingAccounts = true
+				return m, m.fetchAccountsStatus()
+			}
+			return m, nil
 		}
 
 		// [tui-upgrade: bd-uz09d] Open spawn wizard with ctrl+w.
@@ -5252,6 +5442,51 @@ func (m Model) renderSidebar(width, height int) string {
 			}
 			m.workflowPanel.SetSize(width, panelHeight)
 			lines = append(lines, m.workflowPanel.View(), "")
+		}
+	}
+
+	// C6-wire panels: quota, ratelimit, accounts render in the sidebar while
+	// toggled visible. [reality-bridge: bd-ws2-wire-or-delete-ykmcz.6]
+	if m.showQuotaPanel && m.quotaPanel != nil && height > 0 {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		panelHeight := height - used - 1
+		if panelHeight >= m.quotaPanel.Config().MinHeight {
+			if panelHeight > 12 {
+				panelHeight = 12
+			}
+			if activeSidebarID == m.quotaPanel.Config().ID {
+				m.quotaPanel.Focus()
+			}
+			m.quotaPanel.SetSize(width, panelHeight)
+			lines = append(lines, m.quotaPanel.View(), "")
+		}
+	}
+	if m.showRateLimitPanel && m.rateLimitPanel != nil && height > 0 {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		panelHeight := height - used - 1
+		if panelHeight >= m.rateLimitPanel.Config().MinHeight {
+			if panelHeight > 12 {
+				panelHeight = 12
+			}
+			if activeSidebarID == m.rateLimitPanel.Config().ID {
+				m.rateLimitPanel.Focus()
+			}
+			m.rateLimitPanel.SetSize(width, panelHeight)
+			lines = append(lines, m.rateLimitPanel.View(), "")
+		}
+	}
+	if m.showAccountsPanel && m.accountsPanel != nil && height > 0 {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		panelHeight := height - used - 1
+		if panelHeight >= m.accountsPanel.Config().MinHeight {
+			if panelHeight > 12 {
+				panelHeight = 12
+			}
+			if activeSidebarID == m.accountsPanel.Config().ID {
+				m.accountsPanel.Focus()
+			}
+			m.accountsPanel.SetSize(width, panelHeight)
+			lines = append(lines, m.accountsPanel.View(), "")
 		}
 	}
 
