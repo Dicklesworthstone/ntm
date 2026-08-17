@@ -1,0 +1,10 @@
+# G4 canary fixture (bd-ws0-guards-klz98.5): the fixture tree contains a
+# buildable deliverable (fakedeliverable/ with a package.json) that this
+# manifest does NOT declare. release_preflight.sh --self-test must FAIL this
+# manifest (the F1/F2 finished-but-never-shipped class) or abort as a placebo.
+
+schema = "1"
+
+[artifact.something-else]
+kind = "binary"
+version_probe = 'echo "${EXPECTED_VERSION}"'

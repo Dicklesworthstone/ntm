@@ -1,0 +1,10 @@
+# G4 canary fixture (bd-ws0-guards-klz98.5): the fakedeliverable probe reports
+# a version that does NOT match the expected tag. release_preflight.sh
+# --self-test must FAIL this manifest or abort as a placebo.
+
+schema = "1"
+
+[artifact.fakedeliverable]
+kind = "web-embed"
+dir = "fakedeliverable"
+version_probe = 'echo "0.0.0-skewed"'

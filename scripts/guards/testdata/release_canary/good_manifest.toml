@@ -1,0 +1,10 @@
+# G4 canary fixture (bd-ws0-guards-klz98.5): fully consistent manifest for the
+# fixture tree. release_preflight.sh --self-test must PASS this one (no false
+# positives).
+
+schema = "1"
+
+[artifact.fakedeliverable]
+kind = "web-embed"
+dir = "fakedeliverable"
+version_probe = 'echo "${EXPECTED_VERSION}"'

@@ -1,0 +1,49 @@
+# release_artifacts.toml — WS0-G4 release-artifact lockstep manifest
+# (bd-ws0-guards-klz98.5). Consumed by scripts/release_preflight.sh, which runs
+# as the `release-preflight` CI job (dry-run on every push) AND as STEP 0 of
+# the DSR release checklist in AGENTS.md.
+#
+# One [artifact.<name>] block per deliverable. Fields:
+#   kind          binary | installer | web-embed | vsix | docker-image | ...
+#   dir           deliverable directory (required for deferred entries; the
+#                 pre-flight fails if the dir vanishes — stale entry — or if a
+#                 buildable deliverable dir exists with NO entry — the F1/F2
+#                 "finished but never shipped" class, structurally impossible)
+#   version_probe bash snippet run from the repo root with EXPECTED_VERSION
+#                 and PREFLIGHT_TMP exported; its stdout's LAST line must equal
+#                 EXPECTED_VERSION exactly
+#   deferred      open bead ID: deliverable exists but is not shipped yet; the
+#                 owning bead must replace this with a version_probe in the PR
+#                 that ships it. version_probe and deferred are mutually
+#                 exclusive; every entry needs exactly one of them.
+
+schema = "1"
+
+[artifact.ntm-binary]
+kind = "binary"
+# Replicates the .goreleaser.yaml stamp (internal/cli.Version) with go build,
+# then asserts the stamped binary reports EXPECTED_VERSION.
+version_probe = 'go build -trimpath -ldflags "-s -w -X github.com/Dicklesworthstone/ntm/internal/cli.Version=${EXPECTED_VERSION}" -o "${PREFLIGHT_TMP}/ntm" ./cmd/ntm && "${PREFLIGHT_TMP}/ntm" version --short'
+
+[artifact.install-sh]
+kind = "installer"
+# install.sh is version-agnostic (it resolves GitHub release assets at run
+# time), so the probe asserts the naming/repo contract it depends on is intact
+# and then reports the expected version itself.
+version_probe = 'bash -n install.sh && grep -q "REPO_OWNER=\"Dicklesworthstone\"" install.sh && grep -q "BIN_NAME=\"ntm\"" install.sh && grep -q -- "--version=" install.sh && echo "${EXPECTED_VERSION}"'
+
+[artifact.web]
+kind = "web-embed"
+dir = "web"
+# Built but never shipped (F1). F1b lands go:embed + `ntm web` + the ldflags
+# version stamp and MUST replace this deferred line with a real version_probe
+# in the same PR (release_artifacts.toml registration is in its exit criteria).
+deferred = "bd-ws5-ship-or-cut-jv0rc.1.2"
+
+[artifact.vscode-extension]
+kind = "vsix"
+dir = "vscode"
+# Built but never shipped (F2). F2 ships the .vsix on DSR releases and MUST
+# replace this deferred line with a probe asserting vscode/package.json's
+# version equals the tag.
+deferred = "bd-ws5-ship-or-cut-jv0rc.2"
