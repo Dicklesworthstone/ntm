@@ -99,13 +99,15 @@ func sendCASSInjectionConfigs(withFlag, noFlag bool, cfg *config.Config) (bool, 
 
 	query := cass.DefaultCASSConfig()
 	// internal/cass has no DefaultFilterConfig; mirror the robot engine's
-	// defaults (robot.DefaultFilterConfig) for identical behavior.
+	// defaults (robot.DefaultFilterConfig) for identical behavior. Topic
+	// filtering carries its own defaults (disabled, neutral boosts).
 	filter := cass.FilterConfig{
 		MinRelevance:      0.7,
 		MaxItems:          5,
 		PreferSameProject: true,
 		MaxAgeDays:        30,
 		RecencyBoost:      0.3,
+		TopicFilter:       cass.DefaultTopicFilterConfig(),
 	}
 	inject := cass.DefaultInjectConfig()
 	if cfg == nil {

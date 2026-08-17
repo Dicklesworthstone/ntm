@@ -193,41 +193,8 @@ internal/bv/triage.go:GetTriageNoCache	bd-g1-deadcode-backlog-2ijy8	outside the 
 internal/bv/triage.go:GetTriageRecommendations	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/bv/triage.go:GetTriageTopPicks	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
 internal/bv/triage.go:SetTriageCacheTTL	bd-g1-deadcode-backlog-2ijy8	outside the C1-C10 gap register; triage to wire-or-delete
-internal/cass/client.go:WithExecutor	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:agentCanonicalLongName	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:cleanContentForMarkdown	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:containsTopic	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:countInjectedItems	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:DefaultCASSConfig	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:DefaultInjectConfig	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:DefaultTopicFilterConfig	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:DetectTopics	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:extractCodeSnippets	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:ExtractKeywords	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:ExtractSessionDate	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:ExtractSessionName	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:FilterResults	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:formatAge	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:FormatContext	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:FormatForAgent	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:formatMarkdown	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:formatMinimal	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:formatStructured	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:InjectContext	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:InjectContextFromQuery	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:isCASSAvailable	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:isSameProject	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:isStopWord	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:normalizeScore	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:QueryAndFilterCASS	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:QueryCASS	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:removeCodeBlocks	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:sortScoredHits	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:tokenize	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:topicsOverlap	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/inject.go:truncateToTokens	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/types.go:CASSError.Error	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
-internal/cass/types.go:Message.TimestampTime	bd-ws2-wire-or-delete-ykmcz.11	C10 send-time CASS injection; wired by --with-cass / --no-cass
+internal/cass/types.go:CASSError.Error	bd-g1-deadcode-backlog-2ijy8	outside the C10 injection-engine wire; typed-API surface with test-only callers; triage to wire-or-delete
+internal/cass/types.go:Message.TimestampTime	bd-g1-deadcode-backlog-2ijy8	outside the C10 injection-engine wire; typed-API surface with test-only callers; triage to wire-or-delete
 internal/caut/client.go:CachedClient.CacheStats	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/caut/client.go:CachedClient.GetAgentUsage	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
 internal/caut/client.go:CachedClient.Invalidate	bd-ws2-wire-or-delete-ykmcz.10	C9 caut->CAAM coordinator; DELETE (operator sign-off, RULE 1)
@@ -2352,3 +2319,5 @@ internal/serve/openapi.go:buildInputSchema	bd-ws4-openapi-parity-wpwck.3	helper 
 internal/serve/openapi.go:buildResponseSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
 internal/serve/openapi.go:ensureReferencedSchema	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
 internal/serve/openapi.go:normalizePathForOpenAPI	bd-ws4-openapi-parity-wpwck.3	helper of deprecated kernel-registry generator; deleted in the W4 sign-off batch
+# permanent: test-helper
+internal/cass/client.go:WithExecutor	permanent	test-only executor injection hook; reached by internal/cass/client_test.go and internal/tui/components/cass_search_test.go

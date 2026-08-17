@@ -69,13 +69,6 @@ bugs.cooldown_minutes	bd-g2-claims-backlog-o787y	live key awaiting a RegisterRea
 bugs.interval	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 bugs.push_routing	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 cass.binary_path	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
-cass.context.enabled	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
-cass.context.lookback_days	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
-cass.context.max_sessions	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
-cass.context.max_tokens	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
-cass.context.min_relevance	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
-cass.context.prefer_same_project	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
-cass.context.skip_if_context_above	bd-ws2-wire-or-delete-ykmcz.11	send-injection key; C10 registers the reader claim at wire time
 cass.duplicates.enabled	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 cass.duplicates.lookback_days	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
 cass.duplicates.prompt_on_match	bd-g2-claims-backlog-o787y	live key awaiting a RegisterReader claim from its consuming package
