@@ -4600,75 +4600,76 @@ func TestParsePriority(t *testing.T) {
 }
 
 func TestCalculateConfidence(t *testing.T) {
+	// Simple strategy confidence is the raw capability score with no strategy
+	// adjustments; every other strategy routes through internal/assign.
 	tests := []struct {
 		name      string
 		agentType string
 		bead      bv.BeadPreview
-		strategy  string
 		minConf   float64
 		maxConf   float64
 	}{
 		// Claude strengths (using assign.DefaultCapabilities)
-		{"claude analysis", "claude", bv.BeadPreview{Title: "Analyze codebase"}, "balanced", 0.85, 0.95},
-		{"claude refactor", "claude", bv.BeadPreview{Title: "Refactor module"}, "balanced", 0.90, 1.00},
-		{"claude generic", "claude", bv.BeadPreview{Title: "Some task"}, "balanced", 0.75, 0.85}, // TaskTask = 0.80
+		{"claude analysis", "claude", bv.BeadPreview{Title: "Analyze codebase"}, 0.85, 0.95},
+		{"claude refactor", "claude", bv.BeadPreview{Title: "Refactor module"}, 0.90, 1.00},
+		{"claude generic", "claude", bv.BeadPreview{Title: "Some task"}, 0.75, 0.85}, // TaskTask = 0.80
 
 		// Codex strengths
-		{"codex feature", "codex", bv.BeadPreview{Title: "Implement feature"}, "balanced", 0.85, 0.95},
-		{"codex bug", "codex", bv.BeadPreview{Title: "Fix bug"}, "balanced", 0.85, 0.95}, // TaskBug = 0.90
+		{"codex feature", "codex", bv.BeadPreview{Title: "Implement feature"}, 0.85, 0.95},
+		{"codex bug", "codex", bv.BeadPreview{Title: "Fix bug"}, 0.85, 0.95}, // TaskBug = 0.90
 
 		// Gemini strengths
-		{"gemini docs", "gemini", bv.BeadPreview{Title: "Update documentation"}, "balanced", 0.85, 0.95},
+		{"gemini docs", "gemini", bv.BeadPreview{Title: "Update documentation"}, 0.85, 0.95},
 
-		// Strategy adjustments
-		{"speed boost", "claude", bv.BeadPreview{Title: "Some task"}, "speed", 0.80, 0.90},                   // (0.80 + 0.9) / 2 = 0.85
-		{"dependency P1", "claude", bv.BeadPreview{Title: "Task", Priority: "P1"}, "dependency", 0.85, 0.95}, // 0.80 + 0.1 = 0.90
-		{"dependency P0", "claude", bv.BeadPreview{Title: "Task", Priority: "P0"}, "dependency", 0.85, 0.95},
+		// Priority never adjusts simple confidence.
+		{"P1 no boost", "claude", bv.BeadPreview{Title: "Task", Priority: "P1"}, 0.75, 0.85},
+		{"P0 no boost", "claude", bv.BeadPreview{Title: "Task", Priority: "P0"}, 0.75, 0.85},
 
 		// Unknown agent returns 0.5 default from capability matrix
-		{"unknown agent", "unknown", bv.BeadPreview{Title: "Task"}, "balanced", 0.45, 0.55},
+		{"unknown agent", "unknown", bv.BeadPreview{Title: "Task"}, 0.45, 0.55},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := calculateConfidence(tc.agentType, tc.bead, tc.strategy)
+			got := calculateConfidence(tc.agentType, tc.bead)
 			if got < tc.minConf || got > tc.maxConf {
-				t.Errorf("calculateConfidence(%q, %q, %q) = %.2f, want in range [%.2f, %.2f]",
-					tc.agentType, tc.bead.Title, tc.strategy, got, tc.minConf, tc.maxConf)
+				t.Errorf("calculateConfidence(%q, %q) = %.2f, want in range [%.2f, %.2f]",
+					tc.agentType, tc.bead.Title, got, tc.minConf, tc.maxConf)
 			}
 		})
 	}
 }
 
 func TestGenerateReasoning(t *testing.T) {
+	// Simple strategy reasoning names the sequential pairing and never
+	// mentions planner strategies.
 	tests := []struct {
 		name        string
 		agentType   string
 		bead        bv.BeadPreview
-		strategy    string
 		mustContain []string
 	}{
-		{"claude refactor balanced", "claude", bv.BeadPreview{Title: "Refactor code"}, "balanced",
-			[]string{"excels at refactor", "balanced"}},
-		{"codex feature speed", "codex", bv.BeadPreview{Title: "Add feature"}, "speed",
-			[]string{"excels at feature", "speed"}},
-		{"gemini docs quality", "gemini", bv.BeadPreview{Title: "Write documentation"}, "quality",
-			[]string{"excels at documentation", "quality"}},
-		{"P0 critical", "claude", bv.BeadPreview{Title: "Fix", Priority: "P0"}, "dependency",
+		{"claude refactor", "claude", bv.BeadPreview{Title: "Refactor code"},
+			[]string{"excels at refactor", "simple sequential pairing"}},
+		{"codex feature", "codex", bv.BeadPreview{Title: "Add feature"},
+			[]string{"excels at feature", "simple sequential pairing"}},
+		{"gemini docs", "gemini", bv.BeadPreview{Title: "Write documentation"},
+			[]string{"excels at documentation", "simple sequential pairing"}},
+		{"P0 critical", "claude", bv.BeadPreview{Title: "Fix", Priority: "P0"},
 			[]string{"critical priority"}},
-		{"P1 high", "claude", bv.BeadPreview{Title: "Fix", Priority: "P1"}, "dependency",
+		{"P1 high", "claude", bv.BeadPreview{Title: "Fix", Priority: "P1"},
 			[]string{"high priority"}},
-		{"generic task", "unknown", bv.BeadPreview{Title: "Do stuff"}, "balanced",
-			[]string{"balanced"}},
+		{"generic task", "unknown", bv.BeadPreview{Title: "Do stuff"},
+			[]string{"simple sequential pairing"}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := generateReasoning(tc.agentType, tc.bead, tc.strategy)
+			got := generateReasoning(tc.agentType, tc.bead)
 			for _, substr := range tc.mustContain {
 				if !strings.Contains(strings.ToLower(got), strings.ToLower(substr)) {
-					t.Errorf("generateReasoning(%q, %q, %q) = %q, should contain %q",
-						tc.agentType, tc.bead.Title, tc.strategy, got, substr)
+					t.Errorf("generateReasoning(%q, %q) = %q, should contain %q",
+						tc.agentType, tc.bead.Title, got, substr)
 				}
 			}
 		})
